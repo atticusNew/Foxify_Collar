@@ -688,16 +688,22 @@ export function App() {
       });
       if (!res.ok) throw new Error("force_quote_failed");
       const data = await res.json();
+      const status = String(data?.status ?? "ok");
       const feeUsdc = Number(data?.feeUsdc);
       const markIv = Number(data?.markIv);
-      if (!Number.isFinite(feeUsdc)) throw new Error("force_quote_invalid");
+      const nonPricedStatus =
+        status === "no_quote" ||
+        status === "perp_fallback" ||
+        status === "premium_floor" ||
+        status === "error";
+      if (!Number.isFinite(feeUsdc) && !nonPricedStatus) throw new Error("force_quote_invalid");
       setPreviewQuote({
         feeRegime: data?.feeRegime ?? null,
         markIv: Number.isFinite(markIv) ? markIv : null,
         feeUsdc: Number.isFinite(feeUsdc) ? feeUsdc : null,
         quoteId: data?.quoteId ?? null,
         quoteExpiresAt: data?.quoteExpiresAt ?? null,
-        status: data?.status ?? null,
+        status,
         reason: data?.reason ?? null
       });
       setPreviewQuoteRaw(data && typeof data === "object" ? (data as Record<string, unknown>) : null);
@@ -823,16 +829,22 @@ export function App() {
           }, 800);
           return;
         }
+        const status = String(data?.status ?? "ok");
         const feeUsdc = Number(data?.feeUsdc);
         const markIv = Number(data?.markIv ?? 0);
-        if (!Number.isFinite(feeUsdc)) throw new Error("preview_quote_invalid");
+        const nonPricedStatus =
+          status === "no_quote" ||
+          status === "perp_fallback" ||
+          status === "premium_floor" ||
+          status === "error";
+        if (!Number.isFinite(feeUsdc) && !nonPricedStatus) throw new Error("preview_quote_invalid");
         setPreviewQuote({
           feeRegime: data?.feeRegime ?? null,
           markIv: Number.isFinite(markIv) ? markIv : null,
           feeUsdc: Number.isFinite(feeUsdc) ? feeUsdc : null,
           quoteId: data?.quoteId ?? null,
           quoteExpiresAt: data?.quoteExpiresAt ?? null,
-          status: data?.status ?? null,
+          status,
           reason: data?.reason ?? (data?.status ? String(data.status) : null)
         });
         setPreviewQuoteRaw(data && typeof data === "object" ? (data as Record<string, unknown>) : null);
@@ -1008,8 +1020,20 @@ export function App() {
             return;
           }
 
+          if (quote?.status === "error") {
+            const reasonText = quote?.reason ? ` (${quote.reason})` : "";
+            setLastExecution(
+              String(quote?.message || `Quote engine unavailable. Please retry.${reasonText}`)
+            );
+            setIsActivating(false);
+            return;
+          }
+
           const optionUnavailable =
-            !quote || quote.status === "no_quote" || quote.status === "perp_fallback";
+            !quote ||
+            quote.status === "no_quote" ||
+            quote.status === "perp_fallback" ||
+            quote.status === "error";
           if (optionUnavailable) {
             continue;
           }
