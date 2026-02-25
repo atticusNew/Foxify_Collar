@@ -1448,6 +1448,13 @@ function resolvePremiumMarkupPct(tierName: string, leverage?: number): Decimal {
   return new Decimal(tierMarkup).add(new Decimal(leveragePct));
 }
 
+function resolveTierMinNotionalUsdc(tierName: string): Decimal | null {
+  const raw = riskControls.tier_min_notional_usdc_by_tier?.[tierName];
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return new Decimal(value);
+}
+
 function resolveDriftTolerance(tierName: string): { pct: Decimal; usdc: Decimal } {
   const pct = riskControls.drift_tolerance_pct_by_tier?.[tierName] ?? 0;
   const usdc = riskControls.drift_tolerance_usdc_by_tier?.[tierName] ?? 0;
@@ -3986,11 +3993,15 @@ app.post("/put/quote", async (req) => {
       dualVenueEnabled: venueConfig.dual_venue_enabled
     },
     request: {
+      tierName: body.tierName ?? null,
       asset: body.asset ?? null,
       side: body.side ?? null,
       targetDays: body.targetDays ?? null,
       expiryTag: body.expiryTag ?? null,
       leverage: body.leverage ?? null,
+      optionType: null,
+      protectedNotionalUsdc: null,
+      tierMinNotionalUsdc: null,
       fastPreview: body._fastPreview === true
     },
     instrumentUniverse: {
@@ -4230,11 +4241,42 @@ app.post("/put/quote", async (req) => {
   ).size;
   const spotPrice = new Decimal(body.spotPrice);
   const drawdownFloorPct = new Decimal(body.drawdownFloorPct);
+  const protectedNotionalUsdc = positionSize.abs().mul(spotPrice.abs());
+  quoteDiagnostics.request.protectedNotionalUsdc = protectedNotionalUsdc.toFixed(2);
   const targetStrike =
     optionType === "put"
       ? spotPrice.mul(new Decimal(1).minus(drawdownFloorPct))
       : spotPrice.mul(new Decimal(1).plus(drawdownFloorPct));
   const tierName = body.tierName || "Unknown";
+  quoteDiagnostics.request.tierName = tierName;
+  const tierMinNotionalUsdc = resolveTierMinNotionalUsdc(tierName);
+  if (tierMinNotionalUsdc) {
+    quoteDiagnostics.request.tierMinNotionalUsdc = tierMinNotionalUsdc.toFixed(2);
+  }
+  if (tierMinNotionalUsdc && protectedNotionalUsdc.lt(tierMinNotionalUsdc)) {
+    quoteDiagnostics.failureStage = "tier_notional_min";
+    await audit("tier_notional_min_rejected", {
+      tierName,
+      side: body.side ?? null,
+      protectedNotionalUsdc: protectedNotionalUsdc.toFixed(2),
+      minNotionalUsdc: tierMinNotionalUsdc.toFixed(2),
+      requestedTargetDays: body.targetDays ?? null
+    });
+    return cacheAndReturn({
+      status: "no_quote",
+      reason: "tier_notional_min",
+      message: `${tierName} requires at least $${tierMinNotionalUsdc.toFixed(
+        2
+      )} protected notional.`,
+      tierName,
+      protectedNotionalUsdc: protectedNotionalUsdc.toFixed(2),
+      minNotionalUsdc: tierMinNotionalUsdc.toFixed(2),
+      suggestions: [
+        "Increase protected notional for this tier",
+        "Use a lower tier for smaller notionals"
+      ]
+    });
+  }
   const tierLeverageLimits = riskControls.max_leverage_by_tier?.[tierName];
   if (tierLeverageLimits) {
     const maxLeverageForOption = tierLeverageLimits[optionType];
@@ -5029,7 +5071,6 @@ app.post("/put/quote", async (req) => {
   const bufferTargetPct = baseBuffer.plus(leverageBuffer).plus(ivBuffer);
   const bufferTargetPctCapped = Decimal.min(bufferTargetPct, new Decimal(0.15));
 
-  const protectedNotionalUsdc = positionSize.mul(new Decimal(body.spotPrice));
   const notionalUsdc = protectedNotionalUsdc.toNumber();
   let feeUsdc = feeBase.feeUsdc;
   const feeRegime = feeBase.feeRegime;
@@ -5436,6 +5477,27 @@ app.post("/put/auto-renew", async (req) => {
   const spotPrice = new Decimal(body.spotPrice);
   const drawdownFloorPct = new Decimal(body.drawdownFloorPct);
   const tierName = body.tierName || "Unknown";
+  const protectedNotionalUsdc = requiredSize.abs().mul(spotPrice.abs());
+  const tierMinNotionalUsdc = resolveTierMinNotionalUsdc(tierName);
+  if (tierMinNotionalUsdc && protectedNotionalUsdc.lt(tierMinNotionalUsdc)) {
+    await audit("put_renew_skipped", {
+      coverageId: body.coverageId ?? null,
+      reason: "tier_notional_min",
+      tierName,
+      protectedNotionalUsdc: protectedNotionalUsdc.toFixed(2),
+      minNotionalUsdc: tierMinNotionalUsdc.toFixed(2)
+    });
+    return {
+      status: "no_quote",
+      reason: "tier_notional_min",
+      tierName,
+      protectedNotionalUsdc: protectedNotionalUsdc.toFixed(2),
+      minNotionalUsdc: tierMinNotionalUsdc.toFixed(2),
+      message: `${tierName} requires at least $${tierMinNotionalUsdc.toFixed(
+        2
+      )} protected notional for renewal.`
+    };
+  }
   const expiryTargetDays = body.expiryTag
     ? targetDaysForExpiryTag(results, body.expiryTag)
     : null;
@@ -7682,6 +7744,7 @@ app.get("/debug/risk-controls", async () => {
       pass_through_uncapped_max_ratio: current.pass_through_uncapped_max_ratio ?? null,
       pass_through_cap_by_tier: current.pass_through_cap_by_tier ?? {},
       pass_through_cap_by_leverage: current.pass_through_cap_by_leverage ?? {},
+      tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {},
       enable_premium_pass_through: current.enable_premium_pass_through ?? null,
       require_user_opt_in_for_pass_through: current.require_user_opt_in_for_pass_through ?? null,
       premium_floor_ratio: current.premium_floor_ratio ?? null,

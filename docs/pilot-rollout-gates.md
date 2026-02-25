@@ -6,6 +6,7 @@
   - `final_fee = max(tier_floor_fee, hedge_premium * (1 + tier_markup + leverage_markup))`
 - Keep CTC in shadow mode (`ctc_shadow_mode=true`).
 - Keep pass-through + floor as charge basis for all pilot tiers.
+- Enforce tier cohort minimum notionals. Out-of-cohort requests return `reason=tier_notional_min`.
 
 ## Phase 1 (2-3 days)
 
@@ -25,7 +26,7 @@
 
 ## Acceptance Gates (before full pilot)
 
-1. No quote where `final_fee / hedge_premium` exceeds configured pilot cap.
+1. No in-cohort quote where `final_fee / hedge_premium` exceeds configured pilot cap.
 2. Quote-to-audit reconciliation error `< 0.5%` for coverage economics fields.
 3. Tenor drift > 2 days only when `tenorReason=tenor_fallback`.
 4. Activation success remains stable with no execution regression.

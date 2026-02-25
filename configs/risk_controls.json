@@ -24,6 +24,12 @@
   "min_fee_usdc_by_tier": {
     "Pro (Bronze)": 10
   },
+  "tier_min_notional_usdc_by_tier": {
+    "Pro (Bronze)": 1000,
+    "Pro (Silver)": 2500,
+    "Pro (Gold)": 5000,
+    "Pro (Platinum)": 10000
+  },
   "premium_markup_pct_by_tier": {
     "Pro (Bronze)": 0,
     "Pro (Silver)": 0.03,

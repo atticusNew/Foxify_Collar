@@ -51,6 +51,7 @@ IFS=',' read -r -a TIERS <<< "${TIERS_CSV}"
 
 quote_failures=0
 checked_quotes=0
+out_of_cohort_skips=0
 
 echo "===================================================================="
 echo "Pilot Acceptance Gates"
@@ -101,6 +102,7 @@ PY
         }')"
       response="$(curl -s "${API_BASE}/put/quote" -H "Content-Type: application/json" -d "${payload}")"
       status="$(jq -r '.status // "unknown"' <<<"${response}")"
+      reason="$(jq -r '.reason // empty' <<<"${response}")"
       fee="$(jq -r '.feeUsdc // empty' <<<"${response}")"
       premium="$(jq -r '.rollEstimatedPremiumUsdc // .premiumUsdc // empty' <<<"${response}")"
       selected_days="$(jq -r '.targetDays // empty' <<<"${response}")"
@@ -109,6 +111,12 @@ PY
       checked_quotes=$((checked_quotes + 1))
 
       if [[ "${status}" != "ok" && "${status}" != "pass_through" ]]; then
+        if [[ "${reason}" == "tier_notional_min" ]]; then
+          min_notional="$(jq -r '.minNotionalUsdc // empty' <<<"${response}")"
+          out_of_cohort_skips=$((out_of_cohort_skips + 1))
+          echo "SKIP out-of-cohort tier=${tier} notional=${notional} lev=${lev}: minNotional=${min_notional}"
+          continue
+        fi
         echo "FAIL quote status tier=${tier} notional=${notional} lev=${lev}: status=${status}"
         quote_failures=$((quote_failures + 1))
         continue
@@ -153,6 +161,7 @@ done
 
 echo
 echo "Quote gate checks: ${checked_quotes} scenarios, failures=${quote_failures}"
+echo "Out-of-cohort skips=${out_of_cohort_skips}"
 
 recon_failures=0
 coverage_json="$(curl -s "${API_BASE}/coverage/active?accountId=demo")"

@@ -34,6 +34,17 @@ This is the only customer-facing fee path in pilot mode.
 - `grossMarginUsdc = collectedFeeUsdc - hedgeSpendUsdc`
 - `pricingReason`
 
+## Tier Eligibility (Pilot Cohorts)
+
+Pilot quoting enforces tier minimum protected notional thresholds:
+
+- Pro (Bronze): 1,000 USDC
+- Pro (Silver): 2,500 USDC
+- Pro (Gold): 5,000 USDC
+- Pro (Platinum): 10,000 USDC
+
+If a request is below a tier threshold, the API returns `reason=tier_notional_min`.
+
 ## User Experience
 
 ### Normal Quote (Premium <= 1.25x Base Fee)

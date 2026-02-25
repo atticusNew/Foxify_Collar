@@ -35,6 +35,7 @@ export interface RiskControlsConfig {
   subsidy_volatility_multiplier?: number;
   survival_tolerance_pct?: number;
   min_fee_usdc_by_tier?: Record<string, number>;
+  tier_min_notional_usdc_by_tier?: Record<string, number>;
   premium_floor_ratio?: number;
   fee_iv_uplift_threshold?: number;
   fee_iv_uplift_pct_by_tier?: Record<string, number>;
@@ -140,6 +141,7 @@ const DEFAULTS: RiskControlsConfig = {
   subsidy_volatility_multiplier: 0.5,
   survival_tolerance_pct: 0.98,
   min_fee_usdc_by_tier: {},
+  tier_min_notional_usdc_by_tier: {},
   premium_floor_ratio: 1.25,
   fee_iv_uplift_threshold: 0.8,
   fee_iv_uplift_pct_by_tier: {},
