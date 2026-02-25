@@ -55,6 +55,7 @@ import {
   resolveLiveCtcFeeControl
 } from "./phase0Guards";
 import { resolveOptionPremiumUsdc } from "./executionUtils";
+import { buildCoverageReport } from "./coverageReport";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -1153,33 +1154,6 @@ async function computeCoverageMtmSnapshots(): Promise<void> {
   }
 }
 
-function calculateCoverageStatus(
-  position: PortfolioExposure,
-  hedge?: {
-    optionType?: string | null;
-    strike?: number | string | null;
-    hedgeSize?: number | string | null;
-  },
-  drawdownFloorPct = 0.2
-): {
-  requiredSize: number;
-  coveredSize: number;
-  coveragePct: number;
-  floorStrike: number;
-  isCovered: boolean;
-} {
-  const requiredSize = position.size || 0;
-  const coveredSize = Number(hedge?.hedgeSize ?? 0);
-  const coveragePct =
-    requiredSize > 0 ? Math.min(1, coveredSize / requiredSize) * 100 : 0;
-  const floorStrike =
-    position.side === "long"
-      ? position.entryPrice * (1 - drawdownFloorPct)
-      : position.entryPrice * (1 + drawdownFloorPct);
-  const isCovered = coveredSize >= requiredSize * 0.99;
-  return { requiredSize, coveredSize, coveragePct, floorStrike, isCovered };
-}
-
 function serializeDecimal(value: Decimal | null | undefined, digits = 6): string | null {
   if (value === null || value === undefined) return null;
   return value.toFixed(digits);
@@ -1959,91 +1933,19 @@ app.get("/coverage/report", async (req) => {
   const query = req.query as { accountId?: string };
   const accountId = query.accountId || "demo";
   const portfolio = portfolioSnapshots.get(accountId);
-  const coverages = await readAuditEntries(500);
-  const coverageEvents = coverages.filter((entry) => entry.event === "coverage_activated");
-
-  const latestByPosition = new Map<string, Record<string, unknown>>();
-  for (const entry of coverageEvents) {
-    const payload = entry.payload as any;
-    const pos = payload?.portfolio?.positions?.[0];
-    if (!pos?.asset || !pos?.side || !pos?.entryPrice) continue;
-    const key = `${pos.asset}|${pos.side}|${pos.leverage}|${pos.entryPrice}`;
-    latestByPosition.set(key, payload);
-  }
-  const matchCoverage = (position: PortfolioExposure): Record<string, unknown> | null => {
-    const key = `${position.asset}|${position.side}|${position.leverage}|${position.entryPrice}`;
-    if (latestByPosition.has(key)) return latestByPosition.get(key) as Record<string, unknown>;
-    const candidates: Array<{ payload: Record<string, unknown>; diff: number }> = [];
-    for (const payload of latestByPosition.values()) {
-      const pos = (payload as any)?.portfolio?.positions?.[0];
-      if (!pos?.asset || !pos?.side || !pos?.entryPrice || !pos?.leverage) continue;
-      if (pos.asset !== position.asset || pos.side !== position.side) continue;
-      const notional = Number(pos.marginUsd || 0) * Number(pos.leverage || 1);
-      const size = pos.entryPrice ? notional / Number(pos.entryPrice) : 0;
-      const diff = Math.abs(size - position.size);
-      candidates.push({ payload, diff });
-    }
-    if (!candidates.length) return null;
-    candidates.sort((a, b) => a.diff - b.diff);
-    return candidates[0].payload;
-  };
-
   const positions = portfolio?.positions ?? [];
-  const results = positions.map((pos, idx) => {
-    const id = `pos_${idx + 1}`;
-    const coverage = matchCoverage(pos) as any;
-    const hedge = coverage?.hedge || null;
-    const drawdownFloorPct =
-      coverage?.equityUsd && coverage?.floorUsd
-        ? Math.max(0, 1 - Number(coverage.floorUsd) / Number(coverage.equityUsd))
-        : 0.2;
-    const status = calculateCoverageStatus(
-      {
-        asset: pos.asset,
-        side: pos.side,
-        entryPrice: pos.entryPrice,
-        size: pos.size,
-        leverage: pos.leverage
-      },
-      {
-        optionType: hedge?.optionType ?? null,
-        strike: hedge?.strike ?? null,
-        hedgeSize: hedge?.hedgeSize ?? null
-      },
-      drawdownFloorPct
-    );
-    return {
-      positionId: id,
-      asset: pos.asset,
-      side: pos.side,
-      entryPrice: pos.entryPrice,
-      size: pos.size,
-      leverage: pos.leverage,
-      coverageId: coverage?.coverageId ?? null,
-      hedgeInstrument: hedge?.instrument ?? null,
-      expiryTag: hedge?.expiryTag ?? null,
-      optionType: hedge?.optionType ?? null,
-      strike: hedge?.strike ?? null,
-      reason: coverage?.reason ?? null,
-      feeUsd: coverage?.feeUsd ?? null,
-      premiumUsd: hedge?.premiumUsdc ?? null,
-      subsidyUsd: hedge?.subsidyUsdc ?? null,
-      requiredSize: status.requiredSize,
-      coveredSize: status.coveredSize,
-      coveragePct: status.coveragePct.toFixed(2),
-      floorStrike: status.floorStrike,
-      isCovered: status.isCovered
-    };
+  const coverageReport = buildCoverageReport({
+    accountId,
+    positions,
+    coverageLedgerEntries: Array.from(coverageLedger.values())
   });
-
-  const covered = results.filter((r) => r.isCovered).length;
   return {
     status: "ok",
     accountId,
-    positions: results.length,
-    covered,
-    coveragePct: results.length ? ((covered / results.length) * 100).toFixed(2) : "0",
-    results
+    positions: coverageReport.results.length,
+    covered: coverageReport.covered,
+    coveragePct: coverageReport.coveragePct,
+    results: coverageReport.results
   };
 });
 
