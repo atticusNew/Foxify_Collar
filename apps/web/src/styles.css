@@ -108,6 +108,11 @@ body {
   margin-left: 8px;
 }
 
+.pill-warning {
+  background: rgba(242, 166, 90, 0.16);
+  color: #f2a65a;
+}
+
 .stats {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -251,6 +256,32 @@ body {
 .row-inline-fee {
   justify-content: flex-end;
   min-width: 220px;
+}
+
+.premium-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fetching-status {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.fetching-status em {
+  display: inline-flex;
+  align-items: center;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.fetching-dots {
+  display: inline-block;
+  width: 3ch;
+  text-align: left;
 }
 
 .fee-amount {
@@ -973,6 +1004,10 @@ select.input {
   font-size: 11px;
   color: var(--muted);
   line-height: 1.4;
+}
+
+.ineligible-hint {
+  margin-top: 4px;
 }
 
 .toast {

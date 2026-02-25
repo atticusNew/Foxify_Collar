@@ -48,6 +48,18 @@ type PortfolioValidation = {
   value?: Portfolio;
 };
 
+type PositionEligibility = {
+  eligible: boolean;
+  tierName: string;
+  minNotionalUsdc: number;
+  estimatedNotionalUsdc: number;
+  missingNotionalUsdc: number;
+  requiredSizeUnits: number | null;
+  requiredMarginUsd: number | null;
+  additionalMarginUsd: number | null;
+  nearThreshold: boolean;
+};
+
 type RiskSummary = {
   equityUsdc: string;
   drawdownLimitUsdc: string;
@@ -109,6 +121,18 @@ const parseFundedLevels = (input: unknown): FundedLevel[] => {
     .filter((item): item is FundedLevel => Boolean(item));
 };
 
+const parseTierMinNotionalMap = (input: unknown): Record<string, number> => {
+  if (!input || typeof input !== "object") return {};
+  const entries = Object.entries(input as Record<string, unknown>);
+  const map: Record<string, number> = {};
+  for (const [tierName, raw] of entries) {
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value <= 0) continue;
+    map[tierName] = value;
+  }
+  return map;
+};
+
 const formatSpotPrice = (value: number) =>
   value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -126,6 +150,7 @@ export function App() {
   const [autoRenew, setAutoRenew] = useState(true);
   const [portfolioOpen, setPortfolioOpen] = useState(false);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [tierMinNotionalByTier, setTierMinNotionalByTier] = useState<Record<string, number>>({});
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [protectionActive, setProtectionActive] = useState(false);
   const [protectionStart, setProtectionStart] = useState<string | null>(null);
@@ -354,6 +379,40 @@ export function App() {
     };
     loadLevels();
   }, [DATA_MODE, FOXIFY_ENABLED, FOXIFY_POSITION_ENDPOINT]);
+
+  useEffect(() => {
+    let active = true;
+    const loadTierRules = async () => {
+      const extract = (payload: unknown): Record<string, number> => {
+        const controls = (payload as { controls?: Record<string, unknown> } | null)?.controls;
+        return parseTierMinNotionalMap(controls?.tier_min_notional_usdc_by_tier);
+      };
+      try {
+        let next: Record<string, number> = {};
+        const buildInfoRes = await fetch(`${API_BASE}/debug/build-info`);
+        if (buildInfoRes.ok) {
+          next = extract(await buildInfoRes.json());
+        }
+        if (Object.keys(next).length === 0) {
+          const riskRes = await fetch(`${API_BASE}/debug/risk-controls`);
+          if (riskRes.ok) {
+            next = extract(await riskRes.json());
+          }
+        }
+        if (active && Object.keys(next).length > 0) {
+          setTierMinNotionalByTier(next);
+        }
+      } catch {
+        // Keep previous rules if fetch fails.
+      }
+    };
+    loadTierRules();
+    const id = window.setInterval(loadTierRules, 60000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -647,10 +706,58 @@ export function App() {
   }, [portfolio, level, fundingUsd, portfolioStats.totalPnl, portfolioStats.floorUsd]);
 
   const currentPositions = portfolioStats.entries;
+  const activeTierName = level?.name || portfolio?.tierName || "Unknown";
+  const activeTierMinNotionalUsdc = Number(tierMinNotionalByTier[activeTierName] ?? 0);
+  const positionEligibility = useMemo(() => {
+    const byId = new Map<string, PositionEligibility>();
+    for (const position of currentPositions) {
+      const spot = Number(spotPrices[position.asset] || position.entryPrice || 0);
+      const leverage = Number(position.leverage || 0);
+      const entryPrice = Number(position.entryPrice || 0);
+      const estimatedNotionalUsdc =
+        spot > 0 ? Math.abs(Number(position.sizeUnits || 0)) * spot : 0;
+      const roundedNotionalUsdc = Math.round(estimatedNotionalUsdc * 100) / 100;
+      const minNotionalUsdc = activeTierMinNotionalUsdc > 0 ? activeTierMinNotionalUsdc : 0;
+      const eligible = minNotionalUsdc <= 0 || roundedNotionalUsdc >= minNotionalUsdc;
+      const missingNotionalUsdc = eligible
+        ? 0
+        : Math.max(0, minNotionalUsdc - roundedNotionalUsdc);
+      const requiredSizeUnits =
+        minNotionalUsdc > 0 && spot > 0 ? minNotionalUsdc / spot : null;
+      const requiredMarginUsd =
+        minNotionalUsdc > 0 && spot > 0 && leverage > 0 && entryPrice > 0
+          ? (minNotionalUsdc * entryPrice) / (leverage * spot)
+          : null;
+      const additionalMarginUsd =
+        requiredMarginUsd !== null
+          ? Math.max(0, requiredMarginUsd - Number(position.marginUsd || 0))
+          : null;
+      const nearThreshold =
+        minNotionalUsdc > 0 &&
+        roundedNotionalUsdc > 0 &&
+        Math.abs(roundedNotionalUsdc - minNotionalUsdc) / minNotionalUsdc <= 0.02;
+      byId.set(position.id, {
+        eligible,
+        tierName: activeTierName,
+        minNotionalUsdc,
+        estimatedNotionalUsdc: roundedNotionalUsdc,
+        missingNotionalUsdc,
+        requiredSizeUnits,
+        requiredMarginUsd,
+        additionalMarginUsd,
+        nearThreshold
+      });
+    }
+    return byId;
+  }, [activeTierMinNotionalUsdc, activeTierName, currentPositions, spotPrices]);
   const selectedPositions = useMemo(
     () => currentPositions.filter((p) => selectedIds.includes(p.id)),
     [currentPositions, selectedIds]
   );
+  const selectedEligibility = useMemo(() => {
+    if (selectedPositions.length !== 1) return null;
+    return positionEligibility.get(selectedPositions[0].id) || null;
+  }, [positionEligibility, selectedPositions]);
   const pricingKey = useMemo(() => {
     if (!level || selectedPositions.length !== 1) return null;
     const primary = selectedPositions[0];
@@ -1009,6 +1116,20 @@ export function App() {
     if (selectedIds.length > 1) {
       setActivationNoticeTimed("Select a single position for protection.");
       return;
+    }
+    const selected = selectedPositions[0];
+    if (selected) {
+      const eligibility = positionEligibility.get(selected.id);
+      if (eligibility && !eligibility.eligible) {
+        const needMargin =
+          eligibility.additionalMarginUsd !== null
+            ? `Add about $${formatUsd(eligibility.additionalMarginUsd)} margin`
+            : "Increase position size";
+        setActivationNoticeTimed(
+          `Ineligible: min $${formatUsd(eligibility.minNotionalUsdc)} protected notional for ${eligibility.tierName}. ${needMargin} to enable protection.`
+        );
+        return;
+      }
     }
     if (!hasAvailablePremium()) {
       setActivationNoticeTimed("Waiting for premium quote. Please try again.");
@@ -1610,6 +1731,8 @@ export function App() {
     value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatPrice = (value: number) =>
     value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatSizeUnits = (value: number) =>
+    value.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
 
   const mtmEquity = riskSummary ? Number(riskSummary.equityUsdc) : portfolioStats.equityUsd;
   const mtmDistanceToFloor = mtmEquity - portfolioStats.floorUsd;
@@ -1675,6 +1798,17 @@ export function App() {
   ]);
 
   const toggleSelected = (id: string) => {
+    const eligibility = positionEligibility.get(id);
+    if (eligibility && !eligibility.eligible) {
+      const needSize =
+        eligibility.requiredSizeUnits !== null
+          ? `${formatSizeUnits(eligibility.requiredSizeUnits)} BTC`
+          : "larger size";
+      setActivationNoticeTimed(
+        `Ineligible: min $${formatUsd(eligibility.minNotionalUsdc)} for ${eligibility.tierName}. Need about ${needSize} protected notional equivalent.`
+      );
+      return;
+    }
     setSelectedIds((prev) => (prev.includes(id) ? [] : [id]));
     previewLastRequestAtRef.current = 0;
     setPreviewTick((prev) => prev + 1);
@@ -1736,7 +1870,7 @@ export function App() {
       ? Number(previewQuote.targetDays)
       : null;
   const tenorFallbackActive = previewQuote?.tenorReason === "tenor_fallback";
-  const canActivate = hasAvailablePremium() && !isActivating;
+  const canActivate = hasAvailablePremium() && !isActivating && (selectedEligibility?.eligible ?? true);
 
   return (
     <div className="shell">
@@ -1862,16 +1996,30 @@ export function App() {
                 <div className="positions">
                   {currentPositions.map((p) => {
                     const isProtected = protectedIds.includes(p.id);
+                    const eligibility = positionEligibility.get(p.id) || null;
+                    const isIneligible = Boolean(eligibility && !eligibility.eligible);
                     return (
                     <div className="position-row" key={p.id}>
                       <div>
                         <strong>
                           {p.asset} {p.side === "long" ? "Long" : "Short"}
                         </strong>
+                        {isIneligible && eligibility && (
+                          <span className="pill pill-inline pill-warning">
+                            Ineligible: min ${formatUsd(eligibility.minNotionalUsdc)} for {eligibility.tierName}
+                          </span>
+                        )}
                         <div className="muted">
                           ${formatUsd(p.marginUsd)} • {p.leverage}x • Entry $
                           {formatPrice(p.entryPrice)}
                         </div>
+                        {isIneligible && eligibility && (
+                          <div className="muted ineligible-hint">
+                            Need ~{formatSizeUnits(eligibility.requiredSizeUnits ?? 0)} BTC protected or
+                            margin ${formatUsd(eligibility.requiredMarginUsd ?? 0)} (+
+                            ${formatUsd(eligibility.additionalMarginUsd ?? 0)}) at {p.leverage}x.
+                          </div>
+                        )}
                       </div>
                       <div className="position-actions">
                         <span className={p.pnl >= 0 ? "pill" : "danger"}>
@@ -1883,10 +2031,12 @@ export function App() {
                           <button
                             className={selectedIds.includes(p.id) ? "btn active" : "btn"}
                             onClick={() => toggleSelected(p.id)}
-                            disabled={isProtected}
+                            disabled={isProtected || isIneligible}
                           >
                             {isProtected
                               ? "Protected"
+                              : isIneligible
+                                ? "Ineligible"
                               : selectedIds.includes(p.id)
                                 ? "Selected"
                                 : "Protect"}
@@ -1954,6 +2104,18 @@ export function App() {
               {tenorFallbackActive && (
                 <div className="disclaimer">
                   Preferred tenor unavailable; quote used tenor fallback due to liquidity.
+                </div>
+              )}
+              {selectedEligibility?.nearThreshold && (
+                <div className="disclaimer">
+                  Near minimum notional threshold. Eligibility may change as spot updates.
+                </div>
+              )}
+              {selectedEligibility && !selectedEligibility.eligible && (
+                <div className="disclaimer danger">
+                  Ineligible to protect: minimum ${formatUsd(selectedEligibility.minNotionalUsdc)} for{" "}
+                  {selectedEligibility.tierName}. Estimated protected notional $
+                  {formatUsd(selectedEligibility.estimatedNotionalUsdc)}.
                 </div>
               )}
               {selectedIds.length > 0 && (
