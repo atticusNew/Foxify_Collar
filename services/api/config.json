@@ -1,9 +1,9 @@
 {
   "venue": {
-    "mode": "dual_venue",
-    "bybit_enabled": true,
+    "mode": "deribit_only",
+    "bybit_enabled": false,
     "deribit_enabled": true,
-    "dual_venue_enabled": true
+    "dual_venue_enabled": false
   },
   "demo_mode": {
     "enabled": true,
