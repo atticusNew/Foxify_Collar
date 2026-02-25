@@ -4280,7 +4280,13 @@ app.post("/put/quote", async (req) => {
     tenorMode = "preferred";
 
     for (let expiryIdx = 0; expiryIdx < effectiveExpiryOrder.length; expiryIdx += 1) {
-      if (!fastPreview && hasFallbackPool && expiryIdx >= fallbackStartIndex && bestCandidate) {
+      if (
+        !fastPreview &&
+        hasFallbackPool &&
+        fallbackStartIndex > 0 &&
+        expiryIdx >= fallbackStartIndex &&
+        bestCandidate
+      ) {
         tenorMode = "preferred";
         break;
       }
@@ -4428,7 +4434,7 @@ app.post("/put/quote", async (req) => {
         if (!bestCandidate || result.candidate.allInPremium.lt(bestCandidate.allInPremium)) {
           bestCandidate = result.candidate;
           tenorMode =
-            !fastPreview && hasFallbackPool && expiryIdx >= fallbackStartIndex
+            hasFallbackPool && expiryIdx >= fallbackStartIndex
               ? "fallback"
               : "preferred";
           bestSnapshots = result.snapshots;
@@ -5370,7 +5376,12 @@ app.post("/put/auto-renew", async (req) => {
     tenorMode = "preferred";
 
     for (let expiryIdx = 0; expiryIdx < orderedExpirySearchOrder.length; expiryIdx += 1) {
-      if (hasFallbackPool && expiryIdx >= fallbackStartIndex && bestCandidate) {
+      if (
+        hasFallbackPool &&
+        fallbackStartIndex > 0 &&
+        expiryIdx >= fallbackStartIndex &&
+        bestCandidate
+      ) {
         tenorMode = "preferred";
         break;
       }
