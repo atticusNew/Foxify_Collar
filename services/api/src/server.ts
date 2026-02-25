@@ -56,6 +56,7 @@ import {
 } from "./phase0Guards";
 import { resolveOptionPremiumUsdc } from "./executionUtils";
 import { buildCoverageReport } from "./coverageReport";
+import { resolveCoverageTargetSize } from "./quoteCoverage";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -4070,7 +4071,8 @@ app.post("/put/quote", async (req) => {
     spreadTooWide: 0,
     sizeTooSmall: 0,
     noBidAsk: 0,
-    slippageTooHigh: 0
+    slippageTooHigh: 0,
+    insufficientCoverage: 0
   };
   const quoteDiagnostics: any = {
     version: 1,
@@ -4635,14 +4637,26 @@ app.post("/put/quote", async (req) => {
               timestampMs: quote.book.timestampMs ?? null,
               markPriceUsd: serializeDecimal(quote.book.markPriceUsd, 6)
             }));
-            const agg = aggregateOptionQuotes(quotes, "buy", requiredSize);
+            const strike = new Decimal(inst.strike);
+            const targetSize = resolveCoverageTargetSize({
+              spotPrice,
+              drawdownFloorPct,
+              optionType,
+              strike,
+              requiredSize,
+              minSize
+            });
+            if (!targetSize) {
+              return { kind: "rejected" as const, reason: "insufficientCoverage" as const };
+            }
+            const agg = aggregateOptionQuotes(quotes, "buy", targetSize);
             if (!agg.bestBid || !agg.bestAsk) {
               return { kind: "rejected" as const, reason: "noBidAsk" as const };
             }
             if (agg.spread.gt(maxSpreadPct)) {
               return { kind: "rejected" as const, reason: "spreadTooWide" as const };
             }
-            if (!agg.avgPrice || agg.filledSize.lte(0)) {
+            if (!agg.avgPrice || agg.filledSize.lte(0) || agg.filledSize.lt(targetSize)) {
               return { kind: "rejected" as const, reason: "sizeTooSmall" as const };
             }
             const slippagePct = agg.avgPrice.minus(agg.bestAsk).div(agg.bestAsk);
@@ -4650,12 +4664,12 @@ app.post("/put/quote", async (req) => {
               return { kind: "rejected" as const, reason: "slippageTooHigh" as const };
             }
             const premiumPerUnit = agg.avgPrice;
-            const premiumTotal = premiumPerUnit.mul(requiredSize);
+            const premiumTotal = premiumPerUnit.mul(targetSize);
             const rollMultiplier = Math.max(1, Math.ceil(targetDays / days));
             const allInPremium = premiumTotal.mul(new Decimal(rollMultiplier));
             return {
               kind: "candidate" as const,
-              strikeKey: new Decimal(inst.strike).toFixed(0),
+              strikeKey: strike.toFixed(0),
               snapshots,
               plans: agg.plans,
               candidate: {
@@ -4665,11 +4679,12 @@ app.post("/put/quote", async (req) => {
                 premiumPerUnit,
                 premiumTotal,
                 availableSize: agg.totalAskSize,
-                strike: new Decimal(inst.strike),
+                strike,
                 iv: Number.isFinite(body.ivSnapshot ?? NaN) ? Number(body.ivSnapshot) : 0,
                 spreadPct: agg.spread,
                 rollMultiplier,
-                allInPremium
+                allInPremium,
+                hedgeSize: targetSize
               }
             };
           } catch (error: any) {
@@ -4699,6 +4714,9 @@ app.post("/put/quote", async (req) => {
               break;
             case "slippageTooHigh":
               rejected.slippageTooHigh += 1;
+              break;
+            case "insufficientCoverage":
+              rejected.insufficientCoverage += 1;
               break;
             default:
               rejected.missingBook += 1;
