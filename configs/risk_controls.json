@@ -81,5 +81,6 @@
   "ctc_price_buffer_pct": 0.02,
   "enable_premium_pass_through": true,
   "require_user_opt_in_for_pass_through": false,
-  "pass_through_min_notification_ratio": 1.5
+  "pass_through_min_notification_ratio": 1.5,
+  "pilot_max_fee_to_premium_ratio": 1.8
 }

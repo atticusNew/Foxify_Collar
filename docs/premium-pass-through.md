@@ -45,6 +45,11 @@ Pilot quoting enforces tier minimum protected notional thresholds:
 
 If a request is below a tier threshold, the API returns `reason=tier_notional_min`.
 
+Pilot also enforces a fee sanity guard:
+
+- `final_fee / hedge_premium <= pilot_max_fee_to_premium_ratio` (default `1.8`)
+- Breaches return `reason=fee_ratio_guard`
+
 ## User Experience
 
 ### Normal Quote (Premium <= 1.25x Base Fee)

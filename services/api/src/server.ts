@@ -5150,6 +5150,33 @@ app.post("/put/quote", async (req) => {
     feeUsdc = ctcAssessment.boundedFeeUsdc;
     feeReason = "ctc_safety";
   }
+  const maxFeeRatioRaw = Number(riskControls.pilot_max_fee_to_premium_ratio ?? 1.8);
+  const maxFeeRatio =
+    Number.isFinite(maxFeeRatioRaw) && maxFeeRatioRaw > 0 ? new Decimal(maxFeeRatioRaw) : null;
+  if (maxFeeRatio && allInPremium.gt(0)) {
+    const feeRatio = feeUsdc.div(allInPremium);
+    if (feeRatio.gt(maxFeeRatio)) {
+      quoteDiagnostics.failureStage = "fee_ratio_guard";
+      await audit("pilot_fee_ratio_guard", {
+        tierName,
+        leverage,
+        optionType,
+        feeUsdc: feeUsdc.toFixed(2),
+        premiumUsdc: allInPremium.toFixed(2),
+        ratio: feeRatio.toFixed(6),
+        maxRatio: maxFeeRatio.toFixed(6)
+      });
+      return cacheAndReturn({
+        status: "no_quote",
+        reason: "fee_ratio_guard",
+        message: "Quote rejected by pilot fee-to-premium guardrail.",
+        feeUsdc: feeUsdc.toFixed(2),
+        premiumUsdc: allInPremium.toFixed(2),
+        feeToPremiumRatio: feeRatio.toFixed(6),
+        maxAllowedRatio: maxFeeRatio.toFixed(6)
+      });
+    }
+  }
   await audit("pass_through_gate", {
     passThroughEnabled,
     requiresUserOptIn,
@@ -5815,6 +5842,34 @@ app.post("/put/auto-renew", async (req) => {
   ) {
     effectiveFeeUsdc = renewCtcAssessment.boundedFeeUsdc;
     renewReason = "ctc_safety";
+  }
+  const renewMaxFeeRatioRaw = Number(riskControls.pilot_max_fee_to_premium_ratio ?? 1.8);
+  const renewMaxFeeRatio =
+    Number.isFinite(renewMaxFeeRatioRaw) && renewMaxFeeRatioRaw > 0
+      ? new Decimal(renewMaxFeeRatioRaw)
+      : null;
+  if (renewMaxFeeRatio && effectiveAllInPremium.gt(0)) {
+    const renewFeeRatio = effectiveFeeUsdc.div(effectiveAllInPremium);
+    if (renewFeeRatio.gt(renewMaxFeeRatio)) {
+      await audit("put_renew_failed", {
+        reason: "fee_ratio_guard",
+        tierName,
+        leverage: renewLeverage,
+        feeUsdc: effectiveFeeUsdc.toFixed(2),
+        premiumUsdc: effectiveAllInPremium.toFixed(2),
+        ratio: renewFeeRatio.toFixed(6),
+        maxRatio: renewMaxFeeRatio.toFixed(6)
+      });
+      return {
+        status: "no_quote",
+        reason: "fee_ratio_guard",
+        tierName,
+        feeUsdc: effectiveFeeUsdc.toFixed(2),
+        premiumUsdc: effectiveAllInPremium.toFixed(2),
+        feeToPremiumRatio: renewFeeRatio.toFixed(6),
+        maxAllowedRatio: renewMaxFeeRatio.toFixed(6)
+      };
+    }
   }
   const renewPassThroughEnabled = true;
   const renewRequiresUserOptIn = false;
@@ -7753,6 +7808,7 @@ app.get("/debug/risk-controls", async () => {
       pass_through_cap_by_tier: current.pass_through_cap_by_tier ?? {},
       pass_through_cap_by_leverage: current.pass_through_cap_by_leverage ?? {},
       tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {},
+      pilot_max_fee_to_premium_ratio: current.pilot_max_fee_to_premium_ratio ?? null,
       enable_premium_pass_through: current.enable_premium_pass_through ?? null,
       require_user_opt_in_for_pass_through: current.require_user_opt_in_for_pass_through ?? null,
       premium_floor_ratio: current.premium_floor_ratio ?? null,

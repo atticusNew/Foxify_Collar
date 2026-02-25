@@ -58,6 +58,7 @@ export interface RiskControlsConfig {
   enable_premium_pass_through?: boolean;
   require_user_opt_in_for_pass_through?: boolean;
   pass_through_min_notification_ratio?: number;
+  pilot_max_fee_to_premium_ratio?: number;
   premium_markup_pct_by_tier?: Record<string, number>;
   leverage_markup_pct_by_x?: Record<string, number>;
   drift_tolerance_pct_by_tier?: Record<string, number>;
@@ -156,6 +157,7 @@ const DEFAULTS: RiskControlsConfig = {
   enable_premium_pass_through: true,
   require_user_opt_in_for_pass_through: false,
   pass_through_min_notification_ratio: 1.5,
+  pilot_max_fee_to_premium_ratio: 1.8,
   premium_markup_pct_by_tier: {},
   leverage_markup_pct_by_x: {},
   drift_tolerance_pct_by_tier: {},
