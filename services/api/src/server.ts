@@ -2141,16 +2141,28 @@ app.get("/risk/summary", async (req) => {
 });
 
 const deribitEnv = (process.env.DERIBIT_ENV as "testnet" | "live") || "live";
-console.log("[Deribit] Using MAINNET endpoint");
-const deribitPaper =
-  process.env.DERIBIT_PAPER !== undefined
-    ? process.env.DERIBIT_PAPER === "true"
-    : deribitEnv !== "live";
+const deribitHasCredentials = Boolean(
+  process.env.DERIBIT_CLIENT_ID && process.env.DERIBIT_CLIENT_SECRET
+);
+const deribitPaperEnv = process.env.DERIBIT_PAPER?.trim().toLowerCase();
+const deribitPaperRequested =
+  deribitPaperEnv !== undefined ? deribitPaperEnv === "true" : deribitEnv !== "live";
+const deribitPaper = deribitHasCredentials ? deribitPaperRequested : true;
+if (!deribitHasCredentials && deribitPaperEnv === "false") {
+  console.warn(
+    "[Deribit] DERIBIT_PAPER=false but credentials are missing; forcing paper mode to avoid execution hard-fail."
+  );
+}
+console.log(
+  `[Deribit] endpoint=${deribitEnv} paper=${deribitPaper ? "true" : "false"} credentials=${
+    deribitHasCredentials ? "present" : "missing"
+  }`
+);
 
 const deribit = new DeribitConnector(
   deribitEnv,
   deribitPaper,
-  process.env.DERIBIT_CLIENT_ID && process.env.DERIBIT_CLIENT_SECRET
+  deribitHasCredentials
     ? {
         clientId: process.env.DERIBIT_CLIENT_ID,
         clientSecret: process.env.DERIBIT_CLIENT_SECRET
@@ -2996,6 +3008,108 @@ function resolveLiquidityThresholds(
   };
 }
 
+async function simulateDeribitPaperOrderbookFallback(params: {
+  instrument: string;
+  amount: number;
+  side: "buy" | "sell";
+  coverageId?: string;
+  quoteId?: string;
+  tierName?: string;
+  accountId?: string;
+  requestedVenue: string;
+  requestedInstrument: string;
+  primaryError: string;
+}): Promise<any | null> {
+  if (!Number.isFinite(params.amount) || params.amount <= 0 || !params.instrument) {
+    return null;
+  }
+  try {
+    const book = await deribit.getOrderBook(params.instrument);
+    const orderBook = (book as any)?.result;
+    if (!orderBook) {
+      return null;
+    }
+    const bestBid = orderBook?.bids?.[0]?.[0] ?? null;
+    const bestAsk = orderBook?.asks?.[0]?.[0] ?? null;
+    const bidSize = Number(orderBook?.bids?.[0]?.[1] ?? 0);
+    const askSize = Number(orderBook?.asks?.[0]?.[1] ?? 0);
+    const fillPrice = params.side === "buy" ? bestAsk : bestBid;
+    const availableSize = params.side === "buy" ? askSize : bidSize;
+    let fallbackResponse: any;
+    if (!fillPrice) {
+      fallbackResponse = {
+        status: "paper_rejected",
+        reason: "no_top_of_book",
+        bestBid,
+        bestAsk,
+        availableSize,
+        bookTimestamp: orderBook?.timestamp ?? null
+      };
+    } else if (availableSize < params.amount) {
+      if (availableSize > 0) {
+        fallbackResponse = {
+          status: "paper_filled",
+          reason: "partial_fill",
+          fillPrice,
+          filledAmount: availableSize,
+          fillCurrency: "btc",
+          bestBid,
+          bestAsk,
+          availableSize,
+          bookTimestamp: orderBook?.timestamp ?? null
+        };
+      } else {
+        fallbackResponse = {
+          status: "paper_rejected",
+          reason: "insufficient_liquidity",
+          bestBid,
+          bestAsk,
+          availableSize,
+          bookTimestamp: orderBook?.timestamp ?? null
+        };
+      }
+    } else {
+      fallbackResponse = {
+        status: "paper_filled",
+        reason: "deribit_unavailable_paper_fallback",
+        fillPrice,
+        filledAmount: params.amount,
+        fillCurrency: "btc",
+        bestBid,
+        bestAsk,
+        availableSize,
+        bookTimestamp: orderBook?.timestamp ?? null
+      };
+    }
+    fallbackResponse.executionVenue = "deribit";
+    fallbackResponse.executedInstrument = params.instrument;
+    fallbackResponse.diagnostic = {
+      category: "execution_fallback",
+      requestedVenue: params.requestedVenue,
+      executedVenue: "deribit",
+      requestedInstrument: params.requestedInstrument,
+      executedInstrument: params.instrument,
+      reason: "deribit_unavailable_paper_fallback",
+      primaryError: params.primaryError
+    };
+    await audit("hedge_order_fallback", {
+      coverageId: params.coverageId || null,
+      quoteId: params.quoteId ?? null,
+      tierName: params.tierName ?? null,
+      accountId: params.accountId ?? null,
+      requestedVenue: params.requestedVenue,
+      executedVenue: "deribit",
+      requestedInstrument: params.requestedInstrument,
+      executedInstrument: params.instrument,
+      reason: "deribit_unavailable_paper_fallback",
+      primaryError: params.primaryError
+    });
+    return fallbackResponse;
+  } catch {
+    return null;
+  }
+}
+
 app.get("/deribit/instruments", async () => {
   return deribit.listInstruments("BTC");
 });
@@ -3326,29 +3440,53 @@ app.post("/deribit/order", async (req) => {
         return failure;
       }
     } else {
-      const failure = {
-        status: "execution_error",
-        reason: "venue_unavailable",
-        message: "Order execution failed before liquidity validation.",
-        retryable: true,
-        diagnostic: {
-          category: "execution_error",
-          venue,
-          instrument: body.instrument,
-          amount: body.amount,
+      const canFallbackToDeribitPaper =
+        executionVenue === "deribit" &&
+        inferredHedgeType === "option" &&
+        typeof executionInstrument === "string" &&
+        executionInstrument.length > 0;
+      if (canFallbackToDeribitPaper) {
+        const paperFallback = await simulateDeribitPaperOrderbookFallback({
+          instrument: executionInstrument,
+          amount: Number(body.amount ?? 0),
           side: body.side,
-          type: body.type ?? "market",
-          detail: primaryError
+          coverageId: body.coverageId,
+          quoteId: body.quoteId,
+          tierName: body.tierName,
+          accountId: body.accountId,
+          requestedVenue: venue,
+          requestedInstrument: String(body.instrument || executionInstrument),
+          primaryError
+        });
+        if (paperFallback) {
+          response = paperFallback;
         }
-      };
-      await audit("hedge_order_failed", {
-        coverageId: body.coverageId || null,
-        quoteId: body.quoteId ?? null,
-        tierName: body.tierName ?? null,
-        accountId: body.accountId ?? null,
-        ...failure.diagnostic
-      });
-      return failure;
+      }
+      if (!response) {
+        const failure = {
+          status: "execution_error",
+          reason: "venue_unavailable",
+          message: "Order execution failed before liquidity validation.",
+          retryable: true,
+          diagnostic: {
+            category: "execution_error",
+            venue,
+            instrument: body.instrument,
+            amount: body.amount,
+            side: body.side,
+            type: body.type ?? "market",
+            detail: primaryError
+          }
+        };
+        await audit("hedge_order_failed", {
+          coverageId: body.coverageId || null,
+          quoteId: body.quoteId ?? null,
+          tierName: body.tierName ?? null,
+          accountId: body.accountId ?? null,
+          ...failure.diagnostic
+        });
+        return failure;
+      }
     }
   }
   const responseExecutionVenue =
@@ -7848,6 +7986,11 @@ app.get("/debug/build-info", async () => {
     gitCommit,
     gitBranch,
     venueMode: venueConfig.mode,
+    deribit: {
+      env: deribitEnv,
+      paper: deribitPaper,
+      hasCredentials: deribitHasCredentials
+    },
     controls: {
       ctc_shadow_mode: current.ctc_shadow_mode ?? null,
       tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {},
