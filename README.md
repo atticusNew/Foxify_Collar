@@ -15,6 +15,11 @@ Fixed-price protective put protection for FUNDED traders with MTM crediting, rol
    - `npm run dev:api`
    - `npm run dev:web`
 
+### Cloud Agent Bootstrap
+- Repo includes `.cursor/environment.json` so cloud agents run:
+  - `bash ./scripts/cloud-agent-setup.sh`
+- This performs root workspace dependency install (`npm install`) before task execution.
+
 ## Repository Layout
 - `apps/web/` UI widget (TypeScript/React)
 - `services/api/` API service (TypeScript/Fastify)
