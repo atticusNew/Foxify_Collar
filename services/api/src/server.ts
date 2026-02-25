@@ -3969,6 +3969,73 @@ app.post("/put/quote", async (req) => {
     cached: cached ? "yes" : "no",
     cacheBust: body._cacheBust ?? null
   });
+  const rejected = {
+    missingBook: 0,
+    spreadTooWide: 0,
+    sizeTooSmall: 0,
+    noBidAsk: 0,
+    slippageTooHigh: 0
+  };
+  const quoteDiagnostics: any = {
+    version: 1,
+    stage: "init",
+    venueMode: venueConfig.mode,
+    venueFlags: {
+      bybitEnabled: venueConfig.bybit_enabled,
+      deribitEnabled: venueConfig.deribit_enabled,
+      dualVenueEnabled: venueConfig.dual_venue_enabled
+    },
+    request: {
+      asset: body.asset ?? null,
+      side: body.side ?? null,
+      targetDays: body.targetDays ?? null,
+      expiryTag: body.expiryTag ?? null,
+      leverage: body.leverage ?? null,
+      fastPreview: body._fastPreview === true
+    },
+    instrumentUniverse: {
+      total: null,
+      optionTypeCount: null,
+      expiryCount: null
+    },
+    expiryCandidates: {
+      total: 0,
+      preferred: 0,
+      fallback: 0,
+      scanned: 0,
+      withStrikeCandidates: 0
+    },
+    strikeCandidates: {
+      generated: 0,
+      scanned: 0,
+      evaluated: 0,
+      truncated: 0,
+      budgetSkipped: 0
+    },
+    venueFetch: {
+      attempts: 0,
+      successes: 0,
+      emptyBooks: 0,
+      errors: 0
+    },
+    venueErrorSamples: [] as Array<{
+      expiryTag: string;
+      instrument: string;
+      message: string;
+    }>,
+    searchConfig: {
+      budgetMs: null,
+      strikeScanLimit: null,
+      strikeConcurrency: null
+    },
+    selectedCandidate: null,
+    failureStage: null
+  };
+  const pushVenueErrorSample = (sample: { expiryTag: string; instrument: string; message: string }) => {
+    if (!Array.isArray(quoteDiagnostics.venueErrorSamples)) return;
+    if (quoteDiagnostics.venueErrorSamples.length >= 8) return;
+    quoteDiagnostics.venueErrorSamples.push(sample);
+  };
   const attachVenueMetadata = (response: Record<string, unknown>) => {
     if ((response as any).optionVenue || (response as any).venueComparison) return response;
     const snapshot = (response as any).selectionSnapshot as { books?: Array<any> } | null;
@@ -4013,6 +4080,7 @@ app.post("/put/quote", async (req) => {
   const cacheAndReturn = async (response: Record<string, unknown>) => {
     const withVenue = attachVenueMetadata(response);
     const responseAny = withVenue as any;
+    const responseStatus = String(responseAny.status ?? "unknown");
     let strikeDetails = responseAny.strikeDetails ?? null;
     const strikeValue = Number(responseAny.strike ?? null);
     const targetStrikeValue = Number(responseAny.targetStrike ?? null);
@@ -4036,11 +4104,24 @@ app.post("/put/quote", async (req) => {
       expiryTag: responseAny.expiryTag ?? null,
       targetDays: responseAny.targetDays ?? null
     };
+    const diagnosticsPayload = {
+      ...quoteDiagnostics,
+      stage:
+        quoteDiagnostics.failureStage ??
+        (responseStatus === "no_quote" ? "no_quote" : quoteDiagnostics.stage),
+      rejected: { ...rejected },
+      venueErrorSamples: Array.isArray(quoteDiagnostics.venueErrorSamples)
+        ? [...quoteDiagnostics.venueErrorSamples]
+        : [],
+      responseStatus,
+      responseReason: responseAny.reason ?? null
+    };
     const withTiming = {
       ...withVenue,
       strikeDetails,
       venueSelection,
       expirySelection,
+      quoteDiagnostics: diagnosticsPayload,
       cached: false,
       responseTimeMs: Date.now() - requestStart,
       optimizationMode: responseAny.optimizationMode ?? null,
@@ -4075,31 +4156,32 @@ app.post("/put/quote", async (req) => {
         tierName: body.tierName ?? null
       });
     }
+    if (responseStatus === "no_quote" || responseStatus === "error") {
+      await audit("put_quote_diagnostics", diagnosticsPayload);
+    }
     setQuoteCache(cacheKey, withLock);
     recordCacheMiss(Date.now() - requestStart);
     return withLock;
   };
 
   const asset = (body.asset || "BTC").toUpperCase();
+  quoteDiagnostics.stage = "asset_validation";
+  quoteDiagnostics.request.asset = asset;
   if (asset !== "BTC") {
+    quoteDiagnostics.failureStage = "unsupported_asset";
     return cacheAndReturn({
       status: "no_quote",
       reason: "unsupported_asset"
     });
   }
+  quoteDiagnostics.stage = "loading_instrument_universe";
   const instruments = await deribit.listInstruments(asset);
   const results = (instruments as any)?.result || [];
+  quoteDiagnostics.instrumentUniverse.total = results.length;
   if (!results.length) {
+    quoteDiagnostics.failureStage = "instrument_universe_empty";
     return cacheAndReturn({
       status: "no_quote",
-      reason: "unsupported_asset"
-    });
-  }
-  if (!results.length) {
-    return cacheAndReturn({
-      status: "no_quote",
-      expiryTag: "",
-      targetDays: 0,
       reason: "unsupported_asset"
     });
   }
@@ -4120,6 +4202,7 @@ app.post("/put/quote", async (req) => {
   const contractSize = new Decimal(body.contractSize ?? 1);
   const leverageCheck = normalizeLeverage(body.leverage);
   if (!leverageCheck.ok) {
+    quoteDiagnostics.failureStage = "invalid_leverage";
     return cacheAndReturn({
       status: "no_quote",
       reason: "invalid_leverage",
@@ -4134,6 +4217,17 @@ app.post("/put/quote", async (req) => {
   let hedgeSizeForQuote = requiredSize;
 
   const optionType = body.side === "short" ? "call" : "put";
+  quoteDiagnostics.request.optionType = optionType;
+  const optionTypeToken = optionType === "put" ? "put" : "call";
+  const optionTypeInstruments = results.filter(
+    (inst: any) => String(inst?.option_type || "").toLowerCase() === optionTypeToken
+  );
+  quoteDiagnostics.instrumentUniverse.optionTypeCount = optionTypeInstruments.length;
+  quoteDiagnostics.instrumentUniverse.expiryCount = new Set(
+    optionTypeInstruments
+      .map((inst: any) => deriveExpiryTag(String(inst?.instrument_name || "")))
+      .filter((tag: string) => Boolean(tag))
+  ).size;
   const spotPrice = new Decimal(body.spotPrice);
   const drawdownFloorPct = new Decimal(body.drawdownFloorPct);
   const targetStrike =
@@ -4145,6 +4239,7 @@ app.post("/put/quote", async (req) => {
   if (tierLeverageLimits) {
     const maxLeverageForOption = tierLeverageLimits[optionType];
     if (Number.isFinite(maxLeverageForOption) && leverage > maxLeverageForOption) {
+      quoteDiagnostics.failureStage = "leverage_exceeded";
       await audit("leverage_validation_failed", {
         tierName,
         side: body.side,
@@ -4186,6 +4281,7 @@ app.post("/put/quote", async (req) => {
     0,
     Math.round(riskControls.tenor_preference_tolerance_days ?? 2)
   );
+  quoteDiagnostics.stage = "building_expiry_candidates";
   const fastPreview = body._fastPreview === true;
   const expirySearchOrder = body.expiryTag
     ? [{ expiryTag: body.expiryTag, targetDays: expiryTargetDays ?? targetDays }]
@@ -4212,6 +4308,13 @@ app.post("/put/quote", async (req) => {
     : expirySearchOrder.filter(
         (entry) => Math.abs((entry.targetDays ?? targetDays) - targetDays) > tenorToleranceDays
       );
+  quoteDiagnostics.expiryCandidates.total = expirySearchOrder.length;
+  quoteDiagnostics.expiryCandidates.preferred = preferredExpiryOrder.length;
+  quoteDiagnostics.expiryCandidates.fallback = fallbackExpiryOrder.length;
+  if (expirySearchOrder.length === 0) {
+    quoteDiagnostics.failureStage = "expiry_search_order_empty";
+  }
+  quoteDiagnostics.stage = "evaluating_expiry_candidates";
   const orderedExpirySearchOrder = [...preferredExpiryOrder, ...fallbackExpiryOrder];
   const fallbackStartIndex = preferredExpiryOrder.length;
   const hasFallbackPool = fallbackExpiryOrder.length > 0;
@@ -4246,13 +4349,6 @@ app.post("/put/quote", async (req) => {
       }>
     | null = null;
   let bestSnapshots: QuoteBookSnapshot[] | null = null;
-  const rejected = {
-    missingBook: 0,
-    spreadTooWide: 0,
-    sizeTooSmall: 0,
-    noBidAsk: 0,
-    slippageTooHigh: 0
-  };
 
   const liquidityOverrideEnabled = riskControls.liquidity_override_enabled ?? false;
   let liquidityOverrideUsed = false;
@@ -4266,11 +4362,15 @@ app.post("/put/quote", async (req) => {
     1,
     Math.min(12, Number.isFinite(QUOTE_STRIKE_CONCURRENCY) ? QUOTE_STRIKE_CONCURRENCY : 4)
   );
+  quoteDiagnostics.searchConfig.budgetMs = searchBudgetMs;
+  quoteDiagnostics.searchConfig.strikeScanLimit = strikeScanLimit;
+  quoteDiagnostics.searchConfig.strikeConcurrency = strikeConcurrency;
 
   const overridePasses = fastPreview ? [false] : [false, true];
   let fastPreviewHit = false;
   let tenorMode: "preferred" | "fallback" = "preferred";
   let tenorFallbackUsed = false;
+  quoteDiagnostics.stage = "search_loop";
   for (const overridePass of overridePasses) {
     if (overridePass && !liquidityOverrideEnabled) break;
     bestCandidate = null;
@@ -4290,11 +4390,15 @@ app.post("/put/quote", async (req) => {
         tenorMode = "preferred";
         break;
       }
-      if (Date.now() - searchStartedAt > searchBudgetMs) break;
+      if (Date.now() - searchStartedAt > searchBudgetMs) {
+        quoteDiagnostics.failureStage = "search_budget_exhausted";
+        break;
+      }
       const entry = effectiveExpiryOrder[expiryIdx];
       const expiryTag = entry.expiryTag;
       const days = entry.targetDays;
       if (!expiryTag) continue;
+      quoteDiagnostics.expiryCandidates.scanned += 1;
       const snapshotsByStrike = new Map<string, QuoteBookSnapshot[]>();
       const strikeLimit = fastPreview ? 6 : 40;
       let strikeCandidates =
@@ -4328,6 +4432,10 @@ app.post("/put/quote", async (req) => {
           strikeLimit
         );
       }
+      quoteDiagnostics.strikeCandidates.generated += strikeCandidates.length;
+      if (strikeCandidates.length > 0) {
+        quoteDiagnostics.expiryCandidates.withStrikeCandidates += 1;
+      }
       const { maxSpreadPct, maxSlippagePct } = resolveLiquidityThresholds(
         days,
         overridePass,
@@ -4337,23 +4445,38 @@ app.post("/put/quote", async (req) => {
         useBodySlippage
       );
       const limitedCandidates = strikeCandidates.slice(0, strikeScanLimit);
+      quoteDiagnostics.strikeCandidates.scanned += limitedCandidates.length;
+      if (strikeCandidates.length > limitedCandidates.length) {
+        quoteDiagnostics.strikeCandidates.truncated += strikeCandidates.length - limitedCandidates.length;
+      }
       const evaluations = await mapWithConcurrency(
         limitedCandidates,
         strikeConcurrency,
         async (inst) => {
           try {
+            quoteDiagnostics.strikeCandidates.evaluated += 1;
             if (Date.now() - searchStartedAt > searchBudgetMs) {
+              quoteDiagnostics.strikeCandidates.budgetSkipped += 1;
               return { kind: "budget" as const };
             }
             let quotes: Awaited<ReturnType<typeof getOptionVenueQuotes>> = [];
             try {
+              quoteDiagnostics.venueFetch.attempts += 1;
               quotes = await getOptionVenueQuotes(inst.instrument_name, spotPrice);
-            } catch {
+            } catch (error: any) {
+              quoteDiagnostics.venueFetch.errors += 1;
+              pushVenueErrorSample({
+                expiryTag,
+                instrument: inst.instrument_name,
+                message: String(error?.message ?? "venue_quote_error")
+              });
               return { kind: "rejected" as const, reason: "missingBook" as const };
             }
             if (!quotes.length) {
+              quoteDiagnostics.venueFetch.emptyBooks += 1;
               return { kind: "rejected" as const, reason: "missingBook" as const };
             }
+            quoteDiagnostics.venueFetch.successes += 1;
             const snapshots = quotes.map((quote) => ({
               venue: quote.venue,
               instrument: quote.instrument,
@@ -4402,7 +4525,13 @@ app.post("/put/quote", async (req) => {
                 allInPremium
               }
             };
-          } catch {
+          } catch (error: any) {
+            quoteDiagnostics.venueFetch.errors += 1;
+            pushVenueErrorSample({
+              expiryTag,
+              instrument: inst.instrument_name,
+              message: String(error?.message ?? "quote_eval_error")
+            });
             return { kind: "rejected" as const, reason: "missingBook" as const };
           }
         }
@@ -4433,6 +4562,13 @@ app.post("/put/quote", async (req) => {
         snapshotsByStrike.set(result.strikeKey, result.snapshots);
         if (!bestCandidate || result.candidate.allInPremium.lt(bestCandidate.allInPremium)) {
           bestCandidate = result.candidate;
+          quoteDiagnostics.selectedCandidate = {
+            expiryTag: result.candidate.expiryTag,
+            targetDays: result.candidate.targetDays,
+            strike: result.candidate.strike.toFixed(0),
+            instrument: result.candidate.instrumentName,
+            rollMultiplier: result.candidate.rollMultiplier
+          };
           tenorMode =
             hasFallbackPool && expiryIdx >= fallbackStartIndex
               ? "fallback"
@@ -4447,6 +4583,7 @@ app.post("/put/quote", async (req) => {
     if (fastPreviewHit) break;
 
     if (bestCandidate) {
+      quoteDiagnostics.stage = "candidate_selected";
       liquidityOverrideUsed = overridePass;
       tenorFallbackUsed = tenorMode === "fallback";
       const targetStrikeNumber = targetStrike.toNumber();
@@ -4483,6 +4620,9 @@ app.post("/put/quote", async (req) => {
 
   if (!quote) {
     if (!bestCandidate || !bestCandidate.premiumPerUnit.gt(0)) {
+      if (!quoteDiagnostics.failureStage) {
+        quoteDiagnostics.failureStage = "no_candidate_after_search";
+      }
       await audit("put_quote_failed", {
         reason: "no_quote",
         expiryTag: body.expiryTag || "",
