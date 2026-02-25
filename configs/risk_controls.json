@@ -1,6 +1,13 @@
 {
   "max_leverage": 10,
   "ctc_enabled": true,
+  "ctc_shadow_mode": true,
+  "ctc_price_override_enabled": false,
+  "ctc_shadow_reject_on_explosion": false,
+  "ctc_max_multiple_of_hedge_premium": 1.5,
+  "ctc_max_pct_notional": 0.15,
+  "ctc_min_intrinsic_pct_of_spot": 0.005,
+  "tenor_preference_tolerance_days": 2,
   "ctc_margin_by_tier": {
     "Pro (Bronze)": 0.6,
     "Pro (Silver)": 0.5,

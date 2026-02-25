@@ -9,6 +9,31 @@ ensures the platform remains sustainable when hedging costs rise.
 
 `final_fee = max(tier_floor_fee, hedge_premium * (1 + tier_markup + leverage_markup))`
 
+This is the only customer-facing fee path in pilot mode.
+
+## CTC (Coverage-to-Coverage) in Pilot
+
+- CTC runs in **shadow mode** as a risk signal.
+- CTC does **not** directly override customer fees in initial pilot.
+- CTC outputs are guard-railed before any future pricing use:
+  - `ctc_fee <= ctc_max_multiple_of_hedge_premium`
+  - `ctc_fee <= ctc_max_pct_notional * protected_notional`
+- Low-quality legs (near-zero intrinsic value at floor) are filtered out in CTC leg selection.
+
+## Tenor Control
+
+- Default behavior: choose nearest expiry within configured tolerance (default ±2 days).
+- If no liquidity inside tolerance, quote can expand tenor and sets `tenorReason=tenor_fallback`.
+- Widget displays selected tenor before activation.
+
+## Reconciliation Fields (per coverage)
+
+- `quotedFeeUsdc`
+- `collectedFeeUsdc`
+- `hedgeSpendUsdc`
+- `grossMarginUsdc = collectedFeeUsdc - hedgeSpendUsdc`
+- `pricingReason`
+
 ## User Experience
 
 ### Normal Quote (Premium <= 1.25x Base Fee)

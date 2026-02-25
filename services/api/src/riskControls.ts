@@ -72,6 +72,13 @@ export interface RiskControlsConfig {
   ctc_floor_buckets?: number[];
   ctc_price_buffer_pct?: number;
   ctc_max_snapshot_age_ms?: number;
+  ctc_shadow_mode?: boolean;
+  ctc_price_override_enabled?: boolean;
+  ctc_shadow_reject_on_explosion?: boolean;
+  ctc_max_multiple_of_hedge_premium?: number;
+  ctc_max_pct_notional?: number;
+  ctc_min_intrinsic_pct_of_spot?: number;
+  tenor_preference_tolerance_days?: number;
   option_search_budget_ms?: number;
 }
 
@@ -172,6 +179,13 @@ const DEFAULTS: RiskControlsConfig = {
   ctc_floor_buckets: [0.12, 0.16, 0.2],
   ctc_price_buffer_pct: 0.02,
   ctc_max_snapshot_age_ms: 10000,
+  ctc_shadow_mode: true,
+  ctc_price_override_enabled: false,
+  ctc_shadow_reject_on_explosion: false,
+  ctc_max_multiple_of_hedge_premium: 1.5,
+  ctc_max_pct_notional: 0.15,
+  ctc_min_intrinsic_pct_of_spot: 0.005,
+  tenor_preference_tolerance_days: 2,
   option_search_budget_ms: 1200
 };
 
