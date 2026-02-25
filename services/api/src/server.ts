@@ -1455,6 +1455,14 @@ function resolveTierMinNotionalUsdc(tierName: string): Decimal | null {
   return new Decimal(value);
 }
 
+function isBelowTierMinNotional(
+  protectedNotionalUsdc: Decimal,
+  tierMinNotionalUsdc: Decimal
+): boolean {
+  const protectedRounded = protectedNotionalUsdc.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  return protectedRounded.lt(tierMinNotionalUsdc);
+}
+
 function resolveDriftTolerance(tierName: string): { pct: Decimal; usdc: Decimal } {
   const pct = riskControls.drift_tolerance_pct_by_tier?.[tierName] ?? 0;
   const usdc = riskControls.drift_tolerance_usdc_by_tier?.[tierName] ?? 0;
@@ -4253,7 +4261,7 @@ app.post("/put/quote", async (req) => {
   if (tierMinNotionalUsdc) {
     quoteDiagnostics.request.tierMinNotionalUsdc = tierMinNotionalUsdc.toFixed(2);
   }
-  if (tierMinNotionalUsdc && protectedNotionalUsdc.lt(tierMinNotionalUsdc)) {
+  if (tierMinNotionalUsdc && isBelowTierMinNotional(protectedNotionalUsdc, tierMinNotionalUsdc)) {
     quoteDiagnostics.failureStage = "tier_notional_min";
     await audit("tier_notional_min_rejected", {
       tierName,
@@ -5479,7 +5487,7 @@ app.post("/put/auto-renew", async (req) => {
   const tierName = body.tierName || "Unknown";
   const protectedNotionalUsdc = requiredSize.abs().mul(spotPrice.abs());
   const tierMinNotionalUsdc = resolveTierMinNotionalUsdc(tierName);
-  if (tierMinNotionalUsdc && protectedNotionalUsdc.lt(tierMinNotionalUsdc)) {
+  if (tierMinNotionalUsdc && isBelowTierMinNotional(protectedNotionalUsdc, tierMinNotionalUsdc)) {
     await audit("put_renew_skipped", {
       coverageId: body.coverageId ?? null,
       reason: "tier_notional_min",
