@@ -155,10 +155,12 @@ export function buildCoverageReport(params: {
 } {
   const accountId = normalizeAccountId(params.accountId);
   const allEntries = Array.isArray(params.coverageLedgerEntries) ? params.coverageLedgerEntries : [];
-  const accountEntries = allEntries.filter(
-    (entry) => normalizeAccountId(entry.accountId) === accountId
-  );
-  const searchEntries = accountEntries.length > 0 ? accountEntries : allEntries;
+  const accountEntries = allEntries.filter((entry) => {
+    const raw = String(entry.accountId ?? "").trim();
+    if (!raw.length) return true;
+    return normalizeAccountId(entry.accountId) === accountId;
+  });
+  const searchEntries = accountEntries;
 
   const results: CoverageReportRow[] = params.positions.map((position, idx) => {
     const match = findCoverageMatch(position, searchEntries);

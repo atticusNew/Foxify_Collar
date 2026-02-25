@@ -163,3 +163,39 @@ test("buildCoverageReport uses coverage legs as canonical hedge size", () => {
   assert.ok(Math.abs((report.results[0]?.coveredSize ?? 0) - 1.05) < 1e-9);
   assert.equal(report.results[0]?.isCovered, true);
 });
+
+test("buildCoverageReport does not borrow explicit coverage from other accounts", () => {
+  const report = buildCoverageReport({
+    accountId: "demo",
+    positions: [
+      {
+        asset: "BTC",
+        side: "long",
+        entryPrice: 90000,
+        size: 1,
+        leverage: 1
+      }
+    ],
+    coverageLedgerEntries: [
+      {
+        coverageId: "cov-other-account",
+        accountId: "other",
+        positions: [
+          {
+            id: "p4",
+            asset: "BTC",
+            side: "long",
+            marginUsd: 90000,
+            leverage: 1,
+            entryPrice: 90000
+          }
+        ],
+        hedgeSize: 1
+      }
+    ]
+  });
+
+  assert.equal(report.results[0]?.coverageId, null);
+  assert.equal(report.results[0]?.coveredSize, 0);
+  assert.equal(report.results[0]?.isCovered, false);
+});
