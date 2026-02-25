@@ -3980,6 +3980,22 @@ app.post("/put/preview", async (req) => {
     return { ...cached.response, cached: true, stale: false };
   }
   const response = await startQuoteCompute(body, cacheKey);
+  const status = String((response as any)?.status ?? "unknown");
+  if (status === "no_quote" || status === "error" || status === "perp_fallback") {
+    const fullPayload: PutQuoteRequest = {
+      ...body,
+      _fastPreview: false,
+      _cacheBust: true
+    };
+    const fullCacheKey = buildQuoteCacheKey(fullPayload);
+    const fullResponse = await startQuoteCompute(fullPayload, fullCacheKey);
+    return {
+      ...fullResponse,
+      previewFallback: true,
+      cached: Boolean(cached),
+      stale: false
+    };
+  }
   return { ...response, cached: Boolean(cached), stale: false };
 });
 
