@@ -54,6 +54,15 @@ docker run -p 8000:8000 --env-file .env atticus-mvp:latest
 curl http://localhost:8000/health
 ```
 
+4. Verify runtime build and pricing policy
+```bash
+curl http://localhost:8000/debug/build-info
+```
+Confirm:
+- `serverFlavor = services-api`
+- `policyVersion = pilot-pricing-v2`
+- `gitCommit` matches deployed commit
+
 ## Rollback
 
 - Re-deploy previous image tag

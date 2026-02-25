@@ -119,6 +119,8 @@ const QUOTE_CACHE_STALE_MS = Number(process.env.QUOTE_CACHE_STALE_MS || "20000")
 const QUOTE_CACHE_HARD_MS = Number(process.env.QUOTE_CACHE_HARD_MS || "120000");
 const QUOTE_STRIKE_SCAN_LIMIT = Number(process.env.QUOTE_STRIKE_SCAN_LIMIT || "12");
 const QUOTE_STRIKE_CONCURRENCY = Number(process.env.QUOTE_STRIKE_CONCURRENCY || "4");
+const PRICING_POLICY_VERSION = "pilot-pricing-v2";
+const SERVER_BOOTED_AT = new Date().toISOString();
 
 type VenueMode = "bybit_only" | "deribit_only" | "dual_venue";
 type VenueConfig = {
@@ -3970,6 +3972,7 @@ app.post("/put/quote", async (req) => {
       recordCacheHit(Date.now() - requestStart);
       return attachQuoteLock({
         ...cached.response,
+        policyVersion: PRICING_POLICY_VERSION,
         cached: true,
         responseTimeMs: Date.now() - requestStart,
         cachedAt: new Date(cached.ts).toISOString(),
@@ -4140,6 +4143,7 @@ app.post("/put/quote", async (req) => {
       strikeDetails,
       venueSelection,
       expirySelection,
+      policyVersion: PRICING_POLICY_VERSION,
       quoteDiagnostics: diagnosticsPayload,
       cached: false,
       responseTimeMs: Date.now() - requestStart,
@@ -7820,6 +7824,34 @@ app.get("/debug/risk-controls", async () => {
       ctc_max_pct_notional: current.ctc_max_pct_notional ?? null,
       ctc_min_intrinsic_pct_of_spot: current.ctc_min_intrinsic_pct_of_spot ?? null,
       tenor_preference_tolerance_days: current.tenor_preference_tolerance_days ?? null
+    }
+  };
+});
+
+app.get("/debug/build-info", async () => {
+  const current = await loadRiskControls(RISK_CONTROLS_PATH);
+  const gitCommit =
+    process.env.RENDER_GIT_COMMIT ??
+    process.env.SOURCE_VERSION ??
+    process.env.GIT_COMMIT ??
+    null;
+  const gitBranch =
+    process.env.RENDER_GIT_BRANCH ??
+    process.env.BRANCH_NAME ??
+    process.env.GIT_BRANCH ??
+    null;
+  return {
+    status: "ok",
+    serverFlavor: "services-api",
+    policyVersion: PRICING_POLICY_VERSION,
+    bootedAt: SERVER_BOOTED_AT,
+    gitCommit,
+    gitBranch,
+    venueMode: venueConfig.mode,
+    controls: {
+      ctc_shadow_mode: current.ctc_shadow_mode ?? null,
+      tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {},
+      pilot_max_fee_to_premium_ratio: current.pilot_max_fee_to_premium_ratio ?? null
     }
   };
 });
