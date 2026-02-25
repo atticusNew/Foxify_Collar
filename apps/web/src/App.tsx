@@ -1568,6 +1568,7 @@ export function App() {
           expiryTag: quote?.expiryTag,
           targetDays: expiryDays,
           amount: hedgeSize,
+          leverage: primary?.leverage ?? 1,
           renewWindowMinutes,
           expiryIso: payload.expiryIso,
           side: netSide,

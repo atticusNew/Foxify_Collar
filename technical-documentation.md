@@ -9,7 +9,7 @@ Target users: funded traders and internal operators (exec and ops views), with a
 
 Recent operational changes (demo readiness):
 - Bronze tier supports **put protection only** (call protection disabled).
-- Quote caching now applies to **all response types** (including `premium_floor` and capped responses).
+- Quote caching now applies to **all response types** (including `premium_floor` responses).
 - Quote cache TTL extended to **5 minutes** (env-configurable) for demo performance.
 
 ### 1.2 Technology Stack

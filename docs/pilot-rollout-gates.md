@@ -26,7 +26,7 @@
 
 ## Acceptance Gates (before full pilot)
 
-1. No in-cohort quote where `final_fee / hedge_premium` exceeds configured pilot cap.
+1. No premium caps on pass-through pricing (policy consistency check).
 2. Quote-to-audit reconciliation error `< 0.5%` for coverage economics fields.
 3. Tenor drift > 2 days only when `tenorReason=tenor_fallback`.
 4. Activation success remains stable with no execution regression.

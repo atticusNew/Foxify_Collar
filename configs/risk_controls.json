@@ -75,12 +75,9 @@
       "call": 10
     }
   },
-  "subsidy_daily_cap_usdc": 500,
-  "subsidy_account_daily_cap_usdc": 100,
   "ctc_max_snapshot_age_ms": 10000,
   "ctc_price_buffer_pct": 0.02,
   "enable_premium_pass_through": true,
   "require_user_opt_in_for_pass_through": false,
-  "pass_through_min_notification_ratio": 1.5,
-  "pilot_max_fee_to_premium_ratio": 1.8
+  "pass_through_min_notification_ratio": 1.5
 }
