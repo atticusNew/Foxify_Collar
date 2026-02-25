@@ -54,6 +54,7 @@ import {
   isSurvivalSatisfied,
   resolveLiveCtcFeeControl
 } from "./phase0Guards";
+import { resolveOptionPremiumUsdc } from "./executionUtils";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -3575,12 +3576,13 @@ app.post("/deribit/order", async (req) => {
   const spotPrice = body.spotPrice ?? null;
   const isBybitExec = responseExecutionVenue === "bybit";
   const premiumUsdcFromOrder =
-    inferredHedgeType === "option" && fillPrice
-      ? isBybitExec
-        ? Number(new Decimal(fillPrice).mul(filledAmount))
-        : spotPrice
-          ? Number(new Decimal(fillPrice).mul(new Decimal(spotPrice)).mul(filledAmount))
-          : null
+    inferredHedgeType === "option"
+      ? resolveOptionPremiumUsdc({
+          fillPrice,
+          filledAmount,
+          spotPrice,
+          isBybitExecution: isBybitExec
+        })
       : null;
   let estimatedPremiumUsdc: number | null = null;
   if (premiumUsdcFromOrder === null && inferredHedgeType === "option" && estimatePremiumEnabled) {
@@ -4372,10 +4374,25 @@ app.post("/put/quote", async (req) => {
     });
   }
   quoteDiagnostics.stage = "loading_instrument_universe";
-  const instruments = await deribit.listInstruments(asset);
-  const results = (instruments as any)?.result || [];
+  let results: Array<any> = [];
+  try {
+    const instruments = await deribit.listInstruments(asset);
+    results = (instruments as any)?.result || [];
+  } catch (error: any) {
+    if (venueConfig.mode !== "bybit_only") {
+      quoteDiagnostics.failureStage = "instrument_universe_unavailable";
+      return cacheAndReturn({
+        status: "error",
+        reason: "instrument_universe_unavailable",
+        message: `Failed to load ${asset} instrument universe.`,
+        retryable: true,
+        detail: error?.message ?? "unknown_error"
+      });
+    }
+    results = [];
+  }
   quoteDiagnostics.instrumentUniverse.total = results.length;
-  if (!results.length) {
+  if (!results.length && venueConfig.mode !== "bybit_only") {
     quoteDiagnostics.failureStage = "instrument_universe_empty";
     return cacheAndReturn({
       status: "no_quote",
@@ -5662,8 +5679,22 @@ app.post("/put/auto-renew", async (req) => {
   if (asset !== "BTC") {
     return { status: "no_quote", reason: "unsupported_asset" };
   }
-  const instruments = await deribit.listInstruments(asset);
-  const results = (instruments as any)?.result || [];
+  let results: Array<any> = [];
+  try {
+    const instruments = await deribit.listInstruments(asset);
+    results = (instruments as any)?.result || [];
+  } catch (error: any) {
+    if (venueConfig.mode !== "bybit_only") {
+      return {
+        status: "error",
+        reason: "instrument_universe_unavailable",
+        message: "Failed to load renewal instrument universe.",
+        retryable: true,
+        detail: error?.message ?? "unknown_error"
+      };
+    }
+    results = [];
+  }
   const optionType = body.side === "short" ? "call" : "put";
   const baseMaxSpreadPct = riskControls.max_spread_pct ?? 0.05;
   const baseMaxSlippagePct = riskControls.max_slippage_pct ?? 0.01;
@@ -5684,6 +5715,10 @@ app.post("/put/auto-renew", async (req) => {
   let hedgeSizeForRenew = requiredSize;
   const spotPrice = new Decimal(body.spotPrice);
   const drawdownFloorPct = new Decimal(body.drawdownFloorPct);
+  const targetStrike =
+    optionType === "put"
+      ? spotPrice.mul(new Decimal(1).minus(drawdownFloorPct))
+      : spotPrice.mul(new Decimal(1).plus(drawdownFloorPct));
   const tierName = body.tierName || "Unknown";
   const protectedNotionalUsdc = requiredSize.abs().mul(spotPrice.abs());
   const tierMinNotionalUsdc = resolveTierMinNotionalUsdc(tierName);
@@ -5723,17 +5758,19 @@ app.post("/put/auto-renew", async (req) => {
   );
   const expirySearchOrder = body.expiryTag
     ? [{ expiryTag: body.expiryTag, targetDays: expiryTargetDays ?? targetDays }]
-    : await buildExpirySearchOrder(
-        results,
-        optionType,
-        spotPrice,
-        drawdownFloorPct,
-        requiredSize,
-        new Decimal(baseMaxSpreadPct ?? 0.05),
-        targetDays,
-        maxPreferredDays,
-        maxFallbackDays
-      );
+    : venueConfig.mode === "bybit_only"
+      ? buildBybitExpirySearchOrder(targetDays, 3)
+      : await buildExpirySearchOrder(
+          results,
+          optionType,
+          spotPrice,
+          drawdownFloorPct,
+          requiredSize,
+          new Decimal(baseMaxSpreadPct ?? 0.05),
+          targetDays,
+          maxPreferredDays,
+          maxFallbackDays
+        );
   const preferredExpiryOrder = body.expiryTag
     ? expirySearchOrder
     : expirySearchOrder.filter(
@@ -5801,14 +5838,37 @@ app.post("/put/auto-renew", async (req) => {
       const days = entry.targetDays;
       if (!expiryTag) continue;
       const snapshotsByStrike = new Map<string, QuoteBookSnapshot[]>();
-      const strikeCandidates = selectStrikeCandidates(
-        results,
-        expiryTag,
-        optionType,
-        spotPrice,
-        drawdownFloorPct,
-        30
-      );
+      let strikeCandidates =
+        venueConfig.mode === "bybit_only"
+          ? await selectBybitStrikeCandidates(
+              asset,
+              expiryTag,
+              optionType,
+              targetStrike,
+              30
+            )
+          : selectStrikeCandidates(
+              results,
+              expiryTag,
+              optionType,
+              spotPrice,
+              drawdownFloorPct,
+              30
+            );
+      if (
+        venueConfig.mode === "bybit_only" &&
+        strikeCandidates.length === 0 &&
+        venueConfig.deribit_enabled
+      ) {
+        strikeCandidates = selectStrikeCandidates(
+          results,
+          expiryTag,
+          optionType,
+          spotPrice,
+          drawdownFloorPct,
+          30
+        );
+      }
       const { maxSpreadPct, maxSlippagePct } = resolveLiquidityThresholds(
         days,
         overridePass,
@@ -6147,9 +6207,12 @@ app.post("/put/auto-renew", async (req) => {
     (buyOption as any)?.result?.price ??
     (buyOption as any)?.fillPrice ??
     null;
-  const renewPremiumUsdc = renewFill
-    ? Number(new Decimal(renewFill).mul(new Decimal(body.spotPrice)).mul(cappedAmount))
-    : null;
+  const renewPremiumUsdc = resolveOptionPremiumUsdc({
+    fillPrice: renewFill,
+    filledAmount: cappedAmount.toNumber(),
+    spotPrice: body.spotPrice,
+    isBybitExecution: renewVenue === "bybit"
+  });
   if (!renewalSnapshot && quote && effectiveStrike) {
     const strikeKey = effectiveStrike.toFixed(0);
     renewalSnapshot = {
