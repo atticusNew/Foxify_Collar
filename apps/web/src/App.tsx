@@ -944,14 +944,13 @@ export function App() {
     const canUsePreviewQuote =
       previewFresh &&
       previewQuoteRaw &&
-      (previewStatus === "ok" || previewStatus === "pass_through" || previewStatus === "pass_through_capped");
+      (previewStatus === "ok" || previewStatus === "pass_through");
     let quote: any = canUsePreviewQuote ? previewQuoteRaw : null;
     let hedgeType: "option" | "perp" = "option";
     let hedgeInstrument = "";
     let hedgeSize = 0;
     let bufferTargetPct = 0.05;
     let feeUsd = totalFeeUsd;
-    let subsidyUsd = 0;
     let reason = "flat_fee";
     let regimeLabel: string | null = null;
 
@@ -984,12 +983,9 @@ export function App() {
           });
           quote = await quoteRes.json();
 
-          if (quote?.status === "pass_through" || quote?.status === "pass_through_capped") {
+          if (quote?.status === "pass_through") {
             const pricing = quote?.pricing;
-            const message =
-              quote.status === "pass_through"
-                ? `High volatility: Premium is ${pricing?.ratio || "N/A"}× base fee. You'll be charged $${quote.feeUsdc} for full protection.`
-                : `Premium exceeds tier cap. Fee capped at $${quote.feeUsdc}. Platform subsidizing $${quote.subsidyUsdc || "0"} for full protection.`;
+            const message = `High volatility: Premium is ${pricing?.ratio || "N/A"}× base fee. You'll be charged $${quote.feeUsdc} for full protection.`;
             setLastExecution(message);
           }
 
@@ -1019,7 +1015,6 @@ export function App() {
           }
 
           feeUsd = quote.feeUsdc ? Number(quote.feeUsdc) : totalFeeUsd;
-          subsidyUsd = quote.subsidyUsdc ? Number(quote.subsidyUsdc) : 0;
           reason = quote.reason || "flat_fee";
           regimeLabel = formatFeeRegime(quote.feeRegime);
 
@@ -1066,7 +1061,7 @@ export function App() {
               spotPrice: spot,
               floorPrice,
                 feeRecognized: true,
-                subsidyUsdc: subsidyUsd,
+                subsidyUsdc: 0,
                 reason
               })
             });
@@ -1174,7 +1169,7 @@ export function App() {
       autoRenew,
       feeUsd: perAssetFeeUsd,
       totalFeeUsd: feeUsd,
-      subsidyUsd,
+      subsidyUsd: 0,
       reason,
       quoteId: quote?.quoteId ?? previewQuote?.quoteId ?? null,
       selectedIds,
@@ -1192,7 +1187,7 @@ export function App() {
         instrument: hedgeInstrument || null,
         quoteId: quote?.quoteId ?? previewQuote?.quoteId ?? null,
           premiumUsdc: quote?.premiumUsdc ?? null,
-          subsidyUsdc: subsidyUsd || null,
+          subsidyUsdc: null,
           reason,
         hedgeSize: hedgeSize || null,
         optionType: quote?.optionType ?? null,
