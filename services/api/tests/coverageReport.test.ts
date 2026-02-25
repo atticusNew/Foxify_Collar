@@ -160,6 +160,6 @@ test("buildCoverageReport uses coverage legs as canonical hedge size", () => {
     ]
   });
 
-  assert.equal(report.results[0]?.coveredSize, 1.05);
+  assert.ok(Math.abs((report.results[0]?.coveredSize ?? 0) - 1.05) < 1e-9);
   assert.equal(report.results[0]?.isCovered, true);
 });
