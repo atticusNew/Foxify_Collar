@@ -1,0 +1,64 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --kalshi-primary: #3b82f6;
+  --kalshi-primary-hover: #2563eb;
+  --kalshi-text: #111827;
+  --kalshi-text-secondary: #6b7280;
+  --kalshi-border: #e5e7eb;
+  --kalshi-card-bg: #ffffff;
+  --kalshi-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --kalshi-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #f9fafb;
+  color: var(--kalshi-text);
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-content {
+  flex: 1;
+  padding: 2rem 1rem;
+}
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.page-header {
+  margin-bottom: 2rem;
+}
+
+.page-header h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--kalshi-text);
+  margin-bottom: 0.5rem;
+}
+
+.page-header .subtitle {
+  color: var(--kalshi-text-secondary);
+  font-size: 1rem;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+}

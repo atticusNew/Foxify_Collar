@@ -1,0 +1,60 @@
+# Exchange Configuration for Kalshi Demo
+# Public feeds only (no trading accounts)
+# Priority 1 = Primary, Priority 2 = Secondary, etc.
+
+# Primary Exchange - Deribit (Public Feeds)
+[deribit]
+name = "Deribit"
+base_url = "https://www.deribit.com/api/v2"
+websocket_url = "wss://www.deribit.com/ws/api/v2"
+rate_limit_per_second = 20
+priority = 1
+enabled = true
+spot_trading = true
+options_trading = true
+perpetual_futures = true
+public_feeds_only = true  # No authentication needed
+note = "Public feeds only - no trading access"
+
+# Secondary Exchange - OKX (Public Feeds)
+[okx]
+name = "OKX"
+base_url = "https://www.okx.com/api/v5"
+websocket_url = "wss://ws.okx.com:8443/ws/v5/public"
+rate_limit_per_second = 20
+priority = 2
+enabled = true
+spot_trading = true
+options_trading = true
+perpetual_futures = true
+public_feeds_only = true  # No authentication needed
+note = "Public feeds only - no trading access"
+
+# Tertiary Exchange - Kraken (Public Feeds)
+[kraken]
+name = "Kraken"
+base_url = "https://api.kraken.com/0/public"
+websocket_url = "wss://ws.kraken.com"
+rate_limit_per_second = 10
+priority = 3
+enabled = true
+spot_trading = true
+options_trading = false  # Verify if Kraken has options
+perpetual_futures = false
+public_feeds_only = true  # No authentication needed
+note = "Public feeds only - no trading access. Verify options support."
+
+# Kalshi Exchange - Event Trading Platform
+[kalshi]
+name = "Kalshi"
+base_url = "https://api.elections.kalshi.com/trade-api/v2"  # Live API (production - despite "elections" subdomain, serves all markets)
+websocket_url = "wss://api.elections.kalshi.com/trade-api/ws/v2"  # Live WebSocket URL
+rate_limit_per_second = 10
+priority = 1
+enabled = true
+public_feeds_only = false  # Requires RSA authentication
+private_key_path = "configs/kalshi_private_key.pem"  # Relative to project root
+private_key_path_env = "KALSHI_PRIVATE_KEY_PATH"
+private_key_env = "KALSHI_PRIVATE_KEY"
+note = "RSA authentication required. Uses private key for JWT signing. Live API (production)."
+

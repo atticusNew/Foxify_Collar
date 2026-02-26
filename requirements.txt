@@ -1,0 +1,30 @@
+# Kalshi Demo Platform Requirements
+
+# Core
+fastapi>=0.104.0
+uvicorn>=0.24.0
+aiohttp>=3.9.0
+
+# Exchange APIs (public feeds)
+websockets>=12.0
+
+# Kalshi Authentication
+cryptography>=41.0.0  # For RSA private key authentication
+PyJWT>=2.8.0          # For JWT tokens (if needed)
+# Note: Using custom Kalshi connector implementation, not external SDK
+
+# Financial Calculations
+numpy>=1.24.0
+scipy>=1.11.0  # For Black-Scholes Greeks
+
+# Configuration
+tomli>=2.0.1  # Python 3.11+ uses tomllib, but for compatibility
+python-dotenv>=1.0.0
+
+# Utilities
+pydantic>=2.5.0
+structlog>=23.2.0
+
+# Date/Time
+python-dateutil>=2.8.2
+

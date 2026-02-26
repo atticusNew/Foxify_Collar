@@ -1,0 +1,23 @@
+# Kalshi Configuration
+
+[api]
+base_url = "https://api.elections.kalshi.com/trade-api/v2"  # Live API (production - despite "elections" subdomain, serves all markets)
+websocket_url = "wss://api.elections.kalshi.com/trade-api/ws/v2"  # Live WebSocket URL
+api_key = "0642c333-3349-4423-be5e-2dfdc48baabe"  # Production API key
+private_key_path = "configs/kalshi_private_key.pem"  # Relative to project root
+private_key_path_env = "KALSHI_PRIVATE_KEY_PATH"  # Or set via env var
+private_key_env = "KALSHI_PRIVATE_KEY"  # Or set directly via env var
+
+[events]
+# Filter BTC price events only
+filter_category = "crypto"
+filter_ticker_prefix = "BTC"
+min_volume = 1000  # Minimum volume filter
+max_settlement_days = 90  # Maximum days until settlement
+
+[strategy]
+# Strategy mapping rules
+default_insurance_type = "put"  # Default insurance type
+strike_offset_pct = 0.02  # Strike offset from threshold (2%)
+min_strike_distance_pct = 0.01  # Minimum strike distance (1%)
+

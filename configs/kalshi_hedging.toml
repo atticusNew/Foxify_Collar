@@ -1,0 +1,55 @@
+# Kalshi Hedging Configuration
+# Strike-specific, model-driven hedge engine configuration
+
+[hedging]
+# Maximum replication error allowed (0.01 = 1%)
+max_replication_error = 0.01
+
+# Maximum bid-ask spread percentage (0.05 = 5%)
+max_spread_pct = 0.05
+
+# Maximum margin usage in USD
+max_margin_usd = 100000
+
+# Deep OTM cap strikes for NO hedges (configurable multipliers)
+# For NO on digital_up/one_touch_up: cap strike = threshold * multiplier
+no_hedge_call_cap_multiplier = 1.5
+
+# For NO on digital_down: cap strike = threshold * multiplier
+no_hedge_put_cap_multiplier = 0.5
+
+# Demo mode: can relax constraints slightly for smoother UX in thin markets
+demo_mode = false
+demo_mode_error_relaxation = 0.005  # Relax max_error by 0.5% in demo mode
+demo_mode_margin_relaxation = 1.1   # Allow 10% more margin in demo mode
+
+[scoring]
+# Error penalty weight in candidate scoring
+lambda_error = 100.0
+
+# Capital penalty weight in candidate scoring
+lambda_capital = 0.1
+
+[vol_surface]
+# Refit vol surface when spot moves by this percentage (0.01 = 1%)
+refit_spot_threshold = 0.01
+
+# Refit vol surface when IV moves by this percentage (0.05 = 5%)
+refit_iv_threshold = 0.05
+
+# Refit vol surface after this many seconds (60 = 1 minute)
+refit_time_interval = 60
+
+[strikes]
+# Expand strike search by this factor if strikes are sparse
+strike_expansion_factor = 1.2
+
+# Minimum strike spacing in USD
+min_strike_spacing = 1000
+
+[venues]
+# Venue health monitoring
+health_check_interval = 5      # Check venue health every 5 seconds
+health_degraded_threshold = 3  # Mark degraded after 3 consecutive failures
+health_recovery_threshold = 10 # Mark healthy after 10 consecutive successes
+
