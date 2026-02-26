@@ -52,12 +52,10 @@ type PositionEligibility = {
   eligible: boolean;
   tierName: string;
   minNotionalUsdc: number;
+  effectiveMinNotionalUsdc: number;
   estimatedNotionalUsdc: number;
-  missingNotionalUsdc: number;
-  requiredSizeUnits: number | null;
-  requiredMarginUsd: number | null;
-  additionalMarginUsd: number | null;
   nearThreshold: boolean;
+  latched?: boolean;
 };
 
 type RiskSummary = {
@@ -133,6 +131,12 @@ const parseTierMinNotionalMap = (input: unknown): Record<string, number> => {
   return map;
 };
 
+const parsePctValue = (input: unknown): number => {
+  const value = Number(input);
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.max(0, Math.min(0.1, value));
+};
+
 const formatSpotPrice = (value: number) =>
   value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -151,6 +155,8 @@ export function App() {
   const [portfolioOpen, setPortfolioOpen] = useState(false);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [tierMinNotionalByTier, setTierMinNotionalByTier] = useState<Record<string, number>>({});
+  const [tierMinNotionalTolerancePct, setTierMinNotionalTolerancePct] = useState(0);
+  const [eligibilityLatchById, setEligibilityLatchById] = useState<Record<string, number>>({});
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [protectionActive, setProtectionActive] = useState(false);
   const [protectionStart, setProtectionStart] = useState<string | null>(null);
@@ -234,6 +240,7 @@ export function App() {
     side?: "long" | "short";
     leverage?: number;
   } | null>(null);
+  const ELIGIBILITY_LATCH_MS = 120000;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -383,24 +390,36 @@ export function App() {
   useEffect(() => {
     let active = true;
     const loadTierRules = async () => {
-      const extract = (payload: unknown): Record<string, number> => {
+      const extract = (payload: unknown): {
+        minByTier: Record<string, number>;
+        tolerancePct: number;
+      } => {
         const controls = (payload as { controls?: Record<string, unknown> } | null)?.controls;
-        return parseTierMinNotionalMap(controls?.tier_min_notional_usdc_by_tier);
+        return {
+          minByTier: parseTierMinNotionalMap(controls?.tier_min_notional_usdc_by_tier),
+          tolerancePct: parsePctValue(controls?.tier_min_notional_tolerance_pct)
+        };
       };
       try {
-        let next: Record<string, number> = {};
+        let next: { minByTier: Record<string, number>; tolerancePct: number } = {
+          minByTier: {},
+          tolerancePct: 0
+        };
         const buildInfoRes = await fetch(`${API_BASE}/debug/build-info`);
         if (buildInfoRes.ok) {
           next = extract(await buildInfoRes.json());
         }
-        if (Object.keys(next).length === 0) {
+        if (Object.keys(next.minByTier).length === 0) {
           const riskRes = await fetch(`${API_BASE}/debug/risk-controls`);
           if (riskRes.ok) {
             next = extract(await riskRes.json());
           }
         }
-        if (active && Object.keys(next).length > 0) {
-          setTierMinNotionalByTier(next);
+        if (active) {
+          if (Object.keys(next.minByTier).length > 0) {
+            setTierMinNotionalByTier(next.minByTier);
+          }
+          setTierMinNotionalTolerancePct(next.tolerancePct);
         }
       } catch {
         // Keep previous rules if fetch fails.
@@ -708,56 +727,61 @@ export function App() {
   const currentPositions = portfolioStats.entries;
   const activeTierName = level?.name || portfolio?.tierName || "Unknown";
   const activeTierMinNotionalUsdc = Number(tierMinNotionalByTier[activeTierName] ?? 0);
+  const effectiveMinFactor = Math.max(0, 1 - tierMinNotionalTolerancePct);
   const positionEligibility = useMemo(() => {
     const byId = new Map<string, PositionEligibility>();
     for (const position of currentPositions) {
       const spot = Number(spotPrices[position.asset] || position.entryPrice || 0);
-      const leverage = Number(position.leverage || 0);
-      const entryPrice = Number(position.entryPrice || 0);
       const estimatedNotionalUsdc =
         spot > 0 ? Math.abs(Number(position.sizeUnits || 0)) * spot : 0;
       const roundedNotionalUsdc = Math.round(estimatedNotionalUsdc * 100) / 100;
       const minNotionalUsdc = activeTierMinNotionalUsdc > 0 ? activeTierMinNotionalUsdc : 0;
-      const eligible = minNotionalUsdc <= 0 || roundedNotionalUsdc >= minNotionalUsdc;
-      const missingNotionalUsdc = eligible
-        ? 0
-        : Math.max(0, minNotionalUsdc - roundedNotionalUsdc);
-      const requiredSizeUnits =
-        minNotionalUsdc > 0 && spot > 0 ? minNotionalUsdc / spot : null;
-      const requiredMarginUsd =
-        minNotionalUsdc > 0 && spot > 0 && leverage > 0 && entryPrice > 0
-          ? (minNotionalUsdc * entryPrice) / (leverage * spot)
-          : null;
-      const additionalMarginUsd =
-        requiredMarginUsd !== null
-          ? Math.max(0, requiredMarginUsd - Number(position.marginUsd || 0))
-          : null;
+      const effectiveMinNotionalUsdc = minNotionalUsdc > 0
+        ? minNotionalUsdc * effectiveMinFactor
+        : 0;
+      const eligible = effectiveMinNotionalUsdc <= 0 || roundedNotionalUsdc >= effectiveMinNotionalUsdc;
       const nearThreshold =
-        minNotionalUsdc > 0 &&
+        effectiveMinNotionalUsdc > 0 &&
         roundedNotionalUsdc > 0 &&
-        Math.abs(roundedNotionalUsdc - minNotionalUsdc) / minNotionalUsdc <= 0.02;
+        Math.abs(roundedNotionalUsdc - effectiveMinNotionalUsdc) / effectiveMinNotionalUsdc <= 0.02;
       byId.set(position.id, {
         eligible,
         tierName: activeTierName,
         minNotionalUsdc,
+        effectiveMinNotionalUsdc,
         estimatedNotionalUsdc: roundedNotionalUsdc,
-        missingNotionalUsdc,
-        requiredSizeUnits,
-        requiredMarginUsd,
-        additionalMarginUsd,
         nearThreshold
       });
     }
     return byId;
-  }, [activeTierMinNotionalUsdc, activeTierName, currentPositions, spotPrices]);
+  }, [activeTierMinNotionalUsdc, activeTierName, currentPositions, effectiveMinFactor, spotPrices]);
+  useEffect(() => {
+    const valid = new Set(currentPositions.map((pos) => pos.id));
+    setEligibilityLatchById((prev) => {
+      const next: Record<string, number> = {};
+      const now = Date.now();
+      for (const [id, until] of Object.entries(prev)) {
+        if (!valid.has(id)) continue;
+        if (!Number.isFinite(until) || until <= now) continue;
+        next[id] = until;
+      }
+      if (Object.keys(next).length === Object.keys(prev).length) return prev;
+      return next;
+    });
+  }, [currentPositions]);
   const selectedPositions = useMemo(
     () => currentPositions.filter((p) => selectedIds.includes(p.id)),
     [currentPositions, selectedIds]
   );
   const selectedEligibility = useMemo(() => {
     if (selectedPositions.length !== 1) return null;
-    return positionEligibility.get(selectedPositions[0].id) || null;
-  }, [positionEligibility, selectedPositions]);
+    const base = positionEligibility.get(selectedPositions[0].id) || null;
+    if (!base) return null;
+    const latchUntil = Number(eligibilityLatchById[selectedPositions[0].id] ?? 0);
+    const latched = Number.isFinite(latchUntil) && latchUntil > Date.now();
+    if (base.eligible || !latched) return base;
+    return { ...base, eligible: true, latched: true };
+  }, [eligibilityLatchById, positionEligibility, selectedPositions]);
   const pricingKey = useMemo(() => {
     if (!level || selectedPositions.length !== 1) return null;
     const primary = selectedPositions[0];
@@ -1119,14 +1143,13 @@ export function App() {
     }
     const selected = selectedPositions[0];
     if (selected) {
-      const eligibility = positionEligibility.get(selected.id);
+      const eligibility =
+        selectedEligibility ??
+        positionEligibility.get(selected.id) ??
+        null;
       if (eligibility && !eligibility.eligible) {
-        const needMargin =
-          eligibility.additionalMarginUsd !== null
-            ? `Add about $${formatUsd(eligibility.additionalMarginUsd)} margin`
-            : "Increase position size";
         setActivationNoticeTimed(
-          `Ineligible: min $${formatUsd(eligibility.minNotionalUsdc)} protected notional for ${eligibility.tierName}. ${needMargin} to enable protection.`
+          `Ineligible: minimum $${formatUsd(eligibility.minNotionalUsdc)} protected notional for ${eligibility.tierName}.`
         );
         return;
       }
@@ -1731,8 +1754,6 @@ export function App() {
     value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatPrice = (value: number) =>
     value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const formatSizeUnits = (value: number) =>
-    value.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 });
 
   const mtmEquity = riskSummary ? Number(riskSummary.equityUsdc) : portfolioStats.equityUsd;
   const mtmDistanceToFloor = mtmEquity - portfolioStats.floorUsd;
@@ -1800,16 +1821,16 @@ export function App() {
   const toggleSelected = (id: string) => {
     const eligibility = positionEligibility.get(id);
     if (eligibility && !eligibility.eligible) {
-      const needSize =
-        eligibility.requiredSizeUnits !== null
-          ? `${formatSizeUnits(eligibility.requiredSizeUnits)} BTC`
-          : "larger size";
-      setActivationNoticeTimed(
-        `Ineligible: min $${formatUsd(eligibility.minNotionalUsdc)} for ${eligibility.tierName}. Need about ${needSize} protected notional equivalent.`
-      );
       return;
     }
-    setSelectedIds((prev) => (prev.includes(id) ? [] : [id]));
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return [];
+      setEligibilityLatchById((latchPrev) => ({
+        ...latchPrev,
+        [id]: Date.now() + ELIGIBILITY_LATCH_MS
+      }));
+      return [id];
+    });
     previewLastRequestAtRef.current = 0;
     setPreviewTick((prev) => prev + 1);
   };
@@ -1863,12 +1884,6 @@ export function App() {
     previewState === "idle";
   const pricingStatusLabel = null;
   const feeDisplayLabel = displayFeeUsd ? `$${formatUsd(displayFeeUsd)}` : "-";
-  const selectedTenorDays =
-    previewQuote?.targetDays !== null &&
-    previewQuote?.targetDays !== undefined &&
-    Number.isFinite(previewQuote.targetDays)
-      ? Number(previewQuote.targetDays)
-      : null;
   const tenorFallbackActive = previewQuote?.tenorReason === "tenor_fallback";
   const canActivate = hasAvailablePremium() && !isActivating && (selectedEligibility?.eligible ?? true);
 
@@ -1997,7 +2012,11 @@ export function App() {
                   {currentPositions.map((p) => {
                     const isProtected = protectedIds.includes(p.id);
                     const eligibility = positionEligibility.get(p.id) || null;
-                    const isIneligible = Boolean(eligibility && !eligibility.eligible);
+                    const latchedEligible =
+                      Number(eligibilityLatchById[p.id] ?? 0) > Date.now();
+                    const isIneligible = Boolean(
+                      eligibility && !(eligibility.eligible || latchedEligible)
+                    );
                     return (
                     <div className="position-row" key={p.id}>
                       <div>
@@ -2006,20 +2025,13 @@ export function App() {
                         </strong>
                         {isIneligible && eligibility && (
                           <span className="pill pill-inline pill-warning">
-                            Ineligible: min ${formatUsd(eligibility.minNotionalUsdc)} for {eligibility.tierName}
+                            Ineligible
                           </span>
                         )}
                         <div className="muted">
                           ${formatUsd(p.marginUsd)} • {p.leverage}x • Entry $
                           {formatPrice(p.entryPrice)}
                         </div>
-                        {isIneligible && eligibility && (
-                          <div className="muted ineligible-hint">
-                            Need ~{formatSizeUnits(eligibility.requiredSizeUnits ?? 0)} BTC protected or
-                            margin ${formatUsd(eligibility.requiredMarginUsd ?? 0)} (+
-                            ${formatUsd(eligibility.additionalMarginUsd ?? 0)}) at {p.leverage}x.
-                          </div>
-                        )}
                       </div>
                       <div className="position-actions">
                         <span className={p.pnl >= 0 ? "pill" : "danger"}>
@@ -2056,13 +2068,6 @@ export function App() {
                 <div className="row row-align">
                   <span>Length</span>
                   <strong>{expiryDays} days</strong>
-                </div>
-                <div className="row row-align">
-                  <span>Selected Tenor</span>
-                  <strong>
-                    {selectedTenorDays !== null ? `${selectedTenorDays} days` : "—"}
-                    {tenorFallbackActive ? " (fallback)" : ""}
-                  </strong>
                 </div>
                 <div className="row row-align">
                   <span>Auto-Renew</span>
@@ -2104,18 +2109,6 @@ export function App() {
               {tenorFallbackActive && (
                 <div className="disclaimer">
                   Preferred tenor unavailable; quote used tenor fallback due to liquidity.
-                </div>
-              )}
-              {selectedEligibility?.nearThreshold && (
-                <div className="disclaimer">
-                  Near minimum notional threshold. Eligibility may change as spot updates.
-                </div>
-              )}
-              {selectedEligibility && !selectedEligibility.eligible && (
-                <div className="disclaimer danger">
-                  Ineligible to protect: minimum ${formatUsd(selectedEligibility.minNotionalUsdc)} for{" "}
-                  {selectedEligibility.tierName}. Estimated protected notional $
-                  {formatUsd(selectedEligibility.estimatedNotionalUsdc)}.
                 </div>
               )}
               {selectedIds.length > 0 && (
@@ -2426,11 +2419,11 @@ function PortfolioForm({
   }, [existingPosition?.id]);
 
   const availableMargin = remainingMargin + (existingPosition?.marginUsd || 0);
+  const overFundingUsdc = Math.max(0, marginUsd - availableMargin);
   const canSave =
     !disabled &&
     level &&
     marginUsd > 0 &&
-    marginUsd <= availableMargin &&
     leverage >= 1 &&
     leverage <= 10 &&
     spot > 0;
@@ -2522,6 +2515,11 @@ function PortfolioForm({
         <span>Entry</span>
         <strong>{spot ? `$${formatSpotPrice(spot)}` : "—"}</strong>
       </div>
+      {overFundingUsdc > 0 && (
+        <div className="disclaimer">
+          Soft cap warning: margin exceeds tier funding by ${Math.round(overFundingUsdc)}.
+        </div>
+      )}
       {!existingPosition && (
         <button
           className="btn btn-primary add-position"

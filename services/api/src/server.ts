@@ -1443,7 +1443,12 @@ function isBelowTierMinNotional(
   tierMinNotionalUsdc: Decimal
 ): boolean {
   const protectedRounded = protectedNotionalUsdc.toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
-  return protectedRounded.lt(tierMinNotionalUsdc);
+  const toleranceRaw = Number(riskControls.tier_min_notional_tolerance_pct ?? 0);
+  const tolerancePct = Number.isFinite(toleranceRaw)
+    ? Math.max(0, Math.min(0.1, toleranceRaw))
+    : 0;
+  const effectiveMin = tierMinNotionalUsdc.mul(new Decimal(1).minus(new Decimal(tolerancePct)));
+  return protectedRounded.lt(effectiveMin);
 }
 
 function resolveDriftTolerance(tierName: string): { pct: Decimal; usdc: Decimal } {
@@ -7972,6 +7977,7 @@ app.get("/debug/risk-controls", async () => {
       pass_through_cap_by_tier: current.pass_through_cap_by_tier ?? {},
       pass_through_cap_by_leverage: current.pass_through_cap_by_leverage ?? {},
       tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {},
+      tier_min_notional_tolerance_pct: current.tier_min_notional_tolerance_pct ?? 0,
       enable_premium_pass_through: current.enable_premium_pass_through ?? null,
       require_user_opt_in_for_pass_through: current.require_user_opt_in_for_pass_through ?? null,
       premium_floor_ratio: current.premium_floor_ratio ?? null,
@@ -8014,7 +8020,8 @@ app.get("/debug/build-info", async () => {
     },
     controls: {
       ctc_shadow_mode: current.ctc_shadow_mode ?? null,
-      tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {}
+      tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {},
+      tier_min_notional_tolerance_pct: current.tier_min_notional_tolerance_pct ?? 0
     }
   };
 });
