@@ -142,6 +142,23 @@ const formatSpotPrice = (value: number) =>
 
 const VC_DEMO_MIN_NOTIONAL_USDC = 500;
 
+const parseFiniteInput = (input: string): number | null => {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return null;
+  return value;
+};
+
+const isHalfStep = (value: number): boolean => Math.abs(value * 2 - Math.round(value * 2)) < 1e-9;
+
+const snapToHalfStep = (value: number): number => Math.round(value * 2) / 2;
+
+const formatLeverageInput = (value: number): string => {
+  if (!Number.isFinite(value)) return "1";
+  return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
+};
+
 const limitToSinglePosition = (input: Portfolio | null): Portfolio | null => {
   if (!input) return null;
   return { ...input, positions: input.positions.slice(0, 1) };
@@ -2408,31 +2425,45 @@ function PortfolioForm({
 }) {
   const [asset, setAsset] = useState<Asset>(existingPosition?.asset || "BTC");
   const [side, setSide] = useState<"long" | "short">(existingPosition?.side || "long");
-  const [marginUsd, setMarginUsd] = useState(existingPosition?.marginUsd || 500);
-  const [leverage, setLeverage] = useState(existingPosition?.leverage || 1);
+  const [marginInput, setMarginInput] = useState(() =>
+    Number.isFinite(existingPosition?.marginUsd ?? NaN) ? String(existingPosition?.marginUsd) : "500"
+  );
+  const [leverageInput, setLeverageInput] = useState(() =>
+    formatLeverageInput(
+      Number.isFinite(existingPosition?.leverage ?? NaN) ? Number(existingPosition?.leverage) : 1
+    )
+  );
   const autoSaveTimerRef = useRef<number | null>(null);
   const autoSaveInitRef = useRef(false);
   const spot = spotPrices[asset] || 0;
+  const marginParsed = parseFiniteInput(marginInput);
+  const leverageParsed = parseFiniteInput(leverageInput);
+  const normalizedMarginUsd = marginParsed !== null ? Math.max(0, marginParsed) : 0;
+  const normalizedLeverage =
+    leverageParsed !== null ? snapToHalfStep(Math.min(10, Math.max(1, leverageParsed))) : 0;
+  const marginValid = marginParsed !== null && marginParsed > 0;
+  const leverageInRange = leverageParsed !== null && leverageParsed >= 1 && leverageParsed <= 10;
+  const leverageValid = leverageInRange && isHalfStep(leverageParsed);
 
   useEffect(() => {
     if (!existingPosition) return;
     setAsset(existingPosition.asset);
     setSide(existingPosition.side);
-    setMarginUsd(existingPosition.marginUsd);
-    setLeverage(existingPosition.leverage);
+    setMarginInput(String(existingPosition.marginUsd));
+    setLeverageInput(formatLeverageInput(existingPosition.leverage));
     autoSaveInitRef.current = false;
   }, [existingPosition?.id]);
 
   const availableMargin = remainingMargin + (existingPosition?.marginUsd || 0);
-  const estimatedProtectedNotionalUsdc = marginUsd * leverage;
+  const estimatedProtectedNotionalUsdc =
+    normalizedMarginUsd * (leverageParsed !== null && leverageParsed > 0 ? leverageParsed : 0);
   const belowMinNotional = estimatedProtectedNotionalUsdc < minNotionalUsdc;
-  const overFundingUsdc = Math.max(0, marginUsd - availableMargin);
+  const overFundingUsdc = Math.max(0, normalizedMarginUsd - availableMargin);
   const canSave =
     !disabled &&
     level &&
-    marginUsd > 0 &&
-    leverage >= 1 &&
-    leverage <= 10 &&
+    marginValid &&
+    leverageValid &&
     spot > 0 &&
     !belowMinNotional;
 
@@ -2452,8 +2483,8 @@ function PortfolioForm({
         id: existingPosition.id,
         asset,
         side,
-        marginUsd,
-        leverage,
+        marginUsd: normalizedMarginUsd,
+        leverage: normalizedLeverage,
         entryPrice: spot
       });
     }, 300);
@@ -2463,7 +2494,7 @@ function PortfolioForm({
         autoSaveTimerRef.current = null;
       }
     };
-  }, [asset, side, marginUsd, leverage, spot, canSave, existingPosition?.id]);
+  }, [asset, side, normalizedMarginUsd, normalizedLeverage, spot, canSave, existingPosition?.id]);
 
   return (
     <div className="recommendation">
@@ -2501,8 +2532,18 @@ function PortfolioForm({
           type="number"
           min="0"
           step="50"
-          value={marginUsd}
-          onChange={(e) => setMarginUsd(Number(e.target.value || 0))}
+          value={marginInput}
+          onChange={(e) => setMarginInput(e.target.value)}
+          onBlur={() => {
+            const parsed = parseFiniteInput(marginInput);
+            if (parsed === null) {
+              setMarginInput("0");
+              return;
+            }
+            const clamped = Math.max(0, parsed);
+            const rounded = Math.round(clamped * 100) / 100;
+            setMarginInput(Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(2));
+          }}
           disabled={disabled}
         />
       </div>
@@ -2513,9 +2554,19 @@ function PortfolioForm({
           type="number"
           min="1"
           max="10"
-          step="1"
-          value={leverage}
-          onChange={(e) => setLeverage(Number(e.target.value || 1))}
+          step="0.5"
+          value={leverageInput}
+          onChange={(e) => setLeverageInput(e.target.value)}
+          onBlur={() => {
+            const parsed = parseFiniteInput(leverageInput);
+            if (parsed === null) {
+              setLeverageInput("1");
+              return;
+            }
+            const clamped = Math.min(10, Math.max(1, parsed));
+            const snapped = snapToHalfStep(clamped);
+            setLeverageInput(formatLeverageInput(snapped));
+          }}
           disabled={disabled}
         />
       </div>
@@ -2543,8 +2594,8 @@ function PortfolioForm({
               id: Math.random().toString(36).slice(2, 10),
               asset,
               side,
-              marginUsd,
-              leverage,
+              marginUsd: normalizedMarginUsd,
+              leverage: normalizedLeverage,
               entryPrice: spot
             });
           }}
