@@ -159,6 +159,17 @@ const formatLeverageInput = (value: number): string => {
   return Number.isInteger(value) ? value.toFixed(0) : value.toFixed(1);
 };
 
+const isEditableElement = (target: EventTarget | null): boolean => {
+  if (!target || !(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tag = target.tagName.toLowerCase();
+  if (tag === "textarea" || tag === "select") return true;
+  if (tag !== "input") return false;
+  const input = target as HTMLInputElement;
+  const type = (input.type || "text").toLowerCase();
+  return !["button", "checkbox", "radio", "submit", "reset", "file"].includes(type);
+};
+
 const limitToSinglePosition = (input: Portfolio | null): Portfolio | null => {
   if (!input) return null;
   return { ...input, positions: input.positions.slice(0, 1) };
@@ -325,6 +336,16 @@ export function App() {
       setShowAudit(false);
     }
   }, [isMobile, showAudit]);
+
+  useEffect(() => {
+    const handleDesktopDeleteNav = (event: KeyboardEvent) => {
+      if (event.key !== "Backspace") return;
+      if (isEditableElement(event.target)) return;
+      event.preventDefault();
+    };
+    window.addEventListener("keydown", handleDesktopDeleteNav);
+    return () => window.removeEventListener("keydown", handleDesktopDeleteNav);
+  }, []);
 
   const fetchPositions = async (accountId = "demo") => {
     try {
@@ -2339,7 +2360,9 @@ export function App() {
                             onClick={() => {
                               setPortfolio((prev) => ({
                                 tierName: prev?.tierName || "",
-                                positions: prev?.positions.filter((item) => item.id !== p.id) || []
+                                positions: Array.isArray(prev?.positions)
+                                  ? prev.positions.filter((item) => item.id !== p.id)
+                                  : []
                               }));
                               setSelectedIds((prev) => (prev.includes(p.id) ? [] : prev));
                             }}
@@ -2529,9 +2552,8 @@ function PortfolioForm({
         <span>Margin (USD)</span>
         <input
           className="input"
-          type="number"
-          min="0"
-          step="50"
+          type="text"
+          inputMode="decimal"
           value={marginInput}
           onChange={(e) => setMarginInput(e.target.value)}
           onBlur={() => {
@@ -2551,10 +2573,8 @@ function PortfolioForm({
         <span>Leverage</span>
         <input
           className="input"
-          type="number"
-          min="1"
-          max="10"
-          step="0.5"
+          type="text"
+          inputMode="decimal"
           value={leverageInput}
           onChange={(e) => setLeverageInput(e.target.value)}
           onBlur={() => {
