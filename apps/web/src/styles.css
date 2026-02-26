@@ -1298,12 +1298,12 @@ select.input {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  column-gap: 16px;
+  column-gap: 10px;
 }
 
 .presentation-gate-logo-slot {
-  width: min(210px, 38vw);
-  min-height: 62px;
+  width: min(190px, 35vw);
+  min-height: 64px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1316,11 +1316,11 @@ select.input {
 }
 
 .presentation-gate-logo-img--atticus {
-  max-height: 50px;
+  max-height: 54px;
 }
 
 .presentation-gate-logo-img--trammell {
-  max-height: 62px;
+  max-height: 72px;
 }
 
 .presentation-gate-logo-fallback {
@@ -1334,6 +1334,7 @@ select.input {
   font-weight: 700;
   font-size: 18px;
   letter-spacing: 0.04em;
+  padding: 0 2px;
 }
 
 .presentation-gate-copy {
