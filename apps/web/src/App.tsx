@@ -12,6 +12,7 @@ import {
   FOXIFY_POSITION_ENDPOINT,
   FOXIFY_PORTFOLIO_ENDPOINT
 } from "./config";
+import { PresentationGate } from "./components/PresentationGate";
 
 type FundedLevel = {
   name: string;
@@ -143,6 +144,7 @@ const formatUsd = (value: number) =>
   value.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
 const VC_DEMO_MIN_NOTIONAL_USDC = 500;
+const TVP_PRESENTATION_GATE_KEY = "tvp_presentation_gate_ack_v1";
 
 const parseFiniteInput = (input: string): number | null => {
   const trimmed = input.trim();
@@ -177,7 +179,7 @@ const limitToSinglePosition = (input: Portfolio | null): Portfolio | null => {
   return { ...input, positions: input.positions.slice(0, 1) };
 };
 
-export function App() {
+function AppContent() {
   const [levels, setLevels] = useState<FundedLevel[]>([]);
   const [level, setLevel] = useState<FundedLevel | null>(null);
   const [spotPrices, setSpotPrices] = useState<Record<Asset, number | null>>({
@@ -2425,6 +2427,35 @@ export function App() {
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
+}
+
+export function App() {
+  const [presentationGateAccepted, setPresentationGateAccepted] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      return window.localStorage.getItem(TVP_PRESENTATION_GATE_KEY) === "accepted";
+    } catch {
+      // Fail open for the current session if storage is unavailable.
+      return true;
+    }
+  });
+
+  if (!presentationGateAccepted) {
+    return (
+      <PresentationGate
+        onAccept={() => {
+          try {
+            window.localStorage.setItem(TVP_PRESENTATION_GATE_KEY, "accepted");
+          } catch {
+            // Keep UX moving even if storage cannot be written.
+          }
+          setPresentationGateAccepted(true);
+        }}
+      />
+    );
+  }
+
+  return <AppContent />;
 }
 
 function PortfolioForm({
