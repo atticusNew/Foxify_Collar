@@ -26,11 +26,14 @@
   },
   "tier_min_notional_usdc_by_tier": {
     "Pro (Bronze)": 500,
-    "Pro (Silver)": 2500,
-    "Pro (Gold)": 5000,
-    "Pro (Platinum)": 10000
+    "Pro (Silver)": 500,
+    "Pro (Gold)": 500,
+    "Pro (Platinum)": 500
   },
   "tier_min_notional_tolerance_pct": 0.02,
+  "vc_demo_override_enabled": true,
+  "vc_demo_override_min_notional_usdc": 500,
+  "vc_demo_override_note": "VC demo override",
   "premium_markup_pct_by_tier": {
     "Pro (Bronze)": 0,
     "Pro (Silver)": 0.03,

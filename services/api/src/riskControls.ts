@@ -37,6 +37,9 @@ export interface RiskControlsConfig {
   min_fee_usdc_by_tier?: Record<string, number>;
   tier_min_notional_usdc_by_tier?: Record<string, number>;
   tier_min_notional_tolerance_pct?: number;
+  vc_demo_override_enabled?: boolean;
+  vc_demo_override_min_notional_usdc?: number;
+  vc_demo_override_note?: string;
   premium_floor_ratio?: number;
   fee_iv_uplift_threshold?: number;
   fee_iv_uplift_pct_by_tier?: Record<string, number>;
@@ -144,6 +147,9 @@ const DEFAULTS: RiskControlsConfig = {
   min_fee_usdc_by_tier: {},
   tier_min_notional_usdc_by_tier: {},
   tier_min_notional_tolerance_pct: 0,
+  vc_demo_override_enabled: false,
+  vc_demo_override_min_notional_usdc: 0,
+  vc_demo_override_note: "",
   premium_floor_ratio: 1.25,
   fee_iv_uplift_threshold: 0.8,
   fee_iv_uplift_pct_by_tier: {},

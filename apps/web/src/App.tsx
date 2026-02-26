@@ -140,6 +140,8 @@ const parsePctValue = (input: unknown): number => {
 const formatSpotPrice = (value: number) =>
   value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
+const VC_DEMO_MIN_NOTIONAL_USDC = 500;
+
 const limitToSinglePosition = (input: Portfolio | null): Portfolio | null => {
   if (!input) return null;
   return { ...input, positions: input.positions.slice(0, 1) };
@@ -726,7 +728,9 @@ export function App() {
 
   const currentPositions = portfolioStats.entries;
   const activeTierName = level?.name || portfolio?.tierName || "Unknown";
-  const activeTierMinNotionalUsdc = Number(tierMinNotionalByTier[activeTierName] ?? 0);
+  const activeTierMinNotionalUsdc = Number(
+    tierMinNotionalByTier[activeTierName] ?? VC_DEMO_MIN_NOTIONAL_USDC
+  );
   const effectiveMinFactor = Math.max(0, 1 - tierMinNotionalTolerancePct);
   const positionEligibility = useMemo(() => {
     const byId = new Map<string, PositionEligibility>();
@@ -1148,9 +1152,7 @@ export function App() {
         positionEligibility.get(selected.id) ??
         null;
       if (eligibility && !eligibility.eligible) {
-        setActivationNoticeTimed(
-          `Ineligible: minimum $${formatUsd(eligibility.minNotionalUsdc)} protected notional for ${eligibility.tierName}.`
-        );
+        setActivationNoticeTimed(`Below $${formatUsd(VC_DEMO_MIN_NOTIONAL_USDC)} minimum.`);
         return;
       }
     }
@@ -2025,7 +2027,7 @@ export function App() {
                         </strong>
                         {isIneligible && eligibility && (
                           <span className="pill pill-inline pill-warning">
-                            Ineligible
+                            Below $500 minimum
                           </span>
                         )}
                         <div className="muted">
@@ -2048,7 +2050,7 @@ export function App() {
                             {isProtected
                               ? "Protected"
                               : isIneligible
-                                ? "Ineligible"
+                                ? "Protect"
                               : selectedIds.includes(p.id)
                                 ? "Selected"
                                 : "Protect"}
@@ -2284,6 +2286,7 @@ export function App() {
                 remainingMargin={remainingMargin}
                 spotPrices={spotPrices}
                 existingPosition={null}
+                minNotionalUsdc={VC_DEMO_MIN_NOTIONAL_USDC}
                 disabled={false}
                 onSave={async (position) => {
                   const nextPortfolio = {
@@ -2390,6 +2393,7 @@ function PortfolioForm({
   remainingMargin,
   spotPrices,
   existingPosition,
+  minNotionalUsdc,
   disabled,
   onSave
 }: {
@@ -2398,6 +2402,7 @@ function PortfolioForm({
   remainingMargin: number;
   spotPrices: Record<Asset, number | null>;
   existingPosition: PortfolioPosition | null;
+  minNotionalUsdc: number;
   disabled?: boolean;
   onSave: (position: PortfolioPosition) => void;
 }) {
@@ -2419,6 +2424,8 @@ function PortfolioForm({
   }, [existingPosition?.id]);
 
   const availableMargin = remainingMargin + (existingPosition?.marginUsd || 0);
+  const estimatedProtectedNotionalUsdc = marginUsd * leverage;
+  const belowMinNotional = estimatedProtectedNotionalUsdc < minNotionalUsdc;
   const overFundingUsdc = Math.max(0, marginUsd - availableMargin);
   const canSave =
     !disabled &&
@@ -2426,7 +2433,8 @@ function PortfolioForm({
     marginUsd > 0 &&
     leverage >= 1 &&
     leverage <= 10 &&
-    spot > 0;
+    spot > 0 &&
+    !belowMinNotional;
 
   useEffect(() => {
     if (!existingPosition) return;
@@ -2517,7 +2525,13 @@ function PortfolioForm({
       </div>
       {overFundingUsdc > 0 && (
         <div className="disclaimer">
-          Soft cap warning: margin exceeds tier funding by ${Math.round(overFundingUsdc)}.
+          Above FUNDED limit (demo allowed)
+        </div>
+      )}
+      {belowMinNotional && (
+        <div className="disclaimer">
+          Estimated protected notional must be at least $
+          {formatUsd(minNotionalUsdc)} to add this position.
         </div>
       )}
       {!existingPosition && (

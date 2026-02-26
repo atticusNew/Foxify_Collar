@@ -1432,6 +1432,12 @@ function resolvePremiumMarkupPct(tierName: string, leverage?: number): Decimal {
 }
 
 function resolveTierMinNotionalUsdc(tierName: string): Decimal | null {
+  // VC demo override keeps a single threshold for investor walkthroughs.
+  const demoOverrideEnabled = riskControls.vc_demo_override_enabled === true;
+  const demoOverrideRaw = Number(riskControls.vc_demo_override_min_notional_usdc ?? 0);
+  if (demoOverrideEnabled && Number.isFinite(demoOverrideRaw) && demoOverrideRaw > 0) {
+    return new Decimal(demoOverrideRaw);
+  }
   const raw = riskControls.tier_min_notional_usdc_by_tier?.[tierName];
   const value = Number(raw);
   if (!Number.isFinite(value) || value <= 0) return null;
@@ -7978,6 +7984,9 @@ app.get("/debug/risk-controls", async () => {
       pass_through_cap_by_leverage: current.pass_through_cap_by_leverage ?? {},
       tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {},
       tier_min_notional_tolerance_pct: current.tier_min_notional_tolerance_pct ?? 0,
+      vc_demo_override_enabled: current.vc_demo_override_enabled ?? false,
+      vc_demo_override_min_notional_usdc: current.vc_demo_override_min_notional_usdc ?? 0,
+      vc_demo_override_note: current.vc_demo_override_note ?? "",
       enable_premium_pass_through: current.enable_premium_pass_through ?? null,
       require_user_opt_in_for_pass_through: current.require_user_opt_in_for_pass_through ?? null,
       premium_floor_ratio: current.premium_floor_ratio ?? null,
@@ -8021,7 +8030,10 @@ app.get("/debug/build-info", async () => {
     controls: {
       ctc_shadow_mode: current.ctc_shadow_mode ?? null,
       tier_min_notional_usdc_by_tier: current.tier_min_notional_usdc_by_tier ?? {},
-      tier_min_notional_tolerance_pct: current.tier_min_notional_tolerance_pct ?? 0
+      tier_min_notional_tolerance_pct: current.tier_min_notional_tolerance_pct ?? 0,
+      vc_demo_override_enabled: current.vc_demo_override_enabled ?? false,
+      vc_demo_override_min_notional_usdc: current.vc_demo_override_min_notional_usdc ?? 0,
+      vc_demo_override_note: current.vc_demo_override_note ?? ""
     }
   };
 });
