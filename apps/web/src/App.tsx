@@ -139,6 +139,8 @@ const parsePctValue = (input: unknown): number => {
 
 const formatSpotPrice = (value: number) =>
   value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const formatUsd = (value: number) =>
+  value.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
 const VC_DEMO_MIN_NOTIONAL_USDC = 500;
 
@@ -1790,8 +1792,6 @@ export function App() {
     setIsActivating(false);
   };
 
-  const formatUsd = (value: number) =>
-    value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const formatPrice = (value: number) =>
     value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
