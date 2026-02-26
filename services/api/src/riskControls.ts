@@ -40,6 +40,8 @@ export interface RiskControlsConfig {
   vc_demo_override_enabled?: boolean;
   vc_demo_override_min_notional_usdc?: number;
   vc_demo_override_note?: string;
+  vc_demo_override_premium_markup_pct_by_tier?: Record<string, number>;
+  vc_demo_override_leverage_markup_pct_by_x?: Record<string, number>;
   premium_floor_ratio?: number;
   fee_iv_uplift_threshold?: number;
   fee_iv_uplift_pct_by_tier?: Record<string, number>;
@@ -150,6 +152,8 @@ const DEFAULTS: RiskControlsConfig = {
   vc_demo_override_enabled: false,
   vc_demo_override_min_notional_usdc: 0,
   vc_demo_override_note: "",
+  vc_demo_override_premium_markup_pct_by_tier: {},
+  vc_demo_override_leverage_markup_pct_by_x: {},
   premium_floor_ratio: 1.25,
   fee_iv_uplift_threshold: 0.8,
   fee_iv_uplift_pct_by_tier: {},

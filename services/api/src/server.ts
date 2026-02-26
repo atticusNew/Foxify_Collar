@@ -57,6 +57,7 @@ import {
 import { resolveOptionPremiumUsdc } from "./executionUtils";
 import { buildCoverageReport } from "./coverageReport";
 import { resolveCoverageTargetSize } from "./quoteCoverage";
+import { resolvePremiumMarkupPctForQuote } from "./markupProfile";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -1422,13 +1423,7 @@ function formatCapMultiplier(
 }
 
 function resolvePremiumMarkupPct(tierName: string, leverage?: number): Decimal {
-  if (tierName === "Pro (Bronze)") {
-    return new Decimal(0);
-  }
-  const tierMarkup = riskControls.premium_markup_pct_by_tier?.[tierName] ?? 0;
-  const leverageMarkup = findLeverageMultiplier(leverage, riskControls.leverage_markup_pct_by_x);
-  const leveragePct = Number.isFinite(leverageMarkup) ? leverageMarkup : 0;
-  return new Decimal(tierMarkup).add(new Decimal(leveragePct));
+  return resolvePremiumMarkupPctForQuote(tierName, leverage, riskControls);
 }
 
 function resolveTierMinNotionalUsdc(tierName: string): Decimal | null {
@@ -7987,6 +7982,10 @@ app.get("/debug/risk-controls", async () => {
       vc_demo_override_enabled: current.vc_demo_override_enabled ?? false,
       vc_demo_override_min_notional_usdc: current.vc_demo_override_min_notional_usdc ?? 0,
       vc_demo_override_note: current.vc_demo_override_note ?? "",
+      vc_demo_override_premium_markup_pct_by_tier:
+        current.vc_demo_override_premium_markup_pct_by_tier ?? {},
+      vc_demo_override_leverage_markup_pct_by_x:
+        current.vc_demo_override_leverage_markup_pct_by_x ?? {},
       enable_premium_pass_through: current.enable_premium_pass_through ?? null,
       require_user_opt_in_for_pass_through: current.require_user_opt_in_for_pass_through ?? null,
       premium_floor_ratio: current.premium_floor_ratio ?? null,
@@ -8033,7 +8032,11 @@ app.get("/debug/build-info", async () => {
       tier_min_notional_tolerance_pct: current.tier_min_notional_tolerance_pct ?? 0,
       vc_demo_override_enabled: current.vc_demo_override_enabled ?? false,
       vc_demo_override_min_notional_usdc: current.vc_demo_override_min_notional_usdc ?? 0,
-      vc_demo_override_note: current.vc_demo_override_note ?? ""
+      vc_demo_override_note: current.vc_demo_override_note ?? "",
+      vc_demo_override_premium_markup_pct_by_tier:
+        current.vc_demo_override_premium_markup_pct_by_tier ?? {},
+      vc_demo_override_leverage_markup_pct_by_x:
+        current.vc_demo_override_leverage_markup_pct_by_x ?? {}
     }
   };
 });

@@ -34,6 +34,19 @@
   "vc_demo_override_enabled": true,
   "vc_demo_override_min_notional_usdc": 500,
   "vc_demo_override_note": "VC demo override",
+  "vc_demo_override_premium_markup_pct_by_tier": {
+    "Pro (Bronze)": 0.005,
+    "Pro (Silver)": 0.015,
+    "Pro (Gold)": 0.02,
+    "Pro (Platinum)": 0.025
+  },
+  "vc_demo_override_leverage_markup_pct_by_x": {
+    "1": 0,
+    "2": 0.0025,
+    "3": 0.005,
+    "5": 0.01,
+    "10": 0.015
+  },
   "premium_markup_pct_by_tier": {
     "Pro (Bronze)": 0,
     "Pro (Silver)": 0.03,
