@@ -58,6 +58,7 @@ import { resolveOptionPremiumUsdc } from "./executionUtils";
 import { buildCoverageReport } from "./coverageReport";
 import { resolveCoverageTargetSize } from "./quoteCoverage";
 import { resolvePremiumMarkupPctForQuote } from "./markupProfile";
+import { registerPilotRoutes } from "./pilot/routes";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -8150,6 +8151,8 @@ app.post("/hedge/roll", async (req) => {
     decision
   };
 });
+
+await registerPilotRoutes(app, { deribit });
 
 const startServer = async () => {
   try {
