@@ -139,8 +139,8 @@ export const registerPilotRoutes = async (
     try {
       const snapshot = await resolvePriceSnapshot(
         {
-          primaryUrl: pilotConfig.dydxPriceUrl,
-          fallbackUrl: pilotConfig.fallbackPriceUrl,
+          primaryUrl: pilotConfig.referencePriceUrl,
+          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
           primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
           fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
           freshnessMaxMs: pilotConfig.priceFreshnessMaxMs
@@ -283,7 +283,7 @@ export const registerPilotRoutes = async (
         usedUsdc: dailyUsed.toFixed(2)
       };
     }
-    const marketId = body.marketId || pilotConfig.dydxBtcMarketId;
+    const marketId = pilotConfig.referenceMarketId;
     const tierName = normalizeTierName(body.tierName);
     const drawdownFloorPct = resolveDrawdownFloorPct({
       tierName,
@@ -293,8 +293,8 @@ export const registerPilotRoutes = async (
     try {
       const snapshot = await resolvePriceSnapshot(
         {
-          primaryUrl: pilotConfig.dydxPriceUrl,
-          fallbackUrl: pilotConfig.fallbackPriceUrl,
+          primaryUrl: pilotConfig.referencePriceUrl,
+          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
           primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
           fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
           freshnessMaxMs: pilotConfig.priceFreshnessMaxMs
@@ -444,7 +444,7 @@ export const registerPilotRoutes = async (
         usedUsdc: dailyUsed.toFixed(2)
       };
     }
-    const marketId = body.marketId || pilotConfig.dydxBtcMarketId;
+    const marketId = pilotConfig.referenceMarketId;
     const tierName = normalizeTierName(body.tierName);
     const drawdownFloorPct = resolveDrawdownFloorPct({
       tierName,
@@ -480,8 +480,8 @@ export const registerPilotRoutes = async (
       });
       const snapshot = await resolvePriceSnapshot(
         {
-          primaryUrl: pilotConfig.dydxPriceUrl,
-          fallbackUrl: pilotConfig.fallbackPriceUrl,
+          primaryUrl: pilotConfig.referencePriceUrl,
+          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
           primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
           fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
           freshnessMaxMs: pilotConfig.priceFreshnessMaxMs

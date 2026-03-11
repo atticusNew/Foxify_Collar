@@ -32,12 +32,16 @@ export const pilotConfig = {
   pricePrimaryTimeoutMs: Number(process.env.PRICE_TIMEOUT_PRIMARY_MS || "800"),
   priceFallbackTimeoutMs: Number(process.env.PRICE_TIMEOUT_FALLBACK_MS || "800"),
   priceFreshnessMaxMs: Number(process.env.PRICE_FRESHNESS_MAX_MS || "5000"),
+  singlePriceSource: process.env.PRICE_SINGLE_SOURCE !== "false",
   expiryInitialWindowMs: Number(process.env.EXPIRY_PRICE_INITIAL_WINDOW_MS || "5000"),
   fullCoverageTolerancePct: Number(process.env.FULL_COVERAGE_TOLERANCE_PCT || "0.005"),
   requireFullCoverage: process.env.REQUIRE_FULL_POSITION_COVERAGE !== "false",
   requireFullExecutionFill: process.env.REQUIRE_FULL_EXECUTION_FILL !== "false",
-  dydxPriceUrl: process.env.DYDX_PRICE_URL || "",
-  dydxBtcMarketId: process.env.DYDX_BTC_MARKET_ID || "BTC-USD",
+  referencePriceUrl:
+    process.env.PRICE_REFERENCE_URL ||
+    process.env.DYDX_PRICE_URL ||
+    "https://api.exchange.coinbase.com/products/BTC-USD/ticker",
+  referenceMarketId: process.env.PRICE_REFERENCE_MARKET_ID || process.env.DYDX_BTC_MARKET_ID || "BTC-USD",
   fallbackPriceUrl: process.env.FALLBACK_PRICE_URL || "",
   falconxBaseUrl: process.env.FALCONX_BASE_URL || "https://api.falconx.io",
   falconxApiKey: process.env.FALCONX_API_KEY || "",

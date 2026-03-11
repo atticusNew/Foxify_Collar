@@ -27,9 +27,10 @@ Endpoints:
 
 ## Price source chain
 
-1. Primary: dYdX oracle/index endpoint (`DYDX_PRICE_URL`)
-2. Fallback: configured oracle endpoint (`FALLBACK_PRICE_URL`)
-3. If both fail or payload is invalid, response is:
+1. Canonical primary reference endpoint (`PRICE_REFERENCE_URL`)
+2. Market id pinned by config (`PRICE_REFERENCE_MARKET_ID`, default `BTC-USD`)
+3. Optional fallback endpoint (`FALLBACK_PRICE_URL`) only when `PRICE_SINGLE_SOURCE=false`
+4. If reference resolution fails or payload is invalid, response is:
    - `status=error`
    - `reason=price_unavailable`
    - message: `Price temporarily unavailable, please retry.`
@@ -63,6 +64,7 @@ The pilot ledger stores:
 - Daily protected notional cap is `50,000` USDC per user hash.
 - `entryPrice` is required and treated as manual user input (not auto-derived from spot).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
+- Quote, activation, and expiry resolution all use the same canonical reference feed configuration.
 
 ## Proof payload policy
 

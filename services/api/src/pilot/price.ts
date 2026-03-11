@@ -67,14 +67,24 @@ const extractPrimary = (payload: any): {
     payload?.market_id ??
     payload?.marketId ??
     payload?.market ??
+    payload?.product_id ??
+    payload?.symbol ??
+    payload?.pair ??
     payload?.result?.market_id ??
     payload?.result?.market ??
     null;
   const price =
-    Number(payload?.oraclePrice ?? payload?.oracle_price ?? payload?.indexPrice ?? payload?.index_price);
+    Number(
+      payload?.oraclePrice ??
+        payload?.oracle_price ??
+        payload?.indexPrice ??
+        payload?.index_price ??
+        payload?.price
+    );
   const timestampMs =
     normalizeTimestampMs(
       payload?.timestamp ??
+        payload?.time ??
         payload?.price_timestamp ??
         payload?.updatedAt ??
         payload?.updated_at ??
@@ -143,9 +153,10 @@ export const resolvePriceSnapshot = async (
   try {
     const primaryPayload = await fetchJsonWithTimeout(config.primaryUrl, config.primaryTimeoutMs);
     const extracted = extractPrimary(primaryPayload);
+    const primaryMarket = extracted.marketId || input.marketId;
     const verdict = validate({
       expectedMarket: input.marketId,
-      fetchedMarket: extracted.marketId,
+      fetchedMarket: primaryMarket,
       price: extracted.price,
       timestampMs: extracted.timestampMs,
       nowMs,
@@ -157,8 +168,8 @@ export const resolvePriceSnapshot = async (
         price: new Decimal(extracted.price as number),
         priceTimestamp: new Date(extracted.timestampMs as number).toISOString(),
         marketId: input.marketId,
-        priceSource: "dydx_oracle",
-        priceSourceDetail: "dydx_oracle_api",
+        priceSource: "reference_oracle",
+        priceSourceDetail: primaryMarket === extracted.marketId ? "reference_oracle_api" : "reference_oracle_inferred_market",
         endpointVersion: input.endpointVersion,
         requestId: input.requestId
       };
@@ -168,12 +179,17 @@ export const resolvePriceSnapshot = async (
     primaryError = error?.message || "primary_request_failed";
   }
 
+  if (!config.fallbackUrl) {
+    throw new Error(`price_unavailable:${primaryError}:fallback_disabled`);
+  }
+
   try {
     const fallbackPayload = await fetchJsonWithTimeout(config.fallbackUrl, config.fallbackTimeoutMs);
     const fallbackExtracted = extractFallback(fallbackPayload);
+    const fallbackMarket = fallbackExtracted.marketId || input.marketId;
     const fallbackVerdict = validate({
       expectedMarket: input.marketId,
-      fetchedMarket: fallbackExtracted.marketId,
+      fetchedMarket: fallbackMarket,
       price: fallbackExtracted.price,
       timestampMs: fallbackExtracted.timestampMs,
       nowMs,

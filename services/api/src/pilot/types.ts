@@ -11,7 +11,7 @@ export type LedgerEntryType = "premium_due" | "premium_settled" | "payout_due" |
 
 export type PriceSnapshotType = "entry" | "expiry";
 
-export type PriceSource = "dydx_oracle" | "fallback_oracle";
+export type PriceSource = "reference_oracle" | "fallback_oracle";
 
 export type VenueExecutionStatus = "success" | "failure";
 

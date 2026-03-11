@@ -33,7 +33,7 @@ test("resolvePriceSnapshot uses primary source when valid", async () => {
       endpointVersion: "v1"
     }
   );
-  assert.equal(result.priceSource, "dydx_oracle");
+  assert.equal(result.priceSource, "reference_oracle");
   assert.equal(result.marketId, "BTC-USD");
 });
 
