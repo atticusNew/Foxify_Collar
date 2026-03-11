@@ -243,6 +243,25 @@ export const listProtections = async (
   return result.rows.map(mapProtection);
 };
 
+export const getDailyProtectedNotionalForUser = async (
+  pool: Queryable,
+  userHash: string,
+  dayStartIso: string,
+  dayEndIso: string
+): Promise<string> => {
+  const result = await pool.query(
+    `
+      SELECT COALESCE(SUM(protected_notional), 0)::text AS total
+      FROM pilot_protections
+      WHERE user_hash = $1
+        AND created_at >= $2::timestamptz
+        AND created_at < $3::timestamptz
+    `,
+    [userHash, dayStartIso, dayEndIso]
+  );
+  return String(result.rows[0]?.total || "0");
+};
+
 export const insertPriceSnapshot = async (
   pool: Queryable,
   input: Omit<PriceSnapshotRecord, "id" | "createdAt"> & { id?: string }
@@ -379,6 +398,36 @@ export const insertVenueQuote = async (
   );
 };
 
+export const getVenueQuoteByQuoteId = async (
+  pool: Queryable,
+  quoteId: string
+): Promise<(VenueQuote & { protectionId: string | null }) | null> => {
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_venue_quotes
+      WHERE quote_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [quoteId]
+  );
+  if (!result.rowCount) return null;
+  const row = result.rows[0];
+  return {
+    venue: String(row.venue) as VenueQuote["venue"],
+    quoteId: String(row.quote_id),
+    rfqId: row.rfq_id ? String(row.rfq_id) : null,
+    instrumentId: String(row.instrument_id),
+    side: String(row.side) as VenueQuote["side"],
+    quantity: Number(row.quantity),
+    premium: Number(row.premium),
+    expiresAt: new Date(row.expires_at).toISOString(),
+    quoteTs: new Date(row.quote_ts).toISOString(),
+    details: toRecord(row.details),
+    protectionId: row.protection_id ? String(row.protection_id) : null
+  };
+};
+
 export const insertVenueExecution = async (
   pool: Queryable,
   protectionId: string,
@@ -468,6 +517,70 @@ export const getProofPayload = async (pool: Queryable, protectionId: string): Pr
       externalExecutionId: String(row.external_execution_id),
       details: toRecord(row.details)
     }))
+  };
+};
+
+export const getEssentialProofPayload = async (
+  pool: Queryable,
+  protectionId: string
+): Promise<Record<string, unknown> | null> => {
+  const protection = await getProtection(pool, protectionId);
+  if (!protection) return null;
+  const [snapshots, executions] = await Promise.all([
+    listSnapshotsForProtection(pool, protectionId),
+    pool.query(
+      `SELECT * FROM pilot_venue_executions WHERE protection_id = $1 ORDER BY created_at ASC`,
+      [protectionId]
+    )
+  ]);
+  const latestExecution = executions.rows.length ? executions.rows[executions.rows.length - 1] : null;
+  return {
+    protection: {
+      id: protection.id,
+      status: protection.status,
+      marketId: protection.marketId,
+      tierName: protection.tierName,
+      drawdownFloorPct: protection.drawdownFloorPct,
+      floorPrice: protection.floorPrice,
+      entryPrice: protection.entryPrice,
+      entryPriceSource: protection.entryPriceSource,
+      entryPriceTimestamp: protection.entryPriceTimestamp,
+      expiryAt: protection.expiryAt,
+      expiryPrice: protection.expiryPrice,
+      expiryPriceSource: protection.expiryPriceSource,
+      expiryPriceTimestamp: protection.expiryPriceTimestamp,
+      protectedNotional: protection.protectedNotional,
+      venue: protection.venue,
+      instrumentId: protection.instrumentId,
+      side: protection.side,
+      size: protection.size,
+      executedAt: protection.executedAt
+    },
+    snapshots: snapshots.map((snapshot) => ({
+      snapshotType: snapshot.snapshotType,
+      price: snapshot.price,
+      marketId: snapshot.marketId,
+      priceSource: snapshot.priceSource,
+      priceSourceDetail: snapshot.priceSourceDetail,
+      requestId: snapshot.requestId,
+      endpointVersion: snapshot.endpointVersion,
+      priceTimestamp: snapshot.priceTimestamp
+    })),
+    execution: latestExecution
+      ? {
+          venue: String(latestExecution.venue),
+          status: String(latestExecution.status),
+          quoteId: String(latestExecution.quote_id),
+          rfqId: latestExecution.rfq_id ? String(latestExecution.rfq_id) : null,
+          instrumentId: String(latestExecution.instrument_id),
+          side: String(latestExecution.side),
+          quantity: String(latestExecution.quantity),
+          executionPrice: String(latestExecution.execution_price),
+          executedAt: new Date(latestExecution.executed_at).toISOString(),
+          externalOrderId: String(latestExecution.external_order_id),
+          externalExecutionId: String(latestExecution.external_execution_id)
+        }
+      : null
   };
 };
 

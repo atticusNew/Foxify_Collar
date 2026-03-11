@@ -22,9 +22,12 @@ type QuoteResult = {
   };
   entrySnapshot: {
     price: string;
+    marketId?: string;
     source: string;
     timestamp: string;
+    requestId?: string;
   };
+  entryInputPrice?: string;
 };
 
 type ProtectionRecord = {
@@ -68,6 +71,7 @@ export function PilotApp() {
   const [tierName, setTierName] = useState(DEFAULT_TIERS[0].name);
   const [exposureNotional, setExposureNotional] = useState("50000");
   const [protectedNotional, setProtectedNotional] = useState("50000");
+  const [entryPrice, setEntryPrice] = useState("100000");
   const [tenorDays, setTenorDays] = useState(String(DEFAULT_TIERS[0].expiryDays));
   const [autoRenew, setAutoRenew] = useState(false);
   const [instrumentId, setInstrumentId] = useState("BTC-USD-7D-P");
@@ -83,12 +87,18 @@ export function PilotApp() {
 
   const exposureValue = Number(exposureNotional || 0);
   const protectedValue = Number(protectedNotional || 0);
+  const entryValue = Number(entryPrice || 0);
   const canQuote =
     Number.isFinite(exposureValue) &&
     exposureValue > 0 &&
     Number.isFinite(protectedValue) &&
     protectedValue > 0 &&
-    protectedValue <= exposureValue;
+    protectedValue <= exposureValue &&
+    Number.isFinite(entryValue) &&
+    entryValue > 0;
+  const quoteFresh =
+    quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
+  const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh;
 
   const renewWindowReached = useMemo(() => {
     if (!protection || protection.autoRenew || protection.status !== "active") return false;
@@ -150,6 +160,10 @@ export function PilotApp() {
   }, [selectedTier.name, selectedTier.expiryDays]);
 
   useEffect(() => {
+    setQuote(null);
+  }, [userId, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice, instrumentId]);
+
+  useEffect(() => {
     if (!protection?.id) return;
     const id = setInterval(async () => {
       try {
@@ -176,8 +190,10 @@ export function PilotApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          userId,
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
+          entryPrice: entryValue,
           instrumentId,
           marketId: "BTC-USD",
           tierName: selectedTier.name,
@@ -197,7 +213,10 @@ export function PilotApp() {
   };
 
   const activateProtection = async () => {
-    if (!canQuote) return;
+    if (!canActivate) {
+      setError("Get a fresh quote before activation.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -208,13 +227,15 @@ export function PilotApp() {
           userId,
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
+          entryPrice: entryValue,
           instrumentId,
           marketId: "BTC-USD",
           tierName: selectedTier.name,
           drawdownFloorPct: selectedTier.drawdownFloorPct,
           tenorDays: Number(tenorDays || 7),
           renewWindowMinutes: selectedTier.renewWindowMinutes,
-          autoRenew
+          autoRenew,
+          quoteId: quote?.quote?.quoteId
         })
       });
       const payload = await res.json();
@@ -313,6 +334,14 @@ export function PilotApp() {
               />
             </div>
             <div className="row">
+              <span>Entry Price (manual)</span>
+              <input
+                className="input"
+                value={entryPrice}
+                onChange={(e) => setEntryPrice(e.target.value)}
+              />
+            </div>
+            <div className="row">
               <span>Instrument</span>
               <input
                 className="input"
@@ -320,9 +349,9 @@ export function PilotApp() {
                 onChange={(e) => setInstrumentId(e.target.value)}
               />
             </div>
-            <div className="row">
+            <div className="row row-align">
               <span>Tenor (days)</span>
-              <input className="input" value={tenorDays} onChange={(e) => setTenorDays(e.target.value)} />
+              <strong>{selectedTier.expiryDays} (fixed)</strong>
             </div>
             <div className="row row-align">
               <span>Auto Renew</span>
@@ -337,10 +366,13 @@ export function PilotApp() {
               <button className="btn" disabled={busy || !canQuote} onClick={requestQuote}>
                 Get Quote
               </button>
-              <button className="cta" disabled={busy || !canQuote} onClick={activateProtection}>
+              <button className="cta" disabled={busy || !canActivate} onClick={activateProtection}>
                 Activate Protection
               </button>
             </div>
+            {quote && !quoteFresh && (
+              <div className="disclaimer danger">Quote expired. Please request a new quote.</div>
+            )}
           </div>
           {quote && (
             <div className="section">
@@ -356,6 +388,10 @@ export function PilotApp() {
               <div className="muted">
                 Entry snapshot {quote.entrySnapshot.price} ({quote.entrySnapshot.source}) at{" "}
                 {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
+              </div>
+              <div className="muted">
+                Manual entry input {quote.entryInputPrice || entryPrice} · Quote expires{" "}
+                {new Date(quote.quote.expiresAt).toLocaleTimeString()}
               </div>
             </div>
           )}

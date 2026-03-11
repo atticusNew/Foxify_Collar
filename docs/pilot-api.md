@@ -7,8 +7,7 @@ These endpoints are enabled when `PILOT_API_ENABLED=true`.
 - `POST /pilot/protections/quote`
 - `POST /pilot/protections/activate`
 - `GET /pilot/protections/:id`
-- `GET /pilot/protections/:id/proof`
-- `GET /pilot/protections/export?format=json|csv`
+- `GET /pilot/protections/:id/proof` (requires `x-proof-token` or `Authorization: Bearer <token>`)
 - `POST /pilot/protections/:id/renewal-decision`
 
 ## Internal/admin endpoints
@@ -23,6 +22,7 @@ Endpoints:
 - `POST /pilot/admin/protections/:id/premium-settled`
 - `POST /pilot/admin/protections/:id/payout-settled`
 - `GET /pilot/admin/protections/:id/ledger`
+- `GET /pilot/protections/export?format=json|csv`
 - `POST /pilot/internal/protections/:id/resolve-expiry` (internal operations/testing)
 
 ## Price source chain
@@ -52,7 +52,21 @@ The pilot ledger stores:
   - Gold: 12%
   - Platinum: 12%
 - Floor price is calculated as:
-  - `floor_price = entry_price * (1 - drawdown_floor_pct)`
+  - `floor_price = manual_entry_price * (1 - drawdown_floor_pct)`
 - Payout due logic at expiry:
   - `payout_due = max(floor_price - expiry_price, 0) / entry_price * protected_notional`
+
+## Pilot constraints
+
+- Tenor is fixed at 7 days by tier defaults for pilot.
+- `protectedNotional` must be `<= 50,000` USDC per protection.
+- Daily protected notional cap is `50,000` USDC per user hash.
+- `entryPrice` is required and treated as manual user input (not auto-derived from spot).
+- Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
+
+## Proof payload policy
+
+- Proof response is authenticated and intentionally minimal:
+  - protection status, floor/drawdown, entry/expiry price snapshots, and hedge execution references.
+- Proof excludes internal economics fields (platform PnL, margins, and ledger economics).
 

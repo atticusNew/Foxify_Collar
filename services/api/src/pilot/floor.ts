@@ -49,12 +49,7 @@ export const resolveDrawdownFloorPct = (params: {
 
 export const resolveExpiryDays = (params: { tierName?: string; requestedDays?: number }): number => {
   const tierName = normalizeTierName(params.tierName);
-  const fallback = PILOT_TIER_DEFAULTS[tierName].expiryDays;
-  const requested = Number(params.requestedDays);
-  if (Number.isFinite(requested) && requested > 0 && requested <= 30) {
-    return Math.floor(requested);
-  }
-  return fallback;
+  return PILOT_TIER_DEFAULTS[tierName].expiryDays;
 };
 
 export const resolveRenewWindowMinutes = (params: {

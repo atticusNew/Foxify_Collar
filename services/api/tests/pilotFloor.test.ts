@@ -23,8 +23,8 @@ test("resolveDrawdownFloorPct uses provided valid value else tier default", () =
   );
 });
 
-test("resolveExpiryDays and renew window use bounded values", () => {
-  assert.equal(resolveExpiryDays({ tierName: "Pro (Bronze)", requestedDays: 9 }), 9);
+test("resolveExpiryDays is fixed to tier default and renew window remains bounded", () => {
+  assert.equal(resolveExpiryDays({ tierName: "Pro (Bronze)", requestedDays: 9 }), 7);
   assert.equal(resolveExpiryDays({ tierName: "Pro (Bronze)", requestedDays: 0 }), 7);
   assert.equal(resolveRenewWindowMinutes({ tierName: "Pro (Gold)", requestedMinutes: 240 }), 240);
 });

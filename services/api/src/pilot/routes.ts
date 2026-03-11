@@ -6,9 +6,11 @@ import { buildUserHash } from "./hash";
 import { pilotConfig } from "./config";
 import {
   ensurePilotSchema,
+  getDailyProtectedNotionalForUser,
+  getEssentialProofPayload,
   getPilotPool,
   getProtection,
-  getProofPayload,
+  getVenueQuoteByQuoteId,
   insertAdminAction,
   insertLedgerEntry,
   insertPriceSnapshot,
@@ -47,6 +49,16 @@ const parseBoolean = (value: unknown, fallback = false): boolean => {
   return fallback;
 };
 
+const parsePositiveDecimal = (value: unknown): Decimal | null => {
+  try {
+    const parsed = new Decimal(value as Decimal.Value);
+    if (!parsed.isFinite() || parsed.lte(0)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
 const requireAdmin = async (
   req: FastifyRequest,
   reply: FastifyReply
@@ -66,6 +78,22 @@ const requireAdmin = async (
     return null;
   }
   return { actor, actorIp };
+};
+
+const requireProofAccess = async (req: FastifyRequest, reply: FastifyReply): Promise<boolean> => {
+  if (!pilotConfig.proofToken) {
+    reply.code(503).send({ status: "error", reason: "proof_auth_not_configured" });
+    return false;
+  }
+  const headerToken = String(req.headers["x-proof-token"] || "");
+  const auth = String(req.headers.authorization || "");
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const token = headerToken || bearer;
+  if (!token || token !== pilotConfig.proofToken) {
+    reply.code(401).send({ status: "error", reason: "unauthorized_proof_access" });
+    return false;
+  }
+  return true;
 };
 
 const toCsv = (rows: Array<Record<string, unknown>>): string => {
@@ -179,27 +207,81 @@ export const registerPilotRoutes = async (
 
   app.post("/pilot/protections/quote", async (req, reply) => {
     const body = req.body as {
+      userId?: string;
       protectedNotional?: number;
       foxifyExposureNotional?: number;
+      entryPrice?: number;
       instrumentId?: string;
       marketId?: string;
       clientOrderId?: string;
       tierName?: string;
       drawdownFloorPct?: number;
     };
-    const protectedNotional = Number(body.protectedNotional || 0);
-    const exposureNotional = Number(body.foxifyExposureNotional || 0);
-    if (!Number.isFinite(protectedNotional) || protectedNotional <= 0) {
+    if (!body.userId) {
+      reply.code(400);
+      return { status: "error", reason: "missing_user_id" };
+    }
+    const protectedNotional = parsePositiveDecimal(body.protectedNotional);
+    const exposureNotional = parsePositiveDecimal(body.foxifyExposureNotional);
+    const entryPrice = parsePositiveDecimal(body.entryPrice);
+    if (!protectedNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_protected_notional" };
     }
-    if (!Number.isFinite(exposureNotional) || exposureNotional <= 0) {
+    if (!exposureNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_exposure_notional" };
     }
-    if (protectedNotional > exposureNotional) {
+    if (!entryPrice) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_entry_price" };
+    }
+    const maxProtection = new Decimal(pilotConfig.maxProtectionNotionalUsdc);
+    const maxDailyProtection = new Decimal(pilotConfig.maxDailyProtectedNotionalUsdc);
+    if (protectedNotional.gt(maxProtection)) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "protection_notional_cap_exceeded",
+        capUsdc: maxProtection.toFixed(2)
+      };
+    }
+    if (protectedNotional.gt(exposureNotional)) {
       reply.code(400);
       return { status: "error", reason: "protected_notional_exceeds_exposure" };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = buildUserHash({
+        rawUserId: body.userId,
+        secret: pilotConfig.hashSecret,
+        hashVersion: pilotConfig.hashVersion
+      });
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const now = new Date();
+    const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const dayEnd = new Date(dayStart.getTime() + 86400000);
+    const dailyUsed = new Decimal(
+      await getDailyProtectedNotionalForUser(
+        pool,
+        userHash.userHash,
+        dayStart.toISOString(),
+        dayEnd.toISOString()
+      )
+    );
+    const projectedDaily = dailyUsed.plus(protectedNotional);
+    if (projectedDaily.gt(maxDailyProtection)) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "daily_notional_cap_exceeded",
+        capUsdc: maxDailyProtection.toFixed(2),
+        usedUsdc: dailyUsed.toFixed(2)
+      };
     }
     const marketId = body.marketId || pilotConfig.dydxBtcMarketId;
     const tierName = normalizeTierName(body.tierName);
@@ -224,17 +306,31 @@ export const registerPilotRoutes = async (
           endpointVersion: pilotConfig.endpointVersion
         }
       );
-      const quantity = new Decimal(protectedNotional).div(snapshot.price).toDecimalPlaces(8).toNumber();
+      const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
       const quote = await venue.quote({
         marketId,
-        protectedNotional,
+        protectedNotional: protectedNotional.toNumber(),
         quantity,
         side: "buy",
         instrumentId: body.instrumentId || `${marketId}-7D-P`,
         clientOrderId: body.clientOrderId
       });
-      await insertVenueQuote(pool, quote);
-      const floorPrice = computeFloorPrice(snapshot.price, drawdownFloorPct);
+      const floorPrice = computeFloorPrice(entryPrice, drawdownFloorPct);
+      await insertVenueQuote(pool, {
+        ...quote,
+        details: {
+          ...(quote.details || {}),
+          lockContext: {
+            marketId,
+            tierName,
+            drawdownFloorPct: drawdownFloorPct.toFixed(6),
+            protectedNotional: protectedNotional.toFixed(10),
+            foxifyExposureNotional: exposureNotional.toFixed(10),
+            entryPrice: entryPrice.toFixed(10),
+            floorPrice: floorPrice.toFixed(10)
+          }
+        }
+      });
       return {
         status: "ok",
         tierName,
@@ -247,7 +343,8 @@ export const registerPilotRoutes = async (
           source: snapshot.priceSource,
           timestamp: snapshot.priceTimestamp,
           requestId: snapshot.requestId
-        }
+        },
+        entryInputPrice: entryPrice.toFixed(10)
       };
     } catch (error: any) {
       reply.code(503);
@@ -274,30 +371,79 @@ export const registerPilotRoutes = async (
       clientOrderId?: string;
       tierName?: string;
       drawdownFloorPct?: number;
+      entryPrice?: number;
+      quoteId?: string;
     };
     if (!body.userId) {
       reply.code(400);
       return { status: "error", reason: "missing_user_id" };
     }
-    const protectedNotional = Number(body.protectedNotional || 0);
-    const exposureNotional = Number(body.foxifyExposureNotional || 0);
-    if (!Number.isFinite(protectedNotional) || protectedNotional <= 0) {
+    if (!body.quoteId) {
+      reply.code(400);
+      return { status: "error", reason: "missing_quote_id" };
+    }
+    const protectedNotional = parsePositiveDecimal(body.protectedNotional);
+    const exposureNotional = parsePositiveDecimal(body.foxifyExposureNotional);
+    const entryPrice = parsePositiveDecimal(body.entryPrice);
+    if (!protectedNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_protected_notional" };
     }
-    if (!Number.isFinite(exposureNotional) || exposureNotional <= 0) {
+    if (!exposureNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_exposure_notional" };
     }
-    if (protectedNotional > exposureNotional) {
+    if (!entryPrice) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_entry_price" };
+    }
+    const maxProtection = new Decimal(pilotConfig.maxProtectionNotionalUsdc);
+    const maxDailyProtection = new Decimal(pilotConfig.maxDailyProtectedNotionalUsdc);
+    if (protectedNotional.gt(maxProtection)) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "protection_notional_cap_exceeded",
+        capUsdc: maxProtection.toFixed(2)
+      };
+    }
+    if (protectedNotional.gt(exposureNotional)) {
       reply.code(400);
       return { status: "error", reason: "protected_notional_exceeds_exposure" };
     }
-    const userHash = buildUserHash({
-      rawUserId: body.userId,
-      secret: pilotConfig.hashSecret,
-      hashVersion: pilotConfig.hashVersion
-    });
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = buildUserHash({
+        rawUserId: body.userId,
+        secret: pilotConfig.hashSecret,
+        hashVersion: pilotConfig.hashVersion
+      });
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const now = new Date();
+    const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const dayEnd = new Date(dayStart.getTime() + 86400000);
+    const dailyUsed = new Decimal(
+      await getDailyProtectedNotionalForUser(
+        pool,
+        userHash.userHash,
+        dayStart.toISOString(),
+        dayEnd.toISOString()
+      )
+    );
+    const projectedDaily = dailyUsed.plus(protectedNotional);
+    if (projectedDaily.gt(maxDailyProtection)) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "daily_notional_cap_exceeded",
+        capUsdc: maxDailyProtection.toFixed(2),
+        usedUsdc: dailyUsed.toFixed(2)
+      };
+    }
     const marketId = body.marketId || pilotConfig.dydxBtcMarketId;
     const tierName = normalizeTierName(body.tierName);
     const drawdownFloorPct = resolveDrawdownFloorPct({
@@ -317,8 +463,8 @@ export const registerPilotRoutes = async (
         tierName,
         drawdownFloorPct: drawdownFloorPct.toFixed(6),
         marketId,
-        protectedNotional: protectedNotional.toString(),
-        foxifyExposureNotional: exposureNotional.toString(),
+        protectedNotional: protectedNotional.toFixed(10),
+        foxifyExposureNotional: exposureNotional.toFixed(10),
         expiryAt,
         autoRenew: parseBoolean(body.autoRenew, false),
         renewWindowMinutes: resolveRenewWindowMinutes({
@@ -347,6 +493,7 @@ export const registerPilotRoutes = async (
           endpointVersion: pilotConfig.endpointVersion
         }
       );
+      const instrumentId = body.instrumentId || `${marketId}-7D-P`;
       await insertPriceSnapshot(client, {
         protectionId: protection.id,
         snapshotType: "entry",
@@ -358,18 +505,44 @@ export const registerPilotRoutes = async (
         requestId: snapshot.requestId,
         priceTimestamp: snapshot.priceTimestamp
       });
-      const quantity = new Decimal(protectedNotional).div(snapshot.price).toDecimalPlaces(8).toNumber();
-      const instrumentId = body.instrumentId || `${marketId}-7D-P`;
-      const quote = await venue.quote({
-        marketId,
-        instrumentId,
-        protectedNotional,
-        quantity,
-        side: "buy",
-        clientOrderId: body.clientOrderId
-      });
-      await insertVenueQuote(client, { ...quote, protectionId: protection.id });
-      const execution = await venue.execute(quote);
+      const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
+      const lockedQuote = await getVenueQuoteByQuoteId(client, body.quoteId);
+      if (!lockedQuote) {
+        throw new Error("quote_not_found");
+      }
+      if (Date.now() > Date.parse(lockedQuote.expiresAt)) {
+        throw new Error("quote_expired");
+      }
+      if (lockedQuote.instrumentId !== instrumentId) {
+        throw new Error("quote_mismatch_instrument");
+      }
+      const quantityDeltaPct =
+        quantity > 0
+          ? new Decimal(lockedQuote.quantity).minus(quantity).abs().div(new Decimal(quantity))
+          : new Decimal(0);
+      if (quantityDeltaPct.gt(new Decimal(pilotConfig.fullCoverageTolerancePct))) {
+        throw new Error("quote_mismatch_quantity");
+      }
+      const lockContext = (lockedQuote.details?.lockContext || {}) as Record<string, unknown>;
+      const contextProtected = parsePositiveDecimal(lockContext.protectedNotional);
+      const contextExposure = parsePositiveDecimal(lockContext.foxifyExposureNotional);
+      const contextEntry = parsePositiveDecimal(lockContext.entryPrice);
+      const contextDrawdown = parsePositiveDecimal(lockContext.drawdownFloorPct);
+      if (
+        String(lockContext.marketId || marketId) !== marketId ||
+        String(lockContext.tierName || tierName) !== tierName ||
+        !contextProtected ||
+        !contextExposure ||
+        !contextEntry ||
+        !contextDrawdown ||
+        contextProtected.minus(protectedNotional).abs().gt(new Decimal("0.000001")) ||
+        contextExposure.minus(exposureNotional).abs().gt(new Decimal("0.000001")) ||
+        contextEntry.minus(entryPrice).abs().gt(new Decimal("0.000001")) ||
+        contextDrawdown.minus(drawdownFloorPct).abs().gt(new Decimal("0.000001"))
+      ) {
+        throw new Error("quote_mismatch_context");
+      }
+      const execution = await venue.execute(lockedQuote);
       if (execution.status !== "success") {
         throw new Error("execution_failed");
       }
@@ -389,12 +562,12 @@ export const registerPilotRoutes = async (
         amount: new Decimal(execution.premium).toFixed(10),
         reference: execution.externalOrderId
       });
-      const floorPrice = computeFloorPrice(snapshot.price, drawdownFloorPct);
+      const floorPrice = computeFloorPrice(entryPrice, drawdownFloorPct);
       const updated = await patchProtection(client, protection.id, {
         status: "active",
-        entry_price: snapshot.price.toFixed(10),
-        entry_price_source: snapshot.priceSource,
-        entry_price_timestamp: snapshot.priceTimestamp,
+        entry_price: entryPrice.toFixed(10),
+        entry_price_source: "manual_input",
+        entry_price_timestamp: new Date().toISOString(),
         floor_price: floorPrice.toFixed(10),
         venue: execution.venue,
         instrument_id: execution.instrumentId,
@@ -407,12 +580,15 @@ export const registerPilotRoutes = async (
         external_execution_id: execution.externalExecutionId,
         metadata: {
           ...(protection.metadata || {}),
-          quoteId: quote.quoteId,
-          rfqId: quote.rfqId || null,
+          quoteId: lockedQuote.quoteId,
+          rfqId: lockedQuote.rfqId || null,
           tierName,
           drawdownFloorPct: drawdownFloorPct.toFixed(6),
           floorPrice: floorPrice.toFixed(10),
-          coverageRatio: coverageRatio.toFixed(6)
+          coverageRatio: coverageRatio.toFixed(6),
+          entrySnapshotPrice: snapshot.price.toFixed(10),
+          entrySnapshotSource: snapshot.priceSource,
+          entrySnapshotTimestamp: snapshot.priceTimestamp
         }
       });
       await client.query("COMMIT");
@@ -420,21 +596,53 @@ export const registerPilotRoutes = async (
         status: "ok",
         protection: updated,
         coverageRatio: coverageRatio.toFixed(6),
-        quote
+        quote: lockedQuote
       };
     } catch (error: any) {
       await client.query("ROLLBACK");
       const errMsg = String(error?.message || "");
-      const reason = errMsg.includes("price_unavailable")
-        ? "price_unavailable"
-        : mapVenueFailureReason(error);
-      reply.code(reason === "price_unavailable" ? 503 : 400);
+      let reason = "activation_failed";
+      if (errMsg.includes("price_unavailable")) {
+        reason = "price_unavailable";
+      } else if (
+        [
+          "quote_not_found",
+          "quote_expired",
+          "quote_mismatch_instrument",
+          "quote_mismatch_quantity",
+          "quote_mismatch_context",
+          "full_coverage_not_met"
+        ].includes(errMsg)
+      ) {
+        reason = errMsg;
+      } else if (
+        errMsg === "protection_notional_cap_exceeded" ||
+        errMsg === "daily_notional_cap_exceeded" ||
+        errMsg === "user_hash_secret_missing"
+      ) {
+        reason = errMsg;
+      } else {
+        reason = mapVenueFailureReason(error);
+      }
+      if (reason === "price_unavailable") {
+        reply.code(503);
+      } else if (reason === "user_hash_secret_missing") {
+        reply.code(500);
+      } else if (reason === "quote_not_found") {
+        reply.code(404);
+      } else {
+        reply.code(400);
+      }
       return {
         status: "error",
         reason,
         message:
           reason === "price_unavailable"
             ? "Price temporarily unavailable, please retry."
+            : reason === "quote_expired"
+              ? "Quote expired. Please request a new quote."
+              : reason.startsWith("quote_mismatch")
+                ? "Quote does not match activation parameters. Please request a new quote."
             : "Protection activation failed."
       };
     } finally {
@@ -453,16 +661,20 @@ export const registerPilotRoutes = async (
   });
 
   app.get("/pilot/protections/:id/proof", async (req, reply) => {
+    const allowed = await requireProofAccess(req, reply);
+    if (!allowed) return;
     const params = req.params as { id: string };
-    const payload = await getProofPayload(pool, params.id);
+    const payload = await getEssentialProofPayload(pool, params.id);
     if (!payload) {
       reply.code(404);
       return { status: "error", reason: "not_found" };
     }
-    return { status: "ok", ...payload };
+    return { status: "ok", proof: payload };
   });
 
   app.get("/pilot/protections/export", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
     const query = req.query as { format?: string; limit?: string };
     const protections = await listProtections(pool, { limit: Number(query.limit || 200) });
     const rows = protections.map((item) => ({
@@ -580,6 +792,15 @@ export const registerPilotRoutes = async (
     if (!Number.isFinite(amount) || amount < 0) {
       reply.code(400);
       return { status: "error", reason: "invalid_amount" };
+    }
+    const payoutDue = new Decimal(protection.payoutDueAmount || "0");
+    if (new Decimal(amount).gt(payoutDue)) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "payout_settlement_exceeds_due",
+        payoutDueAmount: payoutDue.toFixed(10)
+      };
     }
     await insertLedgerEntry(pool, {
       protectionId: params.id,
