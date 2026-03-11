@@ -37,6 +37,9 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       user_hash TEXT NOT NULL,
       hash_version INTEGER NOT NULL,
       status TEXT NOT NULL,
+      tier_name TEXT,
+      drawdown_floor_pct NUMERIC(10,6),
+      floor_price NUMERIC(28,10),
       market_id TEXT NOT NULL,
       protected_notional NUMERIC(28,10) NOT NULL,
       foxify_exposure_notional NUMERIC(28,10) NOT NULL,
@@ -66,6 +69,10 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS tier_name TEXT;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS drawdown_floor_pct NUMERIC(10,6);
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS floor_price NUMERIC(28,10);
 
     CREATE TABLE IF NOT EXISTS pilot_price_snapshots (
       id TEXT PRIMARY KEY,
@@ -152,6 +159,8 @@ export const insertProtection = async (
     userHash: string;
     hashVersion: number;
     status: ProtectionStatus;
+    tierName?: string | null;
+    drawdownFloorPct?: string | null;
     marketId: string;
     protectedNotional: string;
     foxifyExposureNotional: string;
@@ -165,10 +174,10 @@ export const insertProtection = async (
   const result = await pool.query(
     `
       INSERT INTO pilot_protections (
-        id, user_hash, hash_version, status, market_id, protected_notional, foxify_exposure_notional,
+        id, user_hash, hash_version, status, tier_name, drawdown_floor_pct, market_id, protected_notional, foxify_exposure_notional,
         expiry_at, auto_renew, renew_window_minutes, metadata
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
       RETURNING *
     `,
     [
@@ -176,6 +185,8 @@ export const insertProtection = async (
       input.userHash,
       input.hashVersion,
       input.status,
+      input.tierName ?? null,
+      input.drawdownFloorPct ?? null,
       input.marketId,
       input.protectedNotional,
       input.foxifyExposureNotional,
@@ -465,6 +476,9 @@ const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({
   userHash: String(row.user_hash),
   hashVersion: Number(row.hash_version),
   status: row.status as ProtectionStatus,
+  tierName: row.tier_name ? String(row.tier_name) : null,
+  drawdownFloorPct: row.drawdown_floor_pct === null ? null : String(row.drawdown_floor_pct),
+  floorPrice: row.floor_price === null ? null : String(row.floor_price),
   marketId: String(row.market_id),
   protectedNotional: String(row.protected_notional),
   entryPrice: row.entry_price === null ? null : String(row.entry_price),

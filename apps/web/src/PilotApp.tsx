@@ -1,7 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { API_BASE } from "./config";
 
+type TierLevel = {
+  name: string;
+  drawdownFloorPct: number;
+  expiryDays: number;
+  renewWindowMinutes: number;
+};
+
 type QuoteResult = {
+  tierName: string;
+  drawdownFloorPct: string;
+  floorPrice: string;
   quote: {
     quoteId: string;
     instrumentId: string;
@@ -20,6 +30,9 @@ type QuoteResult = {
 type ProtectionRecord = {
   id: string;
   status: string;
+  tierName: string | null;
+  drawdownFloorPct: string | null;
+  floorPrice: string | null;
   protectedNotional: string;
   foxifyExposureNotional: string;
   entryPrice: string | null;
@@ -36,11 +49,26 @@ const formatUsd = (value: number | string | null | undefined): string => {
   return parsed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
+const DEFAULT_TIERS: TierLevel[] = [
+  { name: "Pro (Bronze)", drawdownFloorPct: 0.2, expiryDays: 7, renewWindowMinutes: 1440 },
+  { name: "Pro (Silver)", drawdownFloorPct: 0.15, expiryDays: 7, renewWindowMinutes: 1440 },
+  { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
+  { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
+];
+
+const formatPct = (value: number | string | null | undefined): string => {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return "0.00%";
+  return `${(parsed * 100).toFixed(2)}%`;
+};
+
 export function PilotApp() {
   const [userId, setUserId] = useState("foxify-user-001");
+  const [tiers, setTiers] = useState<TierLevel[]>(DEFAULT_TIERS);
+  const [tierName, setTierName] = useState(DEFAULT_TIERS[0].name);
   const [exposureNotional, setExposureNotional] = useState("50000");
   const [protectedNotional, setProtectedNotional] = useState("50000");
-  const [tenorDays, setTenorDays] = useState("7");
+  const [tenorDays, setTenorDays] = useState(String(DEFAULT_TIERS[0].expiryDays));
   const [autoRenew, setAutoRenew] = useState(false);
   const [instrumentId, setInstrumentId] = useState("BTC-USD-7D-P");
   const [quote, setQuote] = useState<QuoteResult | null>(null);
@@ -48,6 +76,10 @@ export function PilotApp() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showRenewModal, setShowRenewModal] = useState(false);
+  const selectedTier = useMemo(
+    () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
+    [tierName, tiers]
+  );
 
   const exposureValue = Number(exposureNotional || 0);
   const protectedValue = Number(protectedNotional || 0);
@@ -71,6 +103,51 @@ export function PilotApp() {
       setShowRenewModal(true);
     }
   }, [renewWindowReached]);
+
+  useEffect(() => {
+    let active = true;
+    const loadTiers = async () => {
+      try {
+        const res = await fetch("/funded_levels.json");
+        if (!res.ok) return;
+        const payload = (await res.json()) as { levels?: Array<Record<string, unknown>> };
+        const parsed = (payload.levels || [])
+          .map((item) => {
+            const name = typeof item.name === "string" ? item.name : "";
+            const drawdown = Number(item.drawdown_limit_pct ?? 0);
+            const expiryDays = Number(item.expiry_days ?? 7);
+            const renewWindowMinutes = Number(item.renew_window_minutes ?? 1440);
+            if (!name || !Number.isFinite(drawdown) || drawdown <= 0) return null;
+            return {
+              name,
+              drawdownFloorPct: drawdown,
+              expiryDays: Number.isFinite(expiryDays) && expiryDays > 0 ? Math.floor(expiryDays) : 7,
+              renewWindowMinutes:
+                Number.isFinite(renewWindowMinutes) && renewWindowMinutes > 0
+                  ? Math.floor(renewWindowMinutes)
+                  : 1440
+            } as TierLevel;
+          })
+          .filter((item): item is TierLevel => Boolean(item));
+        if (!active || parsed.length === 0) return;
+        setTiers(parsed);
+        if (!parsed.some((tier) => tier.name === tierName)) {
+          setTierName(parsed[0].name);
+          setTenorDays(String(parsed[0].expiryDays));
+        }
+      } catch {
+        // keep defaults on tier fetch failure
+      }
+    };
+    loadTiers();
+    return () => {
+      active = false;
+    };
+  }, [tierName]);
+
+  useEffect(() => {
+    setTenorDays(String(selectedTier.expiryDays));
+  }, [selectedTier.name, selectedTier.expiryDays]);
 
   useEffect(() => {
     if (!protection?.id) return;
@@ -102,7 +179,9 @@ export function PilotApp() {
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           instrumentId,
-          marketId: "BTC-USD"
+          marketId: "BTC-USD",
+          tierName: selectedTier.name,
+          drawdownFloorPct: selectedTier.drawdownFloorPct
         })
       });
       const payload = await res.json();
@@ -131,7 +210,10 @@ export function PilotApp() {
           foxifyExposureNotional: exposureValue,
           instrumentId,
           marketId: "BTC-USD",
+          tierName: selectedTier.name,
+          drawdownFloorPct: selectedTier.drawdownFloorPct,
           tenorDays: Number(tenorDays || 7),
+          renewWindowMinutes: selectedTier.renewWindowMinutes,
           autoRenew
         })
       });
@@ -172,6 +254,18 @@ export function PilotApp() {
     }
   };
 
+  const displayedDrawdownPct =
+    Number(protection?.drawdownFloorPct ?? quote?.drawdownFloorPct ?? selectedTier.drawdownFloorPct);
+  const displayedFloor =
+    protection?.floorPrice ??
+    quote?.floorPrice ??
+    (quote?.entrySnapshot?.price
+      ? (
+          Number(quote.entrySnapshot.price) *
+          (1 - Number(quote.drawdownFloorPct || selectedTier.drawdownFloorPct))
+        ).toFixed(10)
+      : null);
+
   return (
     <div className="shell">
       <div className="card">
@@ -182,6 +276,25 @@ export function PilotApp() {
             <div className="row">
               <span>User ID (not stored raw)</span>
               <input className="input" value={userId} onChange={(e) => setUserId(e.target.value)} />
+            </div>
+            <div className="row">
+              <span>Tier</span>
+              <select
+                className="input"
+                value={tierName}
+                onChange={(e) => setTierName(e.target.value)}
+                disabled={busy}
+              >
+                {tiers.map((tier) => (
+                  <option key={tier.name} value={tier.name}>
+                    {tier.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="row row-align">
+              <span>Drawdown Floor</span>
+              <strong>{formatPct(selectedTier.drawdownFloorPct)}</strong>
             </div>
             <div className="row">
               <span>Foxify Exposure Notional (USDC)</span>
@@ -237,6 +350,10 @@ export function PilotApp() {
                 {formatUsd(quote.quote.premium)}
               </div>
               <div className="muted">
+                Tier {quote.tierName} · Drawdown {formatPct(quote.drawdownFloorPct)} · Floor $
+                {formatUsd(quote.floorPrice)}
+              </div>
+              <div className="muted">
                 Entry snapshot {quote.entrySnapshot.price} ({quote.entrySnapshot.source}) at{" "}
                 {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
               </div>
@@ -250,10 +367,17 @@ export function PilotApp() {
             <h4>Active Protection</h4>
             <div className="muted">Protection ID: {protection.id}</div>
             <div className="muted">Status: {protection.status}</div>
+            <div className="muted">Tier: {protection.tierName ?? selectedTier.name}</div>
+            <div className="muted">Drawdown Floor: {formatPct(displayedDrawdownPct)}</div>
+            <div className="muted">Floor Price: {displayedFloor ? `$${formatUsd(displayedFloor)}` : "—"}</div>
             <div className="muted">Protected Notional: ${formatUsd(protection.protectedNotional)}</div>
             <div className="muted">Exposure Notional: ${formatUsd(protection.foxifyExposureNotional)}</div>
-            <div className="muted">Entry Price: {protection.entryPrice ? `$${formatUsd(protection.entryPrice)}` : "—"}</div>
-            <div className="muted">Premium Due: {protection.premium ? `$${formatUsd(protection.premium)}` : "—"}</div>
+            <div className="muted">
+              Entry Price: {protection.entryPrice ? `$${formatUsd(protection.entryPrice)}` : "—"}
+            </div>
+            <div className="muted">
+              Premium Due: {protection.premium ? `$${formatUsd(protection.premium)}` : "—"}
+            </div>
             <div className="muted">Expiry At: {new Date(protection.expiryAt).toLocaleString()}</div>
           </div>
         )}

@@ -43,3 +43,16 @@ The pilot ledger stores:
 - `payout_due`
 - `payout_settled`
 
+## Tier and floor semantics
+
+- Pilot quote/activate accepts `tierName` and optional `drawdownFloorPct`.
+- If `drawdownFloorPct` is omitted, tier default drawdown is used:
+  - Bronze: 20%
+  - Silver: 15%
+  - Gold: 12%
+  - Platinum: 12%
+- Floor price is calculated as:
+  - `floor_price = entry_price * (1 - drawdown_floor_pct)`
+- Payout due logic at expiry:
+  - `payout_due = max(floor_price - expiry_price, 0) / entry_price * protected_notional`
+

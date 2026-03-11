@@ -34,6 +34,9 @@ export type ProtectionRecord = {
   userHash: string;
   hashVersion: number;
   status: ProtectionStatus;
+  tierName: string | null;
+  drawdownFloorPct: string | null;
+  floorPrice: string | null;
   marketId: string;
   protectedNotional: string;
   entryPrice: string | null;
