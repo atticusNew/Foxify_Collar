@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "./config";
 
 type TierLevel = {
@@ -99,6 +99,11 @@ type AdminMetrics = {
   premiumSettledTotalUsdc: string;
   payoutDueTotalUsdc: string;
   payoutSettledTotalUsdc: string;
+  pendingPremiumReceivableUsdc: string;
+  openPayoutLiabilityUsdc: string;
+  startingReserveUsdc: string;
+  availableReserveUsdc: string;
+  reserveAfterOpenPayoutLiabilityUsdc: string;
   netSettledCashUsdc: string;
 };
 
@@ -217,7 +222,7 @@ export function PilotApp() {
       const saved = window.localStorage.getItem("pilot_user_id");
       if (saved) return saved;
     }
-    return `foxify-user-${Math.random().toString(36).slice(2, 8)}`;
+    return "";
   });
   const [tiers, setTiers] = useState<TierLevel[]>(DEFAULT_TIERS);
   const [tierName, setTierName] = useState(DEFAULT_TIERS[0].name);
@@ -248,8 +253,10 @@ export function PilotApp() {
   const [adminMonitor, setAdminMonitor] = useState<MonitorPayload | null>(null);
   const [adminMetrics, setAdminMetrics] = useState<AdminMetrics | null>(null);
   const [adminViewingId, setAdminViewingId] = useState<string | null>(null);
+  const [adminDetailUpdatedAt, setAdminDetailUpdatedAt] = useState<Date | null>(null);
   const [showHistorySection, setShowHistorySection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const adminDetailRef = useRef<HTMLDivElement | null>(null);
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
     [tierName, tiers]
@@ -258,7 +265,9 @@ export function PilotApp() {
   const exposureValue = parseCurrencyNumber(exposureNotional || "0");
   const protectedValue = parseCurrencyNumber(protectedNotional || "0");
   const entryValue = parseCurrencyNumber(entryPrice || "0");
+  const traderId = userId.trim();
   const canQuote =
+    traderId.length > 0 &&
     Number.isFinite(exposureValue) &&
     exposureValue > 0 &&
     Number.isFinite(protectedValue) &&
@@ -333,9 +342,13 @@ export function PilotApp() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      window.localStorage.setItem("pilot_user_id", userId);
+      if (traderId) {
+        window.localStorage.setItem("pilot_user_id", traderId);
+      } else {
+        window.localStorage.removeItem("pilot_user_id");
+      }
     }
-  }, [userId]);
+  }, [traderId]);
 
   useEffect(() => {
     if (!quote?.quote?.expiresAt) {
@@ -375,9 +388,12 @@ export function PilotApp() {
   }, [protection?.id]);
 
   const refreshProtectionHistory = async () => {
-    if (!userId) return;
+    if (!traderId) {
+      setProtectionsHistory([]);
+      return;
+    }
     try {
-      const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(userId)}&limit=20`);
+      const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(traderId)}&limit=20`);
       if (!res.ok) return;
       const payload = await res.json();
       if (Array.isArray(payload?.protections)) {
@@ -392,7 +408,7 @@ export function PilotApp() {
     setMonitorBusy(true);
     try {
       const res = await fetch(
-        `${API_BASE}/pilot/protections/${protectionId}/monitor?userId=${encodeURIComponent(userId)}`
+        `${API_BASE}/pilot/protections/${protectionId}/monitor?userId=${encodeURIComponent(traderId)}`
       );
       if (!res.ok) return;
       const payload = await res.json();
@@ -463,6 +479,10 @@ export function PilotApp() {
       }
       setAdminLedger(Array.isArray(ledgerPayload?.ledger) ? (ledgerPayload.ledger as AdminLedgerEntry[]) : []);
       setAdminMonitor(monitorPayload?.monitor ? (monitorPayload.monitor as MonitorPayload) : null);
+      setAdminDetailUpdatedAt(new Date());
+      setTimeout(() => {
+        adminDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 0);
     } catch (err: any) {
       setAdminError(friendlyError(String(err?.message || "admin_refresh_failed")));
     } finally {
@@ -473,7 +493,7 @@ export function PilotApp() {
 
   useEffect(() => {
     refreshProtectionHistory();
-  }, [userId]);
+  }, [traderId]);
 
   useEffect(() => {
     if (!showProtectionModal || !protection?.id) return;
@@ -482,7 +502,7 @@ export function PilotApp() {
       refreshMonitor(protection.id);
     }, 10000);
     return () => clearInterval(id);
-  }, [showProtectionModal, protection?.id, userId]);
+  }, [showProtectionModal, protection?.id, traderId]);
 
   const requestQuote = async () => {
     if (!canQuote) return;
@@ -502,7 +522,7 @@ export function PilotApp() {
             headers: { "Content-Type": "application/json" },
             signal: controller.signal,
             body: JSON.stringify({
-              userId,
+              userId: traderId,
               protectedNotional: protectedValue,
               foxifyExposureNotional: exposureValue,
               entryPrice: entryValue,
@@ -562,7 +582,7 @@ export function PilotApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId,
+          userId: traderId,
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           entryPrice: entryValue,
@@ -683,20 +703,26 @@ export function PilotApp() {
     Number(adminMetrics?.hedgePremiumTotalUsdc ?? adminRows.reduce((sum, row) => sum + Number(row.premium || 0), 0));
   const adminPremiumDueTotal = Number(adminMetrics?.premiumDueTotalUsdc ?? 0);
   const adminPremiumSettledTotal = Number(adminMetrics?.premiumSettledTotalUsdc ?? 0);
+  const adminPendingPremiumReceivable = Number(adminMetrics?.pendingPremiumReceivableUsdc ?? 0);
   const adminTotalPayoutDue =
     Number(adminMetrics?.payoutDueTotalUsdc ?? adminRows.reduce((sum, row) => sum + Number(row.payout_due_amount || 0), 0));
   const adminTotalPayoutSettled =
     Number(
       adminMetrics?.payoutSettledTotalUsdc ?? adminRows.reduce((sum, row) => sum + Number(row.payout_settled_amount || 0), 0)
     );
+  const adminOpenPayoutLiability = Number(adminMetrics?.openPayoutLiabilityUsdc ?? adminTotalPayoutDue - adminTotalPayoutSettled);
+  const adminStartingReserve = Number(adminMetrics?.startingReserveUsdc ?? 0);
+  const adminAvailableReserve = Number(adminMetrics?.availableReserveUsdc ?? 0);
+  const adminReserveAfterOpenLiability = Number(adminMetrics?.reserveAfterOpenPayoutLiabilityUsdc ?? 0);
   const adminNetSettledCash = Number(adminMetrics?.netSettledCashUsdc ?? adminPremiumSettledTotal - adminTotalPayoutSettled);
   const adminActiveCount = Number(adminMetrics?.activeProtections ?? adminRows.filter((row) => row.status === "active").length);
   const adminTimeLeftMs = adminSelected ? Date.parse(adminSelected.expiry_at) - Date.now() : NaN;
   const hasActiveInHistory = Boolean(protection && protectionsHistory.some((item) => item.id === protection.id));
-  const historyWithoutActive = protection
+  const activeProtectionForView = protection && hasActiveInHistory ? protection : null;
+  const historyWithoutActive = activeProtectionForView
     ? protectionsHistory.filter((item) => item.id !== protection.id)
     : protectionsHistory;
-  const protectionsTotalCount = protectionsHistory.length + (protection && !hasActiveInHistory ? 1 : 0);
+  const protectionsTotalCount = protectionsHistory.length;
 
   return (
     <div className="shell">
@@ -728,8 +754,15 @@ export function PilotApp() {
                   value={userId}
                   spellCheck={false}
                   title={userId}
+                  placeholder="e.g. danny-001"
                   onChange={(e) => setUserId(e.target.value)}
                 />
+              </div>
+            </div>
+            <div className="pilot-form-row">
+              <span className="pilot-label"></span>
+              <div className="pilot-field pilot-field-trader">
+                <div className="muted">Use the same Trader ID to view that trader&apos;s protections.</div>
               </div>
             </div>
 
@@ -838,7 +871,8 @@ export function PilotApp() {
 
             {!canQuote && (
               <div className="disclaimer danger">
-                Enter position size, protection amount, and entry price. Protection amount cannot exceed position size.
+                Enter Trader ID, position size, protection amount, and entry price. Protection amount cannot exceed
+                position size.
               </div>
             )}
           </div>
@@ -939,16 +973,22 @@ export function PilotApp() {
               </button>
             </div>
           </div>
-          {!showHistorySection && protectionsTotalCount > 0 && (
+          {!traderId && (
+            <div className="muted section-collapsed-note">Enter Trader ID to load protections.</div>
+          )}
+          {traderId && (
+            <div className="muted section-collapsed-note">Showing protections for Trader ID: {traderId}</div>
+          )}
+          {!showHistorySection && protectionsTotalCount > 0 && traderId && (
             <div className="muted section-collapsed-note">Protections hidden.</div>
           )}
-          <div className={`collapsible-panel ${showHistorySection ? "is-open" : "is-closed"}`}>
+          <div className={`collapsible-panel ${showHistorySection && Boolean(traderId) ? "is-open" : "is-closed"}`}>
             <div className="collapsible-inner">
-              {!protection && historyWithoutActive.length === 0 ? (
+              {!activeProtectionForView && historyWithoutActive.length === 0 ? (
                 <div className="muted">No protections found for this trader ID yet.</div>
               ) : (
                 <div className="positions">
-                  {protection && (
+                  {activeProtectionForView && (
                     <div className="position-row position-row-active">
                       <div className="position-main">
                         <div className="position-main-title">
@@ -956,12 +996,12 @@ export function PilotApp() {
                           <span className="pill">active</span>
                           <span className="pill pill-warning">Current</span>
                         </div>
-                        <div className="muted">ID {protection.id}</div>
+                        <div className="muted">ID {activeProtectionForView.id}</div>
                         <div className="muted">
                           {triggerLabel.replace("Protection ", "")}{" "}
                           {displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"} · Premium{" "}
-                          {protection.premium ? `$${formatUsd(protection.premium)}` : "—"} · Expires{" "}
-                          {new Date(protection.expiryAt).toLocaleString()}
+                          {activeProtectionForView.premium ? `$${formatUsd(activeProtectionForView.premium)}` : "—"} · Expires{" "}
+                          {new Date(activeProtectionForView.expiryAt).toLocaleString()}
                         </div>
                         {renewalChip && <div className="muted">{renewalChip}</div>}
                       </div>
@@ -971,7 +1011,7 @@ export function PilotApp() {
                           disabled={busy}
                           onClick={() => {
                             setShowProtectionModal(true);
-                            void refreshMonitor(protection.id);
+                            void refreshMonitor(activeProtectionForView.id);
                           }}
                         >
                           Open Monitor
@@ -1143,6 +1183,18 @@ export function PilotApp() {
                     <div className="value">{adminActiveCount}</div>
                   </div>
                   <div className="pilot-monitor-card">
+                    <div className="label">Starting Reserve</div>
+                    <div className="value">${formatUsd(adminStartingReserve)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Available Reserve</div>
+                    <div className="value">${formatUsd(adminAvailableReserve)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Reserve After Open Liability</div>
+                    <div className="value">${formatUsd(adminReserveAfterOpenLiability)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
                     <div className="label">Hedge Premium (Venue Cost)</div>
                     <div className="value">${formatUsd(adminHedgePremiumTotal)}</div>
                   </div>
@@ -1155,6 +1207,10 @@ export function PilotApp() {
                     <div className="value">${formatUsd(adminPremiumSettledTotal)}</div>
                   </div>
                   <div className="pilot-monitor-card">
+                    <div className="label">Pending Premium Receivable</div>
+                    <div className="value">${formatUsd(adminPendingPremiumReceivable)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
                     <div className="label">Payout Liability</div>
                     <div className="value">${formatUsd(adminTotalPayoutDue)}</div>
                   </div>
@@ -1163,13 +1219,17 @@ export function PilotApp() {
                     <div className="value">${formatUsd(adminTotalPayoutSettled)}</div>
                   </div>
                   <div className="pilot-monitor-card">
-                    <div className="label">Net Settled Cash (Proxy Reserve)</div>
+                    <div className="label">Open Payout Liability</div>
+                    <div className="value">${formatUsd(adminOpenPayoutLiability)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Net Settled Cash (Premium - Payout Settled)</div>
                     <div className="value">${formatUsd(adminNetSettledCash)}</div>
                   </div>
                 </div>
                 <div className="muted">
-                  Pilot note: hedge premium reflects venue cost; receivable/received tracks what Atticus should collect and has
-                  collected from premiums.
+                  Premium settled and payout settled only move when settlement events are posted. For 7-day pilot flows,
+                  these remain unchanged until remittance/settlement is recorded.
                 </div>
 
                 <div className="modal-actions">
@@ -1208,7 +1268,7 @@ export function PilotApp() {
                             }
                           }}
                         >
-                          {adminViewingId === row.protection_id ? "Loading..." : adminSelectedId === row.protection_id ? "Viewing" : "View"}
+                          {adminViewingId === row.protection_id ? "Loading..." : "View details"}
                         </button>
                       </span>
                     </div>
@@ -1216,9 +1276,12 @@ export function PilotApp() {
                 </div>
 
                 {adminSelected && (
-                  <div className="section">
+                  <div className="section" ref={adminDetailRef}>
                     <h4>Selected Protection Detail</h4>
                     <div className="muted">ID: {adminSelected.protection_id}</div>
+                    {adminDetailUpdatedAt && (
+                      <div className="muted">Updated {adminDetailUpdatedAt.toLocaleTimeString()}</div>
+                    )}
                     <div className="muted">
                       Status: {adminSelected.status} · Time Left:{" "}
                       {Number.isFinite(adminTimeLeftMs) && adminTimeLeftMs > 0

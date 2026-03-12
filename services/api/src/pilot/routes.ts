@@ -1041,7 +1041,9 @@ export const registerPilotRoutes = async (
   app.get("/pilot/admin/metrics", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
-    const metrics = await getPilotAdminMetrics(pool);
+    const metrics = await getPilotAdminMetrics(pool, {
+      startingReserveUsdc: pilotConfig.startingReserveUsdc
+    });
     return { status: "ok", metrics };
   });
 

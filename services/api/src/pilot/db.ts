@@ -389,7 +389,8 @@ export const listLedgerForProtection = async (
 };
 
 export const getPilotAdminMetrics = async (
-  pool: Queryable
+  pool: Queryable,
+  opts: { startingReserveUsdc: number }
 ): Promise<{
   totalProtections: string;
   activeProtections: string;
@@ -400,6 +401,11 @@ export const getPilotAdminMetrics = async (
   premiumSettledTotalUsdc: string;
   payoutDueTotalUsdc: string;
   payoutSettledTotalUsdc: string;
+  pendingPremiumReceivableUsdc: string;
+  openPayoutLiabilityUsdc: string;
+  startingReserveUsdc: string;
+  availableReserveUsdc: string;
+  reserveAfterOpenPayoutLiabilityUsdc: string;
   netSettledCashUsdc: string;
 }> => {
   const result = await pool.query(
@@ -425,9 +431,25 @@ export const getPilotAdminMetrics = async (
   );
   const row = result.rows[0] || {};
   const ledgerRow = ledger.rows[0] || {};
+  const startingReserve = new Decimal(opts.startingReserveUsdc || 0);
+  const hedgePremium = new Decimal(String(row.hedge_premium_total_usdc || "0"));
+  const premiumDue = new Decimal(String(ledgerRow.premium_due_total_usdc || "0"));
   const premiumSettled = String(ledgerRow.premium_settled_total_usdc || "0");
+  const premiumSettledDecimal = new Decimal(premiumSettled);
   const payoutSettled = String(row.payout_settled_total_usdc || "0");
-  const netSettledCashUsdc = new Decimal(premiumSettled).minus(new Decimal(payoutSettled)).toFixed(10);
+  const payoutSettledDecimal = new Decimal(payoutSettled);
+  const payoutDue = new Decimal(String(row.payout_due_total_usdc || "0"));
+  const pendingPremiumReceivableUsdc = premiumDue.minus(premiumSettledDecimal).toFixed(10);
+  const openPayoutLiabilityUsdc = payoutDue.minus(payoutSettledDecimal).toFixed(10);
+  const availableReserveUsdc = startingReserve
+    .minus(hedgePremium)
+    .plus(premiumSettledDecimal)
+    .minus(payoutSettledDecimal)
+    .toFixed(10);
+  const reserveAfterOpenPayoutLiabilityUsdc = new Decimal(availableReserveUsdc)
+    .minus(new Decimal(openPayoutLiabilityUsdc))
+    .toFixed(10);
+  const netSettledCashUsdc = premiumSettledDecimal.minus(payoutSettledDecimal).toFixed(10);
   return {
     totalProtections: String(row.total_protections || "0"),
     activeProtections: String(row.active_protections || "0"),
@@ -438,6 +460,11 @@ export const getPilotAdminMetrics = async (
     premiumSettledTotalUsdc: premiumSettled,
     payoutDueTotalUsdc: String(row.payout_due_total_usdc || "0"),
     payoutSettledTotalUsdc: payoutSettled,
+    pendingPremiumReceivableUsdc,
+    openPayoutLiabilityUsdc,
+    startingReserveUsdc: startingReserve.toFixed(10),
+    availableReserveUsdc,
+    reserveAfterOpenPayoutLiabilityUsdc,
     netSettledCashUsdc
   };
 };
