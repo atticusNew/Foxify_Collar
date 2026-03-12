@@ -237,7 +237,7 @@ body {
 }
 
 .pilot-card {
-  width: min(700px, 100%);
+  width: min(720px, 100%);
 }
 
 .pilot-form {
@@ -259,7 +259,7 @@ body {
 }
 
 .pilot-input {
-  width: 320px;
+  width: 340px;
   text-align: right;
   padding: 7px 10px;
   border-radius: 10px;
@@ -284,7 +284,7 @@ body {
 }
 
 .pilot-field {
-  width: 320px;
+  width: 340px;
   justify-self: end;
   display: flex;
   justify-content: flex-end;
@@ -363,6 +363,60 @@ body {
   border-radius: 12px;
   background: #111116;
   padding: 12px;
+}
+
+.pilot-admin-modal {
+  width: min(1060px, 100%);
+}
+
+.pilot-admin-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pilot-admin-table {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 12px 0;
+}
+
+.pilot-admin-head,
+.pilot-admin-row {
+  display: grid;
+  grid-template-columns: 2.5fr 1fr 1fr 1.5fr 1fr 0.8fr;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.pilot-admin-head {
+  background: #1b1b21;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.pilot-admin-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.pilot-admin-row:last-child {
+  border-bottom: none;
+}
+
+.pilot-admin-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pilot-admin-ledger {
+  margin-top: 10px;
+  display: grid;
+  gap: 4px;
 }
 
 .row {
@@ -1035,6 +1089,19 @@ select.input {
 
   .pilot-monitor-grid {
     grid-template-columns: 1fr;
+  }
+
+  .pilot-admin-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .pilot-admin-head {
+    display: none;
+  }
+
+  .pilot-admin-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 
   .row-inline-fee {

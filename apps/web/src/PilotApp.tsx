@@ -58,6 +58,37 @@ type MonitorPayload = {
   asOf: string;
 };
 
+type AdminProtectionRow = {
+  protection_id: string;
+  status: string;
+  tier_name: string | null;
+  drawdown_floor_pct: string | null;
+  created_at: string;
+  expiry_at: string;
+  market_id: string;
+  entry_price: string | null;
+  floor_price: string | null;
+  expiry_price: string | null;
+  protected_notional: string;
+  premium: string | null;
+  payout_due_amount: string | null;
+  payout_settled_amount: string | null;
+  venue: string | null;
+  instrument_id: string | null;
+  external_order_id: string | null;
+  external_execution_id: string | null;
+};
+
+type AdminLedgerEntry = {
+  id: string;
+  entryType: string;
+  amount: string;
+  currency: string;
+  reference: string | null;
+  createdAt: string;
+  settledAt: string | null;
+};
+
 type ProtectionRecord = {
   id: string;
   status: string;
@@ -142,6 +173,9 @@ const friendlyError = (message: string): string => {
   if (message.includes("venue_execute_timeout")) {
     return "Venue execution timed out. Request a fresh quote and retry.";
   }
+  if (message.includes("admin_unauthorized") || message.includes("unauthorized")) {
+    return "Admin access denied. Use a valid internal admin token.";
+  }
   return message || "Request failed. Please retry.";
 };
 
@@ -176,6 +210,15 @@ export function PilotApp() {
   const [monitor, setMonitor] = useState<MonitorPayload | null>(null);
   const [monitorBusy, setMonitorBusy] = useState(false);
   const [protectionsHistory, setProtectionsHistory] = useState<ProtectionRecord[]>([]);
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [adminTokenInput, setAdminTokenInput] = useState("");
+  const [adminToken, setAdminToken] = useState<string | null>(null);
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminRows, setAdminRows] = useState<AdminProtectionRow[]>([]);
+  const [adminSelectedId, setAdminSelectedId] = useState<string | null>(null);
+  const [adminLedger, setAdminLedger] = useState<AdminLedgerEntry[]>([]);
+  const [adminMonitor, setAdminMonitor] = useState<MonitorPayload | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
@@ -334,6 +377,54 @@ export function PilotApp() {
     }
   };
 
+  const loadAdminRows = async (token: string) => {
+    setAdminBusy(true);
+    setAdminError(null);
+    try {
+      const res = await fetch(`${API_BASE}/pilot/protections/export?format=json&limit=200`, {
+        headers: { "x-admin-token": token }
+      });
+      const payload = await res.json();
+      if (!res.ok || payload?.status !== "ok" || !Array.isArray(payload?.rows)) {
+        throw new Error(payload?.reason || "admin_load_failed");
+      }
+      const rows = payload.rows as AdminProtectionRow[];
+      setAdminRows(rows);
+      if (!adminSelectedId && rows.length > 0) {
+        setAdminSelectedId(rows[0].protection_id);
+      }
+      setAdminToken(token);
+    } catch (err: any) {
+      setAdminError(friendlyError(String(err?.message || "admin_load_failed")));
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
+  const refreshAdminSelection = async (protectionId: string, token: string) => {
+    setAdminBusy(true);
+    setAdminError(null);
+    try {
+      const [ledgerRes, monitorRes] = await Promise.all([
+        fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/ledger`, {
+          headers: { "x-admin-token": token }
+        }),
+        fetch(`${API_BASE}/pilot/protections/${protectionId}/monitor`)
+      ]);
+      const ledgerPayload = await ledgerRes.json();
+      const monitorPayload = await monitorRes.json();
+      if (!ledgerRes.ok || ledgerPayload?.status !== "ok") {
+        throw new Error(ledgerPayload?.reason || "admin_ledger_failed");
+      }
+      setAdminLedger(Array.isArray(ledgerPayload?.ledger) ? (ledgerPayload.ledger as AdminLedgerEntry[]) : []);
+      setAdminMonitor(monitorPayload?.monitor ? (monitorPayload.monitor as MonitorPayload) : null);
+    } catch (err: any) {
+      setAdminError(friendlyError(String(err?.message || "admin_refresh_failed")));
+    } finally {
+      setAdminBusy(false);
+    }
+  };
+
   useEffect(() => {
     refreshProtectionHistory();
   }, [userId]);
@@ -346,6 +437,11 @@ export function PilotApp() {
     }, 10000);
     return () => clearInterval(id);
   }, [showProtectionModal, protection?.id, userId]);
+
+  useEffect(() => {
+    if (!showAdminModal || !adminToken || !adminSelectedId) return;
+    refreshAdminSelection(adminSelectedId, adminToken);
+  }, [showAdminModal, adminSelectedId, adminToken]);
 
   const requestQuote = async () => {
     if (!canQuote) return;
@@ -521,6 +617,15 @@ export function PilotApp() {
   const liveDistanceToTriggerPct = Number(monitor?.distanceToTriggerPct ?? distanceToTriggerPct);
   const liveOptionMarkUsd = Number(monitor?.optionMarkUsd ?? indicativeOptionMark);
   const liveEstimatedTriggerValue = Number(monitor?.estimatedTriggerValue ?? maxTriggerProtectionValue);
+  const internalAdminEnabled =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("internal_admin") === "1";
+  const adminSelected = adminRows.find((row) => row.protection_id === adminSelectedId) || null;
+  const adminTotalPremium = adminRows.reduce((sum, row) => sum + Number(row.premium || 0), 0);
+  const adminTotalPayoutDue = adminRows.reduce((sum, row) => sum + Number(row.payout_due_amount || 0), 0);
+  const adminTotalPayoutSettled = adminRows.reduce((sum, row) => sum + Number(row.payout_settled_amount || 0), 0);
+  const adminActiveCount = adminRows.filter((row) => row.status === "active").length;
+  const adminTimeLeftMs = adminSelected ? Date.parse(adminSelected.expiry_at) - Date.now() : NaN;
 
   return (
     <div className="shell">
@@ -530,6 +635,15 @@ export function PilotApp() {
             <img src={FOXIFY_LOGO_URL} alt="Foxify logo" className="pilot-logo" />
             <span>Foxify Pilot Protection</span>
           </div>
+          {internalAdminEnabled && (
+            <button
+              className="btn btn-secondary"
+              type="button"
+              onClick={() => setShowAdminModal(true)}
+            >
+              Internal Admin
+            </button>
+          )}
         </div>
 
         <div className="section">
@@ -870,6 +984,146 @@ export function PilotApp() {
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showAdminModal && internalAdminEnabled && (
+        <div className="modal" onClick={() => setShowAdminModal(false)}>
+          <div className="modal-card modal-wide pilot-admin-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">
+                <h3>Atticus Internal Admin</h3>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setShowAdminModal(false)}>
+                x
+              </button>
+            </div>
+
+            {!adminToken && (
+              <div className="modal-body">
+                <div className="muted">Internal-only access. Enter Atticus admin token to unlock data.</div>
+                <div className="pilot-form-row">
+                  <span className="pilot-label">Admin Token</span>
+                  <div className="pilot-field">
+                    <input
+                      className="input pilot-input"
+                      type="password"
+                      value={adminTokenInput}
+                      onChange={(e) => setAdminTokenInput(e.target.value)}
+                      placeholder="x-admin-token"
+                    />
+                  </div>
+                </div>
+                <div className="modal-actions">
+                  <button
+                    className="cta"
+                    disabled={!adminTokenInput.trim() || adminBusy}
+                    onClick={() => void loadAdminRows(adminTokenInput.trim())}
+                  >
+                    {adminBusy ? "Unlocking..." : "Unlock Admin"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {adminToken && (
+              <div className="modal-body">
+                <div className="pilot-admin-grid">
+                  <div className="pilot-monitor-card">
+                    <div className="label">Active Protections</div>
+                    <div className="value">{adminActiveCount}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Premium Booked</div>
+                    <div className="value">${formatUsd(adminTotalPremium)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Payout Liability</div>
+                    <div className="value">${formatUsd(adminTotalPayoutDue)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Payout Settled</div>
+                    <div className="value">${formatUsd(adminTotalPayoutSettled)}</div>
+                  </div>
+                </div>
+
+                <div className="modal-actions">
+                  <button className="btn" disabled={adminBusy} onClick={() => void loadAdminRows(adminToken)}>
+                    {adminBusy ? "Refreshing..." : "Refresh Admin Data"}
+                  </button>
+                </div>
+
+                <div className="pilot-admin-table">
+                  <div className="pilot-admin-head">
+                    <span>Protection ID</span>
+                    <span>Status</span>
+                    <span>Premium</span>
+                    <span>Expiry</span>
+                    <span>Venue</span>
+                    <span>Action</span>
+                  </div>
+                  {adminRows.slice(0, 20).map((row) => (
+                    <div className="pilot-admin-row" key={row.protection_id}>
+                      <span>{row.protection_id}</span>
+                      <span>{row.status}</span>
+                      <span>{row.premium ? `$${formatUsd(row.premium)}` : "—"}</span>
+                      <span>{new Date(row.expiry_at).toLocaleString()}</span>
+                      <span>{row.venue || "—"}</span>
+                      <span>
+                        <button className="btn btn-secondary" onClick={() => setAdminSelectedId(row.protection_id)}>
+                          View
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {adminSelected && (
+                  <div className="section">
+                    <h4>Selected Protection Detail</h4>
+                    <div className="muted">ID: {adminSelected.protection_id}</div>
+                    <div className="muted">
+                      Status: {adminSelected.status} · Time Left:{" "}
+                      {Number.isFinite(adminTimeLeftMs) && adminTimeLeftMs > 0
+                        ? formatCountdown(Math.floor(adminTimeLeftMs / 1000))
+                        : "expired"}
+                    </div>
+                    <div className="muted">
+                      {adminSelected.entry_price ? `Entry $${formatUsd(adminSelected.entry_price)}` : "Entry —"} ·{" "}
+                      {adminSelected.floor_price ? `Trigger $${formatUsd(adminSelected.floor_price)}` : "Trigger —"} ·{" "}
+                      {adminSelected.instrument_id || "No instrument"}
+                    </div>
+                    <div className="muted">
+                      MTM Option Mark:{" "}
+                      {adminMonitor && Number.isFinite(Number(adminMonitor.optionMarkUsd))
+                        ? `$${formatUsd(adminMonitor.optionMarkUsd)}`
+                        : "—"}
+                    </div>
+                    <div className="muted">
+                      Reference:{" "}
+                      {adminMonitor && Number.isFinite(Number(adminMonitor.referencePrice))
+                        ? `$${formatUsd(adminMonitor.referencePrice)}`
+                        : "—"}
+                    </div>
+                    <div className="pilot-admin-ledger">
+                      <strong>Ledger Entries</strong>
+                      {adminLedger.length === 0 ? (
+                        <div className="muted">No ledger entries found.</div>
+                      ) : (
+                        adminLedger.map((entry) => (
+                          <div className="muted" key={entry.id}>
+                            {entry.entryType} · {entry.amount} {entry.currency} · {new Date(entry.createdAt).toLocaleString()}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {adminError && <div className="disclaimer danger">{adminError}</div>}
           </div>
         </div>
       )}
