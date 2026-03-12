@@ -81,7 +81,7 @@ The pilot ledger stores:
 - `entryPrice` is required and treated as manual user input (not auto-derived from spot).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
 - Venue quote/execute operations enforce bounded timeouts:
-  - `PILOT_VENUE_QUOTE_TIMEOUT_MS` (default 5000ms)
+  - `PILOT_VENUE_QUOTE_TIMEOUT_MS` (default 10000ms)
   - `PILOT_VENUE_EXEC_TIMEOUT_MS` (default 8000ms)
   - `PILOT_VENUE_MARK_TIMEOUT_MS` (default 3000ms)
 - Quote, activation, and expiry resolution all use the same canonical reference feed configuration.

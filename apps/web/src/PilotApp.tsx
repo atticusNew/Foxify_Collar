@@ -182,6 +182,17 @@ const friendlyError = (message: string): string => {
 const isPriceUnavailableError = (message: string | null): boolean =>
   Boolean(message && message.toLowerCase().includes("reference btc feed unavailable"));
 
+const isRetryableQuoteError = (message: string): boolean => {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("price_unavailable") ||
+    lower.includes("quote_generation_failed") ||
+    lower.includes("venue_quote_timeout") ||
+    lower.includes("storage_unavailable") ||
+    lower.includes("fetch failed")
+  );
+};
+
 const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 
 export function PilotApp() {
@@ -450,45 +461,62 @@ export function PilotApp() {
     setError(null);
     setQuote(null);
     setQuoteState("fetching");
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12000);
+    const maxAttempts = 2;
+    let finalError: any = null;
     try {
-      const res = await fetch(`${API_BASE}/pilot/protections/quote`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          userId,
-          protectedNotional: protectedValue,
-          foxifyExposureNotional: exposureValue,
-          entryPrice: entryValue,
-          protectionType,
-          instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
-          marketId: "BTC-USD",
-          tierName: selectedTier.name,
-          drawdownFloorPct: selectedTier.drawdownFloorPct
-        })
-      });
-      const payload = await res.json();
-      if (!res.ok || payload?.status !== "ok") {
-        const reason = String(payload?.reason || "");
-        const detail = String(payload?.detail || "");
-        if (reason === "price_unavailable") {
-          throw new Error(`price_unavailable${detail ? `:${detail}` : ""}`);
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 12000);
+        try {
+          const res = await fetch(`${API_BASE}/pilot/protections/quote`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({
+              userId,
+              protectedNotional: protectedValue,
+              foxifyExposureNotional: exposureValue,
+              entryPrice: entryValue,
+              protectionType,
+              instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
+              marketId: "BTC-USD",
+              tierName: selectedTier.name,
+              drawdownFloorPct: selectedTier.drawdownFloorPct
+            })
+          });
+          const payload = await res.json();
+          if (!res.ok || payload?.status !== "ok") {
+            const reason = String(payload?.reason || "");
+            const detail = String(payload?.detail || "");
+            if (reason === "price_unavailable") {
+              throw new Error(`price_unavailable${detail ? `:${detail}` : ""}`);
+            }
+            throw new Error(payload?.message || reason || "quote_failed");
+          }
+          setQuote(payload as QuoteResult);
+          setQuoteState("ready");
+          return;
+        } catch (err: any) {
+          finalError = err;
+          const retryable =
+            err?.name === "AbortError" || isRetryableQuoteError(String(err?.message || "quote_failed"));
+          if (attempt < maxAttempts && retryable) {
+            await new Promise((resolve) => setTimeout(resolve, 450));
+            continue;
+          }
+          break;
+        } finally {
+          clearTimeout(timeout);
         }
-        throw new Error(payload?.message || reason || "quote_failed");
       }
-      setQuote(payload as QuoteResult);
-      setQuoteState("ready");
-    } catch (err: any) {
       setQuoteState("idle");
+      const err = finalError;
       if (err?.name === "AbortError") {
         setError("Quote request timed out. Please retry.");
       } else {
         setError(friendlyError(String(err?.message || "Price temporarily unavailable, please retry.")));
       }
     } finally {
-      clearTimeout(timeout);
       setBusy(false);
     }
   };
