@@ -1,5 +1,7 @@
 import Decimal from "decimal.js";
 
+export type ProtectionType = "long" | "short";
+
 type TierDefaults = {
   drawdownFloorPct: number;
   expiryDays: number;
@@ -65,18 +67,36 @@ export const resolveRenewWindowMinutes = (params: {
   return fallback;
 };
 
+export const normalizeProtectionType = (value?: string): ProtectionType =>
+  String(value || "").toLowerCase() === "short" ? "short" : "long";
+
+export const computeTriggerPrice = (
+  entryPrice: Decimal,
+  adverseMovePct: Decimal,
+  protectionType: ProtectionType
+): Decimal =>
+  protectionType === "short"
+    ? entryPrice.mul(new Decimal(1).plus(adverseMovePct))
+    : entryPrice.mul(new Decimal(1).minus(adverseMovePct));
+
 export const computeFloorPrice = (entryPrice: Decimal, drawdownFloorPct: Decimal): Decimal =>
-  entryPrice.mul(new Decimal(1).minus(drawdownFloorPct));
+  computeTriggerPrice(entryPrice, drawdownFloorPct, "long");
 
 export const computePayoutDue = (params: {
   protectedNotional: Decimal;
   entryPrice: Decimal;
-  floorPrice: Decimal;
+  triggerPrice: Decimal;
   expiryPrice: Decimal;
+  protectionType: ProtectionType;
 }): Decimal => {
   if (params.entryPrice.lte(0) || params.protectedNotional.lte(0)) return new Decimal(0);
-  if (params.expiryPrice.greaterThanOrEqualTo(params.floorPrice)) return new Decimal(0);
-  const lossBelowFloor = params.floorPrice.minus(params.expiryPrice);
-  return lossBelowFloor.div(params.entryPrice).mul(params.protectedNotional);
+  if (params.protectionType === "short") {
+    if (params.expiryPrice.lessThanOrEqualTo(params.triggerPrice)) return new Decimal(0);
+    const moveAboveTrigger = params.expiryPrice.minus(params.triggerPrice);
+    return moveAboveTrigger.div(params.entryPrice).mul(params.protectedNotional);
+  }
+  if (params.expiryPrice.greaterThanOrEqualTo(params.triggerPrice)) return new Decimal(0);
+  const lossBelowTrigger = params.triggerPrice.minus(params.expiryPrice);
+  return lossBelowTrigger.div(params.entryPrice).mul(params.protectedNotional);
 };
 

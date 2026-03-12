@@ -15,6 +15,8 @@ export type PriceSource = "reference_oracle" | "fallback_oracle";
 
 export type VenueExecutionStatus = "success" | "failure";
 
+export type ProtectionType = "long" | "short";
+
 export type PriceSnapshotRecord = {
   id: string;
   protectionId: string;

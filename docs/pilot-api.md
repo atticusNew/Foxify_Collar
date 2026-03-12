@@ -52,18 +52,23 @@ The pilot ledger stores:
 - `payout_due`
 - `payout_settled`
 
-## Tier and floor semantics
+## Tier and trigger semantics
 
 - Pilot quote/activate accepts `tierName` and optional `drawdownFloorPct`.
+- Pilot quote/activate accepts `protectionType`:
+  - `long` (default): downside protection via put semantics
+  - `short`: upside protection via call semantics
 - If `drawdownFloorPct` is omitted, tier default drawdown is used:
   - Bronze: 20%
   - Silver: 15%
   - Gold: 12%
   - Platinum: 12%
-- Floor price is calculated as:
-  - `floor_price = manual_entry_price * (1 - drawdown_floor_pct)`
+- Trigger price is calculated as:
+  - `long`: `trigger_price = manual_entry_price * (1 - drawdown_floor_pct)` (floor)
+  - `short`: `trigger_price = manual_entry_price * (1 + drawdown_floor_pct)` (ceiling)
 - Payout due logic at expiry:
-  - `payout_due = max(floor_price - expiry_price, 0) / entry_price * protected_notional`
+  - `long`: `payout_due = max(trigger_price - expiry_price, 0) / entry_price * protected_notional`
+  - `short`: `payout_due = max(expiry_price - trigger_price, 0) / entry_price * protected_notional`
 
 ## Pilot constraints
 
@@ -73,6 +78,9 @@ The pilot ledger stores:
 - Quote responses may still be returned when the projected daily cap is exceeded, with limit telemetry included.
 - `entryPrice` is required and treated as manual user input (not auto-derived from spot).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
+- Venue quote/execute operations enforce bounded timeouts:
+  - `PILOT_VENUE_QUOTE_TIMEOUT_MS` (default 5000ms)
+  - `PILOT_VENUE_EXEC_TIMEOUT_MS` (default 8000ms)
 - Quote, activation, and expiry resolution all use the same canonical reference feed configuration.
 
 ## Proof payload policy

@@ -24,8 +24,9 @@ import {
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { createPilotVenueAdapter, mapVenueFailureReason } from "./venue";
 import {
-  computeFloorPrice,
+  computeTriggerPrice,
   computePayoutDue,
+  normalizeProtectionType,
   normalizeTierName,
   resolveDrawdownFloorPct,
   resolveExpiryDays,
@@ -57,6 +58,26 @@ const parsePositiveDecimal = (value: unknown): Decimal | null => {
   } catch {
     return null;
   }
+};
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}_timeout`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+const inferProtectionTypeFromInstrument = (instrumentId: string | null | undefined): "long" | "short" => {
+  const normalized = String(instrumentId || "").toUpperCase();
+  return normalized.endsWith("-C") ? "short" : "long";
 };
 
 const requireAdmin = async (
@@ -168,14 +189,18 @@ export const registerPilotRoutes = async (
       const protectedNotional = new Decimal(protection.protectedNotional);
       const expiryPrice = snapshot.price;
       const drawdownFloorPct = new Decimal(protection.drawdownFloorPct || "0.2");
-      const floorPrice = protection.floorPrice
+      const protectionType = normalizeProtectionType(
+        String(protection.metadata?.protectionType || inferProtectionTypeFromInstrument(protection.instrumentId))
+      );
+      const triggerPrice = protection.floorPrice
         ? new Decimal(protection.floorPrice)
-        : computeFloorPrice(entryPrice, drawdownFloorPct);
+        : computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
       const payoutDue = computePayoutDue({
         protectedNotional,
         entryPrice,
-        floorPrice,
-        expiryPrice
+        triggerPrice,
+        expiryPrice,
+        protectionType
       });
       const nextStatus = payoutDue.gt(0) ? "expired_itm" : "expired_otm";
       await patchProtection(pool, protectionId, {
@@ -183,7 +208,7 @@ export const registerPilotRoutes = async (
         expiry_price: snapshot.price.toFixed(10),
         expiry_price_source: snapshot.priceSource,
         expiry_price_timestamp: snapshot.priceTimestamp,
-        floor_price: floorPrice.toFixed(10),
+        floor_price: triggerPrice.toFixed(10),
         payout_due_amount: payoutDue.toFixed(10)
       });
       if (payoutDue.gt(0)) {
@@ -216,7 +241,9 @@ export const registerPilotRoutes = async (
       clientOrderId?: string;
       tierName?: string;
       drawdownFloorPct?: number;
+      protectionType?: "long" | "short";
     };
+    const quoteStartedAt = Date.now();
     if (!body.userId) {
       reply.code(400);
       return { status: "error", reason: "missing_user_id" };
@@ -286,15 +313,21 @@ export const registerPilotRoutes = async (
     }
     const projectedDaily = dailyUsed.plus(protectedNotional);
     const marketId = pilotConfig.referenceMarketId;
-    const quoteInstrumentId = body.instrumentId || `${marketId}-7D-P`;
+    const protectionType = normalizeProtectionType(body.protectionType);
+    const optionType = protectionType === "short" ? "C" : "P";
+    const quoteInstrumentId = body.instrumentId || `${marketId}-7D-${optionType}`;
+    const triggerLabel = protectionType === "short" ? "ceiling_price" : "floor_price";
     const tierName = normalizeTierName(body.tierName);
     const drawdownFloorPct = resolveDrawdownFloorPct({
       tierName,
       drawdownFloorPct: body.drawdownFloorPct
     });
     const requestId = pilotConfig.nextRequestId();
+    let priceMs = 0;
+    let venueMs = 0;
     let snapshot: PriceSnapshotOutput;
     try {
+      const priceStartedAt = Date.now();
       snapshot = await resolvePriceSnapshot(
         {
           primaryUrl: pilotConfig.referencePriceUrl,
@@ -310,26 +343,34 @@ export const registerPilotRoutes = async (
           endpointVersion: pilotConfig.endpointVersion
         }
       );
+      priceMs = Date.now() - priceStartedAt;
     } catch (error: any) {
       reply.code(503);
       return {
         status: "error",
         reason: "price_unavailable",
         message: "Price temporarily unavailable, please retry.",
-        detail: String(error?.message || "price_chain_error")
+        detail: String(error?.message || "price_chain_error"),
+        diagnostics: { requestId, stage: "price_snapshot", elapsedMs: Date.now() - quoteStartedAt }
       };
     }
     try {
       const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
-      const quote = await venue.quote({
-        marketId,
-        protectedNotional: protectedNotional.toNumber(),
-        quantity,
-        side: "buy",
-        instrumentId: quoteInstrumentId,
-        clientOrderId: body.clientOrderId
-      });
-      const floorPrice = computeFloorPrice(entryPrice, drawdownFloorPct);
+      const venueStartedAt = Date.now();
+      const quote = await withTimeout(
+        venue.quote({
+          marketId,
+          protectedNotional: protectedNotional.toNumber(),
+          quantity,
+          side: "buy",
+          instrumentId: quoteInstrumentId,
+          clientOrderId: body.clientOrderId
+        }),
+        pilotConfig.venueQuoteTimeoutMs,
+        "venue_quote"
+      );
+      venueMs = Date.now() - venueStartedAt;
+      const triggerPrice = computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
       await insertVenueQuote(pool, {
         ...quote,
         details: {
@@ -343,15 +384,22 @@ export const registerPilotRoutes = async (
             protectedNotional: protectedNotional.toFixed(10),
             foxifyExposureNotional: exposureNotional.toFixed(10),
             entryPrice: entryPrice.toFixed(10),
-            floorPrice: floorPrice.toFixed(10)
+            protectionType,
+            optionType,
+            triggerPrice: triggerPrice.toFixed(10),
+            triggerLabel,
+            floorPrice: triggerPrice.toFixed(10)
           }
         }
       });
       return {
         status: "ok",
+        protectionType,
         tierName,
         drawdownFloorPct: drawdownFloorPct.toFixed(6),
-        floorPrice: floorPrice.toFixed(10),
+        triggerPrice: triggerPrice.toFixed(10),
+        triggerLabel,
+        floorPrice: triggerPrice.toFixed(10),
         quote,
         entrySnapshot: {
           price: snapshot.price.toFixed(10),
@@ -367,6 +415,14 @@ export const registerPilotRoutes = async (
           dailyUsedUsdc: dailyUsed.toFixed(2),
           projectedDailyUsdc: projectedDaily.toFixed(2),
           dailyCapExceededOnActivate: projectedDaily.gt(maxDailyProtection)
+        },
+        diagnostics: {
+          requestId,
+          timingsMs: {
+            price: priceMs,
+            venue: venueMs,
+            total: Date.now() - quoteStartedAt
+          }
         }
       };
     } catch (error: any) {
@@ -381,7 +437,15 @@ export const registerPilotRoutes = async (
         message: isStorageFailure
           ? "Storage temporarily unavailable, please retry."
           : "Unable to generate a venue quote right now. Please retry.",
-        detail: message
+        detail: message,
+        diagnostics: {
+          requestId,
+          stage: "venue_quote",
+          timingsMs: {
+            price: priceMs,
+            total: Date.now() - quoteStartedAt
+          }
+        }
       };
     }
   });
@@ -400,6 +464,7 @@ export const registerPilotRoutes = async (
       clientOrderId?: string;
       tierName?: string;
       drawdownFloorPct?: number;
+      protectionType?: "long" | "short";
       entryPrice?: number;
       quoteId?: string;
     };
@@ -455,14 +520,25 @@ export const registerPilotRoutes = async (
     const now = new Date();
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const dayEnd = new Date(dayStart.getTime() + 86400000);
-    const dailyUsed = new Decimal(
-      await getDailyProtectedNotionalForUser(
-        pool,
-        userHash.userHash,
-        dayStart.toISOString(),
-        dayEnd.toISOString()
-      )
-    );
+    let dailyUsed: Decimal;
+    try {
+      dailyUsed = new Decimal(
+        await getDailyProtectedNotionalForUser(
+          pool,
+          userHash.userHash,
+          dayStart.toISOString(),
+          dayEnd.toISOString()
+        )
+      );
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "daily_limit_query_failed")
+      };
+    }
     const projectedDaily = dailyUsed.plus(protectedNotional);
     if (projectedDaily.gt(maxDailyProtection)) {
       reply.code(400);
@@ -474,11 +550,16 @@ export const registerPilotRoutes = async (
       };
     }
     const marketId = pilotConfig.referenceMarketId;
+    const protectionType = normalizeProtectionType(body.protectionType);
+    const optionType = protectionType === "short" ? "C" : "P";
+    const triggerLabel = protectionType === "short" ? "ceiling_price" : "floor_price";
+    const instrumentId = body.instrumentId || `${marketId}-7D-${optionType}`;
     const tierName = normalizeTierName(body.tierName);
     const drawdownFloorPct = resolveDrawdownFloorPct({
       tierName,
       drawdownFloorPct: body.drawdownFloorPct
     });
+    const triggerPrice = computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
     const tenorDays = resolveExpiryDays({ tierName, requestedDays: body.tenorDays });
     const expiryAt = body.expiryAt || new Date(Date.now() + tenorDays * 86400000).toISOString();
     const requestId = pilotConfig.nextRequestId();
@@ -504,7 +585,9 @@ export const registerPilotRoutes = async (
           mode: "pilot",
           venueMode: pilotConfig.venueMode,
           tierName,
-          drawdownFloorPct: drawdownFloorPct.toFixed(6)
+          drawdownFloorPct: drawdownFloorPct.toFixed(6),
+          protectionType,
+          optionType
         }
       });
       const snapshot = await resolvePriceSnapshot(
@@ -522,7 +605,6 @@ export const registerPilotRoutes = async (
           endpointVersion: pilotConfig.endpointVersion
         }
       );
-      const instrumentId = body.instrumentId || `${marketId}-7D-P`;
       await insertPriceSnapshot(client, {
         protectionId: protection.id,
         snapshotType: "entry",
@@ -558,6 +640,13 @@ export const registerPilotRoutes = async (
       const contextExposure = parsePositiveDecimal(lockContext.foxifyExposureNotional);
       const contextEntry = parsePositiveDecimal(lockContext.entryPrice);
       const contextDrawdown = parsePositiveDecimal(lockContext.drawdownFloorPct);
+      const contextProtectionType = normalizeProtectionType(
+        String(lockContext.protectionType || inferProtectionTypeFromInstrument(requestedInstrumentId))
+      );
+      const contextTrigger = parsePositiveDecimal(lockContext.triggerPrice ?? lockContext.floorPrice);
+      if (contextProtectionType !== protectionType) {
+        throw new Error("quote_mismatch_type");
+      }
       if (
         String(lockContext.marketId || marketId) !== marketId ||
         String(lockContext.tierName || tierName) !== tierName ||
@@ -565,14 +654,20 @@ export const registerPilotRoutes = async (
         !contextExposure ||
         !contextEntry ||
         !contextDrawdown ||
+        !contextTrigger ||
         contextProtected.minus(protectedNotional).abs().gt(new Decimal("0.000001")) ||
         contextExposure.minus(exposureNotional).abs().gt(new Decimal("0.000001")) ||
         contextEntry.minus(entryPrice).abs().gt(new Decimal("0.000001")) ||
-        contextDrawdown.minus(drawdownFloorPct).abs().gt(new Decimal("0.000001"))
+        contextDrawdown.minus(drawdownFloorPct).abs().gt(new Decimal("0.000001")) ||
+        contextTrigger.minus(triggerPrice).abs().gt(new Decimal("0.000001"))
       ) {
         throw new Error("quote_mismatch_context");
       }
-      const execution = await venue.execute(lockedQuote);
+      const execution = await withTimeout(
+        venue.execute(lockedQuote),
+        pilotConfig.venueExecuteTimeoutMs,
+        "venue_execute"
+      );
       if (execution.status !== "success") {
         throw new Error("execution_failed");
       }
@@ -592,13 +687,12 @@ export const registerPilotRoutes = async (
         amount: new Decimal(execution.premium).toFixed(10),
         reference: execution.externalOrderId
       });
-      const floorPrice = computeFloorPrice(entryPrice, drawdownFloorPct);
       const updated = await patchProtection(client, protection.id, {
         status: "active",
         entry_price: entryPrice.toFixed(10),
         entry_price_source: "manual_input",
         entry_price_timestamp: new Date().toISOString(),
-        floor_price: floorPrice.toFixed(10),
+        floor_price: triggerPrice.toFixed(10),
         venue: execution.venue,
         instrument_id: execution.instrumentId,
         side: execution.side,
@@ -613,8 +707,12 @@ export const registerPilotRoutes = async (
           quoteId: lockedQuote.quoteId,
           rfqId: lockedQuote.rfqId || null,
           tierName,
+          protectionType,
+          optionType,
+          triggerLabel,
           drawdownFloorPct: drawdownFloorPct.toFixed(6),
-          floorPrice: floorPrice.toFixed(10),
+          triggerPrice: triggerPrice.toFixed(10),
+          floorPrice: triggerPrice.toFixed(10),
           coverageRatio: coverageRatio.toFixed(6),
           entrySnapshotPrice: snapshot.price.toFixed(10),
           entrySnapshotSource: snapshot.priceSource,
@@ -639,23 +737,37 @@ export const registerPilotRoutes = async (
           "quote_not_found",
           "quote_expired",
           "quote_mismatch_instrument",
+          "quote_mismatch_type",
           "quote_mismatch_quantity",
           "quote_mismatch_context",
-          "full_coverage_not_met"
+          "full_coverage_not_met",
+          "storage_unavailable"
         ].includes(errMsg)
       ) {
         reason = errMsg;
       } else if (
         errMsg === "protection_notional_cap_exceeded" ||
         errMsg === "daily_notional_cap_exceeded" ||
-        errMsg === "user_hash_secret_missing"
+        errMsg === "user_hash_secret_missing" ||
+        errMsg === "venue_execute_timeout"
       ) {
         reason = errMsg;
+      } else if (
+        errMsg.includes("postgres") ||
+        errMsg.includes("ECONN") ||
+        errMsg.includes("pool") ||
+        errMsg.includes("connection terminated")
+      ) {
+        reason = "storage_unavailable";
       } else {
         reason = mapVenueFailureReason(error);
       }
       if (reason === "price_unavailable") {
         reply.code(503);
+      } else if (reason === "storage_unavailable") {
+        reply.code(503);
+      } else if (reason === "venue_execute_timeout") {
+        reply.code(504);
       } else if (reason === "user_hash_secret_missing") {
         reply.code(500);
       } else if (reason === "quote_not_found") {
@@ -669,10 +781,14 @@ export const registerPilotRoutes = async (
         message:
           reason === "price_unavailable"
             ? "Price temporarily unavailable, please retry."
+            : reason === "storage_unavailable"
+              ? "Storage temporarily unavailable, please retry."
             : reason === "daily_notional_cap_exceeded"
               ? "Daily protection limit reached for this trader. Try again next UTC day."
               : reason === "protection_notional_cap_exceeded"
                 ? `Protection amount exceeds pilot cap (${new Decimal(pilotConfig.maxProtectionNotionalUsdc).toFixed(2)} USDC).`
+            : reason === "venue_execute_timeout"
+              ? "Venue execution timed out. Please request a fresh quote."
             : reason === "quote_expired"
               ? "Quote expired. Please request a new quote."
               : reason.startsWith("quote_mismatch")

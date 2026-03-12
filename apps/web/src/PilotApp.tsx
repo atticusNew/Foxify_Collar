@@ -8,10 +8,15 @@ type TierLevel = {
   renewWindowMinutes: number;
 };
 
+type ProtectionType = "long" | "short";
+
 type QuoteResult = {
+  protectionType?: ProtectionType;
   tierName: string;
   drawdownFloorPct: string;
   floorPrice: string;
+  triggerPrice?: string;
+  triggerLabel?: string;
   quote: {
     quoteId: string;
     instrumentId: string;
@@ -112,6 +117,15 @@ const friendlyError = (message: string): string => {
   if (message.includes("price_unavailable")) {
     return "Reference BTC feed unavailable (503). Retry shortly. If persistent, verify API price-feed env.";
   }
+  if (message.includes("storage_unavailable")) {
+    return "Storage is temporarily unavailable. Please retry shortly.";
+  }
+  if (message.includes("quote_generation_failed")) {
+    return "Unable to generate a venue quote right now. Please retry.";
+  }
+  if (message.includes("venue_execute_timeout")) {
+    return "Venue execution timed out. Request a fresh quote and retry.";
+  }
   return message || "Request failed. Please retry.";
 };
 
@@ -124,9 +138,10 @@ export function PilotApp() {
   const [userId, setUserId] = useState(() => `foxify-user-${Math.random().toString(36).slice(2, 8)}`);
   const [tiers, setTiers] = useState<TierLevel[]>(DEFAULT_TIERS);
   const [tierName, setTierName] = useState(DEFAULT_TIERS[0].name);
-  const [exposureNotional, setExposureNotional] = useState("50,000");
-  const [protectedNotional, setProtectedNotional] = useState("50,000");
-  const [entryPrice, setEntryPrice] = useState("100,000");
+  const [protectionType, setProtectionType] = useState<ProtectionType>("long");
+  const [exposureNotional, setExposureNotional] = useState("");
+  const [protectedNotional, setProtectedNotional] = useState("");
+  const [entryPrice, setEntryPrice] = useState("");
   const [autoRenew, setAutoRenew] = useState(false);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
@@ -216,7 +231,7 @@ export function PilotApp() {
     setQuote(null);
     setQuoteState("idle");
     setQuoteTimeLeft(0);
-  }, [userId, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice]);
+  }, [userId, protectionType, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice]);
 
   useEffect(() => {
     if (!quote?.quote?.expiresAt) {
@@ -273,7 +288,8 @@ export function PilotApp() {
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           entryPrice: entryValue,
-          instrumentId: "BTC-USD-7D-P",
+          protectionType,
+          instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
           marketId: "BTC-USD",
           tierName: selectedTier.name,
           drawdownFloorPct: selectedTier.drawdownFloorPct
@@ -319,7 +335,8 @@ export function PilotApp() {
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           entryPrice: entryValue,
-          instrumentId: "BTC-USD-7D-P",
+          protectionType,
+          instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
           marketId: "BTC-USD",
           tierName: selectedTier.name,
           drawdownFloorPct: selectedTier.drawdownFloorPct,
@@ -368,40 +385,56 @@ export function PilotApp() {
     }
   };
 
+  const metadataProtectionType =
+    protection?.metadata && typeof protection.metadata["protectionType"] === "string"
+      ? ((protection.metadata["protectionType"] as string).toLowerCase() === "short" ? "short" : "long")
+      : null;
+  const effectiveProtectionType: ProtectionType = metadataProtectionType ?? quote?.protectionType ?? protectionType;
   const displayedDrawdownPct =
     Number(protection?.drawdownFloorPct ?? quote?.drawdownFloorPct ?? selectedTier.drawdownFloorPct);
-  const displayedFloor =
+  const configuredTriggerPrice =
+    Number.isFinite(entryValue) && entryValue > 0
+      ? effectiveProtectionType === "short"
+        ? entryValue * (1 + selectedTier.drawdownFloorPct)
+        : entryValue * (1 - selectedTier.drawdownFloorPct)
+      : NaN;
+  const displayedTriggerPrice =
     protection?.floorPrice ??
+    quote?.triggerPrice ??
     quote?.floorPrice ??
-    (quote?.entrySnapshot?.price
-      ? (
-          Number(quote.entrySnapshot.price) *
-          (1 - Number(quote.drawdownFloorPct || selectedTier.drawdownFloorPct))
-        ).toFixed(10)
-      : null);
+    (Number.isFinite(configuredTriggerPrice) ? configuredTriggerPrice.toFixed(10) : null);
   const metadataEntrySnapshotPrice =
     protection?.metadata && typeof protection.metadata["entrySnapshotPrice"] === "string"
       ? (protection.metadata["entrySnapshotPrice"] as string)
       : null;
   const referencePrice =
     Number(metadataEntrySnapshotPrice ?? quote?.entrySnapshot?.price ?? protection?.entryPrice ?? entryValue);
-  const floorNumber = Number(displayedFloor ?? 0);
+  const triggerNumber = Number(displayedTriggerPrice ?? 0);
   const distanceToTriggerPct =
-    Number.isFinite(referencePrice) && referencePrice > 0 && Number.isFinite(floorNumber)
-      ? ((referencePrice - floorNumber) / referencePrice) * 100
+    Number.isFinite(referencePrice) && referencePrice > 0 && Number.isFinite(triggerNumber)
+      ? effectiveProtectionType === "short"
+        ? ((triggerNumber - referencePrice) / referencePrice) * 100
+        : ((referencePrice - triggerNumber) / referencePrice) * 100
       : NaN;
   const indicativeOptionMark = Number(protection?.premium ?? quote?.quote?.premium ?? 0);
+  const protectedNotionalForEstimation = Number(protection?.protectedNotional ?? protectedValue);
   const maxTriggerProtectionValue =
-    Number.isFinite(protectedValue) && Number.isFinite(displayedDrawdownPct)
-      ? protectedValue * displayedDrawdownPct
+    Number.isFinite(protectedNotionalForEstimation) && Number.isFinite(displayedDrawdownPct)
+      ? protectedNotionalForEstimation * displayedDrawdownPct
       : NaN;
   const renewalChip = protection?.expiryAt
     ? `Renewal window: ${new Date(
         Date.parse(protection.expiryAt) - (protection.renewWindowMinutes || 0) * 60 * 1000
       ).toLocaleString()}`
     : null;
-  const configuredFloorPrice =
-    Number.isFinite(entryValue) && entryValue > 0 ? entryValue * (1 - selectedTier.drawdownFloorPct) : NaN;
+  const triggerLabel = effectiveProtectionType === "short" ? "Protection Ceiling Price" : "Protection Floor Price";
+  const drawdownLabel =
+    effectiveProtectionType === "short" ? "Max Upside Move Protected" : "Max Drawdown Protected";
+  const positionDirectionLabel =
+    effectiveProtectionType === "short" ? "Short Exposure (Call Hedge)" : "Long Exposure (Put Hedge)";
+  const quoteProtectionType: ProtectionType = quote?.protectionType ?? protectionType;
+  const quoteDirectionLabel =
+    quoteProtectionType === "short" ? "Short Exposure (Call Hedge)" : "Long Exposure (Put Hedge)";
   const showPriceFeedHint = isPriceUnavailableError(error);
 
   return (
@@ -443,11 +476,27 @@ export function PilotApp() {
             </div>
 
             <div className="pilot-form-row">
+              <span className="pilot-label">Position Direction</span>
+              <div className="pilot-field">
+                <select
+                  className="input pilot-input pilot-select"
+                  value={protectionType}
+                  onChange={(e) => setProtectionType(e.target.value as ProtectionType)}
+                  disabled={busy}
+                >
+                  <option value="long">Long Exposure (Put Hedge)</option>
+                  <option value="short">Short Exposure (Call Hedge)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="pilot-form-row">
               <span className="pilot-label">Position Size (USD)</span>
               <div className="pilot-field">
                 <input
                   className="input pilot-input"
                   inputMode="decimal"
+                  placeholder="e.g. 50,000"
                   value={exposureNotional}
                   onChange={(e) => setExposureNotional(formatCurrencyInput(e.target.value))}
                 />
@@ -460,6 +509,7 @@ export function PilotApp() {
                 <input
                   className="input pilot-input"
                   inputMode="decimal"
+                  placeholder="e.g. 25,000"
                   value={protectedNotional}
                   onChange={(e) => setProtectedNotional(formatCurrencyInput(e.target.value))}
                 />
@@ -472,6 +522,7 @@ export function PilotApp() {
                 <input
                   className="input pilot-input"
                   inputMode="decimal"
+                  placeholder="e.g. 100,000"
                   value={entryPrice}
                   onChange={(e) => setEntryPrice(formatCurrencyInput(e.target.value))}
                 />
@@ -479,16 +530,16 @@ export function PilotApp() {
             </div>
 
             <div className="pilot-form-row">
-              <span className="pilot-label">Max Drawdown Protected</span>
+              <span className="pilot-label">{drawdownLabel}</span>
               <div className="pilot-field pilot-value">
                 <strong>{formatPct(selectedTier.drawdownFloorPct)}</strong>
               </div>
             </div>
 
             <div className="pilot-form-row">
-              <span className="pilot-label">Protection Floor Price</span>
+              <span className="pilot-label">{triggerLabel}</span>
               <div className="pilot-field pilot-value">
-                <strong>{Number.isFinite(configuredFloorPrice) ? `$${formatUsd(configuredFloorPrice)}` : "—"}</strong>
+                <strong>{Number.isFinite(configuredTriggerPrice) ? `$${formatUsd(configuredTriggerPrice)}` : "—"}</strong>
               </div>
             </div>
 
@@ -511,7 +562,7 @@ export function PilotApp() {
 
             {!canQuote && (
               <div className="disclaimer danger">
-                Check inputs: protection amount must be positive and cannot exceed position size.
+                Enter position size, protection amount, and entry price. Protection amount cannot exceed position size.
               </div>
             )}
           </div>
@@ -542,8 +593,12 @@ export function PilotApp() {
                   Premium <strong>${formatUsd(quote.quote.premium)}</strong> · Venue {quote.quote.venue}
                 </div>
                 <div className="muted">
-                  Tier {quote.tierName} · Drawdown {formatPct(quote.drawdownFloorPct)} · Floor $
-                  {formatUsd(quote.floorPrice)}
+                  {quoteDirectionLabel} · Tier {quote.tierName}
+                </div>
+                <div className="muted">
+                  Move threshold {formatPct(quote.drawdownFloorPct)} ·{" "}
+                  {quote.triggerLabel === "ceiling_price" ? "Ceiling" : "Floor"} $
+                  {formatUsd(quote.triggerPrice ?? quote.floorPrice)}
                 </div>
                 <div className="muted">
                   Reference {formatUsd(quote.entrySnapshot.price)} ({quote.entrySnapshot.source}) at{" "}
@@ -595,8 +650,10 @@ export function PilotApp() {
               </button>
             </div>
             <div className="muted">Protection ID: {protection.id}</div>
+            <div className="muted">{positionDirectionLabel}</div>
             <div className="muted">
-              Entry ${formatUsd(protection.entryPrice)} · Floor {displayedFloor ? `$${formatUsd(displayedFloor)}` : "—"}
+              Entry ${formatUsd(protection.entryPrice)} · {triggerLabel.replace("Protection ", "")}{" "}
+              {displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"}
             </div>
             <div className="muted">
               Premium {protection.premium ? `$${formatUsd(protection.premium)}` : "—"} · Expires{" "}
@@ -632,8 +689,8 @@ export function PilotApp() {
                 <div className="value">${formatUsd(protection.entryPrice)}</div>
               </div>
               <div className="pilot-monitor-card">
-                <div className="label">Protection Floor Price</div>
-                <div className="value">{displayedFloor ? `$${formatUsd(displayedFloor)}` : "—"}</div>
+                <div className="label">{triggerLabel}</div>
+                <div className="value">{displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"}</div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Distance to Trigger</div>
