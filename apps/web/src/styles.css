@@ -236,6 +236,106 @@ body {
   padding: 12px;
 }
 
+.pilot-card {
+  width: min(720px, 100%);
+}
+
+.pilot-form {
+  display: grid;
+  gap: 10px;
+}
+
+.pilot-form-row {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-height: 34px;
+}
+
+.pilot-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pilot-input {
+  width: 100%;
+  text-align: right;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.pilot-select {
+  text-align: left;
+}
+
+.pilot-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.pilot-inline-btn {
+  justify-self: end;
+}
+
+.quote-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #111116;
+  display: grid;
+  gap: 6px;
+}
+
+.quote-card-ready {
+  border-color: rgba(54, 211, 141, 0.45);
+}
+
+.quote-card-fetching {
+  border-color: rgba(125, 180, 255, 0.45);
+}
+
+.quote-card-expired {
+  border-color: rgba(242, 166, 90, 0.5);
+}
+
+.pilot-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.pilot-action-btn {
+  margin-top: 0;
+  min-height: 42px;
+  font-size: 13px;
+}
+
+.pilot-monitor {
+  width: min(880px, 100%);
+}
+
+.pilot-monitor-subtitle {
+  margin-bottom: 12px;
+}
+
+.pilot-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pilot-monitor-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #111116;
+  padding: 12px;
+}
+
 .row {
   display: flex;
   justify-content: space-between;
@@ -873,6 +973,30 @@ select.input {
     font-size: 14px;
     font-weight: 600;
     color: var(--text);
+  }
+
+  .pilot-form-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    min-height: 0;
+  }
+
+  .pilot-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .pilot-inline-btn {
+    justify-self: start;
+  }
+
+  .pilot-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .pilot-monitor-grid {
+    grid-template-columns: 1fr;
   }
 
   .row-inline-fee {
