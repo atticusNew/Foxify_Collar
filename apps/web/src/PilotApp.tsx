@@ -774,7 +774,7 @@ export function PilotApp() {
                   value={userId}
                   spellCheck={false}
                   title={userId}
-                  placeholder="e.g. danny-001"
+                  placeholder="e.g. Danny-001"
                   onChange={(e) => setUserId(e.target.value)}
                 />
               </div>
