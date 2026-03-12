@@ -21,7 +21,7 @@ import {
   listProtections,
   patchProtection
 } from "./db";
-import { resolvePriceSnapshot } from "./price";
+import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { createPilotVenueAdapter, mapVenueFailureReason } from "./venue";
 import {
   computeFloorPrice,
@@ -265,24 +265,37 @@ export const registerPilotRoutes = async (
     const now = new Date();
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const dayEnd = new Date(dayStart.getTime() + 86400000);
-    const dailyUsed = new Decimal(
-      await getDailyProtectedNotionalForUser(
-        pool,
-        userHash.userHash,
-        dayStart.toISOString(),
-        dayEnd.toISOString()
-      )
-    );
+    let dailyUsed: Decimal;
+    try {
+      dailyUsed = new Decimal(
+        await getDailyProtectedNotionalForUser(
+          pool,
+          userHash.userHash,
+          dayStart.toISOString(),
+          dayEnd.toISOString()
+        )
+      );
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "daily_limit_query_failed")
+      };
+    }
     const projectedDaily = dailyUsed.plus(protectedNotional);
     const marketId = pilotConfig.referenceMarketId;
+    const quoteInstrumentId = body.instrumentId || `${marketId}-7D-P`;
     const tierName = normalizeTierName(body.tierName);
     const drawdownFloorPct = resolveDrawdownFloorPct({
       tierName,
       drawdownFloorPct: body.drawdownFloorPct
     });
     const requestId = pilotConfig.nextRequestId();
+    let snapshot: PriceSnapshotOutput;
     try {
-      const snapshot = await resolvePriceSnapshot(
+      snapshot = await resolvePriceSnapshot(
         {
           primaryUrl: pilotConfig.referencePriceUrl,
           fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
@@ -297,13 +310,23 @@ export const registerPilotRoutes = async (
           endpointVersion: pilotConfig.endpointVersion
         }
       );
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        message: "Price temporarily unavailable, please retry.",
+        detail: String(error?.message || "price_chain_error")
+      };
+    }
+    try {
       const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
       const quote = await venue.quote({
         marketId,
         protectedNotional: protectedNotional.toNumber(),
         quantity,
         side: "buy",
-        instrumentId: body.instrumentId || `${marketId}-7D-P`,
+        instrumentId: quoteInstrumentId,
         clientOrderId: body.clientOrderId
       });
       const floorPrice = computeFloorPrice(entryPrice, drawdownFloorPct);
@@ -312,7 +335,7 @@ export const registerPilotRoutes = async (
         details: {
           ...(quote.details || {}),
           lockContext: {
-            requestedInstrumentId: body.instrumentId || `${marketId}-7D-P`,
+            requestedInstrumentId: quoteInstrumentId,
             quoteInstrumentId: quote.instrumentId,
             marketId,
             tierName,
@@ -347,12 +370,18 @@ export const registerPilotRoutes = async (
         }
       };
     } catch (error: any) {
-      reply.code(503);
+      const message = String(error?.message || "quote_generation_failed");
+      const isTimeout = message.includes("timeout") || message.includes("AbortError");
+      const isStorageFailure =
+        message.includes("postgres") || message.includes("ECONN") || message.includes("pool") || message.includes("db");
+      reply.code(isTimeout ? 504 : isStorageFailure ? 503 : 502);
       return {
         status: "error",
-        reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
-        detail: String(error?.message || "price_chain_error")
+        reason: isStorageFailure ? "storage_unavailable" : "quote_generation_failed",
+        message: isStorageFailure
+          ? "Storage temporarily unavailable, please retry."
+          : "Unable to generate a venue quote right now. Please retry.",
+        detail: message
       };
     }
   });

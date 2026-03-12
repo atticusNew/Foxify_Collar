@@ -118,6 +118,8 @@ const friendlyError = (message: string): string => {
 const isPriceUnavailableError = (message: string | null): boolean =>
   Boolean(message && message.toLowerCase().includes("reference btc feed unavailable"));
 
+const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
+
 export function PilotApp() {
   const [userId, setUserId] = useState(() => `foxify-user-${Math.random().toString(36).slice(2, 8)}`);
   const [tiers, setTiers] = useState<TierLevel[]>(DEFAULT_TIERS);
@@ -126,8 +128,6 @@ export function PilotApp() {
   const [protectedNotional, setProtectedNotional] = useState("50,000");
   const [entryPrice, setEntryPrice] = useState("100,000");
   const [autoRenew, setAutoRenew] = useState(false);
-  const [instrumentId, setInstrumentId] = useState("BTC-USD-7D-P");
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -216,7 +216,7 @@ export function PilotApp() {
     setQuote(null);
     setQuoteState("idle");
     setQuoteTimeLeft(0);
-  }, [userId, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice, instrumentId]);
+  }, [userId, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice]);
 
   useEffect(() => {
     if (!quote?.quote?.expiresAt) {
@@ -261,16 +261,19 @@ export function PilotApp() {
     setError(null);
     setQuote(null);
     setQuoteState("fetching");
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
     try {
       const res = await fetch(`${API_BASE}/pilot/protections/quote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           userId,
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           entryPrice: entryValue,
-          instrumentId,
+          instrumentId: "BTC-USD-7D-P",
           marketId: "BTC-USD",
           tierName: selectedTier.name,
           drawdownFloorPct: selectedTier.drawdownFloorPct
@@ -289,8 +292,13 @@ export function PilotApp() {
       setQuoteState("ready");
     } catch (err: any) {
       setQuoteState("idle");
-      setError(friendlyError(String(err?.message || "Price temporarily unavailable, please retry.")));
+      if (err?.name === "AbortError") {
+        setError("Quote request timed out. Please retry.");
+      } else {
+        setError(friendlyError(String(err?.message || "Price temporarily unavailable, please retry.")));
+      }
     } finally {
+      clearTimeout(timeout);
       setBusy(false);
     }
   };
@@ -311,7 +319,7 @@ export function PilotApp() {
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           entryPrice: entryValue,
-          instrumentId,
+          instrumentId: "BTC-USD-7D-P",
           marketId: "BTC-USD",
           tierName: selectedTier.name,
           drawdownFloorPct: selectedTier.drawdownFloorPct,
@@ -401,111 +409,105 @@ export function PilotApp() {
       <div className="card pilot-card">
         <div className="title pilot-title">
           <div className="brand">
-            <img src="/foxify-logo.svg" alt="Foxify logo" className="pilot-logo" />
+            <img src={FOXIFY_LOGO_URL} alt="Foxify logo" className="pilot-logo" />
             <span>Foxify Pilot Protection</span>
           </div>
         </div>
-        <div className="subtitle">7-day fixed tenor · quote lock enforced at activation</div>
 
         <div className="section">
           <h4>Protection Request</h4>
           <div className="recommendation pilot-form">
             <div className="pilot-form-row">
               <span className="pilot-label">Trader ID</span>
-              <input className="input pilot-input" value={userId} onChange={(e) => setUserId(e.target.value)} />
+              <div className="pilot-field">
+                <input className="input pilot-input" value={userId} onChange={(e) => setUserId(e.target.value)} />
+              </div>
             </div>
 
             <div className="pilot-form-row">
               <span className="pilot-label">Tier</span>
-              <select
-                className="input pilot-input pilot-select"
-                value={tierName}
-                onChange={(e) => setTierName(e.target.value)}
-                disabled={busy}
-              >
-                {tiers.map((tier) => (
-                  <option key={tier.name} value={tier.name}>
-                    {tier.name}
-                  </option>
-                ))}
-              </select>
+              <div className="pilot-field">
+                <select
+                  className="input pilot-input pilot-select"
+                  value={tierName}
+                  onChange={(e) => setTierName(e.target.value)}
+                  disabled={busy}
+                >
+                  {tiers.map((tier) => (
+                    <option key={tier.name} value={tier.name}>
+                      {tier.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             <div className="pilot-form-row">
               <span className="pilot-label">Position Size (USD)</span>
-              <input
-                className="input pilot-input"
-                inputMode="decimal"
-                value={exposureNotional}
-                onChange={(e) => setExposureNotional(formatCurrencyInput(e.target.value))}
-              />
+              <div className="pilot-field">
+                <input
+                  className="input pilot-input"
+                  inputMode="decimal"
+                  value={exposureNotional}
+                  onChange={(e) => setExposureNotional(formatCurrencyInput(e.target.value))}
+                />
+              </div>
             </div>
 
             <div className="pilot-form-row">
               <span className="pilot-label">Protection Amount (USD)</span>
-              <input
-                className="input pilot-input"
-                inputMode="decimal"
-                value={protectedNotional}
-                onChange={(e) => setProtectedNotional(formatCurrencyInput(e.target.value))}
-              />
+              <div className="pilot-field">
+                <input
+                  className="input pilot-input"
+                  inputMode="decimal"
+                  value={protectedNotional}
+                  onChange={(e) => setProtectedNotional(formatCurrencyInput(e.target.value))}
+                />
+              </div>
             </div>
 
             <div className="pilot-form-row">
               <span className="pilot-label">Entry Price (Manual)</span>
-              <input
-                className="input pilot-input"
-                inputMode="decimal"
-                value={entryPrice}
-                onChange={(e) => setEntryPrice(formatCurrencyInput(e.target.value))}
-              />
+              <div className="pilot-field">
+                <input
+                  className="input pilot-input"
+                  inputMode="decimal"
+                  value={entryPrice}
+                  onChange={(e) => setEntryPrice(formatCurrencyInput(e.target.value))}
+                />
+              </div>
             </div>
 
             <div className="pilot-form-row">
               <span className="pilot-label">Max Drawdown Protected</span>
-              <strong>{formatPct(selectedTier.drawdownFloorPct)}</strong>
+              <div className="pilot-field pilot-value">
+                <strong>{formatPct(selectedTier.drawdownFloorPct)}</strong>
+              </div>
             </div>
 
             <div className="pilot-form-row">
               <span className="pilot-label">Protection Floor Price</span>
-              <strong>{Number.isFinite(configuredFloorPrice) ? `$${formatUsd(configuredFloorPrice)}` : "—"}</strong>
+              <div className="pilot-field pilot-value">
+                <strong>{Number.isFinite(configuredFloorPrice) ? `$${formatUsd(configuredFloorPrice)}` : "—"}</strong>
+              </div>
             </div>
 
             <div className="pilot-form-row">
               <span className="pilot-label">Tenor</span>
-              <strong>{selectedTier.expiryDays} days (fixed)</strong>
+              <div className="pilot-field pilot-value">
+                <strong>{selectedTier.expiryDays} days (fixed)</strong>
+              </div>
             </div>
 
             <div className="pilot-form-row">
               <span className="pilot-label">Auto Renew</span>
-              <label className="pilot-checkbox">
-                <input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} />
-                <span>{autoRenew ? "Enabled" : "Disabled"}</span>
-              </label>
-            </div>
-
-            <div className="pilot-form-row">
-              <span className="pilot-label">Advanced Venue Settings</span>
-              <button
-                className="btn btn-secondary pilot-inline-btn"
-                type="button"
-                onClick={() => setShowAdvanced((value) => !value)}
-                disabled={busy}
-              >
-                {showAdvanced ? "Hide" : "Show"}
-              </button>
-            </div>
-
-            {showAdvanced && (
-              <div className="pilot-form-row">
-                <span className="pilot-label">Venue Instrument (Optional)</span>
-                <input
-                  className="input pilot-input"
-                  value={instrumentId}
-                  onChange={(e) => setInstrumentId(e.target.value)}
-                />
+              <div className="pilot-field">
+                <label className="pilot-checkbox">
+                  <input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} />
+                  <span>{autoRenew ? "Enabled" : "Disabled"}</span>
+                </label>
               </div>
-            )}
+            </div>
 
             {!canQuote && (
               <div className="disclaimer danger">

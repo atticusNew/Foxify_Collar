@@ -247,10 +247,9 @@ body {
 
 .pilot-form-row {
   display: grid;
-  grid-template-columns: 168px minmax(210px, 270px);
+  grid-template-columns: 170px minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   min-height: 32px;
 }
 
@@ -260,9 +259,8 @@ body {
 }
 
 .pilot-input {
-  width: 100%;
+  width: 248px;
   text-align: right;
-  max-width: 270px;
   padding: 7px 10px;
   border-radius: 10px;
 }
@@ -284,14 +282,27 @@ body {
   justify-self: end;
 }
 
+.pilot-field {
+  width: 248px;
+  justify-self: end;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.pilot-value {
+  text-align: right;
+}
+
 .pilot-title {
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
 
 .pilot-logo {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  border-radius: 5px;
+  object-fit: contain;
 }
 
 .quote-card {
@@ -999,7 +1010,12 @@ select.input {
   }
 
   .pilot-input {
-    max-width: 100%;
+    width: 100%;
+  }
+
+  .pilot-field {
+    width: 100%;
+    justify-self: start;
   }
 
   .pilot-label {

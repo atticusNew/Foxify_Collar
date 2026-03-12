@@ -22,9 +22,13 @@ const toRecord = (value: unknown): Record<string, unknown> => {
 export const getPilotPool = (connectionString: string): Pool => {
   if (poolSingleton) return poolSingleton;
   if (!connectionString) throw new Error("postgres_url_missing");
+  const connectTimeoutMs = Number(process.env.PILOT_DB_CONNECT_TIMEOUT_MS || "3000");
+  const queryTimeoutMs = Number(process.env.PILOT_DB_QUERY_TIMEOUT_MS || "7000");
   poolSingleton = new Pool({
     connectionString,
-    max: 10
+    max: 10,
+    connectionTimeoutMillis: Number.isFinite(connectTimeoutMs) ? connectTimeoutMs : 3000,
+    query_timeout: Number.isFinite(queryTimeoutMs) ? queryTimeoutMs : 7000
   });
   return poolSingleton;
 };

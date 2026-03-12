@@ -34,6 +34,14 @@ Endpoints:
    - `status=error`
    - `reason=price_unavailable`
    - message: `Price temporarily unavailable, please retry.`
+5. If storage is unavailable, response may be:
+   - `status=error`
+   - `reason=storage_unavailable`
+   - message: `Storage temporarily unavailable, please retry.`
+6. If venue quote generation fails, response may be:
+   - `status=error`
+   - `reason=quote_generation_failed`
+   - message: `Unable to generate a venue quote right now. Please retry.`
 
 ## Ledger entries
 
