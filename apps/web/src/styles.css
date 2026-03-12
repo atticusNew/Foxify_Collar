@@ -269,6 +269,12 @@ body {
   text-align: left;
 }
 
+.pilot-input-trader {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
 .pilot-select {
   text-align: left;
   white-space: nowrap;
@@ -294,6 +300,10 @@ body {
   display: flex;
   justify-content: flex-end;
   align-items: center;
+}
+
+.pilot-field-trader {
+  width: min(440px, 100%);
 }
 
 .pilot-value {
@@ -1318,6 +1328,11 @@ select.input {
   background: #121216;
 }
 
+.position-row-active {
+  border-color: rgba(54, 211, 141, 0.45);
+  background: linear-gradient(180deg, rgba(54, 211, 141, 0.1), rgba(18, 18, 22, 1));
+}
+
 .position-main {
   min-width: 0;
   display: grid;
@@ -1328,6 +1343,13 @@ select.input {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.section-subtitle {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 2px;
 }
 
 .section-actions {
