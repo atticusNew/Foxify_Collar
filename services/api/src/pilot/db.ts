@@ -415,7 +415,10 @@ export const getPilotAdminMetrics = async (
         COUNT(*) FILTER (WHERE status = 'active')::text AS active_protections,
         COALESCE(SUM(protected_notional), 0)::text AS protected_notional_total_usdc,
         COALESCE(SUM(CASE WHEN status = 'active' THEN protected_notional ELSE 0 END), 0)::text AS protected_notional_active_usdc,
-        COALESCE(SUM(premium), 0)::text AS hedge_premium_total_usdc,
+        (
+          SELECT COALESCE(SUM(premium), 0)::text
+          FROM pilot_venue_executions
+        ) AS hedge_premium_total_usdc,
         COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc,
         COALESCE(SUM(COALESCE(payout_settled_amount, 0)), 0)::text AS payout_settled_total_usdc
       FROM pilot_protections

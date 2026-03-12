@@ -79,6 +79,13 @@ The pilot ledger stores:
 - `protectedNotional` must be `<= 50,000` USDC per protection.
 - Daily protected notional cap is `50,000` USDC per user hash and is enforced on activation.
 - Quote responses may still be returned when the projected daily cap is exceeded, with limit telemetry included.
+- Pilot premium supports passthrough + markup with tier floors:
+  - `client_premium = max(hedge_premium + hedge_premium * PILOT_PREMIUM_MARKUP_PCT, protected_notional * tier_floor_bps / 10000)`
+  - floor defaults by tier:
+    - Bronze: `PILOT_PREMIUM_FLOOR_BPS_BRONZE` (150 bps)
+    - Silver: `PILOT_PREMIUM_FLOOR_BPS_SILVER` (125 bps)
+    - Gold: `PILOT_PREMIUM_FLOOR_BPS_GOLD` (100 bps)
+    - Platinum: `PILOT_PREMIUM_FLOOR_BPS_PLATINUM` (100 bps)
 - `entryPrice` is required and treated as manual user input (not auto-derived from spot).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
 - Venue quote/execute operations enforce bounded timeouts:

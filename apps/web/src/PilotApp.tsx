@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { API_BASE } from "./config";
 
 type TierLevel = {
@@ -253,10 +253,10 @@ export function PilotApp() {
   const [adminMonitor, setAdminMonitor] = useState<MonitorPayload | null>(null);
   const [adminMetrics, setAdminMetrics] = useState<AdminMetrics | null>(null);
   const [adminViewingId, setAdminViewingId] = useState<string | null>(null);
+  const [showAdminDetailModal, setShowAdminDetailModal] = useState(false);
   const [adminDetailUpdatedAt, setAdminDetailUpdatedAt] = useState<Date | null>(null);
   const [showHistorySection, setShowHistorySection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
-  const adminDetailRef = useRef<HTMLDivElement | null>(null);
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
     [tierName, tiers]
@@ -480,9 +480,6 @@ export function PilotApp() {
       setAdminLedger(Array.isArray(ledgerPayload?.ledger) ? (ledgerPayload.ledger as AdminLedgerEntry[]) : []);
       setAdminMonitor(monitorPayload?.monitor ? (monitorPayload.monitor as MonitorPayload) : null);
       setAdminDetailUpdatedAt(new Date());
-      setTimeout(() => {
-        adminDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      }, 0);
     } catch (err: any) {
       setAdminError(friendlyError(String(err?.message || "admin_refresh_failed")));
     } finally {
@@ -503,6 +500,12 @@ export function PilotApp() {
     }, 10000);
     return () => clearInterval(id);
   }, [showProtectionModal, protection?.id, traderId]);
+
+  useEffect(() => {
+    if (!showAdminModal) {
+      setShowAdminDetailModal(false);
+    }
+  }, [showAdminModal]);
 
   const requestQuote = async () => {
     if (!canQuote) return;
@@ -747,7 +750,9 @@ export function PilotApp() {
           <h4>Protection Request</h4>
           <div className="recommendation pilot-form">
             <div className="pilot-form-row">
-              <span className="pilot-label">Trader ID</span>
+              <span className="pilot-label">
+                Trader ID <span className="pilot-label-hint">e.g. danny-001</span>
+              </span>
               <div className="pilot-field pilot-field-trader">
                 <input
                   className="input pilot-input pilot-input-text pilot-input-trader"
@@ -757,12 +762,6 @@ export function PilotApp() {
                   placeholder="e.g. danny-001"
                   onChange={(e) => setUserId(e.target.value)}
                 />
-              </div>
-            </div>
-            <div className="pilot-form-row">
-              <span className="pilot-label"></span>
-              <div className="pilot-field pilot-field-trader">
-                <div className="muted">Use the same Trader ID to view that trader&apos;s protections.</div>
               </div>
             </div>
 
@@ -1263,6 +1262,7 @@ export function PilotApp() {
                           disabled={adminViewingId === row.protection_id}
                           onClick={() => {
                             setAdminSelectedId(row.protection_id);
+                            setShowAdminDetailModal(true);
                             if (adminToken) {
                               void refreshAdminSelection(row.protection_id, adminToken);
                             }
@@ -1275,54 +1275,67 @@ export function PilotApp() {
                   ))}
                 </div>
 
-                {adminSelected && (
-                  <div className="section" ref={adminDetailRef}>
-                    <h4>Selected Protection Detail</h4>
-                    <div className="muted">ID: {adminSelected.protection_id}</div>
-                    {adminDetailUpdatedAt && (
-                      <div className="muted">Updated {adminDetailUpdatedAt.toLocaleTimeString()}</div>
-                    )}
-                    <div className="muted">
-                      Status: {adminSelected.status} · Time Left:{" "}
-                      {Number.isFinite(adminTimeLeftMs) && adminTimeLeftMs > 0
-                        ? formatCountdown(Math.floor(adminTimeLeftMs / 1000))
-                        : "expired"}
-                    </div>
-                    <div className="muted">
-                      {adminSelected.entry_price ? `Entry $${formatUsd(adminSelected.entry_price)}` : "Entry —"} ·{" "}
-                      {adminSelected.floor_price ? `Trigger $${formatUsd(adminSelected.floor_price)}` : "Trigger —"} ·{" "}
-                      {adminSelected.instrument_id || "No instrument"}
-                    </div>
-                    <div className="muted">
-                      MTM Option Mark:{" "}
-                      {adminMonitor && Number.isFinite(Number(adminMonitor.optionMarkUsd))
-                        ? `$${formatUsd(adminMonitor.optionMarkUsd)}`
-                        : "—"}
-                    </div>
-                    <div className="muted">
-                      Reference:{" "}
-                      {adminMonitor && Number.isFinite(Number(adminMonitor.referencePrice))
-                        ? `$${formatUsd(adminMonitor.referencePrice)}`
-                        : "—"}
-                    </div>
-                    <div className="pilot-admin-ledger">
-                      <strong>Ledger Entries</strong>
-                      {adminLedger.length === 0 ? (
-                        <div className="muted">No ledger entries found.</div>
-                      ) : (
-                        adminLedger.map((entry) => (
-                          <div className="muted" key={entry.id}>
-                            {entry.entryType} · {entry.amount} {entry.currency} · {new Date(entry.createdAt).toLocaleString()}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
             )}
 
             {adminError && <div className="disclaimer danger">{adminError}</div>}
+          </div>
+        </div>
+      )}
+
+      {showAdminDetailModal && adminSelected && (
+        <div className="modal" onClick={() => setShowAdminDetailModal(false)}>
+          <div className="modal-card pilot-admin-detail" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">
+                <h3>Protection Detail</h3>
+              </div>
+              <button className="icon-btn" type="button" onClick={() => setShowAdminDetailModal(false)}>
+                x
+              </button>
+            </div>
+            <div className="muted">ID: {adminSelected.protection_id}</div>
+            {adminDetailUpdatedAt && <div className="muted">Updated {adminDetailUpdatedAt.toLocaleTimeString()}</div>}
+            <div className="muted">
+              Status: {adminSelected.status} · Time Left:{" "}
+              {Number.isFinite(adminTimeLeftMs) && adminTimeLeftMs > 0
+                ? formatCountdown(Math.floor(adminTimeLeftMs / 1000))
+                : "expired"}
+            </div>
+            <div className="muted">
+              {adminSelected.entry_price ? `Entry $${formatUsd(adminSelected.entry_price)}` : "Entry —"} ·{" "}
+              {adminSelected.floor_price ? `Trigger $${formatUsd(adminSelected.floor_price)}` : "Trigger —"} ·{" "}
+              {adminSelected.instrument_id || "No instrument"}
+            </div>
+            <div className="muted">
+              MTM Option Mark:{" "}
+              {adminMonitor && Number.isFinite(Number(adminMonitor.optionMarkUsd))
+                ? `$${formatUsd(adminMonitor.optionMarkUsd)}`
+                : "—"}
+            </div>
+            <div className="muted">
+              Reference:{" "}
+              {adminMonitor && Number.isFinite(Number(adminMonitor.referencePrice))
+                ? `$${formatUsd(adminMonitor.referencePrice)}`
+                : "—"}
+            </div>
+            <div className="pilot-admin-ledger">
+              <strong>Ledger Entries</strong>
+              {adminLedger.length === 0 ? (
+                <div className="muted">No ledger entries found.</div>
+              ) : (
+                adminLedger.map((entry) => (
+                  <div className="muted" key={entry.id}>
+                    {entry.entryType} · {entry.amount} {entry.currency} · {new Date(entry.createdAt).toLocaleString()}
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="modal-actions">
+              <button className="btn" onClick={() => setShowAdminDetailModal(false)}>
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

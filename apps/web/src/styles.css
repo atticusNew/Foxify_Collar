@@ -258,6 +258,12 @@ body {
   font-size: 12px;
 }
 
+.pilot-label-hint {
+  font-size: 11px;
+  opacity: 0.9;
+  margin-left: 6px;
+}
+
 .pilot-input {
   width: 340px;
   text-align: right;
@@ -382,6 +388,10 @@ body {
 
 .pilot-admin-modal {
   width: min(1060px, 100%);
+}
+
+.pilot-admin-detail {
+  width: min(720px, 100%);
 }
 
 .pilot-admin-grid {
@@ -1102,6 +1112,12 @@ select.input {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.4px;
+  }
+
+  .pilot-label-hint {
+    display: block;
+    margin-left: 0;
+    margin-top: 2px;
   }
 
   .pilot-inline-btn {

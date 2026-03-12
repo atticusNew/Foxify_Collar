@@ -62,6 +62,42 @@ const parsePositiveDecimal = (value: unknown): Decimal | null => {
   }
 };
 
+const resolveTierPremiumFloorBps = (tierName: string): Decimal => {
+  const raw = Number(pilotConfig.premiumFloorBpsByTier[tierName] ?? 100);
+  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
+  return new Decimal(raw);
+};
+
+const resolvePremiumPricing = (params: {
+  tierName: string;
+  protectedNotional: Decimal;
+  hedgePremium: Decimal;
+}): {
+  hedgePremiumUsd: Decimal;
+  markupPct: Decimal;
+  markupUsd: Decimal;
+  premiumFloorUsd: Decimal;
+  clientPremiumUsd: Decimal;
+  method: "markup" | "floor";
+} => {
+  const markupPctRaw = Number(pilotConfig.premiumMarkupPct);
+  const markupPct = Number.isFinite(markupPctRaw) && markupPctRaw > 0 ? new Decimal(markupPctRaw) : new Decimal(0);
+  const hedgePremiumUsd = params.hedgePremium;
+  const markupUsd = hedgePremiumUsd.mul(markupPct);
+  const markedUpPremium = hedgePremiumUsd.plus(markupUsd);
+  const floorBps = resolveTierPremiumFloorBps(params.tierName);
+  const premiumFloorUsd = params.protectedNotional.mul(floorBps).div(10000);
+  const clientPremiumUsd = Decimal.max(markedUpPremium, premiumFloorUsd);
+  return {
+    hedgePremiumUsd,
+    markupPct,
+    markupUsd,
+    premiumFloorUsd,
+    clientPremiumUsd,
+    method: clientPremiumUsd.eq(premiumFloorUsd) && premiumFloorUsd.gt(markedUpPremium) ? "floor" : "markup"
+  };
+};
+
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
   let timer: NodeJS.Timeout | null = null;
@@ -376,10 +412,24 @@ export const registerPilotRoutes = async (
       );
       venueMs = Date.now() - venueStartedAt;
       const triggerPrice = computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
+      const premiumPricing = resolvePremiumPricing({
+        tierName,
+        protectedNotional,
+        hedgePremium: new Decimal(quote.premium)
+      });
+      const pricingBreakdown = {
+        hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
+        markupPct: premiumPricing.markupPct.toFixed(6),
+        markupUsd: premiumPricing.markupUsd.toFixed(10),
+        premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
+        clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
+        method: premiumPricing.method
+      };
       await insertVenueQuote(pool, {
         ...quote,
         details: {
           ...(quote.details || {}),
+          pricingBreakdown,
           lockContext: {
             requestedInstrumentId: quoteInstrumentId,
             quoteInstrumentId: quote.instrumentId,
@@ -393,10 +443,19 @@ export const registerPilotRoutes = async (
             optionType,
             triggerPrice: triggerPrice.toFixed(10),
             triggerLabel,
-            floorPrice: triggerPrice.toFixed(10)
+            floorPrice: triggerPrice.toFixed(10),
+            ...pricingBreakdown
           }
         }
       });
+      const clientQuote = {
+        ...quote,
+        premium: Number(premiumPricing.clientPremiumUsd.toFixed(4)),
+        details: {
+          ...(quote.details || {}),
+          pricingBreakdown
+        }
+      };
       return {
         status: "ok",
         protectionType,
@@ -405,7 +464,7 @@ export const registerPilotRoutes = async (
         triggerPrice: triggerPrice.toFixed(10),
         triggerLabel,
         floorPrice: triggerPrice.toFixed(10),
-        quote,
+        quote: clientQuote,
         entrySnapshot: {
           price: snapshot.price.toFixed(10),
           marketId: snapshot.marketId,
@@ -668,6 +727,24 @@ export const registerPilotRoutes = async (
       ) {
         throw new Error("quote_mismatch_context");
       }
+      const contextHedgePremium = parsePositiveDecimal(lockContext.hedgePremiumUsd) || new Decimal(lockedQuote.premium);
+      const contextMarkupPct = parsePositiveDecimal(lockContext.markupPct);
+      const contextMarkupUsd = parsePositiveDecimal(lockContext.markupUsd);
+      const contextFloorUsd = parsePositiveDecimal(lockContext.premiumFloorUsd);
+      const contextClientPremium = parsePositiveDecimal(lockContext.clientPremiumUsd);
+      const fallbackPremiumPricing = resolvePremiumPricing({
+        tierName,
+        protectedNotional,
+        hedgePremium: contextHedgePremium
+      });
+      const premiumPricing = {
+        hedgePremiumUsd: contextHedgePremium,
+        markupPct: contextMarkupPct || fallbackPremiumPricing.markupPct,
+        markupUsd: contextMarkupUsd || fallbackPremiumPricing.markupUsd,
+        premiumFloorUsd: contextFloorUsd || fallbackPremiumPricing.premiumFloorUsd,
+        clientPremiumUsd: contextClientPremium || fallbackPremiumPricing.clientPremiumUsd,
+        method: String(lockContext.method || fallbackPremiumPricing.method) === "floor" ? "floor" : "markup"
+      } as const;
       const execution = await withTimeout(
         venue.execute(lockedQuote),
         pilotConfig.venueExecuteTimeoutMs,
@@ -689,7 +766,7 @@ export const registerPilotRoutes = async (
       await insertLedgerEntry(client, {
         protectionId: protection.id,
         entryType: "premium_due",
-        amount: new Decimal(execution.premium).toFixed(10),
+        amount: premiumPricing.clientPremiumUsd.toFixed(10),
         reference: execution.externalOrderId
       });
       const updated = await patchProtection(client, protection.id, {
@@ -703,7 +780,7 @@ export const registerPilotRoutes = async (
         side: execution.side,
         size: new Decimal(execution.quantity).toFixed(10),
         execution_price: new Decimal(execution.executionPrice).toFixed(10),
-        premium: new Decimal(execution.premium).toFixed(10),
+        premium: premiumPricing.clientPremiumUsd.toFixed(10),
         executed_at: execution.executedAt,
         external_order_id: execution.externalOrderId,
         external_execution_id: execution.externalExecutionId,
@@ -719,17 +796,38 @@ export const registerPilotRoutes = async (
           triggerPrice: triggerPrice.toFixed(10),
           floorPrice: triggerPrice.toFixed(10),
           coverageRatio: coverageRatio.toFixed(6),
+          hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
+          markupPct: premiumPricing.markupPct.toFixed(6),
+          markupUsd: premiumPricing.markupUsd.toFixed(10),
+          premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
+          clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
+          premiumMethod: premiumPricing.method,
           entrySnapshotPrice: snapshot.price.toFixed(10),
           entrySnapshotSource: snapshot.priceSource,
           entrySnapshotTimestamp: snapshot.priceTimestamp
         }
       });
       await client.query("COMMIT");
+      const activatedQuote = {
+        ...lockedQuote,
+        premium: Number(premiumPricing.clientPremiumUsd.toFixed(4)),
+        details: {
+          ...(lockedQuote.details || {}),
+          pricingBreakdown: {
+            hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
+            markupPct: premiumPricing.markupPct.toFixed(6),
+            markupUsd: premiumPricing.markupUsd.toFixed(10),
+            premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
+            clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
+            method: premiumPricing.method
+          }
+        }
+      };
       return {
         status: "ok",
         protection: updated,
         coverageRatio: coverageRatio.toFixed(6),
-        quote: lockedQuote
+        quote: activatedQuote
       };
     } catch (error: any) {
       await client.query("ROLLBACK");
@@ -906,8 +1004,12 @@ export const registerPilotRoutes = async (
     const protectedNotional = parsePositiveDecimal(protection.protectedNotional) || new Decimal(0);
     const estimatedTriggerValue = protectedNotional.mul(drawdownFloorPct);
     const quantity = parsePositiveDecimal(protection.size)?.toNumber() || 0;
-    let optionMarkUsd = parsePositiveDecimal(protection.premium)?.toNumber() || 0;
-    let markSource = "stored_premium";
+    const metadataHedgePremium =
+      protection.metadata && typeof protection.metadata["hedgePremiumUsd"] === "string"
+        ? parsePositiveDecimal(protection.metadata["hedgePremiumUsd"])
+        : null;
+    let optionMarkUsd = metadataHedgePremium?.toNumber() || parsePositiveDecimal(protection.premium)?.toNumber() || 0;
+    let markSource = metadataHedgePremium ? "stored_hedge_premium" : "stored_premium";
     let markDetails: Record<string, unknown> | null = null;
     if (protection.instrumentId && quantity > 0) {
       try {
