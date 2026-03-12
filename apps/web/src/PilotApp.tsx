@@ -219,6 +219,8 @@ export function PilotApp() {
   const [adminSelectedId, setAdminSelectedId] = useState<string | null>(null);
   const [adminLedger, setAdminLedger] = useState<AdminLedgerEntry[]>([]);
   const [adminMonitor, setAdminMonitor] = useState<MonitorPayload | null>(null);
+  const [showHistorySection, setShowHistorySection] = useState(true);
+  const [showActiveSection, setShowActiveSection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
@@ -443,6 +445,10 @@ export function PilotApp() {
     refreshAdminSelection(adminSelectedId, adminToken);
   }, [showAdminModal, adminSelectedId, adminToken]);
 
+  useEffect(() => {
+    if (protection?.id) setShowActiveSection(true);
+  }, [protection?.id]);
+
   const requestQuote = async () => {
     if (!canQuote) return;
     setBusy(true);
@@ -652,7 +658,11 @@ export function PilotApp() {
             <div className="pilot-form-row">
               <span className="pilot-label">Trader ID</span>
               <div className="pilot-field">
-                <input className="input pilot-input" value={userId} onChange={(e) => setUserId(e.target.value)} />
+                <input
+                  className="input pilot-input pilot-input-text"
+                  value={userId}
+                  onChange={(e) => setUserId(e.target.value)}
+                />
               </div>
             </div>
 
@@ -683,8 +693,8 @@ export function PilotApp() {
                   onChange={(e) => setProtectionType(e.target.value as ProtectionType)}
                   disabled={busy}
                 >
-                  <option value="long">Long Exposure (Put Hedge)</option>
-                  <option value="short">Short Exposure (Call Hedge)</option>
+                  <option value="long">Long (Put Hedge)</option>
+                  <option value="short">Short (Call Hedge)</option>
                 </select>
               </div>
             </div>
@@ -842,14 +852,29 @@ export function PilotApp() {
 
         <div className="section">
           <div className="section-title-row">
-            <h4>My Protections</h4>
-            <button className="btn btn-secondary pilot-inline-btn" disabled={busy} onClick={refreshProtectionHistory}>
-              Refresh
-            </button>
+            <h4>
+              My Protections <span className="muted">({protectionsHistory.length})</span>
+            </h4>
+            <div className="position-actions">
+              <button className="btn btn-secondary pilot-inline-btn" disabled={busy} onClick={refreshProtectionHistory}>
+                Refresh
+              </button>
+              <button
+                className="btn btn-secondary pilot-inline-btn"
+                type="button"
+                onClick={() => setShowHistorySection((prev) => !prev)}
+              >
+                {showHistorySection ? "Hide" : "Show"}
+              </button>
+            </div>
           </div>
-          {protectionsHistory.length === 0 ? (
+          {!showHistorySection && protectionsHistory.length > 0 && (
+            <div className="muted">Protection history hidden. Click Show to expand.</div>
+          )}
+          {showHistorySection && protectionsHistory.length === 0 ? (
             <div className="muted">No protections found for this trader ID yet.</div>
-          ) : (
+          ) : null}
+          {showHistorySection && protectionsHistory.length > 0 ? (
             <div className="positions">
               {protectionsHistory.map((item) => {
                 const itemType =
@@ -862,14 +887,17 @@ export function PilotApp() {
                   itemType === "short" ? "Ceiling Price" : "Floor Price";
                 return (
                   <div className="position-row" key={item.id}>
-                    <div>
-                      <strong>{itemDirection}</strong>
-                      <div className="muted">
-                        {item.id} · {item.status} · {itemTriggerLabel}{" "}
-                        {item.floorPrice ? `$${formatUsd(item.floorPrice)}` : "—"}
+                    <div className="position-main">
+                      <div className="position-main-title">
+                        <strong>{itemDirection}</strong>
+                        <span className="pill">{item.status}</span>
                       </div>
                       <div className="muted">
-                        Premium {item.premium ? `$${formatUsd(item.premium)}` : "—"} · Expires{" "}
+                        ID {item.id}
+                      </div>
+                      <div className="muted">
+                        {itemTriggerLabel} {item.floorPrice ? `$${formatUsd(item.floorPrice)}` : "—"} · Premium{" "}
+                        {item.premium ? `$${formatUsd(item.premium)}` : "—"} · Expires{" "}
                         {new Date(item.expiryAt).toLocaleString()}
                       </div>
                     </div>
@@ -891,35 +919,57 @@ export function PilotApp() {
                 );
               })}
             </div>
-          )}
+          ) : null}
         </div>
 
         {protection && (
           <div className="section">
             <div className="section-title-row">
               <h4>Protection Active</h4>
-              <button
-                className="btn pilot-inline-btn"
-                disabled={busy}
-                onClick={() => {
-                  setShowProtectionModal(true);
-                  void refreshMonitor(protection.id);
-                }}
-              >
-                Open Monitor
-              </button>
+              <div className="position-actions">
+                <button
+                  className="btn pilot-inline-btn"
+                  disabled={busy}
+                  onClick={() => {
+                    setShowProtectionModal(true);
+                    void refreshMonitor(protection.id);
+                  }}
+                >
+                  Open Monitor
+                </button>
+                <button
+                  className="btn btn-secondary pilot-inline-btn"
+                  type="button"
+                  onClick={() => setShowActiveSection((prev) => !prev)}
+                >
+                  {showActiveSection ? "Hide" : "Show"}
+                </button>
+              </div>
             </div>
-            <div className="muted">Protection ID: {protection.id}</div>
-            <div className="muted">{positionDirectionLabel}</div>
-            <div className="muted">
-              Entry ${formatUsd(protection.entryPrice)} · {triggerLabel.replace("Protection ", "")}{" "}
-              {displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"}
-            </div>
-            <div className="muted">
-              Premium {protection.premium ? `$${formatUsd(protection.premium)}` : "—"} · Expires{" "}
-              {new Date(protection.expiryAt).toLocaleString()}
-            </div>
-            {renewalChip && <div className="disclaimer">{renewalChip}</div>}
+            {showActiveSection ? (
+              <div className="positions">
+                <div className="position-row">
+                  <div className="position-main">
+                    <div className="position-main-title">
+                      <strong>{positionDirectionLabel}</strong>
+                      <span className="pill">{protection.status}</span>
+                    </div>
+                    <div className="muted">Protection ID: {protection.id}</div>
+                    <div className="muted">
+                      Entry ${formatUsd(protection.entryPrice)} · {triggerLabel.replace("Protection ", "")}{" "}
+                      {displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"}
+                    </div>
+                    <div className="muted">
+                      Premium {protection.premium ? `$${formatUsd(protection.premium)}` : "—"} · Expires{" "}
+                      {new Date(protection.expiryAt).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="muted">Active protection details hidden. Click Show to expand.</div>
+            )}
+            {showActiveSection && renewalChip && <div className="disclaimer">{renewalChip}</div>}
           </div>
         )}
       </div>
@@ -1007,7 +1057,7 @@ export function PilotApp() {
                   <span className="pilot-label">Admin Token</span>
                   <div className="pilot-field">
                     <input
-                      className="input pilot-input"
+                      className="input pilot-input pilot-input-text"
                       type="password"
                       value={adminTokenInput}
                       onChange={(e) => setAdminTokenInput(e.target.value)}

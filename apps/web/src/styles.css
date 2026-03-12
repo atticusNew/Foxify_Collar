@@ -265,9 +265,14 @@ body {
   border-radius: 10px;
 }
 
+.pilot-input-text {
+  text-align: left;
+}
+
 .pilot-select {
   text-align: left;
   white-space: nowrap;
+  padding-right: 30px;
 }
 
 .pilot-checkbox {
@@ -1305,6 +1310,18 @@ select.input {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: #121216;
+}
+
+.position-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.position-main-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .audit-table-wrap {
