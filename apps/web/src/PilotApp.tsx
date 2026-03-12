@@ -110,10 +110,13 @@ const friendlyError = (message: string): string => {
     return "Protection terms changed after quoting. Request a new quote before confirming.";
   }
   if (message.includes("price_unavailable")) {
-    return "Price feed is temporarily unavailable. Please retry in a moment.";
+    return "Reference BTC feed unavailable (503). Retry shortly. If persistent, verify API price-feed env.";
   }
   return message || "Request failed. Please retry.";
 };
+
+const isPriceUnavailableError = (message: string | null): boolean =>
+  Boolean(message && message.toLowerCase().includes("reference btc feed unavailable"));
 
 export function PilotApp() {
   const [userId, setUserId] = useState(() => `foxify-user-${Math.random().toString(36).slice(2, 8)}`);
@@ -275,7 +278,12 @@ export function PilotApp() {
       });
       const payload = await res.json();
       if (!res.ok || payload?.status !== "ok") {
-        throw new Error(payload?.message || payload?.reason || "quote_failed");
+        const reason = String(payload?.reason || "");
+        const detail = String(payload?.detail || "");
+        if (reason === "price_unavailable") {
+          throw new Error(`price_unavailable${detail ? `:${detail}` : ""}`);
+        }
+        throw new Error(payload?.message || reason || "quote_failed");
       }
       setQuote(payload as QuoteResult);
       setQuoteState("ready");
@@ -386,11 +394,17 @@ export function PilotApp() {
     : null;
   const configuredFloorPrice =
     Number.isFinite(entryValue) && entryValue > 0 ? entryValue * (1 - selectedTier.drawdownFloorPct) : NaN;
+  const showPriceFeedHint = isPriceUnavailableError(error);
 
   return (
     <div className="shell">
       <div className="card pilot-card">
-        <div className="title">Foxify Pilot Protection</div>
+        <div className="title pilot-title">
+          <div className="brand">
+            <img src="/foxify-logo.svg" alt="Foxify logo" className="pilot-logo" />
+            <span>Foxify Pilot Protection</span>
+          </div>
+        </div>
         <div className="subtitle">7-day fixed tenor · quote lock enforced at activation</div>
 
         <div className="section">
@@ -554,6 +568,20 @@ export function PilotApp() {
             </button>
           </div>
           {error && <div className="disclaimer danger">{error}</div>}
+          {showPriceFeedHint && (
+            <div className="disclaimer">
+              Quick check: API must run with PILOT_API_ENABLED=true, PRICE_SINGLE_SOURCE=true, and a valid
+              PRICE_REFERENCE_URL (Coinbase ticker).{" "}
+              <button
+                className="btn btn-secondary pilot-retry-btn"
+                type="button"
+                disabled={busy || !canQuote}
+                onClick={requestQuote}
+              >
+                Retry quote
+              </button>
+            </div>
+          )}
         </div>
 
         {protection && (
