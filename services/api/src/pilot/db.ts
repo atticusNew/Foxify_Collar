@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
+import Decimal from "decimal.js";
 import type {
   LedgerEntryType,
   PriceSnapshotRecord,
@@ -385,6 +386,60 @@ export const listLedgerForProtection = async (
     createdAt: new Date(row.created_at).toISOString(),
     settledAt: row.settled_at ? new Date(row.settled_at).toISOString() : null
   }));
+};
+
+export const getPilotAdminMetrics = async (
+  pool: Queryable
+): Promise<{
+  totalProtections: string;
+  activeProtections: string;
+  protectedNotionalTotalUsdc: string;
+  protectedNotionalActiveUsdc: string;
+  hedgePremiumTotalUsdc: string;
+  premiumDueTotalUsdc: string;
+  premiumSettledTotalUsdc: string;
+  payoutDueTotalUsdc: string;
+  payoutSettledTotalUsdc: string;
+  netSettledCashUsdc: string;
+}> => {
+  const result = await pool.query(
+    `
+      SELECT
+        COUNT(*)::text AS total_protections,
+        COUNT(*) FILTER (WHERE status = 'active')::text AS active_protections,
+        COALESCE(SUM(protected_notional), 0)::text AS protected_notional_total_usdc,
+        COALESCE(SUM(CASE WHEN status = 'active' THEN protected_notional ELSE 0 END), 0)::text AS protected_notional_active_usdc,
+        COALESCE(SUM(premium), 0)::text AS hedge_premium_total_usdc,
+        COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc,
+        COALESCE(SUM(COALESCE(payout_settled_amount, 0)), 0)::text AS payout_settled_total_usdc
+      FROM pilot_protections
+    `
+  );
+  const ledger = await pool.query(
+    `
+      SELECT
+        COALESCE(SUM(CASE WHEN entry_type = 'premium_due' THEN amount ELSE 0 END), 0)::text AS premium_due_total_usdc,
+        COALESCE(SUM(CASE WHEN entry_type = 'premium_settled' THEN amount ELSE 0 END), 0)::text AS premium_settled_total_usdc
+      FROM pilot_ledger_entries
+    `
+  );
+  const row = result.rows[0] || {};
+  const ledgerRow = ledger.rows[0] || {};
+  const premiumSettled = String(ledgerRow.premium_settled_total_usdc || "0");
+  const payoutSettled = String(row.payout_settled_total_usdc || "0");
+  const netSettledCashUsdc = new Decimal(premiumSettled).minus(new Decimal(payoutSettled)).toFixed(10);
+  return {
+    totalProtections: String(row.total_protections || "0"),
+    activeProtections: String(row.active_protections || "0"),
+    protectedNotionalTotalUsdc: String(row.protected_notional_total_usdc || "0"),
+    protectedNotionalActiveUsdc: String(row.protected_notional_active_usdc || "0"),
+    hedgePremiumTotalUsdc: String(row.hedge_premium_total_usdc || "0"),
+    premiumDueTotalUsdc: String(ledgerRow.premium_due_total_usdc || "0"),
+    premiumSettledTotalUsdc: premiumSettled,
+    payoutDueTotalUsdc: String(row.payout_due_total_usdc || "0"),
+    payoutSettledTotalUsdc: payoutSettled,
+    netSettledCashUsdc
+  };
 };
 
 export const insertVenueQuote = async (

@@ -8,6 +8,7 @@ import {
   ensurePilotSchema,
   getDailyProtectedNotionalForUser,
   getEssentialProofPayload,
+  getPilotAdminMetrics,
   getPilotPool,
   getProtection,
   getVenueQuoteByQuoteId,
@@ -1035,6 +1036,13 @@ export const registerPilotRoutes = async (
     }
     reply.code(400);
     return { status: "error", reason: "invalid_decision" };
+  });
+
+  app.get("/pilot/admin/metrics", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const metrics = await getPilotAdminMetrics(pool);
+    return { status: "ok", metrics };
   });
 
   app.post("/pilot/admin/protections/:id/premium-settled", async (req, reply) => {

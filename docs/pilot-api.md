@@ -24,6 +24,7 @@ Endpoints:
 - `POST /pilot/admin/protections/:id/premium-settled`
 - `POST /pilot/admin/protections/:id/payout-settled`
 - `GET /pilot/admin/protections/:id/ledger`
+- `GET /pilot/admin/metrics`
 - `GET /pilot/protections/export?format=json|csv`
 - `POST /pilot/internal/protections/:id/resolve-expiry` (internal operations/testing)
 

@@ -89,6 +89,19 @@ type AdminLedgerEntry = {
   settledAt: string | null;
 };
 
+type AdminMetrics = {
+  totalProtections: string;
+  activeProtections: string;
+  protectedNotionalTotalUsdc: string;
+  protectedNotionalActiveUsdc: string;
+  hedgePremiumTotalUsdc: string;
+  premiumDueTotalUsdc: string;
+  premiumSettledTotalUsdc: string;
+  payoutDueTotalUsdc: string;
+  payoutSettledTotalUsdc: string;
+  netSettledCashUsdc: string;
+};
+
 type ProtectionRecord = {
   id: string;
   status: string;
@@ -162,13 +175,16 @@ const friendlyError = (message: string): string => {
     return "Protection terms changed after quoting. Request a new quote before confirming.";
   }
   if (message.includes("price_unavailable")) {
-    return "Reference BTC feed unavailable (503). Retry shortly. If persistent, verify API price-feed env.";
+    return "Quote temporarily unavailable. Tap Refresh Quote.";
   }
   if (message.includes("storage_unavailable")) {
-    return "Storage is temporarily unavailable. Please retry shortly.";
+    return "Quote temporarily unavailable. Tap Refresh Quote.";
   }
   if (message.includes("quote_generation_failed")) {
-    return "Unable to generate a venue quote right now. Please retry.";
+    return "Quote temporarily unavailable. Tap Refresh Quote.";
+  }
+  if (message.includes("venue_quote_timeout")) {
+    return "Quote is taking longer than expected. Tap Refresh Quote.";
   }
   if (message.includes("venue_execute_timeout")) {
     return "Venue execution timed out. Request a fresh quote and retry.";
@@ -176,11 +192,11 @@ const friendlyError = (message: string): string => {
   if (message.includes("admin_unauthorized") || message.includes("unauthorized")) {
     return "Admin access denied. Use a valid internal admin token.";
   }
-  return message || "Request failed. Please retry.";
+  return "Unable to complete request. Please retry.";
 };
 
 const isPriceUnavailableError = (message: string | null): boolean =>
-  Boolean(message && message.toLowerCase().includes("reference btc feed unavailable"));
+  Boolean(message && message.toLowerCase().includes("quote temporarily unavailable"));
 
 const isRetryableQuoteError = (message: string): boolean => {
   const lower = message.toLowerCase();
@@ -230,6 +246,8 @@ export function PilotApp() {
   const [adminSelectedId, setAdminSelectedId] = useState<string | null>(null);
   const [adminLedger, setAdminLedger] = useState<AdminLedgerEntry[]>([]);
   const [adminMonitor, setAdminMonitor] = useState<MonitorPayload | null>(null);
+  const [adminMetrics, setAdminMetrics] = useState<AdminMetrics | null>(null);
+  const [adminViewingId, setAdminViewingId] = useState<string | null>(null);
   const [showHistorySection, setShowHistorySection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const selectedTier = useMemo(
@@ -393,17 +411,31 @@ export function PilotApp() {
     setAdminBusy(true);
     setAdminError(null);
     try {
-      const res = await fetch(`${API_BASE}/pilot/protections/export?format=json&limit=200`, {
-        headers: { "x-admin-token": token }
-      });
-      const payload = await res.json();
-      if (!res.ok || payload?.status !== "ok" || !Array.isArray(payload?.rows)) {
-        throw new Error(payload?.reason || "admin_load_failed");
+      const [rowsRes, metricsRes] = await Promise.all([
+        fetch(`${API_BASE}/pilot/protections/export?format=json&limit=200`, {
+          headers: { "x-admin-token": token }
+        }),
+        fetch(`${API_BASE}/pilot/admin/metrics`, {
+          headers: { "x-admin-token": token }
+        })
+      ]);
+      const rowsPayload = await rowsRes.json();
+      const metricsPayload = await metricsRes.json();
+      if (!rowsRes.ok || rowsPayload?.status !== "ok" || !Array.isArray(rowsPayload?.rows)) {
+        throw new Error(rowsPayload?.reason || "admin_load_failed");
       }
-      const rows = payload.rows as AdminProtectionRow[];
+      if (!metricsRes.ok || metricsPayload?.status !== "ok" || !metricsPayload?.metrics) {
+        throw new Error(metricsPayload?.reason || "admin_metrics_failed");
+      }
+      const rows = rowsPayload.rows as AdminProtectionRow[];
       setAdminRows(rows);
-      if (!adminSelectedId && rows.length > 0) {
-        setAdminSelectedId(rows[0].protection_id);
+      setAdminMetrics(metricsPayload.metrics as AdminMetrics);
+      const nextSelected = adminSelectedId && rows.some((row) => row.protection_id === adminSelectedId)
+        ? adminSelectedId
+        : rows[0]?.protection_id || null;
+      setAdminSelectedId(nextSelected);
+      if (nextSelected) {
+        await refreshAdminSelection(nextSelected, token);
       }
       setAdminToken(token);
     } catch (err: any) {
@@ -416,6 +448,7 @@ export function PilotApp() {
   const refreshAdminSelection = async (protectionId: string, token: string) => {
     setAdminBusy(true);
     setAdminError(null);
+    setAdminViewingId(protectionId);
     try {
       const [ledgerRes, monitorRes] = await Promise.all([
         fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/ledger`, {
@@ -434,6 +467,7 @@ export function PilotApp() {
       setAdminError(friendlyError(String(err?.message || "admin_refresh_failed")));
     } finally {
       setAdminBusy(false);
+      setAdminViewingId(null);
     }
   };
 
@@ -450,18 +484,13 @@ export function PilotApp() {
     return () => clearInterval(id);
   }, [showProtectionModal, protection?.id, userId]);
 
-  useEffect(() => {
-    if (!showAdminModal || !adminToken || !adminSelectedId) return;
-    refreshAdminSelection(adminSelectedId, adminToken);
-  }, [showAdminModal, adminSelectedId, adminToken]);
-
   const requestQuote = async () => {
     if (!canQuote) return;
     setBusy(true);
     setError(null);
     setQuote(null);
     setQuoteState("fetching");
-    const maxAttempts = 2;
+    const maxAttempts = 3;
     let finalError: any = null;
     try {
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -512,7 +541,7 @@ export function PilotApp() {
       setQuoteState("idle");
       const err = finalError;
       if (err?.name === "AbortError") {
-        setError("Quote request timed out. Please retry.");
+        setError("Quote is taking longer than expected. Tap Refresh Quote.");
       } else {
         setError(friendlyError(String(err?.message || "Price temporarily unavailable, please retry.")));
       }
@@ -640,20 +669,28 @@ export function PilotApp() {
   const quoteProtectionType: ProtectionType = quote?.protectionType ?? protectionType;
   const quoteDirectionLabel =
     quoteProtectionType === "short" ? "Short Exposure (Call Hedge)" : "Long Exposure (Put Hedge)";
-  const showPriceFeedHint = isPriceUnavailableError(error);
+  const internalAdminEnabled =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("internal_admin") === "1";
+  const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
   const liveReferencePrice = Number(monitor?.referencePrice ?? referencePrice);
   const liveTriggerPrice = monitor?.triggerPrice ?? displayedTriggerPrice;
   const liveDistanceToTriggerPct = Number(monitor?.distanceToTriggerPct ?? distanceToTriggerPct);
   const liveOptionMarkUsd = Number(monitor?.optionMarkUsd ?? indicativeOptionMark);
   const liveEstimatedTriggerValue = Number(monitor?.estimatedTriggerValue ?? maxTriggerProtectionValue);
-  const internalAdminEnabled =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("internal_admin") === "1";
   const adminSelected = adminRows.find((row) => row.protection_id === adminSelectedId) || null;
-  const adminTotalPremium = adminRows.reduce((sum, row) => sum + Number(row.premium || 0), 0);
-  const adminTotalPayoutDue = adminRows.reduce((sum, row) => sum + Number(row.payout_due_amount || 0), 0);
-  const adminTotalPayoutSettled = adminRows.reduce((sum, row) => sum + Number(row.payout_settled_amount || 0), 0);
-  const adminActiveCount = adminRows.filter((row) => row.status === "active").length;
+  const adminHedgePremiumTotal =
+    Number(adminMetrics?.hedgePremiumTotalUsdc ?? adminRows.reduce((sum, row) => sum + Number(row.premium || 0), 0));
+  const adminPremiumDueTotal = Number(adminMetrics?.premiumDueTotalUsdc ?? 0);
+  const adminPremiumSettledTotal = Number(adminMetrics?.premiumSettledTotalUsdc ?? 0);
+  const adminTotalPayoutDue =
+    Number(adminMetrics?.payoutDueTotalUsdc ?? adminRows.reduce((sum, row) => sum + Number(row.payout_due_amount || 0), 0));
+  const adminTotalPayoutSettled =
+    Number(
+      adminMetrics?.payoutSettledTotalUsdc ?? adminRows.reduce((sum, row) => sum + Number(row.payout_settled_amount || 0), 0)
+    );
+  const adminNetSettledCash = Number(adminMetrics?.netSettledCashUsdc ?? adminPremiumSettledTotal - adminTotalPayoutSettled);
+  const adminActiveCount = Number(adminMetrics?.activeProtections ?? adminRows.filter((row) => row.status === "active").length);
   const adminTimeLeftMs = adminSelected ? Date.parse(adminSelected.expiry_at) - Date.now() : NaN;
   const hasActiveInHistory = Boolean(protection && protectionsHistory.some((item) => item.id === protection.id));
   const historyWithoutActive = protection
@@ -1106,8 +1143,16 @@ export function PilotApp() {
                     <div className="value">{adminActiveCount}</div>
                   </div>
                   <div className="pilot-monitor-card">
-                    <div className="label">Premium Booked</div>
-                    <div className="value">${formatUsd(adminTotalPremium)}</div>
+                    <div className="label">Hedge Premium (Venue Cost)</div>
+                    <div className="value">${formatUsd(adminHedgePremiumTotal)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Premium Due (Atticus Receivable)</div>
+                    <div className="value">${formatUsd(adminPremiumDueTotal)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Premium Settled (Received)</div>
+                    <div className="value">${formatUsd(adminPremiumSettledTotal)}</div>
                   </div>
                   <div className="pilot-monitor-card">
                     <div className="label">Payout Liability</div>
@@ -1117,6 +1162,14 @@ export function PilotApp() {
                     <div className="label">Payout Settled</div>
                     <div className="value">${formatUsd(adminTotalPayoutSettled)}</div>
                   </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Net Settled Cash (Proxy Reserve)</div>
+                    <div className="value">${formatUsd(adminNetSettledCash)}</div>
+                  </div>
+                </div>
+                <div className="muted">
+                  Pilot note: hedge premium reflects venue cost; receivable/received tracks what Atticus should collect and has
+                  collected from premiums.
                 </div>
 
                 <div className="modal-actions">
@@ -1135,15 +1188,27 @@ export function PilotApp() {
                     <span>Action</span>
                   </div>
                   {adminRows.slice(0, 20).map((row) => (
-                    <div className="pilot-admin-row" key={row.protection_id}>
+                    <div
+                      className={`pilot-admin-row ${adminSelectedId === row.protection_id ? "pilot-admin-row-selected" : ""}`}
+                      key={row.protection_id}
+                    >
                       <span>{row.protection_id}</span>
                       <span>{row.status}</span>
                       <span>{row.premium ? `$${formatUsd(row.premium)}` : "—"}</span>
                       <span>{new Date(row.expiry_at).toLocaleString()}</span>
                       <span>{row.venue || "—"}</span>
                       <span>
-                        <button className="btn btn-secondary" onClick={() => setAdminSelectedId(row.protection_id)}>
-                          View
+                        <button
+                          className="btn btn-secondary"
+                          disabled={adminViewingId === row.protection_id}
+                          onClick={() => {
+                            setAdminSelectedId(row.protection_id);
+                            if (adminToken) {
+                              void refreshAdminSelection(row.protection_id, adminToken);
+                            }
+                          }}
+                        >
+                          {adminViewingId === row.protection_id ? "Loading..." : adminSelectedId === row.protection_id ? "Viewing" : "View"}
                         </button>
                       </span>
                     </div>

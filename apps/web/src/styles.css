@@ -386,7 +386,7 @@ body {
 
 .pilot-admin-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -416,6 +416,10 @@ body {
 
 .pilot-admin-row {
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.pilot-admin-row-selected {
+  background: rgba(125, 180, 255, 0.08);
 }
 
 .pilot-admin-row:last-child {
