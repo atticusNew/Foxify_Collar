@@ -258,12 +258,6 @@ body {
   font-size: 12px;
 }
 
-.pilot-label-hint {
-  font-size: 11px;
-  opacity: 0.9;
-  margin-left: 6px;
-}
-
 .pilot-input {
   width: 340px;
   text-align: right;
@@ -1114,12 +1108,6 @@ select.input {
     letter-spacing: 0.4px;
   }
 
-  .pilot-label-hint {
-    display: block;
-    margin-left: 0;
-    margin-top: 2px;
-  }
-
   .pilot-inline-btn {
     justify-self: start;
   }
@@ -1370,6 +1358,14 @@ select.input {
   text-transform: uppercase;
   letter-spacing: 0.3px;
   margin-top: 2px;
+}
+
+.pilot-viewing-pill {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .section-actions {

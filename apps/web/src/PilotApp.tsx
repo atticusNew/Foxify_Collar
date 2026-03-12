@@ -767,9 +767,7 @@ export function PilotApp() {
           <h4>Protection Request</h4>
           <div className="recommendation pilot-form">
             <div className="pilot-form-row">
-              <span className="pilot-label">
-                Trader ID <span className="pilot-label-hint">Enter ID to load history</span>
-              </span>
+              <span className="pilot-label">Trader ID</span>
               <div className="pilot-field pilot-field-trader">
                 <input
                   className="input pilot-input pilot-input-text pilot-input-trader"
@@ -970,7 +968,8 @@ export function PilotApp() {
         <div className="section">
           <div className="section-title-row">
             <h4>
-              Protections <span className="muted">({protectionsTotalCount})</span>
+              Protections <span className="muted">({protectionsTotalCount})</span>{" "}
+              {traderId && <span className="pill pilot-viewing-pill">Viewing: {traderId}</span>}
             </h4>
             <div className="section-actions">
               <button className="btn btn-secondary pilot-inline-btn" disabled={busy} onClick={refreshProtectionHistory}>
@@ -991,9 +990,6 @@ export function PilotApp() {
           </div>
           {!traderId && (
             <div className="muted section-collapsed-note">Enter Trader ID to load protections.</div>
-          )}
-          {traderId && (
-            <div className="muted section-collapsed-note">Showing protections for Trader ID: {traderId}</div>
           )}
           {!showHistorySection && protectionsTotalCount > 0 && traderId && (
             <div className="muted section-collapsed-note">Protections hidden.</div>

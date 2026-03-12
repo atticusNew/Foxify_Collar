@@ -80,13 +80,22 @@ The pilot ledger stores:
 - Daily protected notional cap is `50,000` USDC per user hash and is enforced on activation.
 - Quote responses may still be returned when the projected daily cap is exceeded, with limit telemetry included.
 - Pilot premium supports passthrough + markup with tier floors:
-  - `client_premium = max(hedge_premium + hedge_premium * PILOT_PREMIUM_MARKUP_PCT, protected_notional * tier_floor_bps / 10000)`
-  - `PILOT_PREMIUM_MARKUP_PCT` default: `0.015` (1.5%)
-  - floor defaults by tier:
-    - Bronze: `PILOT_PREMIUM_FLOOR_BPS_BRONZE` (25 bps)
-    - Silver: `PILOT_PREMIUM_FLOOR_BPS_SILVER` (20 bps)
-    - Gold: `PILOT_PREMIUM_FLOOR_BPS_GOLD` (15 bps)
-    - Platinum: `PILOT_PREMIUM_FLOOR_BPS_PLATINUM` (15 bps)
+  - `client_premium = max(hedge_premium + hedge_premium * tier_markup_pct, tier_floor_usd, protected_notional * tier_floor_bps / 10000)`
+  - tier markup defaults:
+    - Bronze: `PILOT_PREMIUM_MARKUP_PCT_BRONZE` (`0.06`)
+    - Silver: `PILOT_PREMIUM_MARKUP_PCT_SILVER` (`0.05`)
+    - Gold: `PILOT_PREMIUM_MARKUP_PCT_GOLD` (`0.04`)
+    - Platinum: `PILOT_PREMIUM_MARKUP_PCT_PLATINUM` (`0.03`)
+  - tier USD floor defaults:
+    - Bronze: `PILOT_PREMIUM_FLOOR_USD_BRONZE` (`20`)
+    - Silver: `PILOT_PREMIUM_FLOOR_USD_SILVER` (`17`)
+    - Gold: `PILOT_PREMIUM_FLOOR_USD_GOLD` (`14`)
+    - Platinum: `PILOT_PREMIUM_FLOOR_USD_PLATINUM` (`12`)
+  - tier bps safety floor defaults:
+    - Bronze: `PILOT_PREMIUM_FLOOR_BPS_BRONZE` (`6`)
+    - Silver: `PILOT_PREMIUM_FLOOR_BPS_SILVER` (`5`)
+    - Gold: `PILOT_PREMIUM_FLOOR_BPS_GOLD` (`4`)
+    - Platinum: `PILOT_PREMIUM_FLOOR_BPS_PLATINUM` (`4`)
 - `entryPrice` is required and treated as manual user input (not auto-derived from spot).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
 - Venue quote/execute operations enforce bounded timeouts:

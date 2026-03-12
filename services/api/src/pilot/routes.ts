@@ -68,6 +68,12 @@ const resolveTierPremiumFloorBps = (tierName: string): Decimal => {
   return new Decimal(raw);
 };
 
+const resolveTierPremiumFloorUsd = (tierName: string): Decimal => {
+  const raw = Number(pilotConfig.premiumFloorUsdByTier[tierName] ?? 0);
+  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
+  return new Decimal(raw);
+};
+
 const resolvePremiumPricing = (params: {
   tierName: string;
   protectedNotional: Decimal;
@@ -76,25 +82,40 @@ const resolvePremiumPricing = (params: {
   hedgePremiumUsd: Decimal;
   markupPct: Decimal;
   markupUsd: Decimal;
+  premiumFloorUsdAbsolute: Decimal;
+  premiumFloorUsdFromBps: Decimal;
+  premiumFloorBps: Decimal;
   premiumFloorUsd: Decimal;
   clientPremiumUsd: Decimal;
-  method: "markup" | "floor";
+  method: "markup" | "floor_usd" | "floor_bps";
 } => {
-  const markupPctRaw = Number(pilotConfig.premiumMarkupPct);
+  const markupPctRaw = Number(
+    pilotConfig.premiumMarkupPctByTier[params.tierName] ?? pilotConfig.premiumMarkupPct
+  );
   const markupPct = Number.isFinite(markupPctRaw) && markupPctRaw > 0 ? new Decimal(markupPctRaw) : new Decimal(0);
   const hedgePremiumUsd = params.hedgePremium;
   const markupUsd = hedgePremiumUsd.mul(markupPct);
   const markedUpPremium = hedgePremiumUsd.plus(markupUsd);
-  const floorBps = resolveTierPremiumFloorBps(params.tierName);
-  const premiumFloorUsd = params.protectedNotional.mul(floorBps).div(10000);
+  const premiumFloorBps = resolveTierPremiumFloorBps(params.tierName);
+  const premiumFloorUsdFromBps = params.protectedNotional.mul(premiumFloorBps).div(10000);
+  const premiumFloorUsdAbsolute = resolveTierPremiumFloorUsd(params.tierName);
+  const premiumFloorUsd = Decimal.max(premiumFloorUsdAbsolute, premiumFloorUsdFromBps);
   const clientPremiumUsd = Decimal.max(markedUpPremium, premiumFloorUsd);
+  const method: "markup" | "floor_usd" | "floor_bps" = clientPremiumUsd.eq(markedUpPremium)
+    ? "markup"
+    : premiumFloorUsdAbsolute.greaterThanOrEqualTo(premiumFloorUsdFromBps)
+      ? "floor_usd"
+      : "floor_bps";
   return {
     hedgePremiumUsd,
     markupPct,
     markupUsd,
+    premiumFloorUsdAbsolute,
+    premiumFloorUsdFromBps,
+    premiumFloorBps,
     premiumFloorUsd,
     clientPremiumUsd,
-    method: clientPremiumUsd.eq(premiumFloorUsd) && premiumFloorUsd.gt(markedUpPremium) ? "floor" : "markup"
+    method
   };
 };
 
@@ -456,6 +477,9 @@ export const registerPilotRoutes = async (
         hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
         markupPct: premiumPricing.markupPct.toFixed(6),
         markupUsd: premiumPricing.markupUsd.toFixed(10),
+        premiumFloorUsdAbsolute: premiumPricing.premiumFloorUsdAbsolute.toFixed(10),
+        premiumFloorUsdFromBps: premiumPricing.premiumFloorUsdFromBps.toFixed(10),
+        premiumFloorBps: premiumPricing.premiumFloorBps.toFixed(2),
         premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
         clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
         method: premiumPricing.method
@@ -762,6 +786,9 @@ export const registerPilotRoutes = async (
       const contextMarkupPct = parsePositiveDecimal(lockContext.markupPct);
       const contextMarkupUsd = parsePositiveDecimal(lockContext.markupUsd);
       const contextFloorUsd = parsePositiveDecimal(lockContext.premiumFloorUsd);
+      const contextFloorUsdAbsolute = parsePositiveDecimal(lockContext.premiumFloorUsdAbsolute);
+      const contextFloorUsdFromBps = parsePositiveDecimal(lockContext.premiumFloorUsdFromBps);
+      const contextFloorBps = parsePositiveDecimal(lockContext.premiumFloorBps);
       const contextClientPremium = parsePositiveDecimal(lockContext.clientPremiumUsd);
       const fallbackPremiumPricing = resolvePremiumPricing({
         tierName,
@@ -772,9 +799,17 @@ export const registerPilotRoutes = async (
         hedgePremiumUsd: contextHedgePremium,
         markupPct: contextMarkupPct || fallbackPremiumPricing.markupPct,
         markupUsd: contextMarkupUsd || fallbackPremiumPricing.markupUsd,
+        premiumFloorUsdAbsolute: contextFloorUsdAbsolute || fallbackPremiumPricing.premiumFloorUsdAbsolute,
+        premiumFloorUsdFromBps: contextFloorUsdFromBps || fallbackPremiumPricing.premiumFloorUsdFromBps,
+        premiumFloorBps: contextFloorBps || fallbackPremiumPricing.premiumFloorBps,
         premiumFloorUsd: contextFloorUsd || fallbackPremiumPricing.premiumFloorUsd,
         clientPremiumUsd: contextClientPremium || fallbackPremiumPricing.clientPremiumUsd,
-        method: String(lockContext.method || fallbackPremiumPricing.method) === "floor" ? "floor" : "markup"
+        method: (() => {
+          const rawMethod = String(lockContext.method || fallbackPremiumPricing.method);
+          if (rawMethod === "floor_usd") return "floor_usd";
+          if (rawMethod === "floor_bps") return "floor_bps";
+          return "markup";
+        })()
       } as const;
       const execution = await withTimeout(
         venue.execute(lockedQuote),
@@ -830,6 +865,9 @@ export const registerPilotRoutes = async (
           hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
           markupPct: premiumPricing.markupPct.toFixed(6),
           markupUsd: premiumPricing.markupUsd.toFixed(10),
+          premiumFloorUsdAbsolute: premiumPricing.premiumFloorUsdAbsolute.toFixed(10),
+          premiumFloorUsdFromBps: premiumPricing.premiumFloorUsdFromBps.toFixed(10),
+          premiumFloorBps: premiumPricing.premiumFloorBps.toFixed(2),
           premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
           clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
           premiumMethod: premiumPricing.method,
