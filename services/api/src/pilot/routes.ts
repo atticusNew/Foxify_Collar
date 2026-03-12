@@ -98,6 +98,41 @@ const resolvePremiumPricing = (params: {
   };
 };
 
+const sanitizeQuoteForClient = (quote: {
+  venue: string;
+  quoteId: string;
+  rfqId?: string | null;
+  instrumentId: string;
+  side: "buy";
+  quantity: number;
+  premium: number;
+  expiresAt: string;
+  quoteTs: string;
+  details?: Record<string, unknown>;
+}): {
+  venue: string;
+  quoteId: string;
+  rfqId?: string | null;
+  instrumentId: string;
+  side: "buy";
+  quantity: number;
+  premium: number;
+  expiresAt: string;
+  quoteTs: string;
+  details?: Record<string, unknown>;
+} => {
+  const details = quote.details || {};
+  const allowedDetails: Record<string, unknown> = {};
+  const allowedKeys = ["mode", "source", "pricing", "askPriceBtc", "askSize", "spotPriceUsd", "optionType"];
+  for (const key of allowedKeys) {
+    if (key in details) allowedDetails[key] = details[key];
+  }
+  return {
+    ...quote,
+    details: Object.keys(allowedDetails).length > 0 ? allowedDetails : undefined
+  };
+};
+
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> => {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return promise;
   let timer: NodeJS.Timeout | null = null;
@@ -448,14 +483,10 @@ export const registerPilotRoutes = async (
           }
         }
       });
-      const clientQuote = {
+      const clientQuote = sanitizeQuoteForClient({
         ...quote,
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4)),
-        details: {
-          ...(quote.details || {}),
-          pricingBreakdown
-        }
-      };
+      });
       return {
         status: "ok",
         protectionType,
@@ -808,21 +839,10 @@ export const registerPilotRoutes = async (
         }
       });
       await client.query("COMMIT");
-      const activatedQuote = {
+      const activatedQuote = sanitizeQuoteForClient({
         ...lockedQuote,
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4)),
-        details: {
-          ...(lockedQuote.details || {}),
-          pricingBreakdown: {
-            hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
-            markupPct: premiumPricing.markupPct.toFixed(6),
-            markupUsd: premiumPricing.markupUsd.toFixed(10),
-            premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
-            clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
-            method: premiumPricing.method
-          }
-        }
-      };
+      });
       return {
         status: "ok",
         protection: updated,

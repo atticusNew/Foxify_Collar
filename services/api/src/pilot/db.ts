@@ -396,7 +396,10 @@ export const getPilotAdminMetrics = async (
   activeProtections: string;
   protectedNotionalTotalUsdc: string;
   protectedNotionalActiveUsdc: string;
+  clientPremiumTotalUsdc: string;
   hedgePremiumTotalUsdc: string;
+  bookedMarginUsdc: string;
+  bookedMarginPct: string;
   premiumDueTotalUsdc: string;
   premiumSettledTotalUsdc: string;
   payoutDueTotalUsdc: string;
@@ -415,6 +418,7 @@ export const getPilotAdminMetrics = async (
         COUNT(*) FILTER (WHERE status = 'active')::text AS active_protections,
         COALESCE(SUM(protected_notional), 0)::text AS protected_notional_total_usdc,
         COALESCE(SUM(CASE WHEN status = 'active' THEN protected_notional ELSE 0 END), 0)::text AS protected_notional_active_usdc,
+        COALESCE(SUM(premium), 0)::text AS client_premium_total_usdc,
         (
           SELECT COALESCE(SUM(premium), 0)::text
           FROM pilot_venue_executions
@@ -436,6 +440,9 @@ export const getPilotAdminMetrics = async (
   const ledgerRow = ledger.rows[0] || {};
   const startingReserve = new Decimal(opts.startingReserveUsdc || 0);
   const hedgePremium = new Decimal(String(row.hedge_premium_total_usdc || "0"));
+  const clientPremium = new Decimal(String(row.client_premium_total_usdc || "0"));
+  const bookedMargin = clientPremium.minus(hedgePremium);
+  const bookedMarginPct = clientPremium.gt(0) ? bookedMargin.div(clientPremium).mul(100) : new Decimal(0);
   const premiumDue = new Decimal(String(ledgerRow.premium_due_total_usdc || "0"));
   const premiumSettled = String(ledgerRow.premium_settled_total_usdc || "0");
   const premiumSettledDecimal = new Decimal(premiumSettled);
@@ -458,7 +465,10 @@ export const getPilotAdminMetrics = async (
     activeProtections: String(row.active_protections || "0"),
     protectedNotionalTotalUsdc: String(row.protected_notional_total_usdc || "0"),
     protectedNotionalActiveUsdc: String(row.protected_notional_active_usdc || "0"),
+    clientPremiumTotalUsdc: clientPremium.toFixed(10),
     hedgePremiumTotalUsdc: String(row.hedge_premium_total_usdc || "0"),
+    bookedMarginUsdc: bookedMargin.toFixed(10),
+    bookedMarginPct: bookedMarginPct.toFixed(6),
     premiumDueTotalUsdc: String(ledgerRow.premium_due_total_usdc || "0"),
     premiumSettledTotalUsdc: premiumSettled,
     payoutDueTotalUsdc: String(row.payout_due_total_usdc || "0"),

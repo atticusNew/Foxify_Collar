@@ -29,12 +29,12 @@ export const pilotConfig = {
   hashSecret: process.env.USER_HASH_SECRET || "",
   maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "50000"),
   maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "50000"),
-  premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.08"),
+  premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.015"),
   premiumFloorBpsByTier: {
-    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_BRONZE || "150"),
-    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_SILVER || "125"),
-    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_GOLD || "100"),
-    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "100")
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_BRONZE || "25"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_SILVER || "20"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_GOLD || "15"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "15")
   } as Record<string, number>,
   startingReserveUsdc: Number(process.env.PILOT_STARTING_RESERVE_USDC || "25000"),
   pricePrimaryTimeoutMs: Number(process.env.PRICE_TIMEOUT_PRIMARY_MS || "800"),

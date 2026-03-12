@@ -94,7 +94,10 @@ type AdminMetrics = {
   activeProtections: string;
   protectedNotionalTotalUsdc: string;
   protectedNotionalActiveUsdc: string;
+  clientPremiumTotalUsdc: string;
   hedgePremiumTotalUsdc: string;
+  bookedMarginUsdc: string;
+  bookedMarginPct: string;
   premiumDueTotalUsdc: string;
   premiumSettledTotalUsdc: string;
   payoutDueTotalUsdc: string;
@@ -250,6 +253,7 @@ export function PilotApp() {
   const [adminRows, setAdminRows] = useState<AdminProtectionRow[]>([]);
   const [adminSelectedId, setAdminSelectedId] = useState<string | null>(null);
   const [adminLedger, setAdminLedger] = useState<AdminLedgerEntry[]>([]);
+  const [adminDetailProtection, setAdminDetailProtection] = useState<ProtectionRecord | null>(null);
   const [adminMonitor, setAdminMonitor] = useState<MonitorPayload | null>(null);
   const [adminMetrics, setAdminMetrics] = useState<AdminMetrics | null>(null);
   const [adminViewingId, setAdminViewingId] = useState<string | null>(null);
@@ -477,6 +481,7 @@ export function PilotApp() {
       if (!ledgerRes.ok || ledgerPayload?.status !== "ok") {
         throw new Error(ledgerPayload?.reason || "admin_ledger_failed");
       }
+      setAdminDetailProtection((ledgerPayload?.protection as ProtectionRecord) || null);
       setAdminLedger(Array.isArray(ledgerPayload?.ledger) ? (ledgerPayload.ledger as AdminLedgerEntry[]) : []);
       setAdminMonitor(monitorPayload?.monitor ? (monitorPayload.monitor as MonitorPayload) : null);
       setAdminDetailUpdatedAt(new Date());
@@ -702,8 +707,11 @@ export function PilotApp() {
   const liveOptionMarkUsd = Number(monitor?.optionMarkUsd ?? indicativeOptionMark);
   const liveEstimatedTriggerValue = Number(monitor?.estimatedTriggerValue ?? maxTriggerProtectionValue);
   const adminSelected = adminRows.find((row) => row.protection_id === adminSelectedId) || null;
+  const adminClientPremiumTotal = Number(adminMetrics?.clientPremiumTotalUsdc ?? 0);
   const adminHedgePremiumTotal =
     Number(adminMetrics?.hedgePremiumTotalUsdc ?? adminRows.reduce((sum, row) => sum + Number(row.premium || 0), 0));
+  const adminBookedMargin = Number(adminMetrics?.bookedMarginUsdc ?? adminClientPremiumTotal - adminHedgePremiumTotal);
+  const adminBookedMarginPct = Number(adminMetrics?.bookedMarginPct ?? 0);
   const adminPremiumDueTotal = Number(adminMetrics?.premiumDueTotalUsdc ?? 0);
   const adminPremiumSettledTotal = Number(adminMetrics?.premiumSettledTotalUsdc ?? 0);
   const adminPendingPremiumReceivable = Number(adminMetrics?.pendingPremiumReceivableUsdc ?? 0);
@@ -720,6 +728,15 @@ export function PilotApp() {
   const adminNetSettledCash = Number(adminMetrics?.netSettledCashUsdc ?? adminPremiumSettledTotal - adminTotalPayoutSettled);
   const adminActiveCount = Number(adminMetrics?.activeProtections ?? adminRows.filter((row) => row.status === "active").length);
   const adminTimeLeftMs = adminSelected ? Date.parse(adminSelected.expiry_at) - Date.now() : NaN;
+  const adminSelectedClientPremium = Number(adminDetailProtection?.premium ?? adminSelected?.premium ?? 0);
+  const adminSelectedHedgeCost = Number(
+    (adminDetailProtection?.metadata?.hedgePremiumUsd as string | undefined) ||
+      (adminDetailProtection?.metadata?.rawHedgePremiumUsd as string | undefined) ||
+      0
+  );
+  const adminSelectedTradeMargin = adminSelectedClientPremium - adminSelectedHedgeCost;
+  const adminSelectedTradeMarginPct =
+    adminSelectedClientPremium > 0 ? (adminSelectedTradeMargin / adminSelectedClientPremium) * 100 : NaN;
   const hasActiveInHistory = Boolean(protection && protectionsHistory.some((item) => item.id === protection.id));
   const activeProtectionForView = protection && hasActiveInHistory ? protection : null;
   const historyWithoutActive = activeProtectionForView
@@ -751,7 +768,7 @@ export function PilotApp() {
           <div className="recommendation pilot-form">
             <div className="pilot-form-row">
               <span className="pilot-label">
-                Trader ID <span className="pilot-label-hint">e.g. danny-001</span>
+                Trader ID <span className="pilot-label-hint">Enter ID to load history</span>
               </span>
               <div className="pilot-field pilot-field-trader">
                 <input
@@ -1198,6 +1215,15 @@ export function PilotApp() {
                     <div className="value">${formatUsd(adminHedgePremiumTotal)}</div>
                   </div>
                   <div className="pilot-monitor-card">
+                    <div className="label">Client Premium (Charged)</div>
+                    <div className="value">${formatUsd(adminClientPremiumTotal)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Platform Margin (Booked)</div>
+                    <div className="value">${formatUsd(adminBookedMargin)}</div>
+                    <div className="muted">{Number.isFinite(adminBookedMarginPct) ? `${adminBookedMarginPct.toFixed(2)}%` : "—"}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
                     <div className="label">Premium Due (Atticus Receivable)</div>
                     <div className="value">${formatUsd(adminPremiumDueTotal)}</div>
                   </div>
@@ -1227,8 +1253,8 @@ export function PilotApp() {
                   </div>
                 </div>
                 <div className="muted">
-                  Premium settled and payout settled only move when settlement events are posted. For 7-day pilot flows,
-                  these remain unchanged until remittance/settlement is recorded.
+                  Hedge cost and client premium are shown separately for margin visibility. Settled metrics move only when
+                  settlement events are posted.
                 </div>
 
                 <div className="modal-actions">
@@ -1311,6 +1337,24 @@ export function PilotApp() {
               MTM Option Mark:{" "}
               {adminMonitor && Number.isFinite(Number(adminMonitor.optionMarkUsd))
                 ? `$${formatUsd(adminMonitor.optionMarkUsd)}`
+                : "—"}
+            </div>
+            <div className="muted">
+              Hedge Cost (Venue):{" "}
+              {Number.isFinite(adminSelectedHedgeCost) && adminSelectedHedgeCost > 0
+                ? `$${formatUsd(adminSelectedHedgeCost)}`
+                : "—"}
+            </div>
+            <div className="muted">
+              Client Premium:{" "}
+              {Number.isFinite(adminSelectedClientPremium) && adminSelectedClientPremium > 0
+                ? `$${formatUsd(adminSelectedClientPremium)}`
+                : "—"}
+            </div>
+            <div className="muted">
+              Trade Margin:{" "}
+              {Number.isFinite(adminSelectedTradeMargin)
+                ? `$${formatUsd(adminSelectedTradeMargin)}${Number.isFinite(adminSelectedTradeMarginPct) ? ` (${adminSelectedTradeMarginPct.toFixed(2)}%)` : ""}`
                 : "—"}
             </div>
             <div className="muted">
