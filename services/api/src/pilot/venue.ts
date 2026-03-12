@@ -106,6 +106,13 @@ const resolveDeribitSpot = async (connector: DeribitConnector): Promise<number> 
 export interface PilotVenueAdapter {
   quote(req: QuoteRequest): Promise<VenueQuote>;
   execute(quote: VenueQuote): Promise<VenueExecution>;
+  getMark(params: { instrumentId: string; quantity: number }): Promise<{
+    markPremium: number;
+    unitPrice: number;
+    source: string;
+    asOf: string;
+    details?: Record<string, unknown>;
+  }>;
 }
 
 class MockFalconxAdapter implements PilotVenueAdapter {
@@ -144,17 +151,42 @@ class MockFalconxAdapter implements PilotVenueAdapter {
       details: { mode: "mock" }
     };
   }
+
+  async getMark(params: { instrumentId: string; quantity: number }): Promise<{
+    markPremium: number;
+    unitPrice: number;
+    source: string;
+    asOf: string;
+    details?: Record<string, unknown>;
+  }> {
+    const unitPrice = 1000;
+    return {
+      markPremium: Number((unitPrice * Math.max(params.quantity, 0)).toFixed(4)),
+      unitPrice,
+      source: "mock_static",
+      asOf: nowIso(),
+      details: { mode: "mock" }
+    };
+  }
 }
 
 class DeribitTestAdapter implements PilotVenueAdapter {
   constructor(private connector: DeribitConnector) {}
 
+  private resolveTargetOptionType(requestedInstrument: string): "put" | "call" {
+    const normalized = String(requestedInstrument || "").toUpperCase();
+    if (normalized.endsWith("-C")) return "call";
+    return "put";
+  }
+
   private async resolveQuoteInstrument(requestedInstrument: string, spot: number): Promise<{
     instrumentId: string;
     ask: number;
     askSize: number | null;
+    optionType: "put" | "call";
     source: string;
   }> {
+    const targetOptionType = this.resolveTargetOptionType(requestedInstrument);
     if (DERIBIT_OPTION_REGEX.test(requestedInstrument)) {
       const book = await this.connector.getOrderBook(requestedInstrument);
       const top = extractTopOfBook(book);
@@ -163,6 +195,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           instrumentId: requestedInstrument,
           ask: top.ask,
           askSize: top.askSize,
+          optionType: targetOptionType,
           source: "requested_instrument_orderbook"
         };
       }
@@ -172,10 +205,10 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     const list: any[] = Array.isArray(instruments?.result) ? instruments.result : [];
     const now = Date.now();
     const targetExpiry = now + 7 * 86400000;
-    const targetStrike = spot * 0.85;
+    const targetStrike = targetOptionType === "call" ? spot * 1.15 : spot * 0.85;
 
-    const puts = list
-      .filter((item) => String(item?.option_type || "").toLowerCase() === "put")
+    const candidates = list
+      .filter((item) => String(item?.option_type || "").toLowerCase() === targetOptionType)
       .filter((item) => Number(item?.expiration_timestamp || 0) > now + 60 * 60 * 1000)
       .map((item) => ({
         instrumentId: String(item.instrument_name || ""),
@@ -192,7 +225,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       })
       .slice(0, 25);
 
-    for (const candidate of puts) {
+    for (const candidate of candidates) {
       const book = await this.connector.getOrderBook(candidate.instrumentId);
       const top = extractTopOfBook(book);
       if (top.ask && top.ask > 0) {
@@ -200,7 +233,8 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           instrumentId: candidate.instrumentId,
           ask: top.ask,
           askSize: top.askSize,
-          source: "auto_selected_deribit_put"
+          optionType: targetOptionType,
+          source: targetOptionType === "call" ? "auto_selected_deribit_call" : "auto_selected_deribit_put"
         };
       }
     }
@@ -229,6 +263,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       quoteTs,
       details: {
         source: resolved.source,
+        optionType: resolved.optionType,
         pricing: "live_orderbook",
         askPriceBtc: resolved.ask,
         askSize: resolved.askSize,
@@ -262,6 +297,48 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       externalOrderId: String(order?.id || `DERIBIT-ORD-${randomUUID()}`),
       externalExecutionId: String(order?.id || `DERIBIT-EXE-${randomUUID()}`),
       details: { raw: order }
+    };
+  }
+
+  async getMark(params: { instrumentId: string; quantity: number }): Promise<{
+    markPremium: number;
+    unitPrice: number;
+    source: string;
+    asOf: string;
+    details?: Record<string, unknown>;
+  }> {
+    const [orderBookPayload, spot] = await Promise.all([
+      this.connector.getOrderBook(params.instrumentId),
+      resolveDeribitSpot(this.connector)
+    ]);
+    const orderBook = orderBookPayload?.result ?? orderBookPayload;
+    const top = extractTopOfBook(orderBookPayload);
+    const markBtc = Number(orderBook?.mark_price ?? 0);
+    const unitPrice =
+      Number.isFinite(markBtc) && markBtc > 0
+        ? markBtc * spot
+        : top.ask && top.bid
+          ? ((top.ask + top.bid) / 2) * spot
+          : top.ask
+            ? top.ask * spot
+            : top.bid
+              ? top.bid * spot
+              : NaN;
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+      throw new Error("mark_unavailable");
+    }
+    const quantity = Math.max(0, Number(params.quantity || 0));
+    return {
+      markPremium: Number((unitPrice * quantity).toFixed(4)),
+      unitPrice: Number(unitPrice.toFixed(4)),
+      source: Number.isFinite(markBtc) && markBtc > 0 ? "deribit_mark_price" : "deribit_top_of_book",
+      asOf: nowIso(),
+      details: {
+        markPriceBtc: Number.isFinite(markBtc) ? markBtc : null,
+        askPriceBtc: top.ask,
+        bidPriceBtc: top.bid,
+        spotPriceUsd: spot
+      }
     };
   }
 }
@@ -330,6 +407,16 @@ class FalconxAdapter implements PilotVenueAdapter {
       externalExecutionId: String(response.rfq_id || quote.rfqId || randomUUID()),
       details: response
     };
+  }
+
+  async getMark(): Promise<{
+    markPremium: number;
+    unitPrice: number;
+    source: string;
+    asOf: string;
+    details?: Record<string, unknown>;
+  }> {
+    throw new Error("mark_unavailable");
   }
 }
 

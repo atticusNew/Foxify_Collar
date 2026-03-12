@@ -42,6 +42,22 @@ type QuoteResult = {
   };
 };
 
+type MonitorPayload = {
+  protectionId: string;
+  status: string;
+  protectionType: ProtectionType;
+  referencePrice: string;
+  referenceSource: string;
+  referenceTimestamp: string;
+  triggerPrice: string;
+  distanceToTriggerPct: string;
+  optionMarkUsd: string;
+  markSource: string;
+  markDetails?: Record<string, unknown> | null;
+  estimatedTriggerValue: string;
+  asOf: string;
+};
+
 type ProtectionRecord = {
   id: string;
   status: string;
@@ -135,7 +151,13 @@ const isPriceUnavailableError = (message: string | null): boolean =>
 const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 
 export function PilotApp() {
-  const [userId, setUserId] = useState(() => `foxify-user-${Math.random().toString(36).slice(2, 8)}`);
+  const [userId, setUserId] = useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = window.localStorage.getItem("pilot_user_id");
+      if (saved) return saved;
+    }
+    return `foxify-user-${Math.random().toString(36).slice(2, 8)}`;
+  });
   const [tiers, setTiers] = useState<TierLevel[]>(DEFAULT_TIERS);
   const [tierName, setTierName] = useState(DEFAULT_TIERS[0].name);
   const [protectionType, setProtectionType] = useState<ProtectionType>("long");
@@ -151,6 +173,9 @@ export function PilotApp() {
   const [quoteTimeLeft, setQuoteTimeLeft] = useState(0);
   const [showRenewModal, setShowRenewModal] = useState(false);
   const [showProtectionModal, setShowProtectionModal] = useState(false);
+  const [monitor, setMonitor] = useState<MonitorPayload | null>(null);
+  const [monitorBusy, setMonitorBusy] = useState(false);
+  const [protectionsHistory, setProtectionsHistory] = useState<ProtectionRecord[]>([]);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
@@ -234,6 +259,12 @@ export function PilotApp() {
   }, [userId, protectionType, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice]);
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("pilot_user_id", userId);
+    }
+  }, [userId]);
+
+  useEffect(() => {
     if (!quote?.quote?.expiresAt) {
       setQuoteTimeLeft(0);
       return;
@@ -269,6 +300,52 @@ export function PilotApp() {
     }, 10000);
     return () => clearInterval(id);
   }, [protection?.id]);
+
+  const refreshProtectionHistory = async () => {
+    if (!userId) return;
+    try {
+      const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(userId)}&limit=20`);
+      if (!res.ok) return;
+      const payload = await res.json();
+      if (Array.isArray(payload?.protections)) {
+        setProtectionsHistory(payload.protections as ProtectionRecord[]);
+      }
+    } catch {
+      // ignore history refresh errors in pilot widget
+    }
+  };
+
+  const refreshMonitor = async (protectionId: string) => {
+    setMonitorBusy(true);
+    try {
+      const res = await fetch(
+        `${API_BASE}/pilot/protections/${protectionId}/monitor?userId=${encodeURIComponent(userId)}`
+      );
+      if (!res.ok) return;
+      const payload = await res.json();
+      if (payload?.monitor) {
+        setMonitor(payload.monitor as MonitorPayload);
+        setLastUpdatedAt(new Date());
+      }
+    } catch {
+      // ignore monitor refresh errors in pilot widget
+    } finally {
+      setMonitorBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshProtectionHistory();
+  }, [userId]);
+
+  useEffect(() => {
+    if (!showProtectionModal || !protection?.id) return;
+    refreshMonitor(protection.id);
+    const id = setInterval(() => {
+      refreshMonitor(protection.id);
+    }, 10000);
+    return () => clearInterval(id);
+  }, [showProtectionModal, protection?.id, userId]);
 
   const requestQuote = async () => {
     if (!canQuote) return;
@@ -351,9 +428,11 @@ export function PilotApp() {
         throw new Error(payload?.message || payload?.reason || "activation_failed");
       }
       setProtection(payload.protection as ProtectionRecord);
+      setMonitor(null);
       setLastUpdatedAt(new Date());
       setShowProtectionModal(true);
       setShowRenewModal(false);
+      void refreshProtectionHistory();
     } catch (err: any) {
       setError(friendlyError(String(err?.message || "Protection activation failed.")));
     } finally {
@@ -378,6 +457,7 @@ export function PilotApp() {
         setProtection(payload.protection as ProtectionRecord);
       }
       setShowRenewModal(false);
+      void refreshProtectionHistory();
     } catch (err: any) {
       setError(friendlyError(String(err?.message || "Failed to process renewal decision.")));
     } finally {
@@ -436,6 +516,11 @@ export function PilotApp() {
   const quoteDirectionLabel =
     quoteProtectionType === "short" ? "Short Exposure (Call Hedge)" : "Long Exposure (Put Hedge)";
   const showPriceFeedHint = isPriceUnavailableError(error);
+  const liveReferencePrice = Number(monitor?.referencePrice ?? referencePrice);
+  const liveTriggerPrice = monitor?.triggerPrice ?? displayedTriggerPrice;
+  const liveDistanceToTriggerPct = Number(monitor?.distanceToTriggerPct ?? distanceToTriggerPct);
+  const liveOptionMarkUsd = Number(monitor?.optionMarkUsd ?? indicativeOptionMark);
+  const liveEstimatedTriggerValue = Number(monitor?.estimatedTriggerValue ?? maxTriggerProtectionValue);
 
   return (
     <div className="shell">
@@ -641,11 +726,72 @@ export function PilotApp() {
           )}
         </div>
 
+        <div className="section">
+          <div className="section-title-row">
+            <h4>My Protections</h4>
+            <button className="btn btn-secondary pilot-inline-btn" disabled={busy} onClick={refreshProtectionHistory}>
+              Refresh
+            </button>
+          </div>
+          {protectionsHistory.length === 0 ? (
+            <div className="muted">No protections found for this trader ID yet.</div>
+          ) : (
+            <div className="positions">
+              {protectionsHistory.map((item) => {
+                const itemType =
+                  item.metadata && String(item.metadata.protectionType || "").toLowerCase() === "short"
+                    ? "short"
+                    : "long";
+                const itemDirection =
+                  itemType === "short" ? "Short Exposure (Call Hedge)" : "Long Exposure (Put Hedge)";
+                const itemTriggerLabel =
+                  itemType === "short" ? "Ceiling Price" : "Floor Price";
+                return (
+                  <div className="position-row" key={item.id}>
+                    <div>
+                      <strong>{itemDirection}</strong>
+                      <div className="muted">
+                        {item.id} · {item.status} · {itemTriggerLabel}{" "}
+                        {item.floorPrice ? `$${formatUsd(item.floorPrice)}` : "—"}
+                      </div>
+                      <div className="muted">
+                        Premium {item.premium ? `$${formatUsd(item.premium)}` : "—"} · Expires{" "}
+                        {new Date(item.expiryAt).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="position-actions">
+                      <button
+                        className="btn"
+                        disabled={busy}
+                        onClick={() => {
+                          setProtection(item);
+                          setMonitor(null);
+                          setShowProtectionModal(true);
+                          void refreshMonitor(item.id);
+                        }}
+                      >
+                        Open Monitor
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {protection && (
           <div className="section">
             <div className="section-title-row">
               <h4>Protection Active</h4>
-              <button className="btn pilot-inline-btn" disabled={busy} onClick={() => setShowProtectionModal(true)}>
+              <button
+                className="btn pilot-inline-btn"
+                disabled={busy}
+                onClick={() => {
+                  setShowProtectionModal(true);
+                  void refreshMonitor(protection.id);
+                }}
+              >
                 Open Monitor
               </button>
             </div>
@@ -679,10 +825,19 @@ export function PilotApp() {
               Protected position {protection.id} · Auto-refresh every 10s
               {lastUpdatedAt ? ` · Updated ${lastUpdatedAt.toLocaleTimeString()}` : ""}
             </div>
+            <div className="modal-actions">
+              <button
+                className="btn btn-secondary"
+                disabled={monitorBusy}
+                onClick={() => void refreshMonitor(protection.id)}
+              >
+                {monitorBusy ? "Refreshing..." : "Refresh Monitor"}
+              </button>
+            </div>
             <div className="pilot-monitor-grid">
               <div className="pilot-monitor-card">
                 <div className="label">Reference BTC Price</div>
-                <div className="value">${formatUsd(referencePrice)}</div>
+                <div className="value">${formatUsd(liveReferencePrice)}</div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Entry Price</div>
@@ -690,22 +845,23 @@ export function PilotApp() {
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">{triggerLabel}</div>
-                <div className="value">{displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"}</div>
+                <div className="value">{liveTriggerPrice ? `$${formatUsd(liveTriggerPrice)}` : "—"}</div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Distance to Trigger</div>
-                <div className={`value ${distanceToTriggerPct < 3 ? "danger" : ""}`}>
-                  {Number.isFinite(distanceToTriggerPct) ? `${distanceToTriggerPct.toFixed(2)}%` : "—"}
+                <div className={`value ${liveDistanceToTriggerPct < 3 ? "danger" : ""}`}>
+                  {Number.isFinite(liveDistanceToTriggerPct) ? `${liveDistanceToTriggerPct.toFixed(2)}%` : "—"}
                 </div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Option Mark (Indicative)</div>
-                <div className="value">${formatUsd(indicativeOptionMark)}</div>
+                <div className="value">${formatUsd(liveOptionMarkUsd)}</div>
+                {monitor?.markSource && <div className="muted">{monitor.markSource}</div>}
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Est. Protection Value at Trigger</div>
                 <div className="value">
-                  {Number.isFinite(maxTriggerProtectionValue) ? `$${formatUsd(maxTriggerProtectionValue)}` : "—"}
+                  {Number.isFinite(liveEstimatedTriggerValue) ? `$${formatUsd(liveEstimatedTriggerValue)}` : "—"}
                 </div>
               </div>
             </div>

@@ -6,7 +6,9 @@ These endpoints are enabled when `PILOT_API_ENABLED=true`.
 
 - `POST /pilot/protections/quote`
 - `POST /pilot/protections/activate`
+- `GET /pilot/protections?userId=<id>&limit=<n>`
 - `GET /pilot/protections/:id`
+- `GET /pilot/protections/:id/monitor` (optionally scoped with `?userId=<id>`)
 - `GET /pilot/protections/:id/proof` (requires `x-proof-token` or `Authorization: Bearer <token>`)
 - `POST /pilot/protections/:id/renewal-decision`
 
@@ -81,6 +83,7 @@ The pilot ledger stores:
 - Venue quote/execute operations enforce bounded timeouts:
   - `PILOT_VENUE_QUOTE_TIMEOUT_MS` (default 5000ms)
   - `PILOT_VENUE_EXEC_TIMEOUT_MS` (default 8000ms)
+  - `PILOT_VENUE_MARK_TIMEOUT_MS` (default 3000ms)
 - Quote, activation, and expiry resolution all use the same canonical reference feed configuration.
 
 ## Proof payload policy

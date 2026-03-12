@@ -237,7 +237,7 @@ body {
 }
 
 .pilot-card {
-  width: min(620px, 100%);
+  width: min(700px, 100%);
 }
 
 .pilot-form {
@@ -259,7 +259,7 @@ body {
 }
 
 .pilot-input {
-  width: 248px;
+  width: 320px;
   text-align: right;
   padding: 7px 10px;
   border-radius: 10px;
@@ -267,6 +267,7 @@ body {
 
 .pilot-select {
   text-align: left;
+  white-space: nowrap;
 }
 
 .pilot-checkbox {
@@ -283,7 +284,7 @@ body {
 }
 
 .pilot-field {
-  width: 248px;
+  width: 320px;
   justify-self: end;
   display: flex;
   justify-content: flex-end;

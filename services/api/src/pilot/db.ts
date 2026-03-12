@@ -247,6 +247,19 @@ export const listProtections = async (
   return result.rows.map(mapProtection);
 };
 
+export const listProtectionsByUserHash = async (
+  pool: Queryable,
+  userHash: string,
+  opts: { limit?: number } = {}
+): Promise<ProtectionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  const result = await pool.query(
+    `SELECT * FROM pilot_protections WHERE user_hash = $1 ORDER BY created_at DESC LIMIT $2`,
+    [userHash, limit]
+  );
+  return result.rows.map(mapProtection);
+};
+
 export const getDailyProtectedNotionalForUser = async (
   pool: Queryable,
   userHash: string,

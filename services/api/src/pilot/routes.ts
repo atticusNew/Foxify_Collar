@@ -19,6 +19,7 @@ import {
   insertVenueQuote,
   listLedgerForProtection,
   listProtections,
+  listProtectionsByUserHash,
   patchProtection
 } from "./db";
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
@@ -79,6 +80,11 @@ const inferProtectionTypeFromInstrument = (instrumentId: string | null | undefin
   const normalized = String(instrumentId || "").toUpperCase();
   return normalized.endsWith("-C") ? "short" : "long";
 };
+
+const resolveProtectionTypeFromRecord = (protection: { instrumentId?: string | null; metadata?: Record<string, unknown> }): "long" | "short" =>
+  normalizeProtectionType(
+    String(protection.metadata?.protectionType || inferProtectionTypeFromInstrument(protection.instrumentId))
+  );
 
 const requireAdmin = async (
   req: FastifyRequest,
@@ -189,9 +195,7 @@ export const registerPilotRoutes = async (
       const protectedNotional = new Decimal(protection.protectedNotional);
       const expiryPrice = snapshot.price;
       const drawdownFloorPct = new Decimal(protection.drawdownFloorPct || "0.2");
-      const protectionType = normalizeProtectionType(
-        String(protection.metadata?.protectionType || inferProtectionTypeFromInstrument(protection.instrumentId))
-      );
+      const protectionType = resolveProtectionTypeFromRecord(protection);
       const triggerPrice = protection.floorPrice
         ? new Decimal(protection.floorPrice)
         : computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
@@ -798,6 +802,147 @@ export const registerPilotRoutes = async (
     } finally {
       client.release();
     }
+  });
+
+  app.get("/pilot/protections", async (req, reply) => {
+    const query = req.query as { userId?: string; limit?: string };
+    if (!query.userId) {
+      reply.code(400);
+      return { status: "error", reason: "missing_user_id" };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = buildUserHash({
+        rawUserId: query.userId,
+        secret: pilotConfig.hashSecret,
+        hashVersion: pilotConfig.hashVersion
+      });
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    try {
+      const protections = await listProtectionsByUserHash(pool, userHash.userHash, {
+        limit: Number(query.limit || 20)
+      });
+      return { status: "ok", protections };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "list_protections_failed")
+      };
+    }
+  });
+
+  app.get("/pilot/protections/:id/monitor", async (req, reply) => {
+    const params = req.params as { id: string };
+    const query = req.query as { userId?: string };
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (query.userId) {
+      try {
+        const userHash = buildUserHash({
+          rawUserId: query.userId,
+          secret: pilotConfig.hashSecret,
+          hashVersion: pilotConfig.hashVersion
+        });
+        if (userHash.userHash !== protection.userHash) {
+          reply.code(403);
+          return { status: "error", reason: "forbidden_user_scope" };
+        }
+      } catch (error: any) {
+        const reason = String(error?.message || "server_config_error");
+        reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+        return { status: "error", reason };
+      }
+    }
+    const requestId = pilotConfig.nextRequestId();
+    let snapshot: PriceSnapshotOutput;
+    try {
+      snapshot = await resolvePriceSnapshot(
+        {
+          primaryUrl: pilotConfig.referencePriceUrl,
+          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs
+        },
+        {
+          marketId: protection.marketId,
+          now: new Date(),
+          requestId,
+          endpointVersion: pilotConfig.endpointVersion
+        }
+      );
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        message: "Price temporarily unavailable, please retry.",
+        detail: String(error?.message || "monitor_price_unavailable")
+      };
+    }
+    const protectionType = resolveProtectionTypeFromRecord(protection);
+    const entryPrice = parsePositiveDecimal(protection.entryPrice) || snapshot.price;
+    const drawdownFloorPct = parsePositiveDecimal(protection.drawdownFloorPct) || new Decimal("0.2");
+    const triggerPrice =
+      parsePositiveDecimal(protection.floorPrice) ||
+      computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
+    const referencePrice = snapshot.price;
+    const distanceToTriggerPct = referencePrice.gt(0)
+      ? protectionType === "short"
+        ? triggerPrice.minus(referencePrice).div(referencePrice).mul(100)
+        : referencePrice.minus(triggerPrice).div(referencePrice).mul(100)
+      : new Decimal(0);
+    const protectedNotional = parsePositiveDecimal(protection.protectedNotional) || new Decimal(0);
+    const estimatedTriggerValue = protectedNotional.mul(drawdownFloorPct);
+    const quantity = parsePositiveDecimal(protection.size)?.toNumber() || 0;
+    let optionMarkUsd = parsePositiveDecimal(protection.premium)?.toNumber() || 0;
+    let markSource = "stored_premium";
+    let markDetails: Record<string, unknown> | null = null;
+    if (protection.instrumentId && quantity > 0) {
+      try {
+        const mark = await withTimeout(
+          venue.getMark({
+            instrumentId: protection.instrumentId,
+            quantity
+          }),
+          pilotConfig.venueMarkTimeoutMs,
+          "venue_mark"
+        );
+        optionMarkUsd = mark.markPremium;
+        markSource = mark.source;
+        markDetails = mark.details || null;
+      } catch (error: any) {
+        markDetails = { error: String(error?.message || "mark_unavailable") };
+      }
+    }
+    return {
+      status: "ok",
+      monitor: {
+        protectionId: protection.id,
+        status: protection.status,
+        protectionType,
+        referencePrice: referencePrice.toFixed(10),
+        referenceSource: snapshot.priceSource,
+        referenceTimestamp: snapshot.priceTimestamp,
+        triggerPrice: triggerPrice.toFixed(10),
+        distanceToTriggerPct: distanceToTriggerPct.toFixed(4),
+        optionMarkUsd: new Decimal(optionMarkUsd).toFixed(10),
+        markSource,
+        markDetails,
+        estimatedTriggerValue: estimatedTriggerValue.toFixed(10),
+        asOf: new Date().toISOString()
+      }
+    };
   });
 
   app.get("/pilot/protections/:id", async (req, reply) => {
