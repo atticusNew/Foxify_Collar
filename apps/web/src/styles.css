@@ -1019,6 +1019,12 @@ select.input {
     margin-top: 8px;
   }
 
+  .section-actions {
+    width: 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
   .position-actions .btn {
     width: 100%;
     font-size: 12px;
@@ -1322,6 +1328,51 @@ select.input {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.collapse-toggle {
+  display: inline-flex;
+  align-items: center;
+}
+
+.collapse-chevron {
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 180ms ease;
+  transform: rotate(0deg);
+}
+
+.collapse-chevron.open {
+  transform: rotate(90deg);
+}
+
+.section-collapsed-note {
+  margin-top: 6px;
+}
+
+.collapsible-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 240ms ease, opacity 200ms ease, margin-top 240ms ease;
+  margin-top: 0;
+}
+
+.collapsible-panel.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  margin-top: 8px;
+}
+
+.collapsible-inner {
+  min-height: 0;
+  overflow: hidden;
 }
 
 .audit-table-wrap {

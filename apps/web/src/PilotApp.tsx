@@ -855,78 +855,85 @@ export function PilotApp() {
             <h4>
               My Protections <span className="muted">({protectionsHistory.length})</span>
             </h4>
-            <div className="position-actions">
+            <div className="section-actions">
               <button className="btn btn-secondary pilot-inline-btn" disabled={busy} onClick={refreshProtectionHistory}>
                 Refresh
               </button>
               <button
-                className="btn btn-secondary pilot-inline-btn"
+                className="btn btn-secondary pilot-inline-btn collapse-toggle"
                 type="button"
                 onClick={() => setShowHistorySection((prev) => !prev)}
+                aria-expanded={showHistorySection}
               >
+                <span className={`collapse-chevron ${showHistorySection ? "open" : ""}`} aria-hidden="true">
+                  {">"}
+                </span>
                 {showHistorySection ? "Hide" : "Show"}
               </button>
             </div>
           </div>
           {!showHistorySection && protectionsHistory.length > 0 && (
-            <div className="muted">Protection history hidden. Click Show to expand.</div>
+            <div className="muted section-collapsed-note">Protection history hidden.</div>
           )}
-          {showHistorySection && protectionsHistory.length === 0 ? (
-            <div className="muted">No protections found for this trader ID yet.</div>
-          ) : null}
-          {showHistorySection && protectionsHistory.length > 0 ? (
-            <div className="positions">
-              {protectionsHistory.map((item) => {
-                const itemType =
-                  item.metadata && String(item.metadata.protectionType || "").toLowerCase() === "short"
-                    ? "short"
-                    : "long";
-                const itemDirection =
-                  itemType === "short" ? "Short Exposure (Call Hedge)" : "Long Exposure (Put Hedge)";
-                const itemTriggerLabel =
-                  itemType === "short" ? "Ceiling Price" : "Floor Price";
-                return (
-                  <div className="position-row" key={item.id}>
-                    <div className="position-main">
-                      <div className="position-main-title">
-                        <strong>{itemDirection}</strong>
-                        <span className="pill">{item.status}</span>
+          <div className={`collapsible-panel ${showHistorySection ? "is-open" : "is-closed"}`}>
+            <div className="collapsible-inner">
+              {protectionsHistory.length === 0 ? (
+                <div className="muted">No protections found for this trader ID yet.</div>
+              ) : (
+                <div className="positions">
+                  {protectionsHistory.map((item) => {
+                    const itemType =
+                      item.metadata && String(item.metadata.protectionType || "").toLowerCase() === "short"
+                        ? "short"
+                        : "long";
+                    const itemDirection =
+                      itemType === "short" ? "Short Exposure (Call Hedge)" : "Long Exposure (Put Hedge)";
+                    const itemTriggerLabel =
+                      itemType === "short" ? "Ceiling Price" : "Floor Price";
+                    return (
+                      <div className="position-row" key={item.id}>
+                        <div className="position-main">
+                          <div className="position-main-title">
+                            <strong>{itemDirection}</strong>
+                            <span className="pill">{item.status}</span>
+                          </div>
+                          <div className="muted">
+                            ID {item.id}
+                          </div>
+                          <div className="muted">
+                            {itemTriggerLabel} {item.floorPrice ? `$${formatUsd(item.floorPrice)}` : "—"} · Premium{" "}
+                            {item.premium ? `$${formatUsd(item.premium)}` : "—"} · Expires{" "}
+                            {new Date(item.expiryAt).toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="position-actions">
+                          <button
+                            className="btn"
+                            disabled={busy}
+                            onClick={() => {
+                              setProtection(item);
+                              setMonitor(null);
+                              setShowProtectionModal(true);
+                              void refreshMonitor(item.id);
+                            }}
+                          >
+                            Open Monitor
+                          </button>
+                        </div>
                       </div>
-                      <div className="muted">
-                        ID {item.id}
-                      </div>
-                      <div className="muted">
-                        {itemTriggerLabel} {item.floorPrice ? `$${formatUsd(item.floorPrice)}` : "—"} · Premium{" "}
-                        {item.premium ? `$${formatUsd(item.premium)}` : "—"} · Expires{" "}
-                        {new Date(item.expiryAt).toLocaleString()}
-                      </div>
-                    </div>
-                    <div className="position-actions">
-                      <button
-                        className="btn"
-                        disabled={busy}
-                        onClick={() => {
-                          setProtection(item);
-                          setMonitor(null);
-                          setShowProtectionModal(true);
-                          void refreshMonitor(item.id);
-                        }}
-                      >
-                        Open Monitor
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          ) : null}
+          </div>
         </div>
 
         {protection && (
           <div className="section">
             <div className="section-title-row">
               <h4>Protection Active</h4>
-              <div className="position-actions">
+              <div className="section-actions">
                 <button
                   className="btn pilot-inline-btn"
                   disabled={busy}
@@ -938,37 +945,42 @@ export function PilotApp() {
                   Open Monitor
                 </button>
                 <button
-                  className="btn btn-secondary pilot-inline-btn"
+                  className="btn btn-secondary pilot-inline-btn collapse-toggle"
                   type="button"
                   onClick={() => setShowActiveSection((prev) => !prev)}
+                  aria-expanded={showActiveSection}
                 >
+                  <span className={`collapse-chevron ${showActiveSection ? "open" : ""}`} aria-hidden="true">
+                    {">"}
+                  </span>
                   {showActiveSection ? "Hide" : "Show"}
                 </button>
               </div>
             </div>
-            {showActiveSection ? (
-              <div className="positions">
-                <div className="position-row">
-                  <div className="position-main">
-                    <div className="position-main-title">
-                      <strong>{positionDirectionLabel}</strong>
-                      <span className="pill">{protection.status}</span>
-                    </div>
-                    <div className="muted">Protection ID: {protection.id}</div>
-                    <div className="muted">
-                      Entry ${formatUsd(protection.entryPrice)} · {triggerLabel.replace("Protection ", "")}{" "}
-                      {displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"}
-                    </div>
-                    <div className="muted">
-                      Premium {protection.premium ? `$${formatUsd(protection.premium)}` : "—"} · Expires{" "}
-                      {new Date(protection.expiryAt).toLocaleString()}
+            {!showActiveSection && <div className="muted section-collapsed-note">Active protection details hidden.</div>}
+            <div className={`collapsible-panel ${showActiveSection ? "is-open" : "is-closed"}`}>
+              <div className="collapsible-inner">
+                <div className="positions">
+                  <div className="position-row">
+                    <div className="position-main">
+                      <div className="position-main-title">
+                        <strong>{positionDirectionLabel}</strong>
+                        <span className="pill">{protection.status}</span>
+                      </div>
+                      <div className="muted">Protection ID: {protection.id}</div>
+                      <div className="muted">
+                        Entry ${formatUsd(protection.entryPrice)} · {triggerLabel.replace("Protection ", "")}{" "}
+                        {displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"}
+                      </div>
+                      <div className="muted">
+                        Premium {protection.premium ? `$${formatUsd(protection.premium)}` : "—"} · Expires{" "}
+                        {new Date(protection.expiryAt).toLocaleString()}
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
-            ) : (
-              <div className="muted">Active protection details hidden. Click Show to expand.</div>
-            )}
+            </div>
             {showActiveSection && renewalChip && <div className="disclaimer">{renewalChip}</div>}
           </div>
         )}
