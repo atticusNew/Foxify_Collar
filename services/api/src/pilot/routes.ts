@@ -274,15 +274,6 @@ export const registerPilotRoutes = async (
       )
     );
     const projectedDaily = dailyUsed.plus(protectedNotional);
-    if (projectedDaily.gt(maxDailyProtection)) {
-      reply.code(400);
-      return {
-        status: "error",
-        reason: "daily_notional_cap_exceeded",
-        capUsdc: maxDailyProtection.toFixed(2),
-        usedUsdc: dailyUsed.toFixed(2)
-      };
-    }
     const marketId = pilotConfig.referenceMarketId;
     const tierName = normalizeTierName(body.tierName);
     const drawdownFloorPct = resolveDrawdownFloorPct({
@@ -321,6 +312,8 @@ export const registerPilotRoutes = async (
         details: {
           ...(quote.details || {}),
           lockContext: {
+            requestedInstrumentId: body.instrumentId || `${marketId}-7D-P`,
+            quoteInstrumentId: quote.instrumentId,
             marketId,
             tierName,
             drawdownFloorPct: drawdownFloorPct.toFixed(6),
@@ -344,7 +337,14 @@ export const registerPilotRoutes = async (
           timestamp: snapshot.priceTimestamp,
           requestId: snapshot.requestId
         },
-        entryInputPrice: entryPrice.toFixed(10)
+        entryInputPrice: entryPrice.toFixed(10),
+        limits: {
+          maxProtectionNotionalUsdc: maxProtection.toFixed(2),
+          maxDailyProtectedNotionalUsdc: maxDailyProtection.toFixed(2),
+          dailyUsedUsdc: dailyUsed.toFixed(2),
+          projectedDailyUsdc: projectedDaily.toFixed(2),
+          dailyCapExceededOnActivate: projectedDaily.gt(maxDailyProtection)
+        }
       };
     } catch (error: any) {
       reply.code(503);
@@ -513,7 +513,9 @@ export const registerPilotRoutes = async (
       if (Date.now() > Date.parse(lockedQuote.expiresAt)) {
         throw new Error("quote_expired");
       }
-      if (lockedQuote.instrumentId !== instrumentId) {
+      const lockContext = (lockedQuote.details?.lockContext || {}) as Record<string, unknown>;
+      const requestedInstrumentId = String(lockContext.requestedInstrumentId || instrumentId);
+      if (requestedInstrumentId !== instrumentId) {
         throw new Error("quote_mismatch_instrument");
       }
       const quantityDeltaPct =
@@ -523,7 +525,6 @@ export const registerPilotRoutes = async (
       if (quantityDeltaPct.gt(new Decimal(pilotConfig.fullCoverageTolerancePct))) {
         throw new Error("quote_mismatch_quantity");
       }
-      const lockContext = (lockedQuote.details?.lockContext || {}) as Record<string, unknown>;
       const contextProtected = parsePositiveDecimal(lockContext.protectedNotional);
       const contextExposure = parsePositiveDecimal(lockContext.foxifyExposureNotional);
       const contextEntry = parsePositiveDecimal(lockContext.entryPrice);
@@ -639,6 +640,10 @@ export const registerPilotRoutes = async (
         message:
           reason === "price_unavailable"
             ? "Price temporarily unavailable, please retry."
+            : reason === "daily_notional_cap_exceeded"
+              ? "Daily protection limit reached for this trader. Try again next UTC day."
+              : reason === "protection_notional_cap_exceeded"
+                ? `Protection amount exceeds pilot cap (${new Decimal(pilotConfig.maxProtectionNotionalUsdc).toFixed(2)} USDC).`
             : reason === "quote_expired"
               ? "Quote expired. Please request a new quote."
               : reason.startsWith("quote_mismatch")

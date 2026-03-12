@@ -28,6 +28,13 @@ type QuoteResult = {
     requestId?: string;
   };
   entryInputPrice?: string;
+  limits?: {
+    maxProtectionNotionalUsdc: string;
+    maxDailyProtectedNotionalUsdc: string;
+    dailyUsedUsdc: string;
+    projectedDailyUsdc: string;
+    dailyCapExceededOnActivate: boolean;
+  };
 };
 
 type ProtectionRecord = {
@@ -66,15 +73,15 @@ const formatPct = (value: number | string | null | undefined): string => {
 };
 
 export function PilotApp() {
-  const [userId, setUserId] = useState("foxify-user-001");
+  const [userId, setUserId] = useState(() => `foxify-user-${Math.random().toString(36).slice(2, 8)}`);
   const [tiers, setTiers] = useState<TierLevel[]>(DEFAULT_TIERS);
   const [tierName, setTierName] = useState(DEFAULT_TIERS[0].name);
   const [exposureNotional, setExposureNotional] = useState("50000");
   const [protectedNotional, setProtectedNotional] = useState("50000");
   const [entryPrice, setEntryPrice] = useState("100000");
-  const [tenorDays, setTenorDays] = useState(String(DEFAULT_TIERS[0].expiryDays));
   const [autoRenew, setAutoRenew] = useState(false);
   const [instrumentId, setInstrumentId] = useState("BTC-USD-7D-P");
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -98,7 +105,8 @@ export function PilotApp() {
     entryValue > 0;
   const quoteFresh =
     quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
-  const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh;
+  const quoteCapWarning = quote?.limits?.dailyCapExceededOnActivate === true;
+  const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
 
   const renewWindowReached = useMemo(() => {
     if (!protection || protection.autoRenew || protection.status !== "active") return false;
@@ -143,7 +151,6 @@ export function PilotApp() {
         setTiers(parsed);
         if (!parsed.some((tier) => tier.name === tierName)) {
           setTierName(parsed[0].name);
-          setTenorDays(String(parsed[0].expiryDays));
         }
       } catch {
         // keep defaults on tier fetch failure
@@ -154,10 +161,6 @@ export function PilotApp() {
       active = false;
     };
   }, [tierName]);
-
-  useEffect(() => {
-    setTenorDays(String(selectedTier.expiryDays));
-  }, [selectedTier.name, selectedTier.expiryDays]);
 
   useEffect(() => {
     setQuote(null);
@@ -232,7 +235,7 @@ export function PilotApp() {
           marketId: "BTC-USD",
           tierName: selectedTier.name,
           drawdownFloorPct: selectedTier.drawdownFloorPct,
-          tenorDays: Number(tenorDays || 7),
+          tenorDays: selectedTier.expiryDays,
           renewWindowMinutes: selectedTier.renewWindowMinutes,
           autoRenew,
           quoteId: quote?.quote?.quoteId
@@ -295,7 +298,7 @@ export function PilotApp() {
           <h4>Create Protection</h4>
           <div className="recommendation">
             <div className="row">
-              <span>User ID (not stored raw)</span>
+              <span>Trader ID</span>
               <input className="input" value={userId} onChange={(e) => setUserId(e.target.value)} />
             </div>
             <div className="row">
@@ -314,11 +317,11 @@ export function PilotApp() {
               </select>
             </div>
             <div className="row row-align">
-              <span>Drawdown Floor</span>
+              <span>Protection Trigger (Drawdown)</span>
               <strong>{formatPct(selectedTier.drawdownFloorPct)}</strong>
             </div>
             <div className="row">
-              <span>Foxify Exposure Notional (USDC)</span>
+              <span>Position Size (USD)</span>
               <input
                 className="input"
                 value={exposureNotional}
@@ -326,7 +329,7 @@ export function PilotApp() {
               />
             </div>
             <div className="row">
-              <span>Protected Notional (USDC)</span>
+              <span>Protection Amount (USD)</span>
               <input
                 className="input"
                 value={protectedNotional}
@@ -341,14 +344,6 @@ export function PilotApp() {
                 onChange={(e) => setEntryPrice(e.target.value)}
               />
             </div>
-            <div className="row">
-              <span>Instrument</span>
-              <input
-                className="input"
-                value={instrumentId}
-                onChange={(e) => setInstrumentId(e.target.value)}
-              />
-            </div>
             <div className="row row-align">
               <span>Tenor (days)</span>
               <strong>{selectedTier.expiryDays} (fixed)</strong>
@@ -359,12 +354,33 @@ export function PilotApp() {
             </div>
             {!canQuote && (
               <div className="disclaimer danger">
-                Protected notional must be positive and not exceed Foxify exposure.
+                Protection amount must be positive and cannot exceed position size.
+              </div>
+            )}
+            <div className="row row-align">
+              <span>Advanced venue settings</span>
+              <button
+                className="btn"
+                type="button"
+                onClick={() => setShowAdvanced((value) => !value)}
+                disabled={busy}
+              >
+                {showAdvanced ? "Hide" : "Show"}
+              </button>
+            </div>
+            {showAdvanced && (
+              <div className="row">
+                <span>Venue Instrument (optional)</span>
+                <input
+                  className="input"
+                  value={instrumentId}
+                  onChange={(e) => setInstrumentId(e.target.value)}
+                />
               </div>
             )}
             <div className="row">
               <button className="btn" disabled={busy || !canQuote} onClick={requestQuote}>
-                Get Quote
+                Get Live Quote
               </button>
               <button className="cta" disabled={busy || !canActivate} onClick={activateProtection}>
                 Activate Protection
@@ -373,20 +389,26 @@ export function PilotApp() {
             {quote && !quoteFresh && (
               <div className="disclaimer danger">Quote expired. Please request a new quote.</div>
             )}
+            {quoteCapWarning && (
+              <div className="disclaimer danger">
+                Daily protection limit reached for this trader. Quote shown for reference; activation is blocked
+                until the next UTC day.
+              </div>
+            )}
           </div>
           {quote && (
             <div className="section">
               <h4>Latest Quote</h4>
               <div className="muted">
-                Venue {quote.quote.venue} · Instrument {quote.quote.instrumentId} · Premium $
+                Venue {quote.quote.venue} · Premium $
                 {formatUsd(quote.quote.premium)}
               </div>
               <div className="muted">
-                Tier {quote.tierName} · Drawdown {formatPct(quote.drawdownFloorPct)} · Floor $
+                Tier {quote.tierName} · Trigger {formatPct(quote.drawdownFloorPct)} · Trigger Price $
                 {formatUsd(quote.floorPrice)}
               </div>
               <div className="muted">
-                Entry snapshot {quote.entrySnapshot.price} ({quote.entrySnapshot.source}) at{" "}
+                Reference price {quote.entrySnapshot.price} ({quote.entrySnapshot.source}) at{" "}
                 {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
               </div>
               <div className="muted">
@@ -404,10 +426,10 @@ export function PilotApp() {
             <div className="muted">Protection ID: {protection.id}</div>
             <div className="muted">Status: {protection.status}</div>
             <div className="muted">Tier: {protection.tierName ?? selectedTier.name}</div>
-            <div className="muted">Drawdown Floor: {formatPct(displayedDrawdownPct)}</div>
-            <div className="muted">Floor Price: {displayedFloor ? `$${formatUsd(displayedFloor)}` : "—"}</div>
-            <div className="muted">Protected Notional: ${formatUsd(protection.protectedNotional)}</div>
-            <div className="muted">Exposure Notional: ${formatUsd(protection.foxifyExposureNotional)}</div>
+            <div className="muted">Protection Trigger: {formatPct(displayedDrawdownPct)}</div>
+            <div className="muted">Trigger Price: {displayedFloor ? `$${formatUsd(displayedFloor)}` : "—"}</div>
+            <div className="muted">Protection Amount: ${formatUsd(protection.protectedNotional)}</div>
+            <div className="muted">Position Size: ${formatUsd(protection.foxifyExposureNotional)}</div>
             <div className="muted">
               Entry Price: {protection.entryPrice ? `$${formatUsd(protection.entryPrice)}` : "—"}
             </div>

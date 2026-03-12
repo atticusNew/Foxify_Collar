@@ -61,7 +61,8 @@ The pilot ledger stores:
 
 - Tenor is fixed at 7 days by tier defaults for pilot.
 - `protectedNotional` must be `<= 50,000` USDC per protection.
-- Daily protected notional cap is `50,000` USDC per user hash.
+- Daily protected notional cap is `50,000` USDC per user hash and is enforced on activation.
+- Quote responses may still be returned when the projected daily cap is exceeded, with limit telemetry included.
 - `entryPrice` is required and treated as manual user input (not auto-derived from spot).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
 - Quote, activation, and expiry resolution all use the same canonical reference feed configuration.

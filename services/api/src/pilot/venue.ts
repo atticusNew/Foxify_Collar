@@ -69,6 +69,40 @@ const falconxRequest = async (
   return await res.json();
 };
 
+const DERIBIT_OPTION_REGEX = /^BTC-\d{1,2}[A-Z]{3}\d{2}-\d+-(P|C)$/i;
+
+const parseDeribitStrike = (instrumentId: string): number | null => {
+  const parts = String(instrumentId || "").split("-");
+  if (parts.length < 4) return null;
+  const strike = Number(parts[2]);
+  return Number.isFinite(strike) && strike > 0 ? strike : null;
+};
+
+const extractTopOfBook = (orderBookPayload: any): {
+  ask: number | null;
+  askSize: number | null;
+  bid: number | null;
+} => {
+  const orderBook = orderBookPayload?.result ?? orderBookPayload;
+  const ask = Number(orderBook?.asks?.[0]?.[0] ?? orderBook?.best_ask_price ?? orderBook?.mark_price ?? 0);
+  const askSize = Number(orderBook?.asks?.[0]?.[1] ?? orderBook?.best_ask_amount ?? 0);
+  const bid = Number(orderBook?.bids?.[0]?.[0] ?? orderBook?.best_bid_price ?? 0);
+  return {
+    ask: Number.isFinite(ask) && ask > 0 ? ask : null,
+    askSize: Number.isFinite(askSize) && askSize >= 0 ? askSize : null,
+    bid: Number.isFinite(bid) && bid > 0 ? bid : null
+  };
+};
+
+const resolveDeribitSpot = async (connector: DeribitConnector): Promise<number> => {
+  const spot = await connector.getIndexPrice("btc_usd");
+  const indexPrice = Number((spot as any)?.result?.index_price ?? 0);
+  if (!Number.isFinite(indexPrice) || indexPrice <= 0) {
+    throw new Error("deribit_spot_unavailable");
+  }
+  return indexPrice;
+};
+
 export interface PilotVenueAdapter {
   quote(req: QuoteRequest): Promise<VenueQuote>;
   execute(quote: VenueQuote): Promise<VenueExecution>;
@@ -115,21 +149,91 @@ class MockFalconxAdapter implements PilotVenueAdapter {
 class DeribitTestAdapter implements PilotVenueAdapter {
   constructor(private connector: DeribitConnector) {}
 
+  private async resolveQuoteInstrument(requestedInstrument: string, spot: number): Promise<{
+    instrumentId: string;
+    ask: number;
+    askSize: number | null;
+    source: string;
+  }> {
+    if (DERIBIT_OPTION_REGEX.test(requestedInstrument)) {
+      const book = await this.connector.getOrderBook(requestedInstrument);
+      const top = extractTopOfBook(book);
+      if (top.ask && top.ask > 0) {
+        return {
+          instrumentId: requestedInstrument,
+          ask: top.ask,
+          askSize: top.askSize,
+          source: "requested_instrument_orderbook"
+        };
+      }
+    }
+
+    const instruments = (await this.connector.listInstruments("BTC")) as any;
+    const list: any[] = Array.isArray(instruments?.result) ? instruments.result : [];
+    const now = Date.now();
+    const targetExpiry = now + 7 * 86400000;
+    const targetStrike = spot * 0.85;
+
+    const puts = list
+      .filter((item) => String(item?.option_type || "").toLowerCase() === "put")
+      .filter((item) => Number(item?.expiration_timestamp || 0) > now + 60 * 60 * 1000)
+      .map((item) => ({
+        instrumentId: String(item.instrument_name || ""),
+        strike: Number(item.strike || parseDeribitStrike(String(item.instrument_name || "")) || 0),
+        expiryTs: Number(item.expiration_timestamp || 0)
+      }))
+      .filter((item) => item.instrumentId && Number.isFinite(item.strike) && item.strike > 0)
+      .sort((a, b) => {
+        const scoreA =
+          Math.abs(a.expiryTs - targetExpiry) / 86400000 + Math.abs(a.strike - targetStrike) / Math.max(spot, 1);
+        const scoreB =
+          Math.abs(b.expiryTs - targetExpiry) / 86400000 + Math.abs(b.strike - targetStrike) / Math.max(spot, 1);
+        return scoreA - scoreB;
+      })
+      .slice(0, 25);
+
+    for (const candidate of puts) {
+      const book = await this.connector.getOrderBook(candidate.instrumentId);
+      const top = extractTopOfBook(book);
+      if (top.ask && top.ask > 0) {
+        return {
+          instrumentId: candidate.instrumentId,
+          ask: top.ask,
+          askSize: top.askSize,
+          source: "auto_selected_deribit_put"
+        };
+      }
+    }
+
+    throw new Error("deribit_quote_unavailable");
+  }
+
   async quote(req: QuoteRequest): Promise<VenueQuote> {
-    const premium = Number((req.protectedNotional * 0.011).toFixed(4));
+    const spot = await resolveDeribitSpot(this.connector);
+    const resolved = await this.resolveQuoteInstrument(req.instrumentId, spot);
+    const premium = Number((resolved.ask * spot * req.quantity).toFixed(4));
+    if (!Number.isFinite(premium) || premium <= 0) {
+      throw new Error("deribit_quote_unavailable");
+    }
     const quoteTs = nowIso();
     const expiresAt = new Date(Date.now() + 10_000).toISOString();
     return {
       venue: "deribit_test",
       quoteId: randomUUID(),
       rfqId: null,
-      instrumentId: req.instrumentId,
+      instrumentId: resolved.instrumentId,
       side: "buy",
       quantity: req.quantity,
       premium,
       expiresAt,
       quoteTs,
-      details: { source: "deribit_test_pricing_stub" }
+      details: {
+        source: resolved.source,
+        pricing: "live_orderbook",
+        askPriceBtc: resolved.ask,
+        askSize: resolved.askSize,
+        spotPriceUsd: spot
+      }
     };
   }
 

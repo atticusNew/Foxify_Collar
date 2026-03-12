@@ -160,7 +160,7 @@ Q3_REASON="$(echo "$Q3" | jq -r '.reason // ""')"
   && pass "3 protected notional cannot exceed exposure" \
   || fail "3 protected notional cannot exceed exposure" "$Q3"
 
-# 4) Daily cap for same user (enforced on protections lifecycle)
+# 4) Daily cap for same user (quote allowed, activation blocked when cap exceeded)
 U4="$(uid 04)"
 Q4A="$(post_json "/pilot/protections/quote" "$(quote_payload "$U4" 50000 50000 "$ENTRY_PRICE")")"
 Q4A_STATUS="$(echo "$Q4A" | jq -r '.status // ""')"
@@ -170,13 +170,20 @@ if [[ "$Q4A_STATUS" == "ok" && -n "$Q4A_ID" ]]; then
 else
   A4A='{"status":"error","reason":"quote_failed"}'
 fi
-Q4B="$(post_json "/pilot/protections/quote" "$(quote_payload "$U4" 1 1 "$ENTRY_PRICE")")"
 A4A_STATUS="$(echo "$A4A" | jq -r '.status // ""')"
-Q4B_REASON="$(echo "$Q4B" | jq -r '.reason // ""')"
-if [[ "$Q4A_STATUS" == "ok" && "$A4A_STATUS" == "ok" && "$Q4B_REASON" == "daily_notional_cap_exceeded" ]]; then
+Q4B="$(post_json "/pilot/protections/quote" "$(quote_payload "$U4" 1 1 "$ENTRY_PRICE")")"
+Q4B_STATUS="$(echo "$Q4B" | jq -r '.status // ""')"
+Q4B_ID="$(echo "$Q4B" | jq -r '.quote.quoteId // ""')"
+if [[ "$Q4B_STATUS" == "ok" && -n "$Q4B_ID" ]]; then
+  A4B="$(post_json "/pilot/protections/activate" "$(activate_payload "$U4" 1 1 "$ENTRY_PRICE" "$Q4B_ID")")"
+else
+  A4B='{"status":"error","reason":"quote_failed"}'
+fi
+Q4B_ACTIVATE_REASON="$(echo "$A4B" | jq -r '.reason // ""')"
+if [[ "$Q4A_STATUS" == "ok" && "$A4A_STATUS" == "ok" && "$Q4B_STATUS" == "ok" && "$Q4B_ACTIVATE_REASON" == "daily_notional_cap_exceeded" ]]; then
   pass "4 daily 50k cap per user hash enforced"
 else
-  fail "4 daily 50k cap per user hash enforced" "first_quote=$Q4A first_activate=$A4A second_quote=$Q4B"
+  fail "4 daily 50k cap per user hash enforced" "first_quote=$Q4A first_activate=$A4A second_quote=$Q4B second_activate=$A4B"
 fi
 
 # 5) Quote + activate happy path
