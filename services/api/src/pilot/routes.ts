@@ -240,6 +240,7 @@ export const registerPilotRoutes = async (
   await ensurePilotSchema(pool);
   const venue = createPilotVenueAdapter({
     mode: pilotConfig.venueMode,
+    quoteTtlMs: pilotConfig.quoteTtlMs,
     falconx: {
       baseUrl: pilotConfig.falconxBaseUrl,
       apiKey: pilotConfig.falconxApiKey,

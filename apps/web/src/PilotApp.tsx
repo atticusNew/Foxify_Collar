@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "./config";
 
 type TierLevel = {
@@ -179,6 +179,9 @@ const friendlyError = (message: string): string => {
   if (message.includes("quote_expired")) {
     return "Quote expired. Request a fresh quote and confirm again.";
   }
+  if (message.includes("quote_not_found")) {
+    return "Quote is no longer available. Tap Refresh Quote.";
+  }
   if (message.includes("quote_mismatch")) {
     return "Protection terms changed after quoting. Request a new quote before confirming.";
   }
@@ -195,7 +198,16 @@ const friendlyError = (message: string): string => {
     return "Quote is taking longer than expected. Tap Refresh Quote.";
   }
   if (message.includes("venue_execute_timeout")) {
-    return "Venue execution timed out. Request a fresh quote and retry.";
+    return "Activation is taking longer than expected. Tap Confirm Protection again.";
+  }
+  if (message.includes("full_coverage_not_met")) {
+    return "Coverage check changed. Tap Refresh Quote and confirm again.";
+  }
+  if (message.includes("activation_failed")) {
+    return "Activation could not be confirmed yet. Tap Confirm Protection again.";
+  }
+  if (message.toLowerCase().includes("failed to fetch")) {
+    return "Network issue detected. Please retry.";
   }
   if (message.includes("admin_unauthorized") || message.includes("unauthorized")) {
     return "Admin access denied. Use a valid internal admin token.";
@@ -261,6 +273,10 @@ export function PilotApp() {
   const [adminDetailUpdatedAt, setAdminDetailUpdatedAt] = useState<Date | null>(null);
   const [showHistorySection, setShowHistorySection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const historyRequestSeqRef = useRef(0);
+  const monitorRequestSeqRef = useRef(0);
+  const protectionPollSeqRef = useRef(0);
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
     [tierName, tiers]
@@ -375,40 +391,68 @@ export function PilotApp() {
 
   useEffect(() => {
     if (!protection?.id) return;
-    const id = setInterval(async () => {
+    const polledProtectionId = protection.id;
+    const pollSeq = ++protectionPollSeqRef.current;
+    const pollProtection = async () => {
       try {
-        const res = await fetch(`${API_BASE}/pilot/protections/${protection.id}`);
+        const res = await fetch(`${API_BASE}/pilot/protections/${polledProtectionId}`);
         if (!res.ok) return;
         const payload = await res.json();
-        if (payload?.protection) {
+        if (protectionPollSeqRef.current !== pollSeq) return;
+        if (payload?.protection && payload.protection.id === polledProtectionId) {
           setProtection(payload.protection as ProtectionRecord);
           setLastUpdatedAt(new Date());
         }
       } catch {
         // ignore polling errors in pilot widget
       }
+    };
+    void pollProtection();
+    const id = setInterval(() => {
+      void pollProtection();
     }, 10000);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      protectionPollSeqRef.current += 1;
+    };
   }, [protection?.id]);
 
-  const refreshProtectionHistory = async () => {
-    if (!traderId) {
+  const refreshProtectionHistory = async (opts?: { clearExisting?: boolean; silent?: boolean }) => {
+    const requestSeq = ++historyRequestSeqRef.current;
+    const clearExisting = opts?.clearExisting === true;
+    const silent = opts?.silent === true;
+    if (!silent) {
+      setHistoryBusy(true);
+    }
+    if (clearExisting) {
       setProtectionsHistory([]);
+    }
+    if (!traderId) {
+      if (requestSeq === historyRequestSeqRef.current) {
+        setProtectionsHistory([]);
+        if (!silent) setHistoryBusy(false);
+      }
       return;
     }
     try {
       const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(traderId)}&limit=20`);
       if (!res.ok) return;
       const payload = await res.json();
+      if (requestSeq !== historyRequestSeqRef.current) return;
       if (Array.isArray(payload?.protections)) {
         setProtectionsHistory(payload.protections as ProtectionRecord[]);
       }
     } catch {
       // ignore history refresh errors in pilot widget
+    } finally {
+      if (!silent && requestSeq === historyRequestSeqRef.current) {
+        setHistoryBusy(false);
+      }
     }
   };
 
   const refreshMonitor = async (protectionId: string) => {
+    const requestSeq = ++monitorRequestSeqRef.current;
     setMonitorBusy(true);
     try {
       const res = await fetch(
@@ -416,14 +460,17 @@ export function PilotApp() {
       );
       if (!res.ok) return;
       const payload = await res.json();
-      if (payload?.monitor) {
+      if (requestSeq !== monitorRequestSeqRef.current) return;
+      if (payload?.monitor && payload.monitor.protectionId === protectionId) {
         setMonitor(payload.monitor as MonitorPayload);
         setLastUpdatedAt(new Date());
       }
     } catch {
       // ignore monitor refresh errors in pilot widget
     } finally {
-      setMonitorBusy(false);
+      if (requestSeq === monitorRequestSeqRef.current) {
+        setMonitorBusy(false);
+      }
     }
   };
 
@@ -494,14 +541,18 @@ export function PilotApp() {
   };
 
   useEffect(() => {
-    refreshProtectionHistory();
+    void refreshProtectionHistory({ clearExisting: true });
   }, [traderId]);
 
   useEffect(() => {
+    setMonitor(null);
+  }, [protection?.id]);
+
+  useEffect(() => {
     if (!showProtectionModal || !protection?.id) return;
-    refreshMonitor(protection.id);
+    void refreshMonitor(protection.id);
     const id = setInterval(() => {
-      refreshMonitor(protection.id);
+      void refreshMonitor(protection.id);
     }, 10000);
     return () => clearInterval(id);
   }, [showProtectionModal, protection?.id, traderId]);
@@ -585,10 +636,13 @@ export function PilotApp() {
     }
     setBusy(true);
     setError(null);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await fetch(`${API_BASE}/pilot/protections/activate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           userId: traderId,
           protectedNotional: protectedValue,
@@ -607,17 +661,24 @@ export function PilotApp() {
       });
       const payload = await res.json();
       if (!res.ok || payload?.status !== "ok") {
-        throw new Error(payload?.message || payload?.reason || "activation_failed");
+        const reason = String(payload?.reason || "");
+        const message = String(payload?.message || "");
+        throw new Error([reason, message].filter(Boolean).join(":") || "activation_failed");
       }
       setProtection(payload.protection as ProtectionRecord);
       setMonitor(null);
       setLastUpdatedAt(new Date());
       setShowProtectionModal(true);
       setShowRenewModal(false);
-      void refreshProtectionHistory();
+      void refreshProtectionHistory({ silent: true });
     } catch (err: any) {
-      setError(friendlyError(String(err?.message || "Protection activation failed.")));
+      if (err?.name === "AbortError") {
+        setError("Activation is taking longer than expected. Tap Confirm Protection again.");
+      } else {
+        setError(friendlyError(String(err?.message || "activation_failed")));
+      }
     } finally {
+      clearTimeout(timeout);
       setBusy(false);
     }
   };
@@ -639,7 +700,7 @@ export function PilotApp() {
         setProtection(payload.protection as ProtectionRecord);
       }
       setShowRenewModal(false);
-      void refreshProtectionHistory();
+      void refreshProtectionHistory({ silent: true });
     } catch (err: any) {
       setError(friendlyError(String(err?.message || "Failed to process renewal decision.")));
     } finally {
@@ -971,9 +1032,14 @@ export function PilotApp() {
               Protections <span className="muted">({protectionsTotalCount})</span>{" "}
               {traderId && <span className="pill pilot-viewing-pill">Viewing: {traderId}</span>}
             </h4>
+            {historyBusy && <span className="pill">Loading…</span>}
             <div className="section-actions">
-              <button className="btn btn-secondary pilot-inline-btn" disabled={busy} onClick={refreshProtectionHistory}>
-                Refresh
+              <button
+                className="btn btn-secondary pilot-inline-btn"
+                disabled={busy || historyBusy}
+                onClick={() => void refreshProtectionHistory()}
+              >
+                {historyBusy ? "Refreshing..." : "Refresh"}
               </button>
               <button
                 className="btn btn-secondary pilot-inline-btn collapse-toggle"
@@ -996,7 +1062,12 @@ export function PilotApp() {
           )}
           <div className={`collapsible-panel ${showHistorySection && Boolean(traderId) ? "is-open" : "is-closed"}`}>
             <div className="collapsible-inner">
-              {!activeProtectionForView && historyWithoutActive.length === 0 ? (
+              {historyBusy ? (
+                <div className="muted section-collapsed-note">
+                  <span className="spinner" />
+                  Loading protections...
+                </div>
+              ) : !activeProtectionForView && historyWithoutActive.length === 0 ? (
                 <div className="muted">No protections found for this trader ID yet.</div>
               ) : (
                 <div className="positions">
@@ -1022,6 +1093,7 @@ export function PilotApp() {
                           className="btn"
                           disabled={busy}
                           onClick={() => {
+                            setMonitor(null);
                             setShowProtectionModal(true);
                             void refreshMonitor(activeProtectionForView.id);
                           }}

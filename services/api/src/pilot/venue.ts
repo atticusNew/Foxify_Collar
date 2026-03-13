@@ -116,10 +116,12 @@ export interface PilotVenueAdapter {
 }
 
 class MockFalconxAdapter implements PilotVenueAdapter {
+  constructor(private quoteTtlMs: number) {}
+
   async quote(req: QuoteRequest): Promise<VenueQuote> {
     const premium = Number((req.protectedNotional * 0.01).toFixed(4));
     const quoteTs = nowIso();
-    const expiresAt = new Date(Date.now() + 10_000).toISOString();
+    const expiresAt = new Date(Date.now() + this.quoteTtlMs).toISOString();
     return {
       venue: "mock_falconx",
       quoteId: randomUUID(),
@@ -171,7 +173,10 @@ class MockFalconxAdapter implements PilotVenueAdapter {
 }
 
 class DeribitTestAdapter implements PilotVenueAdapter {
-  constructor(private connector: DeribitConnector) {}
+  constructor(
+    private connector: DeribitConnector,
+    private quoteTtlMs: number
+  ) {}
 
   private resolveTargetOptionType(requestedInstrument: string): "put" | "call" {
     const normalized = String(requestedInstrument || "").toUpperCase();
@@ -250,7 +255,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       throw new Error("deribit_quote_unavailable");
     }
     const quoteTs = nowIso();
-    const expiresAt = new Date(Date.now() + 10_000).toISOString();
+    const expiresAt = new Date(Date.now() + this.quoteTtlMs).toISOString();
     return {
       venue: "deribit_test",
       quoteId: randomUUID(),
@@ -424,10 +429,12 @@ export const createPilotVenueAdapter = (params: {
   mode: PilotVenueMode;
   falconx: FalconxConfig;
   deribit: DeribitConnector;
+  quoteTtlMs?: number;
 }): PilotVenueAdapter => {
+  const quoteTtlMs = Math.max(5_000, Number(params.quoteTtlMs || 30_000));
   if (params.mode === "falconx") return new FalconxAdapter(params.falconx);
-  if (params.mode === "deribit_test") return new DeribitTestAdapter(params.deribit);
-  return new MockFalconxAdapter();
+  if (params.mode === "deribit_test") return new DeribitTestAdapter(params.deribit, quoteTtlMs);
+  return new MockFalconxAdapter(quoteTtlMs);
 };
 
 export const mapVenueFailureReason = (error: unknown): string => {
