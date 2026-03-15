@@ -15,6 +15,11 @@ let poolSingleton: Pool | null = null;
 let schemaReady = false;
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
+export const __setPilotPoolForTests = (pool: Pool | null): void => {
+  poolSingleton = pool;
+  schemaReady = false;
+};
+
 const toRecord = (value: unknown): Record<string, unknown> => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return value as Record<string, unknown>;
@@ -116,9 +121,14 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       premium NUMERIC(28,10) NOT NULL,
       expires_at TIMESTAMPTZ NOT NULL,
       quote_ts TIMESTAMPTZ NOT NULL,
+      consumed_at TIMESTAMPTZ,
+      consumed_by_protection_id TEXT,
       details JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE pilot_venue_quotes ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ;
+    ALTER TABLE pilot_venue_quotes ADD COLUMN IF NOT EXISTS consumed_by_protection_id TEXT;
 
     CREATE TABLE IF NOT EXISTS pilot_venue_executions (
       id TEXT PRIMARY KEY,
@@ -151,8 +161,12 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
 
     CREATE INDEX IF NOT EXISTS pilot_protections_status_idx ON pilot_protections(status);
     CREATE INDEX IF NOT EXISTS pilot_protections_expiry_idx ON pilot_protections(expiry_at);
+    CREATE INDEX IF NOT EXISTS pilot_protections_user_hash_created_idx ON pilot_protections(user_hash, created_at);
     CREATE INDEX IF NOT EXISTS pilot_ledger_entries_protection_idx ON pilot_ledger_entries(protection_id);
     CREATE INDEX IF NOT EXISTS pilot_price_snapshots_protection_idx ON pilot_price_snapshots(protection_id);
+    CREATE INDEX IF NOT EXISTS pilot_venue_quotes_quote_id_idx ON pilot_venue_quotes(quote_id);
+    CREATE INDEX IF NOT EXISTS pilot_venue_executions_protection_idx ON pilot_venue_executions(protection_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS pilot_venue_quotes_venue_quote_id_uidx ON pilot_venue_quotes(venue, quote_id);
   `);
   schemaReady = true;
 };
@@ -510,10 +524,17 @@ export const insertVenueQuote = async (
   );
 };
 
+export type VenueQuoteRecord = VenueQuote & {
+  id: string;
+  protectionId: string | null;
+  consumedAt: string | null;
+  consumedByProtectionId: string | null;
+};
+
 export const getVenueQuoteByQuoteId = async (
   pool: Queryable,
   quoteId: string
-): Promise<(VenueQuote & { protectionId: string | null }) | null> => {
+): Promise<VenueQuoteRecord | null> => {
   const result = await pool.query(
     `
       SELECT * FROM pilot_venue_quotes
@@ -526,6 +547,7 @@ export const getVenueQuoteByQuoteId = async (
   if (!result.rowCount) return null;
   const row = result.rows[0];
   return {
+    id: String(row.id),
     venue: String(row.venue) as VenueQuote["venue"],
     quoteId: String(row.quote_id),
     rfqId: row.rfq_id ? String(row.rfq_id) : null,
@@ -536,8 +558,71 @@ export const getVenueQuoteByQuoteId = async (
     expiresAt: new Date(row.expires_at).toISOString(),
     quoteTs: new Date(row.quote_ts).toISOString(),
     details: toRecord(row.details),
-    protectionId: row.protection_id ? String(row.protection_id) : null
+    protectionId: row.protection_id ? String(row.protection_id) : null,
+    consumedAt: row.consumed_at ? new Date(row.consumed_at).toISOString() : null,
+    consumedByProtectionId: row.consumed_by_protection_id ? String(row.consumed_by_protection_id) : null
   };
+};
+
+export const getVenueQuoteByQuoteIdForUpdate = async (
+  pool: Queryable,
+  quoteId: string
+): Promise<VenueQuoteRecord | null> => {
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_venue_quotes
+      WHERE quote_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+      FOR UPDATE
+    `,
+    [quoteId]
+  );
+  if (!result.rowCount) return null;
+  const row = result.rows[0];
+  return {
+    id: String(row.id),
+    venue: String(row.venue) as VenueQuote["venue"],
+    quoteId: String(row.quote_id),
+    rfqId: row.rfq_id ? String(row.rfq_id) : null,
+    instrumentId: String(row.instrument_id),
+    side: String(row.side) as VenueQuote["side"],
+    quantity: Number(row.quantity),
+    premium: Number(row.premium),
+    expiresAt: new Date(row.expires_at).toISOString(),
+    quoteTs: new Date(row.quote_ts).toISOString(),
+    details: toRecord(row.details),
+    protectionId: row.protection_id ? String(row.protection_id) : null,
+    consumedAt: row.consumed_at ? new Date(row.consumed_at).toISOString() : null,
+    consumedByProtectionId: row.consumed_by_protection_id ? String(row.consumed_by_protection_id) : null
+  };
+};
+
+export const consumeVenueQuote = async (
+  pool: Queryable,
+  venueQuoteRowId: string,
+  protectionId: string
+): Promise<boolean> => {
+  const result = await pool.query(
+    `
+      UPDATE pilot_venue_quotes
+      SET consumed_at = NOW(), consumed_by_protection_id = $2, protection_id = COALESCE(protection_id, $2)
+      WHERE id = $1
+        AND consumed_at IS NULL
+      RETURNING id
+    `,
+    [venueQuoteRowId, protectionId]
+  );
+  return result.rowCount > 0;
+};
+
+export const lockDailyActivationWindow = async (
+  pool: Queryable,
+  userHash: string,
+  dayStartIso: string
+): Promise<void> => {
+  const lockKey = `${userHash}:${dayStartIso.slice(0, 10)}`;
+  await pool.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [lockKey]);
 };
 
 export const insertVenueExecution = async (

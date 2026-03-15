@@ -19,11 +19,20 @@ const parseAllowlist = (raw: string | undefined): ParsedAllowlist => {
   };
 };
 
+export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => {
+  const normalized = (raw || "mock_falconx").trim();
+  if (normalized === "falconx" || normalized === "deribit_test" || normalized === "mock_falconx") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_venue_mode:${normalized || "empty"}`);
+};
+
 export const pilotConfig = {
   enabled: process.env.PILOT_API_ENABLED === "true",
-  venueMode: (process.env.PILOT_VENUE_MODE || "mock_falconx") as PilotVenueMode,
+  venueMode: parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
   postgresUrl: process.env.POSTGRES_URL || process.env.DATABASE_URL || "",
   adminToken: process.env.PILOT_ADMIN_TOKEN || "",
+  internalToken: process.env.PILOT_INTERNAL_TOKEN || "",
   proofToken: process.env.PILOT_PROOF_TOKEN || "",
   hashVersion: Number(process.env.USER_HASH_VERSION || "1"),
   hashSecret: process.env.USER_HASH_SECRET || "",

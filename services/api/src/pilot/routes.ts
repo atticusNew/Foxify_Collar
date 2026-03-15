@@ -11,13 +11,15 @@ import {
   getPilotAdminMetrics,
   getPilotPool,
   getProtection,
-  getVenueQuoteByQuoteId,
+  getVenueQuoteByQuoteIdForUpdate,
   insertAdminAction,
+  consumeVenueQuote,
   insertLedgerEntry,
   insertPriceSnapshot,
   insertProtection,
   insertVenueExecution,
   insertVenueQuote,
+  lockDailyActivationWindow,
   listLedgerForProtection,
   listProtections,
   listProtectionsByUserHash,
@@ -36,10 +38,7 @@ import {
 } from "./floor";
 
 const getRequestIp = (req: FastifyRequest): string => {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) {
-    return forwarded.split(",")[0].trim();
-  }
+  // Use Fastify-resolved client IP. Raw x-forwarded-for is not trusted by default.
   return req.ip;
 };
 
@@ -179,22 +178,41 @@ const resolveProtectionTypeFromRecord = (protection: { instrumentId?: string | n
     String(protection.metadata?.protectionType || inferProtectionTypeFromInstrument(protection.instrumentId))
   );
 
-const requireAdmin = async (
-  req: FastifyRequest,
-  reply: FastifyReply
-): Promise<{ actor: string; actorIp: string } | null> => {
+const sanitizeProtectionForTrader = (protection: Record<string, unknown>): Record<string, unknown> => {
+  const { userHash: _userHash, hashVersion: _hashVersion, ...safe } = protection;
+  return safe;
+};
+
+const isAdminAuthorized = (req: FastifyRequest): boolean => {
   const token = String(req.headers["x-admin-token"] || "");
-  const actor = String(req.headers["x-admin-actor"] || "pilot-ops");
+  if (!pilotConfig.adminToken || token !== pilotConfig.adminToken) return false;
   const actorIp = getRequestIp(req);
-  if (!pilotConfig.adminToken || token !== pilotConfig.adminToken) {
-    reply.code(401).send({ status: "error", reason: "unauthorized_admin" });
-    return null;
-  }
   if (
     pilotConfig.adminIpAllowlist.entries.length > 0 &&
     !pilotConfig.adminIpAllowlist.entries.includes(actorIp)
   ) {
-    reply.code(403).send({ status: "error", reason: "admin_ip_not_allowlisted" });
+    return false;
+  }
+  return true;
+};
+
+const isProofAuthorized = (req: FastifyRequest): boolean => {
+  if (!pilotConfig.proofToken) return false;
+  const headerToken = String(req.headers["x-proof-token"] || "");
+  const auth = String(req.headers.authorization || "");
+  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
+  const token = headerToken || bearer;
+  return Boolean(token && token === pilotConfig.proofToken);
+};
+
+const requireAdmin = async (
+  req: FastifyRequest,
+  reply: FastifyReply
+): Promise<{ actor: string; actorIp: string } | null> => {
+  const actor = String(req.headers["x-admin-actor"] || "pilot-ops");
+  const actorIp = getRequestIp(req);
+  if (!isAdminAuthorized(req)) {
+    reply.code(401).send({ status: "error", reason: "unauthorized_admin" });
     return null;
   }
   return { actor, actorIp };
@@ -205,15 +223,53 @@ const requireProofAccess = async (req: FastifyRequest, reply: FastifyReply): Pro
     reply.code(503).send({ status: "error", reason: "proof_auth_not_configured" });
     return false;
   }
-  const headerToken = String(req.headers["x-proof-token"] || "");
-  const auth = String(req.headers.authorization || "");
-  const bearer = auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
-  const token = headerToken || bearer;
-  if (!token || token !== pilotConfig.proofToken) {
+  if (!isProofAuthorized(req)) {
     reply.code(401).send({ status: "error", reason: "unauthorized_proof_access" });
     return false;
   }
   return true;
+};
+
+const requireProtectionScope = async (params: {
+  req: FastifyRequest;
+  reply: FastifyReply;
+  protection: { userHash: string };
+  userId?: string;
+  allowPrivilegedBypass?: boolean;
+}): Promise<boolean> => {
+  if (params.allowPrivilegedBypass && (isAdminAuthorized(params.req) || isProofAuthorized(params.req))) {
+    return true;
+  }
+  const userId = String(params.userId || "").trim();
+  if (!userId) {
+    params.reply.code(401).send({ status: "error", reason: "unauthorized_user_scope" });
+    return false;
+  }
+  try {
+    const userHash = buildUserHash({
+      rawUserId: userId,
+      secret: pilotConfig.hashSecret,
+      hashVersion: pilotConfig.hashVersion
+    });
+    if (userHash.userHash !== params.protection.userHash) {
+      params.reply.code(403).send({ status: "error", reason: "forbidden_user_scope" });
+      return false;
+    }
+    return true;
+  } catch (error: any) {
+    const reason = String(error?.message || "server_config_error");
+    params.reply.code(reason === "user_hash_secret_missing" ? 500 : 400).send({ status: "error", reason });
+    return false;
+  }
+};
+
+const requireInternalOrAdmin = async (req: FastifyRequest, reply: FastifyReply): Promise<boolean> => {
+  const internalToken = String(req.headers["x-internal-token"] || "");
+  if (pilotConfig.internalToken && internalToken === pilotConfig.internalToken) {
+    return true;
+  }
+  const admin = await requireAdmin(req, reply);
+  return Boolean(admin);
 };
 
 const toCsv = (rows: Array<Record<string, unknown>>): string => {
@@ -644,35 +700,6 @@ export const registerPilotRoutes = async (
     const now = new Date();
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const dayEnd = new Date(dayStart.getTime() + 86400000);
-    let dailyUsed: Decimal;
-    try {
-      dailyUsed = new Decimal(
-        await getDailyProtectedNotionalForUser(
-          pool,
-          userHash.userHash,
-          dayStart.toISOString(),
-          dayEnd.toISOString()
-        )
-      );
-    } catch (error: any) {
-      reply.code(503);
-      return {
-        status: "error",
-        reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
-        detail: String(error?.message || "daily_limit_query_failed")
-      };
-    }
-    const projectedDaily = dailyUsed.plus(protectedNotional);
-    if (projectedDaily.gt(maxDailyProtection)) {
-      reply.code(400);
-      return {
-        status: "error",
-        reason: "daily_notional_cap_exceeded",
-        capUsdc: maxDailyProtection.toFixed(2),
-        usedUsdc: dailyUsed.toFixed(2)
-      };
-    }
     const marketId = pilotConfig.referenceMarketId;
     const protectionType = normalizeProtectionType(body.protectionType);
     const optionType = protectionType === "short" ? "C" : "P";
@@ -685,11 +712,100 @@ export const registerPilotRoutes = async (
     });
     const triggerPrice = computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
     const tenorDays = resolveExpiryDays({ tierName, requestedDays: body.tenorDays });
-    const expiryAt = body.expiryAt || new Date(Date.now() + tenorDays * 86400000).toISOString();
+    const expiryAt = new Date(Date.now() + tenorDays * 86400000).toISOString();
     const requestId = pilotConfig.nextRequestId();
     const client = await pool.connect();
+    let capUsedUsdc: string | null = null;
+    let capProjectedUsdc: string | null = null;
     try {
       await client.query("BEGIN");
+      const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
+      const lockedQuote = await getVenueQuoteByQuoteIdForUpdate(client, body.quoteId);
+      if (!lockedQuote) {
+        throw new Error("quote_not_found");
+      }
+      if (lockedQuote.consumedByProtectionId) {
+        const existing = await getProtection(client, lockedQuote.consumedByProtectionId);
+        if (existing && existing.userHash === userHash.userHash) {
+          await client.query("COMMIT");
+          const replayCoverageRatio =
+            existing.metadata && typeof existing.metadata["coverageRatio"] === "string"
+              ? String(existing.metadata["coverageRatio"])
+              : null;
+          const replayQuote = sanitizeQuoteForClient({
+            ...lockedQuote,
+            premium: Number(new Decimal(existing.premium || lockedQuote.premium).toFixed(4))
+          });
+          return {
+            status: "ok",
+            protection: sanitizeProtectionForTrader(existing as unknown as Record<string, unknown>),
+            coverageRatio: replayCoverageRatio,
+            quote: replayQuote,
+            idempotentReplay: true
+          };
+        }
+        throw new Error("quote_already_consumed");
+      }
+      if (Date.now() > Date.parse(lockedQuote.expiresAt)) {
+        throw new Error("quote_expired");
+      }
+      const lockContext = (lockedQuote.details?.lockContext || {}) as Record<string, unknown>;
+      const requestedInstrumentId = String(lockContext.requestedInstrumentId || instrumentId);
+      if (requestedInstrumentId !== instrumentId) {
+        throw new Error("quote_mismatch_instrument");
+      }
+      const quantityDeltaPct =
+        quantity > 0
+          ? new Decimal(lockedQuote.quantity).minus(quantity).abs().div(new Decimal(quantity))
+          : new Decimal(0);
+      if (quantityDeltaPct.gt(new Decimal(pilotConfig.fullCoverageTolerancePct))) {
+        throw new Error("quote_mismatch_quantity");
+      }
+      const contextProtected = parsePositiveDecimal(lockContext.protectedNotional);
+      const contextExposure = parsePositiveDecimal(lockContext.foxifyExposureNotional);
+      const contextEntry = parsePositiveDecimal(lockContext.entryPrice);
+      const contextDrawdown = parsePositiveDecimal(lockContext.drawdownFloorPct);
+      const contextProtectionType = normalizeProtectionType(
+        String(lockContext.protectionType || inferProtectionTypeFromInstrument(requestedInstrumentId))
+      );
+      const contextTrigger = parsePositiveDecimal(lockContext.triggerPrice ?? lockContext.floorPrice);
+      if (contextProtectionType !== protectionType) {
+        throw new Error("quote_mismatch_type");
+      }
+      if (
+        String(lockContext.marketId || marketId) !== marketId ||
+        String(lockContext.tierName || tierName) !== tierName ||
+        !contextProtected ||
+        !contextExposure ||
+        !contextEntry ||
+        !contextDrawdown ||
+        !contextTrigger ||
+        contextProtected.minus(protectedNotional).abs().gt(new Decimal("0.000001")) ||
+        contextExposure.minus(exposureNotional).abs().gt(new Decimal("0.000001")) ||
+        contextEntry.minus(entryPrice).abs().gt(new Decimal("0.000001")) ||
+        contextDrawdown.minus(drawdownFloorPct).abs().gt(new Decimal("0.000001")) ||
+        contextTrigger.minus(triggerPrice).abs().gt(new Decimal("0.000001"))
+      ) {
+        throw new Error("quote_mismatch_context");
+      }
+      await lockDailyActivationWindow(client, userHash.userHash, dayStart.toISOString());
+      const dailyUsed = new Decimal(
+        await getDailyProtectedNotionalForUser(
+          client,
+          userHash.userHash,
+          dayStart.toISOString(),
+          dayEnd.toISOString()
+        )
+      );
+      const projectedDaily = dailyUsed.plus(protectedNotional);
+      capUsedUsdc = dailyUsed.toFixed(2);
+      capProjectedUsdc = projectedDaily.toFixed(2);
+      if (projectedDaily.gt(maxDailyProtection)) {
+        const capError = new Error("daily_notional_cap_exceeded");
+        (capError as any).usedUsdc = capUsedUsdc;
+        (capError as any).projectedUsdc = capProjectedUsdc;
+        throw capError;
+      }
       const protection = await insertProtection(client, {
         userHash: userHash.userHash,
         hashVersion: userHash.hashVersion,
@@ -742,52 +858,9 @@ export const registerPilotRoutes = async (
         requestId: snapshot.requestId,
         priceTimestamp: snapshot.priceTimestamp
       });
-      const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
-      const lockedQuote = await getVenueQuoteByQuoteId(client, body.quoteId);
-      if (!lockedQuote) {
-        throw new Error("quote_not_found");
-      }
-      if (Date.now() > Date.parse(lockedQuote.expiresAt)) {
-        throw new Error("quote_expired");
-      }
-      const lockContext = (lockedQuote.details?.lockContext || {}) as Record<string, unknown>;
-      const requestedInstrumentId = String(lockContext.requestedInstrumentId || instrumentId);
-      if (requestedInstrumentId !== instrumentId) {
-        throw new Error("quote_mismatch_instrument");
-      }
-      const quantityDeltaPct =
-        quantity > 0
-          ? new Decimal(lockedQuote.quantity).minus(quantity).abs().div(new Decimal(quantity))
-          : new Decimal(0);
-      if (quantityDeltaPct.gt(new Decimal(pilotConfig.fullCoverageTolerancePct))) {
-        throw new Error("quote_mismatch_quantity");
-      }
-      const contextProtected = parsePositiveDecimal(lockContext.protectedNotional);
-      const contextExposure = parsePositiveDecimal(lockContext.foxifyExposureNotional);
-      const contextEntry = parsePositiveDecimal(lockContext.entryPrice);
-      const contextDrawdown = parsePositiveDecimal(lockContext.drawdownFloorPct);
-      const contextProtectionType = normalizeProtectionType(
-        String(lockContext.protectionType || inferProtectionTypeFromInstrument(requestedInstrumentId))
-      );
-      const contextTrigger = parsePositiveDecimal(lockContext.triggerPrice ?? lockContext.floorPrice);
-      if (contextProtectionType !== protectionType) {
-        throw new Error("quote_mismatch_type");
-      }
-      if (
-        String(lockContext.marketId || marketId) !== marketId ||
-        String(lockContext.tierName || tierName) !== tierName ||
-        !contextProtected ||
-        !contextExposure ||
-        !contextEntry ||
-        !contextDrawdown ||
-        !contextTrigger ||
-        contextProtected.minus(protectedNotional).abs().gt(new Decimal("0.000001")) ||
-        contextExposure.minus(exposureNotional).abs().gt(new Decimal("0.000001")) ||
-        contextEntry.minus(entryPrice).abs().gt(new Decimal("0.000001")) ||
-        contextDrawdown.minus(drawdownFloorPct).abs().gt(new Decimal("0.000001")) ||
-        contextTrigger.minus(triggerPrice).abs().gt(new Decimal("0.000001"))
-      ) {
-        throw new Error("quote_mismatch_context");
+      const consumed = await consumeVenueQuote(client, lockedQuote.id, protection.id);
+      if (!consumed) {
+        throw new Error("quote_already_consumed");
       }
       const contextHedgePremium = parsePositiveDecimal(lockContext.hedgePremiumUsd) || new Decimal(lockedQuote.premium);
       const contextMarkupPct = parsePositiveDecimal(lockContext.markupPct);
@@ -890,7 +963,9 @@ export const registerPilotRoutes = async (
       });
       return {
         status: "ok",
-        protection: updated,
+        protection: updated
+          ? sanitizeProtectionForTrader(updated as unknown as Record<string, unknown>)
+          : null,
         coverageRatio: coverageRatio.toFixed(6),
         quote: activatedQuote
       };
@@ -904,6 +979,7 @@ export const registerPilotRoutes = async (
         [
           "quote_not_found",
           "quote_expired",
+          "quote_already_consumed",
           "quote_mismatch_instrument",
           "quote_mismatch_type",
           "quote_mismatch_quantity",
@@ -940,6 +1016,8 @@ export const registerPilotRoutes = async (
         reply.code(500);
       } else if (reason === "quote_not_found") {
         reply.code(404);
+      } else if (reason === "quote_already_consumed") {
+        reply.code(409);
       } else {
         reply.code(400);
       }
@@ -955,13 +1033,22 @@ export const registerPilotRoutes = async (
               ? "Daily protection limit reached for this trader. Try again next UTC day."
               : reason === "protection_notional_cap_exceeded"
                 ? `Protection amount exceeds pilot cap (${new Decimal(pilotConfig.maxProtectionNotionalUsdc).toFixed(2)} USDC).`
+            : reason === "quote_already_consumed"
+              ? "Quote has already been activated. Refresh protections before retrying."
             : reason === "venue_execute_timeout"
               ? "Venue execution timed out. Please request a fresh quote."
             : reason === "quote_expired"
               ? "Quote expired. Please request a new quote."
               : reason.startsWith("quote_mismatch")
                 ? "Quote does not match activation parameters. Please request a new quote."
-            : "Protection activation failed."
+            : "Protection activation failed.",
+        ...(reason === "daily_notional_cap_exceeded"
+          ? {
+              capUsdc: maxDailyProtection.toFixed(2),
+              usedUsdc: (error as any)?.usedUsdc || capUsedUsdc,
+              projectedUsdc: (error as any)?.projectedUsdc || capProjectedUsdc
+            }
+          : {})
       };
     } finally {
       client.release();
@@ -990,7 +1077,12 @@ export const registerPilotRoutes = async (
       const protections = await listProtectionsByUserHash(pool, userHash.userHash, {
         limit: Number(query.limit || 20)
       });
-      return { status: "ok", protections };
+      return {
+        status: "ok",
+        protections: protections.map((item) =>
+          sanitizeProtectionForTrader(item as unknown as Record<string, unknown>)
+        )
+      };
     } catch (error: any) {
       reply.code(503);
       return {
@@ -1010,22 +1102,15 @@ export const registerPilotRoutes = async (
       reply.code(404);
       return { status: "error", reason: "not_found" };
     }
-    if (query.userId) {
-      try {
-        const userHash = buildUserHash({
-          rawUserId: query.userId,
-          secret: pilotConfig.hashSecret,
-          hashVersion: pilotConfig.hashVersion
-        });
-        if (userHash.userHash !== protection.userHash) {
-          reply.code(403);
-          return { status: "error", reason: "forbidden_user_scope" };
-        }
-      } catch (error: any) {
-        const reason = String(error?.message || "server_config_error");
-        reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
-        return { status: "error", reason };
-      }
+    const scoped = await requireProtectionScope({
+      req,
+      reply,
+      protection,
+      userId: query.userId,
+      allowPrivilegedBypass: true
+    });
+    if (!scoped) {
+      return;
     }
     const requestId = pilotConfig.nextRequestId();
     let snapshot: PriceSnapshotOutput;
@@ -1117,12 +1202,24 @@ export const registerPilotRoutes = async (
 
   app.get("/pilot/protections/:id", async (req, reply) => {
     const params = req.params as { id: string };
+    const query = req.query as { userId?: string };
     const protection = await getProtection(pool, params.id);
     if (!protection) {
       reply.code(404);
       return { status: "error", reason: "not_found" };
     }
-    return { status: "ok", protection };
+    const scoped = await requireProtectionScope({
+      req,
+      reply,
+      protection,
+      userId: query.userId,
+      allowPrivilegedBypass: true
+    });
+    if (!scoped) return;
+    return {
+      status: "ok",
+      protection: sanitizeProtectionForTrader(protection as unknown as Record<string, unknown>)
+    };
   });
 
   app.get("/pilot/protections/:id/proof", async (req, reply) => {
@@ -1171,15 +1268,28 @@ export const registerPilotRoutes = async (
 
   app.post("/pilot/protections/:id/renewal-decision", async (req, reply) => {
     const params = req.params as { id: string };
-    const body = req.body as { decision?: "renew" | "expire" };
+    const body = req.body as { decision?: "renew" | "expire"; userId?: string };
     const protection = await getProtection(pool, params.id);
     if (!protection) {
       reply.code(404);
       return { status: "error", reason: "not_found" };
     }
+    const scoped = await requireProtectionScope({
+      req,
+      reply,
+      protection,
+      userId: body.userId,
+      allowPrivilegedBypass: false
+    });
+    if (!scoped) return;
     if (body.decision === "expire") {
       const updated = await patchProtection(pool, params.id, { status: "cancelled" });
-      return { status: "ok", protection: updated };
+      return {
+        status: "ok",
+        protection: updated
+          ? sanitizeProtectionForTrader(updated as unknown as Record<string, unknown>)
+          : null
+      };
     }
     if (body.decision === "renew") {
       const now = new Date();
@@ -1201,7 +1311,10 @@ export const registerPilotRoutes = async (
         renewWindowMinutes: protection.renewWindowMinutes,
         metadata: { renewalOf: protection.id }
       });
-      return { status: "ok", protection: cloned };
+      return {
+        status: "ok",
+        protection: sanitizeProtectionForTrader(cloned as unknown as Record<string, unknown>)
+      };
     }
     reply.code(400);
     return { status: "error", reason: "invalid_decision" };
@@ -1314,6 +1427,8 @@ export const registerPilotRoutes = async (
   });
 
   app.post("/pilot/internal/protections/:id/resolve-expiry", async (req, reply) => {
+    const allowed = await requireInternalOrAdmin(req, reply);
+    if (!allowed) return;
     const params = req.params as { id: string };
     await resolveAndPersistExpiry(params.id);
     const protection = await getProtection(pool, params.id);
@@ -1325,7 +1440,7 @@ export const registerPilotRoutes = async (
   });
 
   const retryEveryMs = Math.max(5000, Number(process.env.EXPIRY_RETRY_INTERVAL_MS || "30000"));
-  setInterval(async () => {
+  const expiryInterval = setInterval(async () => {
     try {
       const pending = await pool.query(
         `
@@ -1344,5 +1459,6 @@ export const registerPilotRoutes = async (
       // intentionally swallow to avoid crashing scheduler loop
     }
   }, retryEveryMs);
+  expiryInterval.unref?.();
 };
 

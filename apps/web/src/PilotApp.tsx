@@ -395,7 +395,9 @@ export function PilotApp() {
     const pollSeq = ++protectionPollSeqRef.current;
     const pollProtection = async () => {
       try {
-        const res = await fetch(`${API_BASE}/pilot/protections/${polledProtectionId}`);
+        const res = await fetch(
+          `${API_BASE}/pilot/protections/${polledProtectionId}?userId=${encodeURIComponent(traderId)}`
+        );
         if (!res.ok) return;
         const payload = await res.json();
         if (protectionPollSeqRef.current !== pollSeq) return;
@@ -521,7 +523,9 @@ export function PilotApp() {
         fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/ledger`, {
           headers: { "x-admin-token": token }
         }),
-        fetch(`${API_BASE}/pilot/protections/${protectionId}/monitor`)
+        fetch(`${API_BASE}/pilot/protections/${protectionId}/monitor`, {
+          headers: { "x-admin-token": token }
+        })
       ]);
       const ledgerPayload = await ledgerRes.json();
       const monitorPayload = await monitorRes.json();
@@ -690,7 +694,7 @@ export function PilotApp() {
       const res = await fetch(`${API_BASE}/pilot/protections/${protection.id}/renewal-decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision })
+        body: JSON.stringify({ decision, userId: traderId })
       });
       const payload = await res.json();
       if (!res.ok || payload?.status !== "ok") {
