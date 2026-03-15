@@ -147,8 +147,19 @@ const sanitizeQuoteForClient = (quote: {
   for (const key of allowedKeys) {
     if (key in details) allowedDetails[key] = details[key];
   }
+  const base = {
+    venue: quote.venue,
+    quoteId: quote.quoteId,
+    instrumentId: quote.instrumentId,
+    side: quote.side,
+    quantity: quote.quantity,
+    premium: quote.premium,
+    expiresAt: quote.expiresAt,
+    quoteTs: quote.quoteTs
+  };
   return {
-    ...quote,
+    ...base,
+    ...(quote.rfqId !== undefined ? { rfqId: quote.rfqId } : {}),
     details: Object.keys(allowedDetails).length > 0 ? allowedDetails : undefined
   };
 };

@@ -218,6 +218,10 @@ test("pilot route hardening A-G", async (t) => {
       assert.equal(firstActivate.statusCode, 200);
       const first = firstActivate.json();
       const firstProtectionId = String(first.protection.id);
+      assert.equal(Object.prototype.hasOwnProperty.call(first.quote, "id"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(first.quote, "protectionId"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(first.quote, "consumedAt"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(first.quote, "consumedByProtectionId"), false);
 
       const secondActivate = await app.inject({
         method: "POST",
@@ -228,6 +232,10 @@ test("pilot route hardening A-G", async (t) => {
       const second = secondActivate.json();
       assert.equal(second.idempotentReplay, true);
       assert.equal(String(second.protection.id), firstProtectionId);
+      assert.equal(Object.prototype.hasOwnProperty.call(second.quote, "id"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(second.quote, "protectionId"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(second.quote, "consumedAt"), false);
+      assert.equal(Object.prototype.hasOwnProperty.call(second.quote, "consumedByProtectionId"), false);
 
       const protectionCount = await pool.query(`SELECT COUNT(*)::int AS n FROM pilot_protections`);
       const executionCount = await pool.query(`SELECT COUNT(*)::int AS n FROM pilot_venue_executions`);
