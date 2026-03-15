@@ -180,7 +180,7 @@ const formatCountdown = (seconds: number): string => {
 
 const friendlyError = (message: string): string => {
   if (message.includes("daily_notional_cap_exceeded")) {
-    return "Daily protection limit reached for this trader. Please try again next UTC day.";
+    return "Daily protection limit reached for pilot operations. Please try again next UTC day.";
   }
   if (message.includes("protection_notional_cap_exceeded")) {
     return "Protection amount exceeds the pilot maximum. Reduce amount and request a new quote.";
@@ -242,15 +242,9 @@ const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 const ATTICUS_LOGO_URL = "https://i.ibb.co/KpbRyd7w/atticus-copy.png";
 const PILOT_SUPPORT_EMAIL = "michael@atticustrade.com";
 const PILOT_SUPPORT_TELEGRAM = "@willialso";
+const PILOT_TENANT_SCOPE_ID = "foxify-pilot";
 
 export function PilotApp() {
-  const [userId, setUserId] = useState(() => {
-    if (typeof window !== "undefined") {
-      const saved = window.localStorage.getItem("pilot_user_id");
-      if (saved) return saved;
-    }
-    return "";
-  });
   const [pilotUnlocked, setPilotUnlocked] = useState(false);
   const [termsStatus, setTermsStatus] = useState<"checking" | "required" | "accepted">("checking");
   const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
@@ -307,10 +301,9 @@ export function PilotApp() {
   const exposureValue = parseCurrencyNumber(exposureNotional || "0");
   const protectedValue = parseCurrencyNumber(protectedNotional || "0");
   const entryValue = parseCurrencyNumber(entryPrice || "0");
-  const traderId = userId.trim();
-  const scopedTraderId = pilotUnlocked ? traderId : "";
+  const scopedPilotId = pilotUnlocked ? PILOT_TENANT_SCOPE_ID : "";
   const canQuote =
-    scopedTraderId.length > 0 &&
+    scopedPilotId.length > 0 &&
     Number.isFinite(exposureValue) &&
     exposureValue > 0 &&
     Number.isFinite(protectedValue) &&
@@ -381,17 +374,7 @@ export function PilotApp() {
     setQuote(null);
     setQuoteState("idle");
     setQuoteTimeLeft(0);
-  }, [userId, protectionType, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice]);
-
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      if (traderId) {
-        window.localStorage.setItem("pilot_user_id", traderId);
-      } else {
-        window.localStorage.removeItem("pilot_user_id");
-      }
-    }
-  }, [traderId]);
+  }, [protectionType, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice]);
 
   useEffect(() => {
     setTermsError(null);
@@ -399,17 +382,13 @@ export function PilotApp() {
     setTermsModalConfirmed(false);
     setPilotUnlocked(false);
     setTermsAcceptedAt(null);
-    if (!traderId) {
-      setTermsStatus("required");
-      return;
-    }
     let cancelled = false;
     const controller = new AbortController();
     setTermsStatus("checking");
     const loadTermsStatus = async () => {
       try {
         const res = await fetch(
-          `${API_BASE}/pilot/terms/status?userId=${encodeURIComponent(traderId)}&termsVersion=${encodeURIComponent(PILOT_TERMS_VERSION)}`,
+          `${API_BASE}/pilot/terms/status?userId=${encodeURIComponent(PILOT_TENANT_SCOPE_ID)}&termsVersion=${encodeURIComponent(PILOT_TERMS_VERSION)}`,
           { signal: controller.signal }
         );
         const payload = (await res.json()) as PilotTermsStatusResponse;
@@ -436,7 +415,7 @@ export function PilotApp() {
       cancelled = true;
       controller.abort();
     };
-  }, [traderId]);
+  }, []);
 
   useEffect(() => {
     if (!quote?.quote?.expiresAt) {
@@ -464,7 +443,7 @@ export function PilotApp() {
     const pollProtection = async () => {
       try {
         const res = await fetch(
-          `${API_BASE}/pilot/protections/${polledProtectionId}?userId=${encodeURIComponent(scopedTraderId)}`
+          `${API_BASE}/pilot/protections/${polledProtectionId}?userId=${encodeURIComponent(scopedPilotId)}`
         );
         if (!res.ok) return;
         const payload = await res.json();
@@ -485,7 +464,7 @@ export function PilotApp() {
       clearInterval(id);
       protectionPollSeqRef.current += 1;
     };
-  }, [protection?.id, scopedTraderId]);
+  }, [protection?.id, scopedPilotId]);
 
   const refreshProtectionHistory = async (opts?: { clearExisting?: boolean; silent?: boolean }) => {
     const requestSeq = ++historyRequestSeqRef.current;
@@ -497,7 +476,7 @@ export function PilotApp() {
     if (clearExisting) {
       setProtectionsHistory([]);
     }
-    if (!scopedTraderId) {
+    if (!scopedPilotId) {
       if (requestSeq === historyRequestSeqRef.current) {
         setProtectionsHistory([]);
         if (!silent) setHistoryBusy(false);
@@ -505,7 +484,7 @@ export function PilotApp() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(scopedTraderId)}&limit=20`);
+      const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(scopedPilotId)}&limit=20`);
       if (!res.ok) return;
       const payload = await res.json();
       if (requestSeq !== historyRequestSeqRef.current) return;
@@ -526,7 +505,7 @@ export function PilotApp() {
     setMonitorBusy(true);
     try {
       const res = await fetch(
-        `${API_BASE}/pilot/protections/${protectionId}/monitor?userId=${encodeURIComponent(scopedTraderId)}`
+        `${API_BASE}/pilot/protections/${protectionId}/monitor?userId=${encodeURIComponent(scopedPilotId)}`
       );
       if (!res.ok) return;
       const payload = await res.json();
@@ -614,7 +593,7 @@ export function PilotApp() {
 
   useEffect(() => {
     void refreshProtectionHistory({ clearExisting: true });
-  }, [scopedTraderId]);
+  }, [scopedPilotId]);
 
   useEffect(() => {
     setMonitor(null);
@@ -627,7 +606,7 @@ export function PilotApp() {
       void refreshMonitor(protection.id);
     }, 10000);
     return () => clearInterval(id);
-  }, [showProtectionModal, protection?.id, scopedTraderId]);
+  }, [showProtectionModal, protection?.id, scopedPilotId]);
 
   useEffect(() => {
     if (!showAdminModal) {
@@ -653,7 +632,7 @@ export function PilotApp() {
             headers: { "Content-Type": "application/json" },
             signal: controller.signal,
             body: JSON.stringify({
-              userId: scopedTraderId,
+              userId: scopedPilotId,
               protectedNotional: protectedValue,
               foxifyExposureNotional: exposureValue,
               entryPrice: entryValue,
@@ -716,7 +695,7 @@ export function PilotApp() {
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          userId: scopedTraderId,
+          userId: scopedPilotId,
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           entryPrice: entryValue,
@@ -762,7 +741,7 @@ export function PilotApp() {
       const res = await fetch(`${API_BASE}/pilot/protections/${protection.id}/renewal-decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, userId: scopedTraderId })
+        body: JSON.stringify({ decision, userId: scopedPilotId })
       });
       const payload = await res.json();
       if (!res.ok || payload?.status !== "ok") {
@@ -781,16 +760,11 @@ export function PilotApp() {
   };
 
   const canContinuePastGate =
-    traderId.length > 0 &&
     !termsBusy &&
     termsStatus !== "checking" &&
     (termsStatus === "accepted" || (termsModalConfirmed && termsChecked));
 
   const acceptTermsAndContinue = async () => {
-    if (!traderId) {
-      setTermsError("Enter Trader ID to continue.");
-      return;
-    }
     if (termsStatus === "accepted") {
       setPilotUnlocked(true);
       return;
@@ -810,7 +784,7 @@ export function PilotApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: traderId,
+          userId: PILOT_TENANT_SCOPE_ID,
           termsVersion: PILOT_TERMS_VERSION,
           accepted: true
         })
@@ -967,27 +941,12 @@ export function PilotApp() {
           <h2 className="pilot-gate-title">Foxify Protection Pilot</h2>
           <div className="recommendation pilot-gate-copy">
             <div className="muted">
-              Access is limited to internal Foxify executives. Acceptance is stored server-side per user and terms
-              version.
+              Internal pilot for Foxify executives. Please review and accept Terms {PILOT_TERMS_VERSION} to continue.
             </div>
-            <div className="pilot-gate-trader-row">
-              <label htmlFor="pilot-gate-trader-id" className="pilot-gate-label">
-                Trader ID
-              </label>
-              <input
-                id="pilot-gate-trader-id"
-                className="input pilot-input pilot-input-text pilot-input-trader pilot-gate-input"
-                value={userId}
-                spellCheck={false}
-                title={userId}
-                placeholder="e.g. Danny-001"
-                onChange={(e) => setUserId(e.target.value)}
-              />
-            </div>
-            {termsStatus === "checking" && traderId && <div className="muted">Checking prior acceptance...</div>}
+            {termsStatus === "checking" && <div className="muted">Checking prior acceptance...</div>}
             {termsAcceptedAt && termsStatus === "accepted" && (
               <div className="muted pilot-gate-accepted-note">
-                Terms {PILOT_TERMS_VERSION} already accepted for Trader ID <strong>{traderId}</strong> on{" "}
+                Terms {PILOT_TERMS_VERSION} already accepted on{" "}
                 {new Date(termsAcceptedAt).toLocaleString()}.
               </div>
             )}
@@ -1019,10 +978,7 @@ export function PilotApp() {
                   ? "Continue to Pilot"
                   : "Accept Terms & Continue"}
             </button>
-            <div className="muted pilot-gate-shared-note">
-              Shared device guidance: verify Trader ID before continuing. Acceptance is recorded per Trader ID and
-              terms version.
-            </div>
+            <div className="muted pilot-gate-shared-note">Acceptance is recorded for pilot operations and audit.</div>
             {termsError && <div className="disclaimer danger">{termsError}</div>}
           </div>
         </div>
@@ -1045,9 +1001,10 @@ export function PilotApp() {
                 </p>
                 <ol className="pilot-terms-list">
                   <li>Internal pilot only for manual perpetual position protection, limited to Foxify executives.</li>
+                  <li>These terms apply to all Foxify executives who execute protections during this pilot.</li>
                   <li>Maximum protection notional is 50,000 USDC per protection request.</li>
                   <li>
-                    Daily protected notional limit is 50,000 USDC per user and resets at 00:00 UTC each calendar day.
+                    Daily protected notional limit is 50,000 USDC for pilot operations and resets at 00:00 UTC each calendar day.
                   </li>
                   <li>Each protection uses a fixed 7-day tenor. Auto-renew may be enabled and remains subject to these terms.</li>
                   <li>
@@ -1128,20 +1085,6 @@ export function PilotApp() {
         <div className="section">
           <h4>Protection Request</h4>
           <div className="recommendation pilot-form">
-            <div className="pilot-form-row">
-              <span className="pilot-label">Trader ID</span>
-              <div className="pilot-field pilot-field-trader">
-                <input
-                  className="input pilot-input pilot-input-text pilot-input-trader"
-                  value={userId}
-                  spellCheck={false}
-                  title={userId}
-                  placeholder="e.g. Danny-001"
-                  onChange={(e) => setUserId(e.target.value)}
-                />
-              </div>
-            </div>
-
             <div className="pilot-form-row">
               <span className="pilot-label">Tier</span>
               <div className="pilot-field">
@@ -1247,8 +1190,7 @@ export function PilotApp() {
 
             {!canQuote && (
               <div className="disclaimer danger">
-                Enter Trader ID, position size, protection amount, and entry price. Protection amount cannot exceed
-                position size.
+                Enter position size, protection amount, and entry price. Protection amount cannot exceed position size.
               </div>
             )}
           </div>
@@ -1295,7 +1237,7 @@ export function PilotApp() {
           </div>
           {quoteCapWarning && (
             <div className="disclaimer danger">
-              Daily protection limit reached for this trader. Quote is shown for reference; confirmation is blocked
+              Daily protection limit reached for pilot operations. Quote is shown for reference; confirmation is blocked
               until the next UTC day.
             </div>
           )}
@@ -1330,8 +1272,7 @@ export function PilotApp() {
         <div className="section">
           <div className="section-title-row">
             <h4>
-              Protections <span className="muted">({protectionsTotalCount})</span>{" "}
-              {scopedTraderId && <span className="pill pilot-viewing-pill">Viewing: {scopedTraderId}</span>}
+              Protections <span className="muted">({protectionsTotalCount})</span>
             </h4>
             {historyBusy && <span className="pill">Loading…</span>}
             <div className="section-actions">
@@ -1355,13 +1296,10 @@ export function PilotApp() {
               </button>
             </div>
           </div>
-          {!scopedTraderId && (
-            <div className="muted section-collapsed-note">Enter Trader ID to load protections.</div>
-          )}
-          {!showHistorySection && protectionsTotalCount > 0 && scopedTraderId && (
+          {!showHistorySection && protectionsTotalCount > 0 && scopedPilotId && (
             <div className="muted section-collapsed-note">Protections hidden.</div>
           )}
-          <div className={`collapsible-panel ${showHistorySection && Boolean(scopedTraderId) ? "is-open" : "is-closed"}`}>
+          <div className={`collapsible-panel ${showHistorySection && Boolean(scopedPilotId) ? "is-open" : "is-closed"}`}>
             <div className="collapsible-inner">
               {historyBusy ? (
                 <div className="muted section-collapsed-note">
@@ -1369,7 +1307,7 @@ export function PilotApp() {
                   Loading protections...
                 </div>
               ) : !activeProtectionForView && historyWithoutActive.length === 0 ? (
-                <div className="muted">No protections found for this trader ID yet.</div>
+                <div className="muted">No protections found yet.</div>
               ) : (
                 <div className="positions">
                   {activeProtectionForView && (
