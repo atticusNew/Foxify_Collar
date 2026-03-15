@@ -60,6 +60,9 @@ The pilot ledger stores:
 - `payout_due`
 - `payout_settled`
 
+Settlement posting endpoints are idempotent per protection + entry type for pilot operations. Repeated
+settlement calls for an already-settled protection return `status=ok` with `idempotentReplay=true`.
+
 ## Tier and trigger semantics
 
 - Pilot quote/activate accepts `tierName` and optional `drawdownFloorPct`.

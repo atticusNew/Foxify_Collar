@@ -1399,6 +1399,17 @@ export const registerPilotRoutes = async (
       reply.code(404);
       return { status: "error", reason: "not_found" };
     }
+    const existingLedger = await listLedgerForProtection(pool, params.id);
+    const existingPremiumSettlement = existingLedger.find((entry) => entry.entryType === "premium_settled");
+    if (existingPremiumSettlement) {
+      return {
+        status: "ok",
+        idempotentReplay: true,
+        settledAmount: existingPremiumSettlement.amount,
+        settledAt: existingPremiumSettlement.settledAt,
+        reference: existingPremiumSettlement.reference
+      };
+    }
     const amount = Number(body.amount ?? protection.premium ?? 0);
     if (!Number.isFinite(amount) || amount <= 0) {
       reply.code(400);
@@ -1434,6 +1445,26 @@ export const registerPilotRoutes = async (
     if (!protection.expiryPrice) {
       reply.code(409);
       return { status: "error", reason: "expiry_price_missing" };
+    }
+    const existingLedger = await listLedgerForProtection(pool, params.id);
+    const existingPayoutSettlement = existingLedger.find((entry) => entry.entryType === "payout_settled");
+    if (existingPayoutSettlement) {
+      return {
+        status: "ok",
+        idempotentReplay: true,
+        settledAmount: existingPayoutSettlement.amount,
+        settledAt: existingPayoutSettlement.settledAt,
+        reference: existingPayoutSettlement.reference
+      };
+    }
+    if (new Decimal(protection.payoutSettledAmount || "0").gt(0)) {
+      return {
+        status: "ok",
+        idempotentReplay: true,
+        settledAmount: String(protection.payoutSettledAmount),
+        settledAt: protection.payoutSettledAt || null,
+        reference: protection.payoutTxRef || null
+      };
     }
     const amount = Number(body.amount ?? protection.payoutDueAmount ?? 0);
     if (!Number.isFinite(amount) || amount < 0) {

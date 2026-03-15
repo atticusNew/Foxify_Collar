@@ -417,6 +417,78 @@ test("pilot route hardening A-H", async (t) => {
       await harness.close();
     }
   });
+
+  await t.test("I) settlement posting is idempotent per protection", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      const { protectionId } = await quoteAndActivate(app, 1200);
+
+      const firstPremium = await app.inject({
+        method: "POST",
+        url: `/pilot/admin/protections/${protectionId}/premium-settled`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: { amount: 12.34, reference: "pilot-premium-1" }
+      });
+      assert.equal(firstPremium.statusCode, 200);
+      assert.equal(firstPremium.json().status, "ok");
+
+      const replayPremium = await app.inject({
+        method: "POST",
+        url: `/pilot/admin/protections/${protectionId}/premium-settled`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: { amount: 12.34, reference: "pilot-premium-1" }
+      });
+      assert.equal(replayPremium.statusCode, 200);
+      assert.equal(replayPremium.json().status, "ok");
+      assert.equal(replayPremium.json().idempotentReplay, true);
+
+      await pool.query(`UPDATE pilot_protections SET expiry_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, [
+        protectionId
+      ]);
+      const resolveExpiry = await app.inject({
+        method: "POST",
+        url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: {}
+      });
+      assert.equal(resolveExpiry.statusCode, 200);
+      const settledAmount = Number(resolveExpiry.json().protection?.payoutDueAmount ?? 0);
+
+      const firstPayout = await app.inject({
+        method: "POST",
+        url: `/pilot/admin/protections/${protectionId}/payout-settled`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: { amount: settledAmount, payoutTxRef: "pilot-payout-1" }
+      });
+      assert.equal(firstPayout.statusCode, 200);
+      assert.equal(firstPayout.json().status, "ok");
+
+      const replayPayout = await app.inject({
+        method: "POST",
+        url: `/pilot/admin/protections/${protectionId}/payout-settled`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: { amount: settledAmount, payoutTxRef: "pilot-payout-1" }
+      });
+      assert.equal(replayPayout.statusCode, 200);
+      assert.equal(replayPayout.json().status, "ok");
+      assert.equal(replayPayout.json().idempotentReplay, true);
+
+      const premiumSettledCount = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_ledger_entries WHERE protection_id = $1 AND entry_type = 'premium_settled'`,
+        [protectionId]
+      );
+      assert.equal(Number(premiumSettledCount.rows[0].n), 1);
+
+      const payoutSettledCount = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_ledger_entries WHERE protection_id = $1 AND entry_type = 'payout_settled'`,
+        [protectionId]
+      );
+      assert.equal(Number(payoutSettledCount.rows[0].n), 1);
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 test.after(() => {

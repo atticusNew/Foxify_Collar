@@ -475,8 +475,7 @@ export const getPilotAdminMetrics = async (
           SELECT COALESCE(SUM(premium), 0)::text
           FROM pilot_venue_executions
         ) AS hedge_premium_total_usdc,
-        COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc,
-        COALESCE(SUM(COALESCE(payout_settled_amount, 0)), 0)::text AS payout_settled_total_usdc
+        COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc
       FROM pilot_protections
     `
   );
@@ -484,7 +483,8 @@ export const getPilotAdminMetrics = async (
     `
       SELECT
         COALESCE(SUM(CASE WHEN entry_type = 'premium_due' THEN amount ELSE 0 END), 0)::text AS premium_due_total_usdc,
-        COALESCE(SUM(CASE WHEN entry_type = 'premium_settled' THEN amount ELSE 0 END), 0)::text AS premium_settled_total_usdc
+        COALESCE(SUM(CASE WHEN entry_type = 'premium_settled' THEN amount ELSE 0 END), 0)::text AS premium_settled_total_usdc,
+        COALESCE(SUM(CASE WHEN entry_type = 'payout_settled' THEN amount ELSE 0 END), 0)::text AS payout_settled_total_usdc
       FROM pilot_ledger_entries
     `
   );
@@ -498,7 +498,7 @@ export const getPilotAdminMetrics = async (
   const premiumDue = new Decimal(String(ledgerRow.premium_due_total_usdc || "0"));
   const premiumSettled = String(ledgerRow.premium_settled_total_usdc || "0");
   const premiumSettledDecimal = new Decimal(premiumSettled);
-  const payoutSettled = String(row.payout_settled_total_usdc || "0");
+  const payoutSettled = String(ledgerRow.payout_settled_total_usdc || "0");
   const payoutSettledDecimal = new Decimal(payoutSettled);
   const payoutDue = new Decimal(String(row.payout_due_total_usdc || "0"));
   const pendingPremiumReceivableUsdc = premiumDue.minus(premiumSettledDecimal).toFixed(10);
