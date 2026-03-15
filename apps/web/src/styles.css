@@ -260,14 +260,20 @@ body {
   gap: 12px;
 }
 
+.pilot-gate-terms-btn {
+  justify-self: center;
+}
+
 .pilot-gate-cta {
   min-height: 40px;
   width: 100%;
 }
 
-.pilot-gate-field {
+.pilot-gate-trader-row {
   display: grid;
-  gap: 6px;
+  grid-template-columns: 120px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
 }
 
 .pilot-gate-label {
@@ -281,8 +287,8 @@ body {
 
 .pilot-gate-checkline {
   display: inline-flex;
-  align-items: flex-start;
-  justify-content: flex-start;
+  align-items: center;
+  justify-content: center;
   gap: 8px;
   font-size: 12px;
   line-height: 1.45;
@@ -297,17 +303,12 @@ body {
   color: var(--text);
 }
 
-.pilot-inline-link {
-  display: inline;
-  border: 0;
-  background: transparent;
-  color: #f2a65a;
-  padding: 0;
-  margin: 0;
-  cursor: pointer;
-  font-size: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+.pilot-gate-instruction {
+  text-align: center;
+}
+
+.pilot-gate-shared-note {
+  text-align: center;
 }
 
 .pilot-form {
@@ -389,6 +390,19 @@ body {
   gap: 10px;
 }
 
+.pilot-header-brand-simple {
+  align-items: center;
+  gap: 10px;
+}
+
+.pilot-header-logo {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  transform: scale(1.18);
+  transform-origin: center center;
+}
+
 .pilot-logo {
   width: 24px;
   height: 24px;
@@ -437,7 +451,7 @@ body {
 }
 
 .pilot-co-brand-logo--foxify {
-  transform: scale(1.16);
+  transform: scale(1.24);
   transform-origin: center center;
 }
 
@@ -1302,6 +1316,11 @@ select.input {
 
   .pilot-gate-title {
     font-size: 18px;
+  }
+
+  .pilot-gate-trader-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 
   .pilot-gate-checkline {

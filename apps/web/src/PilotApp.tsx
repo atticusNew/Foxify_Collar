@@ -966,7 +966,11 @@ export function PilotApp() {
           </div>
           <h2 className="pilot-gate-title">Foxify Protection Pilot</h2>
           <div className="recommendation pilot-gate-copy">
-            <div className="pilot-gate-field">
+            <div className="muted">
+              Access is limited to internal Foxify executives. Acceptance is stored server-side per user and terms
+              version.
+            </div>
+            <div className="pilot-gate-trader-row">
               <label htmlFor="pilot-gate-trader-id" className="pilot-gate-label">
                 Trader ID
               </label>
@@ -980,14 +984,6 @@ export function PilotApp() {
                 onChange={(e) => setUserId(e.target.value)}
               />
             </div>
-            <div className="muted">
-              Access is limited to internal Foxify executives. Acceptance is stored server-side per user and terms
-              version.
-            </div>
-            <div className="muted">
-              Shared device guidance: verify Trader ID before continuing. Acceptance is recorded per Trader ID and
-              terms version.
-            </div>
             {termsStatus === "checking" && traderId && <div className="muted">Checking prior acceptance...</div>}
             {termsAcceptedAt && termsStatus === "accepted" && (
               <div className="muted pilot-gate-accepted-note">
@@ -995,34 +991,27 @@ export function PilotApp() {
                 {new Date(termsAcceptedAt).toLocaleString()}.
               </div>
             )}
-            <label className="pilot-gate-checkline">
+            <button
+              className="btn btn-secondary pilot-gate-terms-btn"
+              type="button"
+              onClick={() => setTermsModalOpen(true)}
+            >
+              Open Terms & Conditions ({PILOT_TERMS_VERSION})
+            </button>
+            {termsStatus !== "accepted" && !termsModalConfirmed && (
+              <div className="muted pilot-gate-instruction">
+                Open Terms & Conditions and click "I have read and accept" to enable the acknowledgement checkbox.
+              </div>
+            )}
+            <label className="pilot-gate-checkline" onClick={() => setTermsModalOpen(termsStatus !== "accepted" && !termsModalConfirmed)}>
               <input
                 type="checkbox"
                 checked={termsChecked}
                 disabled={termsStatus === "accepted" || !termsModalConfirmed}
                 onChange={(e) => setTermsChecked(e.target.checked)}
               />
-              <span>
-                I have read and agree to{" "}
-                <button
-                  type="button"
-                  className="pilot-inline-link"
-                  onClick={(event) => {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setTermsModalOpen(true);
-                  }}
-                >
-                  Terms & Conditions ({PILOT_TERMS_VERSION})
-                </button>
-                .
-              </span>
+              <span>I have read and agree to Terms & Conditions ({PILOT_TERMS_VERSION}).</span>
             </label>
-            {termsStatus !== "accepted" && !termsModalConfirmed && (
-              <div className="muted">
-                Open Terms & Conditions and click "I have read and accept" to enable the acknowledgement checkbox.
-              </div>
-            )}
             <button className="cta pilot-gate-cta" type="button" disabled={!canContinuePastGate} onClick={acceptTermsAndContinue}>
               {termsBusy
                 ? "Saving..."
@@ -1030,6 +1019,10 @@ export function PilotApp() {
                   ? "Continue to Pilot"
                   : "Accept Terms & Continue"}
             </button>
+            <div className="muted pilot-gate-shared-note">
+              Shared device guidance: verify Trader ID before continuing. Acceptance is recorded per Trader ID and
+              terms version.
+            </div>
             {termsError && <div className="disclaimer danger">{termsError}</div>}
           </div>
         </div>
@@ -1108,35 +1101,18 @@ export function PilotApp() {
     <div className="shell">
       <div className="card pilot-card">
         <div className="title pilot-title">
-          <div className="brand pilot-header-brand">
-            <div className="pilot-co-brand pilot-co-brand-compact" aria-label="Foxify and Atticus logos">
-              <div className="pilot-co-brand-logo-slot pilot-co-brand-logo-slot-compact">
-                {foxifyLogoFailed ? (
-                  <span className="pilot-co-brand-fallback">Foxify</span>
-                ) : (
-                  <img
-                    src={FOXIFY_LOGO_URL}
-                    alt="Foxify logo"
-                    className="pilot-co-brand-logo pilot-co-brand-logo-compact pilot-co-brand-logo--foxify"
-                    onError={() => setFoxifyLogoFailed(true)}
-                  />
-                )}
-              </div>
-              <span className="pilot-co-brand-separator">&lt;&gt;</span>
-              <div className="pilot-co-brand-logo-slot pilot-co-brand-logo-slot-compact">
-                {atticusLogoFailed ? (
-                  <span className="pilot-co-brand-fallback">Atticus</span>
-                ) : (
-                  <img
-                    src={ATTICUS_LOGO_URL}
-                    alt="Atticus logo"
-                    className="pilot-co-brand-logo pilot-co-brand-logo-compact pilot-co-brand-logo--atticus"
-                    onError={() => setAtticusLogoFailed(true)}
-                  />
-                )}
-              </div>
-            </div>
-            <span>Foxify Protection Pilot</span>
+          <div className="brand pilot-header-brand-simple">
+            {foxifyLogoFailed ? (
+              <span className="pilot-co-brand-fallback">Foxify</span>
+            ) : (
+              <img
+                src={FOXIFY_LOGO_URL}
+                alt="Foxify logo"
+                className="pilot-header-logo"
+                onError={() => setFoxifyLogoFailed(true)}
+              />
+            )}
+            <span>Protection Pilot</span>
           </div>
           {internalAdminEnabled && (
             <button

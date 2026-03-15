@@ -149,16 +149,16 @@ export const pilotConfig = {
     "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "4")
   } as Record<string, number>,
   startingReserveUsdc: Number(process.env.PILOT_STARTING_RESERVE_USDC || "25000"),
-  pricePrimaryTimeoutMs: Number(process.env.PRICE_TIMEOUT_PRIMARY_MS || "800"),
-  priceFallbackTimeoutMs: Number(process.env.PRICE_TIMEOUT_FALLBACK_MS || "800"),
+  pricePrimaryTimeoutMs: Number(process.env.PRICE_TIMEOUT_PRIMARY_MS || "1400"),
+  priceFallbackTimeoutMs: Number(process.env.PRICE_TIMEOUT_FALLBACK_MS || "1400"),
   priceFreshnessMaxMs: Number(process.env.PRICE_FRESHNESS_MAX_MS || "5000"),
-  priceRequestRetryAttempts: Number(process.env.PRICE_REQUEST_RETRY_ATTEMPTS || "2"),
-  priceRequestRetryDelayMs: Number(process.env.PRICE_REQUEST_RETRY_DELAY_MS || "120"),
+  priceRequestRetryAttempts: Number(process.env.PRICE_REQUEST_RETRY_ATTEMPTS || "3"),
+  priceRequestRetryDelayMs: Number(process.env.PRICE_REQUEST_RETRY_DELAY_MS || "180"),
   venueQuoteTimeoutMs: Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000"),
   quoteTtlMs: Number(process.env.PILOT_QUOTE_TTL_MS || "30000"),
   venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "8000"),
   venueMarkTimeoutMs: Number(process.env.PILOT_VENUE_MARK_TIMEOUT_MS || "3000"),
-  singlePriceSource: process.env.PRICE_SINGLE_SOURCE !== "false",
+  singlePriceSource: process.env.PRICE_SINGLE_SOURCE === "true",
   expiryInitialWindowMs: Number(process.env.EXPIRY_PRICE_INITIAL_WINDOW_MS || "5000"),
   fullCoverageTolerancePct: Number(process.env.FULL_COVERAGE_TOLERANCE_PCT || "0.005"),
   requireFullCoverage: process.env.REQUIRE_FULL_POSITION_COVERAGE !== "false",
@@ -168,7 +168,9 @@ export const pilotConfig = {
     process.env.DYDX_PRICE_URL ||
     "https://api.exchange.coinbase.com/products/BTC-USD/ticker",
   referenceMarketId: process.env.PRICE_REFERENCE_MARKET_ID || process.env.DYDX_BTC_MARKET_ID || "BTC-USD",
-  fallbackPriceUrl: process.env.FALLBACK_PRICE_URL || "",
+  fallbackPriceUrl:
+    process.env.FALLBACK_PRICE_URL ||
+    "https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL",
   falconxBaseUrl: process.env.FALCONX_BASE_URL || "https://api.falconx.io",
   falconxApiKey: process.env.FALCONX_API_KEY || "",
   falconxSecret: process.env.FALCONX_SECRET || "",

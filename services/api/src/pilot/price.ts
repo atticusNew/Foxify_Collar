@@ -162,7 +162,13 @@ const extractFallback = (payload: any): {
     payload?.pair ??
     payload?.result?.market_id ??
     null;
-  const price = Number(payload?.price ?? payload?.value ?? payload?.result?.price);
+  const price = Number(
+    payload?.price ??
+      payload?.value ??
+      payload?.result?.price ??
+      payload?.result?.index_price ??
+      payload?.result?.last_price
+  );
   const timestampMs =
     normalizeTimestampMs(payload?.timestamp ?? payload?.result?.timestamp ?? payload?.updated_at) ?? null;
   return {
