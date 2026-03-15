@@ -242,7 +242,6 @@ const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 const ATTICUS_LOGO_URL = "https://i.ibb.co/KpbRyd7w/atticus-copy.png";
 const PILOT_SUPPORT_EMAIL = "michael@atticustrade.com";
 const PILOT_SUPPORT_TELEGRAM = "@willialso";
-const PILOT_TENANT_SCOPE_ID = "foxify-pilot";
 
 export function PilotApp() {
   const [pilotUnlocked, setPilotUnlocked] = useState(false);
@@ -301,9 +300,8 @@ export function PilotApp() {
   const exposureValue = parseCurrencyNumber(exposureNotional || "0");
   const protectedValue = parseCurrencyNumber(protectedNotional || "0");
   const entryValue = parseCurrencyNumber(entryPrice || "0");
-  const scopedPilotId = pilotUnlocked ? PILOT_TENANT_SCOPE_ID : "";
   const canQuote =
-    scopedPilotId.length > 0 &&
+    pilotUnlocked &&
     Number.isFinite(exposureValue) &&
     exposureValue > 0 &&
     Number.isFinite(protectedValue) &&
@@ -388,7 +386,7 @@ export function PilotApp() {
     const loadTermsStatus = async () => {
       try {
         const res = await fetch(
-          `${API_BASE}/pilot/terms/status?userId=${encodeURIComponent(PILOT_TENANT_SCOPE_ID)}&termsVersion=${encodeURIComponent(PILOT_TERMS_VERSION)}`,
+          `${API_BASE}/pilot/terms/status?termsVersion=${encodeURIComponent(PILOT_TERMS_VERSION)}`,
           { signal: controller.signal }
         );
         const payload = (await res.json()) as PilotTermsStatusResponse;
@@ -443,7 +441,7 @@ export function PilotApp() {
     const pollProtection = async () => {
       try {
         const res = await fetch(
-          `${API_BASE}/pilot/protections/${polledProtectionId}?userId=${encodeURIComponent(scopedPilotId)}`
+          `${API_BASE}/pilot/protections/${polledProtectionId}`
         );
         if (!res.ok) return;
         const payload = await res.json();
@@ -464,7 +462,7 @@ export function PilotApp() {
       clearInterval(id);
       protectionPollSeqRef.current += 1;
     };
-  }, [protection?.id, scopedPilotId]);
+  }, [protection?.id, pilotUnlocked]);
 
   const refreshProtectionHistory = async (opts?: { clearExisting?: boolean; silent?: boolean }) => {
     const requestSeq = ++historyRequestSeqRef.current;
@@ -476,7 +474,7 @@ export function PilotApp() {
     if (clearExisting) {
       setProtectionsHistory([]);
     }
-    if (!scopedPilotId) {
+    if (!pilotUnlocked) {
       if (requestSeq === historyRequestSeqRef.current) {
         setProtectionsHistory([]);
         if (!silent) setHistoryBusy(false);
@@ -484,7 +482,7 @@ export function PilotApp() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(scopedPilotId)}&limit=20`);
+      const res = await fetch(`${API_BASE}/pilot/protections?limit=20`);
       if (!res.ok) return;
       const payload = await res.json();
       if (requestSeq !== historyRequestSeqRef.current) return;
@@ -505,7 +503,7 @@ export function PilotApp() {
     setMonitorBusy(true);
     try {
       const res = await fetch(
-        `${API_BASE}/pilot/protections/${protectionId}/monitor?userId=${encodeURIComponent(scopedPilotId)}`
+        `${API_BASE}/pilot/protections/${protectionId}/monitor`
       );
       if (!res.ok) return;
       const payload = await res.json();
@@ -593,7 +591,7 @@ export function PilotApp() {
 
   useEffect(() => {
     void refreshProtectionHistory({ clearExisting: true });
-  }, [scopedPilotId]);
+  }, [pilotUnlocked]);
 
   useEffect(() => {
     setMonitor(null);
@@ -606,7 +604,7 @@ export function PilotApp() {
       void refreshMonitor(protection.id);
     }, 10000);
     return () => clearInterval(id);
-  }, [showProtectionModal, protection?.id, scopedPilotId]);
+  }, [showProtectionModal, protection?.id, pilotUnlocked]);
 
   useEffect(() => {
     if (!showAdminModal) {
@@ -632,7 +630,6 @@ export function PilotApp() {
             headers: { "Content-Type": "application/json" },
             signal: controller.signal,
             body: JSON.stringify({
-              userId: scopedPilotId,
               protectedNotional: protectedValue,
               foxifyExposureNotional: exposureValue,
               entryPrice: entryValue,
@@ -695,7 +692,6 @@ export function PilotApp() {
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          userId: scopedPilotId,
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           entryPrice: entryValue,
@@ -741,7 +737,7 @@ export function PilotApp() {
       const res = await fetch(`${API_BASE}/pilot/protections/${protection.id}/renewal-decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, userId: scopedPilotId })
+        body: JSON.stringify({ decision })
       });
       const payload = await res.json();
       if (!res.ok || payload?.status !== "ok") {
@@ -784,7 +780,6 @@ export function PilotApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userId: PILOT_TENANT_SCOPE_ID,
           termsVersion: PILOT_TERMS_VERSION,
           accepted: true
         })
@@ -1296,10 +1291,10 @@ export function PilotApp() {
               </button>
             </div>
           </div>
-          {!showHistorySection && protectionsTotalCount > 0 && scopedPilotId && (
+          {!showHistorySection && protectionsTotalCount > 0 && pilotUnlocked && (
             <div className="muted section-collapsed-note">Protections hidden.</div>
           )}
-          <div className={`collapsible-panel ${showHistorySection && Boolean(scopedPilotId) ? "is-open" : "is-closed"}`}>
+          <div className={`collapsible-panel ${showHistorySection && pilotUnlocked ? "is-open" : "is-closed"}`}>
             <div className="collapsible-inner">
               {historyBusy ? (
                 <div className="muted section-collapsed-note">

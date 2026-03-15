@@ -17,8 +17,7 @@ const buildPriceFetch = (): typeof fetch =>
         })
     }) as any) as typeof fetch;
 
-const defaultQuotePayload = (userId: string, protectedNotional = 1000) => ({
-  userId,
+const defaultQuotePayload = (protectedNotional = 1000) => ({
   protectedNotional,
   foxifyExposureNotional: protectedNotional,
   entryPrice: 100000,
@@ -28,8 +27,8 @@ const defaultQuotePayload = (userId: string, protectedNotional = 1000) => ({
   drawdownFloorPct: 0.2
 });
 
-const activationPayload = (userId: string, quoteId: string, protectedNotional = 1000) => ({
-  ...defaultQuotePayload(userId, protectedNotional),
+const activationPayload = (quoteId: string, protectedNotional = 1000) => ({
+  ...defaultQuotePayload(protectedNotional),
   quoteId,
   autoRenew: false,
   tenorDays: 7
@@ -83,13 +82,12 @@ const createPilotHarness = async (): Promise<{
 
 const quoteAndActivate = async (
   app: FastifyInstance,
-  userId: string,
   protectedNotional = 1000
 ): Promise<{ protectionId: string; quoteId: string }> => {
   const quoteRes = await app.inject({
     method: "POST",
     url: "/pilot/protections/quote",
-    payload: defaultQuotePayload(userId, protectedNotional)
+    payload: defaultQuotePayload(protectedNotional)
   });
   assert.equal(quoteRes.statusCode, 200);
   const quotePayload = quoteRes.json();
@@ -100,7 +98,7 @@ const quoteAndActivate = async (
   const activateRes = await app.inject({
     method: "POST",
     url: "/pilot/protections/activate",
-    payload: activationPayload(userId, quoteId, protectedNotional)
+    payload: activationPayload(quoteId, protectedNotional)
   });
   assert.equal(activateRes.statusCode, 200);
   const activatePayloadJson = activateRes.json();
@@ -110,43 +108,25 @@ const quoteAndActivate = async (
   return { protectionId, quoteId };
 };
 
-test("pilot route hardening A-G", async (t) => {
-  await t.test("A) trader read scope enforced and userHash removed", async () => {
+test("pilot route hardening A-H", async (t) => {
+  await t.test("A) tenant-scoped read works without user id and userHash is removed", async () => {
     const harness = await createPilotHarness();
     try {
       const { app } = harness;
-      const { protectionId } = await quoteAndActivate(app, "alice-a");
-
-      const noScopeRes = await app.inject({
-        method: "GET",
-        url: `/pilot/protections/${protectionId}`
-      });
-      assert.equal(noScopeRes.statusCode, 401);
-
-      const wrongScopeRes = await app.inject({
-        method: "GET",
-        url: `/pilot/protections/${protectionId}?userId=alice-other`
-      });
-      assert.equal(wrongScopeRes.statusCode, 403);
+      const { protectionId } = await quoteAndActivate(app);
 
       const scopedRes = await app.inject({
         method: "GET",
-        url: `/pilot/protections/${protectionId}?userId=alice-a`
+        url: `/pilot/protections/${protectionId}`
       });
       assert.equal(scopedRes.statusCode, 200);
       const scoped = scopedRes.json();
       assert.equal(scoped.status, "ok");
       assert.equal(Object.prototype.hasOwnProperty.call(scoped.protection, "userHash"), false);
 
-      const monitorNoScope = await app.inject({
-        method: "GET",
-        url: `/pilot/protections/${protectionId}/monitor`
-      });
-      assert.equal(monitorNoScope.statusCode, 401);
-
       const monitorScoped = await app.inject({
         method: "GET",
-        url: `/pilot/protections/${protectionId}/monitor?userId=alice-a`
+        url: `/pilot/protections/${protectionId}/monitor`
       });
       assert.equal(monitorScoped.statusCode, 200);
       assert.equal(monitorScoped.json().status, "ok");
@@ -155,30 +135,16 @@ test("pilot route hardening A-G", async (t) => {
     }
   });
 
-  await t.test("B) renewal decision scoped and internal expiry requires privileged auth", async () => {
+  await t.test("B) renewal decision is user-id free and internal expiry requires privileged auth", async () => {
     const harness = await createPilotHarness();
     try {
       const { app } = harness;
-      const { protectionId } = await quoteAndActivate(app, "bob-b");
-
-      const renewNoUser = await app.inject({
-        method: "POST",
-        url: `/pilot/protections/${protectionId}/renewal-decision`,
-        payload: { decision: "expire" }
-      });
-      assert.equal(renewNoUser.statusCode, 401);
-
-      const renewWrongUser = await app.inject({
-        method: "POST",
-        url: `/pilot/protections/${protectionId}/renewal-decision`,
-        payload: { decision: "expire", userId: "bob-other" }
-      });
-      assert.equal(renewWrongUser.statusCode, 403);
+      const { protectionId } = await quoteAndActivate(app);
 
       const renewOk = await app.inject({
         method: "POST",
         url: `/pilot/protections/${protectionId}/renewal-decision`,
-        payload: { decision: "expire", userId: "bob-b" }
+        payload: { decision: "expire" }
       });
       assert.equal(renewOk.statusCode, 200);
 
@@ -208,7 +174,7 @@ test("pilot route hardening A-G", async (t) => {
       const quoteRes = await app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: defaultQuotePayload("charlie-c", 1200)
+        payload: defaultQuotePayload(1200)
       });
       assert.equal(quoteRes.statusCode, 200);
       const quoteId = String(quoteRes.json().quote.quoteId);
@@ -216,7 +182,7 @@ test("pilot route hardening A-G", async (t) => {
       const firstActivate = await app.inject({
         method: "POST",
         url: "/pilot/protections/activate",
-        payload: activationPayload("charlie-c", quoteId, 1200)
+        payload: activationPayload(quoteId, 1200)
       });
       assert.equal(firstActivate.statusCode, 200);
       const first = firstActivate.json();
@@ -229,7 +195,7 @@ test("pilot route hardening A-G", async (t) => {
       const secondActivate = await app.inject({
         method: "POST",
         url: "/pilot/protections/activate",
-        payload: activationPayload("charlie-c", quoteId, 1200)
+        payload: activationPayload(quoteId, 1200)
       });
       assert.equal(secondActivate.statusCode, 200);
       const second = secondActivate.json();
@@ -253,16 +219,15 @@ test("pilot route hardening A-G", async (t) => {
     const harness = await createPilotHarness();
     try {
       const { app } = harness;
-      const userId = "daisy-d";
       const q1 = await app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: defaultQuotePayload(userId, 30000)
+        payload: defaultQuotePayload(30000)
       });
       const q2 = await app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: defaultQuotePayload(userId, 30000)
+        payload: defaultQuotePayload(30000)
       });
       assert.equal(q1.statusCode, 200);
       assert.equal(q2.statusCode, 200);
@@ -273,12 +238,12 @@ test("pilot route hardening A-G", async (t) => {
         app.inject({
           method: "POST",
           url: "/pilot/protections/activate",
-          payload: activationPayload(userId, q1Id, 30000)
+          payload: activationPayload(q1Id, 30000)
         }),
         app.inject({
           method: "POST",
           url: "/pilot/protections/activate",
-          payload: activationPayload(userId, q2Id, 30000)
+          payload: activationPayload(q2Id, 30000)
         })
       ]);
 
@@ -300,7 +265,7 @@ test("pilot route hardening A-G", async (t) => {
       const quoteRes = await app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: defaultQuotePayload("eve-e", 1500)
+        payload: defaultQuotePayload(1500)
       });
       assert.equal(quoteRes.statusCode, 200);
       const quoteId = String(quoteRes.json().quote.quoteId);
@@ -310,7 +275,7 @@ test("pilot route hardening A-G", async (t) => {
         method: "POST",
         url: "/pilot/protections/activate",
         payload: {
-          ...activationPayload("eve-e", quoteId, 1500),
+          ...activationPayload(quoteId, 1500),
           expiryAt: requestedOverride
         }
       });
@@ -339,7 +304,7 @@ test("pilot route hardening A-G", async (t) => {
       const notStarted = await app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: defaultQuotePayload("window-user-1", 1000)
+        payload: defaultQuotePayload(1000)
       });
       assert.equal(notStarted.statusCode, 403);
       assert.equal(notStarted.json().reason, "pilot_not_started");
@@ -348,7 +313,7 @@ test("pilot route hardening A-G", async (t) => {
       const closed = await app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: defaultQuotePayload("window-user-2", 1000)
+        payload: defaultQuotePayload(1000)
       });
       assert.equal(closed.statusCode, 403);
       assert.equal(closed.json().reason, "pilot_window_closed");
@@ -357,7 +322,7 @@ test("pilot route hardening A-G", async (t) => {
       const open = await app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: defaultQuotePayload("window-user-3", 1000)
+        payload: defaultQuotePayload(1000)
       });
       assert.equal(open.statusCode, 200);
       assert.equal(open.json().status, "ok");
@@ -388,14 +353,13 @@ test("pilot route hardening A-G", async (t) => {
     }
   });
 
-  await t.test("H) terms acceptance is server-side, auditable, and one-time per user+version", async () => {
+  await t.test("H) terms acceptance is server-side, auditable, and one-time per tenant+version", async () => {
     const harness = await createPilotHarness();
     try {
       const { app, pool } = harness;
-      const userId = "terms-user-1";
       const statusBefore = await app.inject({
         method: "GET",
-        url: `/pilot/terms/status?userId=${encodeURIComponent(userId)}&termsVersion=v1.0`
+        url: `/pilot/terms/status?termsVersion=v1.0`
       });
       assert.equal(statusBefore.statusCode, 200);
       assert.equal(statusBefore.json().status, "ok");
@@ -408,7 +372,6 @@ test("pilot route hardening A-G", async (t) => {
           "user-agent": "pilot-tests/1.0"
         },
         payload: {
-          userId,
           termsVersion: "v1.0",
           accepted: true
         }
@@ -423,7 +386,6 @@ test("pilot route hardening A-G", async (t) => {
         method: "POST",
         url: "/pilot/terms/accept",
         payload: {
-          userId,
           termsVersion: "v1.0",
           accepted: true
         }
@@ -435,7 +397,7 @@ test("pilot route hardening A-G", async (t) => {
 
       const statusAfter = await app.inject({
         method: "GET",
-        url: `/pilot/terms/status?userId=${encodeURIComponent(userId)}&termsVersion=v1.0`
+        url: `/pilot/terms/status?termsVersion=v1.0`
       });
       assert.equal(statusAfter.statusCode, 200);
       assert.equal(statusAfter.json().status, "ok");

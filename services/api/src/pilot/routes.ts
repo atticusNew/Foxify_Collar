@@ -243,38 +243,12 @@ const requireProofAccess = async (req: FastifyRequest, reply: FastifyReply): Pro
   return true;
 };
 
-const requireProtectionScope = async (params: {
-  req: FastifyRequest;
-  reply: FastifyReply;
-  protection: { userHash: string };
-  userId?: string;
-  allowPrivilegedBypass?: boolean;
-}): Promise<boolean> => {
-  if (params.allowPrivilegedBypass && (isAdminAuthorized(params.req) || isProofAuthorized(params.req))) {
-    return true;
-  }
-  const userId = String(params.userId || "").trim();
-  if (!userId) {
-    params.reply.code(401).send({ status: "error", reason: "unauthorized_user_scope" });
-    return false;
-  }
-  try {
-    const userHash = buildUserHash({
-      rawUserId: userId,
-      secret: pilotConfig.hashSecret,
-      hashVersion: pilotConfig.hashVersion
-    });
-    if (userHash.userHash !== params.protection.userHash) {
-      params.reply.code(403).send({ status: "error", reason: "forbidden_user_scope" });
-      return false;
-    }
-    return true;
-  } catch (error: any) {
-    const reason = String(error?.message || "server_config_error");
-    params.reply.code(reason === "user_hash_secret_missing" ? 500 : 400).send({ status: "error", reason });
-    return false;
-  }
-};
+const resolveTenantScopeHash = (): { userHash: string; hashVersion: number } =>
+  buildUserHash({
+    rawUserId: pilotConfig.tenantScopeId,
+    secret: pilotConfig.hashSecret,
+    hashVersion: pilotConfig.hashVersion
+  });
 
 const requireInternalOrAdmin = async (req: FastifyRequest, reply: FastifyReply): Promise<boolean> => {
   const internalToken = String(req.headers["x-internal-token"] || "");
@@ -432,12 +406,7 @@ export const registerPilotRoutes = async (
   };
 
   app.get("/pilot/terms/status", async (req, reply) => {
-    const query = req.query as { userId?: string; termsVersion?: string };
-    const userId = String(query.userId || "").trim();
-    if (!userId) {
-      reply.code(400);
-      return { status: "error", reason: "missing_user_id" };
-    }
+    const query = req.query as { termsVersion?: string };
     if (query.termsVersion && String(query.termsVersion) !== pilotConfig.termsVersion) {
       reply.code(400);
       return {
@@ -448,11 +417,7 @@ export const registerPilotRoutes = async (
     }
     let userHash: { userHash: string; hashVersion: number };
     try {
-      userHash = buildUserHash({
-        rawUserId: userId,
-        secret: pilotConfig.hashSecret,
-        hashVersion: pilotConfig.hashVersion
-      });
+      userHash = resolveTenantScopeHash();
     } catch (error: any) {
       const reason = String(error?.message || "server_config_error");
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
@@ -481,12 +446,7 @@ export const registerPilotRoutes = async (
   });
 
   app.post("/pilot/terms/accept", async (req, reply) => {
-    const body = req.body as { userId?: string; termsVersion?: string; accepted?: boolean };
-    const userId = String(body.userId || "").trim();
-    if (!userId) {
-      reply.code(400);
-      return { status: "error", reason: "missing_user_id" };
-    }
+    const body = req.body as { termsVersion?: string; accepted?: boolean };
     if (body.termsVersion && String(body.termsVersion) !== pilotConfig.termsVersion) {
       reply.code(400);
       return {
@@ -501,11 +461,7 @@ export const registerPilotRoutes = async (
     }
     let userHash: { userHash: string; hashVersion: number };
     try {
-      userHash = buildUserHash({
-        rawUserId: userId,
-        secret: pilotConfig.hashSecret,
-        hashVersion: pilotConfig.hashVersion
-      });
+      userHash = resolveTenantScopeHash();
     } catch (error: any) {
       const reason = String(error?.message || "server_config_error");
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
@@ -546,7 +502,6 @@ export const registerPilotRoutes = async (
   app.post("/pilot/protections/quote", async (req, reply) => {
     if (!enforcePilotWindow(reply)) return;
     const body = req.body as {
-      userId?: string;
       protectedNotional?: number;
       foxifyExposureNotional?: number;
       entryPrice?: number;
@@ -558,10 +513,6 @@ export const registerPilotRoutes = async (
       protectionType?: "long" | "short";
     };
     const quoteStartedAt = Date.now();
-    if (!body.userId) {
-      reply.code(400);
-      return { status: "error", reason: "missing_user_id" };
-    }
     const protectedNotional = parsePositiveDecimal(body.protectedNotional);
     const exposureNotional = parsePositiveDecimal(body.foxifyExposureNotional);
     const entryPrice = parsePositiveDecimal(body.entryPrice);
@@ -593,11 +544,7 @@ export const registerPilotRoutes = async (
     }
     let userHash: { userHash: string; hashVersion: number };
     try {
-      userHash = buildUserHash({
-        rawUserId: body.userId,
-        secret: pilotConfig.hashSecret,
-        hashVersion: pilotConfig.hashVersion
-      });
+      userHash = resolveTenantScopeHash();
     } catch (error: any) {
       const reason = String(error?.message || "server_config_error");
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
@@ -791,7 +738,6 @@ export const registerPilotRoutes = async (
   app.post("/pilot/protections/activate", async (req, reply) => {
     if (!enforcePilotWindow(reply)) return;
     const body = req.body as {
-      userId?: string;
       protectedNotional?: number;
       foxifyExposureNotional?: number;
       instrumentId?: string;
@@ -807,10 +753,6 @@ export const registerPilotRoutes = async (
       entryPrice?: number;
       quoteId?: string;
     };
-    if (!body.userId) {
-      reply.code(400);
-      return { status: "error", reason: "missing_user_id" };
-    }
     if (!body.quoteId) {
       reply.code(400);
       return { status: "error", reason: "missing_quote_id" };
@@ -846,11 +788,7 @@ export const registerPilotRoutes = async (
     }
     let userHash: { userHash: string; hashVersion: number };
     try {
-      userHash = buildUserHash({
-        rawUserId: body.userId,
-        secret: pilotConfig.hashSecret,
-        hashVersion: pilotConfig.hashVersion
-      });
+      userHash = resolveTenantScopeHash();
     } catch (error: any) {
       const reason = String(error?.message || "server_config_error");
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
@@ -1188,7 +1126,7 @@ export const registerPilotRoutes = async (
             : reason === "storage_unavailable"
               ? "Storage temporarily unavailable, please retry."
             : reason === "daily_notional_cap_exceeded"
-              ? "Daily protection limit reached for this trader. Try again next UTC day."
+              ? "Daily protection limit reached for pilot operations. Try again next UTC day."
               : reason === "protection_notional_cap_exceeded"
                 ? `Protection amount exceeds pilot cap (${new Decimal(pilotConfig.maxProtectionNotionalUsdc).toFixed(2)} USDC).`
             : reason === "quote_already_consumed"
@@ -1214,18 +1152,10 @@ export const registerPilotRoutes = async (
   });
 
   app.get("/pilot/protections", async (req, reply) => {
-    const query = req.query as { userId?: string; limit?: string };
-    if (!query.userId) {
-      reply.code(400);
-      return { status: "error", reason: "missing_user_id" };
-    }
+    const query = req.query as { limit?: string };
     let userHash: { userHash: string; hashVersion: number };
     try {
-      userHash = buildUserHash({
-        rawUserId: query.userId,
-        secret: pilotConfig.hashSecret,
-        hashVersion: pilotConfig.hashVersion
-      });
+      userHash = resolveTenantScopeHash();
     } catch (error: any) {
       const reason = String(error?.message || "server_config_error");
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
@@ -1254,21 +1184,10 @@ export const registerPilotRoutes = async (
 
   app.get("/pilot/protections/:id/monitor", async (req, reply) => {
     const params = req.params as { id: string };
-    const query = req.query as { userId?: string };
     const protection = await getProtection(pool, params.id);
     if (!protection) {
       reply.code(404);
       return { status: "error", reason: "not_found" };
-    }
-    const scoped = await requireProtectionScope({
-      req,
-      reply,
-      protection,
-      userId: query.userId,
-      allowPrivilegedBypass: true
-    });
-    if (!scoped) {
-      return;
     }
     const requestId = pilotConfig.nextRequestId();
     let snapshot: PriceSnapshotOutput;
@@ -1360,20 +1279,11 @@ export const registerPilotRoutes = async (
 
   app.get("/pilot/protections/:id", async (req, reply) => {
     const params = req.params as { id: string };
-    const query = req.query as { userId?: string };
     const protection = await getProtection(pool, params.id);
     if (!protection) {
       reply.code(404);
       return { status: "error", reason: "not_found" };
     }
-    const scoped = await requireProtectionScope({
-      req,
-      reply,
-      protection,
-      userId: query.userId,
-      allowPrivilegedBypass: true
-    });
-    if (!scoped) return;
     return {
       status: "ok",
       protection: sanitizeProtectionForTrader(protection as unknown as Record<string, unknown>)
@@ -1426,20 +1336,12 @@ export const registerPilotRoutes = async (
 
   app.post("/pilot/protections/:id/renewal-decision", async (req, reply) => {
     const params = req.params as { id: string };
-    const body = req.body as { decision?: "renew" | "expire"; userId?: string };
+    const body = req.body as { decision?: "renew" | "expire" };
     const protection = await getProtection(pool, params.id);
     if (!protection) {
       reply.code(404);
       return { status: "error", reason: "not_found" };
     }
-    const scoped = await requireProtectionScope({
-      req,
-      reply,
-      protection,
-      userId: body.userId,
-      allowPrivilegedBypass: false
-    });
-    if (!scoped) return;
     if (body.decision === "expire") {
       const updated = await patchProtection(pool, params.id, { status: "cancelled" });
       return {
