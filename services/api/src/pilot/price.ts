@@ -25,6 +25,33 @@ export type PriceChainConfig = {
   primaryTimeoutMs: number;
   fallbackTimeoutMs: number;
   freshnessMaxMs: number;
+  requestRetryAttempts?: number;
+  requestRetryDelayMs?: number;
+};
+
+const sleep = async (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+
+const parseJsonPayload = async (response: any): Promise<any> => {
+  if (typeof response?.text === "function") {
+    const raw = await response.text();
+    if (!raw || !String(raw).trim()) {
+      throw new Error("empty_body");
+    }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error("invalid_json");
+    }
+  }
+  if (typeof response?.json === "function") {
+    try {
+      return await response.json();
+    } catch {
+      throw new Error("invalid_json");
+    }
+  }
+  throw new Error("missing_json_body");
 };
 
 const fetchJsonWithTimeout = async (url: string, timeoutMs: number): Promise<any> => {
@@ -35,10 +62,36 @@ const fetchJsonWithTimeout = async (url: string, timeoutMs: number): Promise<any
     if (!res.ok) {
       throw new Error(`http_${res.status}`);
     }
-    return await res.json();
+    return await parseJsonPayload(res);
+  } catch (error: any) {
+    if (error?.name === "AbortError") {
+      throw new Error("timeout");
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
+};
+
+const fetchJsonWithRetries = async (params: {
+  url: string;
+  timeoutMs: number;
+  retryAttempts: number;
+  retryDelayMs: number;
+}): Promise<any> => {
+  const attempts = Math.max(1, Math.floor(params.retryAttempts));
+  let lastError = "request_failed";
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fetchJsonWithTimeout(params.url, params.timeoutMs);
+    } catch (error: any) {
+      lastError = String(error?.message || "request_failed");
+      if (attempt < attempts) {
+        await sleep(params.retryDelayMs);
+      }
+    }
+  }
+  throw new Error(lastError);
 };
 
 const normalizeTimestampMs = (value: unknown): number | null => {
@@ -149,9 +202,20 @@ export const resolvePriceSnapshot = async (
 ): Promise<PriceSnapshotOutput> => {
   const nowMs = input.now.getTime();
   const expiryAtMs = input.expiryAt ? input.expiryAt.getTime() : undefined;
+  const retryAttempts = Number.isFinite(config.requestRetryAttempts)
+    ? Number(config.requestRetryAttempts)
+    : 2;
+  const retryDelayMs = Number.isFinite(config.requestRetryDelayMs)
+    ? Number(config.requestRetryDelayMs)
+    : 120;
   let primaryError = "unknown";
   try {
-    const primaryPayload = await fetchJsonWithTimeout(config.primaryUrl, config.primaryTimeoutMs);
+    const primaryPayload = await fetchJsonWithRetries({
+      url: config.primaryUrl,
+      timeoutMs: config.primaryTimeoutMs,
+      retryAttempts,
+      retryDelayMs
+    });
     const extracted = extractPrimary(primaryPayload);
     const primaryMarket = extracted.marketId || input.marketId;
     const verdict = validate({
@@ -184,7 +248,12 @@ export const resolvePriceSnapshot = async (
   }
 
   try {
-    const fallbackPayload = await fetchJsonWithTimeout(config.fallbackUrl, config.fallbackTimeoutMs);
+    const fallbackPayload = await fetchJsonWithRetries({
+      url: config.fallbackUrl,
+      timeoutMs: config.fallbackTimeoutMs,
+      retryAttempts,
+      retryDelayMs
+    });
     const fallbackExtracted = extractFallback(fallbackPayload);
     const fallbackMarket = fallbackExtracted.marketId || input.marketId;
     const fallbackVerdict = validate({

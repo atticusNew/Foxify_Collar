@@ -264,7 +264,9 @@ export const registerPilotRoutes = async (
           fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
           primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
           fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs
+          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
         },
         {
           marketId: protection.marketId,
@@ -432,7 +434,9 @@ export const registerPilotRoutes = async (
           fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
           primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
           fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs
+          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
         },
         {
           marketId,
@@ -716,7 +720,9 @@ export const registerPilotRoutes = async (
           fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
           primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
           fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs
+          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
         },
         {
           marketId,
@@ -1030,7 +1036,9 @@ export const registerPilotRoutes = async (
           fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
           primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
           fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs
+          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
         },
         {
           marketId: protection.marketId,

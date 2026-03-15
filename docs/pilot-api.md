@@ -33,15 +33,18 @@ Endpoints:
 1. Canonical primary reference endpoint (`PRICE_REFERENCE_URL`)
 2. Market id pinned by config (`PRICE_REFERENCE_MARKET_ID`, default `BTC-USD`)
 3. Optional fallback endpoint (`FALLBACK_PRICE_URL`) only when `PRICE_SINGLE_SOURCE=false`
-4. If reference resolution fails or payload is invalid, response is:
+4. Reference fetches automatically retry transient payload/network errors:
+   - `PRICE_REQUEST_RETRY_ATTEMPTS` (default `2`)
+   - `PRICE_REQUEST_RETRY_DELAY_MS` (default `120`)
+5. If reference resolution fails or payload is invalid, response is:
    - `status=error`
    - `reason=price_unavailable`
    - message: `Price temporarily unavailable, please retry.`
-5. If storage is unavailable, response may be:
+6. If storage is unavailable, response may be:
    - `status=error`
    - `reason=storage_unavailable`
    - message: `Storage temporarily unavailable, please retry.`
-6. If venue quote generation fails, response may be:
+7. If venue quote generation fails, response may be:
    - `status=error`
    - `reason=quote_generation_failed`
    - message: `Unable to generate a venue quote right now. Please retry.`

@@ -78,6 +78,47 @@ test("resolvePriceSnapshot falls back when primary payload invalid", async () =>
   assert.equal(result.priceSource, "fallback_oracle");
 });
 
+test("resolvePriceSnapshot retries transient invalid primary JSON", async () => {
+  let callCount = 0;
+  global.fetch = (async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return {
+        ok: true,
+        text: async () => "{"
+      } as any;
+    }
+    return {
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          market_id: "BTC-USD",
+          oraclePrice: 100123.45,
+          timestamp: Date.now()
+        })
+    } as any;
+  }) as typeof fetch;
+  const result = await resolvePriceSnapshot(
+    {
+      primaryUrl: "https://primary",
+      fallbackUrl: "https://fallback",
+      primaryTimeoutMs: 800,
+      fallbackTimeoutMs: 800,
+      freshnessMaxMs: 5000,
+      requestRetryAttempts: 2,
+      requestRetryDelayMs: 0
+    },
+    {
+      marketId: "BTC-USD",
+      now: new Date(),
+      requestId: "req-4",
+      endpointVersion: "v1"
+    }
+  );
+  assert.equal(result.priceSource, "reference_oracle");
+  assert.equal(callCount, 2);
+});
+
 test("resolvePriceSnapshot rejects when both sources invalid", async () => {
   global.fetch = (async () =>
     ({
