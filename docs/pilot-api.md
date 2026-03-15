@@ -6,6 +6,8 @@ These endpoints are enabled when `PILOT_API_ENABLED=true`.
 
 - `POST /pilot/protections/quote`
 - `POST /pilot/protections/activate`
+- `GET /pilot/terms/status?userId=<id>&termsVersion=<version>`
+- `POST /pilot/terms/accept`
 - `GET /pilot/protections?userId=<id>&limit=<n>`
 - `GET /pilot/protections/:id`
 - `GET /pilot/protections/:id/monitor` (optionally scoped with `?userId=<id>`)
@@ -81,7 +83,9 @@ The pilot ledger stores:
 - Tenor is fixed at 7 days by tier defaults for pilot.
 - `protectedNotional` must be `<= 50,000` USDC per protection.
 - Daily protected notional cap is `50,000` USDC per user hash and is enforced on activation.
+- Daily cap reset boundary is `00:00 UTC` (calendar-day reset, not rolling 24h).
 - Quote responses may still be returned when the projected daily cap is exceeded, with limit telemetry included.
+- Terms acceptance is stored once per user hash and terms version (`PILOT_TERMS_VERSION`, default `v1.0`) with server-side audit fields (accepted timestamp, client IP, user-agent).
 - Pilot premium supports passthrough + markup with tier floors:
   - `client_premium = max(hedge_premium + hedge_premium * tier_markup_pct, tier_floor_usd, protected_notional * tier_floor_bps / 10000)`
   - tier markup defaults:

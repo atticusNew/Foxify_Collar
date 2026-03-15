@@ -387,6 +387,74 @@ test("pilot route hardening A-G", async (t) => {
       await harness.close();
     }
   });
+
+  await t.test("H) terms acceptance is server-side, auditable, and one-time per user+version", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      const userId = "terms-user-1";
+      const statusBefore = await app.inject({
+        method: "GET",
+        url: `/pilot/terms/status?userId=${encodeURIComponent(userId)}&termsVersion=v1.0`
+      });
+      assert.equal(statusBefore.statusCode, 200);
+      assert.equal(statusBefore.json().status, "ok");
+      assert.equal(statusBefore.json().accepted, false);
+
+      const acceptFirst = await app.inject({
+        method: "POST",
+        url: "/pilot/terms/accept",
+        headers: {
+          "user-agent": "pilot-tests/1.0"
+        },
+        payload: {
+          userId,
+          termsVersion: "v1.0",
+          accepted: true
+        }
+      });
+      assert.equal(acceptFirst.statusCode, 200);
+      assert.equal(acceptFirst.json().status, "ok");
+      assert.equal(acceptFirst.json().firstAcceptance, true);
+      const firstAcceptanceId = String(acceptFirst.json().acceptanceId || "");
+      assert.ok(firstAcceptanceId);
+
+      const acceptSecond = await app.inject({
+        method: "POST",
+        url: "/pilot/terms/accept",
+        payload: {
+          userId,
+          termsVersion: "v1.0",
+          accepted: true
+        }
+      });
+      assert.equal(acceptSecond.statusCode, 200);
+      assert.equal(acceptSecond.json().status, "ok");
+      assert.equal(acceptSecond.json().firstAcceptance, false);
+      assert.equal(String(acceptSecond.json().acceptanceId || ""), firstAcceptanceId);
+
+      const statusAfter = await app.inject({
+        method: "GET",
+        url: `/pilot/terms/status?userId=${encodeURIComponent(userId)}&termsVersion=v1.0`
+      });
+      assert.equal(statusAfter.statusCode, 200);
+      assert.equal(statusAfter.json().status, "ok");
+      assert.equal(statusAfter.json().accepted, true);
+      assert.ok(statusAfter.json().acceptedAt);
+
+      const acceptanceRows = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_terms_acceptances WHERE terms_version = 'v1.0'`
+      );
+      assert.equal(Number(acceptanceRows.rows[0].n), 1);
+      const acceptanceAudit = await pool.query(
+        `SELECT accepted_ip, user_agent FROM pilot_terms_acceptances WHERE terms_version = 'v1.0' LIMIT 1`
+      );
+      assert.equal(String(acceptanceAudit.rows[0].accepted_ip || ""), "127.0.0.1");
+      assert.equal(String(acceptanceAudit.rows[0].user_agent || ""), "pilot-tests/1.0");
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 test.after(() => {

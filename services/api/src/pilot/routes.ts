@@ -5,10 +5,12 @@ import { DeribitConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow } from "./config";
 import {
+  createPilotTermsAcceptanceIfMissing,
   ensurePilotSchema,
   getDailyProtectedNotionalForUser,
   getEssentialProofPayload,
   getPilotAdminMetrics,
+  getPilotTermsAcceptance,
   getPilotPool,
   getProtection,
   getVenueQuoteByQuoteIdForUpdate,
@@ -428,6 +430,118 @@ export const registerPilotRoutes = async (
       });
     }
   };
+
+  app.get("/pilot/terms/status", async (req, reply) => {
+    const query = req.query as { userId?: string; termsVersion?: string };
+    const userId = String(query.userId || "").trim();
+    if (!userId) {
+      reply.code(400);
+      return { status: "error", reason: "missing_user_id" };
+    }
+    if (query.termsVersion && String(query.termsVersion) !== pilotConfig.termsVersion) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "terms_version_mismatch",
+        expectedTermsVersion: pilotConfig.termsVersion
+      };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = buildUserHash({
+        rawUserId: userId,
+        secret: pilotConfig.hashSecret,
+        hashVersion: pilotConfig.hashVersion
+      });
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    try {
+      const acceptance = await getPilotTermsAcceptance(pool, {
+        userHash: userHash.userHash,
+        termsVersion: pilotConfig.termsVersion
+      });
+      return {
+        status: "ok",
+        termsVersion: pilotConfig.termsVersion,
+        accepted: Boolean(acceptance),
+        acceptedAt: acceptance?.acceptedAt || null
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "terms_status_failed")
+      };
+    }
+  });
+
+  app.post("/pilot/terms/accept", async (req, reply) => {
+    const body = req.body as { userId?: string; termsVersion?: string; accepted?: boolean };
+    const userId = String(body.userId || "").trim();
+    if (!userId) {
+      reply.code(400);
+      return { status: "error", reason: "missing_user_id" };
+    }
+    if (body.termsVersion && String(body.termsVersion) !== pilotConfig.termsVersion) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "terms_version_mismatch",
+        expectedTermsVersion: pilotConfig.termsVersion
+      };
+    }
+    if (body.accepted === false) {
+      reply.code(400);
+      return { status: "error", reason: "acceptance_required" };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = buildUserHash({
+        rawUserId: userId,
+        secret: pilotConfig.hashSecret,
+        hashVersion: pilotConfig.hashVersion
+      });
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const userAgent = String(req.headers["user-agent"] || "").trim() || null;
+    try {
+      const accepted = await createPilotTermsAcceptanceIfMissing(pool, {
+        userHash: userHash.userHash,
+        hashVersion: userHash.hashVersion,
+        termsVersion: pilotConfig.termsVersion,
+        acceptedIp: getRequestIp(req),
+        userAgent,
+        source: "pilot_web",
+        details: {
+          endpointVersion: pilotConfig.endpointVersion,
+          requestId: pilotConfig.nextRequestId()
+        }
+      });
+      return {
+        status: "ok",
+        termsVersion: pilotConfig.termsVersion,
+        acceptanceId: accepted.record.id,
+        acceptedAt: accepted.record.acceptedAt,
+        firstAcceptance: accepted.created
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "terms_accept_failed")
+      };
+    }
+  });
 
   app.post("/pilot/protections/quote", async (req, reply) => {
     if (!enforcePilotWindow(reply)) return;

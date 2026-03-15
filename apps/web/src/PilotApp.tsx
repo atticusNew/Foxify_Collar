@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE } from "./config";
+import { API_BASE, PILOT_TERMS_VERSION } from "./config";
 
 type TierLevel = {
   name: string;
@@ -127,6 +127,15 @@ type ProtectionRecord = {
   metadata?: Record<string, unknown> | null;
 };
 
+type PilotTermsStatusResponse = {
+  status: "ok" | "error";
+  accepted?: boolean;
+  acceptedAt?: string | null;
+  termsVersion?: string;
+  reason?: string;
+  message?: string;
+};
+
 const formatUsd = (value: number | string | null | undefined): string => {
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed)) return "0.00";
@@ -230,6 +239,12 @@ const isRetryableQuoteError = (message: string): boolean => {
 };
 
 const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
+const ATTICUS_LOGO_URL = "https://i.ibb.co/KpbRyd7w/atticus-copy.png";
+const PILOT_SUPPORT_EMAIL = "michael@atticustrade.com";
+const PILOT_SUPPORT_TELEGRAM = "@willialso";
+const PILOT_TERMS_CACHE_PREFIX = "pilot_terms_acceptance";
+const acceptanceCacheKey = (traderId: string): string =>
+  `${PILOT_TERMS_CACHE_PREFIX}:${PILOT_TERMS_VERSION}:${traderId.trim().toLowerCase()}`;
 
 export function PilotApp() {
   const [userId, setUserId] = useState(() => {
@@ -239,6 +254,16 @@ export function PilotApp() {
     }
     return "";
   });
+  const [pilotUnlocked, setPilotUnlocked] = useState(false);
+  const [termsStatus, setTermsStatus] = useState<"checking" | "required" | "accepted">("checking");
+  const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
+  const [termsBusy, setTermsBusy] = useState(false);
+  const [termsError, setTermsError] = useState<string | null>(null);
+  const [termsModalOpen, setTermsModalOpen] = useState(false);
+  const [termsModalConfirmed, setTermsModalConfirmed] = useState(false);
+  const [termsChecked, setTermsChecked] = useState(false);
+  const [foxifyLogoFailed, setFoxifyLogoFailed] = useState(false);
+  const [atticusLogoFailed, setAtticusLogoFailed] = useState(false);
   const [tiers, setTiers] = useState<TierLevel[]>(DEFAULT_TIERS);
   const [tierName, setTierName] = useState(DEFAULT_TIERS[0].name);
   const [protectionType, setProtectionType] = useState<ProtectionType>("long");
@@ -286,8 +311,9 @@ export function PilotApp() {
   const protectedValue = parseCurrencyNumber(protectedNotional || "0");
   const entryValue = parseCurrencyNumber(entryPrice || "0");
   const traderId = userId.trim();
+  const scopedTraderId = pilotUnlocked ? traderId : "";
   const canQuote =
-    traderId.length > 0 &&
+    scopedTraderId.length > 0 &&
     Number.isFinite(exposureValue) &&
     exposureValue > 0 &&
     Number.isFinite(protectedValue) &&
@@ -371,6 +397,60 @@ export function PilotApp() {
   }, [traderId]);
 
   useEffect(() => {
+    setTermsError(null);
+    setTermsChecked(false);
+    setTermsModalConfirmed(false);
+    setPilotUnlocked(false);
+    setTermsAcceptedAt(null);
+    if (!traderId) {
+      setTermsStatus("required");
+      return;
+    }
+    const cacheHit =
+      typeof window !== "undefined" && window.localStorage.getItem(acceptanceCacheKey(traderId)) === "1";
+    if (cacheHit) {
+      setPilotUnlocked(true);
+      setTermsStatus("accepted");
+      return;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    setTermsStatus("checking");
+    const loadTermsStatus = async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/pilot/terms/status?userId=${encodeURIComponent(traderId)}&termsVersion=${encodeURIComponent(PILOT_TERMS_VERSION)}`,
+          { signal: controller.signal }
+        );
+        const payload = (await res.json()) as PilotTermsStatusResponse;
+        if (cancelled) return;
+        if (!res.ok || payload.status !== "ok") {
+          throw new Error(payload.reason || payload.message || "terms_status_failed");
+        }
+        if (payload.accepted) {
+          setPilotUnlocked(true);
+          setTermsStatus("accepted");
+          setTermsAcceptedAt(payload.acceptedAt || null);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(acceptanceCacheKey(traderId), "1");
+          }
+          return;
+        }
+        setTermsStatus("required");
+      } catch (error: any) {
+        if (cancelled || error?.name === "AbortError") return;
+        setTermsStatus("required");
+        setTermsError("Unable to verify terms status right now. You can still accept and continue.");
+      }
+    };
+    void loadTermsStatus();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [traderId]);
+
+  useEffect(() => {
     if (!quote?.quote?.expiresAt) {
       setQuoteTimeLeft(0);
       return;
@@ -396,7 +476,7 @@ export function PilotApp() {
     const pollProtection = async () => {
       try {
         const res = await fetch(
-          `${API_BASE}/pilot/protections/${polledProtectionId}?userId=${encodeURIComponent(traderId)}`
+          `${API_BASE}/pilot/protections/${polledProtectionId}?userId=${encodeURIComponent(scopedTraderId)}`
         );
         if (!res.ok) return;
         const payload = await res.json();
@@ -417,7 +497,7 @@ export function PilotApp() {
       clearInterval(id);
       protectionPollSeqRef.current += 1;
     };
-  }, [protection?.id]);
+  }, [protection?.id, scopedTraderId]);
 
   const refreshProtectionHistory = async (opts?: { clearExisting?: boolean; silent?: boolean }) => {
     const requestSeq = ++historyRequestSeqRef.current;
@@ -429,7 +509,7 @@ export function PilotApp() {
     if (clearExisting) {
       setProtectionsHistory([]);
     }
-    if (!traderId) {
+    if (!scopedTraderId) {
       if (requestSeq === historyRequestSeqRef.current) {
         setProtectionsHistory([]);
         if (!silent) setHistoryBusy(false);
@@ -437,7 +517,7 @@ export function PilotApp() {
       return;
     }
     try {
-      const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(traderId)}&limit=20`);
+      const res = await fetch(`${API_BASE}/pilot/protections?userId=${encodeURIComponent(scopedTraderId)}&limit=20`);
       if (!res.ok) return;
       const payload = await res.json();
       if (requestSeq !== historyRequestSeqRef.current) return;
@@ -458,7 +538,7 @@ export function PilotApp() {
     setMonitorBusy(true);
     try {
       const res = await fetch(
-        `${API_BASE}/pilot/protections/${protectionId}/monitor?userId=${encodeURIComponent(traderId)}`
+        `${API_BASE}/pilot/protections/${protectionId}/monitor?userId=${encodeURIComponent(scopedTraderId)}`
       );
       if (!res.ok) return;
       const payload = await res.json();
@@ -546,7 +626,7 @@ export function PilotApp() {
 
   useEffect(() => {
     void refreshProtectionHistory({ clearExisting: true });
-  }, [traderId]);
+  }, [scopedTraderId]);
 
   useEffect(() => {
     setMonitor(null);
@@ -559,7 +639,7 @@ export function PilotApp() {
       void refreshMonitor(protection.id);
     }, 10000);
     return () => clearInterval(id);
-  }, [showProtectionModal, protection?.id, traderId]);
+  }, [showProtectionModal, protection?.id, scopedTraderId]);
 
   useEffect(() => {
     if (!showAdminModal) {
@@ -585,7 +665,7 @@ export function PilotApp() {
             headers: { "Content-Type": "application/json" },
             signal: controller.signal,
             body: JSON.stringify({
-              userId: traderId,
+              userId: scopedTraderId,
               protectedNotional: protectedValue,
               foxifyExposureNotional: exposureValue,
               entryPrice: entryValue,
@@ -648,7 +728,7 @@ export function PilotApp() {
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
         body: JSON.stringify({
-          userId: traderId,
+          userId: scopedTraderId,
           protectedNotional: protectedValue,
           foxifyExposureNotional: exposureValue,
           entryPrice: entryValue,
@@ -694,7 +774,7 @@ export function PilotApp() {
       const res = await fetch(`${API_BASE}/pilot/protections/${protection.id}/renewal-decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, userId: traderId })
+        body: JSON.stringify({ decision, userId: scopedTraderId })
       });
       const payload = await res.json();
       if (!res.ok || payload?.status !== "ok") {
@@ -709,6 +789,56 @@ export function PilotApp() {
       setError(friendlyError(String(err?.message || "Failed to process renewal decision.")));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const canContinuePastGate =
+    traderId.length > 0 && termsModalConfirmed && termsChecked && !termsBusy && termsStatus !== "checking";
+
+  const acceptTermsAndContinue = async () => {
+    if (!traderId) {
+      setTermsError("Enter Trader ID to continue.");
+      return;
+    }
+    if (!termsModalConfirmed) {
+      setTermsError(`Open and accept Terms ${PILOT_TERMS_VERSION} before continuing.`);
+      return;
+    }
+    if (!termsChecked) {
+      setTermsError("Check the acknowledgement box to continue.");
+      return;
+    }
+    setTermsBusy(true);
+    setTermsError(null);
+    try {
+      const res = await fetch(`${API_BASE}/pilot/terms/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: traderId,
+          termsVersion: PILOT_TERMS_VERSION,
+          accepted: true
+        })
+      });
+      const payload = (await res.json()) as {
+        status?: "ok" | "error";
+        acceptedAt?: string;
+        reason?: string;
+        message?: string;
+      };
+      if (!res.ok || payload?.status !== "ok") {
+        throw new Error(payload?.reason || payload?.message || "terms_accept_failed");
+      }
+      setTermsStatus("accepted");
+      setPilotUnlocked(true);
+      setTermsAcceptedAt(payload.acceptedAt || null);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(acceptanceCacheKey(traderId), "1");
+      }
+    } catch (error: any) {
+      setTermsError(friendlyError(String(error?.message || "terms_accept_failed")));
+    } finally {
+      setTermsBusy(false);
     }
   };
 
@@ -809,13 +939,184 @@ export function PilotApp() {
     : protectionsHistory;
   const protectionsTotalCount = protectionsHistory.length;
 
+  if (!pilotUnlocked) {
+    return (
+      <div className="shell">
+        <div className="card pilot-card pilot-gate-card">
+          <div className="pilot-co-brand" aria-label="Foxify and Atticus logos">
+            <div className="pilot-co-brand-logo-slot">
+              {foxifyLogoFailed ? (
+                <span className="pilot-co-brand-fallback">Foxify</span>
+              ) : (
+                <img
+                  src={FOXIFY_LOGO_URL}
+                  alt="Foxify logo"
+                  className="pilot-co-brand-logo"
+                  onError={() => setFoxifyLogoFailed(true)}
+                />
+              )}
+            </div>
+            <span className="pilot-co-brand-separator">&lt;&gt;</span>
+            <div className="pilot-co-brand-logo-slot">
+              {atticusLogoFailed ? (
+                <span className="pilot-co-brand-fallback">Atticus</span>
+              ) : (
+                <img
+                  src={ATTICUS_LOGO_URL}
+                  alt="Atticus logo"
+                  className="pilot-co-brand-logo"
+                  onError={() => setAtticusLogoFailed(true)}
+                />
+              )}
+            </div>
+          </div>
+          <div className="subtitle pilot-gate-subtitle">Foxify Protection Pilot</div>
+          <div className="recommendation pilot-gate-copy">
+            <div className="pilot-form-row">
+              <span className="pilot-label">Trader ID</span>
+              <div className="pilot-field pilot-field-trader">
+                <input
+                  className="input pilot-input pilot-input-text pilot-input-trader"
+                  value={userId}
+                  spellCheck={false}
+                  title={userId}
+                  placeholder="e.g. Danny-001"
+                  onChange={(e) => setUserId(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="muted">
+              Access is limited to internal Foxify executives. Acceptance is stored server-side per user and terms
+              version.
+            </div>
+            {termsStatus === "checking" && traderId && <div className="muted">Checking prior acceptance...</div>}
+            {termsAcceptedAt && (
+              <div className="muted">Recorded acceptance: {new Date(termsAcceptedAt).toLocaleString()}</div>
+            )}
+            <button className="btn btn-secondary pilot-terms-link-btn" type="button" onClick={() => setTermsModalOpen(true)}>
+              Read Terms & Conditions ({PILOT_TERMS_VERSION})
+            </button>
+            <label className="pilot-checkbox pilot-terms-checkbox">
+              <input
+                type="checkbox"
+                checked={termsChecked}
+                disabled={!termsModalConfirmed}
+                onChange={(e) => setTermsChecked(e.target.checked)}
+              />
+              <span>
+                I confirm I have read and agree to Terms & Conditions ({PILOT_TERMS_VERSION})
+              </span>
+            </label>
+            {!termsModalConfirmed && (
+              <div className="muted">Open the terms modal and click "I have read and accept" to enable the checkbox.</div>
+            )}
+            <button className="cta pilot-gate-cta" type="button" disabled={!canContinuePastGate} onClick={acceptTermsAndContinue}>
+              {termsBusy ? "Saving..." : "Continue to Pilot"}
+            </button>
+            {termsError && <div className="disclaimer danger">{termsError}</div>}
+          </div>
+        </div>
+
+        {termsModalOpen && (
+          <div className="modal" onClick={() => setTermsModalOpen(false)}>
+            <div className="modal-card pilot-terms-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-header">
+                <div className="modal-title">
+                  <h3>Foxify Protection Pilot Terms & Conditions</h3>
+                </div>
+                <button className="icon-btn" type="button" onClick={() => setTermsModalOpen(false)}>
+                  x
+                </button>
+              </div>
+              <div className="subheader">Version {PILOT_TERMS_VERSION}</div>
+              <div className="modal-body pilot-terms-body">
+                <ol>
+                  <li>Internal pilot only for manual perpetual position protection, limited to Foxify executives.</li>
+                  <li>Maximum protection notional is 50,000 USDC per protection request.</li>
+                  <li>
+                    Daily protected notional limit is 50,000 USDC per user and resets at 00:00 UTC each calendar day.
+                  </li>
+                  <li>Each protection uses a fixed 7-day tenor. Auto-renew may be enabled and remains subject to these terms.</li>
+                  <li>
+                    The pilot campaign runs for a maximum of 30 days from the official UTC start date configured by
+                    Atticus Operations.
+                  </li>
+                  <li>
+                    Premiums owed by Foxify are payable Net 10 after the pilot closes, unless superseded by a signed
+                    written amendment.
+                  </li>
+                  <li>
+                    Option payout proceeds are remitted to Foxify T+3 business days after venue settlement is confirmed
+                    and reconciled.
+                  </li>
+                  <li>
+                    Pilot records, including quote/activation/monitor/expiry outcomes and terms acceptance, are
+                    retained for audit and reconciliation.
+                  </li>
+                  <li>
+                    Legal owner and final signatory for this pilot record: Michael William.
+                  </li>
+                  <li>
+                    Support and escalation: {PILOT_SUPPORT_EMAIL} · Telegram {PILOT_SUPPORT_TELEGRAM}
+                  </li>
+                </ol>
+              </div>
+              <div className="modal-actions">
+                <button className="btn btn-secondary" type="button" onClick={() => setTermsModalOpen(false)}>
+                  Close
+                </button>
+                <button
+                  className="cta"
+                  type="button"
+                  onClick={() => {
+                    setTermsModalConfirmed(true);
+                    setTermsModalOpen(false);
+                    setTermsError(null);
+                  }}
+                >
+                  I have read and accept Terms {PILOT_TERMS_VERSION}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="shell">
       <div className="card pilot-card">
         <div className="title pilot-title">
-          <div className="brand">
-            <img src={FOXIFY_LOGO_URL} alt="Foxify logo" className="pilot-logo" />
-            <span>Foxify Pilot Protection</span>
+          <div className="brand pilot-header-brand">
+            <div className="pilot-co-brand pilot-co-brand-compact" aria-label="Foxify and Atticus logos">
+              <div className="pilot-co-brand-logo-slot pilot-co-brand-logo-slot-compact">
+                {foxifyLogoFailed ? (
+                  <span className="pilot-co-brand-fallback">Foxify</span>
+                ) : (
+                  <img
+                    src={FOXIFY_LOGO_URL}
+                    alt="Foxify logo"
+                    className="pilot-co-brand-logo pilot-co-brand-logo-compact"
+                    onError={() => setFoxifyLogoFailed(true)}
+                  />
+                )}
+              </div>
+              <span className="pilot-co-brand-separator">&lt;&gt;</span>
+              <div className="pilot-co-brand-logo-slot pilot-co-brand-logo-slot-compact">
+                {atticusLogoFailed ? (
+                  <span className="pilot-co-brand-fallback">Atticus</span>
+                ) : (
+                  <img
+                    src={ATTICUS_LOGO_URL}
+                    alt="Atticus logo"
+                    className="pilot-co-brand-logo pilot-co-brand-logo-compact"
+                    onError={() => setAtticusLogoFailed(true)}
+                  />
+                )}
+              </div>
+            </div>
+            <span>Foxify Protection Pilot</span>
           </div>
           {internalAdminEnabled && (
             <button
@@ -1034,7 +1335,7 @@ export function PilotApp() {
           <div className="section-title-row">
             <h4>
               Protections <span className="muted">({protectionsTotalCount})</span>{" "}
-              {traderId && <span className="pill pilot-viewing-pill">Viewing: {traderId}</span>}
+              {scopedTraderId && <span className="pill pilot-viewing-pill">Viewing: {scopedTraderId}</span>}
             </h4>
             {historyBusy && <span className="pill">Loading…</span>}
             <div className="section-actions">
@@ -1058,13 +1359,13 @@ export function PilotApp() {
               </button>
             </div>
           </div>
-          {!traderId && (
+          {!scopedTraderId && (
             <div className="muted section-collapsed-note">Enter Trader ID to load protections.</div>
           )}
-          {!showHistorySection && protectionsTotalCount > 0 && traderId && (
+          {!showHistorySection && protectionsTotalCount > 0 && scopedTraderId && (
             <div className="muted section-collapsed-note">Protections hidden.</div>
           )}
-          <div className={`collapsible-panel ${showHistorySection && Boolean(traderId) ? "is-open" : "is-closed"}`}>
+          <div className={`collapsible-panel ${showHistorySection && Boolean(scopedTraderId) ? "is-open" : "is-closed"}`}>
             <div className="collapsible-inner">
               {historyBusy ? (
                 <div className="muted section-collapsed-note">

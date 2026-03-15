@@ -117,6 +117,7 @@ export const resolvePilotWindow = (now: Date = new Date()): PilotWindowState => 
 export const pilotConfig = {
   enabled: process.env.PILOT_API_ENABLED === "true",
   venueMode: parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
+  termsVersion: (process.env.PILOT_TERMS_VERSION || "v1.0").trim() || "v1.0",
   postgresUrl: process.env.POSTGRES_URL || process.env.DATABASE_URL || "",
   adminToken: process.env.PILOT_ADMIN_TOKEN || "",
   internalToken: process.env.PILOT_INTERNAL_TOKEN || "",

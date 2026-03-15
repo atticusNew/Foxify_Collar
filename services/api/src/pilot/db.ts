@@ -171,6 +171,28 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       PRIMARY KEY (user_hash, day_start)
     );
 
+    CREATE TABLE IF NOT EXISTS pilot_terms_acceptances (
+      id TEXT PRIMARY KEY,
+      user_hash TEXT NOT NULL,
+      hash_version INTEGER NOT NULL,
+      terms_version TEXT NOT NULL,
+      accepted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      accepted_ip TEXT,
+      user_agent TEXT,
+      source TEXT NOT NULL DEFAULT 'pilot_web',
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (user_hash, terms_version)
+    );
+
+    ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS accepted_ip TEXT;
+    ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS user_agent TEXT;
+    ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'pilot_web';
+    ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb;
+    ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
     CREATE INDEX IF NOT EXISTS pilot_protections_status_idx ON pilot_protections(status);
     CREATE INDEX IF NOT EXISTS pilot_protections_expiry_idx ON pilot_protections(expiry_at);
     CREATE INDEX IF NOT EXISTS pilot_protections_user_hash_created_idx ON pilot_protections(user_hash, created_at);
@@ -179,6 +201,10 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     CREATE INDEX IF NOT EXISTS pilot_venue_quotes_quote_id_idx ON pilot_venue_quotes(quote_id);
     CREATE INDEX IF NOT EXISTS pilot_venue_executions_protection_idx ON pilot_venue_executions(protection_id);
     CREATE UNIQUE INDEX IF NOT EXISTS pilot_venue_quotes_venue_quote_id_uidx ON pilot_venue_quotes(venue, quote_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS pilot_terms_acceptances_user_terms_uidx
+      ON pilot_terms_acceptances(user_hash, terms_version);
+    CREATE INDEX IF NOT EXISTS pilot_terms_acceptances_accepted_at_idx
+      ON pilot_terms_acceptances(accepted_at DESC);
   `);
   schemaReady = true;
 };
@@ -672,6 +698,83 @@ export const reserveDailyActivationCapacity = async (
   return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
 };
 
+export type PilotTermsAcceptanceRecord = {
+  id: string;
+  userHash: string;
+  hashVersion: number;
+  termsVersion: string;
+  acceptedAt: string;
+  acceptedIp: string | null;
+  userAgent: string | null;
+  source: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export const getPilotTermsAcceptance = async (
+  pool: Queryable,
+  params: { userHash: string; termsVersion: string }
+): Promise<PilotTermsAcceptanceRecord | null> => {
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM pilot_terms_acceptances
+      WHERE user_hash = $1
+        AND terms_version = $2
+      LIMIT 1
+    `,
+    [params.userHash, params.termsVersion]
+  );
+  if (!result.rowCount) return null;
+  return mapPilotTermsAcceptance(result.rows[0]);
+};
+
+export const createPilotTermsAcceptanceIfMissing = async (
+  pool: Queryable,
+  input: {
+    userHash: string;
+    hashVersion: number;
+    termsVersion: string;
+    acceptedIp?: string | null;
+    userAgent?: string | null;
+    source?: string;
+    details?: Record<string, unknown>;
+  }
+): Promise<{ record: PilotTermsAcceptanceRecord; created: boolean }> => {
+  const inserted = await pool.query(
+    `
+      INSERT INTO pilot_terms_acceptances (
+        id, user_hash, hash_version, terms_version, accepted_ip, user_agent, source, details
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
+      ON CONFLICT (user_hash, terms_version) DO NOTHING
+      RETURNING *
+    `,
+    [
+      randomUUID(),
+      input.userHash,
+      input.hashVersion,
+      input.termsVersion,
+      input.acceptedIp ?? null,
+      input.userAgent ?? null,
+      input.source || "pilot_web",
+      JSON.stringify(input.details || {})
+    ]
+  );
+  if (inserted.rowCount > 0) {
+    return { record: mapPilotTermsAcceptance(inserted.rows[0]), created: true };
+  }
+  const existing = await getPilotTermsAcceptance(pool, {
+    userHash: input.userHash,
+    termsVersion: input.termsVersion
+  });
+  if (!existing) {
+    throw new Error("terms_acceptance_read_after_insert_failed");
+  }
+  return { record: existing, created: false };
+};
+
 export const insertVenueExecution = async (
   pool: Queryable,
   protectionId: string,
@@ -827,6 +930,20 @@ export const getEssentialProofPayload = async (
       : null
   };
 };
+
+const mapPilotTermsAcceptance = (row: Record<string, unknown>): PilotTermsAcceptanceRecord => ({
+  id: String(row.id),
+  userHash: String(row.user_hash),
+  hashVersion: Number(row.hash_version),
+  termsVersion: String(row.terms_version),
+  acceptedAt: new Date(String(row.accepted_at)).toISOString(),
+  acceptedIp: row.accepted_ip ? String(row.accepted_ip) : null,
+  userAgent: row.user_agent ? String(row.user_agent) : null,
+  source: String(row.source || "pilot_web"),
+  details: toRecord(row.details),
+  createdAt: new Date(String(row.created_at)).toISOString(),
+  updatedAt: new Date(String(row.updated_at)).toISOString()
+});
 
 const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({
   id: String(row.id),

@@ -240,6 +240,37 @@ body {
   width: min(720px, 100%);
 }
 
+.pilot-gate-card {
+  width: min(780px, 100%);
+  display: grid;
+  gap: 10px;
+}
+
+.pilot-gate-subtitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+.pilot-gate-copy {
+  display: grid;
+  gap: 10px;
+}
+
+.pilot-gate-cta {
+  min-height: 40px;
+}
+
+.pilot-terms-link-btn {
+  justify-self: start;
+}
+
+.pilot-terms-checkbox {
+  justify-content: flex-start;
+  align-items: flex-start;
+}
+
 .pilot-form {
   display: grid;
   gap: 8px;
@@ -314,11 +345,71 @@ body {
   margin-bottom: 0;
 }
 
+.pilot-header-brand {
+  align-items: center;
+  gap: 10px;
+}
+
 .pilot-logo {
   width: 24px;
   height: 24px;
   border-radius: 5px;
   object-fit: contain;
+}
+
+.pilot-co-brand {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+}
+
+.pilot-co-brand-compact {
+  width: auto;
+  column-gap: 8px;
+  grid-template-columns: auto auto auto;
+}
+
+.pilot-co-brand-logo-slot {
+  width: 100%;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.pilot-co-brand-logo-slot-compact {
+  min-height: 34px;
+  width: 124px;
+  padding: 4px 8px;
+}
+
+.pilot-co-brand-logo {
+  max-width: 100%;
+  max-height: 32px;
+  object-fit: contain;
+  display: block;
+}
+
+.pilot-co-brand-logo-compact {
+  max-height: 22px;
+}
+
+.pilot-co-brand-fallback {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.pilot-co-brand-separator {
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .quote-card {
@@ -440,6 +531,25 @@ body {
   margin-top: 10px;
   display: grid;
   gap: 4px;
+}
+
+.pilot-terms-modal {
+  width: min(760px, 100%);
+}
+
+.pilot-terms-body {
+  max-height: min(60vh, 520px);
+  overflow: auto;
+}
+
+.pilot-terms-body ol {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .row {
@@ -1106,6 +1216,19 @@ select.input {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.4px;
+  }
+
+  .pilot-co-brand {
+    grid-template-columns: 1fr;
+    row-gap: 8px;
+  }
+
+  .pilot-co-brand-compact {
+    grid-template-columns: auto auto auto;
+  }
+
+  .pilot-co-brand-logo-slot {
+    min-height: 52px;
   }
 
   .pilot-inline-btn {
