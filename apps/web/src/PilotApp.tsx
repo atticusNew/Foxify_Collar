@@ -242,9 +242,6 @@ const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 const ATTICUS_LOGO_URL = "https://i.ibb.co/KpbRyd7w/atticus-copy.png";
 const PILOT_SUPPORT_EMAIL = "michael@atticustrade.com";
 const PILOT_SUPPORT_TELEGRAM = "@willialso";
-const PILOT_TERMS_CACHE_PREFIX = "pilot_terms_acceptance";
-const acceptanceCacheKey = (traderId: string): string =>
-  `${PILOT_TERMS_CACHE_PREFIX}:${PILOT_TERMS_VERSION}:${traderId.trim().toLowerCase()}`;
 
 export function PilotApp() {
   const [userId, setUserId] = useState(() => {
@@ -406,13 +403,6 @@ export function PilotApp() {
       setTermsStatus("required");
       return;
     }
-    const cacheHit =
-      typeof window !== "undefined" && window.localStorage.getItem(acceptanceCacheKey(traderId)) === "1";
-    if (cacheHit) {
-      setPilotUnlocked(true);
-      setTermsStatus("accepted");
-      return;
-    }
     let cancelled = false;
     const controller = new AbortController();
     setTermsStatus("checking");
@@ -428,12 +418,10 @@ export function PilotApp() {
           throw new Error(payload.reason || payload.message || "terms_status_failed");
         }
         if (payload.accepted) {
-          setPilotUnlocked(true);
           setTermsStatus("accepted");
           setTermsAcceptedAt(payload.acceptedAt || null);
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem(acceptanceCacheKey(traderId), "1");
-          }
+          setTermsModalConfirmed(true);
+          setTermsChecked(true);
           return;
         }
         setTermsStatus("required");
@@ -793,11 +781,18 @@ export function PilotApp() {
   };
 
   const canContinuePastGate =
-    traderId.length > 0 && termsModalConfirmed && termsChecked && !termsBusy && termsStatus !== "checking";
+    traderId.length > 0 &&
+    !termsBusy &&
+    termsStatus !== "checking" &&
+    (termsStatus === "accepted" || (termsModalConfirmed && termsChecked));
 
   const acceptTermsAndContinue = async () => {
     if (!traderId) {
       setTermsError("Enter Trader ID to continue.");
+      return;
+    }
+    if (termsStatus === "accepted") {
+      setPilotUnlocked(true);
       return;
     }
     if (!termsModalConfirmed) {
@@ -832,9 +827,8 @@ export function PilotApp() {
       setTermsStatus("accepted");
       setPilotUnlocked(true);
       setTermsAcceptedAt(payload.acceptedAt || null);
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(acceptanceCacheKey(traderId), "1");
-      }
+      setTermsModalConfirmed(true);
+      setTermsChecked(true);
     } catch (error: any) {
       setTermsError(friendlyError(String(error?.message || "terms_accept_failed")));
     } finally {
@@ -951,7 +945,7 @@ export function PilotApp() {
                 <img
                   src={FOXIFY_LOGO_URL}
                   alt="Foxify logo"
-                  className="pilot-co-brand-logo"
+                  className="pilot-co-brand-logo pilot-co-brand-logo--foxify"
                   onError={() => setFoxifyLogoFailed(true)}
                 />
               )}
@@ -964,54 +958,77 @@ export function PilotApp() {
                 <img
                   src={ATTICUS_LOGO_URL}
                   alt="Atticus logo"
-                  className="pilot-co-brand-logo"
+                  className="pilot-co-brand-logo pilot-co-brand-logo--atticus"
                   onError={() => setAtticusLogoFailed(true)}
                 />
               )}
             </div>
           </div>
-          <div className="subtitle pilot-gate-subtitle">Foxify Protection Pilot</div>
+          <h2 className="pilot-gate-title">Foxify Protection Pilot</h2>
           <div className="recommendation pilot-gate-copy">
-            <div className="pilot-form-row">
-              <span className="pilot-label">Trader ID</span>
-              <div className="pilot-field pilot-field-trader">
-                <input
-                  className="input pilot-input pilot-input-text pilot-input-trader"
-                  value={userId}
-                  spellCheck={false}
-                  title={userId}
-                  placeholder="e.g. Danny-001"
-                  onChange={(e) => setUserId(e.target.value)}
-                />
-              </div>
+            <div className="pilot-gate-field">
+              <label htmlFor="pilot-gate-trader-id" className="pilot-gate-label">
+                Trader ID
+              </label>
+              <input
+                id="pilot-gate-trader-id"
+                className="input pilot-input pilot-input-text pilot-input-trader pilot-gate-input"
+                value={userId}
+                spellCheck={false}
+                title={userId}
+                placeholder="e.g. Danny-001"
+                onChange={(e) => setUserId(e.target.value)}
+              />
             </div>
             <div className="muted">
               Access is limited to internal Foxify executives. Acceptance is stored server-side per user and terms
               version.
             </div>
+            <div className="muted">
+              Shared device guidance: verify Trader ID before continuing. Acceptance is recorded per Trader ID and
+              terms version.
+            </div>
             {termsStatus === "checking" && traderId && <div className="muted">Checking prior acceptance...</div>}
-            {termsAcceptedAt && (
-              <div className="muted">Recorded acceptance: {new Date(termsAcceptedAt).toLocaleString()}</div>
+            {termsAcceptedAt && termsStatus === "accepted" && (
+              <div className="muted pilot-gate-accepted-note">
+                Terms {PILOT_TERMS_VERSION} already accepted for Trader ID <strong>{traderId}</strong> on{" "}
+                {new Date(termsAcceptedAt).toLocaleString()}.
+              </div>
             )}
-            <button className="btn btn-secondary pilot-terms-link-btn" type="button" onClick={() => setTermsModalOpen(true)}>
-              Read Terms & Conditions ({PILOT_TERMS_VERSION})
-            </button>
-            <label className="pilot-checkbox pilot-terms-checkbox">
+            <label className="pilot-gate-checkline">
               <input
                 type="checkbox"
                 checked={termsChecked}
-                disabled={!termsModalConfirmed}
+                disabled={termsStatus === "accepted" || !termsModalConfirmed}
                 onChange={(e) => setTermsChecked(e.target.checked)}
               />
               <span>
-                I confirm I have read and agree to Terms & Conditions ({PILOT_TERMS_VERSION})
+                I have read and agree to{" "}
+                <button
+                  type="button"
+                  className="pilot-inline-link"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setTermsModalOpen(true);
+                  }}
+                >
+                  Terms & Conditions ({PILOT_TERMS_VERSION})
+                </button>
+                .
               </span>
             </label>
-            {!termsModalConfirmed && (
-              <div className="muted">Open the terms modal and click "I have read and accept" to enable the checkbox.</div>
+            {termsStatus !== "accepted" && !termsModalConfirmed && (
+              <div className="muted">
+                Open Terms & Conditions and click "I have read and accept" to enable the acknowledgement checkbox.
+              </div>
             )}
             <button className="cta pilot-gate-cta" type="button" disabled={!canContinuePastGate} onClick={acceptTermsAndContinue}>
-              {termsBusy ? "Saving..." : "Continue to Pilot"}
+              {termsBusy
+                ? "Saving..."
+                : termsStatus === "accepted"
+                  ? "Continue to Pilot"
+                  : "Accept Terms & Continue"}
             </button>
             {termsError && <div className="disclaimer danger">{termsError}</div>}
           </div>
@@ -1028,9 +1045,12 @@ export function PilotApp() {
                   x
                 </button>
               </div>
-              <div className="subheader">Version {PILOT_TERMS_VERSION}</div>
+              <div className="subheader pilot-terms-version">Version {PILOT_TERMS_VERSION}</div>
               <div className="modal-body pilot-terms-body">
-                <ol>
+                <p className="pilot-terms-intro">
+                  By proceeding, you acknowledge and agree to the following pilot terms.
+                </p>
+                <ol className="pilot-terms-list">
                   <li>Internal pilot only for manual perpetual position protection, limited to Foxify executives.</li>
                   <li>Maximum protection notional is 50,000 USDC per protection request.</li>
                   <li>
@@ -1061,7 +1081,7 @@ export function PilotApp() {
                   </li>
                 </ol>
               </div>
-              <div className="modal-actions">
+              <div className="modal-actions pilot-terms-actions">
                 <button className="btn btn-secondary" type="button" onClick={() => setTermsModalOpen(false)}>
                   Close
                 </button>
@@ -1097,7 +1117,7 @@ export function PilotApp() {
                   <img
                     src={FOXIFY_LOGO_URL}
                     alt="Foxify logo"
-                    className="pilot-co-brand-logo pilot-co-brand-logo-compact"
+                    className="pilot-co-brand-logo pilot-co-brand-logo-compact pilot-co-brand-logo--foxify"
                     onError={() => setFoxifyLogoFailed(true)}
                   />
                 )}
@@ -1110,7 +1130,7 @@ export function PilotApp() {
                   <img
                     src={ATTICUS_LOGO_URL}
                     alt="Atticus logo"
-                    className="pilot-co-brand-logo pilot-co-brand-logo-compact"
+                    className="pilot-co-brand-logo pilot-co-brand-logo-compact pilot-co-brand-logo--atticus"
                     onError={() => setAtticusLogoFailed(true)}
                   />
                 )}

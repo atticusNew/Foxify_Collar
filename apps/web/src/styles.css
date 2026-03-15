@@ -243,32 +243,71 @@ body {
 .pilot-gate-card {
   width: min(780px, 100%);
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
-.pilot-gate-subtitle {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
+.pilot-gate-title {
   margin: 0;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--text);
 }
 
 .pilot-gate-copy {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .pilot-gate-cta {
   min-height: 40px;
+  width: 100%;
 }
 
-.pilot-terms-link-btn {
-  justify-self: start;
+.pilot-gate-field {
+  display: grid;
+  gap: 6px;
 }
 
-.pilot-terms-checkbox {
-  justify-content: flex-start;
+.pilot-gate-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pilot-gate-input {
+  width: 100%;
+}
+
+.pilot-gate-checkline {
+  display: inline-flex;
   align-items: flex-start;
+  justify-content: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.pilot-gate-checkline input {
+  margin-top: 2px;
+}
+
+.pilot-gate-accepted-note strong {
+  color: var(--text);
+}
+
+.pilot-inline-link {
+  display: inline;
+  border: 0;
+  background: transparent;
+  color: #f2a65a;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .pilot-form {
@@ -373,31 +412,38 @@ body {
 
 .pilot-co-brand-logo-slot {
   width: 100%;
-  min-height: 64px;
+  min-height: 58px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.02);
+  padding: 2px 4px;
 }
 
 .pilot-co-brand-logo-slot-compact {
-  min-height: 34px;
-  width: 124px;
-  padding: 4px 8px;
+  min-height: 30px;
+  width: 130px;
+  padding: 0;
 }
 
 .pilot-co-brand-logo {
   max-width: 100%;
-  max-height: 32px;
+  max-height: 42px;
   object-fit: contain;
   display: block;
 }
 
 .pilot-co-brand-logo-compact {
-  max-height: 22px;
+  max-height: 24px;
+}
+
+.pilot-co-brand-logo--foxify {
+  transform: scale(1.16);
+  transform-origin: center center;
+}
+
+.pilot-co-brand-logo--atticus {
+  transform: scale(1);
+  transform-origin: center center;
 }
 
 .pilot-co-brand-fallback {
@@ -534,22 +580,45 @@ body {
 }
 
 .pilot-terms-modal {
-  width: min(760px, 100%);
+  width: min(820px, 100%);
 }
 
 .pilot-terms-body {
-  max-height: min(60vh, 520px);
+  max-height: min(65vh, 560px);
   overflow: auto;
+  padding-right: 6px;
 }
 
-.pilot-terms-body ol {
+.pilot-terms-version {
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.pilot-terms-intro {
   margin: 0;
-  padding-left: 20px;
-  display: grid;
-  gap: 8px;
-  color: var(--muted);
+  color: var(--text);
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.55;
+}
+
+.pilot-terms-list {
+  margin: 0;
+  padding-left: 24px;
+  display: grid;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+  list-style-position: outside;
+}
+
+.pilot-terms-list li {
+  padding-left: 4px;
+}
+
+.pilot-terms-actions {
+  justify-content: space-between;
+  margin-top: 14px;
 }
 
 .row {
@@ -1229,6 +1298,19 @@ select.input {
 
   .pilot-co-brand-logo-slot {
     min-height: 52px;
+  }
+
+  .pilot-gate-title {
+    font-size: 18px;
+  }
+
+  .pilot-gate-checkline {
+    font-size: 12px;
+  }
+
+  .pilot-terms-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .pilot-inline-btn {
