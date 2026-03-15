@@ -159,6 +159,18 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS pilot_user_day_locks (
+      lock_key TEXT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_daily_usage (
+      user_hash TEXT NOT NULL,
+      day_start DATE NOT NULL,
+      used_notional NUMERIC(28,10) NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_hash, day_start)
+    );
+
     CREATE INDEX IF NOT EXISTS pilot_protections_status_idx ON pilot_protections(status);
     CREATE INDEX IF NOT EXISTS pilot_protections_expiry_idx ON pilot_protections(expiry_at);
     CREATE INDEX IF NOT EXISTS pilot_protections_user_hash_created_idx ON pilot_protections(user_hash, created_at);
@@ -616,13 +628,48 @@ export const consumeVenueQuote = async (
   return result.rowCount > 0;
 };
 
-export const lockDailyActivationWindow = async (
+export const reserveDailyActivationCapacity = async (
   pool: Queryable,
-  userHash: string,
-  dayStartIso: string
-): Promise<void> => {
-  const lockKey = `${userHash}:${dayStartIso.slice(0, 10)}`;
-  await pool.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [lockKey]);
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    protectedNotional: string;
+    maxDailyNotional: string;
+  }
+): Promise<{ ok: true; usedAfter: string } | { ok: false; usedNow: string }> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_daily_usage (user_hash, day_start, used_notional)
+      VALUES ($1, $2::date, 0)
+      ON CONFLICT (user_hash, day_start) DO NOTHING
+    `,
+    [params.userHash, params.dayStartIso]
+  );
+  const updated = await pool.query(
+    `
+      UPDATE pilot_daily_usage
+      SET used_notional = used_notional + $3::numeric
+      WHERE user_hash = $1
+        AND day_start = $2::date
+        AND used_notional + $3::numeric <= $4::numeric
+      RETURNING used_notional::text AS used_after
+    `,
+    [params.userHash, params.dayStartIso, params.protectedNotional, params.maxDailyNotional]
+  );
+  if (updated.rowCount && updated.rows[0]?.used_after) {
+    return { ok: true, usedAfter: String(updated.rows[0].used_after) };
+  }
+  const current = await pool.query(
+    `
+      SELECT used_notional::text AS used_now
+      FROM pilot_daily_usage
+      WHERE user_hash = $1
+        AND day_start = $2::date
+      LIMIT 1
+    `,
+    [params.userHash, params.dayStartIso]
+  );
+  return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
 };
 
 export const insertVenueExecution = async (

@@ -19,7 +19,7 @@ import {
   insertProtection,
   insertVenueExecution,
   insertVenueQuote,
-  lockDailyActivationWindow,
+  reserveDailyActivationCapacity,
   listLedgerForProtection,
   listProtections,
   listProtectionsByUserHash,
@@ -699,7 +699,6 @@ export const registerPilotRoutes = async (
     }
     const now = new Date();
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const dayEnd = new Date(dayStart.getTime() + 86400000);
     const marketId = pilotConfig.referenceMarketId;
     const protectionType = normalizeProtectionType(body.protectionType);
     const optionType = protectionType === "short" ? "C" : "P";
@@ -788,24 +787,24 @@ export const registerPilotRoutes = async (
       ) {
         throw new Error("quote_mismatch_context");
       }
-      await lockDailyActivationWindow(client, userHash.userHash, dayStart.toISOString());
-      const dailyUsed = new Decimal(
-        await getDailyProtectedNotionalForUser(
-          client,
-          userHash.userHash,
-          dayStart.toISOString(),
-          dayEnd.toISOString()
-        )
-      );
-      const projectedDaily = dailyUsed.plus(protectedNotional);
-      capUsedUsdc = dailyUsed.toFixed(2);
-      capProjectedUsdc = projectedDaily.toFixed(2);
-      if (projectedDaily.gt(maxDailyProtection)) {
+      const capReservation = await reserveDailyActivationCapacity(client, {
+        userHash: userHash.userHash,
+        dayStartIso: dayStart.toISOString(),
+        protectedNotional: protectedNotional.toFixed(10),
+        maxDailyNotional: maxDailyProtection.toFixed(10)
+      });
+      if (!capReservation.ok) {
         const capError = new Error("daily_notional_cap_exceeded");
+        const usedNow = new Decimal(capReservation.usedNow);
+        capUsedUsdc = usedNow.toFixed(2);
+        capProjectedUsdc = usedNow.plus(protectedNotional).toFixed(2);
         (capError as any).usedUsdc = capUsedUsdc;
         (capError as any).projectedUsdc = capProjectedUsdc;
         throw capError;
       }
+      const usedAfter = new Decimal(capReservation.usedAfter);
+      capProjectedUsdc = usedAfter.toFixed(2);
+      capUsedUsdc = usedAfter.minus(protectedNotional).toFixed(2);
       const protection = await insertProtection(client, {
         userHash: userHash.userHash,
         hashVersion: userHash.hashVersion,
