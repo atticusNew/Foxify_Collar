@@ -3,7 +3,7 @@ import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
 import { DeribitConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
-import { pilotConfig } from "./config";
+import { pilotConfig, resolvePilotWindow } from "./config";
 import {
   ensurePilotSchema,
   getDailyProtectedNotionalForUser,
@@ -283,6 +283,38 @@ const requireInternalOrAdmin = async (req: FastifyRequest, reply: FastifyReply):
   return Boolean(admin);
 };
 
+const enforcePilotWindow = (reply: FastifyReply): boolean => {
+  const window = resolvePilotWindow(new Date());
+  if (window.status === "open") return true;
+  if (window.status === "config_invalid") {
+    reply.code(500).send({
+      status: "error",
+      reason: "pilot_window_config_invalid",
+      detail: window.reason || "pilot_window_invalid"
+    });
+    return false;
+  }
+  if (window.status === "not_started") {
+    reply.code(403).send({
+      status: "error",
+      reason: "pilot_not_started",
+      startAt: window.startAt,
+      endAt: window.endAt
+    });
+    return false;
+  }
+  if (window.status === "closed") {
+    reply.code(403).send({
+      status: "error",
+      reason: "pilot_window_closed",
+      startAt: window.startAt,
+      endAt: window.endAt
+    });
+    return false;
+  }
+  return true;
+};
+
 const toCsv = (rows: Array<Record<string, unknown>>): string => {
   if (!rows.length) return "";
   const columns = Object.keys(rows[0]);
@@ -398,6 +430,7 @@ export const registerPilotRoutes = async (
   };
 
   app.post("/pilot/protections/quote", async (req, reply) => {
+    if (!enforcePilotWindow(reply)) return;
     const body = req.body as {
       userId?: string;
       protectedNotional?: number;
@@ -642,6 +675,7 @@ export const registerPilotRoutes = async (
   });
 
   app.post("/pilot/protections/activate", async (req, reply) => {
+    if (!enforcePilotWindow(reply)) return;
     const body = req.body as {
       userId?: string;
       protectedNotional?: number;

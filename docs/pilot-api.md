@@ -101,6 +101,13 @@ The pilot ledger stores:
     - Platinum: `PILOT_PREMIUM_FLOOR_BPS_PLATINUM` (`4`)
 - `entryPrice` is required and treated as manual user input (not auto-derived from spot).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
+- Optional campaign window enforcement for new quote/activate requests:
+  - `PILOT_ENFORCE_WINDOW=true`
+  - `PILOT_START_AT=<ISO-8601 UTC>`
+  - `PILOT_DURATION_DAYS` (default `30`)
+  - blocked reasons:
+    - `pilot_not_started`
+    - `pilot_window_closed`
 - Venue quote/execute operations enforce bounded timeouts:
   - `PILOT_VENUE_QUOTE_TIMEOUT_MS` (default 10000ms)
   - `PILOT_QUOTE_TTL_MS` (default 30000ms lock window for mock/deribit_test pilot quotes)

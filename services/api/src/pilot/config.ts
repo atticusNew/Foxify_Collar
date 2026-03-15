@@ -1,6 +1,16 @@
 import { randomUUID } from "node:crypto";
 
 export type PilotVenueMode = "falconx" | "deribit_test" | "mock_falconx";
+export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_invalid";
+
+export type PilotWindowState = {
+  enforced: boolean;
+  startAt: string | null;
+  endAt: string | null;
+  durationDays: number;
+  status: PilotWindowStatus;
+  reason?: string;
+};
 
 type ParsedAllowlist = {
   raw: string;
@@ -27,12 +37,92 @@ export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => 
   throw new Error(`invalid_pilot_venue_mode:${normalized || "empty"}`);
 };
 
+const parsePilotDurationDays = (raw: string | undefined): number => {
+  const parsed = Number(raw || "30");
+  if (Number.isFinite(parsed) && parsed > 0 && parsed <= 3650) {
+    return Math.floor(parsed);
+  }
+  return 30;
+};
+
+const parsePilotStartAt = (raw: string | undefined): Date | null => {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+};
+
+export const resolvePilotWindow = (now: Date = new Date()): PilotWindowState => {
+  const enforced = process.env.PILOT_ENFORCE_WINDOW !== "false";
+  const durationDays = parsePilotDurationDays(process.env.PILOT_DURATION_DAYS);
+  const startRaw = process.env.PILOT_START_AT;
+  const startAtDate = parsePilotStartAt(startRaw);
+  if (!enforced) {
+    return {
+      enforced: false,
+      startAt: null,
+      endAt: null,
+      durationDays,
+      status: "open"
+    };
+  }
+  if (!String(startRaw || "").trim()) {
+    return {
+      enforced: true,
+      startAt: null,
+      endAt: null,
+      durationDays,
+      status: "open"
+    };
+  }
+  if (!startAtDate) {
+    return {
+      enforced: true,
+      startAt: null,
+      endAt: null,
+      durationDays,
+      status: "config_invalid",
+      reason: "pilot_start_at_invalid"
+    };
+  }
+  const endAtDate = new Date(startAtDate.getTime() + durationDays * 86400000);
+  if (now.getTime() < startAtDate.getTime()) {
+    return {
+      enforced: true,
+      startAt: startAtDate.toISOString(),
+      endAt: endAtDate.toISOString(),
+      durationDays,
+      status: "not_started"
+    };
+  }
+  if (now.getTime() >= endAtDate.getTime()) {
+    return {
+      enforced: true,
+      startAt: startAtDate.toISOString(),
+      endAt: endAtDate.toISOString(),
+      durationDays,
+      status: "closed"
+    };
+  }
+  return {
+    enforced: true,
+    startAt: startAtDate.toISOString(),
+    endAt: endAtDate.toISOString(),
+    durationDays,
+    status: "open"
+  };
+};
+
 export const pilotConfig = {
   enabled: process.env.PILOT_API_ENABLED === "true",
   venueMode: parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
   postgresUrl: process.env.POSTGRES_URL || process.env.DATABASE_URL || "",
   adminToken: process.env.PILOT_ADMIN_TOKEN || "",
   internalToken: process.env.PILOT_INTERNAL_TOKEN || "",
+  pilotStartAt: process.env.PILOT_START_AT || "",
+  pilotDurationDays: parsePilotDurationDays(process.env.PILOT_DURATION_DAYS),
+  pilotEnforceWindow: process.env.PILOT_ENFORCE_WINDOW !== "false",
   proofToken: process.env.PILOT_PROOF_TOKEN || "",
   hashVersion: Number(process.env.USER_HASH_VERSION || "1"),
   hashSecret: process.env.USER_HASH_SECRET || "",

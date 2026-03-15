@@ -50,6 +50,9 @@ const createPilotHarness = async (): Promise<{
   process.env.PRICE_REFERENCE_MARKET_ID = "BTC-USD";
   process.env.PRICE_REFERENCE_URL = "https://example.com/ticker";
   process.env.PRICE_SINGLE_SOURCE = "true";
+  process.env.PILOT_START_AT = "";
+  process.env.PILOT_DURATION_DAYS = "30";
+  process.env.PILOT_ENFORCE_WINDOW = "true";
   process.env.PILOT_QUOTE_TTL_MS = "120000";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
 
@@ -317,6 +320,51 @@ test("pilot route hardening A-G", async (t) => {
       const days = (expiryMs - Date.now()) / 86400000;
       assert.ok(days > 6.5 && days < 7.5, `expected ~7d tenor, got ${days.toFixed(4)} days`);
     } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("F) pilot window enforces start and hard stop", async () => {
+    const harness = await createPilotHarness();
+    const previousStart = process.env.PILOT_START_AT;
+    const previousDuration = process.env.PILOT_DURATION_DAYS;
+    const previousEnforce = process.env.PILOT_ENFORCE_WINDOW;
+    const dayMs = 86400000;
+    try {
+      const { app } = harness;
+      process.env.PILOT_ENFORCE_WINDOW = "true";
+      process.env.PILOT_DURATION_DAYS = "30";
+      process.env.PILOT_START_AT = new Date(Date.now() + dayMs).toISOString();
+
+      const notStarted = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload("window-user-1", 1000)
+      });
+      assert.equal(notStarted.statusCode, 403);
+      assert.equal(notStarted.json().reason, "pilot_not_started");
+
+      process.env.PILOT_START_AT = new Date(Date.now() - 31 * dayMs).toISOString();
+      const closed = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload("window-user-2", 1000)
+      });
+      assert.equal(closed.statusCode, 403);
+      assert.equal(closed.json().reason, "pilot_window_closed");
+
+      process.env.PILOT_START_AT = new Date(Date.now() - dayMs).toISOString();
+      const open = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload("window-user-3", 1000)
+      });
+      assert.equal(open.statusCode, 200);
+      assert.equal(open.json().status, "ok");
+    } finally {
+      process.env.PILOT_START_AT = previousStart;
+      process.env.PILOT_DURATION_DAYS = previousDuration;
+      process.env.PILOT_ENFORCE_WINDOW = previousEnforce;
       await harness.close();
     }
   });
