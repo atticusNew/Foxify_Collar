@@ -120,6 +120,9 @@ settlement calls for an already-settled protection return `status=ok` with `idem
   - `PILOT_QUOTE_TTL_MS` (default 30000ms lock window for mock/deribit_test pilot quotes)
   - `PILOT_VENUE_EXEC_TIMEOUT_MS` (default 8000ms)
   - `PILOT_VENUE_MARK_TIMEOUT_MS` (default 3000ms)
+- When `PILOT_FORCE_DERIBIT_TEST_MODE=true` (default), pilot runtime forces Deribit test-only mode:
+  - `DERIBIT_ENV=testnet`
+  - `DERIBIT_PAPER=true`
 - Quote, activation, and expiry resolution all use the same canonical reference feed configuration.
 
 ## Proof payload policy

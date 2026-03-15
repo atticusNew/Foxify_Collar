@@ -813,8 +813,10 @@ export const registerPilotRoutes = async (
     const client = await pool.connect();
     let capUsedUsdc: string | null = null;
     let capProjectedUsdc: string | null = null;
+    let transactionOpen = false;
     try {
       await client.query("BEGIN");
+      transactionOpen = true;
       const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
       const lockedQuote = await getVenueQuoteByQuoteIdForUpdate(client, body.quoteId);
       if (!lockedQuote) {
@@ -824,6 +826,7 @@ export const registerPilotRoutes = async (
         const existing = await getProtection(client, lockedQuote.consumedByProtectionId);
         if (existing && existing.userHash === userHash.userHash) {
           await client.query("COMMIT");
+          transactionOpen = false;
           const replayCoverageRatio =
             existing.metadata && typeof existing.metadata["coverageRatio"] === "string"
               ? String(existing.metadata["coverageRatio"])
@@ -926,34 +929,6 @@ export const registerPilotRoutes = async (
           optionType
         }
       });
-      const snapshot = await resolvePriceSnapshot(
-        {
-          primaryUrl: pilotConfig.referencePriceUrl,
-          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
-          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
-          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
-          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
-          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
-        },
-        {
-          marketId,
-          now: new Date(),
-          requestId,
-          endpointVersion: pilotConfig.endpointVersion
-        }
-      );
-      await insertPriceSnapshot(client, {
-        protectionId: protection.id,
-        snapshotType: "entry",
-        price: snapshot.price.toFixed(10),
-        marketId: snapshot.marketId,
-        priceSource: snapshot.priceSource,
-        priceSourceDetail: snapshot.priceSourceDetail,
-        endpointVersion: snapshot.endpointVersion,
-        requestId: snapshot.requestId,
-        priceTimestamp: snapshot.priceTimestamp
-      });
       const consumed = await consumeVenueQuote(client, lockedQuote.id, protection.id);
       if (!consumed) {
         throw new Error("quote_already_consumed");
@@ -987,6 +962,26 @@ export const registerPilotRoutes = async (
           return "markup";
         })()
       } as const;
+      await client.query("COMMIT");
+      transactionOpen = false;
+
+      const snapshot = await resolvePriceSnapshot(
+        {
+          primaryUrl: pilotConfig.referencePriceUrl,
+          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
+        },
+        {
+          marketId,
+          now: new Date(),
+          requestId,
+          endpointVersion: pilotConfig.endpointVersion
+        }
+      );
       const execution = await withTimeout(
         venue.execute(lockedQuote),
         pilotConfig.venueExecuteTimeoutMs,
@@ -1004,14 +999,25 @@ export const registerPilotRoutes = async (
       ) {
         throw new Error("full_coverage_not_met");
       }
-      await insertVenueExecution(client, protection.id, execution);
-      await insertLedgerEntry(client, {
+      await insertPriceSnapshot(pool, {
+        protectionId: protection.id,
+        snapshotType: "entry",
+        price: snapshot.price.toFixed(10),
+        marketId: snapshot.marketId,
+        priceSource: snapshot.priceSource,
+        priceSourceDetail: snapshot.priceSourceDetail,
+        endpointVersion: snapshot.endpointVersion,
+        requestId: snapshot.requestId,
+        priceTimestamp: snapshot.priceTimestamp
+      });
+      await insertVenueExecution(pool, protection.id, execution);
+      await insertLedgerEntry(pool, {
         protectionId: protection.id,
         entryType: "premium_due",
         amount: premiumPricing.clientPremiumUsd.toFixed(10),
         reference: execution.externalOrderId
       });
-      const updated = await patchProtection(client, protection.id, {
+      const updated = await patchProtection(pool, protection.id, {
         status: "active",
         entry_price: entryPrice.toFixed(10),
         entry_price_source: "manual_input",
@@ -1052,7 +1058,6 @@ export const registerPilotRoutes = async (
           entrySnapshotTimestamp: snapshot.priceTimestamp
         }
       });
-      await client.query("COMMIT");
       const activatedQuote = sanitizeQuoteForClient({
         ...lockedQuote,
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4)),
@@ -1066,7 +1071,10 @@ export const registerPilotRoutes = async (
         quote: activatedQuote
       };
     } catch (error: any) {
-      await client.query("ROLLBACK");
+      if (transactionOpen) {
+        await client.query("ROLLBACK");
+        transactionOpen = false;
+      }
       const errMsg = String(error?.message || "");
       let reason = "activation_failed";
       if (errMsg.includes("price_unavailable")) {
