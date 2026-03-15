@@ -742,6 +742,13 @@ export const createPilotTermsAcceptanceIfMissing = async (
     details?: Record<string, unknown>;
   }
 ): Promise<{ record: PilotTermsAcceptanceRecord; created: boolean }> => {
+  const existing = await getPilotTermsAcceptance(pool, {
+    userHash: input.userHash,
+    termsVersion: input.termsVersion
+  });
+  if (existing) {
+    return { record: existing, created: false };
+  }
   const inserted = await pool.query(
     `
       INSERT INTO pilot_terms_acceptances (
@@ -765,14 +772,14 @@ export const createPilotTermsAcceptanceIfMissing = async (
   if (inserted.rowCount > 0) {
     return { record: mapPilotTermsAcceptance(inserted.rows[0]), created: true };
   }
-  const existing = await getPilotTermsAcceptance(pool, {
+  const postInsertExisting = await getPilotTermsAcceptance(pool, {
     userHash: input.userHash,
     termsVersion: input.termsVersion
   });
-  if (!existing) {
+  if (!postInsertExisting) {
     throw new Error("terms_acceptance_read_after_insert_failed");
   }
-  return { record: existing, created: false };
+  return { record: postInsertExisting, created: false };
 };
 
 export const insertVenueExecution = async (
