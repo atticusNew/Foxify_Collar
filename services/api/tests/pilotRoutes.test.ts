@@ -1,0 +1,339 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import Fastify, { type FastifyInstance } from "fastify";
+import { newDb } from "pg-mem";
+
+const originalFetch = global.fetch;
+
+const buildPriceFetch = (): typeof fetch =>
+  (async () =>
+    ({
+      ok: true,
+      text: async () =>
+        JSON.stringify({
+          product_id: "BTC-USD",
+          price: 100000,
+          timestamp: Date.now()
+        })
+    }) as any) as typeof fetch;
+
+const defaultQuotePayload = (userId: string, protectedNotional = 1000) => ({
+  userId,
+  protectedNotional,
+  foxifyExposureNotional: protectedNotional,
+  entryPrice: 100000,
+  instrumentId: "BTC-USD-7D-P",
+  marketId: "BTC-USD",
+  tierName: "Pro (Bronze)",
+  drawdownFloorPct: 0.2
+});
+
+const activationPayload = (userId: string, quoteId: string, protectedNotional = 1000) => ({
+  ...defaultQuotePayload(userId, protectedNotional),
+  quoteId,
+  autoRenew: false,
+  tenorDays: 7
+});
+
+const createPilotHarness = async (): Promise<{
+  app: FastifyInstance;
+  pool: { query: (sql: string, params?: unknown[]) => Promise<any>; end: () => Promise<void> };
+  close: () => Promise<void>;
+}> => {
+  process.env.PILOT_API_ENABLED = "true";
+  process.env.PILOT_VENUE_MODE = "mock_falconx";
+  process.env.POSTGRES_URL = "postgres://unused";
+  process.env.USER_HASH_SECRET = "test_hash_secret";
+  process.env.PILOT_ADMIN_TOKEN = "admin-local";
+  process.env.PILOT_ADMIN_IP_ALLOWLIST = "127.0.0.1";
+  process.env.PILOT_PROOF_TOKEN = "proof-local";
+  process.env.PRICE_REFERENCE_MARKET_ID = "BTC-USD";
+  process.env.PRICE_REFERENCE_URL = "https://example.com/ticker";
+  process.env.PRICE_SINGLE_SOURCE = "true";
+  process.env.PILOT_QUOTE_TTL_MS = "120000";
+  process.env.PILOT_INTERNAL_TOKEN = "internal-local";
+
+  global.fetch = buildPriceFetch();
+
+  const db = newDb();
+  const pg = db.adapters.createPg();
+  const pool = new pg.Pool();
+
+  const dbModule = await import("../src/pilot/db");
+  dbModule.__setPilotPoolForTests(pool as any);
+  const { registerPilotRoutes } = await import("../src/pilot/routes");
+
+  const app = Fastify();
+  await registerPilotRoutes(app, { deribit: {} as any });
+
+  return {
+    app,
+    pool,
+    close: async () => {
+      await app.close();
+      await pool.end();
+      dbModule.__setPilotPoolForTests(null);
+      global.fetch = originalFetch;
+    }
+  };
+};
+
+const quoteAndActivate = async (
+  app: FastifyInstance,
+  userId: string,
+  protectedNotional = 1000
+): Promise<{ protectionId: string; quoteId: string }> => {
+  const quoteRes = await app.inject({
+    method: "POST",
+    url: "/pilot/protections/quote",
+    payload: defaultQuotePayload(userId, protectedNotional)
+  });
+  assert.equal(quoteRes.statusCode, 200);
+  const quotePayload = quoteRes.json();
+  assert.equal(quotePayload.status, "ok");
+  const quoteId = String(quotePayload.quote?.quoteId || "");
+  assert.ok(quoteId);
+
+  const activateRes = await app.inject({
+    method: "POST",
+    url: "/pilot/protections/activate",
+    payload: activationPayload(userId, quoteId, protectedNotional)
+  });
+  assert.equal(activateRes.statusCode, 200);
+  const activatePayloadJson = activateRes.json();
+  assert.equal(activatePayloadJson.status, "ok");
+  const protectionId = String(activatePayloadJson.protection?.id || "");
+  assert.ok(protectionId);
+  return { protectionId, quoteId };
+};
+
+test("pilot route hardening A-G", async (t) => {
+  await t.test("A) trader read scope enforced and userHash removed", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const { protectionId } = await quoteAndActivate(app, "alice-a");
+
+      const noScopeRes = await app.inject({
+        method: "GET",
+        url: `/pilot/protections/${protectionId}`
+      });
+      assert.equal(noScopeRes.statusCode, 401);
+
+      const wrongScopeRes = await app.inject({
+        method: "GET",
+        url: `/pilot/protections/${protectionId}?userId=alice-other`
+      });
+      assert.equal(wrongScopeRes.statusCode, 403);
+
+      const scopedRes = await app.inject({
+        method: "GET",
+        url: `/pilot/protections/${protectionId}?userId=alice-a`
+      });
+      assert.equal(scopedRes.statusCode, 200);
+      const scoped = scopedRes.json();
+      assert.equal(scoped.status, "ok");
+      assert.equal(Object.prototype.hasOwnProperty.call(scoped.protection, "userHash"), false);
+
+      const monitorNoScope = await app.inject({
+        method: "GET",
+        url: `/pilot/protections/${protectionId}/monitor`
+      });
+      assert.equal(monitorNoScope.statusCode, 401);
+
+      const monitorScoped = await app.inject({
+        method: "GET",
+        url: `/pilot/protections/${protectionId}/monitor?userId=alice-a`
+      });
+      assert.equal(monitorScoped.statusCode, 200);
+      assert.equal(monitorScoped.json().status, "ok");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("B) renewal decision scoped and internal expiry requires privileged auth", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const { protectionId } = await quoteAndActivate(app, "bob-b");
+
+      const renewNoUser = await app.inject({
+        method: "POST",
+        url: `/pilot/protections/${protectionId}/renewal-decision`,
+        payload: { decision: "expire" }
+      });
+      assert.equal(renewNoUser.statusCode, 401);
+
+      const renewWrongUser = await app.inject({
+        method: "POST",
+        url: `/pilot/protections/${protectionId}/renewal-decision`,
+        payload: { decision: "expire", userId: "bob-other" }
+      });
+      assert.equal(renewWrongUser.statusCode, 403);
+
+      const renewOk = await app.inject({
+        method: "POST",
+        url: `/pilot/protections/${protectionId}/renewal-decision`,
+        payload: { decision: "expire", userId: "bob-b" }
+      });
+      assert.equal(renewOk.statusCode, 200);
+
+      const internalNoAuth = await app.inject({
+        method: "POST",
+        url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+        payload: {}
+      });
+      assert.equal(internalNoAuth.statusCode, 401);
+
+      const internalAdmin = await app.inject({
+        method: "POST",
+        url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: {}
+      });
+      assert.equal(internalAdmin.statusCode, 200);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("C) quote lock is single-use with idempotent activation replay", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      const quoteRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload("charlie-c", 1200)
+      });
+      assert.equal(quoteRes.statusCode, 200);
+      const quoteId = String(quoteRes.json().quote.quoteId);
+
+      const firstActivate = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: activationPayload("charlie-c", quoteId, 1200)
+      });
+      assert.equal(firstActivate.statusCode, 200);
+      const first = firstActivate.json();
+      const firstProtectionId = String(first.protection.id);
+
+      const secondActivate = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: activationPayload("charlie-c", quoteId, 1200)
+      });
+      assert.equal(secondActivate.statusCode, 200);
+      const second = secondActivate.json();
+      assert.equal(second.idempotentReplay, true);
+      assert.equal(String(second.protection.id), firstProtectionId);
+
+      const protectionCount = await pool.query(`SELECT COUNT(*)::int AS n FROM pilot_protections`);
+      const executionCount = await pool.query(`SELECT COUNT(*)::int AS n FROM pilot_venue_executions`);
+      assert.equal(Number(protectionCount.rows[0].n), 1);
+      assert.equal(Number(executionCount.rows[0].n), 1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("D) daily cap enforcement is atomic under concurrent activate requests", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const userId = "daisy-d";
+      const q1 = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(userId, 30000)
+      });
+      const q2 = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(userId, 30000)
+      });
+      assert.equal(q1.statusCode, 200);
+      assert.equal(q2.statusCode, 200);
+      const q1Id = String(q1.json().quote.quoteId);
+      const q2Id = String(q2.json().quote.quoteId);
+
+      const [a1, a2] = await Promise.all([
+        app.inject({
+          method: "POST",
+          url: "/pilot/protections/activate",
+          payload: activationPayload(userId, q1Id, 30000)
+        }),
+        app.inject({
+          method: "POST",
+          url: "/pilot/protections/activate",
+          payload: activationPayload(userId, q2Id, 30000)
+        })
+      ]);
+
+      const p1 = a1.json();
+      const p2 = a2.json();
+      const okCount = [p1, p2].filter((item) => item.status === "ok").length;
+      const capCount = [p1, p2].filter((item) => item.reason === "daily_notional_cap_exceeded").length;
+      assert.equal(okCount, 1);
+      assert.equal(capCount, 1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("E) activation ignores client expiry override and enforces fixed 7-day tenor", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const quoteRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload("eve-e", 1500)
+      });
+      assert.equal(quoteRes.statusCode, 200);
+      const quoteId = String(quoteRes.json().quote.quoteId);
+      const requestedOverride = new Date(Date.now() + 30 * 86400000).toISOString();
+
+      const activateRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: {
+          ...activationPayload("eve-e", quoteId, 1500),
+          expiryAt: requestedOverride
+        }
+      });
+      assert.equal(activateRes.statusCode, 200);
+      const payload = activateRes.json();
+      const expiryMs = Date.parse(payload.protection.expiryAt);
+      const days = (expiryMs - Date.now()) / 86400000;
+      assert.ok(days > 6.5 && days < 7.5, `expected ~7d tenor, got ${days.toFixed(4)} days`);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("G) admin allowlist uses trusted request IP (x-forwarded-for spoof ignored)", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const res = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics",
+        headers: {
+          "x-admin-token": "admin-local",
+          "x-forwarded-for": "8.8.8.8"
+        }
+      });
+      assert.equal(res.statusCode, 200);
+      assert.equal(res.json().status, "ok");
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+test.after(() => {
+  global.fetch = originalFetch;
+});
+
