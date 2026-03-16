@@ -371,6 +371,10 @@ body {
   align-items: center;
 }
 
+.pilot-field-entry {
+  width: 420px;
+}
+
 .pilot-field-trader {
   width: min(440px, 100%);
 }
@@ -1291,6 +1295,10 @@ select.input {
   .pilot-field {
     width: 100%;
     justify-self: start;
+  }
+
+  .pilot-field-entry {
+    width: 100%;
   }
 
   .pilot-label {
