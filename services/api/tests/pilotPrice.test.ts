@@ -150,3 +150,76 @@ test("resolvePriceSnapshot rejects when both sources invalid", async () => {
   );
 });
 
+test("resolvePriceSnapshot supports Deribit-style primary payload shape", async () => {
+  global.fetch = (async () =>
+    ({
+      ok: true,
+      json: async () => ({
+        result: {
+          index_price: 100250.5,
+          timestamp: Date.now()
+        }
+      })
+    }) as any) as typeof fetch;
+  const result = await resolvePriceSnapshot(
+    {
+      primaryUrl: "https://primary",
+      fallbackUrl: "https://fallback",
+      primaryTimeoutMs: 800,
+      fallbackTimeoutMs: 800,
+      freshnessMaxMs: 30000
+    },
+    {
+      marketId: "BTC-USD",
+      now: new Date(),
+      requestId: "req-deribit-shape",
+      endpointVersion: "v1"
+    }
+  );
+  assert.equal(result.priceSource, "reference_oracle");
+  assert.equal(result.marketId, "BTC-USD");
+  assert.ok(Number(result.price) > 0);
+});
+
+test("resolvePriceSnapshot supports Coinbase-style fallback timestamp field", async () => {
+  let callCount = 0;
+  global.fetch = (async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return {
+        ok: true,
+        json: async () => ({
+          market_id: "BTC-USD",
+          oraclePrice: -1,
+          timestamp: Date.now()
+        })
+      } as any;
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        price: "99999.12",
+        time: new Date().toISOString()
+      })
+    } as any;
+  }) as typeof fetch;
+  const result = await resolvePriceSnapshot(
+    {
+      primaryUrl: "https://primary",
+      fallbackUrl: "https://fallback",
+      primaryTimeoutMs: 800,
+      fallbackTimeoutMs: 800,
+      freshnessMaxMs: 30000
+    },
+    {
+      marketId: "BTC-USD",
+      now: new Date(),
+      requestId: "req-coinbase-fallback-shape",
+      endpointVersion: "v1"
+    }
+  );
+  assert.equal(result.priceSource, "fallback_oracle");
+  assert.equal(result.marketId, "BTC-USD");
+  assert.ok(Number(result.price) > 0);
+});
+

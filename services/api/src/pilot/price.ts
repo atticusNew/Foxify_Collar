@@ -132,7 +132,11 @@ const extractPrimary = (payload: any): {
         payload?.oracle_price ??
         payload?.indexPrice ??
         payload?.index_price ??
-        payload?.price
+        payload?.price ??
+        payload?.result?.index_price ??
+        payload?.result?.mark_price ??
+        payload?.result?.last_price ??
+        payload?.result?.price
     );
   const timestampMs =
     normalizeTimestampMs(
@@ -170,7 +174,13 @@ const extractFallback = (payload: any): {
       payload?.result?.last_price
   );
   const timestampMs =
-    normalizeTimestampMs(payload?.timestamp ?? payload?.result?.timestamp ?? payload?.updated_at) ?? null;
+    normalizeTimestampMs(
+      payload?.timestamp ??
+        payload?.time ??
+        payload?.result?.timestamp ??
+        payload?.updated_at ??
+        payload?.updatedAt
+    ) ?? null;
   return {
     marketId: typeof marketId === "string" ? marketId : null,
     price: Number.isFinite(price) ? price : null,
