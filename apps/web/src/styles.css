@@ -376,7 +376,8 @@ body {
 }
 
 .pilot-field-entry {
-  width: min(500px, 100%);
+  width: 100%;
+  max-width: 520px;
 }
 
 .pilot-field-trader {
@@ -719,6 +720,10 @@ body {
 .input.pilot-input-text,
 .input.pilot-input-entry {
   text-align: left;
+}
+
+.pilot-input-entry::placeholder {
+  font-size: 11px;
 }
 
 select.input {
