@@ -1032,7 +1032,7 @@ export function PilotApp() {
                 >
                   Terms & Conditions
                 </button>{" "}
-                ({PILOT_TERMS_VERSION}).
+                ({PILOT_TERMS_VERSION})
               </span>
             </label>
             <button className="cta pilot-gate-cta" type="button" disabled={!canContinuePastGate} onClick={acceptTermsAndContinue}>
@@ -1053,7 +1053,7 @@ export function PilotApp() {
                   x
                 </button>
               </div>
-              <div className="subheader pilot-terms-version">Version {PILOT_TERMS_VERSION}</div>
+              <div className="subheader pilot-terms-version">({PILOT_TERMS_VERSION})</div>
               <div className="modal-body pilot-terms-body">
                 <p className="pilot-terms-intro">
                   By proceeding, you acknowledge and agree to the following pilot terms.
