@@ -30,7 +30,7 @@ const parseAllowlist = (raw: string | undefined): ParsedAllowlist => {
 };
 
 export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => {
-  const normalized = (raw || "mock_falconx").trim();
+  const normalized = (raw || "deribit_test").trim();
   if (normalized === "falconx" || normalized === "deribit_test" || normalized === "mock_falconx") {
     return normalized;
   }

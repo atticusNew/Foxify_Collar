@@ -257,11 +257,7 @@ body {
 
 .pilot-gate-copy {
   display: grid;
-  gap: 12px;
-}
-
-.pilot-gate-terms-btn {
-  justify-self: center;
+  gap: 10px;
 }
 
 .pilot-gate-cta {
@@ -286,9 +282,9 @@ body {
 }
 
 .pilot-gate-checkline {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 8px;
   font-size: 12px;
   line-height: 1.45;
@@ -296,19 +292,21 @@ body {
 }
 
 .pilot-gate-checkline input {
-  margin-top: 2px;
+  margin-top: 0;
 }
 
-.pilot-gate-accepted-note strong {
-  color: var(--text);
+.pilot-inline-terms-link {
+  border: 0;
+  background: transparent;
+  color: #8ad0ff;
+  padding: 0;
+  font-size: inherit;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
-.pilot-gate-instruction {
-  text-align: center;
-}
-
-.pilot-gate-shared-note {
-  text-align: center;
+.pilot-inline-terms-link:hover {
+  color: #b7e4ff;
 }
 
 .pilot-form {

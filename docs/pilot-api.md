@@ -124,6 +124,12 @@ settlement calls for an already-settled protection return `status=ok` with `idem
   - `DERIBIT_ENV=testnet`
   - `DERIBIT_PAPER=true`
 - Quote, activation, and expiry resolution all use the same canonical reference feed configuration.
+- Venue mode is controlled by `PILOT_VENUE_MODE`:
+  - `deribit_test` (default for pilot realism + safeguards)
+  - `falconx` (live FalconX credentials)
+  - `mock_falconx` (offline mock path)
+- Venue adapters are isolated behind `PilotVenueAdapter` so additional exchanges (for example Bullish) can
+  be added without changing pilot route contracts.
 
 ## Proof payload policy
 

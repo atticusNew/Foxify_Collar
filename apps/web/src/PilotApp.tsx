@@ -238,20 +238,52 @@ const isRetryableQuoteError = (message: string): boolean => {
   );
 };
 
+const isRetryableActivationError = (message: string): boolean => {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("venue_execute_timeout") ||
+    lower.includes("storage_unavailable") ||
+    lower.includes("price_unavailable") ||
+    lower.includes("activation_failed") ||
+    lower.includes("fetch failed")
+  );
+};
+
+const formatVenueLabel = (venue: string | null | undefined): string => {
+  const normalized = String(venue || "").trim().toLowerCase();
+  if (normalized === "deribit_test") return "Deribit Test";
+  if (normalized === "falconx") return "FalconX Live";
+  if (normalized === "mock_falconx") return "Mock FalconX";
+  return normalized || "Unknown";
+};
+
 const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 const ATTICUS_LOGO_URL = "https://i.ibb.co/KpbRyd7w/atticus-copy.png";
 const PILOT_SUPPORT_EMAIL = "michael@atticustrade.com";
 const PILOT_SUPPORT_TELEGRAM = "@willialso";
 
 export function PilotApp() {
-  const [pilotUnlocked, setPilotUnlocked] = useState(false);
+  const termsLocalStorageKey = `pilot_terms_accepted_${PILOT_TERMS_VERSION}`;
+  const [pilotUnlocked, setPilotUnlocked] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(termsLocalStorageKey) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [termsStatus, setTermsStatus] = useState<"checking" | "required" | "accepted">("checking");
-  const [termsAcceptedAt, setTermsAcceptedAt] = useState<string | null>(null);
   const [termsBusy, setTermsBusy] = useState(false);
   const [termsError, setTermsError] = useState<string | null>(null);
   const [termsModalOpen, setTermsModalOpen] = useState(false);
-  const [termsModalConfirmed, setTermsModalConfirmed] = useState(false);
-  const [termsChecked, setTermsChecked] = useState(false);
+  const [termsChecked, setTermsChecked] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return window.localStorage.getItem(termsLocalStorageKey) === "1";
+    } catch {
+      return false;
+    }
+  });
   const [foxifyLogoFailed, setFoxifyLogoFailed] = useState(false);
   const [atticusLogoFailed, setAtticusLogoFailed] = useState(false);
   const [tiers, setTiers] = useState<TierLevel[]>(DEFAULT_TIERS);
@@ -311,6 +343,7 @@ export function PilotApp() {
     entryValue > 0;
   const quoteFresh =
     quoteState === "ready" && quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
+  const quoteLocked = quoteFresh && Boolean(quote?.quote?.quoteId);
   const quoteCapWarning = quote?.limits?.dailyCapExceededOnActivate === true;
   const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
 
@@ -376,10 +409,6 @@ export function PilotApp() {
 
   useEffect(() => {
     setTermsError(null);
-    setTermsChecked(false);
-    setTermsModalConfirmed(false);
-    setPilotUnlocked(false);
-    setTermsAcceptedAt(null);
     let cancelled = false;
     const controller = new AbortController();
     setTermsStatus("checking");
@@ -396,16 +425,43 @@ export function PilotApp() {
         }
         if (payload.accepted) {
           setTermsStatus("accepted");
-          setTermsAcceptedAt(payload.acceptedAt || null);
-          setTermsModalConfirmed(true);
           setTermsChecked(true);
+          setPilotUnlocked(true);
+          if (typeof window !== "undefined") {
+            try {
+              window.localStorage.setItem(termsLocalStorageKey, "1");
+            } catch {
+              // best-effort cache only
+            }
+          }
           return;
         }
         setTermsStatus("required");
+        setTermsChecked(false);
+        setPilotUnlocked(false);
+        if (typeof window !== "undefined") {
+          try {
+            window.localStorage.removeItem(termsLocalStorageKey);
+          } catch {
+            // best-effort cache only
+          }
+        }
       } catch (error: any) {
         if (cancelled || error?.name === "AbortError") return;
         setTermsStatus("required");
-        setTermsError("Unable to verify terms status right now. You can still accept and continue.");
+        const locallyAccepted = (() => {
+          if (typeof window === "undefined") return false;
+          try {
+            return window.localStorage.getItem(termsLocalStorageKey) === "1";
+          } catch {
+            return false;
+          }
+        })();
+        if (!locallyAccepted) {
+          setTermsChecked(false);
+          setPilotUnlocked(false);
+        }
+        setTermsError("Unable to verify terms right now. You can still continue after confirming acceptance.");
       }
     };
     void loadTermsStatus();
@@ -413,7 +469,7 @@ export function PilotApp() {
       cancelled = true;
       controller.abort();
     };
-  }, []);
+  }, [termsLocalStorageKey]);
 
   useEffect(() => {
     if (!quote?.quote?.expiresAt) {
@@ -684,48 +740,67 @@ export function PilotApp() {
     }
     setBusy(true);
     setError(null);
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    let finalError: any = null;
+    const maxAttempts = 2;
     try {
-      const res = await fetch(`${API_BASE}/pilot/protections/activate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          protectedNotional: protectedValue,
-          foxifyExposureNotional: exposureValue,
-          entryPrice: entryValue,
-          protectionType,
-          instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
-          marketId: "BTC-USD",
-          tierName: selectedTier.name,
-          drawdownFloorPct: selectedTier.drawdownFloorPct,
-          tenorDays: selectedTier.expiryDays,
-          renewWindowMinutes: selectedTier.renewWindowMinutes,
-          autoRenew,
-          quoteId: quote?.quote?.quoteId
-        })
-      });
-      const payload = await res.json();
-      if (!res.ok || payload?.status !== "ok") {
-        const reason = String(payload?.reason || "");
-        const message = String(payload?.message || "");
-        throw new Error([reason, message].filter(Boolean).join(":") || "activation_failed");
-      }
-      setProtection(payload.protection as ProtectionRecord);
-      setMonitor(null);
-      setLastUpdatedAt(new Date());
-      setShowProtectionModal(true);
-      setShowRenewModal(false);
-      void refreshProtectionHistory({ silent: true });
-    } catch (err: any) {
-      if (err?.name === "AbortError") {
-        setError("Activation is taking longer than expected. Tap Confirm Protection again.");
-      } else {
-        setError(friendlyError(String(err?.message || "activation_failed")));
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+          const res = await fetch(`${API_BASE}/pilot/protections/activate`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: controller.signal,
+            body: JSON.stringify({
+              protectedNotional: protectedValue,
+              foxifyExposureNotional: exposureValue,
+              entryPrice: entryValue,
+              protectionType,
+              instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
+              marketId: "BTC-USD",
+              tierName: selectedTier.name,
+              drawdownFloorPct: selectedTier.drawdownFloorPct,
+              tenorDays: selectedTier.expiryDays,
+              renewWindowMinutes: selectedTier.renewWindowMinutes,
+              autoRenew,
+              quoteId: quote?.quote?.quoteId
+            })
+          });
+          const payload = await res.json();
+          if (!res.ok || payload?.status !== "ok") {
+            const reason = String(payload?.reason || "");
+            const message = String(payload?.message || "");
+            throw new Error([reason, message].filter(Boolean).join(":") || "activation_failed");
+          }
+          setProtection(payload.protection as ProtectionRecord);
+          setMonitor(null);
+          setLastUpdatedAt(new Date());
+          setShowProtectionModal(true);
+          setShowRenewModal(false);
+          void refreshProtectionHistory({ silent: true });
+          return;
+        } catch (err: any) {
+          finalError = err;
+          const errMsg = String(err?.message || "activation_failed");
+          const retryable = err?.name === "AbortError" || isRetryableActivationError(errMsg);
+          if (attempt < maxAttempts && retryable) {
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            continue;
+          }
+          break;
+        } finally {
+          clearTimeout(timeout);
+        }
       }
     } finally {
-      clearTimeout(timeout);
+      const err = finalError;
+      if (err) {
+        if (err?.name === "AbortError") {
+          setError("Activation is taking longer than expected. Please retry.");
+        } else {
+          setError(friendlyError(String(err?.message || "activation_failed")));
+        }
+      }
       setBusy(false);
     }
   };
@@ -758,15 +833,11 @@ export function PilotApp() {
   const canContinuePastGate =
     !termsBusy &&
     termsStatus !== "checking" &&
-    (termsStatus === "accepted" || (termsModalConfirmed && termsChecked));
+    (termsStatus === "accepted" || termsChecked);
 
   const acceptTermsAndContinue = async () => {
     if (termsStatus === "accepted") {
       setPilotUnlocked(true);
-      return;
-    }
-    if (!termsModalConfirmed) {
-      setTermsError(`Open and accept Terms ${PILOT_TERMS_VERSION} before continuing.`);
       return;
     }
     if (!termsChecked) {
@@ -795,9 +866,14 @@ export function PilotApp() {
       }
       setTermsStatus("accepted");
       setPilotUnlocked(true);
-      setTermsAcceptedAt(payload.acceptedAt || null);
-      setTermsModalConfirmed(true);
       setTermsChecked(true);
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(termsLocalStorageKey, "1");
+        } catch {
+          // best-effort cache only
+        }
+      }
     } catch (error: any) {
       setTermsError(friendlyError(String(error?.message || "terms_accept_failed")));
     } finally {
@@ -935,45 +1011,33 @@ export function PilotApp() {
           </div>
           <h2 className="pilot-gate-title">Foxify Protection Pilot</h2>
           <div className="recommendation pilot-gate-copy">
-            <div className="muted">
-              Internal pilot for Foxify executives. Please review and accept Terms {PILOT_TERMS_VERSION} to continue.
-            </div>
             {termsStatus === "checking" && <div className="muted">Checking prior acceptance...</div>}
-            {termsAcceptedAt && termsStatus === "accepted" && (
-              <div className="muted pilot-gate-accepted-note">
-                Terms {PILOT_TERMS_VERSION} already accepted on{" "}
-                {new Date(termsAcceptedAt).toLocaleString()}.
-              </div>
-            )}
-            <button
-              className="btn btn-secondary pilot-gate-terms-btn"
-              type="button"
-              onClick={() => setTermsModalOpen(true)}
-            >
-              Open Terms & Conditions ({PILOT_TERMS_VERSION})
-            </button>
-            {termsStatus !== "accepted" && !termsModalConfirmed && (
-              <div className="muted pilot-gate-instruction">
-                Open Terms & Conditions and click "I have read and accept" to enable the acknowledgement checkbox.
-              </div>
-            )}
-            <label className="pilot-gate-checkline" onClick={() => setTermsModalOpen(termsStatus !== "accepted" && !termsModalConfirmed)}>
+            <label className="pilot-gate-checkline">
               <input
                 type="checkbox"
                 checked={termsChecked}
-                disabled={termsStatus === "accepted" || !termsModalConfirmed}
+                disabled={termsStatus === "accepted" || termsStatus === "checking" || termsBusy}
                 onChange={(e) => setTermsChecked(e.target.checked)}
               />
-              <span>I have read and agree to Terms & Conditions ({PILOT_TERMS_VERSION}).</span>
+              <span>
+                I have read and accept{" "}
+                <button
+                  className="pilot-inline-terms-link"
+                  type="button"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setTermsModalOpen(true);
+                  }}
+                >
+                  Terms & Conditions
+                </button>{" "}
+                ({PILOT_TERMS_VERSION}).
+              </span>
             </label>
             <button className="cta pilot-gate-cta" type="button" disabled={!canContinuePastGate} onClick={acceptTermsAndContinue}>
-              {termsBusy
-                ? "Saving..."
-                : termsStatus === "accepted"
-                  ? "Continue to Pilot"
-                  : "Accept Terms & Continue"}
+              {termsBusy ? "Saving..." : "Continue"}
             </button>
-            <div className="muted pilot-gate-shared-note">Acceptance is recorded for pilot operations and audit.</div>
             {termsError && <div className="disclaimer danger">{termsError}</div>}
           </div>
         </div>
@@ -1030,17 +1094,6 @@ export function PilotApp() {
                 <button className="btn btn-secondary" type="button" onClick={() => setTermsModalOpen(false)}>
                   Close
                 </button>
-                <button
-                  className="cta"
-                  type="button"
-                  onClick={() => {
-                    setTermsModalConfirmed(true);
-                    setTermsModalOpen(false);
-                    setTermsError(null);
-                  }}
-                >
-                  I have read and accept Terms {PILOT_TERMS_VERSION}
-                </button>
               </div>
             </div>
           </div>
@@ -1087,7 +1140,7 @@ export function PilotApp() {
                   className="input pilot-input pilot-select"
                   value={tierName}
                   onChange={(e) => setTierName(e.target.value)}
-                  disabled={busy}
+                  disabled={busy || quoteLocked}
                 >
                   {tiers.map((tier) => (
                     <option key={tier.name} value={tier.name}>
@@ -1105,7 +1158,7 @@ export function PilotApp() {
                   className="input pilot-input pilot-select"
                   value={protectionType}
                   onChange={(e) => setProtectionType(e.target.value as ProtectionType)}
-                  disabled={busy}
+                  disabled={busy || quoteLocked}
                 >
                   <option value="long">Long (Put Hedge)</option>
                   <option value="short">Short (Call Hedge)</option>
@@ -1121,6 +1174,7 @@ export function PilotApp() {
                   inputMode="decimal"
                   placeholder="e.g. 50,000"
                   value={exposureNotional}
+                  disabled={busy || quoteLocked}
                   onChange={(e) => setExposureNotional(formatCurrencyInput(e.target.value))}
                 />
               </div>
@@ -1134,6 +1188,7 @@ export function PilotApp() {
                   inputMode="decimal"
                   placeholder="e.g. 25,000"
                   value={protectedNotional}
+                  disabled={busy || quoteLocked}
                   onChange={(e) => setProtectedNotional(formatCurrencyInput(e.target.value))}
                 />
               </div>
@@ -1147,6 +1202,7 @@ export function PilotApp() {
                   inputMode="decimal"
                   placeholder="e.g. 100,000"
                   value={entryPrice}
+                  disabled={busy || quoteLocked}
                   onChange={(e) => setEntryPrice(formatCurrencyInput(e.target.value))}
                 />
               </div>
@@ -1177,7 +1233,12 @@ export function PilotApp() {
               <span className="pilot-label">Auto Renew</span>
               <div className="pilot-field">
                 <label className="pilot-checkbox">
-                  <input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={autoRenew}
+                    disabled={busy || quoteLocked}
+                    onChange={(e) => setAutoRenew(e.target.checked)}
+                  />
                   <span>{autoRenew ? "Enabled" : "Disabled"}</span>
                 </label>
               </div>
@@ -1213,7 +1274,8 @@ export function PilotApp() {
             {(quoteState === "ready" || quoteState === "expired") && quote && (
               <>
                 <div className="muted">
-                  Premium <strong>${formatUsd(quote.quote.premium)}</strong> · Venue {quote.quote.venue}
+                  Premium <strong>${formatUsd(quote.quote.premium)}</strong> · Venue{" "}
+                  <strong>{formatVenueLabel(quote.quote.venue)}</strong>
                 </div>
                 <div className="muted">
                   {quoteDirectionLabel} · Tier {quote.tierName}
@@ -1230,6 +1292,9 @@ export function PilotApp() {
               </>
             )}
           </div>
+          {quoteLocked && (
+            <div className="muted">Quote locked: core request fields are temporarily read-only until refresh or expiry.</div>
+          )}
           {quoteCapWarning && (
             <div className="disclaimer danger">
               Daily protection limit reached for pilot operations. Quote is shown for reference; confirmation is blocked
@@ -1244,7 +1309,7 @@ export function PilotApp() {
               {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
             </button>
             <button className="cta pilot-action-btn" disabled={busy || !canActivate} onClick={activateProtection}>
-              Confirm Protection
+              {busy && quoteState !== "fetching" ? "Confirming..." : "Confirm Protection"}
             </button>
           </div>
           {error && <div className="disclaimer danger">{error}</div>}

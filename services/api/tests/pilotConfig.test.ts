@@ -6,7 +6,7 @@ test("parsePilotVenueMode accepts known values", () => {
   assert.equal(parsePilotVenueMode("falconx"), "falconx");
   assert.equal(parsePilotVenueMode("deribit_test"), "deribit_test");
   assert.equal(parsePilotVenueMode("mock_falconx"), "mock_falconx");
-  assert.equal(parsePilotVenueMode(undefined), "mock_falconx");
+  assert.equal(parsePilotVenueMode(undefined), "deribit_test");
 });
 
 test("parsePilotVenueMode fails fast on unknown values", () => {
