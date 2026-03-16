@@ -499,6 +499,52 @@ export const registerPilotRoutes = async (
     }
   });
 
+  app.get("/pilot/reference-price", async (req, reply) => {
+    const query = req.query as { marketId?: string };
+    const marketId = String(query.marketId || pilotConfig.referenceMarketId || "BTC-USD");
+    const requestId = pilotConfig.nextRequestId();
+    try {
+      const snapshot = await resolvePriceSnapshot(
+        {
+          primaryUrl: pilotConfig.referencePriceUrl,
+          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
+        },
+        {
+          marketId,
+          now: new Date(),
+          requestId,
+          endpointVersion: pilotConfig.endpointVersion
+        }
+      );
+      const ageMs = Math.max(0, Date.now() - Date.parse(snapshot.priceTimestamp));
+      return {
+        status: "ok",
+        reference: {
+          price: snapshot.price.toFixed(10),
+          marketId: snapshot.marketId,
+          source: snapshot.priceSource,
+          timestamp: snapshot.priceTimestamp,
+          requestId: snapshot.requestId,
+          ageMs,
+          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs
+        }
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        message: "Price temporarily unavailable, please retry.",
+        detail: String(error?.message || "reference_price_unavailable")
+      };
+    }
+  });
+
   app.post("/pilot/protections/quote", async (req, reply) => {
     if (!enforcePilotWindow(reply)) return;
     const body = req.body as {

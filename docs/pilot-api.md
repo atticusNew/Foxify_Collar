@@ -6,6 +6,7 @@ These endpoints are enabled when `PILOT_API_ENABLED=true`.
 
 - `POST /pilot/protections/quote`
 - `POST /pilot/protections/activate`
+- `GET /pilot/reference-price?marketId=BTC-USD`
 - `GET /pilot/terms/status?termsVersion=<version>`
 - `POST /pilot/terms/accept`
 - `GET /pilot/protections?limit=<n>`
@@ -50,6 +51,8 @@ Endpoints:
    - `status=error`
    - `reason=quote_generation_failed`
    - message: `Unable to generate a venue quote right now. Please retry.`
+8. `GET /pilot/reference-price` exposes the current server-side reference anchor (price, source, timestamp)
+   used to calibrate protection economics.
 
 ## Ledger entries
 

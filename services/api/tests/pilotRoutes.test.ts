@@ -489,6 +489,26 @@ test("pilot route hardening A-H", async (t) => {
       await harness.close();
     }
   });
+
+  await t.test("J) reference price endpoint returns live anchor metadata", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const res = await app.inject({
+        method: "GET",
+        url: "/pilot/reference-price?marketId=BTC-USD"
+      });
+      assert.equal(res.statusCode, 200);
+      const payload = res.json();
+      assert.equal(payload.status, "ok");
+      assert.equal(String(payload.reference?.marketId || ""), "BTC-USD");
+      assert.equal(Number(payload.reference?.price || 0), 100000);
+      assert.ok(String(payload.reference?.source || "").length > 0);
+      assert.ok(String(payload.reference?.timestamp || "").length > 0);
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 test.after(() => {

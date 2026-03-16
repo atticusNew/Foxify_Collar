@@ -58,6 +58,21 @@ type MonitorPayload = {
   asOf: string;
 };
 
+type ReferencePricePayload = {
+  status: "ok" | "error";
+  reference?: {
+    price: string;
+    marketId: string;
+    source: string;
+    timestamp: string;
+    requestId?: string;
+    ageMs?: number;
+    freshnessMaxMs?: number;
+  };
+  reason?: string;
+  message?: string;
+};
+
 type AdminProtectionRow = {
   protection_id: string;
   status: string;
@@ -257,6 +272,13 @@ const formatVenueLabel = (venue: string | null | undefined): string => {
   return normalized || "Unknown";
 };
 
+const formatPriceSourceLabel = (source: string | null | undefined): string => {
+  const normalized = String(source || "").trim().toLowerCase();
+  if (normalized === "reference_oracle") return "Primary Reference";
+  if (normalized === "fallback_oracle") return "Fallback Reference";
+  return normalized || "Unknown Source";
+};
+
 const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 const ATTICUS_LOGO_URL = "https://i.ibb.co/KpbRyd7w/atticus-copy.png";
 const PILOT_SUPPORT_EMAIL = "michael@atticustrade.com";
@@ -321,6 +343,9 @@ export function PilotApp() {
   const [showHistorySection, setShowHistorySection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [liveReference, setLiveReference] = useState<ReferencePricePayload["reference"] | null>(null);
+  const [liveReferenceBusy, setLiveReferenceBusy] = useState(false);
+  const [liveReferenceError, setLiveReferenceError] = useState<string | null>(null);
   const historyRequestSeqRef = useRef(0);
   const monitorRequestSeqRef = useRef(0);
   const protectionPollSeqRef = useRef(0);
@@ -468,6 +493,47 @@ export function PilotApp() {
       controller.abort();
     };
   }, [termsLocalStorageKey]);
+
+  useEffect(() => {
+    if (!pilotUnlocked) {
+      setLiveReference(null);
+      setLiveReferenceBusy(false);
+      setLiveReferenceError(null);
+      return;
+    }
+    let active = true;
+    const loadReference = async (opts?: { silent?: boolean }) => {
+      const silent = opts?.silent === true;
+      if (!silent) {
+        setLiveReferenceBusy(true);
+      }
+      try {
+        const res = await fetch(`${API_BASE}/pilot/reference-price?marketId=BTC-USD`);
+        const payload = (await res.json()) as ReferencePricePayload;
+        if (!active) return;
+        if (!res.ok || payload.status !== "ok" || !payload.reference) {
+          throw new Error(payload.reason || payload.message || "price_unavailable");
+        }
+        setLiveReference(payload.reference);
+        setLiveReferenceError(null);
+      } catch (error: any) {
+        if (!active) return;
+        setLiveReferenceError(friendlyError(String(error?.message || "price_unavailable")));
+      } finally {
+        if (!silent && active) {
+          setLiveReferenceBusy(false);
+        }
+      }
+    };
+    void loadReference();
+    const id = setInterval(() => {
+      void loadReference({ silent: true });
+    }, 10000);
+    return () => {
+      active = false;
+      clearInterval(id);
+    };
+  }, [pilotUnlocked]);
 
   useEffect(() => {
     if (!quote?.quote?.expiresAt) {
@@ -895,8 +961,16 @@ export function PilotApp() {
     protection?.metadata && typeof protection.metadata["entrySnapshotPrice"] === "string"
       ? (protection.metadata["entrySnapshotPrice"] as string)
       : null;
+  const liveReferenceNumber = Number(liveReference?.price ?? NaN);
+  const liveReferenceAgeMs = Number(liveReference?.ageMs ?? NaN);
+  const liveReferenceFreshnessMs = Number(liveReference?.freshnessMaxMs ?? NaN);
+  const liveReferenceStale =
+    Number.isFinite(liveReferenceAgeMs) &&
+    Number.isFinite(liveReferenceFreshnessMs) &&
+    liveReferenceFreshnessMs > 0 &&
+    liveReferenceAgeMs > liveReferenceFreshnessMs;
   const referencePrice =
-    Number(metadataEntrySnapshotPrice ?? quote?.entrySnapshot?.price ?? protection?.entryPrice ?? NaN);
+    Number(metadataEntrySnapshotPrice ?? quote?.entrySnapshot?.price ?? protection?.entryPrice ?? liveReference?.price ?? NaN);
   const triggerNumber = Number(displayedTriggerPrice ?? 0);
   const distanceToTriggerPct =
     Number.isFinite(referencePrice) && referencePrice > 0 && Number.isFinite(triggerNumber)
@@ -1124,6 +1198,49 @@ export function PilotApp() {
 
         <div className="section">
           <h4>Protection Request</h4>
+          <div className={`pilot-reference-strip ${liveReferenceStale ? "pilot-reference-strip-stale" : ""}`}>
+            <div className="pilot-reference-head">
+              <span className="pilot-reference-title">BTC Reference Price</span>
+              <button
+                className="btn btn-secondary pilot-reference-refresh"
+                type="button"
+                disabled={liveReferenceBusy}
+                onClick={() => {
+                  setLiveReferenceBusy(true);
+                  void (async () => {
+                    try {
+                      const res = await fetch(`${API_BASE}/pilot/reference-price?marketId=BTC-USD`);
+                      const payload = (await res.json()) as ReferencePricePayload;
+                      if (!res.ok || payload.status !== "ok" || !payload.reference) {
+                        throw new Error(payload.reason || payload.message || "price_unavailable");
+                      }
+                      setLiveReference(payload.reference);
+                      setLiveReferenceError(null);
+                    } catch (error: any) {
+                      setLiveReferenceError(friendlyError(String(error?.message || "price_unavailable")));
+                    } finally {
+                      setLiveReferenceBusy(false);
+                    }
+                  })();
+                }}
+              >
+                {liveReferenceBusy ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+            <div className="pilot-reference-value">
+              {Number.isFinite(liveReferenceNumber) ? `$${formatUsd(liveReferenceNumber)}` : "—"}
+            </div>
+            <div className="pilot-reference-meta muted">
+              {liveReference
+                ? `${liveReference.marketId} · ${formatPriceSourceLabel(liveReference.source)} · ${new Date(
+                    liveReference.timestamp
+                  ).toLocaleString()}${liveReferenceStale ? " · stale" : ""}`
+                : liveReferenceBusy
+                  ? "Loading latest reference..."
+                  : "Reference price unavailable"}
+            </div>
+            {liveReferenceError && <div className="disclaimer danger">{liveReferenceError}</div>}
+          </div>
           <div className="recommendation pilot-form">
             <div className="pilot-form-row">
               <span className="pilot-label">Tier</span>

@@ -517,6 +517,49 @@ body {
   padding: 5px 10px;
 }
 
+.pilot-reference-strip {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #111116;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.pilot-reference-strip-stale {
+  border-color: rgba(242, 166, 90, 0.55);
+}
+
+.pilot-reference-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pilot-reference-title {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.pilot-reference-value {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+.pilot-reference-meta {
+  line-height: 1.4;
+}
+
+.pilot-reference-refresh {
+  margin: 0;
+  padding: 5px 10px;
+}
+
 .pilot-monitor {
   width: min(760px, 100%);
 }
@@ -1371,6 +1414,14 @@ select.input {
 
   .pilot-actions {
     grid-template-columns: 1fr;
+  }
+
+  .pilot-reference-head {
+    align-items: flex-start;
+  }
+
+  .pilot-reference-value {
+    font-size: 18px;
   }
 
   .pilot-monitor-grid {
