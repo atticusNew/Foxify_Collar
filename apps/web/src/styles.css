@@ -1324,6 +1324,8 @@ select.input {
   .pilot-co-brand {
     grid-template-columns: 1fr;
     row-gap: 8px;
+    justify-items: center;
+    text-align: center;
   }
 
   .pilot-co-brand-compact {
@@ -1332,6 +1334,12 @@ select.input {
 
   .pilot-co-brand-logo-slot {
     min-height: 52px;
+  }
+
+  .pilot-co-brand-separator {
+    justify-self: center;
+    width: 100%;
+    text-align: center;
   }
 
   .pilot-gate-title {

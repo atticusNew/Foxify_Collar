@@ -1192,7 +1192,7 @@ export function PilotApp() {
                 <input
                   className="input pilot-input pilot-input-text pilot-input-entry"
                   inputMode="decimal"
-                  placeholder="Optional basis (info only)"
+                  placeholder="e.g. $100,000"
                   value={entryPrice}
                   disabled={busy || quoteLocked}
                   onChange={(e) => setEntryPrice(formatCurrencyInput(e.target.value))}
