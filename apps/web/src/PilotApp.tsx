@@ -1190,7 +1190,7 @@ export function PilotApp() {
               <span className="pilot-label">Entry Price (Optional)</span>
               <div className="pilot-field pilot-field-entry">
                 <input
-                  className="input pilot-input pilot-input-text"
+                  className="input pilot-input pilot-input-text pilot-input-entry"
                   inputMode="decimal"
                   placeholder="Optional cost basis (informational only)"
                   value={entryPrice}

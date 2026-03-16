@@ -338,6 +338,10 @@ body {
   text-align: left;
 }
 
+.pilot-input-entry {
+  width: 100%;
+}
+
 .pilot-input-trader {
   width: 100%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
