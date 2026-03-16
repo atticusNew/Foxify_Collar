@@ -52,8 +52,9 @@ services:
           name: atticus-pilot-db
           property: connectionString
 
-  - type: static
+  - type: web
     name: atticus-pilot-web
+    runtime: static
     branch: cursor/foxify-pilot-readiness-d74a
     autoDeploy: true
     buildCommand: npm ci && npm --workspace apps/web run build
