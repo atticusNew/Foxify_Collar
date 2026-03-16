@@ -722,6 +722,10 @@ body {
   text-align: left;
 }
 
+.input.pilot-input-entry {
+  text-align: right;
+}
+
 .pilot-input-entry::placeholder {
   font-size: 11px;
 }
