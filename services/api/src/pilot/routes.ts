@@ -63,6 +63,18 @@ const parsePositiveDecimal = (value: unknown): Decimal | null => {
   }
 };
 
+const resolveReferenceVenueLabel = (url: string, fallbackLabel = "Reference Feed"): string => {
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+    if (hostname.includes("coinbase")) return "Coinbase";
+    if (hostname.includes("deribit")) return "Deribit";
+    if (hostname.includes("falconx")) return "FalconX";
+    return hostname.replace(/^www\./, "") || fallbackLabel;
+  } catch {
+    return fallbackLabel;
+  }
+};
+
 const resolveTierPremiumFloorBps = (tierName: string): Decimal => {
   const raw = Number(pilotConfig.premiumFloorBpsByTier[tierName] ?? 100);
   if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
@@ -522,11 +534,16 @@ export const registerPilotRoutes = async (
         }
       );
       const ageMs = Math.max(0, Date.now() - Date.parse(snapshot.priceTimestamp));
+      const venue =
+        snapshot.priceSource === "fallback_oracle"
+          ? resolveReferenceVenueLabel(pilotConfig.fallbackPriceUrl)
+          : resolveReferenceVenueLabel(pilotConfig.referencePriceUrl);
       return {
         status: "ok",
         reference: {
           price: snapshot.price.toFixed(10),
           marketId: snapshot.marketId,
+          venue,
           source: snapshot.priceSource,
           timestamp: snapshot.priceTimestamp,
           requestId: snapshot.requestId,

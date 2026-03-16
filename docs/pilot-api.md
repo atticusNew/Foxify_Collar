@@ -51,7 +51,7 @@ Endpoints:
    - `status=error`
    - `reason=quote_generation_failed`
    - message: `Unable to generate a venue quote right now. Please retry.`
-8. `GET /pilot/reference-price` exposes the current server-side reference anchor (price, source, timestamp)
+8. `GET /pilot/reference-price` exposes the current server-side reference anchor (price, venue, source, timestamp)
    used to calibrate protection economics.
 
 ## Ledger entries

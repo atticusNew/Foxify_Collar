@@ -503,6 +503,7 @@ test("pilot route hardening A-H", async (t) => {
       assert.equal(payload.status, "ok");
       assert.equal(String(payload.reference?.marketId || ""), "BTC-USD");
       assert.equal(Number(payload.reference?.price || 0), 100000);
+      assert.ok(String(payload.reference?.venue || "").length > 0);
       assert.ok(String(payload.reference?.source || "").length > 0);
       assert.ok(String(payload.reference?.timestamp || "").length > 0);
     } finally {

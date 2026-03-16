@@ -63,6 +63,7 @@ type ReferencePricePayload = {
   reference?: {
     price: string;
     marketId: string;
+    venue?: string;
     source: string;
     timestamp: string;
     requestId?: string;
@@ -272,12 +273,16 @@ const formatVenueLabel = (venue: string | null | undefined): string => {
   return normalized || "Unknown";
 };
 
-const formatPriceSourceLabel = (source: string | null | undefined): string => {
-  const normalized = String(source || "").trim().toLowerCase();
-  if (normalized === "reference_oracle") return "Primary Reference";
-  if (normalized === "fallback_oracle") return "Fallback Reference";
-  return normalized || "Unknown Source";
+const toTermsVersionDisplay = (rawVersion: string): string => {
+  const normalized = String(rawVersion || "").trim();
+  const match = normalized.match(/^v?(\d+)(?:\.(\d+))?/i);
+  if (!match) return "v1.0";
+  const major = match[1] || "1";
+  const minor = (match[2] || "0").charAt(0) || "0";
+  return `v${major}.${minor}`;
 };
+
+const PILOT_TERMS_VERSION_DISPLAY = toTermsVersionDisplay(PILOT_TERMS_VERSION);
 
 const FOXIFY_LOGO_URL = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 const ATTICUS_LOGO_URL = "https://i.ibb.co/KpbRyd7w/atticus-copy.png";
@@ -1098,7 +1103,7 @@ export function PilotApp() {
                 >
                   Terms & Conditions
                 </button>{" "}
-                ({PILOT_TERMS_VERSION})
+                ({PILOT_TERMS_VERSION_DISPLAY})
               </span>
             </label>
             <button className="cta pilot-gate-cta" type="button" disabled={!canContinuePastGate} onClick={acceptTermsAndContinue}>
@@ -1119,7 +1124,7 @@ export function PilotApp() {
                   x
                 </button>
               </div>
-              <div className="subheader pilot-terms-version">({PILOT_TERMS_VERSION})</div>
+              <div className="subheader pilot-terms-version">({PILOT_TERMS_VERSION_DISPLAY})</div>
               <div className="modal-body pilot-terms-body">
                 <p className="pilot-terms-intro">
                   By proceeding, you acknowledge and agree to the following pilot terms.
@@ -1232,9 +1237,9 @@ export function PilotApp() {
             </div>
             <div className="pilot-reference-meta muted">
               {liveReference
-                ? `${liveReference.marketId} · ${formatPriceSourceLabel(liveReference.source)} · ${new Date(
+                ? `Venue ${liveReference.venue || "Reference Feed"} · Last update ${new Date(
                     liveReference.timestamp
-                  ).toLocaleString()}${liveReferenceStale ? " · stale" : ""}`
+                  ).toLocaleString()}${liveReferenceStale ? " · delayed" : ""}`
                 : liveReferenceBusy
                   ? "Loading latest reference..."
                   : "Reference price unavailable"}
