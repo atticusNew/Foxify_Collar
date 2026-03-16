@@ -20,7 +20,6 @@ const buildPriceFetch = (): typeof fetch =>
 const defaultQuotePayload = (protectedNotional = 1000) => ({
   protectedNotional,
   foxifyExposureNotional: protectedNotional,
-  entryPrice: 100000,
   instrumentId: "BTC-USD-7D-P",
   marketId: "BTC-USD",
   tierName: "Pro (Bronze)",
@@ -103,6 +102,7 @@ const quoteAndActivate = async (
   assert.equal(activateRes.statusCode, 200);
   const activatePayloadJson = activateRes.json();
   assert.equal(activatePayloadJson.status, "ok");
+  assert.equal(Number(activatePayloadJson.protection?.entryPrice), 100000);
   const protectionId = String(activatePayloadJson.protection?.id || "");
   assert.ok(protectionId);
   return { protectionId, quoteId };

@@ -75,11 +75,13 @@ settlement calls for an already-settled protection return `status=ok` with `idem
   - Gold: 12%
   - Platinum: 12%
 - Trigger price is calculated as:
-  - `long`: `trigger_price = manual_entry_price * (1 - drawdown_floor_pct)` (floor)
-  - `short`: `trigger_price = manual_entry_price * (1 + drawdown_floor_pct)` (ceiling)
+  - `long`: `trigger_price = server_entry_anchor_price * (1 - drawdown_floor_pct)` (floor)
+  - `short`: `trigger_price = server_entry_anchor_price * (1 + drawdown_floor_pct)` (ceiling)
+- `server_entry_anchor_price` is captured from the canonical live reference snapshot at quote lock / activation.
+- Optional client `entryPrice` is informational only and not used to determine trigger or payout economics.
 - Payout due logic at expiry:
-  - `long`: `payout_due = max(trigger_price - expiry_price, 0) / entry_price * protected_notional`
-  - `short`: `payout_due = max(expiry_price - trigger_price, 0) / entry_price * protected_notional`
+  - `long`: `payout_due = max(trigger_price - expiry_price, 0) / server_entry_anchor_price * protected_notional`
+  - `short`: `payout_due = max(expiry_price - trigger_price, 0) / server_entry_anchor_price * protected_notional`
 
 ## Pilot constraints
 
@@ -106,7 +108,7 @@ settlement calls for an already-settled protection return `status=ok` with `idem
     - Silver: `PILOT_PREMIUM_FLOOR_BPS_SILVER` (`5`)
     - Gold: `PILOT_PREMIUM_FLOOR_BPS_GOLD` (`4`)
     - Platinum: `PILOT_PREMIUM_FLOOR_BPS_PLATINUM` (`4`)
-- `entryPrice` is required and treated as manual user input (not auto-derived from spot).
+- `entryPrice` is optional and treated as user-provided context only (informational).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
 - Optional campaign window enforcement for new quote/activate requests:
   - `PILOT_ENFORCE_WINDOW=true`

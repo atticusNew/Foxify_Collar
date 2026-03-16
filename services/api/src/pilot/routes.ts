@@ -515,7 +515,7 @@ export const registerPilotRoutes = async (
     const quoteStartedAt = Date.now();
     const protectedNotional = parsePositiveDecimal(body.protectedNotional);
     const exposureNotional = parsePositiveDecimal(body.foxifyExposureNotional);
-    const entryPrice = parsePositiveDecimal(body.entryPrice);
+    const entryInputPrice = parsePositiveDecimal(body.entryPrice);
     if (!protectedNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_protected_notional" };
@@ -523,10 +523,6 @@ export const registerPilotRoutes = async (
     if (!exposureNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_exposure_notional" };
-    }
-    if (!entryPrice) {
-      reply.code(400);
-      return { status: "error", reason: "invalid_entry_price" };
     }
     const maxProtection = new Decimal(pilotConfig.maxProtectionNotionalUsdc);
     const maxDailyProtection = new Decimal(pilotConfig.maxDailyProtectedNotionalUsdc);
@@ -618,7 +614,8 @@ export const registerPilotRoutes = async (
       };
     }
     try {
-      const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
+      const entryAnchorPrice = snapshot.price;
+      const quantity = protectedNotional.div(entryAnchorPrice).toDecimalPlaces(8).toNumber();
       const venueStartedAt = Date.now();
       const quote = await withTimeout(
         venue.quote({
@@ -633,7 +630,7 @@ export const registerPilotRoutes = async (
         "venue_quote"
       );
       venueMs = Date.now() - venueStartedAt;
-      const triggerPrice = computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
+      const triggerPrice = computeTriggerPrice(entryAnchorPrice, drawdownFloorPct, protectionType);
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
@@ -663,7 +660,11 @@ export const registerPilotRoutes = async (
             drawdownFloorPct: drawdownFloorPct.toFixed(6),
             protectedNotional: protectedNotional.toFixed(10),
             foxifyExposureNotional: exposureNotional.toFixed(10),
-            entryPrice: entryPrice.toFixed(10),
+            entryPrice: entryAnchorPrice.toFixed(10),
+            entryAnchorPrice: entryAnchorPrice.toFixed(10),
+            entryPriceSource: "reference_snapshot_quote",
+            entryPriceTimestamp: snapshot.priceTimestamp,
+            entryInputPrice: entryInputPrice ? entryInputPrice.toFixed(10) : null,
             protectionType,
             optionType,
             triggerPrice: triggerPrice.toFixed(10),
@@ -693,7 +694,7 @@ export const registerPilotRoutes = async (
           timestamp: snapshot.priceTimestamp,
           requestId: snapshot.requestId
         },
-        entryInputPrice: entryPrice.toFixed(10),
+        entryInputPrice: entryInputPrice ? entryInputPrice.toFixed(10) : null,
         limits: {
           maxProtectionNotionalUsdc: maxProtection.toFixed(2),
           maxDailyProtectedNotionalUsdc: maxDailyProtection.toFixed(2),
@@ -759,7 +760,7 @@ export const registerPilotRoutes = async (
     }
     const protectedNotional = parsePositiveDecimal(body.protectedNotional);
     const exposureNotional = parsePositiveDecimal(body.foxifyExposureNotional);
-    const entryPrice = parsePositiveDecimal(body.entryPrice);
+    const entryInputPrice = parsePositiveDecimal(body.entryPrice);
     if (!protectedNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_protected_notional" };
@@ -767,10 +768,6 @@ export const registerPilotRoutes = async (
     if (!exposureNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_exposure_notional" };
-    }
-    if (!entryPrice) {
-      reply.code(400);
-      return { status: "error", reason: "invalid_entry_price" };
     }
     const maxProtection = new Decimal(pilotConfig.maxProtectionNotionalUsdc);
     const maxDailyProtection = new Decimal(pilotConfig.maxDailyProtectedNotionalUsdc);
@@ -806,7 +803,6 @@ export const registerPilotRoutes = async (
       tierName,
       drawdownFloorPct: body.drawdownFloorPct
     });
-    const triggerPrice = computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
     const tenorDays = resolveExpiryDays({ tierName, requestedDays: body.tenorDays });
     const expiryAt = new Date(Date.now() + tenorDays * 86400000).toISOString();
     const requestId = pilotConfig.nextRequestId();
@@ -814,10 +810,14 @@ export const registerPilotRoutes = async (
     let capUsedUsdc: string | null = null;
     let capProjectedUsdc: string | null = null;
     let transactionOpen = false;
+    let quoteEntryAnchorPrice: Decimal | null = null;
+    let triggerPrice: Decimal | null = null;
+    let quoteEntryInputPrice: string | null = null;
+    let quoteEntryPriceSource = "reference_snapshot_quote";
+    let quoteEntryPriceTimestamp: string | null = null;
     try {
       await client.query("BEGIN");
       transactionOpen = true;
-      const quantity = protectedNotional.div(entryPrice).toDecimalPlaces(8).toNumber();
       const lockedQuote = await getVenueQuoteByQuoteIdForUpdate(client, body.quoteId);
       if (!lockedQuote) {
         throw new Error("quote_not_found");
@@ -853,6 +853,20 @@ export const registerPilotRoutes = async (
       if (requestedInstrumentId !== instrumentId) {
         throw new Error("quote_mismatch_instrument");
       }
+      const contextProtected = parsePositiveDecimal(lockContext.protectedNotional);
+      const contextExposure = parsePositiveDecimal(lockContext.foxifyExposureNotional);
+      const contextEntryAnchor = parsePositiveDecimal(lockContext.entryAnchorPrice ?? lockContext.entryPrice);
+      const contextDrawdown = parsePositiveDecimal(lockContext.drawdownFloorPct);
+      const contextProtectionType = normalizeProtectionType(
+        String(lockContext.protectionType || inferProtectionTypeFromInstrument(requestedInstrumentId))
+      );
+      const computedTriggerFromContext = contextEntryAnchor && contextDrawdown
+        ? computeTriggerPrice(contextEntryAnchor, contextDrawdown, contextProtectionType)
+        : null;
+      const contextTrigger = parsePositiveDecimal(lockContext.triggerPrice ?? lockContext.floorPrice);
+      const quantity = contextEntryAnchor
+        ? protectedNotional.div(contextEntryAnchor).toDecimalPlaces(8).toNumber()
+        : 0;
       const quantityDeltaPct =
         quantity > 0
           ? new Decimal(lockedQuote.quantity).minus(quantity).abs().div(new Decimal(quantity))
@@ -860,14 +874,6 @@ export const registerPilotRoutes = async (
       if (quantityDeltaPct.gt(new Decimal(pilotConfig.fullCoverageTolerancePct))) {
         throw new Error("quote_mismatch_quantity");
       }
-      const contextProtected = parsePositiveDecimal(lockContext.protectedNotional);
-      const contextExposure = parsePositiveDecimal(lockContext.foxifyExposureNotional);
-      const contextEntry = parsePositiveDecimal(lockContext.entryPrice);
-      const contextDrawdown = parsePositiveDecimal(lockContext.drawdownFloorPct);
-      const contextProtectionType = normalizeProtectionType(
-        String(lockContext.protectionType || inferProtectionTypeFromInstrument(requestedInstrumentId))
-      );
-      const contextTrigger = parsePositiveDecimal(lockContext.triggerPrice ?? lockContext.floorPrice);
       if (contextProtectionType !== protectionType) {
         throw new Error("quote_mismatch_type");
       }
@@ -876,17 +882,29 @@ export const registerPilotRoutes = async (
         String(lockContext.tierName || tierName) !== tierName ||
         !contextProtected ||
         !contextExposure ||
-        !contextEntry ||
+        !contextEntryAnchor ||
         !contextDrawdown ||
         !contextTrigger ||
+        !computedTriggerFromContext ||
         contextProtected.minus(protectedNotional).abs().gt(new Decimal("0.000001")) ||
         contextExposure.minus(exposureNotional).abs().gt(new Decimal("0.000001")) ||
-        contextEntry.minus(entryPrice).abs().gt(new Decimal("0.000001")) ||
         contextDrawdown.minus(drawdownFloorPct).abs().gt(new Decimal("0.000001")) ||
-        contextTrigger.minus(triggerPrice).abs().gt(new Decimal("0.000001"))
+        contextTrigger.minus(computedTriggerFromContext).abs().gt(new Decimal("0.000001"))
       ) {
         throw new Error("quote_mismatch_context");
       }
+      quoteEntryAnchorPrice = contextEntryAnchor;
+      triggerPrice = computedTriggerFromContext;
+      quoteEntryInputPrice =
+        typeof lockContext.entryInputPrice === "string" ? String(lockContext.entryInputPrice) : null;
+      quoteEntryPriceSource =
+        typeof lockContext.entryPriceSource === "string"
+          ? String(lockContext.entryPriceSource)
+          : "reference_snapshot_quote";
+      quoteEntryPriceTimestamp =
+        typeof lockContext.entryPriceTimestamp === "string"
+          ? String(lockContext.entryPriceTimestamp)
+          : null;
       const capReservation = await reserveDailyActivationCapacity(client, {
         userHash: userHash.userHash,
         dayStartIso: dayStart.toISOString(),
@@ -1017,11 +1035,14 @@ export const registerPilotRoutes = async (
         amount: premiumPricing.clientPremiumUsd.toFixed(10),
         reference: execution.externalOrderId
       });
+      if (!quoteEntryAnchorPrice || !triggerPrice) {
+        throw new Error("quote_mismatch_context");
+      }
       const updated = await patchProtection(pool, protection.id, {
         status: "active",
-        entry_price: entryPrice.toFixed(10),
-        entry_price_source: "manual_input",
-        entry_price_timestamp: new Date().toISOString(),
+        entry_price: quoteEntryAnchorPrice.toFixed(10),
+        entry_price_source: quoteEntryPriceSource,
+        entry_price_timestamp: quoteEntryPriceTimestamp || snapshot.priceTimestamp,
         floor_price: triggerPrice.toFixed(10),
         venue: execution.venue,
         instrument_id: execution.instrumentId,
@@ -1053,6 +1074,12 @@ export const registerPilotRoutes = async (
           premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
           clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
           premiumMethod: premiumPricing.method,
+          entryAnchorPrice: quoteEntryAnchorPrice.toFixed(10),
+          entryAnchorSource: quoteEntryPriceSource,
+          entryAnchorTimestamp: quoteEntryPriceTimestamp || snapshot.priceTimestamp,
+          entryInputPrice:
+            entryInputPrice?.toFixed(10) ||
+            quoteEntryInputPrice,
           entrySnapshotPrice: snapshot.price.toFixed(10),
           entrySnapshotSource: snapshot.priceSource,
           entrySnapshotTimestamp: snapshot.priceTimestamp

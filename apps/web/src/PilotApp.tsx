@@ -32,7 +32,7 @@ type QuoteResult = {
     timestamp: string;
     requestId?: string;
   };
-  entryInputPrice?: string;
+  entryInputPrice?: string | null;
   limits?: {
     maxProtectionNotionalUsdc: string;
     maxDailyProtectedNotionalUsdc: string;
@@ -338,9 +338,7 @@ export function PilotApp() {
     exposureValue > 0 &&
     Number.isFinite(protectedValue) &&
     protectedValue > 0 &&
-    protectedValue <= exposureValue &&
-    Number.isFinite(entryValue) &&
-    entryValue > 0;
+    protectedValue <= exposureValue;
   const quoteFresh =
     quoteState === "ready" && quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
   const quoteLocked = quoteFresh && Boolean(quote?.quote?.quoteId);
@@ -405,7 +403,7 @@ export function PilotApp() {
     setQuote(null);
     setQuoteState("idle");
     setQuoteTimeLeft(0);
-  }, [protectionType, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional, entryPrice]);
+  }, [protectionType, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional]);
 
   useEffect(() => {
     setTermsError(null);
@@ -688,12 +686,12 @@ export function PilotApp() {
             body: JSON.stringify({
               protectedNotional: protectedValue,
               foxifyExposureNotional: exposureValue,
-              entryPrice: entryValue,
               protectionType,
               instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
               tierName: selectedTier.name,
-              drawdownFloorPct: selectedTier.drawdownFloorPct
+              drawdownFloorPct: selectedTier.drawdownFloorPct,
+              ...(Number.isFinite(entryValue) && entryValue > 0 ? { entryPrice: entryValue } : {})
             })
           });
           const payload = await res.json();
@@ -754,7 +752,6 @@ export function PilotApp() {
             body: JSON.stringify({
               protectedNotional: protectedValue,
               foxifyExposureNotional: exposureValue,
-              entryPrice: entryValue,
               protectionType,
               instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
@@ -763,7 +760,8 @@ export function PilotApp() {
               tenorDays: selectedTier.expiryDays,
               renewWindowMinutes: selectedTier.renewWindowMinutes,
               autoRenew,
-              quoteId: quote?.quote?.quoteId
+              quoteId: quote?.quote?.quoteId,
+              ...(Number.isFinite(entryValue) && entryValue > 0 ? { entryPrice: entryValue } : {})
             })
           });
           const payload = await res.json();
@@ -888,23 +886,17 @@ export function PilotApp() {
   const effectiveProtectionType: ProtectionType = metadataProtectionType ?? quote?.protectionType ?? protectionType;
   const displayedDrawdownPct =
     Number(protection?.drawdownFloorPct ?? quote?.drawdownFloorPct ?? selectedTier.drawdownFloorPct);
-  const configuredTriggerPrice =
-    Number.isFinite(entryValue) && entryValue > 0
-      ? effectiveProtectionType === "short"
-        ? entryValue * (1 + selectedTier.drawdownFloorPct)
-        : entryValue * (1 - selectedTier.drawdownFloorPct)
-      : NaN;
   const displayedTriggerPrice =
     protection?.floorPrice ??
     quote?.triggerPrice ??
     quote?.floorPrice ??
-    (Number.isFinite(configuredTriggerPrice) ? configuredTriggerPrice.toFixed(10) : null);
+    null;
   const metadataEntrySnapshotPrice =
     protection?.metadata && typeof protection.metadata["entrySnapshotPrice"] === "string"
       ? (protection.metadata["entrySnapshotPrice"] as string)
       : null;
   const referencePrice =
-    Number(metadataEntrySnapshotPrice ?? quote?.entrySnapshot?.price ?? protection?.entryPrice ?? entryValue);
+    Number(metadataEntrySnapshotPrice ?? quote?.entrySnapshot?.price ?? protection?.entryPrice ?? NaN);
   const triggerNumber = Number(displayedTriggerPrice ?? 0);
   const distanceToTriggerPct =
     Number.isFinite(referencePrice) && referencePrice > 0 && Number.isFinite(triggerNumber)
@@ -1195,12 +1187,12 @@ export function PilotApp() {
             </div>
 
             <div className="pilot-form-row">
-              <span className="pilot-label">Entry Price (Manual)</span>
+              <span className="pilot-label">Entry Price (Optional)</span>
               <div className="pilot-field">
                 <input
                   className="input pilot-input"
                   inputMode="decimal"
-                  placeholder="e.g. 100,000"
+                  placeholder="Optional cost basis (informational only)"
                   value={entryPrice}
                   disabled={busy || quoteLocked}
                   onChange={(e) => setEntryPrice(formatCurrencyInput(e.target.value))}
@@ -1218,7 +1210,7 @@ export function PilotApp() {
             <div className="pilot-form-row">
               <span className="pilot-label">{triggerLabel}</span>
               <div className="pilot-field pilot-value">
-                <strong>{Number.isFinite(configuredTriggerPrice) ? `$${formatUsd(configuredTriggerPrice)}` : "—"}</strong>
+                <strong>{displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "Set from live quote"}</strong>
               </div>
             </div>
 
@@ -1246,7 +1238,7 @@ export function PilotApp() {
 
             {!canQuote && (
               <div className="disclaimer danger">
-                Enter position size, protection amount, and entry price. Protection amount cannot exceed position size.
+                Enter position size and protection amount. Protection amount cannot exceed position size.
               </div>
             )}
           </div>
@@ -1485,7 +1477,7 @@ export function PilotApp() {
                 <div className="value">${formatUsd(liveReferencePrice)}</div>
               </div>
               <div className="pilot-monitor-card">
-                <div className="label">Entry Price</div>
+                <div className="label">Protection Anchor Price</div>
                 <div className="value">${formatUsd(protection.entryPrice)}</div>
               </div>
               <div className="pilot-monitor-card">
