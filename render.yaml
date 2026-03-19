@@ -20,11 +20,15 @@ services:
       - key: PILOT_VENUE_MODE
         value: deribit_test
       - key: PILOT_FORCE_DERIBIT_TEST_MODE
-        value: "true"
+        value: "false"
       - key: PILOT_DERIBIT_QUOTE_POLICY
-        value: ask_or_mark_fallback
+        value: ask_only
       - key: PILOT_STRIKE_SELECTION_MODE
-        value: legacy
+        value: trigger_aligned
+      - key: DERIBIT_ENV
+        value: live
+      - key: DERIBIT_PAPER
+        value: "true"
       - key: PILOT_TENANT_SCOPE_ID
         value: foxify-pilot
       - key: PILOT_TERMS_VERSION
