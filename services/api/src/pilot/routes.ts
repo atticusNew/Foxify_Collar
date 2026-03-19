@@ -328,6 +328,8 @@ export const registerPilotRoutes = async (
   const venue = createPilotVenueAdapter({
     mode: pilotConfig.venueMode,
     quoteTtlMs: pilotConfig.quoteTtlMs,
+    deribitQuotePolicy: pilotConfig.deribitQuotePolicy,
+    deribitStrikeSelectionMode: pilotConfig.deribitStrikeSelectionMode,
     falconx: {
       baseUrl: pilotConfig.falconxBaseUrl,
       apiKey: pilotConfig.falconxApiKey,
@@ -678,6 +680,7 @@ export const registerPilotRoutes = async (
     }
     try {
       const entryAnchorPrice = snapshot.price;
+      const triggerPrice = computeTriggerPrice(entryAnchorPrice, drawdownFloorPct, protectionType);
       const quantity = protectedNotional.div(entryAnchorPrice).toDecimalPlaces(8).toNumber();
       const venueStartedAt = Date.now();
       const quote = await withTimeout(
@@ -686,6 +689,8 @@ export const registerPilotRoutes = async (
           protectedNotional: protectedNotional.toNumber(),
           quantity,
           side: "buy",
+          triggerPrice: Number(triggerPrice.toFixed(10)),
+          protectionType,
           instrumentId: quoteInstrumentId,
           clientOrderId: body.clientOrderId
         }),
@@ -693,7 +698,6 @@ export const registerPilotRoutes = async (
         "venue_quote"
       );
       venueMs = Date.now() - venueStartedAt;
-      const triggerPrice = computeTriggerPrice(entryAnchorPrice, drawdownFloorPct, protectionType);
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,

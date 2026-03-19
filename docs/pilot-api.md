@@ -129,6 +129,11 @@ settlement calls for an already-settled protection return `status=ok` with `idem
 - When `PILOT_FORCE_DERIBIT_TEST_MODE=true` (default), pilot runtime forces Deribit test-only mode:
   - `DERIBIT_ENV=testnet`
   - `DERIBIT_PAPER=true`
+- Deribit quote behavior can be toggled without code changes:
+  - `PILOT_DERIBIT_QUOTE_POLICY=ask_or_mark_fallback` (default, allows mark fallback when ask is empty)
+  - `PILOT_DERIBIT_QUOTE_POLICY=ask_only` (strict top-of-book ask only)
+  - `PILOT_STRIKE_SELECTION_MODE=legacy` (default 85%/115% heuristic)
+  - `PILOT_STRIKE_SELECTION_MODE=trigger_aligned` (selects strikes nearest computed trigger price)
 - Quote, activation, and expiry resolution all use the same canonical reference feed configuration.
 - Venue mode is controlled by `PILOT_VENUE_MODE`:
   - `deribit_test` (default for pilot realism + safeguards)
