@@ -382,6 +382,7 @@ export const insertPriceSnapshot = async (
         endpoint_version, request_id, price_timestamp
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT (id) DO NOTHING
       RETURNING *
     `,
     [
@@ -397,7 +398,19 @@ export const insertPriceSnapshot = async (
       input.priceTimestamp
     ]
   );
-  return mapSnapshot(result.rows[0]);
+  if (result.rowCount > 0) return mapSnapshot(result.rows[0]);
+  const existing = await pool.query(
+    `
+      SELECT * FROM pilot_price_snapshots
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [id]
+  );
+  if (!existing.rowCount) {
+    throw new Error("snapshot_insert_conflict_without_existing_row");
+  }
+  return mapSnapshot(existing.rows[0]);
 };
 
 export const listSnapshotsForProtection = async (
@@ -423,13 +436,15 @@ export const insertLedgerEntry = async (pool: Queryable, input: {
   currency?: string;
   reference?: string | null;
   settledAt?: string | null;
-}): Promise<void> => {
-  await pool.query(
+}): Promise<boolean> => {
+  const result = await pool.query(
     `
       INSERT INTO pilot_ledger_entries (
         id, protection_id, entry_type, amount, currency, reference, settled_at
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id
     `,
     [
       input.id || randomUUID(),
@@ -441,6 +456,7 @@ export const insertLedgerEntry = async (pool: Queryable, input: {
       input.settledAt ?? null
     ]
   );
+  return result.rowCount > 0;
 };
 
 export const listLedgerForProtection = async (

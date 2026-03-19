@@ -549,39 +549,28 @@ test("pilot route hardening A-H", async (t) => {
   });
 
   await t.test("L) activation failure is marked and daily cap is released", async () => {
-    const deribitFailing = {
-      getIndexPrice: async () => ({ result: { index_price: 100000 } }),
-      getOrderBook: async () => ({ result: { asks: [[0.02, 10]], bids: [[0.015, 10]], mark_price: 0.019 } }),
-      listInstruments: async () => ({ result: [] }),
-      placeOrder: async () => ({ status: "rejected", id: "deribit-fail-1" })
-    };
-    const harness = await createPilotHarness({
-      pilotVenueMode: "deribit_test",
-      deribit: deribitFailing
-    });
+    const harness = await createPilotHarness();
     try {
       const { app, pool } = harness;
       const quoteRes = await app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: {
-          ...defaultQuotePayload(1100),
-          instrumentId: "BTC-28MAR26-80000-P"
-        }
+        payload: defaultQuotePayload(1100)
       });
       assert.equal(quoteRes.statusCode, 200);
       const quoteId = String(quoteRes.json().quote.quoteId);
 
+      global.fetch = (async () => {
+        throw new Error("reference_feed_down");
+      }) as typeof fetch;
+
       const activateRes = await app.inject({
         method: "POST",
         url: "/pilot/protections/activate",
-        payload: {
-          ...activationPayload(quoteId, 1100),
-          instrumentId: "BTC-28MAR26-80000-P"
-        }
+        payload: activationPayload(quoteId, 1100)
       });
-      assert.equal(activateRes.statusCode, 400);
-      assert.equal(activateRes.json().reason, "venue_error");
+      assert.equal(activateRes.statusCode, 503);
+      assert.equal(activateRes.json().reason, "price_unavailable");
 
       const protectionRow = await pool.query(
         `SELECT id, status, metadata FROM pilot_protections ORDER BY created_at DESC LIMIT 1`

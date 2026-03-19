@@ -418,6 +418,7 @@ export const registerPilotRoutes = async (
           return;
         }
         await insertPriceSnapshot(client, {
+          id: `${protectionId}:expiry`,
           protectionId,
           snapshotType: "expiry",
           price: snapshot.price.toFixed(10),
@@ -454,6 +455,7 @@ export const registerPilotRoutes = async (
         });
         if (payoutDue.gt(0)) {
           await insertLedgerEntry(client, {
+            id: `${protectionId}:payout_due`,
             protectionId,
             entryType: "payout_due",
             amount: payoutDue.toFixed(10),
@@ -1183,6 +1185,7 @@ export const registerPilotRoutes = async (
       });
       await insertVenueExecution(pool, protection.id, execution);
       await insertLedgerEntry(pool, {
+        id: `${protection.id}:premium_due`,
         protectionId: protection.id,
         entryType: "premium_due",
         amount: premiumPricing.clientPremiumUsd.toFixed(10),
@@ -1655,13 +1658,27 @@ export const registerPilotRoutes = async (
         reply.code(400);
         return { status: "error", reason: "invalid_amount" };
       }
-      await insertLedgerEntry(client, {
+      const inserted = await insertLedgerEntry(client, {
+        id: `${params.id}:premium_settled`,
         protectionId: params.id,
         entryType: "premium_settled",
         amount: new Decimal(amount).toFixed(10),
         reference: body.reference || null,
         settledAt: new Date().toISOString()
       });
+      if (!inserted) {
+        await client.query("COMMIT");
+        txOpen = false;
+        const refreshedLedger = await listLedgerForProtection(pool, params.id);
+        const refreshed = refreshedLedger.find((entry) => entry.entryType === "premium_settled");
+        return {
+          status: "ok",
+          idempotentReplay: true,
+          settledAmount: refreshed?.amount || new Decimal(amount).toFixed(10),
+          settledAt: refreshed?.settledAt || null,
+          reference: refreshed?.reference || body.reference || null
+        };
+      }
       await insertAdminAction(client, {
         protectionId: params.id,
         action: "premium_settled",
@@ -1751,13 +1768,27 @@ export const registerPilotRoutes = async (
           payoutDueAmount: payoutDue.toFixed(10)
         };
       }
-      await insertLedgerEntry(client, {
+      const inserted = await insertLedgerEntry(client, {
+        id: `${params.id}:payout_settled`,
         protectionId: params.id,
         entryType: "payout_settled",
         amount: new Decimal(amount).toFixed(10),
         reference: body.payoutTxRef || null,
         settledAt: new Date().toISOString()
       });
+      if (!inserted) {
+        await client.query("COMMIT");
+        txOpen = false;
+        const refreshedLedger = await listLedgerForProtection(pool, params.id);
+        const refreshed = refreshedLedger.find((entry) => entry.entryType === "payout_settled");
+        return {
+          status: "ok",
+          idempotentReplay: true,
+          settledAmount: refreshed?.amount || new Decimal(amount).toFixed(10),
+          settledAt: refreshed?.settledAt || null,
+          reference: refreshed?.reference || body.payoutTxRef || null
+        };
+      }
       await patchProtection(client, params.id, {
         payout_settled_amount: new Decimal(amount).toFixed(10),
         payout_settled_at: new Date().toISOString(),
