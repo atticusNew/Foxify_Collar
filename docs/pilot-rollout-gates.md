@@ -1,35 +1,42 @@
 # Pilot Rollout Plan and Acceptance Gates
 
-## Phase 0 (same day)
+This document tracks rollout gates for the `/pilot/*` API surface only.
 
-- Lock pricing to:
-  - `final_fee = max(tier_floor_fee, hedge_premium * (1 + tier_markup + leverage_markup))`
-- Keep CTC in shadow mode (`ctc_shadow_mode=true`).
-- Keep pass-through + floor as charge basis for all pilot tiers.
-- Enforce tier cohort minimum notionals. Out-of-cohort requests return `reason=tier_notional_min`.
+## Phase A: Contract and deployment hygiene
 
-## Phase 1 (2-3 days)
+- Acceptance/UAT script matches current pilot behavior:
+  - tenant-scoped identity (no `userId` parameter)
+  - server-anchored trigger (`entrySnapshot`), not client entry input
+  - fixed 7-day tenor on activation
+- Pilot deployment profile disables legacy loop workloads:
+  - `LOOP_INTERVAL_MS=0`
+  - `MTM_INTERVAL_MS=0`
 
-- Validate CTC exposure semantics with fixed-notional test matrix.
-- Validate CTC guardrails:
-  - max multiple of hedge premium
-  - max percent of protected notional
-- Validate tenor control behavior and fallback attribution.
+## Phase B: Pricing and execution quality (Deribit test mode)
 
-## Phase 2 (canary)
+- Quote uses canonical reference anchor + validated venue quote.
+- Quote-lock activation enforces context integrity (`quote_mismatch_*` protections).
+- Full-coverage checks are enforced against executed quantity.
 
-- Re-enable CTC fee influence only if:
-  - `ctc_shadow_mode=false`
-  - `ctc_price_override_enabled=true`
-  - bounds are respected
-- Canary on selected tiers and 5-10% traffic.
+## Phase C: Accounting and settlement integrity
 
-## Acceptance Gates (before full pilot)
+- Settlement posting remains idempotent under retries and concurrent requests.
+- Expiry resolution writes protection + payout_due ledger consistently.
+- Admin export and metrics remain internally consistent.
 
-1. No premium caps on pass-through pricing (policy consistency check).
-2. Quote-to-audit reconciliation error `< 0.5%` for coverage economics fields.
-3. Tenor drift > 2 days only when `tenorReason=tenor_fallback`.
-4. Activation success remains stable with no execution regression.
+## Phase D: FalconX crossover readiness
+
+- FalconX quote/execute semantics (price units/sign conventions) are confirmed and documented.
+- RFQ lifecycle handling is validated (`rfq_id`, `quote expiry`, `t_retry`, `close_rfq`).
+- Error mapping covers RFQ limits/cooldowns and account margin failures.
+
+## Pilot acceptance gates (before client-facing expansion)
+
+1. Quote/activate/proof/admin UAT passes against current API contract.
+2. Activation success remains stable with no execution regression.
+3. Tenant daily cap enforcement is consistent at UTC reset boundaries.
+4. Reconciliation export totals match admin metrics for scoped pilot records.
+5. No unresolved `awaiting_expiry_price` backlog after scheduled retries.
 
 ## Rollout-day runbook: daily usage backfill
 

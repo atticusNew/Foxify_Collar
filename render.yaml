@@ -27,8 +27,16 @@ services:
         value: v1.0
       - key: PILOT_ADMIN_TOKEN
         generateValue: true
+      - key: PILOT_PROOF_TOKEN
+        generateValue: true
+      - key: PILOT_INTERNAL_TOKEN
+        generateValue: true
       - key: USER_HASH_SECRET
         generateValue: true
+      - key: LOOP_INTERVAL_MS
+        value: "0"
+      - key: MTM_INTERVAL_MS
+        value: "0"
       - key: PRICE_SINGLE_SOURCE
         value: "false"
       - key: PRICE_REFERENCE_URL

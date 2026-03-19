@@ -20,7 +20,7 @@ These endpoints are enabled when `PILOT_API_ENABLED=true`.
 Requires:
 
 - `x-admin-token` header matching `PILOT_ADMIN_TOKEN`
-- request IP in `PILOT_ADMIN_IP_ALLOWLIST`
+- if `PILOT_ADMIN_IP_ALLOWLIST` is configured (non-empty), request IP must be in allowlist
 
 Endpoints:
 
@@ -37,8 +37,8 @@ Endpoints:
 2. Market id pinned by config (`PRICE_REFERENCE_MARKET_ID`, default `BTC-USD`)
 3. Optional fallback endpoint (`FALLBACK_PRICE_URL`) only when `PRICE_SINGLE_SOURCE=false`
 4. Reference fetches automatically retry transient payload/network errors:
-   - `PRICE_REQUEST_RETRY_ATTEMPTS` (default `2`)
-   - `PRICE_REQUEST_RETRY_DELAY_MS` (default `120`)
+   - `PRICE_REQUEST_RETRY_ATTEMPTS` (default `3`)
+   - `PRICE_REQUEST_RETRY_DELAY_MS` (default `180`)
 5. If reference resolution fails or payload is invalid, response is:
    - `status=error`
    - `reason=price_unavailable`
@@ -82,6 +82,7 @@ settlement calls for an already-settled protection return `status=ok` with `idem
   - `short`: `trigger_price = server_entry_anchor_price * (1 + drawdown_floor_pct)` (ceiling)
 - `server_entry_anchor_price` is captured from the canonical live reference snapshot at quote lock / activation.
 - Optional client `entryPrice` is informational only and not used to determine trigger or payout economics.
+- `protection.entryPriceSource` is expected to be `reference_snapshot_quote` for pilot quote-lock activations.
 - Payout due logic at expiry:
   - `long`: `payout_due = max(trigger_price - expiry_price, 0) / server_entry_anchor_price * protected_notional`
   - `short`: `payout_due = max(expiry_price - trigger_price, 0) / server_entry_anchor_price * protected_notional`
