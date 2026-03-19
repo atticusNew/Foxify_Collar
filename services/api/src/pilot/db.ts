@@ -542,7 +542,7 @@ export const getPilotAdminMetrics = async (
         COALESCE(SUM(CASE WHEN status = 'active' THEN protected_notional ELSE 0 END), 0)::text AS protected_notional_active_usdc,
         COALESCE(SUM(premium), 0)::text AS client_premium_total_usdc,
         (
-          SELECT COALESCE(SUM(premium), 0)::text
+          SELECT COALESCE(SUM(vex.premium), 0)::text
           FROM pilot_venue_executions vex
           JOIN pilot_protections p2 ON p2.id = vex.protection_id
           WHERE p2.user_hash = $1
