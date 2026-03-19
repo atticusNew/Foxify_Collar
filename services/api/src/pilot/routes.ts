@@ -5,6 +5,7 @@ import { DeribitConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow } from "./config";
 import {
+  countProtectionsByUserHash,
   createPilotTermsAcceptanceIfMissing,
   ensurePilotSchema,
   getDailyProtectedNotionalForUser,
@@ -26,7 +27,6 @@ import {
   releaseDailyActivationCapacity,
   reserveDailyActivationCapacity,
   listLedgerForProtection,
-  listProtections,
   listProtectionsByUserHash,
   patchProtection
 } from "./db";
@@ -56,10 +56,33 @@ const parseBoolean = (value: unknown, fallback = false): boolean => {
   return fallback;
 };
 
+const parsePositiveInt = (value: unknown, fallback: number, max: number): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(Math.floor(parsed), max);
+};
+
+const parseNonNegativeInt = (value: unknown, fallback = 0): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.floor(parsed);
+};
+
 const parsePositiveDecimal = (value: unknown): Decimal | null => {
   try {
     const parsed = new Decimal(value as Decimal.Value);
     if (!parsed.isFinite() || parsed.lte(0)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const parseDecimalValue = (value: unknown): Decimal | null => {
+  if (value === null || value === undefined || value === "") return null;
+  try {
+    const parsed = new Decimal(value as Decimal.Value);
+    if (!parsed.isFinite()) return null;
     return parsed;
   } catch {
     return null;
@@ -366,6 +389,16 @@ export const registerPilotRoutes = async (
         detail: String(error?.message || "terms_enforcement_failed")
       });
       return false;
+    }
+  };
+
+  const resolveScopedUserHash = (reply: FastifyReply): string | null => {
+    try {
+      return resolveTenantScopeHash().userHash;
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400).send({ status: "error", reason });
+      return null;
     }
   };
 
@@ -1537,33 +1570,163 @@ export const registerPilotRoutes = async (
   app.get("/pilot/protections/export", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
-    const query = req.query as { format?: string; limit?: string };
-    const protections = await listProtections(pool, { limit: Number(query.limit || 200) });
-    const rows = protections.map((item) => ({
-      protection_id: item.id,
-      status: item.status,
-      tier_name: item.tierName,
-      drawdown_floor_pct: item.drawdownFloorPct,
-      created_at: item.createdAt,
-      expiry_at: item.expiryAt,
-      market_id: item.marketId,
-      entry_price: item.entryPrice,
-      floor_price: item.floorPrice,
-      expiry_price: item.expiryPrice,
-      protected_notional: item.protectedNotional,
-      premium: item.premium,
-      payout_due_amount: item.payoutDueAmount,
-      payout_settled_amount: item.payoutSettledAmount,
-      venue: item.venue,
-      instrument_id: item.instrumentId,
-      external_order_id: item.externalOrderId,
-      external_execution_id: item.externalExecutionId
-    }));
-    if (String(query.format || "json").toLowerCase() === "csv") {
-      reply.header("Content-Type", "text/csv");
-      return toCsv(rows);
+    const scopedUserHash = resolveScopedUserHash(reply);
+    if (!scopedUserHash) return;
+    const query = req.query as { format?: string; limit?: string; offset?: string };
+    const limit = parsePositiveInt(query.limit, 200, 1000);
+    const offset = parseNonNegativeInt(query.offset, 0);
+    try {
+      const [protections, total] = await Promise.all([
+        listProtectionsByUserHash(pool, scopedUserHash, { limit, offset }),
+        countProtectionsByUserHash(pool, scopedUserHash)
+      ]);
+      const rows = protections.map((item) => ({
+        protection_id: item.id,
+        status: item.status,
+        tier_name: item.tierName,
+        drawdown_floor_pct: item.drawdownFloorPct,
+        created_at: item.createdAt,
+        expiry_at: item.expiryAt,
+        market_id: item.marketId,
+        entry_price: item.entryPrice,
+        floor_price: item.floorPrice,
+        expiry_price: item.expiryPrice,
+        protected_notional: item.protectedNotional,
+        premium: item.premium,
+        payout_due_amount: item.payoutDueAmount,
+        payout_settled_amount: item.payoutSettledAmount,
+        venue: item.venue,
+        instrument_id: item.instrumentId,
+        external_order_id: item.externalOrderId,
+        external_execution_id: item.externalExecutionId
+      }));
+      if (String(query.format || "json").toLowerCase() === "csv") {
+        reply.header("Content-Type", "text/csv");
+        return toCsv(rows);
+      }
+      return {
+        status: "ok",
+        rows,
+        pagination: {
+          total,
+          limit,
+          offset,
+          nextOffset: offset + rows.length < total ? offset + rows.length : null
+        }
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "protections_export_failed")
+      };
     }
-    return { status: "ok", rows };
+  });
+
+  app.get("/pilot/admin/reconciliation/export", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const scopedUserHash = resolveScopedUserHash(reply);
+    if (!scopedUserHash) return;
+    const query = req.query as { format?: string; limit?: string; offset?: string };
+    const limit = parsePositiveInt(query.limit, 200, 1000);
+    const offset = parseNonNegativeInt(query.offset, 0);
+    try {
+      const [protections, total] = await Promise.all([
+        listProtectionsByUserHash(pool, scopedUserHash, { limit, offset }),
+        countProtectionsByUserHash(pool, scopedUserHash)
+      ]);
+      const rows = await Promise.all(
+        protections.map(async (item) => {
+          const ledger = await listLedgerForProtection(pool, item.id);
+          const sumEntryType = (entryType: string): Decimal =>
+            ledger
+              .filter((entry) => entry.entryType === entryType)
+              .reduce((acc, entry) => acc.plus(parseDecimalValue(entry.amount) || new Decimal(0)), new Decimal(0));
+          const latestReferenceFor = (entryType: string): string | null => {
+            const filtered = ledger.filter((entry) => entry.entryType === entryType);
+            if (!filtered.length) return null;
+            return filtered[filtered.length - 1]?.reference || null;
+          };
+          const premiumDueTotal = sumEntryType("premium_due");
+          const premiumSettledTotal = sumEntryType("premium_settled");
+          const payoutDueTotal = sumEntryType("payout_due");
+          const payoutSettledTotal = sumEntryType("payout_settled");
+          const hedgePremium =
+            parseDecimalValue(item.metadata?.hedgePremiumUsd) ||
+            parseDecimalValue(item.metadata?.rawHedgePremiumUsd);
+          const clientPremium = parseDecimalValue(item.premium);
+          const margin = clientPremium && hedgePremium ? clientPremium.minus(hedgePremium) : null;
+          return {
+            protection_id: item.id,
+            status: item.status,
+            created_at: item.createdAt,
+            expiry_at: item.expiryAt,
+            market_id: item.marketId,
+            protection_type:
+              typeof item.metadata?.protectionType === "string" ? String(item.metadata.protectionType) : "long",
+            tier_name: item.tierName,
+            drawdown_floor_pct: item.drawdownFloorPct,
+            protected_notional: item.protectedNotional,
+            foxify_exposure_notional: item.foxifyExposureNotional,
+            entry_price: item.entryPrice,
+            entry_price_source: item.entryPriceSource,
+            entry_price_timestamp: item.entryPriceTimestamp,
+            trigger_price: item.floorPrice,
+            expiry_price: item.expiryPrice,
+            expiry_price_source: item.expiryPriceSource,
+            expiry_price_timestamp: item.expiryPriceTimestamp,
+            venue: item.venue,
+            instrument_id: item.instrumentId,
+            side: item.side,
+            size: item.size,
+            execution_price: item.executionPrice,
+            quote_id: typeof item.metadata?.quoteId === "string" ? String(item.metadata.quoteId) : null,
+            rfq_id: typeof item.metadata?.rfqId === "string" ? String(item.metadata.rfqId) : null,
+            external_order_id: item.externalOrderId,
+            external_execution_id: item.externalExecutionId,
+            client_premium_usdc: clientPremium ? clientPremium.toFixed(10) : null,
+            hedge_premium_usdc: hedgePremium ? hedgePremium.toFixed(10) : null,
+            trade_margin_usdc: margin ? margin.toFixed(10) : null,
+            premium_due_total_usdc: premiumDueTotal.toFixed(10),
+            premium_settled_total_usdc: premiumSettledTotal.toFixed(10),
+            premium_settled_reference: latestReferenceFor("premium_settled"),
+            premium_outstanding_usdc: premiumDueTotal.minus(premiumSettledTotal).toFixed(10),
+            payout_due_total_usdc: payoutDueTotal.toFixed(10),
+            payout_settled_total_usdc: payoutSettledTotal.toFixed(10),
+            payout_settled_reference: latestReferenceFor("payout_settled"),
+            payout_outstanding_usdc: payoutDueTotal.minus(payoutSettledTotal).toFixed(10),
+            payout_tx_ref: item.payoutTxRef,
+            payout_settled_at: item.payoutSettledAt,
+            ledger_entry_count: ledger.length
+          };
+        })
+      );
+      if (String(query.format || "json").toLowerCase() === "csv") {
+        reply.header("Content-Type", "text/csv");
+        return toCsv(rows);
+      }
+      return {
+        status: "ok",
+        rows,
+        pagination: {
+          total,
+          limit,
+          offset,
+          nextOffset: offset + rows.length < total ? offset + rows.length : null
+        }
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "reconciliation_export_failed")
+      };
+    }
   });
 
   app.post("/pilot/protections/:id/renewal-decision", async (req, reply) => {
@@ -1615,16 +1778,31 @@ export const registerPilotRoutes = async (
   app.get("/pilot/admin/metrics", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
-    const metrics = await getPilotAdminMetrics(pool, {
-      startingReserveUsdc: pilotConfig.startingReserveUsdc
-    });
-    return { status: "ok", metrics };
+    const scopedUserHash = resolveScopedUserHash(reply);
+    if (!scopedUserHash) return;
+    try {
+      const metrics = await getPilotAdminMetrics(pool, {
+        startingReserveUsdc: pilotConfig.startingReserveUsdc,
+        userHash: scopedUserHash
+      });
+      return { status: "ok", metrics };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "admin_metrics_failed")
+      };
+    }
   });
 
   app.post("/pilot/admin/protections/:id/premium-settled", async (req, reply) => {
     const params = req.params as { id: string };
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
+    const scopedUserHash = resolveScopedUserHash(reply);
+    if (!scopedUserHash) return;
     const body = req.body as { amount?: number; reference?: string };
     const client = await pool.connect();
     let txOpen = false;
@@ -1633,6 +1811,12 @@ export const registerPilotRoutes = async (
       txOpen = true;
       const protection = await getProtectionForUpdate(client, params.id);
       if (!protection) {
+        await client.query("ROLLBACK");
+        txOpen = false;
+        reply.code(404);
+        return { status: "error", reason: "not_found" };
+      }
+      if (protection.userHash !== scopedUserHash) {
         await client.query("ROLLBACK");
         txOpen = false;
         reply.code(404);
@@ -1707,6 +1891,8 @@ export const registerPilotRoutes = async (
     const params = req.params as { id: string };
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
+    const scopedUserHash = resolveScopedUserHash(reply);
+    if (!scopedUserHash) return;
     const body = req.body as { amount?: number; payoutTxRef?: string };
     const client = await pool.connect();
     let txOpen = false;
@@ -1715,6 +1901,12 @@ export const registerPilotRoutes = async (
       txOpen = true;
       const protection = await getProtectionForUpdate(client, params.id);
       if (!protection) {
+        await client.query("ROLLBACK");
+        txOpen = false;
+        reply.code(404);
+        return { status: "error", reason: "not_found" };
+      }
+      if (protection.userHash !== scopedUserHash) {
         await client.query("ROLLBACK");
         txOpen = false;
         reply.code(404);
@@ -1822,11 +2014,13 @@ export const registerPilotRoutes = async (
     const params = req.params as { id: string };
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
+    const scopedUserHash = resolveScopedUserHash(reply);
+    if (!scopedUserHash) return;
     const [protection, ledger] = await Promise.all([
       getProtection(pool, params.id),
       listLedgerForProtection(pool, params.id)
     ]);
-    if (!protection) {
+    if (!protection || protection.userHash !== scopedUserHash) {
       reply.code(404);
       return { status: "error", reason: "not_found" };
     }

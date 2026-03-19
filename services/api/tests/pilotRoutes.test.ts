@@ -693,6 +693,146 @@ test("pilot route hardening A-H", async (t) => {
       await harness.close();
     }
   });
+
+  await t.test("N) admin metrics and exports are tenant-scoped", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      await pool.query(
+        `
+          INSERT INTO pilot_protections (
+            id, user_hash, hash_version, status, market_id, protected_notional, foxify_exposure_notional,
+            expiry_at, auto_renew, renew_window_minutes, premium, payout_due_amount, metadata
+          )
+          VALUES (
+            'other-scope-protection', 'other-scope-hash', 1, 'active', 'BTC-USD', '99999', '99999',
+            NOW() + INTERVAL '7 days', FALSE, 1440, '1234.5', '888.8', '{}'::jsonb
+          )
+        `
+      );
+      await pool.query(
+        `
+          INSERT INTO pilot_venue_executions (
+            id, protection_id, venue, status, quote_id, instrument_id, side, quantity, execution_price, premium,
+            executed_at, external_order_id, external_execution_id, details
+          )
+          VALUES (
+            'other-scope-exec', 'other-scope-protection', 'mock_falconx', 'success', 'q-other',
+            'BTC-USD-7D-P', 'buy', '1', '1000', '700', NOW(), 'ord-other', 'exe-other', '{}'::jsonb
+          )
+        `
+      );
+      await pool.query(
+        `
+          INSERT INTO pilot_ledger_entries (id, protection_id, entry_type, amount, currency, reference, settled_at)
+          VALUES
+            ('other-scope-premium-due', 'other-scope-protection', 'premium_due', '500', 'USDC', 'ref1', NOW()),
+            ('other-scope-premium-settled', 'other-scope-protection', 'premium_settled', '300', 'USDC', 'ref2', NOW()),
+            ('other-scope-payout-settled', 'other-scope-protection', 'payout_settled', '200', 'USDC', 'ref3', NOW())
+        `
+      );
+
+      const metricsRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(metricsRes.statusCode, 200);
+      const metricsPayload = metricsRes.json();
+      assert.equal(metricsPayload.status, "ok");
+      assert.equal(String(metricsPayload.metrics?.totalProtections || ""), "0");
+      assert.equal(Number(metricsPayload.metrics?.clientPremiumTotalUsdc || 0), 0);
+      assert.equal(Number(metricsPayload.metrics?.hedgePremiumTotalUsdc || 0), 0);
+
+      const exportRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&limit=50",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(exportRes.statusCode, 200);
+      const exportPayload = exportRes.json();
+      assert.equal(exportPayload.status, "ok");
+      assert.equal(Array.isArray(exportPayload.rows), true);
+      assert.equal(exportPayload.rows.length, 0);
+      assert.equal(Number(exportPayload.pagination?.total || 0), 0);
+
+      const reconciliationRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/reconciliation/export?format=json&limit=50",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(reconciliationRes.statusCode, 200);
+      const reconciliationPayload = reconciliationRes.json();
+      assert.equal(reconciliationPayload.status, "ok");
+      assert.equal(Array.isArray(reconciliationPayload.rows), true);
+      assert.equal(reconciliationPayload.rows.length, 0);
+      assert.equal(Number(reconciliationPayload.pagination?.total || 0), 0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("O) admin export pagination and reconciliation contract are stable", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const first = await quoteAndActivate(app, 1000);
+      const second = await quoteAndActivate(app, 1200);
+
+      const pageOne = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&limit=1&offset=0",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(pageOne.statusCode, 200);
+      const pageOnePayload = pageOne.json();
+      assert.equal(pageOnePayload.status, "ok");
+      assert.equal(pageOnePayload.rows.length, 1);
+      assert.equal(Number(pageOnePayload.pagination?.total || 0), 2);
+      assert.equal(Number(pageOnePayload.pagination?.offset || 0), 0);
+      assert.equal(Number(pageOnePayload.pagination?.limit || 0), 1);
+
+      const pageTwo = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&limit=1&offset=1",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(pageTwo.statusCode, 200);
+      const pageTwoPayload = pageTwo.json();
+      assert.equal(pageTwoPayload.status, "ok");
+      assert.equal(pageTwoPayload.rows.length, 1);
+      assert.notEqual(String(pageOnePayload.rows[0].protection_id), String(pageTwoPayload.rows[0].protection_id));
+
+      const reconciliationJson = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/reconciliation/export?format=json&limit=20&offset=0",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(reconciliationJson.statusCode, 200);
+      const reconciliationPayload = reconciliationJson.json();
+      assert.equal(reconciliationPayload.status, "ok");
+      assert.equal(Number(reconciliationPayload.pagination?.total || 0), 2);
+      assert.equal(reconciliationPayload.rows.length, 2);
+      const ids = new Set(reconciliationPayload.rows.map((row: any) => String(row.protection_id)));
+      assert.equal(ids.has(first.protectionId), true);
+      assert.equal(ids.has(second.protectionId), true);
+      const firstRow = reconciliationPayload.rows[0] as any;
+      assert.ok(Object.prototype.hasOwnProperty.call(firstRow, "premium_due_total_usdc"));
+      assert.ok(Object.prototype.hasOwnProperty.call(firstRow, "premium_outstanding_usdc"));
+      assert.ok(Object.prototype.hasOwnProperty.call(firstRow, "payout_outstanding_usdc"));
+      assert.ok(Object.prototype.hasOwnProperty.call(firstRow, "quote_id"));
+
+      const reconciliationCsv = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/reconciliation/export?format=csv&limit=20&offset=0",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(reconciliationCsv.statusCode, 200);
+      assert.match(reconciliationCsv.body, /protection_id/);
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 test.after(() => {

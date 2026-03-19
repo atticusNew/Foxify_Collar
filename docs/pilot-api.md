@@ -28,7 +28,8 @@ Endpoints:
 - `POST /pilot/admin/protections/:id/payout-settled`
 - `GET /pilot/admin/protections/:id/ledger`
 - `GET /pilot/admin/metrics` (includes reserve/liquidity rollups using `PILOT_STARTING_RESERVE_USDC`)
-- `GET /pilot/protections/export?format=json|csv`
+- `GET /pilot/protections/export?format=json|csv&limit=<n>&offset=<n>` (tenant-scoped admin export)
+- `GET /pilot/admin/reconciliation/export?format=json|csv&limit=<n>&offset=<n>`
 - `POST /pilot/internal/protections/:id/resolve-expiry` (internal operations/testing)
 
 ## Price source chain
@@ -65,6 +66,20 @@ The pilot ledger stores:
 
 Settlement posting endpoints are idempotent per protection + entry type for pilot operations. Repeated
 settlement calls for an already-settled protection return `status=ok` with `idempotentReplay=true`.
+Expiry and settlement writes are protected by deterministic per-protection write keys to keep one-time
+accounting behavior under concurrent requests.
+
+## Admin scope and exports
+
+- Admin metrics and export endpoints are tenant/campaign scoped using the configured pilot tenant scope hash.
+- `GET /pilot/protections/export?format=json` returns:
+  - `rows`
+  - `pagination` (`total`, `limit`, `offset`, `nextOffset`)
+- `GET /pilot/admin/reconciliation/export` provides reconciliation-friendly rows including:
+  - trade/execution identifiers (quote/rfq/external order/execution)
+  - premium and payout ledger totals
+  - outstanding receivable/liability deltas
+  - settlement references.
 
 ## Tier and trigger semantics
 

@@ -341,14 +341,30 @@ export const listProtections = async (
 export const listProtectionsByUserHash = async (
   pool: Queryable,
   userHash: string,
-  opts: { limit?: number } = {}
+  opts: { limit?: number; offset?: number } = {}
 ): Promise<ProtectionRecord[]> => {
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
   const result = await pool.query(
-    `SELECT * FROM pilot_protections WHERE user_hash = $1 ORDER BY created_at DESC LIMIT $2`,
-    [userHash, limit]
+    `SELECT * FROM pilot_protections WHERE user_hash = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+    [userHash, limit, offset]
   );
   return result.rows.map(mapProtection);
+};
+
+export const countProtectionsByUserHash = async (
+  pool: Queryable,
+  userHash: string
+): Promise<number> => {
+  const result = await pool.query(
+    `
+      SELECT COUNT(*)::int AS n
+      FROM pilot_protections
+      WHERE user_hash = $1
+    `,
+    [userHash]
+  );
+  return Number(result.rows[0]?.n || 0);
 };
 
 export const getDailyProtectedNotionalForUser = async (
@@ -496,7 +512,7 @@ export const listLedgerForProtection = async (
 
 export const getPilotAdminMetrics = async (
   pool: Queryable,
-  opts: { startingReserveUsdc: number }
+  opts: { startingReserveUsdc: number; userHash: string }
 ): Promise<{
   totalProtections: string;
   activeProtections: string;
@@ -527,11 +543,16 @@ export const getPilotAdminMetrics = async (
         COALESCE(SUM(premium), 0)::text AS client_premium_total_usdc,
         (
           SELECT COALESCE(SUM(premium), 0)::text
-          FROM pilot_venue_executions
+          FROM pilot_venue_executions vex
+          JOIN pilot_protections p2 ON p2.id = vex.protection_id
+          WHERE p2.user_hash = $1
         ) AS hedge_premium_total_usdc,
         COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc
       FROM pilot_protections
+      WHERE user_hash = $1
     `
+    ,
+    [opts.userHash]
   );
   const ledger = await pool.query(
     `
@@ -539,8 +560,12 @@ export const getPilotAdminMetrics = async (
         COALESCE(SUM(CASE WHEN entry_type = 'premium_due' THEN amount ELSE 0 END), 0)::text AS premium_due_total_usdc,
         COALESCE(SUM(CASE WHEN entry_type = 'premium_settled' THEN amount ELSE 0 END), 0)::text AS premium_settled_total_usdc,
         COALESCE(SUM(CASE WHEN entry_type = 'payout_settled' THEN amount ELSE 0 END), 0)::text AS payout_settled_total_usdc
-      FROM pilot_ledger_entries
+      FROM pilot_ledger_entries l
+      JOIN pilot_protections p ON p.id = l.protection_id
+      WHERE p.user_hash = $1
     `
+    ,
+    [opts.userHash]
   );
   const row = result.rows[0] || {};
   const ledgerRow = ledger.rows[0] || {};
