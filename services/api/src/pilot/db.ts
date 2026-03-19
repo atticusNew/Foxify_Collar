@@ -288,6 +288,44 @@ export const getProtection = async (pool: Queryable, id: string): Promise<Protec
   return mapProtection(result.rows[0]);
 };
 
+export const getProtectionForUpdate = async (
+  pool: Queryable,
+  id: string
+): Promise<ProtectionRecord | null> => {
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_protections
+      WHERE id = $1
+      FOR UPDATE
+    `,
+    [id]
+  );
+  if (!result.rowCount) return null;
+  return mapProtection(result.rows[0]);
+};
+
+export const markProtectionAwaitingExpiryPriceIfUnresolved = async (
+  pool: Queryable,
+  id: string,
+  metadata: Record<string, unknown>
+): Promise<ProtectionRecord | null> => {
+  const result = await pool.query(
+    `
+      UPDATE pilot_protections
+      SET status = 'awaiting_expiry_price',
+          metadata = $2::jsonb,
+          updated_at = NOW()
+      WHERE id = $1
+        AND expiry_price IS NULL
+        AND status IN ('active', 'awaiting_expiry_price')
+      RETURNING *
+    `,
+    [id, JSON.stringify(metadata)]
+  );
+  if (!result.rowCount) return null;
+  return mapProtection(result.rows[0]);
+};
+
 export const listProtections = async (
   pool: Queryable,
   opts: { limit?: number } = {}
@@ -696,6 +734,30 @@ export const reserveDailyActivationCapacity = async (
     [params.userHash, params.dayStartIso]
   );
   return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
+};
+
+export const releaseDailyActivationCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    protectedNotional: string;
+  }
+): Promise<string> => {
+  const updated = await pool.query(
+    `
+      UPDATE pilot_daily_usage
+      SET used_notional = GREATEST(0::numeric, used_notional - $3::numeric)
+      WHERE user_hash = $1
+        AND day_start = $2::date
+      RETURNING used_notional::text AS used_after
+    `,
+    [params.userHash, params.dayStartIso, params.protectedNotional]
+  );
+  if (updated.rowCount && updated.rows[0]?.used_after) {
+    return String(updated.rows[0].used_after);
+  }
+  return "0";
 };
 
 export type PilotTermsAcceptanceRecord = {

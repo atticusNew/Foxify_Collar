@@ -33,13 +33,17 @@ const activationPayload = (quoteId: string, protectedNotional = 1000) => ({
   tenorDays: 7
 });
 
-const createPilotHarness = async (): Promise<{
+const createPilotHarness = async (opts: {
+  autoAcceptTerms?: boolean;
+  pilotVenueMode?: "mock_falconx" | "deribit_test";
+  deribit?: any;
+} = {}): Promise<{
   app: FastifyInstance;
   pool: { query: (sql: string, params?: unknown[]) => Promise<any>; end: () => Promise<void> };
   close: () => Promise<void>;
 }> => {
   process.env.PILOT_API_ENABLED = "true";
-  process.env.PILOT_VENUE_MODE = "mock_falconx";
+  process.env.PILOT_VENUE_MODE = opts.pilotVenueMode || "mock_falconx";
   process.env.POSTGRES_URL = "postgres://unused";
   process.env.USER_HASH_SECRET = "test_hash_secret";
   process.env.PILOT_ADMIN_TOKEN = "admin-local";
@@ -65,7 +69,16 @@ const createPilotHarness = async (): Promise<{
   const { registerPilotRoutes } = await import("../src/pilot/routes");
 
   const app = Fastify();
-  await registerPilotRoutes(app, { deribit: {} as any });
+  await registerPilotRoutes(app, { deribit: (opts.deribit || {}) as any });
+  if (opts.autoAcceptTerms !== false) {
+    const accept = await app.inject({
+      method: "POST",
+      url: "/pilot/terms/accept",
+      payload: { termsVersion: "v1.0", accepted: true }
+    });
+    assert.equal(accept.statusCode, 200);
+    assert.equal(accept.json().status, "ok");
+  }
 
   return {
     app,
@@ -354,7 +367,7 @@ test("pilot route hardening A-H", async (t) => {
   });
 
   await t.test("H) terms acceptance is server-side, auditable, and one-time per tenant+version", async () => {
-    const harness = await createPilotHarness();
+    const harness = await createPilotHarness({ autoAcceptTerms: false });
     try {
       const { app, pool } = harness;
       const statusBefore = await app.inject({
@@ -506,6 +519,187 @@ test("pilot route hardening A-H", async (t) => {
       assert.ok(String(payload.reference?.venue || "").length > 0);
       assert.ok(String(payload.reference?.source || "").length > 0);
       assert.ok(String(payload.reference?.timestamp || "").length > 0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("K) quote and activate require terms acceptance", async () => {
+    const harness = await createPilotHarness({ autoAcceptTerms: false });
+    try {
+      const { app } = harness;
+      const quoteDenied = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteDenied.statusCode, 403);
+      assert.equal(quoteDenied.json().reason, "terms_not_accepted");
+
+      const activateDenied = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: activationPayload("missing-quote", 1000)
+      });
+      assert.equal(activateDenied.statusCode, 403);
+      assert.equal(activateDenied.json().reason, "terms_not_accepted");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("L) activation failure is marked and daily cap is released", async () => {
+    const deribitFailing = {
+      getIndexPrice: async () => ({ result: { index_price: 100000 } }),
+      getOrderBook: async () => ({ result: { asks: [[0.02, 10]], bids: [[0.015, 10]], mark_price: 0.019 } }),
+      listInstruments: async () => ({ result: [] }),
+      placeOrder: async () => ({ status: "rejected", id: "deribit-fail-1" })
+    };
+    const harness = await createPilotHarness({
+      pilotVenueMode: "deribit_test",
+      deribit: deribitFailing
+    });
+    try {
+      const { app, pool } = harness;
+      const quoteRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: {
+          ...defaultQuotePayload(1100),
+          instrumentId: "BTC-28MAR26-80000-P"
+        }
+      });
+      assert.equal(quoteRes.statusCode, 200);
+      const quoteId = String(quoteRes.json().quote.quoteId);
+
+      const activateRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: {
+          ...activationPayload(quoteId, 1100),
+          instrumentId: "BTC-28MAR26-80000-P"
+        }
+      });
+      assert.equal(activateRes.statusCode, 400);
+      assert.equal(activateRes.json().reason, "venue_error");
+
+      const protectionRow = await pool.query(
+        `SELECT id, status, metadata FROM pilot_protections ORDER BY created_at DESC LIMIT 1`
+      );
+      assert.equal(String(protectionRow.rows[0].status || ""), "activation_failed");
+      assert.ok(protectionRow.rows[0].metadata?.activationFailure);
+
+      const usageRow = await pool.query(
+        `SELECT used_notional::text AS used_now FROM pilot_daily_usage LIMIT 1`
+      );
+      assert.equal(String(usageRow.rows[0]?.used_now || "0"), "0");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("M) expiry and settlement writes remain idempotent under concurrency", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      const { protectionId } = await quoteAndActivate(app, 1200);
+
+      await pool.query(`UPDATE pilot_protections SET expiry_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, [
+        protectionId
+      ]);
+
+      global.fetch = (async () =>
+        ({
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 50000,
+              timestamp: Date.now()
+            })
+        }) as any) as typeof fetch;
+
+      const [resolveA, resolveB] = await Promise.all([
+        app.inject({
+          method: "POST",
+          url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: {}
+        }),
+        app.inject({
+          method: "POST",
+          url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: {}
+        })
+      ]);
+      assert.equal(resolveA.statusCode, 200);
+      assert.equal(resolveB.statusCode, 200);
+
+      const expirySnapshotCount = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_price_snapshots WHERE protection_id = $1 AND snapshot_type = 'expiry'`,
+        [protectionId]
+      );
+      assert.equal(Number(expirySnapshotCount.rows[0].n), 1);
+
+      const payoutDueEntries = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_ledger_entries WHERE protection_id = $1 AND entry_type = 'payout_due'`,
+        [protectionId]
+      );
+      assert.equal(Number(payoutDueEntries.rows[0].n), 1);
+
+      const dueRes = await app.inject({
+        method: "GET",
+        url: `/pilot/protections/${protectionId}`
+      });
+      assert.equal(dueRes.statusCode, 200);
+      const payoutDue = Number(dueRes.json().protection?.payoutDueAmount ?? 0);
+
+      const [premiumA, premiumB] = await Promise.all([
+        app.inject({
+          method: "POST",
+          url: `/pilot/admin/protections/${protectionId}/premium-settled`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: { amount: 12.34, reference: "premium-concurrent" }
+        }),
+        app.inject({
+          method: "POST",
+          url: `/pilot/admin/protections/${protectionId}/premium-settled`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: { amount: 12.34, reference: "premium-concurrent" }
+        })
+      ]);
+      assert.equal(premiumA.statusCode, 200);
+      assert.equal(premiumB.statusCode, 200);
+
+      const premiumSettledCount = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_ledger_entries WHERE protection_id = $1 AND entry_type = 'premium_settled'`,
+        [protectionId]
+      );
+      assert.equal(Number(premiumSettledCount.rows[0].n), 1);
+
+      const [payoutA, payoutB] = await Promise.all([
+        app.inject({
+          method: "POST",
+          url: `/pilot/admin/protections/${protectionId}/payout-settled`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: { amount: payoutDue, payoutTxRef: "payout-concurrent" }
+        }),
+        app.inject({
+          method: "POST",
+          url: `/pilot/admin/protections/${protectionId}/payout-settled`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: { amount: payoutDue, payoutTxRef: "payout-concurrent" }
+        })
+      ]);
+      assert.equal(payoutA.statusCode, 200);
+      assert.equal(payoutB.statusCode, 200);
+
+      const payoutSettledCount = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_ledger_entries WHERE protection_id = $1 AND entry_type = 'payout_settled'`,
+        [protectionId]
+      );
+      assert.equal(Number(payoutSettledCount.rows[0].n), 1);
     } finally {
       await harness.close();
     }

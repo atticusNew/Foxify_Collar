@@ -114,6 +114,8 @@ settlement calls for an already-settled protection return `status=ok` with `idem
     - Platinum: `PILOT_PREMIUM_FLOOR_BPS_PLATINUM` (`4`)
 - `entryPrice` is optional and treated as user-provided context only (informational).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
+- Quote and activation require prior acceptance of current terms (`POST /pilot/terms/accept`),
+  otherwise both endpoints return `403` with `reason=terms_not_accepted`.
 - Optional campaign window enforcement for new quote/activate requests:
   - `PILOT_ENFORCE_WINDOW=true`
   - `PILOT_START_AT=<ISO-8601 UTC>`

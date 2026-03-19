@@ -13,6 +13,7 @@ import {
   getPilotTermsAcceptance,
   getPilotPool,
   getProtection,
+  getProtectionForUpdate,
   getVenueQuoteByQuoteIdForUpdate,
   insertAdminAction,
   consumeVenueQuote,
@@ -21,6 +22,8 @@ import {
   insertProtection,
   insertVenueExecution,
   insertVenueQuote,
+  markProtectionAwaitingExpiryPriceIfUnresolved,
+  releaseDailyActivationCapacity,
   reserveDailyActivationCapacity,
   listLedgerForProtection,
   listProtections,
@@ -339,6 +342,33 @@ export const registerPilotRoutes = async (
     deribit: deps.deribit
   });
 
+  const requireTermsAcceptance = async (
+    reply: FastifyReply,
+    userHash: { userHash: string; hashVersion: number }
+  ): Promise<boolean> => {
+    try {
+      const acceptance = await getPilotTermsAcceptance(pool, {
+        userHash: userHash.userHash,
+        termsVersion: pilotConfig.termsVersion
+      });
+      if (acceptance) return true;
+      reply.code(403).send({
+        status: "error",
+        reason: "terms_not_accepted",
+        termsVersion: pilotConfig.termsVersion
+      });
+      return false;
+    } catch (error: any) {
+      reply.code(503).send({
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "terms_enforcement_failed")
+      });
+      return false;
+    }
+  };
+
   const resolveAndPersistExpiry = async (protectionId: string): Promise<void> => {
     const protection = await getProtection(pool, protectionId);
     if (!protection) return;
@@ -365,57 +395,89 @@ export const registerPilotRoutes = async (
           endpointVersion: pilotConfig.endpointVersion
         }
       );
-      await insertPriceSnapshot(pool, {
-        protectionId,
-        snapshotType: "expiry",
-        price: snapshot.price.toFixed(10),
-        marketId: snapshot.marketId,
-        priceSource: snapshot.priceSource,
-        priceSourceDetail: snapshot.priceSourceDetail,
-        endpointVersion: snapshot.endpointVersion,
-        requestId: snapshot.requestId,
-        priceTimestamp: snapshot.priceTimestamp
-      });
-      const entryPrice = new Decimal(protection.entryPrice || "0");
-      const protectedNotional = new Decimal(protection.protectedNotional);
-      const expiryPrice = snapshot.price;
-      const drawdownFloorPct = new Decimal(protection.drawdownFloorPct || "0.2");
-      const protectionType = resolveProtectionTypeFromRecord(protection);
-      const triggerPrice = protection.floorPrice
-        ? new Decimal(protection.floorPrice)
-        : computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
-      const payoutDue = computePayoutDue({
-        protectedNotional,
-        entryPrice,
-        triggerPrice,
-        expiryPrice,
-        protectionType
-      });
-      const nextStatus = payoutDue.gt(0) ? "expired_itm" : "expired_otm";
-      await patchProtection(pool, protectionId, {
-        status: nextStatus,
-        expiry_price: snapshot.price.toFixed(10),
-        expiry_price_source: snapshot.priceSource,
-        expiry_price_timestamp: snapshot.priceTimestamp,
-        floor_price: triggerPrice.toFixed(10),
-        payout_due_amount: payoutDue.toFixed(10)
-      });
-      if (payoutDue.gt(0)) {
-        await insertLedgerEntry(pool, {
+      const client = await pool.connect();
+      let transactionOpen = false;
+      try {
+        await client.query("BEGIN");
+        transactionOpen = true;
+        const locked = await getProtectionForUpdate(client, protectionId);
+        if (!locked) {
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return;
+        }
+        if (!["active", "awaiting_expiry_price"].includes(locked.status) || locked.expiryPrice) {
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return;
+        }
+        const lockedExpiryAt = new Date(locked.expiryAt);
+        if (Date.now() < lockedExpiryAt.getTime()) {
+          await client.query("COMMIT");
+          transactionOpen = false;
+          return;
+        }
+        await insertPriceSnapshot(client, {
           protectionId,
-          entryType: "payout_due",
-          amount: payoutDue.toFixed(10),
-          reference: `expiry:${snapshot.priceTimestamp}`
+          snapshotType: "expiry",
+          price: snapshot.price.toFixed(10),
+          marketId: snapshot.marketId,
+          priceSource: snapshot.priceSource,
+          priceSourceDetail: snapshot.priceSourceDetail,
+          endpointVersion: snapshot.endpointVersion,
+          requestId: snapshot.requestId,
+          priceTimestamp: snapshot.priceTimestamp
         });
+        const entryPrice = new Decimal(locked.entryPrice || "0");
+        const protectedNotional = new Decimal(locked.protectedNotional);
+        const expiryPrice = snapshot.price;
+        const drawdownFloorPct = new Decimal(locked.drawdownFloorPct || "0.2");
+        const protectionType = resolveProtectionTypeFromRecord(locked);
+        const triggerPrice = locked.floorPrice
+          ? new Decimal(locked.floorPrice)
+          : computeTriggerPrice(entryPrice, drawdownFloorPct, protectionType);
+        const payoutDue = computePayoutDue({
+          protectedNotional,
+          entryPrice,
+          triggerPrice,
+          expiryPrice,
+          protectionType
+        });
+        const nextStatus = payoutDue.gt(0) ? "expired_itm" : "expired_otm";
+        await patchProtection(client, protectionId, {
+          status: nextStatus,
+          expiry_price: snapshot.price.toFixed(10),
+          expiry_price_source: snapshot.priceSource,
+          expiry_price_timestamp: snapshot.priceTimestamp,
+          floor_price: triggerPrice.toFixed(10),
+          payout_due_amount: payoutDue.toFixed(10)
+        });
+        if (payoutDue.gt(0)) {
+          await insertLedgerEntry(client, {
+            protectionId,
+            entryType: "payout_due",
+            amount: payoutDue.toFixed(10),
+            reference: `expiry:${snapshot.priceTimestamp}`
+          });
+        }
+        await client.query("COMMIT");
+        transactionOpen = false;
+      } catch (error) {
+        if (transactionOpen) await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
       }
     } catch (error: any) {
-      await patchProtection(pool, protectionId, {
-        status: "awaiting_expiry_price",
-        metadata: {
-          ...protection.metadata,
+      try {
+        const latest = await getProtection(pool, protectionId);
+        await markProtectionAwaitingExpiryPriceIfUnresolved(pool, protectionId, {
+          ...(latest?.metadata || {}),
           expiryError: String(error?.message || "expiry_price_unavailable")
-        }
-      });
+        });
+      } catch {
+        // swallow to keep scheduler resilient
+      }
     }
   };
 
@@ -611,6 +673,7 @@ export const registerPilotRoutes = async (
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
       return { status: "error", reason };
     }
+    if (!(await requireTermsAcceptance(reply, userHash))) return;
     const now = new Date();
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const dayEnd = new Date(dayStart.getTime() + 86400000);
@@ -858,6 +921,7 @@ export const registerPilotRoutes = async (
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
       return { status: "error", reason };
     }
+    if (!(await requireTermsAcceptance(reply, userHash))) return;
     const now = new Date();
     const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const marketId = pilotConfig.referenceMarketId;
@@ -877,6 +941,8 @@ export const registerPilotRoutes = async (
     let capUsedUsdc: string | null = null;
     let capProjectedUsdc: string | null = null;
     let transactionOpen = false;
+    let transactionCommitted = false;
+    let activationProtectionId: string | null = null;
     let quoteEntryAnchorPrice: Decimal | null = null;
     let triggerPrice: Decimal | null = null;
     let quoteEntryInputPrice: string | null = null;
@@ -894,6 +960,24 @@ export const registerPilotRoutes = async (
         if (existing && existing.userHash === userHash.userHash) {
           await client.query("COMMIT");
           transactionOpen = false;
+          if (existing.status === "activation_failed") {
+            reply.code(409);
+            return {
+              status: "error",
+              reason: "activation_previously_failed",
+              message: "Previous activation failed. Please request a fresh quote and retry.",
+              protection: sanitizeProtectionForTrader(existing as unknown as Record<string, unknown>)
+            };
+          }
+          if (existing.status === "pending_activation") {
+            reply.code(409);
+            return {
+              status: "error",
+              reason: "activation_in_progress",
+              message: "Activation is still processing. Refresh protection status and retry shortly.",
+              protection: sanitizeProtectionForTrader(existing as unknown as Record<string, unknown>)
+            };
+          }
           const replayCoverageRatio =
             existing.metadata && typeof existing.metadata["coverageRatio"] === "string"
               ? String(existing.metadata["coverageRatio"])
@@ -1014,6 +1098,7 @@ export const registerPilotRoutes = async (
           optionType
         }
       });
+      activationProtectionId = protection.id;
       const consumed = await consumeVenueQuote(client, lockedQuote.id, protection.id);
       if (!consumed) {
         throw new Error("quote_already_consumed");
@@ -1049,6 +1134,7 @@ export const registerPilotRoutes = async (
       } as const;
       await client.query("COMMIT");
       transactionOpen = false;
+      transactionCommitted = true;
 
       const snapshot = await resolvePriceSnapshot(
         {
@@ -1170,6 +1256,45 @@ export const registerPilotRoutes = async (
         transactionOpen = false;
       }
       const errMsg = String(error?.message || "");
+      if (transactionCommitted && activationProtectionId) {
+        try {
+          const compensationClient = await pool.connect();
+          let compensationTxOpen = false;
+          try {
+            await compensationClient.query("BEGIN");
+            compensationTxOpen = true;
+            const locked = await getProtectionForUpdate(compensationClient, activationProtectionId);
+            if (locked?.status === "pending_activation") {
+              await patchProtection(compensationClient, activationProtectionId, {
+                status: "activation_failed",
+                metadata: {
+                  ...(locked.metadata || {}),
+                  activationFailure: {
+                    at: new Date().toISOString(),
+                    reason: errMsg || "activation_failed",
+                    requestId
+                  }
+                }
+              });
+              await releaseDailyActivationCapacity(compensationClient, {
+                userHash: userHash.userHash,
+                dayStartIso: dayStart.toISOString(),
+                protectedNotional: protectedNotional.toFixed(10)
+              });
+            }
+            await compensationClient.query("COMMIT");
+            compensationTxOpen = false;
+          } catch {
+            if (compensationTxOpen) {
+              await compensationClient.query("ROLLBACK");
+            }
+          } finally {
+            compensationClient.release();
+          }
+        } catch {
+          // swallow compensation errors and return original activation failure
+        }
+      }
       let reason = "activation_failed";
       if (errMsg.includes("price_unavailable")) {
         reason = "price_unavailable";
@@ -1182,6 +1307,8 @@ export const registerPilotRoutes = async (
           "quote_mismatch_type",
           "quote_mismatch_quantity",
           "quote_mismatch_context",
+          "activation_in_progress",
+          "activation_previously_failed",
           "full_coverage_not_met",
           "storage_unavailable"
         ].includes(errMsg)
@@ -1496,42 +1623,67 @@ export const registerPilotRoutes = async (
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
     const body = req.body as { amount?: number; reference?: string };
-    const protection = await getProtection(pool, params.id);
-    if (!protection) {
-      reply.code(404);
-      return { status: "error", reason: "not_found" };
-    }
-    const existingLedger = await listLedgerForProtection(pool, params.id);
-    const existingPremiumSettlement = existingLedger.find((entry) => entry.entryType === "premium_settled");
-    if (existingPremiumSettlement) {
+    const client = await pool.connect();
+    let txOpen = false;
+    try {
+      await client.query("BEGIN");
+      txOpen = true;
+      const protection = await getProtectionForUpdate(client, params.id);
+      if (!protection) {
+        await client.query("ROLLBACK");
+        txOpen = false;
+        reply.code(404);
+        return { status: "error", reason: "not_found" };
+      }
+      const existingLedger = await listLedgerForProtection(client, params.id);
+      const existingPremiumSettlement = existingLedger.find((entry) => entry.entryType === "premium_settled");
+      if (existingPremiumSettlement) {
+        await client.query("COMMIT");
+        txOpen = false;
+        return {
+          status: "ok",
+          idempotentReplay: true,
+          settledAmount: existingPremiumSettlement.amount,
+          settledAt: existingPremiumSettlement.settledAt,
+          reference: existingPremiumSettlement.reference
+        };
+      }
+      const amount = Number(body.amount ?? protection.premium ?? 0);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        await client.query("ROLLBACK");
+        txOpen = false;
+        reply.code(400);
+        return { status: "error", reason: "invalid_amount" };
+      }
+      await insertLedgerEntry(client, {
+        protectionId: params.id,
+        entryType: "premium_settled",
+        amount: new Decimal(amount).toFixed(10),
+        reference: body.reference || null,
+        settledAt: new Date().toISOString()
+      });
+      await insertAdminAction(client, {
+        protectionId: params.id,
+        action: "premium_settled",
+        actor: auth.actor,
+        actorIp: auth.actorIp,
+        details: { amount, reference: body.reference || null }
+      });
+      await client.query("COMMIT");
+      txOpen = false;
+      return { status: "ok" };
+    } catch (error: any) {
+      if (txOpen) await client.query("ROLLBACK");
+      reply.code(503);
       return {
-        status: "ok",
-        idempotentReplay: true,
-        settledAmount: existingPremiumSettlement.amount,
-        settledAt: existingPremiumSettlement.settledAt,
-        reference: existingPremiumSettlement.reference
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "premium_settlement_failed")
       };
+    } finally {
+      client.release();
     }
-    const amount = Number(body.amount ?? protection.premium ?? 0);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      reply.code(400);
-      return { status: "error", reason: "invalid_amount" };
-    }
-    await insertLedgerEntry(pool, {
-      protectionId: params.id,
-      entryType: "premium_settled",
-      amount: new Decimal(amount).toFixed(10),
-      reference: body.reference || null,
-      settledAt: new Date().toISOString()
-    });
-    await insertAdminAction(pool, {
-      protectionId: params.id,
-      action: "premium_settled",
-      actor: auth.actor,
-      actorIp: auth.actorIp,
-      details: { amount, reference: body.reference || null }
-    });
-    return { status: "ok" };
   });
 
   app.post("/pilot/admin/protections/:id/payout-settled", async (req, reply) => {
@@ -1539,69 +1691,100 @@ export const registerPilotRoutes = async (
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
     const body = req.body as { amount?: number; payoutTxRef?: string };
-    const protection = await getProtection(pool, params.id);
-    if (!protection) {
-      reply.code(404);
-      return { status: "error", reason: "not_found" };
-    }
-    if (!protection.expiryPrice) {
-      reply.code(409);
-      return { status: "error", reason: "expiry_price_missing" };
-    }
-    const existingLedger = await listLedgerForProtection(pool, params.id);
-    const existingPayoutSettlement = existingLedger.find((entry) => entry.entryType === "payout_settled");
-    if (existingPayoutSettlement) {
-      return {
-        status: "ok",
-        idempotentReplay: true,
-        settledAmount: existingPayoutSettlement.amount,
-        settledAt: existingPayoutSettlement.settledAt,
-        reference: existingPayoutSettlement.reference
-      };
-    }
-    if (new Decimal(protection.payoutSettledAmount || "0").gt(0)) {
-      return {
-        status: "ok",
-        idempotentReplay: true,
-        settledAmount: String(protection.payoutSettledAmount),
-        settledAt: protection.payoutSettledAt || null,
-        reference: protection.payoutTxRef || null
-      };
-    }
-    const amount = Number(body.amount ?? protection.payoutDueAmount ?? 0);
-    if (!Number.isFinite(amount) || amount < 0) {
-      reply.code(400);
-      return { status: "error", reason: "invalid_amount" };
-    }
-    const payoutDue = new Decimal(protection.payoutDueAmount || "0");
-    if (new Decimal(amount).gt(payoutDue)) {
-      reply.code(400);
+    const client = await pool.connect();
+    let txOpen = false;
+    try {
+      await client.query("BEGIN");
+      txOpen = true;
+      const protection = await getProtectionForUpdate(client, params.id);
+      if (!protection) {
+        await client.query("ROLLBACK");
+        txOpen = false;
+        reply.code(404);
+        return { status: "error", reason: "not_found" };
+      }
+      if (!protection.expiryPrice) {
+        await client.query("ROLLBACK");
+        txOpen = false;
+        reply.code(409);
+        return { status: "error", reason: "expiry_price_missing" };
+      }
+      const existingLedger = await listLedgerForProtection(client, params.id);
+      const existingPayoutSettlement = existingLedger.find((entry) => entry.entryType === "payout_settled");
+      if (existingPayoutSettlement) {
+        await client.query("COMMIT");
+        txOpen = false;
+        return {
+          status: "ok",
+          idempotentReplay: true,
+          settledAmount: existingPayoutSettlement.amount,
+          settledAt: existingPayoutSettlement.settledAt,
+          reference: existingPayoutSettlement.reference
+        };
+      }
+      if (new Decimal(protection.payoutSettledAmount || "0").gt(0)) {
+        await client.query("COMMIT");
+        txOpen = false;
+        return {
+          status: "ok",
+          idempotentReplay: true,
+          settledAmount: String(protection.payoutSettledAmount),
+          settledAt: protection.payoutSettledAt || null,
+          reference: protection.payoutTxRef || null
+        };
+      }
+      const amount = Number(body.amount ?? protection.payoutDueAmount ?? 0);
+      if (!Number.isFinite(amount) || amount < 0) {
+        await client.query("ROLLBACK");
+        txOpen = false;
+        reply.code(400);
+        return { status: "error", reason: "invalid_amount" };
+      }
+      const payoutDue = new Decimal(protection.payoutDueAmount || "0");
+      if (new Decimal(amount).gt(payoutDue)) {
+        await client.query("ROLLBACK");
+        txOpen = false;
+        reply.code(400);
+        return {
+          status: "error",
+          reason: "payout_settlement_exceeds_due",
+          payoutDueAmount: payoutDue.toFixed(10)
+        };
+      }
+      await insertLedgerEntry(client, {
+        protectionId: params.id,
+        entryType: "payout_settled",
+        amount: new Decimal(amount).toFixed(10),
+        reference: body.payoutTxRef || null,
+        settledAt: new Date().toISOString()
+      });
+      await patchProtection(client, params.id, {
+        payout_settled_amount: new Decimal(amount).toFixed(10),
+        payout_settled_at: new Date().toISOString(),
+        payout_tx_ref: body.payoutTxRef || null
+      });
+      await insertAdminAction(client, {
+        protectionId: params.id,
+        action: "payout_settled",
+        actor: auth.actor,
+        actorIp: auth.actorIp,
+        details: { amount, payoutTxRef: body.payoutTxRef || null }
+      });
+      await client.query("COMMIT");
+      txOpen = false;
+      return { status: "ok" };
+    } catch (error: any) {
+      if (txOpen) await client.query("ROLLBACK");
+      reply.code(503);
       return {
         status: "error",
-        reason: "payout_settlement_exceeds_due",
-        payoutDueAmount: payoutDue.toFixed(10)
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "payout_settlement_failed")
       };
+    } finally {
+      client.release();
     }
-    await insertLedgerEntry(pool, {
-      protectionId: params.id,
-      entryType: "payout_settled",
-      amount: new Decimal(amount).toFixed(10),
-      reference: body.payoutTxRef || null,
-      settledAt: new Date().toISOString()
-    });
-    await patchProtection(pool, params.id, {
-      payout_settled_amount: new Decimal(amount).toFixed(10),
-      payout_settled_at: new Date().toISOString(),
-      payout_tx_ref: body.payoutTxRef || null
-    });
-    await insertAdminAction(pool, {
-      protectionId: params.id,
-      action: "payout_settled",
-      actor: auth.actor,
-      actorIp: auth.actorIp,
-      details: { amount, payoutTxRef: body.payoutTxRef || null }
-    });
-    return { status: "ok" };
   });
 
   app.get("/pilot/admin/protections/:id/ledger", async (req, reply) => {
