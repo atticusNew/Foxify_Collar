@@ -267,7 +267,7 @@ const isRetryableActivationError = (message: string): boolean => {
 
 const formatVenueLabel = (venue: string | null | undefined): string => {
   const normalized = String(venue || "").trim().toLowerCase();
-  if (normalized === "deribit_test") return "Deribit Test";
+  if (normalized === "deribit_test") return "Deribit (Live Data, Paper Exec)";
   if (normalized === "falconx") return "FalconX Live";
   if (normalized === "mock_falconx") return "Mock FalconX";
   return normalized || "Unknown";
@@ -318,7 +318,6 @@ export function PilotApp() {
   const [protectionType, setProtectionType] = useState<ProtectionType>("long");
   const [exposureNotional, setExposureNotional] = useState("");
   const [protectedNotional, setProtectedNotional] = useState("");
-  const [entryPrice, setEntryPrice] = useState("");
   const [autoRenew, setAutoRenew] = useState(false);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
@@ -361,7 +360,6 @@ export function PilotApp() {
 
   const exposureValue = parseCurrencyNumber(exposureNotional || "0");
   const protectedValue = parseCurrencyNumber(protectedNotional || "0");
-  const entryValue = parseCurrencyNumber(entryPrice || "0");
   const canQuote =
     pilotUnlocked &&
     Number.isFinite(exposureValue) &&
@@ -761,8 +759,7 @@ export function PilotApp() {
               instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
               tierName: selectedTier.name,
-              drawdownFloorPct: selectedTier.drawdownFloorPct,
-              ...(Number.isFinite(entryValue) && entryValue > 0 ? { entryPrice: entryValue } : {})
+              drawdownFloorPct: selectedTier.drawdownFloorPct
             })
           });
           const payload = await res.json();
@@ -831,8 +828,7 @@ export function PilotApp() {
               tenorDays: selectedTier.expiryDays,
               renewWindowMinutes: selectedTier.renewWindowMinutes,
               autoRenew,
-              quoteId: quote?.quote?.quoteId,
-              ...(Number.isFinite(entryValue) && entryValue > 0 ? { entryPrice: entryValue } : {})
+              quoteId: quote?.quote?.quoteId
             })
           });
           const payload = await res.json();
@@ -1304,20 +1300,6 @@ export function PilotApp() {
                   value={protectedNotional}
                   disabled={busy || quoteLocked}
                   onChange={(e) => setProtectedNotional(formatCurrencyInput(e.target.value))}
-                />
-              </div>
-            </div>
-
-            <div className="pilot-form-row">
-              <span className="pilot-label">Entry Price (Optional)</span>
-              <div className="pilot-field pilot-field-entry">
-                <input
-                  className="input pilot-input pilot-input-text pilot-input-entry"
-                  inputMode="decimal"
-                  placeholder="e.g. $100,000"
-                  value={entryPrice}
-                  disabled={busy || quoteLocked}
-                  onChange={(e) => setEntryPrice(formatCurrencyInput(e.target.value))}
                 />
               </div>
             </div>
