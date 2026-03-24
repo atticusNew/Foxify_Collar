@@ -1,7 +1,11 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
 import { DeribitConnector } from "@foxify/connectors";
-import type { PilotVenueMode } from "./config";
+import type {
+  DeribitQuotePolicy,
+  DeribitStrikeSelectionMode,
+  PilotVenueMode
+} from "./config";
 import type { VenueExecution, VenueQuote } from "./types";
 
 export type QuoteRequest = {
@@ -10,6 +14,8 @@ export type QuoteRequest = {
   protectedNotional: number;
   quantity: number;
   side: "buy";
+  triggerPrice?: number;
+  protectionType?: "long" | "short";
   clientOrderId?: string;
 };
 
@@ -84,7 +90,7 @@ const extractTopOfBook = (orderBookPayload: any): {
   bid: number | null;
 } => {
   const orderBook = orderBookPayload?.result ?? orderBookPayload;
-  const ask = Number(orderBook?.asks?.[0]?.[0] ?? orderBook?.best_ask_price ?? orderBook?.mark_price ?? 0);
+  const ask = Number(orderBook?.asks?.[0]?.[0] ?? orderBook?.best_ask_price ?? 0);
   const askSize = Number(orderBook?.asks?.[0]?.[1] ?? orderBook?.best_ask_amount ?? 0);
   const bid = Number(orderBook?.bids?.[0]?.[0] ?? orderBook?.best_bid_price ?? 0);
   return {
@@ -92,6 +98,12 @@ const extractTopOfBook = (orderBookPayload: any): {
     askSize: Number.isFinite(askSize) && askSize >= 0 ? askSize : null,
     bid: Number.isFinite(bid) && bid > 0 ? bid : null
   };
+};
+
+const extractMarkPrice = (orderBookPayload: any): number | null => {
+  const orderBook = orderBookPayload?.result ?? orderBookPayload;
+  const mark = Number(orderBook?.mark_price ?? 0);
+  return Number.isFinite(mark) && mark > 0 ? mark : null;
 };
 
 const resolveDeribitSpot = async (connector: DeribitConnector): Promise<number> => {
@@ -175,7 +187,9 @@ class MockFalconxAdapter implements PilotVenueAdapter {
 class DeribitTestAdapter implements PilotVenueAdapter {
   constructor(
     private connector: DeribitConnector,
-    private quoteTtlMs: number
+    private quoteTtlMs: number,
+    private quotePolicy: DeribitQuotePolicy,
+    private strikeSelectionMode: DeribitStrikeSelectionMode
   ) {}
 
   private resolveTargetOptionType(requestedInstrument: string): "put" | "call" {
@@ -184,7 +198,11 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     return "put";
   }
 
-  private async resolveQuoteInstrument(requestedInstrument: string, spot: number): Promise<{
+  private async resolveQuoteInstrument(
+    requestedInstrument: string,
+    spot: number,
+    targetTriggerPrice?: number
+  ): Promise<{
     instrumentId: string;
     ask: number;
     askSize: number | null;
@@ -204,13 +222,30 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           source: "requested_instrument_orderbook"
         };
       }
+      const mark = extractMarkPrice(book);
+      if (this.quotePolicy === "ask_or_mark_fallback" && mark && mark > 0) {
+        return {
+          instrumentId: requestedInstrument,
+          ask: mark,
+          askSize: top.askSize,
+          optionType: targetOptionType,
+          source: "requested_instrument_mark_fallback"
+        };
+      }
     }
 
     const instruments = (await this.connector.listInstruments("BTC")) as any;
     const list: any[] = Array.isArray(instruments?.result) ? instruments.result : [];
     const now = Date.now();
     const targetExpiry = now + 7 * 86400000;
-    const targetStrike = targetOptionType === "call" ? spot * 1.15 : spot * 0.85;
+    const targetStrike =
+      this.strikeSelectionMode === "trigger_aligned" &&
+      Number.isFinite(targetTriggerPrice) &&
+      Number(targetTriggerPrice) > 0
+        ? Number(targetTriggerPrice)
+        : targetOptionType === "call"
+          ? spot * 1.15
+          : spot * 0.85;
 
     const candidates = list
       .filter((item) => String(item?.option_type || "").toLowerCase() === targetOptionType)
@@ -242,6 +277,19 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           source: targetOptionType === "call" ? "auto_selected_deribit_call" : "auto_selected_deribit_put"
         };
       }
+      const mark = extractMarkPrice(book);
+      if (this.quotePolicy === "ask_or_mark_fallback" && mark && mark > 0) {
+        return {
+          instrumentId: candidate.instrumentId,
+          ask: mark,
+          askSize: top.askSize,
+          optionType: targetOptionType,
+          source:
+            targetOptionType === "call"
+              ? "auto_selected_deribit_call_mark_fallback"
+              : "auto_selected_deribit_put_mark_fallback"
+        };
+      }
     }
 
     throw new Error("deribit_quote_unavailable");
@@ -249,7 +297,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 
   async quote(req: QuoteRequest): Promise<VenueQuote> {
     const spot = await resolveDeribitSpot(this.connector);
-    const resolved = await this.resolveQuoteInstrument(req.instrumentId, spot);
+    const resolved = await this.resolveQuoteInstrument(req.instrumentId, spot, req.triggerPrice);
     const premium = Number((resolved.ask * spot * req.quantity).toFixed(4));
     if (!Number.isFinite(premium) || premium <= 0) {
       throw new Error("deribit_quote_unavailable");
@@ -288,6 +336,13 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       order?.status === "paper_filled" || order?.status === "filled" || order?.status === "ok"
         ? "success"
         : "failure";
+    const rawFilledAmount = Number(order?.filledAmount ?? order?.amount ?? quote.quantity);
+    const executedQuantity =
+      Number.isFinite(rawFilledAmount) && rawFilledAmount > 0 ? rawFilledAmount : quote.quantity;
+    const executedPremium =
+      quote.quantity > 0
+        ? Number(((quote.premium * executedQuantity) / quote.quantity).toFixed(10))
+        : quote.premium;
     return {
       venue: "deribit_test",
       status,
@@ -295,13 +350,17 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
       side: "buy",
-      quantity: quote.quantity,
+      quantity: executedQuantity,
       executionPrice: Number(order?.fillPrice ?? 0),
-      premium: quote.premium,
+      premium: executedPremium,
       executedAt: nowIso(),
       externalOrderId: String(order?.id || `DERIBIT-ORD-${randomUUID()}`),
       externalExecutionId: String(order?.id || `DERIBIT-EXE-${randomUUID()}`),
-      details: { raw: order }
+      details: {
+        raw: order,
+        requestedQuantity: quote.quantity,
+        executedQuantity
+      }
     };
   }
 
@@ -430,10 +489,23 @@ export const createPilotVenueAdapter = (params: {
   falconx: FalconxConfig;
   deribit: DeribitConnector;
   quoteTtlMs?: number;
+  deribitQuotePolicy?: DeribitQuotePolicy;
+  deribitStrikeSelectionMode?: DeribitStrikeSelectionMode;
 }): PilotVenueAdapter => {
   const quoteTtlMs = Math.max(5_000, Number(params.quoteTtlMs || 30_000));
+  const deribitQuotePolicy: DeribitQuotePolicy =
+    params.deribitQuotePolicy === "ask_only" ? "ask_only" : "ask_or_mark_fallback";
+  const deribitStrikeSelectionMode: DeribitStrikeSelectionMode =
+    params.deribitStrikeSelectionMode === "trigger_aligned" ? "trigger_aligned" : "legacy";
   if (params.mode === "falconx") return new FalconxAdapter(params.falconx);
-  if (params.mode === "deribit_test") return new DeribitTestAdapter(params.deribit, quoteTtlMs);
+  if (params.mode === "deribit_test") {
+    return new DeribitTestAdapter(
+      params.deribit,
+      quoteTtlMs,
+      deribitQuotePolicy,
+      deribitStrikeSelectionMode
+    );
+  }
   return new MockFalconxAdapter(quoteTtlMs);
 };
 

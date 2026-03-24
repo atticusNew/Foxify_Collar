@@ -288,6 +288,44 @@ export const getProtection = async (pool: Queryable, id: string): Promise<Protec
   return mapProtection(result.rows[0]);
 };
 
+export const getProtectionForUpdate = async (
+  pool: Queryable,
+  id: string
+): Promise<ProtectionRecord | null> => {
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_protections
+      WHERE id = $1
+      FOR UPDATE
+    `,
+    [id]
+  );
+  if (!result.rowCount) return null;
+  return mapProtection(result.rows[0]);
+};
+
+export const markProtectionAwaitingExpiryPriceIfUnresolved = async (
+  pool: Queryable,
+  id: string,
+  metadata: Record<string, unknown>
+): Promise<ProtectionRecord | null> => {
+  const result = await pool.query(
+    `
+      UPDATE pilot_protections
+      SET status = 'awaiting_expiry_price',
+          metadata = $2::jsonb,
+          updated_at = NOW()
+      WHERE id = $1
+        AND expiry_price IS NULL
+        AND status IN ('active', 'awaiting_expiry_price')
+      RETURNING *
+    `,
+    [id, JSON.stringify(metadata)]
+  );
+  if (!result.rowCount) return null;
+  return mapProtection(result.rows[0]);
+};
+
 export const listProtections = async (
   pool: Queryable,
   opts: { limit?: number } = {}
@@ -303,14 +341,30 @@ export const listProtections = async (
 export const listProtectionsByUserHash = async (
   pool: Queryable,
   userHash: string,
-  opts: { limit?: number } = {}
+  opts: { limit?: number; offset?: number } = {}
 ): Promise<ProtectionRecord[]> => {
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  const offset = Math.max(0, Math.floor(opts.offset ?? 0));
   const result = await pool.query(
-    `SELECT * FROM pilot_protections WHERE user_hash = $1 ORDER BY created_at DESC LIMIT $2`,
-    [userHash, limit]
+    `SELECT * FROM pilot_protections WHERE user_hash = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+    [userHash, limit, offset]
   );
   return result.rows.map(mapProtection);
+};
+
+export const countProtectionsByUserHash = async (
+  pool: Queryable,
+  userHash: string
+): Promise<number> => {
+  const result = await pool.query(
+    `
+      SELECT COUNT(*)::int AS n
+      FROM pilot_protections
+      WHERE user_hash = $1
+    `,
+    [userHash]
+  );
+  return Number(result.rows[0]?.n || 0);
 };
 
 export const getDailyProtectedNotionalForUser = async (
@@ -344,6 +398,7 @@ export const insertPriceSnapshot = async (
         endpoint_version, request_id, price_timestamp
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT (id) DO NOTHING
       RETURNING *
     `,
     [
@@ -359,7 +414,19 @@ export const insertPriceSnapshot = async (
       input.priceTimestamp
     ]
   );
-  return mapSnapshot(result.rows[0]);
+  if (result.rowCount > 0) return mapSnapshot(result.rows[0]);
+  const existing = await pool.query(
+    `
+      SELECT * FROM pilot_price_snapshots
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [id]
+  );
+  if (!existing.rowCount) {
+    throw new Error("snapshot_insert_conflict_without_existing_row");
+  }
+  return mapSnapshot(existing.rows[0]);
 };
 
 export const listSnapshotsForProtection = async (
@@ -385,13 +452,15 @@ export const insertLedgerEntry = async (pool: Queryable, input: {
   currency?: string;
   reference?: string | null;
   settledAt?: string | null;
-}): Promise<void> => {
-  await pool.query(
+}): Promise<boolean> => {
+  const result = await pool.query(
     `
       INSERT INTO pilot_ledger_entries (
         id, protection_id, entry_type, amount, currency, reference, settled_at
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      ON CONFLICT (id) DO NOTHING
+      RETURNING id
     `,
     [
       input.id || randomUUID(),
@@ -403,6 +472,7 @@ export const insertLedgerEntry = async (pool: Queryable, input: {
       input.settledAt ?? null
     ]
   );
+  return result.rowCount > 0;
 };
 
 export const listLedgerForProtection = async (
@@ -442,7 +512,7 @@ export const listLedgerForProtection = async (
 
 export const getPilotAdminMetrics = async (
   pool: Queryable,
-  opts: { startingReserveUsdc: number }
+  opts: { startingReserveUsdc: number; userHash: string }
 ): Promise<{
   totalProtections: string;
   activeProtections: string;
@@ -472,12 +542,17 @@ export const getPilotAdminMetrics = async (
         COALESCE(SUM(CASE WHEN status = 'active' THEN protected_notional ELSE 0 END), 0)::text AS protected_notional_active_usdc,
         COALESCE(SUM(premium), 0)::text AS client_premium_total_usdc,
         (
-          SELECT COALESCE(SUM(premium), 0)::text
-          FROM pilot_venue_executions
+          SELECT COALESCE(SUM(vex.premium), 0)::text
+          FROM pilot_venue_executions vex
+          JOIN pilot_protections p2 ON p2.id = vex.protection_id
+          WHERE p2.user_hash = $1
         ) AS hedge_premium_total_usdc,
         COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc
       FROM pilot_protections
+      WHERE user_hash = $1
     `
+    ,
+    [opts.userHash]
   );
   const ledger = await pool.query(
     `
@@ -485,8 +560,12 @@ export const getPilotAdminMetrics = async (
         COALESCE(SUM(CASE WHEN entry_type = 'premium_due' THEN amount ELSE 0 END), 0)::text AS premium_due_total_usdc,
         COALESCE(SUM(CASE WHEN entry_type = 'premium_settled' THEN amount ELSE 0 END), 0)::text AS premium_settled_total_usdc,
         COALESCE(SUM(CASE WHEN entry_type = 'payout_settled' THEN amount ELSE 0 END), 0)::text AS payout_settled_total_usdc
-      FROM pilot_ledger_entries
+      FROM pilot_ledger_entries l
+      JOIN pilot_protections p ON p.id = l.protection_id
+      WHERE p.user_hash = $1
     `
+    ,
+    [opts.userHash]
   );
   const row = result.rows[0] || {};
   const ledgerRow = ledger.rows[0] || {};
@@ -696,6 +775,30 @@ export const reserveDailyActivationCapacity = async (
     [params.userHash, params.dayStartIso]
   );
   return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
+};
+
+export const releaseDailyActivationCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    protectedNotional: string;
+  }
+): Promise<string> => {
+  const updated = await pool.query(
+    `
+      UPDATE pilot_daily_usage
+      SET used_notional = GREATEST(0::numeric, used_notional - $3::numeric)
+      WHERE user_hash = $1
+        AND day_start = $2::date
+      RETURNING used_notional::text AS used_after
+    `,
+    [params.userHash, params.dayStartIso, params.protectedNotional]
+  );
+  if (updated.rowCount && updated.rows[0]?.used_after) {
+    return String(updated.rows[0].used_after);
+  }
+  return "0";
 };
 
 export type PilotTermsAcceptanceRecord = {

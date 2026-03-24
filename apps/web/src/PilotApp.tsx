@@ -126,6 +126,13 @@ type AdminMetrics = {
   netSettledCashUsdc: string;
 };
 
+type AdminExportPagination = {
+  total: number;
+  limit: number;
+  offset: number;
+  nextOffset: number | null;
+};
+
 type ProtectionRecord = {
   id: string;
   status: string;
@@ -337,6 +344,12 @@ export function PilotApp() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminError, setAdminError] = useState<string | null>(null);
   const [adminRows, setAdminRows] = useState<AdminProtectionRow[]>([]);
+  const [adminPagination, setAdminPagination] = useState<AdminExportPagination>({
+    total: 0,
+    limit: 20,
+    offset: 0,
+    nextOffset: null
+  });
   const [adminSelectedId, setAdminSelectedId] = useState<string | null>(null);
   const [adminLedger, setAdminLedger] = useState<AdminLedgerEntry[]>([]);
   const [adminDetailProtection, setAdminDetailProtection] = useState<ProtectionRecord | null>(null);
@@ -345,6 +358,7 @@ export function PilotApp() {
   const [adminViewingId, setAdminViewingId] = useState<string | null>(null);
   const [showAdminDetailModal, setShowAdminDetailModal] = useState(false);
   const [adminDetailUpdatedAt, setAdminDetailUpdatedAt] = useState<Date | null>(null);
+  const [adminDownloadingReconciliation, setAdminDownloadingReconciliation] = useState(false);
   const [showHistorySection, setShowHistorySection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -646,12 +660,14 @@ export function PilotApp() {
     }
   };
 
-  const loadAdminRows = async (token: string) => {
+  const loadAdminRows = async (token: string, pageOffset = 0) => {
     setAdminBusy(true);
     setAdminError(null);
+    const pageSize = adminPagination.limit > 0 ? adminPagination.limit : 20;
+    const normalizedOffset = Math.max(0, Math.floor(pageOffset));
     try {
       const [rowsRes, metricsRes] = await Promise.all([
-        fetch(`${API_BASE}/pilot/protections/export?format=json&limit=200`, {
+        fetch(`${API_BASE}/pilot/protections/export?format=json&limit=${pageSize}&offset=${normalizedOffset}`, {
           headers: { "x-admin-token": token }
         }),
         fetch(`${API_BASE}/pilot/admin/metrics`, {
@@ -667,7 +683,17 @@ export function PilotApp() {
         throw new Error(metricsPayload?.reason || "admin_metrics_failed");
       }
       const rows = rowsPayload.rows as AdminProtectionRow[];
+      const paginationPayload = (rowsPayload?.pagination || {}) as Partial<AdminExportPagination>;
       setAdminRows(rows);
+      setAdminPagination({
+        total: Number(paginationPayload.total ?? rows.length ?? 0),
+        limit: Number(paginationPayload.limit ?? pageSize),
+        offset: Number(paginationPayload.offset ?? normalizedOffset),
+        nextOffset:
+          paginationPayload.nextOffset === null || paginationPayload.nextOffset === undefined
+            ? null
+            : Number(paginationPayload.nextOffset)
+      });
       setAdminMetrics(metricsPayload.metrics as AdminMetrics);
       const nextSelected = adminSelectedId && rows.some((row) => row.protection_id === adminSelectedId)
         ? adminSelectedId
@@ -681,6 +707,40 @@ export function PilotApp() {
       setAdminError(friendlyError(String(err?.message || "admin_load_failed")));
     } finally {
       setAdminBusy(false);
+    }
+  };
+
+  const downloadReconciliationCsv = async (token: string) => {
+    setAdminDownloadingReconciliation(true);
+    setAdminError(null);
+    try {
+      const res = await fetch(`${API_BASE}/pilot/admin/reconciliation/export?format=csv&limit=1000&offset=0`, {
+        headers: { "x-admin-token": token }
+      });
+      if (!res.ok) {
+        let reason = "reconciliation_export_failed";
+        try {
+          const payload = await res.json();
+          reason = String(payload?.reason || reason);
+        } catch {
+          // continue with fallback reason
+        }
+        throw new Error(reason);
+      }
+      const csv = await res.text();
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `pilot-reconciliation-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setAdminError(friendlyError(String(err?.message || "reconciliation_export_failed")));
+    } finally {
+      setAdminDownloadingReconciliation(false);
     }
   };
 
@@ -1032,6 +1092,10 @@ export function PilotApp() {
   const adminReserveAfterOpenLiability = Number(adminMetrics?.reserveAfterOpenPayoutLiabilityUsdc ?? 0);
   const adminNetSettledCash = Number(adminMetrics?.netSettledCashUsdc ?? adminPremiumSettledTotal - adminTotalPayoutSettled);
   const adminActiveCount = Number(adminMetrics?.activeProtections ?? adminRows.filter((row) => row.status === "active").length);
+  const adminPageStart = adminPagination.total > 0 ? adminPagination.offset + 1 : 0;
+  const adminPageEnd = Math.min(adminPagination.offset + adminRows.length, adminPagination.total);
+  const adminCanPrevPage = adminPagination.offset > 0;
+  const adminCanNextPage = adminPagination.nextOffset !== null;
   const adminTimeLeftMs = adminSelected ? Date.parse(adminSelected.expiry_at) - Date.now() : NaN;
   const adminSelectedClientPremium = Number(adminDetailProtection?.premium ?? adminSelected?.premium ?? 0);
   const adminSelectedHedgeCost = Number(
@@ -1042,6 +1106,26 @@ export function PilotApp() {
   const adminSelectedTradeMargin = adminSelectedClientPremium - adminSelectedHedgeCost;
   const adminSelectedTradeMarginPct =
     adminSelectedClientPremium > 0 ? (adminSelectedTradeMargin / adminSelectedClientPremium) * 100 : NaN;
+  const adminSelectedPremiumDue = adminLedger
+    .filter((entry) => entry.entryType === "premium_due")
+    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const adminSelectedPremiumSettled = adminLedger
+    .filter((entry) => entry.entryType === "premium_settled")
+    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const adminSelectedPayoutDue = adminLedger
+    .filter((entry) => entry.entryType === "payout_due")
+    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const adminSelectedPayoutSettled = adminLedger
+    .filter((entry) => entry.entryType === "payout_settled")
+    .reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const adminSelectedPremiumSettledRef = (() => {
+    const settled = adminLedger.filter((entry) => entry.entryType === "premium_settled");
+    return settled.length ? settled[settled.length - 1]?.reference || null : null;
+  })();
+  const adminSelectedPayoutSettledRef = (() => {
+    const settled = adminLedger.filter((entry) => entry.entryType === "payout_settled");
+    return settled.length ? settled[settled.length - 1]?.reference || null : null;
+  })();
   const hasActiveInHistory = Boolean(protection && protectionsHistory.some((item) => item.id === protection.id));
   const activeProtectionForView = protection && hasActiveInHistory ? protection : null;
   const historyWithoutActive = activeProtectionForView
@@ -1739,8 +1823,49 @@ export function PilotApp() {
                 </div>
 
                 <div className="modal-actions">
-                  <button className="btn" disabled={adminBusy} onClick={() => void loadAdminRows(adminToken)}>
+                  <button
+                    className="btn"
+                    disabled={adminBusy}
+                    onClick={() => void loadAdminRows(adminToken, adminPagination.offset)}
+                  >
                     {adminBusy ? "Refreshing..." : "Refresh Admin Data"}
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={adminBusy || adminDownloadingReconciliation}
+                    onClick={() => void downloadReconciliationCsv(adminToken)}
+                  >
+                    {adminDownloadingReconciliation ? "Preparing CSV..." : "Download Reconciliation CSV"}
+                  </button>
+                </div>
+
+                <div className="muted">
+                  Showing {adminPageStart}-{adminPageEnd} of {adminPagination.total} scoped protections.
+                </div>
+
+                <div className="modal-actions">
+                  <button
+                    className="btn btn-secondary"
+                    disabled={adminBusy || !adminCanPrevPage}
+                    onClick={() =>
+                      void loadAdminRows(
+                        adminToken,
+                        Math.max(0, adminPagination.offset - Math.max(adminPagination.limit, 1))
+                      )
+                    }
+                  >
+                    Previous Page
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={adminBusy || !adminCanNextPage}
+                    onClick={() => {
+                      if (adminPagination.nextOffset !== null) {
+                        void loadAdminRows(adminToken, adminPagination.nextOffset);
+                      }
+                    }}
+                  >
+                    Next Page
                   </button>
                 </div>
 
@@ -1753,7 +1878,7 @@ export function PilotApp() {
                     <span>Venue</span>
                     <span>Action</span>
                   </div>
-                  {adminRows.slice(0, 20).map((row) => (
+                  {adminRows.map((row) => (
                     <div
                       className={`pilot-admin-row ${adminSelectedId === row.protection_id ? "pilot-admin-row-selected" : ""}`}
                       key={row.protection_id}
@@ -1819,6 +1944,7 @@ export function PilotApp() {
               {adminMonitor && Number.isFinite(Number(adminMonitor.optionMarkUsd))
                 ? `$${formatUsd(adminMonitor.optionMarkUsd)}`
                 : "—"}
+              {adminMonitor?.markSource ? ` (${adminMonitor.markSource})` : ""}
             </div>
             <div className="muted">
               Hedge Cost (Venue):{" "}
@@ -1838,6 +1964,28 @@ export function PilotApp() {
                 ? `$${formatUsd(adminSelectedTradeMargin)}${Number.isFinite(adminSelectedTradeMarginPct) ? ` (${adminSelectedTradeMarginPct.toFixed(2)}%)` : ""}`
                 : "—"}
             </div>
+            <div className="muted">
+              Premium Due/Settled/Outstanding: ${formatUsd(adminSelectedPremiumDue)} / $
+              {formatUsd(adminSelectedPremiumSettled)} / $
+              {formatUsd(adminSelectedPremiumDue - adminSelectedPremiumSettled)}
+            </div>
+            <div className="muted">
+              Payout Due/Settled/Outstanding: ${formatUsd(adminSelectedPayoutDue)} / $
+              {formatUsd(adminSelectedPayoutSettled)} / $
+              {formatUsd(adminSelectedPayoutDue - adminSelectedPayoutSettled)}
+            </div>
+            <div className="muted">
+              Premium Settlement Ref: {adminSelectedPremiumSettledRef || "—"} · Payout Settlement Ref:{" "}
+              {adminSelectedPayoutSettledRef || "—"}
+            </div>
+            <div className="muted">
+              Venue IDs: Order {adminSelected.external_order_id || "—"} · Execution {adminSelected.external_execution_id || "—"}
+            </div>
+            <div className="muted">
+              Quote IDs: Quote {(adminDetailProtection?.metadata?.quoteId as string | undefined) || "—"} · RFQ{" "}
+              {(adminDetailProtection?.metadata?.rfqId as string | undefined) || "—"}
+            </div>
+            <div className="muted">Payout Tx Ref: {adminDetailProtection?.payoutTxRef || "—"}</div>
             <div className="muted">
               Reference:{" "}
               {adminMonitor && Number.isFinite(Number(adminMonitor.referencePrice))

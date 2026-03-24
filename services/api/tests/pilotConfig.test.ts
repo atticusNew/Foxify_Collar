@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parsePilotVenueMode, resolvePilotWindow } from "../src/pilot/config";
+import {
+  parseDeribitQuotePolicy,
+  parseDeribitStrikeSelectionMode,
+  parsePilotVenueMode,
+  resolvePilotWindow
+} from "../src/pilot/config";
 
 test("parsePilotVenueMode accepts known values", () => {
   assert.equal(parsePilotVenueMode("falconx"), "falconx");
@@ -11,6 +16,29 @@ test("parsePilotVenueMode accepts known values", () => {
 
 test("parsePilotVenueMode fails fast on unknown values", () => {
   assert.throws(() => parsePilotVenueMode("unknown_mode"), /invalid_pilot_venue_mode/);
+});
+
+test("parseDeribitQuotePolicy accepts known values", () => {
+  assert.equal(parseDeribitQuotePolicy("ask_only"), "ask_only");
+  assert.equal(parseDeribitQuotePolicy("ask_or_mark_fallback"), "ask_or_mark_fallback");
+  assert.equal(parseDeribitQuotePolicy(undefined), "ask_or_mark_fallback");
+});
+
+test("parseDeribitQuotePolicy fails fast on unknown values", () => {
+  assert.throws(() => parseDeribitQuotePolicy("invalid"), /invalid_deribit_quote_policy/);
+});
+
+test("parseDeribitStrikeSelectionMode accepts known values", () => {
+  assert.equal(parseDeribitStrikeSelectionMode("legacy"), "legacy");
+  assert.equal(parseDeribitStrikeSelectionMode("trigger_aligned"), "trigger_aligned");
+  assert.equal(parseDeribitStrikeSelectionMode(undefined), "legacy");
+});
+
+test("parseDeribitStrikeSelectionMode fails fast on unknown values", () => {
+  assert.throws(
+    () => parseDeribitStrikeSelectionMode("invalid"),
+    /invalid_deribit_strike_selection_mode/
+  );
 });
 
 test("resolvePilotWindow supports optional start and hard-stop duration", () => {

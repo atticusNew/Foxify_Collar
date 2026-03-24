@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 export type PilotVenueMode = "falconx" | "deribit_test" | "mock_falconx";
+export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
+export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
 export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_invalid";
 
 export type PilotWindowState = {
@@ -35,6 +37,24 @@ export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => 
     return normalized;
   }
   throw new Error(`invalid_pilot_venue_mode:${normalized || "empty"}`);
+};
+
+export const parseDeribitQuotePolicy = (raw: string | undefined): DeribitQuotePolicy => {
+  const normalized = String(raw || "ask_or_mark_fallback").trim();
+  if (normalized === "ask_only" || normalized === "ask_or_mark_fallback") {
+    return normalized;
+  }
+  throw new Error(`invalid_deribit_quote_policy:${normalized || "empty"}`);
+};
+
+export const parseDeribitStrikeSelectionMode = (
+  raw: string | undefined
+): DeribitStrikeSelectionMode => {
+  const normalized = String(raw || "legacy").trim();
+  if (normalized === "legacy" || normalized === "trigger_aligned") {
+    return normalized;
+  }
+  throw new Error(`invalid_deribit_strike_selection_mode:${normalized || "empty"}`);
 };
 
 const parsePilotDurationDays = (raw: string | undefined): number => {
@@ -159,6 +179,8 @@ export const pilotConfig = {
   quoteTtlMs: Number(process.env.PILOT_QUOTE_TTL_MS || "30000"),
   venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "8000"),
   venueMarkTimeoutMs: Number(process.env.PILOT_VENUE_MARK_TIMEOUT_MS || "3000"),
+  deribitQuotePolicy: parseDeribitQuotePolicy(process.env.PILOT_DERIBIT_QUOTE_POLICY),
+  deribitStrikeSelectionMode: parseDeribitStrikeSelectionMode(process.env.PILOT_STRIKE_SELECTION_MODE),
   singlePriceSource: process.env.PRICE_SINGLE_SOURCE === "true",
   expiryInitialWindowMs: Number(process.env.EXPIRY_PRICE_INITIAL_WINDOW_MS || "5000"),
   fullCoverageTolerancePct: Number(process.env.FULL_COVERAGE_TOLERANCE_PCT || "0.005"),

@@ -20,7 +20,7 @@ These endpoints are enabled when `PILOT_API_ENABLED=true`.
 Requires:
 
 - `x-admin-token` header matching `PILOT_ADMIN_TOKEN`
-- request IP in `PILOT_ADMIN_IP_ALLOWLIST`
+- if `PILOT_ADMIN_IP_ALLOWLIST` is configured (non-empty), request IP must be in allowlist
 
 Endpoints:
 
@@ -28,7 +28,8 @@ Endpoints:
 - `POST /pilot/admin/protections/:id/payout-settled`
 - `GET /pilot/admin/protections/:id/ledger`
 - `GET /pilot/admin/metrics` (includes reserve/liquidity rollups using `PILOT_STARTING_RESERVE_USDC`)
-- `GET /pilot/protections/export?format=json|csv`
+- `GET /pilot/protections/export?format=json|csv&limit=<n>&offset=<n>` (tenant-scoped admin export)
+- `GET /pilot/admin/reconciliation/export?format=json|csv&limit=<n>&offset=<n>`
 - `POST /pilot/internal/protections/:id/resolve-expiry` (internal operations/testing)
 
 ## Price source chain
@@ -37,8 +38,8 @@ Endpoints:
 2. Market id pinned by config (`PRICE_REFERENCE_MARKET_ID`, default `BTC-USD`)
 3. Optional fallback endpoint (`FALLBACK_PRICE_URL`) only when `PRICE_SINGLE_SOURCE=false`
 4. Reference fetches automatically retry transient payload/network errors:
-   - `PRICE_REQUEST_RETRY_ATTEMPTS` (default `2`)
-   - `PRICE_REQUEST_RETRY_DELAY_MS` (default `120`)
+   - `PRICE_REQUEST_RETRY_ATTEMPTS` (default `3`)
+   - `PRICE_REQUEST_RETRY_DELAY_MS` (default `180`)
 5. If reference resolution fails or payload is invalid, response is:
    - `status=error`
    - `reason=price_unavailable`
@@ -65,6 +66,20 @@ The pilot ledger stores:
 
 Settlement posting endpoints are idempotent per protection + entry type for pilot operations. Repeated
 settlement calls for an already-settled protection return `status=ok` with `idempotentReplay=true`.
+Expiry and settlement writes are protected by deterministic per-protection write keys to keep one-time
+accounting behavior under concurrent requests.
+
+## Admin scope and exports
+
+- Admin metrics and export endpoints are tenant/campaign scoped using the configured pilot tenant scope hash.
+- `GET /pilot/protections/export?format=json` returns:
+  - `rows`
+  - `pagination` (`total`, `limit`, `offset`, `nextOffset`)
+- `GET /pilot/admin/reconciliation/export` provides reconciliation-friendly rows including:
+  - trade/execution identifiers (quote/rfq/external order/execution)
+  - premium and payout ledger totals
+  - outstanding receivable/liability deltas
+  - settlement references.
 
 ## Tier and trigger semantics
 
@@ -82,6 +97,7 @@ settlement calls for an already-settled protection return `status=ok` with `idem
   - `short`: `trigger_price = server_entry_anchor_price * (1 + drawdown_floor_pct)` (ceiling)
 - `server_entry_anchor_price` is captured from the canonical live reference snapshot at quote lock / activation.
 - Optional client `entryPrice` is informational only and not used to determine trigger or payout economics.
+- `protection.entryPriceSource` is expected to be `reference_snapshot_quote` for pilot quote-lock activations.
 - Payout due logic at expiry:
   - `long`: `payout_due = max(trigger_price - expiry_price, 0) / server_entry_anchor_price * protected_notional`
   - `short`: `payout_due = max(expiry_price - trigger_price, 0) / server_entry_anchor_price * protected_notional`
@@ -113,6 +129,8 @@ settlement calls for an already-settled protection return `status=ok` with `idem
     - Platinum: `PILOT_PREMIUM_FLOOR_BPS_PLATINUM` (`4`)
 - `entryPrice` is optional and treated as user-provided context only (informational).
 - Activation must include a fresh `quoteId` from `/pilot/protections/quote`.
+- Quote and activation require prior acceptance of current terms (`POST /pilot/terms/accept`),
+  otherwise both endpoints return `403` with `reason=terms_not_accepted`.
 - Optional campaign window enforcement for new quote/activate requests:
   - `PILOT_ENFORCE_WINDOW=true`
   - `PILOT_START_AT=<ISO-8601 UTC>`
@@ -128,6 +146,11 @@ settlement calls for an already-settled protection return `status=ok` with `idem
 - When `PILOT_FORCE_DERIBIT_TEST_MODE=true` (default), pilot runtime forces Deribit test-only mode:
   - `DERIBIT_ENV=testnet`
   - `DERIBIT_PAPER=true`
+- Deribit quote behavior can be toggled without code changes:
+  - `PILOT_DERIBIT_QUOTE_POLICY=ask_or_mark_fallback` (default, allows mark fallback when ask is empty)
+  - `PILOT_DERIBIT_QUOTE_POLICY=ask_only` (strict top-of-book ask only)
+  - `PILOT_STRIKE_SELECTION_MODE=legacy` (default 85%/115% heuristic)
+  - `PILOT_STRIKE_SELECTION_MODE=trigger_aligned` (selects strikes nearest computed trigger price)
 - Quote, activation, and expiry resolution all use the same canonical reference feed configuration.
 - Venue mode is controlled by `PILOT_VENUE_MODE`:
   - `deribit_test` (default for pilot realism + safeguards)

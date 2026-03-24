@@ -33,13 +33,17 @@ const activationPayload = (quoteId: string, protectedNotional = 1000) => ({
   tenorDays: 7
 });
 
-const createPilotHarness = async (): Promise<{
+const createPilotHarness = async (opts: {
+  autoAcceptTerms?: boolean;
+  pilotVenueMode?: "mock_falconx" | "deribit_test";
+  deribit?: any;
+} = {}): Promise<{
   app: FastifyInstance;
   pool: { query: (sql: string, params?: unknown[]) => Promise<any>; end: () => Promise<void> };
   close: () => Promise<void>;
 }> => {
   process.env.PILOT_API_ENABLED = "true";
-  process.env.PILOT_VENUE_MODE = "mock_falconx";
+  process.env.PILOT_VENUE_MODE = opts.pilotVenueMode || "mock_falconx";
   process.env.POSTGRES_URL = "postgres://unused";
   process.env.USER_HASH_SECRET = "test_hash_secret";
   process.env.PILOT_ADMIN_TOKEN = "admin-local";
@@ -65,7 +69,16 @@ const createPilotHarness = async (): Promise<{
   const { registerPilotRoutes } = await import("../src/pilot/routes");
 
   const app = Fastify();
-  await registerPilotRoutes(app, { deribit: {} as any });
+  await registerPilotRoutes(app, { deribit: (opts.deribit || {}) as any });
+  if (opts.autoAcceptTerms !== false) {
+    const accept = await app.inject({
+      method: "POST",
+      url: "/pilot/terms/accept",
+      payload: { termsVersion: "v1.0", accepted: true }
+    });
+    assert.equal(accept.statusCode, 200);
+    assert.equal(accept.json().status, "ok");
+  }
 
   return {
     app,
@@ -354,7 +367,7 @@ test("pilot route hardening A-H", async (t) => {
   });
 
   await t.test("H) terms acceptance is server-side, auditable, and one-time per tenant+version", async () => {
-    const harness = await createPilotHarness();
+    const harness = await createPilotHarness({ autoAcceptTerms: false });
     try {
       const { app, pool } = harness;
       const statusBefore = await app.inject({
@@ -506,6 +519,316 @@ test("pilot route hardening A-H", async (t) => {
       assert.ok(String(payload.reference?.venue || "").length > 0);
       assert.ok(String(payload.reference?.source || "").length > 0);
       assert.ok(String(payload.reference?.timestamp || "").length > 0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("K) quote and activate require terms acceptance", async () => {
+    const harness = await createPilotHarness({ autoAcceptTerms: false });
+    try {
+      const { app } = harness;
+      const quoteDenied = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteDenied.statusCode, 403);
+      assert.equal(quoteDenied.json().reason, "terms_not_accepted");
+
+      const activateDenied = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: activationPayload("missing-quote", 1000)
+      });
+      assert.equal(activateDenied.statusCode, 403);
+      assert.equal(activateDenied.json().reason, "terms_not_accepted");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("L) activation failure is marked and daily cap is released", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      const quoteRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1100)
+      });
+      assert.equal(quoteRes.statusCode, 200);
+      const quoteId = String(quoteRes.json().quote.quoteId);
+
+      global.fetch = (async () => {
+        throw new Error("reference_feed_down");
+      }) as typeof fetch;
+
+      const activateRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: activationPayload(quoteId, 1100)
+      });
+      assert.equal(activateRes.statusCode, 503);
+      assert.equal(activateRes.json().reason, "price_unavailable");
+
+      const protectionRow = await pool.query(
+        `SELECT id, status, metadata FROM pilot_protections ORDER BY created_at DESC LIMIT 1`
+      );
+      assert.equal(String(protectionRow.rows[0].status || ""), "activation_failed");
+      assert.ok(protectionRow.rows[0].metadata?.activationFailure);
+
+      const usageRow = await pool.query(
+        `SELECT used_notional::text AS used_now FROM pilot_daily_usage LIMIT 1`
+      );
+      assert.equal(String(usageRow.rows[0]?.used_now || "0"), "0");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("M) expiry and settlement writes remain idempotent under concurrency", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      const { protectionId } = await quoteAndActivate(app, 1200);
+
+      await pool.query(`UPDATE pilot_protections SET expiry_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, [
+        protectionId
+      ]);
+
+      global.fetch = (async () =>
+        ({
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 50000,
+              timestamp: Date.now()
+            })
+        }) as any) as typeof fetch;
+
+      const [resolveA, resolveB] = await Promise.all([
+        app.inject({
+          method: "POST",
+          url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: {}
+        }),
+        app.inject({
+          method: "POST",
+          url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: {}
+        })
+      ]);
+      assert.equal(resolveA.statusCode, 200);
+      assert.equal(resolveB.statusCode, 200);
+
+      const expirySnapshotCount = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_price_snapshots WHERE protection_id = $1 AND snapshot_type = 'expiry'`,
+        [protectionId]
+      );
+      assert.equal(Number(expirySnapshotCount.rows[0].n), 1);
+
+      const payoutDueEntries = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_ledger_entries WHERE protection_id = $1 AND entry_type = 'payout_due'`,
+        [protectionId]
+      );
+      assert.equal(Number(payoutDueEntries.rows[0].n), 1);
+
+      const dueRes = await app.inject({
+        method: "GET",
+        url: `/pilot/protections/${protectionId}`
+      });
+      assert.equal(dueRes.statusCode, 200);
+      const payoutDue = Number(dueRes.json().protection?.payoutDueAmount ?? 0);
+
+      const [premiumA, premiumB] = await Promise.all([
+        app.inject({
+          method: "POST",
+          url: `/pilot/admin/protections/${protectionId}/premium-settled`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: { amount: 12.34, reference: "premium-concurrent" }
+        }),
+        app.inject({
+          method: "POST",
+          url: `/pilot/admin/protections/${protectionId}/premium-settled`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: { amount: 12.34, reference: "premium-concurrent" }
+        })
+      ]);
+      assert.equal(premiumA.statusCode, 200);
+      assert.equal(premiumB.statusCode, 200);
+
+      const premiumSettledCount = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_ledger_entries WHERE protection_id = $1 AND entry_type = 'premium_settled'`,
+        [protectionId]
+      );
+      assert.equal(Number(premiumSettledCount.rows[0].n), 1);
+
+      const [payoutA, payoutB] = await Promise.all([
+        app.inject({
+          method: "POST",
+          url: `/pilot/admin/protections/${protectionId}/payout-settled`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: { amount: payoutDue, payoutTxRef: "payout-concurrent" }
+        }),
+        app.inject({
+          method: "POST",
+          url: `/pilot/admin/protections/${protectionId}/payout-settled`,
+          headers: { "x-admin-token": "admin-local" },
+          payload: { amount: payoutDue, payoutTxRef: "payout-concurrent" }
+        })
+      ]);
+      assert.equal(payoutA.statusCode, 200);
+      assert.equal(payoutB.statusCode, 200);
+
+      const payoutSettledCount = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM pilot_ledger_entries WHERE protection_id = $1 AND entry_type = 'payout_settled'`,
+        [protectionId]
+      );
+      assert.equal(Number(payoutSettledCount.rows[0].n), 1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("N) admin metrics and exports are tenant-scoped", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      await pool.query(
+        `
+          INSERT INTO pilot_protections (
+            id, user_hash, hash_version, status, market_id, protected_notional, foxify_exposure_notional,
+            expiry_at, auto_renew, renew_window_minutes, premium, payout_due_amount, metadata
+          )
+          VALUES (
+            'other-scope-protection', 'other-scope-hash', 1, 'active', 'BTC-USD', '99999', '99999',
+            NOW() + INTERVAL '7 days', FALSE, 1440, '1234.5', '888.8', '{}'::jsonb
+          )
+        `
+      );
+      await pool.query(
+        `
+          INSERT INTO pilot_venue_executions (
+            id, protection_id, venue, status, quote_id, instrument_id, side, quantity, execution_price, premium,
+            executed_at, external_order_id, external_execution_id, details
+          )
+          VALUES (
+            'other-scope-exec', 'other-scope-protection', 'mock_falconx', 'success', 'q-other',
+            'BTC-USD-7D-P', 'buy', '1', '1000', '700', NOW(), 'ord-other', 'exe-other', '{}'::jsonb
+          )
+        `
+      );
+      await pool.query(
+        `
+          INSERT INTO pilot_ledger_entries (id, protection_id, entry_type, amount, currency, reference, settled_at)
+          VALUES
+            ('other-scope-premium-due', 'other-scope-protection', 'premium_due', '500', 'USDC', 'ref1', NOW()),
+            ('other-scope-premium-settled', 'other-scope-protection', 'premium_settled', '300', 'USDC', 'ref2', NOW()),
+            ('other-scope-payout-settled', 'other-scope-protection', 'payout_settled', '200', 'USDC', 'ref3', NOW())
+        `
+      );
+
+      const metricsRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(metricsRes.statusCode, 200);
+      const metricsPayload = metricsRes.json();
+      assert.equal(metricsPayload.status, "ok");
+      assert.equal(String(metricsPayload.metrics?.totalProtections || ""), "0");
+      assert.equal(Number(metricsPayload.metrics?.clientPremiumTotalUsdc || 0), 0);
+      assert.equal(Number(metricsPayload.metrics?.hedgePremiumTotalUsdc || 0), 0);
+
+      const exportRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&limit=50",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(exportRes.statusCode, 200);
+      const exportPayload = exportRes.json();
+      assert.equal(exportPayload.status, "ok");
+      assert.equal(Array.isArray(exportPayload.rows), true);
+      assert.equal(exportPayload.rows.length, 0);
+      assert.equal(Number(exportPayload.pagination?.total || 0), 0);
+
+      const reconciliationRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/reconciliation/export?format=json&limit=50",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(reconciliationRes.statusCode, 200);
+      const reconciliationPayload = reconciliationRes.json();
+      assert.equal(reconciliationPayload.status, "ok");
+      assert.equal(Array.isArray(reconciliationPayload.rows), true);
+      assert.equal(reconciliationPayload.rows.length, 0);
+      assert.equal(Number(reconciliationPayload.pagination?.total || 0), 0);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("O) admin export pagination and reconciliation contract are stable", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const first = await quoteAndActivate(app, 1000);
+      const second = await quoteAndActivate(app, 1200);
+
+      const pageOne = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&limit=1&offset=0",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(pageOne.statusCode, 200);
+      const pageOnePayload = pageOne.json();
+      assert.equal(pageOnePayload.status, "ok");
+      assert.equal(pageOnePayload.rows.length, 1);
+      assert.equal(Number(pageOnePayload.pagination?.total || 0), 2);
+      assert.equal(Number(pageOnePayload.pagination?.offset || 0), 0);
+      assert.equal(Number(pageOnePayload.pagination?.limit || 0), 1);
+
+      const pageTwo = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&limit=1&offset=1",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(pageTwo.statusCode, 200);
+      const pageTwoPayload = pageTwo.json();
+      assert.equal(pageTwoPayload.status, "ok");
+      assert.equal(pageTwoPayload.rows.length, 1);
+      assert.notEqual(String(pageOnePayload.rows[0].protection_id), String(pageTwoPayload.rows[0].protection_id));
+
+      const reconciliationJson = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/reconciliation/export?format=json&limit=20&offset=0",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(reconciliationJson.statusCode, 200);
+      const reconciliationPayload = reconciliationJson.json();
+      assert.equal(reconciliationPayload.status, "ok");
+      assert.equal(Number(reconciliationPayload.pagination?.total || 0), 2);
+      assert.equal(reconciliationPayload.rows.length, 2);
+      const ids = new Set(reconciliationPayload.rows.map((row: any) => String(row.protection_id)));
+      assert.equal(ids.has(first.protectionId), true);
+      assert.equal(ids.has(second.protectionId), true);
+      const firstRow = reconciliationPayload.rows[0] as any;
+      assert.ok(Object.prototype.hasOwnProperty.call(firstRow, "premium_due_total_usdc"));
+      assert.ok(Object.prototype.hasOwnProperty.call(firstRow, "premium_outstanding_usdc"));
+      assert.ok(Object.prototype.hasOwnProperty.call(firstRow, "payout_outstanding_usdc"));
+      assert.ok(Object.prototype.hasOwnProperty.call(firstRow, "quote_id"));
+
+      const reconciliationCsv = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/reconciliation/export?format=csv&limit=20&offset=0",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(reconciliationCsv.statusCode, 200);
+      assert.match(reconciliationCsv.body, /protection_id/);
     } finally {
       await harness.close();
     }
