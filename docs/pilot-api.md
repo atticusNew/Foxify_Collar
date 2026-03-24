@@ -125,6 +125,17 @@ settlement calls for an already-settled protection return `status=ok` with `idem
   - `PILOT_QUOTE_TTL_MS` (default 30000ms lock window for mock/deribit_test pilot quotes)
   - `PILOT_VENUE_EXEC_TIMEOUT_MS` (default 8000ms)
   - `PILOT_VENUE_MARK_TIMEOUT_MS` (default 3000ms)
+- Deribit paper quote hardening controls:
+  - `PILOT_DERIBIT_QUOTE_POLICY`:
+    - `ask_only` (strict top-of-book ask only)
+    - `ask_or_mark_fallback` (allow mark fallback when ask is missing)
+  - `PILOT_STRIKE_SELECTION_MODE`:
+    - `legacy` (distance-to-target strike heuristic)
+    - `trigger_aligned` (enforces hedge-side strike constraints against trigger)
+      - put quotes require `selectedStrike >= triggerPrice`
+      - call quotes require `selectedStrike <= triggerPrice`
+  - `PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS` (default `1.5`)
+    - rejects Deribit quotes whose selected expiry drifts too far from the requested tenor
 - When `PILOT_FORCE_DERIBIT_TEST_MODE=true` (default), pilot runtime forces Deribit test-only mode:
   - `DERIBIT_ENV=testnet`
   - `DERIBIT_PAPER=true`
@@ -135,6 +146,21 @@ settlement calls for an already-settled protection return `status=ok` with `idem
   - `mock_falconx` (offline mock path)
 - Venue adapters are isolated behind `PilotVenueAdapter` so additional exchanges (for example Bullish) can
   be added without changing pilot route contracts.
+- Quote responses include venue selection diagnostics when available:
+  - `quote.details.selectedStrike`
+  - `quote.details.strikeGapToTriggerUsd`
+  - `quote.details.strikeGapToTriggerPct`
+  - `quote.details.selectedTenorDays`
+  - `quote.details.tenorDriftDays`
+  - `quote.details.deribitQuotePolicy`
+  - `quote.details.strikeSelectionMode`
+  - mirrored in `diagnostics.venueSelection` for explicit observability
+
+## Activation reconcile fallback
+
+- If venue execution succeeds but a post-execution persistence write fails, activation is marked
+  `reconcile_pending` rather than silently releasing capacity.
+- This status means the hedge may exist at venue while database state needs operator reconciliation.
 
 ## Proof payload policy
 
