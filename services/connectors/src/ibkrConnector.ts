@@ -91,7 +91,7 @@ export class IbkrConnector {
         signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${this.cfg.auth.token}`
+          ...(this.cfg.auth.token ? { Authorization: `Bearer ${this.cfg.auth.token}` } : {})
         },
         body: body ? JSON.stringify(body) : undefined
       });
@@ -99,7 +99,8 @@ export class IbkrConnector {
         const text = await res.text();
         throw new Error(`ibkr_bridge_http_${res.status}:${text}`);
       }
-      return (await res.json()) as T;
+      const text = await res.text();
+      return (text ? JSON.parse(text) : {}) as T;
     } finally {
       clearTimeout(timer);
     }
@@ -131,6 +132,6 @@ export class IbkrConnector {
   }
 
   async cancelOrder(orderId: string): Promise<{ cancelled: boolean; asOf: string }> {
-    return this.request("POST", `/orders/${encodeURIComponent(orderId)}/cancel");
+    return this.request("POST", `/orders/${encodeURIComponent(orderId)}/cancel`);
   }
 }
