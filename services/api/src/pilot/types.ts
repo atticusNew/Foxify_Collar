@@ -15,6 +15,8 @@ export type PriceSnapshotType = "entry" | "expiry";
 export type PriceSource = "reference_oracle" | "fallback_oracle";
 
 export type VenueExecutionStatus = "success" | "failure";
+export type VenueName = "falconx" | "deribit_test" | "mock_falconx" | "ibkr_cme_live" | "ibkr_cme_paper";
+export type HedgeMode = "options_native" | "futures_synthetic";
 
 export type ProtectionType = "long" | "short";
 
@@ -71,7 +73,7 @@ export type ProtectionRecord = {
 };
 
 export type VenueQuote = {
-  venue: "falconx" | "deribit_test" | "mock_falconx";
+  venue: VenueName;
   quoteId: string;
   rfqId?: string | null;
   instrumentId: string;
@@ -84,7 +86,7 @@ export type VenueQuote = {
 };
 
 export type VenueExecution = {
-  venue: "falconx" | "deribit_test" | "mock_falconx";
+  venue: VenueName;
   status: VenueExecutionStatus;
   quoteId: string;
   rfqId?: string | null;

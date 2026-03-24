@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  parsePilotHedgePolicy,
   parseDeribitMaxTenorDriftDays,
   parseDeribitQuotePolicy,
   parseDeribitStrikeSelectionMode,
+  parsePositiveFinite,
+  parsePositiveIntInRange,
   parsePilotVenueMode,
   resolvePilotWindow
 } from "../src/pilot/config";
@@ -12,6 +15,8 @@ test("parsePilotVenueMode accepts known values", () => {
   assert.equal(parsePilotVenueMode("falconx"), "falconx");
   assert.equal(parsePilotVenueMode("deribit_test"), "deribit_test");
   assert.equal(parsePilotVenueMode("mock_falconx"), "mock_falconx");
+  assert.equal(parsePilotVenueMode("ibkr_cme_live"), "ibkr_cme_live");
+  assert.equal(parsePilotVenueMode("ibkr_cme_paper"), "ibkr_cme_paper");
   assert.equal(parsePilotVenueMode(undefined), "deribit_test");
 });
 
@@ -42,6 +47,26 @@ test("parseDeribitMaxTenorDriftDays enforces bounds", () => {
   assert.equal(parseDeribitMaxTenorDriftDays("3.25"), 3.25);
   assert.throws(() => parseDeribitMaxTenorDriftDays("-1"), /invalid_deribit_max_tenor_drift_days/);
   assert.throws(() => parseDeribitMaxTenorDriftDays("99"), /invalid_deribit_max_tenor_drift_days/);
+});
+
+test("parsePilotHedgePolicy validates allowed values", () => {
+  assert.equal(parsePilotHedgePolicy(undefined), "options_primary_futures_fallback");
+  assert.equal(parsePilotHedgePolicy("options_primary_futures_fallback"), "options_primary_futures_fallback");
+  assert.throws(() => parsePilotHedgePolicy("futures_only"), /invalid_pilot_hedge_policy/);
+});
+
+test("parsePositiveIntInRange validates integer bounds", () => {
+  assert.equal(parsePositiveIntInRange(undefined, 7, 1, 30, "invalid"), 7);
+  assert.equal(parsePositiveIntInRange("5", 7, 1, 30, "invalid"), 5);
+  assert.throws(() => parsePositiveIntInRange("0", 7, 1, 30, "invalid"), /invalid:/);
+  assert.throws(() => parsePositiveIntInRange("31", 7, 1, 30, "invalid"), /invalid:/);
+});
+
+test("parsePositiveFinite validates positive numeric values", () => {
+  assert.equal(parsePositiveFinite(undefined, 2500, "invalid"), 2500);
+  assert.equal(parsePositiveFinite("1.5", 2500, "invalid"), 1.5);
+  assert.throws(() => parsePositiveFinite("0", 2500, "invalid"), /invalid:/);
+  assert.throws(() => parsePositiveFinite("-5", 2500, "invalid"), /invalid:/);
 });
 
 test("resolvePilotWindow supports optional start and hard-stop duration", () => {

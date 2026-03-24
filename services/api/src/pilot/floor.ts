@@ -49,9 +49,30 @@ export const resolveDrawdownFloorPct = (params: {
   return new Decimal(fallback);
 };
 
-export const resolveExpiryDays = (params: { tierName?: string; requestedDays?: number }): number => {
+export const resolveExpiryDays = (params: {
+  tierName?: string;
+  requestedDays?: number;
+  minDays?: number;
+  maxDays?: number;
+  defaultDays?: number;
+}): number => {
   const tierName = normalizeTierName(params.tierName);
-  return PILOT_TIER_DEFAULTS[tierName].expiryDays;
+  const tierDefault = PILOT_TIER_DEFAULTS[tierName].expiryDays;
+  const minDays = Number.isFinite(Number(params.minDays)) ? Math.floor(Number(params.minDays)) : 1;
+  const maxDays = Number.isFinite(Number(params.maxDays))
+    ? Math.floor(Number(params.maxDays))
+    : Math.max(minDays, 7);
+  const defaultDays = Number.isFinite(Number(params.defaultDays))
+    ? Math.floor(Number(params.defaultDays))
+    : tierDefault;
+  const requested = Number(params.requestedDays);
+  if (Number.isFinite(requested) && requested >= minDays && requested <= maxDays) {
+    return Math.floor(requested);
+  }
+  if (defaultDays >= minDays && defaultDays <= maxDays) {
+    return defaultDays;
+  }
+  return Math.max(minDays, Math.min(maxDays, tierDefault));
 };
 
 export const resolveRenewWindowMinutes = (params: {

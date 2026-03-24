@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
 
-export type PilotVenueMode = "falconx" | "deribit_test" | "mock_falconx";
+export type PilotVenueMode =
+  | "falconx"
+  | "deribit_test"
+  | "mock_falconx"
+  | "ibkr_cme_live"
+  | "ibkr_cme_paper";
 export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_invalid";
 export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
 export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
+export type PilotHedgePolicy = "options_primary_futures_fallback";
 
 export type PilotWindowState = {
   enforced: boolean;
@@ -33,10 +39,24 @@ const parseAllowlist = (raw: string | undefined): ParsedAllowlist => {
 
 export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => {
   const normalized = (raw || "deribit_test").trim();
-  if (normalized === "falconx" || normalized === "deribit_test" || normalized === "mock_falconx") {
+  if (
+    normalized === "falconx" ||
+    normalized === "deribit_test" ||
+    normalized === "mock_falconx" ||
+    normalized === "ibkr_cme_live" ||
+    normalized === "ibkr_cme_paper"
+  ) {
     return normalized;
   }
   throw new Error(`invalid_pilot_venue_mode:${normalized || "empty"}`);
+};
+
+export const parsePilotHedgePolicy = (raw: string | undefined): PilotHedgePolicy => {
+  const normalized = String(raw || "options_primary_futures_fallback").trim();
+  if (normalized === "options_primary_futures_fallback") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_hedge_policy:${normalized || "empty"}`);
 };
 
 export const parseDeribitQuotePolicy = (raw: string | undefined): DeribitQuotePolicy => {
@@ -63,6 +83,61 @@ export const parseDeribitMaxTenorDriftDays = (raw: string | undefined): number =
     return parsed;
   }
   throw new Error(`invalid_deribit_max_tenor_drift_days:${String(raw || "").trim() || "empty"}`);
+};
+
+export const parsePositiveIntInRange = (
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  errorCode: string
+): number => {
+  const parsed = Number(raw ?? String(fallback));
+  if (Number.isFinite(parsed) && parsed >= min && parsed <= max) {
+    return Math.floor(parsed);
+  }
+  throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
+};
+
+export const parsePositiveFinite = (raw: string | undefined, fallback: number, errorCode: string): number => {
+  const parsed = Number(raw ?? String(fallback));
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
+};
+
+const resolveTenorBounds = (): {
+  minDays: number;
+  maxDays: number;
+  defaultDays: number;
+} => {
+  const minDays = parsePositiveIntInRange(
+    process.env.PILOT_TENOR_MIN_DAYS,
+    1,
+    1,
+    30,
+    "invalid_pilot_tenor_min_days"
+  );
+  const maxDays = parsePositiveIntInRange(
+    process.env.PILOT_TENOR_MAX_DAYS,
+    7,
+    1,
+    30,
+    "invalid_pilot_tenor_max_days"
+  );
+  const defaultDays = parsePositiveIntInRange(
+    process.env.PILOT_TENOR_DEFAULT_DAYS,
+    7,
+    1,
+    30,
+    "invalid_pilot_tenor_default_days"
+  );
+  if (minDays > maxDays) {
+    throw new Error(`invalid_pilot_tenor_bounds:min_${minDays}_gt_max_${maxDays}`);
+  }
+  if (defaultDays < minDays || defaultDays > maxDays) {
+    throw new Error(`invalid_pilot_tenor_default_out_of_bounds:${defaultDays}`);
+  }
+  return { minDays, maxDays, defaultDays };
 };
 
 const parsePilotDurationDays = (raw: string | undefined): number => {
@@ -148,6 +223,47 @@ export const pilotConfig = {
   deribitQuotePolicy: parseDeribitQuotePolicy(process.env.PILOT_DERIBIT_QUOTE_POLICY),
   deribitStrikeSelectionMode: parseDeribitStrikeSelectionMode(process.env.PILOT_STRIKE_SELECTION_MODE),
   deribitMaxTenorDriftDays: parseDeribitMaxTenorDriftDays(process.env.PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS),
+  pilotHedgePolicy: parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY),
+  ...(() => {
+    const tenor = resolveTenorBounds();
+    return {
+      pilotTenorMinDays: tenor.minDays,
+      pilotTenorMaxDays: tenor.maxDays,
+      pilotTenorDefaultDays: tenor.defaultDays
+    };
+  })(),
+  ibkrBridgeBaseUrl: String(process.env.IBKR_BRIDGE_BASE_URL || "http://127.0.0.1:18080").trim(),
+  ibkrBridgeTimeoutMs: parsePositiveFinite(
+    process.env.IBKR_BRIDGE_TIMEOUT_MS,
+    4000,
+    "invalid_ibkr_bridge_timeout_ms"
+  ),
+  ibkrBridgeToken: String(process.env.IBKR_BRIDGE_TOKEN || "").trim(),
+  ibkrAccountId: String(process.env.IBKR_ACCOUNT_ID || "").trim(),
+  ibkrEnableExecution: process.env.IBKR_ENABLE_EXECUTION === "true",
+  ibkrOrderTimeoutMs: parsePositiveFinite(
+    process.env.IBKR_ORDER_TIMEOUT_MS,
+    8000,
+    "invalid_ibkr_order_timeout_ms"
+  ),
+  ibkrMaxRepriceSteps: parsePositiveIntInRange(
+    process.env.IBKR_MAX_REPRICE_STEPS,
+    4,
+    1,
+    20,
+    "invalid_ibkr_max_reprice_steps"
+  ),
+  ibkrRepriceStepTicks: parsePositiveFinite(
+    process.env.IBKR_REPRICE_STEP_TICKS,
+    2,
+    "invalid_ibkr_reprice_step_ticks"
+  ),
+  ibkrMaxSlippageBps: parsePositiveFinite(
+    process.env.IBKR_MAX_SLIPPAGE_BPS,
+    25,
+    "invalid_ibkr_max_slippage_bps"
+  ),
+  enableDeribitComparison: process.env.PILOT_ENABLE_DERIBIT_COMPARISON === "true",
   tenantScopeId: (process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot").trim() || "foxify-pilot",
   termsVersion: (process.env.PILOT_TERMS_VERSION || "v1.0").trim() || "v1.0",
   postgresUrl: process.env.POSTGRES_URL || process.env.DATABASE_URL || "",
