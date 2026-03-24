@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parsePilotVenueMode, resolvePilotWindow } from "../src/pilot/config";
+import {
+  parseDeribitMaxTenorDriftDays,
+  parseDeribitQuotePolicy,
+  parseDeribitStrikeSelectionMode,
+  parsePilotVenueMode,
+  resolvePilotWindow
+} from "../src/pilot/config";
 
 test("parsePilotVenueMode accepts known values", () => {
   assert.equal(parsePilotVenueMode("falconx"), "falconx");
@@ -11,6 +17,31 @@ test("parsePilotVenueMode accepts known values", () => {
 
 test("parsePilotVenueMode fails fast on unknown values", () => {
   assert.throws(() => parsePilotVenueMode("unknown_mode"), /invalid_pilot_venue_mode/);
+});
+
+test("parseDeribitQuotePolicy validates known values", () => {
+  assert.equal(parseDeribitQuotePolicy("ask_only"), "ask_only");
+  assert.equal(parseDeribitQuotePolicy("ask_or_mark_fallback"), "ask_or_mark_fallback");
+  assert.equal(parseDeribitQuotePolicy(undefined), "ask_or_mark_fallback");
+  assert.throws(() => parseDeribitQuotePolicy("best_bid"), /invalid_deribit_quote_policy/);
+});
+
+test("parseDeribitStrikeSelectionMode validates known values", () => {
+  assert.equal(parseDeribitStrikeSelectionMode("legacy"), "legacy");
+  assert.equal(parseDeribitStrikeSelectionMode("trigger_aligned"), "trigger_aligned");
+  assert.equal(parseDeribitStrikeSelectionMode(undefined), "trigger_aligned");
+  assert.throws(
+    () => parseDeribitStrikeSelectionMode("closest"),
+    /invalid_deribit_strike_selection_mode/
+  );
+});
+
+test("parseDeribitMaxTenorDriftDays enforces bounds", () => {
+  assert.equal(parseDeribitMaxTenorDriftDays(undefined), 1.5);
+  assert.equal(parseDeribitMaxTenorDriftDays("0"), 0);
+  assert.equal(parseDeribitMaxTenorDriftDays("3.25"), 3.25);
+  assert.throws(() => parseDeribitMaxTenorDriftDays("-1"), /invalid_deribit_max_tenor_drift_days/);
+  assert.throws(() => parseDeribitMaxTenorDriftDays("99"), /invalid_deribit_max_tenor_drift_days/);
 });
 
 test("resolvePilotWindow supports optional start and hard-stop duration", () => {

@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 export type PilotVenueMode = "falconx" | "deribit_test" | "mock_falconx";
 export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_invalid";
+export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
+export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
 
 export type PilotWindowState = {
   enforced: boolean;
@@ -35,6 +37,32 @@ export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => 
     return normalized;
   }
   throw new Error(`invalid_pilot_venue_mode:${normalized || "empty"}`);
+};
+
+export const parseDeribitQuotePolicy = (raw: string | undefined): DeribitQuotePolicy => {
+  const normalized = String(raw || "ask_or_mark_fallback").trim();
+  if (normalized === "ask_only" || normalized === "ask_or_mark_fallback") {
+    return normalized;
+  }
+  throw new Error(`invalid_deribit_quote_policy:${normalized || "empty"}`);
+};
+
+export const parseDeribitStrikeSelectionMode = (
+  raw: string | undefined
+): DeribitStrikeSelectionMode => {
+  const normalized = String(raw || "trigger_aligned").trim();
+  if (normalized === "legacy" || normalized === "trigger_aligned") {
+    return normalized;
+  }
+  throw new Error(`invalid_deribit_strike_selection_mode:${normalized || "empty"}`);
+};
+
+export const parseDeribitMaxTenorDriftDays = (raw: string | undefined): number => {
+  const parsed = Number(raw || "1.5");
+  if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 14) {
+    return parsed;
+  }
+  throw new Error(`invalid_deribit_max_tenor_drift_days:${String(raw || "").trim() || "empty"}`);
 };
 
 const parsePilotDurationDays = (raw: string | undefined): number => {
@@ -117,6 +145,9 @@ export const resolvePilotWindow = (now: Date = new Date()): PilotWindowState => 
 export const pilotConfig = {
   enabled: process.env.PILOT_API_ENABLED === "true",
   venueMode: parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
+  deribitQuotePolicy: parseDeribitQuotePolicy(process.env.PILOT_DERIBIT_QUOTE_POLICY),
+  deribitStrikeSelectionMode: parseDeribitStrikeSelectionMode(process.env.PILOT_STRIKE_SELECTION_MODE),
+  deribitMaxTenorDriftDays: parseDeribitMaxTenorDriftDays(process.env.PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS),
   tenantScopeId: (process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot").trim() || "foxify-pilot",
   termsVersion: (process.env.PILOT_TERMS_VERSION || "v1.0").trim() || "v1.0",
   postgresUrl: process.env.POSTGRES_URL || process.env.DATABASE_URL || "",
