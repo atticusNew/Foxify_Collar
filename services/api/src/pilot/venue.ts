@@ -1,9 +1,15 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { DeribitConnector } from "@foxify/connectors";
+import {
+  DeribitConnector,
+  IbkrConnector,
+  type IbkrContractQuery,
+  type IbkrQualifiedContract
+} from "@foxify/connectors";
 import type {
   DeribitQuotePolicy,
   DeribitStrikeSelectionMode,
+  PilotHedgePolicy,
   PilotVenueMode
 } from "./config";
 import type { VenueExecution, VenueQuote } from "./types";
@@ -17,6 +23,9 @@ export type QuoteRequest = {
   protectionType?: "long" | "short";
   triggerPrice?: number;
   requestedTenorDays?: number;
+  tenorMinDays?: number;
+  tenorMaxDays?: number;
+  hedgePolicy?: PilotHedgePolicy;
   clientOrderId?: string;
 };
 
@@ -25,6 +34,18 @@ type FalconxConfig = {
   apiKey: string;
   secret: string;
   passphrase: string;
+};
+
+type IbkrVenueConfig = {
+  bridgeBaseUrl: string;
+  bridgeTimeoutMs: number;
+  bridgeToken: string;
+  accountId: string;
+  enableExecution: boolean;
+  orderTimeoutMs: number;
+  maxRepriceSteps: number;
+  repriceStepTicks: number;
+  maxSlippageBps: number;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -142,6 +163,30 @@ const resolveDeribitSpot = async (connector: DeribitConnector): Promise<number> 
     throw new Error("deribit_spot_unavailable");
   }
   return indexPrice;
+};
+
+const toFinitePositive = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.floor(n);
+  return Math.max(min, Math.min(max, v));
+};
+
+const buildIbkrInstrumentId = (contract: IbkrQualifiedContract): string => {
+  const symbol = String(contract.localSymbol || "").replace(/\s+/g, "_");
+  return `IBKR-${contract.secType}-${contract.conId}-${symbol}`;
+};
+
+const parseIbkrConId = (instrumentId: string): number | null => {
+  const match = String(instrumentId || "").match(/^IBKR-[^-]+-(\d+)-/);
+  if (!match) return null;
+  const conId = Number(match[1]);
+  return Number.isFinite(conId) && conId > 0 ? conId : null;
 };
 
 export interface PilotVenueAdapter {
@@ -503,6 +548,273 @@ class DeribitTestAdapter implements PilotVenueAdapter {
   }
 }
 
+class IbkrCmeAdapter implements PilotVenueAdapter {
+  constructor(
+    private connector: IbkrConnector,
+    private mode: "ibkr_cme_live" | "ibkr_cme_paper",
+    private quoteTtlMs: number,
+    private accountId: string,
+    private enableExecution: boolean,
+    private maxRepriceSteps: number,
+    private repriceStepTicks: number,
+    private maxSlippageBps: number
+  ) {}
+
+  private resolveRight(protectionType?: "long" | "short"): "P" | "C" {
+    return protectionType === "short" ? "C" : "P";
+  }
+
+  private async resolveContractAndBook(req: QuoteRequest): Promise<{
+    contract: IbkrQualifiedContract;
+    hedgeMode: "options_native" | "futures_synthetic";
+    top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+    selectedTenorDays: number;
+    strike: number | null;
+  }> {
+    const requestedTenorDays = clampInt(req.requestedTenorDays, 1, 30, 7);
+    const minTenorDays = clampInt(req.tenorMinDays, 1, 30, 1);
+    const maxTenorDays = clampInt(req.tenorMaxDays, minTenorDays, 30, Math.max(minTenorDays, 7));
+    const selectedTenorDays = Math.max(minTenorDays, Math.min(maxTenorDays, requestedTenorDays));
+    const trigger = toFinitePositive(req.triggerPrice);
+    const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
+    const right = this.resolveRight(req.protectionType);
+    const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
+
+    if (hedgePolicy === "options_primary_futures_fallback") {
+      if (roundedStrike) {
+        const optionQuery: IbkrContractQuery = {
+          kind: "mbt_option",
+          symbol: "BTC",
+          exchange: "CME",
+          currency: "USD",
+          tenorDays: selectedTenorDays,
+          right,
+          strike: roundedStrike
+        };
+        const optionContracts = await this.connector.qualifyContracts(optionQuery);
+        if (optionContracts.length > 0) {
+          const contract = optionContracts[0];
+          const top = await this.connector.getTopOfBook(contract.conId);
+          return {
+            contract,
+            hedgeMode: "options_native",
+            top,
+            selectedTenorDays,
+            strike: toFinitePositive(contract.strike) || roundedStrike
+          };
+        }
+      }
+
+      const futQuery: IbkrContractQuery = {
+        kind: "mbt_future",
+        symbol: "BTC",
+        exchange: "CME",
+        currency: "USD",
+        tenorDays: selectedTenorDays
+      };
+      const futContracts = await this.connector.qualifyContracts(futQuery);
+      if (futContracts.length > 0) {
+        const contract = futContracts[0];
+        const top = await this.connector.getTopOfBook(contract.conId);
+        return {
+          contract,
+          hedgeMode: "futures_synthetic",
+          top,
+          selectedTenorDays,
+          strike: null
+        };
+      }
+    }
+
+    throw new Error("ibkr_quote_unavailable:no_contract");
+  }
+
+  async quote(req: QuoteRequest): Promise<VenueQuote> {
+    const resolved = await this.resolveContractAndBook(req);
+    const ask = toFinitePositive(resolved.top.ask);
+    const bid = toFinitePositive(resolved.top.bid);
+    const unitPrice = ask ?? bid;
+    if (!unitPrice) {
+      throw new Error("ibkr_quote_unavailable:no_top_of_book");
+    }
+    const quoteTs = nowIso();
+    const expiresAt = new Date(Date.now() + this.quoteTtlMs).toISOString();
+    const notional = Math.max(0, Number(req.protectedNotional || 0));
+    const referenceQty = Math.max(0, Number(req.quantity || 0));
+    const premium = Number((Math.max(unitPrice * referenceQty, notional * 0.001)).toFixed(4));
+    const instrumentId = buildIbkrInstrumentId(resolved.contract);
+    const trigger = toFinitePositive(req.triggerPrice);
+    const strikeGapToTriggerUsd =
+      trigger !== null && resolved.strike !== null ? resolved.strike - trigger : null;
+    const strikeGapToTriggerPct =
+      trigger && trigger > 0 && strikeGapToTriggerUsd !== null ? strikeGapToTriggerUsd / trigger : null;
+
+    return {
+      venue: this.mode,
+      quoteId: randomUUID(),
+      rfqId: null,
+      instrumentId,
+      side: "buy",
+      quantity: referenceQty,
+      premium,
+      expiresAt,
+      quoteTs,
+      details: {
+        source: "ibkr_top_of_book",
+        pricing: "cme_mbt",
+        hedgeMode: resolved.hedgeMode,
+        selectedTenorDays: resolved.selectedTenorDays,
+        askPrice: ask,
+        bidPrice: bid,
+        askSize: resolved.top.askSize,
+        bidSize: resolved.top.bidSize,
+        selectedStrike: resolved.strike,
+        targetTriggerPrice: trigger,
+        strikeGapToTriggerUsd,
+        strikeGapToTriggerPct,
+        conId: resolved.contract.conId,
+        secType: resolved.contract.secType,
+        localSymbol: resolved.contract.localSymbol,
+        expiry: resolved.contract.expiry,
+        multiplier: resolved.contract.multiplier,
+        minTick: resolved.contract.minTick ?? null
+      }
+    };
+  }
+
+  async execute(quote: VenueQuote): Promise<VenueExecution> {
+    if (!this.enableExecution) {
+      return {
+        venue: this.mode,
+        status: "failure",
+        quoteId: quote.quoteId,
+        rfqId: quote.rfqId ?? null,
+        instrumentId: quote.instrumentId,
+        side: "buy",
+        quantity: 0,
+        executionPrice: 0,
+        premium: 0,
+        executedAt: nowIso(),
+        externalOrderId: `IBKR-DISABLED-${randomUUID()}`,
+        externalExecutionId: `IBKR-DISABLED-${randomUUID()}`,
+        details: { reason: "execution_disabled" }
+      };
+    }
+
+    const details = (quote.details || {}) as Record<string, unknown>;
+    const conId = toFinitePositive(details.conId) || parseIbkrConId(quote.instrumentId);
+    if (!conId) {
+      throw new Error("ibkr_execute_failed:missing_conid");
+    }
+    const minTick = toFinitePositive(details.minTick) || 5;
+    const market = await this.connector.getTopOfBook(conId);
+    const baseAsk = toFinitePositive(market.ask);
+    const baseBid = toFinitePositive(market.bid);
+    const baseLimit = baseAsk ?? baseBid;
+    if (!baseLimit) {
+      throw new Error("ibkr_execute_failed:no_market");
+    }
+    const stepTicks = Math.max(0.1, Number(this.repriceStepTicks || 0));
+    const maxSteps = Math.max(1, Math.floor(this.maxRepriceSteps || 1));
+    const maxSlipPct = Math.max(0, Number(this.maxSlippageBps || 0)) / 10_000;
+    const maxLimit = baseLimit * (1 + maxSlipPct);
+    const requestedQty = Math.max(0.00000001, Number(quote.quantity || 0));
+    const contractQty = Math.max(1, Math.ceil(requestedQty / 0.1));
+
+    let lastOrderId = "";
+    for (let step = 0; step < maxSteps; step += 1) {
+      const limitPrice = Math.min(maxLimit, baseLimit + step * stepTicks * minTick);
+      const placed = await this.connector.placeOrder({
+        accountId: this.accountId,
+        conId,
+        side: "BUY",
+        quantity: contractQty,
+        orderType: "LMT",
+        limitPrice,
+        tif: "IOC",
+        clientOrderId: `pilot-${quote.quoteId}-${step}`
+      });
+      lastOrderId = placed.orderId;
+      const state = await this.connector.getOrder(placed.orderId);
+      const filledQtyContracts = Math.max(0, Number(state.filledQuantity || 0));
+      if (filledQtyContracts > 0 && (state.status === "filled" || state.status === "partially_filled")) {
+        const executedQuantity = Number((filledQtyContracts * 0.1).toFixed(8));
+        const executionPrice = toFinitePositive(state.avgFillPrice) || limitPrice;
+        return {
+          venue: this.mode,
+          status: "success",
+          quoteId: quote.quoteId,
+          rfqId: quote.rfqId ?? null,
+          instrumentId: quote.instrumentId,
+          side: "buy",
+          quantity: executedQuantity,
+          executionPrice,
+          premium: Number((executionPrice * filledQtyContracts).toFixed(6)),
+          executedAt: nowIso(),
+          externalOrderId: placed.orderId,
+          externalExecutionId: placed.orderId,
+          details: {
+            hedgeMode: details.hedgeMode || "options_native",
+            fillStatus: state.status,
+            filledContracts: filledQtyContracts,
+            limitPrice,
+            repriceStep: step
+          }
+        };
+      }
+      await this.connector.cancelOrder(placed.orderId);
+    }
+
+    return {
+      venue: this.mode,
+      status: "failure",
+      quoteId: quote.quoteId,
+      rfqId: quote.rfqId ?? null,
+      instrumentId: quote.instrumentId,
+      side: "buy",
+      quantity: 0,
+      executionPrice: 0,
+      premium: 0,
+      executedAt: nowIso(),
+      externalOrderId: lastOrderId || `IBKR-NO-FILL-${randomUUID()}`,
+      externalExecutionId: lastOrderId || `IBKR-NO-FILL-${randomUUID()}`,
+      details: { reason: "no_fill_after_reprice" }
+    };
+  }
+
+  async getMark(params: { instrumentId: string; quantity: number }): Promise<{
+    markPremium: number;
+    unitPrice: number;
+    source: string;
+    asOf: string;
+    details?: Record<string, unknown>;
+  }> {
+    const conId = parseIbkrConId(params.instrumentId);
+    if (!conId) {
+      throw new Error("mark_unavailable");
+    }
+    const top = await this.connector.getTopOfBook(conId);
+    const bid = toFinitePositive(top.bid);
+    const ask = toFinitePositive(top.ask);
+    const unitPrice = bid && ask ? (bid + ask) / 2 : ask ?? bid;
+    if (!unitPrice) {
+      throw new Error("mark_unavailable");
+    }
+    const quantity = Math.max(0, Number(params.quantity || 0));
+    return {
+      markPremium: Number((unitPrice * quantity).toFixed(6)),
+      unitPrice: Number(unitPrice.toFixed(6)),
+      source: "ibkr_top_of_book_mid",
+      asOf: nowIso(),
+      details: {
+        bid,
+        ask,
+        conId
+      }
+    };
+  }
+}
+
 class FalconxAdapter implements PilotVenueAdapter {
   constructor(private cfg: FalconxConfig) {}
 
@@ -584,6 +896,7 @@ export const createPilotVenueAdapter = (params: {
   mode: PilotVenueMode;
   falconx: FalconxConfig;
   deribit: DeribitConnector;
+  ibkr?: IbkrVenueConfig;
   quoteTtlMs?: number;
   deribitQuotePolicy?: DeribitQuotePolicy;
   deribitStrikeSelectionMode?: DeribitStrikeSelectionMode;
@@ -591,6 +904,27 @@ export const createPilotVenueAdapter = (params: {
 }): PilotVenueAdapter => {
   const quoteTtlMs = Math.max(5_000, Number(params.quoteTtlMs || 30_000));
   if (params.mode === "falconx") return new FalconxAdapter(params.falconx);
+  if (params.mode === "ibkr_cme_live" || params.mode === "ibkr_cme_paper") {
+    if (!params.ibkr) {
+      throw new Error("ibkr_config_missing");
+    }
+    const ibkrConnector = new IbkrConnector({
+      baseUrl: params.ibkr.bridgeBaseUrl,
+      timeoutMs: Math.max(500, Number(params.ibkr.orderTimeoutMs || params.ibkr.bridgeTimeoutMs)),
+      auth: { token: params.ibkr.bridgeToken },
+      accountId: params.ibkr.accountId
+    });
+    return new IbkrCmeAdapter(
+      ibkrConnector,
+      params.mode,
+      quoteTtlMs,
+      params.ibkr.accountId,
+      params.ibkr.enableExecution,
+      params.ibkr.maxRepriceSteps,
+      params.ibkr.repriceStepTicks,
+      params.ibkr.maxSlippageBps
+    );
+  }
   if (params.mode === "deribit_test") {
     return new DeribitTestAdapter(
       params.deribit,

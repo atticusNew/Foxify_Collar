@@ -56,6 +56,9 @@ const createPilotHarness = async (opts?: {
   process.env.PILOT_DURATION_DAYS = "30";
   process.env.PILOT_ENFORCE_WINDOW = "true";
   process.env.PILOT_QUOTE_TTL_MS = "120000";
+  process.env.PILOT_TENOR_MIN_DAYS = "1";
+  process.env.PILOT_TENOR_MAX_DAYS = "7";
+  process.env.PILOT_TENOR_DEFAULT_DAYS = "7";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
   if (opts?.env) {
     for (const [key, value] of Object.entries(opts.env)) {

@@ -24,6 +24,7 @@ type QuoteResult = {
     expiresAt: string;
     quantity: number;
     venue: string;
+    details?: Record<string, unknown>;
   };
   entrySnapshot: {
     price: string;
@@ -40,6 +41,18 @@ type QuoteResult = {
     projectedDailyUsdc: string;
     dailyCapExceededOnActivate: boolean;
   };
+  diagnostics?: Record<string, unknown>;
+};
+
+type QuoteDiagnosticsVenueSelection = {
+  selectedTenorDays?: string | number | null;
+  hedgeMode?: string | null;
+  deribitComparison?: {
+    status?: string;
+    venue?: string;
+    premium?: number | string;
+    instrumentId?: string;
+  } | null;
 };
 
 type MonitorPayload = {
@@ -187,6 +200,9 @@ const parseCurrencyNumber = (value: string): number => {
   return Number.isFinite(parsed) ? parsed : NaN;
 };
 
+const clampInt = (value: number, min: number, max: number): number =>
+  Math.max(min, Math.min(max, Math.floor(value)));
+
 const formatCountdown = (seconds: number): string => {
   if (!Number.isFinite(seconds) || seconds < 0) return "00:00";
   const mins = Math.floor(seconds / 60);
@@ -268,6 +284,8 @@ const isRetryableActivationError = (message: string): boolean => {
 const formatVenueLabel = (venue: string | null | undefined): string => {
   const normalized = String(venue || "").trim().toLowerCase();
   if (normalized === "deribit_test") return "Deribit (Live Data, Paper Exec)";
+  if (normalized === "ibkr_cme_live") return "IBKR CME (Live)";
+  if (normalized === "ibkr_cme_paper") return "IBKR CME (Paper)";
   if (normalized === "falconx") return "FalconX Live";
   if (normalized === "mock_falconx") return "Mock FalconX";
   return normalized || "Unknown";
@@ -319,6 +337,7 @@ export function PilotApp() {
   const [exposureNotional, setExposureNotional] = useState("");
   const [protectedNotional, setProtectedNotional] = useState("");
   const [autoRenew, setAutoRenew] = useState(false);
+  const [selectedTenorDays, setSelectedTenorDays] = useState<number>(7);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -431,7 +450,14 @@ export function PilotApp() {
     setQuote(null);
     setQuoteState("idle");
     setQuoteTimeLeft(0);
-  }, [protectionType, selectedTier.name, selectedTier.drawdownFloorPct, exposureNotional, protectedNotional]);
+  }, [
+    protectionType,
+    selectedTier.name,
+    selectedTier.drawdownFloorPct,
+    selectedTenorDays,
+    exposureNotional,
+    protectedNotional
+  ]);
 
   useEffect(() => {
     setTermsError(null);
@@ -756,10 +782,11 @@ export function PilotApp() {
               protectedNotional: protectedValue,
               foxifyExposureNotional: exposureValue,
               protectionType,
-              instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
+              instrumentId: `BTC-USD-${selectedTenorDays}D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
               tierName: selectedTier.name,
-              drawdownFloorPct: selectedTier.drawdownFloorPct
+              drawdownFloorPct: selectedTier.drawdownFloorPct,
+              tenorDays: selectedTenorDays
             })
           });
           const payload = await res.json();
@@ -821,11 +848,11 @@ export function PilotApp() {
               protectedNotional: protectedValue,
               foxifyExposureNotional: exposureValue,
               protectionType,
-              instrumentId: `BTC-USD-7D-${protectionType === "short" ? "C" : "P"}`,
+              instrumentId: `BTC-USD-${selectedTenorDays}D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
               tierName: selectedTier.name,
               drawdownFloorPct: selectedTier.drawdownFloorPct,
-              tenorDays: selectedTier.expiryDays,
+              tenorDays: selectedTenorDays,
               renewWindowMinutes: selectedTier.renewWindowMinutes,
               autoRenew,
               quoteId: quote?.quote?.quoteId
@@ -998,6 +1025,20 @@ export function PilotApp() {
   const quoteProtectionType: ProtectionType = quote?.protectionType ?? protectionType;
   const quoteDirectionLabel =
     quoteProtectionType === "short" ? "Short Exposure (Call Hedge)" : "Long Exposure (Put Hedge)";
+  const quoteDetails =
+    quote && quote.quote && typeof quote.quote.details === "object" && quote.quote.details
+      ? (quote.quote.details as Record<string, unknown>)
+      : null;
+  const selectedTenorFromQuote = Number(quoteDetails?.selectedTenorDays ?? NaN);
+  const hedgeModeFromQuote = String(quoteDetails?.hedgeMode || "").trim();
+  const quoteDiagnostics =
+    quote && quote.diagnostics && typeof quote.diagnostics === "object"
+      ? (quote.diagnostics as Record<string, unknown>)
+      : null;
+  const deribitComparisonDiagnostics =
+    quoteDiagnostics && quoteDiagnostics.deribitComparison && typeof quoteDiagnostics.deribitComparison === "object"
+      ? (quoteDiagnostics.deribitComparison as Record<string, unknown>)
+      : null;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("internal_admin") === "1";
@@ -1319,9 +1360,23 @@ export function PilotApp() {
             </div>
 
             <div className="pilot-form-row">
-              <span className="pilot-label">Tenor</span>
-              <div className="pilot-field pilot-value">
-                <strong>{selectedTier.expiryDays} days (fixed)</strong>
+              <span className="pilot-label">Tenor (days)</span>
+              <div className="pilot-field">
+                <input
+                  className="input pilot-input"
+                  type="number"
+                  min={1}
+                  max={7}
+                  step={1}
+                  value={selectedTenorDays}
+                  disabled={busy || quoteLocked}
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    if (Number.isFinite(next)) {
+                      setSelectedTenorDays(Math.max(1, Math.min(7, Math.floor(next))));
+                    }
+                  }}
+                />
               </div>
             </div>
 
@@ -1385,6 +1440,31 @@ export function PilotApp() {
                   Reference {formatUsd(quote.entrySnapshot.price)} ({quote.entrySnapshot.source}) at{" "}
                   {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
                 </div>
+                {quoteDetails && (
+                  <>
+                    {Number.isFinite(selectedTenorFromQuote) && (
+                      <div className="muted">
+                        Selected tenor {selectedTenorFromQuote.toFixed(2)} days
+                      </div>
+                    )}
+                    {hedgeModeFromQuote && (
+                      <div className="muted">
+                        Hedge mode:{" "}
+                        {hedgeModeFromQuote === "futures_synthetic"
+                          ? "Futures Synthetic"
+                          : "Options Native"}
+                      </div>
+                    )}
+                  </>
+                )}
+                {deribitComparisonDiagnostics && (
+                  <div className="muted">
+                    Deribit comparison:{" "}
+                    {String(deribitComparisonDiagnostics.status || "") === "ok"
+                      ? `Premium $${formatUsd(deribitComparisonDiagnostics.premium as number)}`
+                      : String(deribitComparisonDiagnostics.reason || "unavailable")}
+                  </div>
+                )}
               </>
             )}
           </div>

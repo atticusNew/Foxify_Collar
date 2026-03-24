@@ -39,6 +39,11 @@ import {
   resolveRenewWindowMinutes
 } from "./floor";
 
+const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_native" | "futures_synthetic" => {
+  const raw = String(quoteDetails?.hedgeMode || "");
+  return raw === "futures_synthetic" ? "futures_synthetic" : "options_native";
+};
+
 const getRequestIp = (req: FastifyRequest): string => {
   // Use Fastify-resolved client IP. Raw x-forwarded-for is not trusted by default.
   return req.ip;
@@ -173,7 +178,8 @@ const sanitizeQuoteForClient = (quote: {
     "selectedTenorDays",
     "tenorDriftDays",
     "deribitQuotePolicy",
-    "strikeSelectionMode"
+    "strikeSelectionMode",
+    "hedgeMode"
   ];
   for (const key of allowedKeys) {
     if (key in details) allowedDetails[key] = details[key];
@@ -354,8 +360,35 @@ export const registerPilotRoutes = async (
       secret: pilotConfig.falconxSecret,
       passphrase: pilotConfig.falconxPassphrase
     },
+    ibkr: {
+      bridgeBaseUrl: pilotConfig.ibkrBridgeBaseUrl,
+      bridgeTimeoutMs: pilotConfig.ibkrBridgeTimeoutMs,
+      bridgeToken: pilotConfig.ibkrBridgeToken,
+      accountId: pilotConfig.ibkrAccountId,
+      enableExecution: pilotConfig.ibkrEnableExecution,
+      orderTimeoutMs: pilotConfig.ibkrOrderTimeoutMs,
+      maxRepriceSteps: pilotConfig.ibkrMaxRepriceSteps,
+      repriceStepTicks: pilotConfig.ibkrRepriceStepTicks,
+      maxSlippageBps: pilotConfig.ibkrMaxSlippageBps
+    },
     deribit: deps.deribit
   });
+  const deribitComparisonVenue = pilotConfig.enableDeribitComparison
+    ? createPilotVenueAdapter({
+        mode: "deribit_test",
+        quoteTtlMs: pilotConfig.quoteTtlMs,
+        deribitQuotePolicy: pilotConfig.deribitQuotePolicy,
+        deribitStrikeSelectionMode: pilotConfig.deribitStrikeSelectionMode,
+        deribitMaxTenorDriftDays: pilotConfig.deribitMaxTenorDriftDays,
+        falconx: {
+          baseUrl: pilotConfig.falconxBaseUrl,
+          apiKey: pilotConfig.falconxApiKey,
+          secret: pilotConfig.falconxSecret,
+          passphrase: pilotConfig.falconxPassphrase
+        },
+        deribit: deps.deribit
+      })
+    : null;
 
   const resolveAndPersistExpiry = async (protectionId: string): Promise<void> => {
     const protection = await getProtection(pool, protectionId);
@@ -588,6 +621,7 @@ export const registerPilotRoutes = async (
       protectedNotional?: number;
       foxifyExposureNotional?: number;
       entryPrice?: number;
+      tenorDays?: number;
       instrumentId?: string;
       marketId?: string;
       clientOrderId?: string;
@@ -700,7 +734,13 @@ export const registerPilotRoutes = async (
       const entryAnchorPrice = snapshot.price;
       const quantity = protectedNotional.div(entryAnchorPrice).toDecimalPlaces(8).toNumber();
       const triggerPrice = computeTriggerPrice(entryAnchorPrice, drawdownFloorPct, protectionType);
-      const requestedTenorDays = resolveExpiryDays({ tierName });
+      const requestedTenorDays = resolveExpiryDays({
+        tierName,
+        requestedDays: Number((body as { tenorDays?: number }).tenorDays),
+        minDays: pilotConfig.pilotTenorMinDays,
+        maxDays: pilotConfig.pilotTenorMaxDays,
+        defaultDays: pilotConfig.pilotTenorDefaultDays
+      });
       const venueStartedAt = Date.now();
       const quote = await withTimeout(
         venue.quote({
@@ -712,12 +752,54 @@ export const registerPilotRoutes = async (
           protectionType,
           triggerPrice: triggerPrice.toNumber(),
           requestedTenorDays,
+          tenorMinDays: pilotConfig.pilotTenorMinDays,
+          tenorMaxDays: pilotConfig.pilotTenorMaxDays,
+          hedgePolicy: pilotConfig.pilotHedgePolicy,
           clientOrderId: body.clientOrderId
         }),
         pilotConfig.venueQuoteTimeoutMs,
         "venue_quote"
       );
       venueMs = Date.now() - venueStartedAt;
+      let deribitComparison: Record<string, unknown> | null = null;
+      if (
+        deribitComparisonVenue &&
+        (pilotConfig.venueMode === "ibkr_cme_live" || pilotConfig.venueMode === "ibkr_cme_paper")
+      ) {
+        try {
+          const cmp = await withTimeout(
+            deribitComparisonVenue.quote({
+              marketId,
+              protectedNotional: protectedNotional.toNumber(),
+              quantity,
+              side: "buy",
+              instrumentId: quoteInstrumentId,
+              protectionType,
+              triggerPrice: triggerPrice.toNumber(),
+              requestedTenorDays,
+              tenorMinDays: pilotConfig.pilotTenorMinDays,
+              tenorMaxDays: pilotConfig.pilotTenorMaxDays,
+              hedgePolicy: pilotConfig.pilotHedgePolicy,
+              clientOrderId: body.clientOrderId
+            }),
+            Math.min(4000, pilotConfig.venueQuoteTimeoutMs),
+            "deribit_comparison_quote"
+          );
+          deribitComparison = {
+            status: "ok",
+            venue: cmp.venue,
+            premium: cmp.premium,
+            instrumentId: cmp.instrumentId,
+            quoteTs: cmp.quoteTs,
+            details: cmp.details || {}
+          };
+        } catch (error: any) {
+          deribitComparison = {
+            status: "error",
+            reason: String(error?.message || "comparison_unavailable")
+          };
+        }
+      }
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
@@ -788,6 +870,8 @@ export const registerPilotRoutes = async (
               quote.details && typeof (quote.details as Record<string, unknown>).strikeSelectionMode === "string"
                 ? String((quote.details as Record<string, unknown>).strikeSelectionMode)
                 : null,
+            hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined),
+            deribitComparison,
             ...pricingBreakdown
           }
         }
@@ -857,8 +941,10 @@ export const registerPilotRoutes = async (
             strikeSelectionMode:
               quote.details && typeof (quote.details as Record<string, unknown>).strikeSelectionMode === "string"
                 ? String((quote.details as Record<string, unknown>).strikeSelectionMode)
-                : null
-          }
+                : null,
+            hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined)
+          },
+          deribitComparison
         }
       };
     } catch (error: any) {
@@ -888,11 +974,12 @@ export const registerPilotRoutes = async (
 
   app.post("/pilot/protections/activate", async (req, reply) => {
     if (!enforcePilotWindow(reply)) return;
-    const body = req.body as {
+  const body = req.body as {
       protectedNotional?: number;
       foxifyExposureNotional?: number;
       instrumentId?: string;
       marketId?: string;
+      tenorDays?: number;
       expiryAt?: string;
       tenorDays?: number;
       autoRenew?: boolean;
@@ -953,7 +1040,13 @@ export const registerPilotRoutes = async (
       tierName,
       drawdownFloorPct: body.drawdownFloorPct
     });
-    const tenorDays = resolveExpiryDays({ tierName, requestedDays: body.tenorDays });
+    const tenorDays = resolveExpiryDays({
+      tierName,
+      requestedDays: body.tenorDays,
+      minDays: pilotConfig.pilotTenorMinDays,
+      maxDays: pilotConfig.pilotTenorMaxDays,
+      defaultDays: pilotConfig.pilotTenorDefaultDays
+    });
     const expiryAt = new Date(Date.now() + tenorDays * 86400000).toISOString();
     const requestId = pilotConfig.nextRequestId();
     const client = await pool.connect();
@@ -1012,6 +1105,10 @@ export const registerPilotRoutes = async (
       const contextProtectionType = normalizeProtectionType(
         String(lockContext.protectionType || inferProtectionTypeFromInstrument(requestedInstrumentId))
       );
+      const contextHedgeMode =
+        String(lockContext.hedgeMode || "") === "futures_synthetic"
+          ? "futures_synthetic"
+          : "options_native";
       const computedTriggerFromContext = contextEntryAnchor && contextDrawdown
         ? computeTriggerPrice(contextEntryAnchor, contextDrawdown, contextProtectionType)
         : null;
@@ -1217,6 +1314,7 @@ export const registerPilotRoutes = async (
           drawdownFloorPct: drawdownFloorPct.toFixed(6),
           triggerPrice: triggerPrice.toFixed(10),
           floorPrice: triggerPrice.toFixed(10),
+          hedgeMode: contextHedgeMode,
           coverageRatio: coverageRatio.toFixed(6),
           hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
           markupPct: premiumPricing.markupPct.toFixed(6),

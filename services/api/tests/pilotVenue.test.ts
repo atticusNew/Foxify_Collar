@@ -294,3 +294,117 @@ test("deribit execution scales premium to filled quantity", async () => {
   assert.equal(execution.premium, 20);
 });
 
+test("ibkr_cme_paper adapter returns quote with hedge mode diagnostics", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            contracts: [
+              {
+                conId: 12345,
+                secType: "FOP",
+                localSymbol: "MBT 20260401 P80000",
+                expiry: "20260401",
+                strike: 80000,
+                right: "P",
+                multiplier: "0.1",
+                minTick: 5
+              }
+            ]
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: 101,
+            ask: 102,
+            bidSize: 9,
+            askSize: 7,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  const adapter = createPilotVenueAdapter({
+    mode: "ibkr_cme_paper",
+    falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+    deribit: {} as any,
+    ibkr: {
+      bridgeBaseUrl: "http://127.0.0.1:18080",
+      bridgeTimeoutMs: 2000,
+      bridgeToken: "",
+      accountId: "DU123456",
+      enableExecution: false,
+      orderTimeoutMs: 2000,
+      maxRepriceSteps: 3,
+      repriceStepTicks: 1,
+      maxSlippageBps: 25
+    }
+  });
+  const quote = await adapter.quote({
+    marketId: "BTC-USD",
+    instrumentId: "BTC-USD-3D-P",
+    protectedNotional: 10000,
+    quantity: 0.2,
+    side: "buy",
+    protectionType: "long",
+    triggerPrice: 80000,
+    requestedTenorDays: 3,
+    tenorMinDays: 1,
+    tenorMaxDays: 7,
+    hedgePolicy: "options_primary_futures_fallback"
+  });
+  assert.equal(quote.venue, "ibkr_cme_paper");
+  assert.equal(typeof quote.details?.hedgeMode, "string");
+  assert.equal(typeof quote.details?.selectedTenorDays, "number");
+  assert.ok(String(quote.instrumentId).startsWith("IBKR-"));
+  global.fetch = originalFetch;
+});
+
+test("ibkr_cme_paper execution disabled yields failure status", async () => {
+  const adapter = createPilotVenueAdapter({
+    mode: "ibkr_cme_paper",
+    falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+    deribit: {} as any,
+    ibkr: {
+      bridgeBaseUrl: "http://127.0.0.1:18080",
+      bridgeTimeoutMs: 2000,
+      bridgeToken: "",
+      accountId: "DU123456",
+      enableExecution: false,
+      orderTimeoutMs: 2000,
+      maxRepriceSteps: 3,
+      repriceStepTicks: 1,
+      maxSlippageBps: 25
+    }
+  });
+  const execution = await adapter.execute({
+    venue: "ibkr_cme_paper",
+    quoteId: "q-1",
+    rfqId: null,
+    instrumentId: "IBKR-FOP-100-MBT_20260401_P80000",
+    side: "buy",
+    quantity: 0.1,
+    premium: 5,
+    expiresAt: new Date(Date.now() + 30000).toISOString(),
+    quoteTs: new Date().toISOString(),
+    details: {
+      conId: 12345
+    }
+  });
+  assert.equal(execution.status, "failure");
+});
+

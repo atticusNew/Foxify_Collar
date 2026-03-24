@@ -88,7 +88,10 @@ settlement calls for an already-settled protection return `status=ok` with `idem
 
 ## Pilot constraints
 
-- Tenor is fixed at 7 days by tier defaults for pilot.
+- Tenor is configurable within bounded range:
+  - `PILOT_TENOR_MIN_DAYS` (default `1`)
+  - `PILOT_TENOR_MAX_DAYS` (default `7`)
+  - `PILOT_TENOR_DEFAULT_DAYS` (default `7`)
 - `protectedNotional` must be `<= 50,000` USDC per protection.
 - Daily protected notional cap is `50,000` USDC for the pilot tenant scope and is enforced on activation.
 - Daily cap reset boundary is `00:00 UTC` (calendar-day reset, not rolling 24h).
@@ -136,6 +139,17 @@ settlement calls for an already-settled protection return `status=ok` with `idem
       - call quotes require `selectedStrike <= triggerPrice`
   - `PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS` (default `1.5`)
     - rejects Deribit quotes whose selected expiry drifts too far from the requested tenor
+- Optional side-by-side testing mode:
+  - `PILOT_ENABLE_DERIBIT_COMPARISON=true` adds non-blocking Deribit comparison diagnostics to quote responses.
+- IBKR/CME pilot mode:
+  - `PILOT_VENUE_MODE=ibkr_cme_live` or `ibkr_cme_paper`
+  - `PILOT_HEDGE_POLICY=options_primary_futures_fallback`
+  - `IBKR_BRIDGE_BASE_URL` (broker-bridge URL)
+  - `IBKR_BRIDGE_TOKEN` (bridge bearer token)
+  - `IBKR_ACCOUNT_ID`
+  - `IBKR_ENABLE_EXECUTION=true|false`
+  - `IBKR_BRIDGE_TIMEOUT_MS`, `IBKR_ORDER_TIMEOUT_MS`
+  - `IBKR_MAX_REPRICE_STEPS`, `IBKR_REPRICE_STEP_TICKS`, `IBKR_MAX_SLIPPAGE_BPS`
 - When `PILOT_FORCE_DERIBIT_TEST_MODE=true` (default), pilot runtime forces Deribit test-only mode:
   - `DERIBIT_ENV=testnet`
   - `DERIBIT_PAPER=true`
