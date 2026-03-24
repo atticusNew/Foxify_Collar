@@ -157,7 +157,24 @@ const sanitizeQuoteForClient = (quote: {
 } => {
   const details = quote.details || {};
   const allowedDetails: Record<string, unknown> = {};
-  const allowedKeys = ["mode", "source", "pricing", "askPriceBtc", "askSize", "spotPriceUsd", "optionType"];
+  const allowedKeys = [
+    "mode",
+    "source",
+    "pricing",
+    "askPriceBtc",
+    "askSource",
+    "askSize",
+    "spotPriceUsd",
+    "optionType",
+    "selectedStrike",
+    "targetTriggerPrice",
+    "strikeGapToTriggerUsd",
+    "strikeGapToTriggerPct",
+    "selectedTenorDays",
+    "tenorDriftDays",
+    "deribitQuotePolicy",
+    "strikeSelectionMode"
+  ];
   for (const key of allowedKeys) {
     if (key in details) allowedDetails[key] = details[key];
   }
@@ -328,6 +345,9 @@ export const registerPilotRoutes = async (
   const venue = createPilotVenueAdapter({
     mode: pilotConfig.venueMode,
     quoteTtlMs: pilotConfig.quoteTtlMs,
+    deribitQuotePolicy: pilotConfig.deribitQuotePolicy,
+    deribitStrikeSelectionMode: pilotConfig.deribitStrikeSelectionMode,
+    deribitMaxTenorDriftDays: pilotConfig.deribitMaxTenorDriftDays,
     falconx: {
       baseUrl: pilotConfig.falconxBaseUrl,
       apiKey: pilotConfig.falconxApiKey,
@@ -679,6 +699,8 @@ export const registerPilotRoutes = async (
     try {
       const entryAnchorPrice = snapshot.price;
       const quantity = protectedNotional.div(entryAnchorPrice).toDecimalPlaces(8).toNumber();
+      const triggerPrice = computeTriggerPrice(entryAnchorPrice, drawdownFloorPct, protectionType);
+      const requestedTenorDays = resolveExpiryDays({ tierName });
       const venueStartedAt = Date.now();
       const quote = await withTimeout(
         venue.quote({
@@ -687,13 +709,15 @@ export const registerPilotRoutes = async (
           quantity,
           side: "buy",
           instrumentId: quoteInstrumentId,
+          protectionType,
+          triggerPrice: triggerPrice.toNumber(),
+          requestedTenorDays,
           clientOrderId: body.clientOrderId
         }),
         pilotConfig.venueQuoteTimeoutMs,
         "venue_quote"
       );
       venueMs = Date.now() - venueStartedAt;
-      const triggerPrice = computeTriggerPrice(entryAnchorPrice, drawdownFloorPct, protectionType);
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
@@ -730,9 +754,40 @@ export const registerPilotRoutes = async (
             entryInputPrice: entryInputPrice ? entryInputPrice.toFixed(10) : null,
             protectionType,
             optionType,
+            requestedTenorDays,
             triggerPrice: triggerPrice.toFixed(10),
             triggerLabel,
             floorPrice: triggerPrice.toFixed(10),
+            selectedStrike:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedStrike))
+                ? Number((quote.details as Record<string, unknown>).selectedStrike).toFixed(10)
+                : null,
+            strikeGapToTriggerUsd:
+              quote.details &&
+              Number.isFinite(Number((quote.details as Record<string, unknown>).strikeGapToTriggerUsd))
+                ? Number((quote.details as Record<string, unknown>).strikeGapToTriggerUsd).toFixed(10)
+                : null,
+            strikeGapToTriggerPct:
+              quote.details &&
+              Number.isFinite(Number((quote.details as Record<string, unknown>).strikeGapToTriggerPct))
+                ? Number((quote.details as Record<string, unknown>).strikeGapToTriggerPct).toFixed(10)
+                : null,
+            selectedTenorDays:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
+                ? Number((quote.details as Record<string, unknown>).selectedTenorDays).toFixed(10)
+                : null,
+            tenorDriftDays:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).tenorDriftDays))
+                ? Number((quote.details as Record<string, unknown>).tenorDriftDays).toFixed(10)
+                : null,
+            deribitQuotePolicy:
+              quote.details && typeof (quote.details as Record<string, unknown>).deribitQuotePolicy === "string"
+                ? String((quote.details as Record<string, unknown>).deribitQuotePolicy)
+                : null,
+            strikeSelectionMode:
+              quote.details && typeof (quote.details as Record<string, unknown>).strikeSelectionMode === "string"
+                ? String((quote.details as Record<string, unknown>).strikeSelectionMode)
+                : null,
             ...pricingBreakdown
           }
         }
@@ -771,6 +826,38 @@ export const registerPilotRoutes = async (
             price: priceMs,
             venue: venueMs,
             total: Date.now() - quoteStartedAt
+          },
+          venueSelection: {
+            selectedStrike:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedStrike))
+                ? Number((quote.details as Record<string, unknown>).selectedStrike).toFixed(10)
+                : null,
+            strikeGapToTriggerUsd:
+              quote.details &&
+              Number.isFinite(Number((quote.details as Record<string, unknown>).strikeGapToTriggerUsd))
+                ? Number((quote.details as Record<string, unknown>).strikeGapToTriggerUsd).toFixed(10)
+                : null,
+            strikeGapToTriggerPct:
+              quote.details &&
+              Number.isFinite(Number((quote.details as Record<string, unknown>).strikeGapToTriggerPct))
+                ? Number((quote.details as Record<string, unknown>).strikeGapToTriggerPct).toFixed(10)
+                : null,
+            selectedTenorDays:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
+                ? Number((quote.details as Record<string, unknown>).selectedTenorDays).toFixed(10)
+                : null,
+            tenorDriftDays:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).tenorDriftDays))
+                ? Number((quote.details as Record<string, unknown>).tenorDriftDays).toFixed(10)
+                : null,
+            deribitQuotePolicy:
+              quote.details && typeof (quote.details as Record<string, unknown>).deribitQuotePolicy === "string"
+                ? String((quote.details as Record<string, unknown>).deribitQuotePolicy)
+                : null,
+            strikeSelectionMode:
+              quote.details && typeof (quote.details as Record<string, unknown>).strikeSelectionMode === "string"
+                ? String((quote.details as Record<string, unknown>).strikeSelectionMode)
+                : null
           }
         }
       };
@@ -878,6 +965,8 @@ export const registerPilotRoutes = async (
     let quoteEntryInputPrice: string | null = null;
     let quoteEntryPriceSource = "reference_snapshot_quote";
     let quoteEntryPriceTimestamp: string | null = null;
+    let reservedProtectionId: string | null = null;
+    let execution: Awaited<ReturnType<typeof venue.execute>> | null = null;
     try {
       await client.query("BEGIN");
       transactionOpen = true;
@@ -1010,6 +1099,7 @@ export const registerPilotRoutes = async (
           optionType
         }
       });
+      reservedProtectionId = protection.id;
       const consumed = await consumeVenueQuote(client, lockedQuote.id, protection.id);
       if (!consumed) {
         throw new Error("quote_already_consumed");
@@ -1063,7 +1153,7 @@ export const registerPilotRoutes = async (
           endpointVersion: pilotConfig.endpointVersion
         }
       );
-      const execution = await withTimeout(
+      execution = await withTimeout(
         venue.execute(lockedQuote),
         pilotConfig.venueExecuteTimeoutMs,
         "venue_execute"
@@ -1165,9 +1255,28 @@ export const registerPilotRoutes = async (
         await client.query("ROLLBACK");
         transactionOpen = false;
       }
+      const shouldMarkReconcilePending = reservedProtectionId && execution && execution.status === "success";
+      if (shouldMarkReconcilePending) {
+        try {
+          await patchProtection(pool, reservedProtectionId, {
+            status: "reconcile_pending",
+            metadata: {
+              reconcileReason: String(error?.message || "post_execution_persistence_failed"),
+              reconcileAt: new Date().toISOString(),
+              quoteId: execution.quoteId,
+              externalOrderId: execution.externalOrderId,
+              externalExecutionId: execution.externalExecutionId
+            }
+          });
+        } catch {
+          // Best-effort reconcile marker. Do not mask original error.
+        }
+      }
       const errMsg = String(error?.message || "");
       let reason = "activation_failed";
-      if (errMsg.includes("price_unavailable")) {
+      if (shouldMarkReconcilePending) {
+        reason = "reconcile_pending";
+      } else if (errMsg.includes("price_unavailable")) {
         reason = "price_unavailable";
       } else if (
         [
@@ -1179,7 +1288,8 @@ export const registerPilotRoutes = async (
           "quote_mismatch_quantity",
           "quote_mismatch_context",
           "full_coverage_not_met",
-          "storage_unavailable"
+          "storage_unavailable",
+          "reconcile_pending"
         ].includes(errMsg)
       ) {
         reason = errMsg;
@@ -1204,6 +1314,8 @@ export const registerPilotRoutes = async (
         reply.code(503);
       } else if (reason === "storage_unavailable") {
         reply.code(503);
+      } else if (reason === "reconcile_pending") {
+        reply.code(409);
       } else if (reason === "venue_execute_timeout") {
         reply.code(504);
       } else if (reason === "user_hash_secret_missing") {

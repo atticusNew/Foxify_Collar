@@ -33,13 +33,17 @@ const activationPayload = (quoteId: string, protectedNotional = 1000) => ({
   tenorDays: 7
 });
 
-const createPilotHarness = async (): Promise<{
+const createPilotHarness = async (opts?: {
+  venueMode?: "mock_falconx" | "deribit_test" | "falconx";
+  deribit?: any;
+  env?: Record<string, string | undefined>;
+}): Promise<{
   app: FastifyInstance;
   pool: { query: (sql: string, params?: unknown[]) => Promise<any>; end: () => Promise<void> };
   close: () => Promise<void>;
 }> => {
   process.env.PILOT_API_ENABLED = "true";
-  process.env.PILOT_VENUE_MODE = "mock_falconx";
+  process.env.PILOT_VENUE_MODE = opts?.venueMode || "mock_falconx";
   process.env.POSTGRES_URL = "postgres://unused";
   process.env.USER_HASH_SECRET = "test_hash_secret";
   process.env.PILOT_ADMIN_TOKEN = "admin-local";
@@ -53,6 +57,15 @@ const createPilotHarness = async (): Promise<{
   process.env.PILOT_ENFORCE_WINDOW = "true";
   process.env.PILOT_QUOTE_TTL_MS = "120000";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
+  if (opts?.env) {
+    for (const [key, value] of Object.entries(opts.env)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 
   global.fetch = buildPriceFetch();
 
@@ -65,7 +78,7 @@ const createPilotHarness = async (): Promise<{
   const { registerPilotRoutes } = await import("../src/pilot/routes");
 
   const app = Fastify();
-  await registerPilotRoutes(app, { deribit: {} as any });
+  await registerPilotRoutes(app, { deribit: (opts?.deribit || {}) as any });
 
   return {
     app,
@@ -514,5 +527,81 @@ test("pilot route hardening A-H", async (t) => {
 
 test.after(() => {
   global.fetch = originalFetch;
+});
+
+test("K) quote diagnostics surface venue strike/tenor selection", async () => {
+  const harness = await createPilotHarness();
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "ok");
+    assert.ok(payload.diagnostics?.venueSelection);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedStrike"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "tenorDriftDays"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "deribitQuotePolicy"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "strikeSelectionMode"),
+      true
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("L) post-execution persistence failure marks protection reconcile_pending", async () => {
+  const harness = await createPilotHarness();
+  try {
+    const originalQuery = harness.pool.query.bind(harness.pool);
+    let injectedFailure = false;
+    harness.pool.query = async (sql: string, params?: unknown[]) => {
+      const text = String(sql || "");
+      const hasActiveStatus = Array.isArray(params) && params.some((value) => value === "active");
+      if (!injectedFailure && text.includes("UPDATE pilot_protections") && hasActiveStatus) {
+        injectedFailure = true;
+        throw new Error("db_write_after_execution_failed");
+      }
+      return originalQuery(sql, params);
+    };
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId);
+    const activateRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    harness.pool.query = originalQuery;
+    // debug
+    assert.equal(activateRes.statusCode, 409);
+    const activatePayload = activateRes.json();
+    assert.equal(activatePayload.reason, "reconcile_pending");
+    const protections = await harness.pool.query(
+      `SELECT status, metadata FROM pilot_protections ORDER BY created_at DESC LIMIT 1`
+    );
+    assert.equal(String(protections.rows[0]?.status || ""), "reconcile_pending");
+    const metadata = protections.rows[0]?.metadata || {};
+    assert.ok(String(metadata.externalOrderId || "").length > 0);
+    assert.ok(String(metadata.reconcileReason || "").length > 0);
+  } finally {
+    await harness.close();
+  }
 });
 
