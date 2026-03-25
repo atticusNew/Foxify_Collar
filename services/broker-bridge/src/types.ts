@@ -1,8 +1,15 @@
 export type BridgeSessionState = "connected" | "disconnected";
+export type BridgeTransportMode = "synthetic" | "ib_socket";
+export type BridgeActiveTransport = "synthetic" | "ib_socket" | "synthetic_fallback";
 
 export type BridgeHealth = {
   ok: boolean;
   session: BridgeSessionState;
+  transport: BridgeTransportMode;
+  activeTransport: BridgeActiveTransport;
+  fallbackEnabled: boolean;
+  lastError?: string;
+  lastFallbackReason?: string;
   asOf: string;
 };
 

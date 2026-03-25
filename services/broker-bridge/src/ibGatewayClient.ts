@@ -1,13 +1,18 @@
+import { IBApi, EventName, SecType, type OrderAction, type OrderType, type TimeInForce } from "@stoqey/ib";
+import type { Contract, ContractDetails } from "@stoqey/ib";
 import type {
+  BridgeActiveTransport,
   BridgeContractQuery,
   BridgeDepth,
+  BridgeHealth,
   BridgeOrderState,
+  BridgeOrderStatus,
   BridgePlaceOrderRequest,
   BridgeQualifiedContract,
-  BridgeTopOfBook
+  BridgeSessionState,
+  BridgeTopOfBook,
+  BridgeTransportMode
 } from "./types";
-
-type SessionState = "connected" | "disconnected";
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -24,6 +29,13 @@ const buildMbtExpiry = (tenorDays: number): string => {
   return `${y}${m}${d}`;
 };
 
+const normalizeExpiry = (value: unknown, fallback: string): string => {
+  const raw = String(value || "").replace(/[^0-9]/g, "");
+  if (raw.length >= 8) return raw.slice(0, 8);
+  if (raw.length === 6) return `${raw}01`;
+  return fallback;
+};
+
 const syntheticConId = (seed: string): number => {
   let hash = 0;
   for (let i = 0; i < seed.length; i += 1) {
@@ -32,39 +44,417 @@ const syntheticConId = (seed: string): number => {
   return Math.abs(hash) + 10_000;
 };
 
+const finiteOrNull = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const positiveOrNull = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+const toBridgeOrderStatus = (value: unknown, filled: number): BridgeOrderStatus => {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "filled") return "filled";
+  if (normalized === "cancelled" || normalized === "apicancelled" || normalized === "pendingcancel") {
+    return "cancelled";
+  }
+  if (normalized === "inactive") return "inactive";
+  if (normalized === "presubmitted" || normalized === "submitted" || normalized === "pendingsubmit") {
+    return filled > 0 ? "partially_filled" : "submitted";
+  }
+  return filled > 0 ? "partially_filled" : "submitted";
+};
+
+type IbConfig = {
+  host: string;
+  port: number;
+  clientId: number;
+  readonlyMode: boolean;
+  transportMode: BridgeTransportMode;
+  fallbackToSynthetic: boolean;
+  connectTimeoutMs: number;
+  requestTimeoutMs: number;
+  marketDataType: 1 | 2 | 3 | 4;
+};
+
+type DepthRow = { level: number; price: number; size: number };
+
 /**
- * Thin IB gateway facade.
- * This scaffold intentionally returns deterministic synthetic responses
- * until live TWS/IB Gateway transport is wired.
+ * Hybrid IB gateway client:
+ * - synthetic mode: deterministic fixtures for offline/dev.
+ * - ib_socket mode: direct TWS/IB Gateway transport via socket API.
+ * Fallback can route runtime transport errors back to synthetic responses.
  */
 export class IbGatewayClient {
-  private session: SessionState = "disconnected";
+  private session: BridgeSessionState = "disconnected";
+  private activeTransport: BridgeActiveTransport;
+  private ib: IBApi | null = null;
+  private nextReqId = 10000;
+  private nextOrderId: number | null = null;
+  private lastError: string | null = null;
+  private lastFallbackReason: string | null = null;
+  private readonly ordersByExternalId = new Map<string, BridgeOrderState>();
+  private readonly orderIdToExternalId = new Map<number, string>();
+  private connectPromise: Promise<void> | null = null;
 
-  constructor(
-    private readonly config: {
-      host: string;
-      port: number;
-      clientId: number;
-      readonlyMode: boolean;
-    }
-  ) {}
-
-  async connect(): Promise<void> {
-    // Placeholder; production wiring will open/verify a real TWS socket session.
-    this.session = "connected";
+  constructor(private readonly config: IbConfig) {
+    this.activeTransport = this.config.transportMode;
   }
 
-  async getHealth(): Promise<{ ok: boolean; session: SessionState; asOf: string }> {
-    if (this.session === "disconnected") {
-      await this.connect();
+  async connect(): Promise<void> {
+    if (this.config.transportMode === "synthetic") {
+      this.session = "connected";
+      this.activeTransport = "synthetic";
+      return;
     }
-    return { ok: true, session: this.session, asOf: nowIso() };
+    await this.ensureIbConnected();
+  }
+
+  async getHealth(): Promise<BridgeHealth> {
+    if (this.config.transportMode === "synthetic") {
+      if (this.session === "disconnected") {
+        await this.connect();
+      }
+      return {
+        ok: true,
+        session: this.session,
+        transport: "synthetic",
+        activeTransport: this.activeTransport,
+        fallbackEnabled: this.config.fallbackToSynthetic,
+        lastError: this.lastError || undefined,
+        lastFallbackReason: this.lastFallbackReason || undefined,
+        asOf: nowIso()
+      };
+    }
+
+    try {
+      await this.ensureIbConnected();
+    } catch (error) {
+      this.lastError = String((error as Error)?.message || error || "ib_connect_failed");
+      if (this.config.fallbackToSynthetic) {
+        this.session = "connected";
+        this.activeTransport = "synthetic_fallback";
+        this.lastFallbackReason = `health:${this.lastError}`;
+      } else {
+        this.session = "disconnected";
+      }
+    }
+
+    return {
+      ok: true,
+      session: this.session,
+      transport: this.config.transportMode,
+      activeTransport: this.activeTransport,
+      fallbackEnabled: this.config.fallbackToSynthetic,
+      lastError: this.lastError || undefined,
+      lastFallbackReason: this.lastFallbackReason || undefined,
+      asOf: nowIso()
+    };
   }
 
   async qualifyContracts(query: BridgeContractQuery): Promise<BridgeQualifiedContract[]> {
-    if (this.session === "disconnected") {
-      await this.connect();
+    return this.runWithTransport(
+      "qualifyContracts",
+      () => this.qualifyContractsIb(query),
+      () => this.qualifyContractsSynthetic(query)
+    );
+  }
+
+  async getTopOfBook(conId: number): Promise<BridgeTopOfBook> {
+    return this.runWithTransport(
+      "getTopOfBook",
+      () => this.getTopOfBookIb(conId),
+      () => this.getTopOfBookSynthetic(conId)
+    );
+  }
+
+  async getDepth(conId: number): Promise<BridgeDepth> {
+    return this.runWithTransport(
+      "getDepth",
+      () => this.getDepthIb(conId),
+      () => this.getDepthSynthetic(conId)
+    );
+  }
+
+  async placeOrder(req: BridgePlaceOrderRequest): Promise<{ orderId: string; submittedAt: string }> {
+    if (this.config.readonlyMode) {
+      throw new Error("bridge_readonly_mode");
     }
+    if (!Number.isFinite(req.quantity) || req.quantity <= 0) {
+      throw new Error("invalid_order_quantity");
+    }
+    if (!Number.isFinite(req.limitPrice) || req.limitPrice <= 0) {
+      throw new Error("invalid_order_limit_price");
+    }
+
+    return this.runWithTransport(
+      "placeOrder",
+      () => this.placeOrderIb(req),
+      () => this.placeOrderSynthetic(req)
+    );
+  }
+
+  async getOrder(orderId: string): Promise<BridgeOrderState> {
+    return this.runWithTransport("getOrder", () => this.getOrderIb(orderId), () => this.getOrderSynthetic(orderId));
+  }
+
+  async cancelOrder(orderId: string): Promise<{ cancelled: boolean; asOf: string }> {
+    if (this.config.readonlyMode) {
+      return { cancelled: false, asOf: nowIso() };
+    }
+    return this.runWithTransport(
+      "cancelOrder",
+      () => this.cancelOrderIb(orderId),
+      () => this.cancelOrderSynthetic(orderId)
+    );
+  }
+
+  private async runWithTransport<T>(
+    opName: string,
+    ibOp: () => Promise<T>,
+    syntheticOp: () => Promise<T>
+  ): Promise<T> {
+    if (this.config.transportMode === "synthetic") {
+      this.activeTransport = "synthetic";
+      this.session = "connected";
+      return await syntheticOp();
+    }
+
+    try {
+      await this.ensureIbConnected();
+      this.activeTransport = "ib_socket";
+      return await ibOp();
+    } catch (error) {
+      this.lastError = String((error as Error)?.message || error || "ib_socket_error");
+      if (!this.config.fallbackToSynthetic) {
+        throw error;
+      }
+      this.lastFallbackReason = `${opName}:${this.lastError}`;
+      this.activeTransport = "synthetic_fallback";
+      this.session = "connected";
+      return await syntheticOp();
+    }
+  }
+
+  private async ensureIbConnected(): Promise<void> {
+    if (this.ib?.isConnected) {
+      this.session = "connected";
+      this.activeTransport = "ib_socket";
+      return;
+    }
+    if (this.connectPromise) {
+      return await this.connectPromise;
+    }
+
+    this.connectPromise = new Promise<void>((resolve, reject) => {
+      const ib = new IBApi({
+        host: this.config.host,
+        port: this.config.port,
+        clientId: this.config.clientId
+      });
+      this.ib = ib;
+
+      const timeoutMs = Math.max(800, Math.floor(this.config.connectTimeoutMs || 0));
+      const timeoutHandle = setTimeout(() => {
+        cleanup();
+        this.session = "disconnected";
+        reject(new Error("ib_connect_timeout"));
+      }, timeoutMs);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutHandle);
+        ib.off(EventName.connected, onConnected);
+        ib.off(EventName.error, onError);
+      };
+
+      const onConnected = (): void => {
+        cleanup();
+        this.registerBaseListeners(ib);
+        this.session = "connected";
+        this.activeTransport = "ib_socket";
+        this.lastError = null;
+        this.lastFallbackReason = null;
+        try {
+          ib.reqMarketDataType(this.config.marketDataType as unknown as number);
+        } catch {
+          // Keep connection alive even if market data type switch is unsupported.
+        }
+        resolve();
+      };
+
+      const onError = (...args: unknown[]): void => {
+        const message = this.extractIbErrorMessage(args);
+        const code = this.extractIbErrorCode(args);
+        if (code === 502 || message.includes("Couldn't connect")) {
+          cleanup();
+          this.session = "disconnected";
+          reject(new Error(`ib_connect_failed:${message || "unknown"}`));
+        } else {
+          this.lastError = message || this.lastError;
+        }
+      };
+
+      ib.once(EventName.connected, onConnected);
+      ib.on(EventName.error, onError);
+      ib.connect(this.config.clientId);
+    })
+      .finally(() => {
+        this.connectPromise = null;
+      })
+      .catch((error) => {
+        this.session = "disconnected";
+        throw error;
+      });
+
+    return await this.connectPromise;
+  }
+
+  private registerBaseListeners(ib: IBApi): void {
+    ib.on(EventName.disconnected, () => {
+      this.session = "disconnected";
+      this.lastError = "ib_disconnected";
+    });
+
+    ib.on(EventName.nextValidId, (orderId: number) => {
+      if (Number.isFinite(orderId) && orderId > 0) {
+        if (this.nextOrderId === null || orderId > this.nextOrderId) {
+          this.nextOrderId = orderId;
+        }
+      }
+    });
+
+    ib.on(
+      EventName.orderStatus,
+      (
+        orderId: number,
+        status: unknown,
+        filled: number,
+        remaining: number,
+        avgFillPrice: number,
+        _permId?: number,
+        _parentId?: number,
+        _lastFillPrice?: number
+      ) => {
+        const externalId = this.orderIdToExternalId.get(orderId);
+        if (!externalId) return;
+        const fillQty = Math.max(0, Number(filled || 0));
+        const current = this.ordersByExternalId.get(externalId);
+        const mappedStatus = toBridgeOrderStatus(status, fillQty);
+        const normalizedStatus =
+          mappedStatus === "submitted" && fillQty > 0 && Number(remaining || 0) > 0
+            ? "partially_filled"
+            : mappedStatus;
+        this.ordersByExternalId.set(externalId, {
+          orderId: externalId,
+          status: normalizedStatus,
+          filledQuantity: fillQty,
+          avgFillPrice: positiveOrNull(avgFillPrice),
+          lastUpdateAt: nowIso(),
+          rejectionReason: current?.rejectionReason
+        });
+      }
+    );
+
+    ib.on(EventName.error, (...args: unknown[]) => {
+      const code = this.extractIbErrorCode(args);
+      const reqId = this.extractIbReqId(args);
+      const message = this.extractIbErrorMessage(args);
+      if (message) {
+        this.lastError = code ? `${code}:${message}` : message;
+      }
+
+      if (reqId !== null && reqId >= 0) {
+        const externalId = this.orderIdToExternalId.get(reqId);
+        if (!externalId) return;
+        const current = this.ordersByExternalId.get(externalId);
+        this.ordersByExternalId.set(externalId, {
+          orderId: externalId,
+          status: "rejected",
+          filledQuantity: current?.filledQuantity ?? 0,
+          avgFillPrice: current?.avgFillPrice ?? null,
+          lastUpdateAt: nowIso(),
+          rejectionReason: message || "ib_order_rejected"
+        });
+      }
+    });
+  }
+
+  private extractIbErrorCode(args: unknown[]): number | null {
+    if (typeof args[1] === "number") return args[1];
+    if (typeof args[0] === "number") return args[0];
+    return null;
+  }
+
+  private extractIbReqId(args: unknown[]): number | null {
+    if (typeof args[2] === "number") return args[2];
+    if (typeof args[0] === "number") return args[0];
+    return null;
+  }
+
+  private extractIbErrorMessage(args: unknown[]): string {
+    if (typeof args[0] === "object" && args[0] !== null && "message" in (args[0] as Record<string, unknown>)) {
+      const message = String((args[0] as { message?: string }).message || "").trim();
+      if (message) return message;
+    }
+    if (typeof args[2] === "string") return args[2];
+    if (typeof args[0] === "string") return args[0];
+    return "";
+  }
+
+  private nextRequestId(): number {
+    this.nextReqId += 1;
+    return this.nextReqId;
+  }
+
+  private async requireOrderId(): Promise<number> {
+    if (this.nextOrderId !== null && this.nextOrderId > 0) {
+      const id = this.nextOrderId;
+      this.nextOrderId += 1;
+      return id;
+    }
+    const ib = await this.requireIb();
+    return await new Promise<number>((resolve, reject) => {
+      const timeoutMs = Math.max(800, Math.floor(this.config.requestTimeoutMs || 0));
+      const timeoutHandle = setTimeout(() => {
+        cleanup();
+        reject(new Error("ib_next_valid_id_timeout"));
+      }, timeoutMs);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutHandle);
+        ib.off(EventName.nextValidId, onNextValidId);
+      };
+
+      const onNextValidId = (orderId: number): void => {
+        cleanup();
+        this.nextOrderId = orderId + 1;
+        resolve(orderId);
+      };
+
+      ib.once(EventName.nextValidId, onNextValidId);
+      ib.reqIds();
+    });
+  }
+
+  private async requireIb(): Promise<IBApi> {
+    await this.ensureIbConnected();
+    if (!this.ib) throw new Error("ib_not_initialized");
+    return this.ib;
+  }
+
+  private buildSyntheticOrderState(orderId: string): BridgeOrderState {
+    return {
+      orderId,
+      status: "filled",
+      filledQuantity: 1,
+      avgFillPrice: 101,
+      lastUpdateAt: nowIso()
+    };
+  }
+
+  private async qualifyContractsSynthetic(query: BridgeContractQuery): Promise<BridgeQualifiedContract[]> {
     const expiry = buildMbtExpiry(query.tenorDays);
     if (query.kind === "mbt_future") {
       const localSymbol = `MBT ${expiry}`;
@@ -98,10 +488,7 @@ export class IbGatewayClient {
     ];
   }
 
-  async getTopOfBook(conId: number): Promise<BridgeTopOfBook> {
-    if (this.session === "disconnected") {
-      await this.connect();
-    }
+  private async getTopOfBookSynthetic(conId: number): Promise<BridgeTopOfBook> {
     const base = 100 + (conId % 10);
     return {
       bid: base,
@@ -112,10 +499,7 @@ export class IbGatewayClient {
     };
   }
 
-  async getDepth(conId: number): Promise<BridgeDepth> {
-    if (this.session === "disconnected") {
-      await this.connect();
-    }
+  private async getDepthSynthetic(conId: number): Promise<BridgeDepth> {
     const base = 100 + (conId % 10);
     return {
       bids: [
@@ -130,45 +514,372 @@ export class IbGatewayClient {
     };
   }
 
-  async placeOrder(req: BridgePlaceOrderRequest): Promise<{ orderId: string; submittedAt: string }> {
-    if (this.session === "disconnected") {
-      await this.connect();
-    }
-    if (this.config.readonlyMode) {
-      throw new Error("bridge_readonly_mode");
-    }
-    if (!Number.isFinite(req.quantity) || req.quantity <= 0) {
-      throw new Error("invalid_order_quantity");
-    }
-    if (!Number.isFinite(req.limitPrice) || req.limitPrice <= 0) {
-      throw new Error("invalid_order_limit_price");
-    }
-    return {
-      orderId: `IB-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      submittedAt: nowIso()
-    };
+  private async placeOrderSynthetic(_req: BridgePlaceOrderRequest): Promise<{ orderId: string; submittedAt: string }> {
+    const orderId = `IB-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const submittedAt = nowIso();
+    this.ordersByExternalId.set(orderId, this.buildSyntheticOrderState(orderId));
+    return { orderId, submittedAt };
   }
 
-  async getOrder(orderId: string): Promise<BridgeOrderState> {
-    if (this.session === "disconnected") {
-      await this.connect();
+  private async getOrderSynthetic(orderId: string): Promise<BridgeOrderState> {
+    return this.ordersByExternalId.get(orderId) || this.buildSyntheticOrderState(orderId);
+  }
+
+  private async cancelOrderSynthetic(orderId: string): Promise<{ cancelled: boolean; asOf: string }> {
+    const current = this.ordersByExternalId.get(orderId);
+    this.ordersByExternalId.set(orderId, {
+      orderId,
+      status: "cancelled",
+      filledQuantity: current?.filledQuantity ?? 0,
+      avgFillPrice: current?.avgFillPrice ?? null,
+      lastUpdateAt: nowIso()
+    });
+    return { cancelled: true, asOf: nowIso() };
+  }
+
+  private async qualifyContractsIb(query: BridgeContractQuery): Promise<BridgeQualifiedContract[]> {
+    const ib = await this.requireIb();
+    const reqId = this.nextRequestId();
+    const fallbackExpiry = buildMbtExpiry(query.tenorDays);
+    const targetContract: Contract =
+      query.kind === "mbt_option"
+        ? {
+            secType: SecType.FOP,
+            symbol: "MBT",
+            exchange: query.exchange,
+            currency: query.currency,
+            lastTradeDateOrContractMonth: fallbackExpiry,
+            strike: Number(query.strike || 0),
+            right: query.right
+          }
+        : {
+            secType: SecType.FUT,
+            symbol: "MBT",
+            exchange: query.exchange,
+            currency: query.currency,
+            lastTradeDateOrContractMonth: fallbackExpiry
+          };
+
+    const details = await new Promise<ContractDetails[]>((resolve, reject) => {
+      const timeoutMs = Math.max(1200, Math.floor(this.config.requestTimeoutMs || 0));
+      const rows: ContractDetails[] = [];
+      const timeoutHandle = setTimeout(() => {
+        cleanup();
+        reject(new Error("ib_contract_details_timeout"));
+      }, timeoutMs);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutHandle);
+        ib.off(EventName.contractDetails, onDetails);
+        ib.off(EventName.contractDetailsEnd, onEnd);
+        ib.off(EventName.error, onError);
+      };
+
+      const onDetails = (eventReqId: number, detail: ContractDetails): void => {
+        if (eventReqId !== reqId) return;
+        rows.push(detail);
+      };
+
+      const onEnd = (eventReqId: number): void => {
+        if (eventReqId !== reqId) return;
+        cleanup();
+        resolve(rows);
+      };
+
+      const onError = (...args: unknown[]): void => {
+        const eventReqId = this.extractIbReqId(args);
+        if (eventReqId !== reqId && eventReqId !== -1) return;
+        const message = this.extractIbErrorMessage(args);
+        const code = this.extractIbErrorCode(args);
+        // Ignore generic connection status broadcasts.
+        if (code === 2104 || code === 2106 || code === 2107 || code === 2158) return;
+        cleanup();
+        reject(new Error(`ib_contract_details_error:${message || code || "unknown"}`));
+      };
+
+      ib.on(EventName.contractDetails, onDetails);
+      ib.on(EventName.contractDetailsEnd, onEnd);
+      ib.on(EventName.error, onError);
+      ib.reqContractDetails(reqId, targetContract);
+    });
+
+    const mapped = details
+      .map((item) => {
+        const contract = item.contract || {};
+        const secType = String(contract.secType || (query.kind === "mbt_option" ? "FOP" : "FUT")).toUpperCase();
+        const strike = positiveOrNull(contract.strike);
+        const right = String(contract.right || "").toUpperCase();
+        const expiry = normalizeExpiry(
+          contract.lastTradeDateOrContractMonth || contract.lastTradeDate || item.contractMonth,
+          fallbackExpiry
+        );
+        const localSymbol = String(contract.localSymbol || `MBT ${expiry}`).trim();
+        const conId = positiveOrNull(contract.conId);
+        if (!conId) return null;
+        const normalizedRight = right === "P" || right === "C" ? (right as "P" | "C") : undefined;
+        const normalizedSecType = secType === "FOP" ? "FOP" : "FUT";
+        return {
+          conId,
+          secType: normalizedSecType,
+          localSymbol,
+          expiry,
+          strike: strike ?? undefined,
+          right: normalizedRight,
+          multiplier: String(contract.multiplier || "0.1"),
+          minTick: positiveOrNull(item.minTick) ?? undefined
+        } satisfies BridgeQualifiedContract;
+      })
+      .filter((row): row is BridgeQualifiedContract => Boolean(row));
+
+    if (query.kind === "mbt_option") {
+      const targetStrike = positiveOrNull(query.strike);
+      const targetRight = query.right;
+      return mapped.filter((row) => {
+        if (row.secType !== "FOP") return false;
+        if (targetRight && row.right !== targetRight) return false;
+        if (targetStrike && row.strike && Math.abs(row.strike - targetStrike) > 1e-9) return false;
+        return true;
+      });
+    }
+
+    return mapped.filter((row) => row.secType === "FUT");
+  }
+
+  private async getTopOfBookIb(conId: number): Promise<BridgeTopOfBook> {
+    const ib = await this.requireIb();
+    const reqId = this.nextRequestId();
+    const contract: Contract = {
+      conId,
+      exchange: "CME",
+      currency: "USD"
+    };
+
+    const snapshot = await new Promise<BridgeTopOfBook>((resolve, reject) => {
+      const timeoutMs = Math.max(1000, Math.floor(this.config.requestTimeoutMs || 0));
+      const state: BridgeTopOfBook = {
+        bid: null,
+        ask: null,
+        bidSize: null,
+        askSize: null,
+        asOf: nowIso()
+      };
+      const timeoutHandle = setTimeout(() => {
+        cleanup();
+        resolve({ ...state, asOf: nowIso() });
+      }, timeoutMs);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutHandle);
+        ib.off(EventName.tickPrice, onTickPrice);
+        ib.off(EventName.tickSize, onTickSize);
+        ib.off(EventName.tickSnapshotEnd, onSnapshotEnd);
+        ib.off(EventName.error, onError);
+        try {
+          ib.cancelMktData(reqId);
+        } catch {
+          // ignore cancellation failures
+        }
+      };
+
+      const onTickPrice = (eventReqId: number, field: number, value: number): void => {
+        if (eventReqId !== reqId) return;
+        if (!Number.isFinite(value) || value <= 0) return;
+        if (field === 1 || field === 66) state.bid = value;
+        if (field === 2 || field === 67) state.ask = value;
+      };
+
+      const onTickSize = (eventReqId: number, field?: number, value?: number): void => {
+        if (eventReqId !== reqId) return;
+        if (!Number.isFinite(Number(value))) return;
+        if (field === 0 || field === 69) state.bidSize = Number(value);
+        if (field === 3 || field === 70) state.askSize = Number(value);
+      };
+
+      const onSnapshotEnd = (eventReqId: number): void => {
+        if (eventReqId !== reqId) return;
+        cleanup();
+        resolve({ ...state, asOf: nowIso() });
+      };
+
+      const onError = (...args: unknown[]): void => {
+        const eventReqId = this.extractIbReqId(args);
+        if (eventReqId !== reqId && eventReqId !== -1) return;
+        const code = this.extractIbErrorCode(args);
+        const message = this.extractIbErrorMessage(args);
+        if (code === 2104 || code === 2106 || code === 2107 || code === 2158 || code === 10167) return;
+        cleanup();
+        reject(new Error(`ib_mktdata_error:${message || code || "unknown"}`));
+      };
+
+      ib.on(EventName.tickPrice, onTickPrice);
+      ib.on(EventName.tickSize, onTickSize);
+      ib.on(EventName.tickSnapshotEnd, onSnapshotEnd);
+      ib.on(EventName.error, onError);
+      ib.reqMktData(reqId, contract, "", true, false);
+    });
+
+    return snapshot;
+  }
+
+  private async getDepthIb(conId: number): Promise<BridgeDepth> {
+    const ib = await this.requireIb();
+    const reqId = this.nextRequestId();
+    const contract: Contract = {
+      conId,
+      exchange: "CME",
+      currency: "USD"
+    };
+    const bidsByLevel = new Map<number, DepthRow>();
+    const asksByLevel = new Map<number, DepthRow>();
+
+    await new Promise<void>((resolve, reject) => {
+      const timeoutMs = Math.max(1000, Math.floor(this.config.requestTimeoutMs || 0));
+      const timeoutHandle = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, timeoutMs);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutHandle);
+        ib.off(EventName.updateMktDepth, onDepth);
+        ib.off(EventName.updateMktDepthL2, onDepthL2);
+        ib.off(EventName.error, onError);
+        try {
+          ib.cancelMktDepth(reqId, false);
+        } catch {
+          // ignore
+        }
+      };
+
+      const applyLevel = (position: number, operation: number, side: number, price: number, size: number): void => {
+        const target = side === 1 ? bidsByLevel : asksByLevel;
+        if (operation === 2 || !Number.isFinite(price) || !Number.isFinite(size) || size <= 0 || price <= 0) {
+          target.delete(position);
+          return;
+        }
+        target.set(position, { level: position, price, size });
+      };
+
+      const onDepth = (
+        eventReqId: number,
+        position: number,
+        operation: number,
+        side: number,
+        price: number,
+        size: number
+      ): void => {
+        if (eventReqId !== reqId) return;
+        applyLevel(position, operation, side, price, size);
+      };
+
+      const onDepthL2 = (
+        eventReqId: number,
+        position: number,
+        _marketMaker: string,
+        operation: number,
+        side: number,
+        price: number,
+        size: number
+      ): void => {
+        if (eventReqId !== reqId) return;
+        applyLevel(position, operation, side, price, size);
+      };
+
+      const onError = (...args: unknown[]): void => {
+        const eventReqId = this.extractIbReqId(args);
+        if (eventReqId !== reqId && eventReqId !== -1) return;
+        const code = this.extractIbErrorCode(args);
+        const message = this.extractIbErrorMessage(args);
+        if (code === 2104 || code === 2106 || code === 2107 || code === 2158 || code === 309) return;
+        cleanup();
+        reject(new Error(`ib_depth_error:${message || code || "unknown"}`));
+      };
+
+      ib.on(EventName.updateMktDepth, onDepth);
+      ib.on(EventName.updateMktDepthL2, onDepthL2);
+      ib.on(EventName.error, onError);
+      ib.reqMktDepth(reqId, contract, 5, false);
+    });
+
+    const bids = Array.from(bidsByLevel.values()).sort((a, b) => a.level - b.level).slice(0, 5);
+    const asks = Array.from(asksByLevel.values()).sort((a, b) => a.level - b.level).slice(0, 5);
+
+    if (bids.length === 0 && asks.length === 0) {
+      const top = await this.getTopOfBookIb(conId);
+      const fallbackBids = top.bid ? [{ level: 0, price: top.bid, size: top.bidSize ?? 0 }] : [];
+      const fallbackAsks = top.ask ? [{ level: 0, price: top.ask, size: top.askSize ?? 0 }] : [];
+      return { bids: fallbackBids, asks: fallbackAsks, asOf: nowIso() };
+    }
+
+    return { bids, asks, asOf: nowIso() };
+  }
+
+  private async placeOrderIb(req: BridgePlaceOrderRequest): Promise<{ orderId: string; submittedAt: string }> {
+    const ib = await this.requireIb();
+    const orderId = await this.requireOrderId();
+    const externalOrderId = String(orderId);
+    this.orderIdToExternalId.set(orderId, externalOrderId);
+    this.ordersByExternalId.set(externalOrderId, {
+      orderId: externalOrderId,
+      status: "submitted",
+      filledQuantity: 0,
+      avgFillPrice: null,
+      lastUpdateAt: nowIso()
+    });
+
+    const contract: Contract = {
+      conId: req.conId,
+      exchange: "CME",
+      currency: "USD"
+    };
+    ib.placeOrder(orderId, contract, {
+      orderId,
+      action: req.side as OrderAction,
+      orderType: req.orderType as OrderType,
+      totalQuantity: req.quantity,
+      lmtPrice: req.limitPrice,
+      tif: req.tif as TimeInForce,
+      account: req.accountId,
+      orderRef: req.clientOrderId,
+      transmit: true
+    });
+
+    return { orderId: externalOrderId, submittedAt: nowIso() };
+  }
+
+  private async getOrderIb(orderId: string): Promise<BridgeOrderState> {
+    const current = this.ordersByExternalId.get(orderId);
+    if (current) {
+      return {
+        ...current,
+        avgFillPrice: finiteOrNull(current.avgFillPrice),
+        lastUpdateAt: nowIso()
+      };
     }
     return {
       orderId,
-      status: "filled",
-      filledQuantity: 1,
-      avgFillPrice: 101,
+      status: "submitted",
+      filledQuantity: 0,
+      avgFillPrice: null,
       lastUpdateAt: nowIso()
     };
   }
 
-  async cancelOrder(orderId: string): Promise<{ cancelled: boolean; asOf: string }> {
-    if (this.session === "disconnected") {
-      await this.connect();
+  private async cancelOrderIb(orderId: string): Promise<{ cancelled: boolean; asOf: string }> {
+    const numericOrderId = Number(orderId);
+    const ib = await this.requireIb();
+    if (Number.isFinite(numericOrderId) && numericOrderId > 0) {
+      ib.cancelOrder(Math.floor(numericOrderId));
     }
-    if (this.config.readonlyMode) {
-      return { cancelled: false, asOf: nowIso() };
-    }
+    const current = this.ordersByExternalId.get(orderId);
+    this.ordersByExternalId.set(orderId, {
+      orderId,
+      status: "cancelled",
+      filledQuantity: current?.filledQuantity ?? 0,
+      avgFillPrice: finiteOrNull(current?.avgFillPrice),
+      lastUpdateAt: nowIso(),
+      rejectionReason: current?.rejectionReason
+    });
     return { cancelled: true, asOf: nowIso() };
   }
 }

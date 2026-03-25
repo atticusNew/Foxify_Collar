@@ -3,12 +3,22 @@ import { z } from "zod";
 import { IbGatewayClient } from "./ibGatewayClient";
 import type {
   BridgeContractQuery,
+  BridgeTransportMode,
   BridgeOrderPlaceRequest
 } from "./types";
 
 const healthResponseSchema = z.object({
   ok: z.boolean(),
   session: z.union([z.literal("connected"), z.literal("disconnected")]),
+  transport: z.union([z.literal("synthetic"), z.literal("ib_socket")]),
+  activeTransport: z.union([
+    z.literal("synthetic"),
+    z.literal("ib_socket"),
+    z.literal("synthetic_fallback")
+  ]),
+  fallbackEnabled: z.boolean(),
+  lastError: z.string().optional(),
+  lastFallbackReason: z.string().optional(),
   asOf: z.string()
 });
 
@@ -44,12 +54,30 @@ const gatewayHost = String(process.env.IBKR_GATEWAY_HOST || "127.0.0.1");
 const gatewayPort = Number(process.env.IBKR_GATEWAY_PORT || "4002");
 const gatewayClientId = Number(process.env.IBKR_GATEWAY_CLIENT_ID || "101");
 const bridgeReadonlyMode = process.env.IBKR_BRIDGE_READONLY === "true";
+const bridgeTransportModeRaw = String(process.env.IBKR_BRIDGE_TRANSPORT || "synthetic").trim();
+const bridgeTransportMode: BridgeTransportMode =
+  bridgeTransportModeRaw === "ib_socket" ? "ib_socket" : "synthetic";
+const bridgeFallbackToSynthetic = process.env.IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC !== "false";
+const gatewayConnectTimeoutMs = Number(process.env.IBKR_GATEWAY_CONNECT_TIMEOUT_MS || "5000");
+const gatewayRequestTimeoutMs = Number(process.env.IBKR_GATEWAY_REQUEST_TIMEOUT_MS || "6000");
+const gatewayMarketDataTypeRaw = Number(process.env.IBKR_MARKET_DATA_TYPE || "1");
+const gatewayMarketDataType =
+  gatewayMarketDataTypeRaw === 2 ||
+  gatewayMarketDataTypeRaw === 3 ||
+  gatewayMarketDataTypeRaw === 4
+    ? gatewayMarketDataTypeRaw
+    : 1;
 
 const ibGatewayClient = new IbGatewayClient({
   host: gatewayHost,
   port: Number.isFinite(gatewayPort) ? gatewayPort : 4002,
   clientId: Number.isFinite(gatewayClientId) ? gatewayClientId : 101,
-  readonlyMode: bridgeReadonlyMode
+  readonlyMode: bridgeReadonlyMode,
+  transportMode: bridgeTransportMode,
+  fallbackToSynthetic: bridgeFallbackToSynthetic,
+  connectTimeoutMs: Number.isFinite(gatewayConnectTimeoutMs) ? gatewayConnectTimeoutMs : 5000,
+  requestTimeoutMs: Number.isFinite(gatewayRequestTimeoutMs) ? gatewayRequestTimeoutMs : 6000,
+  marketDataType: gatewayMarketDataType
 });
 
 const app = Fastify({ logger: true });
