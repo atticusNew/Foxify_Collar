@@ -590,6 +590,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
     const right = this.resolveRight(req.protectionType);
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
+    const hasUsableTop = (top: { ask: number | null; bid: number | null }): boolean =>
+      toFinitePositive(top.ask) !== null || toFinitePositive(top.bid) !== null;
 
     if (hedgePolicy === "options_primary_futures_fallback") {
       if (roundedStrike) {
@@ -603,9 +605,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           strike: roundedStrike
         };
         const optionContracts = await this.connector.qualifyContracts(optionQuery);
-        if (optionContracts.length > 0) {
-          const contract = optionContracts[0];
+        for (const contract of optionContracts.slice(0, 3)) {
           const top = await this.connector.getTopOfBook(contract.conId);
+          if (!hasUsableTop(top)) continue;
           return {
             contract,
             hedgeMode: "options_native",
@@ -624,9 +626,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         tenorDays: selectedTenorDays
       };
       const futContracts = await this.connector.qualifyContracts(futQuery);
-      if (futContracts.length > 0) {
-        const contract = futContracts[0];
+      for (const contract of futContracts.slice(0, 3)) {
         const top = await this.connector.getTopOfBook(contract.conId);
+        if (!hasUsableTop(top)) continue;
         return {
           contract,
           hedgeMode: "futures_synthetic",
@@ -634,6 +636,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           selectedTenorDays,
           strike: null
         };
+      }
+      if (futContracts.length > 0) {
+        throw new Error("ibkr_quote_unavailable:no_top_of_book");
       }
     }
 
