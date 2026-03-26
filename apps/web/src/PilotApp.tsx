@@ -770,7 +770,9 @@ export function PilotApp() {
     try {
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 12000);
+        // IBKR live quotes can take ~15s at p95 under sparse snapshots; keep UI
+        // timeout above that so successful quotes are not aborted client-side.
+        const timeout = setTimeout(() => controller.abort(), 20000);
         try {
           const res = await fetch(`${API_BASE}/pilot/protections/quote`, {
             method: "POST",
@@ -815,7 +817,7 @@ export function PilotApp() {
       setQuoteState("idle");
       const err = finalError;
       if (err?.name === "AbortError") {
-        setError("Quote is taking longer than expected. Tap Refresh Quote.");
+        setError("Quote still processing. This can take up to ~20s in live mode. Tap Refresh Quote if no result.");
       } else {
         setError(friendlyError(String(err?.message || "Price temporarily unavailable, please retry.")));
       }
@@ -1033,6 +1035,19 @@ export function PilotApp() {
     quote && quote.diagnostics && typeof quote.diagnostics === "object"
       ? (quote.diagnostics as Record<string, unknown>)
       : null;
+  const venueSelection =
+    quoteDiagnostics && typeof quoteDiagnostics.venueSelection === "object" && quoteDiagnostics.venueSelection
+      ? (quoteDiagnostics.venueSelection as Record<string, unknown>)
+      : null;
+  const requestedTenorFromDiagnostics = Number(venueSelection?.requestedTenorDays ?? NaN);
+  const selectedTenorFromDiagnostics = Number(
+    venueSelection?.selectedTenorDaysActual ?? venueSelection?.selectedTenorDays ?? NaN
+  );
+  const selectedExpiryFromDiagnostics = String(venueSelection?.selectedExpiry || "").trim();
+  const requestedVsMatchedTenorDriftDays =
+    Number.isFinite(requestedTenorFromDiagnostics) && Number.isFinite(selectedTenorFromDiagnostics)
+      ? Math.abs(selectedTenorFromDiagnostics - requestedTenorFromDiagnostics)
+      : NaN;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
     ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_INTERNAL_ADMIN_ENABLED ===
@@ -1436,6 +1451,18 @@ export function PilotApp() {
                   Reference {formatUsd(quote.entrySnapshot.price)} ({quote.entrySnapshot.source}) at{" "}
                   {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
                 </div>
+                {Number.isFinite(requestedTenorFromDiagnostics) &&
+                  Number.isFinite(selectedTenorFromDiagnostics) && (
+                    <div className="muted">
+                      Tenor requested {requestedTenorFromDiagnostics.toFixed(2)}d · matched{" "}
+                      {selectedTenorFromDiagnostics.toFixed(2)}d
+                      {selectedExpiryFromDiagnostics ? ` · expiry ${selectedExpiryFromDiagnostics}` : ""}
+                    </div>
+                  )}
+                {Number.isFinite(requestedVsMatchedTenorDriftDays) &&
+                  requestedVsMatchedTenorDriftDays > 2 && (
+                    <div className="pill pill-warning">Adjusted to nearest liquid tenor.</div>
+                  )}
                 {quoteDetails && (
                   <>
                     {Number.isFinite(selectedTenorFromQuote) && (
