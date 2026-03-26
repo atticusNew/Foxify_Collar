@@ -380,6 +380,7 @@ export const registerPilotRoutes = async (
       maxTenorDriftDays: pilotConfig.ibkrMaxTenorDriftDays,
       preferTenorAtOrAbove: pilotConfig.ibkrPreferTenorAtOrAbove
     },
+    ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
     deribit: deps.deribit
   });
 

@@ -560,13 +560,16 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private mode: "ibkr_cme_live" | "ibkr_cme_paper",
     private quoteTtlMs: number,
     private accountId: string,
+    private orderTimeoutMs: number,
     private enableExecution: boolean,
     private maxRepriceSteps: number,
     private repriceStepTicks: number,
     private maxSlippageBps: number,
     private requireLiveTransport: boolean,
     private maxTenorDriftDays: number,
-    private preferTenorAtOrAbove: boolean
+    private preferTenorAtOrAbove: boolean,
+    private marketDataRequestTimeoutMs: number,
+    private quoteBudgetMs: number
   ) {}
 
   private resolveRight(protectionType?: "long" | "short"): "P" | "C" {
@@ -598,12 +601,15 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
     const right = this.resolveRight(req.protectionType);
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
+    // Buy-side quote reliability requires an executable ask. Bid-only books are treated
+    // as non-actionable and should continue searching/fallback.
     const hasUsableTop = (top: { ask: number | null; bid: number | null }): boolean =>
-      toFinitePositive(top.ask) !== null || toFinitePositive(top.bid) !== null;
-    const topFromDepth = async (
-      conId: number
-    ): Promise<{ ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string }> => {
-      const depth = await this.connector.getDepth(conId);
+      toFinitePositive(top.ask) !== null;
+    const topFromDepthPayload = (depth: {
+      bids?: Array<{ price?: unknown; size?: unknown }>;
+      asks?: Array<{ price?: unknown; size?: unknown }>;
+      asOf?: unknown;
+    }): { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string } => {
       const bestBid = depth.bids?.[0];
       const bestAsk = depth.asks?.[0];
       return {
@@ -614,6 +620,20 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         asOf: String(depth.asOf || nowIso())
       };
     };
+    const quoteDeadlineMs =
+      Number.isFinite(this.quoteBudgetMs) && this.quoteBudgetMs > 0
+        ? Date.now() + this.quoteBudgetMs - 150
+        : null;
+    const ensureBudget = (minimumRemainingMs = 0): void => {
+      if (quoteDeadlineMs === null) return;
+      if (Date.now() + Math.max(0, minimumRemainingMs) >= quoteDeadlineMs) {
+        throw new Error("venue_quote_timeout");
+      }
+    };
+    const requestWindowHintMs = Math.max(
+      400,
+      Math.min(4000, Math.floor(Number(this.marketDataRequestTimeoutMs || 0)))
+    );
     const calcTenorDaysFromExpiry = (expiryRaw?: string): number | null => {
       const expiry = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
       if (expiry.length !== 8) return null;
@@ -692,16 +712,24 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         ...belowTarget.slice(0, 2)
       ].filter((contract, idx, arr) => arr.findIndex((x) => x.conId === contract.conId) === idx);
       if (shortlisted.length === 0) return null;
+      ensureBudget(requestWindowHintMs);
       const settled = await Promise.all(
         shortlisted.map(async (contract) => {
           try {
-            let top = await this.connector.getTopOfBook(contract.conId);
-            if (!hasUsableTop(top)) {
-              // Fall back to depth-derived best bid/ask for contracts that return sparse
-              // or empty snapshot top-of-book responses.
-              top = await topFromDepth(contract.conId);
+            const [topRes, depthRes] = await Promise.allSettled([
+              this.connector.getTopOfBook(contract.conId),
+              this.connector.getDepth(contract.conId)
+            ]);
+            const top = topRes.status === "fulfilled" ? topRes.value : null;
+            const depthTop =
+              depthRes.status === "fulfilled" ? topFromDepthPayload(depthRes.value) : null;
+            if (top && hasUsableTop(top)) {
+              return { contract, top };
             }
-            return { contract, top };
+            if (depthTop && hasUsableTop(depthTop)) {
+              return { contract, top: depthTop };
+            }
+            return null;
           } catch {
             return null;
           }
@@ -718,6 +746,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     let sawTenorEligibleContract = false;
     if (hedgePolicy === "options_primary_futures_fallback") {
       if (roundedStrike) {
+        ensureBudget(requestWindowHintMs);
         const optionQuery: IbkrContractQuery = {
           kind: "mbt_option",
           symbol: "BTC",
@@ -746,6 +775,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         }
       }
 
+      ensureBudget(requestWindowHintMs);
       const futQuery: IbkrContractQuery = {
         kind: "mbt_future",
         symbol: "BTC",
@@ -787,7 +817,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const resolved = await this.resolveContractAndBook(req);
     const ask = toFinitePositive(resolved.top.ask);
     const bid = toFinitePositive(resolved.top.bid);
-    const unitPrice = ask ?? bid;
+    const unitPrice = ask;
     if (!unitPrice) {
       throw new Error("ibkr_quote_unavailable:no_top_of_book");
     }
@@ -894,7 +924,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         clientOrderId: `pilot-${quote.quoteId}-${step}`
       });
       lastOrderId = placed.orderId;
-      const statusDeadline = Date.now() + Math.max(800, Number(this.maxRepriceSteps || 1) * 400);
+      const statusDeadline = Date.now() + Math.max(800, Math.floor(Number(this.orderTimeoutMs || 0)));
       let state = await this.connector.getOrder(placed.orderId);
       while (
         Date.now() < statusDeadline &&
@@ -1069,6 +1099,7 @@ export const createPilotVenueAdapter = (params: {
   falconx: FalconxConfig;
   deribit: DeribitConnector;
   ibkr?: IbkrVenueConfig;
+  ibkrQuoteBudgetMs?: number;
   quoteTtlMs?: number;
   deribitQuotePolicy?: DeribitQuotePolicy;
   deribitStrikeSelectionMode?: DeribitStrikeSelectionMode;
@@ -1080,11 +1111,16 @@ export const createPilotVenueAdapter = (params: {
     if (!params.ibkr) {
       throw new Error("ibkr_config_missing");
     }
+    const connectorTimeoutMs = Math.max(
+      500,
+      Number(params.ibkr.bridgeTimeoutMs || 0),
+      Number(params.ibkr.orderTimeoutMs || 0)
+    );
     const ibkrConnector = new IbkrConnector({
       baseUrl: params.ibkr.bridgeBaseUrl,
       // Use the more permissive timeout so quote/market-data paths do not abort early
       // when IB request latency exceeds execution polling timeout.
-      timeoutMs: Math.max(500, Number(params.ibkr.bridgeTimeoutMs || 0), Number(params.ibkr.orderTimeoutMs || 0)),
+      timeoutMs: connectorTimeoutMs,
       auth: { token: params.ibkr.bridgeToken },
       accountId: params.ibkr.accountId
     });
@@ -1093,13 +1129,16 @@ export const createPilotVenueAdapter = (params: {
       params.mode,
       quoteTtlMs,
       params.ibkr.accountId,
+      params.ibkr.orderTimeoutMs,
       params.ibkr.enableExecution,
       params.ibkr.maxRepriceSteps,
       params.ibkr.repriceStepTicks,
       params.ibkr.maxSlippageBps,
       params.ibkr.requireLiveTransport,
       Number.isFinite(Number(params.ibkr.maxTenorDriftDays)) ? Number(params.ibkr.maxTenorDriftDays) : 7,
-      params.ibkr.preferTenorAtOrAbove !== false
+      params.ibkr.preferTenorAtOrAbove !== false,
+      connectorTimeoutMs,
+      Number(params.ibkrQuoteBudgetMs || 0)
     );
   }
   if (params.mode === "deribit_test") {

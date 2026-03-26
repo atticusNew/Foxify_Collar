@@ -139,3 +139,36 @@ test("bridge auth required rejects missing token and accepts valid token", async
     await wait(150);
   }
 });
+
+test("depth endpoint remains available when top endpoint is unhealthy", async () => {
+  const port = randomPort();
+  const child = startBridge(port, {
+    IBKR_BRIDGE_TRANSPORT: "ib_socket",
+    IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC: "true",
+    IBKR_GATEWAY_HOST: "127.0.0.1",
+    IBKR_GATEWAY_PORT: "65530",
+    IBKR_GATEWAY_CONNECT_TIMEOUT_MS: "700",
+    IBKR_GATEWAY_REQUEST_TIMEOUT_MS: "700"
+  });
+
+  try {
+    await wait(1400);
+    const depthRes = await fetch(`http://127.0.0.1:${port}/marketdata/depth`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ conId: 12345 })
+    });
+    assert.equal(depthRes.ok, true);
+    const depth = (await depthRes.json()) as {
+      bids?: Array<{ price?: number }>;
+      asks?: Array<{ price?: number }>;
+    };
+    assert.ok(Array.isArray(depth.bids));
+    assert.ok(Array.isArray(depth.asks));
+    assert.equal(typeof depth.bids?.[0]?.price, "number");
+    assert.equal(typeof depth.asks?.[0]?.price, "number");
+  } finally {
+    child.kill("SIGTERM");
+    await wait(150);
+  }
+});

@@ -856,13 +856,8 @@ export class IbGatewayClient {
     const bids = Array.from(bidsByLevel.values()).sort((a, b) => a.level - b.level).slice(0, 5);
     const asks = Array.from(asksByLevel.values()).sort((a, b) => a.level - b.level).slice(0, 5);
 
-    if (bids.length === 0 && asks.length === 0) {
-      const top = await this.getTopOfBookIb(conId);
-      const fallbackBids = top.bid ? [{ level: 0, price: top.bid, size: top.bidSize ?? 0 }] : [];
-      const fallbackAsks = top.ask ? [{ level: 0, price: top.ask, size: top.askSize ?? 0 }] : [];
-      return { bids: fallbackBids, asks: fallbackAsks, asOf: nowIso() };
-    }
-
+    // Avoid recursively invoking top-of-book here. The API quote path already probes top
+    // and depth, so calling top again from depth can add another full timeout window.
     return { bids, asks, asOf: nowIso() };
   }
 
