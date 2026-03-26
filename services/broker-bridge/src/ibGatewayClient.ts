@@ -81,6 +81,15 @@ type IbConfig = {
 
 type DepthRow = { level: number; price: number; size: number };
 
+const normalizeReqId = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.floor(parsed);
+  }
+  return null;
+};
+
 /**
  * Hybrid IB gateway client:
  * - synthetic mode: deterministic fixtures for offline/dev.
@@ -388,9 +397,17 @@ export class IbGatewayClient {
   }
 
   private extractIbReqId(args: unknown[]): number | null {
-    if (typeof args[2] === "number") return args[2];
-    if (typeof args[0] === "number") return args[0];
+    const reqIdCandidates = [args[2], args[0]];
+    for (const value of reqIdCandidates) {
+      const normalized = normalizeReqId(value);
+      if (normalized !== null) return normalized;
+    }
     return null;
+  }
+
+  private reqIdMatches(expectedReqId: number, value: unknown): boolean {
+    const normalized = normalizeReqId(value);
+    return normalized !== null && normalized === expectedReqId;
   }
 
   private extractIbErrorMessage(args: unknown[]): string {
@@ -576,19 +593,19 @@ export class IbGatewayClient {
       };
 
       const onDetails = (eventReqId: number, detail: ContractDetails): void => {
-        if (eventReqId !== reqId) return;
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
         rows.push(detail);
       };
 
       const onEnd = (eventReqId: number): void => {
-        if (eventReqId !== reqId) return;
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
         cleanup();
         resolve(rows);
       };
 
       const onError = (...args: unknown[]): void => {
         const eventReqId = this.extractIbReqId(args);
-        if (eventReqId !== reqId && eventReqId !== -1) return;
+        if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
         const message = this.extractIbErrorMessage(args);
         const code = this.extractIbErrorCode(args);
         // Ignore generic connection status broadcasts.
@@ -682,28 +699,28 @@ export class IbGatewayClient {
       };
 
       const onTickPrice = (eventReqId: number, field: number, value: number): void => {
-        if (eventReqId !== reqId) return;
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
         if (!Number.isFinite(value) || value <= 0) return;
         if (field === 1 || field === 66) state.bid = value;
         if (field === 2 || field === 67) state.ask = value;
       };
 
       const onTickSize = (eventReqId: number, field?: number, value?: number): void => {
-        if (eventReqId !== reqId) return;
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
         if (!Number.isFinite(Number(value))) return;
         if (field === 0 || field === 69) state.bidSize = Number(value);
         if (field === 3 || field === 70) state.askSize = Number(value);
       };
 
       const onSnapshotEnd = (eventReqId: number): void => {
-        if (eventReqId !== reqId) return;
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
         cleanup();
         resolve({ ...state, asOf: nowIso() });
       };
 
       const onError = (...args: unknown[]): void => {
         const eventReqId = this.extractIbReqId(args);
-        if (eventReqId !== reqId && eventReqId !== -1) return;
+        if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
         const code = this.extractIbErrorCode(args);
         const message = this.extractIbErrorMessage(args);
         if (code === 2104 || code === 2106 || code === 2107 || code === 2158 || code === 10167) return;
@@ -768,7 +785,7 @@ export class IbGatewayClient {
         price: number,
         size: number
       ): void => {
-        if (eventReqId !== reqId) return;
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
         applyLevel(position, operation, side, price, size);
       };
 
@@ -781,13 +798,13 @@ export class IbGatewayClient {
         price: number,
         size: number
       ): void => {
-        if (eventReqId !== reqId) return;
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
         applyLevel(position, operation, side, price, size);
       };
 
       const onError = (...args: unknown[]): void => {
         const eventReqId = this.extractIbReqId(args);
-        if (eventReqId !== reqId && eventReqId !== -1) return;
+        if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
         const code = this.extractIbErrorCode(args);
         const message = this.extractIbErrorMessage(args);
         if (code === 2104 || code === 2106 || code === 2107 || code === 2158 || code === 309) return;
