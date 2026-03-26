@@ -556,71 +556,96 @@ export class IbGatewayClient {
 
   private async qualifyContractsIb(query: BridgeContractQuery): Promise<BridgeQualifiedContract[]> {
     const ib = await this.requireIb();
-    const reqId = this.nextRequestId();
     const fallbackExpiry = buildMbtExpiry(query.tenorDays);
-    const targetContract: Contract =
-      query.kind === "mbt_option"
-        ? {
-            secType: SecType.FOP,
-            symbol: "MBT",
-            exchange: query.exchange,
-            currency: query.currency,
-            lastTradeDateOrContractMonth: fallbackExpiry,
-            strike: Number(query.strike || 0),
-            right: query.right
+    const fetchContractDetails = async (targetContract: Contract): Promise<ContractDetails[]> => {
+      const reqId = this.nextRequestId();
+      return await new Promise<ContractDetails[]>((resolve, reject) => {
+        const timeoutMs = Math.max(1200, Math.floor(this.config.requestTimeoutMs || 0));
+        const rows: ContractDetails[] = [];
+        const timeoutHandle = setTimeout(() => {
+          cleanup();
+          reject(new Error("ib_contract_details_timeout"));
+        }, timeoutMs);
+
+        const cleanup = (): void => {
+          clearTimeout(timeoutHandle);
+          ib.off(EventName.contractDetails, onDetails);
+          ib.off(EventName.contractDetailsEnd, onEnd);
+          ib.off(EventName.error, onError);
+        };
+
+        const onDetails = (eventReqId: number, detail: ContractDetails): void => {
+          if (!this.reqIdMatches(reqId, eventReqId)) return;
+          rows.push(detail);
+        };
+
+        const onEnd = (eventReqId: number): void => {
+          if (!this.reqIdMatches(reqId, eventReqId)) return;
+          cleanup();
+          resolve(rows);
+        };
+
+        const onError = (...args: unknown[]): void => {
+          const eventReqId = this.extractIbReqId(args);
+          if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
+          const message = this.extractIbErrorMessage(args);
+          const code = this.extractIbErrorCode(args);
+          // Ignore generic connection status broadcasts.
+          if (code === 2104 || code === 2106 || code === 2107 || code === 2158) return;
+          // No security definition should be treated as "zero results", not a hard bridge failure.
+          if (String(message).toLowerCase().includes("no security definition has been found for the request")) {
+            cleanup();
+            resolve([]);
+            return;
           }
-        : {
-            secType: SecType.FUT,
-            symbol: "MBT",
-            exchange: query.exchange,
-            currency: query.currency,
-            lastTradeDateOrContractMonth: fallbackExpiry
-          };
+          cleanup();
+          reject(new Error(`ib_contract_details_error:${message || code || "unknown"}`));
+        };
 
-    const details = await new Promise<ContractDetails[]>((resolve, reject) => {
-      const timeoutMs = Math.max(1200, Math.floor(this.config.requestTimeoutMs || 0));
-      const rows: ContractDetails[] = [];
-      const timeoutHandle = setTimeout(() => {
-        cleanup();
-        reject(new Error("ib_contract_details_timeout"));
-      }, timeoutMs);
+        ib.on(EventName.contractDetails, onDetails);
+        ib.on(EventName.contractDetailsEnd, onEnd);
+        ib.on(EventName.error, onError);
+        ib.reqContractDetails(reqId, targetContract);
+      });
+    };
 
-      const cleanup = (): void => {
-        clearTimeout(timeoutHandle);
-        ib.off(EventName.contractDetails, onDetails);
-        ib.off(EventName.contractDetailsEnd, onEnd);
-        ib.off(EventName.error, onError);
-      };
+    const optionContractWithExactExpiry: Contract = {
+      secType: SecType.FOP,
+      symbol: "MBT",
+      exchange: query.exchange,
+      currency: query.currency,
+      lastTradeDateOrContractMonth: fallbackExpiry,
+      strike: Number(query.strike || 0),
+      right: query.right
+    };
 
-      const onDetails = (eventReqId: number, detail: ContractDetails): void => {
-        if (!this.reqIdMatches(reqId, eventReqId)) return;
-        rows.push(detail);
-      };
+    const optionContractAnyExpiry: Contract = {
+      secType: SecType.FOP,
+      symbol: "MBT",
+      exchange: query.exchange,
+      currency: query.currency,
+      strike: Number(query.strike || 0),
+      right: query.right
+    };
 
-      const onEnd = (eventReqId: number): void => {
-        if (!this.reqIdMatches(reqId, eventReqId)) return;
-        cleanup();
-        resolve(rows);
-      };
+    const futureContractAnyExpiry: Contract = {
+      secType: SecType.FUT,
+      symbol: "MBT",
+      exchange: query.exchange,
+      currency: query.currency
+    };
 
-      const onError = (...args: unknown[]): void => {
-        const eventReqId = this.extractIbReqId(args);
-        if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
-        const message = this.extractIbErrorMessage(args);
-        const code = this.extractIbErrorCode(args);
-        // Ignore generic connection status broadcasts.
-        if (code === 2104 || code === 2106 || code === 2107 || code === 2158) return;
-        cleanup();
-        reject(new Error(`ib_contract_details_error:${message || code || "unknown"}`));
-      };
+    const details =
+      query.kind === "mbt_option"
+        ? (() => fetchContractDetails(optionContractWithExactExpiry))()
+        : (() => fetchContractDetails(futureContractAnyExpiry))();
+    let resolvedDetails = await details;
+    if (query.kind === "mbt_option" && resolvedDetails.length === 0) {
+      // Retry without forcing exact expiry (e.g. weekend/holiday tenor target).
+      resolvedDetails = await fetchContractDetails(optionContractAnyExpiry);
+    }
 
-      ib.on(EventName.contractDetails, onDetails);
-      ib.on(EventName.contractDetailsEnd, onEnd);
-      ib.on(EventName.error, onError);
-      ib.reqContractDetails(reqId, targetContract);
-    });
-
-    const mapped = details
+    const mapped = resolvedDetails
       .map((item) => {
         const contract = item.contract || {};
         const secType = String(contract.secType || (query.kind === "mbt_option" ? "FOP" : "FUT")).toUpperCase();
@@ -648,10 +673,20 @@ export class IbGatewayClient {
       })
       .filter((row): row is BridgeQualifiedContract => Boolean(row));
 
+    const targetExpiryNum = Number(fallbackExpiry);
+    const sortedByNearestTenor = [...mapped].sort((a, b) => {
+      const aExp = Number(a.expiry || 0);
+      const bExp = Number(b.expiry || 0);
+      const aScore = Number.isFinite(aExp) ? (aExp >= targetExpiryNum ? aExp - targetExpiryNum : 1_000_000 + targetExpiryNum - aExp) : 9_000_000;
+      const bScore = Number.isFinite(bExp) ? (bExp >= targetExpiryNum ? bExp - targetExpiryNum : 1_000_000 + targetExpiryNum - bExp) : 9_000_000;
+      if (aScore !== bScore) return aScore - bScore;
+      return aExp - bExp;
+    });
+
     if (query.kind === "mbt_option") {
       const targetStrike = positiveOrNull(query.strike);
       const targetRight = query.right;
-      return mapped.filter((row) => {
+      return sortedByNearestTenor.filter((row) => {
         if (row.secType !== "FOP") return false;
         if (targetRight && row.right !== targetRight) return false;
         if (targetStrike && row.strike && Math.abs(row.strike - targetStrike) > 1e-9) return false;
@@ -659,7 +694,7 @@ export class IbGatewayClient {
       });
     }
 
-    return mapped.filter((row) => row.secType === "FUT");
+    return sortedByNearestTenor.filter((row) => row.secType === "FUT");
   }
 
   private async getTopOfBookIb(conId: number): Promise<BridgeTopOfBook> {
