@@ -600,6 +600,20 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
     const hasUsableTop = (top: { ask: number | null; bid: number | null }): boolean =>
       toFinitePositive(top.ask) !== null || toFinitePositive(top.bid) !== null;
+    const topFromDepth = async (
+      conId: number
+    ): Promise<{ ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string }> => {
+      const depth = await this.connector.getDepth(conId);
+      const bestBid = depth.bids?.[0];
+      const bestAsk = depth.asks?.[0];
+      return {
+        bid: toFinitePositive(bestBid?.price),
+        ask: toFinitePositive(bestAsk?.price),
+        bidSize: toFinitePositive(bestBid?.size),
+        askSize: toFinitePositive(bestAsk?.size),
+        asOf: String(depth.asOf || nowIso())
+      };
+    };
     const calcTenorDaysFromExpiry = (expiryRaw?: string): number | null => {
       const expiry = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
       if (expiry.length !== 8) return null;
@@ -624,13 +638,6 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const selectedTenorDaysIntended = selectedTenorDays;
     const contractPassesTenorPolicy = (contract: IbkrQualifiedContract): boolean => {
       const meta = contractTenorMeta(contract);
-      if (
-        this.preferTenorAtOrAbove &&
-        meta.selectedTenorDays !== null &&
-        meta.selectedTenorDays + 1e-9 < selectedTenorDaysIntended
-      ) {
-        return false;
-      }
       if (
         Number.isFinite(this.maxTenorDriftDays) &&
         this.maxTenorDriftDays >= 0 &&
@@ -667,14 +674,33 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const eligible = [...contracts]
         .filter(contractPassesTenorPolicy)
         .sort(rankByTenor);
-      // Probe a slightly wider candidate set to reduce transient no-book failures
-      // while keeping per-quote latency bounded.
-      const shortlisted = eligible.slice(0, 6);
+      // Probe a wider candidate set while preserving tenor preference.
+      const preferred = this.preferTenorAtOrAbove
+        ? eligible.filter((contract) => {
+            const tenor = contractTenorMeta(contract).selectedTenorDays;
+            return tenor !== null && tenor + 1e-9 >= selectedTenorDaysIntended;
+          })
+        : eligible;
+      const belowTarget = this.preferTenorAtOrAbove
+        ? eligible.filter((contract) => {
+            const tenor = contractTenorMeta(contract).selectedTenorDays;
+            return tenor !== null && tenor + 1e-9 < selectedTenorDaysIntended;
+          })
+        : [];
+      const shortlisted = [
+        ...preferred.slice(0, 4),
+        ...belowTarget.slice(0, 2)
+      ].filter((contract, idx, arr) => arr.findIndex((x) => x.conId === contract.conId) === idx);
       if (shortlisted.length === 0) return null;
       const settled = await Promise.all(
         shortlisted.map(async (contract) => {
           try {
-            const top = await this.connector.getTopOfBook(contract.conId);
+            let top = await this.connector.getTopOfBook(contract.conId);
+            if (!hasUsableTop(top)) {
+              // Fall back to depth-derived best bid/ask for contracts that return sparse
+              // or empty snapshot top-of-book responses.
+              top = await topFromDepth(contract.conId);
+            }
             return { contract, top };
           } catch {
             return null;
