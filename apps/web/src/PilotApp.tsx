@@ -44,17 +44,6 @@ type QuoteResult = {
   diagnostics?: Record<string, unknown>;
 };
 
-type QuoteDiagnosticsVenueSelection = {
-  selectedTenorDays?: string | number | null;
-  hedgeMode?: string | null;
-  deribitComparison?: {
-    status?: string;
-    venue?: string;
-    premium?: number | string;
-    instrumentId?: string;
-  } | null;
-};
-
 type MonitorPayload = {
   protectionId: string;
   status: string;
@@ -1044,10 +1033,6 @@ export function PilotApp() {
     quote && quote.diagnostics && typeof quote.diagnostics === "object"
       ? (quote.diagnostics as Record<string, unknown>)
       : null;
-  const deribitComparisonDiagnostics =
-    quoteDiagnostics && quoteDiagnostics.deribitComparison && typeof quoteDiagnostics.deribitComparison === "object"
-      ? (quoteDiagnostics.deribitComparison as Record<string, unknown>)
-      : null;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
     ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_INTERNAL_ADMIN_ENABLED ===
@@ -1467,14 +1452,6 @@ export function PilotApp() {
                       </div>
                     )}
                   </>
-                )}
-                {deribitComparisonDiagnostics && (
-                  <div className="muted">
-                    Deribit comparison:{" "}
-                    {String(deribitComparisonDiagnostics.status || "") === "ok"
-                      ? `Premium $${formatUsd(deribitComparisonDiagnostics.premium as number)}`
-                      : String(deribitComparisonDiagnostics.reason || "unavailable")}
-                  </div>
                 )}
               </>
             )}

@@ -382,22 +382,6 @@ export const registerPilotRoutes = async (
     },
     deribit: deps.deribit
   });
-  const deribitComparisonVenue = pilotConfig.enableDeribitComparison
-    ? createPilotVenueAdapter({
-        mode: "deribit_test",
-        quoteTtlMs: pilotConfig.quoteTtlMs,
-        deribitQuotePolicy: pilotConfig.deribitQuotePolicy,
-        deribitStrikeSelectionMode: pilotConfig.deribitStrikeSelectionMode,
-        deribitMaxTenorDriftDays: pilotConfig.deribitMaxTenorDriftDays,
-        falconx: {
-          baseUrl: pilotConfig.falconxBaseUrl,
-          apiKey: pilotConfig.falconxApiKey,
-          secret: pilotConfig.falconxSecret,
-          passphrase: pilotConfig.falconxPassphrase
-        },
-        deribit: deps.deribit
-      })
-    : null;
 
   const resolveAndPersistExpiry = async (protectionId: string): Promise<void> => {
     const protection = await getProtection(pool, protectionId);
@@ -770,45 +754,6 @@ export const registerPilotRoutes = async (
         "venue_quote"
       );
       venueMs = Date.now() - venueStartedAt;
-      let deribitComparison: Record<string, unknown> | null = null;
-      if (
-        deribitComparisonVenue &&
-        (pilotConfig.venueMode === "ibkr_cme_live" || pilotConfig.venueMode === "ibkr_cme_paper")
-      ) {
-        try {
-          const cmp = await withTimeout(
-            deribitComparisonVenue.quote({
-              marketId,
-              protectedNotional: protectedNotional.toNumber(),
-              quantity,
-              side: "buy",
-              instrumentId: quoteInstrumentId,
-              protectionType,
-              triggerPrice: triggerPrice.toNumber(),
-              requestedTenorDays,
-              tenorMinDays: pilotConfig.pilotTenorMinDays,
-              tenorMaxDays: pilotConfig.pilotTenorMaxDays,
-              hedgePolicy: pilotConfig.pilotHedgePolicy,
-              clientOrderId: body.clientOrderId
-            }),
-            Math.min(4000, pilotConfig.venueQuoteTimeoutMs),
-            "deribit_comparison_quote"
-          );
-          deribitComparison = {
-            status: "ok",
-            venue: cmp.venue,
-            premium: cmp.premium,
-            instrumentId: cmp.instrumentId,
-            quoteTs: cmp.quoteTs,
-            details: cmp.details || {}
-          };
-        } catch (error: any) {
-          deribitComparison = {
-            status: "error",
-            reason: String(error?.message || "comparison_unavailable")
-          };
-        }
-      }
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
@@ -880,7 +825,6 @@ export const registerPilotRoutes = async (
                 ? String((quote.details as Record<string, unknown>).strikeSelectionMode)
                 : null,
             hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined),
-            deribitComparison,
             ...pricingBreakdown
           }
         }
@@ -964,8 +908,7 @@ export const registerPilotRoutes = async (
                 ? String((quote.details as Record<string, unknown>).selectedExpiry)
                 : null,
             hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined)
-          },
-          deribitComparison
+          }
         }
       };
     } catch (error: any) {

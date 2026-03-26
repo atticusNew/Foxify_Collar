@@ -281,7 +281,6 @@ export const pilotConfig = {
     process.env.IBKR_REQUIRE_LIVE_TRANSPORT,
     parsePilotVenueMode(process.env.PILOT_VENUE_MODE) === "ibkr_cme_live"
   ),
-  enableDeribitComparison: process.env.PILOT_ENABLE_DERIBIT_COMPARISON === "true",
   tenantScopeId: (process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot").trim() || "foxify-pilot",
   termsVersion: (process.env.PILOT_TERMS_VERSION || "v1.0").trim() || "v1.0",
   postgresUrl: process.env.POSTGRES_URL || process.env.DATABASE_URL || "",

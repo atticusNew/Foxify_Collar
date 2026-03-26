@@ -36,11 +36,6 @@ This integration supports pilot quote + activation flows against IBKR/CME using 
 
 Quote/activate requests can include `tenorDays`; API enforces configured bounds.
 
-## Optional Deribit comparison
-
-- `PILOT_ENABLE_DERIBIT_COMPARISON=true` enables a shadow Deribit quote in quote diagnostics.
-- Comparison is intended for pilot benchmarking only and can be disabled for production rollout.
-
 ## Required IBKR-side readiness
 
 - Trading permissions:

@@ -139,8 +139,6 @@ settlement calls for an already-settled protection return `status=ok` with `idem
       - call quotes require `selectedStrike <= triggerPrice`
   - `PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS` (default `1.5`)
     - rejects Deribit quotes whose selected expiry drifts too far from the requested tenor
-- Optional side-by-side testing mode:
-  - `PILOT_ENABLE_DERIBIT_COMPARISON=true` adds non-blocking Deribit comparison diagnostics to quote responses.
 - IBKR/CME pilot mode:
   - `PILOT_VENUE_MODE=ibkr_cme_live` or `ibkr_cme_paper`
   - `PILOT_HEDGE_POLICY=options_primary_futures_fallback`
