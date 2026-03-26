@@ -5,6 +5,7 @@ import {
   parseDeribitMaxTenorDriftDays,
   parseDeribitQuotePolicy,
   parseDeribitStrikeSelectionMode,
+  parseBooleanEnv,
   parsePositiveFinite,
   parsePositiveIntInRange,
   parsePilotVenueMode,
@@ -67,6 +68,15 @@ test("parsePositiveFinite validates positive numeric values", () => {
   assert.equal(parsePositiveFinite("1.5", 2500, "invalid"), 1.5);
   assert.throws(() => parsePositiveFinite("0", 2500, "invalid"), /invalid:/);
   assert.throws(() => parsePositiveFinite("-5", 2500, "invalid"), /invalid:/);
+});
+
+test("parseBooleanEnv handles true/false with fallback", () => {
+  assert.equal(parseBooleanEnv(undefined, false), false);
+  assert.equal(parseBooleanEnv(undefined, true), true);
+  assert.equal(parseBooleanEnv("true", false), true);
+  assert.equal(parseBooleanEnv("false", true), false);
+  assert.equal(parseBooleanEnv("junk", true), true);
+  assert.equal(parseBooleanEnv("junk", false), false);
 });
 
 test("resolvePilotWindow supports optional start and hard-stop duration", () => {

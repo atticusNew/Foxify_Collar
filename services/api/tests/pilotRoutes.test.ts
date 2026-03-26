@@ -17,6 +17,34 @@ const buildPriceFetch = (): typeof fetch =>
         })
     }) as any) as typeof fetch;
 
+const buildDeribitExecutionFailureStub = (): any => {
+  const instrument = "BTC-31MAR26-80000-P";
+  return {
+    getIndexPrice: async () => ({
+      result: { index_price: 100000 }
+    }),
+    listInstruments: async () => ({
+      result: [
+        {
+          instrument_name: instrument,
+          option_type: "put",
+          strike: 80000,
+          expiration_timestamp: Date.now() + 7 * 86400000
+        }
+      ]
+    }),
+    getOrderBook: async () => ({
+      result: { asks: [[0.01, 5]], bids: [[0.009, 5]], mark_price: 0.0095 }
+    }),
+    placeOrder: async () => ({
+      status: "rejected",
+      id: "paper-reject",
+      fillPrice: 0,
+      filledAmount: 0
+    })
+  };
+};
+
 const defaultQuotePayload = (protectedNotional = 1000) => ({
   protectedNotional,
   foxifyExposureNotional: protectedNotional,
@@ -603,6 +631,145 @@ test("L) post-execution persistence failure marks protection reconcile_pending",
     const metadata = protections.rows[0]?.metadata || {};
     assert.ok(String(metadata.externalOrderId || "").length > 0);
     assert.ok(String(metadata.reconcileReason || "").length > 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("M) quote with failed prior protection returns quote_not_activatable", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    deribit: buildDeribitExecutionFailureStub()
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId);
+
+    // First activation attempt will fail and mark protection activation_failed.
+    const failedActivation = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(failedActivation.statusCode, 502);
+    assert.equal(failedActivation.json().reason, "execution_failed");
+
+    // Re-activating same quote should now surface non-activatable state.
+    const replay = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(replay.statusCode, 409);
+    assert.equal(replay.json().reason, "quote_not_activatable");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("N) execution failure marks protection activation_failed and releases daily capacity", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    deribit: buildDeribitExecutionFailureStub()
+  });
+  try {
+    const { app, pool } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(activateRes.statusCode, 502);
+    const activatePayload = activateRes.json();
+    assert.equal(activatePayload.reason, "execution_failed");
+
+    const protectionRows = await pool.query(
+      `SELECT status, metadata FROM pilot_protections ORDER BY created_at DESC LIMIT 1`
+    );
+    assert.equal(String(protectionRows.rows[0]?.status || ""), "activation_failed");
+    assert.equal(Boolean(protectionRows.rows[0]?.metadata?.capReleased), true);
+
+    const usageRows = await pool.query(`SELECT used_notional::text AS used_now FROM pilot_daily_usage LIMIT 1`);
+    assert.equal(String(usageRows.rows[0]?.used_now || "0"), "0");
+
+    const quoteRes2 = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(50000)
+    });
+    assert.equal(quoteRes2.statusCode, 200);
+    const quoteId2 = String(quoteRes2.json().quote.quoteId);
+
+    const activateRes2 = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId2, 50000)
+    });
+    assert.equal(activateRes2.statusCode, 502);
+    assert.equal(activateRes2.json().reason, "execution_failed");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("O) monitor/detail/proof routes are tenant scoped", async () => {
+  const harnessA = await createPilotHarness({ env: { PILOT_TENANT_SCOPE_ID: "tenant-a" } });
+  const harnessB = await createPilotHarness({ env: { PILOT_TENANT_SCOPE_ID: "tenant-b" } });
+  try {
+    const { app: appA } = harnessA;
+    const { app: appB } = harnessB;
+    const { protectionId } = await quoteAndActivate(appA, 1000);
+
+    const detail = await appB.inject({
+      method: "GET",
+      url: `/pilot/protections/${protectionId}`
+    });
+    assert.equal(detail.statusCode, 404);
+
+    const monitor = await appB.inject({
+      method: "GET",
+      url: `/pilot/protections/${protectionId}/monitor`
+    });
+    assert.equal(monitor.statusCode, 404);
+
+    const proof = await appB.inject({
+      method: "GET",
+      url: `/pilot/protections/${protectionId}/proof`,
+      headers: { "x-proof-token": "proof-local" }
+    });
+    assert.equal(proof.statusCode, 404);
+  } finally {
+    await harnessA.close();
+    await harnessB.close();
+  }
+});
+
+test("P) own proof route works with proof token", async () => {
+  const harness = await createPilotHarness();
+  try {
+    const { app } = harness;
+    const { protectionId } = await quoteAndActivate(app, 1000);
+    const proof = await app.inject({
+      method: "GET",
+      url: `/pilot/protections/${protectionId}/proof`,
+      headers: { "x-proof-token": "proof-local" }
+    });
+    assert.equal(proof.statusCode, 200);
+    assert.equal(proof.json().status, "ok");
   } finally {
     await harness.close();
   }

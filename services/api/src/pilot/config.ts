@@ -105,6 +105,14 @@ export const parsePositiveFinite = (raw: string | undefined, fallback: number, e
   throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
 };
 
+export const parseBooleanEnv = (raw: string | undefined, fallback: boolean): boolean => {
+  const normalized = String(raw ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return fallback;
+};
+
 const resolveTenorBounds = (): {
   minDays: number;
   maxDays: number;
@@ -262,6 +270,10 @@ export const pilotConfig = {
     process.env.IBKR_MAX_SLIPPAGE_BPS,
     25,
     "invalid_ibkr_max_slippage_bps"
+  ),
+  ibkrRequireLiveTransport: parseBooleanEnv(
+    process.env.IBKR_REQUIRE_LIVE_TRANSPORT,
+    parsePilotVenueMode(process.env.PILOT_VENUE_MODE) === "ibkr_cme_live"
   ),
   enableDeribitComparison: process.env.PILOT_ENABLE_DERIBIT_COMPARISON === "true",
   tenantScopeId: (process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot").trim() || "foxify-pilot",

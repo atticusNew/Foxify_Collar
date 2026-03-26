@@ -110,6 +110,30 @@ export class IbkrConnector {
     return this.request("GET", "/health");
   }
 
+  async assertLiveTransportRequired(): Promise<void> {
+    const health = await this.request<{
+      transport?: string;
+      activeTransport?: string;
+      fallbackEnabled?: boolean;
+      lastError?: string;
+      lastFallbackReason?: string;
+    }>("GET", "/health");
+    const transport = String(health.transport || "");
+    const activeTransport = String(health.activeTransport || "");
+    if (transport !== "ib_socket" || activeTransport !== "ib_socket") {
+      const detail = [
+        `transport=${transport || "unknown"}`,
+        `activeTransport=${activeTransport || "unknown"}`,
+        `fallbackEnabled=${String(Boolean(health.fallbackEnabled))}`,
+        `lastError=${String(health.lastError || "")}`,
+        `lastFallbackReason=${String(health.lastFallbackReason || "")}`
+      ]
+        .filter((part) => !part.endsWith("="))
+        .join(" ");
+      throw new Error(`ibkr_transport_not_live:${detail}`);
+    }
+  }
+
   async qualifyContracts(query: IbkrContractQuery): Promise<IbkrQualifiedContract[]> {
     const payload = await this.request<{ contracts?: IbkrQualifiedContract[] }>("POST", "/contracts/qualify", query);
     return Array.isArray(payload.contracts) ? payload.contracts : [];

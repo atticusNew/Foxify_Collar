@@ -1,5 +1,6 @@
 export type ProtectionStatus =
   | "pending_activation"
+  | "activation_failed"
   | "active"
   | "reconcile_pending"
   | "awaiting_renew_decision"

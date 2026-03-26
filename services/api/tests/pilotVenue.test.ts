@@ -351,7 +351,8 @@ test("ibkr_cme_paper adapter returns quote with hedge mode diagnostics", async (
       orderTimeoutMs: 2000,
       maxRepriceSteps: 3,
       repriceStepTicks: 1,
-      maxSlippageBps: 25
+      maxSlippageBps: 25,
+      requireLiveTransport: false
     }
   });
   const quote = await adapter.quote({
@@ -388,7 +389,8 @@ test("ibkr_cme_paper execution disabled yields failure status", async () => {
       orderTimeoutMs: 2000,
       maxRepriceSteps: 3,
       repriceStepTicks: 1,
-      maxSlippageBps: 25
+      maxSlippageBps: 25,
+      requireLiveTransport: false
     }
   });
   const execution = await adapter.execute({
@@ -406,5 +408,72 @@ test("ibkr_cme_paper execution disabled yields failure status", async () => {
     }
   });
   assert.equal(execution.status, "failure");
+});
+
+test("ibkr_cme_live requires active ib_socket transport when enforced", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "synthetic_fallback",
+              fallbackEnabled: true,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_live",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 2000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: true,
+        orderTimeoutMs: 2000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: true
+      }
+    });
+
+    await assert.rejects(
+      () =>
+        adapter.quote({
+          marketId: "BTC-USD",
+          instrumentId: "BTC-USD-3D-P",
+          protectedNotional: 10000,
+          quantity: 0.2,
+          side: "buy",
+          protectionType: "long",
+          triggerPrice: 80000,
+          requestedTenorDays: 3,
+          tenorMinDays: 1,
+          tenorMaxDays: 7,
+          hedgePolicy: "options_primary_futures_fallback"
+        }),
+      /ibkr_transport_not_live/
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 

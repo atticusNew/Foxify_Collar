@@ -48,6 +48,7 @@ const placeOrderSchema = z.object({
 });
 
 const authToken = String(process.env.IBKR_BRIDGE_TOKEN || "").trim();
+const bridgeRequireAuth = process.env.IBKR_BRIDGE_REQUIRE_AUTH !== "false";
 const bridgePort = Number(process.env.IBKR_BRIDGE_PORT || "18080");
 const bridgeHost = String(process.env.IBKR_BRIDGE_HOST || "0.0.0.0");
 const gatewayHost = String(process.env.IBKR_GATEWAY_HOST || "127.0.0.1");
@@ -83,7 +84,14 @@ const ibGatewayClient = new IbGatewayClient({
 const app = Fastify({ logger: true });
 
 app.addHook("onRequest", async (req, reply) => {
-  if (!authToken) return;
+  if (!bridgeRequireAuth) return;
+  if (!authToken) {
+    reply.code(503).send({
+      status: "error",
+      reason: "bridge_auth_not_configured"
+    });
+    return;
+  }
   const header = String(req.headers.authorization || "");
   const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
   if (token !== authToken) {
@@ -91,6 +99,7 @@ app.addHook("onRequest", async (req, reply) => {
       status: "error",
       reason: "unauthorized_bridge"
     });
+    return;
   }
 });
 

@@ -241,6 +241,15 @@ const friendlyError = (message: string): string => {
   if (message.includes("venue_execute_timeout")) {
     return "Activation is taking longer than expected. Tap Confirm Protection again.";
   }
+  if (message.includes("execution_failed")) {
+    return "Venue execution failed. Request a fresh quote and retry.";
+  }
+  if (message.includes("reconcile_pending")) {
+    return "Execution appears submitted, but reconciliation is pending. Contact operations before retrying.";
+  }
+  if (message.includes("quote_not_activatable")) {
+    return "This quote is linked to a failed activation state. Request a fresh quote.";
+  }
   if (message.includes("full_coverage_not_met")) {
     return "Coverage check changed. Tap Refresh Quote and confirm again.";
   }
@@ -1041,7 +1050,9 @@ export function PilotApp() {
       : null;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("internal_admin") === "1";
+    ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_INTERNAL_ADMIN_ENABLED ===
+      "true" ||
+      new URLSearchParams(window.location.search).get("internal_admin") === "1");
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
   const liveReferencePrice = Number(monitor?.referencePrice ?? referencePrice);
   const liveTriggerPrice = monitor?.triggerPrice ?? displayedTriggerPrice;

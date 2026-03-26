@@ -698,6 +698,25 @@ export const reserveDailyActivationCapacity = async (
   return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
 };
 
+export const releaseDailyActivationCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    protectedNotional: string;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      UPDATE pilot_daily_usage
+      SET used_notional = GREATEST(0, used_notional - $3::numeric)
+      WHERE user_hash = $1
+        AND day_start = $2::date
+    `,
+    [params.userHash, params.dayStartIso, params.protectedNotional]
+  );
+};
+
 export type PilotTermsAcceptanceRecord = {
   id: string;
   userHash: string;

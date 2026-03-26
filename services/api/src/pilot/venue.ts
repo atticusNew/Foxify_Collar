@@ -46,9 +46,11 @@ type IbkrVenueConfig = {
   maxRepriceSteps: number;
   repriceStepTicks: number;
   maxSlippageBps: number;
+  requireLiveTransport: boolean;
 };
 
 const nowIso = (): string => new Date().toISOString();
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const timestampSeconds = (): string => (Date.now() / 1000).toFixed(3);
 
@@ -549,6 +551,8 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 }
 
 class IbkrCmeAdapter implements PilotVenueAdapter {
+  private transportVerified = false;
+
   constructor(
     private connector: IbkrConnector,
     private mode: "ibkr_cme_live" | "ibkr_cme_paper",
@@ -557,11 +561,18 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private enableExecution: boolean,
     private maxRepriceSteps: number,
     private repriceStepTicks: number,
-    private maxSlippageBps: number
+    private maxSlippageBps: number,
+    private requireLiveTransport: boolean
   ) {}
 
   private resolveRight(protectionType?: "long" | "short"): "P" | "C" {
     return protectionType === "short" ? "C" : "P";
+  }
+
+  private async ensureRequiredLiveTransport(): Promise<void> {
+    if (!this.requireLiveTransport || this.transportVerified) return;
+    await this.connector.assertLiveTransportRequired();
+    this.transportVerified = true;
   }
 
   private async resolveContractAndBook(req: QuoteRequest): Promise<{
@@ -630,6 +641,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
   }
 
   async quote(req: QuoteRequest): Promise<VenueQuote> {
+    await this.ensureRequiredLiveTransport();
     const resolved = await this.resolveContractAndBook(req);
     const ask = toFinitePositive(resolved.top.ask);
     const bid = toFinitePositive(resolved.top.bid);
@@ -719,7 +731,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const maxSlipPct = Math.max(0, Number(this.maxSlippageBps || 0)) / 10_000;
     const maxLimit = baseLimit * (1 + maxSlipPct);
     const requestedQty = Math.max(0.00000001, Number(quote.quantity || 0));
-    const contractQty = Math.max(1, Math.ceil(requestedQty / 0.1));
+    const contractMultiplier = Math.max(0.00000001, Number(details.multiplier ?? 0.1));
+    const requestedContracts = Math.max(1, Math.ceil(requestedQty / contractMultiplier));
 
     let lastOrderId = "";
     for (let step = 0; step < maxSteps; step += 1) {
@@ -728,18 +741,28 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         accountId: this.accountId,
         conId,
         side: "BUY",
-        quantity: contractQty,
+        quantity: requestedContracts,
         orderType: "LMT",
         limitPrice,
         tif: "IOC",
         clientOrderId: `pilot-${quote.quoteId}-${step}`
       });
       lastOrderId = placed.orderId;
-      const state = await this.connector.getOrder(placed.orderId);
+      const statusDeadline = Date.now() + Math.max(800, Number(this.maxRepriceSteps || 1) * 400);
+      let state = await this.connector.getOrder(placed.orderId);
+      while (
+        Date.now() < statusDeadline &&
+        state.status === "submitted" &&
+        Math.max(0, Number(state.filledQuantity || 0)) === 0
+      ) {
+        await wait(200);
+        state = await this.connector.getOrder(placed.orderId);
+      }
       const filledQtyContracts = Math.max(0, Number(state.filledQuantity || 0));
       if (filledQtyContracts > 0 && (state.status === "filled" || state.status === "partially_filled")) {
-        const executedQuantity = Number((filledQtyContracts * 0.1).toFixed(8));
+        const executedQuantity = Number((filledQtyContracts * contractMultiplier).toFixed(8));
         const executionPrice = toFinitePositive(state.avgFillPrice) || limitPrice;
+        const unitPrice = executionPrice * contractMultiplier;
         return {
           venue: this.mode,
           status: "success",
@@ -749,14 +772,17 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           side: "buy",
           quantity: executedQuantity,
           executionPrice,
-          premium: Number((executionPrice * filledQtyContracts).toFixed(6)),
+          premium: Number((unitPrice * filledQtyContracts).toFixed(6)),
           executedAt: nowIso(),
           externalOrderId: placed.orderId,
           externalExecutionId: placed.orderId,
           details: {
             hedgeMode: details.hedgeMode || "options_native",
             fillStatus: state.status,
+            requestedContracts,
             filledContracts: filledQtyContracts,
+            contractMultiplier,
+            filledUnderlying: Number((filledQtyContracts * contractMultiplier).toFixed(8)),
             limitPrice,
             repriceStep: step
           }
@@ -922,7 +948,8 @@ export const createPilotVenueAdapter = (params: {
       params.ibkr.enableExecution,
       params.ibkr.maxRepriceSteps,
       params.ibkr.repriceStepTicks,
-      params.ibkr.maxSlippageBps
+      params.ibkr.maxSlippageBps,
+      params.ibkr.requireLiveTransport
     );
   }
   if (params.mode === "deribit_test") {
