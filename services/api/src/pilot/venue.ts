@@ -592,6 +592,34 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
     const hasUsableTop = (top: { ask: number | null; bid: number | null }): boolean =>
       toFinitePositive(top.ask) !== null || toFinitePositive(top.bid) !== null;
+    const pickContractWithTop = async (
+      contracts: IbkrQualifiedContract[]
+    ): Promise<
+      | {
+          contract: IbkrQualifiedContract;
+          top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+        }
+      | null
+    > => {
+      const shortlisted = contracts.slice(0, 3);
+      if (shortlisted.length === 0) return null;
+      const settled = await Promise.all(
+        shortlisted.map(async (contract) => {
+          try {
+            const top = await this.connector.getTopOfBook(contract.conId);
+            return { contract, top };
+          } catch {
+            return null;
+          }
+        })
+      );
+      for (const item of settled) {
+        if (!item) continue;
+        if (!hasUsableTop(item.top)) continue;
+        return item;
+      }
+      return null;
+    };
 
     if (hedgePolicy === "options_primary_futures_fallback") {
       if (roundedStrike) {
@@ -605,15 +633,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           strike: roundedStrike
         };
         const optionContracts = await this.connector.qualifyContracts(optionQuery);
-        for (const contract of optionContracts.slice(0, 3)) {
-          const top = await this.connector.getTopOfBook(contract.conId);
-          if (!hasUsableTop(top)) continue;
+        const optionMatch = await pickContractWithTop(optionContracts);
+        if (optionMatch) {
           return {
-            contract,
+            contract: optionMatch.contract,
             hedgeMode: "options_native",
-            top,
+            top: optionMatch.top,
             selectedTenorDays,
-            strike: toFinitePositive(contract.strike) || roundedStrike
+            strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike
           };
         }
       }
@@ -626,13 +653,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         tenorDays: selectedTenorDays
       };
       const futContracts = await this.connector.qualifyContracts(futQuery);
-      for (const contract of futContracts.slice(0, 3)) {
-        const top = await this.connector.getTopOfBook(contract.conId);
-        if (!hasUsableTop(top)) continue;
+      const futMatch = await pickContractWithTop(futContracts);
+      if (futMatch) {
         return {
-          contract,
+          contract: futMatch.contract,
           hedgeMode: "futures_synthetic",
-          top,
+          top: futMatch.top,
           selectedTenorDays,
           strike: null
         };
