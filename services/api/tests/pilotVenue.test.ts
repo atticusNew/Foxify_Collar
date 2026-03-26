@@ -589,3 +589,100 @@ test("ibkr_cme_live requires active ib_socket transport when enforced", async ()
   }
 });
 
+test("ibkr connector timeout prefers bridge timeout when larger", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 12345,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P55000",
+                  expiry: "20260330",
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 95,
+              ask: 96,
+              bidSize: 4,
+              askSize: 6,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 20000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 8000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: true
+      }
+    });
+
+    const quote = await adapter.quote({
+      marketId: "BTC-USD",
+      instrumentId: "BTC-USD-3D-P",
+      protectedNotional: 10000,
+      quantity: 0.2,
+      side: "buy",
+      protectionType: "long",
+      triggerPrice: 55000,
+      requestedTenorDays: 3,
+      tenorMinDays: 1,
+      tenorMaxDays: 7,
+      hedgePolicy: "options_primary_futures_fallback"
+    });
+    assert.equal(quote.venue, "ibkr_cme_paper");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+

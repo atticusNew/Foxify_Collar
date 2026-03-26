@@ -941,7 +941,9 @@ export const createPilotVenueAdapter = (params: {
     }
     const ibkrConnector = new IbkrConnector({
       baseUrl: params.ibkr.bridgeBaseUrl,
-      timeoutMs: Math.max(500, Number(params.ibkr.orderTimeoutMs || params.ibkr.bridgeTimeoutMs)),
+      // Use the more permissive timeout so quote/market-data paths do not abort early
+      // when IB request latency exceeds execution polling timeout.
+      timeoutMs: Math.max(500, Number(params.ibkr.bridgeTimeoutMs || 0), Number(params.ibkr.orderTimeoutMs || 0)),
       auth: { token: params.ibkr.bridgeToken },
       accountId: params.ibkr.accountId
     });
