@@ -667,7 +667,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const eligible = [...contracts]
         .filter(contractPassesTenorPolicy)
         .sort(rankByTenor);
-      const shortlisted = eligible.slice(0, 3);
+      // Probe a slightly wider candidate set to reduce transient no-book failures
+      // while keeping per-quote latency bounded.
+      const shortlisted = eligible.slice(0, 6);
       if (shortlisted.length === 0) return null;
       const settled = await Promise.all(
         shortlisted.map(async (contract) => {
