@@ -597,6 +597,18 @@ test("K) quote diagnostics surface venue strike/tenor selection", async () => {
       Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "strikeSelectionMode"),
       true
     );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "requestedTenorDays"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedTenorDaysActual"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedExpiry"),
+      true
+    );
   } finally {
     await harness.close();
   }

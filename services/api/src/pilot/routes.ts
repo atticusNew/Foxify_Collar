@@ -376,7 +376,9 @@ export const registerPilotRoutes = async (
       maxRepriceSteps: pilotConfig.ibkrMaxRepriceSteps,
       repriceStepTicks: pilotConfig.ibkrRepriceStepTicks,
       maxSlippageBps: pilotConfig.ibkrMaxSlippageBps,
-      requireLiveTransport: pilotConfig.ibkrRequireLiveTransport
+      requireLiveTransport: pilotConfig.ibkrRequireLiveTransport,
+      maxTenorDriftDays: pilotConfig.ibkrMaxTenorDriftDays,
+      preferTenorAtOrAbove: pilotConfig.ibkrPreferTenorAtOrAbove
     },
     deribit: deps.deribit
   });
@@ -949,6 +951,18 @@ export const registerPilotRoutes = async (
               quote.details && typeof (quote.details as Record<string, unknown>).strikeSelectionMode === "string"
                 ? String((quote.details as Record<string, unknown>).strikeSelectionMode)
                 : null,
+            requestedTenorDays:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).requestedTenorDays))
+                ? Number((quote.details as Record<string, unknown>).requestedTenorDays).toFixed(10)
+                : null,
+            selectedTenorDaysActual:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
+                ? Number((quote.details as Record<string, unknown>).selectedTenorDays).toFixed(10)
+                : null,
+            selectedExpiry:
+              quote.details && typeof (quote.details as Record<string, unknown>).selectedExpiry === "string"
+                ? String((quote.details as Record<string, unknown>).selectedExpiry)
+                : null,
             hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined)
           },
           deribitComparison
@@ -957,6 +971,7 @@ export const registerPilotRoutes = async (
     } catch (error: any) {
       const message = String(error?.message || "quote_generation_failed");
       const isTransportNotLive = message.startsWith("ibkr_transport_not_live");
+      const isTenorDriftExceeded = message.includes("tenor_drift_exceeded");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
       const isStorageFailure =
         message.includes("postgres") || message.includes("ECONN") || message.includes("pool") || message.includes("db");
@@ -967,11 +982,15 @@ export const registerPilotRoutes = async (
           ? "storage_unavailable"
           : isTransportNotLive
             ? "ibkr_transport_not_live"
+            : isTenorDriftExceeded
+              ? "tenor_drift_exceeded"
             : "quote_generation_failed",
         message: isStorageFailure
           ? "Storage temporarily unavailable, please retry."
           : isTransportNotLive
             ? "IBKR live transport is not active. Verify bridge transport health and retry."
+            : isTenorDriftExceeded
+              ? "No IBKR contract matched the requested tenor within configured drift."
           : "Unable to generate a venue quote right now. Please retry.",
         detail: message,
         diagnostics: {

@@ -271,6 +271,12 @@ export const pilotConfig = {
     25,
     "invalid_ibkr_max_slippage_bps"
   ),
+  ibkrMaxTenorDriftDays: parsePositiveFinite(
+    process.env.IBKR_MAX_TENOR_DRIFT_DAYS,
+    7,
+    "invalid_ibkr_max_tenor_drift_days"
+  ),
+  ibkrPreferTenorAtOrAbove: parseBooleanEnv(process.env.IBKR_PREFER_TENOR_AT_OR_ABOVE, true),
   ibkrRequireLiveTransport: parseBooleanEnv(
     process.env.IBKR_REQUIRE_LIVE_TRANSPORT,
     parsePilotVenueMode(process.env.PILOT_VENUE_MODE) === "ibkr_cme_live"

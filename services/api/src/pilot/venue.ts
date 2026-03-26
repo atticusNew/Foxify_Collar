@@ -47,6 +47,8 @@ type IbkrVenueConfig = {
   repriceStepTicks: number;
   maxSlippageBps: number;
   requireLiveTransport: boolean;
+  maxTenorDriftDays?: number;
+  preferTenorAtOrAbove?: boolean;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -562,7 +564,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private maxRepriceSteps: number,
     private repriceStepTicks: number,
     private maxSlippageBps: number,
-    private requireLiveTransport: boolean
+    private requireLiveTransport: boolean,
+    private maxTenorDriftDays: number,
+    private preferTenorAtOrAbove: boolean
   ) {}
 
   private resolveRight(protectionType?: "long" | "short"): "P" | "C" {
@@ -579,7 +583,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     contract: IbkrQualifiedContract;
     hedgeMode: "options_native" | "futures_synthetic";
     top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
-    selectedTenorDays: number;
+    requestedTenorDays: number;
+    selectedTenorDays: number | null;
+    tenorDriftDays: number | null;
+    selectedExpiry: string | null;
+    selectionReason: string;
     strike: number | null;
   }> {
     const requestedTenorDays = clampInt(req.requestedTenorDays, 1, 30, 7);
@@ -592,16 +600,74 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
     const hasUsableTop = (top: { ask: number | null; bid: number | null }): boolean =>
       toFinitePositive(top.ask) !== null || toFinitePositive(top.bid) !== null;
+    const calcTenorDaysFromExpiry = (expiryRaw?: string): number | null => {
+      const expiry = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
+      if (expiry.length !== 8) return null;
+      const y = Number(expiry.slice(0, 4));
+      const m = Number(expiry.slice(4, 6));
+      const d = Number(expiry.slice(6, 8));
+      if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+      const expiryTs = Date.UTC(y, Math.max(0, m - 1), d, 8, 0, 0, 0);
+      if (!Number.isFinite(expiryTs)) return null;
+      const tenorDays = (expiryTs - Date.now()) / 86400000;
+      return Number.isFinite(tenorDays) ? tenorDays : null;
+    };
+    const contractTenorMeta = (contract: IbkrQualifiedContract): {
+      selectedTenorDays: number | null;
+      tenorDriftDays: number | null;
+    } => {
+      const selectedTenorDays = calcTenorDaysFromExpiry(contract.expiry);
+      const tenorDriftDays =
+        selectedTenorDays !== null ? Math.abs(selectedTenorDays - selectedTenorDaysIntended) : null;
+      return { selectedTenorDays, tenorDriftDays };
+    };
+    const selectedTenorDaysIntended = selectedTenorDays;
+    const contractPassesTenorPolicy = (contract: IbkrQualifiedContract): boolean => {
+      const meta = contractTenorMeta(contract);
+      if (
+        this.preferTenorAtOrAbove &&
+        meta.selectedTenorDays !== null &&
+        meta.selectedTenorDays + 1e-9 < selectedTenorDaysIntended
+      ) {
+        return false;
+      }
+      if (
+        Number.isFinite(this.maxTenorDriftDays) &&
+        this.maxTenorDriftDays >= 0 &&
+        meta.tenorDriftDays !== null &&
+        meta.tenorDriftDays - this.maxTenorDriftDays > 1e-9
+      ) {
+        return false;
+      }
+      return true;
+    };
+    const rankByTenor = (a: IbkrQualifiedContract, b: IbkrQualifiedContract): number => {
+      const aMeta = contractTenorMeta(a);
+      const bMeta = contractTenorMeta(b);
+      const aTenor = aMeta.selectedTenorDays;
+      const bTenor = bMeta.selectedTenorDays;
+      const aDrift = aMeta.tenorDriftDays ?? Number.POSITIVE_INFINITY;
+      const bDrift = bMeta.tenorDriftDays ?? Number.POSITIVE_INFINITY;
+      const aPenalty = this.preferTenorAtOrAbove && aTenor !== null && aTenor < selectedTenorDaysIntended ? 1 : 0;
+      const bPenalty = this.preferTenorAtOrAbove && bTenor !== null && bTenor < selectedTenorDaysIntended ? 1 : 0;
+      if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+      if (aDrift !== bDrift) return aDrift - bDrift;
+      return String(a.expiry || "").localeCompare(String(b.expiry || ""));
+    };
     const pickContractWithTop = async (
       contracts: IbkrQualifiedContract[]
     ): Promise<
       | {
           contract: IbkrQualifiedContract;
           top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+          eligibleCount: number;
         }
       | null
     > => {
-      const shortlisted = contracts.slice(0, 3);
+      const eligible = [...contracts]
+        .filter(contractPassesTenorPolicy)
+        .sort(rankByTenor);
+      const shortlisted = eligible.slice(0, 3);
       if (shortlisted.length === 0) return null;
       const settled = await Promise.all(
         shortlisted.map(async (contract) => {
@@ -616,11 +682,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       for (const item of settled) {
         if (!item) continue;
         if (!hasUsableTop(item.top)) continue;
-        return item;
+        return { ...item, eligibleCount: eligible.length };
       }
       return null;
     };
 
+    let sawTenorEligibleContract = false;
     if (hedgePolicy === "options_primary_futures_fallback") {
       if (roundedStrike) {
         const optionQuery: IbkrContractQuery = {
@@ -633,13 +700,19 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           strike: roundedStrike
         };
         const optionContracts = await this.connector.qualifyContracts(optionQuery);
+        sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
         const optionMatch = await pickContractWithTop(optionContracts);
         if (optionMatch) {
+          const optionMeta = contractTenorMeta(optionMatch.contract);
           return {
             contract: optionMatch.contract,
             hedgeMode: "options_native",
             top: optionMatch.top,
-            selectedTenorDays,
+            requestedTenorDays: selectedTenorDaysIntended,
+            selectedTenorDays: optionMeta.selectedTenorDays,
+            tenorDriftDays: optionMeta.tenorDriftDays,
+            selectedExpiry: String(optionMatch.contract.expiry || "") || null,
+            selectionReason: "best_tenor_liquidity_option",
             strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike
           };
         }
@@ -653,19 +726,29 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         tenorDays: selectedTenorDays
       };
       const futContracts = await this.connector.qualifyContracts(futQuery);
+      sawTenorEligibleContract ||= futContracts.some(contractPassesTenorPolicy);
       const futMatch = await pickContractWithTop(futContracts);
       if (futMatch) {
+        const futMeta = contractTenorMeta(futMatch.contract);
         return {
           contract: futMatch.contract,
           hedgeMode: "futures_synthetic",
           top: futMatch.top,
-          selectedTenorDays,
+          requestedTenorDays: selectedTenorDaysIntended,
+          selectedTenorDays: futMeta.selectedTenorDays,
+          tenorDriftDays: futMeta.tenorDriftDays,
+          selectedExpiry: String(futMatch.contract.expiry || "") || null,
+          selectionReason: "options_unavailable_futures_fallback",
           strike: null
         };
+      }
+      if (!sawTenorEligibleContract) {
+        throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
       }
       if (futContracts.length > 0) {
         throw new Error("ibkr_quote_unavailable:no_top_of_book");
       }
+      throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
     }
 
     throw new Error("ibkr_quote_unavailable:no_contract");
@@ -706,7 +789,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         source: "ibkr_top_of_book",
         pricing: "cme_mbt",
         hedgeMode: resolved.hedgeMode,
+        requestedTenorDays: resolved.requestedTenorDays,
         selectedTenorDays: resolved.selectedTenorDays,
+        tenorDriftDays: resolved.tenorDriftDays,
+        selectedExpiry: resolved.selectedExpiry,
+        selectionReason: resolved.selectionReason,
         askPrice: ask,
         bidPrice: bid,
         askSize: resolved.top.askSize,
@@ -982,7 +1069,9 @@ export const createPilotVenueAdapter = (params: {
       params.ibkr.maxRepriceSteps,
       params.ibkr.repriceStepTicks,
       params.ibkr.maxSlippageBps,
-      params.ibkr.requireLiveTransport
+      params.ibkr.requireLiveTransport,
+      Number.isFinite(Number(params.ibkr.maxTenorDriftDays)) ? Number(params.ibkr.maxTenorDriftDays) : 7,
+      params.ibkr.preferTenorAtOrAbove !== false
     );
   }
   if (params.mode === "deribit_test") {
@@ -1005,6 +1094,7 @@ export const mapVenueFailureReason = (error: unknown): string => {
   if (message.includes("INVALID_QUOTE_ID")) return "invalid_quote_id";
   if (message.includes("COOLDOWN")) return "execution_cooldown";
   if (message.includes("INSUFFICIENT")) return "insufficient_balance";
+  if (message.includes("tenor_drift_exceeded")) return "tenor_drift_exceeded";
   return "venue_error";
 };
 

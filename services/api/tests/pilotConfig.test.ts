@@ -70,6 +70,15 @@ test("parsePositiveFinite validates positive numeric values", () => {
   assert.throws(() => parsePositiveFinite("-5", 2500, "invalid"), /invalid:/);
 });
 
+test("ibkr tenor drift env parsing supports configured bounds", () => {
+  assert.equal(parsePositiveFinite("7", 7, "invalid_ibkr_max_tenor_drift_days"), 7);
+  assert.equal(parsePositiveFinite("2.5", 7, "invalid_ibkr_max_tenor_drift_days"), 2.5);
+  assert.throws(
+    () => parsePositiveFinite("0", 7, "invalid_ibkr_max_tenor_drift_days"),
+    /invalid_ibkr_max_tenor_drift_days/
+  );
+});
+
 test("parseBooleanEnv handles true/false with fallback", () => {
   assert.equal(parseBooleanEnv(undefined, false), false);
   assert.equal(parseBooleanEnv(undefined, true), true);

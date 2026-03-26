@@ -352,7 +352,9 @@ test("ibkr_cme_paper adapter returns quote with hedge mode diagnostics", async (
       maxRepriceSteps: 3,
       repriceStepTicks: 1,
       maxSlippageBps: 25,
-      requireLiveTransport: false
+      requireLiveTransport: false,
+      maxTenorDriftDays: 7,
+      preferTenorAtOrAbove: true
     }
   });
   const quote = await adapter.quote({
@@ -411,7 +413,7 @@ test("ibkr_cme_paper falls back to futures when option top-of-book is empty", as
                 conId: 22222,
                 secType: "FUT",
                 localSymbol: "MBTH6",
-                expiry: "20260327",
+                expiry: "20260331",
                 multiplier: "0.1",
                 minTick: 5
               }
@@ -466,7 +468,9 @@ test("ibkr_cme_paper falls back to futures when option top-of-book is empty", as
       maxRepriceSteps: 3,
       repriceStepTicks: 1,
       maxSlippageBps: 25,
-      requireLiveTransport: false
+      requireLiveTransport: false,
+      maxTenorDriftDays: 7,
+      preferTenorAtOrAbove: true
     }
   });
   const quote = await adapter.quote({
@@ -502,7 +506,9 @@ test("ibkr_cme_paper execution disabled yields failure status", async () => {
       maxRepriceSteps: 3,
       repriceStepTicks: 1,
       maxSlippageBps: 25,
-      requireLiveTransport: false
+      requireLiveTransport: false,
+      maxTenorDriftDays: 7,
+      preferTenorAtOrAbove: true
     }
   });
   const execution = await adapter.execute({
@@ -563,7 +569,9 @@ test("ibkr_cme_live requires active ib_socket transport when enforced", async ()
         maxRepriceSteps: 3,
         repriceStepTicks: 1,
         maxSlippageBps: 25,
-        requireLiveTransport: true
+        requireLiveTransport: true,
+        maxTenorDriftDays: 7,
+        preferTenorAtOrAbove: true
       }
     });
 
@@ -663,7 +671,9 @@ test("ibkr connector timeout prefers bridge timeout when larger", async () => {
         maxRepriceSteps: 3,
         repriceStepTicks: 1,
         maxSlippageBps: 25,
-        requireLiveTransport: true
+        requireLiveTransport: true,
+        maxTenorDriftDays: 7,
+        preferTenorAtOrAbove: true
       }
     });
 
@@ -681,6 +691,210 @@ test("ibkr connector timeout prefers bridge timeout when larger", async () => {
       hedgePolicy: "options_primary_futures_fallback"
     });
     assert.equal(quote.venue, "ibkr_cme_paper");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("ibkr tenor drift guard rejects candidates outside configured drift window", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 12345,
+                  secType: "FOP",
+                  localSymbol: "WMZ7 P55000",
+                  expiry: "20271231",
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 95,
+              ask: 96,
+              bidSize: 4,
+              askSize: 6,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_live",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 2000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 2000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: true,
+        maxTenorDriftDays: 2,
+        preferTenorAtOrAbove: true
+      }
+    });
+
+    await assert.rejects(
+      () =>
+        adapter.quote({
+          marketId: "BTC-USD",
+          instrumentId: "BTC-USD-3D-P",
+          protectedNotional: 10000,
+          quantity: 0.2,
+          side: "buy",
+          protectionType: "long",
+          triggerPrice: 55000,
+          requestedTenorDays: 3,
+          tenorMinDays: 1,
+          tenorMaxDays: 7,
+          hedgePolicy: "options_primary_futures_fallback"
+        }),
+      /ibkr_quote_unavailable:tenor_drift_exceeded/
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("ibkr tenor drift guard rejects contracts beyond configured drift", async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 99999,
+                  secType: "FOP",
+                  localSymbol: "WMZ7 P55000",
+                  expiry: "20271231",
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 95,
+              ask: 96,
+              bidSize: 4,
+              askSize: 6,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 6000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 6000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: true,
+        maxTenorDriftDays: 2,
+        preferTenorAtOrAbove: true
+      }
+    });
+
+    await assert.rejects(
+      () =>
+        adapter.quote({
+          marketId: "BTC-USD",
+          instrumentId: "BTC-USD-3D-P",
+          protectedNotional: 10000,
+          quantity: 0.2,
+          side: "buy",
+          protectionType: "long",
+          triggerPrice: 55000,
+          requestedTenorDays: 3,
+          tenorMinDays: 1,
+          tenorMaxDays: 7,
+          hedgePolicy: "options_primary_futures_fallback"
+        }),
+      /ibkr_quote_unavailable:tenor_drift_exceeded/
+    );
   } finally {
     global.fetch = originalFetch;
   }
