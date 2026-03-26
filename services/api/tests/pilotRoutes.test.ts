@@ -100,6 +100,15 @@ const createPilotHarness = async (opts?: {
 
   global.fetch = buildPriceFetch();
 
+  const configModule = await import("../src/pilot/config");
+  configModule.pilotConfig.enabled = true;
+  configModule.pilotConfig.venueMode = (opts?.venueMode || "mock_falconx") as any;
+  configModule.pilotConfig.tenantScopeId = process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot";
+  configModule.pilotConfig.adminToken = process.env.PILOT_ADMIN_TOKEN || "";
+  configModule.pilotConfig.proofToken = process.env.PILOT_PROOF_TOKEN || "";
+  configModule.pilotConfig.internalToken = process.env.PILOT_INTERNAL_TOKEN || "";
+  configModule.pilotConfig.hashSecret = process.env.USER_HASH_SECRET || "";
+
   const db = newDb();
   const pg = db.adapters.createPg();
   const pool = new pg.Pool();
