@@ -108,6 +108,33 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.proofToken = process.env.PILOT_PROOF_TOKEN || "";
   configModule.pilotConfig.internalToken = process.env.PILOT_INTERNAL_TOKEN || "";
   configModule.pilotConfig.hashSecret = process.env.USER_HASH_SECRET || "";
+  configModule.pilotConfig.dynamicTenorEnabled = process.env.PILOT_DYNAMIC_TENOR_ENABLED === "true";
+  configModule.pilotConfig.tenorPolicyEnforce = process.env.PILOT_TENOR_ENFORCE === "true";
+  configModule.pilotConfig.tenorPolicyAutoRoute = process.env.PILOT_TENOR_AUTO_ROUTE === "true";
+  configModule.pilotConfig.tenorPolicyCandidateDays = String(process.env.PILOT_TENOR_CANDIDATES || "1,2,4,7,10,12,14")
+    .split(",")
+    .map((item) => Number(item.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0) as number[];
+  configModule.pilotConfig.tenorPolicyMinSamples = Number(process.env.PILOT_TENOR_MIN_SAMPLES || "5");
+  configModule.pilotConfig.tenorPolicyMinOkRate = Number(process.env.PILOT_TENOR_MIN_OK_RATE || "0.8");
+  configModule.pilotConfig.tenorPolicyMinOptionsNativeRate = Number(
+    process.env.PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE || "0.8"
+  );
+  configModule.pilotConfig.tenorPolicyMaxMedianPremiumRatio = Number(
+    process.env.PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO || "0.02"
+  );
+  configModule.pilotConfig.tenorPolicyMaxMedianDriftDays = Number(
+    process.env.PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS || "3"
+  );
+  configModule.pilotConfig.tenorPolicyMaxNegativeMatchedRate = Number(
+    process.env.PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE || "0"
+  );
+  configModule.pilotConfig.tenorPolicyDefaultFallbackDays = Number(
+    process.env.PILOT_TENOR_DEFAULT_FALLBACK || "14"
+  );
+  configModule.pilotConfig.tenorPolicyLookbackMinutes = Number(
+    process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES || "60"
+  );
 
   const db = newDb();
   const pg = db.adapters.createPg();
@@ -799,6 +826,150 @@ test("N2) activation execution_failed surfaces fillStatus and rejectionReason de
     const activatePayload = activateRes.json();
     assert.equal(activatePayload.reason, "execution_failed");
     assert.equal(activatePayload.detail, "fillStatus=rejected");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Q) tenor-policy endpoint returns structured policy payload", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "1,2,4",
+      PILOT_TENOR_MIN_SAMPLES: "1",
+      PILOT_TENOR_MIN_OK_RATE: "0",
+      PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE: "0",
+      PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO: "10",
+      PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS: "30",
+      PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE: "1",
+      PILOT_TENOR_ENFORCE: "true",
+      PILOT_TENOR_AUTO_ROUTE: "true"
+    }
+  });
+  try {
+    const policyRes = await harness.app.inject({
+      method: "GET",
+      url: "/pilot/tenor-policy"
+    });
+    assert.equal(policyRes.statusCode, 200);
+    const payload = policyRes.json();
+    assert.equal(payload.status, "ok");
+    assert.equal(Array.isArray(payload?.config?.candidateTenorsDays), true);
+    assert.equal(Array.isArray(payload?.selection?.enabledTenorsDays), true);
+    assert.equal(Array.isArray(payload?.tenors), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("R) quote diagnostics include premiumPolicy and tenorPolicy", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "1,2,4",
+      PILOT_TENOR_MIN_SAMPLES: "1",
+      PILOT_TENOR_MIN_OK_RATE: "0",
+      PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE: "0",
+      PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO: "10",
+      PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS: "30",
+      PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE: "1",
+      PILOT_TENOR_ENFORCE: "false",
+      PILOT_TENOR_AUTO_ROUTE: "true"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 7
+      }
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "ok");
+    assert.ok(payload?.diagnostics?.premiumPolicy);
+    assert.equal(payload?.diagnostics?.premiumPolicy?.currency, "USD");
+    assert.ok(payload?.diagnostics?.tenorPolicy);
+    assert.equal(
+      typeof payload?.diagnostics?.tenorPolicy?.requestedTenorDays === "number",
+      true
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("S) dynamic tenor enforce blocks unavailable requested tenor", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "1,2,4",
+      PILOT_TENOR_MIN_SAMPLES: "100",
+      PILOT_TENOR_ENFORCE: "true",
+      PILOT_TENOR_AUTO_ROUTE: "false"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 7
+      }
+    });
+    assert.equal(quoteRes.statusCode, 409);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "error");
+    assert.equal(payload.reason, "tenor_temporarily_unavailable");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("T) dynamic tenor auto-route rewrites venue requested tenor", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "1,2,4",
+      PILOT_TENOR_MIN_SAMPLES: "1",
+      PILOT_TENOR_MIN_OK_RATE: "0",
+      PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE: "0",
+      PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO: "10",
+      PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS: "30",
+      PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE: "1",
+      PILOT_TENOR_ENFORCE: "false",
+      PILOT_TENOR_AUTO_ROUTE: "true",
+      PILOT_TENOR_DEFAULT_FALLBACK: "2"
+    }
+  });
+  try {
+    // Seed a successful sample for tenor=2 so it becomes enabled.
+    const seedRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 2
+      }
+    });
+    assert.equal(seedRes.statusCode, 200);
+
+    const rerouteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 7
+      }
+    });
+    assert.equal(rerouteRes.statusCode, 200);
+    const payload = rerouteRes.json();
+    assert.equal(payload.status, "ok");
+    assert.equal(payload?.diagnostics?.tenorPolicy?.requestedTenorDays, 7);
+    assert.equal(payload?.diagnostics?.tenorPolicy?.venueRequestedTenorDays, 2);
   } finally {
     await harness.close();
   }

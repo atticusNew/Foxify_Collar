@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   parsePilotHedgePolicy,
+  parseCommaSeparatedInts,
+  parsePremiumPolicyMode,
   parseDeribitMaxTenorDriftDays,
   parseDeribitQuotePolicy,
   parseDeribitStrikeSelectionMode,
@@ -62,6 +64,21 @@ test("parseIbkrOrderTif validates allowed values", () => {
   assert.equal(parseIbkrOrderTif("ioc"), "IOC");
   assert.equal(parseIbkrOrderTif("DAY"), "DAY");
   assert.throws(() => parseIbkrOrderTif("GTC"), /invalid_ibkr_order_tif/);
+});
+
+test("parsePremiumPolicyMode validates known values", () => {
+  assert.equal(parsePremiumPolicyMode(undefined), "legacy");
+  assert.equal(parsePremiumPolicyMode("legacy"), "legacy");
+  assert.equal(parsePremiumPolicyMode("pass_through_markup"), "pass_through_markup");
+  assert.throws(() => parsePremiumPolicyMode("flat_fee"), /invalid_pilot_premium_policy_mode/);
+});
+
+test("parseCommaSeparatedInts parses, dedupes and validates", () => {
+  assert.deepEqual(parseCommaSeparatedInts(undefined, [1, 2, 4], 1, 30, "invalid_list"), [1, 2, 4]);
+  assert.deepEqual(parseCommaSeparatedInts("4,2,4,1", [9], 1, 30, "invalid_list"), [1, 2, 4]);
+  assert.deepEqual(parseCommaSeparatedInts(" 7, 10 ,12 ", [9], 1, 30, "invalid_list"), [7, 10, 12]);
+  assert.throws(() => parseCommaSeparatedInts("0,2", [1], 1, 30, "invalid_list"), /invalid_list/);
+  assert.throws(() => parseCommaSeparatedInts("a,2", [1], 1, 30, "invalid_list"), /invalid_list/);
 });
 
 test("parsePositiveIntInRange validates integer bounds", () => {

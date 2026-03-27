@@ -11,6 +11,7 @@ export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
 export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
 export type PilotHedgePolicy = "options_primary_futures_fallback";
 export type IbkrOrderTif = "IOC" | "DAY";
+export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 
 export type PilotWindowState = {
   enforced: boolean;
@@ -118,6 +119,41 @@ export const parseIbkrOrderTif = (raw: string | undefined): IbkrOrderTif => {
   const normalized = String(raw || "IOC").trim().toUpperCase();
   if (normalized === "IOC" || normalized === "DAY") return normalized;
   throw new Error(`invalid_ibkr_order_tif:${normalized || "empty"}`);
+};
+
+export const parsePremiumPolicyMode = (raw: string | undefined): PremiumPolicyMode => {
+  const normalized = String(raw || "legacy").trim().toLowerCase();
+  if (normalized === "legacy" || normalized === "pass_through_markup") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_premium_policy_mode:${normalized || "empty"}`);
+};
+
+export const parseCommaSeparatedInts = (
+  raw: string | undefined,
+  fallback: number[],
+  min: number,
+  max: number,
+  errorCode: string
+): number[] => {
+  const input = String(raw || "")
+    .trim()
+    .replace(/\s+/g, "");
+  if (!input) return fallback.slice();
+  const parsed = input
+    .split(",")
+    .filter(Boolean)
+    .map((item) => Number(item));
+  if (!parsed.length) {
+    throw new Error(`${errorCode}:empty`);
+  }
+  const normalized = parsed.map((value) => {
+    if (!Number.isFinite(value) || value < min || value > max) {
+      throw new Error(`${errorCode}:${String(value)}`);
+    }
+    return Math.floor(value);
+  });
+  return Array.from(new Set(normalized)).sort((a, b) => a - b);
 };
 
 const resolveTenorBounds = (): {
@@ -239,6 +275,63 @@ export const pilotConfig = {
   deribitStrikeSelectionMode: parseDeribitStrikeSelectionMode(process.env.PILOT_STRIKE_SELECTION_MODE),
   deribitMaxTenorDriftDays: parseDeribitMaxTenorDriftDays(process.env.PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS),
   pilotHedgePolicy: parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY),
+  premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
+  premiumPolicyVersion: String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2",
+  premiumPolicyEnforce: parseBooleanEnv(process.env.PILOT_PREMIUM_ENFORCE, false),
+  premiumCapEnforce: parseBooleanEnv(process.env.PILOT_ENFORCE_PREMIUM_CAP, false),
+  premiumCapToleranceUsd: parsePositiveFinite(
+    process.env.PILOT_PREMIUM_CAP_TOLERANCE_USD,
+    0.5,
+    "invalid_pilot_premium_cap_tolerance_usd"
+  ),
+  ibkrFeePerContractUsd: parsePositiveFinite(
+    process.env.IBKR_FEE_PER_CONTRACT_USD,
+    2.02,
+    "invalid_ibkr_fee_per_contract_usd"
+  ),
+  ibkrFeePerOrderUsd: Number.isFinite(Number(process.env.IBKR_FEE_PER_ORDER_USD ?? "0"))
+    ? Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD ?? "0"))
+    : 0,
+  dynamicTenorEnabled: parseBooleanEnv(process.env.PILOT_DYNAMIC_TENOR_ENABLED, false),
+  tenorPolicyVersion: String(process.env.PILOT_TENOR_POLICY_VERSION || "tenor_policy_v1").trim() || "tenor_policy_v1",
+  tenorPolicyLookbackMinutes: parsePositiveIntInRange(
+    process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES,
+    60,
+    1,
+    24 * 60,
+    "invalid_pilot_tenor_policy_lookback_minutes"
+  ),
+  tenorPolicyMinSamples: parsePositiveIntInRange(
+    process.env.PILOT_TENOR_MIN_SAMPLES,
+    5,
+    1,
+    500,
+    "invalid_pilot_tenor_min_samples"
+  ),
+  tenorPolicyMinOkRate: Number(process.env.PILOT_TENOR_MIN_OK_RATE ?? "0.8"),
+  tenorPolicyMinOptionsNativeRate: Number(process.env.PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE ?? "0.8"),
+  tenorPolicyMaxMedianPremiumRatio: Number(process.env.PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO ?? "0.02"),
+  tenorPolicyMaxMedianDriftDays: Number(process.env.PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS ?? "3"),
+  tenorPolicyMaxNegativeMatchedRate: Number(process.env.PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE ?? "0"),
+  tenorPolicyEnforce: parseBooleanEnv(
+    process.env.PILOT_TENOR_ENFORCE ?? process.env.PILOT_TENOR_POLICY_ENFORCE,
+    false
+  ),
+  tenorPolicyAutoRoute: parseBooleanEnv(process.env.PILOT_TENOR_AUTO_ROUTE, false),
+  tenorPolicyDefaultFallbackDays: parsePositiveIntInRange(
+    process.env.PILOT_TENOR_DEFAULT_FALLBACK,
+    14,
+    1,
+    30,
+    "invalid_pilot_tenor_default_fallback"
+  ),
+  tenorPolicyCandidateDays: parseCommaSeparatedInts(
+    process.env.PILOT_TENOR_CANDIDATES,
+    [1, 2, 4, 7, 10, 12, 14],
+    1,
+    30,
+    "invalid_pilot_tenor_candidates"
+  ),
   ...(() => {
     const tenor = resolveTenorBounds();
     return {

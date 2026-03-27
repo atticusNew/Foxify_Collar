@@ -2,11 +2,14 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import Decimal from "decimal.js";
 import type {
+  HedgeMode,
   LedgerEntryType,
   PriceSnapshotRecord,
   PriceSnapshotType,
+  PremiumPolicyDiagnostics,
   ProtectionRecord,
   ProtectionStatus,
+  TenorPolicyTenorRow,
   VenueExecution,
   VenueQuote
 } from "./types";
@@ -569,6 +572,70 @@ export type VenueQuoteRecord = VenueQuote & {
   consumedByProtectionId: string | null;
 };
 
+export type TenorDiagnosticsSample = {
+  requestedTenorDays: number;
+  selectedTenorDays: number | null;
+  driftDays: number | null;
+  hedgeMode: HedgeMode | "unknown";
+  premiumRatio: number | null;
+  status: "ok";
+};
+
+export const listRecentQuoteDiagnostics = async (
+  pool: Queryable,
+  params: {
+    lookbackMinutes: number;
+    limit?: number;
+  }
+): Promise<TenorDiagnosticsSample[]> => {
+  const lookbackMinutes = Math.max(1, Math.min(24 * 60, Math.floor(Number(params.lookbackMinutes || 0) || 60)));
+  const limit = Math.max(10, Math.min(5000, Math.floor(Number(params.limit || 2000) || 2000)));
+  const cutoffIso = new Date(Date.now() - lookbackMinutes * 60_000).toISOString();
+  const result = await pool.query(
+    `
+      SELECT details, premium
+      FROM pilot_venue_quotes
+      WHERE created_at >= $1::timestamptz
+      ORDER BY created_at DESC
+      LIMIT $2::int
+    `,
+    [cutoffIso, limit]
+  );
+  const rows: TenorDiagnosticsSample[] = [];
+  for (const row of result.rows) {
+    const details = toRecord(row.details);
+    const lockContext = toRecord(details.lockContext);
+    const requested = safeNumber(lockContext.requestedTenorDays);
+    if (requested === null || requested <= 0) continue;
+    const selected =
+      safeNumber(details.selectedTenorDays) ??
+      safeNumber(details.selectedTenorDaysActual) ??
+      safeNumber(lockContext.selectedTenorDays);
+    const drift = selected !== null ? Math.abs(selected - requested) : null;
+    const modeRaw = String(details.hedgeMode || lockContext.hedgeMode || "").trim();
+    const hedgeMode: HedgeMode | "unknown" =
+      modeRaw === "options_native" || modeRaw === "futures_synthetic" ? modeRaw : "unknown";
+    const clientPremiumUsd =
+      safeNumber(lockContext.clientPremiumUsd) ??
+      safeNumber(toRecord(details.pricingBreakdown).clientPremiumUsd) ??
+      safeNumber(row.premium);
+    const protectedNotional = safeNumber(lockContext.protectedNotional);
+    const premiumRatio =
+      clientPremiumUsd !== null && protectedNotional !== null && protectedNotional > 0
+        ? clientPremiumUsd / protectedNotional
+        : null;
+    rows.push({
+      requestedTenorDays: Math.floor(requested),
+      selectedTenorDays: selected,
+      driftDays: drift,
+      hedgeMode,
+      premiumRatio,
+      status: "ok"
+    });
+  }
+  return rows;
+};
+
 export const getVenueQuoteByQuoteId = async (
   pool: Queryable,
   quoteId: string
@@ -651,7 +718,7 @@ export const consumeVenueQuote = async (
     `,
     [venueQuoteRowId, protectionId]
   );
-  return result.rowCount > 0;
+  return Number(result.rowCount || 0) > 0;
 };
 
 export const reserveDailyActivationCapacity = async (
@@ -788,7 +855,7 @@ export const createPilotTermsAcceptanceIfMissing = async (
       JSON.stringify(input.details || {})
     ]
   );
-  if (inserted.rowCount > 0) {
+  if (Number(inserted.rowCount || 0) > 0) {
     return { record: mapPilotTermsAcceptance(inserted.rows[0]), created: true };
   }
   const postInsertExisting = await getPilotTermsAcceptance(pool, {
@@ -832,6 +899,162 @@ export const insertVenueExecution = async (
       JSON.stringify(input.details || {})
     ]
   );
+};
+
+const percentileContLinear = (sorted: number[], p: number): number | null => {
+  if (!sorted.length) return null;
+  const clamped = Math.max(0, Math.min(1, p));
+  if (sorted.length === 1) return sorted[0];
+  const idx = (sorted.length - 1) * clamped;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  const frac = idx - lo;
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * frac;
+};
+
+const safeNumber = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+export const listRecentTenorPolicyRows = async (
+  pool: Queryable,
+  params: {
+    lookbackMinutes: number;
+    candidateTenors: number[];
+  }
+): Promise<TenorPolicyTenorRow[]> => {
+  const lookbackMinutes = Math.max(5, Math.min(24 * 60, Math.floor(Number(params.lookbackMinutes || 0) || 60)));
+  const cutoffIso = new Date(Date.now() - lookbackMinutes * 60_000).toISOString();
+  const normalizedCandidates = Array.from(
+    new Set(
+      (params.candidateTenors || [])
+        .map((n) => Math.floor(Number(n)))
+        .filter((n) => Number.isFinite(n) && n > 0 && n <= 60)
+    )
+  ).sort((a, b) => a - b);
+  if (!normalizedCandidates.length) return [];
+  const result = await pool.query(
+    `
+      SELECT details
+      FROM pilot_venue_quotes
+      WHERE created_at >= $1::timestamptz
+      ORDER BY created_at DESC
+      LIMIT 2000
+    `,
+    [cutoffIso]
+  );
+  type Running = {
+    sampleCount: number;
+    okCount: number;
+    optionsNativeCount: number;
+    futuresSyntheticCount: number;
+    negativeMatchedCount: number;
+    premiumRatios: number[];
+    driftDays: number[];
+    matchedTenorDays: number[];
+  };
+  const buckets = new Map<number, Running>();
+  for (const tenor of normalizedCandidates) {
+    buckets.set(tenor, {
+      sampleCount: 0,
+      okCount: 0,
+      optionsNativeCount: 0,
+      futuresSyntheticCount: 0,
+      negativeMatchedCount: 0,
+      premiumRatios: [],
+      driftDays: [],
+      matchedTenorDays: []
+    });
+  }
+  for (const row of result.rows) {
+    const details = toRecord(row.details);
+    const lockContext = toRecord(details.lockContext);
+    const requestedRaw = safeNumber(lockContext.requestedTenorDays);
+    if (requestedRaw === null) continue;
+    const requested = Math.floor(requestedRaw);
+    if (!buckets.has(requested)) continue;
+    const bucket = buckets.get(requested)!;
+    bucket.sampleCount += 1;
+    bucket.okCount += 1;
+    const quoteDetails = toRecord(details);
+    const hedgeModeRaw = String(quoteDetails.hedgeMode || lockContext.hedgeMode || "");
+    if (hedgeModeRaw === "options_native") {
+      bucket.optionsNativeCount += 1;
+    } else if (hedgeModeRaw === "futures_synthetic") {
+      bucket.futuresSyntheticCount += 1;
+    }
+    const selectedTenor =
+      safeNumber(quoteDetails.selectedTenorDays) ??
+      safeNumber(quoteDetails.selectedTenorDaysActual) ??
+      safeNumber(lockContext.selectedTenorDays);
+    if (selectedTenor !== null) {
+      bucket.matchedTenorDays.push(selectedTenor);
+      if (selectedTenor <= 0) bucket.negativeMatchedCount += 1;
+      const drift = Math.abs(selectedTenor - requestedRaw);
+      if (Number.isFinite(drift)) bucket.driftDays.push(drift);
+    }
+    const clientPremiumUsd =
+      safeNumber(lockContext.clientPremiumUsd) ??
+      safeNumber(toRecord(quoteDetails.pricingBreakdown).clientPremiumUsd) ??
+      safeNumber(row.premium);
+    const protectedNotional = safeNumber(lockContext.protectedNotional);
+    if (
+      clientPremiumUsd !== null &&
+      protectedNotional !== null &&
+      protectedNotional > 0 &&
+      Number.isFinite(clientPremiumUsd)
+    ) {
+      bucket.premiumRatios.push(clientPremiumUsd / protectedNotional);
+    }
+  }
+  const rows: TenorPolicyTenorRow[] = [];
+  for (const tenor of normalizedCandidates) {
+    const bucket = buckets.get(tenor)!;
+    const sampleCount = bucket.sampleCount;
+    const premiumSorted = [...bucket.premiumRatios].sort((a, b) => a - b);
+    const driftSorted = [...bucket.driftDays].sort((a, b) => a - b);
+    const matchedSorted = [...bucket.matchedTenorDays].sort((a, b) => a - b);
+    rows.push({
+      tenorDays: tenor,
+      sampleCount,
+      metrics: {
+        okRate: sampleCount > 0 ? bucket.okCount / sampleCount : 0,
+        optionsNativeRate: sampleCount > 0 ? bucket.optionsNativeCount / sampleCount : 0,
+        futuresSyntheticRate: sampleCount > 0 ? bucket.futuresSyntheticCount / sampleCount : 0,
+        medianPremiumRatio: percentileContLinear(premiumSorted, 0.5),
+        medianDriftDays: percentileContLinear(driftSorted, 0.5),
+        negativeMatchedTenorRate: sampleCount > 0 ? bucket.negativeMatchedCount / sampleCount : 0,
+        medianMatchedTenorDays: percentileContLinear(matchedSorted, 0.5)
+      },
+      score: null,
+      eligible: false,
+      reasons: []
+    });
+  }
+  return rows;
+};
+
+export const extractLatestPremiumPolicyDiagnostics = async (
+  pool: Queryable,
+  quoteId: string
+): Promise<PremiumPolicyDiagnostics | null> => {
+  const result = await pool.query(
+    `
+      SELECT details
+      FROM pilot_venue_quotes
+      WHERE quote_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [quoteId]
+  );
+  const details = toRecord(result.rows[0]?.details);
+  const lockContext = toRecord(details.lockContext);
+  const premiumPolicy = toRecord(lockContext.premiumPolicy);
+  if (!Object.keys(premiumPolicy).length) return null;
+  return premiumPolicy as PremiumPolicyDiagnostics;
 };
 
 export const insertAdminAction = async (pool: Queryable, input: {

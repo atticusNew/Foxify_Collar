@@ -20,6 +20,99 @@ export type VenueName = "falconx" | "deribit_test" | "mock_falconx" | "ibkr_cme_
 export type HedgeMode = "options_native" | "futures_synthetic";
 
 export type ProtectionType = "long" | "short";
+export type PremiumPolicyMode = "legacy" | "pass_through_markup";
+
+export type PremiumPolicyComponentBreakdown = {
+  hedgeCostUsd: string;
+  brokerFeesUsd: string;
+  passThroughUsd: string;
+  markupPct: string;
+  markupUsd: string;
+  clientPremiumUsd: string;
+};
+
+export type PremiumPolicyCaps = {
+  maxHedgeCostUsd: string;
+  maxBrokerFeesUsd: string;
+  maxClientPremiumUsd: string;
+  toleranceUsd: string;
+};
+
+export type PremiumPolicyDelta = {
+  clientPremiumUsd: string;
+  clientPremiumPct: string;
+};
+
+export type PremiumPolicyDiagnostics = {
+  mode: PremiumPolicyMode;
+  version: string;
+  currency: "USD";
+  estimated: PremiumPolicyComponentBreakdown;
+  realized: PremiumPolicyComponentBreakdown | null;
+  caps: PremiumPolicyCaps;
+  delta?: PremiumPolicyDelta | null;
+};
+
+export type TenorPolicyReason =
+  | "insufficient_samples"
+  | "ok_rate_below_min"
+  | "options_native_rate_below_min"
+  | "premium_ratio_above_max"
+  | "drift_above_max"
+  | "negative_matched_tenor_rate_above_max"
+  | "tenor_clamped_by_backend_bounds"
+  | "policy_data_unavailable";
+
+export type TenorPolicyTenorRow = {
+  tenorDays: number;
+  sampleCount: number;
+  metrics: {
+    okRate: number;
+    optionsNativeRate: number;
+    futuresSyntheticRate: number;
+    medianPremiumRatio: number | null;
+    medianDriftDays: number | null;
+    negativeMatchedTenorRate: number;
+    medianMatchedTenorDays: number | null;
+  };
+  score: number | null;
+  eligible: boolean;
+  reasons: TenorPolicyReason[];
+};
+
+export type TenorPolicyEntry = TenorPolicyTenorRow;
+
+export type TenorPolicyResponse = {
+  status: "ok" | "error";
+  asOf?: string;
+  policyVersion?: string;
+  window?: {
+    lookbackMinutes: number;
+    minSamplesPerTenor: number;
+  };
+  config?: {
+    candidateTenorsDays: number[];
+    thresholds: {
+      minOkRate: number;
+      minOptionsNativeRate: number;
+      maxMedianPremiumRatio: number;
+      maxMedianDriftDays: number;
+      maxNegativeMatchedTenorRate: number;
+    };
+    enforce: boolean;
+    autoRoute: boolean;
+    defaultFallbackTenorDays: number;
+  };
+  selection?: {
+    enabledTenorsDays: number[];
+    defaultTenorDays: number;
+    status: "ok" | "degraded";
+  };
+  tenors?: TenorPolicyTenorRow[];
+  reason?: string;
+  message?: string;
+  detail?: string;
+};
 
 export type PriceSnapshotRecord = {
   id: string;

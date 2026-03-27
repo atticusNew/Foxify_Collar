@@ -6,6 +6,7 @@ import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow } from "./config";
 import {
   createPilotTermsAcceptanceIfMissing,
+  extractLatestPremiumPolicyDiagnostics,
   ensurePilotSchema,
   getDailyProtectedNotionalForUser,
   getEssentialProofPayload,
@@ -21,6 +22,7 @@ import {
   insertProtection,
   insertVenueExecution,
   insertVenueQuote,
+  listRecentTenorPolicyRows,
   reserveDailyActivationCapacity,
   releaseDailyActivationCapacity,
   listLedgerForProtection,
@@ -39,6 +41,13 @@ import {
   resolveExpiryDays,
   resolveRenewWindowMinutes
 } from "./floor";
+import type {
+  PremiumPolicyDiagnostics,
+  TenorPolicyEntry,
+  TenorPolicyResponse,
+  TenorPolicyTenorRow,
+  TenorPolicyReason
+} from "./types";
 
 const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_native" | "futures_synthetic" => {
   const raw = String(quoteDetails?.hedgeMode || "");
@@ -97,8 +106,12 @@ const resolvePremiumPricing = (params: {
   tierName: string;
   protectedNotional: Decimal;
   hedgePremium: Decimal;
+  brokerFees?: Decimal;
+  markupPctOverride?: Decimal | null;
 }): {
   hedgePremiumUsd: Decimal;
+  brokerFeesUsd: Decimal;
+  passThroughUsd: Decimal;
   markupPct: Decimal;
   markupUsd: Decimal;
   premiumFloorUsdAbsolute: Decimal;
@@ -108,13 +121,22 @@ const resolvePremiumPricing = (params: {
   clientPremiumUsd: Decimal;
   method: "markup" | "floor_usd" | "floor_bps";
 } => {
-  const markupPctRaw = Number(
-    pilotConfig.premiumMarkupPctByTier[params.tierName] ?? pilotConfig.premiumMarkupPct
-  );
-  const markupPct = Number.isFinite(markupPctRaw) && markupPctRaw > 0 ? new Decimal(markupPctRaw) : new Decimal(0);
+  const markupPct =
+    params.markupPctOverride ||
+    (() => {
+      const markupPctRaw = Number(
+        pilotConfig.premiumMarkupPctByTier[params.tierName] ?? pilotConfig.premiumMarkupPct
+      );
+      return Number.isFinite(markupPctRaw) && markupPctRaw > 0 ? new Decimal(markupPctRaw) : new Decimal(0);
+    })();
   const hedgePremiumUsd = params.hedgePremium;
-  const markupUsd = hedgePremiumUsd.mul(markupPct);
-  const markedUpPremium = hedgePremiumUsd.plus(markupUsd);
+  const brokerFeesUsd = params.brokerFees || new Decimal(0);
+  const passThroughUsd =
+    pilotConfig.premiumPolicyMode === "pass_through_markup"
+      ? hedgePremiumUsd.plus(brokerFeesUsd)
+      : hedgePremiumUsd;
+  const markupUsd = passThroughUsd.mul(markupPct);
+  const markedUpPremium = passThroughUsd.plus(markupUsd);
   const premiumFloorBps = resolveTierPremiumFloorBps(params.tierName);
   const premiumFloorUsdFromBps = params.protectedNotional.mul(premiumFloorBps).div(10000);
   const premiumFloorUsdAbsolute = resolveTierPremiumFloorUsd(params.tierName);
@@ -127,6 +149,8 @@ const resolvePremiumPricing = (params: {
       : "floor_bps";
   return {
     hedgePremiumUsd,
+    brokerFeesUsd,
+    passThroughUsd,
     markupPct,
     markupUsd,
     premiumFloorUsdAbsolute,
@@ -135,6 +159,185 @@ const resolvePremiumPricing = (params: {
     premiumFloorUsd,
     clientPremiumUsd,
     method
+  };
+};
+
+const estimateBrokerFeesUsd = (params: {
+  venue: string;
+  quantity: number;
+  details?: Record<string, unknown>;
+}): Decimal => {
+  if (!String(params.venue || "").startsWith("ibkr_")) return new Decimal(0);
+  const rawMultiplier = Number(params.details?.multiplier ?? 0);
+  const multiplier = Number.isFinite(rawMultiplier) && rawMultiplier > 0 ? rawMultiplier : 0.1;
+  const contracts = Math.max(1, Math.ceil(Math.max(0, Number(params.quantity || 0)) / multiplier));
+  return new Decimal(contracts)
+    .mul(new Decimal(pilotConfig.ibkrFeePerContractUsd))
+    .plus(new Decimal(pilotConfig.ibkrFeePerOrderUsd));
+};
+
+const buildPremiumPolicyDiagnostics = (params: {
+  estimated: ReturnType<typeof resolvePremiumPricing>;
+  realized?: ReturnType<typeof resolvePremiumPricing> | null;
+}): PremiumPolicyDiagnostics => {
+  const tolerance = new Decimal(pilotConfig.premiumCapToleranceUsd);
+  const estimated = params.estimated;
+  const realized = params.realized || null;
+  const caps = {
+    maxHedgeCostUsd: estimated.hedgePremiumUsd.plus(tolerance).toFixed(10),
+    maxBrokerFeesUsd: estimated.brokerFeesUsd.plus(tolerance).toFixed(10),
+    maxClientPremiumUsd: estimated.clientPremiumUsd.plus(tolerance).toFixed(10),
+    toleranceUsd: tolerance.toFixed(10)
+  };
+  const delta =
+    realized && estimated.clientPremiumUsd.gt(0)
+      ? {
+          clientPremiumUsd: realized.clientPremiumUsd.minus(estimated.clientPremiumUsd).toFixed(10),
+          clientPremiumPct: realized.clientPremiumUsd
+            .minus(estimated.clientPremiumUsd)
+            .div(estimated.clientPremiumUsd)
+            .toFixed(10)
+        }
+      : null;
+  const toComponent = (
+    breakdown: ReturnType<typeof resolvePremiumPricing>
+  ): PremiumPolicyDiagnostics["estimated"] => ({
+    hedgeCostUsd: breakdown.hedgePremiumUsd.toFixed(10),
+    brokerFeesUsd: breakdown.brokerFeesUsd.toFixed(10),
+    passThroughUsd: breakdown.passThroughUsd.toFixed(10),
+    markupPct: breakdown.markupPct.toFixed(10),
+    markupUsd: breakdown.markupUsd.toFixed(10),
+    clientPremiumUsd: breakdown.clientPremiumUsd.toFixed(10)
+  });
+  return {
+    mode: pilotConfig.premiumPolicyMode,
+    version: pilotConfig.premiumPolicyVersion,
+    currency: "USD",
+    estimated: toComponent(estimated),
+    realized: realized ? toComponent(realized) : null,
+    caps,
+    delta
+  };
+};
+
+const toFixedString = (value: Decimal.Value, dp = 10): string => new Decimal(value).toFixed(dp);
+
+const toFiniteNumber = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const resolveMedian = (values: number[]): number | null => {
+  const clean = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (!clean.length) return null;
+  const mid = Math.floor(clean.length / 2);
+  return clean.length % 2 === 1 ? clean[mid] : (clean[mid - 1] + clean[mid]) / 2;
+};
+
+const round6 = (value: number): number => Number(value.toFixed(6));
+
+const resolveDynamicTenorPolicy = async (params: {
+  pool: ReturnType<typeof getPilotPool>;
+  nowIso: string;
+}): Promise<TenorPolicyResponse> => {
+  const candidates = pilotConfig.tenorPolicyCandidateDays;
+  const rows = await listRecentTenorPolicyRows(params.pool, {
+    lookbackMinutes: pilotConfig.tenorPolicyLookbackMinutes,
+    candidateTenors: candidates
+  });
+  const rowsByTenor = new Map<number, TenorPolicyTenorRow>();
+  for (const row of rows) rowsByTenor.set(row.tenorDays, row);
+  const tenors: TenorPolicyEntry[] = [];
+  for (const tenor of candidates) {
+    const row = rowsByTenor.get(tenor);
+    const sampleCount = row?.sampleCount || 0;
+    const metrics = row?.metrics || {
+      okRate: 0,
+      optionsNativeRate: 0,
+      futuresSyntheticRate: 0,
+      medianPremiumRatio: null,
+      medianDriftDays: null,
+      negativeMatchedTenorRate: 0,
+      medianMatchedTenorDays: null
+    };
+    const medianPremiumRatio = metrics.medianPremiumRatio;
+    const medianDriftDays = metrics.medianDriftDays;
+    const reasons: TenorPolicyReason[] = [];
+    if (sampleCount < pilotConfig.tenorPolicyMinSamples) reasons.push("insufficient_samples");
+    if (metrics.okRate < pilotConfig.tenorPolicyMinOkRate) reasons.push("ok_rate_below_min");
+    if (metrics.optionsNativeRate < pilotConfig.tenorPolicyMinOptionsNativeRate) {
+      reasons.push("options_native_rate_below_min");
+    }
+    if (medianPremiumRatio === null || medianDriftDays === null) reasons.push("policy_data_unavailable");
+    if (medianPremiumRatio !== null && medianPremiumRatio > pilotConfig.tenorPolicyMaxMedianPremiumRatio) {
+      reasons.push("premium_ratio_above_max");
+    }
+    if (medianDriftDays !== null && medianDriftDays > pilotConfig.tenorPolicyMaxMedianDriftDays) {
+      reasons.push("drift_above_max");
+    }
+    if (metrics.negativeMatchedTenorRate > pilotConfig.tenorPolicyMaxNegativeMatchedRate) {
+      reasons.push("negative_matched_tenor_rate_above_max");
+    }
+    if (tenor < pilotConfig.pilotTenorMinDays || tenor > pilotConfig.pilotTenorMaxDays) {
+      reasons.push("tenor_clamped_by_backend_bounds");
+    }
+    const score =
+      medianPremiumRatio === null || medianDriftDays === null
+        ? null
+        : 100 * medianPremiumRatio +
+          2 * medianDriftDays +
+          8 * metrics.futuresSyntheticRate +
+          10 * metrics.negativeMatchedTenorRate;
+    tenors.push({
+      tenorDays: tenor,
+      sampleCount,
+      metrics,
+      score: score === null ? null : round6(score),
+      eligible: reasons.length === 0,
+      reasons
+    });
+  }
+  const enabledTenorsDays = tenors.filter((entry) => entry.eligible).map((entry) => entry.tenorDays);
+  const sortedEnabled = tenors
+    .filter((entry) => entry.eligible)
+    .sort((a, b) => {
+      const aScore = a.score ?? Number.POSITIVE_INFINITY;
+      const bScore = b.score ?? Number.POSITIVE_INFINITY;
+      return aScore !== bScore ? aScore - bScore : a.tenorDays - b.tenorDays;
+    });
+  const defaultTenorDays =
+    sortedEnabled[0]?.tenorDays ||
+    (candidates.includes(pilotConfig.tenorPolicyDefaultFallbackDays)
+      ? pilotConfig.tenorPolicyDefaultFallbackDays
+      : candidates[0] || pilotConfig.pilotTenorDefaultDays);
+  const selectionStatus = enabledTenorsDays.length > 0 ? "ok" : "degraded";
+  return {
+    status: "ok",
+    asOf: params.nowIso,
+    policyVersion: pilotConfig.tenorPolicyVersion,
+    window: {
+      lookbackMinutes: pilotConfig.tenorPolicyLookbackMinutes,
+      minSamplesPerTenor: pilotConfig.tenorPolicyMinSamples
+    },
+    config: {
+      candidateTenorsDays: candidates,
+      thresholds: {
+        minOkRate: pilotConfig.tenorPolicyMinOkRate,
+        minOptionsNativeRate: pilotConfig.tenorPolicyMinOptionsNativeRate,
+        maxMedianPremiumRatio: pilotConfig.tenorPolicyMaxMedianPremiumRatio,
+        maxMedianDriftDays: pilotConfig.tenorPolicyMaxMedianDriftDays,
+        maxNegativeMatchedTenorRate: pilotConfig.tenorPolicyMaxNegativeMatchedRate
+      },
+      enforce: pilotConfig.tenorPolicyEnforce,
+      autoRoute: pilotConfig.tenorPolicyAutoRoute,
+      defaultFallbackTenorDays: pilotConfig.tenorPolicyDefaultFallbackDays
+    },
+    selection: {
+      enabledTenorsDays,
+      defaultTenorDays,
+      status: selectionStatus
+    },
+    tenors
   };
 };
 
@@ -610,6 +813,24 @@ export const registerPilotRoutes = async (
     }
   });
 
+  app.get("/pilot/tenor-policy", async (_req, reply) => {
+    try {
+      const policy = await resolveDynamicTenorPolicy({
+        pool,
+        nowIso: new Date().toISOString()
+      });
+      return policy;
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "tenor_policy_unavailable",
+        message: "Tenor policy unavailable, using static tenor controls.",
+        detail: String(error?.message || "tenor_policy_unavailable")
+      };
+    }
+  });
+
   app.post("/pilot/protections/quote", async (req, reply) => {
     if (!enforcePilotWindow(reply)) return;
     const body = req.body as {
@@ -694,6 +915,7 @@ export const registerPilotRoutes = async (
     const requestId = pilotConfig.nextRequestId();
     let priceMs = 0;
     let venueMs = 0;
+    let tenorPolicy: TenorPolicyResponse | null = null;
     let snapshot: PriceSnapshotOutput;
     try {
       const priceStartedAt = Date.now();
@@ -736,6 +958,22 @@ export const registerPilotRoutes = async (
         maxDays: pilotConfig.pilotTenorMaxDays,
         defaultDays: pilotConfig.pilotTenorDefaultDays
       });
+      let venueRequestedTenorDays = requestedTenorDays;
+      if (pilotConfig.dynamicTenorEnabled) {
+        tenorPolicy = await resolveDynamicTenorPolicy({
+          pool,
+          nowIso: new Date().toISOString()
+        });
+        const enabledTenors = tenorPolicy.selection?.enabledTenorsDays || [];
+        const defaultTenor = tenorPolicy.selection?.defaultTenorDays || requestedTenorDays;
+        if (!enabledTenors.includes(requestedTenorDays)) {
+          if (pilotConfig.tenorPolicyAutoRoute && enabledTenors.length > 0) {
+            venueRequestedTenorDays = enabledTenors.includes(defaultTenor) ? defaultTenor : enabledTenors[0];
+          } else if (pilotConfig.tenorPolicyEnforce) {
+            throw new Error("tenor_temporarily_unavailable");
+          }
+        }
+      }
       const venueStartedAt = Date.now();
       const quote = await withTimeout(
         venue.quote({
@@ -746,7 +984,7 @@ export const registerPilotRoutes = async (
           instrumentId: quoteInstrumentId,
           protectionType,
           triggerPrice: triggerPrice.toNumber(),
-          requestedTenorDays,
+          requestedTenorDays: venueRequestedTenorDays,
           tenorMinDays: pilotConfig.pilotTenorMinDays,
           tenorMaxDays: pilotConfig.pilotTenorMaxDays,
           hedgePolicy: pilotConfig.pilotHedgePolicy,
@@ -759,10 +997,20 @@ export const registerPilotRoutes = async (
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
-        hedgePremium: new Decimal(quote.premium)
+        hedgePremium: new Decimal(quote.premium),
+        brokerFees: estimateBrokerFeesUsd({
+          venue: quote.venue,
+          quantity: quote.quantity,
+          details: quote.details as Record<string, unknown> | undefined
+        })
+      });
+      const estimatedPremiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({
+        estimated: premiumPricing
       });
       const pricingBreakdown = {
         hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
+        brokerFeesUsd: premiumPricing.brokerFeesUsd.toFixed(10),
+        passThroughUsd: premiumPricing.passThroughUsd.toFixed(10),
         markupPct: premiumPricing.markupPct.toFixed(6),
         markupUsd: premiumPricing.markupUsd.toFixed(10),
         premiumFloorUsdAbsolute: premiumPricing.premiumFloorUsdAbsolute.toFixed(10),
@@ -793,6 +1041,7 @@ export const registerPilotRoutes = async (
             protectionType,
             optionType,
             requestedTenorDays,
+            venueRequestedTenorDays,
             triggerPrice: triggerPrice.toFixed(10),
             triggerLabel,
             floorPrice: triggerPrice.toFixed(10),
@@ -827,6 +1076,7 @@ export const registerPilotRoutes = async (
                 ? String((quote.details as Record<string, unknown>).strikeSelectionMode)
                 : null,
             hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined),
+            premiumPolicy: estimatedPremiumPolicyDiagnostics,
             ...pricingBreakdown
           }
         }
@@ -866,6 +1116,17 @@ export const registerPilotRoutes = async (
             venue: venueMs,
             total: Date.now() - quoteStartedAt
           },
+          premiumPolicy: estimatedPremiumPolicyDiagnostics,
+          tenorPolicy:
+            tenorPolicy && pilotConfig.dynamicTenorEnabled
+              ? {
+                  status: tenorPolicy.status,
+                  enabledTenorsDays: tenorPolicy.selection?.enabledTenorsDays || [],
+                  defaultTenorDays: tenorPolicy.selection?.defaultTenorDays || requestedTenorDays,
+                  requestedTenorDays,
+                  venueRequestedTenorDays
+                }
+              : null,
           venueSelection: {
             selectedStrike:
               quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedStrike))
@@ -951,16 +1212,21 @@ export const registerPilotRoutes = async (
       const message = String(error?.message || "quote_generation_failed");
       const isTransportNotLive = message.startsWith("ibkr_transport_not_live");
       const isTenorDriftExceeded = message.includes("tenor_drift_exceeded");
+      const isTenorTemporarilyUnavailable = message.includes("tenor_temporarily_unavailable");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
       const isStorageFailure =
         message.includes("postgres") || message.includes("ECONN") || message.includes("pool") || message.includes("db");
-      reply.code(isTimeout ? 504 : isStorageFailure || isTransportNotLive ? 503 : 502);
+      reply.code(
+        isTimeout ? 504 : isStorageFailure || isTransportNotLive ? 503 : isTenorTemporarilyUnavailable ? 409 : 502
+      );
       return {
         status: "error",
         reason: isStorageFailure
           ? "storage_unavailable"
           : isTransportNotLive
             ? "ibkr_transport_not_live"
+            : isTenorTemporarilyUnavailable
+              ? "tenor_temporarily_unavailable"
             : isTenorDriftExceeded
               ? "tenor_drift_exceeded"
             : "quote_generation_failed",
@@ -968,6 +1234,8 @@ export const registerPilotRoutes = async (
           ? "Storage temporarily unavailable, please retry."
           : isTransportNotLive
             ? "IBKR live transport is not active. Verify bridge transport health and retry."
+            : isTenorTemporarilyUnavailable
+              ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
             : isTenorDriftExceeded
               ? "No IBKR contract matched the requested tenor within configured drift."
           : "Unable to generate a venue quote right now. Please retry.",
@@ -1075,10 +1343,13 @@ export const registerPilotRoutes = async (
     let reservedProtection: Awaited<ReturnType<typeof insertProtection>> | null = null;
     let execution: Awaited<ReturnType<typeof venue.execute>> | null = null;
     let executionFailureDetail: string | null = null;
+    let premiumPolicyDiagnostics: PremiumPolicyDiagnostics | null = null;
     let premiumPricing:
       | ReturnType<typeof resolvePremiumPricing>
       | {
           hedgePremiumUsd: Decimal;
+          brokerFeesUsd: Decimal;
+          passThroughUsd: Decimal;
           markupPct: Decimal;
           markupUsd: Decimal;
           premiumFloorUsdAbsolute: Decimal;
@@ -1253,10 +1524,16 @@ export const registerPilotRoutes = async (
       const fallbackPremiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
-        hedgePremium: contextHedgePremium
+        hedgePremium: contextHedgePremium,
+        brokerFees: parsePositiveDecimal(lockContext.brokerFeesUsd) || new Decimal(0),
+        markupPctOverride: contextMarkupPct
       });
+      const contextBrokerFeesUsd = parsePositiveDecimal(lockContext.brokerFeesUsd);
+      const contextPassThroughUsd = parsePositiveDecimal(lockContext.passThroughUsd);
       premiumPricing = {
         hedgePremiumUsd: contextHedgePremium,
+        brokerFeesUsd: contextBrokerFeesUsd || fallbackPremiumPricing.brokerFeesUsd,
+        passThroughUsd: contextPassThroughUsd || fallbackPremiumPricing.passThroughUsd,
         markupPct: contextMarkupPct || fallbackPremiumPricing.markupPct,
         markupUsd: contextMarkupUsd || fallbackPremiumPricing.markupUsd,
         premiumFloorUsdAbsolute: contextFloorUsdAbsolute || fallbackPremiumPricing.premiumFloorUsdAbsolute,
@@ -1271,6 +1548,7 @@ export const registerPilotRoutes = async (
           return "markup";
         })()
       };
+      premiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({ estimated: premiumPricing });
       await client.query("COMMIT");
       transactionOpen = false;
 
@@ -1324,6 +1602,23 @@ export const registerPilotRoutes = async (
       if (!reservedProtection || !quoteEntryAnchorPrice || !triggerPrice || !premiumPricing) {
         throw new Error("activation_failed");
       }
+      const realizedPricing = resolvePremiumPricing({
+        tierName,
+        protectedNotional,
+        hedgePremium: new Decimal(execution.premium),
+        brokerFees: premiumPricing.brokerFeesUsd,
+        markupPctOverride: premiumPricing.markupPct
+      });
+      premiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({
+        estimated: premiumPricing,
+        realized: realizedPricing
+      });
+      if (pilotConfig.premiumCapEnforce && premiumPolicyDiagnostics.caps) {
+        const maxClientPremiumUsd = new Decimal(premiumPolicyDiagnostics.caps.maxClientPremiumUsd);
+        if (realizedPricing.clientPremiumUsd.gt(maxClientPremiumUsd)) {
+          throw new Error("premium_cap_exceeded_post_fill");
+        }
+      }
       await insertPriceSnapshot(pool, {
         protectionId: reservedProtection.id,
         snapshotType: "entry",
@@ -1371,6 +1666,8 @@ export const registerPilotRoutes = async (
           hedgeMode: contextHedgeMode,
           coverageRatio: coverageRatio.toFixed(6),
           hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
+          brokerFeesUsd: premiumPricing.brokerFeesUsd.toFixed(10),
+          passThroughUsd: premiumPricing.passThroughUsd.toFixed(10),
           markupPct: premiumPricing.markupPct.toFixed(6),
           markupUsd: premiumPricing.markupUsd.toFixed(10),
           premiumFloorUsdAbsolute: premiumPricing.premiumFloorUsdAbsolute.toFixed(10),
@@ -1385,7 +1682,8 @@ export const registerPilotRoutes = async (
           entryInputPrice: entryInputPrice?.toFixed(10) || quoteEntryInputPrice,
           entrySnapshotPrice: snapshot.price.toFixed(10),
           entrySnapshotSource: snapshot.priceSource,
-          entrySnapshotTimestamp: snapshot.priceTimestamp
+          entrySnapshotTimestamp: snapshot.priceTimestamp,
+          premiumPolicy: premiumPolicyDiagnostics
         }
       });
       const activatedQuote = sanitizeQuoteForClient({
@@ -1398,7 +1696,11 @@ export const registerPilotRoutes = async (
           ? sanitizeProtectionForTrader(updated as unknown as Record<string, unknown>)
           : null,
         coverageRatio: coverageRatio.toFixed(6),
-        quote: activatedQuote
+        quote: activatedQuote,
+        diagnostics: {
+          requestId,
+          premiumPolicy: premiumPolicyDiagnostics
+        }
       };
     } catch (error: any) {
       if (transactionOpen) {
@@ -1476,6 +1778,7 @@ export const registerPilotRoutes = async (
           "storage_unavailable",
           "reconcile_pending",
           "execution_failed",
+          "premium_cap_exceeded_post_fill",
           "activation_failed"
         ].includes(errMsg)
       ) {
@@ -1517,6 +1820,8 @@ export const registerPilotRoutes = async (
         reply.code(503);
       } else if (reason === "execution_failed") {
         reply.code(502);
+      } else if (reason === "premium_cap_exceeded_post_fill") {
+        reply.code(502);
       } else {
         reply.code(400);
       }
@@ -1543,6 +1848,8 @@ export const registerPilotRoutes = async (
                         ? "Venue execution timed out. Please request a fresh quote."
                         : reason === "execution_failed"
                           ? "Venue execution failed. Please request a fresh quote."
+                          : reason === "premium_cap_exceeded_post_fill"
+                            ? "Realized premium exceeded configured cap. Activation was rejected."
                           : reason === "ibkr_transport_not_live"
                             ? "IBKR live transport is not active. Verify bridge transport health and retry."
                           : reason === "quote_expired"
@@ -1555,6 +1862,15 @@ export const registerPilotRoutes = async (
               capUsdc: maxDailyProtection.toFixed(2),
               usedUsdc: (error as any)?.usedUsdc || capUsedUsdc,
               projectedUsdc: (error as any)?.projectedUsdc || capProjectedUsdc
+            }
+          : {}),
+        ...(body.quoteId
+          ? {
+              diagnostics: {
+                requestId,
+                premiumPolicy:
+                  premiumPolicyDiagnostics || (await extractLatestPremiumPolicyDiagnostics(pool, body.quoteId))
+              }
             }
           : {})
       };
