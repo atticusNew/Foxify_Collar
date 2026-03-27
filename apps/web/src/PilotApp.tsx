@@ -168,6 +168,8 @@ const DEFAULT_TIERS: TierLevel[] = [
 ];
 const PILOT_ENABLED_TENOR_DAYS = [1, 2, 4] as const;
 const PILOT_DEFAULT_TENOR_DAYS = 2;
+const QUOTE_REQUEST_TIMEOUT_MS = 20000;
+const QUOTE_REQUEST_TIMEOUT_SECONDS = Math.ceil(QUOTE_REQUEST_TIMEOUT_MS / 1000);
 
 const formatPct = (value: number | string | null | undefined): string => {
   const parsed = Number(value ?? 0);
@@ -201,6 +203,31 @@ const formatCountdown = (seconds: number): string => {
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 };
 
+const formatTargetHorizonLabel = (days: number): string => `${Math.max(1, Math.floor(days))}D`;
+
+const formatMatchedHorizonLabel = (days: number): string => {
+  if (!Number.isFinite(days)) return "N/A";
+  const totalMinutes = Math.max(0, Math.round(days * 24 * 60));
+  const d = Math.floor(totalMinutes / (24 * 60));
+  const h = Math.floor((totalMinutes - d * 24 * 60) / 60);
+  const m = totalMinutes % 60;
+  if (d <= 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (h <= 0) return `${d}d`;
+  return `${d}d ${h}h`;
+};
+
+const formatExpiryDateLabel = (expiryRaw: string): string => {
+  const normalized = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
+  if (normalized.length !== 8) return "";
+  return `${normalized.slice(0, 4)}-${normalized.slice(4, 6)}-${normalized.slice(6, 8)}`;
+};
+
+const formatHedgeModeLabel = (hedgeMode: string): string => {
+  if (hedgeMode === "futures_synthetic") return "Futures Synthetic";
+  if (hedgeMode === "options_native") return "Options (CME Native)";
+  return hedgeMode || "Unknown";
+};
+
 const friendlyError = (message: string): string => {
   if (message.includes("daily_notional_cap_exceeded")) {
     return "Daily protection limit reached for pilot operations. Please try again next UTC day.";
@@ -227,7 +254,7 @@ const friendlyError = (message: string): string => {
     return "Quote temporarily unavailable. Tap Refresh Quote.";
   }
   if (message.includes("venue_quote_timeout")) {
-    return "Quote is taking longer than expected. Tap Refresh Quote.";
+    return "Quote timed out. Live venue response exceeded 20s. Tap Refresh Quote.";
   }
   if (message.includes("venue_execute_timeout")) {
     return "Activation is taking longer than expected. Tap Confirm Protection again.";
@@ -343,6 +370,7 @@ export function PilotApp() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [quoteState, setQuoteState] = useState<"idle" | "fetching" | "ready" | "expired">("idle");
+  const [quoteRequestTimeLeft, setQuoteRequestTimeLeft] = useState(QUOTE_REQUEST_TIMEOUT_SECONDS);
   const [quoteTimeLeft, setQuoteTimeLeft] = useState(0);
   const [showRenewModal, setShowRenewModal] = useState(false);
   const [showProtectionModal, setShowProtectionModal] = useState(false);
@@ -590,6 +618,21 @@ export function PilotApp() {
   }, [quote?.quote?.expiresAt, quoteState]);
 
   useEffect(() => {
+    if (quoteState !== "fetching") {
+      setQuoteRequestTimeLeft(QUOTE_REQUEST_TIMEOUT_SECONDS);
+      return;
+    }
+    setQuoteRequestTimeLeft(QUOTE_REQUEST_TIMEOUT_SECONDS);
+    const startedAt = Date.now();
+    const id = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const remaining = Math.max(0, QUOTE_REQUEST_TIMEOUT_SECONDS - elapsed);
+      setQuoteRequestTimeLeft(remaining);
+    }, 250);
+    return () => clearInterval(id);
+  }, [quoteState]);
+
+  useEffect(() => {
     if (!protection?.id) return;
     const polledProtectionId = protection.id;
     const pollSeq = ++protectionPollSeqRef.current;
@@ -773,6 +816,7 @@ export function PilotApp() {
     setError(null);
     setQuote(null);
     setQuoteState("fetching");
+    setQuoteRequestTimeLeft(QUOTE_REQUEST_TIMEOUT_SECONDS);
     const maxAttempts = 3;
     let finalError: any = null;
     try {
@@ -780,7 +824,7 @@ export function PilotApp() {
         const controller = new AbortController();
         // IBKR live quotes can take ~15s at p95 under sparse snapshots; keep UI
         // timeout above that so successful quotes are not aborted client-side.
-        const timeout = setTimeout(() => controller.abort(), 20000);
+        const timeout = setTimeout(() => controller.abort(), QUOTE_REQUEST_TIMEOUT_MS);
         try {
           const res = await fetch(`${API_BASE}/pilot/protections/quote`, {
             method: "POST",
@@ -825,7 +869,7 @@ export function PilotApp() {
       setQuoteState("idle");
       const err = finalError;
       if (err?.name === "AbortError") {
-        setError("Quote still processing. This can take up to ~20s in live mode. Tap Refresh Quote if no result.");
+        setError("Quote timed out. Live venue response exceeded 20s. Please retry.");
       } else {
         setError(friendlyError(String(err?.message || "Price temporarily unavailable, please retry.")));
       }
@@ -1039,6 +1083,7 @@ export function PilotApp() {
       : null;
   const selectedTenorFromQuote = Number(quoteDetails?.selectedTenorDays ?? NaN);
   const hedgeModeFromQuote = String(quoteDetails?.hedgeMode || "").trim();
+  const selectedExpiryFromQuoteDetails = String(quoteDetails?.selectedExpiry ?? quoteDetails?.expiry ?? "").trim();
   const quoteDiagnostics =
     quote && quote.diagnostics && typeof quote.diagnostics === "object"
       ? (quote.diagnostics as Record<string, unknown>)
@@ -1056,6 +1101,28 @@ export function PilotApp() {
     Number.isFinite(requestedTenorFromDiagnostics) && Number.isFinite(selectedTenorFromDiagnostics)
       ? Math.abs(selectedTenorFromDiagnostics - requestedTenorFromDiagnostics)
       : NaN;
+  const targetTenorDaysForDisplay = Number.isFinite(requestedTenorFromDiagnostics)
+    ? requestedTenorFromDiagnostics
+    : selectedTenorDays;
+  const matchedTenorDaysForDisplay = Number.isFinite(selectedTenorFromDiagnostics)
+    ? selectedTenorFromDiagnostics
+    : selectedTenorFromQuote;
+  const targetHorizonDisplay = formatTargetHorizonLabel(targetTenorDaysForDisplay);
+  const matchedHorizonDisplay = Number.isFinite(matchedTenorDaysForDisplay)
+    ? `${formatMatchedHorizonLabel(matchedTenorDaysForDisplay)} (est.)`
+    : "N/A";
+  const selectedExpiryDisplay = formatExpiryDateLabel(selectedExpiryFromDiagnostics || selectedExpiryFromQuoteDetails);
+  const showTenorAdjustmentInfo =
+    Number.isFinite(requestedVsMatchedTenorDriftDays) && requestedVsMatchedTenorDriftDays > 0.5;
+  const showTenorAdjustmentWarning =
+    Number.isFinite(requestedVsMatchedTenorDriftDays) && requestedVsMatchedTenorDriftDays > 2;
+  const quoteRequestProgressPct = Math.max(
+    0,
+    Math.min(
+      100,
+      ((QUOTE_REQUEST_TIMEOUT_SECONDS - quoteRequestTimeLeft) / Math.max(1, QUOTE_REQUEST_TIMEOUT_SECONDS)) * 100
+    )
+  );
   const internalAdminEnabled =
     typeof window !== "undefined" &&
     ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_INTERNAL_ADMIN_ENABLED ===
@@ -1379,28 +1446,29 @@ export function PilotApp() {
             </div>
 
             <div className="pilot-form-row">
-              <span className="pilot-label">Tenor (days)</span>
-              <div className="pilot-field">
-                <select
-                  className="input pilot-input pilot-select"
-                  value={selectedTenorDays}
-                  disabled={busy || quoteLocked}
-                  onChange={(e) => {
-                    const next = Number(e.target.value);
-                    if (
-                      Number.isFinite(next) &&
-                      PILOT_ENABLED_TENOR_DAYS.includes(next as (typeof PILOT_ENABLED_TENOR_DAYS)[number])
-                    ) {
-                      setSelectedTenorDays(next);
-                    }
-                  }}
-                >
-                  {PILOT_ENABLED_TENOR_DAYS.map((tenorDay) => (
-                    <option key={tenorDay} value={tenorDay}>
-                      {tenorDay}
-                    </option>
-                  ))}
-                </select>
+              <span className="pilot-label">Target Horizon</span>
+              <div className="pilot-field pilot-tenor-field">
+                <div className="pilot-tenor-chips" role="group" aria-label="Target Horizon">
+                  {PILOT_ENABLED_TENOR_DAYS.map((tenorDay) => {
+                    const selected = selectedTenorDays === tenorDay;
+                    return (
+                      <button
+                        key={tenorDay}
+                        type="button"
+                        className={`pilot-tenor-chip ${selected ? "active" : ""}`}
+                        aria-pressed={selected}
+                        disabled={busy || quoteLocked}
+                        onClick={() => setSelectedTenorDays(tenorDay)}
+                      >
+                        {tenorDay}D
+                        {tenorDay === PILOT_DEFAULT_TENOR_DAYS && (
+                          <span className="pilot-tenor-chip-tag">Recommended</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="muted pilot-tenor-helper">Final matched expiry depends on live liquidity.</div>
               </div>
             </div>
 
@@ -1430,7 +1498,7 @@ export function PilotApp() {
         <div className="section">
           <div className="section-title-row">
             <h4>Quote</h4>
-            {quoteState === "fetching" && <span className="pill">Fetching optimal price</span>}
+            {quoteState === "fetching" && <span className="pill">Finding best available protection…</span>}
             {quoteState === "ready" && quoteTimeLeft > 0 && (
               <span className="pill pill-warning">Expires in {formatCountdown(quoteTimeLeft)}</span>
             )}
@@ -1441,16 +1509,41 @@ export function PilotApp() {
               <div className="muted">Request Quote to fetch a live premium and lock window.</div>
             )}
             {quoteState === "fetching" && (
-              <div className="muted">
-                <span className="spinner" />
-                Fetching optimal protection quote...
+              <div className="quote-fetching">
+                <div className="quote-fetching-title" aria-live="polite">
+                  Finding best available protection...
+                </div>
+                <div className="quote-fetching-meta muted">Checking live contracts, liquidity, and executable prices.</div>
+                <div className="quote-fetching-countdown">
+                  <span className="quote-fetching-seconds">{quoteRequestTimeLeft}s</span>
+                  <span className="muted">remaining</span>
+                </div>
+                <div className="quote-fetching-progress" aria-hidden="true">
+                  <span style={{ width: `${quoteRequestProgressPct.toFixed(1)}%` }} />
+                </div>
               </div>
             )}
             {(quoteState === "ready" || quoteState === "expired") && quote && (
               <>
+                <div className="quote-primary">
+                  Premium <strong>${formatUsd(quote.quote.premium)}</strong>
+                </div>
+                <div className="muted">Venue {formatVenueLabel(quote.quote.venue)}</div>
+                <div className="quote-horizon-row">
+                  <div>
+                    <span className="muted">Target:</span> <strong>{targetHorizonDisplay}</strong>
+                  </div>
+                  <div>
+                    <span className="muted">Matched:</span> <strong>{matchedHorizonDisplay}</strong>
+                  </div>
+                  {selectedExpiryDisplay && (
+                    <div>
+                      <span className="muted">Expiry:</span> <strong>{selectedExpiryDisplay}</strong>
+                    </div>
+                  )}
+                </div>
                 <div className="muted">
-                  Premium <strong>${formatUsd(quote.quote.premium)}</strong> · Venue{" "}
-                  <strong>{formatVenueLabel(quote.quote.venue)}</strong>
+                  Hedge mode: <strong>{formatHedgeModeLabel(hedgeModeFromQuote)}</strong>
                 </div>
                 <div className="muted">
                   {quoteDirectionLabel} · Tier {quote.tierName}
@@ -1464,34 +1557,16 @@ export function PilotApp() {
                   Reference {formatUsd(quote.entrySnapshot.price)} ({quote.entrySnapshot.source}) at{" "}
                   {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
                 </div>
-                {Number.isFinite(requestedTenorFromDiagnostics) &&
-                  Number.isFinite(selectedTenorFromDiagnostics) && (
+                {showTenorAdjustmentInfo && (
+                  <div className="quote-warning">
+                    <div className="pill pill-warning">Matched to nearest liquid expiry.</div>
                     <div className="muted">
-                      Tenor requested {requestedTenorFromDiagnostics.toFixed(2)}d · matched{" "}
-                      {selectedTenorFromDiagnostics.toFixed(2)}d
-                      {selectedExpiryFromDiagnostics ? ` · expiry ${selectedExpiryFromDiagnostics}` : ""}
+                      Requested {targetHorizonDisplay}, matched {matchedHorizonDisplay} due to current liquidity.
                     </div>
-                  )}
-                {Number.isFinite(requestedVsMatchedTenorDriftDays) &&
-                  requestedVsMatchedTenorDriftDays > 2 && (
-                    <div className="pill pill-warning">Adjusted to nearest liquid tenor.</div>
-                  )}
-                {quoteDetails && (
-                  <>
-                    {Number.isFinite(selectedTenorFromQuote) && (
-                      <div className="muted">
-                        Selected tenor {selectedTenorFromQuote.toFixed(2)} days
-                      </div>
+                    {showTenorAdjustmentWarning && (
+                      <div className="muted">Coverage may end earlier than your intended holding window.</div>
                     )}
-                    {hedgeModeFromQuote && (
-                      <div className="muted">
-                        Hedge mode:{" "}
-                        {hedgeModeFromQuote === "futures_synthetic"
-                          ? "Futures Synthetic"
-                          : "Options Native"}
-                      </div>
-                    )}
-                  </>
+                  </div>
                 )}
               </>
             )}
