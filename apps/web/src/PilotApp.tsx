@@ -76,6 +76,34 @@ type ReferencePricePayload = {
   message?: string;
 };
 
+type TenorPolicyResponse = {
+  status: "ok" | "error";
+  selection?: {
+    enabledTenorsDays: number[];
+    defaultTenorDays: number;
+  };
+};
+
+type TenorPolicySummary = {
+  status?: string;
+  enabledTenorsDays?: number[];
+  defaultTenorDays?: number;
+  requestedTenorDays?: number;
+  venueRequestedTenorDays?: number;
+};
+
+type PremiumPolicySummary = {
+  currency?: string;
+  estimated?: {
+    hedgeCostUsd?: string;
+    brokerFeesUsd?: string;
+    passThroughUsd?: string;
+    markupPct?: string;
+    markupUsd?: string;
+    clientPremiumUsd?: string;
+  };
+};
+
 type AdminProtectionRow = {
   protection_id: string;
   status: string;
@@ -365,6 +393,8 @@ export function PilotApp() {
   const [protectedNotional, setProtectedNotional] = useState("");
   const [autoRenew, setAutoRenew] = useState(false);
   const [selectedTenorDays, setSelectedTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
+  const [enabledTenorDays, setEnabledTenorDays] = useState<number[]>([...PILOT_ENABLED_TENOR_DAYS]);
+  const [defaultTenorDays, setDefaultTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -488,10 +518,41 @@ export function PilotApp() {
   ]);
 
   useEffect(() => {
-    if (!PILOT_ENABLED_TENOR_DAYS.includes(selectedTenorDays as (typeof PILOT_ENABLED_TENOR_DAYS)[number])) {
-      setSelectedTenorDays(PILOT_DEFAULT_TENOR_DAYS);
+    if (!enabledTenorDays.includes(selectedTenorDays)) {
+      setSelectedTenorDays(defaultTenorDays);
     }
-  }, [selectedTenorDays]);
+  }, [selectedTenorDays, enabledTenorDays, defaultTenorDays]);
+
+  useEffect(() => {
+    if (!pilotUnlocked) return;
+    let active = true;
+    const loadTenorPolicy = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/pilot/tenor-policy`);
+        const payload = (await res.json()) as TenorPolicyResponse;
+        if (!active || !res.ok || payload.status !== "ok") return;
+        const enabled = Array.isArray(payload.selection?.enabledTenorsDays)
+          ? payload.selection!.enabledTenorsDays.filter((n) => Number.isFinite(Number(n)) && Number(n) > 0)
+          : [];
+        const fallbackEnabled = [...PILOT_ENABLED_TENOR_DAYS];
+        const nextEnabled = enabled.length > 0 ? enabled : fallbackEnabled;
+        const nextDefault =
+          Number(payload.selection?.defaultTenorDays) > 0 &&
+          nextEnabled.includes(Number(payload.selection?.defaultTenorDays))
+            ? Number(payload.selection?.defaultTenorDays)
+            : nextEnabled[0] || PILOT_DEFAULT_TENOR_DAYS;
+        setEnabledTenorDays(nextEnabled);
+        setDefaultTenorDays(nextDefault);
+        setSelectedTenorDays((prev) => (nextEnabled.includes(prev) ? prev : nextDefault));
+      } catch {
+        // keep local static tenor defaults when policy endpoint unavailable
+      }
+    };
+    void loadTenorPolicy();
+    return () => {
+      active = false;
+    };
+  }, [pilotUnlocked]);
 
   useEffect(() => {
     setTermsError(null);
@@ -1092,10 +1153,20 @@ export function PilotApp() {
     quoteDiagnostics && typeof quoteDiagnostics.venueSelection === "object" && quoteDiagnostics.venueSelection
       ? (quoteDiagnostics.venueSelection as Record<string, unknown>)
       : null;
+  const premiumPolicySummary =
+    quoteDiagnostics && typeof quoteDiagnostics.premiumPolicy === "object" && quoteDiagnostics.premiumPolicy
+      ? (quoteDiagnostics.premiumPolicy as PremiumPolicySummary)
+      : null;
+  const tenorPolicySummary =
+    quoteDiagnostics && typeof quoteDiagnostics.tenorPolicy === "object" && quoteDiagnostics.tenorPolicy
+      ? (quoteDiagnostics.tenorPolicy as TenorPolicySummary)
+      : null;
   const requestedTenorFromDiagnostics = Number(venueSelection?.requestedTenorDays ?? NaN);
+  const requestedTenorFromPolicy = Number(tenorPolicySummary?.requestedTenorDays ?? NaN);
   const selectedTenorFromDiagnostics = Number(
     venueSelection?.selectedTenorDaysActual ?? venueSelection?.selectedTenorDays ?? NaN
   );
+  const venueRequestedTenorDays = Number(tenorPolicySummary?.venueRequestedTenorDays ?? NaN);
   const selectedExpiryFromDiagnostics = String(venueSelection?.selectedExpiry || "").trim();
   const requestedVsMatchedTenorDriftDays =
     Number.isFinite(requestedTenorFromDiagnostics) && Number.isFinite(selectedTenorFromDiagnostics)
@@ -1103,6 +1174,8 @@ export function PilotApp() {
       : NaN;
   const targetTenorDaysForDisplay = Number.isFinite(requestedTenorFromDiagnostics)
     ? requestedTenorFromDiagnostics
+    : Number.isFinite(requestedTenorFromPolicy)
+      ? requestedTenorFromPolicy
     : selectedTenorDays;
   const matchedTenorDaysForDisplay = Number.isFinite(selectedTenorFromDiagnostics)
     ? selectedTenorFromDiagnostics
@@ -1171,6 +1244,30 @@ export function PilotApp() {
     ? protectionsHistory.filter((item) => item.id !== protection.id)
     : protectionsHistory;
   const protectionsTotalCount = protectionsHistory.length;
+  const premiumHedgeCost = Number(premiumPolicySummary?.estimated?.hedgeCostUsd ?? NaN);
+  const premiumBrokerFees = Number(premiumPolicySummary?.estimated?.brokerFeesUsd ?? NaN);
+  const premiumPassThrough = Number(premiumPolicySummary?.estimated?.passThroughUsd ?? NaN);
+  const premiumMarkupUsd = Number(premiumPolicySummary?.estimated?.markupUsd ?? NaN);
+  const premiumMarkupPct = Number(premiumPolicySummary?.estimated?.markupPct ?? NaN);
+  const premiumClientTotal = Number(premiumPolicySummary?.estimated?.clientPremiumUsd ?? NaN);
+  const premiumRatioPct =
+    Number.isFinite(premiumClientTotal) && Number.isFinite(protectedValue) && protectedValue > 0
+      ? (premiumClientTotal / protectedValue) * 100
+      : NaN;
+  const quotePolicyClass =
+    quote?.status === "ok"
+      ? Number.isFinite(premiumRatioPct) && premiumRatioPct <= 5
+        ? "GO"
+        : Number.isFinite(premiumRatioPct) && premiumRatioPct <= 15
+          ? "REVIEW"
+          : "NO-GO"
+      : "NO-GO";
+  const quotePolicyClassLabel =
+    quotePolicyClass === "GO"
+      ? "GO"
+      : quotePolicyClass === "REVIEW"
+        ? "REVIEW"
+        : "NO-GO";
 
   if (!pilotUnlocked) {
     return (
@@ -1449,7 +1546,7 @@ export function PilotApp() {
               <span className="pilot-label">Target Horizon</span>
               <div className="pilot-field pilot-tenor-field">
                 <div className="pilot-tenor-chips" role="group" aria-label="Target Horizon">
-                  {PILOT_ENABLED_TENOR_DAYS.map((tenorDay) => {
+                  {enabledTenorDays.map((tenorDay) => {
                     const selected = selectedTenorDays === tenorDay;
                     return (
                       <button
@@ -1461,7 +1558,7 @@ export function PilotApp() {
                         onClick={() => setSelectedTenorDays(tenorDay)}
                       >
                         {tenorDay}D
-                        {tenorDay === PILOT_DEFAULT_TENOR_DAYS && (
+                        {tenorDay === defaultTenorDays && (
                           <span className="pilot-tenor-chip-tag">Recommended</span>
                         )}
                       </button>
@@ -1557,6 +1654,28 @@ export function PilotApp() {
                   Reference {formatUsd(quote.entrySnapshot.price)} ({quote.entrySnapshot.source}) at{" "}
                   {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
                 </div>
+                {premiumPolicySummary && (
+                  <div className="muted">
+                    Pricing policy {quotePolicyClassLabel}
+                    {Number.isFinite(premiumRatioPct) ? ` · premium ratio ${premiumRatioPct.toFixed(2)}%` : ""}
+                    {Number.isFinite(premiumPassThrough)
+                      ? ` · pass-through $${formatUsd(premiumPassThrough)}`
+                      : ""}
+                    {Number.isFinite(premiumMarkupUsd)
+                      ? ` · markup $${formatUsd(premiumMarkupUsd)}${
+                          Number.isFinite(premiumMarkupPct) ? ` (${(premiumMarkupPct * 100).toFixed(2)}%)` : ""
+                        }`
+                      : ""}
+                    {Number.isFinite(premiumBrokerFees) ? ` · broker fees $${formatUsd(premiumBrokerFees)}` : ""}
+                    {Number.isFinite(premiumHedgeCost) ? ` · hedge $${formatUsd(premiumHedgeCost)}` : ""}
+                  </div>
+                )}
+                {tenorPolicySummary && Number.isFinite(venueRequestedTenorDays) && (
+                  <div className="muted">
+                    Tenor policy status: {tenorPolicySummary.status || "unknown"} · request routed to{" "}
+                    {Math.floor(venueRequestedTenorDays)}D
+                  </div>
+                )}
                 {showTenorAdjustmentInfo && (
                   <div className="quote-warning">
                     <div className="pill pill-warning">Matched to nearest liquid expiry.</div>
