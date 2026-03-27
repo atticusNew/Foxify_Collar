@@ -775,6 +775,35 @@ test("N) execution failure marks protection activation_failed and releases daily
   }
 });
 
+test("N2) activation execution_failed surfaces fillStatus and rejectionReason detail", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    deribit: buildDeribitExecutionFailureStub()
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(activateRes.statusCode, 502);
+    const activatePayload = activateRes.json();
+    assert.equal(activatePayload.reason, "execution_failed");
+    assert.equal(activatePayload.detail, "fillStatus=rejected");
+  } finally {
+    await harness.close();
+  }
+});
+
 test("O) monitor/detail/proof routes are tenant scoped", async () => {
   const harnessA = await createPilotHarness({ env: { PILOT_TENANT_SCOPE_ID: "tenant-a" } });
   const harnessB = await createPilotHarness({ env: { PILOT_TENANT_SCOPE_ID: "tenant-b" } });

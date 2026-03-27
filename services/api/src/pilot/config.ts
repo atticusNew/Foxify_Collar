@@ -10,6 +10,7 @@ export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_inva
 export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
 export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
 export type PilotHedgePolicy = "options_primary_futures_fallback";
+export type IbkrOrderTif = "IOC" | "DAY";
 
 export type PilotWindowState = {
   enforced: boolean;
@@ -111,6 +112,12 @@ export const parseBooleanEnv = (raw: string | undefined, fallback: boolean): boo
   if (normalized === "true") return true;
   if (normalized === "false") return false;
   return fallback;
+};
+
+export const parseIbkrOrderTif = (raw: string | undefined): IbkrOrderTif => {
+  const normalized = String(raw || "IOC").trim().toUpperCase();
+  if (normalized === "IOC" || normalized === "DAY") return normalized;
+  throw new Error(`invalid_ibkr_order_tif:${normalized || "empty"}`);
 };
 
 const resolveTenorBounds = (): {
@@ -249,6 +256,7 @@ export const pilotConfig = {
   ibkrBridgeToken: String(process.env.IBKR_BRIDGE_TOKEN || "").trim(),
   ibkrAccountId: String(process.env.IBKR_ACCOUNT_ID || "").trim(),
   ibkrEnableExecution: process.env.IBKR_ENABLE_EXECUTION === "true",
+  ibkrOrderTif: parseIbkrOrderTif(process.env.IBKR_ORDER_TIF),
   ibkrOrderTimeoutMs: parsePositiveFinite(
     process.env.IBKR_ORDER_TIMEOUT_MS,
     8000,

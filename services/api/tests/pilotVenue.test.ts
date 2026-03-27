@@ -354,7 +354,8 @@ test("ibkr_cme_paper adapter returns quote with hedge mode diagnostics", async (
       maxSlippageBps: 25,
       requireLiveTransport: false,
       maxTenorDriftDays: 7,
-      preferTenorAtOrAbove: true
+      preferTenorAtOrAbove: true,
+      orderTif: "IOC"
     }
   });
   const quote = await adapter.quote({
@@ -452,7 +453,8 @@ test("ibkr_cme_paper uses depth-derived ask when top snapshot is empty", async (
       maxSlippageBps: 25,
       requireLiveTransport: false,
       maxTenorDriftDays: 7,
-      preferTenorAtOrAbove: true
+      preferTenorAtOrAbove: true,
+      orderTif: "IOC"
     }
   });
   const quote = await adapter.quote({
@@ -576,7 +578,8 @@ test("ibkr_cme_paper selection scoring prefers nearer tenor over wider-drift con
       maxSlippageBps: 25,
       requireLiveTransport: false,
       maxTenorDriftDays: 10,
-      preferTenorAtOrAbove: true
+      preferTenorAtOrAbove: true,
+      orderTif: "IOC"
     }
   });
   const quote = await adapter.quote({
@@ -711,7 +714,8 @@ test("ibkr_cme_paper falls back to futures when option order books are unusable"
       maxSlippageBps: 25,
       requireLiveTransport: false,
       maxTenorDriftDays: 7,
-      preferTenorAtOrAbove: true
+      preferTenorAtOrAbove: true,
+      orderTif: "IOC"
     }
   });
   const quote = await adapter.quote({
@@ -749,7 +753,8 @@ test("ibkr_cme_paper execution disabled yields failure status", async () => {
       maxSlippageBps: 25,
       requireLiveTransport: false,
       maxTenorDriftDays: 7,
-      preferTenorAtOrAbove: true
+      preferTenorAtOrAbove: true,
+      orderTif: "IOC"
     }
   });
   const execution = await adapter.execute({
@@ -812,7 +817,8 @@ test("ibkr_cme_live requires active ib_socket transport when enforced", async ()
         maxSlippageBps: 25,
         requireLiveTransport: true,
         maxTenorDriftDays: 7,
-        preferTenorAtOrAbove: true
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC"
       }
     });
 
@@ -914,7 +920,8 @@ test("ibkr connector timeout prefers bridge timeout when larger", async () => {
         maxSlippageBps: 25,
         requireLiveTransport: true,
         maxTenorDriftDays: 7,
-        preferTenorAtOrAbove: true
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC"
       }
     });
 
@@ -1013,7 +1020,8 @@ test("ibkr tenor drift guard rejects candidates outside configured drift window"
         maxSlippageBps: 25,
         requireLiveTransport: true,
         maxTenorDriftDays: 2,
-        preferTenorAtOrAbove: true
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC"
       }
     });
 
@@ -1115,7 +1123,8 @@ test("ibkr tenor drift guard rejects contracts beyond configured drift", async (
         maxSlippageBps: 25,
         requireLiveTransport: true,
         maxTenorDriftDays: 2,
-        preferTenorAtOrAbove: true
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC"
       }
     });
 

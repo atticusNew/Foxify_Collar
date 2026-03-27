@@ -376,6 +376,7 @@ export const registerPilotRoutes = async (
       maxRepriceSteps: pilotConfig.ibkrMaxRepriceSteps,
       repriceStepTicks: pilotConfig.ibkrRepriceStepTicks,
       maxSlippageBps: pilotConfig.ibkrMaxSlippageBps,
+      orderTif: pilotConfig.ibkrOrderTif,
       requireLiveTransport: pilotConfig.ibkrRequireLiveTransport,
       maxTenorDriftDays: pilotConfig.ibkrMaxTenorDriftDays,
       preferTenorAtOrAbove: pilotConfig.ibkrPreferTenorAtOrAbove
@@ -1073,6 +1074,7 @@ export const registerPilotRoutes = async (
     let lockedQuoteRecord: Awaited<ReturnType<typeof getVenueQuoteByQuoteIdForUpdate>> | null = null;
     let reservedProtection: Awaited<ReturnType<typeof insertProtection>> | null = null;
     let execution: Awaited<ReturnType<typeof venue.execute>> | null = null;
+    let executionFailureDetail: string | null = null;
     let premiumPricing:
       | ReturnType<typeof resolvePremiumPricing>
       | {
@@ -1295,6 +1297,17 @@ export const registerPilotRoutes = async (
         "venue_execute"
       );
       if (execution.status !== "success") {
+        const fillStatus =
+          execution.details && typeof execution.details.fillStatus === "string"
+            ? String(execution.details.fillStatus)
+            : null;
+        const rejectionReason =
+          execution.details && typeof execution.details.rejectionReason === "string"
+            ? String(execution.details.rejectionReason)
+            : null;
+        executionFailureDetail = [fillStatus ? `fillStatus=${fillStatus}` : null, rejectionReason]
+          .filter((part): part is string => Boolean(part && part.trim()))
+          .join(" | ");
         throw new Error("execution_failed");
       }
       const coverageRatio =
@@ -1510,6 +1523,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason,
+        detail: reason === "execution_failed" ? executionFailureDetail : null,
         message:
           reason === "price_unavailable"
             ? "Price temporarily unavailable, please retry."

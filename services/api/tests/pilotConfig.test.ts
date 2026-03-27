@@ -5,6 +5,7 @@ import {
   parseDeribitMaxTenorDriftDays,
   parseDeribitQuotePolicy,
   parseDeribitStrikeSelectionMode,
+  parseIbkrOrderTif,
   parseBooleanEnv,
   parsePositiveFinite,
   parsePositiveIntInRange,
@@ -54,6 +55,13 @@ test("parsePilotHedgePolicy validates allowed values", () => {
   assert.equal(parsePilotHedgePolicy(undefined), "options_primary_futures_fallback");
   assert.equal(parsePilotHedgePolicy("options_primary_futures_fallback"), "options_primary_futures_fallback");
   assert.throws(() => parsePilotHedgePolicy("futures_only"), /invalid_pilot_hedge_policy/);
+});
+
+test("parseIbkrOrderTif validates allowed values", () => {
+  assert.equal(parseIbkrOrderTif(undefined), "IOC");
+  assert.equal(parseIbkrOrderTif("ioc"), "IOC");
+  assert.equal(parseIbkrOrderTif("DAY"), "DAY");
+  assert.throws(() => parseIbkrOrderTif("GTC"), /invalid_ibkr_order_tif/);
 });
 
 test("parsePositiveIntInRange validates integer bounds", () => {

@@ -43,6 +43,7 @@ type IbkrVenueConfig = {
   accountId: string;
   enableExecution: boolean;
   orderTimeoutMs: number;
+  orderTif?: "IOC" | "DAY";
   maxRepriceSteps: number;
   repriceStepTicks: number;
   maxSlippageBps: number;
@@ -499,6 +500,12 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         ? Math.min(1, Math.max(0, executedQuantity / requestedQuantity))
         : 0;
     const scaledPremium = Number((quote.premium * fillRatio).toFixed(10));
+    const fillStatus = String(order?.status || "unknown");
+    const rejectionReasonRaw =
+      (typeof order?.rejectionReason === "string" && order.rejectionReason) ||
+      (typeof order?.rejectReason === "string" && order.rejectReason) ||
+      (typeof order?.reason === "string" && order.reason) ||
+      null;
     return {
       venue: "deribit_test",
       status,
@@ -514,6 +521,8 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       externalExecutionId: String(order?.id || `DERIBIT-EXE-${randomUUID()}`),
       details: {
         raw: order,
+        fillStatus,
+        rejectionReason: rejectionReasonRaw,
         requestedQuantity,
         executedQuantity,
         fillRatio
@@ -577,6 +586,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private repriceStepTicks: number,
     private maxSlippageBps: number,
     private requireLiveTransport: boolean,
+    private orderTif: "IOC" | "DAY",
     private maxTenorDriftDays: number,
     private preferTenorAtOrAbove: boolean,
     private marketDataRequestTimeoutMs: number,
@@ -1052,6 +1062,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const requestedContracts = Math.max(1, Math.ceil(requestedQty / contractMultiplier));
 
     let lastOrderId = "";
+    let lastFailureDetail: Record<string, unknown> | null = null;
+    const isTerminal = (status: string): boolean =>
+      status === "filled" || status === "partially_filled" || status === "cancelled" || status === "rejected" || status === "inactive";
     for (let step = 0; step < maxSteps; step += 1) {
       const limitPrice = Math.min(maxLimit, baseLimit + step * stepTicks * minTick);
       const placed = await this.connector.placeOrder({
@@ -1061,7 +1074,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         quantity: requestedContracts,
         orderType: "LMT",
         limitPrice,
-        tif: "IOC",
+        tif: this.orderTif,
         clientOrderId: `pilot-${quote.quoteId}-${step}`
       });
       lastOrderId = placed.orderId;
@@ -1105,7 +1118,52 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           }
         };
       }
-      await this.connector.cancelOrder(placed.orderId);
+      const terminalState = await this.connector.getOrder(placed.orderId);
+      const terminalStatus = String(terminalState.status || "");
+      const terminalFilledQty = Math.max(0, Number(terminalState.filledQuantity || 0));
+      if (terminalFilledQty > 0 && (terminalStatus === "filled" || terminalStatus === "partially_filled")) {
+        const executedQuantity = Number((terminalFilledQty * contractMultiplier).toFixed(8));
+        const executionPrice = toFinitePositive(terminalState.avgFillPrice) || limitPrice;
+        const unitPrice = executionPrice * contractMultiplier;
+        return {
+          venue: this.mode,
+          status: "success",
+          quoteId: quote.quoteId,
+          rfqId: quote.rfqId ?? null,
+          instrumentId: quote.instrumentId,
+          side: "buy",
+          quantity: executedQuantity,
+          executionPrice,
+          premium: Number((unitPrice * terminalFilledQty).toFixed(6)),
+          executedAt: nowIso(),
+          externalOrderId: placed.orderId,
+          externalExecutionId: placed.orderId,
+          details: {
+            hedgeMode: details.hedgeMode || "options_native",
+            fillStatus: terminalState.status,
+            requestedContracts,
+            filledContracts: terminalFilledQty,
+            contractMultiplier,
+            filledUnderlying: Number((terminalFilledQty * contractMultiplier).toFixed(8)),
+            limitPrice,
+            repriceStep: step
+          }
+        };
+      }
+      if (!isTerminal(terminalStatus)) {
+        await this.connector.cancelOrder(placed.orderId);
+      }
+      lastFailureDetail = {
+        reason: "no_fill_after_step",
+        fillStatus: terminalState.status,
+        rejectionReason: terminalState.rejectionReason || null,
+        requestedContracts,
+        filledContracts: terminalFilledQty,
+        contractMultiplier,
+        limitPrice,
+        orderTif: this.orderTif,
+        repriceStep: step
+      };
     }
 
     return {
@@ -1121,7 +1179,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       executedAt: nowIso(),
       externalOrderId: lastOrderId || `IBKR-NO-FILL-${randomUUID()}`,
       externalExecutionId: lastOrderId || `IBKR-NO-FILL-${randomUUID()}`,
-      details: { reason: "no_fill_after_reprice" }
+      details: {
+        reason: "no_fill_after_reprice",
+        orderTif: this.orderTif,
+        ...(lastFailureDetail || {})
+      }
     };
   }
 
@@ -1276,6 +1338,7 @@ export const createPilotVenueAdapter = (params: {
       params.ibkr.repriceStepTicks,
       params.ibkr.maxSlippageBps,
       params.ibkr.requireLiveTransport,
+      params.ibkr.orderTif || "IOC",
       Number.isFinite(Number(params.ibkr.maxTenorDriftDays)) ? Number(params.ibkr.maxTenorDriftDays) : 7,
       params.ibkr.preferTenorAtOrAbove !== false,
       connectorTimeoutMs,
