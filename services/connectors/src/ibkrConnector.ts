@@ -86,14 +86,18 @@ export class IbkrConnector {
     const timeoutMs = Math.max(500, Number(this.cfg.timeoutMs || 0));
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
+      const headers: Record<string, string> = {
+        ...(this.cfg.auth.token ? { Authorization: `Bearer ${this.cfg.auth.token}` } : {})
+      };
+      const serializedBody = body ? JSON.stringify(body) : undefined;
+      if (serializedBody) {
+        headers["Content-Type"] = "application/json";
+      }
       const res = await fetch(joinUrl(this.cfg.baseUrl, path), {
         method,
         signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          ...(this.cfg.auth.token ? { Authorization: `Bearer ${this.cfg.auth.token}` } : {})
-        },
-        body: body ? JSON.stringify(body) : undefined
+        headers,
+        body: serializedBody
       });
       if (!res.ok) {
         const text = await res.text();
