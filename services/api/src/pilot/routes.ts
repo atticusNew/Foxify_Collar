@@ -1631,11 +1631,15 @@ export const registerPilotRoutes = async (
       if (!reservedProtection || !quoteEntryAnchorPrice || !triggerPrice || !premiumPricing) {
         throw new Error("activation_failed");
       }
+      const realizedBrokerFeesUsd =
+        parsePositiveDecimal(execution.details?.realizedBrokerFeesUsd) ||
+        parsePositiveDecimal(execution.details?.commissionUsd) ||
+        premiumPricing.brokerFeesUsd;
       const realizedPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
         hedgePremium: new Decimal(execution.premium),
-        brokerFees: premiumPricing.brokerFeesUsd,
+        brokerFees: realizedBrokerFeesUsd,
         markupPctOverride: premiumPricing.markupPct
       });
       premiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({

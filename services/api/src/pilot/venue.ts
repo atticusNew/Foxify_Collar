@@ -1114,6 +1114,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             contractMultiplier,
             filledUnderlying: Number((filledQtyContracts * contractMultiplier).toFixed(8)),
             limitPrice,
+            commissionUsd: toFinitePositive(state.commissionUsd) || 0,
+            commissionCurrency: String(state.commissionCurrency || "USD"),
+            realizedBrokerFeesUsd: toFinitePositive(state.commissionUsd) || 0,
+            realizedBrokerFeesCurrency: String(state.commissionCurrency || "USD"),
             repriceStep: step
           }
         };
@@ -1146,6 +1150,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             contractMultiplier,
             filledUnderlying: Number((terminalFilledQty * contractMultiplier).toFixed(8)),
             limitPrice,
+            commissionUsd: toFinitePositive(terminalState.commissionUsd) || 0,
+            commissionCurrency: String(terminalState.commissionCurrency || "USD"),
+            realizedBrokerFeesUsd: toFinitePositive(terminalState.commissionUsd) || 0,
+            realizedBrokerFeesCurrency: String(terminalState.commissionCurrency || "USD"),
             repriceStep: step
           }
         };

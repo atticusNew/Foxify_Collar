@@ -930,6 +930,50 @@ test("N3) activation metadata persists tenor selection context from lock quote",
   }
 });
 
+test("N4) activation premium diagnostics preserve estimated vs realized fee components", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_POLICY_MODE: "pass_through_markup",
+      PILOT_PREMIUM_MARKUP_PCT_BRONZE: "0.1",
+      IBKR_FEE_PER_CONTRACT_USD: "2.02",
+      IBKR_FEE_PER_ORDER_USD: "0"
+    }
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 7
+      }
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quotePayload = quoteRes.json();
+    const quoteId = String(quotePayload.quote?.quoteId || "");
+    assert.ok(quoteId);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(activateRes.statusCode, 200);
+    const payload = activateRes.json();
+    assert.equal(payload.status, "ok");
+    const estimated = payload?.diagnostics?.premiumPolicy?.estimated || {};
+    const realized = payload?.diagnostics?.premiumPolicy?.realized || {};
+    assert.equal(Number(estimated.brokerFeesUsd), 0);
+    // In this mock venue harness there is no external commission report, so realized fee falls back to estimate.
+    assert.equal(Number(realized.brokerFeesUsd), Number(estimated.brokerFeesUsd));
+    assert.equal(Number(realized.passThroughUsd), Number(realized.hedgeCostUsd) + Number(realized.brokerFeesUsd));
+    assert.equal(Number(realized.clientPremiumUsd), Number(payload?.protection?.premium || 0));
+  } finally {
+    await harness.close();
+  }
+});
+
 test("Q) tenor-policy endpoint returns structured policy payload", async () => {
   const harness = await createPilotHarness({
     env: {

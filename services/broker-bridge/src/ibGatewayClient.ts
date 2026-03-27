@@ -1,5 +1,7 @@
 import { IBApi, EventName, SecType, type OrderAction, type OrderType, type TimeInForce } from "@stoqey/ib";
 import type { Contract, ContractDetails } from "@stoqey/ib";
+import type { CommissionReport } from "@stoqey/ib/dist/api/report/commissionReport";
+import type { Execution } from "@stoqey/ib/dist/api/order/execution";
 import type {
   BridgeActiveTransport,
   BridgeContractQuery,
@@ -109,6 +111,7 @@ export class IbGatewayClient {
   private lastFallbackReason: string | null = null;
   private readonly ordersByExternalId = new Map<string, BridgeOrderState>();
   private readonly orderIdToExternalId = new Map<number, string>();
+  private readonly execIdToOrderExternalId = new Map<string, string>();
   private connectPromise: Promise<void> | null = null;
 
   constructor(private readonly config: IbConfig) {
@@ -364,10 +367,46 @@ export class IbGatewayClient {
           filledQuantity: fillQty,
           avgFillPrice: positiveOrNull(avgFillPrice),
           lastUpdateAt: nowIso(),
-          rejectionReason: current?.rejectionReason
+          rejectionReason: current?.rejectionReason,
+          commissionUsd: current?.commissionUsd ?? null,
+          commissionCurrency: current?.commissionCurrency ?? null,
+          commissionUpdatedAt: current?.commissionUpdatedAt ?? null
         });
       }
     );
+
+    ib.on(EventName.execDetails, (reqId: number, _contract: Contract, execution: Execution) => {
+      if (reqId !== -1) return;
+      const execId = String(execution?.execId || "").trim();
+      if (!execId) return;
+      const orderId = Number(execution?.orderId);
+      if (!Number.isFinite(orderId) || orderId <= 0) return;
+      const externalId = this.orderIdToExternalId.get(Math.floor(orderId));
+      if (!externalId) return;
+      this.execIdToOrderExternalId.set(execId, externalId);
+    });
+
+    ib.on(EventName.commissionReport, (commissionReport: CommissionReport) => {
+      const execId = String(commissionReport?.execId || "").trim();
+      if (!execId) return;
+      const externalId = this.execIdToOrderExternalId.get(execId);
+      if (!externalId) return;
+      const current = this.ordersByExternalId.get(externalId);
+      if (!current) return;
+      const commissionValue = finiteOrNull(commissionReport?.commission);
+      const currency = String(commissionReport?.currency || "").trim().toUpperCase();
+      const hasCommission = commissionValue !== null && Number.isFinite(commissionValue);
+      if (!hasCommission && !currency) return;
+      const nextCommission =
+        (current.commissionUsd ?? 0) + (hasCommission ? Math.max(0, Number(commissionValue)) : 0);
+      this.ordersByExternalId.set(externalId, {
+        ...current,
+        commissionUsd: Number(nextCommission.toFixed(10)),
+        commissionCurrency: currency || current.commissionCurrency || null,
+        commissionUpdatedAt: nowIso(),
+        lastUpdateAt: nowIso()
+      });
+    });
 
     ib.on(EventName.error, (...args: unknown[]) => {
       const code = this.extractIbErrorCode(args);
@@ -389,7 +428,10 @@ export class IbGatewayClient {
           filledQuantity: current?.filledQuantity ?? 0,
           avgFillPrice: current?.avgFillPrice ?? null,
           lastUpdateAt: nowIso(),
-          rejectionReason: existingReason || message || "ib_order_rejected"
+          rejectionReason: existingReason || message || "ib_order_rejected",
+          commissionUsd: current?.commissionUsd ?? null,
+          commissionCurrency: current?.commissionCurrency ?? null,
+          commissionUpdatedAt: current?.commissionUpdatedAt ?? null
         });
       }
     });
@@ -934,7 +976,10 @@ export class IbGatewayClient {
       filledQuantity: updated?.filledQuantity ?? 0,
       avgFillPrice: finiteOrNull(updated?.avgFillPrice),
       lastUpdateAt: nowIso(),
-      rejectionReason: updated?.rejectionReason
+      rejectionReason: updated?.rejectionReason,
+      commissionUsd: updated?.commissionUsd ?? null,
+      commissionCurrency: updated?.commissionCurrency ?? null,
+      commissionUpdatedAt: updated?.commissionUpdatedAt ?? null
     });
     return { cancelled: true, asOf: nowIso() };
   }

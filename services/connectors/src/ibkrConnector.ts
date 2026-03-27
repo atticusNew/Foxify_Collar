@@ -70,6 +70,9 @@ export type IbkrOrderState = {
   avgFillPrice: number | null;
   lastUpdateAt: string;
   rejectionReason?: string;
+  commissionUsd?: number | null;
+  commissionCurrency?: string | null;
+  commissionUpdatedAt?: string | null;
 };
 
 const joinUrl = (baseUrl: string, path: string): string => {

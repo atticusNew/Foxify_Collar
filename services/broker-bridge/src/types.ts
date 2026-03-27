@@ -81,6 +81,9 @@ export type BridgeOrderState = {
   status: BridgeOrderStatus;
   filledQuantity: number;
   avgFillPrice: number | null;
+  commissionUsd?: number | null;
+  commissionCurrency?: string | null;
+  commissionExecId?: string | null;
   lastUpdateAt: string;
   rejectionReason?: string;
 };
