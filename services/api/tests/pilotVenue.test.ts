@@ -296,6 +296,9 @@ test("deribit execution scales premium to filled quantity", async () => {
 
 test("ibkr_cme_paper adapter returns quote with hedge mode diagnostics", async () => {
   const originalFetch = global.fetch;
+  const now = new Date();
+  const nearExpiry = new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  const fartherExpiry = new Date(now.getTime() + 10 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
   global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
@@ -481,6 +484,9 @@ test("ibkr_cme_paper uses depth-derived ask when top snapshot is empty", async (
 
 test("ibkr_cme_paper selection scoring prefers nearer tenor over wider-drift contract", async () => {
   const originalFetch = global.fetch;
+  const now = new Date();
+  const nearExpiry = new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  const fartherExpiry = new Date(now.getTime() + 10 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
   global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
@@ -496,7 +502,7 @@ test("ibkr_cme_paper selection scoring prefers nearer tenor over wider-drift con
                   conId: 11111,
                   secType: "FOP",
                   localSymbol: "WMH6 P55000",
-                  expiry: "20260327",
+                  expiry: nearExpiry,
                   strike: 55000,
                   right: "P",
                   multiplier: "0.1",
@@ -506,7 +512,7 @@ test("ibkr_cme_paper selection scoring prefers nearer tenor over wider-drift con
                   conId: 22222,
                   secType: "FOP",
                   localSymbol: "WMJ6 P55000",
-                  expiry: "20260403",
+                  expiry: fartherExpiry,
                   strike: 55000,
                   right: "P",
                   multiplier: "0.1",

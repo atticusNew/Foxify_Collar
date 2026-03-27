@@ -959,6 +959,8 @@ export const registerPilotRoutes = async (
         defaultDays: pilotConfig.pilotTenorDefaultDays
       });
       let venueRequestedTenorDays = requestedTenorDays;
+      let tenorPolicyFallbackApplied = false;
+      let tenorPolicyFallbackReason: string | null = null;
       if (pilotConfig.dynamicTenorEnabled) {
         tenorPolicy = await resolveDynamicTenorPolicy({
           pool,
@@ -966,9 +968,17 @@ export const registerPilotRoutes = async (
         });
         const enabledTenors = tenorPolicy.selection?.enabledTenorsDays || [];
         const defaultTenor = tenorPolicy.selection?.defaultTenorDays || requestedTenorDays;
+        const requestedIsCandidate = pilotConfig.tenorPolicyCandidateDays.includes(requestedTenorDays);
+        const degradedWithNoEnabled =
+          tenorPolicy.selection?.status === "degraded" && Array.isArray(enabledTenors) && enabledTenors.length === 0;
         if (!enabledTenors.includes(requestedTenorDays)) {
           if (pilotConfig.tenorPolicyAutoRoute && enabledTenors.length > 0) {
             venueRequestedTenorDays = enabledTenors.includes(defaultTenor) ? defaultTenor : enabledTenors[0];
+          } else if (degradedWithNoEnabled && pilotConfig.tenorPolicyEnforce && requestedIsCandidate) {
+            // Deadlock guard: allow candidate tenor quotes when policy has no enabled tenors during warmup/degraded windows.
+            venueRequestedTenorDays = requestedTenorDays;
+            tenorPolicyFallbackApplied = true;
+            tenorPolicyFallbackReason = "degraded_policy_allow_requested_candidate";
           } else if (pilotConfig.tenorPolicyEnforce) {
             throw new Error("tenor_temporarily_unavailable");
           }
@@ -1042,6 +1052,8 @@ export const registerPilotRoutes = async (
             optionType,
             requestedTenorDays,
             venueRequestedTenorDays,
+            tenorPolicyFallbackApplied,
+            tenorPolicyFallbackReason,
             triggerPrice: triggerPrice.toFixed(10),
             triggerLabel,
             floorPrice: triggerPrice.toFixed(10),
@@ -1124,7 +1136,9 @@ export const registerPilotRoutes = async (
                   enabledTenorsDays: tenorPolicy.selection?.enabledTenorsDays || [],
                   defaultTenorDays: tenorPolicy.selection?.defaultTenorDays || requestedTenorDays,
                   requestedTenorDays,
-                  venueRequestedTenorDays
+                  venueRequestedTenorDays,
+                  fallbackApplied: tenorPolicyFallbackApplied,
+                  fallbackReason: tenorPolicyFallbackReason
                 }
               : null,
           venueSelection: {

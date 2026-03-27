@@ -87,6 +87,19 @@ const createPilotHarness = async (opts?: {
   process.env.PILOT_TENOR_MIN_DAYS = "1";
   process.env.PILOT_TENOR_MAX_DAYS = "7";
   process.env.PILOT_TENOR_DEFAULT_DAYS = "7";
+  process.env.PILOT_DYNAMIC_TENOR_ENABLED = "false";
+  process.env.PILOT_TENOR_ENFORCE = "false";
+  process.env.PILOT_TENOR_POLICY_ENFORCE = "false";
+  process.env.PILOT_TENOR_AUTO_ROUTE = "false";
+  process.env.PILOT_TENOR_CANDIDATES = "1,2,4,7,10,12,14";
+  process.env.PILOT_TENOR_MIN_SAMPLES = "5";
+  process.env.PILOT_TENOR_MIN_OK_RATE = "0.8";
+  process.env.PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE = "0.8";
+  process.env.PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO = "0.02";
+  process.env.PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS = "3";
+  process.env.PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE = "0";
+  process.env.PILOT_TENOR_DEFAULT_FALLBACK = "14";
+  process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES = "60";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
   if (opts?.env) {
     for (const [key, value] of Object.entries(opts.env)) {
@@ -109,8 +122,12 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.internalToken = process.env.PILOT_INTERNAL_TOKEN || "";
   configModule.pilotConfig.hashSecret = process.env.USER_HASH_SECRET || "";
   configModule.pilotConfig.dynamicTenorEnabled = process.env.PILOT_DYNAMIC_TENOR_ENABLED === "true";
-  configModule.pilotConfig.tenorPolicyEnforce = process.env.PILOT_TENOR_ENFORCE === "true";
+  configModule.pilotConfig.tenorPolicyEnforce =
+    (process.env.PILOT_TENOR_ENFORCE ?? process.env.PILOT_TENOR_POLICY_ENFORCE) === "true";
   configModule.pilotConfig.tenorPolicyAutoRoute = process.env.PILOT_TENOR_AUTO_ROUTE === "true";
+  configModule.pilotConfig.pilotTenorMinDays = Number(process.env.PILOT_TENOR_MIN_DAYS || "1");
+  configModule.pilotConfig.pilotTenorMaxDays = Number(process.env.PILOT_TENOR_MAX_DAYS || "7");
+  configModule.pilotConfig.pilotTenorDefaultDays = Number(process.env.PILOT_TENOR_DEFAULT_DAYS || "7");
   configModule.pilotConfig.tenorPolicyCandidateDays = String(process.env.PILOT_TENOR_CANDIDATES || "1,2,4,7,10,12,14")
     .split(",")
     .map((item) => Number(item.trim()))
@@ -186,6 +203,16 @@ const quoteAndActivate = async (
   const protectionId = String(activatePayloadJson.protection?.id || "");
   assert.ok(protectionId);
   return { protectionId, quoteId };
+};
+
+const withFixedNow = async <T>(iso: string, fn: () => Promise<T>): Promise<T> => {
+  const realNow = Date.now;
+  Date.now = () => new Date(iso).getTime();
+  try {
+    return await fn();
+  } finally {
+    Date.now = realNow;
+  }
 };
 
 test("pilot route hardening A-H", async (t) => {
@@ -970,6 +997,44 @@ test("T) dynamic tenor auto-route rewrites venue requested tenor", async () => {
     assert.equal(payload.status, "ok");
     assert.equal(payload?.diagnostics?.tenorPolicy?.requestedTenorDays, 7);
     assert.equal(payload?.diagnostics?.tenorPolicy?.venueRequestedTenorDays, 2);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("U) degraded tenor policy with no enabled tenors falls back to default candidate", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "10,12,14",
+      PILOT_TENOR_MIN_DAYS: "10",
+      PILOT_TENOR_MAX_DAYS: "14",
+      PILOT_TENOR_DEFAULT_DAYS: "12",
+      PILOT_TENOR_MIN_SAMPLES: "100",
+      PILOT_TENOR_ENFORCE: "true",
+      PILOT_TENOR_AUTO_ROUTE: "true",
+      PILOT_TENOR_DEFAULT_FALLBACK: "12"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 12
+      }
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const payload = quoteRes.json();
+    // Ensure no seed data from earlier tests leaked into this harness and changed policy state.
+    assert.deepEqual(payload?.diagnostics?.tenorPolicy?.enabledTenorsDays || [], []);
+    assert.equal(payload.status, "ok");
+    assert.equal(payload?.diagnostics?.tenorPolicy?.status, "ok");
+    assert.equal(payload?.diagnostics?.tenorPolicy?.requestedTenorDays, 12);
+    assert.equal(payload?.diagnostics?.tenorPolicy?.venueRequestedTenorDays, 12);
+    assert.equal(payload?.diagnostics?.tenorPolicy?.fallbackApplied, true);
+    assert.equal(payload?.diagnostics?.tenorPolicy?.fallbackReason, "degraded_policy_allow_requested_candidate");
   } finally {
     await harness.close();
   }
