@@ -67,6 +67,9 @@ const toBridgeOrderStatus = (value: unknown, filled: number): BridgeOrderStatus 
   return filled > 0 ? "partially_filled" : "submitted";
 };
 
+const isTerminalOrderStatus = (status: BridgeOrderStatus): boolean =>
+  status === "filled" || status === "partially_filled" || status === "cancelled" || status === "rejected" || status === "inactive";
+
 type IbConfig = {
   host: string;
   port: number;
@@ -378,13 +381,15 @@ export class IbGatewayClient {
         const externalId = this.orderIdToExternalId.get(reqId);
         if (!externalId) return;
         const current = this.ordersByExternalId.get(externalId);
+        const existingTerminal = current ? isTerminalOrderStatus(current.status) : false;
+        const existingReason = String(current?.rejectionReason || "").trim();
         this.ordersByExternalId.set(externalId, {
           orderId: externalId,
-          status: "rejected",
+          status: existingTerminal ? current!.status : "rejected",
           filledQuantity: current?.filledQuantity ?? 0,
           avgFillPrice: current?.avgFillPrice ?? null,
           lastUpdateAt: nowIso(),
-          rejectionReason: message || "ib_order_rejected"
+          rejectionReason: existingReason || message || "ib_order_rejected"
         });
       }
     });
@@ -913,19 +918,23 @@ export class IbGatewayClient {
   }
 
   private async cancelOrderIb(orderId: string): Promise<{ cancelled: boolean; asOf: string }> {
+    const current = this.ordersByExternalId.get(orderId);
+    if (current && isTerminalOrderStatus(current.status)) {
+      return { cancelled: false, asOf: nowIso() };
+    }
     const numericOrderId = Number(orderId);
     const ib = await this.requireIb();
     if (Number.isFinite(numericOrderId) && numericOrderId > 0) {
       ib.cancelOrder(Math.floor(numericOrderId));
     }
-    const current = this.ordersByExternalId.get(orderId);
+    const updated = this.ordersByExternalId.get(orderId);
     this.ordersByExternalId.set(orderId, {
       orderId,
       status: "cancelled",
-      filledQuantity: current?.filledQuantity ?? 0,
-      avgFillPrice: finiteOrNull(current?.avgFillPrice),
+      filledQuantity: updated?.filledQuantity ?? 0,
+      avgFillPrice: finiteOrNull(updated?.avgFillPrice),
       lastUpdateAt: nowIso(),
-      rejectionReason: current?.rejectionReason
+      rejectionReason: updated?.rejectionReason
     });
     return { cancelled: true, asOf: nowIso() };
   }
