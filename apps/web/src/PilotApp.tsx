@@ -306,7 +306,7 @@ const friendlyError = (message: string): string => {
     return "Network issue detected. Please retry.";
   }
   if (message.includes("admin_unauthorized") || message.includes("unauthorized")) {
-    return "Admin access denied. Use a valid internal admin token.";
+    return "Admin access denied. Verify admin token and proxy/IP allowlist settings.";
   }
   return "Unable to complete request. Please retry.";
 };

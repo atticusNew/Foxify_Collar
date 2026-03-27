@@ -55,7 +55,16 @@ const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_nativ
 };
 
 const getRequestIp = (req: FastifyRequest): string => {
-  // Use Fastify-resolved client IP. Raw x-forwarded-for is not trusted by default.
+  // Prefer Fastify-resolved client IP; optionally honor a trusted proxy header for deployments behind edge proxies.
+  const trustedHeader = String(process.env.PILOT_ADMIN_TRUSTED_IP_HEADER || "").trim().toLowerCase();
+  if (trustedHeader) {
+    const raw = req.headers[trustedHeader as keyof typeof req.headers];
+    const headerValue = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof headerValue === "string" && headerValue.trim()) {
+      const forwarded = headerValue.split(",")[0]?.trim();
+      if (forwarded) return forwarded;
+    }
+  }
   return req.ip;
 };
 
