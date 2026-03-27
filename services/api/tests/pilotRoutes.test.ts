@@ -858,6 +858,78 @@ test("N2) activation execution_failed surfaces fillStatus and rejectionReason de
   }
 });
 
+test("N3) activation metadata persists tenor selection context from lock quote", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "10,12,14",
+      PILOT_TENOR_MIN_DAYS: "10",
+      PILOT_TENOR_MAX_DAYS: "14",
+      PILOT_TENOR_DEFAULT_DAYS: "12",
+      PILOT_TENOR_MIN_SAMPLES: "1",
+      PILOT_TENOR_MIN_OK_RATE: "0",
+      PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE: "0",
+      PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO: "10",
+      PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS: "30",
+      PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE: "1",
+      PILOT_TENOR_ENFORCE: "false",
+      PILOT_TENOR_AUTO_ROUTE: "true",
+      PILOT_TENOR_DEFAULT_FALLBACK: "12"
+    }
+  });
+  try {
+    const { app, pool } = harness;
+    const policyRes = await app.inject({
+      method: "GET",
+      url: "/pilot/tenor-policy"
+    });
+    assert.equal(policyRes.statusCode, 200);
+    const policyPayload = policyRes.json();
+    const expectedDefaultTenor = Number(policyPayload?.selection?.defaultTenorDays || 12);
+
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        instrumentId: "BTC-USD-12D-P",
+        tenorDays: 12
+      }
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quotePayload = quoteRes.json();
+    assert.equal(quotePayload.status, "ok");
+    const quoteId = String(quotePayload.quote?.quoteId || "");
+    assert.ok(quoteId);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: {
+        ...activationPayload(quoteId, 1000),
+        instrumentId: "BTC-USD-12D-P",
+        tenorDays: 12
+      }
+    });
+    assert.equal(activateRes.statusCode, 200);
+    const protectionId = String(activateRes.json()?.protection?.id || "");
+    assert.ok(protectionId);
+
+    const persisted = await pool.query(`SELECT metadata FROM pilot_protections WHERE id = $1`, [protectionId]);
+    const metadata = (persisted.rows[0]?.metadata || {}) as Record<string, unknown>;
+    assert.equal(Number(metadata.requestedTenorDays), 12);
+    assert.equal(Number(metadata.venueRequestedTenorDays), expectedDefaultTenor);
+    assert.equal(typeof metadata.tenorPolicyStatus, "string");
+    assert.equal(metadata.selectedExpiry === null || typeof metadata.selectedExpiry === "string", true);
+    assert.equal(
+      metadata.selectedTenorDays === null || Number.isFinite(Number(metadata.selectedTenorDays)),
+      true
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
 test("Q) tenor-policy endpoint returns structured policy payload", async () => {
   const harness = await createPilotHarness({
     env: {

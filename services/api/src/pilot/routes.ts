@@ -1052,6 +1052,10 @@ export const registerPilotRoutes = async (
             optionType,
             requestedTenorDays,
             venueRequestedTenorDays,
+            tenorPolicyStatus:
+              tenorPolicy && pilotConfig.dynamicTenorEnabled
+                ? String(tenorPolicy.selection?.status || "")
+                : null,
             tenorPolicyFallbackApplied,
             tenorPolicyFallbackReason,
             triggerPrice: triggerPrice.toFixed(10),
@@ -1074,6 +1078,10 @@ export const registerPilotRoutes = async (
             selectedTenorDays:
               quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
                 ? Number((quote.details as Record<string, unknown>).selectedTenorDays).toFixed(10)
+                : null,
+            selectedExpiry:
+              quote.details && typeof (quote.details as Record<string, unknown>).selectedExpiry === "string"
+                ? String((quote.details as Record<string, unknown>).selectedExpiry)
                 : null,
             tenorDriftDays:
               quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).tenorDriftDays))
@@ -1535,6 +1543,13 @@ export const registerPilotRoutes = async (
       const contextFloorUsdFromBps = parsePositiveDecimal(lockContext.premiumFloorUsdFromBps);
       const contextFloorBps = parsePositiveDecimal(lockContext.premiumFloorBps);
       const contextClientPremium = parsePositiveDecimal(lockContext.clientPremiumUsd);
+      const contextRequestedTenorDays = parsePositiveDecimal(lockContext.requestedTenorDays);
+      const contextVenueRequestedTenorDays = parsePositiveDecimal(lockContext.venueRequestedTenorDays);
+      const contextSelectedTenorDays = parsePositiveDecimal(lockContext.selectedTenorDays);
+      const contextSelectedExpiry =
+        typeof lockContext.selectedExpiry === "string" ? String(lockContext.selectedExpiry) : null;
+      const contextTenorPolicyStatus =
+        typeof lockContext.tenorPolicyStatus === "string" ? String(lockContext.tenorPolicyStatus) : null;
       const fallbackPremiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
@@ -1677,6 +1692,13 @@ export const registerPilotRoutes = async (
           drawdownFloorPct: drawdownFloorPct.toFixed(6),
           triggerPrice: triggerPrice.toFixed(10),
           floorPrice: triggerPrice.toFixed(10),
+          requestedTenorDays: contextRequestedTenorDays ? contextRequestedTenorDays.toFixed(10) : null,
+          venueRequestedTenorDays: contextVenueRequestedTenorDays
+            ? contextVenueRequestedTenorDays.toFixed(10)
+            : null,
+          selectedTenorDays: contextSelectedTenorDays ? contextSelectedTenorDays.toFixed(10) : null,
+          selectedExpiry: contextSelectedExpiry,
+          tenorPolicyStatus: contextTenorPolicyStatus,
           hedgeMode: contextHedgeMode,
           coverageRatio: coverageRatio.toFixed(6),
           hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
