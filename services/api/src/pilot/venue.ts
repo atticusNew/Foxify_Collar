@@ -181,6 +181,17 @@ const clampInt = (value: unknown, min: number, max: number, fallback: number): n
   return Math.max(min, Math.min(max, v));
 };
 
+const formatMatchedTenorDisplay = (tenorDays: number | null): string | null => {
+  if (!Number.isFinite(Number(tenorDays)) || Number(tenorDays) < 0) return null;
+  const totalMinutes = Math.round(Number(tenorDays) * 24 * 60);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes - days * 24 * 60) / 60);
+  const minutes = totalMinutes % 60;
+  if (days <= 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (hours <= 0) return `${days}d`;
+  return `${days}d ${hours}h`;
+};
+
 const buildIbkrInstrumentId = (contract: IbkrQualifiedContract): string => {
   const symbol = String(contract.localSymbol || "").replace(/\s+/g, "_");
   return `IBKR-${contract.secType}-${contract.conId}-${symbol}`;
@@ -591,6 +602,25 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     tenorDriftDays: number | null;
     selectedExpiry: string | null;
     selectionReason: string;
+    selectionAlgorithm: string;
+    selectedScore: number | null;
+    selectedRank: number | null;
+    selectedIsBelowTarget: boolean | null;
+    candidateCountEvaluated: number;
+    matchedTenorHoursEstimate: number | null;
+    matchedTenorDisplay: string | null;
+    selectionTrace: Array<{
+      conId: number;
+      expiry: string | null;
+      matchedTenorDays: number | null;
+      driftDays: number | null;
+      ask: number | null;
+      bid: number | null;
+      askSize: number | null;
+      spreadPct: number | null;
+      belowTarget: boolean;
+      score: number;
+    }>;
     strike: number | null;
   }> {
     const requestedTenorDays = clampInt(req.requestedTenorDays, 1, 30, 7);
@@ -688,6 +718,22 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           contract: IbkrQualifiedContract;
           top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
           eligibleCount: number;
+          selectedScore: number;
+          selectedRank: number;
+          selectedIsBelowTarget: boolean;
+          candidateCountEvaluated: number;
+          selectionTrace: Array<{
+            conId: number;
+            expiry: string | null;
+            matchedTenorDays: number | null;
+            driftDays: number | null;
+            ask: number | null;
+            bid: number | null;
+            askSize: number | null;
+            spreadPct: number | null;
+            belowTarget: boolean;
+            score: number;
+          }>;
         }
       | null
     > => {
@@ -735,10 +781,75 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           }
         })
       );
-      for (const item of settled) {
-        if (!item) continue;
-        if (!hasUsableTop(item.top)) continue;
-        return { ...item, eligibleCount: eligible.length };
+      const scored = settled
+        .filter((item): item is { contract: IbkrQualifiedContract; top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string } } => Boolean(item))
+        .map((item) => {
+          const meta = contractTenorMeta(item.contract);
+          const ask = toFinitePositive(item.top.ask);
+          const bid = toFinitePositive(item.top.bid);
+          const askSize = toFinitePositive(item.top.askSize);
+          const spreadPct =
+            ask !== null && ask > 0 && bid !== null && bid > 0 && ask >= bid
+              ? (ask - bid) / ask
+              : null;
+          const driftDays = meta.tenorDriftDays;
+          const belowTarget =
+            meta.selectedTenorDays !== null ? meta.selectedTenorDays + 1e-9 < selectedTenorDaysIntended : false;
+          const tenorPenalty = (driftDays ?? 10) * 100;
+          const belowTargetPenalty = this.preferTenorAtOrAbove && belowTarget ? 40 : 0;
+          const spreadPenalty = Math.max(0, Math.min(0.25, spreadPct ?? 0.25)) * 100;
+          const sizePenalty = askSize === null ? 8 : 0;
+          const score = tenorPenalty + belowTargetPenalty + spreadPenalty + sizePenalty;
+          return {
+            ...item,
+            ask,
+            bid,
+            askSize,
+            spreadPct,
+            driftDays,
+            belowTarget,
+            score
+          };
+        })
+        .filter((row) => row.ask !== null)
+        .sort((a, b) => {
+          if (a.score !== b.score) return a.score - b.score;
+          const aDrift = a.driftDays ?? Number.POSITIVE_INFINITY;
+          const bDrift = b.driftDays ?? Number.POSITIVE_INFINITY;
+          if (aDrift !== bDrift) return aDrift - bDrift;
+          if (a.belowTarget !== b.belowTarget) return a.belowTarget ? 1 : -1;
+          if ((a.ask ?? Number.POSITIVE_INFINITY) !== (b.ask ?? Number.POSITIVE_INFINITY)) {
+            return (a.ask ?? Number.POSITIVE_INFINITY) - (b.ask ?? Number.POSITIVE_INFINITY);
+          }
+          return String(a.contract.expiry || "").localeCompare(String(b.contract.expiry || ""));
+        });
+      const selected = scored[0];
+      if (selected) {
+        const trace = scored.slice(0, 3).map((row) => {
+          const tenorMeta = contractTenorMeta(row.contract);
+          return {
+            conId: row.contract.conId,
+            expiry: String(row.contract.expiry || "") || null,
+            matchedTenorDays: tenorMeta.selectedTenorDays,
+            driftDays: tenorMeta.tenorDriftDays,
+            ask: row.ask,
+            bid: row.bid,
+            askSize: row.askSize,
+            spreadPct: row.spreadPct,
+            belowTarget: row.belowTarget,
+            score: Number(row.score.toFixed(6))
+          };
+        });
+        return {
+          contract: selected.contract,
+          top: selected.top,
+          eligibleCount: eligible.length,
+          selectedScore: Number(selected.score.toFixed(6)),
+          selectedRank: 1,
+          selectedIsBelowTarget: selected.belowTarget,
+          candidateCountEvaluated: scored.length,
+          selectionTrace: trace
+        };
       }
       return null;
     };
@@ -770,6 +881,17 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             tenorDriftDays: optionMeta.tenorDriftDays,
             selectedExpiry: String(optionMatch.contract.expiry || "") || null,
             selectionReason: "best_tenor_liquidity_option",
+            selectionAlgorithm: "tenor_quality_v1",
+            selectedScore: optionMatch.selectedScore,
+            selectedRank: optionMatch.selectedRank,
+            selectedIsBelowTarget: optionMatch.selectedIsBelowTarget,
+            candidateCountEvaluated: optionMatch.candidateCountEvaluated,
+            matchedTenorHoursEstimate:
+              optionMeta.selectedTenorDays !== null
+                ? Number((optionMeta.selectedTenorDays * 24).toFixed(4))
+                : null,
+            matchedTenorDisplay: formatMatchedTenorDisplay(optionMeta.selectedTenorDays),
+            selectionTrace: optionMatch.selectionTrace,
             strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike
           };
         }
@@ -797,6 +919,17 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           tenorDriftDays: futMeta.tenorDriftDays,
           selectedExpiry: String(futMatch.contract.expiry || "") || null,
           selectionReason: "options_unavailable_futures_fallback",
+          selectionAlgorithm: "tenor_quality_v1",
+          selectedScore: futMatch.selectedScore,
+          selectedRank: futMatch.selectedRank,
+          selectedIsBelowTarget: futMatch.selectedIsBelowTarget,
+          candidateCountEvaluated: futMatch.candidateCountEvaluated,
+          matchedTenorHoursEstimate:
+            futMeta.selectedTenorDays !== null
+              ? Number((futMeta.selectedTenorDays * 24).toFixed(4))
+              : null,
+          matchedTenorDisplay: formatMatchedTenorDisplay(futMeta.selectedTenorDays),
+          selectionTrace: futMatch.selectionTrace,
           strike: null
         };
       }
@@ -852,6 +985,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         tenorDriftDays: resolved.tenorDriftDays,
         selectedExpiry: resolved.selectedExpiry,
         selectionReason: resolved.selectionReason,
+        selectionAlgorithm: resolved.selectionAlgorithm,
+        selectedScore: resolved.selectedScore,
+        selectedRank: resolved.selectedRank,
+        selectedIsBelowTarget: resolved.selectedIsBelowTarget,
+        candidateCountEvaluated: resolved.candidateCountEvaluated,
+        matchedTenorHoursEstimate: resolved.matchedTenorHoursEstimate,
+        matchedTenorDisplay: resolved.matchedTenorDisplay,
+        selectionTrace: resolved.selectionTrace,
         askPrice: ask,
         bidPrice: bid,
         askSize: resolved.top.askSize,

@@ -609,6 +609,34 @@ test("K) quote diagnostics surface venue strike/tenor selection", async () => {
       Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedExpiry"),
       true
     );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectionAlgorithm"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "candidateCountEvaluated"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedScore"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedRank"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "matchedTenorHoursEstimate"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "matchedTenorDisplay"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectionTrace"),
+      true
+    );
   } finally {
     await harness.close();
   }

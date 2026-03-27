@@ -471,6 +471,132 @@ test("ibkr_cme_paper uses depth-derived ask when top snapshot is empty", async (
   assert.equal(String(quote.details?.hedgeMode), "options_native");
   assert.ok(String(quote.instrumentId).startsWith("IBKR-FOP-"));
   assert.equal(Number(quote.details?.askPrice), 96);
+  assert.equal(String(quote.details?.selectionAlgorithm), "tenor_quality_v1");
+  assert.equal(typeof quote.details?.candidateCountEvaluated, "number");
+  assert.equal(Array.isArray(quote.details?.selectionTrace), true);
+  global.fetch = originalFetch;
+});
+
+test("ibkr_cme_paper selection scoring prefers nearer tenor over wider-drift contract", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.kind === "mbt_option") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 11111,
+                  secType: "FOP",
+                  localSymbol: "WMH6 P55000",
+                  expiry: "20260327",
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                },
+                {
+                  conId: 22222,
+                  secType: "FOP",
+                  localSymbol: "WMJ6 P55000",
+                  expiry: "20260403",
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.conId === 11111) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 105,
+              ask: 106,
+              bidSize: 4,
+              askSize: 5,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: 107,
+            ask: 108,
+            bidSize: 4,
+            askSize: 5,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/depth")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bids: [{ level: 0, price: 105, size: 4 }],
+            asks: [{ level: 0, price: 106, size: 5 }],
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  const adapter = createPilotVenueAdapter({
+    mode: "ibkr_cme_paper",
+    falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+    deribit: {} as any,
+    ibkr: {
+      bridgeBaseUrl: "http://127.0.0.1:18080",
+      bridgeTimeoutMs: 2000,
+      bridgeToken: "",
+      accountId: "DU123456",
+      enableExecution: false,
+      orderTimeoutMs: 2000,
+      maxRepriceSteps: 3,
+      repriceStepTicks: 1,
+      maxSlippageBps: 25,
+      requireLiveTransport: false,
+      maxTenorDriftDays: 10,
+      preferTenorAtOrAbove: true
+    }
+  });
+  const quote = await adapter.quote({
+    marketId: "BTC-USD",
+    instrumentId: "BTC-USD-3D-P",
+    protectedNotional: 10000,
+    quantity: 0.2,
+    side: "buy",
+    protectionType: "long",
+    triggerPrice: 55000,
+    requestedTenorDays: 3,
+    tenorMinDays: 1,
+    tenorMaxDays: 7,
+    hedgePolicy: "options_primary_futures_fallback"
+  });
+  assert.equal(String(quote.details?.selectionAlgorithm), "tenor_quality_v1");
+  assert.equal(Number(quote.details?.conId), 11111);
+  assert.equal(typeof quote.details?.selectedScore, "number");
+  assert.equal(Array.isArray(quote.details?.selectionTrace), true);
+  assert.ok((quote.details?.selectionTrace as Array<unknown>).length >= 1);
   global.fetch = originalFetch;
 });
 

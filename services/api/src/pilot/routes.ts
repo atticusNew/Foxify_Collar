@@ -908,6 +908,40 @@ export const registerPilotRoutes = async (
               quote.details && typeof (quote.details as Record<string, unknown>).selectedExpiry === "string"
                 ? String((quote.details as Record<string, unknown>).selectedExpiry)
                 : null,
+            selectionAlgorithm:
+              quote.details && typeof (quote.details as Record<string, unknown>).selectionAlgorithm === "string"
+                ? String((quote.details as Record<string, unknown>).selectionAlgorithm)
+                : null,
+            candidateCountEvaluated:
+              quote.details &&
+              Number.isFinite(Number((quote.details as Record<string, unknown>).candidateCountEvaluated))
+                ? Number((quote.details as Record<string, unknown>).candidateCountEvaluated)
+                : null,
+            selectedScore:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedScore))
+                ? Number((quote.details as Record<string, unknown>).selectedScore)
+                : null,
+            selectedRank:
+              quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedRank))
+                ? Number((quote.details as Record<string, unknown>).selectedRank)
+                : null,
+            selectedIsBelowTarget:
+              quote.details && typeof (quote.details as Record<string, unknown>).selectedIsBelowTarget === "boolean"
+                ? Boolean((quote.details as Record<string, unknown>).selectedIsBelowTarget)
+                : null,
+            matchedTenorHoursEstimate:
+              quote.details &&
+              Number.isFinite(Number((quote.details as Record<string, unknown>).matchedTenorHoursEstimate))
+                ? Number((quote.details as Record<string, unknown>).matchedTenorHoursEstimate).toFixed(4)
+                : null,
+            matchedTenorDisplay:
+              quote.details && typeof (quote.details as Record<string, unknown>).matchedTenorDisplay === "string"
+                ? String((quote.details as Record<string, unknown>).matchedTenorDisplay)
+                : null,
+            selectionTrace:
+              quote.details && Array.isArray((quote.details as Record<string, unknown>).selectionTrace)
+                ? (quote.details as Record<string, unknown>).selectionTrace
+                : null,
             hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined)
           }
         }
