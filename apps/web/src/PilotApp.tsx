@@ -166,6 +166,8 @@ const DEFAULT_TIERS: TierLevel[] = [
   { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
   { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
 ];
+const PILOT_ENABLED_TENOR_DAYS = [1, 2, 4] as const;
+const PILOT_DEFAULT_TENOR_DAYS = 2;
 
 const formatPct = (value: number | string | null | undefined): string => {
   const parsed = Number(value ?? 0);
@@ -335,7 +337,7 @@ export function PilotApp() {
   const [exposureNotional, setExposureNotional] = useState("");
   const [protectedNotional, setProtectedNotional] = useState("");
   const [autoRenew, setAutoRenew] = useState(false);
-  const [selectedTenorDays, setSelectedTenorDays] = useState<number>(7);
+  const [selectedTenorDays, setSelectedTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -456,6 +458,12 @@ export function PilotApp() {
     exposureNotional,
     protectedNotional
   ]);
+
+  useEffect(() => {
+    if (!PILOT_ENABLED_TENOR_DAYS.includes(selectedTenorDays as (typeof PILOT_ENABLED_TENOR_DAYS)[number])) {
+      setSelectedTenorDays(PILOT_DEFAULT_TENOR_DAYS);
+    }
+  }, [selectedTenorDays]);
 
   useEffect(() => {
     setTermsError(null);
@@ -1373,21 +1381,26 @@ export function PilotApp() {
             <div className="pilot-form-row">
               <span className="pilot-label">Tenor (days)</span>
               <div className="pilot-field">
-                <input
-                  className="input pilot-input"
-                  type="number"
-                  min={1}
-                  max={7}
-                  step={1}
+                <select
+                  className="input pilot-input pilot-select"
                   value={selectedTenorDays}
                   disabled={busy || quoteLocked}
                   onChange={(e) => {
                     const next = Number(e.target.value);
-                    if (Number.isFinite(next)) {
-                      setSelectedTenorDays(Math.max(1, Math.min(7, Math.floor(next))));
+                    if (
+                      Number.isFinite(next) &&
+                      PILOT_ENABLED_TENOR_DAYS.includes(next as (typeof PILOT_ENABLED_TENOR_DAYS)[number])
+                    ) {
+                      setSelectedTenorDays(next);
                     }
                   }}
-                />
+                >
+                  {PILOT_ENABLED_TENOR_DAYS.map((tenorDay) => (
+                    <option key={tenorDay} value={tenorDay}>
+                      {tenorDay}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
