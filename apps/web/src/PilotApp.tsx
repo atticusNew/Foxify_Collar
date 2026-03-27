@@ -535,7 +535,7 @@ export function PilotApp() {
           ? payload.selection!.enabledTenorsDays.filter((n) => Number.isFinite(Number(n)) && Number(n) > 0)
           : [];
         const fallbackEnabled = [...PILOT_ENABLED_TENOR_DAYS];
-        const nextEnabled = enabled.length > 0 ? enabled : fallbackEnabled;
+        const nextEnabled = (enabled.length > 0 ? enabled : fallbackEnabled).slice().sort((a, b) => a - b);
         const nextDefault =
           Number(payload.selection?.defaultTenorDays) > 0 &&
           nextEnabled.includes(Number(payload.selection?.defaultTenorDays))
@@ -1545,27 +1545,31 @@ export function PilotApp() {
             <div className="pilot-form-row">
               <span className="pilot-label">Target Horizon</span>
               <div className="pilot-field pilot-tenor-field">
-                <div className="pilot-tenor-chips" role="group" aria-label="Target Horizon">
+                <div
+                  className={`pilot-tenor-chips ${enabledTenorDays.length === 1 ? "pilot-tenor-chips-single" : ""}`}
+                  role="group"
+                  aria-label="Target Horizon"
+                >
                   {enabledTenorDays.map((tenorDay) => {
                     const selected = selectedTenorDays === tenorDay;
+                    const recommended = tenorDay === defaultTenorDays;
                     return (
                       <button
                         key={tenorDay}
                         type="button"
-                        className={`pilot-tenor-chip ${selected ? "active" : ""}`}
+                        className={`pilot-tenor-chip ${selected ? "active" : ""} ${recommended ? "recommended" : ""}`}
                         aria-pressed={selected}
                         disabled={busy || quoteLocked}
                         onClick={() => setSelectedTenorDays(tenorDay)}
                       >
-                        {tenorDay}D
-                        {tenorDay === defaultTenorDays && (
-                          <span className="pilot-tenor-chip-tag">Recommended</span>
-                        )}
+                        {tenorDay}-Day
                       </button>
                     );
                   })}
                 </div>
-                <div className="muted pilot-tenor-helper">Final matched expiry depends on live liquidity.</div>
+                <div className="muted pilot-tenor-helper">
+                  Recommended horizon: {defaultTenorDays}-Day. Final matched expiry depends on live liquidity.
+                </div>
               </div>
             </div>
 
