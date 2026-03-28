@@ -1356,7 +1356,10 @@ export function PilotApp() {
                   <li>
                     Daily protected notional limit is 50,000 USDC for pilot operations and resets at 00:00 UTC each calendar day.
                   </li>
-                  <li>Each protection uses a fixed 7-day tenor. Auto-renew may be enabled and remains subject to these terms.</li>
+                  <li>
+                    Protection tenor is requested per quote, and matched expiry may differ based on live venue liquidity
+                    and policy controls. Auto-renew may be enabled and remains subject to these terms.
+                  </li>
                   <li>
                     The pilot campaign runs for a maximum of 30 days from the official UTC start date configured by
                     Atticus Operations.

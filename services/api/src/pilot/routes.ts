@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
-import { DeribitConnector } from "@foxify/connectors";
+import { DeribitConnector, IbkrConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow } from "./config";
 import {
@@ -52,6 +52,21 @@ import type {
 const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_native" | "futures_synthetic" => {
   const raw = String(quoteDetails?.hedgeMode || "");
   return raw === "futures_synthetic" ? "futures_synthetic" : "options_native";
+};
+
+const resolveTenorReason = (params: {
+  requestedTenorDays: number;
+  venueRequestedTenorDays: number;
+  selectedTenorDays: number | null;
+  policyFallbackApplied: boolean;
+  policyFallbackReason: string | null;
+}): "tenor_exact" | "tenor_within_2d" | "tenor_fallback_policy" | "tenor_fallback_liquidity" => {
+  const selected = params.selectedTenorDays ?? params.venueRequestedTenorDays;
+  const drift = Math.abs(selected - params.requestedTenorDays);
+  if (drift <= 0.5) return "tenor_exact";
+  if (drift <= 2) return "tenor_within_2d";
+  if (params.policyFallbackApplied || Boolean(params.policyFallbackReason)) return "tenor_fallback_policy";
+  return "tenor_fallback_liquidity";
 };
 
 const getRequestIp = (req: FastifyRequest): string => {
@@ -390,6 +405,7 @@ const sanitizeQuoteForClient = (quote: {
     "strikeGapToTriggerPct",
     "selectedTenorDays",
     "tenorDriftDays",
+    "tenorReason",
     "deribitQuotePolicy",
     "strikeSelectionMode",
     "hedgeMode"
@@ -426,6 +442,44 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: str
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+};
+
+const resolvePilotVenueHealth = async (): Promise<Record<string, unknown>> => {
+  if (!String(pilotConfig.venueMode || "").startsWith("ibkr_")) {
+    return {
+      mode: pilotConfig.venueMode,
+      status: "not_applicable"
+    };
+  }
+  const connector = new IbkrConnector({
+    baseUrl: pilotConfig.ibkrBridgeBaseUrl,
+    timeoutMs: pilotConfig.ibkrBridgeTimeoutMs,
+    auth: {
+      token: pilotConfig.ibkrBridgeToken
+    }
+  });
+  try {
+    const health = await withTimeout(
+      connector.getHealth(),
+      Math.max(500, Number(pilotConfig.ibkrBridgeTimeoutMs || 0)),
+      "ibkr_bridge_health"
+    );
+    return {
+      mode: pilotConfig.venueMode,
+      status: "ok",
+      transport: String((health as any)?.transport || "unknown"),
+      activeTransport: String((health as any)?.activeTransport || "unknown"),
+      session: String((health as any)?.session || "unknown"),
+      fallbackEnabled: Boolean((health as any)?.fallbackEnabled),
+      asOf: String((health as any)?.asOf || "")
+    };
+  } catch (error: any) {
+    return {
+      mode: pilotConfig.venueMode,
+      status: "degraded",
+      detail: String(error?.message || "ibkr_bridge_health_failed")
+    };
   }
 };
 
@@ -822,6 +876,78 @@ export const registerPilotRoutes = async (
     }
   });
 
+  app.get("/pilot/health", async (_req, reply) => {
+    const requestId = pilotConfig.nextRequestId();
+    let db: Record<string, unknown>;
+    try {
+      await withTimeout(pool.query("SELECT 1"), 2000, "db_health");
+      db = { status: "ok" };
+    } catch (error: any) {
+      db = {
+        status: "degraded",
+        detail: String(error?.message || "db_health_failed")
+      };
+    }
+
+    let price: Record<string, unknown>;
+    try {
+      const snapshot = await withTimeout(
+        resolvePriceSnapshot(
+          {
+            primaryUrl: pilotConfig.referencePriceUrl,
+            fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+            primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+            fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+            freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+            requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+            requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
+          },
+          {
+            marketId: pilotConfig.referenceMarketId || "BTC-USD",
+            now: new Date(),
+            requestId,
+            endpointVersion: pilotConfig.endpointVersion
+          }
+        ),
+        Math.max(
+          1000,
+          Math.max(
+            Number(pilotConfig.pricePrimaryTimeoutMs || 0),
+            Number(pilotConfig.priceFallbackTimeoutMs || 0)
+          ) + 1000
+        ),
+        "price_health"
+      );
+      price = {
+        status: "ok",
+        marketId: snapshot.marketId,
+        source: snapshot.priceSource,
+        timestamp: snapshot.priceTimestamp
+      };
+    } catch (error: any) {
+      price = {
+        status: "degraded",
+        detail: String(error?.message || "price_health_failed")
+      };
+    }
+
+    const venue = await resolvePilotVenueHealth();
+    const overallOk =
+      db.status === "ok" &&
+      price.status === "ok" &&
+      (venue.status === "ok" || venue.status === "not_applicable");
+    reply.code(overallOk ? 200 : 503);
+    return {
+      status: overallOk ? "ok" : "degraded",
+      requestId,
+      checks: {
+        db,
+        price,
+        venue
+      }
+    };
+  });
+
   app.get("/pilot/tenor-policy", async (_req, reply) => {
     try {
       const policy = await resolveDynamicTenorPolicy({
@@ -1013,6 +1139,17 @@ export const registerPilotRoutes = async (
         "venue_quote"
       );
       venueMs = Date.now() - venueStartedAt;
+      const selectedTenorDaysRaw =
+        quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
+          ? Number((quote.details as Record<string, unknown>).selectedTenorDays)
+          : null;
+      const tenorReason = resolveTenorReason({
+        requestedTenorDays,
+        venueRequestedTenorDays,
+        selectedTenorDays: selectedTenorDaysRaw,
+        policyFallbackApplied: tenorPolicyFallbackApplied,
+        policyFallbackReason: tenorPolicyFallbackReason
+      });
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
@@ -1043,6 +1180,7 @@ export const registerPilotRoutes = async (
         ...quote,
         details: {
           ...(quote.details || {}),
+          tenorReason,
           pricingBreakdown,
           lockContext: {
             requestedInstrumentId: quoteInstrumentId,
@@ -1088,6 +1226,7 @@ export const registerPilotRoutes = async (
               quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
                 ? Number((quote.details as Record<string, unknown>).selectedTenorDays).toFixed(10)
                 : null,
+            tenorReason,
             selectedExpiry:
               quote.details && typeof (quote.details as Record<string, unknown>).selectedExpiry === "string"
                 ? String((quote.details as Record<string, unknown>).selectedExpiry)
@@ -1112,6 +1251,10 @@ export const registerPilotRoutes = async (
       });
       const clientQuote = sanitizeQuoteForClient({
         ...quote,
+        details: {
+          ...(quote.details || {}),
+          tenorReason
+        },
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4)),
       });
       return {
@@ -1197,6 +1340,7 @@ export const registerPilotRoutes = async (
               quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
                 ? Number((quote.details as Record<string, unknown>).selectedTenorDays).toFixed(10)
                 : null,
+            tenorReason,
             selectedExpiry:
               quote.details && typeof (quote.details as Record<string, unknown>).selectedExpiry === "string"
                 ? String((quote.details as Record<string, unknown>).selectedExpiry)
@@ -1244,11 +1388,19 @@ export const registerPilotRoutes = async (
       const isTransportNotLive = message.startsWith("ibkr_transport_not_live");
       const isTenorDriftExceeded = message.includes("tenor_drift_exceeded");
       const isTenorTemporarilyUnavailable = message.includes("tenor_temporarily_unavailable");
+      const isNoTopOfBook = message.includes("no_top_of_book");
+      const isNoContract = message.includes("no_contract");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
       const isStorageFailure =
         message.includes("postgres") || message.includes("ECONN") || message.includes("pool") || message.includes("db");
       reply.code(
-        isTimeout ? 504 : isStorageFailure || isTransportNotLive ? 503 : isTenorTemporarilyUnavailable ? 409 : 502
+        isTimeout
+          ? 504
+          : isStorageFailure || isTransportNotLive || isNoTopOfBook || isNoContract
+            ? 503
+            : isTenorTemporarilyUnavailable || isTenorDriftExceeded
+              ? 409
+              : 502
       );
       return {
         status: "error",
@@ -1258,6 +1410,10 @@ export const registerPilotRoutes = async (
             ? "ibkr_transport_not_live"
             : isTenorTemporarilyUnavailable
               ? "tenor_temporarily_unavailable"
+            : isNoTopOfBook
+              ? "quote_liquidity_unavailable"
+            : isNoContract
+              ? "quote_contract_unavailable"
             : isTenorDriftExceeded
               ? "tenor_drift_exceeded"
             : "quote_generation_failed",
@@ -1267,6 +1423,10 @@ export const registerPilotRoutes = async (
             ? "IBKR live transport is not active. Verify bridge transport health and retry."
             : isTenorTemporarilyUnavailable
               ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
+            : isNoTopOfBook
+              ? "Venue top-of-book is temporarily unavailable for the requested hedge. Please retry."
+            : isNoContract
+              ? "No venue contract is currently available for the requested hedge. Please retry."
             : isTenorDriftExceeded
               ? "No IBKR contract matched the requested tenor within configured drift."
           : "Unable to generate a venue quote right now. Please retry.",
