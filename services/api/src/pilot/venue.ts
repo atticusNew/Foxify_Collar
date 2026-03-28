@@ -796,6 +796,25 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           if (timer) clearTimeout(timer);
         }
       };
+      const withDepthProbeBudget = async (
+        promise: Promise<{
+          bids?: Array<{ price?: unknown; size?: unknown }>;
+          asks?: Array<{ price?: unknown; size?: unknown }>;
+          asOf?: unknown;
+        }>
+      ): Promise<{
+        bids?: Array<{ price?: unknown; size?: unknown }>;
+        asks?: Array<{ price?: unknown; size?: unknown }>;
+        asOf?: unknown;
+      } | null> => {
+        // Depth snapshots are often slower than top-of-book on IBKR; allow a bounded
+        // extension for depth probes so futures fallback can succeed when top is null.
+        const depthTimeoutMs = Math.max(
+          probeTimeoutMs,
+          Math.min(12000, Math.floor(probeTimeoutMs * 2))
+        );
+        return await withProbeTimeout(promise, depthTimeoutMs);
+      };
       const preferred = this.preferTenorAtOrAbove
         ? eligible.filter((contract) => {
             const tenor = contractTenorMeta(contract).selectedTenorDays;
@@ -855,9 +874,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             }
             ensureLegBudget(Math.min(probeTimeoutMs + 200, 700));
             try {
-              const depth = await withProbeTimeout(
-                this.connector.getDepth(contract.conId),
-                probeTimeoutMs
+              const depth = await withDepthProbeBudget(
+                this.connector.getDepth(contract.conId)
               );
               const depthTop = depth ? topFromDepthPayload(depth) : null;
               if (depthTop && hasUsableTop(depthTop)) {
@@ -991,7 +1009,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         maxPreferred: 4,
         maxBelow: 2,
         depthAttempts: 2,
-        probeTimeoutMs: Math.max(700, Math.min(2200, requestWindowHintMs))
+        probeTimeoutMs: Math.max(1200, Math.min(4500, requestWindowHintMs)),
+        legBudgetMs: Math.max(6000, Math.min(30000, Math.floor(this.quoteBudgetMs * 0.8)))
       });
       if (futMatch) {
         const futMeta = contractTenorMeta(futMatch.contract);
