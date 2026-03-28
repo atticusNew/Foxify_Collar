@@ -722,7 +722,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       return String(a.expiry || "").localeCompare(String(b.expiry || ""));
     };
     const pickContractWithTop = async (
-      contracts: IbkrQualifiedContract[]
+      contracts: IbkrQualifiedContract[],
+      opts?: {
+        maxPreferred?: number;
+        maxBelow?: number;
+        depthAttempts?: number;
+        probeTimeoutMs?: number;
+        legBudgetMs?: number;
+      }
     ): Promise<
       | {
           contract: IbkrQualifiedContract;
@@ -752,6 +759,43 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         .sort(rankByTenor);
       // Keep shortlist compact and probe in-ranked order to reduce market-data fanout,
       // which is especially important when bridge latency is non-trivial (e.g. ngrok/private tunnel).
+      const maxPreferred = Math.max(1, Math.floor(Number(opts?.maxPreferred ?? 3)));
+      const maxBelow = Math.max(0, Math.floor(Number(opts?.maxBelow ?? 1)));
+      const depthAttempts = Math.max(1, Math.min(3, Math.floor(Number(opts?.depthAttempts ?? 2))));
+      const probeTimeoutMs = Math.max(
+        350,
+        Math.min(
+          2500,
+          Math.floor(Number(opts?.probeTimeoutMs ?? Math.max(450, Math.min(1800, requestWindowHintMs))))
+        )
+      );
+      const legBudgetMs = Number.isFinite(Number(opts?.legBudgetMs))
+        ? Math.max(probeTimeoutMs + 300, Math.floor(Number(opts?.legBudgetMs)))
+        : null;
+      const legDeadlineMs = legBudgetMs !== null ? Date.now() + legBudgetMs : null;
+      const ensureLegBudget = (minimumRemainingMs = 0): void => {
+        ensureBudget(minimumRemainingMs);
+        if (legDeadlineMs === null) return;
+        if (Date.now() + Math.max(0, minimumRemainingMs) >= legDeadlineMs) {
+          throw new Error("venue_quote_timeout");
+        }
+      };
+      const withProbeTimeout = async <T>(
+        promise: Promise<T>,
+        timeoutMs: number
+      ): Promise<T | null> => {
+        let timer: NodeJS.Timeout | null = null;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => resolve(null), timeoutMs);
+            })
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
       const preferred = this.preferTenorAtOrAbove
         ? eligible.filter((contract) => {
             const tenor = contractTenorMeta(contract).selectedTenorDays;
@@ -765,8 +809,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           })
         : [];
       const shortlisted = [
-        ...preferred.slice(0, 4),
-        ...belowTarget.slice(0, 2)
+        ...preferred.slice(0, maxPreferred),
+        ...belowTarget.slice(0, maxBelow)
       ].filter((contract, idx, arr) => arr.findIndex((x) => x.conId === contract.conId) === idx);
       if (shortlisted.length === 0) return null;
 
@@ -783,7 +827,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }> = [];
 
       for (const contract of shortlisted) {
-        ensureBudget(requestWindowHintMs);
+        ensureLegBudget(probeTimeoutMs + 250);
         const tenorMeta = contractTenorMeta(contract);
         const belowTargetCandidate =
           tenorMeta.selectedTenorDays !== null ? tenorMeta.selectedTenorDays + 1e-9 < selectedTenorDaysIntended : false;
@@ -792,8 +836,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           | null = null;
 
         try {
-          const top = await this.connector.getTopOfBook(contract.conId);
-          if (hasUsableTop(top)) {
+          const top = await withProbeTimeout(
+            this.connector.getTopOfBook(contract.conId),
+            probeTimeoutMs
+          );
+          if (top && hasUsableTop(top)) {
             chosenTop = top;
           }
         } catch {
@@ -802,15 +849,18 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
 
         if (!chosenTop) {
           // Retry depth once because snapshot/top and depth can arrive out-of-phase on IB.
-          for (let depthAttempt = 0; depthAttempt < 2; depthAttempt += 1) {
+          for (let depthAttempt = 0; depthAttempt < depthAttempts; depthAttempt += 1) {
             if (depthAttempt > 0) {
               await wait(220);
             }
-            ensureBudget(Math.min(requestWindowHintMs, 450));
+            ensureLegBudget(Math.min(probeTimeoutMs + 200, 700));
             try {
-              const depth = await this.connector.getDepth(contract.conId);
-              const depthTop = topFromDepthPayload(depth);
-              if (hasUsableTop(depthTop)) {
+              const depth = await withProbeTimeout(
+                this.connector.getDepth(contract.conId),
+                probeTimeoutMs
+              );
+              const depthTop = depth ? topFromDepthPayload(depth) : null;
+              if (depthTop && hasUsableTop(depthTop)) {
                 chosenTop = depthTop;
                 break;
               }
@@ -879,7 +929,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     let sawTenorEligibleContract = false;
     if (hedgePolicy === "options_primary_futures_fallback") {
       if (roundedStrike) {
-        ensureBudget(requestWindowHintMs);
+        ensureBudget(Math.min(requestWindowHintMs, 1800));
         const optionQuery: IbkrContractQuery = {
           kind: "mbt_option",
           symbol: "BTC",
@@ -891,7 +941,15 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         };
         const optionContracts = await this.connector.qualifyContracts(optionQuery);
         sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
-        const optionMatch = await pickContractWithTop(optionContracts);
+        const optionMatch = await pickContractWithTop(optionContracts, {
+          // Keep option probing narrow so an empty options book does not consume
+          // the full quote budget before futures fallback is attempted.
+          maxPreferred: 2,
+          maxBelow: 1,
+          depthAttempts: 1,
+          probeTimeoutMs: Math.max(500, Math.min(1400, requestWindowHintMs)),
+          legBudgetMs: Math.max(1800, Math.min(6500, Math.floor(this.quoteBudgetMs * 0.33)))
+        });
         if (optionMatch) {
           const optionMeta = contractTenorMeta(optionMatch.contract);
           return {
@@ -929,7 +987,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       };
       const futContracts = await this.connector.qualifyContracts(futQuery);
       sawTenorEligibleContract ||= futContracts.some(contractPassesTenorPolicy);
-      const futMatch = await pickContractWithTop(futContracts);
+      const futMatch = await pickContractWithTop(futContracts, {
+        maxPreferred: 4,
+        maxBelow: 2,
+        depthAttempts: 2,
+        probeTimeoutMs: Math.max(700, Math.min(2200, requestWindowHintMs))
+      });
       if (futMatch) {
         const futMeta = contractTenorMeta(futMatch.contract);
         return {

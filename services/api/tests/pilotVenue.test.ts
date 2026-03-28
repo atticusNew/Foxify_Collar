@@ -742,6 +742,144 @@ test("ibkr_cme_paper falls back to futures when option order books are unusable"
   global.fetch = originalFetch;
 });
 
+test("ibkr_cme_paper falls back quickly when options leg is slow and unusable", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.kind === "mbt_option") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 11111,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P55000",
+                  expiry: "20260330",
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            contracts: [
+              {
+                conId: 22222,
+                secType: "FUT",
+                localSymbol: "MBTH6",
+                expiry: "20260331",
+                multiplier: "0.1",
+                minTick: 5
+              }
+            ]
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.conId === 11111) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: null,
+              ask: null,
+              bidSize: null,
+              askSize: null,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: 95,
+            ask: 96,
+            bidSize: 4,
+            askSize: 6,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/depth")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.conId === 11111) {
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        return {
+          ok: true,
+          text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bids: [{ level: 0, price: 95, size: 4 }],
+            asks: [{ level: 0, price: 96, size: 6 }],
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  const adapter = createPilotVenueAdapter({
+    mode: "ibkr_cme_paper",
+    falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+    deribit: {} as any,
+    ibkr: {
+      bridgeBaseUrl: "http://127.0.0.1:18080",
+      bridgeTimeoutMs: 2000,
+      bridgeToken: "",
+      accountId: "DU123456",
+      enableExecution: false,
+      orderTimeoutMs: 2000,
+      maxRepriceSteps: 3,
+      repriceStepTicks: 1,
+      maxSlippageBps: 25,
+      requireLiveTransport: false,
+      maxTenorDriftDays: 7,
+      preferTenorAtOrAbove: true,
+      orderTif: "IOC"
+    },
+    ibkrQuoteBudgetMs: 9000
+  });
+  const started = Date.now();
+  const quote = await adapter.quote({
+    marketId: "BTC-USD",
+    instrumentId: "BTC-USD-3D-P",
+    protectedNotional: 10000,
+    quantity: 0.2,
+    side: "buy",
+    protectionType: "long",
+    triggerPrice: 55000,
+    requestedTenorDays: 3,
+    tenorMinDays: 1,
+    tenorMaxDays: 7,
+    hedgePolicy: "options_primary_futures_fallback"
+  });
+  const elapsedMs = Date.now() - started;
+  assert.equal(String(quote.details?.hedgeMode), "futures_synthetic");
+  assert.ok(elapsedMs < 7000, `expected fast fallback, got ${elapsedMs}ms`);
+  global.fetch = originalFetch;
+});
+
 test("ibkr_cme_paper execution disabled yields failure status", async () => {
   const adapter = createPilotVenueAdapter({
     mode: "ibkr_cme_paper",
