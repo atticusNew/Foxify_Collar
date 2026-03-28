@@ -573,8 +573,6 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 }
 
 class IbkrCmeAdapter implements PilotVenueAdapter {
-  private transportVerified = false;
-
   constructor(
     private connector: IbkrConnector,
     private mode: "ibkr_cme_live" | "ibkr_cme_paper",
@@ -598,9 +596,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
   }
 
   private async ensureRequiredLiveTransport(): Promise<void> {
-    if (!this.requireLiveTransport || this.transportVerified) return;
+    if (!this.requireLiveTransport) return;
     await this.connector.assertLiveTransportRequired();
-    this.transportVerified = true;
   }
 
   private async resolveContractAndBook(req: QuoteRequest): Promise<{
