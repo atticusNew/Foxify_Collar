@@ -647,6 +647,20 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
     const right = this.resolveRight(req.protectionType);
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
+    const optionStrikeCandidates = (baseStrike: number, optionRight: "P" | "C"): number[] => {
+      const step = 500;
+      // Prefer slightly more protective strikes first before widening symmetrically.
+      const offsetSteps = optionRight === "P" ? [0, 1, -1, 2, -2, 3, -3] : [0, -1, 1, -2, 2, -3, 3];
+      const seen = new Set<number>();
+      const ladder: number[] = [];
+      for (const offset of offsetSteps) {
+        const strike = Math.max(1000, baseStrike + offset * step);
+        if (seen.has(strike)) continue;
+        seen.add(strike);
+        ladder.push(strike);
+      }
+      return ladder;
+    };
     // Buy-side quote reliability requires an executable ask. Bid-only books are treated
     // as non-actionable and should continue searching/fallback.
     const hasUsableTop = (top: { ask: number | null; bid: number | null }): boolean =>
@@ -1040,9 +1054,46 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         hedgeInstrumentFamily: productFamily
       };
     };
-    if (hedgePolicy === "options_primary_futures_fallback") {
-      if (roundedStrike) {
-        ensureBudget(Math.min(requestWindowHintMs, 1800));
+    const runOptionLeg = async (
+      productFamily: "MBT" | "BFF",
+      reason: "best_tenor_liquidity_option" | "primary_options_unavailable_secondary_options_fallback"
+    ): Promise<{
+      contract: IbkrQualifiedContract;
+      hedgeMode: "options_native";
+      top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+      requestedTenorDays: number;
+      selectedTenorDays: number | null;
+      tenorDriftDays: number | null;
+      selectedExpiry: string | null;
+      selectionReason: string;
+      selectionAlgorithm: string;
+      selectedScore: number | null;
+      selectedRank: number | null;
+      selectedIsBelowTarget: boolean | null;
+      candidateCountEvaluated: number;
+      matchedTenorHoursEstimate: number | null;
+      matchedTenorDisplay: string | null;
+      selectionTrace: Array<{
+        conId: number;
+        expiry: string | null;
+        matchedTenorDays: number | null;
+        driftDays: number | null;
+        ask: number | null;
+        bid: number | null;
+        askSize: number | null;
+        spreadPct: number | null;
+        belowTarget: boolean;
+        score: number;
+      }>;
+      strike: number | null;
+      hedgeInstrumentFamily: "MBT" | "BFF";
+    } | null> => {
+      if (!roundedStrike) return null;
+      const strikeCandidates = optionStrikeCandidates(roundedStrike, right);
+      const dedupedContracts: IbkrQualifiedContract[] = [];
+      const seenConIds = new Set<number>();
+      for (const strikeCandidate of strikeCandidates) {
+        ensureBudget(Math.min(requestWindowHintMs, 1400));
         const optionQuery: IbkrContractQuery = queryWithProductFamily(
           {
             kind: "mbt_option",
@@ -1051,46 +1102,66 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             currency: "USD",
             tenorDays: selectedTenorDays,
             right,
-            strike: roundedStrike
+            strike: strikeCandidate
           },
-          this.primaryProductFamily
+          productFamily
         );
         const optionContracts = await this.connector.qualifyContracts(optionQuery);
         sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
-        const optionMatch = await pickContractWithTop(optionContracts, {
-          // Keep option probing narrow so an empty options book does not consume
-          // the full quote budget before futures fallback is attempted.
-          maxPreferred: 2,
-          maxBelow: 1,
-          depthAttempts: 1,
-          probeTimeoutMs: Math.max(500, Math.min(1400, requestWindowHintMs)),
-          legBudgetMs: Math.max(1800, Math.min(6500, Math.floor(this.quoteBudgetMs * 0.33)))
-        });
-        if (optionMatch) {
-          const optionMeta = contractTenorMeta(optionMatch.contract);
-          return {
-            contract: optionMatch.contract,
-            hedgeMode: "options_native",
-            top: optionMatch.top,
-            requestedTenorDays: selectedTenorDaysIntended,
-            selectedTenorDays: optionMeta.selectedTenorDays,
-            tenorDriftDays: optionMeta.tenorDriftDays,
-            selectedExpiry: String(optionMatch.contract.expiry || "") || null,
-            selectionReason: "best_tenor_liquidity_option",
-            selectionAlgorithm: "tenor_quality_v1",
-            selectedScore: optionMatch.selectedScore,
-            selectedRank: optionMatch.selectedRank,
-            selectedIsBelowTarget: optionMatch.selectedIsBelowTarget,
-            candidateCountEvaluated: optionMatch.candidateCountEvaluated,
-            matchedTenorHoursEstimate:
-              optionMeta.selectedTenorDays !== null
-                ? Number((optionMeta.selectedTenorDays * 24).toFixed(4))
-                : null,
-            matchedTenorDisplay: formatMatchedTenorDisplay(optionMeta.selectedTenorDays),
-            selectionTrace: optionMatch.selectionTrace,
-            strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike,
-            hedgeInstrumentFamily: this.primaryProductFamily
-          };
+        for (const contract of optionContracts) {
+          if (seenConIds.has(contract.conId)) continue;
+          seenConIds.add(contract.conId);
+          dedupedContracts.push(contract);
+        }
+      }
+      const optionMatch = await pickContractWithTop(dedupedContracts, {
+        // Keep option probing bounded so fallback legs still have remaining budget.
+        maxPreferred: 3,
+        maxBelow: 1,
+        depthAttempts: 1,
+        probeTimeoutMs: Math.max(500, Math.min(1400, requestWindowHintMs)),
+        legBudgetMs: Math.max(2400, Math.min(8500, Math.floor(this.quoteBudgetMs * 0.4)))
+      });
+      if (!optionMatch) return null;
+      const optionMeta = contractTenorMeta(optionMatch.contract);
+      return {
+        contract: optionMatch.contract,
+        hedgeMode: "options_native",
+        top: optionMatch.top,
+        requestedTenorDays: selectedTenorDaysIntended,
+        selectedTenorDays: optionMeta.selectedTenorDays,
+        tenorDriftDays: optionMeta.tenorDriftDays,
+        selectedExpiry: String(optionMatch.contract.expiry || "") || null,
+        selectionReason: reason,
+        selectionAlgorithm: "tenor_quality_v1",
+        selectedScore: optionMatch.selectedScore,
+        selectedRank: optionMatch.selectedRank,
+        selectedIsBelowTarget: optionMatch.selectedIsBelowTarget,
+        candidateCountEvaluated: optionMatch.candidateCountEvaluated,
+        matchedTenorHoursEstimate:
+          optionMeta.selectedTenorDays !== null ? Number((optionMeta.selectedTenorDays * 24).toFixed(4)) : null,
+        matchedTenorDisplay: formatMatchedTenorDisplay(optionMeta.selectedTenorDays),
+        selectionTrace: optionMatch.selectionTrace,
+        strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike,
+        hedgeInstrumentFamily: productFamily
+      };
+    };
+    if (hedgePolicy === "options_primary_futures_fallback") {
+      const allowBffFallback =
+        this.enableBffFallback &&
+        this.primaryProductFamily !== this.bffProductFamily &&
+        this.bffProductFamily === "BFF";
+      const primaryOptions = await runOptionLeg(this.primaryProductFamily, "best_tenor_liquidity_option");
+      if (primaryOptions) {
+        return primaryOptions;
+      }
+      if (allowBffFallback) {
+        const secondaryOptions = await runOptionLeg(
+          this.bffProductFamily,
+          "primary_options_unavailable_secondary_options_fallback"
+        );
+        if (secondaryOptions) {
+          return secondaryOptions;
         }
       }
 
@@ -1102,10 +1173,6 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         return primaryFallback;
       }
 
-      const allowBffFallback =
-        this.enableBffFallback &&
-        this.primaryProductFamily !== this.bffProductFamily &&
-        this.bffProductFamily === "BFF";
       if (allowBffFallback) {
         const bffFallback = await runFallbackLeg(
           this.bffProductFamily,
