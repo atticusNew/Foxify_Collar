@@ -793,11 +793,10 @@ export class IbGatewayClient {
   private async getTopOfBookIb(conId: number): Promise<BridgeTopOfBook> {
     const ib = await this.requireIb();
     const reqId = this.nextRequestId();
-    const contract: Contract = {
-      conId,
-      exchange: "CME",
-      currency: "USD"
-    };
+    // Use conId-only lookup to avoid over-constraining exchange routing.
+    // Qualified contracts may resolve under CME aliases (e.g. CMECRYPTO/GLOBEX),
+    // and forcing exchange="CME" can trigger false "no security definition" errors.
+    const contract: Contract = { conId };
 
     const snapshot = await new Promise<BridgeTopOfBook>((resolve, reject) => {
       const timeoutMs = Math.max(1000, Math.floor(this.config.requestTimeoutMs || 0));
@@ -869,11 +868,8 @@ export class IbGatewayClient {
   private async getDepthIb(conId: number): Promise<BridgeDepth> {
     const ib = await this.requireIb();
     const reqId = this.nextRequestId();
-    const contract: Contract = {
-      conId,
-      exchange: "CME",
-      currency: "USD"
-    };
+    // Use conId-only lookup to avoid exchange alias mismatches on depth requests.
+    const contract: Contract = { conId };
     const bidsByLevel = new Map<number, DepthRow>();
     const asksByLevel = new Map<number, DepthRow>();
 
@@ -967,11 +963,8 @@ export class IbGatewayClient {
       lastUpdateAt: nowIso()
     });
 
-    const contract: Contract = {
-      conId: req.conId,
-      exchange: "CME",
-      currency: "USD"
-    };
+    // Use conId-only lookup so orders route using IB's canonical contract mapping.
+    const contract: Contract = { conId: req.conId };
     ib.placeOrder(orderId, contract, {
       orderId,
       action: req.side as OrderAction,
