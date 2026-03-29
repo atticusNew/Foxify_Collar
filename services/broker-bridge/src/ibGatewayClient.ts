@@ -612,6 +612,16 @@ export class IbGatewayClient {
     const ib = await this.requireIb();
     const fallbackExpiry = buildMbtExpiry(query.tenorDays);
     const productSymbol = resolveProductSymbol(query.productFamily);
+    const symbolCandidates = Array.from(
+      new Set(
+        [productSymbol, String(query.symbol || "").trim().toUpperCase()]
+          .map((item) => String(item || "").trim().toUpperCase())
+          .filter(Boolean)
+      )
+    );
+    if (!symbolCandidates.length) {
+      symbolCandidates.push(productSymbol);
+    }
     const exchangeCandidates = Array.from(
       new Set(
         [query.exchange, ...this.config.contractExchangeAliases]
@@ -676,43 +686,45 @@ export class IbGatewayClient {
 
     const resolvedDetails: ContractDetails[] = [];
     for (const exchange of exchangeCandidates) {
-      if (query.kind === "mbt_option") {
-        const optionContractWithExactExpiry: Contract = {
-          secType: SecType.FOP,
-          symbol: productSymbol,
-          exchange,
-          currency: query.currency,
-          lastTradeDateOrContractMonth: fallbackExpiry,
-          strike: Number(query.strike || 0),
-          right: query.right
-        };
+      for (const symbolCandidate of symbolCandidates) {
+        if (query.kind === "mbt_option") {
+          const optionContractWithExactExpiry: Contract = {
+            secType: SecType.FOP,
+            symbol: symbolCandidate,
+            exchange,
+            currency: query.currency,
+            lastTradeDateOrContractMonth: fallbackExpiry,
+            strike: Number(query.strike || 0),
+            right: query.right
+          };
 
-        const optionContractAnyExpiry: Contract = {
-          secType: SecType.FOP,
-          symbol: productSymbol,
-          exchange,
-          currency: query.currency,
-          strike: Number(query.strike || 0),
-          right: query.right
-        };
+          const optionContractAnyExpiry: Contract = {
+            secType: SecType.FOP,
+            symbol: symbolCandidate,
+            exchange,
+            currency: query.currency,
+            strike: Number(query.strike || 0),
+            right: query.right
+          };
 
-        let details = await fetchContractDetails(optionContractWithExactExpiry);
-        if (details.length === 0) {
-          // Retry without forcing exact expiry (e.g. weekend/holiday tenor target).
-          details = await fetchContractDetails(optionContractAnyExpiry);
+          let details = await fetchContractDetails(optionContractWithExactExpiry);
+          if (details.length === 0) {
+            // Retry without forcing exact expiry (e.g. weekend/holiday tenor target).
+            details = await fetchContractDetails(optionContractAnyExpiry);
+          }
+          resolvedDetails.push(...details);
+          continue;
         }
-        resolvedDetails.push(...details);
-        continue;
-      }
 
-      const futureContractAnyExpiry: Contract = {
-        secType: SecType.FUT,
-        symbol: productSymbol,
-        exchange,
-        currency: query.currency
-      };
-      const details = await fetchContractDetails(futureContractAnyExpiry);
-      resolvedDetails.push(...details);
+        const futureContractAnyExpiry: Contract = {
+          secType: SecType.FUT,
+          symbol: symbolCandidate,
+          exchange,
+          currency: query.currency
+        };
+        const details = await fetchContractDetails(futureContractAnyExpiry);
+        resolvedDetails.push(...details);
+      }
     }
 
     const seenConIds = new Set<number>();
