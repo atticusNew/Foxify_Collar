@@ -112,6 +112,21 @@ test("ibkr tenor drift env parsing supports configured bounds", () => {
   );
 });
 
+test("ibkr futures synthetic premium ratio env parsing supports configured bounds", () => {
+  assert.equal(
+    parsePositiveFinite("0.05", 0.05, "invalid_ibkr_max_futures_synthetic_premium_ratio"),
+    0.05
+  );
+  assert.equal(
+    parsePositiveFinite("0.02", 0.05, "invalid_ibkr_max_futures_synthetic_premium_ratio"),
+    0.02
+  );
+  assert.throws(
+    () => parsePositiveFinite("0", 0.05, "invalid_ibkr_max_futures_synthetic_premium_ratio"),
+    /invalid_ibkr_max_futures_synthetic_premium_ratio/
+  );
+});
+
 test("parseBooleanEnv handles true/false with fallback", () => {
   assert.equal(parseBooleanEnv(undefined, false), false);
   assert.equal(parseBooleanEnv(undefined, true), true);

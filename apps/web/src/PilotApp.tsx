@@ -81,6 +81,7 @@ type TenorPolicyResponse = {
   selection?: {
     enabledTenorsDays: number[];
     defaultTenorDays: number;
+    status?: "ok" | "degraded";
   };
 };
 
@@ -207,7 +208,6 @@ const DEFAULT_TIERS: TierLevel[] = [
   { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
   { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
 ];
-const PILOT_ENABLED_TENOR_DAYS = [1, 2, 4] as const;
 const PILOT_DEFAULT_TENOR_DAYS = 2;
 const QUOTE_REQUEST_TIMEOUT_MS = 20000;
 const QUOTE_REQUEST_TIMEOUT_SECONDS = Math.ceil(QUOTE_REQUEST_TIMEOUT_MS / 1000);
@@ -293,6 +293,18 @@ const friendlyError = (message: string): string => {
   }
   if (message.includes("quote_generation_failed")) {
     return "Quote temporarily unavailable. Tap Refresh Quote.";
+  }
+  if (message.includes("tenor_drift_exceeded")) {
+    return "Requested protection length is currently illiquid. Try the recommended tenor.";
+  }
+  if (message.includes("tenor_temporarily_unavailable")) {
+    return "Requested protection length is temporarily unavailable. Try the recommended tenor.";
+  }
+  if (message.includes("quote_economics_unacceptable")) {
+    return "Current hedge premium is not economical for this protection. Try again with a different tenor.";
+  }
+  if (message.includes("quote_liquidity_unavailable")) {
+    return "Live liquidity is currently limited. Try again or choose another tenor.";
   }
   if (message.includes("venue_quote_timeout")) {
     return "Quote timed out. Live venue response exceeded 20s. Tap Refresh Quote.";
@@ -406,8 +418,9 @@ export function PilotApp() {
   const [protectedNotional, setProtectedNotional] = useState("");
   const [autoRenew, setAutoRenew] = useState(false);
   const [selectedTenorDays, setSelectedTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
-  const [enabledTenorDays, setEnabledTenorDays] = useState<number[]>([...PILOT_ENABLED_TENOR_DAYS]);
+  const [enabledTenorDays, setEnabledTenorDays] = useState<number[]>([PILOT_DEFAULT_TENOR_DAYS]);
   const [defaultTenorDays, setDefaultTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
+  const [tenorPolicyStatus, setTenorPolicyStatus] = useState<"ok" | "degraded" | "fallback">("fallback");
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -552,18 +565,25 @@ export function PilotApp() {
         const enabled = Array.isArray(payload.selection?.enabledTenorsDays)
           ? payload.selection!.enabledTenorsDays.filter((n) => Number.isFinite(Number(n)) && Number(n) > 0)
           : [];
-        const fallbackEnabled = [...PILOT_ENABLED_TENOR_DAYS];
-        const nextEnabled = (enabled.length > 0 ? enabled : fallbackEnabled).slice().sort((a, b) => a - b);
+        const policyDefault = Number(payload.selection?.defaultTenorDays);
+        const fallbackDefault = Number.isFinite(policyDefault) && policyDefault > 0 ? policyDefault : PILOT_DEFAULT_TENOR_DAYS;
+        // If policy has no enabled tenors yet, show only a single fallback tenor chip.
+        const nextEnabled = (enabled.length > 0 ? enabled : [fallbackDefault]).slice().sort((a, b) => a - b);
         const nextDefault =
-          Number(payload.selection?.defaultTenorDays) > 0 &&
-          nextEnabled.includes(Number(payload.selection?.defaultTenorDays))
-            ? Number(payload.selection?.defaultTenorDays)
+          Number.isFinite(policyDefault) && policyDefault > 0 && nextEnabled.includes(policyDefault)
+            ? policyDefault
             : nextEnabled[0] || PILOT_DEFAULT_TENOR_DAYS;
         setEnabledTenorDays(nextEnabled);
         setDefaultTenorDays(nextDefault);
+        setTenorPolicyStatus(enabled.length > 0 ? (payload.selection?.status === "degraded" ? "degraded" : "ok") : "fallback");
         setSelectedTenorDays((prev) => (nextEnabled.includes(prev) ? prev : nextDefault));
       } catch {
-        // keep local static tenor defaults when policy endpoint unavailable
+        // When policy endpoint is unavailable, keep a single deterministic fallback tenor.
+        const fallback = PILOT_DEFAULT_TENOR_DAYS;
+        setEnabledTenorDays([fallback]);
+        setDefaultTenorDays(fallback);
+        setTenorPolicyStatus("fallback");
+        setSelectedTenorDays((prev) => (prev === fallback ? prev : fallback));
       }
     };
     void loadTenorPolicy();

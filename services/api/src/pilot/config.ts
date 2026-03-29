@@ -391,6 +391,11 @@ export const pilotConfig = {
     7,
     "invalid_ibkr_max_tenor_drift_days"
   ),
+  ibkrMaxFuturesSyntheticPremiumRatio: parsePositiveFinite(
+    process.env.IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO,
+    0.05,
+    "invalid_ibkr_max_futures_synthetic_premium_ratio"
+  ),
   ibkrPreferTenorAtOrAbove: parseBooleanEnv(process.env.IBKR_PREFER_TENOR_AT_OR_ABOVE, true),
   ibkrRequireLiveTransport: parseBooleanEnv(
     process.env.IBKR_REQUIRE_LIVE_TRANSPORT,

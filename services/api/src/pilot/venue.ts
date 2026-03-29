@@ -53,6 +53,7 @@ type IbkrVenueConfig = {
   primaryProductFamily?: "MBT" | "BFF";
   enableBffFallback?: boolean;
   bffProductFamily?: "MBT" | "BFF";
+  maxFuturesSyntheticPremiumRatio?: number;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -593,6 +594,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private primaryProductFamily: "MBT" | "BFF",
     private enableBffFallback: boolean,
     private bffProductFamily: "MBT" | "BFF",
+    private maxFuturesSyntheticPremiumRatio: number,
     private marketDataRequestTimeoutMs: number,
     private quoteBudgetMs: number
   ) {}
@@ -1139,6 +1141,17 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const notional = Math.max(0, Number(req.protectedNotional || 0));
     const referenceQty = Math.max(0, Number(req.quantity || 0));
     const premium = Number((Math.max(unitPrice * referenceQty, notional * 0.001)).toFixed(4));
+    const premiumRatio = notional > 0 ? premium / notional : 0;
+    if (
+      resolved.hedgeMode === "futures_synthetic" &&
+      Number.isFinite(this.maxFuturesSyntheticPremiumRatio) &&
+      this.maxFuturesSyntheticPremiumRatio > 0 &&
+      premiumRatio > this.maxFuturesSyntheticPremiumRatio
+    ) {
+      throw new Error(
+        `ibkr_quote_unavailable:premium_ratio_exceeded:${Number(premiumRatio.toFixed(8))}`
+      );
+    }
     const instrumentId = buildIbkrInstrumentId(resolved.contract);
     const trigger = toFinitePositive(req.triggerPrice);
     const strikeGapToTriggerUsd =
@@ -1161,6 +1174,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         pricing: resolved.hedgeInstrumentFamily === "BFF" ? "cme_bff" : "cme_mbt",
         hedgeMode: resolved.hedgeMode,
         hedgeInstrumentFamily: resolved.hedgeInstrumentFamily,
+        premiumRatio,
         requestedTenorDays: resolved.requestedTenorDays,
         selectedTenorDays: resolved.selectedTenorDays,
         tenorDriftDays: resolved.tenorDriftDays,
@@ -1482,6 +1496,7 @@ export const createPilotVenueAdapter = (params: {
   deribit: DeribitConnector;
   ibkr?: IbkrVenueConfig;
   ibkrQuoteBudgetMs?: number;
+  ibkrMaxFuturesSyntheticPremiumRatio?: number;
   quoteTtlMs?: number;
   deribitQuotePolicy?: DeribitQuotePolicy;
   deribitStrikeSelectionMode?: DeribitStrikeSelectionMode;
@@ -1523,6 +1538,9 @@ export const createPilotVenueAdapter = (params: {
       params.ibkr.primaryProductFamily === "BFF" ? "BFF" : "MBT",
       params.ibkr.enableBffFallback === true,
       params.ibkr.bffProductFamily === "MBT" ? "MBT" : "BFF",
+      Number.isFinite(Number(params.ibkrMaxFuturesSyntheticPremiumRatio))
+        ? Number(params.ibkrMaxFuturesSyntheticPremiumRatio)
+        : 0.05,
       connectorTimeoutMs,
       Number(params.ibkrQuoteBudgetMs || 0)
     );

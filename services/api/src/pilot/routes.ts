@@ -661,7 +661,8 @@ export const registerPilotRoutes = async (
       bffProductFamily: pilotConfig.ibkrBffProductFamily,
       requireLiveTransport: pilotConfig.ibkrRequireLiveTransport,
       maxTenorDriftDays: pilotConfig.ibkrMaxTenorDriftDays,
-      preferTenorAtOrAbove: pilotConfig.ibkrPreferTenorAtOrAbove
+      preferTenorAtOrAbove: pilotConfig.ibkrPreferTenorAtOrAbove,
+      maxFuturesSyntheticPremiumRatio: pilotConfig.ibkrMaxFuturesSyntheticPremiumRatio
     },
     ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
     deribit: deps.deribit
@@ -1422,6 +1423,7 @@ export const registerPilotRoutes = async (
       const isTenorDriftExceeded = message.includes("tenor_drift_exceeded");
       const isTenorTemporarilyUnavailable = message.includes("tenor_temporarily_unavailable");
       const isNoTopOfBook = message.includes("no_top_of_book");
+      const isPremiumGuardrail = message.includes("premium_ratio_exceeded");
       const isNoContract = message.includes("no_contract");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
       const isStorageFailure =
@@ -1429,7 +1431,7 @@ export const registerPilotRoutes = async (
       reply.code(
         isTimeout
           ? 504
-          : isStorageFailure || isTransportNotLive || isNoTopOfBook || isNoContract
+          : isStorageFailure || isTransportNotLive || isNoTopOfBook || isNoContract || isPremiumGuardrail
             ? 503
             : isTenorTemporarilyUnavailable || isTenorDriftExceeded
               ? 409
@@ -1447,6 +1449,8 @@ export const registerPilotRoutes = async (
               ? "quote_liquidity_unavailable"
             : isNoContract
               ? "quote_contract_unavailable"
+            : isPremiumGuardrail
+              ? "quote_economics_unacceptable"
             : isTenorDriftExceeded
               ? "tenor_drift_exceeded"
             : "quote_generation_failed",
@@ -1460,6 +1464,8 @@ export const registerPilotRoutes = async (
               ? "Venue top-of-book is temporarily unavailable for the requested hedge. Please retry."
             : isNoContract
               ? "No venue contract is currently available for the requested hedge. Please retry."
+            : isPremiumGuardrail
+              ? "Venue premium is currently outside pilot guardrails for this tenor. Please retry or choose another tenor."
             : isTenorDriftExceeded
               ? "No IBKR contract matched the requested tenor within configured drift."
           : "Unable to generate a venue quote right now. Please retry.",
