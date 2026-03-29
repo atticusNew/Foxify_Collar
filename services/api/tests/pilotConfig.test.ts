@@ -66,6 +66,14 @@ test("parseIbkrOrderTif validates allowed values", () => {
   assert.throws(() => parseIbkrOrderTif("GTC"), /invalid_ibkr_order_tif/);
 });
 
+test("parseIbkrProductFamily validates allowed values", async () => {
+  const { parseIbkrProductFamily } = await import("../src/pilot/config");
+  assert.equal(parseIbkrProductFamily(undefined, "MBT"), "MBT");
+  assert.equal(parseIbkrProductFamily("bff", "MBT"), "BFF");
+  assert.equal(parseIbkrProductFamily("MBT", "BFF"), "MBT");
+  assert.throws(() => parseIbkrProductFamily("ES", "MBT"), /invalid_ibkr_product_family/);
+});
+
 test("parsePremiumPolicyMode validates known values", () => {
   assert.equal(parsePremiumPolicyMode(undefined), "legacy");
   assert.equal(parsePremiumPolicyMode("legacy"), "legacy");

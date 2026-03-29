@@ -15,9 +15,11 @@ export type BridgeHealth = {
 
 export type BridgeInstrumentKind = "mbt_future" | "mbt_option";
 export type BridgeOptionRight = "P" | "C";
+export type BridgeProductFamily = "MBT" | "BFF";
 
 export type BridgeContractQuery = {
   kind: BridgeInstrumentKind;
+  productFamily?: BridgeProductFamily;
   symbol: "BTC";
   exchange: "CME";
   currency: "USD";

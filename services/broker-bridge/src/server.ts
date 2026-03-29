@@ -24,6 +24,7 @@ const healthResponseSchema = z.object({
 
 const qualifySchema = z.object({
   kind: z.union([z.literal("mbt_future"), z.literal("mbt_option")]),
+  productFamily: z.union([z.literal("MBT"), z.literal("BFF")]).optional(),
   symbol: z.literal("BTC"),
   exchange: z.literal("CME"),
   currency: z.literal("USD"),

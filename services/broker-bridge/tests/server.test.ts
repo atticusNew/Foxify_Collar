@@ -172,3 +172,32 @@ test("depth endpoint remains available when top endpoint is unhealthy", async ()
     await wait(150);
   }
 });
+
+test("contracts qualify accepts optional BFF product family", async () => {
+  const port = randomPort();
+  const child = startBridge(port);
+
+  try {
+    await wait(1200);
+    const qualifyRes = await fetch(`http://127.0.0.1:${port}/contracts/qualify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "mbt_future",
+        productFamily: "BFF",
+        symbol: "BTC",
+        exchange: "CME",
+        currency: "USD",
+        tenorDays: 3
+      })
+    });
+    assert.equal(qualifyRes.ok, true);
+    const payload = (await qualifyRes.json()) as { contracts?: Array<{ localSymbol?: string }> };
+    assert.ok(Array.isArray(payload.contracts));
+    assert.equal(typeof payload.contracts?.[0]?.localSymbol, "string");
+    assert.ok(String(payload.contracts?.[0]?.localSymbol || "").startsWith("BFF "));
+  } finally {
+    child.kill("SIGTERM");
+    await wait(150);
+  }
+});

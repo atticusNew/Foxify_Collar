@@ -50,6 +50,9 @@ type IbkrVenueConfig = {
   requireLiveTransport: boolean;
   maxTenorDriftDays?: number;
   preferTenorAtOrAbove?: boolean;
+  primaryProductFamily?: "MBT" | "BFF";
+  enableBffFallback?: boolean;
+  bffProductFamily?: "MBT" | "BFF";
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -587,6 +590,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private orderTif: "IOC" | "DAY",
     private maxTenorDriftDays: number,
     private preferTenorAtOrAbove: boolean,
+    private primaryProductFamily: "MBT" | "BFF",
+    private enableBffFallback: boolean,
+    private bffProductFamily: "MBT" | "BFF",
     private marketDataRequestTimeoutMs: number,
     private quoteBudgetMs: number
   ) {}
@@ -629,6 +635,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       score: number;
     }>;
     strike: number | null;
+    hedgeInstrumentFamily: "MBT" | "BFF";
   }> {
     const requestedTenorDays = clampInt(req.requestedTenorDays, 1, 30, 7);
     const minTenorDays = clampInt(req.tenorMinDays, 1, 30, 1);
@@ -942,18 +949,110 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     };
 
     let sawTenorEligibleContract = false;
-    if (hedgePolicy === "options_primary_futures_fallback") {
-      if (roundedStrike) {
-        ensureBudget(Math.min(requestWindowHintMs, 1800));
-        const optionQuery: IbkrContractQuery = {
-          kind: "mbt_option",
+    let sawFallbackContracts = false;
+    const queryWithProductFamily = (
+      query: IbkrContractQuery,
+      productFamily: "MBT" | "BFF"
+    ): IbkrContractQuery => ({
+      ...query,
+      productFamily
+    });
+    const runFallbackLeg = async (
+      productFamily: "MBT" | "BFF",
+      reason: "options_unavailable_futures_fallback" | "options_and_mbt_unavailable_bff_fallback"
+    ): Promise<{
+      contract: IbkrQualifiedContract;
+      hedgeMode: "futures_synthetic";
+      top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+      requestedTenorDays: number;
+      selectedTenorDays: number | null;
+      tenorDriftDays: number | null;
+      selectedExpiry: string | null;
+      selectionReason: string;
+      selectionAlgorithm: string;
+      selectedScore: number | null;
+      selectedRank: number | null;
+      selectedIsBelowTarget: boolean | null;
+      candidateCountEvaluated: number;
+      matchedTenorHoursEstimate: number | null;
+      matchedTenorDisplay: string | null;
+      selectionTrace: Array<{
+        conId: number;
+        expiry: string | null;
+        matchedTenorDays: number | null;
+        driftDays: number | null;
+        ask: number | null;
+        bid: number | null;
+        askSize: number | null;
+        spreadPct: number | null;
+        belowTarget: boolean;
+        score: number;
+      }>;
+      strike: null;
+      hedgeInstrumentFamily: "MBT" | "BFF";
+    } | null> => {
+      ensureBudget(requestWindowHintMs);
+      const futQuery: IbkrContractQuery = queryWithProductFamily(
+        {
+          kind: "mbt_future",
           symbol: "BTC",
           exchange: "CME",
           currency: "USD",
-          tenorDays: selectedTenorDays,
-          right,
-          strike: roundedStrike
-        };
+          tenorDays: selectedTenorDays
+        },
+        productFamily
+      );
+      const futContracts = await this.connector.qualifyContracts(futQuery);
+      sawFallbackContracts ||= futContracts.length > 0;
+      sawTenorEligibleContract ||= futContracts.some(contractPassesTenorPolicy);
+      const futMatch = await pickContractWithTop(futContracts, {
+        maxPreferred: 4,
+        maxBelow: 2,
+        depthAttempts: 2,
+        probeTimeoutMs: Math.max(1200, Math.min(4500, requestWindowHintMs)),
+        legBudgetMs: Math.max(6000, Math.min(30000, Math.floor(this.quoteBudgetMs * 0.8)))
+      });
+      if (!futMatch) return null;
+      const futMeta = contractTenorMeta(futMatch.contract);
+      return {
+        contract: futMatch.contract,
+        hedgeMode: "futures_synthetic",
+        top: futMatch.top,
+        requestedTenorDays: selectedTenorDaysIntended,
+        selectedTenorDays: futMeta.selectedTenorDays,
+        tenorDriftDays: futMeta.tenorDriftDays,
+        selectedExpiry: String(futMatch.contract.expiry || "") || null,
+        selectionReason: reason,
+        selectionAlgorithm: "tenor_quality_v1",
+        selectedScore: futMatch.selectedScore,
+        selectedRank: futMatch.selectedRank,
+        selectedIsBelowTarget: futMatch.selectedIsBelowTarget,
+        candidateCountEvaluated: futMatch.candidateCountEvaluated,
+        matchedTenorHoursEstimate:
+          futMeta.selectedTenorDays !== null
+            ? Number((futMeta.selectedTenorDays * 24).toFixed(4))
+            : null,
+        matchedTenorDisplay: formatMatchedTenorDisplay(futMeta.selectedTenorDays),
+        selectionTrace: futMatch.selectionTrace,
+        strike: null,
+        hedgeInstrumentFamily: productFamily
+      };
+    };
+    if (hedgePolicy === "options_primary_futures_fallback") {
+      if (roundedStrike) {
+        ensureBudget(Math.min(requestWindowHintMs, 1800));
+        const optionQuery: IbkrContractQuery = queryWithProductFamily(
+          {
+            kind: "mbt_option",
+            symbol: "BTC",
+            exchange: "CME",
+            currency: "USD",
+            tenorDays: selectedTenorDays,
+            right,
+            strike: roundedStrike
+          },
+          this.primaryProductFamily
+        );
         const optionContracts = await this.connector.qualifyContracts(optionQuery);
         sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
         const optionMatch = await pickContractWithTop(optionContracts, {
@@ -987,57 +1086,37 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
                 : null,
             matchedTenorDisplay: formatMatchedTenorDisplay(optionMeta.selectedTenorDays),
             selectionTrace: optionMatch.selectionTrace,
-            strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike
+            strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike,
+            hedgeInstrumentFamily: this.primaryProductFamily
           };
         }
       }
 
-      ensureBudget(requestWindowHintMs);
-      const futQuery: IbkrContractQuery = {
-        kind: "mbt_future",
-        symbol: "BTC",
-        exchange: "CME",
-        currency: "USD",
-        tenorDays: selectedTenorDays
-      };
-      const futContracts = await this.connector.qualifyContracts(futQuery);
-      sawTenorEligibleContract ||= futContracts.some(contractPassesTenorPolicy);
-      const futMatch = await pickContractWithTop(futContracts, {
-        maxPreferred: 4,
-        maxBelow: 2,
-        depthAttempts: 2,
-        probeTimeoutMs: Math.max(1200, Math.min(4500, requestWindowHintMs)),
-        legBudgetMs: Math.max(6000, Math.min(30000, Math.floor(this.quoteBudgetMs * 0.8)))
-      });
-      if (futMatch) {
-        const futMeta = contractTenorMeta(futMatch.contract);
-        return {
-          contract: futMatch.contract,
-          hedgeMode: "futures_synthetic",
-          top: futMatch.top,
-          requestedTenorDays: selectedTenorDaysIntended,
-          selectedTenorDays: futMeta.selectedTenorDays,
-          tenorDriftDays: futMeta.tenorDriftDays,
-          selectedExpiry: String(futMatch.contract.expiry || "") || null,
-          selectionReason: "options_unavailable_futures_fallback",
-          selectionAlgorithm: "tenor_quality_v1",
-          selectedScore: futMatch.selectedScore,
-          selectedRank: futMatch.selectedRank,
-          selectedIsBelowTarget: futMatch.selectedIsBelowTarget,
-          candidateCountEvaluated: futMatch.candidateCountEvaluated,
-          matchedTenorHoursEstimate:
-            futMeta.selectedTenorDays !== null
-              ? Number((futMeta.selectedTenorDays * 24).toFixed(4))
-              : null,
-          matchedTenorDisplay: formatMatchedTenorDisplay(futMeta.selectedTenorDays),
-          selectionTrace: futMatch.selectionTrace,
-          strike: null
-        };
+      const primaryFallback = await runFallbackLeg(
+        this.primaryProductFamily,
+        "options_unavailable_futures_fallback"
+      );
+      if (primaryFallback) {
+        return primaryFallback;
+      }
+
+      const allowBffFallback =
+        this.enableBffFallback &&
+        this.primaryProductFamily !== this.bffProductFamily &&
+        this.bffProductFamily === "BFF";
+      if (allowBffFallback) {
+        const bffFallback = await runFallbackLeg(
+          this.bffProductFamily,
+          "options_and_mbt_unavailable_bff_fallback"
+        );
+        if (bffFallback) {
+          return bffFallback;
+        }
       }
       if (!sawTenorEligibleContract) {
         throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
       }
-      if (futContracts.length > 0) {
+      if (sawFallbackContracts) {
         throw new Error("ibkr_quote_unavailable:no_top_of_book");
       }
       throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
@@ -1079,8 +1158,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       quoteTs,
       details: {
         source: "ibkr_top_of_book",
-        pricing: "cme_mbt",
+        pricing: resolved.hedgeInstrumentFamily === "BFF" ? "cme_bff" : "cme_mbt",
         hedgeMode: resolved.hedgeMode,
+        hedgeInstrumentFamily: resolved.hedgeInstrumentFamily,
         requestedTenorDays: resolved.requestedTenorDays,
         selectedTenorDays: resolved.selectedTenorDays,
         tenorDriftDays: resolved.tenorDriftDays,
@@ -1440,6 +1520,9 @@ export const createPilotVenueAdapter = (params: {
       params.ibkr.orderTif || "IOC",
       Number.isFinite(Number(params.ibkr.maxTenorDriftDays)) ? Number(params.ibkr.maxTenorDriftDays) : 7,
       params.ibkr.preferTenorAtOrAbove !== false,
+      params.ibkr.primaryProductFamily === "BFF" ? "BFF" : "MBT",
+      params.ibkr.enableBffFallback === true,
+      params.ibkr.bffProductFamily === "MBT" ? "MBT" : "BFF",
       connectorTimeoutMs,
       Number(params.ibkrQuoteBudgetMs || 0)
     );

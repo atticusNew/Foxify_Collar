@@ -176,6 +176,11 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.ibkrPreferTenorAtOrAbove = process.env.IBKR_PREFER_TENOR_AT_OR_ABOVE !== "false";
   configModule.pilotConfig.ibkrOrderTif =
     (process.env.IBKR_ORDER_TIF || "IOC").toUpperCase() === "DAY" ? "DAY" : "IOC";
+  configModule.pilotConfig.ibkrPrimaryProductFamily =
+    String(process.env.IBKR_PRIMARY_PRODUCT_FAMILY || "MBT").toUpperCase() === "BFF" ? "BFF" : "MBT";
+  configModule.pilotConfig.ibkrBffFallbackEnabled = process.env.IBKR_BFF_FALLBACK_ENABLED === "true";
+  configModule.pilotConfig.ibkrBffProductFamily =
+    String(process.env.IBKR_BFF_PRODUCT_FAMILY || "BFF").toUpperCase() === "MBT" ? "MBT" : "BFF";
   configModule.pilotConfig.venueQuoteTimeoutMs = Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000");
 
   const db = newDb();
@@ -1584,6 +1589,24 @@ test("W) quote diagnostics include explicit tenorReason attribution", async () =
             text: async () => JSON.stringify({ contracts: [] })
           } as any;
         }
+        if (payload.kind === "mbt_future" && payload.productFamily === "MBT") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 33331,
+                    secType: "FUT",
+                    localSymbol: "MBTH6",
+                    expiry: "20260331",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
         return {
           ok: true,
           text: async () =>
@@ -1684,6 +1707,203 @@ test("W) quote diagnostics include explicit tenorReason attribution", async () =
           String(payload?.diagnostics?.venueSelection?.tenorReason || "")
         ),
         true
+      );
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("W3) quote diagnostics expose BFF fallback family and reason when enabled", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ contracts: [] })
+          } as any;
+        }
+        if (payload.kind === "mbt_future" && payload.productFamily === "MBT") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 44111,
+                    secType: "FUT",
+                    localSymbol: "MBTH6",
+                    expiry: "20260331",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+        if (payload.kind === "mbt_future" && payload.productFamily === "BFF") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 55222,
+                    secType: "FUT",
+                    localSymbol: "BFFH6",
+                    expiry: "20260328",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+        return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.conId === 44111) {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                bid: null,
+                ask: null,
+                bidSize: null,
+                askSize: null,
+                asOf: new Date().toISOString()
+              })
+          } as any;
+        }
+        if (payload.conId === 55222) {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                bid: 88,
+                ask: 89,
+                bidSize: 3,
+                askSize: 5,
+                asOf: new Date().toISOString()
+              })
+          } as any;
+        }
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: null,
+              ask: null,
+              bidSize: null,
+              askSize: null,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.conId === 44111) {
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+          } as any;
+        }
+        if (payload.conId === 55222) {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                bids: [{ level: 0, price: 88, size: 3 }],
+                asks: [{ level: 0, price: 89, size: 5 }],
+                asOf: new Date().toISOString()
+              })
+          } as any;
+        }
+        return {
+          ok: true,
+          text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "6000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "6000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "40",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        IBKR_PRIMARY_PRODUCT_FAMILY: "MBT",
+        IBKR_BFF_FALLBACK_ENABLED: "true",
+        IBKR_BFF_PRODUCT_FAMILY: "BFF",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const quoteRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteRes.statusCode, 200);
+      const payload = quoteRes.json();
+      assert.equal(payload.status, "ok");
+      assert.equal(String(payload?.quote?.details?.hedgeInstrumentFamily), "BFF");
+      assert.equal(
+        String(payload?.quote?.details?.selectionReason),
+        "options_and_mbt_unavailable_bff_fallback"
+      );
+      assert.equal(String(payload?.diagnostics?.venueSelection?.hedgeInstrumentFamily), "BFF");
+      assert.equal(
+        String(payload?.diagnostics?.venueSelection?.selectionReason),
+        "options_and_mbt_unavailable_bff_fallback"
       );
     } finally {
       await harness.close();

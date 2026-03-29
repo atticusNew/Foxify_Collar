@@ -31,6 +31,9 @@ const buildMbtExpiry = (tenorDays: number): string => {
   return `${y}${m}${d}`;
 };
 
+const resolveProductSymbol = (productFamily: "MBT" | "BFF" | undefined): "MBT" | "BFF" =>
+  productFamily === "BFF" ? "BFF" : "MBT";
+
 const normalizeExpiry = (value: unknown, fallback: string): string => {
   const raw = String(value || "").replace(/[^0-9]/g, "");
   if (raw.length >= 8) return raw.slice(0, 8);
@@ -520,8 +523,9 @@ export class IbGatewayClient {
 
   private async qualifyContractsSynthetic(query: BridgeContractQuery): Promise<BridgeQualifiedContract[]> {
     const expiry = buildMbtExpiry(query.tenorDays);
+    const productSymbol = resolveProductSymbol(query.productFamily);
     if (query.kind === "mbt_future") {
-      const localSymbol = `MBT ${expiry}`;
+      const localSymbol = `${productSymbol} ${expiry}`;
       return [
         {
           conId: syntheticConId(`FUT:${localSymbol}`),
@@ -537,7 +541,7 @@ export class IbGatewayClient {
       return [];
     }
     const strike = Math.floor(Number(query.strike));
-    const localSymbol = `MBT ${expiry} ${query.right}${strike}`;
+    const localSymbol = `${productSymbol} ${expiry} ${query.right}${strike}`;
     return [
       {
         conId: syntheticConId(`FOP:${localSymbol}`),
@@ -604,6 +608,7 @@ export class IbGatewayClient {
   private async qualifyContractsIb(query: BridgeContractQuery): Promise<BridgeQualifiedContract[]> {
     const ib = await this.requireIb();
     const fallbackExpiry = buildMbtExpiry(query.tenorDays);
+    const productSymbol = resolveProductSymbol(query.productFamily);
     const fetchContractDetails = async (targetContract: Contract): Promise<ContractDetails[]> => {
       const reqId = this.nextRequestId();
       return await new Promise<ContractDetails[]>((resolve, reject) => {
@@ -658,7 +663,7 @@ export class IbGatewayClient {
 
     const optionContractWithExactExpiry: Contract = {
       secType: SecType.FOP,
-      symbol: "MBT",
+      symbol: productSymbol,
       exchange: query.exchange,
       currency: query.currency,
       lastTradeDateOrContractMonth: fallbackExpiry,
@@ -668,7 +673,7 @@ export class IbGatewayClient {
 
     const optionContractAnyExpiry: Contract = {
       secType: SecType.FOP,
-      symbol: "MBT",
+      symbol: productSymbol,
       exchange: query.exchange,
       currency: query.currency,
       strike: Number(query.strike || 0),
@@ -677,7 +682,7 @@ export class IbGatewayClient {
 
     const futureContractAnyExpiry: Contract = {
       secType: SecType.FUT,
-      symbol: "MBT",
+      symbol: productSymbol,
       exchange: query.exchange,
       currency: query.currency
     };
@@ -702,7 +707,7 @@ export class IbGatewayClient {
           contract.lastTradeDateOrContractMonth || contract.lastTradeDate || item.contractMonth,
           fallbackExpiry
         );
-        const localSymbol = String(contract.localSymbol || `MBT ${expiry}`).trim();
+        const localSymbol = String(contract.localSymbol || `${productSymbol} ${expiry}`).trim();
         const conId = positiveOrNull(contract.conId);
         if (!conId) return null;
         const normalizedRight = right === "P" || right === "C" ? (right as "P" | "C") : undefined;

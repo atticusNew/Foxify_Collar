@@ -11,6 +11,7 @@ export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
 export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
 export type PilotHedgePolicy = "options_primary_futures_fallback";
 export type IbkrOrderTif = "IOC" | "DAY";
+export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 
 export type PilotWindowState = {
@@ -119,6 +120,16 @@ export const parseIbkrOrderTif = (raw: string | undefined): IbkrOrderTif => {
   const normalized = String(raw || "IOC").trim().toUpperCase();
   if (normalized === "IOC" || normalized === "DAY") return normalized;
   throw new Error(`invalid_ibkr_order_tif:${normalized || "empty"}`);
+};
+
+export const parseIbkrProductFamily = (raw: string | undefined, fallback: IbkrProductFamily): IbkrProductFamily => {
+  const normalized = String(raw || fallback)
+    .trim()
+    .toUpperCase();
+  if (normalized === "MBT" || normalized === "BFF") {
+    return normalized;
+  }
+  throw new Error(`invalid_ibkr_product_family:${normalized || "empty"}`);
 };
 
 export const parsePremiumPolicyMode = (raw: string | undefined): PremiumPolicyMode => {
@@ -350,6 +361,9 @@ export const pilotConfig = {
   ibkrAccountId: String(process.env.IBKR_ACCOUNT_ID || "").trim(),
   ibkrEnableExecution: process.env.IBKR_ENABLE_EXECUTION === "true",
   ibkrOrderTif: parseIbkrOrderTif(process.env.IBKR_ORDER_TIF),
+  ibkrPrimaryProductFamily: parseIbkrProductFamily(process.env.IBKR_PRIMARY_PRODUCT_FAMILY, "MBT"),
+  ibkrBffFallbackEnabled: parseBooleanEnv(process.env.IBKR_BFF_FALLBACK_ENABLED, false),
+  ibkrBffProductFamily: parseIbkrProductFamily(process.env.IBKR_BFF_PRODUCT_FAMILY, "BFF"),
   ibkrOrderTimeoutMs: parsePositiveFinite(
     process.env.IBKR_ORDER_TIMEOUT_MS,
     8000,

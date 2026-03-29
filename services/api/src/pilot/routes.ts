@@ -409,7 +409,9 @@ const sanitizeQuoteForClient = (quote: {
     "tenorReason",
     "deribitQuotePolicy",
     "strikeSelectionMode",
-    "hedgeMode"
+    "hedgeMode",
+    "hedgeInstrumentFamily",
+    "selectionReason"
   ];
   for (const key of allowedKeys) {
     if (key in details) allowedDetails[key] = details[key];
@@ -654,6 +656,9 @@ export const registerPilotRoutes = async (
       repriceStepTicks: pilotConfig.ibkrRepriceStepTicks,
       maxSlippageBps: pilotConfig.ibkrMaxSlippageBps,
       orderTif: pilotConfig.ibkrOrderTif,
+      primaryProductFamily: pilotConfig.ibkrPrimaryProductFamily,
+      enableBffFallback: pilotConfig.ibkrBffFallbackEnabled,
+      bffProductFamily: pilotConfig.ibkrBffProductFamily,
       requireLiveTransport: pilotConfig.ibkrRequireLiveTransport,
       maxTenorDriftDays: pilotConfig.ibkrMaxTenorDriftDays,
       preferTenorAtOrAbove: pilotConfig.ibkrPreferTenorAtOrAbove
@@ -1251,6 +1256,16 @@ export const registerPilotRoutes = async (
               quote.details && typeof (quote.details as Record<string, unknown>).strikeSelectionMode === "string"
                 ? String((quote.details as Record<string, unknown>).strikeSelectionMode)
                 : null,
+            selectionReason:
+              quote.details && typeof (quote.details as Record<string, unknown>).selectionReason === "string"
+                ? String((quote.details as Record<string, unknown>).selectionReason)
+                : null,
+            hedgeInstrumentFamily:
+              quote.details &&
+              ((quote.details as Record<string, unknown>).hedgeInstrumentFamily === "BFF" ||
+                (quote.details as Record<string, unknown>).hedgeInstrumentFamily === "MBT")
+                ? String((quote.details as Record<string, unknown>).hedgeInstrumentFamily)
+                : null,
             hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined),
             premiumPolicy: estimatedPremiumPolicyDiagnostics,
             ...pricingBreakdown
@@ -1387,7 +1402,17 @@ export const registerPilotRoutes = async (
               quote.details && Array.isArray((quote.details as Record<string, unknown>).selectionTrace)
                 ? (quote.details as Record<string, unknown>).selectionTrace
                 : null,
-            hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined)
+            hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined),
+            hedgeInstrumentFamily:
+              quote.details &&
+              ((quote.details as Record<string, unknown>).hedgeInstrumentFamily === "BFF" ||
+                (quote.details as Record<string, unknown>).hedgeInstrumentFamily === "MBT")
+                ? String((quote.details as Record<string, unknown>).hedgeInstrumentFamily)
+                : null,
+            selectionReason:
+              quote.details && typeof (quote.details as Record<string, unknown>).selectionReason === "string"
+                ? String((quote.details as Record<string, unknown>).selectionReason)
+                : null
           }
         }
       };

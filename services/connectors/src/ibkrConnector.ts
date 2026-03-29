@@ -11,9 +11,11 @@ export type IbkrBridgeConfig = {
 
 export type IbkrInstrumentKind = "mbt_future" | "mbt_option";
 export type IbkrOptionRight = "P" | "C";
+export type IbkrProductFamily = "MBT" | "BFF";
 
 export type IbkrContractQuery = {
   kind: IbkrInstrumentKind;
+  productFamily?: IbkrProductFamily;
   symbol: "BTC";
   exchange: "CME";
   currency: "USD";
