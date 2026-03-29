@@ -62,9 +62,10 @@ const activationPayload = (quoteId: string, protectedNotional = 1000) => ({
 });
 
 const createPilotHarness = async (opts?: {
-  venueMode?: "mock_falconx" | "deribit_test" | "falconx";
+  venueMode?: "mock_falconx" | "deribit_test" | "falconx" | "ibkr_cme_paper" | "ibkr_cme_live";
   deribit?: any;
   env?: Record<string, string | undefined>;
+  fetchImpl?: typeof fetch;
 }): Promise<{
   app: FastifyInstance;
   pool: { query: (sql: string, params?: unknown[]) => Promise<any>; end: () => Promise<void> };
@@ -76,6 +77,7 @@ const createPilotHarness = async (opts?: {
   process.env.USER_HASH_SECRET = "test_hash_secret";
   process.env.PILOT_ADMIN_TOKEN = "admin-local";
   process.env.PILOT_ADMIN_IP_ALLOWLIST = "127.0.0.1";
+  delete process.env.PILOT_ADMIN_TRUSTED_IP_HEADER;
   process.env.PILOT_PROOF_TOKEN = "proof-local";
   process.env.PRICE_REFERENCE_MARKET_ID = "BTC-USD";
   process.env.PRICE_REFERENCE_URL = "https://example.com/ticker";
@@ -111,13 +113,20 @@ const createPilotHarness = async (opts?: {
     }
   }
 
-  global.fetch = buildPriceFetch();
+  global.fetch = opts?.fetchImpl || buildPriceFetch();
 
   const configModule = await import("../src/pilot/config");
   configModule.pilotConfig.enabled = true;
   configModule.pilotConfig.venueMode = (opts?.venueMode || "mock_falconx") as any;
   configModule.pilotConfig.tenantScopeId = process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot";
   configModule.pilotConfig.adminToken = process.env.PILOT_ADMIN_TOKEN || "";
+  configModule.pilotConfig.adminIpAllowlist = {
+    raw: process.env.PILOT_ADMIN_IP_ALLOWLIST || "",
+    entries: String(process.env.PILOT_ADMIN_IP_ALLOWLIST || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+  };
   configModule.pilotConfig.proofToken = process.env.PILOT_PROOF_TOKEN || "";
   configModule.pilotConfig.internalToken = process.env.PILOT_INTERNAL_TOKEN || "";
   configModule.pilotConfig.hashSecret = process.env.USER_HASH_SECRET || "";
@@ -152,6 +161,22 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.tenorPolicyLookbackMinutes = Number(
     process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES || "60"
   );
+  configModule.pilotConfig.ibkrBridgeBaseUrl =
+    process.env.IBKR_BRIDGE_BASE_URL || "http://127.0.0.1:18080";
+  configModule.pilotConfig.ibkrBridgeTimeoutMs = Number(process.env.IBKR_BRIDGE_TIMEOUT_MS || "4000");
+  configModule.pilotConfig.ibkrBridgeToken = process.env.IBKR_BRIDGE_TOKEN || "";
+  configModule.pilotConfig.ibkrAccountId = process.env.IBKR_ACCOUNT_ID || "";
+  configModule.pilotConfig.ibkrEnableExecution = process.env.IBKR_ENABLE_EXECUTION === "true";
+  configModule.pilotConfig.ibkrOrderTimeoutMs = Number(process.env.IBKR_ORDER_TIMEOUT_MS || "8000");
+  configModule.pilotConfig.ibkrMaxRepriceSteps = Number(process.env.IBKR_MAX_REPRICE_STEPS || "4");
+  configModule.pilotConfig.ibkrRepriceStepTicks = Number(process.env.IBKR_REPRICE_STEP_TICKS || "2");
+  configModule.pilotConfig.ibkrMaxSlippageBps = Number(process.env.IBKR_MAX_SLIPPAGE_BPS || "25");
+  configModule.pilotConfig.ibkrRequireLiveTransport = process.env.IBKR_REQUIRE_LIVE_TRANSPORT === "true";
+  configModule.pilotConfig.ibkrMaxTenorDriftDays = Number(process.env.IBKR_MAX_TENOR_DRIFT_DAYS || "7");
+  configModule.pilotConfig.ibkrPreferTenorAtOrAbove = process.env.IBKR_PREFER_TENOR_AT_OR_ABOVE !== "false";
+  configModule.pilotConfig.ibkrOrderTif =
+    (process.env.IBKR_ORDER_TIF || "IOC").toUpperCase() === "DAY" ? "DAY" : "IOC";
+  configModule.pilotConfig.venueQuoteTimeoutMs = Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000");
 
   const db = newDb();
   const pg = db.adapters.createPg();
@@ -237,6 +262,20 @@ test("pilot route hardening A-H", async (t) => {
       });
       assert.equal(monitorScoped.statusCode, 200);
       assert.equal(monitorScoped.json().status, "ok");
+
+      const adminMonitorUnauthorized = await app.inject({
+        method: "GET",
+        url: `/pilot/admin/protections/${protectionId}/monitor`
+      });
+      assert.equal(adminMonitorUnauthorized.statusCode, 401);
+
+      const adminMonitorAuthorized = await app.inject({
+        method: "GET",
+        url: `/pilot/admin/protections/${protectionId}/monitor`,
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(adminMonitorAuthorized.statusCode, 200);
+      assert.equal(adminMonitorAuthorized.json().status, "ok");
     } finally {
       await harness.close();
     }
@@ -455,6 +494,87 @@ test("pilot route hardening A-H", async (t) => {
       });
       assert.equal(res.statusCode, 200);
       assert.equal(res.json().status, "ok");
+
+      const { protectionId } = await quoteAndActivate(app, 1000);
+      const monitorRes = await app.inject({
+        method: "GET",
+        url: `/pilot/admin/protections/${protectionId}/monitor`,
+        headers: {
+          "x-admin-token": "admin-local",
+          "x-forwarded-for": "8.8.8.8"
+        }
+      });
+      assert.equal(monitorRes.statusCode, 200);
+      assert.equal(monitorRes.json().status, "ok");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("G2) admin export is tenant scoped and supports scope/status/archive filters", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      const first = await quoteAndActivate(app, 1000);
+      const second = await quoteAndActivate(app, 1500);
+      await pool.query(`UPDATE pilot_protections SET status = 'activation_failed' WHERE id = $1`, [second.protectionId]);
+
+      const activeRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&scope=active",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(activeRes.statusCode, 200);
+      const activePayload = activeRes.json();
+      assert.equal(activePayload.status, "ok");
+      assert.equal(String(activePayload.scope || ""), "active");
+      assert.equal(Number(activePayload.rows?.length || 0), 1);
+      assert.equal(String(activePayload.rows?.[0]?.status || ""), "active");
+
+      const failedRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&scope=all&status=activation_failed",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(failedRes.statusCode, 200);
+      const failedPayload = failedRes.json();
+      assert.equal(failedPayload.status, "ok");
+      assert.equal(String(failedPayload.scope || ""), "all");
+      assert.equal(String(failedPayload.statusFilter || ""), "activation_failed");
+      assert.equal(Number(failedPayload.rows?.length || 0), 1);
+      assert.equal(String(failedPayload.rows?.[0]?.protection_id || ""), second.protectionId);
+
+      const archiveRes = await app.inject({
+        method: "POST",
+        url: "/pilot/admin/protections/archive-except-current",
+        headers: { "x-admin-token": "admin-local" },
+        payload: { keepProtectionId: first.protectionId, reason: "test-archive" }
+      });
+      assert.equal(archiveRes.statusCode, 200);
+      assert.equal(archiveRes.json().status, "ok");
+      assert.equal(String(archiveRes.json().keepProtectionId || ""), first.protectionId);
+      assert.ok(Number(archiveRes.json().archivedCount || 0) >= 1);
+
+      const postArchiveDefaultRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&scope=all",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(postArchiveDefaultRes.statusCode, 200);
+      const postArchiveDefault = postArchiveDefaultRes.json();
+      assert.equal(postArchiveDefault.status, "ok");
+      assert.equal(Number(postArchiveDefault.rows?.length || 0), 1);
+      assert.equal(String(postArchiveDefault.rows?.[0]?.protection_id || ""), first.protectionId);
+
+      const postArchiveIncludeRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&scope=all&includeArchived=true",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(postArchiveIncludeRes.statusCode, 200);
+      const postArchiveInclude = postArchiveIncludeRes.json();
+      assert.equal(postArchiveInclude.status, "ok");
+      assert.ok(Number(postArchiveInclude.rows?.length || 0) >= 2);
     } finally {
       await harness.close();
     }
@@ -592,6 +712,152 @@ test("pilot route hardening A-H", async (t) => {
         [protectionId]
       );
       assert.equal(Number(payoutSettledCount.rows[0].n), 1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("I2) admin metrics reconcile pending receivable and open liability", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const { protectionId } = await quoteAndActivate(app, 1200);
+
+      const preMetricsRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics?scope=all",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(preMetricsRes.statusCode, 200);
+      assert.equal(String(preMetricsRes.json().scope || ""), "all");
+      const preMetrics = preMetricsRes.json().metrics || {};
+
+      // Settle only part of premium and payout so pending/open metrics remain non-zero.
+      const settlePremium = await app.inject({
+        method: "POST",
+        url: `/pilot/admin/protections/${protectionId}/premium-settled`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: { amount: 5, reference: "partial-premium" }
+      });
+      assert.equal(settlePremium.statusCode, 200);
+
+      const { pool } = harness;
+      await pool.query(`UPDATE pilot_protections SET expiry_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, [
+        protectionId
+      ]);
+      const resolveExpiry = await app.inject({
+        method: "POST",
+        url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: {}
+      });
+      assert.equal(resolveExpiry.statusCode, 200);
+      const payoutDue = Number(resolveExpiry.json().protection?.payoutDueAmount ?? 0);
+
+      const settlePayout = await app.inject({
+        method: "POST",
+        url: `/pilot/admin/protections/${protectionId}/payout-settled`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: { amount: Math.max(0, payoutDue / 2), payoutTxRef: "partial-payout" }
+      });
+      assert.equal(settlePayout.statusCode, 200);
+
+      const postMetricsRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics?scope=all",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(postMetricsRes.statusCode, 200);
+      const postMetrics = postMetricsRes.json().metrics || {};
+
+      const premiumDue = Number(postMetrics.premiumDueTotalUsdc || 0);
+      const premiumSettled = Number(postMetrics.premiumSettledTotalUsdc || 0);
+      const pendingPremiumReceivable = Number(postMetrics.pendingPremiumReceivableUsdc || 0);
+      assert.ok(Math.abs((premiumDue - premiumSettled) - pendingPremiumReceivable) < 1e-6);
+
+      const payoutDueTotal = Number(postMetrics.payoutDueTotalUsdc || 0);
+      const payoutSettledTotal = Number(postMetrics.payoutSettledTotalUsdc || 0);
+      const openPayoutLiability = Number(postMetrics.openPayoutLiabilityUsdc || 0);
+      assert.ok(Math.abs((payoutDueTotal - payoutSettledTotal) - openPayoutLiability) < 1e-6);
+
+      const startingReserve = Number(postMetrics.startingReserveUsdc || 0);
+      const hedgePremium = Number(postMetrics.hedgePremiumTotalUsdc || 0);
+      const availableReserve = Number(postMetrics.availableReserveUsdc || 0);
+      assert.ok(Math.abs((startingReserve - hedgePremium + premiumSettled - payoutSettledTotal) - availableReserve) < 1e-6);
+
+      const reserveAfterOpen = Number(postMetrics.reserveAfterOpenPayoutLiabilityUsdc || 0);
+      assert.ok(Math.abs((availableReserve - openPayoutLiability) - reserveAfterOpen) < 1e-6);
+
+      const netSettledCash = Number(postMetrics.netSettledCashUsdc || 0);
+      assert.ok(Math.abs((premiumSettled - payoutSettledTotal) - netSettledCash) < 1e-6);
+
+      // sanity: metrics actually changed
+      assert.notEqual(
+        String(preMetrics.premiumSettledTotalUsdc || "0"),
+        String(postMetrics.premiumSettledTotalUsdc || "0")
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("I3) admin metrics scope=active excludes activation_failed protections", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const active = await quoteAndActivate(app, 1000);
+      assert.ok(active.protectionId);
+
+      const failedQuoteRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(failedQuoteRes.statusCode, 200);
+      const failedQuoteId = String(failedQuoteRes.json().quote?.quoteId || "");
+      assert.ok(failedQuoteId);
+      // Force this protection into activation_failed to verify scope filtering.
+      const failedActivation = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: activationPayload(failedQuoteId, 1000)
+      });
+      assert.equal(failedActivation.statusCode, 200);
+      const failedProtectionId = String(failedActivation.json().protection?.id || "");
+      assert.ok(failedProtectionId);
+      const { pool } = harness;
+      // Force the latest protection into activation_failed to verify scope behavior.
+      await pool.query(
+        `UPDATE pilot_protections SET status = 'activation_failed' WHERE id = (SELECT id FROM pilot_protections ORDER BY created_at DESC LIMIT 1)`
+      );
+      const protectionRows = await pool.query(`SELECT status FROM pilot_protections ORDER BY created_at ASC`);
+      const statuses = protectionRows.rows.map((row) => String(row.status));
+      const allExpected = statuses.length;
+      const activeScopeExpected = statuses.filter((status) => status === "active" || status === "awaiting_expiry_price").length;
+      const failedCount = statuses.filter((status) => status === "activation_failed").length;
+      assert.ok(failedCount >= 1);
+
+      const activeScopeRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(activeScopeRes.statusCode, 200);
+      const activeScope = activeScopeRes.json();
+      assert.equal(String(activeScope.scope || ""), "active");
+      assert.equal(Number(activeScope.metrics?.totalProtections || 0), activeScopeExpected);
+
+      const allScopeRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics?scope=all",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(allScopeRes.statusCode, 200);
+      const allScope = allScopeRes.json();
+      assert.equal(String(allScope.scope || ""), "all");
+      assert.equal(Number(allScope.metrics?.totalProtections || 0), allExpected);
+      assert.ok(Number(activeScope.metrics?.totalProtections || 0) < Number(allScope.metrics?.totalProtections || 0));
+      assert.equal(Number(allScope.metrics?.protectedNotionalTotalUsdc || 0), 2000);
     } finally {
       await harness.close();
     }
@@ -1153,6 +1419,349 @@ test("U) degraded tenor policy with no enabled tenors falls back to default cand
     assert.equal(payload?.diagnostics?.tenorPolicy?.fallbackReason, "degraded_policy_allow_requested_candidate");
   } finally {
     await harness.close();
+  }
+});
+
+test("V) quote maps no_top_of_book to 503 liquidity-unavailable reason", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 11111,
+                    secType: "FOP",
+                    localSymbol: "W5AH6 P55000",
+                    expiry: "20260330",
+                    strike: 55000,
+                    right: "P",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 22222,
+                  secType: "FUT",
+                  localSymbol: "MBTH6",
+                  expiry: "20260331",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: null,
+              ask: null,
+              bidSize: null,
+              askSize: null,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "4000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "4000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "7",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const quoteRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteRes.statusCode, 503);
+      const payload = quoteRes.json();
+      assert.equal(payload.status, "error");
+      assert.equal(payload.reason, "quote_liquidity_unavailable");
+      assert.match(String(payload.detail || ""), /no_top_of_book/);
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("W) quote diagnostics include explicit tenorReason attribution", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ contracts: [] })
+          } as any;
+        }
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 22222,
+                  secType: "FUT",
+                  localSymbol: "MBTH6",
+                  expiry: "20260331",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: null,
+              ask: null,
+              bidSize: null,
+              askSize: null,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bids: [{ level: 0, price: 95, size: 4 }],
+              asks: [{ level: 0, price: 96, size: 6 }],
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "6000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "6000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "40",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const quoteRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteRes.statusCode, 200);
+      const payload = quoteRes.json();
+      assert.equal(payload.status, "ok");
+      assert.equal(
+        typeof payload?.diagnostics?.venueSelection?.tenorReason === "string",
+        true
+      );
+      assert.equal(
+        typeof payload?.quote?.details?.tenorReason === "string",
+        true
+      );
+      assert.equal(
+        ["tenor_exact", "tenor_within_2d", "tenor_fallback_policy", "tenor_fallback_liquidity"].includes(
+          String(payload?.diagnostics?.venueSelection?.tenorReason || "")
+        ),
+        true
+      );
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("W2) health reports degraded when IBKR transport is not live socket", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "http",
+              activeTransport: "http",
+              fallbackEnabled: true,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "4000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "4000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "7",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC"
+      }
+    });
+    try {
+      const healthRes = await harness.app.inject({
+        method: "GET",
+        url: "/pilot/health"
+      });
+      assert.equal(healthRes.statusCode, 503);
+      const payload = healthRes.json();
+      assert.equal(payload.status, "degraded");
+      assert.equal(String(payload?.checks?.venue?.activeTransport || ""), "http");
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
   }
 });
 

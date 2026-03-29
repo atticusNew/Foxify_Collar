@@ -573,8 +573,6 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 }
 
 class IbkrCmeAdapter implements PilotVenueAdapter {
-  private transportVerified = false;
-
   constructor(
     private connector: IbkrConnector,
     private mode: "ibkr_cme_live" | "ibkr_cme_paper",
@@ -598,9 +596,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
   }
 
   private async ensureRequiredLiveTransport(): Promise<void> {
-    if (!this.requireLiveTransport || this.transportVerified) return;
+    if (!this.requireLiveTransport) return;
     await this.connector.assertLiveTransportRequired();
-    this.transportVerified = true;
   }
 
   private async resolveContractAndBook(req: QuoteRequest): Promise<{
@@ -722,7 +719,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       return String(a.expiry || "").localeCompare(String(b.expiry || ""));
     };
     const pickContractWithTop = async (
-      contracts: IbkrQualifiedContract[]
+      contracts: IbkrQualifiedContract[],
+      opts?: {
+        maxPreferred?: number;
+        maxBelow?: number;
+        depthAttempts?: number;
+        probeTimeoutMs?: number;
+        legBudgetMs?: number;
+      }
     ): Promise<
       | {
           contract: IbkrQualifiedContract;
@@ -750,7 +754,64 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const eligible = [...contracts]
         .filter(contractPassesTenorPolicy)
         .sort(rankByTenor);
-      // Probe a wider candidate set while preserving tenor preference.
+      // Keep shortlist compact and probe in-ranked order to reduce market-data fanout,
+      // which is especially important when bridge latency is non-trivial (e.g. ngrok/private tunnel).
+      const maxPreferred = Math.max(1, Math.floor(Number(opts?.maxPreferred ?? 3)));
+      const maxBelow = Math.max(0, Math.floor(Number(opts?.maxBelow ?? 1)));
+      const depthAttempts = Math.max(1, Math.min(3, Math.floor(Number(opts?.depthAttempts ?? 2))));
+      const probeTimeoutMs = Math.max(
+        350,
+        Math.min(
+          2500,
+          Math.floor(Number(opts?.probeTimeoutMs ?? Math.max(450, Math.min(1800, requestWindowHintMs))))
+        )
+      );
+      const legBudgetMs = Number.isFinite(Number(opts?.legBudgetMs))
+        ? Math.max(probeTimeoutMs + 300, Math.floor(Number(opts?.legBudgetMs)))
+        : null;
+      const legDeadlineMs = legBudgetMs !== null ? Date.now() + legBudgetMs : null;
+      const ensureLegBudget = (minimumRemainingMs = 0): void => {
+        ensureBudget(minimumRemainingMs);
+        if (legDeadlineMs === null) return;
+        if (Date.now() + Math.max(0, minimumRemainingMs) >= legDeadlineMs) {
+          throw new Error("venue_quote_timeout");
+        }
+      };
+      const withProbeTimeout = async <T>(
+        promise: Promise<T>,
+        timeoutMs: number
+      ): Promise<T | null> => {
+        let timer: NodeJS.Timeout | null = null;
+        try {
+          return await Promise.race([
+            promise,
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => resolve(null), timeoutMs);
+            })
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      const withDepthProbeBudget = async (
+        promise: Promise<{
+          bids?: Array<{ price?: unknown; size?: unknown }>;
+          asks?: Array<{ price?: unknown; size?: unknown }>;
+          asOf?: unknown;
+        }>
+      ): Promise<{
+        bids?: Array<{ price?: unknown; size?: unknown }>;
+        asks?: Array<{ price?: unknown; size?: unknown }>;
+        asOf?: unknown;
+      } | null> => {
+        // Depth snapshots are often slower than top-of-book on IBKR; allow a bounded
+        // extension for depth probes so futures fallback can succeed when top is null.
+        const depthTimeoutMs = Math.max(
+          probeTimeoutMs,
+          Math.min(12000, Math.floor(probeTimeoutMs * 2))
+        );
+        return await withProbeTimeout(promise, depthTimeoutMs);
+      };
       const preferred = this.preferTenorAtOrAbove
         ? eligible.filter((contract) => {
             const tenor = contractTenorMeta(contract).selectedTenorDays;
@@ -764,102 +825,118 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           })
         : [];
       const shortlisted = [
-        ...preferred.slice(0, 4),
-        ...belowTarget.slice(0, 2)
+        ...preferred.slice(0, maxPreferred),
+        ...belowTarget.slice(0, maxBelow)
       ].filter((contract, idx, arr) => arr.findIndex((x) => x.conId === contract.conId) === idx);
       if (shortlisted.length === 0) return null;
-      ensureBudget(requestWindowHintMs);
-      const settled = await Promise.all(
-        shortlisted.map(async (contract) => {
-          try {
-            const [topRes, depthRes] = await Promise.allSettled([
-              this.connector.getTopOfBook(contract.conId),
-              this.connector.getDepth(contract.conId)
-            ]);
-            const top = topRes.status === "fulfilled" ? topRes.value : null;
-            const depthTop =
-              depthRes.status === "fulfilled" ? topFromDepthPayload(depthRes.value) : null;
-            if (top && hasUsableTop(top)) {
-              return { contract, top };
-            }
-            if (depthTop && hasUsableTop(depthTop)) {
-              return { contract, top: depthTop };
-            }
-            return null;
-          } catch {
-            return null;
+
+      const attempts: Array<{
+        contract: IbkrQualifiedContract;
+        top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string } | null;
+        ask: number | null;
+        bid: number | null;
+        askSize: number | null;
+        spreadPct: number | null;
+        belowTarget: boolean;
+        score: number;
+        driftDays: number | null;
+      }> = [];
+
+      for (const contract of shortlisted) {
+        ensureLegBudget(probeTimeoutMs + 250);
+        const tenorMeta = contractTenorMeta(contract);
+        const belowTargetCandidate =
+          tenorMeta.selectedTenorDays !== null ? tenorMeta.selectedTenorDays + 1e-9 < selectedTenorDaysIntended : false;
+        let chosenTop:
+          | { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string }
+          | null = null;
+
+        try {
+          const top = await withProbeTimeout(
+            this.connector.getTopOfBook(contract.conId),
+            probeTimeoutMs
+          );
+          if (top && hasUsableTop(top)) {
+            chosenTop = top;
           }
-        })
-      );
-      const scored = settled
-        .filter((item): item is { contract: IbkrQualifiedContract; top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string } } => Boolean(item))
-        .map((item) => {
-          const meta = contractTenorMeta(item.contract);
-          const ask = toFinitePositive(item.top.ask);
-          const bid = toFinitePositive(item.top.bid);
-          const askSize = toFinitePositive(item.top.askSize);
-          const spreadPct =
-            ask !== null && ask > 0 && bid !== null && bid > 0 && ask >= bid
-              ? (ask - bid) / ask
-              : null;
-          const driftDays = meta.tenorDriftDays;
-          const belowTarget =
-            meta.selectedTenorDays !== null ? meta.selectedTenorDays + 1e-9 < selectedTenorDaysIntended : false;
-          const tenorPenalty = (driftDays ?? 10) * 100;
-          const belowTargetPenalty = this.preferTenorAtOrAbove && belowTarget ? 40 : 0;
-          const spreadPenalty = Math.max(0, Math.min(0.25, spreadPct ?? 0.25)) * 100;
-          const sizePenalty = askSize === null ? 8 : 0;
-          const score = tenorPenalty + belowTargetPenalty + spreadPenalty + sizePenalty;
-          return {
-            ...item,
-            ask,
-            bid,
-            askSize,
-            spreadPct,
-            driftDays,
-            belowTarget,
-            score
-          };
-        })
-        .filter((row) => row.ask !== null)
-        .sort((a, b) => {
-          if (a.score !== b.score) return a.score - b.score;
-          const aDrift = a.driftDays ?? Number.POSITIVE_INFINITY;
-          const bDrift = b.driftDays ?? Number.POSITIVE_INFINITY;
-          if (aDrift !== bDrift) return aDrift - bDrift;
-          if (a.belowTarget !== b.belowTarget) return a.belowTarget ? 1 : -1;
-          if ((a.ask ?? Number.POSITIVE_INFINITY) !== (b.ask ?? Number.POSITIVE_INFINITY)) {
-            return (a.ask ?? Number.POSITIVE_INFINITY) - (b.ask ?? Number.POSITIVE_INFINITY);
+        } catch {
+          // Continue to depth fallback for this candidate.
+        }
+
+        if (!chosenTop) {
+          // Retry depth once because snapshot/top and depth can arrive out-of-phase on IB.
+          for (let depthAttempt = 0; depthAttempt < depthAttempts; depthAttempt += 1) {
+            if (depthAttempt > 0) {
+              await wait(220);
+            }
+            ensureLegBudget(Math.min(probeTimeoutMs + 200, 700));
+            try {
+              const depth = await withDepthProbeBudget(
+                this.connector.getDepth(contract.conId)
+              );
+              const depthTop = depth ? topFromDepthPayload(depth) : null;
+              if (depthTop && hasUsableTop(depthTop)) {
+                chosenTop = depthTop;
+                break;
+              }
+            } catch {
+              // Probe next attempt/candidate.
+            }
           }
-          return String(a.contract.expiry || "").localeCompare(String(b.contract.expiry || ""));
+        }
+
+        const ask = toFinitePositive(chosenTop?.ask);
+        const bid = toFinitePositive(chosenTop?.bid);
+        const askSize = toFinitePositive(chosenTop?.askSize);
+        const spreadPct =
+          ask !== null && ask > 0 && bid !== null && bid > 0 && ask >= bid
+            ? (ask - bid) / ask
+            : null;
+        const tenorPenalty = (tenorMeta.tenorDriftDays ?? 10) * 100;
+        const belowTargetPenalty = this.preferTenorAtOrAbove && belowTargetCandidate ? 40 : 0;
+        const spreadPenalty = Math.max(0, Math.min(0.25, spreadPct ?? 0.25)) * 100;
+        const sizePenalty = askSize === null ? 8 : 0;
+        const score = tenorPenalty + belowTargetPenalty + spreadPenalty + sizePenalty;
+
+        attempts.push({
+          contract,
+          top: chosenTop,
+          ask,
+          bid,
+          askSize,
+          spreadPct,
+          belowTarget: belowTargetCandidate,
+          score,
+          driftDays: tenorMeta.tenorDriftDays
         });
-      const selected = scored[0];
-      if (selected) {
-        const trace = scored.slice(0, 3).map((row) => {
-          const tenorMeta = contractTenorMeta(row.contract);
+
+        if (ask !== null && chosenTop) {
+          const trace = attempts.slice(0, 3).map((row) => {
+            const meta = contractTenorMeta(row.contract);
+            return {
+              conId: row.contract.conId,
+              expiry: String(row.contract.expiry || "") || null,
+              matchedTenorDays: meta.selectedTenorDays,
+              driftDays: meta.tenorDriftDays,
+              ask: row.ask,
+              bid: row.bid,
+              askSize: row.askSize,
+              spreadPct: row.spreadPct,
+              belowTarget: row.belowTarget,
+              score: Number(row.score.toFixed(6))
+            };
+          });
           return {
-            conId: row.contract.conId,
-            expiry: String(row.contract.expiry || "") || null,
-            matchedTenorDays: tenorMeta.selectedTenorDays,
-            driftDays: tenorMeta.tenorDriftDays,
-            ask: row.ask,
-            bid: row.bid,
-            askSize: row.askSize,
-            spreadPct: row.spreadPct,
-            belowTarget: row.belowTarget,
-            score: Number(row.score.toFixed(6))
+            contract,
+            top: chosenTop,
+            eligibleCount: eligible.length,
+            selectedScore: Number(score.toFixed(6)),
+            selectedRank: 1,
+            selectedIsBelowTarget: belowTargetCandidate,
+            candidateCountEvaluated: attempts.length,
+            selectionTrace: trace
           };
-        });
-        return {
-          contract: selected.contract,
-          top: selected.top,
-          eligibleCount: eligible.length,
-          selectedScore: Number(selected.score.toFixed(6)),
-          selectedRank: 1,
-          selectedIsBelowTarget: selected.belowTarget,
-          candidateCountEvaluated: scored.length,
-          selectionTrace: trace
-        };
+        }
       }
       return null;
     };
@@ -867,7 +944,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     let sawTenorEligibleContract = false;
     if (hedgePolicy === "options_primary_futures_fallback") {
       if (roundedStrike) {
-        ensureBudget(requestWindowHintMs);
+        ensureBudget(Math.min(requestWindowHintMs, 1800));
         const optionQuery: IbkrContractQuery = {
           kind: "mbt_option",
           symbol: "BTC",
@@ -879,7 +956,15 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         };
         const optionContracts = await this.connector.qualifyContracts(optionQuery);
         sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
-        const optionMatch = await pickContractWithTop(optionContracts);
+        const optionMatch = await pickContractWithTop(optionContracts, {
+          // Keep option probing narrow so an empty options book does not consume
+          // the full quote budget before futures fallback is attempted.
+          maxPreferred: 2,
+          maxBelow: 1,
+          depthAttempts: 1,
+          probeTimeoutMs: Math.max(500, Math.min(1400, requestWindowHintMs)),
+          legBudgetMs: Math.max(1800, Math.min(6500, Math.floor(this.quoteBudgetMs * 0.33)))
+        });
         if (optionMatch) {
           const optionMeta = contractTenorMeta(optionMatch.contract);
           return {
@@ -917,7 +1002,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       };
       const futContracts = await this.connector.qualifyContracts(futQuery);
       sawTenorEligibleContract ||= futContracts.some(contractPassesTenorPolicy);
-      const futMatch = await pickContractWithTop(futContracts);
+      const futMatch = await pickContractWithTop(futContracts, {
+        maxPreferred: 4,
+        maxBelow: 2,
+        depthAttempts: 2,
+        probeTimeoutMs: Math.max(1200, Math.min(4500, requestWindowHintMs)),
+        legBudgetMs: Math.max(6000, Math.min(30000, Math.floor(this.quoteBudgetMs * 0.8)))
+      });
       if (futMatch) {
         const futMeta = contractTenorMeta(futMatch.contract);
         return {

@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
-import { DeribitConnector } from "@foxify/connectors";
+import { DeribitConnector, IbkrConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow } from "./config";
 import {
+  archiveProtectionsByUserHashExcept,
   createPilotTermsAcceptanceIfMissing,
   extractLatestPremiumPolicyDiagnostics,
   ensurePilotSchema,
@@ -23,11 +24,11 @@ import {
   insertVenueExecution,
   insertVenueQuote,
   listRecentTenorPolicyRows,
+  listLedgerForProtection,
+  listProtectionsByUserHashForAdmin,
+  listProtectionsByUserHash,
   reserveDailyActivationCapacity,
   releaseDailyActivationCapacity,
-  listLedgerForProtection,
-  listProtections,
-  listProtectionsByUserHash,
   patchProtection
 } from "./db";
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
@@ -52,6 +53,21 @@ import type {
 const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_native" | "futures_synthetic" => {
   const raw = String(quoteDetails?.hedgeMode || "");
   return raw === "futures_synthetic" ? "futures_synthetic" : "options_native";
+};
+
+const resolveTenorReason = (params: {
+  requestedTenorDays: number;
+  venueRequestedTenorDays: number;
+  selectedTenorDays: number | null;
+  policyFallbackApplied: boolean;
+  policyFallbackReason: string | null;
+}): "tenor_exact" | "tenor_within_2d" | "tenor_fallback_policy" | "tenor_fallback_liquidity" => {
+  const selected = params.selectedTenorDays ?? params.venueRequestedTenorDays;
+  const drift = Math.abs(selected - params.requestedTenorDays);
+  if (drift <= 0.5) return "tenor_exact";
+  if (drift <= 2) return "tenor_within_2d";
+  if (params.policyFallbackApplied || Boolean(params.policyFallbackReason)) return "tenor_fallback_policy";
+  return "tenor_fallback_liquidity";
 };
 
 const getRequestIp = (req: FastifyRequest): string => {
@@ -390,6 +406,7 @@ const sanitizeQuoteForClient = (quote: {
     "strikeGapToTriggerPct",
     "selectedTenorDays",
     "tenorDriftDays",
+    "tenorReason",
     "deribitQuotePolicy",
     "strikeSelectionMode",
     "hedgeMode"
@@ -427,6 +444,54 @@ const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, label: str
   } finally {
     if (timer) clearTimeout(timer);
   }
+};
+
+const resolvePilotVenueHealth = async (): Promise<Record<string, unknown>> => {
+  if (!String(pilotConfig.venueMode || "").startsWith("ibkr_")) {
+    return {
+      mode: pilotConfig.venueMode,
+      status: "not_applicable"
+    };
+  }
+  const connector = new IbkrConnector({
+    baseUrl: pilotConfig.ibkrBridgeBaseUrl,
+    timeoutMs: pilotConfig.ibkrBridgeTimeoutMs,
+    auth: {
+      token: pilotConfig.ibkrBridgeToken
+    }
+  });
+  try {
+    const health = await withTimeout(
+      connector.getHealth(),
+      Math.max(500, Number(pilotConfig.ibkrBridgeTimeoutMs || 0)),
+      "ibkr_bridge_health"
+    );
+    return {
+      mode: pilotConfig.venueMode,
+      status: "ok",
+      transport: String((health as any)?.transport || "unknown"),
+      activeTransport: String((health as any)?.activeTransport || "unknown"),
+      session: String((health as any)?.session || "unknown"),
+      fallbackEnabled: Boolean((health as any)?.fallbackEnabled),
+      asOf: String((health as any)?.asOf || "")
+    };
+  } catch (error: any) {
+    return {
+      mode: pilotConfig.venueMode,
+      status: "degraded",
+      detail: String(error?.message || "ibkr_bridge_health_failed")
+    };
+  }
+};
+
+const isIbkrLiveTransportHealthy = (venueHealth: Record<string, unknown>): boolean => {
+  if (venueHealth.status !== "ok") return false;
+  const mode = String(venueHealth.mode || "");
+  if (!mode.startsWith("ibkr_")) return true;
+  const session = String(venueHealth.session || "").toLowerCase();
+  const activeTransport = String(venueHealth.activeTransport || "").toLowerCase();
+  const fallbackEnabled = Boolean(venueHealth.fallbackEnabled);
+  return session === "connected" && activeTransport === "ib_socket" && fallbackEnabled === false;
 };
 
 const inferProtectionTypeFromInstrument = (instrumentId: string | null | undefined): "long" | "short" => {
@@ -822,6 +887,75 @@ export const registerPilotRoutes = async (
     }
   });
 
+  app.get("/pilot/health", async (_req, reply) => {
+    const requestId = pilotConfig.nextRequestId();
+    let db: Record<string, unknown>;
+    try {
+      await withTimeout(pool.query("SELECT 1"), 2000, "db_health");
+      db = { status: "ok" };
+    } catch (error: any) {
+      db = {
+        status: "degraded",
+        detail: String(error?.message || "db_health_failed")
+      };
+    }
+
+    let price: Record<string, unknown>;
+    try {
+      const snapshot = await withTimeout(
+        resolvePriceSnapshot(
+          {
+            primaryUrl: pilotConfig.referencePriceUrl,
+            fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+            primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+            fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+            freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+            requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+            requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
+          },
+          {
+            marketId: pilotConfig.referenceMarketId || "BTC-USD",
+            now: new Date(),
+            requestId,
+            endpointVersion: pilotConfig.endpointVersion
+          }
+        ),
+        Math.max(
+          1000,
+          Math.max(
+            Number(pilotConfig.pricePrimaryTimeoutMs || 0),
+            Number(pilotConfig.priceFallbackTimeoutMs || 0)
+          ) + 1000
+        ),
+        "price_health"
+      );
+      price = {
+        status: "ok",
+        marketId: snapshot.marketId,
+        source: snapshot.priceSource,
+        timestamp: snapshot.priceTimestamp
+      };
+    } catch (error: any) {
+      price = {
+        status: "degraded",
+        detail: String(error?.message || "price_health_failed")
+      };
+    }
+
+    const venue = await resolvePilotVenueHealth();
+    const overallOk = db.status === "ok" && price.status === "ok" && isIbkrLiveTransportHealthy(venue);
+    reply.code(overallOk ? 200 : 503);
+    return {
+      status: overallOk ? "ok" : "degraded",
+      requestId,
+      checks: {
+        db,
+        price,
+        venue
+      }
+    };
+  });
+
   app.get("/pilot/tenor-policy", async (_req, reply) => {
     try {
       const policy = await resolveDynamicTenorPolicy({
@@ -1013,6 +1147,17 @@ export const registerPilotRoutes = async (
         "venue_quote"
       );
       venueMs = Date.now() - venueStartedAt;
+      const selectedTenorDaysRaw =
+        quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
+          ? Number((quote.details as Record<string, unknown>).selectedTenorDays)
+          : null;
+      const tenorReason = resolveTenorReason({
+        requestedTenorDays,
+        venueRequestedTenorDays,
+        selectedTenorDays: selectedTenorDaysRaw,
+        policyFallbackApplied: tenorPolicyFallbackApplied,
+        policyFallbackReason: tenorPolicyFallbackReason
+      });
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
@@ -1043,6 +1188,7 @@ export const registerPilotRoutes = async (
         ...quote,
         details: {
           ...(quote.details || {}),
+          tenorReason,
           pricingBreakdown,
           lockContext: {
             requestedInstrumentId: quoteInstrumentId,
@@ -1088,6 +1234,7 @@ export const registerPilotRoutes = async (
               quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
                 ? Number((quote.details as Record<string, unknown>).selectedTenorDays).toFixed(10)
                 : null,
+            tenorReason,
             selectedExpiry:
               quote.details && typeof (quote.details as Record<string, unknown>).selectedExpiry === "string"
                 ? String((quote.details as Record<string, unknown>).selectedExpiry)
@@ -1112,6 +1259,10 @@ export const registerPilotRoutes = async (
       });
       const clientQuote = sanitizeQuoteForClient({
         ...quote,
+        details: {
+          ...(quote.details || {}),
+          tenorReason
+        },
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4)),
       });
       return {
@@ -1197,6 +1348,7 @@ export const registerPilotRoutes = async (
               quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
                 ? Number((quote.details as Record<string, unknown>).selectedTenorDays).toFixed(10)
                 : null,
+            tenorReason,
             selectedExpiry:
               quote.details && typeof (quote.details as Record<string, unknown>).selectedExpiry === "string"
                 ? String((quote.details as Record<string, unknown>).selectedExpiry)
@@ -1244,11 +1396,19 @@ export const registerPilotRoutes = async (
       const isTransportNotLive = message.startsWith("ibkr_transport_not_live");
       const isTenorDriftExceeded = message.includes("tenor_drift_exceeded");
       const isTenorTemporarilyUnavailable = message.includes("tenor_temporarily_unavailable");
+      const isNoTopOfBook = message.includes("no_top_of_book");
+      const isNoContract = message.includes("no_contract");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
       const isStorageFailure =
         message.includes("postgres") || message.includes("ECONN") || message.includes("pool") || message.includes("db");
       reply.code(
-        isTimeout ? 504 : isStorageFailure || isTransportNotLive ? 503 : isTenorTemporarilyUnavailable ? 409 : 502
+        isTimeout
+          ? 504
+          : isStorageFailure || isTransportNotLive || isNoTopOfBook || isNoContract
+            ? 503
+            : isTenorTemporarilyUnavailable || isTenorDriftExceeded
+              ? 409
+              : 502
       );
       return {
         status: "error",
@@ -1258,6 +1418,10 @@ export const registerPilotRoutes = async (
             ? "ibkr_transport_not_live"
             : isTenorTemporarilyUnavailable
               ? "tenor_temporarily_unavailable"
+            : isNoTopOfBook
+              ? "quote_liquidity_unavailable"
+            : isNoContract
+              ? "quote_contract_unavailable"
             : isTenorDriftExceeded
               ? "tenor_drift_exceeded"
             : "quote_generation_failed",
@@ -1267,6 +1431,10 @@ export const registerPilotRoutes = async (
             ? "IBKR live transport is not active. Verify bridge transport health and retry."
             : isTenorTemporarilyUnavailable
               ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
+            : isNoTopOfBook
+              ? "Venue top-of-book is temporarily unavailable for the requested hedge. Please retry."
+            : isNoContract
+              ? "No venue contract is currently available for the requested hedge. Please retry."
             : isTenorDriftExceeded
               ? "No IBKR contract matched the requested tenor within configured drift."
           : "Unable to generate a venue quote right now. Please retry.",
@@ -1959,25 +2127,8 @@ export const registerPilotRoutes = async (
     }
   });
 
-  app.get("/pilot/protections/:id/monitor", async (req, reply) => {
-    const params = req.params as { id: string };
-    let userHash: { userHash: string; hashVersion: number };
-    try {
-      userHash = resolveTenantScopeHash();
-    } catch (error: any) {
-      const reason = String(error?.message || "server_config_error");
-      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
-      return { status: "error", reason };
-    }
-    const protection = await getProtection(pool, params.id);
-    if (!protection) {
-      reply.code(404);
-      return { status: "error", reason: "not_found" };
-    }
-    if (!assertProtectionOwnership(protection, userHash)) {
-      reply.code(404);
-      return { status: "error", reason: "not_found" };
-    }
+  const buildProtectionMonitorPayload = async (protection: Awaited<ReturnType<typeof getProtection>>) => {
+    if (!protection) throw new Error("not_found");
     const requestId = pilotConfig.nextRequestId();
     let snapshot: PriceSnapshotOutput;
     try {
@@ -1999,13 +2150,9 @@ export const registerPilotRoutes = async (
         }
       );
     } catch (error: any) {
-      reply.code(503);
-      return {
-        status: "error",
-        reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
-        detail: String(error?.message || "monitor_price_unavailable")
-      };
+      const priceError = new Error("price_unavailable");
+      (priceError as any).detail = String(error?.message || "monitor_price_unavailable");
+      throw priceError;
     }
     const protectionType = resolveProtectionTypeFromRecord(protection);
     const entryPrice = parsePositiveDecimal(protection.entryPrice) || snapshot.price;
@@ -2047,23 +2194,96 @@ export const registerPilotRoutes = async (
       }
     }
     return {
-      status: "ok",
-      monitor: {
-        protectionId: protection.id,
-        status: protection.status,
-        protectionType,
-        referencePrice: referencePrice.toFixed(10),
-        referenceSource: snapshot.priceSource,
-        referenceTimestamp: snapshot.priceTimestamp,
-        triggerPrice: triggerPrice.toFixed(10),
-        distanceToTriggerPct: distanceToTriggerPct.toFixed(4),
-        optionMarkUsd: new Decimal(optionMarkUsd).toFixed(10),
-        markSource,
-        markDetails,
-        estimatedTriggerValue: estimatedTriggerValue.toFixed(10),
-        asOf: new Date().toISOString()
-      }
+      protectionId: protection.id,
+      status: protection.status,
+      protectionType,
+      referencePrice: referencePrice.toFixed(10),
+      referenceSource: snapshot.priceSource,
+      referenceTimestamp: snapshot.priceTimestamp,
+      triggerPrice: triggerPrice.toFixed(10),
+      distanceToTriggerPct: distanceToTriggerPct.toFixed(4),
+      optionMarkUsd: new Decimal(optionMarkUsd).toFixed(10),
+      markSource,
+      markDetails,
+      estimatedTriggerValue: estimatedTriggerValue.toFixed(10),
+      asOf: new Date().toISOString()
     };
+  };
+
+  app.get("/pilot/protections/:id/monitor", async (req, reply) => {
+    const params = req.params as { id: string };
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protection, userHash)) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    try {
+      const monitor = await buildProtectionMonitorPayload(protection);
+      return { status: "ok", monitor };
+    } catch (error: any) {
+      if (String(error?.message || "") !== "price_unavailable") {
+        reply.code(500);
+        return {
+          status: "error",
+          reason: "monitor_unavailable",
+          detail: String(error?.message || "monitor_unavailable")
+        };
+      }
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        message: "Price temporarily unavailable, please retry.",
+        detail: String((error as any)?.detail || "monitor_price_unavailable")
+      };
+    }
+  });
+
+  app.get("/pilot/admin/protections/:id/monitor", async (req, reply) => {
+    const params = req.params as { id: string };
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protection, resolveTenantScopeHash())) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    try {
+      const monitor = await buildProtectionMonitorPayload(protection);
+      return { status: "ok", monitor };
+    } catch (error: any) {
+      if (String(error?.message || "") !== "price_unavailable") {
+        reply.code(500);
+        return {
+          status: "error",
+          reason: "monitor_unavailable",
+          detail: String(error?.message || "monitor_unavailable")
+        };
+      }
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        message: "Price temporarily unavailable, please retry.",
+        detail: String((error as any)?.detail || "monitor_price_unavailable")
+      };
+    }
   });
 
   app.get("/pilot/protections/:id", async (req, reply) => {
@@ -2119,8 +2339,37 @@ export const registerPilotRoutes = async (
   app.get("/pilot/protections/export", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
-    const query = req.query as { format?: string; limit?: string };
-    const protections = await listProtections(pool, { limit: Number(query.limit || 200) });
+    const query = req.query as {
+      format?: string;
+      limit?: string;
+      scope?: "active" | "open" | "all";
+      status?: string;
+      includeArchived?: string;
+    };
+    const scope =
+      query.scope === "all" || query.scope === "open" || query.scope === "active" ? query.scope : "active";
+    const includeArchived = String(query.includeArchived || "").toLowerCase() === "true";
+    const statusRaw = String(query.status || "all").trim().toLowerCase();
+    const allowedStatuses = new Set([
+      "pending_activation",
+      "activation_failed",
+      "active",
+      "reconcile_pending",
+      "awaiting_renew_decision",
+      "awaiting_expiry_price",
+      "expired_itm",
+      "expired_otm",
+      "cancelled",
+      "all"
+    ]);
+    const status = allowedStatuses.has(statusRaw) ? statusRaw : "all";
+    const tenant = resolveTenantScopeHash();
+    const protections = await listProtectionsByUserHashForAdmin(pool, tenant.userHash, {
+      limit: Number(query.limit || 200),
+      scope,
+      status: status as any,
+      includeArchived
+    });
     const rows = protections.map((item) => ({
       protection_id: item.id,
       status: item.status,
@@ -2145,7 +2394,36 @@ export const registerPilotRoutes = async (
       reply.header("Content-Type", "text/csv");
       return toCsv(rows);
     }
-    return { status: "ok", rows };
+    return { status: "ok", scope, statusFilter: status, includeArchived, rows };
+  });
+
+  app.post("/pilot/admin/protections/archive-except-current", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const tenant = resolveTenantScopeHash();
+    const body = req.body as { keepProtectionId?: string; reason?: string };
+    const keepProtectionId = String(body.keepProtectionId || "").trim() || null;
+    if (keepProtectionId) {
+      const keep = await getProtection(pool, keepProtectionId);
+      if (!keep || !assertProtectionOwnership(keep, tenant)) {
+        reply.code(404);
+        return { status: "error", reason: "keep_protection_not_found" };
+      }
+    }
+    const archivedCount = await archiveProtectionsByUserHashExcept(pool, {
+      userHash: tenant.userHash,
+      keepProtectionId,
+      reason: body.reason || "admin_archive_except_current",
+      actor: auth.actor
+    });
+    await insertAdminAction(pool, {
+      protectionId: keepProtectionId,
+      action: "archive_except_current",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: { keepProtectionId, archivedCount, reason: body.reason || "admin_archive_except_current" }
+    });
+    return { status: "ok", archivedCount, keepProtectionId };
   });
 
   app.post("/pilot/protections/:id/renewal-decision", async (req, reply) => {
@@ -2209,10 +2487,15 @@ export const registerPilotRoutes = async (
   app.get("/pilot/admin/metrics", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
+    const query = req.query as { scope?: string };
+    const scopeRaw = String(query.scope || "active").toLowerCase();
+    const scope = scopeRaw === "all" || scopeRaw === "open" ? scopeRaw : "active";
     const metrics = await getPilotAdminMetrics(pool, {
-      startingReserveUsdc: pilotConfig.startingReserveUsdc
+      startingReserveUsdc: pilotConfig.startingReserveUsdc,
+      userHash: resolveTenantScopeHash().userHash,
+      scope
     });
-    return { status: "ok", metrics };
+    return { status: "ok", scope, metrics };
   });
 
   app.post("/pilot/admin/protections/:id/premium-settled", async (req, reply) => {

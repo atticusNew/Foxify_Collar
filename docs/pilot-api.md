@@ -51,6 +51,9 @@ Endpoints:
    - `status=error`
    - `reason=quote_generation_failed`
    - message: `Unable to generate a venue quote right now. Please retry.`
+   - IBKR/CME quote path may return:
+     - `reason=quote_liquidity_unavailable` (venue top-of-book/depth ask unavailable during quote budget)
+     - `reason=quote_contract_unavailable` (no candidate contract currently qualified for request)
 8. `GET /pilot/reference-price` exposes the current server-side reference anchor (price, venue, source, timestamp)
    used to calibrate protection economics.
 
@@ -164,6 +167,11 @@ settlement calls for an already-settled protection return `status=ok` with `idem
   - `quote.details.strikeGapToTriggerPct`
   - `quote.details.selectedTenorDays`
   - `quote.details.tenorDriftDays`
+  - `quote.details.tenorReason`:
+    - `tenor_exact`
+    - `tenor_within_2d`
+    - `tenor_fallback_policy`
+    - `tenor_fallback_liquidity`
   - `quote.details.deribitQuotePolicy`
   - `quote.details.strikeSelectionMode`
   - mirrored in `diagnostics.venueSelection` for explicit observability

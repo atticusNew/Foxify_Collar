@@ -156,6 +156,19 @@ type AdminMetrics = {
   netSettledCashUsdc: string;
 };
 
+type AdminScope = "active" | "open" | "all";
+type AdminStatusFilter =
+  | "all"
+  | "pending_activation"
+  | "activation_failed"
+  | "active"
+  | "reconcile_pending"
+  | "awaiting_renew_decision"
+  | "awaiting_expiry_price"
+  | "expired_itm"
+  | "expired_otm"
+  | "cancelled";
+
 type ProtectionRecord = {
   id: string;
   status: string;
@@ -407,12 +420,16 @@ export function PilotApp() {
   const [monitor, setMonitor] = useState<MonitorPayload | null>(null);
   const [monitorBusy, setMonitorBusy] = useState(false);
   const [protectionsHistory, setProtectionsHistory] = useState<ProtectionRecord[]>([]);
+  const [showFailedProtections, setShowFailedProtections] = useState(false);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminTokenInput, setAdminTokenInput] = useState("");
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminError, setAdminError] = useState<string | null>(null);
   const [adminRows, setAdminRows] = useState<AdminProtectionRow[]>([]);
+  const [adminScope, setAdminScope] = useState<AdminScope>("active");
+  const [adminStatusFilter, setAdminStatusFilter] = useState<AdminStatusFilter>("all");
+  const [adminIncludeArchived, setAdminIncludeArchived] = useState(false);
   const [adminSelectedId, setAdminSelectedId] = useState<string | null>(null);
   const [adminLedger, setAdminLedger] = useState<AdminLedgerEntry[]>([]);
   const [adminDetailProtection, setAdminDetailProtection] = useState<ProtectionRecord | null>(null);
@@ -423,6 +440,7 @@ export function PilotApp() {
   const [adminDetailUpdatedAt, setAdminDetailUpdatedAt] = useState<Date | null>(null);
   const [showHistorySection, setShowHistorySection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [monitorUpdatedAt, setMonitorUpdatedAt] = useState<Date | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [liveReference, setLiveReference] = useState<ReferencePricePayload["reference"] | null>(null);
   const [liveReferenceBusy, setLiveReferenceBusy] = useState(false);
@@ -769,7 +787,7 @@ export function PilotApp() {
       if (requestSeq !== monitorRequestSeqRef.current) return;
       if (payload?.monitor && payload.monitor.protectionId === protectionId) {
         setMonitor(payload.monitor as MonitorPayload);
-        setLastUpdatedAt(new Date());
+        setMonitorUpdatedAt(new Date());
       }
     } catch {
       // ignore monitor refresh errors in pilot widget
@@ -780,15 +798,28 @@ export function PilotApp() {
     }
   };
 
-  const loadAdminRows = async (token: string) => {
+  const loadAdminRows = async (
+    token: string,
+    opts?: { scope?: AdminScope; status?: AdminStatusFilter; includeArchived?: boolean }
+  ) => {
     setAdminBusy(true);
     setAdminError(null);
     try {
+      const scope = opts?.scope ?? adminScope;
+      const status = opts?.status ?? adminStatusFilter;
+      const includeArchived = opts?.includeArchived ?? adminIncludeArchived;
+      const params = new URLSearchParams({
+        format: "json",
+        limit: "200",
+        scope,
+        status,
+        includeArchived: includeArchived ? "true" : "false"
+      });
       const [rowsRes, metricsRes] = await Promise.all([
-        fetch(`${API_BASE}/pilot/protections/export?format=json&limit=200`, {
+        fetch(`${API_BASE}/pilot/protections/export?${params.toString()}`, {
           headers: { "x-admin-token": token }
         }),
-        fetch(`${API_BASE}/pilot/admin/metrics`, {
+        fetch(`${API_BASE}/pilot/admin/metrics?scope=${encodeURIComponent(scope)}`, {
           headers: { "x-admin-token": token }
         })
       ]);
@@ -803,6 +834,9 @@ export function PilotApp() {
       const rows = rowsPayload.rows as AdminProtectionRow[];
       setAdminRows(rows);
       setAdminMetrics(metricsPayload.metrics as AdminMetrics);
+      setAdminScope(scope);
+      setAdminStatusFilter(status);
+      setAdminIncludeArchived(includeArchived);
       const nextSelected = adminSelectedId && rows.some((row) => row.protection_id === adminSelectedId)
         ? adminSelectedId
         : rows[0]?.protection_id || null;
@@ -827,7 +861,7 @@ export function PilotApp() {
         fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/ledger`, {
           headers: { "x-admin-token": token }
         }),
-        fetch(`${API_BASE}/pilot/protections/${protectionId}/monitor`, {
+        fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/monitor`, {
           headers: { "x-admin-token": token }
         })
       ]);
@@ -854,6 +888,7 @@ export function PilotApp() {
 
   useEffect(() => {
     setMonitor(null);
+    setMonitorUpdatedAt(null);
   }, [protection?.id]);
 
   useEffect(() => {
@@ -979,6 +1014,7 @@ export function PilotApp() {
           }
           setProtection(payload.protection as ProtectionRecord);
           setMonitor(null);
+          setMonitorUpdatedAt(null);
           setLastUpdatedAt(new Date());
           setShowProtectionModal(true);
           setShowRenewModal(false);
@@ -1202,11 +1238,17 @@ export function PilotApp() {
       "true" ||
       new URLSearchParams(window.location.search).get("internal_admin") === "1");
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
-  const liveReferencePrice = Number(monitor?.referencePrice ?? referencePrice);
-  const liveTriggerPrice = monitor?.triggerPrice ?? displayedTriggerPrice;
-  const liveDistanceToTriggerPct = Number(monitor?.distanceToTriggerPct ?? distanceToTriggerPct);
-  const liveOptionMarkUsd = Number(monitor?.optionMarkUsd ?? indicativeOptionMark);
-  const liveEstimatedTriggerValue = Number(monitor?.estimatedTriggerValue ?? maxTriggerProtectionValue);
+  const monitorHasLiveSnapshot = Boolean(
+    monitor &&
+      protection &&
+      monitor.protectionId === protection.id &&
+      Number.isFinite(Number(monitor.referencePrice))
+  );
+  const liveReferencePrice = monitorHasLiveSnapshot ? Number(monitor?.referencePrice ?? NaN) : NaN;
+  const liveTriggerPrice = monitorHasLiveSnapshot ? monitor?.triggerPrice ?? null : null;
+  const liveDistanceToTriggerPct = monitorHasLiveSnapshot ? Number(monitor?.distanceToTriggerPct ?? NaN) : NaN;
+  const liveOptionMarkUsd = monitorHasLiveSnapshot ? Number(monitor?.optionMarkUsd ?? NaN) : NaN;
+  const liveEstimatedTriggerValue = monitorHasLiveSnapshot ? Number(monitor?.estimatedTriggerValue ?? NaN) : NaN;
   const adminSelected = adminRows.find((row) => row.protection_id === adminSelectedId) || null;
   const adminClientPremiumTotal = Number(adminMetrics?.clientPremiumTotalUsdc ?? 0);
   const adminHedgePremiumTotal =
@@ -1227,7 +1269,17 @@ export function PilotApp() {
   const adminAvailableReserve = Number(adminMetrics?.availableReserveUsdc ?? 0);
   const adminReserveAfterOpenLiability = Number(adminMetrics?.reserveAfterOpenPayoutLiabilityUsdc ?? 0);
   const adminNetSettledCash = Number(adminMetrics?.netSettledCashUsdc ?? adminPremiumSettledTotal - adminTotalPayoutSettled);
-  const adminActiveCount = Number(adminMetrics?.activeProtections ?? adminRows.filter((row) => row.status === "active").length);
+  const adminActiveCount = Number(adminRows.filter((row) => row.status === "active").length);
+  const adminMarkedRows = adminRows.filter((row) => row.status === "active" || row.status === "awaiting_expiry_price");
+  const adminIndicativeHedgeMarkTotal = adminMarkedRows.reduce((sum, row) => {
+    const monitorForRow = row.protection_id === adminSelectedId ? adminMonitor : null;
+    const mark = Number(monitorForRow?.optionMarkUsd ?? NaN);
+    return Number.isFinite(mark) ? sum + mark : sum;
+  }, 0);
+  const adminUnrealizedHedgePnlIndicative = adminIndicativeHedgeMarkTotal - adminHedgePremiumTotal;
+  const adminIndicativeMarksCoverage = `${adminMarkedRows.filter((row) => row.protection_id === adminSelectedId).length}/${
+    adminMarkedRows.length
+  }`;
   const adminTimeLeftMs = adminSelected ? Date.parse(adminSelected.expiry_at) - Date.now() : NaN;
   const adminSelectedClientPremium = Number(adminDetailProtection?.premium ?? adminSelected?.premium ?? 0);
   const adminSelectedHedgeCost = Number(
@@ -1240,10 +1292,16 @@ export function PilotApp() {
     adminSelectedClientPremium > 0 ? (adminSelectedTradeMargin / adminSelectedClientPremium) * 100 : NaN;
   const hasActiveInHistory = Boolean(protection && protectionsHistory.some((item) => item.id === protection.id));
   const activeProtectionForView = protection && hasActiveInHistory ? protection : null;
-  const historyWithoutActive = activeProtectionForView
+  const rawHistoryWithoutActive = activeProtectionForView
     ? protectionsHistory.filter((item) => item.id !== protection.id)
     : protectionsHistory;
-  const protectionsTotalCount = protectionsHistory.length;
+  const totalFailedCount = rawHistoryWithoutActive.filter(
+    (item) => item.status === "activation_failed" || item.status === "cancelled"
+  ).length;
+  const historyWithoutActive = showFailedProtections
+    ? rawHistoryWithoutActive
+    : rawHistoryWithoutActive.filter((item) => item.status !== "activation_failed" && item.status !== "cancelled");
+  const protectionsTotalCount = (activeProtectionForView ? 1 : 0) + historyWithoutActive.length;
   const premiumHedgeCost = Number(premiumPolicySummary?.estimated?.hedgeCostUsd ?? NaN);
   const premiumBrokerFees = Number(premiumPolicySummary?.estimated?.brokerFeesUsd ?? NaN);
   const premiumPassThrough = Number(premiumPolicySummary?.estimated?.passThroughUsd ?? NaN);
@@ -1268,6 +1326,36 @@ export function PilotApp() {
       : quotePolicyClass === "REVIEW"
         ? "REVIEW"
         : "NO-GO";
+  const protectionsForPremium = activeProtectionForView
+    ? [activeProtectionForView, ...historyWithoutActive]
+    : protectionsHistory;
+  const pilotPremiumOwedUsd = protectionsForPremium.reduce(
+    (sum, item) => sum + Number(item.premium || 0),
+    0
+  );
+  const dailyCapUsedUsd = Number(quote?.limits?.dailyUsedUsdc ?? 0);
+  const dailyCapProjectedUsd = Number(quote?.limits?.projectedDailyUsdc ?? 0);
+  const dailyCapMaxUsd = Number(quote?.limits?.maxDailyProtectedNotionalUsdc ?? 0);
+  const showDailyCapSummary = Number.isFinite(dailyCapMaxUsd) && dailyCapMaxUsd > 0;
+  const dailyCapPct =
+    showDailyCapSummary && Number.isFinite(dailyCapProjectedUsd)
+      ? Math.max(0, Math.min(100, (dailyCapProjectedUsd / dailyCapMaxUsd) * 100))
+      : NaN;
+  const monitorStatusLabel = monitorHasLiveSnapshot
+    ? monitorBusy
+      ? "Refreshing live monitor snapshot..."
+      : monitorUpdatedAt
+        ? `Live snapshot updated ${monitorUpdatedAt.toLocaleTimeString()}`
+        : "Live snapshot ready"
+    : monitorBusy
+      ? "Loading first live monitor snapshot..."
+      : "Awaiting first live monitor snapshot...";
+  const statusPillClass = (status: string): string => {
+    const normalized = String(status || "").toLowerCase();
+    if (normalized === "active") return "pill";
+    if (normalized === "awaiting_renew_decision" || normalized === "awaiting_expiry_price") return "pill pill-warning";
+    return "pill pill-danger";
+  };
 
   if (!pilotUnlocked) {
     return (
@@ -1356,7 +1444,10 @@ export function PilotApp() {
                   <li>
                     Daily protected notional limit is 50,000 USDC for pilot operations and resets at 00:00 UTC each calendar day.
                   </li>
-                  <li>Each protection uses a fixed 7-day tenor. Auto-renew may be enabled and remains subject to these terms.</li>
+                  <li>
+                    Protection tenor is requested per quote, and matched expiry may differ based on live venue liquidity
+                    and policy controls. Auto-renew may be enabled and remains subject to these terms.
+                  </li>
                   <li>
                     The pilot campaign runs for a maximum of 30 days from the official UTC start date configured by
                     Atticus Operations.
@@ -1543,12 +1634,12 @@ export function PilotApp() {
             </div>
 
             <div className="pilot-form-row">
-              <span className="pilot-label">Target Horizon</span>
+              <span className="pilot-label">Protection Length</span>
               <div className="pilot-field pilot-tenor-field">
                 <div
                   className={`pilot-tenor-chips ${enabledTenorDays.length === 1 ? "pilot-tenor-chips-single" : ""}`}
                   role="group"
-                  aria-label="Target Horizon"
+                  aria-label="Protection Length"
                 >
                   {enabledTenorDays.map((tenorDay) => {
                     const selected = selectedTenorDays === tenorDay;
@@ -1568,7 +1659,7 @@ export function PilotApp() {
                   })}
                 </div>
                 <div className="muted pilot-tenor-helper">
-                  Recommended horizon: {defaultTenorDays}-Day. Final matched expiry depends on live liquidity.
+                  Recommended: {defaultTenorDays}D. Final expiry may vary.
                 </div>
               </div>
             </div>
@@ -1591,6 +1682,22 @@ export function PilotApp() {
             {!canQuote && (
               <div className="disclaimer danger">
                 Enter position size and protection amount. Protection amount cannot exceed position size.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="section">
+          <h4>Pilot Summary</h4>
+          <div className="quote-card quote-card-ready">
+            <div className="muted">
+              Premium due at pilot close: <strong>${formatUsd(pilotPremiumOwedUsd)}</strong>
+            </div>
+            {showDailyCapSummary && (
+              <div className="muted">
+                Daily protected notional (UTC): used ${formatUsd(dailyCapUsedUsd)} → projected{" "}
+                <strong>${formatUsd(dailyCapProjectedUsd)}</strong> / ${formatUsd(dailyCapMaxUsd)}
+                {Number.isFinite(dailyCapPct) ? ` (${dailyCapPct.toFixed(1)}%)` : ""}
               </div>
             )}
           </div>
@@ -1768,11 +1875,11 @@ export function PilotApp() {
                   <span className="spinner" />
                   Loading protections...
                 </div>
-              ) : !activeProtectionForView && historyWithoutActive.length === 0 ? (
+              ) : !protection && historyWithoutActive.length === 0 ? (
                 <div className="muted">No protections found yet.</div>
               ) : (
                 <div className="positions">
-                  {activeProtectionForView && (
+                  {protection && (
                     <div className="position-row position-row-active">
                       <div className="position-main">
                         <div className="position-main-title">
@@ -1780,12 +1887,12 @@ export function PilotApp() {
                           <span className="pill">active</span>
                           <span className="pill pill-warning">Current</span>
                         </div>
-                        <div className="muted">ID {activeProtectionForView.id}</div>
+                        <div className="muted">ID {protection.id}</div>
                         <div className="muted">
                           {triggerLabel.replace("Protection ", "")}{" "}
                           {displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"} · Premium{" "}
-                          {activeProtectionForView.premium ? `$${formatUsd(activeProtectionForView.premium)}` : "—"} · Expires{" "}
-                          {new Date(activeProtectionForView.expiryAt).toLocaleString()}
+                          {protection.premium ? `$${formatUsd(protection.premium)}` : "—"} · Expires{" "}
+                          {new Date(protection.expiryAt).toLocaleString()}
                         </div>
                         {renewalChip && <div className="muted">{renewalChip}</div>}
                       </div>
@@ -1796,7 +1903,7 @@ export function PilotApp() {
                           onClick={() => {
                             setMonitor(null);
                             setShowProtectionModal(true);
-                            void refreshMonitor(activeProtectionForView.id);
+                            void refreshMonitor(protection.id);
                           }}
                         >
                           Open Monitor
@@ -1805,8 +1912,21 @@ export function PilotApp() {
                     </div>
                   )}
 
-                  {historyWithoutActive.length > 0 && (
-                    <div className="muted section-subtitle">Recent Protections</div>
+                  {(historyWithoutActive.length > 0 || totalFailedCount > 0) && (
+                    <div className="section-title-row">
+                      <div className="muted section-subtitle">Recent Protections</div>
+                      {totalFailedCount > 0 && (
+                        <button
+                          className="link-btn muted"
+                          type="button"
+                          onClick={() => setShowFailedProtections((prev) => !prev)}
+                        >
+                          {showFailedProtections
+                            ? "Hide failed/cancelled"
+                            : `Show failed/cancelled (${totalFailedCount})`}
+                        </button>
+                      )}
+                    </div>
                   )}
                   {historyWithoutActive.map((item) => {
                     const itemType =
@@ -1822,7 +1942,7 @@ export function PilotApp() {
                         <div className="position-main">
                           <div className="position-main-title">
                             <strong>{itemDirection}</strong>
-                            <span className="pill">{item.status}</span>
+                            <span className={statusPillClass(item.status)}>{item.status}</span>
                           </div>
                           <div className="muted">
                             ID {item.id}
@@ -1870,8 +1990,10 @@ export function PilotApp() {
             </div>
             <div className="muted pilot-monitor-subtitle">
               Protected position {protection.id} · Auto-refresh every 10s
-              {lastUpdatedAt ? ` · Updated ${lastUpdatedAt.toLocaleTimeString()}` : ""}
+              {lastUpdatedAt ? ` · Position updated ${lastUpdatedAt.toLocaleTimeString()}` : ""}
+              {monitorUpdatedAt ? ` · Monitor snapshot ${monitorUpdatedAt.toLocaleTimeString()}` : ""}
             </div>
+            <div className="disclaimer">{monitorStatusLabel}</div>
             <div className="modal-actions">
               <button
                 className="btn btn-secondary"
@@ -1884,7 +2006,9 @@ export function PilotApp() {
             <div className="pilot-monitor-grid">
               <div className="pilot-monitor-card">
                 <div className="label">Reference BTC Price</div>
-                <div className="value">${formatUsd(liveReferencePrice)}</div>
+                <div className="value">
+                  {Number.isFinite(liveReferencePrice) ? `$${formatUsd(liveReferencePrice)}` : "Loading live snapshot..."}
+                </div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Protection Anchor Price</div>
@@ -1901,9 +2025,11 @@ export function PilotApp() {
                 </div>
               </div>
               <div className="pilot-monitor-card">
-                <div className="label">Option Mark (Indicative)</div>
-                <div className="value">${formatUsd(liveOptionMarkUsd)}</div>
-                {monitor?.markSource && <div className="muted">{monitor.markSource}</div>}
+                <div className="label">Current Option Mark (Indicative)</div>
+                <div className="value">
+                  {Number.isFinite(liveOptionMarkUsd) ? `$${formatUsd(liveOptionMarkUsd)}` : "Loading live snapshot..."}
+                </div>
+                <div className="muted">Latest indicative option price, not settled P&L.</div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Est. Protection Value at Trigger</div>
@@ -1966,6 +2092,24 @@ export function PilotApp() {
                   <div className="pilot-monitor-card">
                     <div className="label">Active Protections</div>
                     <div className="value">{adminActiveCount}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Indicative Option Value (Open)</div>
+                    <div className="value">
+                      {Number.isFinite(adminIndicativeHedgeMarkTotal)
+                        ? `$${formatUsd(adminIndicativeHedgeMarkTotal)}`
+                        : "—"}
+                    </div>
+                    <div className="muted">Coverage: {adminIndicativeHedgeMarkCount} marked rows</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Unrealized Hedge P&L (Indicative)</div>
+                    <div className={`value ${adminUnrealizedHedgePnlIndicative < 0 ? "danger" : ""}`}>
+                      {Number.isFinite(adminUnrealizedHedgePnlIndicative)
+                        ? `$${formatUsd(adminUnrealizedHedgePnlIndicative)}`
+                        : "—"}
+                    </div>
+                    <div className="muted">Indicative mark value minus hedge premium cost.</div>
                   </div>
                   <div className="pilot-monitor-card">
                     <div className="label">Starting Reserve</div>
@@ -2031,8 +2175,84 @@ export function PilotApp() {
                     {adminBusy ? "Refreshing..." : "Refresh Admin Data"}
                   </button>
                 </div>
+                <div className="pilot-admin-filters">
+                  <label className="muted">
+                    Scope
+                    <select
+                      className="input pilot-input pilot-input-text"
+                      value={adminScope}
+                      onChange={(e) => void loadAdminRows(adminToken, { scope: e.target.value as AdminScope })}
+                    >
+                      <option value="active">active</option>
+                      <option value="open">open</option>
+                      <option value="all">all</option>
+                    </select>
+                  </label>
+                  <label className="muted">
+                    Status
+                    <select
+                      className="input pilot-input pilot-input-text"
+                      value={adminStatusFilter}
+                      onChange={(e) =>
+                        void loadAdminRows(adminToken, { status: e.target.value as AdminStatusFilter })
+                      }
+                    >
+                      <option value="all">all</option>
+                      <option value="pending_activation">pending_activation</option>
+                      <option value="activation_failed">activation_failed</option>
+                      <option value="active">active</option>
+                      <option value="reconcile_pending">reconcile_pending</option>
+                      <option value="awaiting_renew_decision">awaiting_renew_decision</option>
+                      <option value="awaiting_expiry_price">awaiting_expiry_price</option>
+                      <option value="expired_itm">expired_itm</option>
+                      <option value="expired_otm">expired_otm</option>
+                      <option value="cancelled">cancelled</option>
+                    </select>
+                  </label>
+                  <label className="muted pilot-inline-check">
+                    <input
+                      type="checkbox"
+                      checked={adminIncludeArchived}
+                      onChange={(e) => void loadAdminRows(adminToken, { includeArchived: e.target.checked })}
+                    />
+                    Include archived
+                  </label>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={adminBusy}
+                    onClick={async () => {
+                      if (!protection?.id) return;
+                      try {
+                        setAdminBusy(true);
+                        const res = await fetch(`${API_BASE}/pilot/admin/protections/archive-except-current`, {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            "x-admin-token": adminToken
+                          },
+                          body: JSON.stringify({
+                            keepProtectionId: protection.id,
+                            reason: "pre_ship_cleanup_keep_current_active"
+                          })
+                        });
+                        const payload = await res.json();
+                        if (!res.ok || payload?.status !== "ok") {
+                          throw new Error(payload?.reason || "archive_failed");
+                        }
+                        await loadAdminRows(adminToken);
+                      } catch (err: any) {
+                        setAdminError(friendlyError(String(err?.message || "archive_failed")));
+                      } finally {
+                        setAdminBusy(false);
+                      }
+                    }}
+                  >
+                    Archive all except current UI active
+                  </button>
+                </div>
 
-                <div className="pilot-admin-table">
+                <div className="pilot-admin-table-scroll">
+                  <div className="pilot-admin-table">
                   <div className="pilot-admin-head">
                     <span>Protection ID</span>
                     <span>Status</span>
@@ -2068,6 +2288,7 @@ export function PilotApp() {
                       </span>
                     </div>
                   ))}
+                </div>
                 </div>
 
               </div>
