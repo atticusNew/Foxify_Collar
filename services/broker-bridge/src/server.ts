@@ -63,6 +63,11 @@ const bridgeFallbackToSynthetic = process.env.IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC 
 const gatewayConnectTimeoutMs = Number(process.env.IBKR_GATEWAY_CONNECT_TIMEOUT_MS || "5000");
 const gatewayRequestTimeoutMs = Number(process.env.IBKR_GATEWAY_REQUEST_TIMEOUT_MS || "6000");
 const gatewayMarketDataTypeRaw = Number(process.env.IBKR_MARKET_DATA_TYPE || "1");
+const gatewayExchangeAliasesRaw = String(process.env.IBKR_CONTRACT_EXCHANGE_ALIASES || "CME,CMECRYPTO").trim();
+const gatewayExchangeAliases = gatewayExchangeAliasesRaw
+  .split(",")
+  .map((item) => item.trim().toUpperCase())
+  .filter(Boolean);
 const gatewayMarketDataType =
   gatewayMarketDataTypeRaw === 2 ||
   gatewayMarketDataTypeRaw === 3 ||
@@ -79,7 +84,8 @@ const ibGatewayClient = new IbGatewayClient({
   fallbackToSynthetic: bridgeFallbackToSynthetic,
   connectTimeoutMs: Number.isFinite(gatewayConnectTimeoutMs) ? gatewayConnectTimeoutMs : 5000,
   requestTimeoutMs: Number.isFinite(gatewayRequestTimeoutMs) ? gatewayRequestTimeoutMs : 6000,
-  marketDataType: gatewayMarketDataType
+  marketDataType: gatewayMarketDataType,
+  contractExchangeAliases: gatewayExchangeAliases.length ? gatewayExchangeAliases : ["CME", "CMECRYPTO"]
 });
 
 const app = Fastify({ logger: true });

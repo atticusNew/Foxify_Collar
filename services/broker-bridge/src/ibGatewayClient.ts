@@ -85,6 +85,7 @@ type IbConfig = {
   connectTimeoutMs: number;
   requestTimeoutMs: number;
   marketDataType: 1 | 2 | 3 | 4;
+  contractExchangeAliases: string[];
 };
 
 type DepthRow = { level: number; price: number; size: number };
@@ -97,6 +98,8 @@ const normalizeReqId = (value: unknown): number | null => {
   }
   return null;
 };
+
+const normalizeExchangeAlias = (raw: string | undefined | null): string => String(raw || "").trim().toUpperCase();
 
 /**
  * Hybrid IB gateway client:
@@ -609,6 +612,16 @@ export class IbGatewayClient {
     const ib = await this.requireIb();
     const fallbackExpiry = buildMbtExpiry(query.tenorDays);
     const productSymbol = resolveProductSymbol(query.productFamily);
+    const exchangeCandidates = Array.from(
+      new Set(
+        [query.exchange, ...this.config.contractExchangeAliases]
+          .map((item) => normalizeExchangeAlias(item))
+          .filter(Boolean)
+      )
+    );
+    if (!exchangeCandidates.length) {
+      exchangeCandidates.push("CME");
+    }
     const fetchContractDetails = async (targetContract: Contract): Promise<ContractDetails[]> => {
       const reqId = this.nextRequestId();
       return await new Promise<ContractDetails[]>((resolve, reject) => {
@@ -661,42 +674,48 @@ export class IbGatewayClient {
       });
     };
 
-    const optionContractWithExactExpiry: Contract = {
-      secType: SecType.FOP,
-      symbol: productSymbol,
-      exchange: query.exchange,
-      currency: query.currency,
-      lastTradeDateOrContractMonth: fallbackExpiry,
-      strike: Number(query.strike || 0),
-      right: query.right
-    };
+    const resolvedDetails: ContractDetails[] = [];
+    for (const exchange of exchangeCandidates) {
+      if (query.kind === "mbt_option") {
+        const optionContractWithExactExpiry: Contract = {
+          secType: SecType.FOP,
+          symbol: productSymbol,
+          exchange,
+          currency: query.currency,
+          lastTradeDateOrContractMonth: fallbackExpiry,
+          strike: Number(query.strike || 0),
+          right: query.right
+        };
 
-    const optionContractAnyExpiry: Contract = {
-      secType: SecType.FOP,
-      symbol: productSymbol,
-      exchange: query.exchange,
-      currency: query.currency,
-      strike: Number(query.strike || 0),
-      right: query.right
-    };
+        const optionContractAnyExpiry: Contract = {
+          secType: SecType.FOP,
+          symbol: productSymbol,
+          exchange,
+          currency: query.currency,
+          strike: Number(query.strike || 0),
+          right: query.right
+        };
 
-    const futureContractAnyExpiry: Contract = {
-      secType: SecType.FUT,
-      symbol: productSymbol,
-      exchange: query.exchange,
-      currency: query.currency
-    };
+        let details = await fetchContractDetails(optionContractWithExactExpiry);
+        if (details.length === 0) {
+          // Retry without forcing exact expiry (e.g. weekend/holiday tenor target).
+          details = await fetchContractDetails(optionContractAnyExpiry);
+        }
+        resolvedDetails.push(...details);
+        continue;
+      }
 
-    const details =
-      query.kind === "mbt_option"
-        ? (() => fetchContractDetails(optionContractWithExactExpiry))()
-        : (() => fetchContractDetails(futureContractAnyExpiry))();
-    let resolvedDetails = await details;
-    if (query.kind === "mbt_option" && resolvedDetails.length === 0) {
-      // Retry without forcing exact expiry (e.g. weekend/holiday tenor target).
-      resolvedDetails = await fetchContractDetails(optionContractAnyExpiry);
+      const futureContractAnyExpiry: Contract = {
+        secType: SecType.FUT,
+        symbol: productSymbol,
+        exchange,
+        currency: query.currency
+      };
+      const details = await fetchContractDetails(futureContractAnyExpiry);
+      resolvedDetails.push(...details);
     }
 
+    const seenConIds = new Set<number>();
     const mapped = resolvedDetails
       .map((item) => {
         const contract = item.contract || {};
@@ -723,7 +742,12 @@ export class IbGatewayClient {
           minTick: positiveOrNull(item.minTick) ?? undefined
         } satisfies BridgeQualifiedContract;
       })
-      .filter((row): row is BridgeQualifiedContract => Boolean(row));
+      .filter((row): row is BridgeQualifiedContract => {
+        if (!row) return false;
+        if (seenConIds.has(row.conId)) return false;
+        seenConIds.add(row.conId);
+        return true;
+      });
 
     const targetExpiryNum = Number(fallbackExpiry);
     const sortedByNearestTenor = [...mapped].sort((a, b) => {
