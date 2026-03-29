@@ -209,8 +209,12 @@ const DEFAULT_TIERS: TierLevel[] = [
   { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
 ];
 const PILOT_DEFAULT_TENOR_DAYS = 2;
-const QUOTE_REQUEST_TIMEOUT_MS = 20000;
-const QUOTE_REQUEST_TIMEOUT_SECONDS = Math.ceil(QUOTE_REQUEST_TIMEOUT_MS / 1000);
+// Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
+const QUOTE_REQUEST_TIMEOUT_MS = 30000;
+const QUOTE_RETRY_DELAY_MS = 450;
+const QUOTE_REQUEST_MAX_ATTEMPTS = 3;
+const QUOTE_REQUEST_TOTAL_TIMEOUT_MS = QUOTE_REQUEST_TIMEOUT_MS;
+const QUOTE_REQUEST_TIMEOUT_SECONDS = Math.ceil(QUOTE_REQUEST_TOTAL_TIMEOUT_MS / 1000);
 
 const formatPct = (value: number | string | null | undefined): string => {
   const parsed = Number(value ?? 0);
@@ -344,7 +348,6 @@ const isRetryableQuoteError = (message: string): boolean => {
   return (
     lower.includes("price_unavailable") ||
     lower.includes("quote_generation_failed") ||
-    lower.includes("venue_quote_timeout") ||
     lower.includes("storage_unavailable") ||
     lower.includes("fetch failed")
   );
@@ -933,14 +936,18 @@ export function PilotApp() {
     setQuote(null);
     setQuoteState("fetching");
     setQuoteRequestTimeLeft(QUOTE_REQUEST_TIMEOUT_SECONDS);
-    const maxAttempts = 3;
+    const requestStartedAt = Date.now();
     let finalError: any = null;
     try {
-      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      for (let attempt = 1; attempt <= QUOTE_REQUEST_MAX_ATTEMPTS; attempt += 1) {
+        const remainingBudgetMs = QUOTE_REQUEST_TOTAL_TIMEOUT_MS - (Date.now() - requestStartedAt);
+        if (remainingBudgetMs <= 0) {
+          finalError = new Error("quote_request_deadline_exceeded");
+          break;
+        }
         const controller = new AbortController();
-        // IBKR live quotes can take ~15s at p95 under sparse snapshots; keep UI
-        // timeout above that so successful quotes are not aborted client-side.
-        const timeout = setTimeout(() => controller.abort(), QUOTE_REQUEST_TIMEOUT_MS);
+        const attemptTimeoutMs = Math.max(250, Math.min(QUOTE_REQUEST_TIMEOUT_MS, remainingBudgetMs));
+        const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs);
         try {
           const res = await fetch(`${API_BASE}/pilot/protections/quote`, {
             method: "POST",
@@ -964,6 +971,9 @@ export function PilotApp() {
             if (reason === "price_unavailable") {
               throw new Error(`price_unavailable${detail ? `:${detail}` : ""}`);
             }
+            if (reason === "quote_generation_timeout" || reason === "venue_quote_timeout") {
+              throw new Error("venue_quote_timeout");
+            }
             throw new Error(payload?.message || reason || "quote_failed");
           }
           setQuote(payload as QuoteResult);
@@ -973,8 +983,12 @@ export function PilotApp() {
           finalError = err;
           const retryable =
             err?.name === "AbortError" || isRetryableQuoteError(String(err?.message || "quote_failed"));
-          if (attempt < maxAttempts && retryable) {
-            await new Promise((resolve) => setTimeout(resolve, 450));
+          if (attempt < QUOTE_REQUEST_MAX_ATTEMPTS && retryable) {
+            const remainingAfterAttemptMs = QUOTE_REQUEST_TOTAL_TIMEOUT_MS - (Date.now() - requestStartedAt);
+            if (remainingAfterAttemptMs <= QUOTE_RETRY_DELAY_MS + 200) {
+              break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, QUOTE_RETRY_DELAY_MS));
             continue;
           }
           break;
@@ -984,8 +998,13 @@ export function PilotApp() {
       }
       setQuoteState("idle");
       const err = finalError;
-      if (err?.name === "AbortError") {
-        setError("Quote timed out. Live venue response exceeded 20s. Please retry.");
+      if (
+        err?.name === "AbortError" ||
+        String(err?.message || "").includes("quote_request_deadline_exceeded")
+      ) {
+        setError(
+          `Quote timed out. Live venue response exceeded ${QUOTE_REQUEST_TIMEOUT_SECONDS}s. Please retry.`
+        );
       } else {
         setError(friendlyError(String(err?.message || "Price temporarily unavailable, please retry.")));
       }
@@ -1677,9 +1696,6 @@ export function PilotApp() {
                       </button>
                     );
                   })}
-                </div>
-                <div className="muted pilot-tenor-helper">
-                  Recommended: {defaultTenorDays}D. Final expiry may vary.
                 </div>
               </div>
             </div>
