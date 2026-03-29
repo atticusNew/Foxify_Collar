@@ -86,6 +86,7 @@ type IbConfig = {
   requestTimeoutMs: number;
   marketDataType: 1 | 2 | 3 | 4;
   contractExchangeAliases: string[];
+  contractSymbolAliases: string[];
 };
 
 type DepthRow = { level: number; price: number; size: number };
@@ -614,7 +615,11 @@ export class IbGatewayClient {
     const productSymbol = resolveProductSymbol(query.productFamily);
     const symbolCandidates = Array.from(
       new Set(
-        [productSymbol, String(query.symbol || "").trim().toUpperCase()]
+        [
+          productSymbol,
+          String(query.symbol || "").trim().toUpperCase(),
+          ...this.config.contractSymbolAliases
+        ]
           .map((item) => String(item || "").trim().toUpperCase())
           .filter(Boolean)
       )

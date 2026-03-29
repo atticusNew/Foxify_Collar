@@ -68,6 +68,11 @@ const gatewayExchangeAliases = gatewayExchangeAliasesRaw
   .split(",")
   .map((item) => item.trim().toUpperCase())
   .filter(Boolean);
+const gatewaySymbolAliasesRaw = String(process.env.IBKR_CONTRACT_SYMBOL_ALIASES || "BTC,BRR,MBT,BFF").trim();
+const gatewaySymbolAliases = gatewaySymbolAliasesRaw
+  .split(",")
+  .map((item) => item.trim().toUpperCase())
+  .filter(Boolean);
 const gatewayMarketDataType =
   gatewayMarketDataTypeRaw === 2 ||
   gatewayMarketDataTypeRaw === 3 ||
@@ -85,7 +90,8 @@ const ibGatewayClient = new IbGatewayClient({
   connectTimeoutMs: Number.isFinite(gatewayConnectTimeoutMs) ? gatewayConnectTimeoutMs : 5000,
   requestTimeoutMs: Number.isFinite(gatewayRequestTimeoutMs) ? gatewayRequestTimeoutMs : 6000,
   marketDataType: gatewayMarketDataType,
-  contractExchangeAliases: gatewayExchangeAliases.length ? gatewayExchangeAliases : ["CME", "CMECRYPTO"]
+  contractExchangeAliases: gatewayExchangeAliases.length ? gatewayExchangeAliases : ["CME", "CMECRYPTO"],
+  contractSymbolAliases: gatewaySymbolAliases.length ? gatewaySymbolAliases : ["BTC", "BRR", "MBT", "BFF"]
 });
 
 const app = Fastify({ logger: true });
