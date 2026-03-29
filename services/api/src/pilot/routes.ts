@@ -483,6 +483,16 @@ const resolvePilotVenueHealth = async (): Promise<Record<string, unknown>> => {
   }
 };
 
+const isIbkrLiveTransportHealthy = (venueHealth: Record<string, unknown>): boolean => {
+  if (venueHealth.status !== "ok") return false;
+  const mode = String(venueHealth.mode || "");
+  if (!mode.startsWith("ibkr_")) return true;
+  const session = String(venueHealth.session || "").toLowerCase();
+  const activeTransport = String(venueHealth.activeTransport || "").toLowerCase();
+  const fallbackEnabled = Boolean(venueHealth.fallbackEnabled);
+  return session === "connected" && activeTransport === "ib_socket" && fallbackEnabled === false;
+};
+
 const inferProtectionTypeFromInstrument = (instrumentId: string | null | undefined): "long" | "short" => {
   const normalized = String(instrumentId || "").toUpperCase();
   return normalized.endsWith("-C") ? "short" : "long";
@@ -932,10 +942,7 @@ export const registerPilotRoutes = async (
     }
 
     const venue = await resolvePilotVenueHealth();
-    const overallOk =
-      db.status === "ok" &&
-      price.status === "ok" &&
-      (venue.status === "ok" || venue.status === "not_applicable");
+    const overallOk = db.status === "ok" && price.status === "ok" && isIbkrLiveTransportHealthy(venue);
     reply.code(overallOk ? 200 : 503);
     return {
       status: overallOk ? "ok" : "degraded",
@@ -2119,25 +2126,8 @@ export const registerPilotRoutes = async (
     }
   });
 
-  app.get("/pilot/protections/:id/monitor", async (req, reply) => {
-    const params = req.params as { id: string };
-    let userHash: { userHash: string; hashVersion: number };
-    try {
-      userHash = resolveTenantScopeHash();
-    } catch (error: any) {
-      const reason = String(error?.message || "server_config_error");
-      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
-      return { status: "error", reason };
-    }
-    const protection = await getProtection(pool, params.id);
-    if (!protection) {
-      reply.code(404);
-      return { status: "error", reason: "not_found" };
-    }
-    if (!assertProtectionOwnership(protection, userHash)) {
-      reply.code(404);
-      return { status: "error", reason: "not_found" };
-    }
+  const buildProtectionMonitorPayload = async (protection: Awaited<ReturnType<typeof getProtection>>) => {
+    if (!protection) throw new Error("not_found");
     const requestId = pilotConfig.nextRequestId();
     let snapshot: PriceSnapshotOutput;
     try {
@@ -2159,13 +2149,9 @@ export const registerPilotRoutes = async (
         }
       );
     } catch (error: any) {
-      reply.code(503);
-      return {
-        status: "error",
-        reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
-        detail: String(error?.message || "monitor_price_unavailable")
-      };
+      const priceError = new Error("price_unavailable");
+      (priceError as any).detail = String(error?.message || "monitor_price_unavailable");
+      throw priceError;
     }
     const protectionType = resolveProtectionTypeFromRecord(protection);
     const entryPrice = parsePositiveDecimal(protection.entryPrice) || snapshot.price;
@@ -2207,23 +2193,96 @@ export const registerPilotRoutes = async (
       }
     }
     return {
-      status: "ok",
-      monitor: {
-        protectionId: protection.id,
-        status: protection.status,
-        protectionType,
-        referencePrice: referencePrice.toFixed(10),
-        referenceSource: snapshot.priceSource,
-        referenceTimestamp: snapshot.priceTimestamp,
-        triggerPrice: triggerPrice.toFixed(10),
-        distanceToTriggerPct: distanceToTriggerPct.toFixed(4),
-        optionMarkUsd: new Decimal(optionMarkUsd).toFixed(10),
-        markSource,
-        markDetails,
-        estimatedTriggerValue: estimatedTriggerValue.toFixed(10),
-        asOf: new Date().toISOString()
-      }
+      protectionId: protection.id,
+      status: protection.status,
+      protectionType,
+      referencePrice: referencePrice.toFixed(10),
+      referenceSource: snapshot.priceSource,
+      referenceTimestamp: snapshot.priceTimestamp,
+      triggerPrice: triggerPrice.toFixed(10),
+      distanceToTriggerPct: distanceToTriggerPct.toFixed(4),
+      optionMarkUsd: new Decimal(optionMarkUsd).toFixed(10),
+      markSource,
+      markDetails,
+      estimatedTriggerValue: estimatedTriggerValue.toFixed(10),
+      asOf: new Date().toISOString()
     };
+  };
+
+  app.get("/pilot/protections/:id/monitor", async (req, reply) => {
+    const params = req.params as { id: string };
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protection, userHash)) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    try {
+      const monitor = await buildProtectionMonitorPayload(protection);
+      return { status: "ok", monitor };
+    } catch (error: any) {
+      if (String(error?.message || "") !== "price_unavailable") {
+        reply.code(500);
+        return {
+          status: "error",
+          reason: "monitor_unavailable",
+          detail: String(error?.message || "monitor_unavailable")
+        };
+      }
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        message: "Price temporarily unavailable, please retry.",
+        detail: String((error as any)?.detail || "monitor_price_unavailable")
+      };
+    }
+  });
+
+  app.get("/pilot/admin/protections/:id/monitor", async (req, reply) => {
+    const params = req.params as { id: string };
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protection, resolveTenantScopeHash())) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    try {
+      const monitor = await buildProtectionMonitorPayload(protection);
+      return { status: "ok", monitor };
+    } catch (error: any) {
+      if (String(error?.message || "") !== "price_unavailable") {
+        reply.code(500);
+        return {
+          status: "error",
+          reason: "monitor_unavailable",
+          detail: String(error?.message || "monitor_unavailable")
+        };
+      }
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        message: "Price temporarily unavailable, please retry.",
+        detail: String((error as any)?.detail || "monitor_price_unavailable")
+      };
+    }
   });
 
   app.get("/pilot/protections/:id", async (req, reply) => {

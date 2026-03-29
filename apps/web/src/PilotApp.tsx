@@ -423,6 +423,7 @@ export function PilotApp() {
   const [adminDetailUpdatedAt, setAdminDetailUpdatedAt] = useState<Date | null>(null);
   const [showHistorySection, setShowHistorySection] = useState(true);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [monitorUpdatedAt, setMonitorUpdatedAt] = useState<Date | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [liveReference, setLiveReference] = useState<ReferencePricePayload["reference"] | null>(null);
   const [liveReferenceBusy, setLiveReferenceBusy] = useState(false);
@@ -769,7 +770,7 @@ export function PilotApp() {
       if (requestSeq !== monitorRequestSeqRef.current) return;
       if (payload?.monitor && payload.monitor.protectionId === protectionId) {
         setMonitor(payload.monitor as MonitorPayload);
-        setLastUpdatedAt(new Date());
+        setMonitorUpdatedAt(new Date());
       }
     } catch {
       // ignore monitor refresh errors in pilot widget
@@ -827,7 +828,7 @@ export function PilotApp() {
         fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/ledger`, {
           headers: { "x-admin-token": token }
         }),
-        fetch(`${API_BASE}/pilot/protections/${protectionId}/monitor`, {
+        fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/monitor`, {
           headers: { "x-admin-token": token }
         })
       ]);
@@ -854,6 +855,7 @@ export function PilotApp() {
 
   useEffect(() => {
     setMonitor(null);
+    setMonitorUpdatedAt(null);
   }, [protection?.id]);
 
   useEffect(() => {
@@ -979,6 +981,7 @@ export function PilotApp() {
           }
           setProtection(payload.protection as ProtectionRecord);
           setMonitor(null);
+          setMonitorUpdatedAt(null);
           setLastUpdatedAt(new Date());
           setShowProtectionModal(true);
           setShowRenewModal(false);
@@ -1202,11 +1205,17 @@ export function PilotApp() {
       "true" ||
       new URLSearchParams(window.location.search).get("internal_admin") === "1");
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
-  const liveReferencePrice = Number(monitor?.referencePrice ?? referencePrice);
-  const liveTriggerPrice = monitor?.triggerPrice ?? displayedTriggerPrice;
-  const liveDistanceToTriggerPct = Number(monitor?.distanceToTriggerPct ?? distanceToTriggerPct);
-  const liveOptionMarkUsd = Number(monitor?.optionMarkUsd ?? indicativeOptionMark);
-  const liveEstimatedTriggerValue = Number(monitor?.estimatedTriggerValue ?? maxTriggerProtectionValue);
+  const monitorHasLiveSnapshot = Boolean(
+    monitor &&
+      protection &&
+      monitor.protectionId === protection.id &&
+      Number.isFinite(Number(monitor.referencePrice))
+  );
+  const liveReferencePrice = monitorHasLiveSnapshot ? Number(monitor?.referencePrice ?? NaN) : NaN;
+  const liveTriggerPrice = monitorHasLiveSnapshot ? monitor?.triggerPrice ?? null : null;
+  const liveDistanceToTriggerPct = monitorHasLiveSnapshot ? Number(monitor?.distanceToTriggerPct ?? NaN) : NaN;
+  const liveOptionMarkUsd = monitorHasLiveSnapshot ? Number(monitor?.optionMarkUsd ?? NaN) : NaN;
+  const liveEstimatedTriggerValue = monitorHasLiveSnapshot ? Number(monitor?.estimatedTriggerValue ?? NaN) : NaN;
   const adminSelected = adminRows.find((row) => row.protection_id === adminSelectedId) || null;
   const adminClientPremiumTotal = Number(adminMetrics?.clientPremiumTotalUsdc ?? 0);
   const adminHedgePremiumTotal =
@@ -1268,6 +1277,30 @@ export function PilotApp() {
       : quotePolicyClass === "REVIEW"
         ? "REVIEW"
         : "NO-GO";
+  const protectionsForPremium = activeProtectionForView
+    ? [activeProtectionForView, ...historyWithoutActive]
+    : protectionsHistory;
+  const pilotPremiumOwedUsd = protectionsForPremium.reduce(
+    (sum, item) => sum + Number(item.premium || 0),
+    0
+  );
+  const dailyCapUsedUsd = Number(quote?.limits?.dailyUsedUsdc ?? 0);
+  const dailyCapProjectedUsd = Number(quote?.limits?.projectedDailyUsdc ?? 0);
+  const dailyCapMaxUsd = Number(quote?.limits?.maxDailyProtectedNotionalUsdc ?? 0);
+  const showDailyCapSummary = Number.isFinite(dailyCapMaxUsd) && dailyCapMaxUsd > 0;
+  const dailyCapPct =
+    showDailyCapSummary && Number.isFinite(dailyCapProjectedUsd)
+      ? Math.max(0, Math.min(100, (dailyCapProjectedUsd / dailyCapMaxUsd) * 100))
+      : NaN;
+  const monitorStatusLabel = monitorHasLiveSnapshot
+    ? monitorBusy
+      ? "Refreshing live monitor snapshot..."
+      : monitorUpdatedAt
+        ? `Live snapshot updated ${monitorUpdatedAt.toLocaleTimeString()}`
+        : "Live snapshot ready"
+    : monitorBusy
+      ? "Loading first live monitor snapshot..."
+      : "Awaiting first live monitor snapshot...";
 
   if (!pilotUnlocked) {
     return (
@@ -1694,6 +1727,18 @@ export function PilotApp() {
                     )}
                   </div>
                 )}
+                <div className="quote-warning">
+                  <div className="muted">
+                    Premium due at pilot close: <strong>${formatUsd(pilotPremiumOwedUsd)}</strong>
+                  </div>
+                  {showDailyCapSummary && (
+                    <div className="muted">
+                      Daily protected notional (UTC): used ${formatUsd(dailyCapUsedUsd)} → projected{" "}
+                      <strong>${formatUsd(dailyCapProjectedUsd)}</strong> / ${formatUsd(dailyCapMaxUsd)}
+                      {Number.isFinite(dailyCapPct) ? ` (${dailyCapPct.toFixed(1)}%)` : ""}
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -1873,8 +1918,10 @@ export function PilotApp() {
             </div>
             <div className="muted pilot-monitor-subtitle">
               Protected position {protection.id} · Auto-refresh every 10s
-              {lastUpdatedAt ? ` · Updated ${lastUpdatedAt.toLocaleTimeString()}` : ""}
+              {lastUpdatedAt ? ` · Position updated ${lastUpdatedAt.toLocaleTimeString()}` : ""}
+              {monitorUpdatedAt ? ` · Monitor snapshot ${monitorUpdatedAt.toLocaleTimeString()}` : ""}
             </div>
+            <div className="disclaimer">{monitorStatusLabel}</div>
             <div className="modal-actions">
               <button
                 className="btn btn-secondary"
@@ -1887,7 +1934,9 @@ export function PilotApp() {
             <div className="pilot-monitor-grid">
               <div className="pilot-monitor-card">
                 <div className="label">Reference BTC Price</div>
-                <div className="value">${formatUsd(liveReferencePrice)}</div>
+                <div className="value">
+                  {Number.isFinite(liveReferencePrice) ? `$${formatUsd(liveReferencePrice)}` : "Loading live snapshot..."}
+                </div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Protection Anchor Price</div>
@@ -1905,8 +1954,13 @@ export function PilotApp() {
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Option Mark (Indicative)</div>
-                <div className="value">${formatUsd(liveOptionMarkUsd)}</div>
+                <div className="value">
+                  {Number.isFinite(liveOptionMarkUsd) ? `$${formatUsd(liveOptionMarkUsd)}` : "Loading live snapshot..."}
+                </div>
                 {monitor?.markSource && <div className="muted">{monitor.markSource}</div>}
+                <div className="muted">
+                  MTM reflects the current indicative hedge option mark from venue snapshot data (not settled P&L).
+                </div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Est. Protection Value at Trigger</div>

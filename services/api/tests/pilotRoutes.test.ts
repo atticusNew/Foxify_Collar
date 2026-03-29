@@ -262,6 +262,20 @@ test("pilot route hardening A-H", async (t) => {
       });
       assert.equal(monitorScoped.statusCode, 200);
       assert.equal(monitorScoped.json().status, "ok");
+
+      const adminMonitorUnauthorized = await app.inject({
+        method: "GET",
+        url: `/pilot/admin/protections/${protectionId}/monitor`
+      });
+      assert.equal(adminMonitorUnauthorized.statusCode, 401);
+
+      const adminMonitorAuthorized = await app.inject({
+        method: "GET",
+        url: `/pilot/admin/protections/${protectionId}/monitor`,
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(adminMonitorAuthorized.statusCode, 200);
+      assert.equal(adminMonitorAuthorized.json().status, "ok");
     } finally {
       await harness.close();
     }
@@ -480,6 +494,18 @@ test("pilot route hardening A-H", async (t) => {
       });
       assert.equal(res.statusCode, 200);
       assert.equal(res.json().status, "ok");
+
+      const { protectionId } = await quoteAndActivate(app, 1000);
+      const monitorRes = await app.inject({
+        method: "GET",
+        url: `/pilot/admin/protections/${protectionId}/monitor`,
+        headers: {
+          "x-admin-token": "admin-local",
+          "x-forwarded-for": "8.8.8.8"
+        }
+      });
+      assert.equal(monitorRes.statusCode, 200);
+      assert.equal(monitorRes.json().status, "ok");
     } finally {
       await harness.close();
     }
@@ -617,6 +643,86 @@ test("pilot route hardening A-H", async (t) => {
         [protectionId]
       );
       assert.equal(Number(payoutSettledCount.rows[0].n), 1);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("I2) admin metrics reconcile pending receivable and open liability", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const { protectionId } = await quoteAndActivate(app, 1200);
+
+      const preMetricsRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(preMetricsRes.statusCode, 200);
+      const preMetrics = preMetricsRes.json().metrics || {};
+
+      // Settle only part of premium and payout so pending/open metrics remain non-zero.
+      const settlePremium = await app.inject({
+        method: "POST",
+        url: `/pilot/admin/protections/${protectionId}/premium-settled`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: { amount: 5, reference: "partial-premium" }
+      });
+      assert.equal(settlePremium.statusCode, 200);
+
+      const { pool } = harness;
+      await pool.query(`UPDATE pilot_protections SET expiry_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, [
+        protectionId
+      ]);
+      const resolveExpiry = await app.inject({
+        method: "POST",
+        url: `/pilot/internal/protections/${protectionId}/resolve-expiry`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: {}
+      });
+      assert.equal(resolveExpiry.statusCode, 200);
+      const payoutDue = Number(resolveExpiry.json().protection?.payoutDueAmount ?? 0);
+
+      const settlePayout = await app.inject({
+        method: "POST",
+        url: `/pilot/admin/protections/${protectionId}/payout-settled`,
+        headers: { "x-admin-token": "admin-local" },
+        payload: { amount: Math.max(0, payoutDue / 2), payoutTxRef: "partial-payout" }
+      });
+      assert.equal(settlePayout.statusCode, 200);
+
+      const postMetricsRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(postMetricsRes.statusCode, 200);
+      const postMetrics = postMetricsRes.json().metrics || {};
+
+      const premiumDue = Number(postMetrics.premiumDueTotalUsdc || 0);
+      const premiumSettled = Number(postMetrics.premiumSettledTotalUsdc || 0);
+      const pendingPremiumReceivable = Number(postMetrics.pendingPremiumReceivableUsdc || 0);
+      assert.ok(Math.abs((premiumDue - premiumSettled) - pendingPremiumReceivable) < 1e-6);
+
+      const payoutDueTotal = Number(postMetrics.payoutDueTotalUsdc || 0);
+      const payoutSettledTotal = Number(postMetrics.payoutSettledTotalUsdc || 0);
+      const openPayoutLiability = Number(postMetrics.openPayoutLiabilityUsdc || 0);
+      assert.ok(Math.abs((payoutDueTotal - payoutSettledTotal) - openPayoutLiability) < 1e-6);
+
+      const startingReserve = Number(postMetrics.startingReserveUsdc || 0);
+      const hedgePremium = Number(postMetrics.hedgePremiumTotalUsdc || 0);
+      const availableReserve = Number(postMetrics.availableReserveUsdc || 0);
+      assert.ok(Math.abs((startingReserve - hedgePremium + premiumSettled - payoutSettledTotal) - availableReserve) < 1e-6);
+
+      const reserveAfterOpen = Number(postMetrics.reserveAfterOpenPayoutLiabilityUsdc || 0);
+      assert.ok(Math.abs((availableReserve - openPayoutLiability) - reserveAfterOpen) < 1e-6);
+
+      const netSettledCash = Number(postMetrics.netSettledCashUsdc || 0);
+      assert.ok(Math.abs((premiumSettled - payoutSettledTotal) - netSettledCash) < 1e-6);
+
+      // sanity: metrics actually changed
+      assert.notEqual(String(preMetrics.premiumSettledTotalUsdc || "0"), String(postMetrics.premiumSettledTotalUsdc || "0"));
     } finally {
       await harness.close();
     }
@@ -1444,6 +1550,78 @@ test("W) quote diagnostics include explicit tenorReason attribution", async () =
         ),
         true
       );
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("W2) health reports degraded when IBKR transport is not live socket", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "http",
+              activeTransport: "http",
+              fallbackEnabled: true,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "4000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "4000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "7",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC"
+      }
+    });
+    try {
+      const healthRes = await harness.app.inject({
+        method: "GET",
+        url: "/pilot/health"
+      });
+      assert.equal(healthRes.statusCode, 503);
+      const payload = healthRes.json();
+      assert.equal(payload.status, "degraded");
+      assert.equal(String(payload?.checks?.venue?.activeTransport || ""), "http");
     } finally {
       await harness.close();
     }
