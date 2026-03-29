@@ -445,7 +445,7 @@ export const listLedgerForProtection = async (
 
 export const getPilotAdminMetrics = async (
   pool: Queryable,
-  opts: { startingReserveUsdc: number }
+  opts: { startingReserveUsdc: number; scope?: "all" | "active" }
 ): Promise<{
   totalProtections: string;
   activeProtections: string;
@@ -466,8 +466,16 @@ export const getPilotAdminMetrics = async (
   reserveAfterOpenPayoutLiabilityUsdc: string;
   netSettledCashUsdc: string;
 }> => {
+  const scope = opts.scope === "active" ? "active" : "all";
+  const protectionScopeSql =
+    scope === "all" ? "TRUE" : "status IN ('active', 'awaiting_expiry_price')";
   const result = await pool.query(
     `
+      WITH filtered_protections AS (
+        SELECT *
+        FROM pilot_protections
+        WHERE ${protectionScopeSql}
+      )
       SELECT
         COUNT(*)::text AS total_protections,
         COUNT(*) FILTER (WHERE status = 'active')::text AS active_protections,
@@ -475,20 +483,27 @@ export const getPilotAdminMetrics = async (
         COALESCE(SUM(CASE WHEN status = 'active' THEN protected_notional ELSE 0 END), 0)::text AS protected_notional_active_usdc,
         COALESCE(SUM(premium), 0)::text AS client_premium_total_usdc,
         (
-          SELECT COALESCE(SUM(premium), 0)::text
-          FROM pilot_venue_executions
+          SELECT COALESCE(SUM(e.premium), 0)::text
+          FROM pilot_venue_executions e
+          INNER JOIN filtered_protections fp ON fp.id = e.protection_id
         ) AS hedge_premium_total_usdc,
         COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc
-      FROM pilot_protections
+      FROM filtered_protections
     `
   );
   const ledger = await pool.query(
     `
+      WITH filtered_protections AS (
+        SELECT id
+        FROM pilot_protections
+        WHERE ${protectionScopeSql}
+      )
       SELECT
         COALESCE(SUM(CASE WHEN entry_type = 'premium_due' THEN amount ELSE 0 END), 0)::text AS premium_due_total_usdc,
         COALESCE(SUM(CASE WHEN entry_type = 'premium_settled' THEN amount ELSE 0 END), 0)::text AS premium_settled_total_usdc,
         COALESCE(SUM(CASE WHEN entry_type = 'payout_settled' THEN amount ELSE 0 END), 0)::text AS payout_settled_total_usdc
-      FROM pilot_ledger_entries
+      FROM pilot_ledger_entries le
+      INNER JOIN filtered_protections fp ON fp.id = le.protection_id
     `
   );
   const row = result.rows[0] || {};

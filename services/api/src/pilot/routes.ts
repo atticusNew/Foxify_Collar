@@ -2428,10 +2428,13 @@ export const registerPilotRoutes = async (
   app.get("/pilot/admin/metrics", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
+    const query = req.query as { scope?: string };
+    const scope = String(query.scope || "active").toLowerCase() === "all" ? "all" : "active";
     const metrics = await getPilotAdminMetrics(pool, {
-      startingReserveUsdc: pilotConfig.startingReserveUsdc
+      startingReserveUsdc: pilotConfig.startingReserveUsdc,
+      scope
     });
-    return { status: "ok", metrics };
+    return { status: "ok", scope, metrics };
   });
 
   app.post("/pilot/admin/protections/:id/premium-settled", async (req, reply) => {

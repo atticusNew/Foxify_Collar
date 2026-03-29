@@ -656,10 +656,11 @@ test("pilot route hardening A-H", async (t) => {
 
       const preMetricsRes = await app.inject({
         method: "GET",
-        url: "/pilot/admin/metrics",
+        url: "/pilot/admin/metrics?scope=all",
         headers: { "x-admin-token": "admin-local" }
       });
       assert.equal(preMetricsRes.statusCode, 200);
+      assert.equal(String(preMetricsRes.json().scope || ""), "all");
       const preMetrics = preMetricsRes.json().metrics || {};
 
       // Settle only part of premium and payout so pending/open metrics remain non-zero.
@@ -694,7 +695,7 @@ test("pilot route hardening A-H", async (t) => {
 
       const postMetricsRes = await app.inject({
         method: "GET",
-        url: "/pilot/admin/metrics",
+        url: "/pilot/admin/metrics?scope=all",
         headers: { "x-admin-token": "admin-local" }
       });
       assert.equal(postMetricsRes.statusCode, 200);
@@ -722,7 +723,72 @@ test("pilot route hardening A-H", async (t) => {
       assert.ok(Math.abs((premiumSettled - payoutSettledTotal) - netSettledCash) < 1e-6);
 
       // sanity: metrics actually changed
-      assert.notEqual(String(preMetrics.premiumSettledTotalUsdc || "0"), String(postMetrics.premiumSettledTotalUsdc || "0"));
+      assert.notEqual(
+        String(preMetrics.premiumSettledTotalUsdc || "0"),
+        String(postMetrics.premiumSettledTotalUsdc || "0")
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  await t.test("I3) admin metrics scope=active excludes activation_failed protections", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app } = harness;
+      const active = await quoteAndActivate(app, 1000);
+      assert.ok(active.protectionId);
+
+      const failedQuoteRes = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(failedQuoteRes.statusCode, 200);
+      const failedQuoteId = String(failedQuoteRes.json().quote?.quoteId || "");
+      assert.ok(failedQuoteId);
+      // Force this protection into activation_failed to verify scope filtering.
+      const failedActivation = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: activationPayload(failedQuoteId, 1000)
+      });
+      assert.equal(failedActivation.statusCode, 200);
+      const failedProtectionId = String(failedActivation.json().protection?.id || "");
+      assert.ok(failedProtectionId);
+      const { pool } = harness;
+      // Force the latest protection into activation_failed to verify scope behavior.
+      await pool.query(
+        `UPDATE pilot_protections SET status = 'activation_failed' WHERE id = (SELECT id FROM pilot_protections ORDER BY created_at DESC LIMIT 1)`
+      );
+      const protectionRows = await pool.query(`SELECT status FROM pilot_protections ORDER BY created_at ASC`);
+      const statuses = protectionRows.rows.map((row) => String(row.status));
+      const allExpected = statuses.length;
+      const activeScopeExpected = statuses.filter((status) => status === "active" || status === "awaiting_expiry_price").length;
+      const failedCount = statuses.filter((status) => status === "activation_failed").length;
+      assert.ok(failedCount >= 1);
+
+      const activeScopeRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(activeScopeRes.statusCode, 200);
+      const activeScope = activeScopeRes.json();
+      assert.equal(String(activeScope.scope || ""), "active");
+      assert.equal(Number(activeScope.metrics?.totalProtections || 0), activeScopeExpected);
+
+      const allScopeRes = await app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics?scope=all",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(allScopeRes.statusCode, 200);
+      const allScope = allScopeRes.json();
+      assert.equal(String(allScope.scope || ""), "all");
+      assert.equal(Number(allScope.metrics?.totalProtections || 0), allExpected);
+      assert.ok(Number(activeScope.metrics?.totalProtections || 0) < Number(allScope.metrics?.totalProtections || 0));
+      assert.equal(Number(allScope.metrics?.protectedNotionalTotalUsdc || 0), 2000);
     } finally {
       await harness.close();
     }

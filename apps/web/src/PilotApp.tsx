@@ -407,6 +407,7 @@ export function PilotApp() {
   const [monitor, setMonitor] = useState<MonitorPayload | null>(null);
   const [monitorBusy, setMonitorBusy] = useState(false);
   const [protectionsHistory, setProtectionsHistory] = useState<ProtectionRecord[]>([]);
+  const [showFailedProtections, setShowFailedProtections] = useState(false);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [adminTokenInput, setAdminTokenInput] = useState("");
   const [adminToken, setAdminToken] = useState<string | null>(null);
@@ -789,7 +790,7 @@ export function PilotApp() {
         fetch(`${API_BASE}/pilot/protections/export?format=json&limit=200`, {
           headers: { "x-admin-token": token }
         }),
-        fetch(`${API_BASE}/pilot/admin/metrics`, {
+        fetch(`${API_BASE}/pilot/admin/metrics?scope=active`, {
           headers: { "x-admin-token": token }
         })
       ]);
@@ -1249,10 +1250,14 @@ export function PilotApp() {
     adminSelectedClientPremium > 0 ? (adminSelectedTradeMargin / adminSelectedClientPremium) * 100 : NaN;
   const hasActiveInHistory = Boolean(protection && protectionsHistory.some((item) => item.id === protection.id));
   const activeProtectionForView = protection && hasActiveInHistory ? protection : null;
-  const historyWithoutActive = activeProtectionForView
+  const rawHistoryWithoutActive = activeProtectionForView
     ? protectionsHistory.filter((item) => item.id !== protection.id)
     : protectionsHistory;
-  const protectionsTotalCount = protectionsHistory.length;
+  const historyWithoutActive = showFailedProtections
+    ? rawHistoryWithoutActive
+    : rawHistoryWithoutActive.filter((item) => item.status !== "activation_failed" && item.status !== "cancelled");
+  const hiddenFailedCount = rawHistoryWithoutActive.length - historyWithoutActive.length;
+  const protectionsTotalCount = (activeProtectionForView ? 1 : 0) + historyWithoutActive.length;
   const premiumHedgeCost = Number(premiumPolicySummary?.estimated?.hedgeCostUsd ?? NaN);
   const premiumBrokerFees = Number(premiumPolicySummary?.estimated?.brokerFeesUsd ?? NaN);
   const premiumPassThrough = Number(premiumPolicySummary?.estimated?.passThroughUsd ?? NaN);
@@ -1857,8 +1862,19 @@ export function PilotApp() {
                     </div>
                   )}
 
-                  {historyWithoutActive.length > 0 && (
-                    <div className="muted section-subtitle">Recent Protections</div>
+                  {(historyWithoutActive.length > 0 || hiddenFailedCount > 0) && (
+                    <div className="section-title-row">
+                      <div className="muted section-subtitle">Recent Protections</div>
+                      {hiddenFailedCount > 0 && (
+                        <button
+                          className="btn btn-secondary pilot-inline-btn"
+                          type="button"
+                          onClick={() => setShowFailedProtections((prev) => !prev)}
+                        >
+                          {showFailedProtections ? "Hide failed/cancelled" : `Show failed/cancelled (${hiddenFailedCount})`}
+                        </button>
+                      )}
+                    </div>
                   )}
                   {historyWithoutActive.map((item) => {
                     const itemType =
@@ -1961,7 +1977,6 @@ export function PilotApp() {
                 <div className="value">
                   {Number.isFinite(liveOptionMarkUsd) ? `$${formatUsd(liveOptionMarkUsd)}` : "Loading live snapshot..."}
                 </div>
-                {monitor?.markSource && <div className="muted">{monitor.markSource}</div>}
                 <div className="muted">Latest indicative option price, not settled P&L.</div>
               </div>
               <div className="pilot-monitor-card">
