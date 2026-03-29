@@ -78,6 +78,16 @@ type ReferencePricePayload = {
 
 type TenorPolicyResponse = {
   status: "ok" | "error";
+  window?: {
+    minSamplesPerTenor?: number;
+    lookbackMinutes?: number;
+  };
+  tenors?: Array<{
+    tenorDays: number;
+    sampleCount: number;
+    eligible: boolean;
+    reasons: string[];
+  }>;
   selection?: {
     enabledTenorsDays: number[];
     defaultTenorDays: number;
@@ -424,6 +434,7 @@ export function PilotApp() {
   const [enabledTenorDays, setEnabledTenorDays] = useState<number[]>([PILOT_DEFAULT_TENOR_DAYS]);
   const [defaultTenorDays, setDefaultTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
   const [tenorPolicyStatus, setTenorPolicyStatus] = useState<"ok" | "degraded" | "fallback">("fallback");
+  const [tenorPolicyDebugSummary, setTenorPolicyDebugSummary] = useState<string | null>(null);
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -579,6 +590,23 @@ export function PilotApp() {
         setEnabledTenorDays(nextEnabled);
         setDefaultTenorDays(nextDefault);
         setTenorPolicyStatus(enabled.length > 0 ? (payload.selection?.status === "degraded" ? "degraded" : "ok") : "fallback");
+        const minSamples = Number(payload.window?.minSamplesPerTenor ?? NaN);
+        if (Array.isArray(payload.tenors) && payload.tenors.length > 0) {
+          const blockedRows = payload.tenors
+            .filter((entry) => !entry.eligible)
+            .map((entry) => {
+              const reasons = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.join(",") : "unknown";
+              return `${entry.tenorDays}D(samples=${entry.sampleCount};reasons=${reasons})`;
+            });
+          const summaryPrefix = Number.isFinite(minSamples)
+            ? `minSamples=${Math.max(1, Math.floor(minSamples))}`
+            : "minSamples=unknown";
+          setTenorPolicyDebugSummary(
+            blockedRows.length > 0 ? `${summaryPrefix} · blocked: ${blockedRows.join(" | ")}` : `${summaryPrefix} · all candidates eligible`
+          );
+        } else {
+          setTenorPolicyDebugSummary(Number.isFinite(minSamples) ? `minSamples=${Math.max(1, Math.floor(minSamples))}` : null);
+        }
         setSelectedTenorDays((prev) => (nextEnabled.includes(prev) ? prev : nextDefault));
       } catch {
         // When policy endpoint is unavailable, keep a single deterministic fallback tenor.
@@ -586,6 +614,7 @@ export function PilotApp() {
         setEnabledTenorDays([fallback]);
         setDefaultTenorDays(fallback);
         setTenorPolicyStatus("fallback");
+        setTenorPolicyDebugSummary("tenor-policy endpoint unavailable; using deterministic fallback tenor");
         setSelectedTenorDays((prev) => (prev === fallback ? prev : fallback));
       }
     };
@@ -1697,6 +1726,11 @@ export function PilotApp() {
                     );
                   })}
                 </div>
+                {internalAdminEnabled && tenorPolicyDebugSummary && (
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    Tenor policy debug: {tenorPolicyDebugSummary}
+                  </div>
+                )}
               </div>
             </div>
 
