@@ -1270,6 +1270,16 @@ export function PilotApp() {
   const adminReserveAfterOpenLiability = Number(adminMetrics?.reserveAfterOpenPayoutLiabilityUsdc ?? 0);
   const adminNetSettledCash = Number(adminMetrics?.netSettledCashUsdc ?? adminPremiumSettledTotal - adminTotalPayoutSettled);
   const adminActiveCount = Number(adminRows.filter((row) => row.status === "active").length);
+  const adminMarkedRows = adminRows.filter((row) => row.status === "active" || row.status === "awaiting_expiry_price");
+  const adminIndicativeHedgeMarkTotal = adminMarkedRows.reduce((sum, row) => {
+    const monitorForRow = row.protection_id === adminSelectedId ? adminMonitor : null;
+    const mark = Number(monitorForRow?.optionMarkUsd ?? NaN);
+    return Number.isFinite(mark) ? sum + mark : sum;
+  }, 0);
+  const adminUnrealizedHedgePnlIndicative = adminIndicativeHedgeMarkTotal - adminHedgePremiumTotal;
+  const adminIndicativeMarksCoverage = `${adminMarkedRows.filter((row) => row.protection_id === adminSelectedId).length}/${
+    adminMarkedRows.length
+  }`;
   const adminTimeLeftMs = adminSelected ? Date.parse(adminSelected.expiry_at) - Date.now() : NaN;
   const adminSelectedClientPremium = Number(adminDetailProtection?.premium ?? adminSelected?.premium ?? 0);
   const adminSelectedHedgeCost = Number(
@@ -1865,11 +1875,11 @@ export function PilotApp() {
                   <span className="spinner" />
                   Loading protections...
                 </div>
-              ) : !activeProtectionForView && historyWithoutActive.length === 0 ? (
+              ) : !protection && historyWithoutActive.length === 0 ? (
                 <div className="muted">No protections found yet.</div>
               ) : (
                 <div className="positions">
-                  {activeProtectionForView && (
+                  {protection && (
                     <div className="position-row position-row-active">
                       <div className="position-main">
                         <div className="position-main-title">
@@ -1877,12 +1887,12 @@ export function PilotApp() {
                           <span className="pill">active</span>
                           <span className="pill pill-warning">Current</span>
                         </div>
-                        <div className="muted">ID {activeProtectionForView.id}</div>
+                        <div className="muted">ID {protection.id}</div>
                         <div className="muted">
                           {triggerLabel.replace("Protection ", "")}{" "}
                           {displayedTriggerPrice ? `$${formatUsd(displayedTriggerPrice)}` : "—"} · Premium{" "}
-                          {activeProtectionForView.premium ? `$${formatUsd(activeProtectionForView.premium)}` : "—"} · Expires{" "}
-                          {new Date(activeProtectionForView.expiryAt).toLocaleString()}
+                          {protection.premium ? `$${formatUsd(protection.premium)}` : "—"} · Expires{" "}
+                          {new Date(protection.expiryAt).toLocaleString()}
                         </div>
                         {renewalChip && <div className="muted">{renewalChip}</div>}
                       </div>
@@ -1893,7 +1903,7 @@ export function PilotApp() {
                           onClick={() => {
                             setMonitor(null);
                             setShowProtectionModal(true);
-                            void refreshMonitor(activeProtectionForView.id);
+                            void refreshMonitor(protection.id);
                           }}
                         >
                           Open Monitor
@@ -2082,6 +2092,24 @@ export function PilotApp() {
                   <div className="pilot-monitor-card">
                     <div className="label">Active Protections</div>
                     <div className="value">{adminActiveCount}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Indicative Option Value (Open)</div>
+                    <div className="value">
+                      {Number.isFinite(adminIndicativeHedgeMarkTotal)
+                        ? `$${formatUsd(adminIndicativeHedgeMarkTotal)}`
+                        : "—"}
+                    </div>
+                    <div className="muted">Coverage: {adminIndicativeHedgeMarkCount} marked rows</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">Unrealized Hedge P&L (Indicative)</div>
+                    <div className={`value ${adminUnrealizedHedgePnlIndicative < 0 ? "danger" : ""}`}>
+                      {Number.isFinite(adminUnrealizedHedgePnlIndicative)
+                        ? `$${formatUsd(adminUnrealizedHedgePnlIndicative)}`
+                        : "—"}
+                    </div>
+                    <div className="muted">Indicative mark value minus hedge premium cost.</div>
                   </div>
                   <div className="pilot-monitor-card">
                     <div className="label">Starting Reserve</div>
