@@ -119,6 +119,7 @@ export class IbGatewayClient {
   private readonly ordersByExternalId = new Map<string, BridgeOrderState>();
   private readonly orderIdToExternalId = new Map<number, string>();
   private readonly execIdToOrderExternalId = new Map<string, string>();
+  private readonly conIdToExchange = new Map<number, string>();
   private connectPromise: Promise<void> | null = null;
 
   constructor(private readonly config: IbConfig) {
@@ -530,7 +531,7 @@ export class IbGatewayClient {
     const productSymbol = resolveProductSymbol(query.productFamily);
     if (query.kind === "mbt_future") {
       const localSymbol = `${productSymbol} ${expiry}`;
-      return [
+      const contracts = [
         {
           conId: syntheticConId(`FUT:${localSymbol}`),
           secType: "FUT",
@@ -540,13 +541,17 @@ export class IbGatewayClient {
           minTick: 5
         }
       ];
+      for (const contract of contracts) {
+        this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+      }
+      return contracts;
     }
     if (!query.right || !Number.isFinite(Number(query.strike)) || Number(query.strike) <= 0) {
       return [];
     }
     const strike = Math.floor(Number(query.strike));
     const localSymbol = `${productSymbol} ${expiry} ${query.right}${strike}`;
-    return [
+    const contracts = [
       {
         conId: syntheticConId(`FOP:${localSymbol}`),
         secType: "FOP",
@@ -558,6 +563,10 @@ export class IbGatewayClient {
         minTick: 5
       }
     ];
+    for (const contract of contracts) {
+      this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+    }
+    return contracts;
   }
 
   private async getTopOfBookSynthetic(conId: number): Promise<BridgeTopOfBook> {
@@ -689,7 +698,7 @@ export class IbGatewayClient {
       });
     };
 
-    const resolvedDetails: ContractDetails[] = [];
+    const resolvedDetails: Array<{ detail: ContractDetails; requestedExchange: string }> = [];
     for (const exchange of exchangeCandidates) {
       for (const symbolCandidate of symbolCandidates) {
         if (query.kind === "mbt_option") {
@@ -717,7 +726,7 @@ export class IbGatewayClient {
             // Retry without forcing exact expiry (e.g. weekend/holiday tenor target).
             details = await fetchContractDetails(optionContractAnyExpiry);
           }
-          resolvedDetails.push(...details);
+          resolvedDetails.push(...details.map((detail) => ({ detail, requestedExchange: exchange })));
           continue;
         }
 
@@ -728,19 +737,19 @@ export class IbGatewayClient {
           currency: query.currency
         };
         const details = await fetchContractDetails(futureContractAnyExpiry);
-        resolvedDetails.push(...details);
+        resolvedDetails.push(...details.map((detail) => ({ detail, requestedExchange: exchange })));
       }
     }
 
     const seenConIds = new Set<number>();
     const mapped = resolvedDetails
       .map((item) => {
-        const contract = item.contract || {};
+        const contract = item.detail.contract || {};
         const secType = String(contract.secType || (query.kind === "mbt_option" ? "FOP" : "FUT")).toUpperCase();
         const strike = positiveOrNull(contract.strike);
         const right = String(contract.right || "").toUpperCase();
         const expiry = normalizeExpiry(
-          contract.lastTradeDateOrContractMonth || contract.lastTradeDate || item.contractMonth,
+          contract.lastTradeDateOrContractMonth || contract.lastTradeDate || item.detail.contractMonth,
           fallbackExpiry
         );
         const localSymbol = String(contract.localSymbol || `${productSymbol} ${expiry}`).trim();
@@ -748,26 +757,36 @@ export class IbGatewayClient {
         if (!conId) return null;
         const normalizedRight = right === "P" || right === "C" ? (right as "P" | "C") : undefined;
         const normalizedSecType = secType === "FOP" ? "FOP" : "FUT";
+        const exchange = normalizeExchangeAlias(
+          String(contract.exchange || contract.primaryExch || item.requestedExchange || query.exchange)
+        );
         return {
-          conId,
-          secType: normalizedSecType,
-          localSymbol,
-          expiry,
-          strike: strike ?? undefined,
-          right: normalizedRight,
-          multiplier: String(contract.multiplier || "0.1"),
-          minTick: positiveOrNull(item.minTick) ?? undefined
-        } satisfies BridgeQualifiedContract;
+          contract: {
+            conId,
+            secType: normalizedSecType,
+            localSymbol,
+            expiry,
+            strike: strike ?? undefined,
+            right: normalizedRight,
+            multiplier: String(contract.multiplier || "0.1"),
+            minTick: positiveOrNull(item.detail.minTick) ?? undefined
+          } satisfies BridgeQualifiedContract,
+          exchange: exchange || normalizeExchangeAlias(query.exchange) || "CME"
+        };
       })
-      .filter((row): row is BridgeQualifiedContract => {
+      .filter((row): row is { contract: BridgeQualifiedContract; exchange: string } => {
         if (!row) return false;
-        if (seenConIds.has(row.conId)) return false;
-        seenConIds.add(row.conId);
+        if (seenConIds.has(row.contract.conId)) return false;
+        seenConIds.add(row.contract.conId);
         return true;
       });
+    for (const item of mapped) {
+      this.conIdToExchange.set(item.contract.conId, item.exchange);
+    }
+    const mappedContracts = mapped.map((item) => item.contract);
 
     const targetExpiryNum = Number(fallbackExpiry);
-    const sortedByNearestTenor = [...mapped].sort((a, b) => {
+    const sortedByNearestTenor = [...mappedContracts].sort((a, b) => {
       const aExp = Number(a.expiry || 0);
       const bExp = Number(b.expiry || 0);
       const aScore = Number.isFinite(aExp) ? (aExp >= targetExpiryNum ? aExp - targetExpiryNum : 1_000_000 + targetExpiryNum - aExp) : 9_000_000;
@@ -793,10 +812,8 @@ export class IbGatewayClient {
   private async getTopOfBookIb(conId: number): Promise<BridgeTopOfBook> {
     const ib = await this.requireIb();
     const reqId = this.nextRequestId();
-    // Use conId-only lookup to avoid over-constraining exchange routing.
-    // Qualified contracts may resolve under CME aliases (e.g. CMECRYPTO/GLOBEX),
-    // and forcing exchange="CME" can trigger false "no security definition" errors.
-    const contract: Contract = { conId };
+    const exchange = this.conIdToExchange.get(conId) || "CME";
+    const contract: Contract = { conId, exchange };
 
     const snapshot = await new Promise<BridgeTopOfBook>((resolve, reject) => {
       const timeoutMs = Math.max(1000, Math.floor(this.config.requestTimeoutMs || 0));
@@ -868,8 +885,8 @@ export class IbGatewayClient {
   private async getDepthIb(conId: number): Promise<BridgeDepth> {
     const ib = await this.requireIb();
     const reqId = this.nextRequestId();
-    // Use conId-only lookup to avoid exchange alias mismatches on depth requests.
-    const contract: Contract = { conId };
+    const exchange = this.conIdToExchange.get(conId) || "CME";
+    const contract: Contract = { conId, exchange };
     const bidsByLevel = new Map<number, DepthRow>();
     const asksByLevel = new Map<number, DepthRow>();
 
@@ -963,8 +980,8 @@ export class IbGatewayClient {
       lastUpdateAt: nowIso()
     });
 
-    // Use conId-only lookup so orders route using IB's canonical contract mapping.
-    const contract: Contract = { conId: req.conId };
+    const exchange = this.conIdToExchange.get(req.conId) || "CME";
+    const contract: Contract = { conId: req.conId, exchange };
     ib.placeOrder(orderId, contract, {
       orderId,
       action: req.side as OrderAction,
