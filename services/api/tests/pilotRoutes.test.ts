@@ -511,6 +511,75 @@ test("pilot route hardening A-H", async (t) => {
     }
   });
 
+  await t.test("G2) admin export is tenant scoped and supports scope/status/archive filters", async () => {
+    const harness = await createPilotHarness();
+    try {
+      const { app, pool } = harness;
+      const first = await quoteAndActivate(app, 1000);
+      const second = await quoteAndActivate(app, 1500);
+      await pool.query(`UPDATE pilot_protections SET status = 'activation_failed' WHERE id = $1`, [second.protectionId]);
+
+      const activeRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&scope=active",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(activeRes.statusCode, 200);
+      const activePayload = activeRes.json();
+      assert.equal(activePayload.status, "ok");
+      assert.equal(String(activePayload.scope || ""), "active");
+      assert.equal(Number(activePayload.rows?.length || 0), 1);
+      assert.equal(String(activePayload.rows?.[0]?.status || ""), "active");
+
+      const failedRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&scope=all&status=activation_failed",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(failedRes.statusCode, 200);
+      const failedPayload = failedRes.json();
+      assert.equal(failedPayload.status, "ok");
+      assert.equal(String(failedPayload.scope || ""), "all");
+      assert.equal(String(failedPayload.statusFilter || ""), "activation_failed");
+      assert.equal(Number(failedPayload.rows?.length || 0), 1);
+      assert.equal(String(failedPayload.rows?.[0]?.protection_id || ""), second.protectionId);
+
+      const archiveRes = await app.inject({
+        method: "POST",
+        url: "/pilot/admin/protections/archive-except-current",
+        headers: { "x-admin-token": "admin-local" },
+        payload: { keepProtectionId: first.protectionId, reason: "test-archive" }
+      });
+      assert.equal(archiveRes.statusCode, 200);
+      assert.equal(archiveRes.json().status, "ok");
+      assert.equal(String(archiveRes.json().keepProtectionId || ""), first.protectionId);
+      assert.ok(Number(archiveRes.json().archivedCount || 0) >= 1);
+
+      const postArchiveDefaultRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&scope=all",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(postArchiveDefaultRes.statusCode, 200);
+      const postArchiveDefault = postArchiveDefaultRes.json();
+      assert.equal(postArchiveDefault.status, "ok");
+      assert.equal(Number(postArchiveDefault.rows?.length || 0), 1);
+      assert.equal(String(postArchiveDefault.rows?.[0]?.protection_id || ""), first.protectionId);
+
+      const postArchiveIncludeRes = await app.inject({
+        method: "GET",
+        url: "/pilot/protections/export?format=json&scope=all&includeArchived=true",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(postArchiveIncludeRes.statusCode, 200);
+      const postArchiveInclude = postArchiveIncludeRes.json();
+      assert.equal(postArchiveInclude.status, "ok");
+      assert.ok(Number(postArchiveInclude.rows?.length || 0) >= 2);
+    } finally {
+      await harness.close();
+    }
+  });
+
   await t.test("H) terms acceptance is server-side, auditable, and one-time per tenant+version", async () => {
     const harness = await createPilotHarness();
     try {

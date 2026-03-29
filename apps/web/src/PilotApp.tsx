@@ -156,6 +156,19 @@ type AdminMetrics = {
   netSettledCashUsdc: string;
 };
 
+type AdminScope = "active" | "open" | "all";
+type AdminStatusFilter =
+  | "all"
+  | "pending_activation"
+  | "activation_failed"
+  | "active"
+  | "reconcile_pending"
+  | "awaiting_renew_decision"
+  | "awaiting_expiry_price"
+  | "expired_itm"
+  | "expired_otm"
+  | "cancelled";
+
 type ProtectionRecord = {
   id: string;
   status: string;
@@ -414,6 +427,9 @@ export function PilotApp() {
   const [adminBusy, setAdminBusy] = useState(false);
   const [adminError, setAdminError] = useState<string | null>(null);
   const [adminRows, setAdminRows] = useState<AdminProtectionRow[]>([]);
+  const [adminScope, setAdminScope] = useState<AdminScope>("active");
+  const [adminStatusFilter, setAdminStatusFilter] = useState<AdminStatusFilter>("all");
+  const [adminIncludeArchived, setAdminIncludeArchived] = useState(false);
   const [adminSelectedId, setAdminSelectedId] = useState<string | null>(null);
   const [adminLedger, setAdminLedger] = useState<AdminLedgerEntry[]>([]);
   const [adminDetailProtection, setAdminDetailProtection] = useState<ProtectionRecord | null>(null);
@@ -782,15 +798,28 @@ export function PilotApp() {
     }
   };
 
-  const loadAdminRows = async (token: string) => {
+  const loadAdminRows = async (
+    token: string,
+    opts?: { scope?: AdminScope; status?: AdminStatusFilter; includeArchived?: boolean }
+  ) => {
     setAdminBusy(true);
     setAdminError(null);
     try {
+      const scope = opts?.scope ?? adminScope;
+      const status = opts?.status ?? adminStatusFilter;
+      const includeArchived = opts?.includeArchived ?? adminIncludeArchived;
+      const params = new URLSearchParams({
+        format: "json",
+        limit: "200",
+        scope,
+        status,
+        includeArchived: includeArchived ? "true" : "false"
+      });
       const [rowsRes, metricsRes] = await Promise.all([
-        fetch(`${API_BASE}/pilot/protections/export?format=json&limit=200`, {
+        fetch(`${API_BASE}/pilot/protections/export?${params.toString()}`, {
           headers: { "x-admin-token": token }
         }),
-        fetch(`${API_BASE}/pilot/admin/metrics?scope=active`, {
+        fetch(`${API_BASE}/pilot/admin/metrics?scope=${encodeURIComponent(scope)}`, {
           headers: { "x-admin-token": token }
         })
       ]);
@@ -805,6 +834,9 @@ export function PilotApp() {
       const rows = rowsPayload.rows as AdminProtectionRow[];
       setAdminRows(rows);
       setAdminMetrics(metricsPayload.metrics as AdminMetrics);
+      setAdminScope(scope);
+      setAdminStatusFilter(status);
+      setAdminIncludeArchived(includeArchived);
       const nextSelected = adminSelectedId && rows.some((row) => row.protection_id === adminSelectedId)
         ? adminSelectedId
         : rows[0]?.protection_id || null;
@@ -1237,7 +1269,7 @@ export function PilotApp() {
   const adminAvailableReserve = Number(adminMetrics?.availableReserveUsdc ?? 0);
   const adminReserveAfterOpenLiability = Number(adminMetrics?.reserveAfterOpenPayoutLiabilityUsdc ?? 0);
   const adminNetSettledCash = Number(adminMetrics?.netSettledCashUsdc ?? adminPremiumSettledTotal - adminTotalPayoutSettled);
-  const adminActiveCount = Number(adminMetrics?.activeProtections ?? adminRows.filter((row) => row.status === "active").length);
+  const adminActiveCount = Number(adminRows.filter((row) => row.status === "active").length);
   const adminTimeLeftMs = adminSelected ? Date.parse(adminSelected.expiry_at) - Date.now() : NaN;
   const adminSelectedClientPremium = Number(adminDetailProtection?.premium ?? adminSelected?.premium ?? 0);
   const adminSelectedHedgeCost = Number(
@@ -1253,10 +1285,12 @@ export function PilotApp() {
   const rawHistoryWithoutActive = activeProtectionForView
     ? protectionsHistory.filter((item) => item.id !== protection.id)
     : protectionsHistory;
+  const totalFailedCount = rawHistoryWithoutActive.filter(
+    (item) => item.status === "activation_failed" || item.status === "cancelled"
+  ).length;
   const historyWithoutActive = showFailedProtections
     ? rawHistoryWithoutActive
     : rawHistoryWithoutActive.filter((item) => item.status !== "activation_failed" && item.status !== "cancelled");
-  const hiddenFailedCount = rawHistoryWithoutActive.length - historyWithoutActive.length;
   const protectionsTotalCount = (activeProtectionForView ? 1 : 0) + historyWithoutActive.length;
   const premiumHedgeCost = Number(premiumPolicySummary?.estimated?.hedgeCostUsd ?? NaN);
   const premiumBrokerFees = Number(premiumPolicySummary?.estimated?.brokerFeesUsd ?? NaN);
@@ -1306,6 +1340,12 @@ export function PilotApp() {
     : monitorBusy
       ? "Loading first live monitor snapshot..."
       : "Awaiting first live monitor snapshot...";
+  const statusPillClass = (status: string): string => {
+    const normalized = String(status || "").toLowerCase();
+    if (normalized === "active") return "pill";
+    if (normalized === "awaiting_renew_decision" || normalized === "awaiting_expiry_price") return "pill pill-warning";
+    return "pill pill-danger";
+  };
 
   if (!pilotUnlocked) {
     return (
@@ -1862,16 +1902,18 @@ export function PilotApp() {
                     </div>
                   )}
 
-                  {(historyWithoutActive.length > 0 || hiddenFailedCount > 0) && (
+                  {(historyWithoutActive.length > 0 || totalFailedCount > 0) && (
                     <div className="section-title-row">
                       <div className="muted section-subtitle">Recent Protections</div>
-                      {hiddenFailedCount > 0 && (
+                      {totalFailedCount > 0 && (
                         <button
-                          className="btn btn-secondary pilot-inline-btn"
+                          className="link-btn muted"
                           type="button"
                           onClick={() => setShowFailedProtections((prev) => !prev)}
                         >
-                          {showFailedProtections ? "Hide failed/cancelled" : `Show failed/cancelled (${hiddenFailedCount})`}
+                          {showFailedProtections
+                            ? "Hide failed/cancelled"
+                            : `Show failed/cancelled (${totalFailedCount})`}
                         </button>
                       )}
                     </div>
@@ -1890,7 +1932,7 @@ export function PilotApp() {
                         <div className="position-main">
                           <div className="position-main-title">
                             <strong>{itemDirection}</strong>
-                            <span className="pill">{item.status}</span>
+                            <span className={statusPillClass(item.status)}>{item.status}</span>
                           </div>
                           <div className="muted">
                             ID {item.id}
@@ -2105,8 +2147,84 @@ export function PilotApp() {
                     {adminBusy ? "Refreshing..." : "Refresh Admin Data"}
                   </button>
                 </div>
+                <div className="pilot-admin-filters">
+                  <label className="muted">
+                    Scope
+                    <select
+                      className="input pilot-input pilot-input-text"
+                      value={adminScope}
+                      onChange={(e) => void loadAdminRows(adminToken, { scope: e.target.value as AdminScope })}
+                    >
+                      <option value="active">active</option>
+                      <option value="open">open</option>
+                      <option value="all">all</option>
+                    </select>
+                  </label>
+                  <label className="muted">
+                    Status
+                    <select
+                      className="input pilot-input pilot-input-text"
+                      value={adminStatusFilter}
+                      onChange={(e) =>
+                        void loadAdminRows(adminToken, { status: e.target.value as AdminStatusFilter })
+                      }
+                    >
+                      <option value="all">all</option>
+                      <option value="pending_activation">pending_activation</option>
+                      <option value="activation_failed">activation_failed</option>
+                      <option value="active">active</option>
+                      <option value="reconcile_pending">reconcile_pending</option>
+                      <option value="awaiting_renew_decision">awaiting_renew_decision</option>
+                      <option value="awaiting_expiry_price">awaiting_expiry_price</option>
+                      <option value="expired_itm">expired_itm</option>
+                      <option value="expired_otm">expired_otm</option>
+                      <option value="cancelled">cancelled</option>
+                    </select>
+                  </label>
+                  <label className="muted pilot-inline-check">
+                    <input
+                      type="checkbox"
+                      checked={adminIncludeArchived}
+                      onChange={(e) => void loadAdminRows(adminToken, { includeArchived: e.target.checked })}
+                    />
+                    Include archived
+                  </label>
+                  <button
+                    className="btn btn-secondary"
+                    disabled={adminBusy}
+                    onClick={async () => {
+                      if (!protection?.id) return;
+                      try {
+                        setAdminBusy(true);
+                        const res = await fetch(`${API_BASE}/pilot/admin/protections/archive-except-current`, {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            "x-admin-token": adminToken
+                          },
+                          body: JSON.stringify({
+                            keepProtectionId: protection.id,
+                            reason: "pre_ship_cleanup_keep_current_active"
+                          })
+                        });
+                        const payload = await res.json();
+                        if (!res.ok || payload?.status !== "ok") {
+                          throw new Error(payload?.reason || "archive_failed");
+                        }
+                        await loadAdminRows(adminToken);
+                      } catch (err: any) {
+                        setAdminError(friendlyError(String(err?.message || "archive_failed")));
+                      } finally {
+                        setAdminBusy(false);
+                      }
+                    }}
+                  >
+                    Archive all except current UI active
+                  </button>
+                </div>
 
-                <div className="pilot-admin-table">
+                <div className="pilot-admin-table-scroll">
+                  <div className="pilot-admin-table">
                   <div className="pilot-admin-head">
                     <span>Protection ID</span>
                     <span>Status</span>
@@ -2142,6 +2260,7 @@ export function PilotApp() {
                       </span>
                     </div>
                   ))}
+                </div>
                 </div>
 
               </div>

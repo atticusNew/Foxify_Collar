@@ -5,6 +5,7 @@ import { DeribitConnector, IbkrConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow } from "./config";
 import {
+  archiveProtectionsByUserHashExcept,
   createPilotTermsAcceptanceIfMissing,
   extractLatestPremiumPolicyDiagnostics,
   ensurePilotSchema,
@@ -23,11 +24,11 @@ import {
   insertVenueExecution,
   insertVenueQuote,
   listRecentTenorPolicyRows,
+  listLedgerForProtection,
+  listProtectionsByUserHashForAdmin,
+  listProtectionsByUserHash,
   reserveDailyActivationCapacity,
   releaseDailyActivationCapacity,
-  listLedgerForProtection,
-  listProtections,
-  listProtectionsByUserHash,
   patchProtection
 } from "./db";
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
@@ -2338,8 +2339,37 @@ export const registerPilotRoutes = async (
   app.get("/pilot/protections/export", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
-    const query = req.query as { format?: string; limit?: string };
-    const protections = await listProtections(pool, { limit: Number(query.limit || 200) });
+    const query = req.query as {
+      format?: string;
+      limit?: string;
+      scope?: "active" | "open" | "all";
+      status?: string;
+      includeArchived?: string;
+    };
+    const scope =
+      query.scope === "all" || query.scope === "open" || query.scope === "active" ? query.scope : "active";
+    const includeArchived = String(query.includeArchived || "").toLowerCase() === "true";
+    const statusRaw = String(query.status || "all").trim().toLowerCase();
+    const allowedStatuses = new Set([
+      "pending_activation",
+      "activation_failed",
+      "active",
+      "reconcile_pending",
+      "awaiting_renew_decision",
+      "awaiting_expiry_price",
+      "expired_itm",
+      "expired_otm",
+      "cancelled",
+      "all"
+    ]);
+    const status = allowedStatuses.has(statusRaw) ? statusRaw : "all";
+    const tenant = resolveTenantScopeHash();
+    const protections = await listProtectionsByUserHashForAdmin(pool, tenant.userHash, {
+      limit: Number(query.limit || 200),
+      scope,
+      status: status as any,
+      includeArchived
+    });
     const rows = protections.map((item) => ({
       protection_id: item.id,
       status: item.status,
@@ -2364,7 +2394,36 @@ export const registerPilotRoutes = async (
       reply.header("Content-Type", "text/csv");
       return toCsv(rows);
     }
-    return { status: "ok", rows };
+    return { status: "ok", scope, statusFilter: status, includeArchived, rows };
+  });
+
+  app.post("/pilot/admin/protections/archive-except-current", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const tenant = resolveTenantScopeHash();
+    const body = req.body as { keepProtectionId?: string; reason?: string };
+    const keepProtectionId = String(body.keepProtectionId || "").trim() || null;
+    if (keepProtectionId) {
+      const keep = await getProtection(pool, keepProtectionId);
+      if (!keep || !assertProtectionOwnership(keep, tenant)) {
+        reply.code(404);
+        return { status: "error", reason: "keep_protection_not_found" };
+      }
+    }
+    const archivedCount = await archiveProtectionsByUserHashExcept(pool, {
+      userHash: tenant.userHash,
+      keepProtectionId,
+      reason: body.reason || "admin_archive_except_current",
+      actor: auth.actor
+    });
+    await insertAdminAction(pool, {
+      protectionId: keepProtectionId,
+      action: "archive_except_current",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: { keepProtectionId, archivedCount, reason: body.reason || "admin_archive_except_current" }
+    });
+    return { status: "ok", archivedCount, keepProtectionId };
   });
 
   app.post("/pilot/protections/:id/renewal-decision", async (req, reply) => {
@@ -2429,9 +2488,11 @@ export const registerPilotRoutes = async (
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
     const query = req.query as { scope?: string };
-    const scope = String(query.scope || "active").toLowerCase() === "all" ? "all" : "active";
+    const scopeRaw = String(query.scope || "active").toLowerCase();
+    const scope = scopeRaw === "all" || scopeRaw === "open" ? scopeRaw : "active";
     const metrics = await getPilotAdminMetrics(pool, {
       startingReserveUsdc: pilotConfig.startingReserveUsdc,
+      userHash: resolveTenantScopeHash().userHash,
       scope
     });
     return { status: "ok", scope, metrics };

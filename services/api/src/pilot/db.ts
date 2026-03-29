@@ -316,6 +316,111 @@ export const listProtectionsByUserHash = async (
   return result.rows.map(mapProtection);
 };
 
+export type AdminProtectionScope = "active" | "open" | "all";
+
+const OPEN_PROTECTION_STATUSES: ProtectionStatus[] = [
+  "pending_activation",
+  "active",
+  "reconcile_pending",
+  "awaiting_renew_decision",
+  "awaiting_expiry_price"
+];
+
+export const listProtectionsByUserHashForAdmin = async (
+  pool: Queryable,
+  userHash: string,
+  opts: {
+    limit?: number;
+    scope?: AdminProtectionScope;
+    status?: ProtectionStatus | "all";
+    includeArchived?: boolean;
+  } = {}
+): Promise<ProtectionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 200, 1000));
+  const scope: AdminProtectionScope = opts.scope || "active";
+  const status = opts.status || "all";
+  const includeArchived = opts.includeArchived === true;
+  const values: unknown[] = [userHash];
+  const clauses: string[] = ["user_hash = $1"];
+
+  if (!includeArchived) {
+    clauses.push(`COALESCE(metadata->>'archivedAt', '') = ''`);
+  }
+
+  if (scope === "active") {
+    clauses.push(`status = 'active'`);
+  } else if (scope === "open") {
+    clauses.push(`status = ANY($${values.length + 1}::text[])`);
+    values.push(OPEN_PROTECTION_STATUSES as unknown as string[]);
+  }
+
+  if (status !== "all") {
+    clauses.push(`status = $${values.length + 1}`);
+    values.push(status);
+  }
+
+  values.push(limit);
+  const result = await pool.query(
+    `SELECT * FROM pilot_protections WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC LIMIT $${values.length}`,
+    values
+  );
+  return result.rows.map(mapProtection);
+};
+
+export const archiveProtectionsByUserHashExcept = async (
+  pool: Queryable,
+  input: {
+    userHash: string;
+    keepProtectionId: string | null;
+    reason?: string;
+    actor?: string;
+  }
+): Promise<number> => {
+  const archivedAt = new Date().toISOString();
+  const reason = String(input.reason || "admin_cleanup");
+  const actor = String(input.actor || "admin");
+  const values: Array<string> = [input.userHash];
+  const clauses: string[] = [
+    "user_hash = $1",
+    "COALESCE(metadata->>'archivedAt', '') = ''"
+  ];
+
+  if (input.keepProtectionId) {
+    clauses.push(`id <> $${values.length + 1}`);
+    values.push(input.keepProtectionId);
+  }
+
+  const candidates = await pool.query(
+    `
+      SELECT id, metadata
+      FROM pilot_protections
+      WHERE ${clauses.join(" AND ")}
+    `,
+    values
+  );
+  let archivedCount = 0;
+  for (const row of candidates.rows) {
+    const metadata = toRecord(row.metadata);
+    const merged = {
+      ...metadata,
+      archivedAt,
+      archivedReason: reason,
+      archivedBy: actor
+    };
+    const updated = await pool.query(
+      `
+        UPDATE pilot_protections
+        SET metadata = $1::jsonb,
+            updated_at = NOW()
+        WHERE id = $2
+      `,
+      [JSON.stringify(merged), String(row.id)]
+    );
+    archivedCount += Number(updated.rowCount || 0);
+  }
+  return archivedCount;
+};
+
 export const getDailyProtectedNotionalForUser = async (
   pool: Queryable,
   userHash: string,
@@ -445,7 +550,7 @@ export const listLedgerForProtection = async (
 
 export const getPilotAdminMetrics = async (
   pool: Queryable,
-  opts: { startingReserveUsdc: number; scope?: "all" | "active" }
+  opts: { startingReserveUsdc: number; userHash: string; scope?: "all" | "active" | "open" }
 ): Promise<{
   totalProtections: string;
   activeProtections: string;
@@ -466,9 +571,13 @@ export const getPilotAdminMetrics = async (
   reserveAfterOpenPayoutLiabilityUsdc: string;
   netSettledCashUsdc: string;
 }> => {
-  const scope = opts.scope === "active" ? "active" : "all";
+  const scope = opts.scope === "all" ? "all" : opts.scope === "open" ? "open" : "active";
   const protectionScopeSql =
-    scope === "all" ? "TRUE" : "status IN ('active', 'awaiting_expiry_price')";
+    scope === "all"
+      ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = ''"
+      : scope === "open"
+        ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status IN ('pending_activation', 'active', 'reconcile_pending', 'awaiting_renew_decision', 'awaiting_expiry_price')"
+        : "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status = 'active'";
   const result = await pool.query(
     `
       WITH filtered_protections AS (
@@ -489,7 +598,8 @@ export const getPilotAdminMetrics = async (
         ) AS hedge_premium_total_usdc,
         COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc
       FROM filtered_protections
-    `
+    `,
+    [opts.userHash]
   );
   const ledger = await pool.query(
     `
@@ -504,7 +614,8 @@ export const getPilotAdminMetrics = async (
         COALESCE(SUM(CASE WHEN entry_type = 'payout_settled' THEN amount ELSE 0 END), 0)::text AS payout_settled_total_usdc
       FROM pilot_ledger_entries le
       INNER JOIN filtered_protections fp ON fp.id = le.protection_id
-    `
+    `,
+    [opts.userHash]
   );
   const row = result.rows[0] || {};
   const ledgerRow = ledger.rows[0] || {};
