@@ -1579,12 +1579,12 @@ export function PilotApp() {
             </div>
 
             <div className="pilot-form-row">
-              <span className="pilot-label">Target Horizon</span>
+              <span className="pilot-label">Protection Length</span>
               <div className="pilot-field pilot-tenor-field">
                 <div
                   className={`pilot-tenor-chips ${enabledTenorDays.length === 1 ? "pilot-tenor-chips-single" : ""}`}
                   role="group"
-                  aria-label="Target Horizon"
+                  aria-label="Protection Length"
                 >
                   {enabledTenorDays.map((tenorDay) => {
                     const selected = selectedTenorDays === tenorDay;
@@ -1604,7 +1604,7 @@ export function PilotApp() {
                   })}
                 </div>
                 <div className="muted pilot-tenor-helper">
-                  Recommended horizon: {defaultTenorDays}-Day. Final matched expiry depends on live liquidity.
+                  Recommended: {defaultTenorDays}D. Final expiry may vary.
                 </div>
               </div>
             </div>
@@ -1627,6 +1627,22 @@ export function PilotApp() {
             {!canQuote && (
               <div className="disclaimer danger">
                 Enter position size and protection amount. Protection amount cannot exceed position size.
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="section">
+          <h4>Pilot Summary</h4>
+          <div className="quote-card quote-card-ready">
+            <div className="muted">
+              Premium due at pilot close: <strong>${formatUsd(pilotPremiumOwedUsd)}</strong>
+            </div>
+            {showDailyCapSummary && (
+              <div className="muted">
+                Daily protected notional (UTC): used ${formatUsd(dailyCapUsedUsd)} → projected{" "}
+                <strong>${formatUsd(dailyCapProjectedUsd)}</strong> / ${formatUsd(dailyCapMaxUsd)}
+                {Number.isFinite(dailyCapPct) ? ` (${dailyCapPct.toFixed(1)}%)` : ""}
               </div>
             )}
           </div>
@@ -1727,18 +1743,6 @@ export function PilotApp() {
                     )}
                   </div>
                 )}
-                <div className="quote-warning">
-                  <div className="muted">
-                    Premium due at pilot close: <strong>${formatUsd(pilotPremiumOwedUsd)}</strong>
-                  </div>
-                  {showDailyCapSummary && (
-                    <div className="muted">
-                      Daily protected notional (UTC): used ${formatUsd(dailyCapUsedUsd)} → projected{" "}
-                      <strong>${formatUsd(dailyCapProjectedUsd)}</strong> / ${formatUsd(dailyCapMaxUsd)}
-                      {Number.isFinite(dailyCapPct) ? ` (${dailyCapPct.toFixed(1)}%)` : ""}
-                    </div>
-                  )}
-                </div>
               </>
             )}
           </div>
@@ -1953,14 +1957,12 @@ export function PilotApp() {
                 </div>
               </div>
               <div className="pilot-monitor-card">
-                <div className="label">Option Mark (Indicative)</div>
+                <div className="label">Current Option Mark (Indicative)</div>
                 <div className="value">
                   {Number.isFinite(liveOptionMarkUsd) ? `$${formatUsd(liveOptionMarkUsd)}` : "Loading live snapshot..."}
                 </div>
                 {monitor?.markSource && <div className="muted">{monitor.markSource}</div>}
-                <div className="muted">
-                  MTM reflects the current indicative hedge option mark from venue snapshot data (not settled P&L).
-                </div>
+                <div className="muted">Latest indicative option price, not settled P&L.</div>
               </div>
               <div className="pilot-monitor-card">
                 <div className="label">Est. Protection Value at Trigger</div>
