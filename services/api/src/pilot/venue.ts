@@ -194,6 +194,44 @@ const resolveContractMultiplier = (value: unknown, fallback = 0.1): number => {
   return fallback;
 };
 
+const deriveNoViableOptionReason = (counts: {
+  nTotalCandidates: number;
+  nNoTop: number;
+  nNoAsk: number;
+  nFailedProtection: number;
+  nFailedEconomics: number;
+  nFailedMinTradableNotional?: number;
+}):
+  | "no_economical_option"
+  | "no_protection_compliant_option"
+  | "min_tradable_notional_exceeded"
+  | "no_top_of_book" => {
+  const total = Math.max(0, Number(counts.nTotalCandidates || 0));
+  if (total <= 0) return "no_top_of_book";
+  const failedMinTradableNotional = Math.max(0, Number(counts.nFailedMinTradableNotional || 0));
+  const failedEconomics = Math.max(0, Number(counts.nFailedEconomics || 0));
+  const failedProtection = Math.max(0, Number(counts.nFailedProtection || 0));
+  const failedLiquidity = Math.max(0, Number(counts.nNoTop || 0)) + Math.max(0, Number(counts.nNoAsk || 0));
+  if (failedMinTradableNotional > 0 && failedProtection <= 0) {
+    return "min_tradable_notional_exceeded";
+  }
+  // Prefer explicit economics/protection failure taxonomy over generic liquidity
+  // when those constraints are actually what blocked candidate viability.
+  if (failedEconomics > 0 && failedProtection <= 0) {
+    return "no_economical_option";
+  }
+  if (failedProtection > 0 && failedEconomics <= 0) {
+    return "no_protection_compliant_option";
+  }
+  if (failedEconomics > 0 && failedEconomics >= failedProtection && failedEconomics >= failedLiquidity) {
+    return "no_economical_option";
+  }
+  if (failedProtection > 0 && failedProtection >= failedLiquidity) {
+    return "no_protection_compliant_option";
+  }
+  return "no_top_of_book";
+};
+
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -770,6 +808,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       belowTarget: boolean;
       score: number;
     }>;
+    rankedAlternatives?: Array<{
+      expiry: string | null;
+      matchedTenorDays: number | null;
+      ask: number | null;
+      score: number | null;
+      driftDays: number | null;
+    }>;
     strike: number | null;
     hedgeInstrumentFamily: "MBT" | "BFF";
     candidateFailureCounts?: {
@@ -778,6 +823,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nNoAsk: number;
       nFailedProtection: number;
       nFailedEconomics: number;
+      nFailedMinTradableNotional: number;
       nTimedOut: number;
       nPassed: number;
     };
@@ -788,6 +834,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nNoAsk: number;
       nFailedProtection: number;
       nFailedEconomics: number;
+      nFailedMinTradableNotional: number;
       nTimedOut: number;
       nPassed: number;
     };
@@ -1170,6 +1217,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             belowTarget: boolean;
             score: number;
           }>;
+          rankedAlternatives: Array<{
+            expiry: string | null;
+            matchedTenorDays: number | null;
+            ask: number | null;
+            score: number | null;
+            driftDays: number | null;
+          }>;
           failureCounts: OptionFailureCounts;
         }
       | { failureCounts: OptionFailureCounts }
@@ -1191,6 +1245,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nNoAsk: 0,
         nFailedProtection: 0,
         nFailedEconomics: 0,
+        nFailedMinTradableNotional: 0,
         nTimedOut: 0,
         nPassed: 0
       };
@@ -1338,7 +1393,17 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           }
           const notional = Math.max(0, Number(req.protectedNotional || 0));
           const qty = Math.max(0, Number(req.quantity || 0));
-          const premiumRatio = notional > 0 ? (ask * qty) / notional : 0;
+          const contractMultiplier = resolveContractMultiplier(contract.multiplier, 0.1);
+          // Explicit granularity guard: if requested hedge quantity is smaller than
+          // one contract's underlying multiplier, the quote economics are not tradable.
+          if (qty > 0 && qty + 1e-9 < contractMultiplier) {
+            failureCounts.nFailedEconomics += 1;
+            failureCounts.nFailedMinTradableNotional += 1;
+            continue;
+          }
+          const estimatedContracts = Math.max(1, Math.ceil(qty / contractMultiplier));
+          const estimatedPremium = ask * estimatedContracts;
+          const premiumRatio = notional > 0 ? estimatedPremium / notional : 0;
           if (
             Number.isFinite(this.maxOptionPremiumRatio) &&
             this.maxOptionPremiumRatio > 0 &&
@@ -1392,6 +1457,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         belowTarget: row.belowTarget,
         score: Number(row.score.toFixed(6))
       }));
+      const rankedAlternatives = passed.slice(0, 3).map((row) => ({
+        expiry: String(row.contract.expiry || "") || null,
+        matchedTenorDays: row.matchedTenorDays,
+        ask: row.ask,
+        score: Number.isFinite(row.score) ? Number(row.score.toFixed(6)) : null,
+        driftDays: Number.isFinite(row.driftDays) ? row.driftDays : null
+      }));
       return {
         contract: best.contract,
         top: best.top,
@@ -1399,6 +1471,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         selectedRank: 1,
         candidateCountEvaluated: shortlist.length,
         selectionTrace: trace,
+        rankedAlternatives,
         failureCounts
       };
     };
@@ -1411,9 +1484,17 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nNoAsk: 0,
       nFailedProtection: 0,
       nFailedEconomics: 0,
+      nFailedMinTradableNotional: 0,
       nTimedOut: 0,
       nPassed: 0
     };
+    let bestOptionRankedAlternatives: Array<{
+      expiry: string | null;
+      matchedTenorDays: number | null;
+      ask: number | null;
+      score: number | null;
+      driftDays: number | null;
+    }> = [];
     const accumulateOptionFailureCounts = (counts?: OptionFailureCounts): void => {
       if (!counts) return;
       optionFailureTotals.nTotalCandidates += Number(counts.nTotalCandidates || 0);
@@ -1421,6 +1502,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       optionFailureTotals.nNoAsk += Number(counts.nNoAsk || 0);
       optionFailureTotals.nFailedProtection += Number(counts.nFailedProtection || 0);
       optionFailureTotals.nFailedEconomics += Number(counts.nFailedEconomics || 0);
+      optionFailureTotals.nFailedMinTradableNotional += Number(counts.nFailedMinTradableNotional || 0);
       optionFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
       optionFailureTotals.nPassed += Number(counts.nPassed || 0);
     };
@@ -1545,6 +1627,18 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         belowTarget: boolean;
         score: number;
       }>;
+    rankedAlternatives: Array<{
+      conId: number;
+      expiry: string | null;
+      matchedTenorDays: number | null;
+      driftDays: number | null;
+      ask: number | null;
+      bid: number | null;
+      askSize: number | null;
+      spreadPct: number | null;
+      belowTarget: boolean;
+      score: number;
+    }>;
       strike: number | null;
       hedgeInstrumentFamily: "MBT" | "BFF";
       candidateFailureCounts?: {
@@ -1553,6 +1647,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nNoAsk: number;
         nFailedProtection: number;
         nFailedEconomics: number;
+        nFailedMinTradableNotional: number;
         nTimedOut: number;
         nPassed: number;
       };
@@ -1747,6 +1842,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               belowTarget: boolean;
               score: number;
             }>;
+          rankedAlternatives: Array<{
+            expiry: string | null;
+            matchedTenorDays: number | null;
+            ask: number | null;
+            score: number | null;
+            driftDays: number | null;
+          }>;
             failureCounts: OptionFailureCounts;
           }
         | null = null;
@@ -1774,6 +1876,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         }
         if (!bestOptionMatch || optionMatch.selectedScore < bestOptionMatch.selectedScore) {
           bestOptionMatch = optionMatch;
+          bestOptionRankedAlternatives = optionMatch.rankedAlternatives;
         }
         const viableCount = Number(optionMatch.failureCounts.nPassed || 0);
         if (viableCount >= minViableCandidatesBeforeStop) {
@@ -1807,6 +1910,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           optionMeta.selectedTenorDays !== null ? Number((optionMeta.selectedTenorDays * 24).toFixed(4)) : null,
         matchedTenorDisplay: formatMatchedTenorDisplay(optionMeta.selectedTenorDays),
         selectionTrace: optionMatch.selectionTrace,
+        rankedAlternatives: optionMatch.rankedAlternatives,
         strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike,
         hedgeInstrumentFamily: productFamily,
         candidateFailureCounts: optionMatch.failureCounts
@@ -1854,6 +1958,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           nNoAsk: number;
           nFailedProtection: number;
           nFailedEconomics: number;
+          nFailedMinTradableNotional: number;
           nTimedOut: number;
           nPassed: number;
         };
@@ -2049,6 +2154,18 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
       if (sawFallbackContracts) {
         if (this.optionLiquiditySelectionEnabled && optionFailureTotals.nTotalCandidates > 0) {
+          const noViableReason = deriveNoViableOptionReason(optionFailureTotals);
+          const rankedAlternatives = (bestOptionRankedAlternatives.length > 0
+            ? bestOptionRankedAlternatives
+            : null) as
+            | Array<{
+                expiry: string | null;
+                matchedTenorDays: number | null;
+                driftDays: number | null;
+                ask: number | null;
+                score: number | null;
+              }>
+            | null;
           timingsMs.total = Date.now() - selectorStartedAt;
           this.selectorDiagnostics = {
             asOf: nowIso(),
@@ -2057,11 +2174,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             timingsMs,
             counters,
             optionCandidateFailureCounts: { ...optionFailureTotals },
-            error: "ibkr_quote_unavailable:no_top_of_book:no_viable_option"
+            error: `ibkr_quote_unavailable:${noViableReason}:no_viable_option`
           };
-          throw new Error(
-            `ibkr_quote_unavailable:no_top_of_book:no_viable_option:${JSON.stringify(optionFailureTotals)}`
-          );
+          throw new Error([
+            `ibkr_quote_unavailable:${noViableReason}:no_viable_option:${JSON.stringify(optionFailureTotals)}`,
+            rankedAlternatives
+              ? `ranked_alternatives:${JSON.stringify(rankedAlternatives)}`
+              : null
+          ].filter(Boolean).join(":"));
         }
         timingsMs.total = Date.now() - selectorStartedAt;
         this.selectorDiagnostics = {
@@ -2101,6 +2221,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nNoAsk: 0,
         nFailedProtection: 0,
         nFailedEconomics: 0,
+        nFailedMinTradableNotional: 0,
         nTimedOut: 0,
         nPassed: 0
       },
@@ -2172,6 +2293,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         matchedTenorHoursEstimate: resolved.matchedTenorHoursEstimate,
         matchedTenorDisplay: resolved.matchedTenorDisplay,
         selectionTrace: resolved.selectionTrace,
+        rankedAlternatives: resolved.rankedAlternatives,
         askPrice: ask,
         bidPrice: bid,
         askSize: resolved.top.askSize,

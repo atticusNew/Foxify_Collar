@@ -245,10 +245,91 @@ const formatMatchedHorizonLabel = (days: number): string => {
   return `${Math.max(1, Math.round(days))}-Day`;
 };
 
+type RankedAlternative = {
+  expiry: string | null;
+  matchedTenorDays: number | null;
+  ask: number | null;
+  score: number | null;
+  driftDays: number | null;
+};
+
+const parseRankedAlternatives = (value: unknown): RankedAlternative[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const item = row as Record<string, unknown>;
+      const expiryRaw = String(item.expiry ?? "").trim();
+      const expiry = expiryRaw.length > 0 ? expiryRaw : null;
+      const matchedTenorDays = Number(item.matchedTenorDays ?? NaN);
+      const ask = Number(item.ask ?? NaN);
+      const score = Number(item.score ?? NaN);
+      const driftDays = Number(item.driftDays ?? NaN);
+      return {
+        expiry,
+        matchedTenorDays: Number.isFinite(matchedTenorDays) ? matchedTenorDays : null,
+        ask: Number.isFinite(ask) ? ask : null,
+        score: Number.isFinite(score) ? score : null,
+        driftDays: Number.isFinite(driftDays) ? driftDays : null
+      } satisfies RankedAlternative;
+    })
+    .filter((row): row is RankedAlternative => Boolean(row))
+    .slice(0, 3);
+};
+
+const buildQuoteAlternativeHint = (detail: string): string => {
+  const match = detail.match(/ranked_alternatives:(\[[\s\S]*\])$/);
+  if (!match) return "";
+  try {
+    const ranked = parseRankedAlternatives(JSON.parse(match[1]));
+    if (!ranked.length) return "";
+    return ranked
+      .map((row) => {
+        const horizon =
+          Number.isFinite(Number(row.matchedTenorDays)) && Number(row.matchedTenorDays) > 0
+            ? `${Math.max(1, Math.round(Number(row.matchedTenorDays)))}D`
+            : "N/A";
+        const premium = Number.isFinite(Number(row.ask)) ? `$${formatUsd(Number(row.ask))}` : "ask n/a";
+        return `${horizon} (${premium})`;
+      })
+      .join(" · ");
+  } catch {
+    return "";
+  }
+};
+
 const formatExpiryDateLabel = (expiryRaw: string): string => {
   const normalized = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
   if (normalized.length !== 8) return "";
   return `${normalized.slice(0, 4)}-${normalized.slice(4, 6)}-${normalized.slice(6, 8)}`;
+};
+
+type SelectionTraceRow = {
+  conId: number;
+  expiry: string | null;
+  matchedTenorDays: number | null;
+  driftDays: number | null;
+  ask: number | null;
+  bid: number | null;
+  askSize: number | null;
+  spreadPct: number | null;
+  belowTarget: boolean;
+  score: number;
+};
+
+const isSelectionTraceRow = (value: unknown): value is SelectionTraceRow => {
+  if (!value || typeof value !== "object") return false;
+  const row = value as Record<string, unknown>;
+  return (
+    Number.isFinite(Number(row.conId)) &&
+    Number.isFinite(Number(row.score)) &&
+    (row.expiry === null || typeof row.expiry === "string")
+  );
+};
+
+const formatMatchedTenorShort = (days: number | null): string => {
+  if (!Number.isFinite(Number(days)) || Number(days) <= 0) return "N/A";
+  return `${Math.max(1, Math.round(Number(days)))}D`;
 };
 
 const friendlyError = (message: string): string => {
@@ -287,6 +368,9 @@ const friendlyError = (message: string): string => {
   }
   if (message.includes("quote_economics_unacceptable")) {
     return "Current hedge premium is not economical for this protection. Try again with a different tenor.";
+  }
+  if (message.includes("min_tradable_notional_exceeded")) {
+    return "Protection amount is currently too small for a tradable contract size. Increase amount or choose another tenor.";
   }
   if (message.includes("quote_liquidity_unavailable")) {
     return "Live liquidity is currently limited. Try again or choose another tenor.";
@@ -1264,6 +1348,11 @@ export function PilotApp() {
     Number.isFinite(requestedVsMatchedTenorDriftDays) && requestedVsMatchedTenorDriftDays > 0.5;
   const showTenorAdjustmentWarning =
     Number.isFinite(requestedVsMatchedTenorDriftDays) && requestedVsMatchedTenorDriftDays > 2;
+  const selectionTraceRows = Array.isArray(venueSelection?.selectionTrace)
+    ? (venueSelection?.selectionTrace as unknown[]).filter(isSelectionTraceRow).slice(0, 3)
+    : [];
+  const rankedAlternativesForDisplay = parseRankedAlternatives(venueSelection?.rankedAlternatives);
+  const quoteAlternativeHint = buildQuoteAlternativeHint(String(error || ""));
   const quoteRequestProgressPct = Math.max(
     0,
     Math.min(
@@ -1789,6 +1878,42 @@ export function PilotApp() {
                     )}
                   </div>
                 )}
+                {(rankedAlternativesForDisplay.length > 0 || selectionTraceRows.length > 1) && (
+                  <div className="quote-alternatives">
+                    <div className="muted">
+                      Alternative expiries considered (closest viable first):
+                    </div>
+                    <ol className="quote-alternatives-list">
+                      {(rankedAlternativesForDisplay.length > 0
+                        ? rankedAlternativesForDisplay
+                        : selectionTraceRows.map((row) => ({
+                            expiry: row.expiry,
+                            matchedTenorDays: row.matchedTenorDays,
+                            ask: row.ask,
+                            score: row.score,
+                            driftDays: row.driftDays
+                          }))
+                      ).map((row, idx) => {
+                        const expiryLabel = row.expiry ? formatExpiryDateLabel(row.expiry) : "";
+                        const tenorLabel = Number.isFinite(Number(row.matchedTenorDays))
+                          ? `${Math.max(1, Math.round(Number(row.matchedTenorDays)))}-Day`
+                          : "N/A";
+                        const premiumLabel = Number.isFinite(Number(row.ask)) ? `$${formatUsd(Number(row.ask))}` : "ask n/a";
+                        const driftLabel = Number.isFinite(Number(row.driftDays))
+                          ? `${Number(row.driftDays).toFixed(2)}d drift`
+                          : "drift n/a";
+                        const scoreLabel = Number.isFinite(Number(row.score))
+                          ? `score ${Number(row.score).toFixed(3)}`
+                          : "score n/a";
+                        return (
+                          <li key={`${String(row.expiry || "na")}-${idx}`} className="muted">
+                            {expiryLabel || tenorLabel} · {premiumLabel} · {driftLabel} · {scoreLabel}
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -1819,6 +1944,9 @@ export function PilotApp() {
             </button>
           </div>
           {error && <div className="disclaimer danger">{error}</div>}
+          {!error && quoteAlternativeHint && (
+            <div className="disclaimer">{`Venue alternatives: ${quoteAlternativeHint}`}</div>
+          )}
           {showPriceFeedHint && (
             <div className="disclaimer">
               Quick check: API must run with PILOT_API_ENABLED=true, PRICE_SINGLE_SOURCE=true, and a valid

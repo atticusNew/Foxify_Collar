@@ -191,6 +191,9 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.ibkrMaxFuturesSyntheticPremiumRatio = Number(
     process.env.IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO || "0.05"
   );
+  configModule.pilotConfig.ibkrMaxOptionPremiumRatio = Number(process.env.IBKR_MAX_OPTION_PREMIUM_RATIO || "0.15");
+  configModule.pilotConfig.ibkrOptionLiquiditySelectionEnabled =
+    process.env.IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED === "true";
   configModule.pilotConfig.ibkrQualifyCacheTtlMs = Number(process.env.IBKR_QUALIFY_CACHE_TTL_MS || "120000");
   configModule.pilotConfig.ibkrQualifyCacheMaxKeys = Number(process.env.IBKR_QUALIFY_CACHE_MAX_KEYS || "2000");
   configModule.pilotConfig.venueQuoteTimeoutMs = Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000");
@@ -974,6 +977,10 @@ test("K) quote diagnostics surface venue strike/tenor selection", async () => {
       Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectionTrace"),
       true
     );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "rankedAlternatives"),
+      true
+    );
   } finally {
     await harness.close();
   }
@@ -1582,6 +1589,170 @@ test("V) quote maps no_top_of_book to 503 liquidity-unavailable reason", async (
         IBKR_MAX_TENOR_DRIFT_DAYS: "7",
         IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
         IBKR_ORDER_TIF: "IOC",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const quoteRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteRes.statusCode, 503, quoteRes.body);
+      const payload = quoteRes.json();
+      assert.equal(payload.status, "error");
+      assert.equal(payload.reason, "quote_liquidity_unavailable");
+      assert.match(String(payload.detail || ""), /no_top_of_book/);
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("V2) quote maps no-economical-option diagnostics to economics-unacceptable reason", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 31111,
+                    secType: "FOP",
+                    localSymbol: "W5AH6 P50000",
+                    expiry: "20260330",
+                    strike: 50000,
+                    right: "P",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 32222,
+                  secType: "FUT",
+                  localSymbol: "MBTH6",
+                  expiry: "20260331",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.conId === 32222) {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                bid: null,
+                ask: null,
+                bidSize: null,
+                askSize: null,
+                asOf: new Date().toISOString()
+              })
+          } as any;
+        }
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 95,
+              ask: 96,
+              bidSize: 5,
+              askSize: 6,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.conId === 32222) {
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+          } as any;
+        }
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bids: [{ level: 0, price: 95, size: 5 }],
+              asks: [{ level: 0, price: 96, size: 6 }],
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "4000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "4000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "7",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        IBKR_REQUIRE_OPTIONS_NATIVE: "false",
+        IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED: "true",
+        IBKR_MAX_OPTION_PREMIUM_RATIO: "0.002",
+        IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO: "2.0",
         PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
       }
     });

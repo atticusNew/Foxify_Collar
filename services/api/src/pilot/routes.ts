@@ -411,7 +411,8 @@ const sanitizeQuoteForClient = (quote: {
     "strikeSelectionMode",
     "hedgeMode",
     "hedgeInstrumentFamily",
-    "selectionReason"
+    "selectionReason",
+    "rankedAlternatives"
   ];
   for (const key of allowedKeys) {
     if (key in details) allowedDetails[key] = details[key];
@@ -1464,6 +1465,10 @@ export const registerPilotRoutes = async (
             selectionReason:
               quote.details && typeof (quote.details as Record<string, unknown>).selectionReason === "string"
                 ? String((quote.details as Record<string, unknown>).selectionReason)
+                : null,
+            rankedAlternatives:
+              quote.details && Array.isArray((quote.details as Record<string, unknown>).rankedAlternatives)
+                ? (quote.details as Record<string, unknown>).rankedAlternatives
                 : null
           }
         }
@@ -1473,7 +1478,8 @@ export const registerPilotRoutes = async (
       const isTransportNotLive = message.startsWith("ibkr_transport_not_live");
       const isTenorDriftExceeded = message.includes("tenor_drift_exceeded");
       const isTenorTemporarilyUnavailable = message.includes("tenor_temporarily_unavailable");
-      const isNoTopOfBook = message.includes("no_top_of_book");
+      const isNoTopOfBook =
+        message.includes("no_top_of_book") && !message.includes("no_top_of_book:no_viable_option");
       const noViableOptionMatch = message.match(/no_viable_option:(\{.*\})/);
       const isNoViableOption = message.includes("no_viable_option");
       const isNoEconomicalOption = message.includes("no_economical_option");
@@ -1501,6 +1507,16 @@ export const registerPilotRoutes = async (
               ? 409
               : 502
       );
+      const noViableReasonPrefix = message.match(
+        /ibkr_quote_unavailable:(min_tradable_notional_exceeded|no_economical_option|no_protection_compliant_option|no_top_of_book):no_viable_option/
+      )?.[1];
+      const noViableReason =
+        noViableReasonPrefix === "min_tradable_notional_exceeded" ||
+        noViableReasonPrefix === "no_economical_option"
+          ? "quote_economics_unacceptable"
+          : noViableReasonPrefix === "no_protection_compliant_option" || noViableReasonPrefix === "no_top_of_book"
+            ? "quote_liquidity_unavailable"
+            : null;
       return {
         status: "error",
         reason: isStorageFailure
@@ -1509,9 +1525,9 @@ export const registerPilotRoutes = async (
             ? "ibkr_transport_not_live"
             : isTenorTemporarilyUnavailable
               ? "tenor_temporarily_unavailable"
-            : isNoTopOfBook
-              ? "quote_liquidity_unavailable"
             : isNoViableOption
+              ? noViableReason || "quote_liquidity_unavailable"
+            : isNoTopOfBook
               ? "quote_liquidity_unavailable"
             : isNoEconomicalOption
               ? "quote_economics_unacceptable"
@@ -1532,10 +1548,12 @@ export const registerPilotRoutes = async (
             ? "IBKR live transport is not active. Verify bridge transport health and retry."
             : isTenorTemporarilyUnavailable
               ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
+            : isNoViableOption
+              ? noViableReason === "quote_economics_unacceptable"
+                ? "No option contract met pilot economics guardrails within quote budget."
+                : "No viable option contract met liquidity/protection/economics constraints within quote budget."
             : isNoTopOfBook
               ? "Venue top-of-book is temporarily unavailable for the requested hedge. Please retry."
-            : isNoViableOption
-              ? "No viable option contract met liquidity/protection/economics constraints within quote budget."
             : isNoEconomicalOption
               ? "No option contract met pilot economics guardrails within quote budget."
             : isNoProtectionCompliantOption
