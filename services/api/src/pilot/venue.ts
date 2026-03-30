@@ -1579,12 +1579,72 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         this.enableBffFallback &&
         this.primaryProductFamily !== this.bffProductFamily &&
         this.bffProductFamily === "BFF";
-      const primaryOptions = await runOptionLeg(this.primaryProductFamily, "best_tenor_liquidity_option");
+      let optionLegTimedOut = false;
+      const runOptionLegWithTimeoutFallback = async (
+        productFamily: "MBT" | "BFF",
+        reason: "best_tenor_liquidity_option" | "primary_options_unavailable_secondary_options_fallback"
+      ): Promise<{
+        contract: IbkrQualifiedContract;
+        hedgeMode: "options_native";
+        top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+        requestedTenorDays: number;
+        selectedTenorDays: number | null;
+        tenorDriftDays: number | null;
+        selectedExpiry: string | null;
+        selectionReason: string;
+        selectionAlgorithm: string;
+        selectedScore: number | null;
+        selectedRank: number | null;
+        selectedIsBelowTarget: boolean | null;
+        candidateCountEvaluated: number;
+        matchedTenorHoursEstimate: number | null;
+        matchedTenorDisplay: string | null;
+        selectionTrace: Array<{
+          conId: number;
+          expiry: string | null;
+          matchedTenorDays: number | null;
+          driftDays: number | null;
+          ask: number | null;
+          bid: number | null;
+          askSize: number | null;
+          spreadPct: number | null;
+          belowTarget: boolean;
+          score: number;
+        }>;
+        strike: number | null;
+        hedgeInstrumentFamily: "MBT" | "BFF";
+        candidateFailureCounts?: {
+          nTotalCandidates: number;
+          nNoTop: number;
+          nNoAsk: number;
+          nFailedProtection: number;
+          nFailedEconomics: number;
+          nTimedOut: number;
+          nPassed: number;
+        };
+      } | null> => {
+        try {
+          return await runOptionLeg(productFamily, reason);
+        } catch (error) {
+          const message = String((error as Error)?.message || "");
+          if (message.includes("venue_quote_timeout")) {
+            optionLegTimedOut = true;
+            return null;
+          }
+          throw error;
+        }
+      };
+      const primaryOptions = await runOptionLegWithTimeoutFallback(
+        this.primaryProductFamily,
+        "best_tenor_liquidity_option"
+      );
       if (primaryOptions) {
         return primaryOptions;
       }
-      if (allowBffFallback) {
-        const secondaryOptions = await runOptionLeg(
+      // If options probing already exhausted its leg budget, skip additional option-family probing
+      // and route directly to futures fallback while quote budget is still available.
+      if (allowBffFallback && !optionLegTimedOut) {
+        const secondaryOptions = await runOptionLegWithTimeoutFallback(
           this.bffProductFamily,
           "primary_options_unavailable_secondary_options_fallback"
         );
