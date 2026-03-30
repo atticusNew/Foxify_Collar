@@ -561,6 +561,21 @@ body {
   margin-top: 4px;
 }
 
+.quote-alternatives {
+  margin-top: 6px;
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+  display: grid;
+  gap: 4px;
+}
+
+.quote-alternatives-list {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 3px;
+}
+
 .quote-fetching {
   display: grid;
   gap: 6px;

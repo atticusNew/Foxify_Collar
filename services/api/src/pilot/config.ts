@@ -281,6 +281,7 @@ export const resolvePilotWindow = (now: Date = new Date()): PilotWindowState => 
 
 export const pilotConfig = {
   enabled: process.env.PILOT_API_ENABLED === "true",
+  activationEnabled: parseBooleanEnv(process.env.PILOT_ACTIVATION_ENABLED, false),
   venueMode: parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
   deribitQuotePolicy: parseDeribitQuotePolicy(process.env.PILOT_DERIBIT_QUOTE_POLICY),
   deribitStrikeSelectionMode: parseDeribitStrikeSelectionMode(process.env.PILOT_STRIKE_SELECTION_MODE),
@@ -409,7 +410,7 @@ export const pilotConfig = {
     "invalid_ibkr_option_probe_parallelism"
   ),
   ibkrOptionLiquiditySelectionEnabled: parseBooleanEnv(process.env.IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED, false),
-  ibkrRequireOptionsNative: parseBooleanEnv(process.env.IBKR_REQUIRE_OPTIONS_NATIVE, false),
+  ibkrRequireOptionsNative: parseBooleanEnv(process.env.IBKR_REQUIRE_OPTIONS_NATIVE, true),
   ibkrQualifyCacheTtlMs: parsePositiveIntInRange(
     process.env.IBKR_QUALIFY_CACHE_TTL_MS,
     120000,
