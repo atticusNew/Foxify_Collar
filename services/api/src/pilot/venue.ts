@@ -1896,10 +1896,19 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           break;
         }
       const scoreStartedAt = Date.now();
+      const optionProbeTimeoutMs =
+        hedgePolicy === "options_only_native"
+          ? Math.max(700, Math.min(2400, requestWindowHintMs))
+          : Math.max(650, Math.min(1800, requestWindowHintMs));
+      const optionProbeDepthAttempts = hedgePolicy === "options_only_native" ? 2 : 1;
+      const optionProbeLegBudgetMs =
+        hedgePolicy === "options_only_native"
+          ? Math.max(2200, Math.min(12000, optionProbeBudgetMs))
+          : Math.max(1200, Math.min(6000, optionProbeBudgetMs));
       const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
-          probeTimeoutMs: Math.max(650, Math.min(1800, requestWindowHintMs)),
-          depthAttempts: 1,
-          legBudgetMs: Math.max(1200, Math.min(6000, optionProbeBudgetMs))
+          probeTimeoutMs: optionProbeTimeoutMs,
+          depthAttempts: optionProbeDepthAttempts,
+          legBudgetMs: optionProbeLegBudgetMs
         });
       timingsMs.score += Date.now() - scoreStartedAt;
         latestFailureCounts = optionMatch.failureCounts;
