@@ -1394,6 +1394,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     } | null> => {
       if (!roundedStrike) return null;
       const strikeCandidates = optionStrikeCandidates(roundedStrike, right);
+      const strikeCandidatesForMode = this.optionLiquiditySelectionEnabled
+        ? strikeCandidates
+        : strikeCandidates.slice(0, 3);
       const tenorCandidates = this.optionLiquiditySelectionEnabled
         ? (() => {
             const values: number[] = [];
@@ -1418,7 +1421,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const seenConIds = new Set<number>();
       const optionLegBudgetMs = this.optionLiquiditySelectionEnabled
         ? Math.max(10_000, Math.min(22_000, Math.floor(this.quoteBudgetMs * 0.38)))
-        : Math.max(8_000, Math.min(18_000, Math.floor(this.quoteBudgetMs * 0.34)));
+        : Math.max(4_200, Math.min(11_000, Math.floor(this.quoteBudgetMs * 0.22)));
       const optionLegDeadlineMs = Date.now() + optionLegBudgetMs;
       const ensureOptionLegBudget = (minimumRemainingMs = 0): void => {
         ensureBudget(minimumRemainingMs);
@@ -1428,7 +1431,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       };
       const qualifyTimeoutMs = this.optionLiquiditySelectionEnabled
         ? Math.max(1500, Math.min(3500, Math.floor(requestWindowHintMs * 0.9)))
-        : Math.max(1200, Math.min(2800, Math.floor(requestWindowHintMs * 0.8)));
+        : Math.max(700, Math.min(1600, Math.floor(requestWindowHintMs * 0.55)));
       const qualifyParallelism = this.optionLiquiditySelectionEnabled ? Math.max(2, Math.min(4, optionProbeParallelism)) : 1;
       const withQualifyTimeout = async (
         promise: Promise<IbkrQualifiedContract[]>,
@@ -1453,7 +1456,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       };
       const qualifyTasks: Array<{ tenor: number; strike: number }> = [];
       for (const tenorCandidate of tenorCandidates) {
-        for (const strikeCandidate of strikeCandidates) {
+        for (const strikeCandidate of strikeCandidatesForMode) {
           qualifyTasks.push({ tenor: tenorCandidate, strike: strikeCandidate });
         }
       }
@@ -1502,9 +1505,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           // Keep option probing bounded so fallback legs still have remaining budget.
           maxPreferred: 3,
           maxBelow: 1,
-          depthAttempts: 1,
-          probeTimeoutMs: Math.max(500, Math.min(1400, requestWindowHintMs)),
-          legBudgetMs: Math.max(2400, Math.min(8500, Math.floor(this.quoteBudgetMs * 0.4)))
+          depthAttempts: 2,
+          probeTimeoutMs: Math.max(450, Math.min(1100, Math.floor(requestWindowHintMs * 0.7))),
+          legBudgetMs: Math.max(2200, Math.min(6800, Math.floor(this.quoteBudgetMs * 0.3)))
         });
         if (!optionMatch) return null;
         const optionMeta = contractTenorMeta(optionMatch.contract);
