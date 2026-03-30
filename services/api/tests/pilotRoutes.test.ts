@@ -117,6 +117,7 @@ const createPilotHarness = async (opts?: {
 
   const configModule = await import("../src/pilot/config");
   configModule.pilotConfig.enabled = true;
+  configModule.pilotConfig.activationEnabled = process.env.PILOT_ACTIVATION_ENABLED === "true";
   configModule.pilotConfig.venueMode = (opts?.venueMode || "mock_falconx") as any;
   configModule.pilotConfig.tenantScopeId = process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot";
   configModule.pilotConfig.adminToken = process.env.PILOT_ADMIN_TOKEN || "";
@@ -181,7 +182,10 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.ibkrBffFallbackEnabled = process.env.IBKR_BFF_FALLBACK_ENABLED === "true";
   configModule.pilotConfig.ibkrBffProductFamily =
     String(process.env.IBKR_BFF_PRODUCT_FAMILY || "BFF").toUpperCase() === "MBT" ? "MBT" : "BFF";
-  configModule.pilotConfig.ibkrRequireOptionsNative = process.env.IBKR_REQUIRE_OPTIONS_NATIVE === "true";
+  configModule.pilotConfig.ibkrRequireOptionsNative =
+    process.env.IBKR_REQUIRE_OPTIONS_NATIVE
+      ? process.env.IBKR_REQUIRE_OPTIONS_NATIVE === "true"
+      : true;
   configModule.pilotConfig.ibkrQualifyCacheTtlMs = Number(process.env.IBKR_QUALIFY_CACHE_TTL_MS || "120000");
   configModule.pilotConfig.ibkrQualifyCacheMaxKeys = Number(process.env.IBKR_QUALIFY_CACHE_MAX_KEYS || "2000");
   configModule.pilotConfig.venueQuoteTimeoutMs = Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000");

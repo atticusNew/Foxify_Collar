@@ -188,6 +188,12 @@ const toFinitePositive = (value: unknown): number | null => {
   return Number.isFinite(n) && n > 0 ? n : null;
 };
 
+const resolveContractMultiplier = (value: unknown, fallback = 0.1): number => {
+  const raw = Number(value);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return fallback;
+};
+
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -2116,7 +2122,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const expiresAt = new Date(Date.now() + this.quoteTtlMs).toISOString();
     const notional = Math.max(0, Number(req.protectedNotional || 0));
     const referenceQty = Math.max(0, Number(req.quantity || 0));
-    const premium = Number((Math.max(unitPrice * referenceQty, notional * 0.001)).toFixed(4));
+    const contractMultiplier = resolveContractMultiplier(resolved.contract.multiplier, 0.1);
+    const estimatedContracts = Math.max(1, Math.ceil(referenceQty / contractMultiplier));
+    const premium = Number((unitPrice * estimatedContracts).toFixed(4));
     const premiumRatio = notional > 0 ? premium / notional : 0;
     if (
       resolved.hedgeMode === "futures_synthetic" &&
@@ -2168,6 +2176,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         bidPrice: bid,
         askSize: resolved.top.askSize,
         bidSize: resolved.top.bidSize,
+        estimatedContracts,
         selectedStrike: resolved.strike,
         targetTriggerPrice: trigger,
         strikeGapToTriggerUsd,

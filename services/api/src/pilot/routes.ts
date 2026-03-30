@@ -658,7 +658,7 @@ export const registerPilotRoutes = async (
       maxSlippageBps: pilotConfig.ibkrMaxSlippageBps,
       orderTif: pilotConfig.ibkrOrderTif,
       primaryProductFamily: pilotConfig.ibkrPrimaryProductFamily,
-      enableBffFallback: pilotConfig.ibkrBffFallbackEnabled,
+      enableBffFallback: pilotConfig.ibkrRequireOptionsNative ? false : pilotConfig.ibkrBffFallbackEnabled,
       bffProductFamily: pilotConfig.ibkrBffProductFamily,
       requireLiveTransport: pilotConfig.ibkrRequireLiveTransport,
       maxTenorDriftDays: pilotConfig.ibkrMaxTenorDriftDays,
@@ -1588,6 +1588,14 @@ export const registerPilotRoutes = async (
 
   app.post("/pilot/protections/activate", async (req, reply) => {
     if (!enforcePilotWindow(reply)) return;
+    if (!pilotConfig.activationEnabled) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "activation_disabled",
+        message: "Activation is disabled while quote-only pilot validation is in progress."
+      };
+    }
     const body = req.body as {
       protectedNotional?: number;
       foxifyExposureNotional?: number;

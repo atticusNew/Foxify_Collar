@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, PILOT_TERMS_VERSION } from "./config";
+import { API_BASE, PILOT_ACTIVATION_ENABLED, PILOT_TERMS_VERSION } from "./config";
 
 type TierLevel = {
   name: string;
@@ -276,6 +276,9 @@ const friendlyError = (message: string): string => {
   if (message.includes("quote_generation_failed")) {
     return "Quote temporarily unavailable. Tap Refresh Quote.";
   }
+  if (message.includes("activation_disabled")) {
+    return "Activation is paused while quote validation is in progress. You can continue requesting live quotes.";
+  }
   if (message.includes("tenor_drift_exceeded")) {
     return "Requested protection length is currently illiquid. Try the recommended tenor.";
   }
@@ -461,7 +464,8 @@ export function PilotApp() {
     quoteState === "ready" && quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
   const quoteLocked = quoteFresh && Boolean(quote?.quote?.quoteId);
   const quoteCapWarning = quote?.limits?.dailyCapExceededOnActivate === true;
-  const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
+  const canActivate =
+    PILOT_ACTIVATION_ENABLED && canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
 
   const renewWindowReached = useMemo(() => {
     if (!protection || protection.autoRenew || protection.status !== "active") return false;
@@ -1018,6 +1022,10 @@ export function PilotApp() {
   };
 
   const activateProtection = async () => {
+    if (!PILOT_ACTIVATION_ENABLED) {
+      setError("Activation is paused while quote validation is in progress.");
+      return;
+    }
     if (!canActivate) {
       setError("Get a fresh quote before activation.");
       return;
@@ -1791,6 +1799,12 @@ export function PilotApp() {
             <div className="disclaimer danger">
               Daily protection limit reached for pilot operations. Quote is shown for reference; confirmation is blocked
               until the next UTC day.
+            </div>
+          )}
+          {!PILOT_ACTIVATION_ENABLED && (
+            <div className="disclaimer">
+              Quote-only mode is active. Confirm Protection is temporarily disabled while live quote quality is being
+              validated.
             </div>
           )}
         </div>

@@ -136,6 +136,11 @@ test("parseBooleanEnv handles true/false with fallback", () => {
   assert.equal(parseBooleanEnv("junk", false), false);
 });
 
+test("phase-0 defaults prefer quote-only + options-native", () => {
+  assert.equal(parseBooleanEnv(undefined, false), false);
+  assert.equal(parseBooleanEnv(undefined, true), true);
+});
+
 test("resolvePilotWindow supports optional start and hard-stop duration", () => {
   const prevStart = process.env.PILOT_START_AT;
   const prevDuration = process.env.PILOT_DURATION_DAYS;
