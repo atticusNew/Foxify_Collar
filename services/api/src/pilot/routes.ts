@@ -1488,10 +1488,11 @@ export const registerPilotRoutes = async (
       const isPremiumGuardrail = message.includes("premium_ratio_exceeded");
       const isNoContract = message.includes("no_contract");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
+      const isVenueQuoteTimeout = message.includes("venue_quote_timeout");
       const isStorageFailure =
         message.includes("postgres") || message.includes("ECONN") || message.includes("pool") || message.includes("db");
       reply.code(
-        isTimeout
+        isTimeout || isVenueQuoteTimeout
           ? 504
           : isStorageFailure ||
               isTransportNotLive ||
@@ -1525,6 +1526,8 @@ export const registerPilotRoutes = async (
             ? "ibkr_transport_not_live"
             : isTenorTemporarilyUnavailable
               ? "tenor_temporarily_unavailable"
+            : isVenueQuoteTimeout
+              ? "quote_generation_timeout"
             : isNoViableOption
               ? noViableReason || "quote_liquidity_unavailable"
             : isNoTopOfBook
@@ -1548,6 +1551,8 @@ export const registerPilotRoutes = async (
             ? "IBKR live transport is not active. Verify bridge transport health and retry."
             : isTenorTemporarilyUnavailable
               ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
+            : isVenueQuoteTimeout
+              ? "Venue quote timed out while evaluating options liquidity. Please retry."
             : isNoViableOption
               ? noViableReason === "quote_economics_unacceptable"
                 ? "No option contract met pilot economics guardrails within quote budget."

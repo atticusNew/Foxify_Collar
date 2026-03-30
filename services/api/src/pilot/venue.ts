@@ -1488,6 +1488,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nTimedOut: 0,
       nPassed: 0
     };
+    let optionLegFailureReason: string | null = null;
     let bestOptionRankedAlternatives: Array<{
       expiry: string | null;
       matchedTenorDays: number | null;
@@ -1723,6 +1724,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         }
       };
       type QualifyTask = { tenor: number; strike?: number };
+      let optionQualifyTimedOut = false;
       const runQualifyTasks = async (qualifyTasks: Array<QualifyTask>): Promise<void> => {
         if (!qualifyTasks.length) return;
         let qualifyCursor = 0;
@@ -1756,10 +1758,19 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               timingsMs.qualify += Date.now() - qualifyStartedAt;
               if (qualified.timedOut) {
                 optionFailureTotals.nTimedOut += 1;
+                optionLegFailureReason = "option_qualify_timeout";
+                optionQualifyTimedOut = true;
               }
               optionContracts = qualified.contracts;
-            } catch {
+            } catch (error) {
               optionFailureTotals.nTimedOut += 1;
+              const message = String((error as Error)?.message || "option_qualify_failed");
+              optionLegFailureReason = message.includes("ib_contract_details_timeout")
+                ? "option_qualify_timeout"
+                : "option_qualify_failed";
+              if (message.includes("ib_contract_details_timeout") || message.includes("timeout")) {
+                optionQualifyTimedOut = true;
+              }
               optionContracts = [];
             }
             sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
@@ -1822,7 +1833,15 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       // Progressive widening: search closest tenor/strike rings first, then expand.
       // This prioritizes finding executable liquidity quickly while still allowing
       // a wider search when early rings do not provide enough viable candidates.
-      const ringTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => [{ tenor }]);
+      // Phase 1.5: in live IBKR mode, prioritize strike-scoped option qualification
+      // per tenor before broad tenor-only probing. This avoids contract-detail timeouts
+      // observed on broad option-chain requests while preserving fallback behavior.
+      const ringTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => {
+        const strikeScoped = strikeCandidatesForMode
+          .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, 3)))
+          .map((strike) => ({ tenor, strike }));
+        return strikeScoped.length > 0 ? strikeScoped : [{ tenor }];
+      });
       let bestOptionMatch:
         | {
             contract: IbkrQualifiedContract;
@@ -1886,6 +1905,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       if (!bestOptionMatch) {
         if (latestFailureCounts) {
           accumulateOptionFailureCounts(latestFailureCounts);
+        }
+        if (optionQualifyTimedOut && optionFailureTotals.nTotalCandidates <= 0) {
+          optionLegFailureReason = "option_qualify_timeout";
         }
         return null;
       }
@@ -2083,6 +2105,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             candidateCountEvaluated: primaryFallback.candidateCountEvaluated
           }
         };
+        if (
+          optionLegFailureReason &&
+          optionFailureTotals.nTotalCandidates <= 0 &&
+          optionFailureTotals.nPassed <= 0
+        ) {
+          throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+        }
         return primaryFallback;
       }
 
@@ -2136,6 +2165,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               candidateCountEvaluated: bffFallback.candidateCountEvaluated
             }
           };
+          if (
+            optionLegFailureReason &&
+            optionFailureTotals.nTotalCandidates <= 0 &&
+            optionFailureTotals.nPassed <= 0
+          ) {
+            throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+          }
           return bffFallback;
         }
       }
@@ -2148,8 +2184,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           timingsMs,
           counters,
           optionCandidateFailureCounts: { ...optionFailureTotals },
-          error: "ibkr_quote_unavailable:tenor_drift_exceeded"
+          error: optionLegFailureReason ? `ibkr_quote_unavailable:${optionLegFailureReason}` : "ibkr_quote_unavailable:tenor_drift_exceeded"
         };
+        if (optionLegFailureReason) {
+          throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+        }
         throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
       }
       if (sawFallbackContracts) {
@@ -2191,8 +2230,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           timingsMs,
           counters,
           optionCandidateFailureCounts: { ...optionFailureTotals },
-          error: "ibkr_quote_unavailable:no_top_of_book"
+          error: optionLegFailureReason ? `ibkr_quote_unavailable:${optionLegFailureReason}` : "ibkr_quote_unavailable:no_top_of_book"
         };
+        if (optionLegFailureReason && optionFailureTotals.nTotalCandidates <= 0 && optionFailureTotals.nPassed <= 0) {
+          throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+        }
         throw new Error("ibkr_quote_unavailable:no_top_of_book");
       }
       timingsMs.total = Date.now() - selectorStartedAt;
@@ -2203,8 +2245,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         timingsMs,
         counters,
         optionCandidateFailureCounts: { ...optionFailureTotals },
-        error: "ibkr_quote_unavailable:tenor_drift_exceeded"
+        error: optionLegFailureReason ? `ibkr_quote_unavailable:${optionLegFailureReason}` : "ibkr_quote_unavailable:tenor_drift_exceeded"
       };
+      if (optionLegFailureReason && optionFailureTotals.nTotalCandidates <= 0 && optionFailureTotals.nPassed <= 0) {
+        throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+      }
       throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
     }
 
