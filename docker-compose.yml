@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: services/broker-bridge/Dockerfile
+    env_file:
+      - .env
     environment:
       - IBKR_BRIDGE_PORT=18080
       - IBKR_BRIDGE_HOST=0.0.0.0
@@ -39,13 +41,15 @@ services:
     build: .
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - PORT=8000
       - HOST=0.0.0.0
       - DERIBIT_ENV=testnet
       - DERIBIT_PAPER=true
-      - DERIBIT_CLIENT_ID=${DERIBIT_CLIENT_ID}
-      - DERIBIT_CLIENT_SECRET=${DERIBIT_CLIENT_SECRET}
+      - DERIBIT_CLIENT_ID=${DERIBIT_CLIENT_ID:-}
+      - DERIBIT_CLIENT_SECRET=${DERIBIT_CLIENT_SECRET:-}
       - PILOT_API_ENABLED=${PILOT_API_ENABLED:-true}
       - RISK_CONTROLS_PATH=/app/configs/risk_controls.json
       - AUDIT_LOG_PATH=/app/logs/audit.log
