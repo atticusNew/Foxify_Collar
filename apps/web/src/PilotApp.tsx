@@ -95,26 +95,6 @@ type TenorPolicyResponse = {
   };
 };
 
-type TenorPolicySummary = {
-  status?: string;
-  enabledTenorsDays?: number[];
-  defaultTenorDays?: number;
-  requestedTenorDays?: number;
-  venueRequestedTenorDays?: number;
-};
-
-type PremiumPolicySummary = {
-  currency?: string;
-  estimated?: {
-    hedgeCostUsd?: string;
-    brokerFeesUsd?: string;
-    passThroughUsd?: string;
-    markupPct?: string;
-    markupUsd?: string;
-    clientPremiumUsd?: string;
-  };
-};
-
 type AdminProtectionRow = {
   protection_id: string;
   status: string;
@@ -258,29 +238,17 @@ const formatCountdown = (seconds: number): string => {
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 };
 
-const formatTargetHorizonLabel = (days: number): string => `${Math.max(1, Math.floor(days))}D`;
+const formatTargetHorizonLabel = (days: number): string => `${Math.max(1, Math.floor(days))}-Day`;
 
 const formatMatchedHorizonLabel = (days: number): string => {
   if (!Number.isFinite(days)) return "N/A";
-  const totalMinutes = Math.max(0, Math.round(days * 24 * 60));
-  const d = Math.floor(totalMinutes / (24 * 60));
-  const h = Math.floor((totalMinutes - d * 24 * 60) / 60);
-  const m = totalMinutes % 60;
-  if (d <= 0) return `${h}h ${String(m).padStart(2, "0")}m`;
-  if (h <= 0) return `${d}d`;
-  return `${d}d ${h}h`;
+  return `${Math.max(1, Math.round(days))}-Day`;
 };
 
 const formatExpiryDateLabel = (expiryRaw: string): string => {
   const normalized = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
   if (normalized.length !== 8) return "";
   return `${normalized.slice(0, 4)}-${normalized.slice(4, 6)}-${normalized.slice(6, 8)}`;
-};
-
-const formatHedgeModeLabel = (hedgeMode: string): string => {
-  if (hedgeMode === "futures_synthetic") return "Futures Synthetic";
-  if (hedgeMode === "options_native") return "Options (CME Native)";
-  return hedgeMode || "Unknown";
 };
 
 const friendlyError = (message: string): string => {
@@ -579,10 +547,17 @@ export function PilotApp() {
         const enabled = Array.isArray(payload.selection?.enabledTenorsDays)
           ? payload.selection!.enabledTenorsDays.filter((n) => Number.isFinite(Number(n)) && Number(n) > 0)
           : [];
+        const candidateTenors = Array.isArray(payload.tenors)
+          ? payload.tenors
+              .map((entry) => Number(entry.tenorDays))
+              .filter((n) => Number.isFinite(n) && n > 0)
+          : [];
         const policyDefault = Number(payload.selection?.defaultTenorDays);
         const fallbackDefault = Number.isFinite(policyDefault) && policyDefault > 0 ? policyDefault : PILOT_DEFAULT_TENOR_DAYS;
-        // If policy has no enabled tenors yet, show only a single fallback tenor chip.
-        const nextEnabled = (enabled.length > 0 ? enabled : [fallbackDefault]).slice().sort((a, b) => a - b);
+        // If policy has no enabled tenors yet, expose candidate tenors so users can still choose a horizon.
+        const nextEnabled = (enabled.length > 0 ? enabled : candidateTenors.length > 0 ? candidateTenors : [fallbackDefault])
+          .slice()
+          .sort((a, b) => a - b);
         const nextDefault =
           Number.isFinite(policyDefault) && policyDefault > 0 && nextEnabled.includes(policyDefault)
             ? policyDefault
@@ -1247,7 +1222,6 @@ export function PilotApp() {
       ? (quote.quote.details as Record<string, unknown>)
       : null;
   const selectedTenorFromQuote = Number(quoteDetails?.selectedTenorDays ?? NaN);
-  const hedgeModeFromQuote = String(quoteDetails?.hedgeMode || "").trim();
   const selectedExpiryFromQuoteDetails = String(quoteDetails?.selectedExpiry ?? quoteDetails?.expiry ?? "").trim();
   const quoteDiagnostics =
     quote && quote.diagnostics && typeof quote.diagnostics === "object"
@@ -1257,20 +1231,10 @@ export function PilotApp() {
     quoteDiagnostics && typeof quoteDiagnostics.venueSelection === "object" && quoteDiagnostics.venueSelection
       ? (quoteDiagnostics.venueSelection as Record<string, unknown>)
       : null;
-  const premiumPolicySummary =
-    quoteDiagnostics && typeof quoteDiagnostics.premiumPolicy === "object" && quoteDiagnostics.premiumPolicy
-      ? (quoteDiagnostics.premiumPolicy as PremiumPolicySummary)
-      : null;
-  const tenorPolicySummary =
-    quoteDiagnostics && typeof quoteDiagnostics.tenorPolicy === "object" && quoteDiagnostics.tenorPolicy
-      ? (quoteDiagnostics.tenorPolicy as TenorPolicySummary)
-      : null;
   const requestedTenorFromDiagnostics = Number(venueSelection?.requestedTenorDays ?? NaN);
-  const requestedTenorFromPolicy = Number(tenorPolicySummary?.requestedTenorDays ?? NaN);
   const selectedTenorFromDiagnostics = Number(
     venueSelection?.selectedTenorDaysActual ?? venueSelection?.selectedTenorDays ?? NaN
   );
-  const venueRequestedTenorDays = Number(tenorPolicySummary?.venueRequestedTenorDays ?? NaN);
   const selectedExpiryFromDiagnostics = String(venueSelection?.selectedExpiry || "").trim();
   const requestedVsMatchedTenorDriftDays =
     Number.isFinite(requestedTenorFromDiagnostics) && Number.isFinite(selectedTenorFromDiagnostics)
@@ -1278,17 +1242,16 @@ export function PilotApp() {
       : NaN;
   const targetTenorDaysForDisplay = Number.isFinite(requestedTenorFromDiagnostics)
     ? requestedTenorFromDiagnostics
-    : Number.isFinite(requestedTenorFromPolicy)
-      ? requestedTenorFromPolicy
     : selectedTenorDays;
   const matchedTenorDaysForDisplay = Number.isFinite(selectedTenorFromDiagnostics)
     ? selectedTenorFromDiagnostics
     : selectedTenorFromQuote;
   const targetHorizonDisplay = formatTargetHorizonLabel(targetTenorDaysForDisplay);
   const matchedHorizonDisplay = Number.isFinite(matchedTenorDaysForDisplay)
-    ? `${formatMatchedHorizonLabel(matchedTenorDaysForDisplay)} (est.)`
+    ? formatMatchedHorizonLabel(matchedTenorDaysForDisplay)
     : "N/A";
   const selectedExpiryDisplay = formatExpiryDateLabel(selectedExpiryFromDiagnostics || selectedExpiryFromQuoteDetails);
+  const matchedExpiryDisplay = selectedExpiryDisplay || matchedHorizonDisplay;
   const showTenorAdjustmentInfo =
     Number.isFinite(requestedVsMatchedTenorDriftDays) && requestedVsMatchedTenorDriftDays > 0.5;
   const showTenorAdjustmentWarning =
@@ -1300,6 +1263,8 @@ export function PilotApp() {
       ((QUOTE_REQUEST_TIMEOUT_SECONDS - quoteRequestTimeLeft) / Math.max(1, QUOTE_REQUEST_TIMEOUT_SECONDS)) * 100
     )
   );
+  const quoteRequestUrgencyClass =
+    quoteRequestTimeLeft <= 6 ? "is-danger" : quoteRequestTimeLeft <= 12 ? "is-warning" : "";
   const internalAdminEnabled =
     typeof window !== "undefined" &&
     ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_INTERNAL_ADMIN_ENABLED ===
@@ -1370,30 +1335,6 @@ export function PilotApp() {
     ? rawHistoryWithoutActive
     : rawHistoryWithoutActive.filter((item) => item.status !== "activation_failed" && item.status !== "cancelled");
   const protectionsTotalCount = (activeProtectionForView ? 1 : 0) + historyWithoutActive.length;
-  const premiumHedgeCost = Number(premiumPolicySummary?.estimated?.hedgeCostUsd ?? NaN);
-  const premiumBrokerFees = Number(premiumPolicySummary?.estimated?.brokerFeesUsd ?? NaN);
-  const premiumPassThrough = Number(premiumPolicySummary?.estimated?.passThroughUsd ?? NaN);
-  const premiumMarkupUsd = Number(premiumPolicySummary?.estimated?.markupUsd ?? NaN);
-  const premiumMarkupPct = Number(premiumPolicySummary?.estimated?.markupPct ?? NaN);
-  const premiumClientTotal = Number(premiumPolicySummary?.estimated?.clientPremiumUsd ?? NaN);
-  const premiumRatioPct =
-    Number.isFinite(premiumClientTotal) && Number.isFinite(protectedValue) && protectedValue > 0
-      ? (premiumClientTotal / protectedValue) * 100
-      : NaN;
-  const quotePolicyClass =
-    quote?.status === "ok"
-      ? Number.isFinite(premiumRatioPct) && premiumRatioPct <= 5
-        ? "GO"
-        : Number.isFinite(premiumRatioPct) && premiumRatioPct <= 15
-          ? "REVIEW"
-          : "NO-GO"
-      : "NO-GO";
-  const quotePolicyClassLabel =
-    quotePolicyClass === "GO"
-      ? "GO"
-      : quotePolicyClass === "REVIEW"
-        ? "REVIEW"
-        : "NO-GO";
   const protectionsForPremium = activeProtectionForView
     ? [activeProtectionForView, ...historyWithoutActive]
     : protectionsHistory;
@@ -1411,13 +1352,13 @@ export function PilotApp() {
       : NaN;
   const monitorStatusLabel = monitorHasLiveSnapshot
     ? monitorBusy
-      ? "Refreshing live monitor snapshot..."
+      ? "Refreshing monitor..."
       : monitorUpdatedAt
-        ? `Live snapshot updated ${monitorUpdatedAt.toLocaleTimeString()}`
-        : "Live snapshot ready"
+        ? `Updated ${monitorUpdatedAt.toLocaleTimeString()}`
+        : "Monitor ready"
     : monitorBusy
-      ? "Loading first live monitor snapshot..."
-      : "Awaiting first live monitor snapshot...";
+      ? "Loading monitor..."
+      : "Awaiting first monitor update...";
   const statusPillClass = (status: string): string => {
     const normalized = String(status || "").toLowerCase();
     if (normalized === "active") return "pill";
@@ -1793,7 +1734,9 @@ export function PilotApp() {
                 </div>
                 <div className="quote-fetching-meta muted">Checking live contracts, liquidity, and executable prices.</div>
                 <div className="quote-fetching-countdown">
-                  <span className="quote-fetching-seconds">{quoteRequestTimeLeft}s</span>
+                  <span className={`quote-fetching-seconds ${quoteRequestUrgencyClass}`}>
+                    {formatCountdown(quoteRequestTimeLeft)}
+                  </span>
                   <span className="muted">remaining</span>
                 </div>
                 <div className="quote-fetching-progress" aria-hidden="true">
@@ -1809,19 +1752,11 @@ export function PilotApp() {
                 <div className="muted">Venue {formatVenueLabel(quote.quote.venue)}</div>
                 <div className="quote-horizon-row">
                   <div>
-                    <span className="muted">Target:</span> <strong>{targetHorizonDisplay}</strong>
+                    <span className="muted">Target Horizon:</span> <strong>{targetHorizonDisplay}</strong>
                   </div>
                   <div>
-                    <span className="muted">Matched:</span> <strong>{matchedHorizonDisplay}</strong>
+                    <span className="muted">Matched Expiry:</span> <strong>{matchedExpiryDisplay}</strong>
                   </div>
-                  {selectedExpiryDisplay && (
-                    <div>
-                      <span className="muted">Expiry:</span> <strong>{selectedExpiryDisplay}</strong>
-                    </div>
-                  )}
-                </div>
-                <div className="muted">
-                  Hedge mode: <strong>{formatHedgeModeLabel(hedgeModeFromQuote)}</strong>
                 </div>
                 <div className="muted">
                   {quoteDirectionLabel} · Tier {quote.tierName}
@@ -1835,33 +1770,11 @@ export function PilotApp() {
                   Reference {formatUsd(quote.entrySnapshot.price)} ({quote.entrySnapshot.source}) at{" "}
                   {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
                 </div>
-                {premiumPolicySummary && (
-                  <div className="muted">
-                    Pricing policy {quotePolicyClassLabel}
-                    {Number.isFinite(premiumRatioPct) ? ` · premium ratio ${premiumRatioPct.toFixed(2)}%` : ""}
-                    {Number.isFinite(premiumPassThrough)
-                      ? ` · pass-through $${formatUsd(premiumPassThrough)}`
-                      : ""}
-                    {Number.isFinite(premiumMarkupUsd)
-                      ? ` · markup $${formatUsd(premiumMarkupUsd)}${
-                          Number.isFinite(premiumMarkupPct) ? ` (${(premiumMarkupPct * 100).toFixed(2)}%)` : ""
-                        }`
-                      : ""}
-                    {Number.isFinite(premiumBrokerFees) ? ` · broker fees $${formatUsd(premiumBrokerFees)}` : ""}
-                    {Number.isFinite(premiumHedgeCost) ? ` · hedge $${formatUsd(premiumHedgeCost)}` : ""}
-                  </div>
-                )}
-                {tenorPolicySummary && Number.isFinite(venueRequestedTenorDays) && (
-                  <div className="muted">
-                    Tenor policy status: {tenorPolicySummary.status || "unknown"} · request routed to{" "}
-                    {Math.floor(venueRequestedTenorDays)}D
-                  </div>
-                )}
                 {showTenorAdjustmentInfo && (
                   <div className="quote-warning">
                     <div className="pill pill-warning">Matched to nearest liquid expiry.</div>
                     <div className="muted">
-                      Requested {targetHorizonDisplay}, matched {matchedHorizonDisplay} due to current liquidity.
+                      Requested {targetHorizonDisplay}, matched {matchedExpiryDisplay} due to current liquidity.
                     </div>
                     {showTenorAdjustmentWarning && (
                       <div className="muted">Coverage may end earlier than your intended holding window.</div>
@@ -2059,11 +1972,10 @@ export function PilotApp() {
               </button>
             </div>
             <div className="muted pilot-monitor-subtitle">
-              Protected position {protection.id} · Auto-refresh every 10s
-              {lastUpdatedAt ? ` · Position updated ${lastUpdatedAt.toLocaleTimeString()}` : ""}
-              {monitorUpdatedAt ? ` · Monitor snapshot ${monitorUpdatedAt.toLocaleTimeString()}` : ""}
+              Protection {protection.id} · Updates every 10s
+              {monitorUpdatedAt ? ` · Last update ${monitorUpdatedAt.toLocaleTimeString()}` : ""}
             </div>
-            <div className="disclaimer">{monitorStatusLabel}</div>
+            <div className="muted pilot-monitor-status">{monitorStatusLabel}</div>
             <div className="modal-actions">
               <button
                 className="btn btn-secondary"
@@ -2075,13 +1987,13 @@ export function PilotApp() {
             </div>
             <div className="pilot-monitor-grid">
               <div className="pilot-monitor-card">
-                <div className="label">Reference BTC Price</div>
+                <div className="label">Current BTC Price</div>
                 <div className="value">
                   {Number.isFinite(liveReferencePrice) ? `$${formatUsd(liveReferencePrice)}` : "Loading live snapshot..."}
                 </div>
               </div>
               <div className="pilot-monitor-card">
-                <div className="label">Protection Anchor Price</div>
+                <div className="label">Entry BTC Price</div>
                 <div className="value">${formatUsd(protection.entryPrice)}</div>
               </div>
               <div className="pilot-monitor-card">
@@ -2095,14 +2007,14 @@ export function PilotApp() {
                 </div>
               </div>
               <div className="pilot-monitor-card">
-                <div className="label">Current Option Mark (Indicative)</div>
+                <div className="label">Current Hedge Value</div>
                 <div className="value">
                   {Number.isFinite(liveOptionMarkUsd) ? `$${formatUsd(liveOptionMarkUsd)}` : "Loading live snapshot..."}
                 </div>
-                <div className="muted">Latest indicative option price, not settled P&L.</div>
+                <div className="muted">Estimated current value of the hedge leg. Not realized P&L.</div>
               </div>
               <div className="pilot-monitor-card">
-                <div className="label">Est. Protection Value at Trigger</div>
+                <div className="label">Estimated Value at Trigger</div>
                 <div className="value">
                   {Number.isFinite(liveEstimatedTriggerValue) ? `$${formatUsd(liveEstimatedTriggerValue)}` : "—"}
                 </div>

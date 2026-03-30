@@ -87,32 +87,46 @@ export class IbkrConnector {
   constructor(private cfg: IbkrBridgeConfig) {}
 
   private async request<T>(method: HttpMethod, path: string, body?: Record<string, unknown>): Promise<T> {
-    const controller = new AbortController();
     const timeoutMs = Math.max(500, Number(this.cfg.timeoutMs || 0));
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const headers: Record<string, string> = {
-        ...(this.cfg.auth.token ? { Authorization: `Bearer ${this.cfg.auth.token}` } : {})
-      };
-      const serializedBody = body ? JSON.stringify(body) : undefined;
-      if (serializedBody) {
-        headers["Content-Type"] = "application/json";
-      }
-      const res = await fetch(joinUrl(this.cfg.baseUrl, path), {
-        method,
-        signal: controller.signal,
-        headers,
-        body: serializedBody
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`ibkr_bridge_http_${res.status}:${text}`);
-      }
-      const text = await res.text();
-      return (text ? JSON.parse(text) : {}) as T;
-    } finally {
-      clearTimeout(timer);
+    const headers: Record<string, string> = {
+      ...(this.cfg.auth.token ? { Authorization: `Bearer ${this.cfg.auth.token}` } : {})
+    };
+    const serializedBody = body ? JSON.stringify(body) : undefined;
+    if (serializedBody) {
+      headers["Content-Type"] = "application/json";
     }
+
+    // A single transient bridge timeout should not fail the whole quote path.
+    // Keep retries small and bounded to avoid request fanout.
+    const maxAttempts = 2;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(joinUrl(this.cfg.baseUrl, path), {
+          method,
+          signal: controller.signal,
+          headers,
+          body: serializedBody
+        });
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`ibkr_bridge_http_${res.status}:${text}`);
+        }
+        const text = await res.text();
+        return (text ? JSON.parse(text) : {}) as T;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= maxAttempts) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error("ibkr_bridge_request_failed");
   }
 
   async getHealth(): Promise<{ ok: boolean; session: "connected" | "disconnected"; asOf: string }> {
