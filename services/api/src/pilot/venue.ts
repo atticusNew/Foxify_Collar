@@ -1414,22 +1414,78 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         : [selectedTenorDaysIntended];
       const dedupedContracts: IbkrQualifiedContract[] = [];
       const seenConIds = new Set<number>();
+      const optionLegBudgetMs = this.optionLiquiditySelectionEnabled
+        ? Math.max(10_000, Math.min(22_000, Math.floor(this.quoteBudgetMs * 0.38)))
+        : Math.max(8_000, Math.min(18_000, Math.floor(this.quoteBudgetMs * 0.34)));
+      const optionLegDeadlineMs = Date.now() + optionLegBudgetMs;
+      const ensureOptionLegBudget = (minimumRemainingMs = 0): void => {
+        ensureBudget(minimumRemainingMs);
+        if (Date.now() + Math.max(0, minimumRemainingMs) >= optionLegDeadlineMs) {
+          throw new Error("venue_quote_timeout");
+        }
+      };
+      const qualifyTimeoutMs = this.optionLiquiditySelectionEnabled
+        ? Math.max(1500, Math.min(3500, Math.floor(requestWindowHintMs * 0.9)))
+        : Math.max(1200, Math.min(2800, Math.floor(requestWindowHintMs * 0.8)));
+      const qualifyParallelism = this.optionLiquiditySelectionEnabled ? Math.max(2, Math.min(4, optionProbeParallelism)) : 1;
+      const withQualifyTimeout = async (
+        promise: Promise<IbkrQualifiedContract[]>,
+        timeoutMs: number
+      ): Promise<{ contracts: IbkrQualifiedContract[]; timedOut: boolean }> => {
+        let timer: NodeJS.Timeout | null = null;
+        let timedOut = false;
+        try {
+          const value = await Promise.race([
+            promise,
+            new Promise<IbkrQualifiedContract[]>((resolve) => {
+              timer = setTimeout(() => {
+                timedOut = true;
+                resolve([]);
+              }, timeoutMs);
+            })
+          ]);
+          return { contracts: Array.isArray(value) ? value : [], timedOut };
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      const qualifyTasks: Array<{ tenor: number; strike: number }> = [];
       for (const tenorCandidate of tenorCandidates) {
         for (const strikeCandidate of strikeCandidates) {
-          ensureBudget(Math.min(requestWindowHintMs, 1400));
+          qualifyTasks.push({ tenor: tenorCandidate, strike: strikeCandidate });
+        }
+      }
+      let qualifyCursor = 0;
+      const runQualifyWorker = async (): Promise<void> => {
+        while (true) {
+          const idx = qualifyCursor;
+          qualifyCursor += 1;
+          if (idx >= qualifyTasks.length) return;
+          ensureOptionLegBudget(Math.min(qualifyTimeoutMs + 150, 1200));
+          const task = qualifyTasks[idx];
           const optionQuery: IbkrContractQuery = queryWithProductFamily(
             {
               kind: "mbt_option",
               symbol: "BTC",
               exchange: "CME",
               currency: "USD",
-              tenorDays: tenorCandidate,
+              tenorDays: task.tenor,
               right,
-              strike: strikeCandidate
+              strike: task.strike
             },
             productFamily
           );
-          const optionContracts = await this.connector.qualifyContracts(optionQuery);
+          let optionContracts: IbkrQualifiedContract[] = [];
+          try {
+            const qualified = await withQualifyTimeout(this.connector.qualifyContracts(optionQuery), qualifyTimeoutMs);
+            if (qualified.timedOut) {
+              optionFailureTotals.nTimedOut += 1;
+            }
+            optionContracts = qualified.contracts;
+          } catch {
+            optionFailureTotals.nTimedOut += 1;
+            optionContracts = [];
+          }
           sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
           for (const contract of optionContracts) {
             if (seenConIds.has(contract.conId)) continue;
@@ -1437,7 +1493,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             dedupedContracts.push(contract);
           }
         }
-      }
+      };
+      await Promise.all(Array.from({ length: qualifyParallelism }, () => runQualifyWorker()));
       if (!this.optionLiquiditySelectionEnabled) {
         const optionMatch = await pickContractWithTop(dedupedContracts, {
           // Keep option probing bounded so fallback legs still have remaining budget.
