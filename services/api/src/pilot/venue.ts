@@ -1922,6 +1922,27 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       );
       if (primaryFallback) {
         if (this.requireOptionsNative) {
+          timingsMs.total = Date.now() - selectorStartedAt;
+          this.selectorDiagnostics = {
+            asOf: nowIso(),
+            requestId: randomUUID(),
+            venueMode: this.mode,
+            timingsMs,
+            counters,
+            optionCandidateFailureCounts: { ...optionFailureTotals },
+            selection: {
+              hedgeMode: primaryFallback.hedgeMode,
+              hedgeInstrumentFamily: primaryFallback.hedgeInstrumentFamily,
+              selectionReason: primaryFallback.selectionReason,
+              selectionAlgorithm: primaryFallback.selectionAlgorithm,
+              selectedScore: primaryFallback.selectedScore,
+              selectedTenorDays: primaryFallback.selectedTenorDays,
+              selectedExpiry: primaryFallback.selectedExpiry,
+              selectedStrike: primaryFallback.strike,
+              candidateCountEvaluated: primaryFallback.candidateCountEvaluated
+            },
+            error: "ibkr_quote_unavailable:options_required"
+          };
           throw new Error("ibkr_quote_unavailable:options_required");
         }
         timingsMs.total = Date.now() - selectorStartedAt;
@@ -1954,6 +1975,27 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         );
         if (bffFallback) {
           if (this.requireOptionsNative) {
+            timingsMs.total = Date.now() - selectorStartedAt;
+            this.selectorDiagnostics = {
+              asOf: nowIso(),
+              requestId: randomUUID(),
+              venueMode: this.mode,
+              timingsMs,
+              counters,
+              optionCandidateFailureCounts: { ...optionFailureTotals },
+              selection: {
+                hedgeMode: bffFallback.hedgeMode,
+                hedgeInstrumentFamily: bffFallback.hedgeInstrumentFamily,
+                selectionReason: bffFallback.selectionReason,
+                selectionAlgorithm: bffFallback.selectionAlgorithm,
+                selectedScore: bffFallback.selectedScore,
+                selectedTenorDays: bffFallback.selectedTenorDays,
+                selectedExpiry: bffFallback.selectedExpiry,
+                selectedStrike: bffFallback.strike,
+                candidateCountEvaluated: bffFallback.candidateCountEvaluated
+              },
+              error: "ibkr_quote_unavailable:options_required"
+            };
             throw new Error("ibkr_quote_unavailable:options_required");
           }
           timingsMs.total = Date.now() - selectorStartedAt;
