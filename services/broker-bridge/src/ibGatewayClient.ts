@@ -547,7 +547,25 @@ export class IbGatewayClient {
       return contracts;
     }
     if (!query.right || !Number.isFinite(Number(query.strike)) || Number(query.strike) <= 0) {
-      return [];
+      if (!query.right) return [];
+      // Mirror IB "option chain" semantics for strike-less qualification by returning
+      // a compact nearby strike ladder in synthetic mode.
+      const baseStrike = 55000;
+      const strikes = [baseStrike - 1000, baseStrike - 500, baseStrike, baseStrike + 500, baseStrike + 1000];
+      const contracts = strikes.map((strike) => ({
+        conId: syntheticConId(`FOP:${productSymbol}:${expiry}:${query.right}${strike}`),
+        secType: "FOP" as const,
+        localSymbol: `${productSymbol} ${expiry} ${query.right}${strike}`,
+        expiry,
+        strike,
+        right: query.right,
+        multiplier: "0.1",
+        minTick: 5
+      }));
+      for (const contract of contracts) {
+        this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+      }
+      return contracts;
     }
     const strike = Math.floor(Number(query.strike));
     const localSymbol = `${productSymbol} ${expiry} ${query.right}${strike}`;
@@ -699,7 +717,10 @@ export class IbGatewayClient {
     };
 
     const resolvedDetails: Array<{ detail: ContractDetails; requestedExchange: string }> = [];
-    for (const exchange of exchangeCandidates) {
+    const hasTargetStrike = Number.isFinite(Number(query.strike)) && Number(query.strike) > 0;
+    const normalizedStrike = hasTargetStrike ? Number(query.strike) : undefined;
+    const targetDetailCount = query.kind === "mbt_option" ? (hasTargetStrike ? 24 : 64) : 12;
+    exchangeLoop: for (const exchange of exchangeCandidates) {
       for (const symbolCandidate of symbolCandidates) {
         if (query.kind === "mbt_option") {
           const optionContractWithExactExpiry: Contract = {
@@ -708,25 +729,48 @@ export class IbGatewayClient {
             exchange,
             currency: query.currency,
             lastTradeDateOrContractMonth: fallbackExpiry,
-            strike: Number(query.strike || 0),
             right: query.right
           };
+          if (normalizedStrike !== undefined) {
+            optionContractWithExactExpiry.strike = normalizedStrike;
+          }
+
+          const optionContractMonthScoped: Contract = {
+            secType: SecType.FOP,
+            symbol: symbolCandidate,
+            exchange,
+            currency: query.currency,
+            lastTradeDateOrContractMonth: fallbackExpiry.slice(0, 6),
+            right: query.right
+          };
+          if (normalizedStrike !== undefined) {
+            optionContractMonthScoped.strike = normalizedStrike;
+          }
 
           const optionContractAnyExpiry: Contract = {
             secType: SecType.FOP,
             symbol: symbolCandidate,
             exchange,
             currency: query.currency,
-            strike: Number(query.strike || 0),
             right: query.right
           };
+          if (normalizedStrike !== undefined) {
+            optionContractAnyExpiry.strike = normalizedStrike;
+          }
 
           let details = await fetchContractDetails(optionContractWithExactExpiry);
           if (details.length === 0) {
-            // Retry without forcing exact expiry (e.g. weekend/holiday tenor target).
+            // Retry with month-scoped expiry first, then broad fallback.
+            details = await fetchContractDetails(optionContractMonthScoped);
+          }
+          if (details.length === 0) {
+            // Retry without forcing expiry (e.g. weekend/holiday tenor target).
             details = await fetchContractDetails(optionContractAnyExpiry);
           }
           resolvedDetails.push(...details.map((detail) => ({ detail, requestedExchange: exchange })));
+          if (resolvedDetails.length >= targetDetailCount) {
+            break exchangeLoop;
+          }
           continue;
         }
 
@@ -738,6 +782,9 @@ export class IbGatewayClient {
         };
         const details = await fetchContractDetails(futureContractAnyExpiry);
         resolvedDetails.push(...details.map((detail) => ({ detail, requestedExchange: exchange })));
+        if (resolvedDetails.length >= targetDetailCount) {
+          break exchangeLoop;
+        }
       }
     }
 

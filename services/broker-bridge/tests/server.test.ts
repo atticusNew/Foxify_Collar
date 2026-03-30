@@ -201,3 +201,37 @@ test("contracts qualify accepts optional BFF product family", async () => {
     await wait(150);
   }
 });
+
+test("contracts qualify mbt_option accepts omitted strike", async () => {
+  const port = randomPort();
+  const child = startBridge(port);
+
+  try {
+    await wait(1200);
+    const qualifyRes = await fetch(`http://127.0.0.1:${port}/contracts/qualify`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        kind: "mbt_option",
+        productFamily: "MBT",
+        symbol: "BTC",
+        exchange: "CME",
+        currency: "USD",
+        tenorDays: 7,
+        right: "P"
+      })
+    });
+    assert.equal(qualifyRes.ok, true);
+    const payload = (await qualifyRes.json()) as {
+      contracts?: Array<{ secType?: string; right?: string; strike?: number }>;
+    };
+    assert.ok(Array.isArray(payload.contracts));
+    assert.ok((payload.contracts?.length || 0) > 0);
+    assert.equal(payload.contracts?.[0]?.secType, "FOP");
+    assert.equal(payload.contracts?.[0]?.right, "P");
+    assert.equal(typeof payload.contracts?.[0]?.strike, "number");
+  } finally {
+    child.kill("SIGTERM");
+    await wait(150);
+  }
+});

@@ -1589,10 +1589,17 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           throw new Error("venue_quote_timeout");
         }
       };
+      const qualifyRequestHintMs = Math.max(
+        900,
+        Math.min(12000, Math.floor(Number(this.marketDataRequestTimeoutMs || requestWindowHintMs)))
+      );
       const qualifyTimeoutMs = this.optionLiquiditySelectionEnabled
-        ? Math.max(1500, Math.min(3500, Math.floor(requestWindowHintMs * 0.9)))
-        : Math.max(700, Math.min(1600, Math.floor(requestWindowHintMs * 0.55)));
-      const qualifyParallelism = this.optionLiquiditySelectionEnabled ? Math.max(2, Math.min(4, optionProbeParallelism)) : 1;
+        ? Math.max(2200, Math.min(9000, Math.floor(qualifyRequestHintMs * 0.8)))
+        : Math.max(700, Math.min(2000, Math.floor(requestWindowHintMs * 0.55)));
+      const qualifyParallelism = this.optionLiquiditySelectionEnabled
+        ? Math.max(1, Math.min(4, optionProbeParallelism))
+        : 1;
+      const maxQualifiedContracts = this.optionLiquiditySelectionEnabled ? 48 : 18;
       const withQualifyTimeout = async (
         promise: Promise<IbkrQualifiedContract[]>,
         timeoutMs: number
@@ -1620,6 +1627,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         let qualifyCursor = 0;
         const runQualifyWorker = async (): Promise<void> => {
           while (true) {
+            if (dedupedContracts.length >= maxQualifiedContracts) return;
             const idx = qualifyCursor;
             qualifyCursor += 1;
             if (idx >= qualifyTasks.length) return;
@@ -1658,7 +1666,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               if (seenConIds.has(contract.conId)) continue;
               seenConIds.add(contract.conId);
               dedupedContracts.push(contract);
+              if (dedupedContracts.length >= maxQualifiedContracts) break;
             }
+            if (dedupedContracts.length >= maxQualifiedContracts) return;
           }
         };
         await Promise.all(Array.from({ length: qualifyParallelism }, () => runQualifyWorker()));
