@@ -72,6 +72,7 @@ const createPilotHarness = async (opts?: {
   close: () => Promise<void>;
 }> => {
   process.env.PILOT_API_ENABLED = "true";
+  process.env.PILOT_ACTIVATION_ENABLED = "true";
   process.env.PILOT_VENUE_MODE = opts?.venueMode || "mock_falconx";
   process.env.POSTGRES_URL = "postgres://unused";
   process.env.USER_HASH_SECRET = "test_hash_secret";
@@ -103,6 +104,7 @@ const createPilotHarness = async (opts?: {
   process.env.PILOT_TENOR_DEFAULT_FALLBACK = "14";
   process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES = "60";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
+  process.env.IBKR_REQUIRE_OPTIONS_NATIVE = "false";
   if (opts?.env) {
     for (const [key, value] of Object.entries(opts.env)) {
       if (value === undefined) {
@@ -186,6 +188,9 @@ const createPilotHarness = async (opts?: {
     process.env.IBKR_REQUIRE_OPTIONS_NATIVE
       ? process.env.IBKR_REQUIRE_OPTIONS_NATIVE === "true"
       : true;
+  configModule.pilotConfig.ibkrMaxFuturesSyntheticPremiumRatio = Number(
+    process.env.IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO || "0.05"
+  );
   configModule.pilotConfig.ibkrQualifyCacheTtlMs = Number(process.env.IBKR_QUALIFY_CACHE_TTL_MS || "120000");
   configModule.pilotConfig.ibkrQualifyCacheMaxKeys = Number(process.env.IBKR_QUALIFY_CACHE_MAX_KEYS || "2000");
   configModule.pilotConfig.venueQuoteTimeoutMs = Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000");
@@ -1054,6 +1059,37 @@ test("M) quote with failed prior protection returns quote_not_activatable", asyn
   }
 });
 
+test("M2) activation can be disabled during quote-only validation mode", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_ACTIVATION_ENABLED: "false"
+    }
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId || "");
+    assert.ok(quoteId.length > 0);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(activateRes.statusCode, 503);
+    const payload = activateRes.json();
+    assert.equal(payload.status, "error");
+    assert.equal(payload.reason, "activation_disabled");
+  } finally {
+    await harness.close();
+  }
+});
+
 test("N) execution failure marks protection activation_failed and releases daily capacity", async () => {
   const harness = await createPilotHarness({
     venueMode: "deribit_test",
@@ -1689,6 +1725,8 @@ test("W) quote diagnostics include explicit tenorReason attribution", async () =
         IBKR_MAX_TENOR_DRIFT_DAYS: "40",
         IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
         IBKR_ORDER_TIF: "IOC",
+        IBKR_REQUIRE_OPTIONS_NATIVE: "false",
+        IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO: "2",
         PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
       }
     });
@@ -1890,6 +1928,8 @@ test("W3) quote diagnostics expose BFF fallback family and reason when enabled",
         IBKR_PRIMARY_PRODUCT_FAMILY: "MBT",
         IBKR_BFF_FALLBACK_ENABLED: "true",
         IBKR_BFF_PRODUCT_FAMILY: "BFF",
+        IBKR_REQUIRE_OPTIONS_NATIVE: "false",
+        IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO: "2.0",
         PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
       }
     });
@@ -2255,6 +2295,7 @@ test("Y) selector diagnostics endpoint requires admin and returns quote-stage co
         IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
         IBKR_ORDER_TIF: "IOC",
         IBKR_REQUIRE_OPTIONS_NATIVE: "false",
+        IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO: "2.0",
         PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
       }
     });
