@@ -1308,7 +1308,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           const idx = cursor;
           cursor += 1;
           if (idx >= shortlist.length) return;
-          ensureLegBudget(probeTimeoutMs + 150);
+          const candidateBudgetHintMs =
+            hedgePolicy === "options_only_native"
+              ? Math.max(350, Math.min(900, probeTimeoutMs))
+              : probeTimeoutMs + 150;
+          ensureLegBudget(candidateBudgetHintMs);
           const contract = shortlist[idx];
           const tenorMeta = contractTenorMeta(contract);
           const matchedTenorDays = tenorMeta.selectedTenorDays;
@@ -1323,6 +1327,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           timingsMs.top += Date.now() - topStartedAt;
           if (topProbe.timedOut) {
             failureCounts.nTimedOut += 1;
+            // In options-only mode prioritize scanning additional candidates quickly.
+            // A candidate that times out on top-of-book tends to also stall on depth.
+            if (hedgePolicy === "options_only_native") {
+              failureCounts.nNoTop += 1;
+              continue;
+            }
           }
           if (topProbe.value && hasUsableTop(topProbe.value)) {
             chosenTop = topProbe.value;
@@ -1334,9 +1344,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               ensureLegBudget(Math.min(probeTimeoutMs, 900));
               counters.depthCalls += 1;
               const depthStartedAt = Date.now();
+              const depthProbeTimeoutMs =
+                hedgePolicy === "options_only_native"
+                  ? Math.max(900, Math.min(2200, probeTimeoutMs))
+                  : Math.min(12000, probeTimeoutMs * 2);
               const depthProbe = await withProbeTimeout(
                 this.connector.getDepth(contract.conId),
-                Math.min(12000, probeTimeoutMs * 2)
+                depthProbeTimeoutMs
               );
               timingsMs.depth += Date.now() - depthStartedAt;
               if (depthProbe.timedOut) {
@@ -1441,7 +1455,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           failureCounts.nPassed += 1;
         }
       };
-      const workers = Array.from({ length: optionProbeParallelism }, () => worker());
+      const effectiveProbeWorkers =
+        hedgePolicy === "options_only_native"
+          ? Math.max(2, Math.min(4, optionProbeParallelism))
+          : optionProbeParallelism;
+      const workers = Array.from({ length: Math.max(1, Math.min(shortlist.length, effectiveProbeWorkers)) }, () => worker());
       await Promise.all(workers);
       if (!passed.length) {
         return { failureCounts };
@@ -1898,9 +1916,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const scoreStartedAt = Date.now();
       const optionProbeTimeoutMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(700, Math.min(2400, requestWindowHintMs))
+          ? Math.max(500, Math.min(1400, requestWindowHintMs))
           : Math.max(650, Math.min(1800, requestWindowHintMs));
-      const optionProbeDepthAttempts = hedgePolicy === "options_only_native" ? 2 : 1;
+      const optionProbeDepthAttempts = 1;
       const optionProbeLegBudgetMs =
         hedgePolicy === "options_only_native"
           ? Math.max(2200, Math.min(12000, optionProbeBudgetMs))
