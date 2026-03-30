@@ -232,6 +232,53 @@ const deriveNoViableOptionReason = (counts: {
   return "no_top_of_book";
 };
 
+const isLikelyNoLiquidityWindow = (counts: {
+  nTotalCandidates: number;
+  nNoTop: number;
+  nNoAsk: number;
+  nFailedProtection: number;
+  nFailedEconomics: number;
+  nPassed: number;
+  nTimedOut?: number;
+}): boolean => {
+  const total = Math.max(0, Number(counts.nTotalCandidates || 0));
+  if (total <= 0) return false;
+  const passed = Math.max(0, Number(counts.nPassed || 0));
+  const noTop = Math.max(0, Number(counts.nNoTop || 0));
+  const noAsk = Math.max(0, Number(counts.nNoAsk || 0));
+  const failedProtection = Math.max(0, Number(counts.nFailedProtection || 0));
+  const failedEconomics = Math.max(0, Number(counts.nFailedEconomics || 0));
+  const timedOut = Math.max(0, Number(counts.nTimedOut || 0));
+  return (
+    passed <= 0 &&
+    noTop + noAsk >= total &&
+    failedProtection <= 0 &&
+    failedEconomics <= 0 &&
+    timedOut >= Math.max(1, Math.floor(total * 0.5))
+  );
+};
+
+const normalizeNoLiquidityWindowError = (
+  message: string,
+  counts: {
+    nTotalCandidates: number;
+    nNoTop: number;
+    nNoAsk: number;
+    nFailedProtection: number;
+    nFailedEconomics: number;
+    nPassed: number;
+    nTimedOut?: number;
+  },
+  sawTenorEligibleContract: boolean
+): string => {
+  if (message.includes("no_liquidity_window")) return "ibkr_quote_unavailable:no_liquidity_window";
+  if (!sawTenorEligibleContract) return message;
+  if (message.includes("tenor_drift_exceeded") && isLikelyNoLiquidityWindow(counts)) {
+    return "ibkr_quote_unavailable:no_liquidity_window";
+  }
+  return message;
+};
+
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -1262,6 +1309,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         Math.min(3000, Math.floor(Number(opts?.probeTimeoutMs ?? Math.max(700, requestWindowHintMs))))
       );
       const depthAttempts = Math.max(1, Math.min(2, Math.floor(Number(opts?.depthAttempts ?? 1))));
+      const maxTopCallsPerProbe =
+        hedgePolicy === "options_only_native"
+          ? Math.max(8, Math.min(16, Number(this.optionProbeParallelism || 1) * 8))
+          : Number.POSITIVE_INFINITY;
       const legBudgetMs = Number.isFinite(Number(opts?.legBudgetMs))
         ? Math.max(2500, Math.floor(Number(opts?.legBudgetMs)))
         : Math.max(5000, Math.min(18000, Math.floor(this.quoteBudgetMs * 0.5)));
@@ -1311,6 +1362,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           const idx = cursor;
           cursor += 1;
           if (idx >= shortlist.length) return;
+          if (counters.topCalls >= maxTopCallsPerProbe) return;
           const candidateBudgetHintMs =
             hedgePolicy === "options_only_native"
               ? Math.max(350, Math.min(900, probeTimeoutMs))
@@ -2017,7 +2069,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           return primaryOptions;
         }
       } catch (error) {
-        const message = String((error as Error)?.message || "ibkr_quote_unavailable:option_selection_failed");
+        const rawMessage = String((error as Error)?.message || "ibkr_quote_unavailable:option_selection_failed");
+        const message = normalizeNoLiquidityWindowError(rawMessage, optionFailureTotals, sawTenorEligibleContract);
         if (message.includes("venue_quote_timeout")) {
           counters.optionsLegTimedOut += 1;
         }
@@ -2052,6 +2105,19 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
       }
       if (this.optionLiquiditySelectionEnabled && optionFailureTotals.nTotalCandidates > 0) {
+        if (isLikelyNoLiquidityWindow(optionFailureTotals)) {
+          timingsMs.total = Date.now() - selectorStartedAt;
+          this.selectorDiagnostics = {
+            asOf: nowIso(),
+            requestId: randomUUID(),
+            venueMode: this.mode,
+            timingsMs,
+            counters,
+            optionCandidateFailureCounts: { ...optionFailureTotals },
+            error: "ibkr_quote_unavailable:no_liquidity_window"
+          };
+          throw new Error("ibkr_quote_unavailable:no_liquidity_window");
+        }
         const noViableReason = deriveNoViableOptionReason(optionFailureTotals);
         const rankedAlternatives = (bestOptionRankedAlternatives.length > 0
           ? bestOptionRankedAlternatives

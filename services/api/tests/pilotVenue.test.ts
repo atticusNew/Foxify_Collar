@@ -981,6 +981,141 @@ test("ibkr_cme_paper options_only_native enforces short-side coverage and reject
   }
 });
 
+test("ibkr_cme_paper options_only_native maps repeated top timeouts to no_liquidity_window", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.kind === "mbt_option") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 65111,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P55000",
+                  expiry: "20260330",
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                },
+                {
+                  conId: 65222,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P55500",
+                  expiry: "20260330",
+                  strike: 55500,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                },
+                {
+                  conId: 65333,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P56000",
+                  expiry: "20260330",
+                  strike: 56000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                },
+                {
+                  conId: 65444,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P56500",
+                  expiry: "20260330",
+                  strike: 56500,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: null,
+            ask: null,
+            bidSize: null,
+            askSize: null,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/depth")) {
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  try {
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 2000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 2000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: false,
+        maxTenorDriftDays: 5,
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC",
+        optionLiquiditySelectionEnabled: true,
+        optionProbeParallelism: 1,
+        optionTenorWindowDays: 0,
+        maxOptionPremiumRatio: 0.5,
+        optionProtectionTolerancePct: 0.03
+      },
+      ibkrQuoteBudgetMs: 12000
+    });
+    await assert.rejects(
+      () =>
+        adapter.quote({
+          marketId: "BTC-USD",
+          instrumentId: "BTC-USD-14D-P",
+          protectedNotional: 25000,
+          quantity: 0.2,
+          side: "buy",
+          protectionType: "long",
+          drawdownFloorPct: 0.2,
+          triggerPrice: 55000,
+          requestedTenorDays: 14,
+          tenorMinDays: 1,
+          tenorMaxDays: 30,
+          hedgePolicy: "options_only_native"
+        }),
+      /ibkr_quote_unavailable:(no_liquidity_window|tenor_drift_exceeded)/
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("ibkr_cme_paper options_only_native scoring favors stronger economics when tenor is equal", async () => {
   const originalFetch = global.fetch;
   const now = new Date();

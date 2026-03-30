@@ -1485,6 +1485,7 @@ export const registerPilotRoutes = async (
       const isNoEconomicalOption = message.includes("no_economical_option");
       const isNoProtectionCompliantOption = message.includes("no_protection_compliant_option");
       const isOptionsRequired = message.includes("options_required");
+      const isNoLiquidityWindow = message.includes("no_liquidity_window");
       const isPremiumGuardrail = message.includes("premium_ratio_exceeded");
       const isNoContract = message.includes("no_contract");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
@@ -1501,6 +1502,7 @@ export const registerPilotRoutes = async (
               isNoEconomicalOption ||
               isNoProtectionCompliantOption ||
               isOptionsRequired ||
+              isNoLiquidityWindow ||
               isNoContract ||
               isPremiumGuardrail
             ? 503
@@ -1538,6 +1540,8 @@ export const registerPilotRoutes = async (
               ? "quote_liquidity_unavailable"
             : isOptionsRequired
               ? "quote_options_required"
+            : isNoLiquidityWindow
+              ? "quote_liquidity_unavailable"
             : isNoContract
               ? "quote_contract_unavailable"
             : isPremiumGuardrail
@@ -1565,6 +1569,8 @@ export const registerPilotRoutes = async (
               ? "No option contract met minimum protection effectiveness within quote budget."
             : isOptionsRequired
               ? "Options-native quotes are required and no viable option contract was available within quote budget."
+            : isNoLiquidityWindow
+              ? "CME options liquidity appears unavailable for the current market window. Please retry during active session."
             : isNoContract
               ? "No venue contract is currently available for the requested hedge. Please retry."
             : isPremiumGuardrail
