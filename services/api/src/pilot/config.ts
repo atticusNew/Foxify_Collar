@@ -410,6 +410,20 @@ export const pilotConfig = {
   ),
   ibkrOptionLiquiditySelectionEnabled: parseBooleanEnv(process.env.IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED, false),
   ibkrRequireOptionsNative: parseBooleanEnv(process.env.IBKR_REQUIRE_OPTIONS_NATIVE, false),
+  ibkrQualifyCacheTtlMs: parsePositiveIntInRange(
+    process.env.IBKR_QUALIFY_CACHE_TTL_MS,
+    120000,
+    1000,
+    3600000,
+    "invalid_ibkr_qualify_cache_ttl_ms"
+  ),
+  ibkrQualifyCacheMaxKeys: parsePositiveIntInRange(
+    process.env.IBKR_QUALIFY_CACHE_MAX_KEYS,
+    2000,
+    100,
+    20000,
+    "invalid_ibkr_qualify_cache_max_keys"
+  ),
   ibkrOptionLiquidityTenorWindowDays: parsePositiveIntInRange(
     process.env.IBKR_OPTION_LIQUIDITY_TENOR_WINDOW_DAYS,
     3,

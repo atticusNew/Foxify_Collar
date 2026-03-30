@@ -398,7 +398,7 @@ test("ibkr_cme_paper uses depth-derived ask when top snapshot is empty", async (
                   conId: 11111,
                   secType: "FOP",
                   localSymbol: "W5AH6 P55000",
-                  expiry: "20260330",
+                  expiry: "20260402",
                   strike: 55000,
                   right: "P",
                   multiplier: "0.1",
@@ -870,7 +870,7 @@ test("ibkr_cme_paper option strike ladder finds nearby liquid strike before futu
       side: "buy",
       protectionType: "long",
       triggerPrice: 55000,
-      requestedTenorDays: 3,
+      requestedTenorDays: 4,
       tenorMinDays: 1,
       tenorMaxDays: 7,
       hedgePolicy: "options_primary_futures_fallback"
@@ -1004,7 +1004,7 @@ test("ibkr_cme_paper probes secondary options family before futures when enabled
       side: "buy",
       protectionType: "long",
       triggerPrice: 55000,
-      requestedTenorDays: 3,
+      requestedTenorDays: 2,
       tenorMinDays: 1,
       tenorMaxDays: 7,
       hedgePolicy: "options_primary_futures_fallback"
@@ -1457,7 +1457,7 @@ test("ibkr_cme_paper probes secondary options family before futures synthetic fa
                   conId: 88888,
                   secType: "FOP",
                   localSymbol: "W5AH6 P55000",
-                  expiry: "20260330",
+                  expiry: "20260406",
                   strike: 55000,
                   right: "P",
                   multiplier: "0.1",
@@ -2395,6 +2395,255 @@ test("ibkr tenor drift guard rejects contracts beyond configured drift", async (
         }),
       /ibkr_quote_unavailable:tenor_drift_exceeded/
     );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("ibkr_cme_paper qualify cache reuses option qualification across repeated quotes", async () => {
+  const originalFetch = global.fetch;
+  let optionQualifyCalls = 0;
+  try {
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          optionQualifyCalls += 1;
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 12121,
+                    secType: "FOP",
+                    localSymbol: "W5AH6 P55000",
+                    expiry: "20260330",
+                    strike: 55000,
+                    right: "P",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+        return {
+          ok: true,
+          text: async () => JSON.stringify({ contracts: [] })
+        } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 95,
+              ask: 96,
+              bidSize: 3,
+              askSize: 5,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bids: [{ level: 0, price: 95, size: 3 }],
+              asks: [{ level: 0, price: 96, size: 5 }],
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return { ok: false, status: 404, text: async () => "not_found" } as any;
+    }) as typeof fetch;
+
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 6000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 6000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: true,
+        maxTenorDriftDays: 7,
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC",
+        optionLiquiditySelectionEnabled: true,
+        optionTenorWindowDays: 1,
+        optionProbeParallelism: 2,
+        qualifyCacheTtlMs: 120000,
+        qualifyCacheMaxKeys: 1000
+      },
+      ibkrQuoteBudgetMs: 12000
+    });
+
+    const request = {
+      marketId: "BTC-USD",
+      instrumentId: "BTC-USD-8D-P",
+      protectedNotional: 10000,
+      quantity: 0.2,
+      side: "buy" as const,
+      protectionType: "long" as const,
+      triggerPrice: 55000,
+      requestedTenorDays: 8,
+      tenorMinDays: 1,
+      tenorMaxDays: 14,
+      hedgePolicy: "options_primary_futures_fallback" as const
+    };
+    await assert.rejects(() => adapter.quote(request), /ibkr_quote_unavailable:tenor_drift_exceeded/);
+    await assert.rejects(() => adapter.quote(request), /ibkr_quote_unavailable:tenor_drift_exceeded/);
+    assert.ok(optionQualifyCalls > 0);
+    assert.ok(optionQualifyCalls <= 25, `expected cache to reduce qualify calls, got ${optionQualifyCalls}`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("ibkr_cme_paper qualify cache avoids repeated contract qualification", async () => {
+  const originalFetch = global.fetch;
+  try {
+    let qualifyCount = 0;
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        qualifyCount += 1;
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 32101,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P55000",
+                  expiry: "20260330",
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 95,
+              ask: 96,
+              bidSize: 3,
+              askSize: 5,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bids: [{ level: 0, price: 95, size: 3 }],
+              asks: [{ level: 0, price: 96, size: 5 }],
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: false,
+        status: 404,
+        text: async () => "not_found"
+      } as any;
+    }) as typeof fetch;
+
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 6000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 6000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: false,
+        maxTenorDriftDays: 7,
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC",
+        optionLiquiditySelectionEnabled: false,
+        optionTenorWindowDays: 0,
+        optionProbeParallelism: 1,
+        optionProtectionTolerancePct: 0.03,
+        maxOptionPremiumRatio: 0.2,
+        qualifyCacheTtlMs: 300000,
+        qualifyCacheMaxKeys: 500
+      }
+    });
+
+    const req = {
+      marketId: "BTC-USD",
+      instrumentId: "BTC-USD-8D-P",
+      protectedNotional: 10000,
+      quantity: 0.2,
+      side: "buy" as const,
+      protectionType: "long" as const,
+      triggerPrice: 55000,
+      requestedTenorDays: 2,
+      tenorMinDays: 1,
+      tenorMaxDays: 14,
+      hedgePolicy: "options_primary_futures_fallback" as const
+    };
+    const first = await adapter.quote(req);
+    const second = await adapter.quote(req);
+    assert.equal(first.venue, "ibkr_cme_paper");
+    assert.equal(second.venue, "ibkr_cme_paper");
+    assert.equal(qualifyCount, 3);
   } finally {
     global.fetch = originalFetch;
   }

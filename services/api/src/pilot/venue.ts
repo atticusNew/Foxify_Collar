@@ -61,6 +61,8 @@ type IbkrVenueConfig = {
   optionLiquiditySelectionEnabled?: boolean;
   optionTenorWindowDays?: number;
   requireOptionsNative?: boolean;
+  qualifyCacheTtlMs?: number;
+  qualifyCacheMaxKeys?: number;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -593,6 +595,52 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 }
 
 class IbkrCmeAdapter implements PilotVenueAdapter {
+  private qualifyCache = new Map<string, { contracts: IbkrQualifiedContract[]; ts: number }>();
+  private qualifyInFlight = new Map<string, Promise<IbkrQualifiedContract[]>>();
+  private selectorDiagnostics: {
+    asOf: string;
+    requestId: string;
+    venueMode: "ibkr_cme_live" | "ibkr_cme_paper";
+    timingsMs: {
+      total: number;
+      qualify: number;
+      top: number;
+      depth: number;
+      score: number;
+    };
+    counters: {
+      qualifyCalls: number;
+      qualifyCacheHits: number;
+      qualifyCacheMisses: number;
+      topCalls: number;
+      depthCalls: number;
+      depthRetries: number;
+      optionsFamiliesTried: number;
+      optionsLegTimedOut: number;
+    };
+    optionCandidateFailureCounts: {
+      nTotalCandidates: number;
+      nNoTop: number;
+      nNoAsk: number;
+      nFailedProtection: number;
+      nFailedEconomics: number;
+      nTimedOut: number;
+      nPassed: number;
+    };
+    selection?: {
+      hedgeMode: "options_native" | "futures_synthetic";
+      hedgeInstrumentFamily: "MBT" | "BFF";
+      selectionReason: string;
+      selectionAlgorithm: string;
+      selectedScore: number | null;
+      selectedTenorDays: number | null;
+      selectedExpiry: string | null;
+      selectedStrike: number | null;
+      candidateCountEvaluated: number;
+    };
+    error?: string;
+  } | null = null;
+
   constructor(
     private connector: IbkrConnector,
     private mode: "ibkr_cme_live" | "ibkr_cme_paper",
@@ -617,6 +665,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private optionLiquiditySelectionEnabled: boolean,
     private optionTenorWindowDays: number,
     private requireOptionsNative: boolean,
+    private qualifyCacheTtlMs: number,
+    private qualifyCacheMaxKeys: number,
     private marketDataRequestTimeoutMs: number,
     private quoteBudgetMs: number
   ) {}
@@ -628,6 +678,62 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
   private async ensureRequiredLiveTransport(): Promise<void> {
     if (!this.requireLiveTransport) return;
     await this.connector.assertLiveTransportRequired();
+  }
+
+  getDiagnostics(): Record<string, unknown> | null {
+    return this.selectorDiagnostics ? { ...this.selectorDiagnostics } : null;
+  }
+
+  private getCachedQualifiedContracts(key: string): IbkrQualifiedContract[] | null {
+    const cached = this.qualifyCache.get(key);
+    if (!cached) return null;
+    if (Date.now() - cached.ts > Math.max(1000, this.qualifyCacheTtlMs)) {
+      this.qualifyCache.delete(key);
+      return null;
+    }
+    return cached.contracts;
+  }
+
+  private setCachedQualifiedContracts(key: string, contracts: IbkrQualifiedContract[]): void {
+    this.qualifyCache.set(key, { contracts, ts: Date.now() });
+    const maxKeys = Math.max(100, this.qualifyCacheMaxKeys);
+    while (this.qualifyCache.size > maxKeys) {
+      const firstKey = this.qualifyCache.keys().next().value;
+      if (!firstKey) break;
+      this.qualifyCache.delete(firstKey);
+    }
+  }
+
+  private async qualifyContractsCached(
+    query: IbkrContractQuery,
+    counters: {
+      qualifyCalls: number;
+      qualifyCacheHits: number;
+      qualifyCacheMisses: number;
+    }
+  ): Promise<IbkrQualifiedContract[]> {
+    const key = JSON.stringify(query);
+    counters.qualifyCalls += 1;
+    const cached = this.getCachedQualifiedContracts(key);
+    if (cached) {
+      counters.qualifyCacheHits += 1;
+      return cached;
+    }
+    counters.qualifyCacheMisses += 1;
+    const inflight = this.qualifyInFlight.get(key);
+    if (inflight) return inflight;
+    const promise = this.connector
+      .qualifyContracts(query)
+      .then((contracts) => {
+        const normalized = Array.isArray(contracts) ? contracts : [];
+        this.setCachedQualifiedContracts(key, normalized);
+        return normalized;
+      })
+      .finally(() => {
+        this.qualifyInFlight.delete(key);
+      });
+    this.qualifyInFlight.set(key, promise);
+    return promise;
   }
 
   private async resolveContractAndBook(req: QuoteRequest): Promise<{
@@ -678,6 +784,18 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nFailedEconomics: number;
       nTimedOut: number;
       nPassed: number;
+    };
+    const selectorStartedAt = Date.now();
+    const timingsMs = { total: 0, qualify: 0, top: 0, depth: 0, score: 0 };
+    const counters = {
+      qualifyCalls: 0,
+      qualifyCacheHits: 0,
+      qualifyCacheMisses: 0,
+      topCalls: 0,
+      depthCalls: 0,
+      depthRetries: 0,
+      optionsFamiliesTried: 0,
+      optionsLegTimedOut: 0
     };
     const requestedTenorDays = clampInt(req.requestedTenorDays, 1, 30, 7);
     const minTenorDays = clampInt(req.tenorMinDays, 1, 30, 1);
@@ -1120,7 +1238,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           let chosenTop:
             | { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string }
             | null = null;
+          counters.topCalls += 1;
+          const topStartedAt = Date.now();
           const topProbe = await withProbeTimeout(this.connector.getTopOfBook(contract.conId), probeTimeoutMs);
+          timingsMs.top += Date.now() - topStartedAt;
           if (topProbe.timedOut) {
             failureCounts.nTimedOut += 1;
           }
@@ -1132,7 +1253,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             }
             for (let attempt = 0; attempt < depthAttempts; attempt += 1) {
               ensureLegBudget(Math.min(probeTimeoutMs, 900));
-              const depthProbe = await withProbeTimeout(this.connector.getDepth(contract.conId), Math.min(12000, probeTimeoutMs * 2));
+              counters.depthCalls += 1;
+              const depthStartedAt = Date.now();
+              const depthProbe = await withProbeTimeout(
+                this.connector.getDepth(contract.conId),
+                Math.min(12000, probeTimeoutMs * 2)
+              );
+              timingsMs.depth += Date.now() - depthStartedAt;
               if (depthProbe.timedOut) {
                 failureCounts.nTimedOut += 1;
               }
@@ -1142,6 +1269,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
                 break;
               }
               if (attempt + 1 < depthAttempts) {
+                counters.depthRetries += 1;
                 await wait(200);
               }
             }
@@ -1281,7 +1409,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       ...query,
       productFamily
     });
-    const runFallbackLeg = async (
+      const runFallbackLeg = async (
       productFamily: "MBT" | "BFF",
       reason: "options_unavailable_futures_fallback" | "options_and_mbt_unavailable_bff_fallback"
     ): Promise<{
@@ -1326,7 +1454,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         },
         productFamily
       );
-      const futContracts = await this.connector.qualifyContracts(futQuery);
+      const futQualifyStartedAt = Date.now();
+      const futContracts = await this.qualifyContractsCached(futQuery, counters);
+      timingsMs.qualify += Date.now() - futQualifyStartedAt;
       sawFallbackContracts ||= futContracts.length > 0;
       sawTenorEligibleContract ||= futContracts.some(contractPassesTenorPolicy);
       const futMatch = await pickContractWithTop(futContracts, {
@@ -1362,7 +1492,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         hedgeInstrumentFamily: productFamily
       };
     };
-    const runOptionLeg = async (
+      const runOptionLeg = async (
       productFamily: "MBT" | "BFF",
       reason: "best_tenor_liquidity_option" | "primary_options_unavailable_secondary_options_fallback"
     ): Promise<{
@@ -1405,6 +1535,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nPassed: number;
       };
     } | null> => {
+      counters.optionsFamiliesTried += 1;
       if (!roundedStrike) return null;
       const strikeCandidates = optionStrikeCandidates(roundedStrike, right);
       const strikeCandidatesForMode = this.optionLiquiditySelectionEnabled
@@ -1491,7 +1622,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             );
             let optionContracts: IbkrQualifiedContract[] = [];
             try {
-              const qualified = await withQualifyTimeout(this.connector.qualifyContracts(optionQuery), qualifyTimeoutMs);
+              const qualifyStartedAt = Date.now();
+              const qualified = await withQualifyTimeout(
+                this.qualifyContractsCached(optionQuery, counters),
+                qualifyTimeoutMs
+              );
+              timingsMs.qualify += Date.now() - qualifyStartedAt;
               if (qualified.timedOut) {
                 optionFailureTotals.nTimedOut += 1;
               }
@@ -1612,11 +1748,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         if (optionProbeBudgetMs < 1200) {
           break;
         }
-        const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
+      const scoreStartedAt = Date.now();
+      const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
           probeTimeoutMs: Math.max(650, Math.min(1800, requestWindowHintMs)),
           depthAttempts: 1,
           legBudgetMs: Math.max(1200, Math.min(6000, optionProbeBudgetMs))
         });
+      timingsMs.score += Date.now() - scoreStartedAt;
         latestFailureCounts = optionMatch.failureCounts;
         if (!("contract" in optionMatch)) {
           continue;
@@ -1713,6 +1851,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           const message = String((error as Error)?.message || "");
           if (message.includes("venue_quote_timeout")) {
             optionLegTimedOut = true;
+            counters.optionsLegTimedOut += 1;
             return null;
           }
           throw error;
@@ -1723,6 +1862,26 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         "best_tenor_liquidity_option"
       );
       if (primaryOptions) {
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          selection: {
+            hedgeMode: primaryOptions.hedgeMode,
+            hedgeInstrumentFamily: primaryOptions.hedgeInstrumentFamily,
+            selectionReason: primaryOptions.selectionReason,
+            selectionAlgorithm: primaryOptions.selectionAlgorithm,
+            selectedScore: primaryOptions.selectedScore,
+            selectedTenorDays: primaryOptions.selectedTenorDays,
+            selectedExpiry: primaryOptions.selectedExpiry,
+            selectedStrike: primaryOptions.strike,
+            candidateCountEvaluated: primaryOptions.candidateCountEvaluated
+          }
+        };
         return primaryOptions;
       }
       // If options probing already exhausted its leg budget, skip additional option-family probing
@@ -1733,6 +1892,26 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           "primary_options_unavailable_secondary_options_fallback"
         );
         if (secondaryOptions) {
+          timingsMs.total = Date.now() - selectorStartedAt;
+          this.selectorDiagnostics = {
+            asOf: nowIso(),
+            requestId: randomUUID(),
+            venueMode: this.mode,
+            timingsMs,
+            counters,
+            optionCandidateFailureCounts: { ...optionFailureTotals },
+            selection: {
+              hedgeMode: secondaryOptions.hedgeMode,
+              hedgeInstrumentFamily: secondaryOptions.hedgeInstrumentFamily,
+              selectionReason: secondaryOptions.selectionReason,
+              selectionAlgorithm: secondaryOptions.selectionAlgorithm,
+              selectedScore: secondaryOptions.selectedScore,
+              selectedTenorDays: secondaryOptions.selectedTenorDays,
+              selectedExpiry: secondaryOptions.selectedExpiry,
+              selectedStrike: secondaryOptions.strike,
+              candidateCountEvaluated: secondaryOptions.candidateCountEvaluated
+            }
+          };
           return secondaryOptions;
         }
       }
@@ -1745,6 +1924,26 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         if (this.requireOptionsNative) {
           throw new Error("ibkr_quote_unavailable:options_required");
         }
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          selection: {
+            hedgeMode: primaryFallback.hedgeMode,
+            hedgeInstrumentFamily: primaryFallback.hedgeInstrumentFamily,
+            selectionReason: primaryFallback.selectionReason,
+            selectionAlgorithm: primaryFallback.selectionAlgorithm,
+            selectedScore: primaryFallback.selectedScore,
+            selectedTenorDays: primaryFallback.selectedTenorDays,
+            selectedExpiry: primaryFallback.selectedExpiry,
+            selectedStrike: primaryFallback.strike,
+            candidateCountEvaluated: primaryFallback.candidateCountEvaluated
+          }
+        };
         return primaryFallback;
       }
 
@@ -1757,23 +1956,101 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           if (this.requireOptionsNative) {
             throw new Error("ibkr_quote_unavailable:options_required");
           }
+          timingsMs.total = Date.now() - selectorStartedAt;
+          this.selectorDiagnostics = {
+            asOf: nowIso(),
+            requestId: randomUUID(),
+            venueMode: this.mode,
+            timingsMs,
+            counters,
+            optionCandidateFailureCounts: { ...optionFailureTotals },
+            selection: {
+              hedgeMode: bffFallback.hedgeMode,
+              hedgeInstrumentFamily: bffFallback.hedgeInstrumentFamily,
+              selectionReason: bffFallback.selectionReason,
+              selectionAlgorithm: bffFallback.selectionAlgorithm,
+              selectedScore: bffFallback.selectedScore,
+              selectedTenorDays: bffFallback.selectedTenorDays,
+              selectedExpiry: bffFallback.selectedExpiry,
+              selectedStrike: bffFallback.strike,
+              candidateCountEvaluated: bffFallback.candidateCountEvaluated
+            }
+          };
           return bffFallback;
         }
       }
       if (!sawTenorEligibleContract) {
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: "ibkr_quote_unavailable:tenor_drift_exceeded"
+        };
         throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
       }
       if (sawFallbackContracts) {
         if (this.optionLiquiditySelectionEnabled && optionFailureTotals.nTotalCandidates > 0) {
+          timingsMs.total = Date.now() - selectorStartedAt;
+          this.selectorDiagnostics = {
+            asOf: nowIso(),
+            requestId: randomUUID(),
+            venueMode: this.mode,
+            timingsMs,
+            counters,
+            optionCandidateFailureCounts: { ...optionFailureTotals },
+            error: "ibkr_quote_unavailable:no_top_of_book:no_viable_option"
+          };
           throw new Error(
             `ibkr_quote_unavailable:no_top_of_book:no_viable_option:${JSON.stringify(optionFailureTotals)}`
           );
         }
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: "ibkr_quote_unavailable:no_top_of_book"
+        };
         throw new Error("ibkr_quote_unavailable:no_top_of_book");
       }
+      timingsMs.total = Date.now() - selectorStartedAt;
+      this.selectorDiagnostics = {
+        asOf: nowIso(),
+        requestId: randomUUID(),
+        venueMode: this.mode,
+        timingsMs,
+        counters,
+        optionCandidateFailureCounts: { ...optionFailureTotals },
+        error: "ibkr_quote_unavailable:tenor_drift_exceeded"
+      };
       throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
     }
 
+    timingsMs.total = Date.now() - selectorStartedAt;
+    this.selectorDiagnostics = {
+      asOf: nowIso(),
+      requestId: randomUUID(),
+      venueMode: this.mode,
+      timingsMs,
+      counters,
+      optionCandidateFailureCounts: {
+        nTotalCandidates: 0,
+        nNoTop: 0,
+        nNoAsk: 0,
+        nFailedProtection: 0,
+        nFailedEconomics: 0,
+        nTimedOut: 0,
+        nPassed: 0
+      },
+      error: "ibkr_quote_unavailable:no_contract"
+    };
     throw new Error("ibkr_quote_unavailable:no_contract");
   }
 
@@ -2205,6 +2482,12 @@ export const createPilotVenueAdapter = (params: {
         ? Math.max(0, Math.min(14, Math.floor(Number(params.ibkr.optionTenorWindowDays))))
         : 3,
       params.ibkr.requireOptionsNative === true,
+      Number.isFinite(Number(params.ibkr.qualifyCacheTtlMs))
+        ? Math.max(1000, Math.floor(Number(params.ibkr.qualifyCacheTtlMs)))
+        : 120000,
+      Number.isFinite(Number(params.ibkr.qualifyCacheMaxKeys))
+        ? Math.max(100, Math.floor(Number(params.ibkr.qualifyCacheMaxKeys)))
+        : 2000,
       connectorTimeoutMs,
       Number(params.ibkrQuoteBudgetMs || 0)
     );
@@ -2230,6 +2513,7 @@ export const mapVenueFailureReason = (error: unknown): string => {
   if (message.includes("COOLDOWN")) return "execution_cooldown";
   if (message.includes("INSUFFICIENT")) return "insufficient_balance";
   if (message.includes("tenor_drift_exceeded")) return "tenor_drift_exceeded";
+  if (message.includes("options_required")) return "quote_options_required";
   return "venue_error";
 };
 
