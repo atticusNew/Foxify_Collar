@@ -1240,7 +1240,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           if (strikeCmp !== 0) return strikeCmp;
           return String(a.localSymbol || "").localeCompare(String(b.localSymbol || ""));
         });
-      const shortlist = eligible.slice(0, 18);
+      const shortlist = eligible.slice(
+        0,
+        hedgePolicy === "options_only_native" ? Math.min(8, eligible.length) : 18
+      );
       const failureCounts: OptionFailureCounts = {
         nTotalCandidates: shortlist.length,
         nNoTop: 0,
@@ -1916,12 +1919,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const scoreStartedAt = Date.now();
       const optionProbeTimeoutMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(500, Math.min(1400, requestWindowHintMs))
+          ? Math.max(350, Math.min(900, Math.floor(requestWindowHintMs * 0.35)))
           : Math.max(650, Math.min(1800, requestWindowHintMs));
       const optionProbeDepthAttempts = 1;
       const optionProbeLegBudgetMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(2200, Math.min(12000, optionProbeBudgetMs))
+          ? Math.max(3000, Math.min(22000, optionProbeBudgetMs))
           : Math.max(1200, Math.min(6000, optionProbeBudgetMs));
       const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
           probeTimeoutMs: optionProbeTimeoutMs,
