@@ -2,12 +2,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --only=production
-
 COPY . .
 
-RUN npm run build
+RUN npm ci
 
 RUN mkdir -p /app/logs
 
@@ -16,4 +13,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 EXPOSE 8000
 
-CMD ["node", "dist/server.js"]
+CMD ["npm", "--workspace", "services/api", "exec", "tsx", "src/server.ts"]

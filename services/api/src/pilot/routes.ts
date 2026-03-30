@@ -458,6 +458,7 @@ const resolvePilotVenueHealth = async (): Promise<Record<string, unknown>> => {
   const connector = new IbkrConnector({
     baseUrl: pilotConfig.ibkrBridgeBaseUrl,
     timeoutMs: pilotConfig.ibkrBridgeTimeoutMs,
+    accountId: pilotConfig.ibkrAccountId || "PILOT_HEALTHCHECK",
     auth: {
       token: pilotConfig.ibkrBridgeToken
     }
@@ -666,8 +667,11 @@ export const registerPilotRoutes = async (
       maxOptionPremiumRatio: pilotConfig.ibkrMaxOptionPremiumRatio,
       optionProbeParallelism: pilotConfig.ibkrOptionProbeParallelism,
       optionLiquiditySelectionEnabled: pilotConfig.ibkrOptionLiquiditySelectionEnabled,
-      optionLiquidityTenorWindowDays: pilotConfig.ibkrOptionLiquidityTenorWindowDays,
-      optionProtectionTolerancePct: pilotConfig.ibkrOptionProtectionTolerancePct
+      qualifyCacheTtlMs: pilotConfig.ibkrQualifyCacheTtlMs,
+      qualifyCacheMaxKeys: pilotConfig.ibkrQualifyCacheMaxKeys,
+      optionTenorWindowDays: pilotConfig.ibkrOptionLiquidityTenorWindowDays,
+      optionProtectionTolerancePct: pilotConfig.ibkrOptionProtectionTolerancePct,
+      requireOptionsNative: pilotConfig.ibkrRequireOptionsNative
     },
     ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
     deribit: deps.deribit
@@ -985,6 +989,47 @@ export const registerPilotRoutes = async (
     }
   });
 
+  app.get("/pilot/admin/diagnostics/selector", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const diagnosticsRaw =
+      pilotConfig.venueMode === "ibkr_cme_live" || pilotConfig.venueMode === "ibkr_cme_paper"
+        ? venue.getDiagnostics()
+        : null;
+    const diagnostics =
+      diagnosticsRaw && typeof diagnosticsRaw === "object"
+        ? diagnosticsRaw
+        : {
+            asOf: new Date().toISOString(),
+            requestId: null,
+            venueMode: pilotConfig.venueMode,
+            timingsMs: { total: 0, qualify: 0, top: 0, depth: 0, score: 0 },
+            counters: {
+              qualifyCalls: 0,
+              qualifyCacheHits: 0,
+              qualifyCacheMisses: 0,
+              topCalls: 0,
+              depthCalls: 0,
+              depthRetries: 0,
+              optionsFamiliesTried: 0,
+              optionsLegTimedOut: 0
+            },
+            optionCandidateFailureCounts: {
+              nTotalCandidates: 0,
+              nNoTop: 0,
+              nNoAsk: 0,
+              nFailedProtection: 0,
+              nFailedEconomics: 0,
+              nTimedOut: 0,
+              nPassed: 0
+            }
+          };
+    return {
+      status: "ok",
+      diagnostics
+    };
+  });
+
   app.post("/pilot/protections/quote", async (req, reply) => {
     if (!enforcePilotWindow(reply)) return;
     const body = req.body as {
@@ -1147,6 +1192,7 @@ export const registerPilotRoutes = async (
           side: "buy",
           instrumentId: quoteInstrumentId,
           protectionType,
+          drawdownFloorPct: drawdownFloorPct.toNumber(),
           triggerPrice: triggerPrice.toNumber(),
           requestedTenorDays: venueRequestedTenorDays,
           tenorMinDays: pilotConfig.pilotTenorMinDays,
@@ -1432,6 +1478,7 @@ export const registerPilotRoutes = async (
       const isNoViableOption = message.includes("no_viable_option");
       const isNoEconomicalOption = message.includes("no_economical_option");
       const isNoProtectionCompliantOption = message.includes("no_protection_compliant_option");
+      const isOptionsRequired = message.includes("options_required");
       const isPremiumGuardrail = message.includes("premium_ratio_exceeded");
       const isNoContract = message.includes("no_contract");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
@@ -1446,6 +1493,7 @@ export const registerPilotRoutes = async (
               isNoViableOption ||
               isNoEconomicalOption ||
               isNoProtectionCompliantOption ||
+              isOptionsRequired ||
               isNoContract ||
               isPremiumGuardrail
             ? 503
@@ -1469,6 +1517,8 @@ export const registerPilotRoutes = async (
               ? "quote_economics_unacceptable"
             : isNoProtectionCompliantOption
               ? "quote_liquidity_unavailable"
+            : isOptionsRequired
+              ? "quote_options_required"
             : isNoContract
               ? "quote_contract_unavailable"
             : isPremiumGuardrail
@@ -1490,6 +1540,8 @@ export const registerPilotRoutes = async (
               ? "No option contract met pilot economics guardrails within quote budget."
             : isNoProtectionCompliantOption
               ? "No option contract met minimum protection effectiveness within quote budget."
+            : isOptionsRequired
+              ? "Options-native quotes are required and no viable option contract was available within quote budget."
             : isNoContract
               ? "No venue contract is currently available for the requested hedge. Please retry."
             : isPremiumGuardrail
@@ -1510,6 +1562,19 @@ export const registerPilotRoutes = async (
                 optionCandidateFailureCounts: (() => {
                   try {
                     return JSON.parse(noViableOptionMatch[1]);
+                  } catch {
+                    return null;
+                  }
+                })()
+              }
+            : {}),
+          ...(message.includes("selector_diag:") && message.match(/selector_diag:(\{.*\})/)
+            ? {
+                selectorDiagnostics: (() => {
+                  const match = message.match(/selector_diag:(\{.*\})/);
+                  if (!match) return null;
+                  try {
+                    return JSON.parse(match[1]);
                   } catch {
                     return null;
                   }

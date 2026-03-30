@@ -582,6 +582,8 @@ body {
   font-size: 18px;
   font-weight: 700;
   color: #7db4ff;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3px;
 }
 
 .quote-fetching-progress {
@@ -677,6 +679,8 @@ body {
 
 .pilot-monitor-subtitle {
   margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .pilot-monitor-grid {
@@ -690,6 +694,11 @@ body {
   border-radius: 12px;
   background: #111116;
   padding: 12px;
+  transition: border-color 140ms ease;
+}
+
+.pilot-monitor-card .label {
+  letter-spacing: 0.2px;
 }
 
 .pilot-admin-modal {
