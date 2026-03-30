@@ -396,6 +396,29 @@ export const pilotConfig = {
     0.05,
     "invalid_ibkr_max_futures_synthetic_premium_ratio"
   ),
+  ibkrMaxOptionPremiumRatio: parsePositiveFinite(
+    process.env.IBKR_MAX_OPTION_PREMIUM_RATIO,
+    0.15,
+    "invalid_ibkr_max_option_premium_ratio"
+  ),
+  ibkrOptionProbeParallelism: parsePositiveIntInRange(
+    process.env.IBKR_OPTION_PROBE_PARALLELISM,
+    3,
+    1,
+    8,
+    "invalid_ibkr_option_probe_parallelism"
+  ),
+  ibkrOptionLiquiditySelectionEnabled: parseBooleanEnv(process.env.IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED, false),
+  ibkrOptionLiquidityTenorWindowDays: parsePositiveIntInRange(
+    process.env.IBKR_OPTION_LIQUIDITY_TENOR_WINDOW_DAYS,
+    3,
+    0,
+    14,
+    "invalid_ibkr_option_liquidity_tenor_window_days"
+  ),
+  ibkrOptionProtectionTolerancePct: Number.isFinite(Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))
+    ? Math.max(0, Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))
+    : 0.03,
   ibkrPreferTenorAtOrAbove: parseBooleanEnv(process.env.IBKR_PREFER_TENOR_AT_OR_ABOVE, true),
   ibkrRequireLiveTransport: parseBooleanEnv(
     process.env.IBKR_REQUIRE_LIVE_TRANSPORT,

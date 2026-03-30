@@ -54,6 +54,10 @@ type IbkrVenueConfig = {
   enableBffFallback?: boolean;
   bffProductFamily?: "MBT" | "BFF";
   maxFuturesSyntheticPremiumRatio?: number;
+  maxOptionPremiumRatio?: number;
+  optionProtectionTolerancePct?: number;
+  optionProbeParallelism?: number;
+  optionTenorWindowDays?: number;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -200,6 +204,15 @@ const formatMatchedTenorDisplay = (tenorDays: number | null): string | null => {
 const buildIbkrInstrumentId = (contract: IbkrQualifiedContract): string => {
   const symbol = String(contract.localSymbol || "").replace(/\s+/g, "_");
   return `IBKR-${contract.secType}-${contract.conId}-${symbol}`;
+};
+
+const parseIbkrStrikeFromLocalSymbol = (contract: IbkrQualifiedContract): number | null => {
+  const direct = toFinitePositive(contract.strike);
+  if (direct !== null) return direct;
+  const raw = String(contract.localSymbol || "");
+  const match = raw.match(/([PC])\s*([0-9]+(?:\.[0-9]+)?)/i);
+  if (!match) return null;
+  return toFinitePositive(match[2]);
 };
 
 const parseIbkrConId = (instrumentId: string): number | null => {
@@ -595,6 +608,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private enableBffFallback: boolean,
     private bffProductFamily: "MBT" | "BFF",
     private maxFuturesSyntheticPremiumRatio: number,
+    private maxOptionPremiumRatio: number,
+    private optionProtectionTolerancePct: number,
+    private optionProbeParallelism: number,
+    private optionLiquiditySelectionEnabled: boolean,
+    private optionTenorWindowDays: number,
     private marketDataRequestTimeoutMs: number,
     private quoteBudgetMs: number
   ) {}
@@ -638,7 +656,25 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     }>;
     strike: number | null;
     hedgeInstrumentFamily: "MBT" | "BFF";
+    candidateFailureCounts?: {
+      nTotalCandidates: number;
+      nNoTop: number;
+      nNoAsk: number;
+      nFailedProtection: number;
+      nFailedEconomics: number;
+      nTimedOut: number;
+      nPassed: number;
+    };
   }> {
+    type OptionFailureCounts = {
+      nTotalCandidates: number;
+      nNoTop: number;
+      nNoAsk: number;
+      nFailedProtection: number;
+      nFailedEconomics: number;
+      nTimedOut: number;
+      nPassed: number;
+    };
     const requestedTenorDays = clampInt(req.requestedTenorDays, 1, 30, 7);
     const minTenorDays = clampInt(req.tenorMinDays, 1, 30, 1);
     const maxTenorDays = clampInt(req.tenorMaxDays, minTenorDays, 30, Math.max(minTenorDays, 7));
@@ -694,6 +730,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       400,
       Math.min(4000, Math.floor(Number(this.marketDataRequestTimeoutMs || 0)))
     );
+    const optionLiquiditySelectionEnabled = this.optionLiquiditySelectionEnabled !== false;
+    const optionProbeParallelism = Math.max(1, Math.min(6, Math.floor(Number(this.optionProbeParallelism || 0)) || 3));
+    const optionTenorWindowDays = Math.max(0, Math.min(14, Math.floor(Number(this.optionTenorWindowDays || 0)) || 3));
     const calcTenorDaysFromExpiry = (expiryRaw?: string): number | null => {
       const expiry = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
       if (expiry.length !== 8) return null;
@@ -727,6 +766,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         return false;
       }
       return true;
+    };
+    const contractPassesOptionTenorWindow = (contract: IbkrQualifiedContract): boolean => {
+      const meta = contractTenorMeta(contract);
+      if (meta.selectedTenorDays === null) return false;
+      const drift = Math.abs(meta.selectedTenorDays - selectedTenorDaysIntended);
+      return drift <= optionTenorWindowDays + 1e-9;
     };
     const rankByTenor = (a: IbkrQualifiedContract, b: IbkrQualifiedContract): number => {
       const aMeta = contractTenorMeta(a);
@@ -963,9 +1008,257 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
       return null;
     };
+    const probeOptionCandidates = async (
+      contracts: IbkrQualifiedContract[],
+      minProtectionThreshold: number | null,
+      opts?: { probeTimeoutMs?: number; depthAttempts?: number; legBudgetMs?: number }
+    ): Promise<
+      | {
+          contract: IbkrQualifiedContract;
+          top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+          selectedScore: number;
+          selectedRank: number;
+          candidateCountEvaluated: number;
+          selectionTrace: Array<{
+            conId: number;
+            expiry: string | null;
+            matchedTenorDays: number | null;
+            driftDays: number | null;
+            ask: number | null;
+            bid: number | null;
+            askSize: number | null;
+            spreadPct: number | null;
+            belowTarget: boolean;
+            score: number;
+          }>;
+          failureCounts: OptionFailureCounts;
+        }
+      | { failureCounts: OptionFailureCounts }
+    > => {
+      const eligible = [...contracts]
+        .filter(contractPassesTenorPolicy)
+        .filter(contractPassesOptionTenorWindow)
+        .sort(rankByTenor);
+      const shortlist = eligible.slice(0, 18);
+      const failureCounts: OptionFailureCounts = {
+        nTotalCandidates: shortlist.length,
+        nNoTop: 0,
+        nNoAsk: 0,
+        nFailedProtection: 0,
+        nFailedEconomics: 0,
+        nTimedOut: 0,
+        nPassed: 0
+      };
+      if (!shortlist.length) {
+        return { failureCounts };
+      }
+      const probeTimeoutMs = Math.max(
+        450,
+        Math.min(3000, Math.floor(Number(opts?.probeTimeoutMs ?? Math.max(700, requestWindowHintMs))))
+      );
+      const depthAttempts = Math.max(1, Math.min(2, Math.floor(Number(opts?.depthAttempts ?? 1))));
+      const legBudgetMs = Number.isFinite(Number(opts?.legBudgetMs))
+        ? Math.max(2500, Math.floor(Number(opts?.legBudgetMs)))
+        : Math.max(5000, Math.min(18000, Math.floor(this.quoteBudgetMs * 0.5)));
+      const legDeadlineMs = Date.now() + legBudgetMs;
+      const ensureLegBudget = (minimumRemainingMs = 0): void => {
+        ensureBudget(minimumRemainingMs);
+        if (Date.now() + Math.max(0, minimumRemainingMs) >= legDeadlineMs) {
+          throw new Error("venue_quote_timeout");
+        }
+      };
+      const withProbeTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<{ value: T | null; timedOut: boolean }> => {
+        let timer: NodeJS.Timeout | null = null;
+        let timedOut = false;
+        try {
+          const value = await Promise.race([
+            promise,
+            new Promise<null>((resolve) => {
+              timer = setTimeout(() => {
+                timedOut = true;
+                resolve(null);
+              }, timeoutMs);
+            })
+          ]);
+          return { value: (value as T | null) ?? null, timedOut };
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      };
+      type Scored = {
+        contract: IbkrQualifiedContract;
+        top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+        ask: number;
+        bid: number | null;
+        askSize: number | null;
+        spreadPct: number | null;
+        driftDays: number;
+        matchedTenorDays: number;
+        belowTarget: boolean;
+        protectionCoveragePct: number | null;
+        premiumRatio: number;
+        score: number;
+      };
+      const passed: Scored[] = [];
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        while (true) {
+          const idx = cursor;
+          cursor += 1;
+          if (idx >= shortlist.length) return;
+          ensureLegBudget(probeTimeoutMs + 150);
+          const contract = shortlist[idx];
+          const tenorMeta = contractTenorMeta(contract);
+          const matchedTenorDays = tenorMeta.selectedTenorDays;
+          const driftDays = tenorMeta.tenorDriftDays ?? Number.POSITIVE_INFINITY;
+          const belowTarget = matchedTenorDays !== null ? matchedTenorDays + 1e-9 < selectedTenorDaysIntended : false;
+          let chosenTop:
+            | { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string }
+            | null = null;
+          const topProbe = await withProbeTimeout(this.connector.getTopOfBook(contract.conId), probeTimeoutMs);
+          if (topProbe.timedOut) {
+            failureCounts.nTimedOut += 1;
+          }
+          if (topProbe.value && hasUsableTop(topProbe.value)) {
+            chosenTop = topProbe.value;
+          } else {
+            if (!topProbe.value) {
+              failureCounts.nNoTop += 1;
+            }
+            for (let attempt = 0; attempt < depthAttempts; attempt += 1) {
+              ensureLegBudget(Math.min(probeTimeoutMs, 900));
+              const depthProbe = await withProbeTimeout(this.connector.getDepth(contract.conId), Math.min(12000, probeTimeoutMs * 2));
+              if (depthProbe.timedOut) {
+                failureCounts.nTimedOut += 1;
+              }
+              const depthTop = depthProbe.value ? topFromDepthPayload(depthProbe.value) : null;
+              if (depthTop && hasUsableTop(depthTop)) {
+                chosenTop = depthTop;
+                break;
+              }
+              if (attempt + 1 < depthAttempts) {
+                await wait(200);
+              }
+            }
+          }
+          if (!chosenTop) {
+            failureCounts.nNoTop += 1;
+            continue;
+          }
+          const ask = toFinitePositive(chosenTop.ask);
+          const bid = toFinitePositive(chosenTop.bid);
+          const askSize = toFinitePositive(chosenTop.askSize);
+          if (ask === null) {
+            failureCounts.nNoAsk += 1;
+            continue;
+          }
+          const spreadPct =
+            bid !== null && bid > 0 && ask >= bid
+              ? (ask - bid) / ask
+              : null;
+          const strike = parseIbkrStrikeFromLocalSymbol(contract);
+          const protectionCoveragePct =
+            trigger && strike && trigger > 0
+              ? right === "P"
+                ? ((trigger - strike) / trigger) * 100
+                : ((strike - trigger) / trigger) * 100
+              : null;
+          if (
+            minProtectionThreshold !== null &&
+            protectionCoveragePct !== null &&
+            protectionCoveragePct + 1e-9 < minProtectionThreshold
+          ) {
+            failureCounts.nFailedProtection += 1;
+            continue;
+          }
+          const notional = Math.max(0, Number(req.protectedNotional || 0));
+          const qty = Math.max(0, Number(req.quantity || 0));
+          const premiumRatio = notional > 0 ? (ask * qty) / notional : 0;
+          if (
+            Number.isFinite(this.maxOptionPremiumRatio) &&
+            this.maxOptionPremiumRatio > 0 &&
+            premiumRatio > this.maxOptionPremiumRatio
+          ) {
+            failureCounts.nFailedEconomics += 1;
+            continue;
+          }
+          const spreadPenalty = Math.max(0, Math.min(0.3, spreadPct ?? 0.3)) * 100;
+          const sizePenalty = askSize === null ? 20 : 1 / Math.max(0.1, askSize);
+          const protectionPenalty =
+            minProtectionThreshold !== null && protectionCoveragePct !== null
+              ? Math.max(0, minProtectionThreshold - protectionCoveragePct) * 2
+              : 0;
+          const economicsPenalty = premiumRatio * 200;
+          const tenorPenalty = Math.max(0, driftDays) * 0.4;
+          const score = spreadPenalty * 5 + sizePenalty * 10 + protectionPenalty * 8 + economicsPenalty * 4 + tenorPenalty;
+          passed.push({
+            contract,
+            top: chosenTop,
+            ask,
+            bid,
+            askSize,
+            spreadPct,
+            driftDays: Number.isFinite(driftDays) ? driftDays : 999,
+            matchedTenorDays: matchedTenorDays ?? selectedTenorDaysIntended,
+            belowTarget,
+            protectionCoveragePct,
+            premiumRatio,
+            score
+          });
+          failureCounts.nPassed += 1;
+        }
+      };
+      const workers = Array.from({ length: optionProbeParallelism }, () => worker());
+      await Promise.all(workers);
+      if (!passed.length) {
+        return { failureCounts };
+      }
+      passed.sort((a, b) => a.score - b.score);
+      const best = passed[0];
+      const trace = passed.slice(0, 5).map((row) => ({
+        conId: row.contract.conId,
+        expiry: String(row.contract.expiry || "") || null,
+        matchedTenorDays: row.matchedTenorDays,
+        driftDays: row.driftDays,
+        ask: row.ask,
+        bid: row.bid,
+        askSize: row.askSize,
+        spreadPct: row.spreadPct,
+        belowTarget: row.belowTarget,
+        score: Number(row.score.toFixed(6))
+      }));
+      return {
+        contract: best.contract,
+        top: best.top,
+        selectedScore: Number(best.score.toFixed(6)),
+        selectedRank: 1,
+        candidateCountEvaluated: shortlist.length,
+        selectionTrace: trace,
+        failureCounts
+      };
+    };
 
     let sawTenorEligibleContract = false;
     let sawFallbackContracts = false;
+    const optionFailureTotals: OptionFailureCounts = {
+      nTotalCandidates: 0,
+      nNoTop: 0,
+      nNoAsk: 0,
+      nFailedProtection: 0,
+      nFailedEconomics: 0,
+      nTimedOut: 0,
+      nPassed: 0
+    };
+    const accumulateOptionFailureCounts = (counts?: OptionFailureCounts): void => {
+      if (!counts) return;
+      optionFailureTotals.nTotalCandidates += Number(counts.nTotalCandidates || 0);
+      optionFailureTotals.nNoTop += Number(counts.nNoTop || 0);
+      optionFailureTotals.nNoAsk += Number(counts.nNoAsk || 0);
+      optionFailureTotals.nFailedProtection += Number(counts.nFailedProtection || 0);
+      optionFailureTotals.nFailedEconomics += Number(counts.nFailedEconomics || 0);
+      optionFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
+      optionFailureTotals.nPassed += Number(counts.nPassed || 0);
+    };
     const queryWithProductFamily = (
       query: IbkrContractQuery,
       productFamily: "MBT" | "BFF"
@@ -1087,42 +1380,117 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }>;
       strike: number | null;
       hedgeInstrumentFamily: "MBT" | "BFF";
+      candidateFailureCounts?: {
+        nTotalCandidates: number;
+        nNoTop: number;
+        nNoAsk: number;
+        nFailedProtection: number;
+        nFailedEconomics: number;
+        nTimedOut: number;
+        nPassed: number;
+      };
     } | null> => {
       if (!roundedStrike) return null;
       const strikeCandidates = optionStrikeCandidates(roundedStrike, right);
+      const tenorCandidates = this.optionLiquiditySelectionEnabled
+        ? (() => {
+            const values: number[] = [];
+            const pushIfNew = (v: number): void => {
+              const day = clampInt(v, minTenorDays, maxTenorDays, selectedTenorDaysIntended);
+              if (!values.includes(day)) values.push(day);
+            };
+            pushIfNew(selectedTenorDaysIntended);
+            for (let offset = 1; offset <= optionTenorWindowDays; offset += 1) {
+              if (this.preferTenorAtOrAbove) {
+                pushIfNew(selectedTenorDaysIntended + offset);
+                pushIfNew(selectedTenorDaysIntended - offset);
+              } else {
+                pushIfNew(selectedTenorDaysIntended - offset);
+                pushIfNew(selectedTenorDaysIntended + offset);
+              }
+            }
+            return values;
+          })()
+        : [selectedTenorDaysIntended];
       const dedupedContracts: IbkrQualifiedContract[] = [];
       const seenConIds = new Set<number>();
-      for (const strikeCandidate of strikeCandidates) {
-        ensureBudget(Math.min(requestWindowHintMs, 1400));
-        const optionQuery: IbkrContractQuery = queryWithProductFamily(
-          {
-            kind: "mbt_option",
-            symbol: "BTC",
-            exchange: "CME",
-            currency: "USD",
-            tenorDays: selectedTenorDays,
-            right,
-            strike: strikeCandidate
-          },
-          productFamily
-        );
-        const optionContracts = await this.connector.qualifyContracts(optionQuery);
-        sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
-        for (const contract of optionContracts) {
-          if (seenConIds.has(contract.conId)) continue;
-          seenConIds.add(contract.conId);
-          dedupedContracts.push(contract);
+      for (const tenorCandidate of tenorCandidates) {
+        for (const strikeCandidate of strikeCandidates) {
+          ensureBudget(Math.min(requestWindowHintMs, 1400));
+          const optionQuery: IbkrContractQuery = queryWithProductFamily(
+            {
+              kind: "mbt_option",
+              symbol: "BTC",
+              exchange: "CME",
+              currency: "USD",
+              tenorDays: tenorCandidate,
+              right,
+              strike: strikeCandidate
+            },
+            productFamily
+          );
+          const optionContracts = await this.connector.qualifyContracts(optionQuery);
+          sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
+          for (const contract of optionContracts) {
+            if (seenConIds.has(contract.conId)) continue;
+            seenConIds.add(contract.conId);
+            dedupedContracts.push(contract);
+          }
         }
       }
-      const optionMatch = await pickContractWithTop(dedupedContracts, {
-        // Keep option probing bounded so fallback legs still have remaining budget.
-        maxPreferred: 3,
-        maxBelow: 1,
-        depthAttempts: 1,
-        probeTimeoutMs: Math.max(500, Math.min(1400, requestWindowHintMs)),
-        legBudgetMs: Math.max(2400, Math.min(8500, Math.floor(this.quoteBudgetMs * 0.4)))
-      });
-      if (!optionMatch) return null;
+      if (!this.optionLiquiditySelectionEnabled) {
+        const optionMatch = await pickContractWithTop(dedupedContracts, {
+          // Keep option probing bounded so fallback legs still have remaining budget.
+          maxPreferred: 3,
+          maxBelow: 1,
+          depthAttempts: 1,
+          probeTimeoutMs: Math.max(500, Math.min(1400, requestWindowHintMs)),
+          legBudgetMs: Math.max(2400, Math.min(8500, Math.floor(this.quoteBudgetMs * 0.4)))
+        });
+        if (!optionMatch) return null;
+        const optionMeta = contractTenorMeta(optionMatch.contract);
+        return {
+          contract: optionMatch.contract,
+          hedgeMode: "options_native",
+          top: optionMatch.top,
+          requestedTenorDays: selectedTenorDaysIntended,
+          selectedTenorDays: optionMeta.selectedTenorDays,
+          tenorDriftDays: optionMeta.tenorDriftDays,
+          selectedExpiry: String(optionMatch.contract.expiry || "") || null,
+          selectionReason: reason,
+          selectionAlgorithm: "tenor_quality_v1",
+          selectedScore: optionMatch.selectedScore,
+          selectedRank: optionMatch.selectedRank,
+          selectedIsBelowTarget: optionMatch.selectedIsBelowTarget,
+          candidateCountEvaluated: optionMatch.candidateCountEvaluated,
+          matchedTenorHoursEstimate:
+            optionMeta.selectedTenorDays !== null ? Number((optionMeta.selectedTenorDays * 24).toFixed(4)) : null,
+          matchedTenorDisplay: formatMatchedTenorDisplay(optionMeta.selectedTenorDays),
+          selectionTrace: optionMatch.selectionTrace,
+          strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike,
+          hedgeInstrumentFamily: productFamily
+        };
+      }
+
+      const drawdownPct = Number(req.protectionType === "short" ? 0 : req.drawdownFloorPct ?? 0);
+      const minProtectionThreshold =
+        Number.isFinite(drawdownPct) && drawdownPct > 0
+          ? Math.max(0, drawdownPct * 100 - this.optionProtectionTolerancePct)
+          : null;
+      const optionMatch = await probeOptionCandidates(
+        dedupedContracts,
+        minProtectionThreshold,
+        {
+          probeTimeoutMs: Math.max(700, Math.min(2200, requestWindowHintMs)),
+          depthAttempts: 1,
+          legBudgetMs: Math.max(3000, Math.min(16000, Math.floor(this.quoteBudgetMs * 0.55)))
+        }
+      );
+      if (!("contract" in optionMatch)) {
+        accumulateOptionFailureCounts(optionMatch.failureCounts);
+        return null;
+      }
+      accumulateOptionFailureCounts(optionMatch.failureCounts);
       const optionMeta = contractTenorMeta(optionMatch.contract);
       return {
         contract: optionMatch.contract,
@@ -1133,7 +1501,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         tenorDriftDays: optionMeta.tenorDriftDays,
         selectedExpiry: String(optionMatch.contract.expiry || "") || null,
         selectionReason: reason,
-        selectionAlgorithm: "tenor_quality_v1",
+        selectionAlgorithm: "liquidity_protection_first_v1",
         selectedScore: optionMatch.selectedScore,
         selectedRank: optionMatch.selectedRank,
         selectedIsBelowTarget: optionMatch.selectedIsBelowTarget,
@@ -1143,7 +1511,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         matchedTenorDisplay: formatMatchedTenorDisplay(optionMeta.selectedTenorDays),
         selectionTrace: optionMatch.selectionTrace,
         strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike,
-        hedgeInstrumentFamily: productFamily
+        hedgeInstrumentFamily: productFamily,
+        candidateFailureCounts: optionMatch.failureCounts
       };
     };
     if (hedgePolicy === "options_primary_futures_fallback") {
@@ -1186,6 +1555,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
       }
       if (sawFallbackContracts) {
+        if (this.optionLiquiditySelectionEnabled && optionFailureTotals.nTotalCandidates > 0) {
+          throw new Error(
+            `ibkr_quote_unavailable:no_top_of_book:no_viable_option:${JSON.stringify(optionFailureTotals)}`
+          );
+        }
         throw new Error("ibkr_quote_unavailable:no_top_of_book");
       }
       throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
@@ -1268,7 +1642,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         localSymbol: resolved.contract.localSymbol,
         expiry: resolved.contract.expiry,
         multiplier: resolved.contract.multiplier,
-        minTick: resolved.contract.minTick ?? null
+        minTick: resolved.contract.minTick ?? null,
+        candidateFailureCounts: resolved.candidateFailureCounts ?? null
       }
     };
   }
@@ -1563,7 +1938,6 @@ export const createPilotVenueAdapter = (params: {
   deribit: DeribitConnector;
   ibkr?: IbkrVenueConfig;
   ibkrQuoteBudgetMs?: number;
-  ibkrMaxFuturesSyntheticPremiumRatio?: number;
   quoteTtlMs?: number;
   deribitQuotePolicy?: DeribitQuotePolicy;
   deribitStrikeSelectionMode?: DeribitStrikeSelectionMode;
@@ -1605,9 +1979,22 @@ export const createPilotVenueAdapter = (params: {
       params.ibkr.primaryProductFamily === "BFF" ? "BFF" : "MBT",
       params.ibkr.enableBffFallback === true,
       params.ibkr.bffProductFamily === "MBT" ? "MBT" : "BFF",
-      Number.isFinite(Number(params.ibkrMaxFuturesSyntheticPremiumRatio))
-        ? Number(params.ibkrMaxFuturesSyntheticPremiumRatio)
+      Number.isFinite(Number(params.ibkr.maxFuturesSyntheticPremiumRatio))
+        ? Number(params.ibkr.maxFuturesSyntheticPremiumRatio)
         : 0.05,
+      Number.isFinite(Number(params.ibkr.maxOptionPremiumRatio))
+        ? Number(params.ibkr.maxOptionPremiumRatio)
+        : 0.15,
+      Number.isFinite(Number(params.ibkr.optionProtectionTolerancePct))
+        ? Math.max(0, Number(params.ibkr.optionProtectionTolerancePct))
+        : 0.03,
+      Number.isFinite(Number(params.ibkr.optionProbeParallelism))
+        ? Math.max(1, Math.min(8, Math.floor(Number(params.ibkr.optionProbeParallelism))))
+        : 3,
+      params.ibkr.optionLiquiditySelectionEnabled === true,
+      Number.isFinite(Number(params.ibkr.optionTenorWindowDays))
+        ? Math.max(0, Math.min(14, Math.floor(Number(params.ibkr.optionTenorWindowDays))))
+        : 3,
       connectorTimeoutMs,
       Number(params.ibkrQuoteBudgetMs || 0)
     );

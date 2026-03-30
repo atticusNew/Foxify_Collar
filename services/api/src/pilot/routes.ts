@@ -662,7 +662,12 @@ export const registerPilotRoutes = async (
       requireLiveTransport: pilotConfig.ibkrRequireLiveTransport,
       maxTenorDriftDays: pilotConfig.ibkrMaxTenorDriftDays,
       preferTenorAtOrAbove: pilotConfig.ibkrPreferTenorAtOrAbove,
-      maxFuturesSyntheticPremiumRatio: pilotConfig.ibkrMaxFuturesSyntheticPremiumRatio
+      maxFuturesSyntheticPremiumRatio: pilotConfig.ibkrMaxFuturesSyntheticPremiumRatio,
+      maxOptionPremiumRatio: pilotConfig.ibkrMaxOptionPremiumRatio,
+      optionProbeParallelism: pilotConfig.ibkrOptionProbeParallelism,
+      optionLiquiditySelectionEnabled: pilotConfig.ibkrOptionLiquiditySelectionEnabled,
+      optionLiquidityTenorWindowDays: pilotConfig.ibkrOptionLiquidityTenorWindowDays,
+      optionProtectionTolerancePct: pilotConfig.ibkrOptionProtectionTolerancePct
     },
     ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
     deribit: deps.deribit
@@ -1423,6 +1428,10 @@ export const registerPilotRoutes = async (
       const isTenorDriftExceeded = message.includes("tenor_drift_exceeded");
       const isTenorTemporarilyUnavailable = message.includes("tenor_temporarily_unavailable");
       const isNoTopOfBook = message.includes("no_top_of_book");
+      const noViableOptionMatch = message.match(/no_viable_option:(\{.*\})/);
+      const isNoViableOption = message.includes("no_viable_option");
+      const isNoEconomicalOption = message.includes("no_economical_option");
+      const isNoProtectionCompliantOption = message.includes("no_protection_compliant_option");
       const isPremiumGuardrail = message.includes("premium_ratio_exceeded");
       const isNoContract = message.includes("no_contract");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
@@ -1431,7 +1440,14 @@ export const registerPilotRoutes = async (
       reply.code(
         isTimeout
           ? 504
-          : isStorageFailure || isTransportNotLive || isNoTopOfBook || isNoContract || isPremiumGuardrail
+          : isStorageFailure ||
+              isTransportNotLive ||
+              isNoTopOfBook ||
+              isNoViableOption ||
+              isNoEconomicalOption ||
+              isNoProtectionCompliantOption ||
+              isNoContract ||
+              isPremiumGuardrail
             ? 503
             : isTenorTemporarilyUnavailable || isTenorDriftExceeded
               ? 409
@@ -1446,6 +1462,12 @@ export const registerPilotRoutes = async (
             : isTenorTemporarilyUnavailable
               ? "tenor_temporarily_unavailable"
             : isNoTopOfBook
+              ? "quote_liquidity_unavailable"
+            : isNoViableOption
+              ? "quote_liquidity_unavailable"
+            : isNoEconomicalOption
+              ? "quote_economics_unacceptable"
+            : isNoProtectionCompliantOption
               ? "quote_liquidity_unavailable"
             : isNoContract
               ? "quote_contract_unavailable"
@@ -1462,6 +1484,12 @@ export const registerPilotRoutes = async (
               ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
             : isNoTopOfBook
               ? "Venue top-of-book is temporarily unavailable for the requested hedge. Please retry."
+            : isNoViableOption
+              ? "No viable option contract met liquidity/protection/economics constraints within quote budget."
+            : isNoEconomicalOption
+              ? "No option contract met pilot economics guardrails within quote budget."
+            : isNoProtectionCompliantOption
+              ? "No option contract met minimum protection effectiveness within quote budget."
             : isNoContract
               ? "No venue contract is currently available for the requested hedge. Please retry."
             : isPremiumGuardrail
@@ -1476,7 +1504,18 @@ export const registerPilotRoutes = async (
           timingsMs: {
             price: priceMs,
             total: Date.now() - quoteStartedAt
-          }
+          },
+          ...(noViableOptionMatch
+            ? {
+                optionCandidateFailureCounts: (() => {
+                  try {
+                    return JSON.parse(noViableOptionMatch[1]);
+                  } catch {
+                    return null;
+                  }
+                })()
+              }
+            : {})
         }
       };
     }
