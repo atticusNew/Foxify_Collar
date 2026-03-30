@@ -682,6 +682,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const maxTenorDays = clampInt(req.tenorMaxDays, minTenorDays, 30, Math.max(minTenorDays, 7));
     const selectedTenorDays = Math.max(minTenorDays, Math.min(maxTenorDays, requestedTenorDays));
     const trigger = toFinitePositive(req.triggerPrice);
+    const adverseMovePct = Number(req.protectionType === "short" ? 0 : req.drawdownFloorPct ?? 0);
     const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
     const right = this.resolveRight(req.protectionType);
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
@@ -1159,11 +1160,21 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               ? (ask - bid) / ask
               : null;
           const strike = parseIbkrStrikeFromLocalSymbol(contract);
+          const inferredEntry =
+            trigger &&
+            Number.isFinite(adverseMovePct) &&
+            adverseMovePct > 0 &&
+            adverseMovePct < 1 &&
+            trigger > 0
+              ? req.protectionType === "short"
+                ? trigger / (1 + adverseMovePct)
+                : trigger / (1 - adverseMovePct)
+              : null;
           const protectionCoveragePct =
-            trigger && strike && trigger > 0
+            inferredEntry && strike && inferredEntry > 0
               ? right === "P"
-                ? ((trigger - strike) / trigger) * 100
-                : ((strike - trigger) / trigger) * 100
+                ? ((inferredEntry - strike) / inferredEntry) * 100
+                : ((strike - inferredEntry) / inferredEntry) * 100
               : null;
           if (
             minProtectionThreshold !== null &&
@@ -1534,10 +1545,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         };
       }
 
-      const drawdownPct = Number(req.protectionType === "short" ? 0 : req.drawdownFloorPct ?? 0);
       const minProtectionThreshold =
-        Number.isFinite(drawdownPct) && drawdownPct > 0
-          ? Math.max(0, drawdownPct * 100 - this.optionProtectionTolerancePct)
+        Number.isFinite(adverseMovePct) && adverseMovePct > 0
+          ? Math.max(0, adverseMovePct * 100 - this.optionProtectionTolerancePct)
           : null;
       const optionMatch = await probeOptionCandidates(
         dedupedContracts,

@@ -1877,9 +1877,9 @@ test("ibkr_cme_paper liquidity-first mode falls back to futures when option cove
                 {
                   conId: 88111,
                   secType: "FOP",
-                  localSymbol: "W5AH6 P54950",
+                  localSymbol: "W5AH6 P60000",
                   expiry: "20260330",
-                  strike: 54950,
+                  strike: 60000,
                   right: "P",
                   multiplier: "0.1",
                   minTick: 5
