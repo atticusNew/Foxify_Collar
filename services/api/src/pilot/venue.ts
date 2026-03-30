@@ -239,7 +239,6 @@ const isLikelyNoLiquidityWindow = (counts: {
   nFailedProtection: number;
   nFailedEconomics: number;
   nPassed: number;
-  nTimedOut?: number;
 }): boolean => {
   const total = Math.max(0, Number(counts.nTotalCandidates || 0));
   if (total <= 0) return false;
@@ -248,13 +247,11 @@ const isLikelyNoLiquidityWindow = (counts: {
   const noAsk = Math.max(0, Number(counts.nNoAsk || 0));
   const failedProtection = Math.max(0, Number(counts.nFailedProtection || 0));
   const failedEconomics = Math.max(0, Number(counts.nFailedEconomics || 0));
-  const timedOut = Math.max(0, Number(counts.nTimedOut || 0));
   return (
     passed <= 0 &&
-    noTop + noAsk >= total &&
+    noTop + noAsk >= Math.max(1, Math.floor(total * 0.8)) &&
     failedProtection <= 0 &&
-    failedEconomics <= 0 &&
-    timedOut >= Math.max(1, Math.floor(total * 0.5))
+    failedEconomics <= 0
   );
 };
 
@@ -1356,13 +1353,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         score: number;
       };
       const passed: Scored[] = [];
+      let topCallsInProbe = 0;
       let cursor = 0;
       const worker = async (): Promise<void> => {
         while (true) {
           const idx = cursor;
           cursor += 1;
           if (idx >= shortlist.length) return;
-          if (counters.topCalls >= maxTopCallsPerProbe) return;
+          if (topCallsInProbe >= maxTopCallsPerProbe) return;
           const candidateBudgetHintMs =
             hedgePolicy === "options_only_native"
               ? Math.max(350, Math.min(900, probeTimeoutMs))
@@ -1376,6 +1374,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           let chosenTop:
             | { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string }
             | null = null;
+          topCallsInProbe += 1;
           counters.topCalls += 1;
           const topStartedAt = Date.now();
           const topProbe = await withProbeTimeout(this.connector.getTopOfBook(contract.conId), probeTimeoutMs);
@@ -1966,7 +1965,26 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             failureCounts: OptionFailureCounts;
           }
         | null = null;
-      let latestFailureCounts: OptionFailureCounts | null = null;
+      const noMatchFailureTotals: OptionFailureCounts = {
+        nTotalCandidates: 0,
+        nNoTop: 0,
+        nNoAsk: 0,
+        nFailedProtection: 0,
+        nFailedEconomics: 0,
+        nFailedMinTradableNotional: 0,
+        nTimedOut: 0,
+        nPassed: 0
+      };
+      const accumulateNoMatchFailureTotals = (counts: OptionFailureCounts): void => {
+        noMatchFailureTotals.nTotalCandidates += Number(counts.nTotalCandidates || 0);
+        noMatchFailureTotals.nNoTop += Number(counts.nNoTop || 0);
+        noMatchFailureTotals.nNoAsk += Number(counts.nNoAsk || 0);
+        noMatchFailureTotals.nFailedProtection += Number(counts.nFailedProtection || 0);
+        noMatchFailureTotals.nFailedEconomics += Number(counts.nFailedEconomics || 0);
+        noMatchFailureTotals.nFailedMinTradableNotional += Number(counts.nFailedMinTradableNotional || 0);
+        noMatchFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
+        noMatchFailureTotals.nPassed += Number(counts.nPassed || 0);
+      };
       const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 2 : 3;
       for (const ringGroup of ringTasks) {
         await runQualifyTasks(ringGroup);
@@ -1993,8 +2011,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           legBudgetMs: optionProbeLegBudgetMs
         });
       timingsMs.score += Date.now() - scoreStartedAt;
-        latestFailureCounts = optionMatch.failureCounts;
         if (!("contract" in optionMatch)) {
+          accumulateNoMatchFailureTotals(optionMatch.failureCounts);
           continue;
         }
         if (!bestOptionMatch || optionMatch.selectedScore < bestOptionMatch.selectedScore) {
@@ -2007,9 +2025,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         }
       }
       if (!bestOptionMatch) {
-        if (latestFailureCounts) {
-          accumulateOptionFailureCounts(latestFailureCounts);
-        }
+        accumulateOptionFailureCounts(noMatchFailureTotals);
         if (optionQualifyTimedOut && optionFailureTotals.nTotalCandidates <= 0) {
           optionLegFailureReason = "option_qualify_timeout";
         }
