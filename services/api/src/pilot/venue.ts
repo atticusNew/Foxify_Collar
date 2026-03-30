@@ -1242,7 +1242,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         });
       const shortlist = eligible.slice(
         0,
-        hedgePolicy === "options_only_native" ? Math.min(8, eligible.length) : 18
+        hedgePolicy === "options_only_native" ? Math.min(24, eligible.length) : 18
       );
       const failureCounts: OptionFailureCounts = {
         nTotalCandidates: shortlist.length,
@@ -1867,7 +1867,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       // per tenor before broad tenor-only probing. This avoids contract-detail timeouts
       // observed on broad option-chain requests while preserving fallback behavior.
       const strikeScopedProbeWidth = hedgePolicy === "options_only_native" ? 2 : 3;
-      const ringTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => {
+      const baseRingTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => {
         const strikeScoped = strikeCandidatesForMode
           .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, strikeScopedProbeWidth)))
           .map((strike) => ({ tenor, strike }));
@@ -1876,6 +1876,15 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         }
         return strikeScoped.length > 0 ? strikeScoped : [{ tenor }];
       });
+      const expandedRingTasks =
+        hedgePolicy === "options_only_native"
+          ? tenorCandidates.map((tenor) => {
+              const strikeScoped = strikeCandidatesForMode.map((strike) => ({ tenor, strike }));
+              return strikeScoped.length > 0 ? [...strikeScoped, { tenor }] : [{ tenor }];
+            })
+          : [];
+      const ringTasks: Array<Array<QualifyTask>> =
+        hedgePolicy === "options_only_native" ? [...baseRingTasks, ...expandedRingTasks] : baseRingTasks;
       let bestOptionMatch:
         | {
             contract: IbkrQualifiedContract;
