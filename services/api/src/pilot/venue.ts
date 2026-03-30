@@ -1467,53 +1467,57 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           if (timer) clearTimeout(timer);
         }
       };
-      const qualifyTasks: Array<{ tenor: number; strike: number }> = [];
-      for (const tenorCandidate of tenorCandidates) {
-        for (const strikeCandidate of strikeCandidatesForMode) {
-          qualifyTasks.push({ tenor: tenorCandidate, strike: strikeCandidate });
-        }
-      }
-      let qualifyCursor = 0;
-      const runQualifyWorker = async (): Promise<void> => {
-        while (true) {
-          const idx = qualifyCursor;
-          qualifyCursor += 1;
-          if (idx >= qualifyTasks.length) return;
-          ensureOptionLegBudget(Math.min(qualifyTimeoutMs + 150, 1200));
-          const task = qualifyTasks[idx];
-          const optionQuery: IbkrContractQuery = queryWithProductFamily(
-            {
-              kind: "mbt_option",
-              symbol: "BTC",
-              exchange: "CME",
-              currency: "USD",
-              tenorDays: task.tenor,
-              right,
-              strike: task.strike
-            },
-            productFamily
-          );
-          let optionContracts: IbkrQualifiedContract[] = [];
-          try {
-            const qualified = await withQualifyTimeout(this.connector.qualifyContracts(optionQuery), qualifyTimeoutMs);
-            if (qualified.timedOut) {
+      const runQualifyTasks = async (qualifyTasks: Array<{ tenor: number; strike: number }>): Promise<void> => {
+        if (!qualifyTasks.length) return;
+        let qualifyCursor = 0;
+        const runQualifyWorker = async (): Promise<void> => {
+          while (true) {
+            const idx = qualifyCursor;
+            qualifyCursor += 1;
+            if (idx >= qualifyTasks.length) return;
+            ensureOptionLegBudget(Math.min(qualifyTimeoutMs + 150, 1200));
+            const task = qualifyTasks[idx];
+            const optionQuery: IbkrContractQuery = queryWithProductFamily(
+              {
+                kind: "mbt_option",
+                symbol: "BTC",
+                exchange: "CME",
+                currency: "USD",
+                tenorDays: task.tenor,
+                right,
+                strike: task.strike
+              },
+              productFamily
+            );
+            let optionContracts: IbkrQualifiedContract[] = [];
+            try {
+              const qualified = await withQualifyTimeout(this.connector.qualifyContracts(optionQuery), qualifyTimeoutMs);
+              if (qualified.timedOut) {
+                optionFailureTotals.nTimedOut += 1;
+              }
+              optionContracts = qualified.contracts;
+            } catch {
               optionFailureTotals.nTimedOut += 1;
+              optionContracts = [];
             }
-            optionContracts = qualified.contracts;
-          } catch {
-            optionFailureTotals.nTimedOut += 1;
-            optionContracts = [];
+            sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
+            for (const contract of optionContracts) {
+              if (seenConIds.has(contract.conId)) continue;
+              seenConIds.add(contract.conId);
+              dedupedContracts.push(contract);
+            }
           }
-          sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
-          for (const contract of optionContracts) {
-            if (seenConIds.has(contract.conId)) continue;
-            seenConIds.add(contract.conId);
-            dedupedContracts.push(contract);
+        };
+        await Promise.all(Array.from({ length: qualifyParallelism }, () => runQualifyWorker()));
+      };
+      if (!this.optionLiquiditySelectionEnabled) {
+        const qualifyTasks: Array<{ tenor: number; strike: number }> = [];
+        for (const tenorCandidate of tenorCandidates) {
+          for (const strikeCandidate of strikeCandidatesForMode) {
+            qualifyTasks.push({ tenor: tenorCandidate, strike: strikeCandidate });
           }
         }
-      };
-      await Promise.all(Array.from({ length: qualifyParallelism }, () => runQualifyWorker()));
-      if (!this.optionLiquiditySelectionEnabled) {
+        await runQualifyTasks(qualifyTasks);
         const optionMatch = await pickContractWithTop(dedupedContracts, {
           // Keep option probing bounded so fallback legs still have remaining budget.
           maxPreferred: 3,
@@ -1551,20 +1555,88 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         Number.isFinite(adverseMovePct) && adverseMovePct > 0
           ? Math.max(0, adverseMovePct * 100 - this.optionProtectionTolerancePct)
           : null;
-      const optionMatch = await probeOptionCandidates(
-        dedupedContracts,
-        minProtectionThreshold,
-        {
-          probeTimeoutMs: Math.max(700, Math.min(2200, requestWindowHintMs)),
-          depthAttempts: 1,
-          legBudgetMs: Math.max(3000, Math.min(16000, Math.floor(this.quoteBudgetMs * 0.55)))
+      // Progressive widening: search closest tenor/strike rings first, then expand.
+      // This prioritizes finding executable liquidity quickly while still allowing
+      // a wider search when early rings do not provide enough viable candidates.
+      const ringTasks: Array<Array<{ tenor: number; strike: number }>> = [];
+      const seenRingTaskKeys = new Set<string>();
+      for (let ring = 0; ring < tenorCandidates.length; ring += 1) {
+        const tenor = tenorCandidates[ring];
+        const strikeDepth =
+          ring === 0
+            ? Math.min(3, strikeCandidatesForMode.length)
+            : ring === 1
+              ? Math.min(5, strikeCandidatesForMode.length)
+              : strikeCandidatesForMode.length;
+        const ringGroup: Array<{ tenor: number; strike: number }> = [];
+        for (const strike of strikeCandidatesForMode.slice(0, strikeDepth)) {
+          const key = `${tenor}:${strike}`;
+          if (seenRingTaskKeys.has(key)) continue;
+          seenRingTaskKeys.add(key);
+          ringGroup.push({ tenor, strike });
         }
-      );
-      if (!("contract" in optionMatch)) {
-        accumulateOptionFailureCounts(optionMatch.failureCounts);
+        if (ringGroup.length) {
+          ringTasks.push(ringGroup);
+        }
+      }
+      let bestOptionMatch:
+        | {
+            contract: IbkrQualifiedContract;
+            top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+            selectedScore: number;
+            selectedRank: number;
+            candidateCountEvaluated: number;
+            selectionTrace: Array<{
+              conId: number;
+              expiry: string | null;
+              matchedTenorDays: number | null;
+              driftDays: number | null;
+              ask: number | null;
+              bid: number | null;
+              askSize: number | null;
+              spreadPct: number | null;
+              belowTarget: boolean;
+              score: number;
+            }>;
+            failureCounts: OptionFailureCounts;
+          }
+        | null = null;
+      let latestFailureCounts: OptionFailureCounts | null = null;
+      const minViableCandidatesBeforeStop = 3;
+      for (const ringGroup of ringTasks) {
+        await runQualifyTasks(ringGroup);
+        if (!dedupedContracts.length) {
+          continue;
+        }
+        const optionProbeBudgetMs = Math.max(1200, optionLegDeadlineMs - Date.now() - 120);
+        if (optionProbeBudgetMs < 1200) {
+          break;
+        }
+        const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
+          probeTimeoutMs: Math.max(650, Math.min(1800, requestWindowHintMs)),
+          depthAttempts: 1,
+          legBudgetMs: Math.max(1200, Math.min(6000, optionProbeBudgetMs))
+        });
+        latestFailureCounts = optionMatch.failureCounts;
+        if (!("contract" in optionMatch)) {
+          continue;
+        }
+        if (!bestOptionMatch || optionMatch.selectedScore < bestOptionMatch.selectedScore) {
+          bestOptionMatch = optionMatch;
+        }
+        const viableCount = Number(optionMatch.failureCounts.nPassed || 0);
+        if (viableCount >= minViableCandidatesBeforeStop) {
+          break;
+        }
+      }
+      if (!bestOptionMatch) {
+        if (latestFailureCounts) {
+          accumulateOptionFailureCounts(latestFailureCounts);
+        }
         return null;
       }
-      accumulateOptionFailureCounts(optionMatch.failureCounts);
+      accumulateOptionFailureCounts(bestOptionMatch.failureCounts);
+      const optionMatch = bestOptionMatch;
       const optionMeta = contractTenorMeta(optionMatch.contract);
       return {
         contract: optionMatch.contract,
