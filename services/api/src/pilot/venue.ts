@@ -239,6 +239,7 @@ const isLikelyNoLiquidityWindow = (counts: {
   nFailedProtection: number;
   nFailedEconomics: number;
   nPassed: number;
+  nTimedOut?: number;
 }): boolean => {
   const total = Math.max(0, Number(counts.nTotalCandidates || 0));
   if (total <= 0) return false;
@@ -247,9 +248,13 @@ const isLikelyNoLiquidityWindow = (counts: {
   const noAsk = Math.max(0, Number(counts.nNoAsk || 0));
   const failedProtection = Math.max(0, Number(counts.nFailedProtection || 0));
   const failedEconomics = Math.max(0, Number(counts.nFailedEconomics || 0));
+  const timedOut = Math.max(0, Number(counts.nTimedOut || 0));
+  const marketDataUnavailable =
+    noTop + noAsk >= Math.max(1, Math.floor(total * 0.8)) ||
+    timedOut >= Math.max(2, Math.floor(total * 0.5));
   return (
     passed <= 0 &&
-    noTop + noAsk >= Math.max(1, Math.floor(total * 0.8)) &&
+    marketDataUnavailable &&
     failedProtection <= 0 &&
     failedEconomics <= 0
   );
@@ -1514,7 +1519,16 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           ? Math.max(2, Math.min(4, optionProbeParallelism))
           : optionProbeParallelism;
       const workers = Array.from({ length: Math.max(1, Math.min(shortlist.length, effectiveProbeWorkers)) }, () => worker());
-      await Promise.all(workers);
+      try {
+        await Promise.all(workers);
+      } catch (error) {
+        const message = String((error as Error)?.message || "probe_candidates_failed");
+        if (message.includes("venue_quote_timeout")) {
+          failureCounts.nTimedOut += 1;
+          return { failureCounts };
+        }
+        throw error;
+      }
       if (!passed.length) {
         return { failureCounts };
       }
@@ -2013,6 +2027,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       timingsMs.score += Date.now() - scoreStartedAt;
         if (!("contract" in optionMatch)) {
           accumulateNoMatchFailureTotals(optionMatch.failureCounts);
+          if (
+            hedgePolicy === "options_only_native" &&
+            sawTenorEligibleContract &&
+            isLikelyNoLiquidityWindow(noMatchFailureTotals)
+          ) {
+            break;
+          }
           continue;
         }
         if (!bestOptionMatch || optionMatch.selectedScore < bestOptionMatch.selectedScore) {
