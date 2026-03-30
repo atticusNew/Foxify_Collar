@@ -890,11 +890,21 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
       return true;
     };
-    const contractPassesOptionTenorWindow = (contract: IbkrQualifiedContract): boolean => {
+      const effectiveOptionTenorWindowDays = Math.max(
+        optionTenorWindowDays,
+        Number.isFinite(this.maxTenorDriftDays) && this.maxTenorDriftDays >= 0 ? this.maxTenorDriftDays : 0
+      );
+      const strikeDistanceFromRounded = (contract: IbkrQualifiedContract): number => {
+        if (!roundedStrike) return Number.POSITIVE_INFINITY;
+        const strike = parseIbkrStrikeFromLocalSymbol(contract);
+        if (!strike) return Number.POSITIVE_INFINITY;
+        return Math.abs(strike - roundedStrike);
+      };
+      const contractPassesOptionTenorWindow = (contract: IbkrQualifiedContract): boolean => {
       const meta = contractTenorMeta(contract);
       if (meta.selectedTenorDays === null) return false;
       const drift = Math.abs(meta.selectedTenorDays - selectedTenorDaysIntended);
-      return drift <= optionTenorWindowDays + 1e-9;
+        return drift <= effectiveOptionTenorWindowDays + 1e-9;
     };
     const rankByTenor = (a: IbkrQualifiedContract, b: IbkrQualifiedContract): number => {
       const aMeta = contractTenorMeta(a);
@@ -1131,7 +1141,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
       return null;
     };
-    const probeOptionCandidates = async (
+      const probeOptionCandidates = async (
       contracts: IbkrQualifiedContract[],
       minProtectionThreshold: number | null,
       opts?: { probeTimeoutMs?: number; depthAttempts?: number; legBudgetMs?: number }
@@ -1161,7 +1171,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const eligible = [...contracts]
         .filter(contractPassesTenorPolicy)
         .filter(contractPassesOptionTenorWindow)
-        .sort(rankByTenor);
+        .sort((a, b) => {
+          const tenorCmp = rankByTenor(a, b);
+          if (tenorCmp !== 0) return tenorCmp;
+          const strikeCmp = strikeDistanceFromRounded(a) - strikeDistanceFromRounded(b);
+          if (strikeCmp !== 0) return strikeCmp;
+          return String(a.localSymbol || "").localeCompare(String(b.localSymbol || ""));
+        });
       const shortlist = eligible.slice(0, 18);
       const failureCounts: OptionFailureCounts = {
         nTotalCandidates: shortlist.length,
@@ -1598,7 +1614,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           if (timer) clearTimeout(timer);
         }
       };
-      const runQualifyTasks = async (qualifyTasks: Array<{ tenor: number; strike: number }>): Promise<void> => {
+      type QualifyTask = { tenor: number; strike?: number };
+      const runQualifyTasks = async (qualifyTasks: Array<QualifyTask>): Promise<void> => {
         if (!qualifyTasks.length) return;
         let qualifyCursor = 0;
         const runQualifyWorker = async (): Promise<void> => {
@@ -1608,18 +1625,18 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             if (idx >= qualifyTasks.length) return;
             ensureOptionLegBudget(Math.min(qualifyTimeoutMs + 150, 1200));
             const task = qualifyTasks[idx];
-            const optionQuery: IbkrContractQuery = queryWithProductFamily(
-              {
-                kind: "mbt_option",
-                symbol: "BTC",
-                exchange: "CME",
-                currency: "USD",
-                tenorDays: task.tenor,
-                right,
-                strike: task.strike
-              },
-              productFamily
-            );
+            const optionQueryBase: IbkrContractQuery = {
+              kind: "mbt_option",
+              symbol: "BTC",
+              exchange: "CME",
+              currency: "USD",
+              tenorDays: task.tenor,
+              right
+            };
+            if (Number.isFinite(Number(task.strike)) && Number(task.strike) > 0) {
+              optionQueryBase.strike = Number(task.strike);
+            }
+            const optionQuery: IbkrContractQuery = queryWithProductFamily(optionQueryBase, productFamily);
             let optionContracts: IbkrQualifiedContract[] = [];
             try {
               const qualifyStartedAt = Date.now();
@@ -1694,27 +1711,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       // Progressive widening: search closest tenor/strike rings first, then expand.
       // This prioritizes finding executable liquidity quickly while still allowing
       // a wider search when early rings do not provide enough viable candidates.
-      const ringTasks: Array<Array<{ tenor: number; strike: number }>> = [];
-      const seenRingTaskKeys = new Set<string>();
-      for (let ring = 0; ring < tenorCandidates.length; ring += 1) {
-        const tenor = tenorCandidates[ring];
-        const strikeDepth =
-          ring === 0
-            ? Math.min(3, strikeCandidatesForMode.length)
-            : ring === 1
-              ? Math.min(5, strikeCandidatesForMode.length)
-              : strikeCandidatesForMode.length;
-        const ringGroup: Array<{ tenor: number; strike: number }> = [];
-        for (const strike of strikeCandidatesForMode.slice(0, strikeDepth)) {
-          const key = `${tenor}:${strike}`;
-          if (seenRingTaskKeys.has(key)) continue;
-          seenRingTaskKeys.add(key);
-          ringGroup.push({ tenor, strike });
-        }
-        if (ringGroup.length) {
-          ringTasks.push(ringGroup);
-        }
-      }
+      const ringTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => [{ tenor }]);
       let bestOptionMatch:
         | {
             contract: IbkrQualifiedContract;
