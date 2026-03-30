@@ -1684,9 +1684,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         : [selectedTenorDaysIntended];
       const dedupedContracts: IbkrQualifiedContract[] = [];
       const seenConIds = new Set<number>();
-      const optionLegBudgetMs = this.optionLiquiditySelectionEnabled
-        ? Math.max(10_000, Math.min(22_000, Math.floor(this.quoteBudgetMs * 0.38)))
-        : Math.max(4_200, Math.min(11_000, Math.floor(this.quoteBudgetMs * 0.22)));
+      const optionLegBudgetMs =
+        hedgePolicy === "options_only_native"
+          ? Math.max(12_000, Math.min(28_000, Math.floor(this.quoteBudgetMs * 0.82)))
+          : this.optionLiquiditySelectionEnabled
+            ? Math.max(10_000, Math.min(22_000, Math.floor(this.quoteBudgetMs * 0.38)))
+            : Math.max(4_200, Math.min(11_000, Math.floor(this.quoteBudgetMs * 0.22)));
       const optionLegDeadlineMs = Date.now() + optionLegBudgetMs;
       const ensureOptionLegBudget = (minimumRemainingMs = 0): void => {
         ensureBudget(minimumRemainingMs);
@@ -1698,9 +1701,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         900,
         Math.min(12000, Math.floor(Number(this.marketDataRequestTimeoutMs || requestWindowHintMs)))
       );
-      const qualifyTimeoutMs = this.optionLiquiditySelectionEnabled
-        ? Math.max(2200, Math.min(9000, Math.floor(qualifyRequestHintMs * 0.8)))
-        : Math.max(700, Math.min(2000, Math.floor(requestWindowHintMs * 0.55)));
+      const qualifyTimeoutMs =
+        hedgePolicy === "options_only_native"
+          ? Math.max(1200, Math.min(3600, Math.floor(qualifyRequestHintMs * 0.45)))
+          : this.optionLiquiditySelectionEnabled
+            ? Math.max(2200, Math.min(9000, Math.floor(qualifyRequestHintMs * 0.8)))
+            : Math.max(700, Math.min(2000, Math.floor(requestWindowHintMs * 0.55)));
       const qualifyParallelism = this.optionLiquiditySelectionEnabled
         ? Math.max(1, Math.min(4, optionProbeParallelism))
         : 1;
@@ -1839,11 +1845,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       // Phase 1.5: in live IBKR mode, prioritize strike-scoped option qualification
       // per tenor before broad tenor-only probing. This avoids contract-detail timeouts
       // observed on broad option-chain requests while preserving fallback behavior.
-      const strikeScopedProbeWidth = hedgePolicy === "options_only_native" ? 5 : 3;
+      const strikeScopedProbeWidth = hedgePolicy === "options_only_native" ? 2 : 3;
       const ringTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => {
         const strikeScoped = strikeCandidatesForMode
           .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, strikeScopedProbeWidth)))
           .map((strike) => ({ tenor, strike }));
+        if (hedgePolicy === "options_only_native") {
+          return strikeScoped.length > 0 ? [...strikeScoped, { tenor }] : [{ tenor }];
+        }
         return strikeScoped.length > 0 ? strikeScoped : [{ tenor }];
       });
       let bestOptionMatch:
@@ -1876,7 +1885,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           }
         | null = null;
       let latestFailureCounts: OptionFailureCounts | null = null;
-      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 5 : 3;
+      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 2 : 3;
       for (const ringGroup of ringTasks) {
         await runQualifyTasks(ringGroup);
         if (!dedupedContracts.length) {
