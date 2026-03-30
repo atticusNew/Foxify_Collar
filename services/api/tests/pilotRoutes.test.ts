@@ -181,6 +181,9 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.ibkrBffFallbackEnabled = process.env.IBKR_BFF_FALLBACK_ENABLED === "true";
   configModule.pilotConfig.ibkrBffProductFamily =
     String(process.env.IBKR_BFF_PRODUCT_FAMILY || "BFF").toUpperCase() === "MBT" ? "MBT" : "BFF";
+  configModule.pilotConfig.ibkrRequireOptionsNative = process.env.IBKR_REQUIRE_OPTIONS_NATIVE === "true";
+  configModule.pilotConfig.ibkrQualifyCacheTtlMs = Number(process.env.IBKR_QUALIFY_CACHE_TTL_MS || "120000");
+  configModule.pilotConfig.ibkrQualifyCacheMaxKeys = Number(process.env.IBKR_QUALIFY_CACHE_MAX_KEYS || "2000");
   configModule.pilotConfig.venueQuoteTimeoutMs = Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000");
 
   const db = newDb();
@@ -2031,6 +2034,261 @@ test("P) own proof route works with proof token", async () => {
     assert.equal(proof.json().status, "ok");
   } finally {
     await harness.close();
+  }
+});
+
+test("X) options-required errors map to explicit quote_options_required reason", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ contracts: [] })
+          } as any;
+        }
+        if (payload.kind === "mbt_future") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 77881,
+                    secType: "FUT",
+                    localSymbol: "MBTH6",
+                    expiry: "20260331",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 90,
+              ask: 91,
+              bidSize: 2,
+              askSize: 3,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return { ok: false, status: 404, text: async () => "not_found" } as any;
+    }) as typeof fetch;
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "6000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "6000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "40",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        IBKR_REQUIRE_OPTIONS_NATIVE: "true",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const quoteRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteRes.statusCode, 503);
+      const payload = quoteRes.json();
+      assert.equal(payload.status, "error");
+      assert.equal(payload.reason, "quote_options_required");
+      assert.match(String(payload.detail || ""), /options_required/);
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("Y) selector diagnostics endpoint requires admin and returns quote-stage counters", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ contracts: [] })
+          } as any;
+        }
+        if (payload.kind === "mbt_future") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 88111,
+                    secType: "FUT",
+                    localSymbol: "MBTH6",
+                    expiry: "20260331",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 100,
+              ask: 101,
+              bidSize: 2,
+              askSize: 2,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return { ok: false, status: 404, text: async () => "not_found" } as any;
+    }) as typeof fetch;
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "6000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "6000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "40",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        IBKR_REQUIRE_OPTIONS_NATIVE: "false",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const unauthorized = await harness.app.inject({
+        method: "GET",
+        url: "/pilot/admin/diagnostics/selector"
+      });
+      assert.equal(unauthorized.statusCode, 401);
+
+      const quoteRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteRes.statusCode, 200);
+
+      const diagnosticsRes = await harness.app.inject({
+        method: "GET",
+        url: "/pilot/admin/diagnostics/selector",
+        headers: { "x-admin-token": "admin-local", "x-forwarded-for": "127.0.0.1" }
+      });
+      assert.equal(diagnosticsRes.statusCode, 200);
+      const diagnosticsPayload = diagnosticsRes.json();
+      assert.equal(diagnosticsPayload.status, "ok");
+      assert.equal(typeof diagnosticsPayload.diagnostics?.asOf === "string", true);
+      assert.equal(typeof diagnosticsPayload.diagnostics?.counters?.qualifyCalls === "number", true);
+      assert.equal(typeof diagnosticsPayload.diagnostics?.timingsMs?.total === "number", true);
+      assert.equal(
+        typeof diagnosticsPayload.diagnostics?.optionCandidateFailureCounts?.nTotalCandidates === "number",
+        true
+      );
+      assert.equal(typeof diagnosticsPayload.diagnostics?.counters?.qualifyCacheHits === "number", true);
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
   }
 });
 
