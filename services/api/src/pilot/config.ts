@@ -9,7 +9,7 @@ export type PilotVenueMode =
 export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_invalid";
 export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
 export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
-export type PilotHedgePolicy = "options_primary_futures_fallback";
+export type PilotHedgePolicy = "options_primary_futures_fallback" | "options_only_native";
 export type IbkrOrderTif = "IOC" | "DAY";
 export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
@@ -56,7 +56,7 @@ export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => 
 
 export const parsePilotHedgePolicy = (raw: string | undefined): PilotHedgePolicy => {
   const normalized = String(raw || "options_primary_futures_fallback").trim();
-  if (normalized === "options_primary_futures_fallback") {
+  if (normalized === "options_primary_futures_fallback" || normalized === "options_only_native") {
     return normalized;
   }
   throw new Error(`invalid_pilot_hedge_policy:${normalized || "empty"}`);

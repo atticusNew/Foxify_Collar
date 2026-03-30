@@ -1938,6 +1938,116 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         candidateFailureCounts: optionMatch.failureCounts
       };
     };
+    if (hedgePolicy === "options_only_native") {
+      try {
+        const primaryOptions = await runOptionLeg(this.primaryProductFamily, "best_tenor_liquidity_option");
+        if (primaryOptions) {
+          timingsMs.total = Date.now() - selectorStartedAt;
+          this.selectorDiagnostics = {
+            asOf: nowIso(),
+            requestId: randomUUID(),
+            venueMode: this.mode,
+            timingsMs,
+            counters,
+            optionCandidateFailureCounts: { ...optionFailureTotals },
+            selection: {
+              hedgeMode: primaryOptions.hedgeMode,
+              hedgeInstrumentFamily: primaryOptions.hedgeInstrumentFamily,
+              selectionReason: primaryOptions.selectionReason,
+              selectionAlgorithm: primaryOptions.selectionAlgorithm,
+              selectedScore: primaryOptions.selectedScore,
+              selectedTenorDays: primaryOptions.selectedTenorDays,
+              selectedExpiry: primaryOptions.selectedExpiry,
+              selectedStrike: primaryOptions.strike,
+              candidateCountEvaluated: primaryOptions.candidateCountEvaluated
+            }
+          };
+          return primaryOptions;
+        }
+      } catch (error) {
+        const message = String((error as Error)?.message || "ibkr_quote_unavailable:option_selection_failed");
+        if (message.includes("venue_quote_timeout")) {
+          counters.optionsLegTimedOut += 1;
+        }
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: message
+        };
+        throw error;
+      }
+      if (!sawTenorEligibleContract) {
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: optionLegFailureReason
+            ? `ibkr_quote_unavailable:${optionLegFailureReason}`
+            : "ibkr_quote_unavailable:tenor_drift_exceeded"
+        };
+        if (optionLegFailureReason) {
+          throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+        }
+        throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
+      }
+      if (this.optionLiquiditySelectionEnabled && optionFailureTotals.nTotalCandidates > 0) {
+        const noViableReason = deriveNoViableOptionReason(optionFailureTotals);
+        const rankedAlternatives = (bestOptionRankedAlternatives.length > 0
+          ? bestOptionRankedAlternatives
+          : null) as
+          | Array<{
+              expiry: string | null;
+              matchedTenorDays: number | null;
+              driftDays: number | null;
+              ask: number | null;
+              score: number | null;
+            }>
+          | null;
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: `ibkr_quote_unavailable:${noViableReason}:no_viable_option`
+        };
+        throw new Error(
+          [
+            `ibkr_quote_unavailable:${noViableReason}:no_viable_option:${JSON.stringify(optionFailureTotals)}`,
+            rankedAlternatives ? `ranked_alternatives:${JSON.stringify(rankedAlternatives)}` : null
+          ]
+            .filter(Boolean)
+            .join(":")
+        );
+      }
+      timingsMs.total = Date.now() - selectorStartedAt;
+      this.selectorDiagnostics = {
+        asOf: nowIso(),
+        requestId: randomUUID(),
+        venueMode: this.mode,
+        timingsMs,
+        counters,
+        optionCandidateFailureCounts: { ...optionFailureTotals },
+        error: optionLegFailureReason
+          ? `ibkr_quote_unavailable:${optionLegFailureReason}`
+          : "ibkr_quote_unavailable:no_top_of_book"
+      };
+      if (optionLegFailureReason && optionFailureTotals.nTotalCandidates <= 0 && optionFailureTotals.nPassed <= 0) {
+        throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+      }
+      throw new Error("ibkr_quote_unavailable:no_top_of_book");
+    }
     if (hedgePolicy === "options_primary_futures_fallback") {
       const allowBffFallback = this.enableBffFallback && this.primaryProductFamily !== this.bffProductFamily;
       let optionLegTimedOut = false;
