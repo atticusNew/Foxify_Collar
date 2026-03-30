@@ -21,6 +21,7 @@ export type QuoteRequest = {
   quantity: number;
   side: "buy";
   protectionType?: "long" | "short";
+  drawdownFloorPct?: number;
   triggerPrice?: number;
   requestedTenorDays?: number;
   tenorMinDays?: number;
@@ -57,6 +58,7 @@ type IbkrVenueConfig = {
   maxOptionPremiumRatio?: number;
   optionProtectionTolerancePct?: number;
   optionProbeParallelism?: number;
+  optionLiquiditySelectionEnabled?: boolean;
   optionTenorWindowDays?: number;
 };
 

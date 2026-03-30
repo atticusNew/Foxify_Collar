@@ -458,6 +458,7 @@ const resolvePilotVenueHealth = async (): Promise<Record<string, unknown>> => {
   const connector = new IbkrConnector({
     baseUrl: pilotConfig.ibkrBridgeBaseUrl,
     timeoutMs: pilotConfig.ibkrBridgeTimeoutMs,
+    accountId: pilotConfig.ibkrAccountId || "PILOT_HEALTHCHECK",
     auth: {
       token: pilotConfig.ibkrBridgeToken
     }
@@ -666,7 +667,7 @@ export const registerPilotRoutes = async (
       maxOptionPremiumRatio: pilotConfig.ibkrMaxOptionPremiumRatio,
       optionProbeParallelism: pilotConfig.ibkrOptionProbeParallelism,
       optionLiquiditySelectionEnabled: pilotConfig.ibkrOptionLiquiditySelectionEnabled,
-      optionLiquidityTenorWindowDays: pilotConfig.ibkrOptionLiquidityTenorWindowDays,
+      optionTenorWindowDays: pilotConfig.ibkrOptionLiquidityTenorWindowDays,
       optionProtectionTolerancePct: pilotConfig.ibkrOptionProtectionTolerancePct
     },
     ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
@@ -1147,6 +1148,7 @@ export const registerPilotRoutes = async (
           side: "buy",
           instrumentId: quoteInstrumentId,
           protectionType,
+          drawdownFloorPct: drawdownFloorPct.toNumber(),
           triggerPrice: triggerPrice.toNumber(),
           requestedTenorDays: venueRequestedTenorDays,
           tenorMinDays: pilotConfig.pilotTenorMinDays,
