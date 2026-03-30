@@ -872,6 +872,248 @@ test("ibkr_cme_paper options_only_native rejects instead of futures fallback", a
   global.fetch = originalFetch;
 });
 
+test("ibkr_cme_paper options_only_native enforces short-side coverage and rejects unprotected calls", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.kind === "mbt_option") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 63111,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 C54000",
+                  expiry: "20260330",
+                  strike: 54000,
+                  right: "C",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: 90,
+            ask: 91,
+            bidSize: 4,
+            askSize: 6,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/depth")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bids: [{ level: 0, price: 90, size: 4 }],
+            asks: [{ level: 0, price: 91, size: 6 }],
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  try {
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 2000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 2000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: false,
+        maxTenorDriftDays: 7,
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC",
+        optionLiquiditySelectionEnabled: true,
+        optionProbeParallelism: 2,
+        optionTenorWindowDays: 4,
+        maxOptionPremiumRatio: 0.5,
+        optionProtectionTolerancePct: 0.03
+      },
+      ibkrQuoteBudgetMs: 8000
+    });
+    await assert.rejects(
+      () =>
+        adapter.quote({
+          marketId: "BTC-USD",
+          instrumentId: "BTC-USD-3D-C",
+          protectedNotional: 10000,
+          quantity: 0.2,
+          side: "buy",
+          protectionType: "short",
+          drawdownFloorPct: 0.2,
+          triggerPrice: 55000,
+          requestedTenorDays: 3,
+          tenorMinDays: 1,
+          tenorMaxDays: 7,
+          hedgePolicy: "options_only_native"
+        }),
+      /ibkr_quote_unavailable:no_protection_compliant_option:no_viable_option:/
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("ibkr_cme_paper options_only_native scoring favors stronger economics when tenor is equal", async () => {
+  const originalFetch = global.fetch;
+  const now = new Date();
+  const matchedExpiry = new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.kind === "mbt_option") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 64111,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P55000",
+                  expiry: matchedExpiry,
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                },
+                {
+                  conId: 64222,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P54500",
+                  expiry: matchedExpiry,
+                  strike: 54500,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.conId === 64111) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 95,
+              ask: 115,
+              bidSize: 4,
+              askSize: 5,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: 90,
+            ask: 92,
+            bidSize: 4,
+            askSize: 5,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/depth")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bids: [{ level: 0, price: 90, size: 4 }],
+            asks: [{ level: 0, price: 92, size: 5 }],
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  try {
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 2000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 2000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: false,
+        maxTenorDriftDays: 7,
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC",
+        optionLiquiditySelectionEnabled: true,
+        optionProbeParallelism: 2,
+        optionTenorWindowDays: 4,
+        maxOptionPremiumRatio: 0.5,
+        optionProtectionTolerancePct: 0.03
+      },
+      ibkrQuoteBudgetMs: 8000
+    });
+    const quote = await adapter.quote({
+      marketId: "BTC-USD",
+      instrumentId: "BTC-USD-3D-P",
+      protectedNotional: 10000,
+      quantity: 0.2,
+      side: "buy",
+      protectionType: "long",
+      drawdownFloorPct: 0.2,
+      triggerPrice: 55000,
+      requestedTenorDays: 3,
+      tenorMinDays: 1,
+      tenorMaxDays: 7,
+      hedgePolicy: "options_only_native"
+    });
+    assert.equal(Number(quote.details?.conId), 64222);
+    assert.equal(String(quote.details?.hedgeMode), "options_native");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("ibkr_cme_paper option strike ladder finds nearby liquid strike before futures fallback", async () => {
   const originalFetch = global.fetch;
   global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

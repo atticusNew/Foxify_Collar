@@ -855,7 +855,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const maxTenorDays = clampInt(req.tenorMaxDays, minTenorDays, 30, Math.max(minTenorDays, 7));
     const selectedTenorDays = Math.max(minTenorDays, Math.min(maxTenorDays, requestedTenorDays));
     const trigger = toFinitePositive(req.triggerPrice);
-    const adverseMovePct = Number(req.protectionType === "short" ? 0 : req.drawdownFloorPct ?? 0);
+    const adverseMovePctRaw = Number(req.drawdownFloorPct ?? 0);
+    const adverseMovePct =
+      Number.isFinite(adverseMovePctRaw) && adverseMovePctRaw > 0 ? Math.min(0.95, adverseMovePctRaw) : 0;
     const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
     const right = this.resolveRight(req.protectionType);
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
@@ -1383,6 +1385,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
                 ? ((inferredEntry - strike) / inferredEntry) * 100
                 : ((strike - inferredEntry) / inferredEntry) * 100
               : null;
+          if (minProtectionThreshold !== null && protectionCoveragePct === null) {
+            failureCounts.nFailedProtection += 1;
+            continue;
+          }
           if (
             minProtectionThreshold !== null &&
             protectionCoveragePct !== null &&
@@ -1412,15 +1418,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             failureCounts.nFailedEconomics += 1;
             continue;
           }
-          const spreadPenalty = Math.max(0, Math.min(0.3, spreadPct ?? 0.3)) * 100;
-          const sizePenalty = askSize === null ? 20 : 1 / Math.max(0.1, askSize);
-          const protectionPenalty =
-            minProtectionThreshold !== null && protectionCoveragePct !== null
-              ? Math.max(0, minProtectionThreshold - protectionCoveragePct) * 2
-              : 0;
-          const economicsPenalty = premiumRatio * 200;
-          const tenorPenalty = Math.max(0, driftDays) * 0.4;
-          const score = spreadPenalty * 5 + sizePenalty * 10 + protectionPenalty * 8 + economicsPenalty * 4 + tenorPenalty;
+          const spreadPenalty = Math.max(0, Math.min(0.45, spreadPct ?? 0.45)) * 100;
+          const sizePenalty = askSize === null ? 10 : 1 / Math.max(0.2, askSize);
+          const economicsPenalty = premiumRatio * 100;
+          const tenorPenalty = Math.max(0, driftDays) * 20;
+          const belowTargetPenalty = this.preferTenorAtOrAbove && belowTarget ? 7 : 0;
+          const score = tenorPenalty + belowTargetPenalty + spreadPenalty * 1.1 + sizePenalty * 6 + economicsPenalty * 14;
           passed.push({
             contract,
             top: chosenTop,
@@ -1836,9 +1839,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       // Phase 1.5: in live IBKR mode, prioritize strike-scoped option qualification
       // per tenor before broad tenor-only probing. This avoids contract-detail timeouts
       // observed on broad option-chain requests while preserving fallback behavior.
+      const strikeScopedProbeWidth = hedgePolicy === "options_only_native" ? 5 : 3;
       const ringTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => {
         const strikeScoped = strikeCandidatesForMode
-          .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, 3)))
+          .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, strikeScopedProbeWidth)))
           .map((strike) => ({ tenor, strike }));
         return strikeScoped.length > 0 ? strikeScoped : [{ tenor }];
       });
@@ -1872,7 +1876,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           }
         | null = null;
       let latestFailureCounts: OptionFailureCounts | null = null;
-      const minViableCandidatesBeforeStop = 3;
+      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 5 : 3;
       for (const ringGroup of ringTasks) {
         await runQualifyTasks(ringGroup);
         if (!dedupedContracts.length) {
