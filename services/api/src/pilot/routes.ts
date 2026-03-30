@@ -668,7 +668,8 @@ export const registerPilotRoutes = async (
       optionProbeParallelism: pilotConfig.ibkrOptionProbeParallelism,
       optionLiquiditySelectionEnabled: pilotConfig.ibkrOptionLiquiditySelectionEnabled,
       optionTenorWindowDays: pilotConfig.ibkrOptionLiquidityTenorWindowDays,
-      optionProtectionTolerancePct: pilotConfig.ibkrOptionProtectionTolerancePct
+      optionProtectionTolerancePct: pilotConfig.ibkrOptionProtectionTolerancePct,
+      requireOptionsNative: pilotConfig.ibkrRequireOptionsNative
     },
     ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
     deribit: deps.deribit

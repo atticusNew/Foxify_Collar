@@ -409,6 +409,7 @@ export const pilotConfig = {
     "invalid_ibkr_option_probe_parallelism"
   ),
   ibkrOptionLiquiditySelectionEnabled: parseBooleanEnv(process.env.IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED, false),
+  ibkrRequireOptionsNative: parseBooleanEnv(process.env.IBKR_REQUIRE_OPTIONS_NATIVE, false),
   ibkrOptionLiquidityTenorWindowDays: parsePositiveIntInRange(
     process.env.IBKR_OPTION_LIQUIDITY_TENOR_WINDOW_DAYS,
     3,

@@ -60,6 +60,7 @@ type IbkrVenueConfig = {
   optionProbeParallelism?: number;
   optionLiquiditySelectionEnabled?: boolean;
   optionTenorWindowDays?: number;
+  requireOptionsNative?: boolean;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -615,6 +616,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private optionProbeParallelism: number,
     private optionLiquiditySelectionEnabled: boolean,
     private optionTenorWindowDays: number,
+    private requireOptionsNative: boolean,
     private marketDataRequestTimeoutMs: number,
     private quoteBudgetMs: number
   ) {}
@@ -1588,10 +1590,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       };
     };
     if (hedgePolicy === "options_primary_futures_fallback") {
-      const allowBffFallback =
-        this.enableBffFallback &&
-        this.primaryProductFamily !== this.bffProductFamily &&
-        this.bffProductFamily === "BFF";
+      const allowBffFallback = this.enableBffFallback && this.primaryProductFamily !== this.bffProductFamily;
       let optionLegTimedOut = false;
       const runOptionLegWithTimeoutFallback = async (
         productFamily: "MBT" | "BFF",
@@ -1671,6 +1670,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         "options_unavailable_futures_fallback"
       );
       if (primaryFallback) {
+        if (this.requireOptionsNative) {
+          throw new Error("ibkr_quote_unavailable:options_required");
+        }
         return primaryFallback;
       }
 
@@ -1680,6 +1682,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           "options_and_mbt_unavailable_bff_fallback"
         );
         if (bffFallback) {
+          if (this.requireOptionsNative) {
+            throw new Error("ibkr_quote_unavailable:options_required");
+          }
           return bffFallback;
         }
       }
@@ -2127,6 +2132,7 @@ export const createPilotVenueAdapter = (params: {
       Number.isFinite(Number(params.ibkr.optionTenorWindowDays))
         ? Math.max(0, Math.min(14, Math.floor(Number(params.ibkr.optionTenorWindowDays))))
         : 3,
+      params.ibkr.requireOptionsNative === true,
       connectorTimeoutMs,
       Number(params.ibkrQuoteBudgetMs || 0)
     );
