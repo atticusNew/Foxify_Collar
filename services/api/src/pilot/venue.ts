@@ -691,6 +691,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 class IbkrCmeAdapter implements PilotVenueAdapter {
   private qualifyCache = new Map<string, { contracts: IbkrQualifiedContract[]; ts: number }>();
   private qualifyInFlight = new Map<string, Promise<IbkrQualifiedContract[]>>();
+  private tenorLiquidityHints = new Map<string, { score: number; asOfMs: number }>();
   private selectorDiagnostics: {
     asOf: string;
     requestId: string;
@@ -796,6 +797,42 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       if (!firstKey) break;
       this.qualifyCache.delete(firstKey);
     }
+  }
+
+  private updateTenorLiquidityHint(tenorDays: number, result: {
+    contractsFound: number;
+    timedOut: boolean;
+    hadTopLiquidity: boolean;
+  }): void {
+    const tenorKey = String(Math.max(1, Math.floor(Number(tenorDays) || 0)));
+    const prev = this.tenorLiquidityHints.get(tenorKey);
+    const baseScore = result.hadTopLiquidity ? 3 : result.contractsFound > 0 ? 1 : -2;
+    const timeoutPenalty = result.timedOut ? -2 : 0;
+    const nextScoreRaw = baseScore + timeoutPenalty;
+    const nextScore = prev ? Math.max(-10, Math.min(10, prev.score * 0.55 + nextScoreRaw)) : nextScoreRaw;
+    this.tenorLiquidityHints.set(tenorKey, {
+      score: Number(nextScore.toFixed(4)),
+      asOfMs: Date.now()
+    });
+  }
+
+  private rankTenorCandidatesWithHints(tenorCandidates: number[], selectedTenorDaysIntended: number): number[] {
+    const nowMs = Date.now();
+    const staleAfterMs = Math.max(90_000, Math.min(900_000, this.qualifyCacheTtlMs * 4));
+    return [...tenorCandidates].sort((a, b) => {
+      const aHint = this.tenorLiquidityHints.get(String(a));
+      const bHint = this.tenorLiquidityHints.get(String(b));
+      const aFresh = Boolean(aHint && nowMs - aHint.asOfMs <= staleAfterMs);
+      const bFresh = Boolean(bHint && nowMs - bHint.asOfMs <= staleAfterMs);
+      if (aFresh && bFresh && aHint && bHint && aHint.score !== bHint.score) {
+        return bHint.score - aHint.score;
+      }
+      if (aFresh !== bFresh) return aFresh ? -1 : 1;
+      const aDrift = Math.abs(a - selectedTenorDaysIntended);
+      const bDrift = Math.abs(b - selectedTenorDaysIntended);
+      if (aDrift !== bDrift) return aDrift - bDrift;
+      return a - b;
+    });
   }
 
   private async qualifyContractsCached(
@@ -1769,6 +1806,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             return values;
           })()
         : [selectedTenorDaysIntended];
+      const orderedTenorCandidates =
+        hedgePolicy === "options_only_native"
+          ? this.rankTenorCandidatesWithHints(tenorCandidates, selectedTenorDaysIntended)
+          : tenorCandidates;
       const dedupedContracts: IbkrQualifiedContract[] = [];
       const seenConIds = new Set<number>();
       const optionLegBudgetMs =
@@ -1941,7 +1982,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       // per tenor before broad tenor-only probing. This avoids contract-detail timeouts
       // observed on broad option-chain requests while preserving fallback behavior.
       const strikeScopedProbeWidth = hedgePolicy === "options_only_native" ? 2 : 3;
-      const baseRingTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => {
+      const baseRingTasks: Array<Array<QualifyTask>> = orderedTenorCandidates.map((tenor) => {
         const strikeScoped = strikeCandidatesForMode
           .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, strikeScopedProbeWidth)))
           .map((strike) => ({ tenor, strike }));
@@ -1953,7 +1994,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       });
       const expandedRingTasks =
         hedgePolicy === "options_only_native"
-          ? tenorCandidates.map((tenor) => {
+          ? orderedTenorCandidates.map((tenor) => {
               const strikeScoped = strikeCandidatesForMode.map((strike) => ({ tenor, strike }));
               return strikeScoped.length > 0 ? [...strikeScoped, { tenor }] : [{ tenor }];
             })
@@ -2016,8 +2057,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           : ringTasks.length;
       for (let ringIdx = 0; ringIdx < maxRingPasses; ringIdx += 1) {
         const ringGroup = ringTasks[ringIdx];
+        const ringTenor = ringGroup[0]?.tenor || selectedTenorDaysIntended;
         await runQualifyTasks(ringGroup);
         if (!dedupedContracts.length) {
+          this.updateTenorLiquidityHint(ringTenor, {
+            contractsFound: 0,
+            timedOut: optionQualifyTimedOut,
+            hadTopLiquidity: false
+          });
           continue;
         }
         const optionProbeBudgetMs = Math.max(1200, optionLegDeadlineMs - Date.now() - 120);
@@ -2042,6 +2089,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       timingsMs.score += Date.now() - scoreStartedAt;
         if (!("contract" in optionMatch)) {
           accumulateNoMatchFailureTotals(optionMatch.failureCounts);
+          this.updateTenorLiquidityHint(ringTenor, {
+            contractsFound: Number(optionMatch.failureCounts.nTotalCandidates || 0),
+            timedOut: Number(optionMatch.failureCounts.nTimedOut || 0) > 0,
+            hadTopLiquidity:
+              Number(optionMatch.failureCounts.nNoTop || 0) < Number(optionMatch.failureCounts.nTotalCandidates || 0)
+          });
           if (
             hedgePolicy === "options_only_native" &&
             sawTenorEligibleContract &&
@@ -2055,6 +2108,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           bestOptionMatch = optionMatch;
           bestOptionRankedAlternatives = optionMatch.rankedAlternatives;
         }
+        this.updateTenorLiquidityHint(ringTenor, {
+          contractsFound: Number(optionMatch.failureCounts.nTotalCandidates || 0),
+          timedOut: Number(optionMatch.failureCounts.nTimedOut || 0) > 0,
+          hadTopLiquidity: Number(optionMatch.failureCounts.nPassed || 0) > 0
+        });
         const viableCount = Number(optionMatch.failureCounts.nPassed || 0);
         if (viableCount >= minViableCandidatesBeforeStop) {
           break;

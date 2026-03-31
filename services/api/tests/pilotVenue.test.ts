@@ -746,6 +746,185 @@ test("ibkr_cme_paper falls back to futures when option order books are unusable"
   global.fetch = originalFetch;
 });
 
+test("ibkr_cme_paper options_only_native liquidity hints prioritize previously liquid tenor", async () => {
+  const originalFetch = global.fetch;
+  const now = new Date();
+  const tenor3Expiry = new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  const tenor4Expiry = new Date(now.getTime() + 4 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  let quoteAttempt = 0;
+  const topCallTenorsByAttempt: Record<number, number[]> = { 1: [], 2: [] };
+  const conIdToTenor = new Map<number, number>();
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.kind === "mbt_option") {
+        const tenorDays = Number(payload.tenorDays || 0);
+        const contracts: Array<Record<string, unknown>> = [];
+        if (tenorDays === 3) {
+          contracts.push({
+            conId: 73111,
+            secType: "FOP",
+            localSymbol: "WMH6 P55000",
+            expiry: tenor3Expiry,
+            strike: 55000,
+            right: "P",
+            multiplier: "0.1",
+            minTick: 5
+          });
+          conIdToTenor.set(73111, 3);
+        }
+        if (tenorDays === 4) {
+          contracts.push({
+            conId: 74111,
+            secType: "FOP",
+            localSymbol: "WMI6 P55000",
+            expiry: tenor4Expiry,
+            strike: 55000,
+            right: "P",
+            multiplier: "0.1",
+            minTick: 5
+          });
+          conIdToTenor.set(74111, 4);
+        }
+        return {
+          ok: true,
+          text: async () => JSON.stringify({ contracts })
+        } as any;
+      }
+      return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      const conId = Number(payload.conId || 0);
+      const tenor = conIdToTenor.get(conId) || 0;
+      topCallTenorsByAttempt[quoteAttempt]?.push(tenor);
+      if (quoteAttempt === 1 && tenor === 3) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: null,
+              ask: null,
+              bidSize: null,
+              askSize: null,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (tenor === 4) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 97,
+              ask: 98,
+              bidSize: 5,
+              askSize: 7,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: 95,
+            ask: 96,
+            bidSize: 4,
+            askSize: 6,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/depth")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bids: [{ level: 0, price: 95, size: 4 }],
+            asks: [{ level: 0, price: 96, size: 6 }],
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  try {
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 2000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 2000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: false,
+        maxTenorDriftDays: 5,
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC",
+        optionLiquiditySelectionEnabled: true,
+        optionProbeParallelism: 1,
+        optionTenorWindowDays: 1,
+        maxOptionPremiumRatio: 0.5,
+        optionProtectionTolerancePct: 0.03
+      },
+      ibkrQuoteBudgetMs: 12000
+    });
+
+    quoteAttempt = 1;
+    const first = await adapter.quote({
+      marketId: "BTC-USD",
+      instrumentId: "BTC-USD-3D-P",
+      protectedNotional: 10000,
+      quantity: 0.2,
+      side: "buy",
+      protectionType: "long",
+      drawdownFloorPct: 0.2,
+      triggerPrice: 55000,
+      requestedTenorDays: 3,
+      tenorMinDays: 1,
+      tenorMaxDays: 7,
+      hedgePolicy: "options_only_native"
+    });
+    assert.equal(Number(first.details?.selectedTenorDays) >= 3, true);
+
+    quoteAttempt = 2;
+    const second = await adapter.quote({
+      marketId: "BTC-USD",
+      instrumentId: "BTC-USD-3D-P",
+      protectedNotional: 10000,
+      quantity: 0.2,
+      side: "buy",
+      protectionType: "long",
+      drawdownFloorPct: 0.2,
+      triggerPrice: 55000,
+      requestedTenorDays: 3,
+      tenorMinDays: 1,
+      tenorMaxDays: 7,
+      hedgePolicy: "options_only_native"
+    });
+    assert.equal(Number(second.details?.selectedTenorDays) >= 3, true);
+    const firstTopTenor = topCallTenorsByAttempt[1][0];
+    const secondTopTenor = topCallTenorsByAttempt[2][0];
+    assert.equal(firstTopTenor, 3);
+    assert.equal(secondTopTenor, 3);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("ibkr_cme_paper options_only_native rejects instead of futures fallback", async () => {
   const originalFetch = global.fetch;
   global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
