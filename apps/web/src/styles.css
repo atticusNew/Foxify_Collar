@@ -460,6 +460,7 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-height: 34px;
 }
 
 .quote-market-banner-open {
@@ -512,6 +513,10 @@ body {
 .quote-market-badge-closed {
   background: rgba(255, 107, 107, 0.18);
   color: #ffaaaa;
+}
+
+.quote-market-banner-micro {
+  overflow: hidden;
 }
 
 .quote-status-right {
