@@ -1443,12 +1443,6 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           timingsMs.top += Date.now() - topStartedAt;
           if (topProbe.timedOut) {
             failureCounts.nTimedOut += 1;
-            // In options-only mode prioritize scanning additional candidates quickly.
-            // A candidate that times out on top-of-book tends to also stall on depth.
-            if (hedgePolicy === "options_only_native") {
-              failureCounts.nNoTop += 1;
-              continue;
-            }
           }
           if (topProbe.value && hasUsableTop(topProbe.value)) {
             chosenTop = topProbe.value;
@@ -1462,7 +1456,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               const depthStartedAt = Date.now();
               const depthProbeTimeoutMs =
                 hedgePolicy === "options_only_native"
-                  ? Math.max(900, Math.min(2200, probeTimeoutMs))
+                  ? Math.max(1800, Math.min(10000, Math.floor(probeTimeoutMs * 1.1)))
                   : Math.min(12000, probeTimeoutMs * 2);
               const depthProbe = await withProbeTimeout(
                 this.connector.getDepth(contract.conId),
@@ -2152,7 +2146,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const scoreStartedAt = Date.now();
       const optionProbeTimeoutMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(900, Math.min(2400, Math.floor(requestWindowHintMs * 0.8)))
+          ? Math.max(2200, Math.min(10000, Math.floor(requestWindowHintMs * 1.2)))
           : Math.max(650, Math.min(1800, requestWindowHintMs));
       const optionProbeDepthAttempts = hedgePolicy === "options_only_native" ? 2 : 1;
       const optionProbeLegBudgetMs =
