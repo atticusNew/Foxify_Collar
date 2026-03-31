@@ -190,6 +190,11 @@ body {
   margin-top: 12px;
 }
 
+.section-compact {
+  padding-top: 8px;
+  margin-top: 8px;
+}
+
 .section h4 {
   margin: 0 0 10px 0;
   font-size: 14px;
@@ -445,14 +450,14 @@ body {
 }
 
 .quote-market-banner {
-  margin-top: 6px;
+  margin-top: 2px;
   margin-bottom: 8px;
   border: 1px solid rgba(255, 107, 107, 0.55);
   border-radius: 10px;
   background: rgba(255, 107, 107, 0.1);
-  padding: 9px 10px;
+  padding: 7px 10px;
   display: grid;
-  gap: 4px;
+  gap: 3px;
 }
 
 .quote-market-banner-open {
@@ -466,7 +471,7 @@ body {
 }
 
 .quote-market-banner-title {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   color: #ff9a9a;
 }
@@ -474,8 +479,8 @@ body {
 .quote-market-banner-time {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  font-size: 11px;
+  gap: 8px;
+  font-size: 10px;
 }
 
 .quote-market-badge {
@@ -483,7 +488,7 @@ body {
   align-items: center;
   border-radius: 999px;
   padding: 2px 8px;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.2px;
   text-transform: uppercase;

@@ -1536,16 +1536,8 @@ export function PilotApp() {
         : quoteLiquidityStatus === "off_market"
           ? "pill pill-danger"
           : "pill pill-warning";
-  const quoteUnavailableSecondary =
-    quoteLiquidityStatus === "off_market"
-      ? "Market is currently closed by CME schedule. Retry when market status returns to Open."
-      : cmeMarketWindow.isOpen
-        ? "Market is open, but no executable liquidity met constraints right now. Try another tenor or retry shortly."
-        : "Market schedule is currently closed. Retry in the next open session.";
-  const quoteUnavailableSecondaryClass =
-    quoteLiquidityStatus === "off_market"
-      ? "quote-unavailable-secondary"
-      : "quote-unavailable-secondary quote-unavailable-secondary-amber";
+  const quoteUnavailableSecondary = "Please try again.";
+  const quoteUnavailableSecondaryClass = "quote-unavailable-secondary quote-unavailable-secondary-amber";
   const adminBrokerSnapshot = adminMetrics?.brokerBalanceSnapshot ?? null;
   const adminBrokerAvailableFunds = Number(adminBrokerSnapshot?.availableFundsUsd ?? NaN);
   const adminBrokerNetLiquidation = Number(adminBrokerSnapshot?.netLiquidationUsd ?? NaN);
@@ -1803,6 +1795,33 @@ export function PilotApp() {
         </div>
 
         <div className="section">
+          <div
+            className={`quote-market-banner ${cmeMarketWindow.isOpen ? "quote-market-banner-open" : "quote-market-banner-closed"}`}
+          >
+            <div className="quote-market-banner-title">
+              CME BTC Options Market <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
+              <span
+                className={`pill ${quoteLiquidityStatus === "limited" ? "pill-warning" : quoteLiquidityStatus === "off_market" ? "pill-danger" : ""}`}
+              >
+                Liquidity {quoteLiquidityStatus === "limited" ? "Thin" : quoteLiquidityStatus === "off_market" ? "After Hours" : "Normal"}
+              </span>
+            </div>
+            <div className="quote-market-banner-time muted">
+              <span>ET: {cmeNowEtLabel}</span>
+              <span>Local: {localNowLabel}</span>
+              {cmeMarketWindow.isOpen ? (
+                <span>Session is active.</span>
+              ) : (
+                <span>
+                  Next open: {nextCmeOpenLabel || "TBD"}
+                  {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="section">
           <h4>Protection Request</h4>
           <div className={`pilot-reference-strip ${liveReferenceStale ? "pilot-reference-strip-stale" : ""}`}>
             <div className="pilot-reference-head">
@@ -1996,23 +2015,6 @@ export function PilotApp() {
         </div>
 
         <div className="section pilot-actions-under-request">
-          <div className={`quote-market-banner ${cmeMarketWindow.isOpen ? "quote-market-banner-open" : "quote-market-banner-closed"}`}>
-            <div className="quote-market-banner-title">
-              CME BTC Options Market <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
-            </div>
-            <div className="quote-market-banner-time muted">
-              <span>ET: {cmeNowEtLabel}</span>
-              <span>Local: {localNowLabel}</span>
-              {cmeMarketWindow.isOpen ? (
-                <span>Session is active.</span>
-              ) : (
-                <span>
-                  Next open: {nextCmeOpenLabel || "TBD"}
-                  {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
-                </span>
-              )}
-            </div>
-          </div>
           <div className="pilot-actions">
             <button className="btn btn-secondary pilot-action-btn" disabled={busy || !canQuote} onClick={requestQuote}>
               {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
@@ -2182,7 +2184,7 @@ export function PilotApp() {
           </div>
           {showQuoteUnavailableHint && (
             <div className="quote-unavailable-note">
-              <div className="quote-unavailable-title">Quote unavailable right now.</div>
+              <div className="quote-unavailable-title">Quote not available right now.</div>
               <div className={quoteUnavailableSecondaryClass}>{quoteUnavailableSecondary}</div>
             </div>
           )}
