@@ -22,6 +22,17 @@ const healthResponseSchema = z.object({
   asOf: z.string()
 });
 
+const accountSummarySchema = z.object({
+  source: z.literal("ibkr_account_summary"),
+  accountId: z.string().nullable(),
+  currency: z.string(),
+  netLiquidationUsd: z.string(),
+  availableFundsUsd: z.string(),
+  excessLiquidityUsd: z.string(),
+  buyingPowerUsd: z.string(),
+  asOf: z.string()
+});
+
 const qualifySchema = z.object({
   kind: z.union([z.literal("mbt_future"), z.literal("mbt_option")]),
   productFamily: z.union([z.literal("MBT"), z.literal("BFF")]).optional(),
@@ -119,6 +130,11 @@ app.addHook("onRequest", async (req, reply) => {
 app.get("/health", async () => {
   const health = await ibGatewayClient.getHealth();
   return healthResponseSchema.parse(health);
+});
+
+app.get("/account/summary", async () => {
+  const snapshot = await ibGatewayClient.getAccountSummarySnapshot();
+  return accountSummarySchema.parse(snapshot);
 });
 
 app.post("/contracts/qualify", async (req) => {

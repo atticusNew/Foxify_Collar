@@ -455,10 +455,48 @@ body {
   gap: 4px;
 }
 
+.quote-market-banner-open {
+  border-color: rgba(54, 211, 141, 0.45);
+  background: rgba(54, 211, 141, 0.09);
+}
+
+.quote-market-banner-closed {
+  border-color: rgba(255, 107, 107, 0.55);
+  background: rgba(255, 107, 107, 0.1);
+}
+
 .quote-market-banner-title {
   font-size: 12px;
   font-weight: 700;
   color: #ff9a9a;
+}
+
+.quote-market-banner-time {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 11px;
+}
+
+.quote-market-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.quote-market-badge-open {
+  background: rgba(54, 211, 141, 0.16);
+  color: #8ee9be;
+}
+
+.quote-market-badge-closed {
+  background: rgba(255, 107, 107, 0.18);
+  color: #ffaaaa;
 }
 
 .quote-status-right {
@@ -612,6 +650,15 @@ body {
   font-size: 12px;
   font-weight: 600;
   color: #f2c389;
+}
+
+.quote-unavailable-secondary {
+  color: #ffd166;
+  font-weight: 600;
+}
+
+.quote-unavailable-secondary-amber {
+  color: #ffd24d;
 }
 
 .quote-alternatives {

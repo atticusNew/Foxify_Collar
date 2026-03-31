@@ -90,6 +90,17 @@ export type BridgeOrderState = {
   rejectionReason?: string;
 };
 
+export type BridgeAccountSummarySnapshot = {
+  source: "ibkr_account_summary";
+  accountId: string | null;
+  currency: string;
+  netLiquidationUsd: string;
+  availableFundsUsd: string;
+  excessLiquidityUsd: string;
+  buyingPowerUsd: string;
+  asOf: string;
+};
+
 export type BridgeTopRequest = { conId: number };
 export type BridgeDepthRequest = { conId: number };
 export type BridgeOrderRequest = { orderId: string };

@@ -107,6 +107,18 @@ type AdminLedgerEntry = {
   settledAt: string | null;
 };
 
+type AdminBrokerBalanceSnapshot = {
+  source: "ibkr_account_summary";
+  readOnly: true;
+  accountId: string | null;
+  currency: string;
+  netLiquidationUsd: string;
+  availableFundsUsd: string;
+  excessLiquidityUsd: string;
+  buyingPowerUsd: string;
+  asOf: string;
+};
+
 type AdminMetrics = {
   totalProtections: string;
   activeProtections: string;
@@ -126,6 +138,7 @@ type AdminMetrics = {
   availableReserveUsdc: string;
   reserveAfterOpenPayoutLiabilityUsdc: string;
   netSettledCashUsdc: string;
+  brokerBalanceSnapshot?: AdminBrokerBalanceSnapshot | null;
 };
 
 type AdminScope = "active" | "open" | "all";
@@ -400,6 +413,27 @@ const formatCmeCountdown = (to: Date, nowMs: number): string => {
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
 };
+
+const formatCmeNowEt = (nowMs: number): string =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: CME_MARKET_TZ,
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZoneName: "short"
+  }).format(new Date(nowMs));
+
+const formatLocalNow = (nowMs: number): string =>
+  new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZoneName: "short"
+  }).format(new Date(nowMs));
 
 const friendlyError = (message: string): string => {
   if (message.includes("no_liquidity_window")) {
@@ -1012,8 +1046,19 @@ export function PilotApp() {
         throw new Error(reason || `admin_metrics_failed:http_${metricsRes.status}`);
       }
       const rows = rowsPayload.rows as AdminProtectionRow[];
+      const brokerBalanceSnapshotRaw = metricsPayload.brokerBalanceSnapshot;
+      const brokerBalanceSnapshot =
+        brokerBalanceSnapshotRaw &&
+        typeof brokerBalanceSnapshotRaw === "object" &&
+        !Array.isArray(brokerBalanceSnapshotRaw) &&
+        String((brokerBalanceSnapshotRaw as Record<string, unknown>).source || "") === "ibkr_account_summary"
+          ? (brokerBalanceSnapshotRaw as NonNullable<AdminMetrics["brokerBalanceSnapshot"]>)
+          : null;
       setAdminRows(rows);
-      setAdminMetrics(metricsPayload.metrics as AdminMetrics);
+      setAdminMetrics({
+        ...(metricsPayload.metrics as AdminMetrics),
+        brokerBalanceSnapshot
+      });
       setAdminScope(scope);
       setAdminStatusFilter(status);
       setAdminIncludeArchived(includeArchived);
@@ -1450,7 +1495,12 @@ export function PilotApp() {
   const cmeMarketWindow = useMemo(() => resolveCmeMarketWindow(new Date(clockNowMs)), [clockNowMs]);
   const nextCmeOpenLabel = cmeMarketWindow.nextOpenAt ? formatCmeOpenAt(cmeMarketWindow.nextOpenAt) : null;
   const nextCmeOpenCountdown = cmeMarketWindow.nextOpenAt ? formatCmeCountdown(cmeMarketWindow.nextOpenAt, clockNowMs) : null;
-  const showCmeClosedBanner = !cmeMarketWindow.isOpen;
+  const cmeNowEtLabel = formatCmeNowEt(clockNowMs);
+  const localNowLabel = formatLocalNow(clockNowMs);
+  const cmeStatusLabel = cmeMarketWindow.isOpen ? "Open" : "Closed";
+  const cmeStatusBadgeClass = cmeMarketWindow.isOpen
+    ? "quote-market-badge quote-market-badge-open"
+    : "quote-market-badge quote-market-badge-closed";
   const urlSearchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
@@ -1488,8 +1538,19 @@ export function PilotApp() {
           : "pill pill-warning";
   const quoteUnavailableSecondary =
     quoteLiquidityStatus === "off_market"
-      ? "Likely outside active market hours. Retry during session open."
-      : "Try another tenor or retry in a moment as liquidity updates.";
+      ? "Market is currently closed by CME schedule. Retry when market status returns to Open."
+      : cmeMarketWindow.isOpen
+        ? "Market is open, but no executable liquidity met constraints right now. Try another tenor or retry shortly."
+        : "Market schedule is currently closed. Retry in the next open session.";
+  const quoteUnavailableSecondaryClass =
+    quoteLiquidityStatus === "off_market"
+      ? "quote-unavailable-secondary"
+      : "quote-unavailable-secondary quote-unavailable-secondary-amber";
+  const adminBrokerSnapshot = adminMetrics?.brokerBalanceSnapshot ?? null;
+  const adminBrokerAvailableFunds = Number(adminBrokerSnapshot?.availableFundsUsd ?? NaN);
+  const adminBrokerNetLiquidation = Number(adminBrokerSnapshot?.netLiquidationUsd ?? NaN);
+  const adminBrokerExcessLiquidity = Number(adminBrokerSnapshot?.excessLiquidityUsd ?? NaN);
+  const adminBrokerBuyingPower = Number(adminBrokerSnapshot?.buyingPowerUsd ?? NaN);
   const showQuoteSection = quoteState !== "idle" || Boolean(quote) || Boolean(error);
   const monitorHasLiveSnapshot = Boolean(
     monitor &&
@@ -1935,16 +1996,23 @@ export function PilotApp() {
         </div>
 
         <div className="section pilot-actions-under-request">
-          {showCmeClosedBanner && (
-            <div className="quote-market-banner">
-              <div className="quote-market-banner-title">Outside CME Market Hours</div>
-              <div className="muted">
-                CME BTC options are currently closed.
-                {nextCmeOpenLabel ? ` Next open: ${nextCmeOpenLabel}.` : ""}
-                {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
-              </div>
+          <div className={`quote-market-banner ${cmeMarketWindow.isOpen ? "quote-market-banner-open" : "quote-market-banner-closed"}`}>
+            <div className="quote-market-banner-title">
+              CME BTC Options Market <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
             </div>
-          )}
+            <div className="quote-market-banner-time muted">
+              <span>ET: {cmeNowEtLabel}</span>
+              <span>Local: {localNowLabel}</span>
+              {cmeMarketWindow.isOpen ? (
+                <span>Session is active.</span>
+              ) : (
+                <span>
+                  Next open: {nextCmeOpenLabel || "TBD"}
+                  {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
+                </span>
+              )}
+            </div>
+          </div>
           <div className="pilot-actions">
             <button className="btn btn-secondary pilot-action-btn" disabled={busy || !canQuote} onClick={requestQuote}>
               {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
@@ -2115,7 +2183,7 @@ export function PilotApp() {
           {showQuoteUnavailableHint && (
             <div className="quote-unavailable-note">
               <div className="quote-unavailable-title">Quote unavailable right now.</div>
-              <div className="muted">{quoteUnavailableSecondary}</div>
+              <div className={quoteUnavailableSecondaryClass}>{quoteUnavailableSecondary}</div>
             </div>
           )}
           {quoteLocked && (
@@ -2419,6 +2487,26 @@ export function PilotApp() {
                   <div className="pilot-monitor-card">
                     <div className="label">Reserve After Open Liability</div>
                     <div className="value">${formatUsd(adminReserveAfterOpenLiability)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">IBKR Available Funds (Live)</div>
+                    <div className="value">{Number.isFinite(adminBrokerAvailableFunds) ? `$${formatUsd(adminBrokerAvailableFunds)}` : "—"}</div>
+                    <div className="muted">{adminBrokerSnapshot ? `As of ${new Date(adminBrokerSnapshot.asOf).toLocaleString()}` : "Read-only broker snapshot unavailable."}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">IBKR Net Liquidation (Live)</div>
+                    <div className="value">{Number.isFinite(adminBrokerNetLiquidation) ? `$${formatUsd(adminBrokerNetLiquidation)}` : "—"}</div>
+                    <div className="muted">
+                      {adminBrokerSnapshot ? `Acct ${adminBrokerSnapshot.accountId || "N/A"} · ${adminBrokerSnapshot.currency}` : "Read-only broker snapshot."}
+                    </div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">IBKR Excess Liquidity (Live)</div>
+                    <div className="value">{Number.isFinite(adminBrokerExcessLiquidity) ? `$${formatUsd(adminBrokerExcessLiquidity)}` : "—"}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">IBKR Buying Power (Live)</div>
+                    <div className="value">{Number.isFinite(adminBrokerBuyingPower) ? `$${formatUsd(adminBrokerBuyingPower)}` : "—"}</div>
                   </div>
                   <div className="pilot-monitor-card">
                     <div className="label">Hedge Premium (Venue Cost)</div>
