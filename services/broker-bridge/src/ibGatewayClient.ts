@@ -981,75 +981,116 @@ export class IbGatewayClient {
 
   private async getTopOfBookIb(conId: number): Promise<BridgeTopOfBook> {
     const ib = await this.requireIb();
-    const reqId = this.nextRequestId();
     const exchange = this.conIdToExchange.get(conId) || "CME";
     const contract: Contract = { conId, exchange };
+    const collectTopOfBook = async (params: {
+      snapshot: boolean;
+      timeoutMs: number;
+      resolveOnUsableTick: boolean;
+    }): Promise<BridgeTopOfBook> => {
+      const reqId = this.nextRequestId();
+      return await new Promise<BridgeTopOfBook>((resolve, reject) => {
+        const state: BridgeTopOfBook = {
+          bid: null,
+          ask: null,
+          bidSize: null,
+          askSize: null,
+          asOf: nowIso()
+        };
+        let settled = false;
+        let settleTimer: NodeJS.Timeout | null = null;
+        const timeoutHandle = setTimeout(() => {
+          finish();
+        }, Math.max(500, params.timeoutMs));
 
-    const snapshot = await new Promise<BridgeTopOfBook>((resolve, reject) => {
-      const timeoutMs = Math.max(1000, Math.floor(this.config.requestTimeoutMs || 0));
-      const state: BridgeTopOfBook = {
-        bid: null,
-        ask: null,
-        bidSize: null,
-        askSize: null,
-        asOf: nowIso()
-      };
-      const timeoutHandle = setTimeout(() => {
-        cleanup();
-        resolve({ ...state, asOf: nowIso() });
-      }, timeoutMs);
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve({ ...state, asOf: nowIso() });
+        };
 
-      const cleanup = (): void => {
-        clearTimeout(timeoutHandle);
-        ib.off(EventName.tickPrice, onTickPrice);
-        ib.off(EventName.tickSize, onTickSize);
-        ib.off(EventName.tickSnapshotEnd, onSnapshotEnd);
-        ib.off(EventName.error, onError);
-        try {
-          ib.cancelMktData(reqId);
-        } catch {
-          // ignore cancellation failures
-        }
-      };
+        const scheduleFinishSoon = (): void => {
+          if (!params.resolveOnUsableTick || settled) return;
+          if (state.ask === null && state.bid === null) return;
+          if (settleTimer) return;
+          settleTimer = setTimeout(() => {
+            settleTimer = null;
+            finish();
+          }, 120);
+        };
 
-      const onTickPrice = (eventReqId: number, field: number, value: number): void => {
-        if (!this.reqIdMatches(reqId, eventReqId)) return;
-        if (!Number.isFinite(value) || value <= 0) return;
-        if (field === 1 || field === 66) state.bid = value;
-        if (field === 2 || field === 67) state.ask = value;
-      };
+        const cleanup = (): void => {
+          clearTimeout(timeoutHandle);
+          if (settleTimer) clearTimeout(settleTimer);
+          ib.off(EventName.tickPrice, onTickPrice);
+          ib.off(EventName.tickSize, onTickSize);
+          ib.off(EventName.tickSnapshotEnd, onSnapshotEnd);
+          ib.off(EventName.error, onError);
+          try {
+            ib.cancelMktData(reqId);
+          } catch {
+            // ignore cancellation failures
+          }
+        };
 
-      const onTickSize = (eventReqId: number, field?: number, value?: number): void => {
-        if (!this.reqIdMatches(reqId, eventReqId)) return;
-        if (!Number.isFinite(Number(value))) return;
-        if (field === 0 || field === 69) state.bidSize = Number(value);
-        if (field === 3 || field === 70) state.askSize = Number(value);
-      };
+        const onTickPrice = (eventReqId: number, field: number, value: number): void => {
+          if (!this.reqIdMatches(reqId, eventReqId)) return;
+          if (!Number.isFinite(value) || value <= 0) return;
+          if (field === 1 || field === 66) state.bid = value;
+          if (field === 2 || field === 67) state.ask = value;
+          scheduleFinishSoon();
+        };
 
-      const onSnapshotEnd = (eventReqId: number): void => {
-        if (!this.reqIdMatches(reqId, eventReqId)) return;
-        cleanup();
-        resolve({ ...state, asOf: nowIso() });
-      };
+        const onTickSize = (eventReqId: number, field?: number, value?: number): void => {
+          if (!this.reqIdMatches(reqId, eventReqId)) return;
+          if (!Number.isFinite(Number(value))) return;
+          if (field === 0 || field === 69) state.bidSize = Number(value);
+          if (field === 3 || field === 70) state.askSize = Number(value);
+          scheduleFinishSoon();
+        };
 
-      const onError = (...args: unknown[]): void => {
-        const eventReqId = this.extractIbReqId(args);
-        if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
-        const code = this.extractIbErrorCode(args);
-        const message = this.extractIbErrorMessage(args);
-        if (code === 2104 || code === 2106 || code === 2107 || code === 2158 || code === 10167) return;
-        cleanup();
-        reject(new Error(`ib_mktdata_error:${message || code || "unknown"}`));
-      };
+        const onSnapshotEnd = (eventReqId: number): void => {
+          if (!params.snapshot) return;
+          if (!this.reqIdMatches(reqId, eventReqId)) return;
+          finish();
+        };
 
-      ib.on(EventName.tickPrice, onTickPrice);
-      ib.on(EventName.tickSize, onTickSize);
-      ib.on(EventName.tickSnapshotEnd, onSnapshotEnd);
-      ib.on(EventName.error, onError);
-      ib.reqMktData(reqId, contract, "", true, false);
+        const onError = (...args: unknown[]): void => {
+          const eventReqId = this.extractIbReqId(args);
+          if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
+          const code = this.extractIbErrorCode(args);
+          const message = this.extractIbErrorMessage(args);
+          if (code === 2104 || code === 2106 || code === 2107 || code === 2158 || code === 10167) return;
+          cleanup();
+          reject(new Error(`ib_mktdata_error:${message || code || "unknown"}`));
+        };
+
+        ib.on(EventName.tickPrice, onTickPrice);
+        ib.on(EventName.tickSize, onTickSize);
+        ib.on(EventName.tickSnapshotEnd, onSnapshotEnd);
+        ib.on(EventName.error, onError);
+        ib.reqMktData(reqId, contract, "", params.snapshot, false);
+      });
+    };
+
+    const timeoutMs = Math.max(1000, Math.floor(this.config.requestTimeoutMs || 0));
+    const snapshotPhaseMs = Math.max(700, Math.min(2500, Math.floor(timeoutMs * 0.4)));
+    const snapshot = await collectTopOfBook({
+      snapshot: true,
+      timeoutMs: snapshotPhaseMs,
+      resolveOnUsableTick: false
     });
+    if (snapshot.ask !== null || snapshot.bid !== null) return snapshot;
 
-    return snapshot;
+    // Some option contracts return empty snapshot books even when streaming quotes are available.
+    // Retry with a short streaming probe before concluding no top-of-book liquidity.
+    const streamPhaseMs = Math.max(900, timeoutMs - snapshotPhaseMs);
+    return await collectTopOfBook({
+      snapshot: false,
+      timeoutMs: streamPhaseMs,
+      resolveOnUsableTick: true
+    });
   }
 
   private async getDepthIb(conId: number): Promise<BridgeDepth> {
