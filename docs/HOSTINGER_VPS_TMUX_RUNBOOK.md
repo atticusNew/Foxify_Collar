@@ -18,7 +18,7 @@ ssh root@srv1536090
 mkdir -p /opt/ibkr-stack
 cd /opt/ibkr-stack
 git clone https://github.com/atticusNew/Foxify_Collar.git .
-git checkout cursor/platform-pilot-readiness-c44e
+git checkout cursor/optimal-option-selection-logic-cd07
 cp .env.example .env
 ```
 
@@ -31,49 +31,46 @@ apt-get install -y tmux curl jq
 
 ---
 
-## 2) Required `.env` values (desktop TWS connectivity)
+## 2) Select env profile (Phase 3A cutover)
 
-Edit `/opt/ibkr-stack/.env` and set at minimum:
+Use profile-based envs to avoid mixed mode drift:
+
+- `env/profiles/pilot_ibkr_live.env` (canonical live profile)
+- `env/profiles/pilot_ibkr_paper.env` (paper rehearsal profile)
+- `env/profiles/pilot_deribit_test.env` (dev fallback only)
+
+On VPS:
 
 ```bash
-PILOT_API_ENABLED=true
-PILOT_VENUE_MODE=ibkr_cme_live
-PILOT_HEDGE_POLICY=options_primary_futures_fallback
-
-# API -> broker bridge auth
-IBKR_BRIDGE_TOKEN=<LONG_RANDOM_SECRET>
-IBKR_BRIDGE_REQUIRE_AUTH=true
-
-# Allow execution when ready (set false for dry run)
-IBKR_ENABLE_EXECUTION=true
-IBKR_ACCOUNT_ID=<YOUR_IBKR_ACCOUNT_ID>
-
-# Enforce real transport for live pilot integrity
-IBKR_REQUIRE_LIVE_TRANSPORT=true
-
-# Bridge transport settings
-IBKR_BRIDGE_TRANSPORT=ib_socket
-IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC=false
-IBKR_BRIDGE_READONLY=false
-
-# Desktop TWS reverse tunnel lands on VPS host port 14002
-IBKR_GATEWAY_HOST=host.docker.internal
-IBKR_GATEWAY_PORT=14002
-IBKR_GATEWAY_CLIENT_ID=101
-
-# Pilot operational controls
-USER_HASH_SECRET=<LONG_RANDOM_SECRET>
-PILOT_ADMIN_TOKEN=<LONG_RANDOM_SECRET>
-PILOT_INTERNAL_TOKEN=<LONG_RANDOM_SECRET>
-PILOT_PROOF_TOKEN=<LONG_RANDOM_SECRET>
-POSTGRES_URL=postgresql://atticus:<DB_PASSWORD>@postgres:5432/atticus
-DB_PASSWORD=<DB_PASSWORD>
+cd /opt/ibkr-stack
+cp env/profiles/pilot_ibkr_live.env .env
+vi .env
 ```
+
+Set required secrets/IDs in `.env`:
+
+- `DB_PASSWORD`
+- `POSTGRES_URL`
+- `IBKR_BRIDGE_TOKEN`
+- `IBKR_ACCOUNT_ID`
+- `USER_HASH_SECRET`
+- `PILOT_ADMIN_TOKEN`
+- `PILOT_INTERNAL_TOKEN`
+- `PILOT_PROOF_TOKEN`
+
+Validate before deploy:
+
+```bash
+./scripts/validate_pilot_env.sh .env
+```
+
+Expected output: `pilot env validation passed`.
 
 Notes:
 
-- Use `PILOT_VENUE_MODE=ibkr_cme_paper` for paper rehearsal.
-- For paper rehearsal, you can set `IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC=true` while testing connectivity.
+- For paper rehearsal: `cp env/profiles/pilot_ibkr_paper.env .env`
+- `options_only_native` is the canonical pilot quote policy.
+- `IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC=false` should remain disabled for live cutover integrity.
 
 ---
 
@@ -127,7 +124,10 @@ From VPS:
 ```bash
 ssh root@srv1536090
 cd /opt/ibkr-stack
-git pull origin cursor/platform-pilot-readiness-c44e
+git fetch origin cursor/optimal-option-selection-logic-cd07
+git checkout cursor/optimal-option-selection-logic-cd07
+git pull origin cursor/optimal-option-selection-logic-cd07
+./scripts/validate_pilot_env.sh .env
 ```
 
 Start stack in dedicated tmux session:
@@ -157,6 +157,34 @@ tmux attach -t atticus-stack
 Detach from tmux without stopping:
 
 - `Ctrl+b` then `d`
+
+---
+
+## 4.5) Frontend cutover (Render static web -> VPS API)
+
+To remove split deployment risk, keep web static on Render but move pilot API path to VPS.
+
+Update Render web env:
+
+- `VITE_API_BASE=https://<your-vps-api-domain>`
+
+Then redeploy web.
+
+Post-cutover smoke:
+
+```bash
+curl -s https://<your-vps-api-domain>/health | jq .
+curl -s https://<your-vps-api-domain>/pilot/health | jq .
+```
+
+Expected:
+
+- API served by VPS endpoint
+- `pilot/health` reports IBKR transport state from VPS stack
+
+Rollback:
+
+- Reset `VITE_API_BASE` to prior API endpoint and redeploy web.
 
 ---
 
