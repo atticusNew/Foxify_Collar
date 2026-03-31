@@ -121,6 +121,10 @@ export class IbGatewayClient {
   private readonly orderIdToExternalId = new Map<number, string>();
   private readonly execIdToOrderExternalId = new Map<string, string>();
   private readonly conIdToExchange = new Map<number, string>();
+  private readonly conIdToContractHint = new Map<
+    number,
+    { exchange: string; secType: "FOP" | "FUT"; localSymbol?: string; multiplier?: string }
+  >();
   private connectPromise: Promise<void> | null = null;
 
   constructor(private readonly config: IbConfig) {
@@ -646,7 +650,14 @@ export class IbGatewayClient {
         }
       ];
       for (const contract of contracts) {
-        this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+        const exchange = normalizeExchangeAlias(query.exchange) || "CME";
+        this.conIdToExchange.set(contract.conId, exchange);
+        this.conIdToContractHint.set(contract.conId, {
+          exchange,
+          secType: "FUT",
+          localSymbol: contract.localSymbol,
+          multiplier: contract.multiplier
+        });
       }
       return contracts;
     }
@@ -667,7 +678,14 @@ export class IbGatewayClient {
         minTick: 5
       }));
       for (const contract of contracts) {
-        this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+        const exchange = normalizeExchangeAlias(query.exchange) || "CME";
+        this.conIdToExchange.set(contract.conId, exchange);
+        this.conIdToContractHint.set(contract.conId, {
+          exchange,
+          secType: "FOP",
+          localSymbol: contract.localSymbol,
+          multiplier: contract.multiplier
+        });
       }
       return contracts;
     }
@@ -686,7 +704,14 @@ export class IbGatewayClient {
       }
     ];
     for (const contract of contracts) {
-      this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+      const exchange = normalizeExchangeAlias(query.exchange) || "CME";
+      this.conIdToExchange.set(contract.conId, exchange);
+      this.conIdToContractHint.set(contract.conId, {
+        exchange,
+        secType: "FOP",
+        localSymbol: contract.localSymbol,
+        multiplier: contract.multiplier
+      });
     }
     return contracts;
   }
@@ -952,6 +977,12 @@ export class IbGatewayClient {
       });
     for (const item of mapped) {
       this.conIdToExchange.set(item.contract.conId, item.exchange);
+      this.conIdToContractHint.set(item.contract.conId, {
+        exchange: item.exchange,
+        secType: item.contract.secType,
+        localSymbol: item.contract.localSymbol,
+        multiplier: item.contract.multiplier
+      });
     }
     const mappedContracts = mapped.map((item) => item.contract);
 
@@ -981,8 +1012,15 @@ export class IbGatewayClient {
 
   private async getTopOfBookIb(conId: number): Promise<BridgeTopOfBook> {
     const ib = await this.requireIb();
-    const exchange = this.conIdToExchange.get(conId) || "CME";
-    const contract: Contract = { conId, exchange };
+    const hint = this.conIdToContractHint.get(conId);
+    const exchange = hint?.exchange || this.conIdToExchange.get(conId) || "CME";
+    const contract: Contract = {
+      conId,
+      exchange,
+      secType: hint?.secType ? (hint.secType as unknown as SecType) : undefined,
+      localSymbol: hint?.localSymbol,
+      multiplier: hint?.multiplier
+    };
     const collectTopOfBook = async (params: {
       snapshot: boolean;
       timeoutMs: number;
@@ -1096,8 +1134,15 @@ export class IbGatewayClient {
   private async getDepthIb(conId: number): Promise<BridgeDepth> {
     const ib = await this.requireIb();
     const reqId = this.nextRequestId();
-    const exchange = this.conIdToExchange.get(conId) || "CME";
-    const contract: Contract = { conId, exchange };
+    const hint = this.conIdToContractHint.get(conId);
+    const exchange = hint?.exchange || this.conIdToExchange.get(conId) || "CME";
+    const contract: Contract = {
+      conId,
+      exchange,
+      secType: hint?.secType ? (hint.secType as unknown as SecType) : undefined,
+      localSymbol: hint?.localSymbol,
+      multiplier: hint?.multiplier
+    };
     const bidsByLevel = new Map<number, DepthRow>();
     const asksByLevel = new Map<number, DepthRow>();
 
@@ -1191,8 +1236,15 @@ export class IbGatewayClient {
       lastUpdateAt: nowIso()
     });
 
-    const exchange = this.conIdToExchange.get(req.conId) || "CME";
-    const contract: Contract = { conId: req.conId, exchange };
+    const hint = this.conIdToContractHint.get(req.conId);
+    const exchange = hint?.exchange || this.conIdToExchange.get(req.conId) || "CME";
+    const contract: Contract = {
+      conId: req.conId,
+      exchange,
+      secType: hint?.secType ? (hint.secType as unknown as SecType) : undefined,
+      localSymbol: hint?.localSymbol,
+      multiplier: hint?.multiplier
+    };
     ib.placeOrder(orderId, contract, {
       orderId,
       action: req.side as OrderAction,
