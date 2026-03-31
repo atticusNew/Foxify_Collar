@@ -324,6 +324,13 @@ const isLikelyAfterHoursUtc = (): boolean => {
 };
 
 const friendlyError = (message: string): string => {
+  if (
+    message.includes("service_unavailable") ||
+    message.includes("http_503") ||
+    message.includes("admin_service_unavailable")
+  ) {
+    return "Service is temporarily unavailable (503). Please retry shortly.";
+  }
   if (message.includes("daily_notional_cap_exceeded")) {
     return "Daily protection limit reached for pilot operations. Please try again next UTC day.";
   }
@@ -391,7 +398,7 @@ const friendlyError = (message: string): string => {
     return "Network issue detected. Please retry.";
   }
   if (message.includes("admin_unauthorized") || message.includes("unauthorized")) {
-    return "Admin access denied. Verify admin token and proxy/IP allowlist settings.";
+    return "Admin access denied. Verify admin token and PILOT_ADMIN_IP_ALLOWLIST / trusted proxy IP settings.";
   }
   return "Unable to complete request. Please retry.";
 };
@@ -406,9 +413,24 @@ const isQuoteUnavailableError = (message: string | null): boolean => {
     lower.includes("liquidity") ||
     lower.includes("no_top_of_book") ||
     lower.includes("off-market") ||
+    lower.includes("after-market") ||
     lower.includes("timed out") ||
-    lower.includes("temporarily unavailable")
+    lower.includes("temporarily unavailable") ||
+    lower.includes("service unavailable") ||
+    lower.includes("503") ||
+    lower.includes("http_503") ||
+    lower.includes("service_unavailable")
   );
+};
+
+const parseApiBody = async (res: Response): Promise<{ payload: any; rawText: string }> => {
+  const rawText = await res.text();
+  if (!rawText) return { payload: null, rawText: "" };
+  try {
+    return { payload: JSON.parse(rawText), rawText };
+  } catch {
+    return { payload: null, rawText };
+  }
 };
 
 const isRetryableQuoteError = (message: string): boolean => {
@@ -878,19 +900,34 @@ export function PilotApp() {
       });
       const [rowsRes, metricsRes] = await Promise.all([
         fetch(`${API_BASE}/pilot/protections/export?${params.toString()}`, {
-          headers: { "x-admin-token": token }
+          headers: { "x-admin-token": token, "x-admin-actor": "web-admin" }
         }),
         fetch(`${API_BASE}/pilot/admin/metrics?scope=${encodeURIComponent(scope)}`, {
-          headers: { "x-admin-token": token }
+          headers: { "x-admin-token": token, "x-admin-actor": "web-admin" }
         })
       ]);
-      const rowsPayload = await rowsRes.json();
-      const metricsPayload = await metricsRes.json();
+      const [rowsParsed, metricsParsed] = await Promise.all([parseApiBody(rowsRes), parseApiBody(metricsRes)]);
+      const rowsPayload = rowsParsed.payload;
+      const metricsPayload = metricsParsed.payload;
       if (!rowsRes.ok || rowsPayload?.status !== "ok" || !Array.isArray(rowsPayload?.rows)) {
-        throw new Error(rowsPayload?.reason || "admin_load_failed");
+        const reason = String(rowsPayload?.reason || "");
+        if (reason === "unauthorized_admin" || rowsRes.status === 401) {
+          throw new Error("admin_unauthorized");
+        }
+        if (rowsRes.status === 503) {
+          throw new Error("admin_service_unavailable");
+        }
+        throw new Error(reason || `admin_load_failed:http_${rowsRes.status}`);
       }
       if (!metricsRes.ok || metricsPayload?.status !== "ok" || !metricsPayload?.metrics) {
-        throw new Error(metricsPayload?.reason || "admin_metrics_failed");
+        const reason = String(metricsPayload?.reason || "");
+        if (reason === "unauthorized_admin" || metricsRes.status === 401) {
+          throw new Error("admin_unauthorized");
+        }
+        if (metricsRes.status === 503) {
+          throw new Error("admin_service_unavailable");
+        }
+        throw new Error(reason || `admin_metrics_failed:http_${metricsRes.status}`);
       }
       const rows = rowsPayload.rows as AdminProtectionRow[];
       setAdminRows(rows);
@@ -920,16 +957,24 @@ export function PilotApp() {
     try {
       const [ledgerRes, monitorRes] = await Promise.all([
         fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/ledger`, {
-          headers: { "x-admin-token": token }
+          headers: { "x-admin-token": token, "x-admin-actor": "web-admin" }
         }),
         fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/monitor`, {
-          headers: { "x-admin-token": token }
+          headers: { "x-admin-token": token, "x-admin-actor": "web-admin" }
         })
       ]);
-      const ledgerPayload = await ledgerRes.json();
-      const monitorPayload = await monitorRes.json();
+      const [ledgerParsed, monitorParsed] = await Promise.all([parseApiBody(ledgerRes), parseApiBody(monitorRes)]);
+      const ledgerPayload = ledgerParsed.payload;
+      const monitorPayload = monitorParsed.payload;
       if (!ledgerRes.ok || ledgerPayload?.status !== "ok") {
-        throw new Error(ledgerPayload?.reason || "admin_ledger_failed");
+        const reason = String(ledgerPayload?.reason || "");
+        if (reason === "unauthorized_admin" || ledgerRes.status === 401) {
+          throw new Error("admin_unauthorized");
+        }
+        if (ledgerRes.status === 503) {
+          throw new Error("admin_service_unavailable");
+        }
+        throw new Error(reason || `admin_ledger_failed:http_${ledgerRes.status}`);
       }
       setAdminDetailProtection((ledgerPayload?.protection as ProtectionRecord) || null);
       setAdminLedger(Array.isArray(ledgerPayload?.ledger) ? (ledgerPayload.ledger as AdminLedgerEntry[]) : []);
@@ -1002,7 +1047,8 @@ export function PilotApp() {
               tenorDays: selectedTenorDays
             })
           });
-          const payload = await res.json();
+          const parsed = await parseApiBody(res);
+          const payload = parsed.payload;
           if (!res.ok || payload?.status !== "ok") {
             const reason = String(payload?.reason || "");
             const detail = String(payload?.detail || "");
@@ -1011,6 +1057,12 @@ export function PilotApp() {
             }
             if (reason === "quote_generation_timeout" || reason === "venue_quote_timeout") {
               throw new Error("venue_quote_timeout");
+            }
+            if (!payload && res.status === 503) {
+              throw new Error("service_unavailable_503");
+            }
+            if (!payload && res.status >= 500) {
+              throw new Error(`service_unavailable_${res.status}`);
             }
             throw new Error(payload?.message || reason || "quote_failed");
           }
@@ -1319,20 +1371,22 @@ export function PilotApp() {
   const showQuoteUnavailableHint = quoteState !== "fetching" && isQuoteUnavailableError(error);
   const quoteLiquidityStatus: QuoteLiquidityStatus = (() => {
     const quoteError = String(error || "").toLowerCase();
+    if (quoteError.includes("service_unavailable") || quoteError.includes("http_503")) return "limited";
     if (quoteError.includes("no_liquidity_window")) return "off_market";
     if (quoteError.includes("quote_liquidity_unavailable") || quoteError.includes("no_top_of_book")) return "limited";
     if (isLikelyAfterHoursUtc()) return "off_market";
     if (quoteState === "ready" && quote) return "active";
     return "unknown";
   })();
+  const showQuoteLiquidityPill = quoteLiquidityStatus !== "unknown";
   const quoteLiquidityLabel =
     quoteLiquidityStatus === "active"
-      ? "Market active"
+      ? "Market Hours"
       : quoteLiquidityStatus === "limited"
         ? "Limited liquidity"
         : quoteLiquidityStatus === "off_market"
-          ? "Likely off-market window"
-          : "Liquidity status pending";
+          ? "After-Market Hours"
+          : "";
   const quoteLiquidityPillClass =
     quoteLiquidityStatus === "active"
       ? "pill"
@@ -1738,7 +1792,7 @@ export function PilotApp() {
                         disabled={busy || quoteLocked}
                         onClick={() => setSelectedTenorDays(tenorDay)}
                       >
-                        {tenorDay}D
+                        {tenorDay}-Day
                       </button>
                     );
                   })}
@@ -1791,12 +1845,18 @@ export function PilotApp() {
         <div className="section">
           <div className="section-title-row">
             <h4>Quote</h4>
-            <span className={quoteLiquidityPillClass}>{quoteLiquidityLabel}</span>
-            {quoteState === "fetching" && <span className="pill">Finding best available protection…</span>}
-            {quoteState === "ready" && quoteTimeLeft > 0 && (
-              <span className="pill pill-warning">Expires in {formatCountdown(quoteTimeLeft)}</span>
-            )}
-            {quoteState === "expired" && <span className="pill pill-warning">Quote expired</span>}
+          </div>
+          <div className="quote-status-row">
+            <div className="quote-status-left">
+              {showQuoteLiquidityPill && <span className={quoteLiquidityPillClass}>{quoteLiquidityLabel}</span>}
+            </div>
+            <div className="quote-status-right">
+              {quoteState === "fetching" && <span className="pill">Finding best available protection…</span>}
+              {quoteState === "ready" && quoteTimeLeft > 0 && (
+                <span className="pill pill-warning">Expires in {formatCountdown(quoteTimeLeft)}</span>
+              )}
+              {quoteState === "expired" && <span className="pill pill-warning">Quote expired</span>}
+            </div>
           </div>
           <div className={`quote-card quote-card-${quoteState}`}>
             {quoteState === "idle" && (
@@ -2577,12 +2637,17 @@ export function PilotApp() {
                 </div>
               </div>
             </div>
-            <div className="modal-actions">
-              <button className="btn" type="button" disabled={busy} onClick={() => setShowActivateConfirmModal(false)}>
+            <div className="modal-actions pilot-activate-actions">
+              <button
+                className="btn pilot-activate-action-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => setShowActivateConfirmModal(false)}
+              >
                 Cancel
               </button>
               <button
-                className="cta"
+                className="pilot-activate-action-btn pilot-activate-action-btn-primary"
                 type="button"
                 disabled={busy || (activateModalMode === "live" && !canActivate)}
                 onClick={async () => {
@@ -2605,6 +2670,16 @@ export function PilotApp() {
           </div>
         </div>
       )}
+      <a
+        className="pilot-help-fab"
+        href={`https://t.me/${PILOT_SUPPORT_TELEGRAM.replace(/^@/, "")}?text=${encodeURIComponent(
+          "Hi Michael, I need help with Foxify pilot testing."
+        )}`}
+        target="_blank"
+        rel="noreferrer"
+      >
+        Telegram Help
+      </a>
     </div>
   );
 }
