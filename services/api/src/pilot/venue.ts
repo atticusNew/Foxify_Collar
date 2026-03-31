@@ -1793,9 +1793,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           : this.optionLiquiditySelectionEnabled
             ? Math.max(2200, Math.min(9000, Math.floor(qualifyRequestHintMs * 0.8)))
             : Math.max(700, Math.min(2000, Math.floor(requestWindowHintMs * 0.55)));
-      const qualifyParallelism = this.optionLiquiditySelectionEnabled
-        ? Math.max(1, Math.min(4, optionProbeParallelism))
-        : 1;
+      const qualifyParallelism =
+        hedgePolicy === "options_only_native"
+          ? 1
+          : this.optionLiquiditySelectionEnabled
+            ? Math.max(1, Math.min(4, optionProbeParallelism))
+            : 1;
       const maxQualifiedContracts = this.optionLiquiditySelectionEnabled ? 48 : 18;
       const withQualifyTimeout = async (
         promise: Promise<IbkrQualifiedContract[]>,
@@ -1949,7 +1952,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             })
           : [];
       const ringTasks: Array<Array<QualifyTask>> =
-        hedgePolicy === "options_only_native" ? [...baseRingTasks, ...expandedRingTasks] : baseRingTasks;
+        hedgePolicy === "options_only_native" ? baseRingTasks : baseRingTasks;
       let bestOptionMatch:
         | {
             contract: IbkrQualifiedContract;
@@ -1999,8 +2002,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         noMatchFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
         noMatchFailureTotals.nPassed += Number(counts.nPassed || 0);
       };
-      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 2 : 3;
-      for (const ringGroup of ringTasks) {
+      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 1 : 3;
+      const maxRingPasses =
+        hedgePolicy === "options_only_native"
+          ? Math.max(1, Math.min(3, ringTasks.length))
+          : ringTasks.length;
+      for (let ringIdx = 0; ringIdx < maxRingPasses; ringIdx += 1) {
+        const ringGroup = ringTasks[ringIdx];
         await runQualifyTasks(ringGroup);
         if (!dedupedContracts.length) {
           continue;
@@ -2042,6 +2050,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         }
         const viableCount = Number(optionMatch.failureCounts.nPassed || 0);
         if (viableCount >= minViableCandidatesBeforeStop) {
+          break;
+        }
+        if (
+          hedgePolicy === "options_only_native" &&
+          sawTenorEligibleContract &&
+          isLikelyNoLiquidityWindow(noMatchFailureTotals)
+        ) {
           break;
         }
       }
