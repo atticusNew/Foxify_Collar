@@ -76,25 +76,6 @@ type ReferencePricePayload = {
   message?: string;
 };
 
-type TenorPolicyResponse = {
-  status: "ok" | "error";
-  window?: {
-    minSamplesPerTenor?: number;
-    lookbackMinutes?: number;
-  };
-  tenors?: Array<{
-    tenorDays: number;
-    sampleCount: number;
-    eligible: boolean;
-    reasons: string[];
-  }>;
-  selection?: {
-    enabledTenorsDays: number[];
-    defaultTenorDays: number;
-    status?: "ok" | "degraded";
-  };
-};
-
 type AdminProtectionRow = {
   protection_id: string;
   status: string;
@@ -198,7 +179,8 @@ const DEFAULT_TIERS: TierLevel[] = [
   { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
   { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
 ];
-const PILOT_DEFAULT_TENOR_DAYS = 2;
+const STATIC_TENOR_CHIPS_DAYS = [3, 7, 14, 21, 30] as const;
+const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[1];
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
 const QUOTE_REQUEST_TIMEOUT_MS = 30000;
 const QUOTE_RETRY_DELAY_MS = 450;
@@ -332,6 +314,8 @@ const formatMatchedTenorShort = (days: number | null): string => {
   return `${Math.max(1, Math.round(Number(days)))}D`;
 };
 
+type QuoteLiquidityStatus = "unknown" | "active" | "limited" | "off_market";
+
 const friendlyError = (message: string): string => {
   if (message.includes("daily_notional_cap_exceeded")) {
     return "Daily protection limit reached for pilot operations. Please try again next UTC day.";
@@ -414,7 +398,8 @@ const isRetryableQuoteError = (message: string): boolean => {
     lower.includes("price_unavailable") ||
     lower.includes("quote_generation_failed") ||
     lower.includes("storage_unavailable") ||
-    lower.includes("fetch failed")
+    lower.includes("fetch failed") ||
+    lower.includes("network issue")
   );
 };
 
@@ -486,10 +471,7 @@ export function PilotApp() {
   const [protectedNotional, setProtectedNotional] = useState("");
   const [autoRenew, setAutoRenew] = useState(false);
   const [selectedTenorDays, setSelectedTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
-  const [enabledTenorDays, setEnabledTenorDays] = useState<number[]>([PILOT_DEFAULT_TENOR_DAYS]);
-  const [defaultTenorDays, setDefaultTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
-  const [tenorPolicyStatus, setTenorPolicyStatus] = useState<"ok" | "degraded" | "fallback">("fallback");
-  const [tenorPolicyDebugSummary, setTenorPolicyDebugSummary] = useState<string | null>(null);
+  const staticTenorOptions = STATIC_TENOR_CHIPS_DAYS as readonly number[];
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -619,73 +601,15 @@ export function PilotApp() {
   ]);
 
   useEffect(() => {
-    if (!enabledTenorDays.includes(selectedTenorDays)) {
-      setSelectedTenorDays(defaultTenorDays);
+    if (!staticTenorOptions.includes(selectedTenorDays)) {
+      setSelectedTenorDays(PILOT_DEFAULT_TENOR_DAYS);
     }
-  }, [selectedTenorDays, enabledTenorDays, defaultTenorDays]);
+  }, [selectedTenorDays, staticTenorOptions]);
 
   useEffect(() => {
     if (!pilotUnlocked) return;
-    let active = true;
-    const loadTenorPolicy = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/pilot/tenor-policy`);
-        const payload = (await res.json()) as TenorPolicyResponse;
-        if (!active || !res.ok || payload.status !== "ok") return;
-        const enabled = Array.isArray(payload.selection?.enabledTenorsDays)
-          ? payload.selection!.enabledTenorsDays.filter((n) => Number.isFinite(Number(n)) && Number(n) > 0)
-          : [];
-        const candidateTenors = Array.isArray(payload.tenors)
-          ? payload.tenors
-              .map((entry) => Number(entry.tenorDays))
-              .filter((n) => Number.isFinite(n) && n > 0)
-          : [];
-        const policyDefault = Number(payload.selection?.defaultTenorDays);
-        const fallbackDefault = Number.isFinite(policyDefault) && policyDefault > 0 ? policyDefault : PILOT_DEFAULT_TENOR_DAYS;
-        // If policy has no enabled tenors yet, expose candidate tenors so users can still choose a horizon.
-        const nextEnabled = (enabled.length > 0 ? enabled : candidateTenors.length > 0 ? candidateTenors : [fallbackDefault])
-          .slice()
-          .sort((a, b) => a - b);
-        const nextDefault =
-          Number.isFinite(policyDefault) && policyDefault > 0 && nextEnabled.includes(policyDefault)
-            ? policyDefault
-            : nextEnabled[0] || PILOT_DEFAULT_TENOR_DAYS;
-        setEnabledTenorDays(nextEnabled);
-        setDefaultTenorDays(nextDefault);
-        setTenorPolicyStatus(enabled.length > 0 ? (payload.selection?.status === "degraded" ? "degraded" : "ok") : "fallback");
-        const minSamples = Number(payload.window?.minSamplesPerTenor ?? NaN);
-        if (Array.isArray(payload.tenors) && payload.tenors.length > 0) {
-          const blockedRows = payload.tenors
-            .filter((entry) => !entry.eligible)
-            .map((entry) => {
-              const reasons = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.join(",") : "unknown";
-              return `${entry.tenorDays}D(samples=${entry.sampleCount};reasons=${reasons})`;
-            });
-          const summaryPrefix = Number.isFinite(minSamples)
-            ? `minSamples=${Math.max(1, Math.floor(minSamples))}`
-            : "minSamples=unknown";
-          setTenorPolicyDebugSummary(
-            blockedRows.length > 0 ? `${summaryPrefix} · blocked: ${blockedRows.join(" | ")}` : `${summaryPrefix} · all candidates eligible`
-          );
-        } else {
-          setTenorPolicyDebugSummary(Number.isFinite(minSamples) ? `minSamples=${Math.max(1, Math.floor(minSamples))}` : null);
-        }
-        setSelectedTenorDays((prev) => (nextEnabled.includes(prev) ? prev : nextDefault));
-      } catch {
-        // When policy endpoint is unavailable, keep a single deterministic fallback tenor.
-        const fallback = PILOT_DEFAULT_TENOR_DAYS;
-        setEnabledTenorDays([fallback]);
-        setDefaultTenorDays(fallback);
-        setTenorPolicyStatus("fallback");
-        setTenorPolicyDebugSummary("tenor-policy endpoint unavailable; using deterministic fallback tenor");
-        setSelectedTenorDays((prev) => (prev === fallback ? prev : fallback));
-      }
-    };
-    void loadTenorPolicy();
-    return () => {
-      active = false;
-    };
-  }, [pilotUnlocked]);
+    setSelectedTenorDays((prev) => (staticTenorOptions.includes(prev) ? prev : PILOT_DEFAULT_TENOR_DAYS));
+  }, [pilotUnlocked, staticTenorOptions]);
 
   useEffect(() => {
     setTermsError(null);
@@ -1368,6 +1292,29 @@ export function PilotApp() {
       "true" ||
       new URLSearchParams(window.location.search).get("internal_admin") === "1");
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
+  const quoteLiquidityStatus: QuoteLiquidityStatus = (() => {
+    const quoteError = String(error || "").toLowerCase();
+    if (quoteError.includes("no_liquidity_window")) return "off_market";
+    if (quoteError.includes("quote_liquidity_unavailable") || quoteError.includes("no_top_of_book")) return "limited";
+    if (quoteState === "ready" && quote) return "active";
+    return "unknown";
+  })();
+  const quoteLiquidityLabel =
+    quoteLiquidityStatus === "active"
+      ? "Market active"
+      : quoteLiquidityStatus === "limited"
+        ? "Limited liquidity"
+        : quoteLiquidityStatus === "off_market"
+          ? "Likely off-market window"
+          : "Liquidity status pending";
+  const quoteLiquidityPillClass =
+    quoteLiquidityStatus === "active"
+      ? "pill"
+      : quoteLiquidityStatus === "limited"
+        ? "pill pill-warning"
+        : quoteLiquidityStatus === "off_market"
+          ? "pill pill-danger"
+          : "pill pill-warning";
   const monitorHasLiveSnapshot = Boolean(
     monitor &&
       protection &&
@@ -1743,18 +1690,20 @@ export function PilotApp() {
               <span className="pilot-label">Protection Length</span>
               <div className="pilot-field pilot-tenor-field">
                 <div
-                  className={`pilot-tenor-chips ${enabledTenorDays.length === 1 ? "pilot-tenor-chips-single" : ""}`}
+                  className="pilot-tenor-chips pilot-tenor-chips-static"
                   role="group"
                   aria-label="Protection Length"
                 >
-                  {enabledTenorDays.map((tenorDay) => {
+                  {staticTenorOptions.map((tenorDay) => {
                     const selected = selectedTenorDays === tenorDay;
-                    const recommended = tenorDay === defaultTenorDays;
+                    const recommended = tenorDay === PILOT_DEFAULT_TENOR_DAYS;
                     return (
                       <button
                         key={tenorDay}
                         type="button"
-                        className={`pilot-tenor-chip ${selected ? "active" : ""} ${recommended ? "recommended" : ""}`}
+                        className={`pilot-tenor-chip ${selected ? "active" : ""} ${
+                          recommended ? "pilot-tenor-chip-recommended" : ""
+                        }`}
                         aria-pressed={selected}
                         disabled={busy || quoteLocked}
                         onClick={() => setSelectedTenorDays(tenorDay)}
@@ -1764,11 +1713,9 @@ export function PilotApp() {
                     );
                   })}
                 </div>
-                {internalAdminEnabled && tenorPolicyDebugSummary && (
-                  <div className="muted" style={{ marginTop: 8 }}>
-                    Tenor policy debug: {tenorPolicyDebugSummary}
-                  </div>
-                )}
+                <div className="muted pilot-tenor-helper" style={{ marginTop: 8 }}>
+                  Static horizons for clarity. Final matched expiry may differ based on live liquidity.
+                </div>
               </div>
             </div>
 
@@ -1814,6 +1761,7 @@ export function PilotApp() {
         <div className="section">
           <div className="section-title-row">
             <h4>Quote</h4>
+            <span className={quoteLiquidityPillClass}>{quoteLiquidityLabel}</span>
             {quoteState === "fetching" && <span className="pill">Finding best available protection…</span>}
             {quoteState === "ready" && quoteTimeLeft > 0 && (
               <span className="pill pill-warning">Expires in {formatCountdown(quoteTimeLeft)}</span>
