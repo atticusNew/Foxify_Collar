@@ -1086,6 +1086,7 @@ export const registerPilotRoutes = async (
       foxifyExposureNotional?: number;
       entryPrice?: number;
       tenorDays?: number;
+      strictTenor?: boolean | string;
       instrumentId?: string;
       marketId?: string;
       clientOrderId?: string;
@@ -1257,7 +1258,8 @@ export const registerPilotRoutes = async (
           tenorMinDays: pilotConfig.pilotTenorMinDays,
           tenorMaxDays: pilotConfig.pilotTenorMaxDays,
           hedgePolicy: pilotConfig.pilotHedgePolicy,
-          clientOrderId: body.clientOrderId
+          clientOrderId: body.clientOrderId,
+          strictTenor: parseBoolean(body.strictTenor, false)
         }),
         pilotConfig.venueQuoteTimeoutMs,
         "venue_quote"

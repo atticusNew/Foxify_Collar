@@ -26,6 +26,7 @@ export type QuoteRequest = {
   requestedTenorDays?: number;
   tenorMinDays?: number;
   tenorMaxDays?: number;
+  strictTenor?: boolean;
   hedgePolicy?: PilotHedgePolicy;
   clientOrderId?: string;
 };
@@ -950,6 +951,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const minTenorDays = clampInt(req.tenorMinDays, 1, 30, 1);
     const maxTenorDays = clampInt(req.tenorMaxDays, minTenorDays, 30, Math.max(minTenorDays, 7));
     const selectedTenorDays = Math.max(minTenorDays, Math.min(maxTenorDays, requestedTenorDays));
+    const strictTenor = req.strictTenor === true;
     const trigger = toFinitePositive(req.triggerPrice);
     const adverseMovePctRaw = Number(req.drawdownFloorPct ?? 0);
     const adverseMovePct =
@@ -1041,21 +1043,22 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
       return true;
     };
-      const effectiveOptionTenorWindowDays = Math.max(
-        optionTenorWindowDays,
-        Number.isFinite(this.maxTenorDriftDays) && this.maxTenorDriftDays >= 0 ? this.maxTenorDriftDays : 0
-      );
-      const strikeDistanceFromRounded = (contract: IbkrQualifiedContract): number => {
-        if (!roundedStrike) return Number.POSITIVE_INFINITY;
-        const strike = parseIbkrStrikeFromLocalSymbol(contract);
-        if (!strike) return Number.POSITIVE_INFINITY;
-        return Math.abs(strike - roundedStrike);
-      };
-      const contractPassesOptionTenorWindow = (contract: IbkrQualifiedContract): boolean => {
+    const effectiveOptionTenorWindowDays = Math.max(
+      optionTenorWindowDays,
+      Number.isFinite(this.maxTenorDriftDays) && this.maxTenorDriftDays >= 0 ? this.maxTenorDriftDays : 0
+    );
+    const strikeDistanceFromRounded = (contract: IbkrQualifiedContract): number => {
+      if (!roundedStrike) return Number.POSITIVE_INFINITY;
+      const strike = parseIbkrStrikeFromLocalSymbol(contract);
+      if (!strike) return Number.POSITIVE_INFINITY;
+      return Math.abs(strike - roundedStrike);
+    };
+    const contractPassesOptionTenorWindow = (contract: IbkrQualifiedContract): boolean => {
       const meta = contractTenorMeta(contract);
       if (meta.selectedTenorDays === null) return false;
       const drift = Math.abs(meta.selectedTenorDays - selectedTenorDaysIntended);
-        return drift <= effectiveOptionTenorWindowDays + 1e-9;
+      if (strictTenor) return drift <= 1.01;
+      return drift <= effectiveOptionTenorWindowDays + 1e-9;
     };
     const rankByTenor = (a: IbkrQualifiedContract, b: IbkrQualifiedContract): number => {
       const aMeta = contractTenorMeta(a);
@@ -2122,10 +2125,20 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         const stalledMarketData = noTop + timedOut >= Math.max(4, Math.floor(total * 0.6));
         return stalledMarketData || isLikelyNoLiquidityWindow(counts);
       };
+      const valueSweepBudgetMs =
+        hedgePolicy === "options_only_native" ? Math.max(1000, Math.min(2200, Math.floor(this.quoteBudgetMs * 0.12))) : 0;
+      const valueSweepStartMs = Date.now();
       for (let ringIdx = 0; ringIdx < maxRingPasses; ringIdx += 1) {
         const topCallsUsed = Math.max(0, counters.topCalls - topCallsAtLegStart);
         const remainingTopCalls = maxTopCallsPerOptionLeg - topCallsUsed;
         if (remainingTopCalls <= 0) {
+          break;
+        }
+        if (
+          hedgePolicy === "options_only_native" &&
+          bestOptionMatch &&
+          Date.now() - valueSweepStartMs >= valueSweepBudgetMs
+        ) {
           break;
         }
         const ringGroup = ringTasks[ringIdx];
@@ -2139,27 +2152,36 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           });
           continue;
         }
+        if (strictTenor && !dedupedContracts.some(contractPassesOptionTenorWindow)) {
+          optionLegFailureReason = "tenor_drift_exceeded";
+          this.updateTenorLiquidityHint(ringTenor, {
+            contractsFound: dedupedContracts.length,
+            timedOut: optionQualifyTimedOut,
+            hadTopLiquidity: false
+          });
+          continue;
+        }
         const optionProbeBudgetMs = Math.max(1200, optionLegDeadlineMs - Date.now() - 120);
         if (optionProbeBudgetMs < 1200) {
           break;
         }
-      const scoreStartedAt = Date.now();
-      const optionProbeTimeoutMs =
-        hedgePolicy === "options_only_native"
-          ? Math.max(2200, Math.min(10000, Math.floor(requestWindowHintMs * 1.2)))
-          : Math.max(650, Math.min(1800, requestWindowHintMs));
-      const optionProbeDepthAttempts = hedgePolicy === "options_only_native" ? 2 : 1;
-      const optionProbeLegBudgetMs =
-        hedgePolicy === "options_only_native"
-          ? Math.max(5000, Math.min(30000, optionProbeBudgetMs))
-          : Math.max(1200, Math.min(6000, optionProbeBudgetMs));
-      const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
+        const scoreStartedAt = Date.now();
+        const optionProbeTimeoutMs =
+          hedgePolicy === "options_only_native"
+            ? Math.max(2200, Math.min(10000, Math.floor(requestWindowHintMs * 1.2)))
+            : Math.max(650, Math.min(1800, requestWindowHintMs));
+        const optionProbeDepthAttempts = hedgePolicy === "options_only_native" ? 2 : 1;
+        const optionProbeLegBudgetMs =
+          hedgePolicy === "options_only_native"
+            ? Math.max(5000, Math.min(30000, optionProbeBudgetMs))
+            : Math.max(1200, Math.min(6000, optionProbeBudgetMs));
+        const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
           probeTimeoutMs: optionProbeTimeoutMs,
           depthAttempts: optionProbeDepthAttempts,
           legBudgetMs: optionProbeLegBudgetMs,
           maxTopCalls: remainingTopCalls
         });
-      timingsMs.score += Date.now() - scoreStartedAt;
+        timingsMs.score += Date.now() - scoreStartedAt;
         if (!("contract" in optionMatch)) {
           accumulateNoMatchFailureTotals(optionMatch.failureCounts);
           this.updateTenorLiquidityHint(ringTenor, {
@@ -2177,13 +2199,23 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           }
           continue;
         }
+        const previousBestScore = bestOptionMatch?.selectedScore ?? null;
         if (!bestOptionMatch || optionMatch.selectedScore < bestOptionMatch.selectedScore) {
           bestOptionMatch = optionMatch;
           bestOptionRankedAlternatives = optionMatch.rankedAlternatives;
         }
         if (hedgePolicy === "options_only_native") {
-          // Demo mode preference: first actionable protected option wins.
-          break;
+          // Bounded value sweep: keep scanning briefly to improve premium if clearly better.
+          const sweepElapsedMs = Date.now() - valueSweepStartMs;
+          const valueImproved =
+            previousBestScore !== null &&
+            Number.isFinite(previousBestScore) &&
+            Number.isFinite(optionMatch.selectedScore) &&
+            previousBestScore - optionMatch.selectedScore > 5;
+          if (sweepElapsedMs >= valueSweepBudgetMs || (!valueImproved && previousBestScore !== null)) {
+            break;
+          }
+          continue;
         }
         this.updateTenorLiquidityHint(ringTenor, {
           contractsFound: Number(optionMatch.failureCounts.nTotalCandidates || 0),
