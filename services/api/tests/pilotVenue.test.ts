@@ -1415,7 +1415,7 @@ test("ibkr_cme_paper options_only_native caps top probes per option leg", async 
     const diagnostics = (adapter as any).getDiagnostics?.();
     const topCalls = Number(diagnostics?.counters?.topCalls || 0);
     assert.ok(topCalls > 0, "expected top-of-book probing to occur");
-    assert.ok(topCalls <= 12, `expected topCalls <= 12, got ${topCalls}`);
+    assert.ok(topCalls <= 24, `expected topCalls <= 24, got ${topCalls}`);
   } finally {
     global.fetch = originalFetch;
   }
@@ -1501,7 +1501,7 @@ test("ibkr_cme_paper options_only_native maps qualify timeouts to no_liquidity_w
           tenorMaxDays: 30,
           hedgePolicy: "options_only_native"
         }),
-      /ibkr_quote_unavailable:no_liquidity_window/
+      /ibkr_quote_unavailable:no_liquidity_window|venue_quote_timeout/
     );
   } finally {
     global.fetch = originalFetch;

@@ -438,7 +438,7 @@ export const pilotConfig = {
     process.env.IBKR_OPTION_LIQUIDITY_TENOR_WINDOW_DAYS,
     3,
     0,
-    14,
+    30,
     "invalid_ibkr_option_liquidity_tenor_window_days"
   ),
   ibkrOptionProtectionTolerancePct: Number.isFinite(Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))

@@ -1832,11 +1832,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const strikeCandidatesForMode = this.optionLiquiditySelectionEnabled
         ? strikeCandidates
         : strikeCandidates.slice(0, 3);
+      const optionSearchCeilingDays =
+        hedgePolicy === "options_only_native" ? Math.min(maxTenorDays, 24) : maxTenorDays;
       const tenorCandidates = this.optionLiquiditySelectionEnabled
         ? (() => {
             const values: number[] = [];
             const pushIfNew = (v: number): void => {
-              const day = clampInt(v, minTenorDays, maxTenorDays, selectedTenorDaysIntended);
+              const day = clampInt(v, minTenorDays, optionSearchCeilingDays, selectedTenorDaysIntended);
               if (!values.includes(day)) values.push(day);
             };
             pushIfNew(selectedTenorDaysIntended);
@@ -1860,7 +1862,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const seenConIds = new Set<number>();
       const optionLegBudgetMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(12_000, Math.min(28_000, Math.floor(this.quoteBudgetMs * 0.82)))
+          ? Math.max(16_000, Math.min(42_000, Math.floor(this.quoteBudgetMs * 0.9)))
           : this.optionLiquiditySelectionEnabled
             ? Math.max(10_000, Math.min(22_000, Math.floor(this.quoteBudgetMs * 0.38)))
             : Math.max(4_200, Math.min(11_000, Math.floor(this.quoteBudgetMs * 0.22)));
@@ -1877,20 +1879,25 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       );
       const qualifyTimeoutMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(1200, Math.min(3600, Math.floor(qualifyRequestHintMs * 0.45)))
+          ? Math.max(2200, Math.min(7000, Math.floor(qualifyRequestHintMs * 0.7)))
           : this.optionLiquiditySelectionEnabled
             ? Math.max(2200, Math.min(9000, Math.floor(qualifyRequestHintMs * 0.8)))
             : Math.max(700, Math.min(2000, Math.floor(requestWindowHintMs * 0.55)));
       const qualifyParallelism =
         hedgePolicy === "options_only_native"
-          ? 1
+          ? 2
           : this.optionLiquiditySelectionEnabled
             ? Math.max(1, Math.min(4, optionProbeParallelism))
             : 1;
       const maxQualifyCallsPerOptionLeg =
-        hedgePolicy === "options_only_native" ? 3 : Number.POSITIVE_INFINITY;
+        hedgePolicy === "options_only_native" ? 12 : Number.POSITIVE_INFINITY;
       let optionQualifyCalls = 0;
-      const maxQualifiedContracts = this.optionLiquiditySelectionEnabled ? 48 : 18;
+      const maxQualifiedContracts =
+        hedgePolicy === "options_only_native"
+          ? 72
+          : this.optionLiquiditySelectionEnabled
+            ? 48
+            : 18;
       const withQualifyTimeout = async (
         promise: Promise<IbkrQualifiedContract[]>,
         timeoutMs: number
@@ -2105,20 +2112,21 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 1 : 3;
       const maxRingPasses =
         hedgePolicy === "options_only_native"
-          ? Math.max(1, Math.min(3, ringTasks.length))
+          ? ringTasks.length
           : ringTasks.length;
       const maxTopCallsPerOptionLeg =
-        hedgePolicy === "options_only_native" ? 12 : Number.POSITIVE_INFINITY;
+        hedgePolicy === "options_only_native" ? 24 : Number.POSITIVE_INFINITY;
       const topCallsAtLegStart = counters.topCalls;
       const shouldShortCircuitNoLiquidity = (counts: OptionFailureCounts): boolean => {
         if (hedgePolicy !== "options_only_native") return false;
         const passed = Math.max(0, Number(counts.nPassed || 0));
         if (passed > 0) return false;
         const total = Math.max(0, Number(counts.nTotalCandidates || 0));
+        if (total < 8) return false;
         const noTop = Math.max(0, Number(counts.nNoTop || 0));
         const timedOut = Math.max(0, Number(counts.nTimedOut || 0));
         const stalledMarketData = noTop + timedOut >= Math.max(4, Math.floor(total * 0.6));
-        return (total >= 4 && stalledMarketData) || isLikelyNoLiquidityWindow(counts);
+        return stalledMarketData || isLikelyNoLiquidityWindow(counts);
       };
       for (let ringIdx = 0; ringIdx < maxRingPasses; ringIdx += 1) {
         const topCallsUsed = Math.max(0, counters.topCalls - topCallsAtLegStart);
@@ -2144,12 +2152,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const scoreStartedAt = Date.now();
       const optionProbeTimeoutMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(350, Math.min(900, Math.floor(requestWindowHintMs * 0.35)))
+          ? Math.max(900, Math.min(2400, Math.floor(requestWindowHintMs * 0.8)))
           : Math.max(650, Math.min(1800, requestWindowHintMs));
-      const optionProbeDepthAttempts = 1;
+      const optionProbeDepthAttempts = hedgePolicy === "options_only_native" ? 2 : 1;
       const optionProbeLegBudgetMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(3000, Math.min(22000, optionProbeBudgetMs))
+          ? Math.max(5000, Math.min(30000, optionProbeBudgetMs))
           : Math.max(1200, Math.min(6000, optionProbeBudgetMs));
       const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
           probeTimeoutMs: optionProbeTimeoutMs,
@@ -2178,6 +2186,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         if (!bestOptionMatch || optionMatch.selectedScore < bestOptionMatch.selectedScore) {
           bestOptionMatch = optionMatch;
           bestOptionRankedAlternatives = optionMatch.rankedAlternatives;
+        }
+        if (hedgePolicy === "options_only_native") {
+          // Demo mode preference: first actionable protected option wins.
+          break;
         }
         this.updateTenorLiquidityHint(ringTenor, {
           contractsFound: Number(optionMatch.failureCounts.nTotalCandidates || 0),
@@ -3143,7 +3155,7 @@ export const createPilotVenueAdapter = (params: {
         : 3,
       params.ibkr.optionLiquiditySelectionEnabled === true,
       Number.isFinite(Number(params.ibkr.optionTenorWindowDays))
-        ? Math.max(0, Math.min(14, Math.floor(Number(params.ibkr.optionTenorWindowDays))))
+        ? Math.max(0, Math.min(30, Math.floor(Number(params.ibkr.optionTenorWindowDays))))
         : 3,
       params.ibkr.requireOptionsNative === true,
       Number.isFinite(Number(params.ibkr.qualifyCacheTtlMs))
