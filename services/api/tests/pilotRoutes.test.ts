@@ -198,6 +198,33 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.ibkrQualifyCacheMaxKeys = Number(process.env.IBKR_QUALIFY_CACHE_MAX_KEYS || "2000");
   configModule.pilotConfig.venueQuoteTimeoutMs = Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000");
   configModule.pilotConfig.quoteMinNotionalUsdc = Number(process.env.PILOT_QUOTE_MIN_NOTIONAL_USDC || "1000");
+  configModule.pilotConfig.premiumPolicyMode =
+    process.env.PILOT_PREMIUM_POLICY_MODE === "pass_through_markup"
+      ? "pass_through_markup"
+      : "hedge_only_markup";
+  configModule.pilotConfig.premiumPolicyVersion =
+    String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2";
+  configModule.pilotConfig.premiumMarkupPct = Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045");
+  configModule.pilotConfig.premiumMarkupPctByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_BRONZE || "0.06"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_SILVER || "0.05"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_GOLD || "0.04"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_PLATINUM || "0.03")
+  };
+  configModule.pilotConfig.premiumFloorUsdByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_FLOOR_USD_BRONZE || "20"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_FLOOR_USD_SILVER || "17"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_USD_GOLD || "14"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_USD_PLATINUM || "12")
+  };
+  configModule.pilotConfig.premiumFloorBpsByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_BRONZE || "6"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_SILVER || "5"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_GOLD || "4"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "4")
+  };
+  configModule.pilotConfig.ibkrFeePerContractUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_CONTRACT_USD || "2.02"));
+  configModule.pilotConfig.ibkrFeePerOrderUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD || "0"));
 
   const db = newDb();
   const pg = db.adapters.createPg();
