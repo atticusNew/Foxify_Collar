@@ -315,6 +315,12 @@ const formatMatchedTenorShort = (days: number | null): string => {
 };
 
 type QuoteLiquidityStatus = "unknown" | "active" | "limited" | "off_market";
+const isLikelyAfterHoursUtc = (): boolean => {
+  const now = new Date();
+  const day = now.getUTCDay(); // 0=Sun ... 6=Sat
+  // Keep this lightweight for pilot UX: weekends are strong "likely after-hours" signal.
+  return day === 0 || day === 6;
+};
 
 const friendlyError = (message: string): string => {
   if (message.includes("daily_notional_cap_exceeded")) {
@@ -1296,6 +1302,7 @@ export function PilotApp() {
     const quoteError = String(error || "").toLowerCase();
     if (quoteError.includes("no_liquidity_window")) return "off_market";
     if (quoteError.includes("quote_liquidity_unavailable") || quoteError.includes("no_top_of_book")) return "limited";
+    if (isLikelyAfterHoursUtc()) return "off_market";
     if (quoteState === "ready" && quote) return "active";
     return "unknown";
   })();

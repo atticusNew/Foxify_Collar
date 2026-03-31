@@ -390,7 +390,7 @@ body {
 }
 
 .pilot-tenor-chips-static {
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .pilot-tenor-chip {
@@ -406,6 +406,10 @@ body {
   align-items: center;
   justify-content: center;
   min-height: 36px;
+}
+
+.pilot-tenor-chip-span {
+  grid-column: span 1;
 }
 
 .pilot-tenor-chip.active {
@@ -1495,6 +1499,10 @@ select.input {
 
   .pilot-tenor-chips {
     grid-template-columns: 1fr;
+  }
+
+  .pilot-tenor-chip-span {
+    grid-column: span 1;
   }
 
   .pilot-tenor-helper {
