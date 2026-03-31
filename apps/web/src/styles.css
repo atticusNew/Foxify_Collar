@@ -444,6 +444,23 @@ body {
   gap: 8px;
 }
 
+.quote-market-banner {
+  margin-top: 6px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 107, 107, 0.55);
+  border-radius: 10px;
+  background: rgba(255, 107, 107, 0.1);
+  padding: 9px 10px;
+  display: grid;
+  gap: 4px;
+}
+
+.quote-market-banner-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ff9a9a;
+}
+
 .quote-status-right {
   display: inline-flex;
   align-items: center;
@@ -674,6 +691,10 @@ body {
   margin-top: 0;
   min-height: 40px;
   font-size: 13px;
+}
+
+.pilot-actions-under-request {
+  margin-top: 8px;
 }
 
 .pilot-preview-btn {
@@ -2227,19 +2248,20 @@ select.input {
   right: 18px;
   bottom: 18px;
   z-index: 25;
-  border: 1px solid var(--border);
+  border: 1px solid rgba(42, 171, 238, 0.65);
   border-radius: 999px;
-  background: #111116;
-  color: var(--muted);
+  background: linear-gradient(90deg, rgba(42, 171, 238, 0.25), rgba(42, 171, 238, 0.12));
+  color: #bfe9ff;
   padding: 7px 11px;
   font-size: 11px;
+  font-weight: 600;
   text-decoration: none;
   box-shadow: var(--shadow);
 }
 
 .pilot-help-fab:hover {
-  color: var(--text);
-  border-color: rgba(141, 208, 255, 0.45);
+  color: #e7f7ff;
+  border-color: rgba(132, 220, 255, 0.95);
 }
 
 .presentation-gate-card {

@@ -316,14 +316,95 @@ const formatMatchedTenorShort = (days: number | null): string => {
 
 type QuoteLiquidityStatus = "unknown" | "active" | "limited" | "off_market";
 type ActivateModalMode = "live" | "preview";
-const isLikelyAfterHoursUtc = (): boolean => {
-  const now = new Date();
-  const day = now.getUTCDay(); // 0=Sun ... 6=Sat
-  // Keep this lightweight for pilot UX: weekends are strong "likely after-hours" signal.
-  return day === 0 || day === 6;
+type CmeMarketWindow = {
+  isOpen: boolean;
+  nextOpenAt: Date | null;
+};
+
+const CME_MARKET_TZ = "America/New_York";
+const CME_SCAN_STEP_MS = 60_000;
+const CME_SCAN_MAX_STEPS = 60 * 24 * 8;
+
+const getCmeEtClock = (date: Date): { weekday: number; hour: number; minute: number } => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CME_MARKET_TZ,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const weekdayLabel = parts.find((part) => part.type === "weekday")?.value || "Mon";
+  const hour = Number(parts.find((part) => part.type === "hour")?.value || "0");
+  const minute = Number(parts.find((part) => part.type === "minute")?.value || "0");
+  const weekdayMap: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6
+  };
+  return {
+    weekday: weekdayMap[weekdayLabel] ?? 1,
+    hour: Number.isFinite(hour) ? hour : 0,
+    minute: Number.isFinite(minute) ? minute : 0
+  };
+};
+
+const isCmeOptionsMarketOpen = (date: Date): boolean => {
+  const { weekday, hour, minute } = getCmeEtClock(date);
+  const minuteOfDay = hour * 60 + minute;
+  if (weekday === 6) return false; // Saturday closed.
+  if (weekday === 0) return minuteOfDay >= 18 * 60; // Sunday opens 6:00 PM ET.
+  if (weekday === 5) return minuteOfDay < 17 * 60; // Friday closes 5:00 PM ET.
+  // Monday-Thursday: open except daily 5:00-6:00 PM ET maintenance break.
+  return minuteOfDay < 17 * 60 || minuteOfDay >= 18 * 60;
+};
+
+const findNextCmeOptionsOpenAt = (from: Date): Date | null => {
+  for (let step = 1; step <= CME_SCAN_MAX_STEPS; step += 1) {
+    const candidate = new Date(from.getTime() + step * CME_SCAN_STEP_MS);
+    if (isCmeOptionsMarketOpen(candidate)) return candidate;
+  }
+  return null;
+};
+
+const resolveCmeMarketWindow = (now: Date): CmeMarketWindow => {
+  const isOpen = isCmeOptionsMarketOpen(now);
+  return {
+    isOpen,
+    nextOpenAt: isOpen ? null : findNextCmeOptionsOpenAt(now)
+  };
+};
+
+const formatCmeOpenAt = (date: Date): string =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: CME_MARKET_TZ,
+    weekday: "short",
+    month: "short",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short"
+  }).format(date);
+
+const formatCmeCountdown = (to: Date, nowMs: number): string => {
+  const diffMs = Math.max(0, to.getTime() - nowMs);
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 };
 
 const friendlyError = (message: string): string => {
+  if (message.includes("no_liquidity_window")) {
+    return "Outside CME market hours. Quotes are unavailable until the market reopens.";
+  }
   if (
     message.includes("service_unavailable") ||
     message.includes("http_503") ||
@@ -553,6 +634,7 @@ export function PilotApp() {
   const [liveReference, setLiveReference] = useState<ReferencePricePayload["reference"] | null>(null);
   const [liveReferenceBusy, setLiveReferenceBusy] = useState(false);
   const [liveReferenceError, setLiveReferenceError] = useState<string | null>(null);
+  const [clockNowMs, setClockNowMs] = useState(() => Date.now());
   const historyRequestSeqRef = useRef(0);
   const monitorRequestSeqRef = useRef(0);
   const protectionPollSeqRef = useRef(0);
@@ -1012,6 +1094,11 @@ export function PilotApp() {
     }
   }, [showAdminModal]);
 
+  useEffect(() => {
+    const id = setInterval(() => setClockNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   const requestQuote = async () => {
     if (!canQuote) return;
     setBusy(true);
@@ -1064,7 +1151,7 @@ export function PilotApp() {
             if (!payload && res.status >= 500) {
               throw new Error(`service_unavailable_${res.status}`);
             }
-            throw new Error(payload?.message || reason || "quote_failed");
+            throw new Error([reason, payload?.message, detail].filter(Boolean).join(":") || "quote_failed");
           }
           setQuote(payload as QuoteResult);
           setQuoteState("ready");
@@ -1360,6 +1447,10 @@ export function PilotApp() {
   );
   const quoteRequestUrgencyClass =
     quoteRequestTimeLeft <= 6 ? "is-danger" : quoteRequestTimeLeft <= 12 ? "is-warning" : "";
+  const cmeMarketWindow = useMemo(() => resolveCmeMarketWindow(new Date(clockNowMs)), [clockNowMs]);
+  const nextCmeOpenLabel = cmeMarketWindow.nextOpenAt ? formatCmeOpenAt(cmeMarketWindow.nextOpenAt) : null;
+  const nextCmeOpenCountdown = cmeMarketWindow.nextOpenAt ? formatCmeCountdown(cmeMarketWindow.nextOpenAt, clockNowMs) : null;
+  const showCmeClosedBanner = !cmeMarketWindow.isOpen;
   const urlSearchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
@@ -1374,7 +1465,7 @@ export function PilotApp() {
     if (quoteError.includes("service_unavailable") || quoteError.includes("http_503")) return "limited";
     if (quoteError.includes("no_liquidity_window")) return "off_market";
     if (quoteError.includes("quote_liquidity_unavailable") || quoteError.includes("no_top_of_book")) return "limited";
-    if (isLikelyAfterHoursUtc()) return "off_market";
+    if (!cmeMarketWindow.isOpen) return "off_market";
     if (quoteState === "ready" && quote) return "active";
     return "unknown";
   })();
@@ -1399,6 +1490,7 @@ export function PilotApp() {
     quoteLiquidityStatus === "off_market"
       ? "Likely outside active market hours. Retry during session open."
       : "Try another tenor or retry in a moment as liquidity updates.";
+  const showQuoteSection = quoteState !== "idle" || Boolean(quote) || Boolean(error);
   const monitorHasLiveSnapshot = Boolean(
     monitor &&
       protection &&
@@ -1842,7 +1934,72 @@ export function PilotApp() {
           </div>
         </div>
 
-        <div className="section">
+        <div className="section pilot-actions-under-request">
+          {showCmeClosedBanner && (
+            <div className="quote-market-banner">
+              <div className="quote-market-banner-title">Outside CME Market Hours</div>
+              <div className="muted">
+                CME BTC options are currently closed.
+                {nextCmeOpenLabel ? ` Next open: ${nextCmeOpenLabel}.` : ""}
+                {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
+              </div>
+            </div>
+          )}
+          <div className="pilot-actions">
+            <button className="btn btn-secondary pilot-action-btn" disabled={busy || !canQuote} onClick={requestQuote}>
+              {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
+            </button>
+            <button
+              className="cta pilot-action-btn"
+              disabled={busy || !canActivate}
+              onClick={() => {
+                setActivationPreviewNotice(null);
+                setActivateModalMode("live");
+                setShowActivateConfirmModal(true);
+              }}
+            >
+              {busy && quoteState !== "fetching" ? "Confirming..." : "Confirm Protection"}
+            </button>
+          </div>
+          {previewActivateEnabled && (
+            <div className="disclaimer">
+              <button
+                className="btn btn-secondary pilot-preview-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setActivationPreviewNotice(null);
+                  setActivateModalMode("preview");
+                  setShowActivateConfirmModal(true);
+                }}
+              >
+                Preview activation modal
+              </button>
+            </div>
+          )}
+          {activationPreviewNotice && <div className="disclaimer">{activationPreviewNotice}</div>}
+          {error && <div className={`disclaimer ${showQuoteUnavailableHint ? "" : "danger"}`}>{error}</div>}
+          {!error && quoteAlternativeHint && (
+            <div className="disclaimer">{`Venue alternatives: ${quoteAlternativeHint}`}</div>
+          )}
+          {showPriceFeedHint && (
+            <div className="disclaimer">
+              Quick check: API must run with PILOT_API_ENABLED=true, PRICE_SINGLE_SOURCE=true, and a valid
+              PRICE_REFERENCE_URL (Coinbase ticker).{" "}
+              <button
+                className="btn btn-secondary pilot-retry-btn"
+                type="button"
+                disabled={busy || !canQuote}
+                onClick={requestQuote}
+              >
+                Retry quote
+              </button>
+            </div>
+          )}
+        </div>
+
+        {showQuoteSection && (
+          <div className="section">
           <div className="section-title-row">
             <h4>Quote</h4>
           </div>
@@ -1976,61 +2133,8 @@ export function PilotApp() {
               validated.
             </div>
           )}
-        </div>
-
-        <div className="section">
-          <div className="pilot-actions">
-            <button className="btn btn-secondary pilot-action-btn" disabled={busy || !canQuote} onClick={requestQuote}>
-              {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
-            </button>
-            <button
-              className="cta pilot-action-btn"
-              disabled={busy || !canActivate}
-              onClick={() => {
-                setActivationPreviewNotice(null);
-                setActivateModalMode("live");
-                setShowActivateConfirmModal(true);
-              }}
-            >
-              {busy && quoteState !== "fetching" ? "Confirming..." : "Confirm Protection"}
-            </button>
           </div>
-          {previewActivateEnabled && (
-            <div className="disclaimer">
-              <button
-                className="btn btn-secondary pilot-preview-btn"
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setActivationPreviewNotice(null);
-                  setActivateModalMode("preview");
-                  setShowActivateConfirmModal(true);
-                }}
-              >
-                Preview activation modal
-              </button>
-            </div>
-          )}
-          {activationPreviewNotice && <div className="disclaimer">{activationPreviewNotice}</div>}
-          {error && <div className={`disclaimer ${showQuoteUnavailableHint ? "" : "danger"}`}>{error}</div>}
-          {!error && quoteAlternativeHint && (
-            <div className="disclaimer">{`Venue alternatives: ${quoteAlternativeHint}`}</div>
-          )}
-          {showPriceFeedHint && (
-            <div className="disclaimer">
-              Quick check: API must run with PILOT_API_ENABLED=true, PRICE_SINGLE_SOURCE=true, and a valid
-              PRICE_REFERENCE_URL (Coinbase ticker).{" "}
-              <button
-                className="btn btn-secondary pilot-retry-btn"
-                type="button"
-                disabled={busy || !canQuote}
-                onClick={requestQuote}
-              >
-                Retry quote
-              </button>
-            </div>
-          )}
-        </div>
+        )}
 
         <div className="section">
           <div className="section-title-row">
@@ -2070,7 +2174,7 @@ export function PilotApp() {
                   Loading protections...
                 </div>
               ) : !protection && historyWithoutActive.length === 0 ? (
-                <div className="muted">No protections found yet.</div>
+                <div className="muted">No protected positions yet.</div>
               ) : (
                 <div className="positions">
                   {protection && (
@@ -2293,7 +2397,7 @@ export function PilotApp() {
                         ? `$${formatUsd(adminIndicativeHedgeMarkTotal)}`
                         : "—"}
                     </div>
-                    <div className="muted">Coverage: {adminIndicativeHedgeMarkCount} marked rows</div>
+                    <div className="muted">Coverage: {adminIndicativeMarksCoverage} marked rows</div>
                   </div>
                   <div className="pilot-monitor-card">
                     <div className="label">Unrealized Hedge P&L (Indicative)</div>
