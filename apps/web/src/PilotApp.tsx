@@ -315,6 +315,7 @@ const formatMatchedTenorShort = (days: number | null): string => {
 };
 
 type QuoteLiquidityStatus = "unknown" | "active" | "limited" | "off_market";
+type ActivateModalMode = "live" | "preview";
 const isLikelyAfterHoursUtc = (): boolean => {
   const now = new Date();
   const day = now.getUTCDay(); // 0=Sun ... 6=Sat
@@ -397,6 +398,18 @@ const friendlyError = (message: string): string => {
 
 const isPriceUnavailableError = (message: string | null): boolean =>
   Boolean(message && message.toLowerCase().includes("quote temporarily unavailable"));
+
+const isQuoteUnavailableError = (message: string | null): boolean => {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("liquidity") ||
+    lower.includes("no_top_of_book") ||
+    lower.includes("off-market") ||
+    lower.includes("timed out") ||
+    lower.includes("temporarily unavailable")
+  );
+};
 
 const isRetryableQuoteError = (message: string): boolean => {
   const lower = message.toLowerCase();
@@ -486,6 +499,9 @@ export function PilotApp() {
   const [quoteRequestTimeLeft, setQuoteRequestTimeLeft] = useState(QUOTE_REQUEST_TIMEOUT_SECONDS);
   const [quoteTimeLeft, setQuoteTimeLeft] = useState(0);
   const [showRenewModal, setShowRenewModal] = useState(false);
+  const [showActivateConfirmModal, setShowActivateConfirmModal] = useState(false);
+  const [activateModalMode, setActivateModalMode] = useState<ActivateModalMode>("live");
+  const [activationPreviewNotice, setActivationPreviewNotice] = useState<string | null>(null);
   const [showProtectionModal, setShowProtectionModal] = useState(false);
   const [monitor, setMonitor] = useState<MonitorPayload | null>(null);
   const [monitorBusy, setMonitorBusy] = useState(false);
@@ -1292,12 +1308,15 @@ export function PilotApp() {
   );
   const quoteRequestUrgencyClass =
     quoteRequestTimeLeft <= 6 ? "is-danger" : quoteRequestTimeLeft <= 12 ? "is-warning" : "";
+  const urlSearchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
     ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_INTERNAL_ADMIN_ENABLED ===
       "true" ||
-      new URLSearchParams(window.location.search).get("internal_admin") === "1");
+      urlSearchParams?.get("internal_admin") === "1");
+  const previewActivateEnabled = urlSearchParams?.get("preview_activate") === "1";
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
+  const showQuoteUnavailableHint = quoteState !== "fetching" && isQuoteUnavailableError(error);
   const quoteLiquidityStatus: QuoteLiquidityStatus = (() => {
     const quoteError = String(error || "").toLowerCase();
     if (quoteError.includes("no_liquidity_window")) return "off_market";
@@ -1322,6 +1341,10 @@ export function PilotApp() {
         : quoteLiquidityStatus === "off_market"
           ? "pill pill-danger"
           : "pill pill-warning";
+  const quoteUnavailableSecondary =
+    quoteLiquidityStatus === "off_market"
+      ? "Likely outside active market hours. Retry during session open."
+      : "Try another tenor or retry in a moment as liquidity updates.";
   const monitorHasLiveSnapshot = Boolean(
     monitor &&
       protection &&
@@ -1693,7 +1716,7 @@ export function PilotApp() {
               </div>
             </div>
 
-            <div className="pilot-form-row">
+            <div className="pilot-form-row pilot-form-row-tenor">
               <span className="pilot-label">Protection Length</span>
               <div className="pilot-field pilot-tenor-field">
                 <div
@@ -1715,13 +1738,13 @@ export function PilotApp() {
                         disabled={busy || quoteLocked}
                         onClick={() => setSelectedTenorDays(tenorDay)}
                       >
-                        {tenorDay}-Day
+                        {tenorDay}D
                       </button>
                     );
                   })}
                 </div>
                 <div className="muted pilot-tenor-helper" style={{ marginTop: 8 }}>
-                  Static horizons for clarity. Final matched expiry may differ based on live liquidity.
+                  Closest liquid expiry is matched automatically.
                 </div>
               </div>
             </div>
@@ -1872,6 +1895,12 @@ export function PilotApp() {
               </>
             )}
           </div>
+          {showQuoteUnavailableHint && (
+            <div className="quote-unavailable-note">
+              <div className="quote-unavailable-title">Quote unavailable right now.</div>
+              <div className="muted">{quoteUnavailableSecondary}</div>
+            </div>
+          )}
           {quoteLocked && (
             <div className="muted">Quote locked: core request fields are temporarily read-only until refresh or expiry.</div>
           )}
@@ -1894,11 +1923,36 @@ export function PilotApp() {
             <button className="btn btn-secondary pilot-action-btn" disabled={busy || !canQuote} onClick={requestQuote}>
               {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
             </button>
-            <button className="cta pilot-action-btn" disabled={busy || !canActivate} onClick={activateProtection}>
+            <button
+              className="cta pilot-action-btn"
+              disabled={busy || !canActivate}
+              onClick={() => {
+                setActivationPreviewNotice(null);
+                setActivateModalMode("live");
+                setShowActivateConfirmModal(true);
+              }}
+            >
               {busy && quoteState !== "fetching" ? "Confirming..." : "Confirm Protection"}
             </button>
           </div>
-          {error && <div className="disclaimer danger">{error}</div>}
+          {previewActivateEnabled && (
+            <div className="disclaimer">
+              <button
+                className="btn btn-secondary pilot-preview-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setActivationPreviewNotice(null);
+                  setActivateModalMode("preview");
+                  setShowActivateConfirmModal(true);
+                }}
+              >
+                Preview activation modal
+              </button>
+            </div>
+          )}
+          {activationPreviewNotice && <div className="disclaimer">{activationPreviewNotice}</div>}
+          {error && <div className={`disclaimer ${showQuoteUnavailableHint ? "" : "danger"}`}>{error}</div>}
           {!error && quoteAlternativeHint && (
             <div className="disclaimer">{`Venue alternatives: ${quoteAlternativeHint}`}</div>
           )}
@@ -2473,6 +2527,80 @@ export function PilotApp() {
                   Renew protection
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showActivateConfirmModal && (
+        <div className="modal" onClick={() => (busy ? undefined : setShowActivateConfirmModal(false))}>
+          <div className="modal-card pilot-activate-confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">
+                <h3>Confirm Protection Activation</h3>
+              </div>
+              <button
+                className="icon-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => setShowActivateConfirmModal(false)}
+              >
+                x
+              </button>
+            </div>
+            {activateModalMode === "preview" ? (
+              <div className="disclaimer">
+                Preview mode only. No live activation request will be sent.
+              </div>
+            ) : (
+              <div className="muted">
+                Confirm this quote to activate protection with the matched expiry and premium below.
+              </div>
+            )}
+            <div className="pilot-activate-summary">
+              <div className="pilot-monitor-card">
+                <div className="label">Direction</div>
+                <div className="value">{quoteDirectionLabel}</div>
+              </div>
+              <div className="pilot-monitor-card">
+                <div className="label">Protection Amount</div>
+                <div className="value">${formatUsd(protectedValue)}</div>
+              </div>
+              <div className="pilot-monitor-card">
+                <div className="label">Quoted Premium</div>
+                <div className="value">${formatUsd(quote?.quote?.premium ?? 0)}</div>
+              </div>
+              <div className="pilot-monitor-card">
+                <div className="label">Requested vs Matched</div>
+                <div className="value">
+                  {targetHorizonDisplay} → {matchedExpiryDisplay}
+                </div>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn" type="button" disabled={busy} onClick={() => setShowActivateConfirmModal(false)}>
+                Cancel
+              </button>
+              <button
+                className="cta"
+                type="button"
+                disabled={busy || (activateModalMode === "live" && !canActivate)}
+                onClick={async () => {
+                  if (activateModalMode === "preview") {
+                    setShowActivateConfirmModal(false);
+                    setActivationPreviewNotice("Preview complete. No live activation request was sent.");
+                    return;
+                  }
+                  setShowActivateConfirmModal(false);
+                  await activateProtection();
+                }}
+              >
+                {activateModalMode === "preview"
+                  ? "Run Preview"
+                  : busy
+                    ? "Confirming..."
+                    : "Activate Protection"}
+              </button>
             </div>
           </div>
         </div>
