@@ -1001,12 +1001,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
     };
     const requestWindowHintMs = Math.max(
-      400,
-      Math.min(4000, Math.floor(Number(this.marketDataRequestTimeoutMs || 0)))
+      600,
+      Math.min(12000, Math.floor(Number(this.marketDataRequestTimeoutMs || 0)))
     );
     const optionLiquiditySelectionEnabled = this.optionLiquiditySelectionEnabled !== false;
     const optionProbeParallelism = Math.max(1, Math.min(6, Math.floor(Number(this.optionProbeParallelism || 0)) || 3));
-    const optionTenorWindowDays = Math.max(0, Math.min(14, Math.floor(Number(this.optionTenorWindowDays || 0)) || 3));
+    const optionTenorWindowDays = Math.max(0, Math.min(30, Math.floor(Number(this.optionTenorWindowDays || 0)) || 3));
     const calcTenorDaysFromExpiry = (expiryRaw?: string): number | null => {
       const expiry = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
       if (expiry.length !== 8) return null;
