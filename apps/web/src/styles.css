@@ -204,7 +204,7 @@ body {
 .section-title-row {
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
   gap: 8px;
 }
 
@@ -444,9 +444,13 @@ body {
 .quote-status-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   margin-bottom: 8px;
   gap: 8px;
+}
+
+.quote-status-row .quote-status-right {
+  margin-left: auto;
 }
 
 .quote-market-banner {
@@ -517,6 +521,10 @@ body {
 
 .quote-market-banner-micro {
   overflow: hidden;
+  padding: 4px 8px;
+  gap: 6px;
+  min-height: 28px;
+  font-size: 11px;
 }
 
 .quote-status-right {
@@ -524,6 +532,10 @@ body {
   align-items: center;
   gap: 8px;
   min-height: 20px;
+}
+
+.quote-summary-section {
+  margin-top: 6px;
 }
 
 .pilot-field-entry {
@@ -1764,6 +1776,12 @@ select.input {
 
   .pilot-actions {
     grid-template-columns: 1fr;
+  }
+
+  .quote-market-banner-micro {
+    align-items: flex-start;
+    min-height: 0;
+    padding: 6px 8px;
   }
 
   .pilot-reference-head {

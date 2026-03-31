@@ -4,6 +4,7 @@ import {
   parsePilotHedgePolicy,
   parseCommaSeparatedInts,
   parsePremiumPolicyMode,
+  parsePilotQuoteMinNotionalUsdc,
   parseDeribitMaxTenorDriftDays,
   parseDeribitQuotePolicy,
   parseDeribitStrikeSelectionMode,
@@ -80,6 +81,17 @@ test("parsePremiumPolicyMode validates known values", () => {
   assert.equal(parsePremiumPolicyMode("legacy"), "legacy");
   assert.equal(parsePremiumPolicyMode("pass_through_markup"), "pass_through_markup");
   assert.throws(() => parsePremiumPolicyMode("flat_fee"), /invalid_pilot_premium_policy_mode/);
+});
+
+test("parsePilotQuoteMinNotionalUsdc enforces pilot floor", () => {
+  assert.equal(parsePilotQuoteMinNotionalUsdc(undefined), 1000);
+  assert.equal(parsePilotQuoteMinNotionalUsdc("1500"), 1500);
+  // Never allow a configured value below the pilot safety floor.
+  assert.equal(parsePilotQuoteMinNotionalUsdc("100"), 500);
+  assert.throws(
+    () => parsePilotQuoteMinNotionalUsdc("0"),
+    /invalid_pilot_quote_min_notional_usdc/
+  );
 });
 
 test("parseCommaSeparatedInts parses, dedupes and validates", () => {

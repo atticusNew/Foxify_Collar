@@ -108,6 +108,15 @@ export const parsePositiveFinite = (raw: string | undefined, fallback: number, e
   throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
 };
 
+export const parsePilotQuoteMinNotionalUsdc = (raw: string | undefined): number => {
+  const parsed = Number(raw ?? "1000");
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`invalid_pilot_quote_min_notional_usdc:${String(raw || "").trim() || "empty"}`);
+  }
+  // Pilot safety floor: configurable target (default 1000), but never below 500.
+  return Math.max(500, parsed);
+};
+
 export const parseBooleanEnv = (raw: string | undefined, fallback: boolean): boolean => {
   const normalized = String(raw ?? "").trim().toLowerCase();
   if (!normalized) return fallback;
@@ -451,6 +460,7 @@ export const pilotConfig = {
   proofToken: process.env.PILOT_PROOF_TOKEN || "",
   hashVersion: Number(process.env.USER_HASH_VERSION || "1"),
   hashSecret: process.env.USER_HASH_SECRET || "",
+  quoteMinNotionalUsdc: parsePilotQuoteMinNotionalUsdc(process.env.PILOT_QUOTE_MIN_NOTIONAL_USDC),
   maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "50000"),
   maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "50000"),
   premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045"),

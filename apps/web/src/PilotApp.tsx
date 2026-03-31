@@ -327,7 +327,7 @@ const formatMatchedTenorShort = (days: number | null): string => {
   return `${Math.max(1, Math.round(Number(days)))}D`;
 };
 
-type QuoteLiquidityStatus = "unknown" | "normal" | "thin";
+type QuoteLiquidityStatus = "normal" | "thin";
 type ActivateModalMode = "live" | "preview";
 type CmeMarketWindow = {
   isOpen: boolean;
@@ -338,6 +338,9 @@ const CME_MARKET_TZ = "America/New_York";
 const CME_SCAN_STEP_MS = 60_000;
 const CME_SCAN_MAX_STEPS = 60 * 24 * 8;
 const LIQUIDITY_STATUS_TTL_MS = 5 * 60 * 1000;
+const LIQUIDITY_THIN_CONFIRMATION_COUNT = 1;
+const LIQUIDITY_NORMAL_CONFIRMATION_COUNT = 2;
+const MIN_QUOTE_NOTIONAL_USDC = 1000;
 const REGULAR_MARKET_HOURS_LABEL = "Regular Market Hours 9:30 AM-5:00 PM ET";
 
 const getCmeEtClock = (date: Date): { weekday: number; hour: number; minute: number } => {
@@ -490,6 +493,9 @@ const friendlyError = (message: string): string => {
   if (message.includes("quote_liquidity_unavailable")) {
     return "Live liquidity is currently limited. Try again or choose another tenor.";
   }
+  if (message.includes("quote_min_notional_not_met")) {
+    return "Pilot minimum quote size is enforced. Increase protection amount and request a new quote.";
+  }
   if (message.includes("venue_quote_timeout")) {
     return "Quote timed out. Live venue response exceeded 20s. Tap Refresh Quote.";
   }
@@ -587,13 +593,12 @@ const classifyLiquidityFromError = (message: string): QuoteLiquidityStatus => {
   ) {
     return "thin";
   }
-  return "unknown";
+  return "normal";
 };
 
 const getLiquidityStatusLabel = (status: QuoteLiquidityStatus): string => {
-  if (status === "normal") return "Normal";
   if (status === "thin") return "Thin";
-  return "Unknown";
+  return "Normal";
 };
 
 const formatVenueLabel = (venue: string | null | undefined): string => {
@@ -688,21 +693,40 @@ export function PilotApp() {
   const [showAdminDetailModal, setShowAdminDetailModal] = useState(false);
   const [adminDetailUpdatedAt, setAdminDetailUpdatedAt] = useState<Date | null>(null);
   const [showHistorySection, setShowHistorySection] = useState(true);
+  const [showPilotSummary, setShowPilotSummary] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [monitorUpdatedAt, setMonitorUpdatedAt] = useState<Date | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [liveReference, setLiveReference] = useState<ReferencePricePayload["reference"] | null>(null);
   const [liveReferenceBusy, setLiveReferenceBusy] = useState(false);
   const [liveReferenceError, setLiveReferenceError] = useState<string | null>(null);
-  const [liquiditySignalStatus, setLiquiditySignalStatus] = useState<QuoteLiquidityStatus>("unknown");
+  const [liquiditySignalStatus, setLiquiditySignalStatus] = useState<QuoteLiquidityStatus>("normal");
   const [liquiditySignalAtMs, setLiquiditySignalAtMs] = useState<number>(0);
+  const liquidityTransitionRef = useRef<{ thinSignals: number; normalSignals: number }>({
+    thinSignals: 0,
+    normalSignals: 0
+  });
   const [clockNowMs, setClockNowMs] = useState(() => Date.now());
   const historyRequestSeqRef = useRef(0);
   const monitorRequestSeqRef = useRef(0);
   const protectionPollSeqRef = useRef(0);
   const recordLiquiditySignal = (nextStatus: QuoteLiquidityStatus): void => {
-    setLiquiditySignalStatus(nextStatus);
-    setLiquiditySignalAtMs(Date.now());
+    const state = liquidityTransitionRef.current;
+    if (nextStatus === "thin") {
+      state.thinSignals += 1;
+      state.normalSignals = 0;
+      if (state.thinSignals >= LIQUIDITY_THIN_CONFIRMATION_COUNT) {
+        setLiquiditySignalStatus("thin");
+        setLiquiditySignalAtMs(Date.now());
+      }
+      return;
+    }
+    state.normalSignals += 1;
+    state.thinSignals = 0;
+    if (state.normalSignals >= LIQUIDITY_NORMAL_CONFIRMATION_COUNT) {
+      setLiquiditySignalStatus("normal");
+      setLiquiditySignalAtMs(Date.now());
+    }
   };
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
@@ -1177,13 +1201,13 @@ export function PilotApp() {
   }, []);
 
   useEffect(() => {
-    if (liquiditySignalStatus === "unknown" || !Number.isFinite(liquiditySignalAtMs) || liquiditySignalAtMs <= 0) return;
+    if (!Number.isFinite(liquiditySignalAtMs) || liquiditySignalAtMs <= 0) return;
     const remainingMs = LIQUIDITY_STATUS_TTL_MS - (Date.now() - liquiditySignalAtMs);
     if (remainingMs <= 0) {
-      setLiquiditySignalStatus("unknown");
+      setLiquiditySignalStatus("normal");
       return;
     }
-    const id = setTimeout(() => setLiquiditySignalStatus("unknown"), remainingMs);
+    const id = setTimeout(() => setLiquiditySignalStatus("normal"), remainingMs);
     return () => clearTimeout(id);
   }, [liquiditySignalStatus, liquiditySignalAtMs]);
 
@@ -1561,11 +1585,9 @@ export function PilotApp() {
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
   const showQuoteUnavailableHint = quoteState !== "fetching" && isQuoteUnavailableError(error);
   const quoteLiquidityStatus: QuoteLiquidityStatus = liquiditySignalStatus;
-  const showQuoteLiquidityPill = quoteLiquidityStatus !== "unknown";
-  const quoteLiquidityLabel =
-    quoteLiquidityStatus === "normal" ? "Normal liquidity" : quoteLiquidityStatus === "thin" ? "Thin liquidity" : "";
-  const quoteLiquidityPillClass =
-    quoteLiquidityStatus === "normal" ? "pill" : quoteLiquidityStatus === "thin" ? "pill pill-warning" : "pill pill-warning";
+  const showQuoteLiquidityPill = true;
+  const quoteLiquidityLabel = quoteLiquidityStatus === "thin" ? "Thin liquidity" : "Normal liquidity";
+  const quoteLiquidityPillClass = quoteLiquidityStatus === "thin" ? "pill pill-warning" : "pill";
   const quoteUnavailableSecondary = "Please try again.";
   const quoteUnavailableSecondaryClass = "quote-unavailable-secondary quote-unavailable-secondary-amber";
   const adminBrokerSnapshot = adminMetrics?.brokerBalanceSnapshot ?? null;
@@ -1830,9 +1852,7 @@ export function PilotApp() {
           >
             <span className="quote-market-banner-title">CME BTC Options</span>
             <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
-            <span
-              className={`pill ${quoteLiquidityStatus === "thin" ? "pill-warning" : quoteLiquidityStatus === "unknown" ? "pill-warning" : ""}`}
-            >
+            <span className={`pill ${quoteLiquidityStatus === "thin" ? "pill-warning" : ""}`}>
               Liquidity {getLiquidityStatusLabel(quoteLiquidityStatus)}
             </span>
             <span className="muted">Regular Market Hours 9:30 AM-5:00 PM ET</span>
@@ -2019,24 +2039,41 @@ export function PilotApp() {
             {!canQuote && (
               <div className="disclaimer danger">
                 Enter position size and protection amount. Protection amount cannot exceed position size.
+                <br />
+                Minimum quote amount: ${formatUsd(MIN_QUOTE_NOTIONAL_USDC)}.
               </div>
             )}
           </div>
         </div>
 
         <div className="section">
-          <h4>Pilot Summary</h4>
-          <div className="quote-card quote-card-ready">
-            <div className="muted">
-              Premium due at pilot close: <strong>${formatUsd(pilotPremiumOwedUsd)}</strong>
-            </div>
-            {showDailyCapSummary && (
-              <div className="muted">
-                Daily protected notional (UTC): used ${formatUsd(dailyCapUsedUsd)} → projected{" "}
-                <strong>${formatUsd(dailyCapProjectedUsd)}</strong> / ${formatUsd(dailyCapMaxUsd)}
-                {Number.isFinite(dailyCapPct) ? ` (${dailyCapPct.toFixed(1)}%)` : ""}
+          <div className="section-title-row">
+            <h4>Pilot Summary</h4>
+            <button
+              className="btn btn-secondary collapse-toggle"
+              type="button"
+              aria-expanded={showPilotSummary}
+              onClick={() => setShowPilotSummary((prev) => !prev)}
+            >
+              <span className={`collapse-chevron ${showPilotSummary ? "open" : ""}`}>▶</span>
+              {showPilotSummary ? "Hide" : "Show"}
+            </button>
+          </div>
+          <div className={`collapsible-panel ${showPilotSummary ? "is-open" : ""}`}>
+            <div className="collapsible-inner">
+              <div className="quote-card quote-card-ready">
+                <div className="muted">
+                  Premium due at pilot close: <strong>${formatUsd(pilotPremiumOwedUsd)}</strong>
+                </div>
+                {showDailyCapSummary && (
+                  <div className="muted">
+                    Daily protected notional (UTC): used ${formatUsd(dailyCapUsedUsd)} → projected{" "}
+                    <strong>${formatUsd(dailyCapProjectedUsd)}</strong> / ${formatUsd(dailyCapMaxUsd)}
+                    {Number.isFinite(dailyCapPct) ? ` (${dailyCapPct.toFixed(1)}%)` : ""}
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
         </div>
 
@@ -2098,11 +2135,9 @@ export function PilotApp() {
           <div className="section">
           <div className="section-title-row">
             <h4>Quote</h4>
+            {showQuoteLiquidityPill && <span className={`${quoteLiquidityPillClass} pill-inline`}>{quoteLiquidityLabel}</span>}
           </div>
           <div className="quote-status-row">
-            <div className="quote-status-left">
-              {showQuoteLiquidityPill && <span className={quoteLiquidityPillClass}>{quoteLiquidityLabel}</span>}
-            </div>
             <div className="quote-status-right">
               {quoteState === "fetching" && <span className="pill">Finding best available protection…</span>}
               {quoteState === "ready" && quoteTimeLeft > 0 && (

@@ -252,6 +252,8 @@ const toFiniteNumber = (value: unknown): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
+const resolveQuoteMinNotionalFloor = (): Decimal => new Decimal(pilotConfig.quoteMinNotionalUsdc);
+
 const resolveMedian = (values: number[]): number | null => {
   const clean = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
   if (!clean.length) return null;
@@ -412,7 +414,8 @@ const sanitizeQuoteForClient = (quote: {
     "hedgeMode",
     "hedgeInstrumentFamily",
     "selectionReason",
-    "rankedAlternatives"
+    "rankedAlternatives",
+    "candidateFailureCounts"
   ];
   for (const key of allowedKeys) {
     if (key in details) allowedDetails[key] = details[key];
@@ -1063,6 +1066,9 @@ export const registerPilotRoutes = async (
               nNoAsk: 0,
               nFailedProtection: 0,
               nFailedEconomics: 0,
+              nFailedWideSpread: 0,
+              nFailedThinDepth: 0,
+              nFailedStaleTop: 0,
               nTimedOut: 0,
               nPassed: 0
             }
@@ -1098,6 +1104,16 @@ export const registerPilotRoutes = async (
     if (!exposureNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_exposure_notional" };
+    }
+    const quoteMinNotional = resolveQuoteMinNotionalFloor();
+    if (protectedNotional.lt(quoteMinNotional)) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "quote_min_notional_not_met",
+        message: `Minimum quote notional is $${quoteMinNotional.toFixed(0)} during pilot.`,
+        minQuoteNotionalUsdc: quoteMinNotional.toFixed(2)
+      };
     }
     const maxProtection = new Decimal(pilotConfig.maxProtectionNotionalUsdc);
     const maxDailyProtection = new Decimal(pilotConfig.maxDailyProtectedNotionalUsdc);
@@ -1297,6 +1313,7 @@ export const registerPilotRoutes = async (
             tierName,
             drawdownFloorPct: drawdownFloorPct.toFixed(6),
             protectedNotional: protectedNotional.toFixed(10),
+            quoteMinNotionalUsdc: quoteMinNotional.toFixed(10),
             foxifyExposureNotional: exposureNotional.toFixed(10),
             entryPrice: entryAnchorPrice.toFixed(10),
             entryAnchorPrice: entryAnchorPrice.toFixed(10),
@@ -1393,6 +1410,7 @@ export const registerPilotRoutes = async (
         },
         entryInputPrice: entryInputPrice ? entryInputPrice.toFixed(10) : null,
         limits: {
+          minQuoteNotionalUsdc: quoteMinNotional.toFixed(2),
           maxProtectionNotionalUsdc: maxProtection.toFixed(2),
           maxDailyProtectedNotionalUsdc: maxDailyProtection.toFixed(2),
           dailyUsedUsdc: dailyUsed.toFixed(2),
@@ -1511,6 +1529,12 @@ export const registerPilotRoutes = async (
             rankedAlternatives:
               quote.details && Array.isArray((quote.details as Record<string, unknown>).rankedAlternatives)
                 ? (quote.details as Record<string, unknown>).rankedAlternatives
+                : null,
+            candidateFailureCounts:
+              quote.details &&
+              typeof (quote.details as Record<string, unknown>).candidateFailureCounts === "object" &&
+              (quote.details as Record<string, unknown>).candidateFailureCounts
+                ? (quote.details as Record<string, unknown>).candidateFailureCounts
                 : null
           }
         }
@@ -1555,13 +1579,28 @@ export const registerPilotRoutes = async (
       const noViableReasonPrefix = message.match(
         /ibkr_quote_unavailable:(min_tradable_notional_exceeded|no_economical_option|no_protection_compliant_option|no_top_of_book):no_viable_option/
       )?.[1];
+      const noViableOptionRaw = noViableOptionMatch?.[1];
+      const noViableOptionDiagnostics = (() => {
+        if (!noViableOptionRaw) return null;
+        try {
+          return JSON.parse(noViableOptionRaw) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })();
       const noViableReason =
-        noViableReasonPrefix === "min_tradable_notional_exceeded" ||
-        noViableReasonPrefix === "no_economical_option"
-          ? "quote_economics_unacceptable"
-          : noViableReasonPrefix === "no_protection_compliant_option" || noViableReasonPrefix === "no_top_of_book"
+        Number(noViableOptionDiagnostics?.nFailedMinTradableNotional || 0) > 0
+          ? "quote_min_notional_not_met"
+          : Number(noViableOptionDiagnostics?.nFailedWideSpread || 0) > 0 ||
+              Number(noViableOptionDiagnostics?.nFailedThinDepth || 0) > 0 ||
+              Number(noViableOptionDiagnostics?.nFailedStaleTop || 0) > 0
             ? "quote_liquidity_unavailable"
-            : null;
+            : noViableReasonPrefix === "min_tradable_notional_exceeded" ||
+                noViableReasonPrefix === "no_economical_option"
+              ? "quote_economics_unacceptable"
+              : noViableReasonPrefix === "no_protection_compliant_option" || noViableReasonPrefix === "no_top_of_book"
+                ? "quote_liquidity_unavailable"
+                : null;
       return {
         status: "error",
         reason: isStorageFailure
@@ -1602,6 +1641,8 @@ export const registerPilotRoutes = async (
             : isNoViableOption
               ? noViableReason === "quote_economics_unacceptable"
                 ? "No option contract met pilot economics guardrails within quote budget."
+                : noViableReason === "quote_min_notional_not_met"
+                  ? "Requested protection amount is below the minimum tradable option notional for current liquidity."
                 : "No viable option contract met liquidity/protection/economics constraints within quote budget."
             : isNoTopOfBook
               ? "Venue top-of-book is temporarily unavailable for the requested hedge. Please retry."
@@ -1628,15 +1669,9 @@ export const registerPilotRoutes = async (
             price: priceMs,
             total: Date.now() - quoteStartedAt
           },
-          ...(noViableOptionMatch
+          ...(noViableOptionRaw
             ? {
-                optionCandidateFailureCounts: (() => {
-                  try {
-                    return JSON.parse(noViableOptionMatch[1]);
-                  } catch {
-                    return null;
-                  }
-                })()
+                optionCandidateFailureCounts: noViableOptionDiagnostics
               }
             : {}),
           ...(message.includes("selector_diag:") && message.match(/selector_diag:(\{.*\})/)
@@ -1697,6 +1732,16 @@ export const registerPilotRoutes = async (
     if (!exposureNotional) {
       reply.code(400);
       return { status: "error", reason: "invalid_exposure_notional" };
+    }
+    const quoteMinNotional = resolveQuoteMinNotionalFloor();
+    if (protectedNotional.lt(quoteMinNotional)) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "quote_min_notional_not_met",
+        message: `Minimum quote notional is $${quoteMinNotional.toFixed(0)} during pilot.`,
+        minQuoteNotionalUsdc: quoteMinNotional.toFixed(2)
+      };
     }
     const maxProtection = new Decimal(pilotConfig.maxProtectionNotionalUsdc);
     const maxDailyProtection = new Decimal(pilotConfig.maxDailyProtectedNotionalUsdc);

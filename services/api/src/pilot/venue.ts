@@ -719,6 +719,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nNoAsk: number;
       nFailedProtection: number;
       nFailedEconomics: number;
+      nFailedWideSpread: number;
+      nFailedThinDepth: number;
+      nFailedStaleTop: number;
       nTimedOut: number;
       nPassed: number;
     };
@@ -911,6 +914,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nFailedProtection: number;
       nFailedEconomics: number;
       nFailedMinTradableNotional: number;
+      nFailedWideSpread: number;
+      nFailedThinDepth: number;
+      nFailedStaleTop: number;
       nTimedOut: number;
       nPassed: number;
     };
@@ -922,6 +928,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nFailedProtection: number;
       nFailedEconomics: number;
       nFailedMinTradableNotional: number;
+      nFailedWideSpread: number;
+      nFailedThinDepth: number;
+      nFailedStaleTop: number;
       nTimedOut: number;
       nPassed: number;
     };
@@ -1338,6 +1347,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nFailedProtection: 0,
         nFailedEconomics: 0,
         nFailedMinTradableNotional: 0,
+        nFailedWideSpread: 0,
+        nFailedThinDepth: 0,
+        nFailedStaleTop: 0,
         nTimedOut: 0,
         nPassed: 0
       };
@@ -1486,6 +1498,30 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             bid !== null && bid > 0 && ask >= bid
               ? (ask - bid) / ask
               : null;
+          const asOfMs = Date.parse(String(chosenTop.asOf || ""));
+          const topAgeMs = Number.isFinite(asOfMs) ? Math.max(0, Date.now() - asOfMs) : null;
+          const notional = Math.max(0, Number(req.protectedNotional || 0));
+          const qty = Math.max(0, Number(req.quantity || 0));
+          const contractMultiplier = resolveContractMultiplier(contract.multiplier, 0.1);
+          const estimatedContracts = Math.max(1, Math.ceil(qty / contractMultiplier));
+          const estimatedPremium = ask * estimatedContracts;
+          const premiumRatio = notional > 0 ? estimatedPremium / notional : 0;
+          const maxSpreadPctByProtection = notional >= 10000 ? 0.2 : notional >= 2000 ? 0.28 : 0.35;
+          if (spreadPct !== null && spreadPct > maxSpreadPctByProtection) {
+            failureCounts.nFailedEconomics += 1;
+            failureCounts.nFailedWideSpread += 1;
+            continue;
+          }
+          if (askSize !== null && askSize < 0.5) {
+            failureCounts.nFailedEconomics += 1;
+            failureCounts.nFailedThinDepth += 1;
+            continue;
+          }
+          if (topAgeMs !== null && topAgeMs > 12_000) {
+            failureCounts.nNoTop += 1;
+            failureCounts.nFailedStaleTop += 1;
+            continue;
+          }
           const strike = parseIbkrStrikeFromLocalSymbol(contract);
           const inferredEntry =
             trigger &&
@@ -1515,9 +1551,6 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             failureCounts.nFailedProtection += 1;
             continue;
           }
-          const notional = Math.max(0, Number(req.protectedNotional || 0));
-          const qty = Math.max(0, Number(req.quantity || 0));
-          const contractMultiplier = resolveContractMultiplier(contract.multiplier, 0.1);
           // Explicit granularity guard: if requested hedge quantity is smaller than
           // one contract's underlying multiplier, the quote economics are not tradable.
           if (qty > 0 && qty + 1e-9 < contractMultiplier) {
@@ -1525,9 +1558,6 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             failureCounts.nFailedMinTradableNotional += 1;
             continue;
           }
-          const estimatedContracts = Math.max(1, Math.ceil(qty / contractMultiplier));
-          const estimatedPremium = ask * estimatedContracts;
-          const premiumRatio = notional > 0 ? estimatedPremium / notional : 0;
           if (
             Number.isFinite(this.maxOptionPremiumRatio) &&
             this.maxOptionPremiumRatio > 0 &&
@@ -1619,6 +1649,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nFailedProtection: 0,
       nFailedEconomics: 0,
       nFailedMinTradableNotional: 0,
+      nFailedWideSpread: 0,
+      nFailedThinDepth: 0,
+      nFailedStaleTop: 0,
       nTimedOut: 0,
       nPassed: 0
     };
@@ -1638,6 +1671,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       optionFailureTotals.nFailedProtection += Number(counts.nFailedProtection || 0);
       optionFailureTotals.nFailedEconomics += Number(counts.nFailedEconomics || 0);
       optionFailureTotals.nFailedMinTradableNotional += Number(counts.nFailedMinTradableNotional || 0);
+      optionFailureTotals.nFailedWideSpread += Number(counts.nFailedWideSpread || 0);
+      optionFailureTotals.nFailedThinDepth += Number(counts.nFailedThinDepth || 0);
+      optionFailureTotals.nFailedStaleTop += Number(counts.nFailedStaleTop || 0);
       optionFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
       optionFailureTotals.nPassed += Number(counts.nPassed || 0);
     };
@@ -1783,6 +1819,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nFailedProtection: number;
         nFailedEconomics: number;
         nFailedMinTradableNotional: number;
+        nFailedWideSpread: number;
+        nFailedThinDepth: number;
+        nFailedStaleTop: number;
         nTimedOut: number;
         nPassed: number;
       };
@@ -2044,6 +2083,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nFailedProtection: 0,
         nFailedEconomics: 0,
         nFailedMinTradableNotional: 0,
+        nFailedWideSpread: 0,
+        nFailedThinDepth: 0,
+        nFailedStaleTop: 0,
         nTimedOut: 0,
         nPassed: 0
       };
@@ -2054,6 +2096,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         noMatchFailureTotals.nFailedProtection += Number(counts.nFailedProtection || 0);
         noMatchFailureTotals.nFailedEconomics += Number(counts.nFailedEconomics || 0);
         noMatchFailureTotals.nFailedMinTradableNotional += Number(counts.nFailedMinTradableNotional || 0);
+        noMatchFailureTotals.nFailedWideSpread += Number(counts.nFailedWideSpread || 0);
+        noMatchFailureTotals.nFailedThinDepth += Number(counts.nFailedThinDepth || 0);
+        noMatchFailureTotals.nFailedStaleTop += Number(counts.nFailedStaleTop || 0);
         noMatchFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
         noMatchFailureTotals.nPassed += Number(counts.nPassed || 0);
       };
@@ -2658,6 +2703,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nFailedProtection: 0,
         nFailedEconomics: 0,
         nFailedMinTradableNotional: 0,
+        nFailedWideSpread: 0,
+        nFailedThinDepth: 0,
+        nFailedStaleTop: 0,
         nTimedOut: 0,
         nPassed: 0
       },
