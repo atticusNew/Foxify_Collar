@@ -1794,30 +1794,25 @@ export function PilotApp() {
           )}
         </div>
 
-        <div className="section">
+        <div className="section section-compact">
           <div
-            className={`quote-market-banner ${cmeMarketWindow.isOpen ? "quote-market-banner-open" : "quote-market-banner-closed"}`}
+            className={`quote-market-banner quote-market-banner-micro ${cmeMarketWindow.isOpen ? "quote-market-banner-open" : "quote-market-banner-closed"}`}
           >
-            <div className="quote-market-banner-title">
-              CME BTC Options Market <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
-              <span
-                className={`pill ${quoteLiquidityStatus === "limited" ? "pill-warning" : quoteLiquidityStatus === "off_market" ? "pill-danger" : ""}`}
-              >
-                Liquidity {quoteLiquidityStatus === "limited" ? "Thin" : quoteLiquidityStatus === "off_market" ? "After Hours" : "Normal"}
+            <span className="quote-market-banner-title">CME BTC Options</span>
+            <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
+            <span
+              className={`pill ${quoteLiquidityStatus === "limited" ? "pill-warning" : quoteLiquidityStatus === "off_market" ? "pill-danger" : ""}`}
+            >
+              Liquidity {quoteLiquidityStatus === "limited" ? "Thin" : quoteLiquidityStatus === "off_market" ? "After Hours" : "Normal"}
+            </span>
+            <span className="muted">ET {cmeNowEtLabel}</span>
+            {!cmeMarketWindow.isOpen && (
+              <span className="muted">
+                Next {nextCmeOpenLabel || "TBD"}
+                {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
               </span>
-            </div>
-            <div className="quote-market-banner-time muted">
-              <span>ET: {cmeNowEtLabel}</span>
-              <span>Local: {localNowLabel}</span>
-              {cmeMarketWindow.isOpen ? (
-                <span>Session is active.</span>
-              ) : (
-                <span>
-                  Next open: {nextCmeOpenLabel || "TBD"}
-                  {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
-                </span>
-              )}
-            </div>
+            )}
+            <span className="muted">Local {localNowLabel}</span>
           </div>
         </div>
 

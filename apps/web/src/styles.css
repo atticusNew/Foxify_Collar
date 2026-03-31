@@ -455,9 +455,11 @@ body {
   border: 1px solid rgba(255, 107, 107, 0.55);
   border-radius: 10px;
   background: rgba(255, 107, 107, 0.1);
-  padding: 7px 10px;
-  display: grid;
-  gap: 3px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .quote-market-banner-open {
@@ -471,27 +473,35 @@ body {
 }
 
 .quote-market-banner-title {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  color: #ff9a9a;
+  color: #e9edf5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .quote-market-banner-time {
-  display: flex;
-  flex-wrap: wrap;
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
   font-size: 10px;
+  white-space: nowrap;
 }
 
 .quote-market-badge {
   display: inline-flex;
   align-items: center;
   border-radius: 999px;
-  padding: 2px 8px;
+  padding: 1px 7px;
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.2px;
   text-transform: uppercase;
+}
+
+.quote-market-separator {
+  opacity: 0.45;
 }
 
 .quote-market-badge-open {
