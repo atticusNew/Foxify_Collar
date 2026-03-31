@@ -1283,10 +1283,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
       return null;
     };
-      const probeOptionCandidates = async (
+    const probeOptionCandidates = async (
       contracts: IbkrQualifiedContract[],
       minProtectionThreshold: number | null,
-      opts?: { probeTimeoutMs?: number; depthAttempts?: number; legBudgetMs?: number }
+      opts?: { probeTimeoutMs?: number; depthAttempts?: number; legBudgetMs?: number; maxTopCalls?: number }
     ): Promise<
       | {
           contract: IbkrQualifiedContract;
@@ -1329,7 +1329,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         });
       const shortlist = eligible.slice(
         0,
-        hedgePolicy === "options_only_native" ? Math.min(24, eligible.length) : 18
+        hedgePolicy === "options_only_native" ? Math.min(12, eligible.length) : 18
       );
       const failureCounts: OptionFailureCounts = {
         nTotalCandidates: shortlist.length,
@@ -1351,8 +1351,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const depthAttempts = Math.max(1, Math.min(2, Math.floor(Number(opts?.depthAttempts ?? 1))));
       const maxTopCallsPerProbe =
         hedgePolicy === "options_only_native"
-          ? Math.max(8, Math.min(16, Number(this.optionProbeParallelism || 1) * 8))
+          ? Math.max(4, Math.min(8, Number(this.optionProbeParallelism || 1) * 6))
           : Number.POSITIVE_INFINITY;
+      const maxTopCallsBudget = Number.isFinite(Number(opts?.maxTopCalls))
+        ? Math.max(0, Math.floor(Number(opts?.maxTopCalls)))
+        : Number.POSITIVE_INFINITY;
+      const effectiveMaxTopCalls = Math.max(0, Math.min(maxTopCallsPerProbe, maxTopCallsBudget));
       const legBudgetMs = Number.isFinite(Number(opts?.legBudgetMs))
         ? Math.max(2500, Math.floor(Number(opts?.legBudgetMs)))
         : Math.max(5000, Math.min(18000, Math.floor(this.quoteBudgetMs * 0.5)));
@@ -1398,12 +1402,15 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const passed: Scored[] = [];
       let topCallsInProbe = 0;
       let cursor = 0;
+      if (effectiveMaxTopCalls <= 0) {
+        return { failureCounts };
+      }
       const worker = async (): Promise<void> => {
         while (true) {
           const idx = cursor;
           cursor += 1;
           if (idx >= shortlist.length) return;
-          if (topCallsInProbe >= maxTopCallsPerProbe) return;
+          if (topCallsInProbe >= effectiveMaxTopCalls) return;
           const candidateBudgetHintMs =
             hedgePolicy === "options_only_native"
               ? Math.max(350, Math.min(900, probeTimeoutMs))
@@ -2055,7 +2062,25 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         hedgePolicy === "options_only_native"
           ? Math.max(1, Math.min(3, ringTasks.length))
           : ringTasks.length;
+      const maxTopCallsPerOptionLeg =
+        hedgePolicy === "options_only_native" ? 12 : Number.POSITIVE_INFINITY;
+      const topCallsAtLegStart = counters.topCalls;
+      const shouldShortCircuitNoLiquidity = (counts: OptionFailureCounts): boolean => {
+        if (hedgePolicy !== "options_only_native") return false;
+        const passed = Math.max(0, Number(counts.nPassed || 0));
+        if (passed > 0) return false;
+        const total = Math.max(0, Number(counts.nTotalCandidates || 0));
+        const noTop = Math.max(0, Number(counts.nNoTop || 0));
+        const timedOut = Math.max(0, Number(counts.nTimedOut || 0));
+        const stalledMarketData = noTop + timedOut >= Math.max(4, Math.floor(total * 0.6));
+        return (total >= 4 && stalledMarketData) || isLikelyNoLiquidityWindow(counts);
+      };
       for (let ringIdx = 0; ringIdx < maxRingPasses; ringIdx += 1) {
+        const topCallsUsed = Math.max(0, counters.topCalls - topCallsAtLegStart);
+        const remainingTopCalls = maxTopCallsPerOptionLeg - topCallsUsed;
+        if (remainingTopCalls <= 0) {
+          break;
+        }
         const ringGroup = ringTasks[ringIdx];
         const ringTenor = ringGroup[0]?.tenor || selectedTenorDaysIntended;
         await runQualifyTasks(ringGroup);
@@ -2084,7 +2109,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
           probeTimeoutMs: optionProbeTimeoutMs,
           depthAttempts: optionProbeDepthAttempts,
-          legBudgetMs: optionProbeLegBudgetMs
+          legBudgetMs: optionProbeLegBudgetMs,
+          maxTopCalls: remainingTopCalls
         });
       timingsMs.score += Date.now() - scoreStartedAt;
         if (!("contract" in optionMatch)) {
@@ -2098,7 +2124,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           if (
             hedgePolicy === "options_only_native" &&
             sawTenorEligibleContract &&
-            isLikelyNoLiquidityWindow(noMatchFailureTotals)
+            shouldShortCircuitNoLiquidity(noMatchFailureTotals)
           ) {
             break;
           }
@@ -2120,7 +2146,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         if (
           hedgePolicy === "options_only_native" &&
           sawTenorEligibleContract &&
-          isLikelyNoLiquidityWindow(noMatchFailureTotals)
+          shouldShortCircuitNoLiquidity(noMatchFailureTotals)
         ) {
           break;
         }

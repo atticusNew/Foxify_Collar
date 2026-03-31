@@ -1295,6 +1295,119 @@ test("ibkr_cme_paper options_only_native maps repeated top timeouts to no_liquid
   }
 });
 
+test("ibkr_cme_paper options_only_native caps top probes per option leg", async () => {
+  const originalFetch = global.fetch;
+  const matchedExpiry = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  const optionContracts = Array.from({ length: 30 }, (_, idx) => ({
+    conId: 76000 + idx,
+    secType: "FOP",
+    localSymbol: `W5AH6 P${65000 + idx * 250}`,
+    expiry: matchedExpiry,
+    strike: 65000 + idx * 250,
+    right: "P",
+    multiplier: "0.1",
+    minTick: 5
+  }));
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.kind === "mbt_option") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: optionContracts
+            })
+        } as any;
+      }
+      return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: 95,
+            ask: 100,
+            bidSize: 4,
+            askSize: 5,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/depth")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bids: [{ level: 0, price: 95, size: 4 }],
+            asks: [{ level: 0, price: 100, size: 5 }],
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  try {
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 2000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 2000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: false,
+        maxTenorDriftDays: 7,
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC",
+        optionLiquiditySelectionEnabled: true,
+        optionProbeParallelism: 4,
+        optionTenorWindowDays: 10,
+        maxOptionPremiumRatio: 0.5,
+        optionProtectionTolerancePct: 0.03
+      },
+      ibkrQuoteBudgetMs: 20000
+    });
+    await assert.rejects(
+      () =>
+        adapter.quote({
+          marketId: "BTC-USD",
+          instrumentId: "BTC-USD-14D-P",
+          protectedNotional: 25000,
+          quantity: 0.2,
+          side: "buy",
+          protectionType: "long",
+          drawdownFloorPct: 0.2,
+          triggerPrice: 55000,
+          requestedTenorDays: 14,
+          tenorMinDays: 1,
+          tenorMaxDays: 30,
+          hedgePolicy: "options_only_native"
+        }),
+      /ibkr_quote_unavailable:no_protection_compliant_option:no_viable_option:/
+    );
+    const diagnostics = (adapter as any).getDiagnostics?.();
+    const topCalls = Number(diagnostics?.counters?.topCalls || 0);
+    assert.ok(topCalls > 0, "expected top-of-book probing to occur");
+    assert.ok(topCalls <= 12, `expected topCalls <= 12, got ${topCalls}`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("ibkr_cme_paper options_only_native maps qualify timeouts to no_liquidity_window", async () => {
   const originalFetch = global.fetch;
   global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
