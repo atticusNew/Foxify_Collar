@@ -754,7 +754,12 @@ export class IbGatewayClient {
           .map((item) => String(item || "").trim().toUpperCase())
           .filter(Boolean)
       )
-    );
+    ).filter((symbol) => {
+      // Avoid cross-family leakage (MBT request selecting BFF symbols, or vice versa).
+      if (productSymbol === "MBT" && symbol === "BFF") return false;
+      if (productSymbol === "BFF" && symbol === "MBT") return false;
+      return true;
+    });
     if (!symbolCandidates.length) {
       symbolCandidates.push(productSymbol);
     }
@@ -911,6 +916,20 @@ export class IbGatewayClient {
         const exchange = normalizeExchangeAlias(
           String(contract.exchange || contract.primaryExch || item.requestedExchange || query.exchange)
         );
+        const normalizedSymbol = String(contract.symbol || "").trim().toUpperCase();
+        const normalizedLocalSymbol = localSymbol.toUpperCase();
+        const explicitFamilyFromSymbol =
+          normalizedSymbol === "MBT" || normalizedSymbol === "BFF" ? normalizedSymbol : null;
+        const explicitFamilyFromLocal =
+          normalizedLocalSymbol.startsWith("MBT")
+            ? "MBT"
+            : normalizedLocalSymbol.startsWith("BFF")
+              ? "BFF"
+              : null;
+        const explicitFamily = explicitFamilyFromSymbol || explicitFamilyFromLocal;
+        if (query.kind === "mbt_option" && explicitFamily && explicitFamily !== productSymbol) {
+          return null;
+        }
         return {
           contract: {
             conId,
