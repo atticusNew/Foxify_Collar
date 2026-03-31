@@ -1116,6 +1116,93 @@ test("ibkr_cme_paper options_only_native maps repeated top timeouts to no_liquid
   }
 });
 
+test("ibkr_cme_paper options_only_native maps qualify timeouts to no_liquidity_window", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      await new Promise((resolve) => setTimeout(resolve, 4200));
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ contracts: [] })
+      } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bid: null,
+            ask: null,
+            bidSize: null,
+            askSize: null,
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    if (path.startsWith("marketdata/depth")) {
+      return {
+        ok: true,
+        text: async () => JSON.stringify({ bids: [], asks: [], asOf: new Date().toISOString() })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  try {
+    const adapter = createPilotVenueAdapter({
+      mode: "ibkr_cme_paper",
+      falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+      deribit: {} as any,
+      ibkr: {
+        bridgeBaseUrl: "http://127.0.0.1:18080",
+        bridgeTimeoutMs: 2000,
+        bridgeToken: "",
+        accountId: "DU123456",
+        enableExecution: false,
+        orderTimeoutMs: 2000,
+        maxRepriceSteps: 3,
+        repriceStepTicks: 1,
+        maxSlippageBps: 25,
+        requireLiveTransport: false,
+        maxTenorDriftDays: 5,
+        preferTenorAtOrAbove: true,
+        orderTif: "IOC",
+        optionLiquiditySelectionEnabled: true,
+        optionProbeParallelism: 1,
+        optionTenorWindowDays: 0,
+        maxOptionPremiumRatio: 0.5,
+        optionProtectionTolerancePct: 0.03
+      },
+      ibkrQuoteBudgetMs: 12000
+    });
+    await assert.rejects(
+      () =>
+        adapter.quote({
+          marketId: "BTC-USD",
+          instrumentId: "BTC-USD-14D-P",
+          protectedNotional: 25000,
+          quantity: 0.2,
+          side: "buy",
+          protectionType: "long",
+          drawdownFloorPct: 0.2,
+          triggerPrice: 55000,
+          requestedTenorDays: 14,
+          tenorMinDays: 1,
+          tenorMaxDays: 30,
+          hedgePolicy: "options_only_native"
+        }),
+      /ibkr_quote_unavailable:no_liquidity_window/
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("ibkr_cme_paper options_only_native scoring favors stronger economics when tenor is equal", async () => {
   const originalFetch = global.fetch;
   const now = new Date();

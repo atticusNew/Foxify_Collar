@@ -274,6 +274,7 @@ const normalizeNoLiquidityWindowError = (
   sawTenorEligibleContract: boolean
 ): string => {
   if (message.includes("no_liquidity_window")) return "ibkr_quote_unavailable:no_liquidity_window";
+  if (message.includes("option_qualify_timeout")) return "ibkr_quote_unavailable:no_liquidity_window";
   if (!sawTenorEligibleContract) return message;
   if (message.includes("tenor_drift_exceeded") && isLikelyNoLiquidityWindow(counts)) {
     return "ibkr_quote_unavailable:no_liquidity_window";
@@ -1799,6 +1800,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           : this.optionLiquiditySelectionEnabled
             ? Math.max(1, Math.min(4, optionProbeParallelism))
             : 1;
+      const maxQualifyCallsPerOptionLeg =
+        hedgePolicy === "options_only_native" ? 3 : Number.POSITIVE_INFINITY;
+      let optionQualifyCalls = 0;
       const maxQualifiedContracts = this.optionLiquiditySelectionEnabled ? 48 : 18;
       const withQualifyTimeout = async (
         promise: Promise<IbkrQualifiedContract[]>,
@@ -1829,9 +1833,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         const runQualifyWorker = async (): Promise<void> => {
           while (true) {
             if (dedupedContracts.length >= maxQualifiedContracts) return;
+            if (optionQualifyCalls >= maxQualifyCallsPerOptionLeg) return;
             const idx = qualifyCursor;
             qualifyCursor += 1;
             if (idx >= qualifyTasks.length) return;
+            optionQualifyCalls += 1;
             ensureOptionLegBudget(Math.min(qualifyTimeoutMs + 150, 1200));
             const task = qualifyTasks[idx];
             const optionQueryBase: IbkrContractQuery = {
@@ -1940,7 +1946,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, strikeScopedProbeWidth)))
           .map((strike) => ({ tenor, strike }));
         if (hedgePolicy === "options_only_native") {
-          return strikeScoped.length > 0 ? [...strikeScoped, { tenor }] : [{ tenor }];
+          // In options-only mode, qualify tenor-only first and only then strike-scoped.
+          return strikeScoped.length > 0 ? [{ tenor }, ...strikeScoped] : [{ tenor }];
         }
         return strikeScoped.length > 0 ? strikeScoped : [{ tenor }];
       });
@@ -2136,9 +2143,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           optionCandidateFailureCounts: { ...optionFailureTotals },
           error: message
         };
-        throw error;
+        throw new Error(message);
       }
-      if (!sawTenorEligibleContract) {
+      if (optionLegFailureReason === "option_qualify_timeout") {
         timingsMs.total = Date.now() - selectorStartedAt;
         this.selectorDiagnostics = {
           asOf: nowIso(),
@@ -2147,10 +2154,30 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           timingsMs,
           counters,
           optionCandidateFailureCounts: { ...optionFailureTotals },
-          error: optionLegFailureReason
-            ? `ibkr_quote_unavailable:${optionLegFailureReason}`
-            : "ibkr_quote_unavailable:tenor_drift_exceeded"
+          error: "ibkr_quote_unavailable:no_liquidity_window"
         };
+        throw new Error("ibkr_quote_unavailable:no_liquidity_window");
+      }
+      if (!sawTenorEligibleContract) {
+        timingsMs.total = Date.now() - selectorStartedAt;
+        const mappedError =
+          optionLegFailureReason === "option_qualify_timeout"
+            ? "ibkr_quote_unavailable:no_liquidity_window"
+            : optionLegFailureReason
+              ? `ibkr_quote_unavailable:${optionLegFailureReason}`
+              : "ibkr_quote_unavailable:tenor_drift_exceeded";
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: mappedError
+        };
+        if (optionLegFailureReason === "option_qualify_timeout") {
+          throw new Error("ibkr_quote_unavailable:no_liquidity_window");
+        }
         if (optionLegFailureReason) {
           throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
         }
