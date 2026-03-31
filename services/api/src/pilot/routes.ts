@@ -488,6 +488,48 @@ const resolvePilotVenueHealth = async (): Promise<Record<string, unknown>> => {
   }
 };
 
+type AdminBrokerBalanceSnapshot = {
+  source: "ibkr_account_summary";
+  readOnly: true;
+  accountId: string | null;
+  currency: string;
+  netLiquidationUsd: string;
+  availableFundsUsd: string;
+  excessLiquidityUsd: string;
+  buyingPowerUsd: string;
+  asOf: string;
+} | null;
+
+const resolveAdminBrokerBalanceSnapshot = async (): Promise<AdminBrokerBalanceSnapshot> => {
+  if (!String(pilotConfig.venueMode || "").startsWith("ibkr_")) {
+    return null;
+  }
+  const connector = new IbkrConnector({
+    baseUrl: pilotConfig.ibkrBridgeBaseUrl,
+    timeoutMs: pilotConfig.ibkrBridgeTimeoutMs,
+    accountId: pilotConfig.ibkrAccountId || "PILOT_ADMIN_SNAPSHOT",
+    auth: {
+      token: pilotConfig.ibkrBridgeToken
+    }
+  });
+  const summary = await withTimeout(
+    connector.getAccountSummarySnapshot(),
+    Math.max(500, Number(pilotConfig.ibkrBridgeTimeoutMs || 0)),
+    "ibkr_account_summary"
+  );
+  return {
+    source: "ibkr_account_summary",
+    readOnly: true,
+    accountId: summary.accountId,
+    currency: String(summary.currency || "USD"),
+    netLiquidationUsd: String(summary.netLiquidationUsd || "0"),
+    availableFundsUsd: String(summary.availableFundsUsd || "0"),
+    excessLiquidityUsd: String(summary.excessLiquidityUsd || "0"),
+    buyingPowerUsd: String(summary.buyingPowerUsd || "0"),
+    asOf: String(summary.asOf || new Date().toISOString())
+  };
+};
+
 const isIbkrLiveTransportHealthy = (venueHealth: Record<string, unknown>): boolean => {
   if (venueHealth.status !== "ok") return false;
   const mode = String(venueHealth.mode || "");
@@ -1485,6 +1527,7 @@ export const registerPilotRoutes = async (
       const isNoEconomicalOption = message.includes("no_economical_option");
       const isNoProtectionCompliantOption = message.includes("no_protection_compliant_option");
       const isOptionsRequired = message.includes("options_required");
+      const isNoLiquidityWindow = message.includes("no_liquidity_window");
       const isPremiumGuardrail = message.includes("premium_ratio_exceeded");
       const isNoContract = message.includes("no_contract");
       const isTimeout = message.includes("timeout") || message.includes("AbortError");
@@ -1501,6 +1544,7 @@ export const registerPilotRoutes = async (
               isNoEconomicalOption ||
               isNoProtectionCompliantOption ||
               isOptionsRequired ||
+              isNoLiquidityWindow ||
               isNoContract ||
               isPremiumGuardrail
             ? 503
@@ -1538,6 +1582,8 @@ export const registerPilotRoutes = async (
               ? "quote_liquidity_unavailable"
             : isOptionsRequired
               ? "quote_options_required"
+            : isNoLiquidityWindow
+              ? "quote_liquidity_unavailable"
             : isNoContract
               ? "quote_contract_unavailable"
             : isPremiumGuardrail
@@ -1565,6 +1611,8 @@ export const registerPilotRoutes = async (
               ? "No option contract met minimum protection effectiveness within quote budget."
             : isOptionsRequired
               ? "Options-native quotes are required and no viable option contract was available within quote budget."
+            : isNoLiquidityWindow
+              ? "CME options liquidity appears unavailable for the current market window. Please retry during active session."
             : isNoContract
               ? "No venue contract is currently available for the requested hedge. Please retry."
             : isPremiumGuardrail
@@ -2656,12 +2704,25 @@ export const registerPilotRoutes = async (
     const query = req.query as { scope?: string };
     const scopeRaw = String(query.scope || "active").toLowerCase();
     const scope = scopeRaw === "all" || scopeRaw === "open" ? scopeRaw : "active";
-    const metrics = await getPilotAdminMetrics(pool, {
-      startingReserveUsdc: pilotConfig.startingReserveUsdc,
-      userHash: resolveTenantScopeHash().userHash,
-      scope
-    });
-    return { status: "ok", scope, metrics };
+    const [metrics, brokerSnapshotResult] = await Promise.allSettled([
+      getPilotAdminMetrics(pool, {
+        startingReserveUsdc: pilotConfig.startingReserveUsdc,
+        userHash: resolveTenantScopeHash().userHash,
+        scope
+      }),
+      resolveAdminBrokerBalanceSnapshot()
+    ]);
+    if (metrics.status !== "fulfilled") {
+      throw metrics.reason;
+    }
+    const brokerBalanceSnapshot =
+      brokerSnapshotResult.status === "fulfilled"
+        ? brokerSnapshotResult.value
+        : {
+            status: "error",
+            reason: String((brokerSnapshotResult as PromiseRejectedResult).reason?.message || "snapshot_unavailable")
+          };
+    return { status: "ok", scope, metrics: metrics.value, brokerBalanceSnapshot };
   });
 
   app.post("/pilot/admin/protections/:id/premium-settled", async (req, reply) => {

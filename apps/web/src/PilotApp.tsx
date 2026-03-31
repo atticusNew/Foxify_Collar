@@ -76,25 +76,6 @@ type ReferencePricePayload = {
   message?: string;
 };
 
-type TenorPolicyResponse = {
-  status: "ok" | "error";
-  window?: {
-    minSamplesPerTenor?: number;
-    lookbackMinutes?: number;
-  };
-  tenors?: Array<{
-    tenorDays: number;
-    sampleCount: number;
-    eligible: boolean;
-    reasons: string[];
-  }>;
-  selection?: {
-    enabledTenorsDays: number[];
-    defaultTenorDays: number;
-    status?: "ok" | "degraded";
-  };
-};
-
 type AdminProtectionRow = {
   protection_id: string;
   status: string;
@@ -126,6 +107,18 @@ type AdminLedgerEntry = {
   settledAt: string | null;
 };
 
+type AdminBrokerBalanceSnapshot = {
+  source: "ibkr_account_summary";
+  readOnly: true;
+  accountId: string | null;
+  currency: string;
+  netLiquidationUsd: string;
+  availableFundsUsd: string;
+  excessLiquidityUsd: string;
+  buyingPowerUsd: string;
+  asOf: string;
+};
+
 type AdminMetrics = {
   totalProtections: string;
   activeProtections: string;
@@ -145,6 +138,7 @@ type AdminMetrics = {
   availableReserveUsdc: string;
   reserveAfterOpenPayoutLiabilityUsdc: string;
   netSettledCashUsdc: string;
+  brokerBalanceSnapshot?: AdminBrokerBalanceSnapshot | null;
 };
 
 type AdminScope = "active" | "open" | "all";
@@ -198,7 +192,8 @@ const DEFAULT_TIERS: TierLevel[] = [
   { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
   { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
 ];
-const PILOT_DEFAULT_TENOR_DAYS = 2;
+const STATIC_TENOR_CHIPS_DAYS = [3, 7, 14, 21, 30] as const;
+const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[1];
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
 const QUOTE_REQUEST_TIMEOUT_MS = 30000;
 const QUOTE_RETRY_DELAY_MS = 450;
@@ -332,7 +327,127 @@ const formatMatchedTenorShort = (days: number | null): string => {
   return `${Math.max(1, Math.round(Number(days)))}D`;
 };
 
+type QuoteLiquidityStatus = "unknown" | "normal" | "thin";
+type ActivateModalMode = "live" | "preview";
+type CmeMarketWindow = {
+  isOpen: boolean;
+  nextOpenAt: Date | null;
+};
+
+const CME_MARKET_TZ = "America/New_York";
+const CME_SCAN_STEP_MS = 60_000;
+const CME_SCAN_MAX_STEPS = 60 * 24 * 8;
+const LIQUIDITY_STATUS_TTL_MS = 5 * 60 * 1000;
+const REGULAR_MARKET_HOURS_LABEL = "Regular Market Hours 9:30 AM-5:00 PM ET";
+
+const getCmeEtClock = (date: Date): { weekday: number; hour: number; minute: number } => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CME_MARKET_TZ,
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const weekdayLabel = parts.find((part) => part.type === "weekday")?.value || "Mon";
+  const hour = Number(parts.find((part) => part.type === "hour")?.value || "0");
+  const minute = Number(parts.find((part) => part.type === "minute")?.value || "0");
+  const weekdayMap: Record<string, number> = {
+    Sun: 0,
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6
+  };
+  return {
+    weekday: weekdayMap[weekdayLabel] ?? 1,
+    hour: Number.isFinite(hour) ? hour : 0,
+    minute: Number.isFinite(minute) ? minute : 0
+  };
+};
+
+const isCmeOptionsMarketOpen = (date: Date): boolean => {
+  const { weekday, hour, minute } = getCmeEtClock(date);
+  const minuteOfDay = hour * 60 + minute;
+  if (weekday === 6) return false; // Saturday closed.
+  if (weekday === 0) return minuteOfDay >= 18 * 60; // Sunday opens 6:00 PM ET.
+  if (weekday === 5) return minuteOfDay < 17 * 60; // Friday closes 5:00 PM ET.
+  // Monday-Thursday: open except daily 5:00-6:00 PM ET maintenance break.
+  return minuteOfDay < 17 * 60 || minuteOfDay >= 18 * 60;
+};
+
+const findNextCmeOptionsOpenAt = (from: Date): Date | null => {
+  for (let step = 1; step <= CME_SCAN_MAX_STEPS; step += 1) {
+    const candidate = new Date(from.getTime() + step * CME_SCAN_STEP_MS);
+    if (isCmeOptionsMarketOpen(candidate)) return candidate;
+  }
+  return null;
+};
+
+const resolveCmeMarketWindow = (now: Date): CmeMarketWindow => {
+  const isOpen = isCmeOptionsMarketOpen(now);
+  return {
+    isOpen,
+    nextOpenAt: isOpen ? null : findNextCmeOptionsOpenAt(now)
+  };
+};
+
+const formatCmeOpenAt = (date: Date): string =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: CME_MARKET_TZ,
+    weekday: "short",
+    month: "short",
+    day: "2-digit",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short"
+  }).format(date);
+
+const formatCmeCountdown = (to: Date, nowMs: number): string => {
+  const diffMs = Math.max(0, to.getTime() - nowMs);
+  const totalMinutes = Math.floor(diffMs / 60000);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+};
+
+const formatCmeNowEt = (nowMs: number): string =>
+  new Intl.DateTimeFormat("en-US", {
+    timeZone: CME_MARKET_TZ,
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZoneName: "short"
+  }).format(new Date(nowMs));
+
+const formatLocalNow = (nowMs: number): string =>
+  new Intl.DateTimeFormat(undefined, {
+    weekday: "short",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZoneName: "short"
+  }).format(new Date(nowMs));
+
 const friendlyError = (message: string): string => {
+  if (message.includes("no_liquidity_window")) {
+    return "Outside CME market hours. Quotes are unavailable until the market reopens.";
+  }
+  if (
+    message.includes("service_unavailable") ||
+    message.includes("http_503") ||
+    message.includes("admin_service_unavailable")
+  ) {
+    return "Service is temporarily unavailable (503). Please retry shortly.";
+  }
   if (message.includes("daily_notional_cap_exceeded")) {
     return "Daily protection limit reached for pilot operations. Please try again next UTC day.";
   }
@@ -400,7 +515,7 @@ const friendlyError = (message: string): string => {
     return "Network issue detected. Please retry.";
   }
   if (message.includes("admin_unauthorized") || message.includes("unauthorized")) {
-    return "Admin access denied. Verify admin token and proxy/IP allowlist settings.";
+    return "Admin access denied. Verify admin token and PILOT_ADMIN_IP_ALLOWLIST / trusted proxy IP settings.";
   }
   return "Unable to complete request. Please retry.";
 };
@@ -408,13 +523,41 @@ const friendlyError = (message: string): string => {
 const isPriceUnavailableError = (message: string | null): boolean =>
   Boolean(message && message.toLowerCase().includes("quote temporarily unavailable"));
 
+const isQuoteUnavailableError = (message: string | null): boolean => {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("liquidity") ||
+    lower.includes("no_top_of_book") ||
+    lower.includes("off-market") ||
+    lower.includes("after-market") ||
+    lower.includes("timed out") ||
+    lower.includes("temporarily unavailable") ||
+    lower.includes("service unavailable") ||
+    lower.includes("503") ||
+    lower.includes("http_503") ||
+    lower.includes("service_unavailable")
+  );
+};
+
+const parseApiBody = async (res: Response): Promise<{ payload: any; rawText: string }> => {
+  const rawText = await res.text();
+  if (!rawText) return { payload: null, rawText: "" };
+  try {
+    return { payload: JSON.parse(rawText), rawText };
+  } catch {
+    return { payload: null, rawText };
+  }
+};
+
 const isRetryableQuoteError = (message: string): boolean => {
   const lower = message.toLowerCase();
   return (
     lower.includes("price_unavailable") ||
     lower.includes("quote_generation_failed") ||
     lower.includes("storage_unavailable") ||
-    lower.includes("fetch failed")
+    lower.includes("fetch failed") ||
+    lower.includes("network issue")
   );
 };
 
@@ -427,6 +570,30 @@ const isRetryableActivationError = (message: string): boolean => {
     lower.includes("activation_failed") ||
     lower.includes("fetch failed")
   );
+};
+
+const classifyLiquidityFromError = (message: string): QuoteLiquidityStatus => {
+  const lower = String(message || "").toLowerCase();
+  if (
+    lower.includes("quote_liquidity_unavailable") ||
+    lower.includes("no_top_of_book") ||
+    lower.includes("no_liquidity_window") ||
+    lower.includes("venue_quote_timeout") ||
+    lower.includes("quote_generation_timeout") ||
+    lower.includes("service unavailable") ||
+    lower.includes("service_unavailable") ||
+    lower.includes("http_503") ||
+    lower.includes("503")
+  ) {
+    return "thin";
+  }
+  return "unknown";
+};
+
+const getLiquidityStatusLabel = (status: QuoteLiquidityStatus): string => {
+  if (status === "normal") return "Normal";
+  if (status === "thin") return "Thin";
+  return "Unknown";
 };
 
 const formatVenueLabel = (venue: string | null | undefined): string => {
@@ -486,10 +653,7 @@ export function PilotApp() {
   const [protectedNotional, setProtectedNotional] = useState("");
   const [autoRenew, setAutoRenew] = useState(false);
   const [selectedTenorDays, setSelectedTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
-  const [enabledTenorDays, setEnabledTenorDays] = useState<number[]>([PILOT_DEFAULT_TENOR_DAYS]);
-  const [defaultTenorDays, setDefaultTenorDays] = useState<number>(PILOT_DEFAULT_TENOR_DAYS);
-  const [tenorPolicyStatus, setTenorPolicyStatus] = useState<"ok" | "degraded" | "fallback">("fallback");
-  const [tenorPolicyDebugSummary, setTenorPolicyDebugSummary] = useState<string | null>(null);
+  const staticTenorOptions = STATIC_TENOR_CHIPS_DAYS as readonly number[];
   const [quote, setQuote] = useState<QuoteResult | null>(null);
   const [protection, setProtection] = useState<ProtectionRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -498,6 +662,9 @@ export function PilotApp() {
   const [quoteRequestTimeLeft, setQuoteRequestTimeLeft] = useState(QUOTE_REQUEST_TIMEOUT_SECONDS);
   const [quoteTimeLeft, setQuoteTimeLeft] = useState(0);
   const [showRenewModal, setShowRenewModal] = useState(false);
+  const [showActivateConfirmModal, setShowActivateConfirmModal] = useState(false);
+  const [activateModalMode, setActivateModalMode] = useState<ActivateModalMode>("live");
+  const [activationPreviewNotice, setActivationPreviewNotice] = useState<string | null>(null);
   const [showProtectionModal, setShowProtectionModal] = useState(false);
   const [monitor, setMonitor] = useState<MonitorPayload | null>(null);
   const [monitorBusy, setMonitorBusy] = useState(false);
@@ -527,9 +694,16 @@ export function PilotApp() {
   const [liveReference, setLiveReference] = useState<ReferencePricePayload["reference"] | null>(null);
   const [liveReferenceBusy, setLiveReferenceBusy] = useState(false);
   const [liveReferenceError, setLiveReferenceError] = useState<string | null>(null);
+  const [liquiditySignalStatus, setLiquiditySignalStatus] = useState<QuoteLiquidityStatus>("unknown");
+  const [liquiditySignalAtMs, setLiquiditySignalAtMs] = useState<number>(0);
+  const [clockNowMs, setClockNowMs] = useState(() => Date.now());
   const historyRequestSeqRef = useRef(0);
   const monitorRequestSeqRef = useRef(0);
   const protectionPollSeqRef = useRef(0);
+  const recordLiquiditySignal = (nextStatus: QuoteLiquidityStatus): void => {
+    setLiquiditySignalStatus(nextStatus);
+    setLiquiditySignalAtMs(Date.now());
+  };
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
     [tierName, tiers]
@@ -619,73 +793,15 @@ export function PilotApp() {
   ]);
 
   useEffect(() => {
-    if (!enabledTenorDays.includes(selectedTenorDays)) {
-      setSelectedTenorDays(defaultTenorDays);
+    if (!staticTenorOptions.includes(selectedTenorDays)) {
+      setSelectedTenorDays(PILOT_DEFAULT_TENOR_DAYS);
     }
-  }, [selectedTenorDays, enabledTenorDays, defaultTenorDays]);
+  }, [selectedTenorDays, staticTenorOptions]);
 
   useEffect(() => {
     if (!pilotUnlocked) return;
-    let active = true;
-    const loadTenorPolicy = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/pilot/tenor-policy`);
-        const payload = (await res.json()) as TenorPolicyResponse;
-        if (!active || !res.ok || payload.status !== "ok") return;
-        const enabled = Array.isArray(payload.selection?.enabledTenorsDays)
-          ? payload.selection!.enabledTenorsDays.filter((n) => Number.isFinite(Number(n)) && Number(n) > 0)
-          : [];
-        const candidateTenors = Array.isArray(payload.tenors)
-          ? payload.tenors
-              .map((entry) => Number(entry.tenorDays))
-              .filter((n) => Number.isFinite(n) && n > 0)
-          : [];
-        const policyDefault = Number(payload.selection?.defaultTenorDays);
-        const fallbackDefault = Number.isFinite(policyDefault) && policyDefault > 0 ? policyDefault : PILOT_DEFAULT_TENOR_DAYS;
-        // If policy has no enabled tenors yet, expose candidate tenors so users can still choose a horizon.
-        const nextEnabled = (enabled.length > 0 ? enabled : candidateTenors.length > 0 ? candidateTenors : [fallbackDefault])
-          .slice()
-          .sort((a, b) => a - b);
-        const nextDefault =
-          Number.isFinite(policyDefault) && policyDefault > 0 && nextEnabled.includes(policyDefault)
-            ? policyDefault
-            : nextEnabled[0] || PILOT_DEFAULT_TENOR_DAYS;
-        setEnabledTenorDays(nextEnabled);
-        setDefaultTenorDays(nextDefault);
-        setTenorPolicyStatus(enabled.length > 0 ? (payload.selection?.status === "degraded" ? "degraded" : "ok") : "fallback");
-        const minSamples = Number(payload.window?.minSamplesPerTenor ?? NaN);
-        if (Array.isArray(payload.tenors) && payload.tenors.length > 0) {
-          const blockedRows = payload.tenors
-            .filter((entry) => !entry.eligible)
-            .map((entry) => {
-              const reasons = Array.isArray(entry.reasons) && entry.reasons.length > 0 ? entry.reasons.join(",") : "unknown";
-              return `${entry.tenorDays}D(samples=${entry.sampleCount};reasons=${reasons})`;
-            });
-          const summaryPrefix = Number.isFinite(minSamples)
-            ? `minSamples=${Math.max(1, Math.floor(minSamples))}`
-            : "minSamples=unknown";
-          setTenorPolicyDebugSummary(
-            blockedRows.length > 0 ? `${summaryPrefix} · blocked: ${blockedRows.join(" | ")}` : `${summaryPrefix} · all candidates eligible`
-          );
-        } else {
-          setTenorPolicyDebugSummary(Number.isFinite(minSamples) ? `minSamples=${Math.max(1, Math.floor(minSamples))}` : null);
-        }
-        setSelectedTenorDays((prev) => (nextEnabled.includes(prev) ? prev : nextDefault));
-      } catch {
-        // When policy endpoint is unavailable, keep a single deterministic fallback tenor.
-        const fallback = PILOT_DEFAULT_TENOR_DAYS;
-        setEnabledTenorDays([fallback]);
-        setDefaultTenorDays(fallback);
-        setTenorPolicyStatus("fallback");
-        setTenorPolicyDebugSummary("tenor-policy endpoint unavailable; using deterministic fallback tenor");
-        setSelectedTenorDays((prev) => (prev === fallback ? prev : fallback));
-      }
-    };
-    void loadTenorPolicy();
-    return () => {
-      active = false;
-    };
-  }, [pilotUnlocked]);
+    setSelectedTenorDays((prev) => (staticTenorOptions.includes(prev) ? prev : PILOT_DEFAULT_TENOR_DAYS));
+  }, [pilotUnlocked, staticTenorOptions]);
 
   useEffect(() => {
     setTermsError(null);
@@ -932,23 +1048,49 @@ export function PilotApp() {
       });
       const [rowsRes, metricsRes] = await Promise.all([
         fetch(`${API_BASE}/pilot/protections/export?${params.toString()}`, {
-          headers: { "x-admin-token": token }
+          headers: { "x-admin-token": token, "x-admin-actor": "web-admin" }
         }),
         fetch(`${API_BASE}/pilot/admin/metrics?scope=${encodeURIComponent(scope)}`, {
-          headers: { "x-admin-token": token }
+          headers: { "x-admin-token": token, "x-admin-actor": "web-admin" }
         })
       ]);
-      const rowsPayload = await rowsRes.json();
-      const metricsPayload = await metricsRes.json();
+      const [rowsParsed, metricsParsed] = await Promise.all([parseApiBody(rowsRes), parseApiBody(metricsRes)]);
+      const rowsPayload = rowsParsed.payload;
+      const metricsPayload = metricsParsed.payload;
       if (!rowsRes.ok || rowsPayload?.status !== "ok" || !Array.isArray(rowsPayload?.rows)) {
-        throw new Error(rowsPayload?.reason || "admin_load_failed");
+        const reason = String(rowsPayload?.reason || "");
+        if (reason === "unauthorized_admin" || rowsRes.status === 401) {
+          throw new Error("admin_unauthorized");
+        }
+        if (rowsRes.status === 503) {
+          throw new Error("admin_service_unavailable");
+        }
+        throw new Error(reason || `admin_load_failed:http_${rowsRes.status}`);
       }
       if (!metricsRes.ok || metricsPayload?.status !== "ok" || !metricsPayload?.metrics) {
-        throw new Error(metricsPayload?.reason || "admin_metrics_failed");
+        const reason = String(metricsPayload?.reason || "");
+        if (reason === "unauthorized_admin" || metricsRes.status === 401) {
+          throw new Error("admin_unauthorized");
+        }
+        if (metricsRes.status === 503) {
+          throw new Error("admin_service_unavailable");
+        }
+        throw new Error(reason || `admin_metrics_failed:http_${metricsRes.status}`);
       }
       const rows = rowsPayload.rows as AdminProtectionRow[];
+      const brokerBalanceSnapshotRaw = metricsPayload.brokerBalanceSnapshot;
+      const brokerBalanceSnapshot =
+        brokerBalanceSnapshotRaw &&
+        typeof brokerBalanceSnapshotRaw === "object" &&
+        !Array.isArray(brokerBalanceSnapshotRaw) &&
+        String((brokerBalanceSnapshotRaw as Record<string, unknown>).source || "") === "ibkr_account_summary"
+          ? (brokerBalanceSnapshotRaw as NonNullable<AdminMetrics["brokerBalanceSnapshot"]>)
+          : null;
       setAdminRows(rows);
-      setAdminMetrics(metricsPayload.metrics as AdminMetrics);
+      setAdminMetrics({
+        ...(metricsPayload.metrics as AdminMetrics),
+        brokerBalanceSnapshot
+      });
       setAdminScope(scope);
       setAdminStatusFilter(status);
       setAdminIncludeArchived(includeArchived);
@@ -974,16 +1116,24 @@ export function PilotApp() {
     try {
       const [ledgerRes, monitorRes] = await Promise.all([
         fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/ledger`, {
-          headers: { "x-admin-token": token }
+          headers: { "x-admin-token": token, "x-admin-actor": "web-admin" }
         }),
         fetch(`${API_BASE}/pilot/admin/protections/${protectionId}/monitor`, {
-          headers: { "x-admin-token": token }
+          headers: { "x-admin-token": token, "x-admin-actor": "web-admin" }
         })
       ]);
-      const ledgerPayload = await ledgerRes.json();
-      const monitorPayload = await monitorRes.json();
+      const [ledgerParsed, monitorParsed] = await Promise.all([parseApiBody(ledgerRes), parseApiBody(monitorRes)]);
+      const ledgerPayload = ledgerParsed.payload;
+      const monitorPayload = monitorParsed.payload;
       if (!ledgerRes.ok || ledgerPayload?.status !== "ok") {
-        throw new Error(ledgerPayload?.reason || "admin_ledger_failed");
+        const reason = String(ledgerPayload?.reason || "");
+        if (reason === "unauthorized_admin" || ledgerRes.status === 401) {
+          throw new Error("admin_unauthorized");
+        }
+        if (ledgerRes.status === 503) {
+          throw new Error("admin_service_unavailable");
+        }
+        throw new Error(reason || `admin_ledger_failed:http_${ledgerRes.status}`);
       }
       setAdminDetailProtection((ledgerPayload?.protection as ProtectionRecord) || null);
       setAdminLedger(Array.isArray(ledgerPayload?.ledger) ? (ledgerPayload.ledger as AdminLedgerEntry[]) : []);
@@ -1021,6 +1171,22 @@ export function PilotApp() {
     }
   }, [showAdminModal]);
 
+  useEffect(() => {
+    const id = setInterval(() => setClockNowMs(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    if (liquiditySignalStatus === "unknown" || !Number.isFinite(liquiditySignalAtMs) || liquiditySignalAtMs <= 0) return;
+    const remainingMs = LIQUIDITY_STATUS_TTL_MS - (Date.now() - liquiditySignalAtMs);
+    if (remainingMs <= 0) {
+      setLiquiditySignalStatus("unknown");
+      return;
+    }
+    const id = setTimeout(() => setLiquiditySignalStatus("unknown"), remainingMs);
+    return () => clearTimeout(id);
+  }, [liquiditySignalStatus, liquiditySignalAtMs]);
+
   const requestQuote = async () => {
     if (!canQuote) return;
     setBusy(true);
@@ -1056,7 +1222,8 @@ export function PilotApp() {
               tenorDays: selectedTenorDays
             })
           });
-          const payload = await res.json();
+          const parsed = await parseApiBody(res);
+          const payload = parsed.payload;
           if (!res.ok || payload?.status !== "ok") {
             const reason = String(payload?.reason || "");
             const detail = String(payload?.detail || "");
@@ -1066,13 +1233,25 @@ export function PilotApp() {
             if (reason === "quote_generation_timeout" || reason === "venue_quote_timeout") {
               throw new Error("venue_quote_timeout");
             }
-            throw new Error(payload?.message || reason || "quote_failed");
+            if (!payload && res.status === 503) {
+              throw new Error("service_unavailable_503");
+            }
+            if (!payload && res.status >= 500) {
+              throw new Error(`service_unavailable_${res.status}`);
+            }
+            const errMessage = [reason, payload?.message, detail].filter(Boolean).join(":") || "quote_failed";
+            throw new Error(errMessage);
           }
           setQuote(payload as QuoteResult);
+          recordLiquiditySignal("normal");
           setQuoteState("ready");
           return;
         } catch (err: any) {
           finalError = err;
+          const classified = classifyLiquidityFromError(String(err?.message || "quote_failed"));
+          if (classified === "thin") {
+            recordLiquiditySignal("thin");
+          }
           const retryable =
             err?.name === "AbortError" || isRetryableQuoteError(String(err?.message || "quote_failed"));
           if (attempt < QUOTE_REQUEST_MAX_ATTEMPTS && retryable) {
@@ -1090,6 +1269,7 @@ export function PilotApp() {
       }
       setQuoteState("idle");
       const err = finalError;
+      recordLiquiditySignal(classifyLiquidityFromError(String(err?.message || "")));
       if (
         err?.name === "AbortError" ||
         String(err?.message || "").includes("quote_request_deadline_exceeded")
@@ -1362,12 +1542,38 @@ export function PilotApp() {
   );
   const quoteRequestUrgencyClass =
     quoteRequestTimeLeft <= 6 ? "is-danger" : quoteRequestTimeLeft <= 12 ? "is-warning" : "";
+  const cmeMarketWindow = useMemo(() => resolveCmeMarketWindow(new Date(clockNowMs)), [clockNowMs]);
+  const nextCmeOpenLabel = cmeMarketWindow.nextOpenAt ? formatCmeOpenAt(cmeMarketWindow.nextOpenAt) : null;
+  const nextCmeOpenCountdown = cmeMarketWindow.nextOpenAt ? formatCmeCountdown(cmeMarketWindow.nextOpenAt, clockNowMs) : null;
+  const cmeNowEtLabel = formatCmeNowEt(clockNowMs);
+  const localNowLabel = formatLocalNow(clockNowMs);
+  const cmeStatusLabel = cmeMarketWindow.isOpen ? "Open" : "Closed";
+  const cmeStatusBadgeClass = cmeMarketWindow.isOpen
+    ? "quote-market-badge quote-market-badge-open"
+    : "quote-market-badge quote-market-badge-closed";
+  const urlSearchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
     ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_INTERNAL_ADMIN_ENABLED ===
       "true" ||
-      new URLSearchParams(window.location.search).get("internal_admin") === "1");
+      urlSearchParams?.get("internal_admin") === "1");
+  const previewActivateEnabled = urlSearchParams?.get("preview_activate") === "1";
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
+  const showQuoteUnavailableHint = quoteState !== "fetching" && isQuoteUnavailableError(error);
+  const quoteLiquidityStatus: QuoteLiquidityStatus = liquiditySignalStatus;
+  const showQuoteLiquidityPill = quoteLiquidityStatus !== "unknown";
+  const quoteLiquidityLabel =
+    quoteLiquidityStatus === "normal" ? "Normal liquidity" : quoteLiquidityStatus === "thin" ? "Thin liquidity" : "";
+  const quoteLiquidityPillClass =
+    quoteLiquidityStatus === "normal" ? "pill" : quoteLiquidityStatus === "thin" ? "pill pill-warning" : "pill pill-warning";
+  const quoteUnavailableSecondary = "Please try again.";
+  const quoteUnavailableSecondaryClass = "quote-unavailable-secondary quote-unavailable-secondary-amber";
+  const adminBrokerSnapshot = adminMetrics?.brokerBalanceSnapshot ?? null;
+  const adminBrokerAvailableFunds = Number(adminBrokerSnapshot?.availableFundsUsd ?? NaN);
+  const adminBrokerNetLiquidation = Number(adminBrokerSnapshot?.netLiquidationUsd ?? NaN);
+  const adminBrokerExcessLiquidity = Number(adminBrokerSnapshot?.excessLiquidityUsd ?? NaN);
+  const adminBrokerBuyingPower = Number(adminBrokerSnapshot?.buyingPowerUsd ?? NaN);
+  const showQuoteSection = quoteState !== "idle" || Boolean(quote) || Boolean(error);
   const monitorHasLiveSnapshot = Boolean(
     monitor &&
       protection &&
@@ -1618,6 +1824,29 @@ export function PilotApp() {
           )}
         </div>
 
+        <div className="section section-compact">
+          <div
+            className={`quote-market-banner quote-market-banner-micro ${cmeMarketWindow.isOpen ? "quote-market-banner-open" : "quote-market-banner-closed"}`}
+          >
+            <span className="quote-market-banner-title">CME BTC Options</span>
+            <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
+            <span
+              className={`pill ${quoteLiquidityStatus === "thin" ? "pill-warning" : quoteLiquidityStatus === "unknown" ? "pill-warning" : ""}`}
+            >
+              Liquidity {getLiquidityStatusLabel(quoteLiquidityStatus)}
+            </span>
+            <span className="muted">Regular Market Hours 9:30 AM-5:00 PM ET</span>
+            <span className="muted">ET {cmeNowEtLabel}</span>
+            {!cmeMarketWindow.isOpen && (
+              <span className="muted">
+                Next {nextCmeOpenLabel || "TBD"}
+                {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
+              </span>
+            )}
+            <span className="muted">Local {localNowLabel}</span>
+          </div>
+        </div>
+
         <div className="section">
           <h4>Protection Request</h4>
           <div className={`pilot-reference-strip ${liveReferenceStale ? "pilot-reference-strip-stale" : ""}`}>
@@ -1739,22 +1968,24 @@ export function PilotApp() {
               </div>
             </div>
 
-            <div className="pilot-form-row">
+            <div className="pilot-form-row pilot-form-row-tenor">
               <span className="pilot-label">Protection Length</span>
               <div className="pilot-field pilot-tenor-field">
                 <div
-                  className={`pilot-tenor-chips ${enabledTenorDays.length === 1 ? "pilot-tenor-chips-single" : ""}`}
+                  className="pilot-tenor-chips pilot-tenor-chips-static"
                   role="group"
                   aria-label="Protection Length"
                 >
-                  {enabledTenorDays.map((tenorDay) => {
+                  {staticTenorOptions.map((tenorDay) => {
                     const selected = selectedTenorDays === tenorDay;
-                    const recommended = tenorDay === defaultTenorDays;
+                    const recommended = tenorDay === PILOT_DEFAULT_TENOR_DAYS;
                     return (
                       <button
                         key={tenorDay}
                         type="button"
-                        className={`pilot-tenor-chip ${selected ? "active" : ""} ${recommended ? "recommended" : ""}`}
+                        className={`pilot-tenor-chip ${selected ? "active" : ""} ${
+                          recommended ? "pilot-tenor-chip-recommended" : ""
+                        }`}
                         aria-pressed={selected}
                         disabled={busy || quoteLocked}
                         onClick={() => setSelectedTenorDays(tenorDay)}
@@ -1764,11 +1995,9 @@ export function PilotApp() {
                     );
                   })}
                 </div>
-                {internalAdminEnabled && tenorPolicyDebugSummary && (
-                  <div className="muted" style={{ marginTop: 8 }}>
-                    Tenor policy debug: {tenorPolicyDebugSummary}
-                  </div>
-                )}
+                <div className="muted pilot-tenor-helper" style={{ marginTop: 8 }}>
+                  Closest liquid expiry is matched automatically.
+                </div>
               </div>
             </div>
 
@@ -1811,14 +2040,76 @@ export function PilotApp() {
           </div>
         </div>
 
-        <div className="section">
+        <div className="section pilot-actions-under-request">
+          <div className="pilot-actions">
+            <button className="btn btn-secondary pilot-action-btn" disabled={busy || !canQuote} onClick={requestQuote}>
+              {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
+            </button>
+            <button
+              className="cta pilot-action-btn"
+              disabled={busy || !canActivate}
+              onClick={() => {
+                setActivationPreviewNotice(null);
+                setActivateModalMode("live");
+                setShowActivateConfirmModal(true);
+              }}
+            >
+              {busy && quoteState !== "fetching" ? "Confirming..." : "Confirm Protection"}
+            </button>
+          </div>
+          {previewActivateEnabled && (
+            <div className="disclaimer">
+              <button
+                className="btn btn-secondary pilot-preview-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setActivationPreviewNotice(null);
+                  setActivateModalMode("preview");
+                  setShowActivateConfirmModal(true);
+                }}
+              >
+                Preview activation modal
+              </button>
+            </div>
+          )}
+          {activationPreviewNotice && <div className="disclaimer">{activationPreviewNotice}</div>}
+          {error && <div className={`disclaimer ${showQuoteUnavailableHint ? "" : "danger"}`}>{error}</div>}
+          {!error && quoteAlternativeHint && (
+            <div className="disclaimer">{`Venue alternatives: ${quoteAlternativeHint}`}</div>
+          )}
+          {showPriceFeedHint && (
+            <div className="disclaimer">
+              Quick check: API must run with PILOT_API_ENABLED=true, PRICE_SINGLE_SOURCE=true, and a valid
+              PRICE_REFERENCE_URL (Coinbase ticker).{" "}
+              <button
+                className="btn btn-secondary pilot-retry-btn"
+                type="button"
+                disabled={busy || !canQuote}
+                onClick={requestQuote}
+              >
+                Retry quote
+              </button>
+            </div>
+          )}
+        </div>
+
+        {showQuoteSection && (
+          <div className="section">
           <div className="section-title-row">
             <h4>Quote</h4>
-            {quoteState === "fetching" && <span className="pill">Finding best available protection…</span>}
-            {quoteState === "ready" && quoteTimeLeft > 0 && (
-              <span className="pill pill-warning">Expires in {formatCountdown(quoteTimeLeft)}</span>
-            )}
-            {quoteState === "expired" && <span className="pill pill-warning">Quote expired</span>}
+          </div>
+          <div className="quote-status-row">
+            <div className="quote-status-left">
+              {showQuoteLiquidityPill && <span className={quoteLiquidityPillClass}>{quoteLiquidityLabel}</span>}
+            </div>
+            <div className="quote-status-right">
+              {quoteState === "fetching" && <span className="pill">Finding best available protection…</span>}
+              {quoteState === "ready" && quoteTimeLeft > 0 && (
+                <span className="pill pill-warning">Expires in {formatCountdown(quoteTimeLeft)}</span>
+              )}
+              {quoteState === "expired" && <span className="pill pill-warning">Quote expired</span>}
+            </div>
           </div>
           <div className={`quote-card quote-card-${quoteState}`}>
             {quoteState === "idle" && (
@@ -1917,6 +2208,12 @@ export function PilotApp() {
               </>
             )}
           </div>
+          {showQuoteUnavailableHint && (
+            <div className="quote-unavailable-note">
+              <div className="quote-unavailable-title">Quote not available right now.</div>
+              <div className={quoteUnavailableSecondaryClass}>{quoteUnavailableSecondary}</div>
+            </div>
+          )}
           {quoteLocked && (
             <div className="muted">Quote locked: core request fields are temporarily read-only until refresh or expiry.</div>
           )}
@@ -1932,36 +2229,8 @@ export function PilotApp() {
               validated.
             </div>
           )}
-        </div>
-
-        <div className="section">
-          <div className="pilot-actions">
-            <button className="btn btn-secondary pilot-action-btn" disabled={busy || !canQuote} onClick={requestQuote}>
-              {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
-            </button>
-            <button className="cta pilot-action-btn" disabled={busy || !canActivate} onClick={activateProtection}>
-              {busy && quoteState !== "fetching" ? "Confirming..." : "Confirm Protection"}
-            </button>
           </div>
-          {error && <div className="disclaimer danger">{error}</div>}
-          {!error && quoteAlternativeHint && (
-            <div className="disclaimer">{`Venue alternatives: ${quoteAlternativeHint}`}</div>
-          )}
-          {showPriceFeedHint && (
-            <div className="disclaimer">
-              Quick check: API must run with PILOT_API_ENABLED=true, PRICE_SINGLE_SOURCE=true, and a valid
-              PRICE_REFERENCE_URL (Coinbase ticker).{" "}
-              <button
-                className="btn btn-secondary pilot-retry-btn"
-                type="button"
-                disabled={busy || !canQuote}
-                onClick={requestQuote}
-              >
-                Retry quote
-              </button>
-            </div>
-          )}
-        </div>
+        )}
 
         <div className="section">
           <div className="section-title-row">
@@ -2001,7 +2270,7 @@ export function PilotApp() {
                   Loading protections...
                 </div>
               ) : !protection && historyWithoutActive.length === 0 ? (
-                <div className="muted">No protections found yet.</div>
+                <div className="muted">No protected positions yet.</div>
               ) : (
                 <div className="positions">
                   {protection && (
@@ -2224,7 +2493,7 @@ export function PilotApp() {
                         ? `$${formatUsd(adminIndicativeHedgeMarkTotal)}`
                         : "—"}
                     </div>
-                    <div className="muted">Coverage: {adminIndicativeHedgeMarkCount} marked rows</div>
+                    <div className="muted">Coverage: {adminIndicativeMarksCoverage} marked rows</div>
                   </div>
                   <div className="pilot-monitor-card">
                     <div className="label">Unrealized Hedge P&L (Indicative)</div>
@@ -2246,6 +2515,26 @@ export function PilotApp() {
                   <div className="pilot-monitor-card">
                     <div className="label">Reserve After Open Liability</div>
                     <div className="value">${formatUsd(adminReserveAfterOpenLiability)}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">IBKR Available Funds (Live)</div>
+                    <div className="value">{Number.isFinite(adminBrokerAvailableFunds) ? `$${formatUsd(adminBrokerAvailableFunds)}` : "—"}</div>
+                    <div className="muted">{adminBrokerSnapshot ? `As of ${new Date(adminBrokerSnapshot.asOf).toLocaleString()}` : "Read-only broker snapshot unavailable."}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">IBKR Net Liquidation (Live)</div>
+                    <div className="value">{Number.isFinite(adminBrokerNetLiquidation) ? `$${formatUsd(adminBrokerNetLiquidation)}` : "—"}</div>
+                    <div className="muted">
+                      {adminBrokerSnapshot ? `Acct ${adminBrokerSnapshot.accountId || "N/A"} · ${adminBrokerSnapshot.currency}` : "Read-only broker snapshot."}
+                    </div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">IBKR Excess Liquidity (Live)</div>
+                    <div className="value">{Number.isFinite(adminBrokerExcessLiquidity) ? `$${formatUsd(adminBrokerExcessLiquidity)}` : "—"}</div>
+                  </div>
+                  <div className="pilot-monitor-card">
+                    <div className="label">IBKR Buying Power (Live)</div>
+                    <div className="value">{Number.isFinite(adminBrokerBuyingPower) ? `$${formatUsd(adminBrokerBuyingPower)}` : "—"}</div>
                   </div>
                   <div className="pilot-monitor-card">
                     <div className="label">Hedge Premium (Venue Cost)</div>
@@ -2522,6 +2811,95 @@ export function PilotApp() {
           </div>
         </div>
       )}
+
+      {showActivateConfirmModal && (
+        <div className="modal" onClick={() => (busy ? undefined : setShowActivateConfirmModal(false))}>
+          <div className="modal-card pilot-activate-confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-title">
+                <h3>Confirm Protection Activation</h3>
+              </div>
+              <button
+                className="icon-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => setShowActivateConfirmModal(false)}
+              >
+                x
+              </button>
+            </div>
+            {activateModalMode === "preview" ? (
+              <div className="disclaimer">
+                Preview mode only. No live activation request will be sent.
+              </div>
+            ) : (
+              <div className="muted">
+                Confirm this quote to activate protection with the matched expiry and premium below.
+              </div>
+            )}
+            <div className="pilot-activate-summary">
+              <div className="pilot-monitor-card">
+                <div className="label">Direction</div>
+                <div className="value">{quoteDirectionLabel}</div>
+              </div>
+              <div className="pilot-monitor-card">
+                <div className="label">Protection Amount</div>
+                <div className="value">${formatUsd(protectedValue)}</div>
+              </div>
+              <div className="pilot-monitor-card">
+                <div className="label">Quoted Premium</div>
+                <div className="value">${formatUsd(quote?.quote?.premium ?? 0)}</div>
+              </div>
+              <div className="pilot-monitor-card">
+                <div className="label">Requested vs Matched</div>
+                <div className="value">
+                  {targetHorizonDisplay} → {matchedExpiryDisplay}
+                </div>
+              </div>
+            </div>
+            <div className="modal-actions pilot-activate-actions">
+              <button
+                className="btn pilot-activate-action-btn"
+                type="button"
+                disabled={busy}
+                onClick={() => setShowActivateConfirmModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="pilot-activate-action-btn pilot-activate-action-btn-primary"
+                type="button"
+                disabled={busy || (activateModalMode === "live" && !canActivate)}
+                onClick={async () => {
+                  if (activateModalMode === "preview") {
+                    setShowActivateConfirmModal(false);
+                    setActivationPreviewNotice("Preview complete. No live activation request was sent.");
+                    return;
+                  }
+                  setShowActivateConfirmModal(false);
+                  await activateProtection();
+                }}
+              >
+                {activateModalMode === "preview"
+                  ? "Run Preview"
+                  : busy
+                    ? "Confirming..."
+                    : "Activate Protection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <a
+        className="pilot-help-fab"
+        href={`https://t.me/${PILOT_SUPPORT_TELEGRAM.replace(/^@/, "")}?text=${encodeURIComponent(
+          "Hi Michael, I need help with Foxify pilot testing."
+        )}`}
+        target="_blank"
+        rel="noreferrer"
+      >
+        Telegram Help
+      </a>
     </div>
   );
 }

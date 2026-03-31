@@ -190,6 +190,11 @@ body {
   margin-top: 12px;
 }
 
+.section-compact {
+  padding-top: 8px;
+  margin-top: 8px;
+}
+
 .section h4 {
   margin: 0 0 10px 0;
   font-size: 14px;
@@ -199,7 +204,7 @@ body {
 .section-title-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
 }
 
@@ -322,6 +327,10 @@ body {
   min-height: 32px;
 }
 
+.pilot-form-row-tenor {
+  align-items: start;
+}
+
 .pilot-label {
   color: var(--muted);
   font-size: 12px;
@@ -389,12 +398,9 @@ body {
   justify-items: stretch;
 }
 
-.pilot-tenor-chips.pilot-tenor-chips-single {
-  justify-items: end;
-}
-
-.pilot-tenor-chips.pilot-tenor-chips-single .pilot-tenor-chip {
-  grid-column: 3;
+.pilot-tenor-chips-static {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .pilot-tenor-chip {
@@ -402,14 +408,18 @@ body {
   border-radius: 10px;
   background: #121216;
   color: var(--text);
-  padding: 8px 10px;
-  font-size: 12px;
+  padding: 7px 8px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   min-height: 36px;
+}
+
+.pilot-tenor-chip-span {
+  grid-column: span 1;
 }
 
 .pilot-tenor-chip.active {
@@ -429,6 +439,91 @@ body {
 
 .pilot-tenor-helper {
   text-align: right;
+}
+
+.quote-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  gap: 8px;
+}
+
+.quote-market-banner {
+  margin-top: 2px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(255, 107, 107, 0.55);
+  border-radius: 10px;
+  background: rgba(255, 107, 107, 0.1);
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.quote-market-banner-open {
+  border-color: rgba(54, 211, 141, 0.45);
+  background: rgba(54, 211, 141, 0.09);
+}
+
+.quote-market-banner-closed {
+  border-color: rgba(255, 107, 107, 0.55);
+  background: rgba(255, 107, 107, 0.1);
+}
+
+.quote-market-banner-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #e9edf5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quote-market-banner-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.quote-market-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.quote-market-separator {
+  opacity: 0.45;
+}
+
+.quote-market-badge-open {
+  background: rgba(54, 211, 141, 0.16);
+  color: #8ee9be;
+}
+
+.quote-market-badge-closed {
+  background: rgba(255, 107, 107, 0.18);
+  color: #ffaaaa;
+}
+
+.quote-market-banner-micro {
+  overflow: hidden;
+}
+
+.quote-status-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 20px;
 }
 
 .pilot-field-entry {
@@ -550,7 +645,7 @@ body {
 
 .quote-horizon-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-top: 2px;
 }
@@ -559,6 +654,31 @@ body {
   display: grid;
   gap: 4px;
   margin-top: 4px;
+}
+
+.quote-unavailable-note {
+  margin-top: 8px;
+  border: 1px solid rgba(242, 166, 90, 0.45);
+  border-radius: 10px;
+  background: rgba(242, 166, 90, 0.08);
+  padding: 8px 10px;
+  display: grid;
+  gap: 3px;
+}
+
+.quote-unavailable-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f2c389;
+}
+
+.quote-unavailable-secondary {
+  color: #ffd166;
+  font-weight: 600;
+}
+
+.quote-unavailable-secondary-amber {
+  color: #ffd24d;
 }
 
 .quote-alternatives {
@@ -640,6 +760,26 @@ body {
   font-size: 13px;
 }
 
+.pilot-actions-under-request {
+  margin-top: 8px;
+}
+
+.pilot-preview-btn {
+  margin-top: 0;
+}
+
+.pilot-help-btn-wrap {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pilot-help-btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
 .pilot-retry-btn {
   margin-left: 8px;
   padding: 5px 10px;
@@ -690,6 +830,54 @@ body {
 
 .pilot-monitor {
   width: min(760px, 100%);
+}
+
+.pilot-activate-confirm {
+  width: min(720px, 100%);
+}
+
+.pilot-activate-summary {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pilot-activate-actions {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pilot-activate-actions .btn,
+.pilot-activate-actions .cta {
+  width: 100%;
+  min-height: 42px;
+  margin-top: 0;
+  border-radius: 10px;
+}
+
+.pilot-activate-actions .btn {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.pilot-activate-action-btn-primary {
+  display: block;
+  width: 100%;
+  margin-top: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.pilot-activate-action-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .pilot-monitor-subtitle {
@@ -1501,6 +1689,14 @@ select.input {
     grid-template-columns: 1fr;
   }
 
+  .pilot-tenor-chips-static {
+    grid-template-columns: 1fr;
+  }
+
+  .pilot-tenor-chip-span {
+    grid-column: span 1;
+  }
+
   .pilot-tenor-helper {
     text-align: left;
   }
@@ -1528,6 +1724,14 @@ select.input {
 
   .pilot-co-brand-logo-slot {
     min-height: 52px;
+  }
+
+  .pilot-activate-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .pilot-activate-actions {
+    grid-template-columns: 1fr;
   }
 
   .pilot-co-brand-separator {
@@ -2104,6 +2308,27 @@ select.input {
   padding: 24px;
   background: #f3f4f6;
   color: #111827;
+}
+
+.pilot-help-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 25;
+  border: 1px solid rgba(42, 171, 238, 0.65);
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(42, 171, 238, 0.25), rgba(42, 171, 238, 0.12));
+  color: #bfe9ff;
+  padding: 7px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: var(--shadow);
+}
+
+.pilot-help-fab:hover {
+  color: #e7f7ff;
+  border-color: rgba(132, 220, 255, 0.95);
 }
 
 .presentation-gate-card {

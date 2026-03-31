@@ -77,6 +77,17 @@ export type IbkrOrderState = {
   commissionUpdatedAt?: string | null;
 };
 
+export type IbkrAccountSummarySnapshot = {
+  source: "ibkr_account_summary";
+  accountId: string | null;
+  currency: string;
+  netLiquidationUsd: string;
+  availableFundsUsd: string;
+  excessLiquidityUsd: string;
+  buyingPowerUsd: string;
+  asOf: string;
+};
+
 const joinUrl = (baseUrl: string, path: string): string => {
   const base = String(baseUrl || "").replace(/\/+$/, "");
   const suffix = String(path || "").startsWith("/") ? path : `/${path}`;
@@ -131,6 +142,10 @@ export class IbkrConnector {
 
   async getHealth(): Promise<{ ok: boolean; session: "connected" | "disconnected"; asOf: string }> {
     return this.request("GET", "/health");
+  }
+
+  async getAccountSummarySnapshot(): Promise<IbkrAccountSummarySnapshot> {
+    return this.request("GET", "/account/summary");
   }
 
   async assertLiveTransportRequired(): Promise<void> {

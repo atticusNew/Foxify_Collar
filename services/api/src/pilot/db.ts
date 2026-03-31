@@ -663,6 +663,8 @@ export const getPilotAdminMetrics = async (
   };
 };
 
+export type PilotAdminMetrics = Awaited<ReturnType<typeof getPilotAdminMetrics>>;
+
 export const insertVenueQuote = async (
   pool: Queryable,
   input: VenueQuote & { protectionId?: string | null }

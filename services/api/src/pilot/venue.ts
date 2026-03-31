@@ -232,6 +232,56 @@ const deriveNoViableOptionReason = (counts: {
   return "no_top_of_book";
 };
 
+const isLikelyNoLiquidityWindow = (counts: {
+  nTotalCandidates: number;
+  nNoTop: number;
+  nNoAsk: number;
+  nFailedProtection: number;
+  nFailedEconomics: number;
+  nPassed: number;
+  nTimedOut?: number;
+}): boolean => {
+  const total = Math.max(0, Number(counts.nTotalCandidates || 0));
+  if (total <= 0) return false;
+  const passed = Math.max(0, Number(counts.nPassed || 0));
+  const noTop = Math.max(0, Number(counts.nNoTop || 0));
+  const noAsk = Math.max(0, Number(counts.nNoAsk || 0));
+  const failedProtection = Math.max(0, Number(counts.nFailedProtection || 0));
+  const failedEconomics = Math.max(0, Number(counts.nFailedEconomics || 0));
+  const timedOut = Math.max(0, Number(counts.nTimedOut || 0));
+  const marketDataUnavailable =
+    noTop + noAsk >= Math.max(1, Math.floor(total * 0.8)) ||
+    timedOut >= Math.max(2, Math.floor(total * 0.5));
+  return (
+    passed <= 0 &&
+    marketDataUnavailable &&
+    failedProtection <= 0 &&
+    failedEconomics <= 0
+  );
+};
+
+const normalizeNoLiquidityWindowError = (
+  message: string,
+  counts: {
+    nTotalCandidates: number;
+    nNoTop: number;
+    nNoAsk: number;
+    nFailedProtection: number;
+    nFailedEconomics: number;
+    nPassed: number;
+    nTimedOut?: number;
+  },
+  sawTenorEligibleContract: boolean
+): string => {
+  if (message.includes("no_liquidity_window")) return "ibkr_quote_unavailable:no_liquidity_window";
+  if (message.includes("option_qualify_timeout")) return "ibkr_quote_unavailable:no_liquidity_window";
+  if (!sawTenorEligibleContract) return message;
+  if (message.includes("tenor_drift_exceeded") && isLikelyNoLiquidityWindow(counts)) {
+    return "ibkr_quote_unavailable:no_liquidity_window";
+  }
+  return message;
+};
+
 const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -641,6 +691,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 class IbkrCmeAdapter implements PilotVenueAdapter {
   private qualifyCache = new Map<string, { contracts: IbkrQualifiedContract[]; ts: number }>();
   private qualifyInFlight = new Map<string, Promise<IbkrQualifiedContract[]>>();
+  private tenorLiquidityHints = new Map<string, { score: number; asOfMs: number }>();
   private selectorDiagnostics: {
     asOf: string;
     requestId: string;
@@ -746,6 +797,42 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       if (!firstKey) break;
       this.qualifyCache.delete(firstKey);
     }
+  }
+
+  private updateTenorLiquidityHint(tenorDays: number, result: {
+    contractsFound: number;
+    timedOut: boolean;
+    hadTopLiquidity: boolean;
+  }): void {
+    const tenorKey = String(Math.max(1, Math.floor(Number(tenorDays) || 0)));
+    const prev = this.tenorLiquidityHints.get(tenorKey);
+    const baseScore = result.hadTopLiquidity ? 3 : result.contractsFound > 0 ? 1 : -2;
+    const timeoutPenalty = result.timedOut ? -2 : 0;
+    const nextScoreRaw = baseScore + timeoutPenalty;
+    const nextScore = prev ? Math.max(-10, Math.min(10, prev.score * 0.55 + nextScoreRaw)) : nextScoreRaw;
+    this.tenorLiquidityHints.set(tenorKey, {
+      score: Number(nextScore.toFixed(4)),
+      asOfMs: Date.now()
+    });
+  }
+
+  private rankTenorCandidatesWithHints(tenorCandidates: number[], selectedTenorDaysIntended: number): number[] {
+    const nowMs = Date.now();
+    const staleAfterMs = Math.max(90_000, Math.min(900_000, this.qualifyCacheTtlMs * 4));
+    return [...tenorCandidates].sort((a, b) => {
+      const aHint = this.tenorLiquidityHints.get(String(a));
+      const bHint = this.tenorLiquidityHints.get(String(b));
+      const aFresh = Boolean(aHint && nowMs - aHint.asOfMs <= staleAfterMs);
+      const bFresh = Boolean(bHint && nowMs - bHint.asOfMs <= staleAfterMs);
+      if (aFresh && bFresh && aHint && bHint && aHint.score !== bHint.score) {
+        return bHint.score - aHint.score;
+      }
+      if (aFresh !== bFresh) return aFresh ? -1 : 1;
+      const aDrift = Math.abs(a - selectedTenorDaysIntended);
+      const bDrift = Math.abs(b - selectedTenorDaysIntended);
+      if (aDrift !== bDrift) return aDrift - bDrift;
+      return a - b;
+    });
   }
 
   private async qualifyContractsCached(
@@ -855,7 +942,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const maxTenorDays = clampInt(req.tenorMaxDays, minTenorDays, 30, Math.max(minTenorDays, 7));
     const selectedTenorDays = Math.max(minTenorDays, Math.min(maxTenorDays, requestedTenorDays));
     const trigger = toFinitePositive(req.triggerPrice);
-    const adverseMovePct = Number(req.protectionType === "short" ? 0 : req.drawdownFloorPct ?? 0);
+    const adverseMovePctRaw = Number(req.drawdownFloorPct ?? 0);
+    const adverseMovePct =
+      Number.isFinite(adverseMovePctRaw) && adverseMovePctRaw > 0 ? Math.min(0.95, adverseMovePctRaw) : 0;
     const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
     const right = this.resolveRight(req.protectionType);
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
@@ -1194,10 +1283,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
       return null;
     };
-      const probeOptionCandidates = async (
+    const probeOptionCandidates = async (
       contracts: IbkrQualifiedContract[],
       minProtectionThreshold: number | null,
-      opts?: { probeTimeoutMs?: number; depthAttempts?: number; legBudgetMs?: number }
+      opts?: { probeTimeoutMs?: number; depthAttempts?: number; legBudgetMs?: number; maxTopCalls?: number }
     ): Promise<
       | {
           contract: IbkrQualifiedContract;
@@ -1238,7 +1327,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           if (strikeCmp !== 0) return strikeCmp;
           return String(a.localSymbol || "").localeCompare(String(b.localSymbol || ""));
         });
-      const shortlist = eligible.slice(0, 18);
+      const shortlist = eligible.slice(
+        0,
+        hedgePolicy === "options_only_native" ? Math.min(12, eligible.length) : 18
+      );
       const failureCounts: OptionFailureCounts = {
         nTotalCandidates: shortlist.length,
         nNoTop: 0,
@@ -1257,6 +1349,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         Math.min(3000, Math.floor(Number(opts?.probeTimeoutMs ?? Math.max(700, requestWindowHintMs))))
       );
       const depthAttempts = Math.max(1, Math.min(2, Math.floor(Number(opts?.depthAttempts ?? 1))));
+      const maxTopCallsPerProbe =
+        hedgePolicy === "options_only_native"
+          ? Math.max(4, Math.min(8, Number(this.optionProbeParallelism || 1) * 6))
+          : Number.POSITIVE_INFINITY;
+      const maxTopCallsBudget = Number.isFinite(Number(opts?.maxTopCalls))
+        ? Math.max(0, Math.floor(Number(opts?.maxTopCalls)))
+        : Number.POSITIVE_INFINITY;
+      const effectiveMaxTopCalls = Math.max(0, Math.min(maxTopCallsPerProbe, maxTopCallsBudget));
       const legBudgetMs = Number.isFinite(Number(opts?.legBudgetMs))
         ? Math.max(2500, Math.floor(Number(opts?.legBudgetMs)))
         : Math.max(5000, Math.min(18000, Math.floor(this.quoteBudgetMs * 0.5)));
@@ -1300,13 +1400,22 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         score: number;
       };
       const passed: Scored[] = [];
+      let topCallsInProbe = 0;
       let cursor = 0;
+      if (effectiveMaxTopCalls <= 0) {
+        return { failureCounts };
+      }
       const worker = async (): Promise<void> => {
         while (true) {
           const idx = cursor;
           cursor += 1;
           if (idx >= shortlist.length) return;
-          ensureLegBudget(probeTimeoutMs + 150);
+          if (topCallsInProbe >= effectiveMaxTopCalls) return;
+          const candidateBudgetHintMs =
+            hedgePolicy === "options_only_native"
+              ? Math.max(350, Math.min(900, probeTimeoutMs))
+              : probeTimeoutMs + 150;
+          ensureLegBudget(candidateBudgetHintMs);
           const contract = shortlist[idx];
           const tenorMeta = contractTenorMeta(contract);
           const matchedTenorDays = tenorMeta.selectedTenorDays;
@@ -1315,12 +1424,19 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           let chosenTop:
             | { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string }
             | null = null;
+          topCallsInProbe += 1;
           counters.topCalls += 1;
           const topStartedAt = Date.now();
           const topProbe = await withProbeTimeout(this.connector.getTopOfBook(contract.conId), probeTimeoutMs);
           timingsMs.top += Date.now() - topStartedAt;
           if (topProbe.timedOut) {
             failureCounts.nTimedOut += 1;
+            // In options-only mode prioritize scanning additional candidates quickly.
+            // A candidate that times out on top-of-book tends to also stall on depth.
+            if (hedgePolicy === "options_only_native") {
+              failureCounts.nNoTop += 1;
+              continue;
+            }
           }
           if (topProbe.value && hasUsableTop(topProbe.value)) {
             chosenTop = topProbe.value;
@@ -1332,9 +1448,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               ensureLegBudget(Math.min(probeTimeoutMs, 900));
               counters.depthCalls += 1;
               const depthStartedAt = Date.now();
+              const depthProbeTimeoutMs =
+                hedgePolicy === "options_only_native"
+                  ? Math.max(900, Math.min(2200, probeTimeoutMs))
+                  : Math.min(12000, probeTimeoutMs * 2);
               const depthProbe = await withProbeTimeout(
                 this.connector.getDepth(contract.conId),
-                Math.min(12000, probeTimeoutMs * 2)
+                depthProbeTimeoutMs
               );
               timingsMs.depth += Date.now() - depthStartedAt;
               if (depthProbe.timedOut) {
@@ -1383,6 +1503,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
                 ? ((inferredEntry - strike) / inferredEntry) * 100
                 : ((strike - inferredEntry) / inferredEntry) * 100
               : null;
+          if (minProtectionThreshold !== null && protectionCoveragePct === null) {
+            failureCounts.nFailedProtection += 1;
+            continue;
+          }
           if (
             minProtectionThreshold !== null &&
             protectionCoveragePct !== null &&
@@ -1412,15 +1536,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             failureCounts.nFailedEconomics += 1;
             continue;
           }
-          const spreadPenalty = Math.max(0, Math.min(0.3, spreadPct ?? 0.3)) * 100;
-          const sizePenalty = askSize === null ? 20 : 1 / Math.max(0.1, askSize);
-          const protectionPenalty =
-            minProtectionThreshold !== null && protectionCoveragePct !== null
-              ? Math.max(0, minProtectionThreshold - protectionCoveragePct) * 2
-              : 0;
-          const economicsPenalty = premiumRatio * 200;
-          const tenorPenalty = Math.max(0, driftDays) * 0.4;
-          const score = spreadPenalty * 5 + sizePenalty * 10 + protectionPenalty * 8 + economicsPenalty * 4 + tenorPenalty;
+          const spreadPenalty = Math.max(0, Math.min(0.45, spreadPct ?? 0.45)) * 100;
+          const sizePenalty = askSize === null ? 10 : 1 / Math.max(0.2, askSize);
+          const economicsPenalty = premiumRatio * 100;
+          const tenorPenalty = Math.max(0, driftDays) * 20;
+          const belowTargetPenalty = this.preferTenorAtOrAbove && belowTarget ? 7 : 0;
+          const score = tenorPenalty + belowTargetPenalty + spreadPenalty * 1.1 + sizePenalty * 6 + economicsPenalty * 14;
           passed.push({
             contract,
             top: chosenTop,
@@ -1438,8 +1559,21 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           failureCounts.nPassed += 1;
         }
       };
-      const workers = Array.from({ length: optionProbeParallelism }, () => worker());
-      await Promise.all(workers);
+      const effectiveProbeWorkers =
+        hedgePolicy === "options_only_native"
+          ? Math.max(2, Math.min(4, optionProbeParallelism))
+          : optionProbeParallelism;
+      const workers = Array.from({ length: Math.max(1, Math.min(shortlist.length, effectiveProbeWorkers)) }, () => worker());
+      try {
+        await Promise.all(workers);
+      } catch (error) {
+        const message = String((error as Error)?.message || "probe_candidates_failed");
+        if (message.includes("venue_quote_timeout")) {
+          failureCounts.nTimedOut += 1;
+          return { failureCounts };
+        }
+        throw error;
+      }
       if (!passed.length) {
         return { failureCounts };
       }
@@ -1679,11 +1813,18 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             return values;
           })()
         : [selectedTenorDaysIntended];
+      const orderedTenorCandidates =
+        hedgePolicy === "options_only_native"
+          ? this.rankTenorCandidatesWithHints(tenorCandidates, selectedTenorDaysIntended)
+          : tenorCandidates;
       const dedupedContracts: IbkrQualifiedContract[] = [];
       const seenConIds = new Set<number>();
-      const optionLegBudgetMs = this.optionLiquiditySelectionEnabled
-        ? Math.max(10_000, Math.min(22_000, Math.floor(this.quoteBudgetMs * 0.38)))
-        : Math.max(4_200, Math.min(11_000, Math.floor(this.quoteBudgetMs * 0.22)));
+      const optionLegBudgetMs =
+        hedgePolicy === "options_only_native"
+          ? Math.max(12_000, Math.min(28_000, Math.floor(this.quoteBudgetMs * 0.82)))
+          : this.optionLiquiditySelectionEnabled
+            ? Math.max(10_000, Math.min(22_000, Math.floor(this.quoteBudgetMs * 0.38)))
+            : Math.max(4_200, Math.min(11_000, Math.floor(this.quoteBudgetMs * 0.22)));
       const optionLegDeadlineMs = Date.now() + optionLegBudgetMs;
       const ensureOptionLegBudget = (minimumRemainingMs = 0): void => {
         ensureBudget(minimumRemainingMs);
@@ -1695,12 +1836,21 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         900,
         Math.min(12000, Math.floor(Number(this.marketDataRequestTimeoutMs || requestWindowHintMs)))
       );
-      const qualifyTimeoutMs = this.optionLiquiditySelectionEnabled
-        ? Math.max(2200, Math.min(9000, Math.floor(qualifyRequestHintMs * 0.8)))
-        : Math.max(700, Math.min(2000, Math.floor(requestWindowHintMs * 0.55)));
-      const qualifyParallelism = this.optionLiquiditySelectionEnabled
-        ? Math.max(1, Math.min(4, optionProbeParallelism))
-        : 1;
+      const qualifyTimeoutMs =
+        hedgePolicy === "options_only_native"
+          ? Math.max(1200, Math.min(3600, Math.floor(qualifyRequestHintMs * 0.45)))
+          : this.optionLiquiditySelectionEnabled
+            ? Math.max(2200, Math.min(9000, Math.floor(qualifyRequestHintMs * 0.8)))
+            : Math.max(700, Math.min(2000, Math.floor(requestWindowHintMs * 0.55)));
+      const qualifyParallelism =
+        hedgePolicy === "options_only_native"
+          ? 1
+          : this.optionLiquiditySelectionEnabled
+            ? Math.max(1, Math.min(4, optionProbeParallelism))
+            : 1;
+      const maxQualifyCallsPerOptionLeg =
+        hedgePolicy === "options_only_native" ? 3 : Number.POSITIVE_INFINITY;
+      let optionQualifyCalls = 0;
       const maxQualifiedContracts = this.optionLiquiditySelectionEnabled ? 48 : 18;
       const withQualifyTimeout = async (
         promise: Promise<IbkrQualifiedContract[]>,
@@ -1731,9 +1881,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         const runQualifyWorker = async (): Promise<void> => {
           while (true) {
             if (dedupedContracts.length >= maxQualifiedContracts) return;
+            if (optionQualifyCalls >= maxQualifyCallsPerOptionLeg) return;
             const idx = qualifyCursor;
             qualifyCursor += 1;
             if (idx >= qualifyTasks.length) return;
+            optionQualifyCalls += 1;
             ensureOptionLegBudget(Math.min(qualifyTimeoutMs + 150, 1200));
             const task = qualifyTasks[idx];
             const optionQueryBase: IbkrContractQuery = {
@@ -1836,12 +1988,26 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       // Phase 1.5: in live IBKR mode, prioritize strike-scoped option qualification
       // per tenor before broad tenor-only probing. This avoids contract-detail timeouts
       // observed on broad option-chain requests while preserving fallback behavior.
-      const ringTasks: Array<Array<QualifyTask>> = tenorCandidates.map((tenor) => {
+      const strikeScopedProbeWidth = hedgePolicy === "options_only_native" ? 2 : 3;
+      const baseRingTasks: Array<Array<QualifyTask>> = orderedTenorCandidates.map((tenor) => {
         const strikeScoped = strikeCandidatesForMode
-          .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, 3)))
+          .slice(0, Math.max(1, Math.min(strikeCandidatesForMode.length, strikeScopedProbeWidth)))
           .map((strike) => ({ tenor, strike }));
+        if (hedgePolicy === "options_only_native") {
+          // In options-only mode, qualify tenor-only first and only then strike-scoped.
+          return strikeScoped.length > 0 ? [{ tenor }, ...strikeScoped] : [{ tenor }];
+        }
         return strikeScoped.length > 0 ? strikeScoped : [{ tenor }];
       });
+      const expandedRingTasks =
+        hedgePolicy === "options_only_native"
+          ? orderedTenorCandidates.map((tenor) => {
+              const strikeScoped = strikeCandidatesForMode.map((strike) => ({ tenor, strike }));
+              return strikeScoped.length > 0 ? [...strikeScoped, { tenor }] : [{ tenor }];
+            })
+          : [];
+      const ringTasks: Array<Array<QualifyTask>> =
+        hedgePolicy === "options_only_native" ? baseRingTasks : baseRingTasks;
       let bestOptionMatch:
         | {
             contract: IbkrQualifiedContract;
@@ -1871,11 +2037,59 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             failureCounts: OptionFailureCounts;
           }
         | null = null;
-      let latestFailureCounts: OptionFailureCounts | null = null;
-      const minViableCandidatesBeforeStop = 3;
-      for (const ringGroup of ringTasks) {
+      const noMatchFailureTotals: OptionFailureCounts = {
+        nTotalCandidates: 0,
+        nNoTop: 0,
+        nNoAsk: 0,
+        nFailedProtection: 0,
+        nFailedEconomics: 0,
+        nFailedMinTradableNotional: 0,
+        nTimedOut: 0,
+        nPassed: 0
+      };
+      const accumulateNoMatchFailureTotals = (counts: OptionFailureCounts): void => {
+        noMatchFailureTotals.nTotalCandidates += Number(counts.nTotalCandidates || 0);
+        noMatchFailureTotals.nNoTop += Number(counts.nNoTop || 0);
+        noMatchFailureTotals.nNoAsk += Number(counts.nNoAsk || 0);
+        noMatchFailureTotals.nFailedProtection += Number(counts.nFailedProtection || 0);
+        noMatchFailureTotals.nFailedEconomics += Number(counts.nFailedEconomics || 0);
+        noMatchFailureTotals.nFailedMinTradableNotional += Number(counts.nFailedMinTradableNotional || 0);
+        noMatchFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
+        noMatchFailureTotals.nPassed += Number(counts.nPassed || 0);
+      };
+      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 1 : 3;
+      const maxRingPasses =
+        hedgePolicy === "options_only_native"
+          ? Math.max(1, Math.min(3, ringTasks.length))
+          : ringTasks.length;
+      const maxTopCallsPerOptionLeg =
+        hedgePolicy === "options_only_native" ? 12 : Number.POSITIVE_INFINITY;
+      const topCallsAtLegStart = counters.topCalls;
+      const shouldShortCircuitNoLiquidity = (counts: OptionFailureCounts): boolean => {
+        if (hedgePolicy !== "options_only_native") return false;
+        const passed = Math.max(0, Number(counts.nPassed || 0));
+        if (passed > 0) return false;
+        const total = Math.max(0, Number(counts.nTotalCandidates || 0));
+        const noTop = Math.max(0, Number(counts.nNoTop || 0));
+        const timedOut = Math.max(0, Number(counts.nTimedOut || 0));
+        const stalledMarketData = noTop + timedOut >= Math.max(4, Math.floor(total * 0.6));
+        return (total >= 4 && stalledMarketData) || isLikelyNoLiquidityWindow(counts);
+      };
+      for (let ringIdx = 0; ringIdx < maxRingPasses; ringIdx += 1) {
+        const topCallsUsed = Math.max(0, counters.topCalls - topCallsAtLegStart);
+        const remainingTopCalls = maxTopCallsPerOptionLeg - topCallsUsed;
+        if (remainingTopCalls <= 0) {
+          break;
+        }
+        const ringGroup = ringTasks[ringIdx];
+        const ringTenor = ringGroup[0]?.tenor || selectedTenorDaysIntended;
         await runQualifyTasks(ringGroup);
         if (!dedupedContracts.length) {
+          this.updateTenorLiquidityHint(ringTenor, {
+            contractsFound: 0,
+            timedOut: optionQualifyTimedOut,
+            hadTopLiquidity: false
+          });
           continue;
         }
         const optionProbeBudgetMs = Math.max(1200, optionLegDeadlineMs - Date.now() - 120);
@@ -1883,29 +2097,62 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           break;
         }
       const scoreStartedAt = Date.now();
+      const optionProbeTimeoutMs =
+        hedgePolicy === "options_only_native"
+          ? Math.max(350, Math.min(900, Math.floor(requestWindowHintMs * 0.35)))
+          : Math.max(650, Math.min(1800, requestWindowHintMs));
+      const optionProbeDepthAttempts = 1;
+      const optionProbeLegBudgetMs =
+        hedgePolicy === "options_only_native"
+          ? Math.max(3000, Math.min(22000, optionProbeBudgetMs))
+          : Math.max(1200, Math.min(6000, optionProbeBudgetMs));
       const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
-          probeTimeoutMs: Math.max(650, Math.min(1800, requestWindowHintMs)),
-          depthAttempts: 1,
-          legBudgetMs: Math.max(1200, Math.min(6000, optionProbeBudgetMs))
+          probeTimeoutMs: optionProbeTimeoutMs,
+          depthAttempts: optionProbeDepthAttempts,
+          legBudgetMs: optionProbeLegBudgetMs,
+          maxTopCalls: remainingTopCalls
         });
       timingsMs.score += Date.now() - scoreStartedAt;
-        latestFailureCounts = optionMatch.failureCounts;
         if (!("contract" in optionMatch)) {
+          accumulateNoMatchFailureTotals(optionMatch.failureCounts);
+          this.updateTenorLiquidityHint(ringTenor, {
+            contractsFound: Number(optionMatch.failureCounts.nTotalCandidates || 0),
+            timedOut: Number(optionMatch.failureCounts.nTimedOut || 0) > 0,
+            hadTopLiquidity:
+              Number(optionMatch.failureCounts.nNoTop || 0) < Number(optionMatch.failureCounts.nTotalCandidates || 0)
+          });
+          if (
+            hedgePolicy === "options_only_native" &&
+            sawTenorEligibleContract &&
+            shouldShortCircuitNoLiquidity(noMatchFailureTotals)
+          ) {
+            break;
+          }
           continue;
         }
         if (!bestOptionMatch || optionMatch.selectedScore < bestOptionMatch.selectedScore) {
           bestOptionMatch = optionMatch;
           bestOptionRankedAlternatives = optionMatch.rankedAlternatives;
         }
+        this.updateTenorLiquidityHint(ringTenor, {
+          contractsFound: Number(optionMatch.failureCounts.nTotalCandidates || 0),
+          timedOut: Number(optionMatch.failureCounts.nTimedOut || 0) > 0,
+          hadTopLiquidity: Number(optionMatch.failureCounts.nPassed || 0) > 0
+        });
         const viableCount = Number(optionMatch.failureCounts.nPassed || 0);
         if (viableCount >= minViableCandidatesBeforeStop) {
           break;
         }
+        if (
+          hedgePolicy === "options_only_native" &&
+          sawTenorEligibleContract &&
+          shouldShortCircuitNoLiquidity(noMatchFailureTotals)
+        ) {
+          break;
+        }
       }
       if (!bestOptionMatch) {
-        if (latestFailureCounts) {
-          accumulateOptionFailureCounts(latestFailureCounts);
-        }
+        accumulateOptionFailureCounts(noMatchFailureTotals);
         if (optionQualifyTimedOut && optionFailureTotals.nTotalCandidates <= 0) {
           optionLegFailureReason = "option_qualify_timeout";
         }
@@ -1938,6 +2185,150 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         candidateFailureCounts: optionMatch.failureCounts
       };
     };
+    if (hedgePolicy === "options_only_native") {
+      try {
+        const primaryOptions = await runOptionLeg(this.primaryProductFamily, "best_tenor_liquidity_option");
+        if (primaryOptions) {
+          timingsMs.total = Date.now() - selectorStartedAt;
+          this.selectorDiagnostics = {
+            asOf: nowIso(),
+            requestId: randomUUID(),
+            venueMode: this.mode,
+            timingsMs,
+            counters,
+            optionCandidateFailureCounts: { ...optionFailureTotals },
+            selection: {
+              hedgeMode: primaryOptions.hedgeMode,
+              hedgeInstrumentFamily: primaryOptions.hedgeInstrumentFamily,
+              selectionReason: primaryOptions.selectionReason,
+              selectionAlgorithm: primaryOptions.selectionAlgorithm,
+              selectedScore: primaryOptions.selectedScore,
+              selectedTenorDays: primaryOptions.selectedTenorDays,
+              selectedExpiry: primaryOptions.selectedExpiry,
+              selectedStrike: primaryOptions.strike,
+              candidateCountEvaluated: primaryOptions.candidateCountEvaluated
+            }
+          };
+          return primaryOptions;
+        }
+      } catch (error) {
+        const rawMessage = String((error as Error)?.message || "ibkr_quote_unavailable:option_selection_failed");
+        const message = normalizeNoLiquidityWindowError(rawMessage, optionFailureTotals, sawTenorEligibleContract);
+        if (message.includes("venue_quote_timeout")) {
+          counters.optionsLegTimedOut += 1;
+        }
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: message
+        };
+        throw new Error(message);
+      }
+      if (optionLegFailureReason === "option_qualify_timeout") {
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: "ibkr_quote_unavailable:no_liquidity_window"
+        };
+        throw new Error("ibkr_quote_unavailable:no_liquidity_window");
+      }
+      if (!sawTenorEligibleContract) {
+        timingsMs.total = Date.now() - selectorStartedAt;
+        const mappedError =
+          optionLegFailureReason === "option_qualify_timeout"
+            ? "ibkr_quote_unavailable:no_liquidity_window"
+            : optionLegFailureReason
+              ? `ibkr_quote_unavailable:${optionLegFailureReason}`
+              : "ibkr_quote_unavailable:tenor_drift_exceeded";
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: mappedError
+        };
+        if (optionLegFailureReason === "option_qualify_timeout") {
+          throw new Error("ibkr_quote_unavailable:no_liquidity_window");
+        }
+        if (optionLegFailureReason) {
+          throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+        }
+        throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
+      }
+      if (this.optionLiquiditySelectionEnabled && optionFailureTotals.nTotalCandidates > 0) {
+        if (isLikelyNoLiquidityWindow(optionFailureTotals)) {
+          timingsMs.total = Date.now() - selectorStartedAt;
+          this.selectorDiagnostics = {
+            asOf: nowIso(),
+            requestId: randomUUID(),
+            venueMode: this.mode,
+            timingsMs,
+            counters,
+            optionCandidateFailureCounts: { ...optionFailureTotals },
+            error: "ibkr_quote_unavailable:no_liquidity_window"
+          };
+          throw new Error("ibkr_quote_unavailable:no_liquidity_window");
+        }
+        const noViableReason = deriveNoViableOptionReason(optionFailureTotals);
+        const rankedAlternatives = (bestOptionRankedAlternatives.length > 0
+          ? bestOptionRankedAlternatives
+          : null) as
+          | Array<{
+              expiry: string | null;
+              matchedTenorDays: number | null;
+              driftDays: number | null;
+              ask: number | null;
+              score: number | null;
+            }>
+          | null;
+        timingsMs.total = Date.now() - selectorStartedAt;
+        this.selectorDiagnostics = {
+          asOf: nowIso(),
+          requestId: randomUUID(),
+          venueMode: this.mode,
+          timingsMs,
+          counters,
+          optionCandidateFailureCounts: { ...optionFailureTotals },
+          error: `ibkr_quote_unavailable:${noViableReason}:no_viable_option`
+        };
+        throw new Error(
+          [
+            `ibkr_quote_unavailable:${noViableReason}:no_viable_option:${JSON.stringify(optionFailureTotals)}`,
+            rankedAlternatives ? `ranked_alternatives:${JSON.stringify(rankedAlternatives)}` : null
+          ]
+            .filter(Boolean)
+            .join(":")
+        );
+      }
+      timingsMs.total = Date.now() - selectorStartedAt;
+      this.selectorDiagnostics = {
+        asOf: nowIso(),
+        requestId: randomUUID(),
+        venueMode: this.mode,
+        timingsMs,
+        counters,
+        optionCandidateFailureCounts: { ...optionFailureTotals },
+        error: optionLegFailureReason
+          ? `ibkr_quote_unavailable:${optionLegFailureReason}`
+          : "ibkr_quote_unavailable:no_top_of_book"
+      };
+      if (optionLegFailureReason && optionFailureTotals.nTotalCandidates <= 0 && optionFailureTotals.nPassed <= 0) {
+        throw new Error(`ibkr_quote_unavailable:${optionLegFailureReason}`);
+      }
+      throw new Error("ibkr_quote_unavailable:no_top_of_book");
+    }
     if (hedgePolicy === "options_primary_futures_fallback") {
       const allowBffFallback = this.enableBffFallback && this.primaryProductFamily !== this.bffProductFamily;
       let optionLegTimedOut = false;

@@ -23,8 +23,12 @@ This integration supports pilot quote + activation flows against IBKR/CME using 
 
 ## Hedge policy
 
-- `PILOT_HEDGE_POLICY=options_primary_futures_fallback`
-  - Attempts CME MBT options quote first.
+- `PILOT_HEDGE_POLICY=options_only_native` (recommended for pilot quote-quality validation)
+  - Attempts CME MBT options quote only.
+  - No futures fallback and no secondary BFF fallback.
+  - Returns an explicit options-unavailable/liquidity/economics error when no viable option exists.
+- `PILOT_HEDGE_POLICY=options_primary_futures_fallback` (legacy compatibility mode)
+  - Attempts CME MBT options first.
   - Falls back to MBT futures synthetic hedge when options are unavailable.
   - Route/UI diagnostics expose `hedgeMode` (`options_native` or `futures_synthetic`).
 

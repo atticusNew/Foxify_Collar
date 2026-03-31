@@ -56,6 +56,7 @@ test("parseDeribitMaxTenorDriftDays enforces bounds", () => {
 test("parsePilotHedgePolicy validates allowed values", () => {
   assert.equal(parsePilotHedgePolicy(undefined), "options_primary_futures_fallback");
   assert.equal(parsePilotHedgePolicy("options_primary_futures_fallback"), "options_primary_futures_fallback");
+  assert.equal(parsePilotHedgePolicy("options_only_native"), "options_only_native");
   assert.throws(() => parsePilotHedgePolicy("futures_only"), /invalid_pilot_hedge_policy/);
 });
 

@@ -235,3 +235,35 @@ test("contracts qualify mbt_option accepts omitted strike", async () => {
     await wait(150);
   }
 });
+
+test("account summary endpoint returns read-only snapshot payload", async () => {
+  const port = randomPort();
+  const child = startBridge(port);
+
+  try {
+    await wait(1200);
+    const res = await fetch(`http://127.0.0.1:${port}/account/summary`);
+    assert.equal(res.ok, true);
+    const payload = (await res.json()) as {
+      source?: string;
+      accountId?: string | null;
+      currency?: string;
+      netLiquidationUsd?: string;
+      availableFundsUsd?: string;
+      excessLiquidityUsd?: string;
+      buyingPowerUsd?: string;
+      asOf?: string;
+    };
+    assert.equal(payload.source, "ibkr_account_summary");
+    assert.equal(payload.accountId, null);
+    assert.equal(payload.currency, "USD");
+    assert.equal(typeof payload.availableFundsUsd, "string");
+    assert.equal(typeof payload.netLiquidationUsd, "string");
+    assert.equal(typeof payload.excessLiquidityUsd, "string");
+    assert.equal(typeof payload.buyingPowerUsd, "string");
+    assert.equal(typeof payload.asOf, "string");
+  } finally {
+    child.kill("SIGTERM");
+    await wait(150);
+  }
+});

@@ -4,6 +4,7 @@ import type { CommissionReport } from "@stoqey/ib/dist/api/report/commissionRepo
 import type { Execution } from "@stoqey/ib/dist/api/order/execution";
 import type {
   BridgeActiveTransport,
+  BridgeAccountSummarySnapshot,
   BridgeContractQuery,
   BridgeDepth,
   BridgeHealth,
@@ -175,6 +176,14 @@ export class IbGatewayClient {
       lastFallbackReason: this.lastFallbackReason || undefined,
       asOf: nowIso()
     };
+  }
+
+  async getAccountSummarySnapshot(): Promise<BridgeAccountSummarySnapshot> {
+    return this.runWithTransport(
+      "getAccountSummarySnapshot",
+      () => this.getAccountSummarySnapshotIb(),
+      () => this.getAccountSummarySnapshotSynthetic()
+    );
   }
 
   async qualifyContracts(query: BridgeContractQuery): Promise<BridgeQualifiedContract[]> {
@@ -523,6 +532,101 @@ export class IbGatewayClient {
       filledQuantity: 1,
       avgFillPrice: 101,
       lastUpdateAt: nowIso()
+    };
+  }
+
+  private accountMetricToFixed(value: string | undefined): string {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed.toFixed(10) : "0.0000000000";
+  }
+
+  private async getAccountSummarySnapshotSynthetic(): Promise<BridgeAccountSummarySnapshot> {
+    return {
+      source: "ibkr_account_summary",
+      accountId: null,
+      currency: "USD",
+      netLiquidationUsd: "0.0000000000",
+      availableFundsUsd: "0.0000000000",
+      excessLiquidityUsd: "0.0000000000",
+      buyingPowerUsd: "0.0000000000",
+      asOf: nowIso()
+    };
+  }
+
+  private async getAccountSummarySnapshotIb(): Promise<BridgeAccountSummarySnapshot> {
+    const ib = await this.requireIb();
+    const reqId = this.nextRequestId();
+    const tags = new Set(["NetLiquidation", "AvailableFunds", "ExcessLiquidity", "BuyingPower"]);
+    const values = new Map<string, string>();
+    let accountId: string | null = null;
+
+    await new Promise<void>((resolve, reject) => {
+      const timeoutMs = Math.max(1200, Math.floor(this.config.requestTimeoutMs || 0));
+      const timeoutHandle = setTimeout(() => {
+        cleanup();
+        reject(new Error("ib_account_summary_timeout"));
+      }, timeoutMs);
+
+      const cleanup = (): void => {
+        clearTimeout(timeoutHandle);
+        ib.off(EventName.accountSummary, onSummary);
+        ib.off(EventName.accountSummaryEnd, onEnd);
+        ib.off(EventName.error, onError);
+        try {
+          ib.cancelAccountSummary(reqId);
+        } catch {
+          // ignore
+        }
+      };
+
+      const onSummary = (
+        eventReqId: number,
+        account: string,
+        tag: string,
+        value: string,
+        currency: string
+      ): void => {
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
+        if (!tags.has(tag)) return;
+        const isUsd = String(currency || "").trim().toUpperCase() === "USD";
+        if (!isUsd && String(currency || "").trim() !== "") return;
+        if (!accountId && String(account || "").trim()) {
+          accountId = String(account).trim();
+        }
+        values.set(tag, String(value || "").trim());
+      };
+
+      const onEnd = (eventReqId: number): void => {
+        if (!this.reqIdMatches(reqId, eventReqId)) return;
+        cleanup();
+        resolve();
+      };
+
+      const onError = (...args: unknown[]): void => {
+        const eventReqId = this.extractIbReqId(args);
+        if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
+        const code = this.extractIbErrorCode(args);
+        const message = this.extractIbErrorMessage(args);
+        if (code === 2104 || code === 2106 || code === 2107 || code === 2158) return;
+        cleanup();
+        reject(new Error(`ib_account_summary_error:${message || code || "unknown"}`));
+      };
+
+      ib.on(EventName.accountSummary, onSummary);
+      ib.on(EventName.accountSummaryEnd, onEnd);
+      ib.on(EventName.error, onError);
+      ib.reqAccountSummary(reqId, "All", "NetLiquidation,AvailableFunds,ExcessLiquidity,BuyingPower");
+    });
+
+    return {
+      source: "ibkr_account_summary",
+      accountId,
+      currency: "USD",
+      netLiquidationUsd: this.accountMetricToFixed(values.get("NetLiquidation")),
+      availableFundsUsd: this.accountMetricToFixed(values.get("AvailableFunds")),
+      excessLiquidityUsd: this.accountMetricToFixed(values.get("ExcessLiquidity")),
+      buyingPowerUsd: this.accountMetricToFixed(values.get("BuyingPower")),
+      asOf: nowIso()
     };
   }
 

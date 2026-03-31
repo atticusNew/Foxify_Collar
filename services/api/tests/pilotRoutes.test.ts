@@ -1775,6 +1775,92 @@ test("V2) quote maps no-economical-option diagnostics to economics-unacceptable 
   }
 });
 
+test("V6) admin metrics include broker balance snapshot when available", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "account/summary") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              source: "ibkr_account_summary",
+              accountId: "DU555111",
+              currency: "USD",
+              netLiquidationUsd: "1996.1200000000",
+              availableFundsUsd: "1200.5000000000",
+              excessLiquidityUsd: "980.7500000000",
+              buyingPowerUsd: "2401.0000000000",
+              asOf: "2026-03-31T06:00:00.000Z"
+            })
+        } as any;
+      }
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: "2026-03-31T06:00:00.000Z"
+            })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () => JSON.stringify({})
+      } as any;
+    }) as typeof fetch;
+
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "2500",
+        IBKR_ACCOUNT_ID: "DU555111"
+      }
+    });
+    try {
+      const res = await harness.app.inject({
+        method: "GET",
+        url: "/pilot/admin/metrics?scope=all",
+        headers: { "x-admin-token": "admin-local" }
+      });
+      assert.equal(res.statusCode, 200);
+      const payload = res.json();
+      assert.equal(payload.status, "ok");
+      assert.equal(payload.scope, "all");
+      assert.equal(payload.brokerBalanceSnapshot?.source, "ibkr_account_summary");
+      assert.equal(payload.brokerBalanceSnapshot?.readOnly, true);
+      assert.equal(payload.brokerBalanceSnapshot?.accountId, "DU555111");
+      assert.equal(payload.brokerBalanceSnapshot?.currency, "USD");
+      assert.equal(payload.brokerBalanceSnapshot?.availableFundsUsd, "1200.5000000000");
+      assert.equal(payload.brokerBalanceSnapshot?.netLiquidationUsd, "1996.1200000000");
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("W) quote diagnostics include explicit tenorReason attribution", async () => {
   const originalFetch = global.fetch;
   try {

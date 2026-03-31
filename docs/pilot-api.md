@@ -144,7 +144,9 @@ settlement calls for an already-settled protection return `status=ok` with `idem
     - rejects Deribit quotes whose selected expiry drifts too far from the requested tenor
 - IBKR/CME pilot mode:
   - `PILOT_VENUE_MODE=ibkr_cme_live` or `ibkr_cme_paper`
-  - `PILOT_HEDGE_POLICY=options_primary_futures_fallback`
+  - `PILOT_HEDGE_POLICY=options_only_native` (recommended)
+    - strict options-native selection only (no futures/BFF fallback)
+  - `PILOT_HEDGE_POLICY=options_primary_futures_fallback` (legacy compatibility mode)
   - `IBKR_BRIDGE_BASE_URL` (broker-bridge URL)
   - `IBKR_BRIDGE_TOKEN` (bridge bearer token)
   - `IBKR_ACCOUNT_ID`
