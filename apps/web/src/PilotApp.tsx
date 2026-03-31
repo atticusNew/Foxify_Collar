@@ -327,7 +327,7 @@ const formatMatchedTenorShort = (days: number | null): string => {
   return `${Math.max(1, Math.round(Number(days)))}D`;
 };
 
-type QuoteLiquidityStatus = "unknown" | "active" | "limited" | "off_market";
+type QuoteLiquidityStatus = "unknown" | "normal" | "thin";
 type ActivateModalMode = "live" | "preview";
 type CmeMarketWindow = {
   isOpen: boolean;
@@ -337,6 +337,8 @@ type CmeMarketWindow = {
 const CME_MARKET_TZ = "America/New_York";
 const CME_SCAN_STEP_MS = 60_000;
 const CME_SCAN_MAX_STEPS = 60 * 24 * 8;
+const LIQUIDITY_STATUS_TTL_MS = 5 * 60 * 1000;
+const REGULAR_MARKET_HOURS_LABEL = "Regular Market Hours 9:30 AM-5:00 PM ET";
 
 const getCmeEtClock = (date: Date): { weekday: number; hour: number; minute: number } => {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -570,6 +572,30 @@ const isRetryableActivationError = (message: string): boolean => {
   );
 };
 
+const classifyLiquidityFromError = (message: string): QuoteLiquidityStatus => {
+  const lower = String(message || "").toLowerCase();
+  if (
+    lower.includes("quote_liquidity_unavailable") ||
+    lower.includes("no_top_of_book") ||
+    lower.includes("no_liquidity_window") ||
+    lower.includes("venue_quote_timeout") ||
+    lower.includes("quote_generation_timeout") ||
+    lower.includes("service unavailable") ||
+    lower.includes("service_unavailable") ||
+    lower.includes("http_503") ||
+    lower.includes("503")
+  ) {
+    return "thin";
+  }
+  return "unknown";
+};
+
+const getLiquidityStatusLabel = (status: QuoteLiquidityStatus): string => {
+  if (status === "normal") return "Normal";
+  if (status === "thin") return "Thin";
+  return "Unknown";
+};
+
 const formatVenueLabel = (venue: string | null | undefined): string => {
   const normalized = String(venue || "").trim().toLowerCase();
   if (normalized === "deribit_test") return "Deribit (Live Data, Paper Exec)";
@@ -668,10 +694,16 @@ export function PilotApp() {
   const [liveReference, setLiveReference] = useState<ReferencePricePayload["reference"] | null>(null);
   const [liveReferenceBusy, setLiveReferenceBusy] = useState(false);
   const [liveReferenceError, setLiveReferenceError] = useState<string | null>(null);
+  const [liquiditySignalStatus, setLiquiditySignalStatus] = useState<QuoteLiquidityStatus>("unknown");
+  const [liquiditySignalAtMs, setLiquiditySignalAtMs] = useState<number>(0);
   const [clockNowMs, setClockNowMs] = useState(() => Date.now());
   const historyRequestSeqRef = useRef(0);
   const monitorRequestSeqRef = useRef(0);
   const protectionPollSeqRef = useRef(0);
+  const recordLiquiditySignal = (nextStatus: QuoteLiquidityStatus): void => {
+    setLiquiditySignalStatus(nextStatus);
+    setLiquiditySignalAtMs(Date.now());
+  };
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
     [tierName, tiers]
@@ -1144,6 +1176,17 @@ export function PilotApp() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (liquiditySignalStatus === "unknown" || !Number.isFinite(liquiditySignalAtMs) || liquiditySignalAtMs <= 0) return;
+    const remainingMs = LIQUIDITY_STATUS_TTL_MS - (Date.now() - liquiditySignalAtMs);
+    if (remainingMs <= 0) {
+      setLiquiditySignalStatus("unknown");
+      return;
+    }
+    const id = setTimeout(() => setLiquiditySignalStatus("unknown"), remainingMs);
+    return () => clearTimeout(id);
+  }, [liquiditySignalStatus, liquiditySignalAtMs]);
+
   const requestQuote = async () => {
     if (!canQuote) return;
     setBusy(true);
@@ -1196,13 +1239,19 @@ export function PilotApp() {
             if (!payload && res.status >= 500) {
               throw new Error(`service_unavailable_${res.status}`);
             }
-            throw new Error([reason, payload?.message, detail].filter(Boolean).join(":") || "quote_failed");
+            const errMessage = [reason, payload?.message, detail].filter(Boolean).join(":") || "quote_failed";
+            throw new Error(errMessage);
           }
           setQuote(payload as QuoteResult);
+          recordLiquiditySignal("normal");
           setQuoteState("ready");
           return;
         } catch (err: any) {
           finalError = err;
+          const classified = classifyLiquidityFromError(String(err?.message || "quote_failed"));
+          if (classified === "thin") {
+            recordLiquiditySignal("thin");
+          }
           const retryable =
             err?.name === "AbortError" || isRetryableQuoteError(String(err?.message || "quote_failed"));
           if (attempt < QUOTE_REQUEST_MAX_ATTEMPTS && retryable) {
@@ -1220,6 +1269,7 @@ export function PilotApp() {
       }
       setQuoteState("idle");
       const err = finalError;
+      recordLiquiditySignal(classifyLiquidityFromError(String(err?.message || "")));
       if (
         err?.name === "AbortError" ||
         String(err?.message || "").includes("quote_request_deadline_exceeded")
@@ -1510,32 +1560,12 @@ export function PilotApp() {
   const previewActivateEnabled = urlSearchParams?.get("preview_activate") === "1";
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
   const showQuoteUnavailableHint = quoteState !== "fetching" && isQuoteUnavailableError(error);
-  const quoteLiquidityStatus: QuoteLiquidityStatus = (() => {
-    const quoteError = String(error || "").toLowerCase();
-    if (quoteError.includes("service_unavailable") || quoteError.includes("http_503")) return "limited";
-    if (quoteError.includes("no_liquidity_window")) return "off_market";
-    if (quoteError.includes("quote_liquidity_unavailable") || quoteError.includes("no_top_of_book")) return "limited";
-    if (!cmeMarketWindow.isOpen) return "off_market";
-    if (quoteState === "ready" && quote) return "active";
-    return "unknown";
-  })();
+  const quoteLiquidityStatus: QuoteLiquidityStatus = liquiditySignalStatus;
   const showQuoteLiquidityPill = quoteLiquidityStatus !== "unknown";
   const quoteLiquidityLabel =
-    quoteLiquidityStatus === "active"
-      ? "Market Hours"
-      : quoteLiquidityStatus === "limited"
-        ? "Limited liquidity"
-        : quoteLiquidityStatus === "off_market"
-          ? "After-Market Hours"
-          : "";
+    quoteLiquidityStatus === "normal" ? "Normal liquidity" : quoteLiquidityStatus === "thin" ? "Thin liquidity" : "";
   const quoteLiquidityPillClass =
-    quoteLiquidityStatus === "active"
-      ? "pill"
-      : quoteLiquidityStatus === "limited"
-        ? "pill pill-warning"
-        : quoteLiquidityStatus === "off_market"
-          ? "pill pill-danger"
-          : "pill pill-warning";
+    quoteLiquidityStatus === "normal" ? "pill" : quoteLiquidityStatus === "thin" ? "pill pill-warning" : "pill pill-warning";
   const quoteUnavailableSecondary = "Please try again.";
   const quoteUnavailableSecondaryClass = "quote-unavailable-secondary quote-unavailable-secondary-amber";
   const adminBrokerSnapshot = adminMetrics?.brokerBalanceSnapshot ?? null;
@@ -1801,10 +1831,11 @@ export function PilotApp() {
             <span className="quote-market-banner-title">CME BTC Options</span>
             <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
             <span
-              className={`pill ${quoteLiquidityStatus === "limited" ? "pill-warning" : quoteLiquidityStatus === "off_market" ? "pill-danger" : ""}`}
+              className={`pill ${quoteLiquidityStatus === "thin" ? "pill-warning" : quoteLiquidityStatus === "unknown" ? "pill-warning" : ""}`}
             >
-              Liquidity {quoteLiquidityStatus === "limited" ? "Thin" : quoteLiquidityStatus === "off_market" ? "After Hours" : "Normal"}
+              Liquidity {getLiquidityStatusLabel(quoteLiquidityStatus)}
             </span>
+            <span className="muted">Regular Market Hours 9:30 AM-5:00 PM ET</span>
             <span className="muted">ET {cmeNowEtLabel}</span>
             {!cmeMarketWindow.isOpen && (
               <span className="muted">
