@@ -102,6 +102,11 @@ const normalizeReqId = (value: unknown): number | null => {
 };
 
 const normalizeExchangeAlias = (raw: string | undefined | null): string => String(raw || "").trim().toUpperCase();
+const splitExchangeList = (raw: unknown): string[] =>
+  String(raw || "")
+    .split(",")
+    .map((item) => normalizeExchangeAlias(item))
+    .filter(Boolean);
 
 /**
  * Hybrid IB gateway client:
@@ -938,9 +943,17 @@ export class IbGatewayClient {
         if (!conId) return null;
         const normalizedRight = right === "P" || right === "C" ? (right as "P" | "C") : undefined;
         const normalizedSecType = secType === "FOP" ? "FOP" : "FUT";
-        const exchange = normalizeExchangeAlias(
-          String(contract.exchange || contract.primaryExch || item.requestedExchange || query.exchange)
-        );
+        const contractExchange = normalizeExchangeAlias(String(contract.exchange || ""));
+        const primaryExchange = normalizeExchangeAlias(String(contract.primaryExch || ""));
+        const detailExchangeCandidates = splitExchangeList((item.detail as any)?.validExchanges);
+        // Prefer explicit contract routing exchanges before request fallbacks.
+        const exchange =
+          contractExchange ||
+          primaryExchange ||
+          detailExchangeCandidates[0] ||
+          normalizeExchangeAlias(item.requestedExchange) ||
+          normalizeExchangeAlias(query.exchange) ||
+          "CME";
         const normalizedSymbol = String(contract.symbol || "").trim().toUpperCase();
         const normalizedLocalSymbol = localSymbol.toUpperCase();
         const explicitFamilyFromSymbol =
