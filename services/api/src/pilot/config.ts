@@ -444,6 +444,27 @@ export const pilotConfig = {
   ibkrOptionProtectionTolerancePct: Number.isFinite(Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))
     ? Math.max(0, Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))
     : 0.03,
+  optionSelectionCoverageWeight: Number.isFinite(Number(process.env.PILOT_OPTION_SELECTION_COVERAGE_WEIGHT ?? "18"))
+    ? Math.max(0, Number(process.env.PILOT_OPTION_SELECTION_COVERAGE_WEIGHT ?? "18"))
+    : 18,
+  optionSelectionPremiumWeight: Number.isFinite(Number(process.env.PILOT_OPTION_SELECTION_PREMIUM_WEIGHT ?? "14"))
+    ? Math.max(0, Number(process.env.PILOT_OPTION_SELECTION_PREMIUM_WEIGHT ?? "14"))
+    : 14,
+  optionSelectionLiquidityWeight: Number.isFinite(Number(process.env.PILOT_OPTION_SELECTION_LIQUIDITY_WEIGHT ?? "7.5"))
+    ? Math.max(0, Number(process.env.PILOT_OPTION_SELECTION_LIQUIDITY_WEIGHT ?? "7.5"))
+    : 7.5,
+  optionSelectionTenorWeight: Number.isFinite(Number(process.env.PILOT_OPTION_SELECTION_TENOR_WEIGHT ?? "20"))
+    ? Math.max(0, Number(process.env.PILOT_OPTION_SELECTION_TENOR_WEIGHT ?? "20"))
+    : 20,
+  premiumTriggerCostShare: Number.isFinite(Number(process.env.PILOT_PREMIUM_TRIGGER_COST_SHARE ?? "0.15"))
+    ? Math.max(0, Number(process.env.PILOT_PREMIUM_TRIGGER_COST_SHARE ?? "0.15"))
+    : 0.15,
+  premiumExpectedTriggerProbabilityByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_PROB_BRONZE || "0.28"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_PROB_SILVER || "0.22"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_PROB_GOLD || "0.18"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_PROB_PLATINUM || "0.15")
+  } as Record<string, number>,
   ibkrPreferTenorAtOrAbove: parseBooleanEnv(process.env.IBKR_PREFER_TENOR_AT_OR_ABOVE, true),
   ibkrRequireLiveTransport: parseBooleanEnv(
     process.env.IBKR_REQUIRE_LIVE_TRANSPORT,
@@ -481,6 +502,30 @@ export const pilotConfig = {
     "Pro (Silver)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_SILVER || "5"),
     "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_GOLD || "4"),
     "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "4")
+  } as Record<string, number>,
+  premiumTriggerCreditFloorPctByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_BRONZE || "0.03"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_SILVER || "0.025"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_GOLD || "0.02"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_PLATINUM || "0.018")
+  } as Record<string, number>,
+  premiumExpectedTriggerBreachProbByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_BRONZE || "0.25"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_SILVER || "0.2"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_GOLD || "0.16"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_PLATINUM || "0.14")
+  } as Record<string, number>,
+  premiumProfitabilityBufferPctByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_BRONZE || "0.015"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_SILVER || "0.012"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_GOLD || "0.01"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_PLATINUM || "0.01")
+  } as Record<string, number>,
+  premiumTriggerCreditWeightByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_BRONZE || "0.35"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_SILVER || "0.32"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_GOLD || "0.28"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_PLATINUM || "0.25")
   } as Record<string, number>,
   startingReserveUsdc: Number(process.env.PILOT_STARTING_RESERVE_USDC || "25000"),
   pricePrimaryTimeoutMs: Number(process.env.PRICE_TIMEOUT_PRIMARY_MS || "1400"),

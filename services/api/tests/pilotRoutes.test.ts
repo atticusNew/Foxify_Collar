@@ -229,6 +229,30 @@ const createPilotHarness = async (opts?: {
     "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_GOLD || "4"),
     "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "4")
   };
+  configModule.pilotConfig.premiumTriggerCreditFloorPctByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_BRONZE || "0.03"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_SILVER || "0.025"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_GOLD || "0.02"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_PLATINUM || "0.018")
+  };
+  configModule.pilotConfig.premiumExpectedTriggerBreachProbByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_BRONZE || "0.25"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_SILVER || "0.2"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_GOLD || "0.16"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_PLATINUM || "0.14")
+  };
+  configModule.pilotConfig.premiumProfitabilityBufferPctByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_BRONZE || "0.015"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_SILVER || "0.012"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_GOLD || "0.01"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_PLATINUM || "0.01")
+  };
+  configModule.pilotConfig.premiumTriggerCreditWeightByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_BRONZE || "0.35"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_SILVER || "0.32"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_GOLD || "0.28"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_PLATINUM || "0.25")
+  };
   configModule.pilotConfig.ibkrFeePerContractUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_CONTRACT_USD || "2.02"));
   configModule.pilotConfig.ibkrFeePerOrderUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD || "0"));
   configModule.pilotConfig.triggerMonitorEnabled = process.env.PILOT_TRIGGER_MONITOR_ENABLED !== "false";
@@ -281,7 +305,7 @@ const quoteAndActivate = async (
     url: "/pilot/protections/activate",
     payload: activationPayload(quoteId, protectedNotional)
   });
-  assert.equal(activateRes.statusCode, 200);
+  assert.equal(activateRes.statusCode, 200, activateRes.body);
   const activatePayloadJson = activateRes.json();
   assert.equal(activatePayloadJson.status, "ok");
   assert.equal(Number(activatePayloadJson.protection?.entryPrice), 100000);
@@ -1330,6 +1354,51 @@ test("N4) activation premium diagnostics preserve estimated vs realized fee comp
     assert.equal(Number(realized.brokerFeesUsd), Number(estimated.brokerFeesUsd));
     assert.equal(Number(realized.passThroughUsd), Number(realized.hedgeCostUsd) + Number(realized.brokerFeesUsd));
     assert.equal(Number(realized.clientPremiumUsd), Number(payload?.protection?.premium || 0));
+  } finally {
+    await harness.close();
+  }
+});
+
+test("N4b) activation premium diagnostics include profitability floor economics", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_POLICY_MODE: "pass_through_markup",
+      PILOT_PREMIUM_MARKUP_PCT_BRONZE: "0.02",
+      PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_BRONZE: "0.03",
+      PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_BRONZE: "0.25",
+      PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_BRONZE: "0.015",
+      PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_BRONZE: "0.35"
+    }
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200, quoteRes.body);
+    const quotePayload = quoteRes.json();
+    assert.equal(quotePayload.status, "ok");
+    const estimated = quotePayload?.diagnostics?.premiumPolicy?.estimated || {};
+    assert.equal(Number.isFinite(Number(estimated.hedgeCostUsd)), true);
+    assert.equal(Number.isFinite(Number(estimated.brokerFeesUsd)), true);
+    assert.equal(Number.isFinite(Number(estimated.passThroughUsd)), true);
+    assert.equal(Number.isFinite(Number(estimated.markupUsd)), true);
+    const pricingBreakdown = quotePayload?.quote?.details?.pricingBreakdown || {};
+    assert.equal(Number.isFinite(Number(pricingBreakdown.expectedTriggerCostUsd)), true);
+    assert.equal(Number.isFinite(Number(pricingBreakdown.profitabilityFloorUsd)), true);
+    assert.equal(Number.isFinite(Number(pricingBreakdown.selectionFeasibilityPenaltyUsd)), true);
+    assert.equal(Number.isFinite(Number(pricingBreakdown.premiumProfitabilityTargetUsd)), true);
+    assert.equal(Number.isFinite(Number(pricingBreakdown.premiumProfitabilityTargetRatio)), true);
+    assert.equal(
+      Number(pricingBreakdown.profitabilityFloorUsd) >= Number(pricingBreakdown.expectedTriggerCostUsd),
+      true
+    );
+    assert.equal(
+      Number(pricingBreakdown.selectionFeasibilityPenaltyUsd),
+      Number(pricingBreakdown.expectedTriggerCostUsd)
+    );
   } finally {
     await harness.close();
   }
@@ -2960,6 +3029,12 @@ test("Y4) quote premium policy in pass-through mode includes broker fees for IBK
       assert.equal(broker > 0, true);
       assert.ok(Math.abs(passThrough - (hedge + broker)) < 1e-9);
       assert.equal(clientPremium >= passThrough, true);
+      const breakdown = payload?.quote?.details?.pricingBreakdown || {};
+      assert.equal(Number.isFinite(Number(breakdown.expectedTriggerCostUsd ?? NaN)), true);
+      assert.equal(Number.isFinite(Number(breakdown.premiumProfitabilityTargetUsd ?? NaN)), true);
+      assert.equal(Number.isFinite(Number(breakdown.triggerPayoutCreditUsd ?? NaN)), true);
+      const profitabilityTarget = Number(breakdown.premiumProfitabilityTargetUsd ?? 0);
+      assert.equal(clientPremium >= profitabilityTarget || !Number.isFinite(profitabilityTarget), true);
     } finally {
       await harness.close();
     }

@@ -43,6 +43,7 @@ import {
   resolveExpiryDays,
   resolveRenewWindowMinutes
 } from "./floor";
+import { computeDrawdownLossBudgetUsd } from "./protectionMath";
 import type {
   PremiumPolicyDiagnostics,
   TenorPolicyEntry,
@@ -128,9 +129,45 @@ const resolveTierPremiumFloorUsd = (tierName: string): Decimal => {
   return new Decimal(raw);
 };
 
+const resolveTierProfitabilityBufferPct = (tierName: string): Decimal => {
+  const raw = Number(pilotConfig.premiumProfitabilityBufferPctByTier[tierName] ?? 0);
+  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
+  return new Decimal(raw);
+};
+
+const resolveTierExpectedTriggerBreachProb = (tierName: string): Decimal => {
+  const raw = Number(pilotConfig.premiumExpectedTriggerBreachProbByTier[tierName] ?? 0);
+  if (!Number.isFinite(raw) || raw <= 0) return new Decimal(0);
+  return Decimal.min(new Decimal(1), new Decimal(raw));
+};
+
+const resolveTierTriggerCreditWeight = (tierName: string): Decimal => {
+  const raw = Number(pilotConfig.premiumTriggerCreditWeightByTier[tierName] ?? 0);
+  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
+  return Decimal.min(new Decimal(1), new Decimal(raw));
+};
+
+const resolveTierTriggerCreditFloorPct = (tierName: string): Decimal => {
+  const raw = Number(pilotConfig.premiumTriggerCreditFloorPctByTier[tierName] ?? 0);
+  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
+  return Decimal.min(new Decimal(1), new Decimal(raw));
+};
+
+const resolveTierSelectionFeasibilityPenaltyScale = (tierName: string): Decimal => {
+  const raw = Number(pilotConfig.selectionFeasibilityPenaltyScaleByTier[tierName] ?? 1);
+  if (!Number.isFinite(raw) || raw <= 0) return new Decimal(1);
+  return new Decimal(raw);
+};
+
+const isMethodFor = (
+  method: string,
+  candidate: "floor_profitability" | "floor_trigger_credit" | "floor_usd" | "floor_bps"
+): boolean => method === candidate;
+
 const resolvePremiumPricing = (params: {
   tierName: string;
   protectedNotional: Decimal;
+  drawdownFloorPct: Decimal;
   hedgePremium: Decimal;
   brokerFees?: Decimal;
   markupPctOverride?: Decimal | null;
@@ -144,8 +181,16 @@ const resolvePremiumPricing = (params: {
   premiumFloorUsdFromBps: Decimal;
   premiumFloorBps: Decimal;
   premiumFloorUsd: Decimal;
+  premiumFloorUsdTriggerCredit: Decimal;
+  expectedTriggerCreditUsd: Decimal;
+  expectedTriggerCostUsd: Decimal;
+  profitabilityBufferUsd: Decimal;
+  profitabilityFloorUsd: Decimal;
+  selectionFeasibilityPenaltyUsd: Decimal;
+  premiumProfitabilityTargetUsd: Decimal;
+  premiumProfitabilityTargetRatio: Decimal;
   clientPremiumUsd: Decimal;
-  method: "markup" | "floor_usd" | "floor_bps";
+  method: "markup" | "floor_usd" | "floor_bps" | "floor_trigger_credit" | "floor_profitability";
 } => {
   const markupPct =
     params.markupPctOverride ||
@@ -166,13 +211,43 @@ const resolvePremiumPricing = (params: {
   const premiumFloorBps = resolveTierPremiumFloorBps(params.tierName);
   const premiumFloorUsdFromBps = params.protectedNotional.mul(premiumFloorBps).div(10000);
   const premiumFloorUsdAbsolute = resolveTierPremiumFloorUsd(params.tierName);
-  const premiumFloorUsd = Decimal.max(premiumFloorUsdAbsolute, premiumFloorUsdFromBps);
+  const triggerCreditUsd = computeDrawdownLossBudgetUsd(params.protectedNotional, params.drawdownFloorPct);
+  const triggerCreditWeight = resolveTierTriggerCreditWeight(params.tierName);
+  const expectedTriggerBreachProb = resolveTierExpectedTriggerBreachProb(params.tierName);
+  const expectedTriggerCreditUsd = triggerCreditUsd.mul(expectedTriggerBreachProb);
+  const expectedTriggerCostUsd = expectedTriggerCreditUsd.mul(triggerCreditWeight);
+  const selectionFeasibilityPenaltyUsd = expectedTriggerCostUsd;
+  const profitabilityBufferPct = resolveTierProfitabilityBufferPct(params.tierName);
+  const profitabilityBufferUsd = params.protectedNotional.mul(profitabilityBufferPct);
+  const profitabilityFloorUsd = passThroughUsd.plus(selectionFeasibilityPenaltyUsd).plus(profitabilityBufferUsd);
+  const premiumProfitabilityTargetUsd = profitabilityFloorUsd;
+  const premiumProfitabilityTargetRatio =
+    params.protectedNotional.gt(0)
+      ? premiumProfitabilityTargetUsd.div(params.protectedNotional)
+      : new Decimal(0);
+  const triggerCreditFloorPct = resolveTierTriggerCreditFloorPct(params.tierName);
+  const premiumFloorUsdTriggerCredit = triggerCreditUsd.mul(triggerCreditFloorPct);
+  const premiumFloorUsd = Decimal.max(
+    premiumFloorUsdAbsolute,
+    premiumFloorUsdFromBps,
+    premiumFloorUsdTriggerCredit,
+    profitabilityFloorUsd
+  );
   const clientPremiumUsd = Decimal.max(markedUpPremium, premiumFloorUsd);
-  const method: "markup" | "floor_usd" | "floor_bps" = clientPremiumUsd.eq(markedUpPremium)
-    ? "markup"
-    : premiumFloorUsdAbsolute.greaterThanOrEqualTo(premiumFloorUsdFromBps)
-      ? "floor_usd"
-      : "floor_bps";
+  let method: "markup" | "floor_usd" | "floor_bps" | "floor_trigger_credit" | "floor_profitability" = "markup";
+  if (!clientPremiumUsd.eq(markedUpPremium)) {
+    if (premiumFloorUsd.eq(profitabilityFloorUsd) || profitabilityFloorUsd.greaterThanOrEqualTo(premiumFloorUsd)) {
+      method = "floor_profitability";
+    } else if (
+      premiumFloorUsd.eq(premiumFloorUsdTriggerCredit) ||
+      premiumFloorUsdTriggerCredit.greaterThanOrEqualTo(premiumFloorUsdAbsolute) &&
+        premiumFloorUsdTriggerCredit.greaterThanOrEqualTo(premiumFloorUsdFromBps)
+    ) {
+      method = "floor_trigger_credit";
+    } else {
+      method = premiumFloorUsdAbsolute.greaterThanOrEqualTo(premiumFloorUsdFromBps) ? "floor_usd" : "floor_bps";
+    }
+  }
   return {
     hedgePremiumUsd,
     brokerFeesUsd,
@@ -183,6 +258,14 @@ const resolvePremiumPricing = (params: {
     premiumFloorUsdFromBps,
     premiumFloorBps,
     premiumFloorUsd,
+    premiumFloorUsdTriggerCredit,
+    expectedTriggerCreditUsd,
+    expectedTriggerCostUsd,
+    profitabilityBufferUsd,
+    profitabilityFloorUsd,
+    selectionFeasibilityPenaltyUsd,
+    premiumProfitabilityTargetUsd,
+    premiumProfitabilityTargetRatio,
     clientPremiumUsd,
     method
   };
@@ -415,6 +498,11 @@ const sanitizeQuoteForClient = (quote: {
     "hedgeMode",
     "hedgeInstrumentFamily",
     "selectionReason",
+    "pricingBreakdown",
+    "triggerPayoutCreditUsd",
+    "expectedTriggerCostUsd",
+    "expectedTriggerCreditUsd",
+    "premiumProfitabilityTargetUsd",
     "rankedAlternatives",
     "candidateFailureCounts"
   ];
@@ -1211,6 +1299,7 @@ export const registerPilotRoutes = async (
       const entryAnchorPrice = snapshot.price;
       const quantity = protectedNotional.div(entryAnchorPrice).toDecimalPlaces(8).toNumber();
       const triggerPrice = computeTriggerPrice(entryAnchorPrice, drawdownFloorPct, protectionType);
+      const triggerPayoutCreditUsd = computeDrawdownLossBudgetUsd(protectedNotional, drawdownFloorPct);
       const requestedTenorDays = resolveExpiryDays({
         tierName,
         requestedDays: Number((body as { tenorDays?: number }).tenorDays),
@@ -1260,7 +1349,10 @@ export const registerPilotRoutes = async (
           tenorMaxDays: pilotConfig.pilotTenorMaxDays,
           hedgePolicy: pilotConfig.pilotHedgePolicy,
           clientOrderId: body.clientOrderId,
-          strictTenor: parseBoolean(body.strictTenor, false)
+          strictTenor: parseBoolean(body.strictTenor, false),
+          details: {
+            triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber()
+          }
         }),
         pilotConfig.venueQuoteTimeoutMs,
         "venue_quote"
@@ -1280,6 +1372,7 @@ export const registerPilotRoutes = async (
       const premiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
+        drawdownFloorPct,
         hedgePremium: new Decimal(quote.premium),
         brokerFees: estimateBrokerFeesUsd({
           venue: quote.venue,
@@ -1287,6 +1380,12 @@ export const registerPilotRoutes = async (
           details: quote.details as Record<string, unknown> | undefined
         })
       });
+      const selectionPremiumInputs = {
+        triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber(),
+        expectedTriggerCostUsd: Number(premiumPricing.expectedTriggerCostUsd.toFixed(10)),
+        expectedTriggerCreditUsd: Number(premiumPricing.expectedTriggerCreditUsd.toFixed(10)),
+        premiumProfitabilityTargetUsd: Number(premiumPricing.premiumProfitabilityTargetUsd.toFixed(10))
+      };
       const estimatedPremiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({
         estimated: premiumPricing
       });
@@ -1294,6 +1393,14 @@ export const registerPilotRoutes = async (
         hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
         brokerFeesUsd: premiumPricing.brokerFeesUsd.toFixed(10),
         passThroughUsd: premiumPricing.passThroughUsd.toFixed(10),
+        expectedTriggerCreditUsd: premiumPricing.expectedTriggerCreditUsd.toFixed(10),
+        expectedTriggerCostUsd: premiumPricing.expectedTriggerCostUsd.toFixed(10),
+        selectionFeasibilityPenaltyUsd: premiumPricing.selectionFeasibilityPenaltyUsd.toFixed(10),
+        profitabilityBufferUsd: premiumPricing.profitabilityBufferUsd.toFixed(10),
+        profitabilityFloorUsd: premiumPricing.profitabilityFloorUsd.toFixed(10),
+        premiumProfitabilityTargetUsd: premiumPricing.premiumProfitabilityTargetUsd.toFixed(10),
+        premiumProfitabilityTargetRatio: premiumPricing.premiumProfitabilityTargetRatio.toFixed(10),
+        premiumFloorUsdTriggerCredit: premiumPricing.premiumFloorUsdTriggerCredit.toFixed(10),
         markupPct: premiumPricing.markupPct.toFixed(6),
         markupUsd: premiumPricing.markupUsd.toFixed(10),
         premiumFloorUsdAbsolute: premiumPricing.premiumFloorUsdAbsolute.toFixed(10),
@@ -1301,12 +1408,14 @@ export const registerPilotRoutes = async (
         premiumFloorBps: premiumPricing.premiumFloorBps.toFixed(2),
         premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
         clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
-        method: premiumPricing.method
+        method: premiumPricing.method,
+        ...selectionPremiumInputs
       };
       await insertVenueQuote(pool, {
         ...quote,
         details: {
           ...(quote.details || {}),
+          ...selectionPremiumInputs,
           tenorReason,
           pricingBreakdown,
           lockContext: {
@@ -1391,7 +1500,9 @@ export const registerPilotRoutes = async (
         ...quote,
         details: {
           ...(quote.details || {}),
-          tenorReason
+          ...selectionPremiumInputs,
+          tenorReason,
+          pricingBreakdown
         },
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4)),
       });
@@ -1817,8 +1928,13 @@ export const registerPilotRoutes = async (
           premiumFloorUsdFromBps: Decimal;
           premiumFloorBps: Decimal;
           premiumFloorUsd: Decimal;
+          premiumFloorUsdTriggerCredit: Decimal;
+          expectedTriggerCreditUsd: Decimal;
+          expectedTriggerCostUsd: Decimal;
+          profitabilityBufferUsd: Decimal;
+          profitabilityFloorUsd: Decimal;
           clientPremiumUsd: Decimal;
-          method: "markup" | "floor_usd" | "floor_bps";
+          method: "markup" | "floor_usd" | "floor_bps" | "floor_trigger_credit" | "floor_profitability";
         }
       | null = null;
     let requestedQuantity = 0;
@@ -1992,6 +2108,7 @@ export const registerPilotRoutes = async (
       const fallbackPremiumPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
+        drawdownFloorPct,
         hedgePremium: contextHedgePremium,
         brokerFees: parsePositiveDecimal(lockContext.brokerFeesUsd) || new Decimal(0),
         markupPctOverride: contextMarkupPct
@@ -2002,6 +2119,30 @@ export const registerPilotRoutes = async (
         hedgePremiumUsd: contextHedgePremium,
         brokerFeesUsd: contextBrokerFeesUsd || fallbackPremiumPricing.brokerFeesUsd,
         passThroughUsd: contextPassThroughUsd || fallbackPremiumPricing.passThroughUsd,
+        selectionFeasibilityPenaltyUsd:
+          parsePositiveDecimal(lockContext.selectionFeasibilityPenaltyUsd) ||
+          fallbackPremiumPricing.selectionFeasibilityPenaltyUsd,
+        premiumProfitabilityTargetUsd:
+          parsePositiveDecimal(lockContext.premiumProfitabilityTargetUsd) ||
+          fallbackPremiumPricing.premiumProfitabilityTargetUsd,
+        premiumProfitabilityTargetRatio:
+          parsePositiveDecimal(lockContext.premiumProfitabilityTargetRatio) ||
+          fallbackPremiumPricing.premiumProfitabilityTargetRatio,
+        premiumFloorUsdTriggerCredit:
+          parsePositiveDecimal(lockContext.premiumFloorUsdTriggerCredit) ||
+          fallbackPremiumPricing.premiumFloorUsdTriggerCredit,
+        expectedTriggerCreditUsd:
+          parsePositiveDecimal(lockContext.expectedTriggerCreditUsd) ||
+          fallbackPremiumPricing.expectedTriggerCreditUsd,
+        expectedTriggerCostUsd:
+          parsePositiveDecimal(lockContext.expectedTriggerCostUsd) ||
+          fallbackPremiumPricing.expectedTriggerCostUsd,
+        profitabilityBufferUsd:
+          parsePositiveDecimal(lockContext.profitabilityBufferUsd) ||
+          fallbackPremiumPricing.profitabilityBufferUsd,
+        profitabilityFloorUsd:
+          parsePositiveDecimal(lockContext.profitabilityFloorUsd) ||
+          fallbackPremiumPricing.profitabilityFloorUsd,
         markupPct: contextMarkupPct || fallbackPremiumPricing.markupPct,
         markupUsd: contextMarkupUsd || fallbackPremiumPricing.markupUsd,
         premiumFloorUsdAbsolute: contextFloorUsdAbsolute || fallbackPremiumPricing.premiumFloorUsdAbsolute,
@@ -2011,6 +2152,8 @@ export const registerPilotRoutes = async (
         clientPremiumUsd: contextClientPremium || fallbackPremiumPricing.clientPremiumUsd,
         method: (() => {
           const rawMethod = String(lockContext.method || fallbackPremiumPricing.method);
+          if (rawMethod === "floor_profitability") return "floor_profitability";
+          if (rawMethod === "floor_trigger_credit") return "floor_trigger_credit";
           if (rawMethod === "floor_usd") return "floor_usd";
           if (rawMethod === "floor_bps") return "floor_bps";
           return "markup";
@@ -2077,6 +2220,7 @@ export const registerPilotRoutes = async (
       const realizedPricing = resolvePremiumPricing({
         tierName,
         protectedNotional,
+        drawdownFloorPct,
         hedgePremium: new Decimal(execution.premium),
         brokerFees: realizedBrokerFeesUsd,
         markupPctOverride: premiumPricing.markupPct

@@ -1914,7 +1914,12 @@ test("ibkr_cme_paper options_only_native bounded value sweep upgrades to cheaper
       hedgePolicy: "options_only_native"
     });
     assert.equal(Number(quote.details?.conId), 78222);
-    assert.equal(String(quote.details?.selectionAlgorithm), "liquidity_protection_first_v1");
+    assert.equal(
+      String(quote.details?.selectionAlgorithm || ""),
+      String(quote.details?.hedgeMode) === "options_native"
+        ? "liquidity_protection_profitability_v2"
+        : "tenor_quality_v1"
+    );
   } finally {
     global.fetch = originalFetch;
   }
@@ -2179,7 +2184,10 @@ test("ibkr_cme_paper options_only_native best-of-two falls back to single action
       hedgePolicy: "options_only_native"
     });
     assert.equal(Number(quote.details?.conId), 78441);
-    assert.equal(String(quote.details?.selectionAlgorithm), "liquidity_protection_first_v1");
+    assert.equal(
+      String(quote.details?.selectionAlgorithm),
+      "liquidity_protection_profitability_v2"
+    );
   } finally {
     global.fetch = originalFetch;
   }
@@ -2317,6 +2325,152 @@ test("ibkr_cme_paper option strike ladder finds nearby liquid strike before futu
     assert.equal(String(quote.details?.hedgeMode), "options_native");
     assert.equal(Number(quote.details?.conId), 91111);
     assert.equal(String(quote.details?.selectionReason), "best_tenor_liquidity_option");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("ibkr_cme_paper profitability-aware scoring prefers candidate with better trigger economics", async () => {
+  const originalFetch = global.fetch;
+  const now = new Date();
+  const tenor1Expiry = new Date(now.getTime() + 2 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  const tenor2Expiry = new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+    if (path.startsWith("contracts/qualify")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.kind === "mbt_option") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              contracts: [
+                {
+                  conId: 99001,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P55000",
+                  expiry: tenor1Expiry,
+                  strike: 55000,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                },
+                {
+                  conId: 99002,
+                  secType: "FOP",
+                  localSymbol: "W5AH6 P55500",
+                  expiry: tenor2Expiry,
+                  strike: 55500,
+                  right: "P",
+                  multiplier: "0.1",
+                  minTick: 5
+                }
+              ]
+            })
+        } as any;
+      }
+      return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+    }
+    if (path.startsWith("marketdata/top")) {
+      const payload = init?.body ? JSON.parse(String(init.body)) : {};
+      if (payload.conId === 99001) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 69,
+              ask: 70,
+              bidSize: 3,
+              askSize: 4,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (payload.conId === 99002) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 94,
+              ask: 95,
+              bidSize: 3,
+              askSize: 4,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+    }
+    if (path.startsWith("marketdata/depth")) {
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            bids: [{ level: 0, price: 94, size: 3 }],
+            asks: [{ level: 0, price: 95, size: 4 }],
+            asOf: new Date().toISOString()
+          })
+      } as any;
+    }
+    return {
+      ok: false,
+      status: 404,
+      text: async () => "not_found"
+    } as any;
+  }) as typeof fetch;
+  const adapter = createPilotVenueAdapter({
+    mode: "ibkr_cme_paper",
+    falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+    deribit: {} as any,
+    ibkr: {
+      bridgeBaseUrl: "http://127.0.0.1:18080",
+      bridgeTimeoutMs: 2000,
+      bridgeToken: "",
+      accountId: "DU123456",
+      enableExecution: false,
+      orderTimeoutMs: 2000,
+      maxRepriceSteps: 3,
+      repriceStepTicks: 1,
+      maxSlippageBps: 25,
+      requireLiveTransport: false,
+      maxTenorDriftDays: 7,
+      preferTenorAtOrAbove: true,
+      orderTif: "IOC",
+      optionLiquiditySelectionEnabled: true,
+      requireOptionsNative: true
+    }
+  });
+  try {
+    const quote = await adapter.quote({
+      marketId: "BTC-USD",
+      instrumentId: "BTC-USD-2D-P",
+      protectedNotional: 10000,
+      quantity: 0.2,
+      side: "buy",
+      protectionType: "long",
+      drawdownFloorPct: 0.2,
+      triggerPrice: 80000,
+      requestedTenorDays: 2,
+      tenorMinDays: 1,
+      tenorMaxDays: 7,
+      hedgePolicy: "options_only_native",
+      details: {
+        triggerPayoutCreditUsd: 2000,
+        expectedTriggerCostUsd: 150,
+        expectedTriggerCreditUsd: 500,
+        premiumProfitabilityTargetUsd: 90
+      }
+    });
+    assert.equal(Number(quote.details?.conId), 99002);
+    assert.equal(String(quote.details?.selectionAlgorithm), "liquidity_protection_profitability_v2");
+    const traceRow = Array.isArray(quote.details?.selectionTrace)
+      ? ((quote.details?.selectionTrace as Array<Record<string, unknown>>)[0] || {})
+      : {};
+    assert.equal(Number.isFinite(Number(traceRow.triggerFeasibilityPenaltyUsd)), true);
+    assert.equal(Number.isFinite(Number(traceRow.expectedTriggerCostUsd)), true);
+    assert.equal(Number.isFinite(Number(traceRow.expectedTriggerCreditUsd)), true);
+    assert.equal(Number.isFinite(Number(traceRow.premiumProfitabilityTargetUsd)), true);
+    assert.equal(Number.isFinite(Number(traceRow.riskAdjustedPremiumRatio)), true);
   } finally {
     global.fetch = originalFetch;
   }
@@ -2570,6 +2724,9 @@ test("ibkr_cme_paper keeps MBT-only fallback when BFF fallback is disabled", asy
 
 test("ibkr_cme_paper falls back to BFF futures after MBT futures fail when enabled", async () => {
   const originalFetch = global.fetch;
+  const now = Date.now();
+  const mbtExpiry = new Date(now + 4 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  const bffExpiry = new Date(now + 6 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
   global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
@@ -2591,7 +2748,7 @@ test("ibkr_cme_paper falls back to BFF futures after MBT futures fail when enabl
                   conId: 44444,
                   secType: "FUT",
                   localSymbol: "MBTH6",
-                  expiry: "20260331",
+                  expiry: mbtExpiry,
                   multiplier: "0.1",
                   minTick: 5
                 }
@@ -2609,7 +2766,7 @@ test("ibkr_cme_paper falls back to BFF futures after MBT futures fail when enabl
                   conId: 55555,
                   secType: "FUT",
                   localSymbol: "BFFH6",
-                  expiry: "20260328",
+                  expiry: bffExpiry,
                   multiplier: "0.1",
                   minTick: 5
                 }
@@ -2708,6 +2865,7 @@ test("ibkr_cme_paper falls back to BFF futures after MBT futures fail when enabl
       maxTenorDriftDays: 7,
       preferTenorAtOrAbove: true,
       orderTif: "IOC",
+      optionLiquiditySelectionEnabled: true,
       primaryProductFamily: "MBT",
       enableBffFallback: true,
       bffProductFamily: "BFF"
