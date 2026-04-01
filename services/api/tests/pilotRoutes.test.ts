@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { newDb } from "pg-mem";
+import Decimal from "decimal.js";
 
 const originalFetch = global.fetch;
 
@@ -88,6 +89,9 @@ const createPilotHarness = async (opts?: {
   process.env.PILOT_DURATION_DAYS = "30";
   process.env.PILOT_ENFORCE_WINDOW = "true";
   process.env.PILOT_QUOTE_TTL_MS = "120000";
+  process.env.PILOT_TRIGGER_MONITOR_ENABLED = "false";
+  process.env.PILOT_TRIGGER_MONITOR_INTERVAL_MS = "5000";
+  process.env.PILOT_TRIGGER_MONITOR_BATCH_SIZE = "50";
   process.env.PILOT_TENOR_MIN_DAYS = "1";
   process.env.PILOT_TENOR_MAX_DAYS = "7";
   process.env.PILOT_TENOR_DEFAULT_DAYS = "7";
@@ -227,6 +231,9 @@ const createPilotHarness = async (opts?: {
   };
   configModule.pilotConfig.ibkrFeePerContractUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_CONTRACT_USD || "2.02"));
   configModule.pilotConfig.ibkrFeePerOrderUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD || "0"));
+  configModule.pilotConfig.triggerMonitorEnabled = process.env.PILOT_TRIGGER_MONITOR_ENABLED !== "false";
+  configModule.pilotConfig.triggerMonitorIntervalMs = Number(process.env.PILOT_TRIGGER_MONITOR_INTERVAL_MS || "5000");
+  configModule.pilotConfig.triggerMonitorBatchSize = Number(process.env.PILOT_TRIGGER_MONITOR_BATCH_SIZE || "50");
 
   const db = newDb();
   const pg = db.adapters.createPg();
@@ -234,6 +241,8 @@ const createPilotHarness = async (opts?: {
 
   const dbModule = await import("../src/pilot/db");
   dbModule.__setPilotPoolForTests(pool as any);
+  const triggerMonitorModule = await import("../src/pilot/triggerMonitor");
+  triggerMonitorModule.__setTriggerMonitorEnabledForTests(false);
   const { registerPilotRoutes } = await import("../src/pilot/routes");
 
   const app = Fastify();
@@ -245,6 +254,7 @@ const createPilotHarness = async (opts?: {
     close: async () => {
       await app.close();
       await pool.end();
+      triggerMonitorModule.__setTriggerMonitorEnabledForTests(true);
       dbModule.__setPilotPoolForTests(null);
       global.fetch = originalFetch;
     }
@@ -3084,5 +3094,67 @@ test("Y5) quote strictTenor maps drifted options to tenor_drift_exceeded", async
     }
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test("Z1) trigger monitor marks breached active protection as triggered", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_TRIGGER_MONITOR_ENABLED: "false",
+      PILOT_TRIGGER_MONITOR_BATCH_SIZE: "10"
+    }
+  });
+  try {
+    const { app, pool } = harness;
+    const { protectionId } = await quoteAndActivate(app, 1000);
+    const { processTriggerMonitorCycleWithResolver } = await import("../src/pilot/triggerMonitor");
+
+    const triggerSnapshotResolver = async () => ({
+      price: new Decimal(79000),
+      priceTimestamp: new Date().toISOString(),
+      marketId: "BTC-USD",
+      priceSource: "reference_oracle" as const,
+      priceSourceDetail: "reference_oracle_api",
+      endpointVersion: "v1",
+      requestId: "trigger-test"
+    });
+    const monitorResult = await processTriggerMonitorCycleWithResolver(
+      pool as any,
+      triggerSnapshotResolver as any,
+      new Date()
+    );
+    assert.equal(monitorResult.scanned >= 1, true);
+    assert.equal(monitorResult.triggered, 1);
+    const monitorResultReplay = await processTriggerMonitorCycleWithResolver(
+      pool as any,
+      triggerSnapshotResolver as any,
+      new Date()
+    );
+    assert.equal(monitorResultReplay.triggered, 0);
+
+    const protectionState = await pool.query(
+      `SELECT status, payout_due_amount, metadata FROM pilot_protections WHERE id = $1`,
+      [protectionId]
+    );
+    assert.equal(String(protectionState.rows[0].status), "triggered");
+    assert.equal(Number(protectionState.rows[0].payout_due_amount), 200);
+    assert.equal(String(protectionState.rows[0].metadata?.triggerStatus || ""), "breached");
+
+    const triggerLedger = await pool.query(
+      `SELECT entry_type, amount FROM pilot_ledger_entries WHERE protection_id = $1 ORDER BY created_at ASC`,
+      [protectionId]
+    );
+    const triggerEntries = triggerLedger.rows.filter((row: any) => row.entry_type === "trigger_payout_due");
+    assert.equal(triggerEntries.length, 1);
+    assert.equal(Number(triggerEntries[0].amount), 200);
+
+    const triggerSnapshots = await pool.query(
+      `SELECT snapshot_type, price FROM pilot_price_snapshots WHERE protection_id = $1 AND snapshot_type = 'trigger'`,
+      [protectionId]
+    );
+    assert.equal(Number(triggerSnapshots.rowCount || 0), 1);
+    assert.equal(Number(triggerSnapshots.rows[0].price), 79000);
+  } finally {
+    await harness.close();
   }
 });

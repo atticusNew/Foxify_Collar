@@ -492,6 +492,21 @@ export const pilotConfig = {
   quoteTtlMs: Number(process.env.PILOT_QUOTE_TTL_MS || "30000"),
   venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "8000"),
   venueMarkTimeoutMs: Number(process.env.PILOT_VENUE_MARK_TIMEOUT_MS || "3000"),
+  triggerMonitorEnabled: parseBooleanEnv(process.env.PILOT_TRIGGER_MONITOR_ENABLED, true),
+  triggerMonitorIntervalMs: parsePositiveIntInRange(
+    process.env.PILOT_TRIGGER_MONITOR_INTERVAL_MS,
+    5000,
+    1000,
+    60000,
+    "invalid_pilot_trigger_monitor_interval_ms"
+  ),
+  triggerMonitorBatchSize: parsePositiveIntInRange(
+    process.env.PILOT_TRIGGER_MONITOR_BATCH_SIZE,
+    50,
+    1,
+    500,
+    "invalid_pilot_trigger_monitor_batch_size"
+  ),
   singlePriceSource: process.env.PRICE_SINGLE_SOURCE === "true",
   expiryInitialWindowMs: Number(process.env.EXPIRY_PRICE_INITIAL_WINDOW_MS || "5000"),
   fullCoverageTolerancePct: Number(process.env.FULL_COVERAGE_TOLERANCE_PCT || "0.005"),

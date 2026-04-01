@@ -33,6 +33,7 @@ import {
 } from "./db";
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { createPilotVenueAdapter, mapVenueFailureReason } from "./venue";
+import { registerPilotTriggerMonitor } from "./triggerMonitor";
 import {
   computeTriggerPrice,
   computePayoutDue,
@@ -2615,6 +2616,7 @@ export const registerPilotRoutes = async (
       "pending_activation",
       "activation_failed",
       "active",
+      "triggered",
       "reconcile_pending",
       "awaiting_renew_decision",
       "awaiting_expiry_price",
@@ -2946,5 +2948,8 @@ export const registerPilotRoutes = async (
     }
   }, retryEveryMs);
   expiryInterval.unref?.();
+  if (pilotConfig.triggerMonitorEnabled) {
+    registerPilotTriggerMonitor(pool);
+  }
 };
 

@@ -291,6 +291,61 @@ export const getProtection = async (pool: Queryable, id: string): Promise<Protec
   return mapProtection(result.rows[0]);
 };
 
+export const patchProtectionForStatus = async (
+  pool: Queryable,
+  params: {
+    id: string;
+    expectedStatus: ProtectionStatus | ProtectionStatus[];
+    patch: Record<string, unknown>;
+  }
+): Promise<ProtectionRecord | null> => {
+  const entries = Object.entries(params.patch).filter(([, value]) => value !== undefined);
+  if (!entries.length) return null;
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  entries.forEach(([key, value], idx) => {
+    fields.push(`${key} = $${idx + 1}`);
+    values.push(value);
+  });
+  fields.push(`updated_at = NOW()`);
+  const statusValues = Array.isArray(params.expectedStatus) ? params.expectedStatus : [params.expectedStatus];
+  values.push(params.id);
+  const idParam = values.length;
+  const statusParamStart = values.length + 1;
+  values.push(...statusValues);
+  const statusParams = statusValues.map((_, idx) => `$${statusParamStart + idx}`).join(", ");
+  const query = `
+    UPDATE pilot_protections
+    SET ${fields.join(", ")}
+    WHERE id = $${idParam}
+      AND status IN (${statusParams})
+    RETURNING *
+  `;
+  const updated = await pool.query(query, values);
+  if (updated.rowCount === 0) return null;
+  return mapProtection(updated.rows[0]);
+};
+
+export const listActiveProtectionsForTriggerMonitor = async (
+  pool: Queryable,
+  params: { limit?: number } = {}
+): Promise<ProtectionRecord[]> => {
+  const limit = Math.max(1, Math.min(params.limit ?? 50, 500));
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM pilot_protections
+      WHERE status = 'active'
+        AND entry_price IS NOT NULL
+        AND (drawdown_floor_pct IS NOT NULL OR floor_price IS NOT NULL)
+      ORDER BY updated_at ASC
+      LIMIT $1
+    `,
+    [limit]
+  );
+  return result.rows.map(mapProtection);
+};
+
 export const listProtections = async (
   pool: Queryable,
   opts: { limit?: number } = {}
@@ -321,6 +376,7 @@ export type AdminProtectionScope = "active" | "open" | "all";
 const OPEN_PROTECTION_STATUSES: ProtectionStatus[] = [
   "pending_activation",
   "active",
+  "triggered",
   "reconcile_pending",
   "awaiting_renew_decision",
   "awaiting_expiry_price"
@@ -576,7 +632,7 @@ export const getPilotAdminMetrics = async (
     scope === "all"
       ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = ''"
       : scope === "open"
-        ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status IN ('pending_activation', 'active', 'reconcile_pending', 'awaiting_renew_decision', 'awaiting_expiry_price')"
+        ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status IN ('pending_activation', 'active', 'triggered', 'reconcile_pending', 'awaiting_renew_decision', 'awaiting_expiry_price')"
         : "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status = 'active'";
   const result = await pool.query(
     `

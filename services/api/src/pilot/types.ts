@@ -2,6 +2,7 @@ export type ProtectionStatus =
   | "pending_activation"
   | "activation_failed"
   | "active"
+  | "triggered"
   | "reconcile_pending"
   | "awaiting_renew_decision"
   | "awaiting_expiry_price"
@@ -9,9 +10,14 @@ export type ProtectionStatus =
   | "expired_otm"
   | "cancelled";
 
-export type LedgerEntryType = "premium_due" | "premium_settled" | "payout_due" | "payout_settled";
+export type LedgerEntryType =
+  | "premium_due"
+  | "premium_settled"
+  | "trigger_payout_due"
+  | "payout_due"
+  | "payout_settled";
 
-export type PriceSnapshotType = "entry" | "expiry";
+export type PriceSnapshotType = "entry" | "expiry" | "trigger";
 
 export type PriceSource = "reference_oracle" | "fallback_oracle";
 
