@@ -252,7 +252,13 @@ type ActivateModalMode = "live" | "preview";
 const LIQUIDITY_STATUS_TTL_MS = 5 * 60 * 1000;
 const LIQUIDITY_THIN_CONFIRMATION_COUNT = 1;
 const LIQUIDITY_NORMAL_CONFIRMATION_COUNT = 2;
-const MIN_QUOTE_NOTIONAL_USDC = 1000;
+const MIN_QUOTE_NOTIONAL_USDC = 7500;
+
+const formatUsdNoDecimals = (value: number | string | null | undefined): string => {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return "0";
+  return parsed.toLocaleString(undefined, { maximumFractionDigits: 0 });
+};
 
 const friendlyError = (message: string): string => {
   if (message.includes("no_liquidity_window")) {
@@ -1814,7 +1820,7 @@ export function PilotApp() {
                   }}
                 />
                 <div className="muted pilot-protection-min-helper">
-                  Min ${formatUsd(minProtectionAmountUsd)}
+                  Min ${formatUsdNoDecimals(minProtectionAmountUsd)}
                 </div>
               </div>
             </div>
@@ -1883,7 +1889,7 @@ export function PilotApp() {
 
             {!canQuote && (
               <div className="disclaimer danger">
-                Protection amount must be at least ${formatUsd(minProtectionAmountUsd)} and cannot exceed position size
+                Protection amount must be at least ${formatUsdNoDecimals(minProtectionAmountUsd)} and cannot exceed position size
               </div>
             )}
           </div>
