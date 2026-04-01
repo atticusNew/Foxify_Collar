@@ -387,12 +387,12 @@ body {
 
 .pilot-tenor-field {
   display: grid;
-  justify-content: stretch;
+  justify-content: end;
   gap: 6px;
 }
 
 .pilot-tenor-chips {
-  width: 100%;
+  width: auto;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
