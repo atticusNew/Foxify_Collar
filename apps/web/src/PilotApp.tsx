@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, PILOT_ACTIVATION_ENABLED, PILOT_TERMS_VERSION } from "./config";
+import { API_BASE, PILOT_TERMS_VERSION } from "./config";
 
 type TierLevel = {
   name: string;
@@ -579,8 +579,7 @@ export function PilotApp() {
     quoteState === "ready" && quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
   const quoteLocked = quoteFresh && Boolean(quote?.quote?.quoteId);
   const quoteCapWarning = quote?.limits?.dailyCapExceededOnActivate === true;
-  const canActivate =
-    PILOT_ACTIVATION_ENABLED && canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
+  const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
   const showQuoteSection = quoteState !== "idle" || Boolean(quote) || Boolean(error);
 
   const renewWindowReached = useMemo(() => {
@@ -1152,10 +1151,6 @@ export function PilotApp() {
   };
 
   const activateProtection = async () => {
-    if (!PILOT_ACTIVATION_ENABLED) {
-      setError("Activation is paused while quote validation is in progress.");
-      return;
-    }
     if (!canActivate) {
       setError("Get a fresh quote before activation.");
       return;
