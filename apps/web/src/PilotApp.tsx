@@ -256,7 +256,7 @@ const MIN_QUOTE_NOTIONAL_USDC = 1000;
 
 const friendlyError = (message: string): string => {
   if (message.includes("no_liquidity_window")) {
-    return "Outside CME market hours. Quotes are unavailable until the market reopens.";
+    return "No liquidity or options available right now, try again";
   }
   if (
     message.includes("service_unavailable") ||
@@ -305,7 +305,7 @@ const friendlyError = (message: string): string => {
     return "Protection amount is currently too small for a tradable contract size. Increase amount or choose another tenor.";
   }
   if (message.includes("quote_liquidity_unavailable")) {
-    return "Live liquidity is currently limited. Try again or choose another tenor.";
+    return "No liquidity or options available right now, try again";
   }
   if (message.includes("quote_min_notional_not_met")) {
     return "Pilot minimum quote size is enforced. Increase protection amount and request a new quote.";
@@ -1813,8 +1813,8 @@ export function PilotApp() {
                     }
                   }}
                 />
-                <div className="muted" style={{ marginTop: 6 }}>
-                  Min protect amount ${formatUsd(minProtectionAmountUsd)}
+                <div className="muted pilot-protection-min-helper">
+                  Min ${formatUsd(minProtectionAmountUsd)}
                 </div>
               </div>
             </div>
@@ -1860,8 +1860,8 @@ export function PilotApp() {
                     );
                   })}
                 </div>
-                <div className="muted pilot-tenor-helper" style={{ marginTop: 8 }}>
-                  Target selected length if unavailable nearest liquid expiry used
+                <div className="muted pilot-tenor-helper">
+                  Target length, nearest liquid expiry if unavailable
                 </div>
               </div>
             </div>
@@ -1958,7 +1958,7 @@ export function PilotApp() {
             </div>
             {showQuoteUnavailableHint && (
               <div className="quote-unavailable-note">
-                <div className="quote-unavailable-title">No option found retry</div>
+                <div className="quote-unavailable-title">No liquidity or options available right now, try again</div>
               </div>
             )}
             {error && !showQuoteUnavailableHint && <div className="disclaimer danger">{error}</div>}

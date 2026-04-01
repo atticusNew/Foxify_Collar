@@ -379,9 +379,10 @@ body {
 .pilot-field {
   width: 340px;
   justify-self: end;
-  display: flex;
-  justify-content: flex-end;
+  display: grid;
+  justify-items: end;
   align-items: center;
+  gap: 4px;
 }
 
 .pilot-tenor-field {
@@ -438,6 +439,19 @@ body {
 }
 
 .pilot-tenor-helper {
+  text-align: right;
+  font-size: 11px;
+  line-height: 1.2;
+  max-width: 280px;
+  justify-self: end;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.pilot-protection-min-helper {
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(242, 166, 90, 0.95);
   text-align: right;
 }
 
@@ -681,7 +695,7 @@ body {
 .quote-unavailable-title {
   font-size: 12px;
   font-weight: 600;
-  color: #f2c389;
+  color: #f2a65a;
 }
 
 .quote-unavailable-secondary {
