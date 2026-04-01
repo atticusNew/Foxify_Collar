@@ -193,8 +193,8 @@ const DEFAULT_TIERS: TierLevel[] = [
   { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
   { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
 ];
-const STATIC_TENOR_CHIPS_DAYS = [3, 7, 14, 21, 30] as const;
-const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[1];
+const STATIC_TENOR_CHIPS_DAYS = [7, 14, 21] as const;
+const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[0];
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
 const QUOTE_REQUEST_TIMEOUT_MS = 30000;
 const QUOTE_RETRY_DELAY_MS = 450;
@@ -253,6 +253,7 @@ const LIQUIDITY_STATUS_TTL_MS = 5 * 60 * 1000;
 const LIQUIDITY_THIN_CONFIRMATION_COUNT = 1;
 const LIQUIDITY_NORMAL_CONFIRMATION_COUNT = 2;
 const MIN_QUOTE_NOTIONAL_USDC = 7500;
+const MAX_PROTECTION_NOTIONAL_USDC = 20000;
 
 const formatUsdNoDecimals = (value: number | string | null | undefined): string => {
   const parsed = Number(value ?? 0);
@@ -554,6 +555,11 @@ export function PilotApp() {
     Number.isFinite(minProtectionAmountUsdRaw) && minProtectionAmountUsdRaw > 0
       ? minProtectionAmountUsdRaw
       : MIN_QUOTE_NOTIONAL_USDC;
+  const maxProtectionAmountUsdRaw = Number(quote?.limits?.maxProtectionNotionalUsdc ?? NaN);
+  const maxProtectionAmountUsd =
+    Number.isFinite(maxProtectionAmountUsdRaw) && maxProtectionAmountUsdRaw > 0
+      ? maxProtectionAmountUsdRaw
+      : MAX_PROTECTION_NOTIONAL_USDC;
   const exposureValue = parseCurrencyNumber(exposureNotional || "0");
   const protectedValue = parseCurrencyNumber(protectedNotional || "0");
   const canQuote =
@@ -563,7 +569,12 @@ export function PilotApp() {
     Number.isFinite(protectedValue) &&
     protectedValue > 0 &&
     protectedValue >= minProtectionAmountUsd &&
+    protectedValue <= maxProtectionAmountUsd &&
     protectedValue <= exposureValue;
+  const quotePremiumRatioPct =
+    quote && Number.isFinite(quote.quote?.premium) && protectedValue > 0
+      ? (Number(quote.quote.premium) / protectedValue) * 100
+      : null;
   const quoteFresh =
     quoteState === "ready" && quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
   const quoteLocked = quoteFresh && Boolean(quote?.quote?.quoteId);
@@ -1811,6 +1822,7 @@ export function PilotApp() {
                     const parsedProtected = parseCurrencyNumber(e.currentTarget.value || "0");
                     if (!Number.isFinite(parsedProtected) || parsedProtected <= 0) return;
                     let nextProtected = Math.max(parsedProtected, minProtectionAmountUsd);
+                    nextProtected = Math.min(nextProtected, maxProtectionAmountUsd);
                     if (Number.isFinite(exposureValue) && exposureValue >= minProtectionAmountUsd) {
                       nextProtected = Math.min(nextProtected, exposureValue);
                     }
@@ -1889,7 +1901,8 @@ export function PilotApp() {
 
             {!canQuote && (
               <div className="disclaimer danger">
-                Protection amount must be at least ${formatUsdNoDecimals(minProtectionAmountUsd)} and cannot exceed position size
+                Protection amount must be between ${formatUsdNoDecimals(minProtectionAmountUsd)} and $
+                {formatUsdNoDecimals(maxProtectionAmountUsd)} and cannot exceed position size
               </div>
             )}
           </div>
@@ -1933,6 +1946,9 @@ export function PilotApp() {
                   <div className="quote-primary">
                     Premium <strong>${formatUsd(quote.quote.premium)}</strong>
                   </div>
+                  {Number.isFinite(quotePremiumRatioPct) && (
+                    <div className="muted">Premium ratio {quotePremiumRatioPct.toFixed(2)}% of protection</div>
+                  )}
                   <div className="muted">Venue {formatVenueLabel(quote.quote.venue)}</div>
                   <div className="quote-horizon-row">
                     <div>
