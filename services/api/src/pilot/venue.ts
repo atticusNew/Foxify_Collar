@@ -2106,7 +2106,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         noMatchFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
         noMatchFailureTotals.nPassed += Number(counts.nPassed || 0);
       };
-      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 1 : 3;
+      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 2 : 3;
       const maxRingPasses =
         hedgePolicy === "options_only_native"
           ? ringTasks.length
@@ -2126,8 +2126,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         return stalledMarketData || isLikelyNoLiquidityWindow(counts);
       };
       const valueSweepBudgetMs =
-        hedgePolicy === "options_only_native" ? Math.max(1000, Math.min(2200, Math.floor(this.quoteBudgetMs * 0.12))) : 0;
-      const valueSweepStartMs = Date.now();
+        hedgePolicy === "options_only_native" ? Math.max(1500, Math.min(2500, Math.floor(this.quoteBudgetMs * 0.15))) : 0;
+      let valueSweepStartMs: number | null = null;
+      let actionableMatchesSeen = 0;
       for (let ringIdx = 0; ringIdx < maxRingPasses; ringIdx += 1) {
         const topCallsUsed = Math.max(0, counters.topCalls - topCallsAtLegStart);
         const remainingTopCalls = maxTopCallsPerOptionLeg - topCallsUsed;
@@ -2137,6 +2138,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         if (
           hedgePolicy === "options_only_native" &&
           bestOptionMatch &&
+          valueSweepStartMs !== null &&
           Date.now() - valueSweepStartMs >= valueSweepBudgetMs
         ) {
           break;
@@ -2205,14 +2207,22 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           bestOptionRankedAlternatives = optionMatch.rankedAlternatives;
         }
         if (hedgePolicy === "options_only_native") {
-          // Bounded value sweep: keep scanning briefly to improve premium if clearly better.
-          const sweepElapsedMs = Date.now() - valueSweepStartMs;
+          if (valueSweepStartMs === null) {
+            valueSweepStartMs = Date.now();
+          }
+          actionableMatchesSeen += 1;
+          // Fast best-of-two actionable: continue until at least two actionable matches
+          // are observed or the bounded sweep budget is exhausted.
+          const sweepElapsedMs = valueSweepStartMs === null ? 0 : Date.now() - valueSweepStartMs;
           const valueImproved =
             previousBestScore !== null &&
             Number.isFinite(previousBestScore) &&
             Number.isFinite(optionMatch.selectedScore) &&
             previousBestScore - optionMatch.selectedScore > 5;
-          if (sweepElapsedMs >= valueSweepBudgetMs || (!valueImproved && previousBestScore !== null)) {
+          if (actionableMatchesSeen < minViableCandidatesBeforeStop && sweepElapsedMs < valueSweepBudgetMs) {
+            continue;
+          }
+          if (sweepElapsedMs >= valueSweepBudgetMs || (actionableMatchesSeen >= minViableCandidatesBeforeStop && !valueImproved)) {
             break;
           }
           continue;
