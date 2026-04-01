@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, PILOT_ACTIVATION_ENABLED, PILOT_TERMS_VERSION } from "./config";
+import { API_BASE, PILOT_TERMS_VERSION } from "./config";
 
 type TierLevel = {
   name: string;
@@ -35,6 +35,7 @@ type QuoteResult = {
   };
   entryInputPrice?: string | null;
   limits?: {
+    minQuoteNotionalUsdc?: string;
     maxProtectionNotionalUsdc: string;
     maxDailyProtectedNotionalUsdc: string;
     dailyUsedUsdc: string;
@@ -192,8 +193,8 @@ const DEFAULT_TIERS: TierLevel[] = [
   { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
   { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
 ];
-const STATIC_TENOR_CHIPS_DAYS = [3, 7, 14, 21, 30] as const;
-const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[1];
+const STATIC_TENOR_CHIPS_DAYS = [7, 14, 21] as const;
+const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[0];
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
 const QUOTE_REQUEST_TIMEOUT_MS = 30000;
 const QUOTE_RETRY_DELAY_MS = 450;
@@ -240,206 +241,29 @@ const formatMatchedHorizonLabel = (days: number): string => {
   return `${Math.max(1, Math.round(days))}-Day`;
 };
 
-type RankedAlternative = {
-  expiry: string | null;
-  matchedTenorDays: number | null;
-  ask: number | null;
-  score: number | null;
-  driftDays: number | null;
-};
-
-const parseRankedAlternatives = (value: unknown): RankedAlternative[] => {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((row) => {
-      if (!row || typeof row !== "object") return null;
-      const item = row as Record<string, unknown>;
-      const expiryRaw = String(item.expiry ?? "").trim();
-      const expiry = expiryRaw.length > 0 ? expiryRaw : null;
-      const matchedTenorDays = Number(item.matchedTenorDays ?? NaN);
-      const ask = Number(item.ask ?? NaN);
-      const score = Number(item.score ?? NaN);
-      const driftDays = Number(item.driftDays ?? NaN);
-      return {
-        expiry,
-        matchedTenorDays: Number.isFinite(matchedTenorDays) ? matchedTenorDays : null,
-        ask: Number.isFinite(ask) ? ask : null,
-        score: Number.isFinite(score) ? score : null,
-        driftDays: Number.isFinite(driftDays) ? driftDays : null
-      } satisfies RankedAlternative;
-    })
-    .filter((row): row is RankedAlternative => Boolean(row))
-    .slice(0, 3);
-};
-
-const buildQuoteAlternativeHint = (detail: string): string => {
-  const match = detail.match(/ranked_alternatives:(\[[\s\S]*\])$/);
-  if (!match) return "";
-  try {
-    const ranked = parseRankedAlternatives(JSON.parse(match[1]));
-    if (!ranked.length) return "";
-    return ranked
-      .map((row) => {
-        const horizon =
-          Number.isFinite(Number(row.matchedTenorDays)) && Number(row.matchedTenorDays) > 0
-            ? `${Math.max(1, Math.round(Number(row.matchedTenorDays)))}D`
-            : "N/A";
-        const premium = Number.isFinite(Number(row.ask)) ? `$${formatUsd(Number(row.ask))}` : "ask n/a";
-        return `${horizon} (${premium})`;
-      })
-      .join(" · ");
-  } catch {
-    return "";
-  }
-};
-
 const formatExpiryDateLabel = (expiryRaw: string): string => {
   const normalized = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
   if (normalized.length !== 8) return "";
   return `${normalized.slice(0, 4)}-${normalized.slice(4, 6)}-${normalized.slice(6, 8)}`;
 };
 
-type SelectionTraceRow = {
-  conId: number;
-  expiry: string | null;
-  matchedTenorDays: number | null;
-  driftDays: number | null;
-  ask: number | null;
-  bid: number | null;
-  askSize: number | null;
-  spreadPct: number | null;
-  belowTarget: boolean;
-  score: number;
-};
-
-const isSelectionTraceRow = (value: unknown): value is SelectionTraceRow => {
-  if (!value || typeof value !== "object") return false;
-  const row = value as Record<string, unknown>;
-  return (
-    Number.isFinite(Number(row.conId)) &&
-    Number.isFinite(Number(row.score)) &&
-    (row.expiry === null || typeof row.expiry === "string")
-  );
-};
-
-const formatMatchedTenorShort = (days: number | null): string => {
-  if (!Number.isFinite(Number(days)) || Number(days) <= 0) return "N/A";
-  return `${Math.max(1, Math.round(Number(days)))}D`;
-};
-
-type QuoteLiquidityStatus = "unknown" | "normal" | "thin";
+type QuoteLiquidityStatus = "normal" | "thin";
 type ActivateModalMode = "live" | "preview";
-type CmeMarketWindow = {
-  isOpen: boolean;
-  nextOpenAt: Date | null;
-};
-
-const CME_MARKET_TZ = "America/New_York";
-const CME_SCAN_STEP_MS = 60_000;
-const CME_SCAN_MAX_STEPS = 60 * 24 * 8;
 const LIQUIDITY_STATUS_TTL_MS = 5 * 60 * 1000;
-const REGULAR_MARKET_HOURS_LABEL = "Regular Market Hours 9:30 AM-5:00 PM ET";
+const LIQUIDITY_THIN_CONFIRMATION_COUNT = 1;
+const LIQUIDITY_NORMAL_CONFIRMATION_COUNT = 2;
+const MIN_QUOTE_NOTIONAL_USDC = 7500;
+const MAX_PROTECTION_NOTIONAL_USDC = 20000;
 
-const getCmeEtClock = (date: Date): { weekday: number; hour: number; minute: number } => {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: CME_MARKET_TZ,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).formatToParts(date);
-  const weekdayLabel = parts.find((part) => part.type === "weekday")?.value || "Mon";
-  const hour = Number(parts.find((part) => part.type === "hour")?.value || "0");
-  const minute = Number(parts.find((part) => part.type === "minute")?.value || "0");
-  const weekdayMap: Record<string, number> = {
-    Sun: 0,
-    Mon: 1,
-    Tue: 2,
-    Wed: 3,
-    Thu: 4,
-    Fri: 5,
-    Sat: 6
-  };
-  return {
-    weekday: weekdayMap[weekdayLabel] ?? 1,
-    hour: Number.isFinite(hour) ? hour : 0,
-    minute: Number.isFinite(minute) ? minute : 0
-  };
+const formatUsdNoDecimals = (value: number | string | null | undefined): string => {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return "0";
+  return parsed.toLocaleString(undefined, { maximumFractionDigits: 0 });
 };
-
-const isCmeOptionsMarketOpen = (date: Date): boolean => {
-  const { weekday, hour, minute } = getCmeEtClock(date);
-  const minuteOfDay = hour * 60 + minute;
-  if (weekday === 6) return false; // Saturday closed.
-  if (weekday === 0) return minuteOfDay >= 18 * 60; // Sunday opens 6:00 PM ET.
-  if (weekday === 5) return minuteOfDay < 17 * 60; // Friday closes 5:00 PM ET.
-  // Monday-Thursday: open except daily 5:00-6:00 PM ET maintenance break.
-  return minuteOfDay < 17 * 60 || minuteOfDay >= 18 * 60;
-};
-
-const findNextCmeOptionsOpenAt = (from: Date): Date | null => {
-  for (let step = 1; step <= CME_SCAN_MAX_STEPS; step += 1) {
-    const candidate = new Date(from.getTime() + step * CME_SCAN_STEP_MS);
-    if (isCmeOptionsMarketOpen(candidate)) return candidate;
-  }
-  return null;
-};
-
-const resolveCmeMarketWindow = (now: Date): CmeMarketWindow => {
-  const isOpen = isCmeOptionsMarketOpen(now);
-  return {
-    isOpen,
-    nextOpenAt: isOpen ? null : findNextCmeOptionsOpenAt(now)
-  };
-};
-
-const formatCmeOpenAt = (date: Date): string =>
-  new Intl.DateTimeFormat("en-US", {
-    timeZone: CME_MARKET_TZ,
-    weekday: "short",
-    month: "short",
-    day: "2-digit",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-    timeZoneName: "short"
-  }).format(date);
-
-const formatCmeCountdown = (to: Date, nowMs: number): string => {
-  const diffMs = Math.max(0, to.getTime() - nowMs);
-  const totalMinutes = Math.floor(diffMs / 60000);
-  const days = Math.floor(totalMinutes / (24 * 60));
-  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
-  const minutes = totalMinutes % 60;
-  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
-};
-
-const formatCmeNowEt = (nowMs: number): string =>
-  new Intl.DateTimeFormat("en-US", {
-    timeZone: CME_MARKET_TZ,
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-    timeZoneName: "short"
-  }).format(new Date(nowMs));
-
-const formatLocalNow = (nowMs: number): string =>
-  new Intl.DateTimeFormat(undefined, {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-    timeZoneName: "short"
-  }).format(new Date(nowMs));
 
 const friendlyError = (message: string): string => {
   if (message.includes("no_liquidity_window")) {
-    return "Outside CME market hours. Quotes are unavailable until the market reopens.";
+    return "No liquidity or options available right now, try again";
   }
   if (
     message.includes("service_unavailable") ||
@@ -488,7 +312,10 @@ const friendlyError = (message: string): string => {
     return "Protection amount is currently too small for a tradable contract size. Increase amount or choose another tenor.";
   }
   if (message.includes("quote_liquidity_unavailable")) {
-    return "Live liquidity is currently limited. Try again or choose another tenor.";
+    return "No liquidity or options available right now, try again";
+  }
+  if (message.includes("quote_min_notional_not_met")) {
+    return "Pilot minimum quote size is enforced. Increase protection amount and request a new quote.";
   }
   if (message.includes("venue_quote_timeout")) {
     return "Quote timed out. Live venue response exceeded 20s. Tap Refresh Quote.";
@@ -587,13 +414,7 @@ const classifyLiquidityFromError = (message: string): QuoteLiquidityStatus => {
   ) {
     return "thin";
   }
-  return "unknown";
-};
-
-const getLiquidityStatusLabel = (status: QuoteLiquidityStatus): string => {
-  if (status === "normal") return "Normal";
-  if (status === "thin") return "Thin";
-  return "Unknown";
+  return "normal";
 };
 
 const formatVenueLabel = (venue: string | null | undefined): string => {
@@ -688,27 +509,57 @@ export function PilotApp() {
   const [showAdminDetailModal, setShowAdminDetailModal] = useState(false);
   const [adminDetailUpdatedAt, setAdminDetailUpdatedAt] = useState<Date | null>(null);
   const [showHistorySection, setShowHistorySection] = useState(true);
+  const [showPilotSummary, setShowPilotSummary] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [monitorUpdatedAt, setMonitorUpdatedAt] = useState<Date | null>(null);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [liveReference, setLiveReference] = useState<ReferencePricePayload["reference"] | null>(null);
   const [liveReferenceBusy, setLiveReferenceBusy] = useState(false);
   const [liveReferenceError, setLiveReferenceError] = useState<string | null>(null);
-  const [liquiditySignalStatus, setLiquiditySignalStatus] = useState<QuoteLiquidityStatus>("unknown");
+  const [liquiditySignalStatus, setLiquiditySignalStatus] = useState<QuoteLiquidityStatus>("normal");
   const [liquiditySignalAtMs, setLiquiditySignalAtMs] = useState<number>(0);
-  const [clockNowMs, setClockNowMs] = useState(() => Date.now());
+  const liquidityTransitionRef = useRef<{ thinSignals: number; normalSignals: number }>({
+    thinSignals: 0,
+    normalSignals: 0
+  });
+  const quoteSectionRef = useRef<HTMLDivElement | null>(null);
+  const actionsSectionRef = useRef<HTMLDivElement | null>(null);
   const historyRequestSeqRef = useRef(0);
   const monitorRequestSeqRef = useRef(0);
   const protectionPollSeqRef = useRef(0);
   const recordLiquiditySignal = (nextStatus: QuoteLiquidityStatus): void => {
-    setLiquiditySignalStatus(nextStatus);
-    setLiquiditySignalAtMs(Date.now());
+    const state = liquidityTransitionRef.current;
+    if (nextStatus === "thin") {
+      state.thinSignals += 1;
+      state.normalSignals = 0;
+      if (state.thinSignals >= LIQUIDITY_THIN_CONFIRMATION_COUNT) {
+        setLiquiditySignalStatus("thin");
+        setLiquiditySignalAtMs(Date.now());
+      }
+      return;
+    }
+    state.normalSignals += 1;
+    state.thinSignals = 0;
+    if (state.normalSignals >= LIQUIDITY_NORMAL_CONFIRMATION_COUNT) {
+      setLiquiditySignalStatus("normal");
+      setLiquiditySignalAtMs(Date.now());
+    }
   };
   const selectedTier = useMemo(
     () => tiers.find((tier) => tier.name === tierName) || DEFAULT_TIERS[0],
     [tierName, tiers]
   );
 
+  const minProtectionAmountUsdRaw = Number(quote?.limits?.minQuoteNotionalUsdc ?? NaN);
+  const minProtectionAmountUsd =
+    Number.isFinite(minProtectionAmountUsdRaw) && minProtectionAmountUsdRaw > 0
+      ? minProtectionAmountUsdRaw
+      : MIN_QUOTE_NOTIONAL_USDC;
+  const maxProtectionAmountUsdRaw = Number(quote?.limits?.maxProtectionNotionalUsdc ?? NaN);
+  const maxProtectionAmountUsd =
+    Number.isFinite(maxProtectionAmountUsdRaw) && maxProtectionAmountUsdRaw > 0
+      ? maxProtectionAmountUsdRaw
+      : MAX_PROTECTION_NOTIONAL_USDC;
   const exposureValue = parseCurrencyNumber(exposureNotional || "0");
   const protectedValue = parseCurrencyNumber(protectedNotional || "0");
   const canQuote =
@@ -717,13 +568,19 @@ export function PilotApp() {
     exposureValue > 0 &&
     Number.isFinite(protectedValue) &&
     protectedValue > 0 &&
+    protectedValue >= minProtectionAmountUsd &&
+    protectedValue <= maxProtectionAmountUsd &&
     protectedValue <= exposureValue;
+  const quotePremiumRatioPct =
+    quote && Number.isFinite(quote.quote?.premium) && protectedValue > 0
+      ? (Number(quote.quote.premium) / protectedValue) * 100
+      : null;
   const quoteFresh =
     quoteState === "ready" && quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
   const quoteLocked = quoteFresh && Boolean(quote?.quote?.quoteId);
   const quoteCapWarning = quote?.limits?.dailyCapExceededOnActivate === true;
-  const canActivate =
-    PILOT_ACTIVATION_ENABLED && canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
+  const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
+  const showQuoteSection = quoteState !== "idle" || Boolean(quote) || Boolean(error);
 
   const renewWindowReached = useMemo(() => {
     if (!protection || protection.autoRenew || protection.status !== "active") return false;
@@ -1172,20 +1029,28 @@ export function PilotApp() {
   }, [showAdminModal]);
 
   useEffect(() => {
-    const id = setInterval(() => setClockNowMs(Date.now()), 30_000);
-    return () => clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    if (liquiditySignalStatus === "unknown" || !Number.isFinite(liquiditySignalAtMs) || liquiditySignalAtMs <= 0) return;
+    if (!Number.isFinite(liquiditySignalAtMs) || liquiditySignalAtMs <= 0) return;
     const remainingMs = LIQUIDITY_STATUS_TTL_MS - (Date.now() - liquiditySignalAtMs);
     if (remainingMs <= 0) {
-      setLiquiditySignalStatus("unknown");
+      setLiquiditySignalStatus("normal");
       return;
     }
-    const id = setTimeout(() => setLiquiditySignalStatus("unknown"), remainingMs);
+    const id = setTimeout(() => setLiquiditySignalStatus("normal"), remainingMs);
     return () => clearTimeout(id);
   }, [liquiditySignalStatus, liquiditySignalAtMs]);
+
+  useEffect(() => {
+    if (!showQuoteSection) return;
+    quoteSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [showQuoteSection, quoteState, quote?.quote?.quoteId, error]);
+
+  useEffect(() => {
+    if (quoteState !== "ready" && quoteState !== "expired") return;
+    const id = window.setTimeout(() => {
+      actionsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+    return () => window.clearTimeout(id);
+  }, [quoteState, quote?.quote?.quoteId]);
 
   const requestQuote = async () => {
     if (!canQuote) return;
@@ -1286,10 +1151,6 @@ export function PilotApp() {
   };
 
   const activateProtection = async () => {
-    if (!PILOT_ACTIVATION_ENABLED) {
-      setError("Activation is paused while quote validation is in progress.");
-      return;
-    }
     if (!canActivate) {
       setError("Get a fresh quote before activation.");
       return;
@@ -1526,13 +1387,6 @@ export function PilotApp() {
   const matchedExpiryDisplay = selectedExpiryDisplay || matchedHorizonDisplay;
   const showTenorAdjustmentInfo =
     Number.isFinite(requestedVsMatchedTenorDriftDays) && requestedVsMatchedTenorDriftDays > 0.5;
-  const showTenorAdjustmentWarning =
-    Number.isFinite(requestedVsMatchedTenorDriftDays) && requestedVsMatchedTenorDriftDays > 2;
-  const selectionTraceRows = Array.isArray(venueSelection?.selectionTrace)
-    ? (venueSelection?.selectionTrace as unknown[]).filter(isSelectionTraceRow).slice(0, 3)
-    : [];
-  const rankedAlternativesForDisplay = parseRankedAlternatives(venueSelection?.rankedAlternatives);
-  const quoteAlternativeHint = buildQuoteAlternativeHint(String(error || ""));
   const quoteRequestProgressPct = Math.max(
     0,
     Math.min(
@@ -1542,15 +1396,6 @@ export function PilotApp() {
   );
   const quoteRequestUrgencyClass =
     quoteRequestTimeLeft <= 6 ? "is-danger" : quoteRequestTimeLeft <= 12 ? "is-warning" : "";
-  const cmeMarketWindow = useMemo(() => resolveCmeMarketWindow(new Date(clockNowMs)), [clockNowMs]);
-  const nextCmeOpenLabel = cmeMarketWindow.nextOpenAt ? formatCmeOpenAt(cmeMarketWindow.nextOpenAt) : null;
-  const nextCmeOpenCountdown = cmeMarketWindow.nextOpenAt ? formatCmeCountdown(cmeMarketWindow.nextOpenAt, clockNowMs) : null;
-  const cmeNowEtLabel = formatCmeNowEt(clockNowMs);
-  const localNowLabel = formatLocalNow(clockNowMs);
-  const cmeStatusLabel = cmeMarketWindow.isOpen ? "Open" : "Closed";
-  const cmeStatusBadgeClass = cmeMarketWindow.isOpen
-    ? "quote-market-badge quote-market-badge-open"
-    : "quote-market-badge quote-market-badge-closed";
   const urlSearchParams = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
   const internalAdminEnabled =
     typeof window !== "undefined" &&
@@ -1560,20 +1405,11 @@ export function PilotApp() {
   const previewActivateEnabled = urlSearchParams?.get("preview_activate") === "1";
   const showPriceFeedHint = internalAdminEnabled && isPriceUnavailableError(error);
   const showQuoteUnavailableHint = quoteState !== "fetching" && isQuoteUnavailableError(error);
-  const quoteLiquidityStatus: QuoteLiquidityStatus = liquiditySignalStatus;
-  const showQuoteLiquidityPill = quoteLiquidityStatus !== "unknown";
-  const quoteLiquidityLabel =
-    quoteLiquidityStatus === "normal" ? "Normal liquidity" : quoteLiquidityStatus === "thin" ? "Thin liquidity" : "";
-  const quoteLiquidityPillClass =
-    quoteLiquidityStatus === "normal" ? "pill" : quoteLiquidityStatus === "thin" ? "pill pill-warning" : "pill pill-warning";
-  const quoteUnavailableSecondary = "Please try again.";
-  const quoteUnavailableSecondaryClass = "quote-unavailable-secondary quote-unavailable-secondary-amber";
   const adminBrokerSnapshot = adminMetrics?.brokerBalanceSnapshot ?? null;
   const adminBrokerAvailableFunds = Number(adminBrokerSnapshot?.availableFundsUsd ?? NaN);
   const adminBrokerNetLiquidation = Number(adminBrokerSnapshot?.netLiquidationUsd ?? NaN);
   const adminBrokerExcessLiquidity = Number(adminBrokerSnapshot?.excessLiquidityUsd ?? NaN);
   const adminBrokerBuyingPower = Number(adminBrokerSnapshot?.buyingPowerUsd ?? NaN);
-  const showQuoteSection = quoteState !== "idle" || Boolean(quote) || Boolean(error);
   const monitorHasLiveSnapshot = Boolean(
     monitor &&
       protection &&
@@ -1825,25 +1661,41 @@ export function PilotApp() {
         </div>
 
         <div className="section section-compact">
-          <div
-            className={`quote-market-banner quote-market-banner-micro ${cmeMarketWindow.isOpen ? "quote-market-banner-open" : "quote-market-banner-closed"}`}
-          >
+          <div className="quote-market-banner quote-market-banner-micro">
             <span className="quote-market-banner-title">CME BTC Options</span>
-            <span className={cmeStatusBadgeClass}>{cmeStatusLabel}</span>
-            <span
-              className={`pill ${quoteLiquidityStatus === "thin" ? "pill-warning" : quoteLiquidityStatus === "unknown" ? "pill-warning" : ""}`}
+            <span className="muted">Market Hours 9:30am-5pm EST</span>
+            <span className="muted">Liquidity is thinner after market hours</span>
+          </div>
+        </div>
+
+        <div className="section">
+          <div className="section-title-row">
+            <h4>Pilot Summary</h4>
+            <button
+              className="btn btn-secondary collapse-toggle"
+              type="button"
+              aria-expanded={showPilotSummary}
+              onClick={() => setShowPilotSummary((prev) => !prev)}
             >
-              Liquidity {getLiquidityStatusLabel(quoteLiquidityStatus)}
-            </span>
-            <span className="muted">Regular Market Hours 9:30 AM-5:00 PM ET</span>
-            <span className="muted">ET {cmeNowEtLabel}</span>
-            {!cmeMarketWindow.isOpen && (
-              <span className="muted">
-                Next {nextCmeOpenLabel || "TBD"}
-                {nextCmeOpenCountdown ? ` (${nextCmeOpenCountdown})` : ""}
-              </span>
-            )}
-            <span className="muted">Local {localNowLabel}</span>
+              <span className={`collapse-chevron ${showPilotSummary ? "open" : ""}`}>▶</span>
+              {showPilotSummary ? "Hide" : "Show"}
+            </button>
+          </div>
+          <div className={`collapsible-panel ${showPilotSummary ? "is-open" : ""}`}>
+            <div className="collapsible-inner">
+              <div className="quote-card quote-card-ready">
+                <div className="muted">
+                  Premium due at pilot close: <strong>${formatUsd(pilotPremiumOwedUsd)}</strong>
+                </div>
+                {showDailyCapSummary && (
+                  <div className="muted">
+                    Daily protected notional (UTC): used ${formatUsd(dailyCapUsedUsd)} → projected{" "}
+                    <strong>${formatUsd(dailyCapProjectedUsd)}</strong> / ${formatUsd(dailyCapMaxUsd)}
+                    {Number.isFinite(dailyCapPct) ? ` (${dailyCapPct.toFixed(1)}%)` : ""}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -1936,6 +1788,17 @@ export function PilotApp() {
                   value={exposureNotional}
                   disabled={busy || quoteLocked}
                   onChange={(e) => setExposureNotional(formatCurrencyInput(e.target.value))}
+                  onBlur={(e) => {
+                    const parsedExposure = parseCurrencyNumber(e.currentTarget.value || "0");
+                    if (!Number.isFinite(parsedExposure) || parsedExposure <= 0) return;
+                    const nextExposure = Math.max(parsedExposure, minProtectionAmountUsd);
+                    if (nextExposure !== parsedExposure) {
+                      setExposureNotional(formatCurrencyInput(String(nextExposure)));
+                    }
+                    if (Number.isFinite(protectedValue) && protectedValue > nextExposure) {
+                      setProtectedNotional(formatCurrencyInput(String(nextExposure)));
+                    }
+                  }}
                 />
               </div>
             </div>
@@ -1950,7 +1813,22 @@ export function PilotApp() {
                   value={protectedNotional}
                   disabled={busy || quoteLocked}
                   onChange={(e) => setProtectedNotional(formatCurrencyInput(e.target.value))}
+                  onBlur={(e) => {
+                    const parsedProtected = parseCurrencyNumber(e.currentTarget.value || "0");
+                    if (!Number.isFinite(parsedProtected) || parsedProtected <= 0) return;
+                    let nextProtected = Math.max(parsedProtected, minProtectionAmountUsd);
+                    nextProtected = Math.min(nextProtected, maxProtectionAmountUsd);
+                    if (Number.isFinite(exposureValue) && exposureValue >= minProtectionAmountUsd) {
+                      nextProtected = Math.min(nextProtected, exposureValue);
+                    }
+                    if (nextProtected !== parsedProtected) {
+                      setProtectedNotional(formatCurrencyInput(String(nextProtected)));
+                    }
+                  }}
                 />
+                <div className="muted pilot-protection-min-helper">
+                  Min ${formatUsdNoDecimals(minProtectionAmountUsd)}
+                </div>
               </div>
             </div>
 
@@ -1995,8 +1873,8 @@ export function PilotApp() {
                     );
                   })}
                 </div>
-                <div className="muted pilot-tenor-helper" style={{ marginTop: 8 }}>
-                  Closest liquid expiry is matched automatically.
+                <div className="muted pilot-tenor-helper">
+                  Target length, nearest liquid expiry if unavailable
                 </div>
               </div>
             </div>
@@ -2018,32 +1896,117 @@ export function PilotApp() {
 
             {!canQuote && (
               <div className="disclaimer danger">
-                Enter position size and protection amount. Protection amount cannot exceed position size.
+                Protection amount must be between ${formatUsdNoDecimals(minProtectionAmountUsd)} and $
+                {formatUsdNoDecimals(maxProtectionAmountUsd)} and cannot exceed position size
               </div>
             )}
           </div>
         </div>
 
-        <div className="section">
-          <h4>Pilot Summary</h4>
-          <div className="quote-card quote-card-ready">
-            <div className="muted">
-              Premium due at pilot close: <strong>${formatUsd(pilotPremiumOwedUsd)}</strong>
+        {showQuoteSection && (
+          <div className="section" ref={quoteSectionRef}>
+            <div className="section-title-row">
+              <h4>Quote</h4>
             </div>
-            {showDailyCapSummary && (
-              <div className="muted">
-                Daily protected notional (UTC): used ${formatUsd(dailyCapUsedUsd)} → projected{" "}
-                <strong>${formatUsd(dailyCapProjectedUsd)}</strong> / ${formatUsd(dailyCapMaxUsd)}
-                {Number.isFinite(dailyCapPct) ? ` (${dailyCapPct.toFixed(1)}%)` : ""}
+            <div className="quote-status-row">
+              <div className="quote-status-right">
+                {quoteState === "fetching" && <span className="pill">Finding best quote</span>}
+                {quoteState === "ready" && quoteTimeLeft > 0 && (
+                  <span className="pill pill-warning">Expires in {formatCountdown(quoteTimeLeft)}</span>
+                )}
+                {quoteState === "expired" && <span className="pill pill-warning">Quote expired</span>}
+              </div>
+            </div>
+            <div className={`quote-card quote-card-${quoteState}`}>
+              {quoteState === "idle" && <div className="muted">Find quote to fetch live premium and lock window</div>}
+              {quoteState === "fetching" && (
+                <div className="quote-fetching">
+                  <div className="quote-fetching-title" aria-live="polite">
+                    Finding best quote
+                  </div>
+                  <div className="quote-fetching-meta muted">Checking live contracts and executable prices</div>
+                  <div className="quote-fetching-countdown">
+                    <span className={`quote-fetching-seconds ${quoteRequestUrgencyClass}`}>
+                      {formatCountdown(quoteRequestTimeLeft)}
+                    </span>
+                    <span className="muted">remaining</span>
+                  </div>
+                  <div className="quote-fetching-progress" aria-hidden="true">
+                    <span style={{ width: `${quoteRequestProgressPct.toFixed(1)}%` }} />
+                  </div>
+                </div>
+              )}
+              {(quoteState === "ready" || quoteState === "expired") && quote && (
+                <>
+                  <div className="quote-primary">
+                    Premium <strong>${formatUsd(quote.quote.premium)}</strong>
+                  </div>
+                  {Number.isFinite(quotePremiumRatioPct) && (
+                    <div className="muted">Premium ratio {quotePremiumRatioPct.toFixed(2)}% of protection</div>
+                  )}
+                  <div className="muted">Venue {formatVenueLabel(quote.quote.venue)}</div>
+                  <div className="quote-horizon-row">
+                    <div>
+                      <span className="muted">Target Horizon:</span> <strong>{targetHorizonDisplay}</strong>
+                    </div>
+                    <div>
+                      <span className="muted">Matched Expiry:</span> <strong>{matchedExpiryDisplay}</strong>
+                    </div>
+                  </div>
+                  <div className="muted">
+                    {quoteDirectionLabel} · Tier {quote.tierName}
+                  </div>
+                  <div className="muted">
+                    Move threshold {formatPct(quote.drawdownFloorPct)} ·{" "}
+                    {quote.triggerLabel === "ceiling_price" ? "Ceiling" : "Floor"} $
+                    {formatUsd(quote.triggerPrice ?? quote.floorPrice)}
+                  </div>
+                  <div className="muted">
+                    Reference {formatUsd(quote.entrySnapshot.price)} ({quote.entrySnapshot.source}) at{" "}
+                    {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
+                  </div>
+                  {showTenorAdjustmentInfo && (
+                    <div className="quote-warning">
+                      <div className="pill pill-warning">Nearest liquid expiry used</div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            {showQuoteUnavailableHint && (
+              <div className="quote-unavailable-note">
+                <div className="quote-unavailable-title">No liquidity or options available right now, try again</div>
+              </div>
+            )}
+            {error && !showQuoteUnavailableHint && <div className="disclaimer danger">{error}</div>}
+            {quoteLocked && (
+              <div className="muted">Quote locked core request fields are read-only until refresh or expiry</div>
+            )}
+            {quoteCapWarning && (
+              <div className="disclaimer danger">
+                Daily protection limit reached for pilot operations quote shown for reference confirmation blocked until next UTC day
+              </div>
+            )}
+            {showPriceFeedHint && (
+              <div className="disclaimer">
+                Quick check API must run with PILOT_API_ENABLED=true PRICE_SINGLE_SOURCE=true and valid PRICE_REFERENCE_URL
+                <button
+                  className="btn btn-secondary pilot-retry-btn"
+                  type="button"
+                  disabled={busy || !canQuote}
+                  onClick={requestQuote}
+                >
+                  Retry quote
+                </button>
               </div>
             )}
           </div>
-        </div>
+        )}
 
-        <div className="section pilot-actions-under-request">
+        <div className="section pilot-actions-under-request" ref={actionsSectionRef}>
           <div className="pilot-actions">
             <button className="btn btn-secondary pilot-action-btn" disabled={busy || !canQuote} onClick={requestQuote}>
-              {quoteState === "fetching" ? "Fetching..." : "Request Quote"}
+              {quoteState === "fetching" ? "Finding..." : "Find Quote"}
             </button>
             <button
               className="cta pilot-action-btn"
@@ -2074,163 +2037,7 @@ export function PilotApp() {
             </div>
           )}
           {activationPreviewNotice && <div className="disclaimer">{activationPreviewNotice}</div>}
-          {error && <div className={`disclaimer ${showQuoteUnavailableHint ? "" : "danger"}`}>{error}</div>}
-          {!error && quoteAlternativeHint && (
-            <div className="disclaimer">{`Venue alternatives: ${quoteAlternativeHint}`}</div>
-          )}
-          {showPriceFeedHint && (
-            <div className="disclaimer">
-              Quick check: API must run with PILOT_API_ENABLED=true, PRICE_SINGLE_SOURCE=true, and a valid
-              PRICE_REFERENCE_URL (Coinbase ticker).{" "}
-              <button
-                className="btn btn-secondary pilot-retry-btn"
-                type="button"
-                disabled={busy || !canQuote}
-                onClick={requestQuote}
-              >
-                Retry quote
-              </button>
-            </div>
-          )}
         </div>
-
-        {showQuoteSection && (
-          <div className="section">
-          <div className="section-title-row">
-            <h4>Quote</h4>
-          </div>
-          <div className="quote-status-row">
-            <div className="quote-status-left">
-              {showQuoteLiquidityPill && <span className={quoteLiquidityPillClass}>{quoteLiquidityLabel}</span>}
-            </div>
-            <div className="quote-status-right">
-              {quoteState === "fetching" && <span className="pill">Finding best available protection…</span>}
-              {quoteState === "ready" && quoteTimeLeft > 0 && (
-                <span className="pill pill-warning">Expires in {formatCountdown(quoteTimeLeft)}</span>
-              )}
-              {quoteState === "expired" && <span className="pill pill-warning">Quote expired</span>}
-            </div>
-          </div>
-          <div className={`quote-card quote-card-${quoteState}`}>
-            {quoteState === "idle" && (
-              <div className="muted">Request Quote to fetch a live premium and lock window.</div>
-            )}
-            {quoteState === "fetching" && (
-              <div className="quote-fetching">
-                <div className="quote-fetching-title" aria-live="polite">
-                  Finding best available protection...
-                </div>
-                <div className="quote-fetching-meta muted">Checking live contracts, liquidity, and executable prices.</div>
-                <div className="quote-fetching-countdown">
-                  <span className={`quote-fetching-seconds ${quoteRequestUrgencyClass}`}>
-                    {formatCountdown(quoteRequestTimeLeft)}
-                  </span>
-                  <span className="muted">remaining</span>
-                </div>
-                <div className="quote-fetching-progress" aria-hidden="true">
-                  <span style={{ width: `${quoteRequestProgressPct.toFixed(1)}%` }} />
-                </div>
-              </div>
-            )}
-            {(quoteState === "ready" || quoteState === "expired") && quote && (
-              <>
-                <div className="quote-primary">
-                  Premium <strong>${formatUsd(quote.quote.premium)}</strong>
-                </div>
-                <div className="muted">Venue {formatVenueLabel(quote.quote.venue)}</div>
-                <div className="quote-horizon-row">
-                  <div>
-                    <span className="muted">Target Horizon:</span> <strong>{targetHorizonDisplay}</strong>
-                  </div>
-                  <div>
-                    <span className="muted">Matched Expiry:</span> <strong>{matchedExpiryDisplay}</strong>
-                  </div>
-                </div>
-                <div className="muted">
-                  {quoteDirectionLabel} · Tier {quote.tierName}
-                </div>
-                <div className="muted">
-                  Move threshold {formatPct(quote.drawdownFloorPct)} ·{" "}
-                  {quote.triggerLabel === "ceiling_price" ? "Ceiling" : "Floor"} $
-                  {formatUsd(quote.triggerPrice ?? quote.floorPrice)}
-                </div>
-                <div className="muted">
-                  Reference {formatUsd(quote.entrySnapshot.price)} ({quote.entrySnapshot.source}) at{" "}
-                  {new Date(quote.entrySnapshot.timestamp).toLocaleString()}
-                </div>
-                {showTenorAdjustmentInfo && (
-                  <div className="quote-warning">
-                    <div className="pill pill-warning">Matched to nearest liquid expiry.</div>
-                    <div className="muted">
-                      Requested {targetHorizonDisplay}, matched {matchedExpiryDisplay} due to current liquidity.
-                    </div>
-                    {showTenorAdjustmentWarning && (
-                      <div className="muted">Coverage may end earlier than your intended holding window.</div>
-                    )}
-                  </div>
-                )}
-                {(rankedAlternativesForDisplay.length > 0 || selectionTraceRows.length > 1) && (
-                  <div className="quote-alternatives">
-                    <div className="muted">
-                      Alternative expiries considered (closest viable first):
-                    </div>
-                    <ol className="quote-alternatives-list">
-                      {(rankedAlternativesForDisplay.length > 0
-                        ? rankedAlternativesForDisplay
-                        : selectionTraceRows.map((row) => ({
-                            expiry: row.expiry,
-                            matchedTenorDays: row.matchedTenorDays,
-                            ask: row.ask,
-                            score: row.score,
-                            driftDays: row.driftDays
-                          }))
-                      ).map((row, idx) => {
-                        const expiryLabel = row.expiry ? formatExpiryDateLabel(row.expiry) : "";
-                        const tenorLabel = Number.isFinite(Number(row.matchedTenorDays))
-                          ? `${Math.max(1, Math.round(Number(row.matchedTenorDays)))}-Day`
-                          : "N/A";
-                        const premiumLabel = Number.isFinite(Number(row.ask)) ? `$${formatUsd(Number(row.ask))}` : "ask n/a";
-                        const driftLabel = Number.isFinite(Number(row.driftDays))
-                          ? `${Number(row.driftDays).toFixed(2)}d drift`
-                          : "drift n/a";
-                        const scoreLabel = Number.isFinite(Number(row.score))
-                          ? `score ${Number(row.score).toFixed(3)}`
-                          : "score n/a";
-                        return (
-                          <li key={`${String(row.expiry || "na")}-${idx}`} className="muted">
-                            {expiryLabel || tenorLabel} · {premiumLabel} · {driftLabel} · {scoreLabel}
-                          </li>
-                        );
-                      })}
-                    </ol>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-          {showQuoteUnavailableHint && (
-            <div className="quote-unavailable-note">
-              <div className="quote-unavailable-title">Quote not available right now.</div>
-              <div className={quoteUnavailableSecondaryClass}>{quoteUnavailableSecondary}</div>
-            </div>
-          )}
-          {quoteLocked && (
-            <div className="muted">Quote locked: core request fields are temporarily read-only until refresh or expiry.</div>
-          )}
-          {quoteCapWarning && (
-            <div className="disclaimer danger">
-              Daily protection limit reached for pilot operations. Quote is shown for reference; confirmation is blocked
-              until the next UTC day.
-            </div>
-          )}
-          {!PILOT_ACTIVATION_ENABLED && (
-            <div className="disclaimer">
-              Quote-only mode is active. Confirm Protection is temporarily disabled while live quote quality is being
-              validated.
-            </div>
-          )}
-          </div>
-        )}
 
         <div className="section">
           <div className="section-title-row">

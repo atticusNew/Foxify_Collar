@@ -73,6 +73,7 @@ const createPilotHarness = async (opts?: {
 }> => {
   process.env.PILOT_API_ENABLED = "true";
   process.env.PILOT_ACTIVATION_ENABLED = "true";
+  process.env.PILOT_HEDGE_POLICY = "options_primary_futures_fallback";
   process.env.PILOT_VENUE_MODE = opts?.venueMode || "mock_falconx";
   process.env.POSTGRES_URL = "postgres://unused";
   process.env.USER_HASH_SECRET = "test_hash_secret";
@@ -120,6 +121,7 @@ const createPilotHarness = async (opts?: {
   const configModule = await import("../src/pilot/config");
   configModule.pilotConfig.enabled = true;
   configModule.pilotConfig.activationEnabled = process.env.PILOT_ACTIVATION_ENABLED === "true";
+  configModule.pilotConfig.pilotHedgePolicy = configModule.parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY);
   configModule.pilotConfig.venueMode = (opts?.venueMode || "mock_falconx") as any;
   configModule.pilotConfig.tenantScopeId = process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot";
   configModule.pilotConfig.adminToken = process.env.PILOT_ADMIN_TOKEN || "";
@@ -197,6 +199,34 @@ const createPilotHarness = async (opts?: {
   configModule.pilotConfig.ibkrQualifyCacheTtlMs = Number(process.env.IBKR_QUALIFY_CACHE_TTL_MS || "120000");
   configModule.pilotConfig.ibkrQualifyCacheMaxKeys = Number(process.env.IBKR_QUALIFY_CACHE_MAX_KEYS || "2000");
   configModule.pilotConfig.venueQuoteTimeoutMs = Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000");
+  configModule.pilotConfig.quoteMinNotionalUsdc = Number(process.env.PILOT_QUOTE_MIN_NOTIONAL_USDC || "1000");
+  configModule.pilotConfig.premiumPolicyMode =
+    process.env.PILOT_PREMIUM_POLICY_MODE === "pass_through_markup"
+      ? "pass_through_markup"
+      : "hedge_only_markup";
+  configModule.pilotConfig.premiumPolicyVersion =
+    String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2";
+  configModule.pilotConfig.premiumMarkupPct = Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045");
+  configModule.pilotConfig.premiumMarkupPctByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_BRONZE || "0.06"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_SILVER || "0.05"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_GOLD || "0.04"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_PLATINUM || "0.03")
+  };
+  configModule.pilotConfig.premiumFloorUsdByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_FLOOR_USD_BRONZE || "20"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_FLOOR_USD_SILVER || "17"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_USD_GOLD || "14"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_USD_PLATINUM || "12")
+  };
+  configModule.pilotConfig.premiumFloorBpsByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_BRONZE || "6"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_SILVER || "5"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_GOLD || "4"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "4")
+  };
+  configModule.pilotConfig.ibkrFeePerContractUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_CONTRACT_USD || "2.02"));
+  configModule.pilotConfig.ibkrFeePerOrderUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD || "0"));
 
   const db = newDb();
   const pg = db.adapters.createPg();
@@ -1480,6 +1510,9 @@ test("U) degraded tenor policy with no enabled tenors falls back to default cand
 test("V) quote maps no_top_of_book to 503 liquidity-unavailable reason", async () => {
   const originalFetch = global.fetch;
   try {
+    const now = Date.now();
+    const optionExpiry = new Date(now + 5 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+    const futureExpiry = new Date(now + 6 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
@@ -1509,7 +1542,7 @@ test("V) quote maps no_top_of_book to 503 liquidity-unavailable reason", async (
                     conId: 11111,
                     secType: "FOP",
                     localSymbol: "W5AH6 P55000",
-                    expiry: "20260330",
+                    expiry: optionExpiry,
                     strike: 55000,
                     right: "P",
                     multiplier: "0.1",
@@ -1528,7 +1561,7 @@ test("V) quote maps no_top_of_book to 503 liquidity-unavailable reason", async (
                   conId: 22222,
                   secType: "FUT",
                   localSymbol: "MBTH6",
-                  expiry: "20260331",
+                  expiry: futureExpiry,
                   multiplier: "0.1",
                   minTick: 5
                 }
@@ -1614,6 +1647,9 @@ test("V) quote maps no_top_of_book to 503 liquidity-unavailable reason", async (
 test("V2) quote maps no-economical-option diagnostics to economics-unacceptable reason", async () => {
   const originalFetch = global.fetch;
   try {
+    const now = Date.now();
+    const optionExpiry = new Date(now + 5 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+    const futureExpiry = new Date(now + 6 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
@@ -1643,7 +1679,7 @@ test("V2) quote maps no-economical-option diagnostics to economics-unacceptable 
                     conId: 31111,
                     secType: "FOP",
                     localSymbol: "W5AH6 P50000",
-                    expiry: "20260330",
+                    expiry: optionExpiry,
                     strike: 50000,
                     right: "P",
                     multiplier: "0.1",
@@ -1662,7 +1698,7 @@ test("V2) quote maps no-economical-option diagnostics to economics-unacceptable 
                   conId: 32222,
                   secType: "FUT",
                   localSymbol: "MBTH6",
-                  expiry: "20260331",
+                  expiry: futureExpiry,
                   multiplier: "0.1",
                   minTick: 5
                 }
@@ -1760,13 +1796,13 @@ test("V2) quote maps no-economical-option diagnostics to economics-unacceptable 
       const quoteRes = await harness.app.inject({
         method: "POST",
         url: "/pilot/protections/quote",
-        payload: defaultQuotePayload(1000)
+        payload: defaultQuotePayload(20000)
       });
       assert.equal(quoteRes.statusCode, 503);
       const payload = quoteRes.json();
       assert.equal(payload.status, "error");
-      assert.equal(payload.reason, "quote_liquidity_unavailable");
-      assert.match(String(payload.detail || ""), /no_top_of_book/);
+      assert.equal(payload.reason, "quote_economics_unacceptable");
+      assert.match(String(payload.detail || ""), /no_economical_option|no_viable_option/);
     } finally {
       await harness.close();
     }
@@ -2594,3 +2630,459 @@ test("Y) selector diagnostics endpoint requires admin and returns quote-stage co
   }
 });
 
+test("Y2) quote enforces configurable minimum notional floor", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_QUOTE_MIN_NOTIONAL_USDC: "1000"
+    }
+  });
+  try {
+    const belowMin = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(900)
+    });
+    assert.equal(belowMin.statusCode, 400);
+    const belowMinPayload = belowMin.json();
+    assert.equal(belowMinPayload.status, "error");
+    assert.equal(belowMinPayload.reason, "quote_min_notional_not_met");
+    assert.equal(Number(belowMinPayload.minQuoteNotionalUsdc), 1000);
+
+    const atMin = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(atMin.statusCode, 200);
+    const atMinPayload = atMin.json();
+    assert.equal(atMinPayload.status, "ok");
+    assert.equal(Number(atMinPayload?.limits?.minQuoteNotionalUsdc || 0), 1000);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Y3) selector diagnostics include extended candidate failure counters", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 91111,
+                    secType: "FOP",
+                    localSymbol: "W5AH6 P60000",
+                    expiry: "20260330",
+                    strike: 60000,
+                    right: "P",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+        if (payload.kind === "mbt_future") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 92222,
+                    secType: "FUT",
+                    localSymbol: "MBTH6",
+                    expiry: "20260331",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 10,
+              ask: 20,
+              bidSize: 0.1,
+              askSize: 0.2,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bids: [{ level: 0, price: 10, size: 0.1 }],
+              asks: [{ level: 0, price: 20, size: 0.2 }],
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return { ok: false, status: 404, text: async () => "not_found" } as any;
+    }) as typeof fetch;
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "6000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "6000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "40",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        IBKR_REQUIRE_OPTIONS_NATIVE: "true",
+        IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED: "true",
+        IBKR_MAX_OPTION_PREMIUM_RATIO: "0.05",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const quoteRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteRes.statusCode === 503 || quoteRes.statusCode === 409, true);
+
+      const diagnosticsRes = await harness.app.inject({
+        method: "GET",
+        url: "/pilot/admin/diagnostics/selector",
+        headers: { "x-admin-token": "admin-local", "x-forwarded-for": "127.0.0.1" }
+      });
+      assert.equal(diagnosticsRes.statusCode, 200);
+      const diagnosticsPayload = diagnosticsRes.json();
+      assert.equal(diagnosticsPayload.status, "ok");
+      assert.equal(
+        typeof diagnosticsPayload.diagnostics?.optionCandidateFailureCounts?.nFailedWideSpread === "number",
+        true
+      );
+      assert.equal(
+        typeof diagnosticsPayload.diagnostics?.optionCandidateFailureCounts?.nFailedThinDepth === "number",
+        true
+      );
+      assert.equal(
+        typeof diagnosticsPayload.diagnostics?.optionCandidateFailureCounts?.nFailedStaleTop === "number",
+        true
+      );
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("Y4) quote premium policy in pass-through mode includes broker fees for IBKR", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const now = Date.now();
+    const futureExpiry = new Date(now + 6 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+        }
+        if (payload.kind === "mbt_future") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 93333,
+                    secType: "FUT",
+                    localSymbol: "MBTH6",
+                    expiry: futureExpiry,
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 95,
+              ask: 96,
+              bidSize: 4,
+              askSize: 5,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bids: [{ level: 0, price: 95, size: 4 }],
+              asks: [{ level: 0, price: 96, size: 5 }],
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return { ok: false, status: 404, text: async () => "not_found" } as any;
+    }) as typeof fetch;
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        PILOT_PREMIUM_POLICY_MODE: "pass_through_markup",
+        PILOT_PREMIUM_MARKUP_PCT_BRONZE: "0.1",
+        IBKR_FEE_PER_CONTRACT_USD: "2.02",
+        IBKR_FEE_PER_ORDER_USD: "0",
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "4000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "4000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "7",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        IBKR_REQUIRE_OPTIONS_NATIVE: "false",
+        IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED: "true",
+        IBKR_MAX_OPTION_PREMIUM_RATIO: "0.2",
+        IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO: "2.0",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const quoteRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: defaultQuotePayload(1000)
+      });
+      assert.equal(quoteRes.statusCode, 200, quoteRes.body);
+      const payload = quoteRes.json();
+      assert.equal(payload.status, "ok");
+      assert.equal(String(payload.quote?.venue || ""), "ibkr_cme_paper");
+      const estimated = payload?.diagnostics?.premiumPolicy?.estimated || {};
+      const hedge = Number(estimated.hedgeCostUsd ?? 0);
+      const broker = Number(estimated.brokerFeesUsd ?? 0);
+      const passThrough = Number(estimated.passThroughUsd ?? 0);
+      const clientPremium = Number(estimated.clientPremiumUsd ?? 0);
+      assert.equal(Number.isFinite(hedge), true);
+      assert.equal(Number.isFinite(broker), true);
+      assert.equal(Number.isFinite(passThrough), true);
+      assert.equal(Number.isFinite(clientPremium), true);
+      assert.equal(broker > 0, true);
+      assert.ok(Math.abs(passThrough - (hedge + broker)) < 1e-9);
+      assert.equal(clientPremium >= passThrough, true);
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("Y5) quote strictTenor maps drifted options to tenor_drift_exceeded", async () => {
+  const originalFetch = global.fetch;
+  try {
+    const now = Date.now();
+    const driftedExpiry = new Date(now + 6 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
+      if (path === "health") {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              ok: true,
+              session: "connected",
+              transport: "ib_socket",
+              activeTransport: "ib_socket",
+              fallbackEnabled: false,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("contracts/qualify")) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : {};
+        if (payload.kind === "mbt_option") {
+          return {
+            ok: true,
+            text: async () =>
+              JSON.stringify({
+                contracts: [
+                  {
+                    conId: 95551,
+                    secType: "FOP",
+                    localSymbol: "W5AH6 P55000",
+                    expiry: driftedExpiry,
+                    strike: 55000,
+                    right: "P",
+                    multiplier: "0.1",
+                    minTick: 5
+                  }
+                ]
+              })
+          } as any;
+        }
+        return { ok: true, text: async () => JSON.stringify({ contracts: [] }) } as any;
+      }
+      if (path.startsWith("marketdata/top")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bid: 94,
+              ask: 95,
+              bidSize: 4,
+              askSize: 5,
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (path.startsWith("marketdata/depth")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              bids: [{ level: 0, price: 94, size: 4 }],
+              asks: [{ level: 0, price: 95, size: 5 }],
+              asOf: new Date().toISOString()
+            })
+        } as any;
+      }
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 100000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return { ok: false, status: 404, text: async () => "not_found" } as any;
+    }) as typeof fetch;
+    const harness = await createPilotHarness({
+      venueMode: "ibkr_cme_paper",
+      fetchImpl,
+      env: {
+        PILOT_HEDGE_POLICY: "options_only_native",
+        IBKR_BRIDGE_BASE_URL: "http://127.0.0.1:18080",
+        IBKR_BRIDGE_TIMEOUT_MS: "4000",
+        IBKR_ACCOUNT_ID: "DU123456",
+        IBKR_ENABLE_EXECUTION: "false",
+        IBKR_ORDER_TIMEOUT_MS: "4000",
+        IBKR_MAX_REPRICE_STEPS: "3",
+        IBKR_REPRICE_STEP_TICKS: "1",
+        IBKR_MAX_SLIPPAGE_BPS: "25",
+        IBKR_REQUIRE_LIVE_TRANSPORT: "true",
+        IBKR_MAX_TENOR_DRIFT_DAYS: "7",
+        IBKR_PREFER_TENOR_AT_OR_ABOVE: "true",
+        IBKR_ORDER_TIF: "IOC",
+        IBKR_REQUIRE_OPTIONS_NATIVE: "true",
+        IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED: "true",
+        IBKR_OPTION_LIQUIDITY_TENOR_WINDOW_DAYS: "3",
+        IBKR_MAX_OPTION_PREMIUM_RATIO: "0.5",
+        PILOT_VENUE_QUOTE_TIMEOUT_MS: "12000"
+      }
+    });
+    try {
+      const strictRes = await harness.app.inject({
+        method: "POST",
+        url: "/pilot/protections/quote",
+        payload: {
+          ...defaultQuotePayload(1000),
+          tenorDays: 3,
+          strictTenor: true
+        }
+      });
+      assert.equal(strictRes.statusCode, 409, strictRes.body);
+      const strictPayload = strictRes.json();
+      assert.equal(strictPayload.status, "error");
+      assert.equal(strictPayload.reason, "tenor_drift_exceeded");
+    } finally {
+      await harness.close();
+    }
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

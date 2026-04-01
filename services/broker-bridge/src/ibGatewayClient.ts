@@ -102,6 +102,11 @@ const normalizeReqId = (value: unknown): number | null => {
 };
 
 const normalizeExchangeAlias = (raw: string | undefined | null): string => String(raw || "").trim().toUpperCase();
+const splitExchangeList = (raw: unknown): string[] =>
+  String(raw || "")
+    .split(",")
+    .map((item) => normalizeExchangeAlias(item))
+    .filter(Boolean);
 
 /**
  * Hybrid IB gateway client:
@@ -121,6 +126,10 @@ export class IbGatewayClient {
   private readonly orderIdToExternalId = new Map<number, string>();
   private readonly execIdToOrderExternalId = new Map<string, string>();
   private readonly conIdToExchange = new Map<number, string>();
+  private readonly conIdToContractHint = new Map<
+    number,
+    { exchange: string; secType: "FOP" | "FUT"; localSymbol?: string; multiplier?: string }
+  >();
   private connectPromise: Promise<void> | null = null;
 
   constructor(private readonly config: IbConfig) {
@@ -646,7 +655,14 @@ export class IbGatewayClient {
         }
       ];
       for (const contract of contracts) {
-        this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+        const exchange = normalizeExchangeAlias(query.exchange) || "CME";
+        this.conIdToExchange.set(contract.conId, exchange);
+        this.conIdToContractHint.set(contract.conId, {
+          exchange,
+          secType: "FUT",
+          localSymbol: contract.localSymbol,
+          multiplier: contract.multiplier
+        });
       }
       return contracts;
     }
@@ -667,7 +683,14 @@ export class IbGatewayClient {
         minTick: 5
       }));
       for (const contract of contracts) {
-        this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+        const exchange = normalizeExchangeAlias(query.exchange) || "CME";
+        this.conIdToExchange.set(contract.conId, exchange);
+        this.conIdToContractHint.set(contract.conId, {
+          exchange,
+          secType: "FOP",
+          localSymbol: contract.localSymbol,
+          multiplier: contract.multiplier
+        });
       }
       return contracts;
     }
@@ -686,7 +709,14 @@ export class IbGatewayClient {
       }
     ];
     for (const contract of contracts) {
-      this.conIdToExchange.set(contract.conId, normalizeExchangeAlias(query.exchange) || "CME");
+      const exchange = normalizeExchangeAlias(query.exchange) || "CME";
+      this.conIdToExchange.set(contract.conId, exchange);
+      this.conIdToContractHint.set(contract.conId, {
+        exchange,
+        secType: "FOP",
+        localSymbol: contract.localSymbol,
+        multiplier: contract.multiplier
+      });
     }
     return contracts;
   }
@@ -754,7 +784,12 @@ export class IbGatewayClient {
           .map((item) => String(item || "").trim().toUpperCase())
           .filter(Boolean)
       )
-    );
+    ).filter((symbol) => {
+      // Avoid cross-family leakage (MBT request selecting BFF symbols, or vice versa).
+      if (productSymbol === "MBT" && symbol === "BFF") return false;
+      if (productSymbol === "BFF" && symbol === "MBT") return false;
+      return true;
+    });
     if (!symbolCandidates.length) {
       symbolCandidates.push(productSymbol);
     }
@@ -908,9 +943,31 @@ export class IbGatewayClient {
         if (!conId) return null;
         const normalizedRight = right === "P" || right === "C" ? (right as "P" | "C") : undefined;
         const normalizedSecType = secType === "FOP" ? "FOP" : "FUT";
-        const exchange = normalizeExchangeAlias(
-          String(contract.exchange || contract.primaryExch || item.requestedExchange || query.exchange)
-        );
+        const contractExchange = normalizeExchangeAlias(String(contract.exchange || ""));
+        const primaryExchange = normalizeExchangeAlias(String(contract.primaryExch || ""));
+        const detailExchangeCandidates = splitExchangeList((item.detail as any)?.validExchanges);
+        // Prefer explicit contract routing exchanges before request fallbacks.
+        const exchange =
+          contractExchange ||
+          primaryExchange ||
+          detailExchangeCandidates[0] ||
+          normalizeExchangeAlias(item.requestedExchange) ||
+          normalizeExchangeAlias(query.exchange) ||
+          "CME";
+        const normalizedSymbol = String(contract.symbol || "").trim().toUpperCase();
+        const normalizedLocalSymbol = localSymbol.toUpperCase();
+        const explicitFamilyFromSymbol =
+          normalizedSymbol === "MBT" || normalizedSymbol === "BFF" ? normalizedSymbol : null;
+        const explicitFamilyFromLocal =
+          normalizedLocalSymbol.startsWith("MBT")
+            ? "MBT"
+            : normalizedLocalSymbol.startsWith("BFF")
+              ? "BFF"
+              : null;
+        const explicitFamily = explicitFamilyFromSymbol || explicitFamilyFromLocal;
+        if (query.kind === "mbt_option" && explicitFamily && explicitFamily !== productSymbol) {
+          return null;
+        }
         return {
           contract: {
             conId,
@@ -933,6 +990,12 @@ export class IbGatewayClient {
       });
     for (const item of mapped) {
       this.conIdToExchange.set(item.contract.conId, item.exchange);
+      this.conIdToContractHint.set(item.contract.conId, {
+        exchange: item.exchange,
+        secType: item.contract.secType,
+        localSymbol: item.contract.localSymbol,
+        multiplier: item.contract.multiplier
+      });
     }
     const mappedContracts = mapped.map((item) => item.contract);
 
@@ -962,82 +1025,137 @@ export class IbGatewayClient {
 
   private async getTopOfBookIb(conId: number): Promise<BridgeTopOfBook> {
     const ib = await this.requireIb();
-    const reqId = this.nextRequestId();
-    const exchange = this.conIdToExchange.get(conId) || "CME";
-    const contract: Contract = { conId, exchange };
+    const hint = this.conIdToContractHint.get(conId);
+    const exchange = hint?.exchange || this.conIdToExchange.get(conId) || "CME";
+    const contract: Contract = {
+      conId,
+      exchange,
+      secType: hint?.secType ? (hint.secType as unknown as SecType) : undefined,
+      localSymbol: hint?.localSymbol,
+      multiplier: hint?.multiplier
+    };
+    const collectTopOfBook = async (params: {
+      snapshot: boolean;
+      timeoutMs: number;
+      resolveOnUsableTick: boolean;
+    }): Promise<BridgeTopOfBook> => {
+      const reqId = this.nextRequestId();
+      return await new Promise<BridgeTopOfBook>((resolve, reject) => {
+        const state: BridgeTopOfBook = {
+          bid: null,
+          ask: null,
+          bidSize: null,
+          askSize: null,
+          asOf: nowIso()
+        };
+        let settled = false;
+        let settleTimer: NodeJS.Timeout | null = null;
+        const timeoutHandle = setTimeout(() => {
+          finish();
+        }, Math.max(500, params.timeoutMs));
 
-    const snapshot = await new Promise<BridgeTopOfBook>((resolve, reject) => {
-      const timeoutMs = Math.max(1000, Math.floor(this.config.requestTimeoutMs || 0));
-      const state: BridgeTopOfBook = {
-        bid: null,
-        ask: null,
-        bidSize: null,
-        askSize: null,
-        asOf: nowIso()
-      };
-      const timeoutHandle = setTimeout(() => {
-        cleanup();
-        resolve({ ...state, asOf: nowIso() });
-      }, timeoutMs);
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          resolve({ ...state, asOf: nowIso() });
+        };
 
-      const cleanup = (): void => {
-        clearTimeout(timeoutHandle);
-        ib.off(EventName.tickPrice, onTickPrice);
-        ib.off(EventName.tickSize, onTickSize);
-        ib.off(EventName.tickSnapshotEnd, onSnapshotEnd);
-        ib.off(EventName.error, onError);
-        try {
-          ib.cancelMktData(reqId);
-        } catch {
-          // ignore cancellation failures
-        }
-      };
+        const scheduleFinishSoon = (): void => {
+          if (!params.resolveOnUsableTick || settled) return;
+          if (state.ask === null && state.bid === null) return;
+          if (settleTimer) return;
+          settleTimer = setTimeout(() => {
+            settleTimer = null;
+            finish();
+          }, 120);
+        };
 
-      const onTickPrice = (eventReqId: number, field: number, value: number): void => {
-        if (!this.reqIdMatches(reqId, eventReqId)) return;
-        if (!Number.isFinite(value) || value <= 0) return;
-        if (field === 1 || field === 66) state.bid = value;
-        if (field === 2 || field === 67) state.ask = value;
-      };
+        const cleanup = (): void => {
+          clearTimeout(timeoutHandle);
+          if (settleTimer) clearTimeout(settleTimer);
+          ib.off(EventName.tickPrice, onTickPrice);
+          ib.off(EventName.tickSize, onTickSize);
+          ib.off(EventName.tickSnapshotEnd, onSnapshotEnd);
+          ib.off(EventName.error, onError);
+          try {
+            ib.cancelMktData(reqId);
+          } catch {
+            // ignore cancellation failures
+          }
+        };
 
-      const onTickSize = (eventReqId: number, field?: number, value?: number): void => {
-        if (!this.reqIdMatches(reqId, eventReqId)) return;
-        if (!Number.isFinite(Number(value))) return;
-        if (field === 0 || field === 69) state.bidSize = Number(value);
-        if (field === 3 || field === 70) state.askSize = Number(value);
-      };
+        const onTickPrice = (eventReqId: number, field: number, value: number): void => {
+          if (!this.reqIdMatches(reqId, eventReqId)) return;
+          if (!Number.isFinite(value) || value <= 0) return;
+          if (field === 1 || field === 66) state.bid = value;
+          if (field === 2 || field === 67) state.ask = value;
+          scheduleFinishSoon();
+        };
 
-      const onSnapshotEnd = (eventReqId: number): void => {
-        if (!this.reqIdMatches(reqId, eventReqId)) return;
-        cleanup();
-        resolve({ ...state, asOf: nowIso() });
-      };
+        const onTickSize = (eventReqId: number, field?: number, value?: number): void => {
+          if (!this.reqIdMatches(reqId, eventReqId)) return;
+          if (!Number.isFinite(Number(value))) return;
+          if (field === 0 || field === 69) state.bidSize = Number(value);
+          if (field === 3 || field === 70) state.askSize = Number(value);
+          scheduleFinishSoon();
+        };
 
-      const onError = (...args: unknown[]): void => {
-        const eventReqId = this.extractIbReqId(args);
-        if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
-        const code = this.extractIbErrorCode(args);
-        const message = this.extractIbErrorMessage(args);
-        if (code === 2104 || code === 2106 || code === 2107 || code === 2158 || code === 10167) return;
-        cleanup();
-        reject(new Error(`ib_mktdata_error:${message || code || "unknown"}`));
-      };
+        const onSnapshotEnd = (eventReqId: number): void => {
+          if (!params.snapshot) return;
+          if (!this.reqIdMatches(reqId, eventReqId)) return;
+          finish();
+        };
 
-      ib.on(EventName.tickPrice, onTickPrice);
-      ib.on(EventName.tickSize, onTickSize);
-      ib.on(EventName.tickSnapshotEnd, onSnapshotEnd);
-      ib.on(EventName.error, onError);
-      ib.reqMktData(reqId, contract, "", true, false);
+        const onError = (...args: unknown[]): void => {
+          const eventReqId = this.extractIbReqId(args);
+          if (!this.reqIdMatches(reqId, eventReqId) && !this.reqIdMatches(-1, eventReqId)) return;
+          const code = this.extractIbErrorCode(args);
+          const message = this.extractIbErrorMessage(args);
+          if (code === 2104 || code === 2106 || code === 2107 || code === 2158 || code === 10167) return;
+          cleanup();
+          reject(new Error(`ib_mktdata_error:${message || code || "unknown"}`));
+        };
+
+        ib.on(EventName.tickPrice, onTickPrice);
+        ib.on(EventName.tickSize, onTickSize);
+        ib.on(EventName.tickSnapshotEnd, onSnapshotEnd);
+        ib.on(EventName.error, onError);
+        ib.reqMktData(reqId, contract, "", params.snapshot, false);
+      });
+    };
+
+    const timeoutMs = Math.max(1000, Math.floor(this.config.requestTimeoutMs || 0));
+    const snapshotPhaseMs = Math.max(700, Math.min(2500, Math.floor(timeoutMs * 0.4)));
+    const snapshot = await collectTopOfBook({
+      snapshot: true,
+      timeoutMs: snapshotPhaseMs,
+      resolveOnUsableTick: false
     });
+    if (snapshot.ask !== null || snapshot.bid !== null) return snapshot;
 
-    return snapshot;
+    // Some option contracts return empty snapshot books even when streaming quotes are available.
+    // Retry with a short streaming probe before concluding no top-of-book liquidity.
+    const streamPhaseMs = Math.max(900, timeoutMs - snapshotPhaseMs);
+    return await collectTopOfBook({
+      snapshot: false,
+      timeoutMs: streamPhaseMs,
+      resolveOnUsableTick: true
+    });
   }
 
   private async getDepthIb(conId: number): Promise<BridgeDepth> {
     const ib = await this.requireIb();
     const reqId = this.nextRequestId();
-    const exchange = this.conIdToExchange.get(conId) || "CME";
-    const contract: Contract = { conId, exchange };
+    const hint = this.conIdToContractHint.get(conId);
+    const exchange = hint?.exchange || this.conIdToExchange.get(conId) || "CME";
+    const contract: Contract = {
+      conId,
+      exchange,
+      secType: hint?.secType ? (hint.secType as unknown as SecType) : undefined,
+      localSymbol: hint?.localSymbol,
+      multiplier: hint?.multiplier
+    };
     const bidsByLevel = new Map<number, DepthRow>();
     const asksByLevel = new Map<number, DepthRow>();
 
@@ -1131,8 +1249,15 @@ export class IbGatewayClient {
       lastUpdateAt: nowIso()
     });
 
-    const exchange = this.conIdToExchange.get(req.conId) || "CME";
-    const contract: Contract = { conId: req.conId, exchange };
+    const hint = this.conIdToContractHint.get(req.conId);
+    const exchange = hint?.exchange || this.conIdToExchange.get(req.conId) || "CME";
+    const contract: Contract = {
+      conId: req.conId,
+      exchange,
+      secType: hint?.secType ? (hint.secType as unknown as SecType) : undefined,
+      localSymbol: hint?.localSymbol,
+      multiplier: hint?.multiplier
+    };
     ib.placeOrder(orderId, contract, {
       orderId,
       action: req.side as OrderAction,

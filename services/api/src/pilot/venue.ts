@@ -26,6 +26,7 @@ export type QuoteRequest = {
   requestedTenorDays?: number;
   tenorMinDays?: number;
   tenorMaxDays?: number;
+  strictTenor?: boolean;
   hedgePolicy?: PilotHedgePolicy;
   clientOrderId?: string;
 };
@@ -719,6 +720,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nNoAsk: number;
       nFailedProtection: number;
       nFailedEconomics: number;
+      nFailedWideSpread: number;
+      nFailedThinDepth: number;
+      nFailedStaleTop: number;
       nTimedOut: number;
       nPassed: number;
     };
@@ -911,6 +915,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nFailedProtection: number;
       nFailedEconomics: number;
       nFailedMinTradableNotional: number;
+      nFailedWideSpread: number;
+      nFailedThinDepth: number;
+      nFailedStaleTop: number;
       nTimedOut: number;
       nPassed: number;
     };
@@ -922,6 +929,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nFailedProtection: number;
       nFailedEconomics: number;
       nFailedMinTradableNotional: number;
+      nFailedWideSpread: number;
+      nFailedThinDepth: number;
+      nFailedStaleTop: number;
       nTimedOut: number;
       nPassed: number;
     };
@@ -941,6 +951,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const minTenorDays = clampInt(req.tenorMinDays, 1, 30, 1);
     const maxTenorDays = clampInt(req.tenorMaxDays, minTenorDays, 30, Math.max(minTenorDays, 7));
     const selectedTenorDays = Math.max(minTenorDays, Math.min(maxTenorDays, requestedTenorDays));
+    const strictTenor = req.strictTenor === true;
     const trigger = toFinitePositive(req.triggerPrice);
     const adverseMovePctRaw = Number(req.drawdownFloorPct ?? 0);
     const adverseMovePct =
@@ -992,12 +1003,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
     };
     const requestWindowHintMs = Math.max(
-      400,
-      Math.min(4000, Math.floor(Number(this.marketDataRequestTimeoutMs || 0)))
+      600,
+      Math.min(12000, Math.floor(Number(this.marketDataRequestTimeoutMs || 0)))
     );
     const optionLiquiditySelectionEnabled = this.optionLiquiditySelectionEnabled !== false;
     const optionProbeParallelism = Math.max(1, Math.min(6, Math.floor(Number(this.optionProbeParallelism || 0)) || 3));
-    const optionTenorWindowDays = Math.max(0, Math.min(14, Math.floor(Number(this.optionTenorWindowDays || 0)) || 3));
+    const optionTenorWindowDays = Math.max(0, Math.min(30, Math.floor(Number(this.optionTenorWindowDays || 0)) || 3));
     const calcTenorDaysFromExpiry = (expiryRaw?: string): number | null => {
       const expiry = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
       if (expiry.length !== 8) return null;
@@ -1032,21 +1043,22 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       }
       return true;
     };
-      const effectiveOptionTenorWindowDays = Math.max(
-        optionTenorWindowDays,
-        Number.isFinite(this.maxTenorDriftDays) && this.maxTenorDriftDays >= 0 ? this.maxTenorDriftDays : 0
-      );
-      const strikeDistanceFromRounded = (contract: IbkrQualifiedContract): number => {
-        if (!roundedStrike) return Number.POSITIVE_INFINITY;
-        const strike = parseIbkrStrikeFromLocalSymbol(contract);
-        if (!strike) return Number.POSITIVE_INFINITY;
-        return Math.abs(strike - roundedStrike);
-      };
-      const contractPassesOptionTenorWindow = (contract: IbkrQualifiedContract): boolean => {
+    const effectiveOptionTenorWindowDays = Math.max(
+      optionTenorWindowDays,
+      Number.isFinite(this.maxTenorDriftDays) && this.maxTenorDriftDays >= 0 ? this.maxTenorDriftDays : 0
+    );
+    const strikeDistanceFromRounded = (contract: IbkrQualifiedContract): number => {
+      if (!roundedStrike) return Number.POSITIVE_INFINITY;
+      const strike = parseIbkrStrikeFromLocalSymbol(contract);
+      if (!strike) return Number.POSITIVE_INFINITY;
+      return Math.abs(strike - roundedStrike);
+    };
+    const contractPassesOptionTenorWindow = (contract: IbkrQualifiedContract): boolean => {
       const meta = contractTenorMeta(contract);
       if (meta.selectedTenorDays === null) return false;
       const drift = Math.abs(meta.selectedTenorDays - selectedTenorDaysIntended);
-        return drift <= effectiveOptionTenorWindowDays + 1e-9;
+      if (strictTenor) return drift <= 1.01;
+      return drift <= effectiveOptionTenorWindowDays + 1e-9;
     };
     const rankByTenor = (a: IbkrQualifiedContract, b: IbkrQualifiedContract): number => {
       const aMeta = contractTenorMeta(a);
@@ -1338,6 +1350,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nFailedProtection: 0,
         nFailedEconomics: 0,
         nFailedMinTradableNotional: 0,
+        nFailedWideSpread: 0,
+        nFailedThinDepth: 0,
+        nFailedStaleTop: 0,
         nTimedOut: 0,
         nPassed: 0
       };
@@ -1431,12 +1446,6 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           timingsMs.top += Date.now() - topStartedAt;
           if (topProbe.timedOut) {
             failureCounts.nTimedOut += 1;
-            // In options-only mode prioritize scanning additional candidates quickly.
-            // A candidate that times out on top-of-book tends to also stall on depth.
-            if (hedgePolicy === "options_only_native") {
-              failureCounts.nNoTop += 1;
-              continue;
-            }
           }
           if (topProbe.value && hasUsableTop(topProbe.value)) {
             chosenTop = topProbe.value;
@@ -1450,7 +1459,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               const depthStartedAt = Date.now();
               const depthProbeTimeoutMs =
                 hedgePolicy === "options_only_native"
-                  ? Math.max(900, Math.min(2200, probeTimeoutMs))
+                  ? Math.max(1800, Math.min(10000, Math.floor(probeTimeoutMs * 1.1)))
                   : Math.min(12000, probeTimeoutMs * 2);
               const depthProbe = await withProbeTimeout(
                 this.connector.getDepth(contract.conId),
@@ -1486,6 +1495,30 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             bid !== null && bid > 0 && ask >= bid
               ? (ask - bid) / ask
               : null;
+          const asOfMs = Date.parse(String(chosenTop.asOf || ""));
+          const topAgeMs = Number.isFinite(asOfMs) ? Math.max(0, Date.now() - asOfMs) : null;
+          const notional = Math.max(0, Number(req.protectedNotional || 0));
+          const qty = Math.max(0, Number(req.quantity || 0));
+          const contractMultiplier = resolveContractMultiplier(contract.multiplier, 0.1);
+          const estimatedContracts = Math.max(1, Math.ceil(qty / contractMultiplier));
+          const estimatedPremium = ask * estimatedContracts;
+          const premiumRatio = notional > 0 ? estimatedPremium / notional : 0;
+          const maxSpreadPctByProtection = notional >= 10000 ? 0.2 : notional >= 2000 ? 0.28 : 0.35;
+          if (spreadPct !== null && spreadPct > maxSpreadPctByProtection) {
+            failureCounts.nFailedEconomics += 1;
+            failureCounts.nFailedWideSpread += 1;
+            continue;
+          }
+          if (askSize !== null && askSize < 0.5) {
+            failureCounts.nFailedEconomics += 1;
+            failureCounts.nFailedThinDepth += 1;
+            continue;
+          }
+          if (topAgeMs !== null && topAgeMs > 12_000) {
+            failureCounts.nNoTop += 1;
+            failureCounts.nFailedStaleTop += 1;
+            continue;
+          }
           const strike = parseIbkrStrikeFromLocalSymbol(contract);
           const inferredEntry =
             trigger &&
@@ -1515,9 +1548,6 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             failureCounts.nFailedProtection += 1;
             continue;
           }
-          const notional = Math.max(0, Number(req.protectedNotional || 0));
-          const qty = Math.max(0, Number(req.quantity || 0));
-          const contractMultiplier = resolveContractMultiplier(contract.multiplier, 0.1);
           // Explicit granularity guard: if requested hedge quantity is smaller than
           // one contract's underlying multiplier, the quote economics are not tradable.
           if (qty > 0 && qty + 1e-9 < contractMultiplier) {
@@ -1525,9 +1555,6 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             failureCounts.nFailedMinTradableNotional += 1;
             continue;
           }
-          const estimatedContracts = Math.max(1, Math.ceil(qty / contractMultiplier));
-          const estimatedPremium = ask * estimatedContracts;
-          const premiumRatio = notional > 0 ? estimatedPremium / notional : 0;
           if (
             Number.isFinite(this.maxOptionPremiumRatio) &&
             this.maxOptionPremiumRatio > 0 &&
@@ -1619,6 +1646,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nFailedProtection: 0,
       nFailedEconomics: 0,
       nFailedMinTradableNotional: 0,
+      nFailedWideSpread: 0,
+      nFailedThinDepth: 0,
+      nFailedStaleTop: 0,
       nTimedOut: 0,
       nPassed: 0
     };
@@ -1638,6 +1668,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       optionFailureTotals.nFailedProtection += Number(counts.nFailedProtection || 0);
       optionFailureTotals.nFailedEconomics += Number(counts.nFailedEconomics || 0);
       optionFailureTotals.nFailedMinTradableNotional += Number(counts.nFailedMinTradableNotional || 0);
+      optionFailureTotals.nFailedWideSpread += Number(counts.nFailedWideSpread || 0);
+      optionFailureTotals.nFailedThinDepth += Number(counts.nFailedThinDepth || 0);
+      optionFailureTotals.nFailedStaleTop += Number(counts.nFailedStaleTop || 0);
       optionFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
       optionFailureTotals.nPassed += Number(counts.nPassed || 0);
     };
@@ -1783,6 +1816,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nFailedProtection: number;
         nFailedEconomics: number;
         nFailedMinTradableNotional: number;
+        nFailedWideSpread: number;
+        nFailedThinDepth: number;
+        nFailedStaleTop: number;
         nTimedOut: number;
         nPassed: number;
       };
@@ -1793,11 +1829,13 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const strikeCandidatesForMode = this.optionLiquiditySelectionEnabled
         ? strikeCandidates
         : strikeCandidates.slice(0, 3);
+      const optionSearchCeilingDays =
+        hedgePolicy === "options_only_native" ? Math.min(maxTenorDays, 24) : maxTenorDays;
       const tenorCandidates = this.optionLiquiditySelectionEnabled
         ? (() => {
             const values: number[] = [];
             const pushIfNew = (v: number): void => {
-              const day = clampInt(v, minTenorDays, maxTenorDays, selectedTenorDaysIntended);
+              const day = clampInt(v, minTenorDays, optionSearchCeilingDays, selectedTenorDaysIntended);
               if (!values.includes(day)) values.push(day);
             };
             pushIfNew(selectedTenorDaysIntended);
@@ -1821,7 +1859,7 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       const seenConIds = new Set<number>();
       const optionLegBudgetMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(12_000, Math.min(28_000, Math.floor(this.quoteBudgetMs * 0.82)))
+          ? Math.max(16_000, Math.min(42_000, Math.floor(this.quoteBudgetMs * 0.9)))
           : this.optionLiquiditySelectionEnabled
             ? Math.max(10_000, Math.min(22_000, Math.floor(this.quoteBudgetMs * 0.38)))
             : Math.max(4_200, Math.min(11_000, Math.floor(this.quoteBudgetMs * 0.22)));
@@ -1838,20 +1876,25 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       );
       const qualifyTimeoutMs =
         hedgePolicy === "options_only_native"
-          ? Math.max(1200, Math.min(3600, Math.floor(qualifyRequestHintMs * 0.45)))
+          ? Math.max(2200, Math.min(7000, Math.floor(qualifyRequestHintMs * 0.7)))
           : this.optionLiquiditySelectionEnabled
             ? Math.max(2200, Math.min(9000, Math.floor(qualifyRequestHintMs * 0.8)))
             : Math.max(700, Math.min(2000, Math.floor(requestWindowHintMs * 0.55)));
       const qualifyParallelism =
         hedgePolicy === "options_only_native"
-          ? 1
+          ? 2
           : this.optionLiquiditySelectionEnabled
             ? Math.max(1, Math.min(4, optionProbeParallelism))
             : 1;
       const maxQualifyCallsPerOptionLeg =
-        hedgePolicy === "options_only_native" ? 3 : Number.POSITIVE_INFINITY;
+        hedgePolicy === "options_only_native" ? 12 : Number.POSITIVE_INFINITY;
       let optionQualifyCalls = 0;
-      const maxQualifiedContracts = this.optionLiquiditySelectionEnabled ? 48 : 18;
+      const maxQualifiedContracts =
+        hedgePolicy === "options_only_native"
+          ? 72
+          : this.optionLiquiditySelectionEnabled
+            ? 48
+            : 18;
       const withQualifyTimeout = async (
         promise: Promise<IbkrQualifiedContract[]>,
         timeoutMs: number
@@ -2044,6 +2087,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nFailedProtection: 0,
         nFailedEconomics: 0,
         nFailedMinTradableNotional: 0,
+        nFailedWideSpread: 0,
+        nFailedThinDepth: 0,
+        nFailedStaleTop: 0,
         nTimedOut: 0,
         nPassed: 0
       };
@@ -2054,31 +2100,47 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         noMatchFailureTotals.nFailedProtection += Number(counts.nFailedProtection || 0);
         noMatchFailureTotals.nFailedEconomics += Number(counts.nFailedEconomics || 0);
         noMatchFailureTotals.nFailedMinTradableNotional += Number(counts.nFailedMinTradableNotional || 0);
+        noMatchFailureTotals.nFailedWideSpread += Number(counts.nFailedWideSpread || 0);
+        noMatchFailureTotals.nFailedThinDepth += Number(counts.nFailedThinDepth || 0);
+        noMatchFailureTotals.nFailedStaleTop += Number(counts.nFailedStaleTop || 0);
         noMatchFailureTotals.nTimedOut += Number(counts.nTimedOut || 0);
         noMatchFailureTotals.nPassed += Number(counts.nPassed || 0);
       };
-      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 1 : 3;
+      const minViableCandidatesBeforeStop = hedgePolicy === "options_only_native" ? 2 : 3;
       const maxRingPasses =
         hedgePolicy === "options_only_native"
-          ? Math.max(1, Math.min(3, ringTasks.length))
+          ? ringTasks.length
           : ringTasks.length;
       const maxTopCallsPerOptionLeg =
-        hedgePolicy === "options_only_native" ? 12 : Number.POSITIVE_INFINITY;
+        hedgePolicy === "options_only_native" ? 24 : Number.POSITIVE_INFINITY;
       const topCallsAtLegStart = counters.topCalls;
       const shouldShortCircuitNoLiquidity = (counts: OptionFailureCounts): boolean => {
         if (hedgePolicy !== "options_only_native") return false;
         const passed = Math.max(0, Number(counts.nPassed || 0));
         if (passed > 0) return false;
         const total = Math.max(0, Number(counts.nTotalCandidates || 0));
+        if (total < 8) return false;
         const noTop = Math.max(0, Number(counts.nNoTop || 0));
         const timedOut = Math.max(0, Number(counts.nTimedOut || 0));
         const stalledMarketData = noTop + timedOut >= Math.max(4, Math.floor(total * 0.6));
-        return (total >= 4 && stalledMarketData) || isLikelyNoLiquidityWindow(counts);
+        return stalledMarketData || isLikelyNoLiquidityWindow(counts);
       };
+      const valueSweepBudgetMs =
+        hedgePolicy === "options_only_native" ? Math.max(1500, Math.min(2500, Math.floor(this.quoteBudgetMs * 0.15))) : 0;
+      let valueSweepStartMs: number | null = null;
+      let actionableMatchesSeen = 0;
       for (let ringIdx = 0; ringIdx < maxRingPasses; ringIdx += 1) {
         const topCallsUsed = Math.max(0, counters.topCalls - topCallsAtLegStart);
         const remainingTopCalls = maxTopCallsPerOptionLeg - topCallsUsed;
         if (remainingTopCalls <= 0) {
+          break;
+        }
+        if (
+          hedgePolicy === "options_only_native" &&
+          bestOptionMatch &&
+          valueSweepStartMs !== null &&
+          Date.now() - valueSweepStartMs >= valueSweepBudgetMs
+        ) {
           break;
         }
         const ringGroup = ringTasks[ringIdx];
@@ -2092,27 +2154,36 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           });
           continue;
         }
+        if (strictTenor && !dedupedContracts.some(contractPassesOptionTenorWindow)) {
+          optionLegFailureReason = "tenor_drift_exceeded";
+          this.updateTenorLiquidityHint(ringTenor, {
+            contractsFound: dedupedContracts.length,
+            timedOut: optionQualifyTimedOut,
+            hadTopLiquidity: false
+          });
+          continue;
+        }
         const optionProbeBudgetMs = Math.max(1200, optionLegDeadlineMs - Date.now() - 120);
         if (optionProbeBudgetMs < 1200) {
           break;
         }
-      const scoreStartedAt = Date.now();
-      const optionProbeTimeoutMs =
-        hedgePolicy === "options_only_native"
-          ? Math.max(350, Math.min(900, Math.floor(requestWindowHintMs * 0.35)))
-          : Math.max(650, Math.min(1800, requestWindowHintMs));
-      const optionProbeDepthAttempts = 1;
-      const optionProbeLegBudgetMs =
-        hedgePolicy === "options_only_native"
-          ? Math.max(3000, Math.min(22000, optionProbeBudgetMs))
-          : Math.max(1200, Math.min(6000, optionProbeBudgetMs));
-      const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
+        const scoreStartedAt = Date.now();
+        const optionProbeTimeoutMs =
+          hedgePolicy === "options_only_native"
+            ? Math.max(2200, Math.min(10000, Math.floor(requestWindowHintMs * 1.2)))
+            : Math.max(650, Math.min(1800, requestWindowHintMs));
+        const optionProbeDepthAttempts = hedgePolicy === "options_only_native" ? 2 : 1;
+        const optionProbeLegBudgetMs =
+          hedgePolicy === "options_only_native"
+            ? Math.max(5000, Math.min(30000, optionProbeBudgetMs))
+            : Math.max(1200, Math.min(6000, optionProbeBudgetMs));
+        const optionMatch = await probeOptionCandidates(dedupedContracts, minProtectionThreshold, {
           probeTimeoutMs: optionProbeTimeoutMs,
           depthAttempts: optionProbeDepthAttempts,
           legBudgetMs: optionProbeLegBudgetMs,
           maxTopCalls: remainingTopCalls
         });
-      timingsMs.score += Date.now() - scoreStartedAt;
+        timingsMs.score += Date.now() - scoreStartedAt;
         if (!("contract" in optionMatch)) {
           accumulateNoMatchFailureTotals(optionMatch.failureCounts);
           this.updateTenorLiquidityHint(ringTenor, {
@@ -2130,9 +2201,31 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           }
           continue;
         }
+        const previousBestScore = bestOptionMatch?.selectedScore ?? null;
         if (!bestOptionMatch || optionMatch.selectedScore < bestOptionMatch.selectedScore) {
           bestOptionMatch = optionMatch;
           bestOptionRankedAlternatives = optionMatch.rankedAlternatives;
+        }
+        if (hedgePolicy === "options_only_native") {
+          if (valueSweepStartMs === null) {
+            valueSweepStartMs = Date.now();
+          }
+          actionableMatchesSeen += 1;
+          // Fast best-of-two actionable: continue until at least two actionable matches
+          // are observed or the bounded sweep budget is exhausted.
+          const sweepElapsedMs = valueSweepStartMs === null ? 0 : Date.now() - valueSweepStartMs;
+          const valueImproved =
+            previousBestScore !== null &&
+            Number.isFinite(previousBestScore) &&
+            Number.isFinite(optionMatch.selectedScore) &&
+            previousBestScore - optionMatch.selectedScore > 5;
+          if (actionableMatchesSeen < minViableCandidatesBeforeStop && sweepElapsedMs < valueSweepBudgetMs) {
+            continue;
+          }
+          if (sweepElapsedMs >= valueSweepBudgetMs || (actionableMatchesSeen >= minViableCandidatesBeforeStop && !valueImproved)) {
+            break;
+          }
+          continue;
         }
         this.updateTenorLiquidityHint(ringTenor, {
           contractsFound: Number(optionMatch.failureCounts.nTotalCandidates || 0),
@@ -2658,6 +2751,9 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         nFailedProtection: 0,
         nFailedEconomics: 0,
         nFailedMinTradableNotional: 0,
+        nFailedWideSpread: 0,
+        nFailedThinDepth: 0,
+        nFailedStaleTop: 0,
         nTimedOut: 0,
         nPassed: 0
       },
@@ -3095,7 +3191,7 @@ export const createPilotVenueAdapter = (params: {
         : 3,
       params.ibkr.optionLiquiditySelectionEnabled === true,
       Number.isFinite(Number(params.ibkr.optionTenorWindowDays))
-        ? Math.max(0, Math.min(14, Math.floor(Number(params.ibkr.optionTenorWindowDays))))
+        ? Math.max(0, Math.min(30, Math.floor(Number(params.ibkr.optionTenorWindowDays))))
         : 3,
       params.ibkr.requireOptionsNative === true,
       Number.isFinite(Number(params.ibkr.qualifyCacheTtlMs))
