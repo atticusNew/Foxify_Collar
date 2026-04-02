@@ -201,3 +201,41 @@ export type VenueExecution = {
   details?: Record<string, unknown>;
 };
 
+export type SimPositionStatus = "open" | "closed" | "triggered";
+
+export type SimTreasuryEntryType = "premium_collected" | "trigger_credit";
+
+export type SimPositionRecord = {
+  id: string;
+  userHash: string;
+  hashVersion: number;
+  status: SimPositionStatus;
+  marketId: string;
+  side: ProtectionType;
+  notionalUsd: string;
+  entryPrice: string;
+  tierName: string | null;
+  drawdownFloorPct: string | null;
+  floorPrice: string | null;
+  protectionEnabled: boolean;
+  protectionId: string | null;
+  protectionPremiumUsd: string | null;
+  protectedLossUsd: string | null;
+  triggerCreditedUsd: string;
+  triggerCreditedAt: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SimTreasuryLedgerRecord = {
+  id: string;
+  simPositionId: string;
+  userHash: string;
+  protectionId: string | null;
+  entryType: SimTreasuryEntryType;
+  amountUsd: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+

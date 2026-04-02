@@ -6,6 +6,7 @@ import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow } from "./config";
 import {
   archiveProtectionsByUserHashExcept,
+  creditSimPositionForTrigger,
   createPilotTermsAcceptanceIfMissing,
   extractLatestPremiumPolicyDiagnostics,
   ensurePilotSchema,
@@ -27,11 +28,17 @@ import {
   listLedgerForProtection,
   listProtectionsByUserHashForAdmin,
   listProtectionsByUserHash,
+  listSimOpenProtectedPositionsByUserHash,
+  listSimPositionsByUserHash,
+  listSimTreasuryLedgerByUserHash,
   reserveDailyTreasurySubsidyCapacity,
   releaseDailyTreasurySubsidyCapacity,
   reserveDailyActivationCapacity,
   releaseDailyActivationCapacity,
-  patchProtection
+  patchProtection,
+  insertSimPosition,
+  insertSimTreasuryLedgerEntry,
+  getSimPlatformMetrics
 } from "./db";
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { createPilotVenueAdapter, mapVenueFailureReason } from "./venue";
@@ -139,6 +146,102 @@ const toFiniteNumber = (value: unknown): number | null => {
 };
 
 const resolveQuoteMinNotionalFloor = (): Decimal => new Decimal(pilotConfig.quoteMinNotionalUsdc);
+const SIM_DAYS = 7;
+
+const buildSimLifecycleMetadata = (base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> => ({
+  ...base,
+  ...patch
+});
+
+const resolveLiveReferencePrice = async (requestId: string, marketId: string): Promise<PriceSnapshotOutput> =>
+  withTimeout(
+    resolvePriceSnapshot(
+      {
+        primaryUrl: pilotConfig.referencePriceUrl,
+        fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+        primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+        fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+        freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+        requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+        requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
+      },
+      {
+        marketId,
+        now: new Date(),
+        requestId,
+        endpointVersion: pilotConfig.endpointVersion
+      }
+    ),
+    Math.max(1500, pilotConfig.pricePrimaryTimeoutMs + pilotConfig.priceFallbackTimeoutMs + 1000),
+    "price"
+  );
+
+const runSimTriggerMonitorCycle = async (params: {
+  pool: ReturnType<typeof getPilotPool>;
+  tenant: { userHash: string; hashVersion: number };
+  maxRows?: number;
+}): Promise<{ scanned: number; triggered: number }> => {
+  const candidates = await listSimOpenProtectedPositionsByUserHash(params.pool, params.tenant.userHash, {
+    limit: Math.max(1, Math.min(Number(params.maxRows || 200), 1000))
+  });
+  let triggered = 0;
+  for (const simPosition of candidates) {
+    const protectionId = String(simPosition.protectionId || "");
+    if (!protectionId) continue;
+    const protection = await getProtection(params.pool, protectionId);
+    if (!protection) continue;
+    const requestId = pilotConfig.nextRequestId();
+    let snapshot: PriceSnapshotOutput;
+    try {
+      snapshot = await resolveLiveReferencePrice(requestId, simPosition.marketId);
+    } catch {
+      continue;
+    }
+    const entryPrice = parsePositiveDecimal(simPosition.entryPrice);
+    const drawdownFloorPct = parsePositiveDecimal(simPosition.drawdownFloorPct);
+    const protectedLossUsd = parsePositiveDecimal(simPosition.protectedLossUsd);
+    if (!entryPrice || !drawdownFloorPct || !protectedLossUsd) continue;
+    const triggerPrice = parsePositiveDecimal(simPosition.floorPrice) || computeTriggerPrice(entryPrice, drawdownFloorPct, "long");
+    const breached = snapshot.price.lessThanOrEqualTo(triggerPrice);
+    if (!breached) continue;
+    const lifecycle = buildSimLifecycleMetadata(simPosition.metadata || {}, {
+      triggerPrice: triggerPrice.toFixed(10),
+      triggerReferencePrice: snapshot.price.toFixed(10),
+      triggerPriceSource: snapshot.priceSource,
+      triggerPriceTimestamp: snapshot.priceTimestamp,
+      triggerRequestId: requestId,
+      triggerMonitorAt: new Date().toISOString()
+    });
+    const credited = await creditSimPositionForTrigger(params.pool, {
+      id: simPosition.id,
+      triggerCreditUsd: protectedLossUsd.toFixed(10),
+      metadata: lifecycle
+    });
+    if (!credited) continue;
+    await insertLedgerEntry(params.pool, {
+      protectionId,
+      entryType: "trigger_payout_due",
+      amount: protectedLossUsd.toFixed(10),
+      reference: `sim_trigger:${simPosition.id}:${snapshot.priceTimestamp}`
+    });
+    await insertSimTreasuryLedgerEntry(params.pool, {
+      simPositionId: simPosition.id,
+      userHash: params.tenant.userHash,
+      protectionId,
+      entryType: "trigger_credit",
+      amountUsd: protectedLossUsd.toFixed(10),
+      metadata: {
+        requestId,
+        referencePrice: snapshot.price.toFixed(10),
+        triggerPrice: triggerPrice.toFixed(10),
+        priceSource: snapshot.priceSource,
+        priceTimestamp: snapshot.priceTimestamp
+      }
+    });
+    triggered += 1;
+  }
+  return { scanned: candidates.length, triggered };
+};
 
 const resolveMedian = (values: number[]): number | null => {
   const clean = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
@@ -837,6 +940,248 @@ export const registerPilotRoutes = async (
         reason: "price_unavailable",
         message: "Price temporarily unavailable, please retry.",
         detail: String(error?.message || "reference_price_unavailable")
+      };
+    }
+  });
+
+  app.post("/pilot/sim/positions/open", async (req, reply) => {
+    if (!enforcePilotWindow(reply)) return;
+    const body = req.body as {
+      protectedNotional?: number;
+      tierName?: string;
+      drawdownFloorPct?: number;
+      side?: "long" | "short";
+      marketId?: string;
+      withProtection?: boolean;
+      quoteId?: string;
+      tenorDays?: number;
+    };
+    const protectedNotional = parsePositiveDecimal(body?.protectedNotional);
+    if (!protectedNotional) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_notional" };
+    }
+    const side = String(body?.side || "long").toLowerCase() === "short" ? "short" : "long";
+    const tierName = normalizeTierName(body?.tierName);
+    const drawdownFloorPct = resolveDrawdownFloorPct({
+      tierName,
+      drawdownFloorPct: Number(body?.drawdownFloorPct)
+    });
+    const marketId = String(body?.marketId || "BTC-USD");
+    const withProtection = parseBoolean(body?.withProtection, false);
+    const tenant = resolveTenantScopeHash();
+    const requestId = pilotConfig.nextRequestId();
+    let snapshot: PriceSnapshotOutput;
+    try {
+      snapshot = await resolveLiveReferencePrice(requestId, marketId);
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        detail: String(error?.message || "sim_open_price_unavailable")
+      };
+    }
+    const floorPrice = computeTriggerPrice(snapshot.price, drawdownFloorPct, side);
+    let protectionId: string | null = null;
+    let protectionPremiumUsd: Decimal | null = null;
+    if (withProtection) {
+      const quoteId = String(body?.quoteId || "").trim();
+      if (!quoteId) {
+        reply.code(400);
+        return { status: "error", reason: "quote_id_required_for_protection" };
+      }
+      const activationPayload = {
+        quoteId,
+        protectedNotional: protectedNotional.toNumber(),
+        foxifyExposureNotional: protectedNotional.toNumber(),
+        instrumentId: "BTC-USD-7D-P",
+        marketId,
+        tierName,
+        drawdownFloorPct: drawdownFloorPct.toNumber(),
+        protectionType: side,
+        autoRenew: false,
+        tenorDays: Number(body?.tenorDays || SIM_DAYS)
+      };
+      const activation = await app.inject({
+        method: "POST",
+        url: "/pilot/protections/activate",
+        payload: activationPayload
+      });
+      if (activation.statusCode !== 200) {
+        reply.code(activation.statusCode);
+        return activation.json();
+      }
+      const activationJson = activation.json() as {
+        status: string;
+        protection?: { id?: string; premium?: string | number };
+      };
+      protectionId = String(activationJson.protection?.id || "");
+      protectionPremiumUsd = parsePositiveDecimal(activationJson.protection?.premium ?? 0);
+      if (!protectionId || !protectionPremiumUsd) {
+        reply.code(500);
+        return { status: "error", reason: "sim_protection_activation_incomplete" };
+      }
+    }
+    const protectedLossUsd = computeDrawdownLossBudgetUsd(protectedNotional, drawdownFloorPct);
+    const simPosition = await insertSimPosition(pool, {
+      userHash: tenant.userHash,
+      hashVersion: tenant.hashVersion,
+      status: "open",
+      marketId,
+      side,
+      notionalUsd: protectedNotional.toFixed(10),
+      entryPrice: snapshot.price.toFixed(10),
+      tierName,
+      drawdownFloorPct: drawdownFloorPct.toFixed(6),
+      floorPrice: floorPrice.toFixed(10),
+      protectionEnabled: withProtection,
+      protectionId,
+      protectionPremiumUsd: protectionPremiumUsd?.toFixed(10) ?? null,
+      protectedLossUsd: withProtection ? protectedLossUsd.toFixed(10) : null,
+      metadata: {
+        requestId,
+        source: "sim_position_open",
+        referencePriceSource: snapshot.priceSource,
+        referencePriceTimestamp: snapshot.priceTimestamp
+      }
+    });
+    if (withProtection && protectionPremiumUsd) {
+      await insertSimTreasuryLedgerEntry(pool, {
+        simPositionId: simPosition.id,
+        userHash: tenant.userHash,
+        protectionId,
+        entryType: "premium_collected",
+        amountUsd: protectionPremiumUsd.toFixed(10),
+        metadata: {
+          requestId,
+          source: "sim_position_open",
+          quoteId: String(body?.quoteId || "")
+        }
+      });
+    }
+    return {
+      status: "ok",
+      simPosition,
+      entrySnapshot: {
+        price: snapshot.price.toFixed(10),
+        marketId: snapshot.marketId,
+        source: snapshot.priceSource,
+        timestamp: snapshot.priceTimestamp,
+        requestId: snapshot.requestId
+      }
+    };
+  });
+
+  app.get("/pilot/sim/positions", async (req, reply) => {
+    const query = req.query as { limit?: string };
+    let tenant: { userHash: string; hashVersion: number };
+    try {
+      tenant = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const limit = Number(query.limit || 100);
+    let positions;
+    try {
+      positions = await listSimPositionsByUserHash(pool, tenant.userHash, { limit });
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        detail: String(error?.message || "sim_positions_list_failed")
+      };
+    }
+    const marketIds = Array.from(new Set(positions.map((item) => item.marketId)));
+    const marks = new Map<string, PriceSnapshotOutput>();
+    await Promise.all(
+      marketIds.map(async (marketId) => {
+        try {
+          const snapshot = await resolveLiveReferencePrice(pilotConfig.nextRequestId(), marketId);
+          marks.set(marketId, snapshot);
+        } catch {
+          // best effort mark pricing for dashboard
+        }
+      })
+    );
+    const enriched = positions.map((position) => {
+      const mark = marks.get(position.marketId);
+      const entry = parsePositiveDecimal(position.entryPrice) || new Decimal(0);
+      const notional = parsePositiveDecimal(position.notionalUsd) || new Decimal(0);
+      const markPrice = mark?.price || entry;
+      const pnlUsd = entry.gt(0)
+        ? notional.mul(markPrice.minus(entry)).div(entry)
+        : new Decimal(0);
+      const drawdownPct = entry.gt(0) ? entry.minus(markPrice).div(entry) : new Decimal(0);
+      return {
+        ...position,
+        markPrice: mark ? mark.price.toFixed(10) : null,
+        markSource: mark?.priceSource || null,
+        markTimestamp: mark?.priceTimestamp || null,
+        pnlUsd: pnlUsd.toFixed(10),
+        drawdownPct: drawdownPct.toFixed(10)
+      };
+    });
+    return { status: "ok", positions: enriched };
+  });
+
+  app.post("/pilot/internal/sim/trigger-monitor/run", async (req, reply) => {
+    const allowed = await requireInternalOrAdmin(req, reply);
+    if (!allowed) return;
+    const body = req.body as { maxRows?: number } | undefined;
+    let tenant: { userHash: string; hashVersion: number };
+    try {
+      tenant = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    try {
+      const result = await runSimTriggerMonitorCycle({
+        pool,
+        tenant,
+        maxRows: Number(body?.maxRows || 200)
+      });
+      return { status: "ok", result };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        detail: String(error?.message || "sim_trigger_monitor_failed")
+      };
+    }
+  });
+
+  app.get("/pilot/sim/platform/metrics", async (_req, reply) => {
+    let tenant: { userHash: string; hashVersion: number };
+    try {
+      tenant = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    try {
+      const [metrics, recentLedger] = await Promise.all([
+        getSimPlatformMetrics(pool, tenant.userHash),
+        listSimTreasuryLedgerByUserHash(pool, tenant.userHash, { limit: 100 })
+      ]);
+      return {
+        status: "ok",
+        metrics,
+        recentLedger
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        detail: String(error?.message || "sim_platform_metrics_failed")
       };
     }
   });
