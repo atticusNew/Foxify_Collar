@@ -260,7 +260,7 @@ const createPilotHarness = async (opts?: {
     "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_PLATINUM || "0.25")
   };
   configModule.pilotConfig.treasuryPerQuoteSubsidyCapPct = Number(
-    process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT || "0.7"
+    process.env.PILOT_TREASURY_PER_QUOTE_SUBSIDY_CAP_PCT || process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT || "0.7"
   );
   configModule.pilotConfig.treasuryDailySubsidyCapUsdc = Number(
     process.env.PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC || "15000"

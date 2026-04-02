@@ -523,7 +523,7 @@ export const pilotConfig = {
   maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "50000"),
   maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "50000"),
   treasuryPerQuoteSubsidyCapPct: parseFractionRange(
-    process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT,
+    process.env.PILOT_TREASURY_PER_QUOTE_SUBSIDY_CAP_PCT || process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT,
     0.7,
     0,
     1,
