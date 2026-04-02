@@ -68,6 +68,34 @@ type SimSummaryResponse = {
   summary?: SimSummary;
 };
 
+type SimPlatformMetrics = {
+  totalPositions: string;
+  openPositions: string;
+  triggeredPositions: string;
+  protectedPositions: string;
+  premiumCollectedUsd: string;
+  triggerCreditPaidUsd: string;
+  treasuryNetUsd: string;
+};
+
+type SimLedgerEntry = {
+  id: string;
+  simPositionId: string;
+  entryType: "premium_collected" | "trigger_credit";
+  amountUsd: string;
+  createdAt: string;
+};
+
+type SimPlatformResponse = {
+  status: "ok" | "error";
+  reason?: string;
+  message?: string;
+  metrics?: SimPlatformMetrics;
+  recentLedger?: SimLedgerEntry[];
+};
+
+type ViewMode = "entry" | "trader";
+
 const STOP_LOSS_OPTIONS: StopLossOption[] = [
   { label: "20%", floorPct: 0.2, tierName: "Pro (Bronze)" },
   { label: "15%", floorPct: 0.15, tierName: "Pro (Silver)" },
@@ -83,13 +111,6 @@ const formatUsd = (value: number | string | null | undefined): string => {
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed)) return "$0.00";
   return `$${parsed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-};
-
-const formatUsdOrDash = (value: number | string | null | undefined): string => {
-  if (value === null || value === undefined || String(value).trim() === "") return "—";
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) return "—";
-  return formatUsd(parsed);
 };
 
 const formatPct = (value: number | string | null | undefined): string => {
@@ -117,14 +138,8 @@ const parseCsvNumber = (value: string): number => {
   return Number.isFinite(parsed) ? parsed : NaN;
 };
 
-const deriveStopLossPct = (entryPrice: string | null | undefined, floorPrice: string | null | undefined): number | null => {
-  const entry = Number(entryPrice);
-  const floor = Number(floorPrice);
-  if (!Number.isFinite(entry) || !Number.isFinite(floor) || entry <= 0) return null;
-  return Math.max(0, Math.min(1, (entry - floor) / entry));
-};
-
 export function SimpleSimPilotApp() {
+  const [viewMode, setViewMode] = useState<ViewMode>("entry");
   const [sizeInput, setSizeInput] = useState("10,000");
   const [stopLossPct, setStopLossPct] = useState(STOP_LOSS_OPTIONS[0].floorPct);
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
@@ -139,10 +154,16 @@ export function SimpleSimPilotApp() {
   const [actionBusy, setActionBusy] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
+  const [platformMetrics, setPlatformMetrics] = useState<SimPlatformMetrics | null>(null);
+  const [platformLedger, setPlatformLedger] = useState<SimLedgerEntry[]>([]);
+  const [platformBusy, setPlatformBusy] = useState(false);
+  const [platformError, setPlatformError] = useState<string | null>(null);
+
   const [protectModalOpen, setProtectModalOpen] = useState(false);
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [quote, setQuote] = useState<SimQuote | null>(null);
+  const [platformModalOpen, setPlatformModalOpen] = useState(false);
 
   const sizeUsd = parseCsvNumber(sizeInput);
   const isSizeValid = Number.isFinite(sizeUsd) && sizeUsd > 0;
@@ -173,7 +194,7 @@ export function SimpleSimPilotApp() {
     }
   };
 
-  const refreshDashboard = async () => {
+  const refreshTraderDashboard = async () => {
     setRefreshBusy(true);
     setRefreshError(null);
     try {
@@ -198,12 +219,32 @@ export function SimpleSimPilotApp() {
     }
   };
 
+  const refreshPlatformDashboard = async () => {
+    setPlatformBusy(true);
+    setPlatformError(null);
+    try {
+      const res = await fetch(`${API_BASE}/pilot/sim/platform/metrics`);
+      const payload = (await res.json()) as SimPlatformResponse;
+      if (!res.ok || payload.status !== "ok") {
+        throw new Error(parseError(payload));
+      }
+      setPlatformMetrics(payload.metrics || null);
+      setPlatformLedger(payload.recentLedger || []);
+    } catch (error: unknown) {
+      setPlatformError(error instanceof Error ? error.message : "failed_to_refresh_platform");
+    } finally {
+      setPlatformBusy(false);
+    }
+  };
+
+  const refreshAll = async () => {
+    await Promise.all([fetchReferencePrice(), refreshTraderDashboard()]);
+  };
+
   useEffect(() => {
-    void fetchReferencePrice();
-    void refreshDashboard();
+    void refreshAll();
     const id = window.setInterval(() => {
-      void fetchReferencePrice();
-      void refreshDashboard();
+      void refreshAll();
     }, 15000);
     return () => window.clearInterval(id);
   }, []);
@@ -212,6 +253,11 @@ export function SimpleSimPilotApp() {
     setQuote(null);
     setQuoteError(null);
   }, [sizeInput, stopLossPct]);
+
+  useEffect(() => {
+    if (!platformModalOpen) return;
+    void refreshPlatformDashboard();
+  }, [platformModalOpen]);
 
   const requestQuote = async (): Promise<SimQuote | null> => {
     if (!isSizeValid) {
@@ -278,10 +324,11 @@ export function SimpleSimPilotApp() {
       });
       const payload = (await res.json()) as { status?: string; reason?: string; message?: string };
       if (!res.ok || payload.status !== "ok") throw new Error(parseError(payload));
-      setActionMessage(withProtection ? "Protected position opened." : "Position opened without protection.");
+      setActionMessage(withProtection ? "Position opened with protection." : "Position opened without protection.");
       setProtectModalOpen(false);
       setQuote(null);
-      await refreshDashboard();
+      await refreshTraderDashboard();
+      setViewMode("trader");
     } catch (error: unknown) {
       setActionMessage(error instanceof Error ? error.message : "open_position_failed");
     } finally {
@@ -305,7 +352,7 @@ export function SimpleSimPilotApp() {
       const payload = (await res.json()) as { status?: string; reason?: string; message?: string };
       if (!res.ok || payload.status !== "ok") throw new Error(parseError(payload));
       setActionMessage("Position closed.");
-      await refreshDashboard();
+      await refreshTraderDashboard();
     } catch (error: unknown) {
       setActionMessage(error instanceof Error ? error.message : "close_position_failed");
     } finally {
@@ -320,155 +367,242 @@ export function SimpleSimPilotApp() {
           <div className="brand">
             <span className="brand-accent">Atticus</span> Trader Pilot
           </div>
-          <span className="pill">Deribit Sim</span>
         </div>
-        <div className="subtitle">Simple position protection flow for funded-account drawdown coverage.</div>
+        <div className="subtitle">Simple funded-account protection flow.</div>
 
-        <div className="section section-compact">
-          <h4>Open Position</h4>
-          <div className="pilot-form sim-form-grid">
-            <div className="pilot-form-row">
-              <span className="pilot-label">Current BTC price</span>
-              <strong>{btcPrice ? formatUsd(btcPrice) : priceBusy ? "Loading..." : "Unavailable"}</strong>
-            </div>
-            <div className="pilot-form-row">
-              <span className="pilot-label">Position size (USD)</span>
-              <input
-                className="input pilot-input"
-                value={sizeInput}
-                inputMode="decimal"
-                onChange={(event) => setSizeInput(formatCsvInput(event.target.value))}
-                placeholder="10,000"
-              />
-            </div>
-            <div className="pilot-form-row">
-              <span className="pilot-label">Stop loss</span>
-              <select
-                className="input pilot-input pilot-select"
-                value={String(stopLossPct)}
-                onChange={(event) => setStopLossPct(Number(event.target.value))}
-              >
-                {STOP_LOSS_OPTIONS.map((option) => (
-                  <option key={option.label} value={String(option.floorPct)}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="pilot-form-row">
-              <span className="pilot-label">Protection amount</span>
-              <strong>{formatUsd(protectionAmountUsd)}</strong>
-            </div>
-            <div className="pilot-form-row">
-              <span className="pilot-label">Current floor</span>
-              <strong>{floorPriceUsd ? formatUsd(floorPriceUsd) : "—"}</strong>
-            </div>
-          </div>
-
-          <div className="pilot-actions">
-            <button className="cta" onClick={() => void openProtectionModal()} disabled={actionBusy || !isSizeValid}>
-              Open Position
-            </button>
-            <button
-              className="btn"
-              onClick={() => {
-                void fetchReferencePrice();
-                void refreshDashboard();
-              }}
-              disabled={priceBusy || refreshBusy || actionBusy}
-            >
-              Refresh
-            </button>
-          </div>
-          {priceUpdatedAt ? <div className="muted">Price updated: {new Date(priceUpdatedAt).toLocaleString()}</div> : null}
-          {priceError ? <div className="disclaimer danger">{priceError}</div> : null}
-          {actionMessage ? <div className="disclaimer">{actionMessage}</div> : null}
-          {refreshError ? <div className="disclaimer danger">{refreshError}</div> : null}
-        </div>
-
-        <div className="section">
-          <div className="section-title-row">
-            <h4>Trader Dashboard</h4>
-            <span className="muted">
-              Open positions: <strong>{summary?.openPositions || "0"}</strong>
-            </span>
-          </div>
-          <div className="stats">
-            <div className="stat">
-              <div className="label">Current Equity</div>
-              <div className="value">{formatUsd(summary?.currentEquityUsd)}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Unrealized PnL</div>
-              <div className="value">{formatUsd(summary?.unrealizedPnlUsd)}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Premium Paid</div>
-              <div className="value">{formatUsd(summary?.premiumPaidUsd)}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Protection Credits</div>
-              <div className="value">{formatUsd(summary?.triggerCreditsUsd)}</div>
-            </div>
-          </div>
-          <div className="positions">
-            {positions.length === 0 ? (
-              <div className="empty">No positions yet.</div>
-            ) : (
-              positions.map((position) => (
-                <div key={position.id} className={`position-row ${position.status === "open" ? "position-row-active" : ""}`}>
-                  <div className="position-main">
-                    <div className="position-main-title">
-                      <strong>
-                        {formatUsd(position.notionalUsd)} Long
-                      </strong>
-                      <span className={`pill ${position.status === "triggered" ? "pill-danger" : "pill-warning"}`}>
-                        {position.status}
-                      </span>
-                      {position.protectionEnabled ? <span className="pill">Protected</span> : <span className="pill pill-warning">Unprotected</span>}
-                    </div>
-                    <div className="muted">
-                      Entry {formatUsd(position.entryPrice)} | Mark {formatUsd(position.markPrice)} | Floor {formatUsd(position.floorPrice)} | Stop{" "}
-                      {formatPct(position.drawdownPct)}
-                    </div>
-                    <div className="muted">
-                      PnL {formatUsd(position.pnlUsd)} | Credits {formatUsd(position.triggerCreditedUsd)}
-                    </div>
-                  </div>
-                  <div className="position-actions">
-                    {position.status === "open" ? (
-                      <button className="btn" onClick={() => void closePosition(position.id)} disabled={actionBusy}>
-                        Close
+        {viewMode === "entry" ? (
+          <div className="section section-compact">
+            <h4>Open Position</h4>
+            <div className="sim-entry-card">
+              <div className="sim-widget-grid">
+                <div className="sim-widget-row">
+                  <span className="pilot-label">Current BTC Price</span>
+                  <strong className="sim-widget-value">{btcPrice ? formatUsd(btcPrice) : priceBusy ? "Loading..." : "Unavailable"}</strong>
+                </div>
+                <div className="sim-widget-row">
+                  <span className="pilot-label">Position Size (USD)</span>
+                  <input
+                    className="input pilot-input sim-widget-value"
+                    value={sizeInput}
+                    inputMode="decimal"
+                    onChange={(event) => setSizeInput(formatCsvInput(event.target.value))}
+                    placeholder="10,000"
+                  />
+                </div>
+                <div className="sim-widget-row">
+                  <span className="pilot-label">Stop Loss</span>
+                  <div className="sim-stoploss-group">
+                    {STOP_LOSS_OPTIONS.map((option) => (
+                      <button
+                        key={option.label}
+                        className={`btn sim-stoploss-btn ${option.floorPct === stopLossPct ? "active" : ""}`}
+                        onClick={() => setStopLossPct(option.floorPct)}
+                        type="button"
+                      >
+                        {option.label}
                       </button>
-                    ) : null}
+                    ))}
                   </div>
                 </div>
-              ))
-            )}
+                <div className="sim-widget-row">
+                  <span className="pilot-label">Protection Amount</span>
+                  <strong className="sim-widget-value">{formatUsd(protectionAmountUsd)}</strong>
+                </div>
+                <div className="sim-widget-row">
+                  <span className="pilot-label">Current Floor</span>
+                  <strong className="sim-widget-value">{floorPriceUsd ? formatUsd(floorPriceUsd) : "—"}</strong>
+                </div>
+              </div>
+              <button className="cta sim-open-btn" onClick={() => void openProtectionModal()} disabled={actionBusy || !isSizeValid}>
+                Open Position
+              </button>
+              {priceUpdatedAt ? <div className="muted">Price updated: {new Date(priceUpdatedAt).toLocaleString()}</div> : null}
+              {priceError ? <div className="disclaimer danger">{priceError}</div> : null}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="section section-compact">
+            <div className="section-title-row">
+              <h4>Trader Dashboard</h4>
+              <div className="section-actions">
+                <button className="btn" onClick={() => setViewMode("entry")} type="button">
+                  Add Position
+                </button>
+                <button
+                  className="btn"
+                  onClick={() => {
+                    setPlatformModalOpen(true);
+                  }}
+                  type="button"
+                >
+                  Platform Dashboard
+                </button>
+                <button className="btn" onClick={() => void refreshTraderDashboard()} disabled={refreshBusy || actionBusy} type="button">
+                  {refreshBusy ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+            </div>
+
+            <div className="sim-dashboard-grid">
+              <div className="stat">
+                <div className="label">Current Equity</div>
+                <div className="value">{formatUsd(summary?.currentEquityUsd)}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Unrealized PnL</div>
+                <div className="value">{formatUsd(summary?.unrealizedPnlUsd)}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Premium Paid</div>
+                <div className="value">{formatUsd(summary?.premiumPaidUsd)}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Protection Credits</div>
+                <div className="value">{formatUsd(summary?.triggerCreditsUsd)}</div>
+              </div>
+            </div>
+            <div className="row">
+              <span>Open positions</span>
+              <strong>{summary?.openPositions || "0"}</strong>
+            </div>
+            {actionMessage ? <div className="disclaimer">{actionMessage}</div> : null}
+            {refreshError ? <div className="disclaimer danger">{refreshError}</div> : null}
+            <div className="positions sim-position-list">
+              {positions.length === 0 ? (
+                <div className="empty">No positions yet.</div>
+              ) : (
+                positions.map((position) => (
+                  <div key={position.id} className={`position-row ${position.status === "open" ? "position-row-active" : ""}`}>
+                    <div className="position-main">
+                      <div className="position-main-title">
+                        <strong>{formatUsd(position.notionalUsd)} Long</strong>
+                        <span className={`pill sim-status-pill ${position.status === "triggered" ? "pill-danger" : "pill-warning"}`}>
+                          {position.status}
+                        </span>
+                        {position.protectionEnabled ? <span className="pill">Protected</span> : <span className="pill pill-warning">Unprotected</span>}
+                      </div>
+                      <div className="muted">
+                        Entry {formatUsd(position.entryPrice)} | Mark {formatUsd(position.markPrice)} | Floor {formatUsd(position.floorPrice)} | Drawdown{" "}
+                        {formatPct(position.drawdownPct)}
+                      </div>
+                      <div className="muted">
+                        PnL {formatUsd(position.pnlUsd)} | Credits {formatUsd(position.triggerCreditedUsd)}
+                      </div>
+                    </div>
+                    <div className="position-actions">
+                      {position.status === "open" ? (
+                        <button className="btn" onClick={() => void closePosition(position.id)} disabled={actionBusy} type="button">
+                          Close
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {protectModalOpen ? (
         <div className="modal">
           <div className="modal-card">
             <div className="modal-title">
-              <h3>Protect this position</h3>
+              <h3>Protect this Position</h3>
             </div>
-            <div className="subheader">
-              If your drawdown floor hits, we credit you the full floor loss (e.g., {formatUsd(protectionAmountUsd)}).
-            </div>
-            <div className="row">
+            <p className="sim-modal-copy">
+              If your drawdown floor hits, we credit you <strong>{formatUsd(protectionAmountUsd)}</strong>.
+            </p>
+            <div className="row sim-modal-cost">
               <span>Cost</span>
               <strong>{quoteBusy ? "Pricing..." : quote ? `${formatUsd(quote.premium)} per ${TENOR_DAYS} days` : "Unavailable"}</strong>
             </div>
             {quoteError ? <div className="disclaimer danger">{quoteError}</div> : null}
             <div className="sim-modal-actions">
-              <button className="btn btn-primary" onClick={() => void submitOpen(true)} disabled={actionBusy || quoteBusy || !quote?.quoteId}>
-                Protect &amp; Open
+              <button className="btn btn-primary" onClick={() => void submitOpen(true)} disabled={actionBusy || quoteBusy || !quote?.quoteId} type="button">
+                Open Position + Protection
               </button>
-              <button className="btn" onClick={() => void submitOpen(false)} disabled={actionBusy}>
-                Open w/o Protection
+              <button className="btn" onClick={() => void submitOpen(false)} disabled={actionBusy} type="button">
+                Open Position Only
+              </button>
+            </div>
+            <div className="modal-actions">
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setProtectModalOpen(false);
+                  setQuoteError(null);
+                }}
+                disabled={actionBusy}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {platformModalOpen ? (
+        <div className="modal">
+          <div className="modal-card">
+            <div className="modal-title">
+              <h3>Platform Dashboard</h3>
+            </div>
+            <div className="sim-dashboard-grid">
+              <div className="stat">
+                <div className="label">Total Positions</div>
+                <div className="value">{platformMetrics?.totalPositions || "0"}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Open Positions</div>
+                <div className="value">{platformMetrics?.openPositions || "0"}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Protected Positions</div>
+                <div className="value">{platformMetrics?.protectedPositions || "0"}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Triggered Positions</div>
+                <div className="value">{platformMetrics?.triggeredPositions || "0"}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Premium Collected</div>
+                <div className="value">{formatUsd(platformMetrics?.premiumCollectedUsd)}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Trigger Credits Paid</div>
+                <div className="value">{formatUsd(platformMetrics?.triggerCreditPaidUsd)}</div>
+              </div>
+              <div className="stat">
+                <div className="label">Treasury Net</div>
+                <div className="value">{formatUsd(platformMetrics?.treasuryNetUsd)}</div>
+              </div>
+            </div>
+            {platformError ? <div className="disclaimer danger">{platformError}</div> : null}
+            <div className="positions sim-position-list">
+              {(platformLedger || []).slice(0, 6).map((entry) => (
+                <div key={entry.id} className="position-row">
+                  <div className="position-main">
+                    <strong>{entry.entryType === "premium_collected" ? "Premium Collected" : "Trigger Credit"}</strong>
+                    <div className="muted">
+                      {formatUsd(entry.amountUsd)} | {new Date(entry.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setPlatformModalOpen(false);
+                  setPlatformError(null);
+                }}
+                disabled={platformBusy}
+                type="button"
+              >
+                X Close
               </button>
             </div>
           </div>

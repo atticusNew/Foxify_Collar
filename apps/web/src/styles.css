@@ -2476,6 +2476,99 @@ select.input {
   gap: 10px;
 }
 
+.sim-stage-shell {
+  display: grid;
+  gap: 12px;
+}
+
+.sim-stage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sim-stage-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.sim-protect-copy {
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.sim-protect-credit {
+  font-size: 22px;
+  font-weight: 800;
+  color: #f5e5d6;
+}
+
+.sim-protect-cost {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.sim-modal-actions-stacked {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.sim-dashboard-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #111116;
+  padding: 12px;
+}
+
+.sim-dashboard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-table {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.sim-table-head,
+.sim-table-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr 1fr 1fr 0.9fr;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+}
+
+.sim-table-head {
+  background: #1a1a1f;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.sim-table-row {
+  background: #121216;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.sim-table-row strong {
+  font-size: 12px;
+}
+
+.sim-platform-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
 .presentation-gate-card {
   width: min(560px, 100%);
   border-radius: 16px;
