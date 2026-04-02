@@ -27,6 +27,8 @@ import {
   listLedgerForProtection,
   listProtectionsByUserHashForAdmin,
   listProtectionsByUserHash,
+  reserveDailyTreasurySubsidyCapacity,
+  releaseDailyTreasurySubsidyCapacity,
   reserveDailyActivationCapacity,
   releaseDailyActivationCapacity,
   patchProtection
@@ -99,6 +101,17 @@ const parsePositiveDecimal = (value: unknown): Decimal | null => {
   try {
     const parsed = new Decimal(value as Decimal.Value);
     if (!parsed.isFinite() || parsed.lte(0)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+};
+
+const parseBoundedDecimal = (value: unknown, min: Decimal.Value, max: Decimal.Value): Decimal | null => {
+  try {
+    const parsed = new Decimal(value as Decimal.Value);
+    if (!parsed.isFinite()) return null;
+    if (parsed.lt(min) || parsed.gt(max)) return null;
     return parsed;
   } catch {
     return null;
@@ -1160,9 +1173,10 @@ export const registerPilotRoutes = async (
         policyFallbackApplied: tenorPolicyFallbackApplied,
         policyFallbackReason: tenorPolicyFallbackReason
       });
-      const premiumPricing = resolvePremiumPricing({
+      const pricingModeForSelection = pilotConfig.premiumPricingMode;
+      let premiumPricing = resolvePremiumPricing({
         tierName,
-        pricingMode: pilotConfig.premiumPricingMode,
+        pricingMode: pricingModeForSelection,
         protectedNotional,
         drawdownFloorPct,
         hedgePremium: new Decimal(quote.premium),
@@ -1172,12 +1186,97 @@ export const registerPilotRoutes = async (
           details: quote.details as Record<string, unknown> | undefined
         })
       });
-      const selectionPremiumInputs = {
+      const selectionPremiumInputsFromPricing = () => ({
         triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber(),
         expectedTriggerCostUsd: Number(premiumPricing.expectedTriggerCostUsd.toFixed(10)),
         expectedTriggerCreditUsd: Number(premiumPricing.expectedTriggerCreditUsd.toFixed(10)),
         premiumProfitabilityTargetUsd: Number(premiumPricing.premiumProfitabilityTargetUsd.toFixed(10))
+      });
+      let selectionPremiumInputs = selectionPremiumInputsFromPricing();
+      let treasuryFallbackApplied: "none" | "per_quote_cap" | "daily_cap" = "none";
+      const applyStrictPricingFallback = (reason: "per_quote_cap" | "daily_cap"): void => {
+        premiumPricing = resolvePremiumPricing({
+          tierName,
+          pricingMode: "actuarial_strict",
+          protectedNotional,
+          drawdownFloorPct,
+          hedgePremium: new Decimal(quote.premium),
+          brokerFees: estimateBrokerFeesUsd({
+            venue: quote.venue,
+            quantity: quote.quantity,
+            details: quote.details as Record<string, unknown> | undefined
+          })
+        });
+        selectionPremiumInputs = selectionPremiumInputsFromPricing();
+        treasuryFallbackApplied = reason;
       };
+      const requestedByUserHash = String((req.headers["x-user-id"] as string | undefined) || userHash.userHash);
+      let quoteSubsidyUsd = Decimal.max(
+        new Decimal(0),
+        premiumPricing.premiumProfitabilityTargetUsd.minus(premiumPricing.clientPremiumUsd)
+      );
+      const quoteSubsidyCapUsd = triggerPayoutCreditUsd.mul(new Decimal(pilotConfig.treasuryPerQuoteSubsidyCapPct));
+      if (quoteSubsidyUsd.gt(quoteSubsidyCapUsd)) {
+        const strictFallbackEnabled =
+          pilotConfig.treasuryStrictFallbackEnabled && pricingModeForSelection === "hybrid_otm_treasury";
+        if (!strictFallbackEnabled) {
+          reply.code(409);
+          return {
+            status: "error",
+            reason: "treasury_subsidy_per_quote_cap_exceeded",
+            quoteSubsidyUsd: quoteSubsidyUsd.toFixed(10),
+            subsidyCapUsd: quoteSubsidyCapUsd.toFixed(10)
+          };
+        }
+        applyStrictPricingFallback("per_quote_cap");
+        quoteSubsidyUsd = Decimal.max(
+          new Decimal(0),
+          premiumPricing.premiumProfitabilityTargetUsd.minus(premiumPricing.clientPremiumUsd)
+        );
+      }
+      if (quoteSubsidyUsd.gt(0)) {
+        const subsidyUsage = await reserveDailyTreasurySubsidyCapacity(pool, {
+          userHash: requestedByUserHash,
+          dayStartIso: dayStart.toISOString(),
+          subsidyAmount: quoteSubsidyUsd.toFixed(10),
+          maxDailySubsidy: new Decimal(pilotConfig.treasuryDailySubsidyCapUsdc).toFixed(10)
+        });
+        if (!subsidyUsage.ok) {
+          const strictFallbackEnabled =
+            pilotConfig.treasuryStrictFallbackEnabled && pricingModeForSelection === "hybrid_otm_treasury";
+          if (!strictFallbackEnabled) {
+            reply.code(409);
+            return {
+              status: "error",
+              reason: "treasury_subsidy_daily_cap_exceeded",
+              subsidyUsedUsd: subsidyUsage.usedNow,
+              subsidyProjectedUsd: new Decimal(subsidyUsage.usedNow).plus(quoteSubsidyUsd).toFixed(10),
+              subsidyCapUsd: new Decimal(pilotConfig.treasuryDailySubsidyCapUsdc).toFixed(10)
+            };
+          }
+          applyStrictPricingFallback("daily_cap");
+          quoteSubsidyUsd = Decimal.max(
+            new Decimal(0),
+            premiumPricing.premiumProfitabilityTargetUsd.minus(premiumPricing.clientPremiumUsd)
+          );
+          if (quoteSubsidyUsd.gt(0)) {
+            reply.code(409);
+            return {
+              status: "error",
+              reason: "treasury_subsidy_daily_cap_exceeded",
+              subsidyUsedUsd: subsidyUsage.usedNow,
+              subsidyProjectedUsd: new Decimal(subsidyUsage.usedNow).plus(quoteSubsidyUsd).toFixed(10),
+              subsidyCapUsd: new Decimal(pilotConfig.treasuryDailySubsidyCapUsdc).toFixed(10)
+            };
+          }
+        } else {
+          await releaseDailyTreasurySubsidyCapacity(pool, {
+            userHash: requestedByUserHash,
+            dayStartIso: dayStart.toISOString(),
+            subsidyAmount: quoteSubsidyUsd.toFixed(10)
+          });
+        }
+      }
       const estimatedPremiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({
         estimated: premiumPricing
       });
@@ -1202,6 +1301,11 @@ export const registerPilotRoutes = async (
         premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
         clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
         method: premiumPricing.method,
+        treasuryQuoteSubsidyUsd: quoteSubsidyUsd.toFixed(10),
+        treasuryPerQuoteSubsidyCapUsd: quoteSubsidyCapUsd.toFixed(10),
+        treasuryDailySubsidyCapUsdc: new Decimal(pilotConfig.treasuryDailySubsidyCapUsdc).toFixed(10),
+        treasuryFallbackApplied,
+        treasuryStrictFallbackEnabled: pilotConfig.treasuryStrictFallbackEnabled,
         ...selectionPremiumInputs
       };
       await insertVenueQuote(pool, {

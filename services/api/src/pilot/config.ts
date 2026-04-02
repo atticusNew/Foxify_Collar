@@ -167,6 +167,18 @@ export const parsePilotSelectorMode = (raw: string | undefined): PilotSelectorMo
   throw new Error(`invalid_pilot_selector_mode:${normalized || "empty"}`);
 };
 
+export const parseFractionRange = (
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  errorCode: string
+): number => {
+  const parsed = Number(raw ?? String(fallback));
+  if (Number.isFinite(parsed) && parsed >= min && parsed <= max) return parsed;
+  throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
+};
+
 export const parseCommaSeparatedInts = (
   raw: string | undefined,
   fallback: number[],
@@ -504,6 +516,19 @@ export const pilotConfig = {
   quoteMinNotionalUsdc: parsePilotQuoteMinNotionalUsdc(process.env.PILOT_QUOTE_MIN_NOTIONAL_USDC),
   maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "50000"),
   maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "50000"),
+  treasuryPerQuoteSubsidyCapPct: parseFractionRange(
+    process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT,
+    0.7,
+    0,
+    1,
+    "invalid_pilot_treasury_subsidy_cap_pct"
+  ),
+  treasuryDailySubsidyCapUsdc: parsePositiveFinite(
+    process.env.PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC,
+    15000,
+    "invalid_pilot_treasury_daily_subsidy_cap_usdc"
+  ),
+  treasuryStrictFallbackEnabled: parseBooleanEnv(process.env.PILOT_TREASURY_STRICT_FALLBACK_ENABLED, true),
   premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045"),
   premiumMarkupPctByTier: {
     "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_BRONZE || "0.06"),

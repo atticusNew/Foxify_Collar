@@ -174,6 +174,13 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       PRIMARY KEY (user_hash, day_start)
     );
 
+    CREATE TABLE IF NOT EXISTS pilot_daily_treasury_subsidy_usage (
+      user_hash TEXT NOT NULL,
+      day_start DATE NOT NULL,
+      used_subsidy NUMERIC(28,10) NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_hash, day_start)
+    );
+
     CREATE TABLE IF NOT EXISTS pilot_terms_acceptances (
       id TEXT PRIMARY KEY,
       user_hash TEXT NOT NULL,
@@ -965,6 +972,69 @@ export const releaseDailyActivationCapacity = async (
         AND day_start = $2::date
     `,
     [params.userHash, params.dayStartIso, params.protectedNotional]
+  );
+};
+
+export const reserveDailyTreasurySubsidyCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    subsidyAmount: string;
+    maxDailySubsidy: string;
+  }
+): Promise<{ ok: true; usedAfter: string } | { ok: false; usedNow: string }> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_daily_treasury_subsidy_usage (user_hash, day_start, used_subsidy)
+      VALUES ($1, $2::date, 0)
+      ON CONFLICT (user_hash, day_start) DO NOTHING
+    `,
+    [params.userHash, params.dayStartIso]
+  );
+  const updated = await pool.query(
+    `
+      UPDATE pilot_daily_treasury_subsidy_usage
+      SET used_subsidy = used_subsidy + $3::numeric
+      WHERE user_hash = $1
+        AND day_start = $2::date
+        AND used_subsidy + $3::numeric <= $4::numeric
+      RETURNING used_subsidy::text AS used_after
+    `,
+    [params.userHash, params.dayStartIso, params.subsidyAmount, params.maxDailySubsidy]
+  );
+  if (updated.rowCount && updated.rows[0]?.used_after) {
+    return { ok: true, usedAfter: String(updated.rows[0].used_after) };
+  }
+  const current = await pool.query(
+    `
+      SELECT used_subsidy::text AS used_now
+      FROM pilot_daily_treasury_subsidy_usage
+      WHERE user_hash = $1
+        AND day_start = $2::date
+      LIMIT 1
+    `,
+    [params.userHash, params.dayStartIso]
+  );
+  return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
+};
+
+export const releaseDailyTreasurySubsidyCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    subsidyAmount: string;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      UPDATE pilot_daily_treasury_subsidy_usage
+      SET used_subsidy = GREATEST(0, used_subsidy - $3::numeric)
+      WHERE user_hash = $1
+        AND day_start = $2::date
+    `,
+    [params.userHash, params.dayStartIso, params.subsidyAmount]
   );
 };
 

@@ -259,6 +259,14 @@ const createPilotHarness = async (opts?: {
     "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_GOLD || "0.28"),
     "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_PLATINUM || "0.25")
   };
+  configModule.pilotConfig.treasuryPerQuoteSubsidyCapPct = Number(
+    process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT || "0.7"
+  );
+  configModule.pilotConfig.treasuryDailySubsidyCapUsdc = Number(
+    process.env.PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC || "15000"
+  );
+  configModule.pilotConfig.treasuryStrictFallbackEnabled =
+    process.env.PILOT_TREASURY_STRICT_FALLBACK_ENABLED !== "false";
   configModule.pilotConfig.ibkrFeePerContractUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_CONTRACT_USD || "2.02"));
   configModule.pilotConfig.ibkrFeePerOrderUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD || "0"));
   configModule.pilotConfig.triggerMonitorEnabled = process.env.PILOT_TRIGGER_MONITOR_ENABLED !== "false";
@@ -3074,6 +3082,84 @@ test("Y4b) quote supports hybrid pricing mode and reports mode diagnostics", asy
       true
     );
     assert.equal(Number.isFinite(Number(breakdown.clientPremiumUsd ?? NaN)), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Y4c) quote rejects when per-quote treasury subsidy cap is exceeded", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_TREASURY_SUBSIDY_CAP_PCT: "0.01",
+      PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "false"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 409, quoteRes.body);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "error");
+    assert.equal(payload.reason, "treasury_subsidy_per_quote_cap_exceeded");
+    assert.equal(Number.isFinite(Number(payload.quoteSubsidyUsd ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(payload.subsidyCapUsd ?? NaN)), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Y4d) quote rejects when daily treasury subsidy cap is exceeded", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_TREASURY_SUBSIDY_CAP_PCT: "1.0",
+      PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC: "1",
+      PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "false"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 409, quoteRes.body);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "error");
+    assert.equal(payload.reason, "treasury_subsidy_daily_cap_exceeded");
+    assert.equal(Number.isFinite(Number(payload.subsidyUsedUsd ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(payload.subsidyProjectedUsd ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(payload.subsidyCapUsd ?? NaN)), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Y4e) quote falls back to strict pricing mode when treasury rails trip", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_TREASURY_SUBSIDY_CAP_PCT: "0.01",
+      PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "true"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 200, quoteRes.body);
+    const payload = quoteRes.json();
+    const breakdown = payload?.quote?.details?.pricingBreakdown || {};
+    assert.equal(String(breakdown.pricingMode || ""), "actuarial_strict");
+    assert.equal(String(breakdown.treasuryFallbackApplied || ""), "per_quote_cap");
+    assert.equal(Number.isFinite(Number(breakdown.treasuryQuoteSubsidyUsd ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(breakdown.treasuryPerQuoteSubsidyCapUsd ?? NaN)), true);
   } finally {
     await harness.close();
   }
