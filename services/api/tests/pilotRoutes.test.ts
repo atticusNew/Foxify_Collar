@@ -3549,6 +3549,132 @@ test("Z3) sim position close marks closed and stores realized pnl metadata", asy
   }
 });
 
+test("Z4) sim account summary returns equity and pnl aggregates", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    env: {
+      PILOT_ENFORCE_WINDOW: "false"
+    },
+    deribit: {
+      async getIndexPrice() {
+        return { result: { index_price: 100000 } };
+      },
+      async listInstruments() {
+        return {
+          result: [
+            {
+              instrument_name: "BTC-10APR26-80000-P",
+              option_type: "put",
+              strike: 80000,
+              expiration_timestamp: Date.now() + 7 * 86400000
+            }
+          ]
+        };
+      },
+      async getOrderBook() {
+        return {
+          result: {
+            asks: [[0.01, 5]],
+            bids: [[0.009, 5]],
+            mark_price: 0.0095
+          }
+        };
+      },
+      async placeOrder() {
+        return {
+          status: "filled",
+          id: "sim-order-3",
+          fillPrice: 0.01,
+          filledAmount: 0.05,
+          amount: 0.05
+        };
+      }
+    } as any
+  });
+  try {
+    const { app } = harness;
+    const openA = await app.inject({
+      method: "POST",
+      url: "/pilot/sim/positions/open",
+      payload: {
+        protectedNotional: 10000,
+        tierName: "Pro (Bronze)",
+        drawdownFloorPct: 0.2,
+        side: "long",
+        marketId: "BTC-USD",
+        withProtection: false
+      }
+    });
+    assert.equal(openA.statusCode, 200, openA.body);
+
+    const openB = await app.inject({
+      method: "POST",
+      url: "/pilot/sim/positions/open",
+      payload: {
+        protectedNotional: 5000,
+        tierName: "Pro (Bronze)",
+        drawdownFloorPct: 0.2,
+        side: "long",
+        marketId: "BTC-USD",
+        withProtection: false
+      }
+    });
+    assert.equal(openB.statusCode, 200, openB.body);
+    const simPositionId = String(openB.json().simPosition?.id || "");
+    assert.ok(simPositionId.length > 0);
+
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 105000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            product_id: "BTC-USD",
+            price: 105000,
+            timestamp: Date.now()
+          })
+      } as any;
+    }) as typeof fetch;
+
+    const closeRes = await app.inject({
+      method: "POST",
+      url: `/pilot/sim/positions/${simPositionId}/close`
+    });
+    assert.equal(closeRes.statusCode, 200, closeRes.body);
+
+    const summaryRes = await app.inject({
+      method: "GET",
+      url: "/pilot/sim/account/summary"
+    });
+    assert.equal(summaryRes.statusCode, 200, summaryRes.body);
+    const summaryPayload = summaryRes.json();
+    assert.equal(summaryPayload.status, "ok");
+    assert.equal(summaryPayload.summary.openPositions, "1");
+    assert.equal(summaryPayload.summary.closedPositions, "1");
+    assert.equal(summaryPayload.summary.totalPositions, undefined);
+    assert.equal(Number(summaryPayload.summary.realizedPnlUsd) > 0, true);
+    assert.equal(Number(summaryPayload.summary.unrealizedPnlUsd) > 0, true);
+    assert.equal(
+      Number(summaryPayload.summary.currentEquityUsd) > Number(summaryPayload.summary.startingEquityUsd),
+      true
+    );
+  } finally {
+    await harness.close();
+    global.fetch = originalFetch;
+  }
+});
+
 test("Z1) trigger monitor marks breached active protection as triggered", async () => {
   const harness = await createPilotHarness({
     env: {

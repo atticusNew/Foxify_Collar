@@ -149,6 +149,7 @@ const toFiniteNumber = (value: unknown): number | null => {
 
 const resolveQuoteMinNotionalFloor = (): Decimal => new Decimal(pilotConfig.quoteMinNotionalUsdc);
 const SIM_DAYS = 7;
+const DEFAULT_SIM_STARTING_EQUITY_USD = new Decimal(10000);
 
 const buildSimLifecycleMetadata = (base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> => ({
   ...base,
@@ -177,6 +178,12 @@ const resolveLiveReferencePrice = async (requestId: string, marketId: string): P
     Math.max(1500, pilotConfig.pricePrimaryTimeoutMs + pilotConfig.priceFallbackTimeoutMs + 1000),
     "price"
   );
+
+const resolveSimStartingEquityUsd = (): Decimal => {
+  const raw = Number(process.env.PILOT_SIM_STARTING_EQUITY_USD ?? DEFAULT_SIM_STARTING_EQUITY_USD.toString());
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_SIM_STARTING_EQUITY_USD;
+  return new Decimal(raw);
+};
 
 const runSimTriggerMonitorCycle = async (params: {
   pool: ReturnType<typeof getPilotPool>;
@@ -1249,6 +1256,86 @@ export const registerPilotRoutes = async (
         status: "error",
         reason: "storage_unavailable",
         detail: String(error?.message || "sim_platform_metrics_failed")
+      };
+    }
+  });
+
+  app.get("/pilot/sim/account/summary", async (_req, reply) => {
+    let tenant: { userHash: string; hashVersion: number };
+    try {
+      tenant = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    try {
+      const [positions, recentLedger] = await Promise.all([
+        listSimPositionsByUserHash(pool, tenant.userHash, { limit: 500 }),
+        listSimTreasuryLedgerByUserHash(pool, tenant.userHash, { limit: 2000 })
+      ]);
+      const marketIds = Array.from(new Set(positions.map((item) => item.marketId)));
+      const marks = new Map<string, Decimal>();
+      await Promise.all(
+        marketIds.map(async (marketId) => {
+          try {
+            const snapshot = await resolveLiveReferencePrice(pilotConfig.nextRequestId(), marketId);
+            marks.set(marketId, snapshot.price);
+          } catch {
+            // best effort marks for account summary
+          }
+        })
+      );
+      const ledgerPremiumPaid = recentLedger
+        .filter((entry) => entry.entryType === "premium_collected")
+        .reduce((acc, entry) => acc.plus(new Decimal(entry.amountUsd)), new Decimal(0));
+      const ledgerTriggerCredits = recentLedger
+        .filter((entry) => entry.entryType === "trigger_credit")
+        .reduce((acc, entry) => acc.plus(new Decimal(entry.amountUsd)), new Decimal(0));
+      const closedRealizedPnl = positions
+        .filter((position) => position.status === "closed")
+        .reduce((acc, position) => {
+          const lifecycle = position.metadata || {};
+          const realized = toFiniteNumber(lifecycle.realizedPnlUsd);
+          if (realized === null) return acc;
+          return acc.plus(realized);
+        }, new Decimal(0));
+      const openUnrealizedPnl = positions
+        .filter((position) => position.status === "open")
+        .reduce((acc, position) => {
+          const entry = parsePositiveDecimal(position.entryPrice) || new Decimal(0);
+          const notional = parsePositiveDecimal(position.notionalUsd) || new Decimal(0);
+          const mark = marks.get(position.marketId) || entry;
+          if (entry.lte(0) || notional.lte(0)) return acc;
+          const pnl = notional.mul(mark.minus(entry)).div(entry);
+          return acc.plus(pnl);
+        }, new Decimal(0));
+      const startingEquityUsd = resolveSimStartingEquityUsd();
+      const currentEquityUsd = startingEquityUsd
+        .plus(closedRealizedPnl)
+        .plus(openUnrealizedPnl)
+        .plus(ledgerTriggerCredits)
+        .minus(ledgerPremiumPaid);
+      return {
+        status: "ok",
+        summary: {
+          startingEquityUsd: startingEquityUsd.toFixed(10),
+          premiumPaidUsd: ledgerPremiumPaid.toFixed(10),
+          triggerCreditsUsd: ledgerTriggerCredits.toFixed(10),
+          realizedPnlUsd: closedRealizedPnl.toFixed(10),
+          unrealizedPnlUsd: openUnrealizedPnl.toFixed(10),
+          currentEquityUsd: currentEquityUsd.toFixed(10),
+          openPositions: String(positions.filter((item) => item.status === "open").length),
+          closedPositions: String(positions.filter((item) => item.status === "closed").length),
+          triggeredPositions: String(positions.filter((item) => item.status === "triggered").length)
+        }
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        detail: String(error?.message || "sim_account_summary_failed")
       };
     }
   });
