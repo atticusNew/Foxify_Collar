@@ -208,6 +208,10 @@ const createPilotHarness = async (opts?: {
     process.env.PILOT_PREMIUM_POLICY_MODE === "pass_through_markup"
       ? "pass_through_markup"
       : "hedge_only_markup";
+  configModule.pilotConfig.premiumPricingMode =
+    process.env.PILOT_PREMIUM_PRICING_MODE === "hybrid_otm_treasury"
+      ? "hybrid_otm_treasury"
+      : "actuarial_strict";
   configModule.pilotConfig.premiumPolicyVersion =
     String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2";
   configModule.pilotConfig.premiumMarkupPct = Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045");
@@ -3040,6 +3044,36 @@ test("Y4) quote premium policy in pass-through mode includes broker fees for IBK
     }
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test("Y4b) quote supports hybrid pricing mode and reports mode diagnostics", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_PREMIUM_POLICY_MODE: "pass_through_markup",
+      PILOT_PREMIUM_MARKUP_PCT_BRONZE: "0.06"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 200, quoteRes.body);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "ok");
+    const breakdown = payload?.quote?.details?.pricingBreakdown || {};
+    assert.equal(String(breakdown.pricingMode || ""), "hybrid_otm_treasury");
+    assert.equal(
+      String(payload?.diagnostics?.premiumPolicy?.mode || "") === "pass_through_markup" ||
+        String(payload?.diagnostics?.premiumPolicy?.mode || "") === "legacy",
+      true
+    );
+    assert.equal(Number.isFinite(Number(breakdown.clientPremiumUsd ?? NaN)), true);
+  } finally {
+    await harness.close();
   }
 });
 

@@ -35,6 +35,12 @@ import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { createPilotVenueAdapter, mapVenueFailureReason } from "./venue";
 import { registerPilotTriggerMonitor } from "./triggerMonitor";
 import {
+  buildPremiumPolicyDiagnostics,
+  estimateBrokerFeesUsd,
+  resolvePremiumPricing,
+  type PremiumPricingResult
+} from "./pricingPolicy";
+import {
   computeTriggerPrice,
   computePayoutDue,
   normalizeProtectionType,
@@ -44,13 +50,7 @@ import {
   resolveRenewWindowMinutes
 } from "./floor";
 import { computeDrawdownLossBudgetUsd } from "./protectionMath";
-import type {
-  PremiumPolicyDiagnostics,
-  TenorPolicyEntry,
-  TenorPolicyResponse,
-  TenorPolicyTenorRow,
-  TenorPolicyReason
-} from "./types";
+import type { PremiumPolicyDiagnostics, TenorPolicyEntry, TenorPolicyResponse, TenorPolicyTenorRow, TenorPolicyReason } from "./types";
 
 const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_native" | "futures_synthetic" => {
   const raw = String(quoteDetails?.hedgeMode || "");
@@ -117,217 +117,6 @@ const resolveReferenceVenueLabel = (url: string, fallbackLabel = "Reference Feed
   }
 };
 
-const resolveTierPremiumFloorBps = (tierName: string): Decimal => {
-  const raw = Number(pilotConfig.premiumFloorBpsByTier[tierName] ?? 100);
-  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
-  return new Decimal(raw);
-};
-
-const resolveTierPremiumFloorUsd = (tierName: string): Decimal => {
-  const raw = Number(pilotConfig.premiumFloorUsdByTier[tierName] ?? 0);
-  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
-  return new Decimal(raw);
-};
-
-const resolveTierProfitabilityBufferPct = (tierName: string): Decimal => {
-  const raw = Number(pilotConfig.premiumProfitabilityBufferPctByTier[tierName] ?? 0);
-  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
-  return new Decimal(raw);
-};
-
-const resolveTierExpectedTriggerBreachProb = (tierName: string): Decimal => {
-  const raw = Number(pilotConfig.premiumExpectedTriggerBreachProbByTier[tierName] ?? 0);
-  if (!Number.isFinite(raw) || raw <= 0) return new Decimal(0);
-  return Decimal.min(new Decimal(1), new Decimal(raw));
-};
-
-const resolveTierTriggerCreditWeight = (tierName: string): Decimal => {
-  const raw = Number(pilotConfig.premiumTriggerCreditWeightByTier[tierName] ?? 0);
-  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
-  return Decimal.min(new Decimal(1), new Decimal(raw));
-};
-
-const resolveTierTriggerCreditFloorPct = (tierName: string): Decimal => {
-  const raw = Number(pilotConfig.premiumTriggerCreditFloorPctByTier[tierName] ?? 0);
-  if (!Number.isFinite(raw) || raw < 0) return new Decimal(0);
-  return Decimal.min(new Decimal(1), new Decimal(raw));
-};
-
-const resolveTierSelectionFeasibilityPenaltyScale = (tierName: string): Decimal => {
-  const raw = Number(pilotConfig.selectionFeasibilityPenaltyScaleByTier[tierName] ?? 1);
-  if (!Number.isFinite(raw) || raw <= 0) return new Decimal(1);
-  return new Decimal(raw);
-};
-
-const isMethodFor = (
-  method: string,
-  candidate: "floor_profitability" | "floor_trigger_credit" | "floor_usd" | "floor_bps"
-): boolean => method === candidate;
-
-const resolvePremiumPricing = (params: {
-  tierName: string;
-  protectedNotional: Decimal;
-  drawdownFloorPct: Decimal;
-  hedgePremium: Decimal;
-  brokerFees?: Decimal;
-  markupPctOverride?: Decimal | null;
-}): {
-  hedgePremiumUsd: Decimal;
-  brokerFeesUsd: Decimal;
-  passThroughUsd: Decimal;
-  markupPct: Decimal;
-  markupUsd: Decimal;
-  premiumFloorUsdAbsolute: Decimal;
-  premiumFloorUsdFromBps: Decimal;
-  premiumFloorBps: Decimal;
-  premiumFloorUsd: Decimal;
-  premiumFloorUsdTriggerCredit: Decimal;
-  expectedTriggerCreditUsd: Decimal;
-  expectedTriggerCostUsd: Decimal;
-  profitabilityBufferUsd: Decimal;
-  profitabilityFloorUsd: Decimal;
-  selectionFeasibilityPenaltyUsd: Decimal;
-  premiumProfitabilityTargetUsd: Decimal;
-  premiumProfitabilityTargetRatio: Decimal;
-  clientPremiumUsd: Decimal;
-  method: "markup" | "floor_usd" | "floor_bps" | "floor_trigger_credit" | "floor_profitability";
-} => {
-  const markupPct =
-    params.markupPctOverride ||
-    (() => {
-      const markupPctRaw = Number(
-        pilotConfig.premiumMarkupPctByTier[params.tierName] ?? pilotConfig.premiumMarkupPct
-      );
-      return Number.isFinite(markupPctRaw) && markupPctRaw > 0 ? new Decimal(markupPctRaw) : new Decimal(0);
-    })();
-  const hedgePremiumUsd = params.hedgePremium;
-  const brokerFeesUsd = params.brokerFees || new Decimal(0);
-  const passThroughUsd =
-    pilotConfig.premiumPolicyMode === "pass_through_markup"
-      ? hedgePremiumUsd.plus(brokerFeesUsd)
-      : hedgePremiumUsd;
-  const markupUsd = passThroughUsd.mul(markupPct);
-  const markedUpPremium = passThroughUsd.plus(markupUsd);
-  const premiumFloorBps = resolveTierPremiumFloorBps(params.tierName);
-  const premiumFloorUsdFromBps = params.protectedNotional.mul(premiumFloorBps).div(10000);
-  const premiumFloorUsdAbsolute = resolveTierPremiumFloorUsd(params.tierName);
-  const triggerCreditUsd = computeDrawdownLossBudgetUsd(params.protectedNotional, params.drawdownFloorPct);
-  const triggerCreditWeight = resolveTierTriggerCreditWeight(params.tierName);
-  const expectedTriggerBreachProb = resolveTierExpectedTriggerBreachProb(params.tierName);
-  const expectedTriggerCreditUsd = triggerCreditUsd.mul(expectedTriggerBreachProb);
-  const expectedTriggerCostUsd = expectedTriggerCreditUsd.mul(triggerCreditWeight);
-  const selectionFeasibilityPenaltyUsd = expectedTriggerCostUsd;
-  const profitabilityBufferPct = resolveTierProfitabilityBufferPct(params.tierName);
-  const profitabilityBufferUsd = params.protectedNotional.mul(profitabilityBufferPct);
-  const profitabilityFloorUsd = passThroughUsd.plus(selectionFeasibilityPenaltyUsd).plus(profitabilityBufferUsd);
-  const premiumProfitabilityTargetUsd = profitabilityFloorUsd;
-  const premiumProfitabilityTargetRatio =
-    params.protectedNotional.gt(0)
-      ? premiumProfitabilityTargetUsd.div(params.protectedNotional)
-      : new Decimal(0);
-  const triggerCreditFloorPct = resolveTierTriggerCreditFloorPct(params.tierName);
-  const premiumFloorUsdTriggerCredit = triggerCreditUsd.mul(triggerCreditFloorPct);
-  const premiumFloorUsd = Decimal.max(
-    premiumFloorUsdAbsolute,
-    premiumFloorUsdFromBps,
-    premiumFloorUsdTriggerCredit,
-    profitabilityFloorUsd
-  );
-  const clientPremiumUsd = Decimal.max(markedUpPremium, premiumFloorUsd);
-  let method: "markup" | "floor_usd" | "floor_bps" | "floor_trigger_credit" | "floor_profitability" = "markup";
-  if (!clientPremiumUsd.eq(markedUpPremium)) {
-    if (premiumFloorUsd.eq(profitabilityFloorUsd) || profitabilityFloorUsd.greaterThanOrEqualTo(premiumFloorUsd)) {
-      method = "floor_profitability";
-    } else if (
-      premiumFloorUsd.eq(premiumFloorUsdTriggerCredit) ||
-      premiumFloorUsdTriggerCredit.greaterThanOrEqualTo(premiumFloorUsdAbsolute) &&
-        premiumFloorUsdTriggerCredit.greaterThanOrEqualTo(premiumFloorUsdFromBps)
-    ) {
-      method = "floor_trigger_credit";
-    } else {
-      method = premiumFloorUsdAbsolute.greaterThanOrEqualTo(premiumFloorUsdFromBps) ? "floor_usd" : "floor_bps";
-    }
-  }
-  return {
-    hedgePremiumUsd,
-    brokerFeesUsd,
-    passThroughUsd,
-    markupPct,
-    markupUsd,
-    premiumFloorUsdAbsolute,
-    premiumFloorUsdFromBps,
-    premiumFloorBps,
-    premiumFloorUsd,
-    premiumFloorUsdTriggerCredit,
-    expectedTriggerCreditUsd,
-    expectedTriggerCostUsd,
-    profitabilityBufferUsd,
-    profitabilityFloorUsd,
-    selectionFeasibilityPenaltyUsd,
-    premiumProfitabilityTargetUsd,
-    premiumProfitabilityTargetRatio,
-    clientPremiumUsd,
-    method
-  };
-};
-
-const estimateBrokerFeesUsd = (params: {
-  venue: string;
-  quantity: number;
-  details?: Record<string, unknown>;
-}): Decimal => {
-  if (!String(params.venue || "").startsWith("ibkr_")) return new Decimal(0);
-  const rawMultiplier = Number(params.details?.multiplier ?? 0);
-  const multiplier = Number.isFinite(rawMultiplier) && rawMultiplier > 0 ? rawMultiplier : 0.1;
-  const contracts = Math.max(1, Math.ceil(Math.max(0, Number(params.quantity || 0)) / multiplier));
-  return new Decimal(contracts)
-    .mul(new Decimal(pilotConfig.ibkrFeePerContractUsd))
-    .plus(new Decimal(pilotConfig.ibkrFeePerOrderUsd));
-};
-
-const buildPremiumPolicyDiagnostics = (params: {
-  estimated: ReturnType<typeof resolvePremiumPricing>;
-  realized?: ReturnType<typeof resolvePremiumPricing> | null;
-}): PremiumPolicyDiagnostics => {
-  const tolerance = new Decimal(pilotConfig.premiumCapToleranceUsd);
-  const estimated = params.estimated;
-  const realized = params.realized || null;
-  const caps = {
-    maxHedgeCostUsd: estimated.hedgePremiumUsd.plus(tolerance).toFixed(10),
-    maxBrokerFeesUsd: estimated.brokerFeesUsd.plus(tolerance).toFixed(10),
-    maxClientPremiumUsd: estimated.clientPremiumUsd.plus(tolerance).toFixed(10),
-    toleranceUsd: tolerance.toFixed(10)
-  };
-  const delta =
-    realized && estimated.clientPremiumUsd.gt(0)
-      ? {
-          clientPremiumUsd: realized.clientPremiumUsd.minus(estimated.clientPremiumUsd).toFixed(10),
-          clientPremiumPct: realized.clientPremiumUsd
-            .minus(estimated.clientPremiumUsd)
-            .div(estimated.clientPremiumUsd)
-            .toFixed(10)
-        }
-      : null;
-  const toComponent = (
-    breakdown: ReturnType<typeof resolvePremiumPricing>
-  ): PremiumPolicyDiagnostics["estimated"] => ({
-    hedgeCostUsd: breakdown.hedgePremiumUsd.toFixed(10),
-    brokerFeesUsd: breakdown.brokerFeesUsd.toFixed(10),
-    passThroughUsd: breakdown.passThroughUsd.toFixed(10),
-    markupPct: breakdown.markupPct.toFixed(10),
-    markupUsd: breakdown.markupUsd.toFixed(10),
-    clientPremiumUsd: breakdown.clientPremiumUsd.toFixed(10)
-  });
-  return {
-    mode: pilotConfig.premiumPolicyMode,
-    version: pilotConfig.premiumPolicyVersion,
-    currency: "USD",
-    estimated: toComponent(estimated),
-    realized: realized ? toComponent(realized) : null,
-    caps,
-    delta
-  };
-};
 
 const toFixedString = (value: Decimal.Value, dp = 10): string => new Decimal(value).toFixed(dp);
 
@@ -503,6 +292,7 @@ const sanitizeQuoteForClient = (quote: {
     "expectedTriggerCostUsd",
     "expectedTriggerCreditUsd",
     "premiumProfitabilityTargetUsd",
+    "premiumPricingMode",
     "rankedAlternatives",
     "candidateFailureCounts"
   ];
@@ -1371,6 +1161,7 @@ export const registerPilotRoutes = async (
       });
       const premiumPricing = resolvePremiumPricing({
         tierName,
+        pricingMode: pilotConfig.premiumPricingMode,
         protectedNotional,
         drawdownFloorPct,
         hedgePremium: new Decimal(quote.premium),
@@ -1390,6 +1181,7 @@ export const registerPilotRoutes = async (
         estimated: premiumPricing
       });
       const pricingBreakdown = {
+        pricingMode: premiumPricing.pricingMode,
         hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
         brokerFeesUsd: premiumPricing.brokerFeesUsd.toFixed(10),
         passThroughUsd: premiumPricing.passThroughUsd.toFixed(10),
@@ -1916,27 +1708,7 @@ export const registerPilotRoutes = async (
     let execution: Awaited<ReturnType<typeof venue.execute>> | null = null;
     let executionFailureDetail: string | null = null;
     let premiumPolicyDiagnostics: PremiumPolicyDiagnostics | null = null;
-    let premiumPricing:
-      | ReturnType<typeof resolvePremiumPricing>
-      | {
-          hedgePremiumUsd: Decimal;
-          brokerFeesUsd: Decimal;
-          passThroughUsd: Decimal;
-          markupPct: Decimal;
-          markupUsd: Decimal;
-          premiumFloorUsdAbsolute: Decimal;
-          premiumFloorUsdFromBps: Decimal;
-          premiumFloorBps: Decimal;
-          premiumFloorUsd: Decimal;
-          premiumFloorUsdTriggerCredit: Decimal;
-          expectedTriggerCreditUsd: Decimal;
-          expectedTriggerCostUsd: Decimal;
-          profitabilityBufferUsd: Decimal;
-          profitabilityFloorUsd: Decimal;
-          clientPremiumUsd: Decimal;
-          method: "markup" | "floor_usd" | "floor_bps" | "floor_trigger_credit" | "floor_profitability";
-        }
-      | null = null;
+    let premiumPricing: PremiumPricingResult | null = null;
     let requestedQuantity = 0;
     let contextHedgeMode: "options_native" | "futures_synthetic" = "options_native";
     try {
@@ -2107,6 +1879,7 @@ export const registerPilotRoutes = async (
         typeof lockContext.tenorPolicyStatus === "string" ? String(lockContext.tenorPolicyStatus) : null;
       const fallbackPremiumPricing = resolvePremiumPricing({
         tierName,
+        pricingMode: pilotConfig.premiumPricingMode,
         protectedNotional,
         drawdownFloorPct,
         hedgePremium: contextHedgePremium,
@@ -2219,6 +1992,7 @@ export const registerPilotRoutes = async (
         premiumPricing.brokerFeesUsd;
       const realizedPricing = resolvePremiumPricing({
         tierName,
+        pricingMode: pilotConfig.premiumPricingMode,
         protectedNotional,
         drawdownFloorPct,
         hedgePremium: new Decimal(execution.premium),
