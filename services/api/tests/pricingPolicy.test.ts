@@ -103,5 +103,7 @@ test("resolveDefaultPricingPolicyConfig returns sane defaults", () => {
   assert.equal(cfg.mode, "actuarial_strict");
   assert.equal(cfg.baseFeeUsd.toFixed(10), "5.0000000000");
   assert.equal(cfg.markupFactor.toFixed(10), "1.5000000000");
+  assert.equal(cfg.claimsCoverageFactor.toFixed(10), "0.3000000000");
+  assert.equal(cfg.triggerProbCap.toFixed(10), "0.2000000000");
   assert.equal(cfg.notionalBands.length, 5);
 });

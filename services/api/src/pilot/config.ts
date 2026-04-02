@@ -110,6 +110,12 @@ export const parsePositiveFinite = (raw: string | undefined, fallback: number, e
   throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
 };
 
+export const parseNonNegativeFinite = (raw: string | undefined, fallback: number, errorCode: string): number => {
+  const parsed = Number(raw ?? String(fallback));
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
+};
+
 export const parsePilotQuoteMinNotionalUsdc = (raw: string | undefined): number => {
   const parsed = Number(raw ?? "1000");
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -529,6 +535,30 @@ export const pilotConfig = {
     "invalid_pilot_treasury_daily_subsidy_cap_usdc"
   ),
   treasuryStrictFallbackEnabled: parseBooleanEnv(process.env.PILOT_TREASURY_STRICT_FALLBACK_ENABLED, true),
+  hybridTriggerProbCap: parseFractionRange(
+    process.env.PILOT_HYBRID_TRIGGER_PROB_CAP,
+    0.2,
+    0,
+    1,
+    "invalid_pilot_hybrid_trigger_prob_cap"
+  ),
+  hybridClaimsCoverageFactor: parseFractionRange(
+    process.env.PILOT_HYBRID_CLAIMS_COVERAGE_FACTOR,
+    0.3,
+    0,
+    1,
+    "invalid_pilot_hybrid_claims_coverage_factor"
+  ),
+  hybridMarkupFactor: parsePositiveFinite(
+    process.env.PILOT_HYBRID_MARKUP_FACTOR,
+    1.5,
+    "invalid_pilot_hybrid_markup_factor"
+  ),
+  hybridBaseFeeUsd: parseNonNegativeFinite(
+    process.env.PILOT_HYBRID_BASE_FEE_USD,
+    5,
+    "invalid_pilot_hybrid_base_fee_usd"
+  ),
   premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045"),
   premiumMarkupPctByTier: {
     "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_BRONZE || "0.06"),

@@ -10,6 +10,8 @@ import {
   parseDeribitStrikeSelectionMode,
   parseIbkrOrderTif,
   parseBooleanEnv,
+  parseFractionRange,
+  parseNonNegativeFinite,
   parsePositiveFinite,
   parsePositiveIntInRange,
   parsePilotVenueMode,
@@ -114,6 +116,21 @@ test("parsePositiveFinite validates positive numeric values", () => {
   assert.equal(parsePositiveFinite("1.5", 2500, "invalid"), 1.5);
   assert.throws(() => parsePositiveFinite("0", 2500, "invalid"), /invalid:/);
   assert.throws(() => parsePositiveFinite("-5", 2500, "invalid"), /invalid:/);
+});
+
+test("parseNonNegativeFinite allows zero and blocks negatives", () => {
+  assert.equal(parseNonNegativeFinite(undefined, 5, "invalid"), 5);
+  assert.equal(parseNonNegativeFinite("0", 5, "invalid"), 0);
+  assert.equal(parseNonNegativeFinite("1.25", 5, "invalid"), 1.25);
+  assert.throws(() => parseNonNegativeFinite("-0.01", 5, "invalid"), /invalid:/);
+});
+
+test("parseFractionRange enforces fractional bounds", () => {
+  assert.equal(parseFractionRange(undefined, 0.3, 0, 1, "invalid"), 0.3);
+  assert.equal(parseFractionRange("0", 0.3, 0, 1, "invalid"), 0);
+  assert.equal(parseFractionRange("1", 0.3, 0, 1, "invalid"), 1);
+  assert.throws(() => parseFractionRange("-0.01", 0.3, 0, 1, "invalid"), /invalid:/);
+  assert.throws(() => parseFractionRange("1.1", 0.3, 0, 1, "invalid"), /invalid:/);
 });
 
 test("ibkr tenor drift env parsing supports configured bounds", () => {

@@ -103,32 +103,6 @@ const resolveTierMarkupPct = (tierName: string): Decimal => {
   return Number.isFinite(raw) && raw > 0 ? new Decimal(raw) : new Decimal(0);
 };
 
-const resolveHybridMarkupFactor = (tierName: string): Decimal => {
-  const markupPct = resolveTierMarkupPct(tierName);
-  return Decimal.max(new Decimal(1), new Decimal(1).plus(markupPct.mul(2)));
-};
-
-const resolveHybridBaseFeeUsd = (tierName: string): Decimal => {
-  const configured = resolveTierPremiumFloorUsd(tierName);
-  if (configured.gt(0)) return Decimal.min(new Decimal(8), configured);
-  return new Decimal(5);
-};
-
-const resolveHybridTriggerProbCap = (drawdownFloorPct: Decimal): Decimal => {
-  // Wider floor (20%) typically has lower trigger probability than tight floors.
-  return drawdownFloorPct.greaterThanOrEqualTo(new Decimal("0.2")) ? new Decimal("0.2") : new Decimal("0.3");
-};
-
-const resolveHybridClaimsCoverageFactor = (): Decimal => new Decimal("0.35");
-
-const resolvePositionFloorUsd = (notionalUsd: Decimal): Decimal => {
-  if (notionalUsd.lt(1500)) return new Decimal(10);
-  if (notionalUsd.lt(3000)) return new Decimal(15);
-  if (notionalUsd.lt(6000)) return new Decimal(20);
-  if (notionalUsd.lte(10000)) return new Decimal(25);
-  return new Decimal(35);
-};
-
 export const resolvePricingPolicyMode = (raw: string | undefined): PricingMode => {
   const normalized = String(raw || "actuarial_strict").trim().toLowerCase();
   if (normalized === "hybrid_otm_treasury" || normalized === "actuarial_strict") {
@@ -183,10 +157,13 @@ export const resolveDefaultPricingPolicyConfig = (params: {
       ? params.profitabilityBufferPct
       : 0.015
   ),
-  baseFeeUsd: new Decimal(5),
-  markupFactor: new Decimal("1.5"),
-  claimsCoverageFactor: new Decimal("0.35"),
-  triggerProbCap: new Decimal("0.2"),
+  baseFeeUsd: Decimal.max(new Decimal(0), new Decimal(pilotConfig.hybridBaseFeeUsd)),
+  markupFactor: parsePositiveFiniteWithDefault(pilotConfig.hybridMarkupFactor, new Decimal("1.5")),
+  claimsCoverageFactor: Decimal.min(
+    new Decimal(1),
+    Decimal.max(new Decimal(0), new Decimal(pilotConfig.hybridClaimsCoverageFactor))
+  ),
+  triggerProbCap: Decimal.min(new Decimal(1), Decimal.max(new Decimal(0), new Decimal(pilotConfig.hybridTriggerProbCap))),
   notionalBands: [
     { maxNotionalUsd: new Decimal("1500"), floorUsd: new Decimal("10") },
     { maxNotionalUsd: new Decimal("3000"), floorUsd: new Decimal("15") },
