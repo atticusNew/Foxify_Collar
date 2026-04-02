@@ -27,7 +27,15 @@ test("comparePricingModels returns strict and hybrid premiums for identical inpu
   assert.equal(result.rows[0].hybridMethod.startsWith("hybrid_"), true);
   assert.equal(result.rows[0].strictClientPremiumUsd, "210.5000000000");
   assert.equal(result.rows[0].hybridClientPremiumUsd, "77.0000000000");
+  assert.equal(result.rows[0].hybridClaimsFloorHit, true);
+  assert.equal(result.rows[0].hybridImpliedSubsidyGapUsd, "133.5000000000");
   assert.equal(result.summary.nRows, 1);
+  assert.equal(result.summary.claimsFloorHitCount, 1);
+  assert.equal(result.summary.claimsFloorHitRatePct, "100.0000");
+  assert.equal(result.summary.impliedSubsidyGapMeanUsd, "133.5000000000");
+  assert.equal(result.summary.impliedSubsidyGapMedianUsd, "133.5000000000");
+  assert.equal(result.summary.impliedSubsidyGapTotalUsd, "133.5000000000");
+  assert.equal(result.summary.impliedSubsidyGapPositiveCount, 1);
 });
 
 test("parseComparisonInputFixture normalizes scenarios deterministically", () => {

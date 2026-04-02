@@ -33,6 +33,11 @@ export type PricingComparisonRow = {
   hybridExpectedClaimsUsd: string;
   strictTriggerProb: string;
   hybridTriggerProb: string;
+  hybridPositionFloorUsd: string;
+  hybridClaimsFloorUsd: string;
+  hybridMarkupPremiumUsd: string;
+  hybridClaimsFloorHit: boolean;
+  hybridImpliedSubsidyGapUsd: string;
   quoteInstrumentId: string | null;
   spotPriceUsd: string | null;
 };
@@ -46,6 +51,12 @@ export type ComparisonOutput = {
     hybridMeanPremiumUsd: string;
     meanDeltaUsd: string;
     medianDeltaUsd: string;
+    claimsFloorHitCount: number;
+    claimsFloorHitRatePct: string;
+    impliedSubsidyGapMeanUsd: string;
+    impliedSubsidyGapMedianUsd: string;
+    impliedSubsidyGapTotalUsd: string;
+    impliedSubsidyGapPositiveCount: number;
     positiveDeltaCount: number;
     negativeDeltaCount: number;
     zeroDeltaCount: number;
@@ -78,11 +89,20 @@ const buildSummary = (rows: PricingComparisonRow[]) => {
   const strictPremiums = rows.map((row) => new Decimal(row.strictClientPremiumUsd));
   const hybridPremiums = rows.map((row) => new Decimal(row.hybridClientPremiumUsd));
   const deltas = rows.map((row) => new Decimal(row.premiumDeltaUsd));
+  const impliedSubsidyGaps = rows.map((row) => new Decimal(row.hybridImpliedSubsidyGapUsd));
   const n = rows.length;
   const strictMean = n > 0 ? strictPremiums.reduce((acc, cur) => acc.plus(cur), new Decimal(0)).div(n) : new Decimal(0);
   const hybridMean = n > 0 ? hybridPremiums.reduce((acc, cur) => acc.plus(cur), new Decimal(0)).div(n) : new Decimal(0);
   const meanDelta = n > 0 ? deltas.reduce((acc, cur) => acc.plus(cur), new Decimal(0)).div(n) : new Decimal(0);
   const medianDelta = median(deltas);
+  const claimsFloorHitCount = rows.filter((row) => row.hybridClaimsFloorHit).length;
+  const claimsFloorHitRatePct =
+    n > 0 ? new Decimal(claimsFloorHitCount).div(n).mul(100).toFixed(4) : new Decimal(0).toFixed(4);
+  const impliedSubsidyGapMean =
+    n > 0 ? impliedSubsidyGaps.reduce((acc, cur) => acc.plus(cur), new Decimal(0)).div(n) : new Decimal(0);
+  const impliedSubsidyGapMedian = median(impliedSubsidyGaps);
+  const impliedSubsidyGapTotal = impliedSubsidyGaps.reduce((acc, cur) => acc.plus(cur), new Decimal(0));
+  const impliedSubsidyGapPositiveCount = impliedSubsidyGaps.filter((item) => item.gt(0)).length;
   const positiveDeltaCount = deltas.filter((item) => item.gt(0)).length;
   const negativeDeltaCount = deltas.filter((item) => item.lt(0)).length;
   const zeroDeltaCount = deltas.length - positiveDeltaCount - negativeDeltaCount;
@@ -92,6 +112,12 @@ const buildSummary = (rows: PricingComparisonRow[]) => {
     hybridMeanPremiumUsd: toFixed(hybridMean),
     meanDeltaUsd: toFixed(meanDelta),
     medianDeltaUsd: toFixed(medianDelta),
+    claimsFloorHitCount,
+    claimsFloorHitRatePct,
+    impliedSubsidyGapMeanUsd: toFixed(impliedSubsidyGapMean),
+    impliedSubsidyGapMedianUsd: toFixed(impliedSubsidyGapMedian),
+    impliedSubsidyGapTotalUsd: toFixed(impliedSubsidyGapTotal),
+    impliedSubsidyGapPositiveCount,
     positiveDeltaCount,
     negativeDeltaCount,
     zeroDeltaCount
@@ -118,6 +144,11 @@ export const comparePricingModels = (inputs: PricingComparisonInput[], asOfIso =
     });
     const deltaUsd = hybrid.clientPremiumUsd.minus(strict.clientPremiumUsd);
     const deltaPct = strict.clientPremiumUsd.gt(0) ? deltaUsd.div(strict.clientPremiumUsd) : new Decimal(0);
+    const hybridClaimsFloorHit = hybrid.method === "hybrid_claims_floor";
+    const hybridImpliedSubsidyGapUsd = Decimal.max(
+      new Decimal(0),
+      hybrid.premiumProfitabilityTargetUsd.minus(hybrid.clientPremiumUsd)
+    );
     return {
       scenarioId: input.scenarioId,
       asOfIso,
@@ -136,6 +167,11 @@ export const comparePricingModels = (inputs: PricingComparisonInput[], asOfIso =
       hybridExpectedClaimsUsd: toFixed(hybrid.expectedClaimsUsd),
       strictTriggerProb: toFixed(strict.expectedTriggerProbCapped),
       hybridTriggerProb: toFixed(hybrid.expectedTriggerProbCapped),
+      hybridPositionFloorUsd: toFixed(hybrid.positionFloorUsd),
+      hybridClaimsFloorUsd: toFixed(hybrid.claimsFloorUsd),
+      hybridMarkupPremiumUsd: toFixed(hybrid.markupPremiumUsd),
+      hybridClaimsFloorHit,
+      hybridImpliedSubsidyGapUsd: toFixed(hybridImpliedSubsidyGapUsd),
       quoteInstrumentId: input.quoteInstrumentId || null,
       spotPriceUsd: input.spotPriceUsd ? toFixed(input.spotPriceUsd) : null
     };

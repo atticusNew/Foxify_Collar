@@ -100,6 +100,10 @@ const main = async () => {
         hybridMeanPremiumUsd: summary.hybridMeanPremiumUsd,
         meanDeltaUsd: summary.meanDeltaUsd,
         medianDeltaUsd: summary.medianDeltaUsd,
+        claimsFloorHitRatePct: summary.claimsFloorHitRatePct,
+        impliedSubsidyGapMeanUsd: summary.impliedSubsidyGapMeanUsd,
+        impliedSubsidyGapMedianUsd: summary.impliedSubsidyGapMedianUsd,
+        impliedSubsidyGapTotalUsd: summary.impliedSubsidyGapTotalUsd,
         outJson,
         outCsv
       },
