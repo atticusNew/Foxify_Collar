@@ -200,6 +200,19 @@ cmd_compare_live_deribit() {
   json_summary_from_compare "${out_json}"
 }
 
+cmd_compare_tenors_live_deribit() {
+  local out_json="${COMPARE_OUT_DIR}/pilot-tenor-compare.json"
+  local out_csv="${COMPARE_OUT_DIR}/pilot-tenor-compare.csv"
+  cd "${ROOT_DIR}/services/api"
+  npm run -s pilot:compare-tenors -- \
+    --tenors 14,21,28 \
+    --notionals 5000,10000 \
+    --tiers "Pro (Bronze),Pro (Silver),Pro (Gold)" \
+    --out-json "${out_json}" \
+    --out-csv "${out_csv}"
+  jq '.summaryByTenor' "${out_json}"
+}
+
 cmd_deribit_matrix() {
   local out_dir="${COMPARE_OUT_DIR}/pilot-matrix"
   mkdir -p "${out_dir}"
@@ -247,6 +260,7 @@ Commands:
   selector-diagnostics            Query /pilot/admin/diagnostics/selector with admin token
   compare-fixture                 Run compare-models against fixture and print KPI summary
   compare-live-deribit            Run compare-models against live Deribit and print KPI summary
+  compare-tenors-live-deribit     Run 14/21/28 tenor live Deribit premium sweep
   deribit-matrix                  Run strict + hybrid matrix compares (fixture) and print merged summary
 EOF
 }
@@ -264,6 +278,7 @@ main() {
     selector-diagnostics) cmd_selector_diagnostics ;;
     compare-fixture) cmd_compare_fixture ;;
     compare-live-deribit) cmd_compare_live_deribit ;;
+    compare-tenors-live-deribit) cmd_compare_tenors_live_deribit ;;
     deribit-matrix) cmd_deribit_matrix ;;
     *)
       usage

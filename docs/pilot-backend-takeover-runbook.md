@@ -160,6 +160,25 @@ npm run -s pilot:compare-models -- \
 jq '.summary' /tmp/pilot-compare-live-deribit.json
 ```
 
+### 4.2b Tenor sweep script (live Deribit, requested 14/21/28d)
+
+```bash
+cd /opt/ibkr-stack/services/api
+npm run -s pilot:compare-tenors -- \
+  --tenors 14,21,28 \
+  --notionals 5000,10000 \
+  --tiers "Pro (Bronze),Pro (Silver),Pro (Gold)" \
+  --out-json /tmp/pilot-tenor-compare.json \
+  --out-csv /tmp/pilot-tenor-compare.csv
+
+jq '.summaryByTenor' /tmp/pilot-tenor-compare.json
+```
+
+Notes:
+
+- Output reports requested tenor, selected tenor, and tenor drift days for each row.
+- Deribit expiry availability can cause requested 28d to map to nearest listed expiry.
+
 ### 4.3 Required KPI table fields
 
 `pilot:compare-models` summary now includes:

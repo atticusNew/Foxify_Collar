@@ -7,6 +7,7 @@ import {
   comparisonRowsToCsv,
   parseComparisonInputFixture
 } from "../src/pilot/modelComparison";
+import { compareLiveDeribitByTenor } from "../src/pilot/tenorComparison";
 
 test("comparePricingModels returns strict and hybrid premiums for identical input", () => {
   const result = comparePricingModels([
@@ -119,4 +120,43 @@ test("buildLiveDeribitComparisonInputs uses Deribit spot and orderbook snapshots
   assert.equal(inputs[0].spotPriceUsd?.toFixed(10), "60000.0000000000");
   assert.equal(inputs[0].brokerFeesUsd.toFixed(10), "1.2500000000");
   assert.equal(inputs[0].hedgePremiumUsd.minus(new Decimal("60")).abs().lessThan(new Decimal("0.00001")), true);
+});
+
+test("compareLiveDeribitByTenor returns rows grouped by requested tenor", async () => {
+  const deribitMock = {
+    async getIndexPrice() {
+      return { result: { index_price: 60000 } };
+    },
+    async listInstruments() {
+      return {
+        result: [
+          { instrument_name: "BTC-17APR26-52000-P" },
+          { instrument_name: "BTC-24APR26-51000-P" }
+        ]
+      };
+    },
+    async getOrderBook(instrumentId: string) {
+      if (instrumentId.includes("17APR26")) {
+        return { result: { asks: [[0.012, 12]], mark_price: 0.011 } };
+      }
+      return { result: { asks: [[0.014, 10]], mark_price: 0.013 } };
+    }
+  } as any;
+  const output = await compareLiveDeribitByTenor({
+    deribit: deribitMock,
+    env: "testnet",
+    tenorsDays: [14, 21],
+    notionalsUsd: [5000],
+    tiers: ["Pro (Bronze)"],
+    asOf: new Date("2026-04-03T00:00:00.000Z")
+  });
+  assert.equal(output.rows.length, 2);
+  assert.equal(output.summaryByTenor.length, 2);
+  assert.equal(output.summaryByTenor[0].tenorDaysRequested, 14);
+  assert.equal(output.summaryByTenor[1].tenorDaysRequested, 21);
+  assert.equal(output.summaryByTenor[0].nRows, 1);
+  assert.equal(output.summaryByTenor[1].nRows, 1);
+  assert.equal(output.rows.every((row) => row.error === null), true);
+  assert.equal(output.rows[0].strictMethod, "floor_profitability");
+  assert.equal(output.rows[0].hybridMethod?.startsWith("hybrid_"), true);
 });

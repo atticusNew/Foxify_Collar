@@ -24,6 +24,7 @@
     "dev": "tsx watch src/server.ts",
     "test": "tsx --test tests/**/*.test.ts",
     "migrate:pilot": "tsx src/pilot/migrate.ts",
-    "pilot:compare-models": "tsx scripts/pilotCompareModels.ts"
+    "pilot:compare-models": "tsx scripts/pilotCompareModels.ts",
+    "pilot:compare-tenors": "tsx scripts/pilotCompareTenors.ts"
   }
 }
