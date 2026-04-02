@@ -10,6 +10,7 @@ import type {
   DeribitQuotePolicy,
   DeribitStrikeSelectionMode,
   PilotHedgePolicy,
+  PilotSelectorMode,
   PilotVenueMode
 } from "./config";
 import type { VenueExecution, VenueQuote } from "./types";
@@ -64,6 +65,7 @@ type IbkrVenueConfig = {
   requireOptionsNative?: boolean;
   qualifyCacheTtlMs?: number;
   qualifyCacheMaxKeys?: number;
+  selectorMode?: PilotSelectorMode;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -767,7 +769,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private qualifyCacheTtlMs: number,
     private qualifyCacheMaxKeys: number,
     private marketDataRequestTimeoutMs: number,
-    private quoteBudgetMs: number
+    private quoteBudgetMs: number,
+    private selectorMode: PilotSelectorMode
   ) {}
 
   private resolveRight(protectionType?: "long" | "short"): "P" | "C" {
@@ -1594,11 +1597,23 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
               ? Math.max(0, Math.min(2, premiumUsd / Math.max(triggerPayoutCreditUsd, 1e-9)))
               : 1;
           const triggerFeasibilityPenalty =
-            triggerCoverageRatio >= 1
+            this.selectorMode === "hybrid_treasury"
               ? 0
-              : (1 - triggerCoverageRatio) * (notionalUsd > 0 ? 70 : 35);
-          const expectedLossPenalty = notionalUsd > 0 ? (expectedTriggerCostUsd / notionalUsd) * 100 * 6 : 0;
-          const profitabilityPenalty = notionalUsd > 0 ? (premiumShortfallUsd / notionalUsd) * 100 * 12 : 0;
+              : triggerCoverageRatio >= 1
+                ? 0
+                : (1 - triggerCoverageRatio) * (notionalUsd > 0 ? 70 : 35);
+          const expectedLossPenalty =
+            this.selectorMode === "hybrid_treasury"
+              ? 0
+              : notionalUsd > 0
+                ? (expectedTriggerCostUsd / notionalUsd) * 100 * 6
+                : 0;
+          const profitabilityPenalty =
+            this.selectorMode === "hybrid_treasury"
+              ? 0
+              : notionalUsd > 0
+                ? (premiumShortfallUsd / notionalUsd) * 100 * 12
+                : 0;
           const score =
             tenorPenalty +
             belowTargetPenalty +
@@ -2320,7 +2335,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         tenorDriftDays: optionMeta.tenorDriftDays,
         selectedExpiry: String(optionMatch.contract.expiry || "") || null,
         selectionReason: reason,
-        selectionAlgorithm: "liquidity_protection_profitability_v2",
+        selectionAlgorithm:
+          this.selectorMode === "hybrid_treasury"
+            ? "liquidity_tenor_hybrid_treasury_v1"
+            : "liquidity_protection_profitability_v2",
         selectedScore: optionMatch.selectedScore,
         selectedRank: optionMatch.selectedRank,
         selectedIsBelowTarget: optionMatch.selectedIsBelowTarget,
@@ -3258,7 +3276,8 @@ export const createPilotVenueAdapter = (params: {
         ? Math.max(100, Math.floor(Number(params.ibkr.qualifyCacheMaxKeys)))
         : 2000,
       connectorTimeoutMs,
-      Number(params.ibkrQuoteBudgetMs || 0)
+      Number(params.ibkrQuoteBudgetMs || 0),
+      params.ibkr.selectorMode || "strict_profitability"
     );
   }
   if (params.mode === "deribit_test") {

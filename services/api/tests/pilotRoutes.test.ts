@@ -212,6 +212,8 @@ const createPilotHarness = async (opts?: {
     process.env.PILOT_PREMIUM_PRICING_MODE === "hybrid_otm_treasury"
       ? "hybrid_otm_treasury"
       : "actuarial_strict";
+  configModule.pilotConfig.pilotSelectorMode =
+    process.env.PILOT_SELECTOR_MODE === "hybrid_treasury" ? "hybrid_treasury" : "strict_profitability";
   configModule.pilotConfig.premiumPolicyVersion =
     String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2";
   configModule.pilotConfig.premiumMarkupPct = Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045");

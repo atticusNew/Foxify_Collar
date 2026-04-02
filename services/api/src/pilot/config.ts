@@ -14,6 +14,7 @@ export type IbkrOrderTif = "IOC" | "DAY";
 export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 export type PilotPricingMode = "actuarial_strict" | "hybrid_otm_treasury";
+export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
 
 export type PilotWindowState = {
   enforced: boolean;
@@ -156,6 +157,14 @@ export const parsePilotPricingMode = (raw: string | undefined): PilotPricingMode
     return normalized;
   }
   throw new Error(`invalid_pilot_pricing_mode:${normalized || "empty"}`);
+};
+
+export const parsePilotSelectorMode = (raw: string | undefined): PilotSelectorMode => {
+  const normalized = String(raw || "strict_profitability").trim().toLowerCase();
+  if (normalized === "strict_profitability" || normalized === "hybrid_treasury") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_selector_mode:${normalized || "empty"}`);
 };
 
 export const parseCommaSeparatedInts = (
@@ -307,6 +316,7 @@ export const pilotConfig = {
   pilotHedgePolicy: parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY),
   premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
   premiumPricingMode: parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
+  pilotSelectorMode: parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
   premiumPolicyVersion: String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2",
   premiumPolicyEnforce: parseBooleanEnv(process.env.PILOT_PREMIUM_ENFORCE, false),
   premiumCapEnforce: parseBooleanEnv(process.env.PILOT_ENFORCE_PREMIUM_CAP, false),

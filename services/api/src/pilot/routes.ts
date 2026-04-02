@@ -596,7 +596,8 @@ export const registerPilotRoutes = async (
       qualifyCacheMaxKeys: pilotConfig.ibkrQualifyCacheMaxKeys,
       optionTenorWindowDays: pilotConfig.ibkrOptionLiquidityTenorWindowDays,
       optionProtectionTolerancePct: pilotConfig.ibkrOptionProtectionTolerancePct,
-      requireOptionsNative: pilotConfig.ibkrRequireOptionsNative
+      requireOptionsNative: pilotConfig.ibkrRequireOptionsNative,
+      selectorMode: pilotConfig.pilotSelectorMode
     },
     ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
     deribit: deps.deribit
