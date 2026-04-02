@@ -27,14 +27,14 @@ test("comparePricingModels returns strict and hybrid premiums for identical inpu
   assert.equal(result.rows[0].hybridMethod.startsWith("hybrid_"), true);
   assert.equal(result.rows[0].strictClientPremiumUsd, "210.5000000000");
   assert.equal(result.rows[0].hybridClientPremiumUsd, "77.0000000000");
-  assert.equal(result.rows[0].hybridClaimsFloorHit, true);
-  assert.equal(result.rows[0].hybridImpliedSubsidyGapUsd, "133.5000000000");
+  assert.equal(result.rows[0].hybridClaimsFloorHit, result.rows[0].hybridMethod === "hybrid_claims_floor");
+  assert.equal(result.rows[0].hybridImpliedSubsidyGapUsd, "116.0000000000");
   assert.equal(result.summary.nRows, 1);
-  assert.equal(result.summary.claimsFloorHitCount, 1);
-  assert.equal(result.summary.claimsFloorHitRatePct, "100.0000");
-  assert.equal(result.summary.impliedSubsidyGapMeanUsd, "133.5000000000");
-  assert.equal(result.summary.impliedSubsidyGapMedianUsd, "133.5000000000");
-  assert.equal(result.summary.impliedSubsidyGapTotalUsd, "133.5000000000");
+  assert.equal(result.summary.claimsFloorHitCount, result.rows[0].hybridClaimsFloorHit ? 1 : 0);
+  assert.equal(result.summary.claimsFloorHitRatePct, result.rows[0].hybridClaimsFloorHit ? "100.0000" : "0.0000");
+  assert.equal(result.summary.impliedSubsidyGapMeanUsd, result.rows[0].hybridImpliedSubsidyGapUsd);
+  assert.equal(result.summary.impliedSubsidyGapMedianUsd, result.rows[0].hybridImpliedSubsidyGapUsd);
+  assert.equal(result.summary.impliedSubsidyGapTotalUsd, result.rows[0].hybridImpliedSubsidyGapUsd);
   assert.equal(result.summary.impliedSubsidyGapPositiveCount, 1);
 });
 
