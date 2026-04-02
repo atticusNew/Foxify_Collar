@@ -9,6 +9,10 @@ import type {
   PremiumPolicyDiagnostics,
   ProtectionRecord,
   ProtectionStatus,
+  SimPositionRecord,
+  SimPositionStatus,
+  SimTreasuryEntryType,
+  SimTreasuryLedgerRecord,
   TenorPolicyTenorRow,
   VenueExecution,
   VenueQuote
@@ -174,6 +178,47 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       PRIMARY KEY (user_hash, day_start)
     );
 
+    CREATE TABLE IF NOT EXISTS pilot_daily_treasury_subsidy_usage (
+      user_hash TEXT NOT NULL,
+      day_start DATE NOT NULL,
+      used_subsidy NUMERIC(28,10) NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_hash, day_start)
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_sim_positions (
+      id TEXT PRIMARY KEY,
+      user_hash TEXT NOT NULL,
+      hash_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      notional_usd NUMERIC(28,10) NOT NULL,
+      entry_price NUMERIC(28,10) NOT NULL,
+      tier_name TEXT,
+      drawdown_floor_pct NUMERIC(10,6),
+      floor_price NUMERIC(28,10),
+      protection_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      protection_id TEXT REFERENCES pilot_protections(id) ON DELETE SET NULL,
+      protection_premium_usd NUMERIC(28,10),
+      protected_loss_usd NUMERIC(28,10),
+      trigger_credited_usd NUMERIC(28,10) NOT NULL DEFAULT 0,
+      trigger_credited_at TIMESTAMPTZ,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_sim_treasury_ledger (
+      id TEXT PRIMARY KEY,
+      sim_position_id TEXT NOT NULL REFERENCES pilot_sim_positions(id) ON DELETE CASCADE,
+      user_hash TEXT NOT NULL,
+      protection_id TEXT REFERENCES pilot_protections(id) ON DELETE SET NULL,
+      entry_type TEXT NOT NULL,
+      amount_usd NUMERIC(28,10) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS pilot_terms_acceptances (
       id TEXT PRIMARY KEY,
       user_hash TEXT NOT NULL,
@@ -208,6 +253,14 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       ON pilot_terms_acceptances(user_hash, terms_version);
     CREATE INDEX IF NOT EXISTS pilot_terms_acceptances_accepted_at_idx
       ON pilot_terms_acceptances(accepted_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_sim_positions_user_hash_created_idx
+      ON pilot_sim_positions(user_hash, created_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_sim_positions_status_idx
+      ON pilot_sim_positions(status);
+    CREATE INDEX IF NOT EXISTS pilot_sim_treasury_ledger_user_hash_created_idx
+      ON pilot_sim_treasury_ledger(user_hash, created_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_sim_treasury_ledger_position_idx
+      ON pilot_sim_treasury_ledger(sim_position_id, created_at DESC);
   `);
   schemaReady = true;
 };
@@ -291,6 +344,61 @@ export const getProtection = async (pool: Queryable, id: string): Promise<Protec
   return mapProtection(result.rows[0]);
 };
 
+export const patchProtectionForStatus = async (
+  pool: Queryable,
+  params: {
+    id: string;
+    expectedStatus: ProtectionStatus | ProtectionStatus[];
+    patch: Record<string, unknown>;
+  }
+): Promise<ProtectionRecord | null> => {
+  const entries = Object.entries(params.patch).filter(([, value]) => value !== undefined);
+  if (!entries.length) return null;
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  entries.forEach(([key, value], idx) => {
+    fields.push(`${key} = $${idx + 1}`);
+    values.push(value);
+  });
+  fields.push(`updated_at = NOW()`);
+  const statusValues = Array.isArray(params.expectedStatus) ? params.expectedStatus : [params.expectedStatus];
+  values.push(params.id);
+  const idParam = values.length;
+  const statusParamStart = values.length + 1;
+  values.push(...statusValues);
+  const statusParams = statusValues.map((_, idx) => `$${statusParamStart + idx}`).join(", ");
+  const query = `
+    UPDATE pilot_protections
+    SET ${fields.join(", ")}
+    WHERE id = $${idParam}
+      AND status IN (${statusParams})
+    RETURNING *
+  `;
+  const updated = await pool.query(query, values);
+  if (updated.rowCount === 0) return null;
+  return mapProtection(updated.rows[0]);
+};
+
+export const listActiveProtectionsForTriggerMonitor = async (
+  pool: Queryable,
+  params: { limit?: number } = {}
+): Promise<ProtectionRecord[]> => {
+  const limit = Math.max(1, Math.min(params.limit ?? 50, 500));
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM pilot_protections
+      WHERE status = 'active'
+        AND entry_price IS NOT NULL
+        AND (drawdown_floor_pct IS NOT NULL OR floor_price IS NOT NULL)
+      ORDER BY updated_at ASC
+      LIMIT $1
+    `,
+    [limit]
+  );
+  return result.rows.map(mapProtection);
+};
+
 export const listProtections = async (
   pool: Queryable,
   opts: { limit?: number } = {}
@@ -321,6 +429,7 @@ export type AdminProtectionScope = "active" | "open" | "all";
 const OPEN_PROTECTION_STATUSES: ProtectionStatus[] = [
   "pending_activation",
   "active",
+  "triggered",
   "reconcile_pending",
   "awaiting_renew_decision",
   "awaiting_expiry_price"
@@ -576,7 +685,7 @@ export const getPilotAdminMetrics = async (
     scope === "all"
       ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = ''"
       : scope === "open"
-        ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status IN ('pending_activation', 'active', 'reconcile_pending', 'awaiting_renew_decision', 'awaiting_expiry_price')"
+        ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status IN ('pending_activation', 'active', 'triggered', 'reconcile_pending', 'awaiting_renew_decision', 'awaiting_expiry_price')"
         : "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status = 'active'";
   const result = await pool.query(
     `
@@ -910,6 +1019,332 @@ export const releaseDailyActivationCapacity = async (
     `,
     [params.userHash, params.dayStartIso, params.protectedNotional]
   );
+};
+
+export const reserveDailyTreasurySubsidyCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    subsidyAmount: string;
+    maxDailySubsidy: string;
+  }
+): Promise<{ ok: true; usedAfter: string } | { ok: false; usedNow: string }> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_daily_treasury_subsidy_usage (user_hash, day_start, used_subsidy)
+      VALUES ($1, $2::date, 0)
+      ON CONFLICT (user_hash, day_start) DO NOTHING
+    `,
+    [params.userHash, params.dayStartIso]
+  );
+  const updated = await pool.query(
+    `
+      UPDATE pilot_daily_treasury_subsidy_usage
+      SET used_subsidy = used_subsidy + $3::numeric
+      WHERE user_hash = $1
+        AND day_start = $2::date
+        AND used_subsidy + $3::numeric <= $4::numeric
+      RETURNING used_subsidy::text AS used_after
+    `,
+    [params.userHash, params.dayStartIso, params.subsidyAmount, params.maxDailySubsidy]
+  );
+  if (updated.rowCount && updated.rows[0]?.used_after) {
+    return { ok: true, usedAfter: String(updated.rows[0].used_after) };
+  }
+  const current = await pool.query(
+    `
+      SELECT used_subsidy::text AS used_now
+      FROM pilot_daily_treasury_subsidy_usage
+      WHERE user_hash = $1
+        AND day_start = $2::date
+      LIMIT 1
+    `,
+    [params.userHash, params.dayStartIso]
+  );
+  return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
+};
+
+export const releaseDailyTreasurySubsidyCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    subsidyAmount: string;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      UPDATE pilot_daily_treasury_subsidy_usage
+      SET used_subsidy = GREATEST(0, used_subsidy - $3::numeric)
+      WHERE user_hash = $1
+        AND day_start = $2::date
+    `,
+    [params.userHash, params.dayStartIso, params.subsidyAmount]
+  );
+};
+
+export const insertSimPosition = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    userHash: string;
+    hashVersion: number;
+    status: SimPositionStatus;
+    marketId: string;
+    side: "long" | "short";
+    notionalUsd: string;
+    entryPrice: string;
+    tierName?: string | null;
+    drawdownFloorPct?: string | null;
+    floorPrice?: string | null;
+    protectionEnabled: boolean;
+    protectionId?: string | null;
+    protectionPremiumUsd?: string | null;
+    protectedLossUsd?: string | null;
+    triggerCreditedUsd?: string;
+    triggerCreditedAt?: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<SimPositionRecord> => {
+  const id = input.id || randomUUID();
+  const inserted = await pool.query(
+    `
+      INSERT INTO pilot_sim_positions (
+        id, user_hash, hash_version, status, market_id, side, notional_usd, entry_price,
+        tier_name, drawdown_floor_pct, floor_price, protection_enabled, protection_id,
+        protection_premium_usd, protected_loss_usd, trigger_credited_usd, trigger_credited_at, metadata
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,
+        $9,$10,$11,$12,$13,
+        $14,$15,$16,$17,$18::jsonb
+      )
+      RETURNING *
+    `,
+    [
+      id,
+      input.userHash,
+      input.hashVersion,
+      input.status,
+      input.marketId,
+      input.side,
+      input.notionalUsd,
+      input.entryPrice,
+      input.tierName ?? null,
+      input.drawdownFloorPct ?? null,
+      input.floorPrice ?? null,
+      input.protectionEnabled,
+      input.protectionId ?? null,
+      input.protectionPremiumUsd ?? null,
+      input.protectedLossUsd ?? null,
+      input.triggerCreditedUsd ?? "0",
+      input.triggerCreditedAt ?? null,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+  return mapSimPosition(inserted.rows[0]);
+};
+
+export const getSimPosition = async (pool: Queryable, id: string): Promise<SimPositionRecord | null> => {
+  const result = await pool.query(`SELECT * FROM pilot_sim_positions WHERE id = $1 LIMIT 1`, [id]);
+  if (!result.rowCount) return null;
+  return mapSimPosition(result.rows[0]);
+};
+
+export const patchSimPosition = async (
+  pool: Queryable,
+  id: string,
+  patch: Record<string, unknown>
+): Promise<SimPositionRecord | null> => {
+  const entries = Object.entries(patch).filter(([, value]) => value !== undefined);
+  if (!entries.length) return getSimPosition(pool, id);
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  entries.forEach(([key, value], idx) => {
+    fields.push(`${key} = $${idx + 1}`);
+    values.push(value);
+  });
+  fields.push("updated_at = NOW()");
+  values.push(id);
+  const updated = await pool.query(
+    `
+      UPDATE pilot_sim_positions
+      SET ${fields.join(", ")}
+      WHERE id = $${values.length}
+      RETURNING *
+    `,
+    values
+  );
+  if (!updated.rowCount) return null;
+  return mapSimPosition(updated.rows[0]);
+};
+
+export const listSimPositionsByUserHash = async (
+  pool: Queryable,
+  userHash: string,
+  opts: { limit?: number } = {}
+): Promise<SimPositionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_sim_positions
+      WHERE user_hash = $1
+      ORDER BY created_at DESC
+      LIMIT $2
+    `,
+    [userHash, limit]
+  );
+  return result.rows.map(mapSimPosition);
+};
+
+export const listSimOpenProtectedPositionsByUserHash = async (
+  pool: Queryable,
+  userHash: string,
+  opts: { limit?: number } = {}
+): Promise<SimPositionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 200, 500));
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_sim_positions
+      WHERE user_hash = $1
+        AND status = 'open'
+        AND protection_enabled = TRUE
+      ORDER BY created_at ASC
+      LIMIT $2
+    `,
+    [userHash, limit]
+  );
+  return result.rows.map(mapSimPosition);
+};
+
+export const creditSimPositionForTrigger = async (
+  pool: Queryable,
+  params: {
+    id: string;
+    triggerCreditUsd: string;
+    metadata: Record<string, unknown>;
+  }
+): Promise<SimPositionRecord | null> => {
+  const updated = await pool.query(
+    `
+      UPDATE pilot_sim_positions
+      SET
+        status = 'triggered',
+        trigger_credited_usd = $2::numeric,
+        trigger_credited_at = NOW(),
+        metadata = $3::jsonb,
+        updated_at = NOW()
+      WHERE id = $1
+        AND status = 'open'
+        AND protection_enabled = TRUE
+        AND COALESCE(trigger_credited_usd, 0) = 0
+      RETURNING *
+    `,
+    [params.id, params.triggerCreditUsd, JSON.stringify(params.metadata || {})]
+  );
+  if (!updated.rowCount) return null;
+  return mapSimPosition(updated.rows[0]);
+};
+
+export const insertSimTreasuryLedgerEntry = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    simPositionId: string;
+    userHash: string;
+    protectionId?: string | null;
+    entryType: SimTreasuryEntryType;
+    amountUsd: string;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<SimTreasuryLedgerRecord> => {
+  const inserted = await pool.query(
+    `
+      INSERT INTO pilot_sim_treasury_ledger (
+        id, sim_position_id, user_hash, protection_id, entry_type, amount_usd, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+      RETURNING *
+    `,
+    [
+      input.id || randomUUID(),
+      input.simPositionId,
+      input.userHash,
+      input.protectionId ?? null,
+      input.entryType,
+      input.amountUsd,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+  return mapSimTreasuryLedger(inserted.rows[0]);
+};
+
+export const listSimTreasuryLedgerByUserHash = async (
+  pool: Queryable,
+  userHash: string,
+  opts: { limit?: number } = {}
+): Promise<SimTreasuryLedgerRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 500, 2000));
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_sim_treasury_ledger
+      WHERE user_hash = $1
+      ORDER BY created_at DESC
+      LIMIT $2
+    `,
+    [userHash, limit]
+  );
+  return result.rows.map(mapSimTreasuryLedger);
+};
+
+export const getSimPlatformMetrics = async (
+  pool: Queryable,
+  userHash: string
+): Promise<{
+  totalPositions: string;
+  openPositions: string;
+  triggeredPositions: string;
+  protectedPositions: string;
+  premiumCollectedUsd: string;
+  triggerCreditPaidUsd: string;
+  treasuryNetUsd: string;
+}> => {
+  const counts = await pool.query(
+    `
+      SELECT
+        COUNT(*)::text AS total_positions,
+        COUNT(*) FILTER (WHERE status = 'open')::text AS open_positions,
+        COUNT(*) FILTER (WHERE status = 'triggered')::text AS triggered_positions,
+        COUNT(*) FILTER (WHERE protection_enabled = TRUE)::text AS protected_positions
+      FROM pilot_sim_positions
+      WHERE user_hash = $1
+    `,
+    [userHash]
+  );
+  const ledger = await pool.query(
+    `
+      SELECT
+        COALESCE(SUM(CASE WHEN entry_type = 'premium_collected' THEN amount_usd ELSE 0 END), 0)::text AS premium_collected_usd,
+        COALESCE(SUM(CASE WHEN entry_type = 'trigger_credit' THEN amount_usd ELSE 0 END), 0)::text AS trigger_credit_paid_usd
+      FROM pilot_sim_treasury_ledger
+      WHERE user_hash = $1
+    `,
+    [userHash]
+  );
+  const countsRow = counts.rows[0] || {};
+  const ledgerRow = ledger.rows[0] || {};
+  const premiumCollected = new Decimal(String(ledgerRow.premium_collected_usd || "0"));
+  const triggerCreditPaid = new Decimal(String(ledgerRow.trigger_credit_paid_usd || "0"));
+  return {
+    totalPositions: String(countsRow.total_positions || "0"),
+    openPositions: String(countsRow.open_positions || "0"),
+    triggeredPositions: String(countsRow.triggered_positions || "0"),
+    protectedPositions: String(countsRow.protected_positions || "0"),
+    premiumCollectedUsd: premiumCollected.toFixed(10),
+    triggerCreditPaidUsd: triggerCreditPaid.toFixed(10),
+    treasuryNetUsd: premiumCollected.minus(triggerCreditPaid).toFixed(10)
+  };
 };
 
 export type PilotTermsAcceptanceRecord = {
@@ -1320,6 +1755,40 @@ const mapPilotTermsAcceptance = (row: Record<string, unknown>): PilotTermsAccept
   details: toRecord(row.details),
   createdAt: new Date(String(row.created_at)).toISOString(),
   updatedAt: new Date(String(row.updated_at)).toISOString()
+});
+
+const mapSimPosition = (row: Record<string, unknown>): SimPositionRecord => ({
+  id: String(row.id),
+  userHash: String(row.user_hash),
+  hashVersion: Number(row.hash_version),
+  status: String(row.status) as SimPositionStatus,
+  marketId: String(row.market_id),
+  side: String(row.side) as "long" | "short",
+  notionalUsd: String(row.notional_usd),
+  entryPrice: String(row.entry_price),
+  tierName: row.tier_name ? String(row.tier_name) : null,
+  drawdownFloorPct: row.drawdown_floor_pct === null ? null : String(row.drawdown_floor_pct),
+  floorPrice: row.floor_price === null ? null : String(row.floor_price),
+  protectionEnabled: Boolean(row.protection_enabled),
+  protectionId: row.protection_id ? String(row.protection_id) : null,
+  protectionPremiumUsd: row.protection_premium_usd === null ? null : String(row.protection_premium_usd),
+  protectedLossUsd: row.protected_loss_usd === null ? null : String(row.protected_loss_usd),
+  triggerCreditedUsd: String(row.trigger_credited_usd),
+  triggerCreditedAt: row.trigger_credited_at ? new Date(String(row.trigger_credited_at)).toISOString() : null,
+  metadata: toRecord(row.metadata),
+  createdAt: new Date(String(row.created_at)).toISOString(),
+  updatedAt: new Date(String(row.updated_at)).toISOString()
+});
+
+const mapSimTreasuryLedger = (row: Record<string, unknown>): SimTreasuryLedgerRecord => ({
+  id: String(row.id),
+  simPositionId: String(row.sim_position_id),
+  userHash: String(row.user_hash),
+  protectionId: row.protection_id ? String(row.protection_id) : null,
+  entryType: String(row.entry_type) as SimTreasuryEntryType,
+  amountUsd: String(row.amount_usd),
+  metadata: toRecord(row.metadata),
+  createdAt: new Date(String(row.created_at)).toISOString()
 });
 
 const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({

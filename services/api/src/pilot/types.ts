@@ -2,6 +2,7 @@ export type ProtectionStatus =
   | "pending_activation"
   | "activation_failed"
   | "active"
+  | "triggered"
   | "reconcile_pending"
   | "awaiting_renew_decision"
   | "awaiting_expiry_price"
@@ -9,9 +10,14 @@ export type ProtectionStatus =
   | "expired_otm"
   | "cancelled";
 
-export type LedgerEntryType = "premium_due" | "premium_settled" | "payout_due" | "payout_settled";
+export type LedgerEntryType =
+  | "premium_due"
+  | "premium_settled"
+  | "trigger_payout_due"
+  | "payout_due"
+  | "payout_settled";
 
-export type PriceSnapshotType = "entry" | "expiry";
+export type PriceSnapshotType = "entry" | "expiry" | "trigger";
 
 export type PriceSource = "reference_oracle" | "fallback_oracle";
 
@@ -193,5 +199,43 @@ export type VenueExecution = {
   externalOrderId: string;
   externalExecutionId: string;
   details?: Record<string, unknown>;
+};
+
+export type SimPositionStatus = "open" | "closed" | "triggered";
+
+export type SimTreasuryEntryType = "premium_collected" | "trigger_credit";
+
+export type SimPositionRecord = {
+  id: string;
+  userHash: string;
+  hashVersion: number;
+  status: SimPositionStatus;
+  marketId: string;
+  side: ProtectionType;
+  notionalUsd: string;
+  entryPrice: string;
+  tierName: string | null;
+  drawdownFloorPct: string | null;
+  floorPrice: string | null;
+  protectionEnabled: boolean;
+  protectionId: string | null;
+  protectionPremiumUsd: string | null;
+  protectedLossUsd: string | null;
+  triggerCreditedUsd: string;
+  triggerCreditedAt: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SimTreasuryLedgerRecord = {
+  id: string;
+  simPositionId: string;
+  userHash: string;
+  protectionId: string | null;
+  entryType: SimTreasuryEntryType;
+  amountUsd: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
 };
 

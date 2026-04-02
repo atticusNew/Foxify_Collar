@@ -10,6 +10,7 @@ import type {
   DeribitQuotePolicy,
   DeribitStrikeSelectionMode,
   PilotHedgePolicy,
+  PilotSelectorMode,
   PilotVenueMode
 } from "./config";
 import type { VenueExecution, VenueQuote } from "./types";
@@ -64,6 +65,7 @@ type IbkrVenueConfig = {
   requireOptionsNative?: boolean;
   qualifyCacheTtlMs?: number;
   qualifyCacheMaxKeys?: number;
+  selectorMode?: PilotSelectorMode;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -767,7 +769,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private qualifyCacheTtlMs: number,
     private qualifyCacheMaxKeys: number,
     private marketDataRequestTimeoutMs: number,
-    private quoteBudgetMs: number
+    private quoteBudgetMs: number,
+    private selectorMode: PilotSelectorMode
   ) {}
 
   private resolveRight(protectionType?: "long" | "short"): "P" | "C" {
@@ -935,6 +938,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
       nTimedOut: number;
       nPassed: number;
     };
+
+    const toSafeNumber = (value: unknown): number | null => {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
+    };
     const selectorStartedAt = Date.now();
     const timingsMs = { total: 0, qualify: 0, top: 0, depth: 0, score: 0 };
     const counters = {
@@ -956,6 +964,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const adverseMovePctRaw = Number(req.drawdownFloorPct ?? 0);
     const adverseMovePct =
       Number.isFinite(adverseMovePctRaw) && adverseMovePctRaw > 0 ? Math.min(0.95, adverseMovePctRaw) : 0;
+    const requestDetails = (req.details || {}) as Record<string, unknown>;
+    const expectedTriggerCostUsdForSelection = toSafeNumber(requestDetails.expectedTriggerCostUsd) ?? 0;
+    const premiumProfitabilityTargetUsdForSelection =
+      toSafeNumber(requestDetails.premiumProfitabilityTargetUsd) ?? 0;
+    const triggerPayoutCreditUsdForSelection = toSafeNumber(requestDetails.triggerPayoutCreditUsd) ?? 0;
     const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
     const right = this.resolveRight(req.protectionType);
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
@@ -1412,6 +1425,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         belowTarget: boolean;
         protectionCoveragePct: number | null;
         premiumRatio: number;
+        triggerFeasibilityPenaltyUsd: number;
+        expectedTriggerCostUsd: number;
+        expectedTriggerCreditUsd: number;
+        premiumProfitabilityTargetUsd: number;
+        riskAdjustedPremiumRatio: number;
         score: number;
       };
       const passed: Scored[] = [];
@@ -1568,7 +1586,43 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
           const economicsPenalty = premiumRatio * 100;
           const tenorPenalty = Math.max(0, driftDays) * 20;
           const belowTargetPenalty = this.preferTenorAtOrAbove && belowTarget ? 7 : 0;
-          const score = tenorPenalty + belowTargetPenalty + spreadPenalty * 1.1 + sizePenalty * 6 + economicsPenalty * 14;
+          const expectedTriggerCostUsd = expectedTriggerCostUsdForSelection;
+          const premiumProfitabilityTargetUsd = premiumProfitabilityTargetUsdForSelection;
+          const triggerPayoutCreditUsd = triggerPayoutCreditUsdForSelection;
+          const notionalUsd = notional > 0 ? notional : 0;
+          const premiumUsd = estimatedPremium;
+          const premiumShortfallUsd = Math.max(0, premiumProfitabilityTargetUsd - premiumUsd);
+          const triggerCoverageRatio =
+            triggerPayoutCreditUsd > 0
+              ? Math.max(0, Math.min(2, premiumUsd / Math.max(triggerPayoutCreditUsd, 1e-9)))
+              : 1;
+          const triggerFeasibilityPenalty =
+            this.selectorMode === "hybrid_treasury"
+              ? 0
+              : triggerCoverageRatio >= 1
+                ? 0
+                : (1 - triggerCoverageRatio) * (notionalUsd > 0 ? 70 : 35);
+          const expectedLossPenalty =
+            this.selectorMode === "hybrid_treasury"
+              ? 0
+              : notionalUsd > 0
+                ? (expectedTriggerCostUsd / notionalUsd) * 100 * 6
+                : 0;
+          const profitabilityPenalty =
+            this.selectorMode === "hybrid_treasury"
+              ? 0
+              : notionalUsd > 0
+                ? (premiumShortfallUsd / notionalUsd) * 100 * 12
+                : 0;
+          const score =
+            tenorPenalty +
+            belowTargetPenalty +
+            spreadPenalty * 1.1 +
+            sizePenalty * 6 +
+            economicsPenalty * 14 +
+            triggerFeasibilityPenalty +
+            expectedLossPenalty +
+            profitabilityPenalty;
           passed.push({
             contract,
             top: chosenTop,
@@ -1581,6 +1635,14 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
             belowTarget,
             protectionCoveragePct,
             premiumRatio,
+            triggerFeasibilityPenaltyUsd: Number((triggerFeasibilityPenalty * 0.01 * notionalUsd).toFixed(8)),
+            expectedTriggerCostUsd: Number(expectedTriggerCostUsd.toFixed(8)),
+            expectedTriggerCreditUsd: Number(triggerPayoutCreditUsd.toFixed(8)),
+            premiumProfitabilityTargetUsd: Number(premiumProfitabilityTargetUsd.toFixed(8)),
+            riskAdjustedPremiumRatio:
+              notionalUsd > 0
+                ? Number(((premiumUsd + expectedTriggerCostUsd) / notionalUsd).toFixed(8))
+                : premiumRatio,
             score
           });
           failureCounts.nPassed += 1;
@@ -1616,6 +1678,11 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         askSize: row.askSize,
         spreadPct: row.spreadPct,
         belowTarget: row.belowTarget,
+        triggerFeasibilityPenaltyUsd: row.triggerFeasibilityPenaltyUsd,
+        expectedTriggerCostUsd: row.expectedTriggerCostUsd,
+        expectedTriggerCreditUsd: row.expectedTriggerCreditUsd,
+        premiumProfitabilityTargetUsd: row.premiumProfitabilityTargetUsd,
+        riskAdjustedPremiumRatio: row.riskAdjustedPremiumRatio,
         score: Number(row.score.toFixed(6))
       }));
       const rankedAlternatives = passed.slice(0, 3).map((row) => ({
@@ -1623,7 +1690,12 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         matchedTenorDays: row.matchedTenorDays,
         ask: row.ask,
         score: Number.isFinite(row.score) ? Number(row.score.toFixed(6)) : null,
-        driftDays: Number.isFinite(row.driftDays) ? row.driftDays : null
+        driftDays: Number.isFinite(row.driftDays) ? row.driftDays : null,
+        triggerFeasibilityPenaltyUsd: row.triggerFeasibilityPenaltyUsd,
+        expectedTriggerCostUsd: row.expectedTriggerCostUsd,
+        expectedTriggerCreditUsd: row.expectedTriggerCreditUsd,
+        premiumProfitabilityTargetUsd: row.premiumProfitabilityTargetUsd,
+        riskAdjustedPremiumRatio: row.riskAdjustedPremiumRatio
       }));
       return {
         contract: best.contract,
@@ -2263,7 +2335,10 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         tenorDriftDays: optionMeta.tenorDriftDays,
         selectedExpiry: String(optionMatch.contract.expiry || "") || null,
         selectionReason: reason,
-        selectionAlgorithm: "liquidity_protection_first_v1",
+        selectionAlgorithm:
+          this.selectorMode === "hybrid_treasury"
+            ? "liquidity_tenor_hybrid_treasury_v1"
+            : "liquidity_protection_profitability_v2",
         selectedScore: optionMatch.selectedScore,
         selectedRank: optionMatch.selectedRank,
         selectedIsBelowTarget: optionMatch.selectedIsBelowTarget,
@@ -3201,7 +3276,8 @@ export const createPilotVenueAdapter = (params: {
         ? Math.max(100, Math.floor(Number(params.ibkr.qualifyCacheMaxKeys)))
         : 2000,
       connectorTimeoutMs,
-      Number(params.ibkrQuoteBudgetMs || 0)
+      Number(params.ibkrQuoteBudgetMs || 0),
+      params.ibkr.selectorMode || "strict_profitability"
     );
   }
   if (params.mode === "deribit_test") {

@@ -13,6 +13,8 @@ export type PilotHedgePolicy = "options_primary_futures_fallback" | "options_onl
 export type IbkrOrderTif = "IOC" | "DAY";
 export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
+export type PilotPricingMode = "actuarial_strict" | "hybrid_otm_treasury";
+export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
 
 export type PilotWindowState = {
   enforced: boolean;
@@ -108,6 +110,12 @@ export const parsePositiveFinite = (raw: string | undefined, fallback: number, e
   throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
 };
 
+export const parseNonNegativeFinite = (raw: string | undefined, fallback: number, errorCode: string): number => {
+  const parsed = Number(raw ?? String(fallback));
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
+};
+
 export const parsePilotQuoteMinNotionalUsdc = (raw: string | undefined): number => {
   const parsed = Number(raw ?? "1000");
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -147,6 +155,34 @@ export const parsePremiumPolicyMode = (raw: string | undefined): PremiumPolicyMo
     return normalized;
   }
   throw new Error(`invalid_pilot_premium_policy_mode:${normalized || "empty"}`);
+};
+
+export const parsePilotPricingMode = (raw: string | undefined): PilotPricingMode => {
+  const normalized = String(raw || "actuarial_strict").trim().toLowerCase();
+  if (normalized === "actuarial_strict" || normalized === "hybrid_otm_treasury") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_pricing_mode:${normalized || "empty"}`);
+};
+
+export const parsePilotSelectorMode = (raw: string | undefined): PilotSelectorMode => {
+  const normalized = String(raw || "strict_profitability").trim().toLowerCase();
+  if (normalized === "strict_profitability" || normalized === "hybrid_treasury") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_selector_mode:${normalized || "empty"}`);
+};
+
+export const parseFractionRange = (
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  errorCode: string
+): number => {
+  const parsed = Number(raw ?? String(fallback));
+  if (Number.isFinite(parsed) && parsed >= min && parsed <= max) return parsed;
+  throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
 };
 
 export const parseCommaSeparatedInts = (
@@ -297,6 +333,8 @@ export const pilotConfig = {
   deribitMaxTenorDriftDays: parseDeribitMaxTenorDriftDays(process.env.PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS),
   pilotHedgePolicy: parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY),
   premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
+  premiumPricingMode: parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
+  pilotSelectorMode: parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
   premiumPolicyVersion: String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2",
   premiumPolicyEnforce: parseBooleanEnv(process.env.PILOT_PREMIUM_ENFORCE, false),
   premiumCapEnforce: parseBooleanEnv(process.env.PILOT_ENFORCE_PREMIUM_CAP, false),
@@ -444,6 +482,27 @@ export const pilotConfig = {
   ibkrOptionProtectionTolerancePct: Number.isFinite(Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))
     ? Math.max(0, Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))
     : 0.03,
+  optionSelectionCoverageWeight: Number.isFinite(Number(process.env.PILOT_OPTION_SELECTION_COVERAGE_WEIGHT ?? "18"))
+    ? Math.max(0, Number(process.env.PILOT_OPTION_SELECTION_COVERAGE_WEIGHT ?? "18"))
+    : 18,
+  optionSelectionPremiumWeight: Number.isFinite(Number(process.env.PILOT_OPTION_SELECTION_PREMIUM_WEIGHT ?? "14"))
+    ? Math.max(0, Number(process.env.PILOT_OPTION_SELECTION_PREMIUM_WEIGHT ?? "14"))
+    : 14,
+  optionSelectionLiquidityWeight: Number.isFinite(Number(process.env.PILOT_OPTION_SELECTION_LIQUIDITY_WEIGHT ?? "7.5"))
+    ? Math.max(0, Number(process.env.PILOT_OPTION_SELECTION_LIQUIDITY_WEIGHT ?? "7.5"))
+    : 7.5,
+  optionSelectionTenorWeight: Number.isFinite(Number(process.env.PILOT_OPTION_SELECTION_TENOR_WEIGHT ?? "20"))
+    ? Math.max(0, Number(process.env.PILOT_OPTION_SELECTION_TENOR_WEIGHT ?? "20"))
+    : 20,
+  premiumTriggerCostShare: Number.isFinite(Number(process.env.PILOT_PREMIUM_TRIGGER_COST_SHARE ?? "0.15"))
+    ? Math.max(0, Number(process.env.PILOT_PREMIUM_TRIGGER_COST_SHARE ?? "0.15"))
+    : 0.15,
+  premiumExpectedTriggerProbabilityByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_PROB_BRONZE || "0.28"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_PROB_SILVER || "0.22"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_PROB_GOLD || "0.18"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_PROB_PLATINUM || "0.15")
+  } as Record<string, number>,
   ibkrPreferTenorAtOrAbove: parseBooleanEnv(process.env.IBKR_PREFER_TENOR_AT_OR_ABOVE, true),
   ibkrRequireLiveTransport: parseBooleanEnv(
     process.env.IBKR_REQUIRE_LIVE_TRANSPORT,
@@ -463,6 +522,43 @@ export const pilotConfig = {
   quoteMinNotionalUsdc: parsePilotQuoteMinNotionalUsdc(process.env.PILOT_QUOTE_MIN_NOTIONAL_USDC),
   maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "50000"),
   maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "50000"),
+  treasuryPerQuoteSubsidyCapPct: parseFractionRange(
+    process.env.PILOT_TREASURY_PER_QUOTE_SUBSIDY_CAP_PCT || process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT,
+    0.7,
+    0,
+    1,
+    "invalid_pilot_treasury_subsidy_cap_pct"
+  ),
+  treasuryDailySubsidyCapUsdc: parsePositiveFinite(
+    process.env.PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC,
+    15000,
+    "invalid_pilot_treasury_daily_subsidy_cap_usdc"
+  ),
+  treasuryStrictFallbackEnabled: parseBooleanEnv(process.env.PILOT_TREASURY_STRICT_FALLBACK_ENABLED, true),
+  hybridTriggerProbCap: parseFractionRange(
+    process.env.PILOT_HYBRID_TRIGGER_PROB_CAP,
+    0.2,
+    0,
+    1,
+    "invalid_pilot_hybrid_trigger_prob_cap"
+  ),
+  hybridClaimsCoverageFactor: parseFractionRange(
+    process.env.PILOT_HYBRID_CLAIMS_COVERAGE_FACTOR,
+    0.3,
+    0,
+    1,
+    "invalid_pilot_hybrid_claims_coverage_factor"
+  ),
+  hybridMarkupFactor: parsePositiveFinite(
+    process.env.PILOT_HYBRID_MARKUP_FACTOR,
+    1.5,
+    "invalid_pilot_hybrid_markup_factor"
+  ),
+  hybridBaseFeeUsd: parseNonNegativeFinite(
+    process.env.PILOT_HYBRID_BASE_FEE_USD,
+    5,
+    "invalid_pilot_hybrid_base_fee_usd"
+  ),
   premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045"),
   premiumMarkupPctByTier: {
     "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_BRONZE || "0.06"),
@@ -482,6 +578,30 @@ export const pilotConfig = {
     "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_GOLD || "4"),
     "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "4")
   } as Record<string, number>,
+  premiumTriggerCreditFloorPctByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_BRONZE || "0.03"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_SILVER || "0.025"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_GOLD || "0.02"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_PLATINUM || "0.018")
+  } as Record<string, number>,
+  premiumExpectedTriggerBreachProbByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_BRONZE || "0.25"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_SILVER || "0.2"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_GOLD || "0.16"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_PLATINUM || "0.14")
+  } as Record<string, number>,
+  premiumProfitabilityBufferPctByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_BRONZE || "0.015"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_SILVER || "0.012"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_GOLD || "0.01"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_PLATINUM || "0.01")
+  } as Record<string, number>,
+  premiumTriggerCreditWeightByTier: {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_BRONZE || "0.35"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_SILVER || "0.32"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_GOLD || "0.28"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_PLATINUM || "0.25")
+  } as Record<string, number>,
   startingReserveUsdc: Number(process.env.PILOT_STARTING_RESERVE_USDC || "25000"),
   pricePrimaryTimeoutMs: Number(process.env.PRICE_TIMEOUT_PRIMARY_MS || "1400"),
   priceFallbackTimeoutMs: Number(process.env.PRICE_TIMEOUT_FALLBACK_MS || "1400"),
@@ -492,6 +612,21 @@ export const pilotConfig = {
   quoteTtlMs: Number(process.env.PILOT_QUOTE_TTL_MS || "30000"),
   venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "8000"),
   venueMarkTimeoutMs: Number(process.env.PILOT_VENUE_MARK_TIMEOUT_MS || "3000"),
+  triggerMonitorEnabled: parseBooleanEnv(process.env.PILOT_TRIGGER_MONITOR_ENABLED, true),
+  triggerMonitorIntervalMs: parsePositiveIntInRange(
+    process.env.PILOT_TRIGGER_MONITOR_INTERVAL_MS,
+    5000,
+    1000,
+    60000,
+    "invalid_pilot_trigger_monitor_interval_ms"
+  ),
+  triggerMonitorBatchSize: parsePositiveIntInRange(
+    process.env.PILOT_TRIGGER_MONITOR_BATCH_SIZE,
+    50,
+    1,
+    500,
+    "invalid_pilot_trigger_monitor_batch_size"
+  ),
   singlePriceSource: process.env.PRICE_SINGLE_SOURCE === "true",
   expiryInitialWindowMs: Number(process.env.EXPIRY_PRICE_INITIAL_WINDOW_MS || "5000"),
   fullCoverageTolerancePct: Number(process.env.FULL_COVERAGE_TOLERANCE_PCT || "0.005"),

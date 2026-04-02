@@ -1897,6 +1897,29 @@ select.input {
   .stats {
     grid-template-columns: 1fr;
   }
+
+  .sim-widget-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    min-height: 0;
+  }
+
+  .sim-widget-value {
+    text-align: left;
+  }
+
+  .sim-stoploss-group {
+    justify-self: start;
+    flex-wrap: wrap;
+  }
+
+  .sim-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sim-modal-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 .cta {
@@ -2361,6 +2384,253 @@ select.input {
 .pilot-help-fab:hover {
   color: #e7f7ff;
   border-color: rgba(132, 220, 255, 0.95);
+}
+
+.sim-card {
+  width: min(980px, 100%);
+}
+
+.sim-form-grid {
+  gap: 10px;
+}
+
+.sim-quote-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #111116;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
+.sim-entry-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #111116;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.sim-widget-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.sim-widget-row {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.sim-widget-value {
+  text-align: right;
+}
+
+.sim-stoploss-group {
+  display: inline-flex;
+  justify-self: end;
+  gap: 8px;
+}
+
+.sim-stoploss-btn {
+  min-width: 64px;
+  padding: 6px 10px;
+}
+
+.sim-open-btn {
+  margin-top: 4px;
+}
+
+.sim-open-btn.compact {
+  width: auto;
+  min-width: 220px;
+  justify-self: end;
+  padding: 10px 14px;
+}
+
+.sim-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sim-status-pill {
+  text-transform: uppercase;
+}
+
+.sim-position-list {
+  margin-top: 8px;
+}
+
+.sim-modal-copy {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.sim-modal-cost {
+  font-size: 14px;
+}
+
+.sim-modal-actions {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sim-protect-modal {
+  width: min(520px, 100%);
+}
+
+.sim-protect-stack {
+  display: grid;
+  gap: 18px;
+  padding-top: 4px;
+}
+
+.sim-protect-line {
+  display: grid;
+  gap: 4px;
+}
+
+.sim-protect-label {
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+
+.sim-protect-value {
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 800;
+  color: #f5e5d6;
+}
+
+.sim-protect-value-amount {
+  color: #ffe0ba;
+}
+
+.sim-protect-value-cost {
+  color: #ffd3a2;
+}
+
+.sim-protect-actions {
+  margin-top: 4px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sim-protect-btn {
+  padding: 9px 12px;
+  min-height: 38px;
+}
+
+.sim-protect-close {
+  justify-self: end;
+}
+
+.sim-stage-shell {
+  display: grid;
+  gap: 12px;
+}
+
+.sim-stage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sim-stage-title {
+  margin: 0;
+  font-size: 16px;
+}
+
+.sim-protect-copy {
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.sim-protect-credit {
+  font-size: 22px;
+  font-weight: 800;
+  color: #f5e5d6;
+}
+
+.sim-protect-cost {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.sim-modal-actions-stacked {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.sim-dashboard-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #111116;
+  padding: 12px;
+}
+
+.sim-dashboard-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-dashboard-actions .btn {
+  min-width: 124px;
+}
+
+.sim-table {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.sim-table-head,
+.sim-table-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 1fr 1fr 1fr 0.9fr;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 10px;
+}
+
+.sim-table-head {
+  background: #1a1a1f;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.sim-table-row {
+  background: #121216;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.sim-table-row strong {
+  font-size: 12px;
+}
+
+.sim-platform-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .presentation-gate-card {

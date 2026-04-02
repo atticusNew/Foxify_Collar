@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { newDb } from "pg-mem";
+import Decimal from "decimal.js";
 
 const originalFetch = global.fetch;
 
@@ -88,6 +89,9 @@ const createPilotHarness = async (opts?: {
   process.env.PILOT_DURATION_DAYS = "30";
   process.env.PILOT_ENFORCE_WINDOW = "true";
   process.env.PILOT_QUOTE_TTL_MS = "120000";
+  process.env.PILOT_TRIGGER_MONITOR_ENABLED = "false";
+  process.env.PILOT_TRIGGER_MONITOR_INTERVAL_MS = "5000";
+  process.env.PILOT_TRIGGER_MONITOR_BATCH_SIZE = "50";
   process.env.PILOT_TENOR_MIN_DAYS = "1";
   process.env.PILOT_TENOR_MAX_DAYS = "7";
   process.env.PILOT_TENOR_DEFAULT_DAYS = "7";
@@ -204,6 +208,12 @@ const createPilotHarness = async (opts?: {
     process.env.PILOT_PREMIUM_POLICY_MODE === "pass_through_markup"
       ? "pass_through_markup"
       : "hedge_only_markup";
+  configModule.pilotConfig.premiumPricingMode =
+    process.env.PILOT_PREMIUM_PRICING_MODE === "hybrid_otm_treasury"
+      ? "hybrid_otm_treasury"
+      : "actuarial_strict";
+  configModule.pilotConfig.pilotSelectorMode =
+    process.env.PILOT_SELECTOR_MODE === "hybrid_treasury" ? "hybrid_treasury" : "strict_profitability";
   configModule.pilotConfig.premiumPolicyVersion =
     String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2";
   configModule.pilotConfig.premiumMarkupPct = Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045");
@@ -225,8 +235,43 @@ const createPilotHarness = async (opts?: {
     "Pro (Gold)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_GOLD || "4"),
     "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_FLOOR_BPS_PLATINUM || "4")
   };
+  configModule.pilotConfig.premiumTriggerCreditFloorPctByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_BRONZE || "0.03"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_SILVER || "0.025"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_GOLD || "0.02"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_PLATINUM || "0.018")
+  };
+  configModule.pilotConfig.premiumExpectedTriggerBreachProbByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_BRONZE || "0.25"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_SILVER || "0.2"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_GOLD || "0.16"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_PLATINUM || "0.14")
+  };
+  configModule.pilotConfig.premiumProfitabilityBufferPctByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_BRONZE || "0.015"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_SILVER || "0.012"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_GOLD || "0.01"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_PLATINUM || "0.01")
+  };
+  configModule.pilotConfig.premiumTriggerCreditWeightByTier = {
+    "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_BRONZE || "0.35"),
+    "Pro (Silver)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_SILVER || "0.32"),
+    "Pro (Gold)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_GOLD || "0.28"),
+    "Pro (Platinum)": Number(process.env.PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_PLATINUM || "0.25")
+  };
+  configModule.pilotConfig.treasuryPerQuoteSubsidyCapPct = Number(
+    process.env.PILOT_TREASURY_PER_QUOTE_SUBSIDY_CAP_PCT || process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT || "0.7"
+  );
+  configModule.pilotConfig.treasuryDailySubsidyCapUsdc = Number(
+    process.env.PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC || "15000"
+  );
+  configModule.pilotConfig.treasuryStrictFallbackEnabled =
+    process.env.PILOT_TREASURY_STRICT_FALLBACK_ENABLED !== "false";
   configModule.pilotConfig.ibkrFeePerContractUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_CONTRACT_USD || "2.02"));
   configModule.pilotConfig.ibkrFeePerOrderUsd = Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD || "0"));
+  configModule.pilotConfig.triggerMonitorEnabled = process.env.PILOT_TRIGGER_MONITOR_ENABLED !== "false";
+  configModule.pilotConfig.triggerMonitorIntervalMs = Number(process.env.PILOT_TRIGGER_MONITOR_INTERVAL_MS || "5000");
+  configModule.pilotConfig.triggerMonitorBatchSize = Number(process.env.PILOT_TRIGGER_MONITOR_BATCH_SIZE || "50");
 
   const db = newDb();
   const pg = db.adapters.createPg();
@@ -234,6 +279,8 @@ const createPilotHarness = async (opts?: {
 
   const dbModule = await import("../src/pilot/db");
   dbModule.__setPilotPoolForTests(pool as any);
+  const triggerMonitorModule = await import("../src/pilot/triggerMonitor");
+  triggerMonitorModule.__setTriggerMonitorEnabledForTests(false);
   const { registerPilotRoutes } = await import("../src/pilot/routes");
 
   const app = Fastify();
@@ -245,6 +292,7 @@ const createPilotHarness = async (opts?: {
     close: async () => {
       await app.close();
       await pool.end();
+      triggerMonitorModule.__setTriggerMonitorEnabledForTests(true);
       dbModule.__setPilotPoolForTests(null);
       global.fetch = originalFetch;
     }
@@ -271,7 +319,7 @@ const quoteAndActivate = async (
     url: "/pilot/protections/activate",
     payload: activationPayload(quoteId, protectedNotional)
   });
-  assert.equal(activateRes.statusCode, 200);
+  assert.equal(activateRes.statusCode, 200, activateRes.body);
   const activatePayloadJson = activateRes.json();
   assert.equal(activatePayloadJson.status, "ok");
   assert.equal(Number(activatePayloadJson.protection?.entryPrice), 100000);
@@ -1320,6 +1368,51 @@ test("N4) activation premium diagnostics preserve estimated vs realized fee comp
     assert.equal(Number(realized.brokerFeesUsd), Number(estimated.brokerFeesUsd));
     assert.equal(Number(realized.passThroughUsd), Number(realized.hedgeCostUsd) + Number(realized.brokerFeesUsd));
     assert.equal(Number(realized.clientPremiumUsd), Number(payload?.protection?.premium || 0));
+  } finally {
+    await harness.close();
+  }
+});
+
+test("N4b) activation premium diagnostics include profitability floor economics", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_POLICY_MODE: "pass_through_markup",
+      PILOT_PREMIUM_MARKUP_PCT_BRONZE: "0.02",
+      PILOT_PREMIUM_TRIGGER_CREDIT_FLOOR_PCT_BRONZE: "0.03",
+      PILOT_PREMIUM_EXPECTED_TRIGGER_BREACH_PROB_BRONZE: "0.25",
+      PILOT_PREMIUM_PROFITABILITY_BUFFER_PCT_BRONZE: "0.015",
+      PILOT_PREMIUM_TRIGGER_CREDIT_WEIGHT_BRONZE: "0.35"
+    }
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200, quoteRes.body);
+    const quotePayload = quoteRes.json();
+    assert.equal(quotePayload.status, "ok");
+    const estimated = quotePayload?.diagnostics?.premiumPolicy?.estimated || {};
+    assert.equal(Number.isFinite(Number(estimated.hedgeCostUsd)), true);
+    assert.equal(Number.isFinite(Number(estimated.brokerFeesUsd)), true);
+    assert.equal(Number.isFinite(Number(estimated.passThroughUsd)), true);
+    assert.equal(Number.isFinite(Number(estimated.markupUsd)), true);
+    const pricingBreakdown = quotePayload?.quote?.details?.pricingBreakdown || {};
+    assert.equal(Number.isFinite(Number(pricingBreakdown.expectedTriggerCostUsd)), true);
+    assert.equal(Number.isFinite(Number(pricingBreakdown.profitabilityFloorUsd)), true);
+    assert.equal(Number.isFinite(Number(pricingBreakdown.selectionFeasibilityPenaltyUsd)), true);
+    assert.equal(Number.isFinite(Number(pricingBreakdown.premiumProfitabilityTargetUsd)), true);
+    assert.equal(Number.isFinite(Number(pricingBreakdown.premiumProfitabilityTargetRatio)), true);
+    assert.equal(
+      Number(pricingBreakdown.profitabilityFloorUsd) >= Number(pricingBreakdown.expectedTriggerCostUsd),
+      true
+    );
+    assert.equal(
+      Number(pricingBreakdown.selectionFeasibilityPenaltyUsd),
+      Number(pricingBreakdown.expectedTriggerCostUsd)
+    );
   } finally {
     await harness.close();
   }
@@ -2950,11 +3043,125 @@ test("Y4) quote premium policy in pass-through mode includes broker fees for IBK
       assert.equal(broker > 0, true);
       assert.ok(Math.abs(passThrough - (hedge + broker)) < 1e-9);
       assert.equal(clientPremium >= passThrough, true);
+      const breakdown = payload?.quote?.details?.pricingBreakdown || {};
+      assert.equal(Number.isFinite(Number(breakdown.expectedTriggerCostUsd ?? NaN)), true);
+      assert.equal(Number.isFinite(Number(breakdown.premiumProfitabilityTargetUsd ?? NaN)), true);
+      assert.equal(Number.isFinite(Number(breakdown.triggerPayoutCreditUsd ?? NaN)), true);
+      const profitabilityTarget = Number(breakdown.premiumProfitabilityTargetUsd ?? 0);
+      assert.equal(clientPremium >= profitabilityTarget || !Number.isFinite(profitabilityTarget), true);
     } finally {
       await harness.close();
     }
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test("Y4b) quote supports hybrid pricing mode and reports mode diagnostics", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_PREMIUM_POLICY_MODE: "pass_through_markup",
+      PILOT_PREMIUM_MARKUP_PCT_BRONZE: "0.06"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 200, quoteRes.body);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "ok");
+    const breakdown = payload?.quote?.details?.pricingBreakdown || {};
+    assert.equal(String(breakdown.pricingMode || ""), "hybrid_otm_treasury");
+    assert.equal(
+      String(payload?.diagnostics?.premiumPolicy?.mode || "") === "pass_through_markup" ||
+        String(payload?.diagnostics?.premiumPolicy?.mode || "") === "legacy",
+      true
+    );
+    assert.equal(Number.isFinite(Number(breakdown.clientPremiumUsd ?? NaN)), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Y4c) quote rejects when per-quote treasury subsidy cap is exceeded", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_TREASURY_SUBSIDY_CAP_PCT: "0.01",
+      PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "false"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 409, quoteRes.body);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "error");
+    assert.equal(payload.reason, "treasury_subsidy_per_quote_cap_exceeded");
+    assert.equal(Number.isFinite(Number(payload.quoteSubsidyUsd ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(payload.subsidyCapUsd ?? NaN)), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Y4d) quote rejects when daily treasury subsidy cap is exceeded", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_TREASURY_SUBSIDY_CAP_PCT: "1.0",
+      PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC: "1",
+      PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "false"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 409, quoteRes.body);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "error");
+    assert.equal(payload.reason, "treasury_subsidy_daily_cap_exceeded");
+    assert.equal(Number.isFinite(Number(payload.subsidyUsedUsd ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(payload.subsidyProjectedUsd ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(payload.subsidyCapUsd ?? NaN)), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Y4e) quote falls back to strict pricing mode when treasury rails trip", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_TREASURY_SUBSIDY_CAP_PCT: "0.01",
+      PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "true"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 200, quoteRes.body);
+    const payload = quoteRes.json();
+    const breakdown = payload?.quote?.details?.pricingBreakdown || {};
+    assert.equal(String(breakdown.pricingMode || ""), "actuarial_strict");
+    assert.equal(String(breakdown.treasuryFallbackApplied || ""), "per_quote_cap");
+    assert.equal(Number.isFinite(Number(breakdown.treasuryQuoteSubsidyUsd ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(breakdown.treasuryPerQuoteSubsidyCapUsd ?? NaN)), true);
+  } finally {
+    await harness.close();
   }
 });
 
@@ -3084,5 +3291,448 @@ test("Y5) quote strictTenor maps drifted options to tenor_drift_exceeded", async
     }
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test("Z2) sim open/list/trigger lifecycle credits treasury for protected breach", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    env: {
+      PILOT_ENFORCE_WINDOW: "false",
+      PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
+      PILOT_SELECTOR_MODE: "hybrid_treasury"
+    },
+    deribit: {
+      async getIndexPrice() {
+        return { result: { index_price: 100000 } };
+      },
+      async listInstruments() {
+        return {
+          result: [
+            {
+              instrument_name: "BTC-10APR26-80000-P",
+              option_type: "put",
+              strike: 80000,
+              expiration_timestamp: Date.now() + 7 * 86400000
+            }
+          ]
+        };
+      },
+      async getOrderBook() {
+        return {
+          result: {
+            asks: [[0.01, 5]],
+            bids: [[0.009, 5]],
+            mark_price: 0.0095
+          }
+        };
+      },
+      async placeOrder() {
+        return {
+          status: "filled",
+          id: "sim-order-1",
+          fillPrice: 0.01,
+          filledAmount: 0.05,
+          amount: 0.05
+        };
+      }
+    } as any
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(5000)
+    });
+    assert.equal(quoteRes.statusCode, 200, quoteRes.body);
+    const quoteId = String(quoteRes.json().quote?.quoteId || "");
+    assert.ok(quoteId.length > 0);
+
+    const simOpen = await app.inject({
+      method: "POST",
+      url: "/pilot/sim/positions/open",
+      payload: {
+        protectedNotional: 5000,
+        tierName: "Pro (Bronze)",
+        drawdownFloorPct: 0.2,
+        side: "long",
+        marketId: "BTC-USD",
+        withProtection: true,
+        quoteId,
+        tenorDays: 7
+      }
+    });
+    assert.equal(simOpen.statusCode, 200, simOpen.body);
+    const simOpenPayload = simOpen.json();
+    assert.equal(simOpenPayload.status, "ok");
+    const simPositionId = String(simOpenPayload.simPosition?.id || "");
+    assert.ok(simPositionId.length > 0);
+    assert.equal(simOpenPayload.simPosition.protectionEnabled, true);
+    assert.equal(Number(simOpenPayload.simPosition.protectedLossUsd), 1000);
+
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 79000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            product_id: "BTC-USD",
+            price: 79000,
+            timestamp: Date.now()
+          })
+      } as any;
+    }) as typeof fetch;
+
+    const runTrigger = await app.inject({
+      method: "POST",
+      url: "/pilot/internal/sim/trigger-monitor/run",
+      headers: {
+        "x-internal-token": "internal-local"
+      },
+      payload: { maxRows: 50 }
+    });
+    assert.equal(runTrigger.statusCode, 200, runTrigger.body);
+    const triggerPayload = runTrigger.json();
+    assert.equal(triggerPayload.status, "ok");
+    assert.equal(Number(triggerPayload.result?.triggered || 0) >= 1, true);
+
+    const simList = await app.inject({
+      method: "GET",
+      url: "/pilot/sim/positions?limit=20"
+    });
+    assert.equal(simList.statusCode, 200, simList.body);
+    const simListPayload = simList.json();
+    const updated = (simListPayload.positions || []).find((item: any) => item.id === simPositionId);
+    assert.ok(updated);
+    assert.equal(updated.status, "triggered");
+    assert.equal(Number(updated.triggerCreditedUsd), 1000);
+
+    const metricsRes = await app.inject({
+      method: "GET",
+      url: "/pilot/sim/platform/metrics"
+    });
+    assert.equal(metricsRes.statusCode, 200, metricsRes.body);
+    const metricsPayload = metricsRes.json();
+    assert.equal(metricsPayload.status, "ok");
+    assert.equal(Number(metricsPayload.metrics.premiumCollectedUsd) > 0, true);
+    assert.equal(Number(metricsPayload.metrics.triggerCreditPaidUsd), 1000);
+    assert.equal(Number(metricsPayload.metrics.triggeredPositions) >= 1, true);
+    assert.equal(
+      (metricsPayload.recentLedger || []).some((entry: any) => entry.entryType === "trigger_credit"),
+      true
+    );
+  } finally {
+    await harness.close();
+    global.fetch = originalFetch;
+  }
+});
+
+test("Z3) sim position close marks closed and stores realized pnl metadata", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    env: {
+      PILOT_ENFORCE_WINDOW: "false"
+    },
+    deribit: {
+      async getIndexPrice() {
+        return { result: { index_price: 100000 } };
+      },
+      async listInstruments() {
+        return {
+          result: [
+            {
+              instrument_name: "BTC-10APR26-80000-P",
+              option_type: "put",
+              strike: 80000,
+              expiration_timestamp: Date.now() + 7 * 86400000
+            }
+          ]
+        };
+      },
+      async getOrderBook() {
+        return {
+          result: {
+            asks: [[0.01, 5]],
+            bids: [[0.009, 5]],
+            mark_price: 0.0095
+          }
+        };
+      },
+      async placeOrder() {
+        return {
+          status: "filled",
+          id: "sim-order-2",
+          fillPrice: 0.01,
+          filledAmount: 0.05,
+          amount: 0.05
+        };
+      }
+    } as any
+  });
+  try {
+    const { app } = harness;
+    const opened = await app.inject({
+      method: "POST",
+      url: "/pilot/sim/positions/open",
+      payload: {
+        protectedNotional: 5000,
+        tierName: "Pro (Bronze)",
+        drawdownFloorPct: 0.2,
+        side: "long",
+        marketId: "BTC-USD",
+        withProtection: false
+      }
+    });
+    assert.equal(opened.statusCode, 200, opened.body);
+    const openPayload = opened.json();
+    const simPositionId = String(openPayload.simPosition?.id || "");
+    assert.ok(simPositionId.length > 0);
+
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 105000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            product_id: "BTC-USD",
+            price: 105000,
+            timestamp: Date.now()
+          })
+      } as any;
+    }) as typeof fetch;
+
+    const closeRes = await app.inject({
+      method: "POST",
+      url: `/pilot/sim/positions/${simPositionId}/close`
+    });
+    assert.equal(closeRes.statusCode, 200, closeRes.body);
+    const closePayload = closeRes.json();
+    assert.equal(closePayload.status, "ok");
+    assert.equal(closePayload.simPosition.status, "closed");
+    const metadata = (closePayload.simPosition.metadata || {}) as Record<string, unknown>;
+    assert.equal(Number.isFinite(Number(metadata.closePrice ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(metadata.realizedPnlUsd ?? NaN)), true);
+
+    const closeAgain = await app.inject({
+      method: "POST",
+      url: `/pilot/sim/positions/${simPositionId}/close`
+    });
+    assert.equal(closeAgain.statusCode, 200, closeAgain.body);
+    assert.equal(closeAgain.json().status, "ok");
+    assert.equal(closeAgain.json().idempotent, true);
+  } finally {
+    await harness.close();
+    global.fetch = originalFetch;
+  }
+});
+
+test("Z4) sim account summary returns equity and pnl aggregates", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    env: {
+      PILOT_ENFORCE_WINDOW: "false"
+    },
+    deribit: {
+      async getIndexPrice() {
+        return { result: { index_price: 100000 } };
+      },
+      async listInstruments() {
+        return {
+          result: [
+            {
+              instrument_name: "BTC-10APR26-80000-P",
+              option_type: "put",
+              strike: 80000,
+              expiration_timestamp: Date.now() + 7 * 86400000
+            }
+          ]
+        };
+      },
+      async getOrderBook() {
+        return {
+          result: {
+            asks: [[0.01, 5]],
+            bids: [[0.009, 5]],
+            mark_price: 0.0095
+          }
+        };
+      },
+      async placeOrder() {
+        return {
+          status: "filled",
+          id: "sim-order-3",
+          fillPrice: 0.01,
+          filledAmount: 0.05,
+          amount: 0.05
+        };
+      }
+    } as any
+  });
+  try {
+    const { app } = harness;
+    const openA = await app.inject({
+      method: "POST",
+      url: "/pilot/sim/positions/open",
+      payload: {
+        protectedNotional: 10000,
+        tierName: "Pro (Bronze)",
+        drawdownFloorPct: 0.2,
+        side: "long",
+        marketId: "BTC-USD",
+        withProtection: false
+      }
+    });
+    assert.equal(openA.statusCode, 200, openA.body);
+
+    const openB = await app.inject({
+      method: "POST",
+      url: "/pilot/sim/positions/open",
+      payload: {
+        protectedNotional: 5000,
+        tierName: "Pro (Bronze)",
+        drawdownFloorPct: 0.2,
+        side: "long",
+        marketId: "BTC-USD",
+        withProtection: false
+      }
+    });
+    assert.equal(openB.statusCode, 200, openB.body);
+    const simPositionId = String(openB.json().simPosition?.id || "");
+    assert.ok(simPositionId.length > 0);
+
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 105000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            product_id: "BTC-USD",
+            price: 105000,
+            timestamp: Date.now()
+          })
+      } as any;
+    }) as typeof fetch;
+
+    const closeRes = await app.inject({
+      method: "POST",
+      url: `/pilot/sim/positions/${simPositionId}/close`
+    });
+    assert.equal(closeRes.statusCode, 200, closeRes.body);
+
+    const summaryRes = await app.inject({
+      method: "GET",
+      url: "/pilot/sim/account/summary"
+    });
+    assert.equal(summaryRes.statusCode, 200, summaryRes.body);
+    const summaryPayload = summaryRes.json();
+    assert.equal(summaryPayload.status, "ok");
+    assert.equal(summaryPayload.summary.openPositions, "1");
+    assert.equal(summaryPayload.summary.closedPositions, "1");
+    assert.equal(summaryPayload.summary.totalPositions, undefined);
+    assert.equal(Number(summaryPayload.summary.realizedPnlUsd) > 0, true);
+    assert.equal(Number(summaryPayload.summary.unrealizedPnlUsd) > 0, true);
+    assert.equal(
+      Number(summaryPayload.summary.currentEquityUsd) > Number(summaryPayload.summary.startingEquityUsd),
+      true
+    );
+  } finally {
+    await harness.close();
+    global.fetch = originalFetch;
+  }
+});
+
+test("Z1) trigger monitor marks breached active protection as triggered", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_TRIGGER_MONITOR_ENABLED: "false",
+      PILOT_TRIGGER_MONITOR_BATCH_SIZE: "10"
+    }
+  });
+  try {
+    const { app, pool } = harness;
+    const { protectionId } = await quoteAndActivate(app, 1000);
+    const { processTriggerMonitorCycleWithResolver } = await import("../src/pilot/triggerMonitor");
+
+    const triggerSnapshotResolver = async () => ({
+      price: new Decimal(79000),
+      priceTimestamp: new Date().toISOString(),
+      marketId: "BTC-USD",
+      priceSource: "reference_oracle" as const,
+      priceSourceDetail: "reference_oracle_api",
+      endpointVersion: "v1",
+      requestId: "trigger-test"
+    });
+    const monitorResult = await processTriggerMonitorCycleWithResolver(
+      pool as any,
+      triggerSnapshotResolver as any,
+      new Date()
+    );
+    assert.equal(monitorResult.scanned >= 1, true);
+    assert.equal(monitorResult.triggered, 1);
+    const monitorResultReplay = await processTriggerMonitorCycleWithResolver(
+      pool as any,
+      triggerSnapshotResolver as any,
+      new Date()
+    );
+    assert.equal(monitorResultReplay.triggered, 0);
+
+    const protectionState = await pool.query(
+      `SELECT status, payout_due_amount, metadata FROM pilot_protections WHERE id = $1`,
+      [protectionId]
+    );
+    assert.equal(String(protectionState.rows[0].status), "triggered");
+    assert.equal(Number(protectionState.rows[0].payout_due_amount), 200);
+    assert.equal(String(protectionState.rows[0].metadata?.triggerStatus || ""), "breached");
+
+    const triggerLedger = await pool.query(
+      `SELECT entry_type, amount FROM pilot_ledger_entries WHERE protection_id = $1 ORDER BY created_at ASC`,
+      [protectionId]
+    );
+    const triggerEntries = triggerLedger.rows.filter((row: any) => row.entry_type === "trigger_payout_due");
+    assert.equal(triggerEntries.length, 1);
+    assert.equal(Number(triggerEntries[0].amount), 200);
+
+    const triggerSnapshots = await pool.query(
+      `SELECT snapshot_type, price FROM pilot_price_snapshots WHERE protection_id = $1 AND snapshot_type = 'trigger'`,
+      [protectionId]
+    );
+    assert.equal(Number(triggerSnapshots.rowCount || 0), 1);
+    assert.equal(Number(triggerSnapshots.rows[0].price), 79000);
+  } finally {
+    await harness.close();
   }
 });
