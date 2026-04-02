@@ -1897,6 +1897,29 @@ select.input {
   .stats {
     grid-template-columns: 1fr;
   }
+
+  .sim-widget-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    min-height: 0;
+  }
+
+  .sim-widget-value {
+    text-align: left;
+  }
+
+  .sim-stoploss-group {
+    justify-self: start;
+    flex-wrap: wrap;
+  }
+
+  .sim-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sim-modal-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 .cta {
@@ -2378,6 +2401,79 @@ select.input {
   padding: 10px 12px;
   display: grid;
   gap: 6px;
+}
+
+.sim-entry-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #111116;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.sim-widget-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.sim-widget-row {
+  display: grid;
+  grid-template-columns: 170px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+
+.sim-widget-value {
+  text-align: right;
+}
+
+.sim-stoploss-group {
+  display: inline-flex;
+  justify-self: end;
+  gap: 8px;
+}
+
+.sim-stoploss-btn {
+  min-width: 64px;
+  padding: 6px 10px;
+}
+
+.sim-open-btn {
+  margin-top: 4px;
+}
+
+.sim-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sim-status-pill {
+  text-transform: uppercase;
+}
+
+.sim-position-list {
+  margin-top: 8px;
+}
+
+.sim-modal-copy {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.sim-modal-cost {
+  font-size: 14px;
+}
+
+.sim-modal-actions {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
 }
 
 .presentation-gate-card {

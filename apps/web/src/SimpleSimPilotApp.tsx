@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { API_BASE, PILOT_SIM_TRIGGER_TOKEN } from "./config";
+import { API_BASE } from "./config";
 
-type TierConfig = {
-  name: string;
-  drawdownFloorPct: number;
+type StopLossOption = {
+  label: string;
+  floorPct: number;
+  tierName: string;
 };
 
 type SimQuote = {
@@ -12,7 +13,7 @@ type SimQuote = {
   expiresAt: string;
 };
 
-type SimQuoteResponse = {
+type QuoteResponse = {
   status: "ok" | "error";
   reason?: string;
   message?: string;
@@ -20,24 +21,29 @@ type SimQuoteResponse = {
   quote?: SimQuote;
 };
 
+type ReferencePriceResponse = {
+  status: "ok" | "error";
+  reason?: string;
+  message?: string;
+  reference?: {
+    price: string;
+    timestamp: string;
+    source: string;
+  };
+};
+
 type SimPosition = {
   id: string;
   status: "open" | "closed" | "triggered";
-  marketId: string;
   side: "long" | "short";
   notionalUsd: string;
   entryPrice: string;
-  tierName: string | null;
-  drawdownFloorPct: string | null;
   floorPrice: string | null;
-  protectionEnabled: boolean;
-  protectionPremiumUsd: string | null;
-  protectedLossUsd: string | null;
-  triggerCreditedUsd: string;
+  drawdownPct: string;
   markPrice: string | null;
   pnlUsd: string;
-  drawdownPct: string;
-  createdAt: string;
+  protectionEnabled: boolean;
+  triggerCreditedUsd: string;
 };
 
 type SimPositionListResponse = {
@@ -48,15 +54,11 @@ type SimPositionListResponse = {
 };
 
 type SimSummary = {
-  startingEquityUsd: string;
   premiumPaidUsd: string;
   triggerCreditsUsd: string;
-  realizedPnlUsd: string;
   unrealizedPnlUsd: string;
   currentEquityUsd: string;
   openPositions: string;
-  closedPositions: string;
-  triggeredPositions: string;
 };
 
 type SimSummaryResponse = {
@@ -66,47 +68,28 @@ type SimSummaryResponse = {
   summary?: SimSummary;
 };
 
-type SimPlatformMetrics = {
-  totalPositions: string;
-  openPositions: string;
-  triggeredPositions: string;
-  protectedPositions: string;
-  premiumCollectedUsd: string;
-  triggerCreditPaidUsd: string;
-  treasuryNetUsd: string;
-};
-
-type SimLedgerEntry = {
-  id: string;
-  simPositionId: string;
-  entryType: "premium_collected" | "trigger_credit";
-  amountUsd: string;
-  createdAt: string;
-};
-
-type SimPlatformMetricsResponse = {
-  status: "ok" | "error";
-  reason?: string;
-  message?: string;
-  metrics?: SimPlatformMetrics;
-  recentLedger?: SimLedgerEntry[];
-};
-
-const TIERS: TierConfig[] = [
-  { name: "Pro (Bronze)", drawdownFloorPct: 0.2 },
-  { name: "Pro (Silver)", drawdownFloorPct: 0.15 },
-  { name: "Pro (Gold)", drawdownFloorPct: 0.12 },
-  { name: "Pro (Platinum)", drawdownFloorPct: 0.12 }
+const STOP_LOSS_OPTIONS: StopLossOption[] = [
+  { label: "20%", floorPct: 0.2, tierName: "Pro (Bronze)" },
+  { label: "15%", floorPct: 0.15, tierName: "Pro (Silver)" },
+  { label: "12%", floorPct: 0.12, tierName: "Pro (Gold)" }
 ];
 
-const MARKET_ID = "BTC-USD";
 const TENOR_DAYS = 7;
-const MONITOR_INTERVAL_MS = 30000;
+const MARKET_ID = "BTC-USD";
+const SIDE: "long" = "long";
+const INSTRUMENT_ID = "BTC-USD-7D-P";
 
 const formatUsd = (value: number | string | null | undefined): string => {
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed)) return "$0.00";
   return `$${parsed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+const formatUsdOrDash = (value: number | string | null | undefined): string => {
+  if (value === null || value === undefined || String(value).trim() === "") return "—";
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return "—";
+  return formatUsd(parsed);
 };
 
 const formatPct = (value: number | string | null | undefined): string => {
@@ -115,67 +98,99 @@ const formatPct = (value: number | string | null | undefined): string => {
   return `${(parsed * 100).toFixed(2)}%`;
 };
 
-const parseApiError = (payload: { reason?: string; message?: string; detail?: string } | null): string =>
+const parseError = (payload: { reason?: string; message?: string; detail?: string } | null): string =>
   payload?.message || payload?.reason || payload?.detail || "request_failed";
 
+const formatCsvInput = (value: string): string => {
+  const cleaned = value.replace(/,/g, "").replace(/[^\d.]/g, "");
+  if (!cleaned) return "";
+  const [wholeRaw, ...fractionParts] = cleaned.split(".");
+  const whole = wholeRaw.replace(/^0+(?=\d)/, "");
+  const grouped = (whole || "0").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  if (fractionParts.length === 0) return grouped;
+  const fraction = fractionParts.join("").slice(0, 2);
+  return `${grouped}.${fraction}`;
+};
+
+const parseCsvNumber = (value: string): number => {
+  const parsed = Number(value.replace(/,/g, ""));
+  return Number.isFinite(parsed) ? parsed : NaN;
+};
+
+const deriveStopLossPct = (entryPrice: string | null | undefined, floorPrice: string | null | undefined): number | null => {
+  const entry = Number(entryPrice);
+  const floor = Number(floorPrice);
+  if (!Number.isFinite(entry) || !Number.isFinite(floor) || entry <= 0) return null;
+  return Math.max(0, Math.min(1, (entry - floor) / entry));
+};
+
 export function SimpleSimPilotApp() {
-  const [tierName, setTierName] = useState(TIERS[0].name);
-  const [side, setSide] = useState<"long" | "short">("long");
-  const [notionalInput, setNotionalInput] = useState("10000");
-  const [withProtection, setWithProtection] = useState(true);
-  const [quote, setQuote] = useState<SimQuote | null>(null);
-  const [quoteBusy, setQuoteBusy] = useState(false);
-  const [quoteError, setQuoteError] = useState<string | null>(null);
-  const [actionBusy, setActionBusy] = useState(false);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [sizeInput, setSizeInput] = useState("10,000");
+  const [stopLossPct, setStopLossPct] = useState(STOP_LOSS_OPTIONS[0].floorPct);
+  const [btcPrice, setBtcPrice] = useState<number | null>(null);
+  const [priceBusy, setPriceBusy] = useState(false);
+  const [priceError, setPriceError] = useState<string | null>(null);
+  const [priceUpdatedAt, setPriceUpdatedAt] = useState<string | null>(null);
+
   const [positions, setPositions] = useState<SimPosition[]>([]);
   const [summary, setSummary] = useState<SimSummary | null>(null);
-  const [platformMetrics, setPlatformMetrics] = useState<SimPlatformMetrics | null>(null);
-  const [ledger, setLedger] = useState<SimLedgerEntry[]>([]);
   const [refreshBusy, setRefreshBusy] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [autoMonitorEnabled, setAutoMonitorEnabled] = useState(false);
-  const [autoMonitorAt, setAutoMonitorAt] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
 
-  const selectedTier = useMemo(
-    () => TIERS.find((tier) => tier.name === tierName) || TIERS[0],
-    [tierName]
-  );
-  const notionalUsd = Number(notionalInput);
-  const isNotionalValid = Number.isFinite(notionalUsd) && notionalUsd > 0;
-  const protectedLossUsd = isNotionalValid ? notionalUsd * selectedTier.drawdownFloorPct : 0;
-  const instrumentId = side === "short" ? "BTC-USD-7D-C" : "BTC-USD-7D-P";
-  const openProtectedCount = useMemo(
-    () => positions.filter((position) => position.status === "open" && position.protectionEnabled).length,
-    [positions]
-  );
+  const [protectModalOpen, setProtectModalOpen] = useState(false);
+  const [quoteBusy, setQuoteBusy] = useState(false);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [quote, setQuote] = useState<SimQuote | null>(null);
 
-  const refreshData = async () => {
+  const sizeUsd = parseCsvNumber(sizeInput);
+  const isSizeValid = Number.isFinite(sizeUsd) && sizeUsd > 0;
+  const selectedStopLoss = useMemo(
+    () => STOP_LOSS_OPTIONS.find((opt) => opt.floorPct === stopLossPct) || STOP_LOSS_OPTIONS[0],
+    [stopLossPct]
+  );
+  const protectionAmountUsd = isSizeValid ? sizeUsd * selectedStopLoss.floorPct : 0;
+  const floorPriceUsd = btcPrice && Number.isFinite(btcPrice) ? btcPrice * (1 - selectedStopLoss.floorPct) : null;
+
+  const fetchReferencePrice = async () => {
+    setPriceBusy(true);
+    setPriceError(null);
+    try {
+      const res = await fetch(`${API_BASE}/pilot/reference-price?marketId=${encodeURIComponent(MARKET_ID)}`);
+      const payload = (await res.json()) as ReferencePriceResponse;
+      if (!res.ok || payload.status !== "ok" || !payload.reference?.price) {
+        throw new Error(parseError(payload));
+      }
+      const price = Number(payload.reference.price);
+      if (!Number.isFinite(price)) throw new Error("invalid_reference_price");
+      setBtcPrice(price);
+      setPriceUpdatedAt(payload.reference.timestamp || new Date().toISOString());
+    } catch (error: unknown) {
+      setPriceError(error instanceof Error ? error.message : "failed_to_fetch_price");
+    } finally {
+      setPriceBusy(false);
+    }
+  };
+
+  const refreshDashboard = async () => {
     setRefreshBusy(true);
     setRefreshError(null);
     try {
-      const [positionsRes, summaryRes, platformRes] = await Promise.all([
+      const [positionsRes, summaryRes] = await Promise.all([
         fetch(`${API_BASE}/pilot/sim/positions?limit=100`),
-        fetch(`${API_BASE}/pilot/sim/account/summary`),
-        fetch(`${API_BASE}/pilot/sim/platform/metrics`)
+        fetch(`${API_BASE}/pilot/sim/account/summary`)
       ]);
       const positionsPayload = (await positionsRes.json()) as SimPositionListResponse;
       const summaryPayload = (await summaryRes.json()) as SimSummaryResponse;
-      const platformPayload = (await platformRes.json()) as SimPlatformMetricsResponse;
-
       if (!positionsRes.ok || positionsPayload.status !== "ok") {
-        throw new Error(parseApiError(positionsPayload));
+        throw new Error(parseError(positionsPayload));
       }
       if (!summaryRes.ok || summaryPayload.status !== "ok") {
-        throw new Error(parseApiError(summaryPayload));
-      }
-      if (!platformRes.ok || platformPayload.status !== "ok") {
-        throw new Error(parseApiError(platformPayload));
+        throw new Error(parseError(summaryPayload));
       }
       setPositions(positionsPayload.positions || []);
       setSummary(summaryPayload.summary || null);
-      setPlatformMetrics(platformPayload.metrics || null);
-      setLedger(platformPayload.recentLedger || []);
     } catch (error: unknown) {
       setRefreshError(error instanceof Error ? error.message : "failed_to_refresh");
     } finally {
@@ -184,86 +199,89 @@ export function SimpleSimPilotApp() {
   };
 
   useEffect(() => {
-    void refreshData();
+    void fetchReferencePrice();
+    void refreshDashboard();
+    const id = window.setInterval(() => {
+      void fetchReferencePrice();
+      void refreshDashboard();
+    }, 15000);
+    return () => window.clearInterval(id);
   }, []);
 
   useEffect(() => {
     setQuote(null);
     setQuoteError(null);
-  }, [tierName, side, notionalInput, withProtection]);
+  }, [sizeInput, stopLossPct]);
 
-  const requestQuote = async () => {
-    if (!isNotionalValid) {
+  const requestQuote = async (): Promise<SimQuote | null> => {
+    if (!isSizeValid) {
       setQuoteError("Enter a valid position size.");
-      return;
+      return null;
     }
     setQuoteBusy(true);
     setQuoteError(null);
-    setActionMessage(null);
     try {
-      const response = await fetch(`${API_BASE}/pilot/protections/quote`, {
+      const res = await fetch(`${API_BASE}/pilot/protections/quote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          protectedNotional: notionalUsd,
-          foxifyExposureNotional: notionalUsd,
-          instrumentId,
+          protectedNotional: sizeUsd,
+          foxifyExposureNotional: sizeUsd,
+          instrumentId: INSTRUMENT_ID,
           marketId: MARKET_ID,
-          tierName: selectedTier.name,
-          drawdownFloorPct: selectedTier.drawdownFloorPct,
-          protectionType: side,
+          tierName: selectedStopLoss.tierName,
+          drawdownFloorPct: selectedStopLoss.floorPct,
+          protectionType: SIDE,
           tenorDays: TENOR_DAYS
         })
       });
-      const payload = (await response.json()) as SimQuoteResponse;
-      if (!response.ok || payload.status !== "ok" || !payload.quote) {
-        throw new Error(parseApiError(payload));
+      const payload = (await res.json()) as QuoteResponse;
+      if (!res.ok || payload.status !== "ok" || !payload.quote) {
+        throw new Error(parseError(payload));
       }
       setQuote(payload.quote);
+      return payload.quote;
     } catch (error: unknown) {
       setQuoteError(error instanceof Error ? error.message : "quote_failed");
+      return null;
     } finally {
       setQuoteBusy(false);
     }
   };
 
-  const openPosition = async () => {
-    if (!isNotionalValid) {
-      setActionMessage("Enter a valid position size before opening.");
-      return;
-    }
-    if (withProtection && !quote?.quoteId) {
-      setActionMessage("Get a protection quote first.");
+  const submitOpen = async (withProtection: boolean) => {
+    if (!isSizeValid) {
+      setActionMessage("Enter a valid position size.");
       return;
     }
     setActionBusy(true);
     setActionMessage(null);
     try {
-      const response = await fetch(`${API_BASE}/pilot/sim/positions/open`, {
+      let quoteToUse = quote;
+      if (withProtection && !quoteToUse?.quoteId) {
+        quoteToUse = await requestQuote();
+        if (!quoteToUse?.quoteId) throw new Error("quote_required_before_protect");
+      }
+      const res = await fetch(`${API_BASE}/pilot/sim/positions/open`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          protectedNotional: notionalUsd,
-          tierName: selectedTier.name,
-          drawdownFloorPct: selectedTier.drawdownFloorPct,
-          side,
+          protectedNotional: sizeUsd,
+          tierName: selectedStopLoss.tierName,
+          drawdownFloorPct: selectedStopLoss.floorPct,
+          side: SIDE,
           marketId: MARKET_ID,
           withProtection,
-          quoteId: withProtection ? quote?.quoteId : undefined,
+          quoteId: withProtection ? quoteToUse?.quoteId : undefined,
           tenorDays: TENOR_DAYS
         })
       });
-      const payload = (await response.json()) as { status?: string; reason?: string; message?: string };
-      if (!response.ok || payload.status !== "ok") {
-        throw new Error(parseApiError(payload));
-      }
-      setActionMessage(
-        withProtection
-          ? "Position opened with protection. Trigger monitor will credit if floor breaches."
-          : "Position opened without protection."
-      );
+      const payload = (await res.json()) as { status?: string; reason?: string; message?: string };
+      if (!res.ok || payload.status !== "ok") throw new Error(parseError(payload));
+      setActionMessage(withProtection ? "Protected position opened." : "Position opened without protection.");
+      setProtectModalOpen(false);
       setQuote(null);
-      await refreshData();
+      await refreshDashboard();
     } catch (error: unknown) {
       setActionMessage(error instanceof Error ? error.message : "open_position_failed");
     } finally {
@@ -271,20 +289,23 @@ export function SimpleSimPilotApp() {
     }
   };
 
+  const openProtectionModal = async () => {
+    setProtectModalOpen(true);
+    setQuoteError(null);
+    if (!quote?.quoteId) {
+      await requestQuote();
+    }
+  };
+
   const closePosition = async (id: string) => {
     setActionBusy(true);
     setActionMessage(null);
     try {
-      const response = await fetch(`${API_BASE}/pilot/sim/positions/${encodeURIComponent(id)}/close`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" }
-      });
-      const payload = (await response.json()) as { status?: string; reason?: string; message?: string };
-      if (!response.ok || payload.status !== "ok") {
-        throw new Error(parseApiError(payload));
-      }
+      const res = await fetch(`${API_BASE}/pilot/sim/positions/${encodeURIComponent(id)}/close`, { method: "POST" });
+      const payload = (await res.json()) as { status?: string; reason?: string; message?: string };
+      if (!res.ok || payload.status !== "ok") throw new Error(parseError(payload));
       setActionMessage("Position closed.");
-      await refreshData();
+      await refreshDashboard();
     } catch (error: unknown) {
       setActionMessage(error instanceof Error ? error.message : "close_position_failed");
     } finally {
@@ -292,170 +313,84 @@ export function SimpleSimPilotApp() {
     }
   };
 
-  const runTriggerMonitor = async (options?: { silent?: boolean }) => {
-    const silent = options?.silent === true;
-    setActionBusy(true);
-    if (!silent) {
-      setActionMessage(null);
-    }
-    try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (PILOT_SIM_TRIGGER_TOKEN) {
-        headers["x-internal-token"] = PILOT_SIM_TRIGGER_TOKEN;
-      }
-      const response = await fetch(`${API_BASE}/pilot/internal/sim/trigger-monitor/run`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ maxRows: 200 })
-      });
-      const payload = (await response.json()) as {
-        status?: string;
-        reason?: string;
-        message?: string;
-        result?: { triggeredCount?: number };
-      };
-      if (!response.ok || payload.status !== "ok") {
-        throw new Error(parseApiError(payload));
-      }
-      const triggeredCount = Number(payload.result?.triggeredCount ?? 0);
-      if (!silent) {
-        setActionMessage(
-          triggeredCount > 0
-            ? `Trigger monitor credited ${triggeredCount} protected position(s).`
-            : "Trigger monitor ran. No new trigger credits this cycle."
-        );
-      }
-      setAutoMonitorAt(new Date().toISOString());
-      await refreshData();
-    } catch (error: unknown) {
-      if (!silent) {
-        setActionMessage(error instanceof Error ? error.message : "trigger_monitor_failed");
-      }
-    } finally {
-      setActionBusy(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!autoMonitorEnabled) return;
-    if (!PILOT_SIM_TRIGGER_TOKEN) return;
-    let running = false;
-    const id = window.setInterval(() => {
-      if (running) return;
-      running = true;
-      void runTriggerMonitor({ silent: true }).finally(() => {
-        running = false;
-      });
-    }, MONITOR_INTERVAL_MS);
-    return () => window.clearInterval(id);
-  }, [autoMonitorEnabled]);
-
   return (
     <div className="shell">
       <div className="card card-wide sim-card">
         <div className="title">
           <div className="brand">
-            <span className="brand-accent">Atticus</span> Simple Pilot (Deribit Simulation)
+            <span className="brand-accent">Atticus</span> Trader Pilot
           </div>
-          <span className="pill">MVP</span>
+          <span className="pill">Deribit Sim</span>
         </div>
-        <div className="subtitle">
-          Open a simulated BTC perp position, optionally add drawdown protection, and track trader + platform outcomes in one place.
-        </div>
+        <div className="subtitle">Simple position protection flow for funded-account drawdown coverage.</div>
 
         <div className="section section-compact">
-          <h4>1) Open Position</h4>
+          <h4>Open Position</h4>
           <div className="pilot-form sim-form-grid">
+            <div className="pilot-form-row">
+              <span className="pilot-label">Current BTC price</span>
+              <strong>{btcPrice ? formatUsd(btcPrice) : priceBusy ? "Loading..." : "Unavailable"}</strong>
+            </div>
             <div className="pilot-form-row">
               <span className="pilot-label">Position size (USD)</span>
               <input
                 className="input pilot-input"
-                value={notionalInput}
+                value={sizeInput}
                 inputMode="decimal"
-                onChange={(event) => setNotionalInput(event.target.value)}
-                placeholder="10000"
+                onChange={(event) => setSizeInput(formatCsvInput(event.target.value))}
+                placeholder="10,000"
               />
             </div>
             <div className="pilot-form-row">
-              <span className="pilot-label">Tier</span>
-              <select className="input pilot-input pilot-select" value={tierName} onChange={(e) => setTierName(e.target.value)}>
-                {TIERS.map((tier) => (
-                  <option key={tier.name} value={tier.name}>
-                    {tier.name}
+              <span className="pilot-label">Stop loss</span>
+              <select
+                className="input pilot-input pilot-select"
+                value={String(stopLossPct)}
+                onChange={(event) => setStopLossPct(Number(event.target.value))}
+              >
+                {STOP_LOSS_OPTIONS.map((option) => (
+                  <option key={option.label} value={String(option.floorPct)}>
+                    {option.label}
                   </option>
                 ))}
               </select>
             </div>
             <div className="pilot-form-row">
-              <span className="pilot-label">Side</span>
-              <select
-                className="input pilot-input pilot-select"
-                value={side}
-                onChange={(e) => setSide(e.target.value === "short" ? "short" : "long")}
-              >
-                <option value="long">Long</option>
-                <option value="short">Short</option>
-              </select>
+              <span className="pilot-label">Protection amount</span>
+              <strong>{formatUsd(protectionAmountUsd)}</strong>
             </div>
             <div className="pilot-form-row">
-              <span className="pilot-label">Drawdown floor</span>
-              <strong>{formatPct(selectedTier.drawdownFloorPct)}</strong>
-            </div>
-            <div className="pilot-form-row">
-              <span className="pilot-label">Loss protected if floor hits</span>
-              <strong>{formatUsd(protectedLossUsd)}</strong>
-            </div>
-            <div className="pilot-form-row">
-              <span className="pilot-label">Add protection</span>
-              <label className="pilot-checkbox">
-                <input
-                  type="checkbox"
-                  checked={withProtection}
-                  onChange={(event) => setWithProtection(event.target.checked)}
-                />
-                Yes, cover floor loss for {TENOR_DAYS} days
-              </label>
+              <span className="pilot-label">Current floor</span>
+              <strong>{floorPriceUsd ? formatUsd(floorPriceUsd) : "—"}</strong>
             </div>
           </div>
-
-          {withProtection ? (
-            <div className="sim-quote-block">
-              <div className="row">
-                <span>Protection quote</span>
-                <strong>{quote ? formatUsd(quote.premium) : "—"}</strong>
-              </div>
-              <div className="row">
-                <span>Quote expiry</span>
-                <strong>{quote?.expiresAt ? new Date(quote.expiresAt).toLocaleString() : "Not quoted yet"}</strong>
-              </div>
-              <button className="btn btn-primary" onClick={() => void requestQuote()} disabled={quoteBusy || actionBusy}>
-                {quoteBusy ? "Pricing..." : "Preview protection price"}
-              </button>
-              {quoteError ? <div className="disclaimer danger">{quoteError}</div> : null}
-              <div className="disclaimer">
-                User-facing copy: <strong>If your drawdown floor hits, we credit {formatUsd(protectedLossUsd)}.</strong>{" "}
-                Current estimated cost: <strong>{quote ? formatUsd(quote.premium) : "request quote"}</strong> for {TENOR_DAYS} days.
-              </div>
-            </div>
-          ) : null}
 
           <div className="pilot-actions">
-            <button className="cta" onClick={() => void openPosition()} disabled={actionBusy || quoteBusy}>
-              {actionBusy ? "Submitting..." : withProtection ? "Open Position + Protection" : "Open Position"}
+            <button className="cta" onClick={() => void openProtectionModal()} disabled={actionBusy || !isSizeValid}>
+              Open Position
             </button>
-            <button className="btn" onClick={() => void refreshData()} disabled={refreshBusy || actionBusy}>
-              {refreshBusy ? "Refreshing..." : "Refresh data"}
+            <button
+              className="btn"
+              onClick={() => {
+                void fetchReferencePrice();
+                void refreshDashboard();
+              }}
+              disabled={priceBusy || refreshBusy || actionBusy}
+            >
+              Refresh
             </button>
           </div>
+          {priceUpdatedAt ? <div className="muted">Price updated: {new Date(priceUpdatedAt).toLocaleString()}</div> : null}
+          {priceError ? <div className="disclaimer danger">{priceError}</div> : null}
           {actionMessage ? <div className="disclaimer">{actionMessage}</div> : null}
           {refreshError ? <div className="disclaimer danger">{refreshError}</div> : null}
         </div>
 
         <div className="section">
           <div className="section-title-row">
-            <h4>2) Trader Dashboard</h4>
+            <h4>Trader Dashboard</h4>
             <span className="muted">
-              Open protected: <strong>{openProtectedCount}</strong>
+              Open positions: <strong>{summary?.openPositions || "0"}</strong>
             </span>
           </div>
           <div className="stats">
@@ -464,39 +399,40 @@ export function SimpleSimPilotApp() {
               <div className="value">{formatUsd(summary?.currentEquityUsd)}</div>
             </div>
             <div className="stat">
+              <div className="label">Unrealized PnL</div>
+              <div className="value">{formatUsd(summary?.unrealizedPnlUsd)}</div>
+            </div>
+            <div className="stat">
               <div className="label">Premium Paid</div>
               <div className="value">{formatUsd(summary?.premiumPaidUsd)}</div>
             </div>
             <div className="stat">
-              <div className="label">Trigger Credits</div>
+              <div className="label">Protection Credits</div>
               <div className="value">{formatUsd(summary?.triggerCreditsUsd)}</div>
             </div>
-            <div className="stat">
-              <div className="label">Unrealized PnL</div>
-              <div className="value">{formatUsd(summary?.unrealizedPnlUsd)}</div>
-            </div>
           </div>
-
           <div className="positions">
             {positions.length === 0 ? (
-              <div className="empty">No simulated positions yet.</div>
+              <div className="empty">No positions yet.</div>
             ) : (
               positions.map((position) => (
                 <div key={position.id} className={`position-row ${position.status === "open" ? "position-row-active" : ""}`}>
                   <div className="position-main">
                     <div className="position-main-title">
-                      <strong>{position.tierName || "Tier N/A"}</strong>
+                      <strong>
+                        {formatUsd(position.notionalUsd)} Long
+                      </strong>
                       <span className={`pill ${position.status === "triggered" ? "pill-danger" : "pill-warning"}`}>
                         {position.status}
                       </span>
+                      {position.protectionEnabled ? <span className="pill">Protected</span> : <span className="pill pill-warning">Unprotected</span>}
                     </div>
                     <div className="muted">
-                      {position.side.toUpperCase()} {formatUsd(position.notionalUsd)} @ {formatUsd(position.entryPrice)} | Floor{" "}
-                      {formatUsd(position.floorPrice)} | Drawdown {formatPct(position.drawdownPct)}
+                      Entry {formatUsd(position.entryPrice)} | Mark {formatUsd(position.markPrice)} | Floor {formatUsd(position.floorPrice)} | Stop{" "}
+                      {formatPct(position.drawdownPct)}
                     </div>
                     <div className="muted">
-                      Mark {formatUsd(position.markPrice)} | PnL {formatUsd(position.pnlUsd)} | Trigger credit{" "}
-                      {formatUsd(position.triggerCreditedUsd)}
+                      PnL {formatUsd(position.pnlUsd)} | Credits {formatUsd(position.triggerCreditedUsd)}
                     </div>
                   </div>
                   <div className="position-actions">
@@ -511,77 +447,33 @@ export function SimpleSimPilotApp() {
             )}
           </div>
         </div>
+      </div>
 
-        <div className="section">
-          <div className="section-title-row">
-            <h4>3) Platform Essentials</h4>
-            <div className="section-actions">
-              <label className="pilot-inline-check muted">
-                <input
-                  type="checkbox"
-                  checked={autoMonitorEnabled}
-                  disabled={!PILOT_SIM_TRIGGER_TOKEN || actionBusy}
-                  onChange={(event) => setAutoMonitorEnabled(event.target.checked)}
-                />
-                Auto monitor (30s)
-              </label>
-              <button className="btn" onClick={() => void runTriggerMonitor()} disabled={actionBusy || refreshBusy}>
-                Run trigger monitor cycle
+      {protectModalOpen ? (
+        <div className="modal">
+          <div className="modal-card">
+            <div className="modal-title">
+              <h3>Protect this position</h3>
+            </div>
+            <div className="subheader">
+              If your drawdown floor hits, we credit you the full floor loss (e.g., {formatUsd(protectionAmountUsd)}).
+            </div>
+            <div className="row">
+              <span>Cost</span>
+              <strong>{quoteBusy ? "Pricing..." : quote ? `${formatUsd(quote.premium)} per ${TENOR_DAYS} days` : "Unavailable"}</strong>
+            </div>
+            {quoteError ? <div className="disclaimer danger">{quoteError}</div> : null}
+            <div className="sim-modal-actions">
+              <button className="btn btn-primary" onClick={() => void submitOpen(true)} disabled={actionBusy || quoteBusy || !quote?.quoteId}>
+                Protect &amp; Open
+              </button>
+              <button className="btn" onClick={() => void submitOpen(false)} disabled={actionBusy}>
+                Open w/o Protection
               </button>
             </div>
           </div>
-          {!PILOT_SIM_TRIGGER_TOKEN ? (
-            <div className="disclaimer">
-              Internal trigger monitor endpoint needs auth. Set <code>VITE_PILOT_INTERNAL_TOKEN</code> for one-click monitor runs
-              from this UI, or run your server-side scheduler.
-            </div>
-          ) : null}
-          {autoMonitorAt ? (
-            <div className="muted">Last monitor cycle: {new Date(autoMonitorAt).toLocaleString()}</div>
-          ) : null}
-          <div className="stats">
-            <div className="stat">
-              <div className="label">Total Positions</div>
-              <div className="value">{platformMetrics?.totalPositions || "0"}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Triggered Positions</div>
-              <div className="value">{platformMetrics?.triggeredPositions || "0"}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Premium Collected</div>
-              <div className="value">{formatUsd(platformMetrics?.premiumCollectedUsd)}</div>
-            </div>
-            <div className="stat">
-              <div className="label">Trigger Credits Paid</div>
-              <div className="value">{formatUsd(platformMetrics?.triggerCreditPaidUsd)}</div>
-            </div>
-          </div>
-          <div className="row row-tight">
-            <span>Treasury net</span>
-            <strong>{formatUsd(platformMetrics?.treasuryNetUsd)}</strong>
-          </div>
-          <div className="divider" />
-          <h4>Recent Treasury Ledger</h4>
-          <div className="positions">
-            {ledger.length === 0 ? (
-              <div className="empty">No treasury entries yet.</div>
-            ) : (
-              ledger.slice(0, 8).map((entry) => (
-                <div key={entry.id} className="position-row">
-                  <div className="position-main">
-                    <strong>{entry.entryType === "premium_collected" ? "Premium Collected" : "Trigger Credit Paid"}</strong>
-                    <div className="muted">
-                      {formatUsd(entry.amountUsd)} | Position {entry.simPositionId.slice(0, 8)}... |{" "}
-                      {new Date(entry.createdAt).toLocaleString()}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
