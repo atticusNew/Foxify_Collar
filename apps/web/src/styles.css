@@ -2363,6 +2363,23 @@ select.input {
   border-color: rgba(132, 220, 255, 0.95);
 }
 
+.sim-card {
+  width: min(980px, 100%);
+}
+
+.sim-form-grid {
+  gap: 10px;
+}
+
+.sim-quote-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #111116;
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+}
+
 .presentation-gate-card {
   width: min(560px, 100%);
   border-radius: 16px;
