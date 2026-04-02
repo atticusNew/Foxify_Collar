@@ -113,6 +113,12 @@ const formatUsd = (value: number | string | null | undefined): string => {
   return `$${parsed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
+const formatUsdNoDecimals = (value: number | string | null | undefined): string => {
+  const parsed = Number(value ?? 0);
+  if (!Number.isFinite(parsed)) return "$0";
+  return `$${Math.round(parsed).toLocaleString()}`;
+};
+
 const formatPct = (value: number | string | null | undefined): string => {
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed)) return "0.00%";
@@ -194,9 +200,12 @@ export function SimpleSimPilotApp() {
     }
   };
 
-  const refreshTraderDashboard = async () => {
-    setRefreshBusy(true);
-    setRefreshError(null);
+  const refreshTraderDashboard = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    if (!silent) {
+      setRefreshBusy(true);
+      setRefreshError(null);
+    }
     try {
       const [positionsRes, summaryRes] = await Promise.all([
         fetch(`${API_BASE}/pilot/sim/positions?limit=100`),
@@ -213,9 +222,13 @@ export function SimpleSimPilotApp() {
       setPositions(positionsPayload.positions || []);
       setSummary(summaryPayload.summary || null);
     } catch (error: unknown) {
-      setRefreshError(error instanceof Error ? error.message : "failed_to_refresh");
+      if (!silent) {
+        setRefreshError(error instanceof Error ? error.message : "failed_to_refresh");
+      }
     } finally {
-      setRefreshBusy(false);
+      if (!silent) {
+        setRefreshBusy(false);
+      }
     }
   };
 
@@ -237,14 +250,15 @@ export function SimpleSimPilotApp() {
     }
   };
 
-  const refreshAll = async () => {
-    await Promise.all([fetchReferencePrice(), refreshTraderDashboard()]);
+  const refreshAll = async (options?: { silent?: boolean }) => {
+    const silent = options?.silent === true;
+    await Promise.all([fetchReferencePrice(), refreshTraderDashboard({ silent })]);
   };
 
   useEffect(() => {
     void refreshAll();
     const id = window.setInterval(() => {
-      void refreshAll();
+      void refreshAll({ silent: true });
     }, 15000);
     return () => window.clearInterval(id);
   }, []);
@@ -304,7 +318,7 @@ export function SimpleSimPilotApp() {
     setActionMessage(null);
     try {
       let quoteToUse = quote;
-      if (withProtection && !quoteToUse?.quoteId) {
+      if (withProtection) {
         quoteToUse = await requestQuote();
         if (!quoteToUse?.quoteId) throw new Error("quote_required_before_protect");
       }
@@ -438,7 +452,7 @@ export function SimpleSimPilotApp() {
                   Platform Dashboard
                 </button>
                 <button className="btn" onClick={() => void refreshTraderDashboard()} disabled={refreshBusy || actionBusy} type="button">
-                  {refreshBusy ? "Refreshing..." : "Refresh"}
+                  Refresh
                 </button>
               </div>
             </div>
@@ -506,29 +520,38 @@ export function SimpleSimPilotApp() {
 
       {protectModalOpen ? (
         <div className="modal">
-          <div className="modal-card">
+          <div className="modal-card sim-protect-modal">
             <div className="modal-title">
               <h3>Protect this Position</h3>
             </div>
-            <p className="sim-modal-copy">
-              If your drawdown floor hits, we credit you <strong>{formatUsd(protectionAmountUsd)}</strong>.
-            </p>
-            <div className="row sim-modal-cost">
-              <span>Cost</span>
-              <strong>{quoteBusy ? "Pricing..." : quote ? `${formatUsd(quote.premium)} per ${TENOR_DAYS} days` : "Unavailable"}</strong>
+            <div className="sim-protect-grid">
+              <div className="sim-protect-line sim-protect-line-strong">
+                <span>Position Drops</span>
+                <strong>{selectedStopLoss.label}</strong>
+              </div>
+              <div className="sim-protect-line sim-protect-line-credit">
+                <span>Instantly Credited</span>
+                <strong>{formatUsdNoDecimals(protectionAmountUsd)}</strong>
+              </div>
+              <div className="sim-protect-line sim-protect-line-cost">
+                <span>Protection Cost</span>
+                <strong>
+                  {quoteBusy ? "Pricing..." : quote ? `${formatUsdNoDecimals(quote.premium)} per ${TENOR_DAYS} days` : "Unavailable"}
+                </strong>
+              </div>
             </div>
             {quoteError ? <div className="disclaimer danger">{quoteError}</div> : null}
             <div className="sim-modal-actions">
-              <button className="btn btn-primary" onClick={() => void submitOpen(true)} disabled={actionBusy || quoteBusy || !quote?.quoteId} type="button">
+              <button className="btn btn-primary sim-compact-btn" onClick={() => void submitOpen(true)} disabled={actionBusy || quoteBusy} type="button">
                 Open Position + Protection
               </button>
-              <button className="btn" onClick={() => void submitOpen(false)} disabled={actionBusy} type="button">
+              <button className="btn sim-compact-btn" onClick={() => void submitOpen(false)} disabled={actionBusy} type="button">
                 Open Position Only
               </button>
             </div>
             <div className="modal-actions">
               <button
-                className="btn btn-secondary"
+                className="btn btn-secondary sim-compact-btn"
                 onClick={() => {
                   setProtectModalOpen(false);
                   setQuoteError(null);

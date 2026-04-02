@@ -2444,6 +2444,13 @@ select.input {
   margin-top: 4px;
 }
 
+.sim-open-btn.compact {
+  width: auto;
+  min-width: 220px;
+  justify-self: end;
+  padding: 10px 14px;
+}
+
 .sim-dashboard-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2474,6 +2481,59 @@ select.input {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+.sim-protect-modal {
+  width: min(520px, 100%);
+}
+
+.sim-protect-stack {
+  display: grid;
+  gap: 18px;
+  padding-top: 4px;
+}
+
+.sim-protect-line {
+  display: grid;
+  gap: 4px;
+}
+
+.sim-protect-label {
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+
+.sim-protect-value {
+  font-size: 26px;
+  line-height: 1.15;
+  font-weight: 800;
+  color: #f5e5d6;
+}
+
+.sim-protect-value-amount {
+  color: #ffe0ba;
+}
+
+.sim-protect-value-cost {
+  color: #ffd3a2;
+}
+
+.sim-protect-actions {
+  margin-top: 4px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.sim-protect-btn {
+  padding: 9px 12px;
+  min-height: 38px;
+}
+
+.sim-protect-close {
+  justify-self: end;
 }
 
 .sim-stage-shell {
@@ -2527,6 +2587,10 @@ select.input {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.sim-dashboard-actions .btn {
+  min-width: 124px;
 }
 
 .sim-table {
