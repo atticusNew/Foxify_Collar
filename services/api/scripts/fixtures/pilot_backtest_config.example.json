@@ -1,0 +1,49 @@
+{
+  "name": "falconx_baseline_schedule_v1",
+  "tenorDays": 7,
+  "entryStepHours": 24,
+  "notionalsUsd": ["5000", "10000", "15000", "20000", "25000", "30000", "35000", "40000", "45000", "50000"],
+  "treasury": {
+    "startingBalanceUsd": "25000",
+    "dailySubsidyCapUsd": "15000",
+    "perQuoteSubsidyCapPct": "0.7"
+  },
+  "tiers": [
+    {
+      "tierName": "Pro (Bronze)",
+      "drawdownFloorPct": "0.20",
+      "strictPremiumPer1kProtectedUsd": "132.82",
+      "hybridPremiumPer1kProtectedUsd": "52.20",
+      "fallbackHedgePremiumPer1kProtectedUsd": "40.00",
+      "strictHedgeRecoveryPct": "0.95",
+      "hybridHedgeRecoveryPct": "0.90"
+    },
+    {
+      "tierName": "Pro (Silver)",
+      "drawdownFloorPct": "0.15",
+      "strictPremiumPer1kProtectedUsd": "132.82",
+      "hybridPremiumPer1kProtectedUsd": "52.20",
+      "fallbackHedgePremiumPer1kProtectedUsd": "40.00",
+      "strictHedgeRecoveryPct": "0.95",
+      "hybridHedgeRecoveryPct": "0.90"
+    },
+    {
+      "tierName": "Pro (Gold)",
+      "drawdownFloorPct": "0.12",
+      "strictPremiumPer1kProtectedUsd": "132.82",
+      "hybridPremiumPer1kProtectedUsd": "52.20",
+      "fallbackHedgePremiumPer1kProtectedUsd": "40.00",
+      "strictHedgeRecoveryPct": "0.95",
+      "hybridHedgeRecoveryPct": "0.90"
+    },
+    {
+      "tierName": "Pro (Platinum)",
+      "drawdownFloorPct": "0.12",
+      "strictPremiumPer1kProtectedUsd": "132.82",
+      "hybridPremiumPer1kProtectedUsd": "52.20",
+      "fallbackHedgePremiumPer1kProtectedUsd": "40.00",
+      "strictHedgeRecoveryPct": "0.95",
+      "hybridHedgeRecoveryPct": "0.90"
+    }
+  ]
+}
