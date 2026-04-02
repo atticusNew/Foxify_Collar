@@ -3439,6 +3439,116 @@ test("Z2) sim open/list/trigger lifecycle credits treasury for protected breach"
   }
 });
 
+test("Z3) sim position close marks closed and stores realized pnl metadata", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    env: {
+      PILOT_ENFORCE_WINDOW: "false"
+    },
+    deribit: {
+      async getIndexPrice() {
+        return { result: { index_price: 100000 } };
+      },
+      async listInstruments() {
+        return {
+          result: [
+            {
+              instrument_name: "BTC-10APR26-80000-P",
+              option_type: "put",
+              strike: 80000,
+              expiration_timestamp: Date.now() + 7 * 86400000
+            }
+          ]
+        };
+      },
+      async getOrderBook() {
+        return {
+          result: {
+            asks: [[0.01, 5]],
+            bids: [[0.009, 5]],
+            mark_price: 0.0095
+          }
+        };
+      },
+      async placeOrder() {
+        return {
+          status: "filled",
+          id: "sim-order-2",
+          fillPrice: 0.01,
+          filledAmount: 0.05,
+          amount: 0.05
+        };
+      }
+    } as any
+  });
+  try {
+    const { app } = harness;
+    const opened = await app.inject({
+      method: "POST",
+      url: "/pilot/sim/positions/open",
+      payload: {
+        protectedNotional: 5000,
+        tierName: "Pro (Bronze)",
+        drawdownFloorPct: 0.2,
+        side: "long",
+        marketId: "BTC-USD",
+        withProtection: false
+      }
+    });
+    assert.equal(opened.statusCode, 200, opened.body);
+    const openPayload = opened.json();
+    const simPositionId = String(openPayload.simPosition?.id || "");
+    assert.ok(simPositionId.length > 0);
+
+    global.fetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/ticker")) {
+        return {
+          ok: true,
+          text: async () =>
+            JSON.stringify({
+              product_id: "BTC-USD",
+              price: 105000,
+              timestamp: Date.now()
+            })
+        } as any;
+      }
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            product_id: "BTC-USD",
+            price: 105000,
+            timestamp: Date.now()
+          })
+      } as any;
+    }) as typeof fetch;
+
+    const closeRes = await app.inject({
+      method: "POST",
+      url: `/pilot/sim/positions/${simPositionId}/close`
+    });
+    assert.equal(closeRes.statusCode, 200, closeRes.body);
+    const closePayload = closeRes.json();
+    assert.equal(closePayload.status, "ok");
+    assert.equal(closePayload.simPosition.status, "closed");
+    const metadata = (closePayload.simPosition.metadata || {}) as Record<string, unknown>;
+    assert.equal(Number.isFinite(Number(metadata.closePrice ?? NaN)), true);
+    assert.equal(Number.isFinite(Number(metadata.realizedPnlUsd ?? NaN)), true);
+
+    const closeAgain = await app.inject({
+      method: "POST",
+      url: `/pilot/sim/positions/${simPositionId}/close`
+    });
+    assert.equal(closeAgain.statusCode, 200, closeAgain.body);
+    assert.equal(closeAgain.json().status, "ok");
+    assert.equal(closeAgain.json().idempotent, true);
+  } finally {
+    await harness.close();
+    global.fetch = originalFetch;
+  }
+});
+
 test("Z1) trigger monitor marks breached active protection as triggered", async () => {
   const harness = await createPilotHarness({
     env: {

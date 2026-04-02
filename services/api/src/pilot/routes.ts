@@ -16,6 +16,7 @@ import {
   getPilotTermsAcceptance,
   getPilotPool,
   getProtection,
+  getSimPosition,
   getVenueQuoteByQuoteIdForUpdate,
   insertAdminAction,
   consumeVenueQuote,
@@ -31,6 +32,7 @@ import {
   listSimOpenProtectedPositionsByUserHash,
   listSimPositionsByUserHash,
   listSimTreasuryLedgerByUserHash,
+  patchSimPosition,
   reserveDailyTreasurySubsidyCapacity,
   releaseDailyTreasurySubsidyCapacity,
   reserveDailyActivationCapacity,
@@ -1126,6 +1128,71 @@ export const registerPilotRoutes = async (
       };
     });
     return { status: "ok", positions: enriched };
+  });
+
+  app.post("/pilot/sim/positions/:id/close", async (req, reply) => {
+    const params = req.params as { id: string };
+    let tenant: { userHash: string; hashVersion: number };
+    try {
+      tenant = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const simPosition = await getSimPosition(pool, params.id);
+    if (!simPosition || !assertProtectionOwnership(simPosition, tenant)) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (simPosition.status === "closed") {
+      return { status: "ok", simPosition, idempotent: true };
+    }
+    const requestId = pilotConfig.nextRequestId();
+    let snapshot: PriceSnapshotOutput;
+    try {
+      snapshot = await resolveLiveReferencePrice(requestId, simPosition.marketId);
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "price_unavailable",
+        detail: String(error?.message || "sim_close_price_unavailable")
+      };
+    }
+    const entryPrice = parsePositiveDecimal(simPosition.entryPrice) || new Decimal(0);
+    const notionalUsd = parsePositiveDecimal(simPosition.notionalUsd) || new Decimal(0);
+    const realizedPnlUsd =
+      entryPrice.gt(0) && notionalUsd.gt(0)
+        ? notionalUsd.mul(snapshot.price.minus(entryPrice)).div(entryPrice)
+        : new Decimal(0);
+    const closedAtIso = new Date().toISOString();
+    const closed = await patchSimPosition(pool, params.id, {
+      status: "closed",
+      metadata: buildSimLifecycleMetadata(simPosition.metadata || {}, {
+        closedAt: closedAtIso,
+        closePrice: snapshot.price.toFixed(10),
+        closePriceSource: snapshot.priceSource,
+        closePriceTimestamp: snapshot.priceTimestamp,
+        closeRequestId: requestId,
+        realizedPnlUsd: realizedPnlUsd.toFixed(10)
+      })
+    });
+    if (!closed) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    return {
+      status: "ok",
+      simPosition: closed,
+      closeSnapshot: {
+        price: snapshot.price.toFixed(10),
+        marketId: snapshot.marketId,
+        source: snapshot.priceSource,
+        timestamp: snapshot.priceTimestamp,
+        requestId: snapshot.requestId
+      }
+    };
   });
 
   app.post("/pilot/internal/sim/trigger-monitor/run", async (req, reply) => {
