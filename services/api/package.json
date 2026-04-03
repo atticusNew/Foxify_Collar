@@ -29,6 +29,7 @@
     "pilot:backtest:fetch-btc": "tsx scripts/pilotBacktestFetchBtc.ts",
     "pilot:backtest:run": "tsx scripts/pilotBacktestRun.ts",
     "pilot:backtest:quick": "bash scripts/pilot_backtest_quick.sh",
-    "pilot:backtest:risk-pack": "tsx scripts/pilotBacktestRiskPack.ts"
+    "pilot:backtest:risk-pack": "tsx scripts/pilotBacktestRiskPack.ts",
+    "pilot:backtest:tp-sweep": "tsx scripts/pilotBacktestTpSweep.ts"
   }
 }

@@ -228,3 +228,39 @@ BREACH_MODE=path_min npm run -s pilot:backtest:quick
 # legacy expiry-only logic
 BREACH_MODE=expiry_only npm run -s pilot:backtest:quick
 ```
+
+## TP parameter sweep (grid search + ranked workbook)
+
+Purpose:
+- Test multiple TP settings across your stress + calm quarter set.
+- Rank combinations that reduce stress-quarter subsidy without sacrificing calm-quarter performance.
+- Export one workbook with tabs (overall summary, combo scores, per-quarter rows, etc.).
+
+Example (16 combos: rebound 1/2/3/4 x decay 10/20/30/40):
+
+```bash
+cd /opt/ibkr-stack/services/api
+npm run -s pilot:backtest:tp-sweep -- \
+  --out-dir artifacts/backtest/stress_tp/sweep \
+  --rebound-grid "1,2,3,4" \
+  --decay-grid "10,20,30,40" \
+  --quarters "q2_2022,2022-04-01T00:00:00Z,2022-07-01T00:00:00Z,stress;q4_2022,2022-10-01T00:00:00Z,2023-01-01T00:00:00Z,stress;q1_2023,2023-01-01T00:00:00Z,2023-04-01T00:00:00Z,calm;q1_2024,2024-01-01T00:00:00Z,2024-04-01T00:00:00Z,calm" \
+  --source coinbase
+```
+
+Outputs under `artifacts/backtest/stress_tp/sweep/`:
+- `tp_sweep_ranked.csv` (best-to-worst TP combos by weighted score)
+- `tp_sweep_combo_summary.csv` (all combos + key metrics)
+- `tp_sweep_quarterly.csv` (per-quarter per-model stats)
+- `tp_sweep_baseline.csv` (TP-disabled baseline)
+- `tp_sweep_overview.md` (concise narrative)
+- `tp_sweep.xlsx` with tabs:
+  - `ranked`
+  - `combo_summary`
+  - `quarterly`
+  - `baseline`
+  - `weights`
+
+Notes:
+- Lower score is better.
+- Score emphasizes stress subsidy + blocked subsidy + drawdown and adds a smaller penalty if calm-quarter PnL improvement is negative.
