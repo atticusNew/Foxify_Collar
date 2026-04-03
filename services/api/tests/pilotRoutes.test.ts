@@ -3076,6 +3076,9 @@ test("Y4b) quote supports hybrid pricing mode and reports mode diagnostics", asy
     assert.equal(payload.status, "ok");
     const breakdown = payload?.quote?.details?.pricingBreakdown || {};
     assert.equal(String(breakdown.pricingMode || ""), "hybrid_otm_treasury");
+    assert.equal(Number(breakdown.hybridStrictMultiplier), 0.6);
+    assert.equal(Number(breakdown.displayedPremiumPer1kUsd), 25);
+    assert.equal(Number(breakdown.displayedPremiumUsd), 125);
     assert.equal(
       String(payload?.diagnostics?.premiumPolicy?.mode || "") === "pass_through_markup" ||
         String(payload?.diagnostics?.premiumPolicy?.mode || "") === "legacy",

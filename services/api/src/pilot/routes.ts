@@ -52,6 +52,7 @@ import { registerPilotTriggerMonitor } from "./triggerMonitor";
 import {
   buildPremiumPolicyDiagnostics,
   estimateBrokerFeesUsd,
+  resolvePilotRoundedPremiumDisplay,
   resolvePremiumPricing,
   type PremiumPricingResult
 } from "./pricingPolicy";
@@ -1801,6 +1802,11 @@ export const registerPilotRoutes = async (
           details: quote.details as Record<string, unknown> | undefined
         })
       });
+      const roundedPremiumDisplay = resolvePilotRoundedPremiumDisplay({
+        tierName,
+        protectedNotionalUsd: protectedNotional,
+        drawdownFloorPct
+      });
       let premiumRegimeMetrics: PremiumRegimeMetrics = {
         sampleCount: 0,
         triggerHitRatePct: 0,
@@ -1989,6 +1995,8 @@ export const registerPilotRoutes = async (
         hybridStrictMultiplier: premiumPricing.hybridStrictMultiplier.toFixed(6),
         hybridDiscountedStrictPremiumUsd: premiumPricing.hybridDiscountedStrictPremiumUsd.toFixed(10),
         clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
+        displayedPremiumPer1kUsd: roundedPremiumDisplay.roundedPremiumPer1kUsd.toFixed(2),
+        displayedPremiumUsd: roundedPremiumDisplay.roundedClientPremiumUsd.toFixed(2),
         method: premiumPricing.method,
         treasuryQuoteSubsidyUsd: quoteSubsidyUsd.toFixed(10),
         treasuryPerQuoteSubsidyCapUsd: quoteSubsidyCapUsd.toFixed(10),
@@ -2106,6 +2114,8 @@ export const registerPilotRoutes = async (
             premiumRegimeOverlayUsd: premiumRegimeOverlay.overlayUsd.toFixed(10),
             premiumRegimeBasePremiumUsd: premiumRegimeOverlay.basePremiumUsd.toFixed(10),
             premiumRegimeAdjustedPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd.toFixed(10),
+            displayRoundedPremiumPer1kUsd: roundedPremiumDisplay.roundedPremiumPer1kUsd.toFixed(2),
+            displayRoundedClientPremiumUsd: roundedPremiumDisplay.roundedClientPremiumUsd.toFixed(2),
             ...pricingBreakdown
           }
         }
@@ -2970,6 +2980,16 @@ export const registerPilotRoutes = async (
           premiumFloorBps: premiumPricing.premiumFloorBps.toFixed(2),
           premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
           clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
+          displayedPremiumUsd:
+            parsePositiveDecimal(lockContext.displayedPremiumUsd) ||
+            new Decimal(lockContext.displayedPremiumUsd || NaN).isFinite()
+              ? String(lockContext.displayedPremiumUsd)
+              : premiumPricing.clientPremiumUsd.toFixed(10),
+          displayedPremiumPer1kUsd:
+            parsePositiveDecimal(lockContext.displayedPremiumPer1kUsd) ||
+            new Decimal(lockContext.displayedPremiumPer1kUsd || NaN).isFinite()
+              ? String(lockContext.displayedPremiumPer1kUsd)
+              : premiumPricing.clientPremiumUsd.div(protectedNotional.div(1000)).toFixed(10),
           premiumMethod: premiumPricing.method,
           entryAnchorPrice: quoteEntryAnchorPrice.toFixed(10),
           entryAnchorSource: quoteEntryPriceSource,

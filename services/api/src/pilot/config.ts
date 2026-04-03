@@ -265,6 +265,8 @@ export const resolveHybridStrictMultiplierSchedules = (): Record<HybridStrictMul
   cheaper: resolveCheaperHybridStrictMultiplierByTier()
 });
 
+export const DEFAULT_LIVE_HYBRID_STRICT_MULTIPLIER_SCHEDULE: HybridStrictMultiplierScheduleName = "cheaper";
+
 export const parseNonNegativeFinite = (raw: string | undefined, fallback: number, errorCode: string): number => {
   const parsed = Number(raw ?? String(fallback));
   if (Number.isFinite(parsed) && parsed >= 0) return parsed;
@@ -998,7 +1000,7 @@ export const pilotConfig = {
     "invalid_pilot_hybrid_base_fee_usd"
   ),
   hybridStrictMultiplierSchedules: resolveHybridStrictMultiplierSchedules(),
-  hybridStrictMultiplierByTier: resolveCurrentHybridStrictMultiplierByTier(),
+  hybridStrictMultiplierByTier: resolveCheaperHybridStrictMultiplierByTier(),
   premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045"),
   premiumMarkupPctByTier: {
     "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_BRONZE || "0.06"),

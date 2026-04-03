@@ -162,6 +162,15 @@ test("resolveHybridStrictMultiplierSchedules exposes current and cheaper schedul
   assert.equal(schedules.cheaper["Pro (Platinum)"], 0.72);
 });
 
+test("live pilot defaults to the cheaper hybrid schedule", async () => {
+  const { pilotConfig } = await import("../src/pilot/config");
+  assert.deepEqual(pilotConfig.hybridStrictMultiplierByTier, pilotConfig.hybridStrictMultiplierSchedules.cheaper);
+  assert.equal(pilotConfig.hybridStrictMultiplierByTier["Pro (Bronze)"], 0.6);
+  assert.equal(pilotConfig.hybridStrictMultiplierByTier["Pro (Silver)"], 0.67);
+  assert.equal(pilotConfig.hybridStrictMultiplierByTier["Pro (Gold)"], 0.72);
+  assert.equal(pilotConfig.hybridStrictMultiplierByTier["Pro (Platinum)"], 0.72);
+});
+
 test("ibkr tenor drift env parsing supports configured bounds", () => {
   assert.equal(parsePositiveFinite("7", 7, "invalid_ibkr_max_tenor_drift_days"), 7);
   assert.equal(parsePositiveFinite("2.5", 7, "invalid_ibkr_max_tenor_drift_days"), 2.5);

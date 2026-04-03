@@ -45,6 +45,14 @@ export type PremiumPricingBreakdown = {
   pricingMode: PricingMode;
 };
 
+export type PilotRoundedPremiumDisplay = {
+  tierName: string;
+  protectedNotionalUsd: Decimal;
+  drawdownFloorPct: Decimal;
+  roundedPremiumPer1kUsd: Decimal;
+  roundedClientPremiumUsd: Decimal;
+};
+
 export type PricingPolicyConfig = {
   mode: PricingMode;
   premiumPolicyMode: PremiumPolicyMode;
@@ -108,6 +116,13 @@ const resolveTierMarkupPct = (tierName: string): Decimal => {
 const resolveTierHybridStrictMultiplier = (tierName: string): Decimal => {
   const raw = Number(pilotConfig.hybridStrictMultiplierByTier[tierName] ?? 0.7);
   return Number.isFinite(raw) && raw > 0 ? new Decimal(raw) : new Decimal("0.7");
+};
+
+const ROUNDED_PREMIUM_PER_1K_USD_BY_TIER: Record<string, Decimal> = {
+  "Pro (Bronze)": new Decimal(25),
+  "Pro (Silver)": new Decimal(21),
+  "Pro (Gold)": new Decimal(18),
+  "Pro (Platinum)": new Decimal(17)
 };
 
 export const resolvePricingPolicyMode = (raw: string | undefined): PricingMode => {
@@ -342,6 +357,24 @@ export const resolvePremiumPricing = (params: {
     clientPremiumUsd,
     method,
     pricingMode: mode
+  };
+};
+
+export const resolvePilotRoundedPremiumDisplay = (params: {
+  tierName: string;
+  protectedNotionalUsd: Decimal;
+  drawdownFloorPct: Decimal;
+}): PilotRoundedPremiumDisplay => {
+  const protectedNotionalUsd = new Decimal(params.protectedNotionalUsd);
+  const roundedPremiumPer1kUsd =
+    ROUNDED_PREMIUM_PER_1K_USD_BY_TIER[params.tierName] || new Decimal(0);
+  const roundedClientPremiumUsd = protectedNotionalUsd.div(1000).mul(roundedPremiumPer1kUsd);
+  return {
+    tierName: params.tierName,
+    protectedNotionalUsd,
+    drawdownFloorPct: new Decimal(params.drawdownFloorPct),
+    roundedPremiumPer1kUsd,
+    roundedClientPremiumUsd
   };
 };
 

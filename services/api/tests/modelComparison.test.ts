@@ -26,7 +26,7 @@ test("comparePricingModels returns strict and hybrid premiums for identical inpu
   assert.equal(result.rows[0].strictMethod, "floor_profitability");
   assert.equal(result.rows[0].hybridMethod, "hybrid_strict_discount");
   assert.equal(result.rows[0].strictClientPremiumUsd, "210.5000000000");
-  assert.equal(result.rows[0].hybridClientPremiumUsd, "136.8250000000");
+  assert.equal(result.rows[0].hybridClientPremiumUsd, "126.3000000000");
   assert.equal(result.summary.nRows, 1);
 });
 

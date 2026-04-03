@@ -204,10 +204,32 @@ Edit: `scripts/fixtures/pilot_backtest_config.example.json`
 - `treasury.perQuoteSubsidyCapPct`
 - Per tier:
   - `strictPremiumPer1kProtectedUsd`
-  - `hybridPremiumPer1kProtectedUsd` (keep this as a discounted share of strict, e.g. ~65% Bronze, 70% Silver, 75% Gold, 78% Platinum)
+  - `hybridPremiumPer1kProtectedUsd` (keep this as a discounted share of strict; live pilot default is the cheaper schedule)
   - `fallbackHedgePremiumPer1kProtectedUsd`
   - `strictHedgeRecoveryPct`
   - `hybridHedgeRecoveryPct`
+
+## Live pilot pricing lock-in
+
+Production pilot defaults:
+
+- Hybrid pricing uses the cheaper strict-discount schedule:
+  - Bronze: `0.60 x strict`
+  - Silver: `0.67 x strict`
+  - Gold: `0.72 x strict`
+  - Platinum: `0.72 x strict`
+- Premium regimes can still add watch/stress overlays when treasury telemetry deteriorates.
+- Take-profit is disabled in production (`tp_off`) for simplicity and treasury governance.
+- r/d take-profit settings remain available only in backtests and experiments.
+
+Rounded UI pricing chart (presentation only; underwriting still uses exact cheaper multipliers):
+
+| Tier | Floor | Rounded per 1k/week | 5k | 10k | 25k | 50k |
+|---|---:|---:|---:|---:|---:|---:|
+| Bronze | 20% | $25 | $125 | $250 | $625 | $1,250 |
+| Silver | 15% | $21 | $105 | $210 | $525 | $1,050 |
+| Gold | 12% | $18 | $90 | $180 | $450 | $900 |
+| Platinum | 12% | $17 | $85 | $170 | $425 | $850 |
 
 ## FalconX integration path (next step)
 
