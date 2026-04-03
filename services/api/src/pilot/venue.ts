@@ -1,7 +1,17 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { Buffer } from "node:buffer";
-import { DeribitConnector } from "@foxify/connectors";
-import type { PilotVenueMode } from "./config";
+import {
+  DeribitConnector,
+  IbkrConnector,
+  type IbkrContractQuery,
+  type IbkrQualifiedContract
+} from "@foxify/connectors";
+import type {
+  DeribitQuotePolicy,
+  DeribitStrikeSelectionMode,
+  PilotHedgePolicy,
+  PilotVenueMode
+} from "./config";
 import type { VenueExecution, VenueQuote } from "./types";
 
 export type QuoteRequest = {
@@ -10,6 +20,12 @@ export type QuoteRequest = {
   protectedNotional: number;
   quantity: number;
   side: "buy";
+  protectionType?: "long" | "short";
+  triggerPrice?: number;
+  requestedTenorDays?: number;
+  tenorMinDays?: number;
+  tenorMaxDays?: number;
+  hedgePolicy?: PilotHedgePolicy;
   clientOrderId?: string;
 };
 
@@ -20,7 +36,24 @@ type FalconxConfig = {
   passphrase: string;
 };
 
+type IbkrVenueConfig = {
+  bridgeBaseUrl: string;
+  bridgeTimeoutMs: number;
+  bridgeToken: string;
+  accountId: string;
+  enableExecution: boolean;
+  orderTimeoutMs: number;
+  orderTif?: "IOC" | "DAY";
+  maxRepriceSteps: number;
+  repriceStepTicks: number;
+  maxSlippageBps: number;
+  requireLiveTransport: boolean;
+  maxTenorDriftDays?: number;
+  preferTenorAtOrAbove?: boolean;
+};
+
 const nowIso = (): string => new Date().toISOString();
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const timestampSeconds = (): string => (Date.now() / 1000).toFixed(3);
 
@@ -78,13 +111,41 @@ const parseDeribitStrike = (instrumentId: string): number | null => {
   return Number.isFinite(strike) && strike > 0 ? strike : null;
 };
 
+const parseDeribitExpiry = (instrumentId: string): number | null => {
+  const parts = String(instrumentId || "").split("-");
+  if (parts.length < 4) return null;
+  const rawDate = String(parts[1] || "").toUpperCase();
+  if (!/^\d{1,2}[A-Z]{3}\d{2}$/.test(rawDate)) return null;
+  const day = Number(rawDate.slice(0, rawDate.length - 5));
+  const monthRaw = rawDate.slice(rawDate.length - 5, rawDate.length - 2);
+  const year = 2000 + Number(rawDate.slice(-2));
+  const monthMap: Record<string, number> = {
+    JAN: 0,
+    FEB: 1,
+    MAR: 2,
+    APR: 3,
+    MAY: 4,
+    JUN: 5,
+    JUL: 6,
+    AUG: 7,
+    SEP: 8,
+    OCT: 9,
+    NOV: 10,
+    DEC: 11
+  };
+  const month = monthMap[monthRaw];
+  if (!Number.isFinite(day) || !Number.isFinite(year) || month === undefined) return null;
+  const expiry = Date.UTC(year, month, day, 8, 0, 0, 0);
+  return Number.isFinite(expiry) ? expiry : null;
+};
+
 const extractTopOfBook = (orderBookPayload: any): {
   ask: number | null;
   askSize: number | null;
   bid: number | null;
 } => {
   const orderBook = orderBookPayload?.result ?? orderBookPayload;
-  const ask = Number(orderBook?.asks?.[0]?.[0] ?? orderBook?.best_ask_price ?? orderBook?.mark_price ?? 0);
+  const ask = Number(orderBook?.asks?.[0]?.[0] ?? orderBook?.best_ask_price ?? 0);
   const askSize = Number(orderBook?.asks?.[0]?.[1] ?? orderBook?.best_ask_amount ?? 0);
   const bid = Number(orderBook?.bids?.[0]?.[0] ?? orderBook?.best_bid_price ?? 0);
   return {
@@ -94,6 +155,12 @@ const extractTopOfBook = (orderBookPayload: any): {
   };
 };
 
+const extractMarkPrice = (orderBookPayload: any): number | null => {
+  const orderBook = orderBookPayload?.result ?? orderBookPayload;
+  const mark = Number(orderBook?.mark_price ?? 0);
+  return Number.isFinite(mark) && mark > 0 ? mark : null;
+};
+
 const resolveDeribitSpot = async (connector: DeribitConnector): Promise<number> => {
   const spot = await connector.getIndexPrice("btc_usd");
   const indexPrice = Number((spot as any)?.result?.index_price ?? 0);
@@ -101,6 +168,41 @@ const resolveDeribitSpot = async (connector: DeribitConnector): Promise<number> 
     throw new Error("deribit_spot_unavailable");
   }
   return indexPrice;
+};
+
+const toFinitePositive = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+const clampInt = (value: unknown, min: number, max: number, fallback: number): number => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  const v = Math.floor(n);
+  return Math.max(min, Math.min(max, v));
+};
+
+const formatMatchedTenorDisplay = (tenorDays: number | null): string | null => {
+  if (!Number.isFinite(Number(tenorDays)) || Number(tenorDays) < 0) return null;
+  const totalMinutes = Math.round(Number(tenorDays) * 24 * 60);
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes - days * 24 * 60) / 60);
+  const minutes = totalMinutes % 60;
+  if (days <= 0) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (hours <= 0) return `${days}d`;
+  return `${days}d ${hours}h`;
+};
+
+const buildIbkrInstrumentId = (contract: IbkrQualifiedContract): string => {
+  const symbol = String(contract.localSymbol || "").replace(/\s+/g, "_");
+  return `IBKR-${contract.secType}-${contract.conId}-${symbol}`;
+};
+
+const parseIbkrConId = (instrumentId: string): number | null => {
+  const match = String(instrumentId || "").match(/^IBKR-[^-]+-(\d+)-/);
+  if (!match) return null;
+  const conId = Number(match[1]);
+  return Number.isFinite(conId) && conId > 0 ? conId : null;
 };
 
 export interface PilotVenueAdapter {
@@ -175,71 +277,126 @@ class MockFalconxAdapter implements PilotVenueAdapter {
 class DeribitTestAdapter implements PilotVenueAdapter {
   constructor(
     private connector: DeribitConnector,
-    private quoteTtlMs: number
+    private quoteTtlMs: number,
+    private quotePolicy: DeribitQuotePolicy,
+    private strikeSelectionMode: DeribitStrikeSelectionMode,
+    private maxTenorDriftDays: number
   ) {}
 
-  private resolveTargetOptionType(requestedInstrument: string): "put" | "call" {
+  private resolveTargetOptionType(
+    requestedInstrument: string,
+    protectionType?: "long" | "short"
+  ): "put" | "call" {
+    if (protectionType === "short") return "call";
+    if (protectionType === "long") return "put";
     const normalized = String(requestedInstrument || "").toUpperCase();
     if (normalized.endsWith("-C")) return "call";
     return "put";
   }
 
-  private async resolveQuoteInstrument(requestedInstrument: string, spot: number): Promise<{
+  private async resolveQuoteInstrument(params: {
+    requestedInstrument: string;
+    spot: number;
+    targetTriggerPrice?: number;
+    requestedTenorDays?: number;
+    protectionType?: "long" | "short";
+  }): Promise<{
     instrumentId: string;
     ask: number;
     askSize: number | null;
     optionType: "put" | "call";
     source: string;
+    askSource: "ask" | "mark";
+    strike: number;
+    expiryTs: number | null;
   }> {
-    const targetOptionType = this.resolveTargetOptionType(requestedInstrument);
-    if (DERIBIT_OPTION_REGEX.test(requestedInstrument)) {
-      const book = await this.connector.getOrderBook(requestedInstrument);
-      const top = extractTopOfBook(book);
-      if (top.ask && top.ask > 0) {
-        return {
-          instrumentId: requestedInstrument,
-          ask: top.ask,
-          askSize: top.askSize,
-          optionType: targetOptionType,
-          source: "requested_instrument_orderbook"
-        };
-      }
-    }
-
+    const targetOptionType = this.resolveTargetOptionType(params.requestedInstrument, params.protectionType);
     const instruments = (await this.connector.listInstruments("BTC")) as any;
     const list: any[] = Array.isArray(instruments?.result) ? instruments.result : [];
     const now = Date.now();
-    const targetExpiry = now + 7 * 86400000;
-    const targetStrike = targetOptionType === "call" ? spot * 1.15 : spot * 0.85;
+    const requestedTenorDays =
+      Number.isFinite(Number(params.requestedTenorDays)) && Number(params.requestedTenorDays) > 0
+        ? Number(params.requestedTenorDays)
+        : 7;
+    const targetExpiry = now + requestedTenorDays * 86400000;
+    const legacyTargetStrike = targetOptionType === "call" ? params.spot * 1.15 : params.spot * 0.85;
+    const triggerTarget =
+      Number.isFinite(Number(params.targetTriggerPrice)) && Number(params.targetTriggerPrice) > 0
+        ? Number(params.targetTriggerPrice)
+        : null;
+    const targetStrike =
+      this.strikeSelectionMode === "trigger_aligned" && triggerTarget ? triggerTarget : legacyTargetStrike;
 
-    const candidates = list
+    const requestedCandidate =
+      DERIBIT_OPTION_REGEX.test(params.requestedInstrument) &&
+      Number.isFinite(parseDeribitStrike(params.requestedInstrument))
+        ? {
+            instrumentId: params.requestedInstrument,
+            strike: Number(parseDeribitStrike(params.requestedInstrument)),
+            expiryTs: parseDeribitExpiry(params.requestedInstrument)
+          }
+        : null;
+
+    let candidates = list
       .filter((item) => String(item?.option_type || "").toLowerCase() === targetOptionType)
       .filter((item) => Number(item?.expiration_timestamp || 0) > now + 60 * 60 * 1000)
       .map((item) => ({
         instrumentId: String(item.instrument_name || ""),
         strike: Number(item.strike || parseDeribitStrike(String(item.instrument_name || "")) || 0),
-        expiryTs: Number(item.expiration_timestamp || 0)
+        expiryTs: Number(item.expiration_timestamp || parseDeribitExpiry(String(item.instrument_name || "")) || 0)
       }))
       .filter((item) => item.instrumentId && Number.isFinite(item.strike) && item.strike > 0)
+      .filter((item) =>
+        this.strikeSelectionMode === "trigger_aligned" && triggerTarget
+          ? targetOptionType === "put"
+            ? item.strike >= triggerTarget
+            : item.strike <= triggerTarget
+          : true
+      );
+
+    if (this.strikeSelectionMode === "trigger_aligned" && triggerTarget && candidates.length === 0) {
+      throw new Error("deribit_quote_unavailable:trigger_strike_unavailable");
+    }
+
+    candidates = candidates
       .sort((a, b) => {
         const scoreA =
-          Math.abs(a.expiryTs - targetExpiry) / 86400000 + Math.abs(a.strike - targetStrike) / Math.max(spot, 1);
+          Math.abs(a.expiryTs - targetExpiry) / 86400000 +
+          Math.abs(a.strike - targetStrike) / Math.max(params.spot, 1);
         const scoreB =
-          Math.abs(b.expiryTs - targetExpiry) / 86400000 + Math.abs(b.strike - targetStrike) / Math.max(spot, 1);
+          Math.abs(b.expiryTs - targetExpiry) / 86400000 +
+          Math.abs(b.strike - targetStrike) / Math.max(params.spot, 1);
         return scoreA - scoreB;
       })
-      .slice(0, 25);
+      .slice(0, 40);
 
-    for (const candidate of candidates) {
+    const orderedCandidates = requestedCandidate
+      ? [requestedCandidate, ...candidates.filter((item) => item.instrumentId !== requestedCandidate.instrumentId)]
+      : candidates;
+
+    for (const candidate of orderedCandidates) {
       const book = await this.connector.getOrderBook(candidate.instrumentId);
       const top = extractTopOfBook(book);
-      if (top.ask && top.ask > 0) {
+      const mark = extractMarkPrice(book);
+      const askFromAsk = top.ask && top.ask > 0 ? top.ask : null;
+      const askFromMark =
+        this.quotePolicy === "ask_or_mark_fallback" && mark && mark > 0 ? mark : null;
+      const ask = askFromAsk ?? askFromMark;
+      if (ask && ask > 0) {
         return {
           instrumentId: candidate.instrumentId,
-          ask: top.ask,
+          ask,
           askSize: top.askSize,
           optionType: targetOptionType,
-          source: targetOptionType === "call" ? "auto_selected_deribit_call" : "auto_selected_deribit_put"
+          source:
+            candidate.instrumentId === requestedCandidate?.instrumentId
+              ? "requested_instrument_orderbook"
+              : targetOptionType === "call"
+                ? "auto_selected_deribit_call"
+                : "auto_selected_deribit_put",
+          askSource: askFromAsk ? "ask" : "mark",
+          strike: candidate.strike,
+          expiryTs: Number.isFinite(candidate.expiryTs) && candidate.expiryTs > 0 ? candidate.expiryTs : null
         };
       }
     }
@@ -248,12 +405,44 @@ class DeribitTestAdapter implements PilotVenueAdapter {
   }
 
   async quote(req: QuoteRequest): Promise<VenueQuote> {
+    const now = Date.now();
     const spot = await resolveDeribitSpot(this.connector);
-    const resolved = await this.resolveQuoteInstrument(req.instrumentId, spot);
+    const resolved = await this.resolveQuoteInstrument({
+      requestedInstrument: req.instrumentId,
+      spot,
+      targetTriggerPrice: req.triggerPrice,
+      requestedTenorDays: req.requestedTenorDays,
+      protectionType: req.protectionType
+    });
+    const requestedTenorDays =
+      Number.isFinite(Number(req.requestedTenorDays)) && Number(req.requestedTenorDays) > 0
+        ? Number(req.requestedTenorDays)
+        : 7;
+    const selectedTenorDays = resolved.expiryTs ? (resolved.expiryTs - now) / 86400000 : null;
+    const tenorDriftDays =
+      selectedTenorDays !== null ? Math.abs(selectedTenorDays - requestedTenorDays) : null;
+    if (
+      tenorDriftDays !== null &&
+      Number.isFinite(this.maxTenorDriftDays) &&
+      this.maxTenorDriftDays >= 0 &&
+      tenorDriftDays > this.maxTenorDriftDays
+    ) {
+      throw new Error("deribit_quote_unavailable:tenor_drift_exceeded");
+    }
     const premium = Number((resolved.ask * spot * req.quantity).toFixed(4));
     if (!Number.isFinite(premium) || premium <= 0) {
       throw new Error("deribit_quote_unavailable");
     }
+    const targetTriggerPrice =
+      Number.isFinite(Number(req.triggerPrice)) && Number(req.triggerPrice) > 0
+        ? Number(req.triggerPrice)
+        : null;
+    const strikeGapToTriggerUsd =
+      targetTriggerPrice !== null ? resolved.strike - targetTriggerPrice : null;
+    const strikeGapToTriggerPct =
+      targetTriggerPrice && targetTriggerPrice > 0 && strikeGapToTriggerUsd !== null
+        ? strikeGapToTriggerUsd / targetTriggerPrice
+        : null;
     const quoteTs = nowIso();
     const expiresAt = new Date(Date.now() + this.quoteTtlMs).toISOString();
     return {
@@ -271,8 +460,17 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         optionType: resolved.optionType,
         pricing: "live_orderbook",
         askPriceBtc: resolved.ask,
+        askSource: resolved.askSource,
         askSize: resolved.askSize,
-        spotPriceUsd: spot
+        spotPriceUsd: spot,
+        selectedStrike: resolved.strike,
+        targetTriggerPrice,
+        strikeGapToTriggerUsd,
+        strikeGapToTriggerPct,
+        selectedTenorDays,
+        tenorDriftDays,
+        deribitQuotePolicy: this.quotePolicy,
+        strikeSelectionMode: this.strikeSelectionMode
       }
     };
   }
@@ -288,6 +486,26 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       order?.status === "paper_filled" || order?.status === "filled" || order?.status === "ok"
         ? "success"
         : "failure";
+    const requestedQuantity = Math.max(0, Number(quote.quantity || 0));
+    const filledAmount = Number(order?.filledAmount);
+    const reportedAmount = Number(order?.amount);
+    const executedQuantityRaw = Number.isFinite(filledAmount)
+      ? filledAmount
+      : Number.isFinite(reportedAmount)
+        ? reportedAmount
+        : requestedQuantity;
+    const executedQuantity = Math.max(0, executedQuantityRaw);
+    const fillRatio =
+      requestedQuantity > 0
+        ? Math.min(1, Math.max(0, executedQuantity / requestedQuantity))
+        : 0;
+    const scaledPremium = Number((quote.premium * fillRatio).toFixed(10));
+    const fillStatus = String(order?.status || "unknown");
+    const rejectionReasonRaw =
+      (typeof order?.rejectionReason === "string" && order.rejectionReason) ||
+      (typeof order?.rejectReason === "string" && order.rejectReason) ||
+      (typeof order?.reason === "string" && order.reason) ||
+      null;
     return {
       venue: "deribit_test",
       status,
@@ -295,13 +513,20 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
       side: "buy",
-      quantity: quote.quantity,
+      quantity: executedQuantity,
       executionPrice: Number(order?.fillPrice ?? 0),
-      premium: quote.premium,
+      premium: scaledPremium,
       executedAt: nowIso(),
       externalOrderId: String(order?.id || `DERIBIT-ORD-${randomUUID()}`),
       externalExecutionId: String(order?.id || `DERIBIT-EXE-${randomUUID()}`),
-      details: { raw: order }
+      details: {
+        raw: order,
+        fillStatus,
+        rejectionReason: rejectionReasonRaw,
+        requestedQuantity,
+        executedQuantity,
+        fillRatio
+      }
     };
   }
 
@@ -316,11 +541,10 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       this.connector.getOrderBook(params.instrumentId),
       resolveDeribitSpot(this.connector)
     ]);
-    const orderBook = orderBookPayload?.result ?? orderBookPayload;
     const top = extractTopOfBook(orderBookPayload);
-    const markBtc = Number(orderBook?.mark_price ?? 0);
+    const markBtc = extractMarkPrice(orderBookPayload);
     const unitPrice =
-      Number.isFinite(markBtc) && markBtc > 0
+      markBtc
         ? markBtc * spot
         : top.ask && top.bid
           ? ((top.ask + top.bid) / 2) * spot
@@ -336,13 +560,669 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     return {
       markPremium: Number((unitPrice * quantity).toFixed(4)),
       unitPrice: Number(unitPrice.toFixed(4)),
-      source: Number.isFinite(markBtc) && markBtc > 0 ? "deribit_mark_price" : "deribit_top_of_book",
+      source: markBtc ? "deribit_mark_price" : "deribit_top_of_book",
       asOf: nowIso(),
       details: {
-        markPriceBtc: Number.isFinite(markBtc) ? markBtc : null,
+        markPriceBtc: markBtc,
         askPriceBtc: top.ask,
         bidPriceBtc: top.bid,
         spotPriceUsd: spot
+      }
+    };
+  }
+}
+
+class IbkrCmeAdapter implements PilotVenueAdapter {
+  private transportVerified = false;
+
+  constructor(
+    private connector: IbkrConnector,
+    private mode: "ibkr_cme_live" | "ibkr_cme_paper",
+    private quoteTtlMs: number,
+    private accountId: string,
+    private orderTimeoutMs: number,
+    private enableExecution: boolean,
+    private maxRepriceSteps: number,
+    private repriceStepTicks: number,
+    private maxSlippageBps: number,
+    private requireLiveTransport: boolean,
+    private orderTif: "IOC" | "DAY",
+    private maxTenorDriftDays: number,
+    private preferTenorAtOrAbove: boolean,
+    private marketDataRequestTimeoutMs: number,
+    private quoteBudgetMs: number
+  ) {}
+
+  private resolveRight(protectionType?: "long" | "short"): "P" | "C" {
+    return protectionType === "short" ? "C" : "P";
+  }
+
+  private async ensureRequiredLiveTransport(): Promise<void> {
+    if (!this.requireLiveTransport || this.transportVerified) return;
+    await this.connector.assertLiveTransportRequired();
+    this.transportVerified = true;
+  }
+
+  private async resolveContractAndBook(req: QuoteRequest): Promise<{
+    contract: IbkrQualifiedContract;
+    hedgeMode: "options_native" | "futures_synthetic";
+    top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+    requestedTenorDays: number;
+    selectedTenorDays: number | null;
+    tenorDriftDays: number | null;
+    selectedExpiry: string | null;
+    selectionReason: string;
+    selectionAlgorithm: string;
+    selectedScore: number | null;
+    selectedRank: number | null;
+    selectedIsBelowTarget: boolean | null;
+    candidateCountEvaluated: number;
+    matchedTenorHoursEstimate: number | null;
+    matchedTenorDisplay: string | null;
+    selectionTrace: Array<{
+      conId: number;
+      expiry: string | null;
+      matchedTenorDays: number | null;
+      driftDays: number | null;
+      ask: number | null;
+      bid: number | null;
+      askSize: number | null;
+      spreadPct: number | null;
+      belowTarget: boolean;
+      score: number;
+    }>;
+    strike: number | null;
+  }> {
+    const requestedTenorDays = clampInt(req.requestedTenorDays, 1, 30, 7);
+    const minTenorDays = clampInt(req.tenorMinDays, 1, 30, 1);
+    const maxTenorDays = clampInt(req.tenorMaxDays, minTenorDays, 30, Math.max(minTenorDays, 7));
+    const selectedTenorDays = Math.max(minTenorDays, Math.min(maxTenorDays, requestedTenorDays));
+    const trigger = toFinitePositive(req.triggerPrice);
+    const roundedStrike = trigger ? Math.max(1000, Math.round(trigger / 500) * 500) : null;
+    const right = this.resolveRight(req.protectionType);
+    const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
+    // Buy-side quote reliability requires an executable ask. Bid-only books are treated
+    // as non-actionable and should continue searching/fallback.
+    const hasUsableTop = (top: { ask: number | null; bid: number | null }): boolean =>
+      toFinitePositive(top.ask) !== null;
+    const topFromDepthPayload = (depth: {
+      bids?: Array<{ price?: unknown; size?: unknown }>;
+      asks?: Array<{ price?: unknown; size?: unknown }>;
+      asOf?: unknown;
+    }): { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string } => {
+      const bestBid = depth.bids?.[0];
+      const bestAsk = depth.asks?.[0];
+      return {
+        bid: toFinitePositive(bestBid?.price),
+        ask: toFinitePositive(bestAsk?.price),
+        bidSize: toFinitePositive(bestBid?.size),
+        askSize: toFinitePositive(bestAsk?.size),
+        asOf: String(depth.asOf || nowIso())
+      };
+    };
+    const quoteDeadlineMs =
+      Number.isFinite(this.quoteBudgetMs) && this.quoteBudgetMs > 0
+        ? Date.now() + this.quoteBudgetMs - 150
+        : null;
+    const ensureBudget = (minimumRemainingMs = 0): void => {
+      if (quoteDeadlineMs === null) return;
+      if (Date.now() + Math.max(0, minimumRemainingMs) >= quoteDeadlineMs) {
+        throw new Error("venue_quote_timeout");
+      }
+    };
+    const requestWindowHintMs = Math.max(
+      400,
+      Math.min(4000, Math.floor(Number(this.marketDataRequestTimeoutMs || 0)))
+    );
+    const calcTenorDaysFromExpiry = (expiryRaw?: string): number | null => {
+      const expiry = String(expiryRaw || "").replace(/[^0-9]/g, "").slice(0, 8);
+      if (expiry.length !== 8) return null;
+      const y = Number(expiry.slice(0, 4));
+      const m = Number(expiry.slice(4, 6));
+      const d = Number(expiry.slice(6, 8));
+      if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return null;
+      const expiryTs = Date.UTC(y, Math.max(0, m - 1), d, 8, 0, 0, 0);
+      if (!Number.isFinite(expiryTs)) return null;
+      const tenorDays = (expiryTs - Date.now()) / 86400000;
+      return Number.isFinite(tenorDays) ? tenorDays : null;
+    };
+    const contractTenorMeta = (contract: IbkrQualifiedContract): {
+      selectedTenorDays: number | null;
+      tenorDriftDays: number | null;
+    } => {
+      const selectedTenorDays = calcTenorDaysFromExpiry(contract.expiry);
+      const tenorDriftDays =
+        selectedTenorDays !== null ? Math.abs(selectedTenorDays - selectedTenorDaysIntended) : null;
+      return { selectedTenorDays, tenorDriftDays };
+    };
+    const selectedTenorDaysIntended = selectedTenorDays;
+    const contractPassesTenorPolicy = (contract: IbkrQualifiedContract): boolean => {
+      const meta = contractTenorMeta(contract);
+      if (
+        Number.isFinite(this.maxTenorDriftDays) &&
+        this.maxTenorDriftDays >= 0 &&
+        meta.tenorDriftDays !== null &&
+        meta.tenorDriftDays - this.maxTenorDriftDays > 1e-9
+      ) {
+        return false;
+      }
+      return true;
+    };
+    const rankByTenor = (a: IbkrQualifiedContract, b: IbkrQualifiedContract): number => {
+      const aMeta = contractTenorMeta(a);
+      const bMeta = contractTenorMeta(b);
+      const aTenor = aMeta.selectedTenorDays;
+      const bTenor = bMeta.selectedTenorDays;
+      const aDrift = aMeta.tenorDriftDays ?? Number.POSITIVE_INFINITY;
+      const bDrift = bMeta.tenorDriftDays ?? Number.POSITIVE_INFINITY;
+      const aPenalty = this.preferTenorAtOrAbove && aTenor !== null && aTenor < selectedTenorDaysIntended ? 1 : 0;
+      const bPenalty = this.preferTenorAtOrAbove && bTenor !== null && bTenor < selectedTenorDaysIntended ? 1 : 0;
+      if (aPenalty !== bPenalty) return aPenalty - bPenalty;
+      if (aDrift !== bDrift) return aDrift - bDrift;
+      return String(a.expiry || "").localeCompare(String(b.expiry || ""));
+    };
+    const pickContractWithTop = async (
+      contracts: IbkrQualifiedContract[]
+    ): Promise<
+      | {
+          contract: IbkrQualifiedContract;
+          top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string };
+          eligibleCount: number;
+          selectedScore: number;
+          selectedRank: number;
+          selectedIsBelowTarget: boolean;
+          candidateCountEvaluated: number;
+          selectionTrace: Array<{
+            conId: number;
+            expiry: string | null;
+            matchedTenorDays: number | null;
+            driftDays: number | null;
+            ask: number | null;
+            bid: number | null;
+            askSize: number | null;
+            spreadPct: number | null;
+            belowTarget: boolean;
+            score: number;
+          }>;
+        }
+      | null
+    > => {
+      const eligible = [...contracts]
+        .filter(contractPassesTenorPolicy)
+        .sort(rankByTenor);
+      // Probe a wider candidate set while preserving tenor preference.
+      const preferred = this.preferTenorAtOrAbove
+        ? eligible.filter((contract) => {
+            const tenor = contractTenorMeta(contract).selectedTenorDays;
+            return tenor !== null && tenor + 1e-9 >= selectedTenorDaysIntended;
+          })
+        : eligible;
+      const belowTarget = this.preferTenorAtOrAbove
+        ? eligible.filter((contract) => {
+            const tenor = contractTenorMeta(contract).selectedTenorDays;
+            return tenor !== null && tenor + 1e-9 < selectedTenorDaysIntended;
+          })
+        : [];
+      const shortlisted = [
+        ...preferred.slice(0, 4),
+        ...belowTarget.slice(0, 2)
+      ].filter((contract, idx, arr) => arr.findIndex((x) => x.conId === contract.conId) === idx);
+      if (shortlisted.length === 0) return null;
+      ensureBudget(requestWindowHintMs);
+      const settled = await Promise.all(
+        shortlisted.map(async (contract) => {
+          try {
+            const [topRes, depthRes] = await Promise.allSettled([
+              this.connector.getTopOfBook(contract.conId),
+              this.connector.getDepth(contract.conId)
+            ]);
+            const top = topRes.status === "fulfilled" ? topRes.value : null;
+            const depthTop =
+              depthRes.status === "fulfilled" ? topFromDepthPayload(depthRes.value) : null;
+            if (top && hasUsableTop(top)) {
+              return { contract, top };
+            }
+            if (depthTop && hasUsableTop(depthTop)) {
+              return { contract, top: depthTop };
+            }
+            return null;
+          } catch {
+            return null;
+          }
+        })
+      );
+      const scored = settled
+        .filter((item): item is { contract: IbkrQualifiedContract; top: { ask: number | null; bid: number | null; askSize: number | null; bidSize: number | null; asOf: string } } => Boolean(item))
+        .map((item) => {
+          const meta = contractTenorMeta(item.contract);
+          const ask = toFinitePositive(item.top.ask);
+          const bid = toFinitePositive(item.top.bid);
+          const askSize = toFinitePositive(item.top.askSize);
+          const spreadPct =
+            ask !== null && ask > 0 && bid !== null && bid > 0 && ask >= bid
+              ? (ask - bid) / ask
+              : null;
+          const driftDays = meta.tenorDriftDays;
+          const belowTarget =
+            meta.selectedTenorDays !== null ? meta.selectedTenorDays + 1e-9 < selectedTenorDaysIntended : false;
+          const tenorPenalty = (driftDays ?? 10) * 100;
+          const belowTargetPenalty = this.preferTenorAtOrAbove && belowTarget ? 40 : 0;
+          const spreadPenalty = Math.max(0, Math.min(0.25, spreadPct ?? 0.25)) * 100;
+          const sizePenalty = askSize === null ? 8 : 0;
+          const score = tenorPenalty + belowTargetPenalty + spreadPenalty + sizePenalty;
+          return {
+            ...item,
+            ask,
+            bid,
+            askSize,
+            spreadPct,
+            driftDays,
+            belowTarget,
+            score
+          };
+        })
+        .filter((row) => row.ask !== null)
+        .sort((a, b) => {
+          if (a.score !== b.score) return a.score - b.score;
+          const aDrift = a.driftDays ?? Number.POSITIVE_INFINITY;
+          const bDrift = b.driftDays ?? Number.POSITIVE_INFINITY;
+          if (aDrift !== bDrift) return aDrift - bDrift;
+          if (a.belowTarget !== b.belowTarget) return a.belowTarget ? 1 : -1;
+          if ((a.ask ?? Number.POSITIVE_INFINITY) !== (b.ask ?? Number.POSITIVE_INFINITY)) {
+            return (a.ask ?? Number.POSITIVE_INFINITY) - (b.ask ?? Number.POSITIVE_INFINITY);
+          }
+          return String(a.contract.expiry || "").localeCompare(String(b.contract.expiry || ""));
+        });
+      const selected = scored[0];
+      if (selected) {
+        const trace = scored.slice(0, 3).map((row) => {
+          const tenorMeta = contractTenorMeta(row.contract);
+          return {
+            conId: row.contract.conId,
+            expiry: String(row.contract.expiry || "") || null,
+            matchedTenorDays: tenorMeta.selectedTenorDays,
+            driftDays: tenorMeta.tenorDriftDays,
+            ask: row.ask,
+            bid: row.bid,
+            askSize: row.askSize,
+            spreadPct: row.spreadPct,
+            belowTarget: row.belowTarget,
+            score: Number(row.score.toFixed(6))
+          };
+        });
+        return {
+          contract: selected.contract,
+          top: selected.top,
+          eligibleCount: eligible.length,
+          selectedScore: Number(selected.score.toFixed(6)),
+          selectedRank: 1,
+          selectedIsBelowTarget: selected.belowTarget,
+          candidateCountEvaluated: scored.length,
+          selectionTrace: trace
+        };
+      }
+      return null;
+    };
+
+    let sawTenorEligibleContract = false;
+    if (hedgePolicy === "options_primary_futures_fallback") {
+      if (roundedStrike) {
+        ensureBudget(requestWindowHintMs);
+        const optionQuery: IbkrContractQuery = {
+          kind: "mbt_option",
+          symbol: "BTC",
+          exchange: "CME",
+          currency: "USD",
+          tenorDays: selectedTenorDays,
+          right,
+          strike: roundedStrike
+        };
+        const optionContracts = await this.connector.qualifyContracts(optionQuery);
+        sawTenorEligibleContract ||= optionContracts.some(contractPassesTenorPolicy);
+        const optionMatch = await pickContractWithTop(optionContracts);
+        if (optionMatch) {
+          const optionMeta = contractTenorMeta(optionMatch.contract);
+          return {
+            contract: optionMatch.contract,
+            hedgeMode: "options_native",
+            top: optionMatch.top,
+            requestedTenorDays: selectedTenorDaysIntended,
+            selectedTenorDays: optionMeta.selectedTenorDays,
+            tenorDriftDays: optionMeta.tenorDriftDays,
+            selectedExpiry: String(optionMatch.contract.expiry || "") || null,
+            selectionReason: "best_tenor_liquidity_option",
+            selectionAlgorithm: "tenor_quality_v1",
+            selectedScore: optionMatch.selectedScore,
+            selectedRank: optionMatch.selectedRank,
+            selectedIsBelowTarget: optionMatch.selectedIsBelowTarget,
+            candidateCountEvaluated: optionMatch.candidateCountEvaluated,
+            matchedTenorHoursEstimate:
+              optionMeta.selectedTenorDays !== null
+                ? Number((optionMeta.selectedTenorDays * 24).toFixed(4))
+                : null,
+            matchedTenorDisplay: formatMatchedTenorDisplay(optionMeta.selectedTenorDays),
+            selectionTrace: optionMatch.selectionTrace,
+            strike: toFinitePositive(optionMatch.contract.strike) || roundedStrike
+          };
+        }
+      }
+
+      ensureBudget(requestWindowHintMs);
+      const futQuery: IbkrContractQuery = {
+        kind: "mbt_future",
+        symbol: "BTC",
+        exchange: "CME",
+        currency: "USD",
+        tenorDays: selectedTenorDays
+      };
+      const futContracts = await this.connector.qualifyContracts(futQuery);
+      sawTenorEligibleContract ||= futContracts.some(contractPassesTenorPolicy);
+      const futMatch = await pickContractWithTop(futContracts);
+      if (futMatch) {
+        const futMeta = contractTenorMeta(futMatch.contract);
+        return {
+          contract: futMatch.contract,
+          hedgeMode: "futures_synthetic",
+          top: futMatch.top,
+          requestedTenorDays: selectedTenorDaysIntended,
+          selectedTenorDays: futMeta.selectedTenorDays,
+          tenorDriftDays: futMeta.tenorDriftDays,
+          selectedExpiry: String(futMatch.contract.expiry || "") || null,
+          selectionReason: "options_unavailable_futures_fallback",
+          selectionAlgorithm: "tenor_quality_v1",
+          selectedScore: futMatch.selectedScore,
+          selectedRank: futMatch.selectedRank,
+          selectedIsBelowTarget: futMatch.selectedIsBelowTarget,
+          candidateCountEvaluated: futMatch.candidateCountEvaluated,
+          matchedTenorHoursEstimate:
+            futMeta.selectedTenorDays !== null
+              ? Number((futMeta.selectedTenorDays * 24).toFixed(4))
+              : null,
+          matchedTenorDisplay: formatMatchedTenorDisplay(futMeta.selectedTenorDays),
+          selectionTrace: futMatch.selectionTrace,
+          strike: null
+        };
+      }
+      if (!sawTenorEligibleContract) {
+        throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
+      }
+      if (futContracts.length > 0) {
+        throw new Error("ibkr_quote_unavailable:no_top_of_book");
+      }
+      throw new Error("ibkr_quote_unavailable:tenor_drift_exceeded");
+    }
+
+    throw new Error("ibkr_quote_unavailable:no_contract");
+  }
+
+  async quote(req: QuoteRequest): Promise<VenueQuote> {
+    await this.ensureRequiredLiveTransport();
+    const resolved = await this.resolveContractAndBook(req);
+    const ask = toFinitePositive(resolved.top.ask);
+    const bid = toFinitePositive(resolved.top.bid);
+    const unitPrice = ask;
+    if (!unitPrice) {
+      throw new Error("ibkr_quote_unavailable:no_top_of_book");
+    }
+    const quoteTs = nowIso();
+    const expiresAt = new Date(Date.now() + this.quoteTtlMs).toISOString();
+    const notional = Math.max(0, Number(req.protectedNotional || 0));
+    const referenceQty = Math.max(0, Number(req.quantity || 0));
+    const premium = Number((Math.max(unitPrice * referenceQty, notional * 0.001)).toFixed(4));
+    const instrumentId = buildIbkrInstrumentId(resolved.contract);
+    const trigger = toFinitePositive(req.triggerPrice);
+    const strikeGapToTriggerUsd =
+      trigger !== null && resolved.strike !== null ? resolved.strike - trigger : null;
+    const strikeGapToTriggerPct =
+      trigger && trigger > 0 && strikeGapToTriggerUsd !== null ? strikeGapToTriggerUsd / trigger : null;
+
+    return {
+      venue: this.mode,
+      quoteId: randomUUID(),
+      rfqId: null,
+      instrumentId,
+      side: "buy",
+      quantity: referenceQty,
+      premium,
+      expiresAt,
+      quoteTs,
+      details: {
+        source: "ibkr_top_of_book",
+        pricing: "cme_mbt",
+        hedgeMode: resolved.hedgeMode,
+        requestedTenorDays: resolved.requestedTenorDays,
+        selectedTenorDays: resolved.selectedTenorDays,
+        tenorDriftDays: resolved.tenorDriftDays,
+        selectedExpiry: resolved.selectedExpiry,
+        selectionReason: resolved.selectionReason,
+        selectionAlgorithm: resolved.selectionAlgorithm,
+        selectedScore: resolved.selectedScore,
+        selectedRank: resolved.selectedRank,
+        selectedIsBelowTarget: resolved.selectedIsBelowTarget,
+        candidateCountEvaluated: resolved.candidateCountEvaluated,
+        matchedTenorHoursEstimate: resolved.matchedTenorHoursEstimate,
+        matchedTenorDisplay: resolved.matchedTenorDisplay,
+        selectionTrace: resolved.selectionTrace,
+        askPrice: ask,
+        bidPrice: bid,
+        askSize: resolved.top.askSize,
+        bidSize: resolved.top.bidSize,
+        selectedStrike: resolved.strike,
+        targetTriggerPrice: trigger,
+        strikeGapToTriggerUsd,
+        strikeGapToTriggerPct,
+        conId: resolved.contract.conId,
+        secType: resolved.contract.secType,
+        localSymbol: resolved.contract.localSymbol,
+        expiry: resolved.contract.expiry,
+        multiplier: resolved.contract.multiplier,
+        minTick: resolved.contract.minTick ?? null
+      }
+    };
+  }
+
+  async execute(quote: VenueQuote): Promise<VenueExecution> {
+    if (!this.enableExecution) {
+      return {
+        venue: this.mode,
+        status: "failure",
+        quoteId: quote.quoteId,
+        rfqId: quote.rfqId ?? null,
+        instrumentId: quote.instrumentId,
+        side: "buy",
+        quantity: 0,
+        executionPrice: 0,
+        premium: 0,
+        executedAt: nowIso(),
+        externalOrderId: `IBKR-DISABLED-${randomUUID()}`,
+        externalExecutionId: `IBKR-DISABLED-${randomUUID()}`,
+        details: { reason: "execution_disabled" }
+      };
+    }
+
+    const details = (quote.details || {}) as Record<string, unknown>;
+    const conId = toFinitePositive(details.conId) || parseIbkrConId(quote.instrumentId);
+    if (!conId) {
+      throw new Error("ibkr_execute_failed:missing_conid");
+    }
+    const minTick = toFinitePositive(details.minTick) || 5;
+    const market = await this.connector.getTopOfBook(conId);
+    const baseAsk = toFinitePositive(market.ask);
+    const baseBid = toFinitePositive(market.bid);
+    const baseLimit = baseAsk ?? baseBid;
+    if (!baseLimit) {
+      throw new Error("ibkr_execute_failed:no_market");
+    }
+    const stepTicks = Math.max(0.1, Number(this.repriceStepTicks || 0));
+    const maxSteps = Math.max(1, Math.floor(this.maxRepriceSteps || 1));
+    const maxSlipPct = Math.max(0, Number(this.maxSlippageBps || 0)) / 10_000;
+    const maxLimit = baseLimit * (1 + maxSlipPct);
+    const requestedQty = Math.max(0.00000001, Number(quote.quantity || 0));
+    const contractMultiplier = Math.max(0.00000001, Number(details.multiplier ?? 0.1));
+    const requestedContracts = Math.max(1, Math.ceil(requestedQty / contractMultiplier));
+
+    let lastOrderId = "";
+    let lastFailureDetail: Record<string, unknown> | null = null;
+    const isTerminal = (status: string): boolean =>
+      status === "filled" || status === "partially_filled" || status === "cancelled" || status === "rejected" || status === "inactive";
+    for (let step = 0; step < maxSteps; step += 1) {
+      const limitPrice = Math.min(maxLimit, baseLimit + step * stepTicks * minTick);
+      const placed = await this.connector.placeOrder({
+        accountId: this.accountId,
+        conId,
+        side: "BUY",
+        quantity: requestedContracts,
+        orderType: "LMT",
+        limitPrice,
+        tif: this.orderTif,
+        clientOrderId: `pilot-${quote.quoteId}-${step}`
+      });
+      lastOrderId = placed.orderId;
+      const statusDeadline = Date.now() + Math.max(800, Math.floor(Number(this.orderTimeoutMs || 0)));
+      let state = await this.connector.getOrder(placed.orderId);
+      while (
+        Date.now() < statusDeadline &&
+        state.status === "submitted" &&
+        Math.max(0, Number(state.filledQuantity || 0)) === 0
+      ) {
+        await wait(200);
+        state = await this.connector.getOrder(placed.orderId);
+      }
+      const filledQtyContracts = Math.max(0, Number(state.filledQuantity || 0));
+      if (filledQtyContracts > 0 && (state.status === "filled" || state.status === "partially_filled")) {
+        const executedQuantity = Number((filledQtyContracts * contractMultiplier).toFixed(8));
+        const executionPrice = toFinitePositive(state.avgFillPrice) || limitPrice;
+        const unitPrice = executionPrice * contractMultiplier;
+        return {
+          venue: this.mode,
+          status: "success",
+          quoteId: quote.quoteId,
+          rfqId: quote.rfqId ?? null,
+          instrumentId: quote.instrumentId,
+          side: "buy",
+          quantity: executedQuantity,
+          executionPrice,
+          premium: Number((unitPrice * filledQtyContracts).toFixed(6)),
+          executedAt: nowIso(),
+          externalOrderId: placed.orderId,
+          externalExecutionId: placed.orderId,
+          details: {
+            hedgeMode: details.hedgeMode || "options_native",
+            fillStatus: state.status,
+            requestedContracts,
+            filledContracts: filledQtyContracts,
+            contractMultiplier,
+            filledUnderlying: Number((filledQtyContracts * contractMultiplier).toFixed(8)),
+            limitPrice,
+            commissionUsd: toFinitePositive(state.commissionUsd) || 0,
+            commissionCurrency: String(state.commissionCurrency || "USD"),
+            realizedBrokerFeesUsd: toFinitePositive(state.commissionUsd) || 0,
+            realizedBrokerFeesCurrency: String(state.commissionCurrency || "USD"),
+            repriceStep: step
+          }
+        };
+      }
+      const terminalState = await this.connector.getOrder(placed.orderId);
+      const terminalStatus = String(terminalState.status || "");
+      const terminalFilledQty = Math.max(0, Number(terminalState.filledQuantity || 0));
+      if (terminalFilledQty > 0 && (terminalStatus === "filled" || terminalStatus === "partially_filled")) {
+        const executedQuantity = Number((terminalFilledQty * contractMultiplier).toFixed(8));
+        const executionPrice = toFinitePositive(terminalState.avgFillPrice) || limitPrice;
+        const unitPrice = executionPrice * contractMultiplier;
+        return {
+          venue: this.mode,
+          status: "success",
+          quoteId: quote.quoteId,
+          rfqId: quote.rfqId ?? null,
+          instrumentId: quote.instrumentId,
+          side: "buy",
+          quantity: executedQuantity,
+          executionPrice,
+          premium: Number((unitPrice * terminalFilledQty).toFixed(6)),
+          executedAt: nowIso(),
+          externalOrderId: placed.orderId,
+          externalExecutionId: placed.orderId,
+          details: {
+            hedgeMode: details.hedgeMode || "options_native",
+            fillStatus: terminalState.status,
+            requestedContracts,
+            filledContracts: terminalFilledQty,
+            contractMultiplier,
+            filledUnderlying: Number((terminalFilledQty * contractMultiplier).toFixed(8)),
+            limitPrice,
+            commissionUsd: toFinitePositive(terminalState.commissionUsd) || 0,
+            commissionCurrency: String(terminalState.commissionCurrency || "USD"),
+            realizedBrokerFeesUsd: toFinitePositive(terminalState.commissionUsd) || 0,
+            realizedBrokerFeesCurrency: String(terminalState.commissionCurrency || "USD"),
+            repriceStep: step
+          }
+        };
+      }
+      if (!isTerminal(terminalStatus)) {
+        await this.connector.cancelOrder(placed.orderId);
+      }
+      lastFailureDetail = {
+        reason: "no_fill_after_step",
+        fillStatus: terminalState.status,
+        rejectionReason: terminalState.rejectionReason || null,
+        requestedContracts,
+        filledContracts: terminalFilledQty,
+        contractMultiplier,
+        limitPrice,
+        orderTif: this.orderTif,
+        repriceStep: step
+      };
+    }
+
+    return {
+      venue: this.mode,
+      status: "failure",
+      quoteId: quote.quoteId,
+      rfqId: quote.rfqId ?? null,
+      instrumentId: quote.instrumentId,
+      side: "buy",
+      quantity: 0,
+      executionPrice: 0,
+      premium: 0,
+      executedAt: nowIso(),
+      externalOrderId: lastOrderId || `IBKR-NO-FILL-${randomUUID()}`,
+      externalExecutionId: lastOrderId || `IBKR-NO-FILL-${randomUUID()}`,
+      details: {
+        reason: "no_fill_after_reprice",
+        orderTif: this.orderTif,
+        ...(lastFailureDetail || {})
+      }
+    };
+  }
+
+  async getMark(params: { instrumentId: string; quantity: number }): Promise<{
+    markPremium: number;
+    unitPrice: number;
+    source: string;
+    asOf: string;
+    details?: Record<string, unknown>;
+  }> {
+    const conId = parseIbkrConId(params.instrumentId);
+    if (!conId) {
+      throw new Error("mark_unavailable");
+    }
+    const top = await this.connector.getTopOfBook(conId);
+    const bid = toFinitePositive(top.bid);
+    const ask = toFinitePositive(top.ask);
+    const unitPrice = bid && ask ? (bid + ask) / 2 : ask ?? bid;
+    if (!unitPrice) {
+      throw new Error("mark_unavailable");
+    }
+    const quantity = Math.max(0, Number(params.quantity || 0));
+    return {
+      markPremium: Number((unitPrice * quantity).toFixed(6)),
+      unitPrice: Number(unitPrice.toFixed(6)),
+      source: "ibkr_top_of_book_mid",
+      asOf: nowIso(),
+      details: {
+        bid,
+        ask,
+        conId
       }
     };
   }
@@ -429,11 +1309,61 @@ export const createPilotVenueAdapter = (params: {
   mode: PilotVenueMode;
   falconx: FalconxConfig;
   deribit: DeribitConnector;
+  ibkr?: IbkrVenueConfig;
+  ibkrQuoteBudgetMs?: number;
   quoteTtlMs?: number;
+  deribitQuotePolicy?: DeribitQuotePolicy;
+  deribitStrikeSelectionMode?: DeribitStrikeSelectionMode;
+  deribitMaxTenorDriftDays?: number;
 }): PilotVenueAdapter => {
   const quoteTtlMs = Math.max(5_000, Number(params.quoteTtlMs || 30_000));
   if (params.mode === "falconx") return new FalconxAdapter(params.falconx);
-  if (params.mode === "deribit_test") return new DeribitTestAdapter(params.deribit, quoteTtlMs);
+  if (params.mode === "ibkr_cme_live" || params.mode === "ibkr_cme_paper") {
+    if (!params.ibkr) {
+      throw new Error("ibkr_config_missing");
+    }
+    const connectorTimeoutMs = Math.max(
+      500,
+      Number(params.ibkr.bridgeTimeoutMs || 0),
+      Number(params.ibkr.orderTimeoutMs || 0)
+    );
+    const ibkrConnector = new IbkrConnector({
+      baseUrl: params.ibkr.bridgeBaseUrl,
+      // Use the more permissive timeout so quote/market-data paths do not abort early
+      // when IB request latency exceeds execution polling timeout.
+      timeoutMs: connectorTimeoutMs,
+      auth: { token: params.ibkr.bridgeToken },
+      accountId: params.ibkr.accountId
+    });
+    return new IbkrCmeAdapter(
+      ibkrConnector,
+      params.mode,
+      quoteTtlMs,
+      params.ibkr.accountId,
+      params.ibkr.orderTimeoutMs,
+      params.ibkr.enableExecution,
+      params.ibkr.maxRepriceSteps,
+      params.ibkr.repriceStepTicks,
+      params.ibkr.maxSlippageBps,
+      params.ibkr.requireLiveTransport,
+      params.ibkr.orderTif || "IOC",
+      Number.isFinite(Number(params.ibkr.maxTenorDriftDays)) ? Number(params.ibkr.maxTenorDriftDays) : 7,
+      params.ibkr.preferTenorAtOrAbove !== false,
+      connectorTimeoutMs,
+      Number(params.ibkrQuoteBudgetMs || 0)
+    );
+  }
+  if (params.mode === "deribit_test") {
+    return new DeribitTestAdapter(
+      params.deribit,
+      quoteTtlMs,
+      params.deribitQuotePolicy || "ask_or_mark_fallback",
+      params.deribitStrikeSelectionMode || "trigger_aligned",
+      Number.isFinite(Number(params.deribitMaxTenorDriftDays))
+        ? Number(params.deribitMaxTenorDriftDays)
+        : 1.5
+    );
+  }
   return new MockFalconxAdapter(quoteTtlMs);
 };
 
@@ -443,6 +1373,7 @@ export const mapVenueFailureReason = (error: unknown): string => {
   if (message.includes("INVALID_QUOTE_ID")) return "invalid_quote_id";
   if (message.includes("COOLDOWN")) return "execution_cooldown";
   if (message.includes("INSUFFICIENT")) return "insufficient_balance";
+  if (message.includes("tenor_drift_exceeded")) return "tenor_drift_exceeded";
   return "venue_error";
 };
 

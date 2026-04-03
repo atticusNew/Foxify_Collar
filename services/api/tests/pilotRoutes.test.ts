@@ -17,6 +17,34 @@ const buildPriceFetch = (): typeof fetch =>
         })
     }) as any) as typeof fetch;
 
+const buildDeribitExecutionFailureStub = (): any => {
+  const instrument = "BTC-31MAR26-80000-P";
+  return {
+    getIndexPrice: async () => ({
+      result: { index_price: 100000 }
+    }),
+    listInstruments: async () => ({
+      result: [
+        {
+          instrument_name: instrument,
+          option_type: "put",
+          strike: 80000,
+          expiration_timestamp: Date.now() + 7 * 86400000
+        }
+      ]
+    }),
+    getOrderBook: async () => ({
+      result: { asks: [[0.01, 5]], bids: [[0.009, 5]], mark_price: 0.0095 }
+    }),
+    placeOrder: async () => ({
+      status: "rejected",
+      id: "paper-reject",
+      fillPrice: 0,
+      filledAmount: 0
+    })
+  };
+};
+
 const defaultQuotePayload = (protectedNotional = 1000) => ({
   protectedNotional,
   foxifyExposureNotional: protectedNotional,
@@ -33,13 +61,17 @@ const activationPayload = (quoteId: string, protectedNotional = 1000) => ({
   tenorDays: 7
 });
 
-const createPilotHarness = async (): Promise<{
+const createPilotHarness = async (opts?: {
+  venueMode?: "mock_falconx" | "deribit_test" | "falconx";
+  deribit?: any;
+  env?: Record<string, string | undefined>;
+}): Promise<{
   app: FastifyInstance;
   pool: { query: (sql: string, params?: unknown[]) => Promise<any>; end: () => Promise<void> };
   close: () => Promise<void>;
 }> => {
   process.env.PILOT_API_ENABLED = "true";
-  process.env.PILOT_VENUE_MODE = "mock_falconx";
+  process.env.PILOT_VENUE_MODE = opts?.venueMode || "mock_falconx";
   process.env.POSTGRES_URL = "postgres://unused";
   process.env.USER_HASH_SECRET = "test_hash_secret";
   process.env.PILOT_ADMIN_TOKEN = "admin-local";
@@ -52,9 +84,74 @@ const createPilotHarness = async (): Promise<{
   process.env.PILOT_DURATION_DAYS = "30";
   process.env.PILOT_ENFORCE_WINDOW = "true";
   process.env.PILOT_QUOTE_TTL_MS = "120000";
+  process.env.PILOT_TENOR_MIN_DAYS = "1";
+  process.env.PILOT_TENOR_MAX_DAYS = "7";
+  process.env.PILOT_TENOR_DEFAULT_DAYS = "7";
+  process.env.PILOT_DYNAMIC_TENOR_ENABLED = "false";
+  process.env.PILOT_TENOR_ENFORCE = "false";
+  process.env.PILOT_TENOR_POLICY_ENFORCE = "false";
+  process.env.PILOT_TENOR_AUTO_ROUTE = "false";
+  process.env.PILOT_TENOR_CANDIDATES = "1,2,4,7,10,12,14";
+  process.env.PILOT_TENOR_MIN_SAMPLES = "5";
+  process.env.PILOT_TENOR_MIN_OK_RATE = "0.8";
+  process.env.PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE = "0.8";
+  process.env.PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO = "0.02";
+  process.env.PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS = "3";
+  process.env.PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE = "0";
+  process.env.PILOT_TENOR_DEFAULT_FALLBACK = "14";
+  process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES = "60";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
+  if (opts?.env) {
+    for (const [key, value] of Object.entries(opts.env)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 
   global.fetch = buildPriceFetch();
+
+  const configModule = await import("../src/pilot/config");
+  configModule.pilotConfig.enabled = true;
+  configModule.pilotConfig.venueMode = (opts?.venueMode || "mock_falconx") as any;
+  configModule.pilotConfig.tenantScopeId = process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot";
+  configModule.pilotConfig.adminToken = process.env.PILOT_ADMIN_TOKEN || "";
+  configModule.pilotConfig.proofToken = process.env.PILOT_PROOF_TOKEN || "";
+  configModule.pilotConfig.internalToken = process.env.PILOT_INTERNAL_TOKEN || "";
+  configModule.pilotConfig.hashSecret = process.env.USER_HASH_SECRET || "";
+  configModule.pilotConfig.dynamicTenorEnabled = process.env.PILOT_DYNAMIC_TENOR_ENABLED === "true";
+  configModule.pilotConfig.tenorPolicyEnforce =
+    (process.env.PILOT_TENOR_ENFORCE ?? process.env.PILOT_TENOR_POLICY_ENFORCE) === "true";
+  configModule.pilotConfig.tenorPolicyAutoRoute = process.env.PILOT_TENOR_AUTO_ROUTE === "true";
+  configModule.pilotConfig.pilotTenorMinDays = Number(process.env.PILOT_TENOR_MIN_DAYS || "1");
+  configModule.pilotConfig.pilotTenorMaxDays = Number(process.env.PILOT_TENOR_MAX_DAYS || "7");
+  configModule.pilotConfig.pilotTenorDefaultDays = Number(process.env.PILOT_TENOR_DEFAULT_DAYS || "7");
+  configModule.pilotConfig.tenorPolicyCandidateDays = String(process.env.PILOT_TENOR_CANDIDATES || "1,2,4,7,10,12,14")
+    .split(",")
+    .map((item) => Number(item.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0) as number[];
+  configModule.pilotConfig.tenorPolicyMinSamples = Number(process.env.PILOT_TENOR_MIN_SAMPLES || "5");
+  configModule.pilotConfig.tenorPolicyMinOkRate = Number(process.env.PILOT_TENOR_MIN_OK_RATE || "0.8");
+  configModule.pilotConfig.tenorPolicyMinOptionsNativeRate = Number(
+    process.env.PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE || "0.8"
+  );
+  configModule.pilotConfig.tenorPolicyMaxMedianPremiumRatio = Number(
+    process.env.PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO || "0.02"
+  );
+  configModule.pilotConfig.tenorPolicyMaxMedianDriftDays = Number(
+    process.env.PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS || "3"
+  );
+  configModule.pilotConfig.tenorPolicyMaxNegativeMatchedRate = Number(
+    process.env.PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE || "0"
+  );
+  configModule.pilotConfig.tenorPolicyDefaultFallbackDays = Number(
+    process.env.PILOT_TENOR_DEFAULT_FALLBACK || "14"
+  );
+  configModule.pilotConfig.tenorPolicyLookbackMinutes = Number(
+    process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES || "60"
+  );
 
   const db = newDb();
   const pg = db.adapters.createPg();
@@ -65,7 +162,7 @@ const createPilotHarness = async (): Promise<{
   const { registerPilotRoutes } = await import("../src/pilot/routes");
 
   const app = Fastify();
-  await registerPilotRoutes(app, { deribit: {} as any });
+  await registerPilotRoutes(app, { deribit: (opts?.deribit || {}) as any });
 
   return {
     app,
@@ -106,6 +203,16 @@ const quoteAndActivate = async (
   const protectionId = String(activatePayloadJson.protection?.id || "");
   assert.ok(protectionId);
   return { protectionId, quoteId };
+};
+
+const withFixedNow = async <T>(iso: string, fn: () => Promise<T>): Promise<T> => {
+  const realNow = Date.now;
+  Date.now = () => new Date(iso).getTime();
+  try {
+    return await fn();
+  } finally {
+    Date.now = realNow;
+  }
 };
 
 test("pilot route hardening A-H", async (t) => {
@@ -514,5 +621,587 @@ test("pilot route hardening A-H", async (t) => {
 
 test.after(() => {
   global.fetch = originalFetch;
+});
+
+test("K) quote diagnostics surface venue strike/tenor selection", async () => {
+  const harness = await createPilotHarness();
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "ok");
+    assert.ok(payload.diagnostics?.venueSelection);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedStrike"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "tenorDriftDays"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "deribitQuotePolicy"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "strikeSelectionMode"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "requestedTenorDays"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedTenorDaysActual"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedExpiry"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectionAlgorithm"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "candidateCountEvaluated"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedScore"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectedRank"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "matchedTenorHoursEstimate"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "matchedTenorDisplay"),
+      true
+    );
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(payload.diagnostics.venueSelection, "selectionTrace"),
+      true
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("L) post-execution persistence failure marks protection reconcile_pending", async () => {
+  const harness = await createPilotHarness();
+  try {
+    const originalQuery = harness.pool.query.bind(harness.pool);
+    let injectedFailure = false;
+    harness.pool.query = async (sql: string, params?: unknown[]) => {
+      const text = String(sql || "");
+      const hasActiveStatus = Array.isArray(params) && params.some((value) => value === "active");
+      if (!injectedFailure && text.includes("UPDATE pilot_protections") && hasActiveStatus) {
+        injectedFailure = true;
+        throw new Error("db_write_after_execution_failed");
+      }
+      return originalQuery(sql, params);
+    };
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId);
+    const activateRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    harness.pool.query = originalQuery;
+    // debug
+    assert.equal(activateRes.statusCode, 409);
+    const activatePayload = activateRes.json();
+    assert.equal(activatePayload.reason, "reconcile_pending");
+    const protections = await harness.pool.query(
+      `SELECT status, metadata FROM pilot_protections ORDER BY created_at DESC LIMIT 1`
+    );
+    assert.equal(String(protections.rows[0]?.status || ""), "reconcile_pending");
+    const metadata = protections.rows[0]?.metadata || {};
+    assert.ok(String(metadata.externalOrderId || "").length > 0);
+    assert.ok(String(metadata.reconcileReason || "").length > 0);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("M) quote with failed prior protection returns quote_not_activatable", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    deribit: buildDeribitExecutionFailureStub()
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId);
+
+    // First activation attempt will fail and mark protection activation_failed.
+    const failedActivation = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(failedActivation.statusCode, 502);
+    assert.equal(failedActivation.json().reason, "execution_failed");
+
+    // Re-activating same quote should now surface non-activatable state.
+    const replay = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(replay.statusCode, 409);
+    assert.equal(replay.json().reason, "quote_not_activatable");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("N) execution failure marks protection activation_failed and releases daily capacity", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    deribit: buildDeribitExecutionFailureStub()
+  });
+  try {
+    const { app, pool } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(activateRes.statusCode, 502);
+    const activatePayload = activateRes.json();
+    assert.equal(activatePayload.reason, "execution_failed");
+
+    const protectionRows = await pool.query(
+      `SELECT status, metadata FROM pilot_protections ORDER BY created_at DESC LIMIT 1`
+    );
+    assert.equal(String(protectionRows.rows[0]?.status || ""), "activation_failed");
+    assert.equal(Boolean(protectionRows.rows[0]?.metadata?.capReleased), true);
+
+    const usageRows = await pool.query(`SELECT used_notional::text AS used_now FROM pilot_daily_usage LIMIT 1`);
+    assert.equal(String(usageRows.rows[0]?.used_now || "0"), "0");
+
+    const quoteRes2 = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(50000)
+    });
+    assert.equal(quoteRes2.statusCode, 200);
+    const quoteId2 = String(quoteRes2.json().quote.quoteId);
+
+    const activateRes2 = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId2, 50000)
+    });
+    assert.equal(activateRes2.statusCode, 502);
+    assert.equal(activateRes2.json().reason, "execution_failed");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("N2) activation execution_failed surfaces fillStatus and rejectionReason detail", async () => {
+  const harness = await createPilotHarness({
+    venueMode: "deribit_test",
+    deribit: buildDeribitExecutionFailureStub()
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: defaultQuotePayload(1000)
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quoteId = String(quoteRes.json().quote.quoteId);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(activateRes.statusCode, 502);
+    const activatePayload = activateRes.json();
+    assert.equal(activatePayload.reason, "execution_failed");
+    assert.equal(activatePayload.detail, "fillStatus=rejected");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("N3) activation metadata persists tenor selection context from lock quote", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "10,12,14",
+      PILOT_TENOR_MIN_DAYS: "10",
+      PILOT_TENOR_MAX_DAYS: "14",
+      PILOT_TENOR_DEFAULT_DAYS: "12",
+      PILOT_TENOR_MIN_SAMPLES: "1",
+      PILOT_TENOR_MIN_OK_RATE: "0",
+      PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE: "0",
+      PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO: "10",
+      PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS: "30",
+      PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE: "1",
+      PILOT_TENOR_ENFORCE: "false",
+      PILOT_TENOR_AUTO_ROUTE: "true",
+      PILOT_TENOR_DEFAULT_FALLBACK: "12"
+    }
+  });
+  try {
+    const { app, pool } = harness;
+    const policyRes = await app.inject({
+      method: "GET",
+      url: "/pilot/tenor-policy"
+    });
+    assert.equal(policyRes.statusCode, 200);
+    const policyPayload = policyRes.json();
+    const expectedDefaultTenor = Number(policyPayload?.selection?.defaultTenorDays || 12);
+
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        instrumentId: "BTC-USD-12D-P",
+        tenorDays: 12
+      }
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quotePayload = quoteRes.json();
+    assert.equal(quotePayload.status, "ok");
+    const quoteId = String(quotePayload.quote?.quoteId || "");
+    assert.ok(quoteId);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: {
+        ...activationPayload(quoteId, 1000),
+        instrumentId: "BTC-USD-12D-P",
+        tenorDays: 12
+      }
+    });
+    assert.equal(activateRes.statusCode, 200);
+    const protectionId = String(activateRes.json()?.protection?.id || "");
+    assert.ok(protectionId);
+
+    const persisted = await pool.query(`SELECT metadata FROM pilot_protections WHERE id = $1`, [protectionId]);
+    const metadata = (persisted.rows[0]?.metadata || {}) as Record<string, unknown>;
+    assert.equal(Number(metadata.requestedTenorDays), 12);
+    assert.equal(Number(metadata.venueRequestedTenorDays), expectedDefaultTenor);
+    assert.equal(typeof metadata.tenorPolicyStatus, "string");
+    assert.equal(metadata.selectedExpiry === null || typeof metadata.selectedExpiry === "string", true);
+    assert.equal(
+      metadata.selectedTenorDays === null || Number.isFinite(Number(metadata.selectedTenorDays)),
+      true
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("N4) activation premium diagnostics preserve estimated vs realized fee components", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_PREMIUM_POLICY_MODE: "pass_through_markup",
+      PILOT_PREMIUM_MARKUP_PCT_BRONZE: "0.1",
+      IBKR_FEE_PER_CONTRACT_USD: "2.02",
+      IBKR_FEE_PER_ORDER_USD: "0"
+    }
+  });
+  try {
+    const { app } = harness;
+    const quoteRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 7
+      }
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const quotePayload = quoteRes.json();
+    const quoteId = String(quotePayload.quote?.quoteId || "");
+    assert.ok(quoteId);
+
+    const activateRes = await app.inject({
+      method: "POST",
+      url: "/pilot/protections/activate",
+      payload: activationPayload(quoteId, 1000)
+    });
+    assert.equal(activateRes.statusCode, 200);
+    const payload = activateRes.json();
+    assert.equal(payload.status, "ok");
+    const estimated = payload?.diagnostics?.premiumPolicy?.estimated || {};
+    const realized = payload?.diagnostics?.premiumPolicy?.realized || {};
+    assert.equal(Number(estimated.brokerFeesUsd), 0);
+    // In this mock venue harness there is no external commission report, so realized fee falls back to estimate.
+    assert.equal(Number(realized.brokerFeesUsd), Number(estimated.brokerFeesUsd));
+    assert.equal(Number(realized.passThroughUsd), Number(realized.hedgeCostUsd) + Number(realized.brokerFeesUsd));
+    assert.equal(Number(realized.clientPremiumUsd), Number(payload?.protection?.premium || 0));
+  } finally {
+    await harness.close();
+  }
+});
+
+test("Q) tenor-policy endpoint returns structured policy payload", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "1,2,4",
+      PILOT_TENOR_MIN_SAMPLES: "1",
+      PILOT_TENOR_MIN_OK_RATE: "0",
+      PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE: "0",
+      PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO: "10",
+      PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS: "30",
+      PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE: "1",
+      PILOT_TENOR_ENFORCE: "true",
+      PILOT_TENOR_AUTO_ROUTE: "true"
+    }
+  });
+  try {
+    const policyRes = await harness.app.inject({
+      method: "GET",
+      url: "/pilot/tenor-policy"
+    });
+    assert.equal(policyRes.statusCode, 200);
+    const payload = policyRes.json();
+    assert.equal(payload.status, "ok");
+    assert.equal(Array.isArray(payload?.config?.candidateTenorsDays), true);
+    assert.equal(Array.isArray(payload?.selection?.enabledTenorsDays), true);
+    assert.equal(Array.isArray(payload?.tenors), true);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("R) quote diagnostics include premiumPolicy and tenorPolicy", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "1,2,4",
+      PILOT_TENOR_MIN_SAMPLES: "1",
+      PILOT_TENOR_MIN_OK_RATE: "0",
+      PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE: "0",
+      PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO: "10",
+      PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS: "30",
+      PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE: "1",
+      PILOT_TENOR_ENFORCE: "false",
+      PILOT_TENOR_AUTO_ROUTE: "true"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 7
+      }
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "ok");
+    assert.ok(payload?.diagnostics?.premiumPolicy);
+    assert.equal(payload?.diagnostics?.premiumPolicy?.currency, "USD");
+    assert.ok(payload?.diagnostics?.tenorPolicy);
+    assert.equal(
+      typeof payload?.diagnostics?.tenorPolicy?.requestedTenorDays === "number",
+      true
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+test("S) dynamic tenor enforce blocks unavailable requested tenor", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "1,2,4",
+      PILOT_TENOR_MIN_SAMPLES: "100",
+      PILOT_TENOR_ENFORCE: "true",
+      PILOT_TENOR_AUTO_ROUTE: "false"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 7
+      }
+    });
+    assert.equal(quoteRes.statusCode, 409);
+    const payload = quoteRes.json();
+    assert.equal(payload.status, "error");
+    assert.equal(payload.reason, "tenor_temporarily_unavailable");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("T) dynamic tenor auto-route rewrites venue requested tenor", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "1,2,4",
+      PILOT_TENOR_MIN_SAMPLES: "1",
+      PILOT_TENOR_MIN_OK_RATE: "0",
+      PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE: "0",
+      PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO: "10",
+      PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS: "30",
+      PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE: "1",
+      PILOT_TENOR_ENFORCE: "false",
+      PILOT_TENOR_AUTO_ROUTE: "true",
+      PILOT_TENOR_DEFAULT_FALLBACK: "2"
+    }
+  });
+  try {
+    // Seed a successful sample for tenor=2 so it becomes enabled.
+    const seedRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 2
+      }
+    });
+    assert.equal(seedRes.statusCode, 200);
+
+    const rerouteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 7
+      }
+    });
+    assert.equal(rerouteRes.statusCode, 200);
+    const payload = rerouteRes.json();
+    assert.equal(payload.status, "ok");
+    assert.equal(payload?.diagnostics?.tenorPolicy?.requestedTenorDays, 7);
+    assert.equal(payload?.diagnostics?.tenorPolicy?.venueRequestedTenorDays, 2);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("U) degraded tenor policy with no enabled tenors falls back to default candidate", async () => {
+  const harness = await createPilotHarness({
+    env: {
+      PILOT_DYNAMIC_TENOR_ENABLED: "true",
+      PILOT_TENOR_CANDIDATES: "10,12,14",
+      PILOT_TENOR_MIN_DAYS: "10",
+      PILOT_TENOR_MAX_DAYS: "14",
+      PILOT_TENOR_DEFAULT_DAYS: "12",
+      PILOT_TENOR_MIN_SAMPLES: "100",
+      PILOT_TENOR_ENFORCE: "true",
+      PILOT_TENOR_AUTO_ROUTE: "true",
+      PILOT_TENOR_DEFAULT_FALLBACK: "12"
+    }
+  });
+  try {
+    const quoteRes = await harness.app.inject({
+      method: "POST",
+      url: "/pilot/protections/quote",
+      payload: {
+        ...defaultQuotePayload(1000),
+        tenorDays: 12
+      }
+    });
+    assert.equal(quoteRes.statusCode, 200);
+    const payload = quoteRes.json();
+    // Ensure no seed data from earlier tests leaked into this harness and changed policy state.
+    assert.deepEqual(payload?.diagnostics?.tenorPolicy?.enabledTenorsDays || [], []);
+    assert.equal(payload.status, "ok");
+    assert.equal(payload?.diagnostics?.tenorPolicy?.status, "ok");
+    assert.equal(payload?.diagnostics?.tenorPolicy?.requestedTenorDays, 12);
+    assert.equal(payload?.diagnostics?.tenorPolicy?.venueRequestedTenorDays, 12);
+    assert.equal(payload?.diagnostics?.tenorPolicy?.fallbackApplied, true);
+    assert.equal(payload?.diagnostics?.tenorPolicy?.fallbackReason, "degraded_policy_allow_requested_candidate");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("O) monitor/detail/proof routes are tenant scoped", async () => {
+  const harnessA = await createPilotHarness({ env: { PILOT_TENANT_SCOPE_ID: "tenant-a" } });
+  const harnessB = await createPilotHarness({ env: { PILOT_TENANT_SCOPE_ID: "tenant-b" } });
+  try {
+    const { app: appA } = harnessA;
+    const { app: appB } = harnessB;
+    const { protectionId } = await quoteAndActivate(appA, 1000);
+
+    const detail = await appB.inject({
+      method: "GET",
+      url: `/pilot/protections/${protectionId}`
+    });
+    assert.equal(detail.statusCode, 404);
+
+    const monitor = await appB.inject({
+      method: "GET",
+      url: `/pilot/protections/${protectionId}/monitor`
+    });
+    assert.equal(monitor.statusCode, 404);
+
+    const proof = await appB.inject({
+      method: "GET",
+      url: `/pilot/protections/${protectionId}/proof`,
+      headers: { "x-proof-token": "proof-local" }
+    });
+    assert.equal(proof.statusCode, 404);
+  } finally {
+    await harnessA.close();
+    await harnessB.close();
+  }
+});
+
+test("P) own proof route works with proof token", async () => {
+  const harness = await createPilotHarness();
+  try {
+    const { app } = harness;
+    const { protectionId } = await quoteAndActivate(app, 1000);
+    const proof = await app.inject({
+      method: "GET",
+      url: `/pilot/protections/${protectionId}/proof`,
+      headers: { "x-proof-token": "proof-local" }
+    });
+    assert.equal(proof.statusCode, 200);
+    assert.equal(proof.json().status, "ok");
+  } finally {
+    await harness.close();
+  }
 });
 
