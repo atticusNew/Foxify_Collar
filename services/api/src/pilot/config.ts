@@ -15,6 +15,7 @@ export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 export type PilotPricingMode = "actuarial_strict" | "hybrid_otm_treasury";
 export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
+export type HybridStrictMultiplierScheduleName = "current" | "cheaper";
 export type HedgeOptimizerRuntimeConfig = {
   enabled: boolean;
   version: string;
@@ -212,6 +213,57 @@ export const parsePositiveFinite = (raw: string | undefined, fallback: number, e
 
 export const parseHybridStrictMultiplier = (raw: string | undefined, fallback: number, errorCode: string): number =>
   parseFractionRange(raw, fallback, 0.25, 1, errorCode);
+
+const resolveCurrentHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_BRONZE,
+    0.65,
+    "invalid_pilot_hybrid_strict_multiplier_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_SILVER,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_GOLD,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_PLATINUM,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_platinum"
+  )
+});
+
+const resolveCheaperHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_CHEAPER_BRONZE,
+    0.6,
+    "invalid_pilot_hybrid_strict_multiplier_cheaper_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_CHEAPER_SILVER,
+    0.67,
+    "invalid_pilot_hybrid_strict_multiplier_cheaper_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_CHEAPER_GOLD,
+    0.72,
+    "invalid_pilot_hybrid_strict_multiplier_cheaper_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_CHEAPER_PLATINUM,
+    0.72,
+    "invalid_pilot_hybrid_strict_multiplier_cheaper_platinum"
+  )
+});
+
+export const resolveHybridStrictMultiplierSchedules = (): Record<HybridStrictMultiplierScheduleName, Record<string, number>> => ({
+  current: resolveCurrentHybridStrictMultiplierByTier(),
+  cheaper: resolveCheaperHybridStrictMultiplierByTier()
+});
 
 export const parseNonNegativeFinite = (raw: string | undefined, fallback: number, errorCode: string): number => {
   const parsed = Number(raw ?? String(fallback));
@@ -945,28 +997,8 @@ export const pilotConfig = {
     5,
     "invalid_pilot_hybrid_base_fee_usd"
   ),
-  hybridStrictMultiplierByTier: {
-    "Pro (Bronze)": parseHybridStrictMultiplier(
-      process.env.PILOT_HYBRID_STRICT_MULTIPLIER_BRONZE,
-      0.65,
-      "invalid_pilot_hybrid_strict_multiplier_bronze"
-    ),
-    "Pro (Silver)": parseHybridStrictMultiplier(
-      process.env.PILOT_HYBRID_STRICT_MULTIPLIER_SILVER,
-      0.7,
-      "invalid_pilot_hybrid_strict_multiplier_silver"
-    ),
-    "Pro (Gold)": parseHybridStrictMultiplier(
-      process.env.PILOT_HYBRID_STRICT_MULTIPLIER_GOLD,
-      0.75,
-      "invalid_pilot_hybrid_strict_multiplier_gold"
-    ),
-    "Pro (Platinum)": parseHybridStrictMultiplier(
-      process.env.PILOT_HYBRID_STRICT_MULTIPLIER_PLATINUM,
-      0.75,
-      "invalid_pilot_hybrid_strict_multiplier_platinum"
-    )
-  } as Record<string, number>,
+  hybridStrictMultiplierSchedules: resolveHybridStrictMultiplierSchedules(),
+  hybridStrictMultiplierByTier: resolveCurrentHybridStrictMultiplierByTier(),
   premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045"),
   premiumMarkupPctByTier: {
     "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_BRONZE || "0.06"),

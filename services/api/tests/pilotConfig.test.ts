@@ -17,6 +17,7 @@ import {
   parsePositiveFinite,
   parsePositiveIntInRange,
   parsePilotVenueMode,
+  resolveHybridStrictMultiplierSchedules,
   resolvePilotWindow
 } from "../src/pilot/config";
 
@@ -147,6 +148,18 @@ test("parseHybridStrictMultiplier enforces discounted pilot bands", () => {
   assert.equal(parseHybridStrictMultiplier("0.78", 0.65, "invalid"), 0.78);
   assert.throws(() => parseHybridStrictMultiplier("0.2", 0.65, "invalid"), /invalid:/);
   assert.throws(() => parseHybridStrictMultiplier("1.1", 0.65, "invalid"), /invalid:/);
+});
+
+test("resolveHybridStrictMultiplierSchedules exposes current and cheaper schedules", () => {
+  const schedules = resolveHybridStrictMultiplierSchedules();
+  assert.equal(schedules.current["Pro (Bronze)"], 0.65);
+  assert.equal(schedules.current["Pro (Silver)"], 0.7);
+  assert.equal(schedules.current["Pro (Gold)"], 0.75);
+  assert.equal(schedules.current["Pro (Platinum)"], 0.75);
+  assert.equal(schedules.cheaper["Pro (Bronze)"], 0.6);
+  assert.equal(schedules.cheaper["Pro (Silver)"], 0.67);
+  assert.equal(schedules.cheaper["Pro (Gold)"], 0.72);
+  assert.equal(schedules.cheaper["Pro (Platinum)"], 0.72);
 });
 
 test("ibkr tenor drift env parsing supports configured bounds", () => {

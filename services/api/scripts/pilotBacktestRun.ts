@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import Decimal from "decimal.js";
+import { pilotConfig, type HybridStrictMultiplierScheduleName } from "../src/pilot/config";
+import { applyPremiumRegimeOverlay, type PremiumRegimeLevel } from "../src/pilot/premiumRegime";
 import { computeDrawdownLossBudgetUsd } from "../src/pilot/protectionMath";
 
 type DecimalString = string;
@@ -171,6 +173,8 @@ type BacktestOutput = {
     reboundPct: string;
     decayPct: string;
   };
+  hybridSchedule: HybridStrictMultiplierScheduleName | "config";
+  premiumRegime: PremiumRegimeLevel;
   treasury: {
     startingBalanceUsd: string;
     dailySubsidyCapUsd: string;
@@ -194,6 +198,8 @@ type Args = {
   tpEnabledOverride: boolean | null;
   tpReboundPctOverride: Decimal | null;
   tpDecayPctOverride: Decimal | null;
+  hybridSchedule: HybridStrictMultiplierScheduleName | null;
+  premiumRegime: PremiumRegimeLevel;
 };
 
 const ZERO = new Decimal(0);
@@ -210,7 +216,9 @@ const parseArgs = (argv: string[]): Args => {
     breachModeOverride: null,
     tpEnabledOverride: null,
     tpReboundPctOverride: null,
-    tpDecayPctOverride: null
+    tpDecayPctOverride: null,
+    hybridSchedule: null,
+    premiumRegime: "normal"
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -278,6 +286,26 @@ const parseArgs = (argv: string[]): Args => {
       const value = parseDecimal(argv[i + 1], "tp_decay_pct");
       if (value.lt(0)) throw new Error("invalid_tp_decay_pct:negative");
       args.tpDecayPctOverride = value;
+      i += 1;
+      continue;
+    }
+    if (token === "--hybrid-schedule" && argv[i + 1]) {
+      const value = String(argv[i + 1]).trim().toLowerCase();
+      if (value === "current" || value === "cheaper") {
+        args.hybridSchedule = value;
+      } else {
+        throw new Error(`invalid_hybrid_schedule:${value}`);
+      }
+      i += 1;
+      continue;
+    }
+    if (token === "--premium-regime" && argv[i + 1]) {
+      const value = String(argv[i + 1]).trim().toLowerCase();
+      if (value === "normal" || value === "watch" || value === "stress") {
+        args.premiumRegime = value;
+      } else {
+        throw new Error(`invalid_premium_regime:${value}`);
+      }
       i += 1;
       continue;
     }
@@ -380,6 +408,44 @@ const loadPrices = async (pricesCsvPath: string): Promise<PricePoint[]> => {
 };
 
 const toFixed = (value: Decimal): string => value.toFixed(10);
+
+const resolveHybridScheduleMultiplier = (
+  tierName: string,
+  hybridSchedule: HybridStrictMultiplierScheduleName | null
+): Decimal | null => {
+  if (!hybridSchedule) return null;
+  const multiplier = pilotConfig.hybridStrictMultiplierSchedules[hybridSchedule]?.[tierName];
+  return Number.isFinite(Number(multiplier)) ? new Decimal(Number(multiplier)) : null;
+};
+
+const resolveHybridPremiumUsd = (params: {
+  tier: TierConfig;
+  protectedNotional: Decimal;
+  protectedPer1k: Decimal;
+  hybridSchedule: HybridStrictMultiplierScheduleName | null;
+  premiumRegime: PremiumRegimeLevel;
+}): Decimal => {
+  const strictPremiumPer1k = parseDecimal(
+    params.tier.strictPremiumPer1kProtectedUsd,
+    `${params.tier.tierName}.strictPremiumPer1kProtectedUsd`
+  );
+  const configuredHybridPremiumPer1k = parseDecimal(
+    params.tier.hybridPremiumPer1kProtectedUsd,
+    `${params.tier.tierName}.hybridPremiumPer1kProtectedUsd`
+  );
+  const scheduleMultiplier = resolveHybridScheduleMultiplier(params.tier.tierName, params.hybridSchedule);
+  const basePremiumUsd = scheduleMultiplier
+    ? strictPremiumPer1k.mul(params.protectedPer1k).mul(scheduleMultiplier)
+    : configuredHybridPremiumPer1k.mul(params.protectedPer1k);
+  const overlay = applyPremiumRegimeOverlay({
+    basePremiumUsd,
+    protectedNotionalUsd: params.protectedNotional,
+    regime: params.premiumRegime,
+    config: pilotConfig.premiumRegime,
+    enabledForPricingMode: true
+  });
+  return overlay.adjustedPremiumUsd;
+};
 
 const computePayoutLong = (params: {
   protectedNotionalUsd: Decimal;
@@ -717,10 +783,10 @@ const main = async () => {
         for (const notionalRaw of config.notionalsUsd) {
           const protectedNotional = parseDecimal(notionalRaw, "notional");
           const protectedPer1k = protectedNotional.div(ONE_THOUSAND);
-          const premiumPer1k =
-            model === "strict"
-              ? parseDecimal(tier.strictPremiumPer1kProtectedUsd, `${tier.tierName}.strictPremiumPer1kProtectedUsd`)
-              : parseDecimal(tier.hybridPremiumPer1kProtectedUsd, `${tier.tierName}.hybridPremiumPer1kProtectedUsd`);
+          const strictPremiumPer1k = parseDecimal(
+            tier.strictPremiumPer1kProtectedUsd,
+            `${tier.tierName}.strictPremiumPer1kProtectedUsd`
+          );
           const hedgePer1k = parseDecimal(
             tier.fallbackHedgePremiumPer1kProtectedUsd,
             `${tier.tierName}.fallbackHedgePremiumPer1kProtectedUsd`
@@ -730,7 +796,16 @@ const main = async () => {
               ? parseDecimal(tier.strictHedgeRecoveryPct, `${tier.tierName}.strictHedgeRecoveryPct`)
               : parseDecimal(tier.hybridHedgeRecoveryPct, `${tier.tierName}.hybridHedgeRecoveryPct`);
 
-          const premiumUsd = premiumPer1k.mul(protectedPer1k);
+          const premiumUsd =
+            model === "strict"
+              ? strictPremiumPer1k.mul(protectedPer1k)
+              : resolveHybridPremiumUsd({
+                  tier,
+                  protectedNotional,
+                  protectedPer1k,
+                  hybridSchedule: args.hybridSchedule,
+                  premiumRegime: args.premiumRegime
+                });
           const hedgeCostUsd = hedgePer1k.mul(protectedPer1k);
           const triggerPriceUsd = entry.price.mul(new Decimal(1).minus(drawdownFloorPct));
           const pathMinPriceUsd = findPathMinPrice(prices, entryIdx, exitIdx);
@@ -866,6 +941,8 @@ const main = async () => {
       reboundPct: toFixed(tp.reboundPct),
       decayPct: toFixed(tp.decayPct)
     },
+    hybridSchedule: args.hybridSchedule || "config",
+    premiumRegime: args.premiumRegime,
     treasury: {
       startingBalanceUsd: toFixed(startingTreasury),
       dailySubsidyCapUsd: toFixed(dailyCap),
