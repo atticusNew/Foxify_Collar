@@ -30,9 +30,15 @@ type BacktestSummaryRow = {
   endTreasuryBalanceUsd: string;
 };
 
+type ExecutiveRiskRow = {
+  model: ModelName;
+  recommendedMinTreasuryBufferUsd: string;
+};
+
 type BacktestOutput = {
   status: "ok";
   summary: BacktestSummaryRow[];
+  executiveRisk?: ExecutiveRiskRow[];
 };
 
 type Args = {
@@ -62,6 +68,7 @@ type PeriodDetailRow = {
   underwritingPnlImprovementUsd: string;
   subsidyNeedTotalUsd: string;
   subsidyNeedReductionUsd: string;
+  recommendedMinTreasuryBufferUsd: string;
   endTreasuryBalanceUsd: string;
 };
 
@@ -73,6 +80,7 @@ type ComboSummaryRow = {
   preserveCalmUpside: boolean;
   stressSubsidyNeedTpUsd: string;
   stressSubsidyNeedReductionUsd: string;
+  stressWorstRecommendedMinBufferUsd: string;
   calmUnderwritingPnlImprovementUsd: string;
   calmSubsidyNeedReductionUsd: string;
   totalUnderwritingPnlTpUsd: string;
@@ -250,6 +258,7 @@ const buildWorkbook = (params: {
   rankingHybrid: Array<Record<string, string | number | boolean>>;
   rankingStrict: Array<Record<string, string | number | boolean>>;
   recommendations: Array<Record<string, string | number | boolean>>;
+  treasuryProjectionRows: Array<Record<string, string | number | boolean>>;
 }) => {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.assumptions), "assumptions");
@@ -266,6 +275,7 @@ const buildWorkbook = (params: {
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.rankingHybrid), "ranking_hybrid");
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.rankingStrict), "ranking_strict");
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.recommendations), "recommendations");
+  XLSX.utils.book_append_sheet(wb, rowsToSheet(params.treasuryProjectionRows), "treasury_projection");
   XLSX.writeFile(wb, params.outPath);
 };
 
@@ -347,7 +357,12 @@ const main = async () => {
         );
 
         const parsed = JSON.parse(await readFile(outJson, "utf8")) as BacktestOutput;
+        const execByModel = new Map<ModelName, ExecutiveRiskRow>();
+        for (const er of parsed.executiveRisk || []) {
+          execByModel.set(er.model, er);
+        }
         for (const summary of parsed.summary) {
+          const er = execByModel.get(summary.model);
           periodRows.push({
             combo,
             reboundPct: rebound.toFixed(2),
@@ -363,6 +378,7 @@ const main = async () => {
             underwritingPnlImprovementUsd: String(summary.underwritingPnlImprovementUsd || "0.0000000000"),
             subsidyNeedTotalUsd: String(summary.subsidyNeedTotalUsd),
             subsidyNeedReductionUsd: String(summary.subsidyNeedReductionUsd || "0.0000000000"),
+            recommendedMinTreasuryBufferUsd: String(er?.recommendedMinTreasuryBufferUsd || "0.0000000000"),
             endTreasuryBalanceUsd: String(summary.endTreasuryBalanceUsd)
           });
         }
@@ -383,6 +399,7 @@ const main = async () => {
         preserveCalmUpside: true,
         stressSubsidyNeedTpUsd: "0.0000000000",
         stressSubsidyNeedReductionUsd: "0.0000000000",
+        stressWorstRecommendedMinBufferUsd: "0.0000000000",
         calmUnderwritingPnlImprovementUsd: "0.0000000000",
         calmSubsidyNeedReductionUsd: "0.0000000000",
         totalUnderwritingPnlTpUsd: "0.0000000000",
@@ -405,6 +422,9 @@ const main = async () => {
       agg.stressSubsidyNeedReductionUsd = toFixed(
         toDecimal(agg.stressSubsidyNeedReductionUsd).plus(toDecimal(row.subsidyNeedReductionUsd))
       );
+      const currentWorst = toDecimal(agg.stressWorstRecommendedMinBufferUsd);
+      const nextValue = toDecimal(row.recommendedMinTreasuryBufferUsd);
+      agg.stressWorstRecommendedMinBufferUsd = toFixed(Decimal.max(currentWorst, nextValue));
     } else {
       agg.calmUnderwritingPnlImprovementUsd = toFixed(
         toDecimal(agg.calmUnderwritingPnlImprovementUsd).plus(toDecimal(row.underwritingPnlImprovementUsd))
@@ -458,7 +478,8 @@ const main = async () => {
       decayPct: rankingHybrid[0]?.decayPct || "n/a",
       preserveCalmUpside: rankingHybrid[0]?.preserveCalmUpside ?? false,
       stressSubsidyNeedTpUsd: rankingHybrid[0]?.stressSubsidyNeedTpUsd || "n/a",
-      calmUnderwritingPnlImprovementUsd: rankingHybrid[0]?.calmUnderwritingPnlImprovementUsd || "n/a"
+      calmUnderwritingPnlImprovementUsd: rankingHybrid[0]?.calmUnderwritingPnlImprovementUsd || "n/a",
+      stressWorstRecommendedMinBufferUsd: rankingHybrid[0]?.stressWorstRecommendedMinBufferUsd || "n/a"
     },
     {
       model: "strict",
@@ -467,9 +488,35 @@ const main = async () => {
       decayPct: rankingStrict[0]?.decayPct || "n/a",
       preserveCalmUpside: rankingStrict[0]?.preserveCalmUpside ?? false,
       stressSubsidyNeedTpUsd: rankingStrict[0]?.stressSubsidyNeedTpUsd || "n/a",
-      calmUnderwritingPnlImprovementUsd: rankingStrict[0]?.calmUnderwritingPnlImprovementUsd || "n/a"
+      calmUnderwritingPnlImprovementUsd: rankingStrict[0]?.calmUnderwritingPnlImprovementUsd || "n/a",
+      stressWorstRecommendedMinBufferUsd: rankingStrict[0]?.stressWorstRecommendedMinBufferUsd || "n/a"
     }
   ];
+
+  const projectionScales = [0.5, 1, 1.5, 2];
+  const topByModel: Record<ModelName, ComboSummaryRow | null> = {
+    hybrid: rankingHybrid[0] || null,
+    strict: rankingStrict[0] || null
+  };
+  const treasuryProjectionRows: Array<Record<string, string | number | boolean>> = [];
+  for (const model of ["hybrid", "strict"] as ModelName[]) {
+    const top = topByModel[model];
+    const baseBuffer = toDecimal(top?.stressWorstRecommendedMinBufferUsd || "0");
+    for (const scale of projectionScales) {
+      const scaled = baseBuffer.mul(scale);
+      treasuryProjectionRows.push({
+        model,
+        combo: top?.combo || "n/a",
+        reboundPct: top?.reboundPct || "n/a",
+        decayPct: top?.decayPct || "n/a",
+        baseStressWorstRecommendedMinBufferUsd: toFixed(baseBuffer),
+        issuanceScale: scale,
+        minBufferUsd: toFixed(scaled),
+        targetBuffer30PctCushionUsd: toFixed(scaled.mul("1.30")),
+        targetBuffer50PctCushionUsd: toFixed(scaled.mul("1.50"))
+      });
+    }
+  }
 
   comboRows.sort((a, b) =>
     a.model === b.model ? a.combo.localeCompare(b.combo) : a.model.localeCompare(b.model)
@@ -498,6 +545,7 @@ const main = async () => {
   const periodCsvPath = path.join(args.outDir, "tp_sweep_period_detail.csv");
   const rankingHybridCsvPath = path.join(args.outDir, "tp_sweep_ranking_hybrid.csv");
   const rankingStrictCsvPath = path.join(args.outDir, "tp_sweep_ranking_strict.csv");
+  const treasuryProjectionCsvPath = path.join(args.outDir, "tp_sweep_treasury_projection.csv");
   const overviewMdPath = path.join(args.outDir, "tp_sweep_overview.md");
   await writeFile(comboCsvPath, rowsToCsv(comboRows as unknown as Array<Record<string, string | number | boolean>>), "utf8");
   await writeFile(periodCsvPath, rowsToCsv(periodRows as unknown as Array<Record<string, string | number | boolean>>), "utf8");
@@ -511,6 +559,7 @@ const main = async () => {
     rowsToCsv(rankingStrict as unknown as Array<Record<string, string | number | boolean>>),
     "utf8"
   );
+  await writeFile(treasuryProjectionCsvPath, rowsToCsv(treasuryProjectionRows), "utf8");
 
   buildWorkbook({
     outPath: outXlsxPath,
@@ -519,7 +568,8 @@ const main = async () => {
     comboRows,
     rankingHybrid,
     rankingStrict,
-    recommendations
+    recommendations,
+    treasuryProjectionRows
   });
 
   const overview = [
@@ -547,6 +597,7 @@ const main = async () => {
     `- period detail csv: \`${periodCsvPath}\``,
     `- ranking hybrid csv: \`${rankingHybridCsvPath}\``,
     `- ranking strict csv: \`${rankingStrictCsvPath}\``,
+    `- treasury projection csv: \`${treasuryProjectionCsvPath}\``,
     `- workbook: \`${outXlsxPath}\``
   ].join("\n");
   await writeFile(overviewMdPath, overview, "utf8");
@@ -562,6 +613,7 @@ const main = async () => {
           periodDetailCsv: periodCsvPath,
           rankingHybridCsv: rankingHybridCsvPath,
           rankingStrictCsv: rankingStrictCsvPath,
+          treasuryProjectionCsv: treasuryProjectionCsvPath,
           overviewMd: overviewMdPath,
           workbookXlsx: outXlsxPath
         },
