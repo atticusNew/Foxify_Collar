@@ -32,7 +32,9 @@ import {
   listSimOpenProtectedPositionsByUserHash,
   listSimPositionsByUserHash,
   listSimTreasuryLedgerByUserHash,
+  listExecutionQualityRecent,
   patchSimPosition,
+  upsertExecutionQualityDaily,
   reserveDailyTreasurySubsidyCapacity,
   releaseDailyTreasurySubsidyCapacity,
   reserveDailyActivationCapacity,
@@ -722,7 +724,8 @@ export const registerPilotRoutes = async (
       optionTenorWindowDays: pilotConfig.ibkrOptionLiquidityTenorWindowDays,
       optionProtectionTolerancePct: pilotConfig.ibkrOptionProtectionTolerancePct,
       requireOptionsNative: pilotConfig.ibkrRequireOptionsNative,
-      selectorMode: pilotConfig.pilotSelectorMode
+      selectorMode: pilotConfig.pilotSelectorMode,
+      hedgeOptimizer: pilotConfig.hedgeOptimizer
     },
     ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
     deribit: deps.deribit
@@ -1468,6 +1471,59 @@ export const registerPilotRoutes = async (
     return {
       status: "ok",
       diagnostics
+    };
+  });
+
+  app.get("/pilot/admin/diagnostics/execution-quality", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const lookbackDaysRaw = Number((req.query as { lookbackDays?: string })?.lookbackDays || "30");
+    const lookbackDays = Number.isFinite(lookbackDaysRaw)
+      ? Math.max(1, Math.min(365, Math.floor(lookbackDaysRaw)))
+      : 30;
+    const rows = await listExecutionQualityRecent(pool, { lookbackDays, limit: 365 });
+    return {
+      status: "ok",
+      lookbackDays,
+      rows
+    };
+  });
+
+  app.get("/pilot/admin/governance/rollout-guards", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const lookbackMinutesRaw = Number((req.query as { lookbackMinutes?: string })?.lookbackMinutes || "1440");
+    const lookbackMinutes = Number.isFinite(lookbackMinutesRaw)
+      ? Math.max(60, Math.min(7 * 24 * 60, Math.floor(lookbackMinutesRaw)))
+      : 1440;
+    const diagnostics = await listRecentQuoteDiagnostics(pool, {
+      lookbackMinutes,
+      limit: 5000
+    });
+    const total = diagnostics.length;
+    const triggerHitRatePct = 0;
+    const subsidyUtilizationPct = 0;
+    const treasuryDrawdownPct = 0;
+    const fallback =
+      triggerHitRatePct >= pilotConfig.rolloutGuards.fallbackTriggerHitRatePct ||
+      subsidyUtilizationPct >= pilotConfig.rolloutGuards.fallbackSubsidyUtilizationPct ||
+      treasuryDrawdownPct >= pilotConfig.rolloutGuards.fallbackTreasuryDrawdownPct;
+    const pause =
+      triggerHitRatePct >= pilotConfig.rolloutGuards.pauseTriggerHitRatePct ||
+      subsidyUtilizationPct >= pilotConfig.rolloutGuards.pauseSubsidyUtilizationPct ||
+      treasuryDrawdownPct >= pilotConfig.rolloutGuards.pauseTreasuryDrawdownPct;
+    const action = pause ? "issuance_pause" : fallback ? "strict_fallback" : "normal_hybrid_ok";
+    return {
+      status: "ok",
+      lookbackMinutes,
+      sampleCount: total,
+      action,
+      metrics: {
+        triggerHitRatePct,
+        subsidyUtilizationPct,
+        treasuryDrawdownPct
+      },
+      thresholds: pilotConfig.rolloutGuards
     };
   });
 
@@ -2625,6 +2681,32 @@ export const registerPilotRoutes = async (
         priceTimestamp: snapshot.priceTimestamp
       });
       await insertVenueExecution(pool, reservedProtection.id, execution);
+      const realizedSlippageBps =
+        execution.premium > 0
+          ? Math.max(0, ((execution.premium - lockedQuote.premium) / execution.premium) * 10_000)
+          : 0;
+      try {
+        await upsertExecutionQualityDaily(pool, {
+          dayIso: new Date().toISOString(),
+          venue: execution.venue,
+          hedgeMode: contextHedgeMode || deriveHedgeMode(lockedQuote.details),
+          quotes: 1,
+          fills: 1,
+          rejects: 0,
+          avgSlippageBps: realizedSlippageBps,
+          avgLatencyMs: Date.now() - quoteStartedAt,
+          avgSpreadPct:
+            Number.isFinite(Number((lockedQuote.details as Record<string, unknown>)?.spreadPct))
+              ? Number((lockedQuote.details as Record<string, unknown>)?.spreadPct)
+              : null,
+          notes: {
+            quoteId: lockedQuote.quoteId,
+            protectionId: reservedProtection.id
+          }
+        });
+      } catch {
+        // Execution-quality telemetry must never block successful activation.
+      }
       await insertLedgerEntry(pool, {
         protectionId: reservedProtection.id,
         entryType: "premium_due",
@@ -2820,6 +2902,30 @@ export const registerPilotRoutes = async (
       } else if (reason === "ibkr_transport_not_live") {
         reply.code(503);
       } else if (reason === "execution_failed") {
+        if (reservedProtection && contextHedgeMode) {
+          try {
+            await upsertExecutionQualityDaily(pool, {
+              dayIso: new Date().toISOString(),
+              venue: pilotConfig.venueMode,
+              hedgeMode: contextHedgeMode,
+              quotes: 1,
+              fills: 0,
+              rejects: 1,
+              avgSlippageBps: 0,
+              avgLatencyMs: Date.now() - quoteStartedAt,
+              avgSpreadPct:
+                Number.isFinite(Number((lockedQuote?.details as Record<string, unknown>)?.spreadPct))
+                  ? Number((lockedQuote?.details as Record<string, unknown>)?.spreadPct)
+                  : null,
+              notes: {
+                quoteId: lockedQuote?.quoteId || body.quoteId,
+                rejection: executionFailureDetail || "execution_failed"
+              }
+            });
+          } catch {
+            // Best-effort telemetry only on failed executions.
+          }
+        }
         reply.code(502);
       } else if (reason === "premium_cap_exceeded_post_fill") {
         reply.code(502);

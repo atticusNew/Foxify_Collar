@@ -16,6 +16,8 @@ type TriggerMonitorResult = {
   triggered: number;
   skipped: number;
   priceErrors: number;
+  fallbackSignals: number;
+  pauseSignals: number;
 };
 
 const buildTriggerMetadata = (params: {
@@ -43,6 +45,12 @@ const buildTriggerMetadata = (params: {
   triggerPriceTimestamp: params.priceTimestamp
 });
 
+const shouldSignalFallback = (triggerRatePct: number): boolean =>
+  triggerRatePct >= pilotConfig.rolloutGuards.fallbackTriggerHitRatePct;
+
+const shouldSignalPause = (triggerRatePct: number): boolean =>
+  triggerRatePct >= pilotConfig.rolloutGuards.pauseTriggerHitRatePct;
+
 export const processTriggerMonitorCycle = async (
   pool: Pool,
   now: Date = new Date()
@@ -59,7 +67,9 @@ export const processTriggerMonitorCycleWithResolver = async (
     scanned: 0,
     triggered: 0,
     skipped: 0,
-    priceErrors: 0
+    priceErrors: 0,
+    fallbackSignals: 0,
+    pauseSignals: 0
   };
   const candidates = await listActiveProtectionsForTriggerMonitor(pool, {
     limit: pilotConfig.triggerMonitorBatchSize
@@ -145,6 +155,13 @@ export const processTriggerMonitorCycleWithResolver = async (
       reference: `trigger:${snapshot.priceTimestamp}`
     });
     result.triggered += 1;
+  }
+  const triggerRatePct = result.scanned > 0 ? (result.triggered / result.scanned) * 100 : 0;
+  if (shouldSignalFallback(triggerRatePct)) {
+    result.fallbackSignals += 1;
+  }
+  if (shouldSignalPause(triggerRatePct)) {
+    result.pauseSignals += 1;
   }
   return result;
 };

@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import Decimal from "decimal.js";
 import type {
+  ExecutionQualityRecord,
   HedgeMode,
   LedgerEntryType,
+  OptionsChainSnapshotRecord,
   PriceSnapshotRecord,
   PriceSnapshotType,
   PremiumPolicyDiagnostics,
@@ -14,6 +16,8 @@ import type {
   SimTreasuryEntryType,
   SimTreasuryLedgerRecord,
   TenorPolicyTenorRow,
+  VenueFillRecord,
+  VenueQuoteRecord,
   VenueExecution,
   VenueQuote
 } from "./types";
@@ -234,6 +238,103 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       UNIQUE (user_hash, terms_version)
     );
 
+    CREATE TABLE IF NOT EXISTS pilot_options_chain_snapshots (
+      id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      as_of_ts TIMESTAMPTZ NOT NULL,
+      tenor_days NUMERIC(14,6),
+      strike NUMERIC(28,10),
+      option_right TEXT,
+      bid NUMERIC(28,10),
+      ask NUMERIC(28,10),
+      mark NUMERIC(28,10),
+      bid_size NUMERIC(28,10),
+      ask_size NUMERIC(28,10),
+      iv NUMERIC(28,10),
+      delta NUMERIC(28,10),
+      gamma NUMERIC(28,10),
+      vega NUMERIC(28,10),
+      theta NUMERIC(28,10),
+      source_ref TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_rfq_quotes (
+      id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      quote_id TEXT NOT NULL,
+      rfq_id TEXT,
+      instrument_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      quantity NUMERIC(28,10) NOT NULL,
+      premium NUMERIC(28,10),
+      expires_at TIMESTAMPTZ,
+      quote_ts TIMESTAMPTZ NOT NULL,
+      latency_ms INTEGER,
+      status TEXT,
+      source_ref TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_rfq_fills (
+      id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      quote_id TEXT,
+      rfq_id TEXT,
+      fill_id TEXT NOT NULL,
+      instrument_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      quantity NUMERIC(28,10) NOT NULL,
+      fill_price NUMERIC(28,10) NOT NULL,
+      premium NUMERIC(28,10),
+      slippage_bps NUMERIC(18,8),
+      status TEXT,
+      fill_ts TIMESTAMPTZ NOT NULL,
+      source_ref TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_hedge_decisions (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      quote_id TEXT,
+      venue TEXT NOT NULL,
+      regime TEXT NOT NULL,
+      selector_mode TEXT NOT NULL,
+      selected_candidate_id TEXT NOT NULL,
+      selected_hedge_mode TEXT NOT NULL,
+      selected_strike NUMERIC(28,10),
+      selected_tenor_days NUMERIC(14,6),
+      selected_score NUMERIC(28,10),
+      decision_reason TEXT,
+      score_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
+      candidate_set JSONB NOT NULL DEFAULT '[]'::jsonb,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_execution_quality_daily (
+      id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      day_start DATE NOT NULL,
+      quote_count INTEGER NOT NULL DEFAULT 0,
+      fill_count INTEGER NOT NULL DEFAULT 0,
+      avg_latency_ms NUMERIC(18,8),
+      avg_slippage_bps NUMERIC(18,8),
+      p95_slippage_bps NUMERIC(18,8),
+      reject_rate_pct NUMERIC(18,8),
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (venue, day_start)
+    );
+
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS accepted_ip TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS user_agent TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'pilot_web';
@@ -261,6 +362,22 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       ON pilot_sim_treasury_ledger(user_hash, created_at DESC);
     CREATE INDEX IF NOT EXISTS pilot_sim_treasury_ledger_position_idx
       ON pilot_sim_treasury_ledger(sim_position_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_options_chain_snapshots_venue_asof_idx
+      ON pilot_options_chain_snapshots(venue, as_of_ts DESC);
+    CREATE INDEX IF NOT EXISTS pilot_options_chain_snapshots_market_idx
+      ON pilot_options_chain_snapshots(market_id, as_of_ts DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS pilot_rfq_quotes_venue_quote_uidx
+      ON pilot_rfq_quotes(venue, quote_id);
+    CREATE INDEX IF NOT EXISTS pilot_rfq_quotes_rfq_idx
+      ON pilot_rfq_quotes(rfq_id, quote_ts DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS pilot_rfq_fills_venue_fill_uidx
+      ON pilot_rfq_fills(venue, fill_id);
+    CREATE INDEX IF NOT EXISTS pilot_rfq_fills_quote_idx
+      ON pilot_rfq_fills(quote_id, fill_ts DESC);
+    CREATE INDEX IF NOT EXISTS pilot_hedge_decisions_request_idx
+      ON pilot_hedge_decisions(request_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_hedge_decisions_quote_idx
+      ON pilot_hedge_decisions(quote_id, created_at DESC);
   `);
   schemaReady = true;
 };
@@ -800,6 +917,279 @@ export const insertVenueQuote = async (
       JSON.stringify(input.details || {})
     ]
   );
+};
+
+export const insertOptionsChainSnapshot = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    venue: string;
+    marketId: string;
+    asOfTs: string;
+    tenorDays: number | null;
+    strike: string | null;
+    optionRight: "P" | "C" | null;
+    bidPxUsd: string | null;
+    askPxUsd: string | null;
+    markPxUsd: string | null;
+    iv: string | null;
+    delta: string | null;
+    gamma: string | null;
+    vega: string | null;
+    theta: string | null;
+    bidSize: string | null;
+    askSize: string | null;
+    source: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_options_chain_snapshots (
+        id, venue, market_id, as_of_ts, tenor_days, strike, option_right, bid_px_usd, ask_px_usd, mark_px_usd,
+        iv, delta, gamma, vega, theta, bid_size, ask_size, source, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb)
+    `,
+    [
+      input.id || randomUUID(),
+      input.venue,
+      input.marketId,
+      input.asOfTs,
+      input.tenorDays,
+      input.strike,
+      input.optionRight,
+      input.bidPxUsd,
+      input.askPxUsd,
+      input.markPxUsd,
+      input.iv,
+      input.delta,
+      input.gamma,
+      input.vega,
+      input.theta,
+      input.bidSize,
+      input.askSize,
+      input.source,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+};
+
+export const insertRfqQuote = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    venue: string;
+    quoteId: string;
+    rfqId: string | null;
+    marketId: string;
+    instrumentId: string | null;
+    side: "buy" | "sell";
+    quantity: string;
+    quotePxUsd: string;
+    quoteTs: string;
+    expiresTs: string | null;
+    source: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_rfq_quotes (
+        id, venue, quote_id, rfq_id, market_id, instrument_id, side, quantity, quote_px_usd, quote_ts, expires_ts, source, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+      ON CONFLICT (venue, quote_id) DO NOTHING
+    `,
+    [
+      input.id || randomUUID(),
+      input.venue,
+      input.quoteId,
+      input.rfqId,
+      input.marketId,
+      input.instrumentId,
+      input.side,
+      input.quantity,
+      input.quotePxUsd,
+      input.quoteTs,
+      input.expiresTs,
+      input.source,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+};
+
+export const insertRfqFill = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    venue: string;
+    fillId: string;
+    quoteId: string | null;
+    rfqId: string | null;
+    marketId: string;
+    instrumentId: string | null;
+    side: "buy" | "sell";
+    quantity: string;
+    fillPxUsd: string;
+    fillTs: string;
+    feeUsd: string | null;
+    slippageBps: string | null;
+    source: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_rfq_fills (
+        id, venue, fill_id, quote_id, rfq_id, market_id, instrument_id, side, quantity, fill_px_usd, fill_ts, fee_usd, slippage_bps, source, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
+      ON CONFLICT (venue, fill_id) DO NOTHING
+    `,
+    [
+      input.id || randomUUID(),
+      input.venue,
+      input.fillId,
+      input.quoteId,
+      input.rfqId,
+      input.marketId,
+      input.instrumentId,
+      input.side,
+      input.quantity,
+      input.fillPxUsd,
+      input.fillTs,
+      input.feeUsd,
+      input.slippageBps,
+      input.source,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+};
+
+export const upsertExecutionQualityDaily = async (
+  pool: Queryable,
+  input: {
+    day?: string;
+    dayIso?: string;
+    venue: string;
+    hedgeMode: HedgeMode;
+    avgSlippageBps: string | number | null;
+    p95SlippageBps?: string | number | null;
+    fillSuccessRatePct?: string | number | null;
+    avgSpreadPct?: string | number | null;
+    avgTopBookDepth?: string | number | null;
+    sampleCount?: number;
+    quotes?: number;
+    fills?: number;
+    rejects?: number;
+    avgLatencyMs?: string | number | null;
+    notes?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  const dayRaw = String(input.day || input.dayIso || "").trim();
+  if (!dayRaw) {
+    throw new Error("invalid_execution_quality_day");
+  }
+  const day = dayRaw.slice(0, 10);
+  const toNullableString = (value: string | number | null | undefined): string | null => {
+    if (value === null || value === undefined) return null;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return String(n);
+  };
+  const quotes = Math.max(0, Math.floor(Number(input.quotes || 0)));
+  const fills = Math.max(0, Math.floor(Number(input.fills || 0)));
+  const rejects = Math.max(0, Math.floor(Number(input.rejects || 0)));
+  const sampleCount = Math.max(
+    0,
+    Math.floor(
+      Number(
+        input.sampleCount ??
+          (quotes > 0 ? quotes : fills + rejects > 0 ? fills + rejects : 1)
+      )
+    )
+  );
+  const fillSuccessRatePct =
+    input.fillSuccessRatePct !== undefined
+      ? toNullableString(input.fillSuccessRatePct)
+      : quotes > 0
+        ? String((fills / Math.max(1, quotes)) * 100)
+        : null;
+  const metadata = {
+    ...(input.metadata || {}),
+    ...(input.notes || {}),
+    quotes,
+    fills,
+    rejects,
+    ...(input.avgLatencyMs !== undefined
+      ? { avgLatencyMs: toNullableString(input.avgLatencyMs) }
+      : {})
+  };
+  await pool.query(
+    `
+      INSERT INTO pilot_execution_quality_daily (
+        day, venue, hedge_mode, avg_slippage_bps, p95_slippage_bps, fill_success_rate_pct,
+        avg_spread_pct, avg_top_book_depth, sample_count, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+      ON CONFLICT (day, venue, hedge_mode) DO UPDATE SET
+        avg_slippage_bps = EXCLUDED.avg_slippage_bps,
+        p95_slippage_bps = EXCLUDED.p95_slippage_bps,
+        fill_success_rate_pct = EXCLUDED.fill_success_rate_pct,
+        avg_spread_pct = EXCLUDED.avg_spread_pct,
+        avg_top_book_depth = EXCLUDED.avg_top_book_depth,
+        sample_count = EXCLUDED.sample_count,
+        metadata = EXCLUDED.metadata
+    `,
+    [
+      day,
+      input.venue,
+      input.hedgeMode,
+      toNullableString(input.avgSlippageBps),
+      toNullableString(input.p95SlippageBps),
+      fillSuccessRatePct,
+      toNullableString(input.avgSpreadPct),
+      toNullableString(input.avgTopBookDepth),
+      sampleCount,
+      JSON.stringify(metadata)
+    ]
+  );
+};
+
+export const listExecutionQualityRecent = async (
+  pool: Queryable,
+  params: {
+    lookbackDays: number;
+    limit?: number;
+  }
+): Promise<ExecutionQualityRecord[]> => {
+  const lookbackDays = Math.max(1, Math.min(365, Math.floor(params.lookbackDays || 30)));
+  const limit = Math.max(1, Math.min(3650, Math.floor(params.limit || 365)));
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM pilot_execution_quality_daily
+      WHERE day >= (CURRENT_DATE - ($1::int || ' days')::interval)::date
+      ORDER BY day DESC, venue ASC, hedge_mode ASC
+      LIMIT $2::int
+    `,
+    [lookbackDays, limit]
+  );
+  return result.rows.map((row) => ({
+    day: new Date(String(row.day)).toISOString().slice(0, 10),
+    venue: String(row.venue),
+    hedgeMode: String(row.hedge_mode) as HedgeMode,
+    avgSlippageBps: row.avg_slippage_bps === null ? null : String(row.avg_slippage_bps),
+    p95SlippageBps: row.p95_slippage_bps === null ? null : String(row.p95_slippage_bps),
+    fillSuccessRatePct: row.fill_success_rate_pct === null ? null : String(row.fill_success_rate_pct),
+    avgSpreadPct: row.avg_spread_pct === null ? null : String(row.avg_spread_pct),
+    avgTopBookDepth: row.avg_top_book_depth === null ? null : String(row.avg_top_book_depth),
+    sampleCount: Number(row.sample_count || 0),
+    metadata: toRecord(row.metadata),
+    updatedAt: new Date(String(row.updated_at)).toISOString()
+  }));
 };
 
 export type VenueQuoteRecord = VenueQuote & {
