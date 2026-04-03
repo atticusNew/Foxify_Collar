@@ -120,6 +120,32 @@ Rule of thumb:
     - `maxDrawdownUsd` / `maxDrawdownPct`
     - `recommendedMinTreasuryBufferUsd`
 
+## Risk pack export (chart + spreadsheet ready)
+
+After you produce multiple quarterly JSON outputs, export governance metrics:
+
+```bash
+cd /workspace/services/api
+npm run -s pilot:backtest:risk-pack -- \
+  --inputs "artifacts/backtest/stress/pilot_backtest_stress_q2_2022.json,artifacts/backtest/stress/pilot_backtest_stress_q4_2022.json,artifacts/backtest/stress/pilot_backtest_stress_q1_2023.json,artifacts/backtest/stress/pilot_backtest_stress_q1_2024.json" \
+  --out-summary-csv artifacts/backtest/risk_pack_summary.csv \
+  --out-daily-csv artifacts/backtest/risk_pack_daily.csv
+```
+
+Outputs:
+- `risk_pack_summary.csv` (period/model level):
+  - rolling trigger hit rate
+  - worst-day subsidy utilization and date
+  - max treasury drawdown
+  - automatic strict fallback / issuance pause flags
+  - breach-rebound counts (take-profit opportunity proxy)
+- `risk_pack_daily.csv` (date/model level):
+  - daily subsidy need/applied/blocked
+  - daily subsidy utilization %
+  - rolling trigger hit rate
+  - treasury drawdown
+  - auto actions
+
 ## Config knobs to edit first
 
 Edit: `scripts/fixtures/pilot_backtest_config.example.json`

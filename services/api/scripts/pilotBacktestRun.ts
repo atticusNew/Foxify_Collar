@@ -107,6 +107,11 @@ type BacktestOutput = {
   name: string;
   mode: RunMode;
   breachMode: BreachMode;
+  treasury: {
+    startingBalanceUsd: string;
+    dailySubsidyCapUsd: string;
+    perQuoteSubsidyCapPct: string;
+  };
   asOfIso: string;
   configPath: string;
   pricesPath: string;
@@ -561,6 +566,11 @@ const main = async () => {
     name: config.name,
     mode: args.mode,
     breachMode,
+    treasury: {
+      startingBalanceUsd: toFixed(startingTreasury),
+      dailySubsidyCapUsd: toFixed(dailyCap),
+      perQuoteSubsidyCapPct: toFixed(perQuoteCapPct)
+    },
     asOfIso: new Date().toISOString(),
     configPath: args.configPath,
     pricesPath: args.pricesCsvPath,
