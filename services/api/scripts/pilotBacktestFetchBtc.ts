@@ -16,9 +16,31 @@ type CandlePoint = {
 };
 
 const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
 const BINANCE_LIMIT = 1000;
 const BINANCE_BASE = "https://api.binance.com";
 const COINGECKO_BASE = "https://api.coingecko.com";
+const COINGECKO_MAX_HOURLY_WINDOW_MS = 89 * DAY_MS;
+const MAX_RETRIES = 5;
+
+const sleep = async (ms: number): Promise<void> =>
+  await new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const fetchWithRetry = async (url: string, provider: "binance" | "coingecko"): Promise<Response> => {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+    const response = await fetch(url);
+    if (response.ok) return response;
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable || attempt === MAX_RETRIES - 1) {
+      throw new Error(`${provider}_http_${response.status}`);
+    }
+    const backoffMs = 500 * 2 ** attempt;
+    await sleep(backoffMs);
+  }
+  throw new Error(`${provider}_http_unknown`);
+};
 
 const parseArgs = (argv: string[]): Args => {
   const nowIso = new Date().toISOString();
@@ -80,10 +102,7 @@ const fetchBinance1h = async (fromMs: number, toMs: number): Promise<CandlePoint
     url.searchParams.set("endTime", String(toMs));
     url.searchParams.set("limit", String(BINANCE_LIMIT));
 
-    const response = await fetch(url.toString());
-    if (!response.ok) {
-      throw new Error(`binance_http_${response.status}`);
-    }
+    const response = await fetchWithRetry(url.toString(), "binance");
 
     const payload = (await response.json()) as unknown;
     if (!Array.isArray(payload)) {
@@ -116,8 +135,7 @@ const fetchBinance1h = async (fromMs: number, toMs: number): Promise<CandlePoint
 
 const floorToHour = (tsMs: number): number => Math.floor(tsMs / HOUR_MS) * HOUR_MS;
 
-const fetchCoinGeckoHourly = async (fromMs: number, toMs: number): Promise<CandlePoint[]> => {
-  // CoinGecko market_chart/range returns [timestamp_ms, price] pairs.
+const fetchCoinGeckoRange = async (fromMs: number, toMs: number): Promise<Array<[number, number]>> => {
   const fromSec = Math.floor(fromMs / 1000);
   const toSec = Math.floor(toMs / 1000);
   const url = new URL("/api/v3/coins/bitcoin/market_chart/range", COINGECKO_BASE);
@@ -125,24 +143,33 @@ const fetchCoinGeckoHourly = async (fromMs: number, toMs: number): Promise<Candl
   url.searchParams.set("from", String(fromSec));
   url.searchParams.set("to", String(toSec));
 
-  const response = await fetch(url.toString());
-  if (!response.ok) {
-    throw new Error(`coingecko_http_${response.status}`);
-  }
+  const response = await fetchWithRetry(url.toString(), "coingecko");
 
   const payload = (await response.json()) as { prices?: Array<[number, number]> };
   if (!Array.isArray(payload?.prices) || payload.prices.length === 0) {
     throw new Error("coingecko_invalid_payload");
   }
+  return payload.prices;
+};
 
+const fetchCoinGeckoHourly = async (fromMs: number, toMs: number): Promise<CandlePoint[]> => {
+  // For large ranges, CoinGecko may degrade to daily points.
+  // Query in <=89-day chunks to preserve hourly granularity.
   const byHour = new Map<number, DecimalString>();
-  for (const point of payload.prices) {
-    const tsMs = Number(point?.[0] ?? NaN);
-    const px = Number(point?.[1] ?? NaN);
-    if (!Number.isFinite(tsMs) || !Number.isFinite(px) || px <= 0) continue;
-    const bucket = floorToHour(tsMs);
-    if (bucket < fromMs || bucket > toMs) continue;
-    byHour.set(bucket, px.toFixed(10));
+
+  let chunkStart = fromMs;
+  while (chunkStart < toMs) {
+    const chunkEnd = Math.min(toMs, chunkStart + COINGECKO_MAX_HOURLY_WINDOW_MS);
+    const prices = await fetchCoinGeckoRange(chunkStart, chunkEnd);
+    for (const point of prices) {
+      const tsMs = Number(point?.[0] ?? NaN);
+      const px = Number(point?.[1] ?? NaN);
+      if (!Number.isFinite(tsMs) || !Number.isFinite(px) || px <= 0) continue;
+      const bucket = floorToHour(tsMs);
+      if (bucket < fromMs || bucket > toMs) continue;
+      byHour.set(bucket, px.toFixed(10));
+    }
+    chunkStart = chunkEnd + 1;
   }
 
   return Array.from(byHour.entries())
