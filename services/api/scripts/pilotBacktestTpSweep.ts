@@ -53,6 +53,14 @@ type Args = {
   quarterLabels: string[] | null;
 };
 
+type ExecutiveSummaryRow = {
+  section: string;
+  metric: string;
+  strict: string;
+  hybrid: string;
+  notes: string;
+};
+
 type PeriodDetailRow = {
   combo: string;
   reboundPct: string;
@@ -259,6 +267,7 @@ const buildWorkbook = (params: {
   rankingStrict: Array<Record<string, string | number | boolean>>;
   recommendations: Array<Record<string, string | number | boolean>>;
   treasuryProjectionRows: Array<Record<string, string | number | boolean>>;
+  executiveSummaryRows: ExecutiveSummaryRow[];
 }) => {
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.assumptions), "assumptions");
@@ -274,6 +283,11 @@ const buildWorkbook = (params: {
   );
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.rankingHybrid), "ranking_hybrid");
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.rankingStrict), "ranking_strict");
+  XLSX.utils.book_append_sheet(
+    wb,
+    rowsToSheet(params.executiveSummaryRows as unknown as Array<Record<string, string | number | boolean>>),
+    "executive_summary"
+  );
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.recommendations), "recommendations");
   XLSX.utils.book_append_sheet(wb, rowsToSheet(params.treasuryProjectionRows), "treasury_projection");
   XLSX.writeFile(wb, params.outPath);
@@ -469,6 +483,8 @@ const main = async () => {
   };
   const rankingHybrid = rankingRows("hybrid");
   const rankingStrict = rankingRows("strict");
+  const stressLabels = selectedQuarters.filter((q) => q.regime === "stress").map((q) => q.label);
+  const calmLabels = selectedQuarters.filter((q) => q.regime === "calm").map((q) => q.label);
 
   const recommendations = [
     {
@@ -490,6 +506,88 @@ const main = async () => {
       stressSubsidyNeedTpUsd: rankingStrict[0]?.stressSubsidyNeedTpUsd || "n/a",
       calmUnderwritingPnlImprovementUsd: rankingStrict[0]?.calmUnderwritingPnlImprovementUsd || "n/a",
       stressWorstRecommendedMinBufferUsd: rankingStrict[0]?.stressWorstRecommendedMinBufferUsd || "n/a"
+    }
+  ];
+
+  const aggregateByModel = (model: ModelName, quarterFilter?: (label: string) => boolean) => {
+    const rows = periodRows.filter(
+      (row) => row.model === model && (!quarterFilter || quarterFilter(row.quarter))
+    );
+    const sum = (selector: (row: PeriodDetailRow) => Decimal) =>
+      rows.reduce((acc, row) => acc.plus(selector(row)), new Decimal(0));
+    return {
+      underwritingPnlTotalUsd: sum((row) => toDecimal(row.underwritingPnlTotalUsd)),
+      underwritingPnlImprovementUsd: sum((row) => toDecimal(row.underwritingPnlImprovementUsd)),
+      subsidyNeedTotalUsd: sum((row) => toDecimal(row.subsidyNeedTotalUsd)),
+      subsidyNeedReductionUsd: sum((row) => toDecimal(row.subsidyNeedReductionUsd))
+    };
+  };
+
+  const strictAll = aggregateByModel("strict");
+  const hybridAll = aggregateByModel("hybrid");
+  const strictStress = aggregateByModel("strict", (label) => stressLabels.includes(label));
+  const hybridStress = aggregateByModel("hybrid", (label) => stressLabels.includes(label));
+  const strictCalm = aggregateByModel("strict", (label) => calmLabels.includes(label));
+  const hybridCalm = aggregateByModel("hybrid", (label) => calmLabels.includes(label));
+
+  const latestTopStrict = rankingStrict[0];
+  const latestTopHybrid = rankingHybrid[0];
+  const executiveSummaryRows: ExecutiveSummaryRow[] = [
+    {
+      section: "Overall",
+      metric: "Total underwriting PnL (TP run set)",
+      strict: toFixed(strictAll.underwritingPnlTotalUsd),
+      hybrid: toFixed(hybridAll.underwritingPnlTotalUsd),
+      notes: "Across all selected quarters and TP grid combinations"
+    },
+    {
+      section: "Overall",
+      metric: "Total underwriting PnL improvement vs baseline",
+      strict: toFixed(strictAll.underwritingPnlImprovementUsd),
+      hybrid: toFixed(hybridAll.underwritingPnlImprovementUsd),
+      notes: "Positive means TP improved underwriting PnL"
+    },
+    {
+      section: "Stress",
+      metric: "Stress-quarter subsidy need total",
+      strict: toFixed(strictStress.subsidyNeedTotalUsd),
+      hybrid: toFixed(hybridStress.subsidyNeedTotalUsd),
+      notes: `Stress quarters: ${stressLabels.join(",") || "none"}`
+    },
+    {
+      section: "Stress",
+      metric: "Stress-quarter subsidy reduction vs baseline",
+      strict: toFixed(strictStress.subsidyNeedReductionUsd),
+      hybrid: toFixed(hybridStress.subsidyNeedReductionUsd),
+      notes: "Positive means TP reduced subsidy need"
+    },
+    {
+      section: "Calm",
+      metric: "Calm-quarter PnL improvement vs baseline",
+      strict: toFixed(strictCalm.underwritingPnlImprovementUsd),
+      hybrid: toFixed(hybridCalm.underwritingPnlImprovementUsd),
+      notes: `Calm quarters: ${calmLabels.join(",") || "none"}`
+    },
+    {
+      section: "Recommended TP",
+      metric: "Rank #1 combo",
+      strict: latestTopStrict ? `${latestTopStrict.combo} (r=${latestTopStrict.reboundPct}, d=${latestTopStrict.decayPct})` : "n/a",
+      hybrid: latestTopHybrid ? `${latestTopHybrid.combo} (r=${latestTopHybrid.reboundPct}, d=${latestTopHybrid.decayPct})` : "n/a",
+      notes: "Ranking objective: preserve calm upside then minimize stress subsidy"
+    },
+    {
+      section: "Recommended TP",
+      metric: "Stress worst recommended min buffer",
+      strict: latestTopStrict?.stressWorstRecommendedMinBufferUsd || "n/a",
+      hybrid: latestTopHybrid?.stressWorstRecommendedMinBufferUsd || "n/a",
+      notes: "Use treasury_projection tab for scale-up targets with 30/50% cushions"
+    },
+    {
+      section: "Interpretation",
+      metric: "Net profitable across selected quarters?",
+      strict: strictAll.underwritingPnlTotalUsd.gt(0) ? "yes" : "no",
+      hybrid: hybridAll.underwritingPnlTotalUsd.gt(0) ? "yes" : "no",
+      notes: "Profitability still depends on realized regime mix and issuance scale"
     }
   ];
 
@@ -569,7 +667,8 @@ const main = async () => {
     rankingHybrid,
     rankingStrict,
     recommendations,
-    treasuryProjectionRows
+    treasuryProjectionRows,
+    executiveSummaryRows
   });
 
   const overview = [
