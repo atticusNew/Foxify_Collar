@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import Decimal from "decimal.js";
+import * as XLSX from "xlsx";
 
 type ModelName = "strict" | "hybrid";
 
@@ -78,6 +79,7 @@ type Args = {
   pauseDrawdownPct: number;
   pauseWhenSubsidyBlocked: boolean;
   takeProfitReboundPct: number;
+  outXlsxPath: string | null;
 };
 
 type DailyAgg = {
@@ -160,7 +162,8 @@ const parseArgs = (argv: string[]): Args => {
     fallbackDrawdownPct: 25,
     pauseDrawdownPct: 50,
     pauseWhenSubsidyBlocked: true,
-    takeProfitReboundPct: 2
+    takeProfitReboundPct: 2,
+    outXlsxPath: null
   };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -228,6 +231,11 @@ const parseArgs = (argv: string[]): Args => {
       i += 1;
       continue;
     }
+    if (token === "--out-xlsx" && argv[i + 1]) {
+      args.outXlsxPath = argv[i + 1];
+      i += 1;
+      continue;
+    }
   }
   args.inputPaths = Array.from(new Set(args.inputPaths));
   if (!args.inputPaths.length) {
@@ -269,6 +277,29 @@ const rowsToCsv = (rows: Array<Record<string, string | number | boolean>>): stri
     lines.push(values.join(","));
   }
   return `${lines.join("\n")}\n`;
+};
+
+const rowsToSheet = (rows: Array<Record<string, string | number | boolean>>) => XLSX.utils.json_to_sheet(rows);
+
+const writeWorkbook = (params: {
+  outPath: string;
+  summaryRows: SummaryCsvRow[];
+  dailyRows: Array<Record<string, string | number | boolean>>;
+  reboundRows: BreachReboundCsvRow[];
+}) => {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(
+    workbook,
+    rowsToSheet(params.summaryRows as unknown as Array<Record<string, string | number | boolean>>),
+    "summary"
+  );
+  XLSX.utils.book_append_sheet(workbook, rowsToSheet(params.dailyRows), "daily");
+  XLSX.utils.book_append_sheet(
+    workbook,
+    rowsToSheet(params.reboundRows as unknown as Array<Record<string, string | number | boolean>>),
+    "breach_rebound"
+  );
+  XLSX.writeFile(workbook, params.outPath);
 };
 
 const periodFromPath = (filePath: string): string => path.basename(filePath, path.extname(filePath));
@@ -554,10 +585,20 @@ const main = async () => {
   const dailyCsvPath = path.join(args.outDir, "risk_pack_daily.csv");
   const reboundCsvPath = path.join(args.outDir, "risk_pack_breach_rebound.csv");
   const overviewMdPath = path.join(args.outDir, "risk_pack_overview.md");
+  const defaultXlsxPath = path.join(args.outDir, "risk_pack.xlsx");
+  const outXlsxPath = args.outXlsxPath || defaultXlsxPath;
+
+  const dailyCsvRows = toDailyCsvRows(dailyRows);
 
   await writeFile(summaryCsvPath, rowsToCsv(summaryRows as unknown as Array<Record<string, string | number | boolean>>), "utf8");
-  await writeFile(dailyCsvPath, rowsToCsv(toDailyCsvRows(dailyRows)), "utf8");
+  await writeFile(dailyCsvPath, rowsToCsv(dailyCsvRows), "utf8");
   await writeFile(reboundCsvPath, rowsToCsv(reboundRows as unknown as Array<Record<string, string | number | boolean>>), "utf8");
+  writeWorkbook({
+    outPath: outXlsxPath,
+    summaryRows,
+    dailyRows: dailyCsvRows,
+    reboundRows
+  });
 
   const top = summaryRows
     .map(
@@ -583,7 +624,8 @@ const main = async () => {
     "## Files",
     `- summary: \`${summaryCsvPath}\``,
     `- daily: \`${dailyCsvPath}\``,
-    `- breach/rebound: \`${reboundCsvPath}\``
+    `- breach/rebound: \`${reboundCsvPath}\``,
+    `- workbook: \`${outXlsxPath}\``
   ].join("\n");
   await writeFile(overviewMdPath, overview, "utf8");
 
@@ -597,7 +639,8 @@ const main = async () => {
           summaryCsv: summaryCsvPath,
           dailyCsv: dailyCsvPath,
           breachReboundCsv: reboundCsvPath,
-          overviewMd: overviewMdPath
+          overviewMd: overviewMdPath,
+          workbookXlsx: outXlsxPath
         },
         rows: {
           summary: summaryRows.length,
