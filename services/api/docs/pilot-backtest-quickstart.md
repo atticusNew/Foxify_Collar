@@ -14,9 +14,12 @@ No, for immediate unit-economics replay.
 ## What gets added
 
 - `scripts/pilotBacktestFetchBtc.ts`
-  - Downloads hourly BTC history CSV for backtest windows (auto source fallback: Binance -> CoinGecko).
+  - Downloads hourly BTC history CSV for backtest windows (auto source fallback: Binance -> CoinGecko -> Coinbase).
 - `scripts/pilotBacktestRun.ts`
   - Runs strict/hybrid historical replay over notionals x tiers.
+  - Supports breach modes:
+    - `path_min` (recommended): trigger based on worst intra-tenor price
+    - `expiry_only` (legacy): trigger based on expiry price only
 - `scripts/fixtures/pilot_backtest_config.example.json`
   - Editable config: schedules, treasury caps, hedge assumptions.
 
@@ -118,6 +121,7 @@ Edit: `scripts/fixtures/pilot_backtest_config.example.json`
 
 - `tenorDays`: default 7 (set 14/21/28 for longer-tenor tests)
 - `entryStepHours`: 24 for one new trade/day (lower for denser simulation)
+- `breachMode`: `path_min` (recommended) or `expiry_only`
 - `notionalsUsd`: basket of tested notionals
 - `treasury.startingBalanceUsd`
 - `treasury.dailySubsidyCapUsd`
@@ -138,3 +142,15 @@ To make hedge cost fully FalconX-native:
 3. Replace `fallbackHedgePremiumPer1kProtectedUsd` and recovery factors with those FalconX-derived values per bucket.
 
 You can keep this script structure unchanged and swap only the config generation step.
+
+## Breach mode override from shell
+
+If you want to compare modes without editing config:
+
+```bash
+# path-based (default / recommended)
+BREACH_MODE=path_min npm run -s pilot:backtest:quick
+
+# legacy expiry-only logic
+BREACH_MODE=expiry_only npm run -s pilot:backtest:quick
+```

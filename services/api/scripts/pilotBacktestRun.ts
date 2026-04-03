@@ -19,6 +19,7 @@ type BacktestConfig = {
   name: string;
   tenorDays: number;
   entryStepHours: number;
+  breachMode?: "expiry_only" | "path_min";
   notionalsUsd: DecimalString[];
   treasury: {
     startingBalanceUsd: DecimalString;
@@ -37,9 +38,11 @@ type PricePoint = {
 type ModelName = "strict" | "hybrid";
 
 type RunMode = "strict_only" | "hybrid_only" | "both";
+type BreachMode = "expiry_only" | "path_min";
 
 type TradeRow = {
   model: ModelName;
+  breachMode: BreachMode;
   tierName: string;
   entryTsIso: string;
   exitTsIso: string;
@@ -47,7 +50,10 @@ type TradeRow = {
   protectedNotionalUsd: string;
   entryPriceUsd: string;
   triggerPriceUsd: string;
+  pathMinPriceUsd: string;
+  payoutReferencePriceUsd: string;
   expiryPriceUsd: string;
+  breachObserved: boolean;
   premiumUsd: string;
   hedgeCostUsd: string;
   hedgeRecoveredUsd: string;
@@ -62,6 +68,7 @@ type TradeRow = {
 
 type SummaryModel = {
   model: ModelName;
+  breachMode: BreachMode;
   trades: number;
   premiumTotalUsd: string;
   payoutTotalUsd: string;
@@ -84,6 +91,7 @@ type BacktestOutput = {
   status: "ok";
   name: string;
   mode: RunMode;
+  breachMode: BreachMode;
   asOfIso: string;
   configPath: string;
   pricesPath: string;
@@ -97,6 +105,7 @@ type Args = {
   outJsonPath: string;
   outCsvPath: string;
   mode: RunMode;
+  breachModeOverride: BreachMode | null;
 };
 
 const ZERO = new Decimal(0);
@@ -109,7 +118,8 @@ const parseArgs = (argv: string[]): Args => {
     pricesCsvPath: "artifacts/backtest/btc_usd_1h.csv",
     outJsonPath: "artifacts/backtest/pilot_backtest.json",
     outCsvPath: "artifacts/backtest/pilot_backtest.csv",
-    mode: "both"
+    mode: "both",
+    breachModeOverride: null
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -144,6 +154,16 @@ const parseArgs = (argv: string[]): Args => {
       i += 1;
       continue;
     }
+    if (token === "--breach-mode" && argv[i + 1]) {
+      const breachMode = String(argv[i + 1]).trim().toLowerCase();
+      if (breachMode === "expiry_only" || breachMode === "path_min") {
+        args.breachModeOverride = breachMode;
+      } else {
+        throw new Error(`invalid_breach_mode:${breachMode}`);
+      }
+      i += 1;
+      continue;
+    }
   }
   return args;
 };
@@ -166,6 +186,13 @@ const parsePositiveInt = (raw: unknown, fieldName: string): number => {
     throw new Error(`invalid_positive_int:${fieldName}`);
   }
   return Math.floor(n);
+};
+
+const parseBreachMode = (raw: unknown, fallback: BreachMode): BreachMode => {
+  const normalized = String(raw || "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === "expiry_only" || normalized === "path_min") return normalized;
+  throw new Error(`invalid_breach_mode:${String(raw || "").trim() || "empty"}`);
 };
 
 const loadConfig = async (configPath: string): Promise<BacktestConfig> => {
@@ -233,10 +260,10 @@ const computePayoutLong = (params: {
   protectedNotionalUsd: Decimal;
   entryPriceUsd: Decimal;
   triggerPriceUsd: Decimal;
-  expiryPriceUsd: Decimal;
+  payoutReferencePriceUsd: Decimal;
 }): Decimal => {
-  if (params.expiryPriceUsd.gte(params.triggerPriceUsd)) return ZERO;
-  const belowTrigger = params.triggerPriceUsd.minus(params.expiryPriceUsd);
+  if (params.payoutReferencePriceUsd.gte(params.triggerPriceUsd)) return ZERO;
+  const belowTrigger = params.triggerPriceUsd.minus(params.payoutReferencePriceUsd);
   return belowTrigger.div(params.entryPriceUsd).mul(params.protectedNotionalUsd);
 };
 
@@ -250,6 +277,14 @@ const findExitIndex = (prices: PricePoint[], entryIdx: number, tenorDays: number
     }
   }
   return chosen;
+};
+
+const findPathMinPrice = (prices: PricePoint[], entryIdx: number, exitIdx: number): Decimal => {
+  let minPrice = prices[entryIdx].price;
+  for (let i = entryIdx; i <= exitIdx; i += 1) {
+    if (prices[i].price.lt(minPrice)) minPrice = prices[i].price;
+  }
+  return minPrice;
 };
 
 const formatCsv = (rows: TradeRow[]): string => {
@@ -297,7 +332,7 @@ const buildSummary = (rows: TradeRow[]): SummaryModel[] => {
     const subsidyNeed = subset.map((row) => new Decimal(row.subsidyNeedUsd));
     const subsidyApplied = subset.map((row) => new Decimal(row.subsidyAppliedUsd));
     const subsidyBlocked = subset.map((row) => new Decimal(row.subsidyBlockedUsd));
-    const triggerHits = subset.filter((row) => new Decimal(row.payoutUsd).gt(0)).length;
+    const triggerHits = subset.filter((row) => row.breachObserved).length;
     const subsidyHits = subset.filter((row) => new Decimal(row.subsidyAppliedUsd).gt(0)).length;
     const subsidyBlockedCount = subset.filter((row) => new Decimal(row.subsidyBlockedUsd).gt(0)).length;
     const endBalance = new Decimal(subset[subset.length - 1].treasuryBalanceAfterUsd);
@@ -305,6 +340,7 @@ const buildSummary = (rows: TradeRow[]): SummaryModel[] => {
 
     summary.push({
       model,
+      breachMode: subset[0].breachMode,
       trades: tradeCount,
       premiumTotalUsd: toFixed(sumDecimals(premiums)),
       payoutTotalUsd: toFixed(sumDecimals(payouts)),
@@ -330,6 +366,7 @@ const buildSummary = (rows: TradeRow[]): SummaryModel[] => {
 const main = async () => {
   const args = parseArgs(process.argv.slice(2));
   const config = await loadConfig(args.configPath);
+  const breachMode = args.breachModeOverride || parseBreachMode(config.breachMode, "path_min");
   const prices = await loadPrices(args.pricesCsvPath);
   const tenorDays = parsePositiveInt(config.tenorDays, "tenorDays");
   const entryStepHours = parsePositiveInt(config.entryStepHours, "entryStepHours");
@@ -372,12 +409,15 @@ const main = async () => {
           const premiumUsd = premiumPer1k.mul(protectedPer1k);
           const hedgeCostUsd = hedgePer1k.mul(protectedPer1k);
           const triggerPriceUsd = entry.price.mul(new Decimal(1).minus(drawdownFloorPct));
+          const pathMinPriceUsd = findPathMinPrice(prices, entryIdx, exitIdx);
+          const payoutReferencePriceUsd = breachMode === "path_min" ? pathMinPriceUsd : exit.price;
+          const breachObserved = payoutReferencePriceUsd.lt(triggerPriceUsd);
           const payoutCap = computeDrawdownLossBudgetUsd(protectedNotional, drawdownFloorPct);
           const payoutRaw = computePayoutLong({
             protectedNotionalUsd: protectedNotional,
             entryPriceUsd: entry.price,
             triggerPriceUsd,
-            expiryPriceUsd: exit.price
+            payoutReferencePriceUsd
           });
           const payoutUsd = Decimal.min(payoutRaw, payoutCap);
 
@@ -397,6 +437,7 @@ const main = async () => {
 
           rows.push({
             model,
+            breachMode,
             tierName: tier.tierName,
             entryTsIso: entry.tsIso,
             exitTsIso: exit.tsIso,
@@ -404,7 +445,10 @@ const main = async () => {
             protectedNotionalUsd: toFixed(protectedNotional),
             entryPriceUsd: toFixed(entry.price),
             triggerPriceUsd: toFixed(triggerPriceUsd),
+            pathMinPriceUsd: toFixed(pathMinPriceUsd),
+            payoutReferencePriceUsd: toFixed(payoutReferencePriceUsd),
             expiryPriceUsd: toFixed(exit.price),
+            breachObserved,
             premiumUsd: toFixed(premiumUsd),
             hedgeCostUsd: toFixed(hedgeCostUsd),
             hedgeRecoveredUsd: toFixed(hedgeRecoveredUsd),
@@ -426,6 +470,7 @@ const main = async () => {
     status: "ok",
     name: config.name,
     mode: args.mode,
+    breachMode,
     asOfIso: new Date().toISOString(),
     configPath: args.configPath,
     pricesPath: args.pricesCsvPath,
@@ -444,6 +489,7 @@ const main = async () => {
         status: "ok",
         name: config.name,
         mode: args.mode,
+        breachMode,
         rows: rows.length,
         summaries: summary,
         outJson: args.outJsonPath,
