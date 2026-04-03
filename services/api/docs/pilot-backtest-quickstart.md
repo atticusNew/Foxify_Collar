@@ -58,10 +58,27 @@ jq '.summary' artifacts/backtest/pilot_backtest.json
 Yes, longer history helps a lot because it captures multiple volatility and drawdown regimes.
 
 For long windows, run in chunks (for example, quarterly) and compare summaries.
-This avoids provider throttling and keeps hourly quality stable:
+This avoids provider throttling and keeps hourly quality stable.
+
+If your environment blocks one source (for example CoinGecko 401), force Coinbase:
 
 ```bash
 cd /workspace/services/api
+
+# Force Coinbase candles if CoinGecko/Binance are blocked
+npm run -s pilot:backtest:fetch-btc -- \
+  --from 2024-10-01T00:00:00Z \
+  --to 2025-01-01T00:00:00Z \
+  --source coinbase \
+  --out-csv artifacts/backtest/btc_usd_q4_2024_1h.csv
+
+# Then run replay on that CSV
+npm run -s pilot:backtest:run -- \
+  --config scripts/fixtures/pilot_backtest_config.example.json \
+  --prices-csv artifacts/backtest/btc_usd_q4_2024_1h.csv \
+  --mode both \
+  --out-json artifacts/backtest/pilot_backtest_q4_2024.json \
+  --out-csv artifacts/backtest/pilot_backtest_q4_2024.csv
 
 # Q4 2024
 FROM_ISO=2024-10-01T00:00:00Z TO_ISO=2025-01-01T00:00:00Z OUT_JSON=artifacts/backtest/pilot_backtest_q4_2024.json OUT_CSV=artifacts/backtest/pilot_backtest_q4_2024.csv npm run -s pilot:backtest:quick

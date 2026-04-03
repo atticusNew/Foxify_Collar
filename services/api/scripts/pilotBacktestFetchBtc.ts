@@ -5,7 +5,7 @@ type Args = {
   fromIso: string;
   toIso: string;
   outCsvPath: string;
-  source: "binance" | "coingecko" | "auto";
+  source: "binance" | "coingecko" | "coinbase" | "auto";
 };
 
 type DecimalString = string;
@@ -20,6 +20,7 @@ const DAY_MS = 24 * HOUR_MS;
 const BINANCE_LIMIT = 1000;
 const BINANCE_BASE = "https://api.binance.com";
 const COINGECKO_BASE = "https://api.coingecko.com";
+const COINBASE_BASE = "https://api.exchange.coinbase.com";
 const COINGECKO_MAX_HOURLY_WINDOW_MS = 89 * DAY_MS;
 const MAX_RETRIES = 5;
 
@@ -28,7 +29,7 @@ const sleep = async (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
-const fetchWithRetry = async (url: string, provider: "binance" | "coingecko"): Promise<Response> => {
+const fetchWithRetry = async (url: string, provider: "binance" | "coingecko" | "coinbase"): Promise<Response> => {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
     const response = await fetch(url);
     if (response.ok) return response;
@@ -71,7 +72,7 @@ const parseArgs = (argv: string[]): Args => {
     }
     if (token === "--source" && argv[i + 1]) {
       const source = String(argv[i + 1]).trim().toLowerCase();
-      if (source !== "binance" && source !== "coingecko" && source !== "auto") {
+      if (source !== "binance" && source !== "coingecko" && source !== "coinbase" && source !== "auto") {
         throw new Error(`invalid_source:${source}`);
       }
       args.source = source as Args["source"];
@@ -177,6 +178,40 @@ const fetchCoinGeckoHourly = async (fromMs: number, toMs: number): Promise<Candl
     .sort((a, b) => a.tsMs - b.tsMs);
 };
 
+const fetchCoinbase1h = async (fromMs: number, toMs: number): Promise<CandlePoint[]> => {
+  // Coinbase candles max 300 rows per request; walk windows to cover long ranges.
+  const rows: CandlePoint[] = [];
+  const WINDOW_MS = 300 * HOUR_MS;
+  let cursor = fromMs;
+
+  while (cursor < toMs) {
+    const end = Math.min(toMs, cursor + WINDOW_MS);
+    const url = new URL("/products/BTC-USD/candles", COINBASE_BASE);
+    url.searchParams.set("granularity", "3600");
+    url.searchParams.set("start", new Date(cursor).toISOString());
+    url.searchParams.set("end", new Date(end).toISOString());
+    const response = await fetchWithRetry(url.toString(), "coinbase");
+    const payload = (await response.json()) as unknown;
+    if (!Array.isArray(payload)) {
+      throw new Error("coinbase_invalid_payload");
+    }
+    for (const row of payload) {
+      if (!Array.isArray(row) || row.length < 5) continue;
+      const tsSec = Number(row[0]);
+      const closePx = Number(row[4]);
+      if (!Number.isFinite(tsSec) || !Number.isFinite(closePx) || closePx <= 0) continue;
+      const tsMs = floorToHour(tsSec * 1000);
+      if (tsMs < fromMs || tsMs > toMs) continue;
+      rows.push({ tsMs, closePriceUsd: closePx.toFixed(10) });
+    }
+    cursor = end + 1;
+  }
+
+  const dedup = new Map<number, CandlePoint>();
+  for (const row of rows) dedup.set(row.tsMs, row);
+  return Array.from(dedup.values()).sort((a, b) => a.tsMs - b.tsMs);
+};
+
 const toCsv = (points: CandlePoint[]): string => {
   const lines = ["ts_iso,price_usd"];
   for (const point of points) {
@@ -205,13 +240,35 @@ const main = async () => {
   } else if (args.source === "coingecko") {
     points = await fetchCoinGeckoHourly(fromMs, toMs);
     sourceUsed = "coingecko";
+  } else if (args.source === "coinbase") {
+    points = await fetchCoinbase1h(fromMs, toMs);
+    sourceUsed = "coinbase";
   } else {
     try {
       points = await fetchBinance1h(fromMs, toMs);
       sourceUsed = "binance";
-    } catch {
-      points = await fetchCoinGeckoHourly(fromMs, toMs);
-      sourceUsed = "coingecko";
+    } catch (binanceError: any) {
+      try {
+        points = await fetchCoinGeckoHourly(fromMs, toMs);
+        sourceUsed = "coingecko";
+      } catch (coingeckoError: any) {
+        points = await fetchCoinbase1h(fromMs, toMs);
+        sourceUsed = "coinbase";
+        console.warn(
+          JSON.stringify(
+            {
+              status: "warning",
+              reason: "data_source_fallback",
+              message: "binance_and_coingecko_unavailable_using_coinbase",
+              binance: String(binanceError?.message || binanceError || "unknown_binance_error"),
+              coingecko: String(coingeckoError?.message || coingeckoError || "unknown_coingecko_error"),
+              fallbackSource: "coinbase"
+            },
+            null,
+            2
+          )
+        );
+      }
     }
   }
   if (!points.length) {
