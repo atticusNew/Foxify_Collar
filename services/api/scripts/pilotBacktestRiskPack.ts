@@ -141,6 +141,9 @@ type SummaryCsvRow = {
   period: string;
   model: ModelName;
   breachMode: string;
+  dynamicSelectorEnabled: boolean;
+  selectorMode: string;
+  hedgeRegime: string;
   takeProfitEnabled: boolean;
   takeProfitTriggeredRatePct: string;
   takeProfitUnderperformedCount: number;
@@ -611,6 +614,9 @@ const main = async () => {
         period,
         model,
         breachMode: modelSummary.breachMode,
+        dynamicSelectorEnabled: Boolean((modelSummary as any).dynamicSelectorEnabled ?? false),
+        selectorMode: String((modelSummary as any).selectorMode || "strict_profitability"),
+        hedgeRegime: String((modelSummary as any).hedgeRegime || "calm"),
         takeProfitEnabled: Boolean(modelSummary.takeProfitEnabled ?? parsed.takeProfit?.enabled ?? false),
         takeProfitTriggeredRatePct: String(modelSummary.takeProfitTriggeredRatePct || "0.0000"),
         takeProfitUnderperformedCount: Number(modelSummary.takeProfitUnderperformedCount || 0),

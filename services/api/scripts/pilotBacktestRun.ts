@@ -20,6 +20,17 @@ type BacktestConfig = {
   tenorDays: number;
   entryStepHours: number;
   breachMode?: "expiry_only" | "path_min";
+  hedgeSelection?: {
+    dynamicSelectorEnabled?: boolean;
+    regimeSwitchingEnabled?: boolean;
+    selectorMode?: "strict_profitability" | "hybrid_treasury";
+    regime?: "calm" | "neutral" | "stress";
+    strikeProximityBias?: DecimalString;
+    preferredTenorDays?: number;
+    selectedTenorDays?: number;
+    selectedStrikeDistancePct?: DecimalString;
+    candidateCount?: number;
+  };
   takeProfit?: {
     enabled?: boolean;
     reboundPct?: DecimalString;
@@ -54,6 +65,13 @@ type TakeProfitRuntime = {
 type TradeRow = {
   model: ModelName;
   breachMode: BreachMode;
+  dynamicSelectorEnabled: boolean;
+  selectorMode: "strict_profitability" | "hybrid_treasury";
+  hedgeRegime: "calm" | "neutral" | "stress";
+  selectedTenorDays: number;
+  selectedStrikeDistancePct: string;
+  strikeProximityBias: string;
+  selectorCandidateCount: number;
   takeProfitEnabled: boolean;
   tierName: string;
   entryTsIso: string;
@@ -94,6 +112,9 @@ type TradeRow = {
 type SummaryModel = {
   model: ModelName;
   breachMode: BreachMode;
+  dynamicSelectorEnabled: boolean;
+  selectorMode: "strict_profitability" | "hybrid_treasury";
+  hedgeRegime: "calm" | "neutral" | "stress";
   takeProfitEnabled: boolean;
   trades: number;
   premiumTotalUsd: string;
@@ -563,6 +584,9 @@ const buildSummary = (rows: TradeRow[]): SummaryModel[] => {
     summary.push({
       model,
       breachMode: subset[0].breachMode,
+      dynamicSelectorEnabled: subset[0].dynamicSelectorEnabled,
+      selectorMode: subset[0].selectorMode,
+      hedgeRegime: subset[0].hedgeRegime,
       takeProfitEnabled: subset[0].takeProfitEnabled,
       trades: tradeCount,
       premiumTotalUsd: toFixed(sumDecimals(premiums)),
@@ -770,6 +794,21 @@ const main = async () => {
           rows.push({
             model,
             breachMode,
+            dynamicSelectorEnabled: config.hedgeSelection?.dynamicSelectorEnabled === true,
+            selectorMode: config.hedgeSelection?.selectorMode === "hybrid_treasury" ? "hybrid_treasury" : "strict_profitability",
+            hedgeRegime:
+              config.hedgeSelection?.regime === "stress"
+                ? "stress"
+                : config.hedgeSelection?.regime === "neutral"
+                  ? "neutral"
+                  : "calm",
+            selectedTenorDays:
+              Number.isFinite(Number(config.hedgeSelection?.selectedTenorDays))
+                ? Number(config.hedgeSelection?.selectedTenorDays)
+                : tenorDays,
+            selectedStrikeDistancePct: toFixed(config.hedgeSelection?.selectedStrikeDistancePct ?? "0.08"),
+            strikeProximityBias: toFixed(config.hedgeSelection?.strikeProximityBias ?? "1.0"),
+            selectorCandidateCount: Math.max(1, Number(config.hedgeSelection?.candidateCount || 6)),
             takeProfitEnabled: tp.enabled,
             tierName: tier.tierName,
             entryTsIso: entry.tsIso,

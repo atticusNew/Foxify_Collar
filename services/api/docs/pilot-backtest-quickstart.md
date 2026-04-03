@@ -112,6 +112,14 @@ Rule of thumb:
   - Columns: `ts_iso,price_usd`
 - `artifacts/backtest/pilot_backtest.csv`
   - One row per simulated protection trade
+  - Includes selector context columns for governance replay:
+    - `dynamicSelectorEnabled`
+    - `selectorMode`
+    - `hedgeRegime`
+    - `selectedTenorDays`
+    - `selectedStrikeDistancePct`
+    - `strikeProximityBias`
+    - `selectorCandidateCount`
 - `artifacts/backtest/pilot_backtest.json`
   - Includes full rows + compact `summary` table per model
   - Includes `executiveRisk` block per model:
@@ -264,3 +272,36 @@ Outputs under `artifacts/backtest/stress_tp/sweep/`:
 Notes:
 - Lower score is better.
 - Score emphasizes stress subsidy + blocked subsidy + drawdown and adds a smaller penalty if calm-quarter PnL improvement is negative.
+
+## Dynamic selector + governance controls
+
+New runtime controls (env):
+
+```bash
+# Optimizer + regime switching
+PILOT_HEDGE_OPTIMIZER_ENABLED=true
+PILOT_HEDGE_OPTIMIZER_VERSION=optimizer_v1
+
+# Rollout guards (fallback/pause)
+PILOT_GUARD_FALLBACK_TRIGGER_HIT_RATE_PCT=8
+PILOT_GUARD_FALLBACK_SUBSIDY_UTILIZATION_PCT=50
+PILOT_GUARD_FALLBACK_TREASURY_DRAWDOWN_PCT=25
+PILOT_GUARD_PAUSE_TRIGGER_HIT_RATE_PCT=15
+PILOT_GUARD_PAUSE_SUBSIDY_UTILIZATION_PCT=85
+PILOT_GUARD_PAUSE_TREASURY_DRAWDOWN_PCT=50
+PILOT_GUARD_PAUSE_ON_BLOCKED_SUBSIDY=true
+
+# Tier batching + tenor ladder
+PILOT_TIER_BATCHING_ENABLED=true
+PILOT_TIER_BATCHING_WINDOW_SECONDS=30
+PILOT_TIER_BATCHING_MAX_QUOTES=50
+PILOT_TIER_GROUPING_ENABLED=true
+PILOT_TENOR_LADDER_ENABLED=true
+PILOT_TENOR_LADDER_DAYS=7,14,21
+```
+
+Admin diagnostics endpoints:
+
+- `GET /pilot/admin/diagnostics/selector`
+- `GET /pilot/admin/diagnostics/execution-quality?lookbackDays=30`
+- `GET /pilot/admin/governance/rollout-guards`
