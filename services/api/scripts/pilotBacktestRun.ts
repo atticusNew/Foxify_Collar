@@ -87,6 +87,21 @@ type SummaryModel = {
   endTreasuryBalanceUsd: string;
 };
 
+type ExecutiveRiskModel = {
+  model: ModelName;
+  breachMode: BreachMode;
+  trades: number;
+  losingTradeCount: number;
+  losingTradeRatePct: string;
+  worstDaySubsidyNeedUsd: string;
+  worstDaySubsidyNeedDate: string | null;
+  lossP95PerTradeUsd: string;
+  maxDrawdownUsd: string;
+  maxDrawdownPct: string;
+  recommendedMinTreasuryBufferUsd: string;
+  recommendedBufferFormula: string;
+};
+
 type BacktestOutput = {
   status: "ok";
   name: string;
@@ -97,6 +112,7 @@ type BacktestOutput = {
   pricesPath: string;
   rows: TradeRow[];
   summary: SummaryModel[];
+  executiveRisk: ExecutiveRiskModel[];
 };
 
 type Args = {
@@ -316,6 +332,15 @@ const resolveModels = (mode: RunMode): ModelName[] => {
 
 const sumDecimals = (items: Decimal[]): Decimal => items.reduce((acc, cur) => acc.plus(cur), ZERO);
 
+const percentile = (items: Decimal[], p: number): Decimal => {
+  if (!items.length) return ZERO;
+  const sorted = items.slice().sort((a, b) => a.comparedTo(b));
+  const clamped = Math.max(0, Math.min(1, p));
+  const rank = Math.ceil(clamped * sorted.length) - 1;
+  const idx = Math.max(0, Math.min(sorted.length - 1, rank));
+  return sorted[idx];
+};
+
 const buildSummary = (rows: TradeRow[]): SummaryModel[] => {
   const models: ModelName[] = ["strict", "hybrid"];
   const summary: SummaryModel[] = [];
@@ -361,6 +386,70 @@ const buildSummary = (rows: TradeRow[]): SummaryModel[] => {
   }
 
   return summary;
+};
+
+const buildExecutiveRisk = (rows: TradeRow[], startingTreasury: Decimal): ExecutiveRiskModel[] => {
+  const models: ModelName[] = ["strict", "hybrid"];
+  const out: ExecutiveRiskModel[] = [];
+  for (const model of models) {
+    const subset = rows.filter((row) => row.model === model);
+    if (!subset.length) continue;
+
+    const tradeCount = subset.length;
+    const losses = subset.map((row) => Decimal.max(ZERO, new Decimal(row.underwritingPnlUsd).negated()));
+    const losingTradeCount = losses.filter((value) => value.gt(0)).length;
+    const losingTradeRatePct = new Decimal(losingTradeCount).div(tradeCount).mul(100).toFixed(4);
+    const p95Loss = percentile(losses, 0.95);
+
+    const dayNeeds = new Map<string, Decimal>();
+    for (const row of subset) {
+      const day = row.entryTsIso.slice(0, 10);
+      const running = dayNeeds.get(day) || ZERO;
+      dayNeeds.set(day, running.plus(new Decimal(row.subsidyNeedUsd)));
+    }
+    let worstDayNeed = ZERO;
+    let worstDayNeedDate: string | null = null;
+    for (const [day, value] of dayNeeds.entries()) {
+      if (value.gt(worstDayNeed)) {
+        worstDayNeed = value;
+        worstDayNeedDate = day;
+      }
+    }
+
+    let peak = startingTreasury;
+    let maxDrawdown = ZERO;
+    for (const row of subset) {
+      const balance = new Decimal(row.treasuryBalanceAfterUsd);
+      if (balance.gt(peak)) peak = balance;
+      const dd = peak.minus(balance);
+      if (dd.gt(maxDrawdown)) maxDrawdown = dd;
+    }
+    const maxDrawdownPct = peak.gt(0) ? maxDrawdown.div(peak).mul(100) : ZERO;
+
+    const recommendedMinBuffer = Decimal.max(
+      startingTreasury,
+      worstDayNeed.mul("1.5"),
+      p95Loss.mul(10),
+      maxDrawdown.mul("1.25")
+    );
+
+    out.push({
+      model,
+      breachMode: subset[0].breachMode,
+      trades: tradeCount,
+      losingTradeCount,
+      losingTradeRatePct,
+      worstDaySubsidyNeedUsd: toFixed(worstDayNeed),
+      worstDaySubsidyNeedDate: worstDayNeedDate,
+      lossP95PerTradeUsd: toFixed(p95Loss),
+      maxDrawdownUsd: toFixed(maxDrawdown),
+      maxDrawdownPct: maxDrawdownPct.toFixed(4),
+      recommendedMinTreasuryBufferUsd: toFixed(recommendedMinBuffer),
+      recommendedBufferFormula:
+        "max(startingTreasury, 1.5x worstDaySubsidyNeed, 10x p95LossPerTrade, 1.25x maxDrawdown)"
+    });
+  }
+  return out;
 };
 
 const main = async () => {
@@ -466,6 +555,7 @@ const main = async () => {
   }
 
   const summary = buildSummary(rows);
+  const executiveRisk = buildExecutiveRisk(rows, startingTreasury);
   const out: BacktestOutput = {
     status: "ok",
     name: config.name,
@@ -475,7 +565,8 @@ const main = async () => {
     configPath: args.configPath,
     pricesPath: args.pricesCsvPath,
     rows,
-    summary
+    summary,
+    executiveRisk
   };
 
   await ensureParentDir(args.outJsonPath);
@@ -492,6 +583,7 @@ const main = async () => {
         breachMode,
         rows: rows.length,
         summaries: summary,
+        executiveRisk,
         outJson: args.outJsonPath,
         outCsv: args.outCsvPath
       },

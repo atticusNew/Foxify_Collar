@@ -114,6 +114,11 @@ Rule of thumb:
   - One row per simulated protection trade
 - `artifacts/backtest/pilot_backtest.json`
   - Includes full rows + compact `summary` table per model
+  - Includes `executiveRisk` block per model:
+    - `worstDaySubsidyNeedUsd`
+    - `lossP95PerTradeUsd`
+    - `maxDrawdownUsd` / `maxDrawdownPct`
+    - `recommendedMinTreasuryBufferUsd`
 
 ## Config knobs to edit first
 
@@ -142,6 +147,12 @@ To make hedge cost fully FalconX-native:
 3. Replace `fallbackHedgePremiumPer1kProtectedUsd` and recovery factors with those FalconX-derived values per bucket.
 
 You can keep this script structure unchanged and swap only the config generation step.
+
+## Executive risk quick query
+
+```bash
+jq '.executiveRisk' artifacts/backtest/pilot_backtest.json
+```
 
 ## Breach mode override from shell
 
