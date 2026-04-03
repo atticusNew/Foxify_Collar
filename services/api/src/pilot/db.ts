@@ -666,6 +666,24 @@ export const getDailyProtectedNotionalForUser = async (
   return String(result.rows[0]?.total || "0");
 };
 
+export const getDailyTreasurySubsidyUsageForUser = async (
+  pool: Queryable,
+  userHash: string,
+  dayStartIso: string
+): Promise<string> => {
+  const result = await pool.query(
+    `
+      SELECT COALESCE(used_subsidy, 0)::text AS used_subsidy
+      FROM pilot_daily_treasury_subsidy_usage
+      WHERE user_hash = $1
+        AND day_start = $2::date
+      LIMIT 1
+    `,
+    [userHash, dayStartIso]
+  );
+  return String(result.rows[0]?.used_subsidy || "0");
+};
+
 export const insertPriceSnapshot = async (
   pool: Queryable,
   input: Omit<PriceSnapshotRecord, "id" | "createdAt"> & { id?: string }
@@ -1205,6 +1223,12 @@ export type TenorDiagnosticsSample = {
   driftDays: number | null;
   hedgeMode: HedgeMode | "unknown";
   premiumRatio: number | null;
+  treasuryQuoteSubsidyUsd: number;
+  subsidyCapUsd: number;
+  subsidyUtilizationPct: number;
+  treasuryReserveAfterOpenLiabilityUsdc: number;
+  treasuryDrawdownPct: number;
+  quoteTs: string | null;
   status: "ok";
 };
 
@@ -1220,7 +1244,7 @@ export const listRecentQuoteDiagnostics = async (
   const cutoffIso = new Date(Date.now() - lookbackMinutes * 60_000).toISOString();
   const result = await pool.query(
     `
-      SELECT details, premium
+      SELECT details, premium, quote_ts
       FROM pilot_venue_quotes
       WHERE created_at >= $1::timestamptz
       ORDER BY created_at DESC
@@ -1251,12 +1275,30 @@ export const listRecentQuoteDiagnostics = async (
       clientPremiumUsd !== null && protectedNotional !== null && protectedNotional > 0
         ? clientPremiumUsd / protectedNotional
         : null;
+    const pricingBreakdown = toRecord(details.pricingBreakdown);
+    const treasuryQuoteSubsidyUsd = safeNumber(pricingBreakdown.treasuryQuoteSubsidyUsd) ?? 0;
+    const subsidyCapUsd = safeNumber(pricingBreakdown.treasuryPerQuoteSubsidyCapUsd) ?? 0;
+    const subsidyUtilizationPct = subsidyCapUsd > 0 ? (treasuryQuoteSubsidyUsd / subsidyCapUsd) * 100 : 0;
+    const reserveAfterOpenLiabilityUsdc = safeNumber(pricingBreakdown.treasuryReserveAfterOpenLiabilityUsdc) ?? 0;
+    const startingReserveUsdc = safeNumber(pricingBreakdown.treasuryStartingReserveUsdc) ?? 0;
+    const treasuryDrawdownPct =
+      startingReserveUsdc > 0
+        ? Math.max(0, Math.min(100, ((startingReserveUsdc - reserveAfterOpenLiabilityUsdc) / startingReserveUsdc) * 100))
+        : 0;
+    const quoteTsIso =
+      typeof row.quote_ts === "string" || row.quote_ts instanceof Date ? new Date(String(row.quote_ts)).toISOString() : null;
     rows.push({
       requestedTenorDays: Math.floor(requested),
       selectedTenorDays: selected,
       driftDays: drift,
       hedgeMode,
       premiumRatio,
+      treasuryQuoteSubsidyUsd,
+      subsidyCapUsd,
+      subsidyUtilizationPct,
+      treasuryReserveAfterOpenLiabilityUsdc: reserveAfterOpenLiabilityUsdc,
+      treasuryDrawdownPct,
+      quoteTs: quoteTsIso,
       status: "ok"
     });
   }

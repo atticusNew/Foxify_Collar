@@ -11,6 +11,7 @@ import {
   extractLatestPremiumPolicyDiagnostics,
   ensurePilotSchema,
   getDailyProtectedNotionalForUser,
+  getDailyTreasurySubsidyUsageForUser,
   getEssentialProofPayload,
   getPilotAdminMetrics,
   getPilotTermsAcceptance,
@@ -33,6 +34,7 @@ import {
   listSimPositionsByUserHash,
   listSimTreasuryLedgerByUserHash,
   listExecutionQualityRecent,
+  listRecentQuoteDiagnostics,
   patchSimPosition,
   upsertExecutionQualityDaily,
   reserveDailyTreasurySubsidyCapacity,
@@ -53,6 +55,11 @@ import {
   resolvePremiumPricing,
   type PremiumPricingResult
 } from "./pricingPolicy";
+import {
+  applyPremiumRegimeOverlay,
+  resolvePremiumRegime,
+  type PremiumRegimeMetrics
+} from "./premiumRegime";
 import {
   computeTriggerPrice,
   computePayoutDue,
@@ -152,6 +159,7 @@ const toFiniteNumber = (value: unknown): number | null => {
 const resolveQuoteMinNotionalFloor = (): Decimal => new Decimal(pilotConfig.quoteMinNotionalUsdc);
 const SIM_DAYS = 7;
 const DEFAULT_SIM_STARTING_EQUITY_USD = new Decimal(10000);
+const PREMIUM_REGIME_SCOPE_KEY = "global";
 
 const buildSimLifecycleMetadata = (base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> => ({
   ...base,
@@ -262,6 +270,51 @@ const resolveMedian = (values: number[]): number | null => {
 };
 
 const round6 = (value: number): number => Number(value.toFixed(6));
+
+const resolvePremiumRegimeMetrics = async (
+  pool: ReturnType<typeof getPilotPool>,
+  userHash: string
+): Promise<PremiumRegimeMetrics> => {
+  const diagnostics = await listRecentQuoteDiagnostics(pool, {
+    lookbackMinutes: pilotConfig.premiumRegime.lookbackMinutes,
+    limit: Math.max(200, pilotConfig.premiumRegime.minSamples * 5)
+  });
+  const sampleCount = diagnostics.length;
+  const triggerHits = diagnostics.filter((row) => {
+    const ratio = Number(row.premiumRatio ?? 0);
+    return Number.isFinite(ratio) && ratio >= 0.02;
+  }).length;
+  const triggerHitRatePct = sampleCount > 0 ? (triggerHits / sampleCount) * 100 : 0;
+  const subsidyUtilizationPct =
+    sampleCount > 0
+      ? diagnostics.reduce((acc, row) => acc + Number(row.subsidyUtilizationPct || 0), 0) / sampleCount
+      : 0;
+  let treasuryDrawdownPct =
+    sampleCount > 0
+      ? diagnostics.reduce((acc, row) => acc + Number(row.treasuryDrawdownPct || 0), 0) / sampleCount
+      : 0;
+  try {
+    const treasurySnapshot = await getPilotAdminMetrics(pool, {
+      userHash,
+      scope: "open",
+      startingReserveUsdc: pilotConfig.startingReserveUsdc
+    });
+    const startingReserve = toFiniteNumber(treasurySnapshot.startingReserveUsdc) || 0;
+    const reserveAfterOpenLiability = toFiniteNumber(treasurySnapshot.reserveAfterOpenPayoutLiabilityUsdc) || 0;
+    if (startingReserve > 0) {
+      const drawdownNow = ((startingReserve - reserveAfterOpenLiability) / startingReserve) * 100;
+      treasuryDrawdownPct = Math.max(0, Math.min(100, drawdownNow));
+    }
+  } catch {
+    // Keep diagnostics-derived fallback when admin metrics are temporarily unavailable.
+  }
+  return {
+    sampleCount,
+    triggerHitRatePct: round6(triggerHitRatePct),
+    subsidyUtilizationPct: round6(subsidyUtilizationPct),
+    treasuryDrawdownPct: round6(treasuryDrawdownPct)
+  };
+};
 
 const resolveDynamicTenorPolicy = async (params: {
   pool: ReturnType<typeof getPilotPool>;
@@ -1501,9 +1554,16 @@ export const registerPilotRoutes = async (
       limit: 5000
     });
     const total = diagnostics.length;
-    const triggerHitRatePct = 0;
-    const subsidyUtilizationPct = 0;
-    const treasuryDrawdownPct = 0;
+    const triggerHits = diagnostics.filter((row) => Number(row.treasuryQuoteSubsidyUsd || 0) > 0).length;
+    const triggerHitRatePct = total > 0 ? (triggerHits / total) * 100 : 0;
+    const subsidyUtilizationPct =
+      total > 0
+        ? diagnostics.reduce((acc, row) => acc + Number(row.subsidyUtilizationPct || 0), 0) / total
+        : 0;
+    const treasuryDrawdownPct =
+      total > 0
+        ? diagnostics.reduce((acc, row) => acc + Number(row.treasuryDrawdownPct || 0), 0) / total
+        : 0;
     const fallback =
       triggerHitRatePct >= pilotConfig.rolloutGuards.fallbackTriggerHitRatePct ||
       subsidyUtilizationPct >= pilotConfig.rolloutGuards.fallbackSubsidyUtilizationPct ||
@@ -1741,6 +1801,36 @@ export const registerPilotRoutes = async (
           details: quote.details as Record<string, unknown> | undefined
         })
       });
+      let premiumRegimeMetrics: PremiumRegimeMetrics = {
+        sampleCount: 0,
+        triggerHitRatePct: 0,
+        subsidyUtilizationPct: 0,
+        treasuryDrawdownPct: 0
+      };
+      try {
+        premiumRegimeMetrics = await resolvePremiumRegimeMetrics(pool);
+      } catch {
+        // Fail-open: do not block quotes on telemetry/diagnostics availability.
+      }
+      const premiumRegimeDecision = resolvePremiumRegime({
+        scopeKey: PREMIUM_REGIME_SCOPE_KEY,
+        config: pilotConfig.premiumRegime,
+        metrics: premiumRegimeMetrics
+      });
+      let premiumRegimeOverlay = applyPremiumRegimeOverlay({
+        basePremiumUsd: premiumPricing.clientPremiumUsd,
+        protectedNotionalUsd: protectedNotional,
+        regime: premiumRegimeDecision.regime,
+        config: pilotConfig.premiumRegime,
+        enabledForPricingMode:
+          premiumPricing.pricingMode === "hybrid_otm_treasury" || pilotConfig.premiumRegime.applyToActuarialStrict
+      });
+      if (premiumRegimeOverlay.applied) {
+        premiumPricing = {
+          ...premiumPricing,
+          clientPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd
+        };
+      }
       const selectionPremiumInputsFromPricing = () => ({
         triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber(),
         expectedTriggerCostUsd: Number(premiumPricing.expectedTriggerCostUsd.toFixed(10)),
@@ -1762,6 +1852,20 @@ export const registerPilotRoutes = async (
             details: quote.details as Record<string, unknown> | undefined
           })
         });
+        premiumRegimeOverlay = applyPremiumRegimeOverlay({
+          basePremiumUsd: premiumPricing.clientPremiumUsd,
+          protectedNotionalUsd: protectedNotional,
+          regime: premiumRegimeDecision.regime,
+          config: pilotConfig.premiumRegime,
+          enabledForPricingMode:
+            premiumPricing.pricingMode === "hybrid_otm_treasury" || pilotConfig.premiumRegime.applyToActuarialStrict
+        });
+        if (premiumRegimeOverlay.applied) {
+          premiumPricing = {
+            ...premiumPricing,
+            clientPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd
+          };
+        }
         selectionPremiumInputs = selectionPremiumInputsFromPricing();
         treasuryFallbackApplied = reason;
       };
@@ -1832,6 +1936,33 @@ export const registerPilotRoutes = async (
           });
         }
       }
+      let treasuryStartingReserveUsdc = new Decimal(pilotConfig.startingReserveUsdc);
+      let treasuryReserveAfterOpenLiabilityUsdc = new Decimal(pilotConfig.startingReserveUsdc);
+      try {
+        const treasurySnapshot = await getPilotAdminMetrics(pool, {
+          startingReserveUsdc: pilotConfig.startingReserveUsdc,
+          userHash: userHash.userHash,
+          scope: "open"
+        });
+        treasuryStartingReserveUsdc = new Decimal(treasurySnapshot.startingReserveUsdc || pilotConfig.startingReserveUsdc);
+        treasuryReserveAfterOpenLiabilityUsdc = new Decimal(
+          treasurySnapshot.reserveAfterOpenPayoutLiabilityUsdc || treasuryStartingReserveUsdc
+        );
+      } catch {
+        // Keep defaults when treasury snapshot is unavailable.
+      }
+      const treasuryDrawdownPct = treasuryStartingReserveUsdc.gt(0)
+        ? Decimal.max(
+            new Decimal(0),
+            Decimal.min(
+              new Decimal(100),
+              treasuryStartingReserveUsdc
+                .minus(treasuryReserveAfterOpenLiabilityUsdc)
+                .div(treasuryStartingReserveUsdc)
+                .mul(100)
+            )
+          )
+        : new Decimal(0);
       const estimatedPremiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({
         estimated: premiumPricing
       });
@@ -1859,8 +1990,28 @@ export const registerPilotRoutes = async (
         treasuryQuoteSubsidyUsd: quoteSubsidyUsd.toFixed(10),
         treasuryPerQuoteSubsidyCapUsd: quoteSubsidyCapUsd.toFixed(10),
         treasuryDailySubsidyCapUsdc: new Decimal(pilotConfig.treasuryDailySubsidyCapUsdc).toFixed(10),
+        treasuryStartingReserveUsdc: treasuryStartingReserveUsdc.toFixed(10),
+        treasuryReserveAfterOpenLiabilityUsdc: treasuryReserveAfterOpenLiabilityUsdc.toFixed(10),
+        treasuryDrawdownPct: treasuryDrawdownPct.toFixed(6),
         treasuryFallbackApplied,
         treasuryStrictFallbackEnabled: pilotConfig.treasuryStrictFallbackEnabled,
+        premiumRegimeEnabled: pilotConfig.premiumRegime.enabled,
+        premiumRegimeLevel: premiumRegimeDecision.regime,
+        premiumRegimePreviousLevel: premiumRegimeDecision.previousRegime,
+        premiumRegimeChanged: premiumRegimeDecision.changed,
+        premiumRegimeReason: premiumRegimeDecision.reason,
+        premiumRegimeHoldMinutesRemaining: premiumRegimeDecision.holdMinutesRemaining,
+        premiumRegimeSampleCount: premiumRegimeDecision.metrics.sampleCount,
+        premiumRegimeTriggerHitRatePct: Number(premiumRegimeDecision.metrics.triggerHitRatePct.toFixed(6)),
+        premiumRegimeSubsidyUtilizationPct: Number(premiumRegimeDecision.metrics.subsidyUtilizationPct.toFixed(6)),
+        premiumRegimeTreasuryDrawdownPct: Number(premiumRegimeDecision.metrics.treasuryDrawdownPct.toFixed(6)),
+        premiumRegimeOverlayApplied: premiumRegimeOverlay.applied,
+        premiumRegimeOverlayUsd: premiumRegimeOverlay.overlayUsd.toFixed(10),
+        premiumRegimeOverlayPctOfBase: premiumRegimeOverlay.overlayPctOfBase.toFixed(10),
+        premiumRegimeOverlayMultiplier: premiumRegimeOverlay.multiplier.toFixed(10),
+        premiumRegimeOverlayAddUsdPer1k: premiumRegimeOverlay.addUsdPer1k.toFixed(10),
+        premiumRegimeBasePremiumUsd: premiumRegimeOverlay.basePremiumUsd.toFixed(10),
+        premiumRegimeAdjustedPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd.toFixed(10),
         ...selectionPremiumInputs
       };
       await insertVenueQuote(pool, {
@@ -1944,6 +2095,14 @@ export const registerPilotRoutes = async (
                 : null,
             hedgeMode: deriveHedgeMode(quote.details as Record<string, unknown> | undefined),
             premiumPolicy: estimatedPremiumPolicyDiagnostics,
+            premiumRegimeLevel: premiumRegimeDecision.regime,
+            premiumRegimePreviousLevel: premiumRegimeDecision.previousRegime,
+            premiumRegimeChanged: premiumRegimeDecision.changed,
+            premiumRegimeReason: premiumRegimeDecision.reason,
+            premiumRegimeOverlayApplied: premiumRegimeOverlay.applied,
+            premiumRegimeOverlayUsd: premiumRegimeOverlay.overlayUsd.toFixed(10),
+            premiumRegimeBasePremiumUsd: premiumRegimeOverlay.basePremiumUsd.toFixed(10),
+            premiumRegimeAdjustedPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd.toFixed(10),
             ...pricingBreakdown
           }
         }
@@ -2525,10 +2684,16 @@ export const registerPilotRoutes = async (
         parsePositiveDecimal(lockContext.hedgePremiumUsd) || new Decimal(lockedQuote.premium);
       const contextMarkupPct = parsePositiveDecimal(lockContext.markupPct);
       const contextMarkupUsd = parsePositiveDecimal(lockContext.markupUsd);
-      const contextFloorUsd = parsePositiveDecimal(lockContext.premiumFloorUsd);
-      const contextFloorUsdAbsolute = parsePositiveDecimal(lockContext.premiumFloorUsdAbsolute);
-      const contextFloorUsdFromBps = parsePositiveDecimal(lockContext.premiumFloorUsdFromBps);
-      const contextFloorBps = parsePositiveDecimal(lockContext.premiumFloorBps);
+      const contextFloorUsd = parsePositiveDecimal(lockContext.premiumFloorUsd) || parseBoundedDecimal(lockContext.premiumFloorUsd, 0, Number.MAX_SAFE_INTEGER);
+      const contextFloorUsdAbsolute =
+        parsePositiveDecimal(lockContext.premiumFloorUsdAbsolute) ||
+        parseBoundedDecimal(lockContext.premiumFloorUsdAbsolute, 0, Number.MAX_SAFE_INTEGER);
+      const contextFloorUsdFromBps =
+        parsePositiveDecimal(lockContext.premiumFloorUsdFromBps) ||
+        parseBoundedDecimal(lockContext.premiumFloorUsdFromBps, 0, Number.MAX_SAFE_INTEGER);
+      const contextFloorBps =
+        parsePositiveDecimal(lockContext.premiumFloorBps) ||
+        parseBoundedDecimal(lockContext.premiumFloorBps, 0, Number.MAX_SAFE_INTEGER);
       const contextClientPremium = parsePositiveDecimal(lockContext.clientPremiumUsd);
       const contextRequestedTenorDays = parsePositiveDecimal(lockContext.requestedTenorDays);
       const contextVenueRequestedTenorDays = parsePositiveDecimal(lockContext.venueRequestedTenorDays);
@@ -2548,6 +2713,20 @@ export const registerPilotRoutes = async (
       });
       const contextBrokerFeesUsd = parsePositiveDecimal(lockContext.brokerFeesUsd);
       const contextPassThroughUsd = parsePositiveDecimal(lockContext.passThroughUsd);
+      const contextExpectedClaimsUsd =
+        parsePositiveDecimal(lockContext.expectedClaimsUsd) ||
+        parseBoundedDecimal(lockContext.expectedClaimsUsd, 0, Number.MAX_SAFE_INTEGER);
+      const contextExpectedTriggerProbRaw = parseBoundedDecimal(lockContext.expectedTriggerProbRaw, 0, 1);
+      const contextExpectedTriggerProbCapped = parseBoundedDecimal(lockContext.expectedTriggerProbCapped, 0, 1);
+      const contextPositionFloorUsd =
+        parsePositiveDecimal(lockContext.positionFloorUsd) ||
+        parseBoundedDecimal(lockContext.positionFloorUsd, 0, Number.MAX_SAFE_INTEGER);
+      const contextClaimsFloorUsd =
+        parsePositiveDecimal(lockContext.claimsFloorUsd) ||
+        parseBoundedDecimal(lockContext.claimsFloorUsd, 0, Number.MAX_SAFE_INTEGER);
+      const contextMarkupPremiumUsd =
+        parsePositiveDecimal(lockContext.markupPremiumUsd) ||
+        parseBoundedDecimal(lockContext.markupPremiumUsd, 0, Number.MAX_SAFE_INTEGER);
       premiumPricing = {
         hedgePremiumUsd: contextHedgePremium,
         brokerFeesUsd: contextBrokerFeesUsd || fallbackPremiumPricing.brokerFeesUsd,
@@ -2585,12 +2764,28 @@ export const registerPilotRoutes = async (
         clientPremiumUsd: contextClientPremium || fallbackPremiumPricing.clientPremiumUsd,
         method: (() => {
           const rawMethod = String(lockContext.method || fallbackPremiumPricing.method);
+          if (rawMethod === "hybrid_markup") return "hybrid_markup";
+          if (rawMethod === "hybrid_position_floor") return "hybrid_position_floor";
+          if (rawMethod === "hybrid_claims_floor") return "hybrid_claims_floor";
           if (rawMethod === "floor_profitability") return "floor_profitability";
           if (rawMethod === "floor_trigger_credit") return "floor_trigger_credit";
           if (rawMethod === "floor_usd") return "floor_usd";
           if (rawMethod === "floor_bps") return "floor_bps";
           return "markup";
-        })()
+        })(),
+        expectedClaimsUsd:
+          parsePositiveDecimal(lockContext.expectedClaimsUsd) || fallbackPremiumPricing.expectedClaimsUsd,
+        expectedTriggerProbRaw:
+          parsePositiveDecimal(lockContext.expectedTriggerProbRaw) || fallbackPremiumPricing.expectedTriggerProbRaw,
+        expectedTriggerProbCapped:
+          parsePositiveDecimal(lockContext.expectedTriggerProbCapped) || fallbackPremiumPricing.expectedTriggerProbCapped,
+        positionFloorUsd: parsePositiveDecimal(lockContext.positionFloorUsd) || fallbackPremiumPricing.positionFloorUsd,
+        claimsFloorUsd: parsePositiveDecimal(lockContext.claimsFloorUsd) || fallbackPremiumPricing.claimsFloorUsd,
+        markupPremiumUsd: parsePositiveDecimal(lockContext.markupPremiumUsd) || fallbackPremiumPricing.markupPremiumUsd,
+        pricingMode:
+          lockContext.pricingMode === "hybrid_otm_treasury" || lockContext.pricingMode === "actuarial_strict"
+            ? lockContext.pricingMode
+            : fallbackPremiumPricing.pricingMode
       };
       premiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({ estimated: premiumPricing });
       await client.query("COMMIT");

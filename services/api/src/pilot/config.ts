@@ -91,6 +91,31 @@ export type TierBatchingTenorRuntimeConfig = {
   tenorLadderDays: number[];
 };
 
+export type PremiumRegimeRuntimeConfig = {
+  enabled: boolean;
+  applyToActuarialStrict: boolean;
+  lookbackMinutes: number;
+  minSamples: number;
+  minDwellMinutes: number;
+  maxOverlayPctOfBasePremium: number;
+  watchAddUsdPer1k: number;
+  watchMultiplier: number;
+  stressAddUsdPer1k: number;
+  stressMultiplier: number;
+  enterWatchTriggerHitRatePct: number;
+  enterWatchSubsidyUtilizationPct: number;
+  enterWatchTreasuryDrawdownPct: number;
+  enterStressTriggerHitRatePct: number;
+  enterStressSubsidyUtilizationPct: number;
+  enterStressTreasuryDrawdownPct: number;
+  exitWatchTriggerHitRatePct: number;
+  exitWatchSubsidyUtilizationPct: number;
+  exitWatchTreasuryDrawdownPct: number;
+  exitStressTriggerHitRatePct: number;
+  exitStressSubsidyUtilizationPct: number;
+  exitStressTreasuryDrawdownPct: number;
+};
+
 export type PilotWindowState = {
   enforced: boolean;
   startAt: string | null;
@@ -414,6 +439,119 @@ const parseTierBatchingTenorRuntimeConfig = (): TierBatchingTenorRuntimeConfig =
   )
 });
 
+const parsePremiumRegimeRuntimeConfig = (): PremiumRegimeRuntimeConfig => ({
+  enabled: parseBooleanEnv(process.env.PILOT_PREMIUM_REGIME_ENABLED, false),
+  applyToActuarialStrict: parseBooleanEnv(process.env.PILOT_PREMIUM_REGIME_APPLY_TO_ACTUARIAL, false),
+  lookbackMinutes: parsePositiveIntInRange(
+    process.env.PILOT_PREMIUM_REGIME_LOOKBACK_MINUTES,
+    240,
+    5,
+    7 * 24 * 60,
+    "invalid_pilot_premium_regime_lookback_minutes"
+  ),
+  minSamples: parsePositiveIntInRange(
+    process.env.PILOT_PREMIUM_REGIME_MIN_SAMPLES,
+    20,
+    1,
+    10000,
+    "invalid_pilot_premium_regime_min_samples"
+  ),
+  minDwellMinutes: parsePositiveIntInRange(
+    process.env.PILOT_PREMIUM_REGIME_MIN_DWELL_MINUTES,
+    60,
+    1,
+    24 * 60,
+    "invalid_pilot_premium_regime_min_dwell_minutes"
+  ),
+  maxOverlayPctOfBasePremium: parseFractionRange(
+    process.env.PILOT_PREMIUM_REGIME_MAX_OVERLAY_PCT_OF_BASE,
+    1,
+    0,
+    5,
+    "invalid_pilot_premium_regime_max_overlay_pct_of_base"
+  ),
+  watchAddUsdPer1k: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_WATCH_ADD_USD_PER_1K,
+    2,
+    "invalid_pilot_premium_regime_watch_add_usd_per_1k"
+  ),
+  watchMultiplier: parsePositiveFinite(
+    process.env.PILOT_PREMIUM_REGIME_WATCH_MULTIPLIER,
+    1,
+    "invalid_pilot_premium_regime_watch_multiplier"
+  ),
+  stressAddUsdPer1k: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_STRESS_ADD_USD_PER_1K,
+    4,
+    "invalid_pilot_premium_regime_stress_add_usd_per_1k"
+  ),
+  stressMultiplier: parsePositiveFinite(
+    process.env.PILOT_PREMIUM_REGIME_STRESS_MULTIPLIER,
+    1,
+    "invalid_pilot_premium_regime_stress_multiplier"
+  ),
+  enterWatchTriggerHitRatePct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_ENTER_WATCH_TRIGGER_HIT_RATE_PCT,
+    8,
+    "invalid_pilot_premium_regime_enter_watch_trigger_hit_rate_pct"
+  ),
+  enterWatchSubsidyUtilizationPct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_ENTER_WATCH_SUBSIDY_UTILIZATION_PCT,
+    50,
+    "invalid_pilot_premium_regime_enter_watch_subsidy_utilization_pct"
+  ),
+  enterWatchTreasuryDrawdownPct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_ENTER_WATCH_TREASURY_DRAWDOWN_PCT,
+    20,
+    "invalid_pilot_premium_regime_enter_watch_treasury_drawdown_pct"
+  ),
+  enterStressTriggerHitRatePct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_ENTER_STRESS_TRIGGER_HIT_RATE_PCT,
+    15,
+    "invalid_pilot_premium_regime_enter_stress_trigger_hit_rate_pct"
+  ),
+  enterStressSubsidyUtilizationPct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_ENTER_STRESS_SUBSIDY_UTILIZATION_PCT,
+    80,
+    "invalid_pilot_premium_regime_enter_stress_subsidy_utilization_pct"
+  ),
+  enterStressTreasuryDrawdownPct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_ENTER_STRESS_TREASURY_DRAWDOWN_PCT,
+    35,
+    "invalid_pilot_premium_regime_enter_stress_treasury_drawdown_pct"
+  ),
+  exitWatchTriggerHitRatePct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_EXIT_WATCH_TRIGGER_HIT_RATE_PCT,
+    5,
+    "invalid_pilot_premium_regime_exit_watch_trigger_hit_rate_pct"
+  ),
+  exitWatchSubsidyUtilizationPct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_EXIT_WATCH_SUBSIDY_UTILIZATION_PCT,
+    35,
+    "invalid_pilot_premium_regime_exit_watch_subsidy_utilization_pct"
+  ),
+  exitWatchTreasuryDrawdownPct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_EXIT_WATCH_TREASURY_DRAWDOWN_PCT,
+    12,
+    "invalid_pilot_premium_regime_exit_watch_treasury_drawdown_pct"
+  ),
+  exitStressTriggerHitRatePct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_EXIT_STRESS_TRIGGER_HIT_RATE_PCT,
+    10,
+    "invalid_pilot_premium_regime_exit_stress_trigger_hit_rate_pct"
+  ),
+  exitStressSubsidyUtilizationPct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_EXIT_STRESS_SUBSIDY_UTILIZATION_PCT,
+    60,
+    "invalid_pilot_premium_regime_exit_stress_subsidy_utilization_pct"
+  ),
+  exitStressTreasuryDrawdownPct: parseNonNegativeFinite(
+    process.env.PILOT_PREMIUM_REGIME_EXIT_STRESS_TREASURY_DRAWDOWN_PCT,
+    25,
+    "invalid_pilot_premium_regime_exit_stress_treasury_drawdown_pct"
+  )
+});
+
 export const parseFractionRange = (
   raw: string | undefined,
   fallback: number,
@@ -579,6 +717,7 @@ export const pilotConfig = {
   hedgeOptimizer: parseHedgeOptimizerRuntimeConfig(),
   rolloutGuards: parseRolloutGuardRuntimeConfig(),
   tierBatchingTenor: parseTierBatchingTenorRuntimeConfig(),
+  premiumRegime: parsePremiumRegimeRuntimeConfig(),
   premiumPolicyVersion: String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2",
   premiumPolicyEnforce: parseBooleanEnv(process.env.PILOT_PREMIUM_ENFORCE, false),
   premiumCapEnforce: parseBooleanEnv(process.env.PILOT_ENFORCE_PREMIUM_CAP, false),

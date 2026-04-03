@@ -4,6 +4,7 @@ import {
   parsePilotHedgePolicy,
   parseCommaSeparatedInts,
   parsePremiumPolicyMode,
+  parsePilotPricingMode,
   parsePilotQuoteMinNotionalUsdc,
   parseDeribitMaxTenorDriftDays,
   parseDeribitQuotePolicy,
@@ -83,6 +84,13 @@ test("parsePremiumPolicyMode validates known values", () => {
   assert.equal(parsePremiumPolicyMode("legacy"), "legacy");
   assert.equal(parsePremiumPolicyMode("pass_through_markup"), "pass_through_markup");
   assert.throws(() => parsePremiumPolicyMode("flat_fee"), /invalid_pilot_premium_policy_mode/);
+});
+
+test("parsePilotPricingMode validates known values", () => {
+  assert.equal(parsePilotPricingMode(undefined), "actuarial_strict");
+  assert.equal(parsePilotPricingMode("actuarial_strict"), "actuarial_strict");
+  assert.equal(parsePilotPricingMode("hybrid_otm_treasury"), "hybrid_otm_treasury");
+  assert.throws(() => parsePilotPricingMode("hybrid"), /invalid_pilot_pricing_mode/);
 });
 
 test("parsePilotQuoteMinNotionalUsdc enforces pilot floor", () => {
