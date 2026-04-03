@@ -806,8 +806,12 @@ const main = async () => {
               Number.isFinite(Number(config.hedgeSelection?.selectedTenorDays))
                 ? Number(config.hedgeSelection?.selectedTenorDays)
                 : tenorDays,
-            selectedStrikeDistancePct: toFixed(config.hedgeSelection?.selectedStrikeDistancePct ?? "0.08"),
-            strikeProximityBias: toFixed(config.hedgeSelection?.strikeProximityBias ?? "1.0"),
+            selectedStrikeDistancePct: toFixed(
+              parseDecimal(config.hedgeSelection?.selectedStrikeDistancePct ?? "0.08", "hedgeSelection.selectedStrikeDistancePct")
+            ),
+            strikeProximityBias: toFixed(
+              parseDecimal(config.hedgeSelection?.strikeProximityBias ?? "1.0", "hedgeSelection.strikeProximityBias")
+            ),
             selectorCandidateCount: Math.max(1, Number(config.hedgeSelection?.candidateCount || 6)),
             takeProfitEnabled: tp.enabled,
             tierName: tier.tierName,
