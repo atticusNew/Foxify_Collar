@@ -742,6 +742,8 @@ export const registerPilotRoutes = async (
   await ensurePilotSchema(pool);
   const venue = createPilotVenueAdapter({
     mode: pilotConfig.venueMode,
+    bullishEnabled: pilotConfig.bullish.enabled,
+    bullish: pilotConfig.bullish,
     quoteTtlMs: pilotConfig.quoteTtlMs,
     deribitQuotePolicy: pilotConfig.deribitQuotePolicy,
     deribitStrikeSelectionMode: pilotConfig.deribitStrikeSelectionMode,

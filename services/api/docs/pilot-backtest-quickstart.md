@@ -231,6 +231,52 @@ Rounded UI pricing chart (presentation only; underwriting still uses exact cheap
 | Gold | 12% | $18 | $90 | $180 | $450 | $900 |
 | Platinum | 12% | $17 | $85 | $170 | $425 | $850 |
 
+## Bullish testnet pilot venue integration
+
+Current pilot venue architecture:
+
+- Active venue integrations:
+  - `deribit_test`
+  - `ibkr_cme_paper`
+  - `ibkr_cme_live`
+  - `falconx`
+- Experimental / placeholders left intentionally untouched in this phase:
+  - `mock_falconx`
+  - FalconX remains non-primary for the Foxify CEO localized pilot
+- Venue selection for pilot quote/execute flows happens in:
+  - `services/api/src/pilot/config.ts` via `PILOT_VENUE_MODE`
+  - `services/api/src/pilot/venue.ts` via `createPilotVenueAdapter(...)`
+  - `services/api/src/pilot/routes.ts` when the singleton pilot venue adapter is created
+
+Bullish integration point:
+
+- New isolated venue mode: `bullish_testnet`
+- Enabled only when `PILOT_BULLISH_ENABLED=true`
+- Intended to become the primary pilot venue incrementally, without altering Deribit/IBKR behavior unless explicitly selected
+
+Safe setup for local/Cursor smoke testing:
+
+```bash
+cd /workspace/services/api
+
+# read-only smoke test
+npm run -s pilot:bullish:smoke -- --symbol BTCUSDC
+
+# optional tiny order path, only when explicitly requested
+npm run -s pilot:bullish:smoke -- --symbol BTCUSDC --place-test-order true --cancel-test-order true
+```
+
+Required env knobs:
+
+- `PILOT_VENUE_MODE=bullish_testnet`
+- `PILOT_BULLISH_ENABLED=true`
+- `PILOT_BULLISH_API_HOSTNAME=...`
+- `PILOT_BULLISH_PUBLIC_WS_URL=...`
+- `PILOT_BULLISH_PRIVATE_WS_URL=...`
+- `PILOT_BULLISH_HMAC_PUBLIC_KEY=...`
+- `PILOT_BULLISH_HMAC_SECRET=...`
+- `PILOT_BULLISH_TRADING_ACCOUNT_ID=...`
+
 ## FalconX integration path (next step)
 
 To make hedge cost fully FalconX-native:

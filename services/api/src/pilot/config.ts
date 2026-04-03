@@ -5,7 +5,8 @@ export type PilotVenueMode =
   | "deribit_test"
   | "mock_falconx"
   | "ibkr_cme_live"
-  | "ibkr_cme_paper";
+  | "ibkr_cme_paper"
+  | "bullish_testnet";
 export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_invalid";
 export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
 export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
@@ -16,6 +17,29 @@ export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 export type PilotPricingMode = "actuarial_strict" | "hybrid_otm_treasury";
 export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
 export type HybridStrictMultiplierScheduleName = "current" | "cheaper";
+export type BullishAuthMode = "hmac" | "ecdsa";
+export type BullishOrderTif = "IOC" | "DAY" | "GTC";
+export type BullishRuntimeConfig = {
+  enabled: boolean;
+  restBaseUrl: string;
+  publicWsUrl: string;
+  privateWsUrl: string;
+  authMode: BullishAuthMode;
+  hmacPublicKey: string;
+  hmacSecret: string;
+  tradingAccountId: string;
+  defaultSymbol: string;
+  symbolByMarketId: Record<string, string>;
+  hmacLoginPath: string;
+  tradingAccountsPath: string;
+  noncePath: string;
+  commandPath: string;
+  orderbookPathTemplate: string;
+  enableExecution: boolean;
+  orderTimeoutMs: number;
+  orderTif: BullishOrderTif;
+  allowMargin: boolean;
+};
 export type HedgeOptimizerRuntimeConfig = {
   enabled: boolean;
   version: string;
@@ -150,7 +174,8 @@ export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => 
     normalized === "deribit_test" ||
     normalized === "mock_falconx" ||
     normalized === "ibkr_cme_live" ||
-    normalized === "ibkr_cme_paper"
+    normalized === "ibkr_cme_paper" ||
+    normalized === "bullish_testnet"
   ) {
     return normalized;
   }
@@ -320,6 +345,18 @@ export const parsePilotPricingMode = (raw: string | undefined): PilotPricingMode
     return normalized;
   }
   throw new Error(`invalid_pilot_pricing_mode:${normalized || "empty"}`);
+};
+
+export const parseBullishAuthMode = (raw: string | undefined): BullishAuthMode => {
+  const normalized = String(raw || "hmac").trim().toLowerCase();
+  if (normalized === "hmac" || normalized === "ecdsa") return normalized;
+  throw new Error(`invalid_bullish_auth_mode:${normalized || "empty"}`);
+};
+
+export const parseBullishOrderTif = (raw: string | undefined): BullishOrderTif => {
+  const normalized = String(raw || "IOC").trim().toUpperCase();
+  if (normalized === "IOC" || normalized === "DAY" || normalized === "GTC") return normalized;
+  throw new Error(`invalid_bullish_order_tif:${normalized || "empty"}`);
 };
 
 export const parsePilotSelectorMode = (raw: string | undefined): PilotSelectorMode => {
@@ -496,6 +533,46 @@ const parseTierBatchingTenorRuntimeConfig = (): TierBatchingTenorRuntimeConfig =
   )
 });
 
+const parseBullishRuntimeConfig = (): BullishRuntimeConfig => ({
+  enabled: parseBooleanEnv(process.env.PILOT_BULLISH_ENABLED, false),
+  restBaseUrl: String(process.env.PILOT_BULLISH_REST_BASE_URL || "https://api.exchange.bullish.com").trim(),
+  publicWsUrl: String(
+    process.env.PILOT_BULLISH_PUBLIC_WS_URL || "wss://api.exchange.bullish.com/trading-api/v1/market-data/orderbook"
+  ).trim(),
+  privateWsUrl: String(
+    process.env.PILOT_BULLISH_PRIVATE_WS_URL || "wss://api.exchange.bullish.com/trading-api/v1/private-data"
+  ).trim(),
+  authMode: parseBullishAuthMode(process.env.PILOT_BULLISH_AUTH_MODE),
+  hmacPublicKey: String(process.env.PILOT_BULLISH_HMAC_PUBLIC_KEY || "").trim(),
+  hmacSecret: String(process.env.PILOT_BULLISH_HMAC_SECRET || "").trim(),
+  tradingAccountId: String(process.env.PILOT_BULLISH_TRADING_ACCOUNT_ID || "").trim(),
+  defaultSymbol: String(process.env.PILOT_BULLISH_DEFAULT_SYMBOL || "BTCUSDC").trim() || "BTCUSDC",
+  symbolByMarketId: parseSymbolMap(
+    process.env.PILOT_BULLISH_SYMBOL_MAP,
+    { "BTC-USD": "BTCUSDC" },
+    "invalid_pilot_bullish_symbol_map"
+  ),
+  hmacLoginPath: String(process.env.PILOT_BULLISH_HMAC_LOGIN_PATH || "/trading-api/v1/users/hmac/login").trim(),
+  tradingAccountsPath: String(
+    process.env.PILOT_BULLISH_TRADING_ACCOUNTS_PATH || "/trading-api/v1/accounts/trading-accounts"
+  ).trim(),
+  noncePath: String(process.env.PILOT_BULLISH_NONCE_PATH || "/nonce").trim(),
+  commandPath: String(process.env.PILOT_BULLISH_COMMAND_PATH || "/trading-api/v2/command").trim(),
+  orderbookPathTemplate: String(
+    process.env.PILOT_BULLISH_ORDERBOOK_PATH_TEMPLATE || "/trading-api/v1/markets/:symbol/orderbook/hybrid"
+  ).trim(),
+  enableExecution: parseBooleanEnv(process.env.PILOT_BULLISH_ENABLE_EXECUTION, false),
+  orderTimeoutMs: parsePositiveIntInRange(
+    process.env.PILOT_BULLISH_ORDER_TIMEOUT_MS,
+    8000,
+    1000,
+    60000,
+    "invalid_pilot_bullish_order_timeout_ms"
+  ),
+  orderTif: parseBullishOrderTif(process.env.PILOT_BULLISH_ORDER_TIF),
+  allowMargin: parseBooleanEnv(process.env.PILOT_BULLISH_ALLOW_MARGIN, false)
+});
+
 const parsePremiumRegimeRuntimeConfig = (): PremiumRegimeRuntimeConfig => ({
   enabled: parseBooleanEnv(process.env.PILOT_PREMIUM_REGIME_ENABLED, false),
   applyToActuarialStrict: parseBooleanEnv(process.env.PILOT_PREMIUM_REGIME_APPLY_TO_ACTUARIAL, false),
@@ -648,6 +725,29 @@ export const parseCommaSeparatedInts = (
   return Array.from(new Set(normalized)).sort((a, b) => a - b);
 };
 
+export const parseSymbolMap = (
+  raw: string | undefined,
+  fallback: Record<string, string>,
+  errorCode: string
+): Record<string, string> => {
+  const input = String(raw || "").trim();
+  if (!input) return { ...fallback };
+  const entries = input
+    .split(",")
+    .map((pair) => pair.trim())
+    .filter(Boolean);
+  if (!entries.length) return { ...fallback };
+  const out: Record<string, string> = {};
+  for (const entry of entries) {
+    const [left, right] = entry.split(":").map((part) => part?.trim() || "");
+    if (!left || !right) {
+      throw new Error(`${errorCode}:${entry}`);
+    }
+    out[left] = right;
+  }
+  return out;
+};
+
 const resolveTenorBounds = (): {
   minDays: number;
   maxDays: number;
@@ -771,6 +871,7 @@ export const pilotConfig = {
   premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
   premiumPricingMode: parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
   pilotSelectorMode: parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
+  bullish: parseBullishRuntimeConfig(),
   hedgeOptimizer: parseHedgeOptimizerRuntimeConfig(),
   rolloutGuards: parseRolloutGuardRuntimeConfig(),
   tierBatchingTenor: parseTierBatchingTenorRuntimeConfig(),

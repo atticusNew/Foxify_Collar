@@ -22,7 +22,13 @@ export type PriceSnapshotType = "entry" | "expiry" | "trigger";
 export type PriceSource = "reference_oracle" | "fallback_oracle";
 
 export type VenueExecutionStatus = "success" | "failure";
-export type VenueName = "falconx" | "deribit_test" | "mock_falconx" | "ibkr_cme_live" | "ibkr_cme_paper";
+export type VenueName =
+  | "falconx"
+  | "deribit_test"
+  | "mock_falconx"
+  | "ibkr_cme_live"
+  | "ibkr_cme_paper"
+  | "bullish_testnet";
 export type HedgeMode = "options_native" | "futures_synthetic";
 
 export type ProtectionType = "long" | "short";

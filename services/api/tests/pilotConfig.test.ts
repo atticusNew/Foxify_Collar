@@ -27,6 +27,7 @@ test("parsePilotVenueMode accepts known values", () => {
   assert.equal(parsePilotVenueMode("mock_falconx"), "mock_falconx");
   assert.equal(parsePilotVenueMode("ibkr_cme_live"), "ibkr_cme_live");
   assert.equal(parsePilotVenueMode("ibkr_cme_paper"), "ibkr_cme_paper");
+  assert.equal(parsePilotVenueMode("bullish_testnet"), "bullish_testnet");
   assert.equal(parsePilotVenueMode(undefined), "deribit_test");
 });
 
