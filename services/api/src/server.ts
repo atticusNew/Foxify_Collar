@@ -98,7 +98,9 @@ function isCeoRelevantEvent(eventName: string): boolean {
   return CEO_AUDIT_EVENTS.includes(eventName);
 }
 
-const app = Fastify();
+const trustProxyEnv = String(process.env.PILOT_TRUST_PROXY || "").trim().toLowerCase();
+const trustProxy = trustProxyEnv === "true";
+const app = Fastify({ trustProxy });
 await app.register(cors, { origin: true });
 const LOOP_INTERVAL_MS = Number(process.env.LOOP_INTERVAL_MS || "600000");
 const MTM_INTERVAL_MS = Number(process.env.MTM_INTERVAL_MS || "300000");

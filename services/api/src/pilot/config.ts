@@ -1,7 +1,18 @@
 import { randomUUID } from "node:crypto";
 
-export type PilotVenueMode = "falconx" | "deribit_test" | "mock_falconx";
+export type PilotVenueMode =
+  | "falconx"
+  | "deribit_test"
+  | "mock_falconx"
+  | "ibkr_cme_live"
+  | "ibkr_cme_paper";
 export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_invalid";
+export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
+export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
+export type PilotHedgePolicy = "options_primary_futures_fallback";
+export type IbkrOrderTif = "IOC" | "DAY";
+export type IbkrProductFamily = "MBT" | "BFF";
+export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 
 export type PilotWindowState = {
   enforced: boolean;
@@ -31,10 +42,164 @@ const parseAllowlist = (raw: string | undefined): ParsedAllowlist => {
 
 export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => {
   const normalized = (raw || "deribit_test").trim();
-  if (normalized === "falconx" || normalized === "deribit_test" || normalized === "mock_falconx") {
+  if (
+    normalized === "falconx" ||
+    normalized === "deribit_test" ||
+    normalized === "mock_falconx" ||
+    normalized === "ibkr_cme_live" ||
+    normalized === "ibkr_cme_paper"
+  ) {
     return normalized;
   }
   throw new Error(`invalid_pilot_venue_mode:${normalized || "empty"}`);
+};
+
+export const parsePilotHedgePolicy = (raw: string | undefined): PilotHedgePolicy => {
+  const normalized = String(raw || "options_primary_futures_fallback").trim();
+  if (normalized === "options_primary_futures_fallback") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_hedge_policy:${normalized || "empty"}`);
+};
+
+export const parseDeribitQuotePolicy = (raw: string | undefined): DeribitQuotePolicy => {
+  const normalized = String(raw || "ask_or_mark_fallback").trim();
+  if (normalized === "ask_only" || normalized === "ask_or_mark_fallback") {
+    return normalized;
+  }
+  throw new Error(`invalid_deribit_quote_policy:${normalized || "empty"}`);
+};
+
+export const parseDeribitStrikeSelectionMode = (
+  raw: string | undefined
+): DeribitStrikeSelectionMode => {
+  const normalized = String(raw || "trigger_aligned").trim();
+  if (normalized === "legacy" || normalized === "trigger_aligned") {
+    return normalized;
+  }
+  throw new Error(`invalid_deribit_strike_selection_mode:${normalized || "empty"}`);
+};
+
+export const parseDeribitMaxTenorDriftDays = (raw: string | undefined): number => {
+  const parsed = Number(raw || "1.5");
+  if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 14) {
+    return parsed;
+  }
+  throw new Error(`invalid_deribit_max_tenor_drift_days:${String(raw || "").trim() || "empty"}`);
+};
+
+export const parsePositiveIntInRange = (
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+  errorCode: string
+): number => {
+  const parsed = Number(raw ?? String(fallback));
+  if (Number.isFinite(parsed) && parsed >= min && parsed <= max) {
+    return Math.floor(parsed);
+  }
+  throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
+};
+
+export const parsePositiveFinite = (raw: string | undefined, fallback: number, errorCode: string): number => {
+  const parsed = Number(raw ?? String(fallback));
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
+};
+
+export const parseBooleanEnv = (raw: string | undefined, fallback: boolean): boolean => {
+  const normalized = String(raw ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return fallback;
+};
+
+export const parseIbkrOrderTif = (raw: string | undefined): IbkrOrderTif => {
+  const normalized = String(raw || "IOC").trim().toUpperCase();
+  if (normalized === "IOC" || normalized === "DAY") return normalized;
+  throw new Error(`invalid_ibkr_order_tif:${normalized || "empty"}`);
+};
+
+export const parseIbkrProductFamily = (raw: string | undefined, fallback: IbkrProductFamily): IbkrProductFamily => {
+  const normalized = String(raw || fallback)
+    .trim()
+    .toUpperCase();
+  if (normalized === "MBT" || normalized === "BFF") {
+    return normalized;
+  }
+  throw new Error(`invalid_ibkr_product_family:${normalized || "empty"}`);
+};
+
+export const parsePremiumPolicyMode = (raw: string | undefined): PremiumPolicyMode => {
+  const normalized = String(raw || "legacy").trim().toLowerCase();
+  if (normalized === "legacy" || normalized === "pass_through_markup") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_premium_policy_mode:${normalized || "empty"}`);
+};
+
+export const parseCommaSeparatedInts = (
+  raw: string | undefined,
+  fallback: number[],
+  min: number,
+  max: number,
+  errorCode: string
+): number[] => {
+  const input = String(raw || "")
+    .trim()
+    .replace(/\s+/g, "");
+  if (!input) return fallback.slice();
+  const parsed = input
+    .split(",")
+    .filter(Boolean)
+    .map((item) => Number(item));
+  if (!parsed.length) {
+    throw new Error(`${errorCode}:empty`);
+  }
+  const normalized = parsed.map((value) => {
+    if (!Number.isFinite(value) || value < min || value > max) {
+      throw new Error(`${errorCode}:${String(value)}`);
+    }
+    return Math.floor(value);
+  });
+  return Array.from(new Set(normalized)).sort((a, b) => a - b);
+};
+
+const resolveTenorBounds = (): {
+  minDays: number;
+  maxDays: number;
+  defaultDays: number;
+} => {
+  const minDays = parsePositiveIntInRange(
+    process.env.PILOT_TENOR_MIN_DAYS,
+    1,
+    1,
+    30,
+    "invalid_pilot_tenor_min_days"
+  );
+  const maxDays = parsePositiveIntInRange(
+    process.env.PILOT_TENOR_MAX_DAYS,
+    7,
+    1,
+    30,
+    "invalid_pilot_tenor_max_days"
+  );
+  const defaultDays = parsePositiveIntInRange(
+    process.env.PILOT_TENOR_DEFAULT_DAYS,
+    7,
+    1,
+    30,
+    "invalid_pilot_tenor_default_days"
+  );
+  if (minDays > maxDays) {
+    throw new Error(`invalid_pilot_tenor_bounds:min_${minDays}_gt_max_${maxDays}`);
+  }
+  if (defaultDays < minDays || defaultDays > maxDays) {
+    throw new Error(`invalid_pilot_tenor_default_out_of_bounds:${defaultDays}`);
+  }
+  return { minDays, maxDays, defaultDays };
 };
 
 const parsePilotDurationDays = (raw: string | undefined): number => {
@@ -117,6 +282,148 @@ export const resolvePilotWindow = (now: Date = new Date()): PilotWindowState => 
 export const pilotConfig = {
   enabled: process.env.PILOT_API_ENABLED === "true",
   venueMode: parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
+  deribitQuotePolicy: parseDeribitQuotePolicy(process.env.PILOT_DERIBIT_QUOTE_POLICY),
+  deribitStrikeSelectionMode: parseDeribitStrikeSelectionMode(process.env.PILOT_STRIKE_SELECTION_MODE),
+  deribitMaxTenorDriftDays: parseDeribitMaxTenorDriftDays(process.env.PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS),
+  pilotHedgePolicy: parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY),
+  premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
+  premiumPolicyVersion: String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2",
+  premiumPolicyEnforce: parseBooleanEnv(process.env.PILOT_PREMIUM_ENFORCE, false),
+  premiumCapEnforce: parseBooleanEnv(process.env.PILOT_ENFORCE_PREMIUM_CAP, false),
+  premiumCapToleranceUsd: parsePositiveFinite(
+    process.env.PILOT_PREMIUM_CAP_TOLERANCE_USD,
+    0.5,
+    "invalid_pilot_premium_cap_tolerance_usd"
+  ),
+  ibkrFeePerContractUsd: parsePositiveFinite(
+    process.env.IBKR_FEE_PER_CONTRACT_USD,
+    2.02,
+    "invalid_ibkr_fee_per_contract_usd"
+  ),
+  ibkrFeePerOrderUsd: Number.isFinite(Number(process.env.IBKR_FEE_PER_ORDER_USD ?? "0"))
+    ? Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD ?? "0"))
+    : 0,
+  dynamicTenorEnabled: parseBooleanEnv(process.env.PILOT_DYNAMIC_TENOR_ENABLED, false),
+  tenorPolicyVersion: String(process.env.PILOT_TENOR_POLICY_VERSION || "tenor_policy_v1").trim() || "tenor_policy_v1",
+  tenorPolicyLookbackMinutes: parsePositiveIntInRange(
+    process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES,
+    60,
+    1,
+    24 * 60,
+    "invalid_pilot_tenor_policy_lookback_minutes"
+  ),
+  tenorPolicyMinSamples: parsePositiveIntInRange(
+    process.env.PILOT_TENOR_MIN_SAMPLES,
+    5,
+    1,
+    500,
+    "invalid_pilot_tenor_min_samples"
+  ),
+  tenorPolicyMinOkRate: Number(process.env.PILOT_TENOR_MIN_OK_RATE ?? "0.8"),
+  tenorPolicyMinOptionsNativeRate: Number(process.env.PILOT_TENOR_MIN_OPTIONS_NATIVE_RATE ?? "0.8"),
+  tenorPolicyMaxMedianPremiumRatio: Number(process.env.PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO ?? "0.02"),
+  tenorPolicyMaxMedianDriftDays: Number(process.env.PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS ?? "3"),
+  tenorPolicyMaxNegativeMatchedRate: Number(process.env.PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE ?? "0"),
+  tenorPolicyEnforce: parseBooleanEnv(
+    process.env.PILOT_TENOR_ENFORCE ?? process.env.PILOT_TENOR_POLICY_ENFORCE,
+    false
+  ),
+  tenorPolicyAutoRoute: parseBooleanEnv(process.env.PILOT_TENOR_AUTO_ROUTE, false),
+  tenorPolicyDefaultFallbackDays: parsePositiveIntInRange(
+    process.env.PILOT_TENOR_DEFAULT_FALLBACK,
+    14,
+    1,
+    30,
+    "invalid_pilot_tenor_default_fallback"
+  ),
+  tenorPolicyCandidateDays: parseCommaSeparatedInts(
+    process.env.PILOT_TENOR_CANDIDATES,
+    [1, 2, 4, 7, 10, 12, 14],
+    1,
+    30,
+    "invalid_pilot_tenor_candidates"
+  ),
+  ...(() => {
+    const tenor = resolveTenorBounds();
+    return {
+      pilotTenorMinDays: tenor.minDays,
+      pilotTenorMaxDays: tenor.maxDays,
+      pilotTenorDefaultDays: tenor.defaultDays
+    };
+  })(),
+  ibkrBridgeBaseUrl: String(process.env.IBKR_BRIDGE_BASE_URL || "http://127.0.0.1:18080").trim(),
+  ibkrBridgeTimeoutMs: parsePositiveFinite(
+    process.env.IBKR_BRIDGE_TIMEOUT_MS,
+    4000,
+    "invalid_ibkr_bridge_timeout_ms"
+  ),
+  ibkrBridgeToken: String(process.env.IBKR_BRIDGE_TOKEN || "").trim(),
+  ibkrAccountId: String(process.env.IBKR_ACCOUNT_ID || "").trim(),
+  ibkrEnableExecution: process.env.IBKR_ENABLE_EXECUTION === "true",
+  ibkrOrderTif: parseIbkrOrderTif(process.env.IBKR_ORDER_TIF),
+  ibkrPrimaryProductFamily: parseIbkrProductFamily(process.env.IBKR_PRIMARY_PRODUCT_FAMILY, "MBT"),
+  ibkrBffFallbackEnabled: parseBooleanEnv(process.env.IBKR_BFF_FALLBACK_ENABLED, false),
+  ibkrBffProductFamily: parseIbkrProductFamily(process.env.IBKR_BFF_PRODUCT_FAMILY, "BFF"),
+  ibkrOrderTimeoutMs: parsePositiveFinite(
+    process.env.IBKR_ORDER_TIMEOUT_MS,
+    8000,
+    "invalid_ibkr_order_timeout_ms"
+  ),
+  ibkrMaxRepriceSteps: parsePositiveIntInRange(
+    process.env.IBKR_MAX_REPRICE_STEPS,
+    4,
+    1,
+    20,
+    "invalid_ibkr_max_reprice_steps"
+  ),
+  ibkrRepriceStepTicks: parsePositiveFinite(
+    process.env.IBKR_REPRICE_STEP_TICKS,
+    2,
+    "invalid_ibkr_reprice_step_ticks"
+  ),
+  ibkrMaxSlippageBps: parsePositiveFinite(
+    process.env.IBKR_MAX_SLIPPAGE_BPS,
+    25,
+    "invalid_ibkr_max_slippage_bps"
+  ),
+  ibkrMaxTenorDriftDays: parsePositiveFinite(
+    process.env.IBKR_MAX_TENOR_DRIFT_DAYS,
+    7,
+    "invalid_ibkr_max_tenor_drift_days"
+  ),
+  ibkrMaxFuturesSyntheticPremiumRatio: parsePositiveFinite(
+    process.env.IBKR_MAX_FUTURES_SYNTHETIC_PREMIUM_RATIO,
+    0.05,
+    "invalid_ibkr_max_futures_synthetic_premium_ratio"
+  ),
+  ibkrMaxOptionPremiumRatio: parsePositiveFinite(
+    process.env.IBKR_MAX_OPTION_PREMIUM_RATIO,
+    0.15,
+    "invalid_ibkr_max_option_premium_ratio"
+  ),
+  ibkrOptionProbeParallelism: parsePositiveIntInRange(
+    process.env.IBKR_OPTION_PROBE_PARALLELISM,
+    3,
+    1,
+    8,
+    "invalid_ibkr_option_probe_parallelism"
+  ),
+  ibkrOptionLiquiditySelectionEnabled: parseBooleanEnv(process.env.IBKR_OPTION_LIQUIDITY_SELECTION_ENABLED, false),
+  ibkrOptionLiquidityTenorWindowDays: parsePositiveIntInRange(
+    process.env.IBKR_OPTION_LIQUIDITY_TENOR_WINDOW_DAYS,
+    3,
+    0,
+    14,
+    "invalid_ibkr_option_liquidity_tenor_window_days"
+  ),
+  ibkrOptionProtectionTolerancePct: Number.isFinite(Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))
+    ? Math.max(0, Number(process.env.IBKR_OPTION_PROTECTION_TOLERANCE_PCT ?? "0.03"))
+    : 0.03,
+  ibkrPreferTenorAtOrAbove: parseBooleanEnv(process.env.IBKR_PREFER_TENOR_AT_OR_ABOVE, true),
+  ibkrRequireLiveTransport: parseBooleanEnv(
+    process.env.IBKR_REQUIRE_LIVE_TRANSPORT,
+    parsePilotVenueMode(process.env.PILOT_VENUE_MODE) === "ibkr_cme_live"
+  ),
   tenantScopeId: (process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot").trim() || "foxify-pilot",
   termsVersion: (process.env.PILOT_TERMS_VERSION || "v1.0").trim() || "v1.0",
   postgresUrl: process.env.POSTGRES_URL || process.env.DATABASE_URL || "",
