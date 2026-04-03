@@ -25,6 +25,13 @@ export type BullishHybridOrderbook = {
 
 type BullishWsMessage = Record<string, unknown>;
 
+let bullishWsRequestCounter = BigInt(Date.now());
+
+const nextBullishWsRequestId = (): string => {
+  bullishWsRequestCounter += 1n;
+  return bullishWsRequestCounter.toString();
+};
+
 const ensureLeadingSlash = (value: string): string => (value.startsWith("/") ? value : `/${value}`);
 
 const buildUrl = (baseUrl: string, requestPath: string): string =>
@@ -32,7 +39,12 @@ const buildUrl = (baseUrl: string, requestPath: string): string =>
 
 const sha256Hex = (value: string): string => createHash("sha256").update(value).digest("hex");
 
-const signBullishHmac = (secret: string, value: string): string =>
+// Bullish HMAC login signs the raw canonical string directly.
+const signBullishHmacLogin = (secret: string, value: string): string =>
+  createHmac("sha256", secret).update(value).digest("hex");
+
+// Bullish authenticated command submission signs the SHA-256 hexdigest of the canonical string.
+const signBullishHmacCommand = (secret: string, value: string): string =>
   createHmac("sha256", secret).update(sha256Hex(value)).digest("hex");
 
 const asArray = <T>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
@@ -74,7 +86,13 @@ const normalizeOrderbookSide = (value: unknown): BullishOrderbookLevel[] => {
         record.price ?? record.px ?? record.levelPrice ?? record.orderPrice ?? record[0]
       );
       const quantity = toFiniteString(
-        record.quantity ?? record.qty ?? record.size ?? record.amount ?? record.absoluteQuantity ?? record[1]
+        record.quantity ??
+          record.qty ??
+          record.size ??
+          record.amount ??
+          record.absoluteQuantity ??
+          record.priceLevelQuantity ??
+          record[1]
       );
       return price && quantity ? { price, quantity } : null;
     })
@@ -182,10 +200,11 @@ export class BullishTradingClient {
       throw new Error("bullish_credentials_missing");
     }
     const timestamp = Date.now().toString();
-    const nonce = randomUUID().replace(/-/g, "");
+    // Bullish HMAC login examples use a numeric, time-based nonce.
+    const nonce = Math.floor(Date.now() / 1000).toString();
     const requestPath = ensureLeadingSlash(this.config.hmacLoginPath);
     const signaturePayload = `${timestamp}${nonce}GET${requestPath}`;
-    const signature = signBullishHmac(this.config.hmacSecret, signaturePayload);
+    const signature = signBullishHmacLogin(this.config.hmacSecret, signaturePayload);
     const payload = await this.requestJson<{ token?: string; authorizer?: string }>({
       path: requestPath,
       method: "GET",
@@ -219,14 +238,27 @@ export class BullishTradingClient {
     };
   }
 
+  getConfiguredTradingAccountId(): string {
+    return String(this.config.tradingAccountId || "").trim();
+  }
+
   async getTradingAccounts(): Promise<unknown> {
     const headers = await this.buildJwtHeaders();
-    return await this.requestJson({
+    const payload = await this.requestJson<unknown>({
       path: this.config.tradingAccountsPath,
       method: "GET",
       timeoutMs: this.config.orderTimeoutMs,
       headers
     });
+    const configuredTradingAccountId = this.getConfiguredTradingAccountId();
+    const records = Array.isArray((payload as any)?.data) ? ((payload as any).data as Array<Record<string, unknown>>) : null;
+    if (!configuredTradingAccountId || !records) {
+      return payload;
+    }
+    return {
+      ...(payload as Record<string, unknown>),
+      data: records.filter((record) => String(record.tradingAccountId || "") === configuredTradingAccountId)
+    };
   }
 
   async getHybridOrderBook(symbol: string): Promise<BullishHybridOrderbook> {
@@ -268,7 +300,7 @@ export class BullishTradingClient {
       authorizer: session.authorizer,
       command
     });
-    const signature = signBullishHmac(
+    const signature = signBullishHmacCommand(
       this.config.hmacSecret,
       `${timestamp}${nonce}POST${requestPath}${payload}`
     );
@@ -381,14 +413,14 @@ export class BullishTradingClient {
             topic,
             symbol: params.symbol
           },
-          id: randomUUID()
+          id: nextBullishWsRequestId()
         },
         {
           jsonrpc: "2.0",
           type: "command",
           method: "subscribe",
           params: { topic: "heartbeat" },
-          id: randomUUID()
+          id: nextBullishWsRequestId()
         }
       ],
       predicate: (message) => {
@@ -428,14 +460,14 @@ export class BullishTradingClient {
           params: {
             topic: params.topic
           },
-          id: randomUUID()
+          id: nextBullishWsRequestId()
         },
         {
           jsonrpc: "2.0",
           type: "command",
           method: "subscribe",
           params: { topic: "heartbeat" },
-          id: randomUUID()
+          id: nextBullishWsRequestId()
         }
       ],
       predicate: (message) => {

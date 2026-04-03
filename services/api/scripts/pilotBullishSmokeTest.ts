@@ -79,8 +79,8 @@ const main = async () => {
       (process.env.PILOT_BULLISH_AUTH_MODE || process.env.BULLISH_AUTH_METHOD || "hmac").trim().toLowerCase() === "ecdsa"
         ? "ecdsa"
         : "hmac",
-    hmacPublicKey: process.env.BULLISH_HMAC_PUBLIC_KEY || "",
-    hmacSecret: process.env.BULLISH_HMAC_SECRET || "",
+    hmacPublicKey: process.env.PILOT_BULLISH_HMAC_PUBLIC_KEY || process.env.BULLISH_HMAC_PUBLIC_KEY || "",
+    hmacSecret: process.env.PILOT_BULLISH_HMAC_SECRET || process.env.BULLISH_HMAC_SECRET || "",
     tradingAccountId: process.env.PILOT_BULLISH_TRADING_ACCOUNT_ID || process.env.BULLISH_TRADING_ACCOUNT_ID || "",
     defaultSymbol:
       process.env.PILOT_BULLISH_DEFAULT_SYMBOL || process.env.BULLISH_SMOKE_SYMBOL || "BTCUSDC",
