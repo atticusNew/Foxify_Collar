@@ -63,6 +63,7 @@ type ExecutiveSummaryRow = {
 
 type PeriodDetailRow = {
   combo: string;
+  tpEnabled: boolean;
   reboundPct: string;
   decayPct: string;
   quarter: string;
@@ -82,6 +83,7 @@ type PeriodDetailRow = {
 
 type ComboSummaryRow = {
   combo: string;
+  tpEnabled: boolean;
   model: ModelName;
   reboundPct: string;
   decayPct: string;
@@ -97,6 +99,15 @@ type ComboSummaryRow = {
   calmTriggerHitRatePct: string;
   avgTakeProfitTriggeredRatePct: string;
   totalTakeProfitUnderperformedCount: number;
+};
+
+type SweepScenario = {
+  combo: string;
+  tpEnabled: boolean;
+  reboundPct: string;
+  decayPct: string;
+  reboundCliValue: string | null;
+  decayCliValue: string | null;
 };
 
 const DEFAULT_QUARTERS: QuarterDef[] = [
@@ -332,70 +343,84 @@ const main = async () => {
     );
   }
 
-  const periodRows: PeriodDetailRow[] = [];
+  const scenarios: SweepScenario[] = [
+    {
+      combo: "tp_off",
+      tpEnabled: false,
+      reboundPct: "off",
+      decayPct: "off",
+      reboundCliValue: null,
+      decayCliValue: null
+    }
+  ];
   for (const rebound of args.reboundGrid) {
     for (const decay of args.decayGrid) {
-      const combo = `r${rebound.toFixed(2)}_d${decay.toFixed(2)}`;
-      const comboDir = path.join(runsDir, combo);
-      await mkdir(comboDir, { recursive: true });
+      scenarios.push({
+        combo: `r${rebound.toFixed(2)}_d${decay.toFixed(2)}`,
+        tpEnabled: true,
+        reboundPct: rebound.toFixed(2),
+        decayPct: decay.toFixed(2),
+        reboundCliValue: rebound.toString(),
+        decayCliValue: decay.toString()
+      });
+    }
+  }
 
-      for (const quarter of selectedQuarters) {
-        const pricesCsv = path.join(pricesDir, `btc_usd_${quarter.label}_1h.csv`);
-        const outJson = path.join(comboDir, `pilot_backtest_${quarter.label}.json`);
-        const outCsv = path.join(comboDir, `pilot_backtest_${quarter.label}.csv`);
-        await runCommand(
-          "npm",
-          [
-            "run",
-            "-s",
-            "pilot:backtest:run",
-            "--",
-            "--config",
-            args.configPath,
-            "--prices-csv",
-            pricesCsv,
-            "--mode",
-            args.mode,
-            "--tp-enabled",
-            "true",
-            "--tp-rebound-pct",
-            rebound.toString(),
-            "--tp-decay-pct",
-            decay.toString(),
-            "--out-json",
-            outJson,
-            "--out-csv",
-            outCsv
-          ],
-          cwd
-        );
+  const periodRows: PeriodDetailRow[] = [];
+  for (const scenario of scenarios) {
+    const comboDir = path.join(runsDir, scenario.combo);
+    await mkdir(comboDir, { recursive: true });
 
-        const parsed = JSON.parse(await readFile(outJson, "utf8")) as BacktestOutput;
-        const execByModel = new Map<ModelName, ExecutiveRiskRow>();
-        for (const er of parsed.executiveRisk || []) {
-          execByModel.set(er.model, er);
-        }
-        for (const summary of parsed.summary) {
-          const er = execByModel.get(summary.model);
-          periodRows.push({
-            combo,
-            reboundPct: rebound.toFixed(2),
-            decayPct: decay.toFixed(2),
-            quarter: quarter.label,
-            regime: quarter.regime,
-            model: summary.model,
-            trades: summary.trades,
-            triggerHitRatePct: String(summary.triggerHitRatePct),
-            takeProfitTriggeredRatePct: String(summary.takeProfitTriggeredRatePct || "0.0000"),
-            takeProfitUnderperformedCount: Number(summary.takeProfitUnderperformedCount || 0),
-            underwritingPnlTotalUsd: String(summary.underwritingPnlTotalUsd),
-            underwritingPnlImprovementUsd: String(summary.underwritingPnlImprovementUsd || "0.0000000000"),
-            subsidyNeedTotalUsd: String(summary.subsidyNeedTotalUsd),
-            subsidyNeedReductionUsd: String(summary.subsidyNeedReductionUsd || "0.0000000000"),
-            recommendedMinTreasuryBufferUsd: String(er?.recommendedMinTreasuryBufferUsd || "0.0000000000"),
-            endTreasuryBalanceUsd: String(summary.endTreasuryBalanceUsd)
-          });
-        }
+    for (const quarter of selectedQuarters) {
+      const pricesCsv = path.join(pricesDir, `btc_usd_${quarter.label}_1h.csv`);
+      const outJson = path.join(comboDir, `pilot_backtest_${quarter.label}.json`);
+      const outCsv = path.join(comboDir, `pilot_backtest_${quarter.label}.csv`);
+      const runArgs = [
+        "run",
+        "-s",
+        "pilot:backtest:run",
+        "--",
+        "--config",
+        args.configPath,
+        "--prices-csv",
+        pricesCsv,
+        "--mode",
+        args.mode,
+        "--tp-enabled",
+        scenario.tpEnabled ? "true" : "false"
+      ];
+      if (scenario.tpEnabled && scenario.reboundCliValue && scenario.decayCliValue) {
+        runArgs.push("--tp-rebound-pct", scenario.reboundCliValue, "--tp-decay-pct", scenario.decayCliValue);
+      }
+      runArgs.push("--out-json", outJson, "--out-csv", outCsv);
+      await runCommand("npm", runArgs, cwd);
+
+      const parsed = JSON.parse(await readFile(outJson, "utf8")) as BacktestOutput;
+      const execByModel = new Map<ModelName, ExecutiveRiskRow>();
+      for (const er of parsed.executiveRisk || []) {
+        execByModel.set(er.model, er);
+      }
+      for (const summary of parsed.summary) {
+        const er = execByModel.get(summary.model);
+        periodRows.push({
+          combo: scenario.combo,
+          tpEnabled: scenario.tpEnabled,
+          reboundPct: scenario.reboundPct,
+          decayPct: scenario.decayPct,
+          quarter: quarter.label,
+          regime: quarter.regime,
+          model: summary.model,
+          trades: summary.trades,
+          triggerHitRatePct: String(summary.triggerHitRatePct),
+          takeProfitTriggeredRatePct: String(summary.takeProfitTriggeredRatePct || "0.0000"),
+          takeProfitUnderperformedCount: Number(summary.takeProfitUnderperformedCount || 0),
+          underwritingPnlTotalUsd: String(summary.underwritingPnlTotalUsd),
+          underwritingPnlImprovementUsd: String(summary.underwritingPnlImprovementUsd || "0.0000000000"),
+          subsidyNeedTotalUsd: String(summary.subsidyNeedTotalUsd),
+          subsidyNeedReductionUsd: String(summary.subsidyNeedReductionUsd || "0.0000000000"),
+          recommendedMinTreasuryBufferUsd: String(er?.recommendedMinTreasuryBufferUsd || "0.0000000000"),
+          endTreasuryBalanceUsd: String(summary.endTreasuryBalanceUsd)
+        });
       }
     }
   }
@@ -407,6 +432,7 @@ const main = async () => {
     if (!existing) {
       byComboModel.set(key, {
         combo: row.combo,
+        tpEnabled: row.tpEnabled,
         model: row.model,
         reboundPct: row.reboundPct,
         decayPct: row.decayPct,
@@ -490,6 +516,7 @@ const main = async () => {
     {
       model: "hybrid",
       recommendationRank1: rankingHybrid[0]?.combo || "n/a",
+      tpEnabled: rankingHybrid[0]?.tpEnabled ?? false,
       reboundPct: rankingHybrid[0]?.reboundPct || "n/a",
       decayPct: rankingHybrid[0]?.decayPct || "n/a",
       preserveCalmUpside: rankingHybrid[0]?.preserveCalmUpside ?? false,
@@ -500,6 +527,7 @@ const main = async () => {
     {
       model: "strict",
       recommendationRank1: rankingStrict[0]?.combo || "n/a",
+      tpEnabled: rankingStrict[0]?.tpEnabled ?? false,
       reboundPct: rankingStrict[0]?.reboundPct || "n/a",
       decayPct: rankingStrict[0]?.decayPct || "n/a",
       preserveCalmUpside: rankingStrict[0]?.preserveCalmUpside ?? false,
@@ -605,6 +633,7 @@ const main = async () => {
       treasuryProjectionRows.push({
         model,
         combo: top?.combo || "n/a",
+        tpEnabled: Boolean(top?.tpEnabled ?? false),
         reboundPct: top?.reboundPct || "n/a",
         decayPct: top?.decayPct || "n/a",
         baseStressWorstRecommendedMinBufferUsd: toFixed(baseBuffer),
@@ -631,6 +660,7 @@ const main = async () => {
   const assumptions = [
     { key: "objective", value: "Minimize stress subsidy need while preserving calm-quarter upside" },
     { key: "tp_definition", value: "TP closes hedge before expiry on rebound/decay rules after breach dynamics" },
+    { key: "baseline_candidate", value: "tp_off is included in ranking as direct no-TP comparator" },
     { key: "stress_quarters", value: selectedQuarters.filter((q) => q.regime === "stress").map((q) => q.label).join(",") },
     { key: "calm_quarters", value: selectedQuarters.filter((q) => q.regime === "calm").map((q) => q.label).join(",") },
     { key: "rebound_grid_pct", value: args.reboundGrid.map((v) => v.toFixed(2)).join(",") },
@@ -688,7 +718,7 @@ const main = async () => {
     "## Top recommendations",
     ...recommendations.map(
       (row) =>
-        `- ${row.model}: ${row.recommendationRank1} (rebound=${row.reboundPct}%, decay=${row.decayPct}%, preserveCalmUpside=${String(row.preserveCalmUpside)})`
+        `- ${row.model}: ${row.recommendationRank1} (tpEnabled=${String(row.tpEnabled)}, rebound=${row.reboundPct}%, decay=${row.decayPct}%, preserveCalmUpside=${String(row.preserveCalmUpside)})`
     ),
     "",
     "## Files",
@@ -706,7 +736,7 @@ const main = async () => {
       {
         status: "ok",
         quarters: selectedQuarters.map((q) => ({ label: q.label, regime: q.regime })),
-        combos: args.reboundGrid.length * args.decayGrid.length,
+        combos: scenarios.length,
         files: {
           comboSummaryCsv: comboCsvPath,
           periodDetailCsv: periodCsvPath,
