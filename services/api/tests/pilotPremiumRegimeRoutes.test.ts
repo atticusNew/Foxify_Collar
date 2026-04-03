@@ -98,6 +98,30 @@ const createHarness = async (opts?: {
   const { registerPilotRoutes } = await import("../src/pilot/routes");
   const app = Fastify();
   await registerPilotRoutes(app, { deribit: buildDeribitStub() as any });
+  await dbModule.insertVenueQuote(pool as any, {
+    venue: "deribit_test",
+    quoteId: "seed-premium-regime-watch",
+    rfqId: null,
+    instrumentId: "BTC-31MAR26-80000-P",
+    side: "buy",
+    quantity: 0.05,
+    premium: 50,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    quoteTs: new Date().toISOString(),
+    details: {
+      pricingBreakdown: {
+        clientPremiumUsd: "50.0000000000",
+        treasuryQuoteSubsidyUsd: "0.0000000000",
+        treasuryPerQuoteSubsidyCapUsd: "100.0000000000",
+        treasuryStartingReserveUsdc: "25000.0000000000",
+        treasuryReserveAfterOpenLiabilityUsdc: "20000.0000000000"
+      },
+      lockContext: {
+        requestedTenorDays: 7,
+        protectedNotional: "5000.0000000000"
+      }
+    }
+  });
   return {
     app,
     close: async () => {

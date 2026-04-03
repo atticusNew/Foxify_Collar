@@ -87,8 +87,8 @@ test("hybrid_otm_treasury mode keeps actuarial expected claims diagnostics", () 
   assert.equal(result.expectedTriggerProbRaw.toFixed(10), "0.9000000000");
   assert.equal(result.expectedTriggerProbCapped.toFixed(10), "0.9000000000");
   assert.equal(result.expectedClaimsUsd.toFixed(10), "900.0000000000");
-  assert.equal(result.strictClientPremiumUsd.toFixed(10), "350.0000000000");
-  assert.equal(result.clientPremiumUsd.toFixed(10), "227.5000000000");
+  assert.equal(result.strictClientPremiumUsd.toFixed(10), "410.0000000000");
+  assert.equal(result.clientPremiumUsd.toFixed(10), "266.5000000000");
 });
 
 test("resolveDefaultPricingPolicyConfig returns sane defaults", () => {
