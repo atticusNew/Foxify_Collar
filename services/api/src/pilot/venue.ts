@@ -9,11 +9,15 @@ import {
 import type {
   DeribitQuotePolicy,
   DeribitStrikeSelectionMode,
+  HedgeOptimizerRuntimeConfig,
   PilotHedgePolicy,
   PilotSelectorMode,
   PilotVenueMode
 } from "./config";
-import type { VenueExecution, VenueQuote } from "./types";
+import type { HedgeCandidate, VenueExecution, VenueQuote } from "./types";
+import { toHedgeCandidate } from "./hedgeCandidates";
+import { selectBestHedgeCandidate } from "./hedgeScoring";
+import { resolveHedgeRegime } from "./regimePolicy";
 
 export type QuoteRequest = {
   marketId: string;
@@ -66,6 +70,7 @@ type IbkrVenueConfig = {
   qualifyCacheTtlMs?: number;
   qualifyCacheMaxKeys?: number;
   selectorMode?: PilotSelectorMode;
+  hedgeOptimizer?: HedgeOptimizerRuntimeConfig;
 };
 
 const nowIso = (): string => new Date().toISOString();
@@ -770,7 +775,8 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     private qualifyCacheMaxKeys: number,
     private marketDataRequestTimeoutMs: number,
     private quoteBudgetMs: number,
-    private selectorMode: PilotSelectorMode
+    private selectorMode: PilotSelectorMode,
+    private hedgeOptimizer: HedgeOptimizerRuntimeConfig
   ) {}
 
   private resolveRight(protectionType?: "long" | "short"): "P" | "C" {
@@ -974,8 +980,29 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
     const hedgePolicy = req.hedgePolicy || "options_primary_futures_fallback";
     const optionStrikeCandidates = (baseStrike: number, optionRight: "P" | "C"): number[] => {
       const step = 500;
-      // Prefer slightly more protective strikes first before widening symmetrically.
-      const offsetSteps = optionRight === "P" ? [0, 1, -1, 2, -2, 3, -3] : [0, -1, 1, -2, 2, -3, 3];
+      const regimeSeed = resolveHedgeRegime({
+        triggerHitRatePct: 5,
+        subsidyUtilizationPct: this.selectorMode === "hybrid_treasury" ? 25 : 8,
+        treasuryDrawdownPct: this.selectorMode === "hybrid_treasury" ? 18 : 5,
+        iv30d: null,
+        ivSkew: null
+      });
+      const policy = this.hedgeOptimizer.regimePolicy[regimeSeed.regime];
+      const nearFirstCount = Math.max(1, Math.min(4, Math.round(policy.preferCloserStrikeBias * 4)));
+      const nearFirstOffsetsPut = [0, 1, -1, 2, -2, 3, -3];
+      const nearFirstOffsetsCall = [0, -1, 1, -2, 2, -3, 3];
+      const farFirstOffsetsPut = [0, -1, 1, -2, 2, -3, 3];
+      const farFirstOffsetsCall = [0, 1, -1, 2, -2, 3, -3];
+      // Always retain full ladder coverage to avoid false futures fallback,
+      // but flip closer/farther ordering by regime bias.
+      const offsetSteps =
+        nearFirstCount >= 3
+          ? optionRight === "P"
+            ? nearFirstOffsetsPut
+            : nearFirstOffsetsCall
+          : optionRight === "P"
+            ? farFirstOffsetsPut
+            : farFirstOffsetsCall;
       const seen = new Set<number>();
       const ladder: number[] = [];
       for (const offset of offsetSteps) {
@@ -1667,7 +1694,55 @@ class IbkrCmeAdapter implements PilotVenueAdapter {
         return { failureCounts };
       }
       passed.sort((a, b) => a.score - b.score);
-      const best = passed[0];
+      let best = passed[0];
+      if (this.hedgeOptimizer.enabled) {
+        const regimeDecision = resolveHedgeRegime({
+          triggerHitRatePct: 5,
+          subsidyUtilizationPct: this.selectorMode === "hybrid_treasury" ? 30 : 10,
+          treasuryDrawdownPct: this.selectorMode === "hybrid_treasury" ? 20 : 8,
+          iv30d: null,
+          ivSkew: null
+        });
+        const optimizerCandidates: HedgeCandidate[] = passed.map((row, idx) =>
+          toHedgeCandidate({
+            candidateId: `option_${idx}_${row.contract.conId}`,
+            hedgeMode: "options_native",
+            hedgeInstrumentFamily: productFamily,
+            strike: toFinitePositive(row.contract.strike),
+            triggerPrice: trigger,
+            tenorDays: row.matchedTenorDays,
+            tenorDriftDays: row.driftDays,
+            belowTargetTenor: row.belowTarget,
+            ask: row.ask,
+            bid: row.bid,
+            askSize: row.askSize,
+            spreadPct: row.spreadPct,
+            premiumUsd: row.ask * Math.max(1, Math.ceil(Math.max(0, Number(req.quantity || 0)) / resolveContractMultiplier(row.contract.multiplier, 0.1))),
+            premiumRatio: row.premiumRatio,
+            expectedTriggerCostUsd: row.expectedTriggerCostUsd,
+            expectedTriggerCreditUsd: row.expectedTriggerCreditUsd,
+            premiumProfitabilityTargetUsd: row.premiumProfitabilityTargetUsd,
+            expectedSubsidyUsd: Math.max(0, row.premiumProfitabilityTargetUsd - row.ask),
+            liquidityPenalty: Math.max(0, (row.spreadPct ?? 0) * 100 + (row.askSize ? 1 / Math.max(row.askSize, 0.2) : 6)),
+            carryPenalty: Math.max(0, row.premiumRatio * 100 * 0.3),
+            basisPenalty: 0,
+            fillRiskPenalty: Math.max(0, row.askSize ? 1 / Math.max(row.askSize, 0.3) : 5),
+            tailProtectionScore: Math.max(0, 100 - Math.abs((toFinitePositive(row.contract.strike) ?? roundedStrike ?? 0) - (trigger ?? 0)) / Math.max(trigger ?? 1, 1) * 100)
+          })
+        );
+        const decision = selectBestHedgeCandidate({
+          candidates: optimizerCandidates,
+          config: this.hedgeOptimizer,
+          regime: regimeDecision.regime
+        });
+        if (decision) {
+          const mapped = new Map(optimizerCandidates.map((candidate, idx) => [candidate.candidateId, idx]));
+          const bestIdx = mapped.get(decision.selectedCandidateId);
+          if (bestIdx !== undefined) {
+            best = passed[bestIdx];
+          }
+        }
+      }
       const trace = passed.slice(0, 5).map((row) => ({
         conId: row.contract.conId,
         expiry: String(row.contract.expiry || "") || null,
@@ -3277,7 +3352,48 @@ export const createPilotVenueAdapter = (params: {
         : 2000,
       connectorTimeoutMs,
       Number(params.ibkrQuoteBudgetMs || 0),
-      params.ibkr.selectorMode || "strict_profitability"
+      params.ibkr.selectorMode || "strict_profitability",
+      params.ibkr.hedgeOptimizer || {
+        enabled: false,
+        version: "optimizer_v1",
+        normalization: {
+          expectedSubsidyUsd: { min: 0, max: 5000 },
+          cvar95Usd: { min: 0, max: 7000 },
+          liquidityPenalty: { min: 0, max: 50 },
+          fillRiskPenalty: { min: 0, max: 30 },
+          basisPenalty: { min: 0, max: 20 },
+          carryPenalty: { min: 0, max: 20 },
+          pnlRewardUsd: { min: 0, max: 7000 },
+          mtpdReward: { min: 0, max: 100 },
+          tenorDriftDays: { min: 0, max: 14 },
+          strikeDistancePct: { min: 0, max: 0.2 }
+        },
+        weights: {
+          expectedSubsidy: 0.28,
+          cvar95: 0.14,
+          liquidityPenalty: 0.1,
+          fillRiskPenalty: 0.08,
+          basisPenalty: 0.05,
+          carryPenalty: 0.05,
+          pnlReward: 0.12,
+          mtpdReward: 0.08,
+          tenorDriftPenalty: 0.05,
+          strikeDistancePenalty: 0.05
+        },
+        hardConstraints: {
+          maxPremiumRatio: 0.2,
+          maxSpreadPct: 0.35,
+          minAskSize: 0.2,
+          maxTenorDriftDays: 7,
+          minTailProtectionScore: 1,
+          maxExpectedSubsidyUsd: 10000
+        },
+        regimePolicy: {
+          calm: { preferCloserStrikeBias: 1, maxStrikeDistancePct: 0.1, minTenorDays: 5, maxTenorDays: 21 },
+          neutral: { preferCloserStrikeBias: 0.7, maxStrikeDistancePct: 0.12, minTenorDays: 3, maxTenorDays: 14 },
+          stress: { preferCloserStrikeBias: 0.25, maxStrikeDistancePct: 0.2, minTenorDays: 1, maxTenorDays: 10 }
+        }
+      }
     );
   }
   if (params.mode === "deribit_test") {

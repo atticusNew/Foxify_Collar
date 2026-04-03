@@ -15,6 +15,81 @@ export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 export type PilotPricingMode = "actuarial_strict" | "hybrid_otm_treasury";
 export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
+export type HedgeOptimizerRuntimeConfig = {
+  enabled: boolean;
+  version: string;
+  normalization: {
+    expectedSubsidyUsd: { min: number; max: number };
+    cvar95Usd: { min: number; max: number };
+    liquidityPenalty: { min: number; max: number };
+    fillRiskPenalty: { min: number; max: number };
+    basisPenalty: { min: number; max: number };
+    carryPenalty: { min: number; max: number };
+    pnlRewardUsd: { min: number; max: number };
+    mtpdReward: { min: number; max: number };
+    tenorDriftDays: { min: number; max: number };
+    strikeDistancePct: { min: number; max: number };
+  };
+  weights: {
+    expectedSubsidy: number;
+    cvar95: number;
+    liquidityPenalty: number;
+    fillRiskPenalty: number;
+    basisPenalty: number;
+    carryPenalty: number;
+    pnlReward: number;
+    mtpdReward: number;
+    tenorDriftPenalty: number;
+    strikeDistancePenalty: number;
+  };
+  hardConstraints: {
+    maxPremiumRatio: number;
+    maxSpreadPct: number;
+    minAskSize: number;
+    maxTenorDriftDays: number;
+    minTailProtectionScore: number;
+    maxExpectedSubsidyUsd: number;
+  };
+  regimePolicy: {
+    calm: {
+      preferCloserStrikeBias: number;
+      maxStrikeDistancePct: number;
+      minTenorDays: number;
+      maxTenorDays: number;
+    };
+    neutral: {
+      preferCloserStrikeBias: number;
+      maxStrikeDistancePct: number;
+      minTenorDays: number;
+      maxTenorDays: number;
+    };
+    stress: {
+      preferCloserStrikeBias: number;
+      maxStrikeDistancePct: number;
+      minTenorDays: number;
+      maxTenorDays: number;
+    };
+  };
+};
+
+export type RolloutGuardRuntimeConfig = {
+  fallbackTriggerHitRatePct: number;
+  fallbackSubsidyUtilizationPct: number;
+  fallbackTreasuryDrawdownPct: number;
+  pauseTriggerHitRatePct: number;
+  pauseSubsidyUtilizationPct: number;
+  pauseTreasuryDrawdownPct: number;
+  pauseOnBlockedSubsidy: boolean;
+};
+
+export type TierBatchingTenorRuntimeConfig = {
+  enabled: boolean;
+  batchWindowSeconds: number;
+  maxBatchQuotes: number;
+  tierGroupingEnabled: boolean;
+  tenorLadderEnabled: boolean;
+  tenorLadderDays: number[];
+};
 
 export type PilotWindowState = {
   enforced: boolean;
@@ -172,6 +247,172 @@ export const parsePilotSelectorMode = (raw: string | undefined): PilotSelectorMo
   }
   throw new Error(`invalid_pilot_selector_mode:${normalized || "empty"}`);
 };
+
+const parseFiniteWithFallback = (raw: string | undefined, fallback: number): number => {
+  const parsed = Number(raw ?? String(fallback));
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const parseNonNegativeFiniteWithFallback = (raw: string | undefined, fallback: number): number => {
+  const parsed = parseFiniteWithFallback(raw, fallback);
+  return Math.max(0, parsed);
+};
+
+const parsePositiveFiniteWithFallback = (raw: string | undefined, fallback: number): number => {
+  const parsed = parseFiniteWithFallback(raw, fallback);
+  return parsed > 0 ? parsed : fallback;
+};
+
+const parseProbabilityWithFallback = (raw: string | undefined, fallback: number): number =>
+  parseFractionRange(raw, fallback, 0, 1, "invalid_probability_range");
+
+const parseHedgeOptimizerRuntimeConfig = (): HedgeOptimizerRuntimeConfig => ({
+  enabled: parseBooleanEnv(process.env.PILOT_HEDGE_OPTIMIZER_ENABLED, false),
+  version: String(process.env.PILOT_HEDGE_OPTIMIZER_VERSION || "optimizer_v1").trim() || "optimizer_v1",
+  normalization: {
+    expectedSubsidyUsd: {
+      min: Number(process.env.PILOT_HEDGE_NORM_EXPECTED_SUBSIDY_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_EXPECTED_SUBSIDY_MAX || "5000")
+    },
+    cvar95Usd: {
+      min: Number(process.env.PILOT_HEDGE_NORM_CVAR95_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_CVAR95_MAX || "7000")
+    },
+    liquidityPenalty: {
+      min: Number(process.env.PILOT_HEDGE_NORM_LIQUIDITY_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_LIQUIDITY_MAX || "50")
+    },
+    fillRiskPenalty: {
+      min: Number(process.env.PILOT_HEDGE_NORM_FILL_RISK_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_FILL_RISK_MAX || "30")
+    },
+    basisPenalty: {
+      min: Number(process.env.PILOT_HEDGE_NORM_BASIS_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_BASIS_MAX || "20")
+    },
+    carryPenalty: {
+      min: Number(process.env.PILOT_HEDGE_NORM_CARRY_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_CARRY_MAX || "20")
+    },
+    pnlRewardUsd: {
+      min: Number(process.env.PILOT_HEDGE_NORM_PNL_REWARD_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_PNL_REWARD_MAX || "7000")
+    },
+    mtpdReward: {
+      min: Number(process.env.PILOT_HEDGE_NORM_MTPD_REWARD_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_MTPD_REWARD_MAX || "100")
+    },
+    tenorDriftDays: {
+      min: Number(process.env.PILOT_HEDGE_NORM_TENOR_DRIFT_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_TENOR_DRIFT_MAX || "14")
+    },
+    strikeDistancePct: {
+      min: Number(process.env.PILOT_HEDGE_NORM_STRIKE_DISTANCE_MIN || "0"),
+      max: Number(process.env.PILOT_HEDGE_NORM_STRIKE_DISTANCE_MAX || "0.2")
+    }
+  },
+  weights: {
+    expectedSubsidy: Number(process.env.PILOT_HEDGE_WEIGHT_EXPECTED_SUBSIDY || "0.28"),
+    cvar95: Number(process.env.PILOT_HEDGE_WEIGHT_CVAR95 || "0.14"),
+    liquidityPenalty: Number(process.env.PILOT_HEDGE_WEIGHT_LIQUIDITY || "0.1"),
+    fillRiskPenalty: Number(process.env.PILOT_HEDGE_WEIGHT_FILL_RISK || "0.08"),
+    basisPenalty: Number(process.env.PILOT_HEDGE_WEIGHT_BASIS || "0.05"),
+    carryPenalty: Number(process.env.PILOT_HEDGE_WEIGHT_CARRY || "0.05"),
+    pnlReward: Number(process.env.PILOT_HEDGE_WEIGHT_PNL_REWARD || "0.12"),
+    mtpdReward: Number(process.env.PILOT_HEDGE_WEIGHT_MTPD_REWARD || "0.08"),
+    tenorDriftPenalty: Number(process.env.PILOT_HEDGE_WEIGHT_TENOR_DRIFT || "0.05"),
+    strikeDistancePenalty: Number(process.env.PILOT_HEDGE_WEIGHT_STRIKE_DISTANCE || "0.05")
+  },
+  hardConstraints: {
+    maxPremiumRatio: Number(process.env.PILOT_HEDGE_CONSTRAINT_MAX_PREMIUM_RATIO || "0.2"),
+    maxSpreadPct: Number(process.env.PILOT_HEDGE_CONSTRAINT_MAX_SPREAD_PCT || "0.35"),
+    minAskSize: Number(process.env.PILOT_HEDGE_CONSTRAINT_MIN_ASK_SIZE || "0.2"),
+    maxTenorDriftDays: Number(process.env.PILOT_HEDGE_CONSTRAINT_MAX_TENOR_DRIFT_DAYS || "7"),
+    minTailProtectionScore: Number(process.env.PILOT_HEDGE_CONSTRAINT_MIN_TAIL_SCORE || "1"),
+    maxExpectedSubsidyUsd: Number(process.env.PILOT_HEDGE_CONSTRAINT_MAX_EXPECTED_SUBSIDY_USD || "10000")
+  },
+  regimePolicy: {
+    calm: {
+      preferCloserStrikeBias: Number(process.env.PILOT_HEDGE_REGIME_CALM_CLOSER_BIAS || "1.0"),
+      maxStrikeDistancePct: Number(process.env.PILOT_HEDGE_REGIME_CALM_MAX_STRIKE_DISTANCE_PCT || "0.1"),
+      minTenorDays: Number(process.env.PILOT_HEDGE_REGIME_CALM_MIN_TENOR_DAYS || "5"),
+      maxTenorDays: Number(process.env.PILOT_HEDGE_REGIME_CALM_MAX_TENOR_DAYS || "21")
+    },
+    neutral: {
+      preferCloserStrikeBias: Number(process.env.PILOT_HEDGE_REGIME_NEUTRAL_CLOSER_BIAS || "0.7"),
+      maxStrikeDistancePct: Number(process.env.PILOT_HEDGE_REGIME_NEUTRAL_MAX_STRIKE_DISTANCE_PCT || "0.12"),
+      minTenorDays: Number(process.env.PILOT_HEDGE_REGIME_NEUTRAL_MIN_TENOR_DAYS || "3"),
+      maxTenorDays: Number(process.env.PILOT_HEDGE_REGIME_NEUTRAL_MAX_TENOR_DAYS || "14")
+    },
+    stress: {
+      preferCloserStrikeBias: Number(process.env.PILOT_HEDGE_REGIME_STRESS_CLOSER_BIAS || "0.25"),
+      maxStrikeDistancePct: Number(process.env.PILOT_HEDGE_REGIME_STRESS_MAX_STRIKE_DISTANCE_PCT || "0.2"),
+      minTenorDays: Number(process.env.PILOT_HEDGE_REGIME_STRESS_MIN_TENOR_DAYS || "1"),
+      maxTenorDays: Number(process.env.PILOT_HEDGE_REGIME_STRESS_MAX_TENOR_DAYS || "10")
+    }
+  }
+});
+
+const parseRolloutGuardRuntimeConfig = (): RolloutGuardRuntimeConfig => ({
+  fallbackTriggerHitRatePct: parseNonNegativeFinite(
+    process.env.PILOT_GUARD_FALLBACK_TRIGGER_HIT_RATE_PCT,
+    8,
+    "invalid_pilot_guard_fallback_trigger_hit_rate_pct"
+  ),
+  fallbackSubsidyUtilizationPct: parseNonNegativeFinite(
+    process.env.PILOT_GUARD_FALLBACK_SUBSIDY_UTILIZATION_PCT,
+    50,
+    "invalid_pilot_guard_fallback_subsidy_utilization_pct"
+  ),
+  fallbackTreasuryDrawdownPct: parseNonNegativeFinite(
+    process.env.PILOT_GUARD_FALLBACK_TREASURY_DRAWDOWN_PCT,
+    25,
+    "invalid_pilot_guard_fallback_treasury_drawdown_pct"
+  ),
+  pauseTriggerHitRatePct: parseNonNegativeFinite(
+    process.env.PILOT_GUARD_PAUSE_TRIGGER_HIT_RATE_PCT,
+    15,
+    "invalid_pilot_guard_pause_trigger_hit_rate_pct"
+  ),
+  pauseSubsidyUtilizationPct: parseNonNegativeFinite(
+    process.env.PILOT_GUARD_PAUSE_SUBSIDY_UTILIZATION_PCT,
+    85,
+    "invalid_pilot_guard_pause_subsidy_utilization_pct"
+  ),
+  pauseTreasuryDrawdownPct: parseNonNegativeFinite(
+    process.env.PILOT_GUARD_PAUSE_TREASURY_DRAWDOWN_PCT,
+    50,
+    "invalid_pilot_guard_pause_treasury_drawdown_pct"
+  ),
+  pauseOnBlockedSubsidy: parseBooleanEnv(process.env.PILOT_GUARD_PAUSE_ON_BLOCKED_SUBSIDY, true)
+});
+
+const parseTierBatchingTenorRuntimeConfig = (): TierBatchingTenorRuntimeConfig => ({
+  enabled: parseBooleanEnv(process.env.PILOT_TIER_BATCHING_ENABLED, false),
+  batchWindowSeconds: parsePositiveIntInRange(
+    process.env.PILOT_TIER_BATCHING_WINDOW_SECONDS,
+    30,
+    1,
+    300,
+    "invalid_pilot_tier_batching_window_seconds"
+  ),
+  maxBatchQuotes: parsePositiveIntInRange(
+    process.env.PILOT_TIER_BATCHING_MAX_QUOTES,
+    50,
+    1,
+    500,
+    "invalid_pilot_tier_batching_max_quotes"
+  ),
+  tierGroupingEnabled: parseBooleanEnv(process.env.PILOT_TIER_GROUPING_ENABLED, true),
+  tenorLadderEnabled: parseBooleanEnv(process.env.PILOT_TENOR_LADDER_ENABLED, false),
+  tenorLadderDays: parseCommaSeparatedInts(
+    process.env.PILOT_TENOR_LADDER_DAYS,
+    [7, 14, 21],
+    1,
+    30,
+    "invalid_pilot_tenor_ladder_days"
+  )
+});
 
 export const parseFractionRange = (
   raw: string | undefined,
@@ -335,6 +576,9 @@ export const pilotConfig = {
   premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
   premiumPricingMode: parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
   pilotSelectorMode: parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
+  hedgeOptimizer: parseHedgeOptimizerRuntimeConfig(),
+  rolloutGuards: parseRolloutGuardRuntimeConfig(),
+  tierBatchingTenor: parseTierBatchingTenorRuntimeConfig(),
   premiumPolicyVersion: String(process.env.PILOT_PREMIUM_POLICY_VERSION || "v2").trim() || "v2",
   premiumPolicyEnforce: parseBooleanEnv(process.env.PILOT_PREMIUM_ENFORCE, false),
   premiumCapEnforce: parseBooleanEnv(process.env.PILOT_ENFORCE_PREMIUM_CAP, false),

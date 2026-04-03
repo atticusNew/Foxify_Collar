@@ -2195,6 +2195,9 @@ test("ibkr_cme_paper options_only_native best-of-two falls back to single action
 
 test("ibkr_cme_paper option strike ladder finds nearby liquid strike before futures fallback", async () => {
   const originalFetch = global.fetch;
+  const now = new Date();
+  const optionExpiry = new Date(now.getTime() + 4 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+  const futureExpiry = new Date(now.getTime() + 5 * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
   global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const path = url.split("://")[1]?.split("/").slice(1).join("/") || "";
@@ -2214,7 +2217,7 @@ test("ibkr_cme_paper option strike ladder finds nearby liquid strike before futu
                     conId: 91111,
                     secType: "FOP",
                     localSymbol: "W5AH6 P55500",
-                    expiry: "20260330",
+                    expiry: optionExpiry,
                     strike: 55500,
                     right: "P",
                     multiplier: "0.1",
@@ -2236,7 +2239,7 @@ test("ibkr_cme_paper option strike ladder finds nearby liquid strike before futu
                   conId: 92222,
                   secType: "FUT",
                   localSymbol: "MBTH6",
-                  expiry: "20260331",
+                  expiry: futureExpiry,
                   multiplier: "0.1",
                   minTick: 5
                 }
@@ -2306,7 +2309,48 @@ test("ibkr_cme_paper option strike ladder finds nearby liquid strike before futu
         orderTif: "IOC",
         primaryProductFamily: "MBT",
         enableBffFallback: false,
-        bffProductFamily: "BFF"
+        bffProductFamily: "BFF",
+        hedgeOptimizer: {
+          enabled: false,
+          version: "test",
+          normalization: {
+            expectedSubsidyUsd: { min: 0, max: 1 },
+            cvar95Usd: { min: 0, max: 1 },
+            liquidityPenalty: { min: 0, max: 1 },
+            fillRiskPenalty: { min: 0, max: 1 },
+            basisPenalty: { min: 0, max: 1 },
+            carryPenalty: { min: 0, max: 1 },
+            pnlRewardUsd: { min: 0, max: 1 },
+            mtpdReward: { min: 0, max: 1 },
+            tenorDriftDays: { min: 0, max: 1 },
+            strikeDistancePct: { min: 0, max: 1 }
+          },
+          weights: {
+            expectedSubsidy: 0,
+            cvar95: 0,
+            liquidityPenalty: 0,
+            fillRiskPenalty: 0,
+            basisPenalty: 0,
+            carryPenalty: 0,
+            pnlReward: 0,
+            mtpdReward: 0,
+            tenorDriftPenalty: 0,
+            strikeDistancePenalty: 0
+          },
+          hardConstraints: {
+            maxPremiumRatio: 999,
+            maxSpreadPct: 999,
+            minAskSize: 0,
+            maxTenorDriftDays: 999,
+            minTailProtectionScore: 0,
+            maxExpectedSubsidyUsd: 999999
+          },
+          regimePolicy: {
+            calm: { preferCloserStrikeBias: 1, maxStrikeDistancePct: 0.1, minTenorDays: 1, maxTenorDays: 30 },
+            neutral: { preferCloserStrikeBias: 1, maxStrikeDistancePct: 0.1, minTenorDays: 1, maxTenorDays: 30 },
+            stress: { preferCloserStrikeBias: 1, maxStrikeDistancePct: 0.1, minTenorDays: 1, maxTenorDays: 30 }
+          }
+        }
       }
     });
     const quote = await adapter.quote({

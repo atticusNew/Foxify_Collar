@@ -239,3 +239,315 @@ export type SimTreasuryLedgerRecord = {
   createdAt: string;
 };
 
+export type HedgeSelectionRegime = "calm" | "neutral" | "stress";
+
+export type HedgeCandidate = {
+  candidateId: string;
+  hedgeMode: HedgeMode;
+  hedgeInstrumentFamily: "MBT" | "BFF";
+  strike: number | null;
+  triggerPrice: number | null;
+  strikeGapToTriggerPct: number | null;
+  tenorDays: number | null;
+  tenorDriftDays: number | null;
+  belowTargetTenor: boolean;
+  ask: number;
+  bid: number | null;
+  askSize: number | null;
+  spreadPct: number | null;
+  premiumUsd: number;
+  premiumRatio: number;
+  expectedTriggerCostUsd: number;
+  expectedTriggerCreditUsd: number;
+  premiumProfitabilityTargetUsd: number;
+  expectedSubsidyUsd: number;
+  liquidityPenalty: number;
+  carryPenalty: number;
+  basisPenalty: number;
+  fillRiskPenalty: number;
+  tailProtectionScore: number;
+};
+
+export type HedgeScoreBreakdown = {
+  totalScore: number;
+  normalized: {
+    expectedSubsidy: number;
+    cvar95Proxy: number;
+    liquidityPenalty: number;
+    fillRiskPenalty: number;
+    basisPenalty: number;
+    carryPenalty: number;
+    pnlReward: number;
+    mtpdReward: number;
+    tenorDriftPenalty: number;
+    strikeDistancePenalty: number;
+  };
+  weighted: {
+    expectedSubsidy: number;
+    cvar95Proxy: number;
+    liquidityPenalty: number;
+    fillRiskPenalty: number;
+    basisPenalty: number;
+    carryPenalty: number;
+    pnlReward: number;
+    mtpdReward: number;
+    tenorDriftPenalty: number;
+    strikeDistancePenalty: number;
+  };
+};
+
+export type HedgeSelectionDecision = {
+  selectedCandidateId: string;
+  regime: HedgeSelectionRegime;
+  reason: string;
+  score: HedgeScoreBreakdown;
+  topAlternatives: Array<{
+    candidateId: string;
+    score: number;
+    hedgeMode: HedgeMode;
+    strike: number | null;
+    tenorDays: number | null;
+  }>;
+};
+
+export type MarketLiquiditySnapshot = {
+  asOfIso: string;
+  spreadPct: number | null;
+  topAskSize: number | null;
+  topBidSize: number | null;
+  staleTopMs: number | null;
+  depthScore: number | null;
+};
+
+export type GreeksSnapshot = {
+  asOfIso: string;
+  delta: number | null;
+  gamma: number | null;
+  vega: number | null;
+  theta: number | null;
+  iv: number | null;
+  skew: number | null;
+};
+
+export type HedgeOptimizerNormalizationRanges = {
+  expectedSubsidyUsd: { min: number; max: number };
+  cvar95Usd: { min: number; max: number };
+  liquidityPenalty: { min: number; max: number };
+  fillRiskPenalty: { min: number; max: number };
+  basisPenalty: { min: number; max: number };
+  carryPenalty: { min: number; max: number };
+  pnlRewardUsd: { min: number; max: number };
+  mtpdReward: { min: number; max: number };
+  tenorDriftDays: { min: number; max: number };
+  strikeDistancePct: { min: number; max: number };
+};
+
+export type HedgeOptimizerWeights = {
+  expectedSubsidy: number;
+  cvar95: number;
+  liquidityPenalty: number;
+  fillRiskPenalty: number;
+  basisPenalty: number;
+  carryPenalty: number;
+  pnlReward: number;
+  mtpdReward: number;
+  tenorDriftPenalty: number;
+  strikeDistancePenalty: number;
+};
+
+export type HedgeOptimizerHardConstraints = {
+  maxPremiumRatio: number;
+  maxSpreadPct: number;
+  minAskSize: number;
+  maxTenorDriftDays: number;
+  minTailProtectionScore: number;
+  maxExpectedSubsidyUsd: number;
+};
+
+export type HedgeOptimizerRegimePolicy = {
+  calm: {
+    preferCloserStrikeBias: number;
+    maxStrikeDistancePct: number;
+    minTenorDays: number;
+    maxTenorDays: number;
+  };
+  neutral: {
+    preferCloserStrikeBias: number;
+    maxStrikeDistancePct: number;
+    minTenorDays: number;
+    maxTenorDays: number;
+  };
+  stress: {
+    preferCloserStrikeBias: number;
+    maxStrikeDistancePct: number;
+    minTenorDays: number;
+    maxTenorDays: number;
+  };
+};
+
+export type HedgeOptimizerConfig = {
+  enabled: boolean;
+  version: string;
+  normalization: HedgeOptimizerNormalizationRanges;
+  weights: HedgeOptimizerWeights;
+  hardConstraints: HedgeOptimizerHardConstraints;
+  regimePolicy: HedgeOptimizerRegimePolicy;
+};
+
+export type RolloutGuardConfig = {
+  fallbackTriggerHitRatePct: number;
+  fallbackSubsidyUtilizationPct: number;
+  fallbackTreasuryDrawdownPct: number;
+  pauseTriggerHitRatePct: number;
+  pauseSubsidyUtilizationPct: number;
+  pauseTreasuryDrawdownPct: number;
+  pauseOnBlockedSubsidy: boolean;
+};
+
+export type OptionsChainSnapshotRecord = {
+  id: string;
+  source: string;
+  venue: string;
+  marketId: string;
+  instrumentId: string;
+  tsIso: string;
+  expiryIso: string | null;
+  strike: string | null;
+  right: "P" | "C" | null;
+  bid: string | null;
+  ask: string | null;
+  mark: string | null;
+  iv: string | null;
+  delta: string | null;
+  gamma: string | null;
+  vega: string | null;
+  theta: string | null;
+  openInterest: string | null;
+  bidSize: string | null;
+  askSize: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type RfqQuoteHistoryRecord = {
+  id: string;
+  source: string;
+  venue: string;
+  rfqId: string | null;
+  quoteId: string | null;
+  marketId: string;
+  instrumentId: string | null;
+  side: "buy" | "sell" | null;
+  quantity: string | null;
+  premium: string | null;
+  quoteTsIso: string;
+  expiresAtIso: string | null;
+  status: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type RfqFillHistoryRecord = {
+  id: string;
+  source: string;
+  venue: string;
+  rfqId: string | null;
+  quoteId: string | null;
+  fillId: string | null;
+  marketId: string;
+  instrumentId: string | null;
+  side: "buy" | "sell" | null;
+  quantity: string | null;
+  executionPrice: string | null;
+  premium: string | null;
+  executedAtIso: string;
+  slippageBps: string | null;
+  latencyMs: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type HedgeDecisionRecord = {
+  id: string;
+  decisionTsIso: string;
+  requestId: string | null;
+  venueMode: string;
+  selectorMode: string;
+  regime: string | null;
+  selectedCandidateId: string | null;
+  selectedHedgeMode: string | null;
+  selectedInstrumentFamily: string | null;
+  selectedStrike: string | null;
+  selectedTenorDays: string | null;
+  selectedScore: string | null;
+  reason: string | null;
+  candidates: unknown[];
+  scoreBreakdown: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type ExecutionQualityDailyRecord = {
+  dayStart: string;
+  venue: string;
+  hedgeMode: HedgeMode;
+  tradesCount: number;
+  fillsCount: number;
+  meanSlippageBps: string;
+  p95SlippageBps: string;
+  meanLatencyMs: string;
+  p95LatencyMs: string;
+  optionFillRate: string;
+  futuresFillRate: string;
+  metadata: Record<string, unknown>;
+  updatedAt: string;
+};
+
+export type VenueQuoteRecord = {
+  day: string;
+  venue: string;
+  quoteId: string;
+  rfqId: string | null;
+  marketId: string;
+  instrumentId: string | null;
+  side: "buy" | "sell";
+  quantity: string;
+  quotePxUsd: string;
+  quoteTs: string;
+  expiresTs: string | null;
+  source: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type VenueFillRecord = {
+  day: string;
+  venue: string;
+  fillId: string;
+  quoteId: string | null;
+  rfqId: string | null;
+  marketId: string;
+  instrumentId: string | null;
+  side: "buy" | "sell";
+  quantity: string;
+  fillPxUsd: string;
+  fillTs: string;
+  feeUsd: string | null;
+  slippageBps: string | null;
+  source: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type ExecutionQualityRecord = {
+  day: string;
+  venue: string;
+  hedgeMode: HedgeMode;
+  avgSlippageBps: string | null;
+  p95SlippageBps: string | null;
+  fillSuccessRatePct: string | null;
+  avgSpreadPct: string | null;
+  avgTopBookDepth: string | null;
+  sampleCount: number;
+  metadata: Record<string, unknown>;
+  updatedAt: string;
+};
+
