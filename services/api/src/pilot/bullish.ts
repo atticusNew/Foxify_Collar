@@ -200,8 +200,9 @@ export class BullishTradingClient {
       throw new Error("bullish_credentials_missing");
     }
     const timestamp = Date.now().toString();
-    // Bullish HMAC login examples use a numeric, time-based nonce.
-    const nonce = Math.floor(Date.now() / 1000).toString();
+    // Bullish requires BX-NONCE to be an incrementing 64-bit integer within the
+    // current daily nonce window; reuse the microsecond-range nonce helper here.
+    const nonce = await this.getCommandNonce();
     const requestPath = ensureLeadingSlash(this.config.hmacLoginPath);
     const signaturePayload = `${timestamp}${nonce}GET${requestPath}`;
     const signature = signBullishHmacLogin(this.config.hmacSecret, signaturePayload);
