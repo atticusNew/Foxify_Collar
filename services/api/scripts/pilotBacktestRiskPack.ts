@@ -8,6 +8,11 @@ type ModelName = "strict" | "hybrid";
 type BacktestTradeRow = {
   model: ModelName;
   breachMode: "expiry_only" | "path_min";
+  takeProfitEnabled?: boolean;
+  takeProfitTriggered?: boolean;
+  takeProfitRule?: "none" | "rebound" | "decay" | "expiry_after_breach" | "no_breach";
+  takeProfitCloseTsIso?: string;
+  takeProfitClosePriceUsd?: string;
   entryTsIso: string;
   expiryPriceUsd: string;
   triggerPriceUsd: string;
@@ -18,6 +23,15 @@ type BacktestTradeRow = {
   subsidyNeedUsd: string;
   subsidyAppliedUsd: string;
   subsidyBlockedUsd: string;
+  underwritingPnlBaselineUsd?: string;
+  underwritingPnlTpUsd?: string;
+  underwritingPnlDeltaVsBaselineUsd?: string;
+  subsidyNeedBaselineUsd?: string;
+  subsidyNeedTpUsd?: string;
+  subsidyNeedDeltaVsBaselineUsd?: string;
+  hedgeRecoveredBaselineUsd?: string;
+  hedgeRecoveredTpUsd?: string;
+  hedgeRecoveredDeltaVsBaselineUsd?: string;
   underwritingPnlUsd: string;
   hedgeNetCostUsd: string;
   treasuryBalanceAfterUsd: string;
@@ -26,14 +40,27 @@ type BacktestTradeRow = {
 type BacktestSummaryRow = {
   model: ModelName;
   breachMode: "expiry_only" | "path_min";
+  takeProfitEnabled?: boolean;
   trades: number;
   premiumTotalUsd: string;
   payoutTotalUsd: string;
   hedgeNetCostTotalUsd: string;
   underwritingPnlTotalUsd: string;
+  underwritingPnlBaselineTotalUsd?: string;
+  underwritingPnlTpTotalUsd?: string;
+  underwritingPnlImprovementUsd?: string;
   subsidyNeedTotalUsd: string;
+  subsidyNeedBaselineTotalUsd?: string;
+  subsidyNeedTpTotalUsd?: string;
+  subsidyNeedReductionUsd?: string;
   subsidyAppliedTotalUsd: string;
   subsidyBlockedTotalUsd: string;
+  hedgeRecoveredBaselineTotalUsd?: string;
+  hedgeRecoveredTpTotalUsd?: string;
+  hedgeRecoveredImprovementUsd?: string;
+  takeProfitTriggeredCount?: number;
+  takeProfitTriggeredRatePct?: string;
+  takeProfitUnderperformedCount?: number;
   triggerHitRatePct: string;
   endTreasuryBalanceUsd: string;
 };
@@ -57,6 +84,11 @@ type BacktestOutput = {
   status: "ok";
   name: string;
   breachMode: "expiry_only" | "path_min";
+  takeProfit?: {
+    enabled: boolean;
+    reboundPct: string;
+    decayPct: string;
+  };
   treasury?: {
     startingBalanceUsd: string;
     dailySubsidyCapUsd: string;
@@ -109,15 +141,27 @@ type SummaryCsvRow = {
   period: string;
   model: ModelName;
   breachMode: string;
+  takeProfitEnabled: boolean;
+  takeProfitTriggeredRatePct: string;
+  takeProfitUnderperformedCount: number;
   trades: number;
   premiumTotalUsd: string;
   payoutTotalUsd: string;
   hedgeNetCostTotalUsd: string;
   underwritingPnlTotalUsd: string;
+  underwritingPnlBaselineTotalUsd: string;
+  underwritingPnlTpTotalUsd: string;
+  underwritingPnlImprovementUsd: string;
   pnlMarginPct: string;
   subsidyNeedTotalUsd: string;
+  subsidyNeedBaselineTotalUsd: string;
+  subsidyNeedTpTotalUsd: string;
+  subsidyNeedReductionUsd: string;
   subsidyAppliedTotalUsd: string;
   subsidyBlockedTotalUsd: string;
+  hedgeRecoveredBaselineTotalUsd: string;
+  hedgeRecoveredTpTotalUsd: string;
+  hedgeRecoveredImprovementUsd: string;
   triggerHitRatePct: string;
   worstDaySubsidyNeedUsd: string;
   worstDaySubsidyNeedDate: string;
@@ -148,6 +192,26 @@ type BreachReboundCsvRow = {
   meanReboundFromPathMinPct: string;
   p95ReboundFromPathMinPct: string;
   meanStillBelowTriggerPct: string;
+};
+
+type TpImpactCsvRow = {
+  period: string;
+  model: ModelName;
+  breachMode: string;
+  takeProfitEnabled: boolean;
+  trades: number;
+  takeProfitTriggeredCount: number;
+  takeProfitTriggeredRatePct: string;
+  takeProfitUnderperformedCount: number;
+  underwritingPnlBaselineTotalUsd: string;
+  underwritingPnlTpTotalUsd: string;
+  underwritingPnlImprovementUsd: string;
+  subsidyNeedBaselineTotalUsd: string;
+  subsidyNeedTpTotalUsd: string;
+  subsidyNeedReductionUsd: string;
+  hedgeRecoveredBaselineTotalUsd: string;
+  hedgeRecoveredTpTotalUsd: string;
+  hedgeRecoveredImprovementUsd: string;
 };
 
 const parseArgs = (argv: string[]): Args => {
@@ -286,6 +350,8 @@ const writeWorkbook = (params: {
   summaryRows: SummaryCsvRow[];
   dailyRows: Array<Record<string, string | number | boolean>>;
   reboundRows: BreachReboundCsvRow[];
+  tpImpactRows: TpImpactCsvRow[];
+  tpRulesRows: Array<Record<string, string | number | boolean>>;
 }) => {
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(
@@ -299,6 +365,12 @@ const writeWorkbook = (params: {
     rowsToSheet(params.reboundRows as unknown as Array<Record<string, string | number | boolean>>),
     "breach_rebound"
   );
+  XLSX.utils.book_append_sheet(
+    workbook,
+    rowsToSheet(params.tpImpactRows as unknown as Array<Record<string, string | number | boolean>>),
+    "tp_impact"
+  );
+  XLSX.utils.book_append_sheet(workbook, rowsToSheet(params.tpRulesRows), "tp_rule_breakdown");
   XLSX.writeFile(workbook, params.outPath);
 };
 
@@ -485,6 +557,8 @@ const main = async () => {
   const summaryRows: SummaryCsvRow[] = [];
   const dailyRows: DailyAgg[] = [];
   const reboundRows: BreachReboundCsvRow[] = [];
+  const tpImpactRows: TpImpactCsvRow[] = [];
+  const tpRulesRows: Array<Record<string, string | number | boolean>> = [];
 
   for (const inputPath of args.inputPaths) {
     const raw = await readFile(inputPath, "utf8");
@@ -537,15 +611,27 @@ const main = async () => {
         period,
         model,
         breachMode: modelSummary.breachMode,
+        takeProfitEnabled: Boolean(modelSummary.takeProfitEnabled ?? parsed.takeProfit?.enabled ?? false),
+        takeProfitTriggeredRatePct: String(modelSummary.takeProfitTriggeredRatePct || "0.0000"),
+        takeProfitUnderperformedCount: Number(modelSummary.takeProfitUnderperformedCount || 0),
         trades: modelSummary.trades,
         premiumTotalUsd: modelSummary.premiumTotalUsd,
         payoutTotalUsd: modelSummary.payoutTotalUsd,
         hedgeNetCostTotalUsd: modelSummary.hedgeNetCostTotalUsd,
         underwritingPnlTotalUsd: modelSummary.underwritingPnlTotalUsd,
+        underwritingPnlBaselineTotalUsd: String(modelSummary.underwritingPnlBaselineTotalUsd || modelSummary.underwritingPnlTotalUsd),
+        underwritingPnlTpTotalUsd: String(modelSummary.underwritingPnlTpTotalUsd || modelSummary.underwritingPnlTotalUsd),
+        underwritingPnlImprovementUsd: String(modelSummary.underwritingPnlImprovementUsd || "0.0000000000"),
         pnlMarginPct: toFixed(pnlMarginPct, 4),
         subsidyNeedTotalUsd: modelSummary.subsidyNeedTotalUsd,
+        subsidyNeedBaselineTotalUsd: String(modelSummary.subsidyNeedBaselineTotalUsd || modelSummary.subsidyNeedTotalUsd),
+        subsidyNeedTpTotalUsd: String(modelSummary.subsidyNeedTpTotalUsd || modelSummary.subsidyNeedTotalUsd),
+        subsidyNeedReductionUsd: String(modelSummary.subsidyNeedReductionUsd || "0.0000000000"),
         subsidyAppliedTotalUsd: modelSummary.subsidyAppliedTotalUsd,
         subsidyBlockedTotalUsd: modelSummary.subsidyBlockedTotalUsd,
+        hedgeRecoveredBaselineTotalUsd: String(modelSummary.hedgeRecoveredBaselineTotalUsd || "0.0000000000"),
+        hedgeRecoveredTpTotalUsd: String(modelSummary.hedgeRecoveredTpTotalUsd || "0.0000000000"),
+        hedgeRecoveredImprovementUsd: String(modelSummary.hedgeRecoveredImprovementUsd || "0.0000000000"),
         triggerHitRatePct: modelSummary.triggerHitRatePct,
         worstDaySubsidyNeedUsd: er?.worstDaySubsidyNeedUsd || "0.0000000000",
         worstDaySubsidyNeedDate: er?.worstDaySubsidyNeedDate || "",
@@ -572,6 +658,43 @@ const main = async () => {
           takeProfitReboundPct: args.takeProfitReboundPct
         })
       );
+
+      tpImpactRows.push({
+        period,
+        model,
+        breachMode: modelSummary.breachMode,
+        takeProfitEnabled: Boolean(modelSummary.takeProfitEnabled ?? parsed.takeProfit?.enabled ?? false),
+        trades: modelSummary.trades,
+        takeProfitTriggeredCount: Number(modelSummary.takeProfitTriggeredCount || 0),
+        takeProfitTriggeredRatePct: String(modelSummary.takeProfitTriggeredRatePct || "0.0000"),
+        takeProfitUnderperformedCount: Number(modelSummary.takeProfitUnderperformedCount || 0),
+        underwritingPnlBaselineTotalUsd: String(modelSummary.underwritingPnlBaselineTotalUsd || modelSummary.underwritingPnlTotalUsd),
+        underwritingPnlTpTotalUsd: String(modelSummary.underwritingPnlTpTotalUsd || modelSummary.underwritingPnlTotalUsd),
+        underwritingPnlImprovementUsd: String(modelSummary.underwritingPnlImprovementUsd || "0.0000000000"),
+        subsidyNeedBaselineTotalUsd: String(modelSummary.subsidyNeedBaselineTotalUsd || modelSummary.subsidyNeedTotalUsd),
+        subsidyNeedTpTotalUsd: String(modelSummary.subsidyNeedTpTotalUsd || modelSummary.subsidyNeedTotalUsd),
+        subsidyNeedReductionUsd: String(modelSummary.subsidyNeedReductionUsd || "0.0000000000"),
+        hedgeRecoveredBaselineTotalUsd: String(modelSummary.hedgeRecoveredBaselineTotalUsd || "0.0000000000"),
+        hedgeRecoveredTpTotalUsd: String(modelSummary.hedgeRecoveredTpTotalUsd || "0.0000000000"),
+        hedgeRecoveredImprovementUsd: String(modelSummary.hedgeRecoveredImprovementUsd || "0.0000000000")
+      });
+
+      const tpRuleCounts = new Map<string, number>();
+      for (const row of modelRows) {
+        const rule = String(row.takeProfitRule || "none");
+        tpRuleCounts.set(rule, (tpRuleCounts.get(rule) || 0) + 1);
+      }
+      for (const [rule, count] of tpRuleCounts.entries()) {
+        tpRulesRows.push({
+          period,
+          model,
+          breachMode: modelSummary.breachMode,
+          takeProfitEnabled: Boolean(modelSummary.takeProfitEnabled ?? parsed.takeProfit?.enabled ?? false),
+          rule,
+          count,
+          ratePct: modelSummary.trades > 0 ? new Decimal(count).div(modelSummary.trades).mul(100).toFixed(4) : "0.0000"
+        });
+      }
     }
   }
 
@@ -580,10 +703,20 @@ const main = async () => {
     a.period === b.period ? (a.day === b.day ? a.model.localeCompare(b.model) : a.day.localeCompare(b.day)) : a.period.localeCompare(b.period)
   );
   reboundRows.sort((a, b) => (a.period === b.period ? a.model.localeCompare(b.model) : a.period.localeCompare(b.period)));
+  tpImpactRows.sort((a, b) => (a.period === b.period ? a.model.localeCompare(b.model) : a.period.localeCompare(b.period)));
+  tpRulesRows.sort((a, b) =>
+    String(a.period) === String(b.period)
+      ? String(a.model) === String(b.model)
+        ? String(a.rule).localeCompare(String(b.rule))
+        : String(a.model).localeCompare(String(b.model))
+      : String(a.period).localeCompare(String(b.period))
+  );
 
   const summaryCsvPath = path.join(args.outDir, "risk_pack_summary.csv");
   const dailyCsvPath = path.join(args.outDir, "risk_pack_daily.csv");
   const reboundCsvPath = path.join(args.outDir, "risk_pack_breach_rebound.csv");
+  const tpImpactCsvPath = path.join(args.outDir, "risk_pack_tp_impact.csv");
+  const tpRuleCsvPath = path.join(args.outDir, "risk_pack_tp_rules.csv");
   const overviewMdPath = path.join(args.outDir, "risk_pack_overview.md");
   const defaultXlsxPath = path.join(args.outDir, "risk_pack.xlsx");
   const outXlsxPath = args.outXlsxPath || defaultXlsxPath;
@@ -593,11 +726,15 @@ const main = async () => {
   await writeFile(summaryCsvPath, rowsToCsv(summaryRows as unknown as Array<Record<string, string | number | boolean>>), "utf8");
   await writeFile(dailyCsvPath, rowsToCsv(dailyCsvRows), "utf8");
   await writeFile(reboundCsvPath, rowsToCsv(reboundRows as unknown as Array<Record<string, string | number | boolean>>), "utf8");
+  await writeFile(tpImpactCsvPath, rowsToCsv(tpImpactRows as unknown as Array<Record<string, string | number | boolean>>), "utf8");
+  await writeFile(tpRuleCsvPath, rowsToCsv(tpRulesRows), "utf8");
   writeWorkbook({
     outPath: outXlsxPath,
     summaryRows,
     dailyRows: dailyCsvRows,
-    reboundRows
+    reboundRows,
+    tpImpactRows,
+    tpRulesRows
   });
 
   const top = summaryRows
@@ -625,6 +762,8 @@ const main = async () => {
     `- summary: \`${summaryCsvPath}\``,
     `- daily: \`${dailyCsvPath}\``,
     `- breach/rebound: \`${reboundCsvPath}\``,
+    `- tp impact: \`${tpImpactCsvPath}\``,
+    `- tp rules: \`${tpRuleCsvPath}\``,
     `- workbook: \`${outXlsxPath}\``
   ].join("\n");
   await writeFile(overviewMdPath, overview, "utf8");
@@ -639,13 +778,17 @@ const main = async () => {
           summaryCsv: summaryCsvPath,
           dailyCsv: dailyCsvPath,
           breachReboundCsv: reboundCsvPath,
+          tpImpactCsv: tpImpactCsvPath,
+          tpRulesCsv: tpRuleCsvPath,
           overviewMd: overviewMdPath,
           workbookXlsx: outXlsxPath
         },
         rows: {
           summary: summaryRows.length,
           daily: dailyRows.length,
-          breachRebound: reboundRows.length
+          breachRebound: reboundRows.length,
+          tpImpact: tpImpactRows.length,
+          tpRules: tpRulesRows.length
         }
       },
       null,

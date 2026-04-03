@@ -10,6 +10,9 @@ OUT_CSV="${OUT_CSV:-artifacts/backtest/pilot_backtest.csv}"
 MODE="${MODE:-both}"
 BREACH_MODE="${BREACH_MODE:-}"
 SOURCE="${SOURCE:-auto}"
+TP_ENABLED="${TP_ENABLED:-}"
+TP_REBOUND_PCT="${TP_REBOUND_PCT:-}"
+TP_DECAY_PCT="${TP_DECAY_PCT:-}"
 
 echo "[1/3] Fetching hourly BTC prices..."
 npm run -s pilot:backtest:fetch-btc -- \
@@ -27,6 +30,15 @@ BACKTEST_CMD=(npm run -s pilot:backtest:run -- \
   --out-csv "${OUT_CSV}")
 if [[ -n "${BREACH_MODE}" ]]; then
   BACKTEST_CMD+=(--breach-mode "${BREACH_MODE}")
+fi
+if [[ -n "${TP_ENABLED}" ]]; then
+  BACKTEST_CMD+=(--tp-enabled "${TP_ENABLED}")
+fi
+if [[ -n "${TP_REBOUND_PCT}" ]]; then
+  BACKTEST_CMD+=(--tp-rebound-pct "${TP_REBOUND_PCT}")
+fi
+if [[ -n "${TP_DECAY_PCT}" ]]; then
+  BACKTEST_CMD+=(--tp-decay-pct "${TP_DECAY_PCT}")
 fi
 "${BACKTEST_CMD[@]}"
 

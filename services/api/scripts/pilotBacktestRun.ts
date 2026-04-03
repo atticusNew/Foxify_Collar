@@ -20,6 +20,11 @@ type BacktestConfig = {
   tenorDays: number;
   entryStepHours: number;
   breachMode?: "expiry_only" | "path_min";
+  takeProfit?: {
+    enabled?: boolean;
+    reboundPct?: DecimalString;
+    decayPct?: DecimalString;
+  };
   notionalsUsd: DecimalString[];
   treasury: {
     startingBalanceUsd: DecimalString;
@@ -39,10 +44,17 @@ type ModelName = "strict" | "hybrid";
 
 type RunMode = "strict_only" | "hybrid_only" | "both";
 type BreachMode = "expiry_only" | "path_min";
+type TakeProfitRule = "none" | "rebound" | "decay" | "expiry_after_breach" | "no_breach";
+type TakeProfitRuntime = {
+  enabled: boolean;
+  reboundPct: Decimal;
+  decayPct: Decimal;
+};
 
 type TradeRow = {
   model: ModelName;
   breachMode: BreachMode;
+  takeProfitEnabled: boolean;
   tierName: string;
   entryTsIso: string;
   exitTsIso: string;
@@ -54,12 +66,25 @@ type TradeRow = {
   payoutReferencePriceUsd: string;
   expiryPriceUsd: string;
   breachObserved: boolean;
+  takeProfitTriggered: boolean;
+  takeProfitRule: TakeProfitRule;
+  takeProfitCloseTsIso: string;
+  takeProfitClosePriceUsd: string;
   premiumUsd: string;
   hedgeCostUsd: string;
+  hedgeRecoveredBaselineUsd: string;
+  hedgeRecoveredTpUsd: string;
+  hedgeRecoveredDeltaVsBaselineUsd: string;
   hedgeRecoveredUsd: string;
   hedgeNetCostUsd: string;
   payoutUsd: string;
+  underwritingPnlBaselineUsd: string;
+  underwritingPnlTpUsd: string;
+  underwritingPnlDeltaVsBaselineUsd: string;
   underwritingPnlUsd: string;
+  subsidyNeedBaselineUsd: string;
+  subsidyNeedTpUsd: string;
+  subsidyNeedDeltaVsBaselineUsd: string;
   subsidyNeedUsd: string;
   subsidyAppliedUsd: string;
   subsidyBlockedUsd: string;
@@ -69,6 +94,7 @@ type TradeRow = {
 type SummaryModel = {
   model: ModelName;
   breachMode: BreachMode;
+  takeProfitEnabled: boolean;
   trades: number;
   premiumTotalUsd: string;
   payoutTotalUsd: string;
@@ -77,9 +103,21 @@ type SummaryModel = {
   hedgeNetCostTotalUsd: string;
   underwritingPnlTotalUsd: string;
   underwritingPnlPerTradeUsd: string;
+  underwritingPnlBaselineTotalUsd: string;
+  underwritingPnlTpTotalUsd: string;
+  underwritingPnlImprovementUsd: string;
   subsidyNeedTotalUsd: string;
+  subsidyNeedBaselineTotalUsd: string;
+  subsidyNeedTpTotalUsd: string;
+  subsidyNeedReductionUsd: string;
   subsidyAppliedTotalUsd: string;
   subsidyBlockedTotalUsd: string;
+  hedgeRecoveredBaselineTotalUsd: string;
+  hedgeRecoveredTpTotalUsd: string;
+  hedgeRecoveredImprovementUsd: string;
+  takeProfitTriggeredCount: number;
+  takeProfitTriggeredRatePct: string;
+  takeProfitUnderperformedCount: number;
   subsidyHitCount: number;
   subsidyBlockedCount: number;
   triggerHitCount: number;
@@ -107,6 +145,11 @@ type BacktestOutput = {
   name: string;
   mode: RunMode;
   breachMode: BreachMode;
+  takeProfit: {
+    enabled: boolean;
+    reboundPct: string;
+    decayPct: string;
+  };
   treasury: {
     startingBalanceUsd: string;
     dailySubsidyCapUsd: string;
@@ -127,6 +170,9 @@ type Args = {
   outCsvPath: string;
   mode: RunMode;
   breachModeOverride: BreachMode | null;
+  tpEnabledOverride: boolean | null;
+  tpReboundPctOverride: Decimal | null;
+  tpDecayPctOverride: Decimal | null;
 };
 
 const ZERO = new Decimal(0);
@@ -140,7 +186,10 @@ const parseArgs = (argv: string[]): Args => {
     outJsonPath: "artifacts/backtest/pilot_backtest.json",
     outCsvPath: "artifacts/backtest/pilot_backtest.csv",
     mode: "both",
-    breachModeOverride: null
+    breachModeOverride: null,
+    tpEnabledOverride: null,
+    tpReboundPctOverride: null,
+    tpDecayPctOverride: null
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -182,6 +231,32 @@ const parseArgs = (argv: string[]): Args => {
       } else {
         throw new Error(`invalid_breach_mode:${breachMode}`);
       }
+      i += 1;
+      continue;
+    }
+    if (token === "--tp-enabled" && argv[i + 1]) {
+      const raw = String(argv[i + 1]).trim().toLowerCase();
+      if (raw === "true" || raw === "1" || raw === "yes") {
+        args.tpEnabledOverride = true;
+      } else if (raw === "false" || raw === "0" || raw === "no") {
+        args.tpEnabledOverride = false;
+      } else {
+        throw new Error(`invalid_tp_enabled:${raw}`);
+      }
+      i += 1;
+      continue;
+    }
+    if (token === "--tp-rebound-pct" && argv[i + 1]) {
+      const value = parseDecimal(argv[i + 1], "tp_rebound_pct");
+      if (value.lt(0)) throw new Error("invalid_tp_rebound_pct:negative");
+      args.tpReboundPctOverride = value;
+      i += 1;
+      continue;
+    }
+    if (token === "--tp-decay-pct" && argv[i + 1]) {
+      const value = parseDecimal(argv[i + 1], "tp_decay_pct");
+      if (value.lt(0)) throw new Error("invalid_tp_decay_pct:negative");
+      args.tpDecayPctOverride = value;
       i += 1;
       continue;
     }
@@ -229,6 +304,14 @@ const loadConfig = async (configPath: string): Promise<BacktestConfig> => {
   parseDecimal(parsed.treasury?.startingBalanceUsd, "treasury.startingBalanceUsd");
   parseDecimal(parsed.treasury?.dailySubsidyCapUsd, "treasury.dailySubsidyCapUsd");
   parseDecimal(parsed.treasury?.perQuoteSubsidyCapPct, "treasury.perQuoteSubsidyCapPct");
+  if (parsed.takeProfit) {
+    if (parsed.takeProfit.reboundPct !== undefined) {
+      parseDecimal(parsed.takeProfit.reboundPct, "takeProfit.reboundPct");
+    }
+    if (parsed.takeProfit.decayPct !== undefined) {
+      parseDecimal(parsed.takeProfit.decayPct, "takeProfit.decayPct");
+    }
+  }
 
   for (const tier of parsed.tiers) {
     parseDecimal(tier.drawdownFloorPct, `${tier.tierName}.drawdownFloorPct`);
@@ -308,6 +391,96 @@ const findPathMinPrice = (prices: PricePoint[], entryIdx: number, exitIdx: numbe
   return minPrice;
 };
 
+const resolveTakeProfitRuntime = (config: BacktestConfig, args: Args): TakeProfitRuntime => {
+  const configEnabledRaw = String(config.takeProfit?.enabled ?? "false").trim().toLowerCase();
+  const enabledFromConfig = configEnabledRaw === "true" || configEnabledRaw === "1" || configEnabledRaw === "yes";
+  const enabled = args.tpEnabledOverride ?? enabledFromConfig;
+  const reboundPct = args.tpReboundPctOverride ?? parseDecimal(config.takeProfit?.reboundPct ?? "2", "takeProfit.reboundPct");
+  const decayPct = args.tpDecayPctOverride ?? parseDecimal(config.takeProfit?.decayPct ?? "2", "takeProfit.decayPct");
+
+  if (reboundPct.lt(0)) throw new Error("invalid_take_profit_rebound_pct:negative");
+  if (decayPct.lt(0)) throw new Error("invalid_take_profit_decay_pct:negative");
+
+  return { enabled, reboundPct, decayPct };
+};
+
+const evaluateTakeProfit = (params: {
+  prices: PricePoint[];
+  entryIdx: number;
+  exitIdx: number;
+  triggerPrice: Decimal;
+  tp: TakeProfitRuntime;
+}): { tpTriggered: boolean; tpRule: TakeProfitRule; closeIndex: number; closePrice: Decimal } => {
+  const expiryClose = {
+    closeIndex: params.exitIdx,
+    closePrice: params.prices[params.exitIdx].price
+  };
+  if (!params.tp.enabled) {
+    return {
+      tpTriggered: false,
+      tpRule: "none",
+      ...expiryClose
+    };
+  }
+
+  let breached = false;
+  let minAfterBreach: Decimal | null = null;
+  let peakIntrinsic = ZERO;
+
+  for (let i = params.entryIdx; i <= params.exitIdx; i += 1) {
+    const px = params.prices[i].price;
+    const intrinsic = Decimal.max(ZERO, params.triggerPrice.minus(px));
+
+    if (!breached && intrinsic.gt(0)) {
+      breached = true;
+      minAfterBreach = px;
+      peakIntrinsic = intrinsic;
+    }
+    if (!breached) continue;
+
+    if (px.lt(minAfterBreach!)) minAfterBreach = px;
+    if (intrinsic.gt(peakIntrinsic)) peakIntrinsic = intrinsic;
+
+    if (params.tp.reboundPct.gt(0) && minAfterBreach!.gt(0)) {
+      const reboundPct = px.minus(minAfterBreach!).div(minAfterBreach!).mul(100);
+      if (reboundPct.gte(params.tp.reboundPct)) {
+        return {
+          tpTriggered: true,
+          tpRule: "rebound",
+          closeIndex: i,
+          closePrice: px
+        };
+      }
+    }
+
+    if (params.tp.decayPct.gt(0) && peakIntrinsic.gt(0)) {
+      const decayPct = peakIntrinsic.minus(intrinsic).div(peakIntrinsic).mul(100);
+      if (decayPct.gte(params.tp.decayPct)) {
+        return {
+          tpTriggered: true,
+          tpRule: "decay",
+          closeIndex: i,
+          closePrice: px
+        };
+      }
+    }
+  }
+
+  if (breached) {
+    return {
+      tpTriggered: false,
+      tpRule: "expiry_after_breach",
+      ...expiryClose
+    };
+  }
+
+  return {
+    tpTriggered: false,
+    tpRule: "no_breach",
+    ...expiryClose
+  };
+};
+
 const formatCsv = (rows: TradeRow[]): string => {
   if (!rows.length) return "";
   const headers = Object.keys(rows[0]);
@@ -362,15 +535,35 @@ const buildSummary = (rows: TradeRow[]): SummaryModel[] => {
     const subsidyNeed = subset.map((row) => new Decimal(row.subsidyNeedUsd));
     const subsidyApplied = subset.map((row) => new Decimal(row.subsidyAppliedUsd));
     const subsidyBlocked = subset.map((row) => new Decimal(row.subsidyBlockedUsd));
+    const pnlBaseline = subset.map((row) => new Decimal(row.underwritingPnlBaselineUsd));
+    const pnlTp = subset.map((row) => new Decimal(row.underwritingPnlTpUsd));
+    const subsidyNeedBaseline = subset.map((row) => new Decimal(row.subsidyNeedBaselineUsd));
+    const subsidyNeedTp = subset.map((row) => new Decimal(row.subsidyNeedTpUsd));
+    const hedgeRecoveredBaseline = subset.map((row) => new Decimal(row.hedgeRecoveredBaselineUsd));
+    const hedgeRecoveredTp = subset.map((row) => new Decimal(row.hedgeRecoveredTpUsd));
     const triggerHits = subset.filter((row) => row.breachObserved).length;
     const subsidyHits = subset.filter((row) => new Decimal(row.subsidyAppliedUsd).gt(0)).length;
     const subsidyBlockedCount = subset.filter((row) => new Decimal(row.subsidyBlockedUsd).gt(0)).length;
     const endBalance = new Decimal(subset[subset.length - 1].treasuryBalanceAfterUsd);
     const tradeCount = subset.length;
+    const takeProfitTriggeredCount = subset.filter((row) => row.takeProfitTriggered).length;
+    const takeProfitTriggeredRatePct = new Decimal(takeProfitTriggeredCount).div(tradeCount).mul(100).toFixed(4);
+    const takeProfitUnderperformedCount = subset.filter((row) => new Decimal(row.underwritingPnlDeltaVsBaselineUsd).lt(0)).length;
+
+    const underwritingPnlBaselineTotal = sumDecimals(pnlBaseline);
+    const underwritingPnlTpTotal = sumDecimals(pnlTp);
+    const underwritingPnlImprovement = underwritingPnlTpTotal.minus(underwritingPnlBaselineTotal);
+    const subsidyNeedBaselineTotal = sumDecimals(subsidyNeedBaseline);
+    const subsidyNeedTpTotal = sumDecimals(subsidyNeedTp);
+    const subsidyNeedReduction = subsidyNeedBaselineTotal.minus(subsidyNeedTpTotal);
+    const hedgeRecoveredBaselineTotal = sumDecimals(hedgeRecoveredBaseline);
+    const hedgeRecoveredTpTotal = sumDecimals(hedgeRecoveredTp);
+    const hedgeRecoveredImprovement = hedgeRecoveredTpTotal.minus(hedgeRecoveredBaselineTotal);
 
     summary.push({
       model,
       breachMode: subset[0].breachMode,
+      takeProfitEnabled: subset[0].takeProfitEnabled,
       trades: tradeCount,
       premiumTotalUsd: toFixed(sumDecimals(premiums)),
       payoutTotalUsd: toFixed(sumDecimals(payouts)),
@@ -379,9 +572,21 @@ const buildSummary = (rows: TradeRow[]): SummaryModel[] => {
       hedgeNetCostTotalUsd: toFixed(sumDecimals(hedgeNetCosts)),
       underwritingPnlTotalUsd: toFixed(sumDecimals(pnl)),
       underwritingPnlPerTradeUsd: toFixed(sumDecimals(pnl).div(tradeCount)),
+      underwritingPnlBaselineTotalUsd: toFixed(underwritingPnlBaselineTotal),
+      underwritingPnlTpTotalUsd: toFixed(underwritingPnlTpTotal),
+      underwritingPnlImprovementUsd: toFixed(underwritingPnlImprovement),
       subsidyNeedTotalUsd: toFixed(sumDecimals(subsidyNeed)),
+      subsidyNeedBaselineTotalUsd: toFixed(subsidyNeedBaselineTotal),
+      subsidyNeedTpTotalUsd: toFixed(subsidyNeedTpTotal),
+      subsidyNeedReductionUsd: toFixed(subsidyNeedReduction),
       subsidyAppliedTotalUsd: toFixed(sumDecimals(subsidyApplied)),
       subsidyBlockedTotalUsd: toFixed(sumDecimals(subsidyBlocked)),
+      hedgeRecoveredBaselineTotalUsd: toFixed(hedgeRecoveredBaselineTotal),
+      hedgeRecoveredTpTotalUsd: toFixed(hedgeRecoveredTpTotal),
+      hedgeRecoveredImprovementUsd: toFixed(hedgeRecoveredImprovement),
+      takeProfitTriggeredCount,
+      takeProfitTriggeredRatePct,
+      takeProfitUnderperformedCount,
       subsidyHitCount: subsidyHits,
       subsidyBlockedCount,
       triggerHitCount: triggerHits,
@@ -461,6 +666,7 @@ const main = async () => {
   const args = parseArgs(process.argv.slice(2));
   const config = await loadConfig(args.configPath);
   const breachMode = args.breachModeOverride || parseBreachMode(config.breachMode, "path_min");
+  const tp = resolveTakeProfitRuntime(config, args);
   const prices = await loadPrices(args.pricesCsvPath);
   const tenorDays = parsePositiveInt(config.tenorDays, "tenorDays");
   const entryStepHours = parsePositiveInt(config.entryStepHours, "entryStepHours");
@@ -515,10 +721,42 @@ const main = async () => {
           });
           const payoutUsd = Decimal.min(payoutRaw, payoutCap);
 
-          const hedgeRecoveredUsd = payoutUsd.mul(hedgeRecoveryPct);
-          const hedgeNetCostUsd = Decimal.max(ZERO, hedgeCostUsd.minus(hedgeRecoveredUsd));
-          const underwritingPnlUsd = premiumUsd.minus(payoutUsd).minus(hedgeNetCostUsd);
-          const subsidyNeedUsd = Decimal.max(ZERO, underwritingPnlUsd.negated());
+          const hedgeReferenceBaselinePriceUsd = exit.price;
+          const tpEval = evaluateTakeProfit({
+            prices,
+            entryIdx,
+            exitIdx,
+            triggerPrice: triggerPriceUsd,
+            tp
+          });
+          const hedgeReferenceTpPriceUsd = tpEval.closePrice;
+          const hedgeRecoveredBaselineRaw = computePayoutLong({
+            protectedNotionalUsd: protectedNotional,
+            entryPriceUsd: entry.price,
+            triggerPriceUsd,
+            payoutReferencePriceUsd: hedgeReferenceBaselinePriceUsd
+          });
+          const hedgeRecoveredTpRaw = computePayoutLong({
+            protectedNotionalUsd: protectedNotional,
+            entryPriceUsd: entry.price,
+            triggerPriceUsd,
+            payoutReferencePriceUsd: hedgeReferenceTpPriceUsd
+          });
+          const hedgeRecoveredBaselineUsd = Decimal.min(hedgeRecoveredBaselineRaw, payoutCap).mul(hedgeRecoveryPct);
+          const hedgeRecoveredTpUsd = Decimal.min(hedgeRecoveredTpRaw, payoutCap).mul(hedgeRecoveryPct);
+          const hedgeRecoveredDeltaVsBaselineUsd = hedgeRecoveredTpUsd.minus(hedgeRecoveredBaselineUsd);
+          const hedgeRecoveredUsd = tp.enabled ? hedgeRecoveredTpUsd : hedgeRecoveredBaselineUsd;
+          const hedgeNetCostBaselineUsd = Decimal.max(ZERO, hedgeCostUsd.minus(hedgeRecoveredBaselineUsd));
+          const hedgeNetCostTpUsd = Decimal.max(ZERO, hedgeCostUsd.minus(hedgeRecoveredTpUsd));
+          const hedgeNetCostUsd = tp.enabled ? hedgeNetCostTpUsd : hedgeNetCostBaselineUsd;
+          const underwritingPnlBaselineUsd = premiumUsd.minus(payoutUsd).minus(hedgeNetCostBaselineUsd);
+          const underwritingPnlTpUsd = premiumUsd.minus(payoutUsd).minus(hedgeNetCostTpUsd);
+          const underwritingPnlDeltaVsBaselineUsd = underwritingPnlTpUsd.minus(underwritingPnlBaselineUsd);
+          const underwritingPnlUsd = tp.enabled ? underwritingPnlTpUsd : underwritingPnlBaselineUsd;
+          const subsidyNeedBaselineUsd = Decimal.max(ZERO, underwritingPnlBaselineUsd.negated());
+          const subsidyNeedTpUsd = Decimal.max(ZERO, underwritingPnlTpUsd.negated());
+          const subsidyNeedDeltaVsBaselineUsd = subsidyNeedTpUsd.minus(subsidyNeedBaselineUsd);
+          const subsidyNeedUsd = tp.enabled ? subsidyNeedTpUsd : subsidyNeedBaselineUsd;
           const perQuoteCapUsd = premiumUsd.mul(perQuoteCapPct);
           const usedToday = dailyApplied.get(dayKey) || ZERO;
           const remainingDailyCap = Decimal.max(ZERO, dailyCap.minus(usedToday));
@@ -532,6 +770,7 @@ const main = async () => {
           rows.push({
             model,
             breachMode,
+            takeProfitEnabled: tp.enabled,
             tierName: tier.tierName,
             entryTsIso: entry.tsIso,
             exitTsIso: exit.tsIso,
@@ -543,12 +782,25 @@ const main = async () => {
             payoutReferencePriceUsd: toFixed(payoutReferencePriceUsd),
             expiryPriceUsd: toFixed(exit.price),
             breachObserved,
+            takeProfitTriggered: tpEval.tpTriggered,
+            takeProfitRule: tpEval.tpRule,
+            takeProfitCloseTsIso: prices[tpEval.closeIndex].tsIso,
+            takeProfitClosePriceUsd: toFixed(tpEval.closePrice),
             premiumUsd: toFixed(premiumUsd),
             hedgeCostUsd: toFixed(hedgeCostUsd),
+            hedgeRecoveredBaselineUsd: toFixed(hedgeRecoveredBaselineUsd),
+            hedgeRecoveredTpUsd: toFixed(hedgeRecoveredTpUsd),
+            hedgeRecoveredDeltaVsBaselineUsd: toFixed(hedgeRecoveredDeltaVsBaselineUsd),
             hedgeRecoveredUsd: toFixed(hedgeRecoveredUsd),
             hedgeNetCostUsd: toFixed(hedgeNetCostUsd),
             payoutUsd: toFixed(payoutUsd),
+            underwritingPnlBaselineUsd: toFixed(underwritingPnlBaselineUsd),
+            underwritingPnlTpUsd: toFixed(underwritingPnlTpUsd),
+            underwritingPnlDeltaVsBaselineUsd: toFixed(underwritingPnlDeltaVsBaselineUsd),
             underwritingPnlUsd: toFixed(underwritingPnlUsd),
+            subsidyNeedBaselineUsd: toFixed(subsidyNeedBaselineUsd),
+            subsidyNeedTpUsd: toFixed(subsidyNeedTpUsd),
+            subsidyNeedDeltaVsBaselineUsd: toFixed(subsidyNeedDeltaVsBaselineUsd),
             subsidyNeedUsd: toFixed(subsidyNeedUsd),
             subsidyAppliedUsd: toFixed(subsidyAppliedUsd),
             subsidyBlockedUsd: toFixed(subsidyBlockedUsd),
@@ -566,6 +818,11 @@ const main = async () => {
     name: config.name,
     mode: args.mode,
     breachMode,
+    takeProfit: {
+      enabled: tp.enabled,
+      reboundPct: toFixed(tp.reboundPct),
+      decayPct: toFixed(tp.decayPct)
+    },
     treasury: {
       startingBalanceUsd: toFixed(startingTreasury),
       dailySubsidyCapUsd: toFixed(dailyCap),
@@ -591,6 +848,7 @@ const main = async () => {
         name: config.name,
         mode: args.mode,
         breachMode,
+        takeProfit: out.takeProfit,
         rows: rows.length,
         summaries: summary,
         executiveRisk,

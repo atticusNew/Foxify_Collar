@@ -119,6 +119,12 @@ Rule of thumb:
     - `lossP95PerTradeUsd`
     - `maxDrawdownUsd` / `maxDrawdownPct`
     - `recommendedMinTreasuryBufferUsd`
+  - Includes `takeProfit` runtime block and TP deltas in `summary`:
+    - `underwritingPnlBaselineTotalUsd` / `underwritingPnlTpTotalUsd`
+    - `underwritingPnlImprovementUsd`
+    - `subsidyNeedBaselineTotalUsd` / `subsidyNeedTpTotalUsd`
+    - `subsidyNeedReductionUsd`
+    - `takeProfitTriggeredCount` / `takeProfitTriggeredRatePct`
 
 ## Risk pack export (chart + spreadsheet ready)
 
@@ -145,6 +151,37 @@ Outputs:
   - rolling trigger hit rate
   - treasury drawdown
   - auto actions
+- `risk_pack_tp_impact.csv` (period/model TP delta view):
+  - baseline vs TP underwriting PnL totals
+  - baseline vs TP subsidy need totals
+  - hedge recovery improvement
+  - TP trigger and underperformance counts
+- `risk_pack_tp_rules.csv` (period/model rule mix):
+  - counts and rates by `takeProfitRule`
+- `risk_pack.xlsx`:
+  - tabs: `summary`, `daily`, `breach_rebound`, `tp_impact`, `tp_rule_breakdown`
+
+### True TP simulation knobs
+
+Set in `scripts/fixtures/pilot_backtest_config.example.json`:
+
+- `takeProfit.enabled` (true/false)
+- `takeProfit.reboundPct` (close hedge when rebound from post-breach low reaches this %)
+- `takeProfit.decayPct` (close hedge when intrinsic value decays this % from peak after breach)
+
+CLI overrides (without editing config):
+
+```bash
+npm run -s pilot:backtest:run -- \
+  --config scripts/fixtures/pilot_backtest_config.example.json \
+  --prices-csv artifacts/backtest/btc_usd_1h.csv \
+  --mode both \
+  --tp-enabled true \
+  --tp-rebound-pct 2 \
+  --tp-decay-pct 2 \
+  --out-json artifacts/backtest/pilot_backtest_tp.json \
+  --out-csv artifacts/backtest/pilot_backtest_tp.csv
+```
 
 ## Config knobs to edit first
 
