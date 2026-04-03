@@ -963,7 +963,7 @@ export const pilotConfig = {
     ),
     "Pro (Platinum)": parseHybridStrictMultiplier(
       process.env.PILOT_HYBRID_STRICT_MULTIPLIER_PLATINUM,
-      0.78,
+      0.75,
       "invalid_pilot_hybrid_strict_multiplier_platinum"
     )
   } as Record<string, number>,
