@@ -64,6 +64,24 @@ test("premium regime enters stress and respects dwell before downgrade", () => {
   assert.match(earlyDowngrade.reason, /min_dwell_hold|stress_exit_thresholds_not_met/);
 });
 
+test("premium regime stays normal on initial insufficient samples", () => {
+  __resetPremiumRegimeStateForTests();
+  const config = buildConfig({ minSamples: 5 });
+  const decision = resolvePremiumRegime({
+    scopeKey: "global",
+    config,
+    metrics: {
+      sampleCount: 2,
+      triggerHitRatePct: 20,
+      subsidyUtilizationPct: 90,
+      treasuryDrawdownPct: 45
+    }
+  });
+  assert.equal(decision.regime, "normal");
+  assert.equal(decision.changed, false);
+  assert.equal(decision.reason, "insufficient_samples_hold");
+});
+
 test("premium regime overlay applies add-per-1k and cap", () => {
   const config = buildConfig({
     maxOverlayPctOfBasePremium: 0.1,

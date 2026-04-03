@@ -1985,6 +1985,9 @@ export const registerPilotRoutes = async (
         premiumFloorUsdFromBps: premiumPricing.premiumFloorUsdFromBps.toFixed(10),
         premiumFloorBps: premiumPricing.premiumFloorBps.toFixed(2),
         premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
+        strictClientPremiumUsd: premiumPricing.strictClientPremiumUsd.toFixed(10),
+        hybridStrictMultiplier: premiumPricing.hybridStrictMultiplier.toFixed(6),
+        hybridDiscountedStrictPremiumUsd: premiumPricing.hybridDiscountedStrictPremiumUsd.toFixed(10),
         clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
         method: premiumPricing.method,
         treasuryQuoteSubsidyUsd: quoteSubsidyUsd.toFixed(10),
@@ -2695,6 +2698,15 @@ export const registerPilotRoutes = async (
         parsePositiveDecimal(lockContext.premiumFloorBps) ||
         parseBoundedDecimal(lockContext.premiumFloorBps, 0, Number.MAX_SAFE_INTEGER);
       const contextClientPremium = parsePositiveDecimal(lockContext.clientPremiumUsd);
+      const contextStrictClientPremium =
+        parsePositiveDecimal(lockContext.strictClientPremiumUsd) ||
+        parseBoundedDecimal(lockContext.strictClientPremiumUsd, 0, Number.MAX_SAFE_INTEGER);
+      const contextHybridStrictMultiplier =
+        parsePositiveDecimal(lockContext.hybridStrictMultiplier) ||
+        parseBoundedDecimal(lockContext.hybridStrictMultiplier, 0, Number.MAX_SAFE_INTEGER);
+      const contextHybridDiscountedStrictPremiumUsd =
+        parsePositiveDecimal(lockContext.hybridDiscountedStrictPremiumUsd) ||
+        parseBoundedDecimal(lockContext.hybridDiscountedStrictPremiumUsd, 0, Number.MAX_SAFE_INTEGER);
       const contextRequestedTenorDays = parsePositiveDecimal(lockContext.requestedTenorDays);
       const contextVenueRequestedTenorDays = parsePositiveDecimal(lockContext.venueRequestedTenorDays);
       const contextSelectedTenorDays = parsePositiveDecimal(lockContext.selectedTenorDays);
@@ -2761,12 +2773,17 @@ export const registerPilotRoutes = async (
         premiumFloorUsdFromBps: contextFloorUsdFromBps || fallbackPremiumPricing.premiumFloorUsdFromBps,
         premiumFloorBps: contextFloorBps || fallbackPremiumPricing.premiumFloorBps,
         premiumFloorUsd: contextFloorUsd || fallbackPremiumPricing.premiumFloorUsd,
+        strictClientPremiumUsd: contextStrictClientPremium || fallbackPremiumPricing.strictClientPremiumUsd,
+        hybridStrictMultiplier: contextHybridStrictMultiplier || fallbackPremiumPricing.hybridStrictMultiplier,
+        hybridDiscountedStrictPremiumUsd:
+          contextHybridDiscountedStrictPremiumUsd || fallbackPremiumPricing.hybridDiscountedStrictPremiumUsd,
         clientPremiumUsd: contextClientPremium || fallbackPremiumPricing.clientPremiumUsd,
         method: (() => {
           const rawMethod = String(lockContext.method || fallbackPremiumPricing.method);
-          if (rawMethod === "hybrid_markup") return "hybrid_markup";
-          if (rawMethod === "hybrid_position_floor") return "hybrid_position_floor";
-          if (rawMethod === "hybrid_claims_floor") return "hybrid_claims_floor";
+          if (rawMethod === "hybrid_strict_discount") return "hybrid_strict_discount";
+          if (rawMethod === "hybrid_markup") return "hybrid_strict_discount";
+          if (rawMethod === "hybrid_position_floor") return "hybrid_strict_discount";
+          if (rawMethod === "hybrid_claims_floor") return "hybrid_strict_discount";
           if (rawMethod === "floor_profitability") return "floor_profitability";
           if (rawMethod === "floor_trigger_credit") return "floor_trigger_credit";
           if (rawMethod === "floor_usd") return "floor_usd";

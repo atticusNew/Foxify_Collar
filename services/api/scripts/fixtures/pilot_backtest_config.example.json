@@ -19,7 +19,7 @@
       "tierName": "Pro (Bronze)",
       "drawdownFloorPct": "0.20",
       "strictPremiumPer1kProtectedUsd": "132.82",
-      "hybridPremiumPer1kProtectedUsd": "52.20",
+      "hybridPremiumPer1kProtectedUsd": "86.33",
       "fallbackHedgePremiumPer1kProtectedUsd": "40.00",
       "strictHedgeRecoveryPct": "0.95",
       "hybridHedgeRecoveryPct": "0.90"
@@ -28,7 +28,7 @@
       "tierName": "Pro (Silver)",
       "drawdownFloorPct": "0.15",
       "strictPremiumPer1kProtectedUsd": "132.82",
-      "hybridPremiumPer1kProtectedUsd": "52.20",
+      "hybridPremiumPer1kProtectedUsd": "92.97",
       "fallbackHedgePremiumPer1kProtectedUsd": "40.00",
       "strictHedgeRecoveryPct": "0.95",
       "hybridHedgeRecoveryPct": "0.90"
@@ -37,7 +37,7 @@
       "tierName": "Pro (Gold)",
       "drawdownFloorPct": "0.12",
       "strictPremiumPer1kProtectedUsd": "132.82",
-      "hybridPremiumPer1kProtectedUsd": "52.20",
+      "hybridPremiumPer1kProtectedUsd": "99.62",
       "fallbackHedgePremiumPer1kProtectedUsd": "40.00",
       "strictHedgeRecoveryPct": "0.95",
       "hybridHedgeRecoveryPct": "0.90"
@@ -46,7 +46,7 @@
       "tierName": "Pro (Platinum)",
       "drawdownFloorPct": "0.12",
       "strictPremiumPer1kProtectedUsd": "132.82",
-      "hybridPremiumPer1kProtectedUsd": "52.20",
+      "hybridPremiumPer1kProtectedUsd": "103.60",
       "fallbackHedgePremiumPer1kProtectedUsd": "40.00",
       "strictHedgeRecoveryPct": "0.95",
       "hybridHedgeRecoveryPct": "0.90"

@@ -204,7 +204,7 @@ Edit: `scripts/fixtures/pilot_backtest_config.example.json`
 - `treasury.perQuoteSubsidyCapPct`
 - Per tier:
   - `strictPremiumPer1kProtectedUsd`
-  - `hybridPremiumPer1kProtectedUsd`
+  - `hybridPremiumPer1kProtectedUsd` (keep this as a discounted share of strict, e.g. ~65% Bronze, 70% Silver, 75% Gold, 78% Platinum)
   - `fallbackHedgePremiumPer1kProtectedUsd`
   - `strictHedgeRecoveryPct`
   - `hybridHedgeRecoveryPct`

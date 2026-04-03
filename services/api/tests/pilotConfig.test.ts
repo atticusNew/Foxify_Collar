@@ -12,6 +12,7 @@ import {
   parseIbkrOrderTif,
   parseBooleanEnv,
   parseFractionRange,
+  parseHybridStrictMultiplier,
   parseNonNegativeFinite,
   parsePositiveFinite,
   parsePositiveIntInRange,
@@ -139,6 +140,13 @@ test("parseFractionRange enforces fractional bounds", () => {
   assert.equal(parseFractionRange("1", 0.3, 0, 1, "invalid"), 1);
   assert.throws(() => parseFractionRange("-0.01", 0.3, 0, 1, "invalid"), /invalid:/);
   assert.throws(() => parseFractionRange("1.1", 0.3, 0, 1, "invalid"), /invalid:/);
+});
+
+test("parseHybridStrictMultiplier enforces discounted pilot bands", () => {
+  assert.equal(parseHybridStrictMultiplier(undefined, 0.65, "invalid"), 0.65);
+  assert.equal(parseHybridStrictMultiplier("0.78", 0.65, "invalid"), 0.78);
+  assert.throws(() => parseHybridStrictMultiplier("0.2", 0.65, "invalid"), /invalid:/);
+  assert.throws(() => parseHybridStrictMultiplier("1.1", 0.65, "invalid"), /invalid:/);
 });
 
 test("ibkr tenor drift env parsing supports configured bounds", () => {

@@ -132,6 +132,8 @@ test("quote applies premium regime overlay in watch regime", async () => {
     const breakdown = body?.quote?.details?.pricingBreakdown || {};
     assert.equal(breakdown.premiumRegimeOverlayApplied, true);
     assert.equal(breakdown.premiumRegimeLevel, "watch");
+    assert.equal(Number(breakdown.strictClientPremiumUsd), 212.5);
+    assert.equal(Number(breakdown.hybridStrictMultiplier), 0.65);
     assert.equal(Number(breakdown.premiumRegimeOverlayAddUsdPer1k), 2);
     assert.equal(Number(breakdown.premiumRegimeOverlayUsd), 10);
     assert.equal(Number(breakdown.clientPremiumUsd), Number(breakdown.premiumRegimeAdjustedPremiumUsd));

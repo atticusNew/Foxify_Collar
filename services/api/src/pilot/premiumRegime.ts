@@ -82,8 +82,8 @@ export const resolvePremiumRegime = (params: {
 
   let next = proposeRegime(params.metrics, params.config);
   let reason = "thresholds";
-  if (hasPreviousState && params.metrics.sampleCount < params.config.minSamples) {
-    next = previous.regime;
+  if (params.metrics.sampleCount < params.config.minSamples) {
+    next = hasPreviousState ? previous.regime : "normal";
     reason = "insufficient_samples_hold";
   } else if (previous.regime === "stress" && next !== "stress") {
     if (!canExitStress(params.metrics, params.config)) {
