@@ -1,4 +1,4 @@
-import { createHash, createHmac, createSign, randomUUID } from "node:crypto";
+import { createHash, createHmac, createPrivateKey, createPublicKey, createSign, randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { BullishRuntimeConfig } from "./config";
 
@@ -25,6 +25,16 @@ export type BullishHybridOrderbook = {
 
 type BullishWsMessage = Record<string, unknown>;
 
+type BullishPemInspection = {
+  present: boolean;
+  normalized: string;
+  beginLabel: string | null;
+  endLabel: string | null;
+  bodyLength: number;
+  invalidBodyCharCount: number;
+  invalidBodyCharSample: string[];
+};
+
 let bullishWsRequestCounter = BigInt(Date.now());
 
 const nextBullishWsRequestId = (): string => {
@@ -42,7 +52,12 @@ const sha256Hex = (value: string): string => createHash("sha256").update(value).
 const normalizePem = (value: string): string => {
   const normalized = String(value || "").trim();
   if (!normalized) return "";
-  const withNewlines = normalized.replace(/\\n/g, "\n").trim();
+  const withoutWrappingQuotes =
+    (normalized.startsWith("'") && normalized.endsWith("'")) ||
+    (normalized.startsWith("\"") && normalized.endsWith("\""))
+      ? normalized.slice(1, -1)
+      : normalized;
+  const withNewlines = withoutWrappingQuotes.replace(/\\n/g, "\n").trim();
   const beginMatch = withNewlines.match(/-----BEGIN ([A-Z ]+)-----/);
   const endMatch = withNewlines.match(/-----END ([A-Z ]+)-----/);
   if (!beginMatch || !endMatch) {
@@ -55,6 +70,93 @@ const normalizePem = (value: string): string => {
     .replace(/\s+/g, "");
   const wrapped = body.match(/.{1,64}/g)?.join("\n") || body;
   return `-----BEGIN ${label}-----\n${wrapped}\n-----END ${label}-----`;
+};
+
+const inspectPem = (value: string): BullishPemInspection => {
+  const normalized = normalizePem(value);
+  if (!normalized) {
+    return {
+      present: false,
+      normalized: "",
+      beginLabel: null,
+      endLabel: null,
+      bodyLength: 0,
+      invalidBodyCharCount: 0,
+      invalidBodyCharSample: []
+    };
+  }
+  const beginLabel = normalized.match(/-----BEGIN ([A-Z ]+)-----/)?.[1]?.trim() || null;
+  const endLabel = normalized.match(/-----END ([A-Z ]+)-----/)?.[1]?.trim() || null;
+  const body = normalized
+    .replace(/-----BEGIN [A-Z ]+-----/g, "")
+    .replace(/-----END [A-Z ]+-----/g, "")
+    .replace(/\s+/g, "");
+  const invalidChars = Array.from(new Set(body.replace(/[A-Za-z0-9+/=]/g, "").split("").filter(Boolean)));
+  return {
+    present: true,
+    normalized,
+    beginLabel,
+    endLabel,
+    bodyLength: body.length,
+    invalidBodyCharCount: invalidChars.length,
+    invalidBodyCharSample: invalidChars.slice(0, 8)
+  };
+};
+
+const parseBullishPrivateKey = (value: string) => {
+  const inspection = inspectPem(value);
+  if (!inspection.present) {
+    throw new Error("bullish_ecdsa_private_key_missing");
+  }
+  if (!inspection.beginLabel || !inspection.endLabel || inspection.beginLabel !== inspection.endLabel) {
+    throw new Error("bullish_ecdsa_private_key_invalid_pem_markers");
+  }
+  if (inspection.invalidBodyCharCount > 0) {
+    throw new Error("bullish_ecdsa_private_key_invalid_base64_body");
+  }
+  const type =
+    inspection.beginLabel === "PRIVATE KEY"
+      ? "pkcs8"
+      : inspection.beginLabel === "EC PRIVATE KEY"
+        ? "sec1"
+        : null;
+  if (!type) {
+    throw new Error(`bullish_ecdsa_private_key_unsupported_pem_type:${inspection.beginLabel}`);
+  }
+  try {
+    return createPrivateKey({
+      key: inspection.normalized,
+      format: "pem",
+      type
+    });
+  } catch {
+    throw new Error(`bullish_ecdsa_private_key_parse_failed:${type}`);
+  }
+};
+
+const parseBullishPublicKey = (value: string) => {
+  const inspection = inspectPem(value);
+  if (!inspection.present) {
+    throw new Error("bullish_ecdsa_public_key_missing");
+  }
+  if (!inspection.beginLabel || !inspection.endLabel || inspection.beginLabel !== inspection.endLabel) {
+    throw new Error("bullish_ecdsa_public_key_invalid_pem_markers");
+  }
+  if (inspection.invalidBodyCharCount > 0) {
+    throw new Error("bullish_ecdsa_public_key_invalid_base64_body");
+  }
+  if (inspection.beginLabel !== "PUBLIC KEY") {
+    throw new Error(`bullish_ecdsa_public_key_unsupported_pem_type:${inspection.beginLabel}`);
+  }
+  try {
+    return createPublicKey({
+      key: inspection.normalized,
+      format: "pem",
+      type: "spki"
+    });
+  } catch {
+    throw new Error("bullish_ecdsa_public_key_parse_failed:spki");
+  }
 };
 
 const decodeBullishMetadata = (encoded: string): { userId: string | null; raw: Record<string, unknown> | null } => {
@@ -155,6 +257,55 @@ export const resolveBullishMarketSymbol = (
   const instrument = String(params.instrumentId || "").trim().toUpperCase();
   if (instrument.startsWith("BTC")) return config.symbolByMarketId["BTC-USD"] || config.defaultSymbol;
   return config.defaultSymbol;
+};
+
+export const inspectBullishEcdsaKeyMaterial = (params: {
+  publicKey: string;
+  privateKey: string;
+  metadata: string;
+}) => {
+  const publicInspection = inspectPem(params.publicKey);
+  const privateInspection = inspectPem(params.privateKey);
+  const metadata = decodeBullishMetadata(params.metadata);
+  let privateKeyParses = false;
+  let publicKeyParses = false;
+  let privateKeyParseError: string | null = null;
+  let publicKeyParseError: string | null = null;
+  try {
+    parseBullishPrivateKey(params.privateKey);
+    privateKeyParses = true;
+  } catch (error) {
+    privateKeyParseError = String((error as Error)?.message || error);
+  }
+  try {
+    parseBullishPublicKey(params.publicKey);
+    publicKeyParses = true;
+  } catch (error) {
+    publicKeyParseError = String((error as Error)?.message || error);
+  }
+  return {
+    metadataUserIdPresent: Boolean(metadata.userId),
+    publicKey: {
+      present: publicInspection.present,
+      beginLabel: publicInspection.beginLabel,
+      endLabel: publicInspection.endLabel,
+      bodyLength: publicInspection.bodyLength,
+      invalidBodyCharCount: publicInspection.invalidBodyCharCount,
+      invalidBodyCharSample: publicInspection.invalidBodyCharSample,
+      parses: publicKeyParses,
+      parseError: publicKeyParseError
+    },
+    privateKey: {
+      present: privateInspection.present,
+      beginLabel: privateInspection.beginLabel,
+      endLabel: privateInspection.endLabel,
+      bodyLength: privateInspection.bodyLength,
+      invalidBodyCharCount: privateInspection.invalidBodyCharCount,
+      invalidBodyCharSample: privateInspection.invalidBodyCharSample,
+      parses: privateKeyParses,
+      parseError: privateKeyParseError
+    }
+  };
 };
 
 export class BullishTradingClient {
@@ -265,9 +416,8 @@ export class BullishTradingClient {
       return this.jwtSession;
     }
     const publicKey = normalizePem(this.config.ecdsaPublicKey);
-    const privateKey = normalizePem(this.config.ecdsaPrivateKey);
     const { userId } = decodeBullishMetadata(this.config.ecdsaMetadata);
-    if (!publicKey || !privateKey || !userId) {
+    if (!publicKey || !this.config.ecdsaPrivateKey || !userId) {
       throw new Error("bullish_credentials_missing");
     }
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -279,10 +429,13 @@ export class BullishTradingClient {
       sessionKey: null
     };
     const loginPayloadJson = JSON.stringify(loginPayload);
+    // Validate both PEMs eagerly so auth failures distinguish local key parsing
+    // from remote Bullish API/login rejections.
+    parseBullishPublicKey(publicKey);
     const signer = createSign("sha256");
     signer.update(loginPayloadJson);
     signer.end();
-    const signature = signer.sign(privateKey).toString("base64");
+    const signature = signer.sign(parseBullishPrivateKey(this.config.ecdsaPrivateKey)).toString("base64");
     const payload = await this.requestJson<{ token?: string; authorizer?: string }>({
       path: ensureLeadingSlash(this.config.ecdsaLoginPath),
       method: "POST",
