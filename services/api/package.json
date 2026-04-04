@@ -37,6 +37,7 @@
     "pilot:backtest:tp-sweep": "tsx scripts/pilotBacktestTpSweep.ts",
     "pilot:backtest:premium-sweep": "tsx scripts/pilotBacktestPremiumSweep.ts",
     "pilot:backtest:band-targets": "tsx scripts/pilotBacktestBandTargets.ts",
+    "pilot:backtest:launch-verdict": "tsx scripts/pilotBacktestLaunchVerdict.ts",
     "pilot:backfill:options-chain": "tsx scripts/pilotBackfillOptionsChain.ts",
     "pilot:backfill:rfq-history": "tsx scripts/pilotBackfillRfqHistory.ts",
     "pilot:backfill:execution-quality": "tsx scripts/pilotBackfillExecutionQuality.ts"
