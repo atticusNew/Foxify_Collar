@@ -367,9 +367,21 @@ const main = async () => {
     const byPremium = periodRows.filter((row) => row.bronzePremiumPer1kUsd === bronzePremium);
     const stressRows = byPremium.filter((row) => row.periodRegime === "stress");
     const rolling = byPremium.find((row) => row.periodLabel === "rolling_12m");
-    if (!stressRows.length || !rolling) continue;
+    if (!rolling) continue;
 
-    const anchor = [...stressRows].sort(
+    // Backward-compatible behavior:
+    // - Prefer explicit stress rows when present.
+    // - For consistent period profiles (all mixed), anchor to last_qtr or any non-rolling period.
+    const nonRollingRows = byPremium.filter((row) => row.periodLabel !== "rolling_12m");
+    const anchorCandidates =
+      stressRows.length > 0
+        ? stressRows
+        : nonRollingRows.find((row) => row.periodLabel === "last_qtr")
+          ? nonRollingRows.filter((row) => row.periodLabel === "last_qtr")
+          : nonRollingRows;
+    if (!anchorCandidates.length) continue;
+
+    const anchor = [...anchorCandidates].sort(
       (a, b) => toDecimal(b.subsidyNeedTotalUsd).minus(toDecimal(a.subsidyNeedTotalUsd)).toNumber()
     )[0];
     const anchorSubsidyNeed = toDecimal(anchor.subsidyNeedTotalUsd);
@@ -384,8 +396,12 @@ const main = async () => {
       : new Decimal(0);
     const anchorDays = resolvePeriodDays(anchor);
 
-    const stressCombinedBaseNeed = stressRows.reduce((acc, row) => acc.plus(toDecimal(row.subsidyNeedTotalUsd)), new Decimal(0));
-    const stressWorstDayBase = stressRows.reduce(
+    const stressRowsForProjection = stressRows.length > 0 ? stressRows : [anchor];
+    const stressCombinedBaseNeed = stressRowsForProjection.reduce(
+      (acc, row) => acc.plus(toDecimal(row.subsidyNeedTotalUsd)),
+      new Decimal(0)
+    );
+    const stressWorstDayBase = stressRowsForProjection.reduce(
       (acc, row) => Decimal.max(acc, toDecimal(row.worstDaySubsidyNeedUsd)),
       new Decimal(0)
     );

@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import Decimal from "decimal.js";
 
 type Regime = "stress" | "calm" | "mixed";
+type PeriodProfile = "legacy" | "consistent_core" | "rolling_12m" | "rolling_24m" | "last_qtr";
 
 type PeriodDef = {
   label: string;
@@ -83,6 +84,8 @@ type Args = {
   stressTargetMinUsd: Decimal;
   decisionRequireNoBlockedSubsidy: boolean;
   skipFetch: boolean;
+  periodProfile: PeriodProfile;
+  asOfIso: string | null;
   periodLabels: string[] | null;
 };
 
@@ -161,24 +164,62 @@ type BandSelection = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const rolling12mPeriod = (): PeriodDef => {
-  const toMs = Date.now();
-  const fromMs = toMs - 365 * DAY_MS;
+const buildRollingPeriod = (label: string, toMs: number, days: number): PeriodDef => {
+  const fromMs = toMs - days * DAY_MS;
   return {
-    label: "rolling_12m",
+    label,
     fromIso: new Date(fromMs).toISOString(),
     toIso: new Date(toMs).toISOString(),
     regime: "mixed"
   };
 };
 
-const DEFAULT_PERIODS = (): PeriodDef[] => [
+const startOfQuarterUtc = (date: Date): Date =>
+  new Date(Date.UTC(date.getUTCFullYear(), Math.floor(date.getUTCMonth() / 3) * 3, 1, 0, 0, 0, 0));
+
+const buildLastCompletedQuarterPeriod = (asOf: Date): PeriodDef => {
+  const quarterStart = startOfQuarterUtc(asOf);
+  const lastQuarterEnd = quarterStart;
+  const lastQuarterStart = new Date(lastQuarterEnd.getTime());
+  lastQuarterStart.setUTCMonth(lastQuarterStart.getUTCMonth() - 3);
+  return {
+    label: "last_qtr",
+    fromIso: lastQuarterStart.toISOString(),
+    toIso: lastQuarterEnd.toISOString(),
+    regime: "mixed"
+  };
+};
+
+const LEGACY_PERIODS = (toMs: number): PeriodDef[] => [
   { label: "q2_2022", fromIso: "2022-04-01T00:00:00Z", toIso: "2022-07-01T00:00:00Z", regime: "stress" },
   { label: "q4_2022", fromIso: "2022-10-01T00:00:00Z", toIso: "2023-01-01T00:00:00Z", regime: "stress" },
   { label: "q1_2023", fromIso: "2023-01-01T00:00:00Z", toIso: "2023-04-01T00:00:00Z", regime: "calm" },
   { label: "q1_2024", fromIso: "2024-01-01T00:00:00Z", toIso: "2024-04-01T00:00:00Z", regime: "calm" },
-  rolling12mPeriod()
+  buildRollingPeriod("rolling_12m", toMs, 365)
 ];
+
+const parseAsOf = (raw: string | null): Date => {
+  const value = String(raw || "").trim();
+  if (!value) return new Date();
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`invalid_as_of:${value}`);
+  return parsed;
+};
+
+const resolvePeriodProfilePeriods = (profile: PeriodProfile, asOf: Date): PeriodDef[] => {
+  const toMs = asOf.getTime();
+  if (profile === "rolling_12m") return [buildRollingPeriod("rolling_12m", toMs, 365)];
+  if (profile === "rolling_24m") return [buildRollingPeriod("rolling_24m", toMs, 730)];
+  if (profile === "last_qtr") return [buildLastCompletedQuarterPeriod(asOf)];
+  if (profile === "consistent_core") {
+    return [
+      buildLastCompletedQuarterPeriod(asOf),
+      buildRollingPeriod("rolling_12m", toMs, 365),
+      buildRollingPeriod("rolling_24m", toMs, 730)
+    ];
+  }
+  return LEGACY_PERIODS(toMs);
+};
 
 const toDecimal = (value: string | number | null | undefined): Decimal => {
   try {
@@ -226,6 +267,8 @@ const parseArgs = (argv: string[]): Args => {
     stressTargetMinUsd: new Decimal("400000"),
     decisionRequireNoBlockedSubsidy: false,
     skipFetch: false,
+    periodProfile: "legacy",
+    asOfIso: null,
     periodLabels: null
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -306,6 +349,27 @@ const parseArgs = (argv: string[]): Args => {
     }
     if (token === "--skip-fetch" && argv[i + 1]) {
       args.skipFetch = parseBool(argv[i + 1], false);
+      i += 1;
+      continue;
+    }
+    if (token === "--period-profile" && argv[i + 1]) {
+      const profile = String(argv[i + 1]).trim().toLowerCase();
+      if (
+        profile === "legacy" ||
+        profile === "consistent_core" ||
+        profile === "rolling_12m" ||
+        profile === "rolling_24m" ||
+        profile === "last_qtr"
+      ) {
+        args.periodProfile = profile;
+      } else {
+        throw new Error(`invalid_period_profile:${profile}`);
+      }
+      i += 1;
+      continue;
+    }
+    if (token === "--as-of" && argv[i + 1]) {
+      args.asOfIso = String(argv[i + 1]).trim() || null;
       i += 1;
       continue;
     }
@@ -433,7 +497,8 @@ const ensureSingleTierConfig = (
 const main = async () => {
   const args = parseArgs(process.argv.slice(2));
   const cwd = process.cwd();
-  const periods = DEFAULT_PERIODS();
+  const asOf = parseAsOf(args.asOfIso);
+  const periods = resolvePeriodProfilePeriods(args.periodProfile, asOf);
   const selectedPeriods = args.periodLabels ? periods.filter((p) => args.periodLabels!.includes(p.label)) : periods;
   if (!selectedPeriods.length) throw new Error("no_periods_selected");
 
@@ -614,6 +679,8 @@ const main = async () => {
     decisionRequireNoBlockedSubsidy: args.decisionRequireNoBlockedSubsidy,
     stressTargetMinUsd: args.stressTargetMinUsd.toFixed(2),
     stressMaxUsd: args.stressMaxUsd.toFixed(2),
+    periodProfile: args.periodProfile,
+    asOfIso: asOf.toISOString(),
     periods: selectedPeriods
   };
 

@@ -41,6 +41,7 @@
     "pilot:backtest:multi-tier-launch-verdict": "tsx scripts/pilotBacktestMultiTierLaunchVerdict.ts",
     "pilot:backtest:final-candidate-monthly-economics": "tsx scripts/pilotBacktestFinalCandidateMonthlyEconomics.ts",
     "pilot:backtest:weighted-reprice": "bash scripts/pilot_backtest_weighted_reprice.sh",
+    "pilot:backtest:consistent-matrix": "bash scripts/pilot_backtest_consistent_matrix.sh",
     "pilot:backfill:options-chain": "tsx scripts/pilotBackfillOptionsChain.ts",
     "pilot:backfill:rfq-history": "tsx scripts/pilotBackfillRfqHistory.ts",
     "pilot:backfill:execution-quality": "tsx scripts/pilotBackfillExecutionQuality.ts"
