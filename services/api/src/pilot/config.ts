@@ -16,7 +16,7 @@ export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 export type PilotPricingMode = "actuarial_strict" | "hybrid_otm_treasury";
 export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
-export type HybridStrictMultiplierScheduleName = "current" | "cheaper";
+export type HybridStrictMultiplierScheduleName = "current" | "cheaper" | "strict_band_low" | "strict_band_mid" | "strict_band_high";
 export type BullishAuthMode = "hmac" | "ecdsa";
 export type BullishOrderTif = "IOC" | "DAY" | "GTC";
 export type PilotRuntimeProfileName = "default" | "bullish_locked_v1";
@@ -306,9 +306,83 @@ const resolveCheaperHybridStrictMultiplierByTier = (): Record<string, number> =>
   )
 });
 
+// Structured bands aligned to drawdown-floor tiers:
+// Bronze(20%): 0.60-0.70, Silver(15%): 0.65-0.75, Gold/Plat(12%): 0.70-0.80
+const resolveStrictBandLowHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_LOW_BRONZE,
+    0.6,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_low_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_LOW_SILVER,
+    0.65,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_low_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_LOW_GOLD,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_low_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_LOW_PLATINUM,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_low_platinum"
+  )
+});
+
+const resolveStrictBandMidHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_MID_BRONZE,
+    0.65,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_mid_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_MID_SILVER,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_mid_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_MID_GOLD,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_mid_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_MID_PLATINUM,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_mid_platinum"
+  )
+});
+
+const resolveStrictBandHighHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_HIGH_BRONZE,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_high_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_HIGH_SILVER,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_high_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_HIGH_GOLD,
+    0.8,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_high_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_HIGH_PLATINUM,
+    0.8,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_high_platinum"
+  )
+});
+
 export const resolveHybridStrictMultiplierSchedules = (): Record<HybridStrictMultiplierScheduleName, Record<string, number>> => ({
   current: resolveCurrentHybridStrictMultiplierByTier(),
-  cheaper: resolveCheaperHybridStrictMultiplierByTier()
+  cheaper: resolveCheaperHybridStrictMultiplierByTier(),
+  strict_band_low: resolveStrictBandLowHybridStrictMultiplierByTier(),
+  strict_band_mid: resolveStrictBandMidHybridStrictMultiplierByTier(),
+  strict_band_high: resolveStrictBandHighHybridStrictMultiplierByTier()
 });
 
 export const DEFAULT_LIVE_HYBRID_STRICT_MULTIPLIER_SCHEDULE: HybridStrictMultiplierScheduleName = "cheaper";
