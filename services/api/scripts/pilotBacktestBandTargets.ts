@@ -15,6 +15,7 @@ type Args = {
   issuanceScaleGrid: Decimal[];
   realismHighMax: Decimal;
   realismMediumMax: Decimal;
+  allowSmallBandUsd: boolean;
 };
 
 type CandidateRow = {
@@ -143,6 +144,13 @@ const toDecimal = (value: string | number | null | undefined): Decimal => {
 
 const toFixed = (value: Decimal, dp = 10): string => value.toFixed(dp);
 const absDecimal = (value: Decimal): Decimal => (value.lt(0) ? value.negated() : value);
+const parseBool = (raw: string | undefined, fallback: boolean): boolean => {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (!value) return fallback;
+  if (value === "true" || value === "1" || value === "yes") return true;
+  if (value === "false" || value === "0" || value === "no") return false;
+  return fallback;
+};
 
 const parseDecimalList = (raw: string | undefined, fallback: string): Decimal[] => {
   const out = String(raw || fallback)
@@ -156,7 +164,19 @@ const parseDecimalList = (raw: string | undefined, fallback: string): Decimal[] 
   return Array.from(dedup.values()).sort((a, b) => a.minus(b).toNumber());
 };
 
-const parseBands = (raw: string | undefined): BandSpec[] => {
+const parseUsdAmount = (raw: string): Decimal => {
+  const value = String(raw || "").trim();
+  const match = value.match(/^(-?\d+(?:\.\d+)?)\s*([kKmMbB]?)$/);
+  if (!match) return toDecimal(value);
+  const base = toDecimal(match[1]);
+  const unit = String(match[2] || "").toLowerCase();
+  if (unit === "k") return base.mul(1000);
+  if (unit === "m") return base.mul(1_000_000);
+  if (unit === "b") return base.mul(1_000_000_000);
+  return base;
+};
+
+const parseBands = (raw: string | undefined, allowSmallBandUsd: boolean): BandSpec[] => {
   const source = String(raw || "severe_400_500:400000-500000,severe_250_300:250000-300000");
   const out: BandSpec[] = [];
   for (const token of source.split(",")) {
@@ -166,10 +186,16 @@ const parseBands = (raw: string | undefined): BandSpec[] => {
     const [minRaw, maxRaw] = String(rangeRaw || "")
       .split("-", 2)
       .map((v) => v.trim());
-    const minValue = toDecimal(minRaw);
-    const maxValue = toDecimal(maxRaw);
+    const minValue = parseUsdAmount(minRaw);
+    const maxValue = parseUsdAmount(maxRaw);
     if (minValue.lte(0) || maxValue.lte(0) || maxValue.lt(minValue)) {
       throw new Error(`invalid_band:${part}`);
+    }
+    const likelyUnintendedTinyBand = maxValue.lt(1000);
+    if (likelyUnintendedTinyBand && !allowSmallBandUsd) {
+      throw new Error(
+        `band_values_too_small:${part}:use_full_usd_or_suffix_e.g._200000-250000_or_200k-250k_or_pass_--allow-small-band-usd_true`
+      );
     }
     const label = String(labelRaw || `${minRaw}_${maxRaw}`)
       .trim()
@@ -189,11 +215,13 @@ const parseArgs = (argv: string[]): Args => {
   const args: Args = {
     sweepResultsPath: "artifacts/desktop/premium_sweep_coinbase_tp_off_scaled/premium_sweep_results.json",
     outDir: null,
-    bands: parseBands(undefined),
+    bands: [],
     issuanceScaleGrid: parseDecimalList(undefined, "25,50,75,100,125,150,175,200"),
     realismHighMax: new Decimal(150),
-    realismMediumMax: new Decimal(300)
+    realismMediumMax: new Decimal(300),
+    allowSmallBandUsd: false
   };
+  let rawBands: string | undefined;
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (token === "--results-json" && argv[i + 1]) {
@@ -207,7 +235,12 @@ const parseArgs = (argv: string[]): Args => {
       continue;
     }
     if (token === "--bands" && argv[i + 1]) {
-      args.bands = parseBands(argv[i + 1]);
+      rawBands = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (token === "--allow-small-band-usd" && argv[i + 1]) {
+      args.allowSmallBandUsd = parseBool(argv[i + 1], false);
       i += 1;
       continue;
     }
@@ -231,6 +264,7 @@ const parseArgs = (argv: string[]): Args => {
       continue;
     }
   }
+  args.bands = parseBands(rawBands, args.allowSmallBandUsd);
   return args;
 };
 
