@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import Decimal from "decimal.js";
 
@@ -55,6 +55,7 @@ type PeriodRow = {
 type SweepResults = {
   assumptions?: {
     treasuryStartingBalanceUsd?: string;
+    tierName?: string;
   };
   candidateRows: CandidateRow[];
   periodRows: PeriodRow[];
@@ -255,9 +256,19 @@ const resolvePeriodDays = (period: Pick<PeriodRow, "fromIso" | "toIso">): number
   return Math.max(1, Math.round((toMs - fromMs) / (24 * 60 * 60 * 1000)));
 };
 
-const scenarioLabelFromPremium = (premium: string): string => {
+const slugifyTierName = (tierName: string): string =>
+  String(tierName || "tier")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "tier";
+
+const scenarioLabelCandidates = (premium: string, tierName?: string): string[] => {
   const normalized = toDecimal(premium).toFixed(2).replace(".", "_");
-  return `bronze_${normalized}`;
+  const out = new Set<string>();
+  if (tierName) out.add(`${slugifyTierName(tierName)}_${normalized}`);
+  out.add(`bronze_${normalized}`); // legacy fallback
+  return Array.from(out.values());
 };
 
 const parseHybridSummary = (runJson: RunJson): RunSummaryHybrid => {
@@ -285,14 +296,31 @@ const main = async () => {
   const candidateRows = Array.isArray(results.candidateRows) ? results.candidateRows : [];
   const runJsonCache = new Map<string, RunSummaryHybrid>();
   const runsDir = path.join(path.dirname(args.sweepResultsPath), "runs");
+  const runScenarioDirs = await readdir(runsDir).catch(() => []);
 
   const readRunSummary = async (bronzePremium: string, periodLabel: string): Promise<RunSummaryHybrid> => {
     const cacheKey = `${bronzePremium}:${periodLabel}`;
     const cached = runJsonCache.get(cacheKey);
     if (cached) return cached;
-    const scenarioDir = scenarioLabelFromPremium(bronzePremium);
-    const runPath = path.join(runsDir, scenarioDir, `pilot_backtest_${periodLabel}.json`);
-    const parsed = JSON.parse(await readFile(runPath, "utf8")) as RunJson;
+    const normalized = toDecimal(bronzePremium).toFixed(2).replace(".", "_");
+    const candidates = scenarioLabelCandidates(bronzePremium, results.assumptions?.tierName);
+    // Also accept any scenario dir that ends with the normalized premium token.
+    for (const dir of runScenarioDirs) {
+      if (String(dir).endsWith(`_${normalized}`)) candidates.push(String(dir));
+    }
+    let parsed: RunJson | null = null;
+    for (const scenarioDir of candidates) {
+      const runPath = path.join(runsDir, scenarioDir, `pilot_backtest_${periodLabel}.json`);
+      try {
+        parsed = JSON.parse(await readFile(runPath, "utf8")) as RunJson;
+        break;
+      } catch {
+        // try next candidate
+      }
+    }
+    if (!parsed) {
+      throw new Error(`run_json_not_found:${bronzePremium}:${periodLabel}`);
+    }
     const summary = parseHybridSummary(parsed);
     runJsonCache.set(cacheKey, summary);
     return summary;
