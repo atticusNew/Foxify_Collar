@@ -23,6 +23,19 @@ export type BullishHybridOrderbook = {
   raw: unknown;
 };
 
+export type BullishMarketRecord = {
+  symbol: string;
+  marketId?: string;
+  marketType?: string;
+  optionType?: string;
+  optionStrikePrice?: string;
+  expiryDatetime?: string;
+  underlyingBaseSymbol?: string;
+  underlyingQuoteSymbol?: string;
+  marketEnabled?: boolean;
+  createOrderEnabled?: boolean;
+};
+
 type BullishWsMessage = Record<string, unknown>;
 
 type BullishPemInspection = {
@@ -255,6 +268,13 @@ export const resolveBullishMarketSymbol = (
   const marketId = String(params.marketId || "").trim();
   if (marketId && config.symbolByMarketId[marketId]) return config.symbolByMarketId[marketId];
   const instrument = String(params.instrumentId || "").trim().toUpperCase();
+  if (
+    /^[A-Z0-9]+-[A-Z0-9]+-PERP$/.test(instrument) ||
+    /^[A-Z0-9]+-[A-Z0-9]+-\d{8}$/.test(instrument) ||
+    /^[A-Z0-9]+-[A-Z0-9]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/.test(instrument)
+  ) {
+    return instrument;
+  }
   if (instrument.startsWith("BTC")) return config.symbolByMarketId["BTC-USD"] || config.defaultSymbol;
   return config.defaultSymbol;
 };
@@ -312,6 +332,8 @@ export class BullishTradingClient {
   private jwtSession: BullishJwtSession | null = null;
 
   private nextNonceValue: bigint = BigInt(Date.now()) * 1000n;
+
+  private marketsCache: { expiresAtMs: number; records: BullishMarketRecord[] } | null = null;
 
   constructor(private readonly config: BullishRuntimeConfig) {}
 
@@ -533,6 +555,45 @@ export class BullishTradingClient {
           : String(payload.sequenceNumber),
       raw: payload
     };
+  }
+
+  async getMarkets(params?: { forceRefresh?: boolean; cacheTtlMs?: number }): Promise<BullishMarketRecord[]> {
+    const forceRefresh = params?.forceRefresh === true;
+    const cacheTtlMs = Math.max(1000, Number(params?.cacheTtlMs || 0) || 30_000);
+    if (!forceRefresh && this.marketsCache && this.marketsCache.expiresAtMs > Date.now()) {
+      return this.marketsCache.records;
+    }
+    const payload = await this.requestJson<unknown>({
+      path: "/trading-api/v1/markets",
+      method: "GET",
+      timeoutMs: this.config.orderTimeoutMs,
+      headers: { Accept: "application/json" }
+    });
+    const records = Array.isArray(payload)
+      ? (payload as Array<Record<string, unknown>>)
+          .map((item) => {
+            const symbol = String(item.symbol || "").trim().toUpperCase();
+            if (!symbol) return null;
+            return {
+              symbol,
+              marketId: item.marketId ? String(item.marketId) : undefined,
+              marketType: item.marketType ? String(item.marketType) : undefined,
+              optionType: item.optionType ? String(item.optionType) : undefined,
+              optionStrikePrice: item.optionStrikePrice ? String(item.optionStrikePrice) : undefined,
+              expiryDatetime: item.expiryDatetime ? String(item.expiryDatetime) : undefined,
+              underlyingBaseSymbol: item.underlyingBaseSymbol ? String(item.underlyingBaseSymbol) : undefined,
+              underlyingQuoteSymbol: item.underlyingQuoteSymbol ? String(item.underlyingQuoteSymbol) : undefined,
+              marketEnabled: item.marketEnabled === true,
+              createOrderEnabled: item.createOrderEnabled === true
+            } satisfies BullishMarketRecord;
+          })
+          .filter((item): item is BullishMarketRecord => Boolean(item))
+      : [];
+    this.marketsCache = {
+      expiresAtMs: Date.now() + cacheTtlMs,
+      records
+    };
+    return records;
   }
 
   async submitCommand(command: Record<string, unknown>): Promise<unknown> {
