@@ -29,7 +29,8 @@ type GateConfig = {
 
 type Args = {
   inputJsonPath: string;
-  bandLabel: string;
+  pilotBandLabel: string;
+  productionBandLabel: string;
   pilot: GateConfig;
   production: GateConfig;
   outJsonPath: string | null;
@@ -57,7 +58,8 @@ const toFixed = (value: Decimal, dp = 6): string => value.toFixed(dp);
 const parseArgs = (argv: string[]): Args => {
   const args: Args = {
     inputJsonPath: "artifacts/desktop/premium_sweep_coinbase_tp_off_wide/premium_sweep_band_targets.json",
-    bandLabel: "severe_400_500",
+    pilotBandLabel: "severe_400_500",
+    productionBandLabel: "severe_250_300",
     pilot: {
       coverMin: new Decimal(95),
       lossMax: new Decimal(200),
@@ -83,7 +85,18 @@ const parseArgs = (argv: string[]): Args => {
       continue;
     }
     if (token === "--band" && argv[i + 1]) {
-      args.bandLabel = argv[i + 1];
+      args.pilotBandLabel = argv[i + 1];
+      args.productionBandLabel = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (token === "--pilot-band" && argv[i + 1]) {
+      args.pilotBandLabel = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (token === "--production-band" && argv[i + 1]) {
+      args.productionBandLabel = argv[i + 1];
       i += 1;
       continue;
     }
@@ -99,16 +112,21 @@ const parseArgs = (argv: string[]): Args => {
       i += 1;
     };
 
-    if (token === "--pilot-cover-min") parseGate(args.pilot, "coverMin");
-    else if (token === "--pilot-loss-max") parseGate(args.pilot, "lossMax");
-    else if (token === "--pilot-margin-min") parseGate(args.pilot, "marginMin");
+    if (token === "--pilot-cover-min" || token === "--pilot-cover-min-pct") parseGate(args.pilot, "coverMin");
+    else if (token === "--pilot-loss-max" || token === "--pilot-loss-max-pct") parseGate(args.pilot, "lossMax");
+    else if (token === "--pilot-margin-min" || token === "--pilot-margin-min-pct") parseGate(args.pilot, "marginMin");
     else if (token === "--pilot-treasury-coverage-min") parseGate(args.pilot, "treasuryCoverageMin");
     else if (token === "--pilot-issuance-scale-max") parseGate(args.pilot, "issuanceScaleMax");
-    else if (token === "--prod-cover-min") parseGate(args.production, "coverMin");
-    else if (token === "--prod-loss-max") parseGate(args.production, "lossMax");
-    else if (token === "--prod-margin-min") parseGate(args.production, "marginMin");
-    else if (token === "--prod-treasury-coverage-min") parseGate(args.production, "treasuryCoverageMin");
-    else if (token === "--prod-issuance-scale-max") parseGate(args.production, "issuanceScaleMax");
+    else if (token === "--production-cover-min" || token === "--production-cover-min-pct" || token === "--prod-cover-min")
+      parseGate(args.production, "coverMin");
+    else if (token === "--production-loss-max" || token === "--production-loss-max-pct" || token === "--prod-loss-max")
+      parseGate(args.production, "lossMax");
+    else if (token === "--production-margin-min" || token === "--production-margin-min-pct" || token === "--prod-margin-min")
+      parseGate(args.production, "marginMin");
+    else if (token === "--production-treasury-coverage-min" || token === "--prod-treasury-coverage-min")
+      parseGate(args.production, "treasuryCoverageMin");
+    else if (token === "--production-issuance-scale-max" || token === "--prod-issuance-scale-max")
+      parseGate(args.production, "issuanceScaleMax");
   }
 
   return args;
@@ -132,24 +150,34 @@ const main = async () => {
   const args = parseArgs(process.argv.slice(2));
   const raw = await readFile(args.inputJsonPath, "utf8");
   const parsed = JSON.parse(raw) as BandTargetsJson;
-  const rows = (parsed.projectionRows || [])
-    .filter((row) => String(row.bandLabel || "") === args.bandLabel)
-    .sort((a, b) => toDecimal(a.bronzePremiumPer1kUsd).minus(toDecimal(b.bronzePremiumPer1kUsd)).toNumber());
+  const rowsForBand = (bandLabel: string) =>
+    (parsed.projectionRows || [])
+      .filter((row) => String(row.bandLabel || "") === bandLabel)
+      .sort((a, b) => toDecimal(a.bronzePremiumPer1kUsd).minus(toDecimal(b.bronzePremiumPer1kUsd)).toNumber());
 
-  if (!rows.length) {
-    throw new Error(`band_not_found:${args.bandLabel}`);
+  const pilotRows = rowsForBand(args.pilotBandLabel);
+  const prodRows = rowsForBand(args.productionBandLabel);
+
+  if (!pilotRows.length) {
+    throw new Error(`pilot_band_not_found:${args.pilotBandLabel}`);
+  }
+  if (!prodRows.length) {
+    throw new Error(`production_band_not_found:${args.productionBandLabel}`);
   }
 
-  const pilotMatch = rows.find((row) => evaluate(row, args.pilot).all) || null;
-  const prodMatch = rows.find((row) => evaluate(row, args.production).all) || null;
+  const pilotMatch = pilotRows.find((row) => evaluate(row, args.pilot).all) || null;
+  const prodMatch = prodRows.find((row) => evaluate(row, args.production).all) || null;
 
-  const pilotInspect = pilotMatch || rows[0];
-  const prodInspect = prodMatch || rows[0];
+  const pilotInspect = pilotMatch || pilotRows[pilotRows.length - 1];
+  const prodInspect = prodMatch || prodRows[prodRows.length - 1];
 
   const out = {
     status: "ok",
     inputJsonPath: args.inputJsonPath,
-    bandLabel: args.bandLabel,
+    bands: {
+      pilot: args.pilotBandLabel,
+      production: args.productionBandLabel
+    },
     gateConfig: {
       pilot: {
         coverMinPct: toFixed(args.pilot.coverMin, 4),
