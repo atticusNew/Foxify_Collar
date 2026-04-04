@@ -19,6 +19,8 @@ export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
 export type HybridStrictMultiplierScheduleName = "current" | "cheaper";
 export type BullishAuthMode = "hmac" | "ecdsa";
 export type BullishOrderTif = "IOC" | "DAY" | "GTC";
+export type PilotRuntimeProfileName = "default" | "bullish_locked_v1";
+export type PilotProfile = "default" | "bullish_locked_v1";
 export type BullishRuntimeConfig = {
   enabled: boolean;
   restBaseUrl: string;
@@ -43,6 +45,21 @@ export type BullishRuntimeConfig = {
   orderTimeoutMs: number;
   orderTif: BullishOrderTif;
   allowMargin: boolean;
+};
+
+export type PilotLockedPricingProfile = {
+  enabled: boolean;
+  name: PilotRuntimeProfileName;
+  venueMode: "bullish_testnet";
+  forceOnlyBullishVenue: boolean;
+  fixedTenorDays: number;
+  enforceTierDrawdownOnly: boolean;
+  fixedPricingMode: PilotPricingMode;
+  premiumPolicyMode: PremiumPolicyMode;
+  selectorMode: PilotSelectorMode;
+  hybridStrictMultiplierSchedule: HybridStrictMultiplierScheduleName;
+  strictTenor: boolean;
+  fixedDrawdownFloorPctByTier: Record<string, number>;
 };
 export type HedgeOptimizerRuntimeConfig = {
   enabled: boolean;
@@ -371,6 +388,14 @@ export const parsePilotSelectorMode = (raw: string | undefined): PilotSelectorMo
   throw new Error(`invalid_pilot_selector_mode:${normalized || "empty"}`);
 };
 
+export const parsePilotProfile = (raw: string | undefined): PilotProfile => {
+  const normalized = String(raw || "default").trim().toLowerCase();
+  if (normalized === "default" || normalized === "bullish_locked_v1") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_profile:${normalized || "empty"}`);
+};
+
 const parseFiniteWithFallback = (raw: string | undefined, fallback: number): number => {
   const parsed = Number(raw ?? String(fallback));
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -537,8 +562,8 @@ const parseTierBatchingTenorRuntimeConfig = (): TierBatchingTenorRuntimeConfig =
   )
 });
 
-const parseBullishRuntimeConfig = (): BullishRuntimeConfig => ({
-  enabled: parseBooleanEnv(process.env.PILOT_BULLISH_ENABLED, false),
+const parseBullishRuntimeConfig = (forceEnabled = false): BullishRuntimeConfig => ({
+  enabled: forceEnabled || parseBooleanEnv(process.env.PILOT_BULLISH_ENABLED, false),
   restBaseUrl: String(
     process.env.PILOT_BULLISH_REST_BASE_URL ||
       process.env.PILOT_BULLISH_API_HOSTNAME ||
@@ -874,18 +899,27 @@ export const resolvePilotWindow = (now: Date = new Date()): PilotWindowState => 
   };
 };
 
+const pilotProfileName = parsePilotProfile(process.env.PILOT_PROFILE);
+const isBullishLockedProfile = pilotProfileName === "bullish_locked_v1";
+
 export const pilotConfig = {
+  profile: pilotProfileName,
+  bullishLockedProfile: isBullishLockedProfile,
   enabled: process.env.PILOT_API_ENABLED === "true",
   activationEnabled: parseBooleanEnv(process.env.PILOT_ACTIVATION_ENABLED, false),
-  venueMode: parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
+  venueMode: isBullishLockedProfile ? "bullish_testnet" : parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
   deribitQuotePolicy: parseDeribitQuotePolicy(process.env.PILOT_DERIBIT_QUOTE_POLICY),
   deribitStrikeSelectionMode: parseDeribitStrikeSelectionMode(process.env.PILOT_STRIKE_SELECTION_MODE),
   deribitMaxTenorDriftDays: parseDeribitMaxTenorDriftDays(process.env.PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS),
   pilotHedgePolicy: parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY),
-  premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
-  premiumPricingMode: parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
-  pilotSelectorMode: parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
-  bullish: parseBullishRuntimeConfig(),
+  premiumPolicyMode: isBullishLockedProfile
+    ? "pass_through_markup"
+    : parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
+  premiumPricingMode: isBullishLockedProfile
+    ? "hybrid_otm_treasury"
+    : parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
+  pilotSelectorMode: isBullishLockedProfile ? "strict_profitability" : parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
+  bullish: parseBullishRuntimeConfig(isBullishLockedProfile),
   hedgeOptimizer: parseHedgeOptimizerRuntimeConfig(),
   rolloutGuards: parseRolloutGuardRuntimeConfig(),
   tierBatchingTenor: parseTierBatchingTenorRuntimeConfig(),
@@ -906,7 +940,7 @@ export const pilotConfig = {
   ibkrFeePerOrderUsd: Number.isFinite(Number(process.env.IBKR_FEE_PER_ORDER_USD ?? "0"))
     ? Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD ?? "0"))
     : 0,
-  dynamicTenorEnabled: parseBooleanEnv(process.env.PILOT_DYNAMIC_TENOR_ENABLED, false),
+  dynamicTenorEnabled: isBullishLockedProfile ? false : parseBooleanEnv(process.env.PILOT_DYNAMIC_TENOR_ENABLED, false),
   tenorPolicyVersion: String(process.env.PILOT_TENOR_POLICY_VERSION || "tenor_policy_v1").trim() || "tenor_policy_v1",
   tenorPolicyLookbackMinutes: parsePositiveIntInRange(
     process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES,
@@ -927,11 +961,10 @@ export const pilotConfig = {
   tenorPolicyMaxMedianPremiumRatio: Number(process.env.PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO ?? "0.02"),
   tenorPolicyMaxMedianDriftDays: Number(process.env.PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS ?? "3"),
   tenorPolicyMaxNegativeMatchedRate: Number(process.env.PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE ?? "0"),
-  tenorPolicyEnforce: parseBooleanEnv(
-    process.env.PILOT_TENOR_ENFORCE ?? process.env.PILOT_TENOR_POLICY_ENFORCE,
-    false
-  ),
-  tenorPolicyAutoRoute: parseBooleanEnv(process.env.PILOT_TENOR_AUTO_ROUTE, false),
+  tenorPolicyEnforce: isBullishLockedProfile
+    ? false
+    : parseBooleanEnv(process.env.PILOT_TENOR_ENFORCE ?? process.env.PILOT_TENOR_POLICY_ENFORCE, false),
+  tenorPolicyAutoRoute: isBullishLockedProfile ? false : parseBooleanEnv(process.env.PILOT_TENOR_AUTO_ROUTE, false),
   tenorPolicyDefaultFallbackDays: parsePositiveIntInRange(
     process.env.PILOT_TENOR_DEFAULT_FALLBACK,
     14,
@@ -947,6 +980,13 @@ export const pilotConfig = {
     "invalid_pilot_tenor_candidates"
   ),
   ...(() => {
+    if (isBullishLockedProfile) {
+      return {
+        pilotTenorMinDays: 7,
+        pilotTenorMaxDays: 7,
+        pilotTenorDefaultDays: 7
+      };
+    }
     const tenor = resolveTenorBounds();
     return {
       pilotTenorMinDays: tenor.minDays,
@@ -1203,6 +1243,33 @@ export const pilotConfig = {
   falconxPassphrase: process.env.FALCONX_PASSPHRASE || "",
   adminIpAllowlist: parseAllowlist(process.env.PILOT_ADMIN_IP_ALLOWLIST),
   endpointVersion: process.env.PILOT_ENDPOINT_VERSION || "v1",
+  lockedProfile: {
+    enabled: isBullishLockedProfile,
+    name: pilotProfileName,
+    venueMode: "bullish_testnet",
+    forceOnlyBullishVenue: isBullishLockedProfile,
+    fixedTenorDays: isBullishLockedProfile ? 7 : parsePositiveIntInRange(process.env.PILOT_FIXED_TENOR_DAYS, 7, 1, 30, "invalid_pilot_fixed_tenor_days"),
+    enforceTierDrawdownOnly: isBullishLockedProfile,
+    fixedPricingMode: isBullishLockedProfile ? "hybrid_otm_treasury" : parsePilotPricingMode(process.env.PILOT_FIXED_PRICING_MODE),
+    premiumPolicyMode: isBullishLockedProfile ? "pass_through_markup" : parsePremiumPolicyMode(process.env.PILOT_FIXED_PREMIUM_POLICY_MODE),
+    selectorMode: isBullishLockedProfile ? "strict_profitability" : parsePilotSelectorMode(process.env.PILOT_FIXED_SELECTOR_MODE),
+    hybridStrictMultiplierSchedule: isBullishLockedProfile
+      ? DEFAULT_LIVE_HYBRID_STRICT_MULTIPLIER_SCHEDULE
+      : (() => {
+          const raw = String(process.env.PILOT_HYBRID_STRICT_MULTIPLIER_SCHEDULE || DEFAULT_LIVE_HYBRID_STRICT_MULTIPLIER_SCHEDULE)
+            .trim()
+            .toLowerCase();
+          if (raw === "current" || raw === "cheaper") return raw;
+          throw new Error(`invalid_pilot_hybrid_strict_multiplier_schedule:${raw || "empty"}`);
+        })(),
+    strictTenor: isBullishLockedProfile,
+    fixedDrawdownFloorPctByTier: {
+      "Pro (Bronze)": 0.2,
+      "Pro (Silver)": 0.15,
+      "Pro (Gold)": 0.12,
+      "Pro (Platinum)": 0.12
+    }
+  },
   nextRequestId: () => randomUUID()
 };
 

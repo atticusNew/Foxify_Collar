@@ -3,7 +3,7 @@ import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
 import { DeribitConnector, IbkrConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
-import { pilotConfig, resolvePilotWindow } from "./config";
+import { pilotConfig, resolvePilotWindow, type PilotPricingMode } from "./config";
 import {
   archiveProtectionsByUserHashExcept,
   creditSimPositionForTrigger,
@@ -158,6 +158,9 @@ const toFiniteNumber = (value: unknown): number | null => {
 };
 
 const resolveQuoteMinNotionalFloor = (): Decimal => new Decimal(pilotConfig.quoteMinNotionalUsdc);
+const isLockedBullishProfile = pilotConfig.lockedProfile.name === "bullish_locked_v1";
+const lockedProfileTenorDays = pilotConfig.lockedProfile.fixedTenorDays;
+const lockedProfilePricingMode: PilotPricingMode = pilotConfig.lockedProfile.fixedPricingMode;
 const SIM_DAYS = 7;
 const DEFAULT_SIM_STARTING_EQUITY_USD = new Decimal(10000);
 const PREMIUM_REGIME_SCOPE_KEY = "global";
@@ -189,6 +192,12 @@ const resolveLiveReferencePrice = async (requestId: string, marketId: string): P
     Math.max(1500, pilotConfig.pricePrimaryTimeoutMs + pilotConfig.priceFallbackTimeoutMs + 1000),
     "price"
   );
+
+const resolveLockedDrawdownFloorPct = (tierName: string): Decimal => {
+  if (tierName === "Pro (Silver)") return new Decimal(0.15);
+  if (tierName === "Pro (Gold)" || tierName === "Pro (Platinum)") return new Decimal(0.12);
+  return new Decimal(0.2);
+};
 
 const resolveSimStartingEquityUsd = (): Decimal => {
   const raw = Number(process.env.PILOT_SIM_STARTING_EQUITY_USD ?? DEFAULT_SIM_STARTING_EQUITY_USD.toString());
@@ -1678,10 +1687,12 @@ export const registerPilotRoutes = async (
     const quoteInstrumentId = body.instrumentId || `${marketId}-7D-${optionType}`;
     const triggerLabel = protectionType === "short" ? "ceiling_price" : "floor_price";
     const tierName = normalizeTierName(body.tierName);
-    const drawdownFloorPct = resolveDrawdownFloorPct({
-      tierName,
-      drawdownFloorPct: body.drawdownFloorPct
-    });
+    const drawdownFloorPct = isLockedBullishProfile
+      ? resolveLockedDrawdownFloorPct(tierName)
+      : resolveDrawdownFloorPct({
+          tierName,
+          drawdownFloorPct: body.drawdownFloorPct
+        });
     const requestId = pilotConfig.nextRequestId();
     let priceMs = 0;
     let venueMs = 0;
@@ -1722,17 +1733,19 @@ export const registerPilotRoutes = async (
       const quantity = protectedNotional.div(entryAnchorPrice).toDecimalPlaces(8).toNumber();
       const triggerPrice = computeTriggerPrice(entryAnchorPrice, drawdownFloorPct, protectionType);
       const triggerPayoutCreditUsd = computeDrawdownLossBudgetUsd(protectedNotional, drawdownFloorPct);
-      const requestedTenorDays = resolveExpiryDays({
-        tierName,
-        requestedDays: Number((body as { tenorDays?: number }).tenorDays),
-        minDays: pilotConfig.pilotTenorMinDays,
-        maxDays: pilotConfig.pilotTenorMaxDays,
-        defaultDays: pilotConfig.pilotTenorDefaultDays
-      });
+      const requestedTenorDays = isLockedBullishProfile
+        ? lockedProfileTenorDays
+        : resolveExpiryDays({
+            tierName,
+            requestedDays: Number((body as { tenorDays?: number }).tenorDays),
+            minDays: pilotConfig.pilotTenorMinDays,
+            maxDays: pilotConfig.pilotTenorMaxDays,
+            defaultDays: pilotConfig.pilotTenorDefaultDays
+          });
       let venueRequestedTenorDays = requestedTenorDays;
       let tenorPolicyFallbackApplied = false;
       let tenorPolicyFallbackReason: string | null = null;
-      if (pilotConfig.dynamicTenorEnabled) {
+      if (pilotConfig.dynamicTenorEnabled && !isLockedBullishProfile) {
         tenorPolicy = await resolveDynamicTenorPolicy({
           pool,
           nowIso: new Date().toISOString()
@@ -1771,7 +1784,7 @@ export const registerPilotRoutes = async (
           tenorMaxDays: pilotConfig.pilotTenorMaxDays,
           hedgePolicy: pilotConfig.pilotHedgePolicy,
           clientOrderId: body.clientOrderId,
-          strictTenor: parseBoolean(body.strictTenor, false),
+          strictTenor: isLockedBullishProfile ? true : parseBoolean(body.strictTenor, false),
           details: {
             triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber()
           }
@@ -1791,7 +1804,9 @@ export const registerPilotRoutes = async (
         policyFallbackApplied: tenorPolicyFallbackApplied,
         policyFallbackReason: tenorPolicyFallbackReason
       });
-      const pricingModeForSelection = pilotConfig.premiumPricingMode;
+      const pricingModeForSelection = isLockedBullishProfile
+        ? lockedProfilePricingMode
+        : pilotConfig.premiumPricingMode;
       let premiumPricing = resolvePremiumPricing({
         tierName,
         pricingMode: pricingModeForSelection,
@@ -2037,8 +2052,19 @@ export const registerPilotRoutes = async (
           lockContext: {
             requestedInstrumentId: quoteInstrumentId,
             quoteInstrumentId: quote.instrumentId,
+            selectedInstrumentId:
+              quote.details && typeof (quote.details as Record<string, unknown>).selectedInstrumentId === "string"
+                ? String((quote.details as Record<string, unknown>).selectedInstrumentId)
+                : null,
+            bullishSymbol:
+              quote.details && typeof (quote.details as Record<string, unknown>).bullishSymbol === "string"
+                ? String((quote.details as Record<string, unknown>).bullishSymbol)
+                : null,
             marketId,
             tierName,
+            profile: pilotConfig.lockedProfile.name,
+            fixedTenorDays: lockedProfileTenorDays,
+            fixedPricingMode: lockedProfilePricingMode,
             drawdownFloorPct: drawdownFloorPct.toFixed(6),
             protectedNotional: protectedNotional.toFixed(10),
             quoteMinNotionalUsdc: quoteMinNotional.toFixed(10),
@@ -2136,6 +2162,12 @@ export const registerPilotRoutes = async (
         status: "ok",
         protectionType,
         tierName,
+        profile: {
+          name: pilotConfig.lockedProfile.name,
+          fixedTenorDays: lockedProfileTenorDays,
+          fixedPricingMode: lockedProfilePricingMode,
+          fixedDrawdownFloorPctByTier: pilotConfig.lockedProfile.fixedDrawdownFloorPctByTier
+        },
         drawdownFloorPct: drawdownFloorPct.toFixed(6),
         triggerPrice: triggerPrice.toFixed(10),
         triggerLabel,
