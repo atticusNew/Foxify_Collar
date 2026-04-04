@@ -27,10 +27,14 @@ export type BullishRuntimeConfig = {
   authMode: BullishAuthMode;
   hmacPublicKey: string;
   hmacSecret: string;
+  ecdsaPublicKey: string;
+  ecdsaPrivateKey: string;
+  ecdsaMetadata: string;
   tradingAccountId: string;
   defaultSymbol: string;
   symbolByMarketId: Record<string, string>;
   hmacLoginPath: string;
+  ecdsaLoginPath: string;
   tradingAccountsPath: string;
   noncePath: string;
   commandPath: string;
@@ -348,7 +352,7 @@ export const parsePilotPricingMode = (raw: string | undefined): PilotPricingMode
 };
 
 export const parseBullishAuthMode = (raw: string | undefined): BullishAuthMode => {
-  const normalized = String(raw || "hmac").trim().toLowerCase();
+  const normalized = String(raw || "ecdsa").trim().toLowerCase();
   if (normalized === "hmac" || normalized === "ecdsa") return normalized;
   throw new Error(`invalid_bullish_auth_mode:${normalized || "empty"}`);
 };
@@ -545,6 +549,9 @@ const parseBullishRuntimeConfig = (): BullishRuntimeConfig => ({
   authMode: parseBullishAuthMode(process.env.PILOT_BULLISH_AUTH_MODE),
   hmacPublicKey: String(process.env.PILOT_BULLISH_HMAC_PUBLIC_KEY || "").trim(),
   hmacSecret: String(process.env.PILOT_BULLISH_HMAC_SECRET || "").trim(),
+  ecdsaPublicKey: String(process.env.PILOT_BULLISH_ECDSA_PUBLIC_KEY || "").trim(),
+  ecdsaPrivateKey: String(process.env.PILOT_BULLISH_ECDSA_PRIVATE_KEY || "").trim(),
+  ecdsaMetadata: String(process.env.PILOT_BULLISH_ECDSA_METADATA || "").trim(),
   tradingAccountId: String(process.env.PILOT_BULLISH_TRADING_ACCOUNT_ID || "").trim(),
   defaultSymbol: String(process.env.PILOT_BULLISH_DEFAULT_SYMBOL || "BTCUSDC").trim() || "BTCUSDC",
   symbolByMarketId: parseSymbolMap(
@@ -553,6 +560,7 @@ const parseBullishRuntimeConfig = (): BullishRuntimeConfig => ({
     "invalid_pilot_bullish_symbol_map"
   ),
   hmacLoginPath: String(process.env.PILOT_BULLISH_HMAC_LOGIN_PATH || "/trading-api/v1/users/hmac/login").trim(),
+  ecdsaLoginPath: String(process.env.PILOT_BULLISH_ECDSA_LOGIN_PATH || "/trading-api/v2/users/login").trim(),
   tradingAccountsPath: String(
     process.env.PILOT_BULLISH_TRADING_ACCOUNTS_PATH || "/trading-api/v1/accounts/trading-accounts"
   ).trim(),

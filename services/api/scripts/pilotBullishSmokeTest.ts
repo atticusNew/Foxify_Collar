@@ -57,6 +57,10 @@ const parseArgs = (argv: string[]): Args => {
 
 const main = async () => {
   const args = parseArgs(process.argv.slice(2));
+  const authMode =
+    (process.env.PILOT_BULLISH_AUTH_MODE || process.env.BULLISH_AUTH_METHOD || "ecdsa").trim().toLowerCase() === "hmac"
+      ? "hmac"
+      : "ecdsa";
   const client = new BullishTradingClient({
     enabled: true,
     restBaseUrl:
@@ -75,10 +79,10 @@ const main = async () => {
       process.env.BULLISH_TESTNET_PRIVATE_WS_URL ||
       process.env.BULLISH_PRIVATE_WS_URL ||
       "",
-    authMode:
-      (process.env.PILOT_BULLISH_AUTH_MODE || process.env.BULLISH_AUTH_METHOD || "hmac").trim().toLowerCase() === "ecdsa"
-        ? "ecdsa"
-        : "hmac",
+    authMode,
+    ecdsaPublicKey: process.env.PILOT_BULLISH_ECDSA_PUBLIC_KEY || "",
+    ecdsaPrivateKey: process.env.PILOT_BULLISH_ECDSA_PRIVATE_KEY || "",
+    ecdsaMetadata: process.env.PILOT_BULLISH_ECDSA_METADATA || "",
     hmacPublicKey: process.env.PILOT_BULLISH_HMAC_PUBLIC_KEY || process.env.BULLISH_HMAC_PUBLIC_KEY || "",
     hmacSecret: process.env.PILOT_BULLISH_HMAC_SECRET || process.env.BULLISH_HMAC_SECRET || "",
     tradingAccountId: process.env.PILOT_BULLISH_TRADING_ACCOUNT_ID || process.env.BULLISH_TRADING_ACCOUNT_ID || "",
@@ -92,6 +96,7 @@ const main = async () => {
     orderTif: (process.env.PILOT_BULLISH_ORDER_TIF || "GTC").trim() || "GTC",
     allowMargin: String(process.env.PILOT_BULLISH_ALLOW_MARGIN || "false").trim().toLowerCase() === "true",
     hmacLoginPath: "/trading-api/v1/users/hmac/login",
+    ecdsaLoginPath: "/trading-api/v2/users/login",
     tradingAccountsPath: "/trading-api/v1/accounts/trading-accounts",
     orderbookPathTemplate: "/trading-api/v1/markets/:symbol/orderbook/hybrid",
     commandPath: "/trading-api/v2/command",
@@ -112,7 +117,7 @@ const main = async () => {
       ? (accountsPayload as Array<Record<string, unknown>>)
       : [];
   steps.auth = {
-    mode: "jwt_via_hmac_login"
+    mode: authMode === "ecdsa" ? "jwt_via_ecdsa_login" : "jwt_via_hmac_login"
   };
   steps.tradingAccounts = {
     count: accounts.length,

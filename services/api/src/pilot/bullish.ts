@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, createSign, randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { BullishRuntimeConfig } from "./config";
 
@@ -38,6 +38,40 @@ const buildUrl = (baseUrl: string, requestPath: string): string =>
   new URL(ensureLeadingSlash(requestPath), baseUrl).toString();
 
 const sha256Hex = (value: string): string => createHash("sha256").update(value).digest("hex");
+
+const normalizePem = (value: string): string => {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  const withNewlines = normalized.replace(/\\n/g, "\n").trim();
+  const beginMatch = withNewlines.match(/-----BEGIN ([A-Z ]+)-----/);
+  const endMatch = withNewlines.match(/-----END ([A-Z ]+)-----/);
+  if (!beginMatch || !endMatch) {
+    return withNewlines;
+  }
+  const label = beginMatch[1].trim();
+  const body = withNewlines
+    .replace(/-----BEGIN [A-Z ]+-----/g, "")
+    .replace(/-----END [A-Z ]+-----/g, "")
+    .replace(/\s+/g, "");
+  const wrapped = body.match(/.{1,64}/g)?.join("\n") || body;
+  return `-----BEGIN ${label}-----\n${wrapped}\n-----END ${label}-----`;
+};
+
+const decodeBullishMetadata = (encoded: string): { userId: string | null; raw: Record<string, unknown> | null } => {
+  const normalized = String(encoded || "").trim();
+  if (!normalized) return { userId: null, raw: null };
+  try {
+    const decoded = Buffer.from(normalized, "base64").toString("utf8");
+    const parsed = JSON.parse(decoded) as Record<string, unknown>;
+    const userId = String(parsed.userId || "").trim();
+    return {
+      userId: userId || null,
+      raw: parsed
+    };
+  } catch {
+    return { userId: null, raw: null };
+  }
+};
 
 // Bullish HMAC login signs the raw canonical string directly.
 const signBullishHmacLogin = (secret: string, value: string): string =>
@@ -189,12 +223,9 @@ export class BullishTradingClient {
     return this.nextNonceValue.toString();
   }
 
-  private async getJwtSession(): Promise<BullishJwtSession> {
+  private async loginWithHmac(): Promise<BullishJwtSession> {
     if (this.jwtSession && this.jwtSession.expiresAtMs > Date.now() + 60_000) {
       return this.jwtSession;
-    }
-    if (this.config.authMode !== "hmac") {
-      throw new Error("bullish_auth_mode_not_supported");
     }
     if (!this.config.hmacPublicKey || !this.config.hmacSecret) {
       throw new Error("bullish_credentials_missing");
@@ -227,6 +258,67 @@ export class BullishTradingClient {
       expiresAtMs: Date.now() + 23 * 60 * 60 * 1000
     };
     return this.jwtSession;
+  }
+
+  private async loginWithEcdsa(): Promise<BullishJwtSession> {
+    if (this.jwtSession && this.jwtSession.expiresAtMs > Date.now() + 60_000) {
+      return this.jwtSession;
+    }
+    const publicKey = normalizePem(this.config.ecdsaPublicKey);
+    const privateKey = normalizePem(this.config.ecdsaPrivateKey);
+    const { userId } = decodeBullishMetadata(this.config.ecdsaMetadata);
+    if (!publicKey || !privateKey || !userId) {
+      throw new Error("bullish_credentials_missing");
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const loginPayload = {
+      userId,
+      nonce: nowSeconds,
+      expirationTime: nowSeconds + 300,
+      biometricsUsed: false,
+      sessionKey: null
+    };
+    const loginPayloadJson = JSON.stringify(loginPayload);
+    const signer = createSign("sha256");
+    signer.update(loginPayloadJson);
+    signer.end();
+    const signature = signer.sign(privateKey).toString("base64");
+    const payload = await this.requestJson<{ token?: string; authorizer?: string }>({
+      path: ensureLeadingSlash(this.config.ecdsaLoginPath),
+      method: "POST",
+      timeoutMs: this.config.orderTimeoutMs,
+      body: JSON.stringify({
+        publicKey,
+        signature,
+        loginPayload
+      }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      }
+    });
+    if (!payload?.token || !payload?.authorizer) {
+      throw new Error("bullish_login_invalid_response");
+    }
+    this.jwtSession = {
+      token: payload.token,
+      authorizer: payload.authorizer,
+      expiresAtMs: Date.now() + 23 * 60 * 60 * 1000
+    };
+    return this.jwtSession;
+  }
+
+  private async getJwtSession(): Promise<BullishJwtSession> {
+    if (this.jwtSession && this.jwtSession.expiresAtMs > Date.now() + 60_000) {
+      return this.jwtSession;
+    }
+    if (this.config.authMode === "ecdsa") {
+      return await this.loginWithEcdsa();
+    }
+    if (this.config.authMode === "hmac") {
+      return await this.loginWithHmac();
+    }
+    throw new Error("bullish_auth_mode_not_supported");
   }
 
   private async buildJwtHeaders(): Promise<Record<string, string>> {
