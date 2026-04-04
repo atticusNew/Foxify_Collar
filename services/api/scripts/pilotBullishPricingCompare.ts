@@ -1,4 +1,6 @@
 import Decimal from "decimal.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { BullishTradingClient } from "../src/pilot/bullish";
 import { resolvePremiumPricing } from "../src/pilot/pricingPolicy";
 import { normalizeTierName, resolveDrawdownFloorPct } from "../src/pilot/floor";
@@ -10,6 +12,8 @@ type CompareInput = {
   protectionType: "long" | "short";
   tenorDays: number;
   symbolHint?: string;
+  outJsonPath: string | null;
+  outCsvPath: string | null;
 };
 
 const parseArgs = (argv: string[]): CompareInput => {
@@ -18,7 +22,9 @@ const parseArgs = (argv: string[]): CompareInput => {
     tierName: process.env.BULLISH_COMPARE_TIER || "Pro (Bronze)",
     protectionType: (process.env.BULLISH_COMPARE_PROTECTION_TYPE || "long").toLowerCase() === "short" ? "short" : "long",
     tenorDays: Math.max(1, Number(process.env.BULLISH_COMPARE_TENOR_DAYS || "7") || 7),
-    symbolHint: process.env.BULLISH_COMPARE_SYMBOL || "BTCUSDC"
+    symbolHint: process.env.BULLISH_COMPARE_SYMBOL || "BTCUSDC",
+    outJsonPath: process.env.BULLISH_COMPARE_OUT_JSON || null,
+    outCsvPath: process.env.BULLISH_COMPARE_OUT_CSV || null
   };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -47,11 +53,40 @@ const parseArgs = (argv: string[]): CompareInput => {
       i += 1;
       continue;
     }
+    if (token === "--out-json" && argv[i + 1]) {
+      out.outJsonPath = argv[i + 1];
+      i += 1;
+      continue;
+    }
+    if (token === "--out-csv" && argv[i + 1]) {
+      out.outCsvPath = argv[i + 1];
+      i += 1;
+      continue;
+    }
   }
   if (!Number.isFinite(out.protectedNotionalUsd) || out.protectedNotionalUsd <= 0) {
     throw new Error("invalid_notional");
   }
   return out;
+};
+
+const escapeCsv = (raw: string): string => {
+  if (!raw.includes(",") && !raw.includes("\"") && !raw.includes("\n")) return raw;
+  return `"${raw.replace(/"/g, "\"\"")}"`;
+};
+
+const rowsToCsv = (rows: Array<Record<string, string | number | boolean>>): string => {
+  if (!rows.length) return "";
+  const headers = Object.keys(rows[0]);
+  const lines = [headers.join(",")];
+  for (const row of rows) {
+    lines.push(headers.map((key) => escapeCsv(String(row[key] ?? ""))).join(","));
+  }
+  return `${lines.join("\n")}\n`;
+};
+
+const ensureParentDir = async (targetPath: string): Promise<void> => {
+  await mkdir(path.dirname(targetPath), { recursive: true });
 };
 
 const toFinitePositive = (value: unknown): number | null => {
@@ -177,45 +212,74 @@ const main = async () => {
     drawdownFloorPct,
     hedgePremium
   });
-  console.log(
-    JSON.stringify(
+  const out = {
+    status: "ok",
+    profile: pilotConfig.profile,
+    input: {
+      protectedNotionalUsd: input.protectedNotionalUsd,
+      tierName,
+      protectionType: input.protectionType,
+      tenorDays: input.tenorDays,
+      drawdownFloorPct: drawdownFloorPct.toFixed(6),
+      referenceSpot: spot.toFixed(6),
+      triggerPrice: triggerPrice.toFixed(6),
+      quantity: quantity.toFixed(8)
+    },
+    selectedOption: {
+      symbol: selected.symbol,
+      strike: selected.strike,
+      expiryIso: new Date(selected.expiryMs).toISOString(),
+      bestAskPrice: bestAskPrice.toFixed(10),
+      bestAskQuantity: String(optionBook.asks[0]?.quantity || "")
+    },
+    pricing: {
+      hedgePremiumUsd: hedgePremium.toFixed(10),
+      actuarialStrictClientPremiumUsd: strict.clientPremiumUsd.toFixed(10),
+      hybridLockedClientPremiumUsd: hybrid.clientPremiumUsd.toFixed(10),
+      strictMethod: strict.method,
+      hybridMethod: hybrid.method,
+      hybridStrictMultiplier: hybrid.hybridStrictMultiplier.toFixed(6),
+      deltaHybridMinusStrictUsd: hybrid.clientPremiumUsd.minus(strict.clientPremiumUsd).toFixed(10),
+      deltaHybridMinusStrictPct: strict.clientPremiumUsd.gt(0)
+        ? hybrid.clientPremiumUsd.minus(strict.clientPremiumUsd).div(strict.clientPremiumUsd).mul(100).toFixed(6)
+        : "0"
+    }
+  } as const;
+
+  if (input.outJsonPath) {
+    await ensureParentDir(input.outJsonPath);
+    await writeFile(input.outJsonPath, `${JSON.stringify(out, null, 2)}\n`, "utf8");
+  }
+  if (input.outCsvPath) {
+    await ensureParentDir(input.outCsvPath);
+    const csvRows = [
       {
-        status: "ok",
-        profile: pilotConfig.profile,
-        input: {
-          protectedNotionalUsd: input.protectedNotionalUsd,
-          tierName,
-          protectionType: input.protectionType,
-          tenorDays: input.tenorDays,
-          drawdownFloorPct: drawdownFloorPct.toFixed(6),
-          referenceSpot: spot.toFixed(6),
-          triggerPrice: triggerPrice.toFixed(6),
-          quantity: quantity.toFixed(8)
-        },
-        selectedOption: {
-          symbol: selected.symbol,
-          strike: selected.strike,
-          expiryIso: new Date(selected.expiryMs).toISOString(),
-          bestAskPrice: bestAskPrice.toFixed(10),
-          bestAskQuantity: String(optionBook.asks[0]?.quantity || "")
-        },
-        pricing: {
-          hedgePremiumUsd: hedgePremium.toFixed(10),
-          actuarialStrictClientPremiumUsd: strict.clientPremiumUsd.toFixed(10),
-          hybridLockedClientPremiumUsd: hybrid.clientPremiumUsd.toFixed(10),
-          strictMethod: strict.method,
-          hybridMethod: hybrid.method,
-          hybridStrictMultiplier: hybrid.hybridStrictMultiplier.toFixed(6),
-          deltaHybridMinusStrictUsd: hybrid.clientPremiumUsd.minus(strict.clientPremiumUsd).toFixed(10),
-          deltaHybridMinusStrictPct: strict.clientPremiumUsd.gt(0)
-            ? hybrid.clientPremiumUsd.minus(strict.clientPremiumUsd).div(strict.clientPremiumUsd).mul(100).toFixed(6)
-            : "0"
-        }
-      },
-      null,
-      2
-    )
-  );
+        profile: out.profile,
+        tierName: out.input.tierName,
+        protectionType: out.input.protectionType,
+        tenorDays: out.input.tenorDays,
+        protectedNotionalUsd: out.input.protectedNotionalUsd,
+        drawdownFloorPct: out.input.drawdownFloorPct,
+        referenceSpot: out.input.referenceSpot,
+        triggerPrice: out.input.triggerPrice,
+        quantity: out.input.quantity,
+        selectedSymbol: out.selectedOption.symbol,
+        selectedStrike: out.selectedOption.strike,
+        selectedExpiryIso: out.selectedOption.expiryIso,
+        bestAskPrice: out.selectedOption.bestAskPrice,
+        bestAskQuantity: out.selectedOption.bestAskQuantity,
+        hedgePremiumUsd: out.pricing.hedgePremiumUsd,
+        actuarialStrictClientPremiumUsd: out.pricing.actuarialStrictClientPremiumUsd,
+        hybridLockedClientPremiumUsd: out.pricing.hybridLockedClientPremiumUsd,
+        hybridStrictMultiplier: out.pricing.hybridStrictMultiplier,
+        deltaHybridMinusStrictUsd: out.pricing.deltaHybridMinusStrictUsd,
+        deltaHybridMinusStrictPct: out.pricing.deltaHybridMinusStrictPct
+      }
+    ] satisfies Array<Record<string, string | number | boolean>>;
+    await writeFile(input.outCsvPath, rowsToCsv(csvRows), "utf8");
+  }
+
+  console.log(JSON.stringify({ ...out, files: { outJson: input.outJsonPath, outCsv: input.outCsvPath } }, null, 2));
 };
 
 main().catch((error) => {
