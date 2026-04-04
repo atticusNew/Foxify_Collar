@@ -124,6 +124,40 @@ type CandidateRow = {
   decisionTag: "acceptable" | "risky";
 };
 
+type BandProjectionRow = {
+  bandLabel: string;
+  bronzePremiumPer1kUsd: string;
+  targetMinPerStressQuarterUsd: string;
+  targetMaxPerStressQuarterUsd: string;
+  stressAnchorQuarterLabel: string;
+  stressAnchorQuarterBaseSubsidyNeedUsd: string;
+  requiredIssuanceScaleMin: string;
+  requiredIssuanceScaleMax: string;
+  requiredIssuanceScaleMid: string;
+  projectedWorstStressQuarterSubsidyNeedUsd: string;
+  projectedStressCombinedSubsidyNeedUsd: string;
+  projectedRolling12mUnderwritingPnlUsd: string;
+  projectedRolling12mSubsidyNeedUsd: string;
+  projectedRolling12mSubsidyBlockedUsd: string;
+  projectedStressWorstDaySubsidyNeedUsd: string;
+  projectedStressBufferFromWorstDayUsd: string;
+  configuredStartingTreasuryUsd: string;
+  projectedTreasuryCoverageRatio: string;
+  projectedAnnualSubsidyToPnlAbsRatio: string;
+  baseAnchorQuarterProtectedNotionalUsd: string;
+  projectedAnchorQuarterProtectedNotionalMinUsd: string;
+  projectedAnchorQuarterProtectedNotionalMaxUsd: string;
+  projectedAnchorDailyProtectedNotionalMinUsd: string;
+  projectedAnchorDailyProtectedNotionalMaxUsd: string;
+  realismTag: "high" | "medium" | "low";
+};
+
+type BandSelection = {
+  bandLabel: string;
+  lowestBronzeAny: BandProjectionRow | null;
+  lowestBronzeRealistic: BandProjectionRow | null;
+};
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const rolling12mPeriod = (): PeriodDef => {
@@ -307,6 +341,8 @@ const sumDecimals = (items: Decimal[]): Decimal => items.reduce((acc, cur) => ac
 const maxDecimal = (items: Decimal[]): Decimal =>
   items.reduce((acc, cur) => (cur.gt(acc) ? cur : acc), new Decimal(0));
 
+const absDecimal = (value: Decimal): Decimal => (value.lt(0) ? value.negated() : value);
+
 const runCommand = (command: string, args: string[], cwd: string) =>
   new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { cwd, stdio: "inherit", shell: false });
@@ -324,6 +360,13 @@ const fileExists = async (targetPath: string): Promise<boolean> => {
   } catch {
     return false;
   }
+};
+
+const resolvePeriodDays = (period: Pick<PeriodRow, "fromIso" | "toIso">): number => {
+  const fromMs = Date.parse(period.fromIso);
+  const toMs = Date.parse(period.toIso);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return 1;
+  return Math.max(1, Math.round((toMs - fromMs) / DAY_MS));
 };
 
 const ensureBronzeOnlyConfig = (
