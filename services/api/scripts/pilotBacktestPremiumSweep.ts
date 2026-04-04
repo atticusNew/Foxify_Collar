@@ -73,6 +73,7 @@ type Args = {
   configPath: string;
   outDir: string;
   source: "auto" | "binance" | "coingecko" | "coinbase";
+  tierName: string;
   bronzeGrid: Decimal[];
   notionalsUsd: string[];
   treasuryStartingBalanceUsd: Decimal | null;
@@ -215,6 +216,7 @@ const parseArgs = (argv: string[]): Args => {
     configPath: "scripts/fixtures/pilot_backtest_config.example.json",
     outDir: "artifacts/desktop/premium_sweep",
     source: "coinbase",
+    tierName: "Pro (Bronze)",
     bronzeGrid: parseGrid(undefined, "20,21,22,23,24,25"),
     notionalsUsd: ["1000"],
     treasuryStartingBalanceUsd: null,
@@ -245,6 +247,11 @@ const parseArgs = (argv: string[]): Args => {
       } else {
         throw new Error(`invalid_source:${source}`);
       }
+      i += 1;
+      continue;
+    }
+    if (token === "--tier-name" && argv[i + 1]) {
+      args.tierName = String(argv[i + 1]).trim() || "Pro (Bronze)";
       i += 1;
       continue;
     }
@@ -369,9 +376,17 @@ const resolvePeriodDays = (period: Pick<PeriodRow, "fromIso" | "toIso">): number
   return Math.max(1, Math.round((toMs - fromMs) / DAY_MS));
 };
 
-const ensureBronzeOnlyConfig = (
+const slugifyTierName = (tierName: string): string =>
+  String(tierName || "tier")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "tier";
+
+const ensureSingleTierConfig = (
   baseConfig: BacktestConfig,
   bronzePremiumPer1k: Decimal,
+  selectedTierName: string,
   overrides: {
     notionalsUsd: string[];
     treasuryStartingBalanceUsd: Decimal | null;
@@ -379,15 +394,16 @@ const ensureBronzeOnlyConfig = (
     treasuryPerQuoteSubsidyCapPct: Decimal | null;
   }
 ): BacktestConfig => {
-  const bronzeTier = (baseConfig.tiers || []).find((tier) => String(tier.tierName || "").trim() === "Pro (Bronze)");
-  if (!bronzeTier) {
-    throw new Error("bronze_tier_missing_in_config");
+  const targetTier = (baseConfig.tiers || []).find((tier) => String(tier.tierName || "").trim() === selectedTierName);
+  if (!targetTier) {
+    throw new Error(`tier_missing_in_config:${selectedTierName}`);
   }
   const notionals = Array.from(new Set(overrides.notionalsUsd.map((item) => String(item || "").trim()).filter(Boolean)));
   if (!notionals.length) throw new Error("no_notionals_configured");
+  const tierSlug = slugifyTierName(selectedTierName);
   return {
     ...baseConfig,
-    name: `${baseConfig.name || "pilot_backtest"}_bronze_${bronzePremiumPer1k.toFixed(2)}_tp_off`,
+    name: `${baseConfig.name || "pilot_backtest"}_${tierSlug}_${bronzePremiumPer1k.toFixed(2)}_tp_off`,
     notionalsUsd: notionals,
     takeProfit: {
       enabled: false,
@@ -407,7 +423,7 @@ const ensureBronzeOnlyConfig = (
     },
     tiers: [
       {
-        ...bronzeTier,
+        ...targetTier,
         hybridPremiumPer1kProtectedUsd: bronzePremiumPer1k.toFixed(2)
       }
     ]
@@ -422,6 +438,7 @@ const main = async () => {
   if (!selectedPeriods.length) throw new Error("no_periods_selected");
 
   const outDir = args.outDir;
+  const tierSlug = slugifyTierName(args.tierName);
   const runsDir = path.join(outDir, "runs");
   const pricesDir = path.join(outDir, "prices");
   const configsDir = path.join(outDir, "configs");
@@ -458,10 +475,10 @@ const main = async () => {
 
   const periodRows: PeriodRow[] = [];
   for (const bronzePremiumPer1k of args.bronzeGrid) {
-    const scenarioLabel = `bronze_${bronzePremiumPer1k.toFixed(2).replace(".", "_")}`;
+    const scenarioLabel = `${tierSlug}_${bronzePremiumPer1k.toFixed(2).replace(".", "_")}`;
     const scenarioDir = path.join(runsDir, scenarioLabel);
     await mkdir(scenarioDir, { recursive: true });
-    const scenarioConfig = ensureBronzeOnlyConfig(baseConfig, bronzePremiumPer1k, {
+    const scenarioConfig = ensureSingleTierConfig(baseConfig, bronzePremiumPer1k, args.tierName, {
       notionalsUsd: args.notionalsUsd,
       treasuryStartingBalanceUsd: args.treasuryStartingBalanceUsd,
       treasuryDailySubsidyCapUsd: args.treasuryDailySubsidyCapUsd,
@@ -584,6 +601,7 @@ const main = async () => {
   const recommended = candidateRows[0] || null;
   const assumptions = {
     source: args.source,
+    tierName: args.tierName,
     tpEnabledForced: false,
     modelMode: "hybrid_only",
     notionalsUsd: args.notionalsUsd,
