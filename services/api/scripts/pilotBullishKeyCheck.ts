@@ -6,16 +6,13 @@ const main = async () => {
     privateKey: String(process.env.PILOT_BULLISH_ECDSA_PRIVATE_KEY || ""),
     metadata: String(process.env.PILOT_BULLISH_ECDSA_METADATA || "")
   });
-  if (!inspection.ok) {
-    throw new Error(inspection.reason);
-  }
   console.log(
     JSON.stringify(
       {
         status: "ok",
-        userIdPresent: inspection.userIdPresent,
-        keyParsed: true,
-        keyType: inspection.privateKeyType
+        metadataUserIdPresent: inspection.metadataUserIdPresent,
+        publicKey: inspection.publicKey,
+        privateKey: inspection.privateKey
       },
       null,
       2

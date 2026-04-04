@@ -539,7 +539,13 @@ const parseTierBatchingTenorRuntimeConfig = (): TierBatchingTenorRuntimeConfig =
 
 const parseBullishRuntimeConfig = (): BullishRuntimeConfig => ({
   enabled: parseBooleanEnv(process.env.PILOT_BULLISH_ENABLED, false),
-  restBaseUrl: String(process.env.PILOT_BULLISH_REST_BASE_URL || "https://api.exchange.bullish.com").trim(),
+  restBaseUrl: String(
+    process.env.PILOT_BULLISH_REST_BASE_URL ||
+      process.env.PILOT_BULLISH_API_HOSTNAME ||
+      process.env.BULLISH_TESTNET_API_HOSTNAME ||
+      process.env.BULLISH_API_HOSTNAME ||
+      "https://api.exchange.bullish.com"
+  ).trim(),
   publicWsUrl: String(
     process.env.PILOT_BULLISH_PUBLIC_WS_URL || "wss://api.exchange.bullish.com/trading-api/v1/market-data/orderbook"
   ).trim(),
