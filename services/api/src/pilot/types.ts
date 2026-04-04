@@ -19,7 +19,7 @@ export type LedgerEntryType =
 
 export type PriceSnapshotType = "entry" | "expiry" | "trigger";
 
-export type PriceSource = "reference_oracle" | "fallback_oracle";
+export type PriceSource = "reference_oracle" | "fallback_oracle" | "bullish_orderbook_mid";
 
 export type VenueExecutionStatus = "success" | "failure";
 export type VenueName =

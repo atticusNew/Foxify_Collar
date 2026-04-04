@@ -193,10 +193,75 @@ const resolveLiveReferencePrice = async (requestId: string, marketId: string): P
     "price"
   );
 
+const resolveBullishReferencePrice = async (requestId: string, marketId: string): Promise<PriceSnapshotOutput> => {
+  const bullishSymbol =
+    pilotConfig.bullish.symbolByMarketId[marketId] ||
+    (marketId === "BTC-USD" ? "BTCUSDC" : pilotConfig.bullish.defaultSymbol);
+  const orderbookPath = pilotConfig.bullish.orderbookPathTemplate.replace(":symbol", encodeURIComponent(bullishSymbol));
+  const payload = await withTimeout(
+    (async () => {
+      const response = await fetch(new URL(orderbookPath, pilotConfig.bullish.restBaseUrl).toString(), {
+        headers: { Accept: "application/json" }
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`bullish_reference_http_${response.status}:${text}`);
+      }
+      const text = await response.text();
+      return text ? (JSON.parse(text) as Record<string, unknown>) : ({} as Record<string, unknown>);
+    })(),
+    Math.max(1200, pilotConfig.pricePrimaryTimeoutMs),
+    "bullish_reference_price"
+  );
+  const topBid = Number(
+    ((payload.bids as Array<Record<string, unknown>> | undefined)?.[0]?.price ??
+      (payload.bids as Array<Record<string, unknown>> | undefined)?.[0]?.px ??
+      NaN) as number
+  );
+  const topAsk = Number(
+    ((payload.asks as Array<Record<string, unknown>> | undefined)?.[0]?.price ??
+      (payload.asks as Array<Record<string, unknown>> | undefined)?.[0]?.px ??
+      NaN) as number
+  );
+  let price: Decimal | null = null;
+  if (Number.isFinite(topBid) && topBid > 0 && Number.isFinite(topAsk) && topAsk > 0) {
+    price = new Decimal(topBid).plus(topAsk).div(2);
+  } else if (Number.isFinite(topAsk) && topAsk > 0) {
+    price = new Decimal(topAsk);
+  } else if (Number.isFinite(topBid) && topBid > 0) {
+    price = new Decimal(topBid);
+  }
+  if (!price) {
+    throw new Error("bullish_reference_no_top_of_book");
+  }
+  const timestampRaw = String(payload.timestamp || payload.datetime || "");
+  const parsedTimestamp = Number(timestampRaw);
+  const timestampIso =
+    Number.isFinite(parsedTimestamp) && parsedTimestamp > 0
+      ? new Date(parsedTimestamp).toISOString()
+      : new Date().toISOString();
+  return {
+    price,
+    priceTimestamp: timestampIso,
+    marketId,
+    priceSource: "bullish_orderbook_mid",
+    priceSourceDetail: "bullish_hybrid_orderbook_mid",
+    endpointVersion: pilotConfig.endpointVersion,
+    requestId
+  };
+};
+
 const resolveLockedDrawdownFloorPct = (tierName: string): Decimal => {
   if (tierName === "Pro (Silver)") return new Decimal(0.15);
   if (tierName === "Pro (Gold)" || tierName === "Pro (Platinum)") return new Decimal(0.12);
   return new Decimal(0.2);
+};
+
+const resolveReferencePriceForPilot = async (requestId: string, marketId: string): Promise<PriceSnapshotOutput> => {
+  if (isLockedBullishProfile) {
+    return await resolveBullishReferencePrice(requestId, marketId);
+  }
+  return await resolveLiveReferencePrice(requestId, marketId);
 };
 
 const resolveSimStartingEquityUsd = (): Decimal => {
