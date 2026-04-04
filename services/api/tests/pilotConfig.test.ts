@@ -12,10 +12,12 @@ import {
   parseIbkrOrderTif,
   parseBooleanEnv,
   parseFractionRange,
+  parseHybridStrictMultiplier,
   parseNonNegativeFinite,
   parsePositiveFinite,
   parsePositiveIntInRange,
   parsePilotVenueMode,
+  resolveHybridStrictMultiplierSchedules,
   resolvePilotWindow
 } from "../src/pilot/config";
 
@@ -25,6 +27,7 @@ test("parsePilotVenueMode accepts known values", () => {
   assert.equal(parsePilotVenueMode("mock_falconx"), "mock_falconx");
   assert.equal(parsePilotVenueMode("ibkr_cme_live"), "ibkr_cme_live");
   assert.equal(parsePilotVenueMode("ibkr_cme_paper"), "ibkr_cme_paper");
+  assert.equal(parsePilotVenueMode("bullish_testnet"), "bullish_testnet");
   assert.equal(parsePilotVenueMode(undefined), "deribit_test");
 });
 
@@ -139,6 +142,34 @@ test("parseFractionRange enforces fractional bounds", () => {
   assert.equal(parseFractionRange("1", 0.3, 0, 1, "invalid"), 1);
   assert.throws(() => parseFractionRange("-0.01", 0.3, 0, 1, "invalid"), /invalid:/);
   assert.throws(() => parseFractionRange("1.1", 0.3, 0, 1, "invalid"), /invalid:/);
+});
+
+test("parseHybridStrictMultiplier enforces discounted pilot bands", () => {
+  assert.equal(parseHybridStrictMultiplier(undefined, 0.65, "invalid"), 0.65);
+  assert.equal(parseHybridStrictMultiplier("0.78", 0.65, "invalid"), 0.78);
+  assert.throws(() => parseHybridStrictMultiplier("0.2", 0.65, "invalid"), /invalid:/);
+  assert.throws(() => parseHybridStrictMultiplier("1.1", 0.65, "invalid"), /invalid:/);
+});
+
+test("resolveHybridStrictMultiplierSchedules exposes current and cheaper schedules", () => {
+  const schedules = resolveHybridStrictMultiplierSchedules();
+  assert.equal(schedules.current["Pro (Bronze)"], 0.65);
+  assert.equal(schedules.current["Pro (Silver)"], 0.7);
+  assert.equal(schedules.current["Pro (Gold)"], 0.75);
+  assert.equal(schedules.current["Pro (Platinum)"], 0.75);
+  assert.equal(schedules.cheaper["Pro (Bronze)"], 0.6);
+  assert.equal(schedules.cheaper["Pro (Silver)"], 0.67);
+  assert.equal(schedules.cheaper["Pro (Gold)"], 0.72);
+  assert.equal(schedules.cheaper["Pro (Platinum)"], 0.72);
+});
+
+test("live pilot defaults to the cheaper hybrid schedule", async () => {
+  const { pilotConfig } = await import("../src/pilot/config");
+  assert.deepEqual(pilotConfig.hybridStrictMultiplierByTier, pilotConfig.hybridStrictMultiplierSchedules.cheaper);
+  assert.equal(pilotConfig.hybridStrictMultiplierByTier["Pro (Bronze)"], 0.6);
+  assert.equal(pilotConfig.hybridStrictMultiplierByTier["Pro (Silver)"], 0.67);
+  assert.equal(pilotConfig.hybridStrictMultiplierByTier["Pro (Gold)"], 0.72);
+  assert.equal(pilotConfig.hybridStrictMultiplierByTier["Pro (Platinum)"], 0.72);
 });
 
 test("ibkr tenor drift env parsing supports configured bounds", () => {

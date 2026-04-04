@@ -5,7 +5,8 @@ export type PilotVenueMode =
   | "deribit_test"
   | "mock_falconx"
   | "ibkr_cme_live"
-  | "ibkr_cme_paper";
+  | "ibkr_cme_paper"
+  | "bullish_testnet";
 export type PilotWindowStatus = "open" | "not_started" | "closed" | "config_invalid";
 export type DeribitQuotePolicy = "ask_only" | "ask_or_mark_fallback";
 export type DeribitStrikeSelectionMode = "legacy" | "trigger_aligned";
@@ -15,6 +16,34 @@ export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 export type PilotPricingMode = "actuarial_strict" | "hybrid_otm_treasury";
 export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
+export type HybridStrictMultiplierScheduleName = "current" | "cheaper";
+export type BullishAuthMode = "hmac" | "ecdsa";
+export type BullishOrderTif = "IOC" | "DAY" | "GTC";
+export type BullishRuntimeConfig = {
+  enabled: boolean;
+  restBaseUrl: string;
+  publicWsUrl: string;
+  privateWsUrl: string;
+  authMode: BullishAuthMode;
+  hmacPublicKey: string;
+  hmacSecret: string;
+  ecdsaPublicKey: string;
+  ecdsaPrivateKey: string;
+  ecdsaMetadata: string;
+  tradingAccountId: string;
+  defaultSymbol: string;
+  symbolByMarketId: Record<string, string>;
+  hmacLoginPath: string;
+  ecdsaLoginPath: string;
+  tradingAccountsPath: string;
+  noncePath: string;
+  commandPath: string;
+  orderbookPathTemplate: string;
+  enableExecution: boolean;
+  orderTimeoutMs: number;
+  orderTif: BullishOrderTif;
+  allowMargin: boolean;
+};
 export type HedgeOptimizerRuntimeConfig = {
   enabled: boolean;
   version: string;
@@ -149,7 +178,8 @@ export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => 
     normalized === "deribit_test" ||
     normalized === "mock_falconx" ||
     normalized === "ibkr_cme_live" ||
-    normalized === "ibkr_cme_paper"
+    normalized === "ibkr_cme_paper" ||
+    normalized === "bullish_testnet"
   ) {
     return normalized;
   }
@@ -210,6 +240,62 @@ export const parsePositiveFinite = (raw: string | undefined, fallback: number, e
   throw new Error(`${errorCode}:${String(raw || "").trim() || "empty"}`);
 };
 
+export const parseHybridStrictMultiplier = (raw: string | undefined, fallback: number, errorCode: string): number =>
+  parseFractionRange(raw, fallback, 0.25, 1, errorCode);
+
+const resolveCurrentHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_BRONZE,
+    0.65,
+    "invalid_pilot_hybrid_strict_multiplier_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_SILVER,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_GOLD,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_PLATINUM,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_platinum"
+  )
+});
+
+const resolveCheaperHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_CHEAPER_BRONZE,
+    0.6,
+    "invalid_pilot_hybrid_strict_multiplier_cheaper_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_CHEAPER_SILVER,
+    0.67,
+    "invalid_pilot_hybrid_strict_multiplier_cheaper_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_CHEAPER_GOLD,
+    0.72,
+    "invalid_pilot_hybrid_strict_multiplier_cheaper_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_CHEAPER_PLATINUM,
+    0.72,
+    "invalid_pilot_hybrid_strict_multiplier_cheaper_platinum"
+  )
+});
+
+export const resolveHybridStrictMultiplierSchedules = (): Record<HybridStrictMultiplierScheduleName, Record<string, number>> => ({
+  current: resolveCurrentHybridStrictMultiplierByTier(),
+  cheaper: resolveCheaperHybridStrictMultiplierByTier()
+});
+
+export const DEFAULT_LIVE_HYBRID_STRICT_MULTIPLIER_SCHEDULE: HybridStrictMultiplierScheduleName = "cheaper";
+
 export const parseNonNegativeFinite = (raw: string | undefined, fallback: number, errorCode: string): number => {
   const parsed = Number(raw ?? String(fallback));
   if (Number.isFinite(parsed) && parsed >= 0) return parsed;
@@ -263,6 +349,18 @@ export const parsePilotPricingMode = (raw: string | undefined): PilotPricingMode
     return normalized;
   }
   throw new Error(`invalid_pilot_pricing_mode:${normalized || "empty"}`);
+};
+
+export const parseBullishAuthMode = (raw: string | undefined): BullishAuthMode => {
+  const normalized = String(raw || "ecdsa").trim().toLowerCase();
+  if (normalized === "hmac" || normalized === "ecdsa") return normalized;
+  throw new Error(`invalid_bullish_auth_mode:${normalized || "empty"}`);
+};
+
+export const parseBullishOrderTif = (raw: string | undefined): BullishOrderTif => {
+  const normalized = String(raw || "IOC").trim().toUpperCase();
+  if (normalized === "IOC" || normalized === "DAY" || normalized === "GTC") return normalized;
+  throw new Error(`invalid_bullish_order_tif:${normalized || "empty"}`);
 };
 
 export const parsePilotSelectorMode = (raw: string | undefined): PilotSelectorMode => {
@@ -439,115 +537,159 @@ const parseTierBatchingTenorRuntimeConfig = (): TierBatchingTenorRuntimeConfig =
   )
 });
 
+const parseBullishRuntimeConfig = (): BullishRuntimeConfig => ({
+  enabled: parseBooleanEnv(process.env.PILOT_BULLISH_ENABLED, false),
+  restBaseUrl: String(process.env.PILOT_BULLISH_REST_BASE_URL || "https://api.exchange.bullish.com").trim(),
+  publicWsUrl: String(
+    process.env.PILOT_BULLISH_PUBLIC_WS_URL || "wss://api.exchange.bullish.com/trading-api/v1/market-data/orderbook"
+  ).trim(),
+  privateWsUrl: String(
+    process.env.PILOT_BULLISH_PRIVATE_WS_URL || "wss://api.exchange.bullish.com/trading-api/v1/private-data"
+  ).trim(),
+  authMode: parseBullishAuthMode(process.env.PILOT_BULLISH_AUTH_MODE),
+  hmacPublicKey: String(process.env.PILOT_BULLISH_HMAC_PUBLIC_KEY || "").trim(),
+  hmacSecret: String(process.env.PILOT_BULLISH_HMAC_SECRET || "").trim(),
+  ecdsaPublicKey: String(process.env.PILOT_BULLISH_ECDSA_PUBLIC_KEY || "").trim(),
+  ecdsaPrivateKey: String(process.env.PILOT_BULLISH_ECDSA_PRIVATE_KEY || "").trim(),
+  ecdsaMetadata: String(process.env.PILOT_BULLISH_ECDSA_METADATA || "").trim(),
+  tradingAccountId: String(process.env.PILOT_BULLISH_TRADING_ACCOUNT_ID || "").trim(),
+  defaultSymbol: String(process.env.PILOT_BULLISH_DEFAULT_SYMBOL || "BTCUSDC").trim() || "BTCUSDC",
+  symbolByMarketId: parseSymbolMap(
+    process.env.PILOT_BULLISH_SYMBOL_MAP,
+    { "BTC-USD": "BTCUSDC" },
+    "invalid_pilot_bullish_symbol_map"
+  ),
+  hmacLoginPath: String(process.env.PILOT_BULLISH_HMAC_LOGIN_PATH || "/trading-api/v1/users/hmac/login").trim(),
+  ecdsaLoginPath: String(process.env.PILOT_BULLISH_ECDSA_LOGIN_PATH || "/trading-api/v2/users/login").trim(),
+  tradingAccountsPath: String(
+    process.env.PILOT_BULLISH_TRADING_ACCOUNTS_PATH || "/trading-api/v1/accounts/trading-accounts"
+  ).trim(),
+  noncePath: String(process.env.PILOT_BULLISH_NONCE_PATH || "/nonce").trim(),
+  commandPath: String(process.env.PILOT_BULLISH_COMMAND_PATH || "/trading-api/v2/command").trim(),
+  orderbookPathTemplate: String(
+    process.env.PILOT_BULLISH_ORDERBOOK_PATH_TEMPLATE || "/trading-api/v1/markets/:symbol/orderbook/hybrid"
+  ).trim(),
+  enableExecution: parseBooleanEnv(process.env.PILOT_BULLISH_ENABLE_EXECUTION, false),
+  orderTimeoutMs: parsePositiveIntInRange(
+    process.env.PILOT_BULLISH_ORDER_TIMEOUT_MS,
+    8000,
+    1000,
+    60000,
+    "invalid_pilot_bullish_order_timeout_ms"
+  ),
+  orderTif: parseBullishOrderTif(process.env.PILOT_BULLISH_ORDER_TIF),
+  allowMargin: parseBooleanEnv(process.env.PILOT_BULLISH_ALLOW_MARGIN, false)
+});
+
 const parsePremiumRegimeRuntimeConfig = (): PremiumRegimeRuntimeConfig => ({
   enabled: parseBooleanEnv(process.env.PILOT_PREMIUM_REGIME_ENABLED, false),
   applyToActuarialStrict: parseBooleanEnv(process.env.PILOT_PREMIUM_REGIME_APPLY_TO_ACTUARIAL, false),
   lookbackMinutes: parsePositiveIntInRange(
     process.env.PILOT_PREMIUM_REGIME_LOOKBACK_MINUTES,
-    240,
+    360,
     5,
     7 * 24 * 60,
     "invalid_pilot_premium_regime_lookback_minutes"
   ),
   minSamples: parsePositiveIntInRange(
     process.env.PILOT_PREMIUM_REGIME_MIN_SAMPLES,
-    20,
+    24,
     1,
     10000,
     "invalid_pilot_premium_regime_min_samples"
   ),
   minDwellMinutes: parsePositiveIntInRange(
     process.env.PILOT_PREMIUM_REGIME_MIN_DWELL_MINUTES,
-    60,
+    180,
     1,
     24 * 60,
     "invalid_pilot_premium_regime_min_dwell_minutes"
   ),
   maxOverlayPctOfBasePremium: parseFractionRange(
     process.env.PILOT_PREMIUM_REGIME_MAX_OVERLAY_PCT_OF_BASE,
-    1,
+    0.3,
     0,
     5,
     "invalid_pilot_premium_regime_max_overlay_pct_of_base"
   ),
   watchAddUsdPer1k: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_WATCH_ADD_USD_PER_1K,
-    2,
+    1.5,
     "invalid_pilot_premium_regime_watch_add_usd_per_1k"
   ),
   watchMultiplier: parsePositiveFinite(
     process.env.PILOT_PREMIUM_REGIME_WATCH_MULTIPLIER,
-    1,
+    1.05,
     "invalid_pilot_premium_regime_watch_multiplier"
   ),
   stressAddUsdPer1k: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_STRESS_ADD_USD_PER_1K,
-    4,
+    3,
     "invalid_pilot_premium_regime_stress_add_usd_per_1k"
   ),
   stressMultiplier: parsePositiveFinite(
     process.env.PILOT_PREMIUM_REGIME_STRESS_MULTIPLIER,
-    1,
+    1.15,
     "invalid_pilot_premium_regime_stress_multiplier"
   ),
   enterWatchTriggerHitRatePct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_ENTER_WATCH_TRIGGER_HIT_RATE_PCT,
-    8,
+    7,
     "invalid_pilot_premium_regime_enter_watch_trigger_hit_rate_pct"
   ),
   enterWatchSubsidyUtilizationPct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_ENTER_WATCH_SUBSIDY_UTILIZATION_PCT,
-    50,
+    35,
     "invalid_pilot_premium_regime_enter_watch_subsidy_utilization_pct"
   ),
   enterWatchTreasuryDrawdownPct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_ENTER_WATCH_TREASURY_DRAWDOWN_PCT,
-    20,
+    15,
     "invalid_pilot_premium_regime_enter_watch_treasury_drawdown_pct"
   ),
   enterStressTriggerHitRatePct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_ENTER_STRESS_TRIGGER_HIT_RATE_PCT,
-    15,
+    12,
     "invalid_pilot_premium_regime_enter_stress_trigger_hit_rate_pct"
   ),
   enterStressSubsidyUtilizationPct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_ENTER_STRESS_SUBSIDY_UTILIZATION_PCT,
-    80,
+    60,
     "invalid_pilot_premium_regime_enter_stress_subsidy_utilization_pct"
   ),
   enterStressTreasuryDrawdownPct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_ENTER_STRESS_TREASURY_DRAWDOWN_PCT,
-    35,
+    30,
     "invalid_pilot_premium_regime_enter_stress_treasury_drawdown_pct"
   ),
   exitWatchTriggerHitRatePct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_EXIT_WATCH_TRIGGER_HIT_RATE_PCT,
-    5,
+    4,
     "invalid_pilot_premium_regime_exit_watch_trigger_hit_rate_pct"
   ),
   exitWatchSubsidyUtilizationPct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_EXIT_WATCH_SUBSIDY_UTILIZATION_PCT,
-    35,
+    25,
     "invalid_pilot_premium_regime_exit_watch_subsidy_utilization_pct"
   ),
   exitWatchTreasuryDrawdownPct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_EXIT_WATCH_TREASURY_DRAWDOWN_PCT,
-    12,
+    8,
     "invalid_pilot_premium_regime_exit_watch_treasury_drawdown_pct"
   ),
   exitStressTriggerHitRatePct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_EXIT_STRESS_TRIGGER_HIT_RATE_PCT,
-    10,
+    8,
     "invalid_pilot_premium_regime_exit_stress_trigger_hit_rate_pct"
   ),
   exitStressSubsidyUtilizationPct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_EXIT_STRESS_SUBSIDY_UTILIZATION_PCT,
-    60,
+    45,
     "invalid_pilot_premium_regime_exit_stress_subsidy_utilization_pct"
   ),
   exitStressTreasuryDrawdownPct: parseNonNegativeFinite(
     process.env.PILOT_PREMIUM_REGIME_EXIT_STRESS_TREASURY_DRAWDOWN_PCT,
-    25,
+    20,
     "invalid_pilot_premium_regime_exit_stress_treasury_drawdown_pct"
   )
 });
@@ -589,6 +731,29 @@ export const parseCommaSeparatedInts = (
     return Math.floor(value);
   });
   return Array.from(new Set(normalized)).sort((a, b) => a - b);
+};
+
+export const parseSymbolMap = (
+  raw: string | undefined,
+  fallback: Record<string, string>,
+  errorCode: string
+): Record<string, string> => {
+  const input = String(raw || "").trim();
+  if (!input) return { ...fallback };
+  const entries = input
+    .split(",")
+    .map((pair) => pair.trim())
+    .filter(Boolean);
+  if (!entries.length) return { ...fallback };
+  const out: Record<string, string> = {};
+  for (const entry of entries) {
+    const [left, right] = entry.split(":").map((part) => part?.trim() || "");
+    if (!left || !right) {
+      throw new Error(`${errorCode}:${entry}`);
+    }
+    out[left] = right;
+  }
+  return out;
 };
 
 const resolveTenorBounds = (): {
@@ -714,6 +879,7 @@ export const pilotConfig = {
   premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
   premiumPricingMode: parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
   pilotSelectorMode: parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
+  bullish: parseBullishRuntimeConfig(),
   hedgeOptimizer: parseHedgeOptimizerRuntimeConfig(),
   rolloutGuards: parseRolloutGuardRuntimeConfig(),
   tierBatchingTenor: parseTierBatchingTenorRuntimeConfig(),
@@ -942,6 +1108,8 @@ export const pilotConfig = {
     5,
     "invalid_pilot_hybrid_base_fee_usd"
   ),
+  hybridStrictMultiplierSchedules: resolveHybridStrictMultiplierSchedules(),
+  hybridStrictMultiplierByTier: resolveCheaperHybridStrictMultiplierByTier(),
   premiumMarkupPct: Number(process.env.PILOT_PREMIUM_MARKUP_PCT || "0.045"),
   premiumMarkupPctByTier: {
     "Pro (Bronze)": Number(process.env.PILOT_PREMIUM_MARKUP_PCT_BRONZE || "0.06"),

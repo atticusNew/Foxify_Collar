@@ -204,10 +204,78 @@ Edit: `scripts/fixtures/pilot_backtest_config.example.json`
 - `treasury.perQuoteSubsidyCapPct`
 - Per tier:
   - `strictPremiumPer1kProtectedUsd`
-  - `hybridPremiumPer1kProtectedUsd`
+  - `hybridPremiumPer1kProtectedUsd` (keep this as a discounted share of strict; live pilot default is the cheaper schedule)
   - `fallbackHedgePremiumPer1kProtectedUsd`
   - `strictHedgeRecoveryPct`
   - `hybridHedgeRecoveryPct`
+
+## Live pilot pricing lock-in
+
+Production pilot defaults:
+
+- Hybrid pricing uses the cheaper strict-discount schedule:
+  - Bronze: `0.60 x strict`
+  - Silver: `0.67 x strict`
+  - Gold: `0.72 x strict`
+  - Platinum: `0.72 x strict`
+- Premium regimes can still add watch/stress overlays when treasury telemetry deteriorates.
+- Take-profit is disabled in production (`tp_off`) for simplicity and treasury governance.
+- r/d take-profit settings remain available only in backtests and experiments.
+
+Rounded UI pricing chart (presentation only; underwriting still uses exact cheaper multipliers):
+
+| Tier | Floor | Rounded per 1k/week | 5k | 10k | 25k | 50k |
+|---|---:|---:|---:|---:|---:|---:|
+| Bronze | 20% | $25 | $125 | $250 | $625 | $1,250 |
+| Silver | 15% | $21 | $105 | $210 | $525 | $1,050 |
+| Gold | 12% | $18 | $90 | $180 | $450 | $900 |
+| Platinum | 12% | $17 | $85 | $170 | $425 | $850 |
+
+## Bullish testnet pilot venue integration
+
+Current pilot venue architecture:
+
+- Active venue integrations:
+  - `deribit_test`
+  - `ibkr_cme_paper`
+  - `ibkr_cme_live`
+  - `falconx`
+- Experimental / placeholders left intentionally untouched in this phase:
+  - `mock_falconx`
+  - FalconX remains non-primary for the Foxify CEO localized pilot
+- Venue selection for pilot quote/execute flows happens in:
+  - `services/api/src/pilot/config.ts` via `PILOT_VENUE_MODE`
+  - `services/api/src/pilot/venue.ts` via `createPilotVenueAdapter(...)`
+  - `services/api/src/pilot/routes.ts` when the singleton pilot venue adapter is created
+
+Bullish integration point:
+
+- New isolated venue mode: `bullish_testnet`
+- Enabled only when `PILOT_BULLISH_ENABLED=true`
+- Intended to become the primary pilot venue incrementally, without altering Deribit/IBKR behavior unless explicitly selected
+
+Safe setup for local/Cursor smoke testing:
+
+```bash
+cd /workspace/services/api
+
+# read-only smoke test
+npm run -s pilot:bullish:smoke -- --symbol BTCUSDC
+
+# optional tiny order path, only when explicitly requested
+npm run -s pilot:bullish:smoke -- --symbol BTCUSDC --place-test-order true --cancel-test-order true
+```
+
+Required env knobs:
+
+- `PILOT_VENUE_MODE=bullish_testnet`
+- `PILOT_BULLISH_ENABLED=true`
+- `PILOT_BULLISH_API_HOSTNAME=...`
+- `PILOT_BULLISH_PUBLIC_WS_URL=...`
+- `PILOT_BULLISH_PRIVATE_WS_URL=...`
+- `PILOT_BULLISH_HMAC_PUBLIC_KEY=...`
+- `PILOT_BULLISH_HMAC_SECRET=...`
+- `PILOT_BULLISH_TRADING_ACCOUNT_ID=...`
 
 ## FalconX integration path (next step)
 

@@ -25,6 +25,64 @@ test("mock_falconx adapter returns quote and execution", async () => {
   assert.equal(execution.status, "success");
 });
 
+test("bullish_testnet requires explicit enable flag", async () => {
+  assert.throws(
+    () =>
+      createPilotVenueAdapter({
+        mode: "bullish_testnet",
+        falconx: {
+          baseUrl: "https://api.falconx.io",
+          apiKey: "key",
+          secret: "c2VjcmV0",
+          passphrase: "pass"
+        },
+        deribit: {} as any,
+        bullish: {
+          enabled: false,
+          restBaseUrl: "https://api.exchange.bullish.com",
+          publicWsUrl: "wss://api.exchange.bullish.com/trading-api/v1/market-data/orderbook",
+          privateWsUrl: "wss://api.exchange.bullish.com/trading-api/v1/private",
+          apiKeyType: "hmac",
+          publicKey: "pub",
+          secret: "secret",
+          tradingAccountId: "1111",
+          symbol: "BTCUSDC",
+          quoteTtlMs: 30000,
+          enableExecution: false
+        }
+      }),
+    /bullish_testnet_disabled/
+  );
+});
+
+test("bullish_testnet adapter can be constructed when explicitly enabled", () => {
+  const adapter = createPilotVenueAdapter({
+    mode: "bullish_testnet",
+    bullishEnabled: true,
+    falconx: {
+      baseUrl: "https://api.falconx.io",
+      apiKey: "key",
+      secret: "c2VjcmV0",
+      passphrase: "pass"
+    },
+    deribit: {} as any,
+    bullish: {
+      enabled: true,
+      restBaseUrl: "https://api.exchange.bullish.com",
+      publicWsUrl: "wss://api.exchange.bullish.com/trading-api/v1/market-data/orderbook",
+      privateWsUrl: "wss://api.exchange.bullish.com/trading-api/v1/private",
+      apiKeyType: "hmac",
+      publicKey: "pub",
+      secret: "secret",
+      tradingAccountId: "1111",
+      symbol: "BTCUSDC",
+      quoteTtlMs: 30000,
+      enableExecution: false
+    }
+  });
+  assert.ok(adapter);
+});
+
 test("mapVenueFailureReason normalizes known errors", () => {
   assert.equal(mapVenueFailureReason(new Error("QUOTE_EXPIRED")), "quote_expired");
   assert.equal(mapVenueFailureReason(new Error("INVALID_QUOTE_ID")), "invalid_quote_id");

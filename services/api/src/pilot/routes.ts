@@ -52,6 +52,7 @@ import { registerPilotTriggerMonitor } from "./triggerMonitor";
 import {
   buildPremiumPolicyDiagnostics,
   estimateBrokerFeesUsd,
+  resolvePilotRoundedPremiumDisplay,
   resolvePremiumPricing,
   type PremiumPricingResult
 } from "./pricingPolicy";
@@ -741,6 +742,8 @@ export const registerPilotRoutes = async (
   await ensurePilotSchema(pool);
   const venue = createPilotVenueAdapter({
     mode: pilotConfig.venueMode,
+    bullishEnabled: pilotConfig.bullish.enabled,
+    bullish: pilotConfig.bullish,
     quoteTtlMs: pilotConfig.quoteTtlMs,
     deribitQuotePolicy: pilotConfig.deribitQuotePolicy,
     deribitStrikeSelectionMode: pilotConfig.deribitStrikeSelectionMode,
@@ -1801,6 +1804,11 @@ export const registerPilotRoutes = async (
           details: quote.details as Record<string, unknown> | undefined
         })
       });
+      const roundedPremiumDisplay = resolvePilotRoundedPremiumDisplay({
+        tierName,
+        protectedNotionalUsd: protectedNotional,
+        drawdownFloorPct
+      });
       let premiumRegimeMetrics: PremiumRegimeMetrics = {
         sampleCount: 0,
         triggerHitRatePct: 0,
@@ -1985,7 +1993,12 @@ export const registerPilotRoutes = async (
         premiumFloorUsdFromBps: premiumPricing.premiumFloorUsdFromBps.toFixed(10),
         premiumFloorBps: premiumPricing.premiumFloorBps.toFixed(2),
         premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
+        strictClientPremiumUsd: premiumPricing.strictClientPremiumUsd.toFixed(10),
+        hybridStrictMultiplier: premiumPricing.hybridStrictMultiplier.toFixed(6),
+        hybridDiscountedStrictPremiumUsd: premiumPricing.hybridDiscountedStrictPremiumUsd.toFixed(10),
         clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
+        displayedPremiumPer1kUsd: roundedPremiumDisplay.roundedPremiumPer1kUsd.toFixed(2),
+        displayedPremiumUsd: roundedPremiumDisplay.roundedClientPremiumUsd.toFixed(2),
         method: premiumPricing.method,
         treasuryQuoteSubsidyUsd: quoteSubsidyUsd.toFixed(10),
         treasuryPerQuoteSubsidyCapUsd: quoteSubsidyCapUsd.toFixed(10),
@@ -2103,6 +2116,8 @@ export const registerPilotRoutes = async (
             premiumRegimeOverlayUsd: premiumRegimeOverlay.overlayUsd.toFixed(10),
             premiumRegimeBasePremiumUsd: premiumRegimeOverlay.basePremiumUsd.toFixed(10),
             premiumRegimeAdjustedPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd.toFixed(10),
+            displayRoundedPremiumPer1kUsd: roundedPremiumDisplay.roundedPremiumPer1kUsd.toFixed(2),
+            displayRoundedClientPremiumUsd: roundedPremiumDisplay.roundedClientPremiumUsd.toFixed(2),
             ...pricingBreakdown
           }
         }
@@ -2695,6 +2710,15 @@ export const registerPilotRoutes = async (
         parsePositiveDecimal(lockContext.premiumFloorBps) ||
         parseBoundedDecimal(lockContext.premiumFloorBps, 0, Number.MAX_SAFE_INTEGER);
       const contextClientPremium = parsePositiveDecimal(lockContext.clientPremiumUsd);
+      const contextStrictClientPremium =
+        parsePositiveDecimal(lockContext.strictClientPremiumUsd) ||
+        parseBoundedDecimal(lockContext.strictClientPremiumUsd, 0, Number.MAX_SAFE_INTEGER);
+      const contextHybridStrictMultiplier =
+        parsePositiveDecimal(lockContext.hybridStrictMultiplier) ||
+        parseBoundedDecimal(lockContext.hybridStrictMultiplier, 0, Number.MAX_SAFE_INTEGER);
+      const contextHybridDiscountedStrictPremiumUsd =
+        parsePositiveDecimal(lockContext.hybridDiscountedStrictPremiumUsd) ||
+        parseBoundedDecimal(lockContext.hybridDiscountedStrictPremiumUsd, 0, Number.MAX_SAFE_INTEGER);
       const contextRequestedTenorDays = parsePositiveDecimal(lockContext.requestedTenorDays);
       const contextVenueRequestedTenorDays = parsePositiveDecimal(lockContext.venueRequestedTenorDays);
       const contextSelectedTenorDays = parsePositiveDecimal(lockContext.selectedTenorDays);
@@ -2761,12 +2785,17 @@ export const registerPilotRoutes = async (
         premiumFloorUsdFromBps: contextFloorUsdFromBps || fallbackPremiumPricing.premiumFloorUsdFromBps,
         premiumFloorBps: contextFloorBps || fallbackPremiumPricing.premiumFloorBps,
         premiumFloorUsd: contextFloorUsd || fallbackPremiumPricing.premiumFloorUsd,
+        strictClientPremiumUsd: contextStrictClientPremium || fallbackPremiumPricing.strictClientPremiumUsd,
+        hybridStrictMultiplier: contextHybridStrictMultiplier || fallbackPremiumPricing.hybridStrictMultiplier,
+        hybridDiscountedStrictPremiumUsd:
+          contextHybridDiscountedStrictPremiumUsd || fallbackPremiumPricing.hybridDiscountedStrictPremiumUsd,
         clientPremiumUsd: contextClientPremium || fallbackPremiumPricing.clientPremiumUsd,
         method: (() => {
           const rawMethod = String(lockContext.method || fallbackPremiumPricing.method);
-          if (rawMethod === "hybrid_markup") return "hybrid_markup";
-          if (rawMethod === "hybrid_position_floor") return "hybrid_position_floor";
-          if (rawMethod === "hybrid_claims_floor") return "hybrid_claims_floor";
+          if (rawMethod === "hybrid_strict_discount") return "hybrid_strict_discount";
+          if (rawMethod === "hybrid_markup") return "hybrid_strict_discount";
+          if (rawMethod === "hybrid_position_floor") return "hybrid_strict_discount";
+          if (rawMethod === "hybrid_claims_floor") return "hybrid_strict_discount";
           if (rawMethod === "floor_profitability") return "floor_profitability";
           if (rawMethod === "floor_trigger_credit") return "floor_trigger_credit";
           if (rawMethod === "floor_usd") return "floor_usd";
@@ -2953,6 +2982,16 @@ export const registerPilotRoutes = async (
           premiumFloorBps: premiumPricing.premiumFloorBps.toFixed(2),
           premiumFloorUsd: premiumPricing.premiumFloorUsd.toFixed(10),
           clientPremiumUsd: premiumPricing.clientPremiumUsd.toFixed(10),
+          displayedPremiumUsd:
+            parsePositiveDecimal(lockContext.displayedPremiumUsd) ||
+            new Decimal(lockContext.displayedPremiumUsd || NaN).isFinite()
+              ? String(lockContext.displayedPremiumUsd)
+              : premiumPricing.clientPremiumUsd.toFixed(10),
+          displayedPremiumPer1kUsd:
+            parsePositiveDecimal(lockContext.displayedPremiumPer1kUsd) ||
+            new Decimal(lockContext.displayedPremiumPer1kUsd || NaN).isFinite()
+              ? String(lockContext.displayedPremiumPer1kUsd)
+              : premiumPricing.clientPremiumUsd.div(protectedNotional.div(1000)).toFixed(10),
           premiumMethod: premiumPricing.method,
           entryAnchorPrice: quoteEntryAnchorPrice.toFixed(10),
           entryAnchorSource: quoteEntryPriceSource,

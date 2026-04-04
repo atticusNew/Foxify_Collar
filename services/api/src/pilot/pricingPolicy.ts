@@ -11,9 +11,7 @@ export type PremiumMethod =
   | "floor_bps"
   | "floor_trigger_credit"
   | "floor_profitability"
-  | "hybrid_markup"
-  | "hybrid_position_floor"
-  | "hybrid_claims_floor";
+  | "hybrid_strict_discount";
 
 export type PremiumPricingBreakdown = {
   hedgePremiumUsd: Decimal;
@@ -39,9 +37,20 @@ export type PremiumPricingBreakdown = {
   expectedTriggerProbCapped: Decimal;
   expectedClaimsUsd: Decimal;
   markupPremiumUsd: Decimal;
+  strictClientPremiumUsd: Decimal;
+  hybridStrictMultiplier: Decimal;
+  hybridDiscountedStrictPremiumUsd: Decimal;
   clientPremiumUsd: Decimal;
   method: PremiumMethod;
   pricingMode: PricingMode;
+};
+
+export type PilotRoundedPremiumDisplay = {
+  tierName: string;
+  protectedNotionalUsd: Decimal;
+  drawdownFloorPct: Decimal;
+  roundedPremiumPer1kUsd: Decimal;
+  roundedClientPremiumUsd: Decimal;
 };
 
 export type PricingPolicyConfig = {
@@ -58,6 +67,7 @@ export type PricingPolicyConfig = {
   markupFactor: Decimal;
   claimsCoverageFactor: Decimal;
   triggerProbCap: Decimal;
+  hybridStrictMultiplier: Decimal;
   notionalBands: Array<{ maxNotionalUsd: Decimal | null; floorUsd: Decimal }>;
   selectionFeasibilityPenaltyScale: Decimal;
 };
@@ -103,6 +113,18 @@ const resolveTierMarkupPct = (tierName: string): Decimal => {
   return Number.isFinite(raw) && raw > 0 ? new Decimal(raw) : new Decimal(0);
 };
 
+const resolveTierHybridStrictMultiplier = (tierName: string): Decimal => {
+  const raw = Number(pilotConfig.hybridStrictMultiplierByTier[tierName] ?? 0.7);
+  return Number.isFinite(raw) && raw > 0 ? new Decimal(raw) : new Decimal("0.7");
+};
+
+const ROUNDED_PREMIUM_PER_1K_USD_BY_TIER: Record<string, Decimal> = {
+  "Pro (Bronze)": new Decimal(25),
+  "Pro (Silver)": new Decimal(21),
+  "Pro (Gold)": new Decimal(18),
+  "Pro (Platinum)": new Decimal(17)
+};
+
 export const resolvePricingPolicyMode = (raw: string | undefined): PricingMode => {
   const normalized = String(raw || "actuarial_strict").trim().toLowerCase();
   if (normalized === "hybrid_otm_treasury" || normalized === "actuarial_strict") {
@@ -132,6 +154,7 @@ export const resolveDefaultPricingPolicyConfig = (params: {
   expectedTriggerBreachProb: number;
   triggerCreditWeight: number;
   profitabilityBufferPct: number;
+  hybridStrictMultiplier?: number;
   selectionFeasibilityPenaltyScale?: number;
 }): PricingPolicyConfig => ({
   mode: params.pricingMode,
@@ -164,6 +187,10 @@ export const resolveDefaultPricingPolicyConfig = (params: {
     Decimal.max(new Decimal(0), new Decimal(pilotConfig.hybridClaimsCoverageFactor))
   ),
   triggerProbCap: Decimal.min(new Decimal(1), Decimal.max(new Decimal(0), new Decimal(pilotConfig.hybridTriggerProbCap))),
+  hybridStrictMultiplier: parsePositiveFiniteWithDefault(
+    params.hybridStrictMultiplier,
+    resolveTierHybridStrictMultiplier("Pro (Bronze)")
+  ),
   notionalBands: [
     { maxNotionalUsd: new Decimal("1500"), floorUsd: new Decimal("10") },
     { maxNotionalUsd: new Decimal("3000"), floorUsd: new Decimal("15") },
@@ -211,6 +238,7 @@ export const resolvePremiumPricing = (params: {
       ),
       triggerCreditWeight: Number(pilotConfig.premiumTriggerCreditWeightByTier[params.tierName] ?? 0.35),
       profitabilityBufferPct: Number(pilotConfig.premiumProfitabilityBufferPctByTier[params.tierName] ?? 0.015),
+      hybridStrictMultiplier: Number(pilotConfig.hybridStrictMultiplierByTier[params.tierName] ?? 0.7),
       selectionFeasibilityPenaltyScale: 1
     });
   const hedgePremiumUsd = params.hedgePremium;
@@ -224,11 +252,8 @@ export const resolvePremiumPricing = (params: {
   const markedUpPremium = passThroughUsd.plus(markupUsd);
   const triggerCreditUsd = computeDrawdownLossBudgetUsd(params.protectedNotional, params.drawdownFloorPct);
   const expectedTriggerProbRaw = config.expectedTriggerBreachProb;
-  const expectedTriggerProbCapped =
-    mode === "hybrid_otm_treasury"
-      ? Decimal.min(expectedTriggerProbRaw, config.triggerProbCap)
-      : expectedTriggerProbRaw;
-  const expectedClaimsUsd = triggerCreditUsd.mul(expectedTriggerProbCapped);
+  const expectedTriggerProbCapped = expectedTriggerProbRaw;
+  const expectedClaimsUsd = triggerCreditUsd.mul(expectedTriggerProbRaw);
   const expectedTriggerCreditUsd = expectedClaimsUsd;
   const triggerCreditWeight = config.triggerCreditWeight;
   const expectedTriggerCostUsd = expectedTriggerCreditUsd.mul(triggerCreditWeight);
@@ -244,19 +269,20 @@ export const resolvePremiumPricing = (params: {
     params.protectedNotional.gt(0)
       ? premiumProfitabilityTargetUsd.div(params.protectedNotional)
       : new Decimal(0);
-  const positionFloorUsd = resolvePositionFloorUsdForConfig(params.protectedNotional, config);
+  const strictFloorUsd = Decimal.max(
+    premiumFloorUsdAbsolute,
+    premiumFloorUsdFromBps,
+    premiumFloorUsdTriggerCredit,
+    profitabilityFloorUsd
+  );
+  const strictClientPremiumUsd = Decimal.max(markedUpPremium, strictFloorUsd);
+  const hybridStrictMultiplier = config.hybridStrictMultiplier;
+  const hybridDiscountedStrictPremiumUsd = strictClientPremiumUsd.mul(hybridStrictMultiplier);
+  const positionFloorUsd = strictFloorUsd;
   const claimsFloorUsd = expectedClaimsUsd.mul(config.claimsCoverageFactor);
 
   if (mode === "hybrid_otm_treasury") {
-    const markupFactor = config.markupFactor;
-    const baseFeeUsd = config.baseFeeUsd;
-    const hybridMarkupPremium = passThroughUsd.mul(markupFactor).plus(baseFeeUsd);
-    const clientPremiumUsd = Decimal.max(hybridMarkupPremium, positionFloorUsd, claimsFloorUsd);
-    const method: PremiumMethod = clientPremiumUsd.eq(hybridMarkupPremium)
-      ? "hybrid_markup"
-      : clientPremiumUsd.eq(positionFloorUsd)
-        ? "hybrid_position_floor"
-        : "hybrid_claims_floor";
+    const clientPremiumUsd = hybridDiscountedStrictPremiumUsd;
     return {
       hedgePremiumUsd,
       brokerFeesUsd,
@@ -280,20 +306,18 @@ export const resolvePremiumPricing = (params: {
       expectedTriggerProbRaw,
       expectedTriggerProbCapped,
       expectedClaimsUsd,
-      markupPremiumUsd: hybridMarkupPremium,
+      markupPremiumUsd: hybridDiscountedStrictPremiumUsd,
+      strictClientPremiumUsd,
+      hybridStrictMultiplier,
+      hybridDiscountedStrictPremiumUsd,
       clientPremiumUsd,
-      method,
+      method: "hybrid_strict_discount",
       pricingMode: mode
     };
   }
 
-  const premiumFloorUsd = Decimal.max(
-    premiumFloorUsdAbsolute,
-    premiumFloorUsdFromBps,
-    premiumFloorUsdTriggerCredit,
-    profitabilityFloorUsd
-  );
-  const clientPremiumUsd = Decimal.max(markedUpPremium, premiumFloorUsd);
+  const premiumFloorUsd = strictFloorUsd;
+  const clientPremiumUsd = strictClientPremiumUsd;
   const method: PremiumMethod = clientPremiumUsd.eq(markedUpPremium)
     ? "markup"
     : premiumFloorUsd.eq(profitabilityFloorUsd)
@@ -327,9 +351,30 @@ export const resolvePremiumPricing = (params: {
     expectedTriggerProbCapped,
     expectedClaimsUsd,
     markupPremiumUsd: markedUpPremium,
+    strictClientPremiumUsd,
+    hybridStrictMultiplier: new Decimal(1),
+    hybridDiscountedStrictPremiumUsd: strictClientPremiumUsd,
     clientPremiumUsd,
     method,
     pricingMode: mode
+  };
+};
+
+export const resolvePilotRoundedPremiumDisplay = (params: {
+  tierName: string;
+  protectedNotionalUsd: Decimal;
+  drawdownFloorPct: Decimal;
+}): PilotRoundedPremiumDisplay => {
+  const protectedNotionalUsd = new Decimal(params.protectedNotionalUsd);
+  const roundedPremiumPer1kUsd =
+    ROUNDED_PREMIUM_PER_1K_USD_BY_TIER[params.tierName] || new Decimal(0);
+  const roundedClientPremiumUsd = protectedNotionalUsd.div(1000).mul(roundedPremiumPer1kUsd);
+  return {
+    tierName: params.tierName,
+    protectedNotionalUsd,
+    drawdownFloorPct: new Decimal(params.drawdownFloorPct),
+    roundedPremiumPer1kUsd,
+    roundedClientPremiumUsd
   };
 };
 

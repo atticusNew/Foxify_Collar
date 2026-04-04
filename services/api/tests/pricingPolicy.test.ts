@@ -5,6 +5,7 @@ import {
   resolvePremiumPricing,
   resolvePricingPolicyMode,
   resolveDefaultPricingPolicyConfig,
+  resolvePilotRoundedPremiumDisplay,
   type PricingPolicyConfig
 } from "../src/pilot/pricingPolicy";
 
@@ -22,6 +23,7 @@ const baseConfig = (): PricingPolicyConfig => ({
   markupFactor: new Decimal("1.5"),
   claimsCoverageFactor: new Decimal("0.35"),
   triggerProbCap: new Decimal("0.2"),
+  hybridStrictMultiplier: new Decimal("0.60"),
   notionalBands: [
     { maxNotionalUsd: new Decimal("1500"), floorUsd: new Decimal("10") },
     { maxNotionalUsd: new Decimal("3000"), floorUsd: new Decimal("15") },
@@ -48,11 +50,12 @@ test("actuarial_strict mode keeps profitability floor behavior", () => {
   });
   assert.equal(result.method, "floor_profitability");
   assert.equal(result.clientPremiumUsd.toFixed(10), "212.5000000000");
+  assert.equal(result.strictClientPremiumUsd.toFixed(10), "212.5000000000");
   assert.equal(result.premiumProfitabilityTargetUsd.toFixed(10), "212.5000000000");
   assert.equal(result.expectedClaimsUsd.toFixed(10), "250.0000000000");
 });
 
-test("hybrid_otm_treasury mode uses soft claims floor and bands", () => {
+test("hybrid_otm_treasury mode discounts strict pricing by configured multiplier", () => {
   const config = { ...baseConfig(), mode: "hybrid_otm_treasury" as const };
   const result = resolvePremiumPricing({
     config,
@@ -61,14 +64,14 @@ test("hybrid_otm_treasury mode uses soft claims floor and bands", () => {
     hedgePremium: new Decimal("50"),
     brokerFees: new Decimal("0")
   });
-  assert.equal(result.method, "hybrid_markup");
-  assert.equal(result.markupPremiumUsd.toFixed(10), "80.0000000000");
-  assert.equal(result.claimsFloorUsd.toFixed(10), "70.0000000000");
-  assert.equal(result.positionFloorUsd.toFixed(10), "20.0000000000");
-  assert.equal(result.clientPremiumUsd.toFixed(10), "80.0000000000");
+  assert.equal(result.method, "hybrid_strict_discount");
+  assert.equal(result.strictClientPremiumUsd.toFixed(10), "212.5000000000");
+  assert.equal(result.hybridStrictMultiplier.toFixed(10), "0.6000000000");
+  assert.equal(result.hybridDiscountedStrictPremiumUsd.toFixed(10), "127.5000000000");
+  assert.equal(result.clientPremiumUsd.toFixed(10), "127.5000000000");
 });
 
-test("hybrid_otm_treasury mode caps trigger probability in claims floor", () => {
+test("hybrid_otm_treasury mode keeps actuarial expected claims diagnostics", () => {
   const config = {
     ...baseConfig(),
     mode: "hybrid_otm_treasury" as const,
@@ -82,9 +85,11 @@ test("hybrid_otm_treasury mode caps trigger probability in claims floor", () => 
     hedgePremium: new Decimal("20"),
     brokerFees: new Decimal("0")
   });
-  assert.equal(result.expectedTriggerProbCapped.toFixed(10), "0.2000000000");
-  assert.equal(result.expectedClaimsUsd.toFixed(10), "200.0000000000");
-  assert.equal(result.claimsFloorUsd.toFixed(10), "70.0000000000");
+  assert.equal(result.expectedTriggerProbRaw.toFixed(10), "0.9000000000");
+  assert.equal(result.expectedTriggerProbCapped.toFixed(10), "0.9000000000");
+  assert.equal(result.expectedClaimsUsd.toFixed(10), "900.0000000000");
+  assert.equal(result.strictClientPremiumUsd.toFixed(10), "410.0000000000");
+  assert.equal(result.clientPremiumUsd.toFixed(10), "246.0000000000");
 });
 
 test("resolveDefaultPricingPolicyConfig returns sane defaults", () => {
@@ -98,6 +103,7 @@ test("resolveDefaultPricingPolicyConfig returns sane defaults", () => {
     expectedTriggerBreachProb: 0.25,
     triggerCreditWeight: 0.35,
     profitabilityBufferPct: 0.015,
+    hybridStrictMultiplier: 0.6,
     selectionFeasibilityPenaltyScale: 1
   });
   assert.equal(cfg.mode, "actuarial_strict");
@@ -105,5 +111,40 @@ test("resolveDefaultPricingPolicyConfig returns sane defaults", () => {
   assert.equal(cfg.markupFactor.toFixed(10), "1.5000000000");
   assert.equal(cfg.claimsCoverageFactor.toFixed(10), "0.3000000000");
   assert.equal(cfg.triggerProbCap.toFixed(10), "0.2000000000");
+  assert.equal(cfg.hybridStrictMultiplier.toFixed(10), "0.6000000000");
   assert.equal(cfg.notionalBands.length, 5);
+});
+
+test("resolvePilotRoundedPremiumDisplay returns rounded UI chart without changing backend economics", () => {
+  const bronze = resolvePilotRoundedPremiumDisplay({
+    tierName: "Pro (Bronze)",
+    protectedNotionalUsd: new Decimal("5000"),
+    drawdownFloorPct: new Decimal("0.2")
+  });
+  assert.equal(bronze.roundedClientPremiumUsd.toFixed(10), "125.0000000000");
+  assert.equal(bronze.roundedPremiumPer1kUsd.toFixed(10), "25.0000000000");
+
+  const silver = resolvePilotRoundedPremiumDisplay({
+    tierName: "Pro (Silver)",
+    protectedNotionalUsd: new Decimal("10000"),
+    drawdownFloorPct: new Decimal("0.15")
+  });
+  assert.equal(silver.roundedClientPremiumUsd.toFixed(10), "210.0000000000");
+  assert.equal(silver.roundedPremiumPer1kUsd.toFixed(10), "21.0000000000");
+
+  const gold = resolvePilotRoundedPremiumDisplay({
+    tierName: "Pro (Gold)",
+    protectedNotionalUsd: new Decimal("25000"),
+    drawdownFloorPct: new Decimal("0.12")
+  });
+  assert.equal(gold.roundedClientPremiumUsd.toFixed(10), "450.0000000000");
+  assert.equal(gold.roundedPremiumPer1kUsd.toFixed(10), "18.0000000000");
+
+  const platinum = resolvePilotRoundedPremiumDisplay({
+    tierName: "Pro (Platinum)",
+    protectedNotionalUsd: new Decimal("50000"),
+    drawdownFloorPct: new Decimal("0.12")
+  });
+  assert.equal(platinum.roundedClientPremiumUsd.toFixed(10), "850.0000000000");
+  assert.equal(platinum.roundedPremiumPer1kUsd.toFixed(10), "17.0000000000");
 });

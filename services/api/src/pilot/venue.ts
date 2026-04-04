@@ -7,6 +7,7 @@ import {
   type IbkrQualifiedContract
 } from "@foxify/connectors";
 import type {
+  BullishRuntimeConfig,
   DeribitQuotePolicy,
   DeribitStrikeSelectionMode,
   HedgeOptimizerRuntimeConfig,
@@ -18,6 +19,7 @@ import type { HedgeCandidate, VenueExecution, VenueQuote } from "./types";
 import { toHedgeCandidate } from "./hedgeCandidates";
 import { selectBestHedgeCandidate } from "./hedgeScoring";
 import { resolveHedgeRegime } from "./regimePolicy";
+import { BullishTradingClient, resolveBullishMarketSymbol } from "./bullish";
 
 export type QuoteRequest = {
   marketId: string;
@@ -3280,11 +3282,150 @@ class FalconxAdapter implements PilotVenueAdapter {
   }
 }
 
+class BullishTestnetAdapter implements PilotVenueAdapter {
+  private readonly client: BullishTradingClient;
+
+  constructor(
+    private readonly config: BullishRuntimeConfig,
+    private readonly quoteTtlMs: number
+  ) {
+    this.client = new BullishTradingClient(config);
+  }
+
+  async quote(req: QuoteRequest): Promise<VenueQuote> {
+    const symbol = resolveBullishMarketSymbol(this.config, {
+      marketId: req.marketId,
+      instrumentId: req.instrumentId
+    });
+    const book = await this.client.getHybridOrderBook(symbol);
+    const bestAsk = book.asks[0];
+    const bestBid = book.bids[0] || null;
+    const askPx = Number(bestAsk?.price ?? NaN);
+    const askQty = Number(bestAsk?.quantity ?? NaN);
+    if (!Number.isFinite(askPx) || askPx <= 0 || !Number.isFinite(askQty) || askQty <= 0) {
+      throw new Error("bullish_quote_unavailable:no_top_of_book");
+    }
+    const premium = Number((askPx * Math.max(0, Number(req.quantity || 0))).toFixed(10));
+    return {
+      venue: "bullish_testnet",
+      quoteId: randomUUID(),
+      rfqId: null,
+      instrumentId: req.instrumentId,
+      side: "buy",
+      quantity: req.quantity,
+      premium,
+      expiresAt: new Date(Date.now() + this.quoteTtlMs).toISOString(),
+      quoteTs: nowIso(),
+      details: {
+        venueMode: "bullish_testnet",
+        bullishSymbol: symbol,
+        bestAskPrice: bestAsk.price,
+        bestAskQuantity: bestAsk.quantity,
+        bestBidPrice: bestBid?.price ?? null,
+        bestBidQuantity: bestBid?.quantity ?? null,
+        sequenceNumber: book.sequenceNumber,
+        orderbookTimestamp: book.timestamp,
+        source: "bullish_hybrid_orderbook"
+      }
+    };
+  }
+
+  async execute(quote: VenueQuote): Promise<VenueExecution> {
+    if (!this.config.enableExecution) {
+      return {
+        venue: "bullish_testnet",
+        status: "failure",
+        quoteId: quote.quoteId,
+        rfqId: quote.rfqId ?? null,
+        instrumentId: quote.instrumentId,
+        side: "buy",
+        quantity: quote.quantity,
+        executionPrice: 0,
+        premium: quote.premium,
+        executedAt: nowIso(),
+        externalOrderId: "",
+        externalExecutionId: "",
+        details: {
+          rejectionReason: "bullish_execution_disabled"
+        }
+      };
+    }
+    const symbol = resolveBullishMarketSymbol(this.config, {
+      marketId: quote.details?.marketId as string | undefined,
+      instrumentId: quote.instrumentId
+    });
+    const quantity = Number(quote.quantity || 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error("bullish_execute_invalid_quantity");
+    }
+    const unitPrice = quantity > 0 ? quote.premium / quantity : quote.premium;
+    const response = await this.client.createSpotLimitOrder({
+      symbol,
+      side: "BUY",
+      price: unitPrice.toFixed(8),
+      quantity: quantity.toFixed(8),
+      clientOrderId: quote.quoteId
+    });
+    const responseRecord = response as Record<string, unknown>;
+    const orderId =
+      typeof responseRecord.orderId === "string"
+        ? responseRecord.orderId
+        : typeof (responseRecord.data as Record<string, unknown> | undefined)?.orderId === "string"
+          ? String((responseRecord.data as Record<string, unknown>).orderId)
+          : "";
+    return {
+      venue: "bullish_testnet",
+      status: orderId ? "success" : "failure",
+      quoteId: quote.quoteId,
+      rfqId: quote.rfqId ?? null,
+      instrumentId: quote.instrumentId,
+      side: "buy",
+      quantity: quote.quantity,
+      executionPrice: unitPrice,
+      premium: quote.premium,
+      executedAt: nowIso(),
+      externalOrderId: orderId,
+      externalExecutionId: orderId ? `bullish-${orderId}` : "",
+      details: responseRecord
+    };
+  }
+
+  async getMark(params: { instrumentId: string; quantity: number }): Promise<{
+    markPremium: number;
+    unitPrice: number;
+    source: string;
+    asOf: string;
+    details?: Record<string, unknown>;
+  }> {
+    const symbol = resolveBullishMarketSymbol(this.config, {
+      instrumentId: params.instrumentId
+    });
+    const book = await this.client.getHybridOrderBook(symbol);
+    const bestAsk = Number(book.asks[0]?.price ?? NaN);
+    if (!Number.isFinite(bestAsk) || bestAsk <= 0) {
+      throw new Error("bullish_mark_unavailable");
+    }
+    const unitPrice = bestAsk;
+    return {
+      markPremium: Number((unitPrice * Math.max(0, Number(params.quantity || 0))).toFixed(10)),
+      unitPrice,
+      source: "bullish_hybrid_orderbook",
+      asOf: book.datetime || nowIso(),
+      details: {
+        bullishSymbol: symbol,
+        sequenceNumber: book.sequenceNumber
+      }
+    };
+  }
+}
+
 export const createPilotVenueAdapter = (params: {
   mode: PilotVenueMode;
   falconx: FalconxConfig;
   deribit: DeribitConnector;
   ibkr?: IbkrVenueConfig;
+  bullish?: BullishRuntimeConfig;
+  bullishEnabled?: boolean;
   ibkrQuoteBudgetMs?: number;
   quoteTtlMs?: number;
   deribitQuotePolicy?: DeribitQuotePolicy;
@@ -3293,6 +3434,15 @@ export const createPilotVenueAdapter = (params: {
 }): PilotVenueAdapter => {
   const quoteTtlMs = Math.max(5_000, Number(params.quoteTtlMs || 30_000));
   if (params.mode === "falconx") return new FalconxAdapter(params.falconx);
+  if (params.mode === "bullish_testnet") {
+    if (params.bullishEnabled !== true) {
+      throw new Error("bullish_testnet_disabled");
+    }
+    if (!params.bullish) {
+      throw new Error("bullish_config_missing");
+    }
+    return new BullishTestnetAdapter(params.bullish, quoteTtlMs);
+  }
   if (params.mode === "ibkr_cme_live" || params.mode === "ibkr_cme_paper") {
     if (!params.ibkr) {
       throw new Error("ibkr_config_missing");
