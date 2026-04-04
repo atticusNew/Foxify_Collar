@@ -74,8 +74,13 @@ type Args = {
   outDir: string;
   source: "auto" | "binance" | "coingecko" | "coinbase";
   bronzeGrid: Decimal[];
+  notionalsUsd: string[];
+  treasuryStartingBalanceUsd: Decimal | null;
+  treasuryDailySubsidyCapUsd: Decimal | null;
+  treasuryPerQuoteSubsidyCapPct: Decimal | null;
   stressMaxUsd: Decimal;
   stressTargetMinUsd: Decimal;
+  decisionRequireNoBlockedSubsidy: boolean;
   skipFetch: boolean;
   periodLabels: string[] | null;
 };
@@ -177,8 +182,13 @@ const parseArgs = (argv: string[]): Args => {
     outDir: "artifacts/desktop/premium_sweep",
     source: "coinbase",
     bronzeGrid: parseGrid(undefined, "20,21,22,23,24,25"),
+    notionalsUsd: ["1000"],
+    treasuryStartingBalanceUsd: null,
+    treasuryDailySubsidyCapUsd: null,
+    treasuryPerQuoteSubsidyCapPct: null,
     stressMaxUsd: new Decimal("500000"),
     stressTargetMinUsd: new Decimal("400000"),
+    decisionRequireNoBlockedSubsidy: false,
     skipFetch: false,
     periodLabels: null
   };
@@ -209,6 +219,40 @@ const parseArgs = (argv: string[]): Args => {
       i += 1;
       continue;
     }
+    if (token === "--notionals" && argv[i + 1]) {
+      const items = String(argv[i + 1])
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (!items.length) throw new Error("invalid_notionals");
+      for (const item of items) {
+        if (toDecimal(item).lte(0)) throw new Error(`invalid_notional_value:${item}`);
+      }
+      args.notionalsUsd = items;
+      i += 1;
+      continue;
+    }
+    if (token === "--treasury-starting-balance-usd" && argv[i + 1]) {
+      const value = toDecimal(argv[i + 1]);
+      if (value.lte(0)) throw new Error("invalid_treasury_starting_balance_usd");
+      args.treasuryStartingBalanceUsd = value;
+      i += 1;
+      continue;
+    }
+    if (token === "--treasury-daily-subsidy-cap-usd" && argv[i + 1]) {
+      const value = toDecimal(argv[i + 1]);
+      if (value.lte(0)) throw new Error("invalid_treasury_daily_subsidy_cap_usd");
+      args.treasuryDailySubsidyCapUsd = value;
+      i += 1;
+      continue;
+    }
+    if (token === "--treasury-per-quote-subsidy-cap-pct" && argv[i + 1]) {
+      const value = toDecimal(argv[i + 1]);
+      if (value.lt(0) || value.gt(1)) throw new Error("invalid_treasury_per_quote_subsidy_cap_pct");
+      args.treasuryPerQuoteSubsidyCapPct = value;
+      i += 1;
+      continue;
+    }
     if (token === "--stress-max-usd" && argv[i + 1]) {
       args.stressMaxUsd = toDecimal(argv[i + 1]);
       i += 1;
@@ -221,6 +265,11 @@ const parseArgs = (argv: string[]): Args => {
     }
     if (token === "--skip-fetch" && argv[i + 1]) {
       args.skipFetch = parseBool(argv[i + 1], false);
+      i += 1;
+      continue;
+    }
+    if (token === "--decision-require-no-blocked-subsidy" && argv[i + 1]) {
+      args.decisionRequireNoBlockedSubsidy = parseBool(argv[i + 1], false);
       i += 1;
       continue;
     }
@@ -277,18 +326,22 @@ const fileExists = async (targetPath: string): Promise<boolean> => {
   }
 };
 
-const ensureBronzeOnlyConfig = (baseConfig: BacktestConfig, bronzePremiumPer1k: Decimal): BacktestConfig => {
+const ensureBronzeOnlyConfig = (
+  baseConfig: BacktestConfig,
+  bronzePremiumPer1k: Decimal,
+  overrides: {
+    notionalsUsd: string[];
+    treasuryStartingBalanceUsd: Decimal | null;
+    treasuryDailySubsidyCapUsd: Decimal | null;
+    treasuryPerQuoteSubsidyCapPct: Decimal | null;
+  }
+): BacktestConfig => {
   const bronzeTier = (baseConfig.tiers || []).find((tier) => String(tier.tierName || "").trim() === "Pro (Bronze)");
   if (!bronzeTier) {
     throw new Error("bronze_tier_missing_in_config");
   }
-  const notionals = Array.from(
-    new Set(
-      ["1000", ...(Array.isArray(baseConfig.notionalsUsd) ? baseConfig.notionalsUsd : [])]
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-    )
-  );
+  const notionals = Array.from(new Set(overrides.notionalsUsd.map((item) => String(item || "").trim()).filter(Boolean)));
+  if (!notionals.length) throw new Error("no_notionals_configured");
   return {
     ...baseConfig,
     name: `${baseConfig.name || "pilot_backtest"}_bronze_${bronzePremiumPer1k.toFixed(2)}_tp_off`,
@@ -297,6 +350,17 @@ const ensureBronzeOnlyConfig = (baseConfig: BacktestConfig, bronzePremiumPer1k: 
       enabled: false,
       reboundPct: String(baseConfig.takeProfit?.reboundPct || "2.0"),
       decayPct: String(baseConfig.takeProfit?.decayPct || "30.0")
+    },
+    treasury: {
+      startingBalanceUsd:
+        overrides.treasuryStartingBalanceUsd?.toFixed(2) ||
+        String(baseConfig.treasury?.startingBalanceUsd || "25000"),
+      dailySubsidyCapUsd:
+        overrides.treasuryDailySubsidyCapUsd?.toFixed(2) ||
+        String(baseConfig.treasury?.dailySubsidyCapUsd || "15000"),
+      perQuoteSubsidyCapPct:
+        overrides.treasuryPerQuoteSubsidyCapPct?.toFixed(6) ||
+        String(baseConfig.treasury?.perQuoteSubsidyCapPct || "0.7")
     },
     tiers: [
       {
@@ -354,7 +418,12 @@ const main = async () => {
     const scenarioLabel = `bronze_${bronzePremiumPer1k.toFixed(2).replace(".", "_")}`;
     const scenarioDir = path.join(runsDir, scenarioLabel);
     await mkdir(scenarioDir, { recursive: true });
-    const scenarioConfig = ensureBronzeOnlyConfig(baseConfig, bronzePremiumPer1k);
+    const scenarioConfig = ensureBronzeOnlyConfig(baseConfig, bronzePremiumPer1k, {
+      notionalsUsd: args.notionalsUsd,
+      treasuryStartingBalanceUsd: args.treasuryStartingBalanceUsd,
+      treasuryDailySubsidyCapUsd: args.treasuryDailySubsidyCapUsd,
+      treasuryPerQuoteSubsidyCapPct: args.treasuryPerQuoteSubsidyCapPct
+    });
     const scenarioConfigPath = path.join(configsDir, `backtest_config_${scenarioLabel}.json`);
     await writeFile(scenarioConfigPath, `${JSON.stringify(scenarioConfig, null, 2)}\n`, "utf8");
 
@@ -441,7 +510,8 @@ const main = async () => {
     const inTargetStressBandUsd =
       stressSubsidyNeedTotalUsd.gte(args.stressTargetMinUsd) && stressSubsidyNeedTotalUsd.lte(args.stressMaxUsd);
     const hasAnyBlockedSubsidy = stressSubsidyBlockedTotalUsd.gt(0) || rolling12mSubsidyBlockedTotalUsd.gt(0);
-    const decisionTag: CandidateRow["decisionTag"] = passesStressMaxUsd && !hasAnyBlockedSubsidy ? "acceptable" : "risky";
+    const noBlockedCheck = args.decisionRequireNoBlockedSubsidy ? !hasAnyBlockedSubsidy : true;
+    const decisionTag: CandidateRow["decisionTag"] = passesStressMaxUsd && noBlockedCheck ? "acceptable" : "risky";
 
     candidateRows.push({
       bronzePremiumPer1kUsd: premium,
@@ -473,6 +543,14 @@ const main = async () => {
     source: args.source,
     tpEnabledForced: false,
     modelMode: "hybrid_only",
+    notionalsUsd: args.notionalsUsd,
+    treasuryStartingBalanceUsd:
+      args.treasuryStartingBalanceUsd?.toFixed(2) || String(baseConfig.treasury?.startingBalanceUsd || ""),
+    treasuryDailySubsidyCapUsd:
+      args.treasuryDailySubsidyCapUsd?.toFixed(2) || String(baseConfig.treasury?.dailySubsidyCapUsd || ""),
+    treasuryPerQuoteSubsidyCapPct:
+      args.treasuryPerQuoteSubsidyCapPct?.toFixed(6) || String(baseConfig.treasury?.perQuoteSubsidyCapPct || ""),
+    decisionRequireNoBlockedSubsidy: args.decisionRequireNoBlockedSubsidy,
     stressTargetMinUsd: args.stressTargetMinUsd.toFixed(2),
     stressMaxUsd: args.stressMaxUsd.toFixed(2),
     periods: selectedPeriods
@@ -510,8 +588,8 @@ const main = async () => {
     recommended
       ? `- Recommended current candidate: **Bronze ${recommended.bronzePremiumPer1kUsd} USD per $1k** (tag=${recommended.decisionTag}, stressSubsidyNeed=${recommended.stressSubsidyNeedTotalUsd}, blocked=${recommended.stressSubsidyBlockedTotalUsd}).`
       : "- No recommendation available (no candidate rows).",
-    "- `decisionTag=acceptable` means stress cap passed and no blocked subsidy observed.",
-    "- `decisionTag=risky` means stress cap breached and/or blocked subsidy appeared.",
+    `- \`decisionTag=acceptable\` means stress cap passed${args.decisionRequireNoBlockedSubsidy ? " and blocked subsidy remained zero." : "."}`,
+    `- \`decisionTag=risky\` means stress cap breached${args.decisionRequireNoBlockedSubsidy ? " or blocked subsidy appeared." : "."}`,
     "",
     "## Files",
     `- JSON: \`${outJsonPath}\``,
