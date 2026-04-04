@@ -120,6 +120,21 @@ const parseArgs = (argv: string[]): Args => {
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
+    if (token === "--tier" && argv[i + 1]) {
+      const raw = String(argv[i + 1]).trim();
+      const splitIdx = raw.indexOf(":");
+      if (splitIdx <= 0 || splitIdx >= raw.length - 1) {
+        throw new Error(`invalid_tier_arg:${raw}`);
+      }
+      const tier = raw.slice(0, splitIdx).trim().toLowerCase();
+      const inputPath = raw.slice(splitIdx + 1).trim();
+      if (tier !== "bronze" && tier !== "silver" && tier !== "gold" && tier !== "platinum") {
+        throw new Error(`invalid_tier_name:${tier}`);
+      }
+      args.tierInputs[tier] = inputPath;
+      i += 1;
+      continue;
+    }
     if (token === "--bronze-targets-json" && argv[i + 1]) {
       args.tierInputs.bronze = argv[i + 1];
       i += 1;
