@@ -78,6 +78,28 @@ type IbkrVenueConfig = {
 const nowIso = (): string => new Date().toISOString();
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+const toFinitePositiveNumber = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const parseBullishOptionSymbol = (
+  symbol: string
+): { expiry: string; strike: number; optionType: "CALL" | "PUT" } | null => {
+  const match = String(symbol || "")
+    .trim()
+    .toUpperCase()
+    .match(/^BTC-USDC-(\d{8})-(\d+(?:\.\d+)*)-(C|P)$/);
+  if (!match) return null;
+  const strike = Number(match[2]);
+  if (!Number.isFinite(strike) || strike <= 0) return null;
+  return {
+    expiry: match[1],
+    strike,
+    optionType: match[3] === "C" ? "CALL" : "PUT"
+  };
+};
+
 const timestampSeconds = (): string => (Date.now() / 1000).toFixed(3);
 
 const signFalconx = (params: {
@@ -3292,11 +3314,74 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     this.client = new BullishTradingClient(config);
   }
 
+  private async selectBullishOptionSymbol(req: QuoteRequest): Promise<string | null> {
+    const allMarkets = await this.client.getMarkets();
+    const requestedOptionType = req.protectionType === "short" ? "CALL" : "PUT";
+    const now = Date.now();
+    const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 7)));
+    const targetExpiryMs = now + requestedTenorDays * 24 * 60 * 60 * 1000;
+    const triggerPrice = toFinitePositiveNumber(req.triggerPrice) || null;
+    const fallbackSpot = toFinitePositiveNumber(req.protectedNotional) && toFinitePositiveNumber(req.quantity)
+      ? Number(req.protectedNotional) / Number(req.quantity)
+      : null;
+    const strikeAnchor = triggerPrice || fallbackSpot;
+    if (!strikeAnchor) return null;
+
+    const candidates = allMarkets
+      .map((market) => {
+        const symbol = String((market as Record<string, unknown>).symbol || "");
+        const marketType = String((market as Record<string, unknown>).marketType || "").toUpperCase();
+        if (marketType !== "OPTION") return null;
+        const parsed = parseBullishOptionSymbol(symbol);
+        if (!parsed || parsed.optionType !== requestedOptionType) return null;
+        const expiryIso = String((market as Record<string, unknown>).expiryDatetime || "");
+        const expiryMs = Date.parse(expiryIso);
+        if (!Number.isFinite(expiryMs) || expiryMs <= now) return null;
+        const tradable = (market as Record<string, unknown>).createOrderEnabled !== false;
+        if (!tradable) return null;
+        const tenorDriftDays = Math.abs(expiryMs - targetExpiryMs) / 86400000;
+        const strikeDistancePct = Math.abs(parsed.strike - strikeAnchor) / strikeAnchor;
+        return {
+          symbol,
+          expiryMs,
+          tenorDriftDays,
+          strikeDistancePct
+        };
+      })
+      .filter((entry): entry is { symbol: string; expiryMs: number; tenorDriftDays: number; strikeDistancePct: number } =>
+        Boolean(entry)
+      )
+      .sort((a, b) => {
+        if (a.tenorDriftDays !== b.tenorDriftDays) return a.tenorDriftDays - b.tenorDriftDays;
+        if (a.strikeDistancePct !== b.strikeDistancePct) return a.strikeDistancePct - b.strikeDistancePct;
+        return a.expiryMs - b.expiryMs;
+      });
+
+    for (const candidate of candidates.slice(0, 25)) {
+      try {
+        const book = await this.client.getHybridOrderBook(candidate.symbol);
+        const bestAsk = book.asks[0];
+        const askPx = Number(bestAsk?.price ?? NaN);
+        const askQty = Number(bestAsk?.quantity ?? NaN);
+        if (Number.isFinite(askPx) && askPx > 0 && Number.isFinite(askQty) && askQty > 0) {
+          return candidate.symbol;
+        }
+      } catch {
+        // Ignore transient market data failures while scanning liquidity candidates.
+      }
+    }
+
+    return candidates[0]?.symbol || null;
+  }
+
   async quote(req: QuoteRequest): Promise<VenueQuote> {
-    const symbol = resolveBullishMarketSymbol(this.config, {
-      marketId: req.marketId,
-      instrumentId: req.instrumentId
-    });
+    const optionSymbol = await this.selectBullishOptionSymbol(req);
+    const symbol =
+      optionSymbol ||
+      resolveBullishMarketSymbol(this.config, {
+        marketId: req.marketId,
+        instrumentId: req.instrumentId
+      });
     const book = await this.client.getHybridOrderBook(symbol);
     const bestAsk = book.asks[0];
     const bestBid = book.bids[0] || null;
@@ -3310,7 +3395,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       venue: "bullish_testnet",
       quoteId: randomUUID(),
       rfqId: null,
-      instrumentId: req.instrumentId,
+      instrumentId: optionSymbol || req.instrumentId,
       side: "buy",
       quantity: req.quantity,
       premium,
@@ -3325,7 +3410,10 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         bestBidQuantity: bestBid?.quantity ?? null,
         sequenceNumber: book.sequenceNumber,
         orderbookTimestamp: book.timestamp,
-        source: "bullish_hybrid_orderbook"
+        source: "bullish_hybrid_orderbook",
+        selectedInstrumentId: optionSymbol || req.instrumentId,
+        requestedInstrumentId: req.instrumentId,
+        hedgeMode: optionSymbol ? "options_native" : "futures_synthetic"
       }
     };
   }
@@ -3350,10 +3438,14 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         }
       };
     }
-    const symbol = resolveBullishMarketSymbol(this.config, {
-      marketId: quote.details?.marketId as string | undefined,
-      instrumentId: quote.instrumentId
-    });
+    const quoteDetails = (quote.details || {}) as Record<string, unknown>;
+    const selectedInstrumentId = String(quoteDetails.selectedInstrumentId || quote.instrumentId || "").trim();
+    const symbol =
+      selectedInstrumentId ||
+      resolveBullishMarketSymbol(this.config, {
+        marketId: quote.details?.marketId as string | undefined,
+        instrumentId: quote.instrumentId
+      });
     const quantity = Number(quote.quantity || 0);
     if (!Number.isFinite(quantity) || quantity <= 0) {
       throw new Error("bullish_execute_invalid_quantity");
