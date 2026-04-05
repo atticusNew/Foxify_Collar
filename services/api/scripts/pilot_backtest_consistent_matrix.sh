@@ -70,6 +70,10 @@ run_mix () {
   local SILVER_BAND="$3"
   local GOLD_BAND="$4"
   local PLAT_BAND="$5"
+  local BRONZE_GRID="$6"
+  local SILVER_GRID="$7"
+  local GOLD_GRID="$8"
+  local PLAT_GRID="$9"
   local MIX_DIR="$BASE_OUT/$MIX_LABEL"
 
   mkdir -p "$MIX_DIR"
@@ -78,10 +82,10 @@ run_mix () {
   # pilot target 400-500k, production 250-300k.
   # Bronze / Silver / Gold / Platinum allocations per mix.
   # Note: explicit USD (not shorthand) to avoid shell/parser issues.
-  run_tier "Pro (Bronze)" bronze "22,23,24,25,26,27,28,29,30" "$MIX_DIR" "5000,10000,25000,50000"
-  run_tier "Pro (Silver)" silver "19,20,21,22,23,24,25,26,27,28,29,30" "$MIX_DIR" "5000,10000,25000,50000"
-  run_tier "Pro (Gold)" gold "16,17,18,19,20,21,22,23,24,25,26,27,28,29,30" "$MIX_DIR" "5000,10000,25000,50000"
-  run_tier "Pro (Platinum)" platinum "15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30" "$MIX_DIR" "5000,10000,25000,50000"
+  run_tier "Pro (Bronze)" bronze "$BRONZE_GRID" "$MIX_DIR" "5000,10000,25000,50000"
+  run_tier "Pro (Silver)" silver "$SILVER_GRID" "$MIX_DIR" "5000,10000,25000,50000"
+  run_tier "Pro (Gold)" gold "$GOLD_GRID" "$MIX_DIR" "5000,10000,25000,50000"
+  run_tier "Pro (Platinum)" platinum "$PLAT_GRID" "$MIX_DIR" "5000,10000,25000,50000"
 
   npm run -s pilot:backtest:band-targets -- \
     --results-json "$MIX_DIR/bronze/premium_sweep_results.json" \
@@ -127,7 +131,11 @@ run_mix \
   "severe_400_500:200000-250000,severe_250_300:125000-150000" \
   "severe_400_500:120000-150000,severe_250_300:75000-90000" \
   "severe_400_500:60000-75000,severe_250_300:38000-45000" \
-  "severe_400_500:20000-25000,severe_250_300:13000-15000"
+  "severe_400_500:20000-25000,severe_250_300:13000-15000" \
+  "22,23,24,25,26,27,28,29,30" \
+  "19,20,21,22,23,24,25,26,27,28,29,30" \
+  "16,17,18,19,20,21,22,23,24,25,26,27,28,29,30" \
+  "15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30"
 
 # Mix B: 40/30/20/10
 run_mix \
@@ -135,7 +143,11 @@ run_mix \
   "severe_400_500:160000-200000,severe_250_300:100000-120000" \
   "severe_400_500:120000-150000,severe_250_300:75000-90000" \
   "severe_400_500:80000-100000,severe_250_300:50000-60000" \
-  "severe_400_500:40000-50000,severe_250_300:25000-30000"
+  "severe_400_500:40000-50000,severe_250_300:25000-30000" \
+  "22,23,24,25,26,27,28,29,30" \
+  "19,20,21,22,23,24,25,26,27,28,29,30" \
+  "16,17,18,19,20,21,22,23,24,25,26,27,28,29,30" \
+  "15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30"
 
 # Mix C: 35/30/20/15
 run_mix \
@@ -143,7 +155,23 @@ run_mix \
   "severe_400_500:140000-175000,severe_250_300:87500-105000" \
   "severe_400_500:120000-150000,severe_250_300:75000-90000" \
   "severe_400_500:80000-100000,severe_250_300:50000-60000" \
-  "severe_400_500:60000-75000,severe_250_300:38000-45000"
+  "severe_400_500:60000-75000,severe_250_300:38000-45000" \
+  "22,23,24,25,26,27,28,29,30" \
+  "19,20,21,22,23,24,25,26,27,28,29,30" \
+  "16,17,18,19,20,21,22,23,24,25,26,27,28,29,30" \
+  "15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30"
+
+# Mix D: explicit flat 25/25/25/25 premium check
+run_mix \
+  "mix_flat_25_25_25_25" \
+  "severe_400_500:200000-250000,severe_250_300:125000-150000" \
+  "severe_400_500:120000-150000,severe_250_300:75000-90000" \
+  "severe_400_500:60000-75000,severe_250_300:38000-45000" \
+  "severe_400_500:20000-25000,severe_250_300:13000-15000" \
+  "25" \
+  "25" \
+  "25" \
+  "25"
 
 node - "$BASE_OUT" <<'NODE'
 const fs = require("fs");

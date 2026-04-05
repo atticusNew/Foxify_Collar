@@ -64,7 +64,8 @@ type OutputRow = {
   targetBand: string;
   gateVerdict: string;
   sustainable: boolean;
-  premiumPer1kUsd: string;
+  recommendedPremiumPer1kUsd: string;
+  metricsPremiumPer1kUsd: string;
   issuanceScaleMid: string;
   rolling12mPremiumUsd: string;
   monthlyPremiumUsd: string;
@@ -224,7 +225,8 @@ const main = async () => {
         targetBand: base.band,
         gateVerdict: base.verdict,
         sustainable: base.verdict === "GO",
-        premiumPer1kUsd: premium || "NONE",
+        recommendedPremiumPer1kUsd: premium || "NONE",
+        metricsPremiumPer1kUsd: selectedProjection ? resolvePremium(selectedProjection) : "UNKNOWN",
         issuanceScaleMid: String(selectedProjection?.requiredIssuanceScaleMid || base.issuanceScaleMid || "0"),
         rolling12mPremiumUsd: toFixed(annualPremium),
         monthlyPremiumUsd: toFixed(annualPremium.div(12)),
@@ -281,7 +283,8 @@ const main = async () => {
         phase === "pilot"
           ? String(verdict.summary?.overallPilotVerdict || "NO_GO") === "GO"
           : String(verdict.summary?.overallProductionVerdict || "NO_GO") === "GO",
-      premiumPer1kUsd: "n/a",
+      recommendedPremiumPer1kUsd: "n/a",
+      metricsPremiumPer1kUsd: "n/a",
       issuanceScaleMid: "n/a",
       rolling12mPremiumUsd: toFixed(annualPremium),
       monthlyPremiumUsd: toFixed(annualPremium.div(12)),
