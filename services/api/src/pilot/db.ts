@@ -2,11 +2,22 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 import Decimal from "decimal.js";
 import type {
+  ExecutionQualityRecord,
+  HedgeMode,
   LedgerEntryType,
+  OptionsChainSnapshotRecord,
   PriceSnapshotRecord,
   PriceSnapshotType,
+  PremiumPolicyDiagnostics,
   ProtectionRecord,
   ProtectionStatus,
+  SimPositionRecord,
+  SimPositionStatus,
+  SimTreasuryEntryType,
+  SimTreasuryLedgerRecord,
+  TenorPolicyTenorRow,
+  VenueFillRecord,
+  VenueQuoteRecord,
   VenueExecution,
   VenueQuote
 } from "./types";
@@ -171,6 +182,47 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       PRIMARY KEY (user_hash, day_start)
     );
 
+    CREATE TABLE IF NOT EXISTS pilot_daily_treasury_subsidy_usage (
+      user_hash TEXT NOT NULL,
+      day_start DATE NOT NULL,
+      used_subsidy NUMERIC(28,10) NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_hash, day_start)
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_sim_positions (
+      id TEXT PRIMARY KEY,
+      user_hash TEXT NOT NULL,
+      hash_version INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      notional_usd NUMERIC(28,10) NOT NULL,
+      entry_price NUMERIC(28,10) NOT NULL,
+      tier_name TEXT,
+      drawdown_floor_pct NUMERIC(10,6),
+      floor_price NUMERIC(28,10),
+      protection_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+      protection_id TEXT REFERENCES pilot_protections(id) ON DELETE SET NULL,
+      protection_premium_usd NUMERIC(28,10),
+      protected_loss_usd NUMERIC(28,10),
+      trigger_credited_usd NUMERIC(28,10) NOT NULL DEFAULT 0,
+      trigger_credited_at TIMESTAMPTZ,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_sim_treasury_ledger (
+      id TEXT PRIMARY KEY,
+      sim_position_id TEXT NOT NULL REFERENCES pilot_sim_positions(id) ON DELETE CASCADE,
+      user_hash TEXT NOT NULL,
+      protection_id TEXT REFERENCES pilot_protections(id) ON DELETE SET NULL,
+      entry_type TEXT NOT NULL,
+      amount_usd NUMERIC(28,10) NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS pilot_terms_acceptances (
       id TEXT PRIMARY KEY,
       user_hash TEXT NOT NULL,
@@ -184,6 +236,103 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (user_hash, terms_version)
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_options_chain_snapshots (
+      id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      as_of_ts TIMESTAMPTZ NOT NULL,
+      tenor_days NUMERIC(14,6),
+      strike NUMERIC(28,10),
+      option_right TEXT,
+      bid NUMERIC(28,10),
+      ask NUMERIC(28,10),
+      mark NUMERIC(28,10),
+      bid_size NUMERIC(28,10),
+      ask_size NUMERIC(28,10),
+      iv NUMERIC(28,10),
+      delta NUMERIC(28,10),
+      gamma NUMERIC(28,10),
+      vega NUMERIC(28,10),
+      theta NUMERIC(28,10),
+      source_ref TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_rfq_quotes (
+      id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      quote_id TEXT NOT NULL,
+      rfq_id TEXT,
+      instrument_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      quantity NUMERIC(28,10) NOT NULL,
+      premium NUMERIC(28,10),
+      expires_at TIMESTAMPTZ,
+      quote_ts TIMESTAMPTZ NOT NULL,
+      latency_ms INTEGER,
+      status TEXT,
+      source_ref TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_rfq_fills (
+      id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      market_id TEXT NOT NULL,
+      quote_id TEXT,
+      rfq_id TEXT,
+      fill_id TEXT NOT NULL,
+      instrument_id TEXT NOT NULL,
+      side TEXT NOT NULL,
+      quantity NUMERIC(28,10) NOT NULL,
+      fill_price NUMERIC(28,10) NOT NULL,
+      premium NUMERIC(28,10),
+      slippage_bps NUMERIC(18,8),
+      status TEXT,
+      fill_ts TIMESTAMPTZ NOT NULL,
+      source_ref TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_hedge_decisions (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      quote_id TEXT,
+      venue TEXT NOT NULL,
+      regime TEXT NOT NULL,
+      selector_mode TEXT NOT NULL,
+      selected_candidate_id TEXT NOT NULL,
+      selected_hedge_mode TEXT NOT NULL,
+      selected_strike NUMERIC(28,10),
+      selected_tenor_days NUMERIC(14,6),
+      selected_score NUMERIC(28,10),
+      decision_reason TEXT,
+      score_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
+      candidate_set JSONB NOT NULL DEFAULT '[]'::jsonb,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS pilot_execution_quality_daily (
+      id TEXT PRIMARY KEY,
+      venue TEXT NOT NULL,
+      day_start DATE NOT NULL,
+      quote_count INTEGER NOT NULL DEFAULT 0,
+      fill_count INTEGER NOT NULL DEFAULT 0,
+      avg_latency_ms NUMERIC(18,8),
+      avg_slippage_bps NUMERIC(18,8),
+      p95_slippage_bps NUMERIC(18,8),
+      reject_rate_pct NUMERIC(18,8),
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (venue, day_start)
     );
 
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS accepted_ip TEXT;
@@ -205,6 +354,30 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       ON pilot_terms_acceptances(user_hash, terms_version);
     CREATE INDEX IF NOT EXISTS pilot_terms_acceptances_accepted_at_idx
       ON pilot_terms_acceptances(accepted_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_sim_positions_user_hash_created_idx
+      ON pilot_sim_positions(user_hash, created_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_sim_positions_status_idx
+      ON pilot_sim_positions(status);
+    CREATE INDEX IF NOT EXISTS pilot_sim_treasury_ledger_user_hash_created_idx
+      ON pilot_sim_treasury_ledger(user_hash, created_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_sim_treasury_ledger_position_idx
+      ON pilot_sim_treasury_ledger(sim_position_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_options_chain_snapshots_venue_asof_idx
+      ON pilot_options_chain_snapshots(venue, as_of_ts DESC);
+    CREATE INDEX IF NOT EXISTS pilot_options_chain_snapshots_market_idx
+      ON pilot_options_chain_snapshots(market_id, as_of_ts DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS pilot_rfq_quotes_venue_quote_uidx
+      ON pilot_rfq_quotes(venue, quote_id);
+    CREATE INDEX IF NOT EXISTS pilot_rfq_quotes_rfq_idx
+      ON pilot_rfq_quotes(rfq_id, quote_ts DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS pilot_rfq_fills_venue_fill_uidx
+      ON pilot_rfq_fills(venue, fill_id);
+    CREATE INDEX IF NOT EXISTS pilot_rfq_fills_quote_idx
+      ON pilot_rfq_fills(quote_id, fill_ts DESC);
+    CREATE INDEX IF NOT EXISTS pilot_hedge_decisions_request_idx
+      ON pilot_hedge_decisions(request_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS pilot_hedge_decisions_quote_idx
+      ON pilot_hedge_decisions(quote_id, created_at DESC);
   `);
   schemaReady = true;
 };
@@ -288,6 +461,61 @@ export const getProtection = async (pool: Queryable, id: string): Promise<Protec
   return mapProtection(result.rows[0]);
 };
 
+export const patchProtectionForStatus = async (
+  pool: Queryable,
+  params: {
+    id: string;
+    expectedStatus: ProtectionStatus | ProtectionStatus[];
+    patch: Record<string, unknown>;
+  }
+): Promise<ProtectionRecord | null> => {
+  const entries = Object.entries(params.patch).filter(([, value]) => value !== undefined);
+  if (!entries.length) return null;
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  entries.forEach(([key, value], idx) => {
+    fields.push(`${key} = $${idx + 1}`);
+    values.push(value);
+  });
+  fields.push(`updated_at = NOW()`);
+  const statusValues = Array.isArray(params.expectedStatus) ? params.expectedStatus : [params.expectedStatus];
+  values.push(params.id);
+  const idParam = values.length;
+  const statusParamStart = values.length + 1;
+  values.push(...statusValues);
+  const statusParams = statusValues.map((_, idx) => `$${statusParamStart + idx}`).join(", ");
+  const query = `
+    UPDATE pilot_protections
+    SET ${fields.join(", ")}
+    WHERE id = $${idParam}
+      AND status IN (${statusParams})
+    RETURNING *
+  `;
+  const updated = await pool.query(query, values);
+  if (updated.rowCount === 0) return null;
+  return mapProtection(updated.rows[0]);
+};
+
+export const listActiveProtectionsForTriggerMonitor = async (
+  pool: Queryable,
+  params: { limit?: number } = {}
+): Promise<ProtectionRecord[]> => {
+  const limit = Math.max(1, Math.min(params.limit ?? 50, 500));
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM pilot_protections
+      WHERE status = 'active'
+        AND entry_price IS NOT NULL
+        AND (drawdown_floor_pct IS NOT NULL OR floor_price IS NOT NULL)
+      ORDER BY updated_at ASC
+      LIMIT $1
+    `,
+    [limit]
+  );
+  return result.rows.map(mapProtection);
+};
+
 export const listProtections = async (
   pool: Queryable,
   opts: { limit?: number } = {}
@@ -313,6 +541,112 @@ export const listProtectionsByUserHash = async (
   return result.rows.map(mapProtection);
 };
 
+export type AdminProtectionScope = "active" | "open" | "all";
+
+const OPEN_PROTECTION_STATUSES: ProtectionStatus[] = [
+  "pending_activation",
+  "active",
+  "triggered",
+  "reconcile_pending",
+  "awaiting_renew_decision",
+  "awaiting_expiry_price"
+];
+
+export const listProtectionsByUserHashForAdmin = async (
+  pool: Queryable,
+  userHash: string,
+  opts: {
+    limit?: number;
+    scope?: AdminProtectionScope;
+    status?: ProtectionStatus | "all";
+    includeArchived?: boolean;
+  } = {}
+): Promise<ProtectionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 200, 1000));
+  const scope: AdminProtectionScope = opts.scope || "active";
+  const status = opts.status || "all";
+  const includeArchived = opts.includeArchived === true;
+  const values: unknown[] = [userHash];
+  const clauses: string[] = ["user_hash = $1"];
+
+  if (!includeArchived) {
+    clauses.push(`COALESCE(metadata->>'archivedAt', '') = ''`);
+  }
+
+  if (scope === "active") {
+    clauses.push(`status = 'active'`);
+  } else if (scope === "open") {
+    clauses.push(`status = ANY($${values.length + 1}::text[])`);
+    values.push(OPEN_PROTECTION_STATUSES as unknown as string[]);
+  }
+
+  if (status !== "all") {
+    clauses.push(`status = $${values.length + 1}`);
+    values.push(status);
+  }
+
+  values.push(limit);
+  const result = await pool.query(
+    `SELECT * FROM pilot_protections WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC LIMIT $${values.length}`,
+    values
+  );
+  return result.rows.map(mapProtection);
+};
+
+export const archiveProtectionsByUserHashExcept = async (
+  pool: Queryable,
+  input: {
+    userHash: string;
+    keepProtectionId: string | null;
+    reason?: string;
+    actor?: string;
+  }
+): Promise<number> => {
+  const archivedAt = new Date().toISOString();
+  const reason = String(input.reason || "admin_cleanup");
+  const actor = String(input.actor || "admin");
+  const values: Array<string> = [input.userHash];
+  const clauses: string[] = [
+    "user_hash = $1",
+    "COALESCE(metadata->>'archivedAt', '') = ''"
+  ];
+
+  if (input.keepProtectionId) {
+    clauses.push(`id <> $${values.length + 1}`);
+    values.push(input.keepProtectionId);
+  }
+
+  const candidates = await pool.query(
+    `
+      SELECT id, metadata
+      FROM pilot_protections
+      WHERE ${clauses.join(" AND ")}
+    `,
+    values
+  );
+  let archivedCount = 0;
+  for (const row of candidates.rows) {
+    const metadata = toRecord(row.metadata);
+    const merged = {
+      ...metadata,
+      archivedAt,
+      archivedReason: reason,
+      archivedBy: actor
+    };
+    const updated = await pool.query(
+      `
+        UPDATE pilot_protections
+        SET metadata = $1::jsonb,
+            updated_at = NOW()
+        WHERE id = $2
+      `,
+      [JSON.stringify(merged), String(row.id)]
+    );
+    archivedCount += Number(updated.rowCount || 0);
+  }
+  return archivedCount;
+};
+
 export const getDailyProtectedNotionalForUser = async (
   pool: Queryable,
   userHash: string,
@@ -330,6 +664,24 @@ export const getDailyProtectedNotionalForUser = async (
     [userHash, dayStartIso, dayEndIso]
   );
   return String(result.rows[0]?.total || "0");
+};
+
+export const getDailyTreasurySubsidyUsageForUser = async (
+  pool: Queryable,
+  userHash: string,
+  dayStartIso: string
+): Promise<string> => {
+  const result = await pool.query(
+    `
+      SELECT COALESCE(used_subsidy, 0)::text AS used_subsidy
+      FROM pilot_daily_treasury_subsidy_usage
+      WHERE user_hash = $1
+        AND day_start = $2::date
+      LIMIT 1
+    `,
+    [userHash, dayStartIso]
+  );
+  return String(result.rows[0]?.used_subsidy || "0");
 };
 
 export const insertPriceSnapshot = async (
@@ -442,7 +794,7 @@ export const listLedgerForProtection = async (
 
 export const getPilotAdminMetrics = async (
   pool: Queryable,
-  opts: { startingReserveUsdc: number }
+  opts: { startingReserveUsdc: number; userHash: string; scope?: "all" | "active" | "open" }
 ): Promise<{
   totalProtections: string;
   activeProtections: string;
@@ -463,8 +815,20 @@ export const getPilotAdminMetrics = async (
   reserveAfterOpenPayoutLiabilityUsdc: string;
   netSettledCashUsdc: string;
 }> => {
+  const scope = opts.scope === "all" ? "all" : opts.scope === "open" ? "open" : "active";
+  const protectionScopeSql =
+    scope === "all"
+      ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = ''"
+      : scope === "open"
+        ? "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status IN ('pending_activation', 'active', 'triggered', 'reconcile_pending', 'awaiting_renew_decision', 'awaiting_expiry_price')"
+        : "user_hash = $1 AND COALESCE(metadata->>'archivedAt', '') = '' AND status = 'active'";
   const result = await pool.query(
     `
+      WITH filtered_protections AS (
+        SELECT *
+        FROM pilot_protections
+        WHERE ${protectionScopeSql}
+      )
       SELECT
         COUNT(*)::text AS total_protections,
         COUNT(*) FILTER (WHERE status = 'active')::text AS active_protections,
@@ -472,21 +836,30 @@ export const getPilotAdminMetrics = async (
         COALESCE(SUM(CASE WHEN status = 'active' THEN protected_notional ELSE 0 END), 0)::text AS protected_notional_active_usdc,
         COALESCE(SUM(premium), 0)::text AS client_premium_total_usdc,
         (
-          SELECT COALESCE(SUM(premium), 0)::text
-          FROM pilot_venue_executions
+          SELECT COALESCE(SUM(e.premium), 0)::text
+          FROM pilot_venue_executions e
+          INNER JOIN filtered_protections fp ON fp.id = e.protection_id
         ) AS hedge_premium_total_usdc,
         COALESCE(SUM(COALESCE(payout_due_amount, 0)), 0)::text AS payout_due_total_usdc
-      FROM pilot_protections
-    `
+      FROM filtered_protections
+    `,
+    [opts.userHash]
   );
   const ledger = await pool.query(
     `
+      WITH filtered_protections AS (
+        SELECT id
+        FROM pilot_protections
+        WHERE ${protectionScopeSql}
+      )
       SELECT
         COALESCE(SUM(CASE WHEN entry_type = 'premium_due' THEN amount ELSE 0 END), 0)::text AS premium_due_total_usdc,
         COALESCE(SUM(CASE WHEN entry_type = 'premium_settled' THEN amount ELSE 0 END), 0)::text AS premium_settled_total_usdc,
         COALESCE(SUM(CASE WHEN entry_type = 'payout_settled' THEN amount ELSE 0 END), 0)::text AS payout_settled_total_usdc
-      FROM pilot_ledger_entries
-    `
+      FROM pilot_ledger_entries le
+      INNER JOIN filtered_protections fp ON fp.id = le.protection_id
+    `,
+    [opts.userHash]
   );
   const row = result.rows[0] || {};
   const ledgerRow = ledger.rows[0] || {};
@@ -534,6 +907,8 @@ export const getPilotAdminMetrics = async (
   };
 };
 
+export type PilotAdminMetrics = Awaited<ReturnType<typeof getPilotAdminMetrics>>;
+
 export const insertVenueQuote = async (
   pool: Queryable,
   input: VenueQuote & { protectionId?: string | null }
@@ -562,11 +937,372 @@ export const insertVenueQuote = async (
   );
 };
 
+export const insertOptionsChainSnapshot = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    venue: string;
+    marketId: string;
+    asOfTs: string;
+    tenorDays: number | null;
+    strike: string | null;
+    optionRight: "P" | "C" | null;
+    bidPxUsd: string | null;
+    askPxUsd: string | null;
+    markPxUsd: string | null;
+    iv: string | null;
+    delta: string | null;
+    gamma: string | null;
+    vega: string | null;
+    theta: string | null;
+    bidSize: string | null;
+    askSize: string | null;
+    source: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_options_chain_snapshots (
+        id, venue, market_id, as_of_ts, tenor_days, strike, option_right, bid_px_usd, ask_px_usd, mark_px_usd,
+        iv, delta, gamma, vega, theta, bid_size, ask_size, source, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19::jsonb)
+    `,
+    [
+      input.id || randomUUID(),
+      input.venue,
+      input.marketId,
+      input.asOfTs,
+      input.tenorDays,
+      input.strike,
+      input.optionRight,
+      input.bidPxUsd,
+      input.askPxUsd,
+      input.markPxUsd,
+      input.iv,
+      input.delta,
+      input.gamma,
+      input.vega,
+      input.theta,
+      input.bidSize,
+      input.askSize,
+      input.source,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+};
+
+export const insertRfqQuote = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    venue: string;
+    quoteId: string;
+    rfqId: string | null;
+    marketId: string;
+    instrumentId: string | null;
+    side: "buy" | "sell";
+    quantity: string;
+    quotePxUsd: string;
+    quoteTs: string;
+    expiresTs: string | null;
+    source: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_rfq_quotes (
+        id, venue, quote_id, rfq_id, market_id, instrument_id, side, quantity, quote_px_usd, quote_ts, expires_ts, source, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+      ON CONFLICT (venue, quote_id) DO NOTHING
+    `,
+    [
+      input.id || randomUUID(),
+      input.venue,
+      input.quoteId,
+      input.rfqId,
+      input.marketId,
+      input.instrumentId,
+      input.side,
+      input.quantity,
+      input.quotePxUsd,
+      input.quoteTs,
+      input.expiresTs,
+      input.source,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+};
+
+export const insertRfqFill = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    venue: string;
+    fillId: string;
+    quoteId: string | null;
+    rfqId: string | null;
+    marketId: string;
+    instrumentId: string | null;
+    side: "buy" | "sell";
+    quantity: string;
+    fillPxUsd: string;
+    fillTs: string;
+    feeUsd: string | null;
+    slippageBps: string | null;
+    source: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_rfq_fills (
+        id, venue, fill_id, quote_id, rfq_id, market_id, instrument_id, side, quantity, fill_px_usd, fill_ts, fee_usd, slippage_bps, source, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)
+      ON CONFLICT (venue, fill_id) DO NOTHING
+    `,
+    [
+      input.id || randomUUID(),
+      input.venue,
+      input.fillId,
+      input.quoteId,
+      input.rfqId,
+      input.marketId,
+      input.instrumentId,
+      input.side,
+      input.quantity,
+      input.fillPxUsd,
+      input.fillTs,
+      input.feeUsd,
+      input.slippageBps,
+      input.source,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+};
+
+export const upsertExecutionQualityDaily = async (
+  pool: Queryable,
+  input: {
+    day?: string;
+    dayIso?: string;
+    venue: string;
+    hedgeMode: HedgeMode;
+    avgSlippageBps: string | number | null;
+    p95SlippageBps?: string | number | null;
+    fillSuccessRatePct?: string | number | null;
+    avgSpreadPct?: string | number | null;
+    avgTopBookDepth?: string | number | null;
+    sampleCount?: number;
+    quotes?: number;
+    fills?: number;
+    rejects?: number;
+    avgLatencyMs?: string | number | null;
+    notes?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  const dayRaw = String(input.day || input.dayIso || "").trim();
+  if (!dayRaw) {
+    throw new Error("invalid_execution_quality_day");
+  }
+  const day = dayRaw.slice(0, 10);
+  const toNullableString = (value: string | number | null | undefined): string | null => {
+    if (value === null || value === undefined) return null;
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    return String(n);
+  };
+  const quotes = Math.max(0, Math.floor(Number(input.quotes || 0)));
+  const fills = Math.max(0, Math.floor(Number(input.fills || 0)));
+  const rejects = Math.max(0, Math.floor(Number(input.rejects || 0)));
+  const sampleCount = Math.max(
+    0,
+    Math.floor(
+      Number(
+        input.sampleCount ??
+          (quotes > 0 ? quotes : fills + rejects > 0 ? fills + rejects : 1)
+      )
+    )
+  );
+  const fillSuccessRatePct =
+    input.fillSuccessRatePct !== undefined
+      ? toNullableString(input.fillSuccessRatePct)
+      : quotes > 0
+        ? String((fills / Math.max(1, quotes)) * 100)
+        : null;
+  const metadata = {
+    ...(input.metadata || {}),
+    ...(input.notes || {}),
+    quotes,
+    fills,
+    rejects,
+    ...(input.avgLatencyMs !== undefined
+      ? { avgLatencyMs: toNullableString(input.avgLatencyMs) }
+      : {})
+  };
+  await pool.query(
+    `
+      INSERT INTO pilot_execution_quality_daily (
+        day, venue, hedge_mode, avg_slippage_bps, p95_slippage_bps, fill_success_rate_pct,
+        avg_spread_pct, avg_top_book_depth, sample_count, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+      ON CONFLICT (day, venue, hedge_mode) DO UPDATE SET
+        avg_slippage_bps = EXCLUDED.avg_slippage_bps,
+        p95_slippage_bps = EXCLUDED.p95_slippage_bps,
+        fill_success_rate_pct = EXCLUDED.fill_success_rate_pct,
+        avg_spread_pct = EXCLUDED.avg_spread_pct,
+        avg_top_book_depth = EXCLUDED.avg_top_book_depth,
+        sample_count = EXCLUDED.sample_count,
+        metadata = EXCLUDED.metadata
+    `,
+    [
+      day,
+      input.venue,
+      input.hedgeMode,
+      toNullableString(input.avgSlippageBps),
+      toNullableString(input.p95SlippageBps),
+      fillSuccessRatePct,
+      toNullableString(input.avgSpreadPct),
+      toNullableString(input.avgTopBookDepth),
+      sampleCount,
+      JSON.stringify(metadata)
+    ]
+  );
+};
+
+export const listExecutionQualityRecent = async (
+  pool: Queryable,
+  params: {
+    lookbackDays: number;
+    limit?: number;
+  }
+): Promise<ExecutionQualityRecord[]> => {
+  const lookbackDays = Math.max(1, Math.min(365, Math.floor(params.lookbackDays || 30)));
+  const limit = Math.max(1, Math.min(3650, Math.floor(params.limit || 365)));
+  const result = await pool.query(
+    `
+      SELECT *
+      FROM pilot_execution_quality_daily
+      WHERE day >= (CURRENT_DATE - ($1::int || ' days')::interval)::date
+      ORDER BY day DESC, venue ASC, hedge_mode ASC
+      LIMIT $2::int
+    `,
+    [lookbackDays, limit]
+  );
+  return result.rows.map((row) => ({
+    day: new Date(String(row.day)).toISOString().slice(0, 10),
+    venue: String(row.venue),
+    hedgeMode: String(row.hedge_mode) as HedgeMode,
+    avgSlippageBps: row.avg_slippage_bps === null ? null : String(row.avg_slippage_bps),
+    p95SlippageBps: row.p95_slippage_bps === null ? null : String(row.p95_slippage_bps),
+    fillSuccessRatePct: row.fill_success_rate_pct === null ? null : String(row.fill_success_rate_pct),
+    avgSpreadPct: row.avg_spread_pct === null ? null : String(row.avg_spread_pct),
+    avgTopBookDepth: row.avg_top_book_depth === null ? null : String(row.avg_top_book_depth),
+    sampleCount: Number(row.sample_count || 0),
+    metadata: toRecord(row.metadata),
+    updatedAt: new Date(String(row.updated_at)).toISOString()
+  }));
+};
+
 export type VenueQuoteRecord = VenueQuote & {
   id: string;
   protectionId: string | null;
   consumedAt: string | null;
   consumedByProtectionId: string | null;
+};
+
+export type TenorDiagnosticsSample = {
+  requestedTenorDays: number;
+  selectedTenorDays: number | null;
+  driftDays: number | null;
+  hedgeMode: HedgeMode | "unknown";
+  premiumRatio: number | null;
+  treasuryQuoteSubsidyUsd: number;
+  subsidyCapUsd: number;
+  subsidyUtilizationPct: number;
+  treasuryReserveAfterOpenLiabilityUsdc: number;
+  treasuryDrawdownPct: number;
+  quoteTs: string | null;
+  status: "ok";
+};
+
+export const listRecentQuoteDiagnostics = async (
+  pool: Queryable,
+  params: {
+    lookbackMinutes: number;
+    limit?: number;
+  }
+): Promise<TenorDiagnosticsSample[]> => {
+  const lookbackMinutes = Math.max(1, Math.min(24 * 60, Math.floor(Number(params.lookbackMinutes || 0) || 60)));
+  const limit = Math.max(10, Math.min(5000, Math.floor(Number(params.limit || 2000) || 2000)));
+  const cutoffIso = new Date(Date.now() - lookbackMinutes * 60_000).toISOString();
+  const result = await pool.query(
+    `
+      SELECT details, premium, quote_ts
+      FROM pilot_venue_quotes
+      WHERE created_at >= $1::timestamptz
+      ORDER BY created_at DESC
+      LIMIT $2::int
+    `,
+    [cutoffIso, limit]
+  );
+  const rows: TenorDiagnosticsSample[] = [];
+  for (const row of result.rows) {
+    const details = toRecord(row.details);
+    const lockContext = toRecord(details.lockContext);
+    const requested = safeNumber(lockContext.requestedTenorDays);
+    if (requested === null || requested <= 0) continue;
+    const selected =
+      safeNumber(details.selectedTenorDays) ??
+      safeNumber(details.selectedTenorDaysActual) ??
+      safeNumber(lockContext.selectedTenorDays);
+    const drift = selected !== null ? Math.abs(selected - requested) : null;
+    const modeRaw = String(details.hedgeMode || lockContext.hedgeMode || "").trim();
+    const hedgeMode: HedgeMode | "unknown" =
+      modeRaw === "options_native" || modeRaw === "futures_synthetic" ? modeRaw : "unknown";
+    const clientPremiumUsd =
+      safeNumber(lockContext.clientPremiumUsd) ??
+      safeNumber(toRecord(details.pricingBreakdown).clientPremiumUsd) ??
+      safeNumber(row.premium);
+    const protectedNotional = safeNumber(lockContext.protectedNotional);
+    const premiumRatio =
+      clientPremiumUsd !== null && protectedNotional !== null && protectedNotional > 0
+        ? clientPremiumUsd / protectedNotional
+        : null;
+    const pricingBreakdown = toRecord(details.pricingBreakdown);
+    const treasuryQuoteSubsidyUsd = safeNumber(pricingBreakdown.treasuryQuoteSubsidyUsd) ?? 0;
+    const subsidyCapUsd = safeNumber(pricingBreakdown.treasuryPerQuoteSubsidyCapUsd) ?? 0;
+    const subsidyUtilizationPct = subsidyCapUsd > 0 ? (treasuryQuoteSubsidyUsd / subsidyCapUsd) * 100 : 0;
+    const reserveAfterOpenLiabilityUsdc = safeNumber(pricingBreakdown.treasuryReserveAfterOpenLiabilityUsdc) ?? 0;
+    const startingReserveUsdc = safeNumber(pricingBreakdown.treasuryStartingReserveUsdc) ?? 0;
+    const treasuryDrawdownPct =
+      startingReserveUsdc > 0
+        ? Math.max(0, Math.min(100, ((startingReserveUsdc - reserveAfterOpenLiabilityUsdc) / startingReserveUsdc) * 100))
+        : 0;
+    const quoteTsIso =
+      typeof row.quote_ts === "string" || row.quote_ts instanceof Date ? new Date(String(row.quote_ts)).toISOString() : null;
+    rows.push({
+      requestedTenorDays: Math.floor(requested),
+      selectedTenorDays: selected,
+      driftDays: drift,
+      hedgeMode,
+      premiumRatio,
+      treasuryQuoteSubsidyUsd,
+      subsidyCapUsd,
+      subsidyUtilizationPct,
+      treasuryReserveAfterOpenLiabilityUsdc: reserveAfterOpenLiabilityUsdc,
+      treasuryDrawdownPct,
+      quoteTs: quoteTsIso,
+      status: "ok"
+    });
+  }
+  return rows;
 };
 
 export const getVenueQuoteByQuoteId = async (
@@ -651,7 +1387,7 @@ export const consumeVenueQuote = async (
     `,
     [venueQuoteRowId, protectionId]
   );
-  return result.rowCount > 0;
+  return Number(result.rowCount || 0) > 0;
 };
 
 export const reserveDailyActivationCapacity = async (
@@ -696,6 +1432,351 @@ export const reserveDailyActivationCapacity = async (
     [params.userHash, params.dayStartIso]
   );
   return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
+};
+
+export const releaseDailyActivationCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    protectedNotional: string;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      UPDATE pilot_daily_usage
+      SET used_notional = GREATEST(0, used_notional - $3::numeric)
+      WHERE user_hash = $1
+        AND day_start = $2::date
+    `,
+    [params.userHash, params.dayStartIso, params.protectedNotional]
+  );
+};
+
+export const reserveDailyTreasurySubsidyCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    subsidyAmount: string;
+    maxDailySubsidy: string;
+  }
+): Promise<{ ok: true; usedAfter: string } | { ok: false; usedNow: string }> => {
+  await pool.query(
+    `
+      INSERT INTO pilot_daily_treasury_subsidy_usage (user_hash, day_start, used_subsidy)
+      VALUES ($1, $2::date, 0)
+      ON CONFLICT (user_hash, day_start) DO NOTHING
+    `,
+    [params.userHash, params.dayStartIso]
+  );
+  const updated = await pool.query(
+    `
+      UPDATE pilot_daily_treasury_subsidy_usage
+      SET used_subsidy = used_subsidy + $3::numeric
+      WHERE user_hash = $1
+        AND day_start = $2::date
+        AND used_subsidy + $3::numeric <= $4::numeric
+      RETURNING used_subsidy::text AS used_after
+    `,
+    [params.userHash, params.dayStartIso, params.subsidyAmount, params.maxDailySubsidy]
+  );
+  if (updated.rowCount && updated.rows[0]?.used_after) {
+    return { ok: true, usedAfter: String(updated.rows[0].used_after) };
+  }
+  const current = await pool.query(
+    `
+      SELECT used_subsidy::text AS used_now
+      FROM pilot_daily_treasury_subsidy_usage
+      WHERE user_hash = $1
+        AND day_start = $2::date
+      LIMIT 1
+    `,
+    [params.userHash, params.dayStartIso]
+  );
+  return { ok: false, usedNow: String(current.rows[0]?.used_now || "0") };
+};
+
+export const releaseDailyTreasurySubsidyCapacity = async (
+  pool: Queryable,
+  params: {
+    userHash: string;
+    dayStartIso: string;
+    subsidyAmount: string;
+  }
+): Promise<void> => {
+  await pool.query(
+    `
+      UPDATE pilot_daily_treasury_subsidy_usage
+      SET used_subsidy = GREATEST(0, used_subsidy - $3::numeric)
+      WHERE user_hash = $1
+        AND day_start = $2::date
+    `,
+    [params.userHash, params.dayStartIso, params.subsidyAmount]
+  );
+};
+
+export const insertSimPosition = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    userHash: string;
+    hashVersion: number;
+    status: SimPositionStatus;
+    marketId: string;
+    side: "long" | "short";
+    notionalUsd: string;
+    entryPrice: string;
+    tierName?: string | null;
+    drawdownFloorPct?: string | null;
+    floorPrice?: string | null;
+    protectionEnabled: boolean;
+    protectionId?: string | null;
+    protectionPremiumUsd?: string | null;
+    protectedLossUsd?: string | null;
+    triggerCreditedUsd?: string;
+    triggerCreditedAt?: string | null;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<SimPositionRecord> => {
+  const id = input.id || randomUUID();
+  const inserted = await pool.query(
+    `
+      INSERT INTO pilot_sim_positions (
+        id, user_hash, hash_version, status, market_id, side, notional_usd, entry_price,
+        tier_name, drawdown_floor_pct, floor_price, protection_enabled, protection_id,
+        protection_premium_usd, protected_loss_usd, trigger_credited_usd, trigger_credited_at, metadata
+      )
+      VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,
+        $9,$10,$11,$12,$13,
+        $14,$15,$16,$17,$18::jsonb
+      )
+      RETURNING *
+    `,
+    [
+      id,
+      input.userHash,
+      input.hashVersion,
+      input.status,
+      input.marketId,
+      input.side,
+      input.notionalUsd,
+      input.entryPrice,
+      input.tierName ?? null,
+      input.drawdownFloorPct ?? null,
+      input.floorPrice ?? null,
+      input.protectionEnabled,
+      input.protectionId ?? null,
+      input.protectionPremiumUsd ?? null,
+      input.protectedLossUsd ?? null,
+      input.triggerCreditedUsd ?? "0",
+      input.triggerCreditedAt ?? null,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+  return mapSimPosition(inserted.rows[0]);
+};
+
+export const getSimPosition = async (pool: Queryable, id: string): Promise<SimPositionRecord | null> => {
+  const result = await pool.query(`SELECT * FROM pilot_sim_positions WHERE id = $1 LIMIT 1`, [id]);
+  if (!result.rowCount) return null;
+  return mapSimPosition(result.rows[0]);
+};
+
+export const patchSimPosition = async (
+  pool: Queryable,
+  id: string,
+  patch: Record<string, unknown>
+): Promise<SimPositionRecord | null> => {
+  const entries = Object.entries(patch).filter(([, value]) => value !== undefined);
+  if (!entries.length) return getSimPosition(pool, id);
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  entries.forEach(([key, value], idx) => {
+    fields.push(`${key} = $${idx + 1}`);
+    values.push(value);
+  });
+  fields.push("updated_at = NOW()");
+  values.push(id);
+  const updated = await pool.query(
+    `
+      UPDATE pilot_sim_positions
+      SET ${fields.join(", ")}
+      WHERE id = $${values.length}
+      RETURNING *
+    `,
+    values
+  );
+  if (!updated.rowCount) return null;
+  return mapSimPosition(updated.rows[0]);
+};
+
+export const listSimPositionsByUserHash = async (
+  pool: Queryable,
+  userHash: string,
+  opts: { limit?: number } = {}
+): Promise<SimPositionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_sim_positions
+      WHERE user_hash = $1
+      ORDER BY created_at DESC
+      LIMIT $2
+    `,
+    [userHash, limit]
+  );
+  return result.rows.map(mapSimPosition);
+};
+
+export const listSimOpenProtectedPositionsByUserHash = async (
+  pool: Queryable,
+  userHash: string,
+  opts: { limit?: number } = {}
+): Promise<SimPositionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 200, 500));
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_sim_positions
+      WHERE user_hash = $1
+        AND status = 'open'
+        AND protection_enabled = TRUE
+      ORDER BY created_at ASC
+      LIMIT $2
+    `,
+    [userHash, limit]
+  );
+  return result.rows.map(mapSimPosition);
+};
+
+export const creditSimPositionForTrigger = async (
+  pool: Queryable,
+  params: {
+    id: string;
+    triggerCreditUsd: string;
+    metadata: Record<string, unknown>;
+  }
+): Promise<SimPositionRecord | null> => {
+  const updated = await pool.query(
+    `
+      UPDATE pilot_sim_positions
+      SET
+        status = 'triggered',
+        trigger_credited_usd = $2::numeric,
+        trigger_credited_at = NOW(),
+        metadata = $3::jsonb,
+        updated_at = NOW()
+      WHERE id = $1
+        AND status = 'open'
+        AND protection_enabled = TRUE
+        AND COALESCE(trigger_credited_usd, 0) = 0
+      RETURNING *
+    `,
+    [params.id, params.triggerCreditUsd, JSON.stringify(params.metadata || {})]
+  );
+  if (!updated.rowCount) return null;
+  return mapSimPosition(updated.rows[0]);
+};
+
+export const insertSimTreasuryLedgerEntry = async (
+  pool: Queryable,
+  input: {
+    id?: string;
+    simPositionId: string;
+    userHash: string;
+    protectionId?: string | null;
+    entryType: SimTreasuryEntryType;
+    amountUsd: string;
+    metadata?: Record<string, unknown>;
+  }
+): Promise<SimTreasuryLedgerRecord> => {
+  const inserted = await pool.query(
+    `
+      INSERT INTO pilot_sim_treasury_ledger (
+        id, sim_position_id, user_hash, protection_id, entry_type, amount_usd, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb)
+      RETURNING *
+    `,
+    [
+      input.id || randomUUID(),
+      input.simPositionId,
+      input.userHash,
+      input.protectionId ?? null,
+      input.entryType,
+      input.amountUsd,
+      JSON.stringify(input.metadata || {})
+    ]
+  );
+  return mapSimTreasuryLedger(inserted.rows[0]);
+};
+
+export const listSimTreasuryLedgerByUserHash = async (
+  pool: Queryable,
+  userHash: string,
+  opts: { limit?: number } = {}
+): Promise<SimTreasuryLedgerRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 500, 2000));
+  const result = await pool.query(
+    `
+      SELECT * FROM pilot_sim_treasury_ledger
+      WHERE user_hash = $1
+      ORDER BY created_at DESC
+      LIMIT $2
+    `,
+    [userHash, limit]
+  );
+  return result.rows.map(mapSimTreasuryLedger);
+};
+
+export const getSimPlatformMetrics = async (
+  pool: Queryable,
+  userHash: string
+): Promise<{
+  totalPositions: string;
+  openPositions: string;
+  triggeredPositions: string;
+  protectedPositions: string;
+  premiumCollectedUsd: string;
+  triggerCreditPaidUsd: string;
+  treasuryNetUsd: string;
+}> => {
+  const counts = await pool.query(
+    `
+      SELECT
+        COUNT(*)::text AS total_positions,
+        COUNT(*) FILTER (WHERE status = 'open')::text AS open_positions,
+        COUNT(*) FILTER (WHERE status = 'triggered')::text AS triggered_positions,
+        COUNT(*) FILTER (WHERE protection_enabled = TRUE)::text AS protected_positions
+      FROM pilot_sim_positions
+      WHERE user_hash = $1
+    `,
+    [userHash]
+  );
+  const ledger = await pool.query(
+    `
+      SELECT
+        COALESCE(SUM(CASE WHEN entry_type = 'premium_collected' THEN amount_usd ELSE 0 END), 0)::text AS premium_collected_usd,
+        COALESCE(SUM(CASE WHEN entry_type = 'trigger_credit' THEN amount_usd ELSE 0 END), 0)::text AS trigger_credit_paid_usd
+      FROM pilot_sim_treasury_ledger
+      WHERE user_hash = $1
+    `,
+    [userHash]
+  );
+  const countsRow = counts.rows[0] || {};
+  const ledgerRow = ledger.rows[0] || {};
+  const premiumCollected = new Decimal(String(ledgerRow.premium_collected_usd || "0"));
+  const triggerCreditPaid = new Decimal(String(ledgerRow.trigger_credit_paid_usd || "0"));
+  return {
+    totalPositions: String(countsRow.total_positions || "0"),
+    openPositions: String(countsRow.open_positions || "0"),
+    triggeredPositions: String(countsRow.triggered_positions || "0"),
+    protectedPositions: String(countsRow.protected_positions || "0"),
+    premiumCollectedUsd: premiumCollected.toFixed(10),
+    triggerCreditPaidUsd: triggerCreditPaid.toFixed(10),
+    treasuryNetUsd: premiumCollected.minus(triggerCreditPaid).toFixed(10)
+  };
 };
 
 export type PilotTermsAcceptanceRecord = {
@@ -769,7 +1850,7 @@ export const createPilotTermsAcceptanceIfMissing = async (
       JSON.stringify(input.details || {})
     ]
   );
-  if (inserted.rowCount > 0) {
+  if (Number(inserted.rowCount || 0) > 0) {
     return { record: mapPilotTermsAcceptance(inserted.rows[0]), created: true };
   }
   const postInsertExisting = await getPilotTermsAcceptance(pool, {
@@ -813,6 +1894,162 @@ export const insertVenueExecution = async (
       JSON.stringify(input.details || {})
     ]
   );
+};
+
+const percentileContLinear = (sorted: number[], p: number): number | null => {
+  if (!sorted.length) return null;
+  const clamped = Math.max(0, Math.min(1, p));
+  if (sorted.length === 1) return sorted[0];
+  const idx = (sorted.length - 1) * clamped;
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sorted[lo];
+  const frac = idx - lo;
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * frac;
+};
+
+const safeNumber = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+export const listRecentTenorPolicyRows = async (
+  pool: Queryable,
+  params: {
+    lookbackMinutes: number;
+    candidateTenors: number[];
+  }
+): Promise<TenorPolicyTenorRow[]> => {
+  const lookbackMinutes = Math.max(5, Math.min(24 * 60, Math.floor(Number(params.lookbackMinutes || 0) || 60)));
+  const cutoffIso = new Date(Date.now() - lookbackMinutes * 60_000).toISOString();
+  const normalizedCandidates = Array.from(
+    new Set(
+      (params.candidateTenors || [])
+        .map((n) => Math.floor(Number(n)))
+        .filter((n) => Number.isFinite(n) && n > 0 && n <= 60)
+    )
+  ).sort((a, b) => a - b);
+  if (!normalizedCandidates.length) return [];
+  const result = await pool.query(
+    `
+      SELECT details
+      FROM pilot_venue_quotes
+      WHERE created_at >= $1::timestamptz
+      ORDER BY created_at DESC
+      LIMIT 2000
+    `,
+    [cutoffIso]
+  );
+  type Running = {
+    sampleCount: number;
+    okCount: number;
+    optionsNativeCount: number;
+    futuresSyntheticCount: number;
+    negativeMatchedCount: number;
+    premiumRatios: number[];
+    driftDays: number[];
+    matchedTenorDays: number[];
+  };
+  const buckets = new Map<number, Running>();
+  for (const tenor of normalizedCandidates) {
+    buckets.set(tenor, {
+      sampleCount: 0,
+      okCount: 0,
+      optionsNativeCount: 0,
+      futuresSyntheticCount: 0,
+      negativeMatchedCount: 0,
+      premiumRatios: [],
+      driftDays: [],
+      matchedTenorDays: []
+    });
+  }
+  for (const row of result.rows) {
+    const details = toRecord(row.details);
+    const lockContext = toRecord(details.lockContext);
+    const requestedRaw = safeNumber(lockContext.requestedTenorDays);
+    if (requestedRaw === null) continue;
+    const requested = Math.floor(requestedRaw);
+    if (!buckets.has(requested)) continue;
+    const bucket = buckets.get(requested)!;
+    bucket.sampleCount += 1;
+    bucket.okCount += 1;
+    const quoteDetails = toRecord(details);
+    const hedgeModeRaw = String(quoteDetails.hedgeMode || lockContext.hedgeMode || "");
+    if (hedgeModeRaw === "options_native") {
+      bucket.optionsNativeCount += 1;
+    } else if (hedgeModeRaw === "futures_synthetic") {
+      bucket.futuresSyntheticCount += 1;
+    }
+    const selectedTenor =
+      safeNumber(quoteDetails.selectedTenorDays) ??
+      safeNumber(quoteDetails.selectedTenorDaysActual) ??
+      safeNumber(lockContext.selectedTenorDays);
+    if (selectedTenor !== null) {
+      bucket.matchedTenorDays.push(selectedTenor);
+      if (selectedTenor <= 0) bucket.negativeMatchedCount += 1;
+      const drift = Math.abs(selectedTenor - requestedRaw);
+      if (Number.isFinite(drift)) bucket.driftDays.push(drift);
+    }
+    const clientPremiumUsd =
+      safeNumber(lockContext.clientPremiumUsd) ??
+      safeNumber(toRecord(quoteDetails.pricingBreakdown).clientPremiumUsd) ??
+      safeNumber(row.premium);
+    const protectedNotional = safeNumber(lockContext.protectedNotional);
+    if (
+      clientPremiumUsd !== null &&
+      protectedNotional !== null &&
+      protectedNotional > 0 &&
+      Number.isFinite(clientPremiumUsd)
+    ) {
+      bucket.premiumRatios.push(clientPremiumUsd / protectedNotional);
+    }
+  }
+  const rows: TenorPolicyTenorRow[] = [];
+  for (const tenor of normalizedCandidates) {
+    const bucket = buckets.get(tenor)!;
+    const sampleCount = bucket.sampleCount;
+    const premiumSorted = [...bucket.premiumRatios].sort((a, b) => a - b);
+    const driftSorted = [...bucket.driftDays].sort((a, b) => a - b);
+    const matchedSorted = [...bucket.matchedTenorDays].sort((a, b) => a - b);
+    rows.push({
+      tenorDays: tenor,
+      sampleCount,
+      metrics: {
+        okRate: sampleCount > 0 ? bucket.okCount / sampleCount : 0,
+        optionsNativeRate: sampleCount > 0 ? bucket.optionsNativeCount / sampleCount : 0,
+        futuresSyntheticRate: sampleCount > 0 ? bucket.futuresSyntheticCount / sampleCount : 0,
+        medianPremiumRatio: percentileContLinear(premiumSorted, 0.5),
+        medianDriftDays: percentileContLinear(driftSorted, 0.5),
+        negativeMatchedTenorRate: sampleCount > 0 ? bucket.negativeMatchedCount / sampleCount : 0,
+        medianMatchedTenorDays: percentileContLinear(matchedSorted, 0.5)
+      },
+      score: null,
+      eligible: false,
+      reasons: []
+    });
+  }
+  return rows;
+};
+
+export const extractLatestPremiumPolicyDiagnostics = async (
+  pool: Queryable,
+  quoteId: string
+): Promise<PremiumPolicyDiagnostics | null> => {
+  const result = await pool.query(
+    `
+      SELECT details
+      FROM pilot_venue_quotes
+      WHERE quote_id = $1
+      ORDER BY created_at DESC
+      LIMIT 1
+    `,
+    [quoteId]
+  );
+  const details = toRecord(result.rows[0]?.details);
+  const lockContext = toRecord(details.lockContext);
+  const premiumPolicy = toRecord(lockContext.premiumPolicy);
+  if (!Object.keys(premiumPolicy).length) return null;
+  return premiumPolicy as PremiumPolicyDiagnostics;
 };
 
 export const insertAdminAction = async (pool: Queryable, input: {
@@ -950,6 +2187,40 @@ const mapPilotTermsAcceptance = (row: Record<string, unknown>): PilotTermsAccept
   details: toRecord(row.details),
   createdAt: new Date(String(row.created_at)).toISOString(),
   updatedAt: new Date(String(row.updated_at)).toISOString()
+});
+
+const mapSimPosition = (row: Record<string, unknown>): SimPositionRecord => ({
+  id: String(row.id),
+  userHash: String(row.user_hash),
+  hashVersion: Number(row.hash_version),
+  status: String(row.status) as SimPositionStatus,
+  marketId: String(row.market_id),
+  side: String(row.side) as "long" | "short",
+  notionalUsd: String(row.notional_usd),
+  entryPrice: String(row.entry_price),
+  tierName: row.tier_name ? String(row.tier_name) : null,
+  drawdownFloorPct: row.drawdown_floor_pct === null ? null : String(row.drawdown_floor_pct),
+  floorPrice: row.floor_price === null ? null : String(row.floor_price),
+  protectionEnabled: Boolean(row.protection_enabled),
+  protectionId: row.protection_id ? String(row.protection_id) : null,
+  protectionPremiumUsd: row.protection_premium_usd === null ? null : String(row.protection_premium_usd),
+  protectedLossUsd: row.protected_loss_usd === null ? null : String(row.protected_loss_usd),
+  triggerCreditedUsd: String(row.trigger_credited_usd),
+  triggerCreditedAt: row.trigger_credited_at ? new Date(String(row.trigger_credited_at)).toISOString() : null,
+  metadata: toRecord(row.metadata),
+  createdAt: new Date(String(row.created_at)).toISOString(),
+  updatedAt: new Date(String(row.updated_at)).toISOString()
+});
+
+const mapSimTreasuryLedger = (row: Record<string, unknown>): SimTreasuryLedgerRecord => ({
+  id: String(row.id),
+  simPositionId: String(row.sim_position_id),
+  userHash: String(row.user_hash),
+  protectionId: row.protection_id ? String(row.protection_id) : null,
+  entryType: String(row.entry_type) as SimTreasuryEntryType,
+  amountUsd: String(row.amount_usd),
+  metadata: toRecord(row.metadata),
+  createdAt: new Date(String(row.created_at)).toISOString()
 });
 
 const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({

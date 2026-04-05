@@ -1,0 +1,65 @@
+{
+  "version": "optimizer_v1",
+  "enabled": true,
+  "normalization": {
+    "expectedSubsidyUsd": { "min": 0, "max": 5000 },
+    "cvar95Usd": { "min": 0, "max": 7000 },
+    "liquidityPenalty": { "min": 0, "max": 50 },
+    "fillRiskPenalty": { "min": 0, "max": 30 },
+    "basisPenalty": { "min": 0, "max": 20 },
+    "carryPenalty": { "min": 0, "max": 20 },
+    "pnlRewardUsd": { "min": 0, "max": 7000 },
+    "mtpdReward": { "min": 0, "max": 100 },
+    "tenorDriftDays": { "min": 0, "max": 14 },
+    "strikeDistancePct": { "min": 0, "max": 0.2 }
+  },
+  "weights": {
+    "expectedSubsidy": 0.28,
+    "cvar95": 0.14,
+    "liquidityPenalty": 0.1,
+    "fillRiskPenalty": 0.08,
+    "basisPenalty": 0.05,
+    "carryPenalty": 0.05,
+    "pnlReward": 0.12,
+    "mtpdReward": 0.08,
+    "tenorDriftPenalty": 0.05,
+    "strikeDistancePenalty": 0.05
+  },
+  "hardConstraints": {
+    "maxPremiumRatio": 0.2,
+    "maxSpreadPct": 0.35,
+    "minAskSize": 0.2,
+    "maxTenorDriftDays": 7,
+    "minTailProtectionScore": 1,
+    "maxExpectedSubsidyUsd": 10000
+  },
+  "regimePolicy": {
+    "calm": {
+      "preferCloserStrikeBias": 1.0,
+      "maxStrikeDistancePct": 0.1,
+      "minTenorDays": 5,
+      "maxTenorDays": 21
+    },
+    "neutral": {
+      "preferCloserStrikeBias": 0.7,
+      "maxStrikeDistancePct": 0.12,
+      "minTenorDays": 3,
+      "maxTenorDays": 14
+    },
+    "stress": {
+      "preferCloserStrikeBias": 0.25,
+      "maxStrikeDistancePct": 0.2,
+      "minTenorDays": 1,
+      "maxTenorDays": 10
+    }
+  },
+  "rolloutGuards": {
+    "fallbackTriggerHitRatePct": 8,
+    "fallbackSubsidyUtilizationPct": 50,
+    "fallbackTreasuryDrawdownPct": 25,
+    "pauseTriggerHitRatePct": 15,
+    "pauseSubsidyUtilizationPct": 85,
+    "pauseTreasuryDrawdownPct": 50,
+    "pauseOnBlockedSubsidy": true
+  }
+}

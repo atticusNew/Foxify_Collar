@@ -1,0 +1,24 @@
+{
+  "scenarios": [
+    {
+      "scenarioId": "bronze_5k_1k",
+      "tierName": "Pro (Bronze)",
+      "protectedNotionalUsd": 5000,
+      "drawdownFloorPct": 0.2,
+      "hedgePremiumUsd": 48,
+      "brokerFeesUsd": 0,
+      "spotPriceUsd": 60000,
+      "quoteInstrumentId": "BTC-09APR26-48000-P"
+    },
+    {
+      "scenarioId": "silver_5k_750",
+      "tierName": "Pro (Silver)",
+      "protectedNotionalUsd": 5000,
+      "drawdownFloorPct": 0.15,
+      "hedgePremiumUsd": 39,
+      "brokerFeesUsd": 0,
+      "spotPriceUsd": 60000,
+      "quoteInstrumentId": "BTC-09APR26-51000-P"
+    }
+  ]
+}

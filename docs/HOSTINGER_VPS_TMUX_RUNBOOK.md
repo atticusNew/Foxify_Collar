@@ -1,0 +1,263 @@
+# Hostinger VPS tmux Runbook (Docker + IBKR Desktop TWS Tunnel)
+
+This runbook is for your setup:
+
+- VPS host: `root@srv1536090`
+- Stack path: `/opt/ibkr-stack`
+- Runtime: Docker Compose on VPS
+- IBKR session source: **TWS running on your desktop**
+
+---
+
+## 1) One-time VPS setup
+
+Run on VPS:
+
+```bash
+ssh root@srv1536090
+mkdir -p /opt/ibkr-stack
+cd /opt/ibkr-stack
+git clone https://github.com/atticusNew/Foxify_Collar.git .
+git checkout cursor/optimal-option-selection-logic-cd07
+cp .env.example .env
+```
+
+Install required tools (if missing):
+
+```bash
+apt-get update
+apt-get install -y tmux curl jq
+```
+
+---
+
+## 2) Select env profile (Phase 3A cutover)
+
+Use profile-based envs to avoid mixed mode drift:
+
+- `env/profiles/pilot_ibkr_live.env` (canonical live profile)
+- `env/profiles/pilot_ibkr_paper.env` (paper rehearsal profile)
+- `env/profiles/pilot_deribit_test.env` (dev fallback only)
+
+On VPS:
+
+```bash
+cd /opt/ibkr-stack
+cp env/profiles/pilot_ibkr_live.env .env
+vi .env
+```
+
+Set required secrets/IDs in `.env`:
+
+- `DB_PASSWORD`
+- `POSTGRES_URL`
+- `IBKR_BRIDGE_TOKEN`
+- `IBKR_ACCOUNT_ID`
+- `USER_HASH_SECRET`
+- `PILOT_ADMIN_TOKEN`
+- `PILOT_INTERNAL_TOKEN`
+- `PILOT_PROOF_TOKEN`
+
+Validate before deploy:
+
+```bash
+./scripts/validate_pilot_env.sh .env
+```
+
+Expected output: `pilot env validation passed`.
+
+Notes:
+
+- For paper rehearsal: `cp env/profiles/pilot_ibkr_paper.env .env`
+- `options_only_native` is the canonical pilot quote policy.
+- `IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC=false` should remain disabled for live cutover integrity.
+
+---
+
+## 3) Desktop side: keep TWS tunnel up continuously
+
+Your desktop must keep a reverse SSH tunnel to VPS so broker-bridge can reach TWS.
+
+### 3.1 TWS API settings on desktop
+
+- Enable API socket connections in TWS.
+- Confirm port:
+  - Paper TWS usually `7497`
+  - Live TWS usually `7496`
+
+### 3.2 Start persistent tunnel in tmux (desktop)
+
+Use the correct local TWS port (`7497` or `7496`):
+
+```bash
+tmux new-session -d -s ibkr-tunnel 'while true; do ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -N -R 0.0.0.0:14002:127.0.0.1:7497 root@srv1536090; sleep 5; done'
+```
+
+Check tunnel session:
+
+```bash
+tmux ls
+tmux attach -t ibkr-tunnel
+```
+
+Important:
+
+- `-R 0.0.0.0:14002:...` requires VPS sshd allowing gateway ports.
+- On VPS, set `/etc/ssh/sshd_config` with:
+
+```text
+GatewayPorts clientspecified
+```
+
+Then reload sshd:
+
+```bash
+systemctl reload ssh
+```
+
+---
+
+## 4) VPS side: start stack in tmux
+
+From VPS:
+
+```bash
+ssh root@srv1536090
+cd /opt/ibkr-stack
+git fetch origin cursor/optimal-option-selection-logic-cd07
+git checkout cursor/optimal-option-selection-logic-cd07
+git pull origin cursor/optimal-option-selection-logic-cd07
+./scripts/validate_pilot_env.sh .env
+```
+
+Start stack in dedicated tmux session:
+
+```bash
+tmux new-session -d -s atticus-stack 'cd /opt/ibkr-stack && docker compose --env-file .env up --build'
+```
+
+Optional monitoring tmux session:
+
+```bash
+tmux new-session -d -s atticus-watch 'while true; do date -u; curl -s http://127.0.0.1:8000/pilot/health | jq .; echo "---"; sleep 20; done'
+```
+
+View sessions:
+
+```bash
+tmux ls
+```
+
+Attach to stack logs:
+
+```bash
+tmux attach -t atticus-stack
+```
+
+Detach from tmux without stopping:
+
+- `Ctrl+b` then `d`
+
+---
+
+## 4.5) Frontend cutover (Render static web -> VPS API)
+
+To remove split deployment risk, keep web static on Render but move pilot API path to VPS.
+
+Update Render web env:
+
+- `VITE_API_BASE=https://<your-vps-api-domain>`
+
+Then redeploy web.
+
+Post-cutover smoke:
+
+```bash
+curl -s https://<your-vps-api-domain>/health | jq .
+curl -s https://<your-vps-api-domain>/pilot/health | jq .
+```
+
+Expected:
+
+- API served by VPS endpoint
+- `pilot/health` reports IBKR transport state from VPS stack
+
+Rollback:
+
+- Reset `VITE_API_BASE` to prior API endpoint and redeploy web.
+
+---
+
+## 5) Health and readiness checks
+
+On VPS:
+
+```bash
+cd /opt/ibkr-stack
+docker compose ps
+curl -s http://127.0.0.1:8000/health | jq .
+curl -s http://127.0.0.1:8000/pilot/health | jq .
+```
+
+Expected for live mode:
+
+- `/pilot/health` should show:
+  - `checks.venue.transport = "ib_socket"`
+  - `checks.venue.activeTransport = "ib_socket"`
+  - overall `status = "ok"`
+
+If degraded, inspect:
+
+```bash
+docker compose logs --tail=200 broker-bridge
+docker compose logs --tail=200 atticus
+```
+
+---
+
+## 6) Restart and recovery commands
+
+### Restart only app stack (keep data)
+
+```bash
+cd /opt/ibkr-stack
+docker compose --env-file .env down
+docker compose --env-file .env up --build
+```
+
+### Restart specific service
+
+```bash
+cd /opt/ibkr-stack
+docker compose restart broker-bridge
+docker compose restart atticus
+```
+
+### If desktop tunnel drops
+
+1. Reattach desktop tmux:
+   ```bash
+   tmux attach -t ibkr-tunnel
+   ```
+2. Restart tunnel loop.
+3. Recheck VPS `/pilot/health`.
+
+---
+
+## 7) Reboot persistence (VPS)
+
+If VPS reboots, auto-start tmux stack session via root crontab:
+
+```bash
+crontab -e
+```
+
+Add:
+
+```text
+@reboot /usr/bin/tmux new-session -d -s atticus-stack 'cd /opt/ibkr-stack && docker compose --env-file .env up'
+@reboot /usr/bin/tmux new-session -d -s atticus-watch 'while true; do date -u; curl -s http://127.0.0.1:8000/pilot/health | /usr/bin/jq .; echo "---"; sleep 20; done'
+```
+
+Desktop tunnel should also be configured to auto-start on desktop login/reboot (tmux, systemd user service, or launch agent).
+
