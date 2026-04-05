@@ -3401,14 +3401,15 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const moneyness = candidate.strike / spotPrice;
 
         let score = 0;
-        if (spreadPositive) score += 50;
-        if (hasLiquidity) score += 30;
+        if (spreadPositive) score += 60;
+        else score -= 20;
+        if (hasLiquidity) score += 20;
 
         if (isShort) {
-          score += Math.max(0, 20 - Math.abs(moneyness - 1.0) * 200);
+          if (moneyness >= 1.00 && moneyness <= 1.08) score += 15;
         } else {
-          if (moneyness >= 0.88 && moneyness <= 0.98) score += 20;
-          else if (moneyness >= 0.80 && moneyness <= 1.00) score += 10;
+          if (moneyness >= 0.88 && moneyness <= 0.96) score += 15;
+          else if (moneyness >= 0.80 && moneyness <= 0.98) score += 8;
         }
 
         if (triggerPrice) {
