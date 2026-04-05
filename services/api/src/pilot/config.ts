@@ -189,7 +189,7 @@ const parseAllowlist = (raw: string | undefined): ParsedAllowlist => {
 };
 
 export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => {
-  const normalized = (raw || "deribit_test").trim();
+  const normalized = (raw || "bullish_testnet").trim();
   if (
     normalized === "falconx" ||
     normalized === "deribit_test" ||

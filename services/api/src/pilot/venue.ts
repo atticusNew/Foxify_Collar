@@ -3314,18 +3314,30 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     this.client = new BullishTradingClient(config);
   }
 
-  private async selectBullishOptionSymbol(req: QuoteRequest): Promise<string | null> {
+  private async selectBullishOptionSymbol(req: QuoteRequest): Promise<{
+    symbol: string;
+    strike: number;
+    hedgeCostPerUnit: number;
+    hedgeCostTotal: number;
+    availableQty: number;
+    selectionReason: string;
+  } | null> {
     const allMarkets = await this.client.getMarkets();
-    const requestedOptionType = req.protectionType === "short" ? "CALL" : "PUT";
+    const isShort = req.protectionType === "short";
+    const requestedOptionType = isShort ? "CALL" : "PUT";
     const now = Date.now();
     const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 7)));
     const targetExpiryMs = now + requestedTenorDays * 24 * 60 * 60 * 1000;
-    const triggerPrice = toFinitePositiveNumber(req.triggerPrice) || null;
-    const fallbackSpot = toFinitePositiveNumber(req.protectedNotional) && toFinitePositiveNumber(req.quantity)
+    const spotPrice = toFinitePositiveNumber(req.protectedNotional) && toFinitePositiveNumber(req.quantity)
       ? Number(req.protectedNotional) / Number(req.quantity)
       : null;
-    const strikeAnchor = triggerPrice || fallbackSpot;
-    if (!strikeAnchor) return null;
+    const triggerPrice = toFinitePositiveNumber(req.triggerPrice) || null;
+    const drawdownFloorPct = toFinitePositiveNumber(req.drawdownFloorPct) || 0.2;
+    const btcQty = Number(req.quantity || 0);
+
+    if (!spotPrice || btcQty <= 0) return null;
+
+    const maxHedgeCostPer1k = Number(process.env.PILOT_BULLISH_MAX_HEDGE_COST_PER_1K || "0") || null;
 
     const candidates = allMarkets
       .map((market) => {
@@ -3340,52 +3352,121 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const tradable = (market as Record<string, unknown>).createOrderEnabled !== false;
         if (!tradable) return null;
         const tenorDriftDays = Math.abs(expiryMs - targetExpiryMs) / 86400000;
-        const strikeDistancePct = Math.abs(parsed.strike - strikeAnchor) / strikeAnchor;
-        return {
-          symbol,
-          expiryMs,
-          tenorDriftDays,
-          strikeDistancePct
-        };
-      })
-      .filter((entry): entry is { symbol: string; expiryMs: number; tenorDriftDays: number; strikeDistancePct: number } =>
-        Boolean(entry)
-      )
-      .sort((a, b) => {
-        if (a.tenorDriftDays !== b.tenorDriftDays) return a.tenorDriftDays - b.tenorDriftDays;
-        if (a.strikeDistancePct !== b.strikeDistancePct) return a.strikeDistancePct - b.strikeDistancePct;
-        return a.expiryMs - b.expiryMs;
-      });
+        if (tenorDriftDays > 3) return null;
 
-    for (const candidate of candidates.slice(0, 25)) {
+        if (isShort) {
+          if (parsed.strike < spotPrice) return null;
+        } else {
+          if (parsed.strike > spotPrice * 1.05) return null;
+          if (triggerPrice && parsed.strike < triggerPrice * 0.8) return null;
+        }
+
+        return { symbol, strike: parsed.strike, expiryMs, tenorDriftDays };
+      })
+      .filter(Boolean) as Array<{ symbol: string; strike: number; expiryMs: number; tenorDriftDays: number }>;
+
+    candidates.sort((a, b) => a.tenorDriftDays - b.tenorDriftDays || a.strike - b.strike);
+
+    type ScoredCandidate = {
+      symbol: string;
+      strike: number;
+      askPrice: number;
+      askQty: number;
+      hedgeCostTotal: number;
+      hedgeCostPer1k: number;
+      score: number;
+      selectionReason: string;
+    };
+
+    const scored: ScoredCandidate[] = [];
+    const bestTenorDrift = candidates[0]?.tenorDriftDays ?? 0;
+    const sameExpiryGroup = candidates.filter((c) => Math.abs(c.tenorDriftDays - bestTenorDrift) < 0.5);
+
+    for (const candidate of sameExpiryGroup.slice(0, 20)) {
       try {
         const book = await this.client.getHybridOrderBook(candidate.symbol);
         const bestAsk = book.asks[0];
         const askPx = Number(bestAsk?.price ?? NaN);
         const askQty = Number(bestAsk?.quantity ?? NaN);
-        if (Number.isFinite(askPx) && askPx > 0 && Number.isFinite(askQty) && askQty > 0) {
-          return candidate.symbol;
+        if (!Number.isFinite(askPx) || askPx <= 0) continue;
+        if (!Number.isFinite(askQty) || askQty <= 0) continue;
+
+        const hedgeCostTotal = askPx * btcQty;
+        const hedgeCostPer1k = (askPx / spotPrice) * 1000;
+        if (maxHedgeCostPer1k && hedgeCostPer1k > maxHedgeCostPer1k) continue;
+
+        const premium = Number(req.protectedNotional || 0) / 1000 * 11;
+        const hasLiquidity = askQty >= btcQty;
+        const spreadPositive = premium > hedgeCostTotal;
+        const moneyness = candidate.strike / spotPrice;
+
+        let score = 0;
+        if (spreadPositive) score += 50;
+        if (hasLiquidity) score += 30;
+
+        if (isShort) {
+          score += Math.max(0, 20 - Math.abs(moneyness - 1.0) * 200);
+        } else {
+          if (moneyness >= 0.88 && moneyness <= 0.98) score += 20;
+          else if (moneyness >= 0.80 && moneyness <= 1.00) score += 10;
         }
+
+        if (triggerPrice) {
+          const coverageOnBreach = Math.max(0, candidate.strike - triggerPrice) * btcQty;
+          const maxPayout = Number(req.protectedNotional || 0) * drawdownFloorPct;
+          const coverageRatio = maxPayout > 0 ? coverageOnBreach / maxPayout : 0;
+          score += Math.min(20, coverageRatio * 20);
+        }
+
+        const reason = [
+          spreadPositive ? "spread_positive" : "spread_negative",
+          hasLiquidity ? "liquidity_ok" : "partial_fill",
+          `moneyness_${(moneyness * 100).toFixed(0)}pct`,
+          `cost_${hedgeCostPer1k.toFixed(1)}_per_1k`
+        ].join("|");
+
+        scored.push({
+          symbol: candidate.symbol,
+          strike: candidate.strike,
+          askPrice: askPx,
+          askQty: askQty,
+          hedgeCostTotal,
+          hedgeCostPer1k,
+          score,
+          selectionReason: reason
+        });
       } catch {
-        // Ignore transient market data failures while scanning liquidity candidates.
+        // Skip candidates with transient market data failures
       }
     }
 
-    return candidates[0]?.symbol || null;
+    if (!scored.length) return null;
+
+    scored.sort((a, b) => b.score - a.score || a.hedgeCostPer1k - b.hedgeCostPer1k);
+    const best = scored[0];
+
+    return {
+      symbol: best.symbol,
+      strike: best.strike,
+      hedgeCostPerUnit: best.askPrice,
+      hedgeCostTotal: best.hedgeCostTotal,
+      availableQty: best.askQty,
+      selectionReason: best.selectionReason
+    };
   }
 
   async quote(req: QuoteRequest): Promise<VenueQuote> {
-    const optionSymbol = await this.selectBullishOptionSymbol(req);
-    const symbol =
-      optionSymbol ||
+    const selection = await this.selectBullishOptionSymbol(req);
+    const symbol = selection?.symbol ||
       resolveBullishMarketSymbol(this.config, {
         marketId: req.marketId,
         instrumentId: req.instrumentId
       });
+
     const book = await this.client.getHybridOrderBook(symbol);
     const bestAsk = book.asks[0];
     const bestBid = book.bids[0] || null;
-    const askPx = Number(bestAsk?.price ?? NaN);
+    const askPx = selection ? selection.hedgeCostPerUnit : Number(bestAsk?.price ?? NaN);
     const askQty = Number(bestAsk?.quantity ?? NaN);
     if (!Number.isFinite(askPx) || askPx <= 0 || !Number.isFinite(askQty) || askQty <= 0) {
       throw new Error("bullish_quote_unavailable:no_top_of_book");
@@ -3395,7 +3476,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       venue: "bullish_testnet",
       quoteId: randomUUID(),
       rfqId: null,
-      instrumentId: optionSymbol || req.instrumentId,
+      instrumentId: selection?.symbol || req.instrumentId,
       side: "buy",
       quantity: req.quantity,
       premium,
@@ -3404,16 +3485,23 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       details: {
         venueMode: "bullish_testnet",
         bullishSymbol: symbol,
-        bestAskPrice: bestAsk.price,
-        bestAskQuantity: bestAsk.quantity,
+        bestAskPrice: bestAsk?.price ?? null,
+        bestAskQuantity: bestAsk?.quantity ?? null,
         bestBidPrice: bestBid?.price ?? null,
         bestBidQuantity: bestBid?.quantity ?? null,
         sequenceNumber: book.sequenceNumber,
         orderbookTimestamp: book.timestamp,
         source: "bullish_hybrid_orderbook",
-        selectedInstrumentId: optionSymbol || req.instrumentId,
+        selectedInstrumentId: selection?.symbol || req.instrumentId,
         requestedInstrumentId: req.instrumentId,
-        hedgeMode: optionSymbol ? "options_native" : "futures_synthetic"
+        hedgeMode: selection ? "options_native" : "futures_synthetic",
+        optionSelection: selection ? {
+          strike: selection.strike,
+          hedgeCostPerUnit: selection.hedgeCostPerUnit,
+          hedgeCostTotal: selection.hedgeCostTotal,
+          availableQty: selection.availableQty,
+          selectionReason: selection.selectionReason
+        } : null
       }
     };
   }
