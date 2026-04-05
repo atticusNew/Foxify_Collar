@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
 import { DeribitConnector, IbkrConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow, type PilotPricingMode } from "./config";
+import { PilotMonitor, parseMonitorConfig } from "./monitor";
 import {
   archiveProtectionsByUserHashExcept,
   creditSimPositionForTrigger,
@@ -812,6 +814,24 @@ export const registerPilotRoutes = async (
   deps: { deribit: DeribitConnector }
 ): Promise<void> => {
   if (!pilotConfig.enabled) return;
+
+  await app.register(rateLimit, {
+    max: Number(process.env.PILOT_RATE_LIMIT_MAX || "60"),
+    timeWindow: Number(process.env.PILOT_RATE_LIMIT_WINDOW_MS || "60000"),
+    keyGenerator: (req: FastifyRequest) => {
+      const forwarded = req.headers["x-forwarded-for"];
+      return typeof forwarded === "string" ? forwarded.split(",")[0].trim() : req.ip;
+    },
+    errorResponseBuilder: () => ({
+      status: "error",
+      reason: "rate_limit_exceeded",
+      message: "Too many requests. Please retry after a short delay."
+    })
+  });
+
+  const monitorConfig = parseMonitorConfig();
+  const monitor = new PilotMonitor(monitorConfig);
+
   const pool = getPilotPool(pilotConfig.postgresUrl);
   await ensurePilotSchema(pool);
   const venue = createPilotVenueAdapter({
@@ -3910,5 +3930,44 @@ export const registerPilotRoutes = async (
   if (pilotConfig.triggerMonitorEnabled) {
     registerPilotTriggerMonitor(pool);
   }
+
+  app.get("/pilot/monitor/status", async (req, reply) => {
+    if (!isAdminAuthorized(req)) {
+      reply.code(401);
+      return { status: "error", reason: "unauthorized" };
+    }
+    return { status: "ok", ...monitor.getStatus() };
+  });
+
+  app.get("/pilot/monitor/alerts", async (req, reply) => {
+    if (!isAdminAuthorized(req)) {
+      reply.code(401);
+      return { status: "error", reason: "unauthorized" };
+    }
+    const limit = Math.max(1, Math.min(200, Number((req.query as Record<string, string>).limit || "50")));
+    return { status: "ok", alerts: monitor.getRecentAlerts(limit) };
+  });
+
+  app.post("/pilot/monitor/treasury-check", async (req, reply) => {
+    if (!isAdminAuthorized(req)) {
+      reply.code(401);
+      return { status: "error", reason: "unauthorized" };
+    }
+    if (!pilotConfig.bullish.enabled || !pilotConfig.bullish.privateWsUrl) {
+      return { status: "error", reason: "bullish_not_configured" };
+    }
+    try {
+      const { BullishTradingClient } = await import("./bullish");
+      const client = new BullishTradingClient(pilotConfig.bullish);
+      const snapshot = await monitor.checkTreasuryBalance(client);
+      return { status: "ok", treasury: snapshot };
+    } catch (error) {
+      return {
+        status: "error",
+        reason: "treasury_check_failed",
+        message: String((error as Error)?.message || error)
+      };
+    }
+  });
 };
 

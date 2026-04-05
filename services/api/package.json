@@ -6,6 +6,7 @@
   "main": "src/server.ts",
   "dependencies": {
     "@fastify/cors": "^8.5.0",
+    "@fastify/rate-limit": "^9.1.0",
     "@foxify/connectors": "0.1.0",
     "@foxify/hedging": "0.1.0",
     "decimal.js": "^10.4.3",

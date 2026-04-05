@@ -785,4 +785,168 @@ export class BullishTradingClient {
       }
     });
   }
+
+  async waitForOrderFill(params: {
+    clientOrderId: string;
+    timeoutMs?: number;
+    tradingAccountId?: string;
+  }): Promise<BullishOrderFillResult> {
+    const session = await this.getJwtSession();
+    const url = new URL(this.config.privateWsUrl);
+    const tradingAccountId = params.tradingAccountId || this.config.tradingAccountId;
+    if (tradingAccountId) {
+      url.searchParams.set("tradingAccountId", tradingAccountId);
+    }
+    const timeoutMs = Math.max(2000, Number(params.timeoutMs || 15_000));
+
+    return await new Promise<BullishOrderFillResult>((resolve, reject) => {
+      const ws = new WebSocket(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${session.token}`,
+          COOKIE: `JWT_COOKIE=${session.token}`
+        }
+      });
+      const timeout = setTimeout(() => {
+        ws.close();
+        resolve({
+          status: "timeout",
+          orderId: null,
+          fillPrice: null,
+          fillQuantity: null,
+          fees: null,
+          orderStatus: null,
+          raw: null
+        });
+      }, timeoutMs);
+
+      ws.on("open", () => {
+        ws.send(JSON.stringify({
+          jsonrpc: "2.0",
+          type: "command",
+          method: "subscribe",
+          params: { topic: "orders" },
+          id: nextBullishWsRequestId()
+        }));
+        ws.send(JSON.stringify({
+          jsonrpc: "2.0",
+          type: "command",
+          method: "subscribe",
+          params: { topic: "trades" },
+          id: nextBullishWsRequestId()
+        }));
+      });
+
+      let matchedOrderId: string | null = null;
+
+      ws.on("message", (raw) => {
+        try {
+          const parsed = JSON.parse(String(raw)) as BullishWsMessage;
+          const dataType = String(parsed.dataType || "");
+          const dataArray = Array.isArray(parsed.data) ? parsed.data as Array<Record<string, unknown>> : [];
+
+          if (dataType === "V1TAOrder") {
+            for (const order of dataArray) {
+              const cid = String(order.clientOrderId || order.handle || "");
+              if (cid === params.clientOrderId || String(order.orderId || "") === params.clientOrderId) {
+                matchedOrderId = String(order.orderId || "");
+                const status = String(order.status || "").toUpperCase();
+                if (status === "CLOSED" || status === "CANCELLED" || status === "REJECTED") {
+                  clearTimeout(timeout);
+                  ws.close();
+                  const filled = status === "CLOSED" && String(order.statusReason || "") === "Executed";
+                  resolve({
+                    status: filled ? "filled" : "rejected",
+                    orderId: matchedOrderId,
+                    fillPrice: order.averageFillPrice ? String(order.averageFillPrice) : null,
+                    fillQuantity: order.quantityFilled ? String(order.quantityFilled) : null,
+                    fees: {
+                      baseFee: order.baseFee ? String(order.baseFee) : "0",
+                      quoteFee: order.quoteFee ? String(order.quoteFee) : "0"
+                    },
+                    orderStatus: status,
+                    raw: order
+                  });
+                }
+              }
+            }
+          }
+
+          if (dataType === "V1TATrade" && matchedOrderId) {
+            for (const trade of dataArray) {
+              if (String(trade.orderId || "") === matchedOrderId) {
+                clearTimeout(timeout);
+                ws.close();
+                resolve({
+                  status: "filled",
+                  orderId: matchedOrderId,
+                  fillPrice: trade.price ? String(trade.price) : null,
+                  fillQuantity: trade.quantity ? String(trade.quantity) : null,
+                  fees: {
+                    baseFee: trade.baseFee ? String(trade.baseFee) : "0",
+                    quoteFee: trade.quoteFee ? String(trade.quoteFee) : "0"
+                  },
+                  orderStatus: "CLOSED",
+                  raw: trade
+                });
+              }
+            }
+          }
+        } catch {
+          // Ignore malformed WS messages
+        }
+      });
+
+      ws.on("error", (error) => {
+        clearTimeout(timeout);
+        resolve({
+          status: "error",
+          orderId: null,
+          fillPrice: null,
+          fillQuantity: null,
+          fees: null,
+          orderStatus: null,
+          raw: { error: String(error?.message || error) }
+        });
+      });
+
+      ws.on("close", () => {
+        clearTimeout(timeout);
+      });
+    });
+  }
+
+  async getAssetBalances(params?: {
+    tradingAccountId?: string;
+    timeoutMs?: number;
+  }): Promise<BullishAssetBalance[]> {
+    const snapshot = await this.waitForPrivateTopicSnapshot({
+      topic: "assetAccounts",
+      timeoutMs: params?.timeoutMs || 10_000,
+      tradingAccountId: params?.tradingAccountId
+    });
+    const data = Array.isArray(snapshot.data) ? snapshot.data as Array<Record<string, unknown>> : [];
+    return data.map((item) => ({
+      assetSymbol: String(item.assetSymbol || ""),
+      availableQuantity: String(item.availableQuantity || "0"),
+      lockedQuantity: String(item.lockedQuantity || "0"),
+      borrowedQuantity: String(item.borrowedQuantity || "0")
+    }));
+  }
 }
+
+export type BullishOrderFillResult = {
+  status: "filled" | "rejected" | "timeout" | "error";
+  orderId: string | null;
+  fillPrice: string | null;
+  fillQuantity: string | null;
+  fees: { baseFee: string; quoteFee: string } | null;
+  orderStatus: string | null;
+  raw: unknown;
+};
+
+export type BullishAssetBalance = {
+  assetSymbol: string;
+  availableQuantity: string;
+  lockedQuantity: string;
+  borrowedQuantity: string;
+};

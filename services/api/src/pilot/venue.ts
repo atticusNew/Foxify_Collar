@@ -3451,13 +3451,24 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       throw new Error("bullish_execute_invalid_quantity");
     }
     const unitPrice = quantity > 0 ? quote.premium / quantity : quote.premium;
-    const response = await this.client.createSpotLimitOrder({
-      symbol,
-      side: "BUY",
-      price: unitPrice.toFixed(8),
-      quantity: quantity.toFixed(8),
-      clientOrderId: quote.quoteId
-    });
+    const clientOrderId = quote.quoteId;
+    const fillWaitEnabled =
+      String(process.env.PILOT_BULLISH_FILL_CONFIRM_ENABLED || "true").trim().toLowerCase() !== "false";
+    const fillWaitMs = Math.max(2000, Number(process.env.PILOT_BULLISH_FILL_CONFIRM_TIMEOUT_MS || "15000"));
+
+    const [response, fillResult] = await Promise.all([
+      this.client.createSpotLimitOrder({
+        symbol,
+        side: "BUY",
+        price: unitPrice.toFixed(8),
+        quantity: quantity.toFixed(8),
+        clientOrderId
+      }),
+      fillWaitEnabled && this.config.privateWsUrl
+        ? this.client.waitForOrderFill({ clientOrderId, timeoutMs: fillWaitMs }).catch(() => null)
+        : Promise.resolve(null)
+    ]);
+
     const responseRecord = response as Record<string, unknown>;
     const orderId =
       typeof responseRecord.orderId === "string"
@@ -3465,6 +3476,15 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         : typeof (responseRecord.data as Record<string, unknown> | undefined)?.orderId === "string"
           ? String((responseRecord.data as Record<string, unknown>).orderId)
           : "";
+
+    const fillConfirmed = fillResult?.status === "filled";
+    const actualFillPrice = fillConfirmed && fillResult?.fillPrice
+      ? Number(fillResult.fillPrice)
+      : unitPrice;
+    const actualFillQty = fillConfirmed && fillResult?.fillQuantity
+      ? Number(fillResult.fillQuantity)
+      : quantity;
+
     return {
       venue: "bullish_testnet",
       status: orderId ? "success" : "failure",
@@ -3472,13 +3492,24 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
       side: "buy",
-      quantity: quote.quantity,
-      executionPrice: unitPrice,
-      premium: quote.premium,
+      quantity: fillConfirmed ? actualFillQty : quote.quantity,
+      executionPrice: actualFillPrice,
+      premium: fillConfirmed ? actualFillPrice * actualFillQty : quote.premium,
       executedAt: nowIso(),
-      externalOrderId: orderId,
+      externalOrderId: fillResult?.orderId || orderId,
       externalExecutionId: orderId ? `bullish-${orderId}` : "",
-      details: responseRecord
+      details: {
+        ...responseRecord,
+        fillConfirmation: fillResult
+          ? {
+              status: fillResult.status,
+              fillPrice: fillResult.fillPrice,
+              fillQuantity: fillResult.fillQuantity,
+              fees: fillResult.fees,
+              orderStatus: fillResult.orderStatus
+            }
+          : { status: "not_awaited" }
+      }
     };
   }
 
