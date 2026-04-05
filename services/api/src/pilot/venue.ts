@@ -20,6 +20,14 @@ import { toHedgeCandidate } from "./hedgeCandidates";
 import { selectBestHedgeCandidate } from "./hedgeScoring";
 import { resolveHedgeRegime } from "./regimePolicy";
 import { BullishTradingClient, resolveBullishMarketSymbol } from "./bullish";
+import {
+  type HedgeOptimizationConfig,
+  parseHedgeOptimizationConfig,
+  resolveOptimalTenor,
+  evaluateRollOpportunity,
+  resolveDynamicStrikeRange,
+  HedgeBatchManager
+} from "./hedgeOptimizations";
 
 export type QuoteRequest = {
   marketId: string;
@@ -3306,12 +3314,16 @@ class FalconxAdapter implements PilotVenueAdapter {
 
 class BullishTestnetAdapter implements PilotVenueAdapter {
   private readonly client: BullishTradingClient;
+  private readonly hedgeConfig: HedgeOptimizationConfig;
+  private readonly batchManager: HedgeBatchManager;
 
   constructor(
     private readonly config: BullishRuntimeConfig,
     private readonly quoteTtlMs: number
   ) {
     this.client = new BullishTradingClient(config);
+    this.hedgeConfig = parseHedgeOptimizationConfig();
+    this.batchManager = new HedgeBatchManager(this.hedgeConfig);
   }
 
   private async selectBullishOptionSymbol(req: QuoteRequest): Promise<{
@@ -3339,6 +3351,12 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
 
     const maxHedgeCostPer1k = Number(process.env.PILOT_BULLISH_MAX_HEDGE_COST_PER_1K || "0") || null;
 
+    const strikeRange = resolveDynamicStrikeRange({
+      config: this.hedgeConfig,
+      recentVolatilityPct: null,
+      isShort
+    });
+
     const candidates = allMarkets
       .map((market) => {
         const symbol = String((market as Record<string, unknown>).symbol || "");
@@ -3354,11 +3372,12 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const tenorDriftDays = Math.abs(expiryMs - targetExpiryMs) / 86400000;
         if (tenorDriftDays > 3) return null;
 
+        const moneyness = parsed.strike / spotPrice;
         if (isShort) {
-          if (parsed.strike < spotPrice) return null;
+          if (moneyness < strikeRange.targetMoneynessMin * 0.95 || moneyness > strikeRange.targetMoneynessMax * 1.2) return null;
         } else {
-          if (parsed.strike > spotPrice * 1.05) return null;
-          if (triggerPrice && parsed.strike < triggerPrice * 0.8) return null;
+          if (moneyness > strikeRange.targetMoneynessMax * 1.1) return null;
+          if (moneyness < strikeRange.targetMoneynessMin * 0.85) return null;
         }
 
         return { symbol, strike: parsed.strike, expiryMs, tenorDriftDays };
@@ -3405,11 +3424,14 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         else score -= 20;
         if (hasLiquidity) score += 20;
 
-        if (isShort) {
-          if (moneyness >= 1.00 && moneyness <= 1.08) score += 15;
+        if (moneyness >= strikeRange.targetMoneynessMin && moneyness <= strikeRange.targetMoneynessMax) {
+          score += 15;
         } else {
-          if (moneyness >= 0.88 && moneyness <= 0.96) score += 15;
-          else if (moneyness >= 0.80 && moneyness <= 0.98) score += 8;
+          const distFromRange = Math.min(
+            Math.abs(moneyness - strikeRange.targetMoneynessMin),
+            Math.abs(moneyness - strikeRange.targetMoneynessMax)
+          );
+          score += Math.max(0, 8 - distFromRange * 100);
         }
 
         if (triggerPrice) {
@@ -3473,6 +3495,20 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       throw new Error("bullish_quote_unavailable:no_top_of_book");
     }
     const premium = Number((askPx * Math.max(0, Number(req.quantity || 0))).toFixed(10));
+
+    const batchDecision = this.hedgeConfig.batchHedgingEnabled
+      ? this.batchManager.addToQueue({
+          requestId: randomUUID(),
+          protectionType: req.protectionType || "long",
+          notionalUsd: req.protectedNotional,
+          btcQty: Number(req.quantity || 0),
+          drawdownFloorPct: req.drawdownFloorPct || 0.2,
+          triggerPrice: req.triggerPrice || 0,
+          premiumPer1k: 11,
+          createdAt: Date.now()
+        })
+      : null;
+
     return {
       venue: "bullish_testnet",
       quoteId: randomUUID(),
@@ -3496,6 +3532,17 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         selectedInstrumentId: selection?.symbol || req.instrumentId,
         requestedInstrumentId: req.instrumentId,
         hedgeMode: selection ? "options_native" : "futures_synthetic",
+        optimizations: {
+          batchDecision: batchDecision ? {
+            mode: batchDecision.mode,
+            reason: batchDecision.reason,
+            pendingCount: batchDecision.pendingCount,
+            totalBtcQty: batchDecision.totalBtcQty
+          } : null,
+          dynamicStrike: this.hedgeConfig.dynamicStrikeEnabled ? "enabled" : "disabled",
+          rollOptimization: this.hedgeConfig.rollOptimizationEnabled ? "enabled" : "disabled",
+          autoRenewTenor: this.hedgeConfig.autoRenewTenorEnabled ? "enabled" : "disabled"
+        },
         optionSelection: selection ? {
           strike: selection.strike,
           hedgeCostPerUnit: selection.hedgeCostPerUnit,
