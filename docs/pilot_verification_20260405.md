@@ -1,7 +1,7 @@
 # Bullish Testnet Pilot Verification Report
 
 **Run ID:** `pilot_auth_debug_20260405T025840Z`
-**Date:** 2026-04-05T02:58:40Z
+**Date:** 2026-04-05T02:58:40Z (updated 2026-04-05T03:16Z with testnet resolution)
 **Branch:** `cursor/-bc-e51d2b47-923d-4e8c-9cb9-44b1a0efb37c-4a4e`
 **Base branch:** `cursor/bullish-locked-profile-phase-a` (merged, ancestor confirmed)
 **Commit:** `b983579`
@@ -19,74 +19,90 @@
 | npm deps (services/api) | Installed |
 | Node.js available | YES |
 
-### Env Var Presence (Cloud Agent VM)
+### Env Var Presence
 
 | Variable | Status |
 |----------|--------|
-| `PILOT_BULLISH_REST_BASE_URL` | **MISSING** (not injected to cloud agent) |
-| `PILOT_BULLISH_TRADING_ACCOUNT_ID` | **MISSING** |
-| `PILOT_BULLISH_ECDSA_METADATA` | **MISSING** |
-| `PILOT_BULLISH_ECDSA_PUBLIC_KEY` | **MISSING** |
-| `PILOT_BULLISH_ECDSA_PRIVATE_KEY` | **MISSING** |
-
-> **Note:** Bullish ECDSA credentials are not present in this Cloud Agent VM environment. Previous runs (with secrets injected) confirmed key validity: `publicPrivateMatch = true`, fingerprint `458c48...`, userId `222847629947099`, credentialId `9907722786`.
+| `PILOT_BULLISH_REST_BASE_URL` | **SET** (`https://api.simnext.bullish-test.com`) |
+| `PILOT_BULLISH_TRADING_ACCOUNT_ID` | SET (discovered: `111920783890876`) |
+| `PILOT_BULLISH_ECDSA_METADATA` | **SET** (userId `222847629947099`, credentialId `9907722786`) |
+| `PILOT_BULLISH_ECDSA_PUBLIC_KEY` | **SET** (derived from private key, fingerprint `458c48...`) |
+| `PILOT_BULLISH_ECDSA_PRIVATE_KEY` | **SET** (PKCS8, EC P-256) |
 
 ---
 
 ## B) Bullish Auth Diagnostics
+
+### Root-cause resolution: error 8011 USER_NOT_EXISTS
+
+The previous blocker was caused by pointing at the **production** URL (`api.exchange.bullish.com`) instead of the **testnet** URL (`api.simnext.bullish-test.com`). The user account exists on the Bullish SimNext testnet, not on production.
+
+**Fix:** Changed `PILOT_BULLISH_REST_BASE_URL` from `https://api.exchange.bullish.com` to `https://api.simnext.bullish-test.com`. Updated `.env.example` accordingly.
 
 ### Commands Run
 
 ```bash
 cd /workspace/services/api
 RUN_DIR="artifacts/pilot_auth_debug_20260405T025840Z"
-npm run -s pilot:bullish:key-check        # -> 02_key_check.json
-npm run -s pilot:bullish:auth-debug       # -> 03_auth_debug.json
-npm run -s pilot:bullish:smoke -- --symbol BTCUSDC  # -> 04_smoke.json
+npx tsx scripts/pilotBullishKeyCheck.ts          # -> 02_key_check.json
+npx tsx scripts/pilotBullishAuthDebug.ts          # -> 18_auth_debug_testnet.json
+npx tsx scripts/pilotBullishSmokeTest.ts --symbol BTCUSDC  # -> 19_smoke_testnet.json
 ```
 
-### Results
+### Results (against testnet)
 
 | Script | Exit | Status | Detail |
 |--------|------|--------|--------|
-| `pilot:bullish:key-check` | 0 | `ok` | Both keys absent (cloud agent lacks creds) |
-| `pilot:bullish:auth-debug` | 1 | `error` | `public_key_missing` |
-| `pilot:bullish:smoke` | 0 | `error` | `bullish_credentials_missing` |
-| Metadata decode | 0 | N/A | `has_metadata: false` |
+| `pilot:bullish:key-check` | 0 | `ok` | Keys present, parse OK, fingerprint match |
+| `pilot:bullish:auth-debug` | 0 | `ok` | `publicPrivateMatch: true`, userId `222847629947099` |
+| `pilot:bullish:smoke` | 0 | **`ok`** | **ECDSA login succeeded, trading account discovered, orderbook live** |
 
-### Known blocker (when creds are present)
+### Smoke test output (testnet)
 
-From prior authenticated run:
 ```json
 {
-  "status": "error",
-  "reason": "bullish_smoke_failed",
-  "message": "bullish_http_404:{\"message\":\"User does not exist.\",\"errorCode\":8011,\"errorCodeName\":\"USER_NOT_EXISTS\"}"
+  "status": "ok",
+  "symbol": "BTCUSDC",
+  "steps": {
+    "auth": { "mode": "jwt_via_ecdsa_login" },
+    "tradingAccounts": {
+      "count": 1,
+      "tradingAccountIds": ["111920783890876"]
+    },
+    "orderbook": {
+      "bids": [{"price": "67141.7000", "quantity": "0.00005750"}, ...],
+      "asks": [{"price": "67141.8000", "quantity": "0.00634155"}, ...],
+      "sequenceNumber": "10861031",
+      "timestamp": "1775359755665"
+    }
+  }
 }
 ```
-
-**Blocker:** Bullish API returns HTTP 404 with errorCode `8011` (`USER_NOT_EXISTS`). The ECDSA key material is valid and matches, but the associated userId (`222847629947099`) is not provisioned on the Bullish testnet exchange. This requires Bullish-side account provisioning.
 
 ---
 
 ## C) Public Endpoint Sanity
 
-### Command
+### Testnet endpoint
 
 ```bash
-curl -s "https://api.exchange.bullish.com/trading-api/v1/markets"
+curl -s "https://api.simnext.bullish-test.com/trading-api/v1/markets"
 ```
 
-### Result
+| Check | Result |
+|-------|--------|
+| HTTP status | **200 OK** |
+| BTCUSDC present | **YES** |
+
+### Production endpoint (also verified)
 
 | Check | Result |
 |-------|--------|
 | HTTP status | **200 OK** |
 | Total markets | 703 |
 | BTCUSDC present | **YES** |
-| BTC-related symbols (sample) | BTCAUSD, BTCEUR, BTCEURAU, BTCEURC, BTCFIDD, BTCPAXG, BTCPYUSD, BTCRLUSD, BTCUSD |
 
-**Verdict: PASS** - Bullish public API is reachable and BTCUSDC is a valid trading pair.
+**Verdict: PASS** - Both testnet and production public APIs are reachable and BTCUSDC is a valid trading pair.
 
 ---
 
@@ -197,31 +213,34 @@ npx tsx scripts/pilotBacktestPremiumSweep.ts \
 | # | Item | Status | Notes |
 |---|------|--------|-------|
 | 1 | Branch integrity | **GO** | Base merged, clean tree |
-| 2 | Bullish public API reachable | **GO** | HTTP 200, 703 markets |
+| 2 | Bullish testnet API reachable | **GO** | HTTP 200, `api.simnext.bullish-test.com` |
 | 3 | BTCUSDC symbol available | **GO** | Confirmed in market list |
-| 4 | ECDSA key material valid | **GO** (prev run) | Keys parse, match, fingerprint verified |
-| 5 | Bullish user provisioned | **NO-GO** | errorCode 8011 USER_NOT_EXISTS |
-| 6 | Smoke auth end-to-end | **BLOCKED** | Depends on #5 |
-| 7 | Pilot floor defaults (20/15/12) | **GO** | 6/6 tests pass |
-| 8 | 7-day tenor enforcement | **GO** | Verified via resolveExpiryDays |
-| 9 | Premium policy modes | **GO** | actuarial_strict + hybrid_otm_treasury validated |
-| 10 | Premium regime overlay | **GO** | stress/watch/dwell/cap logic passes |
-| 11 | Model comparison | **GO** | Hybrid saves ~37% vs strict |
-| 12 | Premium sweep | **GO** | All 8 grid points acceptable |
-| 13 | Execution safety | **GO** | `PILOT_BULLISH_ENABLE_EXECUTION=false` confirmed |
+| 4 | ECDSA key material valid | **GO** | Keys parse, match, fingerprint `458c48...` |
+| 5 | Bullish user provisioned | **GO** | userId `222847629947099` exists on SimNext testnet |
+| 6 | Smoke auth end-to-end | **GO** | JWT login succeeded, trading account `111920783890876` discovered |
+| 7 | Orderbook live data | **GO** | BTCUSDC bids/asks streaming, sequenceNumber advancing |
+| 8 | Pilot floor defaults (20/15/12) | **GO** | 6/6 tests pass |
+| 9 | 7-day tenor enforcement | **GO** | Verified via resolveExpiryDays |
+| 10 | Premium policy modes | **GO** | actuarial_strict + hybrid_otm_treasury validated |
+| 11 | Premium regime overlay | **GO** | stress/watch/dwell/cap logic passes |
+| 12 | Model comparison | **GO** | Hybrid saves ~37% vs strict |
+| 13 | Premium sweep | **GO** | All 8 grid points acceptable |
+| 14 | Execution safety | **GO** | `PILOT_BULLISH_ENABLE_EXECUTION=false` confirmed |
 
-### Overall Verdict: **CONDITIONAL GO**
+### Overall Verdict: **GO**
 
-The pricing model, policy logic, and premium economics are validated and ready. The sole blocker is Bullish-side account provisioning (error 8011). Once the Bullish testnet user is created for userId `222847629947099`, the smoke test should pass and canary can proceed.
+All checks pass. The previous 8011 blocker is resolved -- root cause was using the production URL instead of the SimNext testnet URL. Auth, orderbook, and trading account discovery all succeed on `api.simnext.bullish-test.com`.
 
 ### Recommended Canary Execution Settings
 
 ```env
+PILOT_BULLISH_REST_BASE_URL=https://api.simnext.bullish-test.com
 PILOT_BULLISH_ENABLE_EXECUTION=false
 PILOT_BULLISH_ENABLE_SMOKE_ORDER=false
 PILOT_VENUE_MODE=bullish_testnet
 PILOT_BULLISH_AUTH_MODE=ecdsa
 PILOT_BULLISH_SYMBOL=BTCUSDC
+PILOT_BULLISH_TRADING_ACCOUNT_ID=111920783890876
 PILOT_PREMIUM_POLICY_MODE=hybrid_otm_treasury
 ```
 
@@ -250,6 +269,8 @@ artifacts/pilot_auth_debug_20260405T025840Z/
   15_premium_sweep_output.txt
   16_ibkr_venue_failures.txt
   17_all_pricing_tests.txt
+  18_auth_debug_testnet.json     (NEW - testnet auth-debug)
+  19_smoke_testnet.json          (NEW - testnet smoke PASS)
   premium_sweep/
     premium_sweep_results.json
     premium_sweep_candidate_summary.csv
@@ -258,4 +279,32 @@ artifacts/pilot_auth_debug_20260405T025840Z/
     configs/   (8 backtest configs)
     prices/    (3 price CSVs)
     runs/      (8 tier dirs x 3 period outputs each)
+```
+
+## How to Pull Reports
+
+From the repo root:
+
+```bash
+# Pull the latest verification report
+git pull origin cursor/-bc-e51d2b47-923d-4e8c-9cb9-44b1a0efb37c-4a4e
+cat docs/pilot_verification_20260405.md
+
+# Re-run and regenerate local artifacts
+cd services/api
+npm install
+RUN_DIR="artifacts/pilot_auth_debug_$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$RUN_DIR"
+npx tsx scripts/pilotBullishAuthDebug.ts | tee "$RUN_DIR/auth_debug.json"
+npx tsx scripts/pilotBullishSmokeTest.ts --symbol BTCUSDC | tee "$RUN_DIR/smoke.json"
+npx tsx scripts/pilotCompareModels.ts \
+  --fixture tests/fixtures/pilotCompareModels.fixture.json \
+  --out-json "$RUN_DIR/model_compare.json" \
+  --out-csv "$RUN_DIR/model_compare.csv"
+npx tsx scripts/pilotBacktestPremiumSweep.ts \
+  --config scripts/fixtures/pilot_backtest_config.example.json \
+  --out-dir "$RUN_DIR/premium_sweep" \
+  --source coinbase \
+  --period-profile consistent_core \
+  --bronze-grid 18,19,20,21,22,23,24,25
 ```
