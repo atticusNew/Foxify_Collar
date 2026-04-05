@@ -3587,10 +3587,46 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       throw new Error("bullish_execute_invalid_quantity");
     }
     const unitPrice = quantity > 0 ? quote.premium / quantity : quote.premium;
-    const clientOrderId = quote.quoteId;
+
+    const stalenessMaxPct = Math.max(0.5, Number(process.env.PILOT_BULLISH_PRICE_STALENESS_MAX_PCT || "5"));
+    try {
+      const freshBook = await this.client.getHybridOrderBook(symbol);
+      const freshAsk = Number(freshBook.asks[0]?.price ?? NaN);
+      if (Number.isFinite(freshAsk) && freshAsk > 0) {
+        const driftPct = Math.abs(freshAsk - unitPrice) / unitPrice * 100;
+        if (driftPct > stalenessMaxPct) {
+          return {
+            venue: "bullish_testnet",
+            status: "failure",
+            quoteId: quote.quoteId,
+            rfqId: quote.rfqId ?? null,
+            instrumentId: quote.instrumentId,
+            side: "buy",
+            quantity: quote.quantity,
+            executionPrice: 0,
+            premium: quote.premium,
+            executedAt: nowIso(),
+            externalOrderId: "",
+            externalExecutionId: "",
+            details: {
+              rejectionReason: "price_staleness_exceeded",
+              quotedPrice: unitPrice,
+              currentAsk: freshAsk,
+              driftPct: driftPct.toFixed(2),
+              maxAllowedPct: stalenessMaxPct
+            }
+          };
+        }
+      }
+    } catch {
+      // If fresh book check fails, proceed with original price
+    }
+
+    const clientOrderId = quote.quoteId.replace(/[^0-9]/g, "").slice(0, 16) || String(BigInt(Date.now()) * 1000n);
     const fillWaitEnabled =
       String(process.env.PILOT_BULLISH_FILL_CONFIRM_ENABLED || "true").trim().toLowerCase() !== "false";
     const fillWaitMs = Math.max(2000, Number(process.env.PILOT_BULLISH_FILL_CONFIRM_TIMEOUT_MS || "15000"));
+    const cancelTimeoutMs = Math.max(3000, Number(process.env.PILOT_BULLISH_UNFILLED_CANCEL_TIMEOUT_MS || "10000"));
 
     const [response, fillResult] = await Promise.all([
       this.client.createSpotLimitOrder({
@@ -3614,12 +3650,51 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
           : "";
 
     const fillConfirmed = fillResult?.status === "filled";
+
+    if (!fillConfirmed && orderId && this.config.orderTif !== "IOC") {
+      setTimeout(async () => {
+        try {
+          await this.client.cancelOrder({ symbol, orderId });
+          console.log(`[BullishAdapter] Auto-cancelled unfilled order ${orderId} for ${symbol}`);
+        } catch {
+          // Order may have filled between check and cancel -- safe to ignore
+        }
+      }, cancelTimeoutMs).unref?.();
+    }
+
+    let restFillResult: { fillPrice: string | null; fillQuantity: string | null; status: string } | null = null;
+    if (!fillConfirmed && orderId && fillWaitEnabled) {
+      try {
+        const accounts = await this.client.getTradingAccounts() as Record<string, unknown>;
+        const data = Array.isArray((accounts as any)?.data) ? (accounts as any).data : [];
+        for (const account of data) {
+          const positions = Array.isArray(account?.positions) ? account.positions : [];
+          for (const pos of positions) {
+            if (String(pos?.orderId || "") === orderId && String(pos?.status || "").toUpperCase() === "CLOSED") {
+              restFillResult = {
+                fillPrice: pos.averageFillPrice || pos.price || null,
+                fillQuantity: pos.quantityFilled || pos.quantity || null,
+                status: "filled_via_rest"
+              };
+            }
+          }
+        }
+      } catch {
+        // REST fallback is best-effort
+      }
+    }
+
+    const confirmedViaAny = fillConfirmed || restFillResult?.status === "filled_via_rest";
     const actualFillPrice = fillConfirmed && fillResult?.fillPrice
       ? Number(fillResult.fillPrice)
-      : unitPrice;
+      : restFillResult?.fillPrice
+        ? Number(restFillResult.fillPrice)
+        : unitPrice;
     const actualFillQty = fillConfirmed && fillResult?.fillQuantity
       ? Number(fillResult.fillQuantity)
-      : quantity;
+      : restFillResult?.fillQuantity
+        ? Number(restFillResult.fillQuantity)
+        : quantity;
 
     return {
       venue: "bullish_testnet",
@@ -3628,9 +3703,9 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
       side: "buy",
-      quantity: fillConfirmed ? actualFillQty : quote.quantity,
+      quantity: confirmedViaAny ? actualFillQty : quote.quantity,
       executionPrice: actualFillPrice,
-      premium: fillConfirmed ? actualFillPrice * actualFillQty : quote.premium,
+      premium: confirmedViaAny ? actualFillPrice * actualFillQty : quote.premium,
       executedAt: nowIso(),
       externalOrderId: fillResult?.orderId || orderId,
       externalExecutionId: orderId ? `bullish-${orderId}` : "",
@@ -3644,7 +3719,15 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
               fees: fillResult.fees,
               orderStatus: fillResult.orderStatus
             }
-          : { status: "not_awaited" }
+          : restFillResult
+            ? { status: restFillResult.status, fillPrice: restFillResult.fillPrice, fillQuantity: restFillResult.fillQuantity }
+            : { status: "not_confirmed" },
+        priceGuard: {
+          stalenessMaxPct,
+          orderTif: this.config.orderTif,
+          autoCancelEnabled: this.config.orderTif !== "IOC",
+          autoCancelTimeoutMs: this.config.orderTif !== "IOC" ? cancelTimeoutMs : 0
+        }
       }
     };
   }
