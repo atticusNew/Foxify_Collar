@@ -169,3 +169,44 @@ FalconX is an **OTC derivatives desk**, not an exchange. Key differences:
 | 9 | 2-week paper trade data | Continuous quote logging | **NOT STARTED** |
 | 10 | Rate limiting active | Config + test | **NOT DONE** |
 | 11 | Alerting on treasury depletion | Monitor hook | **NOT DONE** |
+
+---
+
+## Appendix: Bullish API Docs Validation (added 2026-04-05)
+
+### Biggest Unknown Resolved
+
+The `V2CreateOrder` command is Bullish's **universal order API** for all markets -- spot, perps, options, and futures. The `symbol` field accepts any market symbol including option instruments like `BTC-USDC-20260410-67000-P`. This confirms the platform's `createSpotLimitOrder` implementation is the correct approach for placing hedge put orders.
+
+### What the Docs Confirm
+
+| Feature | Status | Doc Source |
+|---------|--------|-----------|
+| Option order execution via V2CreateOrder | **Confirmed correct** | Make REST API |
+| Order book hybrid endpoint | **Already implemented** | Get Market Order Book |
+| Fill confirmation via private WS | **Available, not fully used** | Stream fills |
+| Real-time balance tracking | **Available, not used** | Stream fills (assetAccounts) |
+| L2 streaming for option books | **Available, not used** | Stream Order book websocket |
+
+### Recommended Enhancements (from docs)
+
+1. **Wire private WebSocket for fill tracking** -- subscribe to `orders` + `trades` topics after placing hedge orders for instant fill confirmation instead of polling
+2. **Stream `assetAccounts`** for real-time USDC treasury balance monitoring
+3. **Use L2 WebSocket** instead of REST polling for option order books -- faster pricing, less rate limit risk
+
+### Updated Production Readiness
+
+| Area | Previous | Updated | Change |
+|------|----------|---------|--------|
+| Bullish execution confidence | 5/10 | **8/10** | V2CreateOrder confirmed for options |
+| Overall | 6/10 | **7/10** | Core execution path validated |
+
+### Remaining Proof Points (updated)
+
+| # | Proof | Status |
+|---|-------|--------|
+| 7 | Bullish put order fills via V2CreateOrder | **CONFIRMED by docs** (needs 1 testnet order to verify) |
+| 8 | Full quote->activate E2E | NOT DONE |
+| 9 | 2-week paper trade | NOT STARTED |
+| 10 | Rate limiting | NOT DONE |
+| 11 | Alerting | NOT DONE |
