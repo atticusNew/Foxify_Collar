@@ -600,6 +600,32 @@ export class BullishTradingClient {
     const session = await this.getJwtSession();
     const timestamp = Date.now().toString();
     const nonce = await this.getCommandNonce();
+
+    if (this.config.authMode === "ecdsa" && this.config.ecdsaPrivateKey) {
+      const requestPath = "/trading-api/v2/orders";
+      const bodyString = JSON.stringify(command);
+      const canonicalString = `${timestamp}${nonce}POST${requestPath}${bodyString}`;
+      const signer = createSign("sha256");
+      signer.update(canonicalString);
+      signer.end();
+      const signature = signer.sign(parseBullishPrivateKey(this.config.ecdsaPrivateKey)).toString("base64");
+
+      return await this.requestJson({
+        path: requestPath,
+        method: "POST",
+        timeoutMs: this.config.orderTimeoutMs,
+        body: bodyString,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`,
+          "BX-TIMESTAMP": timestamp,
+          "BX-NONCE": nonce,
+          "BX-SIGNATURE": signature
+        }
+      });
+    }
+
     const requestPath = ensureLeadingSlash(this.config.commandPath);
     const payload = JSON.stringify({
       timestamp,
@@ -633,6 +659,19 @@ export class BullishTradingClient {
     quantity: string;
     clientOrderId?: string;
   }): Promise<unknown> {
+    if (this.config.authMode === "ecdsa") {
+      return await this.submitCommand({
+        commandType: "V3CreateOrder",
+        symbol: params.symbol,
+        type: "LIMIT",
+        side: params.side,
+        price: params.price,
+        quantity: params.quantity,
+        timeInForce: this.config.orderTif,
+        clientOrderId: params.clientOrderId || String(BigInt(Date.now()) * 1000n),
+        tradingAccountId: this.config.tradingAccountId
+      });
+    }
     return await this.submitCommand({
       commandType: "V2CreateOrder",
       handle: null,
