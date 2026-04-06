@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { PilotApp } from "./PilotApp";
+import { PilotWidget } from "./PilotWidget";
 import { SimpleSimPilotApp } from "./SimpleSimPilotApp";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET } from "./config";
 import "./styles.css";
@@ -45,7 +46,7 @@ const root = createRoot(document.getElementById("root")!);
 root.render(
   <React.StrictMode>
     <RootErrorBoundary>
-      {PILOT_SIMPLE_SIM_WIDGET ? <SimpleSimPilotApp /> : PILOT_WIDGET ? <PilotApp /> : <App />}
+      {PILOT_SIMPLE_SIM_WIDGET ? <SimpleSimPilotApp /> : PILOT_WIDGET ? <PilotWidget /> : <App />}
     </RootErrorBoundary>
   </React.StrictMode>
 );
