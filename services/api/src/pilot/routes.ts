@@ -1,9 +1,11 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import rateLimit from "@fastify/rate-limit";
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
 import { DeribitConnector, IbkrConnector } from "@foxify/connectors";
 import { buildUserHash } from "./hash";
 import { pilotConfig, resolvePilotWindow, type PilotPricingMode } from "./config";
+import { PilotMonitor, parseMonitorConfig } from "./monitor";
 import {
   archiveProtectionsByUserHashExcept,
   creditSimPositionForTrigger,
@@ -812,6 +814,24 @@ export const registerPilotRoutes = async (
   deps: { deribit: DeribitConnector }
 ): Promise<void> => {
   if (!pilotConfig.enabled) return;
+
+  await app.register(rateLimit, {
+    max: Number(process.env.PILOT_RATE_LIMIT_MAX || "60"),
+    timeWindow: Number(process.env.PILOT_RATE_LIMIT_WINDOW_MS || "60000"),
+    keyGenerator: (req: FastifyRequest) => {
+      const forwarded = req.headers["x-forwarded-for"];
+      return typeof forwarded === "string" ? forwarded.split(",")[0].trim() : req.ip;
+    },
+    errorResponseBuilder: () => ({
+      status: "error",
+      reason: "rate_limit_exceeded",
+      message: "Too many requests. Please retry after a short delay."
+    })
+  });
+
+  const monitorConfig = parseMonitorConfig();
+  const monitor = new PilotMonitor(monitorConfig);
+
   const pool = getPilotPool(pilotConfig.postgresUrl);
   await ensurePilotSchema(pool);
   const venue = createPilotVenueAdapter({
@@ -869,24 +889,26 @@ export const registerPilotRoutes = async (
     if (Date.now() < expiryAt.getTime()) return;
     const requestId = pilotConfig.nextRequestId();
     try {
-      const snapshot = await resolvePriceSnapshot(
-        {
-          primaryUrl: pilotConfig.referencePriceUrl,
-          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
-          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
-          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
-          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
-          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
-        },
-        {
-          marketId: protection.marketId,
-          now: new Date(),
-          expiryAt,
-          requestId,
-          endpointVersion: pilotConfig.endpointVersion
-        }
-      );
+      const snapshot = isLockedBullishProfile
+        ? await resolveBullishReferencePrice(requestId, protection.marketId)
+        : await resolvePriceSnapshot(
+          {
+            primaryUrl: pilotConfig.referencePriceUrl,
+            fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+            primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+            fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+            freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+            requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+            requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
+          },
+          {
+            marketId: protection.marketId,
+            now: new Date(),
+            expiryAt,
+            requestId,
+            endpointVersion: pilotConfig.endpointVersion
+          }
+        );
       await insertPriceSnapshot(pool, {
         protectionId,
         snapshotType: "expiry",
@@ -914,13 +936,19 @@ export const registerPilotRoutes = async (
         protectionType
       });
       const nextStatus = payoutDue.gt(0) ? "expired_itm" : "expired_otm";
+      const hedgeStatus = payoutDue.gt(0) ? "expired" : "expired";
       await patchProtection(pool, protectionId, {
         status: nextStatus,
         expiry_price: snapshot.price.toFixed(10),
         expiry_price_source: snapshot.priceSource,
         expiry_price_timestamp: snapshot.priceTimestamp,
         floor_price: triggerPrice.toFixed(10),
-        payout_due_amount: payoutDue.toFixed(10)
+        payout_due_amount: payoutDue.toFixed(10),
+        metadata: {
+          ...(protection.metadata || {}),
+          hedge_status: hedgeStatus,
+          hedgeExpiryResolvedAt: new Date().toISOString(),
+        }
       });
       if (payoutDue.gt(0)) {
         await insertLedgerEntry(pool, {
@@ -1040,28 +1068,14 @@ export const registerPilotRoutes = async (
     const marketId = String(query.marketId || pilotConfig.referenceMarketId || "BTC-USD");
     const requestId = pilotConfig.nextRequestId();
     try {
-      const snapshot = await resolvePriceSnapshot(
-        {
-          primaryUrl: pilotConfig.referencePriceUrl,
-          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
-          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
-          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
-          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
-          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
-        },
-        {
-          marketId,
-          now: new Date(),
-          requestId,
-          endpointVersion: pilotConfig.endpointVersion
-        }
-      );
+      const snapshot = await resolveReferencePriceForPilot(requestId, marketId);
       const ageMs = Math.max(0, Date.now() - Date.parse(snapshot.priceTimestamp));
       const venue =
-        snapshot.priceSource === "fallback_oracle"
-          ? resolveReferenceVenueLabel(pilotConfig.fallbackPriceUrl)
-          : resolveReferenceVenueLabel(pilotConfig.referencePriceUrl);
+        snapshot.priceSource === "bullish_orderbook_mid"
+          ? "Bullish"
+          : snapshot.priceSource === "fallback_oracle"
+            ? resolveReferenceVenueLabel(pilotConfig.fallbackPriceUrl)
+            : resolveReferenceVenueLabel(pilotConfig.referencePriceUrl);
       return {
         status: "ok",
         reference: {
@@ -3910,5 +3924,44 @@ export const registerPilotRoutes = async (
   if (pilotConfig.triggerMonitorEnabled) {
     registerPilotTriggerMonitor(pool);
   }
+
+  app.get("/pilot/monitor/status", async (req, reply) => {
+    if (!isAdminAuthorized(req)) {
+      reply.code(401);
+      return { status: "error", reason: "unauthorized" };
+    }
+    return { status: "ok", ...monitor.getStatus() };
+  });
+
+  app.get("/pilot/monitor/alerts", async (req, reply) => {
+    if (!isAdminAuthorized(req)) {
+      reply.code(401);
+      return { status: "error", reason: "unauthorized" };
+    }
+    const limit = Math.max(1, Math.min(200, Number((req.query as Record<string, string>).limit || "50")));
+    return { status: "ok", alerts: monitor.getRecentAlerts(limit) };
+  });
+
+  app.post("/pilot/monitor/treasury-check", async (req, reply) => {
+    if (!isAdminAuthorized(req)) {
+      reply.code(401);
+      return { status: "error", reason: "unauthorized" };
+    }
+    if (!pilotConfig.bullish.enabled || !pilotConfig.bullish.privateWsUrl) {
+      return { status: "error", reason: "bullish_not_configured" };
+    }
+    try {
+      const { BullishTradingClient } = await import("./bullish");
+      const client = new BullishTradingClient(pilotConfig.bullish);
+      const snapshot = await monitor.checkTreasuryBalance(client);
+      return { status: "ok", treasury: snapshot };
+    } catch (error) {
+      return {
+        status: "error",
+        reason: "treasury_check_failed",
+        message: String((error as Error)?.message || error)
+      };
+    }
+  });
 };
 

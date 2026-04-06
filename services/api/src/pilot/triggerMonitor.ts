@@ -11,6 +11,29 @@ import { resolvePriceSnapshot } from "./price";
 import { isDrawdownBreached, resolveTriggerEconomicsFromProtection } from "./protectionMath";
 import type { PriceSnapshotOutput } from "./price";
 
+const resolveBullishTriggerPrice = async (requestId: string, marketId: string): Promise<PriceSnapshotOutput> => {
+  const { BullishTradingClient, resolveBullishMarketSymbol } = await import("./bullish");
+  const symbol = resolveBullishMarketSymbol(marketId, pilotConfig.bullish);
+  const client = new BullishTradingClient(pilotConfig.bullish);
+  const book = await client.getOrderBook(symbol);
+  const bestBid = book.bids?.[0]?.[0] ?? null;
+  const bestAsk = book.asks?.[0]?.[0] ?? null;
+  if (!bestBid && !bestAsk) throw new Error("bullish_no_orderbook_data");
+  const mid = bestBid && bestAsk
+    ? new Decimal(bestBid).plus(bestAsk).div(2)
+    : new Decimal(bestBid || bestAsk!);
+  const now = new Date().toISOString();
+  return {
+    price: mid,
+    marketId,
+    priceSource: "bullish_orderbook_mid",
+    priceSourceDetail: "bullish_trigger_monitor_mid",
+    endpointVersion: pilotConfig.endpointVersion,
+    requestId,
+    priceTimestamp: now
+  };
+};
+
 type TriggerMonitorResult = {
   scanned: number;
   triggered: number;
@@ -42,7 +65,8 @@ const buildTriggerMetadata = (params: {
   protectionType: params.protectionType,
   triggerRequestId: params.requestId,
   triggerPriceSource: params.priceSource,
-  triggerPriceTimestamp: params.priceTimestamp
+  triggerPriceTimestamp: params.priceTimestamp,
+  hedge_status: "active",
 });
 
 const shouldSignalFallback = (triggerRatePct: number): boolean =>
@@ -82,25 +106,31 @@ export const processTriggerMonitorCycleWithResolver = async (
       continue;
     }
     const requestId = pilotConfig.nextRequestId();
-    let snapshot;
+    let snapshot: PriceSnapshotOutput;
     try {
-      snapshot = await priceResolver(
-        {
-          primaryUrl: pilotConfig.referencePriceUrl,
-          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
-          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
-          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
-          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
-          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
-        },
-        {
-          marketId: protection.marketId,
-          now,
-          requestId,
-          endpointVersion: pilotConfig.endpointVersion
-        }
-      );
+      const useBullish = pilotConfig.lockedProfile.name === "bullish_locked_v1"
+        && pilotConfig.bullish.enabled;
+      if (useBullish) {
+        snapshot = await resolveBullishTriggerPrice(requestId, protection.marketId);
+      } else {
+        snapshot = await priceResolver(
+          {
+            primaryUrl: pilotConfig.referencePriceUrl,
+            fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+            primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+            fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+            freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+            requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+            requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
+          },
+          {
+            marketId: protection.marketId,
+            now,
+            requestId,
+            endpointVersion: pilotConfig.endpointVersion
+          }
+        );
+      }
     } catch {
       result.priceErrors += 1;
       continue;
