@@ -889,24 +889,26 @@ export const registerPilotRoutes = async (
     if (Date.now() < expiryAt.getTime()) return;
     const requestId = pilotConfig.nextRequestId();
     try {
-      const snapshot = await resolvePriceSnapshot(
-        {
-          primaryUrl: pilotConfig.referencePriceUrl,
-          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
-          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
-          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
-          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
-          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
-        },
-        {
-          marketId: protection.marketId,
-          now: new Date(),
-          expiryAt,
-          requestId,
-          endpointVersion: pilotConfig.endpointVersion
-        }
-      );
+      const snapshot = isLockedBullishProfile
+        ? await resolveBullishReferencePrice(requestId, protection.marketId)
+        : await resolvePriceSnapshot(
+          {
+            primaryUrl: pilotConfig.referencePriceUrl,
+            fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
+            primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
+            fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
+            freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
+            requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
+            requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
+          },
+          {
+            marketId: protection.marketId,
+            now: new Date(),
+            expiryAt,
+            requestId,
+            endpointVersion: pilotConfig.endpointVersion
+          }
+        );
       await insertPriceSnapshot(pool, {
         protectionId,
         snapshotType: "expiry",
@@ -934,13 +936,19 @@ export const registerPilotRoutes = async (
         protectionType
       });
       const nextStatus = payoutDue.gt(0) ? "expired_itm" : "expired_otm";
+      const hedgeStatus = payoutDue.gt(0) ? "expired" : "expired";
       await patchProtection(pool, protectionId, {
         status: nextStatus,
         expiry_price: snapshot.price.toFixed(10),
         expiry_price_source: snapshot.priceSource,
         expiry_price_timestamp: snapshot.priceTimestamp,
         floor_price: triggerPrice.toFixed(10),
-        payout_due_amount: payoutDue.toFixed(10)
+        payout_due_amount: payoutDue.toFixed(10),
+        metadata: {
+          ...(protection.metadata || {}),
+          hedge_status: hedgeStatus,
+          hedgeExpiryResolvedAt: new Date().toISOString(),
+        }
       });
       if (payoutDue.gt(0)) {
         await insertLedgerEntry(pool, {
@@ -1060,28 +1068,14 @@ export const registerPilotRoutes = async (
     const marketId = String(query.marketId || pilotConfig.referenceMarketId || "BTC-USD");
     const requestId = pilotConfig.nextRequestId();
     try {
-      const snapshot = await resolvePriceSnapshot(
-        {
-          primaryUrl: pilotConfig.referencePriceUrl,
-          fallbackUrl: pilotConfig.singlePriceSource ? "" : pilotConfig.fallbackPriceUrl,
-          primaryTimeoutMs: pilotConfig.pricePrimaryTimeoutMs,
-          fallbackTimeoutMs: pilotConfig.priceFallbackTimeoutMs,
-          freshnessMaxMs: pilotConfig.priceFreshnessMaxMs,
-          requestRetryAttempts: pilotConfig.priceRequestRetryAttempts,
-          requestRetryDelayMs: pilotConfig.priceRequestRetryDelayMs
-        },
-        {
-          marketId,
-          now: new Date(),
-          requestId,
-          endpointVersion: pilotConfig.endpointVersion
-        }
-      );
+      const snapshot = await resolveReferencePriceForPilot(requestId, marketId);
       const ageMs = Math.max(0, Date.now() - Date.parse(snapshot.priceTimestamp));
       const venue =
-        snapshot.priceSource === "fallback_oracle"
-          ? resolveReferenceVenueLabel(pilotConfig.fallbackPriceUrl)
-          : resolveReferenceVenueLabel(pilotConfig.referencePriceUrl);
+        snapshot.priceSource === "bullish_orderbook_mid"
+          ? "Bullish"
+          : snapshot.priceSource === "fallback_oracle"
+            ? resolveReferenceVenueLabel(pilotConfig.fallbackPriceUrl)
+            : resolveReferenceVenueLabel(pilotConfig.referencePriceUrl);
       return {
         status: "ok",
         reference: {
