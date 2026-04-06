@@ -190,9 +190,9 @@ function useQuoteCountdown(expiresAt: string | null) {
   return remaining;
 }
 
-// ─── Foxify logo SVG (inline, small) ─────────────────────────────────
+// ─── Foxify logo (inline SVG fallback if remote fails) ───────────────
 
-const FOXIFY_LOGO = "https://foxify.trade/favicon.ico";
+const FOXIFY_LOGO_URL = "https://foxify.trade/favicon.ico";
 
 // ─── Main widget ─────────────────────────────────────────────────────
 
@@ -350,8 +350,8 @@ export function PilotWidget() {
   // ─── Handlers ────────────────────────────────────────────────────
 
   const handleActivate = async () => {
-    if (!quote || !refPrice) return;
-    if (quoteRemaining <= 0) {
+    if (!refPrice) return;
+    if (!quote || quoteRemaining <= 0 || quoteError) {
       await requestQuote();
       return;
     }
@@ -443,13 +443,19 @@ export function PilotWidget() {
   }
 
   const canActivate = !!quote && !activating && quoteRemaining > 0;
+  const quoteExpired = !!quote && quoteRemaining <= 0;
   const buttonLabel = activating
     ? "Opening..."
-    : !quote && quoteLoading
+    : quoteLoading
       ? "Getting quote..."
-      : quoteRemaining <= 0 && quote
+      : quoteExpired
         ? "Refresh Quote"
-        : "Open + Protect";
+        : quoteError
+          ? "Retry Quote"
+          : !quote
+            ? "Get Quote"
+            : "Open + Protect";
+  const buttonEnabled = canActivate || quoteExpired || (!!quoteError && !quoteLoading) || (!quote && !quoteLoading && !!refPrice);
 
   // ─── Render ──────────────────────────────────────────────────────
 
@@ -458,14 +464,14 @@ export function PilotWidget() {
       <div className="card" style={{ maxWidth: 500 }}>
         {/* Header */}
         <div className="title">
-          <div className="brand" style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <img
-              src={FOXIFY_LOGO}
-              alt="Foxify"
-              style={{ width: 20, height: 20, borderRadius: 4 }}
+              src={FOXIFY_LOGO_URL}
+              alt=""
+              style={{ width: 22, height: 22, borderRadius: 5, objectFit: "contain" }}
               onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
             />
-            <span style={{ fontSize: 15, fontWeight: 600 }}>Foxify Protect</span>
+            <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.2 }}>Foxify Protect</span>
           </div>
           {currentBtcPrice && (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -579,17 +585,22 @@ export function PilotWidget() {
               </div>
 
               {quoteError && (
-                <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10 }}>
-                  {quoteError}
-                  <button
-                    onClick={requestQuote}
-                    style={{
-                      marginLeft: 8, fontSize: 11, color: "var(--accent)", background: "none",
-                      border: "none", cursor: "pointer", textDecoration: "underline",
-                    }}
-                  >
-                    Retry
-                  </button>
+                <div style={{
+                  color: "var(--danger)", fontSize: 12, marginBottom: 10,
+                  padding: "8px 10px", background: "rgba(255,107,107,0.08)",
+                  borderRadius: 8, border: "1px solid rgba(255,107,107,0.2)",
+                }}>
+                  Quote error: {quoteError}
+                </div>
+              )}
+
+              {priceError && !quoteError && (
+                <div style={{
+                  color: "var(--danger)", fontSize: 12, marginBottom: 10,
+                  padding: "8px 10px", background: "rgba(255,107,107,0.08)",
+                  borderRadius: 8, border: "1px solid rgba(255,107,107,0.2)",
+                }}>
+                  Price feed error: {priceError}
                 </div>
               )}
 
@@ -661,13 +672,13 @@ export function PilotWidget() {
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   onClick={handleActivate}
-                  disabled={!canActivate && buttonLabel !== "Refresh Quote"}
+                  disabled={!buttonEnabled}
                   style={{
                     flex: 2, padding: "12px 0", borderRadius: 10, border: "none",
                     fontSize: 14, fontWeight: 600, cursor: "pointer",
                     background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
                     color: "#fff",
-                    opacity: (!canActivate && buttonLabel !== "Refresh Quote") ? 0.5 : 1,
+                    opacity: !buttonEnabled ? 0.5 : 1,
                     transition: "opacity 0.15s ease",
                   }}
                 >
