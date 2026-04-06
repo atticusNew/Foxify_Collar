@@ -1,8 +1,9 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { PilotApp } from "./PilotApp";
 import { PilotWidget } from "./PilotWidget";
+import { AdminDashboardPage } from "./AdminDashboard";
 import { SimpleSimPilotApp } from "./SimpleSimPilotApp";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET } from "./config";
 import "./styles.css";
@@ -42,11 +43,33 @@ class RootErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBo
   }
 }
 
+function usePathRoute() {
+  const [path, setPath] = useState(window.location.pathname);
+  useEffect(() => {
+    const onPop = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  return path;
+}
+
+function AppRouter() {
+  const path = usePathRoute();
+
+  if (path === "/admin" || path.startsWith("/admin/")) {
+    return <AdminDashboardPage />;
+  }
+
+  if (PILOT_SIMPLE_SIM_WIDGET) return <SimpleSimPilotApp />;
+  if (PILOT_WIDGET) return <PilotWidget />;
+  return <App />;
+}
+
 const root = createRoot(document.getElementById("root")!);
 root.render(
   <React.StrictMode>
     <RootErrorBoundary>
-      {PILOT_SIMPLE_SIM_WIDGET ? <SimpleSimPilotApp /> : PILOT_WIDGET ? <PilotWidget /> : <App />}
+      <AppRouter />
     </RootErrorBoundary>
   </React.StrictMode>
 );
