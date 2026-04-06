@@ -342,11 +342,6 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_top_book_depth NUMERIC(18,8);
     ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS sample_count INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
-    DO $$ BEGIN
-      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='pilot_execution_quality_daily' AND column_name='day_start')
-      THEN ALTER TABLE pilot_execution_quality_daily RENAME COLUMN day_start TO day;
-      END IF;
-    END $$;
 
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS accepted_ip TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS user_agent TEXT;
