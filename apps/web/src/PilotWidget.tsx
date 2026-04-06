@@ -86,30 +86,27 @@ type MonitorResponse = {
 
 type WidgetView = "form" | "active" | "closed";
 
-// ─── Tier config ─────────────────────────────────────────────────────
+// ─── Stop-loss driven tiers ──────────────────────────────────────────
 
-const POSITION_SIZES = [2500, 5000, 7500, 10000] as const;
+const STOP_LOSS_OPTIONS = [20, 15, 12] as const;
+type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
 
-const SIZE_TO_TIER: Record<number, string> = {
-  2500: "Pro (Bronze)",
-  5000: "Pro (Silver)",
-  7500: "Pro (Gold)",
-  10000: "Pro (Platinum)",
+const STOP_LOSS_TO_TIER: Record<StopLoss, string> = {
+  20: "Pro (Bronze)",
+  15: "Pro (Silver)",
+  12: "Pro (Gold)",
 };
 
-const TIER_DRAWDOWNS: Record<string, number> = {
-  "Pro (Bronze)": 20,
-  "Pro (Silver)": 15,
-  "Pro (Gold)": 12,
-  "Pro (Platinum)": 12,
-};
+const POSITION_MIN = 5000;
+const POSITION_MAX = 50000;
+const POSITION_STEP = 5000;
 
 // ─── Formatting helpers ──────────────────────────────────────────────
 
 const fmtUsd = (v: number) =>
   v.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-const fmtBtc = (v: number) =>
+const fmtBtcPrice = (v: number) =>
   v.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const fmtPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
@@ -124,6 +121,11 @@ const fmtTimeRemaining = (ms: number): string => {
     return `${days}d ${remHrs}h`;
   }
   return `${hours}h ${mins}m`;
+};
+
+const fmtCompact = (v: number) => {
+  if (v >= 1000) return `$${(v / 1000).toFixed(0)}k`;
+  return `$${v}`;
 };
 
 // ─── API helpers ─────────────────────────────────────────────────────
@@ -171,12 +173,7 @@ const activateProtection = (body: {
 const fetchProtection = (id: string) =>
   api<MonitorResponse>(`/pilot/protections/${id}/monitor`);
 
-const fetchProtections = () =>
-  api<{ status: string; protections: ProtectionRecord[] }>("/pilot/protections?limit=1");
-
 // ─── Quote countdown ────────────────────────────────────────────────
-
-const QUOTE_TTL_MS = 30_000;
 
 function useQuoteCountdown(expiresAt: string | null) {
   const [remaining, setRemaining] = useState<number>(0);
@@ -193,6 +190,10 @@ function useQuoteCountdown(expiresAt: string | null) {
   return remaining;
 }
 
+// ─── Foxify logo SVG (inline, small) ─────────────────────────────────
+
+const FOXIFY_LOGO = "https://foxify.trade/favicon.ico";
+
 // ─── Main widget ─────────────────────────────────────────────────────
 
 export function PilotWidget() {
@@ -201,8 +202,9 @@ export function PilotWidget() {
 
   // Form state
   const [positionType, setPositionType] = useState<"long" | "short">("long");
-  const [positionSize, setPositionSize] = useState<number>(2500);
-  const [autoRenew, setAutoRenew] = useState(true);
+  const [positionSize, setPositionSize] = useState<number>(5000);
+  const [stopLoss, setStopLoss] = useState<StopLoss>(20);
+  const [autoRenew, setAutoRenew] = useState(false);
 
   // Reference price polling
   const [refPrice, setRefPrice] = useState<ReferencePrice | null>(null);
@@ -232,11 +234,13 @@ export function PilotWidget() {
 
   const quoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Computed
-  const tierName = SIZE_TO_TIER[positionSize] || "Pro (Bronze)";
-  const drawdownPct = TIER_DRAWDOWNS[tierName] || 20;
+  // Computed from stop loss
+  const tierName = STOP_LOSS_TO_TIER[stopLoss] || "Pro (Bronze)";
+  const drawdownPct = stopLoss;
+  const premiumPerK = 11;
+  const tenorDays = 5;
 
-  // Load funded levels
+  // Load funded levels (for future dynamic config)
   useEffect(() => {
     fetch("/funded_levels.json")
       .then((r) => r.json())
@@ -244,11 +248,9 @@ export function PilotWidget() {
       .catch(() => {});
   }, []);
 
-  // Override drawdown and premium from loaded levels
   const levelConfig = levels.find((l) => l.name === tierName);
-  const drawdownFromConfig = levelConfig ? Number(levelConfig.drawdown_limit_pct) * 100 : drawdownPct;
-  const premiumPerK = levelConfig ? Number(levelConfig.fixed_price_usdc) : 11;
-  const tenorDays = levelConfig ? Number(levelConfig.expiry_days) : 5;
+  const premiumPerKFromConfig = levelConfig ? Number(levelConfig.fixed_price_usdc) : premiumPerK;
+  const tenorDaysFromConfig = levelConfig ? Number(levelConfig.expiry_days) : tenorDays;
 
   // Poll reference price
   useEffect(() => {
@@ -269,7 +271,7 @@ export function PilotWidget() {
     return () => { active = false; clearInterval(id); };
   }, []);
 
-  // Auto-quote when form inputs change and price is available
+  // Auto-quote when form inputs change
   const requestQuote = useCallback(async () => {
     if (!refPrice) return;
     setQuoteLoading(true);
@@ -281,7 +283,7 @@ export function PilotWidget() {
         foxifyExposureNotional: positionSize,
         entryPrice: Number(refPrice.price),
         tierName,
-        drawdownFloorPct: drawdownFromConfig / 100,
+        drawdownFloorPct: drawdownPct / 100,
         protectionType: positionType,
       });
       setQuote(result);
@@ -291,20 +293,20 @@ export function PilotWidget() {
     } finally {
       setQuoteLoading(false);
     }
-  }, [refPrice, positionSize, tierName, drawdownFromConfig, positionType]);
+  }, [refPrice, positionSize, tierName, drawdownPct, positionType]);
 
-  // Request quote on form changes (debounced)
   useEffect(() => {
     if (view !== "form" || !refPrice) return;
     if (quoteTimerRef.current) clearTimeout(quoteTimerRef.current);
     quoteTimerRef.current = setTimeout(requestQuote, 400);
     return () => { if (quoteTimerRef.current) clearTimeout(quoteTimerRef.current); };
-  }, [view, refPrice, positionSize, positionType, requestQuote]);
+  }, [view, refPrice, positionSize, positionType, stopLoss, requestQuote]);
 
   // Re-quote when TTL expires
   useEffect(() => {
     if (view !== "form" || !quote || quoteRemaining > 0) return;
-    requestQuote();
+    const id = setTimeout(requestQuote, 500);
+    return () => clearTimeout(id);
   }, [view, quote, quoteRemaining, requestQuote]);
 
   // Poll active protection monitor
@@ -325,16 +327,13 @@ export function PilotWidget() {
           setCloseReason("expired");
           setView("closed");
         }
-      } catch {
-        // silently retry
-      }
+      } catch {}
     };
     poll();
     const id = setInterval(poll, 5000);
     return () => { active = false; clearInterval(id); };
   }, [view, protectionId]);
 
-  // Also poll live price in active view
   useEffect(() => {
     if (view !== "active") return;
     let active = true;
@@ -352,6 +351,10 @@ export function PilotWidget() {
 
   const handleActivate = async () => {
     if (!quote || !refPrice) return;
+    if (quoteRemaining <= 0) {
+      await requestQuote();
+      return;
+    }
     setActivating(true);
     setActivateError(null);
     try {
@@ -362,7 +365,7 @@ export function PilotWidget() {
         foxifyExposureNotional: positionSize,
         entryPrice: ep,
         tierName,
-        drawdownFloorPct: drawdownFromConfig / 100,
+        drawdownFloorPct: drawdownPct / 100,
         autoRenew,
         protectionType: positionType,
       });
@@ -414,11 +417,10 @@ export function PilotWidget() {
   // ─── Computed display values ─────────────────────────────────────
 
   const currentBtcPrice = livePrice || (refPrice ? Number(refPrice.price) : null);
-  const computedPremium = (positionSize / 1000) * premiumPerK;
+  const computedPremium = (positionSize / 1000) * premiumPerKFromConfig;
   const triggerPriceNum = quote ? Number(quote.triggerPrice) : null;
-  const payoutOnTrigger = positionSize * (drawdownFromConfig / 100);
+  const payoutOnTrigger = positionSize * (drawdownPct / 100);
 
-  // PnL for active view
   let currentPnl: number | null = null;
   let currentPnlPct: number | null = null;
   if (entryPrice && livePrice) {
@@ -430,7 +432,6 @@ export function PilotWidget() {
       : ((entryPrice - livePrice) / entryPrice) * 100;
   }
 
-  // Distance to floor
   let distancePct: number | null = null;
   let distanceUsd: number | null = null;
   if (monitor?.distanceToFloor) {
@@ -441,6 +442,15 @@ export function PilotWidget() {
     distancePct = (distanceUsd / livePrice) * 100;
   }
 
+  const canActivate = !!quote && !activating && quoteRemaining > 0;
+  const buttonLabel = activating
+    ? "Opening..."
+    : !quote && quoteLoading
+      ? "Getting quote..."
+      : quoteRemaining <= 0 && quote
+        ? "Refresh Quote"
+        : "Open + Protect";
+
   // ─── Render ──────────────────────────────────────────────────────
 
   return (
@@ -448,23 +458,23 @@ export function PilotWidget() {
       <div className="card" style={{ maxWidth: 500 }}>
         {/* Header */}
         <div className="title">
-          <div className="brand">
-            <span className="brand-accent">Atticus</span>
-            <span style={{ color: "var(--muted)", fontSize: 13 }}>× Foxify Protect</span>
+          <div className="brand" style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <img
+              src={FOXIFY_LOGO}
+              alt="Foxify"
+              style={{ width: 20, height: 20, borderRadius: 4 }}
+              onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+            />
+            <span style={{ fontSize: 15, fontWeight: 600 }}>Foxify Protect</span>
           </div>
           {currentBtcPrice && (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: 11, color: "var(--muted)" }}>BTC</span>
               <span style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
-                {fmtBtc(currentBtcPrice)}
+                {fmtBtcPrice(currentBtcPrice)}
               </span>
               {!priceError && (
-                <span
-                  style={{
-                    width: 6, height: 6, borderRadius: "50%",
-                    background: "var(--success)", display: "inline-block",
-                  }}
-                />
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />
               )}
             </div>
           )}
@@ -496,38 +506,53 @@ export function PilotWidget() {
               ))}
             </div>
 
-            {/* Position size */}
+            {/* Position size -- slider + input */}
             <div style={{ marginBottom: 14 }}>
-              <div className="label">Position Size</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-                {POSITION_SIZES.map((size) => (
-                  <button
-                    key={size}
-                    onClick={() => setPositionSize(size)}
-                    style={{
-                      padding: "10px 4px", border: "1px solid var(--border)",
-                      borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 500,
-                      background: positionSize === size ? "rgba(184,90,28,0.18)" : "var(--card-2)",
-                      color: positionSize === size ? "var(--accent)" : "var(--text)",
-                      borderColor: positionSize === size ? "var(--accent-2)" : "var(--border)",
-                      transition: "all 0.15s ease",
-                    }}
-                  >
-                    {fmtUsd(size)}
-                  </button>
-                ))}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <div className="label" style={{ margin: 0 }}>Position Size</div>
+                <span style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+                  {fmtUsd(positionSize)}
+                </span>
+              </div>
+              <input
+                type="range"
+                min={POSITION_MIN}
+                max={POSITION_MAX}
+                step={POSITION_STEP}
+                value={positionSize}
+                onChange={(e) => setPositionSize(Number(e.target.value))}
+                style={{
+                  width: "100%", height: 6, appearance: "none", WebkitAppearance: "none",
+                  background: `linear-gradient(to right, var(--accent) ${((positionSize - POSITION_MIN) / (POSITION_MAX - POSITION_MIN)) * 100}%, var(--border) ${((positionSize - POSITION_MIN) / (POSITION_MAX - POSITION_MIN)) * 100}%)`,
+                  borderRadius: 3, outline: "none", cursor: "pointer",
+                }}
+              />
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
+                <span>{fmtCompact(POSITION_MIN)}</span>
+                <span>{fmtCompact(POSITION_MAX)}</span>
               </div>
             </div>
 
-            {/* Tier + drawdown (read-only) */}
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
-              <div>
-                <div className="label">Tier</div>
-                <div style={{ fontSize: 14, fontWeight: 500 }}>{tierName}</div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div className="label">Max Drawdown</div>
-                <div style={{ fontSize: 14, fontWeight: 500 }}>{drawdownFromConfig}%</div>
+            {/* Stop loss selection */}
+            <div style={{ marginBottom: 16 }}>
+              <div className="label">Stop Loss</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+                {STOP_LOSS_OPTIONS.map((sl) => (
+                  <button
+                    key={sl}
+                    onClick={() => setStopLoss(sl)}
+                    style={{
+                      padding: "10px 4px", border: "1px solid var(--border)",
+                      borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 600,
+                      background: stopLoss === sl ? "rgba(184,90,28,0.18)" : "var(--card-2)",
+                      color: stopLoss === sl ? "var(--accent)" : "var(--text)",
+                      borderColor: stopLoss === sl ? "var(--accent-2)" : "var(--border)",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    {sl}%
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -537,110 +562,115 @@ export function PilotWidget() {
                 Protect Your Position
               </div>
 
-              {quoteLoading && !quote && (
-                <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 10 }}>
-                  Getting protection quote...
-                </div>
-              )}
-
               {quoteError && (
                 <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10 }}>
                   {quoteError}
+                  <button
+                    onClick={requestQuote}
+                    style={{
+                      marginLeft: 8, fontSize: 11, color: "var(--accent)", background: "none",
+                      border: "none", cursor: "pointer", textDecoration: "underline",
+                    }}
+                  >
+                    Retry
+                  </button>
                 </div>
               )}
 
-              {(quote || !quoteLoading) && (
-                <>
-                  <div
-                    style={{
-                      background: "rgba(54, 211, 141, 0.06)",
-                      border: "1px solid rgba(54, 211, 141, 0.18)",
-                      borderRadius: 12, padding: 14, marginBottom: 12,
-                    }}
-                  >
-                    <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.5, marginBottom: 8 }}>
-                      If your position hits{" "}
-                      <strong style={{ color: "var(--danger)" }}>{drawdownFromConfig}%</strong>{" "}
-                      drawdown, you receive{" "}
-                      <strong style={{ color: "var(--success)" }}>{fmtUsd(payoutOnTrigger)}</strong>{" "}
-                      instantly.
-                    </div>
+              <div
+                style={{
+                  background: "rgba(54, 211, 141, 0.06)",
+                  border: "1px solid rgba(54, 211, 141, 0.18)",
+                  borderRadius: 12, padding: 14, marginBottom: 12,
+                }}
+              >
+                <div style={{ fontSize: 13, color: "var(--text)", lineHeight: 1.5, marginBottom: 8 }}>
+                  If your position hits{" "}
+                  <strong style={{ color: "var(--danger)" }}>{drawdownPct}%</strong>{" "}
+                  drawdown, you receive{" "}
+                  <strong style={{ color: "var(--success)" }}>{fmtUsd(payoutOnTrigger)}</strong>{" "}
+                  instantly.
+                </div>
 
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}>
-                      <span>Premium</span>
-                      <span style={{ fontWeight: 600, color: "var(--text)" }}>
-                        {fmtUsd(computedPremium)} for {tenorDays} days
-                      </span>
-                    </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}>
+                  <span>Premium</span>
+                  <span style={{ fontWeight: 600, color: "var(--text)" }}>
+                    {fmtUsd(computedPremium)} for {tenorDaysFromConfig} days
+                  </span>
+                </div>
 
-                    {triggerPriceNum && (
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
-                        <span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span>
-                        <span style={{ fontWeight: 500 }}>{fmtBtc(triggerPriceNum)}</span>
-                      </div>
-                    )}
-
-                    {quote && quoteRemaining > 0 && (
-                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 8, textAlign: "right" }}>
-                        Quote valid for {Math.ceil(quoteRemaining / 1000)}s
-                      </div>
-                    )}
+                {triggerPriceNum && (
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
+                    <span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span>
+                    <span style={{ fontWeight: 500 }}>{fmtBtcPrice(triggerPriceNum)}</span>
                   </div>
+                )}
 
-                  {/* Auto-renew */}
-                  <label
-                    style={{
-                      display: "flex", alignItems: "center", gap: 8,
-                      fontSize: 12, color: "var(--muted)", marginBottom: 14, cursor: "pointer",
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={autoRenew}
-                      onChange={(e) => setAutoRenew(e.target.checked)}
-                      style={{ accentColor: "var(--accent)" }}
-                    />
-                    Auto-renew protection at expiry
-                  </label>
-
-                  {activateError && (
-                    <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10 }}>
-                      {activateError}
-                    </div>
-                  )}
-
-                  {/* Action buttons */}
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      onClick={handleActivate}
-                      disabled={!quote || activating || quoteRemaining <= 0}
-                      style={{
-                        flex: 2, padding: "12px 0", borderRadius: 10, border: "none",
-                        fontSize: 14, fontWeight: 600, cursor: "pointer",
-                        background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
-                        color: "#fff",
-                        opacity: (!quote || activating || quoteRemaining <= 0) ? 0.5 : 1,
-                        transition: "opacity 0.15s ease",
-                      }}
-                    >
-                      {activating ? "Opening..." : "Open + Protect"}
-                    </button>
-                    <button
-                      onClick={handleOpenWithout}
-                      disabled={!refPrice}
-                      style={{
-                        flex: 1, padding: "12px 0", borderRadius: 10,
-                        border: "1px solid var(--border)", background: "var(--card-2)",
-                        fontSize: 12, color: "var(--muted)", cursor: "pointer",
-                        transition: "opacity 0.15s ease",
-                        opacity: !refPrice ? 0.5 : 1,
-                      }}
-                    >
-                      Open Without
-                    </button>
+                {quote && quoteRemaining > 0 && (
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 8, textAlign: "right" }}>
+                    Quote valid for {Math.ceil(quoteRemaining / 1000)}s
                   </div>
-                </>
+                )}
+
+                {quoteLoading && !quote && (
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 8, textAlign: "right" }}>
+                    Getting live quote...
+                  </div>
+                )}
+              </div>
+
+              {/* Auto-renew */}
+              <label
+                style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  fontSize: 12, color: "var(--muted)", marginBottom: 14, cursor: "pointer",
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={autoRenew}
+                  onChange={(e) => setAutoRenew(e.target.checked)}
+                  style={{ accentColor: "var(--accent)" }}
+                />
+                Auto-renew protection at expiry
+              </label>
+
+              {activateError && (
+                <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10 }}>
+                  {activateError}
+                </div>
               )}
+
+              {/* Action buttons */}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={handleActivate}
+                  disabled={!canActivate && buttonLabel !== "Refresh Quote"}
+                  style={{
+                    flex: 2, padding: "12px 0", borderRadius: 10, border: "none",
+                    fontSize: 14, fontWeight: 600, cursor: "pointer",
+                    background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
+                    color: "#fff",
+                    opacity: (!canActivate && buttonLabel !== "Refresh Quote") ? 0.5 : 1,
+                    transition: "opacity 0.15s ease",
+                  }}
+                >
+                  {buttonLabel}
+                </button>
+                <button
+                  onClick={handleOpenWithout}
+                  disabled={!refPrice}
+                  style={{
+                    flex: 1, padding: "12px 0", borderRadius: 10,
+                    border: "1px solid var(--border)", background: "var(--card-2)",
+                    fontSize: 12, color: "var(--muted)", cursor: "pointer",
+                    transition: "opacity 0.15s ease",
+                    opacity: !refPrice ? 0.5 : 1,
+                  }}
+                >
+                  Open Without
+                </button>
+              </div>
             </div>
           </>
         )}
@@ -648,7 +678,6 @@ export function PilotWidget() {
         {/* ── STATE 2: Active Position View ── */}
         {view === "active" && (
           <>
-            {/* Position header */}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span
@@ -660,7 +689,7 @@ export function PilotWidget() {
                   {positionType}
                 </span>
                 <span style={{ fontSize: 14, fontWeight: 500 }}>{fmtUsd(positionSize)}</span>
-                <span className="pill pill-small">{tierName.replace("Pro (", "").replace(")", "")}</span>
+                <span className="pill pill-small">{stopLoss}% SL</span>
               </div>
               {protectionId ? (
                 <span className="pill" style={{ background: "rgba(54, 211, 141, 0.12)", color: "var(--success)" }}>
@@ -673,18 +702,17 @@ export function PilotWidget() {
               )}
             </div>
 
-            {/* Price + PnL stats */}
             <div className="stats">
               <div className="stat">
                 <div className="label">Entry Price</div>
                 <div className="value" style={{ fontSize: 14 }}>
-                  {entryPrice ? fmtBtc(entryPrice) : "—"}
+                  {entryPrice ? fmtBtcPrice(entryPrice) : "—"}
                 </div>
               </div>
               <div className="stat">
                 <div className="label">Live Price</div>
                 <div className="value" style={{ fontSize: 14, fontVariantNumeric: "tabular-nums" }}>
-                  {livePrice ? fmtBtc(livePrice) : "—"}
+                  {livePrice ? fmtBtcPrice(livePrice) : "—"}
                 </div>
               </div>
               <div className="stat">
@@ -704,16 +732,15 @@ export function PilotWidget() {
                   <div className="label">{positionType === "long" ? "Floor Price" : "Ceiling Price"}</div>
                   <div className="value" style={{ fontSize: 14 }}>
                     {monitor?.protection?.floorPrice
-                      ? fmtBtc(Number(monitor.protection.floorPrice))
+                      ? fmtBtcPrice(Number(monitor.protection.floorPrice))
                       : triggerPriceNum
-                        ? fmtBtc(triggerPriceNum)
+                        ? fmtBtcPrice(triggerPriceNum)
                         : "—"}
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Distance to floor */}
             {protectionId && distancePct !== null && (
               <div style={{
                 display: "flex", justifyContent: "space-between", fontSize: 12,
@@ -726,7 +753,6 @@ export function PilotWidget() {
               </div>
             )}
 
-            {/* Protection details */}
             {protectionId && monitor && (
               <div
                 style={{
@@ -756,7 +782,7 @@ export function PilotWidget() {
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span>Payout if triggered</span>
                     <span style={{ fontWeight: 500, color: "var(--success)" }}>
-                      {fmtUsd(positionSize * (drawdownFromConfig / 100))}
+                      {fmtUsd(payoutOnTrigger)}
                     </span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
@@ -775,7 +801,6 @@ export function PilotWidget() {
                 width: "100%", padding: "12px 0", borderRadius: 10,
                 border: "1px solid var(--border)", background: "var(--card-2)",
                 fontSize: 13, fontWeight: 500, color: "var(--text)", cursor: "pointer",
-                transition: "background 0.15s ease",
               }}
             >
               Close Position
@@ -797,12 +822,11 @@ export function PilotWidget() {
                     {closedPayout !== null ? fmtUsd(closedPayout) : "—"}
                   </div>
                   <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                    Your {positionType} position hit the {drawdownFromConfig}% drawdown floor.
+                    Your {positionType} position hit the {drawdownPct}% stop loss.
                     Protection payout has been credited.
                   </div>
                 </>
               )}
-
               {closeReason === "user" && (
                 <>
                   <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>Position Closed</div>
@@ -816,7 +840,6 @@ export function PilotWidget() {
                   </div>
                 </>
               )}
-
               {closeReason === "expired" && (
                 <>
                   <div style={{ fontSize: 16, fontWeight: 600, color: "var(--danger)", marginBottom: 6 }}>
@@ -828,7 +851,6 @@ export function PilotWidget() {
                 </>
               )}
             </div>
-
             <button
               onClick={handleReset}
               style={{
@@ -844,8 +866,8 @@ export function PilotWidget() {
         )}
 
         {/* Footer */}
-        <div style={{ textAlign: "center", marginTop: 14, fontSize: 10, color: "var(--muted)", opacity: 0.6 }}>
-          Atticus Protection Pilot • ${premiumPerK}/1k • {tenorDays}-day tenor
+        <div style={{ textAlign: "center", marginTop: 14, fontSize: 10, color: "var(--muted)", opacity: 0.5 }}>
+          Protection provided by Atticus Strategy, Ltd. &copy; 2026
         </div>
       </div>
     </div>
