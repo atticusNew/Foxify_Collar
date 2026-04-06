@@ -728,6 +728,11 @@ class DeribitTestAdapter implements PilotVenueAdapter {
   }
 }
 
+/**
+ * @deprecated IBKR CME adapter -- retained for reference only.
+ * All pilot execution now routes through BullishTestnetAdapter.
+ * Do NOT delete: prior integration logic may inform future venue adapters.
+ */
 class IbkrCmeAdapter implements PilotVenueAdapter {
   private qualifyCache = new Map<string, { contracts: IbkrQualifiedContract[]; ts: number }>();
   private qualifyInFlight = new Map<string, Promise<IbkrQualifiedContract[]>>();

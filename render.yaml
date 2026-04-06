@@ -7,7 +7,7 @@ services:
     name: atticus-pilot-api
     runtime: node
     plan: starter
-    branch: cursor/foxify-pilot-readiness-d74a
+    branch: cursor/bullish-locked-profile-phase-a
     autoDeploy: true
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx src/server.ts
@@ -18,17 +18,25 @@ services:
       - key: PILOT_API_ENABLED
         value: "true"
       - key: PILOT_VENUE_MODE
-        value: deribit_test
-      - key: PILOT_FORCE_DERIBIT_TEST_MODE
-        value: "false"
-      - key: PILOT_DERIBIT_QUOTE_POLICY
-        value: ask_only
+        value: bullish_testnet
+      - key: PILOT_BULLISH_ENABLED
+        value: "true"
+      - key: PILOT_ACTIVATION_ENABLED
+        value: "true"
+      - key: PILOT_BULLISH_ORDER_TIF
+        value: IOC
+      - key: PILOT_TENOR_DEFAULT_DAYS
+        value: "5"
       - key: PILOT_STRIKE_SELECTION_MODE
         value: trigger_aligned
-      - key: DERIBIT_ENV
-        value: live
-      - key: DERIBIT_PAPER
-        value: "true"
+      # Bullish ECDSA credentials -- inject via Render dashboard (never commit secrets)
+      # PILOT_BULLISH_ECDSA_PRIVATE_KEY
+      # PILOT_BULLISH_ECDSA_PUBLIC_KEY
+      # PILOT_BULLISH_ACCOUNT_ID
+      # PILOT_BULLISH_TRADING_ACCOUNT_ID
+      # PILOT_BULLISH_REST_BASE_URL (default: https://api.simnext.bullish-test.com)
+      # PILOT_BULLISH_WS_PUBLIC_URL
+      # PILOT_BULLISH_WS_PRIVATE_URL
       - key: PILOT_TENANT_SCOPE_ID
         value: foxify-pilot
       - key: PILOT_TERMS_VERSION
@@ -71,7 +79,7 @@ services:
   - type: web
     name: atticus-pilot-web
     runtime: static
-    branch: cursor/foxify-pilot-readiness-d74a
+    branch: cursor/bullish-locked-profile-phase-a
     autoDeploy: true
     buildCommand: npm ci && npm --workspace apps/web run build
     staticPublishPath: apps/web/dist

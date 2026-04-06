@@ -322,18 +322,31 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     CREATE TABLE IF NOT EXISTS pilot_execution_quality_daily (
       id TEXT PRIMARY KEY,
       venue TEXT NOT NULL,
-      day_start DATE NOT NULL,
-      quote_count INTEGER NOT NULL DEFAULT 0,
-      fill_count INTEGER NOT NULL DEFAULT 0,
-      avg_latency_ms NUMERIC(18,8),
+      day DATE NOT NULL,
+      hedge_mode TEXT NOT NULL DEFAULT 'default',
       avg_slippage_bps NUMERIC(18,8),
       p95_slippage_bps NUMERIC(18,8),
-      reject_rate_pct NUMERIC(18,8),
-      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      fill_success_rate_pct NUMERIC(18,8),
+      avg_spread_pct NUMERIC(18,8),
+      avg_top_book_depth NUMERIC(18,8),
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (venue, day_start)
+      UNIQUE (day, venue, hedge_mode)
     );
+
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS hedge_mode TEXT NOT NULL DEFAULT 'default';
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS fill_success_rate_pct NUMERIC(18,8);
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_spread_pct NUMERIC(18,8);
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_top_book_depth NUMERIC(18,8);
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS sample_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+    DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='pilot_execution_quality_daily' AND column_name='day_start')
+      THEN ALTER TABLE pilot_execution_quality_daily RENAME COLUMN day_start TO day;
+      END IF;
+    END $$;
 
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS accepted_ip TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS user_agent TEXT;
