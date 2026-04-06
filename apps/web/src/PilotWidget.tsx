@@ -506,44 +506,60 @@ export function PilotWidget() {
               ))}
             </div>
 
-            {/* Position size -- slider + input */}
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <div className="label" style={{ margin: 0 }}>Position Size</div>
-                <span style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+            {/* Position size -- stepper */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Position Size</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)" }}>
+                <button
+                  onClick={() => setPositionSize((s) => Math.max(POSITION_MIN, s - POSITION_STEP))}
+                  disabled={positionSize <= POSITION_MIN}
+                  style={{
+                    width: 36, height: 36, border: "none", cursor: "pointer",
+                    background: "var(--card-2)", color: "var(--text)", fontSize: 18, fontWeight: 600,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    opacity: positionSize <= POSITION_MIN ? 0.3 : 1,
+                    transition: "opacity 0.1s ease",
+                  }}
+                >
+                  −
+                </button>
+                <div
+                  style={{
+                    minWidth: 110, height: 36, display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 15, fontWeight: 700, color: "var(--text)", fontVariantNumeric: "tabular-nums",
+                    background: "var(--bg)", borderLeft: "1px solid var(--border)", borderRight: "1px solid var(--border)",
+                    userSelect: "none",
+                  }}
+                >
                   {fmtUsd(positionSize)}
-                </span>
-              </div>
-              <input
-                type="range"
-                min={POSITION_MIN}
-                max={POSITION_MAX}
-                step={POSITION_STEP}
-                value={positionSize}
-                onChange={(e) => setPositionSize(Number(e.target.value))}
-                style={{
-                  width: "100%", height: 6, appearance: "none", WebkitAppearance: "none",
-                  background: `linear-gradient(to right, var(--accent) ${((positionSize - POSITION_MIN) / (POSITION_MAX - POSITION_MIN)) * 100}%, var(--border) ${((positionSize - POSITION_MIN) / (POSITION_MAX - POSITION_MIN)) * 100}%)`,
-                  borderRadius: 3, outline: "none", cursor: "pointer",
-                }}
-              />
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "var(--muted)", marginTop: 4 }}>
-                <span>{fmtCompact(POSITION_MIN)}</span>
-                <span>{fmtCompact(POSITION_MAX)}</span>
+                </div>
+                <button
+                  onClick={() => setPositionSize((s) => Math.min(POSITION_MAX, s + POSITION_STEP))}
+                  disabled={positionSize >= POSITION_MAX}
+                  style={{
+                    width: 36, height: 36, border: "none", cursor: "pointer",
+                    background: "var(--card-2)", color: "var(--text)", fontSize: 18, fontWeight: 600,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    opacity: positionSize >= POSITION_MAX ? 0.3 : 1,
+                    transition: "opacity 0.1s ease",
+                  }}
+                >
+                  +
+                </button>
               </div>
             </div>
 
-            {/* Stop loss selection */}
-            <div style={{ marginBottom: 16 }}>
-              <div className="label">Stop Loss</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+            {/* Stop loss -- label left, buttons right */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Stop Loss</span>
+              <div style={{ display: "flex", gap: 6 }}>
                 {STOP_LOSS_OPTIONS.map((sl) => (
                   <button
                     key={sl}
                     onClick={() => setStopLoss(sl)}
                     style={{
-                      padding: "10px 4px", border: "1px solid var(--border)",
-                      borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 600,
+                      padding: "7px 16px", border: "1px solid var(--border)",
+                      borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
                       background: stopLoss === sl ? "rgba(184,90,28,0.18)" : "var(--card-2)",
                       color: stopLoss === sl ? "var(--accent)" : "var(--text)",
                       borderColor: stopLoss === sl ? "var(--accent-2)" : "var(--border)",
