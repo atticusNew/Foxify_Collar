@@ -3375,7 +3375,8 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const tradable = (market as Record<string, unknown>).createOrderEnabled !== false;
         if (!tradable) return null;
         const tenorDriftDays = Math.abs(expiryMs - targetExpiryMs) / 86400000;
-        if (tenorDriftDays > 3) return null;
+        const maxDrift = Math.max(7, requestedTenorDays + 3);
+        if (tenorDriftDays > maxDrift) return null;
 
         const moneyness = parsed.strike / spotPrice;
         if (isShort) {
@@ -3485,11 +3486,10 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
 
   async quote(req: QuoteRequest): Promise<VenueQuote> {
     const selection = await this.selectBullishOptionSymbol(req);
-    const symbol = selection?.symbol ||
-      resolveBullishMarketSymbol(this.config, {
-        marketId: req.marketId,
-        instrumentId: req.instrumentId
-      });
+    if (!selection) {
+      throw new Error("bullish_quote_unavailable:no_suitable_option_found");
+    }
+    const symbol = selection.symbol;
 
     const book = await this.client.getHybridOrderBook(symbol);
     const bestAsk = book.asks[0];
@@ -3518,7 +3518,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       venue: "bullish_testnet",
       quoteId: randomUUID(),
       rfqId: null,
-      instrumentId: selection?.symbol || req.instrumentId,
+      instrumentId: selection.symbol,
       side: "buy",
       quantity: req.quantity,
       premium,
@@ -3534,9 +3534,9 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         sequenceNumber: book.sequenceNumber,
         orderbookTimestamp: book.timestamp,
         source: "bullish_hybrid_orderbook",
-        selectedInstrumentId: selection?.symbol || req.instrumentId,
+        selectedInstrumentId: selection.symbol,
         requestedInstrumentId: req.instrumentId,
-        hedgeMode: selection ? "options_native" : "futures_synthetic",
+        hedgeMode: "options_native",
         optimizations: {
           batchDecision: batchDecision ? {
             mode: batchDecision.mode,
