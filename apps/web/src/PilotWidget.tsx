@@ -21,6 +21,7 @@ const LOGO = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 const fmt = (v: number) => v.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtWhole = (v: number) => v.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 0 });
 const fPct = (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}%`;
 const fTime = (ms: number): string => { if (ms <= 0) return "Expired"; const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000); return h >= 24 ? `${Math.floor(h / 24)}d ${h % 24}h` : `${h}h ${m}m`; };
 
@@ -191,7 +192,7 @@ export function PilotWidget() {
 
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", marginBottom: 14, borderRadius: 8, background: "var(--card-2)", border: "1px solid var(--border)" }}>
           <span style={{ fontSize: 12, color: "var(--muted)" }}>Account Balance</span>
-          <span style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: (balance + uPnl) >= INIT_BAL ? "var(--success)" : "var(--text)" }}>{fmt(balance + uPnl)}</span>
+          <span style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: (balance + uPnl) >= INIT_BAL ? "var(--success)" : "var(--text)" }}>{fmtWhole(Math.round(balance + uPnl))}</span>
         </div>
 
         {toast && <Toast message={toast} onDone={() => setToast(null)} />}
@@ -207,7 +208,7 @@ export function PilotWidget() {
           <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Position Size</span>
           <div style={{ display: "flex", alignItems: "center", borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)" }}>
             <button onClick={() => setPositionSize(s => Math.max(POS_MIN, s - POS_STEP))} disabled={positionSize <= POS_MIN} style={{ width: 36, height: 36, border: "none", cursor: "pointer", background: "var(--card-2)", color: "var(--text)", fontSize: 18, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", opacity: positionSize <= POS_MIN ? 0.3 : 1 }}>−</button>
-            <div style={{ minWidth: 110, height: 36, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", background: "var(--bg)", borderLeft: "1px solid var(--border)", borderRight: "1px solid var(--border)", userSelect: "none" }}>{fmt(positionSize)}</div>
+            <div style={{ minWidth: 110, height: 36, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", background: "var(--bg)", borderLeft: "1px solid var(--border)", borderRight: "1px solid var(--border)", userSelect: "none" }}>{fmtWhole(positionSize)}</div>
             <button onClick={() => setPositionSize(s => Math.min(POS_MAX, s + POS_STEP))} disabled={positionSize >= POS_MAX} style={{ width: 36, height: 36, border: "none", cursor: "pointer", background: "var(--card-2)", color: "var(--text)", fontSize: 18, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", opacity: positionSize >= POS_MAX ? 0.3 : 1 }}>+</button>
           </div>
         </div>
@@ -258,7 +259,7 @@ export function PilotWidget() {
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "monospace" }}>#{pos.num}</span>
                         <span style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", color: pos.type === "long" ? "var(--success)" : "var(--danger)" }}>{pos.type}</span>
-                        <span style={{ fontSize: 13, fontWeight: 600 }}>{fmt(pos.size)}</span>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{fmtWhole(pos.size)}</span>
                         <span style={{ fontSize: 10, color: "var(--muted)" }}>{pos.stopLoss}% SL</span>
                       </div>
                       {pos.protectionId
@@ -298,7 +299,7 @@ export function PilotWidget() {
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <span style={{ fontSize: 10, color: "var(--muted)", fontFamily: "monospace" }}>#{pos.num}</span>
                     <span style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: pos.type === "long" ? "var(--success)" : "var(--danger)" }}>{pos.type}</span>
-                    <span style={{ fontSize: 12 }}>{fmt(pos.size)}</span>
+                    <span style={{ fontSize: 12 }}>{fmtWhole(pos.size)}</span>
                     {pos.status === "triggered" && <span style={{ fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 999, background: "rgba(54,211,141,0.12)", color: "var(--success)" }}>Payout: {fmt(pos.closedPayout || 0)}</span>}
                     {pos.status === "closed" && pos.closedPnl !== null && <span style={{ fontSize: 11, fontWeight: 600, color: pos.closedPnl >= 0 ? "var(--success)" : "var(--danger)" }}>P&L: {fmt(pos.closedPnl)}</span>}
                   </div>

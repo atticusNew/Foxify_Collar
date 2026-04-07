@@ -93,7 +93,7 @@ services:
       - key: PRICE_TIMEOUT_FALLBACK_MS
         value: "2500"
       - key: PILOT_RATE_LIMIT_MAX
-        value: "60"
+        value: "300"
       - key: PILOT_RATE_LIMIT_WINDOW_MS
         value: "60000"
       - key: PILOT_MONITOR_ENABLED
