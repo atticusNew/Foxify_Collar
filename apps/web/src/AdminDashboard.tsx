@@ -239,17 +239,20 @@ function Dashboard({ token }: { token: string }) {
   // Config display
   const [healthConfig, setHealthConfig] = useState<Record<string, unknown> | null>(null);
 
+  const [protectionsList, setProtectionsList] = useState<ProtectionSummary[]>([]);
+
   const refresh = useCallback(async () => {
     try {
-      const [healthRes, statusRes, metricsRes, qualityRes, alertsRes] = await Promise.allSettled([
-        adminApi<PlatformHealth>("/pilot/health", token),
+      const [healthRes, statusRes, metricsRes, qualityRes, alertsRes, protectionsRes] = await Promise.allSettled([
+        adminApi<PlatformHealth>("/pilot/health", token).catch(() => null),
         adminApi<MonitorStatus>("/pilot/monitor/status", token),
         adminApi<{ metrics: AdminMetrics }>("/pilot/admin/metrics?scope=all", token),
         adminApi<{ records: ExecutionQuality[] }>("/pilot/admin/diagnostics/execution-quality?lookbackDays=30", token),
         adminApi<{ alerts: Alert[] }>("/pilot/monitor/alerts?limit=20", token),
+        adminApi<{ status: string; protections: ProtectionSummary[] }>("/pilot/protections?limit=50", token),
       ]);
 
-      if (healthRes.status === "fulfilled") {
+      if (healthRes.status === "fulfilled" && healthRes.value) {
         setHealth(healthRes.value);
         setHealthConfig(healthRes.value as unknown as Record<string, unknown>);
       }
@@ -257,6 +260,7 @@ function Dashboard({ token }: { token: string }) {
       if (metricsRes.status === "fulfilled") setMetrics(metricsRes.value.metrics);
       if (qualityRes.status === "fulfilled") setExecQuality(qualityRes.value.records || []);
       if (alertsRes.status === "fulfilled") setAlerts(alertsRes.value.alerts || []);
+      if (protectionsRes.status === "fulfilled") setProtectionsList(protectionsRes.value.protections || []);
       setLastRefresh(new Date().toLocaleTimeString());
       setError(null);
     } catch (e: any) {
@@ -511,7 +515,7 @@ function Dashboard({ token }: { token: string }) {
                 )}
               </span>
             </div>
-            {metrics?.protections && metrics.protections.length > 0 ? (
+            {protectionsList.length > 0 ? (
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
@@ -522,8 +526,8 @@ function Dashboard({ token }: { token: string }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {metrics.protections.map((p) => {
-                      const isActive = p.status === "active" || p.status === "quoted";
+                    {protectionsList.map((p) => {
+                      const isActive = p.status === "active" || p.status === "quoted" || p.status === "reconcile_pending";
                       const isTriggered = p.status === "triggered";
                       return (
                         <tr key={p.id} style={{ borderBottom: "1px solid var(--border)" }}>

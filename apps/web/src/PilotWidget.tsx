@@ -37,7 +37,6 @@ type Position = {
   status: "active" | "closed" | "triggered";
   closedPnl: number | null;
   closedPayout: number | null;
-  monitor: MonitorResponse | null;
 };
 
 // ─── Config ──────────────────────────────────────────────────────────
@@ -53,6 +52,7 @@ const TENOR_DAYS = 5;
 const INITIAL_BALANCE = 1_000_000;
 const BALANCE_KEY = "foxify_pilot_balance";
 const SETTLEMENT_KEY = "foxify_pilot_settlement";
+const POSITIONS_KEY = "foxify_pilot_positions";
 const FOXIFY_LOGO = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -79,73 +79,81 @@ const fetchQuote = (body: Record<string, unknown>) => api<QuoteResponse>("/pilot
 const activateProtection = (body: Record<string, unknown>) => api<{ status: string; protectionId: string; protection: ProtectionRecord }>("/pilot/protections/activate", { method: "POST", body: JSON.stringify(body) });
 const fetchMonitor = (id: string) => api<MonitorResponse>(`/pilot/protections/${id}/monitor`);
 
-// ─── Balance persistence ─────────────────────────────────────────────
+// ─── Persistence ─────────────────────────────────────────────────────
 
 type Settlement = { totalPremiums: number; totalPayouts: number };
 
-const loadBalance = (): number => {
-  try { const v = localStorage.getItem(BALANCE_KEY); return v ? Number(v) : INITIAL_BALANCE; } catch { return INITIAL_BALANCE; }
+const load = <T,>(key: string, fallback: T): T => {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
 };
-const saveBalance = (b: number) => { try { localStorage.setItem(BALANCE_KEY, String(b)); } catch {} };
-const loadSettlement = (): Settlement => {
-  try { const v = localStorage.getItem(SETTLEMENT_KEY); return v ? JSON.parse(v) : { totalPremiums: 0, totalPayouts: 0 }; } catch { return { totalPremiums: 0, totalPayouts: 0 }; }
-};
-const saveSettlement = (s: Settlement) => { try { localStorage.setItem(SETTLEMENT_KEY, JSON.stringify(s)); } catch {} };
+const save = (key: string, v: unknown) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch {} };
 
 // ─── Widget ──────────────────────────────────────────────────────────
 
 export function PilotWidget() {
-  // Form state
+  // Form
   const [positionType, setPositionType] = useState<"long" | "short" | null>(null);
   const [positionSize, setPositionSize] = useState(5000);
   const [stopLoss, setStopLoss] = useState<StopLoss | null>(null);
   const [autoRenew, setAutoRenew] = useState(false);
+  const [formCollapsed, setFormCollapsed] = useState(false);
 
   // Price
-  const [refPrice, setRefPrice] = useState<ReferencePrice | null>(null);
-  const [priceError, setPriceError] = useState<string | null>(null);
   const [livePrice, setLivePrice] = useState<number | null>(null);
+  const [priceError, setPriceError] = useState<string | null>(null);
+  const [priceUpdatedAt, setPriceUpdatedAt] = useState(0);
 
-  // Positions
-  const [positions, setPositions] = useState<Position[]>([]);
+  // Positions (persisted)
+  const [positions, setPositions] = useState<Position[]>(() => load(POSITIONS_KEY, []));
   const [activating, setActivating] = useState(false);
   const [activateError, setActivateError] = useState<string | null>(null);
 
-  // Balance & settlement
-  const [balance, setBalance] = useState(loadBalance);
-  const [settlement, setSettlement] = useState<Settlement>(loadSettlement);
+  // Balance & settlement (persisted)
+  const [balance, setBalance] = useState(() => load(BALANCE_KEY, INITIAL_BALANCE) as number);
+  const [settlement, setSettlement] = useState<Settlement>(() => load(SETTLEMENT_KEY, { totalPremiums: 0, totalPayouts: 0 }));
+
+  // Monitor cache
+  const [monitors, setMonitors] = useState<Record<string, MonitorResponse>>({});
 
   const posIdCounter = useRef(0);
+
+  // Persist on change
+  useEffect(() => { save(POSITIONS_KEY, positions); }, [positions]);
+  useEffect(() => { save(BALANCE_KEY, balance); }, [balance]);
+  useEffect(() => { save(SETTLEMENT_KEY, settlement); }, [settlement]);
 
   // Derived
   const tierName = stopLoss ? STOP_LOSS_TO_TIER[stopLoss] : "Pro (Bronze)";
   const drawdownPct = stopLoss ?? 20;
-  const currentBtcPrice = livePrice || (refPrice ? Number(refPrice.price) : null);
   const computedPremium = (positionSize / 1000) * PREMIUM_PER_K;
   const payoutOnTrigger = positionSize * (drawdownPct / 100);
-  const floorPriceLocal = currentBtcPrice && stopLoss
-    ? (positionType === "short" ? currentBtcPrice * (1 + drawdownPct / 100) : currentBtcPrice * (1 - drawdownPct / 100))
+  const floorPriceLocal = livePrice && stopLoss
+    ? (positionType === "short" ? livePrice * (1 + drawdownPct / 100) : livePrice * (1 - drawdownPct / 100))
     : null;
   const formComplete = positionType !== null && stopLoss !== null;
   const activePositions = positions.filter(p => p.status === "active");
   const closedPositions = positions.filter(p => p.status === "closed" || p.status === "triggered");
 
-  // Unrealized PnL
   const unrealizedPnl = activePositions.reduce((sum, p) => {
-    if (!currentBtcPrice) return sum;
+    if (!livePrice) return sum;
     const pnl = p.type === "long"
-      ? ((currentBtcPrice - p.entryPrice) / p.entryPrice) * p.size
-      : ((p.entryPrice - currentBtcPrice) / p.entryPrice) * p.size;
+      ? ((livePrice - p.entryPrice) / p.entryPrice) * p.size
+      : ((p.entryPrice - livePrice) / p.entryPrice) * p.size;
     return sum + pnl;
   }, 0);
 
-  // Poll BTC price
+  // Poll BTC price every 3s
   useEffect(() => {
     let on = true;
     const poll = async () => {
       try {
         const d = await fetchRef();
-        if (on && d.status === "ok") { setRefPrice(d.reference); setLivePrice(Number(d.reference.price)); setPriceError(null); }
+        if (on && d.status === "ok") {
+          const p = Number(d.reference.price);
+          setLivePrice(p);
+          setPriceUpdatedAt(Date.now());
+          setPriceError(null);
+        }
       } catch (e: any) { if (on) setPriceError(e.message); }
     };
     poll();
@@ -153,7 +161,7 @@ export function PilotWidget() {
     return () => { on = false; clearInterval(id); };
   }, []);
 
-  // Poll monitors for active protected positions
+  // Poll monitors for active protected positions every 5s
   useEffect(() => {
     const protectedActive = activePositions.filter(p => p.protectionId);
     if (!protectedActive.length) return;
@@ -164,33 +172,34 @@ export function PilotWidget() {
         try {
           const d = await fetchMonitor(pos.protectionId);
           if (!on) return;
-          setPositions(prev => prev.map(p => {
-            if (p.id !== pos.id) return p;
-            if (d.protection?.status === "triggered") {
-              const payout = Number(d.protection.payoutDueAmount || 0);
-              const newBal = balance + payout;
-              setBalance(newBal); saveBalance(newBal);
-              setSettlement(s => { const ns = { ...s, totalPayouts: s.totalPayouts + payout }; saveSettlement(ns); return ns; });
-              return { ...p, status: "triggered" as const, closedPayout: payout, monitor: d };
-            }
-            return { ...p, monitor: d };
-          }));
+          setMonitors(prev => ({ ...prev, [pos.id]: d }));
+          if (d.protection?.status === "triggered") {
+            const payout = Number(d.protection.payoutDueAmount || 0);
+            setPositions(prev => prev.map(p => p.id === pos.id ? { ...p, status: "triggered" as const, closedPayout: payout } : p));
+            setBalance(b => { const nb = b + payout; save(BALANCE_KEY, nb); return nb; });
+            setSettlement(s => { const ns = { ...s, totalPayouts: s.totalPayouts + payout }; save(SETTLEMENT_KEY, ns); return ns; });
+          }
         } catch {}
       }
     };
     poll();
     const id = setInterval(poll, 5000);
     return () => { on = false; clearInterval(id); };
-  }, [activePositions.map(p => p.id).join(",")]);
+  }, [activePositions.map(p => p.id + (p.protectionId || "")).join(",")]);
+
+  // Auto-collapse form when there are active positions
+  useEffect(() => {
+    if (activePositions.length > 0 && !formCollapsed) setFormCollapsed(false);
+  }, [activePositions.length]);
 
   // ─── Handlers ──────────────────────────────────────────────────────
 
   const handleOpenProtected = useCallback(async () => {
-    if (!refPrice || !formComplete || !positionType || !stopLoss) return;
+    if (!livePrice || !formComplete || !positionType || !stopLoss) return;
     setActivating(true);
     setActivateError(null);
     try {
-      const ep = Number(refPrice.price);
+      const ep = livePrice;
       const premium = (positionSize / 1000) * PREMIUM_PER_K;
       const quoteResult = await fetchQuote({
         protectedNotional: positionSize, foxifyExposureNotional: positionSize,
@@ -205,38 +214,38 @@ export function PilotWidget() {
       const newPos: Position = {
         id: `pos_${++posIdCounter.current}_${Date.now()}`, type: positionType, size: positionSize,
         stopLoss: drawdownPct, entryPrice: ep, protectionId: pid, autoRenew, premium,
-        status: "active", closedPnl: null, closedPayout: null, monitor: null,
+        status: "active", closedPnl: null, closedPayout: null,
       };
       setPositions(prev => [...prev, newPos]);
-      const newBal = balance - premium;
-      setBalance(newBal); saveBalance(newBal);
-      setSettlement(s => { const ns = { ...s, totalPremiums: s.totalPremiums + premium }; saveSettlement(ns); return ns; });
+      setBalance(b => { const nb = b - premium; save(BALANCE_KEY, nb); return nb; });
+      setSettlement(s => { const ns = { ...s, totalPremiums: s.totalPremiums + premium }; save(SETTLEMENT_KEY, ns); return ns; });
       setPositionType(null);
       setStopLoss(null);
+      setFormCollapsed(true);
     } catch (e: any) {
       setActivateError(e.message);
     } finally {
       setActivating(false);
     }
-  }, [refPrice, formComplete, positionSize, tierName, drawdownPct, positionType, autoRenew, balance]);
+  }, [livePrice, formComplete, positionSize, tierName, drawdownPct, positionType, autoRenew]);
 
   const handleOpenWithout = () => {
-    if (!refPrice || !formComplete || !positionType || !stopLoss) return;
-    const ep = Number(refPrice.price);
+    if (!livePrice || !formComplete || !positionType || !stopLoss) return;
     const newPos: Position = {
       id: `pos_${++posIdCounter.current}_${Date.now()}`, type: positionType, size: positionSize,
-      stopLoss: drawdownPct, entryPrice: ep, protectionId: null, autoRenew: false, premium: 0,
-      status: "active", closedPnl: null, closedPayout: null, monitor: null,
+      stopLoss: drawdownPct, entryPrice: livePrice, protectionId: null, autoRenew: false, premium: 0,
+      status: "active", closedPnl: null, closedPayout: null,
     };
     setPositions(prev => [...prev, newPos]);
     setPositionType(null);
     setStopLoss(null);
+    setFormCollapsed(true);
   };
 
   const handleClose = (posId: string) => {
     setPositions(prev => prev.map(p => {
       if (p.id !== posId || p.status !== "active") return p;
-      const price = currentBtcPrice || p.entryPrice;
+      const price = livePrice || p.entryPrice;
       const pnl = p.type === "long"
         ? ((price - p.entryPrice) / p.entryPrice) * p.size
         : ((p.entryPrice - price) / p.entryPrice) * p.size;
@@ -248,6 +257,9 @@ export function PilotWidget() {
     setPositions(prev => prev.filter(p => p.id !== posId));
   };
 
+  // Price pulse animation
+  const isPriceFresh = Date.now() - priceUpdatedAt < 1500;
+
   // ─── Render ────────────────────────────────────────────────────────
 
   return (
@@ -258,13 +270,23 @@ export function PilotWidget() {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <img src={FOXIFY_LOGO} alt="" style={{ width: 24, height: 24, borderRadius: 6 }}
               onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-            <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.2 }}>Foxify Protect</span>
+            <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.2 }}>Foxify Perp Protect</span>
           </div>
-          {currentBtcPrice && (
+          {livePrice && (
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: 11, color: "var(--muted)" }}>BTC</span>
-              <span style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtUsd(currentBtcPrice)}</span>
-              {!priceError && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} />}
+              <span style={{
+                fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums",
+                transition: "color 0.3s ease",
+                color: isPriceFresh ? "var(--text)" : "var(--muted)",
+              }}>{fmtUsd(livePrice)}</span>
+              {!priceError && (
+                <span style={{
+                  width: 6, height: 6, borderRadius: "50%", display: "inline-block",
+                  background: isPriceFresh ? "var(--success)" : "var(--muted)",
+                  transition: "background 0.3s ease",
+                }} />
+              )}
             </div>
           )}
         </div>
@@ -276,105 +298,119 @@ export function PilotWidget() {
           background: "var(--card-2)", border: "1px solid var(--border)",
         }}>
           <span style={{ fontSize: 12, color: "var(--muted)" }}>Account Balance</span>
-          <span style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: balance >= INITIAL_BALANCE ? "var(--success)" : "var(--text)" }}>
+          <span style={{
+            fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums",
+            color: (balance + unrealizedPnl) >= INITIAL_BALANCE ? "var(--success)" : "var(--text)",
+          }}>
             {fmtUsd(balance + unrealizedPnl)}
           </span>
         </div>
 
-        {/* ── FORM (always visible) ── */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-          {(["long", "short"] as const).map((side) => (
-            <button key={side} onClick={() => setPositionType(side)} style={{
-              flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer",
-              fontSize: 13, fontWeight: 600, textTransform: "capitalize",
-              border: positionType === side
-                ? side === "long" ? "1.5px solid var(--success)" : "1.5px solid var(--danger)"
-                : "1px solid var(--border)",
-              background: positionType === side
-                ? side === "long" ? "rgba(54,211,141,0.15)" : "rgba(255,107,107,0.15)"
-                : "var(--card-2)",
-              color: positionType === side ? side === "long" ? "var(--success)" : "var(--danger)" : "var(--muted)",
-              transition: "all 0.15s ease",
-            }}>{side}</button>
-          ))}
-        </div>
+        {/* ── FORM (collapsible) ── */}
+        <div style={{ marginBottom: activePositions.length > 0 ? 0 : undefined }}>
+          <button onClick={() => setFormCollapsed(c => !c)} style={{
+            width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "8px 0", border: "none", background: "none", cursor: "pointer", color: "var(--text)",
+          }}>
+            <span style={{ fontSize: 14, fontWeight: 600 }}>New Position</span>
+            <span style={{ fontSize: 12, color: "var(--muted)", transition: "transform 0.2s ease", transform: formCollapsed ? "rotate(0deg)" : "rotate(180deg)" }}>▼</span>
+          </button>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Position Size</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)" }}>
-            <button onClick={() => setPositionSize(s => Math.max(POSITION_MIN, s - POSITION_STEP))}
-              disabled={positionSize <= POSITION_MIN}
-              style={{ width: 36, height: 36, border: "none", cursor: "pointer", background: "var(--card-2)", color: "var(--text)", fontSize: 18, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", opacity: positionSize <= POSITION_MIN ? 0.3 : 1 }}>−</button>
-            <div style={{ minWidth: 110, height: 36, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", background: "var(--bg)", borderLeft: "1px solid var(--border)", borderRight: "1px solid var(--border)", userSelect: "none" }}>{fmtUsd(positionSize)}</div>
-            <button onClick={() => setPositionSize(s => Math.min(POSITION_MAX, s + POSITION_STEP))}
-              disabled={positionSize >= POSITION_MAX}
-              style={{ width: 36, height: 36, border: "none", cursor: "pointer", background: "var(--card-2)", color: "var(--text)", fontSize: 18, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", opacity: positionSize >= POSITION_MAX ? 0.3 : 1 }}>+</button>
-          </div>
-        </div>
+          {!formCollapsed && (
+            <>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                {(["long", "short"] as const).map((side) => (
+                  <button key={side} onClick={() => setPositionType(side)} style={{
+                    flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer",
+                    fontSize: 13, fontWeight: 600, textTransform: "capitalize",
+                    border: positionType === side
+                      ? side === "long" ? "1.5px solid var(--success)" : "1.5px solid var(--danger)"
+                      : "1px solid var(--border)",
+                    background: positionType === side
+                      ? side === "long" ? "rgba(54,211,141,0.15)" : "rgba(255,107,107,0.15)"
+                      : "var(--card-2)",
+                    color: positionType === side ? side === "long" ? "var(--success)" : "var(--danger)" : "var(--muted)",
+                    transition: "all 0.15s ease",
+                  }}>{side}</button>
+                ))}
+              </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Stop Loss</span>
-          <div style={{ display: "flex", gap: 6 }}>
-            {STOP_LOSS_OPTIONS.map((sl) => (
-              <button key={sl} onClick={() => setStopLoss(sl)} style={{
-                padding: "7px 16px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
-                background: stopLoss === sl ? "rgba(184,90,28,0.18)" : "var(--card-2)",
-                color: stopLoss === sl ? "var(--accent)" : "var(--text)",
-                borderColor: stopLoss === sl ? "var(--accent-2)" : "var(--border)", transition: "all 0.15s ease",
-              }}>{sl}%</button>
-            ))}
-          </div>
-        </div>
-
-        {/* Protection offer */}
-        <div className="section">
-          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Protect Your Position</div>
-
-          {activateError && (
-            <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10, padding: "8px 10px", background: "rgba(255,107,107,0.08)", borderRadius: 8, border: "1px solid rgba(255,107,107,0.2)", wordBreak: "break-word" }}>
-              {activateError}
-            </div>
-          )}
-
-          <div style={{ background: "rgba(54,211,141,0.06)", border: "1px solid rgba(54,211,141,0.18)", borderRadius: 12, padding: 14, marginBottom: 12, opacity: formComplete ? 1 : 0.5 }}>
-            <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 8 }}>
-              {formComplete ? (
-                <>If your position hits <strong style={{ color: "var(--danger)" }}>{drawdownPct}%</strong> drawdown, you receive <strong style={{ color: "var(--success)" }}>{fmtUsd(payoutOnTrigger)}</strong> instantly.</>
-              ) : (
-                <span style={{ color: "var(--muted)" }}>Select position type and stop loss to see protection details.</span>
-              )}
-            </div>
-            {formComplete && (
-              <>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}>
-                  <span>Premium</span>
-                  <span style={{ fontWeight: 600, color: "var(--text)" }}>{fmtUsd(computedPremium)} for {TENOR_DAYS} days</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Position Size</span>
+                <div style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: 8, overflow: "hidden", border: "1px solid var(--border)" }}>
+                  <button onClick={() => setPositionSize(s => Math.max(POSITION_MIN, s - POSITION_STEP))} disabled={positionSize <= POSITION_MIN}
+                    style={{ width: 36, height: 36, border: "none", cursor: "pointer", background: "var(--card-2)", color: "var(--text)", fontSize: 18, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", opacity: positionSize <= POSITION_MIN ? 0.3 : 1 }}>−</button>
+                  <div style={{ minWidth: 110, height: 36, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", background: "var(--bg)", borderLeft: "1px solid var(--border)", borderRight: "1px solid var(--border)", userSelect: "none" }}>{fmtUsd(positionSize)}</div>
+                  <button onClick={() => setPositionSize(s => Math.min(POSITION_MAX, s + POSITION_STEP))} disabled={positionSize >= POSITION_MAX}
+                    style={{ width: 36, height: 36, border: "none", cursor: "pointer", background: "var(--card-2)", color: "var(--text)", fontSize: 18, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", opacity: positionSize >= POSITION_MAX ? 0.3 : 1 }}>+</button>
                 </div>
-                {floorPriceLocal && (
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
-                    <span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span>
-                    <span style={{ fontWeight: 500 }}>{fmtUsd(floorPriceLocal)}</span>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Stop Loss</span>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {STOP_LOSS_OPTIONS.map((sl) => (
+                    <button key={sl} onClick={() => setStopLoss(sl)} style={{
+                      padding: "7px 16px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600,
+                      background: stopLoss === sl ? "rgba(184,90,28,0.18)" : "var(--card-2)",
+                      color: stopLoss === sl ? "var(--accent)" : "var(--text)",
+                      borderColor: stopLoss === sl ? "var(--accent-2)" : "var(--border)", transition: "all 0.15s ease",
+                    }}>{sl}%</button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="section" style={{ marginTop: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Protect Your Position</div>
+
+                {activateError && (
+                  <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10, padding: "8px 10px", background: "rgba(255,107,107,0.08)", borderRadius: 8, border: "1px solid rgba(255,107,107,0.2)", wordBreak: "break-word" }}>
+                    {activateError}
                   </div>
                 )}
-              </>
-            )}
-          </div>
 
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted)", marginBottom: 14, cursor: "pointer" }}>
-            <input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
-            Auto-renew protection at expiry
-          </label>
+                <div style={{ background: "rgba(54,211,141,0.06)", border: "1px solid rgba(54,211,141,0.18)", borderRadius: 12, padding: 14, marginBottom: 12, opacity: formComplete ? 1 : 0.5 }}>
+                  <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 8 }}>
+                    {formComplete ? (
+                      <>If your position hits <strong style={{ color: "var(--danger)" }}>{drawdownPct}%</strong> drawdown, you receive <strong style={{ color: "var(--success)" }}>{fmtUsd(payoutOnTrigger)}</strong> instantly.</>
+                    ) : (
+                      <span style={{ color: "var(--muted)" }}>Select position type and stop loss to see protection details.</span>
+                    )}
+                  </div>
+                  {formComplete && (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}>
+                        <span>Premium</span>
+                        <span style={{ fontWeight: 600, color: "var(--text)" }}>{fmtUsd(computedPremium)} for {TENOR_DAYS} days</span>
+                      </div>
+                      {floorPriceLocal && (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}>
+                          <span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span>
+                          <span style={{ fontWeight: 500 }}>{fmtUsd(floorPriceLocal)}</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
 
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleOpenProtected} disabled={!formComplete || activating || !refPrice}
-              style={{ flex: 2, padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", opacity: (!formComplete || activating || !refPrice) ? 0.5 : 1, transition: "opacity 0.15s ease" }}>
-              {activating ? "Opening..." : "Open + Protect"}
-            </button>
-            <button onClick={handleOpenWithout} disabled={!formComplete || !refPrice}
-              style={{ flex: 1, padding: "12px 0", borderRadius: 10, border: "1px solid var(--border)", background: "var(--card-2)", fontSize: 12, color: "var(--muted)", cursor: "pointer", opacity: (!formComplete || !refPrice) ? 0.5 : 1 }}>
-              Open Without
-            </button>
-          </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted)", marginBottom: 14, cursor: "pointer" }}>
+                  <input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} style={{ accentColor: "var(--accent)" }} />
+                  Auto-renew protection at expiry
+                </label>
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={handleOpenProtected} disabled={!formComplete || activating || !livePrice}
+                    style={{ flex: 2, padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", opacity: (!formComplete || activating || !livePrice) ? 0.5 : 1, transition: "opacity 0.15s ease" }}>
+                    {activating ? "Opening..." : "Open + Protect"}
+                  </button>
+                  <button onClick={handleOpenWithout} disabled={!formComplete || !livePrice}
+                    style={{ flex: 1, padding: "12px 0", borderRadius: 10, border: "1px solid var(--border)", background: "var(--card-2)", fontSize: 12, color: "var(--muted)", cursor: "pointer", opacity: (!formComplete || !livePrice) ? 0.5 : 1 }}>
+                    Open Without
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* ── ACTIVE POSITIONS ── */}
@@ -385,15 +421,16 @@ export function PilotWidget() {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {activePositions.map(pos => {
-                const pnl = currentBtcPrice
+                const mon = monitors[pos.id];
+                const pnl = livePrice
                   ? (pos.type === "long"
-                    ? ((currentBtcPrice - pos.entryPrice) / pos.entryPrice) * pos.size
-                    : ((pos.entryPrice - currentBtcPrice) / pos.entryPrice) * pos.size)
+                    ? ((livePrice - pos.entryPrice) / pos.entryPrice) * pos.size
+                    : ((pos.entryPrice - livePrice) / pos.entryPrice) * pos.size)
                   : null;
-                const pnlPct = currentBtcPrice
+                const pnlPct = livePrice
                   ? (pos.type === "long"
-                    ? ((currentBtcPrice - pos.entryPrice) / pos.entryPrice) * 100
-                    : ((pos.entryPrice - currentBtcPrice) / pos.entryPrice) * 100)
+                    ? ((livePrice - pos.entryPrice) / pos.entryPrice) * 100
+                    : ((pos.entryPrice - livePrice) / pos.entryPrice) * 100)
                   : null;
                 const floorPrice = pos.type === "long"
                   ? pos.entryPrice * (1 - pos.stopLoss / 100)
@@ -416,15 +453,15 @@ export function PilotWidget() {
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>
                       <span>Entry {fmtUsd(pos.entryPrice)}</span>
                       {pnl !== null && (
-                        <span style={{ fontWeight: 600, color: pnl >= 0 ? "var(--success)" : "var(--danger)" }}>
+                        <span style={{ fontWeight: 600, color: pnl >= 0 ? "var(--success)" : "var(--danger)", fontVariantNumeric: "tabular-nums" }}>
                           {fmtUsd(pnl)} ({fmtPct(pnlPct!)})
                         </span>
                       )}
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>
                       <span>{pos.type === "long" ? "Floor" : "Ceiling"}: {fmtUsd(floorPrice)}</span>
-                      {pos.protectionId && pos.monitor?.timeRemaining && (
-                        <span>{fmtTime(pos.monitor.timeRemaining.ms)} left</span>
+                      {pos.protectionId && mon?.timeRemaining && (
+                        <span>{fmtTime(mon.timeRemaining.ms)} left</span>
                       )}
                       {pos.premium > 0 && <span>Premium: {fmtUsd(pos.premium)}</span>}
                     </div>
@@ -439,14 +476,12 @@ export function PilotWidget() {
           </div>
         )}
 
-        {/* ── CLOSED POSITIONS (recent) ── */}
+        {/* ── CLOSED POSITIONS ── */}
         {closedPositions.length > 0 && (
           <div className="section">
-            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "var(--muted)" }}>
-              Recently Closed
-            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "var(--muted)" }}>Recently Closed</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {closedPositions.slice(-3).map(pos => (
+              {closedPositions.slice(-5).map(pos => (
                 <div key={pos.id} style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                   padding: "8px 10px", borderRadius: 8, background: "var(--card-2)", border: "1px solid var(--border)",
