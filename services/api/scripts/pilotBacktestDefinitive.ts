@@ -305,7 +305,8 @@ function runConfig(
   let suggestedWinRate: number | null = null;
   for (const prem of TEST_PREMIUMS) {
     const wr = winRateByPremium.get(prem)!;
-    if (wr >= 0.6) {
+    const avgPnl = pnlByPremium.get(prem)!;
+    if (wr >= 0.6 && avgPnl > 0) {
       suggestedPremium = prem;
       suggestedWinRate = wr;
       break;
@@ -490,13 +491,37 @@ function generateTable2(results: ConfigResult[]): string {
 
   for (const sl of SL_TIERS) {
     const candidates = results
-      .filter((r) => r.config.sl === sl && r.suggestedPremium !== null)
+      .filter((r) => {
+        if (r.config.sl !== sl || r.suggestedPremium === null) return false;
+        const effectiveSl = r.config.deductible === "1pct" ? Math.max(0, sl - 1) : sl;
+        const payoutPer10k = (10_000 * effectiveSl) / 100;
+        const traderPays = r.suggestedPremium! * 10;
+        return payoutPer10k > traderPays;
+      })
       .sort((a, b) => a.breakEven - b.breakEven);
 
     if (candidates.length === 0) {
-      lines.push(
-        `${pad(sl + "%", 4)} | ${"NO VIABLE CONFIG".padEnd(24)} | ${"-".padStart(11)} | ${"-".padStart(16)} | ${"-".padStart(11)} | ${"-".padStart(12)} | ${"-".padStart(19)} | ${"-".padStart(8)} | ${"-".padStart(13)} | ${"-".padStart(13)}`,
-      );
+      const anyCandidates = results
+        .filter((r) => r.config.sl === sl && r.suggestedPremium !== null)
+        .sort((a, b) => a.breakEven - b.breakEven);
+      if (anyCandidates.length > 0) {
+        const best = anyCandidates[0];
+        const c = best.config;
+        const configStr = configShortLabel(c) + " (*)";
+        const prem = best.suggestedPremium!;
+        const traderPays = prem * 10;
+        const effectiveSl = c.deductible === "1pct" ? Math.max(0, sl - 1) : sl;
+        const payoutPer10k = (10_000 * effectiveSl) / 100;
+        const traderSaves = payoutPer10k - traderPays;
+        const margin = prem - best.breakEven;
+        lines.push(
+          `${pad(sl + "%", 4)} | ${padEnd(configStr, 24)} | ${pad($(prem), 11)} | ${pad($(traderPays), 16)} | ${pad($(payoutPer10k), 11)} | ${pad($(traderSaves), 12)} | ${pad($(margin), 19)} | ${pad(pct(best.triggerRate), 8)} | ${pad($(best.avgHedgeCost), 13)} | ${pad($(best.avgRecovery), 13)}`,
+        );
+      } else {
+        lines.push(
+          `${pad(sl + "%", 4)} | ${"NO VIABLE CONFIG".padEnd(24)} | ${"-".padStart(11)} | ${"-".padStart(16)} | ${"-".padStart(11)} | ${"-".padStart(12)} | ${"-".padStart(19)} | ${"-".padStart(8)} | ${"-".padStart(13)} | ${"-".padStart(13)}`,
+        );
+      }
       continue;
     }
 
@@ -505,7 +530,8 @@ function generateTable2(results: ConfigResult[]): string {
     const configStr = configShortLabel(c);
     const prem = best.suggestedPremium!;
     const traderPays = prem * 10;
-    const payoutPer10k = NOTIONAL_1K * 10 * (c.deductible === "1pct" ? Math.max(0, sl - 1) : sl) / 100;
+    const effectiveSl = c.deductible === "1pct" ? Math.max(0, sl - 1) : sl;
+    const payoutPer10k = (10_000 * effectiveSl) / 100;
     const traderSaves = payoutPer10k - traderPays;
     const margin = prem - best.breakEven;
 
@@ -513,6 +539,9 @@ function generateTable2(results: ConfigResult[]): string {
       `${pad(sl + "%", 4)} | ${padEnd(configStr, 24)} | ${pad($(prem), 11)} | ${pad($(traderPays), 16)} | ${pad($(payoutPer10k), 11)} | ${pad($(traderSaves), 12)} | ${pad($(margin), 19)} | ${pad(pct(best.triggerRate), 8)} | ${pad($(best.avgHedgeCost), 13)} | ${pad($(best.avgRecovery), 13)}`,
     );
   }
+
+  lines.push("");
+  lines.push("(*) = payout <= premium cost, poor trader value proposition");
 
   return lines.join("\n");
 }
@@ -533,11 +562,17 @@ function generateTable3(results: ConfigResult[]): string {
 
   for (const sl of SL_TIERS) {
     const candidates = results
-      .filter((r) => r.config.sl === sl && r.suggestedPremium !== null)
+      .filter((r) => {
+        if (r.config.sl !== sl || r.suggestedPremium === null) return false;
+        const effectiveSl = r.config.deductible === "1pct" ? Math.max(0, sl - 1) : sl;
+        const payoutPer10k = (10_000 * effectiveSl) / 100;
+        const traderPays = r.suggestedPremium! * 10;
+        return payoutPer10k > traderPays;
+      })
       .sort((a, b) => a.breakEven - b.breakEven);
 
     if (candidates.length === 0) {
-      lines.push(`${pad(sl + "%", 4)} | N/A`);
+      lines.push(`${pad(sl + "%", 4)} | N/A — no viable config with positive trader value`);
       continue;
     }
 
@@ -548,10 +583,6 @@ function generateTable3(results: ConfigResult[]): string {
     const calmBE = best.regimeBreakEven.calm;
     const normalBE = best.regimeBreakEven.normal;
     const stressBE = best.regimeBreakEven.stress;
-
-    const calmPrem = Math.ceil(calmBE * 1.2 * 2) / 2;
-    const normalPrem = Math.ceil(normalBE * 1.2 * 2) / 2;
-    const stressPrem = Math.ceil(stressBE * 1.2 * 2) / 2;
 
     let rec: string;
     if (stressBE > best.suggestedPremium! * 2) {
@@ -586,7 +617,13 @@ function generateTable4(results: ConfigResult[]): string {
 
   for (const sl of SL_TIERS) {
     const candidates = results
-      .filter((r) => r.config.sl === sl && r.suggestedPremium !== null)
+      .filter((r) => {
+        if (r.config.sl !== sl || r.suggestedPremium === null) return false;
+        const effectiveSl = r.config.deductible === "1pct" ? Math.max(0, sl - 1) : sl;
+        const payoutPer10k = (10_000 * effectiveSl) / 100;
+        const traderPays = r.suggestedPremium! * 10;
+        return payoutPer10k > traderPays;
+      })
       .sort((a, b) => a.breakEven - b.breakEven);
 
     if (candidates.length === 0) {
@@ -621,12 +658,19 @@ function generateTable5(results: ConfigResult[]): string {
 
   for (const sl of SL_TIERS) {
     const candidates = results
-      .filter((r) => r.config.sl === sl && r.suggestedPremium !== null)
+      .filter((r) => {
+        if (r.config.sl !== sl || r.suggestedPremium === null) return false;
+        const effectiveSl = r.config.deductible === "1pct" ? Math.max(0, sl - 1) : sl;
+        const payoutPer10k = (10_000 * effectiveSl) / 100;
+        const traderPays = r.suggestedPremium! * 10;
+        return payoutPer10k > traderPays;
+      })
       .sort((a, b) => a.breakEven - b.breakEven);
 
     if (candidates.length === 0) {
+      const withoutProtection = (10_000 * sl) / 100;
       lines.push(
-        `${pad(sl + "%", 4)} | ${"N/A".padEnd(12)} | ${"N/A".padEnd(12)} | ${"N/A".padEnd(13)} | ${"N/A".padEnd(20)} | NOT VIABLE`,
+        `${pad(sl + "%", 4)} | ${"N/A".padEnd(12)} | ${"N/A".padEnd(12)} | ${"N/A".padEnd(13)} | ${pad($(withoutProtection, 0), 20)} | NOT VIABLE`,
       );
       continue;
     }
@@ -640,7 +684,8 @@ function generateTable5(results: ConfigResult[]): string {
     const maxLoss = youPay;
     const withoutProtection = (10_000 * sl) / 100;
     const margin = prem - best.breakEven;
-    const viable = margin > 0 ? `YES (+$${margin.toFixed(2)}/1k)` : `MARGINAL`;
+    const deductNote = c.deductible === "1pct" ? " (1% deduct)" : "";
+    const viable = margin > 0 ? `YES (+$${margin.toFixed(2)}/1k)${deductNote}` : `MARGINAL${deductNote}`;
 
     lines.push(
       `${pad(sl + "%", 4)} | ${pad($(youPay, 0) + "/10k", 12)} | ${pad($(youGet, 0), 12)} | ${pad($(maxLoss, 0), 13)} | ${pad($(withoutProtection, 0), 20)} | ${viable}`,
@@ -737,7 +782,15 @@ function generateRecommendation(results: ConfigResult[]): string {
   const bestPerTier = new Map<number, ConfigResult>();
   for (const sl of SL_TIERS) {
     const candidates = results
-      .filter((r) => r.config.sl === sl && r.suggestedPremium !== null)
+      .filter((r) => {
+        if (r.config.sl === sl && r.suggestedPremium !== null) {
+          const effectiveSl = r.config.deductible === "1pct" ? Math.max(0, sl - 1) : sl;
+          const payoutPer10k = (10_000 * effectiveSl) / 100;
+          const traderPays = r.suggestedPremium! * 10;
+          return payoutPer10k > traderPays;
+        }
+        return false;
+      })
       .sort((a, b) => a.breakEven - b.breakEven);
     if (candidates.length > 0) {
       bestPerTier.set(sl, candidates[0]);
@@ -775,9 +828,13 @@ function generateRecommendation(results: ConfigResult[]): string {
   lines.push("  RECOMMENDED LAUNCH TIERS:");
   lines.push("");
 
-  const viable = ranked.filter(([, best]) => {
-    const margin = best.suggestedPremium! - best.breakEven;
-    return margin > 0 && best.suggestedWinRate! >= 0.6;
+  const viable = ranked.filter(([sl, best]) => {
+    const prem = best.suggestedPremium!;
+    const margin = prem - best.breakEven;
+    const effectiveSl = best.config.deductible === "1pct" ? Math.max(0, sl - 1) : sl;
+    const payoutPer10k = (10_000 * effectiveSl) / 100;
+    const traderPays = prem * 10;
+    return margin > 0 && best.suggestedWinRate! >= 0.6 && payoutPer10k > traderPays;
   });
 
   if (viable.length >= 3) {
