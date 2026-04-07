@@ -2068,6 +2068,14 @@ export const registerPilotRoutes = async (
       const estimatedPremiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({
         estimated: premiumPricing
       });
+      const FIXED_PREMIUM_PER_1K = new Decimal(11);
+      if (isLockedBullishProfile) {
+        const fixedClientPremium = protectedNotional.div(1000).mul(FIXED_PREMIUM_PER_1K);
+        premiumPricing = {
+          ...premiumPricing,
+          clientPremiumUsd: fixedClientPremium,
+        };
+      }
       const pricingBreakdown = {
         pricingMode: premiumPricing.pricingMode,
         hedgePremiumUsd: premiumPricing.hedgePremiumUsd.toFixed(10),
@@ -2927,6 +2935,13 @@ export const registerPilotRoutes = async (
             ? lockContext.pricingMode
             : fallbackPremiumPricing.pricingMode
       };
+      const FIXED_PREMIUM_PER_1K_ACTIVATE = new Decimal(11);
+      if (isLockedBullishProfile) {
+        premiumPricing = {
+          ...premiumPricing,
+          clientPremiumUsd: protectedNotional.div(1000).mul(FIXED_PREMIUM_PER_1K_ACTIVATE),
+        };
+      }
       premiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({ estimated: premiumPricing });
       await client.query("COMMIT");
       transactionOpen = false;
