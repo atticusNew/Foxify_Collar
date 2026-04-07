@@ -3634,9 +3634,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     }
 
     const clientOrderId = quote.quoteId.replace(/[^0-9]/g, "").slice(0, 16) || String(BigInt(Date.now()) * 1000n);
-    const fillWaitEnabled =
-      String(process.env.PILOT_BULLISH_FILL_CONFIRM_ENABLED || "true").trim().toLowerCase() !== "false";
-    const fillWaitMs = Math.max(2000, Number(process.env.PILOT_BULLISH_FILL_CONFIRM_TIMEOUT_MS || "15000"));
+    const isIOC = this.config.orderTif === "IOC";
     const cancelTimeoutMs = Math.max(3000, Number(process.env.PILOT_BULLISH_UNFILLED_CANCEL_TIMEOUT_MS || "10000"));
 
     const isOption = /^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol);
@@ -3646,25 +3644,21 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     const formattedQty = Math.floor(quantity * Math.pow(10, qtyPrecision)) / Math.pow(10, qtyPrecision);
     const formattedQtyStr = formattedQty.toFixed(qtyPrecision);
 
-    console.log(`[BullishAdapter] Placing order: symbol=${symbol} side=BUY price=${formattedPrice} qty=${formattedQtyStr} tif=${this.config.orderTif} clientOrderId=${clientOrderId} isOption=${isOption}`);
+    console.log(`[BullishAdapter] Placing order: symbol=${symbol} side=BUY price=${formattedPrice} qty=${formattedQtyStr} tif=${this.config.orderTif} clientOrderId=${clientOrderId}`);
+    const startMs = Date.now();
+
     let response: unknown;
-    let fillResult: { status: string; orderId?: string } | null = null;
     try {
-      [response, fillResult] = await Promise.all([
-        this.client.createSpotLimitOrder({
-          symbol,
-          side: "BUY",
-          price: formattedPrice,
-          quantity: formattedQtyStr,
-          clientOrderId
-        }),
-        fillWaitEnabled && this.config.privateWsUrl
-          ? this.client.waitForOrderFill({ clientOrderId, timeoutMs: fillWaitMs }).catch(() => null)
-          : Promise.resolve(null)
-      ]);
-      console.log(`[BullishAdapter] Order response:`, JSON.stringify(response).slice(0, 500));
+      response = await this.client.createSpotLimitOrder({
+        symbol,
+        side: "BUY",
+        price: formattedPrice,
+        quantity: formattedQtyStr,
+        clientOrderId
+      });
+      console.log(`[BullishAdapter] Order response (${Date.now() - startMs}ms):`, JSON.stringify(response).slice(0, 500));
     } catch (orderError: any) {
-      console.error(`[BullishAdapter] Order FAILED:`, orderError?.message, orderError?.response?.data || orderError?.body || "");
+      console.error(`[BullishAdapter] Order FAILED (${Date.now() - startMs}ms):`, orderError?.message);
       throw new Error(`bullish_order_failed:${orderError?.message || "unknown"}`);
     }
 
@@ -3676,52 +3670,49 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
           ? String((responseRecord.data as Record<string, unknown>).orderId)
           : "";
 
-    const fillConfirmed = fillResult?.status === "filled";
+    const restStatus = String(responseRecord.status || (responseRecord.data as Record<string, unknown> | undefined)?.status || "").toUpperCase();
+    const restFillPrice = Number(responseRecord.averageFillPrice ?? (responseRecord.data as Record<string, unknown> | undefined)?.averageFillPrice ?? responseRecord.price ?? 0);
+    const restFillQty = Number(responseRecord.quantityFilled ?? (responseRecord.data as Record<string, unknown> | undefined)?.quantityFilled ?? responseRecord.quantity ?? 0);
 
-    if (!fillConfirmed && orderId && this.config.orderTif !== "IOC") {
+    const isFilled = restStatus === "FILLED" || restStatus === "CLOSED"
+      || (orderId && restFillPrice > 0 && restFillQty > 0);
+    const isCancelled = restStatus === "CANCELLED" || restStatus === "EXPIRED";
+
+    if (!orderId) {
+      console.error(`[BullishAdapter] No orderId in response -- treating as failure`);
+      return {
+        venue: "bullish_testnet", status: "failure", quoteId: quote.quoteId,
+        rfqId: quote.rfqId ?? null, instrumentId: quote.instrumentId, side: "buy",
+        quantity: quote.quantity, executionPrice: 0, premium: quote.premium,
+        executedAt: nowIso(), externalOrderId: "", externalExecutionId: "",
+        details: { ...responseRecord, rejectionReason: "no_order_id_in_response" }
+      };
+    }
+
+    if (isIOC && isCancelled) {
+      console.warn(`[BullishAdapter] IOC order ${orderId} cancelled/expired (no fill)`);
+      return {
+        venue: "bullish_testnet", status: "failure", quoteId: quote.quoteId,
+        rfqId: quote.rfqId ?? null, instrumentId: quote.instrumentId, side: "buy",
+        quantity: quote.quantity, executionPrice: 0, premium: quote.premium,
+        executedAt: nowIso(), externalOrderId: orderId, externalExecutionId: `bullish-${orderId}`,
+        details: { ...responseRecord, fillStatus: "ioc_no_fill", rejectionReason: "ioc_cancelled" }
+      };
+    }
+
+    if (!isIOC && !isFilled && orderId) {
       setTimeout(async () => {
         try {
           await this.client.cancelOrder({ symbol, orderId });
-          console.log(`[BullishAdapter] Auto-cancelled unfilled order ${orderId} for ${symbol}`);
-        } catch {
-          // Order may have filled between check and cancel -- safe to ignore
-        }
+          console.log(`[BullishAdapter] Auto-cancelled unfilled GTC order ${orderId}`);
+        } catch {}
       }, cancelTimeoutMs).unref?.();
     }
 
-    let restFillResult: { fillPrice: string | null; fillQuantity: string | null; status: string } | null = null;
-    if (!fillConfirmed && orderId && fillWaitEnabled) {
-      try {
-        const accounts = await this.client.getTradingAccounts() as Record<string, unknown>;
-        const data = Array.isArray((accounts as any)?.data) ? (accounts as any).data : [];
-        for (const account of data) {
-          const positions = Array.isArray(account?.positions) ? account.positions : [];
-          for (const pos of positions) {
-            if (String(pos?.orderId || "") === orderId && String(pos?.status || "").toUpperCase() === "CLOSED") {
-              restFillResult = {
-                fillPrice: pos.averageFillPrice || pos.price || null,
-                fillQuantity: pos.quantityFilled || pos.quantity || null,
-                status: "filled_via_rest"
-              };
-            }
-          }
-        }
-      } catch {
-        // REST fallback is best-effort
-      }
-    }
+    const actualFillPrice = restFillPrice > 0 ? restFillPrice : unitPrice;
+    const actualFillQty = restFillQty > 0 ? restFillQty : formattedQty;
 
-    const confirmedViaAny = fillConfirmed || restFillResult?.status === "filled_via_rest";
-    const actualFillPrice = fillConfirmed && fillResult?.fillPrice
-      ? Number(fillResult.fillPrice)
-      : restFillResult?.fillPrice
-        ? Number(restFillResult.fillPrice)
-        : unitPrice;
-    const actualFillQty = fillConfirmed && fillResult?.fillQuantity
-      ? Number(fillResult.fillQuantity)
-      : restFillResult?.fillQuantity
-        ? Number(restFillResult.fillQuantity)
-        : quantity;
+    console.log(`[BullishAdapter] Order ${orderId} result: filled=${isFilled} price=${actualFillPrice} qty=${actualFillQty} latency=${Date.now() - startMs}ms`);
 
     return {
       venue: "bullish_testnet",
@@ -3730,30 +3721,25 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
       side: "buy",
-      quantity: confirmedViaAny ? actualFillQty : quote.quantity,
+      quantity: actualFillQty,
       executionPrice: actualFillPrice,
-      premium: confirmedViaAny ? actualFillPrice * actualFillQty : quote.premium,
+      premium: actualFillPrice * actualFillQty,
       executedAt: nowIso(),
-      externalOrderId: fillResult?.orderId || orderId,
+      externalOrderId: orderId,
       externalExecutionId: orderId ? `bullish-${orderId}` : "",
       details: {
         ...responseRecord,
-        fillConfirmation: fillResult
-          ? {
-              status: fillResult.status,
-              fillPrice: fillResult.fillPrice,
-              fillQuantity: fillResult.fillQuantity,
-              fees: fillResult.fees,
-              orderStatus: fillResult.orderStatus
-            }
-          : restFillResult
-            ? { status: restFillResult.status, fillPrice: restFillResult.fillPrice, fillQuantity: restFillResult.fillQuantity }
-            : { status: "not_confirmed" },
+        fillConfirmation: {
+          method: isIOC ? "rest_ioc_sync" : "rest_with_cancel_fallback",
+          filled: isFilled,
+          fillPrice: actualFillPrice,
+          fillQuantity: actualFillQty,
+          restStatus,
+          latencyMs: Date.now() - startMs,
+        },
         priceGuard: {
           stalenessMaxPct,
           orderTif: this.config.orderTif,
-          autoCancelEnabled: this.config.orderTif !== "IOC",
-          autoCancelTimeoutMs: this.config.orderTif !== "IOC" ? cancelTimeoutMs : 0
         }
       }
     };
