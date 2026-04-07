@@ -340,11 +340,14 @@ export function PilotWidget() {
         {view === "form" && (
           <>
             {/* Long / Short */}
-            <div style={{ display: "flex", gap: 0, marginBottom: 14, borderRadius: 10, overflow: "hidden", border: "1px solid var(--border)" }}>
+            <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
               {(["long", "short"] as const).map((side) => (
                 <button key={side} onClick={() => setPositionType(side)} style={{
-                  flex: 1, padding: "10px 0", border: "none", cursor: "pointer",
+                  flex: 1, padding: "10px 0", borderRadius: 10, cursor: "pointer",
                   fontSize: 13, fontWeight: 600, textTransform: "capitalize",
+                  border: positionType === side
+                    ? side === "long" ? "1.5px solid var(--success)" : "1.5px solid var(--danger)"
+                    : "1px solid var(--border)",
                   background: positionType === side
                     ? side === "long" ? "rgba(54,211,141,0.15)" : "rgba(255,107,107,0.15)"
                     : "var(--card-2)",
