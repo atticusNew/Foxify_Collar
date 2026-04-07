@@ -3580,6 +3580,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       };
     }
     const quoteDetails = (quote.details || {}) as Record<string, unknown>;
+    const optionSelection = quoteDetails.optionSelection as Record<string, unknown> | null | undefined;
     const selectedInstrumentId = String(quoteDetails.selectedInstrumentId || quote.instrumentId || "").trim();
     const symbol =
       selectedInstrumentId ||
@@ -3591,7 +3592,8 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     if (!Number.isFinite(quantity) || quantity <= 0) {
       throw new Error("bullish_execute_invalid_quantity");
     }
-    const unitPrice = quantity > 0 ? quote.premium / quantity : quote.premium;
+    const hedgeCostPerUnit = Number(optionSelection?.hedgeCostPerUnit ?? 0);
+    const unitPrice = hedgeCostPerUnit > 0 ? hedgeCostPerUnit : (quantity > 0 ? quote.premium / quantity : quote.premium);
 
     const stalenessMaxPct = Math.max(0.5, Number(process.env.PILOT_BULLISH_PRICE_STALENESS_MAX_PCT || "5"));
     try {
@@ -3633,18 +3635,27 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     const fillWaitMs = Math.max(2000, Number(process.env.PILOT_BULLISH_FILL_CONFIRM_TIMEOUT_MS || "15000"));
     const cancelTimeoutMs = Math.max(3000, Number(process.env.PILOT_BULLISH_UNFILLED_CANCEL_TIMEOUT_MS || "10000"));
 
-    const [response, fillResult] = await Promise.all([
-      this.client.createSpotLimitOrder({
-        symbol,
-        side: "BUY",
-        price: unitPrice.toFixed(8),
-        quantity: quantity.toFixed(8),
-        clientOrderId
-      }),
-      fillWaitEnabled && this.config.privateWsUrl
-        ? this.client.waitForOrderFill({ clientOrderId, timeoutMs: fillWaitMs }).catch(() => null)
-        : Promise.resolve(null)
-    ]);
+    console.log(`[BullishAdapter] Placing order: symbol=${symbol} side=BUY price=${unitPrice.toFixed(8)} qty=${quantity.toFixed(8)} tif=${this.config.orderTif} clientOrderId=${clientOrderId}`);
+    let response: unknown;
+    let fillResult: { status: string; orderId?: string } | null = null;
+    try {
+      [response, fillResult] = await Promise.all([
+        this.client.createSpotLimitOrder({
+          symbol,
+          side: "BUY",
+          price: unitPrice.toFixed(8),
+          quantity: quantity.toFixed(8),
+          clientOrderId
+        }),
+        fillWaitEnabled && this.config.privateWsUrl
+          ? this.client.waitForOrderFill({ clientOrderId, timeoutMs: fillWaitMs }).catch(() => null)
+          : Promise.resolve(null)
+      ]);
+      console.log(`[BullishAdapter] Order response:`, JSON.stringify(response).slice(0, 500));
+    } catch (orderError: any) {
+      console.error(`[BullishAdapter] Order FAILED:`, orderError?.message, orderError?.response?.data || orderError?.body || "");
+      throw new Error(`bullish_order_failed:${orderError?.message || "unknown"}`);
+    }
 
     const responseRecord = response as Record<string, unknown>;
     const orderId =
