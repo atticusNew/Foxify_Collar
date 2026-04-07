@@ -92,7 +92,8 @@ const adminApi = async <T = unknown>(
       ...opts?.headers,
     },
   });
-  const json = await res.json();
+  let json: any;
+  try { json = await res.json(); } catch { throw new Error(res.ok ? "invalid_response" : `HTTP ${res.status}`); }
   if (!res.ok) throw new Error(json?.reason || json?.message || `HTTP ${res.status}`);
   return json as T;
 };
@@ -120,8 +121,8 @@ function AdminLogin({ onLogin }: { onLogin: (token: string) => void }) {
       await adminApi("/pilot/monitor/status", token.trim());
       sessionStorage.setItem("pilot_admin_token", token.trim());
       onLogin(token.trim());
-    } catch {
-      setError("Invalid admin token");
+    } catch (e: any) {
+      setError(e?.message === "unauthorized" ? "Invalid admin token" : `Connection failed: ${e?.message || "unknown error"}`);
     } finally {
       setLoading(false);
     }
@@ -262,7 +263,9 @@ function Dashboard({ token }: { token: string }) {
       if (alertsRes.status === "fulfilled") setAlerts(alertsRes.value.alerts || []);
       if (protectionsRes.status === "fulfilled") setProtectionsList(protectionsRes.value.protections || []);
       setLastRefresh(new Date().toLocaleTimeString());
-      setError(null);
+      const failures = [healthRes, statusRes, metricsRes, qualityRes, alertsRes, protectionsRes]
+        .filter(r => r.status === "rejected");
+      setError(failures.length > 0 ? `${failures.length} endpoint(s) unavailable` : null);
     } catch (e: any) {
       setError(e.message);
     }

@@ -27,7 +27,13 @@ const fTime = (ms: number): string => { if (ms <= 0) return "Expired"; const h =
 
 // ─── API ─────────────────────────────────────────────────────────────
 
-const api = async <T = unknown>(p: string, o?: RequestInit): Promise<T> => { const r = await fetch(`${API_BASE}${p}`, { ...o, headers: { "Content-Type": "application/json", ...o?.headers } }); const j = await r.json(); if (!r.ok) throw new Error(j?.reason || j?.message || `HTTP ${r.status}`); return j as T; };
+const api = async <T = unknown>(p: string, o?: RequestInit): Promise<T> => {
+  const r = await fetch(`${API_BASE}${p}`, { ...o, headers: { "Content-Type": "application/json", ...o?.headers } });
+  let j: any;
+  try { j = await r.json(); } catch { throw new Error(r.ok ? "invalid_response" : `HTTP ${r.status}`); }
+  if (!r.ok) throw new Error(j?.reason || j?.message || `HTTP ${r.status}`);
+  return j as T;
+};
 const fetchRef = () => api<{ status: string; reference: ReferencePrice }>("/pilot/reference-price");
 const fetchQuote = (b: Record<string, unknown>) => api<QuoteResponse>("/pilot/protections/quote", { method: "POST", body: JSON.stringify(b) });
 const activateProt = (b: Record<string, unknown>) => api<{ status: string; protectionId: string; protection: ProtectionRecord }>("/pilot/protections/activate", { method: "POST", body: JSON.stringify(b) });
@@ -39,7 +45,16 @@ const fetchMon = async (id: string): Promise<MonitorResponse> => {
 // ─── Persistence ─────────────────────────────────────────────────────
 
 type Settl = { totalPremiums: number; totalPayouts: number };
-const ld = <T,>(k: string, f: T): T => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : f; } catch { return f; } };
+const ld = <T,>(k: string, f: T): T => {
+  try {
+    const v = localStorage.getItem(k);
+    if (!v) return f;
+    const parsed = JSON.parse(v);
+    if (typeof f === "number" && (typeof parsed !== "number" || !Number.isFinite(parsed))) return f;
+    if (Array.isArray(f) && !Array.isArray(parsed)) return f;
+    return parsed;
+  } catch { return f; }
+};
 const sv = (k: string, v: unknown) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
 
 // ─── Section ─────────────────────────────────────────────────────────
@@ -59,7 +74,9 @@ function Section({ title, badge, open, onToggle, children }: { title: string; ba
 // ─── Toast ───────────────────────────────────────────────────────────
 
 function Toast({ message, onDone }: { message: string; onDone: () => void }) {
-  useEffect(() => { const t = setTimeout(onDone, 3500); return () => clearTimeout(t); }, [onDone]);
+  const onDoneRef = useRef(onDone);
+  onDoneRef.current = onDone;
+  useEffect(() => { const t = setTimeout(() => onDoneRef.current(), 3500); return () => clearTimeout(t); }, []);
   return (
     <div style={{ padding: "10px 14px", marginBottom: 12, borderRadius: 8, background: "rgba(54,211,141,0.12)", border: "1px solid rgba(54,211,141,0.25)", color: "var(--success)", fontSize: 13, fontWeight: 500, animation: "fadeIn 0.2s ease" }}>
       {message}
@@ -102,7 +119,7 @@ export function PilotWidget() {
   const ready = positionType !== null && stopLoss !== null;
   const actives = positions.filter(p => p.status === "active");
   const closed = positions.filter(p => p.status === "closed" || p.status === "triggered");
-  const uPnl = actives.reduce((s, p) => { if (!livePrice) return s; return s + (p.type === "long" ? ((livePrice - p.entryPrice) / p.entryPrice) * p.size : ((p.entryPrice - livePrice) / p.entryPrice) * p.size); }, 0);
+  const uPnl = actives.reduce((s, p) => { if (!livePrice || !p.entryPrice || p.entryPrice <= 0) return s; return s + (p.type === "long" ? ((livePrice - p.entryPrice) / p.entryPrice) * p.size : ((p.entryPrice - livePrice) / p.entryPrice) * p.size); }, 0);
   const fresh = Date.now() - priceTs < 1500;
 
   useEffect(() => { let on = true; const poll = async () => { try { const d = await fetchRef(); if (on && d.status === "ok") { setLivePrice(Number(d.reference.price)); setPriceTs(Date.now()); setPriceError(null); } } catch (e: any) { if (on) setPriceError(e.message); } }; poll(); const id = setInterval(poll, 3000); return () => { on = false; clearInterval(id); }; }, []);
@@ -133,9 +150,10 @@ export function PilotWidget() {
     try {
       const ep = livePrice;
       const { pid, prem } = await doProtect(positionSize, positionType, dd, ep);
+      if (!pid) throw new Error("Protection activation failed — no protection ID returned");
       const num = nextNum();
       setPositions(prev => [...prev, { id: `pos_${num}_${Date.now()}`, num, type: positionType, size: positionSize, stopLoss: dd, entryPrice: ep, protectionId: pid, autoRenew, premium: prem, status: "active", closedPnl: null, closedPayout: null }]);
-      setBalance(b => { const nb = b - prem; sv(K_BAL, nb); return nb; });
+      setBalance(b => { const nb = Math.max(0, b - prem); sv(K_BAL, nb); return nb; });
       setSettlement(s => { const ns = { ...s, totalPremiums: s.totalPremiums + prem }; sv(K_SET, ns); return ns; });
       setPositionType(null); setStopLoss(null);
       setPosOpen(true);
@@ -158,8 +176,9 @@ export function PilotWidget() {
     setProtectingPosId(posId);
     try {
       const { pid, prem } = await doProtect(pos.size, pos.type, pos.stopLoss, pos.entryPrice);
+      if (!pid) throw new Error("Protection activation failed — no protection ID returned");
       setPositions(prev => prev.map(p => p.id === posId ? { ...p, protectionId: pid, premium: prem } : p));
-      setBalance(b => { const nb = b - prem; sv(K_BAL, nb); return nb; });
+      setBalance(b => { const nb = Math.max(0, b - prem); sv(K_BAL, nb); return nb; });
       setSettlement(s => { const ns = { ...s, totalPremiums: s.totalPremiums + prem }; sv(K_SET, ns); return ns; });
       setToast(`Protection added to Position #${pos.num}`);
     } catch (e: any) { setActivateError(e.message); } finally { setProtectingPosId(null); }
@@ -252,8 +271,9 @@ export function PilotWidget() {
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {actives.map(pos => {
                 const mon = monitors[pos.id];
-                const pnl = livePrice ? (pos.type === "long" ? ((livePrice - pos.entryPrice) / pos.entryPrice) * pos.size : ((pos.entryPrice - livePrice) / pos.entryPrice) * pos.size) : null;
-                const pnlPct = livePrice ? (pos.type === "long" ? ((livePrice - pos.entryPrice) / pos.entryPrice) * 100 : ((pos.entryPrice - livePrice) / pos.entryPrice) * 100) : null;
+                const canCalcPnl = livePrice && pos.entryPrice > 0;
+                const pnl = canCalcPnl ? (pos.type === "long" ? ((livePrice - pos.entryPrice) / pos.entryPrice) * pos.size : ((pos.entryPrice - livePrice) / pos.entryPrice) * pos.size) : null;
+                const pnlPct = canCalcPnl ? (pos.type === "long" ? ((livePrice - pos.entryPrice) / pos.entryPrice) * 100 : ((pos.entryPrice - livePrice) / pos.entryPrice) * 100) : null;
                 const fl = pos.type === "long" ? pos.entryPrice * (1 - pos.stopLoss / 100) : pos.entryPrice * (1 + pos.stopLoss / 100);
                 const isProtecting = protectingPosId === pos.id;
                 return (

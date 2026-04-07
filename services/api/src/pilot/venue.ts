@@ -3731,9 +3731,11 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
 
     console.log(`[BullishAdapter] Order ${orderId} result: filled=${isFilled} price=${actualFillPrice} qty=${actualFillQty} latency=${Date.now() - startMs}ms`);
 
+    const executionSuccess = orderId && (isFilled || (!isIOC && !isCancelled));
+
     return {
       venue: "bullish_testnet",
-      status: orderId ? "success" : "failure",
+      status: executionSuccess ? "success" : "failure",
       quoteId: quote.quoteId,
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
