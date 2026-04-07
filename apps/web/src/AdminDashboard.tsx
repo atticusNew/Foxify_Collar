@@ -405,7 +405,7 @@ function Dashboard({ token }: { token: string }) {
             {/* System health */}
             <div className="card">
               <div className="title" style={{ fontSize: 13 }}>Platform Health</div>
-              {health && (
+              {health ? (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: 12, color: "var(--muted)" }}>Overall</span>
@@ -413,17 +413,21 @@ function Dashboard({ token }: { token: string }) {
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: 12, color: "var(--muted)" }}>Database</span>
-                    {statusBadge(health.checks.db.status)}
+                    {statusBadge(health.checks?.db?.status || "unknown")}
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span style={{ fontSize: 12, color: "var(--muted)" }}>Price Feed</span>
-                    {statusBadge(health.checks.price.status)}
+                    {statusBadge(health.checks?.price?.status || "unknown")}
                   </div>
-                  {health.checks.price.source && (
+                  {health.checks?.price?.source && (
                     <div style={{ fontSize: 11, color: "var(--muted)", marginTop: -4 }}>
                       Source: {String(health.checks.price.source)}
                     </div>
                   )}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--muted)", padding: "10px 0" }}>
+                  {monitorStatus ? "Health check returned degraded status (IBKR transport not connected -- expected for Bullish profile)" : "Loading..."}
                 </div>
               )}
             </div>
@@ -520,7 +524,7 @@ function Dashboard({ token }: { token: string }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      {["ID", "Status", "Tier", "Notional", "Entry", "Floor", "Expiry", "Premium", "Payout Due", "Actions"].map((h) => (
+                      {["ID", "Status", "Notional", "Entry", "Floor", "Instrument", "Premium", "Hedge Cost", "Spread", "Expiry", "Actions"].map((h) => (
                         <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                       ))}
                     </tr>
@@ -529,6 +533,9 @@ function Dashboard({ token }: { token: string }) {
                     {protectionsList.map((p) => {
                       const isActive = p.status === "active" || p.status === "quoted" || p.status === "reconcile_pending";
                       const isTriggered = p.status === "triggered";
+                      const hedgeCost = Number((p as any).executionPrice || (p as any).metadata?.hedgeCostTotal || 0) * Number((p as any).size || (p as any).metadata?.quantity || 0);
+                      const clientPremium = Number(p.premium || 0);
+                      const spread = clientPremium > 0 && hedgeCost > 0 ? clientPremium - hedgeCost : null;
                       return (
                         <tr key={p.id} style={{ borderBottom: "1px solid var(--border)" }}>
                           <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>{p.id.slice(0, 8)}...</td>
@@ -541,15 +548,16 @@ function Dashboard({ token }: { token: string }) {
                               {p.status}
                             </span>
                           </td>
-                          <td style={{ padding: "8px 6px" }}>{p.tierName || "—"}</td>
                           <td style={{ padding: "8px 6px" }}>{fmtUsd(p.protectedNotional)}</td>
                           <td style={{ padding: "8px 6px" }}>{p.entryPrice ? fmtUsd(p.entryPrice) : "—"}</td>
                           <td style={{ padding: "8px 6px" }}>{p.floorPrice ? fmtUsd(p.floorPrice) : "—"}</td>
-                          <td style={{ padding: "8px 6px", fontSize: 10 }}>{new Date(p.expiryAt).toLocaleString()}</td>
-                          <td style={{ padding: "8px 6px" }}>{p.premium ? fmtUsd(p.premium) : "—"}</td>
-                          <td style={{ padding: "8px 6px", color: Number(p.payoutDueAmount || 0) > 0 ? "var(--danger)" : "var(--muted)" }}>
-                            {p.payoutDueAmount ? fmtUsd(p.payoutDueAmount) : "—"}
+                          <td style={{ padding: "8px 6px", fontSize: 10, fontFamily: "monospace" }}>{p.instrumentId || "—"}</td>
+                          <td style={{ padding: "8px 6px" }}>{clientPremium > 0 ? fmtUsd(clientPremium) : "—"}</td>
+                          <td style={{ padding: "8px 6px" }}>{hedgeCost > 0 ? fmtUsd(hedgeCost) : "—"}</td>
+                          <td style={{ padding: "8px 6px", color: spread !== null ? (spread >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
+                            {spread !== null ? fmtUsd(spread) : "—"}
                           </td>
+                          <td style={{ padding: "8px 6px", fontSize: 10 }}>{new Date(p.expiryAt).toLocaleString()}</td>
                           <td style={{ padding: "8px 6px" }}>
                             <div style={{ display: "flex", gap: 4 }}>
                               <button
@@ -683,17 +691,17 @@ function Dashboard({ token }: { token: string }) {
             <div className="title" style={{ fontSize: 13 }}>
               <span>Configuration (Read-Only)</span>
             </div>
-            {healthConfig ? (
+            {healthConfig || monitorStatus ? (
               <pre style={{
                 fontSize: 11, lineHeight: 1.5, color: "var(--muted)",
                 background: "var(--card-2)", padding: 14, borderRadius: 8,
                 overflow: "auto", maxHeight: 500, border: "1px solid var(--border)",
               }}>
-                {JSON.stringify(healthConfig, null, 2)}
+                {JSON.stringify(healthConfig || { monitor: monitorStatus, metrics: metrics }, null, 2)}
               </pre>
             ) : (
               <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
-                Loading configuration...
+                No configuration data available. Health endpoint may be degraded.
               </div>
             )}
           </div>

@@ -1068,7 +1068,7 @@ export const registerPilotRoutes = async (
     const marketId = String(query.marketId || pilotConfig.referenceMarketId || "BTC-USD");
     const requestId = pilotConfig.nextRequestId();
     try {
-      const snapshot = await resolveReferencePriceForPilot(requestId, marketId);
+      const snapshot = await resolveLiveReferencePrice(requestId, marketId);
       const ageMs = Math.max(0, Date.now() - Date.parse(snapshot.priceTimestamp));
       const venue =
         snapshot.priceSource === "bullish_orderbook_mid"
