@@ -7,7 +7,7 @@ services:
     name: atticus-pilot-api
     runtime: node
     plan: starter
-    branch: cursor/bullish-locked-profile-phase-a
+    branch: cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4
     autoDeploy: true
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx src/server.ts
@@ -17,26 +17,47 @@ services:
         value: production
       - key: PILOT_API_ENABLED
         value: "true"
+      - key: PILOT_ACTIVATION_ENABLED
+        value: "true"
+      - key: PILOT_PROFILE
+        value: bullish_locked_v1
       - key: PILOT_VENUE_MODE
         value: bullish_testnet
       - key: PILOT_BULLISH_ENABLED
-        value: "true"
-      - key: PILOT_ACTIVATION_ENABLED
         value: "true"
       - key: PILOT_BULLISH_ORDER_TIF
         value: IOC
       - key: PILOT_TENOR_DEFAULT_DAYS
         value: "5"
+      - key: PILOT_ENFORCE_WINDOW
+        value: "false"
       - key: PILOT_STRIKE_SELECTION_MODE
         value: trigger_aligned
+      - key: PILOT_MAX_PROTECTION_NOTIONAL_USDC
+        value: "50000"
+      - key: PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC
+        value: "500000"
+      - key: PILOT_STARTING_RESERVE_USDC
+        value: "10000"
       # Bullish ECDSA credentials -- inject via Render dashboard (never commit secrets)
       # PILOT_BULLISH_ECDSA_PRIVATE_KEY
       # PILOT_BULLISH_ECDSA_PUBLIC_KEY
-      # PILOT_BULLISH_ACCOUNT_ID
+      # PILOT_BULLISH_ECDSA_METADATA
       # PILOT_BULLISH_TRADING_ACCOUNT_ID
-      # PILOT_BULLISH_REST_BASE_URL (default: https://api.simnext.bullish-test.com)
-      # PILOT_BULLISH_WS_PUBLIC_URL
-      # PILOT_BULLISH_WS_PRIVATE_URL
+      - key: PILOT_BULLISH_REST_BASE_URL
+        value: https://api.simnext.bullish-test.com
+      - key: PILOT_BULLISH_PUBLIC_WS_URL
+        value: wss://api.simnext.bullish-test.com/trading-api/v1/market-data/orderbook
+      - key: PILOT_BULLISH_PRIVATE_WS_URL
+        value: wss://api.simnext.bullish-test.com/trading-api/v1/private-data
+      - key: PILOT_BULLISH_ENABLE_EXECUTION
+        value: "true"
+      - key: PILOT_BULLISH_FILL_CONFIRM_ENABLED
+        value: "true"
+      - key: PILOT_BULLISH_FILL_CONFIRM_TIMEOUT_MS
+        value: "15000"
+      - key: PILOT_BULLISH_PRICE_STALENESS_MAX_PCT
+        value: "5"
       - key: PILOT_TENANT_SCOPE_ID
         value: foxify-pilot
       - key: PILOT_TERMS_VERSION
@@ -56,9 +77,9 @@ services:
       - key: PRICE_SINGLE_SOURCE
         value: "false"
       - key: PRICE_REFERENCE_URL
-        value: https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL
-      - key: FALLBACK_PRICE_URL
         value: https://api.exchange.coinbase.com/products/BTC-USD/ticker
+      - key: FALLBACK_PRICE_URL
+        value: https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL
       - key: PRICE_REFERENCE_MARKET_ID
         value: BTC-USD
       - key: PRICE_REQUEST_RETRY_ATTEMPTS
@@ -71,6 +92,20 @@ services:
         value: "2500"
       - key: PRICE_TIMEOUT_FALLBACK_MS
         value: "2500"
+      - key: PILOT_RATE_LIMIT_MAX
+        value: "60"
+      - key: PILOT_RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: PILOT_MONITOR_ENABLED
+        value: "true"
+      - key: DERIBIT_ENV
+        value: testnet
+      - key: DERIBIT_PAPER
+        value: "true"
+      - key: DERIBIT_CLIENT_ID
+        value: placeholder
+      - key: DERIBIT_CLIENT_SECRET
+        value: placeholder
       - key: POSTGRES_URL
         fromDatabase:
           name: atticus-pilot-db
@@ -79,7 +114,7 @@ services:
   - type: web
     name: atticus-pilot-web
     runtime: static
-    branch: cursor/bullish-locked-profile-phase-a
+    branch: cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4
     autoDeploy: true
     buildCommand: npm ci && npm --workspace apps/web run build
     staticPublishPath: apps/web/dist
