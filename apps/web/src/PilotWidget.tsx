@@ -31,7 +31,10 @@ const api = async <T = unknown>(p: string, o?: RequestInit): Promise<T> => { con
 const fetchRef = () => api<{ status: string; reference: ReferencePrice }>("/pilot/reference-price");
 const fetchQuote = (b: Record<string, unknown>) => api<QuoteResponse>("/pilot/protections/quote", { method: "POST", body: JSON.stringify(b) });
 const activateProt = (b: Record<string, unknown>) => api<{ status: string; protectionId: string; protection: ProtectionRecord }>("/pilot/protections/activate", { method: "POST", body: JSON.stringify(b) });
-const fetchMon = (id: string) => api<MonitorResponse>(`/pilot/protections/${id}/monitor`);
+const fetchMon = async (id: string): Promise<MonitorResponse> => {
+  const raw = await api<{ status: string; monitor?: MonitorResponse } & MonitorResponse>(`/pilot/protections/${id}/monitor`);
+  return raw.monitor || raw;
+};
 
 // ─── Persistence ─────────────────────────────────────────────────────
 
