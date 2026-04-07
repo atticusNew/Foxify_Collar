@@ -3639,7 +3639,14 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     const fillWaitMs = Math.max(2000, Number(process.env.PILOT_BULLISH_FILL_CONFIRM_TIMEOUT_MS || "15000"));
     const cancelTimeoutMs = Math.max(3000, Number(process.env.PILOT_BULLISH_UNFILLED_CANCEL_TIMEOUT_MS || "10000"));
 
-    console.log(`[BullishAdapter] Placing order: symbol=${symbol} side=BUY price=${unitPrice.toFixed(8)} qty=${quantity.toFixed(8)} tif=${this.config.orderTif} clientOrderId=${clientOrderId}`);
+    const isOption = /^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol);
+    const pricePrecision = isOption ? 4 : 8;
+    const qtyPrecision = isOption ? 2 : 8;
+    const formattedPrice = unitPrice.toFixed(pricePrecision);
+    const formattedQty = Math.floor(quantity * Math.pow(10, qtyPrecision)) / Math.pow(10, qtyPrecision);
+    const formattedQtyStr = formattedQty.toFixed(qtyPrecision);
+
+    console.log(`[BullishAdapter] Placing order: symbol=${symbol} side=BUY price=${formattedPrice} qty=${formattedQtyStr} tif=${this.config.orderTif} clientOrderId=${clientOrderId} isOption=${isOption}`);
     let response: unknown;
     let fillResult: { status: string; orderId?: string } | null = null;
     try {
@@ -3647,8 +3654,8 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         this.client.createSpotLimitOrder({
           symbol,
           side: "BUY",
-          price: unitPrice.toFixed(8),
-          quantity: quantity.toFixed(8),
+          price: formattedPrice,
+          quantity: formattedQtyStr,
           clientOrderId
         }),
         fillWaitEnabled && this.config.privateWsUrl
