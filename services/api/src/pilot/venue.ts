@@ -3593,40 +3593,44 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       throw new Error("bullish_execute_invalid_quantity");
     }
     const hedgeCostPerUnit = Number(optionSelection?.hedgeCostPerUnit ?? 0);
-    const unitPrice = hedgeCostPerUnit > 0 ? hedgeCostPerUnit : (quantity > 0 ? quote.premium / quantity : quote.premium);
 
     const stalenessMaxPct = Math.max(0.5, Number(process.env.PILOT_BULLISH_PRICE_STALENESS_MAX_PCT || "5"));
+    let freshAskPrice: number | null = null;
     try {
       const freshBook = await this.client.getHybridOrderBook(symbol);
-      const freshAsk = Number(freshBook.asks[0]?.price ?? NaN);
-      if (Number.isFinite(freshAsk) && freshAsk > 0) {
-        const driftPct = Math.abs(freshAsk - unitPrice) / unitPrice * 100;
-        if (driftPct > stalenessMaxPct) {
-          return {
-            venue: "bullish_testnet",
-            status: "failure",
-            quoteId: quote.quoteId,
-            rfqId: quote.rfqId ?? null,
-            instrumentId: quote.instrumentId,
-            side: "buy",
-            quantity: quote.quantity,
-            executionPrice: 0,
-            premium: quote.premium,
-            executedAt: nowIso(),
-            externalOrderId: "",
-            externalExecutionId: "",
-            details: {
-              rejectionReason: "price_staleness_exceeded",
-              quotedPrice: unitPrice,
-              currentAsk: freshAsk,
-              driftPct: driftPct.toFixed(2),
-              maxAllowedPct: stalenessMaxPct
-            }
-          };
-        }
-      }
+      freshAskPrice = Number(freshBook.asks[0]?.price ?? NaN);
+      if (!Number.isFinite(freshAskPrice) || freshAskPrice <= 0) freshAskPrice = null;
     } catch {
-      // If fresh book check fails, proceed with original price
+      // If fresh book check fails, proceed with stored price
+    }
+
+    const unitPrice = freshAskPrice || (hedgeCostPerUnit > 0 ? hedgeCostPerUnit : (quantity > 0 ? quote.premium / quantity : quote.premium));
+
+    if (freshAskPrice && hedgeCostPerUnit > 0) {
+      const driftPct = Math.abs(freshAskPrice - hedgeCostPerUnit) / hedgeCostPerUnit * 100;
+      if (driftPct > stalenessMaxPct) {
+        return {
+          venue: "bullish_testnet",
+          status: "failure",
+          quoteId: quote.quoteId,
+          rfqId: quote.rfqId ?? null,
+          instrumentId: quote.instrumentId,
+          side: "buy",
+          quantity: quote.quantity,
+          executionPrice: 0,
+          premium: quote.premium,
+          executedAt: nowIso(),
+          externalOrderId: "",
+          externalExecutionId: "",
+          details: {
+            rejectionReason: "price_staleness_exceeded",
+            quotedPrice: hedgeCostPerUnit,
+            currentAsk: freshAskPrice,
+            driftPct: driftPct.toFixed(2),
+            maxAllowedPct: stalenessMaxPct
+          }
+        };
+      }
     }
 
     const clientOrderId = quote.quoteId.replace(/[^0-9]/g, "").slice(0, 16) || String(BigInt(Date.now()) * 1000n);
