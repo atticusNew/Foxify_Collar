@@ -200,11 +200,11 @@ export function PilotWidget() {
         if (!on) return;
         setMonitor(d);
         if (d.currentPrice) setLivePrice(Number(d.currentPrice));
-        if (d.protection.status === "triggered") {
+        if (d.protection?.status === "triggered") {
           setCloseReason("breach");
           setClosedPayout(Number(d.protection.payoutDueAmount || 0));
           setView("closed");
-        } else if (d.protection.status === "expired") {
+        } else if (d.protection?.status === "expired") {
           setCloseReason("expired");
           setView("closed");
         }
@@ -310,7 +310,7 @@ export function PilotWidget() {
 
   let distancePct: number | null = null;
   let distanceUsd: number | null = null;
-  if (monitor?.distanceToFloor) {
+  if (monitor?.protection && monitor?.distanceToFloor) {
     distancePct = Number(monitor.distanceToFloor.pct);
     distanceUsd = Number(monitor.distanceToFloor.usd);
   }
@@ -544,7 +544,7 @@ export function PilotWidget() {
               </div>
             )}
 
-            {protectionId && monitor && (
+            {protectionId && monitor?.protection && (
               <div style={{ background: "rgba(54,211,141,0.04)", border: "1px solid rgba(54,211,141,0.12)", borderRadius: 10, padding: 12, marginBottom: 12 }}>
                 <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8, color: "var(--success)" }}>Protection Active</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--muted)" }}>
@@ -556,7 +556,7 @@ export function PilotWidget() {
                   )}
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span>Premium paid</span>
-                    <span style={{ fontWeight: 500, color: "var(--text)" }}>{fmtUsd(Number(monitor.protection.premium || 0))}</span>
+                    <span style={{ fontWeight: 500, color: "var(--text)" }}>{fmtUsd(Number(monitor.protection?.premium || computedPremium))}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span>Payout if triggered</span>
