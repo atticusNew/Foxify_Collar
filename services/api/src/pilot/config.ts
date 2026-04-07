@@ -1281,7 +1281,7 @@ export const pilotConfig = {
   priceRequestRetryDelayMs: Number(process.env.PRICE_REQUEST_RETRY_DELAY_MS || "180"),
   venueQuoteTimeoutMs: Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "30000"),
   quoteTtlMs: Number(process.env.PILOT_QUOTE_TTL_MS || "30000"),
-  venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "8000"),
+  venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "25000"),
   venueMarkTimeoutMs: Number(process.env.PILOT_VENUE_MARK_TIMEOUT_MS || "3000"),
   triggerMonitorEnabled: parseBooleanEnv(process.env.PILOT_TRIGGER_MONITOR_ENABLED, true),
   triggerMonitorIntervalMs: parsePositiveIntInRange(
