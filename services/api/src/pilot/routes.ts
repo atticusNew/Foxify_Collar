@@ -2986,7 +2986,9 @@ export const registerPilotRoutes = async (
         requestedQuantity > 0
           ? new Decimal(execution.quantity).div(new Decimal(requestedQuantity))
           : new Decimal(0);
-      const threshold = new Decimal(1).minus(new Decimal(pilotConfig.fullCoverageTolerancePct));
+      const baseTolerance = new Decimal(pilotConfig.fullCoverageTolerancePct);
+      const optionQtyTolerance = isLockedBullishProfile ? new Decimal("0.06") : baseTolerance;
+      const threshold = new Decimal(1).minus(optionQtyTolerance);
       if (
         (pilotConfig.requireFullCoverage || pilotConfig.requireFullExecutionFill) &&
         coverageRatio.lt(threshold)
