@@ -688,6 +688,35 @@ export class BullishTradingClient {
     });
   }
 
+  async getOrderStatus(orderId: string): Promise<{
+    status: string;
+    fillPrice: number;
+    fillQuantity: number;
+    fees: { baseFee: string; quoteFee: string };
+    raw: unknown;
+  }> {
+    const headers = await this.buildJwtHeaders();
+    const raw = await this.requestJson<unknown>({
+      path: `/trading-api/v2/orders/${orderId}`,
+      method: "GET",
+      timeoutMs: this.config.orderTimeoutMs,
+      headers
+    });
+    const record = (raw as Record<string, unknown>)?.data as Record<string, unknown> | undefined
+      ?? raw as Record<string, unknown>;
+    const status = String(record?.status || record?.orderStatus || "UNKNOWN").toUpperCase();
+    return {
+      status,
+      fillPrice: Number(record?.averageFillPrice ?? record?.price ?? 0),
+      fillQuantity: Number(record?.quantityFilled ?? record?.filledQuantity ?? 0),
+      fees: {
+        baseFee: String(record?.baseFee ?? "0"),
+        quoteFee: String(record?.quoteFee ?? "0"),
+      },
+      raw,
+    };
+  }
+
   async cancelOrder(params: { symbol: string; orderId: string; clientOrderId?: string }): Promise<unknown> {
     return await this.submitCommand({
       commandType: "V2CancelOrder",

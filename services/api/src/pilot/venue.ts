@@ -3670,9 +3670,26 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
           ? String((responseRecord.data as Record<string, unknown>).orderId)
           : "";
 
-    const restStatus = String(responseRecord.status || (responseRecord.data as Record<string, unknown> | undefined)?.status || "").toUpperCase();
-    const restFillPrice = Number(responseRecord.averageFillPrice ?? (responseRecord.data as Record<string, unknown> | undefined)?.averageFillPrice ?? responseRecord.price ?? 0);
-    const restFillQty = Number(responseRecord.quantityFilled ?? (responseRecord.data as Record<string, unknown> | undefined)?.quantityFilled ?? responseRecord.quantity ?? 0);
+    let restStatus = String(responseRecord.status || (responseRecord.data as Record<string, unknown> | undefined)?.status || "").toUpperCase();
+    let restFillPrice = Number(responseRecord.averageFillPrice ?? (responseRecord.data as Record<string, unknown> | undefined)?.averageFillPrice ?? responseRecord.price ?? 0);
+    let restFillQty = Number(responseRecord.quantityFilled ?? (responseRecord.data as Record<string, unknown> | undefined)?.quantityFilled ?? responseRecord.quantity ?? 0);
+
+    if (orderId && isIOC && restFillPrice <= 0) {
+      const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await delay(attempt === 0 ? 300 : 500);
+        try {
+          const orderStatus = await this.client.getOrderStatus(orderId);
+          console.log(`[BullishAdapter] Order status poll ${attempt + 1}: status=${orderStatus.status} fillPrice=${orderStatus.fillPrice} fillQty=${orderStatus.fillQuantity}`);
+          restStatus = orderStatus.status;
+          if (orderStatus.fillPrice > 0) restFillPrice = orderStatus.fillPrice;
+          if (orderStatus.fillQuantity > 0) restFillQty = orderStatus.fillQuantity;
+          if (restStatus === "CLOSED" || restStatus === "FILLED" || restStatus === "CANCELLED" || restStatus === "EXPIRED") break;
+        } catch (pollErr: any) {
+          console.warn(`[BullishAdapter] Order status poll ${attempt + 1} failed:`, pollErr?.message);
+        }
+      }
+    }
 
     const isFilled = restStatus === "FILLED" || restStatus === "CLOSED"
       || (orderId && restFillPrice > 0 && restFillQty > 0);
