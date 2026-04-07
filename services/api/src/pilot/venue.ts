@@ -3407,7 +3407,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     const bestTenorDrift = candidates[0]?.tenorDriftDays ?? 0;
     const sameExpiryGroup = candidates.filter((c) => Math.abs(c.tenorDriftDays - bestTenorDrift) < 0.5);
 
-    for (const candidate of sameExpiryGroup.slice(0, 20)) {
+    for (const candidate of sameExpiryGroup.slice(0, 5)) {
       try {
         const book = await this.client.getHybridOrderBook(candidate.symbol);
         const bestAsk = book.asks[0];
