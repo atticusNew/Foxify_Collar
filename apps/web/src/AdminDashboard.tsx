@@ -97,8 +97,10 @@ const adminApi = async <T = unknown>(
   return json as T;
 };
 
-const fmtUsd = (v: string | number) => {
+const fmtUsd = (v: string | number | null | undefined) => {
+  if (v === null || v === undefined) return "$0.00";
   const n = typeof v === "string" ? Number(v) : v;
+  if (!Number.isFinite(n)) return "$0.00";
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
 };
 
