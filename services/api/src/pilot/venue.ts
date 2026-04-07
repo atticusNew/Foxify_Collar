@@ -3633,7 +3633,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       }
     }
 
-    const clientOrderId = quote.quoteId.replace(/[^0-9]/g, "").slice(0, 16) || String(BigInt(Date.now()) * 1000n);
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
     const isIOC = this.config.orderTif === "IOC";
     const cancelTimeoutMs = Math.max(3000, Number(process.env.PILOT_BULLISH_UNFILLED_CANCEL_TIMEOUT_MS || "10000"));
 
