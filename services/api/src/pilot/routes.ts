@@ -3445,10 +3445,51 @@ export const registerPilotRoutes = async (
         markDetails = { error: String(error?.message || "mark_unavailable") };
       }
     }
+    const expiryMs = Date.parse(protection.expiryAt);
+    const timeRemainingMs = Number.isFinite(expiryMs) ? Math.max(0, expiryMs - Date.now()) : 0;
+    const hours = Math.floor(timeRemainingMs / 3600000);
+    const mins = Math.floor((timeRemainingMs % 3600000) / 60000);
+    const timeHuman = timeRemainingMs <= 0 ? "Expired"
+      : hours >= 24 ? `${Math.floor(hours / 24)}d ${hours % 24}h`
+      : `${hours}h ${mins}m`;
+
+    const distanceUsd = protectionType === "short"
+      ? triggerPrice.minus(referencePrice).abs()
+      : referencePrice.minus(triggerPrice).abs();
+
     return {
       protectionId: protection.id,
       status: protection.status,
       protectionType,
+      protection: {
+        id: protection.id,
+        status: protection.status,
+        tierName: protection.tierName,
+        protectedNotional: protection.protectedNotional,
+        entryPrice: protection.entryPrice,
+        floorPrice: triggerPrice.toFixed(10),
+        drawdownFloorPct: protection.drawdownFloorPct,
+        expiryAt: protection.expiryAt,
+        premium: protection.premium,
+        autoRenew: protection.autoRenew,
+        payoutDueAmount: protection.payoutDueAmount,
+        payoutSettledAmount: protection.payoutSettledAmount,
+        venue: protection.venue,
+        instrumentId: protection.instrumentId,
+        createdAt: protection.createdAt,
+      },
+      currentPrice: referencePrice.toFixed(10),
+      currentPriceSource: snapshot.priceSource,
+      currentPriceTimestamp: snapshot.priceTimestamp,
+      timeRemaining: {
+        ms: timeRemainingMs,
+        human: timeHuman
+      },
+      distanceToFloor: {
+        pct: distanceToTriggerPct.toFixed(4),
+        usd: distanceUsd.toFixed(2),
+        direction: protectionType === "short" ? "above" : "below"
+      },
       referencePrice: referencePrice.toFixed(10),
       referenceSource: snapshot.priceSource,
       referenceTimestamp: snapshot.priceTimestamp,
