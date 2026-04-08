@@ -421,38 +421,80 @@ export const insertProtection = async (
   }
 ): Promise<ProtectionRecord> => {
   const id = input.id || randomUUID();
-  const result = await pool.query(
-    `
-      INSERT INTO pilot_protections (
-        id, user_hash, hash_version, status, tier_name, drawdown_floor_pct, sl_pct, hedge_status, regime, regime_source, dvol_at_purchase,
-        market_id, protected_notional, foxify_exposure_notional,
-        expiry_at, auto_renew, renew_window_minutes, metadata
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
-      RETURNING *
-    `,
-    [
-      id,
-      input.userHash,
-      input.hashVersion,
-      input.status,
-      input.tierName ?? null,
-      input.drawdownFloorPct ?? null,
-      input.slPct ?? null,
-      input.hedgeStatus ?? null,
-      input.regime ?? null,
-      input.regimeSource ?? null,
-      input.dvolAtPurchase ?? null,
-      input.marketId,
-      input.protectedNotional,
-      input.foxifyExposureNotional,
-      input.expiryAt,
-      input.autoRenew,
-      input.renewWindowMinutes,
-      JSON.stringify(input.metadata || {})
-    ]
-  );
-  return mapProtection(result.rows[0]);
+  const v7Meta = {
+    ...(input.metadata || {}),
+    ...(input.slPct != null ? { slPct: input.slPct } : {}),
+    ...(input.hedgeStatus ? { hedgeStatus: input.hedgeStatus } : {}),
+    ...(input.regime ? { regime: input.regime } : {}),
+    ...(input.regimeSource ? { regimeSource: input.regimeSource } : {}),
+    ...(input.dvolAtPurchase != null ? { dvolAtPurchase: input.dvolAtPurchase } : {})
+  };
+  try {
+    const result = await pool.query(
+      `
+        INSERT INTO pilot_protections (
+          id, user_hash, hash_version, status, tier_name, drawdown_floor_pct, sl_pct, hedge_status, regime, regime_source, dvol_at_purchase,
+          market_id, protected_notional, foxify_exposure_notional,
+          expiry_at, auto_renew, renew_window_minutes, metadata
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
+        RETURNING *
+      `,
+      [
+        id,
+        input.userHash,
+        input.hashVersion,
+        input.status,
+        input.tierName ?? null,
+        input.drawdownFloorPct ?? null,
+        input.slPct ?? null,
+        input.hedgeStatus ?? null,
+        input.regime ?? null,
+        input.regimeSource ?? null,
+        input.dvolAtPurchase ?? null,
+        input.marketId,
+        input.protectedNotional,
+        input.foxifyExposureNotional,
+        input.expiryAt,
+        input.autoRenew,
+        input.renewWindowMinutes,
+        JSON.stringify(v7Meta)
+      ]
+    );
+    return mapProtection(result.rows[0]);
+  } catch (err: any) {
+    if (String(err?.message || "").includes("column") && String(err?.message || "").includes("does not exist")) {
+      console.warn("[insertProtection] V7 columns not yet migrated, falling back to base insert. V7 fields stored in metadata.");
+      const result = await pool.query(
+        `
+          INSERT INTO pilot_protections (
+            id, user_hash, hash_version, status, tier_name, drawdown_floor_pct,
+            market_id, protected_notional, foxify_exposure_notional,
+            expiry_at, auto_renew, renew_window_minutes, metadata
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+          RETURNING *
+        `,
+        [
+          id,
+          input.userHash,
+          input.hashVersion,
+          input.status,
+          input.tierName ?? null,
+          input.drawdownFloorPct ?? null,
+          input.marketId,
+          input.protectedNotional,
+          input.foxifyExposureNotional,
+          input.expiryAt,
+          input.autoRenew,
+          input.renewWindowMinutes,
+          JSON.stringify(v7Meta)
+        ]
+      );
+      return mapProtection(result.rows[0]);
+    }
+    throw err;
+  }
 };
 
 export const patchProtection = async (
