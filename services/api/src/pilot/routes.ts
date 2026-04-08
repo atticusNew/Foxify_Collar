@@ -2851,14 +2851,16 @@ export const registerPilotRoutes = async (
       const rawRequestedQty = contextEntryAnchor
         ? protectedNotional.div(contextEntryAnchor).toDecimalPlaces(8).toNumber()
         : 0;
-      requestedQuantity = v7EnabledActivate
-        ? Math.floor(rawRequestedQty * 100) / 100
-        : rawRequestedQty;
+      requestedQuantity = rawRequestedQty;
+      const quantityMismatchTolerance = v7EnabledActivate
+        ? new Decimal("0.15")
+        : new Decimal(pilotConfig.fullCoverageTolerancePct);
       const quantityDeltaPct =
         requestedQuantity > 0
           ? new Decimal(lockedQuote.quantity).minus(requestedQuantity).abs().div(new Decimal(requestedQuantity))
           : new Decimal(0);
-      if (quantityDeltaPct.gt(new Decimal(pilotConfig.fullCoverageTolerancePct))) {
+      if (quantityDeltaPct.gt(quantityMismatchTolerance)) {
+        console.warn(`[Activate] quote_mismatch_quantity: quoteQty=${lockedQuote.quantity} requestedQty=${requestedQuantity} delta=${quantityDeltaPct.toFixed(4)} tolerance=${quantityMismatchTolerance.toFixed(4)}`);
         throw new Error("quote_mismatch_quantity");
       }
       if (contextProtectionType !== protectionType) {
@@ -3143,9 +3145,12 @@ export const registerPilotRoutes = async (
           .join(" | ");
         throw new Error("execution_failed");
       }
+      const effectiveRequestedQty = v7EnabledActivate
+        ? Math.floor(requestedQuantity * 100) / 100
+        : requestedQuantity;
       const coverageRatio =
-        requestedQuantity > 0
-          ? new Decimal(execution.quantity).div(new Decimal(requestedQuantity))
+        effectiveRequestedQty > 0
+          ? new Decimal(execution.quantity).div(new Decimal(effectiveRequestedQty))
           : new Decimal(0);
       const baseTolerance = new Decimal(pilotConfig.fullCoverageTolerancePct);
       const v7CoverageTolerance = new Decimal("0.15");
