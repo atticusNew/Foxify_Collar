@@ -119,6 +119,11 @@ const resolveTierHybridStrictMultiplier = (tierName: string): Decimal => {
 };
 
 const ROUNDED_PREMIUM_PER_1K_USD_BY_TIER: Record<string, Decimal> = {
+  "SL 1%": new Decimal(9),
+  "SL 2%": new Decimal(6),
+  "SL 3%": new Decimal(5),
+  "SL 5%": new Decimal(4),
+  "SL 10%": new Decimal(2),
   "Pro (Bronze)": new Decimal(11),
   "Pro (Silver)": new Decimal(11),
   "Pro (Gold)": new Decimal(11),
