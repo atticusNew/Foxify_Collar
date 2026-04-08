@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 export type PilotVenueMode =
   | "falconx"
   | "deribit_test"
+  | "deribit_live"
   | "mock_falconx"
   | "ibkr_cme_live"
   | "ibkr_cme_paper"
@@ -196,7 +197,8 @@ export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => 
     normalized === "mock_falconx" ||
     normalized === "ibkr_cme_live" ||
     normalized === "ibkr_cme_paper" ||
-    normalized === "bullish_testnet"
+    normalized === "bullish_testnet" ||
+    normalized === "deribit_live"
   ) {
     return normalized;
   }

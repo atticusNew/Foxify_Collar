@@ -25,6 +25,7 @@ export type VenueExecutionStatus = "success" | "failure";
 export type VenueName =
   | "falconx"
   | "deribit_test"
+  | "deribit_live"
   | "mock_falconx"
   | "ibkr_cme_live"
   | "ibkr_cme_paper"

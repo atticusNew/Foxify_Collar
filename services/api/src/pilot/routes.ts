@@ -885,6 +885,16 @@ export const registerPilotRoutes = async (
     deribit: deps.deribit
   });
 
+  const deribitVenue = createPilotVenueAdapter({
+    mode: "deribit_live",
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+    deribit: deps.deribit,
+    quoteTtlMs: pilotConfig.quoteTtlMs,
+    deribitQuotePolicy: pilotConfig.deribitQuotePolicy,
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 7
+  });
+
   if (pilotConfig.v7.enabled) {
     configureRegimeClassifier({
       deribitConnector: deps.deribit,
@@ -1531,6 +1541,108 @@ export const registerPilotRoutes = async (
     }
   });
 
+  app.get("/pilot/deribit/pricing", async (req, reply) => {
+    const query = req.query as { notional?: string; tenorDays?: string; protectionType?: string };
+    const notional = Number(query.notional || 10000);
+    const tenorDays = Number(query.tenorDays || pilotConfig.v7.defaultTenorDays);
+    const protectionType = String(query.protectionType || "long") as "long" | "short";
+    if (!Number.isFinite(notional) || notional <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_notional" };
+    }
+    try {
+      const spot = await (async () => {
+        const ticker = await deps.deribit.getIndexPrice("btc_usd");
+        const price = Number((ticker as any)?.result?.index_price ?? 0);
+        if (!Number.isFinite(price) || price <= 0) throw new Error("deribit_spot_unavailable");
+        return price;
+      })();
+      const quantity = notional / spot;
+      const slTiers = [1, 2, 3, 5, 10] as const;
+      const results: Record<number, {
+        slPct: number;
+        triggerPrice: number;
+        strike: number | null;
+        instrument: string | null;
+        askBtc: number | null;
+        hedgeCostUsd: number | null;
+        hedgeCostPer1kUsd: number | null;
+        available: boolean;
+        reason: string | null;
+      }> = {};
+
+      for (const slPct of slTiers) {
+        const drawdown = slPct / 100;
+        const triggerPrice = protectionType === "short"
+          ? spot * (1 + drawdown)
+          : spot * (1 - drawdown);
+        try {
+          const dq = await deribitVenue.quote({
+            marketId: "BTC-USD",
+            instrumentId: `BTC-USD-${tenorDays}D-P`,
+            protectedNotional: notional,
+            quantity,
+            side: "buy",
+            protectionType,
+            drawdownFloorPct: drawdown,
+            triggerPrice,
+            requestedTenorDays: tenorDays
+          });
+          const details = (dq.details || {}) as Record<string, unknown>;
+          const askBtc = Number(details.askPriceBtc ?? 0);
+          const hedgeCostUsd = dq.premium;
+          const hedgeCostPer1kUsd = hedgeCostUsd / (notional / 1000);
+          results[slPct] = {
+            slPct,
+            triggerPrice: Number(triggerPrice.toFixed(2)),
+            strike: Number(details.selectedStrike ?? 0) || null,
+            instrument: dq.instrumentId || null,
+            askBtc: Number.isFinite(askBtc) && askBtc > 0 ? askBtc : null,
+            hedgeCostUsd: Number(hedgeCostUsd.toFixed(2)),
+            hedgeCostPer1kUsd: Number(hedgeCostPer1kUsd.toFixed(2)),
+            available: true,
+            reason: null
+          };
+        } catch (err: any) {
+          results[slPct] = {
+            slPct,
+            triggerPrice: Number(triggerPrice.toFixed(2)),
+            strike: null,
+            instrument: null,
+            askBtc: null,
+            hedgeCostUsd: null,
+            hedgeCostPer1kUsd: null,
+            available: false,
+            reason: String(err?.message || "unavailable")
+          };
+        }
+      }
+
+      let regimeStatus;
+      try { regimeStatus = await getCurrentRegime(); } catch { regimeStatus = null; }
+
+      return {
+        status: "ok",
+        venue: "deribit_live",
+        btcSpot: Number(spot.toFixed(2)),
+        notionalUsd: notional,
+        tenorDays,
+        protectionType,
+        regime: regimeStatus?.regime ?? "normal",
+        dvol: regimeStatus?.dvol ?? null,
+        slTiers: results,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "deribit_pricing_unavailable",
+        message: String(error?.message || "Failed to fetch Deribit pricing")
+      };
+    }
+  });
+
   app.get("/pilot/health", async (_req, reply) => {
     const requestId = pilotConfig.nextRequestId();
     let db: Record<string, unknown>;
@@ -1737,8 +1849,10 @@ export const registerPilotRoutes = async (
       slPct?: number;
       drawdownFloorPct?: number;
       protectionType?: "long" | "short";
+      venue?: string;
     };
     const quoteStartedAt = Date.now();
+    const requestedVenue = body.venue === "deribit" ? deribitVenue : venue;
     const protectedNotional = parsePositiveDecimal(body.protectedNotional);
     const exposureNotional = parsePositiveDecimal(body.foxifyExposureNotional);
     const entryInputPrice = parsePositiveDecimal(body.entryPrice);
@@ -1912,7 +2026,7 @@ export const registerPilotRoutes = async (
       }
       const venueStartedAt = Date.now();
       const quote = await withTimeout(
-        venue.quote({
+        requestedVenue.quote({
           marketId,
           protectedNotional: protectedNotional.toNumber(),
           quantity,

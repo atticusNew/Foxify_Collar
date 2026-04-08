@@ -3328,6 +3328,28 @@ class FalconxAdapter implements PilotVenueAdapter {
   }
 }
 
+class DeribitLiveAdapter extends DeribitTestAdapter {
+  constructor(
+    connector: DeribitConnector,
+    quoteTtlMs: number,
+    quotePolicy: DeribitQuotePolicy,
+    strikeSelectionMode: DeribitStrikeSelectionMode,
+    maxTenorDriftDays: number
+  ) {
+    super(connector, quoteTtlMs, quotePolicy, strikeSelectionMode, maxTenorDriftDays);
+  }
+
+  async execute(quote: VenueQuote): Promise<VenueExecution> {
+    const result = await super.execute(quote);
+    return { ...result, venue: "deribit_live" };
+  }
+
+  async quote(req: QuoteRequest): Promise<VenueQuote> {
+    const result = await super.quote(req);
+    return { ...result, venue: "deribit_live" };
+  }
+}
+
 class BullishTestnetAdapter implements PilotVenueAdapter {
   private readonly client: BullishTradingClient;
   private readonly hedgeConfig: HedgeOptimizationConfig;
@@ -3903,6 +3925,17 @@ export const createPilotVenueAdapter = (params: {
       throw new Error("bullish_config_missing");
     }
     return new BullishTestnetAdapter(params.bullish, quoteTtlMs);
+  }
+  if (params.mode === "deribit_live") {
+    return new DeribitLiveAdapter(
+      params.deribit,
+      quoteTtlMs,
+      params.deribitQuotePolicy || "ask_or_mark_fallback",
+      params.deribitStrikeSelectionMode || "trigger_aligned",
+      Number.isFinite(Number(params.deribitMaxTenorDriftDays))
+        ? Number(params.deribitMaxTenorDriftDays)
+        : 7
+    );
   }
   // IBKR is deprecated for V7 pilot; skip initialization when venue is bullish_testnet (handled above)
   if (params.mode === "ibkr_cme_live" || params.mode === "ibkr_cme_paper") {

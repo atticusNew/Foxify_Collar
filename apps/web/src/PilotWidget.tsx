@@ -299,7 +299,6 @@ export function PilotWidget() {
                 </div>
                 {ready && <>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} for {TENOR} days</span></div>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>Rate</span><span style={{ fontWeight: 500 }}>${ppk}/1k ({REGIME_LABEL[regime]})</span></div>
                   {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
                 </>}
               </>
