@@ -23,7 +23,7 @@ const V7_PREMIUMS: Record<StopLoss, Record<Regime, number | null>> = {
   5:  { calm: 2,  normal: 4,  stress: 10 },
   10: { calm: 1,  normal: 2,  stress: 6 }
 };
-const REGIME_LABEL: Record<Regime, string> = { calm: "CALM", normal: "NORMAL", stress: "STRESS" };
+const REGIME_LABEL: Record<Regime, string> = { calm: "Quiet", normal: "Active", stress: "Volatile" };
 const REGIME_COLOR: Record<Regime, string> = { calm: "#36d38d", normal: "#f0b90b", stress: "#ff6b6b" };
 const POS_MIN = 5000, POS_MAX = 50000, POS_STEP = 5000, TENOR = 2, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";
@@ -241,7 +241,10 @@ export function PilotWidget() {
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: 11, color: "var(--muted)" }}>BTC</span>
               <span style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums", transition: "color 0.3s", color: fresh ? "var(--text)" : "var(--muted)" }}>{fmt(livePrice)}</span>
-              {!priceError && <span style={{ width: 6, height: 6, borderRadius: "50%", display: "inline-block", background: fresh ? "var(--success)" : "var(--muted)", transition: "background 0.3s" }} />}
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 999, background: `${REGIME_COLOR[regime]}18`, transition: "all 0.3s" }}>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: REGIME_COLOR[regime], display: "inline-block", transition: "background 0.3s" }} />
+                <span style={{ fontSize: 10, fontWeight: 600, color: REGIME_COLOR[regime], transition: "color 0.3s" }}>{REGIME_LABEL[regime]}</span>
+              </span>
             </div>
           )}
         </div>
@@ -279,19 +282,12 @@ export function PilotWidget() {
         </div>
 
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <span style={{ fontSize: 14, fontWeight: 600 }}>Protect Your Position</span>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: REGIME_COLOR[regime], display: "inline-block" }} />
-              <span style={{ fontSize: 11, fontWeight: 600, color: REGIME_COLOR[regime] }}>{REGIME_LABEL[regime]}</span>
-              {dvol !== null && <span style={{ fontSize: 10, color: "var(--muted)" }}>DVOL {dvol.toFixed(1)}%</span>}
-            </div>
-          </div>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Protect Your Position</div>
           {activateError && <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10, padding: "8px 10px", background: "rgba(255,107,107,0.08)", borderRadius: 8, border: "1px solid rgba(255,107,107,0.2)", wordBreak: "break-word" }}>{activateError}</div>}
           <div style={{ background: isPaused ? "rgba(255,107,107,0.06)" : "rgba(54,211,141,0.06)", border: `1px solid ${isPaused ? "rgba(255,107,107,0.18)" : "rgba(54,211,141,0.18)"}`, borderRadius: 12, padding: 14, marginBottom: 12, opacity: ready ? 1 : 0.5 }}>
             {isPaused && ready ? (
               <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--danger)" }}>
-                <strong>{dd}% SL</strong> protection is <strong>paused</strong> during {REGIME_LABEL[regime]} regime. Select a wider stop loss or wait for conditions to improve.
+                <strong>{dd}% SL</strong> protection is <strong>unavailable</strong> in current market conditions. Select a wider stop loss or try again later.
               </div>
             ) : (
               <>
@@ -309,7 +305,7 @@ export function PilotWidget() {
             <input type="checkbox" checked={autoRenew} onChange={e => setAutoRenew(e.target.checked)} style={{ accentColor: "var(--accent)" }} /> Auto-renew protection at expiry
           </label>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice || isPaused} style={{ flex: 2, padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: isPaused ? "var(--card-2)" : "linear-gradient(135deg, var(--accent), var(--accent-2))", color: isPaused ? "var(--muted)" : "#fff", opacity: (!ready || activating || !livePrice || isPaused) ? 0.5 : 1 }}>{isPaused ? "Paused in " + REGIME_LABEL[regime] : activating ? "Opening..." : "Open + Protect"}</button>
+            <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice || isPaused} style={{ flex: 2, padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: isPaused ? "var(--card-2)" : "linear-gradient(135deg, var(--accent), var(--accent-2))", color: isPaused ? "var(--muted)" : "#fff", opacity: (!ready || activating || !livePrice || isPaused) ? 0.5 : 1 }}>{isPaused ? "Unavailable" : activating ? "Opening..." : "Open + Protect"}</button>
             <button onClick={handleOpenWithout} disabled={!ready || !livePrice} style={{ flex: 1, padding: "12px 0", borderRadius: 10, border: "1px solid var(--border)", background: "var(--card-2)", fontSize: 12, color: "var(--muted)", cursor: "pointer", opacity: (!ready || !livePrice) ? 0.5 : 1 }}>Open Without</button>
           </div>
         </div>
