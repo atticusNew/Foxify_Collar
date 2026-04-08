@@ -207,8 +207,8 @@ const DEFAULT_TIERS: TierLevel[] = [
   { name: "SL 10%", drawdownFloorPct: 0.10, expiryDays: 2, renewWindowMinutes: 1440 }
 ];
 const V7_SL_TIERS = [1, 2, 3, 5, 10] as const;
-const STATIC_TENOR_CHIPS_DAYS = [1, 2, 7] as const;
-const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[0];
+const STATIC_TENOR_CHIPS_DAYS = [2, 3, 7] as const;
+const PILOT_DEFAULT_TENOR_DAYS = 3;
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
 const QUOTE_REQUEST_TIMEOUT_MS = 30000;
 const QUOTE_RETRY_DELAY_MS = 450;

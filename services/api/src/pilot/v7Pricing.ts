@@ -3,10 +3,25 @@ import type { V7Regime, V7SlTier, V7PremiumQuote } from "./types";
 import { V7_SL_TIERS } from "./types";
 
 /**
- * V7 Premium: flat $8 per $1k notional, all tiers, all conditions.
- * 1-day rolling tenor. Source: backtest_1day_tenor_results.txt
+ * V7 Tiered Premium Schedule — USD per $1k notional.
+ * 3-day rolling tenor (2-day for 10% SL).
+ * Source: AGENT_PROMPT_V7_3DAY_FINAL.md, backtest_min_premium_results.txt
  */
-const V7_FLAT_PREMIUM_PER_1K = 8;
+const V7_RATE_PER_1K: Record<V7SlTier, number> = {
+  1: 2,
+  2: 3,
+  3: 4,
+  5: 6,
+  10: 3
+};
+
+const V7_TENOR_DAYS: Record<V7SlTier, number> = {
+  1: 3,
+  2: 3,
+  3: 3,
+  5: 3,
+  10: 2
+};
 
 /**
  * Payout per $10k position, indexed by SL%.
@@ -23,8 +38,11 @@ const V7_PAYOUT_PER_10K: Record<V7SlTier, number> = {
 export const isValidSlTier = (slPct: number): slPct is V7SlTier =>
   (V7_SL_TIERS as readonly number[]).includes(slPct);
 
-export const getV7PremiumPer1k = (slPct: V7SlTier, _regime?: V7Regime): number =>
-  V7_FLAT_PREMIUM_PER_1K;
+export const getV7PremiumPer1k = (slPct: V7SlTier): number =>
+  V7_RATE_PER_1K[slPct];
+
+export const getV7TenorDays = (slPct: V7SlTier): number =>
+  V7_TENOR_DAYS[slPct];
 
 export const getV7PayoutPer10k = (slPct: V7SlTier): number =>
   V7_PAYOUT_PER_10K[slPct] ?? 0;
@@ -40,7 +58,7 @@ export const computeV7Premium = (params: {
   dvol?: number | null;
   regimeSource?: "dvol" | "rvol";
 }): V7PremiumQuote => {
-  const premiumPer1k = V7_FLAT_PREMIUM_PER_1K;
+  const premiumPer1k = V7_RATE_PER_1K[params.slPct];
   const notional = new Decimal(params.notionalUsd);
   const premiumUsd = notional.div(1000).mul(premiumPer1k);
 
@@ -102,12 +120,14 @@ export const computeV7HedgeStrike = (
 export const getV7AvailableTiers = (_regime?: V7Regime): Array<{
   slPct: V7SlTier;
   premiumPer1kUsd: number;
+  tenorDays: number;
   available: boolean;
   payoutPer10kUsd: number;
 }> =>
   V7_SL_TIERS.map((slPct) => ({
     slPct,
-    premiumPer1kUsd: V7_FLAT_PREMIUM_PER_1K,
+    premiumPer1kUsd: V7_RATE_PER_1K[slPct],
+    tenorDays: V7_TENOR_DAYS[slPct],
     available: true,
     payoutPer10kUsd: getV7PayoutPer10k(slPct)
   }));

@@ -3376,7 +3376,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     const isShort = req.protectionType === "short";
     const requestedOptionType = isShort ? "CALL" : "PUT";
     const now = Date.now();
-    const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 1)));
+    const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 3)));
     const targetExpiryMs = now + requestedTenorDays * 24 * 60 * 60 * 1000;
     const spotPrice = toFinitePositiveNumber(req.protectedNotional) && toFinitePositiveNumber(req.quantity)
       ? Number(req.protectedNotional) / Number(req.quantity)
@@ -3408,10 +3408,10 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const tradable = (market as Record<string, unknown>).createOrderEnabled !== false;
         if (!tradable) return null;
         const tenorDriftDays = Math.abs(expiryMs - targetExpiryMs) / 86400000;
-        const maxDrift = requestedTenorDays <= 1 ? 2.5 : Math.max(3, requestedTenorDays + 2);
+        const maxDrift = Math.max(1.5, requestedTenorDays);
         if (tenorDriftDays > maxDrift) return null;
         const tenorDays = (expiryMs - now) / 86400000;
-        if (requestedTenorDays <= 1 && tenorDays < 0.3) return null;
+        if (tenorDays < 0.3) return null;
 
         const moneyness = parsed.strike / spotPrice;
         if (isShort) {

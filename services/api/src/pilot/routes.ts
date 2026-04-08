@@ -75,7 +75,7 @@ import {
 } from "./floor";
 import { computeDrawdownLossBudgetUsd } from "./protectionMath";
 import type { PremiumPolicyDiagnostics, TenorPolicyEntry, TenorPolicyResponse, TenorPolicyTenorRow, TenorPolicyReason } from "./types";
-import { isValidSlTier, computeV7Premium, slPctToDrawdownFloor, slPctToTierLabel, getV7AvailableTiers } from "./v7Pricing";
+import { isValidSlTier, computeV7Premium, slPctToDrawdownFloor, slPctToTierLabel, getV7AvailableTiers, getV7TenorDays } from "./v7Pricing";
 import { getCurrentRegime, configureRegimeClassifier } from "./regimeClassifier";
 import type { V7SlTier, V7PremiumQuote } from "./types";
 
@@ -1949,7 +1949,7 @@ export const registerPilotRoutes = async (
             drawdownFloorPct: body.drawdownFloorPct
           });
     }
-    const defaultTenorDays = v7Enabled ? pilotConfig.v7.defaultTenorDays : 7;
+    const defaultTenorDays = v7Enabled && resolvedSlPct ? getV7TenorDays(resolvedSlPct) : v7Enabled ? pilotConfig.v7.defaultTenorDays : 7;
     const quoteInstrumentId = body.instrumentId || `${marketId}-${defaultTenorDays}D-${optionType}`;
     const requestId = pilotConfig.nextRequestId();
     let priceMs = 0;
@@ -2853,7 +2853,7 @@ export const registerPilotRoutes = async (
     }
     const tierName = activateTierName;
     const drawdownFloorPct = activateDrawdownFloorPct;
-    const activateDefaultTenor = v7EnabledActivate ? pilotConfig.v7.defaultTenorDays : 7;
+    const activateDefaultTenor = v7EnabledActivate && activateSlPct ? getV7TenorDays(activateSlPct) : v7EnabledActivate ? pilotConfig.v7.defaultTenorDays : 7;
     const instrumentId = body.instrumentId || `${marketId}-${activateDefaultTenor}D-${optionType}`;
     const tenorDays = resolveExpiryDays({
       tierName,
