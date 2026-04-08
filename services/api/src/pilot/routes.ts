@@ -3073,8 +3073,28 @@ export const registerPilotRoutes = async (
             ? lockContext.pricingMode
             : fallbackPremiumPricing.pricingMode
       };
-      const FIXED_PREMIUM_PER_1K_ACTIVATE = new Decimal(11);
-      if (isLockedBullishProfile) {
+      if (v7EnabledActivate && activateSlPct) {
+        let activateRegimeForPricing;
+        try {
+          activateRegimeForPricing = await getCurrentRegime();
+        } catch {
+          activateRegimeForPricing = { regime: "normal" as const, dvol: null, rvol: null, source: "rvol" as const, timestamp: new Date().toISOString() };
+        }
+        const v7ActivateQuote = computeV7Premium({
+          slPct: activateSlPct,
+          regime: activateRegimeForPricing.regime,
+          notionalUsd: protectedNotional.toNumber(),
+          dvol: activateRegimeForPricing.dvol,
+          regimeSource: activateRegimeForPricing.source
+        });
+        if (v7ActivateQuote.available) {
+          premiumPricing = {
+            ...premiumPricing,
+            clientPremiumUsd: new Decimal(v7ActivateQuote.premiumUsd)
+          };
+        }
+      } else if (!v7EnabledActivate && isLockedBullishProfile) {
+        const FIXED_PREMIUM_PER_1K_ACTIVATE = new Decimal(11);
         premiumPricing = {
           ...premiumPricing,
           clientPremiumUsd: protectedNotional.div(1000).mul(FIXED_PREMIUM_PER_1K_ACTIVATE),
@@ -3159,18 +3179,28 @@ export const registerPilotRoutes = async (
           throw new Error("premium_cap_exceeded_post_fill");
         }
       }
-      await insertPriceSnapshot(pool, {
-        protectionId: reservedProtection.id,
-        snapshotType: "entry",
-        price: snapshot.price.toFixed(10),
-        marketId: snapshot.marketId,
-        priceSource: snapshot.priceSource,
-        priceSourceDetail: snapshot.priceSourceDetail,
-        endpointVersion: snapshot.endpointVersion,
-        requestId: snapshot.requestId,
-        priceTimestamp: snapshot.priceTimestamp
-      });
-      await insertVenueExecution(pool, reservedProtection.id, execution);
+      try {
+        await insertPriceSnapshot(pool, {
+          protectionId: reservedProtection.id,
+          snapshotType: "entry",
+          price: snapshot.price.toFixed(10),
+          marketId: snapshot.marketId,
+          priceSource: snapshot.priceSource,
+          priceSourceDetail: snapshot.priceSourceDetail,
+          endpointVersion: snapshot.endpointVersion,
+          requestId: snapshot.requestId,
+          priceTimestamp: snapshot.priceTimestamp
+        });
+      } catch (snapErr: any) {
+        console.error(`[Activate] insertPriceSnapshot FAILED: ${snapErr?.message}`);
+        throw snapErr;
+      }
+      try {
+        await insertVenueExecution(pool, reservedProtection.id, execution);
+      } catch (execErr: any) {
+        console.error(`[Activate] insertVenueExecution FAILED: ${execErr?.message}`);
+        throw execErr;
+      }
       const realizedSlippageBps =
         execution.premium > 0
           ? Math.max(0, ((execution.premium - lockedQuote.premium) / execution.premium) * 10_000)
@@ -3197,13 +3227,20 @@ export const registerPilotRoutes = async (
       } catch {
         // Execution-quality telemetry must never block successful activation.
       }
-      await insertLedgerEntry(pool, {
-        protectionId: reservedProtection.id,
-        entryType: "premium_due",
-        amount: premiumPricing.clientPremiumUsd.toFixed(10),
-        reference: execution.externalOrderId
-      });
-      const updated = await patchProtection(pool, reservedProtection.id, {
+      try {
+        await insertLedgerEntry(pool, {
+          protectionId: reservedProtection.id,
+          entryType: "premium_due",
+          amount: premiumPricing.clientPremiumUsd.toFixed(10),
+          reference: execution.externalOrderId
+        });
+      } catch (ledgerErr: any) {
+        console.error(`[Activate] insertLedgerEntry FAILED: ${ledgerErr?.message}`);
+        throw ledgerErr;
+      }
+      let updated;
+      try {
+        updated = await patchProtection(pool, reservedProtection.id, {
         status: "active",
         entry_price: quoteEntryAnchorPrice.toFixed(10),
         entry_price_source: quoteEntryPriceSource,
@@ -3269,6 +3306,10 @@ export const registerPilotRoutes = async (
           premiumPolicy: premiumPolicyDiagnostics
         }
       });
+      } catch (patchErr: any) {
+        console.error(`[Activate] patchProtection FAILED: ${patchErr?.message}`);
+        throw patchErr;
+      }
       const activatedQuote = sanitizeQuoteForClient({
         ...lockedQuote,
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4))
@@ -3286,6 +3327,12 @@ export const registerPilotRoutes = async (
         }
       };
     } catch (error: any) {
+      console.error(`[Activate] ERROR in activation flow: ${error?.message}`, {
+        hasProtection: !!reservedProtection,
+        hasExecution: !!execution,
+        executionStatus: execution?.status,
+        stack: error?.stack?.split("\n").slice(0, 5).join(" | ")
+      });
       if (transactionOpen) {
         await client.query("ROLLBACK");
         transactionOpen = false;
