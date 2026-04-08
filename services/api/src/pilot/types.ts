@@ -557,3 +557,50 @@ export type ExecutionQualityRecord = {
   updatedAt: string;
 };
 
+// ─── V7 Pricing Types ─────────────────────────────────────────────────────────
+
+export type V7Regime = "calm" | "normal" | "stress";
+
+export type V7RegimeSource = "dvol" | "rvol";
+
+export type V7SlTier = 1 | 2 | 3 | 5 | 10;
+
+export const V7_SL_TIERS: readonly V7SlTier[] = [1, 2, 3, 5, 10] as const;
+
+export type V7RegimeStatus = {
+  regime: V7Regime;
+  dvol: number | null;
+  rvol: number | null;
+  source: V7RegimeSource;
+  timestamp: string;
+};
+
+export type V7PremiumQuote = {
+  available: boolean;
+  slPct: V7SlTier;
+  regime: V7Regime;
+  premiumPer1kUsd: number;
+  premiumUsd: number;
+  payoutPer10kUsd: number;
+  notionalUsd: number;
+  reason?: string;
+  regimeSource: V7RegimeSource;
+  dvol: number | null;
+};
+
+export type V7HedgeStatus = "active" | "tp_sold" | "expired_settled" | "expired_worthless" | "pending_sell";
+
+export type V7OptionPosition = {
+  protectionId: string;
+  instrumentId: string;
+  venue: string;
+  side: "buy";
+  quantity: number;
+  entryPremium: number;
+  strike: number;
+  expiryMs: number;
+  hedgeStatus: V7HedgeStatus;
+  tpThreshold: number;
+  metadata: Record<string, unknown>;
+};
+

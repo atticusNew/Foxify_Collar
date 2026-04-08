@@ -104,6 +104,44 @@ export class DeribitConnector {
     });
   }
 
+  async getDVOL(currency = "BTC"): Promise<{ dvol: number | null; timestamp: number | null }> {
+    const url = `${this.baseUrl()}/public/get_volatility_index_data?currency=${currency}&resolution=1&start_timestamp=${Date.now() - 3600_000}&end_timestamp=${Date.now()}`;
+    try {
+      const data = await withRetry(async () => {
+        const res = await fetchWithTimeout(url);
+        return res.json();
+      });
+      const result = (data as any)?.result;
+      if (!result?.data?.length) return { dvol: null, timestamp: null };
+      const latest = result.data[result.data.length - 1];
+      const dvol = Number(Array.isArray(latest) ? latest[4] ?? latest[1] : latest);
+      const ts = Number(Array.isArray(latest) ? latest[0] : null);
+      return {
+        dvol: Number.isFinite(dvol) && dvol > 0 ? dvol : null,
+        timestamp: Number.isFinite(ts) && ts > 0 ? ts : null
+      };
+    } catch {
+      return { dvol: null, timestamp: null };
+    }
+  }
+
+  async getHistoricalVolatility(currency = "BTC"): Promise<{ rvol: number | null }> {
+    const url = `${this.baseUrl()}/public/get_historical_volatility?currency=${currency}`;
+    try {
+      const data = await withRetry(async () => {
+        const res = await fetchWithTimeout(url);
+        return res.json();
+      });
+      const result = (data as any)?.result;
+      if (!Array.isArray(result) || !result.length) return { rvol: null };
+      const latest = result[result.length - 1];
+      const rvol = Number(Array.isArray(latest) ? latest[1] : latest);
+      return { rvol: Number.isFinite(rvol) && rvol > 0 ? rvol : null };
+    } catch {
+      return { rvol: null };
+    }
+  }
+
   private async authenticate(): Promise<string> {
     if (!this.credentials) {
       throw new Error("Missing Deribit credentials");
