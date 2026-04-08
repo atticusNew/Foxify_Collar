@@ -70,10 +70,14 @@ import {
   normalizeTierName,
   resolveDrawdownFloorPct,
   resolveExpiryDays,
-  resolveRenewWindowMinutes
+  resolveRenewWindowMinutes,
+  slPctToTierName
 } from "./floor";
 import { computeDrawdownLossBudgetUsd } from "./protectionMath";
 import type { PremiumPolicyDiagnostics, TenorPolicyEntry, TenorPolicyResponse, TenorPolicyTenorRow, TenorPolicyReason } from "./types";
+import { isValidSlTier, computeV7Premium, slPctToDrawdownFloor, slPctToTierLabel, getV7AvailableTiers } from "./v7Pricing";
+import { getCurrentRegime, configureRegimeClassifier } from "./regimeClassifier";
+import type { V7SlTier, V7PremiumQuote } from "./types";
 
 const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_native" | "futures_synthetic" => {
   const raw = String(quoteDetails?.hedgeMode || "");
@@ -881,6 +885,17 @@ export const registerPilotRoutes = async (
     deribit: deps.deribit
   });
 
+  if (pilotConfig.v7.enabled) {
+    configureRegimeClassifier({
+      deribitConnector: deps.deribit,
+      thresholds: {
+        calmBelow: pilotConfig.v7.dvolCalmThreshold,
+        stressAbove: pilotConfig.v7.dvolStressThreshold
+      }
+    });
+    console.log(`[V7] Regime classifier configured: calm<${pilotConfig.v7.dvolCalmThreshold}% stress>${pilotConfig.v7.dvolStressThreshold}% tenor=${pilotConfig.v7.defaultTenorDays}d`);
+  }
+
   const resolveAndPersistExpiry = async (protectionId: string): Promise<void> => {
     const protection = await getProtection(pool, protectionId);
     if (!protection) return;
@@ -1487,6 +1502,35 @@ export const registerPilotRoutes = async (
     }
   });
 
+  app.get("/pilot/regime", async (_req, reply) => {
+    try {
+      const regimeStatus = await getCurrentRegime();
+      const tiers = getV7AvailableTiers(regimeStatus.regime);
+      return {
+        status: "ok",
+        regime: regimeStatus.regime,
+        dvol: regimeStatus.dvol,
+        rvol: regimeStatus.rvol,
+        source: regimeStatus.source,
+        timestamp: regimeStatus.timestamp,
+        tiers,
+        v7Enabled: pilotConfig.v7.enabled,
+        defaultTenorDays: pilotConfig.v7.defaultTenorDays,
+        thresholds: {
+          calmBelow: pilotConfig.v7.dvolCalmThreshold,
+          stressAbove: pilotConfig.v7.dvolStressThreshold
+        }
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "regime_unavailable",
+        message: String(error?.message || "Failed to fetch regime status")
+      };
+    }
+  });
+
   app.get("/pilot/health", async (_req, reply) => {
     const requestId = pilotConfig.nextRequestId();
     let db: Record<string, unknown>;
@@ -1690,6 +1734,7 @@ export const registerPilotRoutes = async (
       marketId?: string;
       clientOrderId?: string;
       tierName?: string;
+      slPct?: number;
       drawdownFloorPct?: number;
       protectionType?: "long" | "short";
     };
@@ -1763,15 +1808,33 @@ export const registerPilotRoutes = async (
     const marketId = pilotConfig.referenceMarketId;
     const protectionType = normalizeProtectionType(body.protectionType);
     const optionType = protectionType === "short" ? "C" : "P";
-    const quoteInstrumentId = body.instrumentId || `${marketId}-7D-${optionType}`;
     const triggerLabel = protectionType === "short" ? "ceiling_price" : "floor_price";
-    const tierName = normalizeTierName(body.tierName);
-    const drawdownFloorPct = isLockedBullishProfile
-      ? resolveLockedDrawdownFloorPct(tierName)
-      : resolveDrawdownFloorPct({
-          tierName,
-          drawdownFloorPct: body.drawdownFloorPct
-        });
+    const v7Enabled = pilotConfig.v7.enabled;
+    const rawSlPct = Number(body.slPct ?? body.drawdownFloorPct ? undefined : undefined);
+    const slPctInput = body.slPct != null ? Number(body.slPct) : null;
+    const validSlPct = slPctInput !== null && isValidSlTier(slPctInput) ? slPctInput as V7SlTier : null;
+    let tierName: string;
+    let drawdownFloorPct: Decimal;
+    let resolvedSlPct: V7SlTier | null = null;
+    let v7Quote: V7PremiumQuote | null = null;
+    if (v7Enabled && validSlPct) {
+      resolvedSlPct = validSlPct;
+      tierName = slPctToTierLabel(validSlPct);
+      drawdownFloorPct = slPctToDrawdownFloor(validSlPct);
+    } else if (v7Enabled && !validSlPct && body.slPct != null) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_sl_pct", message: "slPct must be one of: 1, 2, 3, 5, 10" };
+    } else {
+      tierName = normalizeTierName(body.tierName);
+      drawdownFloorPct = isLockedBullishProfile
+        ? resolveLockedDrawdownFloorPct(tierName)
+        : resolveDrawdownFloorPct({
+            tierName,
+            drawdownFloorPct: body.drawdownFloorPct
+          });
+    }
+    const defaultTenorDays = v7Enabled ? pilotConfig.v7.defaultTenorDays : 7;
+    const quoteInstrumentId = body.instrumentId || `${marketId}-${defaultTenorDays}D-${optionType}`;
     const requestId = pilotConfig.nextRequestId();
     let priceMs = 0;
     let venueMs = 0;
@@ -1933,6 +1996,38 @@ export const registerPilotRoutes = async (
           clientPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd
         };
       }
+      // V7 Regime-Dynamic Pricing Override
+      if (v7Enabled && resolvedSlPct) {
+        let regimeStatus;
+        try {
+          regimeStatus = await getCurrentRegime();
+        } catch {
+          regimeStatus = { regime: "normal" as const, dvol: null, rvol: null, source: "rvol" as const, timestamp: new Date().toISOString() };
+        }
+        v7Quote = computeV7Premium({
+          slPct: resolvedSlPct,
+          regime: regimeStatus.regime,
+          notionalUsd: protectedNotional.toNumber(),
+          dvol: regimeStatus.dvol,
+          regimeSource: regimeStatus.source
+        });
+        if (!v7Quote.available) {
+          reply.code(409);
+          return {
+            status: "error",
+            reason: v7Quote.reason || "tier_paused_in_current_regime",
+            regime: regimeStatus.regime,
+            slPct: resolvedSlPct,
+            dvol: regimeStatus.dvol,
+            message: `${resolvedSlPct}% SL protection is paused during ${regimeStatus.regime.toUpperCase()} regime.`
+          };
+        }
+        console.log(`[V7Pricing] slPct=${resolvedSlPct} regime=${regimeStatus.regime} dvol=${regimeStatus.dvol} premium=$${v7Quote.premiumUsd.toFixed(2)} per1k=$${v7Quote.premiumPer1kUsd}`);
+        premiumPricing = {
+          ...premiumPricing,
+          clientPremiumUsd: new Decimal(v7Quote.premiumUsd)
+        };
+      }
       const selectionPremiumInputsFromPricing = () => ({
         triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber(),
         expectedTriggerCostUsd: Number(premiumPricing.expectedTriggerCostUsd.toFixed(10)),
@@ -2068,13 +2163,15 @@ export const registerPilotRoutes = async (
       const estimatedPremiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({
         estimated: premiumPricing
       });
-      const FIXED_PREMIUM_PER_1K = new Decimal(11);
-      if (isLockedBullishProfile) {
-        const fixedClientPremium = protectedNotional.div(1000).mul(FIXED_PREMIUM_PER_1K);
-        premiumPricing = {
-          ...premiumPricing,
-          clientPremiumUsd: fixedClientPremium,
-        };
+      if (!v7Enabled) {
+        const FIXED_PREMIUM_PER_1K = new Decimal(11);
+        if (isLockedBullishProfile) {
+          const fixedClientPremium = protectedNotional.div(1000).mul(FIXED_PREMIUM_PER_1K);
+          premiumPricing = {
+            ...premiumPricing,
+            clientPremiumUsd: fixedClientPremium,
+          };
+        }
       }
       const pricingBreakdown = {
         pricingMode: premiumPricing.pricingMode,
@@ -2249,9 +2346,19 @@ export const registerPilotRoutes = async (
         status: "ok",
         protectionType,
         tierName,
+        slPct: resolvedSlPct,
+        v7: v7Quote ? {
+          regime: v7Quote.regime,
+          regimeSource: v7Quote.regimeSource,
+          dvol: v7Quote.dvol,
+          premiumPer1kUsd: v7Quote.premiumPer1kUsd,
+          premiumUsd: v7Quote.premiumUsd,
+          payoutPer10kUsd: v7Quote.payoutPer10kUsd,
+          available: v7Quote.available
+        } : null,
         profile: {
           name: pilotConfig.lockedProfile.name,
-          fixedTenorDays: lockedProfileTenorDays,
+          fixedTenorDays: v7Enabled ? pilotConfig.v7.defaultTenorDays : lockedProfileTenorDays,
           fixedPricingMode: lockedProfilePricingMode,
           fixedDrawdownFloorPctByTier: pilotConfig.lockedProfile.fixedDrawdownFloorPctByTier
         },
@@ -2572,6 +2679,7 @@ export const registerPilotRoutes = async (
       renewWindowMinutes?: number;
       clientOrderId?: string;
       tierName?: string;
+      slPct?: number;
       drawdownFloorPct?: number;
       protectionType?: "long" | "short";
       entryPrice?: number;
@@ -2630,15 +2738,30 @@ export const registerPilotRoutes = async (
     const protectionType = normalizeProtectionType(body.protectionType);
     const optionType = protectionType === "short" ? "C" : "P";
     const triggerLabel = protectionType === "short" ? "ceiling_price" : "floor_price";
-    const instrumentId = body.instrumentId || `${marketId}-7D-${optionType}`;
-    const tierName = normalizeTierName(body.tierName);
-    const drawdownFloorPct = resolveDrawdownFloorPct({
-      tierName,
-      drawdownFloorPct: body.drawdownFloorPct
-    });
+    const v7EnabledActivate = pilotConfig.v7.enabled;
+    const activateSlPctInput = body.slPct != null ? Number(body.slPct) : null;
+    const activateValidSlPct = activateSlPctInput !== null && isValidSlTier(activateSlPctInput) ? activateSlPctInput as V7SlTier : null;
+    let activateTierName: string;
+    let activateDrawdownFloorPct: Decimal;
+    let activateSlPct: V7SlTier | null = null;
+    if (v7EnabledActivate && activateValidSlPct) {
+      activateSlPct = activateValidSlPct;
+      activateTierName = slPctToTierLabel(activateValidSlPct);
+      activateDrawdownFloorPct = slPctToDrawdownFloor(activateValidSlPct);
+    } else {
+      activateTierName = normalizeTierName(body.tierName);
+      activateDrawdownFloorPct = resolveDrawdownFloorPct({
+        tierName: activateTierName,
+        drawdownFloorPct: body.drawdownFloorPct
+      });
+    }
+    const tierName = activateTierName;
+    const drawdownFloorPct = activateDrawdownFloorPct;
+    const activateDefaultTenor = v7EnabledActivate ? pilotConfig.v7.defaultTenorDays : 7;
+    const instrumentId = body.instrumentId || `${marketId}-${activateDefaultTenor}D-${optionType}`;
     const tenorDays = resolveExpiryDays({
       tierName,
-      requestedDays: body.tenorDays,
+      requestedDays: body.tenorDays ?? activateDefaultTenor,
       minDays: pilotConfig.pilotTenorMinDays,
       maxDays: pilotConfig.pilotTenorMaxDays,
       defaultDays: pilotConfig.pilotTenorDefaultDays
@@ -2785,12 +2908,26 @@ export const registerPilotRoutes = async (
       const usedAfter = new Decimal(capReservation.usedAfter);
       capProjectedUsdc = usedAfter.toFixed(2);
       capUsedUsdc = usedAfter.minus(protectedNotional).toFixed(2);
+      let activateRegimeInfo: { regime: string; source: string; dvol: number | null } | null = null;
+      if (v7EnabledActivate && activateSlPct) {
+        try {
+          const rs = await getCurrentRegime();
+          activateRegimeInfo = { regime: rs.regime, source: rs.source, dvol: rs.dvol };
+        } catch {
+          activateRegimeInfo = { regime: "normal", source: "rvol", dvol: null };
+        }
+      }
       const protection = await insertProtection(client, {
         userHash: userHash.userHash,
         hashVersion: userHash.hashVersion,
         status: "pending_activation",
         tierName,
         drawdownFloorPct: drawdownFloorPct.toFixed(6),
+        slPct: activateSlPct,
+        hedgeStatus: "active",
+        regime: activateRegimeInfo?.regime ?? null,
+        regimeSource: activateRegimeInfo?.source ?? null,
+        dvolAtPurchase: activateRegimeInfo?.dvol ?? null,
         marketId,
         protectedNotional: protectedNotional.toFixed(10),
         foxifyExposureNotional: exposureNotional.toFixed(10),
@@ -2804,6 +2941,7 @@ export const registerPilotRoutes = async (
           mode: "pilot",
           venueMode: pilotConfig.venueMode,
           tierName,
+          slPct: activateSlPct,
           drawdownFloorPct: drawdownFloorPct.toFixed(6),
           protectionType,
           optionType
