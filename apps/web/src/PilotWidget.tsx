@@ -154,7 +154,7 @@ export function PilotWidget() {
       } catch { /* regime fetch is best-effort */ }
     };
     poll();
-    const id = setInterval(poll, 60000);
+    const id = setInterval(poll, 15000);
     return () => { on = false; clearInterval(id); };
   }, []);
 

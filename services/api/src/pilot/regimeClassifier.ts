@@ -11,7 +11,7 @@ const DEFAULT_THRESHOLDS: RegimeThresholds = {
   stressAbove: 65
 };
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_TTL_MS = 60 * 1000;
 
 let cachedRegime: { status: V7RegimeStatus; expiresAtMs: number } | null = null;
 let deribitConnectorInstance: DeribitConnector | null = null;
@@ -81,6 +81,9 @@ export const getCurrentRegime = async (params?: {
     source = "rvol";
   }
 
+  const previousRegime = cachedRegime?.status.regime ?? null;
+  const regimeChanged = previousRegime !== null && previousRegime !== regime;
+
   const status: V7RegimeStatus = {
     regime,
     dvol: dvolResult.dvol,
@@ -91,9 +94,15 @@ export const getCurrentRegime = async (params?: {
 
   cachedRegime = { status, expiresAtMs: now + CACHE_TTL_MS };
 
-  console.log(
-    `[RegimeClassifier] regime=${regime} source=${source} dvol=${dvolResult.dvol ?? "N/A"} rvol=${rvolResult.rvol ?? "N/A"}`
-  );
+  if (regimeChanged) {
+    console.log(
+      `[RegimeClassifier] *** REGIME CHANGED: ${previousRegime} → ${regime} *** dvol=${dvolResult.dvol ?? "N/A"} rvol=${rvolResult.rvol ?? "N/A"}`
+    );
+  } else {
+    console.log(
+      `[RegimeClassifier] regime=${regime} source=${source} dvol=${dvolResult.dvol ?? "N/A"} rvol=${rvolResult.rvol ?? "N/A"}`
+    );
+  }
 
   return status;
 };

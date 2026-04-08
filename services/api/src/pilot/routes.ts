@@ -1512,9 +1512,11 @@ export const registerPilotRoutes = async (
     }
   });
 
-  app.get("/pilot/regime", async (_req, reply) => {
+  app.get("/pilot/regime", async (req, reply) => {
+    const query = req.query as { refresh?: string };
+    const forceRefresh = query.refresh === "true";
     try {
-      const regimeStatus = await getCurrentRegime();
+      const regimeStatus = await getCurrentRegime({ forceRefresh });
       const tiers = getV7AvailableTiers(regimeStatus.regime);
       return {
         status: "ok",
@@ -2114,7 +2116,7 @@ export const registerPilotRoutes = async (
       if (v7Enabled && resolvedSlPct) {
         let regimeStatus;
         try {
-          regimeStatus = await getCurrentRegime();
+          regimeStatus = await getCurrentRegime({ forceRefresh: true });
         } catch {
           regimeStatus = { regime: "normal" as const, dvol: null, rvol: null, source: "rvol" as const, timestamp: new Date().toISOString() };
         }
@@ -3030,7 +3032,7 @@ export const registerPilotRoutes = async (
       let activateRegimeInfo: { regime: string; source: string; dvol: number | null } | null = null;
       if (v7EnabledActivate && activateSlPct) {
         try {
-          const rs = await getCurrentRegime();
+          const rs = await getCurrentRegime({ forceRefresh: true });
           activateRegimeInfo = { regime: rs.regime, source: rs.source, dvol: rs.dvol };
         } catch {
           activateRegimeInfo = { regime: "normal", source: "rvol", dvol: null };
@@ -3195,7 +3197,7 @@ export const registerPilotRoutes = async (
       if (v7EnabledActivate && activateSlPct) {
         let activateRegimeForPricing;
         try {
-          activateRegimeForPricing = await getCurrentRegime();
+          activateRegimeForPricing = await getCurrentRegime({ forceRefresh: true });
         } catch {
           activateRegimeForPricing = { regime: "normal" as const, dvol: null, rvol: null, source: "rvol" as const, timestamp: new Date().toISOString() };
         }
