@@ -361,6 +361,16 @@ const parseIbkrConId = (instrumentId: string): number | null => {
   return Number.isFinite(conId) && conId > 0 ? conId : null;
 };
 
+export type SellOptionResult = {
+  status: "sold" | "failed";
+  instrumentId: string;
+  quantity: number;
+  fillPrice: number;
+  totalProceeds: number;
+  orderId: string | null;
+  details: Record<string, unknown>;
+};
+
 export interface PilotVenueAdapter {
   quote(req: QuoteRequest): Promise<VenueQuote>;
   execute(quote: VenueQuote): Promise<VenueExecution>;
@@ -371,6 +381,7 @@ export interface PilotVenueAdapter {
     asOf: string;
     details?: Record<string, unknown>;
   }>;
+  sellOption?(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult>;
 }
 
 class MockFalconxAdapter implements PilotVenueAdapter {
@@ -3791,6 +3802,82 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       }
     };
   }
+
+  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+    if (!this.config.enableExecution) {
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: params.quantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: "execution_disabled" }
+      };
+    }
+
+    const symbol = resolveBullishMarketSymbol(this.config, { instrumentId: params.instrumentId });
+    const book = await this.client.getHybridOrderBook(symbol);
+    const bestBid = Number(book.bids[0]?.price ?? NaN);
+    if (!Number.isFinite(bestBid) || bestBid <= 0) {
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: params.quantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: "no_bid_available" }
+      };
+    }
+
+    const isOption = /^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol);
+    const pricePrecision = isOption ? 4 : 8;
+    const qtyPrecision = isOption ? 2 : 8;
+    const formattedPrice = bestBid.toFixed(pricePrecision);
+    const formattedQty = (Math.floor(params.quantity * Math.pow(10, qtyPrecision)) / Math.pow(10, qtyPrecision)).toFixed(qtyPrecision);
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+
+    console.log(`[BullishAdapter] Selling option: symbol=${symbol} side=SELL price=${formattedPrice} qty=${formattedQty} clientOrderId=${clientOrderId}`);
+
+    try {
+      const response = await this.client.createSpotLimitOrder({
+        symbol,
+        side: "SELL",
+        price: formattedPrice,
+        quantity: formattedQty,
+        clientOrderId
+      });
+
+      const responseRecord = response as Record<string, unknown>;
+      const orderId = String(responseRecord.orderId ?? (responseRecord.data as Record<string, unknown> | undefined)?.orderId ?? "");
+      const fillPrice = Number(responseRecord.averageFillPrice ?? bestBid);
+      const fillQty = Number(responseRecord.quantityFilled ?? params.quantity);
+
+      console.log(`[BullishAdapter] Sell option result: orderId=${orderId} fillPrice=${fillPrice} fillQty=${fillQty}`);
+
+      return {
+        status: "sold",
+        instrumentId: params.instrumentId,
+        quantity: fillQty,
+        fillPrice,
+        totalProceeds: fillPrice * fillQty,
+        orderId: orderId || null,
+        details: { symbol, bestBid, response: responseRecord }
+      };
+    } catch (err: any) {
+      console.error(`[BullishAdapter] Sell option FAILED: ${err?.message}`);
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: params.quantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: err?.message || "sell_order_failed" }
+      };
+    }
+  }
 }
 
 export const createPilotVenueAdapter = (params: {
@@ -3817,6 +3904,7 @@ export const createPilotVenueAdapter = (params: {
     }
     return new BullishTestnetAdapter(params.bullish, quoteTtlMs);
   }
+  // IBKR is deprecated for V7 pilot; skip initialization when venue is bullish_testnet (handled above)
   if (params.mode === "ibkr_cme_live" || params.mode === "ibkr_cme_paper") {
     if (!params.ibkr) {
       throw new Error("ibkr_config_missing");
