@@ -2848,9 +2848,12 @@ export const registerPilotRoutes = async (
           ? computeTriggerPrice(contextEntryAnchor, contextDrawdown, contextProtectionType)
           : null;
       const contextTrigger = parsePositiveDecimal(lockContext.triggerPrice ?? lockContext.floorPrice);
-      requestedQuantity = contextEntryAnchor
+      const rawRequestedQty = contextEntryAnchor
         ? protectedNotional.div(contextEntryAnchor).toDecimalPlaces(8).toNumber()
         : 0;
+      requestedQuantity = v7EnabledActivate
+        ? Math.floor(rawRequestedQty * 100) / 100
+        : rawRequestedQty;
       const quantityDeltaPct =
         requestedQuantity > 0
           ? new Decimal(lockedQuote.quantity).minus(requestedQuantity).abs().div(new Decimal(requestedQuantity))
@@ -3145,12 +3148,16 @@ export const registerPilotRoutes = async (
           ? new Decimal(execution.quantity).div(new Decimal(requestedQuantity))
           : new Decimal(0);
       const baseTolerance = new Decimal(pilotConfig.fullCoverageTolerancePct);
-      const optionQtyTolerance = isLockedBullishProfile ? new Decimal("0.06") : baseTolerance;
+      const v7CoverageTolerance = new Decimal("0.15");
+      const optionQtyTolerance = v7EnabledActivate
+        ? v7CoverageTolerance
+        : isLockedBullishProfile ? new Decimal("0.06") : baseTolerance;
       const threshold = new Decimal(1).minus(optionQtyTolerance);
       if (
         (pilotConfig.requireFullCoverage || pilotConfig.requireFullExecutionFill) &&
         coverageRatio.lt(threshold)
       ) {
+        console.warn(`[Activate] Coverage ratio ${coverageRatio.toFixed(4)} below threshold ${threshold.toFixed(4)} (requested=${requestedQuantity} filled=${execution.quantity})`);
         throw new Error("full_coverage_not_met");
       }
       if (!reservedProtection || !quoteEntryAnchorPrice || !triggerPrice || !premiumPricing) {
