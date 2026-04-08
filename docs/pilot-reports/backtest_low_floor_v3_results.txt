@@ -1,0 +1,220 @@
+═══════════════════════════════════════════════════════════════════════════
+  ATTICUS LOW-FLOOR BACKTEST V3 — TESTS 7-11
+  2026-04-07T21:57:02.594Z
+═══════════════════════════════════════════════════════════════════════════
+
+Fetching 2022-2026 price data...
+  1558 days loaded
+
+═══════════════════════════════════════════════════════════════════════════
+  TEST 7: EXECUTION RISK — SIMULTANEOUS TRIGGERS & LIQUIDITY
+═══════════════════════════════════════════════════════════════════════════
+
+  1% SL:
+    Single-day triggers: 441 / 1558 days (28.3%)
+    Max consecutive trigger days: 5
+    Worst single-day drops that trigger:
+      2022-06-13: -15.42%
+      2022-11-09: -14.33%
+      2026-02-05: -13.98%
+      2022-05-09: -11.61%
+      2022-01-21: -10.36%
+    Simultaneous payout scenarios (all at $10k notional):
+      10 positions: $1,000 payout | 1.43 BTC in options needed
+      20 positions: $2,000 payout | 2.86 BTC in options needed
+      50 positions: $5,000 payout | 7.14 BTC in options needed
+
+  2% SL:
+    Single-day triggers: 252 / 1558 days (16.2%)
+    Max consecutive trigger days: 4
+    Worst single-day drops that trigger:
+      2022-06-13: -15.42%
+      2022-11-09: -14.33%
+      2026-02-05: -13.98%
+      2022-05-09: -11.61%
+      2022-01-21: -10.36%
+    Simultaneous payout scenarios (all at $10k notional):
+      10 positions: $2,000 payout | 1.43 BTC in options needed
+      20 positions: $4,000 payout | 2.86 BTC in options needed
+      50 positions: $10,000 payout | 7.14 BTC in options needed
+
+  3% SL:
+    Single-day triggers: 147 / 1558 days (9.4%)
+    Max consecutive trigger days: 3
+    Worst single-day drops that trigger:
+      2022-06-13: -15.42%
+      2022-11-09: -14.33%
+      2026-02-05: -13.98%
+      2022-05-09: -11.61%
+      2022-01-21: -10.36%
+    Simultaneous payout scenarios (all at $10k notional):
+      10 positions: $3,000 payout | 1.43 BTC in options needed
+      20 positions: $6,000 payout | 2.86 BTC in options needed
+      50 positions: $15,000 payout | 7.14 BTC in options needed
+
+  5% SL:
+    Single-day triggers: 54 / 1558 days (3.5%)
+    Max consecutive trigger days: 2
+    Worst single-day drops that trigger:
+      2022-06-13: -15.42%
+      2022-11-09: -14.33%
+      2026-02-05: -13.98%
+      2022-05-09: -11.61%
+      2022-01-21: -10.36%
+    Simultaneous payout scenarios (all at $10k notional):
+      10 positions: $5,000 payout | 1.43 BTC in options needed
+      20 positions: $10,000 payout | 2.86 BTC in options needed
+      50 positions: $25,000 payout | 7.14 BTC in options needed
+
+  10% SL:
+    Single-day triggers: 6 / 1558 days (0.4%)
+    Max consecutive trigger days: 1
+    Worst single-day drops that trigger:
+      2022-06-13: -15.42%
+      2022-11-09: -14.33%
+      2026-02-05: -13.98%
+      2022-05-09: -11.61%
+      2022-01-21: -10.36%
+    Simultaneous payout scenarios (all at $10k notional):
+      10 positions: $10,000 payout | 1.43 BTC in options needed
+      20 positions: $20,000 payout | 2.86 BTC in options needed
+      50 positions: $50,000 payout | 7.14 BTC in options needed
+
+═══════════════════════════════════════════════════════════════════════════
+  TEST 8: ALTERNATIVE STRUCTURES
+═══════════════════════════════════════════════════════════════════════════
+
+  ── 8A: DEDUCTIBLE MODEL ──
+
+  SL% │ Deductible │ Eff Trigger │ Eff Payout │ Hedge Cost │ Break-Even │ vs Standard
+  ────┼────────────┼─────────────┼────────────┼────────────┼────────────┼────────────
+   2%  │  0.5%      │      53%     │ $    150   │ $    220    │ $    147/10k │   11% cheaper
+   2%  │    1%      │      53%     │ $    100   │ $    220    │ $    120/10k │   27% cheaper
+   2%  │  1.5%      │      53%     │ $     50   │ $    220    │ $     94/10k │   43% cheaper
+   3%  │  0.5%      │      43%     │ $    250   │ $    183    │ $    166/10k │   10% cheaper
+   3%  │    1%      │      43%     │ $    200   │ $    183    │ $    145/10k │   21% cheaper
+   3%  │  1.5%      │      43%     │ $    150   │ $    183    │ $    124/10k │   33% cheaper
+   5%  │  0.5%      │      27%     │ $    450   │ $    124    │ $    168/10k │   14% cheaper
+   5%  │    1%      │      27%     │ $    400   │ $    124    │ $    154/10k │   21% cheaper
+   5%  │  1.5%      │      27%     │ $    350   │ $    124    │ $    140/10k │   28% cheaper
+
+  ── 8B: SLIDING SCALE (incentivize wider SLs) ──
+
+  Strategy: Price inversely to SL% to encourage wider stops
+
+  SL% │ Premium │ Avg P&L/trade │ Annual P&L (5/day) │ Viable?
+  ────┼─────────┼───────────────┼────────────────────┼────────
+   1%  │ $  150/10k │ $     12.93   │ $          23603    │ YES
+   2%  │ $  100/10k │ $    -73.08   │ $        -133369    │ NO
+   3%  │ $   70/10k │ $   -117.69   │ $        -214781    │ NO
+   5%  │ $   45/10k │ $   -136.26   │ $        -248671    │ NO
+  10%  │ $   25/10k │ $    -69.04   │ $        -126006    │ NO
+
+  ── 8C: SUBSCRIPTION MODEL ──
+
+  Monthly fee │ Max notional │ Avg protections/mo │ Avg cost/mo │ Platform P&L │ Viable?
+  ────────────┼──────────────┼────────────────────┼─────────────┼──────────────┼────────
+  $       300 │ $    50,000 │               4    │ $     4101   │ $     -3801   │ NO
+  $       500 │ $    50,000 │               4    │ $     4101   │ $     -3601   │ NO
+  $       750 │ $    50,000 │               4    │ $     4101   │ $     -3351   │ NO
+  $      1000 │ $    50,000 │               4    │ $     4101   │ $     -3101   │ NO
+
+═══════════════════════════════════════════════════════════════════════════
+  TEST 10: MONTE CARLO SIMULATION (10,000 synthetic 7-day paths)
+═══════════════════════════════════════════════════════════════════════════
+
+  Using: spot=$69893 | annualized vol=52.1% | daily vol=2.73%
+
+  1% SL (Monte Carlo):
+    Simulated trigger rate: 71.5%
+    Avg hedge cost:  $277.16/10k
+    Avg payout:      $71.47/10k
+    Avg residual:    $234.37/10k
+    Break-even:      $114.27/10k ($11.43/1k)
+    At $80/10k prem: P5=$-297 | Med=$-197 | P95=$741
+
+  2% SL (Monte Carlo):
+    Simulated trigger rate: 62.7%
+    Avg hedge cost:  $233.26/10k
+    Avg payout:      $125.40/10k
+    Avg residual:    $192.64/10k
+    Break-even:      $166.01/10k ($16.60/1k)
+    At $80/10k prem: P5=$-353 | Med=$-153 | P95=$591
+
+  3% SL (Monte Carlo):
+    Simulated trigger rate: 52.9%
+    Avg hedge cost:  $194.14/10k
+    Avg payout:      $158.70/10k
+    Avg residual:    $152.80/10k
+    Break-even:      $200.04/10k ($20.00/1k)
+    At $80/10k prem: P5=$-414 | Med=$-114 | P95=$418
+
+  5% SL (Monte Carlo):
+    Simulated trigger rate: 37.6%
+    Avg hedge cost:  $129.73/10k
+    Avg payout:      $187.85/10k
+    Avg residual:    $98.07/10k
+    Break-even:      $219.51/10k ($21.95/1k)
+    At $80/10k prem: P5=$-550 | Med=$-50 | P95=$86
+
+  10% SL (Monte Carlo):
+    Simulated trigger rate: 10.1%
+    Avg hedge cost:  $37.20/10k
+    Avg payout:      $100.80/10k
+    Avg residual:    $20.41/10k
+    Break-even:      $117.59/10k ($11.76/1k)
+    At $80/10k prem: P5=$-843 | Med=$43 | P95=$43
+
+═══════════════════════════════════════════════════════════════════════════
+  TEST 11: BREAK-EVEN VOLUME ANALYSIS
+═══════════════════════════════════════════════════════════════════════════
+
+  At aggressive pricing, how many protections/month needed to cover fixed costs?
+
+  Assumed fixed monthly costs (infra, ops): $2000
+
+  SL% │ Premium │ Avg Margin/trade │ Trades/mo to BE │ Revenue/mo @50/day │ Profit/mo @50/day
+  ────┼─────────┼──────────────────┼─────────────────┼────────────────────┼──────────────────
+   1%  │ $   50/10k │ $        -87.07 │    N/A (loss)   │ $          75,000 │ $       -132600
+   1%  │ $   80/10k │ $        -57.07 │    N/A (loss)   │ $         120,000 │ $        -87600
+   1%  │ $  120/10k │ $        -17.07 │    N/A (loss)   │ $         180,000 │ $        -27600
+  ────┼─────────┼──────────────────┼─────────────────┼────────────────────┼──────────────────
+   2%  │ $   50/10k │ $       -123.08 │    N/A (loss)   │ $          75,000 │ $       -186618
+   2%  │ $   80/10k │ $        -93.08 │    N/A (loss)   │ $         120,000 │ $       -141618
+   2%  │ $  120/10k │ $        -53.08 │    N/A (loss)   │ $         180,000 │ $        -81618
+  ────┼─────────┼──────────────────┼─────────────────┼────────────────────┼──────────────────
+   3%  │ $   50/10k │ $       -137.69 │    N/A (loss)   │ $          75,000 │ $       -208533
+   3%  │ $   80/10k │ $       -107.69 │    N/A (loss)   │ $         120,000 │ $       -163533
+   3%  │ $  120/10k │ $        -67.69 │    N/A (loss)   │ $         180,000 │ $       -103533
+  ────┼─────────┼──────────────────┼─────────────────┼────────────────────┼──────────────────
+   5%  │ $   50/10k │ $       -131.26 │    N/A (loss)   │ $          75,000 │ $       -198887
+   5%  │ $   80/10k │ $       -101.26 │    N/A (loss)   │ $         120,000 │ $       -153887
+   5%  │ $  120/10k │ $        -61.26 │    N/A (loss)   │ $         180,000 │ $        -93887
+  ────┼─────────┼──────────────────┼─────────────────┼────────────────────┼──────────────────
+  10%  │ $   50/10k │ $        -44.04 │    N/A (loss)   │ $          75,000 │ $        -68067
+  10%  │ $   80/10k │ $        -14.04 │    N/A (loss)   │ $         120,000 │ $        -23067
+  10%  │ $  120/10k │ $         25.96 │            78   │ $         180,000 │ $         36933
+  ────┼─────────┼──────────────────┼─────────────────┼────────────────────┼──────────────────
+
+═══════════════════════════════════════════════════════════════════════════
+  TEST 9: COMPETITOR / MARKET PRICING REFERENCE
+═══════════════════════════════════════════════════════════════════════════
+
+  DeFi protection protocols (approximate rates):
+
+  Protocol       │ Coverage   │ Cost/year │ Equiv/7d per $10k │ Model
+  ───────────────┼────────────┼───────────┼───────────────────┼──────────────
+  Nexus Mutual   │ Smart cntr │ 2.6%      │ ~$50              │ Pool-based
+  InsurAce       │ Protocol   │ 1-4%      │ $19-$77           │ Pool-based
+  Bumper Finance │ Price floor│ 3-10%     │ $58-$192          │ Options-like
+  Ribbon/Aevo    │ OTM puts   │ Market    │ $30-$150          │ Options vault
+  Derive (Lyra)  │ OTM puts   │ Market    │ $40-$200          │ AMM options
+  TradFi OTC     │ Collar     │ 1-3%      │ $19-$58           │ Structured
+
+  Note: DeFi rates are approximate and vary by market conditions.
+
+  Atticus competitive positioning:
+  - At $80/10k (2% SL, 7d): competitive with Bumper/Ribbon
+  - At $50/10k (5% SL, 7d): cheaper than most DeFi alternatives
+  - Key differentiator: instant payout on breach (no claims process)
+  - Key differentiator: no smart contract risk (CeFi hedge via Bullish)

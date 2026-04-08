@@ -189,7 +189,7 @@ const parseAllowlist = (raw: string | undefined): ParsedAllowlist => {
 };
 
 export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => {
-  const normalized = (raw || "deribit_test").trim();
+  const normalized = (raw || "bullish_testnet").trim();
   if (
     normalized === "falconx" ||
     normalized === "deribit_test" ||
@@ -1279,9 +1279,9 @@ export const pilotConfig = {
   priceFreshnessMaxMs: Number(process.env.PRICE_FRESHNESS_MAX_MS || "5000"),
   priceRequestRetryAttempts: Number(process.env.PRICE_REQUEST_RETRY_ATTEMPTS || "3"),
   priceRequestRetryDelayMs: Number(process.env.PRICE_REQUEST_RETRY_DELAY_MS || "180"),
-  venueQuoteTimeoutMs: Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000"),
+  venueQuoteTimeoutMs: Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "30000"),
   quoteTtlMs: Number(process.env.PILOT_QUOTE_TTL_MS || "30000"),
-  venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "8000"),
+  venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "25000"),
   venueMarkTimeoutMs: Number(process.env.PILOT_VENUE_MARK_TIMEOUT_MS || "3000"),
   triggerMonitorEnabled: parseBooleanEnv(process.env.PILOT_TRIGGER_MONITOR_ENABLED, true),
   triggerMonitorIntervalMs: parsePositiveIntInRange(

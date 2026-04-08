@@ -20,6 +20,14 @@ import { toHedgeCandidate } from "./hedgeCandidates";
 import { selectBestHedgeCandidate } from "./hedgeScoring";
 import { resolveHedgeRegime } from "./regimePolicy";
 import { BullishTradingClient, resolveBullishMarketSymbol } from "./bullish";
+import {
+  type HedgeOptimizationConfig,
+  parseHedgeOptimizationConfig,
+  resolveOptimalTenor,
+  evaluateRollOpportunity,
+  resolveDynamicStrikeRange,
+  HedgeBatchManager
+} from "./hedgeOptimizations";
 
 export type QuoteRequest = {
   marketId: string;
@@ -720,6 +728,11 @@ class DeribitTestAdapter implements PilotVenueAdapter {
   }
 }
 
+/**
+ * @deprecated IBKR CME adapter -- retained for reference only.
+ * All pilot execution now routes through BullishTestnetAdapter.
+ * Do NOT delete: prior integration logic may inform future venue adapters.
+ */
 class IbkrCmeAdapter implements PilotVenueAdapter {
   private qualifyCache = new Map<string, { contracts: IbkrQualifiedContract[]; ts: number }>();
   private qualifyInFlight = new Map<string, Promise<IbkrQualifiedContract[]>>();
@@ -3306,26 +3319,48 @@ class FalconxAdapter implements PilotVenueAdapter {
 
 class BullishTestnetAdapter implements PilotVenueAdapter {
   private readonly client: BullishTradingClient;
+  private readonly hedgeConfig: HedgeOptimizationConfig;
+  private readonly batchManager: HedgeBatchManager;
 
   constructor(
     private readonly config: BullishRuntimeConfig,
     private readonly quoteTtlMs: number
   ) {
     this.client = new BullishTradingClient(config);
+    this.hedgeConfig = parseHedgeOptimizationConfig();
+    this.batchManager = new HedgeBatchManager(this.hedgeConfig);
   }
 
-  private async selectBullishOptionSymbol(req: QuoteRequest): Promise<string | null> {
+  private async selectBullishOptionSymbol(req: QuoteRequest): Promise<{
+    symbol: string;
+    strike: number;
+    hedgeCostPerUnit: number;
+    hedgeCostTotal: number;
+    availableQty: number;
+    selectionReason: string;
+  } | null> {
     const allMarkets = await this.client.getMarkets();
-    const requestedOptionType = req.protectionType === "short" ? "CALL" : "PUT";
+    const isShort = req.protectionType === "short";
+    const requestedOptionType = isShort ? "CALL" : "PUT";
     const now = Date.now();
     const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 7)));
     const targetExpiryMs = now + requestedTenorDays * 24 * 60 * 60 * 1000;
-    const triggerPrice = toFinitePositiveNumber(req.triggerPrice) || null;
-    const fallbackSpot = toFinitePositiveNumber(req.protectedNotional) && toFinitePositiveNumber(req.quantity)
+    const spotPrice = toFinitePositiveNumber(req.protectedNotional) && toFinitePositiveNumber(req.quantity)
       ? Number(req.protectedNotional) / Number(req.quantity)
       : null;
-    const strikeAnchor = triggerPrice || fallbackSpot;
-    if (!strikeAnchor) return null;
+    const triggerPrice = toFinitePositiveNumber(req.triggerPrice) || null;
+    const drawdownFloorPct = toFinitePositiveNumber(req.drawdownFloorPct) || 0.2;
+    const btcQty = Number(req.quantity || 0);
+
+    if (!spotPrice || btcQty <= 0) return null;
+
+    const maxHedgeCostPer1k = Number(process.env.PILOT_BULLISH_MAX_HEDGE_COST_PER_1K || "0") || null;
+
+    const strikeRange = resolveDynamicStrikeRange({
+      config: this.hedgeConfig,
+      recentVolatilityPct: null,
+      isShort
+    });
 
     const candidates = allMarkets
       .map((market) => {
@@ -3340,62 +3375,150 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const tradable = (market as Record<string, unknown>).createOrderEnabled !== false;
         if (!tradable) return null;
         const tenorDriftDays = Math.abs(expiryMs - targetExpiryMs) / 86400000;
-        const strikeDistancePct = Math.abs(parsed.strike - strikeAnchor) / strikeAnchor;
-        return {
-          symbol,
-          expiryMs,
-          tenorDriftDays,
-          strikeDistancePct
-        };
-      })
-      .filter((entry): entry is { symbol: string; expiryMs: number; tenorDriftDays: number; strikeDistancePct: number } =>
-        Boolean(entry)
-      )
-      .sort((a, b) => {
-        if (a.tenorDriftDays !== b.tenorDriftDays) return a.tenorDriftDays - b.tenorDriftDays;
-        if (a.strikeDistancePct !== b.strikeDistancePct) return a.strikeDistancePct - b.strikeDistancePct;
-        return a.expiryMs - b.expiryMs;
-      });
+        const maxDrift = Math.max(7, requestedTenorDays + 3);
+        if (tenorDriftDays > maxDrift) return null;
 
-    for (const candidate of candidates.slice(0, 25)) {
+        const moneyness = parsed.strike / spotPrice;
+        if (isShort) {
+          if (moneyness < strikeRange.targetMoneynessMin * 0.95 || moneyness > strikeRange.targetMoneynessMax * 1.2) return null;
+        } else {
+          if (moneyness > strikeRange.targetMoneynessMax * 1.1) return null;
+          if (moneyness < strikeRange.targetMoneynessMin * 0.85) return null;
+        }
+
+        return { symbol, strike: parsed.strike, expiryMs, tenorDriftDays };
+      })
+      .filter(Boolean) as Array<{ symbol: string; strike: number; expiryMs: number; tenorDriftDays: number }>;
+
+    candidates.sort((a, b) => a.tenorDriftDays - b.tenorDriftDays || a.strike - b.strike);
+
+    type ScoredCandidate = {
+      symbol: string;
+      strike: number;
+      askPrice: number;
+      askQty: number;
+      hedgeCostTotal: number;
+      hedgeCostPer1k: number;
+      score: number;
+      selectionReason: string;
+    };
+
+    const scored: ScoredCandidate[] = [];
+    const bestTenorDrift = candidates[0]?.tenorDriftDays ?? 0;
+    const sameExpiryGroup = candidates.filter((c) => Math.abs(c.tenorDriftDays - bestTenorDrift) < 0.5);
+
+    for (const candidate of sameExpiryGroup.slice(0, 5)) {
       try {
         const book = await this.client.getHybridOrderBook(candidate.symbol);
         const bestAsk = book.asks[0];
         const askPx = Number(bestAsk?.price ?? NaN);
         const askQty = Number(bestAsk?.quantity ?? NaN);
-        if (Number.isFinite(askPx) && askPx > 0 && Number.isFinite(askQty) && askQty > 0) {
-          return candidate.symbol;
+        if (!Number.isFinite(askPx) || askPx <= 0) continue;
+        if (!Number.isFinite(askQty) || askQty <= 0) continue;
+
+        const hedgeCostTotal = askPx * btcQty;
+        const hedgeCostPer1k = (askPx / spotPrice) * 1000;
+        if (maxHedgeCostPer1k && hedgeCostPer1k > maxHedgeCostPer1k) continue;
+
+        const premium = Number(req.protectedNotional || 0) / 1000 * 11;
+        const hasLiquidity = askQty >= btcQty;
+        const spreadPositive = premium > hedgeCostTotal;
+        const moneyness = candidate.strike / spotPrice;
+
+        let score = 0;
+        if (spreadPositive) score += 60;
+        else score -= 20;
+        if (hasLiquidity) score += 20;
+
+        if (moneyness >= strikeRange.targetMoneynessMin && moneyness <= strikeRange.targetMoneynessMax) {
+          score += 15;
+        } else {
+          const distFromRange = Math.min(
+            Math.abs(moneyness - strikeRange.targetMoneynessMin),
+            Math.abs(moneyness - strikeRange.targetMoneynessMax)
+          );
+          score += Math.max(0, 8 - distFromRange * 100);
         }
+
+        if (triggerPrice) {
+          const coverageOnBreach = Math.max(0, candidate.strike - triggerPrice) * btcQty;
+          const maxPayout = Number(req.protectedNotional || 0) * drawdownFloorPct;
+          const coverageRatio = maxPayout > 0 ? coverageOnBreach / maxPayout : 0;
+          score += Math.min(20, coverageRatio * 20);
+        }
+
+        const reason = [
+          spreadPositive ? "spread_positive" : "spread_negative",
+          hasLiquidity ? "liquidity_ok" : "partial_fill",
+          `moneyness_${(moneyness * 100).toFixed(0)}pct`,
+          `cost_${hedgeCostPer1k.toFixed(1)}_per_1k`
+        ].join("|");
+
+        scored.push({
+          symbol: candidate.symbol,
+          strike: candidate.strike,
+          askPrice: askPx,
+          askQty: askQty,
+          hedgeCostTotal,
+          hedgeCostPer1k,
+          score,
+          selectionReason: reason
+        });
       } catch {
-        // Ignore transient market data failures while scanning liquidity candidates.
+        // Skip candidates with transient market data failures
       }
     }
 
-    return candidates[0]?.symbol || null;
+    if (!scored.length) return null;
+
+    scored.sort((a, b) => b.score - a.score || a.hedgeCostPer1k - b.hedgeCostPer1k);
+    const best = scored[0];
+
+    return {
+      symbol: best.symbol,
+      strike: best.strike,
+      hedgeCostPerUnit: best.askPrice,
+      hedgeCostTotal: best.hedgeCostTotal,
+      availableQty: best.askQty,
+      selectionReason: best.selectionReason
+    };
   }
 
   async quote(req: QuoteRequest): Promise<VenueQuote> {
-    const optionSymbol = await this.selectBullishOptionSymbol(req);
-    const symbol =
-      optionSymbol ||
-      resolveBullishMarketSymbol(this.config, {
-        marketId: req.marketId,
-        instrumentId: req.instrumentId
-      });
+    const selection = await this.selectBullishOptionSymbol(req);
+    if (!selection) {
+      throw new Error("bullish_quote_unavailable:no_suitable_option_found");
+    }
+    const symbol = selection.symbol;
+
     const book = await this.client.getHybridOrderBook(symbol);
     const bestAsk = book.asks[0];
     const bestBid = book.bids[0] || null;
-    const askPx = Number(bestAsk?.price ?? NaN);
+    const askPx = selection ? selection.hedgeCostPerUnit : Number(bestAsk?.price ?? NaN);
     const askQty = Number(bestAsk?.quantity ?? NaN);
     if (!Number.isFinite(askPx) || askPx <= 0 || !Number.isFinite(askQty) || askQty <= 0) {
       throw new Error("bullish_quote_unavailable:no_top_of_book");
     }
     const premium = Number((askPx * Math.max(0, Number(req.quantity || 0))).toFixed(10));
+
+    const batchDecision = this.hedgeConfig.batchHedgingEnabled
+      ? this.batchManager.addToQueue({
+          requestId: randomUUID(),
+          protectionType: req.protectionType || "long",
+          notionalUsd: req.protectedNotional,
+          btcQty: Number(req.quantity || 0),
+          drawdownFloorPct: req.drawdownFloorPct || 0.2,
+          triggerPrice: req.triggerPrice || 0,
+          premiumPer1k: 11,
+          createdAt: Date.now()
+        })
+      : null;
+
     return {
       venue: "bullish_testnet",
       quoteId: randomUUID(),
       rfqId: null,
-      instrumentId: optionSymbol || req.instrumentId,
+      instrumentId: selection.symbol,
       side: "buy",
       quantity: req.quantity,
       premium,
@@ -3404,16 +3527,34 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       details: {
         venueMode: "bullish_testnet",
         bullishSymbol: symbol,
-        bestAskPrice: bestAsk.price,
-        bestAskQuantity: bestAsk.quantity,
+        bestAskPrice: bestAsk?.price ?? null,
+        bestAskQuantity: bestAsk?.quantity ?? null,
         bestBidPrice: bestBid?.price ?? null,
         bestBidQuantity: bestBid?.quantity ?? null,
         sequenceNumber: book.sequenceNumber,
         orderbookTimestamp: book.timestamp,
         source: "bullish_hybrid_orderbook",
-        selectedInstrumentId: optionSymbol || req.instrumentId,
+        selectedInstrumentId: selection.symbol,
         requestedInstrumentId: req.instrumentId,
-        hedgeMode: optionSymbol ? "options_native" : "futures_synthetic"
+        hedgeMode: "options_native",
+        optimizations: {
+          batchDecision: batchDecision ? {
+            mode: batchDecision.mode,
+            reason: batchDecision.reason,
+            pendingCount: batchDecision.pendingCount,
+            totalBtcQty: batchDecision.totalBtcQty
+          } : null,
+          dynamicStrike: this.hedgeConfig.dynamicStrikeEnabled ? "enabled" : "disabled",
+          rollOptimization: this.hedgeConfig.rollOptimizationEnabled ? "enabled" : "disabled",
+          autoRenewTenor: this.hedgeConfig.autoRenewTenorEnabled ? "enabled" : "disabled"
+        },
+        optionSelection: selection ? {
+          strike: selection.strike,
+          hedgeCostPerUnit: selection.hedgeCostPerUnit,
+          hedgeCostTotal: selection.hedgeCostTotal,
+          availableQty: selection.availableQty,
+          selectionReason: selection.selectionReason
+        } : null
       }
     };
   }
@@ -3439,6 +3580,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       };
     }
     const quoteDetails = (quote.details || {}) as Record<string, unknown>;
+    const optionSelection = quoteDetails.optionSelection as Record<string, unknown> | null | undefined;
     const selectedInstrumentId = String(quoteDetails.selectedInstrumentId || quote.instrumentId || "").trim();
     const symbol =
       selectedInstrumentId ||
@@ -3450,14 +3592,76 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     if (!Number.isFinite(quantity) || quantity <= 0) {
       throw new Error("bullish_execute_invalid_quantity");
     }
-    const unitPrice = quantity > 0 ? quote.premium / quantity : quote.premium;
-    const response = await this.client.createSpotLimitOrder({
-      symbol,
-      side: "BUY",
-      price: unitPrice.toFixed(8),
-      quantity: quantity.toFixed(8),
-      clientOrderId: quote.quoteId
-    });
+    const hedgeCostPerUnit = Number(optionSelection?.hedgeCostPerUnit ?? 0);
+
+    const stalenessMaxPct = Math.max(0.5, Number(process.env.PILOT_BULLISH_PRICE_STALENESS_MAX_PCT || "5"));
+    let freshAskPrice: number | null = null;
+    try {
+      const freshBook = await this.client.getHybridOrderBook(symbol);
+      freshAskPrice = Number(freshBook.asks[0]?.price ?? NaN);
+      if (!Number.isFinite(freshAskPrice) || freshAskPrice <= 0) freshAskPrice = null;
+    } catch {
+      // If fresh book check fails, proceed with stored price
+    }
+
+    const unitPrice = freshAskPrice || (hedgeCostPerUnit > 0 ? hedgeCostPerUnit : (quantity > 0 ? quote.premium / quantity : quote.premium));
+
+    if (freshAskPrice && hedgeCostPerUnit > 0) {
+      const driftPct = Math.abs(freshAskPrice - hedgeCostPerUnit) / hedgeCostPerUnit * 100;
+      if (driftPct > stalenessMaxPct) {
+        return {
+          venue: "bullish_testnet",
+          status: "failure",
+          quoteId: quote.quoteId,
+          rfqId: quote.rfqId ?? null,
+          instrumentId: quote.instrumentId,
+          side: "buy",
+          quantity: quote.quantity,
+          executionPrice: 0,
+          premium: quote.premium,
+          executedAt: nowIso(),
+          externalOrderId: "",
+          externalExecutionId: "",
+          details: {
+            rejectionReason: "price_staleness_exceeded",
+            quotedPrice: hedgeCostPerUnit,
+            currentAsk: freshAskPrice,
+            driftPct: driftPct.toFixed(2),
+            maxAllowedPct: stalenessMaxPct
+          }
+        };
+      }
+    }
+
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+    const isIOC = this.config.orderTif === "IOC";
+    const cancelTimeoutMs = Math.max(3000, Number(process.env.PILOT_BULLISH_UNFILLED_CANCEL_TIMEOUT_MS || "10000"));
+
+    const isOption = /^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol);
+    const pricePrecision = isOption ? 4 : 8;
+    const qtyPrecision = isOption ? 2 : 8;
+    const formattedPrice = unitPrice.toFixed(pricePrecision);
+    const formattedQty = Math.floor(quantity * Math.pow(10, qtyPrecision)) / Math.pow(10, qtyPrecision);
+    const formattedQtyStr = formattedQty.toFixed(qtyPrecision);
+
+    console.log(`[BullishAdapter] Placing order: symbol=${symbol} side=BUY price=${formattedPrice} qty=${formattedQtyStr} tif=${this.config.orderTif} clientOrderId=${clientOrderId}`);
+    const startMs = Date.now();
+
+    let response: unknown;
+    try {
+      response = await this.client.createSpotLimitOrder({
+        symbol,
+        side: "BUY",
+        price: formattedPrice,
+        quantity: formattedQtyStr,
+        clientOrderId
+      });
+      console.log(`[BullishAdapter] Order response (${Date.now() - startMs}ms):`, JSON.stringify(response).slice(0, 500));
+    } catch (orderError: any) {
+      console.error(`[BullishAdapter] Order FAILED (${Date.now() - startMs}ms):`, orderError?.message);
+      throw new Error(`bullish_order_failed:${orderError?.message || "unknown"}`);
+    }
+
     const responseRecord = response as Record<string, unknown>;
     const orderId =
       typeof responseRecord.orderId === "string"
@@ -3465,20 +3669,98 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         : typeof (responseRecord.data as Record<string, unknown> | undefined)?.orderId === "string"
           ? String((responseRecord.data as Record<string, unknown>).orderId)
           : "";
+
+    let restStatus = String(responseRecord.status || (responseRecord.data as Record<string, unknown> | undefined)?.status || "").toUpperCase();
+    let restFillPrice = Number(responseRecord.averageFillPrice ?? (responseRecord.data as Record<string, unknown> | undefined)?.averageFillPrice ?? responseRecord.price ?? 0);
+    let restFillQty = Number(responseRecord.quantityFilled ?? (responseRecord.data as Record<string, unknown> | undefined)?.quantityFilled ?? responseRecord.quantity ?? 0);
+
+    if (orderId && isIOC && restFillPrice <= 0) {
+      const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await delay(attempt === 0 ? 300 : 500);
+        try {
+          const orderStatus = await this.client.getOrderStatus(orderId);
+          console.log(`[BullishAdapter] Order status poll ${attempt + 1}: status=${orderStatus.status} fillPrice=${orderStatus.fillPrice} fillQty=${orderStatus.fillQuantity}`);
+          restStatus = orderStatus.status;
+          if (orderStatus.fillPrice > 0) restFillPrice = orderStatus.fillPrice;
+          if (orderStatus.fillQuantity > 0) restFillQty = orderStatus.fillQuantity;
+          if (restStatus === "CLOSED" || restStatus === "FILLED" || restStatus === "CANCELLED" || restStatus === "EXPIRED") break;
+        } catch (pollErr: any) {
+          console.warn(`[BullishAdapter] Order status poll ${attempt + 1} failed:`, pollErr?.message);
+        }
+      }
+    }
+
+    const isFilled = restStatus === "FILLED" || restStatus === "CLOSED"
+      || (orderId && restFillPrice > 0 && restFillQty > 0);
+    const isCancelled = restStatus === "CANCELLED" || restStatus === "EXPIRED";
+
+    if (!orderId) {
+      console.error(`[BullishAdapter] No orderId in response -- treating as failure`);
+      return {
+        venue: "bullish_testnet", status: "failure", quoteId: quote.quoteId,
+        rfqId: quote.rfqId ?? null, instrumentId: quote.instrumentId, side: "buy",
+        quantity: quote.quantity, executionPrice: 0, premium: quote.premium,
+        executedAt: nowIso(), externalOrderId: "", externalExecutionId: "",
+        details: { ...responseRecord, rejectionReason: "no_order_id_in_response" }
+      };
+    }
+
+    if (isIOC && isCancelled) {
+      console.warn(`[BullishAdapter] IOC order ${orderId} cancelled/expired (no fill)`);
+      return {
+        venue: "bullish_testnet", status: "failure", quoteId: quote.quoteId,
+        rfqId: quote.rfqId ?? null, instrumentId: quote.instrumentId, side: "buy",
+        quantity: quote.quantity, executionPrice: 0, premium: quote.premium,
+        executedAt: nowIso(), externalOrderId: orderId, externalExecutionId: `bullish-${orderId}`,
+        details: { ...responseRecord, fillStatus: "ioc_no_fill", rejectionReason: "ioc_cancelled" }
+      };
+    }
+
+    if (!isIOC && !isFilled && orderId) {
+      setTimeout(async () => {
+        try {
+          await this.client.cancelOrder({ symbol, orderId });
+          console.log(`[BullishAdapter] Auto-cancelled unfilled GTC order ${orderId}`);
+        } catch {}
+      }, cancelTimeoutMs).unref?.();
+    }
+
+    const actualFillPrice = restFillPrice > 0 ? restFillPrice : unitPrice;
+    const actualFillQty = restFillQty > 0 ? restFillQty : formattedQty;
+
+    console.log(`[BullishAdapter] Order ${orderId} result: filled=${isFilled} price=${actualFillPrice} qty=${actualFillQty} latency=${Date.now() - startMs}ms`);
+
+    const executionSuccess = orderId && (isFilled || (!isIOC && !isCancelled));
+
     return {
       venue: "bullish_testnet",
-      status: orderId ? "success" : "failure",
+      status: executionSuccess ? "success" : "failure",
       quoteId: quote.quoteId,
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
       side: "buy",
-      quantity: quote.quantity,
-      executionPrice: unitPrice,
-      premium: quote.premium,
+      quantity: actualFillQty,
+      executionPrice: actualFillPrice,
+      premium: actualFillPrice * actualFillQty,
       executedAt: nowIso(),
       externalOrderId: orderId,
       externalExecutionId: orderId ? `bullish-${orderId}` : "",
-      details: responseRecord
+      details: {
+        ...responseRecord,
+        fillConfirmation: {
+          method: isIOC ? "rest_ioc_sync" : "rest_with_cancel_fallback",
+          filled: isFilled,
+          fillPrice: actualFillPrice,
+          fillQuantity: actualFillQty,
+          restStatus,
+          latencyMs: Date.now() - startMs,
+        },
+        priceGuard: {
+          stalenessMaxPct,
+          orderTif: this.config.orderTif,
+        }
+      }
     };
   }
 

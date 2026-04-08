@@ -161,8 +161,8 @@ test("quote applies premium regime overlay in watch regime", async () => {
     assert.equal(Number(breakdown.premiumRegimeOverlayAddUsdPer1k), 2);
     assert.equal(Number(breakdown.premiumRegimeOverlayUsd), 10);
     assert.equal(Number(breakdown.clientPremiumUsd), Number(breakdown.premiumRegimeAdjustedPremiumUsd));
-    assert.equal(Number(breakdown.displayedPremiumPer1kUsd), 25);
-    assert.equal(Number(breakdown.displayedPremiumUsd), 125);
+    assert.equal(Number(breakdown.displayedPremiumPer1kUsd), 11);
+    assert.equal(Number(breakdown.displayedPremiumUsd), 55);
   } finally {
     await harness.close();
   }
