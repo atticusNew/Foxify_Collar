@@ -11,10 +11,11 @@ type Position = { id: string; num: number; type: "long" | "short"; size: number;
 
 // ─── Config ──────────────────────────────────────────────────────────
 
-const STOP_LOSS_OPTIONS = [20, 15, 12] as const;
+const STOP_LOSS_OPTIONS = [1, 2, 3, 5, 10] as const;
 type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
-const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 20: "Pro (Bronze)", 15: "Pro (Silver)", 12: "Pro (Gold)" };
-const POS_MIN = 5000, POS_MAX = 50000, POS_STEP = 5000, PPK = 11, TENOR = 5, INIT_BAL = 1_000_000;
+const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 1: "SL 1%", 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
+const SL_PREMIUM_PER_1K: Record<StopLoss, number> = { 1: 9, 2: 6, 3: 5, 5: 4, 10: 2 };
+const POS_MIN = 5000, POS_MAX = 50000, POS_STEP = 5000, TENOR = 2, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";
 const LOGO = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 
@@ -111,9 +112,10 @@ export function PilotWidget() {
   useEffect(() => { sv(K_BAL, balance); }, [balance]);
   useEffect(() => { sv(K_SET, settlement); }, [settlement]);
 
-  const tierName = stopLoss ? STOP_LOSS_TO_TIER[stopLoss] : "Pro (Bronze)";
-  const dd = stopLoss ?? 20;
-  const premium = (positionSize / 1000) * PPK;
+  const tierName = stopLoss ? STOP_LOSS_TO_TIER[stopLoss] : "SL 2%";
+  const dd = stopLoss ?? 2;
+  const ppk = SL_PREMIUM_PER_1K[dd as StopLoss] ?? 6;
+  const premium = (positionSize / 1000) * ppk;
   const payout = positionSize * (dd / 100);
   const floor = livePrice && stopLoss ? (positionType === "short" ? livePrice * (1 + dd / 100) : livePrice * (1 - dd / 100)) : null;
   const ready = positionType !== null && stopLoss !== null;
@@ -136,10 +138,11 @@ export function PilotWidget() {
   const nextNum = () => { posNumRef.current++; sv(K_NUM, posNumRef.current); return posNumRef.current; };
 
   const doProtect = useCallback(async (posSize: number, posType: "long" | "short", sl: number, ep: number, existingPosId?: string) => {
-    const tn = STOP_LOSS_TO_TIER[sl as StopLoss] || "Pro (Bronze)";
-    const prem = (posSize / 1000) * PPK;
-    const q = await fetchQuote({ protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, tierName: tn, drawdownFloorPct: sl / 100, protectionType: posType });
-    const r = await activateProt({ quoteId: q.quote.quoteId, protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, tierName: tn, drawdownFloorPct: sl / 100, autoRenew: false, protectionType: posType });
+    const tn = STOP_LOSS_TO_TIER[sl as StopLoss] || "SL 2%";
+    const slPpk = SL_PREMIUM_PER_1K[sl as StopLoss] ?? 6;
+    const prem = (posSize / 1000) * slPpk;
+    const q = await fetchQuote({ protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, protectionType: posType });
+    const r = await activateProt({ quoteId: q.quote.quoteId, protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, autoRenew: false, protectionType: posType });
     const pid = r.protectionId || r.protection?.id || null;
     return { pid, prem };
   }, []);
@@ -301,7 +304,7 @@ export function PilotWidget() {
                     <div style={{ display: "flex", gap: 6 }}>
                       {!pos.protectionId && (
                         <button onClick={() => handleAddProtection(pos.id)} disabled={isProtecting} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "none", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", fontSize: 11, fontWeight: 600, color: "#fff", cursor: "pointer", opacity: isProtecting ? 0.5 : 1 }}>
-                          {isProtecting ? "Adding..." : `Add Protection (${fmt((pos.size / 1000) * PPK)})`}
+                          {isProtecting ? "Adding..." : `Add Protection (${fmt((pos.size / 1000) * (SL_PREMIUM_PER_1K[pos.stopLoss as StopLoss] ?? 6))})`}
                         </button>
                       )}
                       <button onClick={() => handleClose(pos.id)} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", fontSize: 11, color: "var(--muted)", cursor: "pointer" }}>Close</button>

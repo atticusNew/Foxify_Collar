@@ -188,12 +188,14 @@ const formatUsd = (value: number | string | null | undefined): string => {
 };
 
 const DEFAULT_TIERS: TierLevel[] = [
-  { name: "Pro (Bronze)", drawdownFloorPct: 0.2, expiryDays: 7, renewWindowMinutes: 1440 },
-  { name: "Pro (Silver)", drawdownFloorPct: 0.15, expiryDays: 7, renewWindowMinutes: 1440 },
-  { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
-  { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
+  { name: "SL 1%", drawdownFloorPct: 0.01, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 2%", drawdownFloorPct: 0.02, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 3%", drawdownFloorPct: 0.03, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 5%", drawdownFloorPct: 0.05, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 10%", drawdownFloorPct: 0.10, expiryDays: 2, renewWindowMinutes: 1440 }
 ];
-const STATIC_TENOR_CHIPS_DAYS = [7, 14, 21] as const;
+const V7_SL_TIERS = [1, 2, 3, 5, 10] as const;
+const STATIC_TENOR_CHIPS_DAYS = [2, 7, 14] as const;
 const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[0];
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
 const QUOTE_REQUEST_TIMEOUT_MS = 30000;
@@ -1082,6 +1084,7 @@ export function PilotApp() {
               protectionType,
               instrumentId: `BTC-USD-${selectedTenorDays}D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
+              slPct: selectedTier.drawdownFloorPct * 100,
               tierName: selectedTier.name,
               drawdownFloorPct: selectedTier.drawdownFloorPct,
               tenorDays: selectedTenorDays
@@ -1174,6 +1177,7 @@ export function PilotApp() {
               protectionType,
               instrumentId: `BTC-USD-${selectedTenorDays}D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
+              slPct: selectedTier.drawdownFloorPct * 100,
               tierName: selectedTier.name,
               drawdownFloorPct: selectedTier.drawdownFloorPct,
               tenorDays: selectedTenorDays,
