@@ -149,6 +149,7 @@ export function PilotWidget() {
         if (on && d.status === "ok") {
           setRegime(d.regime);
           setDvol(d.dvol);
+          if (d.regime !== "calm") setStopLoss(prev => prev === 1 ? null : prev);
         }
       } catch { /* regime fetch is best-effort */ }
     };
@@ -271,7 +272,7 @@ export function PilotWidget() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Stop Loss</span>
           <div style={{ display: "flex", gap: 6 }}>
-            {STOP_LOSS_OPTIONS.map(sl => (
+            {STOP_LOSS_OPTIONS.filter(sl => sl !== 1 || regime === "calm").map(sl => (
               <button key={sl} onClick={() => setStopLoss(sl)} style={{ padding: "7px 16px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, background: stopLoss === sl ? "rgba(184,90,28,0.18)" : "var(--card-2)", color: stopLoss === sl ? "var(--accent)" : "var(--text)", borderColor: stopLoss === sl ? "var(--accent-2)" : "var(--border)", transition: "all 0.15s ease" }}>{sl}%</button>
             ))}
           </div>
