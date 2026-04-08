@@ -1,41 +1,18 @@
 services:
-  broker-bridge:
-    build:
-      context: .
-      dockerfile: services/broker-bridge/Dockerfile
-    env_file:
-      - .env
-    environment:
-      - IBKR_BRIDGE_PORT=18080
-      - IBKR_BRIDGE_HOST=0.0.0.0
-      - IBKR_BRIDGE_REQUIRE_AUTH=${IBKR_BRIDGE_REQUIRE_AUTH:-false}
-      - IBKR_BRIDGE_TOKEN=${IBKR_BRIDGE_TOKEN:-}
-      - IBKR_BRIDGE_READONLY=${IBKR_BRIDGE_READONLY:-true}
-      - IBKR_BRIDGE_TRANSPORT=${IBKR_BRIDGE_TRANSPORT:-synthetic}
-      - IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC=${IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC:-true}
-      - IBKR_GATEWAY_HOST=${IBKR_GATEWAY_HOST:-127.0.0.1}
-      - IBKR_GATEWAY_PORT=${IBKR_GATEWAY_PORT:-4002}
-      - IBKR_GATEWAY_CLIENT_ID=${IBKR_GATEWAY_CLIENT_ID:-101}
-      - IBKR_GATEWAY_CONNECT_TIMEOUT_MS=${IBKR_GATEWAY_CONNECT_TIMEOUT_MS:-5000}
-      - IBKR_GATEWAY_REQUEST_TIMEOUT_MS=${IBKR_GATEWAY_REQUEST_TIMEOUT_MS:-6000}
-      - IBKR_MARKET_DATA_TYPE=${IBKR_MARKET_DATA_TYPE:-1}
-    ports:
-      - "${IBKR_BRIDGE_PORT:-18080}:18080"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "const t=process.env.IBKR_BRIDGE_TOKEN||'';const headers=t?{Authorization:'Bearer '+t}:{};fetch('http://localhost:18080/health',{headers}).then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1));"
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 25s
-    restart: unless-stopped
+  # DEPRECATED: broker-bridge is no longer needed for V7 pilot (Bullish venue only).
+  # Kept in file for reference. Do not start this service.
+  # broker-bridge:
+  #   build:
+  #     context: .
+  #     dockerfile: services/broker-bridge/Dockerfile
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - IBKR_BRIDGE_PORT=18080
+  #     - IBKR_BRIDGE_HOST=0.0.0.0
+  #   ports:
+  #     - "${IBKR_BRIDGE_PORT:-18080}:18080"
+  #   restart: unless-stopped
 
   atticus:
     build: .
@@ -54,14 +31,12 @@ services:
       - RISK_CONTROLS_PATH=/app/configs/risk_controls.json
       - AUDIT_LOG_PATH=/app/logs/audit.log
       - POSTGRES_URL=postgresql://atticus:${DB_PASSWORD}@postgres:5432/atticus
-      - IBKR_BRIDGE_BASE_URL=http://broker-bridge:18080
-      - IBKR_BRIDGE_TOKEN=${IBKR_BRIDGE_TOKEN}
+      - V7_PRICING_ENABLED=${V7_PRICING_ENABLED:-true}
+      - V7_DEFAULT_TENOR_DAYS=${V7_DEFAULT_TENOR_DAYS:-2}
     volumes:
       - ./configs:/app/configs:ro
       - ./logs:/app/logs
     depends_on:
-      broker-bridge:
-        condition: service_healthy
       postgres:
         condition: service_healthy
     healthcheck:
