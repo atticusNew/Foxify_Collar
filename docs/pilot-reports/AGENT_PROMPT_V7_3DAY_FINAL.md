@@ -8,15 +8,16 @@ You are implementing the final V7 pricing configuration for the Atticus/Foxify p
 
 Backtesting (results at `/workspace/docs/pilot-reports/backtest_min_premium_results.txt`) showed:
 - 3-day options are cheap enough for low premiums
-- Long enough for meaningful take-profit recovery after breach (105-155% of payout)
+- Long enough for meaningful take-profit recovery after breach (105-317% of payout)
 - The take-profit engine is the primary profit driver — the option gains value after breach and the platform sells it
-- Break-even premiums are near zero for 2% SL because TP recovery exceeds payout
+- Break-even premiums are near zero or negative for 1-2% SL because TP recovery exceeds payout
 - Works across all volatility regimes (tested at vol × 0.44, 0.65, 0.85)
+- 1% SL is the most profitable tier: 317% TP recovery, treasury grows from $100k to $1.9M+ over 4 years at $2/1k premium
 
 ## Final Configuration
 
 ```
-TENORS: 3-day (for 2%, 3%, 5% SL) | 2-day (for 10% SL)
+TENORS: 3-day (for 1%, 2%, 3%, 5% SL) | 2-day (for 10% SL)
 RENEWAL: Rolling — auto-renew at expiry with fresh option at current spot
 TAKE-PROFIT: Always on — sell option at optimal point after breach
 ```
@@ -25,6 +26,7 @@ TAKE-PROFIT: Always on — sell option at optimal point after breach
 
 | SL% | Tenor | Premium/$1k | Per $10k/period | Weekly/$10k | Payout/$10k |
 |-----|-------|------------|----------------|------------|-------------|
+| 1%  | 3d    | $2.00      | $20            | $47        | $100        |
 | 2%  | 3d    | $3.00      | $30            | $70        | $200        |
 | 3%  | 3d    | $4.00      | $40            | $93        | $300        |
 | 5%  | 3d    | $6.00      | $60            | $140       | $500        |
@@ -35,21 +37,30 @@ TAKE-PROFIT: Always on — sell option at optimal point after breach
 - 2-day tenor: 7 / 2 = 3.5 renewals per week
 - Weekly cost = premium per period × renewals per week
 - Example: 2% SL, $30/period × 2.33 = $70/week for $10k position
-
-### Drop 1% SL
-1% SL is not offered. Trigger rates are too high (86-95%) and the premium exceeds the payout, providing no trader value.
+- Example: 1% SL, $20/period × 2.33 = $47/week for $10k position
 
 ## What the Trader Sees
 
 ```
-Position: BTC Long $10,000
-Stop Loss: 2%
-Premium: $30 per 3-day cycle (~$70/week)
-Payout if triggered: $200
-Max loss with protection: $30 (the premium)
-Max loss without: $200
-Savings on breach: $170
-Protection renews automatically every 3 days
+Example 1: Tight stop loss
+  Position: BTC Long $10,000
+  Stop Loss: 1%
+  Premium: $20 per 3-day cycle (~$47/week)
+  Payout if triggered: $100
+  Max loss with protection: $20 (the premium)
+  Max loss without: $100
+  Savings on breach: $80
+  Protection renews automatically every 3 days
+
+Example 2: Standard stop loss
+  Position: BTC Long $10,000
+  Stop Loss: 2%
+  Premium: $30 per 3-day cycle (~$70/week)
+  Payout if triggered: $200
+  Max loss with protection: $30 (the premium)
+  Max loss without: $200
+  Savings on breach: $170
+  Protection renews automatically every 3 days
 ```
 
 ## What the Platform Does (Backend)
@@ -78,6 +89,7 @@ After breach:
 premium = positionSize / 1000 * RATE_PER_1K[slPct]
 
 RATE_PER_1K = {
+  1: 2.00,
   2: 3.00,
   3: 4.00,
   5: 6.00,
@@ -85,6 +97,7 @@ RATE_PER_1K = {
 }
 
 TENOR_DAYS = {
+  1: 3,
   2: 3,
   3: 3,
   5: 3,
@@ -122,8 +135,8 @@ TENOR_DAYS = {
 ### Frontend (`apps/web/src/`)
 
 **PilotWidget.tsx:**
-- SL buttons: [2%, 3%, 5%, 10%] (remove 1%)
-- Premium display: tiered, shows per-period cost
+- SL buttons: [1%, 2%, 3%, 5%, 10%]
+- Premium display: tiered, shows per-period cost and weekly estimate
 - Tenor display: "3-day" or "2-day" based on SL%
 - Weekly cost calculation: premium × (7/tenor)
 - Show "renews every 3 days" or "renews every 2 days"
@@ -132,6 +145,7 @@ TENOR_DAYS = {
 ```json
 {
   "levels": [
+    { "name": "SL 1%", "sl_pct": "0.01", "fixed_price_usdc": "2.00", "expiry_days": "3" },
     { "name": "SL 2%", "sl_pct": "0.02", "fixed_price_usdc": "3.00", "expiry_days": "3" },
     { "name": "SL 3%", "sl_pct": "0.03", "fixed_price_usdc": "4.00", "expiry_days": "3" },
     { "name": "SL 5%", "sl_pct": "0.05", "fixed_price_usdc": "6.00", "expiry_days": "3" },
@@ -174,8 +188,8 @@ All results in `/workspace/docs/pilot-reports/`:
 - Scripts in `services/api/scripts/pilotBacktest*.ts`
 
 ## Success Criteria
-1. Tiered pricing: 2%=$3/1k, 3%=$4/1k, 5%=$6/1k, 10%=$3/1k
-2. Tenor: 3-day for 2/3/5%, 2-day for 10%
+1. Tiered pricing: 1%=$2/1k, 2%=$3/1k, 3%=$4/1k, 5%=$6/1k, 10%=$3/1k
+2. Tenor: 3-day for 1/2/3/5%, 2-day for 10%
 3. No regime pricing (flat rates)
 4. Take-profit logic implemented (sell option after breach at optimal point)
 5. Frontend shows correct SL tiers, premiums, tenors
