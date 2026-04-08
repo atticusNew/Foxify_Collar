@@ -4,7 +4,8 @@ import { API_BASE } from "./config";
 // ─── Types ───────────────────────────────────────────────────────────
 
 type ReferencePrice = { price: string; marketId: string; venue: string; source: string; timestamp: string; ageMs: number };
-type QuoteResponse = { status: string; protectionType: string; tierName: string; drawdownFloorPct: string; triggerPrice: string; floorPrice: string; quote: { quoteId: string; instrumentId: string; premium: number; expiresAt: string; side: string; quantity: number; venue: string; details?: Record<string, unknown> }; entrySnapshot: { price: string; marketId: string; source: string; timestamp: string } };
+type V7Info = { regime: string; regimeSource: string; dvol: number | null; premiumPer1kUsd: number; premiumUsd: number; payoutPer10kUsd: number; available: boolean };
+type QuoteResponse = { status: string; protectionType: string; tierName: string; slPct: number | null; drawdownFloorPct: string; triggerPrice: string; floorPrice: string; v7: V7Info | null; quote: { quoteId: string; instrumentId: string; premium: number; expiresAt: string; side: string; quantity: number; venue: string; details?: Record<string, unknown> }; entrySnapshot: { price: string; marketId: string; source: string; timestamp: string } };
 type ProtectionRecord = { id: string; status: string; tierName: string; protectedNotional: string; entryPrice: string; floorPrice: string; drawdownFloorPct: string; expiryAt: string; premium: string; autoRenew: boolean; payoutDueAmount: string | null; payoutSettledAmount: string | null; venue: string; instrumentId: string; createdAt: string; metadata?: Record<string, unknown> };
 type MonitorResponse = { status: string; protection?: ProtectionRecord; currentPrice?: string; distanceToFloor?: { pct: string; usd: string; direction: string }; timeRemaining?: { ms: number; human: string } };
 type Position = { id: string; num: number; type: "long" | "short"; size: number; stopLoss: number; entryPrice: number; protectionId: string | null; autoRenew: boolean; premium: number; status: "active" | "closed" | "triggered"; closedPnl: number | null; closedPayout: number | null };
@@ -141,10 +142,11 @@ export function PilotWidget() {
     const tn = STOP_LOSS_TO_TIER[sl as StopLoss] || "SL 2%";
     const slPpk = SL_PREMIUM_PER_1K[sl as StopLoss] ?? 6;
     const prem = (posSize / 1000) * slPpk;
-    const q = await fetchQuote({ protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, protectionType: posType });
-    const r = await activateProt({ quoteId: q.quote.quoteId, protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, autoRenew: false, protectionType: posType });
+    const q = await fetchQuote({ protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, protectionType: posType, tenorDays: TENOR });
+    const actualPrem = q.v7?.premiumUsd ?? q.quote.premium;
+    const r = await activateProt({ quoteId: q.quote.quoteId, protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, autoRenew: false, protectionType: posType, tenorDays: TENOR });
     const pid = r.protectionId || r.protection?.id || null;
-    return { pid, prem };
+    return { pid, prem: actualPrem };
   }, []);
 
   const handleOpenProtected = useCallback(async () => {

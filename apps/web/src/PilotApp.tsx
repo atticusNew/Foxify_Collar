@@ -10,9 +10,21 @@ type TierLevel = {
 
 type ProtectionType = "long" | "short";
 
+type V7QuoteInfo = {
+  regime: string;
+  regimeSource: string;
+  dvol: number | null;
+  premiumPer1kUsd: number;
+  premiumUsd: number;
+  payoutPer10kUsd: number;
+  available: boolean;
+};
+
 type QuoteResult = {
   protectionType?: ProtectionType;
   tierName: string;
+  slPct?: number | null;
+  v7?: V7QuoteInfo | null;
   drawdownFloorPct: string;
   floorPrice: string;
   triggerPrice?: string;
