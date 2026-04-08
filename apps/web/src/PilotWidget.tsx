@@ -14,18 +14,9 @@ type Position = { id: string; num: number; type: "long" | "short"; size: number;
 
 const STOP_LOSS_OPTIONS = [1, 2, 3, 5, 10] as const;
 type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
-type Regime = "calm" | "normal" | "stress";
 const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 1: "SL 1%", 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
-const V7_PREMIUMS: Record<StopLoss, Record<Regime, number | null>> = {
-  1:  { calm: 5,  normal: 9,  stress: null },
-  2:  { calm: 3,  normal: 6,  stress: 13 },
-  3:  { calm: 2,  normal: 5,  stress: 12 },
-  5:  { calm: 2,  normal: 4,  stress: 10 },
-  10: { calm: 1,  normal: 2,  stress: 6 }
-};
-const REGIME_LABEL: Record<Regime, string> = { calm: "Quiet", normal: "Active", stress: "Volatile" };
-const REGIME_COLOR: Record<Regime, string> = { calm: "#36d38d", normal: "#f0b90b", stress: "#ff6b6b" };
-const POS_MIN = 5000, POS_MAX = 50000, POS_STEP = 5000, TENOR = 2, INIT_BAL = 1_000_000;
+const PPK = 8;
+const POS_MIN = 5000, POS_MAX = 50000, POS_STEP = 5000, TENOR = 1, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";
 const LOGO = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 
@@ -46,8 +37,6 @@ const api = async <T = unknown>(p: string, o?: RequestInit): Promise<T> => {
   return j as T;
 };
 const fetchRef = () => api<{ status: string; reference: ReferencePrice }>("/pilot/reference-price");
-type RegimeResponse = { status: string; regime: Regime; dvol: number | null; rvol: number | null; source: string; tiers: Array<{ slPct: number; premiumPer1kUsd: number | null; available: boolean; payoutPer10kUsd: number }> };
-const fetchRegime = () => api<RegimeResponse>("/pilot/regime");
 const fetchQuote = (b: Record<string, unknown>) => api<QuoteResponse>("/pilot/protections/quote", { method: "POST", body: JSON.stringify(b) });
 const activateProt = (b: Record<string, unknown>) => api<{ status: string; protectionId: string; protection: ProtectionRecord }>("/pilot/protections/activate", { method: "POST", body: JSON.stringify(b) });
 const fetchMon = async (id: string): Promise<MonitorResponse> => {
@@ -107,8 +96,6 @@ export function PilotWidget() {
   const [livePrice, setLivePrice] = useState<number | null>(null);
   const [priceError, setPriceError] = useState<string | null>(null);
   const [priceTs, setPriceTs] = useState(0);
-  const [regime, setRegime] = useState<Regime>("normal");
-  const [dvol, setDvol] = useState<number | null>(null);
   const [positions, setPositions] = useState<Position[]>(() => ld(K_POS, []));
   const [activating, setActivating] = useState(false);
   const [protectingPosId, setProtectingPosId] = useState<string | null>(null);
@@ -128,9 +115,7 @@ export function PilotWidget() {
 
   const tierName = stopLoss ? STOP_LOSS_TO_TIER[stopLoss] : "SL 2%";
   const dd = stopLoss ?? 2;
-  const ppk = V7_PREMIUMS[dd as StopLoss]?.[regime] ?? null;
-  const isPaused = ppk === null;
-  const premium = isPaused ? 0 : (positionSize / 1000) * ppk;
+  const premium = (positionSize / 1000) * PPK;
   const payout = positionSize * (dd / 100);
   const floor = livePrice && stopLoss ? (positionType === "short" ? livePrice * (1 + dd / 100) : livePrice * (1 - dd / 100)) : null;
   const ready = positionType !== null && stopLoss !== null;
@@ -140,23 +125,6 @@ export function PilotWidget() {
   const fresh = Date.now() - priceTs < 1500;
 
   useEffect(() => { let on = true; const poll = async () => { try { const d = await fetchRef(); if (on && d.status === "ok") { setLivePrice(Number(d.reference.price)); setPriceTs(Date.now()); setPriceError(null); } } catch (e: any) { if (on) setPriceError(e.message); } }; poll(); const id = setInterval(poll, 3000); return () => { on = false; clearInterval(id); }; }, []);
-
-  useEffect(() => {
-    let on = true;
-    const poll = async () => {
-      try {
-        const d = await fetchRegime();
-        if (on && d.status === "ok") {
-          setRegime(d.regime);
-          setDvol(d.dvol);
-          if (d.regime !== "calm") setStopLoss(prev => prev === 1 ? null : prev);
-        }
-      } catch { /* regime fetch is best-effort */ }
-    };
-    poll();
-    const id = setInterval(poll, 15000);
-    return () => { on = false; clearInterval(id); };
-  }, []);
 
   useEffect(() => {
     const pa = actives.filter(p => p.protectionId);
@@ -241,10 +209,7 @@ export function PilotWidget() {
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <span style={{ fontSize: 11, color: "var(--muted)" }}>BTC</span>
               <span style={{ fontSize: 14, fontWeight: 600, fontVariantNumeric: "tabular-nums", transition: "color 0.3s", color: fresh ? "var(--text)" : "var(--muted)" }}>{fmt(livePrice)}</span>
-              <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 7px", borderRadius: 999, background: `${REGIME_COLOR[regime]}18`, transition: "all 0.3s" }}>
-                <span style={{ width: 6, height: 6, borderRadius: "50%", background: REGIME_COLOR[regime], display: "inline-block", transition: "background 0.3s" }} />
-                <span style={{ fontSize: 10, fontWeight: 600, color: REGIME_COLOR[regime], transition: "color 0.3s" }}>{REGIME_LABEL[regime]}</span>
-              </span>
+              {!priceError && <span style={{ width: 6, height: 6, borderRadius: "50%", display: "inline-block", background: fresh ? "var(--success)" : "var(--muted)", transition: "background 0.3s" }} />}
             </div>
           )}
         </div>
@@ -275,7 +240,7 @@ export function PilotWidget() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
           <span style={{ fontSize: 13, color: "var(--muted)", fontWeight: 500 }}>Stop Loss</span>
           <div style={{ display: "flex", gap: 6 }}>
-            {STOP_LOSS_OPTIONS.filter(sl => sl !== 1 || regime === "calm").map(sl => (
+            {STOP_LOSS_OPTIONS.map(sl => (
               <button key={sl} onClick={() => setStopLoss(sl)} style={{ padding: "7px 16px", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, background: stopLoss === sl ? "rgba(184,90,28,0.18)" : "var(--card-2)", color: stopLoss === sl ? "var(--accent)" : "var(--text)", borderColor: stopLoss === sl ? "var(--accent-2)" : "var(--border)", transition: "all 0.15s ease" }}>{sl}%</button>
             ))}
           </div>
@@ -284,28 +249,20 @@ export function PilotWidget() {
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Protect Your Position</div>
           {activateError && <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10, padding: "8px 10px", background: "rgba(255,107,107,0.08)", borderRadius: 8, border: "1px solid rgba(255,107,107,0.2)", wordBreak: "break-word" }}>{activateError}</div>}
-          <div style={{ background: isPaused ? "rgba(255,107,107,0.06)" : "rgba(54,211,141,0.06)", border: `1px solid ${isPaused ? "rgba(255,107,107,0.18)" : "rgba(54,211,141,0.18)"}`, borderRadius: 12, padding: 14, marginBottom: 12, opacity: ready ? 1 : 0.5 }}>
-            {isPaused && ready ? (
-              <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--danger)" }}>
-                <strong>{dd}% SL</strong> protection is <strong>unavailable</strong> in current market conditions. Select a wider stop loss or try again later.
-              </div>
-            ) : (
-              <>
-                <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 8 }}>
-                  {ready ? <>If your position hits <strong style={{ color: "var(--danger)" }}>{dd}%</strong> stop loss, you receive <strong style={{ color: "var(--success)" }}>{fmt(payout)}</strong> instantly.</> : <span style={{ color: "var(--muted)" }}>Select position type and stop loss to see protection details.</span>}
-                </div>
-                {ready && <>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} for {TENOR} days</span></div>
-                  {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
-                </>}
-              </>
-            )}
+          <div style={{ background: "rgba(54,211,141,0.06)", border: "1px solid rgba(54,211,141,0.18)", borderRadius: 12, padding: 14, marginBottom: 12, opacity: ready ? 1 : 0.5 }}>
+            <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 8 }}>
+              {ready ? <>If your position hits <strong style={{ color: "var(--danger)" }}>{dd}%</strong> stop loss, you receive <strong style={{ color: "var(--success)" }}>{fmt(payout)}</strong> instantly.</> : <span style={{ color: "var(--muted)" }}>Select position type and stop loss to see protection details.</span>}
+            </div>
+            {ready && <>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} per day</span></div>
+              {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
+            </>}
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted)", marginBottom: 14, cursor: "pointer" }}>
             <input type="checkbox" checked={autoRenew} onChange={e => setAutoRenew(e.target.checked)} style={{ accentColor: "var(--accent)" }} /> Auto-renew protection at expiry
           </label>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice || isPaused} style={{ flex: 2, padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: isPaused ? "var(--card-2)" : "linear-gradient(135deg, var(--accent), var(--accent-2))", color: isPaused ? "var(--muted)" : "#fff", opacity: (!ready || activating || !livePrice || isPaused) ? 0.5 : 1 }}>{isPaused ? "Unavailable" : activating ? "Opening..." : "Open + Protect"}</button>
+            <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice} style={{ flex: 2, padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", opacity: (!ready || activating || !livePrice) ? 0.5 : 1 }}>{activating ? "Opening..." : "Open + Protect"}</button>
             <button onClick={handleOpenWithout} disabled={!ready || !livePrice} style={{ flex: 1, padding: "12px 0", borderRadius: 10, border: "1px solid var(--border)", background: "var(--card-2)", fontSize: 12, color: "var(--muted)", cursor: "pointer", opacity: (!ready || !livePrice) ? 0.5 : 1 }}>Open Without</button>
           </div>
         </div>
@@ -346,7 +303,7 @@ export function PilotWidget() {
                     <div style={{ display: "flex", gap: 6 }}>
                       {!pos.protectionId && (
                         <button onClick={() => handleAddProtection(pos.id)} disabled={isProtecting} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "none", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", fontSize: 11, fontWeight: 600, color: "#fff", cursor: "pointer", opacity: isProtecting ? 0.5 : 1 }}>
-                          {isProtecting ? "Adding..." : `Add Protection (${fmt((pos.size / 1000) * (V7_PREMIUMS[pos.stopLoss as StopLoss]?.[regime] ?? 6))})`}
+                          {isProtecting ? "Adding..." : `Add Protection (${fmt((pos.size / 1000) * PPK)})`}
                         </button>
                       )}
                       <button onClick={() => handleClose(pos.id)} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", fontSize: 11, color: "var(--muted)", cursor: "pointer" }}>Close</button>

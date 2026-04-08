@@ -2112,33 +2112,13 @@ export const registerPilotRoutes = async (
           clientPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd
         };
       }
-      // V7 Regime-Dynamic Pricing Override
+      // V7 Flat Pricing Override — $8/1k, all tiers, all conditions
       if (v7Enabled && resolvedSlPct) {
-        let regimeStatus;
-        try {
-          regimeStatus = await getCurrentRegime({ forceRefresh: true });
-        } catch {
-          regimeStatus = { regime: "normal" as const, dvol: null, rvol: null, source: "rvol" as const, timestamp: new Date().toISOString() };
-        }
         v7Quote = computeV7Premium({
           slPct: resolvedSlPct,
-          regime: regimeStatus.regime,
-          notionalUsd: protectedNotional.toNumber(),
-          dvol: regimeStatus.dvol,
-          regimeSource: regimeStatus.source
+          notionalUsd: protectedNotional.toNumber()
         });
-        if (!v7Quote.available) {
-          reply.code(409);
-          return {
-            status: "error",
-            reason: v7Quote.reason || "tier_paused_in_current_regime",
-            regime: regimeStatus.regime,
-            slPct: resolvedSlPct,
-            dvol: regimeStatus.dvol,
-            message: `${resolvedSlPct}% SL protection is paused during ${regimeStatus.regime.toUpperCase()} regime.`
-          };
-        }
-        console.log(`[V7Pricing] slPct=${resolvedSlPct} regime=${regimeStatus.regime} dvol=${regimeStatus.dvol} premium=$${v7Quote.premiumUsd.toFixed(2)} per1k=$${v7Quote.premiumPer1kUsd}`);
+        console.log(`[V7Pricing] slPct=${resolvedSlPct} premium=$${v7Quote.premiumUsd.toFixed(2)} per1k=$${v7Quote.premiumPer1kUsd}`);
         premiumPricing = {
           ...premiumPricing,
           clientPremiumUsd: new Decimal(v7Quote.premiumUsd)
@@ -3029,15 +3009,6 @@ export const registerPilotRoutes = async (
       const usedAfter = new Decimal(capReservation.usedAfter);
       capProjectedUsdc = usedAfter.toFixed(2);
       capUsedUsdc = usedAfter.minus(protectedNotional).toFixed(2);
-      let activateRegimeInfo: { regime: string; source: string; dvol: number | null } | null = null;
-      if (v7EnabledActivate && activateSlPct) {
-        try {
-          const rs = await getCurrentRegime({ forceRefresh: true });
-          activateRegimeInfo = { regime: rs.regime, source: rs.source, dvol: rs.dvol };
-        } catch {
-          activateRegimeInfo = { regime: "normal", source: "rvol", dvol: null };
-        }
-      }
       const protection = await insertProtection(client, {
         userHash: userHash.userHash,
         hashVersion: userHash.hashVersion,
@@ -3046,9 +3017,6 @@ export const registerPilotRoutes = async (
         drawdownFloorPct: drawdownFloorPct.toFixed(6),
         slPct: activateSlPct,
         hedgeStatus: "active",
-        regime: activateRegimeInfo?.regime ?? null,
-        regimeSource: activateRegimeInfo?.source ?? null,
-        dvolAtPurchase: activateRegimeInfo?.dvol ?? null,
         marketId,
         protectedNotional: protectedNotional.toFixed(10),
         foxifyExposureNotional: exposureNotional.toFixed(10),
@@ -3195,25 +3163,14 @@ export const registerPilotRoutes = async (
             : fallbackPremiumPricing.pricingMode
       };
       if (v7EnabledActivate && activateSlPct) {
-        let activateRegimeForPricing;
-        try {
-          activateRegimeForPricing = await getCurrentRegime({ forceRefresh: true });
-        } catch {
-          activateRegimeForPricing = { regime: "normal" as const, dvol: null, rvol: null, source: "rvol" as const, timestamp: new Date().toISOString() };
-        }
         const v7ActivateQuote = computeV7Premium({
           slPct: activateSlPct,
-          regime: activateRegimeForPricing.regime,
-          notionalUsd: protectedNotional.toNumber(),
-          dvol: activateRegimeForPricing.dvol,
-          regimeSource: activateRegimeForPricing.source
+          notionalUsd: protectedNotional.toNumber()
         });
-        if (v7ActivateQuote.available) {
-          premiumPricing = {
-            ...premiumPricing,
-            clientPremiumUsd: new Decimal(v7ActivateQuote.premiumUsd)
-          };
-        }
+        premiumPricing = {
+          ...premiumPricing,
+          clientPremiumUsd: new Decimal(v7ActivateQuote.premiumUsd)
+        };
       } else if (!v7EnabledActivate && isLockedBullishProfile) {
         const FIXED_PREMIUM_PER_1K_ACTIVATE = new Decimal(11);
         premiumPricing = {

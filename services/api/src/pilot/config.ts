@@ -993,10 +993,15 @@ const parseV7PricingConfig = (): V7PricingConfig => ({
   enabled: parseBooleanEnv(process.env.V7_PRICING_ENABLED, true),
   defaultTenorDays: parsePositiveIntInRange(
     process.env.V7_DEFAULT_TENOR_DAYS,
-    2,
+    1,
     1,
     30,
     "invalid_v7_default_tenor_days"
+  ),
+  flatPremiumPer1kUsd: parsePositiveFinite(
+    process.env.V7_FLAT_PREMIUM_PER_1K_USD,
+    8,
+    "invalid_v7_flat_premium_per_1k_usd"
   ),
   dvolCalmThreshold: parseNonNegativeFinite(
     process.env.V7_DVOL_CALM_THRESHOLD,

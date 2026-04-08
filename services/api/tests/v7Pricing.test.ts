@@ -30,28 +30,12 @@ test("isValidSlTier — rejects invalid tiers", () => {
   assert.ok(!isValidSlTier(20));
 });
 
-test("getV7PremiumPer1k — CALM premiums", () => {
-  assert.equal(getV7PremiumPer1k(1, "calm"), 5);
-  assert.equal(getV7PremiumPer1k(2, "calm"), 3);
-  assert.equal(getV7PremiumPer1k(3, "calm"), 2);
-  assert.equal(getV7PremiumPer1k(5, "calm"), 2);
-  assert.equal(getV7PremiumPer1k(10, "calm"), 1);
-});
-
-test("getV7PremiumPer1k — NORMAL premiums", () => {
-  assert.equal(getV7PremiumPer1k(1, "normal"), 9);
-  assert.equal(getV7PremiumPer1k(2, "normal"), 6);
-  assert.equal(getV7PremiumPer1k(3, "normal"), 5);
-  assert.equal(getV7PremiumPer1k(5, "normal"), 4);
-  assert.equal(getV7PremiumPer1k(10, "normal"), 2);
-});
-
-test("getV7PremiumPer1k — STRESS premiums (1% paused)", () => {
-  assert.equal(getV7PremiumPer1k(1, "stress"), null);
-  assert.equal(getV7PremiumPer1k(2, "stress"), 13);
-  assert.equal(getV7PremiumPer1k(3, "stress"), 12);
-  assert.equal(getV7PremiumPer1k(5, "stress"), 10);
-  assert.equal(getV7PremiumPer1k(10, "stress"), 6);
+test("getV7PremiumPer1k — flat $8/1k for all tiers", () => {
+  assert.equal(getV7PremiumPer1k(1), 8);
+  assert.equal(getV7PremiumPer1k(2), 8);
+  assert.equal(getV7PremiumPer1k(3), 8);
+  assert.equal(getV7PremiumPer1k(5), 8);
+  assert.equal(getV7PremiumPer1k(10), 8);
 });
 
 test("getV7PayoutPer10k — correct payouts", () => {
@@ -62,41 +46,34 @@ test("getV7PayoutPer10k — correct payouts", () => {
   assert.equal(getV7PayoutPer10k(10), 1000);
 });
 
-test("computeV7Premium — $10k CALM 2% SL", () => {
-  const r = computeV7Premium({ slPct: 2, regime: "calm", notionalUsd: 10000, dvol: 35, regimeSource: "dvol" });
+test("computeV7Premium — $10k flat $8/1k any tier", () => {
+  const r = computeV7Premium({ slPct: 2, notionalUsd: 10000 });
   assert.ok(r.available);
-  assert.equal(r.premiumPer1kUsd, 3);
-  assert.equal(r.premiumUsd, 30);
+  assert.equal(r.premiumPer1kUsd, 8);
+  assert.equal(r.premiumUsd, 80);
   assert.equal(r.payoutPer10kUsd, 200);
 });
 
-test("computeV7Premium — $10k NORMAL 5% SL", () => {
-  const r = computeV7Premium({ slPct: 5, regime: "normal", notionalUsd: 10000, dvol: 50, regimeSource: "dvol" });
-  assert.ok(r.available);
-  assert.equal(r.premiumPer1kUsd, 4);
-  assert.equal(r.premiumUsd, 40);
-  assert.equal(r.payoutPer10kUsd, 500);
+test("computeV7Premium — all tiers same $8/1k", () => {
+  for (const sl of [1, 2, 3, 5, 10] as const) {
+    const r = computeV7Premium({ slPct: sl, notionalUsd: 10000 });
+    assert.ok(r.available);
+    assert.equal(r.premiumPer1kUsd, 8);
+    assert.equal(r.premiumUsd, 80);
+  }
 });
 
-test("computeV7Premium — STRESS 1% SL paused", () => {
-  const r = computeV7Premium({ slPct: 1, regime: "stress", notionalUsd: 10000, dvol: 70, regimeSource: "dvol" });
-  assert.ok(!r.available);
-  assert.equal(r.reason, "paused_in_stress");
-  assert.equal(r.premiumUsd, 0);
-});
-
-test("computeV7Premium — STRESS 2% SL active", () => {
-  const r = computeV7Premium({ slPct: 2, regime: "stress", notionalUsd: 10000, dvol: 70, regimeSource: "dvol" });
+test("computeV7Premium — 1% SL always available (no pause)", () => {
+  const r = computeV7Premium({ slPct: 1, notionalUsd: 10000, regime: "stress" });
   assert.ok(r.available);
-  assert.equal(r.premiumPer1kUsd, 13);
-  assert.equal(r.premiumUsd, 130);
+  assert.equal(r.premiumUsd, 80);
 });
 
 test("computeV7Premium — linear scaling", () => {
-  const r1 = computeV7Premium({ slPct: 3, regime: "normal", notionalUsd: 5000, dvol: 50, regimeSource: "dvol" });
-  const r2 = computeV7Premium({ slPct: 3, regime: "normal", notionalUsd: 25000, dvol: 50, regimeSource: "dvol" });
-  assert.equal(r1.premiumUsd, 25);
-  assert.equal(r2.premiumUsd, 125);
+  const r1 = computeV7Premium({ slPct: 3, notionalUsd: 5000 });
+  const r2 = computeV7Premium({ slPct: 3, notionalUsd: 25000 });
+  assert.equal(r1.premiumUsd, 40);
+  assert.equal(r2.premiumUsd, 200);
   assert.equal(r2.premiumUsd / r1.premiumUsd, 5);
 });
 
@@ -129,20 +106,11 @@ test("computeV7HedgeStrike equals trigger", () => {
   assert.ok(s.eq(t));
 });
 
-test("getV7AvailableTiers — CALM all available", () => {
-  const tiers = getV7AvailableTiers("calm");
+test("getV7AvailableTiers — all tiers available at flat $8", () => {
+  const tiers = getV7AvailableTiers();
   assert.equal(tiers.length, 5);
   assert.ok(tiers.every(t => t.available));
-});
-
-test("getV7AvailableTiers — STRESS has 1% paused", () => {
-  const tiers = getV7AvailableTiers("stress");
-  const sl1 = tiers.find(t => t.slPct === 1);
-  assert.ok(!sl1?.available);
-  assert.equal(sl1?.premiumPer1kUsd, null);
-  const sl2 = tiers.find(t => t.slPct === 2);
-  assert.ok(sl2?.available);
-  assert.equal(sl2?.premiumPer1kUsd, 13);
+  assert.ok(tiers.every(t => t.premiumPer1kUsd === 8));
 });
 
 test("slPctToTierLabel", () => {

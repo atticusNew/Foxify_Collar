@@ -102,7 +102,7 @@ const STOP_LOSS_OPTIONS: StopLossOption[] = [
   { label: "12%", floorPct: 0.12, tierName: "Pro (Gold)" }
 ];
 
-const TENOR_DAYS = 2;
+const TENOR_DAYS = 1;
 const MARKET_ID = "BTC-USD";
 const SIDE: "long" = "long";
 const INSTRUMENT_ID = "BTC-USD-7D-P";
