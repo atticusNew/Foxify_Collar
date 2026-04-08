@@ -148,6 +148,11 @@ export type ProtectionRecord = {
   tierName: string | null;
   drawdownFloorPct: string | null;
   floorPrice: string | null;
+  slPct: number | null;
+  hedgeStatus: string | null;
+  regime: string | null;
+  regimeSource: string | null;
+  dvolAtPurchase: number | null;
   marketId: string;
   protectedNotional: string;
   entryPrice: string | null;

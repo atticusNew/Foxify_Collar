@@ -976,7 +976,66 @@ export const resolvePilotWindow = (now: Date = new Date()): PilotWindowState => 
 const pilotProfileName = parsePilotProfile(process.env.PILOT_PROFILE);
 const isBullishLockedProfile = pilotProfileName === "bullish_locked_v1";
 
+export type V7PricingConfig = {
+  enabled: boolean;
+  defaultTenorDays: number;
+  dvolCalmThreshold: number;
+  dvolStressThreshold: number;
+  dvolCacheTtlMs: number;
+  tpThresholdMultiplier: number;
+  hedgeManagementIntervalMs: number;
+  premiumSchedule: Record<number, Record<string, number | null>>;
+};
+
+const parseV7PricingConfig = (): V7PricingConfig => ({
+  enabled: parseBooleanEnv(process.env.V7_PRICING_ENABLED, true),
+  defaultTenorDays: parsePositiveIntInRange(
+    process.env.V7_DEFAULT_TENOR_DAYS,
+    2,
+    1,
+    30,
+    "invalid_v7_default_tenor_days"
+  ),
+  dvolCalmThreshold: parseNonNegativeFinite(
+    process.env.V7_DVOL_CALM_THRESHOLD,
+    40,
+    "invalid_v7_dvol_calm_threshold"
+  ),
+  dvolStressThreshold: parseNonNegativeFinite(
+    process.env.V7_DVOL_STRESS_THRESHOLD,
+    65,
+    "invalid_v7_dvol_stress_threshold"
+  ),
+  dvolCacheTtlMs: parsePositiveIntInRange(
+    process.env.V7_DVOL_CACHE_TTL_MS,
+    300000,
+    10000,
+    3600000,
+    "invalid_v7_dvol_cache_ttl_ms"
+  ),
+  tpThresholdMultiplier: parsePositiveFinite(
+    process.env.V7_TP_THRESHOLD_MULTIPLIER,
+    1.3,
+    "invalid_v7_tp_threshold_multiplier"
+  ),
+  hedgeManagementIntervalMs: parsePositiveIntInRange(
+    process.env.V7_HEDGE_MANAGEMENT_INTERVAL_MS,
+    60000,
+    5000,
+    600000,
+    "invalid_v7_hedge_management_interval_ms"
+  ),
+  premiumSchedule: {
+    1:  { calm: 5,  normal: 9,  stress: null },
+    2:  { calm: 3,  normal: 6,  stress: 13 },
+    3:  { calm: 2,  normal: 5,  stress: 12 },
+    5:  { calm: 2,  normal: 4,  stress: 10 },
+    10: { calm: 1,  normal: 2,  stress: 6 }
+  }
+});
+
 export const pilotConfig = {
+  v7: parseV7PricingConfig(),
   profile: pilotProfileName,
   bullishLockedProfile: isBullishLockedProfile,
   enabled: process.env.PILOT_API_ENABLED === "true",
@@ -1054,6 +1113,14 @@ export const pilotConfig = {
     "invalid_pilot_tenor_candidates"
   ),
   ...(() => {
+    const v7 = parseV7PricingConfig();
+    if (v7.enabled) {
+      return {
+        pilotTenorMinDays: 1,
+        pilotTenorMaxDays: 14,
+        pilotTenorDefaultDays: v7.defaultTenorDays
+      };
+    }
     if (isBullishLockedProfile) {
       return {
         pilotTenorMinDays: 7,

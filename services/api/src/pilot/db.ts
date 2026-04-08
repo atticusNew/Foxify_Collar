@@ -94,6 +94,11 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS tier_name TEXT;
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS drawdown_floor_pct NUMERIC(10,6);
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS floor_price NUMERIC(28,10);
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS sl_pct NUMERIC(10,4);
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS hedge_status TEXT;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS regime TEXT;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS regime_source TEXT;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS dvol_at_purchase NUMERIC(10,4);
 
     CREATE TABLE IF NOT EXISTS pilot_price_snapshots (
       id TEXT PRIMARY KEY,
@@ -211,6 +216,8 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE pilot_sim_positions ADD COLUMN IF NOT EXISTS sl_pct NUMERIC(10,4);
 
     CREATE TABLE IF NOT EXISTS pilot_sim_treasury_ledger (
       id TEXT PRIMARY KEY,
@@ -399,6 +406,11 @@ export const insertProtection = async (
     status: ProtectionStatus;
     tierName?: string | null;
     drawdownFloorPct?: string | null;
+    slPct?: number | null;
+    hedgeStatus?: string | null;
+    regime?: string | null;
+    regimeSource?: string | null;
+    dvolAtPurchase?: number | null;
     marketId: string;
     protectedNotional: string;
     foxifyExposureNotional: string;
@@ -412,10 +424,11 @@ export const insertProtection = async (
   const result = await pool.query(
     `
       INSERT INTO pilot_protections (
-        id, user_hash, hash_version, status, tier_name, drawdown_floor_pct, market_id, protected_notional, foxify_exposure_notional,
+        id, user_hash, hash_version, status, tier_name, drawdown_floor_pct, sl_pct, hedge_status, regime, regime_source, dvol_at_purchase,
+        market_id, protected_notional, foxify_exposure_notional,
         expiry_at, auto_renew, renew_window_minutes, metadata
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
       RETURNING *
     `,
     [
@@ -425,6 +438,11 @@ export const insertProtection = async (
       input.status,
       input.tierName ?? null,
       input.drawdownFloorPct ?? null,
+      input.slPct ?? null,
+      input.hedgeStatus ?? null,
+      input.regime ?? null,
+      input.regimeSource ?? null,
+      input.dvolAtPurchase ?? null,
       input.marketId,
       input.protectedNotional,
       input.foxifyExposureNotional,
@@ -2239,6 +2257,11 @@ const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({
   tierName: row.tier_name ? String(row.tier_name) : null,
   drawdownFloorPct: row.drawdown_floor_pct === null ? null : String(row.drawdown_floor_pct),
   floorPrice: row.floor_price === null ? null : String(row.floor_price),
+  slPct: row.sl_pct === null || row.sl_pct === undefined ? null : Number(row.sl_pct),
+  hedgeStatus: row.hedge_status ? String(row.hedge_status) : null,
+  regime: row.regime ? String(row.regime) : null,
+  regimeSource: row.regime_source ? String(row.regime_source) : null,
+  dvolAtPurchase: row.dvol_at_purchase === null || row.dvol_at_purchase === undefined ? null : Number(row.dvol_at_purchase),
   marketId: String(row.market_id),
   protectedNotional: String(row.protected_notional),
   entryPrice: row.entry_price === null ? null : String(row.entry_price),
