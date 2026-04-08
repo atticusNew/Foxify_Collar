@@ -1,0 +1,124 @@
+══════════════════════════════════════════════════════════════════════════════════════════
+  ATTICUS DEFINITIVE V4: Best Recommendation + Live Venue Pricing
+  2026-04-08T02:04:07.965Z
+══════════════════════════════════════════════════════════════════════════════════════════
+
+══════════════════════════════════════════════════════════════════════════════════════════
+  OVERALL BEST RECOMMENDATION
+══════════════════════════════════════════════════════════════════════════════════════════
+
+  Current BTC spot: $71,494 | 30-day realized vol: 40.0% | Regime: CALM
+
+  ╔══════════════════════════════════════════════════════════════════════════╗
+  ║  ATTICUS PROTECTION: RECOMMENDED PRODUCT LINEUP                        ║
+  ║                                                                        ║
+  ║  2-day rolling protection, renewable. Trigger-strike put hedge.         ║
+  ║  Naked puts for 1-3% SL. Put spreads for 5-10% SL.                     ║
+  ║  Regime-dynamic pricing: lower in calm, higher in stress, pause if      ║
+  ║  vol > 65% for tight SL tiers.                                         ║
+  ╚══════════════════════════════════════════════════════════════════════════╝
+
+  FIXED PRICING (simple launch, all-weather):
+
+  SL%  | Premium/$1k | $5k   | $10k  | $20k  | $25k  | $50k  | Payout/$10k | Return | Win Rate
+  -----|------------|-------|-------|-------|-------|-------|-------------|--------|--------
+    1% |      $7.00 |   $35 |   $70 |  $140 |  $175 |  $350 |        $100 |   1.4× |     58%
+    2% |      $5.00 |   $25 |   $50 |  $100 |  $125 |  $250 |        $200 |   4.0× |     57%
+    3% |      $5.00 |   $25 |   $50 |  $100 |  $125 |  $250 |        $300 |   6.0× |     72%
+    5% |      $3.00 |   $15 |   $30 |   $60 |   $75 |  $150 |        $500 |  16.7× |     84%
+   10% |      $1.00 |    $5 |   $10 |   $20 |   $25 |   $50 |      $1,000 | 100.0× |     99%
+
+  REGIME-DYNAMIC PRICING (recommended):
+
+  SL%  | CALM (30%)      | NORMAL (50%)    | STRESS (20%)    | Weighted Avg | Notes
+  -----|-----------------|-----------------|-----------------|-------------|------
+    1% | $4/1k ($40/10k) | $7/1k ($70/10k) | PAUSE           |    $4.74/1k | Pause in stress
+    2% | $2/1k ($20/10k) | $5/1k ($50/10k) | $11/1k ($110/10k) |    $5.24/1k | Consider pause in stress
+    3% | $1/1k ($10/10k) | $4/1k ($40/10k) | $10/1k ($100/10k) |    $4.24/1k | Active all regimes
+    5% | $2/1k ($20/10k) | $3/1k ($30/10k) | $7/1k ($70/10k) |    $3.47/1k | Active all regimes
+   10% | $1/1k ($10/10k) | $1/1k ($10/10k) | $1/1k ($10/10k) |    $1.00/1k | Flat — near-zero cost
+
+  REGIME-DYNAMIC: What the trader pays today (per $10k position):
+
+  Current regime: CALM (vol = 40.0%)
+
+  SL%  | Premium TODAY | $5k   | $10k  | $20k  | $25k  | $50k  | Payout/$10k | Return
+  -----|-------------|-------|-------|-------|-------|-------|-------------|-------
+    1% |       $4/1k |   $20 |   $40 |   $80 |  $100 |  $200 |        $100 |   2.5×
+    2% |       $2/1k |   $10 |   $20 |   $40 |   $50 |  $100 |        $200 |  10.0×
+    3% |       $1/1k |    $5 |   $10 |   $20 |   $25 |   $50 |        $300 |  30.0×
+    5% |       $2/1k |   $10 |   $20 |   $40 |   $50 |  $100 |        $500 |  25.0×
+   10% |       $1/1k |    $5 |   $10 |   $20 |   $25 |   $50 |      $1,000 | 100.0×
+
+  HEDGING STRATEGY PER TIER:
+
+  SL%  | Hedge Type      | Option Strike      | Tenor | Why
+  -----|-----------------|--------------------|----|---
+  1%   | Naked trigger   | $70,779 (1% OTM)  | 2d  | Recovery exceeds hedge; spread caps would limit profit
+  2%   | Naked trigger   | $70,064 (2% OTM)  | 2d  | Same — recovery is the profit driver
+  3%   | Naked trigger   | $69,349 (3% OTM)  | 2d  | Same — strong ITM recovery on breach
+  5%   | Put spread      | Buy $69,706 / Sell $66,131 | 2d  | Cheaper hedge; recovery cap rarely hit
+  10%  | Put spread      | Buy $67,919 / Sell $60,769  | 2d  | Very cheap hedge; trigger is rare (1%)
+
+══════════════════════════════════════════════════════════════════════════════════════════
+  LIVE VENUE PRICING — Deribit (Production) + Bullish SimNext
+══════════════════════════════════════════════════════════════════════════════════════════
+
+  Coinbase BTC spot: $71,494
+  Bullish SimNext BTC mid: $71,509
+  Current 30d vol: 40.0% (regime: CALM)
+  Scan time: 2026-04-08T02:04:36.818Z
+
+  DERIBIT (Production) — Live put option prices:
+
+  SL%  | Symbol                         | Strike    | Expiry     | Days | OTM%  | Bid/BTC | Ask/BTC | Ask USD | Hedge/$1k | BS Model/$1k | Venue/BS
+  -----|-------------------------------|-----------|------------|------|-------|---------|---------|---------|-----------|-------------|--------
+    1% | BTC-9APR26-69500-P            |   $69,500 | 2026-04-09 |    1 |  2.8% | 0.00250 | 0.00280 | $200.18 |     $2.80 |       $0.41 |   6.84×
+    1% | BTC-9APR26-70000-P            |   $70,000 | 2026-04-09 |    1 |  2.1% | 0.00360 | 0.00390 | $278.82 |     $3.90 |       $1.00 |   3.91×
+    2% | BTC-9APR26-68000-P            |   $68,000 | 2026-04-09 |    1 |  4.9% | 0.00080 | 0.00090 |  $64.34 |     $0.90 |       $0.01 |  74.20×
+    2% | BTC-10APR26-68000-P           |   $68,000 | 2026-04-10 |    2 |  4.9% | 0.00230 | 0.00250 | $178.73 |     $2.50 |       $0.21 |  12.10×
+    3% | BTC-9APR26-68000-P            |   $68,000 | 2026-04-09 |    1 |  4.9% | 0.00080 | 0.00090 |  $64.34 |     $0.90 |       $0.01 |  74.20×
+    3% | BTC-10APR26-68000-P           |   $68,000 | 2026-04-10 |    2 |  4.9% | 0.00230 | 0.00250 | $178.73 |     $2.50 |       $0.21 |  12.10×
+    5% | BTC-9APR26-68000-P            |   $68,000 | 2026-04-09 |    1 |  4.9% | 0.00080 | 0.00090 |  $64.34 |     $0.90 |       $0.01 |  74.20×
+    5% | BTC-10APR26-68000-P           |   $68,000 | 2026-04-10 |    2 |  4.9% | 0.00230 | 0.00250 | $178.73 |     $2.50 |       $0.21 |  12.10×
+   10% | BTC-9APR26-64500-P            |   $64,500 | 2026-04-09 |    1 |  9.8% | 0.00000 | 0.00020 |  $14.30 |     $0.20 |       $0.00 | 21621610.23×
+   10% | BTC-9APR26-64000-P            |   $64,000 | 2026-04-09 |    1 | 10.5% | 0.00000 | 0.00020 |  $14.30 |     $0.20 |       $0.00 | 346501648.20×
+
+
+  BULLISH SIMNEXT — Live put option prices:
+
+  SL%  | Symbol                         | Strike    | Expiry     | Days | OTM%  | Bid      | Ask      | Hedge/$1k | BS Model/$1k | Venue/BS
+  -----|-------------------------------|-----------|------------|------|-------|----------|----------|-----------|-------------|--------
+    1% | BTC-USDC-20260409-68000-P     |   $68,000 | 2026-04-09 |    1 |  4.9% |    $0.00 |  $630.00 |     $8.81 |       $0.01 | 756.27×
+    1% | BTC-USDC-20260411-68000-P     |   $68,000 | 2026-04-11 |    3 |  4.9% |    $0.00 |  $940.00 |    $13.15 |       $0.62 |  21.05×
+    2% | BTC-USDC-20260409-68000-P     |   $68,000 | 2026-04-09 |    1 |  4.9% |    $0.00 |  $630.00 |     $8.81 |       $0.01 | 756.27×
+    2% | BTC-USDC-20260411-68000-P     |   $68,000 | 2026-04-11 |    3 |  4.9% |    $0.00 |  $940.00 |    $13.15 |       $0.62 |  21.05×
+    3% | BTC-USDC-20260409-68000-P     |   $68,000 | 2026-04-09 |    1 |  4.9% |    $0.00 |  $630.00 |     $8.81 |       $0.01 | 756.27×
+    3% | BTC-USDC-20260411-68000-P     |   $68,000 | 2026-04-11 |    3 |  4.9% |    $0.00 |  $940.00 |    $13.15 |       $0.62 |  21.05×
+    5% | BTC-USDC-20260409-68000-P     |   $68,000 | 2026-04-09 |    1 |  4.9% |    $0.00 |  $630.00 |     $8.81 |       $0.01 | 756.27×
+    5% | BTC-USDC-20260411-68000-P     |   $68,000 | 2026-04-11 |    3 |  4.9% |    $0.00 |  $940.00 |    $13.15 |       $0.62 |  21.05×
+   10% | BTC-USDC-20260417-64000-P     |   $64,000 | 2026-04-17 |    9 | 10.5% |    $0.00 |  $530.00 |     $7.41 |       $0.32 |  22.88×
+   10% | BTC-USDC-20260410-64000-P     |   $64,000 | 2026-04-10 |    2 | 10.5% |    $0.00 |  $850.00 |    $11.89 |       $0.00 | 494967.06×
+
+
+  COMPARISON: Backtest BS Model vs Live Venue Hedge Cost (per $1k):
+
+  SL%  | BS Model (v×0.85) | Deribit Best | Bullish Best | Cheapest Venue | Model Accurate?
+  -----|-------------------|-------------|-------------|----------------|---------------
+    1% |             $5.67 |       $2.80 |       $8.81 | Deribit        | 0.49× — cheaper than model
+    2% |             $2.92 |       $0.90 |       $8.81 | Deribit        | 0.31× — cheaper than model
+    3% |             $1.33 |       $0.90 |       $8.81 | Deribit        | 0.68× — cheaper than model
+    5% |             $0.18 |       $0.90 |       $8.81 | Deribit        | 4.96× — significantly higher
+   10% |             $0.00 |       $0.20 |       $7.41 | Deribit        | 2915.11× — significantly higher
+
+  NOTE: BS model uses vol × 0.85 as IV proxy. Live venue prices include spread, liquidity premium,
+  and market maker edge. Deribit prices are in BTC converted to USD at current spot.
+
+
+  VIABILITY ASSESSMENT:
+
+  1% SL: Prem $7/1k - Hedge $2.80/1k - AvgPayout $4.12/1k + Recovery $10.36/1k = P&L $10.44/1k → VIABLE
+  2% SL: Prem $5/1k - Hedge $0.90/1k - AvgPayout $5.66/1k + Recovery $6.92/1k = P&L $5.36/1k → VIABLE
+  3% SL: Prem $5/1k - Hedge $0.90/1k - AvgPayout $5.61/1k + Recovery $4.59/1k = P&L $3.08/1k → VIABLE
+  5% SL: Prem $3/1k - Hedge $0.90/1k - AvgPayout $4.00/1k + Recovery $2.16/1k = P&L $0.26/1k → VIABLE
+  10% SL: Prem $1/1k - Hedge $0.20/1k - AvgPayout $1.00/1k + Recovery $0.40/1k = P&L $0.20/1k → VIABLE

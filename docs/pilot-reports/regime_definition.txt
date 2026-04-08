@@ -1,0 +1,73 @@
+═══════════════════════════════════════════════════════════════════════════════════════════════
+  ATTICUS REGIME DEFINITION: Principled Regime Boundaries for CEO
+  2026-04-08T03:56:38.170Z
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+  1559 days of BTC data | 1529 daily vol observations
+  Current 30d realized vol: 40.0%
+  Current Deribit DVOL: 45.2%
+  DVOL history: 0 daily observations
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+  SECTION 1: HISTORICAL VOL DISTRIBUTION (2022-2026)
+═══════════════════════════════════════════════════════════════════════════════════════════════
+  30-day realized volatility, annualized.
+
+  Percentile | 30d RVol | What it means
+  -----------|---------|-------------
+  10th       |  29.8% | Very calm — low activity
+  20th       |  34.8% | Calm
+  25th       |  36.9% | Below average
+  30th       |  39.7% | ← CALM/NORMAL boundary (30th percentile)
+  40th       |  43.3% | 
+  50th       |  46.8% | Median — typical market
+  60th       |  50.4% | 
+  70th       |  55.1% | Above average
+  75th       |  58.7% | 
+  80th       |  64.6% | ← NORMAL/STRESS boundary (80th percentile)
+  90th       |  75.2% | High vol
+  95th       |  82.1% | Extreme stress
+
+  Min: 17.0% | Max: 96.5% | Current: 40.0% (31%ile)
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+  SECTION 2: DERIBIT DVOL — THE OFFICIAL BTC VOLATILITY INDEX
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+  The Deribit DVOL is to Bitcoin what the VIX is to the S&P 500.
+  It's calculated from live BTC options prices on Deribit and represents
+  the market's 30-day forward-looking implied volatility.
+
+  Why DVOL is the right benchmark:
+  • Published by Deribit — our primary hedge venue
+  • Derived from options prices — directly reflects our hedge costs
+  • Forward-looking — captures what the market EXPECTS, not what happened
+  • Real-time — updates continuously, no lag
+  • Industry standard — used by every institutional crypto desk
+  • Publicly auditable — anyone can verify the number
+
+  DVOL historical data not available. Using realized vol percentiles only.
+
+  REGIME DEFINITION (Realized Vol Based):
+
+  CALM:   30d RVol < 39.7%  (bottom 30th percentile)
+  NORMAL: 30d RVol 39.7% – 64.6%  (middle 50%)
+  STRESS: 30d RVol > 64.6%  (top 20th percentile)
+
+═══════════════════════════════════════════════════════════════════════════════════════════════
+  RECOMMENDATION
+═══════════════════════════════════════════════════════════════════════════════════════════════
+
+  USE DVOL AS THE PRIMARY REGIME SIGNAL because:
+  1. It's forward-looking (reflects what hedging WILL cost, not what it cost)
+  2. It's published by our hedge venue (Deribit)
+  3. It's an industry standard (institutional credibility)
+  4. It's publicly verifiable (transparency)
+  5. The percentile-based cutoffs are data-driven, not arbitrary
+
+  IMPLEMENTATION:
+  • Check DVOL via Deribit API before each protection sale
+  • If DVOL < calm threshold: charge CALM premium
+  • If DVOL > stress threshold: charge STRESS premium (or pause 1% SL)
+  • Log the DVOL reading with each trade for audit trail
+  • Review and recalibrate percentile thresholds quarterly
