@@ -119,7 +119,6 @@ export function PilotWidget() {
   const ppk = SL_RATE[dd as StopLoss] ?? 3;
   const tenor = SL_TENOR[dd as StopLoss] ?? 3;
   const premium = (positionSize / 1000) * ppk;
-  const weeklyCost = premium * (7 / tenor);
   const payout = positionSize * (dd / 100);
   const floor = livePrice && stopLoss ? (positionType === "short" ? livePrice * (1 + dd / 100) : livePrice * (1 - dd / 100)) : null;
   const ready = positionType !== null && stopLoss !== null;
@@ -259,8 +258,7 @@ export function PilotWidget() {
               {ready ? <>If your position hits <strong style={{ color: "var(--danger)" }}>{dd}%</strong> stop loss, you receive <strong style={{ color: "var(--success)" }}>{fmt(payout)}</strong> instantly.</> : <span style={{ color: "var(--muted)" }}>Select position type and stop loss to see protection details.</span>}
             </div>
             {ready && <>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} / {tenor}-day cycle</span></div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>Weekly est.</span><span style={{ fontWeight: 500 }}>~{fmt(weeklyCost)}/wk</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} for {tenor} days</span></div>
               {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
             </>}
           </div>
