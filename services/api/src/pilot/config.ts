@@ -1258,8 +1258,8 @@ export const pilotConfig = {
   hashVersion: Number(process.env.USER_HASH_VERSION || "1"),
   hashSecret: process.env.USER_HASH_SECRET || "",
   quoteMinNotionalUsdc: parsePilotQuoteMinNotionalUsdc(process.env.PILOT_QUOTE_MIN_NOTIONAL_USDC),
-  maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "50000"),
-  maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "50000"),
+  maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "100000"),
+  maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "100000"),
   treasuryPerQuoteSubsidyCapPct: parseFractionRange(
     process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT,
     0.7,

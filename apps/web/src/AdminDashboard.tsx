@@ -39,6 +39,10 @@ type ProtectionSummary = {
   id: string;
   status: string;
   tierName: string;
+  slPct: number | null;
+  hedgeStatus: string | null;
+  regime: string | null;
+  dvolAtPurchase: number | null;
   protectedNotional: string;
   entryPrice: string;
   floorPrice: string;
@@ -527,7 +531,7 @@ function Dashboard({ token }: { token: string }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      {["ID", "Status", "Notional", "Entry", "Floor", "Instrument", "Premium", "Hedge Cost", "Spread", "Expiry", "Actions"].map((h) => (
+                      {["ID", "Status", "SL%", "Notional", "Entry", "Floor", "Instrument", "Premium", "Hedge Cost", "Spread", "Expiry", "Hedge", "Actions"].map((h) => (
                         <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                       ))}
                     </tr>
@@ -551,6 +555,7 @@ function Dashboard({ token }: { token: string }) {
                               {p.status}
                             </span>
                           </td>
+                          <td style={{ padding: "8px 6px", fontSize: 11, fontWeight: 600 }}>{p.slPct ? `${p.slPct}%` : p.tierName || "—"}</td>
                           <td style={{ padding: "8px 6px" }}>{fmtUsd(p.protectedNotional)}</td>
                           <td style={{ padding: "8px 6px" }}>{p.entryPrice ? fmtUsd(p.entryPrice) : "—"}</td>
                           <td style={{ padding: "8px 6px" }}>{p.floorPrice ? fmtUsd(p.floorPrice) : "—"}</td>
@@ -561,6 +566,7 @@ function Dashboard({ token }: { token: string }) {
                             {spread !== null ? fmtUsd(spread) : "—"}
                           </td>
                           <td style={{ padding: "8px 6px", fontSize: 10 }}>{new Date(p.expiryAt).toLocaleString()}</td>
+                          <td style={{ padding: "8px 6px", fontSize: 10 }}>{p.hedgeStatus || "—"}</td>
                           <td style={{ padding: "8px 6px" }}>
                             <div style={{ display: "flex", gap: 4 }}>
                               <button

@@ -51,6 +51,7 @@ import {
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { createPilotVenueAdapter, mapVenueFailureReason } from "./venue";
 import { registerPilotTriggerMonitor } from "./triggerMonitor";
+import { runAutoRenewCycle } from "./autoRenew";
 import {
   buildPremiumPolicyDiagnostics,
   estimateBrokerFeesUsd,
@@ -4252,6 +4253,17 @@ export const registerPilotRoutes = async (
   if (pilotConfig.triggerMonitorEnabled) {
     registerPilotTriggerMonitor(pool);
   }
+
+  const autoRenewIntervalMs = Number(process.env.PILOT_AUTO_RENEW_INTERVAL_MS || "300000");
+  const autoRenewInterval = setInterval(async () => {
+    try {
+      await runAutoRenewCycle({ pool, venue });
+    } catch (err: any) {
+      console.error(`[AutoRenew] Scheduler error: ${err?.message}`);
+    }
+  }, autoRenewIntervalMs);
+  autoRenewInterval.unref?.();
+  console.log(`[AutoRenew] Scheduler started: interval=${autoRenewIntervalMs}ms`);
 
   app.get("/pilot/monitor/status", async (req, reply) => {
     if (!isAdminAuthorized(req)) {
