@@ -2165,12 +2165,12 @@ export const registerPilotRoutes = async (
       };
       const requestedByUserHash = String((req.headers["x-user-id"] as string | undefined) || userHash.userHash);
       let quoteSubsidyUsd = new Decimal(0);
+      const quoteSubsidyCapUsd = triggerPayoutCreditUsd.mul(new Decimal(pilotConfig.treasuryPerQuoteSubsidyCapPct));
       if (!v7Enabled) {
       quoteSubsidyUsd = Decimal.max(
         new Decimal(0),
         premiumPricing.premiumProfitabilityTargetUsd.minus(premiumPricing.clientPremiumUsd)
       );
-      const quoteSubsidyCapUsd = triggerPayoutCreditUsd.mul(new Decimal(pilotConfig.treasuryPerQuoteSubsidyCapPct));
       if (quoteSubsidyUsd.gt(quoteSubsidyCapUsd)) {
         const strictFallbackEnabled =
           pilotConfig.treasuryStrictFallbackEnabled && pricingModeForSelection === "hybrid_otm_treasury";
