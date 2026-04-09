@@ -2164,7 +2164,9 @@ export const registerPilotRoutes = async (
         treasuryFallbackApplied = reason;
       };
       const requestedByUserHash = String((req.headers["x-user-id"] as string | undefined) || userHash.userHash);
-      let quoteSubsidyUsd = Decimal.max(
+      let quoteSubsidyUsd = new Decimal(0);
+      if (!v7Enabled) {
+      quoteSubsidyUsd = Decimal.max(
         new Decimal(0),
         premiumPricing.premiumProfitabilityTargetUsd.minus(premiumPricing.clientPremiumUsd)
       );
@@ -2230,6 +2232,7 @@ export const registerPilotRoutes = async (
           });
         }
       }
+      } // end if (!v7Enabled) treasury subsidy check
       let treasuryStartingReserveUsdc = new Decimal(pilotConfig.startingReserveUsdc);
       let treasuryReserveAfterOpenLiabilityUsdc = new Decimal(pilotConfig.startingReserveUsdc);
       try {
