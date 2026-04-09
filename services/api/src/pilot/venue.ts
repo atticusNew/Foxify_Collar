@@ -3363,7 +3363,6 @@ class FalconxAdapter implements PilotVenueAdapter {
   }> {
     throw new Error("mark_unavailable");
   }
-}
 
   async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
     try {
