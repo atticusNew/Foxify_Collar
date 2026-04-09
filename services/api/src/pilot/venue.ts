@@ -484,8 +484,10 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     const requestedTenorDays =
       Number.isFinite(Number(params.requestedTenorDays)) && Number(params.requestedTenorDays) > 0
         ? Number(params.requestedTenorDays)
-        : 7;
+        : 2;
     const targetExpiry = now + requestedTenorDays * 86400000;
+    const maxExpiryMs = now + (requestedTenorDays + 2) * 86400000;
+    const minExpiryMs = now + 8 * 3600 * 1000;
     const legacyTargetStrike = targetOptionType === "call" ? params.spot * 1.15 : params.spot * 0.85;
     const triggerTarget =
       Number.isFinite(Number(params.targetTriggerPrice)) && Number(params.targetTriggerPrice) > 0
@@ -506,7 +508,10 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 
     let candidates = list
       .filter((item) => String(item?.option_type || "").toLowerCase() === targetOptionType)
-      .filter((item) => Number(item?.expiration_timestamp || 0) > now + 60 * 60 * 1000)
+      .filter((item) => {
+        const exp = Number(item?.expiration_timestamp || 0);
+        return exp > minExpiryMs && exp < maxExpiryMs;
+      })
       .map((item) => ({
         instrumentId: String(item.instrument_name || ""),
         strike: Number(item.strike || parseDeribitStrike(String(item.instrument_name || "")) || 0),
@@ -541,34 +546,66 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       ? [requestedCandidate, ...candidates.filter((item) => item.instrumentId !== requestedCandidate.instrumentId)]
       : candidates;
 
-    for (const candidate of orderedCandidates) {
-      const book = await this.connector.getOrderBook(candidate.instrumentId);
-      const top = extractTopOfBook(book);
-      const mark = extractMarkPrice(book);
-      const askFromAsk = top.ask && top.ask > 0 ? top.ask : null;
-      const askFromMark =
-        this.quotePolicy === "ask_or_mark_fallback" && mark && mark > 0 ? mark : null;
-      const ask = askFromAsk ?? askFromMark;
-      if (ask && ask > 0) {
-        return {
+    type ScoredDeribitCandidate = {
+      instrumentId: string;
+      ask: number;
+      askSize: number | null;
+      askSource: "ask" | "mark";
+      strike: number;
+      expiryTs: number | null;
+      costScore: number;
+    };
+
+    const scored: ScoredDeribitCandidate[] = [];
+    for (const candidate of orderedCandidates.slice(0, 8)) {
+      try {
+        const book = await this.connector.getOrderBook(candidate.instrumentId);
+        const top = extractTopOfBook(book);
+        const mark = extractMarkPrice(book);
+        const askFromAsk = top.ask && top.ask > 0 ? top.ask : null;
+        const askFromMark =
+          this.quotePolicy === "ask_or_mark_fallback" && mark && mark > 0 ? mark : null;
+        const ask = askFromAsk ?? askFromMark;
+        if (!ask || ask <= 0) continue;
+
+        const strikeDist = triggerTarget
+          ? Math.abs(candidate.strike - triggerTarget) / params.spot
+          : Math.abs(candidate.strike - targetStrike) / params.spot;
+        const costScore = ask + strikeDist * 0.5;
+
+        scored.push({
           instrumentId: candidate.instrumentId,
           ask,
           askSize: top.askSize,
-          optionType: targetOptionType,
-          source:
-            candidate.instrumentId === requestedCandidate?.instrumentId
-              ? "requested_instrument_orderbook"
-              : targetOptionType === "call"
-                ? "auto_selected_deribit_call"
-                : "auto_selected_deribit_put",
           askSource: askFromAsk ? "ask" : "mark",
           strike: candidate.strike,
-          expiryTs: Number.isFinite(candidate.expiryTs) && candidate.expiryTs > 0 ? candidate.expiryTs : null
-        };
+          expiryTs: Number.isFinite(candidate.expiryTs) && candidate.expiryTs > 0 ? candidate.expiryTs : null,
+          costScore
+        });
+      } catch {
+        // Skip candidates with transient orderbook failures
       }
     }
 
-    throw new Error("deribit_quote_unavailable");
+    if (!scored.length) {
+      throw new Error("deribit_quote_unavailable");
+    }
+
+    scored.sort((a, b) => a.costScore - b.costScore);
+    const best = scored[0];
+
+    return {
+      instrumentId: best.instrumentId,
+      ask: best.ask,
+      askSize: best.askSize,
+      optionType: targetOptionType,
+      source: best.instrumentId === requestedCandidate?.instrumentId
+        ? "requested_instrument_orderbook"
+        : `auto_selected_deribit_${targetOptionType}`,
+      askSource: best.askSource,
+      strike: best.strike,
+      expiryTs: best.expiryTs
+    };
   }
 
   async quote(req: QuoteRequest): Promise<VenueQuote> {
@@ -3328,6 +3365,62 @@ class FalconxAdapter implements PilotVenueAdapter {
   }
 }
 
+  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+    try {
+      const spot = await resolveDeribitSpot(this.connector);
+      const book = await this.connector.getOrderBook(params.instrumentId);
+      const top = extractTopOfBook(book);
+      const bidBtc = top.bid;
+      if (!bidBtc || bidBtc <= 0) {
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: params.quantity,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: { reason: "no_bid_available" }
+        };
+      }
+
+      const order = await this.connector.placeOrder({
+        instrument: params.instrumentId,
+        amount: params.quantity,
+        side: "sell",
+        type: "market"
+      }) as any;
+
+      const status = order?.status === "paper_filled" || order?.status === "filled" || order?.status === "ok"
+        ? "sold" : "failed";
+      const fillPrice = Number(order?.fillPrice ?? bidBtc) * spot;
+      const filledAmount = Number(order?.filledAmount ?? order?.amount ?? params.quantity);
+
+      console.log(`[DeribitAdapter] sellOption: instrument=${params.instrumentId} status=${status} fillPrice=${fillPrice.toFixed(2)} qty=${filledAmount}`);
+
+      return {
+        status: status as "sold" | "failed",
+        instrumentId: params.instrumentId,
+        quantity: filledAmount,
+        fillPrice,
+        totalProceeds: fillPrice * filledAmount,
+        orderId: String(order?.id || null),
+        details: { raw: order, bidBtc, spot }
+      };
+    } catch (err: any) {
+      console.error(`[DeribitAdapter] sellOption FAILED: ${err?.message}`);
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: params.quantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: err?.message || "sell_failed" }
+      };
+    }
+  }
+}
+
 class DeribitLiveAdapter extends DeribitTestAdapter {
   constructor(
     connector: DeribitConnector,
@@ -3455,7 +3548,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const hedgeCostPer1k = (askPx / spotPrice) * 1000;
         if (maxHedgeCostPer1k && hedgeCostPer1k > maxHedgeCostPer1k) continue;
 
-        const premium = Number(req.protectedNotional || 0) / 1000 * 11;
+        const premium = Number(req.protectedNotional || 0) / 1000 * 5;
         const hasLiquidity = askQty >= btcQty;
         const spreadPositive = premium > hedgeCostTotal;
         const moneyness = candidate.strike / spotPrice;

@@ -52,6 +52,7 @@ import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { createPilotVenueAdapter, mapVenueFailureReason } from "./venue";
 import { registerPilotTriggerMonitor } from "./triggerMonitor";
 import { runAutoRenewCycle } from "./autoRenew";
+import { runHedgeManagementCycle } from "./hedgeManager";
 import {
   buildPremiumPolicyDiagnostics,
   estimateBrokerFeesUsd,
@@ -4267,6 +4268,24 @@ export const registerPilotRoutes = async (
   }, autoRenewIntervalMs);
   autoRenewInterval.unref?.();
   console.log(`[AutoRenew] Scheduler started: interval=${autoRenewIntervalMs}ms`);
+
+  const hedgeMgmtIntervalMs = Number(process.env.PILOT_HEDGE_MGMT_INTERVAL_MS || "60000");
+  const hedgeMgmtInterval = setInterval(async () => {
+    try {
+      const spot = await (async () => {
+        const ticker = await deps.deribit.getIndexPrice("btc_usd");
+        return Number((ticker as any)?.result?.index_price ?? 0);
+      })();
+      if (!spot || spot <= 0) return;
+      const dvolResult = await deps.deribit.getDVOL("BTC");
+      const iv = dvolResult.dvol ?? 50;
+      await runHedgeManagementCycle({ pool, venue, currentSpot: spot, currentIV: iv });
+    } catch (err: any) {
+      console.error(`[HedgeManager] Scheduler error: ${err?.message}`);
+    }
+  }, hedgeMgmtIntervalMs);
+  hedgeMgmtInterval.unref?.();
+  console.log(`[HedgeManager] Scheduler started: interval=${hedgeMgmtIntervalMs}ms`);
 
   app.get("/pilot/monitor/status", async (req, reply) => {
     if (!isAdminAuthorized(req)) {
