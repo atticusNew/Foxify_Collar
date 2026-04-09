@@ -12,11 +12,11 @@ type Position = { id: string; num: number; type: "long" | "short"; size: number;
 
 // ─── Config ──────────────────────────────────────────────────────────
 
-const STOP_LOSS_OPTIONS = [1, 2, 3, 5, 10] as const;
+const STOP_LOSS_OPTIONS = [2, 3, 5, 10] as const;
 type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
-const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 1: "SL 1%", 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
-const SL_RATE: Record<StopLoss, number> = { 1: 2, 2: 3, 3: 4, 5: 6, 10: 3 };
-const SL_TENOR: Record<StopLoss, number> = { 1: 3, 2: 3, 3: 3, 5: 3, 10: 2 };
+const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
+const SL_RATE: Record<StopLoss, number> = { 2: 5, 3: 4, 5: 3, 10: 2 };
+const SL_TENOR: Record<StopLoss, number> = { 2: 2, 3: 2, 5: 2, 10: 2 };
 const POS_MIN = 5000, POS_MAX = 50000, POS_STEP = 5000, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";
 const LOGO = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";

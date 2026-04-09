@@ -12,22 +12,22 @@ type TierDefaults = {
 export const PILOT_TIER_DEFAULTS: Record<string, TierDefaults> = {
   "SL 1%": {
     drawdownFloorPct: 0.01,
-    expiryDays: 3,
+    expiryDays: 2,
     renewWindowMinutes: 1440
   },
   "SL 2%": {
     drawdownFloorPct: 0.02,
-    expiryDays: 3,
+    expiryDays: 2,
     renewWindowMinutes: 1440
   },
   "SL 3%": {
     drawdownFloorPct: 0.03,
-    expiryDays: 3,
+    expiryDays: 2,
     renewWindowMinutes: 1440
   },
   "SL 5%": {
     drawdownFloorPct: 0.05,
-    expiryDays: 3,
+    expiryDays: 2,
     renewWindowMinutes: 1440
   },
   "SL 10%": {

@@ -3,23 +3,22 @@ import type { V7Regime, V7SlTier, V7PremiumQuote } from "./types";
 import { V7_SL_TIERS } from "./types";
 
 /**
- * V7 Tiered Premium Schedule — USD per $1k notional.
- * 3-day rolling tenor (2-day for 10% SL).
- * Source: AGENT_PROMPT_V7_3DAY_FINAL.md, backtest_min_premium_results.txt
+ * V7 Tiered Premium Schedule — USD per $1k notional, 2-day rolling tenor.
+ * Pricing curve: charge more for tight SL (expensive to hedge), less for wide SL.
  */
 const V7_RATE_PER_1K: Record<V7SlTier, number> = {
-  1: 2,
-  2: 3,
+  1: 6,
+  2: 5,
   3: 4,
-  5: 6,
-  10: 3
+  5: 3,
+  10: 2
 };
 
 const V7_TENOR_DAYS: Record<V7SlTier, number> = {
-  1: 3,
-  2: 3,
-  3: 3,
-  5: 3,
+  1: 2,
+  2: 2,
+  3: 2,
+  5: 2,
   10: 2
 };
 
@@ -117,6 +116,8 @@ export const computeV7HedgeStrike = (
 /**
  * Get all available tiers for a given regime with their premiums.
  */
+export const V7_LAUNCHED_TIERS: readonly V7SlTier[] = [2, 3, 5, 10] as const;
+
 export const getV7AvailableTiers = (_regime?: V7Regime): Array<{
   slPct: V7SlTier;
   premiumPer1kUsd: number;
@@ -124,7 +125,7 @@ export const getV7AvailableTiers = (_regime?: V7Regime): Array<{
   available: boolean;
   payoutPer10kUsd: number;
 }> =>
-  V7_SL_TIERS.map((slPct) => ({
+  V7_LAUNCHED_TIERS.map((slPct) => ({
     slPct,
     premiumPer1kUsd: V7_RATE_PER_1K[slPct],
     tenorDays: V7_TENOR_DAYS[slPct],

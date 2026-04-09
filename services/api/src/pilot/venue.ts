@@ -3376,7 +3376,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     const isShort = req.protectionType === "short";
     const requestedOptionType = isShort ? "CALL" : "PUT";
     const now = Date.now();
-    const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 3)));
+    const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 2)));
     const targetExpiryMs = now + requestedTenorDays * 24 * 60 * 60 * 1000;
     const spotPrice = toFinitePositiveNumber(req.protectedNotional) && toFinitePositiveNumber(req.quantity)
       ? Number(req.protectedNotional) / Number(req.quantity)

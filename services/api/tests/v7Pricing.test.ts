@@ -31,12 +31,12 @@ test("isValidSlTier — rejects invalid tiers", () => {
   assert.ok(!isValidSlTier(20));
 });
 
-test("getV7PremiumPer1k — tiered rates", () => {
-  assert.equal(getV7PremiumPer1k(1), 2);
-  assert.equal(getV7PremiumPer1k(2), 3);
+test("getV7PremiumPer1k — tiered rates (tight SL costs more)", () => {
+  assert.equal(getV7PremiumPer1k(1), 6);
+  assert.equal(getV7PremiumPer1k(2), 5);
   assert.equal(getV7PremiumPer1k(3), 4);
-  assert.equal(getV7PremiumPer1k(5), 6);
-  assert.equal(getV7PremiumPer1k(10), 3);
+  assert.equal(getV7PremiumPer1k(5), 3);
+  assert.equal(getV7PremiumPer1k(10), 2);
 });
 
 test("getV7PayoutPer10k — correct payouts", () => {
@@ -50,13 +50,13 @@ test("getV7PayoutPer10k — correct payouts", () => {
 test("computeV7Premium — $10k tiered pricing", () => {
   const r = computeV7Premium({ slPct: 2, notionalUsd: 10000 });
   assert.ok(r.available);
-  assert.equal(r.premiumPer1kUsd, 3);
-  assert.equal(r.premiumUsd, 30);
+  assert.equal(r.premiumPer1kUsd, 5);
+  assert.equal(r.premiumUsd, 50);
   assert.equal(r.payoutPer10kUsd, 200);
 });
 
 test("computeV7Premium — each tier has correct rate", () => {
-  const expected: Record<number, number> = { 1: 20, 2: 30, 3: 40, 5: 60, 10: 30 };
+  const expected: Record<number, number> = { 1: 60, 2: 50, 3: 40, 5: 30, 10: 20 };
   for (const sl of [1, 2, 3, 5, 10] as const) {
     const r = computeV7Premium({ slPct: sl, notionalUsd: 10000 });
     assert.ok(r.available);
@@ -64,17 +64,11 @@ test("computeV7Premium — each tier has correct rate", () => {
   }
 });
 
-test("computeV7Premium — 1% SL always available", () => {
-  const r = computeV7Premium({ slPct: 1, notionalUsd: 10000 });
-  assert.ok(r.available);
-  assert.equal(r.premiumUsd, 20);
-});
-
 test("computeV7Premium — linear scaling", () => {
-  const r1 = computeV7Premium({ slPct: 3, notionalUsd: 5000 });
-  const r2 = computeV7Premium({ slPct: 3, notionalUsd: 25000 });
-  assert.equal(r1.premiumUsd, 20);
-  assert.equal(r2.premiumUsd, 100);
+  const r1 = computeV7Premium({ slPct: 5, notionalUsd: 5000 });
+  const r2 = computeV7Premium({ slPct: 5, notionalUsd: 25000 });
+  assert.equal(r1.premiumUsd, 15);
+  assert.equal(r2.premiumUsd, 75);
   assert.equal(r2.premiumUsd / r1.premiumUsd, 5);
 });
 
@@ -107,23 +101,24 @@ test("computeV7HedgeStrike equals trigger", () => {
   assert.ok(s.eq(t));
 });
 
-test("getV7AvailableTiers — all tiers available with correct rates", () => {
+test("getV7AvailableTiers — launched tiers (no 1% SL)", () => {
   const tiers = getV7AvailableTiers();
-  assert.equal(tiers.length, 5);
+  assert.equal(tiers.length, 4);
   assert.ok(tiers.every(t => t.available));
+  assert.ok(!tiers.find(t => t.slPct === 1));
   const sl2 = tiers.find(t => t.slPct === 2);
-  assert.equal(sl2?.premiumPer1kUsd, 3);
-  assert.equal(sl2?.tenorDays, 3);
+  assert.equal(sl2?.premiumPer1kUsd, 5);
+  assert.equal(sl2?.tenorDays, 2);
   const sl10 = tiers.find(t => t.slPct === 10);
-  assert.equal(sl10?.premiumPer1kUsd, 3);
+  assert.equal(sl10?.premiumPer1kUsd, 2);
   assert.equal(sl10?.tenorDays, 2);
 });
 
-test("getV7TenorDays — 3d for 1-5%, 2d for 10%", () => {
-  assert.equal(getV7TenorDays(1), 3);
-  assert.equal(getV7TenorDays(2), 3);
-  assert.equal(getV7TenorDays(3), 3);
-  assert.equal(getV7TenorDays(5), 3);
+test("getV7TenorDays — 2d for all tiers", () => {
+  assert.equal(getV7TenorDays(1), 2);
+  assert.equal(getV7TenorDays(2), 2);
+  assert.equal(getV7TenorDays(3), 2);
+  assert.equal(getV7TenorDays(5), 2);
   assert.equal(getV7TenorDays(10), 2);
 });
 

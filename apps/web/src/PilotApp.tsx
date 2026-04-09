@@ -208,7 +208,7 @@ const DEFAULT_TIERS: TierLevel[] = [
 ];
 const V7_SL_TIERS = [1, 2, 3, 5, 10] as const;
 const STATIC_TENOR_CHIPS_DAYS = [2, 3, 7] as const;
-const PILOT_DEFAULT_TENOR_DAYS = 3;
+const PILOT_DEFAULT_TENOR_DAYS = 2;
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
 const QUOTE_REQUEST_TIMEOUT_MS = 30000;
 const QUOTE_RETRY_DELAY_MS = 450;
