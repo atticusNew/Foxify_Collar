@@ -680,56 +680,76 @@ class DeribitTestAdapter implements PilotVenueAdapter {
   }
 
   async execute(quote: VenueQuote): Promise<VenueExecution> {
-    const order = (await this.connector.placeOrder({
+    const raw = (await this.connector.placeOrder({
       instrument: quote.instrumentId,
       amount: quote.quantity,
       side: "buy",
       type: "market"
     })) as any;
-    const status =
-      order?.status === "paper_filled" || order?.status === "filled" || order?.status === "ok"
-        ? "success"
-        : "failure";
+
+    const isPaper = raw?.status === "paper_filled" || raw?.status === "paper_rejected";
+    const orderData = isPaper ? raw : (raw?.result?.order ?? raw);
+    const trades = isPaper ? [] : (raw?.result?.trades ?? []);
+
+    const orderState = isPaper
+      ? raw?.status
+      : String(orderData?.order_state || orderData?.status || "unknown");
+    const isFilled = isPaper
+      ? raw?.status === "paper_filled"
+      : orderState === "filled" || orderState === "closed" ||
+        (Number(orderData?.filled_amount || orderData?.filledAmount || 0) > 0);
+
     const requestedQuantity = Math.max(0, Number(quote.quantity || 0));
-    const filledAmount = Number(order?.filledAmount);
-    const reportedAmount = Number(order?.amount);
-    const executedQuantityRaw = Number.isFinite(filledAmount)
+    const filledAmount = Number(
+      orderData?.filled_amount ?? orderData?.filledAmount ?? (isPaper ? raw?.filledAmount : 0) ?? 0
+    );
+    const executedQuantity = Math.max(0, Number.isFinite(filledAmount) && filledAmount > 0
       ? filledAmount
-      : Number.isFinite(reportedAmount)
-        ? reportedAmount
-        : requestedQuantity;
-    const executedQuantity = Math.max(0, executedQuantityRaw);
-    const fillRatio =
-      requestedQuantity > 0
-        ? Math.min(1, Math.max(0, executedQuantity / requestedQuantity))
-        : 0;
+      : isFilled ? requestedQuantity : 0);
+
+    const fillPriceBtc = isPaper
+      ? Number(raw?.fillPrice ?? 0)
+      : Number(trades?.[0]?.price ?? orderData?.average_price ?? orderData?.price ?? 0);
+
+    const spot = await (async () => {
+      try {
+        const idx = await this.connector.getIndexPrice("btc_usd");
+        return Number((idx as any)?.result?.index_price ?? 0);
+      } catch { return 0; }
+    })();
+    const executionPriceUsd = fillPriceBtc > 0 && spot > 0 ? fillPriceBtc * spot : fillPriceBtc;
+
+    const fillRatio = requestedQuantity > 0
+      ? Math.min(1, Math.max(0, executedQuantity / requestedQuantity))
+      : 0;
     const scaledPremium = Number((quote.premium * fillRatio).toFixed(10));
-    const fillStatus = String(order?.status || "unknown");
-    const rejectionReasonRaw =
-      (typeof order?.rejectionReason === "string" && order.rejectionReason) ||
-      (typeof order?.rejectReason === "string" && order.rejectReason) ||
-      (typeof order?.reason === "string" && order.reason) ||
-      null;
+
+    const orderId = String(orderData?.order_id ?? orderData?.id ?? `DERIBIT-ORD-${randomUUID()}`);
+
+    console.log(`[DeribitAdapter] execute: instrument=${quote.instrumentId} filled=${isFilled} qty=${executedQuantity} priceBtc=${fillPriceBtc} priceUsd=${executionPriceUsd.toFixed(2)} orderId=${orderId}`);
+
     return {
       venue: "deribit_test",
-      status,
+      status: isFilled ? "success" : "failure",
       quoteId: quote.quoteId,
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
       side: "buy",
       quantity: executedQuantity,
-      executionPrice: Number(order?.fillPrice ?? 0),
+      executionPrice: executionPriceUsd,
       premium: scaledPremium,
       executedAt: nowIso(),
-      externalOrderId: String(order?.id || `DERIBIT-ORD-${randomUUID()}`),
-      externalExecutionId: String(order?.id || `DERIBIT-EXE-${randomUUID()}`),
+      externalOrderId: orderId,
+      externalExecutionId: orderId,
       details: {
-        raw: order,
-        fillStatus,
-        rejectionReason: rejectionReasonRaw,
+        raw,
+        orderState,
+        fillPriceBtc,
+        spotPriceUsd: spot,
         requestedQuantity,
         executedQuantity,
-        fillRatio
+        fillRatio,
+        trades: trades?.length ?? 0
       }
     };
   }
