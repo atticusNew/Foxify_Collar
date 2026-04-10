@@ -535,7 +535,7 @@ function Dashboard({ token }: { token: string }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      {["ID", "Status", "Type", "SL%", "Notional", "Entry", "Floor", "Instrument", "Premium", "Hedge Cost", "Spread", "Payout", "Time Left", "Hedge", "Actions"].map((h) => (
+                      {["ID", "Status", "Type", "SL%", "Notional", "Entry", "Floor", "Strike", "Gap", "Premium", "Hedge Cost", "Spread", "Payout", "Time Left", "Hedge", "Actions"].map((h) => (
                         <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                       ))}
                     </tr>
@@ -554,7 +554,12 @@ function Dashboard({ token }: { token: string }) {
                       const payoutStatus = payout > 0 ? (payoutSettled > 0 ? "Settled" : "Due") : "";
                       const msLeft = new Date(p.expiryAt).getTime() - Date.now();
                       const timeLeft = msLeft <= 0 ? "Expired" : msLeft > 86400000 ? `${Math.floor(msLeft / 86400000)}d ${Math.floor((msLeft % 86400000) / 3600000)}h` : `${Math.floor(msLeft / 3600000)}h ${Math.floor((msLeft % 3600000) / 60000)}m`;
-                      const protType = String(p.side || p.metadata?.protectionType || "long");
+                      const rawSide = String(p.metadata?.protectionType || p.side || "long");
+                      const protType = rawSide === "short" ? "short" : "long";
+                      const strikeMatch = String(p.instrumentId || "").match(/(\d+)-(P|C)$/);
+                      const hedgeStrike = strikeMatch ? Number(strikeMatch[1]) : null;
+                      const floorNum = Number(p.floorPrice || 0);
+                      const strikeGap = hedgeStrike && floorNum > 0 ? hedgeStrike - floorNum : null;
                       return (
                         <tr key={p.id} style={{ borderBottom: "1px solid var(--border)" }}>
                           <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>{p.id.slice(0, 8)}...</td>
@@ -572,7 +577,10 @@ function Dashboard({ token }: { token: string }) {
                           <td style={{ padding: "8px 6px" }}>{fmtUsd(p.protectedNotional)}</td>
                           <td style={{ padding: "8px 6px" }}>{p.entryPrice ? fmtUsd(p.entryPrice) : "—"}</td>
                           <td style={{ padding: "8px 6px" }}>{p.floorPrice ? fmtUsd(p.floorPrice) : "—"}</td>
-                          <td style={{ padding: "8px 6px", fontSize: 10, fontFamily: "monospace" }}>{p.instrumentId || "—"}</td>
+                          <td style={{ padding: "8px 6px" }}>{hedgeStrike ? fmtUsd(hedgeStrike) : "—"}</td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, color: strikeGap !== null ? (strikeGap >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
+                            {strikeGap !== null ? `${strikeGap >= 0 ? "+" : ""}${fmtUsd(strikeGap)}` : "—"}
+                          </td>
                           <td style={{ padding: "8px 6px" }}>{clientPremium > 0 ? fmtUsd(clientPremium) : "—"}</td>
                           <td style={{ padding: "8px 6px" }}>{hedgeCost > 0 ? fmtUsd(hedgeCost) : "—"}</td>
                           <td style={{ padding: "8px 6px", color: spread !== null ? (spread >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
