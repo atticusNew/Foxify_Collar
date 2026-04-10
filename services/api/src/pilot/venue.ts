@@ -680,13 +680,15 @@ class DeribitTestAdapter implements PilotVenueAdapter {
   }
 
   async execute(quote: VenueQuote): Promise<VenueExecution> {
+    const deribitQty = Math.max(0.1, Math.floor(quote.quantity * 10) / 10);
     const raw = (await this.connector.placeOrder({
       instrument: quote.instrumentId,
-      amount: quote.quantity,
+      amount: deribitQty,
       side: "buy",
       type: "market"
     })) as any;
 
+    console.log(`[DeribitAdapter] placeOrder raw response:`, JSON.stringify(raw).slice(0, 800));
     const isPaper = raw?.status === "paper_filled" || raw?.status === "paper_rejected";
     const orderData = isPaper ? raw : (raw?.result?.order ?? raw);
     const trades = isPaper ? [] : (raw?.result?.trades ?? []);
