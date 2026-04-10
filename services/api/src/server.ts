@@ -59,6 +59,9 @@ import { buildCoverageReport } from "./coverageReport";
 import { resolveCoverageTargetSize } from "./quoteCoverage";
 import { resolvePremiumMarkupPctForQuote } from "./markupProfile";
 import { registerPilotRoutes } from "./pilot/routes";
+import { registerTreasuryRoutes } from "./pilot/treasuryRoutes";
+import { parseTreasuryConfig } from "./pilot/treasuryConfig";
+import { startTreasuryScheduler } from "./pilot/treasuryScheduler";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -8159,6 +8162,34 @@ app.post("/hedge/roll", async (req) => {
 });
 
 await registerPilotRoutes(app, { deribit, deribitLive });
+
+const treasuryConfig = parseTreasuryConfig();
+if (treasuryConfig.enabled) {
+  const { getPilotPool } = await import("./pilot/db");
+  const treasuryPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+  const { createPilotVenueAdapter } = await import("./pilot/venue");
+  const treasuryVenue = createPilotVenueAdapter({
+    mode: "deribit_live",
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+    deribit,
+    quoteTtlMs: 30000,
+    deribitQuotePolicy: "ask_or_mark_fallback",
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 3
+  });
+  await registerTreasuryRoutes(app, {
+    pool: treasuryPool,
+    venue: treasuryVenue,
+    deribit,
+    config: treasuryConfig
+  });
+  startTreasuryScheduler({
+    pool: treasuryPool,
+    venue: treasuryVenue,
+    deribit,
+    config: treasuryConfig
+  });
+}
 
 const startServer = async () => {
   try {

@@ -4,6 +4,7 @@ import { App } from "./App";
 import { PilotApp } from "./PilotApp";
 import { PilotWidget } from "./PilotWidget";
 import { AdminDashboardPage } from "./AdminDashboard";
+import { TreasuryDashboard } from "./TreasuryDashboard";
 import { SimpleSimPilotApp } from "./SimpleSimPilotApp";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET } from "./config";
 import "./styles.css";
@@ -58,6 +59,10 @@ function AppRouter() {
 
   if (path === "/admin" || path.startsWith("/admin/")) {
     return <AdminDashboardPage />;
+  }
+
+  if (path === "/treasury" || path.startsWith("/treasury/")) {
+    return <TreasuryDashboard />;
   }
 
   if (PILOT_SIMPLE_SIM_WIDGET) return <SimpleSimPilotApp />;
