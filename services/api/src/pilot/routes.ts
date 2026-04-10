@@ -3235,8 +3235,9 @@ export const registerPilotRoutes = async (
           .join(" | ");
         throw new Error("execution_failed");
       }
+      const venueStepSize = pilotConfig.venueMode === "deribit_live" || pilotConfig.venueMode === "deribit_test" ? 10 : 100;
       const effectiveRequestedQty = v7EnabledActivate
-        ? Math.floor(requestedQuantity * 100) / 100
+        ? Math.floor(requestedQuantity * venueStepSize) / venueStepSize
         : requestedQuantity;
       const coverageRatio =
         effectiveRequestedQty > 0
