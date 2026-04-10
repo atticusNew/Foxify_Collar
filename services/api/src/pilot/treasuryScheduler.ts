@@ -20,6 +20,8 @@ type SchedulerDeps = {
   config: TreasuryConfig;
 };
 
+let executionLock = false;
+
 const getSpot = async (deribit: DeribitConnector): Promise<number> => {
   const ticker = await deribit.getIndexPrice("btc_usd");
   const price = Number((ticker as any)?.result?.index_price ?? 0);
@@ -42,6 +44,8 @@ export const runTreasuryDailyCycle = async (deps: SchedulerDeps): Promise<{
   protectionId?: string;
   detail?: string;
 }> => {
+  if (executionLock) return { action: "skipped", detail: "execution_in_progress" };
+
   await ensureTreasurySchema(deps.pool);
   const state = await getTreasuryState(deps.pool);
 
@@ -49,9 +53,12 @@ export const runTreasuryDailyCycle = async (deps: SchedulerDeps): Promise<{
   if (!state.active) return { action: "skipped", detail: "treasury_not_active" };
 
   const today = new Date().toISOString().slice(0, 10);
-  if (state.lastCycleDate === today) return { action: "already_done" };
+  const lastDate = state.lastCycleDate ? String(state.lastCycleDate).slice(0, 10) : null;
+  if (lastDate === today) return { action: "already_done" };
 
-  if (!shouldExecuteToday(state, deps.config)) return { action: "skipped", detail: "before_execution_time" };
+  if (!shouldExecuteToday({ ...state, lastCycleDate: lastDate }, deps.config)) return { action: "skipped", detail: "before_execution_time" };
+
+  executionLock = true;
 
   const notional = new Decimal(deps.config.notionalUsd);
   const floorPct = new Decimal(deps.config.floorPct).div(100);
@@ -63,6 +70,7 @@ export const runTreasuryDailyCycle = async (deps: SchedulerDeps): Promise<{
   try {
     spot = await getSpot(deps.deribit);
   } catch (err: any) {
+    executionLock = false;
     console.error(`[Treasury] Spot price unavailable: ${err?.message}`);
     return { action: "error", detail: err?.message };
   }
@@ -89,6 +97,7 @@ export const runTreasuryDailyCycle = async (deps: SchedulerDeps): Promise<{
       requestedTenorDays: tenorDays
     });
   } catch (err: any) {
+    executionLock = false;
     console.error(`[Treasury] Quote failed: ${err?.message}`);
     return { action: "error", detail: `quote_failed: ${err?.message}` };
   }
@@ -97,11 +106,13 @@ export const runTreasuryDailyCycle = async (deps: SchedulerDeps): Promise<{
   try {
     execution = await deps.venue.execute(quote);
   } catch (err: any) {
+    executionLock = false;
     console.error(`[Treasury] Execution failed: ${err?.message}`);
     return { action: "error", detail: `execution_failed: ${err?.message}` };
   }
 
   if (execution.status !== "success") {
+    executionLock = false;
     console.error(`[Treasury] Execution not successful: ${JSON.stringify(execution.details).slice(0, 300)}`);
     return { action: "error", detail: `execution_status: ${execution.status}` };
   }
@@ -146,6 +157,7 @@ export const runTreasuryDailyCycle = async (deps: SchedulerDeps): Promise<{
     total_cycles: state.totalCycles + 1
   });
 
+  executionLock = false;
   console.log(
     `[Treasury] Cycle complete: protection=${protection.id} instrument=${quote.instrumentId} strike=$${strike} premium=$${premiumUsd.toFixed(2)} hedge=$${hedgeCostUsd.toFixed(2)} spread=$${spreadUsd.toFixed(2)}`
   );

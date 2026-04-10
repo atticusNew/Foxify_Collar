@@ -71,6 +71,16 @@ export const ensureTreasurySchema = async (pool: Queryable): Promise<void> => {
   schemaReady = true;
 };
 
+export const resetTreasuryData = async (pool: Queryable): Promise<void> => {
+  await pool.query(`DELETE FROM treasury_protections`);
+  await pool.query(`UPDATE treasury_config_state SET
+    total_premiums_usd = 0, total_hedge_costs_usd = 0, total_payouts_usd = 0,
+    total_tp_proceeds_usd = 0, total_cycles = 0, total_triggers = 0,
+    last_cycle_date = NULL, last_execution_at = NULL, updated_at = NOW()
+    WHERE id = 'singleton'`);
+  console.log("[Treasury] Data reset complete");
+};
+
 export type TreasuryProtection = {
   id: string;
   cycleDate: string;

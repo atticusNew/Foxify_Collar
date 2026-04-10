@@ -23,11 +23,8 @@ type TreasuryStatus = {
   };
   billing: {
     totalPremiumsUsd: string;
-    totalHedgeCostsUsd: string;
     totalPayoutsUsd: string;
-    totalTpProceedsUsd: string;
-    netToClient: string;
-    netToAtticus: string;
+    netCostToClient: string;
   };
   currentProtection: {
     id: string;
@@ -35,12 +32,10 @@ type TreasuryStatus = {
     entryPrice: string;
     floorPrice: string;
     strike: string;
-    instrumentId: string;
     premiumUsd: string;
-    hedgeCostUsd: string;
-    spreadUsd: string;
     expiryAt: string;
     triggered: boolean;
+    payoutUsd: string | null;
     status: string;
   } | null;
   market: {
@@ -55,8 +50,6 @@ type HistoryEntry = {
   floorPrice: string;
   strike: string;
   premiumUsd: string;
-  hedgeCostUsd: string;
-  spreadUsd: string;
   triggered: boolean;
   payoutUsd: string | null;
   status: string;
@@ -195,8 +188,8 @@ export function TreasuryDashboard() {
               </div>
               <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "right" }}>
                 <div>Premium: {fmt(cp.premiumUsd)}</div>
-                <div>Hedge: {fmt(cp.hedgeCostUsd)}</div>
-                <div style={{ color: Number(cp.spreadUsd) >= 0 ? "var(--success)" : "var(--danger)" }}>Spread: {fmt(cp.spreadUsd)}</div>
+                <div>Payout if triggered: {fmt(Number(data.config.notionalUsd) * data.config.floorPct / 100)}</div>
+                <div>Expires: {new Date(cp.expiryAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
               </div>
             </div>
             {/* Distance bar */}
@@ -218,7 +211,7 @@ export function TreasuryDashboard() {
               </div>
             )}
             <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 6 }}>
-              {cp.instrumentId} · Expires {new Date(cp.expiryAt).toLocaleString()}
+              Protected since {new Date(cp.cycleDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
             </div>
           </div>
         )}
@@ -262,7 +255,7 @@ export function TreasuryDashboard() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                    {["Date", "Entry", "Floor", "Strike", "Premium", "Hedge", "Spread", "Triggered", "Payout"].map((h) => (
+                    {["Date", "Entry", "Floor", "Strike", "Premium", "Triggered", "Payout"].map((h) => (
                       <th key={h} style={{ padding: "6px 4px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                     ))}
                   </tr>
@@ -270,13 +263,11 @@ export function TreasuryDashboard() {
                 <tbody>
                   {history.map((p, i) => (
                     <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td style={{ padding: "6px 4px" }}>{p.cycleDate}</td>
+                      <td style={{ padding: "6px 4px" }}>{new Date(p.cycleDate).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</td>
                       <td style={{ padding: "6px 4px" }}>{p.entryPrice ? fmt(p.entryPrice) : "—"}</td>
                       <td style={{ padding: "6px 4px" }}>{p.floorPrice ? fmt(p.floorPrice) : "—"}</td>
                       <td style={{ padding: "6px 4px" }}>{p.strike ? fmt(p.strike) : "—"}</td>
                       <td style={{ padding: "6px 4px" }}>{fmt(p.premiumUsd || 0)}</td>
-                      <td style={{ padding: "6px 4px" }}>{fmt(p.hedgeCostUsd || 0)}</td>
-                      <td style={{ padding: "6px 4px", color: Number(p.spreadUsd) >= 0 ? "var(--success)" : "var(--danger)" }}>{fmt(p.spreadUsd || 0)}</td>
                       <td style={{ padding: "6px 4px" }}>
                         {p.triggered ? <span style={{ color: "var(--danger)", fontWeight: 600 }}>Yes</span> : <span style={{ color: "var(--muted)" }}>No</span>}
                       </td>

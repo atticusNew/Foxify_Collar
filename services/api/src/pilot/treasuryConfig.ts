@@ -58,9 +58,9 @@ export const parseTreasuryConfig = (): TreasuryConfig => ({
   ),
   checkIntervalMs: parsePositiveIntInRange(
     process.env.TREASURY_CHECK_INTERVAL_MS,
+    300000,
     60000,
-    10000,
-    600000,
+    3600000,
     "invalid_treasury_check_interval_ms"
   ),
   triggerMonitorIntervalMs: parsePositiveIntInRange(

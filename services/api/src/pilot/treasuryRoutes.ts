@@ -9,7 +9,8 @@ import {
   getTreasuryState,
   updateTreasuryState,
   getTreasuryProtectionHistory,
-  getActiveTreasuryProtection
+  getActiveTreasuryProtection,
+  resetTreasuryData
 } from "./treasuryDb";
 import { runTreasuryDailyCycle } from "./treasuryScheduler";
 
@@ -74,11 +75,8 @@ export const registerTreasuryRoutes = async (
       },
       billing: {
         totalPremiumsUsd: state.totalPremiumsUsd,
-        totalHedgeCostsUsd: state.totalHedgeCostsUsd,
         totalPayoutsUsd: state.totalPayoutsUsd,
-        totalTpProceedsUsd: state.totalTpProceedsUsd,
-        netToClient: new Decimal(state.totalPayoutsUsd).minus(state.totalPremiumsUsd).toFixed(2),
-        netToAtticus: new Decimal(state.totalPremiumsUsd).minus(state.totalHedgeCostsUsd).minus(state.totalPayoutsUsd).plus(state.totalTpProceedsUsd).toFixed(2)
+        netCostToClient: new Decimal(state.totalPremiumsUsd).minus(state.totalPayoutsUsd).toFixed(2)
       },
       currentProtection: active ? {
         id: active.id,
@@ -86,12 +84,10 @@ export const registerTreasuryRoutes = async (
         entryPrice: active.entryPrice,
         floorPrice: active.floorPrice,
         strike: active.strike,
-        instrumentId: active.instrumentId,
         premiumUsd: active.premiumUsd,
-        hedgeCostUsd: active.hedgeCostUsd,
-        spreadUsd: active.spreadUsd,
         expiryAt: active.expiryAt,
         triggered: active.triggered,
+        payoutUsd: active.payoutUsd,
         status: active.status
       } : null,
       market: {
@@ -115,8 +111,6 @@ export const registerTreasuryRoutes = async (
         floorPrice: p.floorPrice,
         strike: p.strike,
         premiumUsd: p.premiumUsd,
-        hedgeCostUsd: p.hedgeCostUsd,
-        spreadUsd: p.spreadUsd,
         triggered: p.triggered,
         payoutUsd: p.payoutUsd,
         status: p.status
@@ -157,6 +151,12 @@ export const registerTreasuryRoutes = async (
     });
     console.log(`[Treasury] Notional updated to $${newNotional.toLocaleString()}`);
     return { status: "ok", notionalUsd: newNotional };
+  });
+
+  app.post("/treasury/reset", async (req, reply) => {
+    if (!requireTreasuryAuth(req, reply, deps.config)) return;
+    await resetTreasuryData(deps.pool);
+    return { status: "ok", action: "treasury_data_reset" };
   });
 
   app.post("/treasury/execute-now", async (req, reply) => {
@@ -204,11 +204,17 @@ export const registerTreasuryRoutes = async (
         totalCycles: state.totalCycles,
         totalTriggers: state.totalTriggers,
         totalPremiums: state.totalPremiumsUsd,
-        totalHedgeCosts: state.totalHedgeCostsUsd,
         totalPayouts: state.totalPayoutsUsd,
         netCostToClient: new Decimal(state.totalPremiumsUsd).minus(state.totalPayoutsUsd).toFixed(2)
       },
-      monthly: byMonth
+      monthly: Object.fromEntries(
+        Object.entries(byMonth).map(([month, data]) => [month, {
+          cycles: data.cycles,
+          premiums: data.premiums,
+          payouts: data.payouts,
+          triggers: data.triggers
+        }])
+      )
     };
   });
 };
