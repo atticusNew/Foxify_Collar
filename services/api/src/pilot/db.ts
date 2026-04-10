@@ -397,6 +397,32 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
   schemaReady = true;
 };
 
+export const resetPilotData = async (pool: Queryable): Promise<{ tablesCleared: string[] }> => {
+  const tables = [
+    "pilot_ledger_entries",
+    "pilot_price_snapshots",
+    "pilot_venue_executions",
+    "pilot_venue_quotes",
+    "pilot_rfq_fills",
+    "pilot_rfq_quotes",
+    "pilot_options_chain_snapshots",
+    "pilot_hedge_decisions",
+    "pilot_execution_quality_daily",
+    "pilot_sim_treasury_ledger",
+    "pilot_sim_positions",
+    "pilot_admin_actions",
+    "pilot_daily_usage",
+    "pilot_daily_treasury_subsidy_usage",
+    "pilot_user_day_locks",
+    "pilot_protections"
+  ];
+  for (const table of tables) {
+    await pool.query(`DELETE FROM ${table}`);
+  }
+  console.log(`[DB] Pilot data reset: ${tables.length} tables cleared`);
+  return { tablesCleared: tables };
+};
+
 export const insertProtection = async (
   pool: Queryable,
   input: {

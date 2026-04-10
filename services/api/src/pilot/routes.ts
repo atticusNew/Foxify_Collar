@@ -12,6 +12,7 @@ import {
   createPilotTermsAcceptanceIfMissing,
   extractLatestPremiumPolicyDiagnostics,
   ensurePilotSchema,
+  resetPilotData,
   getDailyProtectedNotionalForUser,
   getDailyTreasurySubsidyUsageForUser,
   getEssentialProofPayload,
@@ -817,7 +818,7 @@ const toCsv = (rows: Array<Record<string, unknown>>): string => {
 
 export const registerPilotRoutes = async (
   app: FastifyInstance,
-  deps: { deribit: DeribitConnector }
+  deps: { deribit: DeribitConnector; deribitLive?: DeribitConnector }
 ): Promise<void> => {
   if (!pilotConfig.enabled) return;
 
@@ -896,6 +897,16 @@ export const registerPilotRoutes = async (
     deribitStrikeSelectionMode: "trigger_aligned",
     deribitMaxTenorDriftDays: 7
   });
+
+  const deribitLivePricingVenue = deps.deribitLive ? createPilotVenueAdapter({
+    mode: "deribit_live",
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+    deribit: deps.deribitLive,
+    quoteTtlMs: pilotConfig.quoteTtlMs,
+    deribitQuotePolicy: "ask_or_mark_fallback",
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 7
+  }) : deribitVenue;
 
   if (pilotConfig.v7.enabled) {
     configureRegimeClassifier({
@@ -1555,8 +1566,9 @@ export const registerPilotRoutes = async (
       return { status: "error", reason: "invalid_notional" };
     }
     try {
+      const pricingConnector = deps.deribitLive || deps.deribit;
       const spot = await (async () => {
-        const ticker = await deps.deribit.getIndexPrice("btc_usd");
+        const ticker = await pricingConnector.getIndexPrice("btc_usd");
         const price = Number((ticker as any)?.result?.index_price ?? 0);
         if (!Number.isFinite(price) || price <= 0) throw new Error("deribit_spot_unavailable");
         return price;
@@ -1581,7 +1593,7 @@ export const registerPilotRoutes = async (
           ? spot * (1 + drawdown)
           : spot * (1 - drawdown);
         try {
-          const dq = await deribitVenue.quote({
+          const dq = await deribitLivePricingVenue.quote({
             marketId: "BTC-USD",
             instrumentId: `BTC-USD-${tenorDays}D-P`,
             protectedNotional: notional,
@@ -4051,6 +4063,25 @@ export const registerPilotRoutes = async (
     }
     reply.code(400);
     return { status: "error", reason: "invalid_decision" };
+  });
+
+  app.post("/pilot/admin/reset", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    try {
+      const result = await resetPilotData(pool);
+      await insertAdminAction(pool, {
+        action: "pilot_data_reset",
+        actor: auth.actor,
+        actorIp: auth.actorIp,
+        details: result
+      });
+      console.log(`[Admin] Pilot data reset by ${auth.actor} from ${auth.actorIp}`);
+      return { status: "ok", ...result };
+    } catch (error: any) {
+      reply.code(500);
+      return { status: "error", reason: String(error?.message || "reset_failed") };
+    }
   });
 
   app.get("/pilot/admin/metrics", async (req, reply) => {

@@ -2065,23 +2065,14 @@ app.get("/risk/summary", async (req) => {
 });
 
 const pilotApiEnabled = process.env.PILOT_API_ENABLED === "true";
-const forceDeribitTestMode = pilotApiEnabled && process.env.PILOT_FORCE_DERIBIT_TEST_MODE !== "false";
 const deribitEnvRaw = (process.env.DERIBIT_ENV as "testnet" | "live") || "live";
-const deribitEnv: "testnet" | "live" = forceDeribitTestMode ? "testnet" : deribitEnvRaw;
+const deribitEnv: "testnet" | "live" = deribitEnvRaw;
 const deribitHasCredentials = Boolean(
   process.env.DERIBIT_CLIENT_ID && process.env.DERIBIT_CLIENT_SECRET
 );
 const deribitPaperEnv = process.env.DERIBIT_PAPER?.trim().toLowerCase();
-let deribitPaperRequested =
+const deribitPaperRequested =
   deribitPaperEnv !== undefined ? deribitPaperEnv === "true" : deribitEnv !== "live";
-if (forceDeribitTestMode) {
-  deribitPaperRequested = true;
-  if (deribitEnvRaw !== "testnet" || deribitPaperEnv === "false") {
-    console.warn(
-      "[Deribit] Pilot mode forcing DERIBIT_ENV=testnet and DERIBIT_PAPER=true for test-only execution."
-    );
-  }
-}
 const deribitPaper = deribitHasCredentials ? deribitPaperRequested : true;
 if (!deribitHasCredentials && deribitPaperEnv === "false") {
   console.warn(
@@ -2104,6 +2095,8 @@ const deribit = new DeribitConnector(
       }
     : undefined
 );
+const deribitLive = new DeribitConnector("live", true);
+console.log(`[Deribit] Live pricing connector: endpoint=live paper=true (read-only, no credentials)`);
 const executionRegistry = new ExecutionRegistry();
 executionRegistry.register(createDeribitExecutor(deribit));
 executionRegistry.register(createBybitExecutor());
@@ -8165,7 +8158,7 @@ app.post("/hedge/roll", async (req) => {
   };
 });
 
-await registerPilotRoutes(app, { deribit });
+await registerPilotRoutes(app, { deribit, deribitLive });
 
 const startServer = async () => {
   try {

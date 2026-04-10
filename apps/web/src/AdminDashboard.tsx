@@ -54,7 +54,11 @@ type ProtectionSummary = {
   payoutSettledAmount: string | null;
   venue: string;
   instrumentId: string;
+  side: string | null;
+  size: string | null;
+  executionPrice: string | null;
   createdAt: string;
+  metadata?: Record<string, unknown>;
 };
 
 type ExecutionQuality = {
@@ -531,7 +535,7 @@ function Dashboard({ token }: { token: string }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      {["ID", "Status", "SL%", "Notional", "Entry", "Floor", "Instrument", "Premium", "Hedge Cost", "Spread", "Expiry", "Hedge", "Actions"].map((h) => (
+                      {["ID", "Status", "Type", "SL%", "Notional", "Entry", "Floor", "Instrument", "Premium", "Hedge Cost", "Spread", "Payout", "Time Left", "Hedge", "Actions"].map((h) => (
                         <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                       ))}
                     </tr>
@@ -540,9 +544,17 @@ function Dashboard({ token }: { token: string }) {
                     {protectionsList.map((p) => {
                       const isActive = p.status === "active" || p.status === "quoted" || p.status === "reconcile_pending";
                       const isTriggered = p.status === "triggered";
-                      const hedgeCost = Number((p as any).executionPrice || (p as any).metadata?.hedgeCostTotal || 0) * Number((p as any).size || (p as any).metadata?.quantity || 0);
+                      const execPrice = Number(p.executionPrice || 0);
+                      const size = Number(p.size || 0);
+                      const hedgeCost = execPrice > 0 && size > 0 ? execPrice * size : 0;
                       const clientPremium = Number(p.premium || 0);
                       const spread = clientPremium > 0 && hedgeCost > 0 ? clientPremium - hedgeCost : null;
+                      const payout = Number(p.payoutDueAmount || 0);
+                      const payoutSettled = Number(p.payoutSettledAmount || 0);
+                      const payoutStatus = payout > 0 ? (payoutSettled > 0 ? "Settled" : "Due") : "";
+                      const msLeft = new Date(p.expiryAt).getTime() - Date.now();
+                      const timeLeft = msLeft <= 0 ? "Expired" : msLeft > 86400000 ? `${Math.floor(msLeft / 86400000)}d ${Math.floor((msLeft % 86400000) / 3600000)}h` : `${Math.floor(msLeft / 3600000)}h ${Math.floor((msLeft % 3600000) / 60000)}m`;
+                      const protType = String(p.side || p.metadata?.protectionType || "long");
                       return (
                         <tr key={p.id} style={{ borderBottom: "1px solid var(--border)" }}>
                           <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>{p.id.slice(0, 8)}...</td>
@@ -555,6 +567,7 @@ function Dashboard({ token }: { token: string }) {
                               {p.status}
                             </span>
                           </td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: protType === "short" ? "var(--danger)" : "var(--success)" }}>{protType}</td>
                           <td style={{ padding: "8px 6px", fontSize: 11, fontWeight: 600 }}>{p.slPct ? `${p.slPct}%` : p.tierName || "—"}</td>
                           <td style={{ padding: "8px 6px" }}>{fmtUsd(p.protectedNotional)}</td>
                           <td style={{ padding: "8px 6px" }}>{p.entryPrice ? fmtUsd(p.entryPrice) : "—"}</td>
@@ -565,7 +578,10 @@ function Dashboard({ token }: { token: string }) {
                           <td style={{ padding: "8px 6px", color: spread !== null ? (spread >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
                             {spread !== null ? fmtUsd(spread) : "—"}
                           </td>
-                          <td style={{ padding: "8px 6px", fontSize: 10 }}>{new Date(p.expiryAt).toLocaleString()}</td>
+                          <td style={{ padding: "8px 6px", fontSize: 10 }}>
+                            {payout > 0 ? <><span style={{ color: "var(--danger)" }}>{fmtUsd(payout)}</span> <span style={{ fontSize: 9, color: payoutStatus === "Settled" ? "var(--success)" : "var(--muted)" }}>{payoutStatus}</span></> : "—"}
+                          </td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, color: msLeft < 3600000 && msLeft > 0 ? "var(--danger)" : "var(--muted)" }}>{isActive ? timeLeft : "—"}</td>
                           <td style={{ padding: "8px 6px", fontSize: 10 }}>{p.hedgeStatus || "—"}</td>
                           <td style={{ padding: "8px 6px" }}>
                             <div style={{ display: "flex", gap: 4 }}>
