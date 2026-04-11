@@ -31,7 +31,6 @@ type TreasuryStatus = {
     cycleDate: string;
     entryPrice: string;
     floorPrice: string;
-    strike: string;
     premiumUsd: string;
     expiryAt: string;
     triggered: boolean;
@@ -147,11 +146,14 @@ export function TreasuryDashboard() {
     <div className="shell">
       <div className="card" style={{ maxWidth: 700, padding: 0 }}>
         {/* Header */}
-        <div style={{ padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border)" }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>{data.client} Treasury Protection</div>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
-              {fmt(data.config.notionalUsd)} at {data.config.floorPct}% floor · {data.config.tenorDays}-day rolling
+        <div style={{ padding: "18px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <img src="https://i.ibb.co/SDwxMqS8/Foxify-200x200.png" alt="" style={{ width: 28, height: 28, borderRadius: 6 }} onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: 0.2 }}>{data.client} Treasury Protection</div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 1 }}>
+                {fmt(data.config.notionalUsd)} at {data.config.floorPct}% floor · {data.config.tenorDays}-day rolling
+              </div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -178,40 +180,37 @@ export function TreasuryDashboard() {
 
         {/* Current Protection */}
         {cp && (
-          <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Today's Protection</div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-              <div style={{ fontSize: 12, color: "var(--muted)" }}>
-                <div>Entry: {fmt(cp.entryPrice)}</div>
-                <div>Floor: {fmt(cp.floorPrice)}</div>
-                <div>Strike: {fmt(cp.strike)}</div>
+          <div style={{ padding: "18px 20px", borderBottom: "1px solid var(--border)" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 12 }}>Today's Protection</div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+              <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.8 }}>
+                <div>Entry Price <span style={{ color: "var(--text)", fontWeight: 600 }}>{fmt(cp.entryPrice)}</span></div>
+                <div>Floor Price <span style={{ color: "var(--text)", fontWeight: 600 }}>{fmt(cp.floorPrice)}</span></div>
               </div>
-              <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "right" }}>
-                <div>Premium: {fmt(cp.premiumUsd)}</div>
-                <div>Payout if triggered: {fmt(Number(data.config.notionalUsd) * data.config.floorPct / 100)}</div>
-                <div>Expires: {new Date(cp.expiryAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</div>
+              <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "right", lineHeight: 1.8 }}>
+                <div>Premium <span style={{ color: "var(--text)", fontWeight: 600 }}>{fmt(cp.premiumUsd)}</span></div>
+                <div>Payout if triggered <span style={{ color: "var(--success)", fontWeight: 600 }}>{fmt(Number(data.config.notionalUsd) * data.config.floorPct / 100)}</span></div>
               </div>
             </div>
-            {/* Distance bar */}
             {dist && (
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
+              <div style={{ marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginBottom: 5 }}>
                   <span>Distance to Floor</span>
-                  <span style={{ fontWeight: 600, color: safePct > 50 ? "var(--success)" : safePct > 25 ? "#f0b90b" : "var(--danger)" }}>
+                  <span style={{ fontWeight: 700, fontSize: 13, color: safePct > 50 ? "var(--success)" : safePct > 25 ? "#f0b90b" : "var(--danger)" }}>
                     {fmt(dist.usd)} ({dist.pct.toFixed(2)}%)
                   </span>
                 </div>
-                <div style={{ height: 6, borderRadius: 3, background: "var(--card-2)", overflow: "hidden" }}>
+                <div style={{ height: 8, borderRadius: 4, background: "var(--card-2)", overflow: "hidden" }}>
                   <div style={{
-                    height: "100%", borderRadius: 3, transition: "width 0.5s, background 0.5s",
+                    height: "100%", borderRadius: 4, transition: "width 0.5s, background 0.5s",
                     width: `${safePct}%`,
                     background: safePct > 50 ? "var(--success)" : safePct > 25 ? "#f0b90b" : "var(--danger)"
                   }} />
                 </div>
               </div>
             )}
-            <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 6 }}>
-              Protected since {new Date(cp.cycleDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+            <div style={{ fontSize: 10, color: "var(--muted)" }}>
+              Expires {new Date(cp.expiryAt).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
             </div>
           </div>
         )}
@@ -255,7 +254,7 @@ export function TreasuryDashboard() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                    {["Date", "Entry", "Floor", "Strike", "Premium", "Triggered", "Payout"].map((h) => (
+                    {["Date", "Entry", "Floor", "Premium", "Triggered", "Payout"].map((h) => (
                       <th key={h} style={{ padding: "6px 4px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                     ))}
                   </tr>
@@ -266,7 +265,6 @@ export function TreasuryDashboard() {
                       <td style={{ padding: "6px 4px" }}>{new Date(p.cycleDate).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</td>
                       <td style={{ padding: "6px 4px" }}>{p.entryPrice ? fmt(p.entryPrice) : "—"}</td>
                       <td style={{ padding: "6px 4px" }}>{p.floorPrice ? fmt(p.floorPrice) : "—"}</td>
-                      <td style={{ padding: "6px 4px" }}>{p.strike ? fmt(p.strike) : "—"}</td>
                       <td style={{ padding: "6px 4px" }}>{fmt(p.premiumUsd || 0)}</td>
                       <td style={{ padding: "6px 4px" }}>
                         {p.triggered ? <span style={{ color: "var(--danger)", fontWeight: 600 }}>Yes</span> : <span style={{ color: "var(--muted)" }}>No</span>}
@@ -281,16 +279,20 @@ export function TreasuryDashboard() {
         )}
 
         {/* Controls */}
-        <div style={{ padding: "16px 20px" }}>
+        <div style={{ padding: "14px 20px" }}>
           {data.state.paused ? (
             <button onClick={() => handleAction("resume")} disabled={loading} style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: "none", background: "var(--success)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
               Resume Protection
             </button>
           ) : (
-            <button onClick={() => handleAction("pause")} disabled={loading} style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: "1px solid var(--border)", background: "var(--card-2)", color: "var(--muted)", fontSize: 13, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+            <button onClick={() => handleAction("pause")} disabled={loading} style={{ width: "100%", padding: "8px 0", borderRadius: 8, border: "1px solid rgba(168,168,173,0.2)", background: "transparent", color: "var(--muted)", fontSize: 11, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
               Pause After Current Cycle
             </button>
           )}
+        </div>
+
+        <div style={{ textAlign: "center", paddingBottom: 14, fontSize: 10, color: "var(--muted)", opacity: 0.4 }}>
+          Protection provided by Atticus Strategy, Ltd.
         </div>
       </div>
     </div>
