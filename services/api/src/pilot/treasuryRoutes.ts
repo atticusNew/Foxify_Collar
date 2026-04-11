@@ -175,6 +175,55 @@ export const registerTreasuryRoutes = async (
     }
   });
 
+  app.get("/treasury/admin/status", async (req, reply) => {
+    if (!requireTreasuryAuth(req, reply, deps.config)) return;
+    const state = await getTreasuryState(deps.pool);
+    const active = await getActiveTreasuryProtection(deps.pool);
+    const history = await getTreasuryProtectionHistory(deps.pool, 30);
+
+    let currentSpot: number | null = null;
+    try {
+      const ticker = await deps.deribit.getIndexPrice("btc_usd");
+      currentSpot = Number((ticker as any)?.result?.index_price ?? 0);
+    } catch { /* best effort */ }
+
+    return {
+      status: "ok",
+      state,
+      currentSpot,
+      currentProtection: active,
+      recentHistory: history.map((p) => ({
+        cycleDate: p.cycleDate,
+        entryPrice: p.entryPrice,
+        floorPrice: p.floorPrice,
+        strike: p.strike,
+        instrumentId: p.instrumentId,
+        venue: p.venue,
+        premiumUsd: p.premiumUsd,
+        hedgeCostUsd: p.hedgeCostUsd,
+        spreadUsd: p.spreadUsd,
+        triggered: p.triggered,
+        triggerPrice: p.triggerPrice,
+        payoutUsd: p.payoutUsd,
+        tpSold: p.tpSold,
+        tpProceedsUsd: p.tpProceedsUsd,
+        externalOrderId: p.externalOrderId,
+        status: p.status
+      })),
+      pnl: {
+        totalPremiums: Number(state.totalPremiumsUsd),
+        totalHedgeCosts: Number(state.totalHedgeCostsUsd),
+        totalPayouts: Number(state.totalPayoutsUsd),
+        totalTpProceeds: Number(state.totalTpProceedsUsd),
+        grossSpread: Number(state.totalPremiumsUsd) - Number(state.totalHedgeCostsUsd),
+        netPnl: Number(state.totalPremiumsUsd) - Number(state.totalHedgeCostsUsd) - Number(state.totalPayoutsUsd) + Number(state.totalTpProceedsUsd),
+        avgHedgeCost: state.totalCycles > 0 ? Number(state.totalHedgeCostsUsd) / state.totalCycles : 0,
+        avgSpread: state.totalCycles > 0 ? (Number(state.totalPremiumsUsd) - Number(state.totalHedgeCostsUsd)) / state.totalCycles : 0,
+        triggerRate: state.totalCycles > 0 ? (state.totalTriggers / state.totalCycles * 100) : 0
+      }
+    };
+  });
+
   app.get("/treasury/billing/summary", async (req, reply) => {
     if (!requireTreasuryAuth(req, reply, deps.config)) return;
     const state = await getTreasuryState(deps.pool);

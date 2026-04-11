@@ -281,19 +281,16 @@ export function TreasuryDashboard() {
         )}
 
         {/* Controls */}
-        <div style={{ padding: "16px 20px", display: "flex", gap: 8 }}>
+        <div style={{ padding: "16px 20px" }}>
           {data.state.paused ? (
-            <button onClick={() => handleAction("resume")} disabled={loading} style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: "var(--success)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+            <button onClick={() => handleAction("resume")} disabled={loading} style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: "none", background: "var(--success)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
               Resume Protection
             </button>
           ) : (
-            <button onClick={() => handleAction("pause")} disabled={loading} style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "1px solid var(--border)", background: "var(--card-2)", color: "var(--muted)", fontSize: 13, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
+            <button onClick={() => handleAction("pause")} disabled={loading} style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: "1px solid var(--border)", background: "var(--card-2)", color: "var(--muted)", fontSize: 13, cursor: "pointer", opacity: loading ? 0.5 : 1 }}>
               Pause After Current Cycle
             </button>
           )}
-          <button onClick={() => handleAction("execute-now")} disabled={loading || data.state.paused} style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", opacity: (loading || data.state.paused) ? 0.5 : 1 }}>
-            Execute Now
-          </button>
         </div>
       </div>
     </div>
