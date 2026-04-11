@@ -54,11 +54,24 @@ export const runTreasuryDailyCycle = async (deps: SchedulerDeps): Promise<{
 
   const today = new Date().toISOString().slice(0, 10);
   const lastDate = state.lastCycleDate ? String(state.lastCycleDate).slice(0, 10) : null;
+
   if (lastDate === today) return { action: "already_done" };
+
+  // DB-level dedup: check if any protection exists for today
+  const existingToday = await deps.pool.query(
+    `SELECT id FROM treasury_protections WHERE cycle_date = $1 LIMIT 1`,
+    [today]
+  );
+  if (existingToday.rows.length > 0) {
+    // Fix the state if it's out of sync
+    await updateTreasuryState(deps.pool, { last_cycle_date: today });
+    return { action: "already_done", detail: "db_dedup" };
+  }
 
   if (!shouldExecuteToday({ ...state, lastCycleDate: lastDate }, deps.config)) return { action: "skipped", detail: "before_execution_time" };
 
   executionLock = true;
+  console.log(`[Treasury] Lock acquired. today=${today} lastDate=${lastDate}`);
 
   const notional = new Decimal(deps.config.notionalUsd);
   const floorPct = new Decimal(deps.config.floorPct).div(100);

@@ -178,6 +178,9 @@ export const registerTreasuryRoutes = async (
   app.get("/treasury/admin/status", async (req, reply) => {
     if (!requireTreasuryAuth(req, reply, deps.config)) return;
     const state = await getTreasuryState(deps.pool);
+    // Sync DB state notional with config (env var is source of truth)
+    state.notionalUsd = String(deps.config.notionalUsd);
+    state.floorPct = String(deps.config.floorPct);
     const active = await getActiveTreasuryProtection(deps.pool);
     const history = await getTreasuryProtectionHistory(deps.pool, 30);
 
