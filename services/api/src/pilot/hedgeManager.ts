@@ -46,13 +46,16 @@ const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
   return result.rows.map((row: Record<string, unknown>) => {
     const meta = (row.metadata || {}) as Record<string, unknown>;
     const protType = String(meta.protectionType || row.side || "long");
+    const instrumentId = String(row.instrument_id || "");
+    const strikeMatch = instrumentId.match(/(\d+)-(P|C)$/);
+    const optionStrike = strikeMatch ? Number(strikeMatch[1]) : 0;
     return {
       protectionId: String(row.id),
-      instrumentId: String(row.instrument_id || ""),
+      instrumentId,
       venue: String(row.venue || ""),
       quantity: Number(row.size || 0),
       entryPremium: Number(row.premium || 0),
-      strike: Number(meta.triggerPrice || meta.floorPrice || 0),
+      strike: optionStrike || Number(meta.triggerPrice || meta.floorPrice || 0),
       expiryMs: new Date(String(row.expiry_at)).getTime(),
       hedgeStatus: String(row.hedge_status || "active"),
       slPct: row.sl_pct !== null && row.sl_pct !== undefined ? Number(row.sl_pct) : null,
@@ -174,15 +177,16 @@ export const runHedgeManagementCycle = async (params: {
       });
 
       const tpTarget = hedge.payoutDueAmount > 0
-        ? hedge.payoutDueAmount * tpMultiplier
-        : hedge.entryPremium * 2;
+        ? hedge.payoutDueAmount * 0.5
+        : hedge.entryPremium;
 
       const shouldTakeProfit = optionVal.totalValue >= tpTarget;
-      const shouldSellNearExpiry = isNearExpiry && optionVal.intrinsicValue > 0;
+      const shouldSellNearExpiry = isNearExpiry && optionVal.totalValue > 10;
+      const shouldSellAnyValue = optionVal.intrinsicValue > 0 && hedge.expiryMs - now < 4 * 3600 * 1000;
 
-      if (!shouldTakeProfit && !shouldSellNearExpiry) continue;
+      if (!shouldTakeProfit && !shouldSellNearExpiry && !shouldSellAnyValue) continue;
 
-      const reason = shouldTakeProfit ? "take_profit" : "near_expiry_itm";
+      const reason = shouldTakeProfit ? "take_profit" : shouldSellAnyValue ? "near_expiry_salvage" : "near_expiry_itm";
       console.log(
         `[HedgeManager] ${reason}: protection=${hedge.protectionId} type=${hedge.protectionType} instrument=${hedge.instrumentId} optionValue=$${optionVal.totalValue.toFixed(2)} target=$${tpTarget.toFixed(2)} intrinsic=$${optionVal.intrinsicValue.toFixed(2)}`
       );
