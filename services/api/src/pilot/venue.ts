@@ -543,8 +543,8 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           const tenorB = Math.abs(b.expiryTs - targetExpiry) / 86400000;
           let preferA: number, preferB: number;
           if (preferItm) {
-            preferA = targetOptionType === "put" ? (a.strike >= triggerTarget ? -0.5 : 0) : (a.strike <= triggerTarget ? -0.5 : 0);
-            preferB = targetOptionType === "put" ? (b.strike >= triggerTarget ? -0.5 : 0) : (b.strike <= triggerTarget ? -0.5 : 0);
+            preferA = targetOptionType === "put" ? (a.strike >= triggerTarget ? -2.0 : 0.5) : (a.strike <= triggerTarget ? -2.0 : 0.5);
+            preferB = targetOptionType === "put" ? (b.strike >= triggerTarget ? -2.0 : 0.5) : (b.strike <= triggerTarget ? -2.0 : 0.5);
           } else {
             preferA = targetOptionType === "put" ? (a.strike <= triggerTarget ? -0.5 : 0) : (a.strike >= triggerTarget ? -0.5 : 0);
             preferB = targetOptionType === "put" ? (b.strike <= triggerTarget ? -0.5 : 0) : (b.strike >= triggerTarget ? -0.5 : 0);
