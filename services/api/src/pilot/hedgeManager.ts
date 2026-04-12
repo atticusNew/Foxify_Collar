@@ -150,14 +150,18 @@ export const runHedgeManagementCycle = async (params: {
       }
 
       if (hedge.quantity <= 0 || hedge.strike <= 0) {
+        console.log(`[HedgeManager] Skip ${hedge.protectionId}: qty=${hedge.quantity} strike=${hedge.strike}`);
         result.skipped++;
         continue;
       }
 
       // Only attempt TP sells on TRIGGERED protections
       if (hedge.status !== "triggered") {
+        result.skipped++;
         continue;
       }
+
+      console.log(`[HedgeManager] Processing triggered: ${hedge.protectionId} instrument=${hedge.instrumentId} qty=${hedge.quantity} strike=${hedge.strike} type=${hedge.protectionType}`);
 
       const optionVal = computeOptionValue({
         protectionType: hedge.protectionType,
