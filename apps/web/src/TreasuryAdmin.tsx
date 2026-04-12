@@ -146,10 +146,10 @@ export function TreasuryAdmin() {
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>P&L Summary</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
             {[
-              { label: "Premiums", value: fmt(pnl.totalPremiums), color: "var(--text)" },
+              { label: "Premiums (revenue)", value: fmt(pnl.totalPremiums), color: "var(--text)" },
               { label: "Hedge Costs", value: fmt(pnl.totalHedgeCosts), color: "var(--danger)" },
-              { label: "Gross Spread", value: fmt(pnl.grossSpread), color: pnl.grossSpread >= 0 ? "var(--success)" : "var(--danger)" },
-              { label: "Net P&L", value: fmt(pnl.netPnl), color: pnl.netPnl >= 0 ? "var(--success)" : "var(--danger)" }
+              { label: "Mgmt Fee Margin", value: fmt(pnl.grossSpread), color: pnl.grossSpread >= 0 ? "var(--success)" : "var(--danger)" },
+              { label: "Net P&L (Atticus)", value: fmt(pnl.netPnl), color: pnl.netPnl >= 0 ? "var(--success)" : "var(--danger)" }
             ].map((item) => (
               <div key={item.label} style={{ padding: "8px 10px", borderRadius: 8, background: "var(--card-2)" }}>
                 <div style={{ color: "var(--muted)", fontSize: 10 }}>{item.label}</div>

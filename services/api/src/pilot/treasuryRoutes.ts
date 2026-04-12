@@ -219,7 +219,10 @@ export const registerTreasuryRoutes = async (
         totalPayouts: Number(state.totalPayoutsUsd),
         totalTpProceeds: Number(state.totalTpProceedsUsd),
         grossSpread: Number(state.totalPremiumsUsd) - Number(state.totalHedgeCostsUsd),
-        netPnl: Number(state.totalPremiumsUsd) - Number(state.totalHedgeCostsUsd) - Number(state.totalPayoutsUsd) + Number(state.totalTpProceedsUsd),
+        netPnl: deps.config.structure === "pass_through"
+          ? Number(state.totalPremiumsUsd) - Number(state.totalHedgeCostsUsd)
+          : Number(state.totalPremiumsUsd) - Number(state.totalHedgeCostsUsd) - Number(state.totalPayoutsUsd) + Number(state.totalTpProceedsUsd),
+        structure: deps.config.structure,
         avgHedgeCost: state.totalCycles > 0 ? Number(state.totalHedgeCostsUsd) / state.totalCycles : 0,
         avgSpread: state.totalCycles > 0 ? (Number(state.totalPremiumsUsd) - Number(state.totalHedgeCostsUsd)) / state.totalCycles : 0,
         triggerRate: state.totalCycles > 0 ? (state.totalTriggers / state.totalCycles * 100) : 0

@@ -201,16 +201,35 @@ export const runTreasuryTriggerCheck = async (deps: SchedulerDeps): Promise<{
 
   const notional = Number(active.notionalUsd || 0);
   const floorPct = Number(active.floorPct || 0.02);
-  const payoutUsd = notional * floorPct;
+  const strike = Number(active.strike || 0);
+  const btcQty = notional / Number(active.entryPrice || spot);
+  const isPassThrough = deps.config.structure === "pass_through";
 
-  console.log(`[Treasury] TRIGGERED: spot=$${spot.toFixed(2)} floor=$${floorPrice.toFixed(2)} payout=$${payoutUsd.toFixed(2)}`);
+  let payoutUsd: number;
+  if (isPassThrough) {
+    const intrinsicPerBtc = Math.max(0, strike - spot);
+    payoutUsd = intrinsicPerBtc * btcQty;
+    console.log(`[Treasury] TRIGGERED (pass-through): spot=$${spot.toFixed(2)} floor=$${floorPrice.toFixed(2)} strike=$${strike} intrinsic=$${intrinsicPerBtc.toFixed(2)}/BTC qty=${btcQty.toFixed(4)} optionValue=$${payoutUsd.toFixed(2)}`);
+  } else {
+    payoutUsd = notional * floorPct;
+    console.log(`[Treasury] TRIGGERED (fixed payout): spot=$${spot.toFixed(2)} floor=$${floorPrice.toFixed(2)} payout=$${payoutUsd.toFixed(2)}`);
+  }
 
   await patchTreasuryProtection(deps.pool, active.id, {
     status: "triggered",
     triggered: true,
     trigger_price: spot.toFixed(10),
     trigger_at: new Date().toISOString(),
-    payout_usd: payoutUsd.toFixed(10)
+    payout_usd: payoutUsd.toFixed(10),
+    metadata: JSON.stringify({
+      structure: deps.config.structure,
+      triggerSpot: spot,
+      strike,
+      intrinsicPerBtc: isPassThrough ? Math.max(0, strike - spot) : null,
+      btcQty,
+      estimatedSettlement: payoutUsd,
+      note: isPassThrough ? "Option value at trigger — final settlement at expiry may differ" : "Fixed payout"
+    })
   });
 
   const state = await getTreasuryState(deps.pool);
@@ -219,7 +238,61 @@ export const runTreasuryTriggerCheck = async (deps: SchedulerDeps): Promise<{
     total_triggers: state.totalTriggers + 1
   });
 
-  return { checked: true, triggered: true, detail: `payout=$${payoutUsd.toFixed(2)}` };
+  return { checked: true, triggered: true, detail: isPassThrough ? `optionValue=$${payoutUsd.toFixed(2)}` : `payout=$${payoutUsd.toFixed(2)}` };
+};
+
+export const runTreasuryExpiryCheck = async (deps: SchedulerDeps): Promise<{ settled: number }> => {
+  await ensureTreasurySchema(deps.pool);
+  const result = await deps.pool.query(`
+    SELECT * FROM treasury_protections
+    WHERE status IN ('active', 'triggered')
+      AND expiry_at IS NOT NULL
+      AND expiry_at < NOW()
+    ORDER BY expiry_at ASC
+    LIMIT 20
+  `);
+
+  let settled = 0;
+  for (const row of result.rows) {
+    const id = String(row.id);
+    const strike = Number(row.strike || 0);
+    const instrumentId = String(row.instrument_id || "");
+    const wasTriggered = Boolean(row.triggered);
+
+    let settlementUsd = 0;
+    try {
+      const spot = await getSpot(deps.deribit);
+      const btcQty = Number(row.notional_usd || 0) / Number(row.entry_price || spot);
+      const intrinsic = Math.max(0, strike - spot);
+      settlementUsd = intrinsic * btcQty;
+    } catch { /* use 0 if spot unavailable */ }
+
+    const finalStatus = wasTriggered ? "settled_triggered" : (settlementUsd > 0 ? "settled_itm" : "expired_otm");
+
+    await patchTreasuryProtection(deps.pool, id, {
+      status: finalStatus,
+      settled: true,
+      payout_usd: settlementUsd > 0 ? settlementUsd.toFixed(10) : (row.payout_usd || "0"),
+      metadata: JSON.stringify({
+        ...(typeof row.metadata === "object" && row.metadata ? row.metadata : {}),
+        settlementUsd,
+        settledAt: new Date().toISOString(),
+        finalStatus
+      })
+    });
+
+    if (settlementUsd > 0 && !wasTriggered) {
+      const state = await getTreasuryState(deps.pool);
+      await updateTreasuryState(deps.pool, {
+        total_payouts_usd: new Decimal(state.totalPayoutsUsd).plus(settlementUsd).toFixed(10)
+      });
+    }
+
+    console.log(`[Treasury] Expiry settled: ${id} instrument=${instrumentId} status=${finalStatus} settlement=$${settlementUsd.toFixed(2)}`);
+    settled++;
+  }
+
+  return { settled };
 };
 
 export const startTreasuryScheduler = (deps: SchedulerDeps): void => {
@@ -246,8 +319,12 @@ export const startTreasuryScheduler = (deps: SchedulerDeps): void => {
       if (result.triggered) {
         console.log(`[Treasury] Trigger detected: ${result.detail}`);
       }
+      const expiry = await runTreasuryExpiryCheck(deps);
+      if (expiry.settled > 0) {
+        console.log(`[Treasury] Expiry check: ${expiry.settled} settled`);
+      }
     } catch (err: any) {
-      console.error(`[Treasury] Trigger monitor error: ${err?.message}`);
+      console.error(`[Treasury] Trigger/expiry monitor error: ${err?.message}`);
     }
   }, deps.config.triggerMonitorIntervalMs);
   triggerInterval.unref?.();
