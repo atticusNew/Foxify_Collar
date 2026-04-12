@@ -121,6 +121,7 @@ const computeOptionValue = (params: {
 export const runHedgeManagementCycle = async (params: {
   pool: Pool;
   venue: PilotVenueAdapter;
+  sellOption: (p: { instrumentId: string; quantity: number }) => Promise<{ status: string; fillPrice: number; totalProceeds: number; orderId: string | null; details: Record<string, unknown> }>;
   currentSpot: number;
   currentIV: number;
 }): Promise<HedgeManagementResult> => {
@@ -195,7 +196,7 @@ export const runHedgeManagementCycle = async (params: {
       console.log(`[HedgeManager] Attempting sell: instrument=${hedge.instrumentId} qty=${sellQty} (raw=${hedge.quantity})`);
 
       try {
-        const sellResult = await params.venue.sellOption!({
+        const sellResult = await params.sellOption({
           instrumentId: hedge.instrumentId,
           quantity: sellQty
         });

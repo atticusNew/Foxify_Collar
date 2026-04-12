@@ -4311,7 +4311,13 @@ export const registerPilotRoutes = async (
       if (!spot || spot <= 0) return;
       const dvolResult = await deps.deribit.getDVOL("BTC");
       const iv = dvolResult.dvol ?? 50;
-      await runHedgeManagementCycle({ pool, venue, currentSpot: spot, currentIV: iv });
+      await runHedgeManagementCycle({
+        pool,
+        venue,
+        sellOption: (p) => venue.sellOption ? venue.sellOption(p) : Promise.resolve({ status: "failed", fillPrice: 0, totalProceeds: 0, orderId: null, details: { reason: "no_sellOption" } }),
+        currentSpot: spot,
+        currentIV: iv
+      });
     } catch (err: any) {
       console.error(`[HedgeManager] Scheduler error: ${err?.message}`);
     }
