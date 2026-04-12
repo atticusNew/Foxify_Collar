@@ -3468,6 +3468,10 @@ class DeribitLiveAdapter extends DeribitTestAdapter {
     const result = await super.quote(req);
     return { ...result, venue: "deribit_live" };
   }
+
+  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+    return super.sellOption(params);
+  }
 }
 
 class BullishTestnetAdapter implements PilotVenueAdapter {
