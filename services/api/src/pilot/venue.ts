@@ -533,6 +533,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     }
 
     const preferItm = (params.drawdownFloorPct ?? 0) > 0 && (params.drawdownFloorPct ?? 0) <= 0.025;
+    console.log(`[OptionSelection] preferItm=${preferItm} drawdownFloorPct=${params.drawdownFloorPct} triggerTarget=${triggerTarget} candidates=${candidates.length}`);
 
     candidates = candidates
       .sort((a, b) => {
@@ -556,6 +557,14 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         return scoreA - scoreB;
       })
       .slice(0, 40);
+
+    if (preferItm && triggerTarget && candidates.length > 0) {
+      const top3 = candidates.slice(0, 3);
+      for (const c of top3) {
+        const isAbove = c.strike >= triggerTarget;
+        console.log(`[OptionSelection] candidate: strike=${c.strike} ${isAbove ? 'ABOVE' : 'below'} trigger=${triggerTarget.toFixed(0)} dist=${Math.abs(c.strike - triggerTarget).toFixed(0)}`);
+      }
+    }
 
     const orderedCandidates = requestedCandidate
       ? [requestedCandidate, ...candidates.filter((item) => item.instrumentId !== requestedCandidate.instrumentId)]
