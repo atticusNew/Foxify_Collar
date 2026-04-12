@@ -467,6 +467,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     targetTriggerPrice?: number;
     requestedTenorDays?: number;
     protectionType?: "long" | "short";
+    drawdownFloorPct?: number;
   }): Promise<{
     instrumentId: string;
     ask: number;
@@ -531,6 +532,8 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       throw new Error("deribit_quote_unavailable:trigger_strike_unavailable");
     }
 
+    const preferItm = (params.drawdownFloorPct ?? 0) > 0 && (params.drawdownFloorPct ?? 0) <= 0.025;
+
     candidates = candidates
       .sort((a, b) => {
         if (triggerTarget) {
@@ -538,8 +541,14 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           const distB = Math.abs(b.strike - triggerTarget);
           const tenorA = Math.abs(a.expiryTs - targetExpiry) / 86400000;
           const tenorB = Math.abs(b.expiryTs - targetExpiry) / 86400000;
-          const preferA = targetOptionType === "put" ? (a.strike <= triggerTarget ? -0.5 : 0) : (a.strike >= triggerTarget ? -0.5 : 0);
-          const preferB = targetOptionType === "put" ? (b.strike <= triggerTarget ? -0.5 : 0) : (b.strike >= triggerTarget ? -0.5 : 0);
+          let preferA: number, preferB: number;
+          if (preferItm) {
+            preferA = targetOptionType === "put" ? (a.strike >= triggerTarget ? -0.5 : 0) : (a.strike <= triggerTarget ? -0.5 : 0);
+            preferB = targetOptionType === "put" ? (b.strike >= triggerTarget ? -0.5 : 0) : (b.strike <= triggerTarget ? -0.5 : 0);
+          } else {
+            preferA = targetOptionType === "put" ? (a.strike <= triggerTarget ? -0.5 : 0) : (a.strike >= triggerTarget ? -0.5 : 0);
+            preferB = targetOptionType === "put" ? (b.strike <= triggerTarget ? -0.5 : 0) : (b.strike >= triggerTarget ? -0.5 : 0);
+          }
           return (tenorA + distA / params.spot + preferA) - (tenorB + distB / params.spot + preferB);
         }
         const scoreA = Math.abs(a.expiryTs - targetExpiry) / 86400000 + Math.abs(a.strike - targetStrike) / Math.max(params.spot, 1);
@@ -622,7 +631,8 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       spot,
       targetTriggerPrice: req.triggerPrice,
       requestedTenorDays: req.requestedTenorDays,
-      protectionType: req.protectionType
+      protectionType: req.protectionType,
+      drawdownFloorPct: req.drawdownFloorPct
     });
     const requestedTenorDays =
       Number.isFinite(Number(req.requestedTenorDays)) && Number(req.requestedTenorDays) > 0

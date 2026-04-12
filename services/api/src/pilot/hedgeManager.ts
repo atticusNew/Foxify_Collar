@@ -178,8 +178,8 @@ export const runHedgeManagementCycle = async (params: {
       });
 
       const tpTarget = hedge.payoutDueAmount > 0
-        ? hedge.payoutDueAmount * 0.5
-        : hedge.entryPremium;
+        ? hedge.payoutDueAmount * 0.2
+        : hedge.entryPremium * 0.5;
 
       const shouldTakeProfit = optionVal.totalValue >= tpTarget;
       const shouldSellNearExpiry = isNearExpiry && optionVal.totalValue > 10;
