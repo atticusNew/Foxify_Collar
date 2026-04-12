@@ -535,7 +535,7 @@ function Dashboard({ token }: { token: string }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      {["ID", "Status", "Type", "SL%", "Notional", "Entry", "Floor", "Strike", "Gap", "Premium", "Hedge", "Spread", "Payout", "Time", "TP Status", "Actions"].map((h) => (
+                      {["ID", "Status", "Type", "SL%", "Notional", "Entry", "Floor", "Strike", "Gap", "Premium", "Hedge", "Spread", "Payout", "TP $", "Time", "TP Status", "Actions"].map((h) => (
                         <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                       ))}
                     </tr>
@@ -588,6 +588,13 @@ function Dashboard({ token }: { token: string }) {
                           </td>
                           <td style={{ padding: "8px 6px", fontSize: 10 }}>
                             {payout > 0 ? <><span style={{ color: "var(--danger)" }}>{fmtUsd(payout)}</span> <span style={{ fontSize: 9, color: payoutStatus === "Settled" ? "var(--success)" : "var(--muted)" }}>{payoutStatus}</span></> : "—"}
+                          </td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, color: "var(--success)" }}>
+                            {(() => {
+                              const sr = (p.metadata as any)?.sellResult;
+                              const tp = sr?.totalProceeds ? Number(sr.totalProceeds) : 0;
+                              return tp > 0 ? fmtUsd(tp) : "—";
+                            })()}
                           </td>
                           <td style={{ padding: "8px 6px", fontSize: 10, color: msLeft < 3600000 && msLeft > 0 ? "var(--danger)" : "var(--muted)" }}>{isActive ? timeLeft : "—"}</td>
                           <td style={{ padding: "8px 6px", fontSize: 10 }}>
@@ -642,19 +649,24 @@ function Dashboard({ token }: { token: string }) {
                         return s + (ep > 0 && sz > 0 ? ep * sz : 0);
                       }, 0);
                       const allPayout = protectionsList.reduce((s, p) => s + Number(p.payoutDueAmount || 0), 0);
+                      const allTpRecovery = protectionsList.reduce((s, p) => {
+                        const sr = (p.metadata as any)?.sellResult;
+                        return s + (sr?.totalProceeds ? Number(sr.totalProceeds) : 0);
+                      }, 0);
                       const allSpread = allPremium - allHedge;
-                      const netPnl = allPremium - allHedge - allPayout;
+                      const netPnl = allPremium - allHedge - allPayout + allTpRecovery;
                       const triggered = protectionsList.filter(p => p.status === "triggered").length;
                       const active = protectionsList.filter(p => p.status === "active").length;
+                      const tpSold = protectionsList.filter(p => p.hedgeStatus === "tp_sold").length;
                       return (
                         <tr style={{ borderTop: "2px solid var(--border)", fontWeight: 600, fontSize: 11 }}>
-                          <td style={{ padding: "8px 6px" }} colSpan={9}>TOTALS — {active} active, {triggered} triggered</td>
+                          <td style={{ padding: "8px 6px" }} colSpan={9}>TOTALS — {active} active, {triggered} triggered, {tpSold} TP sold</td>
                           <td style={{ padding: "8px 6px" }}>{fmtUsd(allPremium)}</td>
                           <td style={{ padding: "8px 6px" }}>{fmtUsd(allHedge)}</td>
                           <td style={{ padding: "8px 6px", color: allSpread >= 0 ? "var(--success)" : "var(--danger)" }}>{fmtUsd(allSpread)}</td>
                           <td style={{ padding: "8px 6px", color: "var(--danger)" }}>{allPayout > 0 ? fmtUsd(allPayout) : "—"}</td>
-                          <td style={{ padding: "8px 6px", color: netPnl >= 0 ? "var(--success)" : "var(--danger)" }}>Net: {fmtUsd(netPnl)}</td>
-                          <td style={{ padding: "8px 6px" }} colSpan={2}></td>
+                          <td style={{ padding: "8px 6px", color: "var(--success)" }}>{allTpRecovery > 0 ? fmtUsd(allTpRecovery) : "—"}</td>
+                          <td style={{ padding: "8px 6px", color: netPnl >= 0 ? "var(--success)" : "var(--danger)" }} colSpan={3}>Net: {fmtUsd(netPnl)}</td>
                         </tr>
                       );
                     })()}
