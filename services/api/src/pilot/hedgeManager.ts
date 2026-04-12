@@ -191,8 +191,11 @@ export const runHedgeManagementCycle = async (params: {
         `[HedgeManager] ${reason}: protection=${hedge.protectionId} type=${hedge.protectionType} instrument=${hedge.instrumentId} optionValue=$${optionVal.totalValue.toFixed(2)} target=$${tpTarget.toFixed(2)} intrinsic=$${optionVal.intrinsicValue.toFixed(2)}`
       );
 
-      if (!params.venue.sellOption) {
-        console.warn(`[HedgeManager] sellOption not available on venue`);
+      const sellFn = typeof params.venue.sellOption === "function"
+        ? params.venue.sellOption.bind(params.venue)
+        : null;
+      if (!sellFn) {
+        console.warn(`[HedgeManager] sellOption not available on venue (type=${typeof params.venue.sellOption}, constructor=${params.venue.constructor?.name})`);
         result.skipped++;
         continue;
       }
@@ -201,7 +204,7 @@ export const runHedgeManagementCycle = async (params: {
       console.log(`[HedgeManager] Attempting sell: instrument=${hedge.instrumentId} qty=${sellQty} (raw=${hedge.quantity})`);
 
       try {
-        const sellResult = await params.venue.sellOption({
+        const sellResult = await sellFn({
           instrumentId: hedge.instrumentId,
           quantity: sellQty
         });
