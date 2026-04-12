@@ -291,9 +291,12 @@ export function PilotWidget() {
                         <span style={{ fontSize: 13, fontWeight: 600 }}>{fmtWhole(pos.size)}</span>
                         <span style={{ fontSize: 10, color: "var(--muted)" }}>{pos.stopLoss}% SL</span>
                       </div>
-                      {pos.protectionId
-                        ? <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(54,211,141,0.12)", color: "var(--success)" }}>Protected</span>
-                        : <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(255,107,107,0.12)", color: "var(--danger)" }}>Unprotected</span>}
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        {pos.protectionId
+                          ? <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(54,211,141,0.12)", color: "var(--success)" }}>Protected</span>
+                          : <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(255,107,107,0.12)", color: "var(--danger)" }}>Unprotected</span>}
+                        {pos.autoRenew && pos.protectionId && <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 5px", borderRadius: 999, background: "rgba(96,165,250,0.12)", color: "#60a5fa" }}>↻ Auto</span>}
+                      </div>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>
                       <span>Entry {fmt(pos.entryPrice)}</span>
@@ -352,6 +355,24 @@ export function PilotWidget() {
 
         <div style={{ textAlign: "center", marginTop: 14, fontSize: 10, color: "var(--muted)", opacity: 0.5 }}>Protection provided by Atticus Strategy, Ltd. &copy; 2026</div>
       </div>
+      <a
+        href="https://t.me/willalso"
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          position: "fixed", bottom: 20, right: 20,
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "8px 14px", borderRadius: 999,
+          background: "linear-gradient(135deg, #229ED9, #1DA1F2)",
+          color: "#fff", fontSize: 12, fontWeight: 600,
+          textDecoration: "none", boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
+          zIndex: 1000, transition: "transform 0.15s, box-shadow 0.15s"
+        }}
+        onMouseEnter={e => { (e.target as HTMLElement).style.transform = "scale(1.05)"; }}
+        onMouseLeave={e => { (e.target as HTMLElement).style.transform = "scale(1)"; }}
+      >
+        💬 Help
+      </a>
     </div>
   );
 }

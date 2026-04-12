@@ -562,7 +562,10 @@ function Dashboard({ token }: { token: string }) {
                       const strikeGap = hedgeStrike && floorNum > 0 ? hedgeStrike - floorNum : null;
                       return (
                         <tr key={p.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                          <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>{p.id.slice(0, 8)}...</td>
+                          <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>
+                            {p.id.slice(0, 8)}...
+                            {p.autoRenew && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 600, padding: "1px 4px", borderRadius: 999, background: "rgba(96,165,250,0.12)", color: "#60a5fa", fontFamily: "sans-serif" }}>AR</span>}
+                          </td>
                           <td style={{ padding: "8px 6px" }}>
                             <span style={{
                               fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999,
