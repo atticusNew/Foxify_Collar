@@ -4311,10 +4311,37 @@ export const registerPilotRoutes = async (
       if (!spot || spot <= 0) return;
       const dvolResult = await deps.deribit.getDVOL("BTC");
       const iv = dvolResult.dvol ?? 50;
+      const sellOptionDirect = async (p: { instrumentId: string; quantity: number }) => {
+        try {
+          const sellSpot = spot;
+          const book = await deps.deribit.getOrderBook(p.instrumentId);
+          const bidBtc = Number((book as any)?.result?.best_bid_price ?? 0);
+          if (!bidBtc || bidBtc <= 0) {
+            return { status: "failed", fillPrice: 0, totalProceeds: 0, orderId: null, details: { reason: "no_bid" } };
+          }
+          const sellQty = Math.max(0.1, Math.floor(p.quantity * 10) / 10);
+          const order = await deps.deribit.placeOrder({ instrument: p.instrumentId, amount: sellQty, side: "sell", type: "market" }) as any;
+          const orderData = order?.result?.order ?? order;
+          const isFilled = String(orderData?.order_state || orderData?.status || "").match(/filled|closed|paper_filled/i);
+          const fillPriceBtc = Number(order?.result?.trades?.[0]?.price ?? orderData?.average_price ?? bidBtc);
+          const fillQty = Number(orderData?.filled_amount ?? orderData?.filledAmount ?? sellQty);
+          console.log(`[HedgeManager] sellOption direct: instrument=${p.instrumentId} filled=${!!isFilled} priceBtc=${fillPriceBtc} qty=${fillQty}`);
+          return {
+            status: isFilled ? "sold" : "failed",
+            fillPrice: fillPriceBtc * sellSpot,
+            totalProceeds: fillPriceBtc * sellSpot * fillQty,
+            orderId: String(orderData?.order_id ?? orderData?.id ?? null),
+            details: { raw: order, bidBtc, spot: sellSpot }
+          };
+        } catch (err: any) {
+          console.error(`[HedgeManager] sellOption direct FAILED: ${err?.message}`);
+          return { status: "failed", fillPrice: 0, totalProceeds: 0, orderId: null, details: { reason: err?.message } };
+        }
+      };
       await runHedgeManagementCycle({
         pool,
         venue,
-        sellOption: (p) => venue.sellOption ? venue.sellOption(p) : Promise.resolve({ status: "failed", fillPrice: 0, totalProceeds: 0, orderId: null, details: { reason: "no_sellOption" } }),
+        sellOption: sellOptionDirect,
         currentSpot: spot,
         currentIV: iv
       });
