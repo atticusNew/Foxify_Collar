@@ -518,13 +518,14 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         expiryTs: Number(item.expiration_timestamp || parseDeribitExpiry(String(item.instrument_name || "")) || 0)
       }))
       .filter((item) => item.instrumentId && Number.isFinite(item.strike) && item.strike > 0)
-      .filter((item) =>
-        this.strikeSelectionMode === "trigger_aligned" && triggerTarget
-          ? targetOptionType === "put"
-            ? item.strike >= triggerTarget
-            : item.strike <= triggerTarget
-          : true
-      );
+      .filter((item) => {
+        if (!(this.strikeSelectionMode === "trigger_aligned" && triggerTarget)) return true;
+        const strikeBuffer = params.spot * 0.005;
+        if (targetOptionType === "put") {
+          return item.strike <= triggerTarget + strikeBuffer;
+        }
+        return item.strike >= triggerTarget - strikeBuffer;
+      });
 
     if (this.strikeSelectionMode === "trigger_aligned" && triggerTarget && candidates.length === 0) {
       throw new Error("deribit_quote_unavailable:trigger_strike_unavailable");
@@ -532,12 +533,17 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 
     candidates = candidates
       .sort((a, b) => {
-        const scoreA =
-          Math.abs(a.expiryTs - targetExpiry) / 86400000 +
-          Math.abs(a.strike - targetStrike) / Math.max(params.spot, 1);
-        const scoreB =
-          Math.abs(b.expiryTs - targetExpiry) / 86400000 +
-          Math.abs(b.strike - targetStrike) / Math.max(params.spot, 1);
+        if (triggerTarget) {
+          const distA = Math.abs(a.strike - triggerTarget);
+          const distB = Math.abs(b.strike - triggerTarget);
+          const tenorA = Math.abs(a.expiryTs - targetExpiry) / 86400000;
+          const tenorB = Math.abs(b.expiryTs - targetExpiry) / 86400000;
+          const preferA = targetOptionType === "put" ? (a.strike <= triggerTarget ? -0.5 : 0) : (a.strike >= triggerTarget ? -0.5 : 0);
+          const preferB = targetOptionType === "put" ? (b.strike <= triggerTarget ? -0.5 : 0) : (b.strike >= triggerTarget ? -0.5 : 0);
+          return (tenorA + distA / params.spot + preferA) - (tenorB + distB / params.spot + preferB);
+        }
+        const scoreA = Math.abs(a.expiryTs - targetExpiry) / 86400000 + Math.abs(a.strike - targetStrike) / Math.max(params.spot, 1);
+        const scoreB = Math.abs(b.expiryTs - targetExpiry) / 86400000 + Math.abs(b.strike - targetStrike) / Math.max(params.spot, 1);
         return scoreA - scoreB;
       })
       .slice(0, 40);
