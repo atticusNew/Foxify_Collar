@@ -535,7 +535,7 @@ function Dashboard({ token }: { token: string }) {
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      {["ID", "Status", "Type", "SL%", "Notional", "Entry", "Floor", "Strike", "Gap", "Premium", "Hedge", "Spread", "Payout", "TP $", "Time", "TP Status", "Actions"].map((h) => (
+                      {["ID", "Status", "Type", "SL%", "AR", "Notional", "Entry", "Floor", "Strike", "Gap", "Premium", "Hedge", "Spread", "Payout", "TP $", "Time", "TP Status", "Actions"].map((h) => (
                         <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                       ))}
                     </tr>
@@ -562,10 +562,7 @@ function Dashboard({ token }: { token: string }) {
                       const strikeGap = hedgeStrike && floorNum > 0 ? hedgeStrike - floorNum : null;
                       return (
                         <tr key={p.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                          <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>
-                            {p.id.slice(0, 8)}...
-                            {p.autoRenew && <span style={{ marginLeft: 4, fontSize: 8, fontWeight: 600, padding: "1px 4px", borderRadius: 999, background: "rgba(96,165,250,0.12)", color: "#60a5fa", fontFamily: "sans-serif" }}>AR</span>}
-                          </td>
+                          <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>{p.id.slice(0, 8)}...</td>
                           <td style={{ padding: "8px 6px" }}>
                             <span style={{
                               fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999,
@@ -577,6 +574,9 @@ function Dashboard({ token }: { token: string }) {
                           </td>
                           <td style={{ padding: "8px 6px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: protType === "short" ? "var(--danger)" : "var(--success)" }}>{protType}</td>
                           <td style={{ padding: "8px 6px", fontSize: 11, fontWeight: 600 }}>{p.slPct ? `${p.slPct}%` : p.tierName || "—"}</td>
+                          <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                            {p.autoRenew ? <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 4px", borderRadius: 999, background: "rgba(96,165,250,0.15)", color: "#60a5fa" }}>↻</span> : <span style={{ fontSize: 9, color: "var(--muted)" }}>—</span>}
+                          </td>
                           <td style={{ padding: "8px 6px" }}>{fmtUsd(p.protectedNotional)}</td>
                           <td style={{ padding: "8px 6px" }}>{p.entryPrice ? fmtUsd(p.entryPrice) : "—"}</td>
                           <td style={{ padding: "8px 6px" }}>{p.floorPrice ? fmtUsd(p.floorPrice) : "—"}</td>

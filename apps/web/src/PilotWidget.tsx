@@ -356,7 +356,7 @@ export function PilotWidget() {
         <div style={{ textAlign: "center", marginTop: 14, fontSize: 10, color: "var(--muted)", opacity: 0.5 }}>Protection provided by Atticus Strategy, Ltd. &copy; 2026</div>
       </div>
       <a
-        href="https://t.me/willalso"
+        href="https://t.me/willialso"
         target="_blank"
         rel="noopener noreferrer"
         style={{
