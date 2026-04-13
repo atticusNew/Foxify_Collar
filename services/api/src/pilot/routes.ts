@@ -2714,7 +2714,7 @@ export const registerPilotRoutes = async (
         message: isStorageFailure
           ? "Storage temporarily unavailable, please retry."
           : isTransportNotLive
-            ? "IBKR live transport is not active. Verify bridge transport health and retry."
+            ? "Exchange connection is not active. Please retry."
             : isTenorTemporarilyUnavailable
               ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
             : isVenueQuoteTimeout
@@ -2740,7 +2740,7 @@ export const registerPilotRoutes = async (
             : isPremiumGuardrail
               ? "Venue premium is currently outside pilot guardrails for this tenor. Please retry or choose another tenor."
             : isTenorDriftExceeded
-              ? "No IBKR contract matched the requested tenor within configured drift."
+              ? "No option contract matched the requested tenor. Please retry."
           : "Unable to generate a venue quote right now. Please retry.",
         detail: message,
         diagnostics: {

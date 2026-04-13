@@ -532,7 +532,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       throw new Error("deribit_quote_unavailable:trigger_strike_unavailable");
     }
 
-    const preferItm = (params.drawdownFloorPct ?? 0) > 0 && (params.drawdownFloorPct ?? 0) <= 0.025;
+    const preferItm = targetOptionType === "put" && (params.drawdownFloorPct ?? 0) > 0 && (params.drawdownFloorPct ?? 0) <= 0.025;
     console.log(`[OptionSelection] preferItm=${preferItm} drawdownFloorPct=${params.drawdownFloorPct} triggerTarget=${triggerTarget} candidates=${candidates.length}`);
 
     candidates = candidates
