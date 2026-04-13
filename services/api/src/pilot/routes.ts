@@ -1715,7 +1715,9 @@ export const registerPilotRoutes = async (
     }
 
     const venue = await resolvePilotVenueHealth();
-    const overallOk = db.status === "ok" && price.status === "ok" && isIbkrLiveTransportHealthy(venue);
+    const venueMode = String(venue.mode || "");
+    const venueHealthy = venueMode.startsWith("ibkr_") ? isIbkrLiveTransportHealthy(venue) : true;
+    const overallOk = db.status === "ok" && price.status === "ok" && venueHealthy;
     reply.code(overallOk ? 200 : 503);
     return {
       status: overallOk ? "ok" : "degraded",
@@ -3327,8 +3329,8 @@ export const registerPilotRoutes = async (
             protectionId: reservedProtection.id
           }
         });
-      } catch {
-        // Execution-quality telemetry must never block successful activation.
+      } catch (eqErr: any) {
+        console.warn(`[Activate] Execution quality upsert failed: ${eqErr?.message}`);
       }
       try {
         await insertLedgerEntry(pool, {

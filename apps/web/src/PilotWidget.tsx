@@ -140,12 +140,12 @@ export function PilotWidget() {
 
   const nextNum = () => { posNumRef.current++; sv(K_NUM, posNumRef.current); return posNumRef.current; };
 
-  const doProtect = useCallback(async (posSize: number, posType: "long" | "short", sl: number, ep: number, existingPosId?: string) => {
+  const doProtect = useCallback(async (posSize: number, posType: "long" | "short", sl: number, ep: number, shouldAutoRenew: boolean, existingPosId?: string) => {
     const tn = STOP_LOSS_TO_TIER[sl as StopLoss] || "SL 2%";
     const slTenor = SL_TENOR[sl as StopLoss] ?? 3;
     const q = await fetchQuote({ protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, protectionType: posType, tenorDays: slTenor });
     const actualPrem = q.v7?.premiumUsd ?? q.quote.premium;
-    const r = await activateProt({ quoteId: q.quote.quoteId, protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, autoRenew: false, protectionType: posType, tenorDays: slTenor });
+    const r = await activateProt({ quoteId: q.quote.quoteId, protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, autoRenew: shouldAutoRenew, protectionType: posType, tenorDays: slTenor });
     const pid = r.protectionId || r.protection?.id || null;
     return { pid, prem: actualPrem };
   }, []);
@@ -155,7 +155,7 @@ export function PilotWidget() {
     setActivating(true); setActivateError(null);
     try {
       const ep = livePrice;
-      const { pid, prem } = await doProtect(positionSize, positionType, dd, ep);
+      const { pid, prem } = await doProtect(positionSize, positionType, dd, ep, autoRenew);
       if (!pid) throw new Error("Protection activation failed — no protection ID returned");
       const num = nextNum();
       setPositions(prev => [...prev, { id: `pos_${num}_${Date.now()}`, num, type: positionType, size: positionSize, stopLoss: dd, entryPrice: ep, protectionId: pid, autoRenew, premium: prem, status: "active", closedPnl: null, closedPayout: null }]);
@@ -181,7 +181,7 @@ export function PilotWidget() {
     if (!pos || pos.protectionId || !livePrice) return;
     setProtectingPosId(posId);
     try {
-      const { pid, prem } = await doProtect(pos.size, pos.type, pos.stopLoss, pos.entryPrice);
+      const { pid, prem } = await doProtect(pos.size, pos.type, pos.stopLoss, pos.entryPrice, pos.autoRenew);
       if (!pid) throw new Error("Protection activation failed — no protection ID returned");
       setPositions(prev => prev.map(p => p.id === posId ? { ...p, protectionId: pid, premium: prem } : p));
       setBalance(b => { const nb = Math.max(0, b - prem); sv(K_BAL, nb); return nb; });
