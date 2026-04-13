@@ -18,6 +18,7 @@ type ManagedHedge = {
   payoutDueAmount: number;
   protectionType: string;
   status: string;
+  triggerAtMs: number;
   metadata: Record<string, unknown>;
 };
 
@@ -62,6 +63,7 @@ const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
       payoutDueAmount: Number(row.payout_due_amount || 0),
       protectionType: protType === "short" ? "short" : "long",
       status: String(row.status || "active"),
+      triggerAtMs: meta.triggerMonitorAt ? new Date(String(meta.triggerMonitorAt)).getTime() : (meta.triggerAt ? new Date(String(meta.triggerAt)).getTime() : 0),
       metadata: meta
     };
   });
@@ -177,17 +179,40 @@ export const runHedgeManagementCycle = async (params: {
         nowMs: now
       });
 
-      const tpTarget = hedge.payoutDueAmount > 0
-        ? hedge.payoutDueAmount * 0.2
-        : hedge.entryPremium * 0.5;
+      const hoursSinceTrigger = hedge.triggerAtMs > 0 ? (now - hedge.triggerAtMs) / 3600000 : 999;
+      const hoursToExpiry = (hedge.expiryMs - now) / 3600000;
+      const payout = hedge.payoutDueAmount > 0 ? hedge.payoutDueAmount : hedge.entryPremium;
 
-      const shouldTakeProfit = optionVal.totalValue >= tpTarget;
-      const shouldSellNearExpiry = isNearExpiry && optionVal.totalValue > 10;
-      const shouldSellAnyValue = optionVal.intrinsicValue > 0 && hedge.expiryMs - now < 4 * 3600 * 1000;
+      let shouldSell = false;
+      let reason = "";
 
-      if (!shouldTakeProfit && !shouldSellNearExpiry && !shouldSellAnyValue) continue;
+      if (hoursToExpiry < 4 && optionVal.totalValue > 10) {
+        shouldSell = true;
+        reason = "near_expiry_salvage";
+      } else if (hoursSinceTrigger < 2) {
+        // Cooling period — don't sell, let momentum develop
+        shouldSell = false;
+        reason = "cooling_period";
+      } else if (hoursSinceTrigger >= 2 && hoursSinceTrigger < 12) {
+        // Prime window — sell if value >= 0.5x payout
+        if (optionVal.totalValue >= payout * 0.5) {
+          shouldSell = true;
+          reason = "take_profit_prime";
+        }
+      } else if (hoursSinceTrigger >= 12) {
+        // Late window — sell if value >= 0.2x payout
+        if (optionVal.totalValue >= payout * 0.2) {
+          shouldSell = true;
+          reason = "take_profit_late";
+        }
+      }
 
-      const reason = shouldTakeProfit ? "take_profit" : shouldSellAnyValue ? "near_expiry_salvage" : "near_expiry_itm";
+      if (!shouldSell) {
+        if (reason === "cooling_period") {
+          console.log(`[HedgeManager] Cooling: ${hedge.protectionId} ${hoursSinceTrigger.toFixed(1)}h since trigger, value=$${optionVal.totalValue.toFixed(2)}, waiting...`);
+        }
+        continue;
+      }
       console.log(
         `[HedgeManager] ${reason}: protection=${hedge.protectionId} type=${hedge.protectionType} instrument=${hedge.instrumentId} optionValue=$${optionVal.totalValue.toFixed(2)} target=$${tpTarget.toFixed(2)} intrinsic=$${optionVal.intrinsicValue.toFixed(2)}`
       );
