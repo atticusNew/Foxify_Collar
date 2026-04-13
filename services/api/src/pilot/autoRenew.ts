@@ -26,10 +26,12 @@ const queryExpiringProtections = async (pool: Pool): Promise<ProtectionRecord[]>
   const result = await pool.query(`
     SELECT *
     FROM pilot_protections
-    WHERE status = 'active'
-      AND auto_renew = true
-      AND expiry_at <= NOW() + INTERVAL '30 minutes'
-      AND expiry_at > NOW() - INTERVAL '2 hours'
+    WHERE auto_renew = true
+      AND (
+        (status = 'active' AND expiry_at <= NOW() + INTERVAL '30 minutes' AND expiry_at > NOW() - INTERVAL '2 hours')
+        OR
+        (status = 'triggered' AND expiry_at > NOW() - INTERVAL '24 hours')
+      )
     ORDER BY expiry_at ASC
     LIMIT 50
   `);
@@ -97,6 +99,11 @@ export const runAutoRenewCycle = async (params: {
 
   for (const protection of expiring) {
     try {
+      if (protection.metadata?.renewedTo) {
+        result.skipped++;
+        continue;
+      }
+
       const slPct = protection.slPct;
       if (!slPct || !isValidSlTier(slPct)) {
         console.warn(`[AutoRenew] Skipping ${protection.id}: invalid slPct=${slPct}`);
@@ -251,7 +258,7 @@ export const runAutoRenewCycle = async (params: {
       });
 
       console.log(
-        `[AutoRenew] Renewed ${protection.id} → ${newProtection.id}: SL=${slPct}% premium=$${premiumUsd.toFixed(2)} entry=$${newEntryPrice.toFixed(0)} trigger=$${newTriggerPrice.toFixed(0)} instrument=${execution.instrumentId}`
+        `[AutoRenew] Renewed ${protection.id} → ${newProtection.id} (${protection.status === "triggered" ? "post-trigger" : "expiry"}): SL=${slPct}% premium=$${premiumUsd.toFixed(2)} entry=$${newEntryPrice.toFixed(0)} trigger=$${newTriggerPrice.toFixed(0)} instrument=${execution.instrumentId}`
       );
       result.renewed++;
     } catch (err: any) {
