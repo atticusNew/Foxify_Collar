@@ -542,8 +542,22 @@ function Dashboard({ token }: { token: string }) {
                   </thead>
                   <tbody>
                     {protectionsList.map((p) => {
-                      const isActive = p.status === "active" || p.status === "quoted" || p.status === "reconcile_pending";
+                      const isActive = p.status === "active" || p.status === "quoted";
                       const isTriggered = p.status === "triggered";
+                      const isReconcile = p.status === "reconcile_pending";
+                      const isFailed = p.status === "activation_failed";
+                      const statusLabel: Record<string, string> = {
+                        active: "Protected",
+                        triggered: "Triggered",
+                        reconcile_pending: "⚠ Processing",
+                        activation_failed: "Failed",
+                        pending_activation: "Activating",
+                        expired_otm: "Expired",
+                        expired_itm: "Settled",
+                        awaiting_expiry_price: "Expiring",
+                        awaiting_renew_decision: "Renewing",
+                        cancelled: "Cancelled"
+                      };
                       const execPrice = Number(p.executionPrice || 0);
                       const size = Number(p.size || 0);
                       const hedgeCost = execPrice > 0 && size > 0 ? execPrice * size : 0;
@@ -566,10 +580,10 @@ function Dashboard({ token }: { token: string }) {
                           <td style={{ padding: "8px 6px" }}>
                             <span style={{
                               fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999,
-                              background: isActive ? "rgba(54,211,141,0.12)" : isTriggered ? "rgba(255,107,107,0.12)" : "rgba(168,168,173,0.12)",
-                              color: isActive ? "var(--success)" : isTriggered ? "var(--danger)" : "var(--muted)",
+                              background: isActive ? "rgba(54,211,141,0.12)" : isTriggered ? "rgba(255,107,107,0.12)" : isReconcile ? "rgba(240,185,11,0.12)" : isFailed ? "rgba(255,107,107,0.08)" : "rgba(168,168,173,0.12)",
+                              color: isActive ? "var(--success)" : isTriggered ? "var(--danger)" : isReconcile ? "#f0b90b" : isFailed ? "var(--danger)" : "var(--muted)",
                             }}>
-                              {p.status}
+                              {statusLabel[p.status] || p.status}
                             </span>
                           </td>
                           <td style={{ padding: "8px 6px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: protType === "short" ? "var(--danger)" : "var(--success)" }}>{protType}</td>

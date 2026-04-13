@@ -396,12 +396,11 @@ export const parseNonNegativeFinite = (raw: string | undefined, fallback: number
 };
 
 export const parsePilotQuoteMinNotionalUsdc = (raw: string | undefined): number => {
-  const parsed = Number(raw ?? "1000");
+  const parsed = Number(raw ?? "10000");
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error(`invalid_pilot_quote_min_notional_usdc:${String(raw || "").trim() || "empty"}`);
   }
-  // Pilot safety floor: configurable target (default 1000), but never below 500.
-  return Math.max(500, parsed);
+  return Math.max(10000, parsed);
 };
 
 export const parseBooleanEnv = (raw: string | undefined, fallback: boolean): boolean => {

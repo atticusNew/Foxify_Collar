@@ -17,7 +17,7 @@ type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
 const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
 const SL_RATE: Record<StopLoss, number> = { 2: 5, 3: 4, 5: 3, 10: 2 };
 const SL_TENOR: Record<StopLoss, number> = { 2: 2, 3: 2, 5: 2, 10: 2 };
-const POS_MIN = 5000, POS_MAX = 50000, POS_STEP = 5000, INIT_BAL = 1_000_000;
+const POS_MIN = 10000, POS_MAX = 50000, POS_STEP = 5000, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";
 const LOGO = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
 
@@ -91,7 +91,7 @@ function Toast({ message, onDone }: { message: string; onDone: () => void }) {
 
 export function PilotWidget() {
   const [positionType, setPositionType] = useState<"long" | "short" | null>(null);
-  const [positionSize, setPositionSize] = useState(5000);
+  const [positionSize, setPositionSize] = useState(10000);
   const [stopLoss, setStopLoss] = useState<StopLoss | null>(null);
   const [autoRenew, setAutoRenew] = useState(false);
   const [livePrice, setLivePrice] = useState<number | null>(null);
