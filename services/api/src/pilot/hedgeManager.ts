@@ -40,7 +40,7 @@ const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
     WHERE hedge_status = 'active'
       AND instrument_id IS NOT NULL
       AND size IS NOT NULL
-      AND (status = 'triggered' OR status = 'active')
+      AND (status = 'triggered' OR status = 'active' OR status LIKE 'expired%')
     ORDER BY expiry_at ASC
     LIMIT 200
   `);

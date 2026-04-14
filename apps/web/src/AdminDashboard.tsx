@@ -615,13 +615,30 @@ function Dashboard({ token }: { token: string }) {
                           </td>
                           <td style={{ padding: "8px 6px", fontSize: 10, color: msLeft < 3600000 && msLeft > 0 ? "var(--danger)" : "var(--muted)" }}>{isActive ? timeLeft : "—"}</td>
                           <td style={{ padding: "8px 6px", fontSize: 10 }}>
-                            <span style={{
-                              padding: "1px 5px", borderRadius: 999, fontSize: 9, fontWeight: 600,
-                              background: p.hedgeStatus === "tp_sold" ? "rgba(54,211,141,0.12)" : p.hedgeStatus === "active" && isTriggered ? "rgba(240,185,11,0.12)" : "rgba(168,168,173,0.08)",
-                              color: p.hedgeStatus === "tp_sold" ? "var(--success)" : p.hedgeStatus === "active" && isTriggered ? "#f0b90b" : "var(--muted)"
-                            }}>
-                              {p.hedgeStatus === "tp_sold" ? "TP Sold" : p.hedgeStatus === "active" && isTriggered ? "Awaiting TP" : p.hedgeStatus || "—"}
-                            </span>
+                            {(() => {
+                              const isExpired = p.status?.startsWith("expired") || false;
+                              const tpLabel =
+                                p.hedgeStatus === "tp_sold" ? "TP Sold"
+                                : p.hedgeStatus === "expired_settled" ? "Settled"
+                                : p.hedgeStatus === "active" && isTriggered ? "Awaiting TP"
+                                : p.hedgeStatus === "active" && isExpired ? "Expired (no TP)"
+                                : p.hedgeStatus || "—";
+                              const tpBg =
+                                p.hedgeStatus === "tp_sold" ? "rgba(54,211,141,0.12)"
+                                : p.hedgeStatus === "active" && isTriggered ? "rgba(240,185,11,0.12)"
+                                : p.hedgeStatus === "active" && isExpired ? "rgba(168,168,173,0.12)"
+                                : "rgba(168,168,173,0.08)";
+                              const tpColor =
+                                p.hedgeStatus === "tp_sold" ? "var(--success)"
+                                : p.hedgeStatus === "expired_settled" ? "var(--muted)"
+                                : p.hedgeStatus === "active" && isTriggered ? "#f0b90b"
+                                : "var(--muted)";
+                              return (
+                                <span style={{ padding: "1px 5px", borderRadius: 999, fontSize: 9, fontWeight: 600, background: tpBg, color: tpColor }}>
+                                  {tpLabel}
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td style={{ padding: "8px 6px" }}>
                             <div style={{ display: "flex", gap: 4 }}>
