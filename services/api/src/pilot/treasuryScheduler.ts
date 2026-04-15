@@ -107,7 +107,8 @@ export const runTreasuryDailyCycle = async (deps: SchedulerDeps): Promise<{
       protectionType: "long",
       drawdownFloorPct: floorPct.toNumber(),
       triggerPrice,
-      requestedTenorDays: tenorDays
+      requestedTenorDays: tenorDays,
+      clientPremiumUsd: premiumUsd.toNumber()
     });
   } catch (err: any) {
     executionLock = false;

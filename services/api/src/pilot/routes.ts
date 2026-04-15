@@ -2042,6 +2042,11 @@ export const registerPilotRoutes = async (
           }
         }
       }
+      let v7ClientPremiumHint = 0;
+      if (v7Enabled && resolvedSlPct) {
+        const ratePer1k = getV7PremiumPer1k(resolvedSlPct);
+        v7ClientPremiumHint = protectedNotional.div(1000).mul(ratePer1k).toNumber();
+      }
       const venueStartedAt = Date.now();
       const quote = await withTimeout(
         requestedVenue.quote({
@@ -2059,6 +2064,7 @@ export const registerPilotRoutes = async (
           hedgePolicy: pilotConfig.pilotHedgePolicy,
           clientOrderId: body.clientOrderId,
           strictTenor: isLockedBullishProfile ? true : parseBoolean(body.strictTenor, false),
+          clientPremiumUsd: v7ClientPremiumHint > 0 ? v7ClientPremiumHint : undefined,
           details: {
             triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber()
           }

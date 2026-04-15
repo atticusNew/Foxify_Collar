@@ -44,6 +44,7 @@ export type QuoteRequest = {
   strictTenor?: boolean;
   hedgePolicy?: PilotHedgePolicy;
   clientOrderId?: string;
+  clientPremiumUsd?: number;
 };
 
 type FalconxConfig = {
@@ -468,6 +469,9 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     requestedTenorDays?: number;
     protectionType?: "long" | "short";
     drawdownFloorPct?: number;
+    protectedNotional?: number;
+    quantity?: number;
+    clientPremiumUsd?: number;
   }): Promise<{
     instrumentId: string;
     ask: number;
@@ -580,6 +584,13 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       costScore: number;
     };
 
+    const executionQty = params.quantity && params.quantity > 0
+      ? Math.max(0.1, Math.floor(params.quantity * 10) / 10)
+      : 0;
+    const clientPremium = params.clientPremiumUsd && params.clientPremiumUsd > 0
+      ? params.clientPremiumUsd
+      : 0;
+
     const scored: ScoredDeribitCandidate[] = [];
     for (const candidate of orderedCandidates.slice(0, 8)) {
       try {
@@ -592,10 +603,30 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         const ask = askFromAsk ?? askFromMark;
         if (!ask || ask <= 0) continue;
 
+        const hedgeCostUsd = ask * params.spot * (executionQty || params.quantity || 0);
         const strikeDist = triggerTarget
           ? Math.abs(candidate.strike - triggerTarget) / params.spot
           : Math.abs(candidate.strike - targetStrike) / params.spot;
-        const costScore = ask + strikeDist * 0.5;
+
+        let costScore = ask + strikeDist * 0.5;
+
+        if (preferItm && triggerTarget) {
+          const isItm = targetOptionType === "put"
+            ? candidate.strike >= triggerTarget
+            : candidate.strike <= triggerTarget;
+          if (isItm) {
+            costScore -= 0.002;
+          }
+        }
+
+        let costCapPenalty = 0;
+        if (clientPremium > 0 && hedgeCostUsd > clientPremium) {
+          costCapPenalty = (hedgeCostUsd - clientPremium) / clientPremium;
+          costScore += costCapPenalty * 0.5;
+        }
+
+        const marginPct = clientPremium > 0 ? ((clientPremium - hedgeCostUsd) / clientPremium * 100) : 0;
+        console.log(`[OptionSelection] score: ${candidate.instrumentId} strike=${candidate.strike} ask=${ask.toFixed(6)} hedgeCost=$${hedgeCostUsd.toFixed(2)} clientPrem=$${clientPremium.toFixed(2)} margin=${marginPct.toFixed(1)}% costScore=${costScore.toFixed(6)}${costCapPenalty > 0 ? ` OVER_PREMIUM(+${(costCapPenalty * 0.5).toFixed(4)})` : ""}${preferItm && triggerTarget && (targetOptionType === "put" ? candidate.strike >= triggerTarget : candidate.strike <= triggerTarget) ? " ITM_BONUS" : ""}`);
 
         scored.push({
           instrumentId: candidate.instrumentId,
@@ -617,6 +648,10 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 
     scored.sort((a, b) => a.costScore - b.costScore);
     const best = scored[0];
+
+    const bestHedgeCost = best.ask * params.spot * (executionQty || params.quantity || 0);
+    const bestMarginPct = clientPremium > 0 ? ((clientPremium - bestHedgeCost) / clientPremium * 100) : 0;
+    console.log(`[OptionSelection] WINNER: ${best.instrumentId} strike=${best.strike} ask=${best.ask.toFixed(6)} hedgeCost=$${bestHedgeCost.toFixed(2)} margin=${bestMarginPct.toFixed(1)}% premium=$${clientPremium.toFixed(2)}${bestHedgeCost > clientPremium ? " ⚠ NEGATIVE_MARGIN" : " ✓"}`);
 
     return {
       instrumentId: best.instrumentId,
@@ -641,7 +676,10 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       targetTriggerPrice: req.triggerPrice,
       requestedTenorDays: req.requestedTenorDays,
       protectionType: req.protectionType,
-      drawdownFloorPct: req.drawdownFloorPct
+      drawdownFloorPct: req.drawdownFloorPct,
+      protectedNotional: req.protectedNotional,
+      quantity: req.quantity,
+      clientPremiumUsd: req.clientPremiumUsd
     });
     const requestedTenorDays =
       Number.isFinite(Number(req.requestedTenorDays)) && Number(req.requestedTenorDays) > 0

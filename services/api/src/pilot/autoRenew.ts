@@ -159,7 +159,8 @@ export const runAutoRenewCycle = async (params: {
           protectionType: "long",
           drawdownFloorPct: drawdownFloor.toNumber(),
           triggerPrice: newTriggerPrice.toNumber(),
-          requestedTenorDays: tenorDays
+          requestedTenorDays: tenorDays,
+          clientPremiumUsd: premiumUsd.toNumber()
         });
       } catch (err: any) {
         console.warn(`[AutoRenew] Quote failed for ${protection.id}: ${err?.message}`);
