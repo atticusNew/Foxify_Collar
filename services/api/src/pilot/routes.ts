@@ -3767,6 +3767,7 @@ export const registerPilotRoutes = async (
         venue: protection.venue,
         instrumentId: protection.instrumentId,
         createdAt: protection.createdAt,
+        renewedTo: protection.metadata?.renewedTo ? String(protection.metadata.renewedTo) : null,
       },
       currentPrice: referencePrice.toFixed(10),
       currentPriceSource: snapshot.priceSource,

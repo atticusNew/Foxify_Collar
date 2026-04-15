@@ -7,7 +7,7 @@ type ReferencePrice = { price: string; marketId: string; venue: string; source: 
 type V7Info = { regime: string; regimeSource: string; dvol: number | null; premiumPer1kUsd: number; premiumUsd: number; payoutPer10kUsd: number; available: boolean };
 type QuoteResponse = { status: string; protectionType: string; tierName: string; slPct: number | null; drawdownFloorPct: string; triggerPrice: string; floorPrice: string; v7: V7Info | null; quote: { quoteId: string; instrumentId: string; premium: number; expiresAt: string; side: string; quantity: number; venue: string; details?: Record<string, unknown> }; entrySnapshot: { price: string; marketId: string; source: string; timestamp: string } };
 type ProtectionRecord = { id: string; status: string; tierName: string; protectedNotional: string; entryPrice: string; floorPrice: string; drawdownFloorPct: string; expiryAt: string; premium: string; autoRenew: boolean; payoutDueAmount: string | null; payoutSettledAmount: string | null; venue: string; instrumentId: string; createdAt: string; metadata?: Record<string, unknown> };
-type MonitorResponse = { status: string; protection?: ProtectionRecord; currentPrice?: string; distanceToFloor?: { pct: string; usd: string; direction: string }; timeRemaining?: { ms: number; human: string } };
+type MonitorResponse = { status: string; protection?: ProtectionRecord & { renewedTo?: string | null }; currentPrice?: string; distanceToFloor?: { pct: string; usd: string; direction: string }; timeRemaining?: { ms: number; human: string } };
 type Position = { id: string; num: number; type: "long" | "short"; size: number; stopLoss: number; entryPrice: number; protectionId: string | null; autoRenew: boolean; premium: number; status: "active" | "closed" | "triggered"; closedPnl: number | null; closedPayout: number | null };
 
 // ─── Config ──────────────────────────────────────────────────────────
@@ -133,7 +133,36 @@ export function PilotWidget() {
     const pa = actives.filter(p => p.protectionId);
     if (!pa.length) return;
     let on = true;
-    const poll = async () => { for (const pos of pa) { if (!on || !pos.protectionId) continue; try { const d = await fetchMon(pos.protectionId); if (!on) return; setMonitors(prev => ({ ...prev, [pos.id]: d })); if (d.protection?.status === "triggered") { const pay = Number(d.protection.payoutDueAmount || 0); setPositions(prev => prev.map(p => p.id === pos.id ? { ...p, status: "triggered" as const, closedPayout: pay } : p)); setBalance(b => { const nb = b + pay; sv(K_BAL, nb); return nb; }); setSettlement(s => { const ns = { ...s, totalPayouts: s.totalPayouts + pay }; sv(K_SET, ns); return ns; }); setToast(`Position #${pos.num} triggered — Payout ${fmt(pay)}`); } } catch {} } };
+    const poll = async () => {
+      for (const pos of pa) {
+        if (!on || !pos.protectionId) continue;
+        try {
+          const d = await fetchMon(pos.protectionId);
+          if (!on) return;
+
+          if (d.protection?.renewedTo && (d.protection?.status === "expired_otm" || d.protection?.status === "expired_itm" || d.protection?.status === "cancelled")) {
+            const newId = d.protection.renewedTo;
+            try {
+              const renewed = await fetchMon(newId);
+              if (!on) return;
+              setPositions(prev => prev.map(p => p.id === pos.id ? { ...p, protectionId: newId } : p));
+              setMonitors(prev => ({ ...prev, [pos.id]: renewed }));
+              setToast(`Position #${pos.num} — Protection auto-renewed`);
+            } catch {}
+            continue;
+          }
+
+          setMonitors(prev => ({ ...prev, [pos.id]: d }));
+          if (d.protection?.status === "triggered") {
+            const pay = Number(d.protection.payoutDueAmount || 0);
+            setPositions(prev => prev.map(p => p.id === pos.id ? { ...p, status: "triggered" as const, closedPayout: pay } : p));
+            setBalance(b => { const nb = b + pay; sv(K_BAL, nb); return nb; });
+            setSettlement(s => { const ns = { ...s, totalPayouts: s.totalPayouts + pay }; sv(K_SET, ns); return ns; });
+            setToast(`Position #${pos.num} triggered — Payout ${fmt(pay)}`);
+          }
+        } catch {}
+      }
+    };
     poll(); const id = setInterval(poll, 5000);
     return () => { on = false; clearInterval(id); };
   }, [actives.map(p => p.id + (p.protectionId || "")).join(",")]);
@@ -304,7 +333,7 @@ export function PilotWidget() {
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>
                       <span>{pos.type === "long" ? "Floor" : "Ceiling"}: {fmt(fl)}</span>
-                      {pos.protectionId && mon?.timeRemaining && <span>{fTime(mon.timeRemaining.ms)} left</span>}
+                      {pos.protectionId && mon?.timeRemaining && <span>{mon.timeRemaining.ms > 0 ? `${fTime(mon.timeRemaining.ms)} left` : "Expired"}</span>}
                       {pos.premium > 0 && <span>Premium: {fmt(pos.premium)}</span>}
                     </div>
                     <div style={{ display: "flex", gap: 6 }}>
