@@ -33,16 +33,18 @@ type HedgeManagementResult = {
 
 const RISK_FREE_RATE = 0;
 
-const COOLING_PERIOD_HOURS = 0.75;
-const DEEP_DROP_COOLING_HOURS = 0.25;
+// ── TP Timing Parameters ──
+const COOLING_PERIOD_HOURS = 0.5;
+const DEEP_DROP_COOLING_HOURS = 0.167;
 const DEEP_DROP_THRESHOLD_PCT = 1.5;
+const BOUNCE_RECOVERY_MIN_VALUE = 3;
 const PRIME_WINDOW_END_HOURS = 8;
-const PRIME_THRESHOLD_MULTIPLIER = 0.3;
-const LATE_THRESHOLD_MULTIPLIER = 0.15;
-const NEAR_EXPIRY_SALVAGE_HOURS = 8;
-const NEAR_EXPIRY_MIN_VALUE = 5;
-const ACTIVE_SALVAGE_HOURS = 6;
-const ACTIVE_SALVAGE_MIN_VALUE = 10;
+const PRIME_THRESHOLD_MULTIPLIER = 0.25;
+const LATE_THRESHOLD_MULTIPLIER = 0.10;
+const NEAR_EXPIRY_SALVAGE_HOURS = 10;
+const NEAR_EXPIRY_MIN_VALUE = 3;
+const ACTIVE_SALVAGE_HOURS = 8;
+const ACTIVE_SALVAGE_MIN_VALUE = 5;
 
 const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
   const result = await pool.query(`
@@ -143,6 +145,11 @@ const computeDropDepthPct = (
   return strike > 0 ? ((strike - currentSpot) / strike) * 100 : 0;
 };
 
+const isOptionOtm = (protectionType: string, currentSpot: number, strike: number): boolean => {
+  if (protectionType === "short") return currentSpot < strike;
+  return currentSpot > strike;
+};
+
 const executeSell = async (
   hedge: ManagedHedge,
   reason: string,
@@ -151,7 +158,7 @@ const executeSell = async (
   pool: Pool
 ): Promise<boolean> => {
   const sellQty = Math.max(0.1, Math.floor(hedge.quantity * 10) / 10);
-  console.log(`[HedgeManager] Attempting sell (${reason}): instrument=${hedge.instrumentId} qty=${sellQty} value=$${optionVal.totalValue.toFixed(2)} intrinsic=$${optionVal.intrinsicValue.toFixed(2)} timeVal=$${optionVal.timeValue.toFixed(2)}`);
+  console.log(`[HedgeManager] Selling (${reason}): ${hedge.protectionId} instrument=${hedge.instrumentId} qty=${sellQty} value=$${optionVal.totalValue.toFixed(2)} intrinsic=$${optionVal.intrinsicValue.toFixed(2)} timeVal=$${optionVal.timeValue.toFixed(2)}`);
 
   try {
     const sellResult = await sellOption({
@@ -258,25 +265,36 @@ export const runHedgeManagementCycle = async (params: {
       const payout = hedge.payoutDueAmount > 0 ? hedge.payoutDueAmount : hedge.entryPremium;
       const dropDepthPct = computeDropDepthPct(hedge.protectionType, params.currentSpot, hedge.strike);
       const isDeepDrop = dropDepthPct >= DEEP_DROP_THRESHOLD_PCT;
+      const otm = isOptionOtm(hedge.protectionType, params.currentSpot, hedge.strike);
 
       let shouldSell = false;
       let reason = "";
 
       if (hoursToExpiry < NEAR_EXPIRY_SALVAGE_HOURS && optionVal.totalValue >= NEAR_EXPIRY_MIN_VALUE) {
+        // Near expiry — salvage whatever is left
         shouldSell = true;
         reason = "near_expiry_salvage";
       } else if (isDeepDrop && hoursSinceTrigger >= DEEP_DROP_COOLING_HOURS && optionVal.totalValue >= payout * PRIME_THRESHOLD_MULTIPLIER) {
+        // Deep sustained drop — sell quickly
         shouldSell = true;
         reason = "deep_drop_tp";
       } else if (hoursSinceTrigger < COOLING_PERIOD_HOURS) {
+        // Still in cooling period
         shouldSell = false;
         reason = "cooling_period";
+      } else if (otm && hoursSinceTrigger >= COOLING_PERIOD_HOURS && optionVal.totalValue >= BOUNCE_RECOVERY_MIN_VALUE) {
+        // Bounced — option is OTM, price recovered past strike.
+        // Sell for whatever time value remains; it's only going to decay.
+        shouldSell = true;
+        reason = "bounce_recovery";
       } else if (hoursSinceTrigger >= COOLING_PERIOD_HOURS && hoursSinceTrigger < PRIME_WINDOW_END_HOURS) {
+        // Prime window — sell if value meets threshold
         if (optionVal.totalValue >= payout * PRIME_THRESHOLD_MULTIPLIER) {
           shouldSell = true;
           reason = "take_profit_prime";
         }
       } else if (hoursSinceTrigger >= PRIME_WINDOW_END_HOURS) {
+        // Late window — lower threshold
         if (optionVal.totalValue >= payout * LATE_THRESHOLD_MULTIPLIER) {
           shouldSell = true;
           reason = "take_profit_late";
@@ -285,9 +303,9 @@ export const runHedgeManagementCycle = async (params: {
 
       if (!shouldSell) {
         if (reason === "cooling_period") {
-          console.log(`[HedgeManager] Cooling: ${hedge.protectionId} ${hoursSinceTrigger.toFixed(1)}h since trigger, drop=${dropDepthPct.toFixed(2)}%, value=$${optionVal.totalValue.toFixed(2)}`);
+          console.log(`[HedgeManager] Cooling: ${hedge.protectionId} ${hoursSinceTrigger.toFixed(1)}h since trigger, drop=${dropDepthPct.toFixed(2)}%, value=$${optionVal.totalValue.toFixed(2)}, otm=${otm}`);
         } else {
-          console.log(`[HedgeManager] Hold: ${hedge.protectionId} sinceTrigger=${hoursSinceTrigger.toFixed(1)}h toExpiry=${hoursToExpiry.toFixed(1)}h value=$${optionVal.totalValue.toFixed(2)} threshold=$${(payout * (hoursSinceTrigger < PRIME_WINDOW_END_HOURS ? PRIME_THRESHOLD_MULTIPLIER : LATE_THRESHOLD_MULTIPLIER)).toFixed(2)} drop=${dropDepthPct.toFixed(2)}%`);
+          console.log(`[HedgeManager] Hold: ${hedge.protectionId} sinceTrigger=${hoursSinceTrigger.toFixed(1)}h toExpiry=${hoursToExpiry.toFixed(1)}h value=$${optionVal.totalValue.toFixed(2)} threshold=$${(payout * (hoursSinceTrigger < PRIME_WINDOW_END_HOURS ? PRIME_THRESHOLD_MULTIPLIER : LATE_THRESHOLD_MULTIPLIER)).toFixed(2)} drop=${dropDepthPct.toFixed(2)}% otm=${otm}`);
         }
         result.skipped++;
         continue;
