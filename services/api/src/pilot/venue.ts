@@ -492,7 +492,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         : 2;
     const targetExpiry = now + requestedTenorDays * 86400000;
     const maxExpiryMs = now + (requestedTenorDays + 2) * 86400000;
-    const minExpiryMs = now + 8 * 3600 * 1000;
+    const minExpiryMs = now + Math.max(8 * 3600 * 1000, requestedTenorDays * 0.5 * 86400000);
     const legacyTargetStrike = targetOptionType === "call" ? params.spot * 1.15 : params.spot * 0.85;
     const triggerTarget =
       Number.isFinite(Number(params.targetTriggerPrice)) && Number(params.targetTriggerPrice) > 0
@@ -544,8 +544,10 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         if (triggerTarget) {
           const distA = Math.abs(a.strike - triggerTarget);
           const distB = Math.abs(b.strike - triggerTarget);
-          const tenorA = Math.abs(a.expiryTs - targetExpiry) / 86400000;
-          const tenorB = Math.abs(b.expiryTs - targetExpiry) / 86400000;
+          const rawTenorA = (a.expiryTs - targetExpiry) / 86400000;
+          const rawTenorB = (b.expiryTs - targetExpiry) / 86400000;
+          const tenorA = rawTenorA < 0 ? Math.abs(rawTenorA) * 3 : rawTenorA;
+          const tenorB = rawTenorB < 0 ? Math.abs(rawTenorB) * 3 : rawTenorB;
           let preferA: number, preferB: number;
           if (preferItm) {
             preferA = targetOptionType === "put" ? (a.strike >= triggerTarget ? -2.0 : 0.5) : (a.strike <= triggerTarget ? -2.0 : 0.5);
@@ -556,8 +558,12 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           }
           return (tenorA + distA / params.spot + preferA) - (tenorB + distB / params.spot + preferB);
         }
-        const scoreA = Math.abs(a.expiryTs - targetExpiry) / 86400000 + Math.abs(a.strike - targetStrike) / Math.max(params.spot, 1);
-        const scoreB = Math.abs(b.expiryTs - targetExpiry) / 86400000 + Math.abs(b.strike - targetStrike) / Math.max(params.spot, 1);
+        const rawScoreA = (a.expiryTs - targetExpiry) / 86400000;
+        const rawScoreB = (b.expiryTs - targetExpiry) / 86400000;
+        const tenorPenA = rawScoreA < 0 ? Math.abs(rawScoreA) * 3 : rawScoreA;
+        const tenorPenB = rawScoreB < 0 ? Math.abs(rawScoreB) * 3 : rawScoreB;
+        const scoreA = tenorPenA + Math.abs(a.strike - targetStrike) / Math.max(params.spot, 1);
+        const scoreB = tenorPenB + Math.abs(b.strike - targetStrike) / Math.max(params.spot, 1);
         return scoreA - scoreB;
       })
       .slice(0, 40);
@@ -684,7 +690,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     const requestedTenorDays =
       Number.isFinite(Number(req.requestedTenorDays)) && Number(req.requestedTenorDays) > 0
         ? Number(req.requestedTenorDays)
-        : 7;
+        : 2;
     const selectedTenorDays = resolved.expiryTs ? (resolved.expiryTs - now) / 86400000 : null;
     const tenorDriftDays =
       selectedTenorDays !== null ? Math.abs(selectedTenorDays - requestedTenorDays) : null;
