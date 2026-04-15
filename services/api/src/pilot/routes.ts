@@ -78,7 +78,7 @@ import {
 } from "./floor";
 import { computeDrawdownLossBudgetUsd } from "./protectionMath";
 import type { PremiumPolicyDiagnostics, TenorPolicyEntry, TenorPolicyResponse, TenorPolicyTenorRow, TenorPolicyReason } from "./types";
-import { isValidSlTier, computeV7Premium, slPctToDrawdownFloor, slPctToTierLabel, getV7AvailableTiers, getV7TenorDays } from "./v7Pricing";
+import { isValidSlTier, computeV7Premium, slPctToDrawdownFloor, slPctToTierLabel, getV7AvailableTiers, getV7TenorDays, getV7PremiumPer1k } from "./v7Pricing";
 import { getCurrentRegime, configureRegimeClassifier } from "./regimeClassifier";
 import type { V7SlTier, V7PremiumQuote } from "./types";
 
