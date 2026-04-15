@@ -3413,11 +3413,20 @@ class FalconxAdapter implements PilotVenueAdapter {
 
   async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
     try {
-      const spot = await resolveDeribitSpot(this.connector);
-      const book = await this.connector.getOrderBook(params.instrumentId);
-      const top = extractTopOfBook(book);
-      const bidBtc = top.bid;
-      if (!bidBtc || bidBtc <= 0) {
+      const payload = {
+        token_pair: { base_token: "BTC", quote_token: "USDC" },
+        quantity: params.quantity,
+        structure: [
+          { side: "sell", symbol: params.instrumentId, weight: 1 }
+        ],
+        client_order_id: randomUUID()
+      };
+
+      console.log(`[FalconX] sellOption RFQ: instrument=${params.instrumentId} qty=${params.quantity}`);
+      const quoteRes = await falconxRequest(this.cfg, "/v3/derivatives/option/quote", "POST", payload);
+
+      if (String(quoteRes?.status || "").toLowerCase() !== "success") {
+        console.error(`[FalconX] sellOption quote failed: ${JSON.stringify(quoteRes?.error || quoteRes).slice(0, 300)}`);
         return {
           status: "failed",
           instrumentId: params.instrumentId,
@@ -3425,35 +3434,60 @@ class FalconxAdapter implements PilotVenueAdapter {
           fillPrice: 0,
           totalProceeds: 0,
           orderId: null,
-          details: { reason: "no_bid_available" }
+          details: { reason: `quote_failed:${quoteRes?.error?.code || "unknown"}` }
         };
       }
 
-      const order = await this.connector.placeOrder({
-        instrument: params.instrumentId,
-        amount: params.quantity,
-        side: "sell",
-        type: "market"
-      }) as any;
+      const bidPrice = Number(quoteRes.bid_price?.value ?? 0);
+      if (bidPrice <= 0) {
+        console.warn(`[FalconX] sellOption: no bid available for ${params.instrumentId}`);
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: params.quantity,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: { reason: "no_bid_available", quoteResponse: quoteRes }
+        };
+      }
 
-      const status = order?.status === "paper_filled" || order?.status === "filled" || order?.status === "ok"
-        ? "sold" : "failed";
-      const fillPrice = Number(order?.fillPrice ?? bidBtc) * spot;
-      const filledAmount = Number(order?.filledAmount ?? order?.amount ?? params.quantity);
+      const execRes = await falconxRequest(
+        this.cfg,
+        "/v3/derivatives/option/quote/execute",
+        "POST",
+        { fx_quote_id: quoteRes.fx_quote_id }
+      );
 
-      console.log(`[DeribitAdapter] sellOption: instrument=${params.instrumentId} status=${status} fillPrice=${fillPrice.toFixed(2)} qty=${filledAmount}`);
+      if (String(execRes?.status || "").toLowerCase() !== "success") {
+        console.error(`[FalconX] sellOption execute failed: ${JSON.stringify(execRes?.error || execRes).slice(0, 300)}`);
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: params.quantity,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: String(quoteRes.fx_quote_id || null),
+          details: { reason: `execute_failed:${execRes?.error?.code || "unknown"}` }
+        };
+      }
+
+      const executedPrice = Number(execRes.executed_price ?? bidPrice);
+      const filledQty = Number(execRes.quantity ?? params.quantity);
+
+      console.log(`[FalconX] sellOption executed: instrument=${params.instrumentId} price=${executedPrice.toFixed(2)} qty=${filledQty} proceeds=${(executedPrice * filledQty).toFixed(2)}`);
 
       return {
-        status: status as "sold" | "failed",
+        status: "sold",
         instrumentId: params.instrumentId,
-        quantity: filledAmount,
-        fillPrice,
-        totalProceeds: fillPrice * filledAmount,
-        orderId: String(order?.id || null),
-        details: { raw: order, bidBtc, spot }
+        quantity: filledQty,
+        fillPrice: executedPrice,
+        totalProceeds: executedPrice * filledQty,
+        orderId: String(execRes.fx_quote_id || quoteRes.fx_quote_id || null),
+        details: { quoteResponse: quoteRes, executeResponse: execRes, bidPrice }
       };
     } catch (err: any) {
-      console.error(`[DeribitAdapter] sellOption FAILED: ${err?.message}`);
+      console.error(`[FalconX] sellOption FAILED: ${err?.message}`);
       return {
         status: "failed",
         instrumentId: params.instrumentId,
@@ -3464,6 +3498,11 @@ class FalconxAdapter implements PilotVenueAdapter {
         details: { reason: err?.message || "sell_failed" }
       };
     }
+  }
+
+  async getPositions(): Promise<any[]> {
+    const response = await falconxRequest(this.cfg, "/v1/derivatives?trade_status=open&product_type=option&market_list=BTC-USD", "GET", null);
+    return Array.isArray(response) ? response : [];
   }
 }
 
