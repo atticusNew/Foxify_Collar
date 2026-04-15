@@ -189,7 +189,7 @@ export function TreasuryDashboard() {
               </div>
               <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "right", lineHeight: 1.8 }}>
                 <div>Premium <span style={{ color: "var(--text)", fontWeight: 600 }}>{fmt(cp.premiumUsd)}</span></div>
-                <div>Coverage <span style={{ color: "var(--success)", fontWeight: 600 }}>Full option value on breach</span></div>
+                <div>Coverage <span style={{ color: "var(--success)", fontWeight: 600 }}>Guaranteed payout on breach</span></div>
               </div>
             </div>
             {dist && (
@@ -240,7 +240,7 @@ export function TreasuryDashboard() {
           </div>
           {Number(data.billing.totalPayoutsUsd) > 0 && (
             <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "rgba(54,211,141,0.06)", border: "1px solid rgba(54,211,141,0.15)", display: "flex", justifyContent: "space-between", fontSize: 12 }}>
-              <span>Option Settlements Received</span>
+              <span>Protection Payouts Received</span>
               <span style={{ fontWeight: 600, color: "var(--success)" }}>{fmt(data.billing.totalPayoutsUsd)}</span>
             </div>
           )}
@@ -254,7 +254,7 @@ export function TreasuryDashboard() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                    {["Date", "Entry", "Floor", "Premium", "Triggered", "Settlement"].map((h) => (
+                    {["Date", "Entry", "Floor", "Premium", "Triggered", "Payout"].map((h) => (
                       <th key={h} style={{ padding: "6px 4px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
                     ))}
                   </tr>

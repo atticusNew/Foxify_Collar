@@ -23,7 +23,7 @@ export type TreasuryConfig = {
 
 export const parseTreasuryConfig = (): TreasuryConfig => ({
   enabled: parseBooleanEnv(process.env.TREASURY_ENABLED, false),
-  structure: String(process.env.TREASURY_STRUCTURE || "pass_through") === "fixed_payout" ? "fixed_payout" : "pass_through",
+  structure: String(process.env.TREASURY_STRUCTURE || "fixed_payout") === "pass_through" ? "pass_through" : "fixed_payout",
   notionalUsd: parsePositiveFinite(
     process.env.TREASURY_NOTIONAL_USD,
     1000000,
