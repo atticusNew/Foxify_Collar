@@ -12,6 +12,7 @@ type ManagedHedge = {
   quantity: number;
   entryPremium: number;
   strike: number;
+  floorPrice: number;
   expiryMs: number;
   hedgeStatus: string;
   slPct: number | null;
@@ -28,6 +29,7 @@ type HedgeManagementResult = {
   salvaged: number;
   expired: number;
   errors: number;
+  noBidRetries: number;
   skipped: number;
 };
 
@@ -49,7 +51,8 @@ const ACTIVE_SALVAGE_MIN_VALUE = 5;
 const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
   const result = await pool.query(`
     SELECT id, instrument_id, venue, size, premium, metadata, side,
-           expiry_at, hedge_status, sl_pct, payout_due_amount, status
+           expiry_at, hedge_status, sl_pct, payout_due_amount, status,
+           floor_price
     FROM pilot_protections
     WHERE hedge_status = 'active'
       AND instrument_id IS NOT NULL
@@ -64,6 +67,7 @@ const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
     const instrumentId = String(row.instrument_id || "");
     const strikeMatch = instrumentId.match(/(\d+)-(P|C)$/);
     const optionStrike = strikeMatch ? Number(strikeMatch[1]) : 0;
+    const floorRaw = Number(row.floor_price || meta.triggerPrice || meta.floorPrice || 0);
     return {
       protectionId: String(row.id),
       instrumentId,
@@ -71,6 +75,7 @@ const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
       quantity: Number(row.size || 0),
       entryPremium: Number(row.premium || 0),
       strike: optionStrike || Number(meta.triggerPrice || meta.floorPrice || 0),
+      floorPrice: Number.isFinite(floorRaw) && floorRaw > 0 ? floorRaw : (optionStrike || 0),
       expiryMs: new Date(String(row.expiry_at)).getTime(),
       hedgeStatus: String(row.hedge_status || "active"),
       slPct: row.sl_pct !== null && row.sl_pct !== undefined ? Number(row.sl_pct) : null,
@@ -134,15 +139,25 @@ const computeOptionValue = (params: {
   };
 };
 
-const computeDropDepthPct = (
+const computeDropDepthFromFloor = (
   protectionType: string,
   currentSpot: number,
-  strike: number
+  floorPrice: number
 ): number => {
+  if (floorPrice <= 0) return 0;
   if (protectionType === "short") {
-    return strike > 0 ? ((currentSpot - strike) / strike) * 100 : 0;
+    return ((currentSpot - floorPrice) / floorPrice) * 100;
   }
-  return strike > 0 ? ((strike - currentSpot) / strike) * 100 : 0;
+  return ((floorPrice - currentSpot) / floorPrice) * 100;
+};
+
+const isProtectionBounced = (
+  protectionType: string,
+  currentSpot: number,
+  floorPrice: number
+): boolean => {
+  if (protectionType === "short") return currentSpot < floorPrice;
+  return currentSpot > floorPrice;
 };
 
 const isOptionOtm = (protectionType: string, currentSpot: number, strike: number): boolean => {
@@ -156,7 +171,7 @@ const executeSell = async (
   optionVal: { totalValue: number; intrinsicValue: number; timeValue: number },
   sellOption: (p: { instrumentId: string; quantity: number }) => Promise<{ status: string; fillPrice: number; totalProceeds: number; orderId: string | null; details: Record<string, unknown> }>,
   pool: Pool
-): Promise<boolean> => {
+): Promise<"sold" | "no_bid" | "failed"> => {
   const sellQty = Math.max(0.1, Math.floor(hedge.quantity * 10) / 10);
   console.log(`[HedgeManager] Selling (${reason}): ${hedge.protectionId} instrument=${hedge.instrumentId} qty=${sellQty} value=$${optionVal.totalValue.toFixed(2)} intrinsic=$${optionVal.intrinsicValue.toFixed(2)} timeVal=$${optionVal.timeValue.toFixed(2)}`);
 
@@ -183,14 +198,20 @@ const executeSell = async (
         },
         soldAt: new Date().toISOString()
       });
-      return true;
-    } else {
-      console.warn(`[HedgeManager] Sell FAILED for ${hedge.protectionId}: ${JSON.stringify(sellResult.details).slice(0, 300)}`);
-      return false;
+      return "sold";
     }
+
+    const isNoBid = sellResult.details?.reason === "no_bid" || sellResult.details?.reason === "no_bid_available";
+    if (isNoBid) {
+      console.log(`[HedgeManager] No bid for ${hedge.protectionId} (${hedge.instrumentId}) — will retry next cycle`);
+      return "no_bid";
+    }
+
+    console.warn(`[HedgeManager] Sell FAILED for ${hedge.protectionId}: ${JSON.stringify(sellResult.details).slice(0, 300)}`);
+    return "failed";
   } catch (sellErr: any) {
     console.error(`[HedgeManager] sellOption THREW for ${hedge.protectionId}: ${sellErr?.message}`);
-    return false;
+    return "failed";
   }
 };
 
@@ -201,7 +222,7 @@ export const runHedgeManagementCycle = async (params: {
   currentSpot: number;
   currentIV: number;
 }): Promise<HedgeManagementResult> => {
-  const result: HedgeManagementResult = { scanned: 0, tpSold: 0, salvaged: 0, expired: 0, errors: 0, skipped: 0 };
+  const result: HedgeManagementResult = { scanned: 0, tpSold: 0, salvaged: 0, expired: 0, errors: 0, noBidRetries: 0, skipped: 0 };
 
   let hedges: ManagedHedge[];
   try {
@@ -247,8 +268,10 @@ export const runHedgeManagementCycle = async (params: {
       if (hedge.status === "active") {
         if (hoursToExpiry <= ACTIVE_SALVAGE_HOURS && optionVal.totalValue >= ACTIVE_SALVAGE_MIN_VALUE) {
           console.log(`[HedgeManager] Active salvage candidate: ${hedge.protectionId} hoursLeft=${hoursToExpiry.toFixed(1)} value=$${optionVal.totalValue.toFixed(2)} (intrinsic=$${optionVal.intrinsicValue.toFixed(2)} time=$${optionVal.timeValue.toFixed(2)})`);
-          const sold = await executeSell(hedge, "active_salvage", optionVal, params.sellOption, params.pool);
-          if (sold) { result.salvaged++; } else { result.errors++; }
+          const sellStatus = await executeSell(hedge, "active_salvage", optionVal, params.sellOption, params.pool);
+          if (sellStatus === "sold") { result.salvaged++; }
+          else if (sellStatus === "no_bid") { result.noBidRetries++; }
+          else { result.errors++; }
         } else {
           result.skipped++;
         }
@@ -263,38 +286,36 @@ export const runHedgeManagementCycle = async (params: {
 
       const hoursSinceTrigger = hedge.triggerAtMs > 0 ? (now - hedge.triggerAtMs) / 3600000 : 999;
       const payout = hedge.payoutDueAmount > 0 ? hedge.payoutDueAmount : hedge.entryPremium;
-      const dropDepthPct = computeDropDepthPct(hedge.protectionType, params.currentSpot, hedge.strike);
-      const isDeepDrop = dropDepthPct >= DEEP_DROP_THRESHOLD_PCT;
-      const otm = isOptionOtm(hedge.protectionType, params.currentSpot, hedge.strike);
+
+      const dropFromFloorPct = computeDropDepthFromFloor(hedge.protectionType, params.currentSpot, hedge.floorPrice);
+      const dropFromStrikePct = hedge.strike > 0 ? (hedge.protectionType === "short"
+        ? ((params.currentSpot - hedge.strike) / hedge.strike) * 100
+        : ((hedge.strike - params.currentSpot) / hedge.strike) * 100) : 0;
+      const isDeepDrop = dropFromFloorPct >= DEEP_DROP_THRESHOLD_PCT;
+      const bounced = isProtectionBounced(hedge.protectionType, params.currentSpot, hedge.floorPrice);
+      const optionIsOtm = isOptionOtm(hedge.protectionType, params.currentSpot, hedge.strike);
 
       let shouldSell = false;
       let reason = "";
 
       if (hoursToExpiry < NEAR_EXPIRY_SALVAGE_HOURS && optionVal.totalValue >= NEAR_EXPIRY_MIN_VALUE) {
-        // Near expiry — salvage whatever is left
         shouldSell = true;
         reason = "near_expiry_salvage";
       } else if (isDeepDrop && hoursSinceTrigger >= DEEP_DROP_COOLING_HOURS && optionVal.totalValue >= payout * PRIME_THRESHOLD_MULTIPLIER) {
-        // Deep sustained drop — sell quickly
         shouldSell = true;
         reason = "deep_drop_tp";
       } else if (hoursSinceTrigger < COOLING_PERIOD_HOURS) {
-        // Still in cooling period
         shouldSell = false;
         reason = "cooling_period";
-      } else if (otm && hoursSinceTrigger >= COOLING_PERIOD_HOURS && optionVal.totalValue >= BOUNCE_RECOVERY_MIN_VALUE) {
-        // Bounced — option is OTM, price recovered past strike.
-        // Sell for whatever time value remains; it's only going to decay.
+      } else if (bounced && hoursSinceTrigger >= COOLING_PERIOD_HOURS && optionVal.totalValue >= BOUNCE_RECOVERY_MIN_VALUE) {
         shouldSell = true;
         reason = "bounce_recovery";
       } else if (hoursSinceTrigger >= COOLING_PERIOD_HOURS && hoursSinceTrigger < PRIME_WINDOW_END_HOURS) {
-        // Prime window — sell if value meets threshold
         if (optionVal.totalValue >= payout * PRIME_THRESHOLD_MULTIPLIER) {
           shouldSell = true;
           reason = "take_profit_prime";
         }
       } else if (hoursSinceTrigger >= PRIME_WINDOW_END_HOURS) {
-        // Late window — lower threshold
         if (optionVal.totalValue >= payout * LATE_THRESHOLD_MULTIPLIER) {
           shouldSell = true;
           reason = "take_profit_late";
@@ -303,16 +324,18 @@ export const runHedgeManagementCycle = async (params: {
 
       if (!shouldSell) {
         if (reason === "cooling_period") {
-          console.log(`[HedgeManager] Cooling: ${hedge.protectionId} ${hoursSinceTrigger.toFixed(1)}h since trigger, drop=${dropDepthPct.toFixed(2)}%, value=$${optionVal.totalValue.toFixed(2)}, otm=${otm}`);
+          console.log(`[HedgeManager] Cooling: ${hedge.protectionId} ${hoursSinceTrigger.toFixed(1)}h since trigger, floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}% value=$${optionVal.totalValue.toFixed(2)}, bounced=${bounced} optionOtm=${optionIsOtm}`);
         } else {
-          console.log(`[HedgeManager] Hold: ${hedge.protectionId} sinceTrigger=${hoursSinceTrigger.toFixed(1)}h toExpiry=${hoursToExpiry.toFixed(1)}h value=$${optionVal.totalValue.toFixed(2)} threshold=$${(payout * (hoursSinceTrigger < PRIME_WINDOW_END_HOURS ? PRIME_THRESHOLD_MULTIPLIER : LATE_THRESHOLD_MULTIPLIER)).toFixed(2)} drop=${dropDepthPct.toFixed(2)}% otm=${otm}`);
+          console.log(`[HedgeManager] Hold: ${hedge.protectionId} sinceTrigger=${hoursSinceTrigger.toFixed(1)}h toExpiry=${hoursToExpiry.toFixed(1)}h value=$${optionVal.totalValue.toFixed(2)} threshold=$${(payout * (hoursSinceTrigger < PRIME_WINDOW_END_HOURS ? PRIME_THRESHOLD_MULTIPLIER : LATE_THRESHOLD_MULTIPLIER)).toFixed(2)} floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}% bounced=${bounced} optionOtm=${optionIsOtm}`);
         }
         result.skipped++;
         continue;
       }
 
-      const sold = await executeSell(hedge, reason, optionVal, params.sellOption, params.pool);
-      if (sold) { result.tpSold++; } else { result.errors++; }
+      const sellStatus = await executeSell(hedge, reason, optionVal, params.sellOption, params.pool);
+      if (sellStatus === "sold") { result.tpSold++; }
+      else if (sellStatus === "no_bid") { result.noBidRetries++; }
+      else { result.errors++; }
     } catch (err: any) {
       console.error(`[HedgeManager] Error processing ${hedge.protectionId}: ${err?.message}`);
       result.errors++;
@@ -320,7 +343,7 @@ export const runHedgeManagementCycle = async (params: {
   }
 
   console.log(
-    `[HedgeManager] Cycle complete: scanned=${result.scanned} tpSold=${result.tpSold} salvaged=${result.salvaged} expired=${result.expired} errors=${result.errors} skipped=${result.skipped}`
+    `[HedgeManager] Cycle complete: scanned=${result.scanned} tpSold=${result.tpSold} salvaged=${result.salvaged} expired=${result.expired} noBid=${result.noBidRetries} errors=${result.errors} skipped=${result.skipped}`
   );
   return result;
 };
