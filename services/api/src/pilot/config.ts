@@ -1354,7 +1354,7 @@ export const pilotConfig = {
   triggerMonitorEnabled: parseBooleanEnv(process.env.PILOT_TRIGGER_MONITOR_ENABLED, true),
   triggerMonitorIntervalMs: parsePositiveIntInRange(
     process.env.PILOT_TRIGGER_MONITOR_INTERVAL_MS,
-    5000,
+    3000,
     1000,
     60000,
     "invalid_pilot_trigger_monitor_interval_ms"

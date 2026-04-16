@@ -297,7 +297,8 @@ const runSimTriggerMonitorCycle = async (params: {
     let snapshot: PriceSnapshotOutput;
     try {
       snapshot = await resolveLiveReferencePrice(requestId, simPosition.marketId);
-    } catch {
+    } catch (err: any) {
+      console.warn(`[SimTriggerMonitor] Price error for sim=${simPosition.id}: ${err?.message || "unknown"}`);
       continue;
     }
     const entryPrice = parsePositiveDecimal(simPosition.entryPrice);
@@ -307,6 +308,7 @@ const runSimTriggerMonitorCycle = async (params: {
     const triggerPrice = parsePositiveDecimal(simPosition.floorPrice) || computeTriggerPrice(entryPrice, drawdownFloorPct, "long");
     const breached = snapshot.price.lessThanOrEqualTo(triggerPrice);
     if (!breached) continue;
+    console.log(`[SimTriggerMonitor] TRIGGERED: sim=${simPosition.id} protection=${protectionId} spot=$${snapshot.price.toFixed(2)} floor=$${triggerPrice.toFixed(2)} payout=$${protectedLossUsd.toFixed(2)}`);
     const lifecycle = buildSimLifecycleMetadata(simPosition.metadata || {}, {
       triggerPrice: triggerPrice.toFixed(10),
       triggerReferencePrice: snapshot.price.toFixed(10),

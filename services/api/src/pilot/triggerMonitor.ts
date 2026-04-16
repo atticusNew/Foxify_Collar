@@ -131,8 +131,9 @@ export const processTriggerMonitorCycleWithResolver = async (
           }
         );
       }
-    } catch {
+    } catch (err: any) {
       result.priceErrors += 1;
+      console.warn(`[TriggerMonitor] Price error for ${protection.id}: ${err?.message || "unknown"}`);
       continue;
     }
     if (
@@ -167,6 +168,7 @@ export const processTriggerMonitorCycleWithResolver = async (
       }
     });
     if (!updated) continue;
+    console.log(`[TriggerMonitor] TRIGGERED: protection=${protection.id} type=${economics.protectionType} spot=$${snapshot.price.toFixed(2)} floor=$${economics.triggerPrice.toFixed(2)} payout=$${economics.triggerPayoutCreditUsd.toFixed(2)} source=${snapshot.priceSource}`);
     await insertPriceSnapshot(pool, {
       protectionId: protection.id,
       snapshotType: "trigger",
@@ -201,13 +203,31 @@ export const __setTriggerMonitorEnabledForTests = (enabled: boolean): void => {
 };
 
 export const registerPilotTriggerMonitor = (pool: Pool): NodeJS.Timeout | null => {
-  if (!pilotConfig.triggerMonitorEnabled) return null;
+  if (!pilotConfig.triggerMonitorEnabled) {
+    console.log("[TriggerMonitor] Disabled (PILOT_TRIGGER_MONITOR_ENABLED=false)");
+    return null;
+  }
   const intervalMs = Math.max(1000, pilotConfig.triggerMonitorIntervalMs);
-  const timer = setInterval(() => {
-    void processTriggerMonitorCycle(pool).catch(() => {
-      // Deliberately swallow to keep monitor loop healthy.
-    });
+  let consecutivePriceErrors = 0;
+  const timer = setInterval(async () => {
+    try {
+      const result = await processTriggerMonitorCycle(pool);
+      if (result.triggered > 0) {
+        console.log(`[TriggerMonitor] Cycle: scanned=${result.scanned} triggered=${result.triggered} priceErrors=${result.priceErrors}`);
+      }
+      if (result.priceErrors > 0) {
+        consecutivePriceErrors += result.priceErrors;
+        if (consecutivePriceErrors >= 10) {
+          console.error(`[TriggerMonitor] ⚠ ${consecutivePriceErrors} consecutive price errors — price feeds may be degraded`);
+        }
+      } else {
+        consecutivePriceErrors = 0;
+      }
+    } catch (err: any) {
+      console.error(`[TriggerMonitor] Cycle error: ${err?.message || "unknown"}`);
+    }
   }, intervalMs);
   timer.unref?.();
+  console.log(`[TriggerMonitor] Started: interval=${intervalMs}ms batchSize=${pilotConfig.triggerMonitorBatchSize}`);
   return timer;
 };
