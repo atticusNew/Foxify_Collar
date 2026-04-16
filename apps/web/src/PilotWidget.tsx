@@ -311,6 +311,7 @@ export function PilotWidget() {
                 const pnlPct = canCalcPnl ? (pos.type === "long" ? ((livePrice - pos.entryPrice) / pos.entryPrice) * 100 : ((pos.entryPrice - livePrice) / pos.entryPrice) * 100) : null;
                 const fl = pos.type === "long" ? pos.entryPrice * (1 - pos.stopLoss / 100) : pos.entryPrice * (1 + pos.stopLoss / 100);
                 const isProtecting = protectingPosId === pos.id;
+                const protectionExpired = pos.protectionId && mon?.timeRemaining && mon.timeRemaining.ms <= 0 && !mon.protection?.renewedTo;
                 return (
                   <div key={pos.id} style={{ padding: 12, borderRadius: 10, border: "1px solid var(--border)", background: "var(--card-2)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -321,10 +322,12 @@ export function PilotWidget() {
                         <span style={{ fontSize: 10, color: "var(--muted)" }}>{pos.stopLoss}% SL</span>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                        {pos.protectionId
-                          ? <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(54,211,141,0.12)", color: "var(--success)" }}>Protected</span>
-                          : <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(255,107,107,0.12)", color: "var(--danger)" }}>Unprotected</span>}
-                        {pos.autoRenew && pos.protectionId && <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 5px", borderRadius: 999, background: "rgba(96,165,250,0.12)", color: "#60a5fa" }}>↻ Auto</span>}
+                        {protectionExpired
+                          ? <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(240,185,11,0.12)", color: "#f0b90b" }}>Protection Expired</span>
+                          : pos.protectionId
+                            ? <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(54,211,141,0.12)", color: "var(--success)" }}>Protected</span>
+                            : <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(255,107,107,0.12)", color: "var(--danger)" }}>Unprotected</span>}
+                        {pos.autoRenew && pos.protectionId && !protectionExpired && <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 5px", borderRadius: 999, background: "rgba(96,165,250,0.12)", color: "#60a5fa" }}>↻ Auto</span>}
                       </div>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>

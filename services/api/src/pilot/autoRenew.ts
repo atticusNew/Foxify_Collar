@@ -115,6 +115,9 @@ export const runAutoRenewCycle = async (params: {
       const ratePer1k = getV7PremiumPer1k(slPct);
       const tenorDays = getV7TenorDays(slPct);
       const premiumUsd = notional.div(1000).mul(ratePer1k);
+      const protectionType: "long" | "short" =
+        String(protection.metadata?.protectionType || protection.side || "long") === "short" ? "short" : "long";
+      const optionType = protectionType === "short" ? "C" : "P";
 
       const requestId = pilotConfig.nextRequestId();
       let snapshot: PriceSnapshotOutput;
@@ -137,14 +140,14 @@ export const runAutoRenewCycle = async (params: {
           }
         );
       } catch (err: any) {
-        console.warn(`[AutoRenew] Price unavailable for ${protection.id}: ${err?.message}`);
+        console.error(`[AutoRenew] FAILED price for ${protection.id} (${protectionType}): ${err?.message}`);
         result.errors++;
         continue;
       }
 
       const newEntryPrice = snapshot.price;
       const drawdownFloor = new Decimal(slPct).div(100);
-      const newTriggerPrice = computeTriggerPrice(newEntryPrice, drawdownFloor, "long");
+      const newTriggerPrice = computeTriggerPrice(newEntryPrice, drawdownFloor, protectionType);
       const quantity = notional.div(newEntryPrice).toDecimalPlaces(8).toNumber();
       const newExpiryAt = new Date(Date.now() + tenorDays * 86400000).toISOString();
 
@@ -152,18 +155,18 @@ export const runAutoRenewCycle = async (params: {
       try {
         quote = await params.venue.quote({
           marketId: protection.marketId,
-          instrumentId: `${protection.marketId}-${tenorDays}D-P`,
+          instrumentId: `${protection.marketId}-${tenorDays}D-${optionType}`,
           protectedNotional: notional.toNumber(),
           quantity,
           side: "buy",
-          protectionType: "long",
+          protectionType,
           drawdownFloorPct: drawdownFloor.toNumber(),
           triggerPrice: newTriggerPrice.toNumber(),
           requestedTenorDays: tenorDays,
           clientPremiumUsd: premiumUsd.toNumber()
         });
       } catch (err: any) {
-        console.warn(`[AutoRenew] Quote failed for ${protection.id}: ${err?.message}`);
+        console.error(`[AutoRenew] FAILED quote for ${protection.id} (${protectionType} ${optionType}): ${err?.message}`);
         result.errors++;
         continue;
       }
@@ -172,13 +175,13 @@ export const runAutoRenewCycle = async (params: {
       try {
         execution = await params.venue.execute(quote);
       } catch (err: any) {
-        console.warn(`[AutoRenew] Execution failed for ${protection.id}: ${err?.message}`);
+        console.error(`[AutoRenew] FAILED execution for ${protection.id} (${protectionType}): ${err?.message}`);
         result.errors++;
         continue;
       }
 
       if (execution.status !== "success") {
-        console.warn(`[AutoRenew] Execution not successful for ${protection.id}: ${execution.status}`);
+        console.error(`[AutoRenew] FAILED execution status for ${protection.id} (${protectionType}): ${execution.status}`);
         result.errors++;
         continue;
       }
@@ -201,7 +204,7 @@ export const runAutoRenewCycle = async (params: {
           renewedFrom: protection.id,
           renewalRequestId: requestId,
           slPct,
-          protectionType: "long",
+          protectionType,
           entryPrice: newEntryPrice.toFixed(10),
           triggerPrice: newTriggerPrice.toFixed(10),
           premiumUsd: premiumUsd.toFixed(10),
@@ -259,7 +262,7 @@ export const runAutoRenewCycle = async (params: {
       });
 
       console.log(
-        `[AutoRenew] Renewed ${protection.id} → ${newProtection.id} (${protection.status === "triggered" ? "post-trigger" : "expiry"}): SL=${slPct}% premium=$${premiumUsd.toFixed(2)} entry=$${newEntryPrice.toFixed(0)} trigger=$${newTriggerPrice.toFixed(0)} instrument=${execution.instrumentId}`
+        `[AutoRenew] Renewed ${protection.id} → ${newProtection.id} (${protectionType} ${protection.status === "triggered" ? "post-trigger" : "expiry"}): SL=${slPct}% premium=$${premiumUsd.toFixed(2)} entry=$${newEntryPrice.toFixed(0)} trigger=$${newTriggerPrice.toFixed(0)} instrument=${execution.instrumentId}`
       );
       result.renewed++;
     } catch (err: any) {
