@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { API_BASE } from "./config";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -249,6 +249,25 @@ function Dashboard({ token }: { token: string }) {
   const [healthConfig, setHealthConfig] = useState<Record<string, unknown> | null>(null);
 
   const [protectionsList, setProtectionsList] = useState<ProtectionSummary[]>([]);
+  const [livePrice, setLivePrice] = useState<number | null>(null);
+  const livePriceRef = useRef(0);
+
+  useEffect(() => {
+    let on = true;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/pilot/reference-price`);
+        const d = await res.json();
+        if (on && d.status === "ok") {
+          const p = Number(d.reference?.price ?? 0);
+          if (p > 0) { setLivePrice(p); livePriceRef.current = Date.now(); }
+        }
+      } catch { /* best effort */ }
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => { on = false; clearInterval(id); };
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -355,7 +374,14 @@ function Dashboard({ token }: { token: string }) {
               Last refresh: {lastRefresh || "loading..."}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {livePrice && (
+              <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 8, background: "var(--card-2)", border: "1px solid var(--border)" }}>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>BTC</span>
+                <span style={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: "var(--text)" }}>{fmtUsd(livePrice)}</span>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: (Date.now() - livePriceRef.current) < 5000 ? "var(--success)" : "var(--muted)" }} />
+              </div>
+            )}
             <button
               onClick={refresh}
               style={{
@@ -613,7 +639,7 @@ function Dashboard({ token }: { token: string }) {
                               return tp > 0 ? fmtUsd(tp) : "—";
                             })()}
                           </td>
-                          <td style={{ padding: "8px 6px", fontSize: 10, color: msLeft < 3600000 && msLeft > 0 ? "var(--danger)" : "var(--muted)" }}>{isActive ? timeLeft : "—"}</td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, color: msLeft < 3600000 && msLeft > 0 ? "var(--danger)" : "var(--muted)" }}>{(isActive || isTriggered) ? timeLeft : "—"}</td>
                           <td style={{ padding: "8px 6px", fontSize: 10 }}>
                             {(() => {
                               const isExpired = p.status?.startsWith("expired") || false;
