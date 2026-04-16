@@ -2782,6 +2782,7 @@ export const registerPilotRoutes = async (
   });
 
   app.post("/pilot/protections/activate", async (req, reply) => {
+    const quoteStartedAt = Date.now();
     if (!enforcePilotWindow(reply)) return;
     if (!pilotConfig.activationEnabled) {
       reply.code(503);
