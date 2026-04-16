@@ -7,7 +7,7 @@ import { AdminDashboardPage } from "./AdminDashboard";
 import { TreasuryDashboard } from "./TreasuryDashboard";
 import { TreasuryAdmin } from "./TreasuryAdmin";
 import { SimpleSimPilotApp } from "./SimpleSimPilotApp";
-import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET } from "./config";
+import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET, PILOT_ACCESS_CODE } from "./config";
 import "./styles.css";
 
 type ErrorBoundaryState = {
@@ -55,6 +55,55 @@ function usePathRoute() {
   return path;
 }
 
+const ACCESS_KEY = "foxify_pilot_access";
+
+function PilotAccessGate({ children }: { children: React.ReactNode }) {
+  const [code, setCode] = useState("");
+  const [granted, setGranted] = useState(() => {
+    if (!PILOT_ACCESS_CODE) return true;
+    return localStorage.getItem(ACCESS_KEY) === PILOT_ACCESS_CODE;
+  });
+
+  if (granted) return <>{children}</>;
+
+  const handleSubmit = () => {
+    if (code.trim() === PILOT_ACCESS_CODE) {
+      localStorage.setItem(ACCESS_KEY, code.trim());
+      setGranted(true);
+    }
+  };
+
+  return (
+    <div className="shell">
+      <div className="card" style={{ maxWidth: 400, padding: 24 }}>
+        <div style={{ textAlign: "center", marginBottom: 20 }}>
+          <img src="https://i.ibb.co/SDwxMqS8/Foxify-200x200.png" alt="" style={{ width: 48, height: 48, borderRadius: 12, marginBottom: 12 }} onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+          <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: 0.2 }}>Foxify Perp Protect</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>Pilot Access</div>
+        </div>
+        <input
+          type="password"
+          placeholder="Access code"
+          value={code}
+          onChange={e => setCode(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && handleSubmit()}
+          style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--card-2)", color: "var(--text)", fontSize: 14, marginBottom: 12, outline: "none", boxSizing: "border-box" }}
+          autoFocus
+        />
+        <button
+          onClick={handleSubmit}
+          style={{ width: "100%", padding: "10px 0", borderRadius: 8, border: "none", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+        >
+          Enter Pilot
+        </button>
+        <div style={{ textAlign: "center", marginTop: 14, fontSize: 10, color: "var(--muted)", opacity: 0.4 }}>
+          Atticus Strategy, Ltd.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AppRouter() {
   const path = usePathRoute();
 
@@ -70,8 +119,8 @@ function AppRouter() {
     return <TreasuryDashboard />;
   }
 
-  if (PILOT_SIMPLE_SIM_WIDGET) return <SimpleSimPilotApp />;
-  if (PILOT_WIDGET) return <PilotWidget />;
+  if (PILOT_SIMPLE_SIM_WIDGET) return <PilotAccessGate><SimpleSimPilotApp /></PilotAccessGate>;
+  if (PILOT_WIDGET) return <PilotAccessGate><PilotWidget /></PilotAccessGate>;
   return <App />;
 }
 

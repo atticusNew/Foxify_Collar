@@ -26,3 +26,4 @@ export const PILOT_SIMPLE_SIM_WIDGET = import.meta.env.VITE_PILOT_SIMPLE_SIM_WID
 export const PILOT_SIM_TRIGGER_TOKEN = import.meta.env.VITE_PILOT_INTERNAL_TOKEN ?? "";
 export const PILOT_TERMS_VERSION = (import.meta.env.VITE_PILOT_TERMS_VERSION ?? "v1.0").trim() || "v1.0";
 export const PILOT_ACTIVATION_ENABLED = import.meta.env.VITE_PILOT_ACTIVATION_ENABLED === "true";
+export const PILOT_ACCESS_CODE = (import.meta.env.VITE_PILOT_ACCESS_CODE ?? "").trim();
