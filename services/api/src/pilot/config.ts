@@ -992,7 +992,7 @@ const parseV7PricingConfig = (): V7PricingConfig => ({
   enabled: parseBooleanEnv(process.env.V7_PRICING_ENABLED, true),
   defaultTenorDays: parsePositiveIntInRange(
     process.env.V7_DEFAULT_TENOR_DAYS,
-    2,
+    1,
     1,
     30,
     "invalid_v7_default_tenor_days"

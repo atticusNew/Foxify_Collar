@@ -16,7 +16,7 @@ const STOP_LOSS_OPTIONS = [2, 3, 5, 10] as const;
 type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
 const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
 const SL_RATE: Record<StopLoss, number> = { 2: 5, 3: 4, 5: 3, 10: 2 };
-const SL_TENOR: Record<StopLoss, number> = { 2: 2, 3: 2, 5: 2, 10: 2 };
+const SL_TENOR: Record<StopLoss, number> = { 2: 1, 3: 1, 5: 1, 10: 1 };
 const POS_MIN = 10000, POS_MAX = 50000, POS_STEP = 5000, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";
 const LOGO = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";
@@ -287,7 +287,7 @@ export function PilotWidget() {
               {ready ? <>If your position hits <strong style={{ color: "var(--danger)" }}>{dd}%</strong> stop loss, you receive <strong style={{ color: "var(--success)" }}>{fmt(payout)}</strong> instantly.</> : <span style={{ color: "var(--muted)" }}>Select position type and stop loss to see protection details.</span>}
             </div>
             {ready && <>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} for {tenor} days</span></div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} for {tenor} {tenor === 1 ? "day" : "days"}</span></div>
               {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
             </>}
           </div>

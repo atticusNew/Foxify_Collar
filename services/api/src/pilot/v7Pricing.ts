@@ -15,11 +15,11 @@ const V7_RATE_PER_1K: Record<V7SlTier, number> = {
 };
 
 const V7_TENOR_DAYS: Record<V7SlTier, number> = {
-  1: 2,
-  2: 2,
-  3: 2,
-  5: 2,
-  10: 2
+  1: 1,
+  2: 1,
+  3: 1,
+  5: 1,
+  10: 1
 };
 
 /**
