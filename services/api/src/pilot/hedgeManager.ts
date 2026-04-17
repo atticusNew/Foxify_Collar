@@ -35,18 +35,78 @@ type HedgeManagementResult = {
 
 const RISK_FREE_RATE = 0;
 
-// ── TP Timing Parameters ──
-const COOLING_PERIOD_HOURS = 0.5;
-const DEEP_DROP_COOLING_HOURS = 0.167;
+// ── Base TP Timing Parameters (normal vol: DVOL 35-60) ──
+const BASE_COOLING_HOURS = 0.5;
+const BASE_DEEP_DROP_COOLING_HOURS = 0.167;
+const BASE_PRIME_THRESHOLD_MULTIPLIER = 0.25;
+const BASE_LATE_THRESHOLD_MULTIPLIER = 0.10;
+
+// ── Fixed parameters (not vol-adjusted) ──
 const DEEP_DROP_THRESHOLD_PCT = 1.5;
 const BOUNCE_RECOVERY_MIN_VALUE = 3;
 const PRIME_WINDOW_END_HOURS = 8;
-const PRIME_THRESHOLD_MULTIPLIER = 0.25;
-const LATE_THRESHOLD_MULTIPLIER = 0.10;
 const NEAR_EXPIRY_SALVAGE_HOURS = 10;
 const NEAR_EXPIRY_MIN_VALUE = 3;
 const ACTIVE_SALVAGE_HOURS = 8;
 const ACTIVE_SALVAGE_MIN_VALUE = 5;
+
+// ── DVOL regime boundaries ──
+const DVOL_LOW = 35;
+const DVOL_HIGH = 60;
+
+// ── Gap-aware hold parameters ──
+const GAP_SIGNIFICANT_PCT = 0.3;
+const GAP_COOLING_EXTENSION_HOURS = 0.5;
+
+type VolRegime = "low" | "normal" | "high";
+
+const resolveVolRegime = (dvol: number): VolRegime => {
+  if (dvol < DVOL_LOW) return "low";
+  if (dvol > DVOL_HIGH) return "high";
+  return "normal";
+};
+
+const resolveAdaptiveParams = (dvol: number) => {
+  const regime = resolveVolRegime(dvol);
+  switch (regime) {
+    case "high":
+      return {
+        regime,
+        coolingHours: 1.0,
+        deepDropCoolingHours: 0.25,
+        primeThreshold: 0.35,
+        lateThreshold: 0.15,
+        primeWindowEndHours: 10
+      };
+    case "low":
+      return {
+        regime,
+        coolingHours: 0.25,
+        deepDropCoolingHours: 0.1,
+        primeThreshold: 0.15,
+        lateThreshold: 0.05,
+        primeWindowEndHours: 6
+      };
+    default:
+      return {
+        regime,
+        coolingHours: BASE_COOLING_HOURS,
+        deepDropCoolingHours: BASE_DEEP_DROP_COOLING_HOURS,
+        primeThreshold: BASE_PRIME_THRESHOLD_MULTIPLIER,
+        lateThreshold: BASE_LATE_THRESHOLD_MULTIPLIER,
+        primeWindowEndHours: PRIME_WINDOW_END_HOURS
+      };
+  }
+};
+
+const computeStrikeFloorGapPct = (
+  protectionType: string,
+  strike: number,
+  floorPrice: number
+): number => {
+  if (floorPrice <= 0 || strike <= 0) return 0;
+  return Math.abs(strike - floorPrice) / floorPrice * 100;
+};
 
 const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
   const result = await pool.query(`
@@ -224,6 +284,9 @@ export const runHedgeManagementCycle = async (params: {
 }): Promise<HedgeManagementResult> => {
   const result: HedgeManagementResult = { scanned: 0, tpSold: 0, salvaged: 0, expired: 0, errors: 0, noBidRetries: 0, skipped: 0 };
 
+  const dvol = params.currentIV;
+  const adaptive = resolveAdaptiveParams(dvol);
+
   let hedges: ManagedHedge[];
   try {
     hedges = await queryManagedHedges(params.pool);
@@ -259,7 +322,7 @@ export const runHedgeManagementCycle = async (params: {
         currentSpot: params.currentSpot,
         strike: hedge.strike,
         expiryMs: hedge.expiryMs,
-        sigma: params.currentIV / 100,
+        sigma: dvol / 100,
         quantity: hedge.quantity,
         nowMs: now
       });
@@ -295,43 +358,52 @@ export const runHedgeManagementCycle = async (params: {
       const bounced = isProtectionBounced(hedge.protectionType, params.currentSpot, hedge.floorPrice);
       const optionIsOtm = isOptionOtm(hedge.protectionType, params.currentSpot, hedge.strike);
 
+      const gapPct = computeStrikeFloorGapPct(hedge.protectionType, hedge.strike, hedge.floorPrice);
+      const hasSignificantGap = gapPct >= GAP_SIGNIFICANT_PCT;
+      const gapInDeadZone = hasSignificantGap && !bounced && optionIsOtm;
+      const effectiveCooling = gapInDeadZone
+        ? adaptive.coolingHours + GAP_COOLING_EXTENSION_HOURS
+        : adaptive.coolingHours;
+
       let shouldSell = false;
       let reason = "";
 
       if (hoursToExpiry < NEAR_EXPIRY_SALVAGE_HOURS && optionVal.totalValue >= NEAR_EXPIRY_MIN_VALUE) {
         shouldSell = true;
         reason = "near_expiry_salvage";
-      } else if (isDeepDrop && hoursSinceTrigger >= DEEP_DROP_COOLING_HOURS && optionVal.totalValue >= payout * PRIME_THRESHOLD_MULTIPLIER) {
+      } else if (isDeepDrop && hoursSinceTrigger >= adaptive.deepDropCoolingHours && optionVal.totalValue >= payout * adaptive.primeThreshold) {
         shouldSell = true;
         reason = "deep_drop_tp";
-      } else if (hoursSinceTrigger < COOLING_PERIOD_HOURS) {
+      } else if (hoursSinceTrigger < effectiveCooling) {
         shouldSell = false;
-        reason = "cooling_period";
-      } else if (bounced && hoursSinceTrigger >= COOLING_PERIOD_HOURS && optionVal.totalValue >= BOUNCE_RECOVERY_MIN_VALUE) {
+        reason = gapInDeadZone ? "gap_extended_cooling" : "cooling_period";
+      } else if (bounced && hoursSinceTrigger >= effectiveCooling && optionVal.totalValue >= BOUNCE_RECOVERY_MIN_VALUE) {
         shouldSell = true;
         reason = "bounce_recovery";
-      } else if (hoursSinceTrigger >= COOLING_PERIOD_HOURS && hoursSinceTrigger < PRIME_WINDOW_END_HOURS) {
-        if (optionVal.totalValue >= payout * PRIME_THRESHOLD_MULTIPLIER) {
+      } else if (hoursSinceTrigger >= effectiveCooling && hoursSinceTrigger < adaptive.primeWindowEndHours) {
+        if (optionVal.totalValue >= payout * adaptive.primeThreshold) {
           shouldSell = true;
           reason = "take_profit_prime";
         }
-      } else if (hoursSinceTrigger >= PRIME_WINDOW_END_HOURS) {
-        if (optionVal.totalValue >= payout * LATE_THRESHOLD_MULTIPLIER) {
+      } else if (hoursSinceTrigger >= adaptive.primeWindowEndHours) {
+        if (optionVal.totalValue >= payout * adaptive.lateThreshold) {
           shouldSell = true;
           reason = "take_profit_late";
         }
       }
 
       if (!shouldSell) {
-        if (reason === "cooling_period") {
-          console.log(`[HedgeManager] Cooling: ${hedge.protectionId} ${hoursSinceTrigger.toFixed(1)}h since trigger, floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}% value=$${optionVal.totalValue.toFixed(2)}, bounced=${bounced} optionOtm=${optionIsOtm}`);
+        const thresholdUsd = payout * (hoursSinceTrigger < adaptive.primeWindowEndHours ? adaptive.primeThreshold : adaptive.lateThreshold);
+        if (reason === "cooling_period" || reason === "gap_extended_cooling") {
+          console.log(`[HedgeManager] ${reason}: ${hedge.protectionId} ${hoursSinceTrigger.toFixed(1)}h/${effectiveCooling.toFixed(1)}h cooling, floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}% value=$${optionVal.totalValue.toFixed(2)} vol=${adaptive.regime}(${dvol.toFixed(0)}) gap=${gapPct.toFixed(2)}%`);
         } else {
-          console.log(`[HedgeManager] Hold: ${hedge.protectionId} sinceTrigger=${hoursSinceTrigger.toFixed(1)}h toExpiry=${hoursToExpiry.toFixed(1)}h value=$${optionVal.totalValue.toFixed(2)} threshold=$${(payout * (hoursSinceTrigger < PRIME_WINDOW_END_HOURS ? PRIME_THRESHOLD_MULTIPLIER : LATE_THRESHOLD_MULTIPLIER)).toFixed(2)} floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}% bounced=${bounced} optionOtm=${optionIsOtm}`);
+          console.log(`[HedgeManager] Hold: ${hedge.protectionId} sinceTrigger=${hoursSinceTrigger.toFixed(1)}h toExpiry=${hoursToExpiry.toFixed(1)}h value=$${optionVal.totalValue.toFixed(2)} threshold=$${thresholdUsd.toFixed(2)} floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}% bounced=${bounced} optionOtm=${optionIsOtm} vol=${adaptive.regime}(${dvol.toFixed(0)}) gap=${gapPct.toFixed(2)}%`);
         }
         result.skipped++;
         continue;
       }
 
+      console.log(`[HedgeManager] TP decision (${reason}): ${hedge.protectionId} vol=${adaptive.regime}(${dvol.toFixed(0)}) gap=${gapPct.toFixed(2)}% floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}%`);
       const sellStatus = await executeSell(hedge, reason, optionVal, params.sellOption, params.pool);
       if (sellStatus === "sold") { result.tpSold++; }
       else if (sellStatus === "no_bid") { result.noBidRetries++; }
@@ -343,7 +415,7 @@ export const runHedgeManagementCycle = async (params: {
   }
 
   console.log(
-    `[HedgeManager] Cycle complete: scanned=${result.scanned} tpSold=${result.tpSold} salvaged=${result.salvaged} expired=${result.expired} noBid=${result.noBidRetries} errors=${result.errors} skipped=${result.skipped}`
+    `[HedgeManager] Cycle complete: scanned=${result.scanned} tpSold=${result.tpSold} salvaged=${result.salvaged} expired=${result.expired} noBid=${result.noBidRetries} errors=${result.errors} skipped=${result.skipped} vol=${adaptive.regime}(${dvol.toFixed(0)})`
   );
   return result;
 };
