@@ -911,14 +911,22 @@ export const registerPilotRoutes = async (
   }) : deribitVenue;
 
   if (pilotConfig.v7.enabled) {
+    // DVOL/RVOL must come from Deribit MAINNET regardless of trading-account
+    // environment. Testnet's volatility-index endpoint serves synthetic flat
+    // values (~133 as of 2026-04 — not a real market reading) which would
+    // mis-tune the DVOL-adaptive TP logic and the BS recovery model.
+    // deps.deribitLive is the read-only mainnet connector wired in
+    // services/api/src/server.ts. Falls back to deps.deribit only if no
+    // separate mainnet connector was provided (e.g. in some tests).
+    const regimeConnector = deps.deribitLive ?? deps.deribit;
     configureRegimeClassifier({
-      deribitConnector: deps.deribit,
+      deribitConnector: regimeConnector,
       thresholds: {
         calmBelow: pilotConfig.v7.dvolCalmThreshold,
         stressAbove: pilotConfig.v7.dvolStressThreshold
       }
     });
-    console.log(`[V7] Regime classifier configured: calm<${pilotConfig.v7.dvolCalmThreshold}% stress>${pilotConfig.v7.dvolStressThreshold}% tenor=${pilotConfig.v7.defaultTenorDays}d`);
+    console.log(`[V7] Regime classifier configured: calm<${pilotConfig.v7.dvolCalmThreshold}% stress>${pilotConfig.v7.dvolStressThreshold}% tenor=${pilotConfig.v7.defaultTenorDays}d source=${deps.deribitLive ? "deribit_mainnet" : "deribit_default"}`);
   }
 
   const resolveAndPersistExpiry = async (protectionId: string): Promise<void> => {
@@ -4314,14 +4322,19 @@ export const registerPilotRoutes = async (
   console.log(`[AutoRenew] Scheduler started: interval=${autoRenewIntervalMs}ms`);
 
   const hedgeMgmtIntervalMs = Number(process.env.PILOT_HEDGE_MGMT_INTERVAL_MS || "60000");
+  // Use mainnet for spot index AND DVOL — both feed the hedge-management
+  // decision tree (DVOL via resolveAdaptiveParams + BS recovery sigma; spot
+  // via computeOptionValue). Testnet returns synthetic data on both. Falls
+  // back to deps.deribit if no separate mainnet connector was wired.
+  const dataConnector = deps.deribitLive ?? deps.deribit;
   const hedgeMgmtInterval = setInterval(async () => {
     try {
       const spot = await (async () => {
-        const ticker = await deps.deribit.getIndexPrice("btc_usd");
+        const ticker = await dataConnector.getIndexPrice("btc_usd");
         return Number((ticker as any)?.result?.index_price ?? 0);
       })();
       if (!spot || spot <= 0) return;
-      const dvolResult = await deps.deribit.getDVOL("BTC");
+      const dvolResult = await dataConnector.getDVOL("BTC");
       const iv = dvolResult.dvol ?? 50;
       const sellOptionDirect = async (p: { instrumentId: string; quantity: number }) => {
         try {

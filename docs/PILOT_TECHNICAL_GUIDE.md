@@ -23,7 +23,10 @@ The Atticus pilot platform provides automated downside protection for Bitcoin po
 │  └── Treasury Scheduler — Daily automated treasury cycles    │
 ├─────────────────────────────────────────────────────────────┤
 │  External Services                                           │
-│  ├── Deribit — Options execution (testnet/live)              │
+│  ├── Deribit (trading account) — Options execution           │
+│  │     paper on testnet, real on live; venue.mode controls   │
+│  ├── Deribit (mainnet, read-only) — DVOL/RVOL/regime data    │
+│  │     ALWAYS mainnet regardless of trading account env      │
 │  ├── Coinbase — Primary spot price feed                      │
 │  └── Deribit Perpetual — Fallback spot price feed            │
 ├─────────────────────────────────────────────────────────────┤
@@ -191,6 +194,20 @@ Example: $50,000 at 2% SL = $50k / 1k × $5 = $250 premium
 ### Bounce Detection
 
 When a triggered position's option goes OTM (spot recovered past strike), the system sells immediately after the 30-min cooling period. An OTM option after trigger only loses time value — waiting gains nothing.
+
+### Volatility Data Source (DVOL / RVOL)
+
+DVOL and RVOL drive (a) the regime classifier, (b) the DVOL-adaptive TP timing/threshold parameters in the hedge manager, and (c) the Black-Scholes recovery-value model. **Both must always be sourced from Deribit mainnet,** regardless of whether the trading account lives on testnet or live.
+
+Implementation:
+- `services/api/src/server.ts` constructs two `DeribitConnector` instances:
+  - `deribit` — env-driven (`DERIBIT_ENV` / `PILOT_VENUE_MODE`), used for trading and account-bound calls. May point at testnet for the paper pilot.
+  - `deribitLive` — always `env="live"`, paper mode, no credentials. Used exclusively for read-only public market data.
+- The pilot regime classifier (`configureRegimeClassifier`) and the hedge-manager scheduler are both wired to `deribitLive` for `getDVOL("BTC")` and `getHistoricalVolatility("BTC")`.
+- Testnet's `get_volatility_index_data` endpoint returns synthetic flat values (~133 as of Apr 2026, vs mainnet ~43). Routing DVOL through testnet would mis-tune the TP decision tree (running high-vol parameters in a calm market) and overstate Black-Scholes fair values.
+- A defensive `console.warn` fires in the connector if `getDVOL` is called against a `testnet`-env instance, as a safety net for future code paths.
+
+Verification: run `npm run pilot:verify:dvol-source` in `services/api/` to confirm the platform's `/pilot/regime` endpoint returns mainnet-aligned DVOL.
 
 ---
 
