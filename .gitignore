@@ -7,3 +7,10 @@ target/
 *.log
 logs/
 artifacts/
+
+# Phase 0 raw drop zones — keep local, do not commit (READMEs are tracked)
+docs/pilot-reports/raw-logs/*.log
+docs/pilot-reports/raw-logs/*.txt
+!docs/pilot-reports/raw-logs/README.md
+docs/pilot-reports/raw-pilot-data/*/
+!docs/pilot-reports/raw-pilot-data/README.md
