@@ -464,7 +464,7 @@ function Dashboard({ token }: { token: string }) {
                 </div>
               ) : (
                 <div style={{ fontSize: 12, color: "var(--muted)", padding: "10px 0" }}>
-                  {monitorStatus ? "Health check returned degraded status (IBKR transport not connected -- expected for Bullish profile)" : "Loading..."}
+                  {monitorStatus ? "Health endpoint returned degraded — check Deribit connectivity in Render logs" : "Loading..."}
                 </div>
               )}
             </div>
@@ -536,7 +536,7 @@ function Dashboard({ token }: { token: string }) {
               )}
               {treasury && treasury.balance && (
                 <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
-                  Bullish account balance: {fmtUsd(treasury.balance)} {treasury.currency || "USDC"}
+                  Deribit account balance: {fmtUsd(treasury.balance)} {treasury.currency || "USDC"}
                 </div>
               )}
             </div>
