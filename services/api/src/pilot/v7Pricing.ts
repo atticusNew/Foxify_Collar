@@ -3,7 +3,7 @@ import type { V7Regime, V7SlTier, V7PremiumQuote } from "./types";
 import { V7_SL_TIERS } from "./types";
 
 /**
- * V7 Tiered Premium Schedule — USD per $1k notional, 2-day rolling tenor.
+ * V7 Tiered Premium Schedule — USD per $1k notional, 1-day rolling tenor.
  * Pricing curve: charge more for tight SL (expensive to hedge), less for wide SL.
  */
 const V7_RATE_PER_1K: Record<V7SlTier, number> = {
