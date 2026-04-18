@@ -1284,6 +1284,196 @@ export const upsertExecutionQualityDaily = async (
   );
 };
 
+/**
+ * Append a single per-trade observation to the daily rollup row, accumulating:
+ *  - sample_count        sums by 1
+ *  - quotes/fills/rejects accumulate in metadata
+ *  - avg_slippage_bps    weighted-average across all observations on that day
+ *  - avg_spread_pct      weighted-average across all observations on that day
+ *  - avg_top_book_depth  weighted-average across all observations on that day
+ *  - fill_success_rate_pct  recomputed from running sum of fills/quotes
+ *  - p95_slippage_bps    recomputed from a per-trade slippage array kept in metadata.slippageSamples
+ *  - per-trade audit trail in metadata.tradeIds (capped at 200 entries)
+ *  - latest protectionId / quoteId always overwrites for traceability of the most recent fill
+ *  - updated_at advances on every call
+ *
+ * Use this from the activate path (one observation per successful activation).
+ * For backfill (where each input row is already an aggregate), continue to use
+ * upsertExecutionQualityDaily which has overwrite semantics.
+ *
+ * Identity for ON CONFLICT remains the composite UNIQUE (day, venue, hedge_mode);
+ * the id column is filled with a generated UUID on first insert and preserved
+ * on subsequent updates.
+ */
+export const incrementExecutionQualityDaily = async (
+  pool: Queryable,
+  input: {
+    day?: string;
+    dayIso?: string;
+    venue: string;
+    hedgeMode: HedgeMode;
+    /** This single trade's slippage in bps. Aggregator computes daily weighted avg + p95. */
+    slippageBps: number;
+    /** This single trade's quote→fill latency in ms. Aggregator computes daily avg. */
+    latencyMs?: number;
+    /** This single trade's quote spread, if known (otherwise undefined). */
+    spreadPct?: number;
+    /** Top-of-book depth observed at fill time, if known. */
+    topBookDepth?: number;
+    /** True if the activation produced a fill; false if it was a quote-only / reject. */
+    filled: boolean;
+    /** Optional cross-references for audit. */
+    protectionId?: string;
+    quoteId?: string;
+    /** Free-form notes merged into metadata. */
+    notes?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  const dayRaw = String(input.day || input.dayIso || "").trim();
+  if (!dayRaw) throw new Error("invalid_execution_quality_day");
+  const day = dayRaw.slice(0, 10);
+  const id = randomUUID();
+  const slip = Number.isFinite(Number(input.slippageBps)) ? Number(input.slippageBps) : 0;
+  const filled = !!input.filled;
+  const quotesDelta = 1;
+  const fillsDelta = filled ? 1 : 0;
+  const rejectsDelta = filled ? 0 : 1;
+
+  // Read existing row (single row per day/venue/hedge_mode key) so we can
+  // recompute aggregates in code. This is two round-trips per activation, but
+  // activate is already a multi-step path and the alternative (computing in
+  // SQL with jsonb arithmetic) becomes hard to reason about for percentile
+  // and array-append semantics. Two round-trips is acceptable at pilot
+  // throughput.
+  const existing = await pool.query(
+    `SELECT sample_count, avg_slippage_bps, avg_spread_pct, avg_top_book_depth, metadata
+     FROM pilot_execution_quality_daily
+     WHERE day = $1 AND venue = $2 AND hedge_mode = $3
+     LIMIT 1`,
+    [day, input.venue, input.hedgeMode]
+  );
+
+  const prev = existing.rows[0] as
+    | {
+        sample_count: number | string;
+        avg_slippage_bps: string | null;
+        avg_spread_pct: string | null;
+        avg_top_book_depth: string | null;
+        metadata: Record<string, unknown> | null;
+      }
+    | undefined;
+
+  const prevN = prev ? Math.max(0, Math.floor(Number(prev.sample_count) || 0)) : 0;
+  const prevMeta = (prev?.metadata || {}) as Record<string, unknown>;
+  const prevQuotes = Math.max(0, Math.floor(Number((prevMeta as any).quotes || 0)));
+  const prevFills = Math.max(0, Math.floor(Number((prevMeta as any).fills || 0)));
+  const prevRejects = Math.max(0, Math.floor(Number((prevMeta as any).rejects || 0)));
+  const prevSlippageSamples = Array.isArray((prevMeta as any).slippageSamples)
+    ? ((prevMeta as any).slippageSamples as number[]).filter((n) => Number.isFinite(n))
+    : [];
+  const prevTradeIds = Array.isArray((prevMeta as any).tradeIds)
+    ? ((prevMeta as any).tradeIds as Array<Record<string, unknown>>)
+    : [];
+  const prevAvgLatencyMs = Number.isFinite(Number((prevMeta as any).avgLatencyMs))
+    ? Number((prevMeta as any).avgLatencyMs)
+    : null;
+
+  const newN = prevN + 1;
+  const weighted = (prevAvg: string | null | undefined, sample: number | undefined): number | null => {
+    if (sample === undefined || !Number.isFinite(sample)) {
+      return prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+    }
+    const prevNum = prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+    if (prevNum === null) return sample;
+    return (prevNum * prevN + sample) / newN;
+  };
+
+  const newAvgSlippageBps = weighted(prev?.avg_slippage_bps, slip) ?? 0;
+  const newAvgSpreadPct = weighted(prev?.avg_spread_pct, input.spreadPct);
+  const newAvgTopBookDepth = weighted(prev?.avg_top_book_depth, input.topBookDepth);
+
+  const newQuotes = prevQuotes + quotesDelta;
+  const newFills = prevFills + fillsDelta;
+  const newRejects = prevRejects + rejectsDelta;
+  const newFillRatePct = newQuotes > 0 ? (newFills / newQuotes) * 100 : null;
+
+  // Append slippage sample (cap at 500 to bound row size); recompute p95.
+  const slippageSamples = [...prevSlippageSamples, slip].slice(-500);
+  const sortedSamples = [...slippageSamples].sort((a, b) => a - b);
+  const p95Idx = Math.min(
+    sortedSamples.length - 1,
+    Math.max(0, Math.floor(0.95 * (sortedSamples.length - 1)))
+  );
+  const newP95SlippageBps = sortedSamples.length > 0 ? sortedSamples[p95Idx] : null;
+
+  // Append trade-id audit (cap at 200).
+  const tradeAudit: Record<string, unknown> = { ts: new Date().toISOString() };
+  if (input.protectionId) tradeAudit.protectionId = input.protectionId;
+  if (input.quoteId) tradeAudit.quoteId = input.quoteId;
+  if (input.latencyMs !== undefined && Number.isFinite(input.latencyMs)) {
+    tradeAudit.latencyMs = Math.max(0, Math.floor(input.latencyMs));
+  }
+  tradeAudit.slippageBps = slip;
+  tradeAudit.filled = filled;
+  const tradeIds = [...prevTradeIds, tradeAudit].slice(-200);
+
+  // Running average latency.
+  const latencyMs = Number.isFinite(Number(input.latencyMs)) ? Number(input.latencyMs) : null;
+  const newAvgLatencyMs =
+    latencyMs === null
+      ? prevAvgLatencyMs
+      : prevAvgLatencyMs === null
+        ? latencyMs
+        : (prevAvgLatencyMs * prevN + latencyMs) / newN;
+
+  const metadata = {
+    ...prevMeta,
+    ...(input.notes || {}),
+    quotes: newQuotes,
+    fills: newFills,
+    rejects: newRejects,
+    avgLatencyMs: newAvgLatencyMs === null ? null : String(newAvgLatencyMs),
+    slippageSamples,
+    tradeIds,
+    // Latest-trade traceability fields (always overwritten):
+    lastProtectionId: input.protectionId ?? (prevMeta as any).lastProtectionId ?? null,
+    lastQuoteId: input.quoteId ?? (prevMeta as any).lastQuoteId ?? null,
+    lastUpdatedAt: new Date().toISOString()
+  };
+
+  await pool.query(
+    `
+      INSERT INTO pilot_execution_quality_daily (
+        id, day, venue, hedge_mode, avg_slippage_bps, p95_slippage_bps, fill_success_rate_pct,
+        avg_spread_pct, avg_top_book_depth, sample_count, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+      ON CONFLICT (day, venue, hedge_mode) DO UPDATE SET
+        avg_slippage_bps      = EXCLUDED.avg_slippage_bps,
+        p95_slippage_bps      = EXCLUDED.p95_slippage_bps,
+        fill_success_rate_pct = EXCLUDED.fill_success_rate_pct,
+        avg_spread_pct        = EXCLUDED.avg_spread_pct,
+        avg_top_book_depth    = EXCLUDED.avg_top_book_depth,
+        sample_count          = EXCLUDED.sample_count,
+        metadata              = EXCLUDED.metadata,
+        updated_at            = NOW()
+    `,
+    [
+      id,
+      day,
+      input.venue,
+      input.hedgeMode,
+      String(newAvgSlippageBps),
+      newP95SlippageBps === null ? null : String(newP95SlippageBps),
+      newFillRatePct === null ? null : String(newFillRatePct),
+      newAvgSpreadPct === null ? null : String(newAvgSpreadPct),
+      newAvgTopBookDepth === null ? null : String(newAvgTopBookDepth),
+      newN,
+      JSON.stringify(metadata)
+    ]
+  );
+};
+
 export const listExecutionQualityRecent = async (
   pool: Queryable,
   params: {
