@@ -46,6 +46,7 @@ import {
   reserveDailyActivationCapacity,
   releaseDailyActivationCapacity,
   patchProtection,
+  patchProtectionForStatus,
   insertSimPosition,
   insertSimTreasuryLedgerEntry,
   getSimPlatformMetrics
@@ -4120,6 +4121,145 @@ export const registerPilotRoutes = async (
     }
     reply.code(400);
     return { status: "error", reason: "invalid_decision" };
+  });
+
+  /**
+   * Toggle auto-renew on/off for an active protection AFTER it has been opened.
+   *
+   * Per Pilot Agreement §3.3, auto-renewal is "available at Client's discretion" —
+   * the activation-time checkbox already supports turning it ON; this endpoint
+   * supports turning it ON or OFF at any point during the protection's life
+   * without closing the underlying perp position.
+   *
+   * Semantics:
+   *   - The current protection cycle ALWAYS runs to its natural expiry
+   *     regardless of this toggle. This endpoint only affects whether the
+   *     auto-renew scheduler creates a NEW protection at expiry.
+   *   - Optimistic-lock guard: only `status = 'active'` rows are toggleable.
+   *     A protection that has already triggered, expired, or been cancelled
+   *     cannot be toggled (404 / 409 — see below).
+   *   - Race window with the auto-renew scheduler (runs every 5 min): if the
+   *     scheduler has already initiated a renewal at the moment the trader
+   *     toggles OFF, that renewal may complete. The next cycle will respect
+   *     the new setting. This is documented in the response message and the
+   *     frontend toast.
+   *   - Audit trail: every toggle appends an entry to metadata.autoRenewToggles
+   *     with timestamp + new value, so admin/operators can reconstruct intent
+   *     post-hoc.
+   *
+   * Request:
+   *   POST /pilot/protections/:id/auto-renew
+   *   body: { enabled: true | false }
+   *
+   * Responses:
+   *   200 { status: "ok", protection, autoRenew: boolean, message: string }
+   *   400 { status: "error", reason: "invalid_enabled_value" }
+   *   404 { status: "error", reason: "not_found" }
+   *   409 { status: "error", reason: "protection_not_active",
+   *         currentStatus, message }
+   *   200 (no-op) { status: "ok", protection, autoRenew, idempotentReplay: true,
+   *                 message }
+   */
+  app.post("/pilot/protections/:id/auto-renew", async (req, reply) => {
+    const params = req.params as { id: string };
+    const body = (req.body || {}) as { enabled?: unknown };
+    const enabled = typeof body.enabled === "boolean" ? body.enabled : null;
+    if (enabled === null) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "invalid_enabled_value",
+        message: "Body must include { \"enabled\": true | false }."
+      };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protection, userHash)) {
+      // Hide existence of other tenants' protections behind 404, not 403.
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (protection.status !== "active") {
+      reply.code(409);
+      return {
+        status: "error",
+        reason: "protection_not_active",
+        currentStatus: protection.status,
+        message:
+          "Auto-renew can only be toggled on an active protection. " +
+          `This protection is currently '${protection.status}'.`
+      };
+    }
+    if (Boolean(protection.autoRenew) === enabled) {
+      // Idempotent replay — already in requested state. Return 200 with the
+      // existing protection so the frontend can settle without surprise.
+      return {
+        status: "ok",
+        idempotentReplay: true,
+        autoRenew: enabled,
+        protection: sanitizeProtectionForTrader(protection as unknown as Record<string, unknown>),
+        message: enabled
+          ? "Auto-renew is already enabled for this protection."
+          : "Auto-renew is already disabled for this protection."
+      };
+    }
+    const auditEntry = {
+      ts: new Date().toISOString(),
+      enabled,
+      previous: Boolean(protection.autoRenew)
+    };
+    const updated = await patchProtectionForStatus(pool, {
+      id: params.id,
+      expectedStatus: "active",
+      patch: {
+        auto_renew: enabled,
+        // Append to an array of toggle events on metadata jsonb. Passing a
+        // plain object follows the existing convention in triggerMonitor.ts
+        // (pg driver serializes jsonb-bound objects automatically).
+        metadata: {
+          ...(protection.metadata || {}),
+          autoRenewToggles: [
+            ...((protection.metadata?.autoRenewToggles as Array<unknown> | undefined) || []),
+            auditEntry
+          ],
+          lastAutoRenewToggleAt: auditEntry.ts,
+          lastAutoRenewToggleValue: enabled
+        }
+      }
+    });
+    if (!updated) {
+      // Lost the optimistic lock — protection status changed between our
+      // read and our write (e.g. it just triggered). Surface as 409.
+      reply.code(409);
+      return {
+        status: "error",
+        reason: "protection_status_changed",
+        message:
+          "Protection status changed during the toggle attempt. " +
+          "Refresh and try again — the protection may have triggered or expired."
+      };
+    }
+    const message = enabled
+      ? "Auto-renew enabled. A new protection will be created at expiry."
+      : "Auto-renew disabled. The current protection will run to expiry; no new protection will be created. " +
+        "If a renewal was already in flight (5-min scheduler window), one more cycle may complete.";
+    return {
+      status: "ok",
+      autoRenew: enabled,
+      protection: sanitizeProtectionForTrader(updated as unknown as Record<string, unknown>),
+      message
+    };
   });
 
   app.post("/pilot/admin/reset", async (req, reply) => {
