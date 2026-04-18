@@ -239,6 +239,23 @@ type LogStats = {
     renewed: number;
     failed: number;
   };
+  deribitAdapter: {
+    executions: number;
+    fillsByInstrument: Record<string, number>;
+    sampleFills: string[];
+    placeOrderRawSeen: number;
+  };
+  activate: {
+    executionQualityUpsertFailures: number;
+    sampleExecutionQualityFailures: string[];
+    otherErrorWarnings: number;
+  };
+  regimeObservations: {
+    volHigh: number;
+    volNormal: number;
+    volLow: number;
+    sampleVolBands: string[];
+  };
 };
 
 const emptyStats = (): LogStats => ({
@@ -276,6 +293,23 @@ const emptyStats = (): LogStats => ({
   autoRenew: {
     renewed: 0,
     failed: 0
+  },
+  deribitAdapter: {
+    executions: 0,
+    fillsByInstrument: {},
+    sampleFills: [],
+    placeOrderRawSeen: 0
+  },
+  activate: {
+    executionQualityUpsertFailures: 0,
+    sampleExecutionQualityFailures: [],
+    otherErrorWarnings: 0
+  },
+  regimeObservations: {
+    volHigh: 0,
+    volNormal: 0,
+    volLow: 0,
+    sampleVolBands: []
   }
 });
 
@@ -308,6 +342,46 @@ const ingestLogLine = (line: string, stats: LogStats): void => {
       stats.hedgeManager.sumExpired += parseInt0(m[4]);
       stats.hedgeManager.sumNoBidRetries += parseInt0(m[5]);
       stats.hedgeManager.sumErrors += parseInt0(m[6]);
+      // Capture vol regime band emitted at end of cycle line: vol=high(133) | normal(43) | low(28)
+      const vm = line.match(/vol=(low|normal|high)\((\d+)\)/);
+      if (vm) {
+        const band = vm[1] as "low" | "normal" | "high";
+        if (band === "high") stats.regimeObservations.volHigh += 1;
+        else if (band === "normal") stats.regimeObservations.volNormal += 1;
+        else if (band === "low") stats.regimeObservations.volLow += 1;
+        if (stats.regimeObservations.sampleVolBands.length < 8) {
+          stats.regimeObservations.sampleVolBands.push(`${band}(${vm[2]})`);
+        }
+      }
+      return;
+    }
+  }
+  if (line.includes("[DeribitAdapter]")) {
+    if (/placeOrder raw response/.test(line)) {
+      stats.deribitAdapter.placeOrderRawSeen += 1;
+      return;
+    }
+    const m = line.match(/execute: instrument=(\S+) filled=(\w+) qty=([\d.]+) priceBtc=([\d.]+) priceUsd=([\d.]+) orderId=(\S+)/);
+    if (m) {
+      stats.deribitAdapter.executions += 1;
+      const inst = m[1];
+      stats.deribitAdapter.fillsByInstrument[inst] = (stats.deribitAdapter.fillsByInstrument[inst] || 0) + 1;
+      if (stats.deribitAdapter.sampleFills.length < 10) {
+        stats.deribitAdapter.sampleFills.push(line.trim());
+      }
+      return;
+    }
+  }
+  if (line.includes("[Activate]")) {
+    if (/Execution quality upsert failed/.test(line)) {
+      stats.activate.executionQualityUpsertFailures += 1;
+      if (stats.activate.sampleExecutionQualityFailures.length < 5) {
+        stats.activate.sampleExecutionQualityFailures.push(line.trim());
+      }
+      return;
+    }
+    if (/FAILED|ERROR|error|failed/i.test(line)) {
+      stats.activate.otherErrorWarnings += 1;
       return;
     }
   }
@@ -949,6 +1023,40 @@ ${Object.entries(logHM.sellResultByStatus).length === 0 ? "_(none in paste-ins)_
 - \`OVER_PREMIUM\` penalty events: ${logOS.overPremiumPenalties}
 - Per-candidate \`score:\` lines: ${logOS.candidatesScored}
 - \`trigger_strike_unavailable\` rejections: ${logOS.triggerStrikeUnavailable}
+
+---
+
+## 7b. DeribitAdapter Execution (Render logs)
+
+- \`placeOrder raw response\` events seen: ${logs.deribitAdapter.placeOrderRawSeen}
+- \`execute:\` summary lines parsed: ${logs.deribitAdapter.executions}
+- Fills by instrument:
+${Object.keys(logs.deribitAdapter.fillsByInstrument).length === 0 ? "  _(none in paste-ins)_" : Object.entries(logs.deribitAdapter.fillsByInstrument).map(([k, v]) => `  - \`${k}\`: ${v}`).join("\n")}
+${logs.deribitAdapter.sampleFills.length > 0 ? "\nSample fills (max 10):\n" + logs.deribitAdapter.sampleFills.map((l) => "    " + l).join("\n") : ""}
+
+---
+
+## 7c. Activate-Path Errors (Render logs)
+
+- \`Execution quality upsert failed\` events: ${logs.activate.executionQualityUpsertFailures}
+- Other \`[Activate]\` error/warning lines: ${logs.activate.otherErrorWarnings}
+${logs.activate.sampleExecutionQualityFailures.length > 0 ? "\nSample upsert failures (max 5):\n" + logs.activate.sampleExecutionQualityFailures.map((l) => "    " + l).join("\n") : ""}
+
+> _If Execution quality upsert failures > 0, the \`pilot_execution_quality_daily\` rollup table is not being populated, which is why \`/pilot/admin/diagnostics/execution-quality\` returns no records. Activations themselves are unaffected — the error is caught and logged without rolling back the trade. Production-readiness item, not a pilot blocker._
+
+---
+
+## 7d. DVOL Regime Observations from \`Cycle complete\` lines
+
+Counts per regime band recorded at the end of each hedge-manager cycle:
+
+- \`vol=high\`:   ${logs.regimeObservations.volHigh}
+- \`vol=normal\`: ${logs.regimeObservations.volNormal}
+- \`vol=low\`:    ${logs.regimeObservations.volLow}
+
+${logs.regimeObservations.sampleVolBands.length > 0 ? `Sample bands (chronological): ${logs.regimeObservations.sampleVolBands.join(", ")}` : "_(no cycle lines with vol band in paste-ins)_"}
+
+> _After PR #26 deployed (DVOL fix), this distribution should reflect mainnet regime (typically \`normal\` for current DVOL ≈ 43). If \`vol=high\` continues to appear post-deploy, investigate cache TTL or connector wiring._
 
 ---
 
