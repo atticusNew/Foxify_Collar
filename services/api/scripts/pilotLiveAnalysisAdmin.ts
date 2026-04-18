@@ -189,7 +189,7 @@ const persistSnapshot = async (args: CliArgs, snap: Snapshot): Promise<string> =
     counts: {
       protectionsActive: countList(snap.protectionsActive, "protections"),
       protectionsAllRows: countList(snap.protectionsAll, "rows"),
-      executionQualityRecords: countList(snap.executionQuality, "records")
+      executionQualityRecords: countList(snap.executionQuality, "rows")
     }
   });
   return dir;
