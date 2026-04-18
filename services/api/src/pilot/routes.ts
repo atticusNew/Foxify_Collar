@@ -40,6 +40,7 @@ import {
   listRecentQuoteDiagnostics,
   patchSimPosition,
   upsertExecutionQualityDaily,
+  incrementExecutionQualityDaily,
   reserveDailyTreasurySubsidyCapacity,
   releaseDailyTreasurySubsidyCapacity,
   reserveDailyActivationCapacity,
@@ -3328,26 +3329,25 @@ export const registerPilotRoutes = async (
           ? Math.max(0, ((execution.premium - lockedQuote.premium) / execution.premium) * 10_000)
           : 0;
       try {
-        await upsertExecutionQualityDaily(pool, {
+        // Per-trade observation; the function accumulates into the day's
+        // rollup (sample_count += 1, weighted-average slippage / spread,
+        // running fill rate from quotes/fills, p95 from a kept-sample array).
+        // Replaces the prior overwrite-style upsertExecutionQualityDaily call
+        // which was clobbering the row on every activation (PR #34).
+        const spreadPctRaw = Number((lockedQuote.details as Record<string, unknown>)?.spreadPct);
+        await incrementExecutionQualityDaily(pool, {
           dayIso: new Date().toISOString(),
           venue: execution.venue,
           hedgeMode: contextHedgeMode || deriveHedgeMode(lockedQuote.details),
-          quotes: 1,
-          fills: 1,
-          rejects: 0,
-          avgSlippageBps: realizedSlippageBps,
-          avgLatencyMs: Date.now() - quoteStartedAt,
-          avgSpreadPct:
-            Number.isFinite(Number((lockedQuote.details as Record<string, unknown>)?.spreadPct))
-              ? Number((lockedQuote.details as Record<string, unknown>)?.spreadPct)
-              : null,
-          notes: {
-            quoteId: lockedQuote.quoteId,
-            protectionId: reservedProtection.id
-          }
+          slippageBps: realizedSlippageBps,
+          latencyMs: Date.now() - quoteStartedAt,
+          spreadPct: Number.isFinite(spreadPctRaw) ? spreadPctRaw : undefined,
+          filled: true,
+          protectionId: reservedProtection.id,
+          quoteId: lockedQuote.quoteId
         });
       } catch (eqErr: any) {
-        console.warn(`[Activate] Execution quality upsert failed: ${eqErr?.message}`);
+        console.warn(`[Activate] Execution quality increment failed: ${eqErr?.message}`);
       }
       try {
         await insertLedgerEntry(pool, {
@@ -3573,23 +3573,17 @@ export const registerPilotRoutes = async (
       } else if (reason === "execution_failed") {
         if (reservedProtection && contextHedgeMode) {
           try {
-            await upsertExecutionQualityDaily(pool, {
+            const spreadPctRawFail = Number((lockedQuote?.details as Record<string, unknown>)?.spreadPct);
+            await incrementExecutionQualityDaily(pool, {
               dayIso: new Date().toISOString(),
               venue: pilotConfig.venueMode,
               hedgeMode: contextHedgeMode,
-              quotes: 1,
-              fills: 0,
-              rejects: 1,
-              avgSlippageBps: 0,
-              avgLatencyMs: Date.now() - quoteStartedAt,
-              avgSpreadPct:
-                Number.isFinite(Number((lockedQuote?.details as Record<string, unknown>)?.spreadPct))
-                  ? Number((lockedQuote?.details as Record<string, unknown>)?.spreadPct)
-                  : null,
-              notes: {
-                quoteId: lockedQuote?.quoteId || body.quoteId,
-                rejection: executionFailureDetail || "execution_failed"
-              }
+              slippageBps: 0,
+              latencyMs: Date.now() - quoteStartedAt,
+              spreadPct: Number.isFinite(spreadPctRawFail) ? spreadPctRawFail : undefined,
+              filled: false,
+              quoteId: lockedQuote?.quoteId || body.quoteId,
+              notes: { rejection: executionFailureDetail || "execution_failed" }
             });
           } catch {
             // Best-effort telemetry only on failed executions.
