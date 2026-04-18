@@ -14,7 +14,7 @@ The Atticus pilot platform provides automated downside protection for Bitcoin po
 │  ├── TreasuryDashboard — Foxify's treasury view              │
 │  └── TreasuryAdmin — Operator treasury admin                 │
 ├─────────────────────────────────────────────────────────────┤
-│  Backend API (FastAPI / Node + Fastify)                       │
+│  Backend API (Node + Fastify)                                 │
 │  ├── Pilot Routes — Quote, activate, monitor, admin          │
 │  ├── Treasury Routes — Status, history, billing, execute     │
 │  ├── Trigger Monitor — 3s polling for floor breaches         │
@@ -59,68 +59,65 @@ Background:
 
 ### Quote Phase
 
-1. User selects position type (long/short), size ($10k-$50k), and SL% (2/3/5/10)
-2. Frontend calls `POST /pilot/protections/quote`
-3. Backend fetches spot price from Coinbase (fallback: Deribit perpetual)
-4. Computes floor/trigger price: `entry × (1 - SL%/100)` for longs
-5. Computes V7 premium: `notional / 1000 × ratePer1k` (e.g., $5/1k for 2%)
-6. Calls Deribit `listInstruments("BTC")` to get available options
-7. Filters by expiry window (requested tenor ± 2 days, min half-tenor)
-8. Scores candidates by strike proximity, tenor alignment, and ITM preference
-9. Fetches order book for top 8 candidates, applies cost cap
-10. Returns quote with instrument, premium, strike, and expiry
+1. User selects position type (long/short), size ($10k–$50k), and SL% (2/3/5/10).
+2. Frontend calls `POST /pilot/protections/quote`.
+3. Backend fetches spot price from Coinbase (fallback: Deribit perpetual).
+4. Computes floor/trigger price: `entry × (1 - SL%/100)` for longs, `entry × (1 + SL%/100)` for shorts.
+5. Computes V7 premium: `notional / 1000 × ratePer1k` (e.g., $5/1k for 2%).
+6. Calls Deribit `listInstruments("BTC")` to get available options.
+7. Filters by expiry window: `[now + max(8h, tenor × 0.5), now + tenor + 2 days]`.
+8. For trigger-aligned mode: also filters strikes within ±0.5% of the trigger price.
+9. Sorts candidates by an asymmetric tenor penalty (too-short expiry penalized 3×), strike-distance, and ITM preference (when applicable).
+10. Fetches order books for top 8 candidates, applies a soft cost-cap penalty when hedge cost exceeds client premium.
+11. Returns quote with instrument, premium, strike, and expiry.
 
 ### Activation Phase
 
-1. User clicks "Open + Protect"
-2. Frontend calls `POST /pilot/protections/activate` with quoteId
-3. Backend retrieves cached quote, validates it hasn't expired
-4. Executes market buy on Deribit for the selected option
-5. Creates protection record in DB with status `active`
-6. Creates sim position, price snapshot, venue execution, and ledger entry
-7. Returns protection ID to frontend
+1. User clicks "Open + Protect".
+2. Frontend calls `POST /pilot/protections/activate` with `quoteId`.
+3. Backend retrieves cached quote, validates it hasn't expired.
+4. Executes a market buy on Deribit for the selected option.
+5. Creates protection record in DB with status `active`.
+6. Creates sim position, price snapshot, venue execution, and ledger entry.
+7. Returns protection ID to the frontend.
 
 ### Monitoring Phase
 
-1. Frontend polls `GET /pilot/protections/:id/monitor` every 5s
-2. Returns current spot, distance to floor, time remaining, option mark
-3. Trigger monitor runs independently every 3s server-side
+1. Frontend polls `GET /pilot/protections/:id/monitor` every 5s.
+2. Returns current spot, distance to floor, time remaining, option mark.
+3. Trigger monitor runs independently every 3s server-side.
 
 ### Trigger Phase
 
-1. Trigger monitor detects `spot <= floorPrice` (longs) or `spot >= ceilingPrice` (shorts)
-2. Atomically updates protection to `status: triggered` with optimistic lock
-3. Records payout amount: `notional × SL%`
-4. Credits sim position balance
-5. Inserts ledger entry for `trigger_payout_due`
-6. Hedge manager begins TP recovery cycle on the option
+1. Trigger monitor detects `spot ≤ floorPrice` (longs) or `spot ≥ ceilingPrice` (shorts).
+2. Atomically updates protection to `status: triggered` with an optimistic lock (`WHERE status = 'active'`).
+3. Records payout amount: `notional × SL%`.
+4. Credits sim position balance.
+5. Inserts ledger entry for `trigger_payout_due`.
+6. Hedge manager begins TP recovery cycle on the option.
 
 ### TP Recovery Phase
 
-1. Hedge manager evaluates triggered positions every 60s
-2. Computes option value via Black-Scholes (put for longs, call for shorts)
-3. Decision tree:
-   - Near expiry (<10h) + value ≥ $3 → sell (salvage)
-   - Deep drop (1.5%+ past strike) + past 10min → sell
-   - Past 30min cooling + option OTM (bounced) + value ≥ $3 → sell
-   - Prime window (0.5-8h) + value ≥ 0.25× payout → sell
-   - Late window (8h+) + value ≥ 0.10× payout → sell
-4. Executes market sell on Deribit
-5. Records proceeds in metadata as `sellResult`
+1. Hedge manager evaluates triggered positions every 60s.
+2. Computes option value via Black-Scholes (put for longs, call for shorts) using DVOL as `sigma`.
+3. Resolves the active TP regime from current DVOL (low / normal / high) — see Section 5.
+4. Walks the decision tree (Section 5) and either sells the option, holds for cooling/gap, or holds for an insufficient-value condition.
+5. Executes a market sell on Deribit when the decision is to sell.
+6. Records proceeds in `metadata.sellResult` and flips `hedge_status` to `tp_sold`.
 
 ### Expiry Phase
 
-1. Expiry resolver runs every 30s checking `expiry_at <= NOW()`
-2. Fetches final spot price
-3. Computes settlement: ITM puts → payout; OTM → zero
-4. Sets status to `expired_itm` or `expired_otm`
-5. If auto-renew enabled → auto-renew cycle creates new protection
+1. Expiry resolver runs every 30s checking `expiry_at <= NOW()`.
+2. Fetches final spot price.
+3. Computes settlement: ITM puts → payout owed to Atticus from option settlement; OTM → zero.
+4. Sets status to `expired_itm` or `expired_otm`.
+5. If auto-renew enabled → auto-renew cycle creates a new protection.
 
 ### Active Salvage (Non-Triggered)
 
-1. Hedge manager checks active positions within 8h of expiry
-2. If option has ≥ $5 in value → sells to capture remaining time value
-3. This recovers value from positions that never triggered
+1. Hedge manager checks active (non-triggered) positions within the active-salvage window before expiry (Section 5).
+2. If option has at least the active-salvage minimum value → sells to capture remaining time value.
+3. This recovers value from positions that never triggered.
 
 ---
 
@@ -129,21 +126,23 @@ Background:
 ### Premium Schedule
 
 | SL% | Rate per $1k | Tenor | Payout per $10k |
-|-----|-------------|-------|-----------------|
-| 2%  | $5.00       | 2 days | $200           |
-| 3%  | $4.00       | 2 days | $300           |
-| 5%  | $3.00       | 2 days | $500           |
-| 10% | $2.00       | 2 days | $1,000         |
+|-----|--------------|-------|-----------------|
+| 2%  | $5.00        | 1 day | $200            |
+| 3%  | $4.00        | 1 day | $300            |
+| 5%  | $3.00        | 1 day | $500            |
+| 10% | $2.00        | 1 day | $1,000          |
 
 Premium formula: `notional / 1000 × ratePer1k`
 
-Example: $50,000 at 2% SL = $50k / 1k × $5 = $250 premium
+Example: $50,000 at 2% SL = $50,000 / 1,000 × $5 = $250 premium.
+
+`SL 1%` ($6/1k, $100 payout per $10k) is defined in `v7Pricing.ts` for forward compatibility but is intentionally excluded from `V7_LAUNCHED_TIERS` and is not selectable via the frontend or quote API during the pilot.
 
 ### Margin Economics
 
-- **Spread** = Client Premium - Hedge Cost
-- **Net P&L** = Total Spreads - Total Payouts + TP Recovery
-- Target: positive spread on every trade (cost cap ensures this)
+- **Spread** = Client Premium − Hedge Cost
+- **Net P&L** = Total Spreads − Total Payouts + TP Recovery
+- The cost-cap soft penalty in option selection biases the system toward positive-spread instruments. When every available instrument exceeds the client premium, the system still selects the cheapest candidate and logs a `⚠ NEGATIVE_MARGIN` warning rather than failing the activation.
 
 ---
 
@@ -151,49 +150,86 @@ Example: $50,000 at 2% SL = $50k / 1k × $5 = $250 premium
 
 ### Phase A — Candidate Filtering & Ranking
 
-1. Fetch all BTC options from Deribit
-2. Filter by option type (puts for longs, calls for shorts)
-3. Filter by expiry window: `[now + max(8h, tenor×0.5), now + tenor + 2 days]`
-4. For trigger-aligned mode: filter strikes within 0.5% buffer of trigger price
-5. Sort with asymmetric tenor penalty (too-short expiry penalized 3×)
-6. ITM preference for ≤2.5% SL: puts at/above trigger get -2.0 bonus
+1. Fetch all BTC options from Deribit.
+2. Filter by option type (puts for longs, calls for shorts).
+3. Filter by expiry window: `[now + max(8h, tenor × 0.5), now + tenor + 2 days]`.
+4. For trigger-aligned mode (`PILOT_STRIKE_SELECTION_MODE=trigger_aligned`): filter strikes within ±0.5% of trigger.
+5. Sort with asymmetric tenor penalty (too-short expiry penalized 3×).
+6. ITM preference for `drawdownFloorPct ≤ 0.025`: puts at/above the trigger receive a `-2.0` sort bonus. Of the launched tiers, only **2% SL** satisfies this condition.
 
 ### Phase B — Order Book Scoring
 
-1. Fetch order books for top 8 candidates
-2. Score: `costScore = ask + strikeDist × 0.5`
-3. ITM bonus: `-0.002` for ITM candidates when preferItm is true
-4. Cost cap: if hedge cost > client premium, proportional penalty added
-5. Winner: lowest costScore
+1. Fetch order books for top 8 candidates.
+2. Score: `costScore = ask + strikeDist × 0.5`.
+3. ITM bonus: `-0.002` for ITM candidates when `preferItm` is true.
+4. Cost cap (soft): if `hedgeCost > clientPremium`, add `(hedgeCost − clientPremium) / clientPremium × 0.5` to `costScore`.
+5. Winner: lowest `costScore`. Logged as `[OptionSelection] WINNER:` with margin %, with `⚠ NEGATIVE_MARGIN` annotation when applicable.
 
 ### Key Parameters
 
-- `preferItm`: true when `drawdownFloorPct ≤ 0.025` (2% and 2.5% SL) and option type is put
-- `strikeSelectionMode`: `trigger_aligned` (aligns strikes to trigger price)
-- `maxTenorDriftDays`: 1.5 (max allowed deviation from requested tenor)
-- `quotePolicy`: `ask_or_mark_fallback` (use ask price, fall back to mark if no ask)
+- `preferItm`: true when `drawdownFloorPct ≤ 0.025` and option type is put.
+- `strikeSelectionMode`: `trigger_aligned` (aligns strikes to trigger price).
+- `maxTenorDriftDays`: 1.5 (max allowed deviation from requested tenor).
+- `quotePolicy`: `ask_or_mark_fallback` (use ask price, fall back to mark if no ask).
+
+If no candidate strike exists in the trigger band under `trigger_aligned` mode, the quote endpoint throws `deribit_quote_unavailable:trigger_strike_unavailable`.
 
 ---
 
 ## 5. Hedge Management & TP Logic
 
-### Parameters
+The hedge manager runs every 60s. It services two classes of positions: **active** (not yet triggered, candidates for active salvage near expiry) and **triggered** (candidates for the full TP decision tree).
 
-| Parameter | Value |
-|-----------|-------|
-| Cooling period | 30 min (10 min for deep drops) |
-| Deep drop threshold | 1.5% past strike |
-| Prime window | 0.5-8h after trigger |
-| Prime threshold | 0.25× payout |
-| Late threshold | 0.10× payout |
-| Near-expiry salvage | <10h to expiry, min $3 |
-| Active salvage | <8h to expiry, min $5 |
-| Bounce detection | OTM after trigger, min $3 |
-| Cycle interval | 60s |
+### DVOL-Adaptive TP Parameters
 
-### Bounce Detection
+The TP timing thresholds adapt to the current DVOL regime resolved from `currentIV`:
 
-When a triggered position's option goes OTM (spot recovered past strike), the system sells immediately after the 30-min cooling period. An OTM option after trigger only loses time value — waiting gains nothing.
+| Parameter                   | Low (DVOL < 35) | Normal (35–60) | High (DVOL > 60) |
+|-----------------------------|-----------------|----------------|------------------|
+| Cooling period (h)          | 0.25            | 0.50           | 1.00             |
+| Deep-drop cooling (h)       | 0.10            | 0.167          | 0.25             |
+| Prime threshold × payout    | 0.15            | 0.25           | 0.35             |
+| Late threshold × payout     | 0.05            | 0.10           | 0.15             |
+| Prime window end (h)        | 6               | 8              | 10               |
+
+### Fixed (Non-Adaptive) Parameters
+
+| Parameter                         | Value     |
+|-----------------------------------|-----------|
+| Deep-drop threshold               | 1.5% past floor |
+| Bounce-recovery min option value  | $3        |
+| Near-expiry salvage window        | < 6 h to expiry |
+| Near-expiry salvage min value     | $3        |
+| Active salvage window             | < 4 h to expiry |
+| Active salvage min value          | $5        |
+| Gap-significant threshold         | 0.3% (strike-vs-floor) |
+| Gap-cooling extension             | +0.5 h    |
+| Cycle interval                    | 60 s      |
+
+### Decision Tree (Triggered Positions)
+
+The hedge manager evaluates these branches in order; the first matching branch wins:
+
+1. **Near-expiry salvage** — `hoursToExpiry < 6` AND `optionValue ≥ $3` → sell.
+2. **Deep-drop TP** — `dropFromFloorPct ≥ 1.5%` AND `hoursSinceTrigger ≥ deepDropCooling` AND `optionValue ≥ payout × primeThreshold` → sell.
+3. **Cooling / gap-extended cooling** — `hoursSinceTrigger < effectiveCooling` → hold. `effectiveCooling = cooling + 0.5h` when `gapPct ≥ 0.3%` AND option is OTM AND not yet bounced.
+4. **Bounce recovery** — `bounced` (spot back through floor) AND `hoursSinceTrigger ≥ effectiveCooling` AND `optionValue ≥ $3` → sell. (Once OTM after trigger, an option only loses time value; waiting gains nothing.)
+5. **Prime window TP** — `effectiveCooling ≤ hoursSinceTrigger < primeWindowEnd` AND `optionValue ≥ payout × primeThreshold` → sell.
+6. **Late window TP** — `hoursSinceTrigger ≥ primeWindowEnd` AND `optionValue ≥ payout × lateThreshold` → sell.
+
+### Active (Non-Triggered) Positions
+
+Only the active-salvage branch is evaluated:
+
+- `hoursToExpiry ≤ 4` AND `optionValue ≥ $5` → sell to capture remaining time value.
+
+### Sell Execution & Outcomes
+
+Each sell call returns one of `sold`, `no_bid`, or `failed`:
+
+- `sold` — `hedge_status` flips to `tp_sold`, `metadata.sellResult` records `fillPrice`, `totalProceeds`, `orderId`, and Black-Scholes-derived `bsRecovery` snapshot.
+- `no_bid` — counted as `noBidRetries`; the hedge will be re-evaluated next cycle.
+- `failed` — counted as `errors`; logged with truncated detail payload.
 
 ### Volatility Data Source (DVOL / RVOL)
 
@@ -213,27 +249,29 @@ Verification: run `npm run pilot:verify:dvol-source` in `services/api/` to confi
 
 ## 6. Trigger Monitoring
 
-- **Interval**: 3 seconds
-- **Primary price source**: Coinbase (`/products/BTC-USD/ticker`)
-- **Fallback**: Deribit perpetual ticker
-- **Retry**: 3 attempts with 180ms delay per source
-- **Freshness check**: Rejects prices older than 5 seconds
-- **Breach logic**: `spot ≤ triggerPrice` (longs), `spot ≥ triggerPrice` (shorts)
-- **Atomic update**: Uses `WHERE status = 'active'` guard to prevent double-trigger
-- **Batch size**: 50 protections per cycle
-- **Error tracking**: Consecutive price errors logged, warning at 10+
+- **Interval**: 3 seconds (`PILOT_TRIGGER_MONITOR_INTERVAL_MS`, min 1 s).
+- **Primary price source**: Coinbase (`/products/BTC-USD/ticker`).
+- **Fallback**: Deribit perpetual ticker.
+- **Retry**: 3 attempts with 180 ms delay per source.
+- **Freshness check**: Rejects prices older than 5 seconds.
+- **Breach logic**: `spot ≤ triggerPrice` (longs), `spot ≥ triggerPrice` (shorts).
+- **Atomic update**: Uses `WHERE status = 'active'` guard to prevent double-trigger.
+- **Batch size**: 50 protections per cycle.
+- **Error tracking**: Consecutive price errors logged; warning at 10+.
 
 ---
 
 ## 7. Auto-Renew System
 
-- **Interval**: 5 minutes
-- **Candidates**: `auto_renew = true` AND `expiry_at` within 30 min ahead or 2 hours past
-- **Protection type**: Reads from original protection (supports both long/short)
-- **Dedup**: Skips if `metadata.renewedTo` already set
-- **On success**: Creates new protection, patches old with `renewedTo` pointer
-- **On failure**: Logs error, old protection stays active until expiry resolver handles it
-- **Frontend**: Polls monitor, follows `renewedTo` chain to display new protection
+- **Interval**: 5 minutes.
+- **Candidates**: `auto_renew = true` AND either:
+  - `status = 'active'` AND `expiry_at` within 30 minutes ahead or 2 hours past, OR
+  - `status = 'triggered'` AND `expiry_at` within 24 hours past (covers post-trigger renewal of triggered protections).
+- **Protection type**: Reads from original protection (supports both long → put, short → call).
+- **Dedup**: Skips if `metadata.renewedTo` already set.
+- **On success**: Creates new protection, patches old with `renewedTo` pointer and sets old status to `expired_otm`.
+- **On failure**: Logs error, old protection stays in place until expiry resolver handles it.
+- **Frontend**: Polls monitor, follows `renewedTo` chain to display the new protection seamlessly.
 
 ---
 
@@ -241,38 +279,38 @@ Verification: run `npm run pilot:verify:dvol-source` in `services/api/` to confi
 
 ### Overview
 
-Separate system for institutional daily protection ($1M+ notional). Runs on the same infrastructure but with independent tables, routes, and scheduler.
+Separate system for institutional daily protection ($1M+ notional). Runs on the same infrastructure but with independent tables, routes, and scheduler. Treasury is **not enabled** during the retail pilot to avoid contaminating pilot reconciliation data and avoid sharing the testnet Deribit account with non-pilot trades.
 
 ### Daily Cycle
 
-1. At scheduled execution time (configurable UTC hour/minute)
-2. Gets current spot price
-3. Computes floor: `spot × (1 - floorPct/100)`
-4. Requests option quote from Deribit
-5. Executes purchase
-6. Records protection with premium, hedge cost, spread
-7. Monitors for trigger throughout the day
-8. Settles at expiry
+1. At scheduled execution time (configurable UTC hour/minute, defaults `00:05` UTC).
+2. Gets current spot price.
+3. Computes floor: `spot × (1 − floorPct/100)`.
+4. Requests option quote from Deribit.
+5. Executes purchase.
+6. Records protection with premium, hedge cost, spread.
+7. Monitors for trigger throughout the day.
+8. Settles at expiry.
 
 ### Structure: Fixed Payout
 
-- Client pays daily premium (e.g., 25 bps of notional)
-- If BTC breaches floor → client receives fixed payout (notional × floorPct)
-- Option value beyond fixed payout is Atticus profit (TP recovery)
+- Client pays daily premium (e.g., 25 bps of notional, configurable).
+- If BTC breaches floor → client receives fixed payout (`notional × floorPct`).
+- Option value beyond fixed payout is Atticus profit (TP recovery).
 
 ### Treasury Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/treasury/status` | Current protection status (Foxify view) |
-| GET | `/treasury/history` | Protection history |
-| POST | `/treasury/pause` | Pause daily execution |
-| POST | `/treasury/resume` | Resume execution |
-| POST | `/treasury/notional` | Adjust notional amount |
-| POST | `/treasury/execute-now` | Force immediate execution |
-| POST | `/treasury/reset` | Reset all treasury data |
-| GET | `/treasury/admin/status` | Full admin view with P&L |
-| GET | `/treasury/billing/summary` | Monthly billing breakdown |
+| GET    | `/treasury/status`            | Current protection status (Foxify view) |
+| GET    | `/treasury/history`           | Protection history |
+| POST   | `/treasury/pause`             | Pause daily execution |
+| POST   | `/treasury/resume`            | Resume execution |
+| POST   | `/treasury/notional`          | Adjust notional amount |
+| POST   | `/treasury/execute-now`       | Force immediate execution |
+| POST   | `/treasury/reset`             | Reset all treasury data |
+| GET    | `/treasury/admin/status`      | Full admin view with P&L |
+| GET    | `/treasury/billing/summary`   | Monthly billing breakdown |
 
 ---
 
@@ -282,26 +320,26 @@ Separate system for institutional daily protection ($1M+ notional). Runs on the 
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| POST | `/pilot/protections/quote` | None | Generate protection quote |
-| POST | `/pilot/protections/activate` | None | Execute protection |
-| GET | `/pilot/protections/:id/monitor` | None | Live protection status |
-| GET | `/pilot/protections` | Admin | List all protections |
-| GET | `/pilot/reference-price` | None | Current BTC spot price |
-| GET | `/pilot/regime` | None | Current volatility regime |
-| GET | `/pilot/health` | None | Platform health check |
+| POST   | `/pilot/protections/quote`           | None  | Generate protection quote |
+| POST   | `/pilot/protections/activate`        | None  | Execute protection |
+| GET    | `/pilot/protections/:id/monitor`     | None  | Live protection status |
+| GET    | `/pilot/protections`                 | Admin | List all protections |
+| GET    | `/pilot/reference-price`             | None  | Current BTC spot price |
+| GET    | `/pilot/regime`                      | None  | Current volatility regime |
+| GET    | `/pilot/health`                      | None  | Platform health check |
 
 ### Admin Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/pilot/admin/metrics` | Aggregate P&L and metrics |
-| GET | `/pilot/admin/diagnostics/execution-quality` | Fill rates and slippage |
-| POST | `/pilot/admin/protections/:id/premium-settled` | Mark premium as settled |
-| POST | `/pilot/admin/protections/:id/payout-settled` | Mark payout as settled |
-| GET | `/pilot/admin/protections/:id/ledger` | Protection ledger entries |
-| POST | `/pilot/admin/reset` | Reset all pilot data |
-| GET | `/pilot/monitor/status` | Monitor health status |
-| GET | `/pilot/monitor/alerts` | Recent alerts |
+| GET    | `/pilot/admin/metrics`                                  | Aggregate P&L and metrics |
+| GET    | `/pilot/admin/diagnostics/execution-quality`            | Fill rates and slippage |
+| POST   | `/pilot/admin/protections/:id/premium-settled`          | Mark premium as settled |
+| POST   | `/pilot/admin/protections/:id/payout-settled`           | Mark payout as settled |
+| GET    | `/pilot/admin/protections/:id/ledger`                   | Protection ledger entries |
+| POST   | `/pilot/admin/reset`                                    | Reset all pilot data |
+| GET    | `/pilot/monitor/status`                                 | Monitor health status |
+| GET    | `/pilot/monitor/alerts`                                 | Recent alerts |
 
 ---
 
@@ -310,21 +348,23 @@ Separate system for institutional daily protection ($1M+ notional). Runs on the 
 ### pilot_protections
 Primary table for all protection records.
 
-Key columns: `id`, `user_hash`, `status`, `tier_name`, `sl_pct`, `drawdown_floor_pct`, `floor_price`, `entry_price`, `protected_notional`, `expiry_at`, `venue`, `instrument_id`, `size`, `execution_price`, `premium`, `payout_due_amount`, `auto_renew`, `hedge_status`, `metadata`
+Key columns: `id`, `user_hash`, `status`, `tier_name`, `sl_pct`, `drawdown_floor_pct`, `floor_price`, `entry_price`, `protected_notional`, `expiry_at`, `venue`, `instrument_id`, `size`, `execution_price`, `premium`, `payout_due_amount`, `auto_renew`, `hedge_status`, `metadata`.
 
-Status values: `pending_activation`, `active`, `triggered`, `expired_itm`, `expired_otm`, `cancelled`, `reconcile_pending`, `activation_failed`, `awaiting_expiry_price`, `awaiting_renew_decision`
+Status values: `pending_activation`, `active`, `triggered`, `expired_itm`, `expired_otm`, `cancelled`, `reconcile_pending`, `activation_failed`, `awaiting_expiry_price`, `awaiting_renew_decision`.
+
+`hedge_status` values: `active`, `tp_sold`, `expired_settled`.
 
 ### pilot_sim_positions
 Simulated perp positions (frontend-driven).
 
-Key columns: `id`, `user_hash`, `status`, `market_id`, `side`, `notional_usd`, `entry_price`, `sl_pct`, `protection_id`, `trigger_credited_usd`
+Key columns: `id`, `user_hash`, `status`, `market_id`, `side`, `notional_usd`, `entry_price`, `sl_pct`, `protection_id`, `trigger_credited_usd`.
 
 ### pilot_ledger_entries
 Accounting trail for premiums and payouts.
 
-Key columns: `id`, `protection_id`, `entry_type`, `amount`, `reference`
+Key columns: `id`, `protection_id`, `entry_type`, `amount`, `reference`.
 
-Entry types: `premium_due`, `premium_collected`, `trigger_payout_due`, `payout_due`, `payout_settled`
+Entry types: `premium_due`, `premium_collected`, `trigger_payout_due`, `payout_due`, `payout_settled`.
 
 ---
 
@@ -334,29 +374,29 @@ Entry types: `premium_due`, `premium_collected`, `trigger_payout_due`, `payout_d
 
 | Variable | Purpose | Example |
 |----------|---------|---------|
-| `PILOT_API_ENABLED` | Enable pilot routes | `true` |
-| `PILOT_ACTIVATION_ENABLED` | Enable trade execution | `true` |
-| `PILOT_VENUE_MODE` | Execution venue | `deribit_test` or `deribit_live` |
-| `DERIBIT_API_KEY` | Deribit credentials | (from Deribit) |
-| `DERIBIT_API_SECRET` | Deribit credentials | (from Deribit) |
-| `POSTGRES_URL` / `DATABASE_URL` | Database connection | (internal Render URL) |
-| `PILOT_ADMIN_TOKEN` | Admin dashboard auth | (any secure string) |
-| `V7_PRICING_ENABLED` | Enable V7 tiered pricing | `true` |
-| `V7_DEFAULT_TENOR_DAYS` | Default option tenor | `2` |
-| `VITE_PILOT_WIDGET` | Enable PilotWidget UI | `true` |
-| `VITE_PILOT_ACCESS_CODE` | Frontend access gate | (any shared code) |
-| `VITE_API_BASE` | Backend API URL | `https://foxify-pilot-new.onrender.com` |
+| `PILOT_API_ENABLED`               | Enable pilot routes        | `true` |
+| `PILOT_ACTIVATION_ENABLED`        | Enable trade execution     | `true` |
+| `PILOT_VENUE_MODE`                | Execution venue            | `deribit_test` or `deribit_live` |
+| `DERIBIT_API_KEY`                 | Deribit credentials        | (from Deribit) |
+| `DERIBIT_API_SECRET`              | Deribit credentials        | (from Deribit) |
+| `POSTGRES_URL` / `DATABASE_URL`   | Database connection        | (internal Render URL) |
+| `PILOT_ADMIN_TOKEN`               | Admin dashboard auth       | (any secure string) |
+| `V7_PRICING_ENABLED`              | Enable V7 tiered pricing   | `true` |
+| `V7_DEFAULT_TENOR_DAYS`           | Default option tenor       | `1` |
+| `VITE_PILOT_WIDGET`               | Enable PilotWidget UI      | `true` |
+| `VITE_PILOT_ACCESS_CODE`          | Frontend access gate       | (any shared code) |
+| `VITE_API_BASE`                   | Backend API URL            | `https://foxify-pilot-new.onrender.com` |
 
 ### Optional Tuning
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `PILOT_TRIGGER_MONITOR_INTERVAL_MS` | 3000 | Trigger check frequency |
-| `PILOT_HEDGE_MGMT_INTERVAL_MS` | 60000 | TP evaluation frequency |
-| `PILOT_AUTO_RENEW_INTERVAL_MS` | 300000 | Auto-renew check frequency |
-| `PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS` | 1.5 | Max tenor deviation |
-| `PILOT_STRIKE_SELECTION_MODE` | `trigger_aligned` | Strike alignment mode |
-| `PILOT_DERIBIT_QUOTE_POLICY` | `ask_or_mark_fallback` | Order book pricing policy |
+| `PILOT_TRIGGER_MONITOR_INTERVAL_MS`     | 3000   | Trigger check frequency |
+| `PILOT_HEDGE_MGMT_INTERVAL_MS`          | 60000  | TP evaluation frequency |
+| `PILOT_AUTO_RENEW_INTERVAL_MS`          | 300000 | Auto-renew check frequency |
+| `PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS`    | 1.5    | Max tenor deviation |
+| `PILOT_STRIKE_SELECTION_MODE`           | `trigger_aligned`       | Strike alignment mode |
+| `PILOT_DERIBIT_QUOTE_POLICY`            | `ask_or_mark_fallback`  | Order book pricing policy |
 
 ---
 
@@ -365,29 +405,30 @@ Entry types: `premium_due`, `premium_collected`, `trigger_payout_due`, `payout_d
 ### Log Prefixes
 
 | Prefix | System | What to Look For |
-|--------|--------|-----------------|
+|--------|--------|------------------|
 | `[TriggerMonitor]` | Trigger detection | `TRIGGERED:` events, price errors, consecutive failure warnings |
-| `[HedgeManager]` | TP recovery | `Selling (reason):` events, `Sell result:`, cycle summaries |
-| `[AutoRenew]` | Protection renewal | `Renewed X → Y`, `FAILED` errors |
-| `[OptionSelection]` | Strike selection | `WINNER:` with margin %, `OVER_PREMIUM` warnings |
+| `[HedgeManager]`   | TP recovery       | `Selling (reason):` events, `Sell result:`, `gap_extended_cooling`, `cooling_period`, cycle summaries |
+| `[AutoRenew]`      | Protection renewal | `Renewed X → Y`, `FAILED` errors |
+| `[OptionSelection]`| Strike selection  | `WINNER:` with margin %, `OVER_PREMIUM` warnings, `⚠ NEGATIVE_MARGIN` |
 | `[DeribitAdapter]` | Deribit execution | Order fills, execution details |
-| `[V7Pricing]` | Premium calculation | `slPct=X premium=$Y` |
-| `[Treasury]` | Treasury operations | Cycle execution, triggers, settlements |
+| `[V7Pricing]`      | Premium calculation | `slPct=X premium=$Y` |
+| `[Treasury]`       | Treasury operations | Cycle execution, triggers, settlements |
 
 ### Health Checks
 
-- `GET /pilot/health` — DB + price feed status
-- `GET /pilot/monitor/status` — Monitor health, consecutive failures, fill rate
-- `GET /pilot/monitor/alerts` — Recent system alerts
+- `GET /pilot/health` — DB + price feed status.
+- `GET /pilot/monitor/status` — Monitor health, consecutive failures, fill rate.
+- `GET /pilot/monitor/alerts` — Recent system alerts.
 
 ---
 
 ## 13. Known Pilot Limitations
 
-- **Deribit testnet**: Paper trades until KYC completes
-- **Single tenant**: One user hash for all positions
-- **Simulated perps**: Positions stored in localStorage, not a real exchange
-- **Manual settlement**: Premium/payout settlement tracked via admin actions
-- **HTTP polling**: Price feeds poll every 3s (not WebSocket)
-- **No automated alerts**: Monitoring via Render logs only
-- **Frontend state**: Position history in localStorage can be lost if browser data cleared
+- **Deribit testnet**: Paper trades until KYC completes and `PILOT_VENUE_MODE` is flipped to `deribit_live`.
+- **Single tenant**: One user hash for all positions.
+- **Simulated perps**: Positions stored in localStorage, not a real exchange.
+- **Manual settlement**: Premium/payout settlement tracked via admin dashboard actions; monthly net reconciliation per pilot agreement.
+- **HTTP polling**: Price feeds poll every 3s (not WebSocket).
+- **No automated alerts**: Monitoring via Render logs only during the pilot.
+- **Frontend state**: Position history in localStorage can be lost if browser data is cleared.
+- **Treasury disabled**: Treasury subsystem is built but intentionally not enabled during the retail pilot.
