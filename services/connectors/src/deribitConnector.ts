@@ -105,6 +105,17 @@ export class DeribitConnector {
   }
 
   async getDVOL(currency = "BTC"): Promise<{ dvol: number | null; timestamp: number | null }> {
+    // get_volatility_index_data on testnet returns SYNTHETIC flat values
+    // (e.g. ~133 BTC DVOL stuck for hours). It is NOT a real market reading
+    // and must not be used to drive TP / regime / BS recovery. Callers
+    // should construct a separate mainnet connector for read-only public
+    // data even when their trading account lives on testnet.
+    if (this.env === "testnet") {
+      console.warn(
+        "[Deribit] getDVOL called on testnet connector — values are synthetic and not market-representative. " +
+        "Use a 'live' env DeribitConnector for read-only public data."
+      );
+    }
     const url = `${this.baseUrl()}/public/get_volatility_index_data?currency=${currency}&resolution=1&start_timestamp=${Date.now() - 3600_000}&end_timestamp=${Date.now()}`;
     try {
       const data = await withRetry(async () => {

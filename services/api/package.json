@@ -45,6 +45,7 @@
     "pilot:backtest:consistent-matrix": "bash scripts/pilot_backtest_consistent_matrix.sh",
     "pilot:backfill:options-chain": "tsx scripts/pilotBackfillOptionsChain.ts",
     "pilot:backfill:rfq-history": "tsx scripts/pilotBackfillRfqHistory.ts",
-    "pilot:backfill:execution-quality": "tsx scripts/pilotBackfillExecutionQuality.ts"
+    "pilot:backfill:execution-quality": "tsx scripts/pilotBackfillExecutionQuality.ts",
+    "pilot:verify:dvol-source": "tsx scripts/pilotVerifyDvolSource.ts"
   }
 }
