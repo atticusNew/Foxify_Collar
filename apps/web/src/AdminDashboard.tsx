@@ -275,7 +275,7 @@ function Dashboard({ token }: { token: string }) {
         adminApi<PlatformHealth>("/pilot/health", token).catch(() => null),
         adminApi<MonitorStatus>("/pilot/monitor/status", token),
         adminApi<{ metrics: AdminMetrics }>("/pilot/admin/metrics?scope=all", token),
-        adminApi<{ records: ExecutionQuality[] }>("/pilot/admin/diagnostics/execution-quality?lookbackDays=30", token),
+        adminApi<{ rows: ExecutionQuality[] }>("/pilot/admin/diagnostics/execution-quality?lookbackDays=30", token),
         adminApi<{ alerts: Alert[] }>("/pilot/monitor/alerts?limit=20", token),
         adminApi<{ status: string; protections: ProtectionSummary[] }>("/pilot/protections?limit=50", token),
       ]);
@@ -286,7 +286,7 @@ function Dashboard({ token }: { token: string }) {
       }
       if (statusRes.status === "fulfilled") setMonitorStatus(statusRes.value);
       if (metricsRes.status === "fulfilled") setMetrics(metricsRes.value.metrics);
-      if (qualityRes.status === "fulfilled") setExecQuality(qualityRes.value.records || []);
+      if (qualityRes.status === "fulfilled") setExecQuality(qualityRes.value.rows || []);
       if (alertsRes.status === "fulfilled") setAlerts(alertsRes.value.alerts || []);
       if (protectionsRes.status === "fulfilled") setProtectionsList(protectionsRes.value.protections || []);
       setLastRefresh(new Date().toLocaleTimeString());
