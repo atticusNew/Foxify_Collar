@@ -44,6 +44,11 @@ const fetchMon = async (id: string): Promise<MonitorResponse> => {
   const raw = await api<{ status: string; monitor?: MonitorResponse } & MonitorResponse>(`/pilot/protections/${id}/monitor`);
   return raw.monitor || raw;
 };
+const toggleAutoRenew = (id: string, enabled: boolean) =>
+  api<{ status: string; autoRenew: boolean; protection?: ProtectionRecord; idempotentReplay?: boolean; message?: string }>(
+    `/pilot/protections/${id}/auto-renew`,
+    { method: "POST", body: JSON.stringify({ enabled }) }
+  );
 
 // ─── Persistence ─────────────────────────────────────────────────────
 
@@ -101,6 +106,7 @@ export function PilotWidget() {
   const [activating, setActivating] = useState(false);
   const [protectingPosId, setProtectingPosId] = useState<string | null>(null);
   const [activateError, setActivateError] = useState<string | null>(null);
+  const [autoRenewToggling, setAutoRenewToggling] = useState<string | null>(null);
   const [balance, setBalance] = useState(() => ld(K_BAL, INIT_BAL) as number);
   const [settlement, setSettlement] = useState<Settl>(() => ld(K_SET, { totalPremiums: 0, totalPayouts: 0 }));
   const [monitors, setMonitors] = useState<Record<string, MonitorResponse>>({});
@@ -230,6 +236,50 @@ export function PilotWidget() {
     if (pos) setToast(`Position #${pos.num} closed`);
   };
 
+  // Toggle auto-renew on an open protection (Pilot Agreement §3.3 — at Client's discretion).
+  // The current cycle still runs to natural expiry; this only affects whether a NEW protection
+  // is created at expiry. Optimistic UI flip + server confirm + fresh monitor refetch.
+  const handleToggleAutoRenew = useCallback(async (posId: string) => {
+    const pos = positions.find(p => p.id === posId);
+    if (!pos || !pos.protectionId) return;
+    const next = !pos.autoRenew;
+    const prev = pos.autoRenew;
+    setAutoRenewToggling(posId);
+    setPositions(p => p.map(x => x.id === posId ? { ...x, autoRenew: next } : x));
+    try {
+      const res = await toggleAutoRenew(pos.protectionId, next);
+      // Refetch monitor so the cached row reflects server truth (and the server's
+      // metadata.autoRenewToggles audit field is visible if anyone inspects it).
+      try {
+        const fresh = await fetchMon(pos.protectionId);
+        setMonitors(prevMon => ({ ...prevMon, [posId]: fresh }));
+      } catch { /* monitor refresh is best-effort */ }
+      if (res.idempotentReplay) {
+        setToast(`Position #${pos.num} — auto-renew already ${next ? "on" : "off"}`);
+      } else if (next) {
+        setToast(`Position #${pos.num} — auto-renew ON. Will renew at expiry.`);
+      } else {
+        setToast(`Position #${pos.num} — auto-renew OFF. Current cycle runs to expiry; no new cycle.`);
+      }
+    } catch (e: any) {
+      // Roll back optimistic update on failure.
+      setPositions(p => p.map(x => x.id === posId ? { ...x, autoRenew: prev } : x));
+      const msg = String(e?.message || "auto_renew_toggle_failed");
+      // 409 protection_not_active surfaces as a friendly explanation.
+      const friendly =
+        msg.includes("protection_not_active")
+          ? "Auto-renew can only be changed on an active protection."
+          : msg.includes("not_found")
+            ? "Protection no longer exists. Refresh to see latest state."
+            : msg.includes("status_changed")
+              ? "Protection status changed mid-toggle (likely just triggered or expired). Refresh and try again."
+              : `Could not toggle auto-renew: ${msg}`;
+      setActivateError(friendly);
+    } finally {
+      setAutoRenewToggling(null);
+    }
+  }, [positions]);
+
   return (
     <div className="shell">
       <div className="card" style={{ maxWidth: 500 }}>
@@ -327,7 +377,34 @@ export function PilotWidget() {
                           : pos.protectionId
                             ? <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(54,211,141,0.12)", color: "var(--success)" }}>Protected</span>
                             : <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(255,107,107,0.12)", color: "var(--danger)" }}>Unprotected</span>}
-                        {pos.autoRenew && pos.protectionId && !protectionExpired && <span style={{ fontSize: 9, fontWeight: 600, padding: "2px 5px", borderRadius: 999, background: "rgba(96,165,250,0.12)", color: "#60a5fa" }}>↻ Auto</span>}
+                        {pos.protectionId && !protectionExpired && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleAutoRenew(pos.id)}
+                            disabled={autoRenewToggling === pos.id}
+                            title={
+                              autoRenewToggling === pos.id
+                                ? "Saving…"
+                                : pos.autoRenew
+                                  ? "Auto-renew is ON. Click to turn OFF — current cycle runs to expiry; no new cycle."
+                                  : "Auto-renew is OFF. Click to turn ON — a new protection will be created at expiry."
+                            }
+                            style={{
+                              fontSize: 9,
+                              fontWeight: 600,
+                              padding: "2px 5px",
+                              borderRadius: 999,
+                              border: pos.autoRenew ? "1px solid rgba(96,165,250,0.35)" : "1px solid var(--border)",
+                              background: pos.autoRenew ? "rgba(96,165,250,0.12)" : "var(--card)",
+                              color: pos.autoRenew ? "#60a5fa" : "var(--muted)",
+                              cursor: autoRenewToggling === pos.id ? "wait" : "pointer",
+                              opacity: autoRenewToggling === pos.id ? 0.6 : 1,
+                              transition: "all 0.15s ease"
+                            }}
+                          >
+                            {autoRenewToggling === pos.id ? "↻ …" : pos.autoRenew ? "↻ Auto" : "↻ Off"}
+                          </button>
+                        )}
                       </div>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>
