@@ -322,6 +322,7 @@ Separate system for institutional daily protection ($1M+ notional). Runs on the 
 |--------|------|------|---------|
 | POST   | `/pilot/protections/quote`           | None  | Generate protection quote |
 | POST   | `/pilot/protections/activate`        | None  | Execute protection |
+| POST   | `/pilot/protections/:id/auto-renew`  | None  | Toggle auto-renew on an active protection (`{ enabled: true \| false }`). Optimistic lock requires `status='active'`; per Pilot Agreement §3.3 this is at Client's discretion. The current cycle always runs to its natural expiry; this only affects whether a NEW protection is created at expiry. |
 | GET    | `/pilot/protections/:id/monitor`     | None  | Live protection status |
 | GET    | `/pilot/protections`                 | Admin | List all protections |
 | GET    | `/pilot/reference-price`             | None  | Current BTC spot price |
