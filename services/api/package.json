@@ -46,6 +46,7 @@
     "pilot:backfill:options-chain": "tsx scripts/pilotBackfillOptionsChain.ts",
     "pilot:backfill:rfq-history": "tsx scripts/pilotBackfillRfqHistory.ts",
     "pilot:backfill:execution-quality": "tsx scripts/pilotBackfillExecutionQuality.ts",
-    "pilot:verify:dvol-source": "tsx scripts/pilotVerifyDvolSource.ts"
+    "pilot:verify:dvol-source": "tsx scripts/pilotVerifyDvolSource.ts",
+    "pilot:phase0:live-analysis": "tsx scripts/pilotLiveAnalysisAdmin.ts"
   }
 }
