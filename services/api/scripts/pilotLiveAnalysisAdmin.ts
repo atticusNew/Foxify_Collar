@@ -41,6 +41,14 @@ type CliArgs = {
   reportPath: string;
   apiBase: string;
   adminToken: string;
+  /**
+   * UTC ISO timestamp marking the cutover from the prior tenor regime to the
+   * current one. Trades with createdAt strictly before this are bucketed as
+   * `pre-switch` and excluded from the headline 1-day-tenor analytics; trades
+   * at or after are bucketed as `post-switch`. Defaults to the 2026-04-17 22:43
+   * UTC commit b0bb452 ("production pilot: switch to 1-day tenor").
+   */
+  tenorSwitchIso: string;
 };
 
 const REPO_ROOT = path.resolve(new URL(".", import.meta.url).pathname, "../../..");
@@ -55,7 +63,8 @@ const parseArgs = (argv: string[]): CliArgs => {
     outDir: path.join(REPO_ROOT, "docs/pilot-reports/raw-pilot-data"),
     reportPath: path.join(REPO_ROOT, "docs/pilot-reports/live_baseline_analysis.md"),
     apiBase,
-    adminToken
+    adminToken,
+    tenorSwitchIso: "2026-04-17T22:43:00.000Z"
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -65,6 +74,7 @@ const parseArgs = (argv: string[]): CliArgs => {
     else if (tok === "--out-dir" && argv[i + 1]) { args.outDir = path.resolve(argv[++i]); }
     else if (tok === "--report" && argv[i + 1]) { args.reportPath = path.resolve(argv[++i]); }
     else if (tok === "--api-base" && argv[i + 1]) { args.apiBase = argv[++i]; }
+    else if (tok === "--tenor-switch-iso" && argv[i + 1]) { args.tenorSwitchIso = argv[++i]; }
   }
 
   if (!args.apiBase) {
@@ -393,6 +403,9 @@ type DbAnalytics = {
   sampleSize: {
     activeCount: number;
     allCount: number;
+    preSwitchCount: number;
+    postSwitchCount: number;
+    tenorSwitchIso: string;
     earliestCreated: string | null;
     latestCreated: string | null;
     spanDays: number | null;
@@ -474,22 +487,67 @@ const parseInstrumentStrike = (instrumentId: string | null): number | null => {
   return m ? Number(m[1]) : null;
 };
 
-const analyseDb = (snap: Snapshot): DbAnalytics => {
-  const allRows: ProtectionRow[] = [];
-  const allWrap: any = snap.protectionsAll;
-  if (allWrap && Array.isArray(allWrap.rows)) {
-    for (const r of allWrap.rows) allRows.push(r as ProtectionRow);
-  }
+const analyseDb = (snap: Snapshot, opts: { tenorSwitchIso: string; postSwitchOnly?: boolean } = { tenorSwitchIso: "" }): DbAnalytics => {
+  // The /pilot/protections endpoint returns the canonical record shape with
+  // metadata (camelCase). The /pilot/protections/export endpoint is a CSV-
+  // friendly projection with a smaller column set (snake_case `protection_id`,
+  // no metadata). Use `active` as the primary source for analytics; use
+  // `export` only to detect archived rows that are missing from `active`.
   const activeWrap: any = snap.protectionsActive;
   const activeArr: any[] = activeWrap && Array.isArray(activeWrap.protections) ? activeWrap.protections : [];
 
-  // Build a map by id from `all`, fall back to `active`
   const byId = new Map<string, ProtectionRow>();
-  for (const r of allRows) byId.set(r.id, r);
   for (const r of activeArr as ProtectionRow[]) {
-    if (!byId.has(r.id)) byId.set(r.id, r);
+    if (r && typeof (r as any).id === "string") byId.set(r.id, r);
   }
-  const merged = Array.from(byId.values());
+
+  // Pull in archived-only records from export (snake_case → camelCase shim,
+  // limited fields, no metadata).
+  const allWrap: any = snap.protectionsAll;
+  if (allWrap && Array.isArray(allWrap.rows)) {
+    for (const raw of allWrap.rows) {
+      const id = String(raw.protection_id || raw.id || "");
+      if (!id || byId.has(id)) continue;
+      byId.set(id, {
+        id,
+        status: String(raw.status || ""),
+        tierName: raw.tier_name ?? null,
+        slPct: null,
+        hedgeStatus: null,
+        protectedNotional: String(raw.protected_notional ?? "0"),
+        entryPrice: raw.entry_price != null ? String(raw.entry_price) : null,
+        floorPrice: raw.floor_price != null ? String(raw.floor_price) : null,
+        drawdownFloorPct: String(raw.drawdown_floor_pct ?? "0"),
+        expiryAt: String(raw.expiry_at ?? ""),
+        premium: raw.premium != null ? String(raw.premium) : null,
+        autoRenew: false,
+        payoutDueAmount: raw.payout_due_amount != null ? String(raw.payout_due_amount) : null,
+        payoutSettledAmount: raw.payout_settled_amount != null ? String(raw.payout_settled_amount) : null,
+        venue: raw.venue ?? null,
+        instrumentId: raw.instrument_id ?? null,
+        side: null,
+        size: null,
+        executionPrice: null,
+        createdAt: String(raw.created_at ?? ""),
+        metadata: null
+      });
+    }
+  }
+
+  const allMerged = Array.from(byId.values());
+
+  const switchMs = opts.tenorSwitchIso ? Date.parse(opts.tenorSwitchIso) : NaN;
+  const isPostSwitch = (r: ProtectionRow): boolean => {
+    if (!Number.isFinite(switchMs)) return true;
+    const t = Date.parse(String(r.createdAt));
+    return Number.isFinite(t) && t >= switchMs;
+  };
+  const preSwitchCount = allMerged.filter((r) => !isPostSwitch(r)).length;
+  const postSwitchCount = allMerged.filter((r) => isPostSwitch(r)).length;
+
+  const merged = opts.postSwitchOnly
+    ? allMerged.filter(isPostSwitch)
+    : allMerged;
 
   // Sample size
   const created = merged.map((r) => Date.parse(String(r.createdAt))).filter((n) => Number.isFinite(n));
@@ -634,6 +692,9 @@ const analyseDb = (snap: Snapshot): DbAnalytics => {
     sampleSize: {
       activeCount: activeArr.length,
       allCount: merged.length,
+      preSwitchCount,
+      postSwitchCount,
+      tenorSwitchIso: opts.tenorSwitchIso || "",
       earliestCreated: earliest,
       latestCreated: latest,
       spanDays
@@ -687,11 +748,14 @@ const renderReport = (params: {
   snapshotDir: string;
   snap: Snapshot;
   db: DbAnalytics;
+  dbPost: DbAnalytics;
   logs: LogStats;
+  tenorSwitchIso: string;
 }): string => {
-  const { snapshotDir, snap, db, logs } = params;
+  const { snapshotDir, snap, db, dbPost, logs, tenorSwitchIso } = params;
   const generatedAt = new Date().toISOString();
   const apiHealth = snap.health?.status || "unknown";
+  const venueMode = snap.health?.checks?.venue?.mode || "unknown";
   const monitorHealthy = snap.monitorStatus?.healthy ? "ok" : "degraded";
   const consecFails = snap.monitorStatus?.consecutiveFailures ?? "—";
   const errorList = snap.fetchErrors.length
@@ -714,9 +778,11 @@ const renderReport = (params: {
   return `# Phase 0 — Live Pilot Baseline Analysis
 
 **Generated:** ${generatedAt}
-**API base:** \`${params.snap ? (snap as any)?.health?._base || (process.env.PILOT_API_BASE || "—") : "—"}\`
+**API base:** \`${process.env.PILOT_API_BASE || "—"}\`
 **Snapshot directory:** \`${path.relative(REPO_ROOT, snapshotDir)}/\`
-**Tenor in code:** 1 day across all launched SL tiers (2 / 3 / 5 / 10).
+**Tenor in code (current):** 1 day across all launched SL tiers (2 / 3 / 5 / 10).
+**Tenor switch deployed at:** \`${tenorSwitchIso}\` (commit \`b0bb452\` "production pilot: switch to 1-day tenor at \$5/4/3/2 per 1k").
+**Venue:** \`${venueMode}\` — Deribit mainnet *connector mode* using a paper account; pricing/orderbook data is real, fills are paper. No real capital at risk.
 
 ---
 
@@ -725,10 +791,13 @@ const renderReport = (params: {
 | Field | Value |
 |---|---|
 | Live API status | \`${apiHealth}\` |
+| Venue mode (connector) | \`${venueMode}\` (paper account) |
 | Monitor healthy | \`${monitorHealthy}\` |
 | Consecutive failures | ${consecFails} |
-| Active protections (DB) | ${db.sampleSize.activeCount} |
-| All protections (DB, incl. archived) | ${db.sampleSize.allCount} |
+| Active protections (from \`/pilot/protections\`) | ${db.sampleSize.activeCount} |
+| All protections (incl. archived from \`/pilot/protections/export\`) | ${db.sampleSize.allCount} |
+| Pre-tenor-switch | ${db.sampleSize.preSwitchCount} |
+| Post-tenor-switch | ${db.sampleSize.postSwitchCount} |
 | Earliest \`createdAt\` | ${db.sampleSize.earliestCreated || "—"} |
 | Latest \`createdAt\` | ${db.sampleSize.latestCreated || "—"} |
 | Span (days) | ${db.sampleSize.spanDays !== null ? db.sampleSize.spanDays.toFixed(1) : "—"} |
@@ -736,11 +805,11 @@ const renderReport = (params: {
 **Fetch errors during snapshot:**
 ${errorList}
 
-> _Statistical caveat: this report reflects whatever the pilot has accumulated to date on testnet. Findings should be treated as directional, not statistically conclusive, until the live (post-KYC) pilot accumulates ≥ 50 trades._
+> _Statistical caveat: this report reflects whatever the pilot has accumulated to date on a Deribit paper account. Findings are directional, not statistically conclusive, until the pilot accumulates ≥ 50 trades — and the **post-switch** sub-sample (currently ${dbPost.sampleSize.allCount} trades) is the only slice that reflects the production 1-day-tenor selection logic._
 
 ---
 
-## 2. Per-Tier Outcomes (DB-derived)
+## 2. Per-Tier Outcomes — All Trades (mixed pre/post switch)
 
 ${renderTierTable(db)}
 
@@ -748,7 +817,7 @@ ${renderTierTable(db)}
 
 ${Object.entries(db.hedgeStatusBreakdown).map(([k, v]) => `- \`${k}\`: ${v}`).join("\n") || "_(no records)_"}
 
-**Realized totals across the sample:**
+**Realized totals across the full sample:**
 
 | Item | Amount |
 |---|---|
@@ -758,39 +827,61 @@ ${Object.entries(db.hedgeStatusBreakdown).map(([k, v]) => `- \`${k}\`: ${v}`).jo
 | Payouts due | ${fmtUsd(db.totals.payoutsDue)} |
 | Payouts settled | ${fmtUsd(db.totals.payoutsSettled)} |
 | TP recovery (proceeds) | ${fmtUsd(db.totals.tpRecovery)} |
-| **Net P&L (realized)** | **${fmtUsd(db.totals.netPnl)}** |
+| **Net P&L (realized, paper)** | **${fmtUsd(db.totals.netPnl)}** |
 
 ---
 
-## 3. Option Selection — What Did the Algorithm Pick?
+## 2b. Per-Tier Outcomes — Post-Tenor-Switch Sub-Sample
 
-### 3.1 Expiry bucket of selected instrument vs createdAt
+This is the slice that reflects the **current** 1-day-tenor selection logic and \$5/4/3/2 per \$1k pricing. Sample size: ${dbPost.sampleSize.allCount}.
 
-| Bucket | Count |
+${dbPost.sampleSize.allCount === 0 ? "_(no post-switch trades yet)_" : renderTierTable(dbPost)}
+
+${dbPost.sampleSize.allCount > 0 ? `**Post-switch realized totals:**
+
+| Item | Amount |
 |---|---|
-| < ~1 day (≤ 0.85d) | ${db.expirySelection.bucketLessThan1d} |
-| ~1 day (0.85–1.5d) | ${db.expirySelection.bucket1d} |
-| ~2 days (1.5–2.5d) | ${db.expirySelection.bucket2d} |
-| ~3 days (2.5–3.5d) | ${db.expirySelection.bucket3d} |
-| > 3 days | ${db.expirySelection.bucketMoreThan3d} |
-| Unknown (couldn't parse) | ${db.expirySelection.unknown} |
+| Premium collected | ${fmtUsd(dbPost.totals.premiumCollected)} |
+| Hedge cost | ${fmtUsd(dbPost.totals.hedgeCost)} |
+| Spread | ${fmtUsd(dbPost.totals.spread)} |
+| Payouts due | ${fmtUsd(dbPost.totals.payoutsDue)} |
+| TP recovery | ${fmtUsd(dbPost.totals.tpRecovery)} |
+| **Post-switch Net P&L (realized, paper)** | **${fmtUsd(dbPost.totals.netPnl)}** |
+` : ""}
 
-> _The selection algorithm allows \`[now+12h, now+3d]\` for tenor=1. Any non-trivial count in the 2d / 3d buckets indicates the 1d strike was unavailable at the trigger band when the trade was placed and the algorithm fell back to a longer-dated option._
+---
+
+## 3. Option Selection — Post-Tenor-Switch Sub-Sample Only
+
+This is the slice that matters for the 1-day-tenor investigation. The ALL-trades view is provided in §3-all below for reference but mixes legacy 2-day-tenor selections.
+
+### 3.1 Expiry bucket of selected instrument vs \`createdAt\`
+
+| Bucket | Post-switch count | All-trades count |
+|---|---|---|
+| < ~1 day (≤ 0.85d) | ${dbPost.expirySelection.bucketLessThan1d} | ${db.expirySelection.bucketLessThan1d} |
+| ~1 day (0.85–1.5d) | ${dbPost.expirySelection.bucket1d} | ${db.expirySelection.bucket1d} |
+| ~2 days (1.5–2.5d) | ${dbPost.expirySelection.bucket2d} | ${db.expirySelection.bucket2d} |
+| ~3 days (2.5–3.5d) | ${dbPost.expirySelection.bucket3d} | ${db.expirySelection.bucket3d} |
+| > 3 days | ${dbPost.expirySelection.bucketMoreThan3d} | ${db.expirySelection.bucketMoreThan3d} |
+| Unknown | ${dbPost.expirySelection.unknown} | ${db.expirySelection.unknown} |
+
+> _For the post-switch column: the 1-day selector's window is \`[now+12h, now+3d]\`. A non-trivial count in the 2d / 3d buckets indicates the 1d strike was unavailable at the trigger band when the trade was placed; Phase 2's chain-availability sampling tests this hypothesis empirically._
 
 ### 3.2 Strike vs trigger (selected instrument)
 
-| Position | Count |
-|---|---|
-| ITM (strike beats trigger) | ${db.strikeVsTrigger.itm} |
-| At trigger (within ±0.05%) | ${db.strikeVsTrigger.atTrigger} |
-| OTM (strike worse than trigger) | ${db.strikeVsTrigger.otm} |
-| Unknown | ${db.strikeVsTrigger.unknown} |
+| Position | Post-switch count | All-trades count |
+|---|---|---|
+| ITM (strike beats trigger) | ${dbPost.strikeVsTrigger.itm} | ${db.strikeVsTrigger.itm} |
+| At trigger (within ±0.05%) | ${dbPost.strikeVsTrigger.atTrigger} | ${db.strikeVsTrigger.atTrigger} |
+| OTM (strike worse than trigger) | ${dbPost.strikeVsTrigger.otm} | ${db.strikeVsTrigger.otm} |
+| Unknown | ${dbPost.strikeVsTrigger.unknown} | ${db.strikeVsTrigger.unknown} |
 
-> _The ITM bonus only fires for \`drawdownFloorPct ≤ 0.025\` (i.e. 2% SL on puts). ITM count concentrated in the 2% tier confirms the bonus is working; ITM count in 3%/5%/10% would indicate the algo preferred ITM for cost reasons rather than the bonus._
+> _The ITM bonus only fires for \`drawdownFloorPct ≤ 0.025\` (i.e. 2% SL on puts). ITM count concentrated in the 2% put tier confirms the bonus is working as designed; ITM count in 3%/5%/10% tiers, or in any call (short) position, would indicate the algorithm preferred ITM for cost reasons rather than the bonus._
 
 ### 3.3 Negative-margin trades observed
 
-DB sample (premium < hedgeCost in completed activations):
+DB sample (premium < hedgeCost in completed activations, all trades):
 
 ${negMarginLines}
 
@@ -863,12 +954,14 @@ ${Object.entries(logHM.sellResultByStatus).length === 0 ? "_(none in paste-ins)_
 
 ## 8. Methodological Notes
 
-1. **DB visibility = outcomes only.** Hold decisions (cooling, gap-extended, sub-threshold) and rejected activations (\`trigger_strike_unavailable\`) only appear in Render logs. The §4.2/§5/§6/§7 sections require the operator to paste log lines into \`docs/pilot-reports/raw-logs/\`.
-2. **Expiry bucketing uses createdAt vs parsed instrument expiry.** For renewals, \`createdAt\` is the new protection's creation time, not the original — the bucket reflects what was bought at that moment.
-3. **Strike-vs-trigger uses parsed strike from \`instrument_id\` and \`floor_price\` from the protection record.** Both are ground truth.
-4. **Negative-margin tally counts trades where realized \`premium − executionPrice × size < 0\`.** Quoted-but-unfilled NEGATIVE_MARGIN warnings live in logs only.
-5. **TP recovery is read from \`metadata.sellResult.totalProceeds\`.** Values denominated in USD as recorded by the platform's sell path.
-6. **The script is read-only.** No platform calls produce side effects. Snapshots persist to \`docs/pilot-reports/raw-pilot-data/<UTC-timestamp>/\`.
+1. **Paper account.** \`venue.mode = deribit_live\` is the *connector mode* — Deribit mainnet endpoints are used for pricing and orderbook data so spreads/IV are real, but the underlying account is paper. No real capital is at risk. Realized P&L figures are paper P&L.
+2. **Tenor-switch cutover.** The \`tenorSwitchIso\` cutover (\`${tenorSwitchIso}\`) splits the dataset. The post-switch sub-sample is the only slice that reflects the current 1-day-tenor selection logic and the \$5/4/3/2 per \$1k pricing schedule. The all-trades view is provided for historical context but mixes legacy 2-day-tenor selections.
+3. **DB visibility = outcomes only.** Hold decisions (cooling, gap-extended, sub-threshold) and rejected activations (\`trigger_strike_unavailable\`) only appear in Render logs. The §4.2/§5/§6/§7 sections require the operator to paste log lines into \`docs/pilot-reports/raw-logs/\`.
+4. **Expiry bucketing uses \`createdAt\` vs parsed instrument expiry.** For renewals, \`createdAt\` is the new protection's creation time, not the original — the bucket reflects what was bought at that moment.
+5. **Strike-vs-trigger uses parsed strike from \`instrument_id\` and \`floor_price\` from the protection record.** Both are ground truth.
+6. **Negative-margin tally counts trades where realized \`premium − executionPrice × size < 0\`.** Quoted-but-unfilled NEGATIVE_MARGIN warnings live in logs only.
+7. **TP recovery is read from \`metadata.sellResult.totalProceeds\`.** Values denominated in USD as recorded by the platform's sell path.
+8. **The script is read-only.** No platform calls produce side effects. Snapshots persist to \`docs/pilot-reports/raw-pilot-data/<UTC-timestamp>/\`.
 
 ---
 
@@ -876,11 +969,11 @@ ${Object.entries(logHM.sellResultByStatus).length === 0 ? "_(none in paste-ins)_
 
 _(Fill in after reviewing — left intentionally blank in the auto-generated draft.)_
 
-- [ ] If expiry-bucket §3.1 shows substantial 2d/3d selections: investigate Phase 2 chain-availability data to confirm 1d strike was genuinely unavailable, or recommend tighter window in Phase 4 (deferred).
-- [ ] If §3.2 shows ITM selections in 3%/5%/10% tiers: confirm whether the cost bias is driving these (no behavior change recommended yet).
+- [ ] If post-switch §3.1 shows substantial 2d/3d selections: investigate Phase 2 chain-availability data to confirm 1d strike was genuinely unavailable, or recommend tighter window in Phase 4 (deferred).
+- [ ] If post-switch §3.2 shows ITM selections in 3%/5%/10% tiers, or in any call (short) position: confirm whether the cost bias is driving these (no behavior change recommended yet).
 - [ ] If §3.3 shows persistent negative-margin trades in any tier: flag for pricing review post-pilot (do not adjust during stabilization).
 - [ ] If §4.2 cooling-hold count >> sub-threshold-hold count for triggered positions that ultimately did NOT sell: TP threshold may be too restrictive on 1-day tenor (defer to Phase 5, post-pilot).
-- [ ] If §5 shows non-zero \`consecutive-error warnings\`: investigate price-feed reliability before live-flip.
+- [ ] If §5 shows non-zero \`consecutive-error warnings\`: investigate price-feed reliability before any live-account flip.
 
 ---
 
@@ -905,14 +998,17 @@ const main = async (): Promise<void> => {
   const snapshotDir = await persistSnapshot(args, snap);
   console.log(`[phase0] snapshot dir: ${snapshotDir}`);
 
-  console.log("[phase0] analysing DB-side outcomes...");
-  const db = analyseDb(snap);
+  console.log("[phase0] analysing DB-side outcomes (all rows)...");
+  const dbAll = analyseDb(snap, { tenorSwitchIso: args.tenorSwitchIso, postSwitchOnly: false });
+
+  console.log("[phase0] analysing DB-side outcomes (post-tenor-switch rows only)...");
+  const dbPost = analyseDb(snap, { tenorSwitchIso: args.tenorSwitchIso, postSwitchOnly: true });
 
   console.log(`[phase0] ingesting Render log paste-ins from: ${args.logsDir}`);
   const logs = await ingestLogsDir(args.logsDir);
   console.log(`[phase0] log files ingested: ${logs.filesIngested.length} (${logs.uniqueLines} unique lines)`);
 
-  const report = renderReport({ snapshotDir, snap, db, logs });
+  const report = renderReport({ snapshotDir, snap, db: dbAll, dbPost, logs, tenorSwitchIso: args.tenorSwitchIso });
 
   if (args.noWrite) {
     console.log("---- REPORT (dry run, --no-write) ----");
@@ -923,7 +1019,7 @@ const main = async (): Promise<void> => {
   await writeFile(args.reportPath, report, "utf8");
   console.log(`[phase0] report written: ${path.relative(REPO_ROOT, args.reportPath)}`);
 
-  console.log(`[phase0] done. sample size: ${db.sampleSize.allCount} protections, ${db.sampleSize.activeCount} active.`);
+  console.log(`[phase0] done. sample size: ${dbAll.sampleSize.allCount} protections (${dbAll.sampleSize.preSwitchCount} pre-switch, ${dbAll.sampleSize.postSwitchCount} post-switch), ${dbAll.sampleSize.activeCount} active.`);
 };
 
 main().catch((err) => {
