@@ -3324,17 +3324,47 @@ export const registerPilotRoutes = async (
         console.error(`[Activate] insertVenueExecution FAILED: ${execErr?.message}`);
         throw execErr;
       }
-      const realizedSlippageBps =
-        execution.premium > 0
-          ? Math.max(0, ((execution.premium - lockedQuote.premium) / execution.premium) * 10_000)
-          : 0;
+      // Compute realized HEDGE slippage = (fill_unit_price - quoted_ask) / quoted_ask × 10_000
+      //
+      // The prior implementation compared execution.premium vs lockedQuote.premium —
+      // but both of those are the V7 client-facing premium ($notional/1000 × ratePer1k),
+      // which is fixed and identical at quote and execute time. That formula was
+      // mathematically guaranteed to be 0 for every pilot activation (PR #34 surfaced
+      // the bug; PR is the fix).
+      //
+      // Real slippage is the gap between what we quoted (the venue ask seen at quote
+      // time) and what we actually paid Deribit (the fill price). This number can be
+      // signed: positive = paid above ask (slipped against us); negative = price
+      // improvement (good fill). We track the SIGNED value so improvements aren't
+      // hidden behind a Math.max(0, ...) clamp.
+      //
+      // Deribit adapter populates askPriceBtc + fillPriceBtc in details. Other
+      // venues (legacy IBKR/Bullish, dormant in the pilot) fall back to the USD-
+      // unit-price comparison.
+      const quoteDetails = (lockedQuote.details || {}) as Record<string, unknown>;
+      const execDetails = (execution.details || {}) as Record<string, unknown>;
+      const quotedAskBtc = Number(quoteDetails.askPriceBtc);
+      const fillPriceBtc = Number(execDetails.fillPriceBtc);
+      let realizedSlippageBps = 0;
+      let slippageSource: "deribit_btc_units" | "usd_unit_fallback" | "unavailable" = "unavailable";
+      if (Number.isFinite(quotedAskBtc) && quotedAskBtc > 0 && Number.isFinite(fillPriceBtc) && fillPriceBtc > 0) {
+        realizedSlippageBps = ((fillPriceBtc - quotedAskBtc) / quotedAskBtc) * 10_000;
+        slippageSource = "deribit_btc_units";
+      } else if (
+        Number.isFinite(execution.executionPrice) && execution.executionPrice > 0 &&
+        Number.isFinite(Number(quoteDetails.quotedUnitPriceUsd)) && Number(quoteDetails.quotedUnitPriceUsd) > 0
+      ) {
+        const quotedUnitUsd = Number(quoteDetails.quotedUnitPriceUsd);
+        realizedSlippageBps = ((execution.executionPrice - quotedUnitUsd) / quotedUnitUsd) * 10_000;
+        slippageSource = "usd_unit_fallback";
+      }
       try {
         // Per-trade observation; the function accumulates into the day's
         // rollup (sample_count += 1, weighted-average slippage / spread,
         // running fill rate from quotes/fills, p95 from a kept-sample array).
         // Replaces the prior overwrite-style upsertExecutionQualityDaily call
         // which was clobbering the row on every activation (PR #34).
-        const spreadPctRaw = Number((lockedQuote.details as Record<string, unknown>)?.spreadPct);
+        const spreadPctRaw = Number(quoteDetails.spreadPct);
         await incrementExecutionQualityDaily(pool, {
           dayIso: new Date().toISOString(),
           venue: execution.venue,
@@ -3344,7 +3374,12 @@ export const registerPilotRoutes = async (
           spreadPct: Number.isFinite(spreadPctRaw) ? spreadPctRaw : undefined,
           filled: true,
           protectionId: reservedProtection.id,
-          quoteId: lockedQuote.quoteId
+          quoteId: lockedQuote.quoteId,
+          notes: {
+            slippageSource,
+            quotedAskBtc: Number.isFinite(quotedAskBtc) ? quotedAskBtc : null,
+            fillPriceBtc: Number.isFinite(fillPriceBtc) ? fillPriceBtc : null
+          }
         });
       } catch (eqErr: any) {
         console.warn(`[Activate] Execution quality increment failed: ${eqErr?.message}`);
@@ -3573,7 +3608,11 @@ export const registerPilotRoutes = async (
       } else if (reason === "execution_failed") {
         if (reservedProtection && contextHedgeMode) {
           try {
-            const spreadPctRawFail = Number((lockedQuote?.details as Record<string, unknown>)?.spreadPct);
+            const failQuoteDetails = (lockedQuote?.details || {}) as Record<string, unknown>;
+            const spreadPctRawFail = Number(failQuoteDetails.spreadPct);
+            // No fill happened, so there's no slippage to record. We pass 0 here
+            // and rely on filled:false so the rollup correctly counts the reject
+            // (running fill-rate denominator advances; numerator does not).
             await incrementExecutionQualityDaily(pool, {
               dayIso: new Date().toISOString(),
               venue: pilotConfig.venueMode,
@@ -3583,7 +3622,10 @@ export const registerPilotRoutes = async (
               spreadPct: Number.isFinite(spreadPctRawFail) ? spreadPctRawFail : undefined,
               filled: false,
               quoteId: lockedQuote?.quoteId || body.quoteId,
-              notes: { rejection: executionFailureDetail || "execution_failed" }
+              notes: {
+                rejection: executionFailureDetail || "execution_failed",
+                slippageSource: "no_fill"
+              }
             });
           } catch {
             // Best-effort telemetry only on failed executions.

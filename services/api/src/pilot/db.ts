@@ -1379,26 +1379,51 @@ export const incrementExecutionQualityDaily = async (
     : null;
 
   const newN = prevN + 1;
-  const weighted = (prevAvg: string | null | undefined, sample: number | undefined): number | null => {
-    if (sample === undefined || !Number.isFinite(sample)) {
-      return prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
-    }
-    const prevNum = prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
-    if (prevNum === null) return sample;
-    return (prevNum * prevN + sample) / newN;
-  };
 
-  const newAvgSlippageBps = weighted(prev?.avg_slippage_bps, slip) ?? 0;
-  const newAvgSpreadPct = weighted(prev?.avg_spread_pct, input.spreadPct);
-  const newAvgTopBookDepth = weighted(prev?.avg_top_book_depth, input.topBookDepth);
-
+  // Quote/fill/reject counters always advance.
   const newQuotes = prevQuotes + quotesDelta;
   const newFills = prevFills + fillsDelta;
   const newRejects = prevRejects + rejectsDelta;
   const newFillRatePct = newQuotes > 0 ? (newFills / newQuotes) * 100 : null;
 
-  // Append slippage sample (cap at 500 to bound row size); recompute p95.
-  const slippageSamples = [...prevSlippageSamples, slip].slice(-500);
+  // Slippage / spread / top-book-depth are only meaningful for FILLED trades.
+  // A reject contributes nothing to the slippage distribution (no fill happened),
+  // so we exclude it from weighted averages and from the p95 sample array.
+  // Without this guard, a reject would push slip=0 into the array and dilute
+  // both avg_slippage_bps and p95_slippage_bps toward zero, masking real fill
+  // quality issues.
+  const fillsForAvg = prevFills; // weighted-avg denominator for previous fills
+  const newFillsForAvg = newFills;
+
+  const weighted = (
+    prevAvg: string | null | undefined,
+    sample: number | undefined,
+    countPrev: number,
+    countNew: number
+  ): number | null => {
+    if (sample === undefined || !Number.isFinite(sample)) {
+      return prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+    }
+    if (countNew <= 0) return null;
+    const prevNum = prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+    if (prevNum === null || countPrev <= 0) return sample;
+    return (prevNum * countPrev + sample) / countNew;
+  };
+
+  const newAvgSlippageBps = filled
+    ? (weighted(prev?.avg_slippage_bps, slip, fillsForAvg, newFillsForAvg) ?? 0)
+    : (prev?.avg_slippage_bps ? Number(prev.avg_slippage_bps) : 0);
+  const newAvgSpreadPct = filled
+    ? weighted(prev?.avg_spread_pct, input.spreadPct, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_spread_pct ? Number(prev.avg_spread_pct) : null);
+  const newAvgTopBookDepth = filled
+    ? weighted(prev?.avg_top_book_depth, input.topBookDepth, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_top_book_depth ? Number(prev.avg_top_book_depth) : null);
+
+  // Append slippage sample only on fills (cap at 500 to bound row size); recompute p95.
+  const slippageSamples = filled
+    ? [...prevSlippageSamples, slip].slice(-500)
+    : prevSlippageSamples;
   const sortedSamples = [...slippageSamples].sort((a, b) => a - b);
   const p95Idx = Math.min(
     sortedSamples.length - 1,
@@ -1417,14 +1442,17 @@ export const incrementExecutionQualityDaily = async (
   tradeAudit.filled = filled;
   const tradeIds = [...prevTradeIds, tradeAudit].slice(-200);
 
-  // Running average latency.
-  const latencyMs = Number.isFinite(Number(input.latencyMs)) ? Number(input.latencyMs) : null;
+  // Running average latency, computed across FILLED trades only (rejects don't
+  // produce a meaningful "fill latency" — they may have failed before any
+  // venue round-trip happened, or after a long timeout that's not representative
+  // of normal fill behavior). Counters always advance so fill rate stays right.
+  const latencyMs = filled && Number.isFinite(Number(input.latencyMs)) ? Number(input.latencyMs) : null;
   const newAvgLatencyMs =
     latencyMs === null
       ? prevAvgLatencyMs
-      : prevAvgLatencyMs === null
+      : prevAvgLatencyMs === null || fillsForAvg <= 0
         ? latencyMs
-        : (prevAvgLatencyMs * prevN + latencyMs) / newN;
+        : (prevAvgLatencyMs * fillsForAvg + latencyMs) / newFillsForAvg;
 
   const metadata = {
     ...prevMeta,
