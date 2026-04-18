@@ -1239,13 +1239,25 @@ export const upsertExecutionQualityDaily = async (
       ? { avgLatencyMs: toNullableString(input.avgLatencyMs) }
       : {})
   };
+  // The pilot_execution_quality_daily.id column is TEXT PRIMARY KEY with no
+  // DEFAULT (see schema definition above). The original upsert omitted `id`,
+  // which produced a silent NOT NULL violation on every activation:
+  //   "[Activate] Execution quality upsert failed: null value in column \"id\"
+  //    of relation \"pilot_execution_quality_daily\" violates not-null
+  //    constraint"
+  // Activations themselves succeeded (the caller catches this error and
+  // logs it without rolling back the trade), but the diagnostics rollup
+  // stayed empty across the entire pilot. Fix: generate a UUID in code
+  // and include it in the INSERT. Identity for ON CONFLICT remains the
+  // composite UNIQUE (day, venue, hedge_mode) — `id` is purely a row PK.
+  const id = randomUUID();
   await pool.query(
     `
       INSERT INTO pilot_execution_quality_daily (
-        day, venue, hedge_mode, avg_slippage_bps, p95_slippage_bps, fill_success_rate_pct,
+        id, day, venue, hedge_mode, avg_slippage_bps, p95_slippage_bps, fill_success_rate_pct,
         avg_spread_pct, avg_top_book_depth, sample_count, metadata
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
       ON CONFLICT (day, venue, hedge_mode) DO UPDATE SET
         avg_slippage_bps = EXCLUDED.avg_slippage_bps,
         p95_slippage_bps = EXCLUDED.p95_slippage_bps,
@@ -1253,9 +1265,11 @@ export const upsertExecutionQualityDaily = async (
         avg_spread_pct = EXCLUDED.avg_spread_pct,
         avg_top_book_depth = EXCLUDED.avg_top_book_depth,
         sample_count = EXCLUDED.sample_count,
-        metadata = EXCLUDED.metadata
+        metadata = EXCLUDED.metadata,
+        updated_at = NOW()
     `,
     [
+      id,
       day,
       input.venue,
       input.hedgeMode,
