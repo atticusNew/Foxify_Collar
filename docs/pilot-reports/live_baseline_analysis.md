@@ -1,8 +1,8 @@
 # Phase 0 — Live Pilot Baseline Analysis
 
-**Generated:** 2026-04-18T03:13:52.865Z
+**Generated:** 2026-04-18T04:08:51.727Z
 **API base:** `https://foxify-pilot-new.onrender.com`
-**Snapshot directory:** `docs/pilot-reports/raw-pilot-data/2026-04-18T03-13-51-866Z/`
+**Snapshot directory:** `docs/pilot-reports/raw-pilot-data/2026-04-18T04-08-50-766Z/`
 **Tenor in code (current):** 1 day across all launched SL tiers (2 / 3 / 5 / 10).
 **Tenor switch deployed at:** `2026-04-17T22:43:00.000Z` (commit `b0bb452` "production pilot: switch to 1-day tenor at $5/4/3/2 per 1k").
 **Venue:** `deribit_live` — Deribit mainnet *connector mode* using a paper account; pricing/orderbook data is real, fills are paper. No real capital at risk.
@@ -17,18 +17,18 @@
 | Venue mode (connector) | `deribit_live` (paper account) |
 | Monitor healthy | `ok` |
 | Consecutive failures | 0 |
-| Active protections (from `/pilot/protections`) | 21 |
-| All protections (incl. archived from `/pilot/protections/export`) | 21 |
+| Active protections (from `/pilot/protections`) | 22 |
+| All protections (incl. archived from `/pilot/protections/export`) | 22 |
 | Pre-tenor-switch | 8 |
-| Post-tenor-switch | 13 |
+| Post-tenor-switch | 14 |
 | Earliest `createdAt` | 2026-04-16T17:16:10.000Z |
-| Latest `createdAt` | 2026-04-18T03:02:09.000Z |
+| Latest `createdAt` | 2026-04-18T03:35:19.000Z |
 | Span (days) | 1.4 |
 
 **Fetch errors during snapshot:**
 _(none)_
 
-> _Statistical caveat: this report reflects whatever the pilot has accumulated to date on a Deribit paper account. Findings are directional, not statistically conclusive, until the pilot accumulates ≥ 50 trades — and the **post-switch** sub-sample (currently 13 trades) is the only slice that reflects the production 1-day-tenor selection logic._
+> _Statistical caveat: this report reflects whatever the pilot has accumulated to date on a Deribit paper account. Findings are directional, not statistically conclusive, until the pilot accumulates ≥ 50 trades — and the **post-switch** sub-sample (currently 14 trades) is the only slice that reflects the production 1-day-tenor selection logic._
 
 ---
 
@@ -36,37 +36,37 @@ _(none)_
 
 | Tier | Count | Triggered | Trig Rate | Avg Prem | Avg Hedge | Avg Spread | Avg Margin% | Neg-Margin | TP Sold | TP Rate | Avg TP $ |
 |------|-------|-----------|-----------|----------|-----------|------------|-------------|------------|---------|---------|----------|
-| SL 10% | 1 | 0 | 0.0% | $70.00 | $3.10 | $66.90 | 95.6% | 0 | 0 | 0.0% | $0.00 |
+| SL 10% | 2 | 0 | 0.0% | $45.00 | $2.32 | $42.68 | 93.9% | 0 | 0 | 0.0% | $0.00 |
 | SL 2% | 12 | 1 | 8.3% | $135.42 | $48.66 | $86.75 | 66.6% | 0 | 1 | 100.0% | $45.12 |
 | SL 3% | 5 | 0 | 0.0% | $116.00 | $30.71 | $85.29 | 75.8% | 0 | 0 | 0.0% | $0.00 |
 | SL 5% | 3 | 0 | 0.0% | $35.00 | $1.80 | $33.20 | 94.6% | 0 | 0 | 0.0% | $0.00 |
 
 **Hedge-status breakdown across all protections:**
 
-- `active`: 20
+- `active`: 21
 - `tp_sold`: 1
 
 **Realized totals across the full sample:**
 
 | Item | Amount |
 |---|---|
-| Premium collected | $2,380.00 |
-| Hedge cost | $746.01 |
-| Spread (premium − hedge) | $1,633.99 |
+| Premium collected | $2,400.00 |
+| Hedge cost | $747.55 |
+| Spread (premium − hedge) | $1,652.45 |
 | Payouts due | $200.00 |
 | Payouts settled | $0.00 |
 | TP recovery (proceeds) | $45.12 |
-| **Net P&L (realized, paper)** | **$1,479.11** |
+| **Net P&L (realized, paper)** | **$1,497.57** |
 
 ---
 
 ## 2b. Per-Tier Outcomes — Post-Tenor-Switch Sub-Sample
 
-This is the slice that reflects the **current** 1-day-tenor selection logic and $5/4/3/2 per $1k pricing. Sample size: 13.
+This is the slice that reflects the **current** 1-day-tenor selection logic and $5/4/3/2 per $1k pricing. Sample size: 14.
 
 | Tier | Count | Triggered | Trig Rate | Avg Prem | Avg Hedge | Avg Spread | Avg Margin% | Neg-Margin | TP Sold | TP Rate | Avg TP $ |
 |------|-------|-----------|-----------|----------|-----------|------------|-------------|------------|---------|---------|----------|
-| SL 10% | 1 | 0 | 0.0% | $70.00 | $3.10 | $66.90 | 95.6% | 0 | 0 | 0.0% | $0.00 |
+| SL 10% | 2 | 0 | 0.0% | $45.00 | $2.32 | $42.68 | 93.9% | 0 | 0 | 0.0% | $0.00 |
 | SL 2% | 6 | 0 | 0.0% | $141.67 | $19.85 | $121.81 | 86.9% | 0 | 0 | 0.0% | $0.00 |
 | SL 3% | 3 | 0 | 0.0% | $113.33 | $8.00 | $105.34 | 93.6% | 0 | 0 | 0.0% | $0.00 |
 | SL 5% | 3 | 0 | 0.0% | $35.00 | $1.80 | $33.20 | 94.6% | 0 | 0 | 0.0% | $0.00 |
@@ -75,12 +75,12 @@ This is the slice that reflects the **current** 1-day-tenor selection logic and 
 
 | Item | Amount |
 |---|---|
-| Premium collected | $1,365.00 |
-| Hedge cost | $151.61 |
-| Spread | $1,213.39 |
+| Premium collected | $1,385.00 |
+| Hedge cost | $153.15 |
+| Spread | $1,231.85 |
 | Payouts due | $0.00 |
 | TP recovery | $0.00 |
-| **Post-switch Net P&L (realized, paper)** | **$1,213.39** |
+| **Post-switch Net P&L (realized, paper)** | **$1,231.85** |
 
 
 ---
@@ -95,7 +95,7 @@ This is the slice that matters for the 1-day-tenor investigation. The ALL-trades
 |---|---|---|
 | < ~1 day (≤ 0.85d) | 0 | 0 |
 | ~1 day (0.85–1.5d) | 13 | 13 |
-| ~2 days (1.5–2.5d) | 0 | 2 |
+| ~2 days (1.5–2.5d) | 1 | 3 |
 | ~3 days (2.5–3.5d) | 0 | 6 |
 | > 3 days | 0 | 0 |
 | Unknown | 0 | 0 |
@@ -108,7 +108,7 @@ This is the slice that matters for the 1-day-tenor investigation. The ALL-trades
 |---|---|---|
 | ITM (strike beats trigger) | 4 | 5 |
 | At trigger (within ±0.05%) | 2 | 4 |
-| OTM (strike worse than trigger) | 7 | 12 |
+| OTM (strike worse than trigger) | 8 | 13 |
 | Unknown | 0 | 0 |
 
 > _The ITM bonus only fires for `drawdownFloorPct ≤ 0.025` (i.e. 2% SL on puts). ITM count concentrated in the 2% put tier confirms the bonus is working as designed; ITM count in 3%/5%/10% tiers, or in any call (short) position, would indicate the algorithm preferred ITM for cost reasons rather than the bonus._
@@ -135,8 +135,8 @@ _(no NEGATIVE_MARGIN log lines found in paste-ins; logs may be missing or no eve
 
 > _If counts below are 0, either no log files have been pasted into `docs/pilot-reports/raw-logs/` yet, or the events did not occur in the pasted window. Outcome columns above remain authoritative regardless._
 
-**Files ingested:** _(none)_
-**Lines parsed:** 0 total / 0 unique
+**Files ingested:** `2026-04-17-autorenew.log`, `2026-04-17-hedgemanager.log`, `2026-04-17-optionselection.log`, `2026-04-17-triggermonitor.log`
+**Lines parsed:** 104 total / 59 unique
 
 **Sell decisions by reason:**
 _(none in paste-ins)_
@@ -150,8 +150,8 @@ _(none in paste-ins)_
 - Sub-threshold / other holds: 0
 
 **Cycle aggregates (from `Cycle complete:` lines):**
-- Cycles seen: 0
-- Sum scanned: 0
+- Cycles seen: 5
+- Sum scanned: 60
 - Sum tpSold: 0
 - Sum salvaged: 0
 - Sum expired: 0
@@ -178,7 +178,7 @@ _(none in paste-ins)_
 
 ## 7. Option Selection Activity (Render logs)
 
-- `WINNER:` lines: 0
+- `WINNER:` lines: 5
 - of which `⚠ NEGATIVE_MARGIN`: 0
 - `OVER_PREMIUM` penalty events: 0
 - Per-candidate `score:` lines: 0
