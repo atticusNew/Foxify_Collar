@@ -838,7 +838,7 @@ export const registerPilotRoutes = async (
     errorResponseBuilder: () => ({
       status: "error",
       reason: "rate_limit_exceeded",
-      message: "Too many requests. Please retry after a short delay."
+      message: "Too many requests. Try again shortly."
     })
   });
 
@@ -1055,7 +1055,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "terms_status_failed")
       };
     }
@@ -1109,7 +1109,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "terms_accept_failed")
       };
     }
@@ -1146,7 +1146,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "reference_price_unavailable")
       };
     }
@@ -1947,7 +1947,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "daily_limit_query_failed")
       };
     }
@@ -1970,9 +1970,9 @@ export const registerPilotRoutes = async (
           currentActiveUsdc: activeAgg.toFixed(2),
           projectedAfterUsdc: projectedAgg.toFixed(2),
           message:
-            `Aggregate active protections would reach $${projectedAgg.toFixed(0)}, ` +
-            `exceeding the $${maxAggregateActive.toFixed(0)} pilot agreement cap. ` +
-            `Close or wait for an existing protection to expire before opening more.`
+            `You'd have $${projectedAgg.toFixed(0)} of protection open. ` +
+            `Pilot limit is $${maxAggregateActive.toFixed(0)}. ` +
+            `Close one or wait for it to expire.`
         };
       }
     } catch (error: any) {
@@ -1980,7 +1980,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "aggregate_active_query_failed")
       };
     }
@@ -2020,10 +2020,9 @@ export const registerPilotRoutes = async (
               currentTierUsageUsdc: tierUsed.toFixed(2),
               projectedAfterUsdc: projectedTier.toFixed(2),
               message:
-                `New protection would push SL ${validSlPctEarly}% daily usage to ` +
-                `$${projectedTier.toFixed(0)}, exceeding the per-tier cap of ` +
-                `$${tierCap.toFixed(0)} (${(pilotConfig.perTierDailyCapPct * 100).toFixed(0)}% of daily limit). ` +
-                `Open the next protection in a different SL tier, or wait for tomorrow's reset.`
+                `${validSlPctEarly}% protection is full for today ` +
+                `(would reach $${projectedTier.toFixed(0)}, limit is $${tierCap.toFixed(0)}). ` +
+                `Try a different level or wait until tomorrow.`
             };
           }
         } catch (error: any) {
@@ -2031,7 +2030,7 @@ export const registerPilotRoutes = async (
           return {
             status: "error",
             reason: "storage_unavailable",
-            message: "Storage temporarily unavailable, please retry.",
+            message: "Quote temporarily unavailable. Tap Refresh Quote.",
             detail: String(error?.message || "tier_concentration_query_failed")
           };
         }
@@ -2098,7 +2097,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "price_chain_error"),
         diagnostics: { requestId, stage: "price_snapshot", elapsedMs: Date.now() - quoteStartedAt }
       };
@@ -2819,36 +2818,36 @@ export const registerPilotRoutes = async (
               ? "tenor_drift_exceeded"
             : "quote_generation_failed",
         message: isStorageFailure
-          ? "Storage temporarily unavailable, please retry."
+          ? "Quote temporarily unavailable. Tap Refresh Quote."
           : isTransportNotLive
-            ? "Exchange connection is not active. Please retry."
+            ? "Exchange connection isn't live. Try again."
             : isTenorTemporarilyUnavailable
-              ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
+              ? "That length is temporarily unavailable. Try the suggested length."
             : isVenueQuoteTimeout
-              ? "Venue quote timed out while evaluating options liquidity. Please retry."
+              ? "Quote timed out. Tap Refresh Quote."
             : isNoViableOption
               ? noViableReason === "quote_economics_unacceptable"
-                ? "No option contract met pilot economics guardrails within quote budget."
+                ? "Hedge cost is uneconomical right now. Try a different length."
                 : noViableReason === "quote_min_notional_not_met"
-                  ? "Requested protection amount is below the minimum tradable option notional for current liquidity."
-                : "No viable option contract met liquidity/protection/economics constraints within quote budget."
+                  ? "Below the exchange minimum. Increase amount."
+                : "No matching option found. Try a different length."
             : isNoTopOfBook
-              ? "Venue top-of-book is temporarily unavailable for the requested hedge. Please retry."
+              ? "Exchange order book temporarily unavailable. Try again."
             : isNoEconomicalOption
-              ? "No option contract met pilot economics guardrails within quote budget."
+              ? "Hedge cost is uneconomical right now. Try a different length."
             : isNoProtectionCompliantOption
-              ? "No option contract met minimum protection effectiveness within quote budget."
+              ? "No option meets the protection threshold. Try a different length."
             : isOptionsRequired
-              ? "Options-native quotes are required and no viable option contract was available within quote budget."
+              ? "No tradeable option available right now. Try again shortly."
             : isNoLiquidityWindow
-              ? "CME options liquidity appears unavailable for the current market window. Please retry during active session."
+              ? "Market closed for options. Try again during active session."
             : isNoContract
-              ? "No venue contract is currently available for the requested hedge. Please retry."
+              ? "No matching contract right now. Try again."
             : isPremiumGuardrail
-              ? "Venue premium is currently outside pilot guardrails for this tenor. Please retry or choose another tenor."
+              ? "Hedge cost outside our safety limit. Try a different length."
             : isTenorDriftExceeded
-              ? "No option contract matched the requested tenor. Please retry."
-          : "Unable to generate a venue quote right now. Please retry.",
+              ? "No option matched that length. Try the suggested one."
+          : "Couldn't get a quote right now. Try again.",
         detail: message,
         diagnostics: {
           requestId,
@@ -2888,7 +2887,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "activation_disabled",
-        message: "Activation is disabled while quote-only pilot validation is in progress."
+        message: "Activation is paused while quotes are validated. Quoting still works."
       };
     }
     const body = req.body as {
@@ -3786,40 +3785,44 @@ export const registerPilotRoutes = async (
         status: "error",
         reason,
         detail: reason === "execution_failed" ? executionFailureDetail : null,
+        // Brevity-pass copy. Style: ≤ 15 words, plain language, state then
+        // action, no jargon (notional, venue, transport, RFQ). The widget's
+        // friendlyError() carries the user-facing version; this fallback
+        // is for clients that bypass the widget (curl, scripts).
         message:
           reason === "price_unavailable"
-            ? "Price temporarily unavailable, please retry."
+            ? "Quote temporarily unavailable. Tap Refresh Quote."
             : reason === "storage_unavailable"
-              ? "Storage temporarily unavailable, please retry."
+              ? "Quote temporarily unavailable. Tap Refresh Quote."
               : reason === "daily_notional_cap_exceeded"
-                ? "Daily protection limit reached for pilot operations. Try again next UTC day."
+                ? "Daily limit reached. Resets at midnight UTC (8pm ET)."
                 : reason === "protection_notional_cap_exceeded"
-                  ? `Protection amount exceeds pilot cap (${new Decimal(
+                  ? `Amount exceeds the pilot per-position max ($${new Decimal(
                       pilotConfig.maxProtectionNotionalUsdc
-                    ).toFixed(2)} USDC).`
+                    ).toFixed(0)}). Reduce it.`
                   : reason === "aggregate_active_notional_cap_exceeded"
-                    ? `Aggregate active protections would exceed pilot cap (${new Decimal(
+                    ? `Pilot's open-protection limit ($${new Decimal(
                         pilotConfig.maxAggregateActiveNotionalUsdc
-                      ).toFixed(2)} USDC). Wait for an existing protection to expire or close before opening more.`
+                      ).toFixed(0)}) is full. Close one or wait for it to expire.`
                   : reason === "per_tier_daily_concentration_cap_exceeded"
-                    ? `New protection would exceed the per-tier daily concentration cap (${(pilotConfig.perTierDailyCapPct * 100).toFixed(0)}% of daily limit per SL tier). Open in a different SL tier or wait for tomorrow's reset.`
+                    ? `This protection level is full for today. Try a different level or wait until tomorrow.`
                   : reason === "quote_already_consumed"
-                    ? "Quote has already been activated. Refresh protections before retrying."
+                    ? "Quote already used. Refresh protections list."
                     : reason === "quote_not_activatable"
-                      ? "Quote is linked to a non-active protection state. Request a fresh quote."
+                      ? "This quote is no longer usable. Tap Refresh Quote."
                       : reason === "venue_execute_timeout"
-                        ? "Venue execution timed out. Please request a fresh quote."
+                        ? "Exchange timed out. Tap Refresh Quote."
                         : reason === "execution_failed"
-                          ? "Venue execution failed. Please request a fresh quote."
+                          ? "Exchange rejected the trade. Tap Refresh Quote."
                           : reason === "premium_cap_exceeded_post_fill"
-                            ? "Realized premium exceeded configured cap. Activation was rejected."
+                            ? "Hedge cost exceeded our safety limit. Protection not opened. No charge."
                           : reason === "ibkr_transport_not_live"
-                            ? "IBKR live transport is not active. Verify bridge transport health and retry."
+                            ? "Exchange connection isn't live. Try again shortly."
                           : reason === "quote_expired"
-                            ? "Quote expired. Please request a new quote."
+                            ? "Quote expired. Tap Refresh Quote."
                             : reason.startsWith("quote_mismatch")
-                              ? "Quote does not match activation parameters. Please request a new quote."
-                              : "Protection activation failed.",
+                              ? "Terms changed after quoting. Tap Refresh Quote."
+                              : "Couldn't open protection. Try again.",
         ...(reason === "daily_notional_cap_exceeded"
           ? {
               capUsdc: maxDailyProtection.toFixed(2),
@@ -3883,7 +3886,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "list_protections_failed")
       };
     }
@@ -4049,7 +4052,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String((error as any)?.detail || "monitor_price_unavailable")
       };
     }
@@ -4084,7 +4087,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String((error as any)?.detail || "monitor_price_unavailable")
       };
     }
