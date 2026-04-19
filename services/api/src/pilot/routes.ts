@@ -4428,6 +4428,38 @@ export const registerPilotRoutes = async (
     };
   });
 
+  /**
+   * R7 — Test-alert endpoint. Lets the operator verify their webhook
+   * configuration (Telegram / Slack / Discord / generic) without waiting
+   * for a real alert to fire. Sends a single info-level alert with a
+   * unique code so dedup doesn't suppress repeated tests.
+   *
+   * POST /pilot/admin/test-alert
+   *   body: { level?: "info"|"warning"|"critical", message?: string }
+   * 200 { status: "ok", alert, dispatchResult }
+   */
+  app.post("/pilot/admin/test-alert", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const body = (req.body || {}) as { level?: string; message?: string };
+    const lvl = body.level === "critical" || body.level === "warning" ? body.level : "info";
+    const stamp = new Date().toISOString();
+    const alert = {
+      level: lvl as "info" | "warning" | "critical",
+      code: `test_alert_${Date.now()}`, // unique code per call → never deduped
+      message: body.message || `Test alert from /pilot/admin/test-alert at ${stamp}`,
+      timestamp: stamp
+    };
+    monitor.recordEvent(alert);
+    // Wait briefly so dispatch results are available in the response.
+    await new Promise((r) => setTimeout(r, 250));
+    return {
+      status: "ok",
+      alert,
+      message: "Alert emitted. Check Telegram / Slack / Discord and /pilot/monitor/alerts to confirm receipt."
+    };
+  });
+
   app.post("/pilot/admin/reset", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
@@ -4649,7 +4681,10 @@ export const registerPilotRoutes = async (
   }, retryEveryMs);
   expiryInterval.unref?.();
   if (pilotConfig.triggerMonitorEnabled) {
-    registerPilotTriggerMonitor(pool);
+    // R7 — wire trigger-monitor alerts to the PilotMonitor → webhook
+    // dispatcher pipeline. trigger_fired (info), trigger_monitor_price_errors
+    // (critical), trigger_monitor_cycle_error (critical).
+    registerPilotTriggerMonitor(pool, (alert) => monitor.recordEvent(alert));
   }
 
   const autoRenewIntervalMs = Number(process.env.PILOT_AUTO_RENEW_INTERVAL_MS || "300000");
@@ -4676,6 +4711,9 @@ export const registerPilotRoutes = async (
       // output, making the hedge manager appear idle in Render logs while
       // triggered positions go unsold. With the wrap, every failed cycle
       // emits a [HedgeManager] no-spot warning that is greppable.
+      // R7 — additionally fan out a hedge_no_spot alert to configured
+      // webhooks so an operator is paged on persistent outages (dedup
+      // window throttles a steady stream of 60s skips to one alert).
       const spot = await (async () => {
         try {
           const ticker = await dataConnector.getIndexPrice("btc_usd");
@@ -4689,6 +4727,11 @@ export const registerPilotRoutes = async (
       })();
       if (!spot || spot <= 0) {
         console.warn(`[HedgeManager] no spot price available — cycle skipped`);
+        monitor.recordEvent({
+          level: "warning",
+          code: "hedge_no_spot",
+          message: "Hedge manager could not fetch BTC index price; cycle skipped. Check Deribit status."
+        });
         return;
       }
       const dvolResult = await dataConnector.getDVOL("BTC");

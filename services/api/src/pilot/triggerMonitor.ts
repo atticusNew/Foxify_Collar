@@ -202,29 +202,74 @@ export const __setTriggerMonitorEnabledForTests = (enabled: boolean): void => {
   pilotConfig.triggerMonitorEnabled = enabled;
 };
 
-export const registerPilotTriggerMonitor = (pool: Pool): NodeJS.Timeout | null => {
+/**
+ * R7 — Optional alert-emit callback. When provided (typically a closure
+ * around a PilotMonitor.recordEvent), the trigger-monitor surfaces
+ * `trigger_monitor_price_errors` and `trigger_monitor_cycle_error` events
+ * to the alert layer for webhook fan-out. Decoupled from PilotMonitor for
+ * test isolation.
+ */
+type AlertEmitter = (alert: {
+  level: "info" | "warning" | "critical";
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+}) => void;
+
+export const registerPilotTriggerMonitor = (
+  pool: Pool,
+  onAlert?: AlertEmitter
+): NodeJS.Timeout | null => {
   if (!pilotConfig.triggerMonitorEnabled) {
     console.log("[TriggerMonitor] Disabled (PILOT_TRIGGER_MONITOR_ENABLED=false)");
     return null;
   }
   const intervalMs = Math.max(1000, pilotConfig.triggerMonitorIntervalMs);
   let consecutivePriceErrors = 0;
+  let alertedAtConsecutiveCount = 0;
   const timer = setInterval(async () => {
     try {
       const result = await processTriggerMonitorCycle(pool);
       if (result.triggered > 0) {
         console.log(`[TriggerMonitor] Cycle: scanned=${result.scanned} triggered=${result.triggered} priceErrors=${result.priceErrors}`);
+        // R7 — surface every trigger event as an info-level alert for
+        // webhook fan-out. Operators want to know immediately when a user
+        // position triggers.
+        onAlert?.({
+          level: "info",
+          code: "trigger_fired",
+          message: `${result.triggered} protection(s) triggered this cycle (scanned=${result.scanned}).`,
+          details: { triggered: result.triggered, scanned: result.scanned }
+        });
       }
       if (result.priceErrors > 0) {
         consecutivePriceErrors += result.priceErrors;
         if (consecutivePriceErrors >= 10) {
           console.error(`[TriggerMonitor] ⚠ ${consecutivePriceErrors} consecutive price errors — price feeds may be degraded`);
+          // R7 — fire ONE alert per crossing of the 10-consecutive threshold
+          // (don't repeat every cycle while the failure persists).
+          if (alertedAtConsecutiveCount < consecutivePriceErrors - consecutivePriceErrors % 10) {
+            onAlert?.({
+              level: "critical",
+              code: "trigger_monitor_price_errors",
+              message: `Trigger monitor has ${consecutivePriceErrors} consecutive price errors. Coinbase + Deribit perp price feeds may both be degraded. Trigger detection is paused.`,
+              details: { consecutiveErrors: consecutivePriceErrors }
+            });
+            alertedAtConsecutiveCount = consecutivePriceErrors - consecutivePriceErrors % 10;
+          }
         }
       } else {
         consecutivePriceErrors = 0;
+        alertedAtConsecutiveCount = 0;
       }
     } catch (err: any) {
       console.error(`[TriggerMonitor] Cycle error: ${err?.message || "unknown"}`);
+      onAlert?.({
+        level: "critical",
+        code: "trigger_monitor_cycle_error",
+        message: `Trigger monitor cycle threw: ${err?.message || "unknown"}. Trigger detection skipped this cycle.`,
+        details: { error: String(err?.message || err) }
+      });
     }
   }, intervalMs);
   timer.unref?.();

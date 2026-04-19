@@ -8168,6 +8168,12 @@ app.post("/hedge/roll", async (req) => {
 const { assertPilotAgreementCaps } = await import("./pilot/config");
 assertPilotAgreementCaps();
 
+// R7 — Configure outbound alert webhook destinations (Telegram / Slack /
+// Discord / generic). Reads PILOT_ALERT_* env vars; logs which destinations
+// were enabled. Calling this is idempotent.
+const { configureAlertDispatcher } = await import("./pilot/alertDispatcher");
+configureAlertDispatcher();
+
 await registerPilotRoutes(app, { deribit, deribitLive });
 
 const treasuryConfig = parseTreasuryConfig();
