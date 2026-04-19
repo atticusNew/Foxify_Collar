@@ -249,6 +249,9 @@ function Dashboard({ token }: { token: string }) {
   const [healthConfig, setHealthConfig] = useState<Record<string, unknown> | null>(null);
 
   const [protectionsList, setProtectionsList] = useState<ProtectionSummary[]>([]);
+  // Default scope is "open" so cleared/expired/cancelled rows don't clutter
+  // the protections table. Toggle "Show all" to see lifecycle history.
+  const [protectionsScope, setProtectionsScope] = useState<"open" | "all">("open");
   const [livePrice, setLivePrice] = useState<number | null>(null);
   const livePriceRef = useRef(0);
 
@@ -277,7 +280,7 @@ function Dashboard({ token }: { token: string }) {
         adminApi<{ metrics: AdminMetrics }>("/pilot/admin/metrics?scope=all", token),
         adminApi<{ rows: ExecutionQuality[] }>("/pilot/admin/diagnostics/execution-quality?lookbackDays=30", token),
         adminApi<{ alerts: Alert[] }>("/pilot/monitor/alerts?limit=20", token),
-        adminApi<{ status: string; protections: ProtectionSummary[] }>("/pilot/protections?limit=50", token),
+        adminApi<{ status: string; protections: ProtectionSummary[] }>(`/pilot/protections?limit=200&scope=${protectionsScope}`, token),
       ]);
 
       if (healthRes.status === "fulfilled" && healthRes.value) {
@@ -296,7 +299,7 @@ function Dashboard({ token }: { token: string }) {
     } catch (e: any) {
       setError(e.message);
     }
-  }, [token]);
+  }, [token, protectionsScope]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -546,7 +549,7 @@ function Dashboard({ token }: { token: string }) {
         {/* ─── Panel: Protections ─── */}
         {activePanel === "protections" && (
           <div className="card card-wide">
-            <div className="title" style={{ fontSize: 13 }}>
+            <div className="title" style={{ fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>
                 Protections
                 {metrics && (
@@ -554,7 +557,26 @@ function Dashboard({ token }: { token: string }) {
                     {metrics.activeProtections} active / {metrics.totalProtections} total
                   </span>
                 )}
+                <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400, marginLeft: 8 }}>
+                  ({protectionsList.length} shown, scope: {protectionsScope})
+                </span>
               </span>
+              <button
+                onClick={() => setProtectionsScope((s) => (s === "open" ? "all" : "open"))}
+                style={{
+                  fontSize: 11,
+                  padding: "4px 10px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  background: "transparent",
+                  color: "var(--muted)",
+                  cursor: "pointer",
+                  fontWeight: 500
+                }}
+                title="Toggle between 'open only' (active / triggered / pending) and 'all' (includes expired and cancelled history)"
+              >
+                {protectionsScope === "open" ? "Show all (history)" : "Show open only"}
+              </button>
             </div>
             {protectionsList.length > 0 ? (
               <div style={{ overflowX: "auto" }}>

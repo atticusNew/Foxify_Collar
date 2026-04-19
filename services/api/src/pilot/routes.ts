@@ -3863,7 +3863,7 @@ export const registerPilotRoutes = async (
   });
 
   app.get("/pilot/protections", async (req, reply) => {
-    const query = req.query as { limit?: string };
+    const query = req.query as { limit?: string; scope?: string };
     let userHash: { userHash: string; hashVersion: number };
     try {
       userHash = resolveTenantScopeHash();
@@ -3872,13 +3872,40 @@ export const registerPilotRoutes = async (
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
       return { status: "error", reason };
     }
+    // Optional scope filter so the admin dashboard can request only currently
+    // open protections (statuses where the platform is still on the hook)
+    // instead of dumping the full lifecycle history including expired_otm /
+    // expired_itm / cancelled rows. Default behavior unchanged ("all") so
+    // existing callers see the same payload.
+    //   - "open": pending_activation, active, triggered, reconcile_pending,
+    //             awaiting_renew_decision, awaiting_expiry_price
+    //   - "active": just status='active'
+    //   - "all" (default): full history (excluding archived rows per PR #55)
+    const scopeRaw = String(query.scope || "all").toLowerCase();
+    const scope: "open" | "active" | "all" =
+      scopeRaw === "open" || scopeRaw === "active" ? (scopeRaw as "open" | "active") : "all";
+    const OPEN_STATUSES = new Set([
+      "pending_activation",
+      "active",
+      "triggered",
+      "reconcile_pending",
+      "awaiting_renew_decision",
+      "awaiting_expiry_price"
+    ]);
     try {
-      const protections = await listProtectionsByUserHash(pool, userHash.userHash, {
+      const all = await listProtectionsByUserHash(pool, userHash.userHash, {
         limit: Number(query.limit || 20)
       });
+      const filtered =
+        scope === "open"
+          ? all.filter((p: any) => OPEN_STATUSES.has(String(p.status)))
+          : scope === "active"
+            ? all.filter((p: any) => p.status === "active")
+            : all;
       return {
         status: "ok",
-        protections: protections.map((item) =>
+        scope,
+        protections: filtered.map((item) =>
           sanitizeProtectionForTrader(item as unknown as Record<string, unknown>)
         )
       };
