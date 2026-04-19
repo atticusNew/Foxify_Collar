@@ -741,6 +741,106 @@ export const archiveProtectionsByUserHashExcept = async (
   return archivedCount;
 };
 
+/**
+ * Surgical admin reset for paper-test protections. Archives a specific list
+ * of protections by ID, releases their daily-usage allocation back into the
+ * cap pool, and stamps audit metadata. Unlike the heavy `resetPilotData`,
+ * this:
+ *   - leaves `pilot_execution_quality_daily`, `pilot_ledger_entries`,
+ *     `pilot_hedge_decisions`, `pilot_admin_actions`,
+ *     `pilot_venue_executions`, and the unaffected protections intact
+ *   - lets paper-testing release the aggregate-active and per-tier-daily
+ *     caps mid-pilot without destroying audit data
+ *
+ * Returns details for the audit log: which IDs were archived and how much
+ * notional was released against the daily-usage table, partitioned by
+ * UTC day.
+ */
+export const archiveTestProtectionsByIds = async (
+  pool: Queryable,
+  input: {
+    userHash: string;
+    protectionIds: string[];
+    actor: string;
+    reason?: string;
+  }
+): Promise<{
+  archivedCount: number;
+  archivedIds: string[];
+  releasedDailyByDay: Array<{ dayStart: string; notional: string }>;
+}> => {
+  if (!input.protectionIds || input.protectionIds.length === 0) {
+    return { archivedCount: 0, archivedIds: [], releasedDailyByDay: [] };
+  }
+  const archivedAt = new Date().toISOString();
+  const reason = String(input.reason || "admin_test_reset");
+  const actor = String(input.actor || "admin");
+  // Build an IN list with one bind per id. We avoid `ANY($2::text[])`
+  // because the in-memory DB used in tests does not unify text[] coercion
+  // with our id strings; production Postgres handles either.
+  const idParams = input.protectionIds.map((_, idx) => `$${idx + 2}`).join(", ");
+  const candidates = await pool.query(
+    `
+      SELECT id, metadata, protected_notional::text AS protected_notional, created_at
+      FROM pilot_protections
+      WHERE user_hash = $1
+        AND id IN (${idParams})
+        AND COALESCE(metadata->>'archivedAt', '') = ''
+    `,
+    [input.userHash, ...input.protectionIds]
+  );
+  const archivedIds: string[] = [];
+  const releaseByDay = new Map<string, number>();
+  for (const row of candidates.rows) {
+    const metadata = toRecord(row.metadata);
+    const merged = {
+      ...metadata,
+      archivedAt,
+      archivedReason: reason,
+      archivedBy: actor,
+      archivedFromStatus: metadata.status || null
+    };
+    const updated = await pool.query(
+      `
+        UPDATE pilot_protections
+        SET metadata = $1::jsonb,
+            status = 'cancelled',
+            updated_at = NOW()
+        WHERE id = $2
+      `,
+      [JSON.stringify(merged), String(row.id)]
+    );
+    if (Number(updated.rowCount || 0) > 0) {
+      archivedIds.push(String(row.id));
+      const dayStart = new Date(String(row.created_at));
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayKey = dayStart.toISOString().slice(0, 10);
+      const notional = Number(row.protected_notional) || 0;
+      releaseByDay.set(dayKey, (releaseByDay.get(dayKey) || 0) + notional);
+    }
+  }
+  const releasedDailyByDay: Array<{ dayStart: string; notional: string }> = [];
+  for (const [dayStart, notional] of releaseByDay.entries()) {
+    if (notional > 0) {
+      await pool.query(
+        `
+          UPDATE pilot_daily_usage
+          SET used_notional = GREATEST(0, used_notional - $3::numeric)
+          WHERE user_hash = $1
+            AND day_start = $2::date
+        `,
+        [input.userHash, dayStart, String(notional)]
+      );
+      releasedDailyByDay.push({ dayStart, notional: String(notional) });
+    }
+  }
+  return {
+    archivedCount: archivedIds.length,
+    archivedIds,
+    releasedDailyByDay
+  };
+};
+
 export const getDailyProtectedNotionalForUser = async (
   pool: Queryable,
   userHash: string,
@@ -785,12 +885,17 @@ export const sumActiveProtectionNotional = async (
   pool: Queryable,
   userHash: string
 ): Promise<string> => {
+  // Excludes archived rows (metadata.archivedAt). Only admin test-reset
+  // sets archivedAt; normal user-facing flows never do, so this filter
+  // is a no-op for production usage. It exists so test-reset can
+  // release the aggregate-active cap on demand.
   const result = await pool.query(
     `
       SELECT COALESCE(SUM(protected_notional), 0)::text AS total
       FROM pilot_protections
       WHERE user_hash = $1
         AND status IN ('active', 'pending_activation', 'triggered')
+        AND COALESCE(metadata->>'archivedAt', '') = ''
     `,
     [userHash]
   );
@@ -817,6 +922,10 @@ export const getDailyTierUsageForUser = async (
   dayStartIso: string,
   dayEndIso: string
 ): Promise<string> => {
+  // Excludes rows that have been explicitly archived (metadata.archivedAt set).
+  // Only the admin test-reset endpoint sets archivedAt today; ordinary
+  // cancellations do not, so this filter is a no-op for normal user flows.
+  // It exists so test-reset can release per-tier daily cap on demand.
   const result = await pool.query(
     `
       SELECT COALESCE(SUM(protected_notional), 0)::text AS total
@@ -825,6 +934,7 @@ export const getDailyTierUsageForUser = async (
         AND sl_pct = $2
         AND created_at >= $3::timestamptz
         AND created_at < $4::timestamptz
+        AND COALESCE(metadata->>'archivedAt', '') = ''
     `,
     [userHash, slPct, dayStartIso, dayEndIso]
   );

@@ -348,7 +348,8 @@ Separate system for institutional daily protection ($1M+ notional). Runs on the 
 | POST   | `/pilot/admin/protections/:id/premium-settled`          | Mark premium as settled |
 | POST   | `/pilot/admin/protections/:id/payout-settled`           | Mark payout as settled |
 | GET    | `/pilot/admin/protections/:id/ledger`                   | Protection ledger entries |
-| POST   | `/pilot/admin/reset`                                    | Reset all pilot data |
+| POST   | `/pilot/admin/reset`                                    | Hard reset — wipes 17 tables (use only between pilot phases) |
+| POST   | `/pilot/admin/test-reset-protections`                   | Surgical archive of paper-test protections, releases caps, preserves audit data (`{ protectionIds: string[], reason?: string }`) |
 | POST   | `/pilot/admin/test-alert`                               | R7 — emit a test alert through the dispatcher (`{ level, message }` optional) |
 | GET    | `/pilot/monitor/status`                                 | Monitor health status |
 | GET    | `/pilot/monitor/alerts`                                 | Recent alerts |
@@ -365,6 +366,10 @@ Key columns: `id`, `user_hash`, `status`, `tier_name`, `sl_pct`, `drawdown_floor
 Status values: `pending_activation`, `active`, `triggered`, `expired_itm`, `expired_otm`, `cancelled`, `reconcile_pending`, `activation_failed`, `awaiting_expiry_price`, `awaiting_renew_decision`.
 
 `hedge_status` values: `active`, `tp_sold`, `expired_settled`.
+
+**Tenancy note (pilot):** all pilot users are mapped to a single `user_hash` derived from `PILOT_TENANT_SCOPE_ID` (default `"foxify-pilot"`). Caps (aggregate-active, daily, per-tier) accumulate across the entire pilot, not per individual trader. Use `POST /pilot/admin/test-reset-protections` to clear cap headroom for paper-test rows without disturbing other audit data. Per-user tenancy is a post-pilot work item.
+
+**`metadata.archivedAt` filter:** rows with `metadata.archivedAt` set are excluded from `sumActiveProtectionNotional` and `getDailyTierUsageForUser`. Only the surgical test-reset endpoint sets this field; ordinary user flows do not.
 
 ### pilot_sim_positions
 Simulated perp positions (frontend-driven).
