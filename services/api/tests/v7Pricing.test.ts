@@ -32,8 +32,10 @@ test("isValidSlTier — rejects invalid tiers", () => {
 });
 
 test("getV7PremiumPer1k — tiered rates (tight SL costs more)", () => {
+  // SL 2% raised from $5 → $6 on 2026-04-18 (DVOL-headroom bump).
+  // SL 1% remains $6 (unlaunched). All other tiers unchanged.
   assert.equal(getV7PremiumPer1k(1), 6);
-  assert.equal(getV7PremiumPer1k(2), 5);
+  assert.equal(getV7PremiumPer1k(2), 6);
   assert.equal(getV7PremiumPer1k(3), 4);
   assert.equal(getV7PremiumPer1k(5), 3);
   assert.equal(getV7PremiumPer1k(10), 2);
@@ -50,13 +52,13 @@ test("getV7PayoutPer10k — correct payouts", () => {
 test("computeV7Premium — $10k tiered pricing", () => {
   const r = computeV7Premium({ slPct: 2, notionalUsd: 10000 });
   assert.ok(r.available);
-  assert.equal(r.premiumPer1kUsd, 5);
-  assert.equal(r.premiumUsd, 50);
+  assert.equal(r.premiumPer1kUsd, 6);
+  assert.equal(r.premiumUsd, 60);
   assert.equal(r.payoutPer10kUsd, 200);
 });
 
 test("computeV7Premium — each tier has correct rate", () => {
-  const expected: Record<number, number> = { 1: 60, 2: 50, 3: 40, 5: 30, 10: 20 };
+  const expected: Record<number, number> = { 1: 60, 2: 60, 3: 40, 5: 30, 10: 20 };
   for (const sl of [1, 2, 3, 5, 10] as const) {
     const r = computeV7Premium({ slPct: sl, notionalUsd: 10000 });
     assert.ok(r.available);
@@ -107,19 +109,20 @@ test("getV7AvailableTiers — launched tiers (no 1% SL)", () => {
   assert.ok(tiers.every(t => t.available));
   assert.ok(!tiers.find(t => t.slPct === 1));
   const sl2 = tiers.find(t => t.slPct === 2);
-  assert.equal(sl2?.premiumPer1kUsd, 5);
-  assert.equal(sl2?.tenorDays, 2);
+  assert.equal(sl2?.premiumPer1kUsd, 6);
+  assert.equal(sl2?.tenorDays, 1);
   const sl10 = tiers.find(t => t.slPct === 10);
   assert.equal(sl10?.premiumPer1kUsd, 2);
-  assert.equal(sl10?.tenorDays, 2);
+  assert.equal(sl10?.tenorDays, 1);
 });
 
-test("getV7TenorDays — 2d for all tiers", () => {
-  assert.equal(getV7TenorDays(1), 2);
-  assert.equal(getV7TenorDays(2), 2);
-  assert.equal(getV7TenorDays(3), 2);
-  assert.equal(getV7TenorDays(5), 2);
-  assert.equal(getV7TenorDays(10), 2);
+test("getV7TenorDays — 1d for all tiers", () => {
+  // Tenor switched 2d → 1d on 2026-04-17 (see PR #18, docs sync).
+  assert.equal(getV7TenorDays(1), 1);
+  assert.equal(getV7TenorDays(2), 1);
+  assert.equal(getV7TenorDays(3), 1);
+  assert.equal(getV7TenorDays(5), 1);
+  assert.equal(getV7TenorDays(10), 1);
 });
 
 test("slPctToTierLabel", () => {
