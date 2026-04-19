@@ -347,6 +347,7 @@ Separate system for institutional daily protection ($1M+ notional). Runs on the 
 | POST   | `/pilot/admin/protections/:id/payout-settled`           | Mark payout as settled |
 | GET    | `/pilot/admin/protections/:id/ledger`                   | Protection ledger entries |
 | POST   | `/pilot/admin/reset`                                    | Reset all pilot data |
+| POST   | `/pilot/admin/test-alert`                               | R7 — emit a test alert through the dispatcher (`{ level, message }` optional) |
 | GET    | `/pilot/monitor/status`                                 | Monitor health status |
 | GET    | `/pilot/monitor/alerts`                                 | Recent alerts |
 
@@ -395,6 +396,49 @@ Entry types: `premium_due`, `premium_collected`, `trigger_payout_due`, `payout_d
 | `VITE_PILOT_WIDGET`               | Enable PilotWidget UI      | `true` |
 | `VITE_PILOT_ACCESS_CODE`          | Frontend access gate       | (any shared code) |
 | `VITE_API_BASE`                   | Backend API URL            | `https://foxify-pilot-new.onrender.com` |
+
+### Alert Dispatcher (R7 — added 2026-04-19)
+
+The platform fans out `PilotAlert` objects to outbound webhook destinations
+via `services/api/src/pilot/alertDispatcher.ts`. All destinations are
+configured by env var; leaving any blank disables that destination.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PILOT_ALERT_TELEGRAM_BOT_TOKEN`   | (empty) | Telegram bot HTTP API token |
+| `PILOT_ALERT_TELEGRAM_CHAT_ID`     | (empty) | Telegram chat ID (user, group, or channel) |
+| `PILOT_ALERT_TELEGRAM_LEVELS`      | `warning,critical` | Comma-list of levels to send |
+| `PILOT_ALERT_SLACK_WEBHOOK_URL`    | (empty) | Slack incoming-webhook URL |
+| `PILOT_ALERT_SLACK_LEVELS`         | `warning,critical` | |
+| `PILOT_ALERT_DISCORD_WEBHOOK_URL`  | (empty) | Discord webhook URL |
+| `PILOT_ALERT_DISCORD_LEVELS`       | `critical` | |
+| `PILOT_ALERT_GENERIC_WEBHOOK_URL`  | (empty) | Generic JSON POST destination |
+| `PILOT_ALERT_GENERIC_LEVELS`       | `info,warning,critical` | |
+| `PILOT_ALERT_DEDUP_WINDOW_SEC`     | `300` | Same `(destination,code,level)` suppressed within window |
+| `PILOT_ALERT_HTTP_TIMEOUT_MS`      | `5000` | Per-webhook send timeout |
+
+Alerts the platform emits and which level they fire at:
+
+| Code | Level | Emitter | When |
+|---|---|---|---|
+| `negative_spread` | warning | monitor.recordFill | Hedge cost > premium on a fill |
+| `fill_failure` | warning/critical | monitor.recordFill | Hedge fill failed; critical at 5+ consecutive |
+| `fill_circuit_breaker` | critical | monitor.recordFill | 5+ consecutive failures = hedging impaired |
+| `treasury_low` / `treasury_critical` | warning/critical | monitor.checkTreasuryBalance | Funding below thresholds |
+| `hedge_no_spot` | warning | hedge-mgmt scheduler (R3.A) | Deribit getIndexPrice failed; cycle skipped |
+| `trigger_fired` | info | trigger monitor (R7) | A protection triggered |
+| `trigger_monitor_price_errors` | critical | trigger monitor (R7) | 10+ consecutive price-feed errors |
+| `trigger_monitor_cycle_error` | critical | trigger monitor (R7) | Trigger-monitor cycle threw |
+
+**Telegram setup recipe** (the most useful destination for solo operators):
+
+1. Open a chat with `@BotFather` on Telegram. Send `/newbot`. Follow prompts; copy the token.
+2. Open a chat with `@userinfobot` to find your numeric chat ID, OR add the bot to a group / channel and use that chat's ID.
+3. On Render, set:
+   - `PILOT_ALERT_TELEGRAM_BOT_TOKEN=<from BotFather>`
+   - `PILOT_ALERT_TELEGRAM_CHAT_ID=<numeric chat id>`
+   - `PILOT_ALERT_TELEGRAM_LEVELS=warning,critical` (or `critical` only if you want only the loudest events)
+4. Trigger a test alert by hitting `POST /pilot/admin/test-alert` (admin token required) — see endpoint below.
 
 ### Notional Cap Configuration (Pilot Agreement §3.1)
 
