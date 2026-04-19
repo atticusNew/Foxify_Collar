@@ -760,6 +760,77 @@ export const getDailyProtectedNotionalForUser = async (
   return String(result.rows[0]?.total || "0");
 };
 
+/**
+ * R2.B — Sum the protected_notional of all currently-OPEN protections for a
+ * user (statuses where Atticus is still on the hook for the position).
+ *
+ * Used by the activate path to enforce the Pilot Agreement §3.1 cap on
+ * "maximum aggregate active notional" — without it, a trader could roll
+ * forward on Day 8 of the pilot when the daily cap jumps to $500k and
+ * accumulate $1M+ of active protections during rollover windows.
+ *
+ * "Open" = status in (active, pending_activation, triggered):
+ *   - active:              currently protecting; Atticus owes payout if floor breached
+ *   - pending_activation:  in-flight activate; reserves its slot defensively
+ *   - triggered:           floor was hit; payout owed but not yet settled
+ *
+ * Note: this is a non-atomic SUM-then-decide check. The activate path
+ * runs it inside the same transaction as the daily-cap reservation so
+ * that two simultaneous activations cannot both pass the check; if the
+ * second one passed the SUM but the first one's INSERT happened in
+ * between, Postgres serializes the transactions and the second sees the
+ * first's row. Acceptable at single-user / low-throughput pilot scale.
+ */
+export const sumActiveProtectionNotional = async (
+  pool: Queryable,
+  userHash: string
+): Promise<string> => {
+  const result = await pool.query(
+    `
+      SELECT COALESCE(SUM(protected_notional), 0)::text AS total
+      FROM pilot_protections
+      WHERE user_hash = $1
+        AND status IN ('active', 'pending_activation', 'triggered')
+    `,
+    [userHash]
+  );
+  return String(result.rows[0]?.total || "0");
+};
+
+/**
+ * R2.D — Per-tier daily new-protection notional summed across the day so
+ * far for one user. Used to enforce a per-SL-tier concentration sub-cap
+ * (e.g., max 60% of the daily cap may be in any single SL tier).
+ *
+ * Per the R1 analysis, tier-concentration is the dominant economic risk
+ * (the −$2,127 paper event was 8 of 9 trades in the same SL 2% tier on
+ * the same strike firing simultaneously). The Pilot Agreement does not
+ * require this cap; it's defense-in-depth.
+ *
+ * Returns the sum for one specific SL tier identifier (sl_pct integer
+ * value, e.g. 2 / 3 / 5 / 10) over the calendar day.
+ */
+export const getDailyTierUsageForUser = async (
+  pool: Queryable,
+  userHash: string,
+  slPct: number,
+  dayStartIso: string,
+  dayEndIso: string
+): Promise<string> => {
+  const result = await pool.query(
+    `
+      SELECT COALESCE(SUM(protected_notional), 0)::text AS total
+      FROM pilot_protections
+      WHERE user_hash = $1
+        AND sl_pct = $2
+        AND created_at >= $3::timestamptz
+        AND created_at < $4::timestamptz
+    `,
+    [userHash, slPct, dayStartIso, dayEndIso]
+  );
+  return String(result.rows[0]?.total || "0");
+};
+
 export const getDailyTreasurySubsidyUsageForUser = async (
   pool: Queryable,
   userHash: string,

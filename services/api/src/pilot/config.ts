@@ -1257,8 +1257,38 @@ export const pilotConfig = {
   hashVersion: Number(process.env.USER_HASH_VERSION || "1"),
   hashSecret: process.env.USER_HASH_SECRET || "",
   quoteMinNotionalUsdc: parsePilotQuoteMinNotionalUsdc(process.env.PILOT_QUOTE_MIN_NOTIONAL_USDC),
+  // R2.A note: Pilot Agreement §3.1 caps per-position at $50k. Render env MUST
+  // set PILOT_MAX_PROTECTION_NOTIONAL_USDC=50000 (the default of 100000 here
+  // is a legacy value retained only to avoid throwing on under-configured
+  // dev environments — production has the env var set).
   maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "100000"),
+  // Daily new-protection cap. Pilot Agreement §3.1: $100k Days 1-7,
+  // $500k Days 8-28. Env var must be bumped on Day 8.
   maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "100000"),
+  // R2.B — aggregate active notional cap. Pilot Agreement §3.1: $200k.
+  // Sum of protected_notional over all open protections (active,
+  // pending_activation, triggered) per user must not exceed this.
+  maxAggregateActiveNotionalUsdc: Number(process.env.PILOT_MAX_AGGREGATE_ACTIVE_NOTIONAL_USDC || "200000"),
+  // R2.D — per-tier concentration sub-cap (defense-in-depth, not in
+  // agreement). Caps the FRACTION of the daily new-protection notional
+  // that may be in any single SL tier. 0.6 = 60%. Set to 1.0 to disable.
+  // Example with daily cap $100k and concentration cap 0.6: a single
+  // SL tier may absorb at most $60k of new protections per day.
+  perTierDailyCapPct: parseFractionRange(
+    process.env.PILOT_PER_TIER_DAILY_CAP_PCT,
+    0.6,
+    0,
+    1,
+    "invalid_pilot_per_tier_daily_cap_pct"
+  ),
+  // R2.E — startup assertion mode. When 'enforce', the platform throws
+  // at boot if any cap env exceeds the agreement maximum. When 'warn',
+  // logs a console.warn but boots. Default 'warn' so dev environments
+  // boot freely; production should set 'enforce'.
+  capEnforcementMode:
+    String(process.env.PILOT_CAP_ENFORCEMENT_MODE || "warn").toLowerCase() === "enforce"
+      ? ("enforce" as const)
+      : ("warn" as const),
   treasuryPerQuoteSubsidyCapPct: parseFractionRange(
     process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT,
     0.7,
@@ -1417,4 +1447,81 @@ export const pilotConfig = {
 
 export const isPilotAdminConfigured = (): boolean =>
   Boolean(pilotConfig.adminToken) && pilotConfig.adminIpAllowlist.entries.length > 0;
+
+/**
+ * R2.E — Cap enforcement assertion. Verifies that runtime env values for
+ * notional caps do not exceed the Pilot Agreement §3.1 limits.
+ *
+ * Behavior depends on PILOT_CAP_ENFORCEMENT_MODE:
+ *   - "enforce" (production): throws an Error preventing the service
+ *     from booting if any cap is misconfigured.
+ *   - "warn" (default; dev/staging): logs a console.warn for each
+ *     violation and continues booting.
+ *
+ * Called by server.ts during startup after pilotConfig is assembled.
+ *
+ * Agreement caps:
+ *   - per-position max:                $50,000  (PILOT_MAX_PROTECTION_NOTIONAL_USDC)
+ *   - aggregate active notional max:  $200,000  (PILOT_MAX_AGGREGATE_ACTIVE_NOTIONAL_USDC)
+ *   - daily cap Days 1-7:             $100,000  (PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC)
+ *   - daily cap Days 8-28:            $500,000  (PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC)
+ *
+ * Note: the daily cap legitimately changes at Day 8, so the assertion
+ * does not pin it to a single value. It allows up to $500k. Operators
+ * must remember to start at $100k and bump to $500k on Day 8 (R2.C).
+ */
+export const assertPilotAgreementCaps = (): { ok: boolean; violations: string[] } => {
+  const violations: string[] = [];
+  const PER_POSITION_MAX = 50000;
+  const AGGREGATE_ACTIVE_MAX = 200000;
+  const DAILY_MAX_WEEK_2_PLUS = 500000;
+
+  if (pilotConfig.maxProtectionNotionalUsdc > PER_POSITION_MAX) {
+    violations.push(
+      `PILOT_MAX_PROTECTION_NOTIONAL_USDC=${pilotConfig.maxProtectionNotionalUsdc} ` +
+      `exceeds Pilot Agreement §3.1 per-position max of $${PER_POSITION_MAX}`
+    );
+  }
+  if (pilotConfig.maxAggregateActiveNotionalUsdc > AGGREGATE_ACTIVE_MAX) {
+    violations.push(
+      `PILOT_MAX_AGGREGATE_ACTIVE_NOTIONAL_USDC=${pilotConfig.maxAggregateActiveNotionalUsdc} ` +
+      `exceeds Pilot Agreement §3.1 aggregate-active max of $${AGGREGATE_ACTIVE_MAX}`
+    );
+  }
+  if (pilotConfig.maxDailyProtectedNotionalUsdc > DAILY_MAX_WEEK_2_PLUS) {
+    violations.push(
+      `PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC=${pilotConfig.maxDailyProtectedNotionalUsdc} ` +
+      `exceeds Pilot Agreement §3.1 max daily cap of $${DAILY_MAX_WEEK_2_PLUS}`
+    );
+  }
+  // Per-tier sub-cap fraction must stay 0..1 (parseFractionRange already
+  // enforces this; included here as a defense for completeness).
+  if (pilotConfig.perTierDailyCapPct < 0 || pilotConfig.perTierDailyCapPct > 1) {
+    violations.push(
+      `PILOT_PER_TIER_DAILY_CAP_PCT=${pilotConfig.perTierDailyCapPct} must be between 0 and 1`
+    );
+  }
+
+  if (violations.length === 0) {
+    console.log(
+      `[pilotConfig] cap assertions PASSED — ` +
+      `perPosition=$${pilotConfig.maxProtectionNotionalUsdc} ` +
+      `aggregateActive=$${pilotConfig.maxAggregateActiveNotionalUsdc} ` +
+      `dailyNew=$${pilotConfig.maxDailyProtectedNotionalUsdc} ` +
+      `perTierFrac=${pilotConfig.perTierDailyCapPct}`
+    );
+    return { ok: true, violations: [] };
+  }
+
+  if (pilotConfig.capEnforcementMode === "enforce") {
+    const msg = `pilot_cap_assertion_failed:\n  - ${violations.join("\n  - ")}`;
+    console.error(`[pilotConfig] CAP ASSERTIONS FAILED (enforce mode):\n${msg}`);
+    throw new Error(msg);
+  }
+  console.warn(
+    `[pilotConfig] cap assertion warnings (warn mode; set PILOT_CAP_ENFORCEMENT_MODE=enforce to block boot):`
+  );
+  for (const v of violations) console.warn(`  - ${v}`);
+  return { ok: false, violations };
+};
 

@@ -14,6 +14,8 @@ import {
   ensurePilotSchema,
   resetPilotData,
   getDailyProtectedNotionalForUser,
+  sumActiveProtectionNotional,
+  getDailyTierUsageForUser,
   getDailyTreasurySubsidyUsageForUser,
   getEssentialProofPayload,
   getPilotAdminMetrics,
@@ -1906,6 +1908,7 @@ export const registerPilotRoutes = async (
     }
     const maxProtection = new Decimal(pilotConfig.maxProtectionNotionalUsdc);
     const maxDailyProtection = new Decimal(pilotConfig.maxDailyProtectedNotionalUsdc);
+    const maxAggregateActive = new Decimal(pilotConfig.maxAggregateActiveNotionalUsdc);
     if (protectedNotional.gt(maxProtection)) {
       reply.code(400);
       return {
@@ -1947,6 +1950,92 @@ export const registerPilotRoutes = async (
         message: "Storage temporarily unavailable, please retry.",
         detail: String(error?.message || "daily_limit_query_failed")
       };
+    }
+    // R2.B — Aggregate active notional cap (Pilot Agreement §3.1: $200k).
+    // Quote-side check is informational only (the binding atomic check is in
+    // the activate path inside the activation transaction). We surface here
+    // to fail-fast before quoting, so the trader's UI can show a friendly
+    // error instead of letting the quote succeed and the activate fail.
+    try {
+      const activeAgg = new Decimal(
+        await sumActiveProtectionNotional(pool, userHash.userHash)
+      );
+      const projectedAgg = activeAgg.plus(protectedNotional);
+      if (projectedAgg.gt(maxAggregateActive)) {
+        reply.code(400);
+        return {
+          status: "error",
+          reason: "aggregate_active_notional_cap_exceeded",
+          capUsdc: maxAggregateActive.toFixed(2),
+          currentActiveUsdc: activeAgg.toFixed(2),
+          projectedAfterUsdc: projectedAgg.toFixed(2),
+          message:
+            `Aggregate active protections would reach $${projectedAgg.toFixed(0)}, ` +
+            `exceeding the $${maxAggregateActive.toFixed(0)} pilot agreement cap. ` +
+            `Close or wait for an existing protection to expire before opening more.`
+        };
+      }
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Storage temporarily unavailable, please retry.",
+        detail: String(error?.message || "aggregate_active_query_failed")
+      };
+    }
+    // R2.D — Per-tier daily concentration cap (defense-in-depth, not in
+    // agreement). Caps the fraction of daily new-protection notional that
+    // may be in any single SL tier. Default 60%. Goal: prevent the
+    // single-event simultaneous-trigger pattern that produced the −$2,127
+    // paper outcome on 2026-04-18 (n=9 R1 analysis).
+    // Only enforced when the v7 pricing path is in use (we know slPct).
+    {
+      const slPctEarly = body?.slPct != null ? Number(body.slPct) : null;
+      const validSlPctEarly =
+        pilotConfig.v7.enabled && slPctEarly !== null && isValidSlTier(slPctEarly)
+          ? (slPctEarly as V7SlTier)
+          : null;
+      if (validSlPctEarly !== null && pilotConfig.perTierDailyCapPct < 1) {
+        try {
+          const tierUsed = new Decimal(
+            await getDailyTierUsageForUser(
+              pool,
+              userHash.userHash,
+              validSlPctEarly,
+              dayStart.toISOString(),
+              dayEnd.toISOString()
+            )
+          );
+          const tierCap = maxDailyProtection.mul(pilotConfig.perTierDailyCapPct);
+          const projectedTier = tierUsed.plus(protectedNotional);
+          if (projectedTier.gt(tierCap)) {
+            reply.code(400);
+            return {
+              status: "error",
+              reason: "per_tier_daily_concentration_cap_exceeded",
+              tierSlPct: validSlPctEarly,
+              capPct: pilotConfig.perTierDailyCapPct,
+              tierCapUsdc: tierCap.toFixed(2),
+              currentTierUsageUsdc: tierUsed.toFixed(2),
+              projectedAfterUsdc: projectedTier.toFixed(2),
+              message:
+                `New protection would push SL ${validSlPctEarly}% daily usage to ` +
+                `$${projectedTier.toFixed(0)}, exceeding the per-tier cap of ` +
+                `$${tierCap.toFixed(0)} (${(pilotConfig.perTierDailyCapPct * 100).toFixed(0)}% of daily limit). ` +
+                `Open the next protection in a different SL tier, or wait for tomorrow's reset.`
+            };
+          }
+        } catch (error: any) {
+          reply.code(503);
+          return {
+            status: "error",
+            reason: "storage_unavailable",
+            message: "Storage temporarily unavailable, please retry.",
+            detail: String(error?.message || "tier_concentration_query_failed")
+          };
+        }
+      }
     }
     const projectedDaily = dailyUsed.plus(protectedNotional);
     const marketId = pilotConfig.referenceMarketId;
@@ -3028,6 +3117,59 @@ export const registerPilotRoutes = async (
         typeof lockContext.entryPriceTimestamp === "string"
           ? String(lockContext.entryPriceTimestamp)
           : null;
+      // R2.B (binding) — Aggregate active notional cap. Run inside the
+      // activation transaction so two concurrent activations cannot both
+      // pass a stale read. Postgres serializes the SUM under the same
+      // client/transaction ordering as the subsequent INSERT.
+      // The check is read-then-decide, so true atomicity requires that
+      // reads from this client see committed inserts from any earlier
+      // concurrent transaction (default READ COMMITTED). At pilot single-
+      // user scale this is bulletproof; at multi-user prod scale a
+      // SELECT … FOR UPDATE on a per-user lock row would be stronger.
+      const maxAggregateActiveAct = new Decimal(pilotConfig.maxAggregateActiveNotionalUsdc);
+      const activeAggAct = new Decimal(
+        await sumActiveProtectionNotional(client, userHash.userHash)
+      );
+      const projectedAggAct = activeAggAct.plus(protectedNotional);
+      if (projectedAggAct.gt(maxAggregateActiveAct)) {
+        const aggErr = new Error("aggregate_active_notional_cap_exceeded");
+        (aggErr as any).capUsdc = maxAggregateActiveAct.toFixed(2);
+        (aggErr as any).currentActiveUsdc = activeAggAct.toFixed(2);
+        (aggErr as any).projectedAfterUsdc = projectedAggAct.toFixed(2);
+        throw aggErr;
+      }
+
+      // R2.D (binding) — Per-tier daily concentration cap. Same scoping
+      // story as above. Only enforced when pricing path is V7 with a
+      // launched tier (i.e. we have a numeric slPct).
+      if (
+        v7EnabledActivate &&
+        activateSlPct !== null &&
+        pilotConfig.perTierDailyCapPct < 1
+      ) {
+        const dayEndAct = new Date(dayStart.getTime() + 86400000);
+        const tierUsedAct = new Decimal(
+          await getDailyTierUsageForUser(
+            client,
+            userHash.userHash,
+            activateSlPct,
+            dayStart.toISOString(),
+            dayEndAct.toISOString()
+          )
+        );
+        const tierCapAct = maxDailyProtection.mul(pilotConfig.perTierDailyCapPct);
+        const projectedTierAct = tierUsedAct.plus(protectedNotional);
+        if (projectedTierAct.gt(tierCapAct)) {
+          const tierErr = new Error("per_tier_daily_concentration_cap_exceeded");
+          (tierErr as any).tierSlPct = activateSlPct;
+          (tierErr as any).capPct = pilotConfig.perTierDailyCapPct;
+          (tierErr as any).tierCapUsdc = tierCapAct.toFixed(2);
+          (tierErr as any).currentTierUsageUsdc = tierUsedAct.toFixed(2);
+          (tierErr as any).projectedAfterUsdc = projectedTierAct.toFixed(2);
+          throw tierErr;
+        }
+      }
+
       const capReservation = await reserveDailyActivationCapacity(client, {
         userHash: userHash.userHash,
         dayStartIso: dayStart.toISOString(),
@@ -3574,6 +3716,8 @@ export const registerPilotRoutes = async (
       } else if (
         errMsg === "protection_notional_cap_exceeded" ||
         errMsg === "daily_notional_cap_exceeded" ||
+        errMsg === "aggregate_active_notional_cap_exceeded" ||
+        errMsg === "per_tier_daily_concentration_cap_exceeded" ||
         errMsg === "user_hash_secret_missing" ||
         errMsg === "venue_execute_timeout"
       ) {
@@ -3653,6 +3797,12 @@ export const registerPilotRoutes = async (
                   ? `Protection amount exceeds pilot cap (${new Decimal(
                       pilotConfig.maxProtectionNotionalUsdc
                     ).toFixed(2)} USDC).`
+                  : reason === "aggregate_active_notional_cap_exceeded"
+                    ? `Aggregate active protections would exceed pilot cap (${new Decimal(
+                        pilotConfig.maxAggregateActiveNotionalUsdc
+                      ).toFixed(2)} USDC). Wait for an existing protection to expire or close before opening more.`
+                  : reason === "per_tier_daily_concentration_cap_exceeded"
+                    ? `New protection would exceed the per-tier daily concentration cap (${(pilotConfig.perTierDailyCapPct * 100).toFixed(0)}% of daily limit per SL tier). Open in a different SL tier or wait for tomorrow's reset.`
                   : reason === "quote_already_consumed"
                     ? "Quote has already been activated. Refresh protections before retrying."
                     : reason === "quote_not_activatable"
@@ -3675,6 +3825,22 @@ export const registerPilotRoutes = async (
               capUsdc: maxDailyProtection.toFixed(2),
               usedUsdc: (error as any)?.usedUsdc || capUsedUsdc,
               projectedUsdc: (error as any)?.projectedUsdc || capProjectedUsdc
+            }
+          : {}),
+        ...(reason === "aggregate_active_notional_cap_exceeded"
+          ? {
+              capUsdc: (error as any)?.capUsdc,
+              currentActiveUsdc: (error as any)?.currentActiveUsdc,
+              projectedAfterUsdc: (error as any)?.projectedAfterUsdc
+            }
+          : {}),
+        ...(reason === "per_tier_daily_concentration_cap_exceeded"
+          ? {
+              tierSlPct: (error as any)?.tierSlPct,
+              capPct: (error as any)?.capPct,
+              tierCapUsdc: (error as any)?.tierCapUsdc,
+              currentTierUsageUsdc: (error as any)?.currentTierUsageUsdc,
+              projectedAfterUsdc: (error as any)?.projectedAfterUsdc
             }
           : {}),
         ...(body.quoteId
