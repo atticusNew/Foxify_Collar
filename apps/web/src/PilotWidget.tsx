@@ -38,7 +38,10 @@ const api = async <T = unknown>(p: string, o?: RequestInit): Promise<T> => {
   const r = await fetch(`${API_BASE}${p}`, { ...o, headers: { "Content-Type": "application/json", ...o?.headers } });
   let j: any;
   try { j = await r.json(); } catch { throw new Error(r.ok ? "invalid_response" : `HTTP ${r.status}`); }
-  if (!r.ok) throw new Error(j?.reason || j?.message || `HTTP ${r.status}`);
+  // Prefer the server's user-facing `message` over the machine `reason` code
+  // so cap-exceeded / quote-expired / etc render in plain language. Fall
+  // back to reason if message is missing (older endpoints), then HTTP code.
+  if (!r.ok) throw new Error(j?.message || j?.reason || `HTTP ${r.status}`);
   return j as T;
 };
 const fetchRef = () => api<{ status: string; reference: ReferencePrice }>("/pilot/reference-price");
