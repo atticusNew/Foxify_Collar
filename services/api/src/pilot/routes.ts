@@ -8,6 +8,7 @@ import { pilotConfig, resolvePilotWindow, type PilotPricingMode } from "./config
 import { PilotMonitor, parseMonitorConfig } from "./monitor";
 import {
   archiveProtectionsByUserHashExcept,
+  archiveTestProtectionsByIds,
   creditSimPositionForTrigger,
   createPilotTermsAcceptanceIfMissing,
   extractLatestPremiumPolicyDiagnostics,
@@ -4476,6 +4477,101 @@ export const registerPilotRoutes = async (
     } catch (error: any) {
       reply.code(500);
       return { status: "error", reason: String(error?.message || "reset_failed") };
+    }
+  });
+
+  // Surgical reset for paper-test protections. Use this — not the heavy
+  // /pilot/admin/reset — when you need to clear cap headroom mid-pilot
+  // without destroying audit data (execution-quality samples, ledger,
+  // hedge decisions, admin actions all stay intact).
+  //
+  // Request body:
+  //   {
+  //     "protectionIds": ["uuid", "uuid", ...],   // required
+  //     "reason": "string"                         // optional, default
+  //                                                // "admin_test_reset"
+  //   }
+  //
+  // Effect per protection ID:
+  //   1. status set to 'cancelled'
+  //   2. metadata.archivedAt / archivedReason / archivedBy stamped for audit
+  //   3. notional released from pilot_daily_usage for the day the
+  //      protection was created
+  //   4. aggregate-active and per-tier-daily caps automatically see the
+  //      row drop out of their queries (both filter on
+  //      metadata.archivedAt = '')
+  //
+  // Constraints:
+  //   - admin token required
+  //   - only protections owned by the same tenant userHash are touched
+  //   - rows already archived are no-ops
+  //   - rows in non-open statuses (expired_*, cancelled) are still
+  //     archived for cleanliness but daily release is a no-op for them
+  app.post("/pilot/admin/test-reset-protections", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const body = (req.body || {}) as { protectionIds?: unknown; reason?: string };
+    const ids = Array.isArray(body.protectionIds)
+      ? body.protectionIds
+          .map((v) => (typeof v === "string" ? v.trim() : ""))
+          .filter((v) => v.length > 0)
+      : [];
+    if (ids.length === 0) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "missing_protection_ids",
+        message: "Provide protectionIds: string[] in the request body."
+      };
+    }
+    if (ids.length > 200) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "too_many_ids",
+        message: "Limit 200 IDs per request."
+      };
+    }
+    try {
+      const tenant = resolveTenantScopeHash();
+      const result = await archiveTestProtectionsByIds(pool, {
+        userHash: tenant.userHash,
+        protectionIds: ids,
+        actor: auth.actor,
+        reason: body.reason ? String(body.reason) : undefined
+      });
+      await insertAdminAction(pool, {
+        action: "pilot_test_reset_protections",
+        actor: auth.actor,
+        actorIp: auth.actorIp,
+        details: {
+          requestedIds: ids,
+          archivedCount: result.archivedCount,
+          archivedIds: result.archivedIds,
+          releasedDailyByDay: result.releasedDailyByDay,
+          reason: body.reason || "admin_test_reset"
+        }
+      });
+      console.log(
+        `[Admin] Test-reset ${result.archivedCount}/${ids.length} protections by ${auth.actor} from ${auth.actorIp}`
+      );
+      return {
+        status: "ok",
+        archivedCount: result.archivedCount,
+        archivedIds: result.archivedIds,
+        skippedIds: ids.filter((id) => !result.archivedIds.includes(id)),
+        releasedDailyByDay: result.releasedDailyByDay,
+        message:
+          result.archivedCount === ids.length
+            ? `Archived ${result.archivedCount} protection(s). Caps released.`
+            : `Archived ${result.archivedCount}/${ids.length}. Skipped IDs were already archived or not found.`
+      };
+    } catch (error: any) {
+      reply.code(500);
+      return {
+        status: "error",
+        reason: String(error?.message || "test_reset_failed")
+      };
     }
   });
 
