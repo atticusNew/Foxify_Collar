@@ -8161,6 +8161,13 @@ app.post("/hedge/roll", async (req) => {
   };
 });
 
+// R2.E — Pilot Agreement §3.1 cap assertion. Verifies env values for
+// notional caps don't exceed agreement maxes. In 'enforce' mode this
+// throws and prevents boot; in 'warn' mode (default) it logs and
+// continues. Set PILOT_CAP_ENFORCEMENT_MODE=enforce on production Render.
+const { assertPilotAgreementCaps } = await import("./pilot/config");
+assertPilotAgreementCaps();
+
 await registerPilotRoutes(app, { deribit, deribitLive });
 
 const treasuryConfig = parseTreasuryConfig();

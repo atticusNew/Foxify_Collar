@@ -388,6 +388,17 @@ Entry types: `premium_due`, `premium_collected`, `trigger_payout_due`, `payout_d
 | `VITE_PILOT_ACCESS_CODE`          | Frontend access gate       | (any shared code) |
 | `VITE_API_BASE`                   | Backend API URL            | `https://foxify-pilot-new.onrender.com` |
 
+### Notional Cap Configuration (Pilot Agreement §3.1)
+
+| Variable | Default | Agreement | Notes |
+|---|---|---|---|
+| `PILOT_QUOTE_MIN_NOTIONAL_USDC`              | 10000  | $10,000 min/position  | Hard floor of $10,000 enforced in code regardless of env |
+| `PILOT_MAX_PROTECTION_NOTIONAL_USDC`         | 100000 | $50,000 max/position  | **MUST set to 50000 for live pilot** |
+| `PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC`    | 100000 | $100k Days 1-7, $500k Days 8-28 | Bump to 500000 on Day 8 of pilot |
+| `PILOT_MAX_AGGREGATE_ACTIVE_NOTIONAL_USDC`   | 200000 | $200,000 aggregate active | R2.B added 2026-04-19 |
+| `PILOT_PER_TIER_DAILY_CAP_PCT`               | 0.6    | (defense-in-depth, not in agreement) | Caps any single SL tier at 60% of daily cap; R2.D added 2026-04-19 |
+| `PILOT_CAP_ENFORCEMENT_MODE`                 | `warn` | (operational guard)   | Set to `enforce` on production to block boot if env values exceed agreement caps; R2.E added 2026-04-19 |
+
 ### Optional Tuning
 
 | Variable | Default | Purpose |
