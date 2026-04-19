@@ -4671,11 +4671,26 @@ export const registerPilotRoutes = async (
   const dataConnector = deps.deribitLive ?? deps.deribit;
   const hedgeMgmtInterval = setInterval(async () => {
     try {
+      // R3.A — wrap getIndexPrice in explicit error handling. Without this,
+      // a Deribit outage causes the cycle to silently return with no log
+      // output, making the hedge manager appear idle in Render logs while
+      // triggered positions go unsold. With the wrap, every failed cycle
+      // emits a [HedgeManager] no-spot warning that is greppable.
       const spot = await (async () => {
-        const ticker = await dataConnector.getIndexPrice("btc_usd");
-        return Number((ticker as any)?.result?.index_price ?? 0);
+        try {
+          const ticker = await dataConnector.getIndexPrice("btc_usd");
+          return Number((ticker as any)?.result?.index_price ?? 0);
+        } catch (priceErr: any) {
+          console.warn(
+            `[HedgeManager] getIndexPrice FAILED — cycle skipped: ${priceErr?.message || "unknown"}`
+          );
+          return 0;
+        }
       })();
-      if (!spot || spot <= 0) return;
+      if (!spot || spot <= 0) {
+        console.warn(`[HedgeManager] no spot price available — cycle skipped`);
+        return;
+      }
       const dvolResult = await dataConnector.getDVOL("BTC");
       const iv = dvolResult.dvol ?? 50;
       const sellOptionDirect = async (p: { instrumentId: string; quantity: number }) => {

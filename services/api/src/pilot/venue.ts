@@ -750,12 +750,28 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 
   async execute(quote: VenueQuote): Promise<VenueExecution> {
     const deribitQty = Math.max(0.1, Math.floor(quote.quantity * 10) / 10);
-    const raw = (await this.connector.placeOrder({
-      instrument: quote.instrumentId,
-      amount: deribitQty,
-      side: "buy",
-      type: "market"
-    })) as any;
+    // R3.B — bound the placeOrder call with an explicit timeout. The
+    // underlying connector has fetchWithTimeout (6s) × withRetry (3) so the
+    // worst-case unguarded latency is ~18s — too long to leave a user staring
+    // at a blank widget, and too long to leave the activate transaction
+    // half-open. 8s gives one HTTP attempt + small headroom; if it trips,
+    // the activate path catches venue_execute_timeout (already wired into
+    // routes.ts response mapping) and returns a clean 504.
+    const EXECUTE_TIMEOUT_MS = Number(process.env.PILOT_DERIBIT_EXECUTE_TIMEOUT_MS || "8000");
+    const raw = (await Promise.race([
+      this.connector.placeOrder({
+        instrument: quote.instrumentId,
+        amount: deribitQty,
+        side: "buy",
+        type: "market"
+      }),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("venue_execute_timeout")),
+          EXECUTE_TIMEOUT_MS
+        )
+      )
+    ])) as any;
 
     console.log(`[DeribitAdapter] placeOrder raw response:`, JSON.stringify(raw).slice(0, 800));
     const isPaper = raw?.status === "paper_filled" || raw?.status === "paper_rejected";

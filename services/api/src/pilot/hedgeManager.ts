@@ -170,6 +170,55 @@ const updateHedgeStatus = async (
   );
 };
 
+/**
+ * R3.C — Persist no-bid retry count and emit threshold warnings.
+ *
+ * Without this, the hedge manager retries no-bid sells every 60s forever
+ * with no metadata trail and no operator visibility. Phase 2 chain samples
+ * showed bid is null in 4 of 8 tier×side combos on every snapshot — for
+ * SL 5%+ shorts and SL 10%+ positions this is the NORM, not the exception.
+ *
+ * This function:
+ *   1. Increments metadata.noBidRetryCount on the protection row.
+ *   2. Stamps metadata.lastNoBidAt + lastNoBidInstrument for traceability.
+ *   3. Logs single-line WARN at threshold cycle counts (30, 60, 120) so
+ *      operators grepping for [HedgeManager] WARN can spot stuck positions
+ *      without log spam every cycle.
+ *
+ * Threshold cadence (60s cycles):
+ *   30 cycles  ≈ 30 minutes  — first warning
+ *   60 cycles  ≈ 1 hour      — second warning
+ *   120 cycles ≈ 2 hours     — third warning (likely going to expire no-bid)
+ */
+const NO_BID_WARN_THRESHOLDS = new Set([30, 60, 120]);
+const recordNoBidRetry = async (
+  pool: Pool,
+  protectionId: string,
+  instrumentId: string
+): Promise<void> => {
+  const result = await pool.query(
+    `UPDATE pilot_protections
+     SET metadata = metadata || jsonb_build_object(
+           'noBidRetryCount', COALESCE((metadata->>'noBidRetryCount')::int, 0) + 1,
+           'lastNoBidAt', $2::text,
+           'lastNoBidInstrument', $3::text
+         ),
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING (metadata->>'noBidRetryCount')::int AS count`,
+    [protectionId, new Date().toISOString(), instrumentId]
+  );
+  const count = Number(result.rows[0]?.count ?? 0);
+  if (NO_BID_WARN_THRESHOLDS.has(count)) {
+    const minutes = count; // 60s cycles → cycles ≈ minutes
+    console.warn(
+      `[HedgeManager] WARN: protection ${protectionId} (${instrumentId}) has been no-bid for ${count} cycles (~${minutes} minutes). ` +
+      `Likely a thin short-dated strike with no buyers. ` +
+      `Position will auto-settle on Deribit at expiry; reconcile via account statement.`
+    );
+  }
+};
+
 const computeOptionValue = (params: {
   protectionType: string;
   currentSpot: number;
@@ -272,6 +321,13 @@ const executeSell = async (
     const isNoBid = sellResult.details?.reason === "no_bid" || sellResult.details?.reason === "no_bid_available";
     if (isNoBid) {
       console.log(`[HedgeManager] No bid for ${hedge.protectionId} (${hedge.instrumentId}) — will retry next cycle`);
+      // R3.C — persist retry count + threshold warnings (best-effort; the
+      // sell-decision flow continues regardless of metadata write success).
+      try {
+        await recordNoBidRetry(pool, hedge.protectionId, hedge.instrumentId);
+      } catch (mdErr: any) {
+        console.warn(`[HedgeManager] noBid metadata write failed for ${hedge.protectionId}: ${mdErr?.message}`);
+      }
       return "no_bid";
     }
 
