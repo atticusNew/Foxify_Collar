@@ -32,11 +32,13 @@ test("isValidSlTier — rejects invalid tiers", () => {
 });
 
 test("getV7PremiumPer1k — tiered rates (tight SL costs more)", () => {
-  // SL 2% raised from $5 → $6 on 2026-04-18 (DVOL-headroom bump).
-  // SL 1% remains $6 (unlaunched). All other tiers unchanged.
+  // Pre-launch calibration:
+  //   2% SL: $5 → $6 (2026-04-18, DVOL-headroom bump)
+  //   3% SL: $4 → $5 (2026-04-19, second-tier DVOL-headroom + anchor)
+  // SL 1% remains $6 (unlaunched). 5% / 10% unchanged.
   assert.equal(getV7PremiumPer1k(1), 6);
   assert.equal(getV7PremiumPer1k(2), 6);
-  assert.equal(getV7PremiumPer1k(3), 4);
+  assert.equal(getV7PremiumPer1k(3), 5);
   assert.equal(getV7PremiumPer1k(5), 3);
   assert.equal(getV7PremiumPer1k(10), 2);
 });
@@ -58,7 +60,7 @@ test("computeV7Premium — $10k tiered pricing", () => {
 });
 
 test("computeV7Premium — each tier has correct rate", () => {
-  const expected: Record<number, number> = { 1: 60, 2: 60, 3: 40, 5: 30, 10: 20 };
+  const expected: Record<number, number> = { 1: 60, 2: 60, 3: 50, 5: 30, 10: 20 };
   for (const sl of [1, 2, 3, 5, 10] as const) {
     const r = computeV7Premium({ slPct: sl, notionalUsd: 10000 });
     assert.ok(r.available);
