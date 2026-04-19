@@ -43,7 +43,15 @@ const BASE_LATE_THRESHOLD_MULTIPLIER = 0.10;
 
 // ── Fixed parameters (not vol-adjusted) ──
 const DEEP_DROP_THRESHOLD_PCT = 1.5;
-const BOUNCE_RECOVERY_MIN_VALUE = 3;
+// Minimum BS-modeled option value to bother selling on the bounce-recovery
+// branch. Raised from $3 → $5 based on Phase 0 v6 TP-optimization analysis
+// (n=9 triggers + 4 chain samples): observed Deribit bid-ask spread on
+// short-dated options runs 18-80% of mid, so a BS-modeled $3 net of fees
+// often realizes ~$1.50-2.00 — sub-economical given Deribit's ~$0.03
+// per-contract option fee. $5 BS aligns the threshold with what we'll
+// actually receive (~$3-4 net) and removes a class of always-losing
+// micro-sales without affecting any larger-value sale.
+const BOUNCE_RECOVERY_MIN_VALUE = 5;
 const PRIME_WINDOW_END_HOURS = 8;
 const NEAR_EXPIRY_SALVAGE_HOURS = 6;
 const NEAR_EXPIRY_MIN_VALUE = 3;
