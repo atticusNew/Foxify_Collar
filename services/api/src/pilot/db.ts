@@ -625,11 +625,22 @@ export const listProtections = async (
 export const listProtectionsByUserHash = async (
   pool: Queryable,
   userHash: string,
-  opts: { limit?: number } = {}
+  opts: { limit?: number; includeArchived?: boolean } = {}
 ): Promise<ProtectionRecord[]> => {
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  // Exclude archived rows by default — these are protections retired via the
+  // admin test-reset endpoint (status='cancelled' + metadata.archivedAt set).
+  // Without this filter, the trader-facing /pilot/protections endpoint and
+  // the admin dashboard render rows that have already been cancelled, making
+  // it impossible to verify the test-reset took effect from the UI.
+  // getProtection (single-by-id) intentionally still returns archived rows
+  // so admins can inspect them after the fact.
+  const includeArchived = opts.includeArchived === true;
+  const archivedClause = includeArchived
+    ? ""
+    : ` AND COALESCE(metadata->>'archivedAt', '') = ''`;
   const result = await pool.query(
-    `SELECT * FROM pilot_protections WHERE user_hash = $1 ORDER BY created_at DESC LIMIT $2`,
+    `SELECT * FROM pilot_protections WHERE user_hash = $1${archivedClause} ORDER BY created_at DESC LIMIT $2`,
     [userHash, limit]
   );
   return result.rows.map(mapProtection);
