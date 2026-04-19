@@ -6,19 +6,31 @@ import { V7_SL_TIERS } from "./types";
  * V7 Tiered Premium Schedule — USD per $1k notional, 1-day rolling tenor.
  * Pricing curve: charge more for tight SL (expensive to hedge), less for wide SL.
  *
- * 2026-04-18 — 2% SL raised from $5 → $6/$1k. Rationale:
- *   At 1-DTE, the 2% strike concentrates ~80% of the schedule's DVOL
- *   sensitivity (gamma is highest near-the-money on short tenors). Black-
- *   Scholes hedge cost on a 2% put crosses the $5 premium at DVOL ≈ 52
- *   and the $6 premium at DVOL ≈ 62. Today's spot DVOL is ~43, so $5
- *   was profitable now; the bump buys 10 DVOL points of breakeven
- *   headroom before live pilot. Wider tiers (3/5/10%) are far less
- *   gamma-sensitive and remain unchanged. See docs/cfo-report/.
+ * Pre-launch calibration (2026-04-18 / 2026-04-19):
+ *
+ *   2% SL: $5 → $6/$1k. At 1-DTE, the 2% strike concentrates ~80% of the
+ *     schedule's DVOL sensitivity (gamma is highest near-the-money on
+ *     short tenors). Black-Scholes hedge cost on a 2% put crosses $5 at
+ *     DVOL ≈ 52 and $6 at DVOL ≈ 62. Bump buys ~10 DVOL points of
+ *     breakeven headroom before live pilot.
+ *
+ *   3% SL: $4 → $5/$1k. The second-most volatility-sensitive tier.
+ *     Hedge cost crosses $4 at DVOL ≈ 66 and $5 at DVOL ≈ 71. Bump buys
+ *     ~5 DVOL points of headroom on a tier that historically spends real
+ *     time in the 60-80 DVOL band. Trader-side ratio remains attractive:
+ *     pay $50 on $10k to receive $300 if triggered (6× return on
+ *     trigger, vs 3.3× on the 2% tier).
+ *
+ *   5% / 10%: unchanged. Hedge cost stays well below premium even at
+ *     DVOL 80 due to deep-OTM gamma. No risk-side justification to bump.
+ *
+ *   Final schedule: $6 / $5 / $3 / $2 for 2 / 3 / 5 / 10%.
+ *   See docs/cfo-report/.
  */
 const V7_RATE_PER_1K: Record<V7SlTier, number> = {
   1: 6,
   2: 6,
-  3: 4,
+  3: 5,
   5: 3,
   10: 2
 };

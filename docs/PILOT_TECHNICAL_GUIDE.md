@@ -128,7 +128,7 @@ Background:
 | SL% | Rate per $1k | Tenor | Payout per $10k |
 |-----|--------------|-------|-----------------|
 | 2%  | $6.00        | 1 day | $200            |
-| 3%  | $4.00        | 1 day | $300            |
+| 3%  | $5.00        | 1 day | $300            |
 | 5%  | $3.00        | 1 day | $500            |
 | 10% | $2.00        | 1 day | $1,000          |
 
@@ -138,7 +138,7 @@ Example: $50,000 at 2% SL = $50,000 / 1,000 × $6 = $300 premium.
 
 `SL 1%` ($6/1k, $100 payout per $10k) is defined in `v7Pricing.ts` for forward compatibility but is intentionally excluded from `V7_LAUNCHED_TIERS` and is not selectable via the frontend or quote API during the pilot.
 
-**2026-04-18 — 2% SL premium raised from $5 → $6/$1k.** Black-Scholes hedge cost for a 1-DTE, 2% OTM put crosses $5/$1k at DVOL ≈ 52 and $6/$1k at DVOL ≈ 62. At today's spot DVOL of ~43, both prices are profitable; the $1 bump buys ~10 DVOL points of breakeven headroom on the platform's most gamma-sensitive tier before the live pilot. Wider tiers (3/5/10%) have an order of magnitude less DVOL sensitivity at 1-DTE and remain unchanged. Full math and historical justification in `docs/cfo-report/`.
+**Pre-launch calibration (2026-04-18 → 2026-04-19).** The 2% SL premium was raised from $5 → $6/$1k, and the 3% SL premium was raised from $4 → $5/$1k. Both changes target the most volatility-sensitive tiers in the schedule. Black-Scholes hedge cost on a 1-DTE 2% put crosses $5 at DVOL ≈ 52 and $6 at DVOL ≈ 62; on a 3% put it crosses $4 at DVOL ≈ 66 and $5 at DVOL ≈ 71. Today's spot DVOL (~43) leaves both prices comfortably profitable; the bumps buy 10 and 5 DVOL points of breakeven headroom respectively before live pilot. The 5% and 10% tiers have an order of magnitude less DVOL sensitivity at 1-DTE and remain unchanged. Trader-side ratio at the new schedule: 2% pays back 3.3× premium on trigger ($60 → $200); 3% pays back 6× ($50 → $300); 5% pays back 16.7×; 10% pays back 50×. Full math and historical justification in `docs/cfo-report/`.
 
 ### Margin Economics
 
