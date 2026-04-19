@@ -228,8 +228,16 @@ Only the active-salvage branch is evaluated:
 Each sell call returns one of `sold`, `no_bid`, or `failed`:
 
 - `sold` — `hedge_status` flips to `tp_sold`, `metadata.sellResult` records `fillPrice`, `totalProceeds`, `orderId`, and Black-Scholes-derived `bsRecovery` snapshot.
-- `no_bid` — counted as `noBidRetries`; the hedge will be re-evaluated next cycle.
+- `no_bid` — counted as `noBidRetries`; the hedge will be re-evaluated next cycle. Per R3.C (added 2026-04-19): `metadata.noBidRetryCount` increments on every no-bid retry, `metadata.lastNoBidAt` and `lastNoBidInstrument` are stamped, and `[HedgeManager] WARN` is emitted at threshold counts (30, 60, 120 cycles ≈ 30 min, 1 h, 2 h) for operator visibility on stuck positions.
 - `failed` — counted as `errors`; logged with truncated detail payload.
+
+### Failure-Mode Hardening (R3.A / R3.B / R3.C)
+
+Three guards added 2026-04-19 to handle common Deribit / venue failure modes safely:
+
+- **R3.A — Hedge cycle silent-skip guard**: `routes.ts` hedge-mgmt scheduler wraps `getIndexPrice()` in try/catch with explicit `[HedgeManager] no spot price available — cycle skipped` warning. Without this, a Deribit outage caused the cycle to silently return with no log output.
+- **R3.B — `placeOrder` timeout wrapper**: `venue.ts execute()` races the Deribit `placeOrder` call against an explicit `PILOT_DERIBIT_EXECUTE_TIMEOUT_MS` (default 8000) timeout. Throws `venue_execute_timeout` if exceeded, which the activate path translates to a 504 response.
+- **R3.C — No-bid retry persistence + warnings**: every `no_bid` sell increments `metadata.noBidRetryCount` and stamps `lastNoBidAt` / `lastNoBidInstrument`. WARN fires at thresholds 30/60/120 cycles. Phase 2 chain samples confirm bid is null in 4 of 8 tier×side combos on every snapshot — this is normal behavior, not a bug; persistence makes it operationally visible.
 
 ### Volatility Data Source (DVOL / RVOL)
 
