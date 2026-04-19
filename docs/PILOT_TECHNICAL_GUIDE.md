@@ -197,7 +197,7 @@ The TP timing thresholds adapt to the current DVOL regime resolved from `current
 | Parameter                         | Value     |
 |-----------------------------------|-----------|
 | Deep-drop threshold               | 1.5% past floor |
-| Bounce-recovery min option value  | $3        |
+| Bounce-recovery min option value  | $5        |
 | Near-expiry salvage window        | < 6 h to expiry |
 | Near-expiry salvage min value     | $3        |
 | Active salvage window             | < 4 h to expiry |
@@ -213,7 +213,7 @@ The hedge manager evaluates these branches in order; the first matching branch w
 1. **Near-expiry salvage** — `hoursToExpiry < 6` AND `optionValue ≥ $3` → sell.
 2. **Deep-drop TP** — `dropFromFloorPct ≥ 1.5%` AND `hoursSinceTrigger ≥ deepDropCooling` AND `optionValue ≥ payout × primeThreshold` → sell.
 3. **Cooling / gap-extended cooling** — `hoursSinceTrigger < effectiveCooling` → hold. `effectiveCooling = cooling + 0.5h` when `gapPct ≥ 0.3%` AND option is OTM AND not yet bounced.
-4. **Bounce recovery** — `bounced` (spot back through floor) AND `hoursSinceTrigger ≥ effectiveCooling` AND `optionValue ≥ $3` → sell. (Once OTM after trigger, an option only loses time value; waiting gains nothing.)
+4. **Bounce recovery** — `bounced` (spot back through floor) AND `hoursSinceTrigger ≥ effectiveCooling` AND `optionValue ≥ $5` → sell. (Once OTM after trigger, an option only loses time value; waiting gains nothing. Threshold raised from $3 to $5 to align with realized post-spread proceeds — see TP optimization analysis.)
 5. **Prime window TP** — `effectiveCooling ≤ hoursSinceTrigger < primeWindowEnd` AND `optionValue ≥ payout × primeThreshold` → sell.
 6. **Late window TP** — `hoursSinceTrigger ≥ primeWindowEnd` AND `optionValue ≥ payout × lateThreshold` → sell.
 
