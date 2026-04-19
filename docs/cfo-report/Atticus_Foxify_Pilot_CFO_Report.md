@@ -10,7 +10,7 @@
 
 - **Where we are:** the platform is feature-complete and stabilized for the Foxify retail pilot. We are running paper trades against Deribit *mainnet* pricing (real spreads, real DVOL, real order books) on a paper account while live credentials clear KYC.
 - **Headline change since your last review:** rolling tenor was changed from 2 days to 1 day. The change was your suggestion. It roughly doubles margin density per dollar of deployed capital, makes time-decay (theta) work harder in the platform's favor, and does not measurably change per-position trigger probability.
-- **One pricing adjustment:** the 2% SL premium was just raised from $5 to $6 per $1k of protection. This is the single most volatility-sensitive tier and the bump buys ~10 DVOL points of breakeven headroom before live pilot. Math is in §4.
+- **Two pre-launch pricing adjustments:** the 2% SL premium was raised from $5 → $6 per $1k of protection, and the 3% SL premium was raised from $4 → $5 per $1k. These are the two most volatility-sensitive tiers; together they buy ~10 and ~5 DVOL points of breakeven headroom respectively before live pilot. Math is in §4. Final schedule: $6 / $5 / $3 / $2 for 2 / 3 / 5 / 10%.
 - **What we cannot yet validate empirically:** TP behavior in a high-DVOL trigger event (we have no high-DVOL triggered positions in the live sample), and TP behavior on a larger sample (current triggered-and-sold sample is n=9, growing as paper trades continue).
 - **Risk we accept going in:** small, bounded by the per-tier and aggregate caps detailed in §6.
 
@@ -63,12 +63,12 @@ The 28-day pilot terms are unchanged. Tenor is implementation detail; commercial
 
 ## 3. Pricing schedule and the math behind each tier
 
-### Schedule (after the 2% bump)
+### Schedule (after the pre-launch calibration)
 
 | SL tier | Premium per $1k | Premium on $10k | Payout per $10k | Implied annualized premium yield |
 |---|---|---|---|---|
 | 2% | **$6** | $60 | $200 | 219% |
-| 3% | $4 | $40 | $300 | 146% |
+| 3% | **$5** | $50 | $300 | 183% |
 | 5% | $3 | $30 | $500 | 110% |
 | 10% | $2 | $20 | $1,000 | 73% |
 
@@ -125,7 +125,7 @@ That's a 63% gross margin on a $6 premium at today's volatility. The spread shri
 | Tier | Hedge cost @ DVOL 43 | Premium | Spread | Notes |
 |---|---|---|---|---|
 | 2% | $2.23 | $6 | $3.77 | Tightest strike, most gamma, most volatility-sensitive |
-| 3% | $0.95 | $4 | $3.05 | Cheaper put because strike is further OTM |
+| 3% | $0.95 | $5 | $4.05 | Second-most gamma-sensitive; bumped pre-launch (see §4) |
 | 5% | $0.20 | $3 | $2.80 | Nearly worthless OTM put at 1-day; mostly pure premium |
 | 10% | $0.01 | $2 | $1.99 | Effectively pure premium; trigger probability is < 1%/day |
 
@@ -133,17 +133,26 @@ The structure intentionally charges more for tight protection (where Atticus has
 
 ---
 
-## 4. The 2% premium bump — why now, with the math
+## 4. The pre-launch pricing calibration — why now, with the math
 
 ### What changed
 
-The 2% SL tier moved from $5 to $6 per $1k notional. Other tiers unchanged. The schedule is now $6/$4/$3/$2.
+Two tiers moved before live pilot. Other tiers unchanged.
 
-### Why only 2%
+| Tier | Old | New |
+|---|---|---|
+| 2% | $5/$1k | **$6/$1k** |
+| 3% | $4/$1k | **$5/$1k** |
+| 5% | $3/$1k | $3/$1k (unchanged) |
+| 10% | $2/$1k | $2/$1k (unchanged) |
 
-Among the four launched tiers, the 2% strike concentrates approximately **80% of the entire schedule's volatility sensitivity**. This is because gamma — the rate of change of delta with respect to spot — is highest for options that are near-the-money on short tenors. The further out-of-the-money a strike is, the less it responds to volatility changes.
+Final schedule: **$6 / $5 / $3 / $2**.
 
-### The breakeven analysis
+### Why these two tiers
+
+The two bumped tiers are the two most volatility-sensitive in the schedule. This is because gamma — the rate of change of delta with respect to spot — is highest for options that are near-the-money on short tenors. The 2% strike sits 2% OTM (closest to the money); the 3% strike sits 3% OTM; both are in the high-gamma zone for 1-day expiries. The 5% and 10% tiers are far enough OTM that they have an order of magnitude less volatility sensitivity.
+
+### The breakeven analysis — 2% tier
 
 Black-Scholes hedge cost per $1k notional, BTC ≈ $100k, 1-day tenor, r = 5%:
 
@@ -157,7 +166,22 @@ Black-Scholes hedge cost per $1k notional, BTC ≈ $100k, 1-day tenor, r = 5%:
 | 100 (extreme) | $12.40 | −$7.40 | −$6.40 |
 | 120 (March 2020 / November 2022) | $16.32 | −$11.32 | −$10.32 |
 
-**Breakeven DVOL on 2%:** $5 → 52, $6 → 62. The bump adds ~10 DVOL points of headroom on the platform's most volatility-sensitive tier before live pilot.
+**Breakeven DVOL on 2%:** $5 → 52, $6 → 62. The bump adds **~10 DVOL points** of headroom.
+
+### The breakeven analysis — 3% tier
+
+Same Black-Scholes math, K = 0.97·S:
+
+| DVOL | 3% put cost | Spread @ $4 | Spread @ $5 |
+|---|---|---|---|
+| 30 | $0.34 | +$3.66 | +$4.66 |
+| 43 (today) | $0.95 | +$3.05 | +$4.05 |
+| 60 | $3.20 | +$0.80 | +$1.80 |
+| 70 | $4.50 | −$0.50 | +$0.50 |
+| 80 (stress) | $5.74 | −$1.74 | −$0.74 |
+| 100 (extreme) | $8.50 | −$4.50 | −$3.50 |
+
+**Breakeven DVOL on 3%:** $4 → 66, $5 → 71. The bump adds **~5 DVOL points** of headroom.
 
 ### Historical DVOL context
 
@@ -168,29 +192,41 @@ Deribit's DVOL has spent the majority of the last five years between 40 and 70:
 - Stress events (DVOL > 80): ~5% of trading days
 - Extreme events (DVOL > 100): ~1% of trading days, clustered around macro shocks (LUNA, FTX, COVID)
 
-Today's reading of ~43 is at the calm end. The bump is insurance against a regime change to the historical norm, not a fix for a current bleed.
+Today's reading of ~43 is at the calm end. Both bumps are insurance against a regime change to the historical norm, not a fix for a current bleed.
 
-### Why not bump 3% / 5% / 10%
+### Why not bump 5% / 10%
 
 Same Black-Scholes math at DVOL = 80 (a stress regime):
 
 | Tier | Hedge cost | Premium | Spread @ stress |
 |---|---|---|---|
-| 2% | $8.54 | $6 | −$2.54 (still vulnerable) |
-| 3% | $5.74 | $4 | −$1.74 |
-| 5% | $2.26 | $3 | +$0.74 (safe) |
-| 10% | ~$0.05 | $2 | +$1.95 (very safe) |
+| 2% | $8.54 | $6 | −$2.54 (managed by per-tier cap) |
+| 3% | $5.74 | $5 | −$0.74 |
+| 5% | $2.26 | $3 | +$0.74 |
+| 10% | ~$0.05 | $2 | +$1.95 |
 
-3% is the second-most exposed tier. We're leaving it at $4 for now because:
-1. The bump is reversible — if pilot data shows 3% taking real DVOL stress, we can revisit.
-2. We don't want to disturb a tier the CEO has already implicitly seen pricing for unless we have empirical evidence it needs it.
-3. The per-tier concentration cap (R2.D, see §6) limits how much new 3% notional can be acquired in a single high-DVOL day.
+5% and 10% have meaningful spread cushion even at stress DVOL. Bumping them would be price-grabbing without risk justification — and at the trader-side return ratios these tiers offer (16.7× and 50× return on trigger), the value proposition is "free upside, cheap insurance." Compressing that would hurt demand without earning material spread for the platform.
 
-5% and 10% have multi-DVOL-point of headroom even at extreme volatility. Bumping them would be price-gouging without risk justification.
+### Trader-side ratios at the new schedule
+
+This is the framing that matters to the CEO and ultimately the trader:
+
+| Tier | Premium on $10k | Payout if triggered | Net to trader | Return on trigger |
+|---|---|---|---|---|
+| 2% @ $6 | $60 | $200 | +$140 | 3.3× |
+| **3% @ $5** | **$50** | **$300** | **+$250** | **6×** |
+| 5% @ $3 | $30 | $500 | +$470 | 16.7× |
+| 10% @ $2 | $20 | $1,000 | +$980 | 50× |
+
+The 3% tier at the new $5 price still gives a **6× return on trigger** — measurably better value than the 2% tier at any of its prices. The bump preserves the value proposition.
+
+### Why the 3% tier was bumped pre-launch (anchoring)
+
+The CEO has not seen 3% pricing in any agreement or conversation to date — discussions to date have anchored on 2%. Anchoring at $5 from day one avoids a "you raised on me" reaction later if pilot data showed the bump was needed. The cost of anchoring high and discovering you're too high (drop back to $4) is much lower than the cost of anchoring low and discovering you needed more (raise on a relationship that has formed around the lower price).
 
 ### Reversibility
 
-If pilot demand on the 2% tier drops materially after the bump, dropping back to $5 is three small config changes and zero operational impact.
+If pilot demand cratters at the new prices, dropping the 2% back to $5 or the 3% back to $4 is three small config changes per tier and zero operational impact.
 
 ---
 
@@ -328,14 +364,14 @@ These are the empirical questions the pilot will answer. They cannot be answered
 | Foxify API integration | Post-pilot, scoped after CEO buy-in | None during pilot |
 | Telegram / Slack alerts | Wired, requires bot token + webhook URL | Activation timing |
 | Per-user tenancy | Identified as post-pilot work item — currently all pilot users share one tenant cap bucket | Scope and timing |
-| 3% premium bump consideration | Defer until 4 weeks of pilot data | Revisit after pilot |
+| Per-tier premium revisions during pilot | Hold final schedule ($6/$5/$3/$2) for the full 28 days | Revisit only on demand-side or DVOL-stress evidence |
 
 ---
 
 ## 10. Things we're watching and risks to flag
 
 1. **Sample size for triggered TP cycles is n=9.** Statistical confidence in TP P&L is low. Real-money position sizing should not scale beyond pilot caps until post-pilot review.
-2. **2% premium bump is empirically untested at the new price.** We expect demand to remain healthy because the optic is still clean ($6 vs $4 step), but if pilot demand at 2% craters we'll know quickly.
+2. **Both premium bumps (2% → $6 and 3% → $5) are empirically untested at the new prices.** We expect demand to remain healthy — the trader-side return ratios (3.3× on 2%, 6× on 3%) remain attractive — but if pilot demand at either tier craters we'll know quickly. Reversible to old prices in three config edits per tier.
 3. **DVOL has been calm (~43) for the entire post-switch window.** The platform's true risk profile is high-DVOL. A pilot that runs through a calm regime end-to-end will look "too good" — the CFO should treat the realized post-switch margin (~89%) as best-case until at least one stress event is observed.
 4. **All pilot users share one tenant cap bucket.** When the CEO logs in, his protections share aggregate-active and per-tier-daily caps with paper-test sessions. Documented in `PILOT_TECHNICAL_GUIDE.md §10`. Per-user tenancy is a post-pilot work item.
 5. **No live trades yet.** The DB sample is real-pricing, paper-fills. Live spread/slippage will be slightly worse than what the paper account reports because (a) actual order routing has friction, (b) we don't know which Deribit liquidity tier we'll be assigned to until KYC clears.
@@ -348,7 +384,7 @@ Honest assessment, in plain terms:
 
 - **Hardened against the failure modes we can think of.** Three R3 categories (no-spot, execute timeout, no-bid persistence) are coded and tested.
 - **Hardened against the cap-overflow patterns identified in R1/R2 audits.** Four cap layers, all atomic, all alerted.
-- **Pricing is conservative on the riskiest tier and competitive on the others.** $6/$4/$3/$2 schedule has positive spread across all tiers at today's DVOL and on the wider tiers across the entire historical DVOL range.
+- **Pricing is conservative on the riskiest tiers and competitive on the others.** $6/$5/$3/$2 schedule has positive spread across all tiers at today's DVOL and on the wider tiers across the entire historical DVOL range. The two volatility-sensitive tiers (2% and 3%) carry meaningful breakeven headroom (~10 and ~5 DVOL points respectively).
 - **Observability sufficient for a single-user pilot.** Render logs, admin dashboard, alert dispatcher, exec quality rollup all functional and validated.
 - **Two known empirical unknowns (high-DVOL TP, spread-drag in stress).** Both are bounded by the per-tier concentration cap; neither is a blocker.
 
@@ -385,6 +421,8 @@ $$
 
 For SL 2% at DVOL 43, premium $6: $(1 − ($2.23 + ~$0.50) / $6) ≈ 54%$ expected gross margin.
 
+For SL 3% at DVOL 43, premium $5: $(1 − ($0.95 + ~$0.50) / $5) ≈ 71%$ expected gross margin.
+
 ---
 
 ## Appendix B — Per-tier hedge cost vs DVOL (full table)
@@ -403,7 +441,7 @@ Black-Scholes hedge cost per $1k notional. 1-day tenor. BTC ≈ $100k.
 | 100 | $12.40 | $8.50 | $4.20 | $0.60 |
 | 120 | $16.32 | $11.40 | $6.40 | $1.40 |
 
-Compare to current premium ($6 / $4 / $3 / $2). The 2% and 3% tiers go negative under stress; the 5% and 10% tiers stay positive across the entire historical DVOL range.
+Compare to current premium ($6 / $5 / $3 / $2). The 2% and 3% tiers still go negative under sustained stress (DVOL > breakeven of 62 / 71 respectively), but with materially less bleed than at the old prices. The 5% and 10% tiers stay positive across the entire historical DVOL range.
 
 ---
 
@@ -459,9 +497,12 @@ PR #40 added regression tests for all five TP decision branches:
 | #45, #46 | R3 failure-mode hardening (no-spot, timeout, no-bid) | Pre-live resilience |
 | #47 | R7 alert dispatcher (Telegram/Slack/Discord/webhook) | Operations |
 | #49 | R3 test coverage completion | Verification |
-| #50 | **2% SL premium $5 → $6** | This report |
+| #50 | **2% SL premium $5 → $6** | DVOL-headroom bump on most volatility-sensitive tier |
 | #51 | Surgical admin test-reset endpoint | Test cap headroom mid-pilot without destroying audit data |
 | #52 | Customer-facing copy brevity pass | UX |
+| #54 | Widget error-message priority fix | Show human messages instead of machine codes |
+| #55 | `listProtectionsByUserHash` archived-row filter | Admin dashboard / trader endpoint hide cancelled+archived rows |
+| **#56** | **3% SL premium $4 → $5** | DVOL-headroom + pre-launch anchoring on second-most volatility-sensitive tier |
 
 ---
 
