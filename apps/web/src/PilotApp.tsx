@@ -275,31 +275,46 @@ const formatUsdNoDecimals = (value: number | string | null | undefined): string 
   return parsed.toLocaleString(undefined, { maximumFractionDigits: 0 });
 };
 
+// Style rules (aligned with isQuoteUnavailableError below — keep substrings
+// like "liquidity", "timed out", "temporarily unavailable" intact so the
+// downstream UI hints still match):
+//   - one sentence ideally; never more than two
+//   - ≤ 15 words where possible
+//   - state, then action: "X happened. Do Y."
+//   - cut: "please", "currently", "right now" (unless meaningful)
+//   - one time-zone reference: UTC + ET only
+//   - never use jargon: aggregate, notional, tenor, venue, transport, RFQ
 const friendlyError = (message: string): string => {
   if (message.includes("no_liquidity_window")) {
-    return "No liquidity or options available right now, try again";
+    return "No liquidity right now. Try again.";
   }
   if (
     message.includes("service_unavailable") ||
     message.includes("http_503") ||
     message.includes("admin_service_unavailable")
   ) {
-    return "Service is temporarily unavailable (503). Please retry shortly.";
+    return "Service temporarily unavailable. Try again shortly.";
+  }
+  if (message.includes("aggregate_active_notional_cap_exceeded")) {
+    return "Pilot's open-protection limit is full. Close one or wait for it to expire.";
+  }
+  if (message.includes("per_tier_daily_concentration_cap_exceeded")) {
+    return "This protection level is full for today. Try a different level or wait until tomorrow.";
   }
   if (message.includes("daily_notional_cap_exceeded")) {
-    return "Daily protection limit reached for pilot operations. Please try again next UTC day.";
+    return "Daily limit reached. Resets at midnight UTC (8pm ET).";
   }
   if (message.includes("protection_notional_cap_exceeded")) {
-    return "Protection amount exceeds the pilot maximum. Reduce amount and request a new quote.";
+    return "Amount exceeds the pilot max. Reduce it and refresh quote.";
   }
   if (message.includes("quote_expired")) {
-    return "Quote expired. Request a fresh quote and confirm again.";
+    return "Quote expired. Tap Refresh Quote.";
   }
   if (message.includes("quote_not_found")) {
-    return "Quote is no longer available. Tap Refresh Quote.";
+    return "Quote is gone. Tap Refresh Quote.";
   }
   if (message.includes("quote_mismatch")) {
-    return "Protection terms changed after quoting. Request a new quote before confirming.";
+    return "Terms changed after quoting. Tap Refresh Quote.";
   }
   if (message.includes("price_unavailable")) {
     return "Quote temporarily unavailable. Tap Refresh Quote.";
@@ -311,54 +326,54 @@ const friendlyError = (message: string): string => {
     return "Quote temporarily unavailable. Tap Refresh Quote.";
   }
   if (message.includes("activation_disabled")) {
-    return "Activation is paused while quote validation is in progress. You can continue requesting live quotes.";
+    return "Activation paused while quotes are validated. Quoting still works.";
   }
   if (message.includes("tenor_drift_exceeded")) {
-    return "Requested protection length is currently illiquid. Try the recommended tenor.";
+    return "That length isn't liquid right now. Try the suggested length.";
   }
   if (message.includes("tenor_temporarily_unavailable")) {
-    return "Requested protection length is temporarily unavailable. Try the recommended tenor.";
+    return "That length is temporarily unavailable. Try the suggested length.";
   }
   if (message.includes("quote_economics_unacceptable")) {
-    return "Current hedge premium is not economical for this protection. Try again with a different tenor.";
+    return "Hedge cost is uneconomical right now. Try a different length.";
   }
   if (message.includes("min_tradable_notional_exceeded")) {
-    return "Protection amount is currently too small for a tradable contract size. Increase amount or choose another tenor.";
+    return "Below the exchange minimum. Increase amount.";
   }
   if (message.includes("quote_liquidity_unavailable")) {
-    return "No liquidity or options available right now, try again";
+    return "No liquidity right now. Try again.";
   }
   if (message.includes("quote_min_notional_not_met")) {
-    return "Pilot minimum quote size is enforced. Increase protection amount and request a new quote.";
+    return "Below pilot minimum. Increase amount and refresh quote.";
   }
   if (message.includes("venue_quote_timeout")) {
-    return "Quote timed out. Live venue response exceeded 20s. Tap Refresh Quote.";
+    return "Quote timed out. Tap Refresh Quote.";
   }
   if (message.includes("venue_execute_timeout")) {
-    return "Activation is taking longer than expected. Tap Confirm Protection again.";
+    return "Activation is taking longer than expected. Tap Confirm again.";
   }
   if (message.includes("execution_failed")) {
-    return "Venue execution failed. Request a fresh quote and retry.";
+    return "Exchange rejected the trade. Tap Refresh Quote.";
   }
   if (message.includes("reconcile_pending")) {
-    return "Execution appears submitted, but reconciliation is pending. Contact operations before retrying.";
+    return "Trade may be submitted but unconfirmed. Contact ops before retrying.";
   }
   if (message.includes("quote_not_activatable")) {
-    return "This quote is linked to a failed activation state. Request a fresh quote.";
+    return "This quote is no longer usable. Tap Refresh Quote.";
   }
   if (message.includes("full_coverage_not_met")) {
-    return "Coverage check changed. Tap Refresh Quote and confirm again.";
+    return "Coverage check changed. Tap Refresh Quote.";
   }
   if (message.includes("activation_failed")) {
-    return "Activation could not be confirmed yet. Tap Confirm Protection again.";
+    return "Couldn't confirm activation. Tap Confirm again.";
   }
   if (message.toLowerCase().includes("failed to fetch")) {
-    return "Network issue detected. Please retry.";
+    return "Network issue. Please retry.";
   }
   if (message.includes("admin_unauthorized") || message.includes("unauthorized")) {
-    return "Admin access denied. Verify admin token and PILOT_ADMIN_IP_ALLOWLIST / trusted proxy IP settings.";
+    return "Admin access denied. Check admin token and IP allowlist.";
   }
-  return "Unable to complete request. Please retry.";
+  return "Couldn't complete request. Please retry.";
 };
 
 const isPriceUnavailableError = (message: string | null): boolean =>
