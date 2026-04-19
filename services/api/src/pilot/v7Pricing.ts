@@ -5,10 +5,19 @@ import { V7_SL_TIERS } from "./types";
 /**
  * V7 Tiered Premium Schedule — USD per $1k notional, 1-day rolling tenor.
  * Pricing curve: charge more for tight SL (expensive to hedge), less for wide SL.
+ *
+ * 2026-04-18 — 2% SL raised from $5 → $6/$1k. Rationale:
+ *   At 1-DTE, the 2% strike concentrates ~80% of the schedule's DVOL
+ *   sensitivity (gamma is highest near-the-money on short tenors). Black-
+ *   Scholes hedge cost on a 2% put crosses the $5 premium at DVOL ≈ 52
+ *   and the $6 premium at DVOL ≈ 62. Today's spot DVOL is ~43, so $5
+ *   was profitable now; the bump buys 10 DVOL points of breakeven
+ *   headroom before live pilot. Wider tiers (3/5/10%) are far less
+ *   gamma-sensitive and remain unchanged. See docs/cfo-report/.
  */
 const V7_RATE_PER_1K: Record<V7SlTier, number> = {
   1: 6,
-  2: 5,
+  2: 6,
   3: 4,
   5: 3,
   10: 2

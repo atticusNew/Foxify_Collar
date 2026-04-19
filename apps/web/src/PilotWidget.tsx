@@ -15,7 +15,11 @@ type Position = { id: string; num: number; type: "long" | "short"; size: number;
 const STOP_LOSS_OPTIONS = [2, 3, 5, 10] as const;
 type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
 const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
-const SL_RATE: Record<StopLoss, number> = { 2: 5, 3: 4, 5: 3, 10: 2 };
+// Client-side preview only (used to render the "Add Protection ($X)" button
+// before a quote round-trip). The authoritative premium comes from the API
+// response (V7Info.premiumPer1kUsd) once a quote is fetched. Must mirror
+// V7_RATE_PER_1K in services/api/src/pilot/v7Pricing.ts.
+const SL_RATE: Record<StopLoss, number> = { 2: 6, 3: 4, 5: 3, 10: 2 };
 const SL_TENOR: Record<StopLoss, number> = { 2: 1, 3: 1, 5: 1, 10: 1 };
 const POS_MIN = 10000, POS_MAX = 50000, POS_STEP = 5000, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";

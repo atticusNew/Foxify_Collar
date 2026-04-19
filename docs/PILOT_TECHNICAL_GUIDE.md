@@ -63,7 +63,7 @@ Background:
 2. Frontend calls `POST /pilot/protections/quote`.
 3. Backend fetches spot price from Coinbase (fallback: Deribit perpetual).
 4. Computes floor/trigger price: `entry × (1 - SL%/100)` for longs, `entry × (1 + SL%/100)` for shorts.
-5. Computes V7 premium: `notional / 1000 × ratePer1k` (e.g., $5/1k for 2%).
+5. Computes V7 premium: `notional / 1000 × ratePer1k` (e.g., $6/1k for 2%).
 6. Calls Deribit `listInstruments("BTC")` to get available options.
 7. Filters by expiry window: `[now + max(8h, tenor × 0.5), now + tenor + 2 days]`.
 8. For trigger-aligned mode: also filters strikes within ±0.5% of the trigger price.
@@ -127,16 +127,18 @@ Background:
 
 | SL% | Rate per $1k | Tenor | Payout per $10k |
 |-----|--------------|-------|-----------------|
-| 2%  | $5.00        | 1 day | $200            |
+| 2%  | $6.00        | 1 day | $200            |
 | 3%  | $4.00        | 1 day | $300            |
 | 5%  | $3.00        | 1 day | $500            |
 | 10% | $2.00        | 1 day | $1,000          |
 
 Premium formula: `notional / 1000 × ratePer1k`
 
-Example: $50,000 at 2% SL = $50,000 / 1,000 × $5 = $250 premium.
+Example: $50,000 at 2% SL = $50,000 / 1,000 × $6 = $300 premium.
 
 `SL 1%` ($6/1k, $100 payout per $10k) is defined in `v7Pricing.ts` for forward compatibility but is intentionally excluded from `V7_LAUNCHED_TIERS` and is not selectable via the frontend or quote API during the pilot.
+
+**2026-04-18 — 2% SL premium raised from $5 → $6/$1k.** Black-Scholes hedge cost for a 1-DTE, 2% OTM put crosses $5/$1k at DVOL ≈ 52 and $6/$1k at DVOL ≈ 62. At today's spot DVOL of ~43, both prices are profitable; the $1 bump buys ~10 DVOL points of breakeven headroom on the platform's most gamma-sensitive tier before the live pilot. Wider tiers (3/5/10%) have an order of magnitude less DVOL sensitivity at 1-DTE and remain unchanged. Full math and historical justification in `docs/cfo-report/`.
 
 ### Margin Economics
 

@@ -154,7 +154,9 @@ const seedHedge = async (
     [
       instrument,
       String(opts.hedgeQty ?? 0.1),
-      String(opts.premium ?? (opts.notional / 1000) * 5),
+      String(
+        opts.premium ?? (opts.notional / 1000) * (opts.slPct === 2 ? 6 : opts.slPct === 3 ? 4 : opts.slPct === 5 ? 3 : 2)
+      ),
       String(opts.payoutDueAmount ?? opts.notional * (opts.slPct / 100)),
       floorPrice,
       seeded.id
