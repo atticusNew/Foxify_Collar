@@ -85,6 +85,28 @@ import { computeDrawdownLossBudgetUsd } from "./protectionMath";
 import type { PremiumPolicyDiagnostics, TenorPolicyEntry, TenorPolicyResponse, TenorPolicyTenorRow, TenorPolicyReason } from "./types";
 import { isValidSlTier, computeV7Premium, slPctToDrawdownFloor, slPctToTierLabel, getV7AvailableTiers, getV7TenorDays, getV7PremiumPer1k } from "./v7Pricing";
 import { getCurrentRegime, configureRegimeClassifier } from "./regimeClassifier";
+import {
+  getCurrentPricingRegime,
+  type PricingRegime
+} from "./pricingRegime";
+
+// Design A — Volatility label shown next to the price in the widget.
+// Maps internal regime IDs to user-facing strings. "Low / Moderate /
+// Elevated / High" was selected over "Calm / Active / Choppy /
+// Stressed" because "Volatility" is universally understood by traders
+// and the labels form a clear monotonic scale.
+const pricingRegimeLabel = (regime: PricingRegime): string => {
+  switch (regime) {
+    case "low":
+      return "Low";
+    case "moderate":
+      return "Moderate";
+    case "elevated":
+      return "Elevated";
+    case "high":
+      return "High";
+  }
+};
 import type { V7SlTier, V7PremiumQuote } from "./types";
 
 const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_native" | "futures_synthetic" => {
@@ -1546,6 +1568,9 @@ export const registerPilotRoutes = async (
     try {
       const regimeStatus = await getCurrentRegime({ forceRefresh });
       const tiers = getV7AvailableTiers(regimeStatus.regime);
+      // Design A — expose the pricing regime so the widget can display
+      // "Volatility: Moderate" next to the price.
+      const pricingRegimeStatus = getCurrentPricingRegime(regimeStatus.dvol);
       return {
         status: "ok",
         regime: regimeStatus.regime,
@@ -1559,7 +1584,11 @@ export const registerPilotRoutes = async (
         thresholds: {
           calmBelow: pilotConfig.v7.dvolCalmThreshold,
           stressAbove: pilotConfig.v7.dvolStressThreshold
-        }
+        },
+        pricingRegime: pricingRegimeStatus.regime,
+        pricingRegimeLabel: pricingRegimeLabel(pricingRegimeStatus.regime),
+        pricingRegimeSource: pricingRegimeStatus.source,
+        pricingRegimeRollingWindowMinutes: pricingRegimeStatus.rollingWindowMinutes
       };
     } catch (error: any) {
       reply.code(503);
@@ -2576,7 +2605,14 @@ export const registerPilotRoutes = async (
           premiumPer1kUsd: v7Quote.premiumPer1kUsd,
           premiumUsd: v7Quote.premiumUsd,
           payoutPer10kUsd: v7Quote.payoutPer10kUsd,
-          available: v7Quote.available
+          available: v7Quote.available,
+          // Design A — surface the pricing regime label and human-friendly
+          // text the widget displays next to the premium so the trader
+          // sees the volatility context behind the price.
+          pricingRegime: getCurrentPricingRegime(v7Quote.dvol).regime,
+          pricingRegimeLabel: pricingRegimeLabel(
+            getCurrentPricingRegime(v7Quote.dvol).regime
+          )
         } : null,
         profile: {
           name: pilotConfig.lockedProfile.name,

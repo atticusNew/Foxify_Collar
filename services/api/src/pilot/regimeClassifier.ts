@@ -1,5 +1,6 @@
 import { DeribitConnector } from "@foxify/connectors";
 import type { V7Regime, V7RegimeSource, V7RegimeStatus } from "./types";
+import { recordDvolSample } from "./pricingRegime";
 
 export type RegimeThresholds = {
   calmBelow: number;
@@ -73,9 +74,16 @@ export const getCurrentRegime = async (params?: {
   if (dvolResult.dvol !== null) {
     regime = classifyRegime(dvolResult.dvol, thresholds);
     source = "dvol";
+    // Feed Design A's pricing-regime rolling window with each fresh
+    // DVOL reading so quote-time pricing has up-to-date 1h-rolling
+    // average available without each quote re-fetching.
+    recordDvolSample(dvolResult.dvol);
   } else if (rvolResult.rvol !== null) {
     regime = classifyRegime(rvolResult.rvol, thresholds);
     source = "rvol";
+    // RVOL is not a perfect proxy for DVOL but it's our best signal
+    // when DVOL is unavailable. Record so pricing has *some* data.
+    recordDvolSample(rvolResult.rvol);
   } else {
     regime = "normal";
     source = "rvol";

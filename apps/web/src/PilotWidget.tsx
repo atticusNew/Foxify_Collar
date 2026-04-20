@@ -4,7 +4,21 @@ import { API_BASE } from "./config";
 // ─── Types ───────────────────────────────────────────────────────────
 
 type ReferencePrice = { price: string; marketId: string; venue: string; source: string; timestamp: string; ageMs: number };
-type V7Info = { regime: string; regimeSource: string; dvol: number | null; premiumPer1kUsd: number; premiumUsd: number; payoutPer10kUsd: number; available: boolean };
+type V7Info = {
+  regime: string;
+  regimeSource: string;
+  dvol: number | null;
+  premiumPer1kUsd: number;
+  premiumUsd: number;
+  payoutPer10kUsd: number;
+  available: boolean;
+  // Design A — pricing regime (low / moderate / elevated / high) and
+  // its human-friendly label ("Low" / "Moderate" / "Elevated" / "High").
+  // Optional for backwards compatibility with quotes generated before
+  // Design A deploys.
+  pricingRegime?: "low" | "moderate" | "elevated" | "high";
+  pricingRegimeLabel?: string;
+};
 type QuoteResponse = { status: string; protectionType: string; tierName: string; slPct: number | null; drawdownFloorPct: string; triggerPrice: string; floorPrice: string; v7: V7Info | null; quote: { quoteId: string; instrumentId: string; premium: number; expiresAt: string; side: string; quantity: number; venue: string; details?: Record<string, unknown> }; entrySnapshot: { price: string; marketId: string; source: string; timestamp: string } };
 type ProtectionRecord = { id: string; status: string; tierName: string; protectedNotional: string; entryPrice: string; floorPrice: string; drawdownFloorPct: string; expiryAt: string; premium: string; autoRenew: boolean; payoutDueAmount: string | null; payoutSettledAmount: string | null; venue: string; instrumentId: string; createdAt: string; metadata?: Record<string, unknown> };
 type MonitorResponse = { status: string; protection?: ProtectionRecord & { renewedTo?: string | null }; currentPrice?: string; distanceToFloor?: { pct: string; usd: string; direction: string }; timeRemaining?: { ms: number; human: string } };
@@ -45,6 +59,18 @@ const api = async <T = unknown>(p: string, o?: RequestInit): Promise<T> => {
   return j as T;
 };
 const fetchRef = () => api<{ status: string; reference: ReferencePrice }>("/pilot/reference-price");
+
+// Design A — poll the pricing regime so the widget can show a live
+// "Volatility: Low/Moderate/Elevated/High" label even before the user
+// requests a quote, AND so the client-side premium preview uses the
+// correct schedule for the day's regime.
+type RegimeInfo = {
+  status: string;
+  pricingRegime?: "low" | "moderate" | "elevated" | "high";
+  pricingRegimeLabel?: string;
+  tiers?: Array<{ slPct: number; premiumPer1kUsd: number }>;
+};
+const fetchRegime = () => api<RegimeInfo>("/pilot/regime");
 const fetchQuote = (b: Record<string, unknown>) => api<QuoteResponse>("/pilot/protections/quote", { method: "POST", body: JSON.stringify(b) });
 const activateProt = (b: Record<string, unknown>) => api<{ status: string; protectionId: string; protection: ProtectionRecord }>("/pilot/protections/activate", { method: "POST", body: JSON.stringify(b) });
 const fetchMon = async (id: string): Promise<MonitorResponse> => {
@@ -107,6 +133,10 @@ export function PilotWidget() {
   const [stopLoss, setStopLoss] = useState<StopLoss | null>(null);
   const [autoRenew, setAutoRenew] = useState(false);
   const [livePrice, setLivePrice] = useState<number | null>(null);
+  // Design A — current pricing regime + per-tier rates from server.
+  // Falls back to client-side SL_RATE table only if the server poll
+  // hasn't returned yet (first paint).
+  const [regimeInfo, setRegimeInfo] = useState<RegimeInfo | null>(null);
   const [priceError, setPriceError] = useState<string | null>(null);
   const [priceTs, setPriceTs] = useState(0);
   const [positions, setPositions] = useState<Position[]>(() => ld(K_POS, []));
@@ -129,7 +159,10 @@ export function PilotWidget() {
 
   const tierName = stopLoss ? STOP_LOSS_TO_TIER[stopLoss] : "SL 2%";
   const dd = stopLoss ?? 2;
-  const ppk = SL_RATE[dd as StopLoss] ?? 3;
+  // Prefer the server-provided regime-aware rate over the static SL_RATE
+  // table (which is only the first-paint fallback).
+  const serverRate = regimeInfo?.tiers?.find((t) => t.slPct === dd)?.premiumPer1kUsd;
+  const ppk = serverRate ?? SL_RATE[dd as StopLoss] ?? 3;
   const tenor = SL_TENOR[dd as StopLoss] ?? 3;
   const premium = (positionSize / 1000) * ppk;
   const payout = positionSize * (dd / 100);
@@ -141,6 +174,25 @@ export function PilotWidget() {
   const fresh = Date.now() - priceTs < 1500;
 
   useEffect(() => { let on = true; const poll = async () => { try { const d = await fetchRef(); if (on && d.status === "ok") { setLivePrice(Number(d.reference.price)); setPriceTs(Date.now()); setPriceError(null); } } catch (e: any) { if (on) setPriceError(e.message); } }; poll(); const id = setInterval(poll, 3000); return () => { on = false; clearInterval(id); }; }, []);
+  // Design A — poll the pricing regime once at mount and then every 60
+  // seconds. The server regime is cached for 5 minutes upstream; this
+  // 60s cadence is just to keep the widget label fresh as conditions
+  // change. Failures silently fall back to the previous regime info
+  // (or to SL_RATE constants if no regime has loaded yet).
+  useEffect(() => {
+    let on = true;
+    const poll = async () => {
+      try {
+        const r = await fetchRegime();
+        if (on && r.status === "ok") setRegimeInfo(r);
+      } catch {
+        // intentionally silent — regime is best-effort
+      }
+    };
+    poll();
+    const id = setInterval(poll, 60_000);
+    return () => { on = false; clearInterval(id); };
+  }, []);
 
   useEffect(() => {
     const pa = actives.filter(p => p.protectionId);
@@ -346,6 +398,15 @@ export function PilotWidget() {
             {ready && <>
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} for {tenor} {tenor === 1 ? "day" : "days"}</span></div>
               {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
+              {regimeInfo?.pricingRegimeLabel && (
+                <div
+                  style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginTop: 6, opacity: 0.8 }}
+                  title="Price reflects current Bitcoin market volatility. See documentation for the schedule."
+                >
+                  <span>Volatility</span>
+                  <span style={{ fontWeight: 500 }}>{regimeInfo.pricingRegimeLabel}</span>
+                </div>
+              )}
             </>}
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted)", marginBottom: 14, cursor: "pointer" }}>

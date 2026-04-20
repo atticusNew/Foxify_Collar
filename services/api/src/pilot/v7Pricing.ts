@@ -1,31 +1,30 @@
 import Decimal from "decimal.js";
 import type { V7Regime, V7SlTier, V7PremiumQuote } from "./types";
 import { V7_SL_TIERS } from "./types";
+import {
+  getCurrentPricingRegime,
+  getPremiumPer1kForRegime,
+  type PricingRegime
+} from "./pricingRegime";
 
 /**
  * V7 Tiered Premium Schedule — USD per $1k notional, 1-day rolling tenor.
  * Pricing curve: charge more for tight SL (expensive to hedge), less for wide SL.
  *
- * Pre-launch calibration (2026-04-18 / 2026-04-19):
+ * 2026-04-19 — Design A (regime-adjusted dynamic pricing).
+ *   The platform now consults pricingRegime.ts at quote time to pick a
+ *   schedule based on a 1-hour rolling DVOL average. Trader experience
+ *   remains "fixed price + instant payout" — the price quoted is locked
+ *   when activated. The schedule simply adjusts for market conditions
+ *   so the platform doesn't sell calm-priced product into a stress
+ *   regime. Capped at $9/$1k for the 2% tier (CEO trader-acceptance
+ *   ceiling). See docs/cfo-report/ and services/api/src/pilot/pricingRegime.ts.
  *
- *   2% SL: $5 → $6/$1k. At 1-DTE, the 2% strike concentrates ~80% of the
- *     schedule's DVOL sensitivity (gamma is highest near-the-money on
- *     short tenors). Black-Scholes hedge cost on a 2% put crosses $5 at
- *     DVOL ≈ 52 and $6 at DVOL ≈ 62. Bump buys ~10 DVOL points of
- *     breakeven headroom before live pilot.
- *
- *   3% SL: $4 → $5/$1k. The second-most volatility-sensitive tier.
- *     Hedge cost crosses $4 at DVOL ≈ 66 and $5 at DVOL ≈ 71. Bump buys
- *     ~5 DVOL points of headroom on a tier that historically spends real
- *     time in the 60-80 DVOL band. Trader-side ratio remains attractive:
- *     pay $50 on $10k to receive $300 if triggered (6× return on
- *     trigger, vs 3.3× on the 2% tier).
- *
- *   5% / 10%: unchanged. Hedge cost stays well below premium even at
- *     DVOL 80 due to deep-OTM gamma. No risk-side justification to bump.
- *
- *   Final schedule: $6 / $5 / $3 / $2 for 2 / 3 / 5 / 10%.
- *   See docs/cfo-report/.
+ * The static V7_RATE_PER_1K below is retained as a LEGACY FALLBACK for
+ * any code path that didn't go through pricingRegime (e.g., tests, the
+ * /pilot/protections endpoint that displays a default rate when no
+ * quote has been requested yet). Production pricing is via
+ * computeV7Premium → getPremiumPer1kForRegime.
  */
 const V7_RATE_PER_1K: Record<V7SlTier, number> = {
   1: 6,
@@ -58,8 +57,20 @@ const V7_PAYOUT_PER_10K: Record<V7SlTier, number> = {
 export const isValidSlTier = (slPct: number): slPct is V7SlTier =>
   (V7_SL_TIERS as readonly number[]).includes(slPct);
 
-export const getV7PremiumPer1k = (slPct: V7SlTier): number =>
-  V7_RATE_PER_1K[slPct];
+/**
+ * Get the per-$1k premium rate for a tier. Default behavior: consult
+ * the live pricing regime (Design A). Pass `useLegacyStaticRate=true`
+ * to bypass the regime classifier and return the static fallback —
+ * only meaningful in tests.
+ */
+export const getV7PremiumPer1k = (
+  slPct: V7SlTier,
+  options?: { useLegacyStaticRate?: boolean }
+): number => {
+  if (options?.useLegacyStaticRate) return V7_RATE_PER_1K[slPct];
+  const regime = getCurrentPricingRegime().regime;
+  return getPremiumPer1kForRegime(slPct, regime);
+};
 
 export const getV7TenorDays = (slPct: V7SlTier): number =>
   V7_TENOR_DAYS[slPct];
@@ -68,8 +79,44 @@ export const getV7PayoutPer10k = (slPct: V7SlTier): number =>
   V7_PAYOUT_PER_10K[slPct] ?? 0;
 
 /**
+ * Map the legacy V7Regime (calm/normal/stress, used by the hedge manager)
+ * to the new PricingRegime (low/moderate/elevated/high) used by Design A.
+ * The mappings are conservative: any V7Regime "stress" reading drives
+ * pricing to "high"; "normal" → "moderate"; "calm" → "low".
+ *
+ * In production the pricing path goes through getCurrentPricingRegime()
+ * directly, which uses its own DVOL band classifier. This mapping
+ * exists for backwards compatibility with callers that still pass a
+ * V7Regime input.
+ */
+const v7ToPricingRegime = (regime: V7Regime | null | undefined): PricingRegime | null => {
+  if (!regime) return null;
+  switch (regime) {
+    case "calm":
+      return "low";
+    case "normal":
+      return "moderate";
+    case "stress":
+      return "high";
+    default:
+      return null;
+  }
+};
+
+/**
  * Compute the V7 premium for a given SL tier, regime, and notional.
- * Returns the full quote including availability status.
+ *
+ * Design A pricing path:
+ *   1. If a pricing regime is available (live DVOL feed), use the
+ *      regime-specific schedule.
+ *   2. If only the legacy V7Regime is supplied, map to PricingRegime.
+ *   3. Fall back to the static V7_RATE_PER_1K only if no regime info
+ *      is available (e.g., tests that bypass the regime classifier).
+ *
+ * Returns the full quote including the resolved regime label and
+ * the rolling DVOL window the price was computed against — both are
+ * persisted on the protection record so we can audit "what regime was
+ * I in when this trade was priced?"
  */
 export const computeV7Premium = (params: {
   slPct: V7SlTier;
@@ -77,8 +124,25 @@ export const computeV7Premium = (params: {
   notionalUsd: number;
   dvol?: number | null;
   regimeSource?: "dvol" | "rvol";
+  /**
+   * Optional explicit pricing regime override. When provided, takes
+   * precedence over the live regime classifier. Used by tests and by
+   * routes that want to lock a specific regime for a quote ID.
+   */
+  pricingRegimeOverride?: PricingRegime;
 }): V7PremiumQuote => {
-  const premiumPer1k = V7_RATE_PER_1K[params.slPct];
+  let pricingRegime: PricingRegime;
+  let dvolForLog: number | null = params.dvol ?? null;
+
+  if (params.pricingRegimeOverride) {
+    pricingRegime = params.pricingRegimeOverride;
+  } else {
+    const status = getCurrentPricingRegime(params.dvol);
+    pricingRegime = status.regime;
+    if (status.dvol !== null) dvolForLog = status.dvol;
+  }
+
+  const premiumPer1k = getPremiumPer1kForRegime(params.slPct, pricingRegime);
   const notional = new Decimal(params.notionalUsd);
   const premiumUsd = notional.div(1000).mul(premiumPer1k);
 
@@ -91,7 +155,7 @@ export const computeV7Premium = (params: {
     payoutPer10kUsd: getV7PayoutPer10k(params.slPct),
     notionalUsd: params.notionalUsd,
     regimeSource: params.regimeSource ?? "rvol",
-    dvol: params.dvol ?? null
+    dvol: dvolForLog
   };
 };
 
@@ -139,20 +203,30 @@ export const computeV7HedgeStrike = (
  */
 export const V7_LAUNCHED_TIERS: readonly V7SlTier[] = [2, 3, 5, 10] as const;
 
-export const getV7AvailableTiers = (_regime?: V7Regime): Array<{
+export const getV7AvailableTiers = (
+  legacyRegime?: V7Regime,
+  pricingRegimeOverride?: PricingRegime
+): Array<{
   slPct: V7SlTier;
   premiumPer1kUsd: number;
   tenorDays: number;
   available: boolean;
   payoutPer10kUsd: number;
-}> =>
-  V7_LAUNCHED_TIERS.map((slPct) => ({
+}> => {
+  // Pick the active pricing regime in this order of preference:
+  //   1. explicit override (used by tests / locked-quote replay)
+  //   2. legacy V7Regime mapped to PricingRegime
+  //   3. live pricing regime classifier
+  const pricingRegime: PricingRegime =
+    pricingRegimeOverride ?? v7ToPricingRegime(legacyRegime) ?? getCurrentPricingRegime().regime;
+  return V7_LAUNCHED_TIERS.map((slPct) => ({
     slPct,
-    premiumPer1kUsd: V7_RATE_PER_1K[slPct],
+    premiumPer1kUsd: getPremiumPer1kForRegime(slPct, pricingRegime),
     tenorDays: V7_TENOR_DAYS[slPct],
     available: true,
     payoutPer10kUsd: getV7PayoutPer10k(slPct)
   }));
+};
 
 /**
  * Generate the tier label stored in DB's tier_name column.
