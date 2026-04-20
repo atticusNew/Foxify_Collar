@@ -4,6 +4,67 @@ import { pilotConfig } from "./config";
 import { computePutRecoveryValue } from "./blackScholes";
 import { bsCall } from "./blackScholes";
 import type { PilotVenueAdapter } from "./venue";
+import { getSpotMovePct, recordSpotSample } from "./spotHistory";
+
+/**
+ * PR C — Active TP gaps configuration.
+ *
+ * Both gaps default to OBSERVE-ONLY mode for the pilot. In observe-only
+ * mode the cycle logs every "would have fired" event with the same
+ * detail as a real fire, so we accumulate calibration data without
+ * taking the action risk. Flip ENFORCE flags to true after we see
+ * enough observe-only data to validate the thresholds.
+ *
+ * Gap 1 (volatility-spike forced exit):
+ *   When BTC has moved more than gap1MovePct over gap1WindowMs and
+ *   the option being held is worth at least gap1MinValueUsd, sell
+ *   immediately. Catches the fast-move scenario where bouncing
+ *   waiting bleeds time value while the option is still valuable.
+ *
+ *   PILOT_TP_GAP1_ENFORCE        default 'false' (observe-only)
+ *   PILOT_TP_GAP1_MOVE_PCT       default 3.0 (% absolute spot move)
+ *   PILOT_TP_GAP1_WINDOW_HOURS   default 2
+ *   PILOT_TP_GAP1_MIN_VALUE_USD  default 50
+ *
+ * Gap 3 (price-direction cooling shrink):
+ *   When BTC is down more than gap3DownPct over gap3WindowMs, halve
+ *   the cooling window for triggered protections. Reduces the wait
+ *   time before bounce_recovery / take_profit_prime branches can
+ *   fire during sustained downtrends.
+ *
+ *   PILOT_TP_GAP3_ENFORCE        default 'false' (observe-only)
+ *   PILOT_TP_GAP3_DOWN_PCT       default 5.0 (% spot fell over window)
+ *   PILOT_TP_GAP3_WINDOW_HOURS   default 24
+ *   PILOT_TP_GAP3_SHRINK_FACTOR  default 0.5 (multiply cooling by this)
+ */
+const TP_GAP_DEFAULTS = {
+  gap1: {
+    enforce: false,
+    movePct: 3.0,
+    windowHours: 2,
+    minValueUsd: 50
+  },
+  gap3: {
+    enforce: false,
+    downPct: 5.0,
+    windowHours: 24,
+    shrinkFactor: 0.5
+  }
+};
+
+const resolveGap1Config = () => ({
+  enforce: String(process.env.PILOT_TP_GAP1_ENFORCE || "").toLowerCase() === "true",
+  movePct: Number(process.env.PILOT_TP_GAP1_MOVE_PCT || TP_GAP_DEFAULTS.gap1.movePct),
+  windowHours: Number(process.env.PILOT_TP_GAP1_WINDOW_HOURS || TP_GAP_DEFAULTS.gap1.windowHours),
+  minValueUsd: Number(process.env.PILOT_TP_GAP1_MIN_VALUE_USD || TP_GAP_DEFAULTS.gap1.minValueUsd)
+});
+
+const resolveGap3Config = () => ({
+  enforce: String(process.env.PILOT_TP_GAP3_ENFORCE || "").toLowerCase() === "true",
+  downPct: Number(process.env.PILOT_TP_GAP3_DOWN_PCT || TP_GAP_DEFAULTS.gap3.downPct),
+  windowHours: Number(process.env.PILOT_TP_GAP3_WINDOW_HOURS || TP_GAP_DEFAULTS.gap3.windowHours),
+  shrinkFactor: Number(process.env.PILOT_TP_GAP3_SHRINK_FACTOR || TP_GAP_DEFAULTS.gap3.shrinkFactor)
+});
 
 type ManagedHedge = {
   protectionId: string;
@@ -351,6 +412,25 @@ export const runHedgeManagementCycle = async (params: {
   const dvol = params.currentIV;
   const adaptive = resolveAdaptiveParams(dvol);
 
+  // PR C — record this cycle's spot sample for Gap 1 and Gap 3 lookbacks.
+  recordSpotSample(params.currentSpot);
+  const gap1Cfg = resolveGap1Config();
+  const gap3Cfg = resolveGap3Config();
+  // Compute the lookback once at top of cycle so every protection
+  // sees the same value (cleaner audit log).
+  const gap1MovePct = getSpotMovePct(gap1Cfg.windowHours * 3600_000);
+  const gap3MovePct = getSpotMovePct(gap3Cfg.windowHours * 3600_000);
+  // Gap 3 fires when spot has dropped more than the threshold
+  // (negative move >= downPct).
+  const gap3Active = gap3MovePct !== null && gap3MovePct <= -gap3Cfg.downPct;
+  if (gap3Active) {
+    console.log(
+      `[HedgeManager] Gap 3: spot down ${(-(gap3MovePct as number)).toFixed(2)}% over ${gap3Cfg.windowHours}h ` +
+      `(threshold ${gap3Cfg.downPct}%). Cooling windows ${gap3Cfg.enforce ? "SHRUNK" : "would shrink (observe-only)"} ` +
+      `by factor ${gap3Cfg.shrinkFactor}.`
+    );
+  }
+
   let hedges: ManagedHedge[];
   try {
     hedges = await queryManagedHedges(params.pool);
@@ -425,9 +505,58 @@ export const runHedgeManagementCycle = async (params: {
       const gapPct = computeStrikeFloorGapPct(hedge.protectionType, hedge.strike, hedge.floorPrice);
       const hasSignificantGap = gapPct >= GAP_SIGNIFICANT_PCT;
       const gapInDeadZone = hasSignificantGap && !bounced && optionIsOtm;
-      const effectiveCooling = gapInDeadZone
+      let effectiveCooling = gapInDeadZone
         ? adaptive.coolingHours + GAP_COOLING_EXTENSION_HOURS
         : adaptive.coolingHours;
+
+      // PR C — Gap 3: shrink cooling window during sustained drops.
+      // Only for LONG protections — for shorts, a 24h spot drop is
+      // beneficial (the option moves away from trigger), not adverse.
+      if (gap3Active && hedge.protectionType !== "short") {
+        const shrunk = effectiveCooling * gap3Cfg.shrinkFactor;
+        if (gap3Cfg.enforce) {
+          console.log(
+            `[HedgeManager] Gap 3 ENFORCE: ${hedge.protectionId} cooling ${effectiveCooling.toFixed(2)}h → ${shrunk.toFixed(2)}h ` +
+            `(spot down ${(-(gap3MovePct as number)).toFixed(2)}% over ${gap3Cfg.windowHours}h)`
+          );
+          effectiveCooling = shrunk;
+        } else {
+          console.log(
+            `[HedgeManager] Gap 3 OBSERVE: ${hedge.protectionId} cooling would shrink ${effectiveCooling.toFixed(2)}h → ${shrunk.toFixed(2)}h ` +
+            `(observe-only; set PILOT_TP_GAP3_ENFORCE=true to act)`
+          );
+        }
+      }
+
+      // PR C — Gap 1: force-exit on volatility spike. Long protections
+      // benefit when BTC drops fast; short protections benefit when BTC
+      // rises fast. We measure the absolute move and use the sign that's
+      // adverse to the trader's underlying position (i.e. the move that
+      // makes the OPTION valuable).
+      const adverseMoveDirection = hedge.protectionType === "short" ? 1 : -1;
+      const adverseMovePct = gap1MovePct !== null ? gap1MovePct * adverseMoveDirection : null;
+      const gap1WouldFire =
+        adverseMovePct !== null &&
+        adverseMovePct >= gap1Cfg.movePct &&
+        optionVal.totalValue >= gap1Cfg.minValueUsd;
+      if (gap1WouldFire) {
+        if (gap1Cfg.enforce) {
+          console.log(
+            `[HedgeManager] Gap 1 ENFORCE: ${hedge.protectionId} adverseMove=${adverseMovePct.toFixed(2)}% over ${gap1Cfg.windowHours}h ` +
+            `value=$${optionVal.totalValue.toFixed(2)} (>= ${gap1Cfg.minValueUsd}). Forcing sale.`
+          );
+          const sellStatus = await executeSell(hedge, "vol_spike_forced_exit", optionVal, params.sellOption, params.pool);
+          if (sellStatus === "sold") { result.tpSold++; }
+          else if (sellStatus === "no_bid") { result.noBidRetries++; }
+          else { result.errors++; }
+          continue;
+        } else {
+          console.log(
+            `[HedgeManager] Gap 1 OBSERVE: ${hedge.protectionId} would force-sell — adverseMove=${adverseMovePct.toFixed(2)}% over ${gap1Cfg.windowHours}h ` +
+            `value=$${optionVal.totalValue.toFixed(2)} (observe-only; set PILOT_TP_GAP1_ENFORCE=true to act)`
+          );
+        }
+      }
 
       let shouldSell = false;
       let reason = "";

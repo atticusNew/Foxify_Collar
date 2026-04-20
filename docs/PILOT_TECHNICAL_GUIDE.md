@@ -406,6 +406,46 @@ Entry types: `premium_due`, `premium_collected`, `trigger_payout_due`, `payout_d
 
 ---
 
+## 10c. Active TP gaps (PR C — feature-flagged)
+
+Two TP system enhancements that respond to fast / sustained price moves. Both default to **observe-only** mode for the pilot — they evaluate the trigger conditions and log "would have fired" events without taking the action. The flag flips them to enforce mode once we have enough observe-only data to validate the thresholds.
+
+Both gaps share an in-process **spot history ring buffer** (`services/api/src/pilot/spotHistory.ts`) that records the BTC spot price each hedge-management cycle. At 60s cadence × 24h max = 1,440 samples maximum (~30 KB). Buffer is in-memory only — restarts empty it, and the gaps degrade gracefully when there's insufficient history.
+
+### Gap 1 — Volatility-spike forced exit
+
+When BTC has moved **adversely** more than `movePct` over `windowHours` AND the option being held is worth at least `minValueUsd`, sell immediately with reason `vol_spike_forced_exit`. Catches the fast-move scenario where waiting for a bounce bleeds time value while the option is still valuable.
+
+"Adversely" is direction-aware: long protections benefit from BTC drops; short protections benefit from BTC rises. Gap 1 fires when the move is in the direction that makes the option valuable.
+
+### Gap 3 — Price-direction cooling shrink
+
+When BTC is down more than `downPct` over `windowHours`, halve (or scale by `shrinkFactor`) the cooling window for **long** protections. Reduces the wait time before `bounce_recovery` and `take_profit_prime` branches can fire during sustained downtrends. Doesn't apply to short protections — for shorts, a sustained BTC drop is favorable, not adverse.
+
+### Configuration
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `PILOT_TP_GAP1_ENFORCE` | `false` | Set `true` to enforce; default observes only |
+| `PILOT_TP_GAP1_MOVE_PCT` | `3.0` | Adverse move % over the window that triggers Gap 1 |
+| `PILOT_TP_GAP1_WINDOW_HOURS` | `2` | Lookback window for Gap 1 |
+| `PILOT_TP_GAP1_MIN_VALUE_USD` | `50` | Minimum option value to bother force-selling |
+| `PILOT_TP_GAP3_ENFORCE` | `false` | Set `true` to enforce; default observes only |
+| `PILOT_TP_GAP3_DOWN_PCT` | `5.0` | Spot drop % over the window that activates Gap 3 |
+| `PILOT_TP_GAP3_WINDOW_HOURS` | `24` | Lookback window for Gap 3 |
+| `PILOT_TP_GAP3_SHRINK_FACTOR` | `0.5` | Cooling-window multiplier when Gap 3 is active |
+
+### Observability
+
+Every cycle when either gap evaluates true, the hedge manager logs:
+
+- **Top-of-cycle (Gap 3 only)**: one summary line per cycle when active
+- **Per-hedge (both gaps)**: `[HedgeManager] Gap 1 OBSERVE` / `Gap 1 ENFORCE` / `Gap 3 OBSERVE` / `Gap 3 ENFORCE` lines per protection that would be affected
+
+`OBSERVE` lines show the same data as `ENFORCE` lines. Counting `OBSERVE` lines in Render logs over the pilot window gives the calibration data needed to decide whether to flip enforce on.
+
+---
+
 ## 11. Environment Configuration
 
 ### Required for Pilot
