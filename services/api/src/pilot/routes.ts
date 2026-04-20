@@ -98,6 +98,28 @@ import {
   resetCircuitBreaker
 } from "./circuitBreaker";
 
+// Format a USD amount as a comma-separated whole-dollar string for
+// inclusion in user-facing error messages. Examples:
+//   100000     → "100,000"
+//   60000.4    → "60,000"
+//   "200000"   → "200,000"
+// Use this in every cap/limit message so the trader sees "$200,000"
+// instead of "$200000".
+const fmtUsdWhole = (value: number | string | { toFixed: (n: number) => string }): string => {
+  let n: number;
+  if (typeof value === "number") {
+    n = value;
+  } else if (typeof value === "string") {
+    n = Number(value);
+  } else if (value && typeof (value as any).toFixed === "function") {
+    n = Number((value as { toFixed: (n: number) => string }).toFixed(2));
+  } else {
+    n = NaN;
+  }
+  if (!Number.isFinite(n)) return String(value);
+  return Math.round(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
+};
+
 // Design A — Volatility label shown next to the price in the widget.
 // Maps internal regime IDs to user-facing strings. "Low / Moderate /
 // Elevated / High" was selected over "Calm / Active / Choppy /
@@ -2051,7 +2073,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "quote_min_notional_not_met",
-        message: `Minimum quote notional is $${quoteMinNotional.toFixed(0)} during pilot.`,
+        message: `Minimum quote notional is $${fmtUsdWhole(quoteMinNotional)} during pilot.`,
         minQuoteNotionalUsdc: quoteMinNotional.toFixed(2)
       };
     }
@@ -2119,8 +2141,8 @@ export const registerPilotRoutes = async (
           currentActiveUsdc: activeAgg.toFixed(2),
           projectedAfterUsdc: projectedAgg.toFixed(2),
           message:
-            `You'd have $${projectedAgg.toFixed(0)} of protection open. ` +
-            `Pilot limit is $${maxAggregateActive.toFixed(0)}. ` +
+            `You'd have $${fmtUsdWhole(projectedAgg)} of protection open. ` +
+            `Pilot limit is $${fmtUsdWhole(maxAggregateActive)}. ` +
             `Close one or wait for it to expire.`
         };
       }
@@ -2170,7 +2192,7 @@ export const registerPilotRoutes = async (
               projectedAfterUsdc: projectedTier.toFixed(2),
               message:
                 `${validSlPctEarly}% protection is full for today ` +
-                `(would reach $${projectedTier.toFixed(0)}, limit is $${tierCap.toFixed(0)}). ` +
+                `(would reach $${fmtUsdWhole(projectedTier)}, limit is $${fmtUsdWhole(tierCap)}). ` +
                 `Try a different level or wait until tomorrow.`
             };
           }
@@ -3098,7 +3120,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "quote_min_notional_not_met",
-        message: `Minimum quote notional is $${quoteMinNotional.toFixed(0)} during pilot.`,
+        message: `Minimum quote notional is $${fmtUsdWhole(quoteMinNotional)} during pilot.`,
         minQuoteNotionalUsdc: quoteMinNotional.toFixed(2)
       };
     }
@@ -3992,13 +4014,13 @@ export const registerPilotRoutes = async (
               : reason === "daily_notional_cap_exceeded"
                 ? "Daily limit reached. Resets at midnight UTC (8pm ET)."
                 : reason === "protection_notional_cap_exceeded"
-                  ? `Amount exceeds the pilot per-position max ($${new Decimal(
+                  ? `Amount exceeds the pilot per-position max ($${fmtUsdWhole(
                       pilotConfig.maxProtectionNotionalUsdc
-                    ).toFixed(0)}). Reduce it.`
+                    )}). Reduce it.`
                   : reason === "aggregate_active_notional_cap_exceeded"
-                    ? `Pilot's open-protection limit ($${new Decimal(
+                    ? `Pilot's open-protection limit ($${fmtUsdWhole(
                         pilotConfig.maxAggregateActiveNotionalUsdc
-                      ).toFixed(0)}) is full. Close one or wait for it to expire.`
+                      )}) is full. Close one or wait for it to expire.`
                   : reason === "per_tier_daily_concentration_cap_exceeded"
                     ? `This protection level is full for today. Try a different level or wait until tomorrow.`
                   : reason === "quote_already_consumed"
