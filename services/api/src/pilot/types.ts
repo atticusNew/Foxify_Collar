@@ -555,6 +555,13 @@ export type ExecutionQualityRecord = {
   hedgeMode: HedgeMode;
   avgSlippageBps: string | null;
   p95SlippageBps: string | null;
+  /**
+   * Weighted-average slippage expressed in USD. Complements
+   * avgSlippageBps so operators can read economically meaningful
+   * numbers without bps-on-cheap-denomination distortion. Null on
+   * historical rows that pre-date the column.
+   */
+  avgSlippageUsd: string | null;
   fillSuccessRatePct: string | null;
   avgSpreadPct: string | null;
   avgTopBookDepth: string | null;

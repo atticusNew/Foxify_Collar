@@ -3,6 +3,7 @@ import test from "node:test";
 import { newDb } from "pg-mem";
 
 import {
+  __setPilotPoolForTests,
   ensurePilotSchema,
   incrementExecutionQualityDaily,
   listExecutionQualityRecent
@@ -25,6 +26,9 @@ import {
 // real Postgres but are awkward to assert under pg-mem's parser quirks.
 
 const buildMemPool = async () => {
+  // Reset module-level schemaReady so each test re-creates tables in
+  // its own pg-mem instance.
+  __setPilotPoolForTests(null);
   const db = newDb({ autoCreateForeignKeyIndices: true });
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
@@ -106,4 +110,70 @@ test("incrementExecutionQualityDaily accumulates per-trade observations into one
   assert.ok(Array.isArray(md.tradeIds));
   assert.equal((md.tradeIds as any[]).length, 4, "all 4 events in audit trail");
   assert.equal(md.lastProtectionId, "p3", "lastProtectionId = newest filled trade");
+});
+
+test("incrementExecutionQualityDaily aggregates avg_slippage_usd alongside bps (regression for tick-noise inflation)", async () => {
+  // Why this test exists: bps-denominated slippage is sensitive to
+  // option price denomination on Deribit. A 1-tick (0.0001 BTC) move
+  // on a cheap deep-OTM put quoted at 0.0033 BTC = ~300 bps, but
+  // dollar-immaterial (~$0.75). Operators were misled by a -50.51 bps
+  // day average that was actually one trade's tick noise. The USD
+  // metric gives an economically meaningful signal alongside.
+  const pool = await buildMemPool();
+
+  // Three fills with realistic USD slippage:
+  //   trade 1: filled $0.20 cheaper than quoted (-$0.20)
+  //   trade 2: filled $0.10 worse than quoted (+$0.10)
+  //   trade 3: filled exactly at quote ($0.00)
+  // Filled-only USD avg = (-0.20 + 0.10 + 0.00) / 3 = -0.0333
+  await incrementExecutionQualityDaily(pool, {
+    day: "2026-04-21", venue: "deribit_live", hedgeMode: "options_native",
+    slippageBps: -100, slippageUsd: -0.20, filled: true,
+    protectionId: "u1", quoteId: "qu1"
+  });
+  await incrementExecutionQualityDaily(pool, {
+    day: "2026-04-21", venue: "deribit_live", hedgeMode: "options_native",
+    slippageBps: 50, slippageUsd: 0.10, filled: true,
+    protectionId: "u2", quoteId: "qu2"
+  });
+  await incrementExecutionQualityDaily(pool, {
+    day: "2026-04-21", venue: "deribit_live", hedgeMode: "options_native",
+    slippageBps: 0, slippageUsd: 0, filled: true,
+    protectionId: "u3", quoteId: "qu3"
+  });
+
+  const recs = await listExecutionQualityRecent(pool, { lookbackDays: 30 });
+  const row = recs.find((r) => r.day === "2026-04-21");
+  assert.ok(row, "row for the test day");
+  assert.equal(Number(row!.sampleCount), 3);
+  assert.ok(
+    Math.abs(Number(row!.avgSlippageUsd) - -0.0333) < 0.001,
+    `expected ~-$0.0333 avg USD slippage, got ${row!.avgSlippageUsd}`
+  );
+
+  // Per-trade audit also carries slippageUsd for spot-check
+  const md = row!.metadata as Record<string, unknown>;
+  const tradeIds = md.tradeIds as Array<Record<string, unknown>>;
+  assert.equal(tradeIds.length, 3);
+  assert.equal(tradeIds[0].slippageUsd, -0.20, "first trade USD slippage in audit");
+  assert.equal(tradeIds[1].slippageUsd, 0.10, "second trade USD slippage in audit");
+  assert.equal(tradeIds[2].slippageUsd, 0, "third trade USD slippage = 0");
+});
+
+test("incrementExecutionQualityDaily handles missing slippageUsd gracefully (USD column stays null)", async () => {
+  // Backwards compat: if a caller doesn't supply slippageUsd, the bps
+  // metric still aggregates and the USD column stays null. Activates
+  // before this PR deployed produce no USD data; the new column must
+  // not block the bps path.
+  const pool = await buildMemPool();
+  await incrementExecutionQualityDaily(pool, {
+    day: "2026-04-22", venue: "deribit_live", hedgeMode: "options_native",
+    slippageBps: 25, filled: true, protectionId: "n1", quoteId: "nq1"
+    // slippageUsd intentionally omitted
+  });
+  const recs = await listExecutionQualityRecent(pool, { lookbackDays: 30 });
+  const row = recs.find((r) => r.day === "2026-04-22");
+  assert.ok(row);
+  assert.equal(Number(row!.avgSlippageBps), 25, "bps still aggregates");
+  assert.equal(row!.avgSlippageUsd, null, "USD stays null when no caller supplies it");
 });
