@@ -64,19 +64,27 @@ export type RegimeSchedule = Record<V7SlTier, number>;
 /**
  * Design A schedule, USD per $1k notional, 1-day tenor.
  *
- *   low (DVOL ≤ 50):     $6 / $5 / $3 / $2  (current "calm" pricing)
+ *   low (DVOL ≤ 50):     $6 / $5 / $3 / $2  (calm pricing)
  *   moderate (DVOL 50-65): $7 / $5.50 / $3 / $2
  *   elevated (DVOL 65-80): $8 / $6 / $3.50 / $2
- *   high (DVOL > 80):     $9 / $7 / $4 / $2  (capped at $9 ceiling for 2%)
+ *   high (DVOL > 80):     $10 / $7 / $4 / $2 (2% ceiling raised from $9 → $10)
+ *
+ * 2026-04-20 — Raised the 2% high-regime ceiling from $9 → $10.
+ * Rationale: $9 was overly conservative on the platform-exposure side.
+ * BS hedge cost on a 2% put at DVOL 80 = $8.54, so $10 puts the platform
+ * within $1 of breakeven at stress entry (vs −$2.54 at $9). Trader-side
+ * return on trigger drops from 2.2× to 2.0× — at the 2× line but not
+ * below it. Reversible to $9 in one config change. The 1% / 3% / 5% / 10%
+ * tiers remain unchanged. See CFO report §5 for full reasoning.
  *
  * 1% SL is defined for forward compatibility but unlaunched
  * (excluded from V7_LAUNCHED_TIERS in v7Pricing.ts).
  */
 export const REGIME_SCHEDULES: Record<PricingRegime, RegimeSchedule> = {
-  low:      { 1: 6, 2: 6, 3: 5,    5: 3,    10: 2 },
-  moderate: { 1: 7, 2: 7, 3: 5.5,  5: 3,    10: 2 },
-  elevated: { 1: 8, 2: 8, 3: 6,    5: 3.5,  10: 2 },
-  high:     { 1: 9, 2: 9, 3: 7,    5: 4,    10: 2 }
+  low:      { 1: 6, 2: 6,  3: 5,    5: 3,    10: 2 },
+  moderate: { 1: 7, 2: 7,  3: 5.5,  5: 3,    10: 2 },
+  elevated: { 1: 8, 2: 8,  3: 6,    5: 3.5,  10: 2 },
+  high:     { 1: 9, 2: 10, 3: 7,    5: 4,    10: 2 }
 };
 
 export const DEFAULT_PRICING_REGIME: PricingRegime = "moderate";
