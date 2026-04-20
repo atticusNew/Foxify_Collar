@@ -31,16 +31,19 @@ test("isValidSlTier — rejects invalid tiers", () => {
   assert.ok(!isValidSlTier(20));
 });
 
-test("getV7PremiumPer1k — tiered rates (tight SL costs more)", () => {
-  // Pre-launch calibration:
-  //   2% SL: $5 → $6 (2026-04-18, DVOL-headroom bump)
-  //   3% SL: $4 → $5 (2026-04-19, second-tier DVOL-headroom + anchor)
-  // SL 1% remains $6 (unlaunched). 5% / 10% unchanged.
-  assert.equal(getV7PremiumPer1k(1), 6);
-  assert.equal(getV7PremiumPer1k(2), 6);
-  assert.equal(getV7PremiumPer1k(3), 5);
-  assert.equal(getV7PremiumPer1k(5), 3);
-  assert.equal(getV7PremiumPer1k(10), 2);
+test("getV7PremiumPer1k — legacy static fallback rates (tight SL costs more)", () => {
+  // Design A (2026-04-19) made pricing regime-aware. The legacy static
+  // table is now only consulted when useLegacyStaticRate=true, which
+  // is only meaningful in unit tests like this one. Production calls
+  // go through the live pricing regime (low/moderate/elevated/high).
+  // Static fallback values match the "low" regime to preserve
+  // backwards compatibility for any caller that bypasses regime.
+  const opts = { useLegacyStaticRate: true } as const;
+  assert.equal(getV7PremiumPer1k(1, opts), 6);
+  assert.equal(getV7PremiumPer1k(2, opts), 6);
+  assert.equal(getV7PremiumPer1k(3, opts), 5);
+  assert.equal(getV7PremiumPer1k(5, opts), 3);
+  assert.equal(getV7PremiumPer1k(10, opts), 2);
 });
 
 test("getV7PayoutPer10k — correct payouts", () => {
@@ -51,20 +54,31 @@ test("getV7PayoutPer10k — correct payouts", () => {
   assert.equal(getV7PayoutPer10k(10), 1000);
 });
 
-test("computeV7Premium — $10k tiered pricing", () => {
-  const r = computeV7Premium({ slPct: 2, notionalUsd: 10000 });
+test("computeV7Premium — $10k tiered pricing (low regime)", () => {
+  // Design A: pin the test to the 'low' regime to match the documented
+  // schedule independent of any live DVOL state.
+  const r = computeV7Premium({ slPct: 2, notionalUsd: 10000, pricingRegimeOverride: "low" });
   assert.ok(r.available);
-  assert.equal(r.premiumPer1kUsd, 6);
+  assert.equal(r.premiumPer1kUsd, 6, "low regime / 2% = $6");
   assert.equal(r.premiumUsd, 60);
   assert.equal(r.payoutPer10kUsd, 200);
 });
 
-test("computeV7Premium — each tier has correct rate", () => {
-  const expected: Record<number, number> = { 1: 60, 2: 60, 3: 50, 5: 30, 10: 20 };
-  for (const sl of [1, 2, 3, 5, 10] as const) {
-    const r = computeV7Premium({ slPct: sl, notionalUsd: 10000 });
-    assert.ok(r.available);
-    assert.equal(r.premiumUsd, expected[sl]);
+test("computeV7Premium — each tier has correct rate per regime", () => {
+  // Verify the schedule across all 4 regimes for the 4 launched tiers
+  // plus 1% (unlaunched but defined). Numbers match the Design A spec.
+  const cases: Array<{ regime: "low" | "moderate" | "elevated" | "high"; expected: Record<number, number> }> = [
+    { regime: "low",      expected: { 1: 60, 2: 60, 3: 50, 5: 30, 10: 20 } },
+    { regime: "moderate", expected: { 1: 70, 2: 70, 3: 55, 5: 30, 10: 20 } },
+    { regime: "elevated", expected: { 1: 80, 2: 80, 3: 60, 5: 35, 10: 20 } },
+    { regime: "high",     expected: { 1: 90, 2: 90, 3: 70, 5: 40, 10: 20 } }
+  ];
+  for (const { regime, expected } of cases) {
+    for (const sl of [1, 2, 3, 5, 10] as const) {
+      const r = computeV7Premium({ slPct: sl, notionalUsd: 10000, pricingRegimeOverride: regime });
+      assert.ok(r.available);
+      assert.equal(r.premiumUsd, expected[sl], `${regime} / ${sl}% on $10k = $${expected[sl]}`);
+    }
   }
 });
 
@@ -105,8 +119,10 @@ test("computeV7HedgeStrike equals trigger", () => {
   assert.ok(s.eq(t));
 });
 
-test("getV7AvailableTiers — launched tiers (no 1% SL)", () => {
-  const tiers = getV7AvailableTiers();
+test("getV7AvailableTiers — launched tiers (no 1% SL), pinned to 'low' regime", () => {
+  // Design A: pass an explicit pricing regime override so the test is
+  // not coupled to whatever live DVOL state happens to be in process.
+  const tiers = getV7AvailableTiers(undefined, "low");
   assert.equal(tiers.length, 4);
   assert.ok(tiers.every(t => t.available));
   assert.ok(!tiers.find(t => t.slPct === 1));
@@ -116,6 +132,14 @@ test("getV7AvailableTiers — launched tiers (no 1% SL)", () => {
   const sl10 = tiers.find(t => t.slPct === 10);
   assert.equal(sl10?.premiumPer1kUsd, 2);
   assert.equal(sl10?.tenorDays, 1);
+});
+
+test("getV7AvailableTiers — high-regime schedule reflects ceiling", () => {
+  const tiers = getV7AvailableTiers(undefined, "high");
+  const sl2 = tiers.find((t) => t.slPct === 2);
+  assert.equal(sl2?.premiumPer1kUsd, 9, "2% caps at $9 in high regime (CEO ceiling)");
+  const sl3 = tiers.find((t) => t.slPct === 3);
+  assert.equal(sl3?.premiumPer1kUsd, 7, "3% rises to $7 in high regime");
 });
 
 test("getV7TenorDays — 1d for all tiers", () => {

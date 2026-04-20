@@ -140,6 +140,27 @@ Example: $50,000 at 2% SL = $50,000 / 1,000 × $6 = $300 premium.
 
 **Pre-launch calibration (2026-04-18 → 2026-04-19).** The 2% SL premium was raised from $5 → $6/$1k, and the 3% SL premium was raised from $4 → $5/$1k. Both changes target the most volatility-sensitive tiers in the schedule. Black-Scholes hedge cost on a 1-DTE 2% put crosses $5 at DVOL ≈ 52 and $6 at DVOL ≈ 62; on a 3% put it crosses $4 at DVOL ≈ 66 and $5 at DVOL ≈ 71. Today's spot DVOL (~43) leaves both prices comfortably profitable; the bumps buy 10 and 5 DVOL points of breakeven headroom respectively before live pilot. The 5% and 10% tiers have an order of magnitude less DVOL sensitivity at 1-DTE and remain unchanged. Trader-side ratio at the new schedule: 2% pays back 3.3× premium on trigger ($60 → $200); 3% pays back 6× ($50 → $300); 5% pays back 16.7×; 10% pays back 50×. Full math and historical justification in `docs/cfo-report/`.
 
+### Design A — Regime-adjusted dynamic pricing (2026-04-19)
+
+The schedule above is the **low-volatility (calm) baseline**. The platform now consults a regime classifier at quote time to pick a schedule based on a 1-hour rolling DVOL average. Trader experience remains "fixed price + instant payout" — the price quoted at request time is locked. The schedule simply adjusts for market conditions.
+
+| DVOL band | Regime | 2% | 3% | 5% | 10% |
+|---|---|---|---|---|---|
+| ≤ 50 | low | $6 | $5 | $3 | $2 |
+| 50–65 | moderate | $7 | $5.50 | $3 | $2 |
+| 65–80 | elevated | $8 | $6 | $3.50 | $2 |
+| > 80 | high | **$9** | $7 | $4 | $2 |
+
+The 2% tier caps at $9/$1k (= $90 on $10k) — just under the trader-acceptance ceiling. In true stress regimes the platform takes a controlled loss on tight tiers (deliberate trade-off: trader acceptance over breakeven in worst conditions; bounded by per-tier daily concentration cap).
+
+**Mechanism details:**
+- 1-hour rolling DVOL average, refreshed every 5 minutes for quotes
+- Hysteresis: upward transitions immediate; downward require crossing boundary by 2 DVOL points
+- Fallback when DVOL unavailable: `moderate`
+- Implementation: `services/api/src/pilot/pricingRegime.ts`
+
+The widget displays a small "Volatility: Low / Moderate / Elevated / High" label under the premium so traders see the volatility context behind the price.
+
 ### Margin Economics
 
 - **Spread** = Client Premium − Hedge Cost
