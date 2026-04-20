@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+#
+# pilot-status — one-shot pilot health snapshot.
+#
+# Run this anytime. It hits the live pilot, prints a green/yellow/red
+# summary across every operational signal, and exits with code 0 if
+# all is healthy / 1 if any check requires attention.
+#
+# Setup once per shell:
+#   export PILOT_API="https://foxify-pilot-new.onrender.com"
+#   export PILOT_ADMIN_TOKEN="<your token>"
+#
+# Usage:
+#   ./scripts/pilot-status            # full check
+#   ./scripts/pilot-status --quiet    # silent, exit code only (good for cron)
+#   ./scripts/pilot-status --json     # machine-readable
+#
+# Designed to read at-a-glance. No third-party dependencies.
+
+set -e
+set -o pipefail
+
+QUIET=0
+JSON=0
+for arg in "$@"; do
+  case "$arg" in
+    --quiet|-q) QUIET=1 ;;
+    --json|-j) JSON=1 ;;
+  esac
+done
+
+API="${PILOT_API:-https://foxify-pilot-new.onrender.com}"
+TOKEN="${PILOT_ADMIN_TOKEN}"
+
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: PILOT_ADMIN_TOKEN not set in environment." >&2
+  echo "  Run: export PILOT_ADMIN_TOKEN='<your-token>'" >&2
+  exit 2
+fi
+
+# ANSI colors (only when stdout is a TTY)
+if [ -t 1 ] && [ "$QUIET" = "0" ] && [ "$JSON" = "0" ]; then
+  GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; BOLD='\033[1m'; NC='\033[0m'
+else
+  GREEN=''; YELLOW=''; RED=''; BLUE=''; BOLD=''; NC=''
+fi
+
+declare -i ATTENTION=0
+
+# fetch JSON from a path; print to stdout, capture status in $LAST_HTTP_STATUS
+fetch() {
+  local path="$1"
+  local out
+  out=$(curl -s -w "\n%{http_code}" -H "x-admin-token: $TOKEN" "$API$path" 2>/dev/null) || out="\n000"
+  LAST_HTTP_STATUS="${out##*$'\n'}"
+  echo "${out%$'\n'*}"
+}
+
+# pretty-print one check row: STATUS  NAME  DETAIL
+row() {
+  local status="$1" name="$2" detail="$3"
+  case "$status" in
+    OK)        printf "  ${GREEN}✓${NC} %-30s %s\n" "$name" "$detail" ;;
+    ATTN)      printf "  ${YELLOW}!${NC} %-30s %s\n" "$name" "$detail"; ATTENTION=$((ATTENTION+1)) ;;
+    FAIL)      printf "  ${RED}✗${NC} %-30s %s\n" "$name" "$detail"; ATTENTION=$((ATTENTION+1)) ;;
+  esac
+}
+
+if [ "$QUIET" = "0" ] && [ "$JSON" = "0" ]; then
+  printf "\n${BOLD}Pilot status — %s${NC}\n" "$(date +'%Y-%m-%d %H:%M:%S %Z')"
+  printf "${BLUE}%s${NC}\n\n" "$API"
+fi
+
+# 1. Health
+HEALTH_JSON=$(fetch "/pilot/health")
+if [ "$LAST_HTTP_STATUS" = "200" ] && echo "$HEALTH_JSON" | grep -q '"status":"ok"'; then
+  row OK "platform health" "ok"
+else
+  row FAIL "platform health" "HTTP $LAST_HTTP_STATUS"
+fi
+
+# 2. Pricing regime — schedule must match label
+REGIME_JSON=$(fetch "/pilot/regime")
+if [ "$LAST_HTTP_STATUS" = "200" ]; then
+  LABEL=$(echo "$REGIME_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('pricingRegimeLabel','?'))" 2>/dev/null)
+  DVOL=$(echo "$REGIME_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('dvol','?'))" 2>/dev/null)
+  TIER2=$(echo "$REGIME_JSON" | python3 -c "import sys,json;t=json.load(sys.stdin)['tiers'];print([x for x in t if x['slPct']==2][0]['premiumPer1kUsd'])" 2>/dev/null)
+  EXPECTED2=$(echo "$REGIME_JSON" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+r=d.get('pricingRegime','')
+print({'low':6,'moderate':7,'elevated':8,'high':9}.get(r,'?'))" 2>/dev/null)
+  if [ "$TIER2" = "$EXPECTED2" ]; then
+    row OK "pricing regime" "$LABEL (DVOL $DVOL, 2%=\$$TIER2)"
+  else
+    row FAIL "pricing regime" "label/schedule mismatch: $LABEL but 2% tier is \$$TIER2 (expected \$$EXPECTED2)"
+  fi
+else
+  row FAIL "pricing regime" "HTTP $LAST_HTTP_STATUS"
+fi
+
+# 3. Circuit breaker — must be armed and not tripped
+CB_JSON=$(fetch "/pilot/admin/circuit-breaker")
+if [ "$LAST_HTTP_STATUS" = "200" ]; then
+  TRIPPED=$(echo "$CB_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['state']['tripped'])" 2>/dev/null)
+  ENFORCE=$(echo "$CB_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['config']['enforce'])" 2>/dev/null)
+  CURRENT=$(echo "$CB_JSON" | python3 -c "import sys,json;v=json.load(sys.stdin)['state']['currentBtc'];print('null' if v is None else v)" 2>/dev/null)
+  if [ "$TRIPPED" = "True" ]; then
+    row FAIL "circuit breaker" "TRIPPED — investigate immediately"
+  elif [ "$ENFORCE" != "True" ]; then
+    row ATTN "circuit breaker" "observe-only (not enforcing)"
+  elif [ "$CURRENT" = "null" ]; then
+    row ATTN "circuit breaker" "armed but no balance samples yet (Deribit account_summary may be failing — check Render logs for [CircuitBreaker])"
+  else
+    row OK "circuit breaker" "armed; equity $CURRENT BTC"
+  fi
+else
+  row FAIL "circuit breaker" "HTTP $LAST_HTTP_STATUS"
+fi
+
+# 4. Open protections + caps
+OPEN_JSON=$(fetch "/pilot/protections/export?scope=open&format=json")
+if [ "$LAST_HTTP_STATUS" = "200" ]; then
+  COUNT=$(echo "$OPEN_JSON" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('rows',[])))" 2>/dev/null)
+  TOTAL_NOTIONAL=$(echo "$OPEN_JSON" | python3 -c "import sys,json;rows=json.load(sys.stdin).get('rows',[]);print(sum(float(r.get('protected_notional',0)) for r in rows))" 2>/dev/null)
+  CAP=200000
+  if [ -n "$TOTAL_NOTIONAL" ]; then
+    PCT=$(python3 -c "print(round($TOTAL_NOTIONAL / $CAP * 100, 1))" 2>/dev/null)
+    if [ "$(python3 -c "print(1 if $TOTAL_NOTIONAL >= $CAP * 0.9 else 0)")" = "1" ]; then
+      row ATTN "open protections" "$COUNT positions; \$$TOTAL_NOTIONAL/\$$CAP ($PCT% of cap)"
+    else
+      row OK "open protections" "$COUNT positions; \$$TOTAL_NOTIONAL/\$$CAP ($PCT% of cap)"
+    fi
+  else
+    row OK "open protections" "$COUNT positions"
+  fi
+else
+  row FAIL "open protections" "HTTP $LAST_HTTP_STATUS"
+fi
+
+# 5. Execution quality — slippage in USD
+EQ_JSON=$(fetch "/pilot/admin/diagnostics/execution-quality")
+if [ "$LAST_HTTP_STATUS" = "200" ]; then
+  TODAY=$(date +"%Y-%m-%d")
+  EQ_TODAY=$(echo "$EQ_JSON" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+rows=d.get('rows',[])
+today='$TODAY'
+match=[r for r in rows if r.get('day')==today]
+if match:
+  r=match[0]
+  print(f\"{r.get('sampleCount',0)}|{r.get('avgSlippageUsd','null')}|{r.get('avgSlippageBps','null')}|{r.get('fillSuccessRatePct','null')}\")
+else:
+  print('0|null|null|null')
+" 2>/dev/null)
+  IFS='|' read -r SAMPLES SLIP_USD SLIP_BPS FILL_RATE <<< "$EQ_TODAY"
+  if [ "$SAMPLES" = "0" ]; then
+    row OK "execution quality" "no fills today"
+  else
+    # Watch trigger: avg USD slippage > +$1 AND >= 20 fills
+    OVER_BUDGET=$(python3 -c "
+try:
+  s = float('$SLIP_USD' if '$SLIP_USD' != 'null' else 0)
+  n = int('$SAMPLES')
+  print(1 if (s > 1.0 and n >= 20) else 0)
+except: print(0)" 2>/dev/null)
+    if [ "$OVER_BUDGET" = "1" ]; then
+      row ATTN "execution quality" "$SAMPLES fills today; avg slip \$$SLIP_USD (>\$1, watch trigger fired)"
+    else
+      row OK "execution quality" "$SAMPLES fills today; avg slip \$$SLIP_USD (\$$SLIP_BPS bps); fill rate $FILL_RATE%"
+    fi
+  fi
+else
+  row FAIL "execution quality" "HTTP $LAST_HTTP_STATUS"
+fi
+
+# 6. Recent alerts
+ALERTS_JSON=$(fetch "/pilot/monitor/alerts?limit=10")
+if [ "$LAST_HTTP_STATUS" = "200" ]; then
+  CRITICAL=$(echo "$ALERTS_JSON" | python3 -c "
+import sys,json,datetime
+try:
+  d=json.load(sys.stdin)
+  alerts=d.get('alerts',[])
+  cutoff=(datetime.datetime.utcnow()-datetime.timedelta(hours=24)).isoformat()
+  recent=[a for a in alerts if a.get('timestamp','')>=cutoff and a.get('severity')=='critical']
+  print(len(recent))
+except: print(0)" 2>/dev/null)
+  WARNING=$(echo "$ALERTS_JSON" | python3 -c "
+import sys,json,datetime
+try:
+  d=json.load(sys.stdin)
+  alerts=d.get('alerts',[])
+  cutoff=(datetime.datetime.utcnow()-datetime.timedelta(hours=24)).isoformat()
+  recent=[a for a in alerts if a.get('timestamp','')>=cutoff and a.get('severity')=='warning']
+  print(len(recent))
+except: print(0)" 2>/dev/null)
+  if [ "$CRITICAL" -gt "0" ]; then
+    row FAIL "recent alerts (24h)" "$CRITICAL critical, $WARNING warning"
+  elif [ "$WARNING" -gt "3" ]; then
+    row ATTN "recent alerts (24h)" "$WARNING warnings (high)"
+  else
+    row OK "recent alerts (24h)" "$CRITICAL critical, $WARNING warning"
+  fi
+else
+  row FAIL "recent alerts" "HTTP $LAST_HTTP_STATUS"
+fi
+
+if [ "$JSON" = "1" ]; then
+  python3 -c "
+import json
+print(json.dumps({'attention_count': $ATTENTION, 'all_ok': $ATTENTION == 0}))
+"
+elif [ "$QUIET" = "0" ]; then
+  echo
+  if [ $ATTENTION -eq 0 ]; then
+    printf "${GREEN}${BOLD}All checks pass.${NC}\n\n"
+  else
+    printf "${YELLOW}${BOLD}%d check(s) need attention.${NC}\n\n" $ATTENTION
+  fi
+fi
+
+exit $ATTENTION
