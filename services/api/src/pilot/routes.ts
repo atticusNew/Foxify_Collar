@@ -3670,6 +3670,29 @@ export const registerPilotRoutes = async (
         realizedSlippageBps = ((execution.executionPrice - quotedUnitUsd) / quotedUnitUsd) * 10_000;
         slippageSource = "usd_unit_fallback";
       }
+      // USD-denominated slippage. Same sign convention as bps: negative
+      // = filled cheaper than quoted (in our favor). Computed in USD so
+      // operators can interpret outliers economically without bps-on-
+      // small-denomination distortion. Single-tick fills on cheap
+      // deep-OTM puts inflate bps but produce dollar-immaterial
+      // numbers (e.g., 1 tick on a 0.0033 BTC quote ≈ -300 bps but
+      // only ~$0.75 of real impact).
+      let realizedSlippageUsd: number | undefined;
+      const spotForSlippage = Number(quoteDetails.spotPriceUsd);
+      const filledQty = Number(execution.quantity);
+      if (
+        slippageSource === "deribit_btc_units" &&
+        Number.isFinite(spotForSlippage) && spotForSlippage > 0 &&
+        Number.isFinite(filledQty) && filledQty > 0
+      ) {
+        realizedSlippageUsd = (fillPriceBtc - quotedAskBtc) * spotForSlippage * filledQty;
+      } else if (
+        slippageSource === "usd_unit_fallback" &&
+        Number.isFinite(filledQty) && filledQty > 0
+      ) {
+        const quotedUnitUsd = Number(quoteDetails.quotedUnitPriceUsd);
+        realizedSlippageUsd = (Number(execution.executionPrice) - quotedUnitUsd) * filledQty;
+      }
       try {
         // Per-trade observation; the function accumulates into the day's
         // rollup (sample_count += 1, weighted-average slippage / spread,
@@ -3682,6 +3705,7 @@ export const registerPilotRoutes = async (
           venue: execution.venue,
           hedgeMode: contextHedgeMode || deriveHedgeMode(lockedQuote.details),
           slippageBps: realizedSlippageBps,
+          slippageUsd: realizedSlippageUsd,
           latencyMs: Date.now() - quoteStartedAt,
           spreadPct: Number.isFinite(spreadPctRaw) ? spreadPctRaw : undefined,
           filled: true,
@@ -3690,7 +3714,8 @@ export const registerPilotRoutes = async (
           notes: {
             slippageSource,
             quotedAskBtc: Number.isFinite(quotedAskBtc) ? quotedAskBtc : null,
-            fillPriceBtc: Number.isFinite(fillPriceBtc) ? fillPriceBtc : null
+            fillPriceBtc: Number.isFinite(fillPriceBtc) ? fillPriceBtc : null,
+            slippageUsd: realizedSlippageUsd ?? null
           }
         });
       } catch (eqErr: any) {

@@ -460,11 +460,14 @@ Five signals where deviation from baseline expectation should trigger investigat
 
 ### 11.2 Slippage drift
 
-- **Metric:** average slippage (basis points) on hedge buys, from `pilot_execution_quality_daily.avg_slippage_bps`
-- **Expected baseline:** small magnitude (single digits to low double digits), centered near zero
-- **Watch trigger:** if average slippage starts running consistently positive (fills worse than quotes) by > 30 bps over a rolling 5-day window
-- **What it means:** spread cost we didn't price in, OR a measurement bug
-- **Action to consider:** investigate Deribit order-book depth at our typical sizes; consider sizing-aware order placement
+- **Metric (primary):** average slippage in **USD** per fill, from `pilot_execution_quality_daily.avg_slippage_usd`. Signed: negative = filled cheaper than quoted, in our favor.
+- **Metric (secondary):** average slippage in basis points, from `pilot_execution_quality_daily.avg_slippage_bps`. **Use with caution** — Deribit option ticks (0.0001 BTC) are a large fraction of cheap deep-OTM put quotes, so a 1-tick fill move on a 0.0033 BTC quote registers as ~300 bps but is dollar-immaterial (~$0.75).
+- **Expected baseline:** USD slippage centered near $0 with random small variation. Bps slippage may swing wildly on cheap denominations and is informative only as a corroborating signal.
+- **Watch trigger (primary):** average USD slippage running consistently positive (fills worse than quotes) by > $1 per fill over a rolling 5-day window AND ≥ 20 fills accumulated. The minimum-fill guard prevents single-trade outliers from triggering the watch.
+- **Watch trigger (secondary):** average bps slippage running > +50 bps over the same window AND p95 > +100 bps. Bps alone is not actionable without USD context.
+- **Watch trigger (counter-evidence to ignore):** isolated bps outliers in the −300 to −500 range on individual trades. These are 1-tick price improvements on cheap denominations and are normal Deribit microstructure.
+- **What a sustained positive USD slippage means:** real spread cost we didn't price in, OR a stale quote-vs-fill timing pattern (order book ticking against us between quote and fill).
+- **Action to consider:** investigate Deribit order-book depth at our typical sizes via the `/pilot/admin/diagnostics/per-trade-fills` endpoint; if persistent, consider sizing-aware order placement.
 
 ### 11.3 Tier mix concentration
 

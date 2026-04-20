@@ -350,6 +350,15 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS sample_count INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+    -- avg_slippage_usd: per-trade slippage expressed in dollars rather
+    -- than basis points. The bps metric is sensitive to denomination
+    -- because Deribit option ticks (0.0001 BTC) are large fractions of
+    -- cheap deep-OTM puts (e.g., 0.0033 BTC), so a 1-tick fill move
+    -- registers as ~300 bps but is dollar-immaterial (~$0.75). USD
+    -- slippage gives operators an economically interpretable signal
+    -- alongside bps. Backfill is null — only forward fills populate it.
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_slippage_usd NUMERIC(18,8);
+
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS accepted_ip TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS user_agent TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'pilot_web';
@@ -1506,6 +1515,14 @@ export const incrementExecutionQualityDaily = async (
     hedgeMode: HedgeMode;
     /** This single trade's slippage in bps. Aggregator computes daily weighted avg + p95. */
     slippageBps: number;
+    /**
+     * This single trade's slippage in USD (signed; negative = filled
+     * cheaper than quoted, in our favor). Optional — when omitted, the
+     * USD aggregate carries forward the prior value. Used because the
+     * bps metric is sensitive to denomination (Deribit option ticks
+     * are a large fraction of cheap deep-OTM put quotes).
+     */
+    slippageUsd?: number;
     /** This single trade's quote→fill latency in ms. Aggregator computes daily avg. */
     latencyMs?: number;
     /** This single trade's quote spread, if known (otherwise undefined). */
@@ -1538,7 +1555,7 @@ export const incrementExecutionQualityDaily = async (
   // and array-append semantics. Two round-trips is acceptable at pilot
   // throughput.
   const existing = await pool.query(
-    `SELECT sample_count, avg_slippage_bps, avg_spread_pct, avg_top_book_depth, metadata
+    `SELECT sample_count, avg_slippage_bps, avg_slippage_usd, avg_spread_pct, avg_top_book_depth, metadata
      FROM pilot_execution_quality_daily
      WHERE day = $1 AND venue = $2 AND hedge_mode = $3
      LIMIT 1`,
@@ -1549,6 +1566,7 @@ export const incrementExecutionQualityDaily = async (
     | {
         sample_count: number | string;
         avg_slippage_bps: string | null;
+        avg_slippage_usd: string | null;
         avg_spread_pct: string | null;
         avg_top_book_depth: string | null;
         metadata: Record<string, unknown> | null;
@@ -1605,6 +1623,10 @@ export const incrementExecutionQualityDaily = async (
   const newAvgSlippageBps = filled
     ? (weighted(prev?.avg_slippage_bps, slip, fillsForAvg, newFillsForAvg) ?? 0)
     : (prev?.avg_slippage_bps ? Number(prev.avg_slippage_bps) : 0);
+  const slipUsd = Number.isFinite(Number(input.slippageUsd)) ? Number(input.slippageUsd) : undefined;
+  const newAvgSlippageUsd = filled
+    ? weighted(prev?.avg_slippage_usd, slipUsd, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_slippage_usd ? Number(prev.avg_slippage_usd) : null);
   const newAvgSpreadPct = filled
     ? weighted(prev?.avg_spread_pct, input.spreadPct, fillsForAvg, newFillsForAvg)
     : (prev?.avg_spread_pct ? Number(prev.avg_spread_pct) : null);
@@ -1631,6 +1653,7 @@ export const incrementExecutionQualityDaily = async (
     tradeAudit.latencyMs = Math.max(0, Math.floor(input.latencyMs));
   }
   tradeAudit.slippageBps = slip;
+  if (slipUsd !== undefined) tradeAudit.slippageUsd = slipUsd;
   tradeAudit.filled = filled;
   const tradeIds = [...prevTradeIds, tradeAudit].slice(-200);
 
@@ -1664,12 +1687,13 @@ export const incrementExecutionQualityDaily = async (
   await pool.query(
     `
       INSERT INTO pilot_execution_quality_daily (
-        id, day, venue, hedge_mode, avg_slippage_bps, p95_slippage_bps, fill_success_rate_pct,
+        id, day, venue, hedge_mode, avg_slippage_bps, avg_slippage_usd, p95_slippage_bps, fill_success_rate_pct,
         avg_spread_pct, avg_top_book_depth, sample_count, metadata
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
       ON CONFLICT (day, venue, hedge_mode) DO UPDATE SET
         avg_slippage_bps      = EXCLUDED.avg_slippage_bps,
+        avg_slippage_usd      = EXCLUDED.avg_slippage_usd,
         p95_slippage_bps      = EXCLUDED.p95_slippage_bps,
         fill_success_rate_pct = EXCLUDED.fill_success_rate_pct,
         avg_spread_pct        = EXCLUDED.avg_spread_pct,
@@ -1684,6 +1708,7 @@ export const incrementExecutionQualityDaily = async (
       input.venue,
       input.hedgeMode,
       String(newAvgSlippageBps),
+      newAvgSlippageUsd === null ? null : String(newAvgSlippageUsd),
       newP95SlippageBps === null ? null : String(newP95SlippageBps),
       newFillRatePct === null ? null : String(newFillRatePct),
       newAvgSpreadPct === null ? null : String(newAvgSpreadPct),
@@ -1718,6 +1743,7 @@ export const listExecutionQualityRecent = async (
     venue: String(row.venue),
     hedgeMode: String(row.hedge_mode) as HedgeMode,
     avgSlippageBps: row.avg_slippage_bps === null ? null : String(row.avg_slippage_bps),
+    avgSlippageUsd: row.avg_slippage_usd === null || row.avg_slippage_usd === undefined ? null : String(row.avg_slippage_usd),
     p95SlippageBps: row.p95_slippage_bps === null ? null : String(row.p95_slippage_bps),
     fillSuccessRatePct: row.fill_success_rate_pct === null ? null : String(row.fill_success_rate_pct),
     avgSpreadPct: row.avg_spread_pct === null ? null : String(row.avg_spread_pct),
