@@ -14,12 +14,51 @@ import {
 } from "./db";
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { computeTriggerPrice } from "./floor";
+import { getCurrentRegime } from "./regimeClassifier";
 
 type AutoRenewResult = {
   scanned: number;
   renewed: number;
   skipped: number;
   errors: number;
+  /** Set when Gap 4 freeze was active for the cycle. */
+  frozenForRegime?: string;
+};
+
+/**
+ * Gap 4 — Auto-renew freeze in stress regime.
+ *
+ * When the regime classifier reports 'stress' (DVOL above the
+ * configured stressAbove threshold, default 65), we don't want to
+ * auto-buy fresh protection at peak premium. Trader can still
+ * manually open a new position; this just disables the silent
+ * renewal that would otherwise compound exposure during a vol spike.
+ * Re-enables automatically when volatility drops back to normal/calm.
+ *
+ * Setting PILOT_AUTO_RENEW_STRESS_ALLOWED=true bypasses this guard
+ * (e.g., if downstream analysis shows we want auto-renew during
+ * stress). Default behavior is to freeze.
+ *
+ * If the regime classifier is unavailable (Deribit data outage) we
+ * fail OPEN — auto-renew proceeds. The conservative alternative
+ * would be fail-closed (always freeze on data unavailability) but
+ * that risks freezing renewals just because of a transient API
+ * blip, which would surprise traders.
+ */
+const isAutoRenewFrozenByVolatilityRegime = async (): Promise<{ frozen: boolean; regime: string }> => {
+  const allowAlways = String(process.env.PILOT_AUTO_RENEW_STRESS_ALLOWED || "")
+    .trim()
+    .toLowerCase() === "true";
+  if (allowAlways) return { frozen: false, regime: "override_allow_always" };
+  try {
+    const status = await getCurrentRegime();
+    return { frozen: status.regime === "stress", regime: status.regime };
+  } catch (err: any) {
+    console.warn(
+      `[AutoRenew] Could not determine regime (${err?.message || "unknown"}); failing OPEN — proceeding with renewal cycle.`
+    );
+    return { frozen: false, regime: "unavailable_fail_open" };
+  }
 };
 
 const queryExpiringProtections = async (pool: Pool): Promise<ProtectionRecord[]> => {
@@ -85,6 +124,17 @@ export const runAutoRenewCycle = async (params: {
 }): Promise<AutoRenewResult> => {
   const result: AutoRenewResult = { scanned: 0, renewed: 0, skipped: 0, errors: 0 };
 
+  // Gap 4 — freeze auto-renew in stress regime.
+  const freezeStatus = await isAutoRenewFrozenByVolatilityRegime();
+  if (freezeStatus.frozen) {
+    console.warn(
+      `[AutoRenew] FROZEN — regime is '${freezeStatus.regime}'. Skipping all auto-renewals this cycle. ` +
+      `Set PILOT_AUTO_RENEW_STRESS_ALLOWED=true to override.`
+    );
+    result.frozenForRegime = freezeStatus.regime;
+    return result;
+  }
+
   let expiring: ProtectionRecord[];
   try {
     expiring = await queryExpiringProtections(params.pool);
@@ -95,7 +145,9 @@ export const runAutoRenewCycle = async (params: {
   result.scanned = expiring.length;
   if (!expiring.length) return result;
 
-  console.log(`[AutoRenew] Found ${expiring.length} expiring protections with auto-renew`);
+  console.log(
+    `[AutoRenew] Found ${expiring.length} expiring protections with auto-renew (regime=${freezeStatus.regime}, freeze=off)`
+  );
 
   for (const protection of expiring) {
     try {

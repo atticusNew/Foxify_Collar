@@ -8174,6 +8174,22 @@ assertPilotAgreementCaps();
 const { configureAlertDispatcher } = await import("./pilot/alertDispatcher");
 configureAlertDispatcher();
 
+// PR B (Gap 2) — Configure max-loss circuit breaker from env.
+//   PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT  (default 0.5 = 50%)
+//   PILOT_CIRCUIT_BREAKER_WINDOW_MS     (default 24h)
+//   PILOT_CIRCUIT_BREAKER_COOLDOWN_MS   (default 4h; set 0 for manual-only)
+//   PILOT_CIRCUIT_BREAKER_MIN_SAMPLES   (default 4)
+//   PILOT_CIRCUIT_BREAKER_ENFORCE       (default true; set 'false' for observe-only)
+const { configureCircuitBreaker } = await import("./pilot/circuitBreaker");
+configureCircuitBreaker({
+  maxLossPct: Number(process.env.PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT || "0.5"),
+  windowMs: Number(process.env.PILOT_CIRCUIT_BREAKER_WINDOW_MS || String(24 * 60 * 60 * 1000)),
+  cooldownMs: Number(process.env.PILOT_CIRCUIT_BREAKER_COOLDOWN_MS || String(4 * 60 * 60 * 1000)),
+  minSamplesForTrip: Number(process.env.PILOT_CIRCUIT_BREAKER_MIN_SAMPLES || "4"),
+  enforce: String(process.env.PILOT_CIRCUIT_BREAKER_ENFORCE || "true").toLowerCase() !== "false"
+});
+console.log("[CircuitBreaker] Configured from env");
+
 await registerPilotRoutes(app, { deribit, deribitLive });
 
 const treasuryConfig = parseTreasuryConfig();
