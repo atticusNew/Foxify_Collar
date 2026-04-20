@@ -1859,6 +1859,117 @@ export const registerPilotRoutes = async (
     };
   });
 
+  /**
+   * GET /pilot/admin/diagnostics/per-trade-fills?limit=20
+   *
+   * Per-trade execution diagnostic. Returns, for each recent
+   * pilot_venue_execution row, the captured-at-quote `askPriceBtc`,
+   * the realized `fillPriceBtc`, the source of the ask snapshot
+   * (live ask vs mark-fallback), and the implied slippage in basis
+   * points. This is what the daily-rollup /execution-quality
+   * endpoint averages — exposing the per-row data lets operators
+   * diagnose whether observed slippage is real microstructure
+   * (timing artifact, sub-ask fills) or a measurement artifact
+   * (e.g., quote captured against mark-price not real ask).
+   *
+   * Default limit 20 rows, max 200.
+   */
+  app.get("/pilot/admin/diagnostics/per-trade-fills", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const limitRaw = Number((req.query as { limit?: string })?.limit || "20");
+    const limit = Number.isFinite(limitRaw)
+      ? Math.max(1, Math.min(200, Math.floor(limitRaw)))
+      : 20;
+    try {
+      const result = await pool.query(
+        `
+          SELECT
+            e.id,
+            e.protection_id,
+            e.venue,
+            e.instrument_id,
+            e.quantity::text AS quantity,
+            e.execution_price::text AS execution_price_usd,
+            e.executed_at,
+            e.details AS execution_details,
+            q.details AS quote_details,
+            q.expires_ts AS quote_expires_at
+          FROM pilot_venue_executions e
+          LEFT JOIN pilot_venue_quotes q ON q.quote_id = e.quote_id
+          ORDER BY e.executed_at DESC
+          LIMIT $1
+        `,
+        [limit]
+      );
+      const rows = result.rows.map((row: Record<string, unknown>) => {
+        const exec = (row.execution_details as Record<string, unknown> | null) || {};
+        const quote = (row.quote_details as Record<string, unknown> | null) || {};
+        const askPriceBtc = Number(quote.askPriceBtc);
+        const fillPriceBtc = Number(exec.fillPriceBtc);
+        const askSource = String(quote.askSource || "");
+        const slippageBps =
+          Number.isFinite(askPriceBtc) && askPriceBtc > 0 && Number.isFinite(fillPriceBtc) && fillPriceBtc > 0
+            ? ((fillPriceBtc - askPriceBtc) / askPriceBtc) * 10_000
+            : null;
+        return {
+          executionId: String(row.id),
+          protectionId: String(row.protection_id),
+          venue: String(row.venue),
+          instrumentId: String(row.instrument_id),
+          executedAt: row.executed_at ? new Date(String(row.executed_at)).toISOString() : null,
+          quoteExpiresAt: row.quote_expires_at ? new Date(String(row.quote_expires_at)).toISOString() : null,
+          quantity: String(row.quantity),
+          executionPriceUsd: String(row.execution_price_usd),
+          quotedAskBtc: Number.isFinite(askPriceBtc) ? askPriceBtc : null,
+          fillPriceBtc: Number.isFinite(fillPriceBtc) ? fillPriceBtc : null,
+          askSource: askSource || null,
+          slippageBps: slippageBps !== null ? Number(slippageBps.toFixed(4)) : null,
+          slippageInterpretation:
+            slippageBps === null
+              ? "unknown_missing_fields"
+              : slippageBps > 5
+                ? "filled_worse_than_quoted"
+                : slippageBps < -5
+                  ? "filled_better_than_quoted"
+                  : "fill_matched_quote"
+        };
+      });
+      return {
+        status: "ok",
+        rows,
+        summary: {
+          count: rows.length,
+          mean_slippage_bps:
+            rows.length === 0
+              ? null
+              : Number(
+                  (
+                    rows
+                      .filter((r) => r.slippageBps !== null)
+                      .reduce((acc, r) => acc + (r.slippageBps || 0), 0) /
+                    Math.max(1, rows.filter((r) => r.slippageBps !== null).length)
+                  ).toFixed(4)
+                ),
+          ask_source_breakdown: rows.reduce(
+            (acc, r) => {
+              const k = r.askSource || "unknown";
+              acc[k] = (acc[k] || 0) + 1;
+              return acc;
+            },
+            {} as Record<string, number>
+          )
+        }
+      };
+    } catch (error: any) {
+      reply.code(500);
+      return {
+        status: "error",
+        reason: String(error?.message || "per_trade_diagnostic_failed")
+      };
+    }
+  });
+
   app.get("/pilot/admin/governance/rollout-guards", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
