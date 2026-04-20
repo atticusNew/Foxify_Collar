@@ -47,13 +47,41 @@ fi
 
 declare -i ATTENTION=0
 
-# fetch JSON from a path; print to stdout, capture status in $LAST_HTTP_STATUS
+# Persist HTTP status to a temp file so the parent shell can read it
+# back after $(fetch ...) command substitution. Command substitution
+# runs in a subshell, so any variable assignments made inside fetch()
+# don't propagate back to the caller — we have to round-trip through
+# disk. Cheap (one file write per check, six checks) and bulletproof
+# across bash 3.2 (macOS), bash 5+, and zsh.
+HTTP_STATUS_FILE="$(mktemp -t pilot-status-XXXXXX 2>/dev/null || mktemp)"
+trap 'rm -f "$HTTP_STATUS_FILE"' EXIT INT TERM
+
+# fetch <path> — print response body to stdout, write HTTP status to
+# $HTTP_STATUS_FILE. Caller reads via: STATUS=$(cat "$HTTP_STATUS_FILE")
 fetch() {
   local path="$1"
-  local out
-  out=$(curl -s -w "\n%{http_code}" -H "x-admin-token: $TOKEN" "$API$path" 2>/dev/null) || out="\n000"
-  LAST_HTTP_STATUS="${out##*$'\n'}"
-  echo "${out%$'\n'*}"
+  # Curl appends %{http_code} to its stdout; we then split it off in
+  # the script logic below using bash parameter expansion. Three-char
+  # HTTP status code is fixed-length so substring slicing is reliable.
+  local body
+  body=$(curl -s -o /dev/stdout -w "%{http_code}" -H "x-admin-token: $TOKEN" "$API$path" 2>/dev/null)
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "000" > "$HTTP_STATUS_FILE"
+    return
+  fi
+  local len=${#body}
+  if [ "$len" -ge 3 ]; then
+    echo "${body:$((len-3)):3}" > "$HTTP_STATUS_FILE"
+    echo "${body:0:$((len-3))}"
+  else
+    echo "000" > "$HTTP_STATUS_FILE"
+  fi
+}
+
+# Read the status that the most recent fetch() wrote.
+last_http() {
+  cat "$HTTP_STATUS_FILE" 2>/dev/null
 }
 
 # pretty-print one check row: STATUS  NAME  DETAIL
@@ -73,15 +101,15 @@ fi
 
 # 1. Health
 HEALTH_JSON=$(fetch "/pilot/health")
-if [ "$LAST_HTTP_STATUS" = "200" ] && echo "$HEALTH_JSON" | grep -q '"status":"ok"'; then
+if [ "$(last_http)" = "200" ] && echo "$HEALTH_JSON" | grep -q '"status":"ok"'; then
   row OK "platform health" "ok"
 else
-  row FAIL "platform health" "HTTP $LAST_HTTP_STATUS"
+  row FAIL "platform health" "HTTP $(last_http)"
 fi
 
 # 2. Pricing regime — schedule must match label
 REGIME_JSON=$(fetch "/pilot/regime")
-if [ "$LAST_HTTP_STATUS" = "200" ]; then
+if [ "$(last_http)" = "200" ]; then
   LABEL=$(echo "$REGIME_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('pricingRegimeLabel','?'))" 2>/dev/null)
   DVOL=$(echo "$REGIME_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('dvol','?'))" 2>/dev/null)
   TIER2=$(echo "$REGIME_JSON" | python3 -c "import sys,json;t=json.load(sys.stdin)['tiers'];print([x for x in t if x['slPct']==2][0]['premiumPer1kUsd'])" 2>/dev/null)
@@ -96,12 +124,12 @@ print({'low':6,'moderate':7,'elevated':8,'high':9}.get(r,'?'))" 2>/dev/null)
     row FAIL "pricing regime" "label/schedule mismatch: $LABEL but 2% tier is \$$TIER2 (expected \$$EXPECTED2)"
   fi
 else
-  row FAIL "pricing regime" "HTTP $LAST_HTTP_STATUS"
+  row FAIL "pricing regime" "HTTP $(last_http)"
 fi
 
 # 3. Circuit breaker — must be armed and not tripped
 CB_JSON=$(fetch "/pilot/admin/circuit-breaker")
-if [ "$LAST_HTTP_STATUS" = "200" ]; then
+if [ "$(last_http)" = "200" ]; then
   TRIPPED=$(echo "$CB_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['state']['tripped'])" 2>/dev/null)
   ENFORCE=$(echo "$CB_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin)['config']['enforce'])" 2>/dev/null)
   CURRENT=$(echo "$CB_JSON" | python3 -c "import sys,json;v=json.load(sys.stdin)['state']['currentBtc'];print('null' if v is None else v)" 2>/dev/null)
@@ -115,12 +143,12 @@ if [ "$LAST_HTTP_STATUS" = "200" ]; then
     row OK "circuit breaker" "armed; equity $CURRENT BTC"
   fi
 else
-  row FAIL "circuit breaker" "HTTP $LAST_HTTP_STATUS"
+  row FAIL "circuit breaker" "HTTP $(last_http)"
 fi
 
 # 4. Open protections + caps
 OPEN_JSON=$(fetch "/pilot/protections/export?scope=open&format=json")
-if [ "$LAST_HTTP_STATUS" = "200" ]; then
+if [ "$(last_http)" = "200" ]; then
   COUNT=$(echo "$OPEN_JSON" | python3 -c "import sys,json;print(len(json.load(sys.stdin).get('rows',[])))" 2>/dev/null)
   TOTAL_NOTIONAL=$(echo "$OPEN_JSON" | python3 -c "import sys,json;rows=json.load(sys.stdin).get('rows',[]);print(sum(float(r.get('protected_notional',0)) for r in rows))" 2>/dev/null)
   CAP=200000
@@ -135,12 +163,12 @@ if [ "$LAST_HTTP_STATUS" = "200" ]; then
     row OK "open protections" "$COUNT positions"
   fi
 else
-  row FAIL "open protections" "HTTP $LAST_HTTP_STATUS"
+  row FAIL "open protections" "HTTP $(last_http)"
 fi
 
 # 5. Execution quality — slippage in USD
 EQ_JSON=$(fetch "/pilot/admin/diagnostics/execution-quality")
-if [ "$LAST_HTTP_STATUS" = "200" ]; then
+if [ "$(last_http)" = "200" ]; then
   TODAY=$(date +"%Y-%m-%d")
   EQ_TODAY=$(echo "$EQ_JSON" | python3 -c "
 import sys,json
@@ -172,12 +200,12 @@ except: print(0)" 2>/dev/null)
     fi
   fi
 else
-  row FAIL "execution quality" "HTTP $LAST_HTTP_STATUS"
+  row FAIL "execution quality" "HTTP $(last_http)"
 fi
 
 # 6. Recent alerts
 ALERTS_JSON=$(fetch "/pilot/monitor/alerts?limit=10")
-if [ "$LAST_HTTP_STATUS" = "200" ]; then
+if [ "$(last_http)" = "200" ]; then
   CRITICAL=$(echo "$ALERTS_JSON" | python3 -c "
 import sys,json,datetime
 try:
@@ -204,7 +232,7 @@ except: print(0)" 2>/dev/null)
     row OK "recent alerts (24h)" "$CRITICAL critical, $WARNING warning"
   fi
 else
-  row FAIL "recent alerts" "HTTP $LAST_HTTP_STATUS"
+  row FAIL "recent alerts" "HTTP $(last_http)"
 fi
 
 if [ "$JSON" = "1" ]; then
