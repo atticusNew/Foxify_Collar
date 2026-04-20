@@ -227,3 +227,88 @@ test("R7: Slack and Generic destinations send their format; failures captured in
   fetchMock.restore();
   restoreEnv();
 });
+
+test("R7 regression: Telegram body HTML-escapes <, >, & in alert.message", async () => {
+  const restoreEnv = setEnv({
+    PILOT_ALERT_TELEGRAM_BOT_TOKEN: "fake-token-123",
+    PILOT_ALERT_TELEGRAM_CHAT_ID: "987654",
+    PILOT_ALERT_TELEGRAM_LEVELS: "warning,critical",
+    PILOT_ALERT_DEDUP_WINDOW_SEC: "0",
+    PILOT_ALERT_SLACK_WEBHOOK_URL: "",
+    PILOT_ALERT_DISCORD_WEBHOOK_URL: "",
+    PILOT_ALERT_GENERIC_WEBHOOK_URL: ""
+  });
+  const fetchMock = captureFetch();
+  __resetAlertDispatcherForTests();
+  configureAlertDispatcher();
+
+  // Production failure observed 2026-04-20: alert.message strings can
+  // contain instrument names like "BTC-19APR26-78500-P offered at <0.001"
+  // which Telegram's HTML parser rejects with 400 because it sees "<0"
+  // as the start of an unrecognized tag. We HTML-escape the body before
+  // sending so arbitrary alert.message content never breaks the send.
+  await dispatchAlert({
+    level: "warning",
+    code: "html_escape_test",
+    message: "tag <html> & symbols > here for BTC-PUT <0.001",
+    timestamp: "2026-04-20T00:00:00.000Z"
+  });
+
+  assert.equal(fetchMock.calls.length, 1, "telegram called once");
+  const body = JSON.parse(String(fetchMock.calls[0].init.body));
+  assert.match(body.text, /&lt;html&gt;/, "< and > escaped in body");
+  assert.match(body.text, /&amp;/, "& escaped in body");
+  assert.match(body.text, /&lt;0\.001/, "embedded <0.001 escaped");
+  assert.match(body.text, /<b>WARNING<\/b>/, "header HTML tags survive (real HTML, not escaped)");
+  assert.equal(body.parse_mode, "HTML");
+
+  fetchMock.restore();
+  restoreEnv();
+});
+
+test("R7 regression: Telegram failure response body is captured into outcome.detail", async () => {
+  const restoreEnv = setEnv({
+    PILOT_ALERT_TELEGRAM_BOT_TOKEN: "fake-token-123",
+    PILOT_ALERT_TELEGRAM_CHAT_ID: "987654",
+    PILOT_ALERT_TELEGRAM_LEVELS: "warning,critical",
+    PILOT_ALERT_DEDUP_WINDOW_SEC: "0",
+    PILOT_ALERT_SLACK_WEBHOOK_URL: "",
+    PILOT_ALERT_DISCORD_WEBHOOK_URL: "",
+    PILOT_ALERT_GENERIC_WEBHOOK_URL: ""
+  });
+
+  // Mock fetch returning a Telegram-style 400 with the actual error
+  // description so we can verify the dispatcher reads the response
+  // body and surfaces it via outcome.detail (was 'n/a' before this fix).
+  const original = global.fetch;
+  global.fetch = (async () => ({
+    ok: false,
+    status: 400,
+    text: async () =>
+      '{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}',
+    json: async () => ({})
+  }) as any) as typeof fetch;
+
+  __resetAlertDispatcherForTests();
+  configureAlertDispatcher();
+
+  const r = await dispatchAlert({
+    level: "warning",
+    code: "detail_capture_test",
+    message: "message",
+    timestamp: "2026-04-20T00:00:00.000Z"
+  });
+
+  global.fetch = original;
+  restoreEnv();
+
+  const tg = r.destinations.find((d) => d.name === "telegram");
+  assert.ok(tg, "telegram destination present");
+  assert.equal(tg!.ok, false);
+  assert.equal(tg!.status, 400);
+  assert.match(
+    String(tg!.detail || ""),
+    /chat not found/,
+    `detail should include Telegram's description; got ${tg!.detail}`
+  );
+});

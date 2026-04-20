@@ -92,13 +92,26 @@ const fetchWithTimeout = async (
   }
 };
 
+// HTML-escape user-provided text before embedding in a Telegram message.
+// Telegram's HTML parse mode requires <, >, & escaped — unescaped chars
+// in alert.message produce a 400 "Bad Request: can't parse entities".
+// Real-world example: an alert message containing an instrument name
+// like "BTC-19APR26-78500-P offered at <0.001" was rejected because
+// "<0.001" was parsed as the start of an HTML tag.
+const escapeHtml = (s: string): string =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
 // Format alert for a Telegram message. Markdown V2 is finicky; we use the
 // simpler "HTML" parse mode which is friendlier with special characters.
 const formatForTelegram = (alert: PilotAlert): string => {
   const icon = alert.level === "critical" ? "🚨" : alert.level === "warning" ? "⚠️" : "ℹ️";
-  const head = `${icon} <b>${alert.level.toUpperCase()}</b> — <code>${alert.code}</code>`;
-  const body = alert.message.slice(0, 2000); // Telegram message-text cap is 4096; leave headroom
-  const ts = `<i>${alert.timestamp}</i>`;
+  const head = `${icon} <b>${escapeHtml(alert.level.toUpperCase())}</b> — <code>${escapeHtml(alert.code)}</code>`;
+  // Cap message length BEFORE escape so we don't truncate inside an HTML entity.
+  const body = escapeHtml(alert.message.slice(0, 2000));
+  const ts = `<i>${escapeHtml(alert.timestamp)}</i>`;
   return `${head}\n${body}\n${ts}`;
 };
 
@@ -174,7 +187,21 @@ export const configureAlertDispatcher = (): { configured: boolean; destinations:
             },
             httpTimeoutMs
           );
-          return { ok: res.ok, status: res.status };
+          // On non-OK, capture Telegram's response body so we can see the
+          // exact error description (e.g. "chat not found", "Unauthorized",
+          // "can't parse entities"). The dispatcher previously logged only
+          // the status code, which left operators blind to the cause.
+          let detail: string | undefined;
+          if (!res.ok) {
+            try {
+              const body = await res.text();
+              // Truncate so a long body doesn't clutter logs.
+              detail = body.slice(0, 500);
+            } catch {
+              detail = undefined;
+            }
+          }
+          return { ok: res.ok, status: res.status, detail };
         } catch (e: any) {
           return { ok: false, status: 0, detail: String(e?.message || e) };
         }
@@ -199,7 +226,11 @@ export const configureAlertDispatcher = (): { configured: boolean; destinations:
             },
             httpTimeoutMs
           );
-          return { ok: res.ok, status: res.status };
+          let detail: string | undefined;
+          if (!res.ok) {
+            try { detail = (await res.text()).slice(0, 500); } catch { /* ignore */ }
+          }
+          return { ok: res.ok, status: res.status, detail };
         } catch (e: any) {
           return { ok: false, status: 0, detail: String(e?.message || e) };
         }
@@ -224,7 +255,11 @@ export const configureAlertDispatcher = (): { configured: boolean; destinations:
             },
             httpTimeoutMs
           );
-          return { ok: res.ok, status: res.status };
+          let detail: string | undefined;
+          if (!res.ok) {
+            try { detail = (await res.text()).slice(0, 500); } catch { /* ignore */ }
+          }
+          return { ok: res.ok, status: res.status, detail };
         } catch (e: any) {
           return { ok: false, status: 0, detail: String(e?.message || e) };
         }
@@ -249,7 +284,11 @@ export const configureAlertDispatcher = (): { configured: boolean; destinations:
             },
             httpTimeoutMs
           );
-          return { ok: res.ok, status: res.status };
+          let detail: string | undefined;
+          if (!res.ok) {
+            try { detail = (await res.text()).slice(0, 500); } catch { /* ignore */ }
+          }
+          return { ok: res.ok, status: res.status, detail };
         } catch (e: any) {
           return { ok: false, status: 0, detail: String(e?.message || e) };
         }
