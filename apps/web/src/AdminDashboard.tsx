@@ -230,6 +230,12 @@ function Dashboard({ token }: { token: string }) {
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [execQuality, setExecQuality] = useState<ExecutionQuality[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  // Track the timestamp of the most recent alert the operator has viewed
+  // (persisted to localStorage). The red-dot / count badge on the Alerts
+  // tab only reflects alerts newer than this. Cleared on tab open below.
+  const [lastViewedAlertTs, setLastViewedAlertTs] = useState<string>(() => {
+    try { return localStorage.getItem("foxify_admin_last_viewed_alert_ts") || ""; } catch { return ""; }
+  });
   const [treasury, setTreasury] = useState<TreasurySnapshot | null>(null);
   const [treasuryLoading, setTreasuryLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -308,6 +314,26 @@ function Dashboard({ token }: { token: string }) {
     const id = setInterval(refresh, 30000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // Mark all alerts as viewed when the operator opens the Alerts tab.
+  // Stores the timestamp of the most recent alert in localStorage; the
+  // unread count badge in the nav uses this as the watermark. Runs on
+  // every panel switch to "alerts" — if a new alert arrives while the
+  // tab is already open, the operator stays on the tab and the next
+  // refresh will not re-mark (timestamp doesn't move backwards).
+  useEffect(() => {
+    if (activePanel !== "alerts") return;
+    if (alerts.length === 0) return;
+    const newest = alerts.reduce((acc, a) => {
+      const t = new Date(a.timestamp).getTime();
+      return t > acc ? t : acc;
+    }, 0);
+    if (newest <= 0) return;
+    const newestIso = new Date(newest).toISOString();
+    if (newestIso === lastViewedAlertTs) return;
+    setLastViewedAlertTs(newestIso);
+    try { localStorage.setItem("foxify_admin_last_viewed_alert_ts", newestIso); } catch { /* localStorage unavailable */ }
+  }, [activePanel, alerts, lastViewedAlertTs]);
 
   const handleTreasuryCheck = async () => {
     setTreasuryLoading(true);
@@ -427,14 +453,24 @@ function Dashboard({ token }: { token: string }) {
               }}
             >
               {p.label}
-              {p.id === "alerts" && alerts.length > 0 && (
-                <span style={{
-                  marginLeft: 4, fontSize: 10, background: "var(--danger)",
-                  color: "#fff", borderRadius: 999, padding: "1px 5px",
-                }}>
-                  {alerts.length}
-                </span>
-              )}
+              {p.id === "alerts" && (() => {
+                // Unread = alerts whose timestamp is strictly newer than
+                // the last-viewed timestamp the operator clicked into.
+                // First-time use (lastViewedAlertTs empty) treats every
+                // alert as unread, which matches user expectation.
+                const unreadCount = alerts.filter(
+                  (a) => !lastViewedAlertTs || new Date(a.timestamp).getTime() > new Date(lastViewedAlertTs).getTime()
+                ).length;
+                if (unreadCount === 0) return null;
+                return (
+                  <span style={{
+                    marginLeft: 4, fontSize: 10, background: "var(--danger)",
+                    color: "#fff", borderRadius: 999, padding: "1px 5px",
+                  }}>
+                    {unreadCount}
+                  </span>
+                );
+              })()}
             </button>
           ))}
         </div>
