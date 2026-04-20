@@ -537,6 +537,8 @@ Alerts the platform emits and which level they fire at:
 | `trigger_fired` | info | trigger monitor (R7) | A protection triggered |
 | `trigger_monitor_price_errors` | critical | trigger monitor (R7) | 10+ consecutive price-feed errors |
 | `trigger_monitor_cycle_error` | critical | trigger monitor (R7) | Trigger-monitor cycle threw |
+| `circuit_breaker_tripped` | critical | hedge-mgmt scheduler (PR B Gap 2) | Deribit equity drawdown exceeded `PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT` |
+| `circuit_breaker_manual_reset` | info | admin endpoint | Operator cleared a tripped breaker via `POST /pilot/admin/circuit-breaker/reset` |
 
 **Telegram setup recipe** (the most useful destination for solo operators):
 
