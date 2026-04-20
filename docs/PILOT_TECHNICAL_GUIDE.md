@@ -149,9 +149,9 @@ The schedule above is the **low-volatility (calm) baseline**. The platform now c
 | ≤ 50 | low | $6 | $5 | $3 | $2 |
 | 50–65 | moderate | $7 | $5.50 | $3 | $2 |
 | 65–80 | elevated | $8 | $6 | $3.50 | $2 |
-| > 80 | high | **$9** | $7 | $4 | $2 |
+| > 80 | high | **$10** | $7 | $4 | $2 |
 
-The 2% tier caps at $9/$1k (= $90 on $10k) — just under the trader-acceptance ceiling. In true stress regimes the platform takes a controlled loss on tight tiers (deliberate trade-off: trader acceptance over breakeven in worst conditions; bounded by per-tier daily concentration cap).
+The 2% tier caps at $10/$1k (= $100 on $10k) in High regime — slightly above the CEO's earlier $80 directional read but tested as economically meaningful: $10 puts the platform within $1 of breakeven at stress entry (DVOL 80 → BS hedge cost $8.54), vs −$2.54 at $9. Trader return on trigger remains 2.0× (premium $100 → payout $200). In true stress regimes the platform still takes a controlled loss on the 2% tier as DVOL pushes higher — bounded by per-tier daily concentration cap. Reversible to $9 in one config change if pilot demand at $10 craters.
 
 **Mechanism details:**
 - 1-hour rolling DVOL average, refreshed every 5 minutes for quotes

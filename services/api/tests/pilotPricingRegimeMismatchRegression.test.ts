@@ -67,7 +67,7 @@ test("regression: explicit pricingRegimeOverride still wins over live classifier
 
   const tiers = getV7AvailableTiers(undefined, "high");
   const tier2 = tiers.find((t) => t.slPct === 2);
-  assert.equal(tier2!.premiumPer1kUsd, 9, "explicit 'high' override should produce $9 ceiling");
+  assert.equal(tier2!.premiumPer1kUsd, 10, "explicit 'high' override should produce $10 ceiling");
 });
 
 test("regression: legacy regime input is ignored even at the boundary values that previously caused divergence", () => {

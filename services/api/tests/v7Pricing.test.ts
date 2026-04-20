@@ -71,7 +71,7 @@ test("computeV7Premium — each tier has correct rate per regime", () => {
     { regime: "low",      expected: { 1: 60, 2: 60, 3: 50, 5: 30, 10: 20 } },
     { regime: "moderate", expected: { 1: 70, 2: 70, 3: 55, 5: 30, 10: 20 } },
     { regime: "elevated", expected: { 1: 80, 2: 80, 3: 60, 5: 35, 10: 20 } },
-    { regime: "high",     expected: { 1: 90, 2: 90, 3: 70, 5: 40, 10: 20 } }
+    { regime: "high",     expected: { 1: 90, 2: 100, 3: 70, 5: 40, 10: 20 } }
   ];
   for (const { regime, expected } of cases) {
     for (const sl of [1, 2, 3, 5, 10] as const) {
@@ -137,7 +137,7 @@ test("getV7AvailableTiers — launched tiers (no 1% SL), pinned to 'low' regime"
 test("getV7AvailableTiers — high-regime schedule reflects ceiling", () => {
   const tiers = getV7AvailableTiers(undefined, "high");
   const sl2 = tiers.find((t) => t.slPct === 2);
-  assert.equal(sl2?.premiumPer1kUsd, 9, "2% caps at $9 in high regime (CEO ceiling)");
+  assert.equal(sl2?.premiumPer1kUsd, 10, "2% caps at $10 in high regime (raised from $9 on 2026-04-20)");
   const sl3 = tiers.find((t) => t.slPct === 3);
   assert.equal(sl3?.premiumPer1kUsd, 7, "3% rises to $7 in high regime");
 });

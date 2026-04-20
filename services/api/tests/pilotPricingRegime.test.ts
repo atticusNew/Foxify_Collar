@@ -38,7 +38,7 @@ test("Design A schedule matches the spec exactly", () => {
   assert.equal(REGIME_SCHEDULES.low[2],      6, "low / 2%  = $6");
   assert.equal(REGIME_SCHEDULES.moderate[2], 7, "moderate / 2%  = $7");
   assert.equal(REGIME_SCHEDULES.elevated[2], 8, "elevated / 2%  = $8");
-  assert.equal(REGIME_SCHEDULES.high[2],     9, "high / 2%  = $9 (CEO trader-acceptance ceiling)");
+  assert.equal(REGIME_SCHEDULES.high[2],     10, "high / 2%  = $10 (raised from $9 on 2026-04-20 — see pricingRegime.ts comment)");
 
   // 3% tier
   assert.equal(REGIME_SCHEDULES.low[3],      5,    "low / 3% = $5");
@@ -59,7 +59,7 @@ test("Design A schedule matches the spec exactly", () => {
   assert.equal(REGIME_SCHEDULES.high[10],     2);
 
   // getPremiumPer1kForRegime is the public read accessor — verify it agrees
-  assert.equal(getPremiumPer1kForRegime(2, "high"), 9);
+  assert.equal(getPremiumPer1kForRegime(2, "high"), 10);
   assert.equal(getPremiumPer1kForRegime(3, "moderate"), 5.5);
 });
 

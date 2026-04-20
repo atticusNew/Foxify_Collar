@@ -33,15 +33,15 @@ The trader sees one fixed price at quote time. The schedule the platform draws f
 | Low | ≤ 50 | $6 | $5 | $3 | $2 |
 | Moderate | 50–65 | $7 | $5.50 | $3 | $2 |
 | Elevated | 65–80 | $8 | $6 | $3.50 | $2 |
-| High | > 80 | **$9** | $7 | $4 | $2 |
+| High | > 80 | **$10** | $7 | $4 | $2 |
 
-The 2% tier caps at $9/$1k = $90 on $10k — the trader-acceptance ceiling. In the High regime the platform takes a controlled loss on the 2% tier (deliberate trade-off: trader acceptance over breakeven in worst conditions, bounded by per-tier concentration cap). 5% and 10% tiers are flat across regimes — they have an order of magnitude less volatility sensitivity at 1-DTE.
+The 2% tier caps at $10/$1k = $100 on $10k in the High regime. At DVOL 80 (stress entry) this puts the platform within ~$1 of breakeven (BS hedge cost $8.54 vs $10 premium); the platform still takes a controlled loss as DVOL pushes higher into crisis ranges (DVOL 100+). Bounded by per-tier daily concentration cap. 5% and 10% tiers are flat across regimes — they have an order of magnitude less volatility sensitivity at 1-DTE.
 
 ### Trader return on trigger
 
 | Tier | At "Low" regime | At "High" regime |
 |---|---|---|
-| 2% | 3.3× | 2.2× |
+| 2% | 3.3× | 2.0× |
 | 3% | 6× | 4.3× |
 | 5% | 16.7× | 12.5× |
 | 10% | 50× | 50× |
@@ -105,7 +105,7 @@ Same 1,558 days, partitioned by DVOL regime at the start of each protection. Str
 | Calm (low) | 467 | $6 | **+$2.64** | $5 | **+$2.11** | $3 | **+$1.43** | $2 | **+$1.14** |
 | Normal (moderate) | 790 | $7 | **+$0.60** | $5.50 | **+$0.06** | $3 | −$0.55 | $2 | +$0.99 |
 | Elevated | (pro-rated) | $8 | **+$0.10** | $6 | **+$0.06** | $3.50 | **+$0.40** | $2 | +$0.50 |
-| Stress (high) | 300 | $9 | **−$1.81** | $7 | **−$2.86** | $4 | **−$1.41** | $2 | +$0.17 |
+| Stress (high) | 300 | $10 | **−$0.81** | $7 | **−$2.86** | $4 | **−$1.41** | $2 | +$0.17 |
 
 **Plain reading:**
 
@@ -221,19 +221,21 @@ Seven controllable knobs ranked by impact-to-cost ratio. Each entry is what the 
 
 ### Lever 1 — Per-tier premium adjustments
 
-**Current setting:** dynamic schedule above. The 2% ceiling at $9 in High regime sits just under the trader-acceptance threshold ($80 on $10k).
+**Current setting:** dynamic schedule above. The 2% ceiling sits at $10 in High regime — slightly above the CEO's earlier $80 directional read but tested as economically meaningful: at DVOL 80 (stress entry) the platform is within $1 of breakeven (vs −$2.54 at the prior $9 level), and trader return on trigger remains 2.0× (premium $100 → payout $200). The 2× ratio is the psychologically meaningful boundary; below that, retention risk rises sharply.
 
 **What remains adjustable:**
-- The $9 ceiling itself (could move to $8 or $10)
+- The $10 ceiling itself (could move to $9 to recover trader-friendliness, or to $11 if pilot data shows dip-buyer cohort dominates stress demand)
 - The DVOL boundaries between regimes (50 / 65 / 80 — could tighten or widen)
 - Per-tier intermediate prices in moderate / elevated regimes
+- The 3% high-regime ceiling ($7) — could rise to $8 if 2% data validates dip-buyer price-insensitivity
 
 **Directional impact at $1M/day notional, balanced tier mix:**
-- Tightening 2% ceiling from $9 → $8 in High regime: −$0.30/$1k in stress days only (~10% of days); roughly −$11k/year of revenue, gain of trader acceptance
-- Loosening 2% ceiling from $9 → $10 in High regime: +$0.30/$1k in stress days only; trader-acceptance risk
-- Shifting low/moderate boundary 50 → 55: more days in low → cheaper schedule → small revenue loss (~−$5k/year at $1M/day) but better trader optic in marginal regimes
+- Lowering 2% ceiling from $10 → $9: −$1/$1k in stress days only (~10% of days); roughly −$11k/year of revenue
+- Raising 2% ceiling from $10 → $11: +$1/$1k in stress days only, +$11k/year revenue, trader return drops to 1.8× — adoption risk
+- Shifting low/moderate boundary 50 → 55: more days in low regime → cheaper schedule → small revenue loss (~−$5k/year at $1M/day) but better trader optic at the boundary
+- Raising 3% high-regime ceiling $7 → $8: +$0.6/$1k stress only on 3% tier, ~$6k/year — symmetric dip-buyer logic
 
-**Cost of being wrong:** demand elasticity is the unknown. Recommendation: hold current schedule for the 28-day pilot; revisit ceilings at week 4 with demand data.
+**Cost of being wrong:** demand elasticity remains the unknown. Recommendation: hold current schedule for the 28-day pilot; revisit ceilings at week 4 with actual demand data. The $10 sit position is reversible to $9 in three config edits.
 
 ### Lever 2 — Per-tier daily concentration cap (highest leverage on tail risk)
 
@@ -424,7 +426,7 @@ These are the questions where CFO judgment will materially shape direction. The 
 
 | Question | Current default | What CFO can shape |
 |---|---|---|
-| **Premium ceilings:** is $9 on the 2% tier the right balance of margin vs adoption? | Hold for 28 days | Frame the demand-elasticity hypothesis we should test post-pilot |
+| **Premium ceilings:** is $10 on the 2% tier the right balance of margin vs adoption? | Hold for 28 days | Frame the demand-elasticity hypothesis we should test post-pilot |
 | **Per-tier cap:** is 60% the right concentration limit, or should it be tighter? | Hold at 60% | Recommend a different setting based on risk appetite |
 | **Treasury timing:** activate alongside pilot or defer? | Defer | Decide based on cleanliness-of-pilot-data vs revenue-acceleration tradeoff |
 | **Capital reserve target at scale:** how much reserve do we want behind aggregate exposure at $1M/day? | $200k implicit | Set explicit reserve target informed by his view of stress-event probability |
@@ -490,8 +492,8 @@ Five signals where deviation from baseline expectation should trigger investigat
 - **Metric:** time spent in DVOL > 80 in any rolling 24h
 - **Expected baseline:** rare — historically < 5% of any 24h window
 - **Watch trigger:** any DVOL > 80 event lasting > 24h
-- **What it means:** the $9 ceiling on 2% means actual losses on every triggered position; sustained stress could exhaust the per-tier cap budget for the day. Cumulative loss could approach the per-tier cap × payout.
-- **Action to consider:** during the event itself, consider manually pausing 2% tier sales (set per-tier cap to $0 temporarily); after the event, review whether the $9 ceiling needs revisiting
+- **What it means:** the $10 ceiling on 2% in High regime means actual losses on every triggered position; sustained stress could exhaust the per-tier cap budget for the day. Cumulative loss could approach the per-tier cap × payout.
+- **Action to consider:** during the event itself, consider manually pausing 2% tier sales (set per-tier cap to $0 temporarily); after the event, review whether the $10 ceiling needs revisiting (down to $9 if demand held painfully, up to $11 if dip-buyers dominated the demand)
 
 ### 11.6 Deribit account drawdown trajectory
 
