@@ -79,31 +79,6 @@ export const getV7PayoutPer10k = (slPct: V7SlTier): number =>
   V7_PAYOUT_PER_10K[slPct] ?? 0;
 
 /**
- * Map the legacy V7Regime (calm/normal/stress, used by the hedge manager)
- * to the new PricingRegime (low/moderate/elevated/high) used by Design A.
- * The mappings are conservative: any V7Regime "stress" reading drives
- * pricing to "high"; "normal" → "moderate"; "calm" → "low".
- *
- * In production the pricing path goes through getCurrentPricingRegime()
- * directly, which uses its own DVOL band classifier. This mapping
- * exists for backwards compatibility with callers that still pass a
- * V7Regime input.
- */
-const v7ToPricingRegime = (regime: V7Regime | null | undefined): PricingRegime | null => {
-  if (!regime) return null;
-  switch (regime) {
-    case "calm":
-      return "low";
-    case "normal":
-      return "moderate";
-    case "stress":
-      return "high";
-    default:
-      return null;
-  }
-};
-
-/**
  * Compute the V7 premium for a given SL tier, regime, and notional.
  *
  * Design A pricing path:
@@ -204,7 +179,7 @@ export const computeV7HedgeStrike = (
 export const V7_LAUNCHED_TIERS: readonly V7SlTier[] = [2, 3, 5, 10] as const;
 
 export const getV7AvailableTiers = (
-  legacyRegime?: V7Regime,
+  _legacyRegime?: V7Regime,
   pricingRegimeOverride?: PricingRegime
 ): Array<{
   slPct: V7SlTier;
@@ -213,12 +188,21 @@ export const getV7AvailableTiers = (
   available: boolean;
   payoutPer10kUsd: number;
 }> => {
-  // Pick the active pricing regime in this order of preference:
+  // Picks the active pricing regime in this order of preference:
   //   1. explicit override (used by tests / locked-quote replay)
-  //   2. legacy V7Regime mapped to PricingRegime
-  //   3. live pricing regime classifier
+  //   2. Design A live classifier
+  //
+  // The legacy V7Regime parameter (calm/normal/stress) is intentionally
+  // IGNORED. The legacy classifier's "calm" upper boundary is 40 while
+  // Design A's "low" upper boundary is 50, so DVOL values in the
+  // 40-50 band are classified differently by each — the legacy says
+  // "normal" (→ moderate pricing $7) while Design A says "low"
+  // ($6 pricing). Using the legacy mapping caused the widget to display
+  // "Volatility: Low" alongside the moderate $7 schedule (deployed
+  // 2026-04-19, observed at DVOL 42.4 → low label + $7 price).
+  // The fix: always source pricing from Design A.
   const pricingRegime: PricingRegime =
-    pricingRegimeOverride ?? v7ToPricingRegime(legacyRegime) ?? getCurrentPricingRegime().regime;
+    pricingRegimeOverride ?? getCurrentPricingRegime().regime;
   return V7_LAUNCHED_TIERS.map((slPct) => ({
     slPct,
     premiumPer1kUsd: getPremiumPer1kForRegime(slPct, pricingRegime),
