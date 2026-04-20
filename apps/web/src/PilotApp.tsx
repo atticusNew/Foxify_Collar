@@ -295,6 +295,9 @@ const friendlyError = (message: string): string => {
   ) {
     return "Service temporarily unavailable. Try again shortly.";
   }
+  if (message.includes("circuit_breaker_active")) {
+    return "Platform paused for safety review. Try again later.";
+  }
   if (message.includes("aggregate_active_notional_cap_exceeded")) {
     return "Pilot's open-protection limit is full. Close one or wait for it to expire.";
   }

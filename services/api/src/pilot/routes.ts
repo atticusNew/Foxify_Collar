@@ -89,6 +89,14 @@ import {
   getCurrentPricingRegime,
   type PricingRegime
 } from "./pricingRegime";
+import {
+  configureCircuitBreaker,
+  getCircuitBreakerConfig,
+  getCircuitBreakerState,
+  isCircuitBreakerActive,
+  recordBalanceSample,
+  resetCircuitBreaker
+} from "./circuitBreaker";
 
 // Design A — Volatility label shown next to the price in the widget.
 // Maps internal regime IDs to user-facing strings. "Low / Moderate /
@@ -2927,6 +2935,20 @@ export const registerPilotRoutes = async (
         message: "Activation is paused while quotes are validated. Quoting still works."
       };
     }
+    // PR B (Gap 2) — circuit breaker: refuse new sales if Deribit
+    // equity has dropped > threshold in the rolling window. Returns
+    // a 503 so clients understand the platform is temporarily
+    // unavailable, not that their request was malformed.
+    if (isCircuitBreakerActive()) {
+      const cbState = getCircuitBreakerState();
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "circuit_breaker_active",
+        message: "Platform paused for safety review. Please try again later.",
+        circuitBreaker: cbState
+      };
+    }
     const body = req.body as {
       protectedNotional?: number;
       foxifyExposureNotional?: number;
@@ -4527,6 +4549,54 @@ export const registerPilotRoutes = async (
     };
   });
 
+  /**
+   * GET /pilot/admin/circuit-breaker
+   * Returns current state + config of the max-loss circuit breaker.
+   */
+  app.get("/pilot/admin/circuit-breaker", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    return {
+      status: "ok",
+      state: getCircuitBreakerState(),
+      config: getCircuitBreakerConfig(),
+      active: isCircuitBreakerActive()
+    };
+  });
+
+  /**
+   * POST /pilot/admin/circuit-breaker/reset
+   * Manually clears a tripped circuit breaker. Re-enables new
+   * protection sales immediately. The breaker will continue to
+   * monitor balance and may re-trip if the underlying drawdown
+   * pattern recurs.
+   */
+  app.post("/pilot/admin/circuit-breaker/reset", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const wasTripped = resetCircuitBreaker(auth.actor);
+    await insertAdminAction(pool, {
+      action: "circuit_breaker_reset",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: { wasTripped }
+    });
+    if (wasTripped) {
+      monitor.recordEvent({
+        level: "info",
+        code: "circuit_breaker_manual_reset",
+        message: `Circuit breaker manually reset by ${auth.actor}.`
+      });
+    }
+    return {
+      status: "ok",
+      wasTripped,
+      message: wasTripped
+        ? "Circuit breaker reset. Platform accepting new protection sales again."
+        : "Circuit breaker was already in normal state. No action taken."
+    };
+  });
+
   app.post("/pilot/admin/reset", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
@@ -4932,6 +5002,34 @@ export const registerPilotRoutes = async (
         currentSpot: spot,
         currentIV: iv
       });
+
+      // PR B (Gap 2) — sample Deribit equity each cycle and feed the
+      // circuit breaker. The breaker owns its own trip detection,
+      // baseline tracking, and cooldown logic; we just supply data.
+      // Wrapped to never fail the cycle if balance fetch errors.
+      try {
+        const acctSummary: any = await deps.deribit.getAccountSummary("BTC");
+        const equityBtc = Number(acctSummary?.result?.equity ?? 0);
+        if (Number.isFinite(equityBtc) && equityBtc >= 0) {
+          const post = recordBalanceSample(equityBtc);
+          if (post.tripped) {
+            // Surface the trip via the existing alert dispatcher so an
+            // operator gets paged on the same channel as other warnings.
+            monitor.recordEvent({
+              level: "critical",
+              code: "circuit_breaker_tripped",
+              message:
+                `Deribit equity drawdown ${(post.lossPct * 100).toFixed(1)}% exceeded threshold ` +
+                `(baseline ${post.baselineBtc.toFixed(6)} BTC, current ${post.currentBtc.toFixed(6)} BTC). ` +
+                `New protection sales blocked until cooldown expires at ${post.cooldownExpiresAt} or admin reset.`
+            });
+          }
+        }
+      } catch (balanceErr: any) {
+        console.warn(
+          `[CircuitBreaker] Could not sample Deribit balance this cycle: ${balanceErr?.message || "unknown"}`
+        );
+      }
     } catch (err: any) {
       console.error(`[HedgeManager] Scheduler error: ${err?.message}`);
     }

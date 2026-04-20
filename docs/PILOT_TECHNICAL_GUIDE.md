@@ -372,6 +372,8 @@ Separate system for institutional daily protection ($1M+ notional). Runs on the 
 | POST   | `/pilot/admin/reset`                                    | Hard reset — wipes 17 tables (use only between pilot phases) |
 | POST   | `/pilot/admin/test-reset-protections`                   | Surgical archive of paper-test protections, releases caps, preserves audit data (`{ protectionIds: string[], reason?: string }`) |
 | POST   | `/pilot/admin/test-alert`                               | R7 — emit a test alert through the dispatcher (`{ level, message }` optional) |
+| GET    | `/pilot/admin/circuit-breaker`                          | PR B (Gap 2) — current state + config of the max-loss circuit breaker |
+| POST   | `/pilot/admin/circuit-breaker/reset`                    | PR B (Gap 2) — manually clear a tripped circuit breaker |
 | GET    | `/pilot/monitor/status`                                 | Monitor health status |
 | GET    | `/pilot/monitor/alerts`                                 | Recent alerts |
 
@@ -403,6 +405,44 @@ Accounting trail for premiums and payouts.
 Key columns: `id`, `protection_id`, `entry_type`, `amount`, `reference`.
 
 Entry types: `premium_due`, `premium_collected`, `trigger_payout_due`, `payout_due`, `payout_settled`.
+
+---
+
+## 10b. Defensive guards (PR B)
+
+Two defensive features added 2026-04-19 to protect platform capital during stress events.
+
+### Gap 4 — Auto-renew freeze in stress regime
+
+When the regime classifier reports `stress` (DVOL above the configured `stressAbove` threshold, default 65), the auto-renew scheduler **skips all renewal attempts for that cycle**. The protected positions themselves are unaffected — they continue to monitor for triggers and can be sold via TP — they just don't auto-roll into a new contract at peak premium pricing.
+
+When volatility drops back to `normal` or `calm`, auto-renew resumes automatically on the next cycle.
+
+**Failure-open:** if the regime classifier is unavailable (Deribit data outage), the freeze does NOT engage and renewals proceed. This is deliberate — failing closed (always freeze on data unavailability) would surprise traders by silently skipping renewals every time Deribit's API has a transient blip.
+
+**Override:** set `PILOT_AUTO_RENEW_STRESS_ALLOWED=true` to bypass the freeze entirely (disabled by default).
+
+### Gap 2 — Max-loss circuit breaker
+
+A platform-wide protection against runaway losses. The breaker observes Deribit equity each hedge-management cycle (default 60s) and tracks the rolling-window peak. When current equity drops below the peak by more than `PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT` (default 50%), the breaker trips and the activate path returns 503 with `reason: "circuit_breaker_active"` for any new protection sales until either:
+- An operator manually un-trips via `POST /pilot/admin/circuit-breaker/reset`
+- The cooldown elapses (`PILOT_CIRCUIT_BREAKER_COOLDOWN_MS`, default 4h)
+
+Existing protections (active, triggered, in-flight TP) are unaffected.
+
+**Cold-start guard:** `PILOT_CIRCUIT_BREAKER_MIN_SAMPLES` (default 4) prevents false trips before the breaker has enough history.
+
+**Observe-only:** set `PILOT_CIRCUIT_BREAKER_ENFORCE=false` for staging — the breaker still observes and logs, but never blocks new sales.
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT` | `0.5` | Fractional drawdown that trips the breaker |
+| `PILOT_CIRCUIT_BREAKER_WINDOW_MS` | `86400000` (24h) | Rolling window for peak calculation |
+| `PILOT_CIRCUIT_BREAKER_COOLDOWN_MS` | `14400000` (4h) | Auto-reset window; set `0` for manual-only |
+| `PILOT_CIRCUIT_BREAKER_MIN_SAMPLES` | `4` | Cold-start guard |
+| `PILOT_CIRCUIT_BREAKER_ENFORCE` | `true` | Set `false` for observe-only |
+
+**Trip alerts:** when the breaker fires, a `circuit_breaker_tripped` alert is dispatched at `critical` level through the R7 alert dispatcher (Telegram / Slack / Discord / generic webhook, whichever is configured).
 
 ---
 
