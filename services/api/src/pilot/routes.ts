@@ -5036,6 +5036,89 @@ export const registerPilotRoutes = async (
     return { status: "ok", protection, ledger };
   });
 
+  /**
+   * GET /pilot/admin/protections/:id/lifecycle
+   *
+   * Comprehensive read-only diagnostic for a single protection's entire
+   * lifecycle. Combines:
+   *   - protection record (status, sl, notional, entry, floor, strike, expiry, metadata)
+   *   - ledger entries (premium_due, premium_settled, payout_due, payout_settled)
+   *   - venue executions (open + close fills, prices, fees, raw response details)
+   *   - price snapshots (entry, mid-cycle, expiry/trigger snapshots)
+   *
+   * Used by scripts/pilot-trade-investigate.sh to produce a readable
+   * timeline for a specific protection. Especially useful for
+   * triggered + TP-sold trades where we want to understand why TP
+   * recovered what it recovered.
+   *
+   * Sample use: investigating the c84dbbe9 trade (first SHORT 2%
+   * trigger in production; recovery 8% vs R1 baseline 68%).
+   */
+  app.get("/pilot/admin/protections/:id/lifecycle", async (req, reply) => {
+    const params = req.params as { id: string };
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protection, resolveTenantScopeHash())) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    const [ledger, executionsResult, snapshotsResult] = await Promise.all([
+      listLedgerForProtection(pool, params.id),
+      pool.query(
+        `SELECT id, venue, status, quote_id, instrument_id, side, quantity, execution_price,
+                premium, executed_at, external_order_id, external_execution_id, details, created_at
+           FROM pilot_venue_executions
+          WHERE protection_id = $1
+          ORDER BY created_at ASC`,
+        [params.id]
+      ),
+      pool.query(
+        `SELECT id, snapshot_type, price, market_id, price_source, price_source_detail,
+                price_timestamp, created_at
+           FROM pilot_price_snapshots
+          WHERE protection_id = $1
+          ORDER BY created_at ASC`,
+        [params.id]
+      )
+    ]);
+    return {
+      status: "ok",
+      protection,
+      ledger,
+      executions: executionsResult.rows.map((row: Record<string, unknown>) => ({
+        id: String(row.id),
+        venue: String(row.venue),
+        status: String(row.status),
+        quoteId: String(row.quote_id || ""),
+        instrumentId: String(row.instrument_id || ""),
+        side: String(row.side || ""),
+        quantity: String(row.quantity || ""),
+        executionPrice: String(row.execution_price || ""),
+        premium: String(row.premium || ""),
+        executedAt: row.executed_at ? new Date(String(row.executed_at)).toISOString() : null,
+        externalOrderId: String(row.external_order_id || ""),
+        externalExecutionId: String(row.external_execution_id || ""),
+        details: row.details || {},
+        createdAt: row.created_at ? new Date(String(row.created_at)).toISOString() : null
+      })),
+      priceSnapshots: snapshotsResult.rows.map((row: Record<string, unknown>) => ({
+        id: String(row.id),
+        snapshotType: String(row.snapshot_type),
+        price: String(row.price || ""),
+        marketId: String(row.market_id || ""),
+        priceSource: String(row.price_source || ""),
+        priceSourceDetail: String(row.price_source_detail || ""),
+        priceTimestamp: row.price_timestamp ? new Date(String(row.price_timestamp)).toISOString() : null,
+        createdAt: row.created_at ? new Date(String(row.created_at)).toISOString() : null
+      }))
+    };
+  });
+
   app.post("/pilot/internal/protections/:id/resolve-expiry", async (req, reply) => {
     const allowed = await requireInternalOrAdmin(req, reply);
     if (!allowed) return;
