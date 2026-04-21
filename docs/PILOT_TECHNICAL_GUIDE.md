@@ -178,22 +178,33 @@ The widget displays a small "Volatility: Low / Moderate / Elevated / High" label
 3. Filter by expiry window: `[now + max(8h, tenor × 0.5), now + tenor + 2 days]`.
 4. For trigger-aligned mode (`PILOT_STRIKE_SELECTION_MODE=trigger_aligned`): filter strikes within ±0.5% of trigger.
 5. Sort with asymmetric tenor penalty (too-short expiry penalized 3×).
-6. ITM preference for `drawdownFloorPct ≤ 0.025`: puts at/above the trigger receive a `-2.0` sort bonus. Of the launched tiers, only **2% SL** satisfies this condition.
+6. ITM preference for `drawdownFloorPct ≤ 0.025`: trigger-ITM strikes (puts at/above trigger, OR calls at/below trigger) receive a `-2.0` sort bonus. Applies to **both LONG and SHORT** protection on the 2% tier.
 
 ### Phase B — Order Book Scoring
 
 1. Fetch order books for top 8 candidates.
-2. Score: `costScore = ask + strikeDist × 0.5`.
-3. ITM bonus: `-0.002` for ITM candidates when `preferItm` is true.
-4. Cost cap (soft): if `hedgeCost > clientPremium`, add `(hedgeCost − clientPremium) / clientPremium × 0.5` to `costScore`.
+2. Score: `costScore = ask + strikeDist × strikeDistCoefficient`.
+3. **Tier-aware ITM bonus** (when `preferItm` fires):
+   - 2% tier (`drawdownFloorPct ≤ 0.02`): `costScore -= 0.010`, `strikeDistCoefficient = 0.3`, ITM cost-cap penalty multiplier `0.25` (vs default `0.5`)
+   - 2-2.5% tier band (`drawdownFloorPct 0.02-0.025`): `costScore -= 0.005`, default coefficients
+   - Above 2.5%: legacy fallback `costScore -= 0.002`
+4. Cost cap (soft): if `hedgeCost > clientPremium`, add `(hedgeCost − clientPremium) / clientPremium × penaltyMultiplier` to `costScore` (penaltyMultiplier reduced for trigger-ITM strikes on the 2% tier — see #3).
 5. Winner: lowest `costScore`. Logged as `[OptionSelection] WINNER:` with margin %, with `⚠ NEGATIVE_MARGIN` annotation when applicable.
 
 ### Key Parameters
 
-- `preferItm`: true when `drawdownFloorPct ≤ 0.025` and option type is put.
+- `preferItm`: true when `drawdownFloorPct ≤ 0.025` (both LONG and SHORT — fixed 2026-04-21; previously hardcoded to put-only).
 - `strikeSelectionMode`: `trigger_aligned` (aligns strikes to trigger price).
 - `maxTenorDriftDays`: 1.5 (max allowed deviation from requested tenor).
 - `quotePolicy`: `ask_or_mark_fallback` (use ask price, fall back to mark if no ask).
+
+### Why aggressive ITM on 2% specifically
+
+The 2% strike-grid dead zone (gap between trigger and next available OTM strike) is a meaningful fraction of the trigger move (~20% on $20k notional). When BTC barely grazes the trigger and stalls or retraces, an OTM hedge captures ~0% of the payout. Trigger-ITM strikes eliminate the dead zone — the hedge is already in the money the moment the trigger fires.
+
+Trade-off: ITM strikes cost ~30-50% more upfront. Mean P&L impact is small (~−$2/trade in calm regime per modeling); the primary justification is **variance reduction** on barely-graze trigger events, which are the worst single-trade outcomes for the platform.
+
+See `docs/pilot-reports/short_protection_logic_audit.md` for the full audit that motivated this change.
 
 If no candidate strike exists in the trigger band under `trigger_aligned` mode, the quote endpoint throws `deribit_quote_unavailable:trigger_strike_unavailable`.
 
