@@ -36,6 +36,43 @@ import { getSpotMovePct, recordSpotSample } from "./spotHistory";
  *   PILOT_TP_GAP3_DOWN_PCT       default 5.0 (% spot fell over window)
  *   PILOT_TP_GAP3_WINDOW_HOURS   default 24
  *   PILOT_TP_GAP3_SHRINK_FACTOR  default 0.5 (multiply cooling by this)
+ *
+ * Gap 5 — SHORT-specific TP rules (added 2026-04-21 after the c84dbbe9
+ * trade exposed that LONG-style "wait for bounce" behavior is wrong for
+ * SHORT triggers, which historically continue UP rather than retrace).
+ *
+ *   Gap 5a — SHORT barely-graze fast exit:
+ *     If a SHORT-protection trigger fires and BTC has only moved past
+ *     the trigger by <gap5GrazePct (default 0.3%) AND we're still in
+ *     the early window (<gap5GrazeWindowMin, default 30 min) AND the
+ *     option still has value (>=gap5MinValueUsd), sell IMMEDIATELY.
+ *     Captures the tiny intrinsic value before time decay erodes it,
+ *     based on the empirical observation that barely-graze SHORT
+ *     triggers tend to retrace rather than bounce favorably.
+ *
+ *   Gap 5b — SHORT clear-breakout extended hold:
+ *     If a SHORT-protection trigger fires and BTC has moved >=
+ *     gap5BreakoutPct (default 1.0%) past trigger AND option value is
+ *     still rising (intrinsic >= gap5BreakoutMinIntrinsic, default
+ *     $50), extend cooling window by gap5BreakoutHoldMultiplier
+ *     (default 1.5×). Lets us ride the momentum continuation that's
+ *     historically common after SHORT breakouts.
+ *
+ *   PILOT_TP_GAP5_ENFORCE              default 'false' (observe-only)
+ *   PILOT_TP_GAP5_GRAZE_PCT            default 0.3
+ *   PILOT_TP_GAP5_GRAZE_WINDOW_MIN     default 30
+ *   PILOT_TP_GAP5_GRAZE_MIN_VALUE_USD  default 15
+ *   PILOT_TP_GAP5_BREAKOUT_PCT         default 1.0
+ *   PILOT_TP_GAP5_BREAKOUT_MIN_INTRINSIC_USD default 50
+ *   PILOT_TP_GAP5_BREAKOUT_HOLD_MULT   default 1.5
+ *
+ *   Validation plan: ship observe-only. After n>=5 SHORT triggers the
+ *   per-direction recovery roll-up in PR #79's Triggered Trades tab
+ *   will show whether SHORT recovery is materially worse than LONG
+ *   (indicating Gap 5 is needed) or comparable (indicating LONG TP is
+ *   already adequate for SHORT). If indicated, flip enforce to true
+ *   one trade at a time and compare recovery vs the observe-only
+ *   baseline.
  */
 const TP_GAP_DEFAULTS = {
   gap1: {
@@ -49,6 +86,15 @@ const TP_GAP_DEFAULTS = {
     downPct: 5.0,
     windowHours: 24,
     shrinkFactor: 0.5
+  },
+  gap5: {
+    enforce: false,
+    grazePct: 0.3,
+    grazeWindowMin: 30,
+    grazeMinValueUsd: 15,
+    breakoutPct: 1.0,
+    breakoutMinIntrinsicUsd: 50,
+    breakoutHoldMult: 1.5
   }
 };
 
@@ -65,6 +111,41 @@ const resolveGap3Config = () => ({
   windowHours: Number(process.env.PILOT_TP_GAP3_WINDOW_HOURS || TP_GAP_DEFAULTS.gap3.windowHours),
   shrinkFactor: Number(process.env.PILOT_TP_GAP3_SHRINK_FACTOR || TP_GAP_DEFAULTS.gap3.shrinkFactor)
 });
+
+const resolveGap5Config = () => ({
+  enforce: String(process.env.PILOT_TP_GAP5_ENFORCE || "").toLowerCase() === "true",
+  grazePct: Number(process.env.PILOT_TP_GAP5_GRAZE_PCT || TP_GAP_DEFAULTS.gap5.grazePct),
+  grazeWindowMin: Number(process.env.PILOT_TP_GAP5_GRAZE_WINDOW_MIN || TP_GAP_DEFAULTS.gap5.grazeWindowMin),
+  grazeMinValueUsd: Number(process.env.PILOT_TP_GAP5_GRAZE_MIN_VALUE_USD || TP_GAP_DEFAULTS.gap5.grazeMinValueUsd),
+  breakoutPct: Number(process.env.PILOT_TP_GAP5_BREAKOUT_PCT || TP_GAP_DEFAULTS.gap5.breakoutPct),
+  breakoutMinIntrinsicUsd: Number(process.env.PILOT_TP_GAP5_BREAKOUT_MIN_INTRINSIC_USD || TP_GAP_DEFAULTS.gap5.breakoutMinIntrinsicUsd),
+  breakoutHoldMult: Number(process.env.PILOT_TP_GAP5_BREAKOUT_HOLD_MULT || TP_GAP_DEFAULTS.gap5.breakoutHoldMult)
+});
+
+/**
+ * Compute spot move BEYOND trigger price (signed: positive = past
+ * trigger in adverse direction, negative = retraced back to safe side).
+ * Pulled from the trigger snapshot stored in metadata at trigger fire
+ * time so we can measure "where was BTC when this fired" against
+ * "where is BTC now."
+ */
+const computeSpotMoveThroughTriggerPct = (
+  protectionType: string,
+  triggerReferencePrice: number | null,
+  triggerPrice: number,
+  currentSpot: number
+): number | null => {
+  if (!triggerReferencePrice || triggerReferencePrice <= 0) return null;
+  if (!triggerPrice || triggerPrice <= 0) return null;
+  // We use CURRENT spot vs trigger price (not vs the trigger reference
+  // spot). The "barely_graze vs clear_breakout" question is "how far
+  // past the trigger has BTC ACTUALLY GONE", evaluated continuously,
+  // not just at the moment of fire.
+  const moveBeyondTrigger = protectionType === "short"
+    ? currentSpot - triggerPrice
+    : triggerPrice - currentSpot;
+  return (moveBeyondTrigger / triggerPrice) * 100;
+};
 
 type ManagedHedge = {
   protectionId: string;
@@ -416,6 +497,7 @@ export const runHedgeManagementCycle = async (params: {
   recordSpotSample(params.currentSpot);
   const gap1Cfg = resolveGap1Config();
   const gap3Cfg = resolveGap3Config();
+  const gap5Cfg = resolveGap5Config();
   // Compute the lookback once at top of cycle so every protection
   // sees the same value (cleaner audit log).
   const gap1MovePct = getSpotMovePct(gap1Cfg.windowHours * 3600_000);
@@ -557,6 +639,92 @@ export const runHedgeManagementCycle = async (params: {
           );
         }
       }
+
+      // ── Gap 5: SHORT-specific TP rules ──
+      // Only evaluated when protectionType === 'short'. Two sub-rules:
+      //   5a) BARELY-GRAZE FAST EXIT: if BTC has barely crossed the
+      //       trigger (< grazePct past it) AND we're early
+      //       (< grazeWindowMin since trigger) AND option still has
+      //       value, sell now. This avoids the c84dbbe9 trap where
+      //       waiting for a bounce just lets time decay erode the
+      //       small intrinsic value the trigger captured.
+      //   5b) CLEAR-BREAKOUT EXTENDED HOLD: if BTC has moved decisively
+      //       past trigger (>= breakoutPct) AND option intrinsic is
+      //       healthy, extend cooling by breakoutHoldMult to let the
+      //       continuation play out.
+      // Default: observe-only. Validation criteria documented in the
+      // configuration block above.
+      let gap5BreakoutModifiedCooling = false;
+      if (hedge.protectionType === "short") {
+        const triggerRefRaw = (hedge.metadata as any)?.triggerReferencePrice;
+        const triggerRefPrice = Number(triggerRefRaw);
+        const triggerPriceForGap5 = hedge.floorPrice;
+        const spotMoveThroughTriggerPct = computeSpotMoveThroughTriggerPct(
+          hedge.protectionType,
+          Number.isFinite(triggerRefPrice) ? triggerRefPrice : null,
+          triggerPriceForGap5,
+          params.currentSpot
+        );
+        const minutesSinceTrigger = hoursSinceTrigger * 60;
+
+        // Gap 5a — BARELY-GRAZE FAST EXIT
+        const gap5aWouldFire =
+          spotMoveThroughTriggerPct !== null &&
+          spotMoveThroughTriggerPct >= 0 &&
+          spotMoveThroughTriggerPct < gap5Cfg.grazePct &&
+          minutesSinceTrigger < gap5Cfg.grazeWindowMin &&
+          optionVal.totalValue >= gap5Cfg.grazeMinValueUsd;
+        if (gap5aWouldFire) {
+          if (gap5Cfg.enforce) {
+            console.log(
+              `[HedgeManager] Gap 5a ENFORCE: ${hedge.protectionId} SHORT barely-graze ` +
+              `(spot ${spotMoveThroughTriggerPct.toFixed(3)}% past trigger, ${minutesSinceTrigger.toFixed(0)}min in, ` +
+              `value=$${optionVal.totalValue.toFixed(2)}). Selling immediately to capture intrinsic before retrace.`
+            );
+            const sellStatus = await executeSell(hedge, "short_barely_graze_fast_exit", optionVal, params.sellOption, params.pool);
+            if (sellStatus === "sold") { result.tpSold++; }
+            else if (sellStatus === "no_bid") { result.noBidRetries++; }
+            else { result.errors++; }
+            continue;
+          } else {
+            console.log(
+              `[HedgeManager] Gap 5a OBSERVE: ${hedge.protectionId} SHORT barely-graze would fast-exit ` +
+              `(spot ${spotMoveThroughTriggerPct.toFixed(3)}% past trigger, ${minutesSinceTrigger.toFixed(0)}min in, ` +
+              `value=$${optionVal.totalValue.toFixed(2)}; observe-only; set PILOT_TP_GAP5_ENFORCE=true to act)`
+            );
+          }
+        }
+
+        // Gap 5b — CLEAR-BREAKOUT EXTENDED HOLD
+        const gap5bWouldFire =
+          spotMoveThroughTriggerPct !== null &&
+          spotMoveThroughTriggerPct >= gap5Cfg.breakoutPct &&
+          optionVal.intrinsicValue >= gap5Cfg.breakoutMinIntrinsicUsd &&
+          hoursSinceTrigger < effectiveCooling * gap5Cfg.breakoutHoldMult;
+        if (gap5bWouldFire) {
+          const extendedCooling = effectiveCooling * gap5Cfg.breakoutHoldMult;
+          if (gap5Cfg.enforce) {
+            console.log(
+              `[HedgeManager] Gap 5b ENFORCE: ${hedge.protectionId} SHORT clear-breakout ` +
+              `(spot ${spotMoveThroughTriggerPct.toFixed(2)}% past trigger, intrinsic=$${optionVal.intrinsicValue.toFixed(2)}). ` +
+              `Cooling extended ${effectiveCooling.toFixed(2)}h → ${extendedCooling.toFixed(2)}h.`
+            );
+            effectiveCooling = extendedCooling;
+            gap5BreakoutModifiedCooling = true;
+          } else {
+            console.log(
+              `[HedgeManager] Gap 5b OBSERVE: ${hedge.protectionId} SHORT clear-breakout would extend cooling ` +
+              `${effectiveCooling.toFixed(2)}h → ${extendedCooling.toFixed(2)}h ` +
+              `(spot ${spotMoveThroughTriggerPct.toFixed(2)}% past trigger, intrinsic=$${optionVal.intrinsicValue.toFixed(2)}; ` +
+              `observe-only; set PILOT_TP_GAP5_ENFORCE=true to act)`
+            );
+          }
+        }
+      }
+      // Suppress unused-var lint noise on the audit flag — it's there
+      // so future TP-decision logging can include the fact that cooling
+      // was lengthened by Gap 5b vs the standard tree.
+      void gap5BreakoutModifiedCooling;
 
       let shouldSell = false;
       let reason = "";
