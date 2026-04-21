@@ -2046,9 +2046,28 @@ export const registerPilotRoutes = async (
             p.expiry_at, p.executed_at, p.created_at, p.side,
             p.metadata
           FROM pilot_protections p
+          -- Only protections that ACTUALLY triggered (BTC crossed the
+          -- trigger price). Excludes protections that ran out the clock
+          -- without triggering — those are "active → expired" lifecycle
+          -- not "triggered" trades and shouldn't appear in this tab.
+          --
+          -- A protection is counted as triggered iff:
+          --   - status is currently 'triggered' or 'reconcile_pending', OR
+          --   - the trigger monitor stamped metadata.triggeredAt (or the
+          --     legacy field metadata.triggerAt — same event, different
+          --     field name across versions), OR
+          --   - hedge_status reached 'tp_sold' (only happens after a real
+          --     trigger fired, never after a no-op expiry)
+          --
+          -- Critically: hedge_status='expired_settled' and 'expired_worthless'
+          -- are EXCLUDED unless one of the trigger markers is also present.
+          -- Those statuses fire for non-triggered protections that simply
+          -- ran out their 1-day expiry. Bug fix 2026-04-22 — was producing
+          -- ghost rows on the Triggered Trades tab for normal expirations.
           WHERE p.status IN ('triggered', 'reconcile_pending')
              OR (p.metadata->>'triggeredAt') IS NOT NULL
-             OR (p.hedge_status IN ('tp_sold', 'expired_settled', 'expired_worthless'))
+             OR (p.metadata->>'triggerAt') IS NOT NULL
+             OR p.hedge_status = 'tp_sold'
           ORDER BY COALESCE(
             (p.metadata->>'triggeredAt')::timestamptz,
             p.executed_at,
