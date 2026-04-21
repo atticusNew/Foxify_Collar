@@ -377,6 +377,9 @@ Separate system for institutional daily protection ($1M+ notional). Runs on the 
 |--------|------|---------|
 | GET    | `/pilot/admin/metrics`                                  | Aggregate P&L and metrics |
 | GET    | `/pilot/admin/diagnostics/execution-quality`            | Fill rates and slippage |
+| GET    | `/pilot/admin/diagnostics/per-trade-fills`              | Per-row fill detail with quoted ask vs fill price (slippage forensics) |
+| GET    | `/pilot/admin/diagnostics/triggered-protections`        | One row per triggered protection — strike geometry (ITM/OTM), trigger pattern (barely-graze / shallow / clear-breakout), recovery ratio vs R1 baseline, per-direction summary |
+| GET    | `/pilot/admin/protections/:id/lifecycle`                | Full per-protection timeline (status, ledger, executions, snapshots) |
 | POST   | `/pilot/admin/protections/:id/premium-settled`          | Mark premium as settled |
 | POST   | `/pilot/admin/protections/:id/payout-settled`           | Mark payout as settled |
 | GET    | `/pilot/admin/protections/:id/ledger`                   | Protection ledger entries |

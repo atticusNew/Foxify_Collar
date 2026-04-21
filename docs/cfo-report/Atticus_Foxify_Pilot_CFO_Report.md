@@ -480,7 +480,7 @@ Five signals where deviation from baseline expectation should trigger investigat
 - **Watch trigger:** average strike gap > +$200 OTM over 5+ fills on 2% tier. This indicates either the ITM preference isn't firing (regression check) OR Deribit liquidity at trigger-ITM strikes has degraded (operational issue).
 - **Per-direction watch:** if SHORT-side average gap is materially worse (more positive) than LONG-side average gap by > $200 over 5+ fills each, investigate — could indicate call-side liquidity has degraded or a bug specific to SHORT selection.
 - **What it means:** the strike-floor dead zone is the structural driver behind low-recovery TP outcomes (see §11.1). Trending negative is healthy; trending positive is the root cause of unexpected single-trade losses.
-- **Action to consider:** verify ITM preference is firing in `[OptionSelection]` log lines (look for `itmBonus=0.010` on 2% tier trades), or run `./scripts/pilot-trade-investigate <protection-id>` for any flagged trade to see the strike vs trigger geometry.
+- **Action to consider:** verify ITM preference is firing in `[OptionSelection]` log lines (look for `itmBonus=0.010` on 2% tier trades), or run `./scripts/pilot-trade-investigate <protection-id>` for any flagged trade to see the strike vs trigger geometry. The Admin Dashboard's **Triggered Trades** tab also shows ITM/OTM badges per trade and the per-direction recovery roll-up at-a-glance.
 
 ### 11.3 Tier mix concentration
 

@@ -79,6 +79,49 @@ type Alert = {
   details?: Record<string, unknown>;
 };
 
+type TriggeredRow = {
+  id: string;
+  createdAt: string | null;
+  direction: "long" | "short";
+  slPct: number | null;
+  tierName: string | null;
+  protectedNotionalUsd: number;
+  entryPrice: number | null;
+  triggerPrice: number;
+  expiryAt: string | null;
+  status: string;
+  hedgeStatus: string | null;
+  selectedStrike: number | null;
+  strikeGapToTriggerUsd: number | null;
+  strikeIsItm: boolean;
+  triggeredAt: string | null;
+  soldAt: string | null;
+  timeFromTriggerToSellMin: number | null;
+  spotAtTrigger: number | null;
+  spotAtSell: number | null;
+  spotMoveThroughTriggerPct: number | null;
+  triggerPattern: "barely_graze" | "shallow" | "clear_breakout" | "unknown";
+  premiumCollectedUsd: number;
+  hedgeCostUsd: number;
+  hedgeRecoveryUsd: number;
+  payoutOwedUsd: number;
+  netPnlUsd: number;
+  recoveryRatioPct: number | null;
+};
+
+type TriggeredSummary = {
+  totalTriggered: number;
+  totalSold: number;
+  avgRecoveryRatioPct: number | null;
+  avgRecoveryRatioLongPct: number | null;
+  avgRecoveryRatioShortPct: number | null;
+  avgNetPnlUsd: number | null;
+  netPnlUsdSum: number;
+  baselineRecoveryRatioPct: number;
+  patternBreakdown: Record<string, number>;
+  itmStrikeRatePct: number | null;
+};
+
 type TreasurySnapshot = {
   balance?: string;
   currency?: string;
@@ -249,12 +292,15 @@ function Dashboard({ token }: { token: string }) {
   } | null>(null);
   const [settlementLoading, setSettlementLoading] = useState(false);
 
-  const [activePanel, setActivePanel] = useState<"health" | "protections" | "quality" | "alerts" | "config">("health");
+  const [activePanel, setActivePanel] = useState<"health" | "protections" | "triggered" | "quality" | "alerts" | "config">("health");
 
   // Config display
   const [healthConfig, setHealthConfig] = useState<Record<string, unknown> | null>(null);
 
   const [protectionsList, setProtectionsList] = useState<ProtectionSummary[]>([]);
+  const [triggeredRows, setTriggeredRows] = useState<TriggeredRow[]>([]);
+  const [triggeredSummary, setTriggeredSummary] = useState<TriggeredSummary | null>(null);
+  const [triggeredDirectionFilter, setTriggeredDirectionFilter] = useState<"all" | "long" | "short">("all");
   // Default scope is "open" so cleared/expired/cancelled rows don't clutter
   // the protections table. Toggle "Show all" to see lifecycle history.
   const [protectionsScope, setProtectionsScope] = useState<"open" | "all">("open");
@@ -280,13 +326,17 @@ function Dashboard({ token }: { token: string }) {
 
   const refresh = useCallback(async () => {
     try {
-      const [healthRes, statusRes, metricsRes, qualityRes, alertsRes, protectionsRes] = await Promise.allSettled([
+      const [healthRes, statusRes, metricsRes, qualityRes, alertsRes, protectionsRes, triggeredRes] = await Promise.allSettled([
         adminApi<PlatformHealth>("/pilot/health", token).catch(() => null),
         adminApi<MonitorStatus>("/pilot/monitor/status", token),
         adminApi<{ metrics: AdminMetrics }>("/pilot/admin/metrics?scope=all", token),
         adminApi<{ rows: ExecutionQuality[] }>("/pilot/admin/diagnostics/execution-quality?lookbackDays=30", token),
         adminApi<{ alerts: Alert[] }>("/pilot/monitor/alerts?limit=20", token),
         adminApi<{ status: string; protections: ProtectionSummary[] }>(`/pilot/protections?limit=200&scope=${protectionsScope}`, token),
+        adminApi<{ rows: TriggeredRow[]; summary: TriggeredSummary }>(
+          `/pilot/admin/diagnostics/triggered-protections?limit=50&direction=${triggeredDirectionFilter}`,
+          token
+        ).catch(() => null),
       ]);
 
       if (healthRes.status === "fulfilled" && healthRes.value) {
@@ -298,14 +348,18 @@ function Dashboard({ token }: { token: string }) {
       if (qualityRes.status === "fulfilled") setExecQuality(qualityRes.value.rows || []);
       if (alertsRes.status === "fulfilled") setAlerts(alertsRes.value.alerts || []);
       if (protectionsRes.status === "fulfilled") setProtectionsList(protectionsRes.value.protections || []);
+      if (triggeredRes.status === "fulfilled" && triggeredRes.value) {
+        setTriggeredRows(triggeredRes.value.rows || []);
+        setTriggeredSummary(triggeredRes.value.summary || null);
+      }
       setLastRefresh(new Date().toLocaleTimeString());
-      const failures = [healthRes, statusRes, metricsRes, qualityRes, alertsRes, protectionsRes]
+      const failures = [healthRes, statusRes, metricsRes, qualityRes, alertsRes, protectionsRes, triggeredRes]
         .filter(r => r.status === "rejected");
       setError(failures.length > 0 ? `${failures.length} endpoint(s) unavailable` : null);
     } catch (e: any) {
       setError(e.message);
     }
-  }, [token, protectionsScope]);
+  }, [token, protectionsScope, triggeredDirectionFilter]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
@@ -370,6 +424,7 @@ function Dashboard({ token }: { token: string }) {
   const panels = [
     { id: "health" as const, label: "Health" },
     { id: "protections" as const, label: "Protections" },
+    { id: "triggered" as const, label: "Triggered Trades" },
     { id: "quality" as const, label: "Execution" },
     { id: "alerts" as const, label: "Alerts" },
     { id: "config" as const, label: "Config" },
@@ -794,6 +849,227 @@ function Dashboard({ token }: { token: string }) {
             ) : (
               <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
                 No protections found
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── Panel: Triggered Trades ─── */}
+        {activePanel === "triggered" && (
+          <div className="card card-wide">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div className="title" style={{ fontSize: 13 }}>Triggered Trades</div>
+              <div style={{ display: "flex", gap: 6, fontSize: 11 }}>
+                {(["all", "long", "short"] as const).map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setTriggeredDirectionFilter(d)}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 6,
+                      fontSize: 11,
+                      border: `1px solid ${triggeredDirectionFilter === d ? "var(--accent)" : "var(--border)"}`,
+                      background: triggeredDirectionFilter === d ? "rgba(99,179,237,0.1)" : "transparent",
+                      color: triggeredDirectionFilter === d ? "var(--accent)" : "var(--muted)",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {d === "all" ? "All" : d === "long" ? "LONG" : "SHORT"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Summary strip */}
+            {triggeredSummary && triggeredSummary.totalTriggered > 0 && (
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                gap: 8,
+                padding: 10,
+                background: "var(--card-2)",
+                borderRadius: 8,
+                marginBottom: 12,
+                fontSize: 11
+              }}>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>Triggered / Sold</div>
+                  <div style={{ fontWeight: 600 }}>{triggeredSummary.totalTriggered} / {triggeredSummary.totalSold}</div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>Avg Recovery</div>
+                  <div style={{
+                    fontWeight: 600,
+                    color: triggeredSummary.avgRecoveryRatioPct === null
+                      ? "var(--muted)"
+                      : triggeredSummary.avgRecoveryRatioPct >= triggeredSummary.baselineRecoveryRatioPct - 10
+                        ? "var(--success)"
+                        : triggeredSummary.avgRecoveryRatioPct >= 30
+                          ? "#f2a65a"
+                          : "var(--danger)"
+                  }}>
+                    {triggeredSummary.avgRecoveryRatioPct !== null ? `${triggeredSummary.avgRecoveryRatioPct.toFixed(1)}%` : "—"}
+                    <span style={{ fontSize: 9, color: "var(--muted)", marginLeft: 4, fontWeight: 400 }}>
+                      vs {triggeredSummary.baselineRecoveryRatioPct}% R1
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>LONG Recovery</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {triggeredSummary.avgRecoveryRatioLongPct !== null ? `${triggeredSummary.avgRecoveryRatioLongPct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>SHORT Recovery</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {triggeredSummary.avgRecoveryRatioShortPct !== null ? `${triggeredSummary.avgRecoveryRatioShortPct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>Net P&amp;L (sum)</div>
+                  <div style={{
+                    fontWeight: 600,
+                    color: triggeredSummary.netPnlUsdSum >= 0 ? "var(--success)" : "var(--danger)"
+                  }}>
+                    {triggeredSummary.netPnlUsdSum >= 0 ? "+" : ""}${triggeredSummary.netPnlUsdSum.toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>ITM Strike Rate</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {triggeredSummary.itmStrikeRatePct !== null ? `${triggeredSummary.itmStrikeRatePct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>Pattern Mix</div>
+                  <div style={{ fontWeight: 600, fontSize: 10 }}>
+                    {Object.entries(triggeredSummary.patternBreakdown)
+                      .map(([k, v]) => `${k.replace("_", " ")}:${v}`)
+                      .join(" · ") || "—"}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {triggeredRows.length > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      {[
+                        "Triggered",
+                        "Dir / SL",
+                        "Notional",
+                        "Trigger / Strike",
+                        "ITM?",
+                        "Pattern",
+                        "Sold After",
+                        "Recovery",
+                        "Net P&L",
+                        "Status"
+                      ].map((h) => (
+                        <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {triggeredRows.map((r) => (
+                      <tr key={r.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <td style={{ padding: "8px 6px", color: "var(--muted)", fontFamily: "monospace", fontSize: 10 }}>
+                          {r.triggeredAt ? new Date(r.triggeredAt).toLocaleString([], {
+                            month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+                          }) : "—"}
+                          <div style={{ fontSize: 9, color: "var(--muted)", marginTop: 2 }}>
+                            {r.id.slice(0, 8)}
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          <span style={{
+                            fontWeight: 600,
+                            color: r.direction === "short" ? "#f2a65a" : "var(--accent)"
+                          }}>
+                            {r.direction.toUpperCase()}
+                          </span>
+                          <span style={{ color: "var(--muted)", marginLeft: 4 }}>
+                            {r.slPct !== null ? `${r.slPct}%` : "—"}
+                          </span>
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>${r.protectedNotionalUsd.toLocaleString()}</td>
+                        <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>
+                          ${Math.round(r.triggerPrice).toLocaleString()}
+                          <div style={{ color: "var(--muted)", marginTop: 2 }}>
+                            {r.selectedStrike !== null ? `K=$${Math.round(r.selectedStrike).toLocaleString()}` : "—"}
+                            {r.strikeGapToTriggerUsd !== null && (
+                              <span style={{ marginLeft: 4 }}>
+                                ({r.strikeGapToTriggerUsd >= 0 ? "+" : ""}${Math.round(r.strikeGapToTriggerUsd)})
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          <span style={{
+                            fontSize: 10, fontWeight: 600,
+                            color: r.strikeIsItm ? "var(--success)" : "#f2a65a"
+                          }}>
+                            {r.strikeIsItm ? "ITM" : "OTM"}
+                          </span>
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          <span style={{
+                            fontSize: 10,
+                            color: r.triggerPattern === "clear_breakout"
+                              ? "var(--success)"
+                              : r.triggerPattern === "barely_graze"
+                                ? "var(--danger)"
+                                : "var(--muted)"
+                          }}>
+                            {r.triggerPattern.replace("_", " ")}
+                          </span>
+                          {r.spotMoveThroughTriggerPct !== null && (
+                            <div style={{ fontSize: 9, color: "var(--muted)" }}>
+                              {r.spotMoveThroughTriggerPct >= 0 ? "+" : ""}{r.spotMoveThroughTriggerPct.toFixed(2)}%
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          {r.timeFromTriggerToSellMin !== null
+                            ? r.timeFromTriggerToSellMin < 60
+                              ? `${r.timeFromTriggerToSellMin}m`
+                              : `${(r.timeFromTriggerToSellMin / 60).toFixed(1)}h`
+                            : <span style={{ color: "var(--muted)" }}>—</span>}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          {r.recoveryRatioPct !== null ? (
+                            <span style={{
+                              fontWeight: 600,
+                              color: r.recoveryRatioPct >= 50 ? "var(--success)"
+                                : r.recoveryRatioPct >= 20 ? "#f2a65a"
+                                : "var(--danger)"
+                            }}>
+                              {r.recoveryRatioPct.toFixed(0)}%
+                            </span>
+                          ) : <span style={{ color: "var(--muted)" }}>—</span>}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          <span style={{
+                            fontWeight: 600,
+                            color: r.netPnlUsd >= 0 ? "var(--success)" : "var(--danger)"
+                          }}>
+                            {r.netPnlUsd >= 0 ? "+" : ""}${r.netPnlUsd.toFixed(0)}
+                          </span>
+                        </td>
+                        <td style={{ padding: "8px 6px", fontSize: 10, color: "var(--muted)" }}>
+                          {r.hedgeStatus || r.status}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
+                No triggered trades yet
               </div>
             )}
           </div>
