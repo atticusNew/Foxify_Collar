@@ -473,6 +473,14 @@ When BTC has moved **adversely** more than `movePct` over `windowHours` AND the 
 
 When BTC is down more than `downPct` over `windowHours`, halve (or scale by `shrinkFactor`) the cooling window for **long** protections. Reduces the wait time before `bounce_recovery` and `take_profit_prime` branches can fire during sustained downtrends. Doesn't apply to short protections — for shorts, a sustained BTC drop is favorable, not adverse.
 
+### Gap 5 — SHORT-specific TP rules (added 2026-04-21 after the c84dbbe9 trade)
+
+Two SHORT-only sub-rules that override / extend the standard TP decision tree. Motivation: BTC microstructure is asymmetric. LONG triggers tend to mean-revert (BTC drops then bounces — bounce_recovery captures value). SHORT triggers tend to either continue UP (momentum) or barely-graze and immediately retrace. The standard "wait for bounce" logic is wrong for SHORT — see `docs/pilot-reports/short_protection_logic_audit.md` F3.
+
+**Gap 5a — Barely-graze fast exit:** if BTC has crossed the SHORT trigger by less than `grazePct` (default 0.3%) AND we're inside the early window (`grazeWindowMin` minutes since trigger, default 30) AND the option still has value (`grazeMinValueUsd` default $15), sell IMMEDIATELY with reason `short_barely_graze_fast_exit`. Captures small intrinsic value before time decay erodes it.
+
+**Gap 5b — Clear-breakout extended hold:** if BTC has moved past the SHORT trigger by at least `breakoutPct` (default 1.0%) AND option intrinsic is healthy (`breakoutMinIntrinsicUsd` default $50), extend cooling window by `breakoutHoldMult` (default 1.5×). Lets us ride momentum continuation rather than selling at the standard cooling boundary.
+
 ### Configuration
 
 | Env var | Default | Purpose |
@@ -485,15 +493,30 @@ When BTC is down more than `downPct` over `windowHours`, halve (or scale by `shr
 | `PILOT_TP_GAP3_DOWN_PCT` | `5.0` | Spot drop % over the window that activates Gap 3 |
 | `PILOT_TP_GAP3_WINDOW_HOURS` | `24` | Lookback window for Gap 3 |
 | `PILOT_TP_GAP3_SHRINK_FACTOR` | `0.5` | Cooling-window multiplier when Gap 3 is active |
+| `PILOT_TP_GAP5_ENFORCE` | `false` | Set `true` to enforce; default observes only |
+| `PILOT_TP_GAP5_GRAZE_PCT` | `0.3` | Spot move % past trigger that qualifies as barely-graze |
+| `PILOT_TP_GAP5_GRAZE_WINDOW_MIN` | `30` | Early-window minutes since trigger for Gap 5a |
+| `PILOT_TP_GAP5_GRAZE_MIN_VALUE_USD` | `15` | Minimum option value to bother fast-selling |
+| `PILOT_TP_GAP5_BREAKOUT_PCT` | `1.0` | Spot move % past trigger that qualifies as clear-breakout |
+| `PILOT_TP_GAP5_BREAKOUT_MIN_INTRINSIC_USD` | `50` | Minimum option intrinsic for Gap 5b |
+| `PILOT_TP_GAP5_BREAKOUT_HOLD_MULT` | `1.5` | Cooling multiplier when Gap 5b extends hold |
 
 ### Observability
 
-Every cycle when either gap evaluates true, the hedge manager logs:
+Every cycle when any gap evaluates true, the hedge manager logs:
 
 - **Top-of-cycle (Gap 3 only)**: one summary line per cycle when active
-- **Per-hedge (both gaps)**: `[HedgeManager] Gap 1 OBSERVE` / `Gap 1 ENFORCE` / `Gap 3 OBSERVE` / `Gap 3 ENFORCE` lines per protection that would be affected
+- **Per-hedge**: `[HedgeManager] Gap 1 OBSERVE` / `Gap 1 ENFORCE` / `Gap 3 OBSERVE` / `Gap 3 ENFORCE` / `Gap 5a OBSERVE` / `Gap 5a ENFORCE` / `Gap 5b OBSERVE` / `Gap 5b ENFORCE` lines per protection that would be affected
 
 `OBSERVE` lines show the same data as `ENFORCE` lines. Counting `OBSERVE` lines in Render logs over the pilot window gives the calibration data needed to decide whether to flip enforce on.
+
+### Gap 5 validation plan
+
+1. Ship Gap 5 with `PILOT_TP_GAP5_ENFORCE=false` (default)
+2. Wait for n ≥ 5 SHORT triggered + sold trades
+3. Use Admin Dashboard → Triggered Trades tab → SHORT filter to compare per-direction recovery vs LONG R1 baseline (68.3%)
+4. If SHORT avg recovery is materially below LONG (say < 50%), set `PILOT_TP_GAP5_ENFORCE=true` — first-cycle effect should show up in next SHORT trigger's Render logs as `Gap 5a ENFORCE` lines
+5. If SHORT avg recovery is comparable to LONG even without Gap 5, leave it at observe-only and revisit thresholds based on the OBSERVE log distribution
 
 ---
 

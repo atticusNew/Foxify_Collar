@@ -461,6 +461,7 @@ Five signals where deviation from baseline expectation should trigger investigat
 - **Watch trigger:** if pilot data shows ratio dropping below 50% sustained, or below 35% in any stress event
 - **What it means:** structural Deribit spread cost is worse than expected; the §3 P&L numbers are too optimistic
 - **Action to consider:** raise the bounce-recovery floor (Lever 4) to filter out micro-sales that don't clear spread, or lift the per-tier concentration cap (Lever 2) to reduce simultaneous TP burden
+- **Per-direction watch (added 2026-04-21):** the platform now tracks SHORT vs LONG recovery separately in the Triggered Trades admin tab. If SHORT avg recovery sustains below 50% while LONG holds near 68%, that's the data signal to flip `PILOT_TP_GAP5_ENFORCE=true` (a SHORT-specific TP rule that's currently shipped in observe-only mode). Gap 5 has two sub-rules: barely-graze fast exit (sells immediately when BTC has only just crossed the trigger and is likely to retrace) and clear-breakout extended hold (lets momentum continuation play out beyond standard cooling). See PILOT_TECHNICAL_GUIDE §10c for thresholds.
 
 ### 11.2 Slippage drift
 
