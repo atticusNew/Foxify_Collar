@@ -536,8 +536,55 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       throw new Error("deribit_quote_unavailable:trigger_strike_unavailable");
     }
 
-    const preferItm = targetOptionType === "put" && (params.drawdownFloorPct ?? 0) > 0 && (params.drawdownFloorPct ?? 0) <= 0.025;
-    console.log(`[OptionSelection] preferItm=${preferItm} drawdownFloorPct=${params.drawdownFloorPct} triggerTarget=${triggerTarget} candidates=${candidates.length}`);
+    // ITM-strike preference for tight-SL hedges.
+    //
+    // Why: Deribit's strike grid creates a "dead zone" between the trigger
+    // price and the next available OTM strike (e.g., trigger $75,707, next
+    // call strike $76,000 = $292 gap). For tight-SL trades this dead zone
+    // is a meaningful fraction of the trigger move and the hedge captures
+    // ~0% of payout when BTC barely grazes the trigger.
+    //
+    // Selecting trigger-ITM strikes (call strike <= trigger, or put strike
+    // >= trigger) eliminates the dead zone — the hedge is already in the
+    // money the moment the trigger fires. Trade-off: ITM strikes cost more
+    // upfront. The variance reduction on barely-graze triggers is the
+    // primary economic justification (see docs/cfo-report §5 lever 1 and
+    // docs/pilot-reports/short_protection_logic_audit.md).
+    //
+    // Bug fix (2026-04-21): preferItm was hardcoded to put-only, so SHORT
+    // protection (call-hedged) never received any ITM preference even at
+    // SL <= 2.5%. The c84dbbe9 trade was the first observed loss caused
+    // by this — net P&L −$288.56 from a $76k OTM call selection that
+    // recovered only $33 against a $400 payout. Now both directions
+    // receive the preference uniformly.
+    //
+    // Tier-aware bonus weight: 2% tier gets a meaningfully larger bonus
+    // (0.010) than 3% tier (0.005) because the 2% dead zone is larger
+    // as a fraction of the 2% trigger move (~20% for 2% on a $20k trade
+    // vs ~12% for 3% on the same trade size).
+    const drawdownFloorPct = params.drawdownFloorPct ?? 0;
+    const preferItm =
+      drawdownFloorPct > 0 && drawdownFloorPct <= 0.025;
+    const itmCostScoreBonus =
+      drawdownFloorPct > 0 && drawdownFloorPct <= 0.02
+        ? 0.010 // 2% tier (and tighter, including 1% if launched) — aggressive
+        : drawdownFloorPct > 0 && drawdownFloorPct <= 0.025
+          ? 0.005 // 2.5% custom tier (between 2% and 3%) — moderate
+          : 0.002; // legacy fallback if preferItm fires without tier match
+    const itmStrikeDistCoefficient =
+      drawdownFloorPct > 0 && drawdownFloorPct <= 0.02
+        ? 0.3 // 2% tier — favor closer-to-trigger more aggressively
+        : 0.5; // legacy default
+    const itmCostCapPenaltyMultiplier =
+      drawdownFloorPct > 0 && drawdownFloorPct <= 0.02
+        ? 0.25 // 2% tier — halve again (i.e., quarter of legacy 0.5) for ITM-trigger strikes
+        : 0.5; // legacy default
+    console.log(
+      `[OptionSelection] preferItm=${preferItm} drawdownFloorPct=${drawdownFloorPct} ` +
+      `triggerTarget=${triggerTarget} candidates=${candidates.length} ` +
+      `itmBonus=${itmCostScoreBonus} itmStrikeDistCoef=${itmStrikeDistCoefficient} ` +
+      `itmCapPenaltyMult=${itmCostCapPenaltyMultiplier} optType=${targetOptionType}`
+    );
 
     candidates = candidates
       .sort((a, b) => {
@@ -614,21 +661,33 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           ? Math.abs(candidate.strike - triggerTarget) / params.spot
           : Math.abs(candidate.strike - targetStrike) / params.spot;
 
-        let costScore = ask + strikeDist * 0.5;
+        // Determine ITM-relative-to-trigger first; some downstream
+        // coefficients are looser for trigger-ITM strikes on the
+        // 2% tier (tighter strikeDist coefficient and reduced cost-cap
+        // penalty so we don't over-penalize the higher-cost ITM choice).
+        const isItm = preferItm && triggerTarget
+          ? (targetOptionType === "put"
+              ? candidate.strike >= triggerTarget
+              : candidate.strike <= triggerTarget)
+          : false;
 
-        if (preferItm && triggerTarget) {
-          const isItm = targetOptionType === "put"
-            ? candidate.strike >= triggerTarget
-            : candidate.strike <= triggerTarget;
-          if (isItm) {
-            costScore -= 0.002;
-          }
+        const effectiveStrikeDistCoef = isItm ? itmStrikeDistCoefficient : 0.5;
+        let costScore = ask + strikeDist * effectiveStrikeDistCoef;
+
+        if (preferItm && triggerTarget && isItm) {
+          costScore -= itmCostScoreBonus;
         }
 
         let costCapPenalty = 0;
         if (clientPremium > 0 && hedgeCostUsd > clientPremium) {
           costCapPenalty = (hedgeCostUsd - clientPremium) / clientPremium;
-          costScore += costCapPenalty * 0.5;
+          // ITM-trigger strikes get a reduced cost-cap penalty on the
+          // 2% tier — they're EXPECTED to cost more than the OTM
+          // alternative, and that incremental cost is the price of
+          // closing the dead zone. Penalizing them at the full rate
+          // would defeat the bonus.
+          const capCoef = isItm ? itmCostCapPenaltyMultiplier : 0.5;
+          costScore += costCapPenalty * capCoef;
         }
 
         const marginPct = clientPremium > 0 ? ((clientPremium - hedgeCostUsd) / clientPremium * 100) : 0;

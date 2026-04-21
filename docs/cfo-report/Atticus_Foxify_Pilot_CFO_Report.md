@@ -237,6 +237,8 @@ Seven controllable knobs ranked by impact-to-cost ratio. Each entry is what the 
 
 **Cost of being wrong:** demand elasticity remains the unknown. Recommendation: hold current schedule for the 28-day pilot; revisit ceilings at week 4 with actual demand data. The $10 sit position is reversible to $9 in three config edits.
 
+**Hedge-side adjustment (2026-04-21):** option-selection ITM preference is now materially more aggressive on the 2% tier specifically, after the c84dbbe9 trade revealed a strike-grid dead-zone effect (hedge captured only 8% of payout when BTC barely grazed the trigger). Previous behavior selected the next OTM strike; new behavior prefers ITM strikes when available and willingly pays ~30-50% more for the hedge to close the gap. Trade-off: ~$2/trade lower mean P&L on 2% in calm regime, but worst-case single-trade loss falls from ~−$288 to ~−$190. Variance reduction is the primary justification. Same fix also corrects a separate latent bug — the ITM preference was hardcoded to put-only and never fired for SHORT (call-hedged) protection. Both tiers (LONG/SHORT) now receive the preference uniformly. See `docs/pilot-reports/short_protection_logic_audit.md` for the full audit.
+
 ### Lever 2 — Per-tier daily concentration cap (highest leverage on tail risk)
 
 **Current setting:** 60% of daily new-protection notional may be in any single SL tier.
