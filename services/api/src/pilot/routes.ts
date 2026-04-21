@@ -1992,6 +1992,318 @@ export const registerPilotRoutes = async (
     }
   });
 
+  /**
+   * GET /pilot/admin/diagnostics/triggered-protections?limit=20&direction=all
+   *
+   * One row per protection that has reached `status='triggered'` (regardless
+   * of whether the hedge has been sold yet). Designed to be the primary
+   * day-to-day surface the operator uses to validate option-selection
+   * quality, TP performance, and SHORT-vs-LONG behavior post PR #76.
+   *
+   * For each triggered protection, returns:
+   *   - identity:        id, direction (long/short), SL%, notional, entry, trigger
+   *   - hedge geometry:  selected strike, strike gap to trigger (signed: + OTM, - ITM)
+   *   - hedge timeline:  triggered_at, hedge_status, sold_at, time_from_trigger_to_sell_min
+   *   - cash flows:      premium, hedge cost, hedge recovery, payout owed, net P&L
+   *   - recovery ratio:  hedge_recovery / payout_owed × 100 (vs R1 baseline 68.3%)
+   *   - trajectory hint: spot_at_trigger, spot_at_sell, spot_move_through_trigger_pct
+   *                      (e.g., +0.15% = barely grazed, +1.2% = clear breakout)
+   *
+   * Sort: most recently triggered first. Default limit 20, max 100.
+   *
+   * Query params:
+   *   - limit:     1-100 (default 20)
+   *   - direction: 'all' | 'long' | 'short' (default 'all')
+   *
+   * Used by:
+   *   - Admin dashboard "Triggered Trades" tab (visual review)
+   *   - scripts/pilot-trade-investigate (deep-dive on a single ID)
+   *   - Post-pilot calibration analyses (recovery distribution by direction)
+   */
+  app.get("/pilot/admin/diagnostics/triggered-protections", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const q = req.query as { limit?: string; direction?: string };
+    const limitRaw = Number(q?.limit || "20");
+    const limit = Number.isFinite(limitRaw)
+      ? Math.max(1, Math.min(100, Math.floor(limitRaw)))
+      : 20;
+    const direction = q?.direction === "long" || q?.direction === "short" ? q.direction : "all";
+    try {
+      // Pull triggered protections + their executions in one round-trip.
+      // We use LATERAL join so per-protection execution aggregation is
+      // pushed into Postgres rather than N+1 queries from Node.
+      const triggeredResult = await pool.query(
+        `
+          SELECT
+            p.id, p.status, p.hedge_status,
+            p.tier_name, p.sl_pct, p.drawdown_floor_pct,
+            p.protected_notional::text   AS protected_notional,
+            p.entry_price::text          AS entry_price,
+            p.floor_price::text          AS floor_price,
+            p.execution_price::text      AS execution_price,
+            p.size::text                 AS size,
+            p.expiry_at, p.executed_at, p.created_at, p.side,
+            p.metadata
+          FROM pilot_protections p
+          WHERE p.status IN ('triggered', 'reconcile_pending')
+             OR (p.metadata->>'triggeredAt') IS NOT NULL
+             OR (p.hedge_status IN ('tp_sold', 'expired_settled', 'expired_worthless'))
+          ORDER BY COALESCE(
+            (p.metadata->>'triggeredAt')::timestamptz,
+            p.executed_at,
+            p.created_at
+          ) DESC
+          LIMIT $1
+        `,
+        [Math.max(limit * 3, 60)] // overfetch then filter for direction client-side
+      );
+
+      const protections = (triggeredResult.rows as Array<Record<string, unknown>>).map((row) => ({
+        id: String(row.id),
+        status: String(row.status || ""),
+        hedgeStatus: row.hedge_status ? String(row.hedge_status) : null,
+        tierName: row.tier_name ? String(row.tier_name) : null,
+        slPct: row.sl_pct === null || row.sl_pct === undefined ? null : Number(row.sl_pct),
+        drawdownFloorPct: row.drawdown_floor_pct === null || row.drawdown_floor_pct === undefined
+          ? null : Number(row.drawdown_floor_pct),
+        protectedNotional: row.protected_notional ? String(row.protected_notional) : "0",
+        entryPrice: row.entry_price ? String(row.entry_price) : null,
+        floorPrice: row.floor_price ? String(row.floor_price) : null,
+        executionPrice: row.execution_price ? String(row.execution_price) : null,
+        size: row.size ? String(row.size) : null,
+        expiryAt: row.expiry_at ? new Date(String(row.expiry_at)).toISOString() : null,
+        executedAt: row.executed_at ? new Date(String(row.executed_at)).toISOString() : null,
+        createdAt: row.created_at ? new Date(String(row.created_at)).toISOString() : null,
+        side: row.side ? String(row.side) : null,
+        metadata: (row.metadata as Record<string, unknown>) || {}
+      }));
+
+      // Per-protection executions
+      const ids = protections.map((p) => p.id);
+      let executionsByProtection: Map<string, Array<Record<string, unknown>>> = new Map();
+      if (ids.length > 0) {
+        const execResult = await pool.query(
+          `
+            SELECT protection_id, side, premium, execution_price, quantity,
+                   executed_at, status, details, instrument_id
+            FROM pilot_venue_executions
+            WHERE protection_id = ANY($1::text[])
+            ORDER BY created_at ASC
+          `,
+          [ids]
+        );
+        executionsByProtection = new Map();
+        for (const r of execResult.rows as Array<Record<string, unknown>>) {
+          const key = String(r.protection_id);
+          const list = executionsByProtection.get(key) || [];
+          list.push(r);
+          executionsByProtection.set(key, list);
+        }
+      }
+
+      // Per-protection price snapshots (entry + trigger)
+      let snapshotsByProtection: Map<string, Array<Record<string, unknown>>> = new Map();
+      if (ids.length > 0) {
+        const snapResult = await pool.query(
+          `
+            SELECT protection_id, snapshot_type, price, price_timestamp, created_at
+            FROM pilot_price_snapshots
+            WHERE protection_id = ANY($1::text[])
+            ORDER BY created_at ASC
+          `,
+          [ids]
+        );
+        snapshotsByProtection = new Map();
+        for (const r of snapResult.rows as Array<Record<string, unknown>>) {
+          const key = String(r.protection_id);
+          const list = snapshotsByProtection.get(key) || [];
+          list.push(r);
+          snapshotsByProtection.set(key, list);
+        }
+      }
+
+      // Per-protection ledger entries (for premium / payout)
+      let ledgerByProtection: Map<string, Array<Record<string, unknown>>> = new Map();
+      if (ids.length > 0) {
+        const lr = await pool.query(
+          `
+            SELECT protection_id, entry_type, amount, settled_at, created_at
+            FROM pilot_ledger_entries
+            WHERE protection_id = ANY($1::text[])
+          `,
+          [ids]
+        );
+        ledgerByProtection = new Map();
+        for (const r of lr.rows as Array<Record<string, unknown>>) {
+          const key = String(r.protection_id);
+          const list = ledgerByProtection.get(key) || [];
+          list.push(r);
+          ledgerByProtection.set(key, list);
+        }
+      }
+
+      const rows = protections
+        .map((p) => {
+          const md = (p.metadata || {}) as Record<string, unknown>;
+          const protType = String(md.protectionType || p.side || "long").toLowerCase();
+          const directionTag = protType === "short" ? "short" : "long";
+
+          const execs = executionsByProtection.get(p.id) || [];
+          const snaps = snapshotsByProtection.get(p.id) || [];
+          const ledger = ledgerByProtection.get(p.id) || [];
+
+          const buyExec = execs.find((e) => String(e.side).toLowerCase() === "buy");
+          const sellExec = execs.find((e) => String(e.side).toLowerCase() === "sell");
+
+          // Cash flows
+          const premiumCollected = ledger
+            .filter((l) => String(l.entry_type) === "premium_due")
+            .reduce((acc, l) => acc + Number(l.amount || 0), 0);
+          const payoutOwed = ledger
+            .filter((l) => ["payout_due", "trigger_payout_due"].includes(String(l.entry_type)))
+            .reduce((acc, l) => acc + Number(l.amount || 0), 0);
+          const hedgeCost = buyExec ? Number(buyExec.premium || 0) : 0;
+          const hedgeRecovery = sellExec ? Number(sellExec.premium || 0) : 0;
+          const netPnlUsd = premiumCollected - hedgeCost + hedgeRecovery - payoutOwed;
+          const recoveryRatioPct = payoutOwed > 0 ? (hedgeRecovery / payoutOwed) * 100 : null;
+
+          // Strike geometry
+          const buyDetails = (buyExec?.details as Record<string, unknown>) || {};
+          const selectedStrike = Number(md.selectedStrike || buyDetails.selectedStrike || 0);
+          const triggerPriceFromMd = Number(md.triggerPrice || md.floorPrice || 0);
+          const triggerPrice = triggerPriceFromMd > 0
+            ? triggerPriceFromMd
+            : Number(p.floorPrice || 0);
+          const strikeGapToTriggerUsd = selectedStrike > 0 && triggerPrice > 0
+            ? selectedStrike - triggerPrice
+            : null;
+          const strikeIsItm = strikeGapToTriggerUsd !== null && (
+            directionTag === "short"
+              ? strikeGapToTriggerUsd < 0    // call strike below trigger = ITM
+              : strikeGapToTriggerUsd > 0    // put strike above trigger = ITM
+          );
+
+          // Timing
+          const triggeredAtIso = md.triggeredAt ? String(md.triggeredAt) : null;
+          const soldAtIso = md.soldAt ? String(md.soldAt) : (sellExec?.executed_at ? new Date(String(sellExec.executed_at)).toISOString() : null);
+          let timeFromTriggerToSellMin: number | null = null;
+          if (triggeredAtIso && soldAtIso) {
+            const delta = new Date(soldAtIso).getTime() - new Date(triggeredAtIso).getTime();
+            if (Number.isFinite(delta) && delta >= 0) {
+              timeFromTriggerToSellMin = Math.round(delta / 60000);
+            }
+          }
+
+          // Trajectory: spot at trigger vs spot at sell.
+          // Falls back to entry_price snapshot when trigger snapshot is missing.
+          const triggerSnap = snaps.find((s) => String(s.snapshot_type) === "trigger");
+          const entrySnap = snaps.find((s) => String(s.snapshot_type) === "entry");
+          const spotAtTrigger = triggerSnap ? Number(triggerSnap.price) : null;
+          const entrySpot = entrySnap ? Number(entrySnap.price) : Number(p.entryPrice || 0);
+          const spotAtSell = sellExec ? Number(buyDetails.spotPriceUsd || 0) : null;
+          // "spot move through trigger" = how far past the trigger BTC went
+          // before starting to retrace. Critical signal for whether barely-graze
+          // (small move, expect retrace) or clear breakout (large move, expect continuation).
+          let spotMoveThroughTriggerPct: number | null = null;
+          if (spotAtTrigger && triggerPrice > 0) {
+            const moveBeyondTrigger = directionTag === "short"
+              ? spotAtTrigger - triggerPrice
+              : triggerPrice - spotAtTrigger;
+            spotMoveThroughTriggerPct = (moveBeyondTrigger / triggerPrice) * 100;
+          }
+
+          return {
+            id: p.id,
+            createdAt: p.createdAt,
+            direction: directionTag as "long" | "short",
+            slPct: p.slPct,
+            tierName: p.tierName,
+            protectedNotionalUsd: Number(p.protectedNotional || 0),
+            entryPrice: entrySpot,
+            triggerPrice,
+            expiryAt: p.expiryAt,
+            status: p.status,
+            hedgeStatus: p.hedgeStatus,
+
+            // Hedge geometry (the PR #76 success metric)
+            selectedStrike: selectedStrike || null,
+            strikeGapToTriggerUsd,
+            strikeIsItm,
+
+            // Timing (the SHORT TP rule research signal)
+            triggeredAt: triggeredAtIso,
+            soldAt: soldAtIso,
+            timeFromTriggerToSellMin,
+
+            // Trajectory (barely-graze detection)
+            spotAtTrigger,
+            spotAtSell,
+            spotMoveThroughTriggerPct,
+            // Convenient classification for UI badges:
+            triggerPattern:
+              spotMoveThroughTriggerPct === null
+                ? "unknown"
+                : spotMoveThroughTriggerPct < 0.3
+                  ? "barely_graze"
+                  : spotMoveThroughTriggerPct < 1.0
+                    ? "shallow"
+                    : "clear_breakout",
+
+            // Cash
+            premiumCollectedUsd: premiumCollected,
+            hedgeCostUsd: hedgeCost,
+            hedgeRecoveryUsd: hedgeRecovery,
+            payoutOwedUsd: payoutOwed,
+            netPnlUsd: Number(netPnlUsd.toFixed(2)),
+            recoveryRatioPct: recoveryRatioPct === null ? null : Number(recoveryRatioPct.toFixed(1))
+          };
+        })
+        .filter((r) => direction === "all" || r.direction === direction)
+        .slice(0, limit);
+
+      // Summary aggregates (across the displayed rows). Caller-friendly
+      // — keeps the dashboard from re-aggregating in JS.
+      const sold = rows.filter((r) => r.recoveryRatioPct !== null);
+      const longSold = sold.filter((r) => r.direction === "long");
+      const shortSold = sold.filter((r) => r.direction === "short");
+      const avg = (xs: number[]) =>
+        xs.length === 0 ? null : Number((xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(2));
+
+      return {
+        status: "ok",
+        rows,
+        summary: {
+          totalTriggered: rows.length,
+          totalSold: sold.length,
+          avgRecoveryRatioPct: avg(sold.map((r) => r.recoveryRatioPct as number)),
+          avgRecoveryRatioLongPct: avg(longSold.map((r) => r.recoveryRatioPct as number)),
+          avgRecoveryRatioShortPct: avg(shortSold.map((r) => r.recoveryRatioPct as number)),
+          avgNetPnlUsd: avg(rows.map((r) => r.netPnlUsd)),
+          netPnlUsdSum: Number(rows.reduce((acc, r) => acc + r.netPnlUsd, 0).toFixed(2)),
+          baselineRecoveryRatioPct: 68.3, // R1 LONG-only baseline
+          patternBreakdown: rows.reduce(
+            (acc, r) => {
+              acc[r.triggerPattern] = (acc[r.triggerPattern] || 0) + 1;
+              return acc;
+            },
+            {} as Record<string, number>
+          ),
+          itmStrikeRatePct:
+            rows.length === 0
+              ? null
+              : Number(((rows.filter((r) => r.strikeIsItm).length / rows.length) * 100).toFixed(1))
+        }
+      };
+    } catch (error: any) {
+      reply.code(500);
+      return {
+        status: "error",
+        reason: String(error?.message || "triggered_protections_diagnostic_failed")
+      };
+    }
+  });
+
   app.get("/pilot/admin/governance/rollout-guards", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
