@@ -64,7 +64,7 @@ export type RegimeSchedule = Record<V7SlTier, number>;
 /**
  * Design A schedule, USD per $1k notional, 1-day tenor.
  *
- *   low (DVOL ≤ 50):     $6 / $5 / $3 / $2  (calm pricing)
+ *   low (DVOL ≤ 50):     $7 / $5 / $3 / $2  (was $6 on 2% — see 2026-04-21 note)
  *   moderate (DVOL 50-65): $7 / $5.50 / $3 / $2
  *   elevated (DVOL 65-80): $8 / $6 / $3.50 / $2
  *   high (DVOL > 80):     $10 / $7 / $4 / $2 (2% ceiling raised from $9 → $10)
@@ -77,11 +77,26 @@ export type RegimeSchedule = Record<V7SlTier, number>;
  * below it. Reversible to $9 in one config change. The 1% / 3% / 5% / 10%
  * tiers remain unchanged. See CFO report §5 for full reasoning.
  *
+ * 2026-04-21 — Raised the 2% low-regime price from $6 → $7 (PR C of the
+ * post-merge follow-on plan). Rationale: tier-mix shaping. The previous
+ * low schedule had a $3 gap between 2% (\$6) and 5% (\$3) — the cheapest
+ * per-dollar-of-protection ratio favored 2%, pulling demand to the
+ * thinnest-margin tier. Raising 2% to $7 widens the gap to $4 and brings
+ * low-regime 2% pricing in line with moderate-regime 2% pricing. The 5%
+ * tier (the per-trade margin sweet spot per backtest math: ~$25-40/trade
+ * vs ~$5-15 for 2%) becomes materially cheaper per dollar protected,
+ * incentivizing wider-tier adoption without changing the platform's
+ * absolute caps or commitments. Per-trade impact in low regime: 2% on
+ * \$10k goes from \$60 → \$70 premium; 5% stays at \$30. 3% stays at \$50.
+ * Trader-perceived increase on low-regime 2% trades only (~10-15% of
+ * trade days × ~50% of trades that pick 2%). Reversible to \$6 in one
+ * config change. See CFO report §11.3.
+ *
  * 1% SL is defined for forward compatibility but unlaunched
  * (excluded from V7_LAUNCHED_TIERS in v7Pricing.ts).
  */
 export const REGIME_SCHEDULES: Record<PricingRegime, RegimeSchedule> = {
-  low:      { 1: 6, 2: 6,  3: 5,    5: 3,    10: 2 },
+  low:      { 1: 7, 2: 7,  3: 5,    5: 3,    10: 2 },
   moderate: { 1: 7, 2: 7,  3: 5.5,  5: 3,    10: 2 },
   elevated: { 1: 8, 2: 8,  3: 6,    5: 3.5,  10: 2 },
   high:     { 1: 9, 2: 10, 3: 7,    5: 4,    10: 2 }

@@ -32,8 +32,14 @@ const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5:
 // Client-side preview only (used to render the "Add Protection ($X)" button
 // before a quote round-trip). The authoritative premium comes from the API
 // response (V7Info.premiumPer1kUsd) once a quote is fetched. Must mirror
-// V7_RATE_PER_1K in services/api/src/pilot/v7Pricing.ts.
-const SL_RATE: Record<StopLoss, number> = { 2: 6, 3: 5, 5: 3, 10: 2 };
+// the LOW-regime row of REGIME_SCHEDULES in
+// services/api/src/pilot/pricingRegime.ts (low is the cheapest regime —
+// using it as the preview floor avoids momentary "premium just went up"
+// flicker when the server returns the actual regime-aware quote).
+//
+// 2026-04-21: 2% raised from \$6 → \$7 in low regime to widen the
+// 2%-vs-5% pricing gap. See PR C / pricingRegime.ts §2026-04-21 note.
+const SL_RATE: Record<StopLoss, number> = { 2: 7, 3: 5, 5: 3, 10: 2 };
 const SL_TENOR: Record<StopLoss, number> = { 2: 1, 3: 1, 5: 1, 10: 1 };
 const POS_MIN = 10000, POS_MAX = 50000, POS_STEP = 5000, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";

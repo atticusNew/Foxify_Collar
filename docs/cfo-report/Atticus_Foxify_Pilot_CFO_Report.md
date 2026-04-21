@@ -30,7 +30,7 @@ The trader sees one fixed price at quote time. The schedule the platform draws f
 
 | Volatility regime | DVOL band | 2% | 3% | 5% | 10% |
 |---|---|---|---|---|---|
-| Low | ≤ 50 | $6 | $5 | $3 | $2 |
+| Low | ≤ 50 | **$7** | $5 | $3 | $2 |
 | Moderate | 50–65 | $7 | $5.50 | $3 | $2 |
 | Elevated | 65–80 | $8 | $6 | $3.50 | $2 |
 | High | > 80 | **$10** | $7 | $4 | $2 |
@@ -41,10 +41,12 @@ The 2% tier caps at $10/$1k = $100 on $10k in the High regime. At DVOL 80 (stres
 
 | Tier | At "Low" regime | At "High" regime |
 |---|---|---|
-| 2% | 3.3× | 2.0× |
+| 2% | 2.9× | 2.0× |
 | 3% | 6× | 4.3× |
 | 5% | 16.7× | 12.5× |
 | 10% | 50× | 50× |
+
+(2% Low return ratio dropped from 3.3× to 2.9× when low-regime 2% premium was raised from $6 to $7 on 2026-04-21 — see PR C tier-mix shaping rationale in §11.3.)
 
 ### Caps (atomic, enforced inside the activation transaction)
 
@@ -102,14 +104,14 @@ Same 1,558 days, partitioned by DVOL regime at the start of each protection. Str
 
 | Regime | Days | 2% premium | **2% P&L** | 3% premium | **3% P&L** | 5% premium | **5% P&L** | 10% premium | **10% P&L** |
 |---|---|---|---|---|---|---|---|---|---|
-| Calm (low) | 467 | $6 | **+$2.64** | $5 | **+$2.11** | $3 | **+$1.43** | $2 | **+$1.14** |
+| Calm (low) | 467 | $7 | **+$3.64** | $5 | **+$2.11** | $3 | **+$1.43** | $2 | **+$1.14** |
 | Normal (moderate) | 790 | $7 | **+$0.60** | $5.50 | **+$0.06** | $3 | −$0.55 | $2 | +$0.99 |
 | Elevated | (pro-rated) | $8 | **+$0.10** | $6 | **+$0.06** | $3.50 | **+$0.40** | $2 | +$0.50 |
 | Stress (high) | 300 | $10 | **−$0.81** | $7 | **−$2.86** | $4 | **−$1.41** | $2 | +$0.17 |
 
 **Plain reading:**
 
-- Calm markets (~30% of days): platform earns positive spread on every tier
+- Calm markets (~30% of days): platform earns positive spread on every tier; 2% widened to $7 on 2026-04-21 (PR C) to push tier-mix shaping toward 5%
 - Normal markets (~51%): mostly small positive spread; 5% tier at the regime boundary
 - Elevated markets: still positive on the schedule's higher prices
 - Stress markets (~19%): controlled loss on tighter tiers; 10% remains profitable
@@ -490,6 +492,7 @@ Five signals where deviation from baseline expectation should trigger investigat
 - **Watch trigger:** if pilot demand consistently ≥ 70% in 2% tier over a 5-day rolling window
 - **What it means:** the per-tier concentration cap is actively constraining revenue, AND the platform is more exposed to simultaneous-trigger events than expected
 - **Action to consider:** revisit pricing to widen the gap between 2% and the wider tiers (incentivize 3% / 5% adoption); or accept the constraint and tighten the cap to 40% for additional tail-risk protection
+- **Pricing action taken (2026-04-21):** raised 2% premium in **low regime** from $6 → $7 (PR C of post-merge plan). Widens the 2%-vs-5% gap from $3 to $4 and brings low-regime 2% in line with moderate-regime 2% pricing. Hypothesis: the previous $3 gap had 2% as the cheapest per-dollar-of-protection ratio in the low regime, pulling demand to the thinnest-margin tier. The $7 / $5 / $3 spread makes 5% (the per-trade margin sweet spot per backtest math) materially cheaper per dollar protected. Reversible to $6 in one config change. Validation: monitor `metrics.tierMix` over the next 5 trade days for shift toward 5% adoption.
 
 ### 11.4 Auto-renew adoption rate
 
@@ -540,7 +543,7 @@ $$
 where $S$ is BTC spot, $K$ is the strike (set equal to the trigger price so the hedge is at-the-trigger), $T$ is time to expiry in years (1/365 for 1-day), $\sigma$ is implied volatility from Deribit's DVOL index, $r$ is the risk-free rate (5%), and $N(\cdot)$ is the standard normal cumulative distribution function.
 
 Sample worked margins at DVOL 43 (today):
-- 2% tier @ $6 (Low regime): $1 − ($2.23 + ~$0.50) / $6 ≈ **54%**
+- 2% tier @ $7 (Low regime): $1 − ($2.23 + ~$0.50) / $7 ≈ **61%** (raised from 54% post PR C — the price uplift goes straight to per-trade margin)
 - 3% tier @ $5 (Low regime): $1 − ($0.95 + ~$0.50) / $5 ≈ **71%**
 
 ---
