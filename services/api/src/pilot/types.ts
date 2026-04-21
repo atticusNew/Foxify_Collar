@@ -565,6 +565,16 @@ export type ExecutionQualityRecord = {
   fillSuccessRatePct: string | null;
   avgSpreadPct: string | null;
   avgTopBookDepth: string | null;
+  /**
+   * Weighted-average strike-floor gap in USD (signed, +OTM/-ITM).
+   * Tracks how often the option-selection algorithm picks strikes
+   * that create a "dead zone" between trigger and strike. Trending
+   * negative after PR #76 (ITM aggressiveness fix) is the expected
+   * behavior. Null on historical rows that pre-date the column.
+   */
+  avgStrikeGapUsd: string | null;
+  /** Same metric as fraction of trigger move. Null on historical rows. */
+  avgStrikeGapPct: string | null;
   sampleCount: number;
   metadata: Record<string, unknown>;
   updatedAt: string;

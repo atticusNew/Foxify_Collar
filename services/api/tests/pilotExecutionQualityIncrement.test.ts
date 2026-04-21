@@ -160,6 +160,69 @@ test("incrementExecutionQualityDaily aggregates avg_slippage_usd alongside bps (
   assert.equal(tradeIds[2].slippageUsd, 0, "third trade USD slippage = 0");
 });
 
+test("incrementExecutionQualityDaily aggregates strike-floor gap + per-direction roll-up", async () => {
+  // Regression for PR 4: strike-gap metric was added to surface the
+  // dead-zone effect that caused the c84dbbe9 trade loss. After
+  // PR #76's ITM aggressiveness fix, the metric should trend more
+  // negative (ITM = strike inside trigger = no dead zone).
+  const pool = await buildMemPool();
+
+  // Three trades with mixed direction + gap profiles:
+  //   t1: SHORT + ITM (gap = -207, strike below trigger)
+  //   t2: SHORT + OTM (gap = +292, the c84dbbe9 pattern pre-fix)
+  //   t3: LONG  + ITM (gap = -150)
+  await incrementExecutionQualityDaily(pool, {
+    day: "2026-04-23", venue: "deribit_live", hedgeMode: "options_native",
+    slippageBps: 0, slippageUsd: 0, filled: true,
+    strikeGapUsd: -207, strikeGapPct: -0.139,
+    protectionType: "short",
+    protectionId: "g1", quoteId: "gq1"
+  });
+  await incrementExecutionQualityDaily(pool, {
+    day: "2026-04-23", venue: "deribit_live", hedgeMode: "options_native",
+    slippageBps: 0, slippageUsd: 0, filled: true,
+    strikeGapUsd: 292, strikeGapPct: 0.197,
+    protectionType: "short",
+    protectionId: "g2", quoteId: "gq2"
+  });
+  await incrementExecutionQualityDaily(pool, {
+    day: "2026-04-23", venue: "deribit_live", hedgeMode: "options_native",
+    slippageBps: 0, slippageUsd: 0, filled: true,
+    strikeGapUsd: -150, strikeGapPct: -0.10,
+    protectionType: "long",
+    protectionId: "g3", quoteId: "gq3"
+  });
+
+  const recs = await listExecutionQualityRecent(pool, { lookbackDays: 30 });
+  const row = recs.find((r) => r.day === "2026-04-23");
+  assert.ok(row, "row for the test day");
+
+  // Aggregate gap = (-207 + 292 - 150) / 3 = -21.67
+  assert.ok(
+    Math.abs(Number(row!.avgStrikeGapUsd) - -21.67) < 0.5,
+    `expected aggregate gap ≈ -$21.67; got ${row!.avgStrikeGapUsd}`
+  );
+
+  // Per-direction roll-up
+  const md = row!.metadata as Record<string, unknown>;
+  const dirRollup = md.directionalRollup as Record<string, Record<string, unknown>>;
+  assert.ok(dirRollup, "directionalRollup is present");
+  assert.equal(dirRollup.short?.fills, 2, "2 SHORT fills");
+  assert.equal(dirRollup.long?.fills, 1, "1 LONG fill");
+  assert.ok(
+    Math.abs(Number(dirRollup.short?.avgStrikeGapUsd) - 42.5) < 0.5,
+    `SHORT avg gap = (-207+292)/2 = +42.5; got ${dirRollup.short?.avgStrikeGapUsd}`
+  );
+  assert.equal(dirRollup.long?.avgStrikeGapUsd, -150);
+
+  // Per-trade audit retains the new fields
+  const tradeIds = md.tradeIds as Array<Record<string, unknown>>;
+  assert.equal(tradeIds.length, 3);
+  assert.equal(tradeIds[0].protectionType, "short");
+  assert.equal(tradeIds[0].strikeGapUsd, -207);
+  assert.equal(tradeIds[2].protectionType, "long");
+});
+
 test("incrementExecutionQualityDaily handles missing slippageUsd gracefully (USD column stays null)", async () => {
   // Backwards compat: if a caller doesn't supply slippageUsd, the bps
   // metric still aggregates and the USD column stays null. Activates

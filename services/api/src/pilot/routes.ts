@@ -3722,12 +3722,26 @@ export const registerPilotRoutes = async (
         // Replaces the prior overwrite-style upsertExecutionQualityDaily call
         // which was clobbering the row on every activation (PR #34).
         const spreadPctRaw = Number(quoteDetails.spreadPct);
+        // Strike-floor gap diagnostics — surfaces how often the
+        // option-selection algorithm picks strikes that create a
+        // dead-zone between trigger and option strike. Fed by the
+        // venue.ts quote response; null on legacy quote shapes.
+        const gapUsdRaw = Number(quoteDetails.strikeGapToTriggerUsd);
+        const gapPctRaw = Number(quoteDetails.strikeGapToTriggerPct);
+        // Direction tagging for SHORT-vs-LONG empirical comparison
+        // (added 2026-04-21 alongside the ITM aggressiveness fix in
+        // PR #76 — needed to validate that SHORT recovery improves
+        // post-fix relative to LONG R1 baseline).
+        const ptype = String(body.protectionType || "").toLowerCase() === "short" ? "short" : "long";
         await incrementExecutionQualityDaily(pool, {
           dayIso: new Date().toISOString(),
           venue: execution.venue,
           hedgeMode: contextHedgeMode || deriveHedgeMode(lockedQuote.details),
           slippageBps: realizedSlippageBps,
           slippageUsd: realizedSlippageUsd,
+          strikeGapUsd: Number.isFinite(gapUsdRaw) ? gapUsdRaw : undefined,
+          strikeGapPct: Number.isFinite(gapPctRaw) ? gapPctRaw : undefined,
+          protectionType: ptype as "long" | "short",
           latencyMs: Date.now() - quoteStartedAt,
           spreadPct: Number.isFinite(spreadPctRaw) ? spreadPctRaw : undefined,
           filled: true,

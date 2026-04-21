@@ -359,6 +359,22 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     -- alongside bps. Backfill is null — only forward fills populate it.
     ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_slippage_usd NUMERIC(18,8);
 
+    -- avg_strike_gap_usd / avg_strike_gap_pct: how far the selected
+    -- option strike sits from the protection trigger price, in absolute
+    -- dollars and as a fraction of the trigger move. A POSITIVE value
+    -- means OTM (strike worse than trigger from the option's POV — call
+    -- strike above trigger, or put strike below trigger), creating a
+    -- "dead zone" where the platform owes the trader on trigger but
+    -- the hedge isn't paying yet. NEGATIVE value means ITM (strike
+    -- already in-the-money relative to trigger).
+    --
+    -- Why this matters: the c84dbbe9 trade exposed how a +$292 OTM
+    -- gap can turn an 8% TP recovery ratio into a real loss. After
+    -- PR #76 (ITM aggressiveness fix) we expect this metric to trend
+    -- meaningfully more negative for the 2% tier.
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_strike_gap_usd NUMERIC(18,8);
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_strike_gap_pct NUMERIC(18,8);
+
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS accepted_ip TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS user_agent TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'pilot_web';
@@ -1523,6 +1539,22 @@ export const incrementExecutionQualityDaily = async (
      * are a large fraction of cheap deep-OTM put quotes).
      */
     slippageUsd?: number;
+    /**
+     * Strike-floor gap diagnostics, in absolute USD and as fraction of
+     * the trigger move. Positive = OTM (gap creates a dead-zone in
+     * which platform owes payout but hedge doesn't pay). Negative = ITM
+     * (hedge already in-the-money at trigger fire). Optional; null on
+     * legacy callers.
+     */
+    strikeGapUsd?: number;
+    strikeGapPct?: number;
+    /**
+     * "long" or "short" — direction-stratified roll-ups for SHORT-vs-LONG
+     * empirical comparison. Stored in metadata.directionalRollup so we
+     * can answer "what's the average TP recovery on SHORT vs LONG?"
+     * without rebuilding from per-trade rows.
+     */
+    protectionType?: "long" | "short";
     /** This single trade's quote→fill latency in ms. Aggregator computes daily avg. */
     latencyMs?: number;
     /** This single trade's quote spread, if known (otherwise undefined). */
@@ -1555,7 +1587,8 @@ export const incrementExecutionQualityDaily = async (
   // and array-append semantics. Two round-trips is acceptable at pilot
   // throughput.
   const existing = await pool.query(
-    `SELECT sample_count, avg_slippage_bps, avg_slippage_usd, avg_spread_pct, avg_top_book_depth, metadata
+    `SELECT sample_count, avg_slippage_bps, avg_slippage_usd, avg_spread_pct, avg_top_book_depth,
+            avg_strike_gap_usd, avg_strike_gap_pct, metadata
      FROM pilot_execution_quality_daily
      WHERE day = $1 AND venue = $2 AND hedge_mode = $3
      LIMIT 1`,
@@ -1569,6 +1602,8 @@ export const incrementExecutionQualityDaily = async (
         avg_slippage_usd: string | null;
         avg_spread_pct: string | null;
         avg_top_book_depth: string | null;
+        avg_strike_gap_usd: string | null;
+        avg_strike_gap_pct: string | null;
         metadata: Record<string, unknown> | null;
       }
     | undefined;
@@ -1633,6 +1668,14 @@ export const incrementExecutionQualityDaily = async (
   const newAvgTopBookDepth = filled
     ? weighted(prev?.avg_top_book_depth, input.topBookDepth, fillsForAvg, newFillsForAvg)
     : (prev?.avg_top_book_depth ? Number(prev.avg_top_book_depth) : null);
+  const gapUsd = Number.isFinite(Number(input.strikeGapUsd)) ? Number(input.strikeGapUsd) : undefined;
+  const gapPct = Number.isFinite(Number(input.strikeGapPct)) ? Number(input.strikeGapPct) : undefined;
+  const newAvgStrikeGapUsd = filled
+    ? weighted(prev?.avg_strike_gap_usd, gapUsd, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_strike_gap_usd ? Number(prev.avg_strike_gap_usd) : null);
+  const newAvgStrikeGapPct = filled
+    ? weighted(prev?.avg_strike_gap_pct, gapPct, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_strike_gap_pct ? Number(prev.avg_strike_gap_pct) : null);
 
   // Append slippage sample only on fills (cap at 500 to bound row size); recompute p95.
   const slippageSamples = filled
@@ -1654,8 +1697,44 @@ export const incrementExecutionQualityDaily = async (
   }
   tradeAudit.slippageBps = slip;
   if (slipUsd !== undefined) tradeAudit.slippageUsd = slipUsd;
+  if (gapUsd !== undefined) tradeAudit.strikeGapUsd = gapUsd;
+  if (gapPct !== undefined) tradeAudit.strikeGapPct = gapPct;
+  if (input.protectionType) tradeAudit.protectionType = input.protectionType;
   tradeAudit.filled = filled;
   const tradeIds = [...prevTradeIds, tradeAudit].slice(-200);
+
+  // Per-direction roll-up (LONG vs SHORT) so we can answer "what's the
+  // avg recovery on SHORT vs LONG?" without rebuilding from per-trade
+  // tradeIds. Stored under metadata.directionalRollup.{long,short} —
+  // each side carries fills, avgSlippageBps, avgSlippageUsd,
+  // avgStrikeGapUsd. Updated only when input.protectionType is set.
+  const prevDirRollup = (prevMeta as any).directionalRollup || {};
+  const directionalRollup: Record<string, Record<string, unknown>> = {
+    long: { ...(prevDirRollup.long || {}) },
+    short: { ...(prevDirRollup.short || {}) }
+  };
+  if (filled && input.protectionType) {
+    const dirKey = input.protectionType;
+    const prevDir = (directionalRollup[dirKey] || {}) as Record<string, unknown>;
+    const prevDirFills = Number(prevDir.fills || 0);
+    const newDirFills = prevDirFills + 1;
+    const dirWeighted = (prevAvg: unknown, sample: number | undefined, prevN: number, newN: number): number | null => {
+      if (sample === undefined || !Number.isFinite(sample)) {
+        return prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+      }
+      if (newN <= 0) return null;
+      const prevNum = prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+      if (prevNum === null || prevDirFills <= 0) return sample;
+      return (prevNum * prevN + sample) / newN;
+    };
+    directionalRollup[dirKey] = {
+      fills: newDirFills,
+      avgSlippageBps: dirWeighted(prevDir.avgSlippageBps, slip, prevDirFills, newDirFills),
+      avgSlippageUsd: dirWeighted(prevDir.avgSlippageUsd, slipUsd, prevDirFills, newDirFills),
+      avgStrikeGapUsd: dirWeighted(prevDir.avgStrikeGapUsd, gapUsd, prevDirFills, newDirFills),
+      avgStrikeGapPct: dirWeighted(prevDir.avgStrikeGapPct, gapPct, prevDirFills, newDirFills)
+    };
+  }
 
   // Running average latency, computed across FILLED trades only (rejects don't
   // produce a meaningful "fill latency" — they may have failed before any
@@ -1678,6 +1757,7 @@ export const incrementExecutionQualityDaily = async (
     avgLatencyMs: newAvgLatencyMs === null ? null : String(newAvgLatencyMs),
     slippageSamples,
     tradeIds,
+    directionalRollup,
     // Latest-trade traceability fields (always overwritten):
     lastProtectionId: input.protectionId ?? (prevMeta as any).lastProtectionId ?? null,
     lastQuoteId: input.quoteId ?? (prevMeta as any).lastQuoteId ?? null,
@@ -1688,9 +1768,9 @@ export const incrementExecutionQualityDaily = async (
     `
       INSERT INTO pilot_execution_quality_daily (
         id, day, venue, hedge_mode, avg_slippage_bps, avg_slippage_usd, p95_slippage_bps, fill_success_rate_pct,
-        avg_spread_pct, avg_top_book_depth, sample_count, metadata
+        avg_spread_pct, avg_top_book_depth, avg_strike_gap_usd, avg_strike_gap_pct, sample_count, metadata
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
       ON CONFLICT (day, venue, hedge_mode) DO UPDATE SET
         avg_slippage_bps      = EXCLUDED.avg_slippage_bps,
         avg_slippage_usd      = EXCLUDED.avg_slippage_usd,
@@ -1698,6 +1778,8 @@ export const incrementExecutionQualityDaily = async (
         fill_success_rate_pct = EXCLUDED.fill_success_rate_pct,
         avg_spread_pct        = EXCLUDED.avg_spread_pct,
         avg_top_book_depth    = EXCLUDED.avg_top_book_depth,
+        avg_strike_gap_usd    = EXCLUDED.avg_strike_gap_usd,
+        avg_strike_gap_pct    = EXCLUDED.avg_strike_gap_pct,
         sample_count          = EXCLUDED.sample_count,
         metadata              = EXCLUDED.metadata,
         updated_at            = NOW()
@@ -1713,6 +1795,8 @@ export const incrementExecutionQualityDaily = async (
       newFillRatePct === null ? null : String(newFillRatePct),
       newAvgSpreadPct === null ? null : String(newAvgSpreadPct),
       newAvgTopBookDepth === null ? null : String(newAvgTopBookDepth),
+      newAvgStrikeGapUsd === null ? null : String(newAvgStrikeGapUsd),
+      newAvgStrikeGapPct === null ? null : String(newAvgStrikeGapPct),
       newN,
       JSON.stringify(metadata)
     ]
@@ -1748,6 +1832,8 @@ export const listExecutionQualityRecent = async (
     fillSuccessRatePct: row.fill_success_rate_pct === null ? null : String(row.fill_success_rate_pct),
     avgSpreadPct: row.avg_spread_pct === null ? null : String(row.avg_spread_pct),
     avgTopBookDepth: row.avg_top_book_depth === null ? null : String(row.avg_top_book_depth),
+    avgStrikeGapUsd: row.avg_strike_gap_usd === null || row.avg_strike_gap_usd === undefined ? null : String(row.avg_strike_gap_usd),
+    avgStrikeGapPct: row.avg_strike_gap_pct === null || row.avg_strike_gap_pct === undefined ? null : String(row.avg_strike_gap_pct),
     sampleCount: Number(row.sample_count || 0),
     metadata: toRecord(row.metadata),
     updatedAt: new Date(String(row.updated_at)).toISOString()

@@ -178,25 +178,39 @@ today='$TODAY'
 match=[r for r in rows if r.get('day')==today]
 if match:
   r=match[0]
-  print(f\"{r.get('sampleCount',0)}|{r.get('avgSlippageUsd','null')}|{r.get('avgSlippageBps','null')}|{r.get('fillSuccessRatePct','null')}\")
+  print(f\"{r.get('sampleCount',0)}|{r.get('avgSlippageUsd','null')}|{r.get('avgSlippageBps','null')}|{r.get('fillSuccessRatePct','null')}|{r.get('avgStrikeGapUsd','null')}\")
 else:
-  print('0|null|null|null')
+  print('0|null|null|null|null')
 " 2>/dev/null)
-  IFS='|' read -r SAMPLES SLIP_USD SLIP_BPS FILL_RATE <<< "$EQ_TODAY"
+  IFS='|' read -r SAMPLES SLIP_USD SLIP_BPS FILL_RATE GAP_USD <<< "$EQ_TODAY"
   if [ "$SAMPLES" = "0" ]; then
     row OK "execution quality" "no fills today"
   else
-    # Watch trigger: avg USD slippage > +$1 AND >= 20 fills
+    # Slippage watch: avg USD slippage > +$1 AND >= 20 fills
     OVER_BUDGET=$(python3 -c "
 try:
   s = float('$SLIP_USD' if '$SLIP_USD' != 'null' else 0)
   n = int('$SAMPLES')
   print(1 if (s > 1.0 and n >= 20) else 0)
 except: print(0)" 2>/dev/null)
+    # Gap watch: avg strike-floor gap > +$200 AND >= 5 fills
+    # (positive = OTM, dead-zone forming. Negative = ITM, healthy.)
+    GAP_OUTSIZED=$(python3 -c "
+try:
+  g = float('$GAP_USD' if '$GAP_USD' != 'null' else 0)
+  n = int('$SAMPLES')
+  print(1 if (g > 200 and n >= 5) else 0)
+except: print(0)" 2>/dev/null)
+    GAP_FRAG=""
+    if [ "$GAP_USD" != "null" ]; then
+      GAP_FRAG=" · gap \$$(printf '%.0f' $GAP_USD)"
+    fi
     if [ "$OVER_BUDGET" = "1" ]; then
       row ATTN "execution quality" "$SAMPLES fills today; avg slip \$$SLIP_USD (>\$1, watch trigger fired)"
+    elif [ "$GAP_OUTSIZED" = "1" ]; then
+      row ATTN "execution quality" "$SAMPLES fills today; avg slip \$$SLIP_USD; avg strike gap +\$$(printf '%.0f' $GAP_USD) OTM (>\$200, dead-zone forming on hedge selection)"
     else
-      row OK "execution quality" "$SAMPLES fills today; avg slip \$$SLIP_USD (\$$SLIP_BPS bps); fill rate $FILL_RATE%"
+      row OK "execution quality" "$SAMPLES fills today; avg slip \$$SLIP_USD (\$$SLIP_BPS bps)$GAP_FRAG; fill rate $FILL_RATE%"
     fi
   fi
 else
