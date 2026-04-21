@@ -25,8 +25,11 @@ import {
 // override, used by tests).
 //
 // This test exercises the exact scenario: DVOL 42.4 should produce
-// "low" pricing ($6 for 2%), not "moderate" pricing ($7), regardless
-// of what the legacy regime says.
+// "low" pricing for all tiers, not "moderate" pricing, regardless of
+// what the legacy regime says. Note: 2% in low regime was raised from
+// $6 → $7 on 2026-04-21 (PR C), so low and moderate now coincide on 2%
+// — the regression remains meaningful for the 3% and other tiers
+// where they still differ.
 
 test("regression: DVOL 42.4 in 40-50 band uses Design A 'low' schedule, not legacy 'normal' → moderate mapping", () => {
   __resetPricingRegimeForTests();
@@ -44,14 +47,22 @@ test("regression: DVOL 42.4 in 40-50 band uses Design A 'low' schedule, not lega
 
   const tier2 = tiers.find((t) => t.slPct === 2);
   assert.ok(tier2, "2% tier should exist");
+  // 2% in low and moderate now coincide at $7 after PR C (2026-04-21).
+  // The regression discriminator for 2% no longer exists — we keep the
+  // assertion as a smoke check, then verify on 3% where the schedules
+  // still diverge ($5 low vs $5.50 moderate).
   assert.equal(
     tier2!.premiumPer1kUsd,
-    6,
-    `2% premium should be $6 (Design A 'low'), not $7 (legacy 'normal' → moderate). Got $${tier2!.premiumPer1kUsd}.`
+    7,
+    `2% premium should be $7 (Design A 'low' = $7 post-PR-C). Got $${tier2!.premiumPer1kUsd}.`
   );
 
   const tier3 = tiers.find((t) => t.slPct === 3);
-  assert.equal(tier3!.premiumPer1kUsd, 5, "3% premium should be $5 (low)");
+  assert.equal(
+    tier3!.premiumPer1kUsd,
+    5,
+    `3% premium should be $5 (Design A 'low'), not $5.50 (legacy 'normal' → moderate). Got $${tier3!.premiumPer1kUsd}.`
+  );
 
   const tier5 = tiers.find((t) => t.slPct === 5);
   assert.equal(tier5!.premiumPer1kUsd, 3, "5% premium should be $3");
@@ -78,13 +89,15 @@ test("regression: legacy regime input is ignored even at the boundary values tha
   recordDvolSample(45, now);
 
   // Try every legacy value; Design A 'low' should win for all.
+  // We assert on the 3% tier because 2% low/moderate are now $7 after
+  // PR C — only the 3% tier still differs ($5 low vs $5.50 moderate).
   for (const legacy of ["calm", "normal", "stress"] as const) {
     const tiers = getV7AvailableTiers(legacy);
-    const tier2 = tiers.find((t) => t.slPct === 2);
+    const tier3 = tiers.find((t) => t.slPct === 3);
     assert.equal(
-      tier2!.premiumPer1kUsd,
-      6,
-      `legacy='${legacy}' should be ignored → Design A 'low' → $6 (got $${tier2!.premiumPer1kUsd})`
+      tier3!.premiumPer1kUsd,
+      5,
+      `legacy='${legacy}' should be ignored → Design A 'low' → 3% = $5 (got $${tier3!.premiumPer1kUsd})`
     );
   }
 });
