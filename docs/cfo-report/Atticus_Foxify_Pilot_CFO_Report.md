@@ -471,6 +471,15 @@ Five signals where deviation from baseline expectation should trigger investigat
 - **What a sustained positive USD slippage means:** real spread cost we didn't price in, OR a stale quote-vs-fill timing pattern (order book ticking against us between quote and fill).
 - **Action to consider:** investigate Deribit order-book depth at our typical sizes via the `/pilot/admin/diagnostics/per-trade-fills` endpoint; if persistent, consider sizing-aware order placement.
 
+### 11.2.1 Strike-floor gap (added post-c84dbbe9)
+
+- **Metric:** average strike-floor gap in USD, from `pilot_execution_quality_daily.avg_strike_gap_usd`. Signed: positive = strike OTM relative to trigger (dead-zone forming on hedge selection), negative = strike ITM (hedge already paying at trigger fire). Per-direction roll-up (LONG vs SHORT) lives in the row's metadata.
+- **Expected baseline (post PR #76 ITM aggressiveness fix):** average gap on 2% tier should be **negative** (typically −$100 to −$300 depending on spot and Deribit strike grid). Wider tiers (3%, 5%, 10%) typically remain slightly positive (small OTM gap) because ITM preference does not apply above 2.5% SL.
+- **Watch trigger:** average strike gap > +$200 OTM over 5+ fills on 2% tier. This indicates either the ITM preference isn't firing (regression check) OR Deribit liquidity at trigger-ITM strikes has degraded (operational issue).
+- **Per-direction watch:** if SHORT-side average gap is materially worse (more positive) than LONG-side average gap by > $200 over 5+ fills each, investigate — could indicate call-side liquidity has degraded or a bug specific to SHORT selection.
+- **What it means:** the strike-floor dead zone is the structural driver behind low-recovery TP outcomes (see §11.1). Trending negative is healthy; trending positive is the root cause of unexpected single-trade losses.
+- **Action to consider:** verify ITM preference is firing in `[OptionSelection]` log lines (look for `itmBonus=0.010` on 2% tier trades), or run `./scripts/pilot-trade-investigate <protection-id>` for any flagged trade to see the strike vs trigger geometry.
+
 ### 11.3 Tier mix concentration
 
 - **Metric:** share of new daily notional in the 2% tier
