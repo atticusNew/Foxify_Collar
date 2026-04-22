@@ -522,17 +522,54 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         strike: Number(item.strike || parseDeribitStrike(String(item.instrument_name || "")) || 0),
         expiryTs: Number(item.expiration_timestamp || parseDeribitExpiry(String(item.instrument_name || "")) || 0)
       }))
-      .filter((item) => item.instrumentId && Number.isFinite(item.strike) && item.strike > 0)
-      .filter((item) => {
-        if (!(this.strikeSelectionMode === "trigger_aligned" && triggerTarget)) return true;
-        const strikeBuffer = params.spot * 0.005;
-        if (targetOptionType === "put") {
-          return item.strike <= triggerTarget + strikeBuffer;
-        }
-        return item.strike >= triggerTarget - strikeBuffer;
-      });
+      .filter((item) => item.instrumentId && Number.isFinite(item.strike) && item.strike > 0);
+
+    // Trigger-aligned candidate filter — keep strikes within an
+    // adaptive band around the trigger. Tries a tight band first
+    // (matches historical behavior for clean fills), then widens if
+    // the grid happens to be misaligned for this expiry+price.
+    //
+    // 2026-04-22 fix: pre-fix used a single fixed band (spot * 0.005);
+    // when Deribit's nearest call strike fell just outside it, the
+    // user got "trigger_strike_unavailable" with no recourse. The
+    // expanded band (spot * 0.020) catches strike-grid alignment
+    // gaps that occur on certain DTE/spot combinations without
+    // letting the algorithm select strikes that are economically
+    // useless (>2% from trigger means hedge margin is broken).
+    let candidatesPreTriggerFilter = candidates;
+    if (this.strikeSelectionMode === "trigger_aligned" && triggerTarget) {
+      const filterByBuffer = (bufferPct: number) => {
+        const strikeBuffer = params.spot * bufferPct;
+        return candidatesPreTriggerFilter.filter((item) => {
+          if (targetOptionType === "put") {
+            return item.strike <= triggerTarget + strikeBuffer;
+          }
+          return item.strike >= triggerTarget - strikeBuffer;
+        });
+      };
+
+      // Try tight (±0.5%) → wider (±1%) → widest (±2%) before failing.
+      candidates = filterByBuffer(0.005);
+      if (candidates.length === 0) {
+        console.log(
+          `[OptionSelection] trigger band ±0.5% empty for ${targetOptionType}; widening to ±1.0%`
+        );
+        candidates = filterByBuffer(0.010);
+      }
+      if (candidates.length === 0) {
+        console.log(
+          `[OptionSelection] trigger band ±1.0% still empty; widening to ±2.0% (last resort)`
+        );
+        candidates = filterByBuffer(0.020);
+      }
+    }
 
     if (this.strikeSelectionMode === "trigger_aligned" && triggerTarget && candidates.length === 0) {
+      console.warn(
+        `[OptionSelection] no strikes within ±2% of trigger ${triggerTarget} for ` +
+        `${targetOptionType} (spot=${params.spot}, tenor=${requestedTenorDays}d). ` +
+        `Deribit grid is misaligned for this expiry. Suggesting wider SL tier or different size.`
+      );
       throw new Error("deribit_quote_unavailable:trigger_strike_unavailable");
     }
 
