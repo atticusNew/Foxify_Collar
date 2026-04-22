@@ -2175,7 +2175,29 @@ export const registerPilotRoutes = async (
           const buyExec = execs.find((e) => String(e.side).toLowerCase() === "buy");
           const sellExec = execs.find((e) => String(e.side).toLowerCase() === "sell");
 
-          // Cash flows
+          // Cash flows.
+          //
+          // CRITICAL: hedge recovery is read from metadata.sellResult.totalProceeds,
+          // NOT from a sell-side venue_executions row. The hedge manager
+          // (services/api/src/pilot/hedgeManager.ts ~line 448) records TP
+          // sales by stamping metadata.sellResult on the protection record,
+          // and does NOT insert a side='sell' venue_executions row. So the
+          // pre-fix code that did `execs.find(side === 'sell')` was always
+          // returning undefined, and recovery always rendered as 0%.
+          //
+          // Fallback chain for recovery:
+          //   1. metadata.sellResult.totalProceeds (truth — set by hedge manager)
+          //   2. Any actual side='sell' venue_executions row (defensive — for
+          //      future code paths that might insert one)
+          //   3. 0
+          //
+          // Same root-cause bug for soldAt — fall back to metadata.sellResult or
+          // metadata.soldAt before checking sellExec.
+          const sellResult = (md.sellResult as Record<string, unknown> | undefined) || undefined;
+          const recoveryFromMetadata = sellResult ? Number(sellResult.totalProceeds || 0) : 0;
+          const recoveryFromExecRow = sellExec ? Number(sellExec.premium || 0) : 0;
+          const hedgeRecovery = recoveryFromMetadata > 0 ? recoveryFromMetadata : recoveryFromExecRow;
+
           const premiumCollected = ledger
             .filter((l) => String(l.entry_type) === "premium_due")
             .reduce((acc, l) => acc + Number(l.amount || 0), 0);
@@ -2183,17 +2205,24 @@ export const registerPilotRoutes = async (
             .filter((l) => ["payout_due", "trigger_payout_due"].includes(String(l.entry_type)))
             .reduce((acc, l) => acc + Number(l.amount || 0), 0);
           const hedgeCost = buyExec ? Number(buyExec.premium || 0) : 0;
-          const hedgeRecovery = sellExec ? Number(sellExec.premium || 0) : 0;
           const netPnlUsd = premiumCollected - hedgeCost + hedgeRecovery - payoutOwed;
           const recoveryRatioPct = payoutOwed > 0 ? (hedgeRecovery / payoutOwed) * 100 : null;
 
-          // Strike geometry
+          // Strike geometry.
+          //
+          // CRITICAL: triggerPrice resolution must prefer the floor_price column
+          // over metadata fields. metadata.triggerPrice may be missing or stale
+          // on older protections; floor_price is set authoritatively by
+          // triggerMonitor.ts at trigger fire and again by activate handler at
+          // creation. Pre-fix bug: when md.triggerPrice was 0/missing AND
+          // md.floorPrice was 0/missing, the strikeGapToTriggerUsd became 0
+          // and strikeIsItm fell to false, displaying everything as OTM
+          // (including correctly-selected ITM strikes from PR #76).
           const buyDetails = (buyExec?.details as Record<string, unknown>) || {};
           const selectedStrike = Number(md.selectedStrike || buyDetails.selectedStrike || 0);
+          const triggerPriceFromCol = Number(p.floorPrice || 0);
           const triggerPriceFromMd = Number(md.triggerPrice || md.floorPrice || 0);
-          const triggerPrice = triggerPriceFromMd > 0
-            ? triggerPriceFromMd
-            : Number(p.floorPrice || 0);
+          const triggerPrice = triggerPriceFromCol > 0 ? triggerPriceFromCol : triggerPriceFromMd;
           const strikeGapToTriggerUsd = selectedStrike > 0 && triggerPrice > 0
             ? selectedStrike - triggerPrice
             : null;
@@ -2203,9 +2232,11 @@ export const registerPilotRoutes = async (
               : strikeGapToTriggerUsd > 0    // put strike above trigger = ITM
           );
 
-          // Timing
-          const triggeredAtIso = md.triggeredAt ? String(md.triggeredAt) : null;
-          const soldAtIso = md.soldAt ? String(md.soldAt) : (sellExec?.executed_at ? new Date(String(sellExec.executed_at)).toISOString() : null);
+          // Timing — same metadata-first fallback chain
+          const triggeredAtIso = md.triggeredAt ? String(md.triggeredAt) : (md.triggerAt ? String(md.triggerAt) : null);
+          const soldFromMetadata = md.soldAt ? String(md.soldAt) : null;
+          const soldFromExec = sellExec?.executed_at ? new Date(String(sellExec.executed_at)).toISOString() : null;
+          const soldAtIso = soldFromMetadata || soldFromExec;
           let timeFromTriggerToSellMin: number | null = null;
           if (triggeredAtIso && soldAtIso) {
             const delta = new Date(soldAtIso).getTime() - new Date(triggeredAtIso).getTime();
@@ -4580,6 +4611,12 @@ export const registerPilotRoutes = async (
         instrumentId: protection.instrumentId,
         createdAt: protection.createdAt,
         renewedTo: protection.metadata?.renewedTo ? String(protection.metadata.renewedTo) : null,
+        // 2026-04-22: signal archived status to widget so it can drop the
+        // position from local cache (the widget polls each protection ID
+        // individually and was previously unable to know that an
+        // admin-triggered archive had occurred — leaving ghost positions
+        // visible until manual localStorage clear).
+        archivedAt: protection.metadata?.archivedAt ? String(protection.metadata.archivedAt) : null,
       },
       currentPrice: referencePrice.toFixed(10),
       currentPriceSource: snapshot.priceSource,

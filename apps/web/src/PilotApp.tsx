@@ -332,13 +332,23 @@ const friendlyError = (message: string): string => {
     return "Activation paused while quotes are validated. Quoting still works.";
   }
   if (message.includes("tenor_drift_exceeded")) {
-    return "That length isn't liquid right now. Try the suggested length.";
+    // 2026-04-22: previous copy said "Try the suggested length" but no
+    // suggestion was actually offered, which confused operators. Honest
+    // copy now — the only currently-launched tenor is 1 day, so there's
+    // nothing to suggest. Operator should retry shortly.
+    return "Hedge length not liquid right now. Try again shortly.";
   }
   if (message.includes("tenor_temporarily_unavailable")) {
-    return "That length is temporarily unavailable. Try the suggested length.";
+    return "Hedge length temporarily unavailable. Try again shortly.";
+  }
+  if (message.includes("trigger_strike_unavailable")) {
+    return "No suitable strike near the trigger right now. Try a wider SL tier (3% or 5%) or change the size.";
+  }
+  if (message.includes("deribit_quote_unavailable")) {
+    return "Quote temporarily unavailable. Try again or pick a different SL tier.";
   }
   if (message.includes("quote_economics_unacceptable")) {
-    return "Hedge cost is uneconomical right now. Try a different length.";
+    return "Hedge cost is uneconomical right now. Try a different SL tier.";
   }
   if (message.includes("min_tradable_notional_exceeded")) {
     return "Below the exchange minimum. Increase amount.";

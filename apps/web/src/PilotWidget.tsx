@@ -21,7 +21,7 @@ type V7Info = {
 };
 type QuoteResponse = { status: string; protectionType: string; tierName: string; slPct: number | null; drawdownFloorPct: string; triggerPrice: string; floorPrice: string; v7: V7Info | null; quote: { quoteId: string; instrumentId: string; premium: number; expiresAt: string; side: string; quantity: number; venue: string; details?: Record<string, unknown> }; entrySnapshot: { price: string; marketId: string; source: string; timestamp: string } };
 type ProtectionRecord = { id: string; status: string; tierName: string; protectedNotional: string; entryPrice: string; floorPrice: string; drawdownFloorPct: string; expiryAt: string; premium: string; autoRenew: boolean; payoutDueAmount: string | null; payoutSettledAmount: string | null; venue: string; instrumentId: string; createdAt: string; metadata?: Record<string, unknown> };
-type MonitorResponse = { status: string; protection?: ProtectionRecord & { renewedTo?: string | null }; currentPrice?: string; distanceToFloor?: { pct: string; usd: string; direction: string }; timeRemaining?: { ms: number; human: string } };
+type MonitorResponse = { status: string; protection?: ProtectionRecord & { renewedTo?: string | null; archivedAt?: string | null }; currentPrice?: string; distanceToFloor?: { pct: string; usd: string; direction: string }; timeRemaining?: { ms: number; human: string } };
 type Position = { id: string; num: number; type: "long" | "short"; size: number; stopLoss: number; entryPrice: number; protectionId: string | null; autoRenew: boolean; premium: number; status: "active" | "closed" | "triggered"; closedPnl: number | null; closedPayout: number | null };
 
 // ─── Config ──────────────────────────────────────────────────────────
@@ -211,6 +211,22 @@ export function PilotWidget() {
           const d = await fetchMon(pos.protectionId);
           if (!on) return;
 
+          // 2026-04-22: server-side reconciliation. If the protection was
+          // archived by admin (test-reset-protections endpoint, manual
+          // intervention) the server now returns archivedAt in the monitor
+          // payload. Drop the local position entry — without this fix the
+          // widget kept showing ghost positions until the operator manually
+          // cleared localStorage.
+          if (d.protection?.archivedAt) {
+            setPositions(prev => prev.filter(p => p.id !== pos.id));
+            setMonitors(prev => {
+              const next = { ...prev };
+              delete next[pos.id];
+              return next;
+            });
+            continue;
+          }
+
           if (d.protection?.renewedTo && (d.protection?.status === "expired_otm" || d.protection?.status === "expired_itm" || d.protection?.status === "cancelled")) {
             const newId = d.protection.renewedTo;
             try {
@@ -231,7 +247,21 @@ export function PilotWidget() {
             setSettlement(s => { const ns = { ...s, totalPayouts: s.totalPayouts + pay }; sv(K_SET, ns); return ns; });
             setToast(`Position #${pos.num} triggered — Payout ${fmt(pay)}`);
           }
-        } catch {}
+        } catch (err: any) {
+          // 2026-04-22: same reconciliation when the server returns 404
+          // (protection deleted at DB level — rare but possible). Without
+          // this branch the widget kept ghost positions for protections
+          // that no longer exist server-side.
+          const msg = String(err?.message || "");
+          if (msg.includes("not_found") || msg.includes("404") || msg.includes("Not Found")) {
+            setPositions(prev => prev.filter(p => p.id !== pos.id));
+            setMonitors(prev => {
+              const next = { ...prev };
+              delete next[pos.id];
+              return next;
+            });
+          }
+        }
       }
     };
     poll(); const id = setInterval(poll, 5000);

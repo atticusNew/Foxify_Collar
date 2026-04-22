@@ -498,7 +498,7 @@ Two SHORT-only sub-rules that override / extend the standard TP decision tree. M
 | `PILOT_TP_GAP3_DOWN_PCT` | `5.0` | Spot drop % over the window that activates Gap 3 |
 | `PILOT_TP_GAP3_WINDOW_HOURS` | `24` | Lookback window for Gap 3 |
 | `PILOT_TP_GAP3_SHRINK_FACTOR` | `0.5` | Cooling-window multiplier when Gap 3 is active |
-| `PILOT_TP_GAP5_ENFORCE` | `false` | Set `true` to enforce; default observes only |
+| `PILOT_TP_GAP5_ENFORCE` | `false` (production: set to `true` 2026-04-22 after empirical signal — 6 of 6 triggered trades showed barely-graze pattern) | Set `true` to enforce; default observes only |
 | `PILOT_TP_GAP5_GRAZE_PCT` | `0.3` | Spot move % past trigger that qualifies as barely-graze |
 | `PILOT_TP_GAP5_GRAZE_WINDOW_MIN` | `30` | Early-window minutes since trigger for Gap 5a |
 | `PILOT_TP_GAP5_GRAZE_MIN_VALUE_USD` | `15` | Minimum option value to bother fast-selling |
