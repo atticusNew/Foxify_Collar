@@ -5216,6 +5216,82 @@ export const registerPilotRoutes = async (
   });
 
   /**
+   * GET /pilot/admin/deribit-balance
+   *
+   * Live snapshot of the Deribit account balance used for real-money
+   * hedging. Pulls fresh from Deribit's get_account_summary on each
+   * request — meant for the "Check Balance" button in the admin
+   * dashboard and any operator who wants real-time visibility into
+   * what's actually on the broker.
+   *
+   * Returns BTC balance + USD value (computed from current Deribit
+   * spot index price). Falls back gracefully if Deribit is unreachable.
+   *
+   * Replaces the prior Bullish-only /pilot/monitor/treasury-check
+   * endpoint that the Check Balance button used to call (Bullish was
+   * deprecated for the retail pilot, so the button silently did
+   * nothing). Bullish endpoint kept intact for treasury reuse later.
+   */
+  app.get("/pilot/admin/deribit-balance", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    try {
+      const summaryRaw: any = await deps.deribit.getAccountSummary("BTC");
+      if (summaryRaw?.error) {
+        reply.code(502);
+        return {
+          status: "error",
+          reason: "deribit_returned_error",
+          detail: summaryRaw.error
+        };
+      }
+      const result = summaryRaw?.result || {};
+      const balanceBtc = Number(result.balance ?? 0);
+      const availableBtc = Number(result.available_funds ?? 0);
+      const equityBtc = Number(result.equity ?? 0);
+      const initialMarginBtc = Number(result.initial_margin ?? 0);
+      const maintMarginBtc = Number(result.maintenance_margin ?? 0);
+
+      // Pull the spot index price separately so we can show USD-equivalent
+      // values. Falls back to null if it errors — UI will display BTC only.
+      let spotUsd: number | null = null;
+      try {
+        const idx: any = await deps.deribit.getIndexPrice("btc_usd");
+        const px = Number(idx?.result?.index_price ?? 0);
+        if (Number.isFinite(px) && px > 0) spotUsd = px;
+      } catch {
+        // ignore — USD values just won't be populated
+      }
+
+      return {
+        status: "ok",
+        currency: "BTC",
+        balanceBtc,
+        availableBtc,
+        equityBtc,
+        initialMarginBtc,
+        maintenanceMarginBtc: maintMarginBtc,
+        spotUsd,
+        balanceUsd: spotUsd !== null ? Number((balanceBtc * spotUsd).toFixed(2)) : null,
+        availableUsd: spotUsd !== null ? Number((availableBtc * spotUsd).toFixed(2)) : null,
+        equityUsd: spotUsd !== null ? Number((equityBtc * spotUsd).toFixed(2)) : null,
+        marginModel: result.margin_model || null,
+        crossCollateralEnabled: result.cross_collateral_enabled ?? null,
+        accountId: result.id ?? null,
+        username: result.username ?? null,
+        asOf: new Date().toISOString()
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "deribit_unreachable",
+        detail: String(error?.message || "deribit_balance_fetch_failed")
+      };
+    }
+  });
+
+  /**
    * POST /pilot/admin/circuit-breaker/reset
    * Manually clears a tripped circuit breaker. Re-enables new
    * protection sales immediately. The breaker will continue to

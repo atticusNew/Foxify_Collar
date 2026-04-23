@@ -123,6 +123,21 @@ type TriggeredSummary = {
 };
 
 type TreasurySnapshot = {
+  // Live Deribit balance snapshot (replaces the old Bullish-only response).
+  // Set by the "Check Balance" button which now hits /pilot/admin/deribit-balance.
+  balanceBtc?: number;
+  availableBtc?: number;
+  equityBtc?: number;
+  spotUsd?: number | null;
+  balanceUsd?: number | null;
+  availableUsd?: number | null;
+  equityUsd?: number | null;
+  marginModel?: string | null;
+  crossCollateralEnabled?: boolean | null;
+  accountId?: number | null;
+  username?: string | null;
+  asOf?: string;
+  // Legacy Bullish fields (kept so older callers don't break; unused by the new endpoint)
   balance?: string;
   currency?: string;
   tradingAccountId?: string;
@@ -392,9 +407,14 @@ function Dashboard({ token }: { token: string }) {
   const handleTreasuryCheck = async () => {
     setTreasuryLoading(true);
     try {
-      const res = await adminApi<{ treasury: TreasurySnapshot }>("/pilot/monitor/treasury-check", token, { method: "POST" });
-      setTreasury(res.treasury);
-    } catch {
+      // 2026-04-23: switched from /pilot/monitor/treasury-check (Bullish — dead
+      // for retail pilot) to /pilot/admin/deribit-balance (live Deribit fetch).
+      // Endpoint returns {balanceBtc, availableBtc, equityBtc, balanceUsd, ...}
+      // straight from Deribit's get_account_summary plus a fresh spot price.
+      const res = await adminApi<TreasurySnapshot>("/pilot/admin/deribit-balance", token);
+      setTreasury(res);
+    } catch (e) {
+      console.error("Failed to fetch Deribit balance:", e);
       setTreasury(null);
     } finally {
       setTreasuryLoading(false);
@@ -628,9 +648,34 @@ function Dashboard({ token }: { token: string }) {
                   </div>
                 </div>
               )}
-              {treasury && treasury.balance && (
-                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8 }}>
-                  Deribit account balance: {fmtUsd(treasury.balance)} {treasury.currency || "USDC"}
+              {treasury && (treasury.balanceBtc !== undefined || treasury.balance) && (
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, lineHeight: 1.6 }}>
+                  {treasury.balanceBtc !== undefined ? (
+                    // New live-Deribit response shape
+                    <>
+                      <div>
+                        <strong style={{ color: "var(--text)" }}>Deribit live balance:</strong>{" "}
+                        {treasury.balanceBtc.toFixed(8)} BTC
+                        {treasury.balanceUsd !== null && treasury.balanceUsd !== undefined ? ` (≈ $${treasury.balanceUsd.toFixed(2)})` : ""}
+                      </div>
+                      {treasury.availableBtc !== undefined && (
+                        <div>
+                          Available: {treasury.availableBtc.toFixed(8)} BTC
+                          {treasury.availableUsd !== null && treasury.availableUsd !== undefined ? ` (≈ $${treasury.availableUsd.toFixed(2)})` : ""}
+                        </div>
+                      )}
+                      {treasury.marginModel && (
+                        <div style={{ fontSize: 10, opacity: 0.7 }}>
+                          margin: {treasury.marginModel}{treasury.crossCollateralEnabled ? " · cross-collateral on" : ""}
+                          {treasury.spotUsd ? ` · BTC index ${"$" + treasury.spotUsd.toFixed(0)}` : ""}
+                          {treasury.asOf ? ` · ${new Date(treasury.asOf).toLocaleTimeString()}` : ""}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    // Legacy Bullish response shape (defensive — shouldn't fire post-fix)
+                    <>Account balance: {fmtUsd(treasury.balance!)} {treasury.currency || "USDC"}</>
+                  )}
                 </div>
               )}
             </div>
