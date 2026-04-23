@@ -1,6 +1,6 @@
 # Foxify Protect Pilot
 
-**Effective Date:** _______________
+**Effective Date:** <span class="blank"></span>
 
 **Between:**
 Atticus Strategy, Ltd. ("Atticus")
@@ -172,10 +172,10 @@ This document is governed by the laws of England and Wales, with exclusive juris
 
 | Atticus Strategy, Ltd. | Foxify |
 |---|---|
-| Name: _________________________ | Name: _________________________ |
-| Title: _________________________ | Title: _________________________ |
-| Date: _________________________ | Date: _________________________ |
-| Email: _________________________ | Email: _________________________ |
+| Name: <span class="blank"></span> | Name: <span class="blank"></span> |
+| Title: <span class="blank"></span> | Title: <span class="blank"></span> |
+| Date: <span class="blank"></span> | Date: <span class="blank"></span> |
+| Email: <span class="blank"></span> | Email: <span class="blank"></span> |
 
 ---
 
@@ -187,26 +187,26 @@ This schedule is a simple summary of pilot activity and settlement for the appli
 
 | Item | Value |
 |---|---|
-| Reconciliation Period | _________________________ |
-| Statement Date | _________________________ |
-| Settlement Due By | _________________________ |
-| Net Amount Due | _________________________ |
+| Reconciliation Period | <span class="blank"></span> |
+| Statement Date | <span class="blank"></span> |
+| Settlement Due By | <span class="blank"></span> |
+| Net Amount Due | <span class="blank"></span> |
 
 ### Pilot Activity Summary
 
 | Protection ID | Date | Position | Notional | Premium | Payout | Net Result |
 |---|---|---|---|---|---|---|
-| __________________ | __________ | __________ | __________ | __________ | __________ | ____________________ |
-| __________________ | __________ | __________ | __________ | __________ | __________ | ____________________ |
-| __________________ | __________ | __________ | __________ | __________ | __________ | ____________________ |
+| <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> |
+| <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> |
+| <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> | <span class="blank"></span> |
 
 ### Statement Totals
 
 | Item | Amount |
 |---|---|
-| Total Premiums | _________________________ |
-| Total Payouts | _________________________ |
-| Net Amount Due | _________________________ |
+| Total Premiums | <span class="blank"></span> |
+| Total Payouts | <span class="blank"></span> |
+| Net Amount Due | <span class="blank"></span> |
 
 ### Settlement Terms
 
