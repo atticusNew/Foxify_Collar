@@ -113,11 +113,15 @@ if [ "$(last_http)" = "200" ]; then
   LABEL=$(echo "$REGIME_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('pricingRegimeLabel','?'))" 2>/dev/null)
   DVOL=$(echo "$REGIME_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('dvol','?'))" 2>/dev/null)
   TIER2=$(echo "$REGIME_JSON" | python3 -c "import sys,json;t=json.load(sys.stdin)['tiers'];print([x for x in t if x['slPct']==2][0]['premiumPer1kUsd'])" 2>/dev/null)
+  # 2026-04-23: PR #81 raised low-regime 2% from $6 → $7 to align with
+  # moderate (tier-mix shaping; widens 2%-vs-5% gap to push 5% adoption).
+  # PR #74 raised high-regime 2% ceiling from $9 → $10. Update the
+  # expected map so this script doesn't false-flag a healthy schedule.
   EXPECTED2=$(echo "$REGIME_JSON" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 r=d.get('pricingRegime','')
-print({'low':6,'moderate':7,'elevated':8,'high':9}.get(r,'?'))" 2>/dev/null)
+print({'low':7,'moderate':7,'elevated':8,'high':10}.get(r,'?'))" 2>/dev/null)
   if [ "$TIER2" = "$EXPECTED2" ]; then
     row OK "pricing regime" "$LABEL (DVOL $DVOL, 2%=\$$TIER2)"
   else
@@ -125,6 +129,36 @@ print({'low':6,'moderate':7,'elevated':8,'high':9}.get(r,'?'))" 2>/dev/null)
   fi
 else
   row FAIL "pricing regime" "HTTP $(last_http)"
+fi
+
+# 2b. Hedge budget cap — pacing per Foxify Pilot Agreement v2 §3.1
+HB_JSON=$(fetch "/pilot/admin/hedge-budget")
+if [ "$(last_http)" = "200" ]; then
+  HB_DAY=$(echo "$HB_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('pilotDay','?'))" 2>/dev/null)
+  HB_CAP=$(echo "$HB_JSON" | python3 -c "import sys,json;v=json.load(sys.stdin).get('capUsd');print('none' if v is None else v)" 2>/dev/null)
+  HB_SPENT=$(echo "$HB_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('cumulativeSpentUsd',0))" 2>/dev/null)
+  HB_REMAIN=$(echo "$HB_JSON" | python3 -c "import sys,json;v=json.load(sys.stdin).get('remainingUsd');print('unlimited' if v is None else v)" 2>/dev/null)
+  HB_ENFORCE=$(echo "$HB_JSON" | python3 -c "import sys,json;print(json.load(sys.stdin).get('enforce','?'))" 2>/dev/null)
+  if [ "$HB_ENFORCE" != "True" ]; then
+    row ATTN "hedge budget" "Day $HB_DAY · cap=$HB_CAP spent=\$$HB_SPENT (NOT enforcing)"
+  elif [ "$HB_CAP" = "none" ]; then
+    row OK "hedge budget" "Day $HB_DAY · no cap · spent \$$HB_SPENT cumulative"
+  else
+    # Check remaining budget — flag if below 20% of cap
+    LOW=$(python3 -c "
+try:
+  cap = float('$HB_CAP')
+  rem = float('$HB_REMAIN')
+  print(1 if rem < cap * 0.2 else 0)
+except: print(0)" 2>/dev/null)
+    if [ "$LOW" = "1" ]; then
+      row ATTN "hedge budget" "Day $HB_DAY · spent \$$HB_SPENT of \$$HB_CAP (only \$$HB_REMAIN remaining)"
+    else
+      row OK "hedge budget" "Day $HB_DAY · spent \$$HB_SPENT of \$$HB_CAP (\$$HB_REMAIN remaining)"
+    fi
+  fi
+else
+  row ATTN "hedge budget" "HTTP $(last_http) — endpoint may not be deployed yet"
 fi
 
 # 3. Circuit breaker — must be armed and not tripped

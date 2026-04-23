@@ -16,6 +16,7 @@ import {
   resetPilotData,
   getDailyProtectedNotionalForUser,
   sumActiveProtectionNotional,
+  sumLiveHedgeCostUsdSince,
   getDailyTierUsageForUser,
   getDailyTreasurySubsidyUsageForUser,
   getEssentialProofPayload,
@@ -97,6 +98,12 @@ import {
   recordBalanceSample,
   resetCircuitBreaker
 } from "./circuitBreaker";
+import {
+  configureHedgeBudgetCap,
+  evaluateHedgeBudgetCap,
+  getHedgeBudgetCapConfig,
+  type HedgeBudgetCapVerdict
+} from "./hedgeBudgetCap";
 
 // Format a USD amount as a comma-separated whole-dollar string for
 // inclusion in user-facing error messages. Examples:
@@ -3670,6 +3677,59 @@ export const registerPilotRoutes = async (
         typeof lockContext.entryPriceTimestamp === "string"
           ? String(lockContext.entryPriceTimestamp)
           : null;
+      // R2.F (binding, added 2026-04-23) — Cumulative hedge-budget cap.
+      // Per Foxify Pilot Agreement v2 §3.1, Atticus's cumulative real-money
+      // hedge spend is capped on a phased ramp-up: $100 / $1,000 / $10,000
+      // for Days 1-2 / 3-7 / 8-21, no cap thereafter. Enforced HERE so the
+      // user sees a clean rejection BEFORE any Deribit order is placed.
+      //
+      // Hedge cost is estimated from the locked quote's askPriceBtc × spot
+      // × quote.quantity. Actual fill cost may differ slightly due to
+      // microstructure but the projected cost is a tight upper bound.
+      //
+      // Disable the cap by setting PILOT_HEDGE_BUDGET_CAP_ENABLED=false
+      // (the policy module respects this flag and short-circuits to allow).
+      const lockedQuoteDetailsForCap =
+        (lockedQuote.details || {}) as Record<string, unknown>;
+      const askPriceBtcForCap = Number(lockedQuoteDetailsForCap.askPriceBtc || 0);
+      const spotPriceUsdForCap = Number(lockedQuoteDetailsForCap.spotPriceUsd || 0);
+      const lockedQty = Number(lockedQuote.quantity || 0);
+      const projectedHedgeCostUsd =
+        askPriceBtcForCap > 0 && spotPriceUsdForCap > 0 && lockedQty > 0
+          ? askPriceBtcForCap * spotPriceUsdForCap * lockedQty
+          : 0;
+
+      const hedgeCapCfg = getHedgeBudgetCapConfig();
+      const pilotStartMs = hedgeCapCfg.pilotStartIso
+        ? Date.parse(hedgeCapCfg.pilotStartIso)
+        : null;
+      const cumulativeSpentUsd = pilotStartMs
+        ? await sumLiveHedgeCostUsdSince(client, pilotStartMs)
+        : await sumLiveHedgeCostUsdSince(client, 0);
+      const hedgeBudgetVerdict: HedgeBudgetCapVerdict = evaluateHedgeBudgetCap({
+        pilotStartMsEpoch: pilotStartMs,
+        cumulativeSpentUsd,
+        prospectiveHedgeCostUsd: projectedHedgeCostUsd
+      });
+      if (!hedgeBudgetVerdict.allowed) {
+        const capErr = new Error("hedge_budget_cap_exceeded");
+        (capErr as any).pilotDay = hedgeBudgetVerdict.pilotDay;
+        (capErr as any).capUsd = hedgeBudgetVerdict.capUsd;
+        (capErr as any).cumulativeSpentUsd = hedgeBudgetVerdict.cumulativeSpentUsd;
+        (capErr as any).remainingUsd = hedgeBudgetVerdict.remainingUsd;
+        (capErr as any).projectedAfterUsd = hedgeBudgetVerdict.projectedAfterUsd;
+        (capErr as any).message = hedgeBudgetVerdict.message;
+        throw capErr;
+      }
+      console.log(
+        `[HedgeBudget] Day ${hedgeBudgetVerdict.pilotDay}: ` +
+        `cap=${hedgeBudgetVerdict.capUsd === null ? "none" : "$" + hedgeBudgetVerdict.capUsd.toFixed(2)} ` +
+        `spent=$${hedgeBudgetVerdict.cumulativeSpentUsd.toFixed(2)} ` +
+        `projecting=$${projectedHedgeCostUsd.toFixed(2)} ` +
+        `→ projected total $${hedgeBudgetVerdict.projectedAfterUsd.toFixed(2)} ` +
+        `(${hedgeBudgetVerdict.remainingUsd === null ? "no cap" : "$" + hedgeBudgetVerdict.remainingUsd.toFixed(2) + " remaining"})`
+      );
+
       // R2.B (binding) — Aggregate active notional cap. Run inside the
       // activation transaction so two concurrent activations cannot both
       // pass a stale read. Postgres serializes the SUM under the same
@@ -4310,6 +4370,7 @@ export const registerPilotRoutes = async (
         errMsg === "daily_notional_cap_exceeded" ||
         errMsg === "aggregate_active_notional_cap_exceeded" ||
         errMsg === "per_tier_daily_concentration_cap_exceeded" ||
+        errMsg === "hedge_budget_cap_exceeded" ||
         errMsg === "user_hash_secret_missing" ||
         errMsg === "venue_execute_timeout"
       ) {
@@ -4399,6 +4460,8 @@ export const registerPilotRoutes = async (
                       )}) is full. Close one or wait for it to expire.`
                   : reason === "per_tier_daily_concentration_cap_exceeded"
                     ? `This protection level is full for today. Try a different level or wait until tomorrow.`
+                  : reason === "hedge_budget_cap_exceeded"
+                    ? ((error as any)?.message || `Pilot hedge budget reached for this phase. Try smaller size or wait for next pilot phase.`)
                   : reason === "quote_already_consumed"
                     ? "Quote already used. Refresh protections list."
                     : reason === "quote_not_activatable"
@@ -4428,6 +4491,15 @@ export const registerPilotRoutes = async (
               capUsdc: (error as any)?.capUsdc,
               currentActiveUsdc: (error as any)?.currentActiveUsdc,
               projectedAfterUsdc: (error as any)?.projectedAfterUsdc
+            }
+          : {}),
+        ...(reason === "hedge_budget_cap_exceeded"
+          ? {
+              pilotDay: (error as any)?.pilotDay,
+              capUsd: (error as any)?.capUsd,
+              cumulativeSpentUsd: (error as any)?.cumulativeSpentUsd,
+              remainingUsd: (error as any)?.remainingUsd,
+              projectedAfterUsd: (error as any)?.projectedAfterUsd
             }
           : {}),
         ...(reason === "per_tier_daily_concentration_cap_exceeded"
@@ -5105,6 +5177,45 @@ export const registerPilotRoutes = async (
   });
 
   /**
+   * GET /pilot/admin/hedge-budget
+   *
+   * Current cumulative hedge spend for the live pilot, the cap that
+   * applies to today, and how much budget remains. Use this to monitor
+   * pacing without having to query Deribit directly.
+   *
+   * Per Foxify Pilot Agreement v2 §3.1:
+   *   Day 1-2:   $100 cumulative
+   *   Day 3-7:   $1,000 cumulative
+   *   Day 8-21:  $10,000 cumulative
+   *   Day 22+:   no additional cap
+   */
+  app.get("/pilot/admin/hedge-budget", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const cfg = getHedgeBudgetCapConfig();
+    const pilotStartMs = cfg.pilotStartIso ? Date.parse(cfg.pilotStartIso) : null;
+    const cumulativeSpentUsd = pilotStartMs
+      ? await sumLiveHedgeCostUsdSince(pool, pilotStartMs)
+      : await sumLiveHedgeCostUsdSince(pool, 0);
+    const verdict = evaluateHedgeBudgetCap({
+      pilotStartMsEpoch: pilotStartMs,
+      cumulativeSpentUsd,
+      // Probe with $0 prospective spend so we just get the snapshot view
+      prospectiveHedgeCostUsd: 0
+    });
+    return {
+      status: "ok",
+      pilotStartIso: cfg.pilotStartIso,
+      pilotDay: verdict.pilotDay,
+      enforce: cfg.enforce,
+      capUsd: verdict.capUsd,
+      cumulativeSpentUsd: Number(cumulativeSpentUsd.toFixed(2)),
+      remainingUsd: verdict.remainingUsd === null ? null : Number(verdict.remainingUsd.toFixed(2)),
+      schedule: cfg.schedule
+    };
+  });
+
+  /**
    * POST /pilot/admin/circuit-breaker/reset
    * Manually clears a tripped circuit breaker. Re-enables new
    * protection sales immediately. The breaker will continue to
@@ -5630,11 +5741,40 @@ export const registerPilotRoutes = async (
       // circuit breaker. The breaker owns its own trip detection,
       // baseline tracking, and cooldown logic; we just supply data.
       // Wrapped to never fail the cycle if balance fetch errors.
+      //
+      // 2026-04-23: improved diagnostics. Previous version logged a
+      // generic warning when sampling failed but didn't surface the
+      // specific Deribit response, making it hard to diagnose live
+      // (user reported circuit breaker showed null balance for hours
+      // after switching to live trading). Now logs the structured
+      // response so the failure mode is visible in Render logs.
       try {
         const acctSummary: any = await deps.deribit.getAccountSummary("BTC");
         const equityBtc = Number(acctSummary?.result?.equity ?? 0);
-        if (Number.isFinite(equityBtc) && equityBtc >= 0) {
+        if (acctSummary?.error) {
+          console.warn(
+            `[CircuitBreaker] Deribit get_account_summary returned error: ${JSON.stringify(acctSummary.error)}`
+          );
+        } else if (!Number.isFinite(equityBtc)) {
+          console.warn(
+            `[CircuitBreaker] Deribit get_account_summary missing/invalid equity field; raw result keys=${
+              Object.keys(acctSummary?.result || {}).join(",")
+            }`
+          );
+        } else if (equityBtc < 0) {
+          console.warn(
+            `[CircuitBreaker] Deribit get_account_summary returned negative equity ${equityBtc} (skipping sample)`
+          );
+        } else {
           const post = recordBalanceSample(equityBtc);
+          // Periodic visible heartbeat — every 10th sample = ~10 minutes
+          // at the default 60s cycle. Helps confirm sampling is healthy.
+          if ((post as any)?.sampleCount && (post as any).sampleCount % 10 === 0) {
+            console.log(
+              `[CircuitBreaker] heartbeat: equity=${equityBtc.toFixed(8)} BTC, ` +
+              `baseline=${(post.baselineBtc || 0).toFixed(8)}, samples=${(post as any).sampleCount}`
+            );
+          }
           if (post.tripped) {
             // Surface the trip via the existing alert dispatcher so an
             // operator gets paged on the same channel as other warnings.
@@ -5650,7 +5790,9 @@ export const registerPilotRoutes = async (
         }
       } catch (balanceErr: any) {
         console.warn(
-          `[CircuitBreaker] Could not sample Deribit balance this cycle: ${balanceErr?.message || "unknown"}`
+          `[CircuitBreaker] Could not sample Deribit balance this cycle: ` +
+          `${balanceErr?.message || "unknown"} ` +
+          `(check API key has account:read scope; this is the same connector that places orders)`
         );
       }
     } catch (err: any) {
