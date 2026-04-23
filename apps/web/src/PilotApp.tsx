@@ -301,6 +301,9 @@ const friendlyError = (message: string): string => {
   if (message.includes("aggregate_active_notional_cap_exceeded")) {
     return "Pilot's open-protection limit is full. Close one or wait for it to expire.";
   }
+  if (message.includes("hedge_budget_cap_exceeded")) {
+    return "Pilot hedge budget cap reached for this phase. Try a smaller size or a wider SL tier (5% / 10%), or wait for the next pilot phase.";
+  }
   if (message.includes("per_tier_daily_concentration_cap_exceeded")) {
     return "This protection level is full for today. Try a different level or wait until tomorrow.";
   }

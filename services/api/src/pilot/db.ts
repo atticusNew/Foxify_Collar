@@ -939,6 +939,53 @@ export const sumActiveProtectionNotional = async (
 };
 
 /**
+ * R2.F (added 2026-04-23) — Cumulative hedge-cost sum since pilot start.
+ *
+ * Sums the real-money cost (Atticus's Deribit spend) of all BUY-side
+ * venue executions since the pilot start date. Used to enforce the
+ * Foxify Pilot Agreement v2 §3.1 hedge-budget cap schedule:
+ *   Day 1-2:  \$100
+ *   Day 3-7:  \$1,000
+ *   Day 8-21: \$10,000
+ *   Day 22+:  no cap
+ *
+ * Counts only BUY executions (the actual cash outflow from Atticus to
+ * Deribit). SELL executions (TP recoveries) are NOT netted off — the
+ * cap bounds GROSS hedge spend, which is the right risk metric for a
+ * controlled rollout. If you want to net out, you can read this and
+ * the corresponding sumLiveHedgeRecoveryUsdSince helper separately.
+ *
+ * Filters to pilot_venue_executions where venue indicates live trading
+ * (not paper/testnet). This way switching DERIBIT_PAPER doesn't pollute
+ * the live cap accounting.
+ */
+export const sumLiveHedgeCostUsdSince = async (
+  pool: Queryable,
+  startMsEpoch: number
+): Promise<number> => {
+  // Live executions only. The "venue" column is set by the connector at
+  // execution time; deribit_live = real fills, deribit_test = paper.
+  // We accept any non-paper venue (including future venues) so this
+  // doesn't need to know connector names.
+  const startIso = new Date(startMsEpoch).toISOString();
+  const result = await pool.query(
+    `
+      SELECT COALESCE(SUM(premium::numeric), 0)::text AS total
+      FROM pilot_venue_executions
+      WHERE LOWER(side) = 'buy'
+        AND status = 'success'
+        AND venue NOT LIKE '%test%'
+        AND venue NOT LIKE '%paper%'
+        AND venue NOT LIKE 'mock%'
+        AND created_at >= $1::timestamptz
+    `,
+    [startIso]
+  );
+  const v = Number(result.rows[0]?.total || "0");
+  return Number.isFinite(v) ? v : 0;
+};
+
+/**
  * R2.D — Per-tier daily new-protection notional summed across the day so
  * far for one user. Used to enforce a per-SL-tier concentration sub-cap
  * (e.g., max 60% of the daily cap may be in any single SL tier).

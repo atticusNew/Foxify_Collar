@@ -8190,6 +8190,21 @@ configureCircuitBreaker({
 });
 console.log("[CircuitBreaker] Configured from env");
 
+// R2.F — hedge-budget cap (Foxify Pilot Agreement v2 §3.1).
+// Env vars:
+//   PILOT_LIVE_START_DATE           ISO date, default: null (auto-detect from earliest live execution)
+//   PILOT_HEDGE_BUDGET_CAP_ENABLED  default 'true'
+const { configureHedgeBudgetCap } = await import("./pilot/hedgeBudgetCap");
+configureHedgeBudgetCap({
+  pilotStartIso: process.env.PILOT_LIVE_START_DATE || null,
+  enforce: String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() !== "false"
+});
+console.log(
+  `[HedgeBudgetCap] Configured: enforce=${
+    String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() !== "false"
+  } pilotStart=${process.env.PILOT_LIVE_START_DATE || "(auto)"}`
+);
+
 await registerPilotRoutes(app, { deribit, deribitLive });
 
 const treasuryConfig = parseTreasuryConfig();

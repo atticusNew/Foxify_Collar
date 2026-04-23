@@ -390,6 +390,7 @@ Separate system for institutional daily protection ($1M+ notional). Runs on the 
 | POST   | `/pilot/admin/test-alert`                               | R7 — emit a test alert through the dispatcher (`{ level, message }` optional) |
 | GET    | `/pilot/admin/circuit-breaker`                          | PR B (Gap 2) — current state + config of the max-loss circuit breaker |
 | POST   | `/pilot/admin/circuit-breaker/reset`                    | PR B (Gap 2) — manually clear a tripped circuit breaker |
+| GET    | `/pilot/admin/hedge-budget`                             | R2.F — current pilot day, cap, cumulative spend, remaining budget |
 | GET    | `/pilot/monitor/status`                                 | Monitor health status |
 | GET    | `/pilot/monitor/alerts`                                 | Recent alerts |
 
