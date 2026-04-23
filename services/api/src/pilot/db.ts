@@ -939,45 +939,71 @@ export const sumActiveProtectionNotional = async (
 };
 
 /**
- * R2.F (added 2026-04-23) — Cumulative hedge-cost sum since pilot start.
+ * R2.F (added 2026-04-23, fixed 2026-04-23 v2) — Cumulative hedge-cost
+ * sum since pilot start.
  *
- * Sums the real-money cost (Atticus's Deribit spend) of all BUY-side
- * venue executions since the pilot start date. Used to enforce the
- * Foxify Pilot Agreement v2 §3.1 hedge-budget cap schedule:
- *   Day 1-2:  \$100
- *   Day 3-7:  \$1,000
- *   Day 8-21: \$10,000
+ * Sums the REAL-MONEY cost (Atticus's actual Deribit spend) of all
+ * BUY-side venue executions since the pilot start date. Used to enforce
+ * the Foxify Pilot Agreement v2 §3.1 hedge-budget cap schedule:
+ *   Day 1-2:  $100
+ *   Day 3-7:  $1,000
+ *   Day 8-21: $10,000
  *   Day 22+:  no cap
  *
- * Counts only BUY executions (the actual cash outflow from Atticus to
- * Deribit). SELL executions (TP recoveries) are NOT netted off — the
- * cap bounds GROSS hedge spend, which is the right risk metric for a
- * controlled rollout. If you want to net out, you can read this and
- * the corresponding sumLiveHedgeRecoveryUsdSince helper separately.
+ * IMPORTANT — what column to sum:
+ *   pilot_venue_executions.premium           = client-facing premium
+ *                                              (e.g. $30 for 5%/$10k)
+ *   pilot_venue_executions.execution_price   = per-contract Deribit
+ *                                              fill cost in USD
+ *                                              (e.g. $54.79 for 0.1 BTC
+ *                                              option at 0.0007 BTC ask)
+ *   total real Deribit cost = execution_price * quantity
+ *                            (~$5.48 for the same trade)
  *
- * Filters to pilot_venue_executions where venue indicates live trading
- * (not paper/testnet). This way switching DERIBIT_PAPER doesn't pollute
- * the live cap accounting.
+ * The first version of this function summed `premium`, which is
+ * client-facing premium NOT real hedge cost. That gave roughly 10×
+ * inflated numbers and blew the cap on day 1.
+ *
+ * IMPORTANT — what counts as "real":
+ *   The venue label alone is unreliable. When PILOT_VENUE_MODE=deribit_live
+ *   was set but DERIBIT_PAPER=true, paper-mode fills were tagged with
+ *   venue='deribit_live' anyway (the live adapter wraps the test adapter
+ *   and rewrites the venue label). The structured signal that an
+ *   execution was a REAL Deribit fill lives in the details.raw.testnet
+ *   field of real responses (false=mainnet) vs the details.raw.status
+ *   field of paper responses ('paper_filled' or 'paper_rejected').
+ *
+ *   We filter:
+ *     details->'raw'->>'testnet' = 'false'  -- real Deribit response
+ *     AND details->'raw'->>'status' is not a paper sentinel
+ *
+ *   This catches all real fills cleanly even on rows from before this
+ *   distinction was clarified.
+ *
+ * Counts only BUY executions (cash outflow). SELL executions (TP
+ * recoveries) are NOT netted off — the cap bounds GROSS hedge spend,
+ * which is the right risk metric for a controlled rollout.
  */
 export const sumLiveHedgeCostUsdSince = async (
   pool: Queryable,
   startMsEpoch: number
 ): Promise<number> => {
-  // Live executions only. The "venue" column is set by the connector at
-  // execution time; deribit_live = real fills, deribit_test = paper.
-  // We accept any non-paper venue (including future venues) so this
-  // doesn't need to know connector names.
   const startIso = new Date(startMsEpoch).toISOString();
   const result = await pool.query(
     `
-      SELECT COALESCE(SUM(premium::numeric), 0)::text AS total
+      SELECT
+        COALESCE(SUM(execution_price::numeric * quantity::numeric), 0)::text AS total
       FROM pilot_venue_executions
       WHERE LOWER(side) = 'buy'
         AND status = 'success'
-        AND venue NOT LIKE '%test%'
-        AND venue NOT LIKE '%paper%'
-        AND venue NOT LIKE 'mock%'
         AND created_at >= $1::timestamptz
+        -- Only count REAL Deribit fills, not paper-mode fills that
+        -- happened to be tagged with venue='deribit_live'. The
+        -- details.raw.testnet=false signal is set by Deribit on real
+        -- mainnet responses; paper responses have status='paper_filled'
+        -- with no testnet field.
+        AND (details->'raw'->>'testnet') = 'false'
+        AND COALESCE(details->'raw'->>'status', '') NOT IN ('paper_filled', 'paper_rejected')
     `,
     [startIso]
   );
