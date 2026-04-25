@@ -146,12 +146,14 @@ The schedule above is the **low-volatility (calm) baseline**. The platform now c
 
 | DVOL band | Regime | 2% | 3% | 5% | 10% |
 |---|---|---|---|---|---|
-| ≤ 50 | low | **$7** | $5 | $3 | $2 |
+| ≤ 50 | low | **$6.50** | $5 | $3 | $2 |
 | 50–65 | moderate | $7 | $5.50 | $3 | $2 |
 | 65–80 | elevated | $8 | $6 | $3.50 | $2 |
 | > 80 | high | **$10** | $7 | $4 | $2 |
 
-**2026-04-21 (PR C):** 2% in low regime raised from $6 → $7 to widen the 2%-vs-5% pricing gap and shape demand toward wider tiers. Low-regime 2% now coincides with moderate. Other tiers unchanged. See CFO report §11.3.
+**2026-04-21 (PR C):** 2% in low regime raised from $6 → $7 to widen the 2%-vs-5% pricing gap and shape demand toward wider tiers.
+
+**2026-04-25:** 2% in low regime lowered from $7 → $6.50 in response to first-week pilot CEO feedback that calm-regime pricing felt thick relative to the $200 max payout. Per-trade EV at 60% TP recovery target: ~$14/trade in calm (down from ~$19), weighted average ~$2.50/trade across all regimes (down from ~$5). Stress regime pricing UNCHANGED — that's what subsidizes the loss days. Reversible to $7 in one config edit. See CFO report §5.
 
 The 2% tier caps at $10/$1k (= $100 on $10k) in High regime — slightly above the CEO's earlier $80 directional read but tested as economically meaningful: $10 puts the platform within $1 of breakeven at stress entry (DVOL 80 → BS hedge cost $8.54), vs −$2.54 at $9. Trader return on trigger remains 2.0× (premium $100 → payout $200). In true stress regimes the platform still takes a controlled loss on the 2% tier as DVOL pushes higher — bounded by per-tier daily concentration cap. Reversible to $9 in one config change if pilot demand at $10 craters.
 

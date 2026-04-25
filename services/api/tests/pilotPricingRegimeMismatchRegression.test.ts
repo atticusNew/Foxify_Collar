@@ -47,14 +47,14 @@ test("regression: DVOL 42.4 in 40-50 band uses Design A 'low' schedule, not lega
 
   const tier2 = tiers.find((t) => t.slPct === 2);
   assert.ok(tier2, "2% tier should exist");
-  // 2% in low and moderate now coincide at $7 after PR C (2026-04-21).
-  // The regression discriminator for 2% no longer exists — we keep the
-  // assertion as a smoke check, then verify on 3% where the schedules
-  // still diverge ($5 low vs $5.50 moderate).
+  // 2026-04-25: low / 2% lowered from \$7 → \$6.50, while moderate / 2% stays
+  // at \$7. The regression discriminator on the 2% tier is back: \$6.50 = low,
+  // \$7 = moderate. If this were broken (legacy classifier winning), we'd see
+  // \$7 here instead of \$6.50.
   assert.equal(
     tier2!.premiumPer1kUsd,
-    7,
-    `2% premium should be $7 (Design A 'low' = $7 post-PR-C). Got $${tier2!.premiumPer1kUsd}.`
+    6.5,
+    `2% premium should be $6.50 (Design A 'low'), not $7 (legacy 'normal' → moderate). Got $${tier2!.premiumPer1kUsd}.`
   );
 
   const tier3 = tiers.find((t) => t.slPct === 3);

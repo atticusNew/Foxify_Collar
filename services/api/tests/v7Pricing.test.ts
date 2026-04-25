@@ -59,8 +59,8 @@ test("computeV7Premium — $10k tiered pricing (low regime)", () => {
   // schedule independent of any live DVOL state.
   const r = computeV7Premium({ slPct: 2, notionalUsd: 10000, pricingRegimeOverride: "low" });
   assert.ok(r.available);
-  assert.equal(r.premiumPer1kUsd, 7, "low regime / 2% = $7 (raised from $6 on 2026-04-21 — see PR C)");
-  assert.equal(r.premiumUsd, 70);
+  assert.equal(r.premiumPer1kUsd, 6.5, "low regime / 2% = $6.50 (lowered from $7 on 2026-04-25 — see pricingRegime.ts comment)");
+  assert.equal(r.premiumUsd, 65);
   assert.equal(r.payoutPer10kUsd, 200);
 });
 
@@ -68,7 +68,7 @@ test("computeV7Premium — each tier has correct rate per regime", () => {
   // Verify the schedule across all 4 regimes for the 4 launched tiers
   // plus 1% (unlaunched but defined). Numbers match the Design A spec.
   const cases: Array<{ regime: "low" | "moderate" | "elevated" | "high"; expected: Record<number, number> }> = [
-    { regime: "low",      expected: { 1: 70, 2: 70, 3: 50, 5: 30, 10: 20 } },
+    { regime: "low",      expected: { 1: 65, 2: 65, 3: 50, 5: 30, 10: 20 } },
     { regime: "moderate", expected: { 1: 70, 2: 70, 3: 55, 5: 30, 10: 20 } },
     { regime: "elevated", expected: { 1: 80, 2: 80, 3: 60, 5: 35, 10: 20 } },
     { regime: "high",     expected: { 1: 90, 2: 100, 3: 70, 5: 40, 10: 20 } }
@@ -127,7 +127,7 @@ test("getV7AvailableTiers — launched tiers (no 1% SL), pinned to 'low' regime"
   assert.ok(tiers.every(t => t.available));
   assert.ok(!tiers.find(t => t.slPct === 1));
   const sl2 = tiers.find(t => t.slPct === 2);
-  assert.equal(sl2?.premiumPer1kUsd, 7);
+  assert.equal(sl2?.premiumPer1kUsd, 6.5);
   assert.equal(sl2?.tenorDays, 1);
   const sl10 = tiers.find(t => t.slPct === 10);
   assert.equal(sl10?.premiumPer1kUsd, 2);
