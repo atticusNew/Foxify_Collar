@@ -35,7 +35,7 @@ test("Design A schedule matches the spec exactly", () => {
   __resetPricingRegimeForTests();
 
   // 2% tier across regimes (the most-watched row)
-  assert.equal(REGIME_SCHEDULES.low[2],      7, "low / 2%  = $7 (raised from $6 on 2026-04-21 — see pricingRegime.ts comment)");
+  assert.equal(REGIME_SCHEDULES.low[2],      6.5, "low / 2%  = $6.50 (lowered from $7 on 2026-04-25 — see pricingRegime.ts comment)");
   assert.equal(REGIME_SCHEDULES.moderate[2], 7, "moderate / 2%  = $7");
   assert.equal(REGIME_SCHEDULES.elevated[2], 8, "elevated / 2%  = $8");
   assert.equal(REGIME_SCHEDULES.high[2],     10, "high / 2%  = $10 (raised from $9 on 2026-04-20 — see pricingRegime.ts comment)");

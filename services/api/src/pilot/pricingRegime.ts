@@ -64,7 +64,7 @@ export type RegimeSchedule = Record<V7SlTier, number>;
 /**
  * Design A schedule, USD per $1k notional, 1-day tenor.
  *
- *   low (DVOL ≤ 50):     $7 / $5 / $3 / $2  (was $6 on 2% — see 2026-04-21 note)
+ *   low (DVOL ≤ 50):     $6.50 / $5 / $3 / $2  (was $7 on 2% — see 2026-04-25 note)
  *   moderate (DVOL 50-65): $7 / $5.50 / $3 / $2
  *   elevated (DVOL 65-80): $8 / $6 / $3.50 / $2
  *   high (DVOL > 80):     $10 / $7 / $4 / $2 (2% ceiling raised from $9 → $10)
@@ -92,14 +92,28 @@ export type RegimeSchedule = Record<V7SlTier, number>;
  * trade days × ~50% of trades that pick 2%). Reversible to \$6 in one
  * config change. See CFO report §11.3.
  *
+ * 2026-04-25 — Lowered the 2% low-regime price from \$7 → \$6.50.
+ * Rationale: post-launch CEO feedback that calm-regime pricing felt thick
+ * relative to the \$200 max payout (35% premium-to-payout ratio). Per-trade
+ * EV modeling at 60% TP recovery (PR #76 + Gap 5 enforce target) shows:
+ *   - Calm breakeven premium: ~\$51 (so \$65 still has \$14 of margin)
+ *   - Calm regime EV at \$65: ~\$14/trade (down from ~\$19 at \$70)
+ *   - Weighted EV across all regimes: ~\$2.50/trade (down from ~\$5)
+ * Stress regime pricing UNCHANGED (\$10/\$1k high regime stays the floor)
+ * because that's what subsidizes the loss days. Other tiers UNCHANGED.
+ * Per-trade impact: 2% on \$10k goes from \$70 → \$65 premium ONLY in
+ * low regime. Reversible to \$7 in one config change. Move-versus-event:
+ * monitor weighted EV after n=10+ triggered trades to confirm the
+ * recovery rate assumption holds.
+ *
  * 1% SL is defined for forward compatibility but unlaunched
  * (excluded from V7_LAUNCHED_TIERS in v7Pricing.ts).
  */
 export const REGIME_SCHEDULES: Record<PricingRegime, RegimeSchedule> = {
-  low:      { 1: 7, 2: 7,  3: 5,    5: 3,    10: 2 },
-  moderate: { 1: 7, 2: 7,  3: 5.5,  5: 3,    10: 2 },
-  elevated: { 1: 8, 2: 8,  3: 6,    5: 3.5,  10: 2 },
-  high:     { 1: 9, 2: 10, 3: 7,    5: 4,    10: 2 }
+  low:      { 1: 6.5, 2: 6.5, 3: 5,    5: 3,    10: 2 },
+  moderate: { 1: 7,   2: 7,   3: 5.5,  5: 3,    10: 2 },
+  elevated: { 1: 8,   2: 8,   3: 6,    5: 3.5,  10: 2 },
+  high:     { 1: 9,   2: 10,  3: 7,    5: 4,    10: 2 }
 };
 
 export const DEFAULT_PRICING_REGIME: PricingRegime = "moderate";
