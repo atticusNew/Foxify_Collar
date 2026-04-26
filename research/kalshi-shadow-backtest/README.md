@@ -36,25 +36,41 @@ Outputs in `./output/`:
 
 This was the first run. Its limitations and how the v2 redesign addresses them are documented in [`ANALYSIS_AND_PLAN.md`](./ANALYSIS_AND_PLAN.md).
 
-### v2 — tiered (Lite + Standard, direct BS pricing)
+### v2 + v3 — tiered (Lite, Standard, Shield, Shield+)
 
 ```bash
 npm run backtest:tiered
 ```
 
 Outputs in `./output/tiered/`:
-- `kalshi_tiered_trades.csv` — trade-by-trade log, **per tier**
-- `kalshi_tiered_summary.md` — tier comparison table, recovery metrics on multiple loss subsets, per-market detail
-- `kalshi_tiered_pitch_snippets.md` — email-ready snippets calibrated to "feel like real money" on a typical $58 stake
+- `kalshi_tiered_trades.csv` — trade-by-trade log, **per tier** (108 rows = 27 markets × 4 tiers)
+- `kalshi_tiered_summary.md` — four-tier comparison, threshold scorecard, per-market detail
+- `kalshi_tiered_pitch_snippets.md` — email-ready snippets, lead with Shield+ for institutional pitch
+
+Two product families:
+
+**v2 put-spread tiers (rebate, BTC-path-dependent):**
+- Lite: ~$3.91 fee (7% of stake), avg recovery $3.68 on losers (~6% of stake).
+- Standard: ~$8.43 fee (14% of stake), 1.7× sized, avg recovery $7.05 (~12% of stake).
+- These cross **retail behavioral** thresholds but not the **institutional deterministic-floor** threshold.
+
+**v3 Shield tiers (deterministic floor, contract-bounded):**
+- Shield: Kalshi-NO leg only. ~$13.44 fee (23% of stake). **40% of stake guaranteed back on every losing market.** Worst-case realized loss: ~92% of stake (down from 100%).
+- Shield+: NO leg + small BTC put spread. ~$12.95 fee. 30% guaranteed floor + variable BTC-tail upside; best single save in dataset is **$13.54 on $12.75 fee** (Nov 2025, BTC −17.4%).
+- These cross thresholds A1, A2, A3, and B2 (deterministic floor) — the institutional risk-policy bar.
+
+See `EVAL_AND_NEXT_STEPS.md` for the threshold framework, full v2 evaluation against retail/institutional/economic thresholds, and the rationale for v3 Shield design.
+
+Tier configuration lives in single config blocks:
+- v2 (Lite, Standard): top of `src/tieredHedgeModel.ts`
+- v3 (Shield, Shield+): bottom of `src/shieldHedgeModel.ts`
 
 The tiered backtest:
-- Prices each protection tier as a real 30-day BTC put spread on Deribit, using direct Black-Scholes on the actual BTC strike at each market's open date (no Foxify SL-tier × √T scaling shortcut).
-- Targets fee bands of 5–7% (Lite) and 10–15% (Standard) of stake.
-- Reports recovery on three subsets: all losers, BTC-down losers, hedge-triggered losers, and the "deep-drop" subset (BTC ≥10% fall) — which is where the brief's loss-recovery target should be evaluated.
-- Includes a sizing-multiplier knob (Standard tier hedges 1.7× the at-risk amount) so cash recovery scales with BTC drawdown without forcing fees out of band.
-- Uses the **derived** outcome (BTC at settle vs strike) instead of the curated `outcome` field — the curated field has 4 mismatches in the dataset, flagged in the per-market log.
-
-Tier configuration lives in a single block at the top of `src/tieredHedgeModel.ts` for easy re-tuning.
+- Prices put-spread tiers as real 30-day BTC put spreads on Deribit (direct Black-Scholes on actual BTC strikes at each market's open).
+- Prices Shield NO legs as $1 face × (100−YES)/100 with a 3% Kalshi fee assumption on NO settlement.
+- Reports recovery on multiple subsets (all losers, BTC-down losers, deep-drop ≥10% losers, hedge-triggered losers).
+- Reports worst-case realized loss per tier and a threshold scorecard against retail/institutional bars.
+- Uses **derived** outcomes (BTC at settle vs strike) instead of the curated `outcome` field — 4 mismatches in the dataset are flagged but not silently mutated.
 
 ## Assumptions
 
