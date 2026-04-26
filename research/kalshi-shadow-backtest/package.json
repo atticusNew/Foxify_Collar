@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "backtest": "npx tsx src/main.ts",
+    "backtest:tiered": "npx tsx src/mainTiered.ts",
     "fetch-btc": "npx tsx src/fetchBtcPrices.ts"
   },
   "dependencies": {
