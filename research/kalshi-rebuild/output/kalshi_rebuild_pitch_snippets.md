@@ -1,49 +1,54 @@
-# Atticus → Kalshi Pitch Snippets — Options-Hedge Bridge
+# Atticus → Kalshi Pitch Snippets — Trader-Cash Story
 
-Atticus is an options-procurement bridge between Kalshi traders and Deribit. We don't act as a Kalshi market maker, we don't take the other side of bets. We route real BTC vertical-spread hedges from Deribit (~$30B BTC options OI) to Kalshi traders in a single combined-ticket flow.
+Atticus is an options-procurement bridge: we route real Deribit BTC vertical-spread hedges to Kalshi traders in a single combined-ticket flow. We don't act as a Kalshi market maker, we don't take the other side of bets. Below: trader-perspective economics on a typical $40 retail Kalshi BTC stake.
 
-*Live Deribit calibration: BTC index $79166, 932 listed contracts.*
+*Live Deribit calibration: BTC index $79085, 932 listed contracts.*
 
 ---
 
 ## Intro Email
 
-**Subject:** Options-hedge bridge for your BTC bettors — Deribit liquidity, single-ticket execution
+**Subject:** Options-hedge bridge for your BTC traders — meaningful cash recovery on a $40 stake
 
 **Body:**
 ```
-We've built a thin layer that lets a Kalshi user buy a BTC bet and a real Deribit BTC vertical-spread hedge in one ticket. The hedge is procured from the live Deribit chain (we don't take the other side of your binary, we don't make a market) — pure pass-through.
+We built a thin overlay that lets a Kalshi user buy a BTC bet and a real Deribit BTC vertical-spread hedge in one ticket. We don't take the other side of your binary, we don't make a market — we procure a real options trade and pass it through.
 
-Across 68 settled BTC markets in our backtest:
-  • Light tier (5%-OTM long leg): ~2% fee of stake, 2.4% fee of notional, 7.7× recovery ratio.
-  • Standard (2%-OTM):              ~4% / 4.2% / 5.8× recovery.
-  • Shield (ATM):                   ~6% / 6.4% / 5.5× recovery.
-  • Shield-Max (ATM, 2× sized):     ~13% / 6.4% / 5.5× recovery.
+On a typical $40 retail Kalshi BTC stake:
 
-What's interesting for Kalshi specifically:
-  • A Kalshi MM cannot sell a 30-day BTC put. We can. This is incremental options depth your platform doesn't currently access.
-  • At 6.4% of notional on Shield, the cost is competitive with bank-OTC verticals — but your traders get it inline.
-  • Capital-policy unlock: institutional users who today can't size into Kalshi BTC contracts (because the binary 100% loss is unbounded) can with this overlay.
+  Standard tier:  +$6.07 fee at entry. When BTC moves materially against the trader and they lose,
+                  they get back $12.00 on average (30% of stake).
 
-Atticus revenue: 13% net margin on the markup. Today's BTC volume scales to a modest revenue line for both sides; the strategic value is the institutional-distribution unlock, which can grow Kalshi's BTC TAM 10×.
+  Shield tier:    +$7.57 fee at entry. On those same BTC-down losing months,
+                  they get back $14.79 on average (37% of stake).
+
+That's the difference between a Kalshi bet that's a complete write-off and one where a $40 loss becomes a ~$25 loss after the hedge pays out.
+
+What's structurally unique:
+  • A Kalshi MM cannot sell a 30-day BTC put. We can — through Deribit (~$30B BTC options OI).
+  • Shield costs 2.7% of protected BTC notional, which is competitive with bank-OTC verticals.
+  • Single-flow execution: the user gets it on your platform, no separate options account.
+
+Atticus runs ~13% net margin on markup. Pure pass-through; no warehousing.
 
 We're already live on Foxify with a related drawdown-protection product. We'd like 30 minutes to walk through the mechanism, the per-tier economics, and a zero-integration shadow pilot.
 ```
 
 ---
 
-## Tier Cash Story
+## Tier Cash Story (drop-in for trader-facing UI)
 
-On a typical Kalshi BTC contract @ 58¢ YES (≈ $58 at risk on a $100 face):
+On a typical $40 Kalshi BTC stake:
 
-| | Light | Standard | **Shield** | **Shield-Max** |
-|---|---|---|---|---|
-| Geometry | 5%-OTM | 2%-OTM | ATM | ATM, 2× sized |
-| Premium | $1.22 | $2.14 | **$3.21** | **$6.42** |
-| Cost as % of protected notional | 2.43% | 4.23% | **6.35%** | **6.35%** |
-| Max payout / premium | 7.7× | 5.8× | 5.5× | 5.5× |
-| Avg recovery on losing markets | 4% of stake | 6% | 10% | 19% |
-| Best save in dataset | $2.49 | $4.21 | **$5.18** | **$10.36** |
+| | Standard | Shield | Shield-Max |
+|---|---|---|---|
+| Geometry | 2%-OTM, 8% width, 2.5× sized | 1%-OTM, 10% width, 4× sized | same as Shield, 6× sized |
+| Premium at entry | $6.07 (15%) | **$7.57** (19%) | $17.34 (43%) |
+| Avg recovery on BTC-down losing months | $12.00 (30%) | **$14.79** (37%) | $33.87 (85%) |
+| Worst-month: unprotected → protected | -$0.31 → -$0.25 | **-$0.31 → -$0.24** | -$0.31 → -$0.15 |
+| Story | "Pay $0 extra to recover ~$0 when the trade goes badly." | "Pay $0 extra to roughly halve your worst losing months." | "Pay $0 extra for max tail-event cash." |
+
+(Worst-month rows scaled from $100-face dataset numbers down to $40-stake reference.)
 
 ---
 
@@ -56,8 +61,8 @@ At entry, Atticus simultaneously buys (on Deribit):
   Long  BTC-29MAY26-80000-P  (an ATM put expiring same day as Kalshi)
   Short BTC-29MAY26-71000-P  (a 12%-OTM put — the floor)
 
-Net cost from the live Deribit chain: about ~6.4% of BTC notional.
-Atticus charges the trader: cost × 1.22 markup = ~6% of their $58 stake.
+Net cost from the live Deribit chain: about ~2.7% of BTC notional.
+Atticus charges the trader: cost × 1.22 markup = ~19% of their $58 stake.
 
 If BTC ends ≥ $80k:
   Kalshi pays the trader $100. The Deribit spread expires worthless.

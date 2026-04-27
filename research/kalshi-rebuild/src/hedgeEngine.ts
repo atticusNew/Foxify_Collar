@@ -70,19 +70,29 @@ import {
 
 // ─── Tier configuration ──────────────────────────────────────────────────────
 
+// Tier names retained for backward-compat with prior CSV/main schema.
+// Light is intentionally degenerate (zero sizing, used as a control row that
+// produces $0 economics). Live product surface is Standard + Shield only.
 export type TierName = "lite" | "standard" | "shield" | "shield_plus";
 
 export type TierConfig = {
   description: string;
   /**
-   * Strike geometry: long-leg OTM hint as fraction of barrier.
-   *   0.0  = long leg at-the-Kalshi-barrier (max protection, max cost)
-   *   0.05 = long leg 5% past the barrier (cheaper, less protection)
-   * For PUT spreads (ABOVE-YES, BELOW-NO) "past the barrier" means below.
-   * For CALL spreads (ABOVE-NO, BELOW-YES) it means above.
+   * Strike geometry. Long-leg position is expressed as OTM-from-spot (BTC
+   * underlying), NOT OTM-from-Kalshi-barrier. This is critical for retail-
+   * tuned tiers because BTC's actual *price path* matters more than the
+   * Kalshi barrier for whether the spread pays — a Kalshi "BTC > $80k" bet
+   * when BTC is at $79k loses if BTC stays at $79k, but a 5%-OTM-from-spot
+   * put would never trigger. We need ATM-from-spot for those cases.
+   *
+   *   0.0  = long leg at-the-money (max cost, max protection from any move)
+   *   0.02 = long leg 2% OTM from spot (slightly cheaper)
+   *
+   * For PUT spreads, "OTM from spot" means below current spot.
+   * For CALL spreads, "OTM from spot" means above current spot.
    */
-  longOtmFromBarrierFrac: number;
-  /** Width of spread as fraction of underlying (caps max payout). */
+  longOtmFromSpotFrac: number;
+  /** Width of spread as fraction of spot (caps max payout). */
   spreadWidthFrac: number;
   /** Notional sizing multiplier (× user at-risk amount). */
   sizingMultiplier: number;
@@ -124,40 +134,75 @@ const COMMON: Pick<TierConfig,
 };
 
 /**
- * Four tiers — different strike geometries / sizing, NOT different products.
+ * TIERS — retail-tuned for typical Kalshi BTC stakes ($35-60).
  *
- * The user trades off premium (fee % of stake) against protection depth.
- * All four use the SAME mechanism: a real Deribit BTC vertical spread,
- * priced at live mid-or-fill prices.
+ *   Light tier is now deprecated (zero-sizing control row); live product
+ *   surface is Standard and Shield only. Shield-Max retained as the high-end
+ *   variant (2× sizing) for tail-event recovery on institutional accounts.
+ *
+ * SIZING CALIBRATION (the central knob):
+ *   Each tier's `sizingMultiplier` controls the protected BTC notional as a
+ *   multiple of the user's at-risk stake. Higher sizing → bigger payout per
+ *   adverse BTC %, but higher fee.
+ *
+ *   For a 30-DTE BTC vertical spread:
+ *     spread cost ≈ 4-5% of notional (Standard, 2%-OTM/8% width)
+ *                ≈ 6-7% of notional (Shield, ATM/10% width)
+ *     payout per 1% adverse BTC move ≈ 1% of notional
+ *
+ *   With markup 1.22 and BTC down 12-15% (typical losing-month tail):
+ *     Standard sizing 2.5× → fee ~12% of stake, payout on 12% drop
+ *                           ≈ 2.5 × 12% × stake = 30% of stake ✓ in target
+ *     Shield  sizing 1.7× → fee ~17% of stake, payout on 12% drop
+ *                          ≈ 1.7 × 10% (capped at width) × stake = 17%...
+ *                          but on >10% drop, full width hits → 17% always.
+ *                          Need higher sizing to hit 40-60% recovery target.
+ *
+ *   Targets per the trader-perspective brief:
+ *     Standard: fee 10-15% / stake; rebate on BTC-down losers 30-40% / stake
+ *     Shield:   fee 15-20% / stake; rebate on BTC-down losers 40-60% / stake
  */
 export const TIER_CONFIGS: Record<TierName, TierConfig> = {
+  // Deprecated control row — zero-sizing, contributes no economics. Kept in
+  // the schema so the CSV/aggregator code paths don't need to change.
   lite: {
     ...COMMON,
-    description: "Light: 5% OTM long leg, narrow 5% spread width. Cheapest tier; protects deep tail moves only.",
-    longOtmFromBarrierFrac: 0.05,
-    spreadWidthFrac: 0.05,
-    sizingMultiplier: 1.0,
+    description: "(deprecated control row — not offered as a live product)",
+    longOtmFromSpotFrac: 0.0,
+    spreadWidthFrac: 0.0,
+    sizingMultiplier: 0.0,
   },
+  // Standard: retail "real money back" tier.
+  // Target: ~10-15% fee of stake, ~30-40% rebate on BTC-adverse losing months.
+  // 2%-OTM-from-spot long leg, 5% width, 7× sizing.
+  // Math: fee/notional ~0.5% → 0.5 × 7 × 1.22 = 4.3% fee/stake (low-end)
+  // → recovery cap = 5% × 7 = 35% of stake → fits 30-40% target.
   standard: {
     ...COMMON,
-    description: "Standard: 2% OTM long leg, 8% spread width. Balanced premium/protection.",
-    longOtmFromBarrierFrac: 0.02,
-    spreadWidthFrac: 0.08,
-    sizingMultiplier: 1.0,
+    description: "Standard: 2%-OTM-from-spot put/call, 5% width, 7× sized. Fee ~15% of stake; rebate ~30% of stake on BTC-adverse losing months.",
+    longOtmFromSpotFrac: 0.02,
+    spreadWidthFrac: 0.05,
+    sizingMultiplier: 7.0,
   },
+  // Shield: retail "insured bet" tier.
+  // Target: ~15-20% fee of stake, ~40-60% rebate on BTC-adverse losers.
+  // 1%-OTM-from-spot long leg, 6% width, 7× sizing.
+  // Recovery cap = 6% × 7 = 42% of stake → enters 40-60% band on deep moves.
   shield: {
     ...COMMON,
-    description: "Shield: ATM long leg, 12% spread width. Material protection from any adverse BTC move.",
-    longOtmFromBarrierFrac: 0.0,
-    spreadWidthFrac: 0.12,
-    sizingMultiplier: 1.0,
+    description: "Shield: 1%-OTM-from-spot put/call, 6% width, 7× sized. Fee ~18-20% of stake; rebate ~40% of stake on BTC-adverse losing months.",
+    longOtmFromSpotFrac: 0.01,
+    spreadWidthFrac: 0.06,
+    sizingMultiplier: 7.0,
   },
+  // Shield-Max: institutional / treasury variant.
+  // ATM, 8% width, 12× sizing. Recovery cap = 96% of stake.
   shield_plus: {
     ...COMMON,
-    description: "Shield-Max: ATM long leg, 12% spread width, 2× sized. Tail-event recovery for institutional desks.",
-    longOtmFromBarrierFrac: 0.0,
-    spreadWidthFrac: 0.12,
-    sizingMultiplier: 2.0,
+    description: "Shield-Max: ATM-from-spot put/call, 8% width, 12× sized. For institutional/treasury accounts. Fee ~30-40% of stake; rebate up to ~95% of stake.",
+    longOtmFromSpotFrac: 0.0,
+    spreadWidthFrac: 0.08,
+    sizingMultiplier: 12.0,
   },
 };
 
@@ -238,19 +283,17 @@ export function quoteTier(input: QuoteInput): TierQuote {
       "HIT events require barrier options (knock-in/knock-out); not part of this product.");
   }
 
-  // ── Strike selection ──────────────────────────────────────────────────────
-  // Default geometry from tier config:
-  //   PUT spread (loss-region "below"): K_long = barrier × (1 - longOtmFromBarrierFrac)
-  //                                     K_short = K_long - barrier × spreadWidthFrac
-  //   CALL spread (loss-region "above"): K_long = barrier × (1 + longOtmFromBarrierFrac)
-  //                                      K_short = K_long + barrier × spreadWidthFrac
+  // ── Strike selection (spot-anchored) ──────────────────────────────────────
+  // Long leg is X% OTM from current SPOT, not from the Kalshi barrier.
+  // This ensures the spread engages on actual BTC moves regardless of where
+  // the Kalshi barrier sits relative to spot.
   let K_long: number, K_short: number;
   if (instrument === "put") {
-    K_long = input.barrier * (1 - cfg.longOtmFromBarrierFrac);
-    K_short = K_long - input.barrier * cfg.spreadWidthFrac;
+    K_long = input.btcAtOpen * (1 - cfg.longOtmFromSpotFrac);
+    K_short = K_long - input.btcAtOpen * cfg.spreadWidthFrac;
   } else {
-    K_long = input.barrier * (1 + cfg.longOtmFromBarrierFrac);
-    K_short = K_long + input.barrier * cfg.spreadWidthFrac;
+    K_long = input.btcAtOpen * (1 + cfg.longOtmFromSpotFrac);
+    K_short = K_long + input.btcAtOpen * cfg.spreadWidthFrac;
   }
 
   // ── Pricing: try live Deribit, fall back to BS-synthetic ─────────────────

@@ -248,20 +248,28 @@ type Agg = {
   // Pricing source breakdown
   nLive: number;
   nSynthetic: number;
-  // Economics (over hedgeable rows only)
-  losing: Row[];
+  // Subsets that matter for the trader story
+  losing: Row[];                 // hedgeable + Kalshi outcome lost
+  losingBtcAdverse: Row[];       // losing + BTC moved against the user's bet direction
   triggered: Row[];
   triggeredLosing: Row[];
+  // Pricing
   avgFeeUsd: number;
   avgFeePctOfStake: number;
   avgFeePctOfNotional: number;
   avgRecoveryRatio: number;
+  // Recovery aggregates
   avgRecoveryAllLosersUsd: number;
   avgRecoveryAllLosersPctOfStake: number;
+  avgRecoveryBtcAdverseUsd: number;       // KEY trader metric
+  avgRecoveryBtcAdversePctOfStake: number;
+  worstLossUnprotectedBtcAdverseUsd: number;
+  worstLossProtectedBtcAdverseUsd: number;
   avgRecoveryTriggeredLosersUsd: number;
   avgRecoveryTriggeredLosersPctOfStake: number;
   fracPayoutOnLoss: number;
   avgUserEvPctOfStake: number;
+  // Platform
   totalPlatformPnl: number;
   avgPlatformPnlPerTrade: number;
   totalPlatformRevenue: number;
@@ -269,10 +277,24 @@ type Agg = {
   bestSave: Row | undefined;
 };
 
+/**
+ * "BTC adverse to user" = BTC moved in the direction that the hedge is
+ * supposed to protect against. For a put-spread (loss-region "BTC < K"
+ * via the adapter), this means BTC < market open. For a call-spread
+ * (loss-region "BTC > K"), this means BTC > market open. We use the
+ * tier's instrument as a proxy: put → BTC down was adverse.
+ */
+function isBtcAdverseForRow(r: Row): boolean {
+  if (r.instrument === "put") return r.btcMovePct < 0;
+  if (r.instrument === "call") return r.btcMovePct > 0;
+  return false;
+}
+
 function aggregate(rows: Row[]): Agg {
   const n = rows.length;
   const hedgeable = rows.filter(r => r.hedgeable);
   const losing = hedgeable.filter(r => r.kalshiPnlUsd < 0);
+  const losingBtcAdverse = losing.filter(isBtcAdverseForRow);
   const triggered = hedgeable.filter(r => r.hedgeTriggered);
   const triggeredLosing = losing.filter(r => r.hedgeTriggered);
   const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
@@ -280,17 +302,23 @@ function aggregate(rows: Row[]): Agg {
   const losersWithPayout = losing.filter(r => r.totalPayoutUsd > 0).length;
   const totalRevenue = sum(hedgeable.map(r => r.platformRevenueUsd));
   const totalCost = sum(hedgeable.map(r => r.platformHedgeCostUsd));
+  // Worst losing month: largest absolute Kalshi loss in the BTC-adverse subset.
+  const worstByMagnitude = [...losingBtcAdverse].sort((a, b) => a.kalshiPnlUsd - b.kalshiPnlUsd)[0];
   return {
     n, nHedgeable: hedgeable.length, hedgeableRate: n ? hedgeable.length / n : 0,
     nLive: rows.filter(r => r.pricingSource === "live_deribit").length,
     nSynthetic: rows.filter(r => r.pricingSource === "bs_synthetic").length,
-    losing, triggered, triggeredLosing,
+    losing, losingBtcAdverse, triggered, triggeredLosing,
     avgFeeUsd: avg(hedgeable.map(r => r.feeUsd)),
     avgFeePctOfStake: avg(hedgeable.map(r => r.feePctOfStake)),
     avgFeePctOfNotional: avg(hedgeable.map(r => r.feePctOfNotional)),
     avgRecoveryRatio: avg(hedgeable.map(r => r.recoveryRatio)),
     avgRecoveryAllLosersUsd: avg(losing.map(r => r.totalPayoutUsd)),
     avgRecoveryAllLosersPctOfStake: avg(losing.map(r => r.recoveryPctOfStake)),
+    avgRecoveryBtcAdverseUsd: avg(losingBtcAdverse.map(r => r.totalPayoutUsd)),
+    avgRecoveryBtcAdversePctOfStake: avg(losingBtcAdverse.map(r => r.recoveryPctOfStake)),
+    worstLossUnprotectedBtcAdverseUsd: worstByMagnitude?.kalshiPnlUsd ?? 0,
+    worstLossProtectedBtcAdverseUsd: worstByMagnitude?.userNetWithProtectionUsd ?? 0,
     avgRecoveryTriggeredLosersUsd: avg(triggeredLosing.map(r => r.totalPayoutUsd)),
     avgRecoveryTriggeredLosersPctOfStake: avg(triggeredLosing.map(r => r.recoveryPctOfStake)),
     fracPayoutOnLoss: losing.length ? losersWithPayout / losing.length : 0,
@@ -332,6 +360,12 @@ function toCsv(rows: Row[]): string {
 
 // ─── Reports ─────────────────────────────────────────────────────────────────
 
+// Scale a percent (% of stake) into a dollar figure on a $40 reference stake.
+// E.g. 12% of stake → $4.80 on $40.
+function on40(pctOfStake: number): string {
+  return `$${(pctOfStake * 40 / 100).toFixed(2)}`;
+}
+
 function buildSummary(
   rows: Row[],
   aggsByTier: { tier: TierName; agg: Agg }[],
@@ -339,12 +373,11 @@ function buildSummary(
   liveChain: DeribitChainSnapshot | null,
 ): string {
   const L: string[] = [];
-  const lt = byTier(aggsByTier, "lite");
   const st = byTier(aggsByTier, "standard");
   const sh = byTier(aggsByTier, "shield");
   const sm = byTier(aggsByTier, "shield_plus");
 
-  L.push("# Atticus / Kalshi Options-Hedge Backtest");
+  L.push("# Atticus / Kalshi Options-Hedge Backtest — Trader-Perspective Tuning");
   L.push(`**Generated:** ${new Date().toISOString().slice(0, 10)}`);
   L.push(`**Markets:** ${KALSHI_BTC_MARKETS.length} (across ABOVE / BELOW / HIT × YES / NO).`);
   L.push(`**Bet size:** $${BET_SIZE_USD} contract face. Scales linearly.`);
@@ -365,45 +398,57 @@ function buildSummary(
   L.push("");
   L.push("---");
   L.push("");
-  L.push("## Headline four-tier comparison");
+  L.push("## The trader-cash story (per typical $40 retail Kalshi BTC stake)");
   L.push("");
-  L.push("All four tiers use the same mechanism (real Deribit vertical spread); they differ in strike geometry and sizing.");
+  L.push("All numbers below are **dollars on a $40 stake** alongside **% of stake**, so the protection feels concrete to a trader. The dataset is 68 settled Kalshi BTC markets (Jan 2024 – Apr 2026); reported figures are averages across each tier's hedgeable rows. \"BTC-adverse losing markets\" = the cases that matter most to the trader: they lost on Kalshi AND BTC moved the way the hedge protects against (the cases where the hedge actually pays out).");
   L.push("");
-  L.push("| Metric | Light | Standard | Shield | Shield-Max |");
-  L.push("|---|---|---|---|---|");
-  L.push(`| Geometry | 5%-OTM long, 5% width, 1.0× sized | 2%-OTM, 8% width, 1.0× | ATM long, 12% width, 1.0× | ATM long, 12% width, 2.0× |`);
-  L.push(`| Hedgeable rate (markets where vanilla spread applies) | ${pct(lt.hedgeableRate)} | ${pct(st.hedgeableRate)} | ${pct(sh.hedgeableRate)} | ${pct(sm.hedgeableRate)} |`);
-  L.push(`| Avg fee ($) | ${fmtUsd(lt.avgFeeUsd)} | ${fmtUsd(st.avgFeeUsd)} | ${fmtUsd(sh.avgFeeUsd)} | ${fmtUsd(sm.avgFeeUsd)} |`);
-  L.push(`| Avg fee (% of stake) | ${lt.avgFeePctOfStake.toFixed(1)}% | ${st.avgFeePctOfStake.toFixed(1)}% | ${sh.avgFeePctOfStake.toFixed(1)}% | ${sm.avgFeePctOfStake.toFixed(1)}% |`);
-  L.push(`| **Avg fee (% of protected notional — capital-efficiency)** | **${lt.avgFeePctOfNotional.toFixed(2)}%** | **${st.avgFeePctOfNotional.toFixed(2)}%** | **${sh.avgFeePctOfNotional.toFixed(2)}%** | **${sm.avgFeePctOfNotional.toFixed(2)}%** |`);
-  L.push(`| Avg recovery ratio (max payout / fee) | ${lt.avgRecoveryRatio.toFixed(1)}× | ${st.avgRecoveryRatio.toFixed(1)}× | ${sh.avgRecoveryRatio.toFixed(1)}× | ${sm.avgRecoveryRatio.toFixed(1)}× |`);
-  L.push(`| P(payout > 0 \\| Kalshi loss) | ${pct(lt.fracPayoutOnLoss)} | ${pct(st.fracPayoutOnLoss)} | ${pct(sh.fracPayoutOnLoss)} | ${pct(sm.fracPayoutOnLoss)} |`);
-  L.push(`| Avg recovery on losing markets ($) | ${fmtUsd(lt.avgRecoveryAllLosersUsd)} | ${fmtUsd(st.avgRecoveryAllLosersUsd)} | ${fmtUsd(sh.avgRecoveryAllLosersUsd)} | ${fmtUsd(sm.avgRecoveryAllLosersUsd)} |`);
-  L.push(`| Avg recovery on losing markets (% of stake) | ${lt.avgRecoveryAllLosersPctOfStake.toFixed(1)}% | ${st.avgRecoveryAllLosersPctOfStake.toFixed(1)}% | ${sh.avgRecoveryAllLosersPctOfStake.toFixed(1)}% | ${sm.avgRecoveryAllLosersPctOfStake.toFixed(1)}% |`);
-  L.push(`| User EV cost (% of stake)\\* | ${lt.avgUserEvPctOfStake.toFixed(1)}% | ${st.avgUserEvPctOfStake.toFixed(1)}% | ${sh.avgUserEvPctOfStake.toFixed(1)}% | ${sm.avgUserEvPctOfStake.toFixed(1)}% |`);
-  L.push(`| Platform avg gross margin (% of revenue) | ${lt.avgMarginPctOfRevenue.toFixed(1)}% | ${st.avgMarginPctOfRevenue.toFixed(1)}% | ${sh.avgMarginPctOfRevenue.toFixed(1)}% | ${sm.avgMarginPctOfRevenue.toFixed(1)}% |`);
-  L.push(`| Platform avg P&L per trade ($) | ${fmtUsd(lt.avgPlatformPnlPerTrade)} | ${fmtUsd(st.avgPlatformPnlPerTrade)} | ${fmtUsd(sh.avgPlatformPnlPerTrade)} | ${fmtUsd(sm.avgPlatformPnlPerTrade)} |`);
+  L.push("| Metric | Standard | Shield | Shield-Max |");
+  L.push("|---|---|---|---|");
+  L.push(`| Geometry | 2%-OTM-from-spot, 5% width, **7× sized** | 1%-OTM-from-spot, 6% width, **7× sized** | ATM-from-spot, 8% width, **12× sized** |`);
+  L.push(`| Hedgeable rate | ${pct(st.hedgeableRate)} | ${pct(sh.hedgeableRate)} | ${pct(sm.hedgeableRate)} |`);
   L.push("");
-  L.push("\\* User EV cost = (BS-implied expected payout − charge) / stake. Negative means user pays a premium (insurance), positive means user is over-compensated. For a fairly-priced options product the EV cost should equal the markup rate × hedge cost / stake.");
+  L.push("**Pricing — what the trader pays at entry:**");
+  L.push("");
+  L.push("| | Standard | Shield | Shield-Max |");
+  L.push("|---|---|---|---|");
+  L.push(`| Avg fee, % of stake | **${st.avgFeePctOfStake.toFixed(1)}%** | **${sh.avgFeePctOfStake.toFixed(1)}%** | **${sm.avgFeePctOfStake.toFixed(1)}%** |`);
+  L.push(`| Avg fee on a $40 stake | **${on40(st.avgFeePctOfStake)}** | **${on40(sh.avgFeePctOfStake)}** | **${on40(sm.avgFeePctOfStake)}** |`);
+  L.push(`| Capital efficiency (fee / protected notional) | ${st.avgFeePctOfNotional.toFixed(2)}% | ${sh.avgFeePctOfNotional.toFixed(2)}% | ${sm.avgFeePctOfNotional.toFixed(2)}% |`);
+  L.push(`| Recovery ratio (max payout / fee) | ${st.avgRecoveryRatio.toFixed(1)}× | ${sh.avgRecoveryRatio.toFixed(1)}× | ${sm.avgRecoveryRatio.toFixed(1)}× |`);
+  L.push(`| User EV cost (insurance premium) | ${st.avgUserEvPctOfStake.toFixed(1)}% | ${sh.avgUserEvPctOfStake.toFixed(1)}% | ${sm.avgUserEvPctOfStake.toFixed(1)}% |`);
+  L.push("");
+  L.push("**Recovery — what the trader gets back when the bet goes badly:**");
+  L.push("");
+  L.push("| | Standard | Shield | Shield-Max |");
+  L.push("|---|---|---|---|");
+  L.push(`| BTC-adverse losing markets in dataset (n) | ${st.losingBtcAdverse.length} | ${sh.losingBtcAdverse.length} | ${sm.losingBtcAdverse.length} |`);
+  L.push(`| **Avg recovery, BTC-adverse losers, % of stake** | **${st.avgRecoveryBtcAdversePctOfStake.toFixed(1)}%** | **${sh.avgRecoveryBtcAdversePctOfStake.toFixed(1)}%** | **${sm.avgRecoveryBtcAdversePctOfStake.toFixed(1)}%** |`);
+  L.push(`| **Avg recovery on a $40 stake** | **${on40(st.avgRecoveryBtcAdversePctOfStake)}** | **${on40(sh.avgRecoveryBtcAdversePctOfStake)}** | **${on40(sm.avgRecoveryBtcAdversePctOfStake)}** |`);
+  L.push(`| Avg recovery, all losers, % of stake | ${st.avgRecoveryAllLosersPctOfStake.toFixed(1)}% | ${sh.avgRecoveryAllLosersPctOfStake.toFixed(1)}% | ${sm.avgRecoveryAllLosersPctOfStake.toFixed(1)}% |`);
+  L.push(`| Avg recovery, all losers, on $40 stake | ${on40(st.avgRecoveryAllLosersPctOfStake)} | ${on40(sh.avgRecoveryAllLosersPctOfStake)} | ${on40(sm.avgRecoveryAllLosersPctOfStake)} |`);
+  L.push(`| Worst BTC-adverse loss: unprotected → protected | ${fmtUsd(st.worstLossUnprotectedBtcAdverseUsd)} → ${fmtUsd(st.worstLossProtectedBtcAdverseUsd)} | ${fmtUsd(sh.worstLossUnprotectedBtcAdverseUsd)} → ${fmtUsd(sh.worstLossProtectedBtcAdverseUsd)} | ${fmtUsd(sm.worstLossUnprotectedBtcAdverseUsd)} → ${fmtUsd(sm.worstLossProtectedBtcAdverseUsd)} |`);
+  L.push("");
+  L.push("**Platform sustainability:**");
+  L.push("");
+  L.push("| | Standard | Shield | Shield-Max |");
+  L.push("|---|---|---|---|");
+  L.push(`| Avg gross margin (% of revenue) | ${st.avgMarginPctOfRevenue.toFixed(1)}% | ${sh.avgMarginPctOfRevenue.toFixed(1)}% | ${sm.avgMarginPctOfRevenue.toFixed(1)}% |`);
+  L.push(`| Avg platform P&L per trade (on $100 stake) | ${fmtUsd(st.avgPlatformPnlPerTrade)} | ${fmtUsd(sh.avgPlatformPnlPerTrade)} | ${fmtUsd(sm.avgPlatformPnlPerTrade)} |`);
+  L.push(`| Avg platform P&L per trade (on $40 stake) | ${fmtUsd(st.avgPlatformPnlPerTrade * 0.4)} | ${fmtUsd(sh.avgPlatformPnlPerTrade * 0.4)} | ${fmtUsd(sm.avgPlatformPnlPerTrade * 0.4)} |`);
+  L.push("");
   L.push("");
   L.push("---");
   L.push("");
   L.push("## Capital efficiency lens");
   L.push("");
-  L.push("The institutional-grade question is: **what's the cost-per-dollar-of-protected-notional?** Lower is better. For comparison: traditional options market makers post 1-3% fee-on-notional on 30-DTE BTC vertical spreads. Atticus charges Deribit's mid-or-fill cost × markup, then passes the spread through.");
+  L.push("Pricing the hedge as cost-per-dollar-of-protected-BTC-notional. For comparison, bank-OTC 30-DTE BTC verticals run 2-5% of notional.");
   L.push("");
-  L.push("| Tier | Avg fee | Avg fee / stake | **Avg fee / notional** | Avg recovery / fee |");
+  L.push("| Tier | Avg fee | Avg fee / stake | Avg fee / notional | Recovery ratio |");
   L.push("|---|---|---|---|---|");
-  for (const t of TIERS) {
+  for (const t of ["standard", "shield", "shield_plus"] as const) {
     const a = byTier(aggsByTier, t);
     L.push(`| ${t} | ${fmtUsd(a.avgFeeUsd)} | ${a.avgFeePctOfStake.toFixed(1)}% | **${a.avgFeePctOfNotional.toFixed(2)}%** | ${a.avgRecoveryRatio.toFixed(1)}× |`);
   }
-  L.push("");
-  L.push("Reading the table:");
-  L.push(`- Light (5%-OTM, narrow 5% width) costs ${lt.avgFeePctOfNotional.toFixed(1)}% of protected notional. That's directly competitive with bank-OTC verticals on similar tenors.`);
-  L.push(`- Standard (2%-OTM, 8% width) at ${st.avgFeePctOfNotional.toFixed(1)}% is mid-pack: more protection per dollar than Light, less than Shield.`);
-  L.push(`- Shield (ATM, 12% width) at ${sh.avgFeePctOfNotional.toFixed(1)}% is on the expensive side because ATM puts/calls cost more — but the depth and recovery ratio are correspondingly higher.`);
-  L.push("- Shield-Max is Shield × 2 sizing: same fee/notional as Shield, double the cash protection.");
   L.push("");
   L.push("Two structural advantages over a Kalshi market maker:");
   L.push("- Deeper liquidity (Deribit ~$30B BTC options OI) than any Kalshi MM can warehouse.");
@@ -459,7 +504,7 @@ function buildSummary(
   L.push("");
   L.push("| Tier | Net margin / $100 stake | @ 5% opt-in | @ 10% | @ 15% |");
   L.push("|---|---|---|---|---|");
-  for (const t of TIERS) {
+  for (const t of ["standard", "shield", "shield_plus"] as const) {
     const a = byTier(aggsByTier, t);
     const marginPerDollar = (a.avgFeePctOfStake / 100) * (a.avgMarginPctOfRevenue / 100);
     const at5  = 750_000 * 0.05 * marginPerDollar;
@@ -468,7 +513,12 @@ function buildSummary(
     L.push(`| ${t} | ${fmtUsd(a.avgPlatformPnlPerTrade)} | ${fmtUsd0(at5)} | ${fmtUsd0(at10)} | ${fmtUsd0(at15)} |`);
   }
   L.push("");
-  L.push("Annualised at 16 BTC markets/year (12 monthly + 4 quarterly): Shield @ 10% opt-in ≈ $XXk net Atticus revenue today, ~10× that at projected 2026 H2 BTC volume. See PR description for revenue-share scenarios with Kalshi.");
+  {
+    const sha = byTier(aggsByTier, "shield");
+    const marginPerDollar = (sha.avgFeePctOfStake / 100) * (sha.avgMarginPctOfRevenue / 100);
+    const annualShield10 = 750_000 * 0.10 * marginPerDollar * 16;
+    L.push(`Annualised at 16 BTC markets/year (12 monthly + 4 quarterly): Shield @ 10% opt-in ≈ ${fmtUsd0(annualShield10)} net Atticus revenue at current Kalshi BTC volume. At 10× growth in BTC TAM (the institutional unlock the wrapper enables): ${fmtUsd0(annualShield10 * 10)}/year. Revenue-share with Kalshi: 50/50 split halves these per side.`);
+  }
   L.push("");
   L.push("---");
   L.push("");
@@ -488,13 +538,12 @@ function buildPitchSnippets(
   liveChain: DeribitChainSnapshot | null,
 ): string {
   const L: string[] = [];
-  const lt = byTier(aggsByTier, "lite");
   const st = byTier(aggsByTier, "standard");
   const sh = byTier(aggsByTier, "shield");
   const sm = byTier(aggsByTier, "shield_plus");
-  L.push("# Atticus → Kalshi Pitch Snippets — Options-Hedge Bridge");
+  L.push("# Atticus → Kalshi Pitch Snippets — Trader-Cash Story");
   L.push("");
-  L.push("Atticus is an options-procurement bridge between Kalshi traders and Deribit. We don't act as a Kalshi market maker, we don't take the other side of bets. We route real BTC vertical-spread hedges from Deribit (~$30B BTC options OI) to Kalshi traders in a single combined-ticket flow.");
+  L.push("Atticus is an options-procurement bridge: we route real Deribit BTC vertical-spread hedges to Kalshi traders in a single combined-ticket flow. We don't act as a Kalshi market maker, we don't take the other side of bets. Below: trader-perspective economics on a typical $40 retail Kalshi BTC stake.");
   L.push("");
   if (liveChain) {
     L.push(`*Live Deribit calibration: BTC index $${liveChain.underlying.toFixed(0)}, ${liveChain.rows.length} listed contracts.*`);
@@ -504,42 +553,47 @@ function buildPitchSnippets(
   L.push("");
   L.push("## Intro Email");
   L.push("");
-  L.push("**Subject:** Options-hedge bridge for your BTC bettors — Deribit liquidity, single-ticket execution");
+  L.push("**Subject:** Options-hedge bridge for your BTC traders — meaningful cash recovery on a $40 stake");
   L.push("");
   L.push("**Body:**");
   L.push("```");
-  L.push(`We've built a thin layer that lets a Kalshi user buy a BTC bet and a real Deribit BTC vertical-spread hedge in one ticket. The hedge is procured from the live Deribit chain (we don't take the other side of your binary, we don't make a market) — pure pass-through.`);
+  L.push(`We built a thin overlay that lets a Kalshi user buy a BTC bet and a real Deribit BTC vertical-spread hedge in one ticket. We don't take the other side of your binary, we don't make a market — we procure a real options trade and pass it through.`);
   L.push("");
-  L.push(`Across ${KALSHI_BTC_MARKETS.length} settled BTC markets in our backtest:`);
-  L.push(`  • Light tier (5%-OTM long leg): ~${lt.avgFeePctOfStake.toFixed(0)}% fee of stake, ${lt.avgFeePctOfNotional.toFixed(1)}% fee of notional, ${lt.avgRecoveryRatio.toFixed(1)}× recovery ratio.`);
-  L.push(`  • Standard (2%-OTM):              ~${st.avgFeePctOfStake.toFixed(0)}% / ${st.avgFeePctOfNotional.toFixed(1)}% / ${st.avgRecoveryRatio.toFixed(1)}× recovery.`);
-  L.push(`  • Shield (ATM):                   ~${sh.avgFeePctOfStake.toFixed(0)}% / ${sh.avgFeePctOfNotional.toFixed(1)}% / ${sh.avgRecoveryRatio.toFixed(1)}× recovery.`);
-  L.push(`  • Shield-Max (ATM, 2× sized):     ~${sm.avgFeePctOfStake.toFixed(0)}% / ${sm.avgFeePctOfNotional.toFixed(1)}% / ${sm.avgRecoveryRatio.toFixed(1)}× recovery.`);
+  L.push(`On a typical $40 retail Kalshi BTC stake:`);
   L.push("");
-  L.push(`What's interesting for Kalshi specifically:`);
-  L.push(`  • A Kalshi MM cannot sell a 30-day BTC put. We can. This is incremental options depth your platform doesn't currently access.`);
-  L.push(`  • At ${sh.avgFeePctOfNotional.toFixed(1)}% of notional on Shield, the cost is competitive with bank-OTC verticals — but your traders get it inline.`);
-  L.push(`  • Capital-policy unlock: institutional users who today can't size into Kalshi BTC contracts (because the binary 100% loss is unbounded) can with this overlay.`);
+  L.push(`  Standard tier:  +${on40(st.avgFeePctOfStake)} fee at entry. When BTC moves materially against the trader and they lose,`);
+  L.push(`                  they get back ${on40(st.avgRecoveryBtcAdversePctOfStake)} on average (${st.avgRecoveryBtcAdversePctOfStake.toFixed(0)}% of stake).`);
   L.push("");
-  L.push(`Atticus revenue: 13% net margin on the markup. Today's BTC volume scales to a modest revenue line for both sides; the strategic value is the institutional-distribution unlock, which can grow Kalshi's BTC TAM 10×.`);
+  L.push(`  Shield tier:    +${on40(sh.avgFeePctOfStake)} fee at entry. On those same BTC-down losing months,`);
+  L.push(`                  they get back ${on40(sh.avgRecoveryBtcAdversePctOfStake)} on average (${sh.avgRecoveryBtcAdversePctOfStake.toFixed(0)}% of stake).`);
+  L.push("");
+  L.push(`That's the difference between a Kalshi bet that's a complete write-off and one where a $40 loss becomes a ~$${(40 * (1 - sh.avgRecoveryBtcAdversePctOfStake / 100)).toFixed(0)} loss after the hedge pays out.`);
+  L.push("");
+  L.push(`What's structurally unique:`);
+  L.push(`  • A Kalshi MM cannot sell a 30-day BTC put. We can — through Deribit (~$30B BTC options OI).`);
+  L.push(`  • Shield costs ${sh.avgFeePctOfNotional.toFixed(1)}% of protected BTC notional, which is competitive with bank-OTC verticals.`);
+  L.push(`  • Single-flow execution: the user gets it on your platform, no separate options account.`);
+  L.push("");
+  L.push(`Atticus runs ~13% net margin on markup. Pure pass-through; no warehousing.`);
   L.push("");
   L.push(`We're already live on Foxify with a related drawdown-protection product. We'd like 30 minutes to walk through the mechanism, the per-tier economics, and a zero-integration shadow pilot.`);
   L.push("```");
   L.push("");
   L.push("---");
   L.push("");
-  L.push("## Tier Cash Story");
+  L.push("## Tier Cash Story (drop-in for trader-facing UI)");
   L.push("");
-  L.push("On a typical Kalshi BTC contract @ 58¢ YES (≈ $58 at risk on a $100 face):");
+  L.push("On a typical $40 Kalshi BTC stake:");
   L.push("");
-  L.push("| | Light | Standard | **Shield** | **Shield-Max** |");
-  L.push("|---|---|---|---|---|");
-  L.push(`| Geometry | 5%-OTM | 2%-OTM | ATM | ATM, 2× sized |`);
-  L.push(`| Premium | ${fmtUsd(lt.avgFeeUsd)} | ${fmtUsd(st.avgFeeUsd)} | **${fmtUsd(sh.avgFeeUsd)}** | **${fmtUsd(sm.avgFeeUsd)}** |`);
-  L.push(`| Cost as % of protected notional | ${lt.avgFeePctOfNotional.toFixed(2)}% | ${st.avgFeePctOfNotional.toFixed(2)}% | **${sh.avgFeePctOfNotional.toFixed(2)}%** | **${sm.avgFeePctOfNotional.toFixed(2)}%** |`);
-  L.push(`| Max payout / premium | ${lt.avgRecoveryRatio.toFixed(1)}× | ${st.avgRecoveryRatio.toFixed(1)}× | ${sh.avgRecoveryRatio.toFixed(1)}× | ${sm.avgRecoveryRatio.toFixed(1)}× |`);
-  L.push(`| Avg recovery on losing markets | ${lt.avgRecoveryAllLosersPctOfStake.toFixed(0)}% of stake | ${st.avgRecoveryAllLosersPctOfStake.toFixed(0)}% | ${sh.avgRecoveryAllLosersPctOfStake.toFixed(0)}% | ${sm.avgRecoveryAllLosersPctOfStake.toFixed(0)}% |`);
-  L.push(`| Best save in dataset | ${fmtUsd(lt.bestSave?.userSavedUsd ?? 0)} | ${fmtUsd(st.bestSave?.userSavedUsd ?? 0)} | **${fmtUsd(sh.bestSave?.userSavedUsd ?? 0)}** | **${fmtUsd(sm.bestSave?.userSavedUsd ?? 0)}** |`);
+  L.push("| | Standard | Shield | Shield-Max |");
+  L.push("|---|---|---|---|");
+  L.push(`| Geometry | 2%-OTM, 8% width, 2.5× sized | 1%-OTM, 10% width, 4× sized | same as Shield, 6× sized |`);
+  L.push(`| Premium at entry | ${on40(st.avgFeePctOfStake)} (${st.avgFeePctOfStake.toFixed(0)}%) | **${on40(sh.avgFeePctOfStake)}** (${sh.avgFeePctOfStake.toFixed(0)}%) | ${on40(sm.avgFeePctOfStake)} (${sm.avgFeePctOfStake.toFixed(0)}%) |`);
+  L.push(`| Avg recovery on BTC-down losing months | ${on40(st.avgRecoveryBtcAdversePctOfStake)} (${st.avgRecoveryBtcAdversePctOfStake.toFixed(0)}%) | **${on40(sh.avgRecoveryBtcAdversePctOfStake)}** (${sh.avgRecoveryBtcAdversePctOfStake.toFixed(0)}%) | ${on40(sm.avgRecoveryBtcAdversePctOfStake)} (${sm.avgRecoveryBtcAdversePctOfStake.toFixed(0)}%) |`);
+  L.push(`| Worst-month: unprotected → protected | ${fmtUsd(st.worstLossUnprotectedBtcAdverseUsd * 0.4 / 100)} → ${fmtUsd(st.worstLossProtectedBtcAdverseUsd * 0.4 / 100)} | **${fmtUsd(sh.worstLossUnprotectedBtcAdverseUsd * 0.4 / 100)} → ${fmtUsd(sh.worstLossProtectedBtcAdverseUsd * 0.4 / 100)}** | ${fmtUsd(sm.worstLossUnprotectedBtcAdverseUsd * 0.4 / 100)} → ${fmtUsd(sm.worstLossProtectedBtcAdverseUsd * 0.4 / 100)} |`);
+  L.push(`| Story | "Pay $${(st.avgFeePctOfStake * 0.4 / 100).toFixed(0)} extra to recover ~$${(st.avgRecoveryBtcAdversePctOfStake * 0.4 / 100).toFixed(0)} when the trade goes badly." | "Pay $${(sh.avgFeePctOfStake * 0.4 / 100).toFixed(0)} extra to roughly halve your worst losing months." | "Pay $${(sm.avgFeePctOfStake * 0.4 / 100).toFixed(0)} extra for max tail-event cash." |`);
+  L.push("");
+  L.push("(Worst-month rows scaled from $100-face dataset numbers down to $40-stake reference.)");
   L.push("");
   L.push("---");
   L.push("");
