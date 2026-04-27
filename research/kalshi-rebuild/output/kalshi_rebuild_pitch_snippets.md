@@ -2,7 +2,7 @@
 
 Atticus is an options-procurement bridge: we route real Deribit BTC vertical-spread hedges to Kalshi traders in a single combined-ticket flow. We don't act as a Kalshi market maker, we don't take the other side of bets. Below: trader-perspective economics on a typical $40 retail Kalshi BTC stake.
 
-*Live Deribit calibration: BTC index $79156, 932 listed contracts.*
+*Live Deribit calibration: BTC index $78998, 932 listed contracts.*
 
 ---
 
@@ -19,10 +19,10 @@ On a typical $40 retail Kalshi BTC stake:
   Standard tier:  +$5.64 fee at entry. When BTC moves materially against the trader and they lose,
                   they get back $11.15 on average (28% of stake).
 
-  Shield tier:    +$7.57 fee at entry. On those same BTC-down losing months,
-                  they get back $14.79 on average (37% of stake).
+  Shield tier:    +$8.65 fee at entry. On those same BTC-down losing months,
+                  they get back $16.90 on average (42% of stake).
 
-That's the difference between a Kalshi bet that's a complete write-off and one where a $40 loss becomes a ~$25 loss after the hedge pays out.
+That's the difference between a Kalshi bet that's a complete write-off and one where a $40 loss becomes a ~$23 loss after the hedge pays out.
 
 What's structurally unique:
   • A Kalshi MM cannot sell a 30-day BTC put. We can — through Deribit (~$30B BTC options OI).
@@ -36,19 +36,38 @@ We're already live on Foxify with a related drawdown-protection product. We'd li
 
 ---
 
-## Tier Cash Story (drop-in for trader-facing UI)
+## Tier Cash Story by Stake Size (drop-in for trader-facing UI)
 
-On a typical $40 Kalshi BTC stake:
+Shield's value scales with stake. The dollar gap between tiers is small at $40 but grows materially at $100+. The UX should default Standard for small stakes and surface Shield for larger ones.
 
-| | Standard | Shield | Shield-Max |
+### On a $40 Kalshi BTC stake:
+
+| | No protection | Standard | Shield |
 |---|---|---|---|
-| Geometry | 2%-OTM, 8% width, 2.5× sized | 1%-OTM, 10% width, 4× sized | same as Shield, 6× sized |
-| Premium at entry | $5.64 (14%) | **$7.57** (19%) | $17.34 (43%) |
-| Avg recovery on BTC-down losing months | $11.15 (28%) | **$14.79** (37%) | $33.87 (85%) |
-| Worst-month: unprotected → protected | -$0.31 → -$0.25 | **-$0.31 → -$0.24** | -$0.31 → -$0.15 |
-| Story | "Pay $0 extra to recover ~$0 when the trade goes badly." | "Pay $0 extra to roughly halve your worst losing months." | "Pay $0 extra for max tail-event cash." |
+| Premium at entry | $0 | **$5.64** (14%) | **$8.65** (22%) |
+| Median BTC-adverse loss month: net P&L | -$40.00 | -$27.00 (saved $13.00) | **-$20.80** (saved $19.20) |
+| Worst BTC-adverse month in dataset: net P&L | -$31.20 | -$25.42 (saved -$5.78) | -$22.94 (saved -$8.26) |
 
-(Worst-month rows scaled from $100-face dataset numbers down to $40-stake reference.)
+### On a $100 Kalshi BTC stake:
+
+| | No protection | Standard | Shield |
+|---|---|---|---|
+| Premium at entry | $0 | **$14.09** (14%) | **$21.62** (22%) |
+| Median BTC-adverse loss month: net P&L | -$100.00 | -$67.50 (saved $32.50) | **-$52.00** (saved $48.00) |
+| Worst BTC-adverse month in dataset: net P&L | -$78.00 | -$63.54 (saved -$14.46) | -$57.34 (saved -$20.66) |
+
+### On a $250 Kalshi BTC stake:
+
+| | No protection | Standard | Shield |
+|---|---|---|---|
+| Premium at entry | $0 | **$35.23** (14%) | **$54.05** (22%) |
+| Median BTC-adverse loss month: net P&L | -$250.00 | -$168.75 (saved $81.25) | **-$130.00** (saved $120.00) |
+| Worst BTC-adverse month in dataset: net P&L | -$195.00 | -$158.85 (saved -$36.15) | -$143.35 (saved -$51.65) |
+
+**Reading the $40 vs $250 tables:**
+- At $40 stake, Shield costs only $3.01 more than Standard but gives $6.20 more median recovery — small absolute dollars.
+- At $250 stake, Shield costs $18.82 more but gives $38.75 more in median recovery — meaningful real money.
+- Recommended UX: Standard pre-selected as default; Shield visible as a one-toggle upgrade, with the $-saved difference dynamically shown on the user's actual stake size.
 
 ---
 
@@ -62,7 +81,7 @@ At entry, Atticus simultaneously buys (on Deribit):
   Short BTC-29MAY26-71000-P  (a 12%-OTM put — the floor)
 
 Net cost from the live Deribit chain: about ~2.7% of BTC notional.
-Atticus charges the trader: cost × 1.22 markup = ~19% of their $58 stake.
+Atticus charges the trader: cost × 1.22 markup = ~22% of their $58 stake.
 
 If BTC ends ≥ $80k:
   Kalshi pays the trader $100. The Deribit spread expires worthless.

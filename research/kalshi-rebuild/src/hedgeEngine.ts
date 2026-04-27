@@ -184,15 +184,17 @@ export const TIER_CONFIGS: Record<TierName, TierConfig> = {
     sizingMultiplier: 6.5,
   },
   // Shield: retail "insured bet" tier.
-  // Target per user PRD: fee target 18% (hard cap 20%), avg rebate 35-40%.
-  // 1%-OTM-from-spot, 6% width, 7× sizing (kept at 7× — empirically
-  // dropping to 6.5× shaves recovery below 35% before fee falls meaningfully).
+  // Tuned to differentiate clearly from Standard: ~50% more fee for ~50%
+  // more recovery (vs the prior ~30%/30% which felt linear). The target
+  // landing zone is fee ≈ 22% / median recovery ≈ 48% — confirmed via
+  // _tierSweep.ts empirical scan.
+  // 1%-OTM-from-spot, 6% width, 8× sizing.
   shield: {
     ...COMMON,
-    description: "Shield: 1%-OTM-from-spot put/call, 6% width, 7× sized. Fee ~18-19% of stake; rebate ~35-42% of stake on BTC-adverse losing months.",
+    description: "Shield: 1%-OTM-from-spot put/call, 6% width, 8× sized. Fee ~22% of stake; median rebate ~48% of stake on BTC-adverse losing months.",
     longOtmFromSpotFrac: 0.01,
     spreadWidthFrac: 0.06,
-    sizingMultiplier: 7.0,
+    sizingMultiplier: 8.0,
   },
   // Shield-Max: institutional / treasury variant.
   // ATM, 8% width, 12× sizing. Recovery cap = 96% of stake.

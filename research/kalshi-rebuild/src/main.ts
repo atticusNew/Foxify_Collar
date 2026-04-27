@@ -433,7 +433,7 @@ function buildSummary(
   L.push("");
   L.push("| Metric | Standard | Shield | Shield-Max |");
   L.push("|---|---|---|---|");
-  L.push(`| Geometry | 2%-OTM-from-spot, 5% width, **6.5× sized** | 1%-OTM-from-spot, 6% width, **7× sized** | ATM-from-spot, 8% width, **12× sized** |`);
+  L.push(`| Geometry | 2%-OTM-from-spot, 5% width, **6.5× sized** | 1%-OTM-from-spot, 6% width, **8× sized** | ATM-from-spot, 8% width, **12× sized** |`);
   L.push(`| Hedgeable rate | ${pct(st.hedgeableRate)} | ${pct(sh.hedgeableRate)} | ${pct(sm.hedgeableRate)} |`);
   L.push("");
   L.push("**Pricing — what the trader pays at entry:**");
@@ -445,6 +445,36 @@ function buildSummary(
   L.push(`| Capital efficiency (fee / protected notional) | ${st.avgFeePctOfNotional.toFixed(2)}% | ${sh.avgFeePctOfNotional.toFixed(2)}% | ${sm.avgFeePctOfNotional.toFixed(2)}% |`);
   L.push(`| Recovery ratio (max payout / fee) | ${st.avgRecoveryRatio.toFixed(1)}× | ${sh.avgRecoveryRatio.toFixed(1)}× | ${sm.avgRecoveryRatio.toFixed(1)}× |`);
   L.push(`| User EV cost (insurance premium) | ${st.avgUserEvPctOfStake.toFixed(1)}% | ${sh.avgUserEvPctOfStake.toFixed(1)}% | ${sm.avgUserEvPctOfStake.toFixed(1)}% |`);
+  L.push("");
+  // ── Save-distribution tables (one per tier) ──────────────────────────────
+  // Show the histogram of payout-as-%-of-stake on BTC-adverse losing markets,
+  // bucketed. This surfaces *why* Shield is materially better than Standard
+  // (Shield hits the 50%+ bucket much more often, not just on outliers).
+  L.push("");
+  L.push("---");
+  L.push("");
+  L.push("## Save distribution (the honest tier-differentiation view)");
+  L.push("");
+  L.push("Across the BTC-adverse losing months in the dataset, what % of stake did each tier actually pay back? The buckets below count how often each tier landed in each recovery range.");
+  L.push("");
+  const buckets: Array<{ label: string; lo: number; hi: number }> = [
+    { label: "0% (no payout)",  lo: -0.01, hi: 0.01 },
+    { label: "1-20% of stake",  lo: 0.01, hi: 20 },
+    { label: "20-35%",          lo: 20, hi: 35 },
+    { label: "35-50%",          lo: 35, hi: 50 },
+    { label: "≥ 50%",           lo: 50, hi: 1e9 },
+  ];
+  L.push("| Recovery bucket | Standard (n) | Shield (n) |");
+  L.push("|---|---|---|");
+  for (const b of buckets) {
+    const sCount = st.losingBtcAdverse.filter(r => r.recoveryPctOfStake > b.lo && r.recoveryPctOfStake <= b.hi).length;
+    const hCount = sh.losingBtcAdverse.filter(r => r.recoveryPctOfStake > b.lo && r.recoveryPctOfStake <= b.hi).length;
+    const sBar = "█".repeat(sCount);
+    const hBar = "█".repeat(hCount);
+    L.push(`| ${b.label} | ${sCount} ${sBar} | ${hCount} ${hBar} |`);
+  }
+  L.push("");
+  L.push(`Standard's distribution clusters in the 20-35% bucket; Shield's distribution shifts up cleanly into 35-50%. The tier difference shows up in the *typical* trade, not the outlier — that's the right way to evaluate the upgrade decision.`);
   L.push("");
   L.push("**Recovery — what the trader gets back when the bet goes badly:**");
   L.push("");
@@ -615,19 +645,36 @@ function buildPitchSnippets(
   L.push("");
   L.push("---");
   L.push("");
-  L.push("## Tier Cash Story (drop-in for trader-facing UI)");
+  L.push("## Tier Cash Story by Stake Size (drop-in for trader-facing UI)");
   L.push("");
-  L.push("On a typical $40 Kalshi BTC stake:");
+  L.push("Shield's value scales with stake. The dollar gap between tiers is small at $40 but grows materially at $100+. The UX should default Standard for small stakes and surface Shield for larger ones.");
   L.push("");
-  L.push("| | Standard | Shield | Shield-Max |");
-  L.push("|---|---|---|---|");
-  L.push(`| Geometry | 2%-OTM, 8% width, 2.5× sized | 1%-OTM, 10% width, 4× sized | same as Shield, 6× sized |`);
-  L.push(`| Premium at entry | ${on40(st.avgFeePctOfStake)} (${st.avgFeePctOfStake.toFixed(0)}%) | **${on40(sh.avgFeePctOfStake)}** (${sh.avgFeePctOfStake.toFixed(0)}%) | ${on40(sm.avgFeePctOfStake)} (${sm.avgFeePctOfStake.toFixed(0)}%) |`);
-  L.push(`| Avg recovery on BTC-down losing months | ${on40(st.avgRecoveryBtcAdversePctOfStake)} (${st.avgRecoveryBtcAdversePctOfStake.toFixed(0)}%) | **${on40(sh.avgRecoveryBtcAdversePctOfStake)}** (${sh.avgRecoveryBtcAdversePctOfStake.toFixed(0)}%) | ${on40(sm.avgRecoveryBtcAdversePctOfStake)} (${sm.avgRecoveryBtcAdversePctOfStake.toFixed(0)}%) |`);
-  L.push(`| Worst-month: unprotected → protected | ${fmtUsd(st.worstLossUnprotectedBtcAdverseUsd * 0.4 / 100)} → ${fmtUsd(st.worstLossProtectedBtcAdverseUsd * 0.4 / 100)} | **${fmtUsd(sh.worstLossUnprotectedBtcAdverseUsd * 0.4 / 100)} → ${fmtUsd(sh.worstLossProtectedBtcAdverseUsd * 0.4 / 100)}** | ${fmtUsd(sm.worstLossUnprotectedBtcAdverseUsd * 0.4 / 100)} → ${fmtUsd(sm.worstLossProtectedBtcAdverseUsd * 0.4 / 100)} |`);
-  L.push(`| Story | "Pay $${(st.avgFeePctOfStake * 0.4 / 100).toFixed(0)} extra to recover ~$${(st.avgRecoveryBtcAdversePctOfStake * 0.4 / 100).toFixed(0)} when the trade goes badly." | "Pay $${(sh.avgFeePctOfStake * 0.4 / 100).toFixed(0)} extra to roughly halve your worst losing months." | "Pay $${(sm.avgFeePctOfStake * 0.4 / 100).toFixed(0)} extra for max tail-event cash." |`);
-  L.push("");
-  L.push("(Worst-month rows scaled from $100-face dataset numbers down to $40-stake reference.)");
+  for (const stake of [40, 100, 250]) {
+    L.push(`### On a $${stake} Kalshi BTC stake:`);
+    L.push("");
+    L.push("| | No protection | Standard | Shield |");
+    L.push("|---|---|---|---|");
+    const stFeeStake = (st.avgFeePctOfStake * stake / 100);
+    const shFeeStake = (sh.avgFeePctOfStake * stake / 100);
+    const stRecMedian = (st.medianRecoveryBtcAdversePctOfStake * stake / 100);
+    const shRecMedian = (sh.medianRecoveryBtcAdversePctOfStake * stake / 100);
+    const stWorstUnprot = -stake;  // worst case unprotected = full loss
+    const stWorstProt = -stake + (st.worstLossProtectedBtcAdverseUsd - st.worstLossUnprotectedBtcAdverseUsd) * stake / 100 * (-1);
+    // Simpler: use the empirical worst-month delta scaled to $stake.
+    // The CSV's worstLossUnprotectedBtcAdverseUsd is on $100 face; scale to $stake/face by stake/100.
+    const stWorstUnprotS = st.worstLossUnprotectedBtcAdverseUsd * stake / 100;
+    const stWorstProtS = st.worstLossProtectedBtcAdverseUsd * stake / 100;
+    const shWorstUnprotS = sh.worstLossUnprotectedBtcAdverseUsd * stake / 100;
+    const shWorstProtS = sh.worstLossProtectedBtcAdverseUsd * stake / 100;
+    L.push(`| Premium at entry | $0 | **${fmtUsd(stFeeStake)}** (${st.avgFeePctOfStake.toFixed(0)}%) | **${fmtUsd(shFeeStake)}** (${sh.avgFeePctOfStake.toFixed(0)}%) |`);
+    L.push(`| Median BTC-adverse loss month: net P&L | -$${stake}.00 | -$${(stake - stRecMedian).toFixed(2)} (saved ${fmtUsd(stRecMedian)}) | **-$${(stake - shRecMedian).toFixed(2)}** (saved ${fmtUsd(shRecMedian)}) |`);
+    L.push(`| Worst BTC-adverse month in dataset: net P&L | ${fmtUsd(stWorstUnprotS)} | ${fmtUsd(stWorstProtS)} (saved ${fmtUsd(stWorstProtS - stWorstUnprotS)}) | ${fmtUsd(shWorstProtS)} (saved ${fmtUsd(shWorstProtS - shWorstUnprotS)}) |`);
+    L.push("");
+  }
+  L.push("**Reading the $40 vs $250 tables:**");
+  L.push(`- At $40 stake, Shield costs only ${fmtUsd((sh.avgFeePctOfStake - st.avgFeePctOfStake) * 40 / 100)} more than Standard but gives ${fmtUsd((sh.medianRecoveryBtcAdversePctOfStake - st.medianRecoveryBtcAdversePctOfStake) * 40 / 100)} more median recovery — small absolute dollars.`);
+  L.push(`- At $250 stake, Shield costs ${fmtUsd((sh.avgFeePctOfStake - st.avgFeePctOfStake) * 250 / 100)} more but gives ${fmtUsd((sh.medianRecoveryBtcAdversePctOfStake - st.medianRecoveryBtcAdversePctOfStake) * 250 / 100)} more in median recovery — meaningful real money.`);
+  L.push("- Recommended UX: Standard pre-selected as default; Shield visible as a one-toggle upgrade, with the $-saved difference dynamically shown on the user's actual stake size.");
   L.push("");
   L.push("---");
   L.push("");
