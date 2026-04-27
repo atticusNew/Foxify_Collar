@@ -39,12 +39,28 @@ The denominator must be positive. When `q × markup × (1+f) ≥ 1`, the tier is
 
 Default W ladder:
 
-| Tier | W | Rebate (at yes=58¢) | Fee (% of stake) | Crosses |
+| Tier | Target W | Rebate (at yes=58¢) | Avg fee | Use case |
 |---|---|---|---|---|
-| Light | 95% | 5% of stake | ~7% | A1 + A2 + A3 |
-| Standard | 85% | 15% of stake | ~12% | A1 + A2 + A3 |
-| Shield | 70% | 30% of stake | ~25% | A1 + A2 + A3 + B1 + B2 |
-| Shield+ | 70% + put/call overlay | 30%+ + tail-up | ~30% | A1 + A2 + A3 + B1 + B2 |
+| Light | 95% | 5% of stake | ~12% of stake | Retail entry: small but guaranteed rebate |
+| Standard | 85% | 15% of stake | ~26% | Retail "real protection" |
+| Shield | 70% | 30% of stake | ~38% | Institutional bar (B1 ≤70% threshold) |
+| Shield-Max | 60% | 40% of stake | ~43% | Treasury / RIA tier (tightest floor) |
+
+## What an "optimal" Kalshi product looks like (and why the design is what it is)
+
+Six properties this rebuild maintains:
+
+1. **Every market gets a quote.** Graceful W-degradation: if target W is infeasible (long-shot bets where loss-leg-cost × markup ≥ 1), the engine falls back to the tightest achievable W. User sees effective W explicitly. No silent NOT_OFFERED.
+
+2. **User EV is reported alongside fee.** The product is insurance — users buy a worst-case-loss bound at an EV cost. Light costs ~3% EV-of-stake, Shield-Max ~12% EV-of-stake. Pitch frame: "what does it cost in expectation to bound your worst case at W?"
+
+3. **TP recovery is modeled generically.** 20% conservative residual-value recovery on un-triggered Deribit overlays. Not a Foxify table — a parameter the user can adjust.
+
+4. **Markup is derived, not picked.** `markup = 1 / (1 - targetNetMargin - opCostFrac)`. Default targets 20% net margin after 5% ops costs → markup = 1.33×.
+
+5. **HIT settlement is path-dependent.** Uses Coinbase daily highs/lows across the holding window for true HIT outcomes (changes ~30% of HIT row settlements vs naive at-expiry-close).
+
+6. **Platform sustainability scaling math.** Per-market revenue scenarios at 5%/10%/15% opt-in rates against the typical $750k/market Kalshi BTC volume.
 
 ## Foxify-clean guarantee
 

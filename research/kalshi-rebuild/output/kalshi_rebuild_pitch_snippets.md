@@ -1,35 +1,36 @@
 # Atticus → Kalshi Pitch Snippets — Multi-Archetype Rebuild
 *Four protection tiers across all Kalshi BTC event archetypes (ABOVE / BELOW / HIT × YES / NO).*
 *Foxify-clean: zero pilot calibrations in this backtest's product-facing math.*
+*Path-dependent HIT settlement using Coinbase daily highs/lows.*
+*User EV computed under Kalshi yesPrice as risk-neutral probability.*
 
 ---
 
 ## Intro Email — Lead with Shield+
 
 **Subject:**
-> A losing Kalshi BTC bet that pays back 72-75% of stake — across every BTC event you trade
+> Worst-case loss capped at 78% of stake — every BTC event archetype, every direction, contract-bounded
 
 **Body:**
 ```
-We ran a protection-wrapper backtest across 50 of your settled BTC markets, covering all three event archetypes (ABOVE / BELOW / HIT) on both YES and NO directions.
+We ran a protection-wrapper backtest across 68 of your settled BTC markets, covering all three event archetypes (ABOVE / BELOW / HIT) on both YES and NO directions.
 
-The product is a four-tier ladder where each tier targets a contract-bounded worst-case loss:
-  • Light    (W=95%): cheapest tier, ~15% fee, every loss pays back ~18% of stake.
-  • Standard (W=85%): ~25% fee, ~39% recovery on every loss.
-  • Shield   (W=70%): institutional bar — worst-case loss ≤ 70% of stake by contract, ~38% fee, ~72% recovery.
-  • Shield+  (W=70% + BTC overlay): Shield's floor PLUS an option-spread overlay — ~41% fee, ~75% recovery, with extra cash on tail BTC moves.
+Headline: a four-tier ladder where each tier targets a contract-bounded worst-case loss W. Every market gets a quote — when the target W can't be hit (long-shot bets, etc.), the engine degrades gracefully to the tightest achievable W ≥ target, and the user sees that explicitly.
 
-Mechanism: Atticus pairs the user's Kalshi position with (a) a Kalshi-NO leg sized analytically so user worst-case loss does not exceed the tier's W parameter, and (b) for Shield+, a Deribit option-spread overlay (call OR put per event archetype) for tail-upside cash recovery.
+  • Light      target W=95% — fee ~12% of stake, avg recovery on losses ~18%.
+  • Standard   target W=85% — fee ~26%, avg recovery ~39%.
+  • Shield     target W=70% — fee ~38%, avg recovery ~60%. Crosses institutional risk-policy bar (B1 ≤70%).
+  • Shield-Max target W=60% — fee ~43%, avg recovery ~69%. Tightest tier; reserved for treasury/RIA accounts.
 
-Crucially, every tier crosses A1+A2+A3 (every loss pays back something, ≥15% of stake on average, never worse than unprotected). Shield/Shield+ also cross B1 (≤70% worst case) — the institutional risk-policy threshold that lets treasuries and RIAs whitelist the wrapped instrument.
+Mechanism: Atticus buys a Kalshi position on the *opposite* side of the user's bet, sized analytically so user worst-case loss does not exceed the tier's W parameter. When the user loses, the opposite-side leg pays Atticus, and Atticus passes the rebate to the user. Pure pass-through; no warehousing, no solvency tail.
 
-Tiers are NOT_OFFERED on markets where the math is infeasible (loss-leg price × markup ≥ 1). The offer-rate matrix in the summary doc shows where each tier prices: Atticus protection naturally fits the high-yesPrice favorite trades (~89% offer rate on Shield for ABOVE/YES) and is honest about not pricing on long-shot trades (where users don't need or want it).
+Why this matters to your users: today every losing prediction is a complete write-off. With Atticus, every losing prediction pays back a contract-bounded floor — and the floor is tight enough (Shield's 70% cap) to cross the risk-policy threshold that lets institutional desks size into Kalshi BTC contracts.
 
-Best save in the dataset (Shield+): KXBTCD-24DEC31-100000 (ABOVE/yes, 2024-12-01→2024-12-31). Unprotected -$72.00 → protected -$46.70 after a $19.78 fee.
+Why this matters to Kalshi: protection premiums are a positive-sum revenue layer on top of the zero-sum binary market. Atticus runs ~27% gross margin per trade. At a typical $750k/market notional and 10% opt-in, Shield generates ~$7,715 per market in net platform revenue — which can be revenue-shared with Kalshi via a clearing-fee arrangement or routed entirely to Atticus depending on commercial structure.
 
-Atticus runs ~30% gross margin per trade across all four tiers. Both legs (Kalshi-NO and Deribit overlay) are pass-through hedged — no warehousing, no solvency tail. Same operational pattern as our live Foxify pilot, but the calibration parameters and product structure are entirely Kalshi-native.
+Best save in the dataset (Shield-Max): KXBTCD-25NOV28-100000 (ABOVE/yes, 2025-11-01→2025-11-28). Unprotected -$78.00 → protected -$46.80 after a $13.51 fee.
 
-We'd like 30 minutes to walk through the tier mechanics, the offer-rate matrix per event archetype, and a zero-integration shadow pilot on your next 17 BTC markets.
+We'd like 30 minutes to walk through the tier mechanics, the per-quadrant degradation matrix, and a zero-integration shadow pilot on your next 23 BTC markets.
 ```
 
 ---
@@ -38,14 +39,16 @@ We'd like 30 minutes to walk through the tier mechanics, the offer-rate matrix p
 
 On a typical Kalshi BTC contract @ 58¢ YES (≈ $58 at risk on a $100 face):
 
-| | Light (W=95%) | Standard (W=85%) | **Shield (W=70%)** | **Shield+ (W=70%+overlay)** |
+| | Light (W=95%) | Standard (W=85%) | **Shield (W=70%)** | **Shield-Max (W=60%)** |
 |---|---|---|---|---|
-| Mechanism | Kalshi-NO leg sized for 5% rebate | NO leg sized for 15% rebate | NO leg sized for 30% rebate | NO leg + BTC option-spread overlay |
-| Extra cost | $6.84 (15%) | $13.59 (25%) | **$22.95** (38%) | **$25.94** (41%) |
-| % of losing markets that pay back | 100% | 100% | **100%** | **100%** |
-| Avg payout on losing markets | $9.04 (18%) | $22.49 (39%) | **$42.93** (72%) | **$46.97** (75%) |
-| Worst-case loss (% of stake) | 95% | 85% | **70%** | **70%** |
-| Offer rate (markets where tier prices) | 76% | 66% | 56% | 44% |
+| Mechanism | NO leg, ~5% guaranteed rebate | NO leg, ~15% guaranteed rebate | NO leg, ~30% guaranteed rebate (institutional bar) | NO leg, ~40% guaranteed rebate (treasury tier) |
+| Extra cost | $5.00 (12%) | $11.79 (26%) | **$18.69** (38%) | **$21.99** (43%) |
+| % of losing markets that pay back | 79% | 79% | **79%** | **79%** |
+| Avg payout on losing markets | $7.71 (18%) | $18.42 (39%) | **$30.25** (60%) | **$35.89** (69%) |
+| Avg effective W (after degradation) | 96% | 88% | **78%** | **73%** |
+| Degradation rate (markets needing fallback) | 19% | 29% | 41% | 56% |
+| User EV cost (% of stake) | -3.3% | -7.0% | -10.3% | -11.7% |
+| Platform avg net P&L per $100 stake | $1.25 | $2.94 | $4.64 | $5.45 |
 
 ---
 

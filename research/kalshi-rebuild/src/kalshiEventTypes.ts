@@ -119,18 +119,21 @@ export function adaptHedgeInstrument(
 // ─── Outcome resolver ────────────────────────────────────────────────────────
 
 /**
- * Determine whether a Kalshi market settled YES or NO from the at-settle
- * underlying price. For HIT events this is approximate — true HIT settlement
- * depends on the *path*, not just the closing price. For backtest purposes
- * we approximate HIT-YES as "did S_settle reach within 1% of K from the
- * appropriate side at settlement". A better model would walk daily highs/lows
- * across the holding window; we accept the approximation and flag it.
+ * Determine whether a Kalshi market settled YES or NO.
+ *
+ * For ABOVE/BELOW: at-settle close determines it.
+ * For HIT: PATH-DEPENDENT. If the caller provides the in-window max-high
+ * (when barrier > S_at_open) or min-low (when barrier < S_at_open) the
+ * outcome reflects whether BTC actually touched K during the window.
+ * If the path data is not provided, falls back to the "did close touch K"
+ * approximation used previously.
  */
 export function deriveKalshiOutcome(
   eventType: EventType,
   barrier: number,
   S_at_settle: number,
   S_at_open: number,
+  pathExtreme?: number,  // max-high if barrier > S_at_open; min-low otherwise
 ): "yes" | "no" {
   if (eventType === "ABOVE") {
     return S_at_settle >= barrier ? "yes" : "no";
@@ -138,10 +141,17 @@ export function deriveKalshiOutcome(
   if (eventType === "BELOW") {
     return S_at_settle <= barrier ? "yes" : "no";
   }
-  // HIT — approximation: did the price approach K from the opening side?
-  // (caller can override with path-aware logic if max-during-window data exists)
+  // HIT
   if (S_at_open < barrier) {
+    // Need an upward touch
+    if (pathExtreme !== undefined) {
+      return pathExtreme >= barrier ? "yes" : "no";
+    }
     return S_at_settle >= barrier ? "yes" : "no";
+  }
+  // Need a downward touch
+  if (pathExtreme !== undefined) {
+    return pathExtreme <= barrier ? "yes" : "no";
   }
   return S_at_settle <= barrier ? "yes" : "no";
 }

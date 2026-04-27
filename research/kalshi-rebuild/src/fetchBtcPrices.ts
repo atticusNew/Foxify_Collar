@@ -25,6 +25,14 @@ async function fetchWithRetry(url: string, maxRetries = 4): Promise<Response> {
   throw new Error("max_retries_exceeded");
 }
 
+/**
+ * Per-day OHLC data for path-dependent HIT settlement.
+ * Coinbase candles: [time, low, high, open, close, volume].
+ */
+export type DailyOhlc = { close: number; high: number; low: number };
+
+const ohlcMap = new Map<string, DailyOhlc>();
+
 async function fetchCoinbaseDaily(fromMs: number, toMs: number): Promise<Map<string, number>> {
   const result = new Map<string, number>();
   let cursor = fromMs;
@@ -37,15 +45,45 @@ async function fetchCoinbaseDaily(fromMs: number, toMs: number): Promise<Map<str
     try {
       const res = await fetchWithRetry(url.toString());
       const candles = await res.json() as number[][];
-      for (const [ts, , , , close] of candles) {
+      for (const [ts, low, high, , close] of candles) {
         const dateStr = new Date(ts * 1000).toISOString().slice(0, 10);
-        if (!result.has(dateStr)) result.set(dateStr, close);
+        if (!result.has(dateStr)) {
+          result.set(dateStr, close);
+          ohlcMap.set(dateStr, { close, high, low });
+        }
       }
     } catch { /* skip window */ }
     cursor = windowEnd;
     await sleep(300);
   }
   return result;
+}
+
+/** Get the maximum high (or minimum low) across a date range. */
+export function maxHighInRange(fromDate: string, toDate: string): number | null {
+  let max: number | null = null;
+  const fromMs = new Date(fromDate).getTime();
+  const toMs = new Date(toDate).getTime();
+  for (const [d, ohlc] of ohlcMap.entries()) {
+    const dMs = new Date(d).getTime();
+    if (dMs >= fromMs && dMs <= toMs) {
+      if (max === null || ohlc.high > max) max = ohlc.high;
+    }
+  }
+  return max;
+}
+
+export function minLowInRange(fromDate: string, toDate: string): number | null {
+  let min: number | null = null;
+  const fromMs = new Date(fromDate).getTime();
+  const toMs = new Date(toDate).getTime();
+  for (const [d, ohlc] of ohlcMap.entries()) {
+    const dMs = new Date(d).getTime();
+    if (dMs >= fromMs && dMs <= toMs) {
+      if (min === null || ohlc.low < min) min = ohlc.low;
+    }
+  }
+  return min;
 }
 
 async function fetchBinanceDaily(fromMs: number, toMs: number): Promise<Map<string, number>> {

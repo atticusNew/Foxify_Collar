@@ -110,15 +110,38 @@ export const KALSHI_BTC_MARKETS: KalshiMarket[] = [
   { marketId: "KXBTCMINY-26FEB-80000-NO", title: "BTC below $80k Feb 27 2026 — NO bet", openDate: "2026-02-01", settleDate: "2026-02-27", daysToSettle: 26, eventType: "BELOW", barrier: 80_000, userDirection: "no",  yesPrice: 35, recordedOutcome: "no",  category: "monthly" },
 
   // ── HIT archetype (KXBTCMAX-style) — "When will BTC hit $X?" first-to-touch ──
-  // Backtest approximation: settlement = "did BTC's daily close approach K
-  // from the open side at any time during the window". For our daily-close
-  // dataset we proxy this with "did S_settle reach barrier within tolerance".
   { marketId: "KXBTCMAX-24Q1-150000",  title: "Will BTC hit $150,000 by Mar 31 2024?",  openDate: "2024-01-15", settleDate: "2024-03-31", daysToSettle: 76, eventType: "HIT", barrier: 150_000, userDirection: "yes", yesPrice: 12, recordedOutcome: "no",  category: "quarterly" },
   { marketId: "KXBTCMAX-24Q4-100000",  title: "Will BTC hit $100,000 by Dec 31 2024?",  openDate: "2024-10-01", settleDate: "2024-12-31", daysToSettle: 91, eventType: "HIT", barrier: 100_000, userDirection: "yes", yesPrice: 65, recordedOutcome: "yes", category: "quarterly" },
   { marketId: "KXBTCMAX-25Q1-120000",  title: "Will BTC hit $120,000 by Mar 31 2025?",  openDate: "2025-01-01", settleDate: "2025-03-31", daysToSettle: 89, eventType: "HIT", barrier: 120_000, userDirection: "yes", yesPrice: 35, recordedOutcome: "no",  category: "quarterly" },
   { marketId: "KXBTCMAX-25Q3-150000",  title: "Will BTC hit $150,000 by Sep 30 2025?",  openDate: "2025-07-01", settleDate: "2025-09-30", daysToSettle: 91, eventType: "HIT", barrier: 150_000, userDirection: "yes", yesPrice: 22, recordedOutcome: "no",  category: "quarterly" },
   { marketId: "KXBTCMAX-25Q4-130000",  title: "Will BTC hit $130,000 by Dec 31 2025?",  openDate: "2025-10-01", settleDate: "2025-12-31", daysToSettle: 91, eventType: "HIT", barrier: 130_000, userDirection: "yes", yesPrice: 28, recordedOutcome: "no",  category: "quarterly" },
   { marketId: "KXBTCMAX-26Q1-110000",  title: "Will BTC hit $110,000 by Mar 31 2026?",  openDate: "2026-01-01", settleDate: "2026-03-31", daysToSettle: 89, eventType: "HIT", barrier: 110_000, userDirection: "yes", yesPrice: 32, recordedOutcome: "no",  category: "quarterly" },
+
+  // HIT-NO bets (user betting BTC will NOT hit the strike)
+  { marketId: "KXBTCMAX-24Q1-150000-NO", title: "BTC hit $150k by Mar 31 2024 — NO bet", openDate: "2024-01-15", settleDate: "2024-03-31", daysToSettle: 76, eventType: "HIT", barrier: 150_000, userDirection: "no", yesPrice: 12, recordedOutcome: "no", category: "quarterly" },
+  { marketId: "KXBTCMAX-25Q1-120000-NO", title: "BTC hit $120k by Mar 31 2025 — NO bet", openDate: "2025-01-01", settleDate: "2025-03-31", daysToSettle: 89, eventType: "HIT", barrier: 120_000, userDirection: "no", yesPrice: 35, recordedOutcome: "no", category: "quarterly" },
+  { marketId: "KXBTCMAX-25Q4-130000-NO", title: "BTC hit $130k by Dec 31 2025 — NO bet", openDate: "2025-10-01", settleDate: "2025-12-31", daysToSettle: 91, eventType: "HIT", barrier: 130_000, userDirection: "no", yesPrice: 28, recordedOutcome: "no", category: "quarterly" },
+  { marketId: "KXBTCMAX-26Q1-110000-NO", title: "BTC hit $110k by Mar 31 2026 — NO bet", openDate: "2026-01-01", settleDate: "2026-03-31", daysToSettle: 89, eventType: "HIT", barrier: 110_000, userDirection: "no", yesPrice: 32, recordedOutcome: "no", category: "quarterly" },
+
+  // Additional ABOVE markets in different yesPrice ranges (broaden coverage)
+  { marketId: "KXBTCD-24FEB29-45000",  title: "BTC above $45,000 on Feb 29 2024?",   openDate: "2024-01-31", settleDate: "2024-02-29", daysToSettle: 29, eventType: "ABOVE", barrier: 45_000, userDirection: "yes", yesPrice: 86, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCD-24MAR28-55000",  title: "BTC above $55,000 on Mar 28 2024?",   openDate: "2024-02-29", settleDate: "2024-03-28", daysToSettle: 28, eventType: "ABOVE", barrier: 55_000, userDirection: "yes", yesPrice: 88, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCD-24OCT31-70000",  title: "BTC above $70,000 on Oct 31 2024?",   openDate: "2024-10-01", settleDate: "2024-10-31", daysToSettle: 30, eventType: "ABOVE", barrier: 70_000, userDirection: "yes", yesPrice: 56, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCD-25JAN31-90000",  title: "BTC above $90,000 on Jan 31 2025?",   openDate: "2025-01-01", settleDate: "2025-01-31", daysToSettle: 30, eventType: "ABOVE", barrier: 90_000, userDirection: "yes", yesPrice: 84, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCD-25NOV28-100000", title: "BTC above $100,000 on Nov 28 2025?",  openDate: "2025-11-01", settleDate: "2025-11-28", daysToSettle: 27, eventType: "ABOVE", barrier: 100_000, userDirection: "yes", yesPrice: 78, recordedOutcome: "no", category: "monthly" },
+  { marketId: "KXBTCD-26MAR27-90000",  title: "BTC above $90,000 on Mar 27 2026?",   openDate: "2026-03-01", settleDate: "2026-03-27", daysToSettle: 26, eventType: "ABOVE", barrier: 90_000, userDirection: "yes", yesPrice: 41, recordedOutcome: "no", category: "monthly" },
+
+  // Additional ABOVE-NO markets at higher yesPrice (favorite contradicted)
+  { marketId: "KXBTCD-25JAN31-90000-NO",  title: "BTC above $90k Jan 31 2025 — NO bet",   openDate: "2025-01-01", settleDate: "2025-01-31", daysToSettle: 30, eventType: "ABOVE", barrier: 90_000, userDirection: "no", yesPrice: 84, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCD-24FEB29-45000-NO",  title: "BTC above $45k Feb 29 2024 — NO bet",   openDate: "2024-01-31", settleDate: "2024-02-29", daysToSettle: 29, eventType: "ABOVE", barrier: 45_000, userDirection: "no", yesPrice: 86, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCD-25NOV28-100000-NO", title: "BTC above $100k Nov 28 2025 — NO bet",  openDate: "2025-11-01", settleDate: "2025-11-28", daysToSettle: 27, eventType: "ABOVE", barrier: 100_000, userDirection: "no", yesPrice: 78, recordedOutcome: "no", category: "monthly" },
+
+  // Additional BELOW markets at higher yesPrice (likely-down expectations)
+  { marketId: "KXBTCMINY-25FEB-95000",   title: "BTC below $95,000 by Feb 28 2025?",  openDate: "2025-02-01", settleDate: "2025-02-28", daysToSettle: 27, eventType: "BELOW", barrier: 95_000, userDirection: "yes", yesPrice: 55, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCMINY-26FEB-90000",   title: "BTC below $90,000 by Feb 27 2026?",  openDate: "2026-02-01", settleDate: "2026-02-27", daysToSettle: 26, eventType: "BELOW", barrier: 90_000, userDirection: "yes", yesPrice: 60, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCMINY-25NOV-105000",  title: "BTC below $105,000 by Nov 28 2025?", openDate: "2025-11-01", settleDate: "2025-11-28", daysToSettle: 27, eventType: "BELOW", barrier: 105_000, userDirection: "yes", yesPrice: 52, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCMINY-25NOV-105000-NO", title: "BTC below $105k Nov 28 2025 — NO bet",  openDate: "2025-11-01", settleDate: "2025-11-28", daysToSettle: 27, eventType: "BELOW", barrier: 105_000, userDirection: "no", yesPrice: 52, recordedOutcome: "yes", category: "monthly" },
+  { marketId: "KXBTCMINY-26FEB-90000-NO",  title: "BTC below $90k Feb 27 2026 — NO bet",   openDate: "2026-02-01", settleDate: "2026-02-27", daysToSettle: 26, eventType: "BELOW", barrier: 90_000, userDirection: "no", yesPrice: 60, recordedOutcome: "yes", category: "monthly" },
 ];
 
 /** Convenience: split markets by event type. */
