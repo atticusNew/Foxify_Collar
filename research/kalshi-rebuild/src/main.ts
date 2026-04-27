@@ -63,6 +63,7 @@ type Row = {
   spreadMaxPayoutUsd: number;
   totalMaxPayoutUsd: number;
   worstCaseLossFracOfStake: number;
+  maxFeasibleW: number;
   userEvUsd: number;
   userEvPctOfStake: number;
   hedgeTriggered: boolean;
@@ -177,6 +178,7 @@ async function run(): Promise<void> {
         spreadMaxPayoutUsd: round2(quote.spreadMaxPayoutUsd),
         totalMaxPayoutUsd: round2(quote.totalMaxPayoutUsd),
         worstCaseLossFracOfStake: round2(quote.worstCaseLossFracOfStake * 100),
+        maxFeasibleW: round2(quote.maxFeasibleW * 100),
         userEvUsd: round2(quote.userEvUsd),
         userEvPctOfStake: round2(quote.userEvPctOfStake * 100),
         hedgeTriggered: outcome.hedgeTriggered,
@@ -341,6 +343,22 @@ function buildSummary(
   L.push("");
   L.push("---");
   L.push("");
+  L.push("## YES-vs-NO symmetry analysis");
+  L.push("");
+  L.push("The product mechanism is symmetric: regardless of bet direction, Atticus buys the *opposite* Kalshi side as the protection leg. This table shows whether the economics actually came out symmetric across all 4 tiers.");
+  L.push("");
+  L.push("| Tier | YES bets (n) | YES avg fee | YES avg recovery | YES avg eff W | NO bets (n) | NO avg fee | NO avg recovery | NO avg eff W |");
+  L.push("|---|---|---|---|---|---|---|---|---|");
+  for (const t of TIERS) {
+    const yes = rows.filter(r => r.tier === t && r.userDirection === "yes");
+    const no  = rows.filter(r => r.tier === t && r.userDirection === "no");
+    const yAg = aggregate(yes);
+    const nAg = aggregate(no);
+    L.push(`| ${t} | ${yes.length} | ${fmtUsd(yAg.avgFeeUsd)} (${yAg.avgFeePctOfStake.toFixed(0)}%) | ${fmtUsd(yAg.avgRecoveryAllLosersUsd)} (${yAg.avgRecoveryAllLosersPctOfStake.toFixed(0)}%) | ${yAg.avgEffectiveW.toFixed(0)}% | ${no.length} | ${fmtUsd(nAg.avgFeeUsd)} (${nAg.avgFeePctOfStake.toFixed(0)}%) | ${fmtUsd(nAg.avgRecoveryAllLosersUsd)} (${nAg.avgRecoveryAllLosersPctOfStake.toFixed(0)}%) | ${nAg.avgEffectiveW.toFixed(0)}% |`);
+  }
+  L.push("");
+  L.push("---");
+  L.push("");
   L.push("## Per-quadrant degradation matrix (where each tier had to fall back from target W)");
   L.push("");
   L.push("Each cell: `n_degraded / n_markets (avg effective W)`. Lower degradation rate = more often the tier delivered its target W exactly.");
@@ -411,7 +429,7 @@ function buildSummary(
   L.push("");
   L.push("Assumes a typical Kalshi BTC market trades ~$750k notional total during its lifetime (public Kalshi volume data, 2024-2026 average). Atticus per-trade margin × opt-in rate × volume per market = revenue scenarios:");
   L.push("");
-  L.push("| Tier | Avg margin / $100 stake | Revenue / $750k market @ 5% opt-in | @ 10% opt-in | @ 15% opt-in |");
+  L.push("| Tier | Net margin / $100 stake | Revenue / $750k market @ 5% opt-in | @ 10% | @ 15% |");
   L.push("|---|---|---|---|---|");
   for (const t of TIERS) {
     const a = byTier(aggsByTier, t);
@@ -419,10 +437,26 @@ function buildSummary(
     const at5  = 750_000 * 0.05 * marginPerDollar;
     const at10 = 750_000 * 0.10 * marginPerDollar;
     const at15 = 750_000 * 0.15 * marginPerDollar;
-    L.push(`| ${t} | ${a.avgPlatformPnlPerTrade.toFixed(2)}/${a.avgFeePctOfStake.toFixed(0)}% fee | ${fmtUsd0(at5)} | ${fmtUsd0(at10)} | ${fmtUsd0(at15)} |`);
+    L.push(`| ${t} | ${fmtUsd(a.avgPlatformPnlPerTrade)} | ${fmtUsd0(at5)} | ${fmtUsd0(at10)} | ${fmtUsd0(at15)} |`);
   }
   L.push("");
-  L.push("At 12 BTC monthly markets × 4 quarterly HIT markets = 16 markets/year, scaled platform revenue (Shield+ tier, 10% opt-in): see PR description.");
+  L.push("### Kalshi revenue-share scenarios (Shield tier @ 10% opt-in)");
+  L.push("");
+  L.push("Atticus runs ~13% net margin per trade. We can split this with Kalshi as a clearing-fee-style arrangement. Numbers below are per BTC market at $750k notional, then annualised at 16 markets/year (current Kalshi BTC cadence: 12 monthly + 4 quarterly HIT).");
+  {
+    const sh = byTier(aggsByTier, "shield");
+    const rev10 = 750_000 * 0.10 * (sh.avgFeePctOfStake / 100);
+    const margin10 = rev10 * (sh.avgMarginPctOfRevenue / 100);
+    L.push("");
+    L.push("| Split | Atticus / market | Kalshi / market | Atticus / year (16 markets) | Kalshi / year |");
+    L.push("|---|---|---|---|---|");
+    L.push(`| 100% Atticus | ${fmtUsd0(margin10)} | $0 | ${fmtUsd0(margin10 * 16)} | $0 |`);
+    L.push(`| 75/25 split | ${fmtUsd0(margin10 * 0.75)} | ${fmtUsd0(margin10 * 0.25)} | ${fmtUsd0(margin10 * 16 * 0.75)} | ${fmtUsd0(margin10 * 16 * 0.25)} |`);
+    L.push(`| 50/50 split | ${fmtUsd0(margin10 * 0.50)} | ${fmtUsd0(margin10 * 0.50)} | ${fmtUsd0(margin10 * 16 * 0.50)} | ${fmtUsd0(margin10 * 16 * 0.50)} |`);
+    L.push(`| 25/75 split | ${fmtUsd0(margin10 * 0.25)} | ${fmtUsd0(margin10 * 0.75)} | ${fmtUsd0(margin10 * 16 * 0.25)} | ${fmtUsd0(margin10 * 16 * 0.75)} |`);
+    L.push("");
+    L.push(`Today's BTC volume (~$750k/market): modest revenue line for both sides. The strategic value is in the 10× growth path: if Kalshi BTC TAM grows to $7.5M/market by 2026 H2 (reasonable given the institutional-distribution unlock the wrapper provides), the 50/50 split delivers ~${fmtUsd0(margin10 * 16 * 0.50 * 10)}/year to each side.`);
+  }
   return L.join("\n");
 }
 

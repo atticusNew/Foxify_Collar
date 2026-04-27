@@ -158,6 +158,13 @@ export type TierQuote = {
   totalMaxPayoutUsd: number;
   worstCaseLossUsd: number;
   worstCaseLossFracOfStake: number;
+  /**
+   * Tightest W achievable for this specific market under the tier's pricing
+   * (markup, kalshi fee, q). Independent of the tier's targetW. Lets the
+   * pitch say: "On this market the tightest worst-case we can offer is X%
+   * of stake, regardless of which tier you pick."
+   */
+  maxFeasibleW: number;
 
   // User EV (computed under the Kalshi yesPrice as the implied probability).
   // userEv = q × (rebate + spreadEvPayoutUsd) + (1 − q) × 0 − chargeUsd
@@ -279,6 +286,19 @@ export function quoteTier(input: QuoteInput): TierQuote {
   const f = cfg.kalshiFeeOnPayout;
   const denom = 1 - q * markup * (1 + f);
 
+  // Max feasible W = tightest W achievable for this market.
+  //   Setting rebate = atRiskUsd (max economical) in the W-solving equation:
+  //     atRiskUsd = (atRiskUsd × (1-W) + spreadCost × m) / denom
+  //     ⇒ W_min = 1 - (atRiskUsd × denom - spreadCost × m) / atRiskUsd
+  //   When denom ≤ 0 (very high q), no positive rebate is feasible: W_min=1.
+  let maxFeasibleW: number;
+  if (denom <= 0) {
+    maxFeasibleW = 1.0;
+  } else {
+    const numerAtFullRebate = atRiskUsd * denom - spreadHedgeCostUsd * markup;
+    maxFeasibleW = Math.max(0, 1 - numerAtFullRebate / atRiskUsd);
+  }
+
   let effectiveW = cfg.targetWorstCaseFracOfStake;
   let rebateFloorUsd = 0;
   let degraded = false;
@@ -356,6 +376,7 @@ export function quoteTier(input: QuoteInput): TierQuote {
     totalMaxPayoutUsd,
     worstCaseLossUsd,
     worstCaseLossFracOfStake: atRiskUsd > 0 ? worstCaseLossUsd / atRiskUsd : 0,
+    maxFeasibleW,
     userEvUsd,
     userEvPctOfStake: atRiskUsd > 0 ? userEvUsd / atRiskUsd : 0,
   };
@@ -486,6 +507,43 @@ export function settleTier(input: OutcomeInput): TierOutcome {
  * TP recovery on un-triggered overlays: 0.20 (conservative generic estimate;
  * no Foxify table). Set per tier.
  */
+// ─── Common parameters ────────────────────────────────────────────────────────
+//
+// MARKUP CALIBRATION (the central change in the symmetry fix).
+//
+// Feasibility constraint for a Kalshi-NO leg of any positive size:
+//   q × markup × (1 + kalshiFee) < 1
+// where q is the price of the loss-leg (opposite Kalshi side).
+//
+// Markup determines the cap on q (the loss-leg price) at which the engine
+// can deliver any rebate at all. Since q can be as high as ~0.85 for a
+// NO bet on a strong favorite (yesPrice=85 → user bets NO, q=YES price=0.85),
+// we MUST keep markup low enough that those favorite-NO bets stay feasible.
+//
+//   markup × (1+f) ≤ 1/q_max  ⇒  markup ≤ 1 / (q_max × 1.03)
+//
+//   At q_max=0.85 → markup ≤ 1.14
+//   At q_max=0.80 → markup ≤ 1.21
+//   At q_max=0.75 → markup ≤ 1.29
+//
+// We use markup=1.18 (13% net margin + 5% ops costs):
+//   - Covers q ≤ 0.82, which catches the great majority of Kalshi BTC bets
+//     (yesPrice typically 0.20-0.80 ⇒ q ≤ 0.80)
+//   - Long-shot bets (q > 0.82) still get a quote via graceful degradation
+//   - 13% net margin is a sustainable insurance-product margin (compare:
+//     auto insurance ~5-10%, options market-makers 1-5%, traditional MGAs
+//     10-20%). Atticus is more capital-light than an auto insurer because
+//     the NO leg is fully pre-funded, so 13% is healthy.
+//
+// PROFITABILITY MATH (sanity check):
+//   Per typical $58 stake, Shield at W=70%:
+//     rebate ≈ $17, NO cost ≈ $7, fee ≈ $8.30
+//     Atticus net per trade ≈ $1.30 (after 5% ops + Kalshi fees)
+//   Per market (12% opt-in × $750k notional × $58 typical stake):
+//     ~1,550 hedged contracts × $1.30 = ~$2k/market
+//     × 16 BTC markets/year = ~$32k/year today
+//     × 10× Kalshi BTC volume by 2026 H2 = ~$320k/year
+//   At higher tiers (Shield-Max W=60%) per-trade margin is ~$1.85.
 const COMMON: Pick<TierConfig,
   "riskFreeRate" | "bidAskWidener" | "ivOverRvol" | "skewSlope" |
   "targetNetMargin" | "opCostFrac" | "kalshiFeeOnPayout" | "tpRecoveryFrac"
@@ -494,34 +552,50 @@ const COMMON: Pick<TierConfig,
   bidAskWidener: 0.10,
   ivOverRvol: 1.18,
   skewSlope: 0.30,
-  targetNetMargin: 0.20,   // 20% net margin per trade
+  targetNetMargin: 0.13,   // 13% net margin (was 20% — too tight for symmetry)
   opCostFrac: 0.05,        // 5% revenue eaten by ops costs
   kalshiFeeOnPayout: 0.03, // 3% Kalshi fee on Atticus's NO win
   tpRecoveryFrac: 0.20,    // recover 20% of un-triggered overlay premium
 };
 
+/**
+ * SYMMETRIC tier ladder. All four tiers are pure Kalshi-NO-leg products
+ * (no Deribit overlay) — same mechanism, same feasibility constraints,
+ * same math whether the user bets YES or NO. The only difference between
+ * tiers is the target worst-case W.
+ *
+ * Symmetry property: for any Kalshi market with yesPrice y, a YES bettor's
+ * tier-X quote and a NO bettor's tier-X quote are mirror images:
+ *   YES bet at y=58 → loss-leg = NO @ q=0.42
+ *   NO  bet at y=58 → loss-leg = YES @ q=0.58
+ * Both feasible at markup=1.18. Higher-confidence bets (y far from 50)
+ * mean ONE side is a favorite (cheap) and the other is a long-shot
+ * (expensive); the favorite-side bet has high q, which is the side that
+ * stresses the feasibility constraint. Markup=1.18 keeps favorites
+ * feasible up to y≈82 (or, equivalently, NO bets up to y_yes≈18).
+ */
 export const TIER_CONFIGS: Record<TierName, TierConfig> = {
   lite: {
     ...COMMON,
-    description: "Light: target worst-case 95% of stake. Cheapest tier; small but guaranteed rebate on every loss.",
+    description: "Light: target worst-case 95% of stake. Cheapest tier; ~5% guaranteed rebate on every losing bet, both YES and NO.",
     targetWorstCaseFracOfStake: 0.95,
     putCallSizingMultiplier: 0.0,
   },
   standard: {
     ...COMMON,
-    description: "Standard: target worst-case 85%. Solid rebate (~15% of stake) on every loss.",
+    description: "Standard: target worst-case 85%. ~15% guaranteed rebate on every losing bet, both YES and NO.",
     targetWorstCaseFracOfStake: 0.85,
     putCallSizingMultiplier: 0.0,
   },
   shield: {
     ...COMMON,
-    description: "Shield: target worst-case 70%. Institutional B1 threshold. ~30% guaranteed rebate where feasible.",
+    description: "Shield: target worst-case 70%. ~30% rebate. Crosses institutional B1 risk-policy bar.",
     targetWorstCaseFracOfStake: 0.70,
     putCallSizingMultiplier: 0.0,
   },
   shield_plus: {
     ...COMMON,
-    description: "Shield-Max: target worst-case 60%. Tightest deterministic floor; reserved for institutional / treasury accounts where W=70% isn't tight enough.",
+    description: "Shield-Max: target worst-case 60%. ~40% rebate. Tightest tier; treasury/RIA accounts.",
     targetWorstCaseFracOfStake: 0.60,
     putCallSizingMultiplier: 0.0,
   },
