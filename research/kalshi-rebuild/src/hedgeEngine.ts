@@ -1,182 +1,378 @@
 /**
- * Unified hedge engine for the Kalshi rebuild — production-shape product.
+ * Atticus options-hedge engine for Kalshi BTC bets.
  *
- * DESIGN GOALS (post-redesign):
+ * PRODUCT (this version supersedes all prior NO-leg variants):
  *
- *   1. Every market gets a quote at SOME achievable W. If the user's preferred
- *      tier (e.g. Shield, target W=70%) is infeasible for a given market
- *      because q × markup × (1+f) ≥ 1, the engine **falls back automatically**
- *      to the tightest feasible W ≥ target. The user's quote shows
- *      `effectiveW` so they know exactly what worst-case they're locking in.
+ *   User holds a Kalshi BTC bet. Atticus brings them a **real Deribit BTC
+ *   options vertical spread** that pays when BTC moves against the bet.
+ *   Atticus is a procurement bridge to a deeper options market; we do NOT
+ *   take the other side of the user's Kalshi bet, do NOT act as a Kalshi
+ *   market maker, do NOT warehouse risk.
  *
- *      No more silent NOT_OFFERED. No "sometimes Shield doesn't work."
+ *   Why this matters for Kalshi:
+ *     - A Kalshi MM cannot sell a 30-day BTC put spread. Only an options
+ *       exchange can. Atticus is the bridge.
+ *     - Brings options-market depth (Deribit handles ~$30B BTC options OI)
+ *       to Kalshi traders without integration on Kalshi's side.
+ *     - Unlocks institutional flow that today can't size into Kalshi BTC
+ *       contracts because the binary 100% loss is unbounded vs treasury
+ *       risk policy.
  *
- *   2. User EV is computed and reported alongside fee. Format:
- *      "Pay $X fee. On loss (P(loss) = q), recover $R. EV cost = $X − q×R."
+ *   Why this matters for the user:
+ *     - Defined-risk overlay at a real options-market price (not a
+ *       synthetic counter-bet, not a coupon).
+ *     - Capital-efficient: small premium (~1-3% of stake on a 5%-OTM put
+ *       spread) protects materially against tail moves.
  *
- *   3. TP recovery on un-triggered Deribit overlays is modeled generically
- *      (no Foxify table). A 30-day BTC option spread that doesn't end in
- *      the money still has time-decay residual value mid-life. We use
- *      `tpRecoveryFrac × spreadHedgeCost` where tpRecoveryFrac is conservative
- *      (default 0.20 — i.e. recover 20% of paid premium on un-triggered).
- *      This is replaceable per-tier and is not derived from any pilot.
+ *   Why this works for Atticus:
+ *     - Markup on real fill cost. Pure pass-through. Margin = chargeUsd −
+ *       (long_ask − short_bid) − Deribit fees − ops costs.
  *
- *   4. Markup is derived from a target net margin band, not picked.
- *      `markup = 1 / (1 - targetNetMargin - opCostFrac)`
- *      where opCostFrac is the fraction of revenue spent on operations
- *      (Kalshi fees on Atticus's leg, Deribit fees, infra). Default
- *      targetNetMargin=0.20, opCostFrac=0.05 → markup ≈ 1.33×.
+ * MECHANISM:
  *
- *   5. NO_LEG_FEASIBILITY is an honest flag, not an offer flag. A market
- *      where `q × markup × (1+f) ≥ 1 + epsilon` cannot have a NO-leg
- *      protection of any positive face value; in that case the tier
- *      degrades to "spread overlay only" or to a higher W until feasible.
+ *   1. Adapter (kalshiEventTypes.ts) maps (event_type × user_direction) to
+ *      put-spread or call-spread instrument:
+ *
+ *        ABOVE-YES: user loses if BTC < K → buy PUT spread below K
+ *        ABOVE-NO:  user loses if BTC ≥ K → buy CALL spread at/above K
+ *        BELOW-YES: user loses if BTC > K → buy CALL spread above K
+ *        BELOW-NO:  user loses if BTC ≤ K → buy PUT spread at/below K
+ *        HIT-YES/NO: not directly hedgeable with vanilla puts/calls (would
+ *                    need barrier options); marked NOT_HEDGEABLE.
+ *
+ *   2. Pricing: live Deribit chain when available (deribitClient.ts).
+ *      Fallback: BS-theoretical + bid-ask widener for historical-date
+ *      markets where the chain isn't accessible.
+ *
+ *   3. Sizing: protected-notional multiplier × user at-risk. 1.0 = matched
+ *      hedge (most capital efficient for user). >1 leverages the put
+ *      spread's max-payout for tail-event recovery.
+ *
+ *   4. Charge: hedge cost × markup. Markup is derived from target net
+ *      margin + ops cost fraction.
+ *
+ *   5. Settlement at expiry: spread payout depends on BTC at settle.
+ *      Atticus passes Deribit fill through to user net of fees.
  */
 
 import {
-  bsPut,
-  bsCall,
-  putSpreadCost,
-  callSpreadCost,
-  putSpreadPayout,
-  callSpreadPayout,
+  bsCall, bsPut,
+  callSpreadCost, putSpreadCost,
+  callSpreadPayout, putSpreadPayout,
 } from "./math.js";
 import {
   adaptHedgeInstrument,
-  type EventType,
-  type UserDirection,
-  type HedgeInstrument,
+  type EventType, type UserDirection, type HedgeInstrument,
 } from "./kalshiEventTypes.js";
 import {
-  buildSyntheticChain,
-  findCallSpreadStrikes,
-  findPutSpreadStrikes,
-} from "./strikeSelector.js";
+  type DeribitChainSnapshot, findClosestExpiry, findVerticalSpread,
+} from "./deribitClient.js";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Tier configuration ──────────────────────────────────────────────────────
 
 export type TierName = "lite" | "standard" | "shield" | "shield_plus";
 
 export type TierConfig = {
-  /** Human-readable description for reports / pitches. */
   description: string;
-
-  // ─── Pricing parameters ───────────────────────────────────────────────────
-  /** Risk-free rate for BS pricing. */
-  riskFreeRate: number;
-  /** Bid-ask widener as fraction of theoretical (e.g. 0.05 = +5% to net cost). */
-  bidAskWidener: number;
-  /** Vol risk premium scalar applied to rvol to estimate IV. */
-  ivOverRvol: number;
-  /** Skew slope: vol-pts added per unit OTM. */
-  skewSlope: number;
-
-  // ─── Markup derivation ────────────────────────────────────────────────────
   /**
-   * Target NET margin (after operating costs). Markup is derived:
-   *   markup = 1 / (1 - targetNetMargin - opCostFrac)
-   * Default 0.20 = "20% net margin per trade after ops costs."
+   * Strike geometry: long-leg OTM hint as fraction of barrier.
+   *   0.0  = long leg at-the-Kalshi-barrier (max protection, max cost)
+   *   0.05 = long leg 5% past the barrier (cheaper, less protection)
+   * For PUT spreads (ABOVE-YES, BELOW-NO) "past the barrier" means below.
+   * For CALL spreads (ABOVE-NO, BELOW-YES) it means above.
    */
+  longOtmFromBarrierFrac: number;
+  /** Width of spread as fraction of underlying (caps max payout). */
+  spreadWidthFrac: number;
+  /** Notional sizing multiplier (× user at-risk amount). */
+  sizingMultiplier: number;
+  /** Target net margin (markup is derived from this + opCostFrac). */
   targetNetMargin: number;
-  /**
-   * Operating-cost fraction of revenue (Kalshi fees on Atticus's leg,
-   * Deribit fees, infra, settlement gas). Default 0.05.
-   */
   opCostFrac: number;
-
-  // ─── Tier shape ───────────────────────────────────────────────────────────
-  /**
-   * TARGET worst-case loss as fraction of stake. The engine tries to
-   * deliver this; if infeasible for a market it FALLS BACK to the tightest
-   * achievable W ≥ targetW (graceful degradation). User receives quote
-   * with `effectiveW` populated.
-   *
-   * 1.0 = no NO leg requested (pure overlay product, e.g. legacy Light/Std).
-   */
-  targetWorstCaseFracOfStake: number;
-  /**
-   * Sizing multiplier on the Deribit-leg notional (× user at-risk amount).
-   * 0 = no overlay. 1.0 = matched. >1 = leveraged for tail upside.
-   */
-  putCallSizingMultiplier: number;
-  /**
-   * TP-recovery fraction on un-triggered Deribit overlays. Conservative
-   * generic estimate of mid-life option-spread residual value. Default 0.20.
-   *
-   * Set to 0 for the most conservative platform-margin number; 0.20 is more
-   * realistic for actual operations.
-   */
-  tpRecoveryFrac: number;
-
-  // ─── Kalshi-side ──────────────────────────────────────────────────────────
-  /** Effective Kalshi fee on NO win (typical 0.01-0.07). */
-  kalshiFeeOnPayout: number;
+  /** Risk-free rate, vol params for BS fallback pricing. */
+  riskFreeRate: number;
+  ivOverRvol: number;
+  skewSlope: number;
+  /** Bid-ask widener applied to BS-theoretical when live chain unavailable. */
+  bidAskWidener: number;
 };
 
-/** Compute the effective markup from targetNetMargin + opCostFrac. */
 function computeMarkup(cfg: TierConfig): number {
   const denom = 1 - cfg.targetNetMargin - cfg.opCostFrac;
   if (denom <= 0.05) return 2.0;
   return 1 / denom;
 }
 
+const COMMON: Pick<TierConfig,
+  "targetNetMargin" | "opCostFrac" | "riskFreeRate" | "ivOverRvol" | "skewSlope" | "bidAskWidener"
+> = {
+  // 13% net margin + 5% ops costs → markup 1.22×.
+  // This is a sustainable insurance/wrap product margin band:
+  //   - Above options MM (1-5%): we add structure, not just liquidity.
+  //   - Below traditional MGA (15-25%): we have less risk capital exposure
+  //     because the hedge is fully Deribit-pre-funded (pass-through).
+  targetNetMargin: 0.13,
+  opCostFrac: 0.05,
+  riskFreeRate: 0.045,
+  // ivOverRvol 1.10 + skewSlope 0.20 + zero widener — calibrated against the
+  // live Deribit chain (see _calibrationCheck.ts). Synthetic now matches live
+  // within ±15% on a 30-DTE BTC ATM/12%-width vertical. Without this
+  // recalibration the prior synthetic was over-pricing by ~30-50%.
+  ivOverRvol: 1.10,
+  skewSlope: 0.20,
+  bidAskWidener: 0.0,
+};
+
+/**
+ * Four tiers — different strike geometries / sizing, NOT different products.
+ *
+ * The user trades off premium (fee % of stake) against protection depth.
+ * All four use the SAME mechanism: a real Deribit BTC vertical spread,
+ * priced at live mid-or-fill prices.
+ */
+export const TIER_CONFIGS: Record<TierName, TierConfig> = {
+  lite: {
+    ...COMMON,
+    description: "Light: 5% OTM long leg, narrow 5% spread width. Cheapest tier; protects deep tail moves only.",
+    longOtmFromBarrierFrac: 0.05,
+    spreadWidthFrac: 0.05,
+    sizingMultiplier: 1.0,
+  },
+  standard: {
+    ...COMMON,
+    description: "Standard: 2% OTM long leg, 8% spread width. Balanced premium/protection.",
+    longOtmFromBarrierFrac: 0.02,
+    spreadWidthFrac: 0.08,
+    sizingMultiplier: 1.0,
+  },
+  shield: {
+    ...COMMON,
+    description: "Shield: ATM long leg, 12% spread width. Material protection from any adverse BTC move.",
+    longOtmFromBarrierFrac: 0.0,
+    spreadWidthFrac: 0.12,
+    sizingMultiplier: 1.0,
+  },
+  shield_plus: {
+    ...COMMON,
+    description: "Shield-Max: ATM long leg, 12% spread width, 2× sized. Tail-event recovery for institutional desks.",
+    longOtmFromBarrierFrac: 0.0,
+    spreadWidthFrac: 0.12,
+    sizingMultiplier: 2.0,
+  },
+};
+
+// ─── Quote ───────────────────────────────────────────────────────────────────
+
+export type PricingSource = "live_deribit" | "bs_synthetic" | "not_hedgeable";
+
+export type QuoteInput = {
+  tier: TierName;
+  eventType: EventType;
+  userDirection: UserDirection;
+  barrier: number;             // Kalshi event strike K (USD)
+  yesPrice: number;            // 0-100 cents
+  betSizeUsd: number;          // contract face (e.g. 100)
+  btcAtOpen: number;           // BTC spot at market open
+  rvol: number;                // 30-day realized vol
+  tenorDays: number;
+  liveChain?: DeribitChainSnapshot;  // pass for current-date markets
+};
+
 export type TierQuote = {
   tier: TierName;
-  /** True iff this tier could be priced at any feasible W (always true after degradation). */
-  offered: boolean;
-  /**
-   * The actual W achieved after degradation. May be ≥ tier's `targetWorstCaseFracOfStake`.
-   * If equal to target, no degradation occurred. If 1.0, no NO leg was feasible
-   * and the tier delivers only the spread overlay (or nothing).
-   */
-  effectiveW: number;
-  /** True if effectiveW > target (i.e. the tier degraded for this market). */
-  degraded: boolean;
-  degradationReason?: string;
-
+  hedgeable: boolean;
+  notHedgeableReason?: string;
   instrument: HedgeInstrument;
+  pricingSource: PricingSource;
+
+  // Strikes (in BTC USD)
   K_long: number;
   K_short: number;
   spreadWidth: number;
 
-  protectedNotionalUsd: number;
-  spreadHedgeCostUsd: number;
-  noLegFaceUsd: number;
-  noLegCostUsd: number;
-  expectedKalshiFeeUsd: number;
-  totalHedgeCostUsd: number;
-  /** Markup actually applied (derived from targetNetMargin + opCostFrac). */
-  markup: number;
-  chargeUsd: number;
-  marginUsd: number;
-
-  // Headlines
+  // Sizing
   atRiskUsd: number;
-  feePctOfStake: number;
-  rebateFloorUsd: number;
-  spreadMaxPayoutUsd: number;
-  totalMaxPayoutUsd: number;
-  worstCaseLossUsd: number;
-  worstCaseLossFracOfStake: number;
-  /**
-   * Tightest W achievable for this specific market under the tier's pricing
-   * (markup, kalshi fee, q). Independent of the tier's targetW. Lets the
-   * pitch say: "On this market the tightest worst-case we can offer is X%
-   * of stake, regardless of which tier you pick."
-   */
-  maxFeasibleW: number;
+  protectedNotionalUsd: number;
 
-  // User EV (computed under the Kalshi yesPrice as the implied probability).
-  // userEv = q × (rebate + spreadEvPayoutUsd) + (1 − q) × 0 − chargeUsd
-  // (spreadEvPayoutUsd uses BS-implied expected payout under risk-neutral measure)
+  // Pricing
+  hedgeCostUsd: number;        // Atticus pays Deribit (long_ask - short_bid) × protectedNotional
+  markup: number;
+  chargeUsd: number;           // user pays Atticus
+  marginUsd: number;
+  feePctOfStake: number;
+  feePctOfNotional: number;    // CAPITAL EFFICIENCY metric: fee / protectedNotional
+
+  // Payout characteristics
+  spreadMaxPayoutUsd: number;
+  recoveryRatio: number;       // maxPayout / fee — how much the user gets per $1 paid in tail event
+  /**
+   * Range of BTC moves where the hedge pays anything.
+   *   PUT spread: pays when BTC < K_long. Trigger threshold = K_long.
+   *   CALL spread: pays when BTC > K_long. Trigger threshold = K_long.
+   * Reported as % move from btcAtOpen (negative = down).
+   */
+  triggerBtcMovePct: number;
+  /** BTC move at which max payout is reached. */
+  maxPayoutBtcMovePct: number;
+
+  // User EV under risk-neutral measure (BS-implied)
   userEvUsd: number;
   userEvPctOfStake: number;
 };
+
+export function quoteTier(input: QuoteInput): TierQuote {
+  const cfg = TIER_CONFIGS[input.tier];
+  const markup = computeMarkup(cfg);
+
+  const userPriceFrac = input.userDirection === "yes"
+    ? input.yesPrice / 100
+    : (100 - input.yesPrice) / 100;
+  const atRiskUsd = userPriceFrac * input.betSizeUsd;
+  const protectedNotionalUsd = atRiskUsd * cfg.sizingMultiplier;
+
+  const { instrument } = adaptHedgeInstrument(input.eventType, input.userDirection, input.barrier);
+
+  // HIT events use barrier options not vanilla spreads — flag and bail.
+  if (instrument === "none") {
+    return makeNotHedgeable(input, cfg, markup, atRiskUsd, protectedNotionalUsd,
+      "HIT events require barrier options (knock-in/knock-out); not part of this product.");
+  }
+
+  // ── Strike selection ──────────────────────────────────────────────────────
+  // Default geometry from tier config:
+  //   PUT spread (loss-region "below"): K_long = barrier × (1 - longOtmFromBarrierFrac)
+  //                                     K_short = K_long - barrier × spreadWidthFrac
+  //   CALL spread (loss-region "above"): K_long = barrier × (1 + longOtmFromBarrierFrac)
+  //                                      K_short = K_long + barrier × spreadWidthFrac
+  let K_long: number, K_short: number;
+  if (instrument === "put") {
+    K_long = input.barrier * (1 - cfg.longOtmFromBarrierFrac);
+    K_short = K_long - input.barrier * cfg.spreadWidthFrac;
+  } else {
+    K_long = input.barrier * (1 + cfg.longOtmFromBarrierFrac);
+    K_short = K_long + input.barrier * cfg.spreadWidthFrac;
+  }
+
+  // ── Pricing: try live Deribit, fall back to BS-synthetic ─────────────────
+  let hedgeCostUsd: number;
+  let pricingSource: PricingSource;
+
+  if (input.liveChain) {
+    // Snap K_long, K_short to listed strikes near our targets
+    const expiry = findClosestExpiry(input.liveChain, input.tenorDays, 6);
+    const optType: "C" | "P" = instrument === "put" ? "P" : "C";
+    const liveSpread = expiry ? findVerticalSpread(input.liveChain, expiry, optType, K_long) : null;
+    if (liveSpread) {
+      K_long = liveSpread.K_long;
+      K_short = liveSpread.K_short;
+      const longUsd = (liveSpread.longRow.ask ?? 0) * (liveSpread.longRow.underlying ?? input.btcAtOpen);
+      const shortUsd = (liveSpread.shortRow.bid ?? 0) * (liveSpread.shortRow.underlying ?? input.btcAtOpen);
+      const netPerBtcOfNotional = Math.max(0, longUsd - shortUsd);
+      // Convert "USD per BTC of notional" to "USD on protectedNotional".
+      // Deribit prices are PER BTC-equivalent, so:
+      //   hedge cost on protectedNotionalUsd = netPerBtcOfNotional × (protectedNotionalUsd / underlying)
+      hedgeCostUsd = netPerBtcOfNotional * (protectedNotionalUsd / input.btcAtOpen);
+      pricingSource = "live_deribit";
+    } else {
+      pricingSource = "bs_synthetic";
+      hedgeCostUsd = bsSyntheticCost(cfg, input, instrument, K_long, K_short, protectedNotionalUsd);
+    }
+  } else {
+    pricingSource = "bs_synthetic";
+    hedgeCostUsd = bsSyntheticCost(cfg, input, instrument, K_long, K_short, protectedNotionalUsd);
+  }
+
+  const spreadWidth = Math.abs(K_long - K_short);
+  const spreadMaxPayoutUsd = (spreadWidth / input.btcAtOpen) * protectedNotionalUsd;
+  const chargeUsd = hedgeCostUsd * markup;
+  const marginUsd = chargeUsd - hedgeCostUsd;
+  const feePctOfStake = atRiskUsd > 0 ? chargeUsd / atRiskUsd : 0;
+  const feePctOfNotional = protectedNotionalUsd > 0 ? chargeUsd / protectedNotionalUsd : 0;
+  const recoveryRatio = chargeUsd > 0 ? spreadMaxPayoutUsd / chargeUsd : 0;
+
+  const triggerBtcMovePct = ((K_long - input.btcAtOpen) / input.btcAtOpen) * 100;
+  const maxPayoutBtcMovePct = ((K_short - input.btcAtOpen) / input.btcAtOpen) * 100;
+
+  // ── User EV under BS measure ──────────────────────────────────────────────
+  // Expected payout under risk-neutral measure ≈ pre-widener BS spread cost.
+  // (We back out the "fair" cost by removing the bid-ask widener on synthetic
+  // pricing, or use the mark-mid for live pricing.)
+  const evExpectedPayout = pricingSource === "bs_synthetic"
+    ? hedgeCostUsd / (1 + cfg.bidAskWidener)
+    : hedgeCostUsd;  // For live, mid-of-bid-ask is approximately the EV
+  const userEvUsd = evExpectedPayout - chargeUsd;
+
+  return {
+    tier: input.tier,
+    hedgeable: true,
+    instrument,
+    pricingSource,
+    K_long, K_short, spreadWidth,
+    atRiskUsd,
+    protectedNotionalUsd,
+    hedgeCostUsd,
+    markup,
+    chargeUsd,
+    marginUsd,
+    feePctOfStake,
+    feePctOfNotional,
+    spreadMaxPayoutUsd,
+    recoveryRatio,
+    triggerBtcMovePct,
+    maxPayoutBtcMovePct,
+    userEvUsd,
+    userEvPctOfStake: atRiskUsd > 0 ? userEvUsd / atRiskUsd : 0,
+  };
+}
+
+function bsSyntheticCost(
+  cfg: TierConfig,
+  input: QuoteInput,
+  instrument: "put" | "call",
+  K_long: number,
+  K_short: number,
+  protectedNotionalUsd: number,
+): number {
+  const T = input.tenorDays / 365;
+  const atmIv = input.rvol * cfg.ivOverRvol;
+  const otmLong = Math.abs(K_long - input.btcAtOpen) / input.btcAtOpen;
+  const otmShort = Math.abs(K_short - input.btcAtOpen) / input.btcAtOpen;
+  const ivLong = atmIv + cfg.skewSlope * otmLong;
+  const ivShort = atmIv + cfg.skewSlope * otmShort;
+  const netPerBtcSpot = instrument === "put"
+    ? putSpreadCost(input.btcAtOpen, K_long, K_short, T, cfg.riskFreeRate, ivLong, ivShort)
+    : callSpreadCost(input.btcAtOpen, K_long, K_short, T, cfg.riskFreeRate, ivLong, ivShort);
+  // BS price is in USD per BTC of notional; multiply by widener and scale.
+  return netPerBtcSpot * (1 + cfg.bidAskWidener) * (protectedNotionalUsd / input.btcAtOpen);
+}
+
+function makeNotHedgeable(
+  input: QuoteInput, _cfg: TierConfig, markup: number,
+  atRiskUsd: number, protectedNotionalUsd: number, reason: string,
+): TierQuote {
+  return {
+    tier: input.tier,
+    hedgeable: false,
+    notHedgeableReason: reason,
+    instrument: "none",
+    pricingSource: "not_hedgeable",
+    K_long: 0, K_short: 0, spreadWidth: 0,
+    atRiskUsd, protectedNotionalUsd: 0,
+    hedgeCostUsd: 0, markup, chargeUsd: 0, marginUsd: 0,
+    feePctOfStake: 0, feePctOfNotional: 0,
+    spreadMaxPayoutUsd: 0, recoveryRatio: 0,
+    triggerBtcMovePct: 0, maxPayoutBtcMovePct: 0,
+    userEvUsd: 0, userEvPctOfStake: 0,
+  };
+}
+
+// ─── Settlement ──────────────────────────────────────────────────────────────
 
 export type TierOutcome = {
   tier: TierName;
   hedgeTriggered: boolean;
   spreadPayoutUsd: number;
+  /** Kept for CSV compatibility with prior runs. Always 0 in this product. */
   shieldPayoutUsd: number;
   totalPayoutUsd: number;
   kalshiPnlUsd: number;
@@ -185,204 +381,11 @@ export type TierOutcome = {
   recoveryPctOfStake: number;
   platformRevenueUsd: number;
   platformHedgeCostUsd: number;
+  /** Always 0 — no NO leg, no Kalshi fee in this product. */
   platformKalshiFeePaidUsd: number;
   platformTpRecoveryUsd: number;
   platformNetPnlUsd: number;
 };
-
-// ─── Quote ───────────────────────────────────────────────────────────────────
-
-export type QuoteInput = {
-  tier: TierName;
-  eventType: EventType;
-  userDirection: UserDirection;
-  barrier: number;          // Kalshi event strike K (USD)
-  yesPrice: number;         // 0-100 cents at open
-  betSizeUsd: number;       // contract face value (e.g. 100)
-  btcAtOpen: number;
-  rvol: number;
-  tenorDays: number;
-};
-
-/**
- * Compute the Deribit overlay's spread cost + max payout + expected payout.
- * Returns null if no strikes were available (rare on the synthetic grid).
- */
-function priceSpreadOverlay(
-  cfg: TierConfig,
-  input: QuoteInput,
-  protectedNotionalUsd: number,
-): {
-  K_long: number; K_short: number; spreadWidth: number;
-  hedgeCostUsd: number; maxPayoutUsd: number; expectedPayoutUsd: number;
-} | null {
-  if (protectedNotionalUsd <= 0) return null;
-  const { instrument } = adaptHedgeInstrument(input.eventType, input.userDirection, input.barrier);
-  if (instrument === "none") return null;
-
-  const chain = buildSyntheticChain(input.btcAtOpen, input.tenorDays);
-  let strikes: { K_long: number; K_short: number } | null = null;
-  for (let offset = 0; offset < 8 && !strikes; offset++) {
-    strikes = instrument === "call"
-      ? findCallSpreadStrikes(chain, input.barrier, offset)
-      : findPutSpreadStrikes(chain, input.barrier, offset);
-  }
-  if (!strikes) return null;
-
-  const { K_long, K_short } = strikes;
-  const spreadWidth = Math.abs(K_short - K_long);
-  const T = input.tenorDays / 365;
-  const atmIv = input.rvol * cfg.ivOverRvol;
-  const otmLong = Math.abs(K_long - input.btcAtOpen) / input.btcAtOpen;
-  const otmShort = Math.abs(K_short - input.btcAtOpen) / input.btcAtOpen;
-  const ivLong = atmIv + cfg.skewSlope * otmLong;
-  const ivShort = atmIv + cfg.skewSlope * otmShort;
-  const netPxPerBtc = instrument === "call"
-    ? callSpreadCost(input.btcAtOpen, K_long, K_short, T, cfg.riskFreeRate, ivLong, ivShort)
-    : putSpreadCost(input.btcAtOpen, K_long, K_short, T, cfg.riskFreeRate, ivLong, ivShort);
-  const grossedCostFracOfBtc = (netPxPerBtc / input.btcAtOpen) * (1 + cfg.bidAskWidener);
-  const hedgeCostUsd = protectedNotionalUsd * grossedCostFracOfBtc;
-  const maxPayoutUsd = (spreadWidth / input.btcAtOpen) * protectedNotionalUsd;
-
-  // Risk-neutral expected payout = BS-theoretical net cost / (1+widener).
-  // Equivalently: expected payout under RN measure = the un-widened spread price.
-  const expectedPayoutUsd = protectedNotionalUsd * (netPxPerBtc / input.btcAtOpen);
-
-  return { K_long, K_short, spreadWidth, hedgeCostUsd, maxPayoutUsd, expectedPayoutUsd };
-}
-
-export function quoteTier(input: QuoteInput): TierQuote {
-  const cfg = TIER_CONFIGS[input.tier];
-  const markup = computeMarkup(cfg);
-
-  // At-risk = cost of the user's position.
-  const userPriceFrac = input.userDirection === "yes"
-    ? input.yesPrice / 100
-    : (100 - input.yesPrice) / 100;
-  const atRiskUsd = userPriceFrac * input.betSizeUsd;
-  // Loss-leg price = price of the opposite Kalshi side.
-  const q = input.userDirection === "yes"
-    ? (100 - input.yesPrice) / 100
-    : input.yesPrice / 100;
-
-  const protectedNotionalUsd = atRiskUsd * cfg.putCallSizingMultiplier;
-  const { instrument } = adaptHedgeInstrument(input.eventType, input.userDirection, input.barrier);
-
-  // ── Spread overlay (independent of rebate sizing) ─────────────────────────
-  const spread = priceSpreadOverlay(cfg, input, protectedNotionalUsd);
-  const K_long = spread?.K_long ?? 0;
-  const K_short = spread?.K_short ?? 0;
-  const spreadWidth = spread?.spreadWidth ?? 0;
-  const spreadHedgeCostUsd = spread?.hedgeCostUsd ?? 0;
-  const spreadMaxPayoutUsd = spread?.maxPayoutUsd ?? 0;
-  const spreadExpectedPayoutUsd = spread?.expectedPayoutUsd ?? 0;
-
-  // ── Solve for rebate with graceful W-degradation ──────────────────────────
-  // The denominator (1 - q × m × (1+f)) determines feasibility.
-  // If denom ≤ 0, the user's side is so cheap (favorite) and Atticus's side
-  // (NO) so expensive that no finite rebate works. We degrade W toward 1.0
-  // until either (a) the math is feasible AND rebate ≤ atRisk, or
-  // (b) we reach W = 1.0 (no NO leg).
-  const f = cfg.kalshiFeeOnPayout;
-  const denom = 1 - q * markup * (1 + f);
-
-  // Max feasible W = tightest W achievable for this market.
-  //   Setting rebate = atRiskUsd (max economical) in the W-solving equation:
-  //     atRiskUsd = (atRiskUsd × (1-W) + spreadCost × m) / denom
-  //     ⇒ W_min = 1 - (atRiskUsd × denom - spreadCost × m) / atRiskUsd
-  //   When denom ≤ 0 (very high q), no positive rebate is feasible: W_min=1.
-  let maxFeasibleW: number;
-  if (denom <= 0) {
-    maxFeasibleW = 1.0;
-  } else {
-    const numerAtFullRebate = atRiskUsd * denom - spreadHedgeCostUsd * markup;
-    maxFeasibleW = Math.max(0, 1 - numerAtFullRebate / atRiskUsd);
-  }
-
-  let effectiveW = cfg.targetWorstCaseFracOfStake;
-  let rebateFloorUsd = 0;
-  let degraded = false;
-  let degradationReason: string | undefined;
-
-  if (effectiveW < 1.0) {
-    if (denom <= 0.02) {
-      // Truly infeasible: user is on a long-shot, Atticus's NO leg costs too much.
-      effectiveW = 1.0;
-      degraded = true;
-      degradationReason = `q×m×(1+f)=${(q * markup * (1 + f)).toFixed(2)} ≥ 1; NO leg infeasible — overlay only`;
-    } else {
-      // Try target W. If rebate > atRisk, walk W up until feasible.
-      const tryW = (W: number) => (atRiskUsd * (1 - W) + spreadHedgeCostUsd * markup) / denom;
-      let W = cfg.targetWorstCaseFracOfStake;
-      let rebate = tryW(W);
-      while (rebate > atRiskUsd && W < 0.99) {
-        W = Math.min(0.99, W + 0.01);
-        rebate = tryW(W);
-      }
-      if (rebate > atRiskUsd) {
-        // Even at W=0.99, can't fit. Set W = 1.0 (no NO leg).
-        effectiveW = 1.0;
-        degraded = true;
-        degradationReason = `even at W=0.99 rebate ${rebate.toFixed(2)} > stake ${atRiskUsd.toFixed(2)}`;
-      } else {
-        if (W > cfg.targetWorstCaseFracOfStake + 0.001) {
-          degraded = true;
-          degradationReason = `target W=${cfg.targetWorstCaseFracOfStake.toFixed(2)} infeasible; degraded to W=${W.toFixed(2)}`;
-        }
-        effectiveW = W;
-        rebateFloorUsd = Math.max(0, rebate);
-      }
-    }
-  }
-
-  const noLegFaceUsd = rebateFloorUsd;
-  const noLegCostUsd = noLegFaceUsd * q;
-  const expectedKalshiFeeUsd = noLegFaceUsd * f * q;
-
-  // ── Aggregate ─────────────────────────────────────────────────────────────
-  const totalHedgeCostUsd = spreadHedgeCostUsd + noLegCostUsd + expectedKalshiFeeUsd;
-  const chargeUsd = totalHedgeCostUsd * markup;
-  const marginUsd = chargeUsd - totalHedgeCostUsd;
-  const totalMaxPayoutUsd = rebateFloorUsd + spreadMaxPayoutUsd;
-  const worstCaseLossUsd = atRiskUsd - rebateFloorUsd + chargeUsd;
-
-  // ── User EV (under Kalshi yesPrice as risk-neutral probability) ───────────
-  // userEv = q × rebateFloorUsd + spreadExpectedPayoutUsd − chargeUsd
-  // (q = P(user loses); rebate is paid only on user-loss; spread payout
-  // is risk-neutral expectation independent of bet outcome.)
-  const userEvUsd = q * rebateFloorUsd + spreadExpectedPayoutUsd - chargeUsd;
-
-  return {
-    tier: input.tier,
-    offered: true,
-    effectiveW,
-    degraded,
-    degradationReason,
-    instrument,
-    K_long, K_short, spreadWidth,
-    protectedNotionalUsd,
-    spreadHedgeCostUsd,
-    noLegFaceUsd,
-    noLegCostUsd,
-    expectedKalshiFeeUsd,
-    totalHedgeCostUsd,
-    markup,
-    chargeUsd,
-    marginUsd,
-    atRiskUsd,
-    feePctOfStake: atRiskUsd > 0 ? chargeUsd / atRiskUsd : 0,
-    rebateFloorUsd,
-    spreadMaxPayoutUsd,
-    totalMaxPayoutUsd,
-    worstCaseLossUsd,
-    worstCaseLossFracOfStake: atRiskUsd > 0 ? worstCaseLossUsd / atRiskUsd : 0,
-    maxFeasibleW,
-    userEvUsd,
-    userEvPctOfStake: atRiskUsd > 0 ? userEvUsd / atRiskUsd : 0,
-  };
-}
-
-// ─── Outcome ─────────────────────────────────────────────────────────────────
 
 export type OutcomeInput = {
   quote: TierQuote;
@@ -390,14 +393,13 @@ export type OutcomeInput = {
   userDirection: UserDirection;
   yesPrice: number;
   betSizeUsd: number;
-  kalshiOutcome: "yes" | "no";   // settled Kalshi result (derived from price)
+  kalshiOutcome: "yes" | "no";
   btcAtOpen: number;
   btcAtSettle: number;
 };
 
 export function settleTier(input: OutcomeInput): TierOutcome {
   const q = input.quote;
-  const cfg = TIER_CONFIGS[q.tier];
   const userPriceFrac = input.userDirection === "yes"
     ? input.yesPrice / 100
     : (100 - input.yesPrice) / 100;
@@ -405,198 +407,49 @@ export function settleTier(input: OutcomeInput): TierOutcome {
   const userWon = input.kalshiOutcome === input.userDirection;
   const kalshiPnl = userWon ? input.betSizeUsd - atRisk : -atRisk;
 
-  // (No early-return for "not offered" — every quote is now offered after
-  // graceful W-degradation. If effectiveW = 1.0 and overlay is none, the
-  // tier delivers no protection but is still "offered" with zero economics.)
-
-  // Spread-leg payout (instrument-aware)
-  let spreadPayoutUsd = 0;
-  if (q.instrument === "call" && q.spreadWidth > 0) {
-    spreadPayoutUsd = callSpreadPayout(
-      q.K_long, q.K_short,
-      input.btcAtOpen, input.btcAtSettle,
-      q.protectedNotionalUsd,
-    );
-  } else if (q.instrument === "put" && q.spreadWidth > 0) {
-    spreadPayoutUsd = putSpreadPayout(
-      q.K_long, q.K_short,
-      input.btcAtOpen, input.btcAtSettle,
-      q.protectedNotionalUsd,
-    );
+  if (!q.hedgeable) {
+    return {
+      tier: q.tier, hedgeTriggered: false,
+      spreadPayoutUsd: 0, shieldPayoutUsd: 0, totalPayoutUsd: 0,
+      kalshiPnlUsd: kalshiPnl,
+      userNetWithProtectionUsd: kalshiPnl,
+      userSavedUsd: 0, recoveryPctOfStake: 0,
+      platformRevenueUsd: 0, platformHedgeCostUsd: 0,
+      platformKalshiFeePaidUsd: 0, platformTpRecoveryUsd: 0, platformNetPnlUsd: 0,
+    };
   }
 
-  // NO-leg payout: triggered when user loses on Kalshi (regardless of BTC path).
-  // The NO leg is "active" iff a rebate was solved for at quote time.
-  const hasNoLeg = q.rebateFloorUsd > 0;
-  const shieldPayoutUsd = (hasNoLeg && !userWon) ? q.rebateFloorUsd : 0;
+  // Spread payout depends on instrument and BTC at settle
+  let spreadPayoutUsd = 0;
+  if (q.instrument === "put" && q.spreadWidth > 0) {
+    spreadPayoutUsd = putSpreadPayout(q.K_long, q.K_short, input.btcAtOpen, input.btcAtSettle, q.protectedNotionalUsd);
+  } else if (q.instrument === "call" && q.spreadWidth > 0) {
+    spreadPayoutUsd = callSpreadPayout(q.K_long, q.K_short, input.btcAtOpen, input.btcAtSettle, q.protectedNotionalUsd);
+  }
 
-  const totalPayoutUsd = spreadPayoutUsd + shieldPayoutUsd;
+  // TP recovery: 20% generic salvage on un-triggered spreads (mid-life
+  // residual value). Conservative, parameterless.
+  const tpRecoveryFrac = 0.20;
+  const tpRecoveryUsd = (q.hedgeCostUsd > 0 && spreadPayoutUsd === 0)
+    ? q.hedgeCostUsd * tpRecoveryFrac
+    : 0;
+
+  const totalPayoutUsd = spreadPayoutUsd;
   const userNet = kalshiPnl - q.chargeUsd + totalPayoutUsd;
-
-  // Realized Kalshi fee: only when NO-leg actually wins
-  const platformKalshiFeePaid = (hasNoLeg && !userWon)
-    ? q.noLegFaceUsd * cfg.kalshiFeeOnPayout
-    : 0;
-
-  // TP recovery on un-triggered Deribit overlay: if the spread didn't pay,
-  // Atticus can sell back the un-expired option(s) for a fraction of paid
-  // premium. Conservative generic estimate (no Foxify table). Only applied
-  // when there was a Deribit overlay AND it didn't pay out.
-  const tpRecoveryUsd = (q.spreadHedgeCostUsd > 0 && spreadPayoutUsd === 0)
-    ? q.spreadHedgeCostUsd * cfg.tpRecoveryFrac
-    : 0;
-
-  // Platform net = revenue − spread cost − NO cost − realized Kalshi fee
-  //              + TP recovery on un-triggered overlays
-  // (Both Deribit spread and Kalshi NO are pass-through: their payouts cancel
-  // the user-facing rebates, so platform retains charge − costs + TP salvage.)
-  const platformNet = q.chargeUsd
-    - q.spreadHedgeCostUsd
-    - q.noLegCostUsd
-    - platformKalshiFeePaid
-    + tpRecoveryUsd;
+  const platformNet = q.chargeUsd - q.hedgeCostUsd + tpRecoveryUsd;
 
   return {
     tier: q.tier,
-    hedgeTriggered: totalPayoutUsd > 0,
-    spreadPayoutUsd,
-    shieldPayoutUsd,
-    totalPayoutUsd,
+    hedgeTriggered: spreadPayoutUsd > 0,
+    spreadPayoutUsd, shieldPayoutUsd: 0, totalPayoutUsd,
     kalshiPnlUsd: kalshiPnl,
     userNetWithProtectionUsd: userNet,
     userSavedUsd: userNet - kalshiPnl,
     recoveryPctOfStake: atRisk > 0 ? totalPayoutUsd / atRisk : 0,
     platformRevenueUsd: q.chargeUsd,
-    platformHedgeCostUsd: q.spreadHedgeCostUsd + q.noLegCostUsd,
-    platformKalshiFeePaidUsd: platformKalshiFeePaid,
+    platformHedgeCostUsd: q.hedgeCostUsd,
+    platformKalshiFeePaidUsd: 0,
     platformTpRecoveryUsd: tpRecoveryUsd,
     platformNetPnlUsd: platformNet,
   };
 }
-
-// ─── Tier configuration block (single source of truth) ───────────────────────
-
-/**
- * Re-tuning happens here only. Each tier's parameters are explicit and
- * locally documented. No Foxify defaults; every constant is justified
- * by the role it plays in the product, not by inheritance.
- *
- * Common parameters (same across tiers unless noted):
- *   bidAskWidener    = 0.10  (10% widener on theoretical option price; ballpark
- *                             Deribit 30-day vertical-spread bid-ask cost)
- *   ivOverRvol       = 1.18  (vol risk premium of ~18% — consistent with public
- *                             Deribit DVOL/RV studies; replaceable per tier)
- *   skewSlope        = 0.30  (modest skew adjustment, ~3 vol-pts per 10% OTM)
- *   riskFreeRate     = 0.045
- *   kalshiFeeOnPayout= 0.03  (3% effective fee on NO win, mid-of-range; tunable)
- */
-/**
- * Tier ladder. Each tier is a target-W product with graceful degradation:
- * if the target W can't be priced, the engine falls back to the tightest
- * achievable W ≥ target. EVERY market gets a quote at SOME effective W.
- *
- * Markup is derived from `targetNetMargin + opCostFrac`, not picked.
- *   Default: targetNetMargin=0.20, opCostFrac=0.05 → markup = 1/(1−0.25) = 1.333.
- *
- * Calibration intent:
- *   Light    target W=95%. Retail entry.   Cheap fee, modest floor.
- *   Standard target W=85%. Retail "real protection".
- *   Shield   target W=70%. Institutional bar (B1 threshold).
- *   Shield+  target W=70% + Deribit overlay for additional tail-upside cash.
- *
- * TP recovery on un-triggered overlays: 0.20 (conservative generic estimate;
- * no Foxify table). Set per tier.
- */
-// ─── Common parameters ────────────────────────────────────────────────────────
-//
-// MARKUP CALIBRATION (the central change in the symmetry fix).
-//
-// Feasibility constraint for a Kalshi-NO leg of any positive size:
-//   q × markup × (1 + kalshiFee) < 1
-// where q is the price of the loss-leg (opposite Kalshi side).
-//
-// Markup determines the cap on q (the loss-leg price) at which the engine
-// can deliver any rebate at all. Since q can be as high as ~0.85 for a
-// NO bet on a strong favorite (yesPrice=85 → user bets NO, q=YES price=0.85),
-// we MUST keep markup low enough that those favorite-NO bets stay feasible.
-//
-//   markup × (1+f) ≤ 1/q_max  ⇒  markup ≤ 1 / (q_max × 1.03)
-//
-//   At q_max=0.85 → markup ≤ 1.14
-//   At q_max=0.80 → markup ≤ 1.21
-//   At q_max=0.75 → markup ≤ 1.29
-//
-// We use markup=1.18 (13% net margin + 5% ops costs):
-//   - Covers q ≤ 0.82, which catches the great majority of Kalshi BTC bets
-//     (yesPrice typically 0.20-0.80 ⇒ q ≤ 0.80)
-//   - Long-shot bets (q > 0.82) still get a quote via graceful degradation
-//   - 13% net margin is a sustainable insurance-product margin (compare:
-//     auto insurance ~5-10%, options market-makers 1-5%, traditional MGAs
-//     10-20%). Atticus is more capital-light than an auto insurer because
-//     the NO leg is fully pre-funded, so 13% is healthy.
-//
-// PROFITABILITY MATH (sanity check):
-//   Per typical $58 stake, Shield at W=70%:
-//     rebate ≈ $17, NO cost ≈ $7, fee ≈ $8.30
-//     Atticus net per trade ≈ $1.30 (after 5% ops + Kalshi fees)
-//   Per market (12% opt-in × $750k notional × $58 typical stake):
-//     ~1,550 hedged contracts × $1.30 = ~$2k/market
-//     × 16 BTC markets/year = ~$32k/year today
-//     × 10× Kalshi BTC volume by 2026 H2 = ~$320k/year
-//   At higher tiers (Shield-Max W=60%) per-trade margin is ~$1.85.
-const COMMON: Pick<TierConfig,
-  "riskFreeRate" | "bidAskWidener" | "ivOverRvol" | "skewSlope" |
-  "targetNetMargin" | "opCostFrac" | "kalshiFeeOnPayout" | "tpRecoveryFrac"
-> = {
-  riskFreeRate: 0.045,
-  bidAskWidener: 0.10,
-  ivOverRvol: 1.18,
-  skewSlope: 0.30,
-  targetNetMargin: 0.13,   // 13% net margin (was 20% — too tight for symmetry)
-  opCostFrac: 0.05,        // 5% revenue eaten by ops costs
-  kalshiFeeOnPayout: 0.03, // 3% Kalshi fee on Atticus's NO win
-  tpRecoveryFrac: 0.20,    // recover 20% of un-triggered overlay premium
-};
-
-/**
- * SYMMETRIC tier ladder. All four tiers are pure Kalshi-NO-leg products
- * (no Deribit overlay) — same mechanism, same feasibility constraints,
- * same math whether the user bets YES or NO. The only difference between
- * tiers is the target worst-case W.
- *
- * Symmetry property: for any Kalshi market with yesPrice y, a YES bettor's
- * tier-X quote and a NO bettor's tier-X quote are mirror images:
- *   YES bet at y=58 → loss-leg = NO @ q=0.42
- *   NO  bet at y=58 → loss-leg = YES @ q=0.58
- * Both feasible at markup=1.18. Higher-confidence bets (y far from 50)
- * mean ONE side is a favorite (cheap) and the other is a long-shot
- * (expensive); the favorite-side bet has high q, which is the side that
- * stresses the feasibility constraint. Markup=1.18 keeps favorites
- * feasible up to y≈82 (or, equivalently, NO bets up to y_yes≈18).
- */
-export const TIER_CONFIGS: Record<TierName, TierConfig> = {
-  lite: {
-    ...COMMON,
-    description: "Light: target worst-case 95% of stake. Cheapest tier; ~5% guaranteed rebate on every losing bet, both YES and NO.",
-    targetWorstCaseFracOfStake: 0.95,
-    putCallSizingMultiplier: 0.0,
-  },
-  standard: {
-    ...COMMON,
-    description: "Standard: target worst-case 85%. ~15% guaranteed rebate on every losing bet, both YES and NO.",
-    targetWorstCaseFracOfStake: 0.85,
-    putCallSizingMultiplier: 0.0,
-  },
-  shield: {
-    ...COMMON,
-    description: "Shield: target worst-case 70%. ~30% rebate. Crosses institutional B1 risk-policy bar.",
-    targetWorstCaseFracOfStake: 0.70,
-    putCallSizingMultiplier: 0.0,
-  },
-  shield_plus: {
-    ...COMMON,
-    description: "Shield-Max: target worst-case 60%. ~40% rebate. Tightest tier; treasury/RIA accounts.",
-    targetWorstCaseFracOfStake: 0.60,
-    putCallSizingMultiplier: 0.0,
-  },
-};

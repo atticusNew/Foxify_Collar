@@ -1,64 +1,75 @@
-# Atticus → Kalshi Pitch Snippets — Multi-Archetype Rebuild
-*Four protection tiers across all Kalshi BTC event archetypes (ABOVE / BELOW / HIT × YES / NO).*
-*Foxify-clean: zero pilot calibrations in this backtest's product-facing math.*
-*Path-dependent HIT settlement using Coinbase daily highs/lows.*
-*User EV computed under Kalshi yesPrice as risk-neutral probability.*
+# Atticus → Kalshi Pitch Snippets — Options-Hedge Bridge
+
+Atticus is an options-procurement bridge between Kalshi traders and Deribit. We don't act as a Kalshi market maker, we don't take the other side of bets. We route real BTC vertical-spread hedges from Deribit (~$30B BTC options OI) to Kalshi traders in a single combined-ticket flow.
+
+*Live Deribit calibration: BTC index $79166, 932 listed contracts.*
 
 ---
 
-## Intro Email — Lead with Shield+
+## Intro Email
 
-**Subject:**
-> Worst-case loss capped at 76% of stake — every BTC event archetype, every direction, contract-bounded
+**Subject:** Options-hedge bridge for your BTC bettors — Deribit liquidity, single-ticket execution
 
 **Body:**
 ```
-We ran a protection-wrapper backtest across 68 of your settled BTC markets, covering all three event archetypes (ABOVE / BELOW / HIT) on both YES and NO directions.
+We've built a thin layer that lets a Kalshi user buy a BTC bet and a real Deribit BTC vertical-spread hedge in one ticket. The hedge is procured from the live Deribit chain (we don't take the other side of your binary, we don't make a market) — pure pass-through.
 
-Headline: a four-tier ladder where each tier targets a contract-bounded worst-case loss W. Every market gets a quote — when the target W can't be hit (long-shot bets, etc.), the engine degrades gracefully to the tightest achievable W ≥ target, and the user sees that explicitly.
+Across 68 settled BTC markets in our backtest:
+  • Light tier (5%-OTM long leg): ~2% fee of stake, 2.4% fee of notional, 7.7× recovery ratio.
+  • Standard (2%-OTM):              ~4% / 4.2% / 5.8× recovery.
+  • Shield (ATM):                   ~6% / 6.4% / 5.5× recovery.
+  • Shield-Max (ATM, 2× sized):     ~13% / 6.4% / 5.5× recovery.
 
-  • Light      target W=95% — fee ~16% of stake, avg recovery on losses ~22%.
-  • Standard   target W=85% — fee ~32%, avg recovery ~47%.
-  • Shield     target W=70% — fee ~44%, avg recovery ~70%. Crosses institutional risk-policy bar (B1 ≤70%).
-  • Shield-Max target W=60% — fee ~49%, avg recovery ~80%. Tightest tier; reserved for treasury/RIA accounts.
+What's interesting for Kalshi specifically:
+  • A Kalshi MM cannot sell a 30-day BTC put. We can. This is incremental options depth your platform doesn't currently access.
+  • At 6.4% of notional on Shield, the cost is competitive with bank-OTC verticals — but your traders get it inline.
+  • Capital-policy unlock: institutional users who today can't size into Kalshi BTC contracts (because the binary 100% loss is unbounded) can with this overlay.
 
-Mechanism: Atticus buys a Kalshi position on the *opposite* side of the user's bet, sized analytically so user worst-case loss does not exceed the tier's W parameter. When the user loses, the opposite-side leg pays Atticus, and Atticus passes the rebate to the user. Pure pass-through; no warehousing, no solvency tail.
+Atticus revenue: 13% net margin on the markup. Today's BTC volume scales to a modest revenue line for both sides; the strategic value is the institutional-distribution unlock, which can grow Kalshi's BTC TAM 10×.
 
-Why this matters to your users: today every losing prediction is a complete write-off. With Atticus, every losing prediction pays back a contract-bounded floor — and the floor is tight enough (Shield's 70% cap) to cross the risk-policy threshold that lets institutional desks size into Kalshi BTC contracts.
-
-Why this matters to Kalshi: protection premiums are a positive-sum revenue layer on top of the zero-sum binary market. Atticus runs ~20% gross margin per trade. At a typical $750k/market notional and 10% opt-in, Shield generates ~$6,751 per market in net platform revenue — which can be revenue-shared with Kalshi via a clearing-fee arrangement or routed entirely to Atticus depending on commercial structure.
-
-Best save in the dataset (Shield-Max): KXBTCD-25NOV28-100000 (ABOVE/yes, 2025-11-01→2025-11-28). Unprotected -$78.00 → protected -$46.80 after a $11.91 fee.
-
-We'd like 30 minutes to walk through the tier mechanics, the per-quadrant degradation matrix, and a zero-integration shadow pilot on your next 23 BTC markets.
+We're already live on Foxify with a related drawdown-protection product. We'd like 30 minutes to walk through the mechanism, the per-tier economics, and a zero-integration shadow pilot.
 ```
 
 ---
 
-## Tier Cash Story (drop-in slide)
+## Tier Cash Story
 
 On a typical Kalshi BTC contract @ 58¢ YES (≈ $58 at risk on a $100 face):
 
-| | Light (W=95%) | Standard (W=85%) | **Shield (W=70%)** | **Shield-Max (W=60%)** |
+| | Light | Standard | **Shield** | **Shield-Max** |
 |---|---|---|---|---|
-| Mechanism | NO leg, ~5% guaranteed rebate | NO leg, ~15% guaranteed rebate | NO leg, ~30% guaranteed rebate (institutional bar) | NO leg, ~40% guaranteed rebate (treasury tier) |
-| Extra cost | $5.31 (16%) | $12.26 (32%) | **$18.95** (44%) | **$22.16** (49%) |
-| % of losing markets that pay back | 91% | 91% | **91%** | **91%** |
-| Avg payout on losing markets | $7.88 (22%) | $19.43 (47%) | **$31.56** (70%) | **$37.64** (80%) |
-| Avg effective W (after degradation) | 95% | 87% | **76%** | **70%** |
-| Degradation rate (markets needing fallback) | 9% | 22% | 34% | 46% |
-| User EV cost (% of stake) | -3.2% | -6.5% | -9.0% | -10.1% |
-| Platform avg net P&L per $100 stake | $0.97 | $2.22 | $3.40 | $3.97 |
+| Geometry | 5%-OTM | 2%-OTM | ATM | ATM, 2× sized |
+| Premium | $1.22 | $2.14 | **$3.21** | **$6.42** |
+| Cost as % of protected notional | 2.43% | 4.23% | **6.35%** | **6.35%** |
+| Max payout / premium | 7.7× | 5.8× | 5.5× | 5.5× |
+| Avg recovery on losing markets | 4% of stake | 6% | 10% | 19% |
+| Best save in dataset | $2.49 | $4.21 | **$5.18** | **$10.36** |
 
 ---
 
-## What's different from prior pitch (PR #91)
+## Mechanic explainer
 
-- **Multi-archetype:** every BTC event you list (ABOVE / BELOW / HIT × YES / NO), not just monthly directional binaries.
-- **Direction-aware hedge:** call OR put spread per (event_type × direction). Previous package hardcoded put — was Foxify carryover.
-- **Foxify-clean:** zero pilot calibration constants in product code.
-- **Real-strike selection:** synthetic chain matches Deribit grid; offset-ladder fallback when narrow spread fails liquidity check (ported from kal_v3_demo).
-- **Honest pricing:** explicit bid-ask widener, no hidden vol-risk-premium scalar.
+```
+Trader buys "BTC > $80,000 by May 30" YES on Kalshi for $58.
+
+At entry, Atticus simultaneously buys (on Deribit):
+  Long  BTC-29MAY26-80000-P  (an ATM put expiring same day as Kalshi)
+  Short BTC-29MAY26-71000-P  (a 12%-OTM put — the floor)
+
+Net cost from the live Deribit chain: about ~6.4% of BTC notional.
+Atticus charges the trader: cost × 1.22 markup = ~6% of their $58 stake.
+
+If BTC ends ≥ $80k:
+  Kalshi pays the trader $100. The Deribit spread expires worthless.
+  Atticus keeps the markup minus 20% TP-salvage on un-triggered spread.
+
+If BTC ends at $73k:
+  Kalshi pays $0 (trader loses $58).
+  The Deribit spread pays out: (80000 - 73000)/79000 × notional = ~9% × notional.
+  Atticus passes the Deribit fill to trader. Trader's net loss is ~half of unprotected.
+
+In every case, Atticus is just procuring a real options trade. We don't take the binary's other side.
+```
 
 ---
 

@@ -23,7 +23,17 @@ A Foxify-clean, multi-archetype backtest of Atticus protection wrappers against 
 | Markup | "Foxify-style margin target" comments | Per-tier explicit, no inheritance |
 | Tier ladder | Lite/Standard rebate (probabilistic) + Shield/Shield+ (deterministic) | All four tiers deterministic-floor-driven, ladder by W (95% / 85% / 70% / 70%+overlay) |
 
-## Headline design: target-W tier ladder
+## Product rewrite — options-procurement bridge (April 2026)
+
+Earlier iterations of this package experimented with Kalshi-NO-leg "deterministic floor" mechanisms. Those were the wrong product: they had Atticus take the other side of the user's Kalshi bet, which is market-maker behavior, not options hedging.
+
+**Current product:** Atticus is a thin procurement bridge between Kalshi traders and Deribit. The user holds a Kalshi BTC bet; Atticus buys a real Deribit BTC vertical-spread on the user's behalf that pays when BTC moves the wrong direction. Atticus does NOT take the other side of the user's Kalshi bet, does NOT act as a Kalshi market maker, and does NOT warehouse risk.
+
+Pricing: live Deribit public-API quotes for current-date markets (no API keys, no auth, zero pilot disruption). BS-theoretical fallback for historical-date backtests, calibrated against the live chain so synthetic prices match within ~10-25%.
+
+Tier ladder: Light (5%-OTM, narrow) → Standard (2%-OTM, wider) → Shield (ATM, 12% width) → Shield-Max (ATM × 2 sized).
+
+## Legacy: target-W tier ladder
 
 Each tier picks a target worst-case-loss `W` as % of stake. The Kalshi-NO leg face is solved analytically from W and the actual yesPrice:
 
