@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "sim": "npx tsx src/main.ts"
+    "sim": "npx tsx src/main.ts",
+    "project": "npx tsx src/projectMain.ts"
   },
   "devDependencies": {
     "tsx": "^4.7.0",
