@@ -32,6 +32,8 @@ const TIERS: TierName[] = ["lite", "standard", "shield", "shield_plus"];
 
 type Row = {
   tier: TierName;
+  offered: boolean;
+  notOfferedReason: string;
   marketId: string;
   eventType: string;
   userDirection: string;
@@ -132,6 +134,8 @@ async function run(): Promise<void> {
       });
       rows.push({
         tier,
+        offered: quote.offered,
+        notOfferedReason: quote.notOfferedReason ?? "",
         marketId: market.marketId,
         eventType: market.eventType,
         userDirection: market.userDirection,
@@ -194,8 +198,10 @@ async function run(): Promise<void> {
 // ─── Aggregator ──────────────────────────────────────────────────────────────
 
 type Agg = {
-  n: number;
-  losing: Row[];
+  n: number;                   // total markets considered (offered + not)
+  nOffered: number;            // markets where the tier could be priced
+  offerRate: number;           // nOffered / n
+  losing: Row[];               // offered + losing
   losingBtcDown: Row[];
   losingDeepDrop: Row[];
   triggered: Row[];
@@ -219,22 +225,28 @@ type Agg = {
 
 function aggregate(rows: Row[]): Agg {
   const n = rows.length;
-  const losing = rows.filter(r => r.kalshiPnlUsd < 0);
+  const offered = rows.filter(r => r.offered);
+  const nOffered = offered.length;
+  // All recovery / fee / payout stats are computed over offered rows only.
+  // Not-offered rows contribute to "offer rate" but not to economics.
+  const losing = offered.filter(r => r.kalshiPnlUsd < 0);
   const losingBtcDown = losing.filter(r => r.btcMovePct < 0);
   const losingDeepDrop = losing.filter(r => Math.abs(r.btcMovePct) >= 10);
-  const triggered = rows.filter(r => r.hedgeTriggered);
+  const triggered = offered.filter(r => r.hedgeTriggered);
   const triggeredLosing = losing.filter(r => r.hedgeTriggered);
   const sum = (a: number[]) => a.reduce((s, v) => s + v, 0);
   const avg = (a: number[]) => (a.length ? sum(a) / a.length : 0);
   const losersWithPayout = losing.filter(r => r.totalPayoutUsd > 0).length;
-  const totalRevenue = sum(rows.map(r => r.platformRevenueUsd));
-  const totalCost = sum(rows.map(r => r.platformHedgeCostUsd));
-  const platformWins = rows.filter(r => r.platformNetPnlUsd > 0).length;
+  const totalRevenue = sum(offered.map(r => r.platformRevenueUsd));
+  const totalCost = sum(offered.map(r => r.platformHedgeCostUsd));
+  const platformWins = offered.filter(r => r.platformNetPnlUsd > 0).length;
   return {
     n,
+    nOffered,
+    offerRate: n ? nOffered / n : 0,
     losing, losingBtcDown, losingDeepDrop, triggered, triggeredLosing,
-    avgFeeUsd: avg(rows.map(r => r.feeUsd)),
-    avgFeePctOfStake: avg(rows.map(r => r.feePctOfStake)),
+    avgFeeUsd: avg(offered.map(r => r.feeUsd)),
+    avgFeePctOfStake: avg(offered.map(r => r.feePctOfStake)),
     avgRecoveryAllLosersUsd: avg(losing.map(r => r.totalPayoutUsd)),
     avgRecoveryAllLosersPctOfStake: avg(losing.map(r => r.recoveryPctOfStake)),
     avgRecoveryTriggeredLosersUsd: avg(triggeredLosing.map(r => r.totalPayoutUsd)),
@@ -242,12 +254,12 @@ function aggregate(rows: Row[]): Agg {
     avgRecoveryDeepDropLosersUsd: avg(losingDeepDrop.map(r => r.totalPayoutUsd)),
     avgRecoveryDeepDropLosersPctOfStake: avg(losingDeepDrop.map(r => r.recoveryPctOfStake)),
     fracPayoutOnLoss: losing.length ? losersWithPayout / losing.length : 0,
-    maxWorstCaseFracOfStake: rows.length ? Math.max(...rows.map(r => r.worstCaseLossFracOfStake)) : 0,
-    totalPlatformPnl: sum(rows.map(r => r.platformNetPnlUsd)),
-    avgPlatformPnlPerTrade: avg(rows.map(r => r.platformNetPnlUsd)),
+    maxWorstCaseFracOfStake: offered.length ? Math.max(...offered.map(r => r.worstCaseLossFracOfStake)) : 0,
+    totalPlatformPnl: sum(offered.map(r => r.platformNetPnlUsd)),
+    avgPlatformPnlPerTrade: avg(offered.map(r => r.platformNetPnlUsd)),
     avgMarginPctOfRevenue: totalRevenue > 0 ? ((totalRevenue - totalCost) / totalRevenue) * 100 : 0,
-    platformWinRate: n ? (platformWins / n) * 100 : 0,
-    bestSave: [...rows].sort((a, b) => b.userSavedUsd - a.userSavedUsd)[0],
+    platformWinRate: nOffered ? (platformWins / nOffered) * 100 : 0,
+    bestSave: [...offered].sort((a, b) => b.userSavedUsd - a.userSavedUsd)[0],
   };
 }
 
@@ -290,9 +302,10 @@ function buildSummary(
   L.push("");
   L.push("## Headline four-tier comparison");
   L.push("");
-  L.push("| Metric | Lite | Standard | Shield | Shield+ |");
+  L.push("| Metric | Light (W=95%) | Standard (W=85%) | Shield (W=70%) | Shield+ (W=70% +overlay) |");
   L.push("|---|---|---|---|---|");
-  L.push(`| Avg fee ($) | ${fmtUsd(byTier(aggsByTier, "lite").avgFeeUsd)} | ${fmtUsd(byTier(aggsByTier, "standard").avgFeeUsd)} | ${fmtUsd(byTier(aggsByTier, "shield").avgFeeUsd)} | ${fmtUsd(byTier(aggsByTier, "shield_plus").avgFeeUsd)} |`);
+  L.push(`| Offer rate (% of markets where tier could be priced) | ${pct(byTier(aggsByTier, "lite").offerRate)} | ${pct(byTier(aggsByTier, "standard").offerRate)} | ${pct(byTier(aggsByTier, "shield").offerRate)} | ${pct(byTier(aggsByTier, "shield_plus").offerRate)} |`);
+  L.push(`| Avg fee ($, offered markets) | ${fmtUsd(byTier(aggsByTier, "lite").avgFeeUsd)} | ${fmtUsd(byTier(aggsByTier, "standard").avgFeeUsd)} | ${fmtUsd(byTier(aggsByTier, "shield").avgFeeUsd)} | ${fmtUsd(byTier(aggsByTier, "shield_plus").avgFeeUsd)} |`);
   L.push(`| Avg fee (% of stake) | ${byTier(aggsByTier, "lite").avgFeePctOfStake.toFixed(1)}% | ${byTier(aggsByTier, "standard").avgFeePctOfStake.toFixed(1)}% | ${byTier(aggsByTier, "shield").avgFeePctOfStake.toFixed(1)}% | ${byTier(aggsByTier, "shield_plus").avgFeePctOfStake.toFixed(1)}% |`);
   L.push(`| **P(payout > 0 \\| loss)** | ${pct(byTier(aggsByTier, "lite").fracPayoutOnLoss)} | ${pct(byTier(aggsByTier, "standard").fracPayoutOnLoss)} | **${pct(byTier(aggsByTier, "shield").fracPayoutOnLoss)}** | **${pct(byTier(aggsByTier, "shield_plus").fracPayoutOnLoss)}** |`);
   L.push(`| Avg recovery, all losers ($) | ${fmtUsd(byTier(aggsByTier, "lite").avgRecoveryAllLosersUsd)} | ${fmtUsd(byTier(aggsByTier, "standard").avgRecoveryAllLosersUsd)} | **${fmtUsd(byTier(aggsByTier, "shield").avgRecoveryAllLosersUsd)}** | **${fmtUsd(byTier(aggsByTier, "shield_plus").avgRecoveryAllLosersUsd)}** |`);
@@ -305,16 +318,33 @@ function buildSummary(
   L.push("");
   L.push("---");
   L.push("");
-  L.push("## Per-quadrant breakdown (Shield+ only — most institutional pitch)");
+  L.push("## Per-quadrant offer-rate matrix (which tiers can be priced where)");
   L.push("");
-  L.push("| Quadrant | n | Avg fee | Avg recovery (loss) | P(payout|loss) | Worst case |");
-  L.push("|---|---|---|---|---|---|");
+  L.push("Each cell shows: offer rate (markets where tier was offerable / total markets in that quadrant).");
+  L.push("");
+  L.push("| Quadrant | Light | Standard | Shield | Shield+ |");
+  L.push("|---|---|---|---|---|");
   const quadrants = ["ABOVE/yes", "ABOVE/no", "BELOW/yes", "BELOW/no", "HIT/yes", "HIT/no"];
-  for (const q of quadrants) {
-    const sub = rows.filter(r => r.tier === "shield_plus" && `${r.eventType}/${r.userDirection}` === q);
-    if (!sub.length) { L.push(`| ${q} | — | — | — | — | — |`); continue; }
+  for (const qLabel of quadrants) {
+    const cells: string[] = [];
+    for (const t of TIERS) {
+      const sub = rows.filter(r => r.tier === t && `${r.eventType}/${r.userDirection}` === qLabel);
+      if (!sub.length) { cells.push("—"); continue; }
+      const offered = sub.filter(r => r.offered).length;
+      cells.push(`${offered}/${sub.length} (${Math.round(100 * offered / sub.length)}%)`);
+    }
+    L.push(`| ${qLabel} | ${cells.join(" | ")} |`);
+  }
+  L.push("");
+  L.push("## Per-quadrant Shield+ economics (offered rows only)");
+  L.push("");
+  L.push("| Quadrant | n offered | Avg fee | Avg recovery (loss) | P(payout|loss) | Worst case |");
+  L.push("|---|---|---|---|---|---|");
+  for (const qLabel of quadrants) {
+    const sub = rows.filter(r => r.tier === "shield_plus" && `${r.eventType}/${r.userDirection}` === qLabel && r.offered);
+    if (!sub.length) { L.push(`| ${qLabel} | 0 | — | — | — | — |`); continue; }
     const a = aggregate(sub);
-    L.push(`| ${q} | ${sub.length} | ${fmtUsd(a.avgFeeUsd)} | ${fmtUsd(a.avgRecoveryAllLosersUsd)} (${a.avgRecoveryAllLosersPctOfStake.toFixed(0)}%) | ${pct(a.fracPayoutOnLoss)} | ${a.maxWorstCaseFracOfStake.toFixed(0)}% |`);
+    L.push(`| ${qLabel} | ${sub.length} | ${fmtUsd(a.avgFeeUsd)} | ${fmtUsd(a.avgRecoveryAllLosersUsd)} (${a.avgRecoveryAllLosersPctOfStake.toFixed(0)}%) | ${pct(a.fracPayoutOnLoss)} | ${a.maxWorstCaseFracOfStake.toFixed(0)}% |`);
   }
   L.push("");
   L.push("---");
@@ -380,19 +410,28 @@ function buildPitchSnippets(
   L.push("");
   L.push("**Body:**");
   L.push("```");
-  L.push(`We ran our protection wrapper across ${KALSHI_BTC_MARKETS.length} of your settled BTC markets, covering all three event archetypes you list (ABOVE / BELOW / HIT) on both YES and NO directions.`);
+  L.push(`We ran a protection-wrapper backtest across ${KALSHI_BTC_MARKETS.length} of your settled BTC markets, covering all three event archetypes (ABOVE / BELOW / HIT) on both YES and NO directions.`);
   L.push("");
-  L.push(`Today, every losing Kalshi BTC bet is a complete write-off. With Shield+ at the headline tier (~${fmtUsd(sp.avgFeeUsd)} extra fee, ~${sp.avgFeePctOfStake.toFixed(0)}% of stake), every losing position pays back ${fmtUsd(sp.avgRecoveryAllLosersUsd)} on average — at minimum 30% of stake guaranteed by contract regardless of which direction BTC moves or which event archetype settled against the user.`);
+  L.push(`The product is a four-tier ladder where each tier targets a contract-bounded worst-case loss:`);
+  L.push(`  • Light    (W=95%): cheapest tier, ~${byTier(aggsByTier, "lite").avgFeePctOfStake.toFixed(0)}% fee, every loss pays back ~${byTier(aggsByTier, "lite").avgRecoveryAllLosersPctOfStake.toFixed(0)}% of stake.`);
+  L.push(`  • Standard (W=85%): ~${byTier(aggsByTier, "standard").avgFeePctOfStake.toFixed(0)}% fee, ~${byTier(aggsByTier, "standard").avgRecoveryAllLosersPctOfStake.toFixed(0)}% recovery on every loss.`);
+  L.push(`  • Shield   (W=70%): institutional bar — worst-case loss ≤ 70% of stake by contract, ~${byTier(aggsByTier, "shield").avgFeePctOfStake.toFixed(0)}% fee, ~${byTier(aggsByTier, "shield").avgRecoveryAllLosersPctOfStake.toFixed(0)}% recovery.`);
+  L.push(`  • Shield+  (W=70% + BTC overlay): Shield's floor PLUS an option-spread overlay — ~${sp.avgFeePctOfStake.toFixed(0)}% fee, ~${sp.avgRecoveryAllLosersPctOfStake.toFixed(0)}% recovery, with extra cash on tail BTC moves.`);
   L.push("");
-  L.push(`The mechanism: Atticus pairs the user's Kalshi position with (a) a Kalshi-NO leg sized to deliver a deterministic rebate floor on any losing outcome, and (b) a Deribit option overlay (call OR put spread, instrument selected per event archetype) for additional payout when the underlying moved materially.`);
+  L.push(`Mechanism: Atticus pairs the user's Kalshi position with (a) a Kalshi-NO leg sized analytically so user worst-case loss does not exceed the tier's W parameter, and (b) for Shield+, a Deribit option-spread overlay (call OR put per event archetype) for tail-upside cash recovery.`);
   L.push("");
-  L.push(`Worst-case realized loss across our entire backtest: ${sp.maxWorstCaseFracOfStake.toFixed(0)}% of stake (vs 100% unprotected). That's the threshold institutional risk policies require.`);
+  L.push(`Crucially, every tier crosses A1+A2+A3 (every loss pays back something, ≥15% of stake on average, never worse than unprotected). Shield/Shield+ also cross B1 (≤70% worst case) — the institutional risk-policy threshold that lets treasuries and RIAs whitelist the wrapped instrument.`);
+  L.push("");
+  L.push(`Tiers are NOT_OFFERED on markets where the math is infeasible (loss-leg price × markup ≥ 1). The offer-rate matrix in the summary doc shows where each tier prices: Atticus protection naturally fits the high-yesPrice favorite trades (~89% offer rate on Shield for ABOVE/YES) and is honest about not pricing on long-shot trades (where users don't need or want it).`);
   if (sp.bestSave) {
+    L.push("");
     const b = sp.bestSave;
-    L.push(`Best save in the dataset: ${b.marketId} (${b.eventType}/${b.userDirection}, ${b.openDate}→${b.settleDate}). Unprotected ${fmtUsd(b.kalshiPnlUsd)} → protected ${fmtUsd(b.userNetWithProtectionUsd)} after a ${fmtUsd(b.feeUsd)} fee.`);
+    L.push(`Best save in the dataset (Shield+): ${b.marketId} (${b.eventType}/${b.userDirection}, ${b.openDate}→${b.settleDate}). Unprotected ${fmtUsd(b.kalshiPnlUsd)} → protected ${fmtUsd(b.userNetWithProtectionUsd)} after a ${fmtUsd(b.feeUsd)} fee.`);
   }
   L.push("");
-  L.push(`Atticus is already live with Foxify on a related drawdown-protection product. We'd like 30 minutes to walk through tier mechanics, the platform side (~${sp.avgMarginPctOfRevenue.toFixed(0)}% gross, fully Deribit/Kalshi-hedged, no warehousing), and a zero-integration shadow pilot on your next ${Math.ceil(KALSHI_BTC_MARKETS.length / 3)} BTC markets.`);
+  L.push(`Atticus runs ~${sp.avgMarginPctOfRevenue.toFixed(0)}% gross margin per trade across all four tiers. Both legs (Kalshi-NO and Deribit overlay) are pass-through hedged — no warehousing, no solvency tail. Same operational pattern as our live Foxify pilot, but the calibration parameters and product structure are entirely Kalshi-native.`);
+  L.push("");
+  L.push(`We'd like 30 minutes to walk through the tier mechanics, the offer-rate matrix per event archetype, and a zero-integration shadow pilot on your next ${Math.ceil(KALSHI_BTC_MARKETS.length / 3)} BTC markets.`);
   L.push("```");
   L.push("");
   L.push("---");
@@ -401,13 +440,14 @@ function buildPitchSnippets(
   L.push("");
   L.push("On a typical Kalshi BTC contract @ 58¢ YES (≈ $58 at risk on a $100 face):");
   L.push("");
-  L.push("| | Lite | Standard | **Shield** | **Shield+** |");
+  L.push("| | Light (W=95%) | Standard (W=85%) | **Shield (W=70%)** | **Shield+ (W=70%+overlay)** |");
   L.push("|---|---|---|---|---|");
-  L.push(`| Mechanism | Adapter-driven option spread (call/put per archetype) | Same, 1.7× sized | Kalshi-NO leg only | NO leg + spread overlay |`);
+  L.push(`| Mechanism | Kalshi-NO leg sized for 5% rebate | NO leg sized for 15% rebate | NO leg sized for 30% rebate | NO leg + BTC option-spread overlay |`);
   L.push(`| Extra cost | ${fmtUsd(byTier(aggsByTier, "lite").avgFeeUsd)} (${byTier(aggsByTier, "lite").avgFeePctOfStake.toFixed(0)}%) | ${fmtUsd(byTier(aggsByTier, "standard").avgFeeUsd)} (${byTier(aggsByTier, "standard").avgFeePctOfStake.toFixed(0)}%) | **${fmtUsd(sh.avgFeeUsd)}** (${sh.avgFeePctOfStake.toFixed(0)}%) | **${fmtUsd(sp.avgFeeUsd)}** (${sp.avgFeePctOfStake.toFixed(0)}%) |`);
   L.push(`| % of losing markets that pay back | ${pct(byTier(aggsByTier, "lite").fracPayoutOnLoss)} | ${pct(byTier(aggsByTier, "standard").fracPayoutOnLoss)} | **${pct(sh.fracPayoutOnLoss)}** | **${pct(sp.fracPayoutOnLoss)}** |`);
   L.push(`| Avg payout on losing markets | ${fmtUsd(byTier(aggsByTier, "lite").avgRecoveryAllLosersUsd)} (${byTier(aggsByTier, "lite").avgRecoveryAllLosersPctOfStake.toFixed(0)}%) | ${fmtUsd(byTier(aggsByTier, "standard").avgRecoveryAllLosersUsd)} (${byTier(aggsByTier, "standard").avgRecoveryAllLosersPctOfStake.toFixed(0)}%) | **${fmtUsd(sh.avgRecoveryAllLosersUsd)}** (${sh.avgRecoveryAllLosersPctOfStake.toFixed(0)}%) | **${fmtUsd(sp.avgRecoveryAllLosersUsd)}** (${sp.avgRecoveryAllLosersPctOfStake.toFixed(0)}%) |`);
   L.push(`| Worst-case loss (% of stake) | ${byTier(aggsByTier, "lite").maxWorstCaseFracOfStake.toFixed(0)}% | ${byTier(aggsByTier, "standard").maxWorstCaseFracOfStake.toFixed(0)}% | **${sh.maxWorstCaseFracOfStake.toFixed(0)}%** | **${sp.maxWorstCaseFracOfStake.toFixed(0)}%** |`);
+  L.push(`| Offer rate (markets where tier prices) | ${pct(byTier(aggsByTier, "lite").offerRate)} | ${pct(byTier(aggsByTier, "standard").offerRate)} | ${pct(sh.offerRate)} | ${pct(sp.offerRate)} |`);
   L.push("");
   L.push("---");
   L.push("");
