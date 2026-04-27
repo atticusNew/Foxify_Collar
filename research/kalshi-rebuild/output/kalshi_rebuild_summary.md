@@ -3,7 +3,7 @@
 **Markets:** 68 (across ABOVE / BELOW / HIT × YES / NO).
 **Bet size:** $100 contract face. Scales linearly.
 **Outcome mismatches (recorded vs derived):** 9/68.
-**Live Deribit calibration snapshot:** BTC index $79085, 932 contracts (public API only).
+**Live Deribit calibration snapshot:** BTC index $79156, 932 contracts (public API only).
 
 ## Product
 
@@ -21,37 +21,40 @@ All numbers below are **dollars on a $40 stake** alongside **% of stake**, so th
 
 | Metric | Standard | Shield | Shield-Max |
 |---|---|---|---|
-| Geometry | 2%-OTM-from-spot, 5% width, **7× sized** | 1%-OTM-from-spot, 6% width, **7× sized** | ATM-from-spot, 8% width, **12× sized** |
-| Hedgeable rate | 85% | 85% | 85% |
+| Geometry | 2%-OTM-from-spot, 5% width, **6.5× sized** | 1%-OTM-from-spot, 6% width, **7× sized** | ATM-from-spot, 8% width, **12× sized** |
+| Hedgeable rate | 100% | 100% | 100% |
 
 **Pricing — what the trader pays at entry:**
 
 | | Standard | Shield | Shield-Max |
 |---|---|---|---|
-| Avg fee, % of stake | **15.2%** | **18.9%** | **43.4%** |
-| Avg fee on a $40 stake | **$6.07** | **$7.57** | **$17.34** |
+| Avg fee, % of stake | **14.1%** | **18.9%** | **43.4%** |
+| Avg fee on a $40 stake | **$5.64** | **$7.57** | **$17.34** |
 | Capital efficiency (fee / protected notional) | 2.17% | 2.70% | 3.61% |
 | Recovery ratio (max payout / fee) | 2.3× | 2.2× | 2.2× |
-| User EV cost (insurance premium) | -2.7% | -3.4% | -7.8% |
+| User EV cost (insurance premium) | -2.5% | -3.4% | -7.8% |
 
 **Recovery — what the trader gets back when the bet goes badly:**
+
+Both **average** and **median** recovery are reported. A few large adverse-month payouts can skew the average up; the median is the more honest single-trade expectation.
 
 | | Standard | Shield | Shield-Max |
 |---|---|---|---|
 | BTC-adverse losing markets in dataset (n) | 22 | 22 | 22 |
-| **Avg recovery, BTC-adverse losers, % of stake** | **30.0%** | **37.0%** | **84.7%** |
-| **Avg recovery on a $40 stake** | **$12.00** | **$14.79** | **$33.87** |
-| Avg recovery, all losers, % of stake | 23.6% | 29.1% | 66.5% |
-| Avg recovery, all losers, on $40 stake | $9.43 | $11.62 | $26.61 |
-| Worst BTC-adverse loss: unprotected → protected | -$78.00 → -$62.43 | -$78.00 → -$59.92 | -$78.00 → -$36.75 |
+| **Avg recovery, BTC-adverse losers, % of stake** | **27.9%** | **37.0%** | **84.7%** |
+| **Median recovery, BTC-adverse losers, % of stake** | **32.5%** | **42.0%** | **96.0%** |
+| Avg recovery on a $40 stake | $11.15 | $14.79 | $33.87 |
+| Median recovery on a $40 stake | $13.00 | $16.80 | $38.40 |
+| Avg recovery, all losers, % of stake | 21.9% | 29.1% | 66.5% |
+| Worst BTC-adverse loss: unprotected → protected | -$78.00 → -$63.54 | -$78.00 → -$59.92 | -$78.00 → -$36.75 |
 
 **Platform sustainability:**
 
 | | Standard | Shield | Shield-Max |
 |---|---|---|---|
 | Avg gross margin (% of revenue) | 18.0% | 18.0% | 18.0% |
-| Avg platform P&L per trade (on $100 stake) | $2.25 | $2.74 | $6.29 |
-| Avg platform P&L per trade (on $40 stake) | $0.90 | $1.10 | $2.52 |
+| Avg platform P&L per trade (on $100 stake) | $2.09 | $2.74 | $6.29 |
+| Avg platform P&L per trade (on $40 stake) | $0.84 | $1.10 | $2.52 |
 
 
 ---
@@ -62,7 +65,7 @@ Pricing the hedge as cost-per-dollar-of-protected-BTC-notional. For comparison, 
 
 | Tier | Avg fee | Avg fee / stake | Avg fee / notional | Recovery ratio |
 |---|---|---|---|---|
-| standard | $7.97 | 15.2% | **2.17%** | 2.3× |
+| standard | $7.40 | 14.1% | **2.17%** | 2.3× |
 | shield | $9.93 | 18.9% | **2.70%** | 2.2× |
 | shield_plus | $22.76 | 43.4% | **3.61%** | 2.2× |
 
@@ -79,7 +82,7 @@ The product is mechanism-symmetric: regardless of bet direction, the adapter rou
 | Tier | YES bets (n) | YES avg fee/notional | YES avg recovery (loss) | NO bets (n) | NO avg fee/notional | NO avg recovery (loss) |
 |---|---|---|---|---|---|---|
 | lite | 45 | 0.00% | $0.00 (0%) | 13 | 0.00% | $0.00 (0%) |
-| standard | 45 | 2.19% | $10.26 (19%) | 13 | 2.10% | $15.49 (35%) |
+| standard | 45 | 2.19% | $9.53 (18%) | 13 | 2.10% | $14.38 (33%) |
 | shield | 45 | 2.73% | $12.96 (24%) | 13 | 2.63% | $18.59 (42%) |
 | shield_plus | 45 | 3.64% | $29.68 (55%) | 13 | 3.51% | $42.48 (96%) |
 
@@ -123,7 +126,7 @@ HIT events show 0% hedgeable: vanilla puts/calls don't replicate first-to-touch 
 
 | Tier | Net margin / $100 stake | @ 5% opt-in | @ 10% | @ 15% |
 |---|---|---|---|---|
-| standard | $2.25 | $1,024 | $2,048 | $3,073 |
+| standard | $2.09 | $951 | $1,903 | $2,854 |
 | shield | $2.74 | $1,277 | $2,554 | $3,831 |
 | shield_plus | $6.29 | $2,926 | $5,852 | $8,778 |
 

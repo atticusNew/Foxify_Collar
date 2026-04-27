@@ -2,7 +2,7 @@
 
 Atticus is an options-procurement bridge: we route real Deribit BTC vertical-spread hedges to Kalshi traders in a single combined-ticket flow. We don't act as a Kalshi market maker, we don't take the other side of bets. Below: trader-perspective economics on a typical $40 retail Kalshi BTC stake.
 
-*Live Deribit calibration: BTC index $79085, 932 listed contracts.*
+*Live Deribit calibration: BTC index $79156, 932 listed contracts.*
 
 ---
 
@@ -16,8 +16,8 @@ We built a thin overlay that lets a Kalshi user buy a BTC bet and a real Deribit
 
 On a typical $40 retail Kalshi BTC stake:
 
-  Standard tier:  +$6.07 fee at entry. When BTC moves materially against the trader and they lose,
-                  they get back $12.00 on average (30% of stake).
+  Standard tier:  +$5.64 fee at entry. When BTC moves materially against the trader and they lose,
+                  they get back $11.15 on average (28% of stake).
 
   Shield tier:    +$7.57 fee at entry. On those same BTC-down losing months,
                   they get back $14.79 on average (37% of stake).
@@ -43,8 +43,8 @@ On a typical $40 Kalshi BTC stake:
 | | Standard | Shield | Shield-Max |
 |---|---|---|---|
 | Geometry | 2%-OTM, 8% width, 2.5× sized | 1%-OTM, 10% width, 4× sized | same as Shield, 6× sized |
-| Premium at entry | $6.07 (15%) | **$7.57** (19%) | $17.34 (43%) |
-| Avg recovery on BTC-down losing months | $12.00 (30%) | **$14.79** (37%) | $33.87 (85%) |
+| Premium at entry | $5.64 (14%) | **$7.57** (19%) | $17.34 (43%) |
+| Avg recovery on BTC-down losing months | $11.15 (28%) | **$14.79** (37%) | $33.87 (85%) |
 | Worst-month: unprotected → protected | -$0.31 → -$0.25 | **-$0.31 → -$0.24** | -$0.31 → -$0.15 |
 | Story | "Pay $0 extra to recover ~$0 when the trade goes badly." | "Pay $0 extra to roughly halve your worst losing months." | "Pay $0 extra for max tail-event cash." |
 

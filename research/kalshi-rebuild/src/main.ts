@@ -220,10 +220,17 @@ async function run(): Promise<void> {
 
   console.error("[4/5] Aggregating and writing outputs…");
   const aggsByTier = TIERS.map(t => ({ tier: t, agg: aggregate(rows.filter(r => r.tier === t)) }));
+  // Hedgeable subset: ABOVE+BELOW only. HIT is not vanilla-hedgeable; we
+  // exclude it from headline numbers so the trader-facing pitch isn't dragged
+  // by 15% of rows that the product explicitly doesn't address.
+  const aboveBelowAggs = TIERS.map(t => ({
+    tier: t,
+    agg: aggregate(rows.filter(r => r.tier === t && r.eventType !== "HIT")),
+  }));
   await writeFile(path.join(OUTPUT_DIR, "kalshi_rebuild_trades.csv"), toCsv(rows), "utf8");
-  const summary = buildSummary(rows, aggsByTier, mismatchCount, liveChain);
+  const summary = buildSummary(rows, aggsByTier, aboveBelowAggs, mismatchCount, liveChain);
   await writeFile(path.join(OUTPUT_DIR, "kalshi_rebuild_summary.md"), summary, "utf8");
-  const snippets = buildPitchSnippets(rows, aggsByTier, liveChain);
+  const snippets = buildPitchSnippets(rows, aggsByTier, aboveBelowAggs, liveChain);
   await writeFile(path.join(OUTPUT_DIR, "kalshi_rebuild_pitch_snippets.md"), snippets, "utf8");
 
   console.log("\n" + "═".repeat(72));
@@ -256,19 +263,24 @@ type Agg = {
   // Pricing
   avgFeeUsd: number;
   avgFeePctOfStake: number;
+  medianFeePctOfStake: number;
   avgFeePctOfNotional: number;
   avgRecoveryRatio: number;
-  // Recovery aggregates
+  // Recovery aggregates (avg + median to surface tail-skew)
   avgRecoveryAllLosersUsd: number;
   avgRecoveryAllLosersPctOfStake: number;
+  medianRecoveryAllLosersPctOfStake: number;
   avgRecoveryBtcAdverseUsd: number;       // KEY trader metric
   avgRecoveryBtcAdversePctOfStake: number;
+  medianRecoveryBtcAdversePctOfStake: number;  // user-requested
   worstLossUnprotectedBtcAdverseUsd: number;
   worstLossProtectedBtcAdverseUsd: number;
   avgRecoveryTriggeredLosersUsd: number;
   avgRecoveryTriggeredLosersPctOfStake: number;
   fracPayoutOnLoss: number;
   avgUserEvPctOfStake: number;
+  // Realized EV (empirical, not BS-theoretical) — avg actual payout − fee
+  realizedEvPctOfStake: number;
   // Platform
   totalPlatformPnl: number;
   avgPlatformPnlPerTrade: number;
@@ -290,6 +302,13 @@ function isBtcAdverseForRow(r: Row): boolean {
   return false;
 }
 
+function median(a: number[]): number {
+  if (!a.length) return 0;
+  const s = [...a].sort((x, y) => x - y);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+}
+
 function aggregate(rows: Row[]): Agg {
   const n = rows.length;
   const hedgeable = rows.filter(r => r.hedgeable);
@@ -304,6 +323,9 @@ function aggregate(rows: Row[]): Agg {
   const totalCost = sum(hedgeable.map(r => r.platformHedgeCostUsd));
   // Worst losing month: largest absolute Kalshi loss in the BTC-adverse subset.
   const worstByMagnitude = [...losingBtcAdverse].sort((a, b) => a.kalshiPnlUsd - b.kalshiPnlUsd)[0];
+  // Realized EV across all hedgeable trades = avg of (actual payout - fee) / stake.
+  // Computed from outcome-net (userSavedUsd is post-fee net of payout).
+  const realizedEv = avg(hedgeable.map(r => r.userSavedUsd / Math.max(0.01, r.yesPrice * 0.01 * 100) * 100));
   return {
     n, nHedgeable: hedgeable.length, hedgeableRate: n ? hedgeable.length / n : 0,
     nLive: rows.filter(r => r.pricingSource === "live_deribit").length,
@@ -311,18 +333,22 @@ function aggregate(rows: Row[]): Agg {
     losing, losingBtcAdverse, triggered, triggeredLosing,
     avgFeeUsd: avg(hedgeable.map(r => r.feeUsd)),
     avgFeePctOfStake: avg(hedgeable.map(r => r.feePctOfStake)),
+    medianFeePctOfStake: median(hedgeable.map(r => r.feePctOfStake)),
     avgFeePctOfNotional: avg(hedgeable.map(r => r.feePctOfNotional)),
     avgRecoveryRatio: avg(hedgeable.map(r => r.recoveryRatio)),
     avgRecoveryAllLosersUsd: avg(losing.map(r => r.totalPayoutUsd)),
     avgRecoveryAllLosersPctOfStake: avg(losing.map(r => r.recoveryPctOfStake)),
+    medianRecoveryAllLosersPctOfStake: median(losing.map(r => r.recoveryPctOfStake)),
     avgRecoveryBtcAdverseUsd: avg(losingBtcAdverse.map(r => r.totalPayoutUsd)),
     avgRecoveryBtcAdversePctOfStake: avg(losingBtcAdverse.map(r => r.recoveryPctOfStake)),
+    medianRecoveryBtcAdversePctOfStake: median(losingBtcAdverse.map(r => r.recoveryPctOfStake)),
     worstLossUnprotectedBtcAdverseUsd: worstByMagnitude?.kalshiPnlUsd ?? 0,
     worstLossProtectedBtcAdverseUsd: worstByMagnitude?.userNetWithProtectionUsd ?? 0,
     avgRecoveryTriggeredLosersUsd: avg(triggeredLosing.map(r => r.totalPayoutUsd)),
     avgRecoveryTriggeredLosersPctOfStake: avg(triggeredLosing.map(r => r.recoveryPctOfStake)),
     fracPayoutOnLoss: losing.length ? losersWithPayout / losing.length : 0,
     avgUserEvPctOfStake: avg(hedgeable.map(r => r.userEvPctOfStake)),
+    realizedEvPctOfStake: realizedEv,
     totalPlatformPnl: sum(hedgeable.map(r => r.platformNetPnlUsd)),
     avgPlatformPnlPerTrade: avg(hedgeable.map(r => r.platformNetPnlUsd)),
     totalPlatformRevenue: totalRevenue,
@@ -369,13 +395,16 @@ function on40(pctOfStake: number): string {
 function buildSummary(
   rows: Row[],
   aggsByTier: { tier: TierName; agg: Agg }[],
+  aboveBelowAggs: { tier: TierName; agg: Agg }[],
   mismatchCount: number,
   liveChain: DeribitChainSnapshot | null,
 ): string {
   const L: string[] = [];
-  const st = byTier(aggsByTier, "standard");
-  const sh = byTier(aggsByTier, "shield");
-  const sm = byTier(aggsByTier, "shield_plus");
+  // Headline numbers come from ABOVE+BELOW subset (HIT explicitly excluded
+  // since vanilla put/call don't replicate barrier payoffs).
+  const st = byTier(aboveBelowAggs, "standard");
+  const sh = byTier(aboveBelowAggs, "shield");
+  const sm = byTier(aboveBelowAggs, "shield_plus");
 
   L.push("# Atticus / Kalshi Options-Hedge Backtest — Trader-Perspective Tuning");
   L.push(`**Generated:** ${new Date().toISOString().slice(0, 10)}`);
@@ -404,7 +433,7 @@ function buildSummary(
   L.push("");
   L.push("| Metric | Standard | Shield | Shield-Max |");
   L.push("|---|---|---|---|");
-  L.push(`| Geometry | 2%-OTM-from-spot, 5% width, **7× sized** | 1%-OTM-from-spot, 6% width, **7× sized** | ATM-from-spot, 8% width, **12× sized** |`);
+  L.push(`| Geometry | 2%-OTM-from-spot, 5% width, **6.5× sized** | 1%-OTM-from-spot, 6% width, **7× sized** | ATM-from-spot, 8% width, **12× sized** |`);
   L.push(`| Hedgeable rate | ${pct(st.hedgeableRate)} | ${pct(sh.hedgeableRate)} | ${pct(sm.hedgeableRate)} |`);
   L.push("");
   L.push("**Pricing — what the trader pays at entry:**");
@@ -419,13 +448,16 @@ function buildSummary(
   L.push("");
   L.push("**Recovery — what the trader gets back when the bet goes badly:**");
   L.push("");
+  L.push("Both **average** and **median** recovery are reported. A few large adverse-month payouts can skew the average up; the median is the more honest single-trade expectation.");
+  L.push("");
   L.push("| | Standard | Shield | Shield-Max |");
   L.push("|---|---|---|---|");
   L.push(`| BTC-adverse losing markets in dataset (n) | ${st.losingBtcAdverse.length} | ${sh.losingBtcAdverse.length} | ${sm.losingBtcAdverse.length} |`);
   L.push(`| **Avg recovery, BTC-adverse losers, % of stake** | **${st.avgRecoveryBtcAdversePctOfStake.toFixed(1)}%** | **${sh.avgRecoveryBtcAdversePctOfStake.toFixed(1)}%** | **${sm.avgRecoveryBtcAdversePctOfStake.toFixed(1)}%** |`);
-  L.push(`| **Avg recovery on a $40 stake** | **${on40(st.avgRecoveryBtcAdversePctOfStake)}** | **${on40(sh.avgRecoveryBtcAdversePctOfStake)}** | **${on40(sm.avgRecoveryBtcAdversePctOfStake)}** |`);
+  L.push(`| **Median recovery, BTC-adverse losers, % of stake** | **${st.medianRecoveryBtcAdversePctOfStake.toFixed(1)}%** | **${sh.medianRecoveryBtcAdversePctOfStake.toFixed(1)}%** | **${sm.medianRecoveryBtcAdversePctOfStake.toFixed(1)}%** |`);
+  L.push(`| Avg recovery on a $40 stake | ${on40(st.avgRecoveryBtcAdversePctOfStake)} | ${on40(sh.avgRecoveryBtcAdversePctOfStake)} | ${on40(sm.avgRecoveryBtcAdversePctOfStake)} |`);
+  L.push(`| Median recovery on a $40 stake | ${on40(st.medianRecoveryBtcAdversePctOfStake)} | ${on40(sh.medianRecoveryBtcAdversePctOfStake)} | ${on40(sm.medianRecoveryBtcAdversePctOfStake)} |`);
   L.push(`| Avg recovery, all losers, % of stake | ${st.avgRecoveryAllLosersPctOfStake.toFixed(1)}% | ${sh.avgRecoveryAllLosersPctOfStake.toFixed(1)}% | ${sm.avgRecoveryAllLosersPctOfStake.toFixed(1)}% |`);
-  L.push(`| Avg recovery, all losers, on $40 stake | ${on40(st.avgRecoveryAllLosersPctOfStake)} | ${on40(sh.avgRecoveryAllLosersPctOfStake)} | ${on40(sm.avgRecoveryAllLosersPctOfStake)} |`);
   L.push(`| Worst BTC-adverse loss: unprotected → protected | ${fmtUsd(st.worstLossUnprotectedBtcAdverseUsd)} → ${fmtUsd(st.worstLossProtectedBtcAdverseUsd)} | ${fmtUsd(sh.worstLossUnprotectedBtcAdverseUsd)} → ${fmtUsd(sh.worstLossProtectedBtcAdverseUsd)} | ${fmtUsd(sm.worstLossUnprotectedBtcAdverseUsd)} → ${fmtUsd(sm.worstLossProtectedBtcAdverseUsd)} |`);
   L.push("");
   L.push("**Platform sustainability:**");
@@ -535,12 +567,14 @@ function buildSummary(
 function buildPitchSnippets(
   rows: Row[],
   aggsByTier: { tier: TierName; agg: Agg }[],
+  aboveBelowAggs: { tier: TierName; agg: Agg }[],
   liveChain: DeribitChainSnapshot | null,
 ): string {
   const L: string[] = [];
-  const st = byTier(aggsByTier, "standard");
-  const sh = byTier(aggsByTier, "shield");
-  const sm = byTier(aggsByTier, "shield_plus");
+  // ABOVE+BELOW only for headline trader-facing numbers
+  const st = byTier(aboveBelowAggs, "standard");
+  const sh = byTier(aboveBelowAggs, "shield");
+  const sm = byTier(aboveBelowAggs, "shield_plus");
   L.push("# Atticus → Kalshi Pitch Snippets — Trader-Cash Story");
   L.push("");
   L.push("Atticus is an options-procurement bridge: we route real Deribit BTC vertical-spread hedges to Kalshi traders in a single combined-ticket flow. We don't act as a Kalshi market maker, we don't take the other side of bets. Below: trader-perspective economics on a typical $40 retail Kalshi BTC stake.");

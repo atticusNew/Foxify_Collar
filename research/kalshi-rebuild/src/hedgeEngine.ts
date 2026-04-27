@@ -173,24 +173,23 @@ export const TIER_CONFIGS: Record<TierName, TierConfig> = {
     sizingMultiplier: 0.0,
   },
   // Standard: retail "real money back" tier.
-  // Target: ~10-15% fee of stake, ~30-40% rebate on BTC-adverse losing months.
-  // 2%-OTM-from-spot long leg, 5% width, 7× sizing.
-  // Math: fee/notional ~0.5% → 0.5 × 7 × 1.22 = 4.3% fee/stake (low-end)
-  // → recovery cap = 5% × 7 = 35% of stake → fits 30-40% target.
+  // Target per user PRD: fee target 15% (hard cap 16%), avg rebate 30-35%.
+  // 2%-OTM-from-spot, 5% width, 6.5× sizing (slightly tightened from 7×
+  // per user feedback — smooths tails without dropping below 30%).
   standard: {
     ...COMMON,
-    description: "Standard: 2%-OTM-from-spot put/call, 5% width, 7× sized. Fee ~15% of stake; rebate ~30% of stake on BTC-adverse losing months.",
+    description: "Standard: 2%-OTM-from-spot put/call, 5% width, 6.5× sized. Fee ~14% of stake; rebate ~28-35% of stake on BTC-adverse losing months.",
     longOtmFromSpotFrac: 0.02,
     spreadWidthFrac: 0.05,
-    sizingMultiplier: 7.0,
+    sizingMultiplier: 6.5,
   },
   // Shield: retail "insured bet" tier.
-  // Target: ~15-20% fee of stake, ~40-60% rebate on BTC-adverse losers.
-  // 1%-OTM-from-spot long leg, 6% width, 7× sizing.
-  // Recovery cap = 6% × 7 = 42% of stake → enters 40-60% band on deep moves.
+  // Target per user PRD: fee target 18% (hard cap 20%), avg rebate 35-40%.
+  // 1%-OTM-from-spot, 6% width, 7× sizing (kept at 7× — empirically
+  // dropping to 6.5× shaves recovery below 35% before fee falls meaningfully).
   shield: {
     ...COMMON,
-    description: "Shield: 1%-OTM-from-spot put/call, 6% width, 7× sized. Fee ~18-20% of stake; rebate ~40% of stake on BTC-adverse losing months.",
+    description: "Shield: 1%-OTM-from-spot put/call, 6% width, 7× sized. Fee ~18-19% of stake; rebate ~35-42% of stake on BTC-adverse losing months.",
     longOtmFromSpotFrac: 0.01,
     spreadWidthFrac: 0.06,
     sizingMultiplier: 7.0,
