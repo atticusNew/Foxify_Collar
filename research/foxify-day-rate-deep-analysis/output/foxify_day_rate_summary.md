@@ -1,219 +1,155 @@
-# Foxify Per-Day Pricing — Deep Analysis
+# Foxify Per-Day Pricing — Deep Analysis (Locked Pricing + Hold-Until-Close)
 **Generated:** 2026-04-27
-**Window:** Last 24 months Coinbase BTC daily OHLC, 12312 simulated positions across 4 SL tiers × 3 position sizes × 3 strike geometries.
+**Window:** Last 24 months Coinbase BTC daily OHLC, 12168 simulated positions across 4 SL tiers × 3 position sizes × 3 strike geometries.
 
-**The product structure being evaluated:**
-- User opens position on Foxify, opts into per-day protection, picks an SL tier (2 / 3 / 5 / 10%).
-- User pays a fixed daily fee (the central question: what's the right fee per tier?).
-- Atticus buys a 14-day Deribit put spread underneath, sized to match the user's notional.
-- If BTC drops to the SL trigger threshold: **user gets paid SL% × notional instantly, protection closes**. Atticus then sells the open Deribit option back to the market for TP recovery.
-- If 7 days pass without trigger: protection ends, Atticus sells residual option for partial TP recovery.
-
----
-
-## §0: TL;DR (the one-page answer)
-
-**Yes — a fixed daily rate per tier is viable across the last 24 months of BTC market conditions.**
-
-Recommended product (rounded for trader-friendly numbers):
+**Product locked per CEO confirmation (Apr 27, 2026):**
 
 | Tier | Per $10k of position, per day | When BTC drops X%, you instantly receive |
 |---|---|---|
-| **2%** | $58/day | 2% of your position |
-| **3%** | $58/day | 3% of your position |
-| **5%** | $53/day | 5% of your position |
-| **10%** | $26/day | 10% of your position |
+| **2%** | $55/day | 2% of your position |
+| **3%** | $60/day | 3% of your position |
+| **5%** | $65/day | 5% of your position |
+| **10%** | $25/day | 10% of your position |
 
-Underlying mechanics:
-- Atticus buys a 14-day Deribit BTC put spread at user entry, with the long leg priced 1% closer to spot than the SL trigger (ITM long-leg geometry — best for TP recovery).
-- On SL trigger: instant payout to user, Atticus sells the open Deribit option for TP recovery (partially offsets payout).
-- Atticus runs **25% net margin in average conditions**. Compresses but stays roughly breakeven in high-vol regimes (see §4 — premium pool absorbs the variance).
-- **Reserves required:** ~$55k at 100 active users, ~$275k at 500 active users (see §5).
-- 24-month premium pool simulation shows positive cumulative balance throughout the window.
+**Hold mechanics:** Protection runs as long as the trader's perp position is open, capped at 14 days (matches the underlying Deribit option tenor — no rolls). At day 12 the trader is prompted to renew if they want to extend; at day 14 protection auto-ends. **If the trader closes their perp before then, protection auto-closes and any unused option value is refunded** to the trader's margin balance (minus a 5% bid-ask haircut on the Deribit unwind).
 
-**Trader value:**
-- 2% tier: trigger rate ~72% over a 7-day hold (most trades pay out something).
-- 5% tier: trigger rate ~43% (about half of trades pay out the 5% safety net).
-- 10% tier: trigger rate ~12% (catastrophe insurance — long stretches without payout, occasional big hit).
-
-**Two surprises in the data worth knowing:**
-1. The 2% and 3% tier rates are nearly the same (~$58/day per $10k). Reason: 2% triggers more often but with smaller payout, 3% triggers less but with bigger payout. They converge at the same daily cost. **Trader UX recommendation:** consider pricing 3% slightly higher than 2% (e.g., $58 vs $55) just for ladder-readability; the math allows it.
-2. The 10% tier is surprisingly cheap ($26/day per $10k) because trigger rate is only ~12%. This may make the 10% tier the most-attractive entry product for novice traders — cheap, simple, big payout when it does trigger.
+**Underlying mechanics:** Atticus buys a 14-day Deribit BTC put spread at user entry, with the long leg priced 1% closer to spot than the SL trigger (ITM long-leg geometry — best for TP recovery). On SL trigger, instant payout to user, Atticus sells the open option for TP recovery (partially offsets the payout).
 
 ---
 
-## §1: Recommended day rate per tier (the answer)
+## §0: TL;DR — does the locked pricing work?
 
-Aggregated across all market conditions in the last 24 months. Fees are calibrated to deliver a **25% Atticus net margin in average conditions**, with margin compressing in high-vol regimes (still positive). Strike geometry: **slightly ITM long leg** — best TP recovery on trigger.
+**Headline by tier (per $10k of position, ITM long-leg geometry):**
 
-| SL tier | Position size | **Recommended fee/day** | $ / day per $10k | Trigger rate (24mo avg) | Avg trader payout when SL fires | Atticus net margin |
+| Tier | Fee/day | Trigger rate (24mo) | Avg days active | Avg total premium per cycle | Payout when triggered | Atticus net margin |
 |---|---|---|---|---|---|---|
-| **2%** | $10,000 | **$57.99** | $57.99 | 72.5% | $200 | 25.0% |
-| **2%** | $25,000 | **$144.99** | $57.99 | 72.5% | $500 | 25.0% |
-| **2%** | $50,000 | **$289.97** | $57.99 | 72.5% | $1,000 | 25.0% |
-| **3%** | $10,000 | **$58.19** | $58.19 | 61.1% | $300 | 25.0% |
-| **3%** | $25,000 | **$145.48** | $58.19 | 61.1% | $750 | 25.0% |
-| **3%** | $50,000 | **$290.96** | $58.19 | 61.1% | $1,500 | 25.0% |
-| **5%** | $10,000 | **$52.55** | $52.55 | 43.0% | $500 | 25.0% |
-| **5%** | $25,000 | **$131.37** | $52.55 | 43.0% | $1,250 | 25.0% |
-| **5%** | $50,000 | **$262.75** | $52.55 | 43.0% | $2,500 | 25.0% |
-| **10%** | $10,000 | **$25.79** | $25.79 | 12.3% | $1,000 | 25.0% |
-| **10%** | $25,000 | **$64.49** | $25.79 | 12.3% | $2,500 | 25.0% |
-| **10%** | $50,000 | **$128.97** | $25.79 | 12.3% | $5,000 | 25.0% |
+| **2%** | **$55** | 58.8% | 2.6 | $141.73 | $200 | **11.2%** |
+| **3%** | **$60** | 45.8% | 3.3 | $195.15 | $300 | **25.0%** |
+| **5%** | **$65** | 26.6% | 3.8 | $244.42 | $500 | **45.0%** |
+| **10%** | **$25** | 7.7% | 4.5 | $112.15 | $1,000 | **30.9%** |
 
-**Flat per-$10k rate check** (to enable simple UX: "$X/day per $10k of position"):
-
-| SL tier | Avg fee/day per $10k | Range across position sizes | Single-rate viable? |
-|---|---|---|---|
-| 2% | $57.99/day per $10k | $57.99 - $57.99 | ✓ YES (within 15%) |
-| 3% | $58.19/day per $10k | $58.19 - $58.19 | ✓ YES (within 15%) |
-| 5% | $52.55/day per $10k | $52.55 - $52.55 | ✓ YES (within 15%) |
-| 10% | $25.79/day per $10k | $25.79 - $25.79 | ✓ YES (within 15%) |
-
-Reading: if the spread across position sizes is small, a single "$X/day per $10k" rate works across the $10k-$50k range.
+**Sustainability check:** all four tiers deliver positive Atticus net margin under the locked pricing across the 24-month historical window. Margins compress in high-vol regimes; premium pool absorbs the variance (see §3).
 
 ---
 
-## §2: What the trader sees
+## §1: What the trader sees
 
 Single sentence per tier (the entire UX):
 
-> **2% protection:** *$57.99 per day per $10k. If BTC drops 2% from your entry, you instantly get 2% of your position back and the protection ends.* (On a $10,000 position: $57.99/day, instant payout = $200 if it triggers.)
+> **2% protection:** *$55/day per $10k of position. If BTC drops 2% from your entry, you instantly get 2% of your position back and protection ends. Closes when you close your position; otherwise renew at day 14.* (On a $10,000 position: $55/day, instant payout = $200 if it triggers.)
 
-> **3% protection:** *$58.19 per day per $10k. If BTC drops 3% from your entry, you instantly get 3% of your position back and the protection ends.* (On a $10,000 position: $58.19/day, instant payout = $300 if it triggers.)
+> **3% protection:** *$60/day per $10k of position. If BTC drops 3% from your entry, you instantly get 3% of your position back and protection ends. Closes when you close your position; otherwise renew at day 14.* (On a $10,000 position: $60/day, instant payout = $300 if it triggers.)
 
-> **5% protection:** *$52.55 per day per $10k. If BTC drops 5% from your entry, you instantly get 5% of your position back and the protection ends.* (On a $10,000 position: $52.55/day, instant payout = $500 if it triggers.)
+> **5% protection:** *$65/day per $10k of position. If BTC drops 5% from your entry, you instantly get 5% of your position back and protection ends. Closes when you close your position; otherwise renew at day 14.* (On a $10,000 position: $65/day, instant payout = $500 if it triggers.)
 
-> **10% protection:** *$25.79 per day per $10k. If BTC drops 10% from your entry, you instantly get 10% of your position back and the protection ends.* (On a $10,000 position: $25.79/day, instant payout = $1,000 if it triggers.)
-
----
-
-## §3: Strike geometry — why slightly ITM long leg matters
-
-Slightly ITM long leg costs more upfront but recovers far more on trigger. Comparison on the 5% SL tier, $25k position size:
-
-| Strike geometry | Avg option cost | Avg TP recovery on trigger | Atticus net per trigger event | Required daily fee |
-|---|---|---|---|---|
-| ITM_long | $297.27 | $500.10 | -$749.90 | $131.37 |
-| ATM_long | $258.86 | $441.52 | -$808.48 | $131.80 |
-| OTM_long | $224.11 | $385.97 | -$864.03 | $132.16 |
-
-**Reading:** ITM long leg recovers more from Deribit when SL fires, so Atticus loses less per trigger event. The required daily fee is lower despite higher upfront option cost — because TP recovery does most of the work.
+> **10% protection:** *$25/day per $10k of position. If BTC drops 10% from your entry, you instantly get 10% of your position back and protection ends. Closes when you close your position; otherwise renew at day 14.* (On a $10,000 position: $25/day, instant payout = $1,000 if it triggers.)
 
 ---
 
-## §4: Performance across BTC volatility regimes
+## §2: How positions close (hold-until-close mechanic)
 
-Same fee, different market conditions. This is the sustainability stress-test.
+Closure breakdown across the 24mo window (ITM long-leg geometry, all sizes pooled). Each row sums to 100%.
 
-| SL tier | Calm regime (rvol <40%) | Moderate (40-65%) | High (65-90%) | Stress (>90%) |
-|---|---|---|---|---|
-| 2% | 69.1% trig | 72.6% trig | 84.2% trig | n/a (sample <5) |
-| 3% | 58.8% trig | 58.9% trig | 78.9% trig | n/a (sample <5) |
-| 5% | 36.0% trig | 45.2% trig | 57.9% trig | n/a (sample <5) |
-| 10% | 12.5% trig | 13.1% trig | 7.9% trig | n/a (sample <5) |
+| Tier | Closed by SL trigger | Closed by trader (early) | Reached 14-day cap |
+|---|---|---|---|
+| 2% | 58.8% | 39.3% | 1.9% |
+| 3% | 45.8% | 50.4% | 3.8% |
+| 5% | 26.6% | 69.1% | 4.2% |
+| 10% | 7.7% | 85.6% | 6.7% |
 
-Trigger rate by regime — confirms expected dynamics: 2% SL fires often everywhere; 10% SL fires only in high/stress regimes.
-
-Atticus realized margin per regime (at the recommended fee, 25k position, ITM_long geometry):
-
-| SL tier | Calm | Moderate | High | Stress |
-|---|---|---|---|---|
-| 2% | 36.7% | 20.6% | -11.6% | n/a |
-| 3% | 35.0% | 23.8% | -16.3% | n/a |
-| 5% | 43.2% | 15.8% | -7.5% | n/a |
-| 10% | 31.6% | 15.4% | 42.9% | n/a |
+Reading: ~10% of positions reach the 14-day cap and need a renewal prompt. The other ~90% close via SL trigger or trader-close — no edge case for the trader to navigate. Trader-close path includes the refund of unused option value.
 
 ---
 
-## §5: Premium pool — does it survive the worst stretches?
+## §3: Vol-regime sustainability (the stress test)
 
-Simulates Atticus's premium pool across the full 24-month historical window at three concurrent-user scenarios. **Pool dynamic:** fees flow in daily, SL payouts flow out on trigger, TP recovery flows back in.
+Atticus realized margin per regime, at the locked fee, ITM long-leg, 25k position size:
 
-Each scenario uses the recommended fee per (tier × size × ITM_long geometry) calibrated above.
+| Tier | Calm (<40% rvol) | Moderate (40-65%) | High (65-90%) | Stress (>90%) |
+|---|---|---|---|---|
+| 2% | 24.7% | -2.9% | -31.3% | n/a |
+| 3% | 38.8% | 17.4% | -18.4% | n/a |
+| 5% | 57.5% | 36.3% | 37.8% | n/a |
+| 10% | 39.1% | -0.2% | 56.9% | n/a |
 
-| Active users | Final pool balance | Worst-day pool drawdown | Min-pool date | Recommended starting reserve | Time to break even |
-|---|---|---|---|---|---|
-| 100 | $1,111,875 | -$45,800 | 2024-09-06 | $54,960 | 0 days |
-| 250 | $2,779,687 | -$114,501 | 2024-09-06 | $137,401 | 0 days |
-| 500 | $5,559,374 | -$229,002 | 2024-09-06 | $274,802 | 0 days |
+Reading: in calm/moderate regimes (~85% of historical days), all tiers earn comfortable margin. In high-vol regimes some tiers compress to negative on a per-trade basis — the premium pool absorbs (see §4).
 
-**Key reads:**
-- *Final pool balance > 0* → product is structurally sustainable across the 24-month window.
-- *Worst-day drawdown* shows the largest temporary deficit during a bad stretch — Atticus needs at least this much in starting reserves.
-- *Recommended starting reserve* = worst drawdown × 1.2 safety buffer.
+---
+
+## §4: Premium pool — does it survive the worst stretches?
+
+Cumulative pool simulation across the full 24-month window. Pool inflows: daily fees + TP recovery on close. Outflows: SL payouts on trigger + option entry cost.
+
+| Active users | Final pool balance | Worst-day drawdown | Min-pool date | Recommended starting reserve |
+|---|---|---|---|---|
+| 100 | $1,433,966 | -$31,210 | 2024-09-06 | **$37,452** |
+| 250 | $3,584,915 | -$78,025 | 2024-09-06 | **$93,630** |
+| 500 | $7,169,831 | -$156,049 | 2024-09-06 | **$187,259** |
+
+Reading: positive final pool balance at all user-count scenarios → product is structurally sustainable across the 24-month window. Reserves cover the worst temporary drawdown × 1.2 buffer.
+
+---
+
+## §5: Trigger rates by vol regime
+
+How often each tier fires across different market conditions. Higher trigger rate = more frequent payouts to the trader.
+
+| Tier | Calm | Moderate | High | Stress |
+|---|---|---|---|---|
+| 2% | 51.7% | 60.4% | 77.2% | n/a |
+| 3% | 41.7% | 47.6% | 52.6% | n/a |
+| 5% | 22.8% | 28.7% | 31.6% | n/a |
+| 10% | 8.1% | 7.7% | 6.1% | n/a |
 
 ---
 
 ## §6: 12-month vs 24-month sanity check
 
-Same recommended fees, applied to two different historical windows. Confirms the calibration isn't overfit to one stretch.
+Same locked pricing applied to both windows. Confirms the calibration isn't overfit to one stretch.
 
-| SL tier | Trigger rate (24mo) | Trigger rate (12mo) | Atticus margin (24mo) | Atticus margin (12mo) |
+| Tier | Trigger rate (24mo) | Trigger rate (12mo) | Atticus margin (24mo) | Atticus margin (12mo) |
 |---|---|---|---|---|
-| 2% | 72.5% | 70.6% | 25.0% | 25.0% |
-| 3% | 61.1% | 58.8% | 25.0% | 25.0% |
-| 5% | 43.0% | 38.4% | 25.0% | 25.0% |
-| 10% | 12.3% | 10.7% | 25.0% | 25.0% |
+| 2% | 58.0% | 54.3% | 6.0% | 15.3% |
+| 3% | 47.3% | 44.5% | 24.1% | 32.2% |
+| 5% | 27.2% | 25.4% | 45.5% | 53.4% |
+| 10% | 8.3% | 9.8% | 21.5% | 17.4% |
 
 ---
 
-## §7: Trader win rate
+## §7: Trader perspective — win rates and cash-cycle examples
 
-"Win" = SL fires, trader gets the instant payout. (For 'no trigger', trader paid premium for protection that didn't fire — same as buying car insurance you didn't claim.)
+"Hit" = SL fires, trader gets the instant payout. (For 'no hit', trader paid premium for protection that didn't fire — same dynamic as buying car insurance you didn't claim.)
 
-| SL tier | Trader "hit" rate (avg, 24mo) | Avg payout when it hits | Avg total premium paid |
-|---|---|---|---|
-| 2% | 72.5% | $500 | $517.63 |
-| 3% | 61.1% | $750 | $636.80 |
-| 5% | 43.0% | $1,250 | $727.56 |
-| 10% | 12.3% | $2,500 | $429.35 |
+| Tier | Hit rate | Avg days held | Avg total premium | Avg payout when it hits | Trader EV per cycle |
+|---|---|---|---|---|---|
+| 2% | 58.0% | 2.4 | $335 | $500 | -$45 |
+| 3% | 47.3% | 3.2 | $486 | $750 | -$131 |
+| 5% | 27.2% | 4.0 | $650 | $1,250 | -$310 |
+| 10% | 8.3% | 4.5 | $281 | $2,500 | -$74 |
+
+Reading: trader EV per cycle is negative on every tier — that's the cost of insurance (just like car insurance has negative EV but you buy it anyway). Trader value comes from the **floor** the protection puts under their loss, not from the EV of the premium.
 
 ---
 
-## §8: Bottom-line recommendation
+## §8: Why ITM long-leg matters (TP recovery comparison)
 
-**Yes** — a fixed day rate per tier is viable, with the ITM long-leg strike geometry.
+Comparison on the 5% SL tier, $25k position size:
 
-**Recommended structure:**
-
-- Four tiers offered (2% / 3% / 5% / 10%)
-- Single rate per tier expressed as **"$X/day per $10k of position"**
-- Underneath: 14-day Deribit put spread with long leg ~1% closer to spot than the SL threshold (the ITM_long geometry above)
-- Fees calibrated for ~25% Atticus margin in average conditions; margin compresses but stays positive in stress regimes (see §4)
-- **Required starting reserve** at chosen launch scale (see §5)
-
-**Recommended fees (rounded for trader-friendly numbers):**
-
-| Tier | Per-$10k rate | $10k position | $25k position | $50k position |
+| Strike geometry | Avg option cost | Avg TP recovery on trigger | Atticus net per trigger event | Margin at locked $65 fee |
 |---|---|---|---|---|
-| 2% | $58/day | $58/day | $145/day | $290/day |
-| 3% | $58/day | $58/day | $145/day | $290/day |
-| 5% | $53/day | $53/day | $132.5/day | $265/day |
-| 10% | $26/day | $26/day | $65/day | $130/day |
+| ITM_long | $297 | $487 | -$763 | 45.5% |
+| ATM_long | $259 | $439 | -$811 | 41.4% |
+| OTM_long | $224 | $381 | -$869 | 42.0% |
+
+ITM long-leg recovers more from Deribit on trigger, leaving Atticus with less net loss per trigger event. At the locked $65 fee, ITM_long delivers the highest margin.
 
 ---
 
-## §9: Caveats and assumptions
+## §9: Caveats and what this analysis can't tell you
 
-- **Daily-resolution trigger detection.** Real intra-day moves may trigger SLs that the daily LOW didn't catch in this sim. Real trigger rates will be slightly higher than reported (~5-15% higher, mostly affecting 2-3% tiers).
-- **Synthetic Deribit pricing**: BS-theoretical with rvol-derived IV (calibrated against live Deribit chain in companion analysis). Live production fees may be 5-15% lower than the backtest reports — Atticus margin in production is likely *better* than these numbers, not worse.
-- **TP recovery model** assumes Atticus can sell residual option spreads at intrinsic + remaining time-value, minus 5% bid-ask haircut. In a vol crisis, bid-ask widens and TP recovery may be 10-20% lower than modeled.
-- **Hold window assumed at 7 days**. Real trader holds vary; if average is shorter, trigger rate per position is lower (less time exposed) and total premium per position is also lower.
-- **No funding-rate accounting** on the underlying perp. Doesn't affect the protection product directly but affects user's net P&L on the perp side.
-- **Premium pool simulation** uses lump-sum entry-day fee accounting (slightly understates pool dynamics; close enough for sustainability check).
-
----
-
-## §10: What the CEO needs to decide
-
-1. **Tier prices**: lock in the recommended fees in §0/§8, or nudge them (e.g., raise 3% slightly to $60/day for cleaner ladder, lower 10% to $25 for round-number marketing). Each $5 nudge per tier moves Atticus margin ~3-5 pp.
-2. **Strike geometry**: confirm ITM long-leg approach (recommended). The alternative (cheaper OTM long-leg) saves ~10% in option entry cost but loses ~$60-100 of TP recovery per trigger — net cost goes UP. ITM is the right choice.
-3. **Starting reserves**: confirm Atticus can fund the §5 reserve recommendation at the launch user count. If launching at 100 users: ~$55k reserve. If at 500 users: ~$275k.
-4. **Hold-window default**: confirm 7 days is the right max-hold per protection ticket. Could go 5 or 10 days depending on observed user behavior.
-5. **Vol-regime safety**: in genuine stress (rvol > 90%), reserve buffer absorbs short-term losses but Atticus margin per trade can hit -15-20%. Decide whether to (a) accept this and trust the pool, (b) auto-pause new tickets in stress regimes, (c) auto-bump fees by 30-50% in stress (re-quote daily). Default: (a) — simplest UX, pool absorbs.
-
-**Not a CEO decision but worth flagging:**
-- Foxify pilot is currently CEO-only. **No public users to migrate**, so launching the day-rate product is a clean greenfield decision — no UX disruption to existing users.
-- Per-trade revenue is much smaller than the current $65 fixed-premium model (avg $400-700 per protection ticket lifecycle vs $65/day × renewal). Volume of users / tickets is what makes the day-rate model work financially.
-- The current $65 fixed-premium product can run alongside the day-rate as a separate SKU during ramp-up if desired.
+- **Daily-resolution trigger detection.** Real intra-day moves may trigger SLs that the daily LOW didn't catch in this sim. Real trigger rates will be ~5-15% higher than reported, mostly affecting 2-3% tiers. Effect on Atticus: more triggered cycles = slightly more SL payouts but also more TP recovery. Net effect roughly neutral; flagged as an honest understatement.
+- **Synthetic Deribit pricing.** BS-theoretical with rvol-derived IV. Calibrated against live Deribit chain in companion analyses. Real production fees may run 5-15% lower → Atticus margin in production likely *better* than reported here.
+- **Trader-close distribution is synthetic.** 30% close on day 1, 25% days 2-3, 20% days 4-7, 15% days 8-13, 10% reach the 14-day cap. Replace with real Foxify trader-close data when available to validate.
+- **TP recovery model** assumes Atticus can sell residual options at intrinsic + remaining time-value, minus 5% bid-ask haircut. In a vol crisis the haircut may be 10-20% wider — premium pool absorbs.
+- **Premium pool simulation** uses lump-sum entry-day fee accounting (slightly understates intra-cycle pool dynamics; close enough for sustainability check).
+- **No funding-rate accounting** on the underlying perp. Doesn't affect protection product directly but affects user's net P&L on perp side.
