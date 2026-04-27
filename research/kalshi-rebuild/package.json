@@ -1,0 +1,15 @@
+{
+  "name": "@atticus-research/kalshi-rebuild",
+  "version": "0.1.0",
+  "description": "Kalshi-native protection backtest. Clean rebuild informed by kal_v3_demo review. No Foxify pilot dependencies.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "backtest": "npx tsx src/main.ts",
+    "fetch-btc": "npx tsx src/fetchBtcPrices.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
