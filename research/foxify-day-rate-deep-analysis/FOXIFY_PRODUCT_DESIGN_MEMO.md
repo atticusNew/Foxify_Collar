@@ -48,27 +48,57 @@ Ranked by (a) fit with Atticus product as it exists today, (b) revenue upside fo
 
 ### #1 RECOMMENDED: "Leverage Boost" — protection as a feature, not a cost
 
-**The pitch to traders:** *"Default 25x. Add Atticus protection to unlock up to 100x at the same margin requirement."*
+**The pitch to traders:** *"Add Atticus protection to unlock leverage tiers above the standard cap, at the same margin requirement."*
 
-**How it works:**
-- Foxify reduces default max leverage on unprotected positions (e.g., to 25x)
-- Adding any Atticus protection tier unlocks higher leverage tiers:
-  - 2% SL protection → 50x unlocked
-  - 3% SL → 75x
-  - 5% SL → 100x
-  - 10% SL → 100x
-- The protection cost is the price of the unlock. Trader sees it as "I'm paying $X to access $Y more leverage" instead of "I'm paying $X for insurance."
+**The fundamental mechanism (the underlying math):**
+
+On any perp venue, leverage is capped because higher leverage = higher *venue* risk, not just trader risk. At 100x, a 1% adverse move = 100% margin loss. When BTC gaps faster than the liquidation engine can close, the position goes negative and the venue eats the bad debt out of its insurance fund (or HLP-equivalent). Every venue caps leverage at some level to protect itself from these blow-ups.
+
+Atticus protection changes this calculus. The protection (as currently structured) pays the trader `SL_pct × notional` at the SL trigger. **That payout can be treated as pre-committed collateral** by Foxify's matching engine:
+
+| State | Unprotected 100x | Protected 100x w/ 5% SL |
+|---|---|---|
+| Margin posted | $100 | $100 |
+| Position size | $10,000 | $10,000 |
+| BTC adverse 1% | Liquidated, -$100 (venue may eat bad debt if liq engine lags) | Position alive — Atticus backstop $500 deferred collateral |
+| BTC adverse 5% | (already liq'd, venue may eat several hundred $$ in bad debt) | SL triggers. Perp loss $500. Atticus pays $500. Net trader: ~$0 (minus fees). **Foxify takes zero bad debt.** |
+
+The trader effectively has $100 margin + $500 of Atticus's guaranteed payout = $600 of effective collateral on a $10,000 position. **That's the same effective collateral as a $600 / 16x unprotected position** — perfectly safe for the venue. Foxify can therefore raise the leverage cap on protected positions because the venue's worst-case exposure looks identical to a low-leverage unprotected position.
+
+**Possible policy mapping (illustrative; tune to Foxify's current caps):**
+- Unprotected: standard cap (whatever Foxify runs today, e.g., 50x)
+- 2% SL protection: +25% leverage cap (e.g., 62x)
+- 3% SL: +50% (e.g., 75x)
+- 5% SL: +100% (e.g., 100x)
+- 10% SL: +100% (e.g., 100x)
+
+The trader sees "I'm paying $X to access more leverage," not "I'm paying $X for insurance." Same dollars, completely different psychology.
 
 **Why this is #1:**
-- **Reframes protection from cost to feature.** Behavioral economics: traders who reject "insurance" will accept "leverage unlock."
-- **Zero new infra.** Just a leverage-tier policy change + the existing protection toggle.
-- **Adoption naturally tracks volume.** Whoever wants more leverage pays for protection. Whoever doesn't, doesn't.
-- **Foxify risk on funded capital drops** at the same time leverage caps go up — both vectors are net-positive.
-- **Defensible economics:** Foxify can argue regulatorily that high-leverage offerings are now "responsibly defined-risk," which matters in some jurisdictions.
+- **Reframes protection from cost to feature.** Traders who reject "insurance" will accept "leverage unlock."
+- **Adoption is structurally tied to leverage choice** rather than depending on opt-in psychology.
+- **Foxify bad-debt risk drops at the same time leverage cap rises** — both vectors are net-positive simultaneously.
+- **Defensible regulatorily:** "100x leverage with options-defined max loss" is a different category than "100x leverage with manual stops" in jurisdictions that care.
+- **Differentiation vs other perp DEXes.** No other venue can offer this without standing up options infrastructure.
 
-**Foxify economics:** identical perp fees on a larger notional base + revenue share on the protection premium. Estimated 20-40% volume uplift from the leverage unlock.
+**Concrete revenue example.** Trader normally runs $1,000 margin at 25x = $25k notional. Foxify perp fee at 5 bps = $12.50/trade.
 
-**Caveat:** the *real* worst-case loss for a 100x position with 5% protection is still 5% of margin, which is bigger than 0.5% of notional on 25x — so the system has to communicate that protection caps *one* loss, not *all* losses across multiple positions over time. Same caveat as today.
+With Leverage Boost: same $1,000 margin at 75x with 5% SL = $75k notional.
+- Trader's max loss bounded at 5% × $75k = $3,750 (vs full margin wipe at any 1.3% adverse move unprotected)
+- Foxify perp fee: 5 bps × $75k = **$37.50** (3x uplift)
+- Foxify protection rev-share (assume 30% of ~$26 weekly premium): ~$8
+- **Foxify total per-trade revenue: ~$45 vs $12.50 unprotected — 3.6× uplift**
+- Foxify bad-debt risk on this position: essentially zero
+
+Across the trader base, even 50% adoption of the higher-leverage tier produces a meaningful step-up in per-deposit revenue.
+
+**What has to be true for this to ship:**
+1. Foxify's liquidation engine has to recognize Atticus protection as deferred collateral and defer liquidation until the SL trigger price. Real engineering change, not huge.
+2. Atticus payout must be operationally guaranteed (Deribit-side reliability, clear SLA, overcollateralization).
+3. Leverage cap policy has to be tier-aware. Pure config + UI work.
+4. **Need to confirm Foxify's current perp leverage cap.** If today's cap is already 100x, "Leverage Boost" can't unlock new tiers on the leverage axis — it would have to be repositioned around bad-debt reduction (Foxify-side benefit) and defined-risk (trader-side benefit). Still valuable but a different pitch. **Open question to ask the CEO.**
+
+**Caveat for traders:** the *worst-case loss* on a 100x position with 5% SL protection is 5% of notional ≈ $500 on a $10k position, which is much bigger in absolute dollars than a 25x trader's full $400 margin wipe. UI must clearly show absolute-$ max loss, not just leverage multiple, so traders aren't surprised.
 
 ---
 
