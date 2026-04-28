@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "sim": "npx tsx src/main.ts",
-    "project": "npx tsx src/projectMain.ts"
+    "project": "npx tsx src/projectMain.ts",
+    "cost-vs-gain": "npx tsx src/costVsGainMain.ts"
   },
   "devDependencies": {
     "tsx": "^4.7.0",
