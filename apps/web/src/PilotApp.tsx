@@ -2518,6 +2518,23 @@ export function PilotApp() {
                   </button>
                 </div>
 
+                {/*
+                  Filter chip — surfaces the implicit filter state above the
+                  table so admins can immediately see why a protection might
+                  be missing from the view. The endpoint defaults to
+                  scope=active + includeArchived=false, so triggered, any
+                  expired_X status, cancelled, and archived rows would
+                  otherwise be silently absent. See docs/AGENT_HANDOFF.md
+                  "Recent Activity" 2026-04-29 for the ghost-trade
+                  investigation that prompted this surface.
+                */}
+                <div
+                  className="muted"
+                  style={{ marginTop: 8, marginBottom: 6, fontSize: 12, fontVariantNumeric: "tabular-nums" }}
+                >
+                  Showing scope={adminScope} · status={adminStatusFilter} · archived={adminIncludeArchived ? "included" : "hidden"} · {adminRows.length} row{adminRows.length === 1 ? "" : "s"}
+                </div>
+
                 <div className="pilot-admin-table-scroll">
                   <div className="pilot-admin-table">
                   <div className="pilot-admin-head">
@@ -2555,6 +2572,14 @@ export function PilotApp() {
                       </span>
                     </div>
                   ))}
+                  {!adminBusy && adminRows.length === 0 && (
+                    <div
+                      className="muted"
+                      style={{ padding: "16px 12px", fontSize: 12, lineHeight: 1.5 }}
+                    >
+                      No protections match this filter. Try <strong>scope=all</strong> and tick <strong>Include archived</strong> to see expired / cancelled / pending / archived rows.
+                    </div>
+                  )}
                 </div>
                 </div>
 
