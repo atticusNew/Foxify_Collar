@@ -6,6 +6,13 @@
 
 A backtest + pitch artifact for proposing an options-procurement bridge for Hyperliquid BTC/ETH perp traders.
 
+The pitch has **two product surfaces** that share the same Deribit hedge mechanism:
+
+1. **Drawdown Protection** (the base product, Phase 1-3) — trader pays for a real Deribit-backed put/call spread that pays out on adverse moves. ~50% drawdown reduction, ~95% liquidation prevention. HLP is unaffected.
+2. **Leverage Boost** (Phase 4, the adoption driver) — protected positions can run higher leverage at the same margin requirement (e.g., 100x where standard cap is ~50x). Atticus payout treated as deferred collateral by HL's matching engine. This is the framing that drives mass adoption *and* delivers the real revenue step-change for HL via larger protected notionals + zero HLP bad-debt risk on protected flow.
+
+See `PITCH_TO_HYPERLIQUID.md` for the full deck-source, especially §3 (Leverage Boost mechanics).
+
 Same engine as the SynFutures pitch (PR #93), reshaped for Hyperliquid's:
 - **Bigger notional tail** (HL leaderboards show meaningful whale activity alongside retail)
 - **More balanced BTC/ETH split** (~60/40 vs typical 70/30)
