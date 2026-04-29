@@ -2,15 +2,15 @@
 
 > **For new AI agent sessions.** Read this once, then explore the repo for details before making any changes. Update the "Last Updated" + "Recent Activity" sections after material changes.
 
-**Last Updated:** 2026-04-26
-**Active Pilot Day:** 4 of 28
+**Last Updated:** 2026-04-29
+**Active Pilot Day:** 6 of 28
 **Pilot Counterparty:** Foxify CEO (B2B retail pilot)
 
 ---
 
 ## Current State
 
-- **Platform:** deployed on Render Singapore. URL: `https://foxify-pilot-new.onrender.com`
+- **Platform:** deployed on Render Singapore. URL: `set in Render dashboard → service settings (env var: PILOT_API_BASE)`
 - **Repo:** `github.com/atticusNew/Foxify_Collar`
 - **Active development branch:** `cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425`
 - **Pilot started:** 2026-04-23 20:00:00 UTC (Day 1)
@@ -71,13 +71,6 @@ Armed. `PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT=0.7` (70% drop in 24h trips it). Enfo
 
 | Date | PR | Summary |
 |---|---|---|
-| 2026-04-21 | #75 | SHORT logic audit (read-only docs) |
-| 2026-04-21 | #76 | ITM aggressive 2% bidirectional fix |
-| 2026-04-21 | #77 | Per-trade lifecycle endpoint + investigation script |
-| 2026-04-21 | #78 | Strike-floor gap metric + per-direction TP roll-up |
-| 2026-04-21 | #79 | Triggered Trades admin tab |
-| 2026-04-21 | #80 | SHORT-specific TP rule (Gap 5) — observe-only initially |
-| 2026-04-21 | #81 | Pricing reshape: low-regime 2% $6 → $7 (tier-mix shaping) |
 | 2026-04-22 | #82 | Triggered tab filter bug — exclude naturally-expired |
 | 2026-04-23 | #83 | Triggered recovery/ITM display + widget archive sync + SHORT 2% strike-grid hardening |
 | 2026-04-23 | #84 | Foxify Pilot Agreement v2 (4-page PDF) |
@@ -85,8 +78,10 @@ Armed. `PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT=0.7` (70% drop in 24h trips it). Enfo
 | 2026-04-23 | #86 | Hedge-budget cap correctness fix (sum execution_price × quantity, exclude paper fills) |
 | 2026-04-23 | #87 | Check Balance button now hits Deribit (was hitting dead Bullish endpoint) |
 | 2026-04-25 | #88 | Lower low-regime 2% $7 → $6.50 (CEO feedback on calm-regime price weight) |
+| 2026-04-29 | #89 | Restore AGENT_HANDOFF.md on active branch (was on a side branch, never merged) |
+| 2026-04-29 | (this session) | Day-6 platform assessment + ghost-trade investigation. CEO-confirmed ghost was an Open-Without local-only row (no server execution). Two follow-on PRs in-flight: admin filter chip, remove Open Without button. Plus this PR (handoff doc Day-6 refresh + URL redaction). |
 
-All PRs above merged to active branch.
+All numbered PRs above merged to active branch. The "this session" row's PRs will replace this line once merged.
 
 ---
 
