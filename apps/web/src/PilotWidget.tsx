@@ -299,14 +299,19 @@ export function PilotWidget() {
     } catch (e: any) { setActivateError(e.message); } finally { setActivating(false); }
   }, [livePrice, ready, positionSize, tierName, dd, positionType, autoRenew, doProtect]);
 
-  const handleOpenWithout = () => {
-    if (!livePrice || !ready || !positionType || !stopLoss) return;
-    const num = nextNum();
-    setPositions(prev => [...prev, { id: `pos_${num}_${Date.now()}`, num, type: positionType, size: positionSize, stopLoss: dd, entryPrice: livePrice, protectionId: null, autoRenew: false, premium: 0, status: "active", closedPnl: null, closedPayout: null }]);
-    setPositionType(null); setStopLoss(null);
-    setPosOpen(true);
-    setToast(`Position #${num} opened — Unprotected`);
-  };
+  // 2026-04-29: handleOpenWithout (and the matching "Open Without" button
+  // below) was removed. The button sat side-by-side with "Open + Protect"
+  // and was one accidental tap away; it created a localStorage-only
+  // position with protectionId=null that never touched the backend, then
+  // sat in the Active Positions list looking like a real trade. The
+  // pilot's purpose is to test protection, not unprotected positions, so
+  // removing the entry path entirely is the right call. Existing local-
+  // only rows from before this change continue to render until the user
+  // dismisses them with the existing Close button — they're a fixed,
+  // shrinking set; no auto-cleanup added so nothing disappears on its
+  // own. The "Add Protection" button on local-only rows (handleAddProtection
+  // below) is left in place: it's harmless dead UI for new sessions and
+  // a useful upgrade path for users with pre-existing local-only rows.
 
   const handleAddProtection = useCallback(async (posId: string) => {
     const pos = positions.find(p => p.id === posId);
@@ -450,10 +455,7 @@ export function PilotWidget() {
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted)", marginBottom: 14, cursor: "pointer" }}>
             <input type="checkbox" checked={autoRenew} onChange={e => setAutoRenew(e.target.checked)} style={{ accentColor: "var(--accent)" }} /> Auto-renew protection at expiry
           </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice} style={{ flex: 2, padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", opacity: (!ready || activating || !livePrice) ? 0.5 : 1 }}>{activating ? "Opening..." : "Open + Protect"}</button>
-            <button onClick={handleOpenWithout} disabled={!ready || !livePrice} style={{ flex: 1, padding: "12px 0", borderRadius: 10, border: "1px solid var(--border)", background: "var(--card-2)", fontSize: 12, color: "var(--muted)", cursor: "pointer", opacity: (!ready || !livePrice) ? 0.5 : 1 }}>Open Without</button>
-          </div>
+          <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", opacity: (!ready || activating || !livePrice) ? 0.5 : 1 }}>{activating ? "Opening..." : "Open + Protect"}</button>
         </div>
 
         {/* ── ACTIVE POSITIONS ── */}
