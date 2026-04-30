@@ -717,12 +717,14 @@ export function PilotWidget() {
                 <span>Daily rate</span>
                 <span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(biweeklyDailyRate)}/day</span>
               </div>
+              {/* 2026-04-30 UX: dropped the "Max if held to N days" line —
+                  it duplicated the daily rate × tenor math the trader can
+                  already see, and the framing implied a fixed cost rather
+                  than the actual close-anytime semantics. Replaced with a
+                  single line that surfaces both the max tenor and the
+                  pay-for-what-you-hold rule. */}
               <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-                <span>Max if held to {BIWEEKLY_MAX_TENOR_DAYS} days</span>
-                <span style={{ fontWeight: 500 }}>{fmt(biweeklyMaxCharge)}</span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
-                <span>Close anytime</span>
+                <span>Max {BIWEEKLY_MAX_TENOR_DAYS} days (close anytime)</span>
                 <span style={{ fontWeight: 500, fontStyle: "italic" }}>only pay for days held</span>
               </div>
               {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 6 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
