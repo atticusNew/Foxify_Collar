@@ -361,6 +361,142 @@ const recordNoBidRetry = async (
   }
 };
 
+/**
+ * Mark a hedge as expired_settled and stamp the rich expiryAutopsy
+ * block in a single atomic write.
+ *
+ * Why JS-side read-merge-write (vs `metadata || $2::jsonb` like the
+ * other helpers): pg-mem 3.x cannot execute the SQL-side `||` concat
+ * operator with a parameterized JSONB RHS, so any test exercising the
+ * isExpired branch through runHedgeManagementCycle was silently
+ * throwing. (No prior test exercised this branch, so we only noticed
+ * when adding the autopsy coverage.) Read-merge-write works in pg-mem
+ * AND in real Postgres, gives identical results, and is safe at the
+ * one-write-per-cycle-per-protection cadence here. Concurrent writers
+ * to the same protection metadata would need SELECT … FOR UPDATE; we
+ * have a single-writer guarantee for hedge_status='active' rows in the
+ * triggered/active branches because the cycle holds them exclusively.
+ *
+ * This is the only metadata write that uses read-merge-write. Other
+ * helpers (recordNoBidRetry, stampHeldToExpiry) keep using the SQL-side
+ * jsonb_build_object pattern because they need atomic increment
+ * semantics (noBidRetryCount) or are best-effort with cheap fail mode.
+ */
+const markExpiredWithAutopsy = async (
+  pool: Pool,
+  protectionId: string,
+  expiredAtIso: string,
+  autopsy: Record<string, unknown>
+): Promise<void> => {
+  const cur = await pool.query(
+    "SELECT metadata FROM pilot_protections WHERE id = $1",
+    [protectionId]
+  );
+  const existing = (cur.rows[0]?.metadata || {}) as Record<string, unknown>;
+  const merged = {
+    ...existing,
+    hedgeManagerAction: "expired",
+    expiredAt: expiredAtIso,
+    expiryAutopsy: autopsy
+  };
+  await pool.query(
+    `UPDATE pilot_protections
+     SET hedge_status = 'expired_settled',
+         metadata = $1::jsonb,
+         updated_at = NOW()
+     WHERE id = $2`,
+    [JSON.stringify(merged), protectionId]
+  );
+};
+
+/**
+ * Expiry autopsy block (added 2026-04-30).
+ *
+ * Stamped on the protection's metadata at the moment the hedge expires
+ * (the isExpired branch in runHedgeManagementCycle). Captures everything
+ * we'd want to know post-mortem about a hedge that ended worthless OR
+ * was held to expiry without TP firing:
+ *
+ *   - Was the option ITM at expiry? If yes, Deribit auto-settles and
+ *     the platform got paid via account_summary even though hedgeManager
+ *     didn't sell. itmAtExpiry=true means "go check the Deribit
+ *     settlement history and credit this as TP recovery" — the
+ *     observability fix for the recovery_ratio number being misleading
+ *     when ITM expiries are uncounted.
+ *
+ *   - Final intrinsic value (= per-contract intrinsic × quantity) at
+ *     expiry. Provides the upper bound on what auto-settlement could
+ *     have paid us.
+ *
+ *   - Spot at expiry, strike, protection type — so a query can
+ *     reconstruct the trade outcome without re-fetching market data.
+ *
+ *   - Total no_bid retries observed — carries forward from
+ *     metadata.noBidRetryCount. Combined with heldToExpiryReason
+ *     (set by the no-bid backstop when it lands) tells the full story:
+ *     "we tried N times to sell, then the backstop engaged, then it
+ *     held to expiry."
+ *
+ *   - Hours from trigger to expiry — timing context. For triggered
+ *     trades this is the window the TP system had to act in; for
+ *     active-then-expired trades this is null.
+ *
+ * Reads only what's already on the protection row + computes intrinsic
+ * locally. No new persistent state, no new queries to Deribit. Pure
+ * function returning a plain object that the caller merges into the
+ * metadata UPDATE alongside hedgeManagerAction.
+ *
+ * Future query (post-deploy operational use):
+ *   SELECT id,
+ *          metadata->'expiryAutopsy'->>'itmAtExpiry',
+ *          metadata->'expiryAutopsy'->>'intrinsicAtExpiryUsd',
+ *          metadata->'expiryAutopsy'->>'totalNoBidRetries',
+ *          metadata->'expiryAutopsy'->>'heldToExpiryReason'
+ *   FROM pilot_protections
+ *   WHERE metadata ? 'expiryAutopsy'
+ *     AND (metadata->'expiryAutopsy'->>'itmAtExpiry')::bool = true
+ *   ORDER BY (metadata->'expiryAutopsy'->>'expiredAt') DESC;
+ *
+ * That gives you every hedge that auto-settled ITM and may need
+ * reconciliation against Deribit's settlement history.
+ */
+const buildExpiryAutopsy = (params: {
+  hedge: ManagedHedge;
+  currentSpot: number;
+  expiredAtIso: string;
+}): Record<string, unknown> => {
+  const { hedge, currentSpot, expiredAtIso } = params;
+  const intrinsicPerContract = hedge.protectionType === "short"
+    ? Math.max(0, currentSpot - hedge.strike) // call: max(0, spot - strike)
+    : Math.max(0, hedge.strike - currentSpot); // put : max(0, strike - spot)
+  const intrinsicAtExpiryUsd = intrinsicPerContract * hedge.quantity;
+  const itmAtExpiry = intrinsicPerContract > 0;
+  const hoursTriggerToExpiry = hedge.triggerAtMs > 0
+    ? (hedge.expiryMs - hedge.triggerAtMs) / 3600000
+    : null;
+  const heldToExpiryReason = (hedge.metadata as any)?.heldToExpiryReason ?? null;
+
+  return {
+    expiryAutopsy: {
+      expiredAt: expiredAtIso,
+      protectionType: hedge.protectionType,
+      strike: hedge.strike,
+      spotAtExpiry: currentSpot,
+      intrinsicAtExpiryUsd: Number(intrinsicAtExpiryUsd.toFixed(8)),
+      itmAtExpiry,
+      // itmAtExpiry=true → Deribit will auto-settle the option;
+      // reconcile against /private/get_settlement_history_by_instrument
+      // to credit the settlement amount as TP recovery.
+      autoSettlementCandidate: itmAtExpiry,
+      totalNoBidRetries: Number((hedge.metadata as any)?.noBidRetryCount ?? 0) || 0,
+      heldToExpiryReason,
+      hoursTriggerToExpiry,
+      hedgeStatus: hedge.hedgeStatus,
+      finalStatus: hedge.status
+    }
+  };
+};
+
 const computeOptionValue = (params: {
   protectionType: string;
   currentSpot: number;
@@ -530,10 +666,35 @@ export const runHedgeManagementCycle = async (params: {
       const hoursToExpiry = (hedge.expiryMs - now) / 3600000;
 
       if (isExpired) {
-        await updateHedgeStatus(params.pool, hedge.protectionId, "expired_settled", {
-          hedgeManagerAction: "expired",
-          expiredAt: new Date().toISOString()
+        const expiredAtIso = new Date().toISOString();
+        const autopsyBlock = buildExpiryAutopsy({
+          hedge,
+          currentSpot: params.currentSpot,
+          expiredAtIso
         });
+        const ap = (autopsyBlock as any).expiryAutopsy as Record<string, unknown>;
+        // Atomic write: status → expired_settled, metadata gets the
+        // autopsy block merged in. Read-merge-write under the hood; see
+        // markExpiredWithAutopsy for why this isn't `metadata || $::jsonb`.
+        await markExpiredWithAutopsy(params.pool, hedge.protectionId, expiredAtIso, ap);
+
+        if (ap.itmAtExpiry) {
+          // ITM expiries are auto-settlement candidates — log distinctly so
+          // operators can spot reconciliation work needed against Deribit's
+          // settlement history.
+          console.log(
+            `[HedgeManager] expired ITM (auto-settlement candidate): ${hedge.protectionId} ` +
+            `intrinsic=$${(ap.intrinsicAtExpiryUsd as number).toFixed(2)} ` +
+            `(spot $${(ap.spotAtExpiry as number).toFixed(2)} vs strike $${(ap.strike as number).toFixed(2)}, ` +
+            `${hedge.protectionType}). Reconcile against Deribit settlement history.`
+          );
+        } else {
+          console.log(
+            `[HedgeManager] expired OTM: ${hedge.protectionId} ` +
+            `(spot $${(ap.spotAtExpiry as number).toFixed(2)} vs strike $${(ap.strike as number).toFixed(2)}, ` +
+            `${hedge.protectionType}). No auto-settlement; option dies worthless.`
+          );
+        }
         result.expired++;
         continue;
       }
