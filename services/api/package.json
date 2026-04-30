@@ -50,6 +50,7 @@
     "pilot:phase0:live-analysis": "tsx scripts/pilotLiveAnalysisAdmin.ts",
     "pilot:phase0:d1:biweekly-pricing": "tsx scripts/phase0/biweekly_pricing_calibration.ts",
     "pilot:phase0:d2:trigger-replay": "tsx scripts/phase0/biweekly_trigger_replay_backtest.ts",
+    "pilot:phase0:d3:per-day-pricing": "tsx scripts/phase0/per_day_pricing_model.ts",
     "pilot:phase0:d4:capital-requirements": "tsx scripts/phase0/capital_requirements_model.ts",
     "pilot:phase2:chain-sample": "tsx scripts/pilotDeribitChainSampler.ts"
   }
