@@ -123,6 +123,69 @@ const resolveGap5Config = () => ({
 });
 
 /**
+ * No-bid backstop (added 2026-04-30 after the 3df5cfa1 trade burned 285
+ * cycles of fruitless sell attempts against an empty Deribit book).
+ *
+ * When a triggered protection has accumulated `noBidRetryCount` >= the
+ * configured threshold, we stop attempting bounce_recovery,
+ * take_profit_prime, take_profit_late, and deep_drop_tp sells on it
+ * and let it ride to natural expiry. The near_expiry_salvage branch
+ * (last 6h of life) is intentionally LEFT ENABLED so we still try if
+ * Deribit liquidity returns near the settlement window — late liquidity
+ * is real (assignees scrambling to close).
+ *
+ * On the cycle where we first cross the threshold we:
+ *   1. Stamp `metadata.heldToExpiryReason = "deribit_persistent_no_bid"`
+ *   2. Stamp `metadata.heldToExpiryAt` (ISO timestamp, for audit)
+ *   3. Emit a single info-level [HedgeManager] log line
+ *
+ * On subsequent cycles we just print a one-line "skipped: no_bid_backstop"
+ * so the cycle log stays scannable and we don't re-stamp metadata or
+ * fire alerts on every 60s cycle.
+ *
+ * Default threshold = 60 cycles ≈ 1 hour at 60s cycle cadence.
+ * Why 60: the operational warning at cycle 30 (half-hour) gives operators
+ * a chance to intervene. By cycle 60 it's clear the book is structurally
+ * empty for this strike. Tighter than that and we cut off legitimate
+ * recovery on options that briefly became unbiddable; looser and we
+ * waste more cycles. Tunable via env without redeploy.
+ *
+ *   PILOT_TP_NO_BID_BACKSTOP_THRESHOLD  default 60
+ *   PILOT_TP_NO_BID_BACKSTOP_ENABLED    default true
+ *
+ * Set ENABLED=false to disable entirely (revert to old behavior of
+ * retrying forever).
+ */
+const NO_BID_BACKSTOP_DEFAULTS = {
+  enabled: true,
+  threshold: 60
+};
+
+const resolveNoBidBackstopConfig = () => ({
+  enabled: String(process.env.PILOT_TP_NO_BID_BACKSTOP_ENABLED ?? "true").toLowerCase() !== "false",
+  threshold: Number(process.env.PILOT_TP_NO_BID_BACKSTOP_THRESHOLD || NO_BID_BACKSTOP_DEFAULTS.threshold)
+});
+
+const stampHeldToExpiry = async (
+  pool: Pool,
+  protectionId: string,
+  reason: string,
+  retryCount: number
+): Promise<void> => {
+  await pool.query(
+    `UPDATE pilot_protections
+     SET metadata = metadata || jsonb_build_object(
+           'heldToExpiryReason', $2::text,
+           'heldToExpiryAt', $3::text,
+           'heldToExpiryNoBidCount', $4::int
+         ),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [protectionId, reason, new Date().toISOString(), retryCount]
+  );
+};
+
+/**
  * Compute spot move BEYOND trigger price (signed: positive = past
  * trigger in adverse direction, negative = retraced back to safe side).
  * Pulled from the trigger snapshot stored in metadata at trigger fire
@@ -162,6 +225,13 @@ type ManagedHedge = {
   protectionType: string;
   status: string;
   triggerAtMs: number;
+  /**
+   * Cumulative no_bid retry count for this protection's hedge sells.
+   * Persisted in metadata.noBidRetryCount by recordNoBidRetry on every
+   * cycle that executeSell returns no_bid. Read here so the no-bid
+   * backstop can decide whether to keep trying or hold to expiry.
+   */
+  noBidRetryCount: number;
   metadata: Record<string, unknown>;
 };
 
@@ -293,6 +363,7 @@ const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
       protectionType: protType === "short" ? "short" : "long",
       status: String(row.status || "active"),
       triggerAtMs: meta.triggerMonitorAt ? new Date(String(meta.triggerMonitorAt)).getTime() : (meta.triggerAt ? new Date(String(meta.triggerAt)).getTime() : 0),
+      noBidRetryCount: Number(meta.noBidRetryCount ?? 0) || 0,
       metadata: meta
     };
   });
@@ -753,9 +824,50 @@ export const runHedgeManagementCycle = async (params: {
       let shouldSell = false;
       let reason = "";
 
+      // No-bid backstop check (2026-04-30). If we've burned through
+      // >= threshold cycles trying to sell against an empty Deribit book,
+      // stop the bounce_recovery / take_profit_* / deep_drop_tp branches
+      // for this protection. near_expiry_salvage stays enabled below
+      // (it's evaluated FIRST in the decision tree, so the backstop only
+      // affects the post-cooling/prime/late branches).
+      const backstopCfg = resolveNoBidBackstopConfig();
+      const inNearExpiryWindow = hoursToExpiry < NEAR_EXPIRY_SALVAGE_HOURS;
+      const backstopEngaged =
+        backstopCfg.enabled &&
+        hedge.noBidRetryCount >= backstopCfg.threshold &&
+        !inNearExpiryWindow;
+
       if (hoursToExpiry < NEAR_EXPIRY_SALVAGE_HOURS && optionVal.totalValue >= NEAR_EXPIRY_MIN_VALUE) {
         shouldSell = true;
         reason = "near_expiry_salvage";
+      } else if (backstopEngaged) {
+        // Backstop engaged: skip every other sell-attempt branch.
+        // Stamp the held-to-expiry reason on the first crossing only
+        // (subsequent cycles see the metadata already set and just
+        // log a brief skip line).
+        shouldSell = false;
+        reason = "no_bid_backstop";
+        const alreadyStamped = Boolean((hedge.metadata as any)?.heldToExpiryReason);
+        if (!alreadyStamped) {
+          try {
+            await stampHeldToExpiry(
+              params.pool,
+              hedge.protectionId,
+              "deribit_persistent_no_bid",
+              hedge.noBidRetryCount
+            );
+            console.log(
+              `[HedgeManager] no_bid backstop ENGAGED: ${hedge.protectionId} ` +
+              `${hedge.noBidRetryCount} no_bid retries (>= threshold ${backstopCfg.threshold}). ` +
+              `Halting bounce/prime/late sell attempts. near_expiry_salvage remains enabled. ` +
+              `Will hold to expiry; if the option is ITM at expiry Deribit will auto-settle.`
+            );
+          } catch (mdErr: any) {
+            console.warn(
+              `[HedgeManager] no_bid backstop stamp failed for ${hedge.protectionId}: ${mdErr?.message}`
+            );
+          }
+        }
       } else if (isDeepDrop && hoursSinceTrigger >= adaptive.deepDropCoolingHours && optionVal.totalValue >= payout * adaptive.primeThreshold) {
         shouldSell = true;
         reason = "deep_drop_tp";
@@ -781,6 +893,11 @@ export const runHedgeManagementCycle = async (params: {
         const thresholdUsd = payout * (hoursSinceTrigger < adaptive.primeWindowEndHours ? adaptive.primeThreshold : adaptive.lateThreshold);
         if (reason === "cooling_period" || reason === "gap_extended_cooling") {
           console.log(`[HedgeManager] ${reason}: ${hedge.protectionId} ${hoursSinceTrigger.toFixed(1)}h/${effectiveCooling.toFixed(1)}h cooling, floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}% value=$${optionVal.totalValue.toFixed(2)} vol=${adaptive.regime}(${dvol.toFixed(0)}) gap=${gapPct.toFixed(2)}%`);
+        } else if (reason === "no_bid_backstop") {
+          // Brief skip line on every cycle once backstop is engaged.
+          // Avoids the verbose Hold log because the rich detail isn't
+          // useful on a hedge we're explicitly holding to expiry.
+          console.log(`[HedgeManager] no_bid_backstop holding: ${hedge.protectionId} ${hoursToExpiry.toFixed(1)}h to expiry · ${hedge.noBidRetryCount} prior no_bid retries`);
         } else {
           console.log(`[HedgeManager] Hold: ${hedge.protectionId} sinceTrigger=${hoursSinceTrigger.toFixed(1)}h toExpiry=${hoursToExpiry.toFixed(1)}h value=$${optionVal.totalValue.toFixed(2)} threshold=$${thresholdUsd.toFixed(2)} floorDrop=${dropFromFloorPct.toFixed(2)}% strikeDrop=${dropFromStrikePct.toFixed(2)}% bounced=${bounced} optionOtm=${optionIsOtm} vol=${adaptive.regime}(${dvol.toFixed(0)}) gap=${gapPct.toFixed(2)}%`);
         }
