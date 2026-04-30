@@ -667,18 +667,42 @@ export const runHedgeManagementCycle = async (params: {
         );
         const minutesSinceTrigger = hoursSinceTrigger * 60;
 
+        // Gap 5a-fix-1 (2026-04-30) — classify the barely-graze pattern from
+        // the spot AT TRIGGER FIRE (triggerReferencePrice), not the current
+        // spot. The 3df5cfa1 trade exposed the original bug: TriggerMonitor
+        // runs every 3s and detects spot crossing the trigger; HedgeManager
+        // runs every 60s. On a fast retrace (BTC barely grazes trigger then
+        // immediately retreats), spot can be back below trigger by the first
+        // HedgeManager cycle. The original guard `spotMoveThroughTriggerPct
+        // >= 0` then evaluated false (spot is now BELOW trigger) and the
+        // rule never fired, despite the trade being a textbook barely-graze.
+        // The pattern classification ("how barely did BTC graze the
+        // trigger") is set at the moment of trigger and does not change.
+        // Use the trigger-time spot for that question. Live spot is still
+        // tracked for logging/observability.
+        const triggerTimeMovePct =
+          Number.isFinite(triggerRefPrice) && triggerRefPrice > 0 && triggerPriceForGap5 > 0
+            ? ((triggerRefPrice - triggerPriceForGap5) / triggerPriceForGap5) * 100
+            : null;
+
         // Gap 5a — BARELY-GRAZE FAST EXIT
+        // Pattern classified from spot-at-trigger-fire. Live conditions
+        // (option still has value, still in early window) are evaluated
+        // from current state.
         const gap5aWouldFire =
-          spotMoveThroughTriggerPct !== null &&
-          spotMoveThroughTriggerPct >= 0 &&
-          spotMoveThroughTriggerPct < gap5Cfg.grazePct &&
+          triggerTimeMovePct !== null &&
+          triggerTimeMovePct >= 0 &&
+          triggerTimeMovePct < gap5Cfg.grazePct &&
           minutesSinceTrigger < gap5Cfg.grazeWindowMin &&
           optionVal.totalValue >= gap5Cfg.grazeMinValueUsd;
         if (gap5aWouldFire) {
+          const liveCtx = spotMoveThroughTriggerPct === null
+            ? "live=n/a"
+            : `live ${spotMoveThroughTriggerPct.toFixed(3)}%`;
           if (gap5Cfg.enforce) {
             console.log(
               `[HedgeManager] Gap 5a ENFORCE: ${hedge.protectionId} SHORT barely-graze ` +
-              `(spot ${spotMoveThroughTriggerPct.toFixed(3)}% past trigger, ${minutesSinceTrigger.toFixed(0)}min in, ` +
+              `(at-trigger ${triggerTimeMovePct.toFixed(3)}% past, ${liveCtx}, ${minutesSinceTrigger.toFixed(0)}min in, ` +
               `value=$${optionVal.totalValue.toFixed(2)}). Selling immediately to capture intrinsic before retrace.`
             );
             const sellStatus = await executeSell(hedge, "short_barely_graze_fast_exit", optionVal, params.sellOption, params.pool);
@@ -689,7 +713,7 @@ export const runHedgeManagementCycle = async (params: {
           } else {
             console.log(
               `[HedgeManager] Gap 5a OBSERVE: ${hedge.protectionId} SHORT barely-graze would fast-exit ` +
-              `(spot ${spotMoveThroughTriggerPct.toFixed(3)}% past trigger, ${minutesSinceTrigger.toFixed(0)}min in, ` +
+              `(at-trigger ${triggerTimeMovePct.toFixed(3)}% past, ${liveCtx}, ${minutesSinceTrigger.toFixed(0)}min in, ` +
               `value=$${optionVal.totalValue.toFixed(2)}; observe-only; set PILOT_TP_GAP5_ENFORCE=true to act)`
             );
           }
