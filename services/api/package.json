@@ -48,6 +48,7 @@
     "pilot:backfill:execution-quality": "tsx scripts/pilotBackfillExecutionQuality.ts",
     "pilot:verify:dvol-source": "tsx scripts/pilotVerifyDvolSource.ts",
     "pilot:phase0:live-analysis": "tsx scripts/pilotLiveAnalysisAdmin.ts",
+    "pilot:phase0:d1:biweekly-pricing": "tsx scripts/phase0/biweekly_pricing_calibration.ts",
     "pilot:phase2:chain-sample": "tsx scripts/pilotDeribitChainSampler.ts"
   }
 }
