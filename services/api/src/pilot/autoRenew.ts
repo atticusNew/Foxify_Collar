@@ -112,6 +112,23 @@ const queryExpiringProtections = async (pool: Pool): Promise<ProtectionRecord[]>
     payoutSettledAt: null,
     payoutTxRef: null,
     foxifyExposureNotional: String(row.foxify_exposure_notional || row.protected_notional),
+    // Biweekly subscription fields. Auto-renew currently runs only against
+    // legacy 1-day protections; defaults match. PR 4 will revisit auto-renew
+    // semantics for biweekly.
+    tenorDays: row.tenor_days === null || row.tenor_days === undefined ? 1 : Number(row.tenor_days),
+    dailyRateUsdPer1k:
+      row.daily_rate_usd_per_1k === null || row.daily_rate_usd_per_1k === undefined
+        ? null
+        : String(row.daily_rate_usd_per_1k),
+    accumulatedChargeUsd:
+      row.accumulated_charge_usd === null || row.accumulated_charge_usd === undefined
+        ? "0"
+        : String(row.accumulated_charge_usd),
+    daysBilled:
+      row.days_billed === null || row.days_billed === undefined ? 0 : Number(row.days_billed),
+    closedAt: row.closed_at ? new Date(String(row.closed_at)).toISOString() : null,
+    closedBy: row.closed_by ? String(row.closed_by) : null,
+    hedgeRetainedForPlatform: Boolean(row.hedge_retained_for_platform),
     metadata: (typeof row.metadata === "object" && row.metadata ? row.metadata : {}) as Record<string, unknown>,
     createdAt: new Date(String(row.created_at)).toISOString(),
     updatedAt: new Date(String(row.updated_at)).toISOString()

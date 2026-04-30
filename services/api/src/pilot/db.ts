@@ -100,6 +100,28 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS regime_source TEXT;
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS dvol_at_purchase NUMERIC(10,4);
 
+    -- Biweekly subscription columns (PR 2 of biweekly cutover, 2026-04-30).
+    -- Pure additive: legacy 1-day rows get tenor_days=1 by default, rest
+    -- nullable. New biweekly rows set tenor_days=14 and the subscription
+    -- billing fields. See services/api/src/pilot/biweeklyPricing.ts for
+    -- the rate table and computeAccumulatedCharge for the billing math.
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS tenor_days INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS daily_rate_usd_per_1k NUMERIC(10,4);
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS accumulated_charge_usd NUMERIC(28,10) NOT NULL DEFAULT 0;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS days_billed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS closed_by TEXT;
+    -- Per CEO direction 2026-04-30: when a biweekly trigger fires, the
+    -- protection closes for the user but the underlying Deribit option
+    -- stays open for the platform (hedge manager owns disposition).
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS hedge_retained_for_platform BOOLEAN NOT NULL DEFAULT FALSE;
+
+    CREATE INDEX IF NOT EXISTS pilot_protections_tenor_open_idx
+      ON pilot_protections (tenor_days, status)
+      WHERE closed_at IS NULL;
+    CREATE INDEX IF NOT EXISTS pilot_protections_user_created_idx
+      ON pilot_protections (user_hash, created_at);
+
     CREATE TABLE IF NOT EXISTS pilot_price_snapshots (
       id TEXT PRIMARY KEY,
       protection_id TEXT NOT NULL REFERENCES pilot_protections(id) ON DELETE CASCADE,
@@ -721,6 +743,164 @@ export const listProtectionsByUserHashForAdmin = async (
     values
   );
   return result.rows.map(mapProtection);
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// Biweekly subscription helpers (PR 2 of biweekly cutover, 2026-04-30)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Reasons a biweekly subscription can close. Persisted in
+ * pilot_protections.closed_by for audit clarity.
+ */
+export type SubscriptionCloseReason =
+  | "user_close"        // trader explicitly closed via /close endpoint (PR 4)
+  | "trigger"           // protection triggered; closes for user, hedge stays open (PR 4)
+  | "natural_expiry"    // hit BIWEEKLY_MAX_TENOR_DAYS (14d); auto-end (PR 4)
+  | "admin";            // admin-initiated close (rare; emergency)
+
+/**
+ * Mark a biweekly protection as closed. Sets closed_at, closed_by,
+ * accumulated_charge_usd, days_billed, and the new status. Optional
+ * hedgeRetainedForPlatform flag (true when trigger fires — per CEO
+ * direction the protection ends for the user but the hedge stays
+ * open for us).
+ *
+ * Returns true if the row was updated, false if not found OR already
+ * closed (closed_at IS NOT NULL). The "already closed" case is
+ * idempotent-friendly: callers can safely retry without double-billing.
+ *
+ * Bills math is computed by the caller (see biweeklyPricing.
+ * computeAccumulatedCharge) so this helper stays a pure DB write.
+ */
+export const markProtectionClosed = async (
+  pool: Queryable,
+  params: {
+    protectionId: string;
+    closedAtIso: string;
+    closedBy: SubscriptionCloseReason;
+    accumulatedChargeUsd: string;  // Decimal string
+    daysBilled: number;
+    newStatus: ProtectionStatus;   // typically "cancelled" for user_close, "triggered" for trigger, "expired_otm" for natural
+    hedgeRetainedForPlatform?: boolean;
+  }
+): Promise<boolean> => {
+  const result = await pool.query(
+    `UPDATE pilot_protections
+     SET status = $2,
+         closed_at = $3::timestamptz,
+         closed_by = $4,
+         accumulated_charge_usd = $5::numeric,
+         days_billed = $6,
+         hedge_retained_for_platform = COALESCE($7, hedge_retained_for_platform),
+         updated_at = NOW()
+     WHERE id = $1
+       AND closed_at IS NULL`,
+    [
+      params.protectionId,
+      params.newStatus,
+      params.closedAtIso,
+      params.closedBy,
+      params.accumulatedChargeUsd,
+      params.daysBilled,
+      params.hedgeRetainedForPlatform ?? null
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+};
+
+/**
+ * List active biweekly protections (tenor_days >= 2 AND closed_at IS NULL).
+ * Used by:
+ *   - The daily charge ticker (PR 4) to refresh accumulated charge
+ *   - The natural-expiry sweep (PR 4) to close out 14-day-old subscriptions
+ *   - Admin views
+ *
+ * Filters out legacy 1-day rows and any already-closed subscriptions.
+ */
+export const listOpenBiweeklyProtections = async (
+  pool: Queryable,
+  opts: { limit?: number } = {}
+): Promise<ProtectionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 500, 1000));
+  const result = await pool.query(
+    `SELECT *
+     FROM pilot_protections
+     WHERE tenor_days >= 2
+       AND closed_at IS NULL
+     ORDER BY created_at ASC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows.map(mapProtection);
+};
+
+/**
+ * Count protections opened by a given user in the last 24 hours.
+ * Used by the 1-trade-per-day guard in the activate endpoint (PR 3).
+ *
+ * Window is rolling 24h ending at `now` (default Date.now()), NOT a
+ * calendar day, so the trader can't re-trade by waiting for midnight
+ * UTC after a recent open. Trade #1 at 23:00 UTC + trade #2 attempt
+ * at 23:30 UTC = blocked; trade #2 attempt at 23:01 UTC next day = allowed.
+ */
+export const countActivationsInLast24h = async (
+  pool: Queryable,
+  userHash: string,
+  nowMs: number = Date.now()
+): Promise<number> => {
+  const cutoffIso = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+  const result = await pool.query(
+    `SELECT COUNT(*)::int AS n
+     FROM pilot_protections
+     WHERE user_hash = $1
+       AND created_at >= $2::timestamptz`,
+    [userHash, cutoffIso]
+  );
+  return Number(result.rows[0]?.n ?? 0);
+};
+
+/**
+ * Lightweight helper: read just the days-billed-related fields for
+ * a protection. Used by the close endpoint (PR 4) to compute the
+ * accumulated charge based on actual days held, without pulling the
+ * full ProtectionRecord. Returns null if not found.
+ */
+export const getProtectionSubscriptionState = async (
+  pool: Queryable,
+  protectionId: string
+): Promise<{
+  protectionId: string;
+  tenorDays: number;
+  dailyRateUsdPer1k: string | null;
+  protectedNotional: string;
+  slPct: number | null;
+  createdAtIso: string;
+  closedAtIso: string | null;
+  status: ProtectionStatus;
+} | null> => {
+  const result = await pool.query(
+    `SELECT id, tenor_days, daily_rate_usd_per_1k, protected_notional,
+            sl_pct, created_at, closed_at, status
+     FROM pilot_protections
+     WHERE id = $1`,
+    [protectionId]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    protectionId: String(row.id),
+    tenorDays: row.tenor_days === null || row.tenor_days === undefined ? 1 : Number(row.tenor_days),
+    dailyRateUsdPer1k:
+      row.daily_rate_usd_per_1k === null || row.daily_rate_usd_per_1k === undefined
+        ? null
+        : String(row.daily_rate_usd_per_1k),
+    protectedNotional: String(row.protected_notional),
+    slPct: row.sl_pct === null || row.sl_pct === undefined ? null : Number(row.sl_pct),
+    createdAtIso: new Date(String(row.created_at)).toISOString(),
+    closedAtIso: row.closed_at ? new Date(String(row.closed_at)).toISOString() : null,
+    status: row.status as ProtectionStatus
+  };
 };
 
 export const archiveProtectionsByUserHashExcept = async (
@@ -2968,6 +3148,21 @@ const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({
   payoutSettledAt: row.payout_settled_at ? new Date(String(row.payout_settled_at)).toISOString() : null,
   payoutTxRef: row.payout_tx_ref ? String(row.payout_tx_ref) : null,
   foxifyExposureNotional: String(row.foxify_exposure_notional),
+  // Biweekly subscription fields. Defaults match legacy 1-day semantics
+  // so any code that doesn't know about biweekly continues to work.
+  tenorDays: row.tenor_days === null || row.tenor_days === undefined ? 1 : Number(row.tenor_days),
+  dailyRateUsdPer1k:
+    row.daily_rate_usd_per_1k === null || row.daily_rate_usd_per_1k === undefined
+      ? null
+      : String(row.daily_rate_usd_per_1k),
+  accumulatedChargeUsd:
+    row.accumulated_charge_usd === null || row.accumulated_charge_usd === undefined
+      ? "0"
+      : String(row.accumulated_charge_usd),
+  daysBilled: row.days_billed === null || row.days_billed === undefined ? 0 : Number(row.days_billed),
+  closedAt: row.closed_at ? new Date(String(row.closed_at)).toISOString() : null,
+  closedBy: row.closed_by ? String(row.closed_by) : null,
+  hedgeRetainedForPlatform: Boolean(row.hedge_retained_for_platform),
   metadata: toRecord(row.metadata),
   createdAt: new Date(String(row.created_at)).toISOString(),
   updatedAt: new Date(String(row.updated_at)).toISOString()
