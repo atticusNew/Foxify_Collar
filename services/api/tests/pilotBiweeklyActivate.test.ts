@@ -185,6 +185,38 @@ test("handleBiweeklyQuote: happy path returns full biweekly preview + persists v
   }
 });
 
+test("handleBiweeklyQuote: passes maxTenorDriftDaysOverride=4 to venue (2026-04-30 fix)", async () => {
+  // Regression: prior to the 2026-04-30 fix, the biweekly quote
+  // request used the default maxTenorDriftDays=1.5 which is
+  // structurally incompatible with Deribit's weekly grid spacing
+  // (~7 days at the 14d horizon → nearest weekly is ~3.5d off →
+  // every quote tripped tenor_drift_exceeded). The handler must now
+  // pass an explicit override so the venue uses 4d (= 7d/2 + safety).
+  process.env.PILOT_BIWEEKLY_ENABLED = "true";
+  try {
+    const pool = await buildPool();
+    const v = fakeVenue();
+    const result = await handleBiweeklyQuote({
+      pool,
+      venue: v.venue,
+      req: {
+        protectedNotionalUsd: 10000,
+        slPct: 2,
+        direction: "long",
+        spotUsd: 76000,
+        marketId: "BTC-USD"
+      }
+    });
+    assert.equal(result.status, "ok");
+    assert.equal(v.calls.quote.length, 1, "venue.quote called exactly once");
+    const venueReq = v.calls.quote[0];
+    assert.equal(venueReq.requestedTenorDays, 14);
+    assert.equal(venueReq.maxTenorDriftDaysOverride, 4);
+  } finally {
+    delete process.env.PILOT_BIWEEKLY_ENABLED;
+  }
+});
+
 test("handleBiweeklyQuote: SHORT direction trigger above spot", async () => {
   process.env.PILOT_BIWEEKLY_ENABLED = "true";
   try {

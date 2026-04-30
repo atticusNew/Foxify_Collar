@@ -92,6 +92,29 @@ export const BIWEEKLY_MAX_TENOR_DAYS = 14;
  */
 export const BIWEEKLY_HEDGE_TENOR_DAYS = 14;
 
+/**
+ * Tenor-drift bound (in days) for biweekly hedge quotes.
+ *
+ * Deribit weekly options settle Friday 08:00 UTC, so the grid spacing
+ * around a 14-day target is 7 days. The nearest weekly expiry to any
+ * given 14-day target is therefore at most ~3.5 days off (and usually
+ * closer to 0–3 days). 4d = grid_spacing/2 + ~0.5d safety margin —
+ * tight enough that the venue can never silently land on the 7d or
+ * 21d expiry (>50% tenor mismatch, not a "small drift") yet wide
+ * enough to always have a valid in-bound candidate on the weekly grid.
+ *
+ * This is the per-request override the biweekly handler passes to the
+ * Deribit venue adapter. It does NOT change the global default
+ * PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS=1.5 used by the legacy 1-day
+ * product.
+ *
+ * Tunable in code if Deribit ever introduces denser grids at this
+ * tenor (e.g. mid-week expiries); no env-var override on purpose
+ * because misconfiguration here is hard to detect from logs and could
+ * cause silent grid mismatches.
+ */
+export const BIWEEKLY_TENOR_DRIFT_BOUND_DAYS = 4;
+
 /** Minimum days held to bill (anti-abuse: trader can't spam open/close to avoid charges). */
 export const BIWEEKLY_MIN_DAYS_BILLED = 1;
 

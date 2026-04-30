@@ -270,6 +270,78 @@ test("trigger_aligned fails when no eligible strike side exists", async () => {
   );
 });
 
+test("tenor drift override widens drift bound for biweekly-style 14d quotes (2026-04-30 fix)", async () => {
+  // Repro: Deribit weekly grid → nearest weekly to a 14d target sits
+  // ~3.5d off the target. With the prod default maxTenorDriftDays=1.5,
+  // every biweekly quote tripped tenor_drift_exceeded. The per-request
+  // override on QuoteRequest lets the biweekly handler request a 4d
+  // bound for THIS quote without globally loosening the prod default.
+  const now = Date.now();
+  // Two candidate weeklies: 11d (drift 3d) and 18d (drift 4d).
+  // With default 1.5d bound: both rejected.
+  // With per-request 4d override: both eligible; 11d wins (in-bound on
+  // both filters and on the cost-distance from the trigger).
+  const closer = "BTC-15MAY26-81000-P";
+  const farther = "BTC-22MAY26-81000-P";
+  const adapter = createPilotVenueAdapter({
+    mode: "deribit_test",
+    falconx: { baseUrl: "https://api.falconx.io", apiKey: "k", secret: "c2VjcmV0", passphrase: "p" },
+    deribit: makeDeribitStub({
+      instruments: [
+        {
+          instrument_name: closer,
+          option_type: "put",
+          strike: 81000,
+          expiration_timestamp: now + 11 * 86400000
+        },
+        {
+          instrument_name: farther,
+          option_type: "put",
+          strike: 81000,
+          expiration_timestamp: now + 18 * 86400000
+        }
+      ],
+      books: {
+        [closer]: { result: { asks: [[0.01, 2]], bids: [[0.009, 2]], mark_price: 0.0095 } },
+        [farther]: { result: { asks: [[0.011, 2]], bids: [[0.010, 2]], mark_price: 0.0105 } }
+      }
+    }),
+    deribitQuotePolicy: "ask_only",
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 1.5
+  });
+
+  // Without override → fail with tenor_drift_exceeded (matches prod bug)
+  await assert.rejects(
+    () =>
+      adapter.quote({
+        marketId: "BTC-USD",
+        instrumentId: "BTC-USD-14D-P",
+        protectedNotional: 10000,
+        quantity: 0.1,
+        side: "buy",
+        protectionType: "long",
+        triggerPrice: 80000,
+        requestedTenorDays: 14
+      }),
+    /tenor_drift_exceeded/
+  );
+
+  // With per-request override = 4d → succeeds, picks the closer expiry
+  const quote = await adapter.quote({
+    marketId: "BTC-USD",
+    instrumentId: "BTC-USD-14D-P",
+    protectedNotional: 10000,
+    quantity: 0.1,
+    side: "buy",
+    protectionType: "long",
+    triggerPrice: 80000,
+    requestedTenorDays: 14,
+    maxTenorDriftDaysOverride: 4
+  });
+  assert.equal(quote.instrumentId, closer, "should pick the 11d (drift 3d) candidate");
+});
+
 test("tenor drift guard rejects far expiries", async () => {
   const now = Date.now();
   const far = "BTC-31MAR26-81000-P";
