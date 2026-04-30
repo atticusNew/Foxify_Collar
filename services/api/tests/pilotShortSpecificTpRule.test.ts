@@ -223,6 +223,83 @@ test("Gap 5a ENFORCE — SHORT barely-graze actually executes the sell", async (
   }
 });
 
+// Gap 5a-fix-1 regression — the 3df5cfa1 failure mode.
+// Real-world sequence: TriggerMonitor (3s cadence) detected spot crossing
+// the trigger ceiling at $77,663.61. By the time HedgeManager (60s cadence)
+// next evaluated the trade, BTC had already retraced back below the trigger.
+// The original code computed spotMoveThroughTriggerPct from CURRENT spot,
+// which was negative once retraced, so the `>= 0` guard killed Gap 5a even
+// though the trade was a textbook barely-graze.
+//
+// After the fix, Gap 5a classifies the pattern from triggerReferencePrice
+// (the spot at the moment the trigger fired, saved in metadata by
+// triggerMonitor.buildTriggerMetadata). The pattern doesn't change
+// retroactively when spot retraces — it was a barely-graze at fire time
+// and remains one for purposes of the rule.
+test("Gap 5a fix — fires on barely-graze SHORT even after BTC retraces back below trigger", async () => {
+  __resetSpotHistoryForTests();
+  process.env.PILOT_TP_GAP5_ENFORCE = "true";
+  try {
+    const pool = await buildPool();
+    const now = Date.now();
+    // Steady spot history at the post-retrace level so Gap 1/3 don't fire.
+    // Mirrors a quick barely-graze where BTC briefly touched $77,663 then
+    // fell back to just under the $77,621.84 trigger within 60s.
+    for (let h = 24; h >= 0; h--) {
+      recordSpotSample(77620, now - h * HOUR_MS);
+    }
+
+    // SHORT 2% protection mirroring 3df5cfa1's pattern: entry $76,099.84,
+    // trigger $77,621.84, triggerReferencePrice $77,663.61 (spot AT
+    // trigger fire, 0.054% past trigger — clearly a barely-graze).
+    // Strike $77,500 (ITM relative to trigger, per PR #76).
+    //
+    // By the time HedgeManager runs, BTC has retraced to $77,620 — just
+    // BELOW the trigger of $77,621.84. The OLD code would have computed
+    // spotMoveThroughTriggerPct = (77620 - 77621.84) / 77621.84 * 100 =
+    // -0.0024% (negative), failed the `>= 0` guard, and never fired
+    // Gap 5a. The 3df5cfa1 trade hit exactly this failure mode.
+    //
+    // The strike $77,500 is still below current spot $77,620, so the call
+    // hedge retains intrinsic = $120 × 1.0 BTC = $120, well above the
+    // $15 grazeMinValueUsd threshold. There IS still value to capture.
+    await seedTriggered(pool, {
+      direction: "short",
+      triggerAtMs: now - 5 * MIN_MS,
+      expiryAtMs: now + 9 * HOUR_MS,
+      entry: 76099.84,
+      triggerPrice: 77621.84,
+      triggerReferencePrice: 77663.61,
+      strike: 77500,
+      payoutDueAmount: 200,
+      hedgeQty: 1.0
+    });
+
+    const { sellOption, calls } = buildSellRecorder();
+    const logs = await captureCycle({
+      pool,
+      sellOption,
+      currentSpot: 77620, // BELOW trigger 77621.84 — the retrace condition
+      currentIV: 0.40
+    });
+
+    const enforceLine = logs.find((l) => l.includes("Gap 5a ENFORCE"));
+    assert.ok(
+      enforceLine,
+      `expected Gap 5a ENFORCE log — fix should classify barely-graze from triggerReferencePrice, not currentSpot. Got: ${logs.filter((l) => l.includes("Gap 5")).join("\n")}`
+    );
+    assert.equal(calls.length, 1, "exactly one sell should execute on the retrace-then-evaluate sequence");
+    // The log should include both the at-trigger pct and the live pct
+    // for operator audit clarity.
+    assert.ok(
+      enforceLine!.includes("at-trigger") && enforceLine!.includes("live"),
+      `enforce log should report both at-trigger and live spot context. Got: ${enforceLine}`
+    );
+  } finally {
+    delete process.env.PILOT_TP_GAP5_ENFORCE;
+  }
+});
+
 test("Gap 5 does NOT fire on LONG protections (SHORT-only guard)", async () => {
   __resetSpotHistoryForTests();
   process.env.PILOT_TP_GAP5_ENFORCE = "true";
@@ -308,15 +385,21 @@ test("Gap 5 does not fire on SHORT trigger that's neither graze nor breakout", a
       recordSpotSample(74000 + h * 5, now - h * HOUR_MS);
     }
 
-    // SHORT 2% trade where BTC is 0.6% past trigger ("shallow" — not
-    // barely-graze, not clear-breakout). Neither Gap 5a nor 5b should fire.
+    // SHORT 2% trade where BTC was 0.6% past trigger AT trigger fire and
+    // remains 0.6% past now. "Shallow" — beyond the 0.3% barely-graze
+    // threshold but below the 1.0% clear-breakout threshold. Neither
+    // Gap 5a nor 5b should fire.
+    //
+    // Note: post Gap 5a-fix-1, the at-trigger spot (triggerReferencePrice)
+    // is what classifies barely-graze, so we set it to genuinely 0.6%
+    // past the trigger of $75,480 = $75,933.
     await seedTriggered(pool, {
       direction: "short",
       triggerAtMs: now - 10 * MIN_MS,
       expiryAtMs: now + 20 * HOUR_MS,
       entry: 74000,
       triggerPrice: 75480,
-      triggerReferencePrice: 75500,
+      triggerReferencePrice: 75933,  // 0.6% past trigger at fire — shallow
       strike: 75500,
       payoutDueAmount: 400
     });
@@ -324,7 +407,7 @@ test("Gap 5 does not fire on SHORT trigger that's neither graze nor breakout", a
     const { sellOption, calls } = buildSellRecorder();
     const logs = await captureCycle({
       pool, sellOption,
-      currentSpot: 75933,  // 0.6% past trigger
+      currentSpot: 75933,  // still 0.6% past trigger
       currentIV: 0.45
     });
 
