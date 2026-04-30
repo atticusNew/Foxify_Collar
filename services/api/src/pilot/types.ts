@@ -15,7 +15,12 @@ export type LedgerEntryType =
   | "premium_settled"
   | "trigger_payout_due"
   | "payout_due"
-  | "payout_settled";
+  | "payout_settled"
+  // Biweekly subscription product (PR 2 of biweekly cutover, 2026-04-30):
+  // No upfront premium; instead the trader's subscription accrues a
+  // daily charge while open and settles at close/trigger/natural-expiry.
+  | "subscription_started"
+  | "subscription_close_settlement";
 
 export type PriceSnapshotType = "entry" | "expiry" | "trigger";
 
@@ -179,6 +184,22 @@ export type ProtectionRecord = {
   payoutSettledAt: string | null;
   payoutTxRef: string | null;
   foxifyExposureNotional: string;
+  // ── Biweekly subscription columns (PR 2 of biweekly cutover, 2026-04-30) ──
+  // For legacy 1-day rows, tenorDays is 1 and the rest of these are null/0.
+  // For biweekly rows, tenorDays is 14 and dailyRateUsdPer1k is set at
+  // activation. accumulatedChargeUsd + daysBilled get populated at close.
+  // closedAt is set when the subscription ends (user close, trigger, or
+  // natural max-tenor expiry); closedBy records the cause.
+  // hedgeRetainedForPlatform flags trades where the underlying option
+  // stays open on Deribit after the trader's protection ends (per CEO
+  // direction 2026-04-30).
+  tenorDays: number;
+  dailyRateUsdPer1k: string | null;
+  accumulatedChargeUsd: string;
+  daysBilled: number;
+  closedAt: string | null;
+  closedBy: string | null;
+  hedgeRetainedForPlatform: boolean;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
