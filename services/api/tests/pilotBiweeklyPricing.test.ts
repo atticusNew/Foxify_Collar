@@ -222,10 +222,15 @@ test("computeMaxProjectedCharge: scales linearly with notional", () => {
 // computeDaysHeld
 // ─────────────────────────────────────────────────────────────────────
 
-test("computeDaysHeld: returns fractional day count", () => {
+test("computeDaysHeld: returns fractional day count (with default 5-min grace)", () => {
   const activated = Date.UTC(2026, 3, 1, 0, 0, 0); // 2026-04-01 00:00:00Z
   const now = Date.UTC(2026, 3, 3, 12, 0, 0); // 2026-04-03 12:00:00Z = 2.5 days later
-  assert.equal(computeDaysHeld({ activatedAtMs: activated, nowMs: now }), 2.5);
+  // 2.5 days - 5min grace = 2.5 - 5/(24×60) = ~2.4965
+  const result = computeDaysHeld({ activatedAtMs: activated, nowMs: now });
+  assert.ok(
+    result >= 2.49 && result < 2.5,
+    `expected ~2.4965 (2.5d minus 5min grace), got ${result}`
+  );
 });
 
 test("computeDaysHeld: returns 0 on clock skew (now < activated)", () => {
@@ -237,7 +242,26 @@ test("computeDaysHeld: returns 0 on clock skew (now < activated)", () => {
 test("computeDaysHeld: defaults nowMs to Date.now()", () => {
   const activated = Date.now() - 86400000; // 1 day ago
   const result = computeDaysHeld({ activatedAtMs: activated });
-  assert.ok(result >= 0.99 && result <= 1.01, `expected ~1.0 day, got ${result}`);
+  // 1 day - 5min grace = ~0.9965 days
+  assert.ok(result >= 0.99 && result <= 1.01, `expected ~1.0 day (minus grace), got ${result}`);
+});
+
+test("computeDaysHeld: day-boundary grace — exactly 3 days returns < 3 (so ceil yields 3)", () => {
+  const activated = Date.UTC(2026, 3, 1, 12, 0, 0);
+  const exactly3DaysLater = Date.UTC(2026, 3, 4, 12, 0, 0);
+  // 3 days - 5min grace = 2.9965... → ceil = 3
+  const result = computeDaysHeld({ activatedAtMs: activated, nowMs: exactly3DaysLater });
+  assert.ok(result < 3, `grace must round 3.0 down so ceil yields 3, got ${result}`);
+  assert.ok(result > 2.99, `grace shouldn't subtract more than 5 min`);
+});
+
+test("computeDaysHeld: day-boundary grace — 3 days + 1 hour rounds up to 4 (clearly past day boundary)", () => {
+  const activated = Date.UTC(2026, 3, 1, 12, 0, 0);
+  const past = Date.UTC(2026, 3, 4, 13, 0, 0); // 3d 1h
+  const result = computeDaysHeld({ activatedAtMs: activated, nowMs: past });
+  // 3.04 days - 5min grace = ~3.038 → ceil = 4
+  assert.ok(result > 3, `3d+1h clearly past 3d boundary, got ${result}`);
+  assert.ok(result < 4);
 });
 
 // ─────────────────────────────────────────────────────────────────────
