@@ -491,6 +491,12 @@ export const insertProtection = async (
     autoRenew: boolean;
     renewWindowMinutes: number;
     metadata?: Record<string, unknown>;
+    // Biweekly subscription fields (PR 3 of biweekly cutover, 2026-04-30).
+    // Optional and back-compat — when omitted, columns get their schema
+    // defaults (tenor_days=1, dailyRateUsdPer1k=null) so legacy 1-day
+    // callers continue working unchanged.
+    tenorDays?: number;
+    dailyRateUsdPer1k?: string | null;
   }
 ): Promise<ProtectionRecord> => {
   const id = input.id || randomUUID();
@@ -508,9 +514,11 @@ export const insertProtection = async (
         INSERT INTO pilot_protections (
           id, user_hash, hash_version, status, tier_name, drawdown_floor_pct, sl_pct, hedge_status, regime, regime_source, dvol_at_purchase,
           market_id, protected_notional, foxify_exposure_notional,
-          expiry_at, auto_renew, renew_window_minutes, metadata
+          expiry_at, auto_renew, renew_window_minutes, metadata,
+          tenor_days, daily_rate_usd_per_1k
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,
+          COALESCE($19::int, 1), $20::numeric)
         RETURNING *
       `,
       [
@@ -531,7 +539,9 @@ export const insertProtection = async (
         input.expiryAt,
         input.autoRenew,
         input.renewWindowMinutes,
-        JSON.stringify(v7Meta)
+        JSON.stringify(v7Meta),
+        input.tenorDays ?? null,
+        input.dailyRateUsdPer1k ?? null
       ]
     );
     return mapProtection(result.rows[0]);

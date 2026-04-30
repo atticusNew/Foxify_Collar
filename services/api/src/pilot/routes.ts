@@ -104,6 +104,12 @@ import {
   getHedgeBudgetCapConfig,
   type HedgeBudgetCapVerdict
 } from "./hedgeBudgetCap";
+import {
+  handleBiweeklyActivate,
+  handleBiweeklyQuote,
+  type BiweeklyActivateErrorReason
+} from "./biweeklyActivate";
+import { isBiweeklyEnabled } from "./biweeklyPricing";
 
 // Format a USD amount as a comma-separated whole-dollar string for
 // inclusion in user-facing error messages. Examples:
@@ -2422,7 +2428,39 @@ export const registerPilotRoutes = async (
       drawdownFloorPct?: number;
       protectionType?: "long" | "short";
       venue?: string;
+      product?: string;
     };
+
+    // ── BIWEEKLY BRANCH (PR 3 of biweekly cutover, 2026-04-30) ──
+    // When the feature flag is on AND the request explicitly opts into
+    // the biweekly product, dispatch to biweeklyActivate.handleBiweeklyQuote
+    // and return early. The legacy 1-day path below runs only when the
+    // flag is off OR product != "biweekly". This keeps the live 1-day
+    // product unchanged while biweekly rolls out.
+    if (isBiweeklyEnabled() && body.product === "biweekly") {
+      const result = await handleBiweeklyQuote({
+        pool,
+        venue,
+        req: {
+          protectedNotionalUsd: Number(body.protectedNotional ?? 0),
+          slPct: Number(body.slPct ?? 0),
+          direction: (body.protectionType ?? "long") as "long" | "short",
+          spotUsd: Number(body.entryPrice ?? 0),
+          marketId: body.marketId ?? pilotConfig.referenceMarketId
+        }
+      });
+      if (result.status === "error") {
+        const httpCode =
+          result.reason === "biweekly_disabled" ? 503 :
+          result.reason === "storage_unavailable" ? 503 :
+          result.reason === "venue_execute_failed" ? 502 :
+          400;
+        reply.code(httpCode);
+        return result;
+      }
+      return result;
+    }
+    // ── END BIWEEKLY BRANCH ─────────────────────────────────────────
     const quoteStartedAt = Date.now();
     const requestedVenue = body.venue === "deribit" ? deribitVenue : venue;
     const protectedNotional = parsePositiveDecimal(body.protectedNotional);
@@ -3467,7 +3505,89 @@ export const registerPilotRoutes = async (
       protectionType?: "long" | "short";
       entryPrice?: number;
       quoteId?: string;
+      product?: string;
     };
+
+    // ── BIWEEKLY BRANCH (PR 3 of biweekly cutover, 2026-04-30) ──
+    // When the feature flag is on AND the request opts into biweekly,
+    // dispatch to biweeklyActivate.handleBiweeklyActivate and return
+    // early. Legacy 1-day path below runs only when flag is off OR
+    // product != "biweekly". The biweekly handler enforces its own
+    // safety guards (1-trade-per-24h, hedge budget cap, venue execute)
+    // so the legacy guards below are not run.
+    if (isBiweeklyEnabled() && body.product === "biweekly") {
+      if (!body.quoteId) {
+        reply.code(400);
+        return { status: "error", reason: "missing_quote_id" };
+      }
+      let userHashBiweekly: { userHash: string; hashVersion: number };
+      try {
+        userHashBiweekly = resolveTenantScopeHash();
+      } catch (error: any) {
+        const reason = String(error?.message || "server_config_error");
+        reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+        return { status: "error", reason };
+      }
+      const result = await handleBiweeklyActivate({
+        pool,
+        venue,
+        userHash: userHashBiweekly.userHash,
+        hashVersion: userHashBiweekly.hashVersion,
+        marketId: body.marketId ?? pilotConfig.referenceMarketId,
+        req: {
+          quoteId: body.quoteId,
+          protectedNotionalUsd: Number(body.protectedNotional ?? 0),
+          slPct: Number(body.slPct ?? 0),
+          direction: (body.protectionType ?? "long") as "long" | "short",
+          clientOrderId: body.clientOrderId
+        },
+        evaluateHedgeBudget: async (projectedHedgeCostUsd) => {
+          const hbCfg = getHedgeBudgetCapConfig();
+          const pilotStartMs = hbCfg.pilotStartIso ? Date.parse(hbCfg.pilotStartIso) : null;
+          const cumulativeSpentUsd = pilotStartMs
+            ? await sumLiveHedgeCostUsdSince(pool, pilotStartMs)
+            : await sumLiveHedgeCostUsdSince(pool, 0);
+          const verdict: HedgeBudgetCapVerdict = evaluateHedgeBudgetCap({
+            pilotStartMsEpoch: pilotStartMs,
+            cumulativeSpentUsd,
+            prospectiveHedgeCostUsd: projectedHedgeCostUsd
+          });
+          return {
+            allowed: verdict.allowed,
+            reason: verdict.reason,
+            message: verdict.message,
+            details: {
+              pilotDay: verdict.pilotDay,
+              capUsd: verdict.capUsd,
+              cumulativeSpentUsd: verdict.cumulativeSpentUsd,
+              remainingUsd: verdict.remainingUsd,
+              projectedAfterUsd: verdict.projectedAfterUsd
+            }
+          };
+        }
+      });
+      if (result.status === "error") {
+        const reasonToHttp: Record<BiweeklyActivateErrorReason, number> = {
+          biweekly_disabled: 503,
+          invalid_notional: 400,
+          invalid_sl_pct: 400,
+          invalid_direction: 400,
+          quote_not_found: 404,
+          quote_already_consumed: 409,
+          quote_expired: 400,
+          quote_mismatch: 400,
+          daily_trade_limit_exceeded: 429,
+          hedge_budget_cap_exceeded: 400,
+          venue_execute_failed: 502,
+          storage_unavailable: 503
+        };
+        reply.code(reasonToHttp[result.reason] ?? 400);
+        return result;
+      }
+      return result;
+    }
+    // ── END BIWEEKLY BRANCH ─────────────────────────────────────────
+
     if (!body.quoteId) {
       reply.code(400);
       return { status: "error", reason: "missing_quote_id" };
