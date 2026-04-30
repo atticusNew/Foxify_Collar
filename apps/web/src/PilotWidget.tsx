@@ -19,28 +19,111 @@ type V7Info = {
   pricingRegime?: "low" | "moderate" | "elevated" | "high";
   pricingRegimeLabel?: string;
 };
+
+// Biweekly quote response shape (PR 5 of biweekly cutover, 2026-04-30).
+// Returned by the server when the request body included product:"biweekly".
+// All fields per services/api/src/pilot/biweeklyActivate.ts
+// BiweeklyQuoteResponse type.
+type BiweeklyQuoteResponse = {
+  status: "ok";
+  product: "biweekly";
+  quoteId: string;
+  ratePerDayPer1kUsd: number;
+  ratePerDayUsd: number;
+  maxTenorDays: number;
+  maxProjectedChargeUsd: number;
+  payoutOnTriggerUsd: number;
+  triggerPriceUsd: number;
+  strikeHintUsd: number;
+  hedgeQuote: { venueQuoteId: string; instrumentId: string; venuePremiumBtc: number; venuePremiumUsd: number; expiresAt: string };
+};
+
 type QuoteResponse = { status: string; protectionType: string; tierName: string; slPct: number | null; drawdownFloorPct: string; triggerPrice: string; floorPrice: string; v7: V7Info | null; quote: { quoteId: string; instrumentId: string; premium: number; expiresAt: string; side: string; quantity: number; venue: string; details?: Record<string, unknown> }; entrySnapshot: { price: string; marketId: string; source: string; timestamp: string } };
-type ProtectionRecord = { id: string; status: string; tierName: string; protectedNotional: string; entryPrice: string; floorPrice: string; drawdownFloorPct: string; expiryAt: string; premium: string; autoRenew: boolean; payoutDueAmount: string | null; payoutSettledAmount: string | null; venue: string; instrumentId: string; createdAt: string; metadata?: Record<string, unknown> };
+
+// Extended ProtectionRecord — biweekly fields (added in PR 2 of cutover)
+// are optional so legacy 1-day rows still type-check. Fields default to
+// 1-day legacy semantics on the server side.
+type ProtectionRecord = {
+  id: string;
+  status: string;
+  tierName: string;
+  protectedNotional: string;
+  entryPrice: string;
+  floorPrice: string;
+  drawdownFloorPct: string;
+  expiryAt: string;
+  premium: string;
+  autoRenew: boolean;
+  payoutDueAmount: string | null;
+  payoutSettledAmount: string | null;
+  venue: string;
+  instrumentId: string;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+  // Biweekly subscription fields (server returns these on every protection;
+  // legacy 1-day rows have tenorDays=1 and the rest null/0/false).
+  tenorDays?: number;
+  dailyRateUsdPer1k?: string | null;
+  accumulatedChargeUsd?: string;
+  daysBilled?: number;
+  closedAt?: string | null;
+  closedBy?: string | null;
+  hedgeRetainedForPlatform?: boolean;
+};
+
 type MonitorResponse = { status: string; protection?: ProtectionRecord & { renewedTo?: string | null; archivedAt?: string | null }; currentPrice?: string; distanceToFloor?: { pct: string; usd: string; direction: string }; timeRemaining?: { ms: number; human: string } };
-type Position = { id: string; num: number; type: "long" | "short"; size: number; stopLoss: number; entryPrice: number; protectionId: string | null; autoRenew: boolean; premium: number; status: "active" | "closed" | "triggered"; closedPnl: number | null; closedPayout: number | null };
+
+// Local Position cache. Adds optional biweekly fields:
+//   - dailyRateUsd: trader-facing $/day on this position (rate × notional/1000)
+//   - maxProjectedCharge: max if held to expiry
+//   - tenorDays: 1 (legacy) or 14 (biweekly)
+//   - activatedAtMs: for client-side "day N of 14" computation
+//
+// premium retained for legacy 1-day rendering. For biweekly rows it's
+// the running accumulated charge (refreshed from server on each monitor
+// poll if available).
+type Position = {
+  id: string;
+  num: number;
+  type: "long" | "short";
+  size: number;
+  stopLoss: number;
+  entryPrice: number;
+  protectionId: string | null;
+  autoRenew: boolean;
+  premium: number;
+  status: "active" | "closed" | "triggered";
+  closedPnl: number | null;
+  closedPayout: number | null;
+  // Biweekly fields (optional; null/undefined for legacy 1-day rows)
+  tenorDays?: number;
+  dailyRateUsd?: number;
+  maxProjectedCharge?: number;
+  activatedAtMs?: number;
+};
 
 // ─── Config ──────────────────────────────────────────────────────────
 
 const STOP_LOSS_OPTIONS = [2, 3, 5, 10] as const;
 type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
 const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
-// Client-side preview only (used to render the "Add Protection ($X)" button
-// before a quote round-trip). The authoritative premium comes from the API
-// response (V7Info.premiumPer1kUsd) once a quote is fetched. Must mirror
-// the LOW-regime row of REGIME_SCHEDULES in
-// services/api/src/pilot/pricingRegime.ts (low is the cheapest regime —
-// using it as the preview floor avoids momentary "premium just went up"
-// flicker when the server returns the actual regime-aware quote).
+
+// Biweekly per-day rate preview (PR 5 of biweekly cutover, 2026-04-30).
+// USD per $1k notional per day. Mirrors the BIWEEKLY_DEFAULT_RATES table
+// in services/api/src/pilot/biweeklyPricing.ts so the widget can
+// render the rate immediately, before the server quote round-trip.
 //
-// 2026-04-21: 2% raised from \$6 → \$7 in low regime (tier-mix shaping).
-// 2026-04-25: 2% lowered from \$7 → \$6.50 in low regime in response to
-//   CEO feedback that calm pricing felt thick. Stress regime unchanged.
-//   See pricingRegime.ts §2026-04-25 note.
+// CEO direction 2026-04-30: "$2.50 for 2-3%, $2.00 for 5%, $1.50 for 10%
+// flat across regimes — the absolute baseline." Server may override these
+// via PILOT_BIWEEKLY_RATE_<N>PCT env; if so the server-returned rate
+// (in BiweeklyQuoteResponse.ratePerDayPer1kUsd) is authoritative.
+const BIWEEKLY_RATE_PER_1K_DAY: Record<StopLoss, number> = { 2: 2.5, 3: 2.5, 5: 2.0, 10: 1.5 };
+const BIWEEKLY_MAX_TENOR_DAYS = 14;
+
+// Legacy 1-day rate table — retained for back-compat rendering of the 2
+// existing 1-day protections that are still active at biweekly cutover
+// time. After they expire (~24h post-deploy), this table is dead UI; PR 6
+// removes it.
 const SL_RATE: Record<StopLoss, number> = { 2: 6.5, 3: 5, 5: 3, 10: 2 };
 const SL_TENOR: Record<StopLoss, number> = { 2: 1, 3: 1, 5: 1, 10: 1 };
 const POS_MIN = 10000, POS_MAX = 50000, POS_STEP = 5000, INIT_BAL = 1_000_000;
@@ -80,7 +163,34 @@ type RegimeInfo = {
 };
 const fetchRegime = () => api<RegimeInfo>("/pilot/regime");
 const fetchQuote = (b: Record<string, unknown>) => api<QuoteResponse>("/pilot/protections/quote", { method: "POST", body: JSON.stringify(b) });
+// Biweekly quote (PR 3 of cutover). Server detects product:"biweekly"
+// in the body and returns BiweeklyQuoteResponse instead of the legacy
+// QuoteResponse shape.
+const fetchBiweeklyQuote = (b: Record<string, unknown>) =>
+  api<BiweeklyQuoteResponse>("/pilot/protections/quote", { method: "POST", body: JSON.stringify({ ...b, product: "biweekly" }) });
 const activateProt = (b: Record<string, unknown>) => api<{ status: string; protectionId: string; protection: ProtectionRecord }>("/pilot/protections/activate", { method: "POST", body: JSON.stringify(b) });
+// Biweekly activate. Same /activate endpoint, server dispatches based on
+// product:"biweekly". Returns the biweekly-shaped response with ok status
+// + product:"biweekly" + protection.
+const activateBiweeklyProt = (b: Record<string, unknown>) =>
+  api<{ status: "ok"; product: "biweekly"; protection: ProtectionRecord }>(
+    "/pilot/protections/activate",
+    { method: "POST", body: JSON.stringify({ ...b, product: "biweekly" }) }
+  );
+// Close a biweekly subscription (PR 4 of cutover). Server settles
+// accumulated charge through close-time and ends the subscription.
+// Returns the updated protection + bill amount for the toast.
+const closeBiweeklyProt = (id: string) =>
+  api<{
+    status: "ok";
+    product: "biweekly";
+    protection: ProtectionRecord;
+    accumulatedChargeUsd: number;
+    daysBilled: number;
+    hedgeRetainedForPlatform: boolean;
+    newlyClosed: boolean;
+  }>(`/pilot/protections/${id}/close`, { method: "POST", body: JSON.stringify({}) });
+
 const fetchMon = async (id: string): Promise<MonitorResponse> => {
   const raw = await api<{ status: string; monitor?: MonitorResponse } & MonitorResponse>(`/pilot/protections/${id}/monitor`);
   return raw.monitor || raw;
@@ -90,6 +200,22 @@ const toggleAutoRenew = (id: string, enabled: boolean) =>
     `/pilot/protections/${id}/auto-renew`,
     { method: "POST", body: JSON.stringify({ enabled }) }
   );
+
+// Helper to identify biweekly positions for branching display logic.
+// A position is biweekly if tenorDays >= 2. Defaults to legacy (false)
+// when tenorDays is missing.
+const isBiweeklyPosition = (pos: Position): boolean => (pos.tenorDays ?? 1) >= 2;
+
+// Helper to compute days held client-side (for the running tally on
+// active biweekly positions). Mirrors the server's day-boundary grace
+// behavior crudely — Math.max(1, Math.ceil(elapsed)) — clamped to
+// BIWEEKLY_MAX_TENOR_DAYS. The authoritative number on close comes
+// from the server. This is just for display.
+const biweeklyDaysHeldDisplay = (activatedAtMs: number, nowMs: number = Date.now()): number => {
+  const elapsedMs = Math.max(0, nowMs - activatedAtMs);
+  const days = elapsedMs / 86400000;
+  return Math.min(BIWEEKLY_MAX_TENOR_DAYS, Math.max(1, Math.ceil(days)));
+};
 
 // ─── Persistence ─────────────────────────────────────────────────────
 
@@ -139,7 +265,12 @@ export function PilotWidget() {
   const [positionType, setPositionType] = useState<"long" | "short" | null>(null);
   const [positionSize, setPositionSize] = useState(10000);
   const [stopLoss, setStopLoss] = useState<StopLoss | null>(null);
+  // autoRenew form-level state retained for legacy 1-day code paths
+  // that still reference Position.autoRenew. Biweekly does not use
+  // auto-renew (per design decision; trader explicitly opens new
+  // subscription at end). The form-level checkbox was removed in PR 5.
   const [autoRenew, setAutoRenew] = useState(false);
+  void autoRenew; void setAutoRenew;
   const [livePrice, setLivePrice] = useState<number | null>(null);
   // Design A — current pricing regime + per-tier rates from server.
   // Falls back to client-side SL_RATE table only if the server poll
@@ -167,12 +298,19 @@ export function PilotWidget() {
 
   const tierName = stopLoss ? STOP_LOSS_TO_TIER[stopLoss] : "SL 2%";
   const dd = stopLoss ?? 2;
-  // Prefer the server-provided regime-aware rate over the static SL_RATE
-  // table (which is only the first-paint fallback).
+  // Legacy 1-day rate retained for the (now-dormant) legacy code paths
+  // that still reference `premium`/`tenor`/`ppk`. Active form display
+  // uses the biweekly per-day rate below.
   const serverRate = regimeInfo?.tiers?.find((t) => t.slPct === dd)?.premiumPer1kUsd;
   const ppk = serverRate ?? SL_RATE[dd as StopLoss] ?? 3;
   const tenor = SL_TENOR[dd as StopLoss] ?? 3;
   const premium = (positionSize / 1000) * ppk;
+  void tierName; void premium; void tenor; // marked unused but retained for legacy paths
+  // Biweekly per-day display values (PR 5).
+  // Daily rate = $/$1k × position notional / 1000. Max projected = daily × 14.
+  const biweeklyRatePer1k = BIWEEKLY_RATE_PER_1K_DAY[dd as StopLoss] ?? 2.5;
+  const biweeklyDailyRate = (positionSize / 1000) * biweeklyRatePer1k;
+  const biweeklyMaxCharge = biweeklyDailyRate * BIWEEKLY_MAX_TENOR_DAYS;
   const payout = positionSize * (dd / 100);
   const floor = livePrice && stopLoss ? (positionType === "short" ? livePrice * (1 + dd / 100) : livePrice * (1 - dd / 100)) : null;
   const ready = positionType !== null && stopLoss !== null;
@@ -272,14 +410,46 @@ export function PilotWidget() {
 
   const nextNum = () => { posNumRef.current++; sv(K_NUM, posNumRef.current); return posNumRef.current; };
 
-  const doProtect = useCallback(async (posSize: number, posType: "long" | "short", sl: number, ep: number, shouldAutoRenew: boolean, existingPosId?: string) => {
-    const tn = STOP_LOSS_TO_TIER[sl as StopLoss] || "SL 2%";
-    const slTenor = SL_TENOR[sl as StopLoss] ?? 3;
-    const q = await fetchQuote({ protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, protectionType: posType, tenorDays: slTenor });
-    const actualPrem = q.v7?.premiumUsd ?? q.quote.premium;
-    const r = await activateProt({ quoteId: q.quote.quoteId, protectedNotional: posSize, foxifyExposureNotional: posSize, entryPrice: ep, slPct: sl, tierName: tn, drawdownFloorPct: sl / 100, autoRenew: shouldAutoRenew, protectionType: posType, tenorDays: slTenor });
-    const pid = r.protectionId || r.protection?.id || null;
-    return { pid, prem: actualPrem };
+  // PR 5 of biweekly cutover (2026-04-30): doProtect now opens biweekly
+  // subscriptions instead of 1-day premium-billed protections. The server
+  // dispatches based on product:"biweekly" in the request body — when the
+  // PILOT_BIWEEKLY_ENABLED env flag is on, the request goes through the
+  // new biweekly handler (PR 3) and creates a 14-day max protection.
+  // When the flag is off, the server returns biweekly_disabled and the
+  // widget surfaces the error.
+  //
+  // Returns the new protection ID + the per-day rate + max projected
+  // charge so the local Position cache can render the running tally
+  // immediately, before the first monitor poll.
+  const doProtect = useCallback(async (posSize: number, posType: "long" | "short", sl: number, ep: number) => {
+    const q = await fetchBiweeklyQuote({
+      protectedNotional: posSize,
+      foxifyExposureNotional: posSize,
+      entryPrice: ep,
+      slPct: sl,
+      tierName: STOP_LOSS_TO_TIER[sl as StopLoss] || "SL 2%",
+      drawdownFloorPct: sl / 100,
+      protectionType: posType
+    });
+    const r = await activateBiweeklyProt({
+      quoteId: q.quoteId,
+      protectedNotional: posSize,
+      foxifyExposureNotional: posSize,
+      entryPrice: ep,
+      slPct: sl,
+      tierName: STOP_LOSS_TO_TIER[sl as StopLoss] || "SL 2%",
+      drawdownFloorPct: sl / 100,
+      protectionType: posType
+    });
+    const pid = r.protection?.id || null;
+    const activatedAtMs = r.protection?.createdAt ? new Date(r.protection.createdAt).getTime() : Date.now();
+    return {
+      pid,
+      dailyRateUsd: q.ratePerDayUsd,
+      maxProjectedCharge: q.maxProjectedChargeUsd,
+      tenorDays: q.maxTenorDays,
+      activatedAtMs
+    };
   }, []);
 
   const handleOpenProtected = useCallback(async () => {
@@ -287,17 +457,37 @@ export function PilotWidget() {
     setActivating(true); setActivateError(null);
     try {
       const ep = livePrice;
-      const { pid, prem } = await doProtect(positionSize, positionType, dd, ep, autoRenew);
-      if (!pid) throw new Error("Protection activation failed — no protection ID returned");
+      const result = await doProtect(positionSize, positionType, dd, ep);
+      if (!result.pid) throw new Error("Protection activation failed — no protection ID returned");
       const num = nextNum();
-      setPositions(prev => [...prev, { id: `pos_${num}_${Date.now()}`, num, type: positionType, size: positionSize, stopLoss: dd, entryPrice: ep, protectionId: pid, autoRenew, premium: prem, status: "active", closedPnl: null, closedPayout: null }]);
-      setBalance(b => { const nb = Math.max(0, b - prem); sv(K_BAL, nb); return nb; });
-      setSettlement(s => { const ns = { ...s, totalPremiums: s.totalPremiums + prem }; sv(K_SET, ns); return ns; });
+      // Biweekly: charge starts at $0; accumulates over time. premium=0
+      // initially, gets refreshed from monitor poll once accumulated_charge
+      // is non-zero on the server.
+      setPositions(prev => [...prev, {
+        id: `pos_${num}_${Date.now()}`,
+        num,
+        type: positionType,
+        size: positionSize,
+        stopLoss: dd,
+        entryPrice: ep,
+        protectionId: result.pid,
+        autoRenew: false, // biweekly doesn't use auto-renew
+        premium: 0,
+        status: "active",
+        closedPnl: null,
+        closedPayout: null,
+        tenorDays: result.tenorDays,
+        dailyRateUsd: result.dailyRateUsd,
+        maxProjectedCharge: result.maxProjectedCharge,
+        activatedAtMs: result.activatedAtMs
+      }]);
+      // Settlement total starts at 0 for biweekly (no upfront premium).
+      // Accumulated charges feed into settlement at close time.
       setPositionType(null); setStopLoss(null);
       setPosOpen(true);
-      setToast(`Position #${num} opened — Protected`);
+      setToast(`Position #${num} opened — $${result.dailyRateUsd.toFixed(2)}/day, max $${result.maxProjectedCharge.toFixed(0)} over ${result.tenorDays} days`);
     } catch (e: any) { setActivateError(e.message); } finally { setActivating(false); }
-  }, [livePrice, ready, positionSize, tierName, dd, positionType, autoRenew, doProtect]);
+  }, [livePrice, ready, positionSize, dd, positionType, doProtect]);
 
   // 2026-04-29: handleOpenWithout (and the matching "Open Without" button
   // below) was removed. The button sat side-by-side with "Open + Protect"
@@ -318,24 +508,101 @@ export function PilotWidget() {
     if (!pos || pos.protectionId || !livePrice) return;
     setProtectingPosId(posId);
     try {
-      const { pid, prem } = await doProtect(pos.size, pos.type, pos.stopLoss, pos.entryPrice, pos.autoRenew);
-      if (!pid) throw new Error("Protection activation failed — no protection ID returned");
-      setPositions(prev => prev.map(p => p.id === posId ? { ...p, protectionId: pid, premium: prem } : p));
-      setBalance(b => { const nb = Math.max(0, b - prem); sv(K_BAL, nb); return nb; });
-      setSettlement(s => { const ns = { ...s, totalPremiums: s.totalPremiums + prem }; sv(K_SET, ns); return ns; });
-      setToast(`Protection added to Position #${pos.num}`);
+      const result = await doProtect(pos.size, pos.type, pos.stopLoss, pos.entryPrice);
+      if (!result.pid) throw new Error("Protection activation failed — no protection ID returned");
+      setPositions(prev => prev.map(p => p.id === posId ? {
+        ...p,
+        protectionId: result.pid,
+        premium: 0,
+        tenorDays: result.tenorDays,
+        dailyRateUsd: result.dailyRateUsd,
+        maxProjectedCharge: result.maxProjectedCharge,
+        activatedAtMs: result.activatedAtMs
+      } : p));
+      setToast(`Protection added to Position #${pos.num} — $${result.dailyRateUsd.toFixed(2)}/day, max $${result.maxProjectedCharge.toFixed(0)} over ${result.tenorDays} days`);
     } catch (e: any) { setActivateError(e.message); } finally { setProtectingPosId(null); }
   }, [positions, livePrice, doProtect]);
 
-  const handleClose = (posId: string) => {
+  // PR 5: handleClose now branches by position type.
+  //
+  // Biweekly + protected → call server /pilot/protections/:id/close,
+  //   server settles accumulated charge, returns final billed amount.
+  //   We surface the bill in the toast and update local state with the
+  //   server-confirmed numbers.
+  //
+  // Legacy 1-day or local-only positions → original local-only close
+  //   (no server call). Computes synthetic P&L from entry vs current.
+  const [closingPosId, setClosingPosId] = useState<string | null>(null);
+  const [closeConfirmPosId, setCloseConfirmPosId] = useState<string | null>(null);
+
+  const handleClose = useCallback(async (posId: string) => {
     const pos = positions.find(p => p.id === posId);
-    setPositions(prev => prev.map(p => {
-      if (p.id !== posId || p.status !== "active") return p;
-      const price = livePrice || p.entryPrice;
-      const pnl = p.type === "long" ? ((price - p.entryPrice) / p.entryPrice) * p.size : ((p.entryPrice - price) / p.entryPrice) * p.size;
-      return { ...p, status: "closed" as const, closedPnl: pnl };
-    }));
-    if (pos) setToast(`Position #${pos.num} closed`);
+    if (!pos) return;
+    // Local-only or legacy 1-day → original behavior
+    if (!pos.protectionId || !isBiweeklyPosition(pos)) {
+      setPositions(prev => prev.map(p => {
+        if (p.id !== posId || p.status !== "active") return p;
+        const price = livePrice || p.entryPrice;
+        const pnl = p.type === "long" ? ((price - p.entryPrice) / p.entryPrice) * p.size : ((p.entryPrice - price) / p.entryPrice) * p.size;
+        return { ...p, status: "closed" as const, closedPnl: pnl };
+      }));
+      setToast(`Position #${pos.num} closed`);
+      return;
+    }
+    // Biweekly: call server close endpoint
+    setClosingPosId(posId);
+    try {
+      const res = await closeBiweeklyProt(pos.protectionId);
+      // Server returns the authoritative bill. Update local state and
+      // mirror in settlement totals so the trader sees the final charge.
+      const billed = res.accumulatedChargeUsd;
+      const days = res.daysBilled;
+      const wasNewClose = res.newlyClosed;
+      setPositions(prev => prev.map(p => p.id === posId ? {
+        ...p,
+        status: "closed" as const,
+        premium: billed,
+        closedPnl: -billed
+      } : p));
+      setBalance(b => {
+        // Settle the bill against balance only on a newly-closed call
+        // to avoid double-charging if the trader retries.
+        if (!wasNewClose) return b;
+        const nb = Math.max(0, b - billed);
+        sv(K_BAL, nb);
+        return nb;
+      });
+      setSettlement(s => {
+        if (!wasNewClose) return s;
+        const ns = { ...s, totalPremiums: s.totalPremiums + billed };
+        sv(K_SET, ns);
+        return ns;
+      });
+      setToast(
+        wasNewClose
+          ? `Position #${pos.num} closed — billed $${billed.toFixed(2)} for ${days} day${days === 1 ? "" : "s"}`
+          : `Position #${pos.num} was already closed (billed $${billed.toFixed(2)})`
+      );
+    } catch (e: any) {
+      const msg = String(e?.message || "close_failed");
+      setActivateError(
+        msg.includes("not_biweekly")
+          ? "This protection is on the legacy 1-day plan; no end-protection action available."
+          : msg.includes("not_found")
+            ? "Protection no longer exists. Refresh."
+            : `Could not close protection: ${msg}`
+      );
+    } finally {
+      setClosingPosId(null);
+      setCloseConfirmPosId(null);
+    }
+  }, [positions, livePrice]);
+
+  // Handler for the inline "Close" button on legacy/unprotected rows.
+  // Wraps handleClose for the local-only path (no confirmation needed —
+  // local-only close is risk-free and can be undone via undo not needed).
+  const handleCloseLocal = (posId: string) => {
+    void handleClose(posId);
   };
 
   // Toggle auto-renew on an open protection (Pilot Agreement §3.3 — at Client's discretion).
@@ -434,17 +701,35 @@ export function PilotWidget() {
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: 12, marginTop: 4 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>Protect Your Position</div>
           {activateError && <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10, padding: "8px 10px", background: "rgba(255,107,107,0.08)", borderRadius: 8, border: "1px solid rgba(255,107,107,0.2)", wordBreak: "break-word" }}>{activateError}</div>}
+          {/* PR 5 of biweekly cutover: per-day subscription pricing display.
+              Replaces the old "Premium $X for 1 day" with daily rate +
+              max-projected-charge framing. The trader sees what they pay
+              per day and the worst case if they hold the full 14 days. */}
           <div style={{ background: "rgba(54,211,141,0.06)", border: "1px solid rgba(54,211,141,0.18)", borderRadius: 12, padding: 14, marginBottom: 12, opacity: ready ? 1 : 0.5 }}>
             <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 8 }}>
               {ready ? <>If your position hits <strong style={{ color: "var(--danger)" }}>{dd}%</strong> stop loss, you receive <strong style={{ color: "var(--success)" }}>{fmt(payout)}</strong> instantly.</> : <span style={{ color: "var(--muted)" }}>Select position type and stop loss to see protection details.</span>}
             </div>
             {ready && <>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}><span>Premium</span><span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(premium)} for {tenor} {tenor === 1 ? "day" : "days"}</span></div>
-              {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 4 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
+              {/* Per-day rate is the headline number; max-projected is the
+                  worst-case ceiling if held for the full 14-day max tenor.
+                  Trader can close anytime and only pays for days actually held. */}
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)" }}>
+                <span>Daily rate</span>
+                <span style={{ fontWeight: 600, color: "var(--text)" }}>{fmt(biweeklyDailyRate)}/day</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+                <span>Max if held to {BIWEEKLY_MAX_TENOR_DAYS} days</span>
+                <span style={{ fontWeight: 500 }}>{fmt(biweeklyMaxCharge)}</span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginTop: 4 }}>
+                <span>Close anytime</span>
+                <span style={{ fontWeight: 500, fontStyle: "italic" }}>only pay for days held</span>
+              </div>
+              {floor && <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginTop: 6 }}><span>{positionType === "long" ? "Floor Price" : "Ceiling Price"}</span><span style={{ fontWeight: 500 }}>{fmt(floor)}</span></div>}
               {regimeInfo?.pricingRegimeLabel && (
                 <div
                   style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginTop: 6, opacity: 0.8 }}
-                  title="Price reflects current Bitcoin market volatility. See documentation for the schedule."
+                  title="Volatility regime is informational; biweekly daily rate is currently flat across regimes."
                 >
                   <span>Volatility</span>
                   <span style={{ fontWeight: 500 }}>{regimeInfo.pricingRegimeLabel}</span>
@@ -452,10 +737,7 @@ export function PilotWidget() {
               )}
             </>}
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--muted)", marginBottom: 14, cursor: "pointer" }}>
-            <input type="checkbox" checked={autoRenew} onChange={e => setAutoRenew(e.target.checked)} style={{ accentColor: "var(--accent)" }} /> Auto-renew protection at expiry
-          </label>
-          <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", opacity: (!ready || activating || !livePrice) ? 0.5 : 1 }}>{activating ? "Opening..." : "Open + Protect"}</button>
+          <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", opacity: (!ready || activating || !livePrice) ? 0.5 : 1 }}>{activating ? "Opening..." : `Open + Protect (${fmt(biweeklyDailyRate)}/day)`}</button>
         </div>
 
         {/* ── ACTIVE POSITIONS ── */}
@@ -469,7 +751,28 @@ export function PilotWidget() {
                 const pnlPct = canCalcPnl ? (pos.type === "long" ? ((livePrice - pos.entryPrice) / pos.entryPrice) * 100 : ((pos.entryPrice - livePrice) / pos.entryPrice) * 100) : null;
                 const fl = pos.type === "long" ? pos.entryPrice * (1 - pos.stopLoss / 100) : pos.entryPrice * (1 + pos.stopLoss / 100);
                 const isProtecting = protectingPosId === pos.id;
+                const isClosing = closingPosId === pos.id;
                 const protectionExpired = pos.protectionId && mon?.timeRemaining && mon.timeRemaining.ms <= 0 && !mon.protection?.renewedTo;
+
+                // PR 5: biweekly subscription branch.
+                // Compute display values for biweekly rows. The server's
+                // accumulated_charge_usd (read from monitor poll if present)
+                // is authoritative; client-side fallback is rate × ceil(daysHeld).
+                const isBiweekly = isBiweeklyPosition(pos);
+                const dailyRate = pos.dailyRateUsd ?? 0;
+                const maxCharge = pos.maxProjectedCharge ?? 0;
+                const activatedAtMs = pos.activatedAtMs ?? Date.now();
+                const daysHeld = isBiweekly ? biweeklyDaysHeldDisplay(activatedAtMs) : 0;
+                // Prefer server-confirmed accumulated charge if available;
+                // otherwise compute client-side estimate (rate × daysHeld).
+                const serverAccCharge = mon?.protection?.accumulatedChargeUsd
+                  ? Number(mon.protection.accumulatedChargeUsd)
+                  : null;
+                const accCharge =
+                  isBiweekly
+                    ? (serverAccCharge && serverAccCharge > 0 ? serverAccCharge : dailyRate * daysHeld)
+                    : 0;
+
                 return (
                   <div key={pos.id} style={{ padding: 12, borderRadius: 10, border: "1px solid var(--border)", background: "var(--card-2)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -485,7 +788,10 @@ export function PilotWidget() {
                           : pos.protectionId
                             ? <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(54,211,141,0.12)", color: "var(--success)" }}>Protected</span>
                             : <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999, background: "rgba(255,107,107,0.12)", color: "var(--danger)" }}>Unprotected</span>}
-                        {pos.protectionId && !protectionExpired && (
+                        {/* Auto-renew toggle ONLY shown for legacy 1-day protections.
+                            Biweekly subscriptions don't have auto-renew — at
+                            close the trader explicitly opens a new one. */}
+                        {pos.protectionId && !protectionExpired && !isBiweekly && (
                           <button
                             type="button"
                             onClick={() => handleToggleAutoRenew(pos.id)}
@@ -519,18 +825,45 @@ export function PilotWidget() {
                       <span>Entry {fmt(pos.entryPrice)}</span>
                       {pnl !== null && <span style={{ fontWeight: 600, color: pnl >= 0 ? "var(--success)" : "var(--danger)", fontVariantNumeric: "tabular-nums" }}>{fmt(pnl)} ({fPct(pnlPct!)})</span>}
                     </div>
-                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>
+                    {/* Floor/ceiling + tenor row */}
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: isBiweekly ? 4 : 6 }}>
                       <span>{pos.type === "long" ? "Floor" : "Ceiling"}: {fmt(fl)}</span>
-                      {pos.protectionId && mon?.timeRemaining && <span>{mon.timeRemaining.ms > 0 ? `${fTime(mon.timeRemaining.ms)} left` : "Expired"}</span>}
-                      {pos.premium > 0 && <span>Premium: {fmt(pos.premium)}</span>}
+                      {!isBiweekly && pos.protectionId && mon?.timeRemaining && <span>{mon.timeRemaining.ms > 0 ? `${fTime(mon.timeRemaining.ms)} left` : "Expired"}</span>}
+                      {!isBiweekly && pos.premium > 0 && <span>Premium: {fmt(pos.premium)}</span>}
                     </div>
+                    {/* Biweekly subscription row: day N of 14 + accumulated charge + max */}
+                    {isBiweekly && pos.protectionId && (
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--muted)", marginBottom: 6 }}>
+                        <span title="Days held so far. Closes automatically at the 14-day max.">
+                          Day {daysHeld} of {pos.tenorDays ?? BIWEEKLY_MAX_TENOR_DAYS}
+                        </span>
+                        <span title={`Daily rate: ${fmt(dailyRate)}/day. Max if held to expiry: ${fmt(maxCharge)}.`}>
+                          Charged so far: <strong style={{ color: "var(--text)" }}>{fmt(accCharge)}</strong>
+                          <span style={{ opacity: 0.6 }}> / max {fmt(maxCharge)}</span>
+                        </span>
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: 6 }}>
                       {!pos.protectionId && (
                         <button onClick={() => handleAddProtection(pos.id)} disabled={isProtecting} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "none", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", fontSize: 11, fontWeight: 600, color: "#fff", cursor: "pointer", opacity: isProtecting ? 0.5 : 1 }}>
-                          {isProtecting ? "Adding..." : `Add Protection (${fmt((pos.size / 1000) * (SL_RATE[pos.stopLoss as StopLoss] ?? 3))})`}
+                          {isProtecting ? "Adding..." : `Add Protection (${fmt((pos.size / 1000) * BIWEEKLY_RATE_PER_1K_DAY[pos.stopLoss as StopLoss] || 0)}/day)`}
                         </button>
                       )}
-                      <button onClick={() => handleClose(pos.id)} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", fontSize: 11, color: "var(--muted)", cursor: "pointer" }}>Close</button>
+                      {/* End Protection button — biweekly subscriptions need
+                          confirmation since they call the server and settle
+                          accumulated charges. Legacy/local-only positions use
+                          the inline Close (no confirmation). */}
+                      {isBiweekly && pos.protectionId ? (
+                        <button
+                          onClick={() => setCloseConfirmPosId(pos.id)}
+                          disabled={isClosing}
+                          style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", fontSize: 11, color: isClosing ? "var(--muted)" : "var(--text)", cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.6 : 1 }}
+                        >
+                          {isClosing ? "Closing…" : "End Protection"}
+                        </button>
+                      ) : (
+                        <button onClick={() => handleCloseLocal(pos.id)} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", fontSize: 11, color: "var(--muted)", cursor: "pointer" }}>Close</button>
+                      )}
                     </div>
                   </div>
                 );
@@ -572,6 +905,87 @@ export function PilotWidget() {
 
         <div style={{ textAlign: "center", marginTop: 14, fontSize: 10, color: "var(--muted)", opacity: 0.5 }}>Protection provided by Atticus Strategy, Ltd. &copy; 2026</div>
       </div>
+
+      {/* PR 5: End-protection confirmation modal for biweekly subscriptions.
+          Shows the current accumulated bill so the trader knows exactly what
+          they're being charged before they confirm. Cancel is the default
+          (highlighted button), End Protection is the destructive secondary. */}
+      {closeConfirmPosId && (() => {
+        const pos = positions.find(p => p.id === closeConfirmPosId);
+        if (!pos) return null;
+        const dailyRate = pos.dailyRateUsd ?? 0;
+        const activatedAtMs = pos.activatedAtMs ?? Date.now();
+        const daysHeld = biweeklyDaysHeldDisplay(activatedAtMs);
+        const estCharge = dailyRate * daysHeld;
+        const isClosing = closingPosId === closeConfirmPosId;
+        return (
+          <div
+            onClick={() => !isClosing && setCloseConfirmPosId(null)}
+            style={{
+              position: "fixed",
+              top: 0, left: 0, right: 0, bottom: 0,
+              background: "rgba(0,0,0,0.55)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              zIndex: 2000,
+              padding: 16
+            }}
+          >
+            <div
+              onClick={e => e.stopPropagation()}
+              style={{
+                background: "var(--card)",
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                padding: 20,
+                maxWidth: 380,
+                width: "100%"
+              }}
+            >
+              <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>
+                End Protection #{pos.num}?
+              </div>
+              <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 }}>
+                You'll be charged <strong style={{ color: "var(--text)" }}>{fmt(estCharge)}</strong> for {daysHeld} day{daysHeld === 1 ? "" : "s"} held. No future charges.
+                <br />
+                <span style={{ opacity: 0.7, fontSize: 11 }}>
+                  Final amount confirmed by server. Once ended, the protection cannot be reopened — open a new one if you need protection again.
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => !isClosing && setCloseConfirmPosId(null)}
+                  disabled={isClosing}
+                  style={{
+                    flex: 1, padding: "10px 0", borderRadius: 8,
+                    border: "none",
+                    background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
+                    color: "#fff", fontSize: 13, fontWeight: 600,
+                    cursor: isClosing ? "wait" : "pointer",
+                    opacity: isClosing ? 0.5 : 1
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => void handleClose(pos.id)}
+                  disabled={isClosing}
+                  style={{
+                    flex: 1, padding: "10px 0", borderRadius: 8,
+                    border: "1px solid var(--danger)",
+                    background: "transparent",
+                    color: "var(--danger)", fontSize: 13, fontWeight: 600,
+                    cursor: isClosing ? "wait" : "pointer",
+                    opacity: isClosing ? 0.5 : 1
+                  }}
+                >
+                  {isClosing ? "Ending…" : "End Protection"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       <a
         href="https://t.me/willialso"
         target="_blank"
