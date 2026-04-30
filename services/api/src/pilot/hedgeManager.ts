@@ -232,6 +232,25 @@ type ManagedHedge = {
    * backstop can decide whether to keep trying or hold to expiry.
    */
   noBidRetryCount: number;
+  /**
+   * Hedge tenor in days. 1 = legacy 1-day product, 14 = biweekly
+   * subscription product (PR 6 of biweekly cutover, 2026-04-30). Used
+   * to scale TP timing constants (cooling window, prime window,
+   * near-expiry salvage threshold) so the 14-day option lifecycle
+   * gets appropriately longer windows than the 1-day product.
+   * Defaults to 1 for legacy rows where tenor_days isn't set.
+   */
+  tenorDays: number;
+  /**
+   * Per CEO direction 2026-04-30 (PR 4 of biweekly cutover): when a
+   * biweekly trigger fires, the protection closes for the user but
+   * the underlying Deribit option stays open for the platform. This
+   * flag, set by biweeklyClose.handleBiweeklyClose, tells the hedge
+   * manager that disposition is on its own schedule (not the
+   * trader's). Used to slightly extend the TP windows on retained
+   * hedges since there's no user-facing urgency.
+   */
+  hedgeRetainedForPlatform: boolean;
   metadata: Record<string, unknown>;
 };
 
@@ -286,35 +305,69 @@ const resolveVolRegime = (dvol: number): VolRegime => {
   return "normal";
 };
 
-const resolveAdaptiveParams = (dvol: number) => {
+// Tenor-aware scaling for TP timing parameters (PR 6 of biweekly
+// cutover, 2026-04-30).
+//
+// The legacy 1-day product calibrated cooling/prime/late timing
+// constants for a 24-hour option lifecycle. Biweekly options live
+// 14× longer and have very different theta curves — applying the
+// 1-day timings to a 14-day option causes the system to hit
+// "near-expiry salvage" with 13 days left, which is wrong.
+//
+// Scaling rules:
+//   - Cooling windows scale as sqrt(tenor) — theta is non-linear, so
+//     waiting longer on a longer option captures proportionally less
+//     time-value relative to total premium.
+//   - Prime/late windows scale linearly — they're calendar-time concepts.
+//   - Near-expiry-salvage is a fixed fraction of tenor (last 1/14 of
+//     the option's life), capped at 24h.
+//   - Threshold values (prime/late as % of payout) DO NOT scale —
+//     they're percentages of payout regardless of tenor.
+//
+// For tenor=1 (legacy), all scalings = 1.0 → behavior identical to
+// pre-PR-6. For tenor=14 (biweekly):
+//   coolingHours: 0.5h → ~1.87h
+//   primeWindowEndHours: 8h → ~7d (168h)
+//   nearExpirySalvageHours: 6h → ~24h
+const tenorScaledTpTimings = (tenorDays: number) => {
+  const t = Math.max(1, tenorDays);
+  return {
+    coolingScale: Math.sqrt(t),       // sqrt scaling — theta-aware
+    primeWindowScale: t,              // linear scaling — calendar time
+    nearExpirySalvageScale: Math.min(t / 1.0, 4.0)  // linear, capped at 4× (= 24h for 1-day base)
+  };
+};
+
+const resolveAdaptiveParams = (dvol: number, tenorDays: number = 1) => {
   const regime = resolveVolRegime(dvol);
+  const sc = tenorScaledTpTimings(tenorDays);
   switch (regime) {
     case "high":
       return {
         regime,
-        coolingHours: 1.0,
-        deepDropCoolingHours: 0.25,
-        primeThreshold: 0.35,
-        lateThreshold: 0.15,
-        primeWindowEndHours: 10
+        coolingHours: 1.0 * sc.coolingScale,
+        deepDropCoolingHours: 0.25 * sc.coolingScale,
+        primeThreshold: 0.35,             // % of payout — NOT scaled by tenor
+        lateThreshold: 0.15,              // % of payout — NOT scaled by tenor
+        primeWindowEndHours: 10 * sc.primeWindowScale
       };
     case "low":
       return {
         regime,
-        coolingHours: 0.25,
-        deepDropCoolingHours: 0.1,
+        coolingHours: 0.25 * sc.coolingScale,
+        deepDropCoolingHours: 0.1 * sc.coolingScale,
         primeThreshold: 0.15,
         lateThreshold: 0.05,
-        primeWindowEndHours: 6
+        primeWindowEndHours: 6 * sc.primeWindowScale
       };
     default:
       return {
         regime,
-        coolingHours: BASE_COOLING_HOURS,
-        deepDropCoolingHours: BASE_DEEP_DROP_COOLING_HOURS,
+        coolingHours: BASE_COOLING_HOURS * sc.coolingScale,
+        deepDropCoolingHours: BASE_DEEP_DROP_COOLING_HOURS * sc.coolingScale,
         primeThreshold: BASE_PRIME_THRESHOLD_MULTIPLIER,
         lateThreshold: BASE_LATE_THRESHOLD_MULTIPLIER,
-        primeWindowEndHours: PRIME_WINDOW_END_HOURS
+        primeWindowEndHours: PRIME_WINDOW_END_HOURS * sc.primeWindowScale
       };
   }
 };
@@ -332,7 +385,9 @@ const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
   const result = await pool.query(`
     SELECT id, instrument_id, venue, size, premium, metadata, side,
            expiry_at, hedge_status, sl_pct, payout_due_amount, status,
-           floor_price
+           floor_price,
+           COALESCE(tenor_days, 1) AS tenor_days,
+           COALESCE(hedge_retained_for_platform, false) AS hedge_retained_for_platform
     FROM pilot_protections
     WHERE hedge_status = 'active'
       AND instrument_id IS NOT NULL
@@ -364,6 +419,12 @@ const queryManagedHedges = async (pool: Pool): Promise<ManagedHedge[]> => {
       status: String(row.status || "active"),
       triggerAtMs: meta.triggerMonitorAt ? new Date(String(meta.triggerMonitorAt)).getTime() : (meta.triggerAt ? new Date(String(meta.triggerAt)).getTime() : 0),
       noBidRetryCount: Number(meta.noBidRetryCount ?? 0) || 0,
+      // Biweekly fields (PR 6 of biweekly cutover, 2026-04-30). The
+      // COALESCE in the SELECT above defaults legacy 1-day rows to
+      // tenor_days=1 and hedge_retained_for_platform=false so all
+      // existing logic continues to behave exactly as before.
+      tenorDays: Number(row.tenor_days ?? 1) || 1,
+      hedgeRetainedForPlatform: Boolean(row.hedge_retained_for_platform),
       metadata: meta
     };
   });
@@ -698,7 +759,11 @@ export const runHedgeManagementCycle = async (params: {
   const result: HedgeManagementResult = { scanned: 0, tpSold: 0, salvaged: 0, expired: 0, errors: 0, noBidRetries: 0, skipped: 0 };
 
   const dvol = params.currentIV;
-  const adaptive = resolveAdaptiveParams(dvol);
+  // Cycle-level adaptive params with legacy 1-day tenor — used only for
+  // the cycle-complete log line. Per-hedge adaptive resolution below
+  // (PR 6 of biweekly cutover, 2026-04-30) scales TP timings by the
+  // hedge's actual tenor_days (1 = legacy, 14 = biweekly).
+  const adaptiveBase = resolveAdaptiveParams(dvol, 1);
 
   // PR C — record this cycle's spot sample for Gap 1 and Gap 3 lookbacks.
   recordSpotSample(params.currentSpot);
@@ -735,6 +800,26 @@ export const runHedgeManagementCycle = async (params: {
       const now = Date.now();
       const isExpired = hedge.expiryMs <= now;
       const hoursToExpiry = (hedge.expiryMs - now) / 3600000;
+
+      // PR 6 (2026-04-30) — resolve adaptive TP timing PER HEDGE based on
+      // its tenor_days. For legacy 1-day rows (tenor_days=1), behavior is
+      // identical to pre-PR-6: coolingScale=1, primeWindowScale=1,
+      // nearExpirySalvageScale=1. For biweekly (tenor_days=14):
+      // sqrt(14)≈3.74× longer cooling, 14× longer prime window,
+      // 4×-capped (24h) near-expiry salvage threshold.
+      //
+      // Additionally, hedges retained for the platform after a biweekly
+      // trigger (hedgeRetainedForPlatform=true, set by biweeklyClose
+      // PR 4) get a 1.5× extension on prime window since there's no
+      // user-facing urgency — we can wait for better recovery.
+      const adaptive = resolveAdaptiveParams(dvol, hedge.tenorDays);
+      const nearExpirySalvageScale = tenorScaledTpTimings(hedge.tenorDays).nearExpirySalvageScale;
+      const baseNearExpirySalvageHours = NEAR_EXPIRY_SALVAGE_HOURS * nearExpirySalvageScale;
+      // Retained-for-platform extension on prime window only.
+      // Cooling unchanged (we still want immediate execution opportunity).
+      // Late threshold unchanged.
+      const platformExtensionMult = hedge.hedgeRetainedForPlatform ? 1.5 : 1.0;
+      adaptive.primeWindowEndHours = adaptive.primeWindowEndHours * platformExtensionMult;
 
       if (isExpired) {
         const expiredAtIso = new Date().toISOString();
@@ -992,13 +1077,15 @@ export const runHedgeManagementCycle = async (params: {
       // (it's evaluated FIRST in the decision tree, so the backstop only
       // affects the post-cooling/prime/late branches).
       const backstopCfg = resolveNoBidBackstopConfig();
-      const inNearExpiryWindow = hoursToExpiry < NEAR_EXPIRY_SALVAGE_HOURS;
+      // PR 6: use the per-hedge scaled near-expiry salvage hours.
+      // For 1-day legacy: 6h (unchanged). For 14-day biweekly: 24h.
+      const inNearExpiryWindow = hoursToExpiry < baseNearExpirySalvageHours;
       const backstopEngaged =
         backstopCfg.enabled &&
         hedge.noBidRetryCount >= backstopCfg.threshold &&
         !inNearExpiryWindow;
 
-      if (hoursToExpiry < NEAR_EXPIRY_SALVAGE_HOURS && optionVal.totalValue >= NEAR_EXPIRY_MIN_VALUE) {
+      if (hoursToExpiry < baseNearExpirySalvageHours && optionVal.totalValue >= NEAR_EXPIRY_MIN_VALUE) {
         shouldSell = true;
         reason = "near_expiry_salvage";
       } else if (backstopEngaged) {
@@ -1078,7 +1165,7 @@ export const runHedgeManagementCycle = async (params: {
   }
 
   console.log(
-    `[HedgeManager] Cycle complete: scanned=${result.scanned} tpSold=${result.tpSold} salvaged=${result.salvaged} expired=${result.expired} noBid=${result.noBidRetries} errors=${result.errors} skipped=${result.skipped} vol=${adaptive.regime}(${dvol.toFixed(0)})`
+    `[HedgeManager] Cycle complete: scanned=${result.scanned} tpSold=${result.tpSold} salvaged=${result.salvaged} expired=${result.expired} noBid=${result.noBidRetries} errors=${result.errors} skipped=${result.skipped} vol=${adaptiveBase.regime}(${dvol.toFixed(0)})`
   );
   return result;
 };
