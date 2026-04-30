@@ -1,8 +1,8 @@
 # Phase 0 — Live Pilot Baseline Analysis
 
-**Generated:** 2026-04-18T04:49:27.716Z
+**Generated:** 2026-04-19T00:16:59.959Z
 **API base:** `https://foxify-pilot-new.onrender.com`
-**Snapshot directory:** `docs/pilot-reports/raw-pilot-data/2026-04-18T04-49-26-935Z/`
+**Snapshot directory:** `docs/pilot-reports/raw-pilot-data/2026-04-19T00-16-59-067Z/`
 **Tenor in code (current):** 1 day across all launched SL tiers (2 / 3 / 5 / 10).
 **Tenor switch deployed at:** `2026-04-17T22:43:00.000Z` (commit `b0bb452` "production pilot: switch to 1-day tenor at $5/4/3/2 per 1k").
 **Venue:** `deribit_live` — Deribit mainnet *connector mode* using a paper account; pricing/orderbook data is real, fills are paper. No real capital at risk.
@@ -17,18 +17,18 @@
 | Venue mode (connector) | `deribit_live` (paper account) |
 | Monitor healthy | `ok` |
 | Consecutive failures | 0 |
-| Active protections (from `/pilot/protections`) | 23 |
-| All protections (incl. archived from `/pilot/protections/export`) | 23 |
+| Active protections (from `/pilot/protections`) | 35 |
+| All protections (incl. archived from `/pilot/protections/export`) | 35 |
 | Pre-tenor-switch | 8 |
-| Post-tenor-switch | 15 |
+| Post-tenor-switch | 27 |
 | Earliest `createdAt` | 2026-04-16T17:16:10.000Z |
-| Latest `createdAt` | 2026-04-18T04:43:45.000Z |
-| Span (days) | 1.5 |
+| Latest `createdAt` | 2026-04-19T00:11:50.000Z |
+| Span (days) | 2.3 |
 
 **Fetch errors during snapshot:**
 _(none)_
 
-> _Statistical caveat: this report reflects whatever the pilot has accumulated to date on a Deribit paper account. Findings are directional, not statistically conclusive, until the pilot accumulates ≥ 50 trades — and the **post-switch** sub-sample (currently 15 trades) is the only slice that reflects the production 1-day-tenor selection logic._
+> _Statistical caveat: this report reflects whatever the pilot has accumulated to date on a Deribit paper account. Findings are directional, not statistically conclusive, until the pilot accumulates ≥ 50 trades — and the **post-switch** sub-sample (currently 27 trades) is the only slice that reflects the production 1-day-tenor selection logic._
 
 ---
 
@@ -37,50 +37,51 @@ _(none)_
 | Tier | Count | Triggered | Trig Rate | Avg Prem | Avg Hedge | Avg Spread | Avg Margin% | Neg-Margin | TP Sold | TP Rate | Avg TP $ |
 |------|-------|-----------|-----------|----------|-----------|------------|-------------|------------|---------|---------|----------|
 | SL 10% | 2 | 0 | 0.0% | $45.00 | $2.32 | $42.68 | 93.9% | 0 | 0 | 0.0% | $0.00 |
-| SL 2% | 13 | 1 | 7.7% | $128.85 | $45.45 | $83.39 | 68.1% | 0 | 1 | 100.0% | $45.12 |
-| SL 3% | 5 | 0 | 0.0% | $116.00 | $30.71 | $85.29 | 75.8% | 0 | 0 | 0.0% | $0.00 |
-| SL 5% | 3 | 0 | 0.0% | $35.00 | $1.80 | $33.20 | 94.6% | 0 | 0 | 0.0% | $0.00 |
+| SL 2% | 22 | 11 | 50.0% | $105.68 | $31.02 | $74.67 | 74.7% | 0 | 11 | 100.0% | $61.57 |
+| SL 3% | 7 | 0 | 0.0% | $100.00 | $23.59 | $76.41 | 79.9% | 0 | 2 | 0.0% | $30.28 |
+| SL 5% | 4 | 0 | 0.0% | $33.75 | $1.93 | $31.82 | 94.0% | 0 | 0 | 0.0% | $0.00 |
 
 **Hedge-status breakdown across all protections:**
 
-- `active`: 22
-- `tp_sold`: 1
+- `active`: 16
+- `tp_sold`: 13
+- `expired_settled`: 6
 
 **Realized totals across the full sample:**
 
 | Item | Amount |
 |---|---|
-| Premium collected | $2,450.00 |
-| Hedge cost | $754.49 |
-| Spread (premium − hedge) | $1,695.51 |
-| Payouts due | $200.00 |
+| Premium collected | $3,250.00 |
+| Hedge cost | $859.82 |
+| Spread (premium − hedge) | $2,390.18 |
+| Payouts due | $4,100.00 |
 | Payouts settled | $0.00 |
-| TP recovery (proceeds) | $45.12 |
-| **Net P&L (realized, paper)** | **$1,540.63** |
+| TP recovery (proceeds) | $737.85 |
+| **Net P&L (realized, paper)** | **-$971.97** |
 
 ---
 
 ## 2b. Per-Tier Outcomes — Post-Tenor-Switch Sub-Sample
 
-This is the slice that reflects the **current** 1-day-tenor selection logic and $5/4/3/2 per $1k pricing. Sample size: 15.
+This is the slice that reflects the **current** 1-day-tenor selection logic and $5/4/3/2 per $1k pricing. Sample size: 27.
 
 | Tier | Count | Triggered | Trig Rate | Avg Prem | Avg Hedge | Avg Spread | Avg Margin% | Neg-Margin | TP Sold | TP Rate | Avg TP $ |
 |------|-------|-----------|-----------|----------|-----------|------------|-------------|------------|---------|---------|----------|
 | SL 10% | 2 | 0 | 0.0% | $45.00 | $2.32 | $42.68 | 93.9% | 0 | 0 | 0.0% | $0.00 |
-| SL 2% | 7 | 0 | 0.0% | $128.57 | $18.01 | $110.56 | 86.8% | 0 | 0 | 0.0% | $0.00 |
-| SL 3% | 3 | 0 | 0.0% | $113.33 | $8.00 | $105.34 | 93.6% | 0 | 0 | 0.0% | $0.00 |
-| SL 5% | 3 | 0 | 0.0% | $35.00 | $1.80 | $33.20 | 94.6% | 0 | 0 | 0.0% | $0.00 |
+| SL 2% | 16 | 9 | 56.3% | $96.88 | $13.59 | $83.28 | 85.3% | 0 | 9 | 100.0% | $59.86 |
+| SL 3% | 5 | 0 | 0.0% | $92.00 | $7.11 | $84.89 | 92.3% | 0 | 2 | 0.0% | $30.28 |
+| SL 5% | 4 | 0 | 0.0% | $33.75 | $1.93 | $31.82 | 94.0% | 0 | 0 | 0.0% | $0.00 |
 
 **Post-switch realized totals:**
 
 | Item | Amount |
 |---|---|
-| Premium collected | $1,435.00 |
-| Hedge cost | $160.09 |
-| Spread | $1,274.91 |
-| Payouts due | $0.00 |
-| TP recovery | $0.00 |
-| **Post-switch Net P&L (realized, paper)** | **$1,274.91** |
+| Premium collected | $2,235.00 |
+| Hedge cost | $265.42 |
+| Spread | $1,969.58 |
+| Payouts due | $3,400.00 |
+| TP recovery | $599.30 |
+| **Post-switch Net P&L (realized, paper)** | **-$831.13** |
 
 
 ---
@@ -94,8 +95,8 @@ This is the slice that matters for the 1-day-tenor investigation. The ALL-trades
 | Bucket | Post-switch count | All-trades count |
 |---|---|---|
 | < ~1 day (≤ 0.85d) | 0 | 0 |
-| ~1 day (0.85–1.5d) | 14 | 14 |
-| ~2 days (1.5–2.5d) | 1 | 3 |
+| ~1 day (0.85–1.5d) | 25 | 25 |
+| ~2 days (1.5–2.5d) | 2 | 4 |
 | ~3 days (2.5–3.5d) | 0 | 6 |
 | > 3 days | 0 | 0 |
 | Unknown | 0 | 0 |
@@ -106,9 +107,9 @@ This is the slice that matters for the 1-day-tenor investigation. The ALL-trades
 
 | Position | Post-switch count | All-trades count |
 |---|---|---|
-| ITM (strike beats trigger) | 5 | 6 |
-| At trigger (within ±0.05%) | 2 | 4 |
-| OTM (strike worse than trigger) | 8 | 13 |
+| ITM (strike beats trigger) | 12 | 13 |
+| At trigger (within ±0.05%) | 3 | 5 |
+| OTM (strike worse than trigger) | 12 | 17 |
 | Unknown | 0 | 0 |
 
 > _The ITM bonus only fires for `drawdownFloorPct ≤ 0.025` (i.e. 2% SL on puts). ITM count concentrated in the 2% put tier confirms the bonus is working as designed; ITM count in 3%/5%/10% tiers, or in any call (short) position, would indicate the algorithm preferred ITM for cost reasons rather than the bonus._
