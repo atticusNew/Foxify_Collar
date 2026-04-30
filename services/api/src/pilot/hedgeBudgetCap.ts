@@ -47,10 +47,51 @@ const DEFAULT_SCHEDULE: HedgeBudgetCapConfig["schedule"] = [
   { throughDay: Number.POSITIVE_INFINITY, capUsd: null }
 ];
 
+/**
+ * Parse PILOT_HEDGE_BUDGET_SCHEDULE_JSON env override, if present.
+ * Format: JSON array of {throughDay, capUsd} where capUsd may be null.
+ *   PILOT_HEDGE_BUDGET_SCHEDULE_JSON='[{"throughDay":7,"capUsd":2000},{"throughDay":21,"capUsd":12000},{"throughDay":null,"capUsd":null}]'
+ *
+ * Added 2026-04-30 (PR 3 of biweekly cutover) so operations can raise
+ * the cap when biweekly launches without a code change. Biweekly
+ * hedges cost ~$258/trade vs ~$15 for legacy 1-day, so the existing
+ * day-1-2 cap of $100 trips immediately under biweekly. Recommended
+ * starting biweekly schedule (assuming user funds Deribit to ~$1,800):
+ *   PILOT_HEDGE_BUDGET_SCHEDULE_JSON='[{"throughDay":7,"capUsd":1500},{"throughDay":21,"capUsd":8000},{"throughDay":null,"capUsd":null}]'
+ *
+ * Returns null on missing/invalid env (caller falls through to default).
+ */
+const parseScheduleEnv = (): HedgeBudgetCapConfig["schedule"] | null => {
+  const raw = process.env.PILOT_HEDGE_BUDGET_SCHEDULE_JSON;
+  if (!raw || raw.trim() === "") return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return null;
+    const schedule: HedgeBudgetCapConfig["schedule"] = [];
+    for (const tier of parsed) {
+      if (!tier || typeof tier !== "object") return null;
+      const throughDayRaw = (tier as Record<string, unknown>).throughDay;
+      const capUsdRaw = (tier as Record<string, unknown>).capUsd;
+      const throughDay =
+        throughDayRaw === null || throughDayRaw === undefined
+          ? Number.POSITIVE_INFINITY
+          : Number(throughDayRaw);
+      const capUsd = capUsdRaw === null ? null : Number(capUsdRaw);
+      if (!Number.isFinite(throughDay) && throughDay !== Number.POSITIVE_INFINITY) return null;
+      if (capUsd !== null && (!Number.isFinite(capUsd) || capUsd < 0)) return null;
+      schedule.push({ throughDay, capUsd });
+    }
+    if (schedule.length === 0) return null;
+    return schedule;
+  } catch {
+    return null;
+  }
+};
+
 let configured: HedgeBudgetCapConfig = {
   pilotStartIso: process.env.PILOT_LIVE_START_DATE || null,
   enforce: String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() === "true",
-  schedule: DEFAULT_SCHEDULE
+  schedule: parseScheduleEnv() ?? DEFAULT_SCHEDULE
 };
 
 export const configureHedgeBudgetCap = (params: Partial<HedgeBudgetCapConfig>): void => {
