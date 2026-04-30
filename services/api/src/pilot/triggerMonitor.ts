@@ -10,6 +10,7 @@ import {
 import { resolvePriceSnapshot } from "./price";
 import { isDrawdownBreached, resolveTriggerEconomicsFromProtection } from "./protectionMath";
 import type { PriceSnapshotOutput } from "./price";
+import { handleBiweeklyClose, sweepBiweeklyNaturalExpiries } from "./biweeklyClose";
 
 const resolveBullishTriggerPrice = async (requestId: string, marketId: string): Promise<PriceSnapshotOutput> => {
   const { BullishTradingClient, resolveBullishMarketSymbol } = await import("./bullish");
@@ -186,6 +187,45 @@ export const processTriggerMonitorCycleWithResolver = async (
       amount: economics.triggerPayoutCreditUsd.toFixed(10),
       reference: `trigger:${snapshot.priceTimestamp}`
     });
+
+    // Biweekly trigger close-handling (PR 4 of biweekly cutover, 2026-04-30).
+    // Per CEO direction: when a biweekly protection triggers, the
+    // protection closes for the user (subscription billing stops, payout
+    // delivered) but the underlying Deribit hedge stays open for the
+    // platform (hedge_retained_for_platform=true). The hedge manager
+    // owns disposition from there.
+    //
+    // For legacy 1-day protections (tenor_days=1), this branch is skipped
+    // and the existing hedge-manager-on-trigger behavior runs unchanged.
+    if (updated.tenorDays >= 2) {
+      try {
+        const closeResult = await handleBiweeklyClose({
+          pool,
+          req: {
+            protectionId: protection.id,
+            closedBy: "trigger",
+            nowMs: now.getTime()
+          }
+        });
+        if (closeResult.status === "ok") {
+          console.log(
+            `[TriggerMonitor] biweekly close-on-trigger: ${protection.id} ` +
+              `daysBilled=${closeResult.daysBilled} ` +
+              `accumulatedCharge=$${closeResult.accumulatedChargeUsd.toFixed(2)} ` +
+              `hedgeRetained=${closeResult.hedgeRetainedForPlatform}`
+          );
+        } else {
+          console.warn(
+            `[TriggerMonitor] biweekly close-on-trigger FAILED for ${protection.id}: ${closeResult.reason} ${closeResult.message}. Trade is in 'triggered' state without closed_at — operator action may be needed.`
+          );
+        }
+      } catch (closeErr: any) {
+        console.error(
+          `[TriggerMonitor] biweekly close-on-trigger threw for ${protection.id}: ${closeErr?.message ?? "unknown"}`
+        );
+      }
+    }
+
     result.triggered += 1;
   }
   const triggerRatePct = result.scanned > 0 ? (result.triggered / result.scanned) * 100 : 0;
@@ -195,6 +235,20 @@ export const processTriggerMonitorCycleWithResolver = async (
   if (shouldSignalPause(triggerRatePct)) {
     result.pauseSignals += 1;
   }
+
+  // Biweekly natural-expiry sweep (PR 4 of biweekly cutover, 2026-04-30).
+  // Closes biweekly protections that have hit their 14-day max tenor.
+  // Cheap query (indexed on tenor_days, closed_at) — runs every cycle.
+  // No-op if no biweekly protections are open. Errors logged only;
+  // the trigger monitor's main flow is unaffected.
+  try {
+    await sweepBiweeklyNaturalExpiries({ pool, nowMs: now.getTime() });
+  } catch (sweepErr: any) {
+    console.warn(
+      `[TriggerMonitor] biweekly natural-expiry sweep threw: ${sweepErr?.message ?? "unknown"}`
+    );
+  }
+
   return result;
 };
 

@@ -109,6 +109,7 @@ import {
   handleBiweeklyQuote,
   type BiweeklyActivateErrorReason
 } from "./biweeklyActivate";
+import { handleBiweeklyClose, type BiweeklyCloseErrorReason } from "./biweeklyClose";
 import { isBiweeklyEnabled } from "./biweeklyPricing";
 
 // Format a USD amount as a comma-separated whole-dollar string for
@@ -5147,6 +5148,79 @@ export const registerPilotRoutes = async (
    *   200 (no-op) { status: "ok", protection, autoRenew, idempotentReplay: true,
    *                 message }
    */
+  /**
+   * POST /pilot/protections/:id/close — biweekly subscription user-close
+   *
+   * Trader-initiated end of a biweekly subscription. Computes the
+   * accumulated charge through close time, marks the protection
+   * cancelled, settles the trader's accumulated charge.
+   *
+   * The underlying Deribit hedge stays open and is disposed by the
+   * hedge manager per its TP logic (sell residual time value).
+   *
+   * Idempotent: calling close on an already-closed protection returns
+   * the prior close result without writing again.
+   *
+   * Validation:
+   *   - Protection must exist
+   *   - Caller must own the protection (tenant scope check; 404 otherwise
+   *     to avoid leaking existence of other tenants' protections)
+   *   - Protection must be biweekly (tenor_days >= 2). Legacy 1-day
+   *     protections cannot be force-closed via this endpoint.
+   *
+   * Responses:
+   *   200 { status: "ok", product: "biweekly", protection,
+   *         accumulatedChargeUsd, daysBilled, hedgeRetainedForPlatform,
+   *         newlyClosed }
+   *   404 { status: "error", reason: "not_found" }
+   *   400 { status: "error", reason: "not_biweekly" | "missing_rate" | "missing_sl_pct" }
+   *   503 { status: "error", reason: "storage_unavailable" }
+   */
+  app.post("/pilot/protections/:id/close", async (req, reply) => {
+    const params = req.params as { id: string };
+    if (!params.id) {
+      reply.code(400);
+      return { status: "error", reason: "missing_protection_id" };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    // Ownership check — fetch the protection first to assert ownership.
+    // Hide existence of other tenants' protections behind 404, not 403
+    // (matches the auto-renew endpoint's pattern).
+    const protectionForOwnership = await getProtection(pool, params.id);
+    if (!protectionForOwnership) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protectionForOwnership, userHash)) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+
+    const result = await handleBiweeklyClose({
+      pool,
+      req: { protectionId: params.id, closedBy: "user_close" }
+    });
+    if (result.status === "error") {
+      const reasonToHttp: Record<BiweeklyCloseErrorReason, number> = {
+        not_found: 404,
+        not_biweekly: 400,
+        missing_rate: 500,
+        missing_sl_pct: 500,
+        storage_unavailable: 503
+      };
+      reply.code(reasonToHttp[result.reason] ?? 400);
+      return result;
+    }
+    return result;
+  });
+
   app.post("/pilot/protections/:id/auto-renew", async (req, reply) => {
     const params = req.params as { id: string };
     const body = (req.body || {}) as { enabled?: unknown };

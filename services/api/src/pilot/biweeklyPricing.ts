@@ -233,11 +233,48 @@ export const computeMaxProjectedCharge = (params: {
 };
 
 /**
+ * Day-boundary grace window (seconds). A close that fires within
+ * BIWEEKLY_DAY_BOUNDARY_GRACE_SEC of an integer-day boundary doesn't
+ * tip into the next billed day. Protects traders from being charged
+ * an extra day due to network latency, clock drift, or a few seconds
+ * of post-day-N click delay.
+ *
+ * Default 5 minutes. Generous enough to absorb realistic latency
+ * (most close requests round-trip in < 1 second), tight enough that
+ * actually intentional "I held it for an extra hour" closes still
+ * bill correctly.
+ *
+ * Tunable via env PILOT_BIWEEKLY_DAY_GRACE_SEC for ops if 5 min
+ * proves wrong in either direction.
+ */
+const BIWEEKLY_DAY_BOUNDARY_GRACE_SEC_DEFAULT = 300;
+
+const resolveGraceSec = (): number => {
+  const raw = process.env.PILOT_BIWEEKLY_DAY_GRACE_SEC;
+  if (raw == null || raw === "") return BIWEEKLY_DAY_BOUNDARY_GRACE_SEC_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > 86400) return BIWEEKLY_DAY_BOUNDARY_GRACE_SEC_DEFAULT;
+  return n;
+};
+
+/**
  * Compute days held given activation timestamp and a "now" timestamp.
  * Returns a fractional day count (e.g. 2.5 = 2 days 12 hours). The
  * caller (typically computeAccumulatedCharge) handles rounding.
  *
  * Defensive: if now < activatedAt (clock skew, bad data), returns 0.
+ *
+ * Day-boundary grace: closes within ~5 minutes of an integer-day
+ * boundary are credited to the lower day count. Prevents traders
+ * being charged for an extra day due to network latency or
+ * sub-second timing. Tunable via PILOT_BIWEEKLY_DAY_GRACE_SEC env.
+ *
+ * Examples (with default 300s = 5min grace):
+ *   3 days + 0 seconds   → 3 billed days
+ *   3 days + 1 second    → 3 billed days (grace)
+ *   3 days + 4 minutes   → 3 billed days (grace)
+ *   3 days + 6 minutes   → 4 billed days (outside grace)
+ *   3 days + 1 hour      → 4 billed days
  */
 export const computeDaysHeld = (params: {
   activatedAtMs: number;
@@ -246,7 +283,11 @@ export const computeDaysHeld = (params: {
   const now = params.nowMs ?? Date.now();
   const elapsedMs = now - params.activatedAtMs;
   if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return 0;
-  return elapsedMs / (24 * 60 * 60 * 1000);
+  // Subtract grace window so sub-grace closes round down to the
+  // prior integer-day boundary.
+  const graceMs = resolveGraceSec() * 1000;
+  const adjustedMs = Math.max(0, elapsedMs - graceMs);
+  return adjustedMs / (24 * 60 * 60 * 1000);
 };
 
 // ─────────────────────────────────────────────────────────────────────
