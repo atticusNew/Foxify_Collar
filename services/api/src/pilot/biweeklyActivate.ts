@@ -57,6 +57,7 @@ import {
   buildBiweeklyQuotePreview,
   BIWEEKLY_HEDGE_TENOR_DAYS,
   BIWEEKLY_MAX_TENOR_DAYS,
+  BIWEEKLY_TENOR_DRIFT_BOUND_DAYS,
   getBiweeklyRatePerDayPer1k,
   isBiweeklyEnabled
 } from "./biweeklyPricing";
@@ -224,7 +225,22 @@ export const handleBiweeklyQuote = async (params: {
     // ask cost against to flag negative-margin deals. It's a soft
     // limit — the adapter still picks the best ITM-aware strike per
     // existing logic; this just informs its margin warning.
-    clientPremiumUsd: preview.maxProjectedChargeUsd
+    clientPremiumUsd: preview.maxProjectedChargeUsd,
+    // Tenor-drift override for biweekly (2026-04-30 fix).
+    //
+    // Deribit weekly options expire Friday 08:00 UTC, so the grid
+    // spacing at the 14-day horizon is 7 days. The nearest weekly
+    // expiry to a 14-day target is therefore at most ~3.5 days off
+    // (and on most days is closer to 0–3 days off). The prod default
+    // PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS=1.5 is sized for the legacy
+    // 1-day product on a (denser) daily grid and is structurally
+    // incompatible with biweekly — every quote would trip
+    // tenor_drift_exceeded.
+    //
+    // 4 days = 7d grid spacing / 2 + ~0.5d safety margin. Tight enough
+    // that a 14d trade can never silently land on a 7d or 21d expiry
+    // (which would mean a >50% tenor mismatch, not a small drift).
+    maxTenorDriftDaysOverride: BIWEEKLY_TENOR_DRIFT_BOUND_DAYS
   };
 
   let venueQuote;

@@ -45,6 +45,26 @@ export type QuoteRequest = {
   hedgePolicy?: PilotHedgePolicy;
   clientOrderId?: string;
   clientPremiumUsd?: number;
+  /**
+   * Per-request override of the venue's tenor-drift bound.
+   *
+   * Default is the venue-instance value (PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS,
+   * 1.5d in prod). Some products legitimately need more headroom because
+   * the underlying expiry grid is sparser than 1.5 days at the requested
+   * tenor — the biweekly product asks for 14d on Deribit's weekly grid
+   * (Fri 08:00 UTC), where the nearest expiry can be ~3.5d off.
+   *
+   * If set, this override is used both for:
+   *   - the candidate-expiry window filter (so we don't pre-exclude
+   *     valid weekly grid points that satisfy the override but not the
+   *     default), and
+   *   - the post-selection drift guard (so the cost-scored winner isn't
+   *     rejected by a tighter default than the requesting product needs).
+   *
+   * If unset, the venue's instance default applies (unchanged behavior
+   * for the legacy 1-day product).
+   */
+  maxTenorDriftDaysOverride?: number;
 };
 
 type FalconxConfig = {
@@ -472,6 +492,13 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     protectedNotional?: number;
     quantity?: number;
     clientPremiumUsd?: number;
+    /**
+     * Per-request drift override (see QuoteRequest.maxTenorDriftDaysOverride).
+     * When provided, the candidate-expiry window AND the strict drift
+     * pre-filter use this value instead of the instance default. The
+     * post-selection drift guard in quote() uses the same effective bound.
+     */
+    maxTenorDriftDaysOverride?: number;
   }): Promise<{
     instrumentId: string;
     ask: number;
@@ -490,9 +517,36 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       Number.isFinite(Number(params.requestedTenorDays)) && Number(params.requestedTenorDays) > 0
         ? Number(params.requestedTenorDays)
         : 2;
+    // Effective tenor-drift bound for THIS request. Per-request override
+    // wins over the instance default so a longer-dated product (e.g.
+    // biweekly = 14d) can relax the bound to match the underlying
+    // expiry grid spacing without globally loosening the prod default
+    // for the legacy 1-day product. Falls back to the instance default
+    // when not provided.
+    //
+    // 2026-04-30 fix: prior code used only this.maxTenorDriftDays in
+    // quote(), so a 14d biweekly request running on the 1.5d prod
+    // default always tripped tenor_drift_exceeded — Deribit weeklies
+    // expire Fri 08:00 UTC and the nearest weekly to a 14d target
+    // can be ~3.5d off.
+    const effectiveMaxDriftDays =
+      Number.isFinite(Number(params.maxTenorDriftDaysOverride)) &&
+      Number(params.maxTenorDriftDaysOverride) >= 0
+        ? Number(params.maxTenorDriftDaysOverride)
+        : this.maxTenorDriftDays;
     const targetExpiry = now + requestedTenorDays * 86400000;
-    const maxExpiryMs = now + (requestedTenorDays + 2) * 86400000;
-    const minExpiryMs = now + Math.max(8 * 3600 * 1000, requestedTenorDays * 0.5 * 86400000);
+    // Widen the candidate-expiry window to match the effective drift
+    // bound. The hard-coded "+2 / *0.5" defaults were tuned for 1-2d
+    // products on a daily grid; a 14d product on a 7d grid must accept
+    // at least the drift-bound's distance on each side, otherwise a
+    // legitimate weekly that satisfies the bound is filtered out
+    // before scoring even begins.
+    const windowEdgeDays = Math.max(2, effectiveMaxDriftDays);
+    const maxExpiryMs = now + (requestedTenorDays + windowEdgeDays) * 86400000;
+    const minExpiryMs = now + Math.max(
+      8 * 3600 * 1000,
+      Math.max(requestedTenorDays * 0.5, requestedTenorDays - windowEdgeDays) * 86400000
+    );
     const legacyTargetStrike = targetOptionType === "call" ? params.spot * 1.15 : params.spot * 0.85;
     const triggerTarget =
       Number.isFinite(Number(params.targetTriggerPrice)) && Number(params.targetTriggerPrice) > 0
@@ -523,6 +577,56 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         expiryTs: Number(item.expiration_timestamp || parseDeribitExpiry(String(item.instrument_name || "")) || 0)
       }))
       .filter((item) => item.instrumentId && Number.isFinite(item.strike) && item.strike > 0);
+
+    // Strict tenor-drift pre-filter (2026-04-30 fix).
+    //
+    // The cost-scorer only optimizes ask price + strike distance — it
+    // has no awareness of tenor drift. If a far-dated cheap candidate
+    // wins cost-scoring and then trips the post-selection drift guard,
+    // the entire quote fails with tenor_drift_exceeded even if a
+    // viable in-bound candidate existed (just one that happened to
+    // cost slightly more or be slightly farther from the trigger).
+    //
+    // Pre-filtering by drift here ensures the cost-scorer can only
+    // pick candidates that will satisfy the post-selection guard,
+    // turning what was a hard fail into "best in-bound choice".
+    //
+    // Only enforced when the bound is finite and non-negative; if
+    // PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS were ever set to a sentinel
+    // disabling-value (negative), behavior remains as before.
+    //
+    // If the caller passed an explicit Deribit instrument
+    // (requestedCandidate non-null) and no auto-discovered candidate
+    // is in-bound, we DON'T early-throw — we let the requested
+    // instrument flow through to cost-scoring and the post-selection
+    // guard, which preserves the legacy behavior of honoring an
+    // operator-specified instrument even at the edge of the drift
+    // window.
+    if (Number.isFinite(effectiveMaxDriftDays) && effectiveMaxDriftDays >= 0) {
+      const inBound = candidates.filter((item) => {
+        if (!Number.isFinite(item.expiryTs) || item.expiryTs <= 0) return false;
+        const drift = Math.abs((item.expiryTs - targetExpiry) / 86400000);
+        return drift <= effectiveMaxDriftDays + 1e-9;
+      });
+      if (inBound.length === 0 && !requestedCandidate) {
+        // No candidate within the drift bound exists in the
+        // pre-filtered window. Fail fast with the same error code the
+        // post-selection guard would have raised — same observable
+        // behavior, just earlier and with an actionable diagnostic.
+        console.warn(
+          `[OptionSelection] no ${targetOptionType} candidates within ` +
+            `±${effectiveMaxDriftDays}d of ${requestedTenorDays}d target ` +
+            `(spot=${params.spot}, total_in_window=${candidates.length}). ` +
+            `Underlying expiry grid may not support this tenor — consider ` +
+            `widening PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS or adjusting ` +
+            `requestedTenorDays.`
+        );
+        throw new Error("deribit_quote_unavailable:tenor_drift_exceeded");
+      }
+      if (inBound.length > 0) {
+        candidates = inBound;
+      }
+    }
 
     // Trigger-aligned candidate filter — keep strikes within an
     // adaptive band around the trigger. Tries a tight band first
@@ -781,7 +885,8 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       drawdownFloorPct: req.drawdownFloorPct,
       protectedNotional: req.protectedNotional,
       quantity: req.quantity,
-      clientPremiumUsd: req.clientPremiumUsd
+      clientPremiumUsd: req.clientPremiumUsd,
+      maxTenorDriftDaysOverride: req.maxTenorDriftDaysOverride
     });
     const requestedTenorDays =
       Number.isFinite(Number(req.requestedTenorDays)) && Number(req.requestedTenorDays) > 0
@@ -790,11 +895,20 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     const selectedTenorDays = resolved.expiryTs ? (resolved.expiryTs - now) / 86400000 : null;
     const tenorDriftDays =
       selectedTenorDays !== null ? Math.abs(selectedTenorDays - requestedTenorDays) : null;
+    // Use the same effective bound as resolveQuoteInstrument — the
+    // post-selection guard is now redundant given the pre-filter, but
+    // we keep it as defense-in-depth in case a future change to the
+    // pre-filter regresses (or the override is bypassed somewhere).
+    const effectiveMaxDriftDays =
+      Number.isFinite(Number(req.maxTenorDriftDaysOverride)) &&
+      Number(req.maxTenorDriftDaysOverride) >= 0
+        ? Number(req.maxTenorDriftDaysOverride)
+        : this.maxTenorDriftDays;
     if (
       tenorDriftDays !== null &&
-      Number.isFinite(this.maxTenorDriftDays) &&
-      this.maxTenorDriftDays >= 0 &&
-      tenorDriftDays > this.maxTenorDriftDays
+      Number.isFinite(effectiveMaxDriftDays) &&
+      effectiveMaxDriftDays >= 0 &&
+      tenorDriftDays > effectiveMaxDriftDays + 1e-9
     ) {
       throw new Error("deribit_quote_unavailable:tenor_drift_exceeded");
     }
