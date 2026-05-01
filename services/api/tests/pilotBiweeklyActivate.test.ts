@@ -356,8 +356,14 @@ test("handleBiweeklyActivate: happy path quote → activate → protection persi
     assert.ok(p.instrumentId && p.instrumentId.startsWith("BTC-USD-"));
     assert.equal(p.side, "buy");
     assert.ok(Math.abs(Number(p.size) - 10000 / 76000) < 1e-9);
-    assert.equal(Number(p.executionPrice), 30); // mock premium
-    assert.equal(Number(p.premium), 30);
+    assert.equal(Number(p.executionPrice), 30); // mock execution price (BTC)
+    // 2026-05-01 follow-up — `premium` column holds trader-facing
+    // premium CEILING (max charge if held to full max tenor), NOT
+    // hedge cost. For 2% × $10k × 14 days × $2.50/$1k = $350.
+    // Hedge cost ($30 in this mock) lives in metadata.hedgeCostUsd.
+    assert.equal(Number(p.premium), 350);
+    assert.equal(Number((p.metadata as any).hedgeCostUsd), 30);
+    assert.equal(Number((p.metadata as any).maxProjectedChargeUsd), 350);
     assert.ok(p.executedAt);
     assert.equal(Number(p.entryPrice), 76000);
     assert.equal(Number(p.floorPrice), 74480);
@@ -365,7 +371,7 @@ test("handleBiweeklyActivate: happy path quote → activate → protection persi
     // Confirm same values landed in the DB (not just on the in-memory record).
     const dbRow = await pool.query(
       `SELECT venue, instrument_id, side, size, execution_price, premium,
-              executed_at, entry_price, floor_price
+              executed_at, entry_price, floor_price, metadata
        FROM pilot_protections WHERE id = $1`,
       [p.id]
     );
@@ -373,6 +379,8 @@ test("handleBiweeklyActivate: happy path quote → activate → protection persi
     assert.ok(dbRow.rows[0].instrument_id);
     assert.equal(Number(dbRow.rows[0].entry_price), 76000);
     assert.equal(Number(dbRow.rows[0].floor_price), 74480);
+    assert.equal(Number(dbRow.rows[0].premium), 350);
+    assert.equal(Number((dbRow.rows[0].metadata as any).hedgeCostUsd), 30);
 
     // Verify ledger entry
     const ledger = await pool.query("SELECT * FROM pilot_ledger_entries WHERE protection_id = $1", [p.id]);

@@ -744,8 +744,28 @@ function Dashboard({ token }: { token: string }) {
                       };
                       const execPrice = Number(p.executionPrice || 0);
                       const size = Number(p.size || 0);
-                      const hedgeCost = execPrice > 0 && size > 0 ? execPrice * size : 0;
+                      // 2026-05-01 — biweekly venues (Deribit) write
+                      // executionPrice in BTC, not USD; multiplying
+                      // execPrice × size gives BTC qty, not USD cost.
+                      // Prefer metadata.hedgeCostUsd (stamped by
+                      // biweeklyActivate post-PR-#120-followup); fall
+                      // back to BTC × spotAtActivation if not present;
+                      // last resort use execPrice × size (legacy 1-day
+                      // path where execPrice was already USD).
+                      const meta = (p.metadata as any) || {};
+                      const hedgeCostFromMeta = Number(meta.hedgeCostUsd || 0);
+                      const spotAtActivation = Number(meta.spotAtActivation || 0);
+                      const isBiweekly = Number((p as any).tenorDays || 1) >= 2;
+                      const hedgeCost = hedgeCostFromMeta > 0
+                        ? hedgeCostFromMeta
+                        : isBiweekly && spotAtActivation > 0 && execPrice > 0 && size > 0
+                          ? execPrice * size * spotAtActivation
+                          : execPrice > 0 && size > 0 ? execPrice * size : 0;
                       const clientPremium = Number(p.premium || 0);
+                      // For biweekly, also surface running accumulated charge
+                      // so admin sees both the ceiling (premium) and what's
+                      // actually billed so far (accumulated_charge_usd).
+                      const accumulatedCharge = Number((p as any).accumulatedChargeUsd || 0);
                       const spread = clientPremium > 0 && hedgeCost > 0 ? clientPremium - hedgeCost : null;
                       const payout = Number(p.payoutDueAmount || 0);
                       const payoutSettled = Number(p.payoutSettledAmount || 0);
@@ -782,7 +802,13 @@ function Dashboard({ token }: { token: string }) {
                           <td style={{ padding: "8px 6px", fontSize: 10, color: strikeGap !== null ? (strikeGap >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
                             {strikeGap !== null ? `${strikeGap >= 0 ? "+" : ""}${fmtUsd(strikeGap)}` : "—"}
                           </td>
-                          <td style={{ padding: "8px 6px" }}>{clientPremium > 0 ? fmtUsd(clientPremium) : "—"}</td>
+                          <td style={{ padding: "8px 6px" }} title={isBiweekly ? `Max ${fmtUsd(clientPremium)} if held to expiry. Currently billed: ${fmtUsd(accumulatedCharge)}.` : undefined}>
+                            {clientPremium > 0
+                              ? (isBiweekly && accumulatedCharge > 0
+                                  ? <>{fmtUsd(accumulatedCharge)}<span style={{ fontSize: 9, color: "var(--muted)" }}> /{fmtUsd(clientPremium)}</span></>
+                                  : fmtUsd(clientPremium))
+                              : "—"}
+                          </td>
                           <td style={{ padding: "8px 6px" }}>{hedgeCost > 0 ? fmtUsd(hedgeCost) : "—"}</td>
                           <td style={{ padding: "8px 6px", color: spread !== null ? (spread >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
                             {spread !== null ? fmtUsd(spread) : "—"}
