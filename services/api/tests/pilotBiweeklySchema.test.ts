@@ -301,6 +301,29 @@ test("countActivationsInLast24h: returns 0 for user with no activations", async 
   assert.equal(count, 0);
 });
 
+test("countActivationsInLast24h: skips synthetic test protections (2026-05-01)", async () => {
+  // Synthetic protections (created via /pilot/admin/protections/synthetic
+  // for UI testing) are tagged metadata.synthetic=true. They must NOT
+  // count toward the 1-trade/24h activation guard — otherwise an
+  // operator who created a test position is locked out of running a
+  // real trade for the next 24h.
+  const pool = await buildPool();
+  const now = Date.now();
+  // 1 real trade, 5 synthetic test rows
+  await seedProtection(pool, { userHash: "userE", createdAtMs: now - 1000 });
+  for (let i = 0; i < 5; i++) {
+    const id = await seedProtection(pool, { userHash: "userE", createdAtMs: now - 2000 - i });
+    // pg-mem's `metadata || jsonb_build_object` doesn't work, so do
+    // the merge in JS and write the full object back. Same pattern as
+    // markExpiredWithAutopsy uses (see PR #104).
+    const r = await pool.query(`SELECT metadata FROM pilot_protections WHERE id = $1`, [id]);
+    const merged = { ...(r.rows[0].metadata || {}), synthetic: true };
+    await pool.query(`UPDATE pilot_protections SET metadata = $1::jsonb WHERE id = $2`, [JSON.stringify(merged), id]);
+  }
+  const count = await countActivationsInLast24h(pool, "userE", now);
+  assert.equal(count, 1, "only the 1 real (non-synthetic) protection counts");
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // getProtectionSubscriptionState
 // ─────────────────────────────────────────────────────────────────────
