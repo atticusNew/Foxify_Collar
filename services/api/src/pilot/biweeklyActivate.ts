@@ -616,6 +616,80 @@ export const handleBiweeklyActivate = async (params: {
     );
   }
 
+  // ── Patch top-level venue fields onto the protection row (2026-05-01) ──
+  //
+  // Bug found via CEO's first real biweekly trade (1c7e17f9, 2026-05-01):
+  // insertProtection above does NOT pass venue/instrument_id/side/size/
+  // execution_price/premium/executed_at/external_order_id/
+  // external_execution_id, so those columns stay NULL on every biweekly
+  // row. The legacy 1-day activate path DOES populate them inline (see
+  // routes.ts:3926). Hedge manager + admin views read from the top-level
+  // columns (NOT from pilot_venue_executions), so leaving them NULL
+  // means:
+  //   - hedge manager can't find the hedge → no TP runs on biweekly
+  //   - admin view shows instr=None → trades look like leftover synthetics
+  //   - ghost-trade-style reconciliation needed for every biweekly
+  //
+  // Also patch entry_price + floor_price (the trigger / floor price for
+  // this trade), which legacy 1-day stores at top-level too. The
+  // trigger monitor reads entry_price (or floor_price, depending on
+  // path); leaving these NULL was masked because trigger monitor
+  // currently falls back to metadata, but the admin views use
+  // top-level so this still presents as broken.
+  try {
+    await pool.query(
+      `UPDATE pilot_protections SET
+         venue                 = $2,
+         instrument_id         = $3,
+         side                  = $4,
+         size                  = $5,
+         execution_price       = $6,
+         premium               = $7,
+         executed_at           = $8::timestamptz,
+         external_order_id     = $9,
+         external_execution_id = $10,
+         entry_price           = $11,
+         floor_price           = $12,
+         updated_at            = NOW()
+       WHERE id = $1`,
+      [
+        protection.id,
+        execution.venue,
+        execution.instrumentId,
+        execution.side,
+        new Decimal(execution.quantity).toFixed(10),
+        new Decimal(execution.executionPrice).toFixed(10),
+        new Decimal(execution.premium).toFixed(10),
+        execution.executedAt,
+        execution.externalOrderId,
+        execution.externalExecutionId,
+        new Decimal(spotUsd).toFixed(10),
+        new Decimal(triggerPriceUsd).toFixed(10)
+      ]
+    );
+    // Reflect on the in-memory record we return so the caller (routes
+    // → trader) sees the full hydrated shape immediately.
+    protection.venue = execution.venue;
+    protection.instrumentId = execution.instrumentId;
+    protection.side = execution.side;
+    protection.size = new Decimal(execution.quantity).toFixed(10);
+    protection.executionPrice = new Decimal(execution.executionPrice).toFixed(10);
+    protection.premium = new Decimal(execution.premium).toFixed(10);
+    protection.executedAt = execution.executedAt;
+    protection.externalOrderId = execution.externalOrderId;
+    protection.externalExecutionId = execution.externalExecutionId;
+    protection.entryPrice = new Decimal(spotUsd).toFixed(10);
+    protection.floorPrice = new Decimal(triggerPriceUsd).toFixed(10);
+  } catch (err: any) {
+    // Don't roll back the activate. The trade is already filled on
+    // Deribit and the row + execution row exist. A reconcile-orphan
+    // call can backfill the venue fields later.
+    console.warn(
+      `[biweeklyActivate] Failed to patch top-level venue fields on ${protection.id}: ${err?.message ?? "unknown"}. ` +
+        `Trade IS live on Deribit (${execution.instrumentId}). Use /pilot/admin/protections/:id/reconcile-orphan-hedge to backfill.`
+    );
+  }
+
   // ── Insert subscription_started ledger entry (no upfront premium) ──
   try {
     await insertLedgerEntry(pool, {
