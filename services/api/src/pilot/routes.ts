@@ -5564,6 +5564,120 @@ export const registerPilotRoutes = async (
   //   - rows already archived are no-ops
   //   - rows in non-open statuses (expired_*, cancelled) are still
   //     archived for cleanliness but daily release is a no-op for them
+  /**
+   * POST /pilot/admin/protections/synthetic — create a fake biweekly
+   *   protection for end-to-end UI testing without spending real money on
+   *   Deribit.
+   *
+   * Inserts a `pilot_protections` row with `status="active"`,
+   * `hedge_status="active"`, a placeholder venue/instrument ID, and the
+   * supplied SL tier + notional. The trader UI sees it as a real active
+   * position and can exercise:
+   *   - "Close Position" → POST /pilot/protections/:id/close
+   *     (full close flow runs: accumulated charge math, ledger write,
+   *      status→cancelled). No Deribit hedge to sell so no real-money
+   *      side effects.
+   *   - Trigger monitor will scan it (it's in active status). On a real
+   *     spot move past the trigger, it WILL flip to triggered + write a
+   *     payout-due ledger entry. The hedge manager will then try to sell
+   *     the placeholder instrument, which fails harmlessly (no_bid /
+   *     instrument_unknown) and the no-bid backstop holds it.
+   *
+   * Use sparingly. Synthetic positions are tagged with
+   * `metadata.synthetic=true` so the admin UI / metrics can exclude
+   * them from real economics. Operators should clean them up via the
+   * existing test-reset endpoint when done.
+   *
+   * Body: { slPct: 2|3|5|10, protectedNotionalUsd: number,
+   *         direction?: "long"|"short", entryPrice?: number,
+   *         tenorDays?: number (defaults to 14) }
+   * Returns: { status: "ok", protection: ProtectionRecord, synthetic: true }
+   */
+  app.post("/pilot/admin/protections/synthetic", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const body = (req.body || {}) as {
+      slPct?: unknown;
+      protectedNotionalUsd?: unknown;
+      direction?: unknown;
+      entryPrice?: unknown;
+      tenorDays?: unknown;
+    };
+    const slPct = Number(body.slPct);
+    const notional = Number(body.protectedNotionalUsd);
+    const direction = body.direction === "short" ? "short" : "long";
+    const entryPrice = Number(body.entryPrice);
+    const tenorDays = Number.isFinite(Number(body.tenorDays)) && Number(body.tenorDays) >= 1
+      ? Math.floor(Number(body.tenorDays))
+      : 14;
+    if (![2, 3, 5, 10].includes(slPct)) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_sl_pct", message: "slPct must be 2, 3, 5, or 10." };
+    }
+    if (!Number.isFinite(notional) || notional <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_notional", message: "protectedNotionalUsd must be > 0." };
+    }
+    const spotForTrigger = Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : 76000;
+    const triggerPrice = direction === "short"
+      ? spotForTrigger * (1 + slPct / 100)
+      : spotForTrigger * (1 - slPct / 100);
+
+    const ratePerDayPer1k =
+      slPct === 2 || slPct === 3 ? 2.5 : slPct === 5 ? 2.0 : 1.5;
+
+    const tenant = resolveTenantScopeHash();
+    const expiryAtIso = new Date(Date.now() + tenorDays * 24 * 60 * 60 * 1000).toISOString();
+    let protection;
+    try {
+      protection = await insertProtection(pool, {
+        userHash: tenant.userHash,
+        hashVersion: tenant.hashVersion,
+        status: "active",
+        tierName: `${slPct}pct`,
+        drawdownFloorPct: new Decimal(slPct).div(100).toFixed(6),
+        slPct,
+        hedgeStatus: "active",
+        marketId: pilotConfig.referenceMarketId,
+        protectedNotional: new Decimal(notional).toFixed(10),
+        foxifyExposureNotional: new Decimal(notional).toFixed(10),
+        expiryAt: expiryAtIso,
+        autoRenew: false,
+        renewWindowMinutes: 1440,
+        tenorDays,
+        dailyRateUsdPer1k: String(ratePerDayPer1k),
+        metadata: {
+          synthetic: true,
+          createdBy: auth.actor,
+          product: tenorDays >= 2 ? "biweekly" : "1day",
+          protectionType: direction,
+          triggerPrice,
+          floorPrice: triggerPrice,
+          spotAtActivation: spotForTrigger,
+          ratePerDayPer1kUsd: ratePerDayPer1k,
+          venueQuoteId: `synthetic-${Date.now()}`,
+          venueInstrumentId: `SYNTHETIC-${slPct}PCT-${direction.toUpperCase()}`,
+          activationRequestId: `synthetic-${randomUUID()}`,
+          note: "synthetic protection for UI testing — no real Deribit hedge"
+        }
+      });
+    } catch (err: any) {
+      reply.code(500);
+      return { status: "error", reason: "storage_unavailable", message: String(err?.message ?? "insert_failed") };
+    }
+    await insertAdminAction(pool, {
+      action: "pilot_synthetic_protection_created",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: { protectionId: protection.id, slPct, notional, direction, tenorDays }
+    });
+    console.log(
+      `[Admin] Synthetic protection created: id=${protection.id} ${slPct}% ${direction} $${notional} ` +
+        `tenor=${tenorDays}d by ${auth.actor}`
+    );
+    return { status: "ok", protection, synthetic: true };
+  });
+
   app.post("/pilot/admin/test-reset-protections", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
