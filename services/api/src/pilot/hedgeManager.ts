@@ -1080,8 +1080,20 @@ export const runHedgeManagementCycle = async (params: {
       // PR 6: use the per-hedge scaled near-expiry salvage hours.
       // For 1-day legacy: 6h (unchanged). For 14-day biweekly: 24h.
       const inNearExpiryWindow = hoursToExpiry < baseNearExpirySalvageHours;
+      // 2026-05-01 — disable the no-bid backstop for biweekly (tenorDays >= 2).
+      // The backstop was sized for the 1-day product where we're trading
+      // same-day expiries against thin Deribit books; on a 14-day weekly
+      // (Friday 08:00 UTC settlement) the bid book is consistently
+      // $50k+ deep and a $1k–$1.5k hedge sell will not stress liquidity.
+      // If we ever do see a no_bid streak on biweekly it's almost
+      // certainly a Deribit incident, not a structural illiquidity —
+      // and we'd rather keep retrying through the incident than freeze
+      // the position into hold-to-expiry. The 1-day product still gets
+      // the backstop unchanged.
+      const isBiweeklyHedge = hedge.tenorDays >= 2;
       const backstopEngaged =
         backstopCfg.enabled &&
+        !isBiweeklyHedge &&
         hedge.noBidRetryCount >= backstopCfg.threshold &&
         !inNearExpiryWindow;
 
