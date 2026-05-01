@@ -297,6 +297,61 @@ test("no_bid backstop: at threshold but inside near-expiry window → backstop b
   );
 });
 
+test("no_bid backstop: biweekly hedges (tenorDays >= 2) are exempt — backstop never engages even at threshold (2026-05-01)", async () => {
+  // Per CEO direction 2026-05-01: the no-bid backstop was sized for the
+  // legacy 1-day product trading thin same-day Deribit books. Biweekly
+  // (14d) hedges trade against the weekly grid where bid book is
+  // consistently $50k+ deep; a $1–$1.5k hedge sell will not stress
+  // liquidity, and a no_bid streak on biweekly is more likely a
+  // Deribit incident than structural illiquidity. Better to keep
+  // retrying through the incident than freeze into hold-to-expiry.
+  //
+  // This test reproduces the SAME conditions as the
+  // "engages outside near-expiry" case above, but with tenorDays=14.
+  // Backstop should NOT engage; sell attempts should continue.
+  __resetSpotHistoryForTests();
+  delete process.env.PILOT_TP_NO_BID_BACKSTOP_ENABLED;
+  delete process.env.PILOT_TP_NO_BID_BACKSTOP_THRESHOLD;
+  const pool = await buildPool();
+  const now = Date.now();
+  for (let h = 24; h >= 0; h--) recordSpotSample(77400, now - h * HOUR_MS);
+
+  const id = await seedTriggeredHedge(pool, {
+    triggerAtMs: now - 1 * HOUR_MS,
+    // Biweekly hedge is far from expiry — 8 days out, not 8 hours
+    expiryAtMs: now + 8 * 24 * HOUR_MS,
+    triggerPrice: 77621.84,
+    triggerReferencePrice: 77663.61,
+    strike: 77500,
+    noBidRetryCount: 60,
+    payoutDueAmount: 200,
+    hedgeQty: 0.5
+  });
+  // Mark this row as biweekly. seedTriggeredHedge defaults tenor_days=1
+  // via insertProtection's default — flip to 14 here to exercise the
+  // biweekly skip branch.
+  await pool.query(
+    `UPDATE pilot_protections SET tenor_days = 14 WHERE id = $1`,
+    [id]
+  );
+
+  const { sellOption, calls } = buildSellRecorder("no_bid");
+  const logs = await captureCycle({ pool, sellOption, currentSpot: 77400, currentIV: 0.40 });
+
+  const engagedLine = logs.find((l) => l.includes("no_bid backstop ENGAGED"));
+  assert.ok(
+    !engagedLine,
+    `backstop must NOT engage on biweekly (tenorDays=14). Got: ${logs.filter((l) => l.includes("backstop")).join("\n")}`
+  );
+
+  const r = await pool.query("SELECT metadata FROM pilot_protections WHERE id = $1", [id]);
+  assert.equal(
+    r.rows[0].metadata.heldToExpiryReason,
+    undefined,
+    "heldToExpiryReason should NOT be stamped on biweekly hedges"
+  );
+});
+
 test("no_bid backstop: PILOT_TP_NO_BID_BACKSTOP_ENABLED=false disables the backstop entirely", async () => {
   __resetSpotHistoryForTests();
   process.env.PILOT_TP_NO_BID_BACKSTOP_ENABLED = "false";
