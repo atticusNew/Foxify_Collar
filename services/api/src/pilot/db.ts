@@ -860,11 +860,18 @@ export const countActivationsInLast24h = async (
   nowMs: number = Date.now()
 ): Promise<number> => {
   const cutoffIso = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+  // Exclude synthetic test protections (created via
+  // /pilot/admin/protections/synthetic) from the daily-activation
+  // guard. Synthetic rows are testing artifacts, not real trades, and
+  // counting them blocks operators from running a real trade after
+  // creating a test position. Tagged via metadata.synthetic=true at
+  // insert time.
   const result = await pool.query(
     `SELECT COUNT(*)::int AS n
      FROM pilot_protections
      WHERE user_hash = $1
-       AND created_at >= $2::timestamptz`,
+       AND created_at >= $2::timestamptz
+       AND COALESCE((metadata->>'synthetic')::boolean, false) = false`,
     [userHash, cutoffIso]
   );
   return Number(result.rows[0]?.n ?? 0);
