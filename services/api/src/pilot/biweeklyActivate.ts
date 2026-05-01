@@ -636,6 +636,34 @@ export const handleBiweeklyActivate = async (params: {
   // path); leaving these NULL was masked because trigger monitor
   // currently falls back to metadata, but the admin views use
   // top-level so this still presents as broken.
+  // 2026-05-01 — Premium semantic split for biweekly.
+  //
+  // Legacy 1-day product wrote `premium` = trader-charged amount and
+  // hedge cost was implicit (≈ premium minus markup). PR #120 fixed the
+  // missing-venue-fields bug but accidentally stamped the hedge cost
+  // (execution.premium = $155.33 paid to Deribit) into the top-level
+  // `premium` column, which the admin view labels as the trader charge.
+  //
+  // For biweekly, the two are different by design:
+  //   - Trader pays: dailyRate × days_held × notional/1000 (capped at
+  //     14 days = maxProjectedChargeUsd)
+  //   - Platform pays Deribit: execution.premium (one-time at activation)
+  //   - Platform margin: maxProjectedCharge - hedgeCost (if held to expiry)
+  //
+  // We stamp `premium` = max projected trader charge (the ceiling, same
+  // semantic as legacy 1-day's "premium" column) so the admin view's
+  // Premium / Hedge / Spread columns render correctly without unit
+  // confusion. The actual running charge lives in
+  // `accumulated_charge_usd` (updated on close) — admin view can read
+  // both for "currently billed" vs "max ceiling" displays.
+  //
+  // We also stash `metadata.hedgeCostUsd` so admin views show hedge
+  // cost in USD without having to know that Deribit's executionPrice
+  // is BTC-denominated (multiplying by spot etc.).
+  const hedgeCostUsd = Number(execution.premium);
+  const maxProjectedChargeUsd = (Number(ratePerDayPer1k) * BIWEEKLY_MAX_TENOR_DAYS * Number(req.protectedNotionalUsd)) / 1000;
+  const traderPremiumCeilingStr = new Decimal(maxProjectedChargeUsd).toFixed(10);
+  const hedgeCostStr = new Decimal(hedgeCostUsd).toFixed(10);
   try {
     await pool.query(
       `UPDATE pilot_protections SET
@@ -659,7 +687,7 @@ export const handleBiweeklyActivate = async (params: {
         execution.side,
         new Decimal(execution.quantity).toFixed(10),
         new Decimal(execution.executionPrice).toFixed(10),
-        new Decimal(execution.premium).toFixed(10),
+        traderPremiumCeilingStr,
         execution.executedAt,
         execution.externalOrderId,
         execution.externalExecutionId,
@@ -667,6 +695,27 @@ export const handleBiweeklyActivate = async (params: {
         new Decimal(triggerPriceUsd).toFixed(10)
       ]
     );
+    // Stamp hedge cost + max projected charge in metadata for admin
+    // displays. Read-merge-write pattern (pg-mem doesn't support
+    // jsonb_build_object — see PR #119 synthetic flag test).
+    try {
+      const r = await pool.query(`SELECT metadata FROM pilot_protections WHERE id = $1`, [protection.id]);
+      const merged = {
+        ...((r.rows[0]?.metadata as any) || {}),
+        hedgeCostUsd,
+        maxProjectedChargeUsd,
+        traderPremiumCeilingUsd: maxProjectedChargeUsd
+      };
+      await pool.query(`UPDATE pilot_protections SET metadata = $2::jsonb WHERE id = $1`, [
+        protection.id,
+        JSON.stringify(merged)
+      ]);
+      protection.metadata = merged;
+    } catch (mdErr: any) {
+      console.warn(
+        `[biweeklyActivate] Failed to stamp hedgeCostUsd metadata on ${protection.id}: ${mdErr?.message ?? "unknown"}`
+      );
+    }
     // Reflect on the in-memory record we return so the caller (routes
     // → trader) sees the full hydrated shape immediately.
     protection.venue = execution.venue;
@@ -674,7 +723,7 @@ export const handleBiweeklyActivate = async (params: {
     protection.side = execution.side;
     protection.size = new Decimal(execution.quantity).toFixed(10);
     protection.executionPrice = new Decimal(execution.executionPrice).toFixed(10);
-    protection.premium = new Decimal(execution.premium).toFixed(10);
+    protection.premium = traderPremiumCeilingStr;
     protection.executedAt = execution.executedAt;
     protection.externalOrderId = execution.externalOrderId;
     protection.externalExecutionId = execution.externalExecutionId;
