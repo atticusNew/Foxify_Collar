@@ -8,11 +8,16 @@ import { pilotConfig, resolvePilotWindow, type PilotPricingMode } from "./config
 import { PilotMonitor, parseMonitorConfig } from "./monitor";
 import {
   archiveProtectionsByUserHashExcept,
+  archiveTestProtectionsByIds,
   creditSimPositionForTrigger,
   createPilotTermsAcceptanceIfMissing,
   extractLatestPremiumPolicyDiagnostics,
   ensurePilotSchema,
+  resetPilotData,
   getDailyProtectedNotionalForUser,
+  sumActiveProtectionNotional,
+  sumLiveHedgeCostUsdSince,
+  getDailyTierUsageForUser,
   getDailyTreasurySubsidyUsageForUser,
   getEssentialProofPayload,
   getPilotAdminMetrics,
@@ -39,11 +44,13 @@ import {
   listRecentQuoteDiagnostics,
   patchSimPosition,
   upsertExecutionQualityDaily,
+  incrementExecutionQualityDaily,
   reserveDailyTreasurySubsidyCapacity,
   releaseDailyTreasurySubsidyCapacity,
   reserveDailyActivationCapacity,
   releaseDailyActivationCapacity,
   patchProtection,
+  patchProtectionForStatus,
   insertSimPosition,
   insertSimTreasuryLedgerEntry,
   getSimPlatformMetrics
@@ -51,6 +58,8 @@ import {
 import { resolvePriceSnapshot, type PriceSnapshotOutput } from "./price";
 import { createPilotVenueAdapter, mapVenueFailureReason } from "./venue";
 import { registerPilotTriggerMonitor } from "./triggerMonitor";
+import { runAutoRenewCycle } from "./autoRenew";
+import { runHedgeManagementCycle } from "./hedgeManager";
 import {
   buildPremiumPolicyDiagnostics,
   estimateBrokerFeesUsd,
@@ -70,10 +79,79 @@ import {
   normalizeTierName,
   resolveDrawdownFloorPct,
   resolveExpiryDays,
-  resolveRenewWindowMinutes
+  resolveRenewWindowMinutes,
+  slPctToTierName
 } from "./floor";
 import { computeDrawdownLossBudgetUsd } from "./protectionMath";
 import type { PremiumPolicyDiagnostics, TenorPolicyEntry, TenorPolicyResponse, TenorPolicyTenorRow, TenorPolicyReason } from "./types";
+import { isValidSlTier, computeV7Premium, slPctToDrawdownFloor, slPctToTierLabel, getV7AvailableTiers, getV7TenorDays, getV7PremiumPer1k } from "./v7Pricing";
+import { getCurrentRegime, configureRegimeClassifier } from "./regimeClassifier";
+import {
+  getCurrentPricingRegime,
+  type PricingRegime
+} from "./pricingRegime";
+import {
+  configureCircuitBreaker,
+  getCircuitBreakerConfig,
+  getCircuitBreakerState,
+  isCircuitBreakerActive,
+  recordBalanceSample,
+  resetCircuitBreaker
+} from "./circuitBreaker";
+import {
+  configureHedgeBudgetCap,
+  evaluateHedgeBudgetCap,
+  getHedgeBudgetCapConfig,
+  type HedgeBudgetCapVerdict
+} from "./hedgeBudgetCap";
+import {
+  handleBiweeklyActivate,
+  handleBiweeklyQuote,
+  type BiweeklyActivateErrorReason
+} from "./biweeklyActivate";
+import { handleBiweeklyClose, type BiweeklyCloseErrorReason } from "./biweeklyClose";
+import { isBiweeklyEnabled } from "./biweeklyPricing";
+
+// Format a USD amount as a comma-separated whole-dollar string for
+// inclusion in user-facing error messages. Examples:
+//   100000     → "100,000"
+//   60000.4    → "60,000"
+//   "200000"   → "200,000"
+// Use this in every cap/limit message so the trader sees "$200,000"
+// instead of "$200000".
+const fmtUsdWhole = (value: number | string | { toFixed: (n: number) => string }): string => {
+  let n: number;
+  if (typeof value === "number") {
+    n = value;
+  } else if (typeof value === "string") {
+    n = Number(value);
+  } else if (value && typeof (value as any).toFixed === "function") {
+    n = Number((value as { toFixed: (n: number) => string }).toFixed(2));
+  } else {
+    n = NaN;
+  }
+  if (!Number.isFinite(n)) return String(value);
+  return Math.round(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
+};
+
+// Design A — Volatility label shown next to the price in the widget.
+// Maps internal regime IDs to user-facing strings. "Low / Moderate /
+// Elevated / High" was selected over "Calm / Active / Choppy /
+// Stressed" because "Volatility" is universally understood by traders
+// and the labels form a clear monotonic scale.
+const pricingRegimeLabel = (regime: PricingRegime): string => {
+  switch (regime) {
+    case "low":
+      return "Low";
+    case "moderate":
+      return "Moderate";
+    case "elevated":
+      return "Elevated";
+    case "high":
+      return "High";
+  }
+};
+import type { V7SlTier, V7PremiumQuote } from "./types";
 
 const deriveHedgeMode = (quoteDetails?: Record<string, unknown>): "options_native" | "futures_synthetic" => {
   const raw = String(quoteDetails?.hedgeMode || "");
@@ -290,7 +368,8 @@ const runSimTriggerMonitorCycle = async (params: {
     let snapshot: PriceSnapshotOutput;
     try {
       snapshot = await resolveLiveReferencePrice(requestId, simPosition.marketId);
-    } catch {
+    } catch (err: any) {
+      console.warn(`[SimTriggerMonitor] Price error for sim=${simPosition.id}: ${err?.message || "unknown"}`);
       continue;
     }
     const entryPrice = parsePositiveDecimal(simPosition.entryPrice);
@@ -300,6 +379,7 @@ const runSimTriggerMonitorCycle = async (params: {
     const triggerPrice = parsePositiveDecimal(simPosition.floorPrice) || computeTriggerPrice(entryPrice, drawdownFloorPct, "long");
     const breached = snapshot.price.lessThanOrEqualTo(triggerPrice);
     if (!breached) continue;
+    console.log(`[SimTriggerMonitor] TRIGGERED: sim=${simPosition.id} protection=${protectionId} spot=$${snapshot.price.toFixed(2)} floor=$${triggerPrice.toFixed(2)} payout=$${protectedLossUsd.toFixed(2)}`);
     const lifecycle = buildSimLifecycleMetadata(simPosition.metadata || {}, {
       triggerPrice: triggerPrice.toFixed(10),
       triggerReferencePrice: snapshot.price.toFixed(10),
@@ -811,7 +891,7 @@ const toCsv = (rows: Array<Record<string, unknown>>): string => {
 
 export const registerPilotRoutes = async (
   app: FastifyInstance,
-  deps: { deribit: DeribitConnector }
+  deps: { deribit: DeribitConnector; deribitLive?: DeribitConnector }
 ): Promise<void> => {
   if (!pilotConfig.enabled) return;
 
@@ -825,7 +905,7 @@ export const registerPilotRoutes = async (
     errorResponseBuilder: () => ({
       status: "error",
       reason: "rate_limit_exceeded",
-      message: "Too many requests. Please retry after a short delay."
+      message: "Too many requests. Try again shortly."
     })
   });
 
@@ -880,6 +960,45 @@ export const registerPilotRoutes = async (
     ibkrQuoteBudgetMs: pilotConfig.venueQuoteTimeoutMs,
     deribit: deps.deribit
   });
+
+  const deribitVenue = createPilotVenueAdapter({
+    mode: "deribit_live",
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+    deribit: deps.deribit,
+    quoteTtlMs: pilotConfig.quoteTtlMs,
+    deribitQuotePolicy: pilotConfig.deribitQuotePolicy,
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 7
+  });
+
+  const deribitLivePricingVenue = deps.deribitLive ? createPilotVenueAdapter({
+    mode: "deribit_live",
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+    deribit: deps.deribitLive,
+    quoteTtlMs: pilotConfig.quoteTtlMs,
+    deribitQuotePolicy: "ask_or_mark_fallback",
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 7
+  }) : deribitVenue;
+
+  if (pilotConfig.v7.enabled) {
+    // DVOL/RVOL must come from Deribit MAINNET regardless of trading-account
+    // environment. Testnet's volatility-index endpoint serves synthetic flat
+    // values (~133 as of 2026-04 — not a real market reading) which would
+    // mis-tune the DVOL-adaptive TP logic and the BS recovery model.
+    // deps.deribitLive is the read-only mainnet connector wired in
+    // services/api/src/server.ts. Falls back to deps.deribit only if no
+    // separate mainnet connector was provided (e.g. in some tests).
+    const regimeConnector = deps.deribitLive ?? deps.deribit;
+    configureRegimeClassifier({
+      deribitConnector: regimeConnector,
+      thresholds: {
+        calmBelow: pilotConfig.v7.dvolCalmThreshold,
+        stressAbove: pilotConfig.v7.dvolStressThreshold
+      }
+    });
+    console.log(`[V7] Regime classifier configured: calm<${pilotConfig.v7.dvolCalmThreshold}% stress>${pilotConfig.v7.dvolStressThreshold}% tenor=${pilotConfig.v7.defaultTenorDays}d source=${deps.deribitLive ? "deribit_mainnet" : "deribit_default"}`);
+  }
 
   const resolveAndPersistExpiry = async (protectionId: string): Promise<void> => {
     const protection = await getProtection(pool, protectionId);
@@ -1003,7 +1122,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "terms_status_failed")
       };
     }
@@ -1057,7 +1176,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "terms_accept_failed")
       };
     }
@@ -1094,7 +1213,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "reference_price_unavailable")
       };
     }
@@ -1487,6 +1606,147 @@ export const registerPilotRoutes = async (
     }
   });
 
+  app.get("/pilot/regime", async (req, reply) => {
+    const query = req.query as { refresh?: string };
+    const forceRefresh = query.refresh === "true";
+    try {
+      const regimeStatus = await getCurrentRegime({ forceRefresh });
+      const tiers = getV7AvailableTiers(regimeStatus.regime);
+      // Design A — expose the pricing regime so the widget can display
+      // "Volatility: Moderate" next to the price.
+      const pricingRegimeStatus = getCurrentPricingRegime(regimeStatus.dvol);
+      return {
+        status: "ok",
+        regime: regimeStatus.regime,
+        dvol: regimeStatus.dvol,
+        rvol: regimeStatus.rvol,
+        source: regimeStatus.source,
+        timestamp: regimeStatus.timestamp,
+        tiers,
+        v7Enabled: pilotConfig.v7.enabled,
+        defaultTenorDays: pilotConfig.v7.defaultTenorDays,
+        thresholds: {
+          calmBelow: pilotConfig.v7.dvolCalmThreshold,
+          stressAbove: pilotConfig.v7.dvolStressThreshold
+        },
+        pricingRegime: pricingRegimeStatus.regime,
+        pricingRegimeLabel: pricingRegimeLabel(pricingRegimeStatus.regime),
+        pricingRegimeSource: pricingRegimeStatus.source,
+        pricingRegimeRollingWindowMinutes: pricingRegimeStatus.rollingWindowMinutes
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "regime_unavailable",
+        message: String(error?.message || "Failed to fetch regime status")
+      };
+    }
+  });
+
+  app.get("/pilot/deribit/pricing", async (req, reply) => {
+    const query = req.query as { notional?: string; tenorDays?: string; protectionType?: string };
+    const notional = Number(query.notional || 10000);
+    const tenorDays = Number(query.tenorDays || pilotConfig.v7.defaultTenorDays);
+    const protectionType = String(query.protectionType || "long") as "long" | "short";
+    if (!Number.isFinite(notional) || notional <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_notional" };
+    }
+    try {
+      const pricingConnector = deps.deribitLive || deps.deribit;
+      const spot = await (async () => {
+        const ticker = await pricingConnector.getIndexPrice("btc_usd");
+        const price = Number((ticker as any)?.result?.index_price ?? 0);
+        if (!Number.isFinite(price) || price <= 0) throw new Error("deribit_spot_unavailable");
+        return price;
+      })();
+      const quantity = notional / spot;
+      const slTiers = [1, 2, 3, 5, 10] as const;
+      const results: Record<number, {
+        slPct: number;
+        triggerPrice: number;
+        strike: number | null;
+        instrument: string | null;
+        askBtc: number | null;
+        hedgeCostUsd: number | null;
+        hedgeCostPer1kUsd: number | null;
+        available: boolean;
+        reason: string | null;
+      }> = {};
+
+      for (const slPct of slTiers) {
+        const drawdown = slPct / 100;
+        const triggerPrice = protectionType === "short"
+          ? spot * (1 + drawdown)
+          : spot * (1 - drawdown);
+        try {
+          const dq = await deribitLivePricingVenue.quote({
+            marketId: "BTC-USD",
+            instrumentId: `BTC-USD-${tenorDays}D-P`,
+            protectedNotional: notional,
+            quantity,
+            side: "buy",
+            protectionType,
+            drawdownFloorPct: drawdown,
+            triggerPrice,
+            requestedTenorDays: tenorDays
+          });
+          const details = (dq.details || {}) as Record<string, unknown>;
+          const askBtc = Number(details.askPriceBtc ?? 0);
+          const hedgeCostUsd = dq.premium;
+          const hedgeCostPer1kUsd = hedgeCostUsd / (notional / 1000);
+          results[slPct] = {
+            slPct,
+            triggerPrice: Number(triggerPrice.toFixed(2)),
+            strike: Number(details.selectedStrike ?? 0) || null,
+            instrument: dq.instrumentId || null,
+            askBtc: Number.isFinite(askBtc) && askBtc > 0 ? askBtc : null,
+            hedgeCostUsd: Number(hedgeCostUsd.toFixed(2)),
+            hedgeCostPer1kUsd: Number(hedgeCostPer1kUsd.toFixed(2)),
+            available: true,
+            reason: null
+          };
+        } catch (err: any) {
+          results[slPct] = {
+            slPct,
+            triggerPrice: Number(triggerPrice.toFixed(2)),
+            strike: null,
+            instrument: null,
+            askBtc: null,
+            hedgeCostUsd: null,
+            hedgeCostPer1kUsd: null,
+            available: false,
+            reason: String(err?.message || "unavailable")
+          };
+        }
+      }
+
+      let regimeStatus;
+      try { regimeStatus = await getCurrentRegime(); } catch { regimeStatus = null; }
+
+      return {
+        status: "ok",
+        venue: "deribit_live",
+        btcSpot: Number(spot.toFixed(2)),
+        notionalUsd: notional,
+        tenorDays,
+        protectionType,
+        regime: regimeStatus?.regime ?? "normal",
+        dvol: regimeStatus?.dvol ?? null,
+        slTiers: results,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "deribit_pricing_unavailable",
+        message: String(error?.message || "Failed to fetch Deribit pricing")
+      };
+    }
+  });
+
   app.get("/pilot/health", async (_req, reply) => {
     const requestId = pilotConfig.nextRequestId();
     let db: Record<string, unknown>;
@@ -1543,7 +1803,9 @@ export const registerPilotRoutes = async (
     }
 
     const venue = await resolvePilotVenueHealth();
-    const overallOk = db.status === "ok" && price.status === "ok" && isIbkrLiveTransportHealthy(venue);
+    const venueMode = String(venue.mode || "");
+    const venueHealthy = venueMode.startsWith("ibkr_") ? isIbkrLiveTransportHealthy(venue) : true;
+    const overallOk = db.status === "ok" && price.status === "ok" && venueHealthy;
     reply.code(overallOk ? 200 : 503);
     return {
       status: overallOk ? "ok" : "degraded",
@@ -1633,6 +1895,479 @@ export const registerPilotRoutes = async (
     };
   });
 
+  /**
+   * GET /pilot/admin/diagnostics/per-trade-fills?limit=20
+   *
+   * Per-trade execution diagnostic. Returns, for each recent
+   * pilot_venue_execution row, the captured-at-quote `askPriceBtc`,
+   * the realized `fillPriceBtc`, the source of the ask snapshot
+   * (live ask vs mark-fallback), and the implied slippage in basis
+   * points. This is what the daily-rollup /execution-quality
+   * endpoint averages — exposing the per-row data lets operators
+   * diagnose whether observed slippage is real microstructure
+   * (timing artifact, sub-ask fills) or a measurement artifact
+   * (e.g., quote captured against mark-price not real ask).
+   *
+   * Default limit 20 rows, max 200.
+   */
+  app.get("/pilot/admin/diagnostics/per-trade-fills", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const limitRaw = Number((req.query as { limit?: string })?.limit || "20");
+    const limit = Number.isFinite(limitRaw)
+      ? Math.max(1, Math.min(200, Math.floor(limitRaw)))
+      : 20;
+    try {
+      const result = await pool.query(
+        `
+          SELECT
+            e.id,
+            e.protection_id,
+            e.venue,
+            e.instrument_id,
+            e.quantity::text AS quantity,
+            e.execution_price::text AS execution_price_usd,
+            e.executed_at,
+            e.details AS execution_details,
+            q.details AS quote_details,
+            q.expires_ts AS quote_expires_at
+          FROM pilot_venue_executions e
+          LEFT JOIN pilot_venue_quotes q ON q.quote_id = e.quote_id
+          ORDER BY e.executed_at DESC
+          LIMIT $1
+        `,
+        [limit]
+      );
+      const rows = result.rows.map((row: Record<string, unknown>) => {
+        const exec = (row.execution_details as Record<string, unknown> | null) || {};
+        const quote = (row.quote_details as Record<string, unknown> | null) || {};
+        const askPriceBtc = Number(quote.askPriceBtc);
+        const fillPriceBtc = Number(exec.fillPriceBtc);
+        const askSource = String(quote.askSource || "");
+        const slippageBps =
+          Number.isFinite(askPriceBtc) && askPriceBtc > 0 && Number.isFinite(fillPriceBtc) && fillPriceBtc > 0
+            ? ((fillPriceBtc - askPriceBtc) / askPriceBtc) * 10_000
+            : null;
+        return {
+          executionId: String(row.id),
+          protectionId: String(row.protection_id),
+          venue: String(row.venue),
+          instrumentId: String(row.instrument_id),
+          executedAt: row.executed_at ? new Date(String(row.executed_at)).toISOString() : null,
+          quoteExpiresAt: row.quote_expires_at ? new Date(String(row.quote_expires_at)).toISOString() : null,
+          quantity: String(row.quantity),
+          executionPriceUsd: String(row.execution_price_usd),
+          quotedAskBtc: Number.isFinite(askPriceBtc) ? askPriceBtc : null,
+          fillPriceBtc: Number.isFinite(fillPriceBtc) ? fillPriceBtc : null,
+          askSource: askSource || null,
+          slippageBps: slippageBps !== null ? Number(slippageBps.toFixed(4)) : null,
+          slippageInterpretation:
+            slippageBps === null
+              ? "unknown_missing_fields"
+              : slippageBps > 5
+                ? "filled_worse_than_quoted"
+                : slippageBps < -5
+                  ? "filled_better_than_quoted"
+                  : "fill_matched_quote"
+        };
+      });
+      return {
+        status: "ok",
+        rows,
+        summary: {
+          count: rows.length,
+          mean_slippage_bps:
+            rows.length === 0
+              ? null
+              : Number(
+                  (
+                    rows
+                      .filter((r) => r.slippageBps !== null)
+                      .reduce((acc, r) => acc + (r.slippageBps || 0), 0) /
+                    Math.max(1, rows.filter((r) => r.slippageBps !== null).length)
+                  ).toFixed(4)
+                ),
+          ask_source_breakdown: rows.reduce(
+            (acc, r) => {
+              const k = r.askSource || "unknown";
+              acc[k] = (acc[k] || 0) + 1;
+              return acc;
+            },
+            {} as Record<string, number>
+          )
+        }
+      };
+    } catch (error: any) {
+      reply.code(500);
+      return {
+        status: "error",
+        reason: String(error?.message || "per_trade_diagnostic_failed")
+      };
+    }
+  });
+
+  /**
+   * GET /pilot/admin/diagnostics/triggered-protections?limit=20&direction=all
+   *
+   * One row per protection that has reached `status='triggered'` (regardless
+   * of whether the hedge has been sold yet). Designed to be the primary
+   * day-to-day surface the operator uses to validate option-selection
+   * quality, TP performance, and SHORT-vs-LONG behavior post PR #76.
+   *
+   * For each triggered protection, returns:
+   *   - identity:        id, direction (long/short), SL%, notional, entry, trigger
+   *   - hedge geometry:  selected strike, strike gap to trigger (signed: + OTM, - ITM)
+   *   - hedge timeline:  triggered_at, hedge_status, sold_at, time_from_trigger_to_sell_min
+   *   - cash flows:      premium, hedge cost, hedge recovery, payout owed, net P&L
+   *   - recovery ratio:  hedge_recovery / payout_owed × 100 (vs R1 baseline 68.3%)
+   *   - trajectory hint: spot_at_trigger, spot_at_sell, spot_move_through_trigger_pct
+   *                      (e.g., +0.15% = barely grazed, +1.2% = clear breakout)
+   *
+   * Sort: most recently triggered first. Default limit 20, max 100.
+   *
+   * Query params:
+   *   - limit:     1-100 (default 20)
+   *   - direction: 'all' | 'long' | 'short' (default 'all')
+   *
+   * Used by:
+   *   - Admin dashboard "Triggered Trades" tab (visual review)
+   *   - scripts/pilot-trade-investigate (deep-dive on a single ID)
+   *   - Post-pilot calibration analyses (recovery distribution by direction)
+   */
+  app.get("/pilot/admin/diagnostics/triggered-protections", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const q = req.query as { limit?: string; direction?: string };
+    const limitRaw = Number(q?.limit || "20");
+    const limit = Number.isFinite(limitRaw)
+      ? Math.max(1, Math.min(100, Math.floor(limitRaw)))
+      : 20;
+    const direction = q?.direction === "long" || q?.direction === "short" ? q.direction : "all";
+    try {
+      // Pull triggered protections + their executions in one round-trip.
+      // We use LATERAL join so per-protection execution aggregation is
+      // pushed into Postgres rather than N+1 queries from Node.
+      const triggeredResult = await pool.query(
+        `
+          SELECT
+            p.id, p.status, p.hedge_status,
+            p.tier_name, p.sl_pct, p.drawdown_floor_pct,
+            p.protected_notional::text   AS protected_notional,
+            p.entry_price::text          AS entry_price,
+            p.floor_price::text          AS floor_price,
+            p.execution_price::text      AS execution_price,
+            p.size::text                 AS size,
+            p.expiry_at, p.executed_at, p.created_at, p.side,
+            p.metadata
+          FROM pilot_protections p
+          -- Only protections that ACTUALLY triggered (BTC crossed the
+          -- trigger price). Excludes protections that ran out the clock
+          -- without triggering — those are "active → expired" lifecycle
+          -- not "triggered" trades and shouldn't appear in this tab.
+          --
+          -- A protection is counted as triggered iff:
+          --   - status is currently 'triggered' or 'reconcile_pending', OR
+          --   - the trigger monitor stamped metadata.triggeredAt (or the
+          --     legacy field metadata.triggerAt — same event, different
+          --     field name across versions), OR
+          --   - hedge_status reached 'tp_sold' (only happens after a real
+          --     trigger fired, never after a no-op expiry)
+          --
+          -- Critically: hedge_status='expired_settled' and 'expired_worthless'
+          -- are EXCLUDED unless one of the trigger markers is also present.
+          -- Those statuses fire for non-triggered protections that simply
+          -- ran out their 1-day expiry. Bug fix 2026-04-22 — was producing
+          -- ghost rows on the Triggered Trades tab for normal expirations.
+          WHERE p.status IN ('triggered', 'reconcile_pending')
+             OR (p.metadata->>'triggeredAt') IS NOT NULL
+             OR (p.metadata->>'triggerAt') IS NOT NULL
+             OR p.hedge_status = 'tp_sold'
+          ORDER BY COALESCE(
+            (p.metadata->>'triggeredAt')::timestamptz,
+            p.executed_at,
+            p.created_at
+          ) DESC
+          LIMIT $1
+        `,
+        [Math.max(limit * 3, 60)] // overfetch then filter for direction client-side
+      );
+
+      const protections = (triggeredResult.rows as Array<Record<string, unknown>>).map((row) => ({
+        id: String(row.id),
+        status: String(row.status || ""),
+        hedgeStatus: row.hedge_status ? String(row.hedge_status) : null,
+        tierName: row.tier_name ? String(row.tier_name) : null,
+        slPct: row.sl_pct === null || row.sl_pct === undefined ? null : Number(row.sl_pct),
+        drawdownFloorPct: row.drawdown_floor_pct === null || row.drawdown_floor_pct === undefined
+          ? null : Number(row.drawdown_floor_pct),
+        protectedNotional: row.protected_notional ? String(row.protected_notional) : "0",
+        entryPrice: row.entry_price ? String(row.entry_price) : null,
+        floorPrice: row.floor_price ? String(row.floor_price) : null,
+        executionPrice: row.execution_price ? String(row.execution_price) : null,
+        size: row.size ? String(row.size) : null,
+        expiryAt: row.expiry_at ? new Date(String(row.expiry_at)).toISOString() : null,
+        executedAt: row.executed_at ? new Date(String(row.executed_at)).toISOString() : null,
+        createdAt: row.created_at ? new Date(String(row.created_at)).toISOString() : null,
+        side: row.side ? String(row.side) : null,
+        metadata: (row.metadata as Record<string, unknown>) || {}
+      }));
+
+      // Per-protection executions
+      const ids = protections.map((p) => p.id);
+      let executionsByProtection: Map<string, Array<Record<string, unknown>>> = new Map();
+      if (ids.length > 0) {
+        const execResult = await pool.query(
+          `
+            SELECT protection_id, side, premium, execution_price, quantity,
+                   executed_at, status, details, instrument_id
+            FROM pilot_venue_executions
+            WHERE protection_id = ANY($1::text[])
+            ORDER BY created_at ASC
+          `,
+          [ids]
+        );
+        executionsByProtection = new Map();
+        for (const r of execResult.rows as Array<Record<string, unknown>>) {
+          const key = String(r.protection_id);
+          const list = executionsByProtection.get(key) || [];
+          list.push(r);
+          executionsByProtection.set(key, list);
+        }
+      }
+
+      // Per-protection price snapshots (entry + trigger)
+      let snapshotsByProtection: Map<string, Array<Record<string, unknown>>> = new Map();
+      if (ids.length > 0) {
+        const snapResult = await pool.query(
+          `
+            SELECT protection_id, snapshot_type, price, price_timestamp, created_at
+            FROM pilot_price_snapshots
+            WHERE protection_id = ANY($1::text[])
+            ORDER BY created_at ASC
+          `,
+          [ids]
+        );
+        snapshotsByProtection = new Map();
+        for (const r of snapResult.rows as Array<Record<string, unknown>>) {
+          const key = String(r.protection_id);
+          const list = snapshotsByProtection.get(key) || [];
+          list.push(r);
+          snapshotsByProtection.set(key, list);
+        }
+      }
+
+      // Per-protection ledger entries (for premium / payout)
+      let ledgerByProtection: Map<string, Array<Record<string, unknown>>> = new Map();
+      if (ids.length > 0) {
+        const lr = await pool.query(
+          `
+            SELECT protection_id, entry_type, amount, settled_at, created_at
+            FROM pilot_ledger_entries
+            WHERE protection_id = ANY($1::text[])
+          `,
+          [ids]
+        );
+        ledgerByProtection = new Map();
+        for (const r of lr.rows as Array<Record<string, unknown>>) {
+          const key = String(r.protection_id);
+          const list = ledgerByProtection.get(key) || [];
+          list.push(r);
+          ledgerByProtection.set(key, list);
+        }
+      }
+
+      const rows = protections
+        .map((p) => {
+          const md = (p.metadata || {}) as Record<string, unknown>;
+          const protType = String(md.protectionType || p.side || "long").toLowerCase();
+          const directionTag = protType === "short" ? "short" : "long";
+
+          const execs = executionsByProtection.get(p.id) || [];
+          const snaps = snapshotsByProtection.get(p.id) || [];
+          const ledger = ledgerByProtection.get(p.id) || [];
+
+          const buyExec = execs.find((e) => String(e.side).toLowerCase() === "buy");
+          const sellExec = execs.find((e) => String(e.side).toLowerCase() === "sell");
+
+          // Cash flows.
+          //
+          // CRITICAL: hedge recovery is read from metadata.sellResult.totalProceeds,
+          // NOT from a sell-side venue_executions row. The hedge manager
+          // (services/api/src/pilot/hedgeManager.ts ~line 448) records TP
+          // sales by stamping metadata.sellResult on the protection record,
+          // and does NOT insert a side='sell' venue_executions row. So the
+          // pre-fix code that did `execs.find(side === 'sell')` was always
+          // returning undefined, and recovery always rendered as 0%.
+          //
+          // Fallback chain for recovery:
+          //   1. metadata.sellResult.totalProceeds (truth — set by hedge manager)
+          //   2. Any actual side='sell' venue_executions row (defensive — for
+          //      future code paths that might insert one)
+          //   3. 0
+          //
+          // Same root-cause bug for soldAt — fall back to metadata.sellResult or
+          // metadata.soldAt before checking sellExec.
+          const sellResult = (md.sellResult as Record<string, unknown> | undefined) || undefined;
+          const recoveryFromMetadata = sellResult ? Number(sellResult.totalProceeds || 0) : 0;
+          const recoveryFromExecRow = sellExec ? Number(sellExec.premium || 0) : 0;
+          const hedgeRecovery = recoveryFromMetadata > 0 ? recoveryFromMetadata : recoveryFromExecRow;
+
+          const premiumCollected = ledger
+            .filter((l) => String(l.entry_type) === "premium_due")
+            .reduce((acc, l) => acc + Number(l.amount || 0), 0);
+          const payoutOwed = ledger
+            .filter((l) => ["payout_due", "trigger_payout_due"].includes(String(l.entry_type)))
+            .reduce((acc, l) => acc + Number(l.amount || 0), 0);
+          const hedgeCost = buyExec ? Number(buyExec.premium || 0) : 0;
+          const netPnlUsd = premiumCollected - hedgeCost + hedgeRecovery - payoutOwed;
+          const recoveryRatioPct = payoutOwed > 0 ? (hedgeRecovery / payoutOwed) * 100 : null;
+
+          // Strike geometry.
+          //
+          // CRITICAL: triggerPrice resolution must prefer the floor_price column
+          // over metadata fields. metadata.triggerPrice may be missing or stale
+          // on older protections; floor_price is set authoritatively by
+          // triggerMonitor.ts at trigger fire and again by activate handler at
+          // creation. Pre-fix bug: when md.triggerPrice was 0/missing AND
+          // md.floorPrice was 0/missing, the strikeGapToTriggerUsd became 0
+          // and strikeIsItm fell to false, displaying everything as OTM
+          // (including correctly-selected ITM strikes from PR #76).
+          const buyDetails = (buyExec?.details as Record<string, unknown>) || {};
+          const selectedStrike = Number(md.selectedStrike || buyDetails.selectedStrike || 0);
+          const triggerPriceFromCol = Number(p.floorPrice || 0);
+          const triggerPriceFromMd = Number(md.triggerPrice || md.floorPrice || 0);
+          const triggerPrice = triggerPriceFromCol > 0 ? triggerPriceFromCol : triggerPriceFromMd;
+          const strikeGapToTriggerUsd = selectedStrike > 0 && triggerPrice > 0
+            ? selectedStrike - triggerPrice
+            : null;
+          const strikeIsItm = strikeGapToTriggerUsd !== null && (
+            directionTag === "short"
+              ? strikeGapToTriggerUsd < 0    // call strike below trigger = ITM
+              : strikeGapToTriggerUsd > 0    // put strike above trigger = ITM
+          );
+
+          // Timing — same metadata-first fallback chain
+          const triggeredAtIso = md.triggeredAt ? String(md.triggeredAt) : (md.triggerAt ? String(md.triggerAt) : null);
+          const soldFromMetadata = md.soldAt ? String(md.soldAt) : null;
+          const soldFromExec = sellExec?.executed_at ? new Date(String(sellExec.executed_at)).toISOString() : null;
+          const soldAtIso = soldFromMetadata || soldFromExec;
+          let timeFromTriggerToSellMin: number | null = null;
+          if (triggeredAtIso && soldAtIso) {
+            const delta = new Date(soldAtIso).getTime() - new Date(triggeredAtIso).getTime();
+            if (Number.isFinite(delta) && delta >= 0) {
+              timeFromTriggerToSellMin = Math.round(delta / 60000);
+            }
+          }
+
+          // Trajectory: spot at trigger vs spot at sell.
+          // Falls back to entry_price snapshot when trigger snapshot is missing.
+          const triggerSnap = snaps.find((s) => String(s.snapshot_type) === "trigger");
+          const entrySnap = snaps.find((s) => String(s.snapshot_type) === "entry");
+          const spotAtTrigger = triggerSnap ? Number(triggerSnap.price) : null;
+          const entrySpot = entrySnap ? Number(entrySnap.price) : Number(p.entryPrice || 0);
+          const spotAtSell = sellExec ? Number(buyDetails.spotPriceUsd || 0) : null;
+          // "spot move through trigger" = how far past the trigger BTC went
+          // before starting to retrace. Critical signal for whether barely-graze
+          // (small move, expect retrace) or clear breakout (large move, expect continuation).
+          let spotMoveThroughTriggerPct: number | null = null;
+          if (spotAtTrigger && triggerPrice > 0) {
+            const moveBeyondTrigger = directionTag === "short"
+              ? spotAtTrigger - triggerPrice
+              : triggerPrice - spotAtTrigger;
+            spotMoveThroughTriggerPct = (moveBeyondTrigger / triggerPrice) * 100;
+          }
+
+          return {
+            id: p.id,
+            createdAt: p.createdAt,
+            direction: directionTag as "long" | "short",
+            slPct: p.slPct,
+            tierName: p.tierName,
+            protectedNotionalUsd: Number(p.protectedNotional || 0),
+            entryPrice: entrySpot,
+            triggerPrice,
+            expiryAt: p.expiryAt,
+            status: p.status,
+            hedgeStatus: p.hedgeStatus,
+
+            // Hedge geometry (the PR #76 success metric)
+            selectedStrike: selectedStrike || null,
+            strikeGapToTriggerUsd,
+            strikeIsItm,
+
+            // Timing (the SHORT TP rule research signal)
+            triggeredAt: triggeredAtIso,
+            soldAt: soldAtIso,
+            timeFromTriggerToSellMin,
+
+            // Trajectory (barely-graze detection)
+            spotAtTrigger,
+            spotAtSell,
+            spotMoveThroughTriggerPct,
+            // Convenient classification for UI badges:
+            triggerPattern:
+              spotMoveThroughTriggerPct === null
+                ? "unknown"
+                : spotMoveThroughTriggerPct < 0.3
+                  ? "barely_graze"
+                  : spotMoveThroughTriggerPct < 1.0
+                    ? "shallow"
+                    : "clear_breakout",
+
+            // Cash
+            premiumCollectedUsd: premiumCollected,
+            hedgeCostUsd: hedgeCost,
+            hedgeRecoveryUsd: hedgeRecovery,
+            payoutOwedUsd: payoutOwed,
+            netPnlUsd: Number(netPnlUsd.toFixed(2)),
+            recoveryRatioPct: recoveryRatioPct === null ? null : Number(recoveryRatioPct.toFixed(1))
+          };
+        })
+        .filter((r) => direction === "all" || r.direction === direction)
+        .slice(0, limit);
+
+      // Summary aggregates (across the displayed rows). Caller-friendly
+      // — keeps the dashboard from re-aggregating in JS.
+      const sold = rows.filter((r) => r.recoveryRatioPct !== null);
+      const longSold = sold.filter((r) => r.direction === "long");
+      const shortSold = sold.filter((r) => r.direction === "short");
+      const avg = (xs: number[]) =>
+        xs.length === 0 ? null : Number((xs.reduce((a, b) => a + b, 0) / xs.length).toFixed(2));
+
+      return {
+        status: "ok",
+        rows,
+        summary: {
+          totalTriggered: rows.length,
+          totalSold: sold.length,
+          avgRecoveryRatioPct: avg(sold.map((r) => r.recoveryRatioPct as number)),
+          avgRecoveryRatioLongPct: avg(longSold.map((r) => r.recoveryRatioPct as number)),
+          avgRecoveryRatioShortPct: avg(shortSold.map((r) => r.recoveryRatioPct as number)),
+          avgNetPnlUsd: avg(rows.map((r) => r.netPnlUsd)),
+          netPnlUsdSum: Number(rows.reduce((acc, r) => acc + r.netPnlUsd, 0).toFixed(2)),
+          baselineRecoveryRatioPct: 68.3, // R1 LONG-only baseline
+          patternBreakdown: rows.reduce(
+            (acc, r) => {
+              acc[r.triggerPattern] = (acc[r.triggerPattern] || 0) + 1;
+              return acc;
+            },
+            {} as Record<string, number>
+          ),
+          itmStrikeRatePct:
+            rows.length === 0
+              ? null
+              : Number(((rows.filter((r) => r.strikeIsItm).length / rows.length) * 100).toFixed(1))
+        }
+      };
+    } catch (error: any) {
+      reply.code(500);
+      return {
+        status: "error",
+        reason: String(error?.message || "triggered_protections_diagnostic_failed")
+      };
+    }
+  });
+
   app.get("/pilot/admin/governance/rollout-guards", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
@@ -1690,10 +2425,45 @@ export const registerPilotRoutes = async (
       marketId?: string;
       clientOrderId?: string;
       tierName?: string;
+      slPct?: number;
       drawdownFloorPct?: number;
       protectionType?: "long" | "short";
+      venue?: string;
+      product?: string;
     };
+
+    // ── BIWEEKLY BRANCH (PR 3 of biweekly cutover, 2026-04-30) ──
+    // When the feature flag is on AND the request explicitly opts into
+    // the biweekly product, dispatch to biweeklyActivate.handleBiweeklyQuote
+    // and return early. The legacy 1-day path below runs only when the
+    // flag is off OR product != "biweekly". This keeps the live 1-day
+    // product unchanged while biweekly rolls out.
+    if (isBiweeklyEnabled() && body.product === "biweekly") {
+      const result = await handleBiweeklyQuote({
+        pool,
+        venue,
+        req: {
+          protectedNotionalUsd: Number(body.protectedNotional ?? 0),
+          slPct: Number(body.slPct ?? 0),
+          direction: (body.protectionType ?? "long") as "long" | "short",
+          spotUsd: Number(body.entryPrice ?? 0),
+          marketId: body.marketId ?? pilotConfig.referenceMarketId
+        }
+      });
+      if (result.status === "error") {
+        const httpCode =
+          result.reason === "biweekly_disabled" ? 503 :
+          result.reason === "storage_unavailable" ? 503 :
+          result.reason === "venue_execute_failed" ? 502 :
+          400;
+        reply.code(httpCode);
+        return result;
+      }
+      return result;
+    }
+    // ── END BIWEEKLY BRANCH ─────────────────────────────────────────
     const quoteStartedAt = Date.now();
+    const requestedVenue = body.venue === "deribit" ? deribitVenue : venue;
     const protectedNotional = parsePositiveDecimal(body.protectedNotional);
     const exposureNotional = parsePositiveDecimal(body.foxifyExposureNotional);
     const entryInputPrice = parsePositiveDecimal(body.entryPrice);
@@ -1711,12 +2481,13 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "quote_min_notional_not_met",
-        message: `Minimum quote notional is $${quoteMinNotional.toFixed(0)} during pilot.`,
+        message: `Minimum quote notional is $${fmtUsdWhole(quoteMinNotional)} during pilot.`,
         minQuoteNotionalUsdc: quoteMinNotional.toFixed(2)
       };
     }
     const maxProtection = new Decimal(pilotConfig.maxProtectionNotionalUsdc);
     const maxDailyProtection = new Decimal(pilotConfig.maxDailyProtectedNotionalUsdc);
+    const maxAggregateActive = new Decimal(pilotConfig.maxAggregateActiveNotionalUsdc);
     if (protectedNotional.gt(maxProtection)) {
       reply.code(400);
       return {
@@ -1755,23 +2526,126 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "daily_limit_query_failed")
       };
+    }
+    // R2.B — Aggregate active notional cap (Pilot Agreement §3.1: $200k).
+    // Quote-side check is informational only (the binding atomic check is in
+    // the activate path inside the activation transaction). We surface here
+    // to fail-fast before quoting, so the trader's UI can show a friendly
+    // error instead of letting the quote succeed and the activate fail.
+    try {
+      const activeAgg = new Decimal(
+        await sumActiveProtectionNotional(pool, userHash.userHash)
+      );
+      const projectedAgg = activeAgg.plus(protectedNotional);
+      if (projectedAgg.gt(maxAggregateActive)) {
+        reply.code(400);
+        return {
+          status: "error",
+          reason: "aggregate_active_notional_cap_exceeded",
+          capUsdc: maxAggregateActive.toFixed(2),
+          currentActiveUsdc: activeAgg.toFixed(2),
+          projectedAfterUsdc: projectedAgg.toFixed(2),
+          message:
+            `You'd have $${fmtUsdWhole(projectedAgg)} of protection open. ` +
+            `Pilot limit is $${fmtUsdWhole(maxAggregateActive)}. ` +
+            `Close one or wait for it to expire.`
+        };
+      }
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "storage_unavailable",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
+        detail: String(error?.message || "aggregate_active_query_failed")
+      };
+    }
+    // R2.D — Per-tier daily concentration cap (defense-in-depth, not in
+    // agreement). Caps the fraction of daily new-protection notional that
+    // may be in any single SL tier. Default 60%. Goal: prevent the
+    // single-event simultaneous-trigger pattern that produced the −$2,127
+    // paper outcome on 2026-04-18 (n=9 R1 analysis).
+    // Only enforced when the v7 pricing path is in use (we know slPct).
+    {
+      const slPctEarly = body?.slPct != null ? Number(body.slPct) : null;
+      const validSlPctEarly =
+        pilotConfig.v7.enabled && slPctEarly !== null && isValidSlTier(slPctEarly)
+          ? (slPctEarly as V7SlTier)
+          : null;
+      if (validSlPctEarly !== null && pilotConfig.perTierDailyCapPct < 1) {
+        try {
+          const tierUsed = new Decimal(
+            await getDailyTierUsageForUser(
+              pool,
+              userHash.userHash,
+              validSlPctEarly,
+              dayStart.toISOString(),
+              dayEnd.toISOString()
+            )
+          );
+          const tierCap = maxDailyProtection.mul(pilotConfig.perTierDailyCapPct);
+          const projectedTier = tierUsed.plus(protectedNotional);
+          if (projectedTier.gt(tierCap)) {
+            reply.code(400);
+            return {
+              status: "error",
+              reason: "per_tier_daily_concentration_cap_exceeded",
+              tierSlPct: validSlPctEarly,
+              capPct: pilotConfig.perTierDailyCapPct,
+              tierCapUsdc: tierCap.toFixed(2),
+              currentTierUsageUsdc: tierUsed.toFixed(2),
+              projectedAfterUsdc: projectedTier.toFixed(2),
+              message:
+                `${validSlPctEarly}% protection is full for today ` +
+                `(would reach $${fmtUsdWhole(projectedTier)}, limit is $${fmtUsdWhole(tierCap)}). ` +
+                `Try a different level or wait until tomorrow.`
+            };
+          }
+        } catch (error: any) {
+          reply.code(503);
+          return {
+            status: "error",
+            reason: "storage_unavailable",
+            message: "Quote temporarily unavailable. Tap Refresh Quote.",
+            detail: String(error?.message || "tier_concentration_query_failed")
+          };
+        }
+      }
     }
     const projectedDaily = dailyUsed.plus(protectedNotional);
     const marketId = pilotConfig.referenceMarketId;
     const protectionType = normalizeProtectionType(body.protectionType);
     const optionType = protectionType === "short" ? "C" : "P";
-    const quoteInstrumentId = body.instrumentId || `${marketId}-7D-${optionType}`;
     const triggerLabel = protectionType === "short" ? "ceiling_price" : "floor_price";
-    const tierName = normalizeTierName(body.tierName);
-    const drawdownFloorPct = isLockedBullishProfile
-      ? resolveLockedDrawdownFloorPct(tierName)
-      : resolveDrawdownFloorPct({
-          tierName,
-          drawdownFloorPct: body.drawdownFloorPct
-        });
+    const v7Enabled = pilotConfig.v7.enabled;
+    const rawSlPct = Number(body.slPct ?? body.drawdownFloorPct ? undefined : undefined);
+    const slPctInput = body.slPct != null ? Number(body.slPct) : null;
+    const validSlPct = slPctInput !== null && isValidSlTier(slPctInput) ? slPctInput as V7SlTier : null;
+    let tierName: string;
+    let drawdownFloorPct: Decimal;
+    let resolvedSlPct: V7SlTier | null = null;
+    let v7Quote: V7PremiumQuote | null = null;
+    if (v7Enabled && validSlPct) {
+      resolvedSlPct = validSlPct;
+      tierName = slPctToTierLabel(validSlPct);
+      drawdownFloorPct = slPctToDrawdownFloor(validSlPct);
+    } else if (v7Enabled && !validSlPct && body.slPct != null) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_sl_pct", message: "slPct must be one of: 1, 2, 3, 5, 10" };
+    } else {
+      tierName = normalizeTierName(body.tierName);
+      drawdownFloorPct = isLockedBullishProfile
+        ? resolveLockedDrawdownFloorPct(tierName)
+        : resolveDrawdownFloorPct({
+            tierName,
+            drawdownFloorPct: body.drawdownFloorPct
+          });
+    }
+    const defaultTenorDays = v7Enabled && resolvedSlPct ? getV7TenorDays(resolvedSlPct) : v7Enabled ? pilotConfig.v7.defaultTenorDays : 7;
+    const quoteInstrumentId = body.instrumentId || `${marketId}-${defaultTenorDays}D-${optionType}`;
     const requestId = pilotConfig.nextRequestId();
     let priceMs = 0;
     let venueMs = 0;
@@ -1802,7 +2676,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "price_chain_error"),
         diagnostics: { requestId, stage: "price_snapshot", elapsedMs: Date.now() - quoteStartedAt }
       };
@@ -1847,9 +2721,14 @@ export const registerPilotRoutes = async (
           }
         }
       }
+      let v7ClientPremiumHint = 0;
+      if (v7Enabled && resolvedSlPct) {
+        const ratePer1k = getV7PremiumPer1k(resolvedSlPct);
+        v7ClientPremiumHint = protectedNotional.div(1000).mul(ratePer1k).toNumber();
+      }
       const venueStartedAt = Date.now();
       const quote = await withTimeout(
-        venue.quote({
+        requestedVenue.quote({
           marketId,
           protectedNotional: protectedNotional.toNumber(),
           quantity,
@@ -1864,6 +2743,7 @@ export const registerPilotRoutes = async (
           hedgePolicy: pilotConfig.pilotHedgePolicy,
           clientOrderId: body.clientOrderId,
           strictTenor: isLockedBullishProfile ? true : parseBoolean(body.strictTenor, false),
+          clientPremiumUsd: v7ClientPremiumHint > 0 ? v7ClientPremiumHint : undefined,
           details: {
             triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber()
           }
@@ -1933,6 +2813,18 @@ export const registerPilotRoutes = async (
           clientPremiumUsd: premiumRegimeOverlay.adjustedPremiumUsd
         };
       }
+      // V7 Flat Pricing Override — $8/1k, all tiers, all conditions
+      if (v7Enabled && resolvedSlPct) {
+        v7Quote = computeV7Premium({
+          slPct: resolvedSlPct,
+          notionalUsd: protectedNotional.toNumber()
+        });
+        console.log(`[V7Pricing] slPct=${resolvedSlPct} premium=$${v7Quote.premiumUsd.toFixed(2)} per1k=$${v7Quote.premiumPer1kUsd}`);
+        premiumPricing = {
+          ...premiumPricing,
+          clientPremiumUsd: new Decimal(v7Quote.premiumUsd)
+        };
+      }
       const selectionPremiumInputsFromPricing = () => ({
         triggerPayoutCreditUsd: triggerPayoutCreditUsd.toNumber(),
         expectedTriggerCostUsd: Number(premiumPricing.expectedTriggerCostUsd.toFixed(10)),
@@ -1972,11 +2864,13 @@ export const registerPilotRoutes = async (
         treasuryFallbackApplied = reason;
       };
       const requestedByUserHash = String((req.headers["x-user-id"] as string | undefined) || userHash.userHash);
-      let quoteSubsidyUsd = Decimal.max(
+      let quoteSubsidyUsd = new Decimal(0);
+      const quoteSubsidyCapUsd = triggerPayoutCreditUsd.mul(new Decimal(pilotConfig.treasuryPerQuoteSubsidyCapPct));
+      if (!v7Enabled) {
+      quoteSubsidyUsd = Decimal.max(
         new Decimal(0),
         premiumPricing.premiumProfitabilityTargetUsd.minus(premiumPricing.clientPremiumUsd)
       );
-      const quoteSubsidyCapUsd = triggerPayoutCreditUsd.mul(new Decimal(pilotConfig.treasuryPerQuoteSubsidyCapPct));
       if (quoteSubsidyUsd.gt(quoteSubsidyCapUsd)) {
         const strictFallbackEnabled =
           pilotConfig.treasuryStrictFallbackEnabled && pricingModeForSelection === "hybrid_otm_treasury";
@@ -2038,6 +2932,7 @@ export const registerPilotRoutes = async (
           });
         }
       }
+      } // end if (!v7Enabled) treasury subsidy check
       let treasuryStartingReserveUsdc = new Decimal(pilotConfig.startingReserveUsdc);
       let treasuryReserveAfterOpenLiabilityUsdc = new Decimal(pilotConfig.startingReserveUsdc);
       try {
@@ -2068,13 +2963,15 @@ export const registerPilotRoutes = async (
       const estimatedPremiumPolicyDiagnostics = buildPremiumPolicyDiagnostics({
         estimated: premiumPricing
       });
-      const FIXED_PREMIUM_PER_1K = new Decimal(11);
-      if (isLockedBullishProfile) {
-        const fixedClientPremium = protectedNotional.div(1000).mul(FIXED_PREMIUM_PER_1K);
-        premiumPricing = {
-          ...premiumPricing,
-          clientPremiumUsd: fixedClientPremium,
-        };
+      if (!v7Enabled) {
+        const FIXED_PREMIUM_PER_1K = new Decimal(11);
+        if (isLockedBullishProfile) {
+          const fixedClientPremium = protectedNotional.div(1000).mul(FIXED_PREMIUM_PER_1K);
+          premiumPricing = {
+            ...premiumPricing,
+            clientPremiumUsd: fixedClientPremium,
+          };
+        }
       }
       const pricingBreakdown = {
         pricingMode: premiumPricing.pricingMode,
@@ -2249,9 +3146,26 @@ export const registerPilotRoutes = async (
         status: "ok",
         protectionType,
         tierName,
+        slPct: resolvedSlPct,
+        v7: v7Quote ? {
+          regime: v7Quote.regime,
+          regimeSource: v7Quote.regimeSource,
+          dvol: v7Quote.dvol,
+          premiumPer1kUsd: v7Quote.premiumPer1kUsd,
+          premiumUsd: v7Quote.premiumUsd,
+          payoutPer10kUsd: v7Quote.payoutPer10kUsd,
+          available: v7Quote.available,
+          // Design A — surface the pricing regime label and human-friendly
+          // text the widget displays next to the premium so the trader
+          // sees the volatility context behind the price.
+          pricingRegime: getCurrentPricingRegime(v7Quote.dvol).regime,
+          pricingRegimeLabel: pricingRegimeLabel(
+            getCurrentPricingRegime(v7Quote.dvol).regime
+          )
+        } : null,
         profile: {
           name: pilotConfig.lockedProfile.name,
-          fixedTenorDays: lockedProfileTenorDays,
+          fixedTenorDays: v7Enabled ? pilotConfig.v7.defaultTenorDays : lockedProfileTenorDays,
           fixedPricingMode: lockedProfilePricingMode,
           fixedDrawdownFloorPctByTier: pilotConfig.lockedProfile.fixedDrawdownFloorPctByTier
         },
@@ -2490,36 +3404,36 @@ export const registerPilotRoutes = async (
               ? "tenor_drift_exceeded"
             : "quote_generation_failed",
         message: isStorageFailure
-          ? "Storage temporarily unavailable, please retry."
+          ? "Quote temporarily unavailable. Tap Refresh Quote."
           : isTransportNotLive
-            ? "IBKR live transport is not active. Verify bridge transport health and retry."
+            ? "Exchange connection isn't live. Try again."
             : isTenorTemporarilyUnavailable
-              ? "Requested tenor is temporarily unavailable. Select an enabled tenor and retry."
+              ? "That length is temporarily unavailable. Try the suggested length."
             : isVenueQuoteTimeout
-              ? "Venue quote timed out while evaluating options liquidity. Please retry."
+              ? "Quote timed out. Tap Refresh Quote."
             : isNoViableOption
               ? noViableReason === "quote_economics_unacceptable"
-                ? "No option contract met pilot economics guardrails within quote budget."
+                ? "Hedge cost is uneconomical right now. Try a different length."
                 : noViableReason === "quote_min_notional_not_met"
-                  ? "Requested protection amount is below the minimum tradable option notional for current liquidity."
-                : "No viable option contract met liquidity/protection/economics constraints within quote budget."
+                  ? "Below the exchange minimum. Increase amount."
+                : "No matching option found. Try a different length."
             : isNoTopOfBook
-              ? "Venue top-of-book is temporarily unavailable for the requested hedge. Please retry."
+              ? "Exchange order book temporarily unavailable. Try again."
             : isNoEconomicalOption
-              ? "No option contract met pilot economics guardrails within quote budget."
+              ? "Hedge cost is uneconomical right now. Try a different length."
             : isNoProtectionCompliantOption
-              ? "No option contract met minimum protection effectiveness within quote budget."
+              ? "No option meets the protection threshold. Try a different length."
             : isOptionsRequired
-              ? "Options-native quotes are required and no viable option contract was available within quote budget."
+              ? "No tradeable option available right now. Try again shortly."
             : isNoLiquidityWindow
-              ? "CME options liquidity appears unavailable for the current market window. Please retry during active session."
+              ? "Market closed for options. Try again during active session."
             : isNoContract
-              ? "No venue contract is currently available for the requested hedge. Please retry."
+              ? "No matching contract right now. Try again."
             : isPremiumGuardrail
-              ? "Venue premium is currently outside pilot guardrails for this tenor. Please retry or choose another tenor."
+              ? "Hedge cost outside our safety limit. Try a different length."
             : isTenorDriftExceeded
-              ? "No IBKR contract matched the requested tenor within configured drift."
-          : "Unable to generate a venue quote right now. Please retry.",
+              ? "No option matched that length. Try the suggested one."
+          : "Couldn't get a quote right now. Try again.",
         detail: message,
         diagnostics: {
           requestId,
@@ -2552,13 +3466,28 @@ export const registerPilotRoutes = async (
   });
 
   app.post("/pilot/protections/activate", async (req, reply) => {
+    const quoteStartedAt = Date.now();
     if (!enforcePilotWindow(reply)) return;
     if (!pilotConfig.activationEnabled) {
       reply.code(503);
       return {
         status: "error",
         reason: "activation_disabled",
-        message: "Activation is disabled while quote-only pilot validation is in progress."
+        message: "Activation is paused while quotes are validated. Quoting still works."
+      };
+    }
+    // PR B (Gap 2) — circuit breaker: refuse new sales if Deribit
+    // equity has dropped > threshold in the rolling window. Returns
+    // a 503 so clients understand the platform is temporarily
+    // unavailable, not that their request was malformed.
+    if (isCircuitBreakerActive()) {
+      const cbState = getCircuitBreakerState();
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "circuit_breaker_active",
+        message: "Platform paused for safety review. Please try again later.",
+        circuitBreaker: cbState
       };
     }
     const body = req.body as {
@@ -2572,11 +3501,94 @@ export const registerPilotRoutes = async (
       renewWindowMinutes?: number;
       clientOrderId?: string;
       tierName?: string;
+      slPct?: number;
       drawdownFloorPct?: number;
       protectionType?: "long" | "short";
       entryPrice?: number;
       quoteId?: string;
+      product?: string;
     };
+
+    // ── BIWEEKLY BRANCH (PR 3 of biweekly cutover, 2026-04-30) ──
+    // When the feature flag is on AND the request opts into biweekly,
+    // dispatch to biweeklyActivate.handleBiweeklyActivate and return
+    // early. Legacy 1-day path below runs only when flag is off OR
+    // product != "biweekly". The biweekly handler enforces its own
+    // safety guards (1-trade-per-24h, hedge budget cap, venue execute)
+    // so the legacy guards below are not run.
+    if (isBiweeklyEnabled() && body.product === "biweekly") {
+      if (!body.quoteId) {
+        reply.code(400);
+        return { status: "error", reason: "missing_quote_id" };
+      }
+      let userHashBiweekly: { userHash: string; hashVersion: number };
+      try {
+        userHashBiweekly = resolveTenantScopeHash();
+      } catch (error: any) {
+        const reason = String(error?.message || "server_config_error");
+        reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+        return { status: "error", reason };
+      }
+      const result = await handleBiweeklyActivate({
+        pool,
+        venue,
+        userHash: userHashBiweekly.userHash,
+        hashVersion: userHashBiweekly.hashVersion,
+        marketId: body.marketId ?? pilotConfig.referenceMarketId,
+        req: {
+          quoteId: body.quoteId,
+          protectedNotionalUsd: Number(body.protectedNotional ?? 0),
+          slPct: Number(body.slPct ?? 0),
+          direction: (body.protectionType ?? "long") as "long" | "short",
+          clientOrderId: body.clientOrderId
+        },
+        evaluateHedgeBudget: async (projectedHedgeCostUsd) => {
+          const hbCfg = getHedgeBudgetCapConfig();
+          const pilotStartMs = hbCfg.pilotStartIso ? Date.parse(hbCfg.pilotStartIso) : null;
+          const cumulativeSpentUsd = pilotStartMs
+            ? await sumLiveHedgeCostUsdSince(pool, pilotStartMs)
+            : await sumLiveHedgeCostUsdSince(pool, 0);
+          const verdict: HedgeBudgetCapVerdict = evaluateHedgeBudgetCap({
+            pilotStartMsEpoch: pilotStartMs,
+            cumulativeSpentUsd,
+            prospectiveHedgeCostUsd: projectedHedgeCostUsd
+          });
+          return {
+            allowed: verdict.allowed,
+            reason: verdict.reason,
+            message: verdict.message,
+            details: {
+              pilotDay: verdict.pilotDay,
+              capUsd: verdict.capUsd,
+              cumulativeSpentUsd: verdict.cumulativeSpentUsd,
+              remainingUsd: verdict.remainingUsd,
+              projectedAfterUsd: verdict.projectedAfterUsd
+            }
+          };
+        }
+      });
+      if (result.status === "error") {
+        const reasonToHttp: Record<BiweeklyActivateErrorReason, number> = {
+          biweekly_disabled: 503,
+          invalid_notional: 400,
+          invalid_sl_pct: 400,
+          invalid_direction: 400,
+          quote_not_found: 404,
+          quote_already_consumed: 409,
+          quote_expired: 400,
+          quote_mismatch: 400,
+          daily_trade_limit_exceeded: 429,
+          hedge_budget_cap_exceeded: 400,
+          venue_execute_failed: 502,
+          storage_unavailable: 503
+        };
+        reply.code(reasonToHttp[result.reason] ?? 400);
+        return result;
+      }
+      return result;
+    }
+    // ── END BIWEEKLY BRANCH ─────────────────────────────────────────
+
     if (!body.quoteId) {
       reply.code(400);
       return { status: "error", reason: "missing_quote_id" };
@@ -2598,7 +3610,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "quote_min_notional_not_met",
-        message: `Minimum quote notional is $${quoteMinNotional.toFixed(0)} during pilot.`,
+        message: `Minimum quote notional is $${fmtUsdWhole(quoteMinNotional)} during pilot.`,
         minQuoteNotionalUsdc: quoteMinNotional.toFixed(2)
       };
     }
@@ -2630,15 +3642,30 @@ export const registerPilotRoutes = async (
     const protectionType = normalizeProtectionType(body.protectionType);
     const optionType = protectionType === "short" ? "C" : "P";
     const triggerLabel = protectionType === "short" ? "ceiling_price" : "floor_price";
-    const instrumentId = body.instrumentId || `${marketId}-7D-${optionType}`;
-    const tierName = normalizeTierName(body.tierName);
-    const drawdownFloorPct = resolveDrawdownFloorPct({
-      tierName,
-      drawdownFloorPct: body.drawdownFloorPct
-    });
+    const v7EnabledActivate = pilotConfig.v7.enabled;
+    const activateSlPctInput = body.slPct != null ? Number(body.slPct) : null;
+    const activateValidSlPct = activateSlPctInput !== null && isValidSlTier(activateSlPctInput) ? activateSlPctInput as V7SlTier : null;
+    let activateTierName: string;
+    let activateDrawdownFloorPct: Decimal;
+    let activateSlPct: V7SlTier | null = null;
+    if (v7EnabledActivate && activateValidSlPct) {
+      activateSlPct = activateValidSlPct;
+      activateTierName = slPctToTierLabel(activateValidSlPct);
+      activateDrawdownFloorPct = slPctToDrawdownFloor(activateValidSlPct);
+    } else {
+      activateTierName = normalizeTierName(body.tierName);
+      activateDrawdownFloorPct = resolveDrawdownFloorPct({
+        tierName: activateTierName,
+        drawdownFloorPct: body.drawdownFloorPct
+      });
+    }
+    const tierName = activateTierName;
+    const drawdownFloorPct = activateDrawdownFloorPct;
+    const activateDefaultTenor = v7EnabledActivate && activateSlPct ? getV7TenorDays(activateSlPct) : v7EnabledActivate ? pilotConfig.v7.defaultTenorDays : 7;
+    const instrumentId = body.instrumentId || `${marketId}-${activateDefaultTenor}D-${optionType}`;
     const tenorDays = resolveExpiryDays({
       tierName,
-      requestedDays: body.tenorDays,
+      requestedDays: body.tenorDays ?? activateDefaultTenor,
       minDays: pilotConfig.pilotTenorMinDays,
       maxDays: pilotConfig.pilotTenorMaxDays,
       defaultDays: pilotConfig.pilotTenorDefaultDays
@@ -2725,14 +3752,19 @@ export const registerPilotRoutes = async (
           ? computeTriggerPrice(contextEntryAnchor, contextDrawdown, contextProtectionType)
           : null;
       const contextTrigger = parsePositiveDecimal(lockContext.triggerPrice ?? lockContext.floorPrice);
-      requestedQuantity = contextEntryAnchor
+      const rawRequestedQty = contextEntryAnchor
         ? protectedNotional.div(contextEntryAnchor).toDecimalPlaces(8).toNumber()
         : 0;
+      requestedQuantity = rawRequestedQty;
+      const quantityMismatchTolerance = v7EnabledActivate
+        ? new Decimal("0.15")
+        : new Decimal(pilotConfig.fullCoverageTolerancePct);
       const quantityDeltaPct =
         requestedQuantity > 0
           ? new Decimal(lockedQuote.quantity).minus(requestedQuantity).abs().div(new Decimal(requestedQuantity))
           : new Decimal(0);
-      if (quantityDeltaPct.gt(new Decimal(pilotConfig.fullCoverageTolerancePct))) {
+      if (quantityDeltaPct.gt(quantityMismatchTolerance)) {
+        console.warn(`[Activate] quote_mismatch_quantity: quoteQty=${lockedQuote.quantity} requestedQty=${requestedQuantity} delta=${quantityDeltaPct.toFixed(4)} tolerance=${quantityMismatchTolerance.toFixed(4)}`);
         throw new Error("quote_mismatch_quantity");
       }
       if (contextProtectionType !== protectionType) {
@@ -2766,6 +3798,112 @@ export const registerPilotRoutes = async (
         typeof lockContext.entryPriceTimestamp === "string"
           ? String(lockContext.entryPriceTimestamp)
           : null;
+      // R2.F (binding, added 2026-04-23) — Cumulative hedge-budget cap.
+      // Per Foxify Pilot Agreement v2 §3.1, Atticus's cumulative real-money
+      // hedge spend is capped on a phased ramp-up: $100 / $1,000 / $10,000
+      // for Days 1-2 / 3-7 / 8-21, no cap thereafter. Enforced HERE so the
+      // user sees a clean rejection BEFORE any Deribit order is placed.
+      //
+      // Hedge cost is estimated from the locked quote's askPriceBtc × spot
+      // × quote.quantity. Actual fill cost may differ slightly due to
+      // microstructure but the projected cost is a tight upper bound.
+      //
+      // Disable the cap by setting PILOT_HEDGE_BUDGET_CAP_ENABLED=false
+      // (the policy module respects this flag and short-circuits to allow).
+      const lockedQuoteDetailsForCap =
+        (lockedQuote.details || {}) as Record<string, unknown>;
+      const askPriceBtcForCap = Number(lockedQuoteDetailsForCap.askPriceBtc || 0);
+      const spotPriceUsdForCap = Number(lockedQuoteDetailsForCap.spotPriceUsd || 0);
+      const lockedQty = Number(lockedQuote.quantity || 0);
+      const projectedHedgeCostUsd =
+        askPriceBtcForCap > 0 && spotPriceUsdForCap > 0 && lockedQty > 0
+          ? askPriceBtcForCap * spotPriceUsdForCap * lockedQty
+          : 0;
+
+      const hedgeCapCfg = getHedgeBudgetCapConfig();
+      const pilotStartMs = hedgeCapCfg.pilotStartIso
+        ? Date.parse(hedgeCapCfg.pilotStartIso)
+        : null;
+      const cumulativeSpentUsd = pilotStartMs
+        ? await sumLiveHedgeCostUsdSince(client, pilotStartMs)
+        : await sumLiveHedgeCostUsdSince(client, 0);
+      const hedgeBudgetVerdict: HedgeBudgetCapVerdict = evaluateHedgeBudgetCap({
+        pilotStartMsEpoch: pilotStartMs,
+        cumulativeSpentUsd,
+        prospectiveHedgeCostUsd: projectedHedgeCostUsd
+      });
+      if (!hedgeBudgetVerdict.allowed) {
+        const capErr = new Error("hedge_budget_cap_exceeded");
+        (capErr as any).pilotDay = hedgeBudgetVerdict.pilotDay;
+        (capErr as any).capUsd = hedgeBudgetVerdict.capUsd;
+        (capErr as any).cumulativeSpentUsd = hedgeBudgetVerdict.cumulativeSpentUsd;
+        (capErr as any).remainingUsd = hedgeBudgetVerdict.remainingUsd;
+        (capErr as any).projectedAfterUsd = hedgeBudgetVerdict.projectedAfterUsd;
+        (capErr as any).message = hedgeBudgetVerdict.message;
+        throw capErr;
+      }
+      console.log(
+        `[HedgeBudget] Day ${hedgeBudgetVerdict.pilotDay}: ` +
+        `cap=${hedgeBudgetVerdict.capUsd === null ? "none" : "$" + hedgeBudgetVerdict.capUsd.toFixed(2)} ` +
+        `spent=$${hedgeBudgetVerdict.cumulativeSpentUsd.toFixed(2)} ` +
+        `projecting=$${projectedHedgeCostUsd.toFixed(2)} ` +
+        `→ projected total $${hedgeBudgetVerdict.projectedAfterUsd.toFixed(2)} ` +
+        `(${hedgeBudgetVerdict.remainingUsd === null ? "no cap" : "$" + hedgeBudgetVerdict.remainingUsd.toFixed(2) + " remaining"})`
+      );
+
+      // R2.B (binding) — Aggregate active notional cap. Run inside the
+      // activation transaction so two concurrent activations cannot both
+      // pass a stale read. Postgres serializes the SUM under the same
+      // client/transaction ordering as the subsequent INSERT.
+      // The check is read-then-decide, so true atomicity requires that
+      // reads from this client see committed inserts from any earlier
+      // concurrent transaction (default READ COMMITTED). At pilot single-
+      // user scale this is bulletproof; at multi-user prod scale a
+      // SELECT … FOR UPDATE on a per-user lock row would be stronger.
+      const maxAggregateActiveAct = new Decimal(pilotConfig.maxAggregateActiveNotionalUsdc);
+      const activeAggAct = new Decimal(
+        await sumActiveProtectionNotional(client, userHash.userHash)
+      );
+      const projectedAggAct = activeAggAct.plus(protectedNotional);
+      if (projectedAggAct.gt(maxAggregateActiveAct)) {
+        const aggErr = new Error("aggregate_active_notional_cap_exceeded");
+        (aggErr as any).capUsdc = maxAggregateActiveAct.toFixed(2);
+        (aggErr as any).currentActiveUsdc = activeAggAct.toFixed(2);
+        (aggErr as any).projectedAfterUsdc = projectedAggAct.toFixed(2);
+        throw aggErr;
+      }
+
+      // R2.D (binding) — Per-tier daily concentration cap. Same scoping
+      // story as above. Only enforced when pricing path is V7 with a
+      // launched tier (i.e. we have a numeric slPct).
+      if (
+        v7EnabledActivate &&
+        activateSlPct !== null &&
+        pilotConfig.perTierDailyCapPct < 1
+      ) {
+        const dayEndAct = new Date(dayStart.getTime() + 86400000);
+        const tierUsedAct = new Decimal(
+          await getDailyTierUsageForUser(
+            client,
+            userHash.userHash,
+            activateSlPct,
+            dayStart.toISOString(),
+            dayEndAct.toISOString()
+          )
+        );
+        const tierCapAct = maxDailyProtection.mul(pilotConfig.perTierDailyCapPct);
+        const projectedTierAct = tierUsedAct.plus(protectedNotional);
+        if (projectedTierAct.gt(tierCapAct)) {
+          const tierErr = new Error("per_tier_daily_concentration_cap_exceeded");
+          (tierErr as any).tierSlPct = activateSlPct;
+          (tierErr as any).capPct = pilotConfig.perTierDailyCapPct;
+          (tierErr as any).tierCapUsdc = tierCapAct.toFixed(2);
+          (tierErr as any).currentTierUsageUsdc = tierUsedAct.toFixed(2);
+          (tierErr as any).projectedAfterUsdc = projectedTierAct.toFixed(2);
+          throw tierErr;
+        }
+      }
+
       const capReservation = await reserveDailyActivationCapacity(client, {
         userHash: userHash.userHash,
         dayStartIso: dayStart.toISOString(),
@@ -2791,6 +3929,8 @@ export const registerPilotRoutes = async (
         status: "pending_activation",
         tierName,
         drawdownFloorPct: drawdownFloorPct.toFixed(6),
+        slPct: activateSlPct,
+        hedgeStatus: "active",
         marketId,
         protectedNotional: protectedNotional.toFixed(10),
         foxifyExposureNotional: exposureNotional.toFixed(10),
@@ -2804,6 +3944,7 @@ export const registerPilotRoutes = async (
           mode: "pilot",
           venueMode: pilotConfig.venueMode,
           tierName,
+          slPct: activateSlPct,
           drawdownFloorPct: drawdownFloorPct.toFixed(6),
           protectionType,
           optionType
@@ -2935,8 +4076,17 @@ export const registerPilotRoutes = async (
             ? lockContext.pricingMode
             : fallbackPremiumPricing.pricingMode
       };
-      const FIXED_PREMIUM_PER_1K_ACTIVATE = new Decimal(11);
-      if (isLockedBullishProfile) {
+      if (v7EnabledActivate && activateSlPct) {
+        const v7ActivateQuote = computeV7Premium({
+          slPct: activateSlPct,
+          notionalUsd: protectedNotional.toNumber()
+        });
+        premiumPricing = {
+          ...premiumPricing,
+          clientPremiumUsd: new Decimal(v7ActivateQuote.premiumUsd)
+        };
+      } else if (!v7EnabledActivate && isLockedBullishProfile) {
+        const FIXED_PREMIUM_PER_1K_ACTIVATE = new Decimal(11);
         premiumPricing = {
           ...premiumPricing,
           clientPremiumUsd: protectedNotional.div(1000).mul(FIXED_PREMIUM_PER_1K_ACTIVATE),
@@ -2982,17 +4132,25 @@ export const registerPilotRoutes = async (
           .join(" | ");
         throw new Error("execution_failed");
       }
+      const venueStepSize = pilotConfig.venueMode === "deribit_live" || pilotConfig.venueMode === "deribit_test" ? 10 : 100;
+      const effectiveRequestedQty = v7EnabledActivate
+        ? Math.floor(requestedQuantity * venueStepSize) / venueStepSize
+        : requestedQuantity;
       const coverageRatio =
-        requestedQuantity > 0
-          ? new Decimal(execution.quantity).div(new Decimal(requestedQuantity))
+        effectiveRequestedQty > 0
+          ? new Decimal(execution.quantity).div(new Decimal(effectiveRequestedQty))
           : new Decimal(0);
       const baseTolerance = new Decimal(pilotConfig.fullCoverageTolerancePct);
-      const optionQtyTolerance = isLockedBullishProfile ? new Decimal("0.06") : baseTolerance;
+      const v7CoverageTolerance = new Decimal("0.15");
+      const optionQtyTolerance = v7EnabledActivate
+        ? v7CoverageTolerance
+        : isLockedBullishProfile ? new Decimal("0.06") : baseTolerance;
       const threshold = new Decimal(1).minus(optionQtyTolerance);
       if (
         (pilotConfig.requireFullCoverage || pilotConfig.requireFullExecutionFill) &&
         coverageRatio.lt(threshold)
       ) {
+        console.warn(`[Activate] Coverage ratio ${coverageRatio.toFixed(4)} below threshold ${threshold.toFixed(4)} (requested=${requestedQuantity} filled=${execution.quantity})`);
         throw new Error("full_coverage_not_met");
       }
       if (!reservedProtection || !quoteEntryAnchorPrice || !triggerPrice || !premiumPricing) {
@@ -3021,51 +4179,141 @@ export const registerPilotRoutes = async (
           throw new Error("premium_cap_exceeded_post_fill");
         }
       }
-      await insertPriceSnapshot(pool, {
-        protectionId: reservedProtection.id,
-        snapshotType: "entry",
-        price: snapshot.price.toFixed(10),
-        marketId: snapshot.marketId,
-        priceSource: snapshot.priceSource,
-        priceSourceDetail: snapshot.priceSourceDetail,
-        endpointVersion: snapshot.endpointVersion,
-        requestId: snapshot.requestId,
-        priceTimestamp: snapshot.priceTimestamp
-      });
-      await insertVenueExecution(pool, reservedProtection.id, execution);
-      const realizedSlippageBps =
-        execution.premium > 0
-          ? Math.max(0, ((execution.premium - lockedQuote.premium) / execution.premium) * 10_000)
-          : 0;
       try {
-        await upsertExecutionQualityDaily(pool, {
+        await insertPriceSnapshot(pool, {
+          protectionId: reservedProtection.id,
+          snapshotType: "entry",
+          price: snapshot.price.toFixed(10),
+          marketId: snapshot.marketId,
+          priceSource: snapshot.priceSource,
+          priceSourceDetail: snapshot.priceSourceDetail,
+          endpointVersion: snapshot.endpointVersion,
+          requestId: snapshot.requestId,
+          priceTimestamp: snapshot.priceTimestamp
+        });
+      } catch (snapErr: any) {
+        console.error(`[Activate] insertPriceSnapshot FAILED: ${snapErr?.message}`);
+        throw snapErr;
+      }
+      try {
+        await insertVenueExecution(pool, reservedProtection.id, execution);
+      } catch (execErr: any) {
+        console.error(`[Activate] insertVenueExecution FAILED: ${execErr?.message}`);
+        throw execErr;
+      }
+      // Compute realized HEDGE slippage = (fill_unit_price - quoted_ask) / quoted_ask × 10_000
+      //
+      // The prior implementation compared execution.premium vs lockedQuote.premium —
+      // but both of those are the V7 client-facing premium ($notional/1000 × ratePer1k),
+      // which is fixed and identical at quote and execute time. That formula was
+      // mathematically guaranteed to be 0 for every pilot activation (PR #34 surfaced
+      // the bug; PR is the fix).
+      //
+      // Real slippage is the gap between what we quoted (the venue ask seen at quote
+      // time) and what we actually paid Deribit (the fill price). This number can be
+      // signed: positive = paid above ask (slipped against us); negative = price
+      // improvement (good fill). We track the SIGNED value so improvements aren't
+      // hidden behind a Math.max(0, ...) clamp.
+      //
+      // Deribit adapter populates askPriceBtc + fillPriceBtc in details. Other
+      // venues (legacy IBKR/Bullish, dormant in the pilot) fall back to the USD-
+      // unit-price comparison.
+      const quoteDetails = (lockedQuote.details || {}) as Record<string, unknown>;
+      const execDetails = (execution.details || {}) as Record<string, unknown>;
+      const quotedAskBtc = Number(quoteDetails.askPriceBtc);
+      const fillPriceBtc = Number(execDetails.fillPriceBtc);
+      let realizedSlippageBps = 0;
+      let slippageSource: "deribit_btc_units" | "usd_unit_fallback" | "unavailable" = "unavailable";
+      if (Number.isFinite(quotedAskBtc) && quotedAskBtc > 0 && Number.isFinite(fillPriceBtc) && fillPriceBtc > 0) {
+        realizedSlippageBps = ((fillPriceBtc - quotedAskBtc) / quotedAskBtc) * 10_000;
+        slippageSource = "deribit_btc_units";
+      } else if (
+        Number.isFinite(execution.executionPrice) && execution.executionPrice > 0 &&
+        Number.isFinite(Number(quoteDetails.quotedUnitPriceUsd)) && Number(quoteDetails.quotedUnitPriceUsd) > 0
+      ) {
+        const quotedUnitUsd = Number(quoteDetails.quotedUnitPriceUsd);
+        realizedSlippageBps = ((execution.executionPrice - quotedUnitUsd) / quotedUnitUsd) * 10_000;
+        slippageSource = "usd_unit_fallback";
+      }
+      // USD-denominated slippage. Same sign convention as bps: negative
+      // = filled cheaper than quoted (in our favor). Computed in USD so
+      // operators can interpret outliers economically without bps-on-
+      // small-denomination distortion. Single-tick fills on cheap
+      // deep-OTM puts inflate bps but produce dollar-immaterial
+      // numbers (e.g., 1 tick on a 0.0033 BTC quote ≈ -300 bps but
+      // only ~$0.75 of real impact).
+      let realizedSlippageUsd: number | undefined;
+      const spotForSlippage = Number(quoteDetails.spotPriceUsd);
+      const filledQty = Number(execution.quantity);
+      if (
+        slippageSource === "deribit_btc_units" &&
+        Number.isFinite(spotForSlippage) && spotForSlippage > 0 &&
+        Number.isFinite(filledQty) && filledQty > 0
+      ) {
+        realizedSlippageUsd = (fillPriceBtc - quotedAskBtc) * spotForSlippage * filledQty;
+      } else if (
+        slippageSource === "usd_unit_fallback" &&
+        Number.isFinite(filledQty) && filledQty > 0
+      ) {
+        const quotedUnitUsd = Number(quoteDetails.quotedUnitPriceUsd);
+        realizedSlippageUsd = (Number(execution.executionPrice) - quotedUnitUsd) * filledQty;
+      }
+      try {
+        // Per-trade observation; the function accumulates into the day's
+        // rollup (sample_count += 1, weighted-average slippage / spread,
+        // running fill rate from quotes/fills, p95 from a kept-sample array).
+        // Replaces the prior overwrite-style upsertExecutionQualityDaily call
+        // which was clobbering the row on every activation (PR #34).
+        const spreadPctRaw = Number(quoteDetails.spreadPct);
+        // Strike-floor gap diagnostics — surfaces how often the
+        // option-selection algorithm picks strikes that create a
+        // dead-zone between trigger and option strike. Fed by the
+        // venue.ts quote response; null on legacy quote shapes.
+        const gapUsdRaw = Number(quoteDetails.strikeGapToTriggerUsd);
+        const gapPctRaw = Number(quoteDetails.strikeGapToTriggerPct);
+        // Direction tagging for SHORT-vs-LONG empirical comparison
+        // (added 2026-04-21 alongside the ITM aggressiveness fix in
+        // PR #76 — needed to validate that SHORT recovery improves
+        // post-fix relative to LONG R1 baseline).
+        const ptype = String(body.protectionType || "").toLowerCase() === "short" ? "short" : "long";
+        await incrementExecutionQualityDaily(pool, {
           dayIso: new Date().toISOString(),
           venue: execution.venue,
           hedgeMode: contextHedgeMode || deriveHedgeMode(lockedQuote.details),
-          quotes: 1,
-          fills: 1,
-          rejects: 0,
-          avgSlippageBps: realizedSlippageBps,
-          avgLatencyMs: Date.now() - quoteStartedAt,
-          avgSpreadPct:
-            Number.isFinite(Number((lockedQuote.details as Record<string, unknown>)?.spreadPct))
-              ? Number((lockedQuote.details as Record<string, unknown>)?.spreadPct)
-              : null,
+          slippageBps: realizedSlippageBps,
+          slippageUsd: realizedSlippageUsd,
+          strikeGapUsd: Number.isFinite(gapUsdRaw) ? gapUsdRaw : undefined,
+          strikeGapPct: Number.isFinite(gapPctRaw) ? gapPctRaw : undefined,
+          protectionType: ptype as "long" | "short",
+          latencyMs: Date.now() - quoteStartedAt,
+          spreadPct: Number.isFinite(spreadPctRaw) ? spreadPctRaw : undefined,
+          filled: true,
+          protectionId: reservedProtection.id,
+          quoteId: lockedQuote.quoteId,
           notes: {
-            quoteId: lockedQuote.quoteId,
-            protectionId: reservedProtection.id
+            slippageSource,
+            quotedAskBtc: Number.isFinite(quotedAskBtc) ? quotedAskBtc : null,
+            fillPriceBtc: Number.isFinite(fillPriceBtc) ? fillPriceBtc : null,
+            slippageUsd: realizedSlippageUsd ?? null
           }
         });
-      } catch {
-        // Execution-quality telemetry must never block successful activation.
+      } catch (eqErr: any) {
+        console.warn(`[Activate] Execution quality increment failed: ${eqErr?.message}`);
       }
-      await insertLedgerEntry(pool, {
-        protectionId: reservedProtection.id,
-        entryType: "premium_due",
-        amount: premiumPricing.clientPremiumUsd.toFixed(10),
-        reference: execution.externalOrderId
-      });
-      const updated = await patchProtection(pool, reservedProtection.id, {
+      try {
+        await insertLedgerEntry(pool, {
+          protectionId: reservedProtection.id,
+          entryType: "premium_due",
+          amount: premiumPricing.clientPremiumUsd.toFixed(10),
+          reference: execution.externalOrderId
+        });
+      } catch (ledgerErr: any) {
+        console.error(`[Activate] insertLedgerEntry FAILED: ${ledgerErr?.message}`);
+        throw ledgerErr;
+      }
+      let updated;
+      try {
+        updated = await patchProtection(pool, reservedProtection.id, {
         status: "active",
         entry_price: quoteEntryAnchorPrice.toFixed(10),
         entry_price_source: quoteEntryPriceSource,
@@ -3131,6 +4379,10 @@ export const registerPilotRoutes = async (
           premiumPolicy: premiumPolicyDiagnostics
         }
       });
+      } catch (patchErr: any) {
+        console.error(`[Activate] patchProtection FAILED: ${patchErr?.message}`);
+        throw patchErr;
+      }
       const activatedQuote = sanitizeQuoteForClient({
         ...lockedQuote,
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4))
@@ -3148,6 +4400,12 @@ export const registerPilotRoutes = async (
         }
       };
     } catch (error: any) {
+      console.error(`[Activate] ERROR in activation flow: ${error?.message}`, {
+        hasProtection: !!reservedProtection,
+        hasExecution: !!execution,
+        executionStatus: execution?.status,
+        stack: error?.stack?.split("\n").slice(0, 5).join(" | ")
+      });
       if (transactionOpen) {
         await client.query("ROLLBACK");
         transactionOpen = false;
@@ -3231,6 +4489,9 @@ export const registerPilotRoutes = async (
       } else if (
         errMsg === "protection_notional_cap_exceeded" ||
         errMsg === "daily_notional_cap_exceeded" ||
+        errMsg === "aggregate_active_notional_cap_exceeded" ||
+        errMsg === "per_tier_daily_concentration_cap_exceeded" ||
+        errMsg === "hedge_budget_cap_exceeded" ||
         errMsg === "user_hash_secret_missing" ||
         errMsg === "venue_execute_timeout"
       ) {
@@ -3266,22 +4527,23 @@ export const registerPilotRoutes = async (
       } else if (reason === "execution_failed") {
         if (reservedProtection && contextHedgeMode) {
           try {
-            await upsertExecutionQualityDaily(pool, {
+            const failQuoteDetails = (lockedQuote?.details || {}) as Record<string, unknown>;
+            const spreadPctRawFail = Number(failQuoteDetails.spreadPct);
+            // No fill happened, so there's no slippage to record. We pass 0 here
+            // and rely on filled:false so the rollup correctly counts the reject
+            // (running fill-rate denominator advances; numerator does not).
+            await incrementExecutionQualityDaily(pool, {
               dayIso: new Date().toISOString(),
               venue: pilotConfig.venueMode,
               hedgeMode: contextHedgeMode,
-              quotes: 1,
-              fills: 0,
-              rejects: 1,
-              avgSlippageBps: 0,
-              avgLatencyMs: Date.now() - quoteStartedAt,
-              avgSpreadPct:
-                Number.isFinite(Number((lockedQuote?.details as Record<string, unknown>)?.spreadPct))
-                  ? Number((lockedQuote?.details as Record<string, unknown>)?.spreadPct)
-                  : null,
+              slippageBps: 0,
+              latencyMs: Date.now() - quoteStartedAt,
+              spreadPct: Number.isFinite(spreadPctRawFail) ? spreadPctRawFail : undefined,
+              filled: false,
+              quoteId: lockedQuote?.quoteId || body.quoteId,
               notes: {
-                quoteId: lockedQuote?.quoteId || body.quoteId,
-                rejection: executionFailureDetail || "execution_failed"
+                rejection: executionFailureDetail || "execution_failed",
+                slippageSource: "no_fill"
               }
             });
           } catch {
@@ -3298,39 +4560,76 @@ export const registerPilotRoutes = async (
         status: "error",
         reason,
         detail: reason === "execution_failed" ? executionFailureDetail : null,
+        // Brevity-pass copy. Style: ≤ 15 words, plain language, state then
+        // action, no jargon (notional, venue, transport, RFQ). The widget's
+        // friendlyError() carries the user-facing version; this fallback
+        // is for clients that bypass the widget (curl, scripts).
         message:
           reason === "price_unavailable"
-            ? "Price temporarily unavailable, please retry."
+            ? "Quote temporarily unavailable. Tap Refresh Quote."
             : reason === "storage_unavailable"
-              ? "Storage temporarily unavailable, please retry."
+              ? "Quote temporarily unavailable. Tap Refresh Quote."
               : reason === "daily_notional_cap_exceeded"
-                ? "Daily protection limit reached for pilot operations. Try again next UTC day."
+                ? "Daily limit reached. Resets at midnight UTC (8pm ET)."
                 : reason === "protection_notional_cap_exceeded"
-                  ? `Protection amount exceeds pilot cap (${new Decimal(
+                  ? `Amount exceeds the pilot per-position max ($${fmtUsdWhole(
                       pilotConfig.maxProtectionNotionalUsdc
-                    ).toFixed(2)} USDC).`
+                    )}). Reduce it.`
+                  : reason === "aggregate_active_notional_cap_exceeded"
+                    ? `Pilot's open-protection limit ($${fmtUsdWhole(
+                        pilotConfig.maxAggregateActiveNotionalUsdc
+                      )}) is full. Close one or wait for it to expire.`
+                  : reason === "per_tier_daily_concentration_cap_exceeded"
+                    ? `This protection level is full for today. Try a different level or wait until tomorrow.`
+                  : reason === "hedge_budget_cap_exceeded"
+                    ? ((error as any)?.message || `Pilot hedge budget reached for this phase. Try smaller size or wait for next pilot phase.`)
                   : reason === "quote_already_consumed"
-                    ? "Quote has already been activated. Refresh protections before retrying."
+                    ? "Quote already used. Refresh protections list."
                     : reason === "quote_not_activatable"
-                      ? "Quote is linked to a non-active protection state. Request a fresh quote."
+                      ? "This quote is no longer usable. Tap Refresh Quote."
                       : reason === "venue_execute_timeout"
-                        ? "Venue execution timed out. Please request a fresh quote."
+                        ? "Exchange timed out. Tap Refresh Quote."
                         : reason === "execution_failed"
-                          ? "Venue execution failed. Please request a fresh quote."
+                          ? "Exchange rejected the trade. Tap Refresh Quote."
                           : reason === "premium_cap_exceeded_post_fill"
-                            ? "Realized premium exceeded configured cap. Activation was rejected."
+                            ? "Hedge cost exceeded our safety limit. Protection not opened. No charge."
                           : reason === "ibkr_transport_not_live"
-                            ? "IBKR live transport is not active. Verify bridge transport health and retry."
+                            ? "Exchange connection isn't live. Try again shortly."
                           : reason === "quote_expired"
-                            ? "Quote expired. Please request a new quote."
+                            ? "Quote expired. Tap Refresh Quote."
                             : reason.startsWith("quote_mismatch")
-                              ? "Quote does not match activation parameters. Please request a new quote."
-                              : "Protection activation failed.",
+                              ? "Terms changed after quoting. Tap Refresh Quote."
+                              : "Couldn't open protection. Try again.",
         ...(reason === "daily_notional_cap_exceeded"
           ? {
               capUsdc: maxDailyProtection.toFixed(2),
               usedUsdc: (error as any)?.usedUsdc || capUsedUsdc,
               projectedUsdc: (error as any)?.projectedUsdc || capProjectedUsdc
+            }
+          : {}),
+        ...(reason === "aggregate_active_notional_cap_exceeded"
+          ? {
+              capUsdc: (error as any)?.capUsdc,
+              currentActiveUsdc: (error as any)?.currentActiveUsdc,
+              projectedAfterUsdc: (error as any)?.projectedAfterUsdc
+            }
+          : {}),
+        ...(reason === "hedge_budget_cap_exceeded"
+          ? {
+              pilotDay: (error as any)?.pilotDay,
+              capUsd: (error as any)?.capUsd,
+              cumulativeSpentUsd: (error as any)?.cumulativeSpentUsd,
+              remainingUsd: (error as any)?.remainingUsd,
+              projectedAfterUsd: (error as any)?.projectedAfterUsd
+            }
+          : {}),
+        ...(reason === "per_tier_daily_concentration_cap_exceeded"
+          ? {
+              tierSlPct: (error as any)?.tierSlPct,
+              capPct: (error as any)?.capPct,
+              tierCapUsdc: (error as any)?.tierCapUsdc,
+              currentTierUsageUsdc: (error as any)?.currentTierUsageUsdc,
+              projectedAfterUsdc: (error as any)?.projectedAfterUsdc
             }
           : {}),
         ...(body.quoteId
@@ -3349,7 +4648,7 @@ export const registerPilotRoutes = async (
   });
 
   app.get("/pilot/protections", async (req, reply) => {
-    const query = req.query as { limit?: string };
+    const query = req.query as { limit?: string; scope?: string };
     let userHash: { userHash: string; hashVersion: number };
     try {
       userHash = resolveTenantScopeHash();
@@ -3358,13 +4657,40 @@ export const registerPilotRoutes = async (
       reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
       return { status: "error", reason };
     }
+    // Optional scope filter so the admin dashboard can request only currently
+    // open protections (statuses where the platform is still on the hook)
+    // instead of dumping the full lifecycle history including expired_otm /
+    // expired_itm / cancelled rows. Default behavior unchanged ("all") so
+    // existing callers see the same payload.
+    //   - "open": pending_activation, active, triggered, reconcile_pending,
+    //             awaiting_renew_decision, awaiting_expiry_price
+    //   - "active": just status='active'
+    //   - "all" (default): full history (excluding archived rows per PR #55)
+    const scopeRaw = String(query.scope || "all").toLowerCase();
+    const scope: "open" | "active" | "all" =
+      scopeRaw === "open" || scopeRaw === "active" ? (scopeRaw as "open" | "active") : "all";
+    const OPEN_STATUSES = new Set([
+      "pending_activation",
+      "active",
+      "triggered",
+      "reconcile_pending",
+      "awaiting_renew_decision",
+      "awaiting_expiry_price"
+    ]);
     try {
-      const protections = await listProtectionsByUserHash(pool, userHash.userHash, {
+      const all = await listProtectionsByUserHash(pool, userHash.userHash, {
         limit: Number(query.limit || 20)
       });
+      const filtered =
+        scope === "open"
+          ? all.filter((p: any) => OPEN_STATUSES.has(String(p.status)))
+          : scope === "active"
+            ? all.filter((p: any) => p.status === "active")
+            : all;
       return {
         status: "ok",
-        protections: protections.map((item) =>
+        scope,
+        protections: filtered.map((item) =>
           sanitizeProtectionForTrader(item as unknown as Record<string, unknown>)
         )
       };
@@ -3373,7 +4699,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "storage_unavailable",
-        message: "Storage temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String(error?.message || "list_protections_failed")
       };
     }
@@ -3477,6 +4803,13 @@ export const registerPilotRoutes = async (
         venue: protection.venue,
         instrumentId: protection.instrumentId,
         createdAt: protection.createdAt,
+        renewedTo: protection.metadata?.renewedTo ? String(protection.metadata.renewedTo) : null,
+        // 2026-04-22: signal archived status to widget so it can drop the
+        // position from local cache (the widget polls each protection ID
+        // individually and was previously unable to know that an
+        // admin-triggered archive had occurred — leaving ghost positions
+        // visible until manual localStorage clear).
+        archivedAt: protection.metadata?.archivedAt ? String(protection.metadata.archivedAt) : null,
       },
       currentPrice: referencePrice.toFixed(10),
       currentPriceSource: snapshot.priceSource,
@@ -3538,7 +4871,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String((error as any)?.detail || "monitor_price_unavailable")
       };
     }
@@ -3573,7 +4906,7 @@ export const registerPilotRoutes = async (
       return {
         status: "error",
         reason: "price_unavailable",
-        message: "Price temporarily unavailable, please retry.",
+        message: "Quote temporarily unavailable. Tap Refresh Quote.",
         detail: String((error as any)?.detail || "monitor_price_unavailable")
       };
     }
@@ -3778,6 +5111,917 @@ export const registerPilotRoutes = async (
     return { status: "error", reason: "invalid_decision" };
   });
 
+  /**
+   * Toggle auto-renew on/off for an active protection AFTER it has been opened.
+   *
+   * Per Pilot Agreement §3.3, auto-renewal is "available at Client's discretion" —
+   * the activation-time checkbox already supports turning it ON; this endpoint
+   * supports turning it ON or OFF at any point during the protection's life
+   * without closing the underlying perp position.
+   *
+   * Semantics:
+   *   - The current protection cycle ALWAYS runs to its natural expiry
+   *     regardless of this toggle. This endpoint only affects whether the
+   *     auto-renew scheduler creates a NEW protection at expiry.
+   *   - Optimistic-lock guard: only `status = 'active'` rows are toggleable.
+   *     A protection that has already triggered, expired, or been cancelled
+   *     cannot be toggled (404 / 409 — see below).
+   *   - Race window with the auto-renew scheduler (runs every 5 min): if the
+   *     scheduler has already initiated a renewal at the moment the trader
+   *     toggles OFF, that renewal may complete. The next cycle will respect
+   *     the new setting. This is documented in the response message and the
+   *     frontend toast.
+   *   - Audit trail: every toggle appends an entry to metadata.autoRenewToggles
+   *     with timestamp + new value, so admin/operators can reconstruct intent
+   *     post-hoc.
+   *
+   * Request:
+   *   POST /pilot/protections/:id/auto-renew
+   *   body: { enabled: true | false }
+   *
+   * Responses:
+   *   200 { status: "ok", protection, autoRenew: boolean, message: string }
+   *   400 { status: "error", reason: "invalid_enabled_value" }
+   *   404 { status: "error", reason: "not_found" }
+   *   409 { status: "error", reason: "protection_not_active",
+   *         currentStatus, message }
+   *   200 (no-op) { status: "ok", protection, autoRenew, idempotentReplay: true,
+   *                 message }
+   */
+  /**
+   * POST /pilot/protections/:id/close — biweekly subscription user-close
+   *
+   * Trader-initiated end of a biweekly subscription. Computes the
+   * accumulated charge through close time, marks the protection
+   * cancelled, settles the trader's accumulated charge.
+   *
+   * The underlying Deribit hedge stays open and is disposed by the
+   * hedge manager per its TP logic (sell residual time value).
+   *
+   * Idempotent: calling close on an already-closed protection returns
+   * the prior close result without writing again.
+   *
+   * Validation:
+   *   - Protection must exist
+   *   - Caller must own the protection (tenant scope check; 404 otherwise
+   *     to avoid leaking existence of other tenants' protections)
+   *   - Protection must be biweekly (tenor_days >= 2). Legacy 1-day
+   *     protections cannot be force-closed via this endpoint.
+   *
+   * Responses:
+   *   200 { status: "ok", product: "biweekly", protection,
+   *         accumulatedChargeUsd, daysBilled, hedgeRetainedForPlatform,
+   *         newlyClosed }
+   *   404 { status: "error", reason: "not_found" }
+   *   400 { status: "error", reason: "not_biweekly" | "missing_rate" | "missing_sl_pct" }
+   *   503 { status: "error", reason: "storage_unavailable" }
+   */
+  app.post("/pilot/protections/:id/close", async (req, reply) => {
+    const params = req.params as { id: string };
+    if (!params.id) {
+      reply.code(400);
+      return { status: "error", reason: "missing_protection_id" };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    // Ownership check — fetch the protection first to assert ownership.
+    // Hide existence of other tenants' protections behind 404, not 403
+    // (matches the auto-renew endpoint's pattern).
+    const protectionForOwnership = await getProtection(pool, params.id);
+    if (!protectionForOwnership) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protectionForOwnership, userHash)) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+
+    const result = await handleBiweeklyClose({
+      pool,
+      req: { protectionId: params.id, closedBy: "user_close" }
+    });
+    if (result.status === "error") {
+      const reasonToHttp: Record<BiweeklyCloseErrorReason, number> = {
+        not_found: 404,
+        not_biweekly: 400,
+        missing_rate: 500,
+        missing_sl_pct: 500,
+        storage_unavailable: 503
+      };
+      reply.code(reasonToHttp[result.reason] ?? 400);
+      return result;
+    }
+    return result;
+  });
+
+  app.post("/pilot/protections/:id/auto-renew", async (req, reply) => {
+    const params = req.params as { id: string };
+    const body = (req.body || {}) as { enabled?: unknown };
+    const enabled = typeof body.enabled === "boolean" ? body.enabled : null;
+    if (enabled === null) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "invalid_enabled_value",
+        message: "Body must include { \"enabled\": true | false }."
+      };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protection, userHash)) {
+      // Hide existence of other tenants' protections behind 404, not 403.
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (protection.status !== "active") {
+      reply.code(409);
+      return {
+        status: "error",
+        reason: "protection_not_active",
+        currentStatus: protection.status,
+        message:
+          "Auto-renew can only be toggled on an active protection. " +
+          `This protection is currently '${protection.status}'.`
+      };
+    }
+    if (Boolean(protection.autoRenew) === enabled) {
+      // Idempotent replay — already in requested state. Return 200 with the
+      // existing protection so the frontend can settle without surprise.
+      return {
+        status: "ok",
+        idempotentReplay: true,
+        autoRenew: enabled,
+        protection: sanitizeProtectionForTrader(protection as unknown as Record<string, unknown>),
+        message: enabled
+          ? "Auto-renew is already enabled for this protection."
+          : "Auto-renew is already disabled for this protection."
+      };
+    }
+    const auditEntry = {
+      ts: new Date().toISOString(),
+      enabled,
+      previous: Boolean(protection.autoRenew)
+    };
+    const updated = await patchProtectionForStatus(pool, {
+      id: params.id,
+      expectedStatus: "active",
+      patch: {
+        auto_renew: enabled,
+        // Append to an array of toggle events on metadata jsonb. Passing a
+        // plain object follows the existing convention in triggerMonitor.ts
+        // (pg driver serializes jsonb-bound objects automatically).
+        metadata: {
+          ...(protection.metadata || {}),
+          autoRenewToggles: [
+            ...((protection.metadata?.autoRenewToggles as Array<unknown> | undefined) || []),
+            auditEntry
+          ],
+          lastAutoRenewToggleAt: auditEntry.ts,
+          lastAutoRenewToggleValue: enabled
+        }
+      }
+    });
+    if (!updated) {
+      // Lost the optimistic lock — protection status changed between our
+      // read and our write (e.g. it just triggered). Surface as 409.
+      reply.code(409);
+      return {
+        status: "error",
+        reason: "protection_status_changed",
+        message:
+          "Protection status changed during the toggle attempt. " +
+          "Refresh and try again — the protection may have triggered or expired."
+      };
+    }
+    const message = enabled
+      ? "Auto-renew enabled. A new protection will be created at expiry."
+      : "Auto-renew disabled. The current protection will run to expiry; no new protection will be created. " +
+        "If a renewal was already in flight (5-min scheduler window), one more cycle may complete.";
+    return {
+      status: "ok",
+      autoRenew: enabled,
+      protection: sanitizeProtectionForTrader(updated as unknown as Record<string, unknown>),
+      message
+    };
+  });
+
+  /**
+   * R7 — Test-alert endpoint. Lets the operator verify their webhook
+   * configuration (Telegram / Slack / Discord / generic) without waiting
+   * for a real alert to fire. Sends a single info-level alert with a
+   * unique code so dedup doesn't suppress repeated tests.
+   *
+   * POST /pilot/admin/test-alert
+   *   body: { level?: "info"|"warning"|"critical", message?: string }
+   * 200 { status: "ok", alert, dispatchResult }
+   */
+  app.post("/pilot/admin/test-alert", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const body = (req.body || {}) as { level?: string; message?: string };
+    const lvl = body.level === "critical" || body.level === "warning" ? body.level : "info";
+    const stamp = new Date().toISOString();
+    const alert = {
+      level: lvl as "info" | "warning" | "critical",
+      code: `test_alert_${Date.now()}`, // unique code per call → never deduped
+      message: body.message || `Test alert from /pilot/admin/test-alert at ${stamp}`,
+      timestamp: stamp
+    };
+    monitor.recordEvent(alert);
+    // Wait briefly so dispatch results are available in the response.
+    await new Promise((r) => setTimeout(r, 250));
+    return {
+      status: "ok",
+      alert,
+      message: "Alert emitted. Check Telegram / Slack / Discord and /pilot/monitor/alerts to confirm receipt."
+    };
+  });
+
+  /**
+   * GET /pilot/admin/circuit-breaker
+   * Returns current state + config of the max-loss circuit breaker.
+   */
+  app.get("/pilot/admin/circuit-breaker", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    return {
+      status: "ok",
+      state: getCircuitBreakerState(),
+      config: getCircuitBreakerConfig(),
+      active: isCircuitBreakerActive()
+    };
+  });
+
+  /**
+   * GET /pilot/admin/hedge-budget
+   *
+   * Current cumulative hedge spend for the live pilot, the cap that
+   * applies to today, and how much budget remains. Use this to monitor
+   * pacing without having to query Deribit directly.
+   *
+   * Per Foxify Pilot Agreement v2 §3.1:
+   *   Day 1-2:   $100 cumulative
+   *   Day 3-7:   $1,000 cumulative
+   *   Day 8-21:  $10,000 cumulative
+   *   Day 22+:   no additional cap
+   */
+  app.get("/pilot/admin/hedge-budget", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const cfg = getHedgeBudgetCapConfig();
+    const pilotStartMs = cfg.pilotStartIso ? Date.parse(cfg.pilotStartIso) : null;
+    const cumulativeSpentUsd = pilotStartMs
+      ? await sumLiveHedgeCostUsdSince(pool, pilotStartMs)
+      : await sumLiveHedgeCostUsdSince(pool, 0);
+    const verdict = evaluateHedgeBudgetCap({
+      pilotStartMsEpoch: pilotStartMs,
+      cumulativeSpentUsd,
+      // Probe with $0 prospective spend so we just get the snapshot view
+      prospectiveHedgeCostUsd: 0
+    });
+    return {
+      status: "ok",
+      pilotStartIso: cfg.pilotStartIso,
+      pilotDay: verdict.pilotDay,
+      enforce: cfg.enforce,
+      capUsd: verdict.capUsd,
+      cumulativeSpentUsd: Number(cumulativeSpentUsd.toFixed(2)),
+      remainingUsd: verdict.remainingUsd === null ? null : Number(verdict.remainingUsd.toFixed(2)),
+      schedule: cfg.schedule
+    };
+  });
+
+  /**
+   * GET /pilot/admin/deribit-balance
+   *
+   * Live snapshot of the Deribit account balance used for real-money
+   * hedging. Pulls fresh from Deribit's get_account_summary on each
+   * request — meant for the "Check Balance" button in the admin
+   * dashboard and any operator who wants real-time visibility into
+   * what's actually on the broker.
+   *
+   * Returns BTC balance + USD value (computed from current Deribit
+   * spot index price). Falls back gracefully if Deribit is unreachable.
+   *
+   * Replaces the prior Bullish-only /pilot/monitor/treasury-check
+   * endpoint that the Check Balance button used to call (Bullish was
+   * deprecated for the retail pilot, so the button silently did
+   * nothing). Bullish endpoint kept intact for treasury reuse later.
+   */
+  app.get("/pilot/admin/deribit-balance", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    try {
+      const summaryRaw: any = await deps.deribit.getAccountSummary("BTC");
+      if (summaryRaw?.error) {
+        reply.code(502);
+        return {
+          status: "error",
+          reason: "deribit_returned_error",
+          detail: summaryRaw.error
+        };
+      }
+      const result = summaryRaw?.result || {};
+      const balanceBtc = Number(result.balance ?? 0);
+      const availableBtc = Number(result.available_funds ?? 0);
+      const equityBtc = Number(result.equity ?? 0);
+      const initialMarginBtc = Number(result.initial_margin ?? 0);
+      const maintMarginBtc = Number(result.maintenance_margin ?? 0);
+
+      // Pull the spot index price separately so we can show USD-equivalent
+      // values. Falls back to null if it errors — UI will display BTC only.
+      let spotUsd: number | null = null;
+      try {
+        const idx: any = await deps.deribit.getIndexPrice("btc_usd");
+        const px = Number(idx?.result?.index_price ?? 0);
+        if (Number.isFinite(px) && px > 0) spotUsd = px;
+      } catch {
+        // ignore — USD values just won't be populated
+      }
+
+      return {
+        status: "ok",
+        currency: "BTC",
+        balanceBtc,
+        availableBtc,
+        equityBtc,
+        initialMarginBtc,
+        maintenanceMarginBtc: maintMarginBtc,
+        spotUsd,
+        balanceUsd: spotUsd !== null ? Number((balanceBtc * spotUsd).toFixed(2)) : null,
+        availableUsd: spotUsd !== null ? Number((availableBtc * spotUsd).toFixed(2)) : null,
+        equityUsd: spotUsd !== null ? Number((equityBtc * spotUsd).toFixed(2)) : null,
+        marginModel: result.margin_model || null,
+        crossCollateralEnabled: result.cross_collateral_enabled ?? null,
+        accountId: result.id ?? null,
+        username: result.username ?? null,
+        asOf: new Date().toISOString()
+      };
+    } catch (error: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "deribit_unreachable",
+        detail: String(error?.message || "deribit_balance_fetch_failed")
+      };
+    }
+  });
+
+  /**
+   * POST /pilot/admin/circuit-breaker/reset
+   * Manually clears a tripped circuit breaker. Re-enables new
+   * protection sales immediately. The breaker will continue to
+   * monitor balance and may re-trip if the underlying drawdown
+   * pattern recurs.
+   */
+  app.post("/pilot/admin/circuit-breaker/reset", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const wasTripped = resetCircuitBreaker(auth.actor);
+    await insertAdminAction(pool, {
+      action: "circuit_breaker_reset",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: { wasTripped }
+    });
+    if (wasTripped) {
+      monitor.recordEvent({
+        level: "info",
+        code: "circuit_breaker_manual_reset",
+        message: `Circuit breaker manually reset by ${auth.actor}.`
+      });
+    }
+    return {
+      status: "ok",
+      wasTripped,
+      message: wasTripped
+        ? "Circuit breaker reset. Platform accepting new protection sales again."
+        : "Circuit breaker was already in normal state. No action taken."
+    };
+  });
+
+  app.post("/pilot/admin/reset", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    try {
+      const result = await resetPilotData(pool);
+      await insertAdminAction(pool, {
+        action: "pilot_data_reset",
+        actor: auth.actor,
+        actorIp: auth.actorIp,
+        details: result
+      });
+      console.log(`[Admin] Pilot data reset by ${auth.actor} from ${auth.actorIp}`);
+      return { status: "ok", ...result };
+    } catch (error: any) {
+      reply.code(500);
+      return { status: "error", reason: String(error?.message || "reset_failed") };
+    }
+  });
+
+  // Surgical reset for paper-test protections. Use this — not the heavy
+  // /pilot/admin/reset — when you need to clear cap headroom mid-pilot
+  // without destroying audit data (execution-quality samples, ledger,
+  // hedge decisions, admin actions all stay intact).
+  //
+  // Request body:
+  //   {
+  //     "protectionIds": ["uuid", "uuid", ...],   // required
+  //     "reason": "string"                         // optional, default
+  //                                                // "admin_test_reset"
+  //   }
+  //
+  // Effect per protection ID:
+  //   1. status set to 'cancelled'
+  //   2. metadata.archivedAt / archivedReason / archivedBy stamped for audit
+  //   3. notional released from pilot_daily_usage for the day the
+  //      protection was created
+  //   4. aggregate-active and per-tier-daily caps automatically see the
+  //      row drop out of their queries (both filter on
+  //      metadata.archivedAt = '')
+  //
+  // Constraints:
+  //   - admin token required
+  //   - only protections owned by the same tenant userHash are touched
+  //   - rows already archived are no-ops
+  //   - rows in non-open statuses (expired_*, cancelled) are still
+  //     archived for cleanliness but daily release is a no-op for them
+  /**
+   * POST /pilot/admin/protections/synthetic — create a fake biweekly
+   *   protection for end-to-end UI testing without spending real money on
+   *   Deribit.
+   *
+   * Inserts a `pilot_protections` row with `status="active"`,
+   * `hedge_status="active"`, a placeholder venue/instrument ID, and the
+   * supplied SL tier + notional. The trader UI sees it as a real active
+   * position and can exercise:
+   *   - "Close Position" → POST /pilot/protections/:id/close
+   *     (full close flow runs: accumulated charge math, ledger write,
+   *      status→cancelled). No Deribit hedge to sell so no real-money
+   *      side effects.
+   *   - Trigger monitor will scan it (it's in active status). On a real
+   *     spot move past the trigger, it WILL flip to triggered + write a
+   *     payout-due ledger entry. The hedge manager will then try to sell
+   *     the placeholder instrument, which fails harmlessly (no_bid /
+   *     instrument_unknown) and the no-bid backstop holds it.
+   *
+   * Use sparingly. Synthetic positions are tagged with
+   * `metadata.synthetic=true` so the admin UI / metrics can exclude
+   * them from real economics. Operators should clean them up via the
+   * existing test-reset endpoint when done.
+   *
+   * Body: { slPct: 2|3|5|10, protectedNotionalUsd: number,
+   *         direction?: "long"|"short", entryPrice?: number,
+   *         tenorDays?: number (defaults to 14) }
+   * Returns: { status: "ok", protection: ProtectionRecord, synthetic: true }
+   */
+  app.post("/pilot/admin/protections/synthetic", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const body = (req.body || {}) as {
+      slPct?: unknown;
+      protectedNotionalUsd?: unknown;
+      direction?: unknown;
+      entryPrice?: unknown;
+      tenorDays?: unknown;
+    };
+    const slPct = Number(body.slPct);
+    const notional = Number(body.protectedNotionalUsd);
+    const direction = body.direction === "short" ? "short" : "long";
+    const entryPrice = Number(body.entryPrice);
+    const tenorDays = Number.isFinite(Number(body.tenorDays)) && Number(body.tenorDays) >= 1
+      ? Math.floor(Number(body.tenorDays))
+      : 14;
+    if (![2, 3, 5, 10].includes(slPct)) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_sl_pct", message: "slPct must be 2, 3, 5, or 10." };
+    }
+    if (!Number.isFinite(notional) || notional <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_notional", message: "protectedNotionalUsd must be > 0." };
+    }
+    const spotForTrigger = Number.isFinite(entryPrice) && entryPrice > 0 ? entryPrice : 76000;
+    const triggerPrice = direction === "short"
+      ? spotForTrigger * (1 + slPct / 100)
+      : spotForTrigger * (1 - slPct / 100);
+
+    const ratePerDayPer1k =
+      slPct === 2 || slPct === 3 ? 2.5 : slPct === 5 ? 2.0 : 1.5;
+
+    const tenant = resolveTenantScopeHash();
+    const expiryAtIso = new Date(Date.now() + tenorDays * 24 * 60 * 60 * 1000).toISOString();
+    let protection;
+    try {
+      protection = await insertProtection(pool, {
+        userHash: tenant.userHash,
+        hashVersion: tenant.hashVersion,
+        status: "active",
+        tierName: `${slPct}pct`,
+        drawdownFloorPct: new Decimal(slPct).div(100).toFixed(6),
+        slPct,
+        hedgeStatus: "active",
+        marketId: pilotConfig.referenceMarketId,
+        protectedNotional: new Decimal(notional).toFixed(10),
+        foxifyExposureNotional: new Decimal(notional).toFixed(10),
+        expiryAt: expiryAtIso,
+        autoRenew: false,
+        renewWindowMinutes: 1440,
+        tenorDays,
+        dailyRateUsdPer1k: String(ratePerDayPer1k),
+        metadata: {
+          synthetic: true,
+          createdBy: auth.actor,
+          product: tenorDays >= 2 ? "biweekly" : "1day",
+          protectionType: direction,
+          triggerPrice,
+          floorPrice: triggerPrice,
+          spotAtActivation: spotForTrigger,
+          ratePerDayPer1kUsd: ratePerDayPer1k,
+          venueQuoteId: `synthetic-${Date.now()}`,
+          venueInstrumentId: `SYNTHETIC-${slPct}PCT-${direction.toUpperCase()}`,
+          activationRequestId: `synthetic-${randomUUID()}`,
+          note: "synthetic protection for UI testing — no real Deribit hedge"
+        }
+      });
+    } catch (err: any) {
+      reply.code(500);
+      return { status: "error", reason: "storage_unavailable", message: String(err?.message ?? "insert_failed") };
+    }
+    await insertAdminAction(pool, {
+      action: "pilot_synthetic_protection_created",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: { protectionId: protection.id, slPct, notional, direction, tenorDays }
+    });
+    console.log(
+      `[Admin] Synthetic protection created: id=${protection.id} ${slPct}% ${direction} $${notional} ` +
+        `tenor=${tenorDays}d by ${auth.actor}`
+    );
+    return { status: "ok", protection, synthetic: true };
+  });
+
+  /**
+   * POST /pilot/admin/protections/:id/reconcile-orphan-hedge
+   *
+   * Backfill venue/instrument fields onto an existing protection row
+   * whose biweekly activate handler succeeded at venue.execute but
+   * never populated the top-level columns (pre-PR-#120 bug). Also
+   * un-archives the row if it was accidentally cleaned up while
+   * looking like a synthetic.
+   *
+   * Use case: CEO's first real biweekly trade (1c7e17f9, 2026-05-01)
+   * filled on Deribit but the protection row had every venue field
+   * NULL. Hedge manager couldn't find the hedge, admin views showed
+   * `instr=None` indistinguishable from synthetics, and the row got
+   * archived during cleanup. This endpoint patches the row back into
+   * a fully-managed state so the platform behaves as if no bug had
+   * happened.
+   *
+   * Idempotency: refuses to overwrite a row that already has
+   * `instrument_id` set unless `?force=true` is passed.
+   *
+   * Validation:
+   *   - Protection row must exist
+   *   - Caller-supplied `instrumentId` must be a Deribit option name
+   *     starting with "BTC-"
+   *   - Direction (from existing row metadata) must match option type:
+   *     SHORT protection → call (-C), LONG protection → put (-P)
+   *
+   * Body: {
+   *   venue: "deribit_test" | "deribit_live",
+   *   instrumentId: string,
+   *   side: "buy",
+   *   size: string (BTC qty),
+   *   executionPriceBtc: string,
+   *   premiumUsd: string,
+   *   executedAt: ISO8601 string,
+   *   externalOrderId: string,
+   *   externalExecutionId?: string (defaults to externalOrderId),
+   *   unarchive?: boolean (default true; clears closedAt/closedBy/
+   *               metadata.archivedAt and restores status='active' if
+   *               the row was archived)
+   * }
+   */
+  app.post("/pilot/admin/protections/:id/reconcile-orphan-hedge", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const params = req.params as { id: string };
+    const query = req.query as { force?: string };
+    const force = String(query.force || "").toLowerCase() === "true";
+    const body = (req.body || {}) as {
+      venue?: unknown;
+      instrumentId?: unknown;
+      side?: unknown;
+      size?: unknown;
+      executionPriceBtc?: unknown;
+      premiumUsd?: unknown;
+      executedAt?: unknown;
+      externalOrderId?: unknown;
+      externalExecutionId?: unknown;
+      unarchive?: unknown;
+    };
+
+    if (!params.id) {
+      reply.code(400);
+      return { status: "error", reason: "missing_protection_id" };
+    }
+
+    // ── Validate inputs ──
+    const venue = String(body.venue || "");
+    if (venue !== "deribit_test" && venue !== "deribit_live") {
+      reply.code(400);
+      return { status: "error", reason: "invalid_venue", message: "venue must be deribit_test or deribit_live." };
+    }
+    const instrumentId = String(body.instrumentId || "");
+    if (!instrumentId.startsWith("BTC-") || (!instrumentId.endsWith("-C") && !instrumentId.endsWith("-P"))) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_instrument_id", message: "instrumentId must be a Deribit BTC option name (BTC-...-C/P)." };
+    }
+    const side = String(body.side || "buy");
+    if (side !== "buy") {
+      reply.code(400);
+      return { status: "error", reason: "invalid_side", message: "side must be 'buy'." };
+    }
+    const sizeStr = String(body.size || "");
+    const size = Number(sizeStr);
+    if (!Number.isFinite(size) || size <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_size", message: "size must be positive BTC quantity." };
+    }
+    const execPriceBtcStr = String(body.executionPriceBtc || "");
+    const execPriceBtc = Number(execPriceBtcStr);
+    if (!Number.isFinite(execPriceBtc) || execPriceBtc <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_execution_price", message: "executionPriceBtc must be positive." };
+    }
+    const premiumUsdStr = String(body.premiumUsd || "");
+    const premiumUsd = Number(premiumUsdStr);
+    if (!Number.isFinite(premiumUsd) || premiumUsd <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_premium", message: "premiumUsd must be positive." };
+    }
+    const executedAt = String(body.executedAt || "");
+    if (!executedAt || isNaN(new Date(executedAt).getTime())) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_executed_at", message: "executedAt must be a valid ISO timestamp." };
+    }
+    const externalOrderId = String(body.externalOrderId || "");
+    if (!externalOrderId) {
+      reply.code(400);
+      return { status: "error", reason: "missing_external_order_id" };
+    }
+    const externalExecutionId = String(body.externalExecutionId || externalOrderId);
+    const unarchive = body.unarchive !== false; // default true
+
+    // ── Fetch existing protection ──
+    const existing = await getProtection(pool, params.id);
+    if (!existing) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+
+    // ── Idempotency / overwrite guard ──
+    if (existing.instrumentId && !force) {
+      reply.code(409);
+      return {
+        status: "error",
+        reason: "already_reconciled",
+        message: `Protection already has instrument_id=${existing.instrumentId}. Pass ?force=true to overwrite.`
+      };
+    }
+
+    // ── Direction ↔ option type consistency check ──
+    const meta = (existing.metadata || {}) as Record<string, unknown>;
+    const protectionType = String(meta.protectionType || "").toLowerCase();
+    const optionType = instrumentId.endsWith("-C") ? "call" : "put";
+    if (protectionType === "short" && optionType !== "call") {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "direction_mismatch",
+        message: `Protection is SHORT (expects call hedge -C); supplied instrument ${instrumentId} is a put.`
+      };
+    }
+    if (protectionType === "long" && optionType !== "put") {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "direction_mismatch",
+        message: `Protection is LONG (expects put hedge -P); supplied instrument ${instrumentId} is a call.`
+      };
+    }
+
+    // ── Build the patch payload ──
+    // Pull entry/floor/trigger from metadata if not on top level (biweekly
+    // activate stored them in metadata only, pre-PR-#120).
+    const triggerPriceMeta = Number(meta.triggerPrice || meta.floorPrice || 0);
+    const spotAtActivationMeta = Number(meta.spotAtActivation || 0);
+
+    const updateFields: string[] = [
+      "venue = $2",
+      "instrument_id = $3",
+      "side = $4",
+      "size = $5",
+      "execution_price = $6",
+      "premium = $7",
+      "executed_at = $8::timestamptz",
+      "external_order_id = $9",
+      "external_execution_id = $10"
+    ];
+    // 2026-05-01 — caller-supplied premiumUsd is the HEDGE COST (USD
+    // paid to Deribit). For biweekly the top-level `premium` column
+    // stores the trader-facing CEILING (= dailyRate × 14d × notional/1000),
+    // matching the new semantic from PR #122. Compute the ceiling
+    // here from row data (slPct + notional + dailyRate) so callers
+    // don't have to compute it manually.
+    const slPctFromRow = Number(existing.slPct || 0);
+    const notionalFromRow = Number(existing.protectedNotional || 0);
+    const dailyRateFromRow = Number(existing.dailyRateUsdPer1k || 0);
+    const tenorFromRow = Number(existing.tenorDays || 1);
+    const isBiweeklyRow = tenorFromRow >= 2;
+    const traderCeilingUsd = isBiweeklyRow && dailyRateFromRow > 0 && notionalFromRow > 0
+      ? tenorFromRow * dailyRateFromRow * (notionalFromRow / 1000)
+      : premiumUsd; // legacy 1-day: caller-supplied value is the trader premium directly
+    const premiumColumnValue = isBiweeklyRow ? traderCeilingUsd : premiumUsd;
+
+    const updateValues: unknown[] = [
+      params.id,
+      venue,
+      instrumentId,
+      side,
+      new Decimal(size).toFixed(10),
+      new Decimal(execPriceBtc).toFixed(10),
+      new Decimal(premiumColumnValue).toFixed(10),
+      executedAt,
+      externalOrderId,
+      externalExecutionId
+    ];
+
+    // Backfill entry_price + floor_price from metadata if currently NULL.
+    if (!existing.entryPrice && spotAtActivationMeta > 0) {
+      updateFields.push(`entry_price = $${updateValues.length + 1}`);
+      updateValues.push(new Decimal(spotAtActivationMeta).toFixed(10));
+    }
+    if (!existing.floorPrice && triggerPriceMeta > 0) {
+      updateFields.push(`floor_price = $${updateValues.length + 1}`);
+      updateValues.push(new Decimal(triggerPriceMeta).toFixed(10));
+    }
+
+    // Un-archive: clear closedAt/closedBy and restore active status if
+    // the row was archived. Always merge a `reconciledAt` flag into
+    // metadata so the audit trail is clear.
+    if (unarchive) {
+      updateFields.push("status = 'active'");
+      updateFields.push("hedge_status = 'active'");
+      updateFields.push("closed_at = NULL");
+      updateFields.push("closed_by = NULL");
+    }
+
+    updateFields.push("updated_at = NOW()");
+
+    // Read-merge-write metadata (jsonb_build_object SQL has pg-mem
+    // compatibility issues per existing convention — see PR #119
+    // synthetic flag test).
+    const newMeta: Record<string, unknown> = {
+      ...meta,
+      // Stamp hedge cost + max projected charge so admin views render
+      // the dynamic Premium / Hedge / Spread columns correctly (matches
+      // biweeklyActivate post-PR-#122).
+      hedgeCostUsd: premiumUsd,
+      maxProjectedChargeUsd: traderCeilingUsd,
+      traderPremiumCeilingUsd: traderCeilingUsd,
+      reconciledAt: new Date().toISOString(),
+      reconciledBy: auth.actor,
+      reconciledReason: "orphan_biweekly_activate_pre_pr120_fix",
+      // Preserve any prior archive markers but mark them as cleared
+      ...(unarchive && meta.archivedAt
+        ? { unarchivedAt: new Date().toISOString(), priorArchivedAt: meta.archivedAt, archivedAt: undefined }
+        : {})
+    };
+    updateFields.push(`metadata = $${updateValues.length + 1}::jsonb`);
+    updateValues.push(JSON.stringify(newMeta));
+
+    try {
+      await pool.query(
+        `UPDATE pilot_protections SET ${updateFields.join(", ")} WHERE id = $1`,
+        updateValues
+      );
+    } catch (err: any) {
+      reply.code(500);
+      return { status: "error", reason: "update_failed", message: String(err?.message ?? "unknown") };
+    }
+
+    const updated = await getProtection(pool, params.id);
+    await insertAdminAction(pool, {
+      action: "pilot_orphan_hedge_reconciled",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: {
+        protectionId: params.id,
+        venue,
+        instrumentId,
+        size: sizeStr,
+        executionPriceBtc: execPriceBtcStr,
+        premiumUsd: premiumUsdStr,
+        executedAt,
+        externalOrderId,
+        unarchive,
+        force
+      }
+    });
+    console.log(
+      `[Admin] Reconciled orphan hedge: id=${params.id} ${instrumentId} ` +
+        `${size} BTC @ ${execPriceBtc}BTC by ${auth.actor}`
+    );
+    return { status: "ok", protection: updated, reconciled: true };
+  });
+
+  app.post("/pilot/admin/test-reset-protections", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const body = (req.body || {}) as { protectionIds?: unknown; reason?: string };
+    const ids = Array.isArray(body.protectionIds)
+      ? body.protectionIds
+          .map((v) => (typeof v === "string" ? v.trim() : ""))
+          .filter((v) => v.length > 0)
+      : [];
+    if (ids.length === 0) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "missing_protection_ids",
+        message: "Provide protectionIds: string[] in the request body."
+      };
+    }
+    if (ids.length > 200) {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "too_many_ids",
+        message: "Limit 200 IDs per request."
+      };
+    }
+    try {
+      const tenant = resolveTenantScopeHash();
+      const result = await archiveTestProtectionsByIds(pool, {
+        userHash: tenant.userHash,
+        protectionIds: ids,
+        actor: auth.actor,
+        reason: body.reason ? String(body.reason) : undefined
+      });
+      await insertAdminAction(pool, {
+        action: "pilot_test_reset_protections",
+        actor: auth.actor,
+        actorIp: auth.actorIp,
+        details: {
+          requestedIds: ids,
+          archivedCount: result.archivedCount,
+          archivedIds: result.archivedIds,
+          releasedDailyByDay: result.releasedDailyByDay,
+          reason: body.reason || "admin_test_reset"
+        }
+      });
+      console.log(
+        `[Admin] Test-reset ${result.archivedCount}/${ids.length} protections by ${auth.actor} from ${auth.actorIp}`
+      );
+      return {
+        status: "ok",
+        archivedCount: result.archivedCount,
+        archivedIds: result.archivedIds,
+        skippedIds: ids.filter((id) => !result.archivedIds.includes(id)),
+        releasedDailyByDay: result.releasedDailyByDay,
+        message:
+          result.archivedCount === ids.length
+            ? `Archived ${result.archivedCount} protection(s). Caps released.`
+            : `Archived ${result.archivedCount}/${ids.length}. Skipped IDs were already archived or not found.`
+      };
+    } catch (error: any) {
+      reply.code(500);
+      return {
+        status: "error",
+        reason: String(error?.message || "test_reset_failed")
+      };
+    }
+  });
+
   app.get("/pilot/admin/metrics", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
@@ -3945,6 +6189,89 @@ export const registerPilotRoutes = async (
     return { status: "ok", protection, ledger };
   });
 
+  /**
+   * GET /pilot/admin/protections/:id/lifecycle
+   *
+   * Comprehensive read-only diagnostic for a single protection's entire
+   * lifecycle. Combines:
+   *   - protection record (status, sl, notional, entry, floor, strike, expiry, metadata)
+   *   - ledger entries (premium_due, premium_settled, payout_due, payout_settled)
+   *   - venue executions (open + close fills, prices, fees, raw response details)
+   *   - price snapshots (entry, mid-cycle, expiry/trigger snapshots)
+   *
+   * Used by scripts/pilot-trade-investigate.sh to produce a readable
+   * timeline for a specific protection. Especially useful for
+   * triggered + TP-sold trades where we want to understand why TP
+   * recovered what it recovered.
+   *
+   * Sample use: investigating the c84dbbe9 trade (first SHORT 2%
+   * trigger in production; recovery 8% vs R1 baseline 68%).
+   */
+  app.get("/pilot/admin/protections/:id/lifecycle", async (req, reply) => {
+    const params = req.params as { id: string };
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const protection = await getProtection(pool, params.id);
+    if (!protection) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(protection, resolveTenantScopeHash())) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    const [ledger, executionsResult, snapshotsResult] = await Promise.all([
+      listLedgerForProtection(pool, params.id),
+      pool.query(
+        `SELECT id, venue, status, quote_id, instrument_id, side, quantity, execution_price,
+                premium, executed_at, external_order_id, external_execution_id, details, created_at
+           FROM pilot_venue_executions
+          WHERE protection_id = $1
+          ORDER BY created_at ASC`,
+        [params.id]
+      ),
+      pool.query(
+        `SELECT id, snapshot_type, price, market_id, price_source, price_source_detail,
+                price_timestamp, created_at
+           FROM pilot_price_snapshots
+          WHERE protection_id = $1
+          ORDER BY created_at ASC`,
+        [params.id]
+      )
+    ]);
+    return {
+      status: "ok",
+      protection,
+      ledger,
+      executions: executionsResult.rows.map((row: Record<string, unknown>) => ({
+        id: String(row.id),
+        venue: String(row.venue),
+        status: String(row.status),
+        quoteId: String(row.quote_id || ""),
+        instrumentId: String(row.instrument_id || ""),
+        side: String(row.side || ""),
+        quantity: String(row.quantity || ""),
+        executionPrice: String(row.execution_price || ""),
+        premium: String(row.premium || ""),
+        executedAt: row.executed_at ? new Date(String(row.executed_at)).toISOString() : null,
+        externalOrderId: String(row.external_order_id || ""),
+        externalExecutionId: String(row.external_execution_id || ""),
+        details: row.details || {},
+        createdAt: row.created_at ? new Date(String(row.created_at)).toISOString() : null
+      })),
+      priceSnapshots: snapshotsResult.rows.map((row: Record<string, unknown>) => ({
+        id: String(row.id),
+        snapshotType: String(row.snapshot_type),
+        price: String(row.price || ""),
+        marketId: String(row.market_id || ""),
+        priceSource: String(row.price_source || ""),
+        priceSourceDetail: String(row.price_source_detail || ""),
+        priceTimestamp: row.price_timestamp ? new Date(String(row.price_timestamp)).toISOString() : null,
+        createdAt: row.created_at ? new Date(String(row.created_at)).toISOString() : null
+      }))
+    };
+  });
+
   app.post("/pilot/internal/protections/:id/resolve-expiry", async (req, reply) => {
     const allowed = await requireInternalOrAdmin(req, reply);
     if (!allowed) return;
@@ -3980,8 +6307,160 @@ export const registerPilotRoutes = async (
   }, retryEveryMs);
   expiryInterval.unref?.();
   if (pilotConfig.triggerMonitorEnabled) {
-    registerPilotTriggerMonitor(pool);
+    // R7 — wire trigger-monitor alerts to the PilotMonitor → webhook
+    // dispatcher pipeline. trigger_fired (info), trigger_monitor_price_errors
+    // (critical), trigger_monitor_cycle_error (critical).
+    registerPilotTriggerMonitor(pool, (alert) => monitor.recordEvent(alert));
   }
+
+  const autoRenewIntervalMs = Number(process.env.PILOT_AUTO_RENEW_INTERVAL_MS || "300000");
+  const autoRenewInterval = setInterval(async () => {
+    try {
+      await runAutoRenewCycle({ pool, venue });
+    } catch (err: any) {
+      console.error(`[AutoRenew] Scheduler error: ${err?.message}`);
+    }
+  }, autoRenewIntervalMs);
+  autoRenewInterval.unref?.();
+  console.log(`[AutoRenew] Scheduler started: interval=${autoRenewIntervalMs}ms`);
+
+  const hedgeMgmtIntervalMs = Number(process.env.PILOT_HEDGE_MGMT_INTERVAL_MS || "60000");
+  // Use mainnet for spot index AND DVOL — both feed the hedge-management
+  // decision tree (DVOL via resolveAdaptiveParams + BS recovery sigma; spot
+  // via computeOptionValue). Testnet returns synthetic data on both. Falls
+  // back to deps.deribit if no separate mainnet connector was wired.
+  const dataConnector = deps.deribitLive ?? deps.deribit;
+  const hedgeMgmtInterval = setInterval(async () => {
+    try {
+      // R3.A — wrap getIndexPrice in explicit error handling. Without this,
+      // a Deribit outage causes the cycle to silently return with no log
+      // output, making the hedge manager appear idle in Render logs while
+      // triggered positions go unsold. With the wrap, every failed cycle
+      // emits a [HedgeManager] no-spot warning that is greppable.
+      // R7 — additionally fan out a hedge_no_spot alert to configured
+      // webhooks so an operator is paged on persistent outages (dedup
+      // window throttles a steady stream of 60s skips to one alert).
+      const spot = await (async () => {
+        try {
+          const ticker = await dataConnector.getIndexPrice("btc_usd");
+          return Number((ticker as any)?.result?.index_price ?? 0);
+        } catch (priceErr: any) {
+          console.warn(
+            `[HedgeManager] getIndexPrice FAILED — cycle skipped: ${priceErr?.message || "unknown"}`
+          );
+          return 0;
+        }
+      })();
+      if (!spot || spot <= 0) {
+        console.warn(`[HedgeManager] no spot price available — cycle skipped`);
+        monitor.recordEvent({
+          level: "warning",
+          code: "hedge_no_spot",
+          message: "Hedge manager could not fetch BTC index price; cycle skipped. Check Deribit status."
+        });
+        return;
+      }
+      const dvolResult = await dataConnector.getDVOL("BTC");
+      const iv = dvolResult.dvol ?? 50;
+      const sellOptionDirect = async (p: { instrumentId: string; quantity: number }) => {
+        try {
+          const sellSpot = spot;
+          const book = await deps.deribit.getOrderBook(p.instrumentId);
+          const bidBtc = Number((book as any)?.result?.best_bid_price ?? 0);
+          if (!bidBtc || bidBtc <= 0) {
+            return { status: "failed", fillPrice: 0, totalProceeds: 0, orderId: null, details: { reason: "no_bid" } };
+          }
+          const sellQty = Math.max(0.1, Math.floor(p.quantity * 10) / 10);
+          const order = await deps.deribit.placeOrder({ instrument: p.instrumentId, amount: sellQty, side: "sell", type: "market" }) as any;
+          const orderData = order?.result?.order ?? order;
+          const isFilled = String(orderData?.order_state || orderData?.status || "").match(/filled|closed|paper_filled/i);
+          const fillPriceBtc = Number(order?.result?.trades?.[0]?.price ?? orderData?.average_price ?? bidBtc);
+          const fillQty = Number(orderData?.filled_amount ?? orderData?.filledAmount ?? sellQty);
+          console.log(`[HedgeManager] sellOption direct: instrument=${p.instrumentId} filled=${!!isFilled} priceBtc=${fillPriceBtc} qty=${fillQty}`);
+          return {
+            status: isFilled ? "sold" : "failed",
+            fillPrice: fillPriceBtc * sellSpot,
+            totalProceeds: fillPriceBtc * sellSpot * fillQty,
+            orderId: String(orderData?.order_id ?? orderData?.id ?? null),
+            details: { raw: order, bidBtc, spot: sellSpot }
+          };
+        } catch (err: any) {
+          console.error(`[HedgeManager] sellOption direct FAILED: ${err?.message}`);
+          return { status: "failed", fillPrice: 0, totalProceeds: 0, orderId: null, details: { reason: err?.message } };
+        }
+      };
+      await runHedgeManagementCycle({
+        pool,
+        venue,
+        sellOption: sellOptionDirect,
+        currentSpot: spot,
+        currentIV: iv
+      });
+
+      // PR B (Gap 2) — sample Deribit equity each cycle and feed the
+      // circuit breaker. The breaker owns its own trip detection,
+      // baseline tracking, and cooldown logic; we just supply data.
+      // Wrapped to never fail the cycle if balance fetch errors.
+      //
+      // 2026-04-23: improved diagnostics. Previous version logged a
+      // generic warning when sampling failed but didn't surface the
+      // specific Deribit response, making it hard to diagnose live
+      // (user reported circuit breaker showed null balance for hours
+      // after switching to live trading). Now logs the structured
+      // response so the failure mode is visible in Render logs.
+      try {
+        const acctSummary: any = await deps.deribit.getAccountSummary("BTC");
+        const equityBtc = Number(acctSummary?.result?.equity ?? 0);
+        if (acctSummary?.error) {
+          console.warn(
+            `[CircuitBreaker] Deribit get_account_summary returned error: ${JSON.stringify(acctSummary.error)}`
+          );
+        } else if (!Number.isFinite(equityBtc)) {
+          console.warn(
+            `[CircuitBreaker] Deribit get_account_summary missing/invalid equity field; raw result keys=${
+              Object.keys(acctSummary?.result || {}).join(",")
+            }`
+          );
+        } else if (equityBtc < 0) {
+          console.warn(
+            `[CircuitBreaker] Deribit get_account_summary returned negative equity ${equityBtc} (skipping sample)`
+          );
+        } else {
+          const post = recordBalanceSample(equityBtc);
+          // Periodic visible heartbeat — every 10th sample = ~10 minutes
+          // at the default 60s cycle. Helps confirm sampling is healthy.
+          if ((post as any)?.sampleCount && (post as any).sampleCount % 10 === 0) {
+            console.log(
+              `[CircuitBreaker] heartbeat: equity=${equityBtc.toFixed(8)} BTC, ` +
+              `baseline=${(post.baselineBtc || 0).toFixed(8)}, samples=${(post as any).sampleCount}`
+            );
+          }
+          if (post.tripped) {
+            // Surface the trip via the existing alert dispatcher so an
+            // operator gets paged on the same channel as other warnings.
+            monitor.recordEvent({
+              level: "critical",
+              code: "circuit_breaker_tripped",
+              message:
+                `Deribit equity drawdown ${(post.lossPct * 100).toFixed(1)}% exceeded threshold ` +
+                `(baseline ${post.baselineBtc.toFixed(6)} BTC, current ${post.currentBtc.toFixed(6)} BTC). ` +
+                `New protection sales blocked until cooldown expires at ${post.cooldownExpiresAt} or admin reset.`
+            });
+          }
+        }
+      } catch (balanceErr: any) {
+        console.warn(
+          `[CircuitBreaker] Could not sample Deribit balance this cycle: ` +
+          `${balanceErr?.message || "unknown"} ` +
+          `(check API key has account:read scope; this is the same connector that places orders)`
+        );
+      }
+    } catch (err: any) {
+      console.error(`[HedgeManager] Scheduler error: ${err?.message}`);
+    }
+  }, hedgeMgmtIntervalMs);
+  hedgeMgmtInterval.unref?.();
+  console.log(`[HedgeManager] Scheduler started: interval=${hedgeMgmtIntervalMs}ms`);
 
   app.get("/pilot/monitor/status", async (req, reply) => {
     if (!isAdminAuthorized(req)) {

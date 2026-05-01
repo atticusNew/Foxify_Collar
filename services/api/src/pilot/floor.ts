@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import type { V7SlTier } from "./types";
 
 export type ProtectionType = "long" | "short";
 
@@ -9,6 +10,31 @@ type TierDefaults = {
 };
 
 export const PILOT_TIER_DEFAULTS: Record<string, TierDefaults> = {
+  "SL 1%": {
+    drawdownFloorPct: 0.01,
+    expiryDays: 1,
+    renewWindowMinutes: 1440
+  },
+  "SL 2%": {
+    drawdownFloorPct: 0.02,
+    expiryDays: 1,
+    renewWindowMinutes: 1440
+  },
+  "SL 3%": {
+    drawdownFloorPct: 0.03,
+    expiryDays: 1,
+    renewWindowMinutes: 1440
+  },
+  "SL 5%": {
+    drawdownFloorPct: 0.05,
+    expiryDays: 1,
+    renewWindowMinutes: 1440
+  },
+  "SL 10%": {
+    drawdownFloorPct: 0.10,
+    expiryDays: 1,
+    renewWindowMinutes: 1440
+  },
   "Pro (Bronze)": {
     drawdownFloorPct: 0.2,
     expiryDays: 7,
@@ -31,9 +57,11 @@ export const PILOT_TIER_DEFAULTS: Record<string, TierDefaults> = {
   }
 };
 
+export const slPctToTierName = (slPct: V7SlTier): string => `SL ${slPct}%`;
+
 export const normalizeTierName = (tierName?: string): string => {
-  if (!tierName) return "Pro (Bronze)";
-  return PILOT_TIER_DEFAULTS[tierName] ? tierName : "Pro (Bronze)";
+  if (!tierName) return "SL 2%";
+  return PILOT_TIER_DEFAULTS[tierName] ? tierName : "SL 2%";
 };
 
 export const resolveDrawdownFloorPct = (params: {

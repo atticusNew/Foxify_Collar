@@ -15,7 +15,12 @@ export type LedgerEntryType =
   | "premium_settled"
   | "trigger_payout_due"
   | "payout_due"
-  | "payout_settled";
+  | "payout_settled"
+  // Biweekly subscription product (PR 2 of biweekly cutover, 2026-04-30):
+  // No upfront premium; instead the trader's subscription accrues a
+  // daily charge while open and settles at close/trigger/natural-expiry.
+  | "subscription_started"
+  | "subscription_close_settlement";
 
 export type PriceSnapshotType = "entry" | "expiry" | "trigger";
 
@@ -25,6 +30,7 @@ export type VenueExecutionStatus = "success" | "failure";
 export type VenueName =
   | "falconx"
   | "deribit_test"
+  | "deribit_live"
   | "mock_falconx"
   | "ibkr_cme_live"
   | "ibkr_cme_paper"
@@ -148,6 +154,11 @@ export type ProtectionRecord = {
   tierName: string | null;
   drawdownFloorPct: string | null;
   floorPrice: string | null;
+  slPct: number | null;
+  hedgeStatus: string | null;
+  regime: string | null;
+  regimeSource: string | null;
+  dvolAtPurchase: number | null;
   marketId: string;
   protectedNotional: string;
   entryPrice: string | null;
@@ -173,6 +184,22 @@ export type ProtectionRecord = {
   payoutSettledAt: string | null;
   payoutTxRef: string | null;
   foxifyExposureNotional: string;
+  // ── Biweekly subscription columns (PR 2 of biweekly cutover, 2026-04-30) ──
+  // For legacy 1-day rows, tenorDays is 1 and the rest of these are null/0.
+  // For biweekly rows, tenorDays is 14 and dailyRateUsdPer1k is set at
+  // activation. accumulatedChargeUsd + daysBilled get populated at close.
+  // closedAt is set when the subscription ends (user close, trigger, or
+  // natural max-tenor expiry); closedBy records the cause.
+  // hedgeRetainedForPlatform flags trades where the underlying option
+  // stays open on Deribit after the trader's protection ends (per CEO
+  // direction 2026-04-30).
+  tenorDays: number;
+  dailyRateUsdPer1k: string | null;
+  accumulatedChargeUsd: string;
+  daysBilled: number;
+  closedAt: string | null;
+  closedBy: string | null;
+  hedgeRetainedForPlatform: boolean;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -549,11 +576,75 @@ export type ExecutionQualityRecord = {
   hedgeMode: HedgeMode;
   avgSlippageBps: string | null;
   p95SlippageBps: string | null;
+  /**
+   * Weighted-average slippage expressed in USD. Complements
+   * avgSlippageBps so operators can read economically meaningful
+   * numbers without bps-on-cheap-denomination distortion. Null on
+   * historical rows that pre-date the column.
+   */
+  avgSlippageUsd: string | null;
   fillSuccessRatePct: string | null;
   avgSpreadPct: string | null;
   avgTopBookDepth: string | null;
+  /**
+   * Weighted-average strike-floor gap in USD (signed, +OTM/-ITM).
+   * Tracks how often the option-selection algorithm picks strikes
+   * that create a "dead zone" between trigger and strike. Trending
+   * negative after PR #76 (ITM aggressiveness fix) is the expected
+   * behavior. Null on historical rows that pre-date the column.
+   */
+  avgStrikeGapUsd: string | null;
+  /** Same metric as fraction of trigger move. Null on historical rows. */
+  avgStrikeGapPct: string | null;
   sampleCount: number;
   metadata: Record<string, unknown>;
   updatedAt: string;
+};
+
+// ─── V7 Pricing Types ─────────────────────────────────────────────────────────
+
+export type V7Regime = "calm" | "normal" | "stress";
+
+export type V7RegimeSource = "dvol" | "rvol";
+
+export type V7SlTier = 1 | 2 | 3 | 5 | 10;
+
+export const V7_SL_TIERS: readonly V7SlTier[] = [1, 2, 3, 5, 10] as const;
+
+export type V7RegimeStatus = {
+  regime: V7Regime;
+  dvol: number | null;
+  rvol: number | null;
+  source: V7RegimeSource;
+  timestamp: string;
+};
+
+export type V7PremiumQuote = {
+  available: boolean;
+  slPct: V7SlTier;
+  regime: V7Regime;
+  premiumPer1kUsd: number;
+  premiumUsd: number;
+  payoutPer10kUsd: number;
+  notionalUsd: number;
+  reason?: string;
+  regimeSource: V7RegimeSource;
+  dvol: number | null;
+};
+
+export type V7HedgeStatus = "active" | "tp_sold" | "expired_settled" | "expired_worthless" | "pending_sell";
+
+export type V7OptionPosition = {
+  protectionId: string;
+  instrumentId: string;
+  venue: string;
+  side: "buy";
+  quantity: number;
+  entryPremium: number;
+  strike: number;
+  expiryMs: number;
+  hedgeStatus: V7HedgeStatus;
+  tpThreshold: number;
+  metadata: Record<string, unknown>;
 };
 

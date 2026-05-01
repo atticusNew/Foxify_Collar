@@ -59,6 +59,9 @@ import { buildCoverageReport } from "./coverageReport";
 import { resolveCoverageTargetSize } from "./quoteCoverage";
 import { resolvePremiumMarkupPctForQuote } from "./markupProfile";
 import { registerPilotRoutes } from "./pilot/routes";
+import { registerTreasuryRoutes } from "./pilot/treasuryRoutes";
+import { parseTreasuryConfig } from "./pilot/treasuryConfig";
+import { startTreasuryScheduler } from "./pilot/treasuryScheduler";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -2065,23 +2068,14 @@ app.get("/risk/summary", async (req) => {
 });
 
 const pilotApiEnabled = process.env.PILOT_API_ENABLED === "true";
-const forceDeribitTestMode = pilotApiEnabled && process.env.PILOT_FORCE_DERIBIT_TEST_MODE !== "false";
 const deribitEnvRaw = (process.env.DERIBIT_ENV as "testnet" | "live") || "live";
-const deribitEnv: "testnet" | "live" = forceDeribitTestMode ? "testnet" : deribitEnvRaw;
+const deribitEnv: "testnet" | "live" = deribitEnvRaw;
 const deribitHasCredentials = Boolean(
   process.env.DERIBIT_CLIENT_ID && process.env.DERIBIT_CLIENT_SECRET
 );
 const deribitPaperEnv = process.env.DERIBIT_PAPER?.trim().toLowerCase();
-let deribitPaperRequested =
+const deribitPaperRequested =
   deribitPaperEnv !== undefined ? deribitPaperEnv === "true" : deribitEnv !== "live";
-if (forceDeribitTestMode) {
-  deribitPaperRequested = true;
-  if (deribitEnvRaw !== "testnet" || deribitPaperEnv === "false") {
-    console.warn(
-      "[Deribit] Pilot mode forcing DERIBIT_ENV=testnet and DERIBIT_PAPER=true for test-only execution."
-    );
-  }
-}
 const deribitPaper = deribitHasCredentials ? deribitPaperRequested : true;
 if (!deribitHasCredentials && deribitPaperEnv === "false") {
   console.warn(
@@ -2104,6 +2098,8 @@ const deribit = new DeribitConnector(
       }
     : undefined
 );
+const deribitLive = new DeribitConnector("live", true);
+console.log(`[Deribit] Live pricing connector: endpoint=live paper=true (read-only, no credentials)`);
 const executionRegistry = new ExecutionRegistry();
 executionRegistry.register(createDeribitExecutor(deribit));
 executionRegistry.register(createBybitExecutor());
@@ -8165,7 +8161,79 @@ app.post("/hedge/roll", async (req) => {
   };
 });
 
-await registerPilotRoutes(app, { deribit });
+// R2.E — Pilot Agreement §3.1 cap assertion. Verifies env values for
+// notional caps don't exceed agreement maxes. In 'enforce' mode this
+// throws and prevents boot; in 'warn' mode (default) it logs and
+// continues. Set PILOT_CAP_ENFORCEMENT_MODE=enforce on production Render.
+const { assertPilotAgreementCaps } = await import("./pilot/config");
+assertPilotAgreementCaps();
+
+// R7 — Configure outbound alert webhook destinations (Telegram / Slack /
+// Discord / generic). Reads PILOT_ALERT_* env vars; logs which destinations
+// were enabled. Calling this is idempotent.
+const { configureAlertDispatcher } = await import("./pilot/alertDispatcher");
+configureAlertDispatcher();
+
+// PR B (Gap 2) — Configure max-loss circuit breaker from env.
+//   PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT  (default 0.5 = 50%)
+//   PILOT_CIRCUIT_BREAKER_WINDOW_MS     (default 24h)
+//   PILOT_CIRCUIT_BREAKER_COOLDOWN_MS   (default 4h; set 0 for manual-only)
+//   PILOT_CIRCUIT_BREAKER_MIN_SAMPLES   (default 4)
+//   PILOT_CIRCUIT_BREAKER_ENFORCE       (default true; set 'false' for observe-only)
+const { configureCircuitBreaker } = await import("./pilot/circuitBreaker");
+configureCircuitBreaker({
+  maxLossPct: Number(process.env.PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT || "0.5"),
+  windowMs: Number(process.env.PILOT_CIRCUIT_BREAKER_WINDOW_MS || String(24 * 60 * 60 * 1000)),
+  cooldownMs: Number(process.env.PILOT_CIRCUIT_BREAKER_COOLDOWN_MS || String(4 * 60 * 60 * 1000)),
+  minSamplesForTrip: Number(process.env.PILOT_CIRCUIT_BREAKER_MIN_SAMPLES || "4"),
+  enforce: String(process.env.PILOT_CIRCUIT_BREAKER_ENFORCE || "true").toLowerCase() !== "false"
+});
+console.log("[CircuitBreaker] Configured from env");
+
+// R2.F — hedge-budget cap (Foxify Pilot Agreement v2 §3.1).
+// Env vars:
+//   PILOT_LIVE_START_DATE           ISO date, default: null (auto-detect from earliest live execution)
+//   PILOT_HEDGE_BUDGET_CAP_ENABLED  default 'true'
+const { configureHedgeBudgetCap } = await import("./pilot/hedgeBudgetCap");
+configureHedgeBudgetCap({
+  pilotStartIso: process.env.PILOT_LIVE_START_DATE || null,
+  enforce: String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() !== "false"
+});
+console.log(
+  `[HedgeBudgetCap] Configured: enforce=${
+    String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() !== "false"
+  } pilotStart=${process.env.PILOT_LIVE_START_DATE || "(auto)"}`
+);
+
+await registerPilotRoutes(app, { deribit, deribitLive });
+
+const treasuryConfig = parseTreasuryConfig();
+if (treasuryConfig.enabled) {
+  const { getPilotPool } = await import("./pilot/db");
+  const treasuryPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+  const { createPilotVenueAdapter } = await import("./pilot/venue");
+  const treasuryVenue = createPilotVenueAdapter({
+    mode: "deribit_live",
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+    deribit,
+    quoteTtlMs: 30000,
+    deribitQuotePolicy: "ask_or_mark_fallback",
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 3
+  });
+  await registerTreasuryRoutes(app, {
+    pool: treasuryPool,
+    venue: treasuryVenue,
+    deribit,
+    config: treasuryConfig
+  });
+  startTreasuryScheduler({
+    pool: treasuryPool,
+    venue: treasuryVenue,
+    deribit,
+    config: treasuryConfig
+  });
+}
 
 const startServer = async () => {
   try {

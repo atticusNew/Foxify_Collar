@@ -94,6 +94,33 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS tier_name TEXT;
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS drawdown_floor_pct NUMERIC(10,6);
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS floor_price NUMERIC(28,10);
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS sl_pct NUMERIC(10,4);
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS hedge_status TEXT;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS regime TEXT;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS regime_source TEXT;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS dvol_at_purchase NUMERIC(10,4);
+
+    -- Biweekly subscription columns (PR 2 of biweekly cutover, 2026-04-30).
+    -- Pure additive: legacy 1-day rows get tenor_days=1 by default, rest
+    -- nullable. New biweekly rows set tenor_days=14 and the subscription
+    -- billing fields. See services/api/src/pilot/biweeklyPricing.ts for
+    -- the rate table and computeAccumulatedCharge for the billing math.
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS tenor_days INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS daily_rate_usd_per_1k NUMERIC(10,4);
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS accumulated_charge_usd NUMERIC(28,10) NOT NULL DEFAULT 0;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS days_billed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS closed_by TEXT;
+    -- Per CEO direction 2026-04-30: when a biweekly trigger fires, the
+    -- protection closes for the user but the underlying Deribit option
+    -- stays open for the platform (hedge manager owns disposition).
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS hedge_retained_for_platform BOOLEAN NOT NULL DEFAULT FALSE;
+
+    CREATE INDEX IF NOT EXISTS pilot_protections_tenor_open_idx
+      ON pilot_protections (tenor_days, status)
+      WHERE closed_at IS NULL;
+    CREATE INDEX IF NOT EXISTS pilot_protections_user_created_idx
+      ON pilot_protections (user_hash, created_at);
 
     CREATE TABLE IF NOT EXISTS pilot_price_snapshots (
       id TEXT PRIMARY KEY,
@@ -211,6 +238,8 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+
+    ALTER TABLE pilot_sim_positions ADD COLUMN IF NOT EXISTS sl_pct NUMERIC(10,4);
 
     CREATE TABLE IF NOT EXISTS pilot_sim_treasury_ledger (
       id TEXT PRIMARY KEY,
@@ -343,6 +372,31 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS sample_count INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+    -- avg_slippage_usd: per-trade slippage expressed in dollars rather
+    -- than basis points. The bps metric is sensitive to denomination
+    -- because Deribit option ticks (0.0001 BTC) are large fractions of
+    -- cheap deep-OTM puts (e.g., 0.0033 BTC), so a 1-tick fill move
+    -- registers as ~300 bps but is dollar-immaterial (~$0.75). USD
+    -- slippage gives operators an economically interpretable signal
+    -- alongside bps. Backfill is null — only forward fills populate it.
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_slippage_usd NUMERIC(18,8);
+
+    -- avg_strike_gap_usd / avg_strike_gap_pct: how far the selected
+    -- option strike sits from the protection trigger price, in absolute
+    -- dollars and as a fraction of the trigger move. A POSITIVE value
+    -- means OTM (strike worse than trigger from the option's POV — call
+    -- strike above trigger, or put strike below trigger), creating a
+    -- "dead zone" where the platform owes the trader on trigger but
+    -- the hedge isn't paying yet. NEGATIVE value means ITM (strike
+    -- already in-the-money relative to trigger).
+    --
+    -- Why this matters: the c84dbbe9 trade exposed how a +$292 OTM
+    -- gap can turn an 8% TP recovery ratio into a real loss. After
+    -- PR #76 (ITM aggressiveness fix) we expect this metric to trend
+    -- meaningfully more negative for the 2% tier.
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_strike_gap_usd NUMERIC(18,8);
+    ALTER TABLE pilot_execution_quality_daily ADD COLUMN IF NOT EXISTS avg_strike_gap_pct NUMERIC(18,8);
+
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS accepted_ip TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS user_agent TEXT;
     ALTER TABLE pilot_terms_acceptances ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'pilot_web';
@@ -390,6 +444,32 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
   schemaReady = true;
 };
 
+export const resetPilotData = async (pool: Queryable): Promise<{ tablesCleared: string[] }> => {
+  const tables = [
+    "pilot_ledger_entries",
+    "pilot_price_snapshots",
+    "pilot_venue_executions",
+    "pilot_venue_quotes",
+    "pilot_rfq_fills",
+    "pilot_rfq_quotes",
+    "pilot_options_chain_snapshots",
+    "pilot_hedge_decisions",
+    "pilot_execution_quality_daily",
+    "pilot_sim_treasury_ledger",
+    "pilot_sim_positions",
+    "pilot_admin_actions",
+    "pilot_daily_usage",
+    "pilot_daily_treasury_subsidy_usage",
+    "pilot_user_day_locks",
+    "pilot_protections"
+  ];
+  for (const table of tables) {
+    await pool.query(`DELETE FROM ${table}`);
+  }
+  console.log(`[DB] Pilot data reset: ${tables.length} tables cleared`);
+  return { tablesCleared: tables };
+};
+
 export const insertProtection = async (
   pool: Queryable,
   input: {
@@ -399,6 +479,11 @@ export const insertProtection = async (
     status: ProtectionStatus;
     tierName?: string | null;
     drawdownFloorPct?: string | null;
+    slPct?: number | null;
+    hedgeStatus?: string | null;
+    regime?: string | null;
+    regimeSource?: string | null;
+    dvolAtPurchase?: number | null;
     marketId: string;
     protectedNotional: string;
     foxifyExposureNotional: string;
@@ -406,35 +491,93 @@ export const insertProtection = async (
     autoRenew: boolean;
     renewWindowMinutes: number;
     metadata?: Record<string, unknown>;
+    // Biweekly subscription fields (PR 3 of biweekly cutover, 2026-04-30).
+    // Optional and back-compat — when omitted, columns get their schema
+    // defaults (tenor_days=1, dailyRateUsdPer1k=null) so legacy 1-day
+    // callers continue working unchanged.
+    tenorDays?: number;
+    dailyRateUsdPer1k?: string | null;
   }
 ): Promise<ProtectionRecord> => {
   const id = input.id || randomUUID();
-  const result = await pool.query(
-    `
-      INSERT INTO pilot_protections (
-        id, user_hash, hash_version, status, tier_name, drawdown_floor_pct, market_id, protected_notional, foxify_exposure_notional,
-        expiry_at, auto_renew, renew_window_minutes, metadata
-      )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
-      RETURNING *
-    `,
-    [
-      id,
-      input.userHash,
-      input.hashVersion,
-      input.status,
-      input.tierName ?? null,
-      input.drawdownFloorPct ?? null,
-      input.marketId,
-      input.protectedNotional,
-      input.foxifyExposureNotional,
-      input.expiryAt,
-      input.autoRenew,
-      input.renewWindowMinutes,
-      JSON.stringify(input.metadata || {})
-    ]
-  );
-  return mapProtection(result.rows[0]);
+  const v7Meta = {
+    ...(input.metadata || {}),
+    ...(input.slPct != null ? { slPct: input.slPct } : {}),
+    ...(input.hedgeStatus ? { hedgeStatus: input.hedgeStatus } : {}),
+    ...(input.regime ? { regime: input.regime } : {}),
+    ...(input.regimeSource ? { regimeSource: input.regimeSource } : {}),
+    ...(input.dvolAtPurchase != null ? { dvolAtPurchase: input.dvolAtPurchase } : {})
+  };
+  try {
+    const result = await pool.query(
+      `
+        INSERT INTO pilot_protections (
+          id, user_hash, hash_version, status, tier_name, drawdown_floor_pct, sl_pct, hedge_status, regime, regime_source, dvol_at_purchase,
+          market_id, protected_notional, foxify_exposure_notional,
+          expiry_at, auto_renew, renew_window_minutes, metadata,
+          tenor_days, daily_rate_usd_per_1k
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,
+          COALESCE($19::int, 1), $20::numeric)
+        RETURNING *
+      `,
+      [
+        id,
+        input.userHash,
+        input.hashVersion,
+        input.status,
+        input.tierName ?? null,
+        input.drawdownFloorPct ?? null,
+        input.slPct ?? null,
+        input.hedgeStatus ?? null,
+        input.regime ?? null,
+        input.regimeSource ?? null,
+        input.dvolAtPurchase ?? null,
+        input.marketId,
+        input.protectedNotional,
+        input.foxifyExposureNotional,
+        input.expiryAt,
+        input.autoRenew,
+        input.renewWindowMinutes,
+        JSON.stringify(v7Meta),
+        input.tenorDays ?? null,
+        input.dailyRateUsdPer1k ?? null
+      ]
+    );
+    return mapProtection(result.rows[0]);
+  } catch (err: any) {
+    if (String(err?.message || "").includes("column") && String(err?.message || "").includes("does not exist")) {
+      console.warn("[insertProtection] V7 columns not yet migrated, falling back to base insert. V7 fields stored in metadata.");
+      const result = await pool.query(
+        `
+          INSERT INTO pilot_protections (
+            id, user_hash, hash_version, status, tier_name, drawdown_floor_pct,
+            market_id, protected_notional, foxify_exposure_notional,
+            expiry_at, auto_renew, renew_window_minutes, metadata
+          )
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+          RETURNING *
+        `,
+        [
+          id,
+          input.userHash,
+          input.hashVersion,
+          input.status,
+          input.tierName ?? null,
+          input.drawdownFloorPct ?? null,
+          input.marketId,
+          input.protectedNotional,
+          input.foxifyExposureNotional,
+          input.expiryAt,
+          input.autoRenew,
+          input.renewWindowMinutes,
+          JSON.stringify(v7Meta)
+        ]
+      );
+      return mapProtection(result.rows[0]);
+    }
+    throw err;
+  }
 };
 
 export const patchProtection = async (
@@ -539,11 +682,22 @@ export const listProtections = async (
 export const listProtectionsByUserHash = async (
   pool: Queryable,
   userHash: string,
-  opts: { limit?: number } = {}
+  opts: { limit?: number; includeArchived?: boolean } = {}
 ): Promise<ProtectionRecord[]> => {
   const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
+  // Exclude archived rows by default — these are protections retired via the
+  // admin test-reset endpoint (status='cancelled' + metadata.archivedAt set).
+  // Without this filter, the trader-facing /pilot/protections endpoint and
+  // the admin dashboard render rows that have already been cancelled, making
+  // it impossible to verify the test-reset took effect from the UI.
+  // getProtection (single-by-id) intentionally still returns archived rows
+  // so admins can inspect them after the fact.
+  const includeArchived = opts.includeArchived === true;
+  const archivedClause = includeArchived
+    ? ""
+    : ` AND COALESCE(metadata->>'archivedAt', '') = ''`;
   const result = await pool.query(
-    `SELECT * FROM pilot_protections WHERE user_hash = $1 ORDER BY created_at DESC LIMIT $2`,
+    `SELECT * FROM pilot_protections WHERE user_hash = $1${archivedClause} ORDER BY created_at DESC LIMIT $2`,
     [userHash, limit]
   );
   return result.rows.map(mapProtection);
@@ -601,6 +755,171 @@ export const listProtectionsByUserHashForAdmin = async (
   return result.rows.map(mapProtection);
 };
 
+// ─────────────────────────────────────────────────────────────────────
+// Biweekly subscription helpers (PR 2 of biweekly cutover, 2026-04-30)
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Reasons a biweekly subscription can close. Persisted in
+ * pilot_protections.closed_by for audit clarity.
+ */
+export type SubscriptionCloseReason =
+  | "user_close"        // trader explicitly closed via /close endpoint (PR 4)
+  | "trigger"           // protection triggered; closes for user, hedge stays open (PR 4)
+  | "natural_expiry"    // hit BIWEEKLY_MAX_TENOR_DAYS (14d); auto-end (PR 4)
+  | "admin";            // admin-initiated close (rare; emergency)
+
+/**
+ * Mark a biweekly protection as closed. Sets closed_at, closed_by,
+ * accumulated_charge_usd, days_billed, and the new status. Optional
+ * hedgeRetainedForPlatform flag (true when trigger fires — per CEO
+ * direction the protection ends for the user but the hedge stays
+ * open for us).
+ *
+ * Returns true if the row was updated, false if not found OR already
+ * closed (closed_at IS NOT NULL). The "already closed" case is
+ * idempotent-friendly: callers can safely retry without double-billing.
+ *
+ * Bills math is computed by the caller (see biweeklyPricing.
+ * computeAccumulatedCharge) so this helper stays a pure DB write.
+ */
+export const markProtectionClosed = async (
+  pool: Queryable,
+  params: {
+    protectionId: string;
+    closedAtIso: string;
+    closedBy: SubscriptionCloseReason;
+    accumulatedChargeUsd: string;  // Decimal string
+    daysBilled: number;
+    newStatus: ProtectionStatus;   // typically "cancelled" for user_close, "triggered" for trigger, "expired_otm" for natural
+    hedgeRetainedForPlatform?: boolean;
+  }
+): Promise<boolean> => {
+  const result = await pool.query(
+    `UPDATE pilot_protections
+     SET status = $2,
+         closed_at = $3::timestamptz,
+         closed_by = $4,
+         accumulated_charge_usd = $5::numeric,
+         days_billed = $6,
+         hedge_retained_for_platform = COALESCE($7, hedge_retained_for_platform),
+         updated_at = NOW()
+     WHERE id = $1
+       AND closed_at IS NULL`,
+    [
+      params.protectionId,
+      params.newStatus,
+      params.closedAtIso,
+      params.closedBy,
+      params.accumulatedChargeUsd,
+      params.daysBilled,
+      params.hedgeRetainedForPlatform ?? null
+    ]
+  );
+  return (result.rowCount ?? 0) > 0;
+};
+
+/**
+ * List active biweekly protections (tenor_days >= 2 AND closed_at IS NULL).
+ * Used by:
+ *   - The daily charge ticker (PR 4) to refresh accumulated charge
+ *   - The natural-expiry sweep (PR 4) to close out 14-day-old subscriptions
+ *   - Admin views
+ *
+ * Filters out legacy 1-day rows and any already-closed subscriptions.
+ */
+export const listOpenBiweeklyProtections = async (
+  pool: Queryable,
+  opts: { limit?: number } = {}
+): Promise<ProtectionRecord[]> => {
+  const limit = Math.max(1, Math.min(opts.limit ?? 500, 1000));
+  const result = await pool.query(
+    `SELECT *
+     FROM pilot_protections
+     WHERE tenor_days >= 2
+       AND closed_at IS NULL
+     ORDER BY created_at ASC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows.map(mapProtection);
+};
+
+/**
+ * Count protections opened by a given user in the last 24 hours.
+ * Used by the 1-trade-per-day guard in the activate endpoint (PR 3).
+ *
+ * Window is rolling 24h ending at `now` (default Date.now()), NOT a
+ * calendar day, so the trader can't re-trade by waiting for midnight
+ * UTC after a recent open. Trade #1 at 23:00 UTC + trade #2 attempt
+ * at 23:30 UTC = blocked; trade #2 attempt at 23:01 UTC next day = allowed.
+ */
+export const countActivationsInLast24h = async (
+  pool: Queryable,
+  userHash: string,
+  nowMs: number = Date.now()
+): Promise<number> => {
+  const cutoffIso = new Date(nowMs - 24 * 60 * 60 * 1000).toISOString();
+  // Exclude synthetic test protections (created via
+  // /pilot/admin/protections/synthetic) from the daily-activation
+  // guard. Synthetic rows are testing artifacts, not real trades, and
+  // counting them blocks operators from running a real trade after
+  // creating a test position. Tagged via metadata.synthetic=true at
+  // insert time.
+  const result = await pool.query(
+    `SELECT COUNT(*)::int AS n
+     FROM pilot_protections
+     WHERE user_hash = $1
+       AND created_at >= $2::timestamptz
+       AND COALESCE((metadata->>'synthetic')::boolean, false) = false`,
+    [userHash, cutoffIso]
+  );
+  return Number(result.rows[0]?.n ?? 0);
+};
+
+/**
+ * Lightweight helper: read just the days-billed-related fields for
+ * a protection. Used by the close endpoint (PR 4) to compute the
+ * accumulated charge based on actual days held, without pulling the
+ * full ProtectionRecord. Returns null if not found.
+ */
+export const getProtectionSubscriptionState = async (
+  pool: Queryable,
+  protectionId: string
+): Promise<{
+  protectionId: string;
+  tenorDays: number;
+  dailyRateUsdPer1k: string | null;
+  protectedNotional: string;
+  slPct: number | null;
+  createdAtIso: string;
+  closedAtIso: string | null;
+  status: ProtectionStatus;
+} | null> => {
+  const result = await pool.query(
+    `SELECT id, tenor_days, daily_rate_usd_per_1k, protected_notional,
+            sl_pct, created_at, closed_at, status
+     FROM pilot_protections
+     WHERE id = $1`,
+    [protectionId]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    protectionId: String(row.id),
+    tenorDays: row.tenor_days === null || row.tenor_days === undefined ? 1 : Number(row.tenor_days),
+    dailyRateUsdPer1k:
+      row.daily_rate_usd_per_1k === null || row.daily_rate_usd_per_1k === undefined
+        ? null
+        : String(row.daily_rate_usd_per_1k),
+    protectedNotional: String(row.protected_notional),
+    slPct: row.sl_pct === null || row.sl_pct === undefined ? null : Number(row.sl_pct),
+    createdAtIso: new Date(String(row.created_at)).toISOString(),
+    closedAtIso: row.closed_at ? new Date(String(row.closed_at)).toISOString() : null,
+    status: row.status as ProtectionStatus
+  };
+};
+
 export const archiveProtectionsByUserHashExcept = async (
   pool: Queryable,
   input: {
@@ -655,6 +974,106 @@ export const archiveProtectionsByUserHashExcept = async (
   return archivedCount;
 };
 
+/**
+ * Surgical admin reset for paper-test protections. Archives a specific list
+ * of protections by ID, releases their daily-usage allocation back into the
+ * cap pool, and stamps audit metadata. Unlike the heavy `resetPilotData`,
+ * this:
+ *   - leaves `pilot_execution_quality_daily`, `pilot_ledger_entries`,
+ *     `pilot_hedge_decisions`, `pilot_admin_actions`,
+ *     `pilot_venue_executions`, and the unaffected protections intact
+ *   - lets paper-testing release the aggregate-active and per-tier-daily
+ *     caps mid-pilot without destroying audit data
+ *
+ * Returns details for the audit log: which IDs were archived and how much
+ * notional was released against the daily-usage table, partitioned by
+ * UTC day.
+ */
+export const archiveTestProtectionsByIds = async (
+  pool: Queryable,
+  input: {
+    userHash: string;
+    protectionIds: string[];
+    actor: string;
+    reason?: string;
+  }
+): Promise<{
+  archivedCount: number;
+  archivedIds: string[];
+  releasedDailyByDay: Array<{ dayStart: string; notional: string }>;
+}> => {
+  if (!input.protectionIds || input.protectionIds.length === 0) {
+    return { archivedCount: 0, archivedIds: [], releasedDailyByDay: [] };
+  }
+  const archivedAt = new Date().toISOString();
+  const reason = String(input.reason || "admin_test_reset");
+  const actor = String(input.actor || "admin");
+  // Build an IN list with one bind per id. We avoid `ANY($2::text[])`
+  // because the in-memory DB used in tests does not unify text[] coercion
+  // with our id strings; production Postgres handles either.
+  const idParams = input.protectionIds.map((_, idx) => `$${idx + 2}`).join(", ");
+  const candidates = await pool.query(
+    `
+      SELECT id, metadata, protected_notional::text AS protected_notional, created_at
+      FROM pilot_protections
+      WHERE user_hash = $1
+        AND id IN (${idParams})
+        AND COALESCE(metadata->>'archivedAt', '') = ''
+    `,
+    [input.userHash, ...input.protectionIds]
+  );
+  const archivedIds: string[] = [];
+  const releaseByDay = new Map<string, number>();
+  for (const row of candidates.rows) {
+    const metadata = toRecord(row.metadata);
+    const merged = {
+      ...metadata,
+      archivedAt,
+      archivedReason: reason,
+      archivedBy: actor,
+      archivedFromStatus: metadata.status || null
+    };
+    const updated = await pool.query(
+      `
+        UPDATE pilot_protections
+        SET metadata = $1::jsonb,
+            status = 'cancelled',
+            updated_at = NOW()
+        WHERE id = $2
+      `,
+      [JSON.stringify(merged), String(row.id)]
+    );
+    if (Number(updated.rowCount || 0) > 0) {
+      archivedIds.push(String(row.id));
+      const dayStart = new Date(String(row.created_at));
+      dayStart.setUTCHours(0, 0, 0, 0);
+      const dayKey = dayStart.toISOString().slice(0, 10);
+      const notional = Number(row.protected_notional) || 0;
+      releaseByDay.set(dayKey, (releaseByDay.get(dayKey) || 0) + notional);
+    }
+  }
+  const releasedDailyByDay: Array<{ dayStart: string; notional: string }> = [];
+  for (const [dayStart, notional] of releaseByDay.entries()) {
+    if (notional > 0) {
+      await pool.query(
+        `
+          UPDATE pilot_daily_usage
+          SET used_notional = GREATEST(0, used_notional - $3::numeric)
+          WHERE user_hash = $1
+            AND day_start = $2::date
+        `,
+        [input.userHash, dayStart, String(notional)]
+      );
+      releasedDailyByDay.push({ dayStart, notional: String(notional) });
+    }
+  }
+  return {
+    archivedCount: archivedIds.length,
+    archivedIds,
+    releasedDailyByDay
+  };
+};
+
 export const getDailyProtectedNotionalForUser = async (
   pool: Queryable,
   userHash: string,
@@ -670,6 +1089,160 @@ export const getDailyProtectedNotionalForUser = async (
         AND created_at < $3::timestamptz
     `,
     [userHash, dayStartIso, dayEndIso]
+  );
+  return String(result.rows[0]?.total || "0");
+};
+
+/**
+ * R2.B — Sum the protected_notional of all currently-OPEN protections for a
+ * user (statuses where Atticus is still on the hook for the position).
+ *
+ * Used by the activate path to enforce the Pilot Agreement §3.1 cap on
+ * "maximum aggregate active notional" — without it, a trader could roll
+ * forward on Day 8 of the pilot when the daily cap jumps to $500k and
+ * accumulate $1M+ of active protections during rollover windows.
+ *
+ * "Open" = status in (active, pending_activation, triggered):
+ *   - active:              currently protecting; Atticus owes payout if floor breached
+ *   - pending_activation:  in-flight activate; reserves its slot defensively
+ *   - triggered:           floor was hit; payout owed but not yet settled
+ *
+ * Note: this is a non-atomic SUM-then-decide check. The activate path
+ * runs it inside the same transaction as the daily-cap reservation so
+ * that two simultaneous activations cannot both pass the check; if the
+ * second one passed the SUM but the first one's INSERT happened in
+ * between, Postgres serializes the transactions and the second sees the
+ * first's row. Acceptable at single-user / low-throughput pilot scale.
+ */
+export const sumActiveProtectionNotional = async (
+  pool: Queryable,
+  userHash: string
+): Promise<string> => {
+  // Excludes archived rows (metadata.archivedAt). Only admin test-reset
+  // sets archivedAt; normal user-facing flows never do, so this filter
+  // is a no-op for production usage. It exists so test-reset can
+  // release the aggregate-active cap on demand.
+  const result = await pool.query(
+    `
+      SELECT COALESCE(SUM(protected_notional), 0)::text AS total
+      FROM pilot_protections
+      WHERE user_hash = $1
+        AND status IN ('active', 'pending_activation', 'triggered')
+        AND COALESCE(metadata->>'archivedAt', '') = ''
+    `,
+    [userHash]
+  );
+  return String(result.rows[0]?.total || "0");
+};
+
+/**
+ * R2.F (added 2026-04-23, fixed 2026-04-23 v2) — Cumulative hedge-cost
+ * sum since pilot start.
+ *
+ * Sums the REAL-MONEY cost (Atticus's actual Deribit spend) of all
+ * BUY-side venue executions since the pilot start date. Used to enforce
+ * the Foxify Pilot Agreement v2 §3.1 hedge-budget cap schedule:
+ *   Day 1-2:  $100
+ *   Day 3-7:  $1,000
+ *   Day 8-21: $10,000
+ *   Day 22+:  no cap
+ *
+ * IMPORTANT — what column to sum:
+ *   pilot_venue_executions.premium           = client-facing premium
+ *                                              (e.g. $30 for 5%/$10k)
+ *   pilot_venue_executions.execution_price   = per-contract Deribit
+ *                                              fill cost in USD
+ *                                              (e.g. $54.79 for 0.1 BTC
+ *                                              option at 0.0007 BTC ask)
+ *   total real Deribit cost = execution_price * quantity
+ *                            (~$5.48 for the same trade)
+ *
+ * The first version of this function summed `premium`, which is
+ * client-facing premium NOT real hedge cost. That gave roughly 10×
+ * inflated numbers and blew the cap on day 1.
+ *
+ * IMPORTANT — what counts as "real":
+ *   The venue label alone is unreliable. When PILOT_VENUE_MODE=deribit_live
+ *   was set but DERIBIT_PAPER=true, paper-mode fills were tagged with
+ *   venue='deribit_live' anyway (the live adapter wraps the test adapter
+ *   and rewrites the venue label). The structured signal that an
+ *   execution was a REAL Deribit fill lives in the details.raw.testnet
+ *   field of real responses (false=mainnet) vs the details.raw.status
+ *   field of paper responses ('paper_filled' or 'paper_rejected').
+ *
+ *   We filter:
+ *     details->'raw'->>'testnet' = 'false'  -- real Deribit response
+ *     AND details->'raw'->>'status' is not a paper sentinel
+ *
+ *   This catches all real fills cleanly even on rows from before this
+ *   distinction was clarified.
+ *
+ * Counts only BUY executions (cash outflow). SELL executions (TP
+ * recoveries) are NOT netted off — the cap bounds GROSS hedge spend,
+ * which is the right risk metric for a controlled rollout.
+ */
+export const sumLiveHedgeCostUsdSince = async (
+  pool: Queryable,
+  startMsEpoch: number
+): Promise<number> => {
+  const startIso = new Date(startMsEpoch).toISOString();
+  const result = await pool.query(
+    `
+      SELECT
+        COALESCE(SUM(execution_price::numeric * quantity::numeric), 0)::text AS total
+      FROM pilot_venue_executions
+      WHERE LOWER(side) = 'buy'
+        AND status = 'success'
+        AND created_at >= $1::timestamptz
+        -- Only count REAL Deribit fills, not paper-mode fills that
+        -- happened to be tagged with venue='deribit_live'. The
+        -- details.raw.testnet=false signal is set by Deribit on real
+        -- mainnet responses; paper responses have status='paper_filled'
+        -- with no testnet field.
+        AND (details->'raw'->>'testnet') = 'false'
+        AND COALESCE(details->'raw'->>'status', '') NOT IN ('paper_filled', 'paper_rejected')
+    `,
+    [startIso]
+  );
+  const v = Number(result.rows[0]?.total || "0");
+  return Number.isFinite(v) ? v : 0;
+};
+
+/**
+ * R2.D — Per-tier daily new-protection notional summed across the day so
+ * far for one user. Used to enforce a per-SL-tier concentration sub-cap
+ * (e.g., max 60% of the daily cap may be in any single SL tier).
+ *
+ * Per the R1 analysis, tier-concentration is the dominant economic risk
+ * (the −$2,127 paper event was 8 of 9 trades in the same SL 2% tier on
+ * the same strike firing simultaneously). The Pilot Agreement does not
+ * require this cap; it's defense-in-depth.
+ *
+ * Returns the sum for one specific SL tier identifier (sl_pct integer
+ * value, e.g. 2 / 3 / 5 / 10) over the calendar day.
+ */
+export const getDailyTierUsageForUser = async (
+  pool: Queryable,
+  userHash: string,
+  slPct: number,
+  dayStartIso: string,
+  dayEndIso: string
+): Promise<string> => {
+  // Excludes rows that have been explicitly archived (metadata.archivedAt set).
+  // Only the admin test-reset endpoint sets archivedAt today; ordinary
+  // cancellations do not, so this filter is a no-op for normal user flows.
+  // It exists so test-reset can release per-tier daily cap on demand.
+  const result = await pool.query(
+    `
+      SELECT COALESCE(SUM(protected_notional), 0)::text AS total
+      FROM pilot_protections
+      WHERE user_hash = $1
+        AND sl_pct = $2
+        AND created_at >= $3::timestamptz
+        AND created_at < $4::timestamptz
+        AND COALESCE(metadata->>'archivedAt', '') = ''
+    `,
+    [userHash, slPct, dayStartIso, dayEndIso]
   );
   return String(result.rows[0]?.total || "0");
 };
@@ -1153,13 +1726,25 @@ export const upsertExecutionQualityDaily = async (
       ? { avgLatencyMs: toNullableString(input.avgLatencyMs) }
       : {})
   };
+  // The pilot_execution_quality_daily.id column is TEXT PRIMARY KEY with no
+  // DEFAULT (see schema definition above). The original upsert omitted `id`,
+  // which produced a silent NOT NULL violation on every activation:
+  //   "[Activate] Execution quality upsert failed: null value in column \"id\"
+  //    of relation \"pilot_execution_quality_daily\" violates not-null
+  //    constraint"
+  // Activations themselves succeeded (the caller catches this error and
+  // logs it without rolling back the trade), but the diagnostics rollup
+  // stayed empty across the entire pilot. Fix: generate a UUID in code
+  // and include it in the INSERT. Identity for ON CONFLICT remains the
+  // composite UNIQUE (day, venue, hedge_mode) — `id` is purely a row PK.
+  const id = randomUUID();
   await pool.query(
     `
       INSERT INTO pilot_execution_quality_daily (
-        day, venue, hedge_mode, avg_slippage_bps, p95_slippage_bps, fill_success_rate_pct,
+        id, day, venue, hedge_mode, avg_slippage_bps, p95_slippage_bps, fill_success_rate_pct,
         avg_spread_pct, avg_top_book_depth, sample_count, metadata
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
       ON CONFLICT (day, venue, hedge_mode) DO UPDATE SET
         avg_slippage_bps = EXCLUDED.avg_slippage_bps,
         p95_slippage_bps = EXCLUDED.p95_slippage_bps,
@@ -1167,9 +1752,11 @@ export const upsertExecutionQualityDaily = async (
         avg_spread_pct = EXCLUDED.avg_spread_pct,
         avg_top_book_depth = EXCLUDED.avg_top_book_depth,
         sample_count = EXCLUDED.sample_count,
-        metadata = EXCLUDED.metadata
+        metadata = EXCLUDED.metadata,
+        updated_at = NOW()
     `,
     [
+      id,
       day,
       input.venue,
       input.hedgeMode,
@@ -1179,6 +1766,308 @@ export const upsertExecutionQualityDaily = async (
       toNullableString(input.avgSpreadPct),
       toNullableString(input.avgTopBookDepth),
       sampleCount,
+      JSON.stringify(metadata)
+    ]
+  );
+};
+
+/**
+ * Append a single per-trade observation to the daily rollup row, accumulating:
+ *  - sample_count        sums by 1
+ *  - quotes/fills/rejects accumulate in metadata
+ *  - avg_slippage_bps    weighted-average across all observations on that day
+ *  - avg_spread_pct      weighted-average across all observations on that day
+ *  - avg_top_book_depth  weighted-average across all observations on that day
+ *  - fill_success_rate_pct  recomputed from running sum of fills/quotes
+ *  - p95_slippage_bps    recomputed from a per-trade slippage array kept in metadata.slippageSamples
+ *  - per-trade audit trail in metadata.tradeIds (capped at 200 entries)
+ *  - latest protectionId / quoteId always overwrites for traceability of the most recent fill
+ *  - updated_at advances on every call
+ *
+ * Use this from the activate path (one observation per successful activation).
+ * For backfill (where each input row is already an aggregate), continue to use
+ * upsertExecutionQualityDaily which has overwrite semantics.
+ *
+ * Identity for ON CONFLICT remains the composite UNIQUE (day, venue, hedge_mode);
+ * the id column is filled with a generated UUID on first insert and preserved
+ * on subsequent updates.
+ */
+export const incrementExecutionQualityDaily = async (
+  pool: Queryable,
+  input: {
+    day?: string;
+    dayIso?: string;
+    venue: string;
+    hedgeMode: HedgeMode;
+    /** This single trade's slippage in bps. Aggregator computes daily weighted avg + p95. */
+    slippageBps: number;
+    /**
+     * This single trade's slippage in USD (signed; negative = filled
+     * cheaper than quoted, in our favor). Optional — when omitted, the
+     * USD aggregate carries forward the prior value. Used because the
+     * bps metric is sensitive to denomination (Deribit option ticks
+     * are a large fraction of cheap deep-OTM put quotes).
+     */
+    slippageUsd?: number;
+    /**
+     * Strike-floor gap diagnostics, in absolute USD and as fraction of
+     * the trigger move. Positive = OTM (gap creates a dead-zone in
+     * which platform owes payout but hedge doesn't pay). Negative = ITM
+     * (hedge already in-the-money at trigger fire). Optional; null on
+     * legacy callers.
+     */
+    strikeGapUsd?: number;
+    strikeGapPct?: number;
+    /**
+     * "long" or "short" — direction-stratified roll-ups for SHORT-vs-LONG
+     * empirical comparison. Stored in metadata.directionalRollup so we
+     * can answer "what's the average TP recovery on SHORT vs LONG?"
+     * without rebuilding from per-trade rows.
+     */
+    protectionType?: "long" | "short";
+    /** This single trade's quote→fill latency in ms. Aggregator computes daily avg. */
+    latencyMs?: number;
+    /** This single trade's quote spread, if known (otherwise undefined). */
+    spreadPct?: number;
+    /** Top-of-book depth observed at fill time, if known. */
+    topBookDepth?: number;
+    /** True if the activation produced a fill; false if it was a quote-only / reject. */
+    filled: boolean;
+    /** Optional cross-references for audit. */
+    protectionId?: string;
+    quoteId?: string;
+    /** Free-form notes merged into metadata. */
+    notes?: Record<string, unknown>;
+  }
+): Promise<void> => {
+  const dayRaw = String(input.day || input.dayIso || "").trim();
+  if (!dayRaw) throw new Error("invalid_execution_quality_day");
+  const day = dayRaw.slice(0, 10);
+  const id = randomUUID();
+  const slip = Number.isFinite(Number(input.slippageBps)) ? Number(input.slippageBps) : 0;
+  const filled = !!input.filled;
+  const quotesDelta = 1;
+  const fillsDelta = filled ? 1 : 0;
+  const rejectsDelta = filled ? 0 : 1;
+
+  // Read existing row (single row per day/venue/hedge_mode key) so we can
+  // recompute aggregates in code. This is two round-trips per activation, but
+  // activate is already a multi-step path and the alternative (computing in
+  // SQL with jsonb arithmetic) becomes hard to reason about for percentile
+  // and array-append semantics. Two round-trips is acceptable at pilot
+  // throughput.
+  const existing = await pool.query(
+    `SELECT sample_count, avg_slippage_bps, avg_slippage_usd, avg_spread_pct, avg_top_book_depth,
+            avg_strike_gap_usd, avg_strike_gap_pct, metadata
+     FROM pilot_execution_quality_daily
+     WHERE day = $1 AND venue = $2 AND hedge_mode = $3
+     LIMIT 1`,
+    [day, input.venue, input.hedgeMode]
+  );
+
+  const prev = existing.rows[0] as
+    | {
+        sample_count: number | string;
+        avg_slippage_bps: string | null;
+        avg_slippage_usd: string | null;
+        avg_spread_pct: string | null;
+        avg_top_book_depth: string | null;
+        avg_strike_gap_usd: string | null;
+        avg_strike_gap_pct: string | null;
+        metadata: Record<string, unknown> | null;
+      }
+    | undefined;
+
+  const prevN = prev ? Math.max(0, Math.floor(Number(prev.sample_count) || 0)) : 0;
+  const prevMeta = (prev?.metadata || {}) as Record<string, unknown>;
+  const prevQuotes = Math.max(0, Math.floor(Number((prevMeta as any).quotes || 0)));
+  const prevFills = Math.max(0, Math.floor(Number((prevMeta as any).fills || 0)));
+  const prevRejects = Math.max(0, Math.floor(Number((prevMeta as any).rejects || 0)));
+  const prevSlippageSamples = Array.isArray((prevMeta as any).slippageSamples)
+    ? ((prevMeta as any).slippageSamples as number[]).filter((n) => Number.isFinite(n))
+    : [];
+  const prevTradeIds = Array.isArray((prevMeta as any).tradeIds)
+    ? ((prevMeta as any).tradeIds as Array<Record<string, unknown>>)
+    : [];
+  const prevAvgLatencyMs = Number.isFinite(Number((prevMeta as any).avgLatencyMs))
+    ? Number((prevMeta as any).avgLatencyMs)
+    : null;
+
+  const newN = prevN + 1;
+
+  // Quote/fill/reject counters always advance.
+  const newQuotes = prevQuotes + quotesDelta;
+  const newFills = prevFills + fillsDelta;
+  const newRejects = prevRejects + rejectsDelta;
+  const newFillRatePct = newQuotes > 0 ? (newFills / newQuotes) * 100 : null;
+
+  // Slippage / spread / top-book-depth are only meaningful for FILLED trades.
+  // A reject contributes nothing to the slippage distribution (no fill happened),
+  // so we exclude it from weighted averages and from the p95 sample array.
+  // Without this guard, a reject would push slip=0 into the array and dilute
+  // both avg_slippage_bps and p95_slippage_bps toward zero, masking real fill
+  // quality issues.
+  const fillsForAvg = prevFills; // weighted-avg denominator for previous fills
+  const newFillsForAvg = newFills;
+
+  const weighted = (
+    prevAvg: string | null | undefined,
+    sample: number | undefined,
+    countPrev: number,
+    countNew: number
+  ): number | null => {
+    if (sample === undefined || !Number.isFinite(sample)) {
+      return prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+    }
+    if (countNew <= 0) return null;
+    const prevNum = prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+    if (prevNum === null || countPrev <= 0) return sample;
+    return (prevNum * countPrev + sample) / countNew;
+  };
+
+  const newAvgSlippageBps = filled
+    ? (weighted(prev?.avg_slippage_bps, slip, fillsForAvg, newFillsForAvg) ?? 0)
+    : (prev?.avg_slippage_bps ? Number(prev.avg_slippage_bps) : 0);
+  const slipUsd = Number.isFinite(Number(input.slippageUsd)) ? Number(input.slippageUsd) : undefined;
+  const newAvgSlippageUsd = filled
+    ? weighted(prev?.avg_slippage_usd, slipUsd, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_slippage_usd ? Number(prev.avg_slippage_usd) : null);
+  const newAvgSpreadPct = filled
+    ? weighted(prev?.avg_spread_pct, input.spreadPct, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_spread_pct ? Number(prev.avg_spread_pct) : null);
+  const newAvgTopBookDepth = filled
+    ? weighted(prev?.avg_top_book_depth, input.topBookDepth, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_top_book_depth ? Number(prev.avg_top_book_depth) : null);
+  const gapUsd = Number.isFinite(Number(input.strikeGapUsd)) ? Number(input.strikeGapUsd) : undefined;
+  const gapPct = Number.isFinite(Number(input.strikeGapPct)) ? Number(input.strikeGapPct) : undefined;
+  const newAvgStrikeGapUsd = filled
+    ? weighted(prev?.avg_strike_gap_usd, gapUsd, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_strike_gap_usd ? Number(prev.avg_strike_gap_usd) : null);
+  const newAvgStrikeGapPct = filled
+    ? weighted(prev?.avg_strike_gap_pct, gapPct, fillsForAvg, newFillsForAvg)
+    : (prev?.avg_strike_gap_pct ? Number(prev.avg_strike_gap_pct) : null);
+
+  // Append slippage sample only on fills (cap at 500 to bound row size); recompute p95.
+  const slippageSamples = filled
+    ? [...prevSlippageSamples, slip].slice(-500)
+    : prevSlippageSamples;
+  const sortedSamples = [...slippageSamples].sort((a, b) => a - b);
+  const p95Idx = Math.min(
+    sortedSamples.length - 1,
+    Math.max(0, Math.floor(0.95 * (sortedSamples.length - 1)))
+  );
+  const newP95SlippageBps = sortedSamples.length > 0 ? sortedSamples[p95Idx] : null;
+
+  // Append trade-id audit (cap at 200).
+  const tradeAudit: Record<string, unknown> = { ts: new Date().toISOString() };
+  if (input.protectionId) tradeAudit.protectionId = input.protectionId;
+  if (input.quoteId) tradeAudit.quoteId = input.quoteId;
+  if (input.latencyMs !== undefined && Number.isFinite(input.latencyMs)) {
+    tradeAudit.latencyMs = Math.max(0, Math.floor(input.latencyMs));
+  }
+  tradeAudit.slippageBps = slip;
+  if (slipUsd !== undefined) tradeAudit.slippageUsd = slipUsd;
+  if (gapUsd !== undefined) tradeAudit.strikeGapUsd = gapUsd;
+  if (gapPct !== undefined) tradeAudit.strikeGapPct = gapPct;
+  if (input.protectionType) tradeAudit.protectionType = input.protectionType;
+  tradeAudit.filled = filled;
+  const tradeIds = [...prevTradeIds, tradeAudit].slice(-200);
+
+  // Per-direction roll-up (LONG vs SHORT) so we can answer "what's the
+  // avg recovery on SHORT vs LONG?" without rebuilding from per-trade
+  // tradeIds. Stored under metadata.directionalRollup.{long,short} —
+  // each side carries fills, avgSlippageBps, avgSlippageUsd,
+  // avgStrikeGapUsd. Updated only when input.protectionType is set.
+  const prevDirRollup = (prevMeta as any).directionalRollup || {};
+  const directionalRollup: Record<string, Record<string, unknown>> = {
+    long: { ...(prevDirRollup.long || {}) },
+    short: { ...(prevDirRollup.short || {}) }
+  };
+  if (filled && input.protectionType) {
+    const dirKey = input.protectionType;
+    const prevDir = (directionalRollup[dirKey] || {}) as Record<string, unknown>;
+    const prevDirFills = Number(prevDir.fills || 0);
+    const newDirFills = prevDirFills + 1;
+    const dirWeighted = (prevAvg: unknown, sample: number | undefined, prevN: number, newN: number): number | null => {
+      if (sample === undefined || !Number.isFinite(sample)) {
+        return prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+      }
+      if (newN <= 0) return null;
+      const prevNum = prevAvg === null || prevAvg === undefined ? null : Number(prevAvg);
+      if (prevNum === null || prevDirFills <= 0) return sample;
+      return (prevNum * prevN + sample) / newN;
+    };
+    directionalRollup[dirKey] = {
+      fills: newDirFills,
+      avgSlippageBps: dirWeighted(prevDir.avgSlippageBps, slip, prevDirFills, newDirFills),
+      avgSlippageUsd: dirWeighted(prevDir.avgSlippageUsd, slipUsd, prevDirFills, newDirFills),
+      avgStrikeGapUsd: dirWeighted(prevDir.avgStrikeGapUsd, gapUsd, prevDirFills, newDirFills),
+      avgStrikeGapPct: dirWeighted(prevDir.avgStrikeGapPct, gapPct, prevDirFills, newDirFills)
+    };
+  }
+
+  // Running average latency, computed across FILLED trades only (rejects don't
+  // produce a meaningful "fill latency" — they may have failed before any
+  // venue round-trip happened, or after a long timeout that's not representative
+  // of normal fill behavior). Counters always advance so fill rate stays right.
+  const latencyMs = filled && Number.isFinite(Number(input.latencyMs)) ? Number(input.latencyMs) : null;
+  const newAvgLatencyMs =
+    latencyMs === null
+      ? prevAvgLatencyMs
+      : prevAvgLatencyMs === null || fillsForAvg <= 0
+        ? latencyMs
+        : (prevAvgLatencyMs * fillsForAvg + latencyMs) / newFillsForAvg;
+
+  const metadata = {
+    ...prevMeta,
+    ...(input.notes || {}),
+    quotes: newQuotes,
+    fills: newFills,
+    rejects: newRejects,
+    avgLatencyMs: newAvgLatencyMs === null ? null : String(newAvgLatencyMs),
+    slippageSamples,
+    tradeIds,
+    directionalRollup,
+    // Latest-trade traceability fields (always overwritten):
+    lastProtectionId: input.protectionId ?? (prevMeta as any).lastProtectionId ?? null,
+    lastQuoteId: input.quoteId ?? (prevMeta as any).lastQuoteId ?? null,
+    lastUpdatedAt: new Date().toISOString()
+  };
+
+  await pool.query(
+    `
+      INSERT INTO pilot_execution_quality_daily (
+        id, day, venue, hedge_mode, avg_slippage_bps, avg_slippage_usd, p95_slippage_bps, fill_success_rate_pct,
+        avg_spread_pct, avg_top_book_depth, avg_strike_gap_usd, avg_strike_gap_pct, sample_count, metadata
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
+      ON CONFLICT (day, venue, hedge_mode) DO UPDATE SET
+        avg_slippage_bps      = EXCLUDED.avg_slippage_bps,
+        avg_slippage_usd      = EXCLUDED.avg_slippage_usd,
+        p95_slippage_bps      = EXCLUDED.p95_slippage_bps,
+        fill_success_rate_pct = EXCLUDED.fill_success_rate_pct,
+        avg_spread_pct        = EXCLUDED.avg_spread_pct,
+        avg_top_book_depth    = EXCLUDED.avg_top_book_depth,
+        avg_strike_gap_usd    = EXCLUDED.avg_strike_gap_usd,
+        avg_strike_gap_pct    = EXCLUDED.avg_strike_gap_pct,
+        sample_count          = EXCLUDED.sample_count,
+        metadata              = EXCLUDED.metadata,
+        updated_at            = NOW()
+    `,
+    [
+      id,
+      day,
+      input.venue,
+      input.hedgeMode,
+      String(newAvgSlippageBps),
+      newAvgSlippageUsd === null ? null : String(newAvgSlippageUsd),
+      newP95SlippageBps === null ? null : String(newP95SlippageBps),
+      newFillRatePct === null ? null : String(newFillRatePct),
+      newAvgSpreadPct === null ? null : String(newAvgSpreadPct),
+      newAvgTopBookDepth === null ? null : String(newAvgTopBookDepth),
+      newAvgStrikeGapUsd === null ? null : String(newAvgStrikeGapUsd),
+      newAvgStrikeGapPct === null ? null : String(newAvgStrikeGapPct),
+      newN,
       JSON.stringify(metadata)
     ]
   );
@@ -1208,10 +2097,13 @@ export const listExecutionQualityRecent = async (
     venue: String(row.venue),
     hedgeMode: String(row.hedge_mode) as HedgeMode,
     avgSlippageBps: row.avg_slippage_bps === null ? null : String(row.avg_slippage_bps),
+    avgSlippageUsd: row.avg_slippage_usd === null || row.avg_slippage_usd === undefined ? null : String(row.avg_slippage_usd),
     p95SlippageBps: row.p95_slippage_bps === null ? null : String(row.p95_slippage_bps),
     fillSuccessRatePct: row.fill_success_rate_pct === null ? null : String(row.fill_success_rate_pct),
     avgSpreadPct: row.avg_spread_pct === null ? null : String(row.avg_spread_pct),
     avgTopBookDepth: row.avg_top_book_depth === null ? null : String(row.avg_top_book_depth),
+    avgStrikeGapUsd: row.avg_strike_gap_usd === null || row.avg_strike_gap_usd === undefined ? null : String(row.avg_strike_gap_usd),
+    avgStrikeGapPct: row.avg_strike_gap_pct === null || row.avg_strike_gap_pct === undefined ? null : String(row.avg_strike_gap_pct),
     sampleCount: Number(row.sample_count || 0),
     metadata: toRecord(row.metadata),
     updatedAt: new Date(String(row.updated_at)).toISOString()
@@ -2239,6 +3131,11 @@ const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({
   tierName: row.tier_name ? String(row.tier_name) : null,
   drawdownFloorPct: row.drawdown_floor_pct === null ? null : String(row.drawdown_floor_pct),
   floorPrice: row.floor_price === null ? null : String(row.floor_price),
+  slPct: row.sl_pct === null || row.sl_pct === undefined ? null : Number(row.sl_pct),
+  hedgeStatus: row.hedge_status ? String(row.hedge_status) : null,
+  regime: row.regime ? String(row.regime) : null,
+  regimeSource: row.regime_source ? String(row.regime_source) : null,
+  dvolAtPurchase: row.dvol_at_purchase === null || row.dvol_at_purchase === undefined ? null : Number(row.dvol_at_purchase),
   marketId: String(row.market_id),
   protectedNotional: String(row.protected_notional),
   entryPrice: row.entry_price === null ? null : String(row.entry_price),
@@ -2268,6 +3165,21 @@ const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({
   payoutSettledAt: row.payout_settled_at ? new Date(String(row.payout_settled_at)).toISOString() : null,
   payoutTxRef: row.payout_tx_ref ? String(row.payout_tx_ref) : null,
   foxifyExposureNotional: String(row.foxify_exposure_notional),
+  // Biweekly subscription fields. Defaults match legacy 1-day semantics
+  // so any code that doesn't know about biweekly continues to work.
+  tenorDays: row.tenor_days === null || row.tenor_days === undefined ? 1 : Number(row.tenor_days),
+  dailyRateUsdPer1k:
+    row.daily_rate_usd_per_1k === null || row.daily_rate_usd_per_1k === undefined
+      ? null
+      : String(row.daily_rate_usd_per_1k),
+  accumulatedChargeUsd:
+    row.accumulated_charge_usd === null || row.accumulated_charge_usd === undefined
+      ? "0"
+      : String(row.accumulated_charge_usd),
+  daysBilled: row.days_billed === null || row.days_billed === undefined ? 0 : Number(row.days_billed),
+  closedAt: row.closed_at ? new Date(String(row.closed_at)).toISOString() : null,
+  closedBy: row.closed_by ? String(row.closed_by) : null,
+  hedgeRetainedForPlatform: Boolean(row.hedge_retained_for_platform),
   metadata: toRecord(row.metadata),
   createdAt: new Date(String(row.created_at)).toISOString(),
   updatedAt: new Date(String(row.updated_at)).toISOString()

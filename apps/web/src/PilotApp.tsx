@@ -10,9 +10,21 @@ type TierLevel = {
 
 type ProtectionType = "long" | "short";
 
+type V7QuoteInfo = {
+  regime: string;
+  regimeSource: string;
+  dvol: number | null;
+  premiumPer1kUsd: number;
+  premiumUsd: number;
+  payoutPer10kUsd: number;
+  available: boolean;
+};
+
 type QuoteResult = {
   protectionType?: ProtectionType;
   tierName: string;
+  slPct?: number | null;
+  v7?: V7QuoteInfo | null;
   drawdownFloorPct: string;
   floorPrice: string;
   triggerPrice?: string;
@@ -188,13 +200,15 @@ const formatUsd = (value: number | string | null | undefined): string => {
 };
 
 const DEFAULT_TIERS: TierLevel[] = [
-  { name: "Pro (Bronze)", drawdownFloorPct: 0.2, expiryDays: 7, renewWindowMinutes: 1440 },
-  { name: "Pro (Silver)", drawdownFloorPct: 0.15, expiryDays: 7, renewWindowMinutes: 1440 },
-  { name: "Pro (Gold)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 },
-  { name: "Pro (Platinum)", drawdownFloorPct: 0.12, expiryDays: 7, renewWindowMinutes: 1440 }
+  { name: "SL 1%", drawdownFloorPct: 0.01, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 2%", drawdownFloorPct: 0.02, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 3%", drawdownFloorPct: 0.03, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 5%", drawdownFloorPct: 0.05, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 10%", drawdownFloorPct: 0.10, expiryDays: 2, renewWindowMinutes: 1440 }
 ];
-const STATIC_TENOR_CHIPS_DAYS = [7, 14, 21] as const;
-const PILOT_DEFAULT_TENOR_DAYS = STATIC_TENOR_CHIPS_DAYS[0];
+const V7_SL_TIERS = [1, 2, 3, 5, 10] as const;
+const STATIC_TENOR_CHIPS_DAYS = [2, 3, 7] as const;
+const PILOT_DEFAULT_TENOR_DAYS = 2;
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
 const QUOTE_REQUEST_TIMEOUT_MS = 30000;
 const QUOTE_RETRY_DELAY_MS = 450;
@@ -261,31 +275,52 @@ const formatUsdNoDecimals = (value: number | string | null | undefined): string 
   return parsed.toLocaleString(undefined, { maximumFractionDigits: 0 });
 };
 
+// Style rules (aligned with isQuoteUnavailableError below — keep substrings
+// like "liquidity", "timed out", "temporarily unavailable" intact so the
+// downstream UI hints still match):
+//   - one sentence ideally; never more than two
+//   - ≤ 15 words where possible
+//   - state, then action: "X happened. Do Y."
+//   - cut: "please", "currently", "right now" (unless meaningful)
+//   - one time-zone reference: UTC + ET only
+//   - never use jargon: aggregate, notional, tenor, venue, transport, RFQ
 const friendlyError = (message: string): string => {
   if (message.includes("no_liquidity_window")) {
-    return "No liquidity or options available right now, try again";
+    return "No liquidity right now. Try again.";
   }
   if (
     message.includes("service_unavailable") ||
     message.includes("http_503") ||
     message.includes("admin_service_unavailable")
   ) {
-    return "Service is temporarily unavailable (503). Please retry shortly.";
+    return "Service temporarily unavailable. Try again shortly.";
+  }
+  if (message.includes("circuit_breaker_active")) {
+    return "Platform paused for safety review. Try again later.";
+  }
+  if (message.includes("aggregate_active_notional_cap_exceeded")) {
+    return "Pilot's open-protection limit is full. Close one or wait for it to expire.";
+  }
+  if (message.includes("hedge_budget_cap_exceeded")) {
+    return "Pilot hedge budget cap reached for this phase. Try a smaller size or a wider SL tier (5% / 10%), or wait for the next pilot phase.";
+  }
+  if (message.includes("per_tier_daily_concentration_cap_exceeded")) {
+    return "This protection level is full for today. Try a different level or wait until tomorrow.";
   }
   if (message.includes("daily_notional_cap_exceeded")) {
-    return "Daily protection limit reached for pilot operations. Please try again next UTC day.";
+    return "Daily limit reached. Resets at midnight UTC (8pm ET).";
   }
   if (message.includes("protection_notional_cap_exceeded")) {
-    return "Protection amount exceeds the pilot maximum. Reduce amount and request a new quote.";
+    return "Amount exceeds the pilot max. Reduce it and refresh quote.";
   }
   if (message.includes("quote_expired")) {
-    return "Quote expired. Request a fresh quote and confirm again.";
+    return "Quote expired. Tap Refresh Quote.";
   }
   if (message.includes("quote_not_found")) {
-    return "Quote is no longer available. Tap Refresh Quote.";
+    return "Quote is gone. Tap Refresh Quote.";
   }
   if (message.includes("quote_mismatch")) {
-    return "Protection terms changed after quoting. Request a new quote before confirming.";
+    return "Terms changed after quoting. Tap Refresh Quote.";
   }
   if (message.includes("price_unavailable")) {
     return "Quote temporarily unavailable. Tap Refresh Quote.";
@@ -297,54 +332,64 @@ const friendlyError = (message: string): string => {
     return "Quote temporarily unavailable. Tap Refresh Quote.";
   }
   if (message.includes("activation_disabled")) {
-    return "Activation is paused while quote validation is in progress. You can continue requesting live quotes.";
+    return "Activation paused while quotes are validated. Quoting still works.";
   }
   if (message.includes("tenor_drift_exceeded")) {
-    return "Requested protection length is currently illiquid. Try the recommended tenor.";
+    // 2026-04-22: previous copy said "Try the suggested length" but no
+    // suggestion was actually offered, which confused operators. Honest
+    // copy now — the only currently-launched tenor is 1 day, so there's
+    // nothing to suggest. Operator should retry shortly.
+    return "Hedge length not liquid right now. Try again shortly.";
   }
   if (message.includes("tenor_temporarily_unavailable")) {
-    return "Requested protection length is temporarily unavailable. Try the recommended tenor.";
+    return "Hedge length temporarily unavailable. Try again shortly.";
+  }
+  if (message.includes("trigger_strike_unavailable")) {
+    return "No suitable strike near the trigger right now. Try a wider SL tier (3% or 5%) or change the size.";
+  }
+  if (message.includes("deribit_quote_unavailable")) {
+    return "Quote temporarily unavailable. Try again or pick a different SL tier.";
   }
   if (message.includes("quote_economics_unacceptable")) {
-    return "Current hedge premium is not economical for this protection. Try again with a different tenor.";
+    return "Hedge cost is uneconomical right now. Try a different SL tier.";
   }
   if (message.includes("min_tradable_notional_exceeded")) {
-    return "Protection amount is currently too small for a tradable contract size. Increase amount or choose another tenor.";
+    return "Below the exchange minimum. Increase amount.";
   }
   if (message.includes("quote_liquidity_unavailable")) {
-    return "No liquidity or options available right now, try again";
+    return "No liquidity right now. Try again.";
   }
   if (message.includes("quote_min_notional_not_met")) {
-    return "Pilot minimum quote size is enforced. Increase protection amount and request a new quote.";
+    return "Below pilot minimum. Increase amount and refresh quote.";
   }
   if (message.includes("venue_quote_timeout")) {
-    return "Quote timed out. Live venue response exceeded 20s. Tap Refresh Quote.";
+    return "Quote timed out. Tap Refresh Quote.";
   }
   if (message.includes("venue_execute_timeout")) {
-    return "Activation is taking longer than expected. Tap Confirm Protection again.";
+    return "Activation is taking longer than expected. Tap Confirm again.";
   }
   if (message.includes("execution_failed")) {
-    return "Venue execution failed. Request a fresh quote and retry.";
+    return "Exchange rejected the trade. Tap Refresh Quote.";
   }
   if (message.includes("reconcile_pending")) {
-    return "Execution appears submitted, but reconciliation is pending. Contact operations before retrying.";
+    return "Trade may be submitted but unconfirmed. Contact ops before retrying.";
   }
   if (message.includes("quote_not_activatable")) {
-    return "This quote is linked to a failed activation state. Request a fresh quote.";
+    return "This quote is no longer usable. Tap Refresh Quote.";
   }
   if (message.includes("full_coverage_not_met")) {
-    return "Coverage check changed. Tap Refresh Quote and confirm again.";
+    return "Coverage check changed. Tap Refresh Quote.";
   }
   if (message.includes("activation_failed")) {
-    return "Activation could not be confirmed yet. Tap Confirm Protection again.";
+    return "Couldn't confirm activation. Tap Confirm again.";
   }
   if (message.toLowerCase().includes("failed to fetch")) {
-    return "Network issue detected. Please retry.";
+    return "Network issue. Please retry.";
   }
   if (message.includes("admin_unauthorized") || message.includes("unauthorized")) {
-    return "Admin access denied. Verify admin token and PILOT_ADMIN_IP_ALLOWLIST / trusted proxy IP settings.";
+    return "Admin access denied. Check admin token and IP allowlist.";
   }
-  return "Unable to complete request. Please retry.";
+  return "Couldn't complete request. Please retry.";
 };
 
 const isPriceUnavailableError = (message: string | null): boolean =>
@@ -1082,6 +1127,7 @@ export function PilotApp() {
               protectionType,
               instrumentId: `BTC-USD-${selectedTenorDays}D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
+              slPct: selectedTier.drawdownFloorPct * 100,
               tierName: selectedTier.name,
               drawdownFloorPct: selectedTier.drawdownFloorPct,
               tenorDays: selectedTenorDays
@@ -1174,6 +1220,7 @@ export function PilotApp() {
               protectionType,
               instrumentId: `BTC-USD-${selectedTenorDays}D-${protectionType === "short" ? "C" : "P"}`,
               marketId: "BTC-USD",
+              slPct: selectedTier.drawdownFloorPct * 100,
               tierName: selectedTier.name,
               drawdownFloorPct: selectedTier.drawdownFloorPct,
               tenorDays: selectedTenorDays,
@@ -2471,6 +2518,23 @@ export function PilotApp() {
                   </button>
                 </div>
 
+                {/*
+                  Filter chip — surfaces the implicit filter state above the
+                  table so admins can immediately see why a protection might
+                  be missing from the view. The endpoint defaults to
+                  scope=active + includeArchived=false, so triggered, any
+                  expired_X status, cancelled, and archived rows would
+                  otherwise be silently absent. See docs/AGENT_HANDOFF.md
+                  "Recent Activity" 2026-04-29 for the ghost-trade
+                  investigation that prompted this surface.
+                */}
+                <div
+                  className="muted"
+                  style={{ marginTop: 8, marginBottom: 6, fontSize: 12, fontVariantNumeric: "tabular-nums" }}
+                >
+                  Showing scope={adminScope} · status={adminStatusFilter} · archived={adminIncludeArchived ? "included" : "hidden"} · {adminRows.length} row{adminRows.length === 1 ? "" : "s"}
+                </div>
+
                 <div className="pilot-admin-table-scroll">
                   <div className="pilot-admin-table">
                   <div className="pilot-admin-head">
@@ -2508,6 +2572,14 @@ export function PilotApp() {
                       </span>
                     </div>
                   ))}
+                  {!adminBusy && adminRows.length === 0 && (
+                    <div
+                      className="muted"
+                      style={{ padding: "16px 12px", fontSize: 12, lineHeight: 1.5 }}
+                    >
+                      No protections match this filter. Try <strong>scope=all</strong> and tick <strong>Include archived</strong> to see expired / cancelled / pending / archived rows.
+                    </div>
+                  )}
                 </div>
                 </div>
 

@@ -44,6 +44,27 @@ export type QuoteRequest = {
   strictTenor?: boolean;
   hedgePolicy?: PilotHedgePolicy;
   clientOrderId?: string;
+  clientPremiumUsd?: number;
+  /**
+   * Per-request override of the venue's tenor-drift bound.
+   *
+   * Default is the venue-instance value (PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS,
+   * 1.5d in prod). Some products legitimately need more headroom because
+   * the underlying expiry grid is sparser than 1.5 days at the requested
+   * tenor — the biweekly product asks for 14d on Deribit's weekly grid
+   * (Fri 08:00 UTC), where the nearest expiry can be ~3.5d off.
+   *
+   * If set, this override is used both for:
+   *   - the candidate-expiry window filter (so we don't pre-exclude
+   *     valid weekly grid points that satisfy the override but not the
+   *     default), and
+   *   - the post-selection drift guard (so the cost-scored winner isn't
+   *     rejected by a tighter default than the requesting product needs).
+   *
+   * If unset, the venue's instance default applies (unchanged behavior
+   * for the legacy 1-day product).
+   */
+  maxTenorDriftDaysOverride?: number;
 };
 
 type FalconxConfig = {
@@ -361,6 +382,16 @@ const parseIbkrConId = (instrumentId: string): number | null => {
   return Number.isFinite(conId) && conId > 0 ? conId : null;
 };
 
+export type SellOptionResult = {
+  status: "sold" | "failed";
+  instrumentId: string;
+  quantity: number;
+  fillPrice: number;
+  totalProceeds: number;
+  orderId: string | null;
+  details: Record<string, unknown>;
+};
+
 export interface PilotVenueAdapter {
   quote(req: QuoteRequest): Promise<VenueQuote>;
   execute(quote: VenueQuote): Promise<VenueExecution>;
@@ -371,6 +402,7 @@ export interface PilotVenueAdapter {
     asOf: string;
     details?: Record<string, unknown>;
   }>;
+  sellOption?(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult>;
 }
 
 class MockFalconxAdapter implements PilotVenueAdapter {
@@ -456,6 +488,17 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     targetTriggerPrice?: number;
     requestedTenorDays?: number;
     protectionType?: "long" | "short";
+    drawdownFloorPct?: number;
+    protectedNotional?: number;
+    quantity?: number;
+    clientPremiumUsd?: number;
+    /**
+     * Per-request drift override (see QuoteRequest.maxTenorDriftDaysOverride).
+     * When provided, the candidate-expiry window AND the strict drift
+     * pre-filter use this value instead of the instance default. The
+     * post-selection drift guard in quote() uses the same effective bound.
+     */
+    maxTenorDriftDaysOverride?: number;
   }): Promise<{
     instrumentId: string;
     ask: number;
@@ -473,8 +516,37 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     const requestedTenorDays =
       Number.isFinite(Number(params.requestedTenorDays)) && Number(params.requestedTenorDays) > 0
         ? Number(params.requestedTenorDays)
-        : 7;
+        : 2;
+    // Effective tenor-drift bound for THIS request. Per-request override
+    // wins over the instance default so a longer-dated product (e.g.
+    // biweekly = 14d) can relax the bound to match the underlying
+    // expiry grid spacing without globally loosening the prod default
+    // for the legacy 1-day product. Falls back to the instance default
+    // when not provided.
+    //
+    // 2026-04-30 fix: prior code used only this.maxTenorDriftDays in
+    // quote(), so a 14d biweekly request running on the 1.5d prod
+    // default always tripped tenor_drift_exceeded — Deribit weeklies
+    // expire Fri 08:00 UTC and the nearest weekly to a 14d target
+    // can be ~3.5d off.
+    const effectiveMaxDriftDays =
+      Number.isFinite(Number(params.maxTenorDriftDaysOverride)) &&
+      Number(params.maxTenorDriftDaysOverride) >= 0
+        ? Number(params.maxTenorDriftDaysOverride)
+        : this.maxTenorDriftDays;
     const targetExpiry = now + requestedTenorDays * 86400000;
+    // Widen the candidate-expiry window to match the effective drift
+    // bound. The hard-coded "+2 / *0.5" defaults were tuned for 1-2d
+    // products on a daily grid; a 14d product on a 7d grid must accept
+    // at least the drift-bound's distance on each side, otherwise a
+    // legitimate weekly that satisfies the bound is filtered out
+    // before scoring even begins.
+    const windowEdgeDays = Math.max(2, effectiveMaxDriftDays);
+    const maxExpiryMs = now + (requestedTenorDays + windowEdgeDays) * 86400000;
+    const minExpiryMs = now + Math.max(
+      8 * 3600 * 1000,
+      Math.max(requestedTenorDays * 0.5, requestedTenorDays - windowEdgeDays) * 86400000
+    );
     const legacyTargetStrike = targetOptionType === "call" ? params.spot * 1.15 : params.spot * 0.85;
     const triggerTarget =
       Number.isFinite(Number(params.targetTriggerPrice)) && Number(params.targetTriggerPrice) > 0
@@ -495,69 +567,310 @@ class DeribitTestAdapter implements PilotVenueAdapter {
 
     let candidates = list
       .filter((item) => String(item?.option_type || "").toLowerCase() === targetOptionType)
-      .filter((item) => Number(item?.expiration_timestamp || 0) > now + 60 * 60 * 1000)
+      .filter((item) => {
+        const exp = Number(item?.expiration_timestamp || 0);
+        return exp > minExpiryMs && exp < maxExpiryMs;
+      })
       .map((item) => ({
         instrumentId: String(item.instrument_name || ""),
         strike: Number(item.strike || parseDeribitStrike(String(item.instrument_name || "")) || 0),
         expiryTs: Number(item.expiration_timestamp || parseDeribitExpiry(String(item.instrument_name || "")) || 0)
       }))
-      .filter((item) => item.instrumentId && Number.isFinite(item.strike) && item.strike > 0)
-      .filter((item) =>
-        this.strikeSelectionMode === "trigger_aligned" && triggerTarget
-          ? targetOptionType === "put"
-            ? item.strike >= triggerTarget
-            : item.strike <= triggerTarget
-          : true
-      );
+      .filter((item) => item.instrumentId && Number.isFinite(item.strike) && item.strike > 0);
+
+    // Strict tenor-drift pre-filter (2026-04-30 fix).
+    //
+    // The cost-scorer only optimizes ask price + strike distance — it
+    // has no awareness of tenor drift. If a far-dated cheap candidate
+    // wins cost-scoring and then trips the post-selection drift guard,
+    // the entire quote fails with tenor_drift_exceeded even if a
+    // viable in-bound candidate existed (just one that happened to
+    // cost slightly more or be slightly farther from the trigger).
+    //
+    // Pre-filtering by drift here ensures the cost-scorer can only
+    // pick candidates that will satisfy the post-selection guard,
+    // turning what was a hard fail into "best in-bound choice".
+    //
+    // Only enforced when the bound is finite and non-negative; if
+    // PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS were ever set to a sentinel
+    // disabling-value (negative), behavior remains as before.
+    //
+    // If the caller passed an explicit Deribit instrument
+    // (requestedCandidate non-null) and no auto-discovered candidate
+    // is in-bound, we DON'T early-throw — we let the requested
+    // instrument flow through to cost-scoring and the post-selection
+    // guard, which preserves the legacy behavior of honoring an
+    // operator-specified instrument even at the edge of the drift
+    // window.
+    if (Number.isFinite(effectiveMaxDriftDays) && effectiveMaxDriftDays >= 0) {
+      const inBound = candidates.filter((item) => {
+        if (!Number.isFinite(item.expiryTs) || item.expiryTs <= 0) return false;
+        const drift = Math.abs((item.expiryTs - targetExpiry) / 86400000);
+        return drift <= effectiveMaxDriftDays + 1e-9;
+      });
+      if (inBound.length === 0 && !requestedCandidate) {
+        // No candidate within the drift bound exists in the
+        // pre-filtered window. Fail fast with the same error code the
+        // post-selection guard would have raised — same observable
+        // behavior, just earlier and with an actionable diagnostic.
+        console.warn(
+          `[OptionSelection] no ${targetOptionType} candidates within ` +
+            `±${effectiveMaxDriftDays}d of ${requestedTenorDays}d target ` +
+            `(spot=${params.spot}, total_in_window=${candidates.length}). ` +
+            `Underlying expiry grid may not support this tenor — consider ` +
+            `widening PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS or adjusting ` +
+            `requestedTenorDays.`
+        );
+        throw new Error("deribit_quote_unavailable:tenor_drift_exceeded");
+      }
+      if (inBound.length > 0) {
+        candidates = inBound;
+      }
+    }
+
+    // Trigger-aligned candidate filter — keep strikes within an
+    // adaptive band around the trigger. Tries a tight band first
+    // (matches historical behavior for clean fills), then widens if
+    // the grid happens to be misaligned for this expiry+price.
+    //
+    // 2026-04-22 fix: pre-fix used a single fixed band (spot * 0.005);
+    // when Deribit's nearest call strike fell just outside it, the
+    // user got "trigger_strike_unavailable" with no recourse. The
+    // expanded band (spot * 0.020) catches strike-grid alignment
+    // gaps that occur on certain DTE/spot combinations without
+    // letting the algorithm select strikes that are economically
+    // useless (>2% from trigger means hedge margin is broken).
+    let candidatesPreTriggerFilter = candidates;
+    if (this.strikeSelectionMode === "trigger_aligned" && triggerTarget) {
+      const filterByBuffer = (bufferPct: number) => {
+        const strikeBuffer = params.spot * bufferPct;
+        return candidatesPreTriggerFilter.filter((item) => {
+          if (targetOptionType === "put") {
+            return item.strike <= triggerTarget + strikeBuffer;
+          }
+          return item.strike >= triggerTarget - strikeBuffer;
+        });
+      };
+
+      // Try tight (±0.5%) → wider (±1%) → widest (±2%) before failing.
+      candidates = filterByBuffer(0.005);
+      if (candidates.length === 0) {
+        console.log(
+          `[OptionSelection] trigger band ±0.5% empty for ${targetOptionType}; widening to ±1.0%`
+        );
+        candidates = filterByBuffer(0.010);
+      }
+      if (candidates.length === 0) {
+        console.log(
+          `[OptionSelection] trigger band ±1.0% still empty; widening to ±2.0% (last resort)`
+        );
+        candidates = filterByBuffer(0.020);
+      }
+    }
 
     if (this.strikeSelectionMode === "trigger_aligned" && triggerTarget && candidates.length === 0) {
+      console.warn(
+        `[OptionSelection] no strikes within ±2% of trigger ${triggerTarget} for ` +
+        `${targetOptionType} (spot=${params.spot}, tenor=${requestedTenorDays}d). ` +
+        `Deribit grid is misaligned for this expiry. Suggesting wider SL tier or different size.`
+      );
       throw new Error("deribit_quote_unavailable:trigger_strike_unavailable");
     }
 
+    // ITM-strike preference for tight-SL hedges.
+    //
+    // Why: Deribit's strike grid creates a "dead zone" between the trigger
+    // price and the next available OTM strike (e.g., trigger $75,707, next
+    // call strike $76,000 = $292 gap). For tight-SL trades this dead zone
+    // is a meaningful fraction of the trigger move and the hedge captures
+    // ~0% of payout when BTC barely grazes the trigger.
+    //
+    // Selecting trigger-ITM strikes (call strike <= trigger, or put strike
+    // >= trigger) eliminates the dead zone — the hedge is already in the
+    // money the moment the trigger fires. Trade-off: ITM strikes cost more
+    // upfront. The variance reduction on barely-graze triggers is the
+    // primary economic justification (see docs/cfo-report §5 lever 1 and
+    // docs/pilot-reports/short_protection_logic_audit.md).
+    //
+    // Bug fix (2026-04-21): preferItm was hardcoded to put-only, so SHORT
+    // protection (call-hedged) never received any ITM preference even at
+    // SL <= 2.5%. The c84dbbe9 trade was the first observed loss caused
+    // by this — net P&L −$288.56 from a $76k OTM call selection that
+    // recovered only $33 against a $400 payout. Now both directions
+    // receive the preference uniformly.
+    //
+    // Tier-aware bonus weight: 2% tier gets a meaningfully larger bonus
+    // (0.010) than 3% tier (0.005) because the 2% dead zone is larger
+    // as a fraction of the 2% trigger move (~20% for 2% on a $20k trade
+    // vs ~12% for 3% on the same trade size).
+    const drawdownFloorPct = params.drawdownFloorPct ?? 0;
+    const preferItm =
+      drawdownFloorPct > 0 && drawdownFloorPct <= 0.025;
+    const itmCostScoreBonus =
+      drawdownFloorPct > 0 && drawdownFloorPct <= 0.02
+        ? 0.010 // 2% tier (and tighter, including 1% if launched) — aggressive
+        : drawdownFloorPct > 0 && drawdownFloorPct <= 0.025
+          ? 0.005 // 2.5% custom tier (between 2% and 3%) — moderate
+          : 0.002; // legacy fallback if preferItm fires without tier match
+    const itmStrikeDistCoefficient =
+      drawdownFloorPct > 0 && drawdownFloorPct <= 0.02
+        ? 0.3 // 2% tier — favor closer-to-trigger more aggressively
+        : 0.5; // legacy default
+    const itmCostCapPenaltyMultiplier =
+      drawdownFloorPct > 0 && drawdownFloorPct <= 0.02
+        ? 0.25 // 2% tier — halve again (i.e., quarter of legacy 0.5) for ITM-trigger strikes
+        : 0.5; // legacy default
+    console.log(
+      `[OptionSelection] preferItm=${preferItm} drawdownFloorPct=${drawdownFloorPct} ` +
+      `triggerTarget=${triggerTarget} candidates=${candidates.length} ` +
+      `itmBonus=${itmCostScoreBonus} itmStrikeDistCoef=${itmStrikeDistCoefficient} ` +
+      `itmCapPenaltyMult=${itmCostCapPenaltyMultiplier} optType=${targetOptionType}`
+    );
+
     candidates = candidates
       .sort((a, b) => {
-        const scoreA =
-          Math.abs(a.expiryTs - targetExpiry) / 86400000 +
-          Math.abs(a.strike - targetStrike) / Math.max(params.spot, 1);
-        const scoreB =
-          Math.abs(b.expiryTs - targetExpiry) / 86400000 +
-          Math.abs(b.strike - targetStrike) / Math.max(params.spot, 1);
+        if (triggerTarget) {
+          const distA = Math.abs(a.strike - triggerTarget);
+          const distB = Math.abs(b.strike - triggerTarget);
+          const rawTenorA = (a.expiryTs - targetExpiry) / 86400000;
+          const rawTenorB = (b.expiryTs - targetExpiry) / 86400000;
+          const tenorA = rawTenorA < 0 ? Math.abs(rawTenorA) * 3 : rawTenorA;
+          const tenorB = rawTenorB < 0 ? Math.abs(rawTenorB) * 3 : rawTenorB;
+          let preferA: number, preferB: number;
+          if (preferItm) {
+            preferA = targetOptionType === "put" ? (a.strike >= triggerTarget ? -2.0 : 0.5) : (a.strike <= triggerTarget ? -2.0 : 0.5);
+            preferB = targetOptionType === "put" ? (b.strike >= triggerTarget ? -2.0 : 0.5) : (b.strike <= triggerTarget ? -2.0 : 0.5);
+          } else {
+            preferA = targetOptionType === "put" ? (a.strike <= triggerTarget ? -0.5 : 0) : (a.strike >= triggerTarget ? -0.5 : 0);
+            preferB = targetOptionType === "put" ? (b.strike <= triggerTarget ? -0.5 : 0) : (b.strike >= triggerTarget ? -0.5 : 0);
+          }
+          return (tenorA + distA / params.spot + preferA) - (tenorB + distB / params.spot + preferB);
+        }
+        const rawScoreA = (a.expiryTs - targetExpiry) / 86400000;
+        const rawScoreB = (b.expiryTs - targetExpiry) / 86400000;
+        const tenorPenA = rawScoreA < 0 ? Math.abs(rawScoreA) * 3 : rawScoreA;
+        const tenorPenB = rawScoreB < 0 ? Math.abs(rawScoreB) * 3 : rawScoreB;
+        const scoreA = tenorPenA + Math.abs(a.strike - targetStrike) / Math.max(params.spot, 1);
+        const scoreB = tenorPenB + Math.abs(b.strike - targetStrike) / Math.max(params.spot, 1);
         return scoreA - scoreB;
       })
       .slice(0, 40);
+
+    if (preferItm && triggerTarget && candidates.length > 0) {
+      const top3 = candidates.slice(0, 3);
+      for (const c of top3) {
+        const isAbove = c.strike >= triggerTarget;
+        console.log(`[OptionSelection] candidate: strike=${c.strike} ${isAbove ? 'ABOVE' : 'below'} trigger=${triggerTarget.toFixed(0)} dist=${Math.abs(c.strike - triggerTarget).toFixed(0)}`);
+      }
+    }
 
     const orderedCandidates = requestedCandidate
       ? [requestedCandidate, ...candidates.filter((item) => item.instrumentId !== requestedCandidate.instrumentId)]
       : candidates;
 
-    for (const candidate of orderedCandidates) {
-      const book = await this.connector.getOrderBook(candidate.instrumentId);
-      const top = extractTopOfBook(book);
-      const mark = extractMarkPrice(book);
-      const askFromAsk = top.ask && top.ask > 0 ? top.ask : null;
-      const askFromMark =
-        this.quotePolicy === "ask_or_mark_fallback" && mark && mark > 0 ? mark : null;
-      const ask = askFromAsk ?? askFromMark;
-      if (ask && ask > 0) {
-        return {
+    type ScoredDeribitCandidate = {
+      instrumentId: string;
+      ask: number;
+      askSize: number | null;
+      askSource: "ask" | "mark";
+      strike: number;
+      expiryTs: number | null;
+      costScore: number;
+    };
+
+    const executionQty = params.quantity && params.quantity > 0
+      ? Math.max(0.1, Math.floor(params.quantity * 10) / 10)
+      : 0;
+    const clientPremium = params.clientPremiumUsd && params.clientPremiumUsd > 0
+      ? params.clientPremiumUsd
+      : 0;
+
+    const scored: ScoredDeribitCandidate[] = [];
+    for (const candidate of orderedCandidates.slice(0, 8)) {
+      try {
+        const book = await this.connector.getOrderBook(candidate.instrumentId);
+        const top = extractTopOfBook(book);
+        const mark = extractMarkPrice(book);
+        const askFromAsk = top.ask && top.ask > 0 ? top.ask : null;
+        const askFromMark =
+          this.quotePolicy === "ask_or_mark_fallback" && mark && mark > 0 ? mark : null;
+        const ask = askFromAsk ?? askFromMark;
+        if (!ask || ask <= 0) continue;
+
+        const hedgeCostUsd = ask * params.spot * (executionQty || params.quantity || 0);
+        const strikeDist = triggerTarget
+          ? Math.abs(candidate.strike - triggerTarget) / params.spot
+          : Math.abs(candidate.strike - targetStrike) / params.spot;
+
+        // Determine ITM-relative-to-trigger first; some downstream
+        // coefficients are looser for trigger-ITM strikes on the
+        // 2% tier (tighter strikeDist coefficient and reduced cost-cap
+        // penalty so we don't over-penalize the higher-cost ITM choice).
+        const isItm = preferItm && triggerTarget
+          ? (targetOptionType === "put"
+              ? candidate.strike >= triggerTarget
+              : candidate.strike <= triggerTarget)
+          : false;
+
+        const effectiveStrikeDistCoef = isItm ? itmStrikeDistCoefficient : 0.5;
+        let costScore = ask + strikeDist * effectiveStrikeDistCoef;
+
+        if (preferItm && triggerTarget && isItm) {
+          costScore -= itmCostScoreBonus;
+        }
+
+        let costCapPenalty = 0;
+        if (clientPremium > 0 && hedgeCostUsd > clientPremium) {
+          costCapPenalty = (hedgeCostUsd - clientPremium) / clientPremium;
+          // ITM-trigger strikes get a reduced cost-cap penalty on the
+          // 2% tier — they're EXPECTED to cost more than the OTM
+          // alternative, and that incremental cost is the price of
+          // closing the dead zone. Penalizing them at the full rate
+          // would defeat the bonus.
+          const capCoef = isItm ? itmCostCapPenaltyMultiplier : 0.5;
+          costScore += costCapPenalty * capCoef;
+        }
+
+        const marginPct = clientPremium > 0 ? ((clientPremium - hedgeCostUsd) / clientPremium * 100) : 0;
+        console.log(`[OptionSelection] score: ${candidate.instrumentId} strike=${candidate.strike} ask=${ask.toFixed(6)} hedgeCost=$${hedgeCostUsd.toFixed(2)} clientPrem=$${clientPremium.toFixed(2)} margin=${marginPct.toFixed(1)}% costScore=${costScore.toFixed(6)}${costCapPenalty > 0 ? ` OVER_PREMIUM(+${(costCapPenalty * 0.5).toFixed(4)})` : ""}${preferItm && triggerTarget && (targetOptionType === "put" ? candidate.strike >= triggerTarget : candidate.strike <= triggerTarget) ? " ITM_BONUS" : ""}`);
+
+        scored.push({
           instrumentId: candidate.instrumentId,
           ask,
           askSize: top.askSize,
-          optionType: targetOptionType,
-          source:
-            candidate.instrumentId === requestedCandidate?.instrumentId
-              ? "requested_instrument_orderbook"
-              : targetOptionType === "call"
-                ? "auto_selected_deribit_call"
-                : "auto_selected_deribit_put",
           askSource: askFromAsk ? "ask" : "mark",
           strike: candidate.strike,
-          expiryTs: Number.isFinite(candidate.expiryTs) && candidate.expiryTs > 0 ? candidate.expiryTs : null
-        };
+          expiryTs: Number.isFinite(candidate.expiryTs) && candidate.expiryTs > 0 ? candidate.expiryTs : null,
+          costScore
+        });
+      } catch {
+        // Skip candidates with transient orderbook failures
       }
     }
 
-    throw new Error("deribit_quote_unavailable");
+    if (!scored.length) {
+      throw new Error("deribit_quote_unavailable");
+    }
+
+    scored.sort((a, b) => a.costScore - b.costScore);
+    const best = scored[0];
+
+    const bestHedgeCost = best.ask * params.spot * (executionQty || params.quantity || 0);
+    const bestMarginPct = clientPremium > 0 ? ((clientPremium - bestHedgeCost) / clientPremium * 100) : 0;
+    console.log(`[OptionSelection] WINNER: ${best.instrumentId} strike=${best.strike} ask=${best.ask.toFixed(6)} hedgeCost=$${bestHedgeCost.toFixed(2)} margin=${bestMarginPct.toFixed(1)}% premium=$${clientPremium.toFixed(2)}${bestHedgeCost > clientPremium ? " ⚠ NEGATIVE_MARGIN" : " ✓"}`);
+
+    return {
+      instrumentId: best.instrumentId,
+      ask: best.ask,
+      askSize: best.askSize,
+      optionType: targetOptionType,
+      source: best.instrumentId === requestedCandidate?.instrumentId
+        ? "requested_instrument_orderbook"
+        : `auto_selected_deribit_${targetOptionType}`,
+      askSource: best.askSource,
+      strike: best.strike,
+      expiryTs: best.expiryTs
+    };
   }
 
   async quote(req: QuoteRequest): Promise<VenueQuote> {
@@ -568,20 +881,34 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       spot,
       targetTriggerPrice: req.triggerPrice,
       requestedTenorDays: req.requestedTenorDays,
-      protectionType: req.protectionType
+      protectionType: req.protectionType,
+      drawdownFloorPct: req.drawdownFloorPct,
+      protectedNotional: req.protectedNotional,
+      quantity: req.quantity,
+      clientPremiumUsd: req.clientPremiumUsd,
+      maxTenorDriftDaysOverride: req.maxTenorDriftDaysOverride
     });
     const requestedTenorDays =
       Number.isFinite(Number(req.requestedTenorDays)) && Number(req.requestedTenorDays) > 0
         ? Number(req.requestedTenorDays)
-        : 7;
+        : 2;
     const selectedTenorDays = resolved.expiryTs ? (resolved.expiryTs - now) / 86400000 : null;
     const tenorDriftDays =
       selectedTenorDays !== null ? Math.abs(selectedTenorDays - requestedTenorDays) : null;
+    // Use the same effective bound as resolveQuoteInstrument — the
+    // post-selection guard is now redundant given the pre-filter, but
+    // we keep it as defense-in-depth in case a future change to the
+    // pre-filter regresses (or the override is bypassed somewhere).
+    const effectiveMaxDriftDays =
+      Number.isFinite(Number(req.maxTenorDriftDaysOverride)) &&
+      Number(req.maxTenorDriftDaysOverride) >= 0
+        ? Number(req.maxTenorDriftDaysOverride)
+        : this.maxTenorDriftDays;
     if (
       tenorDriftDays !== null &&
-      Number.isFinite(this.maxTenorDriftDays) &&
-      this.maxTenorDriftDays >= 0 &&
-      tenorDriftDays > this.maxTenorDriftDays
+      Number.isFinite(effectiveMaxDriftDays) &&
+      effectiveMaxDriftDays >= 0 &&
+      tenorDriftDays > effectiveMaxDriftDays + 1e-9
     ) {
       throw new Error("deribit_quote_unavailable:tenor_drift_exceeded");
     }
@@ -632,56 +959,94 @@ class DeribitTestAdapter implements PilotVenueAdapter {
   }
 
   async execute(quote: VenueQuote): Promise<VenueExecution> {
-    const order = (await this.connector.placeOrder({
-      instrument: quote.instrumentId,
-      amount: quote.quantity,
-      side: "buy",
-      type: "market"
-    })) as any;
-    const status =
-      order?.status === "paper_filled" || order?.status === "filled" || order?.status === "ok"
-        ? "success"
-        : "failure";
+    const deribitQty = Math.max(0.1, Math.floor(quote.quantity * 10) / 10);
+    // R3.B — bound the placeOrder call with an explicit timeout. The
+    // underlying connector has fetchWithTimeout (6s) × withRetry (3) so the
+    // worst-case unguarded latency is ~18s — too long to leave a user staring
+    // at a blank widget, and too long to leave the activate transaction
+    // half-open. 8s gives one HTTP attempt + small headroom; if it trips,
+    // the activate path catches venue_execute_timeout (already wired into
+    // routes.ts response mapping) and returns a clean 504.
+    const EXECUTE_TIMEOUT_MS = Number(process.env.PILOT_DERIBIT_EXECUTE_TIMEOUT_MS || "8000");
+    const raw = (await Promise.race([
+      this.connector.placeOrder({
+        instrument: quote.instrumentId,
+        amount: deribitQty,
+        side: "buy",
+        type: "market"
+      }),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("venue_execute_timeout")),
+          EXECUTE_TIMEOUT_MS
+        )
+      )
+    ])) as any;
+
+    console.log(`[DeribitAdapter] placeOrder raw response:`, JSON.stringify(raw).slice(0, 800));
+    const isPaper = raw?.status === "paper_filled" || raw?.status === "paper_rejected";
+    const orderData = isPaper ? raw : (raw?.result?.order ?? raw);
+    const trades = isPaper ? [] : (raw?.result?.trades ?? []);
+
+    const orderState = isPaper
+      ? raw?.status
+      : String(orderData?.order_state || orderData?.status || "unknown");
+    const isFilled = isPaper
+      ? raw?.status === "paper_filled"
+      : orderState === "filled" || orderState === "closed" ||
+        (Number(orderData?.filled_amount || orderData?.filledAmount || 0) > 0);
+
     const requestedQuantity = Math.max(0, Number(quote.quantity || 0));
-    const filledAmount = Number(order?.filledAmount);
-    const reportedAmount = Number(order?.amount);
-    const executedQuantityRaw = Number.isFinite(filledAmount)
+    const filledAmount = Number(
+      orderData?.filled_amount ?? orderData?.filledAmount ?? (isPaper ? raw?.filledAmount : 0) ?? 0
+    );
+    const executedQuantity = Math.max(0, Number.isFinite(filledAmount) && filledAmount > 0
       ? filledAmount
-      : Number.isFinite(reportedAmount)
-        ? reportedAmount
-        : requestedQuantity;
-    const executedQuantity = Math.max(0, executedQuantityRaw);
-    const fillRatio =
-      requestedQuantity > 0
-        ? Math.min(1, Math.max(0, executedQuantity / requestedQuantity))
-        : 0;
+      : isFilled ? requestedQuantity : 0);
+
+    const fillPriceBtc = isPaper
+      ? Number(raw?.fillPrice ?? 0)
+      : Number(trades?.[0]?.price ?? orderData?.average_price ?? orderData?.price ?? 0);
+
+    const spot = await (async () => {
+      try {
+        const idx = await this.connector.getIndexPrice("btc_usd");
+        return Number((idx as any)?.result?.index_price ?? 0);
+      } catch { return 0; }
+    })();
+    const executionPriceUsd = fillPriceBtc > 0 && spot > 0 ? fillPriceBtc * spot : fillPriceBtc;
+
+    const fillRatio = requestedQuantity > 0
+      ? Math.min(1, Math.max(0, executedQuantity / requestedQuantity))
+      : 0;
     const scaledPremium = Number((quote.premium * fillRatio).toFixed(10));
-    const fillStatus = String(order?.status || "unknown");
-    const rejectionReasonRaw =
-      (typeof order?.rejectionReason === "string" && order.rejectionReason) ||
-      (typeof order?.rejectReason === "string" && order.rejectReason) ||
-      (typeof order?.reason === "string" && order.reason) ||
-      null;
+
+    const orderId = String(orderData?.order_id ?? orderData?.id ?? `DERIBIT-ORD-${randomUUID()}`);
+
+    console.log(`[DeribitAdapter] execute: instrument=${quote.instrumentId} filled=${isFilled} qty=${executedQuantity} priceBtc=${fillPriceBtc} priceUsd=${executionPriceUsd.toFixed(2)} orderId=${orderId}`);
+
     return {
       venue: "deribit_test",
-      status,
+      status: isFilled ? "success" : "failure",
       quoteId: quote.quoteId,
       rfqId: quote.rfqId ?? null,
       instrumentId: quote.instrumentId,
       side: "buy",
       quantity: executedQuantity,
-      executionPrice: Number(order?.fillPrice ?? 0),
+      executionPrice: executionPriceUsd,
       premium: scaledPremium,
       executedAt: nowIso(),
-      externalOrderId: String(order?.id || `DERIBIT-ORD-${randomUUID()}`),
-      externalExecutionId: String(order?.id || `DERIBIT-EXE-${randomUUID()}`),
+      externalOrderId: orderId,
+      externalExecutionId: orderId,
       details: {
-        raw: order,
-        fillStatus,
-        rejectionReason: rejectionReasonRaw,
+        raw,
+        orderState,
+        fillPriceBtc,
+        spotPriceUsd: spot,
         requestedQuantity,
         executedQuantity,
-        fillRatio
+        fillRatio,
+        trades: trades?.length ?? 0
       }
     };
   }
@@ -3315,6 +3680,126 @@ class FalconxAdapter implements PilotVenueAdapter {
   }> {
     throw new Error("mark_unavailable");
   }
+
+  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+    try {
+      const payload = {
+        token_pair: { base_token: "BTC", quote_token: "USDC" },
+        quantity: params.quantity,
+        structure: [
+          { side: "sell", symbol: params.instrumentId, weight: 1 }
+        ],
+        client_order_id: randomUUID()
+      };
+
+      console.log(`[FalconX] sellOption RFQ: instrument=${params.instrumentId} qty=${params.quantity}`);
+      const quoteRes = await falconxRequest(this.cfg, "/v3/derivatives/option/quote", "POST", payload);
+
+      if (String(quoteRes?.status || "").toLowerCase() !== "success") {
+        console.error(`[FalconX] sellOption quote failed: ${JSON.stringify(quoteRes?.error || quoteRes).slice(0, 300)}`);
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: params.quantity,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: { reason: `quote_failed:${quoteRes?.error?.code || "unknown"}` }
+        };
+      }
+
+      const bidPrice = Number(quoteRes.bid_price?.value ?? 0);
+      if (bidPrice <= 0) {
+        console.warn(`[FalconX] sellOption: no bid available for ${params.instrumentId}`);
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: params.quantity,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: { reason: "no_bid_available", quoteResponse: quoteRes }
+        };
+      }
+
+      const execRes = await falconxRequest(
+        this.cfg,
+        "/v3/derivatives/option/quote/execute",
+        "POST",
+        { fx_quote_id: quoteRes.fx_quote_id }
+      );
+
+      if (String(execRes?.status || "").toLowerCase() !== "success") {
+        console.error(`[FalconX] sellOption execute failed: ${JSON.stringify(execRes?.error || execRes).slice(0, 300)}`);
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: params.quantity,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: String(quoteRes.fx_quote_id || null),
+          details: { reason: `execute_failed:${execRes?.error?.code || "unknown"}` }
+        };
+      }
+
+      const executedPrice = Number(execRes.executed_price ?? bidPrice);
+      const filledQty = Number(execRes.quantity ?? params.quantity);
+
+      console.log(`[FalconX] sellOption executed: instrument=${params.instrumentId} price=${executedPrice.toFixed(2)} qty=${filledQty} proceeds=${(executedPrice * filledQty).toFixed(2)}`);
+
+      return {
+        status: "sold",
+        instrumentId: params.instrumentId,
+        quantity: filledQty,
+        fillPrice: executedPrice,
+        totalProceeds: executedPrice * filledQty,
+        orderId: String(execRes.fx_quote_id || quoteRes.fx_quote_id || null),
+        details: { quoteResponse: quoteRes, executeResponse: execRes, bidPrice }
+      };
+    } catch (err: any) {
+      console.error(`[FalconX] sellOption FAILED: ${err?.message}`);
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: params.quantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: err?.message || "sell_failed" }
+      };
+    }
+  }
+
+  async getPositions(): Promise<any[]> {
+    const response = await falconxRequest(this.cfg, "/v1/derivatives?trade_status=open&product_type=option&market_list=BTC-USD", "GET", null);
+    return Array.isArray(response) ? response : [];
+  }
+}
+
+class DeribitLiveAdapter extends DeribitTestAdapter {
+  constructor(
+    connector: DeribitConnector,
+    quoteTtlMs: number,
+    quotePolicy: DeribitQuotePolicy,
+    strikeSelectionMode: DeribitStrikeSelectionMode,
+    maxTenorDriftDays: number
+  ) {
+    super(connector, quoteTtlMs, quotePolicy, strikeSelectionMode, maxTenorDriftDays);
+  }
+
+  async execute(quote: VenueQuote): Promise<VenueExecution> {
+    const result = await super.execute(quote);
+    return { ...result, venue: "deribit_live" };
+  }
+
+  async quote(req: QuoteRequest): Promise<VenueQuote> {
+    const result = await super.quote(req);
+    return { ...result, venue: "deribit_live" };
+  }
+
+  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+    return super.sellOption(params);
+  }
 }
 
 class BullishTestnetAdapter implements PilotVenueAdapter {
@@ -3343,7 +3828,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     const isShort = req.protectionType === "short";
     const requestedOptionType = isShort ? "CALL" : "PUT";
     const now = Date.now();
-    const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 7)));
+    const requestedTenorDays = Math.max(1, Math.floor(Number(req.requestedTenorDays || 2)));
     const targetExpiryMs = now + requestedTenorDays * 24 * 60 * 60 * 1000;
     const spotPrice = toFinitePositiveNumber(req.protectedNotional) && toFinitePositiveNumber(req.quantity)
       ? Number(req.protectedNotional) / Number(req.quantity)
@@ -3375,8 +3860,10 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const tradable = (market as Record<string, unknown>).createOrderEnabled !== false;
         if (!tradable) return null;
         const tenorDriftDays = Math.abs(expiryMs - targetExpiryMs) / 86400000;
-        const maxDrift = Math.max(7, requestedTenorDays + 3);
+        const maxDrift = Math.max(1.5, requestedTenorDays);
         if (tenorDriftDays > maxDrift) return null;
+        const tenorDays = (expiryMs - now) / 86400000;
+        if (tenorDays < 0.3) return null;
 
         const moneyness = parsed.strike / spotPrice;
         if (isShort) {
@@ -3420,7 +3907,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         const hedgeCostPer1k = (askPx / spotPrice) * 1000;
         if (maxHedgeCostPer1k && hedgeCostPer1k > maxHedgeCostPer1k) continue;
 
-        const premium = Number(req.protectedNotional || 0) / 1000 * 11;
+        const premium = Number(req.protectedNotional || 0) / 1000 * 5;
         const hasLiquidity = askQty >= btcQty;
         const spreadPositive = premium > hedgeCostTotal;
         const moneyness = candidate.strike / spotPrice;
@@ -3791,6 +4278,82 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       }
     };
   }
+
+  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+    if (!this.config.enableExecution) {
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: params.quantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: "execution_disabled" }
+      };
+    }
+
+    const symbol = resolveBullishMarketSymbol(this.config, { instrumentId: params.instrumentId });
+    const book = await this.client.getHybridOrderBook(symbol);
+    const bestBid = Number(book.bids[0]?.price ?? NaN);
+    if (!Number.isFinite(bestBid) || bestBid <= 0) {
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: params.quantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: "no_bid_available" }
+      };
+    }
+
+    const isOption = /^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol);
+    const pricePrecision = isOption ? 4 : 8;
+    const qtyPrecision = isOption ? 2 : 8;
+    const formattedPrice = bestBid.toFixed(pricePrecision);
+    const formattedQty = (Math.floor(params.quantity * Math.pow(10, qtyPrecision)) / Math.pow(10, qtyPrecision)).toFixed(qtyPrecision);
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+
+    console.log(`[BullishAdapter] Selling option: symbol=${symbol} side=SELL price=${formattedPrice} qty=${formattedQty} clientOrderId=${clientOrderId}`);
+
+    try {
+      const response = await this.client.createSpotLimitOrder({
+        symbol,
+        side: "SELL",
+        price: formattedPrice,
+        quantity: formattedQty,
+        clientOrderId
+      });
+
+      const responseRecord = response as Record<string, unknown>;
+      const orderId = String(responseRecord.orderId ?? (responseRecord.data as Record<string, unknown> | undefined)?.orderId ?? "");
+      const fillPrice = Number(responseRecord.averageFillPrice ?? bestBid);
+      const fillQty = Number(responseRecord.quantityFilled ?? params.quantity);
+
+      console.log(`[BullishAdapter] Sell option result: orderId=${orderId} fillPrice=${fillPrice} fillQty=${fillQty}`);
+
+      return {
+        status: "sold",
+        instrumentId: params.instrumentId,
+        quantity: fillQty,
+        fillPrice,
+        totalProceeds: fillPrice * fillQty,
+        orderId: orderId || null,
+        details: { symbol, bestBid, response: responseRecord }
+      };
+    } catch (err: any) {
+      console.error(`[BullishAdapter] Sell option FAILED: ${err?.message}`);
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: params.quantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: err?.message || "sell_order_failed" }
+      };
+    }
+  }
 }
 
 export const createPilotVenueAdapter = (params: {
@@ -3817,6 +4380,18 @@ export const createPilotVenueAdapter = (params: {
     }
     return new BullishTestnetAdapter(params.bullish, quoteTtlMs);
   }
+  if (params.mode === "deribit_live") {
+    return new DeribitLiveAdapter(
+      params.deribit,
+      quoteTtlMs,
+      params.deribitQuotePolicy || "ask_or_mark_fallback",
+      params.deribitStrikeSelectionMode || "trigger_aligned",
+      Number.isFinite(Number(params.deribitMaxTenorDriftDays))
+        ? Number(params.deribitMaxTenorDriftDays)
+        : 7
+    );
+  }
+  // IBKR is deprecated for V7 pilot; skip initialization when venue is bullish_testnet (handled above)
   if (params.mode === "ibkr_cme_live" || params.mode === "ibkr_cme_paper") {
     if (!params.ibkr) {
       throw new Error("ibkr_config_missing");

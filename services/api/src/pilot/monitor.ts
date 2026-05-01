@@ -1,4 +1,5 @@
 import type { BullishTradingClient, BullishAssetBalance } from "./bullish";
+import { dispatchAlert } from "./alertDispatcher";
 
 export type AlertLevel = "info" | "warning" | "critical";
 
@@ -61,6 +62,28 @@ export class PilotMonitor {
     }
     const prefix = alert.level === "critical" ? "[CRITICAL]" : alert.level === "warning" ? "[WARNING]" : "[INFO]";
     console.log(`${prefix} [PilotMonitor] ${alert.code}: ${alert.message}`);
+    // R7 — Fan out to configured webhook destinations (Telegram / Slack /
+    // Discord / generic). Best-effort, non-blocking: failures inside the
+    // dispatcher never propagate; the caller's program flow is unaffected.
+    void dispatchAlert(alert).catch((err) => {
+      console.warn(`[PilotMonitor] alert dispatch failed: ${err?.message || err}`);
+    });
+  }
+
+  /**
+   * R7 — Public entry-point for any subsystem (hedge manager, trigger
+   * monitor, activate path, scheduler) to surface an alert. Fans out to
+   * webhooks via the dispatcher and stores in the in-memory ring buffer
+   * for /pilot/monitor/alerts visibility.
+   *
+   * Use this instead of calling console.warn directly when the event is
+   * something an operator would want to see in Telegram/Slack.
+   */
+  recordEvent(alert: Omit<PilotAlert, "timestamp"> & { timestamp?: string }): void {
+    this.emit({
+      timestamp: alert.timestamp || new Date().toISOString(),
+      ...alert
+    });
   }
 
   recordFill(record: FillRecord): void {

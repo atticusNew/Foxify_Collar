@@ -1,0 +1,159 @@
+{
+  "capturedAt": "2026-04-30T11:43:25.848Z",
+  "inputs": {
+    "tenorDays": 14,
+    "maxConcurrent": 10,
+    "d1DatasetPath": "/tmp/d1-for-d4/biweekly_pricing_dataset.json",
+    "currentAccountUsd": 319
+  },
+  "spot": {
+    "usd": 75899.5,
+    "source": "deribit perpetual ticker"
+  },
+  "currentRegime": "low",
+  "perTradeHedgeCostByRegime": {
+    "low": 383.19520319558126,
+    "moderate": 504.80723154506563,
+    "elevated": 716.6823793816174,
+    "high": 906.9152447596302
+  },
+  "weightedExpectedPerTradeUsd": 462.9310481973407,
+  "concurrentScenarios": [
+    {
+      "concurrent": 1,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 498.15376415425567,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 1178.9898181875194
+    },
+    {
+      "concurrent": 2,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 996.3075283085113,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 2357.979636375039
+    },
+    {
+      "concurrent": 3,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 1494.461292462767,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 3536.969454562558
+    },
+    {
+      "concurrent": 4,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 1992.6150566170227,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 4715.959272750078
+    },
+    {
+      "concurrent": 5,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 2490.768820771278,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 5894.949090937596
+    },
+    {
+      "concurrent": 6,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 2988.922584925534,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 7073.938909125116
+    },
+    {
+      "concurrent": 7,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 3487.07634907979,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 8252.928727312636
+    },
+    {
+      "concurrent": 8,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 3985.2301132340453,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 9431.918545500155
+    },
+    {
+      "concurrent": 9,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 4483.383877388301,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 10610.908363687673
+    },
+    {
+      "concurrent": 10,
+      "perTradeCostUsd_current": 383.19520319558126,
+      "accountReq_current": 4981.537641542556,
+      "perTradeCostUsd_stress": 906.9152447596302,
+      "accountReq_stress": 11789.898181875193
+    }
+  ],
+  "margin": {
+    "model": "deribit_cross_sm",
+    "headroomMultiplier": 1.3,
+    "headroomBreakdown": {
+      "volSpikeBufferPct": 20,
+      "newTradeHeadroomPct": 10
+    }
+  },
+  "pilotMix": {
+    "notional": [
+      {
+        "notionalUsd": 10000,
+        "share": 0.65
+      },
+      {
+        "notionalUsd": 15000,
+        "share": 0.1
+      },
+      {
+        "notionalUsd": 25000,
+        "share": 0.1
+      },
+      {
+        "notionalUsd": 35000,
+        "share": 0.1
+      },
+      {
+        "notionalUsd": 50000,
+        "share": 0.05
+      }
+    ],
+    "tier": [
+      {
+        "slPct": 2,
+        "share": 0.75
+      },
+      {
+        "slPct": 3,
+        "share": 0.15
+      },
+      {
+        "slPct": 5,
+        "share": 0.07
+      },
+      {
+        "slPct": 10,
+        "share": 0.03
+      }
+    ],
+    "direction": [
+      {
+        "direction": "long",
+        "share": 0.7
+      },
+      {
+        "direction": "short",
+        "share": 0.3
+      }
+    ],
+    "historicalRegime": {
+      "low": 0.359,
+      "moderate": 0.631,
+      "elevated": 0.007,
+      "high": 0.002
+    }
+  }
+}
