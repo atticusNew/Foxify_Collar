@@ -761,12 +761,56 @@ function Dashboard({ token }: { token: string }) {
                         : isBiweekly && spotAtActivation > 0 && execPrice > 0 && size > 0
                           ? execPrice * size * spotAtActivation
                           : execPrice > 0 && size > 0 ? execPrice * size : 0;
-                      const clientPremium = Number(p.premium || 0);
-                      // For biweekly, also surface running accumulated charge
-                      // so admin sees both the ceiling (premium) and what's
-                      // actually billed so far (accumulated_charge_usd).
+                      // 2026-05-01 — biweekly Premium / Spread are
+                      // DYNAMIC. Compute live from created_at + daily
+                      // rate so admin sees the running bill grow each
+                      // day without waiting for close-time
+                      // accumulated_charge_usd to be written.
+                      //
+                      // Billing rule (matches biweeklyPricing.ts
+                      // computeAccumulatedCharge):
+                      //   billedDays = ceil((now - created_at) / 1d)
+                      //   clamped to [1, 14]
+                      //   running = billedDays × dailyRate × notional/1000
+                      // For biweekly active rows we show "running / max"
+                      // so CEO sees both. For biweekly closed rows we
+                      // show the final accumulated_charge_usd.
+                      // For legacy 1-day, premium column = upfront
+                      // premium (one-shot, no daily accrual).
+                      const dailyRatePer1k = Number((p as any).dailyRateUsdPer1k || 0);
+                      const notionalNum = Number(p.protectedNotional || 0);
+                      const createdAtMs = new Date(p.createdAt).getTime();
+                      const liveBilledDays = isBiweekly && createdAtMs > 0
+                        ? Math.min(14, Math.max(1, Math.ceil((Date.now() - createdAtMs) / 86400000)))
+                        : 0;
+                      const liveAccrualUsd = isBiweekly && dailyRatePer1k > 0 && notionalNum > 0
+                        ? liveBilledDays * dailyRatePer1k * (notionalNum / 1000)
+                        : 0;
                       const accumulatedCharge = Number((p as any).accumulatedChargeUsd || 0);
-                      const spread = clientPremium > 0 && hedgeCost > 0 ? clientPremium - hedgeCost : null;
+                      // Choose display value: closed biweekly → final
+                      // accumulated; active biweekly → live accrual;
+                      // legacy 1-day → top-level premium column.
+                      const isClosedBiweekly = isBiweekly && (p.status === "cancelled" || p.status === "triggered" || p.status === "expired_otm" || p.status === "expired_itm");
+                      const displayedPremium = isBiweekly
+                        ? (isClosedBiweekly && accumulatedCharge > 0 ? accumulatedCharge : liveAccrualUsd)
+                        : Number(p.premium || 0);
+                      // Max ceiling for biweekly (= dailyRate × 14 ×
+                      // notional/1000). Stamped in metadata.maxProjectedChargeUsd
+                      // by biweeklyActivate post-PR-#122; fall back to
+                      // p.premium (which PR #122 stamps as the ceiling).
+                      const biweeklyCeiling = isBiweekly
+                        ? (Number(meta.maxProjectedChargeUsd || 0) > 0
+                            ? Number(meta.maxProjectedChargeUsd)
+                            : (dailyRatePer1k > 0 && notionalNum > 0
+                                ? 14 * dailyRatePer1k * (notionalNum / 1000)
+                                : Number(p.premium || 0)))
+                        : 0;
+                      // Spread tracks the LIVE displayed premium so
+                      // admin sees current platform margin (grows each
+                      // day for biweekly, fixed for legacy 1-day).
+                      const spread = displayedPremium > 0 && hedgeCost > 0
+                        ? displayedPremium - hedgeCost
+                        : null;
                       const payout = Number(p.payoutDueAmount || 0);
                       const payoutSettled = Number(p.payoutSettledAmount || 0);
                       const payoutStatus = payout > 0 ? (payoutSettled > 0 ? "Settled" : "Due") : "";
@@ -802,12 +846,22 @@ function Dashboard({ token }: { token: string }) {
                           <td style={{ padding: "8px 6px", fontSize: 10, color: strikeGap !== null ? (strikeGap >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
                             {strikeGap !== null ? `${strikeGap >= 0 ? "+" : ""}${fmtUsd(strikeGap)}` : "—"}
                           </td>
-                          <td style={{ padding: "8px 6px" }} title={isBiweekly ? `Max ${fmtUsd(clientPremium)} if held to expiry. Currently billed: ${fmtUsd(accumulatedCharge)}.` : undefined}>
-                            {clientPremium > 0
-                              ? (isBiweekly && accumulatedCharge > 0
-                                  ? <>{fmtUsd(accumulatedCharge)}<span style={{ fontSize: 9, color: "var(--muted)" }}> /{fmtUsd(clientPremium)}</span></>
-                                  : fmtUsd(clientPremium))
-                              : "—"}
+                          <td
+                            style={{ padding: "8px 6px" }}
+                            title={
+                              isBiweekly
+                                ? `Day ${liveBilledDays} of 14 — billed ${fmtUsd(displayedPremium)}. Daily rate ${fmtUsd(dailyRatePer1k * notionalNum / 1000)}/day. Max if held to expiry ${fmtUsd(biweeklyCeiling)}.`
+                                : undefined
+                            }
+                          >
+                            {isBiweekly && displayedPremium > 0
+                              ? <>
+                                  {fmtUsd(displayedPremium)}
+                                  <span style={{ fontSize: 9, color: "var(--muted)" }}>
+                                    {" "}/{fmtUsd(biweeklyCeiling)}
+                                  </span>
+                                </>
+                              : displayedPremium > 0 ? fmtUsd(displayedPremium) : "—"}
                           </td>
                           <td style={{ padding: "8px 6px" }}>{hedgeCost > 0 ? fmtUsd(hedgeCost) : "—"}</td>
                           <td style={{ padding: "8px 6px", color: spread !== null ? (spread >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
@@ -886,12 +940,39 @@ function Dashboard({ token }: { token: string }) {
                       );
                     })}
                     {protectionsList.length > 0 && (() => {
-                      const allPremium = protectionsList.reduce((s, p) => s + Number(p.premium || 0), 0);
-                      const allHedge = protectionsList.reduce((s, p) => {
+                      // 2026-05-01 — totals use the same live-bill
+                      // semantics as per-row Premium / Hedge / Spread.
+                      // Biweekly active rows accrue daily; biweekly
+                      // closed rows use accumulated_charge_usd; legacy
+                      // 1-day uses upfront premium column.
+                      const computePerRow = (p: any) => {
+                        const m = (p.metadata as any) || {};
+                        const isBw = Number(p.tenorDays || 1) >= 2;
                         const ep = Number(p.executionPrice || 0);
                         const sz = Number(p.size || 0);
-                        return s + (ep > 0 && sz > 0 ? ep * sz : 0);
-                      }, 0);
+                        const spot = Number(m.spotAtActivation || 0);
+                        const hc =
+                          Number(m.hedgeCostUsd || 0) > 0
+                            ? Number(m.hedgeCostUsd)
+                            : isBw && spot > 0 && ep > 0 && sz > 0
+                              ? ep * sz * spot
+                              : ep > 0 && sz > 0 ? ep * sz : 0;
+                        const dr = Number(p.dailyRateUsdPer1k || 0);
+                        const nt = Number(p.protectedNotional || 0);
+                        const cm = new Date(p.createdAt).getTime();
+                        const ld = isBw && cm > 0
+                          ? Math.min(14, Math.max(1, Math.ceil((Date.now() - cm) / 86400000)))
+                          : 0;
+                        const live = isBw && dr > 0 && nt > 0 ? ld * dr * (nt / 1000) : 0;
+                        const acc = Number(p.accumulatedChargeUsd || 0);
+                        const closed = isBw && (p.status === "cancelled" || p.status === "triggered" || p.status === "expired_otm" || p.status === "expired_itm");
+                        const prem = isBw
+                          ? (closed && acc > 0 ? acc : live)
+                          : Number(p.premium || 0);
+                        return { prem, hc };
+                      };
+                      const allPremium = protectionsList.reduce((s, p) => s + computePerRow(p).prem, 0);
+                      const allHedge = protectionsList.reduce((s, p) => s + computePerRow(p).hc, 0);
                       const allPayout = protectionsList.reduce((s, p) => s + Number(p.payoutDueAmount || 0), 0);
                       const allTpRecovery = protectionsList.reduce((s, p) => {
                         const sr = (p.metadata as any)?.sellResult;

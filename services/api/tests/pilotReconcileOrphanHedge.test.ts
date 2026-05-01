@@ -127,7 +127,13 @@ test("reconcile-orphan-hedge: happy path patches venue fields + un-archives + me
     assert.equal(after!.side, "buy");
     assert.equal(Number(after!.size), 0.1);
     assert.equal(Number(after!.executionPrice), 0.02);
-    assert.equal(Number(after!.premium), 155.33);
+    // 2026-05-01 — premium column = trader-facing ceiling
+    // (= dailyRate × 14 × notional/1000 = 2.5 × 14 × 10 = $350),
+    // NOT the caller-supplied premiumUsd (which is hedge cost).
+    assert.equal(Number(after!.premium), 350);
+    // Hedge cost stashed in metadata for admin view.
+    assert.equal(Number((after!.metadata as any).hedgeCostUsd), 155.33);
+    assert.equal(Number((after!.metadata as any).maxProjectedChargeUsd), 350);
     assert.equal(after!.externalOrderId, "deribit-order-12345");
     assert.equal(after!.externalExecutionId, "deribit-order-12345");
     // Un-archived

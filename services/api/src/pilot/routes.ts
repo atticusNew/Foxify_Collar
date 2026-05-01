@@ -5846,6 +5846,22 @@ export const registerPilotRoutes = async (
       "external_order_id = $9",
       "external_execution_id = $10"
     ];
+    // 2026-05-01 — caller-supplied premiumUsd is the HEDGE COST (USD
+    // paid to Deribit). For biweekly the top-level `premium` column
+    // stores the trader-facing CEILING (= dailyRate × 14d × notional/1000),
+    // matching the new semantic from PR #122. Compute the ceiling
+    // here from row data (slPct + notional + dailyRate) so callers
+    // don't have to compute it manually.
+    const slPctFromRow = Number(existing.slPct || 0);
+    const notionalFromRow = Number(existing.protectedNotional || 0);
+    const dailyRateFromRow = Number(existing.dailyRateUsdPer1k || 0);
+    const tenorFromRow = Number(existing.tenorDays || 1);
+    const isBiweeklyRow = tenorFromRow >= 2;
+    const traderCeilingUsd = isBiweeklyRow && dailyRateFromRow > 0 && notionalFromRow > 0
+      ? tenorFromRow * dailyRateFromRow * (notionalFromRow / 1000)
+      : premiumUsd; // legacy 1-day: caller-supplied value is the trader premium directly
+    const premiumColumnValue = isBiweeklyRow ? traderCeilingUsd : premiumUsd;
+
     const updateValues: unknown[] = [
       params.id,
       venue,
@@ -5853,7 +5869,7 @@ export const registerPilotRoutes = async (
       side,
       new Decimal(size).toFixed(10),
       new Decimal(execPriceBtc).toFixed(10),
-      new Decimal(premiumUsd).toFixed(10),
+      new Decimal(premiumColumnValue).toFixed(10),
       executedAt,
       externalOrderId,
       externalExecutionId
@@ -5884,8 +5900,14 @@ export const registerPilotRoutes = async (
     // Read-merge-write metadata (jsonb_build_object SQL has pg-mem
     // compatibility issues per existing convention — see PR #119
     // synthetic flag test).
-    const newMeta = {
+    const newMeta: Record<string, unknown> = {
       ...meta,
+      // Stamp hedge cost + max projected charge so admin views render
+      // the dynamic Premium / Hedge / Spread columns correctly (matches
+      // biweeklyActivate post-PR-#122).
+      hedgeCostUsd: premiumUsd,
+      maxProjectedChargeUsd: traderCeilingUsd,
+      traderPremiumCeilingUsd: traderCeilingUsd,
       reconciledAt: new Date().toISOString(),
       reconciledBy: auth.actor,
       reconciledReason: "orphan_biweekly_activate_pre_pr120_fix",
