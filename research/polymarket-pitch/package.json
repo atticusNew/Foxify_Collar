@@ -1,0 +1,14 @@
+{
+  "name": "@atticus-research/polymarket-pitch",
+  "version": "0.1.0",
+  "description": "Polymarket exploratory pitch — 1-page hedge analysis. Standalone, no pilot deps.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sim": "npx tsx src/main.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
