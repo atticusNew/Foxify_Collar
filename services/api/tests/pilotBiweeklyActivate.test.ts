@@ -347,6 +347,33 @@ test("handleBiweeklyActivate: happy path quote → activate → protection persi
     // Verify venue.execute was called once
     assert.equal(v.calls.execute.length, 1);
 
+    // 2026-05-01 regression — top-level venue/instrument/size/etc. must
+    // be populated after successful venue.execute. Bug found via CEO's
+    // first real biweekly trade where these were all NULL, which made
+    // hedge manager skip the hedge (no instrument_id to query) and
+    // admin views report instr=None.
+    assert.equal(p.venue, "deribit_test");
+    assert.ok(p.instrumentId && p.instrumentId.startsWith("BTC-USD-"));
+    assert.equal(p.side, "buy");
+    assert.ok(Math.abs(Number(p.size) - 10000 / 76000) < 1e-9);
+    assert.equal(Number(p.executionPrice), 30); // mock premium
+    assert.equal(Number(p.premium), 30);
+    assert.ok(p.executedAt);
+    assert.equal(Number(p.entryPrice), 76000);
+    assert.equal(Number(p.floorPrice), 74480);
+
+    // Confirm same values landed in the DB (not just on the in-memory record).
+    const dbRow = await pool.query(
+      `SELECT venue, instrument_id, side, size, execution_price, premium,
+              executed_at, entry_price, floor_price
+       FROM pilot_protections WHERE id = $1`,
+      [p.id]
+    );
+    assert.equal(dbRow.rows[0].venue, "deribit_test");
+    assert.ok(dbRow.rows[0].instrument_id);
+    assert.equal(Number(dbRow.rows[0].entry_price), 76000);
+    assert.equal(Number(dbRow.rows[0].floor_price), 74480);
+
     // Verify ledger entry
     const ledger = await pool.query("SELECT * FROM pilot_ledger_entries WHERE protection_id = $1", [p.id]);
     assert.equal(ledger.rows.length, 1);
