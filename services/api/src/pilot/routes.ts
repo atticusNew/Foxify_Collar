@@ -5678,6 +5678,260 @@ export const registerPilotRoutes = async (
     return { status: "ok", protection, synthetic: true };
   });
 
+  /**
+   * POST /pilot/admin/protections/:id/reconcile-orphan-hedge
+   *
+   * Backfill venue/instrument fields onto an existing protection row
+   * whose biweekly activate handler succeeded at venue.execute but
+   * never populated the top-level columns (pre-PR-#120 bug). Also
+   * un-archives the row if it was accidentally cleaned up while
+   * looking like a synthetic.
+   *
+   * Use case: CEO's first real biweekly trade (1c7e17f9, 2026-05-01)
+   * filled on Deribit but the protection row had every venue field
+   * NULL. Hedge manager couldn't find the hedge, admin views showed
+   * `instr=None` indistinguishable from synthetics, and the row got
+   * archived during cleanup. This endpoint patches the row back into
+   * a fully-managed state so the platform behaves as if no bug had
+   * happened.
+   *
+   * Idempotency: refuses to overwrite a row that already has
+   * `instrument_id` set unless `?force=true` is passed.
+   *
+   * Validation:
+   *   - Protection row must exist
+   *   - Caller-supplied `instrumentId` must be a Deribit option name
+   *     starting with "BTC-"
+   *   - Direction (from existing row metadata) must match option type:
+   *     SHORT protection → call (-C), LONG protection → put (-P)
+   *
+   * Body: {
+   *   venue: "deribit_test" | "deribit_live",
+   *   instrumentId: string,
+   *   side: "buy",
+   *   size: string (BTC qty),
+   *   executionPriceBtc: string,
+   *   premiumUsd: string,
+   *   executedAt: ISO8601 string,
+   *   externalOrderId: string,
+   *   externalExecutionId?: string (defaults to externalOrderId),
+   *   unarchive?: boolean (default true; clears closedAt/closedBy/
+   *               metadata.archivedAt and restores status='active' if
+   *               the row was archived)
+   * }
+   */
+  app.post("/pilot/admin/protections/:id/reconcile-orphan-hedge", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const params = req.params as { id: string };
+    const query = req.query as { force?: string };
+    const force = String(query.force || "").toLowerCase() === "true";
+    const body = (req.body || {}) as {
+      venue?: unknown;
+      instrumentId?: unknown;
+      side?: unknown;
+      size?: unknown;
+      executionPriceBtc?: unknown;
+      premiumUsd?: unknown;
+      executedAt?: unknown;
+      externalOrderId?: unknown;
+      externalExecutionId?: unknown;
+      unarchive?: unknown;
+    };
+
+    if (!params.id) {
+      reply.code(400);
+      return { status: "error", reason: "missing_protection_id" };
+    }
+
+    // ── Validate inputs ──
+    const venue = String(body.venue || "");
+    if (venue !== "deribit_test" && venue !== "deribit_live") {
+      reply.code(400);
+      return { status: "error", reason: "invalid_venue", message: "venue must be deribit_test or deribit_live." };
+    }
+    const instrumentId = String(body.instrumentId || "");
+    if (!instrumentId.startsWith("BTC-") || (!instrumentId.endsWith("-C") && !instrumentId.endsWith("-P"))) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_instrument_id", message: "instrumentId must be a Deribit BTC option name (BTC-...-C/P)." };
+    }
+    const side = String(body.side || "buy");
+    if (side !== "buy") {
+      reply.code(400);
+      return { status: "error", reason: "invalid_side", message: "side must be 'buy'." };
+    }
+    const sizeStr = String(body.size || "");
+    const size = Number(sizeStr);
+    if (!Number.isFinite(size) || size <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_size", message: "size must be positive BTC quantity." };
+    }
+    const execPriceBtcStr = String(body.executionPriceBtc || "");
+    const execPriceBtc = Number(execPriceBtcStr);
+    if (!Number.isFinite(execPriceBtc) || execPriceBtc <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_execution_price", message: "executionPriceBtc must be positive." };
+    }
+    const premiumUsdStr = String(body.premiumUsd || "");
+    const premiumUsd = Number(premiumUsdStr);
+    if (!Number.isFinite(premiumUsd) || premiumUsd <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_premium", message: "premiumUsd must be positive." };
+    }
+    const executedAt = String(body.executedAt || "");
+    if (!executedAt || isNaN(new Date(executedAt).getTime())) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_executed_at", message: "executedAt must be a valid ISO timestamp." };
+    }
+    const externalOrderId = String(body.externalOrderId || "");
+    if (!externalOrderId) {
+      reply.code(400);
+      return { status: "error", reason: "missing_external_order_id" };
+    }
+    const externalExecutionId = String(body.externalExecutionId || externalOrderId);
+    const unarchive = body.unarchive !== false; // default true
+
+    // ── Fetch existing protection ──
+    const existing = await getProtection(pool, params.id);
+    if (!existing) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+
+    // ── Idempotency / overwrite guard ──
+    if (existing.instrumentId && !force) {
+      reply.code(409);
+      return {
+        status: "error",
+        reason: "already_reconciled",
+        message: `Protection already has instrument_id=${existing.instrumentId}. Pass ?force=true to overwrite.`
+      };
+    }
+
+    // ── Direction ↔ option type consistency check ──
+    const meta = (existing.metadata || {}) as Record<string, unknown>;
+    const protectionType = String(meta.protectionType || "").toLowerCase();
+    const optionType = instrumentId.endsWith("-C") ? "call" : "put";
+    if (protectionType === "short" && optionType !== "call") {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "direction_mismatch",
+        message: `Protection is SHORT (expects call hedge -C); supplied instrument ${instrumentId} is a put.`
+      };
+    }
+    if (protectionType === "long" && optionType !== "put") {
+      reply.code(400);
+      return {
+        status: "error",
+        reason: "direction_mismatch",
+        message: `Protection is LONG (expects put hedge -P); supplied instrument ${instrumentId} is a call.`
+      };
+    }
+
+    // ── Build the patch payload ──
+    // Pull entry/floor/trigger from metadata if not on top level (biweekly
+    // activate stored them in metadata only, pre-PR-#120).
+    const triggerPriceMeta = Number(meta.triggerPrice || meta.floorPrice || 0);
+    const spotAtActivationMeta = Number(meta.spotAtActivation || 0);
+
+    const updateFields: string[] = [
+      "venue = $2",
+      "instrument_id = $3",
+      "side = $4",
+      "size = $5",
+      "execution_price = $6",
+      "premium = $7",
+      "executed_at = $8::timestamptz",
+      "external_order_id = $9",
+      "external_execution_id = $10"
+    ];
+    const updateValues: unknown[] = [
+      params.id,
+      venue,
+      instrumentId,
+      side,
+      new Decimal(size).toFixed(10),
+      new Decimal(execPriceBtc).toFixed(10),
+      new Decimal(premiumUsd).toFixed(10),
+      executedAt,
+      externalOrderId,
+      externalExecutionId
+    ];
+
+    // Backfill entry_price + floor_price from metadata if currently NULL.
+    if (!existing.entryPrice && spotAtActivationMeta > 0) {
+      updateFields.push(`entry_price = $${updateValues.length + 1}`);
+      updateValues.push(new Decimal(spotAtActivationMeta).toFixed(10));
+    }
+    if (!existing.floorPrice && triggerPriceMeta > 0) {
+      updateFields.push(`floor_price = $${updateValues.length + 1}`);
+      updateValues.push(new Decimal(triggerPriceMeta).toFixed(10));
+    }
+
+    // Un-archive: clear closedAt/closedBy and restore active status if
+    // the row was archived. Always merge a `reconciledAt` flag into
+    // metadata so the audit trail is clear.
+    if (unarchive) {
+      updateFields.push("status = 'active'");
+      updateFields.push("hedge_status = 'active'");
+      updateFields.push("closed_at = NULL");
+      updateFields.push("closed_by = NULL");
+    }
+
+    updateFields.push("updated_at = NOW()");
+
+    // Read-merge-write metadata (jsonb_build_object SQL has pg-mem
+    // compatibility issues per existing convention — see PR #119
+    // synthetic flag test).
+    const newMeta = {
+      ...meta,
+      reconciledAt: new Date().toISOString(),
+      reconciledBy: auth.actor,
+      reconciledReason: "orphan_biweekly_activate_pre_pr120_fix",
+      // Preserve any prior archive markers but mark them as cleared
+      ...(unarchive && meta.archivedAt
+        ? { unarchivedAt: new Date().toISOString(), priorArchivedAt: meta.archivedAt, archivedAt: undefined }
+        : {})
+    };
+    updateFields.push(`metadata = $${updateValues.length + 1}::jsonb`);
+    updateValues.push(JSON.stringify(newMeta));
+
+    try {
+      await pool.query(
+        `UPDATE pilot_protections SET ${updateFields.join(", ")} WHERE id = $1`,
+        updateValues
+      );
+    } catch (err: any) {
+      reply.code(500);
+      return { status: "error", reason: "update_failed", message: String(err?.message ?? "unknown") };
+    }
+
+    const updated = await getProtection(pool, params.id);
+    await insertAdminAction(pool, {
+      action: "pilot_orphan_hedge_reconciled",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: {
+        protectionId: params.id,
+        venue,
+        instrumentId,
+        size: sizeStr,
+        executionPriceBtc: execPriceBtcStr,
+        premiumUsd: premiumUsdStr,
+        executedAt,
+        externalOrderId,
+        unarchive,
+        force
+      }
+    });
+    console.log(
+      `[Admin] Reconciled orphan hedge: id=${params.id} ${instrumentId} ` +
+        `${size} BTC @ ${execPriceBtc}BTC by ${auth.actor}`
+    );
+    return { status: "ok", protection: updated, reconciled: true };
+  });
+
   app.post("/pilot/admin/test-reset-protections", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
