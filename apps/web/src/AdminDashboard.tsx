@@ -833,6 +833,28 @@ function Dashboard({ token }: { token: string }) {
                             }}>
                               {statusLabel[p.status] || p.status}
                             </span>
+                            {/* Deferred-close indicator (2026-05-06): shows
+                                "Closing in HH:MM" when a scheduled close
+                                is pending. Status remains 'active' until
+                                the boundary fires. */}
+                            {(p as any).closeEffectiveAt && isActive && (() => {
+                              const remMs = new Date((p as any).closeEffectiveAt).getTime() - Date.now();
+                              if (remMs <= 0) return null;
+                              const hh = Math.floor(remMs / 3600000);
+                              const mm = Math.floor((remMs % 3600000) / 60000);
+                              return (
+                                <span
+                                  title={`Scheduled to close at ${new Date((p as any).closeEffectiveAt).toUTCString().slice(17, 25)} UTC`}
+                                  style={{
+                                    marginLeft: 4, fontSize: 9, fontWeight: 600,
+                                    padding: "1px 5px", borderRadius: 999,
+                                    background: "rgba(240,185,11,0.15)", color: "#f0b90b"
+                                  }}
+                                >
+                                  ⏱ {hh}h {mm}m
+                                </span>
+                              );
+                            })()}
                           </td>
                           <td style={{ padding: "8px 6px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: protType === "short" ? "var(--danger)" : "var(--success)" }}>{protType}</td>
                           <td style={{ padding: "8px 6px", fontSize: 11, fontWeight: 600 }}>{p.slPct ? `${p.slPct}%` : p.tierName || "—"}</td>

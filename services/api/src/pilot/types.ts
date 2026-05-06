@@ -195,6 +195,11 @@ export type ProtectionRecord = {
   // direction 2026-04-30).
   tenorDays: number;
   dailyRateUsdPer1k: string | null;
+  // Deferred close (2026-05-06): set when user clicks End Protection.
+  // Both null until requested. close_effective_at = next billing-day
+  // boundary from activation. Status stays 'active' until effective.
+  closeRequestedAt?: string | null;
+  closeEffectiveAt?: string | null;
   accumulatedChargeUsd: string;
   daysBilled: number;
   closedAt: string | null;

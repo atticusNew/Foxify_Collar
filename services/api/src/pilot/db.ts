@@ -115,12 +115,26 @@ export const ensurePilotSchema = async (pool: Queryable): Promise<void> => {
     -- protection closes for the user but the underlying Deribit option
     -- stays open for the platform (hedge manager owns disposition).
     ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS hedge_retained_for_platform BOOLEAN NOT NULL DEFAULT FALSE;
+    -- Deferred-close (2026-05-06): when a trader requests close mid-day,
+    -- protection stays active until the next billing-day boundary
+    -- (= activation + ceil(daysHeld) * 24h). Same boundaries as billing
+    -- so trader gets every day they pay for. close_requested_at records
+    -- when the user clicked, close_effective_at when the actual close
+    -- runs. status stays 'active' until effective time so trigger
+    -- monitor and hedge manager continue normally; sweep runs the
+    -- close at boundary.
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS close_requested_at TIMESTAMPTZ;
+    ALTER TABLE pilot_protections ADD COLUMN IF NOT EXISTS close_effective_at TIMESTAMPTZ;
 
     CREATE INDEX IF NOT EXISTS pilot_protections_tenor_open_idx
       ON pilot_protections (tenor_days, status)
       WHERE closed_at IS NULL;
     CREATE INDEX IF NOT EXISTS pilot_protections_user_created_idx
       ON pilot_protections (user_hash, created_at);
+    -- Cheap scan target for the deferred-close sweep loop.
+    CREATE INDEX IF NOT EXISTS pilot_protections_close_effective_idx
+      ON pilot_protections (close_effective_at)
+      WHERE close_requested_at IS NOT NULL AND closed_at IS NULL;
 
     CREATE TABLE IF NOT EXISTS pilot_price_snapshots (
       id TEXT PRIMARY KEY,
@@ -817,6 +831,83 @@ export const markProtectionClosed = async (
     ]
   );
   return (result.rowCount ?? 0) > 0;
+};
+
+/**
+ * Schedule a deferred close on a biweekly protection.
+ * Sets close_requested_at and close_effective_at if NOT already set
+ * (idempotent — a second call returns the existing schedule).
+ * Status stays 'active' until close_effective_at arrives and the
+ * sweep runs the actual close via markProtectionClosed.
+ *
+ * Returns true if THIS call wrote the schedule, false if a prior
+ * schedule was already in place.
+ */
+export const requestProtectionClose = async (
+  pool: Queryable,
+  params: {
+    protectionId: string;
+    closeRequestedAtIso: string;
+    closeEffectiveAtIso: string;
+  }
+): Promise<boolean> => {
+  const result = await pool.query(
+    `UPDATE pilot_protections
+     SET close_requested_at = $2::timestamptz,
+         close_effective_at = $3::timestamptz,
+         updated_at = NOW()
+     WHERE id = $1
+       AND close_requested_at IS NULL
+       AND closed_at IS NULL
+       AND status = 'active'`,
+    [params.protectionId, params.closeRequestedAtIso, params.closeEffectiveAtIso]
+  );
+  return (result.rowCount ?? 0) > 0;
+};
+
+/**
+ * Cancel a previously-scheduled deferred close (the "undo" path).
+ * Clears close_requested_at + close_effective_at so the protection
+ * stays active normally. Returns true if a schedule was cleared,
+ * false if no schedule existed or the row was already closed.
+ */
+export const cancelProtectionCloseRequest = async (
+  pool: Queryable,
+  protectionId: string
+): Promise<boolean> => {
+  const result = await pool.query(
+    `UPDATE pilot_protections
+     SET close_requested_at = NULL,
+         close_effective_at = NULL,
+         updated_at = NOW()
+     WHERE id = $1
+       AND close_requested_at IS NOT NULL
+       AND closed_at IS NULL
+       AND status = 'active'`,
+    [protectionId]
+  );
+  return (result.rowCount ?? 0) > 0;
+};
+
+/**
+ * List protections whose scheduled close is due (close_effective_at
+ * <= now and not yet closed). Used by sweepScheduledCloses.
+ */
+export const listScheduledClosesDue = async (
+  pool: Queryable,
+  nowMs: number = Date.now()
+): Promise<Array<{ id: string }>> => {
+  const result = await pool.query(
+    `SELECT id
+     FROM pilot_protections
+     WHERE close_requested_at IS NOT NULL
+       AND closed_at IS NULL
+       AND status = 'active'
+       AND close_effective_at <= $1::timestamptz
+     LIMIT 100`,
+    [new Date(nowMs).toISOString()]
+  );
+  return result.rows.map((r) => ({ id: String(r.id) }));
 };
 
 /**
@@ -3180,6 +3271,8 @@ const mapProtection = (row: Record<string, unknown>): ProtectionRecord => ({
   closedAt: row.closed_at ? new Date(String(row.closed_at)).toISOString() : null,
   closedBy: row.closed_by ? String(row.closed_by) : null,
   hedgeRetainedForPlatform: Boolean(row.hedge_retained_for_platform),
+  closeRequestedAt: row.close_requested_at ? new Date(String(row.close_requested_at)).toISOString() : null,
+  closeEffectiveAt: row.close_effective_at ? new Date(String(row.close_effective_at)).toISOString() : null,
   metadata: toRecord(row.metadata),
   createdAt: new Date(String(row.created_at)).toISOString(),
   updatedAt: new Date(String(row.updated_at)).toISOString()

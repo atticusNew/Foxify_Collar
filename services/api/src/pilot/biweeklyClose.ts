@@ -45,13 +45,17 @@ import type { Pool } from "pg";
 
 import {
   BIWEEKLY_MAX_TENOR_DAYS,
+  BIWEEKLY_MIN_DAYS_BILLED,
   computeAccumulatedCharge,
   computeDaysHeld
 } from "./biweeklyPricing";
 import {
+  cancelProtectionCloseRequest,
   getProtectionSubscriptionState,
   insertLedgerEntry,
+  listScheduledClosesDue,
   markProtectionClosed,
+  requestProtectionClose,
   type SubscriptionCloseReason
 } from "./db";
 import type { ProtectionRecord, ProtectionStatus, V7SlTier } from "./types";
@@ -388,6 +392,239 @@ export const sweepBiweeklyNaturalExpiries = async (params: {
   if (result.scanned > 0) {
     console.log(
       `[biweeklyClose] expiry sweep complete: scanned=${result.scanned} closed=${result.closed} errors=${result.errors}`
+    );
+  }
+  return result;
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// Deferred close (2026-05-06, per CEO direction)
+// ─────────────────────────────────────────────────────────────────────
+//
+// Trader pays whole-day units (Math.ceil); protection should ALSO be
+// whole-day units. Previous immediate-close behaviour billed a full
+// day but cut protection mid-day. Deferred close aligns the two: a
+// close request takes effect at the next billing-day boundary
+// (= activation + ceil(daysHeld) * 24h), so the trader gets every
+// hour of every day they pay for.
+//
+// Status stays 'active' through the deferred window so trigger
+// monitor and hedge manager keep working normally. A periodic sweep
+// converts due requests to actual closes via the existing
+// handleBiweeklyClose path.
+
+export type RequestCloseResult =
+  | {
+      status: "ok";
+      product: "biweekly";
+      protection: ProtectionRecord;
+      /** ISO timestamp when the protection will actually close. */
+      closeEffectiveAt: string;
+      /** Days that will be billed at close_effective_at. */
+      daysBilledAtEffective: number;
+      /** Charge that will be settled at close_effective_at, in USD. */
+      accumulatedChargeAtEffectiveUsd: number;
+      /** True if THIS call wrote the schedule; false if a prior schedule was already in place (idempotent). */
+      newlyRequested: boolean;
+    }
+  | {
+      status: "error";
+      reason: BiweeklyCloseErrorReason | "already_closed" | "trigger_in_progress";
+      message: string;
+    };
+
+/**
+ * Compute the next billing-day boundary from activation that lies
+ * AT OR AFTER nowMs. Matches the ceil-with-grace semantics used by
+ * computeAccumulatedCharge so a close requested at hour 23 of day 1
+ * doesn't tip into day 2's billing.
+ *
+ *   activatedAt + max(BIWEEKLY_MIN_DAYS_BILLED, ceil(daysHeld_at_now)) × 24h
+ *   clamped to activatedAt + BIWEEKLY_MAX_TENOR_DAYS × 24h
+ *
+ * Returns ISO string + integer days at the boundary.
+ */
+const computeNextBoundary = (
+  activatedAtMs: number,
+  nowMs: number
+): { effectiveMs: number; daysAtBoundary: number } => {
+  const daysHeld = computeDaysHeld({ activatedAtMs, nowMs });
+  const daysAtBoundary = Math.min(
+    BIWEEKLY_MAX_TENOR_DAYS,
+    Math.max(BIWEEKLY_MIN_DAYS_BILLED, Math.ceil(daysHeld))
+  );
+  const effectiveMs = activatedAtMs + daysAtBoundary * 86400 * 1000;
+  return { effectiveMs, daysAtBoundary };
+};
+
+/**
+ * Schedule a deferred close on a biweekly protection.
+ *
+ * Idempotent: if a close was already requested, returns the existing
+ * schedule with newlyRequested=false. Refuses if the row is already
+ * closed or in the middle of a trigger settlement.
+ */
+export const requestBiweeklyClose = async (params: {
+  pool: Pool;
+  protectionId: string;
+  nowMs?: number;
+}): Promise<RequestCloseResult> => {
+  const { pool, protectionId } = params;
+  const nowMs = params.nowMs ?? Date.now();
+
+  let state;
+  try {
+    state = await getProtectionSubscriptionState(pool, protectionId);
+  } catch (err: any) {
+    return {
+      status: "error",
+      reason: "storage_unavailable",
+      message: `Lookup failed: ${err?.message ?? "unknown"}`
+    };
+  }
+  if (!state) return { status: "error", reason: "not_found", message: "Protection not found." };
+  if (state.tenorDays < 2) {
+    return { status: "error", reason: "not_biweekly", message: "Deferred close only applies to biweekly protections." };
+  }
+  if (state.closedAtIso !== null) {
+    return { status: "error", reason: "already_closed", message: "Protection already closed." };
+  }
+  if (state.dailyRateUsdPer1k === null) {
+    return { status: "error", reason: "missing_rate", message: "Biweekly protection missing daily_rate_usd_per_1k." };
+  }
+  if (state.slPct === null) {
+    return { status: "error", reason: "missing_sl_pct", message: "Biweekly protection missing sl_pct." };
+  }
+
+  const activatedAtMs = new Date(state.createdAtIso).getTime();
+  const { effectiveMs, daysAtBoundary } = computeNextBoundary(activatedAtMs, nowMs);
+  const closeEffectiveIso = new Date(effectiveMs).toISOString();
+  const closeRequestedIso = new Date(nowMs).toISOString();
+
+  const accumulatedChargeUsd = computeAccumulatedCharge({
+    daysHeld: daysAtBoundary,
+    notionalUsd: Number(state.protectedNotional),
+    slPct: state.slPct as V7SlTier
+  });
+
+  let newlyRequested: boolean;
+  try {
+    newlyRequested = await requestProtectionClose(pool, {
+      protectionId,
+      closeRequestedAtIso: closeRequestedIso,
+      closeEffectiveAtIso: closeEffectiveIso
+    });
+  } catch (err: any) {
+    return {
+      status: "error",
+      reason: "storage_unavailable",
+      message: `Schedule write failed: ${err?.message ?? "unknown"}`
+    };
+  }
+
+  // If newlyRequested === false the row already had a schedule. Either
+  // way re-fetch and return the canonical state — caller doesn't need
+  // to know whether the schedule was just-written or pre-existing
+  // beyond the boolean flag.
+  const protection = await getProtection(pool, protectionId);
+  if (!protection) {
+    return { status: "error", reason: "not_found", message: "Protection vanished mid-schedule." };
+  }
+
+  console.log(
+    `[biweeklyClose] schedule ${newlyRequested ? "set" : "REUSED"}: protection=${protectionId} ` +
+      `effectiveAt=${closeEffectiveIso} daysAtBoundary=${daysAtBoundary} ` +
+      `chargeAtEffectiveUsd=$${accumulatedChargeUsd.toFixed(2)}`
+  );
+
+  return {
+    status: "ok",
+    product: "biweekly",
+    protection,
+    closeEffectiveAt: protection.closeEffectiveAt ?? closeEffectiveIso,
+    daysBilledAtEffective: daysAtBoundary,
+    accumulatedChargeAtEffectiveUsd: accumulatedChargeUsd,
+    newlyRequested
+  };
+};
+
+/**
+ * Cancel a previously-scheduled close (the "undo" path).
+ * Returns true if a schedule was cleared, false if no pending
+ * schedule existed.
+ */
+export const cancelBiweeklyCloseRequest = async (params: {
+  pool: Pool;
+  protectionId: string;
+}): Promise<{ status: "ok"; protection: ProtectionRecord; cleared: boolean } | { status: "error"; reason: "not_found"; message: string }> => {
+  const cleared = await cancelProtectionCloseRequest(params.pool, params.protectionId);
+  const protection = await getProtection(params.pool, params.protectionId);
+  if (!protection) return { status: "error", reason: "not_found", message: "Protection not found." };
+  console.log(
+    `[biweeklyClose] schedule cleared=${cleared}: protection=${params.protectionId}`
+  );
+  return { status: "ok", protection, cleared };
+};
+
+/**
+ * Sweep due scheduled closes. Runs alongside
+ * sweepBiweeklyNaturalExpiries on the trigger monitor's tick loop.
+ *
+ * Critical: bills at the close_effective_at timestamp, NOT at the
+ * sweep tick time. This guarantees the trader is billed exactly the
+ * amount they were quoted at close-request time. If the sweep runs
+ * 2 hours late (slow tick, downtime, etc.) the trader still pays
+ * for daysAtBoundary days, not daysAtBoundary+1.
+ *
+ * Idempotent: handleBiweeklyClose is the source of truth for the
+ * actual close write; sweep just hands off due rows.
+ */
+export const sweepScheduledCloses = async (params: {
+  pool: Pool;
+  nowMs?: number;
+}): Promise<NaturalExpirySweepResult> => {
+  const nowMs = params.nowMs ?? Date.now();
+  const result: NaturalExpirySweepResult = { scanned: 0, closed: 0, errors: 0 };
+
+  let rows: Array<{ id: string }>;
+  try {
+    rows = await listScheduledClosesDue(params.pool, nowMs);
+  } catch (err: any) {
+    console.warn(`[biweeklyClose] scheduled-close sweep query failed: ${err?.message ?? "unknown"}`);
+    return result;
+  }
+  result.scanned = rows.length;
+
+  for (const row of rows) {
+    try {
+      // Read the row's close_effective_at to use as the billing
+      // anchor. Falls back to nowMs if column unset (shouldn't happen
+      // since listScheduledClosesDue filters on it).
+      const protection = await getProtection(params.pool, row.id);
+      const billAtMs = protection?.closeEffectiveAt
+        ? new Date(protection.closeEffectiveAt).getTime()
+        : nowMs;
+      const closeResult = await handleBiweeklyClose({
+        pool: params.pool,
+        req: { protectionId: row.id, closedBy: "user_close", nowMs: billAtMs }
+      });
+      if (closeResult.status === "ok" && closeResult.newlyClosed) {
+        result.closed += 1;
+      } else if (closeResult.status === "error") {
+        result.errors += 1;
+        console.warn(
+          `[biweeklyClose] scheduled-close sweep failed for ${row.id}: ${closeResult.reason} ${closeResult.message}`
+        );
+      }
+    } catch (err: any) {
+      result.errors += 1;
+      console.warn(`[biweeklyClose] scheduled-close sweep threw for ${row.id}: ${err?.message ?? "unknown"}`);
+    }
+  }
+
+  if (result.scanned > 0) {
+    console.log(
+      `[biweeklyClose] scheduled-close sweep complete: scanned=${result.scanned} closed=${result.closed} errors=${result.errors}`
     );
   }
   return result;
