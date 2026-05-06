@@ -100,6 +100,13 @@ type Position = {
   dailyRateUsd?: number;
   maxProjectedCharge?: number;
   activatedAtMs?: number;
+  // Deferred close (2026-05-06): when set, position has a pending
+  // close that fires at closeScheduledFor (ISO timestamp). Position
+  // remains active in the meantime; balance/settlement deferred
+  // until the actual close fires server-side.
+  closeScheduledFor?: string;
+  closeScheduledBilled?: number;
+  closeScheduledDays?: number;
 };
 
 // ─── Config ──────────────────────────────────────────────────────────
@@ -177,19 +184,44 @@ const activateBiweeklyProt = (b: Record<string, unknown>) =>
     "/pilot/protections/activate",
     { method: "POST", body: JSON.stringify({ ...b, product: "biweekly" }) }
   );
-// Close a biweekly subscription (PR 4 of cutover). Server settles
-// accumulated charge through close-time and ends the subscription.
-// Returns the updated protection + bill amount for the toast.
-const closeBiweeklyProt = (id: string) =>
-  api<{
-    status: "ok";
-    product: "biweekly";
-    protection: ProtectionRecord;
-    accumulatedChargeUsd: number;
-    daysBilled: number;
-    hedgeRetainedForPlatform: boolean;
-    newlyClosed: boolean;
-  }>(`/pilot/protections/${id}/close`, { method: "POST", body: JSON.stringify({}) });
+// Close a biweekly subscription.
+//
+// Default (deferred close, 2026-05-06): server schedules the close at
+// the next billing-day boundary so the trader gets every hour of every
+// day they pay for. Response contains closeEffectiveAt (ISO).
+//
+// ?immediate=true: forfeit remaining hours and close right now (used
+// by the "Close immediately" escape hatch).
+type DeferredCloseResponse = {
+  status: "ok";
+  product: "biweekly";
+  protection: ProtectionRecord;
+  closeEffectiveAt: string;
+  daysBilledAtEffective: number;
+  accumulatedChargeAtEffectiveUsd: number;
+  newlyRequested: boolean;
+};
+type ImmediateCloseResponse = {
+  status: "ok";
+  product: "biweekly";
+  protection: ProtectionRecord;
+  accumulatedChargeUsd: number;
+  daysBilled: number;
+  hedgeRetainedForPlatform: boolean;
+  newlyClosed: boolean;
+};
+const closeBiweeklyProt = (id: string, immediate = false) =>
+  api<DeferredCloseResponse | ImmediateCloseResponse>(
+    `/pilot/protections/${id}/close${immediate ? "?immediate=true" : ""}`,
+    { method: "POST", body: JSON.stringify({}) }
+  );
+
+// Cancel a previously-scheduled deferred close (the "undo" path).
+const cancelCloseRequest = (id: string) =>
+  api<{ status: "ok"; protection: ProtectionRecord; cleared: boolean }>(
+    `/pilot/protections/${id}/close-request`,
+    { method: "DELETE" }
+  );
 
 const fetchMon = async (id: string): Promise<MonitorResponse> => {
   const raw = await api<{ status: string; monitor?: MonitorResponse } & MonitorResponse>(`/pilot/protections/${id}/monitor`);
@@ -535,7 +567,7 @@ export function PilotWidget() {
   const [closingPosId, setClosingPosId] = useState<string | null>(null);
   const [closeConfirmPosId, setCloseConfirmPosId] = useState<string | null>(null);
 
-  const handleClose = useCallback(async (posId: string) => {
+  const handleClose = useCallback(async (posId: string, immediate = false) => {
     const pos = positions.find(p => p.id === posId);
     if (!pos) return;
     // Local-only or legacy 1-day → original behavior
@@ -549,40 +581,68 @@ export function PilotWidget() {
       setToast(`Position #${pos.num} closed`);
       return;
     }
-    // Biweekly: call server close endpoint
+    // Biweekly: call server close endpoint.
+    // Default = deferred close at next billing-day boundary (2026-05-06).
+    // ?immediate=true forfeits the remaining hours and closes now.
     setClosingPosId(posId);
     try {
-      const res = await closeBiweeklyProt(pos.protectionId);
-      // Server returns the authoritative bill. Update local state and
-      // mirror in settlement totals so the trader sees the final charge.
-      const billed = res.accumulatedChargeUsd;
-      const days = res.daysBilled;
-      const wasNewClose = res.newlyClosed;
-      setPositions(prev => prev.map(p => p.id === posId ? {
-        ...p,
-        status: "closed" as const,
-        premium: billed,
-        closedPnl: -billed
-      } : p));
-      setBalance(b => {
-        // Settle the bill against balance only on a newly-closed call
-        // to avoid double-charging if the trader retries.
-        if (!wasNewClose) return b;
-        const nb = Math.max(0, b - billed);
-        sv(K_BAL, nb);
-        return nb;
-      });
-      setSettlement(s => {
-        if (!wasNewClose) return s;
-        const ns = { ...s, totalPremiums: s.totalPremiums + billed };
-        sv(K_SET, ns);
-        return ns;
-      });
-      setToast(
-        wasNewClose
-          ? `Position #${pos.num} closed — billed $${billed.toFixed(2)} for ${days} day${days === 1 ? "" : "s"}`
-          : `Position #${pos.num} was already closed (billed $${billed.toFixed(2)})`
-      );
+      const res = await closeBiweeklyProt(pos.protectionId, immediate);
+      // Two response shapes — discriminate by which fields are present.
+      const isDeferred = "closeEffectiveAt" in res;
+      if (isDeferred) {
+        const r = res as DeferredCloseResponse;
+        const effective = new Date(r.closeEffectiveAt);
+        const billed = r.accumulatedChargeAtEffectiveUsd;
+        const days = r.daysBilledAtEffective;
+        // Mark position as scheduled-to-close in local state. Stays
+        // visible as Active with a countdown badge; no balance debit
+        // until the actual close fires (server-side sweep).
+        setPositions(prev => prev.map(p => p.id === posId ? {
+          ...p,
+          closeScheduledFor: r.closeEffectiveAt,
+          closeScheduledBilled: billed,
+          closeScheduledDays: days
+        } : p));
+        const hh = String(effective.getUTCHours()).padStart(2, "0");
+        const mm = String(effective.getUTCMinutes()).padStart(2, "0");
+        setToast(
+          r.newlyRequested
+            ? `Position #${pos.num} will end at ${hh}:${mm} UTC — billed $${billed.toFixed(2)} for ${days} day${days === 1 ? "" : "s"}. You can undo within the window.`
+            : `Position #${pos.num} already scheduled to end at ${hh}:${mm} UTC`
+        );
+      } else {
+        // Immediate close response (legacy shape from handleBiweeklyClose).
+        const r = res as ImmediateCloseResponse;
+        const billed = r.accumulatedChargeUsd;
+        const days = r.daysBilled;
+        const wasNewClose = r.newlyClosed;
+        setPositions(prev => prev.map(p => p.id === posId ? {
+          ...p,
+          status: "closed" as const,
+          premium: billed,
+          closedPnl: -billed,
+          closeScheduledFor: undefined,
+          closeScheduledBilled: undefined,
+          closeScheduledDays: undefined
+        } : p));
+        setBalance(b => {
+          if (!wasNewClose) return b;
+          const nb = Math.max(0, b - billed);
+          sv(K_BAL, nb);
+          return nb;
+        });
+        setSettlement(s => {
+          if (!wasNewClose) return s;
+          const ns = { ...s, totalPremiums: s.totalPremiums + billed };
+          sv(K_SET, ns);
+          return ns;
+        });
+        setToast(
+          wasNewClose
+            ? `Position #${pos.num} closed — billed $${billed.toFixed(2)} for ${days} day${days === 1 ? "" : "s"}`
+            : `Position #${pos.num} was already closed (billed $${billed.toFixed(2)})`
+        );
+      }
     } catch (e: any) {
       const msg = String(e?.message || "close_failed");
       setActivateError(
@@ -590,13 +650,35 @@ export function PilotWidget() {
           ? "This protection is on the legacy 1-day plan; no end-protection action available."
           : msg.includes("not_found")
             ? "Protection no longer exists. Refresh."
-            : `Could not close protection: ${msg}`
+            : msg.includes("already_closed")
+              ? "Protection already ended."
+              : `Could not close protection: ${msg}`
       );
     } finally {
       setClosingPosId(null);
       setCloseConfirmPosId(null);
     }
   }, [positions, livePrice]);
+
+  // Cancel a pending scheduled close (the "undo" path).
+  const handleCancelClose = useCallback(async (posId: string) => {
+    const pos = positions.find(p => p.id === posId);
+    if (!pos || !pos.protectionId || !pos.closeScheduledFor) return;
+    try {
+      const res = await cancelCloseRequest(pos.protectionId);
+      if (res.cleared) {
+        setPositions(prev => prev.map(p => p.id === posId ? {
+          ...p,
+          closeScheduledFor: undefined,
+          closeScheduledBilled: undefined,
+          closeScheduledDays: undefined
+        } : p));
+        setToast(`Position #${pos.num} close cancelled — protection continues normally`);
+      }
+    } catch (e: any) {
+      setActivateError(`Could not cancel close: ${e?.message ?? "unknown"}`);
+    }
+  }, [positions]);
 
   // Handler for the inline "Close" button on legacy/unprotected rows.
   // Wraps handleClose for the local-only path (no confirmation needed —
@@ -854,15 +936,36 @@ export function PilotWidget() {
                       {/* End Protection button — biweekly subscriptions need
                           confirmation since they call the server and settle
                           accumulated charges. Legacy/local-only positions use
-                          the inline Close (no confirmation). */}
+                          the inline Close (no confirmation).
+                          2026-05-06: when a deferred close is pending, the
+                          button switches to "Cancel scheduled close" with a
+                          countdown. */}
                       {isBiweekly && pos.protectionId ? (
-                        <button
-                          onClick={() => setCloseConfirmPosId(pos.id)}
-                          disabled={isClosing}
-                          style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", fontSize: 11, color: isClosing ? "var(--muted)" : "var(--text)", cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.6 : 1 }}
-                        >
-                          {isClosing ? "Closing…" : "End Protection"}
-                        </button>
+                        pos.closeScheduledFor ? (
+                          (() => {
+                            const remainingMs = new Date(pos.closeScheduledFor).getTime() - Date.now();
+                            const hh = Math.max(0, Math.floor(remainingMs / 3600000));
+                            const mm = Math.max(0, Math.floor((remainingMs % 3600000) / 60000));
+                            return (
+                              <button
+                                onClick={() => void handleCancelClose(pos.id)}
+                                disabled={isClosing}
+                                style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", fontSize: 11, color: "var(--accent)", cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.6 : 1 }}
+                                title={`Will close at ${new Date(pos.closeScheduledFor).toUTCString().slice(17, 22)} UTC. Click to cancel and continue protection.`}
+                              >
+                                Closing in {hh}h {mm}m — Undo
+                              </button>
+                            );
+                          })()
+                        ) : (
+                          <button
+                            onClick={() => setCloseConfirmPosId(pos.id)}
+                            disabled={isClosing}
+                            style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", fontSize: 11, color: isClosing ? "var(--muted)" : "var(--text)", cursor: isClosing ? "wait" : "pointer", opacity: isClosing ? 0.6 : 1 }}
+                          >
+                            {isClosing ? "Closing…" : "End Protection"}
+                          </button>
+                        )
                       ) : (
                         <button onClick={() => handleCloseLocal(pos.id)} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "1px solid var(--border)", background: "transparent", fontSize: 11, color: "var(--muted)", cursor: "pointer" }}>Close</button>
                       )}
@@ -918,7 +1021,16 @@ export function PilotWidget() {
         const dailyRate = pos.dailyRateUsd ?? 0;
         const activatedAtMs = pos.activatedAtMs ?? Date.now();
         const daysHeld = biweeklyDaysHeldDisplay(activatedAtMs);
-        const estCharge = dailyRate * daysHeld;
+        // 2026-05-06: deferred close maths. Boundary = activation + ceil(daysHeld) × 24h
+        // (matches biweeklyClose.computeNextBoundary). Trader sees exactly which day
+        // they're paying for and how much wall time remains.
+        const tenor = pos.tenorDays ?? BIWEEKLY_MAX_TENOR_DAYS;
+        const daysAtBoundary = Math.min(tenor, Math.max(1, Math.ceil((Date.now() - activatedAtMs) / 86400000)));
+        const effectiveMs = activatedAtMs + daysAtBoundary * 86400000;
+        const remainingMs = effectiveMs - Date.now();
+        const remHr = Math.max(0, Math.floor(remainingMs / 3600000));
+        const remMn = Math.max(0, Math.floor((remainingMs % 3600000) / 60000));
+        const estCharge = dailyRate * daysAtBoundary;
         const isClosing = closingPosId === closeConfirmPosId;
         return (
           <div
@@ -947,40 +1059,57 @@ export function PilotWidget() {
                 End Protection #{pos.num}?
               </div>
               <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 14, lineHeight: 1.5 }}>
-                You'll be charged <strong style={{ color: "var(--text)" }}>{fmt(estCharge)}</strong> for {daysHeld} day{daysHeld === 1 ? "" : "s"} held. No future charges.
+                Protection will end at the end of day {daysAtBoundary} (in <strong style={{ color: "var(--text)" }}>{remHr}h {remMn}m</strong>). You'll be charged <strong style={{ color: "var(--text)" }}>{fmt(estCharge)}</strong> for {daysAtBoundary} day{daysAtBoundary === 1 ? "" : "s"} — same amount whether you end now or wait.
                 <br />
                 <span style={{ opacity: 0.7, fontSize: 11 }}>
-                  Final amount confirmed by server. Once ended, the protection cannot be reopened — open a new one if you need protection again.
+                  You'll keep full coverage until then. You can cancel the scheduled close any time before it fires.
                 </span>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={() => !isClosing && setCloseConfirmPosId(null)}
+                    disabled={isClosing}
+                    style={{
+                      flex: 1, padding: "10px 0", borderRadius: 8,
+                      border: "none",
+                      background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
+                      color: "#fff", fontSize: 13, fontWeight: 600,
+                      cursor: isClosing ? "wait" : "pointer",
+                      opacity: isClosing ? 0.5 : 1
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => void handleClose(pos.id, false)}
+                    disabled={isClosing}
+                    style={{
+                      flex: 1, padding: "10px 0", borderRadius: 8,
+                      border: "1px solid var(--danger)",
+                      background: "transparent",
+                      color: "var(--danger)", fontSize: 13, fontWeight: 600,
+                      cursor: isClosing ? "wait" : "pointer",
+                      opacity: isClosing ? 0.5 : 1
+                    }}
+                  >
+                    {isClosing ? "Scheduling…" : `End at day ${daysAtBoundary} boundary`}
+                  </button>
+                </div>
                 <button
-                  onClick={() => !isClosing && setCloseConfirmPosId(null)}
+                  onClick={() => void handleClose(pos.id, true)}
                   disabled={isClosing}
                   style={{
-                    flex: 1, padding: "10px 0", borderRadius: 8,
+                    padding: "6px 0", borderRadius: 6,
                     border: "none",
-                    background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
-                    color: "#fff", fontSize: 13, fontWeight: 600,
-                    cursor: isClosing ? "wait" : "pointer",
-                    opacity: isClosing ? 0.5 : 1
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => void handleClose(pos.id)}
-                  disabled={isClosing}
-                  style={{
-                    flex: 1, padding: "10px 0", borderRadius: 8,
-                    border: "1px solid var(--danger)",
                     background: "transparent",
-                    color: "var(--danger)", fontSize: 13, fontWeight: 600,
+                    color: "var(--muted)", fontSize: 10, textDecoration: "underline",
                     cursor: isClosing ? "wait" : "pointer",
                     opacity: isClosing ? 0.5 : 1
                   }}
+                  title="Bypass the wait and end now. Same charge — but you forfeit the remaining hours of protection."
                 >
-                  {isClosing ? "Ending…" : "End Protection"}
+                  Or end immediately (forfeit remaining {remHr}h {remMn}m of coverage)
                 </button>
               </div>
             </div>

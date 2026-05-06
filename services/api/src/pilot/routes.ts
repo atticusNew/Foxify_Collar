@@ -109,7 +109,7 @@ import {
   handleBiweeklyQuote,
   type BiweeklyActivateErrorReason
 } from "./biweeklyActivate";
-import { handleBiweeklyClose, type BiweeklyCloseErrorReason } from "./biweeklyClose";
+import { handleBiweeklyClose, requestBiweeklyClose, cancelBiweeklyCloseRequest, type BiweeklyCloseErrorReason } from "./biweeklyClose";
 import { isBiweeklyEnabled } from "./biweeklyPricing";
 
 // Format a USD amount as a comma-separated whole-dollar string for
@@ -5176,8 +5176,26 @@ export const registerPilotRoutes = async (
    *   400 { status: "error", reason: "not_biweekly" | "missing_rate" | "missing_sl_pct" }
    *   503 { status: "error", reason: "storage_unavailable" }
    */
+  /**
+   * POST /pilot/protections/:id/close
+   *
+   * Default behavior (deferred close, 2026-05-06): protection stays
+   * active until the next billing-day boundary (= activation +
+   * ceil(daysHeld) × 24h). Trader gets every hour of every day they
+   * pay for. Returns the scheduled effective time + projected charge.
+   *
+   * ?immediate=true: forfeit the remaining hours of the current
+   * billing day and close right now. Trader still bills the same
+   * whole-day amount (Math.ceil) — used when trader needs to
+   * disengage instantly (e.g., emergency, account migration).
+   *
+   * Idempotent: a second call with the same id returns the existing
+   * schedule with newlyRequested=false.
+   */
   app.post("/pilot/protections/:id/close", async (req, reply) => {
     const params = req.params as { id: string };
+    const query = req.query as { immediate?: string };
+    const immediate = String(query.immediate || "").toLowerCase() === "true";
     if (!params.id) {
       reply.code(400);
       return { status: "error", reason: "missing_protection_id" };
@@ -5203,19 +5221,77 @@ export const registerPilotRoutes = async (
       return { status: "error", reason: "not_found" };
     }
 
-    const result = await handleBiweeklyClose({
-      pool,
-      req: { protectionId: params.id, closedBy: "user_close" }
-    });
+    if (immediate) {
+      const result = await handleBiweeklyClose({
+        pool,
+        req: { protectionId: params.id, closedBy: "user_close" }
+      });
+      if (result.status === "error") {
+        const reasonToHttp: Record<BiweeklyCloseErrorReason, number> = {
+          not_found: 404,
+          not_biweekly: 400,
+          missing_rate: 500,
+          missing_sl_pct: 500,
+          storage_unavailable: 503
+        };
+        reply.code(reasonToHttp[result.reason] ?? 400);
+        return result;
+      }
+      return result;
+    }
+
+    // Default: deferred close at next billing-day boundary.
+    const result = await requestBiweeklyClose({ pool, protectionId: params.id });
     if (result.status === "error") {
-      const reasonToHttp: Record<BiweeklyCloseErrorReason, number> = {
+      const reasonToHttp: Record<string, number> = {
         not_found: 404,
         not_biweekly: 400,
+        already_closed: 409,
         missing_rate: 500,
         missing_sl_pct: 500,
-        storage_unavailable: 503
+        storage_unavailable: 503,
+        trigger_in_progress: 409
       };
       reply.code(reasonToHttp[result.reason] ?? 400);
+      return result;
+    }
+    return result;
+  });
+
+  /**
+   * DELETE /pilot/protections/:id/close-request
+   *
+   * Cancel a previously-scheduled deferred close ("undo" within the
+   * window). Restores the protection to normal active state. Returns
+   * 200 with cleared=true if a schedule was cleared, cleared=false
+   * if there was no pending schedule.
+   */
+  app.delete("/pilot/protections/:id/close-request", async (req, reply) => {
+    const params = req.params as { id: string };
+    if (!params.id) {
+      reply.code(400);
+      return { status: "error", reason: "missing_protection_id" };
+    }
+    let userHash: { userHash: string; hashVersion: number };
+    try {
+      userHash = resolveTenantScopeHash();
+    } catch (error: any) {
+      const reason = String(error?.message || "server_config_error");
+      reply.code(reason === "user_hash_secret_missing" ? 500 : 400);
+      return { status: "error", reason };
+    }
+    const owned = await getProtection(pool, params.id);
+    if (!owned) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (!assertProtectionOwnership(owned, userHash)) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    const result = await cancelBiweeklyCloseRequest({ pool, protectionId: params.id });
+    if (result.status === "error") {
+      reply.code(404);
       return result;
     }
     return result;

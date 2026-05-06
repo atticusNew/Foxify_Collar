@@ -10,7 +10,7 @@ import {
 import { resolvePriceSnapshot } from "./price";
 import { isDrawdownBreached, resolveTriggerEconomicsFromProtection } from "./protectionMath";
 import type { PriceSnapshotOutput } from "./price";
-import { handleBiweeklyClose, sweepBiweeklyNaturalExpiries } from "./biweeklyClose";
+import { handleBiweeklyClose, sweepBiweeklyNaturalExpiries, sweepScheduledCloses } from "./biweeklyClose";
 
 const resolveBullishTriggerPrice = async (requestId: string, marketId: string): Promise<PriceSnapshotOutput> => {
   const { BullishTradingClient, resolveBullishMarketSymbol } = await import("./bullish");
@@ -246,6 +246,18 @@ export const processTriggerMonitorCycleWithResolver = async (
   } catch (sweepErr: any) {
     console.warn(
       `[TriggerMonitor] biweekly natural-expiry sweep threw: ${sweepErr?.message ?? "unknown"}`
+    );
+  }
+
+  // Deferred-close sweep (2026-05-06): converts due close requests
+  // (close_effective_at <= now) into actual closes via
+  // handleBiweeklyClose. Cheap indexed scan; no-op when no requests
+  // are pending. Errors logged only; main flow unaffected.
+  try {
+    await sweepScheduledCloses({ pool, nowMs: now.getTime() });
+  } catch (sweepErr: any) {
+    console.warn(
+      `[TriggerMonitor] biweekly scheduled-close sweep threw: ${sweepErr?.message ?? "unknown"}`
     );
   }
 
