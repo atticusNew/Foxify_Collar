@@ -33,6 +33,8 @@ import {
   insertProtection,
   insertVenueExecution,
   insertVenueQuote,
+  markProtectionClosed,
+  cancelProtectionCloseRequest,
   listRecentTenorPolicyRows,
   listLedgerForProtection,
   listProtectionsByUserHashForAdmin,
@@ -6028,6 +6030,200 @@ export const registerPilotRoutes = async (
         `${size} BTC @ ${execPriceBtc}BTC by ${auth.actor}`
     );
     return { status: "ok", protection: updated, reconciled: true };
+  });
+
+  /**
+   * POST /pilot/admin/protections/:id/courtesy-close
+   *
+   * One-shot admin tool to close a biweekly protection with explicit
+   * billing overrides. Use cases:
+   *   - Trader clicked End Protection just before a rollover but the
+   *     deferred-close didn't fire in time → bill at the prior day
+   *     boundary as a courtesy
+   *   - Operator dispute resolution
+   *   - Any case where the standard close billing math doesn't match
+   *     the agreed outcome
+   *
+   * Differences vs the trader-facing /close endpoint:
+   *   - daysBilled and accumulatedChargeUsd are EXPLICIT in body, NOT
+   *     computed from current time (the whole point — this is for
+   *     overriding the time-based billing)
+   *   - closedAtIso is EXPLICIT (defaults to a moment before the next
+   *     billing boundary so audit shows "yes this was pre-rollover")
+   *   - hedgeRetainedForPlatform defaults to TRUE so the underlying
+   *     Deribit option stays open and the hedge manager continues to
+   *     run TP — same semantic as a trigger close. Caller can override.
+   *   - Cancels any pending deferred-close schedule first
+   *   - Stamps metadata.courtesyClose with full audit trail
+   *
+   * Body: { daysBilled: number, accumulatedChargeUsd: number,
+   *         closedAtIso?: ISO, hedgeRetainedForPlatform?: boolean,
+   *         reason: string }
+   */
+  app.post("/pilot/admin/protections/:id/courtesy-close", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const params = req.params as { id: string };
+    const body = (req.body || {}) as {
+      daysBilled?: unknown;
+      accumulatedChargeUsd?: unknown;
+      closedAtIso?: unknown;
+      hedgeRetainedForPlatform?: unknown;
+      reason?: unknown;
+    };
+
+    if (!params.id) {
+      reply.code(400);
+      return { status: "error", reason: "missing_protection_id" };
+    }
+    const daysBilled = Number(body.daysBilled);
+    const accumulatedChargeUsd = Number(body.accumulatedChargeUsd);
+    const reason = String(body.reason || "").trim();
+    if (!Number.isFinite(daysBilled) || daysBilled < 1 || daysBilled > 14 || !Number.isInteger(daysBilled)) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_days_billed", message: "daysBilled must be an integer in [1, 14]." };
+    }
+    if (!Number.isFinite(accumulatedChargeUsd) || accumulatedChargeUsd < 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_accumulated_charge", message: "accumulatedChargeUsd must be >= 0." };
+    }
+    if (!reason) {
+      reply.code(400);
+      return { status: "error", reason: "missing_reason", message: "reason is required for audit trail." };
+    }
+    const hedgeRetained = body.hedgeRetainedForPlatform === false ? false : true;
+
+    const existing = await getProtection(pool, params.id);
+    if (!existing) {
+      reply.code(404);
+      return { status: "error", reason: "not_found" };
+    }
+    if (existing.tenorDays < 2) {
+      reply.code(400);
+      return { status: "error", reason: "not_biweekly", message: "Courtesy close only applies to biweekly protections." };
+    }
+    if (existing.closedAt) {
+      reply.code(409);
+      return { status: "error", reason: "already_closed", message: "Protection already closed." };
+    }
+
+    // Default closedAtIso = "5 seconds before next billing boundary"
+    // (= activation + daysBilled × 24h - 5s) so the row reflects "this
+    // was a pre-rollover close." Caller can override.
+    const activatedAtMs = new Date(existing.createdAt).getTime();
+    const defaultClosedAtMs = activatedAtMs + daysBilled * 86400 * 1000 - 5000;
+    const closedAtIso = typeof body.closedAtIso === "string"
+      ? body.closedAtIso
+      : new Date(defaultClosedAtMs).toISOString();
+    if (isNaN(new Date(closedAtIso).getTime())) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_closed_at", message: "closedAtIso must be a valid ISO timestamp." };
+    }
+
+    // Snapshot the original schedule (if any) for audit BEFORE clearing it.
+    const priorSchedule = {
+      closeRequestedAt: existing.closeRequestedAt ?? null,
+      closeEffectiveAt: existing.closeEffectiveAt ?? null
+    };
+
+    // 1. Clear any pending deferred-close schedule so the sweep job
+    //    doesn't try to re-fire after the courtesy close lands.
+    try {
+      await cancelProtectionCloseRequest(pool, params.id);
+    } catch (err: any) {
+      // Non-fatal — markProtectionClosed below is the source of truth.
+      console.warn(`[Admin] courtesy-close: failed to clear pending schedule for ${params.id}: ${err?.message}`);
+    }
+
+    // 2. Atomic close write with explicit overrides.
+    let didClose: boolean;
+    try {
+      didClose = await markProtectionClosed(pool, {
+        protectionId: params.id,
+        closedAtIso,
+        closedBy: "admin",
+        accumulatedChargeUsd: new Decimal(accumulatedChargeUsd).toFixed(8),
+        daysBilled,
+        newStatus: "cancelled",
+        hedgeRetainedForPlatform: hedgeRetained
+      });
+    } catch (err: any) {
+      reply.code(500);
+      return { status: "error", reason: "update_failed", message: String(err?.message ?? "unknown") };
+    }
+    if (!didClose) {
+      reply.code(409);
+      return { status: "error", reason: "already_closed", message: "Race: protection was closed by another path." };
+    }
+
+    // 3. Stamp metadata.courtesyClose for audit. Read-merge-write
+    //    pattern (pg-mem doesn't support jsonb_build_object).
+    try {
+      const r = await pool.query(`SELECT metadata FROM pilot_protections WHERE id = $1`, [params.id]);
+      const merged = {
+        ...((r.rows[0]?.metadata as any) || {}),
+        courtesyClose: {
+          reason,
+          by: auth.actor,
+          atIso: new Date().toISOString(),
+          backdatedClosedAt: closedAtIso,
+          billedDaysOverride: daysBilled,
+          billedChargeOverride: accumulatedChargeUsd,
+          hedgeRetained,
+          priorSchedule
+        }
+      };
+      await pool.query(`UPDATE pilot_protections SET metadata = $2::jsonb WHERE id = $1`, [
+        params.id,
+        JSON.stringify(merged)
+      ]);
+    } catch (err: any) {
+      console.warn(`[Admin] courtesy-close: metadata stamp failed for ${params.id}: ${err?.message}`);
+    }
+
+    // 4. Insert subscription_close_settlement ledger entry.
+    try {
+      await insertLedgerEntry(pool, {
+        protectionId: params.id,
+        entryType: "subscription_close_settlement",
+        amount: new Decimal(accumulatedChargeUsd).toFixed(8),
+        reference: `courtesy:${reason}`
+      });
+    } catch (err: any) {
+      console.warn(`[Admin] courtesy-close: ledger insert failed for ${params.id}: ${err?.message}`);
+    }
+
+    // 5. Audit log.
+    await insertAdminAction(pool, {
+      action: "pilot_courtesy_close",
+      actor: auth.actor,
+      actorIp: auth.actorIp,
+      details: {
+        protectionId: params.id,
+        daysBilled,
+        accumulatedChargeUsd,
+        closedAtIso,
+        hedgeRetained,
+        reason,
+        priorSchedule
+      }
+    });
+    console.log(
+      `[Admin] courtesy-close: id=${params.id} daysBilled=${daysBilled} ` +
+        `chargeUsd=$${accumulatedChargeUsd.toFixed(2)} closedAt=${closedAtIso} ` +
+        `hedgeRetained=${hedgeRetained} by=${auth.actor} reason="${reason}"`
+    );
+
+    const updated = await getProtection(pool, params.id);
+    return {
+      status: "ok",
+      protection: updated,
+      courtesyApplied: true,
+      daysBilled,
+      accumulatedChargeUsd,
+      closedAt: closedAtIso,
+      hedgeRetainedForPlatform: hedgeRetained
+    };
   });
 
   app.post("/pilot/admin/test-reset-protections", async (req, reply) => {
