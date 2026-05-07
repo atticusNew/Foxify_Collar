@@ -412,12 +412,68 @@ export function PilotWidget() {
           }
 
           setMonitors(prev => ({ ...prev, [pos.id]: d }));
-          if (d.protection?.status === "triggered") {
-            const pay = Number(d.protection.payoutDueAmount || 0);
-            setPositions(prev => prev.map(p => p.id === pos.id ? { ...p, status: "triggered" as const, closedPayout: pay } : p));
+          // 2026-05-07: server-side state sync for biweekly. The widget
+          // tracks positions in localStorage but the server is the
+          // source of truth. If the server has closed/cancelled/
+          // expired the row (admin courtesy close, deferred-close
+          // sweep firing, natural expiry sweep), reflect that on the
+          // trader's view within one poll cycle. Without this the
+          // trader would see a stale "Active" position even though
+          // the server has billed and closed it.
+          //
+          // Only react to server-side changes when the local state
+          // still says "active" (avoid re-applying on every poll
+          // after we've already reflected the close).
+          const serverStatus = d.protection?.status;
+          const localStillActive = positions.find(p => p.id === pos.id)?.status === "active";
+          if (serverStatus === "triggered" && localStillActive) {
+            const pay = Number(d.protection?.payoutDueAmount || 0);
+            const billed = Number((d.protection as any)?.accumulatedChargeUsd || 0);
+            setPositions(prev => prev.map(p => p.id === pos.id ? {
+              ...p,
+              status: "triggered" as const,
+              closedPayout: pay,
+              premium: billed > 0 ? billed : p.premium,
+              closeScheduledFor: undefined,
+              closeScheduledBilled: undefined,
+              closeScheduledDays: undefined
+            } : p));
             setBalance(b => { const nb = b + pay; sv(K_BAL, nb); return nb; });
             setSettlement(s => { const ns = { ...s, totalPayouts: s.totalPayouts + pay }; sv(K_SET, ns); return ns; });
             setToast(`Position #${pos.num} triggered — Payout ${fmt(pay)}`);
+          } else if ((serverStatus === "cancelled" || serverStatus === "expired_otm" || serverStatus === "expired_itm") && localStillActive) {
+            // Server-side close (could be: deferred-close sweep fired,
+            // admin courtesy close, natural max-tenor expiry).
+            // Reflect on trader's view.
+            const billed = Number((d.protection as any)?.accumulatedChargeUsd || 0);
+            const days = Number((d.protection as any)?.daysBilled || 0);
+            setPositions(prev => prev.map(p => p.id === pos.id ? {
+              ...p,
+              status: "closed" as const,
+              premium: billed,
+              closedPnl: -billed,
+              closeScheduledFor: undefined,
+              closeScheduledBilled: undefined,
+              closeScheduledDays: undefined
+            } : p));
+            setBalance(b => { const nb = Math.max(0, b - billed); sv(K_BAL, nb); return nb; });
+            setSettlement(s => { const ns = { ...s, totalPremiums: s.totalPremiums + billed }; sv(K_SET, ns); return ns; });
+            setToast(
+              serverStatus === "cancelled"
+                ? `Position #${pos.num} closed — billed ${fmt(billed)} for ${days} day${days === 1 ? "" : "s"}`
+                : `Position #${pos.num} expired — billed ${fmt(billed)}`
+            );
+          } else if (serverStatus === "active" && d.protection && (d.protection as any).closeRequestedAt) {
+            // Server says a deferred close is scheduled but local
+            // state doesn't have it yet (e.g. close scheduled from
+            // a different browser session). Reflect.
+            const localPos = positions.find(p => p.id === pos.id);
+            if (localPos && !localPos.closeScheduledFor) {
+              setPositions(prev => prev.map(p => p.id === pos.id ? {
+                ...p,
+                closeScheduledFor: (d.protection as any).closeEffectiveAt
+              } : p));
+            }
           }
         } catch (err: any) {
           // 2026-04-22: same reconciliation when the server returns 404
@@ -927,6 +983,53 @@ export function PilotWidget() {
                         </span>
                       </div>
                     )}
+                    {/* 2026-05-07: rollover countdown. Always visible on
+                        active biweekly cards. Tells the trader exactly
+                        when the next billing tick fires (and adds $25 to
+                        their bill) so they can act before rollover.
+                        When a close is scheduled, framing changes from
+                        "next bill" to "auto-close at next bill". Pure
+                        information, no action — close logic lives in
+                        the buttons below. */}
+                    {isBiweekly && pos.protectionId && (() => {
+                      const tenor = pos.tenorDays ?? BIWEEKLY_MAX_TENOR_DAYS;
+                      const nextBoundaryDay = Math.min(tenor, daysHeld + 1);
+                      const activated = pos.activatedAtMs ?? Date.now();
+                      const nextBoundaryMs = activated + nextBoundaryDay * 86400000;
+                      const remMs = nextBoundaryMs - Date.now();
+                      if (remMs <= 0) return null;
+                      const hh = Math.floor(remMs / 3600000);
+                      const mm = Math.floor((remMs % 3600000) / 60000);
+                      const nextBillUsd = (daysHeld + 1) * (dailyRate || 0);
+                      const isClosing = !!pos.closeScheduledFor;
+                      return (
+                        <div
+                          style={{
+                            display: "flex", justifyContent: "space-between",
+                            fontSize: 10, color: isClosing ? "#f0b90b" : "var(--muted)",
+                            marginBottom: 6, opacity: 0.9
+                          }}
+                          title={
+                            isClosing
+                              ? `Position will close automatically at the next rollover (no further charges after that).`
+                              : `Each rollover adds ${fmt(dailyRate || 0)} to your bill. Close now or any time before the next rollover to lock in the current day's charge.`
+                          }
+                        >
+                          <span>
+                            {isClosing ? "⏱ Auto-closing in" : "Next rollover in"}
+                            {" "}
+                            <strong style={{ color: isClosing ? "#f0b90b" : "var(--text)" }}>
+                              {hh}h {mm}m
+                            </strong>
+                          </span>
+                          <span>
+                            {isClosing
+                              ? `Final bill: ${fmt(accCharge)}`
+                              : `Next bill: ${fmt(nextBillUsd)}`}
+                          </span>
+                        </div>
+                      );
+                    })()}
                     <div style={{ display: "flex", gap: 6 }}>
                       {!pos.protectionId && (
                         <button onClick={() => handleAddProtection(pos.id)} disabled={isProtecting} style={{ flex: 1, padding: "6px 0", borderRadius: 6, border: "none", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", fontSize: 11, fontWeight: 600, color: "#fff", cursor: "pointer", opacity: isProtecting ? 0.5 : 1 }}>

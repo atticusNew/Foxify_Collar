@@ -833,6 +833,24 @@ function Dashboard({ token }: { token: string }) {
                             }}>
                               {statusLabel[p.status] || p.status}
                             </span>
+                            {/* Courtesy-close indicator (2026-05-07): shows
+                                ⊘ courtesy badge when an admin-initiated
+                                courtesy close was applied (vs normal
+                                user_close, trigger, or natural expiry).
+                                Helps ops distinguish courtesy adjustments
+                                from organic closes during reconciliation. */}
+                            {(p.metadata as any)?.courtesyClose && (
+                              <span
+                                title={`Courtesy close by ${(p.metadata as any).courtesyClose.by}: ${(p.metadata as any).courtesyClose.reason}`}
+                                style={{
+                                  marginLeft: 4, fontSize: 9, fontWeight: 600,
+                                  padding: "1px 5px", borderRadius: 999,
+                                  background: "rgba(96,165,250,0.15)", color: "#60a5fa"
+                                }}
+                              >
+                                ⊘ courtesy
+                              </span>
+                            )}
                             {/* Deferred-close indicator (2026-05-06): shows
                                 "Closing in HH:MM" when a scheduled close
                                 is pending. Status remains 'active' until
