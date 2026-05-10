@@ -1,5 +1,5 @@
 dvol_band,n_pairs,mean_triggers_7d,median_triggers_7d,p95_triggers_7d,max_triggers_7d
-calm,555,4.12,3,9,24
-mod,643,6.19,5,16,22
-elev,178,8.23,7,17,39
-stress,118,11.14,8,33,42
+calm,556,3.80,3,9,22
+mod,681,6.20,5,14,32
+elev,269,9.10,8,19,35
+stress,822,12.14,9,36,56

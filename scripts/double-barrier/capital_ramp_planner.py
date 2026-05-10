@@ -88,39 +88,38 @@ def compute_capital_at_scale(
     headroom_mult: float = 1.30,
 ) -> dict:
     """
-    Capital decomposition:
+    Capital decomposition (V3, post intra-day re-open correction):
 
-      L1 = hedge equity  = initial_hedge_per_pair × N
-      L2 = stress-week reserve = max over bands of (band p05 × N) × N-correction.
-           We use the WORST band's p05_pnl times N (linear in N) as a
-           conservative stress-week reserve, then cap at √N pooling for the
-           independence-friendly portion.
-      L3 = expected-loss buffer = max(0, -E[PnL]_blended × N) for chronic
-           negative carry; with our empirical numbers L3 ≈ 0 in calm/mod/elev,
-           non-zero only when sustained stress is the modeling assumption.
+      L1 = hedge equity = initial_hedge_per_pair × N × 4
+           (×4 multiplier covers up to 4 simultaneous open strangles
+            per pair from intra-day re-opens during a chop day)
+      L2 = unmodeled-risk reserve = max(p05 stress shock,
+                                        $10k × √N + $50k floor)
+           Empirical p05 is now positive in every band, but we hold a
+           floor for risks the model doesn't capture: venue settlement
+           latency, slippage at concentrated trigger events, counterparty
+           credit exposure during 25%/75% settlement window, and
+           regime-shift risks outside the 6.4-year sample.
+      L3 = expected-loss buffer = max(0, -E[blended PnL] × N)
+           Zero under the recommended tiered schedule.
 
-    Foxify pre-fund recommendation = N × (mean_premium / 7d) × 14 days
-       = enough to cover 14 days of premium prepayment without top-up.
-
-    Sustainable LP APR = max APR at which Atticus's expected weekly P&L
-       still covers LP cost + opex with at least 2× safety margin.
+    Sustainable LP APR = max APR at which Atticus pays LP from at most
+       50% of expected weekly P&L, leaving the rest for retained equity.
     """
-    # Hedge equity
-    l1 = initial_hedge_per_pair * n_pairs
-    # Stress-week reserve: use stress-band p05 as worst week; sqrt-N for
-    # independence pooling in the tail
-    p05_stress = band_data.get("stress", {}).get("p05_pnl", -25_000)
-    l2 = max(0.0, -p05_stress) * math.sqrt(max(n_pairs, 1)) * 2.33 / 1.65
+    # Hedge equity (allow for up to 4 overlapping intra-day strangles per pair)
+    l1 = initial_hedge_per_pair * n_pairs * 4.0
+    # Unmodeled-risk floor: $50k floor + $10k × √N for scale
+    l2 = max(50_000.0, 50_000.0 + 10_000.0 * math.sqrt(max(n_pairs, 1)))
     # Chronic carry buffer
     e_pnl = blended["weighted_pnl_per_pair_life"]
     l3 = max(0.0, -e_pnl * n_pairs)
     total = (l1 + l2 + l3) * headroom_mult
 
     weekly_pnl = e_pnl * n_pairs
-    # APR conversion: weekly P&L × 52 = annual P&L
     annual_pnl = weekly_pnl * 52
-    # LP capital sized to total_capital - foxify_prefund
-    foxify_prefund = (blended["weighted_premium"] / 7) * 14 * n_pairs  # 14 days of premium
+    # Foxify working balance: 5 days of premium burn (smaller than V2's
+    # 14 days; aligned with the founder's $10k Phase-1 minimum scaling)
+    foxify_prefund = (blended["weighted_premium"] / 7) * 5 * n_pairs
     lp_capital_needed = max(0.0, total - foxify_prefund)
     # Sustainable APR: LP cost <= 50% of expected weekly P&L
     if lp_capital_needed > 0 and weekly_pnl > 0:
@@ -140,7 +139,7 @@ def compute_capital_at_scale(
         "expected_annual_pnl": annual_pnl,
         "sustainable_lp_apr_pct": sustainable_apr_pct,
         "weeks_to_recover_one_stress_week": (
-            (-p05_stress * n_pairs) / weekly_pnl if weekly_pnl > 0 else float("inf")
+            (l2 / weekly_pnl) if weekly_pnl > 0 else float("inf")
         ),
     }
 

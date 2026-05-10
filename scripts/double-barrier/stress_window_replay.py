@@ -271,8 +271,9 @@ def replay_one_pair(
             rv = realized_vol_30d(rv_window)
             dvol_today = synthetic_iv(rv) * 100.0
         sigma_day = dvol_today / 100.0
-        prem_today = premium_for(schedule, dvol_today) * 2.0
-        premium += prem_today
+        rate_per_pair_day = premium_for(schedule, dvol_today) * 2.0
+        # Pair opens at day-start; full daily premium charged
+        premium += rate_per_pair_day
 
         anchor_price = s_path[day_start_h]
         cost = book.open_strangle(product_obj, sigma_day, anchor_price,
@@ -293,13 +294,27 @@ def replay_one_pair(
             payouts += payout
             now_day = cur_h / 24.0
             side_call = cur_px > anchor_price
+
+            # Sell ITM leg
             cash = book.sell_first_inthemoney_leg(
                 product_obj, sigma_day, cur_px, now_day, is_call=side_call,
             )
             cash_in += cash
+
+            # Foxify closes both perps and reopens at new spot.
+            # Atticus opens a fresh ±2% strangle and charges pro-rated
+            # premium for the rest of the day.
+            remaining_hours = max(0, day_end_h - cur_h)
+            if remaining_hours > 0:
+                new_cost = book.open_strangle(
+                    product_obj, sigma_day, cur_px, now_day, tenor_days=1,
+                )
+                cash_out += new_cost
+                premium += rate_per_pair_day * (remaining_hours / 24.0)
+
             anchor_price = cur_px
 
-        # End-of-day: mark surviving 1-day legs
+        # End-of-day: mark all surviving 1-day legs
         end_px = s_path[day_end_h]
         end_day = day_end_h / 24.0
         residual = book.mark_to_market(product_obj, sigma_day, end_px, end_day)

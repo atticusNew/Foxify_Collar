@@ -182,7 +182,7 @@ def replay_pair(
         payout_per_trigger=payout,
         rfr=rfr,
         venue_spread_bps=venue_spread_bps,
-        premium_per_pair_day=0.0,  # unused; we charge per-day below
+        premium_per_pair_day=0.0,  # unused; charged per-pair-open below
     )
 
     if instrument == "straddle_30d":
@@ -199,29 +199,43 @@ def replay_pair(
         day_start_ts = int(t_unix[day_start_h])
         dvol_day = dvol_at(day_start_ts, dvol_map)
         sigma_day = dvol_day / 100.0
-        prem_today = premium_per_side_per_day(premium_schedule, dvol_day) * 2.0
-        premium += prem_today
+        # NOTE on premium: per the CFO doc Vol Facility Step 3, EVERY pair
+        # open (whether at day-start or after a trigger) gets pro-rated
+        # premium for the remaining hours of the UTC day. We track the
+        # current pair's open hour-of-day and charge each new pair from
+        # there to day_end.
+        # Also: per founder confirmation 2026-05-10, when a trigger fires,
+        # Foxify closes both perps and reopens at new spot, so a NEW
+        # strangle is opened on each trigger (intra-day re-hedge), matching
+        # the new ±2% barrier from the new anchor.
+        rate_per_pair_day = (
+            premium_per_side_per_day(premium_schedule, dvol_day) * 2.0
+        )
 
         if instrument == "daily_strangle":
             anchor_price = s_path[day_start_h]
+            # Open initial (day-start) strangle and charge full-day premium
             cost = book.open_strangle(product_obj, sigma_day, anchor_price,
                                        day - 1.0, tenor_days=1)
             cash_out += cost
+            premium += rate_per_pair_day  # full-day prepay at day open
             if day == 1:
                 initial_cost = cost
             peak_outstanding = max(peak_outstanding, cost)
         elif instrument == "pooled_daily_strangle":
-            # Proxy: same as daily_strangle for individual pair-life sim;
-            # the pooling savings are captured at portfolio level (50bps
-            # slippage halved to 25bps because of size discount).
             product_obj.venue_spread_bps = 25.0
             anchor_price = s_path[day_start_h]
             cost = book.open_strangle(product_obj, sigma_day, anchor_price,
                                        day - 1.0, tenor_days=1)
             cash_out += cost
+            premium += rate_per_pair_day
             if day == 1:
                 initial_cost = cost
             peak_outstanding = max(peak_outstanding, cost)
+        else:  # straddle_30d
+            # 30d straddle is bought once at pair-open (day 1); just charge
+            # the full daily premium each day.
+            premium += rate_per_pair_day
 
         cur_h = day_start_h
         anchor_price = s_path[cur_h]
@@ -232,19 +246,39 @@ def replay_pair(
             move_pct = abs(cur_px / anchor_price - 1.0)
             if move_pct < barrier_pct:
                 continue
-            # Trigger
+            # === TRIGGER FIRES ===
             triggers += 1
             payouts += payout
-            now_day = (cur_h) / 24.0
+            now_day = cur_h / 24.0
             side_call = cur_px > anchor_price
+
+            # 1. Sell the matching ITM leg of the existing strangle
             cash = book.sell_first_inthemoney_leg(
                 product_obj, sigma_day, cur_px, now_day, is_call=side_call,
             )
             cash_in += cash
             running_outstanding -= cash
 
+            # 2. Foxify reopens both perps at new spot. Atticus opens a
+            #    fresh strangle at the new ±2% barrier and charges Foxify
+            #    pro-rated premium for the rest of the day.
+            remaining_hours = max(0, day_end_h - cur_h)
+            if remaining_hours > 0 and instrument in (
+                "daily_strangle", "pooled_daily_strangle"
+            ):
+                new_strangle_cost = book.open_strangle(
+                    product_obj, sigma_day, cur_px, now_day, tenor_days=1,
+                )
+                cash_out += new_strangle_cost
+                running_outstanding += new_strangle_cost
+                peak_outstanding = max(peak_outstanding, running_outstanding)
+                # Pro-rated premium for new pair
+                prorated_premium = rate_per_pair_day * (remaining_hours / 24.0)
+                premium += prorated_premium
+
             if instrument == "straddle_30d":
-                # auto-renew the leg at new spot, fresh 30d
+                # 30d strategy: open replacement single leg of the same
+                # direction (call or put), fresh 30d expiry
                 new_cost = book.open_single_leg(
                     product_obj, sigma_day, cur_px, now_day,
                     tenor_days=30, is_call=side_call,
@@ -252,6 +286,12 @@ def replay_pair(
                 cash_out += new_cost
                 running_outstanding += new_cost
                 peak_outstanding = max(peak_outstanding, running_outstanding)
+                # 30d strategy charges premium daily, not per-trigger; but
+                # Foxify still gets a new pro-rated premium charge per the
+                # spec, so add it here too:
+                if remaining_hours > 0:
+                    prorated_premium = rate_per_pair_day * (remaining_hours / 24.0)
+                    premium += prorated_premium
 
             anchor_price = cur_px
 
