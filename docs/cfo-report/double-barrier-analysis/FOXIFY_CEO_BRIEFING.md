@@ -46,7 +46,7 @@ Foxify generates routing volume by opening matched LONG/SHORT pairs on partner e
 
 ## 4. What Foxify earns at scale
 
-Foxify's economics are driven by partner-exchange rebates on routed volume, **not** by the Atticus premium-vs-payout flow. Per pair at 2.16 triggers/day model:
+Foxify's economics are driven by partner-exchange rebates on routed volume, **not** by the Atticus premium-vs-payout flow. Per pair at Foxify's stated 2.16 triggers/day model (validated by founder-supplied 2-week per-second BTC data showing 21.05% per-2-hour probability):
 
 ```
 Volume routed per pair per day:    $864,000
@@ -55,25 +55,29 @@ Volume routed per pair per day:    $864,000
 
 **At 1,000 pairs (steady-state):** Foxify routes **$315 BILLION/year** of partner-exchange volume.
 
+The 2.16 triggers/day model implies sustained elevated/stress vol regime operations. Pricing reflects that — Foxify mostly sees the higher-tier rates on operating days. Honest cost-on-volume figures:
+
 | Foxify scale | Atticus annual cost | Foxify routed volume | Atticus cost as % of volume |
 |---|---|---|---|
-| Phase 1 (4.3 pairs) | $183k | $1.36B | **0.014%** (1.4 bps) |
-| Phase 2 (12.9 pairs) | $549k | $4.07B | 1.4 bps |
-| Phase 3 (100 pairs) | $4.26M | $31.5B | 1.4 bps |
-| Phase 4 (1,000 pairs) | **$42.6M** | **$315B** | 1.4 bps |
-| Phase 5 (10,000 pairs) | **$426M** | **$3.15T** | 1.4 bps |
+| Phase 1 (4.3 pairs) | $232k | $1.36B | **0.017%** (1.7 bps) |
+| Phase 2 (12.9 pairs) | $697k | $4.07B | 1.7 bps |
+| Phase 3 (100 pairs) | $5.4M | $31.5B | 1.7 bps |
+| Phase 4 (1,000 pairs) | **$54M** | **$315B** | 1.7 bps |
+| Phase 5 (10,000 pairs) | **$540M** | **$3.15T** | 1.7 bps |
 
-**Atticus is a fixed 1.4 bps cost on Foxify's routed volume.** Same as a tight exchange fee. Foxify's typical partner rebate income runs 3-10 bps on routed volume, leaving 1.6-8.6 bps of net operating margin.
+**Atticus is a fixed 1.7 bps cost on Foxify's routed volume** at the operating regime Foxify expects. Foxify's typical partner rebate income runs 3-15 bps on routed volume, leaving 1.3-13.3 bps of net operating margin.
 
 **At 5 bps partner rebate (typical institutional rate) at 1,000 pairs:**
 - Foxify gross: $158M
-- Atticus cost: $42.6M
-- **Foxify net: +$115M/year**
+- Atticus cost: $54M
+- **Foxify net: +$104M/year**
 
 **At 10,000 pairs:**
 - Foxify gross at 5 bps: $1.58B
-- Atticus cost: $426M
-- **Foxify net: +$1.15B/year**
+- Atticus cost: $540M
+- **Foxify net: +$1.04B/year**
+
+**Note on cost variation:** if BTC enters a sustained calm regime (DVOL <50), Foxify's daily premium drops to the lower tier ($475/pair/day) and Foxify's cost-on-volume drops to ~1.0 bps. The pricing self-adjusts with market conditions.
 
 ---
 
@@ -168,15 +172,16 @@ These are decisions that need a clear answer before pair flow goes live:
 
 ## 10. The two-sentence summary
 
-> **For 1.4 basis points on the volume Foxify routes to partner
-> exchanges, Atticus provides bounded-risk protection that lets Foxify
-> operate at $50M+/day notional. As Foxify scales to 10,000 pairs, that
-> 1.4 bps cost ($426M/year) is paid out of Foxify's $1.58B/year of
+> **For 1.7 basis points on the volume Foxify routes to partner
+> exchanges (calibrated to Foxify's stated 2.16-triggers/day expected
+> operating regime), Atticus provides bounded-risk protection that lets
+> Foxify operate at $50M+/day notional. As Foxify scales to 10,000 pairs,
+> that 1.7 bps cost ($540M/year) is paid out of Foxify's $1.58B/year of
 > partner rebate income at 5-bps rebate rates — leaving Foxify with
-> $1.15B/year of net operating margin and Atticus with $145M of annual
-> P&L, both sides scaling together with structural safety mechanisms
-> that have been validated against every BTC crisis of the past
-> 6.4 years.**
+> $1.04B/year of net operating margin, both sides scaling together with
+> structural safety mechanisms validated against every BTC crisis of the
+> past 6.4 years and against Foxify's own per-second BTC data over the
+> May 2025 sample.**
 
 ---
 
