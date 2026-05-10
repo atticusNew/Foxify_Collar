@@ -7,21 +7,27 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 ## Reading order
 
-1. **`MEMO_V2.md`** — Strategic memo (V2). Read this first. Founder-direction-aligned, empirically calibrated against 4 years of real BTC + DVOL.
-2. **`RETAIL_VS_VOL_FACILITY.md`** — Why retail and vol facility are two distinct products that share engineering but not P&L / capital / pricing.
-3. **`FOXIFY_SURPRISES_BRIEF.md`** — Counterparty-risk brief addressing Foxify's "system blow up" concern.
-4. **`COOLDOWN_CIRCUIT_BREAKER_SPEC.md`** — Spec for the payment-capacity protection mechanism (defensive only, not always-on).
-5. `MEMO.md` — V1 memo (kept for diff history; V2 supersedes the recommendations).
+1. **`MEMO_V2.md`** — Strategic memo (V2 + V2.1 crisis-window addendum). Read this first. Founder-direction-aligned, empirically calibrated against 6+ years of real BTC + 5 years of DVOL.
+2. **`PREMIUM_RECOMMENDATION.md`** — Direct answer to "what premium for DVOL <50? median price for DVOL <65?" with the full analytic derivation.
+3. **`RETAIL_VS_VOL_FACILITY.md`** — Why retail and vol facility are two distinct products that share engineering but not P&L / capital / pricing.
+4. **`FOXIFY_SURPRISES_BRIEF.md`** — Counterparty-risk brief addressing Foxify's "system blow up" concern.
+5. **`COOLDOWN_CIRCUIT_BREAKER_SPEC.md`** — Spec for the payment-capacity protection mechanism. *Crisis-window stress test elevated this from "defensive guardrail" to "mandatory production control."*
+6. **`BULLISH_RFQ_RUNBOOK.md`** — How to run the hedge-cost calibration RFQ in <5 minutes (script ready: `services/api/scripts/volFacilityHedgeRfq.ts`).
+7. **`historical/stress_windows.md`** — Crisis-window stress test results (COVID, May-2021, Luna, FTX, banking-2023, yen-carry).
+8. `MEMO.md` — V1 memo (kept for diff history; V2 supersedes).
 
-## Empirical artifacts (4-year historical replay)
+## Empirical artifacts (~6.4-year historical replay)
 
 | File | What it is |
 |---|---|
 | `historical/historical_per_pair.csv` | Every (start_date, instrument, schedule) cell — 13,446 rows |
 | `historical/historical_summary.json` | Per-band aggregates (mean/median/p05/p95 PnL, trigger rate, P[PnL>0]) |
-| `historical/dvol_distribution.json` | 4-year DVOL band frequencies + cluster duration stats |
+| `historical/dvol_distribution.json` | DVOL band frequencies + cluster duration stats |
 | `historical/triggers_by_dvol_band.csv` | Empirical trigger rate per DVOL band |
+| `historical/stress_windows.json` | Per-crisis-window per-schedule P&L distribution |
+| `historical/stress_windows.md` | Human-readable crisis-window report |
 | `capital_ramp_table.csv` | Capital required at scales 1, 4.3, 8, 12.9, 25, 50, 100, 250, 500, 1,000 pairs |
+| `rfq/rfq_<ts>.{json,md}` | Output of `volFacilityHedgeRfq.ts` runs (when executed against Bullish) |
 
 ## V1 sweep artifacts (GBM-based, kept for reference)
 
@@ -39,13 +45,20 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 # install deps once
 pip install numpy scipy
 
-# === V2 (empirical, recommended) ===
-# fetch 4 years of BTC hourly + DVOL daily (~30 sec)
+# === V2 empirical pipeline (recommended) ===
+# fetch ~6.4yr BTC hourly + ~5yr DVOL daily (~35 sec)
 python3 scripts/double-barrier/fetch_historical.py
 # replay product against the real tape (~16 sec)
 python3 scripts/double-barrier/historical_replay.py
-# build the capital ramp table
+# capital ramp table
 python3 scripts/double-barrier/capital_ramp_planner.py
+# crisis-window stress test (COVID, May-2021, Luna, FTX, etc.)
+python3 scripts/double-barrier/stress_window_replay.py
+
+# === Bullish live RFQ (calibrate hedge cost) ===
+# requires PILOT_BULLISH_* env vars (same as live pilot)
+pnpm tsx services/api/scripts/volFacilityHedgeRfq.ts \
+    --notional-usd 50000 --tenor-days 30
 
 # === V1 (GBM, reference only) ===
 python3 scripts/double-barrier/run_full_sweep.py --paths 3000

@@ -25,9 +25,13 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 BTC_PATH = DATA_DIR / "btc_hourly.csv"
 DVOL_PATH = DATA_DIR / "dvol_daily.csv"
 
-# ~4 years back from today
+# Extended window: BTC hourly back to 2020-01-01 to capture March 2020 COVID
+# crash and May 2021 China-ban window.  Deribit DVOL is only available
+# from ~2021-04 onward; for earlier windows the stress-tester uses a
+# realized-vol-based IV proxy (trailing 30d realized × 1.15).
 NOW = int(time.time())
-FOUR_YEARS_AGO = NOW - 4 * 365 * 86400
+START_TS_BTC = 1577836800  # 2020-01-01
+START_TS_DVOL = 1614556800  # 2021-03-01 (Deribit DVOL series start)
 
 
 def fetch_btc_hourly() -> None:
@@ -37,7 +41,7 @@ def fetch_btc_hourly() -> None:
         return
     rows: list[dict] = []
     to_ts = NOW
-    while to_ts > FOUR_YEARS_AGO:
+    while to_ts > START_TS_BTC:
         url = (
             "https://min-api.cryptocompare.com/data/v2/histohour"
             f"?fsym=BTC&tsym=USD&limit=2000&toTs={to_ts}"
@@ -60,7 +64,7 @@ def fetch_btc_hourly() -> None:
             })
         oldest = bars[0]["time"]
         print(f"  [btc] got {len(bars)} bars to {oldest}, total {len(rows)}", flush=True)
-        if oldest <= FOUR_YEARS_AGO:
+        if oldest <= START_TS_BTC:
             break
         to_ts = oldest - 3600
         time.sleep(0.3)
@@ -88,7 +92,7 @@ def fetch_dvol_daily() -> None:
         return
     rows: list[dict] = []
     end_ms = NOW * 1000
-    start_ms_global = FOUR_YEARS_AGO * 1000
+    start_ms_global = START_TS_DVOL * 1000
     chunk_days = 700
     chunk_ms = chunk_days * 86400 * 1000
     cursor = end_ms

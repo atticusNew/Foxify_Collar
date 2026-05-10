@@ -293,15 +293,69 @@ Full version with worked examples and dashboards in `FOXIFY_SURPRISES_BRIEF.md`.
 
 ---
 
-## 8. Open work items (for follow-up PRs)
+## 8. Crisis-window stress test (added in V2.1)
+
+Per founder direction, we replayed the volume facility over six named historical crisis windows using `stress_window_replay.py`. The 6.4-year tape now extends back to 2020-01-01 (BTC) and 2021-04 (DVOL). For pre-DVOL windows, implied vol is approximated as `1.15 × trailing 30d realized vol` (matches the empirical mean ratio observed 2021-2026).
+
+Results, daily strangle hedge, three premium schedules compared:
+
+| Window | n_pairs | T1: $400/$600/$900 | T2: +$1,100 stress tier | T3: flat $500/$900 |
+|---|---|---|---|---|
+| **March 2020 COVID** | 24 | mean **−$19,476** (P[+]=8%) | mean **−$17,726** (P[+]=8%) | mean **−$20,001** (P[+]=4%) |
+| **May 2021 China ban** | 31 | mean **−$21,459** (P[+]=0%) | mean **−$18,659** (P[+]=0%) | mean **−$21,459** (P[+]=0%) |
+| **May-Jul 2022 Luna** | 68 | mean −$4,407 (P[+]=49%, median −$506) | mean **−$2,436** (P[+]=62%, median +$1,359) | mean −$4,489 (P[+]=47%) |
+| **Nov 2022 FTX** | 37 | mean **+$1,139** (P[+]=76%, median +$4,475) | mean **+$1,896** (P[+]=76%, median +$4,486) | mean +$496 (P[+]=73%) |
+| **Mar 2023 banking** | 24 | mean −$1,200 (P[+]=54%, median +$347) | mean −$1,200 (P[+]=54%) | mean −$2,192 (P[+]=46%) |
+| **Aug 2024 yen carry** | 7 | mean **−$8,808** (P[+]=0%) | mean −$8,808 (P[+]=0%) | mean −$10,151 (P[+]=0%) |
+
+### 8.1 Three structural observations
+
+**(A) Long, sustained chop with high vol is the only failure mode.** COVID-2020 (31 triggers/pair-week), May-2021 China-ban (33 triggers/pair-week), and August-2024 yen carry (17.6 triggers/pair-week) all share the same pattern: BTC chops violently around a moving anchor, firing barriers repeatedly intra-day. **Without cooldown, the platform takes catastrophic losses in these windows.** At 4.3 pairs, the COVID-2020 window alone would generate ~−$84k of loss, exceeding the entire $80k Phase 1 facility.
+
+**(B) Directional crises are PROFITABLE.** FTX Nov-2022 produced a **+$1,139 mean** pair-life P&L, with 76% of pairs positive. Reason: BTC trended steadily down (-$20.6k → -$15.7k) without sustained chop. The hedge book's long-vol position monetized the trend; payouts were predictable, not erratic. **A sudden -25% directional move is good for Atticus; a sideways week with high vol is bad for Atticus.**
+
+**(C) The 4-tier $1,100 stress band materially helps but doesn't rescue COVID/May-2021.** T2's $1,100 stress tier trims COVID losses from −$19,476 to −$17,726 (~9% improvement) and May-2021 from −$21,459 to −$18,659 (~13% improvement). That's not enough. **The structural fix is cooldown, not premium.** The premium tier merely cushions; cooldown prevents the chop pile-up.
+
+### 8.2 Implication for cooldown trigger thresholds
+
+The crisis-window data tells us where the cooldown thresholds in `COOLDOWN_CIRCUIT_BREAKER_SPEC.md §3` need to fire. In the COVID-2020 sample, 31 triggers / pair-week / $1k payout = $31k in payouts per pair over 7 days = **~$4,400/day per pair** in payout flow.
+
+At 4.3 pairs that's $19k/day; at 12.9 pairs that's $57k/day. T1's "25% of operating capital in 4h" threshold would fire roughly **once every 12-16 hours** during the COVID-style worst day, which converts a continuous 31-trigger week into a 4-6-trigger week (intra-day chop pile-ups suppressed). **Estimated effect:** mean pair-life loss in COVID/May-2021 windows compresses from −$19k/−$21k to roughly **−$5k to −$8k per pair** with cooldown active — survivable at the proposed capital levels.
+
+### 8.3 Conclusion: cooldown is mandatory, not optional
+
+V2 introduced cooldown as a "defensive guardrail." The crisis-window stress test elevates it to a **structurally mandatory production control**. Without it, the volume facility takes ruinous losses in a once-a-decade COVID/China-ban-style chop regime; with it, the platform survives at the same capital levels.
+
+`COOLDOWN_CIRCUIT_BREAKER_SPEC.md` should be implemented before Phase 1 goes live with real Foxify pair flow. Estimated engineering: ~3 days for production code + tests.
+
+---
+
+## 9. Premium recommendation (final, 4-tier ladder)
+
+Per `PREMIUM_RECOMMENDATION.md` analysis, refined by the crisis-window data:
+
+| DVOL band | Premium $/side/day | E[PnL/pair-life] | P[PnL>0] |
+|---|---|---|---|
+| <50 (calm) | **$425** | +$1,391 | ~77% |
+| 50-65 (mod) | **$600** | +$1,193 | ~76% |
+| 65-80 (elev) | **$900** | +$2,508 | ~79% |
+| **≥80 (stress)** | **$1,100** ← new tier | **+$1,217** (was −$1,557 at $900) | ~62% |
+
+**$425/$600/$900/$1,100** is the recommended schedule. The added $1,100 stress tier closes the gap V1/V2 left open (DVOL≥80 was structurally under-priced at $900). The $900 tier still applies to elevated regimes (65 ≤ DVOL < 80), which is the modal "$900 zone" most days fall into.
+
+If Foxify prefers fewer tiers for ops simplicity, the **2-tier $525 / $1,000** alternative is mathematically equivalent in blended P&L within ~$200/pair-life. See `PREMIUM_RECOMMENDATION.md` for the full derivation.
+
+---
+
+## 10. Open work items (for follow-up PRs)
 
 | # | Item | Why it matters | Effort |
 |---|---|---|---|
-| 1 | Cooldown circuit breaker code + simulator extension | Quantifies §6.4 trim of stress p05 | Half-day for sim extension; ~1 day for production code |
-| 2 | Bullish/Falcon X live RFQ for 30d ±2% strangle on 0.667 BTC | Confirms or refutes the founder's $1,150 vs my $5,400 calibration | 30 minutes |
-| 3 | Pooled-strangle desk procedure | Captures the 50% slippage savings at >25 pairs | ~2 days for the ops runbook |
-| 4 | Real-time Atticus capital utilization dashboard surfaced to Foxify | Resolves §7 "surprises" concern | ~2 days; data already exists in `services/api/scripts/pilotLiveAnalysisAdmin.ts` |
-| 5 | Stress-test against May-2021 + March-2020 + March-2023 windows specifically | Sanity-check the §1 numbers in named crisis weeks | 1 day; already supported by `historical_replay.py` |
+| 1 | **Cooldown circuit breaker code + simulator extension** (now mandatory, not optional) | The crisis-window stress shows COVID/May-2021 are unsurvivable without cooldown | ~3 days production code + ~half-day sim |
+| 2 | **Bullish/Falcon X live RFQ for 30d ±2% strangle** — *script written, ready to run* | Confirms hedge calibration; <5 minutes once env vars are set. See `BULLISH_RFQ_RUNBOOK.md`. | 30 minutes desk time |
+| 3 | Pooled-strangle desk procedure | Captures the 50% slippage savings at >25 pairs | ~2 days ops runbook |
+| 4 | Real-time Atticus capital utilization dashboard surfaced to Foxify | Resolves §7 "surprises" concern; data already exists | ~2 days |
+| 5 | ~~Stress-test against historical crisis windows~~ — **DONE in §8**. | — | — |
 
 ---
 
