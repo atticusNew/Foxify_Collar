@@ -7,8 +7,14 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 ## Reading order
 
-0. **`PDF_DATA_ANALYSIS.md`** — Analysis of founder-supplied BTC historical PDFs (2-week per-second data, 24hr ticks, 1-minute bet log, underwriting probabilities). Confirms Foxify's 2.16 triggers/day model is empirically valid. Recalibrates honest cost-on-volume to 1.7 bps at Foxify's expected operating regime (vs my earlier 1.4 bps under population-weighted blend).
-1. **`FOXIFY_CEO_BRIEFING.md`** — **THE DOCUMENT TO SEND FOXIFY CEO.** Now uses Foxify-weighted numbers (1.7 bps cost on volume, $54M annual @ 1k pairs, $1.04B Foxify net @ 10k pairs). Plain-English 5-7 min read. Tier table, volume rebates, what Foxify earns at scale, why it can't blow up (5 concrete reasons), phased ramp milestones, the four contractual safeguards, FAQ-style answers to expected pushbacks. No jargon.
+**Foxify-side documents (designed to be sent directly to Foxify CEO):**
+
+0. **`CEO_ONE_SHEET.md`** — **PRINT-AND-SIGN VERSION.** Single 2-page document. Premium tiers, why each tier exists, volume rebate ladder, balanced regime breakdown (not skewed by any single year), 5 concrete safety reasons, comparison vs alternatives, capital scaling, what to lock in for Phase 1. Send to CEO as-is.
+1. **`FOXIFY_CEO_BRIEFING.md`** — Same content, longer-form (~7 minute read) with FAQ section. For CEO who wants more detail.
+
+**Backup analytical artifacts:**
+
+2. **`PDF_DATA_ANALYSIS.md`** — Analysis of founder-supplied BTC historical PDFs. Confirms Foxify's 2.16 triggers/day model is empirically valid. Recalibrates honest cost-on-volume to 1.9 bps at balanced regime mix (median of full-history, ex-worst-year, and recent-24-month windows). Plain-English 5-7 min read. Tier table, volume rebates, what Foxify earns at scale, why it can't blow up (5 concrete reasons), phased ramp milestones, the four contractual safeguards, FAQ-style answers to expected pushbacks. No jargon.
 2. **`FOXIFY_VOLUME_FRAMING.md`** — Reframes everything around Foxify's actual KPI: volume routed to partners. At 2.16 triggers/day × $100k pair = $864k/day = $315M/year of routed volume per pair. **Atticus charges 1.4 bps on routed volume** ($43M/yr per 1,000 pairs); Foxify earns 3-10 bps from partner rebates. Foxify's break-even rebate rate is just 1.35 bps. Includes the longer-tenor hedge analysis: 30d strangle is cheaper per-day in absolute terms ($148/day vs $259/day for 1d) BUT can't serve as the per-pair barrier hedge after anchor moves. Real cost savings come from pooled book + institutional pricing + cross-venue routing (40-60% reduction at scale), funding effective tier reductions to **$455/$565/$725/$785 at Foxify-scale**.
 2. **`FOXIFY_PROFITABILITY_REALITY.md`** — Addresses why Foxify can't show direct profit on premium-vs-payouts (insurance is structurally a net cost to the buyer). Recommends tightest viable tier at 5% Atticus margin: $490/$605/$795/$865 per pair per day. Includes optional excess-profit rebate structure.
 2. **`SCALE_ECONOMICS_QA.md`** — Detailed Q&A from 2026-05-10 review: $650 mod, scale earnings tables, DVOL regime time-allocation, volume-rebate tiers, Monte Carlo bootstrap CIs, secondary venue analysis, 8 operational essentials.
