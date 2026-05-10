@@ -1,20 +1,37 @@
 # Double-2% Barrier Hedge — Analytical Package
 
-Quant analysis of the proposed Atticus / Foxify double-barrier knock-out
-product (±2% trigger, $50k pair notional, 7-day max trader tenor, $1,000
-capped payout, $250-$400/side premium) and the capital required to scale
-it to 1,000 concurrent pairs.
+Quant analysis of the Atticus volume facility (Foxify B2B) double-barrier
+knock-out product (±2% trigger, $50k pair notional, 7-day max trader
+tenor, $1,000 capped payout, tiered $400/$600/$900 per side per day
+premium) and the capital required to scale it to 1,000 concurrent pairs.
 
-## What's here
+## Reading order
+
+1. **`MEMO_V2.md`** — Strategic memo (V2). Read this first. Founder-direction-aligned, empirically calibrated against 4 years of real BTC + DVOL.
+2. **`RETAIL_VS_VOL_FACILITY.md`** — Why retail and vol facility are two distinct products that share engineering but not P&L / capital / pricing.
+3. **`FOXIFY_SURPRISES_BRIEF.md`** — Counterparty-risk brief addressing Foxify's "system blow up" concern.
+4. **`COOLDOWN_CIRCUIT_BREAKER_SPEC.md`** — Spec for the payment-capacity protection mechanism (defensive only, not always-on).
+5. `MEMO.md` — V1 memo (kept for diff history; V2 supersedes the recommendations).
+
+## Empirical artifacts (4-year historical replay)
 
 | File | What it is |
 |---|---|
-| `MEMO.md` | **Read this first.** Strategic memo with feedback, recommendations, and ranked path forward. |
-| `SUMMARY.md` | Auto-generated tables: trigger frequency, breakeven premium, P&L grid, capital ladder, burn-rate. |
-| `breakeven_premium.csv` | Breakeven premium per side per day by (regime, instrument, VRP). |
-| `per_pair_pnl.csv` | Full P&L distribution per pair-life by (regime, premium, instrument, VRP). |
-| `capital_ladder.csv` | Capital required at scales 1, 4, 8, 12, 25, 50, 100, 250, 500, 1,000 pairs. |
-| `sweep/sweep_results.json` | Raw Monte-Carlo sweep output (12 minutes / 3,000 paths × 4 regimes × 7 premium tiers × 2 VRP scenarios × 4 hedge instruments). |
+| `historical/historical_per_pair.csv` | Every (start_date, instrument, schedule) cell — 13,446 rows |
+| `historical/historical_summary.json` | Per-band aggregates (mean/median/p05/p95 PnL, trigger rate, P[PnL>0]) |
+| `historical/dvol_distribution.json` | 4-year DVOL band frequencies + cluster duration stats |
+| `historical/triggers_by_dvol_band.csv` | Empirical trigger rate per DVOL band |
+| `capital_ramp_table.csv` | Capital required at scales 1, 4.3, 8, 12.9, 25, 50, 100, 250, 500, 1,000 pairs |
+
+## V1 sweep artifacts (GBM-based, kept for reference)
+
+| File | What it is |
+|---|---|
+| `SUMMARY.md` | V1 Monte-Carlo sweep summary tables |
+| `breakeven_premium.csv` | Breakeven premium under risk-neutral GBM by (regime, instrument, VRP) |
+| `per_pair_pnl.csv` | V1 P&L distribution per pair-life |
+| `capital_ladder.csv` | V1 capital ladder (GBM-based) |
+| `sweep/sweep_results.json` | Raw Monte-Carlo sweep output |
 
 ## How to reproduce
 
@@ -22,14 +39,16 @@ it to 1,000 concurrent pairs.
 # install deps once
 pip install numpy scipy
 
-# headline single-config run (~80 sec)
-python3 scripts/double-barrier/simulator.py \
-  --paths 4000 --regime mod --premium-side 250 --vrp 0.20
+# === V2 (empirical, recommended) ===
+# fetch 4 years of BTC hourly + DVOL daily (~30 sec)
+python3 scripts/double-barrier/fetch_historical.py
+# replay product against the real tape (~16 sec)
+python3 scripts/double-barrier/historical_replay.py
+# build the capital ramp table
+python3 scripts/double-barrier/capital_ramp_planner.py
 
-# full multi-axis sweep (~12 min)
+# === V1 (GBM, reference only) ===
 python3 scripts/double-barrier/run_full_sweep.py --paths 3000
-
-# regenerate tables and SUMMARY.md from sweep
 python3 scripts/double-barrier/analyze_sweep.py
 ```
 
@@ -59,15 +78,23 @@ where L1 scales linearly in N (independent pair option spend), L2 scales
 sub-linearly with √N (independent-pair pooling, z=2.33 for 99th percentile),
 L3 scales linearly when E[PnL] < 0.
 
-## Headline conclusions
+## Headline conclusions (V2)
 
-See `MEMO.md` for the full argument. One-line version:
+See `MEMO_V2.md` for the full argument. One-paragraph version:
 
-> **Hedge instrument barely matters; daily strangle ties up 14× less capital
-> than 30-day strangle for the same expected P&L. The real lever is reducing
-> trigger frequency (cooldown + wider barrier), not optimizing the hedge.
-> $1.5M operating + $5M stress credit gets you 1,000 pairs sustainably
-> *if* the structural fixes ship.**
+> **Empirically, the volume facility is profitable in ~75% of weeks
+> across the 4-year BTC tape under the proposed $400/$600/$900 tiered
+> premium with daily ±2% strangle hedging. Atticus's required operating
+> capital is ~$80k for 4.3 pairs, ~$145k for 12.9 pairs, scaling to
+> ~$1.76M for 1,000 pairs — roughly 5× lower than the V1 GBM-based
+> estimate because BTC implied vol (DVOL) has run +12% above realized vol
+> on average over 4 years (and +22-25% in the elevated/stress bands where
+> the platform is also charging the highest premium tier). The $900 tier
+> kicks in on roughly 17% of days (~63 days/year, ~4 distinct episodes
+> averaging 16 days each). At this scale Atticus can pay LP funding at
+> any reasonable APR (5-50%) with multi-x safety margin on weekly P&L.
+> Cooldown circuit breaker is reserved as a defensive guardrail only,
+> firing on payout-velocity / trigger-density / DVOL-spike thresholds.**
 
 ## Status
 
