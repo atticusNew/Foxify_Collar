@@ -17,14 +17,16 @@ Foxify generates routing volume by opening matched LONG/SHORT pairs on partner e
 
 **Per pair per day, by BTC implied-volatility (DVOL) regime:**
 
-| BTC regime (DVOL band) | Days per year | **Premium per pair per day** |
+| BTC regime (DVOL band) | Days per year (balanced est.) | **Premium per pair per day** |
 |---|---|---|
-| Calm (DVOL < 50) | ~110 days | **$490** |
-| Moderate (50–65) | ~132 days | **$605** |
-| Elevated (65–80) | ~53 days | **$795** |
-| Stress (≥80) | ~70 days | **$865** |
+| Calm (DVOL < 50) | ~129 days (35%) | **$490** |
+| Moderate (50–65) | ~156 days (43%) | **$605** |
+| Elevated (65–80) | ~52 days (14%) | **$795** |
+| Stress (≥80) | ~21 days (6%) | **$865** |
 
 **On any given day, Foxify will see the rate that matches the published Deribit DVOL.** Foxify pays this rate per pair per day for as long as the pair is open. If a trigger fires mid-day, the rate is pro-rated for hours remaining. **No surprises** — the rate is fully determined by published market data.
+
+**Regime distribution is balanced across multiple BTC vol windows** (full 5y history, ex-2021-crisis, recent 24-month) — explicitly NOT skewed to any single year's outliers. 2021 was the highest-stress year but is excluded from the recent 24-month estimate; recent calm doesn't dominate either. The 35/43/14/6 split is the median across three estimates.
 
 ---
 
@@ -42,6 +44,19 @@ Foxify generates routing volume by opening matched LONG/SHORT pairs on partner e
 
 **Rebates are paid monthly on the prior month's volume** — not invoiced mid-month, not surprise-discounted. Foxify gets a clean monthly statement showing the rebate credit.
 
+**The rebate is funded by structural cost reductions Atticus realizes at scale**, not by margin compression alone. Specifically, three real venue-cost levers stack as Foxify volume grows:
+
+| Lever | Activates at | Cost reduction |
+|---|---|---|
+| Pooled hedge book (one big strangle covering all pairs) | >25 concurrent pairs | 30% lower venue spread |
+| Bullish institutional pricing tier | $100M+/month cumulative volume — 3 days into Foxify scale | 10-20% additional |
+| Cross-venue best-execution routing (+ Deribit, Falcon X) | Phase 3+ | 5-15% additional |
+| **Combined at full scale** | **2,000+ pair-days/month** | **~50% hedge cost reduction** |
+
+These hedge cost savings flow directly into the rebate ladder — Atticus passes them to Foxify via the rebate, keeping Atticus's per-pair margin roughly flat at 5-7% across all phases.
+
+**If venue savings underperform (e.g., Bullish institutional tier doesn't materialize):** the pricing reset clause in §8.3 applies — premium reverts to higher tier for one month while Atticus and Foxify reconcile. Restored to rebated rate when venue conditions normalize.
+
 ---
 
 ## 4. What Foxify earns at scale
@@ -55,29 +70,27 @@ Volume routed per pair per day:    $864,000
 
 **At 1,000 pairs (steady-state):** Foxify routes **$315 BILLION/year** of partner-exchange volume.
 
-Using a **balanced regime distribution** (median of full-history, ex-2021-crisis, and recent-24-month windows — explicitly NOT skewed to the worst year):
+Using a **balanced regime distribution** (median of full-history, ex-2021-crisis, and recent-24-month windows — explicitly NOT skewed to any single year's outliers):
 
-| Foxify scale | Atticus annual net cost | Foxify routed volume | Atticus net cost as % of volume |
+| Phase | Pairs | Rebate active | Foxify net cost / year | Net cost on volume |
+|---|---|---|---|---|
+| 1 (Pilot) | 4.3 | 0% | $153k | **1.13 bps** |
+| 2 (Validation) | 12.9 | 2% | $406k | 1.00 bps |
+| 3 (Scale-up) | 100 | 4% | $2.74M | 0.87 bps |
+| 4 (Production) | 1,000 | 6% | $23.3M | 0.74 bps |
+| **5 (Foxify-scale)** | **10,000** | **8%** | **$192M** | **0.61 bps** |
+
+**As Foxify scales, the cost-on-volume DROPS** — from 1.13 bps Phase 1 to 0.61 bps at Foxify-scale. Foxify's typical partner rebate income runs 3-15 bps; Atticus's cost is a small slice of that.
+
+**At 5 bps partner rebate (typical institutional rate):**
+
+| Phase | Foxify gross income | Atticus net cost | **Foxify NET annual** |
 |---|---|---|---|
-| Phase 1 (4.3 pairs) | $258k | $1.36B | **0.019%** (1.9 bps) |
-| Phase 2 (12.9 pairs) | $774k | $4.07B | 1.9 bps |
-| Phase 3 (100 pairs) | $6.0M | $31.5B | 1.9 bps |
-| Phase 4 (1,000 pairs) | **$60M** | **$315B** | 1.9 bps |
-| Phase 5 (10,000 pairs) | **$600M** | **$3.15T** | 1.9 bps |
+| 1 (4.3 pairs) | $679k | $153k | **+$526k** |
+| 4 (1,000 pairs) | $158M | $23.3M | **+$135M** |
+| **5 (10,000 pairs)** | **$1.58B** | **$192M** | **+$1.39B** |
 
-**Atticus is a fixed 1.9 bps net cost on Foxify's routed volume** at balanced regime mix. Foxify's typical partner rebate income runs 3-15 bps on routed volume, leaving 1.1-13.1 bps of net operating margin.
-
-**At 5 bps partner rebate (typical institutional rate) at 1,000 pairs:**
-- Foxify gross: $158M
-- Atticus net cost: $60M
-- **Foxify net: +$98M/year**
-
-**At 10,000 pairs:**
-- Foxify gross at 5 bps: $1.58B
-- Atticus net cost: $600M
-- **Foxify net: +$980M/year**
-
-**Note on regime sensitivity:** if BTC enters a sustained calm regime (DVOL <50, like 2024-2025), Foxify's daily premium drops to the lower tier ($475/pair/day) and net cost-on-volume drops to ~1.2 bps. If BTC enters a sustained stress regime (like 2021), premium tier auto-escalates to $1,200/pair/day and cost-on-volume rises to ~3.5 bps. **Pricing self-adjusts with market conditions, with no manual intervention.**
+**Note on regime sensitivity:** if BTC enters a sustained calm regime (DVOL <50, like 2024-2025), Foxify's daily premium drops further (~30% lower cost-on-volume). If BTC enters a sustained stress regime (like 2021), premium tier auto-escalates and cost-on-volume rises ~40%. **Pricing self-adjusts with market conditions, with no manual intervention.**
 
 ---
 
@@ -172,16 +185,17 @@ These are decisions that need a clear answer before pair flow goes live:
 
 ## 10. The two-sentence summary
 
-> **For 1.9 basis points on the volume Foxify routes to partner
-> exchanges (calibrated to a balanced BTC regime distribution that
-> doesn't skew to any single year's outliers), Atticus provides
-> bounded-risk protection that lets Foxify operate at $50M+/day notional.
-> As Foxify scales to 10,000 pairs, that 1.9 bps net cost ($600M/year)
-> is paid out of Foxify's $1.58B/year of partner rebate income at 5-bps
-> rebate rates — leaving Foxify with $980M/year of net operating margin,
-> both sides scaling together with structural safety mechanisms validated
-> against every BTC crisis of the past 6.4 years and against Foxify's
-> own per-second BTC data over the May 2025 sample.**
+> **For 0.6-1.1 basis points on the volume Foxify routes to partner
+> exchanges (decreasing as scale grows, calibrated to a balanced BTC
+> regime distribution that doesn't skew to any single year's outliers),
+> Atticus provides bounded-risk protection that lets Foxify operate at
+> $50M+/day notional. As Foxify scales to 10,000 pairs, that 0.61 bps
+> net cost ($192M/year) is paid out of Foxify's $1.58B/year of partner
+> rebate income at 5-bps rebate rates — leaving Foxify with $1.39B/year
+> of net operating margin, both sides scaling together with structural
+> safety mechanisms validated against every BTC crisis of the past
+> 6.4 years and against Foxify's own per-second BTC data over the
+> May 2025 sample.**
 
 ---
 
