@@ -7,8 +7,9 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 ## Reading order
 
-1. **`MEMO_V3_ADDENDUM.md`** — **READ FIRST.** Documents the intra-day re-open correction (V3) and what numbers in MEMO_V2 to update.
-2. **`MEMO_V2.md`** — Strategic memo (with V2.1 crisis-window addendum). Original headlines; some numbers superseded by MEMO_V3_ADDENDUM. Founder-direction-aligned, empirically calibrated against 6+ years of real BTC + 5 years of DVOL.
+1. **`PREMIUM_NEGOTIATION.md`** — **READ FIRST for the current pricing recommendation** (Option C: $250/$400/$600/$850 per side). Trader-side economics, platform margin, and what's negotiable.
+2. **`MEMO_V3_ADDENDUM.md`** — Documents the intra-day re-open correction (V3) and what numbers in MEMO_V2 to update.
+3. **`MEMO_V2.md`** — Strategic memo (with V2.1 crisis-window addendum). Original headlines; some numbers superseded by MEMO_V3_ADDENDUM and PREMIUM_NEGOTIATION. Founder-direction-aligned, empirically calibrated against 6+ years of real BTC + 5 years of DVOL.
 2. **`PREMIUM_RECOMMENDATION.md`** — Direct answer to "what premium for DVOL <50? median price for DVOL <65?" with the full analytic derivation.
 3. **`RETAIL_VS_VOL_FACILITY.md`** — Why retail and vol facility are two distinct products that share engineering but not P&L / capital / pricing.
 4. **`FOXIFY_SURPRISES_BRIEF.md`** — Counterparty-risk brief addressing Foxify's "system blow up" concern.
