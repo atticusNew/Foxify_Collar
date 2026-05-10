@@ -46,6 +46,7 @@ import Decimal from "decimal.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { BullishTradingClient } from "../src/pilot/bullish";
+import { pilotConfig } from "../src/pilot/config";
 
 type Args = {
   notionalUsd: number;
@@ -102,23 +103,9 @@ const parseBullishOptionSymbol = (symbol: string): OptionSym | null => {
 };
 
 const buildClient = (): BullishTradingClient => {
-  const authMode =
-    (process.env.PILOT_BULLISH_AUTH_MODE || "ecdsa").trim().toLowerCase() === "hmac"
-      ? "hmac" : "ecdsa";
-  return new BullishTradingClient({
-    enabled: true,
-    restBaseUrl: process.env.PILOT_BULLISH_REST_BASE_URL || "",
-    publicWsUrl: process.env.PILOT_BULLISH_PUBLIC_WS_URL || "",
-    privateWsUrl: process.env.PILOT_BULLISH_PRIVATE_WS_URL || "",
-    authMode,
-    hmacPublicKey: process.env.PILOT_BULLISH_HMAC_PUBLIC_KEY || "",
-    hmacSecret: process.env.PILOT_BULLISH_HMAC_SECRET || "",
-    ecdsaPublicKey: process.env.PILOT_BULLISH_ECDSA_PUBLIC_KEY || "",
-    ecdsaPrivateKey: process.env.PILOT_BULLISH_ECDSA_PRIVATE_KEY || "",
-    ecdsaMetadata: process.env.PILOT_BULLISH_ECDSA_METADATA || undefined,
-    authorizer: process.env.PILOT_BULLISH_AUTHORIZER || "",
-    tradingAccountId: process.env.PILOT_BULLISH_TRADING_ACCOUNT_ID || ""
-  });
+  // Reuse the production env-parsed config so all path templates,
+  // timeouts, and ECDSA auth fields are populated with their defaults.
+  return new BullishTradingClient({ ...pilotConfig.bullish, enabled: true });
 };
 
 const main = async () => {
@@ -128,8 +115,8 @@ const main = async () => {
   // 1. Get spot
   console.log(`[rfq] fetching spot for ${args.spotSymbol} ...`);
   const ob = await client.getHybridOrderBook(args.spotSymbol);
-  const bestBid = Number(ob.bids?.[0]?.[0] || 0);
-  const bestAsk = Number(ob.asks?.[0]?.[0] || 0);
+  const bestBid = Number(ob.bids?.[0]?.price ?? 0);
+  const bestAsk = Number(ob.asks?.[0]?.price ?? 0);
   if (!bestBid || !bestAsk) throw new Error(`no_spot_orderbook for ${args.spotSymbol}`);
   const spot = (bestBid + bestAsk) / 2;
   console.log(`[rfq] spot mid = $${spot.toFixed(2)}`);
@@ -180,10 +167,10 @@ const main = async () => {
   // 5. Fetch each leg's orderbook for ask price
   const callOb = await client.getHybridOrderBook(call.symbol);
   const putOb  = await client.getHybridOrderBook(put.symbol);
-  const callAsk = Number(callOb.asks?.[0]?.[0] || 0);
-  const putAsk  = Number(putOb.asks?.[0]?.[0] || 0);
-  const callBid = Number(callOb.bids?.[0]?.[0] || 0);
-  const putBid  = Number(putOb.bids?.[0]?.[0] || 0);
+  const callAsk = Number(callOb.asks?.[0]?.price ?? 0);
+  const putAsk  = Number(putOb.asks?.[0]?.price ?? 0);
+  const callBid = Number(callOb.bids?.[0]?.price ?? 0);
+  const putBid  = Number(putOb.bids?.[0]?.price ?? 0);
   if (!callAsk || !putAsk) {
     console.warn(`[rfq] one or both legs has no ask: callAsk=${callAsk} putAsk=${putAsk}`);
   }

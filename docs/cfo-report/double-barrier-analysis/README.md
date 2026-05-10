@@ -7,7 +7,9 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 ## Reading order
 
-1. **`PRICING_FINAL_PER_PAIR.md`** — **READ FIRST.** Definitive pricing recommendation in PER-PAIR terms (matches founder's framing). Recommends 4-tier ladder $525/$750/$1,200/$1,600 per pair per day. Reconciles per-side vs per-pair confusion. Answers: why $525 flat doesn't work, why retail is cheaper, how VRP capture is already in the ladder, and what to ask Foxify to validate the deal.
+1. **`DEAL_STRUCTURE_FINAL.md`** — **READ FIRST.** Final recommended structure: $475/$700/$900/$1,200 per pair/day + aggressive cooldown + volume rebates + four contractual guardrails. Why Foxify "paying over payouts" makes sense WITH cooldown (it's a two-way protection mechanism). The cooldown firing thresholds and trigger-reduction modeling. Atticus +$1,160/pair-life blended; Foxify needs $243/day non-Atticus income to break even.
+2. **`LIVE_RFQ_FINDINGS.md`** — Live Bullish mainnet RFQ output 2026-05-10. BTC spot $81,112, DVOL 38.71. 30-day strangle = $2,743 (18.5d expiry). Calibration vs founder's $1,150 estimate (off by 3-4×) and CFO doc's $3,700 (within 20%).
+3. **`PRICING_FINAL_PER_PAIR.md`** — Earlier pricing analysis in per-pair terms ($525/$750/$1,200/$1,600 ladder). Superseded by DEAL_STRUCTURE_FINAL but the analytic foundation is here.
 2. **`HEDGE_OPTIMIZATION_ANALYSIS.md`** — Why structural hedge redesign doesn't unlock margin (option pricing martingale), where margin recovery actually comes from (pooled book + Bullish institutional + best-ex routing = ~50% hedge cost reduction at scale).
 3. **`REVENUE_SPLIT_FRAMEWORK.md`** — The right framing of the pricing question once we understand Foxify is a volume aggregator. Joint surplus is ~$6k/pair-life; pricing tiers shift the split.
 2. **`PREMIUM_NEGOTIATION.md`** — Detailed trader-side vs platform-side trade-off matrix at four premium tiers; per-band breakeven floors.
