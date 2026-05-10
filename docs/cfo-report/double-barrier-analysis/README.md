@@ -7,8 +7,9 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 ## Reading order
 
-1. **`PREMIUM_NEGOTIATION.md`** — **READ FIRST for the current pricing recommendation** (Option C: $250/$400/$600/$850 per side). Trader-side economics, platform margin, and what's negotiable.
-2. **`MEMO_V3_ADDENDUM.md`** — Documents the intra-day re-open correction (V3) and what numbers in MEMO_V2 to update.
+1. **`REVENUE_SPLIT_FRAMEWORK.md`** — **READ FIRST.** The right framing of the pricing question once we understand Foxify is a volume aggregator (not a trader buying insurance). Joint surplus is ~$6k/pair-life; pricing tiers shift the split. Recommends Option C with volume rebates, falling back to Option E with volume commitment.
+2. **`PREMIUM_NEGOTIATION.md`** — Detailed trader-side vs platform-side trade-off matrix at four premium tiers; per-band breakeven floors.
+3. **`MEMO_V3_ADDENDUM.md`** — Documents the intra-day re-open correction (V3) and what numbers in MEMO_V2 to update.
 3. **`MEMO_V2.md`** — Strategic memo (with V2.1 crisis-window addendum). Original headlines; some numbers superseded by MEMO_V3_ADDENDUM and PREMIUM_NEGOTIATION. Founder-direction-aligned, empirically calibrated against 6+ years of real BTC + 5 years of DVOL.
 2. **`PREMIUM_RECOMMENDATION.md`** — Direct answer to "what premium for DVOL <50? median price for DVOL <65?" with the full analytic derivation.
 3. **`RETAIL_VS_VOL_FACILITY.md`** — Why retail and vol facility are two distinct products that share engineering but not P&L / capital / pricing.
