@@ -7,8 +7,9 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 ## Reading order
 
-1. **`HEDGE_OPTIMIZATION_ANALYSIS.md`** — **READ FIRST.** Why structural hedge redesign doesn't unlock margin (option pricing martingale), where margin recovery actually comes from (pooled book + Bullish institutional + best-ex routing = ~50% hedge cost reduction at scale), and the recommended phased pricing schedule with volume rebates.
-2. **`REVENUE_SPLIT_FRAMEWORK.md`** — The right framing of the pricing question once we understand Foxify is a volume aggregator. Joint surplus is ~$6k/pair-life; pricing tiers shift the split. Recommends Option C with volume rebates.
+1. **`PRICING_FINAL_PER_PAIR.md`** — **READ FIRST.** Definitive pricing recommendation in PER-PAIR terms (matches founder's framing). Recommends 4-tier ladder $525/$750/$1,200/$1,600 per pair per day. Reconciles per-side vs per-pair confusion. Answers: why $525 flat doesn't work, why retail is cheaper, how VRP capture is already in the ladder, and what to ask Foxify to validate the deal.
+2. **`HEDGE_OPTIMIZATION_ANALYSIS.md`** — Why structural hedge redesign doesn't unlock margin (option pricing martingale), where margin recovery actually comes from (pooled book + Bullish institutional + best-ex routing = ~50% hedge cost reduction at scale).
+3. **`REVENUE_SPLIT_FRAMEWORK.md`** — The right framing of the pricing question once we understand Foxify is a volume aggregator. Joint surplus is ~$6k/pair-life; pricing tiers shift the split.
 2. **`PREMIUM_NEGOTIATION.md`** — Detailed trader-side vs platform-side trade-off matrix at four premium tiers; per-band breakeven floors.
 3. **`MEMO_V3_ADDENDUM.md`** — Documents the intra-day re-open correction (V3) and what numbers in MEMO_V2 to update.
 3. **`MEMO_V2.md`** — Strategic memo (with V2.1 crisis-window addendum). Original headlines; some numbers superseded by MEMO_V3_ADDENDUM and PREMIUM_NEGOTIATION. Founder-direction-aligned, empirically calibrated against 6+ years of real BTC + 5 years of DVOL.
