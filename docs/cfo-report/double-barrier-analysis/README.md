@@ -13,8 +13,9 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 4. **`FOXIFY_SURPRISES_BRIEF.md`** — Counterparty-risk brief addressing Foxify's "system blow up" concern.
 5. **`COOLDOWN_CIRCUIT_BREAKER_SPEC.md`** — Spec for the payment-capacity protection mechanism. *Crisis-window stress test elevated this from "defensive guardrail" to "mandatory production control."*
 6. **`BULLISH_RFQ_RUNBOOK.md`** — How to run the hedge-cost calibration RFQ in <5 minutes (script ready: `services/api/scripts/volFacilityHedgeRfq.ts`).
-7. **`historical/stress_windows.md`** — Crisis-window stress test results (COVID, May-2021, Luna, FTX, banking-2023, yen-carry).
-8. `MEMO.md` — V1 memo (kept for diff history; V2 supersedes).
+7. **`OPERATIONAL_DETAILS.md`** — TP mechanics, option selection logic, cooldown monitoring-vs-activation distinction, full essentials checklist (size caps, max-loss breaker, settlement timing, etc.).
+8. **`historical/stress_windows.md`** — Crisis-window stress test results (COVID, May-2021, Luna, FTX, banking-2023, yen-carry).
+9. `MEMO.md` — V1 memo (kept for diff history; V2 supersedes).
 
 ## Empirical artifacts (~6.4-year historical replay)
 
