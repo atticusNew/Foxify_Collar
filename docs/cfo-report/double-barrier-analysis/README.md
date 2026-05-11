@@ -9,7 +9,12 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 **Foxify-side documents (designed to be sent directly to Foxify CEO):**
 
-0. **`CEO_ONE_SHEET.md`** — **PRINT-AND-SIGN VERSION.** Single 2-page document. Premium tiers, why each tier exists, volume rebate ladder, balanced regime breakdown (not skewed by any single year), 5 concrete safety reasons, comparison vs alternatives, capital scaling, what to lock in for Phase 1. Send to CEO as-is.
+0. **`FOXIFY_FINAL_ONE_SHEET.md`** — **CURRENT BEST & FINAL.** Customer-facing one-sheet at the final commercial ladder `$490 / $695 / $975 / $1,200` per pair per day (Phase 4-5 effective; Phase 1 base $490/$740/$1,037/$1,277 with rebate ladder capped at 6 %). Mod under $700 ✓, Elev under $1,000 ✓, Stress dropped from $1,452 → $1,200 thanks to the 30-day strangle hedge instrument switch.
+0. **`HEDGE_INSTRUMENT_AND_FINAL_LADDER.md`** — **READ THIS FOR THE WHY.** Empirical analysis of hedge-instrument economics (daily strangle vs pooled-daily vs 30-day strangle) across the 6.4-year tape. **30-day strangle adds +$362/pair-life vs daily strangle** (≈ +$18.9 M/yr at 1k pairs, +$188.6 M/yr at 10k pairs); live Bullish RFQ confirms 30d is 43 % cheaper per day amortized. This is the structural improvement that funds the cheaper Foxify ladder AND gives Atticus more margin simultaneously.
+0. **`EMPIRICAL_COOLDOWN_FINDINGS.md`** — Empirical cooldown analysis (PR #135). Cooldown can't materially clip triggers; pricing must be derived from no-cooldown floors. Cooldown stays as Atticus tail-risk control.
+0. **`COOLDOWN_FOXIFY_BREAKDOWN.md`** — Customer-facing cooldown explainer.
+0. **`PRICING_LADDER_STRESS_TEST.md`** — Quant validation chain for prior ladders.
+0. **`CEO_ONE_SHEET.md`** — **SUPERSEDED by FOXIFY_FINAL_ONE_SHEET.md.** Older one-sheet at the $490/$625/$795/$865 + 6 % rebate ladder (which empirically loses money for Atticus per `EMPIRICAL_COOLDOWN_FINDINGS.md`). Single 2-page document. Premium tiers, why each tier exists, volume rebate ladder, balanced regime breakdown (not skewed by any single year), 5 concrete safety reasons, comparison vs alternatives, capital scaling, what to lock in for Phase 1. Send to CEO as-is.
 1. **`FOXIFY_CEO_BRIEFING.md`** — Same content, longer-form (~7 minute read) with FAQ section. For CEO who wants more detail.
 
 **Backup analytical artifacts:**
