@@ -98,6 +98,59 @@ Standard institutional protections:
 - **Pair-count cap with override:** If maximum simultaneously-open pairs would exceed Atticus capital, cap is triggered until balance is recalibrated.
 - **Pricing reset clause:** If Atticus monthly P&L drops more than 2σ below modeled expectation across any 30-day window, premium ladder reverts to the next-higher tier for the following month. Restored when back in band.
 
+## 7. Operational schedule & pricing review
+
+Standard institutional cadence — neither side is locked in for good. Two mechanisms keep the deal current with the market:
+
+### 7.1 Weekly maintenance window
+
+A 2-hour maintenance window every week, **Sunday 00:00–02:00 UTC** (matches the standard institutional crypto-venue cadence used by Bullish, Deribit, OKX). During the window:
+
+| Behaviour | During maintenance |
+|---|---|
+| New pair openings from Foxify API | **Paused** (returns `503` with `maintenance_active: true, expected_clear_at: ...`) |
+| Existing open pairs | **Continue running**; daily premium accrues normally |
+| Trigger payouts on existing pairs | **Continue normally** ($1,000 per trigger; no clip) |
+| Hedge-book MTM | Continues; no new strangles opened |
+| What Atticus uses the window for | System upgrades, settlement reconciliation, hedge-book rebalancing, deployments, threshold-tuning recalibration |
+
+Maintenance window is **published in advance** in the dashboard with a 24-hour countdown. Foxify can plan around it. Window can be skipped or moved by mutual agreement (e.g., quarter-end avoidance).
+
+### 7.2 Pricing review cadence
+
+The premium ladder is **reviewed every 4 weeks** (28-day cycles). Two adjustment paths:
+
+| Mechanism | Notice required | Trigger | Use case |
+|---|---|---|---|
+| **Scheduled cycle review** (every 4 weeks) | None — review happens automatically at end of each 28-day cycle | End of any 28-day cycle | Reflect realised hedge cost, DVOL distribution shift, venue spread changes |
+| **Notice-based adjustment** (any time) | **14 days written notice** from either side | Either side can initiate | Material change in market structure, venue cost, or product economics |
+| **Emergency review** (immediate) | None — automatic | Any of: DVOL > 100 sustained > 24 hours; realised hedge cost diverges > 25 % from model in any 30-day window; venue insolvency or major operational incident | Crisis-driven recalibration |
+
+Adjustments must be in writing and cite empirical evidence — specifically:
+- Updated `historical_replay.py` output reflecting the new market data
+- Updated live RFQ from Bullish (or chosen primary venue)
+- Updated regime-distribution analysis if DVOL bands have shifted
+
+### 7.3 What can be adjusted
+
+| Element | Adjustable? | Notes |
+|---|---|---|
+| Tier rates ($490/$695/$975/$1,200 effective) | Yes (with notice or at cycle review) | Both directions; up if costs rise, down if venue savings accelerate |
+| Volume rebate ladder (0/2/4/6 % steps) | Yes (with notice or at cycle review) | Phase 4-5 cap can move either way |
+| DVOL band boundaries (50/65/80) | Only by mutual agreement, with empirical evidence | Designed to track institutional convention; rare to move |
+| Trigger payout amount ($1,000 capped) | Only by mutual agreement | Touches product economics; reserved for major deal restructure |
+| ±2 % barrier threshold | Only by mutual agreement | Touches product economics; reserved for major deal restructure |
+| Cooldown thresholds (T1–T4) | Atticus operational discretion | Risk-control parameter; tightening stays within current spec envelope |
+| Maintenance window timing | Mutual agreement | Default Sunday 00:00–02:00 UTC; can move for quarter-end or product launches |
+
+### 7.4 Initial commitment period
+
+**4 weeks (one full pricing cycle)** at the launch ladder. After the first cycle:
+- Either side can invoke the 14-day notice mechanism for any adjustment
+- The 4-week cycle review begins running on a rolling basis
+
+This means the deal is **never locked in for more than 4 weeks at a time** — pricing tracks market reality, both sides have a clean exit path if structural conditions change, and neither side is committed to a price that's wrong against current conditions.
+
 ## FAQ
 
 **Q: What if BTC crashes 30 % in a day?**
@@ -123,6 +176,12 @@ Standard institutional protections:
 
 **Q: Why a 30-day strangle hedge instead of a daily strangle?**
 **A:** Live Bullish mainnet RFQ on 2026-05-10 confirmed the 30-day ±2 % strangle costs $148/day amortized vs $259/day for a daily strangle — 43 % cheaper per day. Empirical replay of the past 6.4 years shows the 30-day strangle delivers $362/pair-life of additional Atticus margin vs daily strangle. **The savings flow into the rebate ladder** that gives Foxify Mod under $700 and Elev under $1,000 at scale.
+
+**Q: When does the maintenance window happen and how do I plan around it?**
+**A:** Sunday 00:00–02:00 UTC every week (2 hours). Existing pairs continue running and paying triggers normally; only new-pair-open API calls return `503` during the window with `expected_clear_at` timestamp. Dashboard publishes a 24-hour countdown. Window can be moved by mutual agreement for quarter-end, product launches, or other planned events. Standard institutional crypto-venue cadence (Bullish, Deribit, OKX run similar windows).
+
+**Q: How long are these prices locked in? Can either side adjust later?**
+**A:** **Never locked in for more than 4 weeks at a time.** Pricing is reviewed every 28 days; either side can invoke a 14-day notice for an adjustment outside the cycle review; emergency reviews trigger automatically on material market events (DVOL > 100 sustained 24+ hr, hedge-cost divergence > 25 % from model, venue insolvency). All adjustments must cite empirical evidence (replay output, live RFQ, regime data). Both sides have a clean exit path; neither is stuck with a price that's wrong against current conditions.
 
 ---
 
