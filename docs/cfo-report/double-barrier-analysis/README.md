@@ -9,6 +9,7 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 **Foxify-side documents (designed to be sent directly to Foxify CEO):**
 
+0. **`PRICING_LADDER_STRESS_TEST.md`** — **READ FIRST.** Independent quant check on the locked `$490/$605/$795/$865` ladder against the empirical anchors. Confirms ladder is the lowest sustainable price, identifies two presentation gaps in the CEO docs that should be closed before sign-off (CEO_ONE_SHEET understates realised Foxify cost ~1.5×; cooldown clip on Foxify payouts not flagged). Recommends one structural hardening move (Mod $605 → $625) plus contractual codification of cooldown if pricing is held as-printed.
 0. **`CEO_ONE_SHEET.md`** — **PRINT-AND-SIGN VERSION.** Single 2-page document. Premium tiers, why each tier exists, volume rebate ladder, balanced regime breakdown (not skewed by any single year), 5 concrete safety reasons, comparison vs alternatives, capital scaling, what to lock in for Phase 1. Send to CEO as-is.
 1. **`FOXIFY_CEO_BRIEFING.md`** — Same content, longer-form (~7 minute read) with FAQ section. For CEO who wants more detail.
 
