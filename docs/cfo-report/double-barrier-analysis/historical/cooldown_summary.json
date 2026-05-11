@@ -1,0 +1,212 @@
+{
+  "cd_off": {
+    "calm": {
+      "n_pairs": 556,
+      "mean_triggers": 3.800359712230216,
+      "mean_triggers_during_cd": 0.0,
+      "mean_payouts": 3800.359712230216,
+      "mean_net_hedge": 253.01787368751602,
+      "mean_cd_hours": 0.0,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.0
+    },
+    "mod": {
+      "n_pairs": 681,
+      "mean_triggers": 6.195301027900147,
+      "mean_triggers_during_cd": 0.0,
+      "mean_payouts": 6195.301027900146,
+      "mean_net_hedge": 621.0205282472375,
+      "mean_cd_hours": 0.0,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.0
+    },
+    "elev": {
+      "n_pairs": 269,
+      "mean_triggers": 9.104089219330856,
+      "mean_triggers_during_cd": 0.0,
+      "mean_payouts": 9104.089219330855,
+      "mean_net_hedge": 1454.8805251915544,
+      "mean_cd_hours": 0.0,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.0
+    },
+    "stress": {
+      "n_pairs": 822,
+      "mean_triggers": 12.138686131386862,
+      "mean_triggers_during_cd": 0.0,
+      "mean_payouts": 12138.686131386861,
+      "mean_net_hedge": 2676.588893085091,
+      "mean_cd_hours": 0.0,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.0
+    }
+  },
+  "cd_spec": {
+    "calm": {
+      "n_pairs": 556,
+      "mean_triggers": 3.800359712230216,
+      "mean_triggers_during_cd": 0.0,
+      "mean_payouts": 3800.359712230216,
+      "mean_net_hedge": 251.63724233839974,
+      "mean_cd_hours": 0.04316546762589928,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.025693730729701953
+    },
+    "mod": {
+      "n_pairs": 681,
+      "mean_triggers": 6.1864904552129225,
+      "mean_triggers_during_cd": 0.0,
+      "mean_payouts": 6186.490455212922,
+      "mean_net_hedge": 609.1730199842591,
+      "mean_cd_hours": 0.023494860499265784,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.013985036011467729
+    },
+    "elev": {
+      "n_pairs": 269,
+      "mean_triggers": 9.078066914498141,
+      "mean_triggers_during_cd": 0.0,
+      "mean_payouts": 9078.066914498142,
+      "mean_net_hedge": 1445.041349699522,
+      "mean_cd_hours": 0.08178438661710037,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.04868118251017879
+    },
+    "stress": {
+      "n_pairs": 822,
+      "mean_triggers": 12.070559610705596,
+      "mean_triggers_during_cd": 0.0170316301703163,
+      "mean_payouts": 12070.559610705595,
+      "mean_net_hedge": 2686.4401266132763,
+      "mean_cd_hours": 0.22749391727493917,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.1354130459969876
+    }
+  },
+  "cd_tight1": {
+    "calm": {
+      "n_pairs": 556,
+      "mean_triggers": 3.800359712230216,
+      "mean_triggers_during_cd": 0.014388489208633094,
+      "mean_payouts": 3800.359712230216,
+      "mean_net_hedge": 264.6163252995844,
+      "mean_cd_hours": 0.09352517985611511,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.055669749914354236
+    },
+    "mod": {
+      "n_pairs": 681,
+      "mean_triggers": 6.190895741556535,
+      "mean_triggers_during_cd": 0.04698972099853157,
+      "mean_payouts": 6190.895741556535,
+      "mean_net_hedge": 660.5862059246926,
+      "mean_cd_hours": 0.3465491923641703,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.206279281169149
+    },
+    "elev": {
+      "n_pairs": 269,
+      "mean_triggers": 9.011152416356877,
+      "mean_triggers_during_cd": 0.08178438661710037,
+      "mean_payouts": 9011.152416356877,
+      "mean_net_hedge": 1522.2497658796322,
+      "mean_cd_hours": 0.550185873605948,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.3274915914321119
+    },
+    "stress": {
+      "n_pairs": 822,
+      "mean_triggers": 11.959854014598541,
+      "mean_triggers_during_cd": 0.14233576642335766,
+      "mean_payouts": 11959.85401459854,
+      "mean_net_hedge": 2955.0752158337273,
+      "mean_cd_hours": 1.2360097323600974,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 0.7357200787857722
+    }
+  },
+  "cd_tight2": {
+    "calm": {
+      "n_pairs": 556,
+      "mean_triggers": 3.787769784172662,
+      "mean_triggers_during_cd": 0.06294964028776978,
+      "mean_payouts": 3787.7697841726617,
+      "mean_net_hedge": 307.1720971231801,
+      "mean_cd_hours": 1.7787769784172662,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 1.058795820486468
+    },
+    "mod": {
+      "n_pairs": 681,
+      "mean_triggers": 6.089574155653451,
+      "mean_triggers_during_cd": 0.24522760646108663,
+      "mean_payouts": 6089.57415565345,
+      "mean_net_hedge": 784.6742384446704,
+      "mean_cd_hours": 4.462555066079295,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 2.6562827774281517
+    },
+    "elev": {
+      "n_pairs": 269,
+      "mean_triggers": 8.910780669144982,
+      "mean_triggers_during_cd": 0.4163568773234201,
+      "mean_payouts": 8910.780669144982,
+      "mean_net_hedge": 1549.5845950170715,
+      "mean_cd_hours": 7.717472118959108,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 4.593733404142326
+    },
+    "stress": {
+      "n_pairs": 822,
+      "mean_triggers": 11.690997566909976,
+      "mean_triggers_during_cd": 0.8856447688564477,
+      "mean_payouts": 11690.997566909975,
+      "mean_net_hedge": 3099.3927950547213,
+      "mean_cd_hours": 12.512165450121655,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 7.447717529834318
+    }
+  },
+  "cd_aggr": {
+    "calm": {
+      "n_pairs": 556,
+      "mean_triggers": 3.7967625899280577,
+      "mean_triggers_during_cd": 0.09352517985611511,
+      "mean_payouts": 3796.7625899280574,
+      "mean_net_hedge": 317.6247246987368,
+      "mean_cd_hours": 2.3489208633093526,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 1.3981671805412812
+    },
+    "mod": {
+      "n_pairs": 681,
+      "mean_triggers": 6.036710719530102,
+      "mean_triggers_during_cd": 0.27165932452276065,
+      "mean_payouts": 6036.710719530103,
+      "mean_net_hedge": 807.3469224085039,
+      "mean_cd_hours": 5.483113069016153,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 3.2637577791762817
+    },
+    "elev": {
+      "n_pairs": 269,
+      "mean_triggers": 8.869888475836431,
+      "mean_triggers_during_cd": 0.5018587360594795,
+      "mean_payouts": 8869.888475836431,
+      "mean_net_hedge": 1578.920886543303,
+      "mean_cd_hours": 10.100371747211897,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 6.012126040007081
+    },
+    "stress": {
+      "n_pairs": 822,
+      "mean_triggers": 11.501216545012165,
+      "mean_triggers_during_cd": 1.0377128953771289,
+      "mean_payouts": 11501.216545012165,
+      "mean_net_hedge": 3258.370798311224,
+      "mean_cd_hours": 15.277372262773723,
+      "mean_pair_hours": 168.0,
+      "cd_active_hours_pct": 9.09367396593674
+    }
+  }
+}

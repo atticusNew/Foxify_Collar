@@ -1,0 +1,6 @@
+cfg,pnl_pl_blended,premium_pl_blended,payouts_pl_blended,hedge_net_pl_blended,triggers_pl_blended,cd_active_pct_blended,atticus_margin_blended_pct,foxify_cost_pl_blended,atticus_annual_at_1k_pairs,foxify_cost_annual_at_1k_pairs
+cd_aggr,4668.3,11414.73,5872.1,874.33,5.87,3.29,40.9,5542.63,243418483.97,289008743.75
+cd_off,4985.29,11717.34,6011.95,720.11,6.01,0.0,42.55,5705.4,259947034.5,297495630.74
+cd_spec,4994.26,11708.44,6000.48,713.71,6.0,0.03,42.66,5707.96,260414842.88,297629466.89
+cd_tight1,4916.42,11669.73,5986.31,767.0,5.99,0.2,42.13,5683.42,256356224.29,296349973.22
+cd_tight2,4730.43,11486.35,5908.44,847.48,5.91,2.61,41.18,5577.91,246657890.72,290848151.86
