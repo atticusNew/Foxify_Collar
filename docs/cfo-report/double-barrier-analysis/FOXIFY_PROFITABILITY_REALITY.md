@@ -68,12 +68,13 @@ The right pitch is in **bps-per-day per dollar of protected notional**, not $pre
 | Atticus margin over hedge cost | Foxify cost in bps/day on $100k notional | Tier (per pair/day) |
 |---|---|---|
 | 0% (Atticus breakeven, hypothetical) | 7.7 bps/day | $466/$578/$756/$825 |
-| **5% (our tightest sustainable)** | **11.7 bps/day** | **$490/$605/$795/$865** |
+| 5 % (original "tightest" — Mod 2.3 % margin, fragile) | 11.7 bps/day | $490/$605/$795/$865 |
+| **~7 % (hardened recommendation)** | **13.0 bps/day** | **$490/$625/$795/$865** |
 | 10% (current commercial floor) | 15.6 bps/day | $512/$635/$832/$907 |
 | 15% (typical structured-products desk) | 19.6 bps/day | $536/$664/$870/$948 |
 | 20% (premium quality structurer) | 23.6 bps/day | $559/$693/$908/$989 |
 
-**Recommended tightest tier: $490/$605/$795/$865 per pair per day.**
+**Recommended tightest sustainable tier: $490 / $625 / $795 / $865 per pair per day** (Mod raised from $605 → $625 to harden Mod margin from 2.3 % → 7.4 % under realistic cooldown clip assumptions; see `PRICING_LADDER_STRESS_TEST.md`).
 
 Foxify hears: *"For 11.7 bps/day on $100k notional, we provide unlimited bounded-risk operating capacity — more than half the cost of you self-hedging at the venue."*
 
@@ -84,44 +85,53 @@ This is **a competitive institutional rate.** Compare to:
 
 ---
 
-## 4. The earnings table both sides should see (5% Atticus margin tier)
+## 4. The earnings table both sides should see (hardened ~7% Atticus margin tier)
 
-Recommended ladder: **$490 / $605 / $795 / $865 per pair per day** with cooldown enabled.
+**Recommended ladder: $490 / $625 / $795 / $865 per pair per day** with cooldown enabled (Mod raised from $605 → $625 to harden the binding-constraint margin from 2.3 % to 7.4 %; rebate top tier capped at 6 % base / 8 % stretch).
 
-### 4.1 Per-pair-life economics
+### 4.1 Per-pair-life economics (balanced 35/43/14/6 weights, design-target cooldown clip)
 
-| DVOL band | Rate | Cooldown | Atticus PnL | Foxify net cost | Foxify $/day | Foxify bps/day |
+| DVOL band | Rate | Cooldown clip | Atticus PnL | Foxify net cost | Foxify $/day | Foxify bps/day |
 |---|---|---|---|---|---|---|
-| Calm (30%/yr) | $490 | 0% | +$200 | $400 | $57 | 5.7 |
-| Mod (36%/yr) | $605 | 20% | +$268 | $668 | $95 | 9.5 |
-| Elev (14%/yr) | $795 | 30% | +$361 | $1,201 | $172 | 17.2 |
-| Stress (19%/yr) | $865 | 50% | +$358 | $1,458 | $208 | 20.8 |
-| **Blended** | — | — | **+$278/pair-life** | **$816/pair-life** | **$117/day** | **11.7 bps** |
+| Calm (35%/yr) | $490 | 0% | +$209 | $409 | $48 | 4.8 |
+| Mod (43%/yr) | $625 | 20% | +$590 | $897 | $91 | 9.1 |
+| Elev (14%/yr) | $795 | 30% | +$1,234 | $2,074 | $195 | 19.5 |
+| Stress (6%/yr) | $865 | 50% | +$1,817 | $2,917 | $281 | 28.1 |
+| **Blended** | — | — | **+$687/pair-life** | **+$1,172/pair-life** | **$130/day** | **13.0 bps** |
 
-### 4.2 Annual P&L at scale
+### 4.2 Annual P&L at scale (no rebate active yet; Phase 1 pricing)
 
 | Scale | Atticus annual P&L | Foxify net cost |
 |---|---|---|
-| 4.3 pairs (Phase 1) | **$62k** | $183k |
-| 12.9 pairs (Phase 2) | $187k | $549k |
-| 100 pairs | $1.45M | $4.26M |
-| 1,000 pairs | **$14.5M** | $42.6M |
-| 10,000 pairs | **$144.7M** | $426M |
+| 4.3 pairs (Phase 1) | **$145k** | $247k |
+| 12.9 pairs (Phase 2) | $434k | $740k |
+| 100 pairs | $3.37M | $5.74M |
+| 1,000 pairs | **$33.7M** | $57.4M |
+| 10,000 pairs | **$337M** | $574M |
 
-**For Foxify at 1,000 pairs:** $42.6M annual cost, financed by $50M+/day notional × ~10-30 bps/day = $50-150M/year of cross-venue rebate income. **Foxify nets +$10-100M/year** at the integrated business level — well within their stated "scale to $50M daily notional makes this worth it" target.
+### 4.2.bis Annual P&L at scale (with 6 % top-tier rebate active in Phase 4+)
 
-**For Atticus at 1,000 pairs:** $14.5M annual P&L. Smaller than the $57M from the prior tier, but still meaningful, and the structure scales to $145M/year at 10,000 pairs.
+| Scale | Atticus annual P&L | Foxify net cost (realised) |
+|---|---|---|
+| 1,000 pairs (6 % rebate) | **$21M** | $42M |
+| 10,000 pairs (6 % rebate) | **$210M** | $420M |
+| 10,000 pairs (8 % stretch rebate) | **$170M** | $390M |
+
+**For Foxify at 1,000 pairs:** $42M annual cost (6 % rebate active), financed by $50M+/day notional × ~10-30 bps/day = $50-150M/year of cross-venue rebate income. **Foxify nets +$10-100M/year** at the integrated business level — well within their stated "scale to $50M daily notional makes this worth it" target.
+
+**For Atticus at 1,000 pairs:** $21M annual P&L (6 % rebate). Scales to $210M/year at 10,000 pairs ($170M at the 8 % stretch slot).
 
 ### 4.3 Sensitivity at higher Atticus margin (Foxify negotiation room)
 
-| Atticus margin | Atticus annual @ 1k | Foxify annual cost @ 1k | Foxify cost @ 10k pairs |
+| Atticus margin | Atticus annual @ 1k (6 % rebate) | Foxify annual cost @ 1k | Foxify cost @ 10k pairs |
 |---|---|---|---|
-| **5% (recommended floor)** | **$14.5M** | $42.6M | $426M |
-| 10% | $28.9M | $57.1M | $571M |
-| 15% | $43.4M | $71.6M | $716M |
-| 20% | $57.9M | $86.1M | $861M |
+| 5 % (original — Mod 2.3 %, fragile) | $13M | $34M | $340M |
+| **~7 % (hardened recommendation)** | **$21M** | **$42M** | **$420M (base) / $390M (8 % stretch)** |
+| 10% | $30M | $51M | $510M |
+| 15% | $46M | $66M | $660M |
+| 20% | $62M | $82M | $820M |
 
-**The 5% tier is the structurally tightest. Going below would mean Atticus loses money on calm days.** At 5%, Atticus has razor-thin per-pair margin (which is exactly what scale-volume deals look like — thin margins on each unit, large scale aggregating to material P&L).
+**The hardened ~7 % tier (Mod $625) is the structurally tightest sustainable. Going below would mean Mod margin compresses to 2.3 % at full rebate — fragile against any cost overrun in the Bullish institutional pricing tier or Falcon-X cross-venue routing rollout.** The hardened tier preserves Foxify's "$490 calm" anchor and adds only $20/pair/day in Mod (~6 % more in absolute Foxify cost) in exchange for 3× more Atticus margin headroom in the binding-constraint band.
 
 ---
 
@@ -176,13 +186,13 @@ At 1,000 pairs with 10% Atticus margin, Atticus earns $29M/year — falls below 
 
 ## 7. Updated final recommendation
 
-**Tier: $490 / $605 / $795 / $865 per pair per day** with cooldown enabled (20%/30%/50% trigger reduction in mod/elev/stress).
+**Tier: $490 / $625 / $795 / $865 per pair per day** with cooldown enabled (design target: 20%/30%/50% trigger reduction in mod/elev/stress; conservative spec read of `COOLDOWN_CIRCUIT_BREAKER_SPEC.md` delivers ~1%/4%/12.5% reduction — gap to be closed by either tightening cooldown thresholds or empirical recalibration in the historical replay).
 
-**Volume rebates** (as previously) — preserves calm at $490, rebates mod/elev/stress at scale.
+**Volume rebates capped at 6 % base; 8 % stretch slot unlocks only on demonstrated Bullish institutional + Falcon-X savings** — preserves calm at $490, rebates mod/elev/stress at scale, decouples Atticus margin from venue commitments not yet in production.
 
 **Optional: Atticus excess-profit rebate.** If Foxify CEO genuinely needs to "show profit," add a tier-3 rebate where 15-25% of Atticus's annual profit above $30M flows back to Foxify. Aligns incentives and gives Foxify a defensible "as Atticus wins, I win" narrative.
 
-**Foxify pays $42.6M/year at 1,000 pairs** (down from $85M at the previous tier). Atticus earns $14.5M/year at the same scale (down from $57M). **The deal still works, just at thinner margins for both — exactly what the founder asked for.**
+**Foxify pays $42M/year at 1,000 pairs (6 % rebate active).** Atticus earns $21M/year at the same scale. **The deal still works, with hardened margin in the binding-constraint Mod band — exactly what the founder asked for, with structural protection against the single biggest fragility.**
 
 ---
 
@@ -195,12 +205,13 @@ At 1,000 pairs with 10% Atticus margin, Atticus earns $29M/year — falls below 
 > $50M+/day notional that earns rebates/funding/basis income they
 > couldn't earn without bounded protection.**
 >
-> **Recommended: tightest tier at 5% Atticus margin = $490/$605/$795/$865
-> per pair per day. Foxify pays 11.7 bps/day blended on $100k notional —
-> competitive vs every institutional vol-product alternative. If Foxify
-> CEO genuinely needs to "show profit," add an excess-profit rebate
-> structure that returns 15-25% of Atticus's >$30M annual P&L back to
-> Foxify; aligns incentives.**
+> **Recommended: hardened ~7 % Atticus margin tier = $490 / $625 / $795 /
+> $865 per pair per day, with rebate capped at 6 % base / 8 % stretch on
+> demonstrated venue savings. Foxify pays 13.0 bps/day blended on $100k
+> notional — competitive vs every institutional vol-product alternative.
+> If Foxify CEO genuinely needs to "show profit," add an excess-profit
+> rebate structure that returns 15-25% of Atticus's >$30M annual P&L
+> back to Foxify; aligns incentives.**
 >
 > **The conversation with Foxify CEO is about reframing the metric
 > (bps/day on notional, not $premium-vs-$payouts) and grounding the
