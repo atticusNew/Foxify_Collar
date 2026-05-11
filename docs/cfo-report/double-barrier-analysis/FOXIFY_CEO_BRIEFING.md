@@ -20,7 +20,7 @@ Foxify generates routing volume by opening matched LONG/SHORT pairs on partner e
 | BTC regime (DVOL band) | Days per year (balanced est.) | **Premium per pair per day** |
 |---|---|---|
 | Calm (DVOL < 50) | ~129 days (35%) | **$490** |
-| Moderate (50–65) | ~156 days (43%) | **$605** |
+| Moderate (50–65) | ~156 days (43%) | **$625** |
 | Elevated (65–80) | ~52 days (14%) | **$795** |
 | Stress (≥80) | ~21 days (6%) | **$865** |
 
@@ -32,15 +32,15 @@ Foxify generates routing volume by opening matched LONG/SHORT pairs on partner e
 
 ## 3. Volume rebates — what scales discount the premium
 
-**Calm tier ($490) never rebates** — it's already at the structural floor. **Moderate / Elevated / Stress tiers rebate** based on Foxify's prior-month volume:
+**Calm tier ($490) never rebates** — it's already at the structural floor. **Moderate / Elevated / Stress tiers rebate** based on Foxify's prior-month volume. **Base ladder caps at 6 %**; the additional 2 % stretch slot unlocks only on demonstrated Bullish institutional pricing tier and Falcon-X cross-venue routing (one full month each in production):
 
 | Foxify monthly volume | Rebate on Mod/Elev/Stress | Mod | Elev | Stress |
 |---|---|---|---|---|
-| 0–100 pair-days/month (Phase 1 launch) | **0%** | $605 | $795 | $865 |
-| 100–500 / month | **2%** | $593 | $779 | $848 |
-| 500–2,000 / month | **4%** | $581 | $763 | $830 |
-| 2,000–10,000 / month | **6%** | $569 | $747 | $813 |
-| **10,000+ / month** (Foxify-scale target) | **8%** | **$557** | **$731** | **$796** |
+| 0–100 pair-days/month (Phase 1 launch) | **0%** | $625 | $795 | $865 |
+| 100–500 / month | **2%** | $613 | $779 | $848 |
+| 500–2,000 / month | **4%** | $600 | $763 | $830 |
+| **2,000+ / month (base ladder cap)** | **6%** | **$588** | **$747** | **$813** |
+| Stretch (Bullish institutional + Falcon-X demonstrated) | **+2 % (8 % total)** | $575 | $731 | $796 |
 
 **Rebates are paid monthly on the prior month's volume** — not invoiced mid-month, not surprise-discounted. Foxify gets a clean monthly statement showing the rebate credit.
 
@@ -72,25 +72,27 @@ Volume routed per pair per day:    $864,000
 
 Using a **balanced regime distribution** (median of full-history, ex-2021-crisis, and recent-24-month windows — explicitly NOT skewed to any single year's outliers):
 
-| Phase | Pairs | Rebate active | Foxify net cost / year | Net cost on volume |
+| Phase | Pairs | Rebate active | Foxify net cost / year (realised) | Net cost on volume |
 |---|---|---|---|---|
-| 1 (Pilot) | 4.3 | 0% | $153k | **1.13 bps** |
-| 2 (Validation) | 12.9 | 2% | $406k | 1.00 bps |
-| 3 (Scale-up) | 100 | 4% | $2.74M | 0.87 bps |
-| 4 (Production) | 1,000 | 6% | $23.3M | 0.74 bps |
-| **5 (Foxify-scale)** | **10,000** | **8%** | **$192M** | **0.61 bps** |
+| 1 (Pilot) | 4.3 | 0% | $190k | **1.40 bps** |
+| 2 (Validation) | 12.9 | 2% | $548k | 1.34 bps |
+| 3 (Scale-up) | 100 | 4% | $4.05M | 1.29 bps |
+| 4 (Production) | 1,000 | 6% (base cap) | $42.0M | 1.38 bps |
+| **5 (Foxify-scale)** | **10,000** | **6% base / 8% stretch** | **$420M base / $390M stretch** | **1.38 / 1.28 bps** |
 
-**As Foxify scales, the cost-on-volume DROPS** — from 1.13 bps Phase 1 to 0.61 bps at Foxify-scale. Foxify's typical partner rebate income runs 3-15 bps; Atticus's cost is a small slice of that.
+**Cost-on-volume holds in the ~1.3–1.4 bps band across the scale ladder.** The 8% stretch rebate (when Bullish institutional pricing tier and Falcon-X cross-venue routing are demonstrated in production) trims ~0.1 bps. Foxify's typical partner rebate income runs 3–15 bps; Atticus's cost is a small slice of that.
 
 **At 5 bps partner rebate (typical institutional rate):**
 
-| Phase | Foxify gross income | Atticus net cost | **Foxify NET annual** |
+| Phase | Foxify gross income | Atticus net cost (realised) | **Foxify NET annual** |
 |---|---|---|---|
-| 1 (4.3 pairs) | $679k | $153k | **+$526k** |
-| 4 (1,000 pairs) | $158M | $23.3M | **+$135M** |
-| **5 (10,000 pairs)** | **$1.58B** | **$192M** | **+$1.39B** |
+| 1 (4.3 pairs) | $679k | $190k | **+$489k** |
+| 4 (1,000 pairs) | $158M | $42.0M | **+$116M** |
+| **5 (10,000 pairs)** | **$1.58B** | **$420M base / $390M stretch** | **+$1.16B base / +$1.19B stretch** |
 
-**Note on regime sensitivity:** if BTC enters a sustained calm regime (DVOL <50, like 2024-2025), Foxify's daily premium drops further (~30% lower cost-on-volume). If BTC enters a sustained stress regime (like 2021), premium tier auto-escalates and cost-on-volume rises ~40%. **Pricing self-adjusts with market conditions, with no manual intervention.**
+**Numbers are net of cooldown clipping** ~8 trigger payouts/pair/yr (~$8k/pair/yr) and ~$11M/pair/yr of routed volume in cooldown windows. See `COOLDOWN_FOXIFY_BREAKDOWN.md` for the full regime-by-regime breakdown of when cooldown fires and what Foxify experiences. **Cost on volume is the right number to read** — cooldown reduces both numerator (payouts) and denominator (volume) roughly proportionally.
+
+**Note on regime sensitivity:** if BTC enters a sustained calm regime (DVOL <50, like 2024-2025), Foxify's daily premium drops ~25% lower cost-on-volume. If BTC enters a sustained stress regime (like 2021), premium tier auto-escalates and cost-on-volume rises ~30%. **Pricing self-adjusts with market conditions, with no manual intervention.**
 
 ---
 
@@ -108,7 +110,23 @@ Atticus buys a real ±2% strangle at Bullish/Deribit/Falcon X for every active p
 
 ### 5.3 Cooldown circuit breaker pauses new pairs in extreme conditions
 
-If BTC's volatility spikes above DVOL 100 (rare crisis-level vol), or if trigger payouts in any 4-hour window exceed 25% of Atticus's available capital, the system **pauses new pair openings until conditions normalize** (typically 4 hours). Existing pairs continue paying out normally — Foxify is never stiffed on triggers that already fired. **The cooldown is the structural protection that lets Atticus quote tight pricing without exposure to runaway chop weeks.**
+If BTC's volatility spikes above DVOL 100 (rare crisis-level vol), or if trigger payouts in any 4-hour window exceed 25% of Atticus's available capital, the system **pauses new pair openings until conditions normalize** (4 hours). Existing pairs continue paying out normally — Foxify is never stiffed on triggers that already fired.
+
+**One important detail to read with this:** during the 4-hour cooldown window, existing pairs' ±2 % barrier stops re-anchoring after each trigger (it stays at the original anchor until cooldown clears). This eliminates intra-day chop pile-ups: a 4-hour chop session that would normally produce 4–5 triggers per pair produces ~2. **Foxify gets paid for the trigger that fires, but subsequent same-direction grazes from the new spot don't count as fresh triggers until cooldown clears.**
+
+**Frequency of cooldown firing, by BTC regime (modeled estimates):**
+
+| Regime | Days/year | Cooldown active hours/year | Estimated Foxify-side payout reduction |
+|---|---:|---:|---:|
+| Calm (DVOL < 50) | 129 | ~6 hr | essentially zero |
+| Moderate (50–65) | 156 | ~75 hr (~3 days) | ~1 % of mod payouts |
+| Elevated (65–80) | 52 | ~100 hr (~4 days) | ~4 % of elev payouts |
+| Stress (≥ 80) | 21 | ~126 hr (~5 days) | ~12.5 % of stress payouts |
+| **Total** | 358 | **~13 days/yr (3.5 % of year)** | **~2.5 % of full-year payouts (~$8k/pair/yr at 312 trig/yr × $1k)** |
+
+**Foxify's net annual cost numbers in §4 already account for this clip on payouts.** Cost on volume stays in the ~1.3–1.4 bps band because cooldown reduces both numerator (payouts) and denominator (volume) roughly proportionally.
+
+**The full plain-English breakdown is in `COOLDOWN_FOXIFY_BREAKDOWN.md`** — when each of the four trigger conditions (T1–T4) fires, what Foxify's daily experience looks like, and a worked example of a stress-day timeline with and without cooldown.
 
 ### 5.4 Real-time dashboard — Foxify sees everything Atticus sees
 
@@ -185,17 +203,21 @@ These are decisions that need a clear answer before pair flow goes live:
 
 ## 10. The two-sentence summary
 
-> **For 0.6-1.1 basis points on the volume Foxify routes to partner
-> exchanges (decreasing as scale grows, calibrated to a balanced BTC
+> **For ~1.3–1.4 basis points on the volume Foxify routes to partner
+> exchanges (1.28 bps at the 8 % stretch slot once Bullish institutional
+> + Falcon-X savings are demonstrated, calibrated to a balanced BTC
 > regime distribution that doesn't skew to any single year's outliers),
 > Atticus provides bounded-risk protection that lets Foxify operate at
-> $50M+/day notional. As Foxify scales to 10,000 pairs, that 0.61 bps
-> net cost ($192M/year) is paid out of Foxify's $1.58B/year of partner
-> rebate income at 5-bps rebate rates — leaving Foxify with $1.39B/year
-> of net operating margin, both sides scaling together with structural
-> safety mechanisms validated against every BTC crisis of the past
-> 6.4 years and against Foxify's own per-second BTC data over the
-> May 2025 sample.**
+> $50M+/day notional. As Foxify scales to 10,000 pairs, that 1.38 bps
+> realised net cost ($420M/year, $390M at the stretch slot) is paid out
+> of Foxify's $1.58B/year of partner rebate income at 5-bps rebate
+> rates — leaving Foxify with $1.16–1.19B/year of net operating margin,
+> both sides scaling together with structural safety mechanisms validated
+> against every BTC crisis of the past 6.4 years and against Foxify's own
+> per-second BTC data over the May 2025 sample. Cooldown circuit breaker
+> is active ~13 days/year (almost all in stress windows) and converts
+> what would otherwise be multi-day emergency shutdowns into routine
+> 4-hour pauses while existing pairs continue to pay $1,000/trigger.**
 
 ---
 

@@ -9,6 +9,8 @@ premium) and the capital required to scale it to 1,000 concurrent pairs.
 
 **Foxify-side documents (designed to be sent directly to Foxify CEO):**
 
+0. **`COOLDOWN_FOXIFY_BREAKDOWN.md`** — **READ THIS FIRST FOR COOLDOWN.** Plain-English explainer: what cooldown actually does in 3 lines, the four objective trigger conditions (T1–T4), how often cooldown fires by BTC regime (Calm ~0 hr/yr, Mod ~75 hr, Elev ~100 hr, Stress ~126 hr; ~13 days/yr total), exactly what Foxify experiences during a cooldown window (existing pairs keep paying full $1k/trigger; new opens rejected; ±2 % barrier stops re-anchoring), per-regime payout-clip estimates, and a worked stress-day timeline. Customer-facing translation of `COOLDOWN_CIRCUIT_BREAKER_SPEC.md`.
+0. **`PRICING_LADDER_STRESS_TEST.md`** — **READ THIS FIRST FOR PRICING.** Independent quant check on the hardened `$490/$625/$795/$865` ladder against the empirical anchors. Confirms hardening (Mod $605→$625, rebate cap 8 %→6 % base) lifts the binding-constraint Mod margin from 2.3 % to 7.4 %. Documents one open analytical risk: cooldown's design-target clip needs to be empirically calibrated by plumbing cooldown into `historical_replay.py` before production launch.
 0. **`CEO_ONE_SHEET.md`** — **PRINT-AND-SIGN VERSION.** Single 2-page document. Premium tiers, why each tier exists, volume rebate ladder, balanced regime breakdown (not skewed by any single year), 5 concrete safety reasons, comparison vs alternatives, capital scaling, what to lock in for Phase 1. Send to CEO as-is.
 1. **`FOXIFY_CEO_BRIEFING.md`** — Same content, longer-form (~7 minute read) with FAQ section. For CEO who wants more detail.
 
