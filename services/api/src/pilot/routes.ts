@@ -2073,6 +2073,138 @@ export const registerPilotRoutes = async (
     }
   });
 
+  /**
+   * WS#0 settlement runner admin endpoints.
+   *
+   * GET  /pilot/admin/settlement/runs                — list recent runs
+   * POST /pilot/admin/settlement/run                 — create draft for period
+   * POST /pilot/admin/settlement/:id/approve         — approve draft (emits ledger)
+   * GET  /pilot/admin/settlement/:id/report          — Foxify-shareable Markdown
+   */
+  app.get("/pilot/admin/settlement/runs", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const query = req.query as { poolId?: string; limit?: string };
+    try {
+      const { listRecentSettlements } = await import("./settlementRunner");
+      const limit = query.limit ? Math.min(100, Math.max(1, Number(query.limit))) : 10;
+      const runs = await listRecentSettlements({
+        pool,
+        poolId: query.poolId === "atticus_hedge" || query.poolId === "foxify_trader"
+          ? (query.poolId as any)
+          : undefined,
+        limit
+      });
+      return { status: "ok", runs };
+    } catch (err: any) {
+      reply.code(503);
+      return { status: "error", reason: "settlement_runner_unavailable", message: String(err?.message || err) };
+    }
+  });
+
+  app.post("/pilot/admin/settlement/run", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const body = req.body as {
+      poolId?: string;
+      settlementType?: string;
+      periodStart?: string;
+      periodEnd?: string;
+    };
+    if (body.poolId !== "atticus_hedge" && body.poolId !== "foxify_trader") {
+      reply.code(400);
+      return { status: "error", reason: "invalid_pool_id" };
+    }
+    if (body.settlementType !== "weekly_25" && body.settlementType !== "end_of_period_75" && body.settlementType !== "manual") {
+      reply.code(400);
+      return { status: "error", reason: "invalid_settlement_type" };
+    }
+    const startMs = body.periodStart ? Date.parse(body.periodStart) : NaN;
+    const endMs = body.periodEnd ? Date.parse(body.periodEnd) : NaN;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_period" };
+    }
+    try {
+      const { createDraftSettlement } = await import("./settlementRunner");
+      const run = await createDraftSettlement({
+        pool,
+        poolId: body.poolId as any,
+        settlementType: body.settlementType as any,
+        periodStart: new Date(startMs),
+        periodEnd: new Date(endMs),
+        metadata: { createdBy: auth.actor }
+      });
+      console.log(
+        `[Settlement] DRAFT created: id=${run.id} pool=${run.poolId} type=${run.settlementType} ` +
+        `netPnL=$${run.netPnLUsdc} distributable=$${run.distributableUsdc} actor=${auth.actor}`
+      );
+      return { status: "ok", run };
+    } catch (err: any) {
+      reply.code(503);
+      return { status: "error", reason: "settlement_create_failed", message: String(err?.message || err) };
+    }
+  });
+
+  app.post("/pilot/admin/settlement/:id/approve", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const params = req.params as { id: string };
+    const body = req.body as { paymentTxRef?: string };
+    try {
+      const { approveSettlement } = await import("./settlementRunner");
+      const approved = await approveSettlement({
+        pool,
+        settlementId: params.id,
+        actor: auth.actor,
+        paymentTxRef: body.paymentTxRef
+      });
+      console.log(
+        `[Settlement] APPROVED: id=${approved.id} actor=${auth.actor} ` +
+        `distributable=$${approved.distributableUsdc} ref=${body.paymentTxRef || "(none)"}`
+      );
+      return { status: "ok", run: approved };
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      if (msg === "settlement_not_found") {
+        reply.code(404);
+        return { status: "error", reason: "settlement_not_found" };
+      }
+      if (msg.startsWith("settlement_not_approvable")) {
+        reply.code(409);
+        return { status: "error", reason: msg };
+      }
+      reply.code(503);
+      return { status: "error", reason: "settlement_approve_failed", message: msg };
+    }
+  });
+
+  app.get("/pilot/admin/settlement/:id/report", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const params = req.params as { id: string };
+    const query = req.query as { format?: string };
+    try {
+      const { listRecentSettlements, generateSettlementReport } = await import("./settlementRunner");
+      // Find by ID — small list scan is fine at pilot scale
+      const runs = await listRecentSettlements({ pool, limit: 100 });
+      const run = runs.find((r) => r.id === params.id);
+      if (!run) {
+        reply.code(404);
+        return { status: "error", reason: "settlement_not_found" };
+      }
+      if (query.format === "json") {
+        return { status: "ok", run };
+      }
+      const md = generateSettlementReport(run);
+      reply.header("Content-Type", "text/markdown; charset=utf-8");
+      return md;
+    } catch (err: any) {
+      reply.code(503);
+      return { status: "error", reason: "settlement_report_failed", message: String(err?.message || err) };
+    }
+  });
+
   app.post("/pilot/admin/pools/:poolId/withdraw", async (req, reply) => {
     const auth = await requireAdmin(req, reply);
     if (!auth) return;
