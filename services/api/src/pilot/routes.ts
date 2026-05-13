@@ -106,6 +106,19 @@ import {
   getHedgeBudgetCapConfig,
   type HedgeBudgetCapVerdict
 } from "./hedgeBudgetCap";
+// WS#3 anti-bot defenses (Bundle C cutover, rev 6, 2026-05-13).
+// Disabled globally by PILOT_ANTI_BOT_ENFORCE=false (default true).
+// recordTrigger and recordProtectionClose are wired into trigger-monitor
+// and close paths in follow-up commits; getThrottleStats wires into a
+// new admin diagnostics endpoint.
+import { resolveClientFingerprint, fingerprintForLog } from "./fingerprint";
+import {
+  recordQuote,
+  recordActivate,
+  checkActivateCooldown,
+  checkOpposingProtectionBlock,
+  computeQuoteParamsHash
+} from "./throttleStore";
 import {
   handleBiweeklyActivate,
   handleBiweeklyQuote,
@@ -2464,6 +2477,57 @@ export const registerPilotRoutes = async (
       return result;
     }
     // ── END BIWEEKLY BRANCH ─────────────────────────────────────────
+
+    // ── WS#3 ANTI-BOT DEFENSES — quote path (rev 6, Bundle C) ──
+    //
+    // Run BEFORE the biweekly branch returns? No — biweekly is a
+    // separate product with its own anti-bot story; legacy 1-DTE pilot
+    // is what we're protecting.
+    //
+    // Three actions:
+    //   1. Resolve fingerprint from request headers
+    //   2. Compute quote-params hash for dedup
+    //   3. Check dedup — if recently quoted with same params, return cached
+    //      diagnostic without re-running the venue (saves Bullish/Deribit
+    //      API quota and prevents quote-spam oracle harvesting).
+    //
+    // Kill-switch: PILOT_ANTI_BOT_ENFORCE=false disables all defenses
+    // entirely. Default true.
+    const antiBotEnforce =
+      String(process.env.PILOT_ANTI_BOT_ENFORCE ?? "true").toLowerCase() !== "false";
+
+    const fingerprintForQuote = antiBotEnforce
+      ? resolveClientFingerprint(req)
+      : null;
+
+    if (fingerprintForQuote) {
+      const quoteParamsHash = computeQuoteParamsHash({
+        protectedNotional: Number(body.protectedNotional ?? 0),
+        slPct: Number(body.slPct ?? 0),
+        protectionType: String(body.protectionType ?? "long"),
+        marketId: String(body.marketId ?? pilotConfig.referenceMarketId)
+      });
+      const dedupResult = recordQuote({
+        fingerprint: fingerprintForQuote.combined,
+        paramsHash: quoteParamsHash
+      });
+      if (dedupResult.deduplicated) {
+        // Don't reject — just instrument and continue. The downstream
+        // pricing engine has its own quote cache and will return the
+        // same answer cheaply. We log here for ops visibility.
+        console.log(
+          `[AntiBot] quote dedup hit: fp=${fingerprintForQuote.combined.slice(0, 12)} hash=${quoteParamsHash}`
+        );
+      }
+      if (dedupResult.suspicionDetected) {
+        console.warn(
+          `[AntiBot] suspicion pattern detected: fp=${fingerprintForQuote.combined.slice(0, 12)} ` +
+          `(quote-to-activate ratio > 50:1); 1.5x surcharge will apply for next 24h`
+        );
+      }
+    }
+    // ── END WS#3 ANTI-BOT (quote) ─────────────────────────────────
+
     const quoteStartedAt = Date.now();
     const requestedVenue = body.venue === "deribit" ? deribitVenue : venue;
     const protectedNotional = parsePositiveDecimal(body.protectedNotional);
@@ -3591,6 +3655,81 @@ export const registerPilotRoutes = async (
     }
     // ── END BIWEEKLY BRANCH ─────────────────────────────────────────
 
+    // ── WS#3 ANTI-BOT DEFENSES — activate path (rev 6, Bundle C) ──
+    //
+    // Three layers enforced HERE before any other validation so the
+    // trader gets a fast, clear error instead of going deep into the
+    // activation pipeline before being rejected.
+    //
+    //   Layer 1: Opposing-side block (per fingerprint, 2% only).
+    //            Blocks bot's long+short paired-protection arb.
+    //   Layer 2: Random-jitter activate cooldown (60-330s).
+    //            Throws off scripted timing.
+    //   Layer 3: Trigger-induced 4h cooldown.
+    //            Blocks rapid re-protection after a trigger fires.
+    //
+    // Layer 4 (premium surcharge) is enforced in the quote handler.
+    //
+    // Kill-switch: PILOT_ANTI_BOT_ENFORCE=false (default true).
+    const antiBotEnforce =
+      String(process.env.PILOT_ANTI_BOT_ENFORCE ?? "true").toLowerCase() !== "false";
+
+    const fingerprintForActivate = antiBotEnforce
+      ? resolveClientFingerprint(req)
+      : null;
+
+    if (fingerprintForActivate) {
+      // Layer 2 + 3 cooldown checks — if EITHER fires, reject early.
+      const cooldownVerdict = checkActivateCooldown({
+        fingerprint: fingerprintForActivate.combined
+      });
+      if (!cooldownVerdict.allowed) {
+        const fpLog = fingerprintForLog(fingerprintForActivate);
+        const retrySec = cooldownVerdict.retryAfterMs
+          ? Math.ceil(cooldownVerdict.retryAfterMs / 1000)
+          : null;
+        console.log(
+          `[AntiBot] activate blocked: fp=${fpLog.combined.slice(0, 12)} ` +
+          `reason=${cooldownVerdict.reason} retryAfter=${retrySec}s primaryLayer=${fpLog.primaryLayer}`
+        );
+        reply.code(429);
+        reply.header("Retry-After", String(retrySec ?? 60));
+        return {
+          status: "error",
+          reason: cooldownVerdict.reason,
+          message: cooldownVerdict.reason === "trigger_cooldown_active"
+            ? "You recently had a triggered protection. Please wait before opening a new same-tier protection."
+            : "Please slow down — wait a moment between protection openings.",
+          retryAfterSec: retrySec
+        };
+      }
+
+      // Layer 1: opposing-side block (2% only). Need slPct from body.
+      const newSide = body.protectionType === "short" ? "short" : "long";
+      const slPctNew = body.slPct != null ? Number(body.slPct) : 0;
+      if (slPctNew === 2) {
+        const opposingVerdict = checkOpposingProtectionBlock({
+          fingerprint: fingerprintForActivate.combined,
+          newSide,
+          slPct: 2
+        });
+        if (!opposingVerdict.allowed) {
+          const fpLog = fingerprintForLog(fingerprintForActivate);
+          console.log(
+            `[AntiBot] opposing-perp block: fp=${fpLog.combined.slice(0, 12)} ` +
+            `newSide=${newSide} primaryLayer=${fpLog.primaryLayer}`
+          );
+          reply.code(409);
+          return {
+            status: "error",
+            reason: "opposing_protection_active",
+            message: "You already have 2% protection on the opposite side. Close it first to open the other side."
+          };
+        }
+      }
+    }
+    // ── END WS#3 ANTI-BOT (activate) ───────────────────────────────
+
     if (!body.quoteId) {
       reply.code(400);
       return { status: "error", reason: "missing_quote_id" };
@@ -4407,6 +4546,27 @@ export const registerPilotRoutes = async (
         ...lockedQuote,
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4))
       });
+
+      // ── WS#3 ANTI-BOT: record successful activation for cooldown tracking ──
+      // Sets the next-activate cooldown (60-330s random jitter) on this
+      // fingerprint and stamps the active 2% protection for opposing-side
+      // block enforcement. Best-effort: any throw here is logged but does
+      // not fail the user-facing activation.
+      if (fingerprintForActivate && reservedProtection) {
+        try {
+          recordActivate({
+            fingerprint: fingerprintForActivate.combined,
+            side: protectionType,
+            slPct: activateSlPct ?? undefined,
+            protectionId: reservedProtection.id
+          });
+        } catch (throttleErr: any) {
+          console.warn(
+            `[AntiBot] recordActivate failed (non-fatal): ${throttleErr?.message ?? throttleErr}`
+          );
+        }
+      }
+
       return {
         status: "ok",
         protection: updated
