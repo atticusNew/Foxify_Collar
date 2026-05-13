@@ -196,6 +196,31 @@ export const processTriggerMonitorCycleWithResolver = async (
     });
     if (!updated) continue;
     console.log(`[TriggerMonitor] TRIGGERED: protection=${protection.id} type=${economics.protectionType} spot=$${snapshot.price.toFixed(2)} floor=$${economics.triggerPrice.toFixed(2)} payout=$${economics.triggerPayoutCreditUsd.toFixed(2)} source=${snapshot.priceSource}`);
+
+    // ── WS#3 Layer 3: trigger-induced cooldown stamp (rev 6, Bundle C) ──
+    //
+    // Read the antiBotFingerprint stamped at activate time (if present)
+    // and impose the 4h post-trigger cooldown on that fingerprint.
+    // Without this, Layer 3 cooldown checks in checkActivateCooldown
+    // never fire because no trigger event sets nextActivateAllowedAfterTriggerMs.
+    //
+    // Best-effort: any failure here logs and continues. The protection's
+    // own status update is the load-bearing operation; the cooldown
+    // stamp is operational hardening on top.
+    const fingerprintForCooldown = (protection.metadata as any)?.antiBotFingerprint;
+    if (typeof fingerprintForCooldown === "string" && fingerprintForCooldown.length > 0) {
+      try {
+        const { recordTrigger } = await import("./throttleStore");
+        recordTrigger({
+          fingerprint: fingerprintForCooldown,
+          protectionId: protection.id
+        });
+      } catch (throttleErr: any) {
+        console.warn(
+          `[TriggerMonitor] WS#3 Layer 3 cooldown stamp failed for ${protection.id}: ${throttleErr?.message ?? throttleErr}`
+        );
+      }
+    }
     await insertPriceSnapshot(pool, {
       protectionId: protection.id,
       snapshotType: "trigger",

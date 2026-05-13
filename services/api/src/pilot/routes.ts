@@ -1934,6 +1934,213 @@ export const registerPilotRoutes = async (
   });
 
   /**
+   * WS#3 (Bundle C, rev 6) — Anti-bot fingerprint stats endpoint.
+   *
+   * Aggregate counters from the in-process throttle store. Used by
+   * operators to verify the anti-bot defenses are operating as expected
+   * and to gauge the size of the active fingerprint set.
+   */
+  app.get("/pilot/admin/diagnostics/fingerprint-stats", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    try {
+      const { getThrottleStats } = await import("./throttleStore");
+      const stats = getThrottleStats();
+      return {
+        status: "ok",
+        antiBotEnforce: String(process.env.PILOT_ANTI_BOT_ENFORCE ?? "true").toLowerCase() !== "false",
+        foxifyLayer6Configured: Boolean(process.env.PILOT_FOXIFY_SHARED_SECRET),
+        stats,
+        notes: [
+          "totalFingerprints = distinct fingerprints seen in current process lifetime",
+          "withActiveCooldown = fingerprints inside Layer 2 random-jitter cooldown",
+          "withTriggerCooldown = fingerprints inside Layer 3 4h post-trigger cooldown",
+          "withSurcharge = fingerprints currently subject to 1.5x premium surcharge (24h after pattern detection)",
+          "withActiveProtections = fingerprints with active 2% protection tracked for opposing-side block",
+          "Counts reset on process restart (in-process LRU store, no persistence)"
+        ]
+      };
+    } catch (err: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "throttle_store_unavailable",
+        message: String(err?.message || err)
+      };
+    }
+  });
+
+  /**
+   * WS#0 (Bundle C, rev 6) — Capital pool admin endpoints.
+   *
+   * /pilot/admin/pools — list pools with current balance + T+5/T+7 withdrawable
+   * /pilot/admin/pools/:poolId/ledger — paginated ledger entries
+   * /pilot/admin/pools/:poolId/deposit — operator records a Foxify deposit
+   * /pilot/admin/pools/:poolId/withdraw — operator records a withdrawal
+   *
+   * All require admin token + IP allowlist (requireAdmin).
+   */
+  app.get("/pilot/admin/pools", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    try {
+      const { getPoolBalance } = await import("./capitalPoolLedger");
+      const atticus = await getPoolBalance(pool, "atticus_hedge");
+      const foxify = await getPoolBalance(pool, "foxify_trader");
+      return {
+        status: "ok",
+        pools: [atticus, foxify].filter(Boolean)
+      };
+    } catch (err: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "capital_pool_unavailable",
+        message: String(err?.message || err)
+      };
+    }
+  });
+
+  app.get("/pilot/admin/pools/:poolId/ledger", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const params = req.params as { poolId: string };
+    const query = req.query as { limit?: string; offset?: string; from?: string; to?: string };
+    if (params.poolId !== "atticus_hedge" && params.poolId !== "foxify_trader") {
+      reply.code(404);
+      return { status: "error", reason: "unknown_pool_id" };
+    }
+    try {
+      const { listLedgerEntries } = await import("./capitalPoolLedger");
+      const limit = query.limit ? Math.min(1000, Math.max(1, Number(query.limit))) : 100;
+      const offset = query.offset ? Math.max(0, Number(query.offset)) : 0;
+      const fromMs = query.from ? Date.parse(query.from) : undefined;
+      const toMs = query.to ? Date.parse(query.to) : undefined;
+      const entries = await listLedgerEntries(pool, {
+        poolId: params.poolId as any,
+        limit,
+        offset,
+        fromMs: Number.isFinite(fromMs) ? (fromMs as number) : undefined,
+        toMs: Number.isFinite(toMs) ? (toMs as number) : undefined
+      });
+      return { status: "ok", poolId: params.poolId, entries };
+    } catch (err: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "capital_pool_unavailable",
+        message: String(err?.message || err)
+      };
+    }
+  });
+
+  app.post("/pilot/admin/pools/:poolId/deposit", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const params = req.params as { poolId: string };
+    const body = req.body as { amountUsdc?: number; reference?: string; metadata?: Record<string, unknown> };
+    if (params.poolId !== "atticus_hedge" && params.poolId !== "foxify_trader") {
+      reply.code(404);
+      return { status: "error", reason: "unknown_pool_id" };
+    }
+    const amount = Number(body.amountUsdc);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_amount" };
+    }
+    try {
+      const { insertLedgerEntry, getPoolBalance } = await import("./capitalPoolLedger");
+      const entry = await insertLedgerEntry(pool, {
+        poolId: params.poolId as any,
+        entryType: "deposit",
+        amountUsdc: amount,
+        reference: body.reference || null,
+        metadata: { ...body.metadata, recordedBy: auth.actor }
+      });
+      const balance = await getPoolBalance(pool, params.poolId as any);
+      console.log(
+        `[CapitalPools] DEPOSIT recorded: pool=${params.poolId} amount=$${amount.toFixed(2)} ` +
+        `actor=${auth.actor} ref=${body.reference || "(none)"} new_balance=$${balance?.currentBalanceUsdc}`
+      );
+      return { status: "ok", entry, balance };
+    } catch (err: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "capital_pool_write_failed",
+        message: String(err?.message || err)
+      };
+    }
+  });
+
+  app.post("/pilot/admin/pools/:poolId/withdraw", async (req, reply) => {
+    const auth = await requireAdmin(req, reply);
+    if (!auth) return;
+    const params = req.params as { poolId: string };
+    const body = req.body as {
+      amountUsdc?: number;
+      reference?: string;
+      metadata?: Record<string, unknown>;
+      respectLockup?: boolean;
+    };
+    if (params.poolId !== "atticus_hedge" && params.poolId !== "foxify_trader") {
+      reply.code(404);
+      return { status: "error", reason: "unknown_pool_id" };
+    }
+    const amount = Number(body.amountUsdc);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      reply.code(400);
+      return { status: "error", reason: "invalid_amount" };
+    }
+    try {
+      const { insertLedgerEntry, getPoolBalance } = await import("./capitalPoolLedger");
+      const balance = await getPoolBalance(pool, params.poolId as any);
+      if (!balance) {
+        reply.code(404);
+        return { status: "error", reason: "pool_not_found" };
+      }
+      // T+7 lockup respected by default; admin can override with respectLockup=false
+      // for operational corrections (extremely rare).
+      const respectLockup = body.respectLockup !== false;
+      const withdrawableLimit = respectLockup
+        ? Number(balance.withdrawableBalanceUsdcT7)
+        : Number(balance.currentBalanceUsdc);
+      if (amount > withdrawableLimit) {
+        reply.code(400);
+        return {
+          status: "error",
+          reason: "amount_exceeds_withdrawable",
+          message: `Withdrawable balance ${respectLockup ? "(T+7 lockup respected)" : "(lockup waived)"}: $${withdrawableLimit.toFixed(2)}`,
+          withdrawableLimit,
+          requested: amount
+        };
+      }
+      // Withdrawal recorded as negative ledger entry
+      const entry = await insertLedgerEntry(pool, {
+        poolId: params.poolId as any,
+        entryType: "withdrawal",
+        amountUsdc: -Math.abs(amount),
+        reference: body.reference || null,
+        metadata: { ...body.metadata, recordedBy: auth.actor, lockupRespected: respectLockup }
+      });
+      const newBalance = await getPoolBalance(pool, params.poolId as any);
+      console.log(
+        `[CapitalPools] WITHDRAWAL recorded: pool=${params.poolId} amount=$${amount.toFixed(2)} ` +
+        `actor=${auth.actor} ref=${body.reference || "(none)"} lockupRespected=${respectLockup} ` +
+        `new_balance=$${newBalance?.currentBalanceUsdc}`
+      );
+      return { status: "ok", entry, balance: newBalance };
+    } catch (err: any) {
+      reply.code(503);
+      return {
+        status: "error",
+        reason: "capital_pool_write_failed",
+        message: String(err?.message || err)
+      };
+    }
+  });
+
+  /**
    * GET /pilot/admin/diagnostics/per-trade-fills?limit=20
    *
    * Per-trade execution diagnostic. Returns, for each recent
@@ -4055,6 +4262,81 @@ export const registerPilotRoutes = async (
         throw aggErr;
       }
 
+      // ── WS#8 Wave 1 OPERATIONAL GUARDRAILS (rev 6, Bundle C) ──
+      //
+      // Three guards layered on top of the existing R2.B aggregate cap:
+      //   1. Foxify pool min balance kill-switch
+      //   2. Aggregate payout liability vs Foxify pool coverage
+      //   3. Reconciliation drift halt (deferred — needs venue balance query)
+      //
+      // All three short-circuit when Foxify pool is $0 (rev 6 default
+      // until Foxify pre-funds), so this layer is operationally inert
+      // until Foxify deposits — at which point the guards engage
+      // automatically without code change.
+      //
+      // Master kill-switch: PILOT_GUARDS_ALL_DISABLED=true. Per-guard
+      // env switches documented in operationalGuardrails.ts.
+      try {
+        const { checkWave1Guards } = await import("./operationalGuardrails");
+        const { getPoolBalance } = await import("./capitalPoolLedger");
+        const foxifyBalance = await getPoolBalance(client, "foxify_trader");
+        const foxifyBalanceUsd = foxifyBalance ? Number(foxifyBalance.currentBalanceUsdc) : 0;
+        // Compute total active payout liability for this user (all open
+        // protections × their tier %). Used for the aggregate liability
+        // coverage check.
+        const liabilityResult = await client.query(
+          `SELECT COALESCE(SUM(protected_notional * (sl_pct::numeric / 100.0)), 0)::text AS total
+           FROM pilot_protections
+           WHERE user_hash = $1
+             AND status IN ('active', 'pending_activation', 'triggered')
+             AND COALESCE(metadata->>'archivedAt', '') = ''`,
+          [userHash.userHash]
+        );
+        const totalActiveLiability = Number(liabilityResult.rows[0]?.total || 0);
+        const newLiability = activateSlPct
+          ? Number(protectedNotional.toFixed(8)) * (activateSlPct / 100)
+          : Number(protectedNotional.toFixed(8)) * Number(drawdownFloorPct.toFixed(8));
+
+        const guardVerdict = checkWave1Guards({
+          foxifyPoolBalanceUsdc: foxifyBalanceUsd,
+          totalActivePayoutLiabilityUsdc: totalActiveLiability,
+          newPayoutLiabilityUsdc: newLiability,
+          // Reconciliation drift requires venue-side balance query.
+          // Wired in a follow-up commit when the operator confirms which
+          // Bullish endpoint to poll for account_summary equivalent.
+          dbTrackedAtticusBalanceUsdc: null,
+          venueReportedAtticusBalanceUsdc: null
+        });
+
+        if (!guardVerdict.allowed) {
+          const guardErr = new Error(guardVerdict.reason || "operational_guardrail_blocked");
+          (guardErr as any).message = guardVerdict.message;
+          (guardErr as any).reason = guardVerdict.reason;
+          (guardErr as any).details = guardVerdict.details;
+          console.warn(
+            `[Wave1Guards] BLOCKED: reason=${guardVerdict.reason} msg=${guardVerdict.message} ` +
+            `foxifyBal=$${foxifyBalanceUsd.toFixed(2)} totalLiab=$${totalActiveLiability.toFixed(2)} ` +
+            `newLiab=$${newLiability.toFixed(2)}`
+          );
+          throw guardErr;
+        }
+      } catch (guardImportErr: any) {
+        // If the import fails (e.g., capital pool migration didn't run
+        // on this deploy), don't block the activation — just log. The
+        // guards module is non-critical safety; falling open is the
+        // correct posture if it can't load.
+        if (guardImportErr?.message?.startsWith("operational_guardrail_blocked") ||
+            guardImportErr?.reason?.startsWith("foxify_pool") ||
+            guardImportErr?.reason?.startsWith("aggregate_liability") ||
+            guardImportErr?.reason?.startsWith("reconciliation")) {
+          throw guardImportErr; // re-throw legitimate guard rejections
+        }
+        console.warn(
+          `[Wave1Guards] guard module unavailable (failing open): ${guardImportErr?.message}`
+        );
+      }
+      // ── END WS#8 Wave 1 ─────────────────────────────────────────
+
       // R2.D (binding) — Per-tier daily concentration cap. Same scoping
       // story as above. Only enforced when pricing path is V7 with a
       // launched tier (i.e. we have a numeric slPct).
@@ -4575,6 +4857,11 @@ export const registerPilotRoutes = async (
       // fingerprint and stamps the active 2% protection for opposing-side
       // block enforcement. Best-effort: any throw here is logged but does
       // not fail the user-facing activation.
+      //
+      // Also persists the fingerprint to protection metadata so the
+      // trigger monitor can stamp Layer 3 cooldown when this protection
+      // eventually triggers (without metadata persistence the trigger
+      // event has no way to know which fingerprint owned the trade).
       if (fingerprintForActivate && reservedProtection) {
         try {
           recordActivate({
@@ -4582,6 +4869,17 @@ export const registerPilotRoutes = async (
             side: protectionType,
             slPct: activateSlPct ?? undefined,
             protectionId: reservedProtection.id
+          });
+          // Best-effort metadata stamp — failure must NOT fail activation
+          await pool.query(
+            `UPDATE pilot_protections
+             SET metadata = metadata || jsonb_build_object('antiBotFingerprint', $2::text)
+             WHERE id = $1`,
+            [reservedProtection.id, fingerprintForActivate.combined]
+          ).catch((mdErr: any) => {
+            console.warn(
+              `[AntiBot] fingerprint metadata stamp failed for ${reservedProtection!.id}: ${mdErr?.message}`
+            );
           });
         } catch (throttleErr: any) {
           console.warn(
@@ -4695,6 +4993,17 @@ export const registerPilotRoutes = async (
         errMsg === "aggregate_active_notional_cap_exceeded" ||
         errMsg === "per_tier_daily_concentration_cap_exceeded" ||
         errMsg === "hedge_budget_cap_exceeded" ||
+        // WS#8 Wave 1 operational guardrail rejection reasons (rev 6, Bundle C):
+        errMsg === "foxify_pool_below_min_balance" ||
+        errMsg === "aggregate_liability_exceeds_pool_coverage" ||
+        errMsg === "reconciliation_drift_exceeded" ||
+        errMsg === "operational_guardrail_blocked" ||
+        // WS#8 Wave 2 (when wired):
+        errMsg === "high_dvol_extreme_pause" ||
+        errMsg === "high_dvol_cooldown" ||
+        errMsg === "bullish_api_5xx_rate_high" ||
+        errMsg === "bullish_api_latency_high" ||
+        errMsg === "premium_velocity_exceeded" ||
         errMsg === "user_hash_secret_missing" ||
         errMsg === "venue_execute_timeout"
       ) {
