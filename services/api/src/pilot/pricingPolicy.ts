@@ -127,11 +127,14 @@ const resolveTierHybridStrictMultiplier = (tierName: string): Decimal => {
 // classifier. Production pricing for V7 tiers (SL 2/3/5/10%) is now
 // regime-aware via pricingRegime.ts (Design A, 2026-04-19). See
 // resolvePilotRoundedPremiumDisplay below.
+// Rev 6 (Bundle C, 2026-05-13): added "SL 7%" entry to legacy fallback
+// table. SL 10% retained for legacy display on historical/expired records.
 const ROUNDED_PREMIUM_PER_1K_USD_BY_TIER: Record<string, Decimal> = {
   "SL 1%": new Decimal(6),
   "SL 2%": new Decimal(6),
   "SL 3%": new Decimal(5),
   "SL 5%": new Decimal(3),
+  "SL 7%": new Decimal(3),
   "SL 10%": new Decimal(2),
   "Pro (Bronze)": new Decimal(11),
   "Pro (Silver)": new Decimal(11),
@@ -384,13 +387,17 @@ export const resolvePilotRoundedPremiumDisplay = (params: {
   // must reflect the live pricing regime (low/moderate/elevated/high).
   // For non-V7 tier names (Pro Bronze/Silver/Gold/Platinum, SL 1%
   // unlaunched) we fall back to the legacy static table.
+  //
+  // Rev 6 (2026-05-13): launched set is now [2, 3, 5, 7] — see
+  // V7_LAUNCHED_TIERS in v7Pricing.ts. SL 10% retained for legacy display
+  // on historical/expired records but not in the regime-pricing fast path.
   const v7Match = /^SL\s+(\d+)%$/i.exec(params.tierName);
   let roundedPremiumPer1kUsd: Decimal;
   if (v7Match && (() => {
     const n = Number(v7Match[1]);
-    return n === 2 || n === 3 || n === 5 || n === 10;
+    return n === 2 || n === 3 || n === 5 || n === 7 || n === 10;
   })()) {
-    const slPct = Number(v7Match[1]) as 2 | 3 | 5 | 10;
+    const slPct = Number(v7Match[1]) as 2 | 3 | 5 | 7 | 10;
     const regime = getCurrentPricingRegime().regime;
     roundedPremiumPer1kUsd = new Decimal(getPremiumPer1kForRegime(slPct, regime));
   } else {

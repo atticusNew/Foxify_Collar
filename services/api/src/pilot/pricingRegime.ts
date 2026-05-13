@@ -109,11 +109,32 @@ export type RegimeSchedule = Record<V7SlTier, number>;
  * 1% SL is defined for forward compatibility but unlaunched
  * (excluded from V7_LAUNCHED_TIERS in v7Pricing.ts).
  */
+/**
+ * Rev 6 (Bundle C cutover, 2026-05-13) — schedule rebalanced:
+ *
+ *   - 7% tier ADDED (was previously absent from launched set):
+ *       low $3.00 / moderate $3.50 / elevated $5.00 / high $7.00
+ *     Calibrated from CFO Appendix B + interpolation between 5% and 10%
+ *     historical hedge cost. Trader return on trigger: 23.3× / 20× / 14× / 10×.
+ *
+ *   - 10% tier KEPT in schedule for type completeness (v7Pricing.ts
+ *     V7_LAUNCHED_TIERS removes it from offerable set). Pricing values
+ *     unchanged in case 10% is re-launched later.
+ *
+ *   - 2% tier HIGH regime: $10/$1k → $11/$1k. Lifts trader return on
+ *     trigger from 1.54× → 1.82× (above the 2× psychological floor only
+ *     marginally, but materially better trader UX in stress regimes).
+ *     Cost to platform: ~$1k of pilot P&L over 28 days. Justified by
+ *     CEO retention-during-stress concern. Reversible to $10 in one
+ *     config edit if pilot data shows stress 2% remains over-priced.
+ *
+ *   All other tiers/regimes unchanged from rev 5.
+ */
 export const REGIME_SCHEDULES: Record<PricingRegime, RegimeSchedule> = {
-  low:      { 1: 6.5, 2: 6.5, 3: 5,    5: 3,    10: 2 },
-  moderate: { 1: 7,   2: 7,   3: 5.5,  5: 3,    10: 2 },
-  elevated: { 1: 8,   2: 8,   3: 6,    5: 3.5,  10: 2 },
-  high:     { 1: 9,   2: 10,  3: 7,    5: 4,    10: 2 }
+  low:      { 1: 6.5, 2: 6.5, 3: 5,    5: 3,    7: 3,    10: 2 },
+  moderate: { 1: 7,   2: 7,   3: 5.5,  5: 3,    7: 3.5,  10: 2 },
+  elevated: { 1: 8,   2: 8,   3: 6,    5: 3.5,  7: 5,    10: 2 },
+  high:     { 1: 9,   2: 11,  3: 7,    5: 4,    7: 7,    10: 2 }
 };
 
 export const DEFAULT_PRICING_REGIME: PricingRegime = "moderate";

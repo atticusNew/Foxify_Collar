@@ -31,6 +31,10 @@ const V7_RATE_PER_1K: Record<V7SlTier, number> = {
   2: 6,
   3: 5,
   5: 3,
+  // Rev 6: 7% tier added (Bundle C cutover, 2026-05-13). Static fallback
+  // matches Bundle C P3 calm rate; production pricing overrides via
+  // pricingRegime.ts regime classifier.
+  7: 3,
   10: 2
 };
 
@@ -39,6 +43,7 @@ const V7_TENOR_DAYS: Record<V7SlTier, number> = {
   2: 1,
   3: 1,
   5: 1,
+  7: 1,
   10: 1
 };
 
@@ -51,6 +56,7 @@ const V7_PAYOUT_PER_10K: Record<V7SlTier, number> = {
   2: 200,
   3: 300,
   5: 500,
+  7: 700,
   10: 1000
 };
 
@@ -176,7 +182,20 @@ export const computeV7HedgeStrike = (
 /**
  * Get all available tiers for a given regime with their premiums.
  */
-export const V7_LAUNCHED_TIERS: readonly V7SlTier[] = [2, 3, 5, 10] as const;
+// V7_LAUNCHED_TIERS — what's offered to new traders.
+//
+// Rev 6 (2026-05-13, Bundle C): 10% dropped from launched set; 7% added.
+//   - 10% drop reason: Bullish has zero strikes near $73k put or $89k
+//     call for 1-DTE expiry; would force Deribit-only routing forever
+//     for 10% trades. Lowest blended P&L tier ($1.72/$1k). Easy to add
+//     back later if needed.
+//   - 7% add reason: fills the demand gap between 5% (12.5× return) and
+//     the dropped 10% (50× return). Bullish 1-week strike grid covers
+//     7% on both sides ($75k put, $86k call within tolerance).
+//
+// 1% remains defined but unlaunched.
+// 10% retained in V7_SL_TIERS (types) but removed here to disable new sales.
+export const V7_LAUNCHED_TIERS: readonly V7SlTier[] = [2, 3, 5, 7] as const;
 
 export const getV7AvailableTiers = (
   _legacyRegime?: V7Regime,

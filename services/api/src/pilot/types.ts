@@ -612,9 +612,18 @@ export type V7Regime = "calm" | "normal" | "stress";
 
 export type V7RegimeSource = "dvol" | "rvol";
 
-export type V7SlTier = 1 | 2 | 3 | 5 | 10;
+// V7SlTier: full set of stop-loss tiers the platform can represent.
+//
+// Rev 6 (Bundle C cutover, 2026-05-13): 7% added as a new wide tier
+// replacing 10% in the launched set. 10% remains in the type union for
+// legacy data compatibility (historical protections may have sl_pct=10
+// on triggered/expired records that we must continue to read), but is
+// REMOVED from V7_LAUNCHED_TIERS so it cannot be sold to new traders.
+//
+// 1% remains defined but unlaunched (forward compatibility).
+export type V7SlTier = 1 | 2 | 3 | 5 | 7 | 10;
 
-export const V7_SL_TIERS: readonly V7SlTier[] = [1, 2, 3, 5, 10] as const;
+export const V7_SL_TIERS: readonly V7SlTier[] = [1, 2, 3, 5, 7, 10] as const;
 
 export type V7RegimeStatus = {
   regime: V7Regime;
