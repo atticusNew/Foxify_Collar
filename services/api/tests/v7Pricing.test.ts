@@ -85,11 +85,14 @@ test("computeV7Premium — each tier has correct rate per regime (P3)", () => {
 });
 
 test("computeV7Premium — linear scaling", () => {
-  const r1 = computeV7Premium({ slPct: 5, notionalUsd: 5000 });
-  const r2 = computeV7Premium({ slPct: 5, notionalUsd: 25000 });
-  assert.equal(r1.premiumUsd, 15);
-  assert.equal(r2.premiumUsd, 75);
-  assert.equal(r2.premiumUsd / r1.premiumUsd, 5);
+  // Pin the pricing regime so this test is decoupled from any DVOL state
+  // a prior test in the same process may have seeded into the regime
+  // classifier rolling window. P3 low / 5% = $4/$1k.
+  const r1 = computeV7Premium({ slPct: 5, notionalUsd: 5000, pricingRegimeOverride: "low" });
+  const r2 = computeV7Premium({ slPct: 5, notionalUsd: 25000, pricingRegimeOverride: "low" });
+  assert.equal(r1.premiumUsd, 20, "P3 low / 5% on $5k = $20");
+  assert.equal(r2.premiumUsd, 100, "P3 low / 5% on $25k = $100");
+  assert.equal(r2.premiumUsd / r1.premiumUsd, 5, "linear scaling: 5x notional → 5x premium");
 });
 
 test("slPctToDrawdownFloor — conversions", () => {
