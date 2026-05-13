@@ -12,23 +12,49 @@ import { isDrawdownBreached, resolveTriggerEconomicsFromProtection } from "./pro
 import type { PriceSnapshotOutput } from "./price";
 import { handleBiweeklyClose, sweepBiweeklyNaturalExpiries, sweepScheduledCloses } from "./biweeklyClose";
 
+/**
+ * Resolve current BTC spot price via Bullish hybrid orderbook for trigger
+ * monitoring. Used when the locked profile is `bullish_locked_v1` and
+ * Bullish is the active venue.
+ *
+ * Bug-fix history (2026-05-13, WS#1 of Bundle C cutover):
+ *   - Previous implementation called `resolveBullishMarketSymbol(marketId, pilotConfig.bullish)`
+ *     with arguments REVERSED. Function signature is `(config, params)`,
+ *     not `(marketId, config)`. This caused the marketId lookup to fail
+ *     and fall through to the default symbol on every cycle.
+ *   - Previous implementation called `client.getOrderBook(symbol)` which
+ *     does not exist on BullishTradingClient. The correct method is
+ *     `getHybridOrderBook(symbol)`.
+ *   - Previous implementation accessed `book.bids[0][0]` assuming a tuple
+ *     shape `[price, qty]`. The actual shape is
+ *     `BullishOrderbookLevel = { price: string; quantity: string }`,
+ *     so the correct access is `book.bids[0]?.price`.
+ *
+ * Without these fixes the trigger monitor would throw on every cycle the
+ * moment the bullish_locked_v1 profile activated, silently halting trigger
+ * detection on Bullish-routed protections.
+ */
 const resolveBullishTriggerPrice = async (requestId: string, marketId: string): Promise<PriceSnapshotOutput> => {
   const { BullishTradingClient, resolveBullishMarketSymbol } = await import("./bullish");
-  const symbol = resolveBullishMarketSymbol(marketId, pilotConfig.bullish);
+  const symbol = resolveBullishMarketSymbol(pilotConfig.bullish, { marketId });
   const client = new BullishTradingClient(pilotConfig.bullish);
-  const book = await client.getOrderBook(symbol);
-  const bestBid = book.bids?.[0]?.[0] ?? null;
-  const bestAsk = book.asks?.[0]?.[0] ?? null;
-  if (!bestBid && !bestAsk) throw new Error("bullish_no_orderbook_data");
+  const book = await client.getHybridOrderBook(symbol);
+  const bestBidStr = book.bids?.[0]?.price ?? null;
+  const bestAskStr = book.asks?.[0]?.price ?? null;
+  if (!bestBidStr && !bestAskStr) {
+    throw new Error("bullish_no_orderbook_data");
+  }
+  const bestBid = bestBidStr ? new Decimal(bestBidStr) : null;
+  const bestAsk = bestAskStr ? new Decimal(bestAskStr) : null;
   const mid = bestBid && bestAsk
-    ? new Decimal(bestBid).plus(bestAsk).div(2)
-    : new Decimal(bestBid || bestAsk!);
+    ? bestBid.plus(bestAsk).div(2)
+    : (bestBid || bestAsk!);
   const now = new Date().toISOString();
   return {
     price: mid,
     marketId,
     priceSource: "bullish_orderbook_mid",
-    priceSourceDetail: "bullish_trigger_monitor_mid",
+    priceSourceDetail: `bullish_trigger_monitor_mid:${symbol}`,
     endpointVersion: pilotConfig.endpointVersion,
     requestId,
     priceTimestamp: now
