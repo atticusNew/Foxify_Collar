@@ -3986,7 +3986,64 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     if (!Number.isFinite(askPx) || askPx <= 0 || !Number.isFinite(askQty) || askQty <= 0) {
       throw new Error("bullish_quote_unavailable:no_top_of_book");
     }
-    const premium = Number((askPx * Math.max(0, Number(req.quantity || 0))).toFixed(10));
+
+    // ── Quote.premium semantics — IMPORTANT (rev 6 fix, WS#1) ──
+    //
+    // VenueQuote.premium is the HEDGE COST in USD (askPx × quantity), NOT
+    // the client-facing premium. The client premium is computed downstream
+    // in routes.ts via resolvePremiumPricing() and OVERWRITES quote.premium
+    // before the response is sent to the trader.
+    //
+    // For Deribit (BTC-quoted), askPx is in BTC, so askPriceBtc is exposed
+    // and downstream multiplies by spotPriceUsd to get USD hedge cost.
+    // For Bullish (USDC-quoted = USD-native), askPx is already in USD, so
+    // we expose hedgeCostTotalUsd and askPriceUsd directly.
+    //
+    // The activate-path hedge-budget cap (routes.ts) reads either pattern
+    // to enforce the cumulative gross-spend cap correctly across venues.
+    //
+    // Without this rev 6 fix, Bullish quotes silently bypassed the
+    // hedge-budget cap because routes.ts would compute
+    // `askPriceBtc * spotPriceUsd * qty = 0 * 0 * qty = 0` and skip
+    // enforcement on every Bullish-routed activation.
+    const quantityClamped = Math.max(0, Number(req.quantity || 0));
+    const hedgeCostTotalUsd = Number((askPx * quantityClamped).toFixed(10));
+    const premium = hedgeCostTotalUsd; // legacy field name; semantics = hedge cost
+    const spotPriceUsdInferred =
+      quantityClamped > 0 && Number(req.protectedNotional || 0) > 0
+        ? Number(req.protectedNotional) / quantityClamped
+        : 0;
+    // askPriceBtc-equivalent for Bullish = askPriceUsd / spotPriceUsd.
+    // Lets downstream code that expects the Deribit convention compute
+    // identical USD hedge cost via askPriceBtc × spotPriceUsd × qty.
+    const askPriceBtcEquiv =
+      spotPriceUsdInferred > 0 ? askPx / spotPriceUsdInferred : 0;
+
+    // ── Resolve real schedule rate for batch-decision premium signal ──
+    //
+    // Previously hardcoded `premiumPer1k: 11` regardless of regime/tier.
+    // Now uses the live regime schedule so analytics consumers (the batch
+    // manager, downstream metrics) see the same per-$1k rate the pricing
+    // engine charged.
+    const slPctApprox = req.drawdownFloorPct
+      ? Math.round(Number(req.drawdownFloorPct) * 100)
+      : 2;
+    const realPremiumPer1k = (() => {
+      try {
+        // Lazy require to avoid circular deps; pricingRegime exports a
+        // pure function that returns the current regime's per-tier rate.
+        const { getCurrentPricingRegime, getPremiumPer1kForRegime } =
+          require("./pricingRegime") as typeof import("./pricingRegime");
+        const regime = getCurrentPricingRegime().regime;
+        const valid = [1, 2, 3, 5, 10] as const;
+        const slKey = (valid as readonly number[]).includes(slPctApprox)
+          ? (slPctApprox as 1 | 2 | 3 | 5 | 10)
+          : 2;
+        return getPremiumPer1kForRegime(slKey, regime);
+      } catch {
+        return 10; // safe default matches Bundle C P3 calm 2%
+      }
+    })();
 
     const batchDecision = this.hedgeConfig.batchHedgingEnabled
       ? this.batchManager.addToQueue({
@@ -3996,7 +4053,7 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
           btcQty: Number(req.quantity || 0),
           drawdownFloorPct: req.drawdownFloorPct || 0.2,
           triggerPrice: req.triggerPrice || 0,
-          premiumPer1k: 11,
+          premiumPer1k: realPremiumPer1k,
           createdAt: Date.now()
         })
       : null;
@@ -4024,6 +4081,18 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         selectedInstrumentId: selection.symbol,
         requestedInstrumentId: req.instrumentId,
         hedgeMode: "options_native",
+        // ── rev 6 (WS#1) — explicit USD hedge cost fields for downstream ──
+        // routes.ts hedge-budget cap reads these. Without them, the cap
+        // silently bypassed Bullish trades.
+        askPriceUsd: askPx,
+        hedgeCostTotalUsd,
+        spotPriceUsd: spotPriceUsdInferred,
+        // Deribit-compat field (askPriceBtc * spotPriceUsd * qty must equal
+        // hedgeCostTotalUsd) so legacy consumers continue to work.
+        askPriceBtc: askPriceBtcEquiv,
+        // Live regime schedule rate that drove this quote (was hardcoded
+        // to 11 in the prior version regardless of regime/tier).
+        premiumPer1kRegimeRate: realPremiumPer1k,
         optimizations: {
           batchDecision: batchDecision ? {
             mode: batchDecision.mode,

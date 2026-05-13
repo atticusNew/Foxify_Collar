@@ -3814,13 +3814,31 @@ export const registerPilotRoutes = async (
       // (the policy module respects this flag and short-circuits to allow).
       const lockedQuoteDetailsForCap =
         (lockedQuote.details || {}) as Record<string, unknown>;
+      const lockedQty = Number(lockedQuote.quantity || 0);
+      // ── Cross-venue hedge cost resolution (rev 6 fix, WS#1) ──
+      //
+      // Different venues expose hedge cost differently:
+      //  - Deribit (BTC-quoted):  askPriceBtc × spotPriceUsd × qty
+      //  - Bullish (USDC-quoted): hedgeCostTotalUsd (already in USD)
+      //
+      // Read whichever is present. Without this, Bullish quotes silently
+      // bypassed the hedge-budget cap because the Deribit-only formula
+      // produced 0 × 0 × qty = 0 → cap evaluator considered the trade
+      // free → activate proceeded regardless of cumulative spend.
+      //
+      // Both conventions still verified consistent: Bullish exposes both
+      // hedgeCostTotalUsd AND a Deribit-compat askPriceBtc-equivalent so
+      // either path produces the same number.
+      const explicitHedgeCostUsd = Number(lockedQuoteDetailsForCap.hedgeCostTotalUsd || 0);
       const askPriceBtcForCap = Number(lockedQuoteDetailsForCap.askPriceBtc || 0);
       const spotPriceUsdForCap = Number(lockedQuoteDetailsForCap.spotPriceUsd || 0);
-      const lockedQty = Number(lockedQuote.quantity || 0);
-      const projectedHedgeCostUsd =
-        askPriceBtcForCap > 0 && spotPriceUsdForCap > 0 && lockedQty > 0
-          ? askPriceBtcForCap * spotPriceUsdForCap * lockedQty
-          : 0;
+      const projectedHedgeCostUsd = (() => {
+        if (explicitHedgeCostUsd > 0) return explicitHedgeCostUsd;
+        if (askPriceBtcForCap > 0 && spotPriceUsdForCap > 0 && lockedQty > 0) {
+          return askPriceBtcForCap * spotPriceUsdForCap * lockedQty;
+        }
+        return 0;
+      })();
 
       const hedgeCapCfg = getHedgeBudgetCapConfig();
       const pilotStartMs = hedgeCapCfg.pilotStartIso
