@@ -110,6 +110,14 @@ const createPilotHarness = async (opts?: {
   process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES = "60";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
   process.env.IBKR_REQUIRE_OPTIONS_NATIVE = "false";
+  // Bundle C anti-bot is in-process LRU keyed on fingerprint. In tests, all
+  // requests share loopback IP + same UA → all collapse to one fingerprint, so
+  // the activate cooldown blocks every subsequent test with 429. Disable for
+  // the pre-existing route tests; anti-bot logic is covered by
+  // pilotThrottleStore.test.ts and pilotFingerprint.test.ts directly.
+  if (process.env.PILOT_ANTI_BOT_ENFORCE === undefined) {
+    process.env.PILOT_ANTI_BOT_ENFORCE = "false";
+  }
   if (opts?.env) {
     for (const [key, value] of Object.entries(opts.env)) {
       if (value === undefined) {
@@ -281,6 +289,12 @@ const createPilotHarness = async (opts?: {
   dbModule.__setPilotPoolForTests(pool as any);
   const triggerMonitorModule = await import("../src/pilot/triggerMonitor");
   triggerMonitorModule.__setTriggerMonitorEnabledForTests(false);
+  // Defensive: clear any leftover throttle state from a prior test in the
+  // same process even if a future test re-enables anti-bot enforcement.
+  try {
+    const throttleModule = await import("../src/pilot/throttleStore");
+    throttleModule.__resetThrottleStoreForTests();
+  } catch {/* throttleStore may not be loaded yet on first call */}
   const { registerPilotRoutes } = await import("../src/pilot/routes");
 
   const app = Fastify();
