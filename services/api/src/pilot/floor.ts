@@ -30,6 +30,14 @@ export const PILOT_TIER_DEFAULTS: Record<string, TierDefaults> = {
     expiryDays: 1,
     renewWindowMinutes: 1440
   },
+  // Bundle C rev 6 (2026-05-13): 7% SL added (replaces 10% in launched set
+  // — see V7_LAUNCHED_TIERS in v7Pricing.ts). 10% retained below for
+  // legacy data compatibility.
+  "SL 7%": {
+    drawdownFloorPct: 0.07,
+    expiryDays: 1,
+    renewWindowMinutes: 1440
+  },
   "SL 10%": {
     drawdownFloorPct: 0.10,
     expiryDays: 1,

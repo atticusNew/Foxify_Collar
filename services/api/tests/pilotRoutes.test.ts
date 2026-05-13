@@ -113,6 +113,14 @@ const createPilotHarness = async (opts?: {
   // Ensure env from a prior test does not leak — explicit defaults reset
   // every harness call so `opts.env` overrides start from a clean slate.
   delete process.env.V7_PRICING_ENABLED;
+  // Bundle C ships hedge-budget caps enforced by default ($100 day-1
+  // ramp). The pre-existing routes tests use ad-hoc notionals that would
+  // breach Day 1's ramp; the cap is exercised directly by
+  // pilotHedgeBudgetCap.test.ts so disable enforcement here unless an
+  // individual test opts in.
+  if (process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED === undefined) {
+    process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED = "false";
+  }
   // Bundle C anti-bot is in-process LRU keyed on fingerprint. In tests, all
   // requests share loopback IP + same UA → all collapse to one fingerprint, so
   // the activate cooldown blocks every subsequent test with 429. Disable for
