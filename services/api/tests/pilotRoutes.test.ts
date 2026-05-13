@@ -110,6 +110,9 @@ const createPilotHarness = async (opts?: {
   process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES = "60";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
   process.env.IBKR_REQUIRE_OPTIONS_NATIVE = "false";
+  // Ensure env from a prior test does not leak — explicit defaults reset
+  // every harness call so `opts.env` overrides start from a clean slate.
+  delete process.env.V7_PRICING_ENABLED;
   // Bundle C anti-bot is in-process LRU keyed on fingerprint. In tests, all
   // requests share loopback IP + same UA → all collapse to one fingerprint, so
   // the activate cooldown blocks every subsequent test with 429. Disable for
@@ -133,6 +136,11 @@ const createPilotHarness = async (opts?: {
   const configModule = await import("../src/pilot/config");
   configModule.pilotConfig.enabled = true;
   configModule.pilotConfig.activationEnabled = process.env.PILOT_ACTIVATION_ENABLED === "true";
+  // V7 pricing is module-import-scoped via parseV7PricingConfig(); allow
+  // tests to opt out (treasury-subsidy tests, for example, exercise the
+  // pre-V7 actuarial-strict pricing path that is gated by !v7Enabled).
+  // Default = enabled (matches production); explicit "false" disables.
+  configModule.pilotConfig.v7.enabled = process.env.V7_PRICING_ENABLED !== "false";
   configModule.pilotConfig.pilotHedgePolicy = configModule.parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY);
   configModule.pilotConfig.venueMode = (opts?.venueMode || "mock_falconx") as any;
   configModule.pilotConfig.tenantScopeId = process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot";
@@ -3107,6 +3115,9 @@ test("Y4b) quote supports hybrid pricing mode and reports mode diagnostics", asy
 test("Y4c) quote rejects when per-quote treasury subsidy cap is exceeded", async () => {
   const harness = await createPilotHarness({
     env: {
+      // Treasury subsidy gating lives in the !v7Enabled actuarial-strict
+      // path; disable V7 to exercise it.
+      V7_PRICING_ENABLED: "false",
       PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
       PILOT_TREASURY_SUBSIDY_CAP_PCT: "0.01",
       PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "false"
@@ -3132,6 +3143,7 @@ test("Y4c) quote rejects when per-quote treasury subsidy cap is exceeded", async
 test("Y4d) quote rejects when daily treasury subsidy cap is exceeded", async () => {
   const harness = await createPilotHarness({
     env: {
+      V7_PRICING_ENABLED: "false",
       PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
       PILOT_TREASURY_SUBSIDY_CAP_PCT: "1.0",
       PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC: "1",
@@ -3159,6 +3171,7 @@ test("Y4d) quote rejects when daily treasury subsidy cap is exceeded", async () 
 test("Y4e) quote falls back to strict pricing mode when treasury rails trip", async () => {
   const harness = await createPilotHarness({
     env: {
+      V7_PRICING_ENABLED: "false",
       PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
       PILOT_TREASURY_SUBSIDY_CAP_PCT: "0.01",
       PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "true"
