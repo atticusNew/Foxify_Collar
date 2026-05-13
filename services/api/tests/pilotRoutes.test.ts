@@ -121,6 +121,15 @@ const createPilotHarness = async (opts?: {
   if (process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED === undefined) {
     process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED = "false";
   }
+  // Bundle C ships WS#8 operational guardrails (Foxify pool kill-switch,
+  // aggregate liability cap, etc.) enforced by default. Pre-existing
+  // routes tests use a $0 Foxify pool, so the kill-switch fires on every
+  // activation. Guardrails are exercised directly by
+  // pilotOperationalGuardrails.test.ts so blanket-disable here unless an
+  // individual test opts in.
+  if (process.env.PILOT_GUARDS_ALL_DISABLED === undefined) {
+    process.env.PILOT_GUARDS_ALL_DISABLED = "true";
+  }
   // Bundle C anti-bot is in-process LRU keyed on fingerprint. In tests, all
   // requests share loopback IP + same UA → all collapse to one fingerprint, so
   // the activate cooldown blocks every subsequent test with 429. Disable for
@@ -149,6 +158,18 @@ const createPilotHarness = async (opts?: {
   // pre-V7 actuarial-strict pricing path that is gated by !v7Enabled).
   // Default = enabled (matches production); explicit "false" disables.
   configModule.pilotConfig.v7.enabled = process.env.V7_PRICING_ENABLED !== "false";
+  // Daily / aggregate notional caps are set once at config import time.
+  // Re-apply from current env so per-test overrides take effect.
+  if (process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC !== undefined) {
+    configModule.pilotConfig.maxDailyProtectedNotionalUsdc = Number(
+      process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC
+    );
+  }
+  if (process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC !== undefined) {
+    configModule.pilotConfig.maxProtectionNotionalUsdc = Number(
+      process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC
+    );
+  }
   configModule.pilotConfig.pilotHedgePolicy = configModule.parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY);
   configModule.pilotConfig.venueMode = (opts?.venueMode || "mock_falconx") as any;
   configModule.pilotConfig.tenantScopeId = process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot";
@@ -490,7 +511,14 @@ test("pilot route hardening A-H", async (t) => {
   });
 
   await t.test("D) daily cap enforcement is atomic under concurrent activate requests", async () => {
-    const harness = await createPilotHarness();
+    // Bundle C raised the default per-day cap to $100k; this test
+    // verifies atomic enforcement so it needs a tighter cap so that
+    // two $30k activations breach it.
+    const harness = await createPilotHarness({
+      env: {
+        PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC: "50000"
+      }
+    });
     try {
       const { app } = harness;
       const q1 = await app.inject({
