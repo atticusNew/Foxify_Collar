@@ -5080,12 +5080,13 @@ export const registerPilotRoutes = async (
             slPct: activateSlPct ?? undefined,
             protectionId: reservedProtection.id
           });
-          // Best-effort metadata stamp — failure must NOT fail activation
+          // Best-effort metadata stamp — failure must NOT fail activation.
+          // Use ||$2::jsonb (pg-mem-compatible) instead of jsonb_build_object (not in pg-mem).
           await pool.query(
             `UPDATE pilot_protections
-             SET metadata = metadata || jsonb_build_object('antiBotFingerprint', $2::text)
+             SET metadata = metadata || $2::jsonb
              WHERE id = $1`,
-            [reservedProtection.id, fingerprintForActivate.combined]
+            [reservedProtection.id, JSON.stringify({ antiBotFingerprint: fingerprintForActivate.combined })]
           ).catch((mdErr: any) => {
             console.warn(
               `[AntiBot] fingerprint metadata stamp failed for ${reservedProtection!.id}: ${mdErr?.message}`
