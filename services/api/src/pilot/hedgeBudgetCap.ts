@@ -31,6 +31,80 @@ export type HedgeBudgetCapVerdict = {
   message?: string;
 };
 
+/**
+ * WS#2 (Bundle C cutover, rev 6, 2026-05-13) — utilization band classifier.
+ *
+ * Used by the alert system to fire warn/alert/critical webhooks at
+ * threshold crossings. Operator can intervene before the cap actually
+ * trips and starts rejecting trades.
+ *
+ * Bands:
+ *   ok       (<70% used)  → normal operation, no alert
+ *   warn     (70-85%)     → operator notification (Telegram info)
+ *   alert    (85-95%)     → operator alert (Telegram warning)
+ *   critical (>=95%)      → operator critical alert (Telegram critical)
+ *                           AND start defensive throttle (raise concentration cap to 40%)
+ *
+ * If capUsd is null (Day 22+ no-cap regime) returns "ok" with pctUsed=0.
+ */
+export type HedgeBudgetUtilizationLevel = "ok" | "warn" | "alert" | "critical";
+
+export type HedgeBudgetUtilization = {
+  level: HedgeBudgetUtilizationLevel;
+  pctUsed: number;
+  capUsd: number | null;
+  cumulativeSpentUsd: number;
+  remainingUsd: number | null;
+};
+
+export const evaluateHedgeBudgetUtilization = (
+  verdict: HedgeBudgetCapVerdict
+): HedgeBudgetUtilization => {
+  if (verdict.capUsd === null) {
+    return {
+      level: "ok",
+      pctUsed: 0,
+      capUsd: null,
+      cumulativeSpentUsd: verdict.cumulativeSpentUsd,
+      remainingUsd: null
+    };
+  }
+  const pctUsed = verdict.capUsd > 0
+    ? verdict.cumulativeSpentUsd / verdict.capUsd
+    : 0;
+  let level: HedgeBudgetUtilizationLevel = "ok";
+  if (pctUsed >= 0.95) level = "critical";
+  else if (pctUsed >= 0.85) level = "alert";
+  else if (pctUsed >= 0.70) level = "warn";
+  return {
+    level,
+    pctUsed,
+    capUsd: verdict.capUsd,
+    cumulativeSpentUsd: verdict.cumulativeSpentUsd,
+    remainingUsd: verdict.remainingUsd
+  };
+};
+
+/**
+ * Compute the projected day-end gross spend at the current burn rate,
+ * and how many more days the current cap can support before tripping.
+ * Used by the /pilot/admin/hedge-budget endpoint for operator visibility.
+ */
+export const projectBurnRate = (params: {
+  cumulativeSpentUsd: number;
+  capUsd: number | null;
+  pilotDay: number;
+}): { burnRateUsdPerDay: number; daysRemainingAtCurrentRate: number | null } => {
+  const burnRateUsdPerDay =
+    params.pilotDay > 0 ? params.cumulativeSpentUsd / params.pilotDay : 0;
+  if (params.capUsd === null || burnRateUsdPerDay <= 0) {
+    return { burnRateUsdPerDay, daysRemainingAtCurrentRate: null };
+  }
+  const remaining = Math.max(0, params.capUsd - params.cumulativeSpentUsd);
+  const daysRemaining = remaining / burnRateUsdPerDay;
+  return { burnRateUsdPerDay, daysRemainingAtCurrentRate: daysRemaining };
+};
+
 export type HedgeBudgetCapConfig = {
   /** ISO timestamp string. If null/missing, caller should auto-detect from earliest live execution. */
   pilotStartIso: string | null;
