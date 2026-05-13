@@ -1097,9 +1097,60 @@ export const runHedgeManagementCycle = async (params: {
         hedge.noBidRetryCount >= backstopCfg.threshold &&
         !inNearExpiryWindow;
 
+      // ── WS#5 (Bundle C, rev 6) — Deep-OTM short-tenor writeoff ──
+      //
+      // For options that are simultaneously deep-OTM AND have < 12h to
+      // expiry AND have negligible total value (< BOUNCE_RECOVERY_MIN_VALUE),
+      // time decay alone makes recovery mathematically impossible. Stop
+      // trying to sell, stop accumulating no_bid retries, hold to expiry.
+      //
+      // This is a TIGHTER filter than the no_bid backstop — fires earlier
+      // (12h vs no-bid-after-60-cycles) and on the math (intrinsic = 0,
+      // total < $5) rather than venue feedback. Saves Deribit per-order
+      // fees and keeps the cycle log scannable.
+      //
+      // The near_expiry_salvage branch above (hoursToExpiry < 6) takes
+      // precedence — if there's still ANY value > NEAR_EXPIRY_MIN_VALUE
+      // ($3) in the last 6h, sell it. Below 6h with value < $3, the
+      // writeoff fires; between 6-12h, only fires if option is OTM AND
+      // sub-bounce-recovery value.
+      const deepOtmWriteoff =
+        hoursToExpiry < 12 &&
+        optionVal.intrinsicValue <= 0 &&
+        optionVal.totalValue < BOUNCE_RECOVERY_MIN_VALUE;
+
       if (hoursToExpiry < baseNearExpirySalvageHours && optionVal.totalValue >= NEAR_EXPIRY_MIN_VALUE) {
         shouldSell = true;
         reason = "near_expiry_salvage";
+      } else if (deepOtmWriteoff) {
+        shouldSell = false;
+        reason = "deep_otm_short_tenor_writeoff";
+        // Stamp once for audit trail; subsequent cycles see metadata
+        // already set and skip the warn log.
+        const alreadyStamped = Boolean((hedge.metadata as any)?.deepOtmWriteoffAt);
+        if (!alreadyStamped) {
+          try {
+            await params.pool.query(
+              `UPDATE pilot_protections
+               SET metadata = metadata || jsonb_build_object(
+                     'deepOtmWriteoffAt', $2::text,
+                     'deepOtmWriteoffReason', 'sub_min_value_with_no_intrinsic'
+                   ),
+                   updated_at = NOW()
+               WHERE id = $1`,
+              [hedge.protectionId, new Date().toISOString()]
+            );
+            console.log(
+              `[HedgeManager] deep_otm_short_tenor_writeoff: ${hedge.protectionId} ` +
+              `intrinsic=$${optionVal.intrinsicValue.toFixed(2)} total=$${optionVal.totalValue.toFixed(2)} ` +
+              `${hoursToExpiry.toFixed(1)}h to expiry. Halting sell attempts; will expire OTM.`
+            );
+          } catch (mdErr: any) {
+            console.warn(
+              `[HedgeManager] writeoff stamp failed for ${hedge.protectionId}: ${mdErr?.message}`
+            );
+          }
+        }
       } else if (backstopEngaged) {
         // Backstop engaged: skip every other sell-attempt branch.
         // Stamp the held-to-expiry reason on the first crossing only
