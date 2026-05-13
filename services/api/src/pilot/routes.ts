@@ -929,6 +929,29 @@ export const registerPilotRoutes = async (
 
   const pool = getPilotPool(pilotConfig.postgresUrl);
   await ensurePilotSchema(pool);
+
+  // WS#0 (Bundle C cutover, rev 6) — additive Foxify capital pool schema.
+  // Fully idempotent (CREATE TABLE IF NOT EXISTS + ON CONFLICT seed).
+  // Atticus pool seeded with $12k initial deposit; Foxify pool seeded
+  // at $0 (operator records deposit ledger entry when Foxify pre-funds).
+  // Deferred dynamic import keeps the boot path independent of pg-mem
+  // test environments that don't load the capital pool migration.
+  try {
+    const { ensureCapitalPoolSchema, seedCapitalPoolsIfNeeded } =
+      await import("./capitalPoolSchema");
+    await ensureCapitalPoolSchema(pool);
+    await seedCapitalPoolsIfNeeded(pool);
+    console.log("[CapitalPools] schema + seed verified (atticus_hedge, foxify_trader)");
+  } catch (poolMigrationErr: any) {
+    // Migration failure is non-fatal — the capital pool subsystem is
+    // optional during pilot bootstrap. Pool admin endpoints will return
+    // 503 if invoked. Production deploys must verify the migration ran
+    // cleanly via /pilot/admin/pools health check.
+    console.warn(
+      `[CapitalPools] schema migration failed (non-fatal): ${poolMigrationErr?.message ?? poolMigrationErr}`
+    );
+  }
+
   const venue = createPilotVenueAdapter({
     mode: pilotConfig.venueMode,
     bullishEnabled: pilotConfig.bullish.enabled,
