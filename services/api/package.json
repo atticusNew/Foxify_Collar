@@ -24,7 +24,9 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "test": "tsx --test tests/**/*.test.ts",
+    "test": "node scripts/run-tests.mjs",
+    "test:bundle-c": "TEST_FILTER=pilot node scripts/run-tests.mjs",
+    "test:no-live": "TEST_SKIP=ParityProbe node scripts/run-tests.mjs",
     "migrate:pilot": "tsx src/pilot/migrate.ts",
     "pilot:bullish:auth-debug": "tsx scripts/pilotBullishAuthDebug.ts",
     "pilot:bullish:pricing-compare": "tsx scripts/pilotBullishPricingCompare.ts",
