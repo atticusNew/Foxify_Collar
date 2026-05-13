@@ -15,18 +15,19 @@ import {
   slPctToTierLabel
 } from "../src/pilot/v7Pricing";
 
-test("isValidSlTier — accepts valid tiers", () => {
+test("isValidSlTier — accepts valid tiers (Bundle C rev 6: 1/2/3/5/7/10)", () => {
   assert.ok(isValidSlTier(1));
   assert.ok(isValidSlTier(2));
   assert.ok(isValidSlTier(3));
   assert.ok(isValidSlTier(5));
-  assert.ok(isValidSlTier(10));
+  assert.ok(isValidSlTier(7), "7% added in rev 6");
+  assert.ok(isValidSlTier(10), "10% retained in V7_SL_TIERS for legacy data");
 });
 
 test("isValidSlTier — rejects invalid tiers", () => {
   assert.ok(!isValidSlTier(0));
   assert.ok(!isValidSlTier(4));
-  assert.ok(!isValidSlTier(7));
+  assert.ok(!isValidSlTier(6));
   assert.ok(!isValidSlTier(15));
   assert.ok(!isValidSlTier(20));
 });
@@ -54,30 +55,31 @@ test("getV7PayoutPer10k — correct payouts", () => {
   assert.equal(getV7PayoutPer10k(10), 1000);
 });
 
-test("computeV7Premium — $10k tiered pricing (low regime)", () => {
-  // Design A: pin the test to the 'low' regime to match the documented
-  // schedule independent of any live DVOL state.
+test("computeV7Premium — $10k tiered pricing (low regime, P3)", () => {
+  // Bundle C P3 lock (2026-05-13): low / 2% = $10/$1k.
   const r = computeV7Premium({ slPct: 2, notionalUsd: 10000, pricingRegimeOverride: "low" });
   assert.ok(r.available);
-  assert.equal(r.premiumPer1kUsd, 6.5, "low regime / 2% = $6.50 (lowered from $7 on 2026-04-25 — see pricingRegime.ts comment)");
-  assert.equal(r.premiumUsd, 65);
+  assert.equal(r.premiumPer1kUsd, 10, "P3 low / 2% = $10");
+  assert.equal(r.premiumUsd, 100);
   assert.equal(r.payoutPer10kUsd, 200);
 });
 
-test("computeV7Premium — each tier has correct rate per regime", () => {
-  // Verify the schedule across all 4 regimes for the 4 launched tiers
-  // plus 1% (unlaunched but defined). Numbers match the Design A spec.
+test("computeV7Premium — each tier has correct rate per regime (P3)", () => {
+  // Bundle C P3 schedule across all 4 regimes for all 6 tiers
+  // (1/2/3/5/7/10 — 7 added in rev 6, 10 kept in schedule for legacy).
   const cases: Array<{ regime: "low" | "moderate" | "elevated" | "high"; expected: Record<number, number> }> = [
-    { regime: "low",      expected: { 1: 65, 2: 65, 3: 50, 5: 30, 10: 20 } },
-    { regime: "moderate", expected: { 1: 70, 2: 70, 3: 55, 5: 30, 10: 20 } },
-    { regime: "elevated", expected: { 1: 80, 2: 80, 3: 60, 5: 35, 10: 20 } },
-    { regime: "high",     expected: { 1: 90, 2: 100, 3: 70, 5: 40, 10: 20 } }
+    { regime: "low",      expected: { 1: 65,  2: 100,   3: 70,   5: 40,   7: 30,   10: 20  } },
+    { regime: "moderate", expected: { 1: 70,  2: 105,   3: 75,   5: 45,   7: 35,   10: 25  } },
+    { regime: "elevated", expected: { 1: 80,  2: 107.5, 3: 92.5, 5: 67.5, 7: 52.5, 10: 42.5 } },
+    { regime: "high",     expected: { 1: 90,  2: 110,   3: 110,  5: 90,   7: 70,   10: 60  } }
   ];
   for (const { regime, expected } of cases) {
-    for (const sl of [1, 2, 3, 5, 10] as const) {
+    for (const sl of [1, 2, 3, 5, 7, 10] as const) {
       const r = computeV7Premium({ slPct: sl, notionalUsd: 10000, pricingRegimeOverride: regime });
       assert.ok(r.available);
-      assert.equal(r.premiumUsd, expected[sl], `${regime} / ${sl}% on $10k = $${expected[sl]}`);
+      // Use rounding to avoid float-precision noise on values like $107.50
+      const actual = Math.round(r.premiumUsd * 100) / 100;
+      assert.equal(actual, expected[sl], `P3 ${regime} / ${sl}% on $10k = $${expected[sl]}`);
     }
   }
 });
@@ -119,27 +121,31 @@ test("computeV7HedgeStrike equals trigger", () => {
   assert.ok(s.eq(t));
 });
 
-test("getV7AvailableTiers — launched tiers (no 1% SL), pinned to 'low' regime", () => {
-  // Design A: pass an explicit pricing regime override so the test is
-  // not coupled to whatever live DVOL state happens to be in process.
+test("getV7AvailableTiers — launched tiers (rev 6: [2,3,5,7]), pinned to 'low' regime", () => {
+  // Bundle C rev 6: V7_LAUNCHED_TIERS = [2, 3, 5, 7]. 10% dropped from
+  // launched set (still in V7_SL_TIERS for legacy data). 1% remains
+  // unlaunched.
   const tiers = getV7AvailableTiers(undefined, "low");
-  assert.equal(tiers.length, 4);
+  assert.equal(tiers.length, 4, "rev 6: 4 launched tiers (2/3/5/7)");
   assert.ok(tiers.every(t => t.available));
-  assert.ok(!tiers.find(t => t.slPct === 1));
+  assert.ok(!tiers.find(t => t.slPct === 1), "1% unlaunched");
+  assert.ok(!tiers.find(t => t.slPct === 10), "10% dropped from launched set in rev 6");
   const sl2 = tiers.find(t => t.slPct === 2);
-  assert.equal(sl2?.premiumPer1kUsd, 6.5);
+  assert.equal(sl2?.premiumPer1kUsd, 10, "P3 low / 2% = $10");
   assert.equal(sl2?.tenorDays, 1);
-  const sl10 = tiers.find(t => t.slPct === 10);
-  assert.equal(sl10?.premiumPer1kUsd, 2);
-  assert.equal(sl10?.tenorDays, 1);
+  const sl7 = tiers.find(t => t.slPct === 7);
+  assert.equal(sl7?.premiumPer1kUsd, 3, "P3 low / 7% = $3 (NEW tier in rev 6)");
+  assert.equal(sl7?.tenorDays, 1);
 });
 
-test("getV7AvailableTiers — high-regime schedule reflects ceiling", () => {
+test("getV7AvailableTiers — high-regime schedule reflects P3 ceiling", () => {
   const tiers = getV7AvailableTiers(undefined, "high");
   const sl2 = tiers.find((t) => t.slPct === 2);
-  assert.equal(sl2?.premiumPer1kUsd, 10, "2% caps at $10 in high regime (raised from $9 on 2026-04-20)");
+  assert.equal(sl2?.premiumPer1kUsd, 11, "P3 stress 2% = $11 (lifted from $13 to give 1.82× trader return)");
   const sl3 = tiers.find((t) => t.slPct === 3);
-  assert.equal(sl3?.premiumPer1kUsd, 7, "3% rises to $7 in high regime");
+  assert.equal(sl3?.premiumPer1kUsd, 11, "P3 stress 3% = $11");
+  const sl7 = tiers.find((t) => t.slPct === 7);
+  assert.equal(sl7?.premiumPer1kUsd, 7, "P3 stress 7% = $7");
 });
 
 test("getV7TenorDays — 1d for all tiers", () => {
@@ -148,6 +154,7 @@ test("getV7TenorDays — 1d for all tiers", () => {
   assert.equal(getV7TenorDays(2), 1);
   assert.equal(getV7TenorDays(3), 1);
   assert.equal(getV7TenorDays(5), 1);
+  assert.equal(getV7TenorDays(7), 1);
   assert.equal(getV7TenorDays(10), 1);
 });
 

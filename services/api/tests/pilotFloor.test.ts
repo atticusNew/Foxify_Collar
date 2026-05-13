@@ -12,9 +12,16 @@ import {
   resolveRenewWindowMinutes
 } from "../src/pilot/floor";
 
-test("normalizeTierName falls back to Bronze for unknown tier", () => {
-  assert.equal(normalizeTierName("Unknown"), "Pro (Bronze)");
+test("normalizeTierName falls back to SL 2% for unknown tier", () => {
+  // Bundle C: pilot tier set is rev 6 (SL 2/3/5/7), so fallback for an
+  // unknown tier name is the most-trafficked tier (SL 2%) rather than
+  // the legacy Pro (Bronze). Existing tier names still pass through.
+  assert.equal(normalizeTierName("Unknown"), "SL 2%");
+  assert.equal(normalizeTierName(""), "SL 2%");
+  assert.equal(normalizeTierName(undefined), "SL 2%");
   assert.equal(normalizeTierName("Pro (Gold)"), "Pro (Gold)");
+  assert.equal(normalizeTierName("SL 2%"), "SL 2%");
+  assert.equal(normalizeTierName("SL 7%"), "SL 7%");
 });
 
 test("resolveDrawdownFloorPct uses provided valid value else tier default", () => {

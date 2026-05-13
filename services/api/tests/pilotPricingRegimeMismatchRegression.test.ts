@@ -47,28 +47,32 @@ test("regression: DVOL 42.4 in 40-50 band uses Design A 'low' schedule, not lega
 
   const tier2 = tiers.find((t) => t.slPct === 2);
   assert.ok(tier2, "2% tier should exist");
-  // 2026-04-25: low / 2% lowered from \$7 → \$6.50, while moderate / 2% stays
-  // at \$7. The regression discriminator on the 2% tier is back: \$6.50 = low,
-  // \$7 = moderate. If this were broken (legacy classifier winning), we'd see
-  // \$7 here instead of \$6.50.
+  // Bundle C P3 (2026-05-13): low / 2% = $10, moderate / 2% = $10.50.
+  // If legacy classifier won (broken), we'd see $10.50; correct behavior
+  // (Design A low) gives $10.
   assert.equal(
     tier2!.premiumPer1kUsd,
-    6.5,
-    `2% premium should be $6.50 (Design A 'low'), not $7 (legacy 'normal' → moderate). Got $${tier2!.premiumPer1kUsd}.`
+    10,
+    `2% premium should be $10 (Design A P3 'low'), not $10.50 (legacy 'normal' → moderate). Got $${tier2!.premiumPer1kUsd}.`
   );
 
   const tier3 = tiers.find((t) => t.slPct === 3);
   assert.equal(
     tier3!.premiumPer1kUsd,
-    5,
-    `3% premium should be $5 (Design A 'low'), not $5.50 (legacy 'normal' → moderate). Got $${tier3!.premiumPer1kUsd}.`
+    7,
+    `3% premium should be $7 (Design A P3 'low'), not $7.50 (legacy 'normal' → moderate). Got $${tier3!.premiumPer1kUsd}.`
   );
 
   const tier5 = tiers.find((t) => t.slPct === 5);
-  assert.equal(tier5!.premiumPer1kUsd, 3, "5% premium should be $3");
+  assert.equal(tier5!.premiumPer1kUsd, 4, "P3 5% low premium should be $4");
 
+  // 7% tier (NEW in rev 6, replaces 10% in launched set)
+  const tier7 = tiers.find((t) => t.slPct === 7);
+  assert.equal(tier7!.premiumPer1kUsd, 3, "P3 7% low premium should be $3");
+
+  // 10% tier no longer in launched set — getV7AvailableTiers should not return it
   const tier10 = tiers.find((t) => t.slPct === 10);
-  assert.equal(tier10!.premiumPer1kUsd, 2, "10% premium should be $2");
+  assert.equal(tier10, undefined, "10% tier dropped from launched set in rev 6");
 });
 
 test("regression: explicit pricingRegimeOverride still wins over live classifier", () => {
@@ -78,7 +82,11 @@ test("regression: explicit pricingRegimeOverride still wins over live classifier
 
   const tiers = getV7AvailableTiers(undefined, "high");
   const tier2 = tiers.find((t) => t.slPct === 2);
-  assert.equal(tier2!.premiumPer1kUsd, 10, "explicit 'high' override should produce $10 ceiling");
+  assert.equal(
+    tier2!.premiumPer1kUsd,
+    11,
+    "explicit 'high' override should produce P3 stress ceiling of $11"
+  );
 });
 
 test("regression: legacy regime input is ignored even at the boundary values that previously caused divergence", () => {
@@ -89,15 +97,14 @@ test("regression: legacy regime input is ignored even at the boundary values tha
   recordDvolSample(45, now);
 
   // Try every legacy value; Design A 'low' should win for all.
-  // We assert on the 3% tier because 2% low/moderate are now $7 after
-  // PR C — only the 3% tier still differs ($5 low vs $5.50 moderate).
+  // P3 schedule: low / 3% = $7, moderate / 3% = $7.50.
   for (const legacy of ["calm", "normal", "stress"] as const) {
     const tiers = getV7AvailableTiers(legacy);
     const tier3 = tiers.find((t) => t.slPct === 3);
     assert.equal(
       tier3!.premiumPer1kUsd,
-      5,
-      `legacy='${legacy}' should be ignored → Design A 'low' → 3% = $5 (got $${tier3!.premiumPer1kUsd})`
+      7,
+      `legacy='${legacy}' should be ignored → Design A 'low' → P3 3% = $7 (got $${tier3!.premiumPer1kUsd})`
     );
   }
 });

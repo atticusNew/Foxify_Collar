@@ -95,6 +95,12 @@ const createHarness = async (opts?: {
   triggerMonitorModule.__setTriggerMonitorEnabledForTests(false);
   const premiumRegimeModule = await import("../src/pilot/premiumRegime");
   premiumRegimeModule.__resetPremiumRegimeStateForTests();
+  // Bundle C raised the parsed pilot min notional floor to $10k. This
+  // test exercises overlay math at $5k legacy notional — patch the
+  // resolved config value directly so the route doesn't reject the
+  // smaller-notional fixture.
+  const configModule = await import("../src/pilot/config");
+  configModule.pilotConfig.quoteMinNotionalUsdc = 1000;
   const { registerPilotRoutes } = await import("../src/pilot/routes");
   const app = Fastify();
   await registerPilotRoutes(app, { deribit: buildDeribitStub() as any });

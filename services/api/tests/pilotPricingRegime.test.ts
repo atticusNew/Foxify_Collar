@@ -31,36 +31,46 @@ import {
 //      provided, defaults to the documented "moderate" middle.
 //   6. Live DVOL fallback (no rolling history yet): used directly.
 
-test("Design A schedule matches the spec exactly", () => {
+test("Bundle C P3 schedule matches the locked cutover spec exactly", () => {
   __resetPricingRegimeForTests();
 
+  // Bundle C / P3 cutover lock (2026-05-13). See pricingRegime.ts header
+  // comment for the calm/normal/stress → low/moderate/elevated/high mapping.
+
   // 2% tier across regimes (the most-watched row)
-  assert.equal(REGIME_SCHEDULES.low[2],      6.5, "low / 2%  = $6.50 (lowered from $7 on 2026-04-25 — see pricingRegime.ts comment)");
-  assert.equal(REGIME_SCHEDULES.moderate[2], 7, "moderate / 2%  = $7");
-  assert.equal(REGIME_SCHEDULES.elevated[2], 8, "elevated / 2%  = $8");
-  assert.equal(REGIME_SCHEDULES.high[2],     10, "high / 2%  = $10 (raised from $9 on 2026-04-20 — see pricingRegime.ts comment)");
+  assert.equal(REGIME_SCHEDULES.low[2],      10,    "P3 low / 2%      = $10");
+  assert.equal(REGIME_SCHEDULES.moderate[2], 10.5,  "P3 moderate / 2% = $10.50");
+  assert.equal(REGIME_SCHEDULES.elevated[2], 10.75, "P3 elevated / 2% = $10.75");
+  assert.equal(REGIME_SCHEDULES.high[2],     11,    "P3 high / 2%     = $11 (stress 2% adjusted from $13 to $11 for 1.82× trader return)");
 
   // 3% tier
-  assert.equal(REGIME_SCHEDULES.low[3],      5,    "low / 3% = $5");
-  assert.equal(REGIME_SCHEDULES.moderate[3], 5.5,  "moderate / 3% = $5.50");
-  assert.equal(REGIME_SCHEDULES.elevated[3], 6,    "elevated / 3% = $6");
-  assert.equal(REGIME_SCHEDULES.high[3],     7,    "high / 3% = $7");
+  assert.equal(REGIME_SCHEDULES.low[3],      7,    "P3 low / 3%      = $7");
+  assert.equal(REGIME_SCHEDULES.moderate[3], 7.5,  "P3 moderate / 3% = $7.50");
+  assert.equal(REGIME_SCHEDULES.elevated[3], 9.25, "P3 elevated / 3% = $9.25");
+  assert.equal(REGIME_SCHEDULES.high[3],     11,   "P3 high / 3%     = $11");
 
   // 5% tier
-  assert.equal(REGIME_SCHEDULES.low[5],      3,    "low / 5% = $3");
-  assert.equal(REGIME_SCHEDULES.moderate[5], 3,    "moderate / 5% = $3");
-  assert.equal(REGIME_SCHEDULES.elevated[5], 3.5,  "elevated / 5% = $3.50");
-  assert.equal(REGIME_SCHEDULES.high[5],     4,    "high / 5% = $4");
+  assert.equal(REGIME_SCHEDULES.low[5],      4,    "P3 low / 5%      = $4");
+  assert.equal(REGIME_SCHEDULES.moderate[5], 4.5,  "P3 moderate / 5% = $4.50");
+  assert.equal(REGIME_SCHEDULES.elevated[5], 6.75, "P3 elevated / 5% = $6.75");
+  assert.equal(REGIME_SCHEDULES.high[5],     9,    "P3 high / 5%     = $9");
 
-  // 10% tier — flat across all regimes (deep OTM, near-zero gamma)
+  // 7% tier (NEW in rev 6 — replaces 10% in the offerable set; 10% kept for type completeness)
+  assert.equal(REGIME_SCHEDULES.low[7],      3,    "P3 low / 7%      = $3");
+  assert.equal(REGIME_SCHEDULES.moderate[7], 3.5,  "P3 moderate / 7% = $3.50");
+  assert.equal(REGIME_SCHEDULES.elevated[7], 5.25, "P3 elevated / 7% = $5.25");
+  assert.equal(REGIME_SCHEDULES.high[7],     7,    "P3 high / 7%     = $7");
+
+  // 10% tier — kept in schedule for legacy data; not in V7_LAUNCHED_TIERS
   assert.equal(REGIME_SCHEDULES.low[10],      2);
-  assert.equal(REGIME_SCHEDULES.moderate[10], 2);
-  assert.equal(REGIME_SCHEDULES.elevated[10], 2);
-  assert.equal(REGIME_SCHEDULES.high[10],     2);
+  assert.equal(REGIME_SCHEDULES.moderate[10], 2.5);
+  assert.equal(REGIME_SCHEDULES.elevated[10], 4.25);
+  assert.equal(REGIME_SCHEDULES.high[10],     6);
 
   // getPremiumPer1kForRegime is the public read accessor — verify it agrees
-  assert.equal(getPremiumPer1kForRegime(2, "high"), 10);
-  assert.equal(getPremiumPer1kForRegime(3, "moderate"), 5.5);
+  assert.equal(getPremiumPer1kForRegime(2, "high"), 11);
+  assert.equal(getPremiumPer1kForRegime(3, "moderate"), 7.5);
+  assert.equal(getPremiumPer1kForRegime(7, "low"), 3);
 });
 
 test("classifier (no hysteresis) picks correct band by DVOL", () => {
