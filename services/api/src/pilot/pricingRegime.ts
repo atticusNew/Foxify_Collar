@@ -130,11 +130,38 @@ export type RegimeSchedule = Record<V7SlTier, number>;
  *
  *   All other tiers/regimes unchanged from rev 5.
  */
+/**
+ * 2026-05-13 (Bundle C cutover lock) — schedule promoted to P3.
+ *
+ * Per Gate 1 sign-off (operator review of WS#9 backtest harness output),
+ * the platform locks Bundle C / P3 pricing for the production cutover.
+ * Backtest projection: +$3,241 over 28 days at 27% Atticus cap utilization.
+ *
+ * Mapping from backtest 3-regime model → runtime 4-regime:
+ *   backtest calm (DVOL < 40)    → runtime low      (DVOL < 50)
+ *   backtest normal (DVOL 40-65) → runtime moderate (DVOL 50-65)
+ *   backtest stress (DVOL > 65)  → runtime elevated (DVOL 65-80)
+ *                                  AND runtime high    (DVOL > 80)
+ *
+ * Runtime "elevated" gets midpoint between P3 normal and P3 stress so
+ * the boundary at DVOL 65 isn't a sharp jump. Runtime "high" gets full
+ * P3 stress pricing.
+ *
+ * Reversible to prior Design A schedule in one commit if pilot data
+ * shows P3 is too aggressive (CEO retention concern). See git log on
+ * this file for prior values.
+ *
+ * Backtest validation (159/159 tests including Bundle C user-facing
+ * premium amounts on $50k 2% match this table):
+ *   $50k 2% calm = $500 premium → 2.0× return on trigger
+ *   $50k 7% calm = $150 premium → 23.3× return on trigger
+ *   $50k 2% stress = $550 premium → 1.82× return on trigger
+ */
 export const REGIME_SCHEDULES: Record<PricingRegime, RegimeSchedule> = {
-  low:      { 1: 6.5, 2: 6.5, 3: 5,    5: 3,    7: 3,    10: 2 },
-  moderate: { 1: 7,   2: 7,   3: 5.5,  5: 3,    7: 3.5,  10: 2 },
-  elevated: { 1: 8,   2: 8,   3: 6,    5: 3.5,  7: 5,    10: 2 },
-  high:     { 1: 9,   2: 11,  3: 7,    5: 4,    7: 7,    10: 2 }
+  low:      { 1: 6.5, 2: 10,    3: 7,    5: 4,    7: 3,    10: 2 },
+  moderate: { 1: 7,   2: 10.5,  3: 7.5,  5: 4.5,  7: 3.5,  10: 2.5 },
+  elevated: { 1: 8,   2: 10.75, 3: 9.25, 5: 6.75, 7: 5.25, 10: 4.25 },
+  high:     { 1: 9,   2: 11,    3: 11,   5: 9,    7: 7,    10: 6 }
 };
 
 export const DEFAULT_PRICING_REGIME: PricingRegime = "moderate";

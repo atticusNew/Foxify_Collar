@@ -111,9 +111,12 @@ type Position = {
 
 // ─── Config ──────────────────────────────────────────────────────────
 
-const STOP_LOSS_OPTIONS = [2, 3, 5, 10] as const;
+// Bundle C cutover (rev 6, 2026-05-13): tier set is now [2, 3, 5, 7].
+//   - 10% dropped (Bullish has no strikes for it on 1-DTE)
+//   - 7% added (fills demand gap; Bullish 1-week strike grid covers it)
+const STOP_LOSS_OPTIONS = [2, 3, 5, 7] as const;
 type StopLoss = (typeof STOP_LOSS_OPTIONS)[number];
-const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 10: "SL 10%" };
+const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5: "SL 5%", 7: "SL 7%" };
 
 // Biweekly per-day rate preview (PR 5 of biweekly cutover, 2026-04-30).
 // USD per $1k notional per day. Mirrors the BIWEEKLY_DEFAULT_RATES table
@@ -124,15 +127,19 @@ const STOP_LOSS_TO_TIER: Record<StopLoss, string> = { 2: "SL 2%", 3: "SL 3%", 5:
 // flat across regimes — the absolute baseline." Server may override these
 // via PILOT_BIWEEKLY_RATE_<N>PCT env; if so the server-returned rate
 // (in BiweeklyQuoteResponse.ratePerDayPer1kUsd) is authoritative.
-const BIWEEKLY_RATE_PER_1K_DAY: Record<StopLoss, number> = { 2: 2.5, 3: 2.5, 5: 2.0, 10: 1.5 };
+const BIWEEKLY_RATE_PER_1K_DAY: Record<StopLoss, number> = { 2: 2.5, 3: 2.5, 5: 2.0, 7: 1.7 };
 const BIWEEKLY_MAX_TENOR_DAYS = 14;
 
 // Legacy 1-day rate table — retained for back-compat rendering of the 2
 // existing 1-day protections that are still active at biweekly cutover
 // time. After they expire (~24h post-deploy), this table is dead UI; PR 6
 // removes it.
-const SL_RATE: Record<StopLoss, number> = { 2: 6.5, 3: 5, 5: 3, 10: 2 };
-const SL_TENOR: Record<StopLoss, number> = { 2: 1, 3: 1, 5: 1, 10: 1 };
+// Static fallback rates (per $1k notional) — used only when /pilot/regime
+// API call hasn't returned yet. Production pricing comes from the
+// regime-adjusted schedule served by the backend; these are display-only
+// initial-render numbers. Bundle C P3 calm baseline.
+const SL_RATE: Record<StopLoss, number> = { 2: 10, 3: 7, 5: 4, 7: 3 };
+const SL_TENOR: Record<StopLoss, number> = { 2: 1, 3: 1, 5: 1, 7: 1 };
 const POS_MIN = 10000, POS_MAX = 50000, POS_STEP = 5000, INIT_BAL = 1_000_000;
 const K_BAL = "foxify_pilot_balance", K_SET = "foxify_pilot_settlement", K_POS = "foxify_pilot_positions", K_NUM = "foxify_pilot_posnum";
 const LOGO = "https://i.ibb.co/SDwxMqS8/Foxify-200x200.png";

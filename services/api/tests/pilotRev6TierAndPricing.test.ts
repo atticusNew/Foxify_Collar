@@ -78,17 +78,18 @@ test("7% trigger price (short): $80k entry × (1 + 0.07) = $85,600", () => {
 
 // ── Regime schedule rev 6 verification ──
 
-test("REGIME_SCHEDULES rev 6: 7% pricing across all regimes", () => {
-  assert.equal(REGIME_SCHEDULES.low[7], 3, "7% calm = $3/$1k");
-  assert.equal(REGIME_SCHEDULES.moderate[7], 3.5, "7% moderate = $3.50/$1k");
-  assert.equal(REGIME_SCHEDULES.elevated[7], 5, "7% elevated = $5/$1k");
-  assert.equal(REGIME_SCHEDULES.high[7], 7, "7% high (stress) = $7/$1k");
+test("REGIME_SCHEDULES Bundle C P3 LOCKED: 7% pricing across all regimes", () => {
+  // Locked 2026-05-13 per Gate 1 operator sign-off
+  assert.equal(REGIME_SCHEDULES.low[7], 3, "7% low (P3 calm) = $3/$1k");
+  assert.equal(REGIME_SCHEDULES.moderate[7], 3.5, "7% moderate (P3 normal) = $3.50/$1k");
+  assert.equal(REGIME_SCHEDULES.elevated[7], 5.25, "7% elevated (P3 mid) = $5.25/$1k");
+  assert.equal(REGIME_SCHEDULES.high[7], 7, "7% high (P3 stress) = $7/$1k");
 });
 
-test("REGIME_SCHEDULES rev 6: stress 2% lifted to $11/$1k (was $13)", () => {
-  // 2% high (stress) was $13/$1k pre-rev-6 → 1.54× trader return
-  // Lifted to $11/$1k → 1.82× trader return (above 2× psychological floor)
-  // Cost: ~$1k of pilot P&L; gain: better trader UX in stress
+test("REGIME_SCHEDULES Bundle C P3 LOCKED: stress 2% lifted to $11/$1k", () => {
+  // 2% high (stress) under P3 with rev 6 stress lift adjustment.
+  // Pre-rev-6 was $13/$1k → 1.54× trader return.
+  // Locked at $11/$1k → 1.82× trader return (above 2× psychological floor).
   assert.equal(REGIME_SCHEDULES.high[2], 11,
     "Stress 2% rate must be $11/$1k (not $13) to give 1.82× trader return on trigger");
 });
@@ -104,27 +105,29 @@ test("REGIME_SCHEDULES rev 6: trader return on trigger for stress 2%", () => {
     `Stress 2% return on trigger should be ~1.8× (was 1.54× pre-rev-6); got ${returnOnTrigger.toFixed(2)}×`);
 });
 
-test("REGIME_SCHEDULES retains 10% for legacy display", () => {
+test("REGIME_SCHEDULES retains 10% for legacy display (P3 LOCKED values)", () => {
   // 10% is dropped from launched set but remains priced in schedule for
   // legacy display on triggered/expired protection records.
+  // P3 locked values include 10% even though it's not offered.
   assert.equal(REGIME_SCHEDULES.low[10], 2);
-  assert.equal(REGIME_SCHEDULES.moderate[10], 2);
-  assert.equal(REGIME_SCHEDULES.elevated[10], 2);
-  assert.equal(REGIME_SCHEDULES.high[10], 2);
+  assert.equal(REGIME_SCHEDULES.moderate[10], 2.5);
+  assert.equal(REGIME_SCHEDULES.elevated[10], 4.25);
+  assert.equal(REGIME_SCHEDULES.high[10], 6);
 });
 
-test("getPremiumPer1kForRegime returns correct rates for all rev 6 launched tiers", () => {
-  // Sanity matrix — Bundle C P3 schedule
+test("getPremiumPer1kForRegime returns correct rates for all Bundle C P3 LOCKED tiers", () => {
+  // Locked 2026-05-13. Numbers per REGIME_SCHEDULES (P3 cutover lock).
   const cases = [
-    { tier: 2 as const, regime: "low" as const, expected: 6.5 },
-    { tier: 2 as const, regime: "high" as const, expected: 11 }, // rev 6 lift
-    { tier: 3 as const, regime: "low" as const, expected: 5 },
-    { tier: 3 as const, regime: "high" as const, expected: 7 },
-    { tier: 5 as const, regime: "low" as const, expected: 3 },
-    { tier: 5 as const, regime: "high" as const, expected: 4 },
+    { tier: 2 as const, regime: "low" as const, expected: 10 },
+    { tier: 2 as const, regime: "moderate" as const, expected: 10.5 },
+    { tier: 2 as const, regime: "high" as const, expected: 11 },
+    { tier: 3 as const, regime: "low" as const, expected: 7 },
+    { tier: 3 as const, regime: "high" as const, expected: 11 },
+    { tier: 5 as const, regime: "low" as const, expected: 4 },
+    { tier: 5 as const, regime: "high" as const, expected: 9 },
     { tier: 7 as const, regime: "low" as const, expected: 3 },
     { tier: 7 as const, regime: "moderate" as const, expected: 3.5 },
-    { tier: 7 as const, regime: "elevated" as const, expected: 5 },
+    { tier: 7 as const, regime: "elevated" as const, expected: 5.25 },
     { tier: 7 as const, regime: "high" as const, expected: 7 }
   ];
   for (const c of cases) {
@@ -136,11 +139,11 @@ test("getPremiumPer1kForRegime returns correct rates for all rev 6 launched tier
 
 // ── Premium/payout math for typical position sizes (Bundle C user-facing) ──
 
-test("Bundle C user-facing premiums for $50k 2% match table", () => {
-  // From BUNDLE_C_PRICING_TABLE.md (rev 6):
+test("Bundle C P3 LOCKED user-facing premiums for $50k 2% match table", () => {
+  // From BUNDLE_C_PRICING_TABLE.md after Gate 1 lock to P3:
   //   Calm:   $500 premium / $1000 payout → 2.0× return
   //   Normal: $525 premium / $1000 payout → 1.9× return
-  //   Stress: $550 premium / $1000 payout → 1.82× return (post rev 6 lift)
+  //   Stress: $550 premium / $1000 payout → 1.82× return
   const notional = 50000;
   const payout = notional * 0.02;
   assert.equal(payout, 1000);
@@ -149,9 +152,9 @@ test("Bundle C user-facing premiums for $50k 2% match table", () => {
   const normalPremium = notional * REGIME_SCHEDULES.moderate[2] / 1000;
   const stressPremium = notional * REGIME_SCHEDULES.high[2] / 1000;
 
-  assert.equal(calmPremium, 325, "Calm 2% on $50k = $325 (Design A baseline; Bundle C P3 raises this)");
-  assert.equal(normalPremium, 350, "Normal 2% on $50k = $350");
-  assert.equal(stressPremium, 550, "Stress 2% on $50k = $550 after rev 6 lift");
+  assert.equal(calmPremium, 500, "P3 calm 2% on $50k = $500 (2.0× return on trigger)");
+  assert.equal(normalPremium, 525, "P3 normal 2% on $50k = $525");
+  assert.equal(stressPremium, 550, "P3 stress 2% on $50k = $550 (1.82× return)");
 });
 
 test("Bundle C user-facing premiums for $50k 7% (NEW tier)", () => {

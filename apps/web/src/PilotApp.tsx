@@ -199,14 +199,24 @@ const formatUsd = (value: number | string | null | undefined): string => {
   return parsed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
+// Bundle C cutover (rev 6, 2026-05-13):
+//   - 10% tier DROPPED from launched set (Bullish has zero strikes for
+//     it on 1-DTE; would force Deribit-only routing forever).
+//   - 7% tier ADDED as new wide tier (Bullish 1-week strike grid covers
+//     it; fills the demand gap between 5% and the dropped 10%).
+//   - 1% remains defined but unlaunched (forward compatibility).
+//   - 10% tier name preserved in DEFAULT_TIERS for legacy display on
+//     pre-cutover protections still in DB; only the tier-button UI
+//     filters via V7_SL_TIERS.
 const DEFAULT_TIERS: TierLevel[] = [
   { name: "SL 1%", drawdownFloorPct: 0.01, expiryDays: 2, renewWindowMinutes: 1440 },
   { name: "SL 2%", drawdownFloorPct: 0.02, expiryDays: 2, renewWindowMinutes: 1440 },
   { name: "SL 3%", drawdownFloorPct: 0.03, expiryDays: 2, renewWindowMinutes: 1440 },
   { name: "SL 5%", drawdownFloorPct: 0.05, expiryDays: 2, renewWindowMinutes: 1440 },
+  { name: "SL 7%", drawdownFloorPct: 0.07, expiryDays: 2, renewWindowMinutes: 1440 },
   { name: "SL 10%", drawdownFloorPct: 0.10, expiryDays: 2, renewWindowMinutes: 1440 }
 ];
-const V7_SL_TIERS = [1, 2, 3, 5, 10] as const;
+const V7_SL_TIERS = [2, 3, 5, 7] as const;
 const STATIC_TENOR_CHIPS_DAYS = [2, 3, 7] as const;
 const PILOT_DEFAULT_TENOR_DAYS = 2;
 // Keep UI quote timeout aligned with backend quote budgets and avoid hidden post-countdown retries.
@@ -302,7 +312,7 @@ const friendlyError = (message: string): string => {
     return "Pilot's open-protection limit is full. Close one or wait for it to expire.";
   }
   if (message.includes("hedge_budget_cap_exceeded")) {
-    return "Pilot hedge budget cap reached for this phase. Try a smaller size or a wider SL tier (5% / 10%), or wait for the next pilot phase.";
+    return "Pilot hedge budget cap reached for this phase. Try a smaller size or a wider SL tier (5% / 7%), or wait for the next pilot phase.";
   }
   if (message.includes("per_tier_daily_concentration_cap_exceeded")) {
     return "This protection level is full for today. Try a different level or wait until tomorrow.";

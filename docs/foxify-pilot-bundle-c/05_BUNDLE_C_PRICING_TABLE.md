@@ -1,8 +1,10 @@
-# Bundle C / P3 — User-Facing Pricing Table (rev 6)
+# Bundle C / P3 — User-Facing Pricing Table (rev 6) — **LOCKED FOR CUTOVER 2026-05-13**
 
 > What a trader sees at quote time, by position size and SL tier, in each volatility regime. Premium is fixed at quote time and locked at activation; payout is also fixed (= notional × SL%).
 
 > **Rev 6 changes:** 10% tier dropped, 7% tier added, stress 2% premium lifted from 1.5× → 1.8× trader return.
+
+> **2026-05-13 lock:** P3 schedule promoted from `BacktestPricingSchedule` to live `REGIME_SCHEDULES` per Gate 1 operator sign-off. Backtest harness re-validates: S3_P3_BUNDLE_C = +$3,241 over 28 days at 27% cap utilization. Frontend tier buttons updated to `[2, 3, 5, 7]` in `apps/web/src/PilotApp.tsx` and `PilotWidget.tsx`.
 
 ---
 

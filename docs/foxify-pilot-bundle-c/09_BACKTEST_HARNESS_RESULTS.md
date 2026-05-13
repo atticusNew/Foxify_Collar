@@ -1,6 +1,6 @@
 # WS#9 Backtest Harness — Bundle C Scenario Comparison
 
-> **Generated:** 2026-05-13T05:50:42.481Z
+> **Generated:** 2026-05-13T08:09:22.086Z
 > **Scope:** 28-day pilot window, 2 × $50k positions/day baseline.
 > **Atticus capital cap:** $12,000.
 >

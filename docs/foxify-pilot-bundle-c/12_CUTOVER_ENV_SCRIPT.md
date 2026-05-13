@@ -71,10 +71,23 @@ V7_DEFAULT_TENOR_DAYS=1
 
 ---
 
-## Step 5 — Pricing regime (Design A live; stress overlay enabled)
+## Step 5 — Pricing regime (Bundle C P3 LOCKED + stress overlay enabled)
+
+> **Pricing locked to P3 on 2026-05-13 per Gate 1 operator sign-off.**
+> Code-level: `services/api/src/pilot/pricingRegime.ts REGIME_SCHEDULES`
+> serves the P3 schedule directly. No env override needed.
+> Rollback: `git revert` the P3 lock commit + redeploy → reverts to Design A.
+
+P3 schedule (USD per $1k notional):
+| Tier | Low | Moderate | Elevated | High |
+|---|---|---|---|---|
+| 2% | 10 | 10.5 | 10.75 | 11 |
+| 3% | 7 | 7.5 | 9.25 | 11 |
+| 5% | 4 | 4.5 | 6.75 | 9 |
+| 7% | 3 | 3.5 | 5.25 | 7 |
 
 ```bash
-# Design A is always-on once V7_PRICING_ENABLED=true. No env needed.
+# V7 pricing always-on; the P3 schedule lives in code (not env).
 
 # Stress pricing overlay (rev 6: ENABLED at cutover per user reply 4):
 PILOT_PREMIUM_REGIME_ENABLED=true
