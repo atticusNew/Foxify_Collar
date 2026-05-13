@@ -1,0 +1,269 @@
+{
+  "timestampIso": "2026-05-13T05:54:17.329Z",
+  "spotUsd": 81028.415,
+  "dvol": 38.39,
+  "bullishExpiry": "2026-05-14T08:00:00.000Z",
+  "deribitExpiry": "14MAY26",
+  "rows": [
+    {
+      "tier": 2,
+      "side": "long_put",
+      "triggerPrice": 79407.8467,
+      "bullish": {
+        "symbol": "BTC-USDC-20260514-79600-P",
+        "strike": 79600,
+        "bestBidUsd": 130,
+        "bestBidQty": 20.7041,
+        "bestAskUsd": 160,
+        "bestAskQty": 3.037,
+        "spreadPctOfMid": 20.689655172413794,
+        "error": null
+      },
+      "deribit": {
+        "instrument": "BTC-14MAY26-79500-P",
+        "strike": 79500,
+        "bestBidBtc": 0.0014,
+        "bestBidUsd": 113.44,
+        "bestBidQty": 35,
+        "bestAskBtc": 0.0017,
+        "bestAskUsd": 137.75,
+        "bestAskQty": 9,
+        "spreadPctOfMid": 19.354838709677416,
+        "error": null
+      },
+      "comparison": {
+        "askDeltaPct": 16.152450090744104,
+        "bullishStrikeDistance": 192.1533000000054,
+        "deribitStrikeDistance": 92.1533000000054
+      }
+    },
+    {
+      "tier": 2,
+      "side": "short_call",
+      "triggerPrice": 82648.98329999999,
+      "bullish": {
+        "symbol": "BTC-USDC-20260514-83000-C",
+        "strike": 83000,
+        "bestBidUsd": 60,
+        "bestBidQty": 18,
+        "bestAskUsd": 80,
+        "bestAskQty": 2.048,
+        "spreadPctOfMid": 28.57142857142857,
+        "error": null
+      },
+      "deribit": {
+        "instrument": "BTC-14MAY26-82500-C",
+        "strike": 82500,
+        "bestBidBtc": 0.0014,
+        "bestBidUsd": 113.44,
+        "bestBidQty": 21.1,
+        "bestAskBtc": 0.0018,
+        "bestAskUsd": 145.85,
+        "bestAskQty": 30,
+        "spreadPctOfMid": 25,
+        "error": null
+      },
+      "comparison": {
+        "askDeltaPct": -45.14912581419266,
+        "bullishStrikeDistance": 351.0167000000074,
+        "deribitStrikeDistance": 148.9832999999926
+      }
+    },
+    {
+      "tier": 3,
+      "side": "long_put",
+      "triggerPrice": 78597.56254999999,
+      "bullish": {
+        "symbol": "BTC-USDC-20260514-79000-P",
+        "strike": 79000,
+        "bestBidUsd": 60,
+        "bestBidQty": 22.2819,
+        "bestAskUsd": 90,
+        "bestAskQty": 4,
+        "spreadPctOfMid": 40,
+        "error": null
+      },
+      "deribit": {
+        "instrument": "BTC-14MAY26-78500-P",
+        "strike": 78500,
+        "bestBidBtc": 0.0005,
+        "bestBidUsd": 40.51,
+        "bestBidQty": 0.9,
+        "bestAskBtc": 0.0006,
+        "bestAskUsd": 48.62,
+        "bestAskQty": 13,
+        "spreadPctOfMid": 18.181818181818173,
+        "error": null
+      },
+      "comparison": {
+        "askDeltaPct": 85.10900863842042,
+        "bullishStrikeDistance": 402.4374500000122,
+        "deribitStrikeDistance": 97.56254999998782
+      }
+    },
+    {
+      "tier": 3,
+      "side": "short_call",
+      "triggerPrice": 83459.26745,
+      "bullish": {
+        "symbol": "BTC-USDC-20260514-83000-C",
+        "strike": 83000,
+        "bestBidUsd": 60,
+        "bestBidQty": 18,
+        "bestAskUsd": 80,
+        "bestAskQty": 2.048,
+        "spreadPctOfMid": 28.57142857142857,
+        "error": null
+      },
+      "deribit": {
+        "instrument": "BTC-14MAY26-83500-C",
+        "strike": 83500,
+        "bestBidBtc": 0.0004,
+        "bestBidUsd": 32.41,
+        "bestBidQty": 43.5,
+        "bestAskBtc": 0.0006,
+        "bestAskUsd": 48.62,
+        "bestAskQty": 22.8,
+        "spreadPctOfMid": 39.999999999999986,
+        "error": null
+      },
+      "comparison": {
+        "askDeltaPct": 64.54134101192925,
+        "bullishStrikeDistance": 459.26744999999937,
+        "deribitStrikeDistance": 40.73255000000063
+      }
+    },
+    {
+      "tier": 5,
+      "side": "long_put",
+      "triggerPrice": 76976.99424999999,
+      "bullish": {
+        "symbol": "BTC-USDC-20260514-78000-P",
+        "strike": 78000,
+        "bestBidUsd": 10,
+        "bestBidQty": 23.9733,
+        "bestAskUsd": 40,
+        "bestAskQty": 0.394,
+        "spreadPctOfMid": 120,
+        "error": null
+      },
+      "deribit": {
+        "instrument": "BTC-14MAY26-77000-P",
+        "strike": 77000,
+        "bestBidBtc": 0.0001,
+        "bestBidUsd": 8.1,
+        "bestBidQty": 12,
+        "bestAskBtc": 0.0002,
+        "bestAskUsd": 16.21,
+        "bestAskQty": 20.1,
+        "spreadPctOfMid": 66.66666666666666,
+        "error": null
+      },
+      "comparison": {
+        "askDeltaPct": 146.76125848241824,
+        "bullishStrikeDistance": 1023.0057500000112,
+        "deribitStrikeDistance": 23.005750000011176
+      }
+    },
+    {
+      "tier": 5,
+      "side": "short_call",
+      "triggerPrice": 85079.83575,
+      "bullish": {
+        "symbol": "BTC-USDC-20260514-85000-C",
+        "strike": 85000,
+        "bestBidUsd": null,
+        "bestBidQty": null,
+        "bestAskUsd": 10,
+        "bestAskQty": 3.437,
+        "spreadPctOfMid": null,
+        "error": null
+      },
+      "deribit": {
+        "instrument": "BTC-14MAY26-85000-C",
+        "strike": 85000,
+        "bestBidBtc": null,
+        "bestBidUsd": null,
+        "bestBidQty": 0,
+        "bestAskBtc": 0.0002,
+        "bestAskUsd": 16.21,
+        "bestAskQty": 23.5,
+        "spreadPctOfMid": null,
+        "error": null
+      },
+      "comparison": {
+        "askDeltaPct": -38.30968537939544,
+        "bullishStrikeDistance": 79.83574999999837,
+        "deribitStrikeDistance": 79.83574999999837
+      }
+    },
+    {
+      "tier": 7,
+      "side": "long_put",
+      "triggerPrice": 75356.42595,
+      "bullish": {
+        "symbol": "BTC-USDC-20260514-78000-P",
+        "strike": 78000,
+        "bestBidUsd": 10,
+        "bestBidQty": 23.9733,
+        "bestAskUsd": 40,
+        "bestAskQty": 0.394,
+        "spreadPctOfMid": 120,
+        "error": null
+      },
+      "deribit": {
+        "instrument": "BTC-14MAY26-75500-P",
+        "strike": 75500,
+        "bestBidBtc": null,
+        "bestBidUsd": null,
+        "bestBidQty": null,
+        "bestAskBtc": null,
+        "bestAskUsd": null,
+        "bestAskQty": null,
+        "spreadPctOfMid": null,
+        "error": "orderbook_unavailable"
+      },
+      "comparison": {
+        "askDeltaPct": null,
+        "bullishStrikeDistance": 2643.5740499999956,
+        "deribitStrikeDistance": 143.57404999999562
+      }
+    },
+    {
+      "tier": 7,
+      "side": "short_call",
+      "triggerPrice": 86700.40405,
+      "bullish": {
+        "symbol": "BTC-USDC-20260514-85000-C",
+        "strike": 85000,
+        "bestBidUsd": null,
+        "bestBidQty": null,
+        "bestAskUsd": 10,
+        "bestAskQty": 3.437,
+        "spreadPctOfMid": null,
+        "error": null
+      },
+      "deribit": {
+        "instrument": "BTC-14MAY26-86500-C",
+        "strike": 86500,
+        "bestBidBtc": null,
+        "bestBidUsd": null,
+        "bestBidQty": null,
+        "bestAskBtc": null,
+        "bestAskUsd": null,
+        "bestAskQty": null,
+        "spreadPctOfMid": null,
+        "error": "orderbook_unavailable"
+      },
+      "comparison": {
+        "askDeltaPct": null,
+        "bullishStrikeDistance": 1700.4040499999974,
+        "deribitStrikeDistance": 200.40404999999737
+      }
+    }
+  ],
+  "notes": [
+    "Average Bullish ask premium vs Deribit: +38.2% across 6 matched comparisons",
+    "Spot: $81028.41; DVOL: 38.39; expiry: 2026-05-14T08:00:00.000Z"
+  ]
+}
