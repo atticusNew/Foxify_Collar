@@ -221,6 +221,30 @@ export const processTriggerMonitorCycleWithResolver = async (
         );
       }
     }
+
+    // ── WS#0 (Bundle C, rev 6) — Pool ledger write: payout liability accrual ──
+    //
+    // Foxify pool loses payout_out (signed negative) at the moment trigger
+    // fires. This is the LIABILITY accrual; actual cash settlement to the
+    // trader's external wallet is a separate operator step recorded via
+    // /admin/protections/:id/payout-settled.
+    //
+    // Until Foxify pre-funds, this write makes the Foxify pool balance
+    // go negative — that's fine and useful: it makes the deficit visible
+    // so when Foxify eventually deposits, the runway calc shows real
+    // accumulated liability.
+    try {
+      const { recordTriggerLedgerWrite } = await import("./poolLifecycleHooks");
+      await recordTriggerLedgerWrite({
+        pool,
+        protectionId: protection.id,
+        payoutOwedUsd: economics.triggerPayoutCreditUsd.toNumber()
+      });
+    } catch (poolErr: any) {
+      console.warn(
+        `[TriggerMonitor] WS#0 pool payout_out write failed for ${protection.id}: ${poolErr?.message ?? poolErr}`
+      );
+    }
     await insertPriceSnapshot(pool, {
       protectionId: protection.id,
       snapshotType: "trigger",

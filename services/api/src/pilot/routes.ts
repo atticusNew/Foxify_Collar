@@ -3180,6 +3180,46 @@ export const registerPilotRoutes = async (
         "venue_quote"
       );
       venueMs = Date.now() - venueStartedAt;
+
+      // ── WS#1 (Bundle C, rev 6) — Multi-venue routing diagnostic ──
+      //
+      // Records the routing decision the multiVenueRouter would have made
+      // for this slPct. Initial integration is INSTRUMENTATION ONLY —
+      // logs the routing decision in quote details + admin diagnostics
+      // but does NOT swap execution venues yet. Actual swap requires an
+      // adapter-pool refactor that's risky in the existing complex
+      // quote→activate flow.
+      //
+      // Once parity probe data validates that swap behavior would be
+      // safe, a follow-up commit can flip from instrumentation to
+      // actual swap by acting on routingDecision.chosenVenue.
+      let routingDiagnostic: Record<string, unknown> | null = null;
+      if (v7Enabled && resolvedSlPct) {
+        try {
+          const { resolveVenueRouting } = await import("./multiVenueRouter");
+          const routing = resolveVenueRouting(resolvedSlPct);
+          routingDiagnostic = {
+            tier: resolvedSlPct,
+            primary: routing.primary,
+            fallback: routing.fallback,
+            reason: routing.reason,
+            actualVenue: quote.venue,
+            wouldSwap: false, // not yet implemented; instrumentation only
+            fallbackDriftThresholdPct: routing.fallbackDriftThresholdPct
+          };
+          // Audit log: helps post-cutover analysis identify routing mismatches
+          if (quote.venue !== routing.primary) {
+            console.log(
+              `[MultiVenueRouter] Quote tier=${resolvedSlPct} actualVenue=${quote.venue} ` +
+              `routerPrimary=${routing.primary} fallback=${routing.fallback ?? "none"} ` +
+              `(instrumentation only — no swap)`
+            );
+          }
+        } catch (routerErr: any) {
+          console.warn(`[MultiVenueRouter] routing diagnostic failed: ${routerErr?.message ?? routerErr}`);
+        }
+      }
+
       const selectedTenorDaysRaw =
         quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedTenorDays))
           ? Number((quote.details as Record<string, unknown>).selectedTenorDays)
@@ -3639,6 +3679,9 @@ export const registerPilotRoutes = async (
                 }
               : null,
           venueSelection: {
+            // WS#1 (Bundle C, rev 6) — multi-venue routing diagnostic
+            // (instrumentation only; see routingDiagnostic block above)
+            multiVenueRouting: routingDiagnostic,
             selectedStrike:
               quote.details && Number.isFinite(Number((quote.details as Record<string, unknown>).selectedStrike))
                 ? Number((quote.details as Record<string, unknown>).selectedStrike).toFixed(10)
@@ -4983,6 +5026,41 @@ export const registerPilotRoutes = async (
         ...lockedQuote,
         premium: Number(premiumPricing.clientPremiumUsd.toFixed(4))
       });
+
+      // ── WS#0 (Bundle C, rev 6) — Pool ledger writes on successful activation ──
+      //
+      // Foxify pool gains the client premium (premium_in).
+      // Atticus pool loses the realized hedge cost (hedge_buy_out, signed -).
+      //
+      // Both writes are best-effort — failure logs but does not fail
+      // the user-facing flow (capital pool architecture is accounting
+      // infrastructure, not load-bearing for protection delivery).
+      //
+      // Until Foxify pre-funds, Foxify pool balance grows with each
+      // premium_in but withdrawal stays at $0 (no deposits exist to
+      // back the withdraw). When Foxify deposits via admin endpoint,
+      // the accumulated premium_in becomes withdrawable per T+7 lockup.
+      if (reservedProtection && execution && execution.status === "success") {
+        try {
+          const { recordActivationLedgerWrites } = await import("./poolLifecycleHooks");
+          const realizedHedgeCostUsd =
+            execution.executionPrice && execution.quantity
+              ? execution.executionPrice * execution.quantity
+              : 0;
+          await recordActivationLedgerWrites({
+            pool,
+            protectionId: reservedProtection.id,
+            clientPremiumUsd: Number(premiumPricing.clientPremiumUsd.toFixed(8)),
+            hedgeCostUsd: realizedHedgeCostUsd,
+            marketId: marketId,
+            externalOrderId: execution.externalOrderId || null
+          });
+        } catch (poolErr: any) {
+          console.warn(
+            `[Activate] WS#0 pool ledger write failed (non-fatal): ${poolErr?.message ?? poolErr}`
+          );
+        }
+      }
 
       // ── WS#3 ANTI-BOT: record successful activation for cooldown tracking ──
       // Sets the next-activate cooldown (60-330s random jitter) on this

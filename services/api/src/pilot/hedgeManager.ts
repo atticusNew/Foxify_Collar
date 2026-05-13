@@ -725,6 +725,33 @@ const executeSell = async (
         },
         soldAt: new Date().toISOString()
       });
+
+      // ── WS#0 (Bundle C, rev 6) — Pool ledger write: TP recovery proceeds ──
+      //
+      // Atticus pool gains hedge_sell_in (positive) when we successfully
+      // sell the option back to the venue. This is the inverse of the
+      // hedge_buy_out at activation; net Atticus pool position over a
+      // protection's lifecycle = hedge_sell_in − hedge_buy_out.
+      //
+      // For OTM-expired protections (no trigger, hedge sold via active
+      // salvage near expiry), this is the partial recovery of the
+      // upfront hedge cost. For triggered protections, this is the full
+      // payoff sale that funds the platform's payout obligation.
+      try {
+        const { recordTpSellLedgerWrite } = await import("./poolLifecycleHooks");
+        await recordTpSellLedgerWrite({
+          pool,
+          protectionId: hedge.protectionId,
+          proceedsUsd: sellResult.totalProceeds,
+          reason,
+          orderId: sellResult.orderId
+        });
+      } catch (poolErr: any) {
+        console.warn(
+          `[HedgeManager] WS#0 pool hedge_sell_in write failed for ${hedge.protectionId}: ${poolErr?.message ?? poolErr}`
+        );
+      }
+
       return "sold";
     }
 
