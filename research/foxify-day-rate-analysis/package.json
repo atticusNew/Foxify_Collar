@@ -1,0 +1,14 @@
+{
+  "name": "@atticus-research/foxify-day-rate-analysis",
+  "version": "0.1.0",
+  "description": "Paper analysis: Foxify pricing-model evolution. Day-rate vs. fixed-premium comparison. ANALYSIS ONLY — no pilot changes.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sim": "npx tsx src/simulate.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
