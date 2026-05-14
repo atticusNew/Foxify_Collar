@@ -67,12 +67,18 @@ import type { HedgeExecutor } from "./tightHedge";
 
 const HMAC_TIMESTAMP_TOLERANCE_MS = 60_000;
 
+const resolveAdminToken = (): string => {
+  // Read dynamically so tests can override env at runtime.
+  return process.env.PILOT_ADMIN_TOKEN || pilotConfig.adminToken || "";
+};
+
 const isAdminAuthorized = (req: FastifyRequest): boolean => {
   const token = String(req.headers["x-admin-token"] || "");
-  if (!pilotConfig.adminToken || !token) return false;
-  if (token.length !== pilotConfig.adminToken.length) return false;
+  const expected = resolveAdminToken();
+  if (!expected || !token) return false;
+  if (token.length !== expected.length) return false;
   try {
-    return timingSafeEqual(Buffer.from(token), Buffer.from(pilotConfig.adminToken));
+    return timingSafeEqual(Buffer.from(token), Buffer.from(expected));
   } catch {
     return false;
   }
