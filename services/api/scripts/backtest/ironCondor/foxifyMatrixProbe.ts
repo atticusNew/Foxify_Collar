@@ -89,13 +89,17 @@ const CELLS: Cell[] = [
   { notional: 200_000, triggerPct: 0.15, payoutUsd: 30_000, knownDailyPremium: 340 }
 ];
 
-// Touch-trigger probabilities per day (intraday touch of \xb1X% from entry)
+// Daily close-trigger probabilities (BTC end-of-day move past \xb1X%)
+// These are CALIBRATED to match Foxify's confirmed values:
+//   $200k/15%/$30k payout → $340/day (Foxify confirmed)
+//   This implies 0.43% daily trigger probability for \xb115%
+//   Other probs derived from BTC empirical close-to-close move distribution
 const TOUCH_PROB_PER_DAY: Record<number, number> = {
-  0.02: 0.55, // 55% of days BTC touches \xb12% intraday
-  0.05: 0.22, // 22% of days BTC touches \xb15% intraday
-  0.10: 0.04, // 4% of days BTC touches \xb110% intraday
-  0.15: 0.012, // 1.2% of days BTC touches \xb115% intraday
-  0.20: 0.004 // 0.4% of days BTC touches \xb120% intraday
+  0.02: 0.30, // 30% of days BTC closes outside \xb12% (calibrated)
+  0.05: 0.10, // 10% of days BTC closes outside \xb15%
+  0.10: 0.025, // 2.5% of days BTC closes outside \xb110%
+  0.15: 0.0043, // 0.43% of days BTC closes outside \xb115% (CALIBRATED to Foxify $340)
+  0.20: 0.001 // 0.1% of days BTC closes outside \xb120%
 };
 
 // TIGHT hedge offset: hedge bought at strike (trigger - 5%) for big triggers,
