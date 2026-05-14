@@ -59,6 +59,10 @@ import { buildCoverageReport } from "./coverageReport";
 import { resolveCoverageTargetSize } from "./quoteCoverage";
 import { resolvePremiumMarkupPctForQuote } from "./markupProfile";
 import { registerPilotRoutes } from "./pilot/routes";
+import { registerVolumeCoverRoutes } from "./volumeCover/volumeCoverRoutes";
+import { createHedgeExecutor } from "./volumeCover/hedgeExecutorAdapter";
+import { createSpotPriceSource } from "./volumeCover/spotPriceSource";
+import { startTriggerDetector } from "./volumeCover/triggerDetector";
 import { registerTreasuryRoutes } from "./pilot/treasuryRoutes";
 import { parseTreasuryConfig } from "./pilot/treasuryConfig";
 import { startTreasuryScheduler } from "./pilot/treasuryScheduler";
@@ -8206,6 +8210,61 @@ console.log(
 );
 
 await registerPilotRoutes(app, { deribit, deribitLive });
+
+// ────────── Volume Cover product (Foxify B2B) ──────────
+if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true") {
+  try {
+    const { createPilotVenueAdapter } = await import("./pilot/venue");
+    const bullishAdapter = createPilotVenueAdapter({
+      mode: "bullish_testnet",
+      falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+      deribit,
+      quoteTtlMs: 30000,
+      deribitQuotePolicy: "ask_or_mark_fallback",
+      deribitStrikeSelectionMode: "trigger_aligned",
+      deribitMaxTenorDriftDays: 3
+    });
+    const deribitAdapter = createPilotVenueAdapter({
+      mode: "deribit_live",
+      falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+      deribit,
+      quoteTtlMs: 30000,
+      deribitQuotePolicy: "ask_or_mark_fallback",
+      deribitStrikeSelectionMode: "trigger_aligned",
+      deribitMaxTenorDriftDays: 3
+    });
+
+    const useMockFills =
+      String(process.env.VOLUME_COVER_HEDGE_MOCK ?? "false").toLowerCase() === "true";
+    const hedgeExecutor = createHedgeExecutor({
+      bullish: bullishAdapter,
+      deribit: deribitAdapter,
+      mockFills: useMockFills
+    });
+    const spotSource = createSpotPriceSource();
+
+    await registerVolumeCoverRoutes(app, { hedgeExecutor, spotSource });
+    console.log(
+      `[VolumeCover] Registered routes (mockFills=${useMockFills}, ` +
+        `auth_disabled=${process.env.VOLUME_COVER_AUTH_DISABLED ?? "false"})`
+    );
+
+    if (String(process.env.VOLUME_COVER_TRIGGER_DETECTOR_ENABLED ?? "true").toLowerCase() === "true") {
+      const { getPilotPool } = await import("./pilot/db");
+      const vcPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+      startTriggerDetector({
+        pool: vcPool,
+        executor: hedgeExecutor,
+        spotSource
+      });
+      console.log(`[VolumeCover] Trigger detector started`);
+    }
+  } catch (err) {
+    console.error(`[VolumeCover] FAILED to register routes: ${(err as Error).message}`);
+  }
+} else {
+  console.log(`[VolumeCover] Disabled (VOLUME_COVER_ENABLED=false)`);
+}
 
 const treasuryConfig = parseTreasuryConfig();
 if (treasuryConfig.enabled) {
