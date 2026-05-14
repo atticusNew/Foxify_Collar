@@ -60,35 +60,44 @@ export type HedgeStructure = {
  *
  * Operator override via VOLUME_COVER_VENUE_ROUTING_JSON env.
  */
+/** Normalized to JS String() output (no trailing zeros). 0.10 → "0.1", 0.02 → "0.02". */
 const DEFAULT_ROUTING: Record<string, { primary: HedgeVenueChoice; fallback: HedgeVenueChoice | null }> = {
   "0.02": { primary: "bullish", fallback: "deribit" },
   "0.05": { primary: "bullish", fallback: "deribit" },
-  "0.10": { primary: "deribit", fallback: "bullish" },
+  "0.1":  { primary: "deribit", fallback: "bullish" },
   "0.15": { primary: "deribit", fallback: null }
+};
+
+const normalizeTriggerKey = (triggerPct: number): string => {
+  // Use a fixed-precision representation then strip trailing zeros so
+  // 0.10 and 0.1 both resolve to "0.1"; 0.020 and 0.02 both resolve to "0.02".
+  const fixed = triggerPct.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+  return fixed;
 };
 
 export const resolveHedgeVenue = (cell: CellDefinition): {
   primary: HedgeVenueChoice;
   fallback: HedgeVenueChoice | null;
 } => {
+  const key = normalizeTriggerKey(cell.triggerPct);
   const envRaw = process.env.VOLUME_COVER_VENUE_ROUTING_JSON;
   if (envRaw && envRaw.trim()) {
     try {
       const parsed = JSON.parse(envRaw);
-      const key = String(cell.triggerPct);
-      if (parsed[key]) {
+      // Try both normalized and raw keys to support either env format
+      const envEntry = parsed[key] ?? parsed[String(cell.triggerPct)];
+      if (envEntry) {
         return {
-          primary: parsed[key].primary || DEFAULT_ROUTING[key]?.primary || "bullish",
-          fallback: parsed[key].fallback === undefined
+          primary: envEntry.primary || DEFAULT_ROUTING[key]?.primary || "bullish",
+          fallback: envEntry.fallback === undefined
             ? (DEFAULT_ROUTING[key]?.fallback ?? null)
-            : parsed[key].fallback
+            : envEntry.fallback
         };
       }
     } catch {
       // Fall through to default on parse error
     }
   }
-  const key = String(cell.triggerPct);
   return DEFAULT_ROUTING[key] || { primary: "bullish", fallback: "deribit" };
 };
 
@@ -217,12 +226,12 @@ export const buildHedgeStructure = (params: {
 const UNIT_COST_BY_TRIGGER: Record<string, number> = {
   "0.02": 90,   // ~$181/strangle ÷ 2 legs ÷ ~1 BTC
   "0.05": 50,
-  "0.10": 27,
+  "0.1":  27,
   "0.15": 65
 };
 
 export const estimateOptionUnitCostUsdc = (cell: CellDefinition): number => {
-  const key = String(cell.triggerPct);
+  const key = normalizeTriggerKey(cell.triggerPct);
   return UNIT_COST_BY_TRIGGER[key] ?? 100;
 };
 
