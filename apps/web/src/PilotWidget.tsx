@@ -1,5 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { API_BASE } from "./config";
+import {
+  API_BASE,
+  PILOT_DEPRECATED,
+  PILOT_DEPRECATED_HEADLINE,
+  PILOT_DEPRECATED_DETAIL
+} from "./config";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -548,6 +553,10 @@ export function PilotWidget() {
   }, []);
 
   const handleOpenProtected = useCallback(async () => {
+    if (PILOT_DEPRECATED) {
+      setActivateError(PILOT_DEPRECATED_HEADLINE);
+      return;
+    }
     if (!livePrice || !ready || !positionType || !stopLoss) return;
     setActivating(true); setActivateError(null);
     try {
@@ -599,6 +608,10 @@ export function PilotWidget() {
   // a useful upgrade path for users with pre-existing local-only rows.
 
   const handleAddProtection = useCallback(async (posId: string) => {
+    if (PILOT_DEPRECATED) {
+      setActivateError(PILOT_DEPRECATED_HEADLINE);
+      return;
+    }
     const pos = positions.find(p => p.id === posId);
     if (!pos || pos.protectionId || !livePrice) return;
     setProtectingPosId(posId);
@@ -816,6 +829,26 @@ export function PilotWidget() {
           <span style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: (balance + uPnl) >= INIT_BAL ? "var(--success)" : "var(--text)" }}>{fmtWhole(Math.round(balance + uPnl))}</span>
         </div>
 
+        {PILOT_DEPRECATED && (
+          <div
+            data-testid="pilot-deprecation-banner"
+            style={{
+              border: "2px solid #c0392b",
+              background: "#2a1717",
+              padding: "10px 12px",
+              borderRadius: 8,
+              marginBottom: 14
+            }}
+          >
+            <div style={{ fontWeight: 700, color: "#ff6b5d", fontSize: 13, marginBottom: 4 }}>
+              {PILOT_DEPRECATED_HEADLINE}
+            </div>
+            <div style={{ color: "#ddd", fontSize: 12, lineHeight: 1.4 }}>
+              {PILOT_DEPRECATED_DETAIL}
+            </div>
+          </div>
+        )}
+
         {toast && <Toast message={toast} onDone={() => setToast(null)} />}
 
         {/* ── FORM ── */}
@@ -884,7 +917,7 @@ export function PilotWidget() {
               )}
             </>}
           </div>
-          <button onClick={handleOpenProtected} disabled={!ready || activating || !livePrice} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer", background: "linear-gradient(135deg, var(--accent), var(--accent-2))", color: "#fff", opacity: (!ready || activating || !livePrice) ? 0.5 : 1 }}>{activating ? "Opening..." : `Open + Protect (${fmt(biweeklyDailyRate)}/day)`}</button>
+          <button onClick={handleOpenProtected} disabled={PILOT_DEPRECATED || !ready || activating || !livePrice} style={{ width: "100%", padding: "12px 0", borderRadius: 10, border: "none", fontSize: 14, fontWeight: 600, cursor: PILOT_DEPRECATED ? "not-allowed" : "pointer", background: PILOT_DEPRECATED ? "var(--card-2)" : "linear-gradient(135deg, var(--accent), var(--accent-2))", color: PILOT_DEPRECATED ? "var(--muted)" : "#fff", opacity: (PILOT_DEPRECATED || !ready || activating || !livePrice) ? 0.5 : 1 }}>{PILOT_DEPRECATED ? "Pilot concluded — no new protections" : (activating ? "Opening..." : `Open + Protect (${fmt(biweeklyDailyRate)}/day)`)}</button>
         </div>
 
         {/* ── ACTIVE POSITIONS ── */}

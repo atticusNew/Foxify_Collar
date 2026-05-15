@@ -27,3 +27,24 @@ export const PILOT_SIM_TRIGGER_TOKEN = import.meta.env.VITE_PILOT_INTERNAL_TOKEN
 export const PILOT_TERMS_VERSION = (import.meta.env.VITE_PILOT_TERMS_VERSION ?? "v1.0").trim() || "v1.0";
 export const PILOT_ACTIVATION_ENABLED = import.meta.env.VITE_PILOT_ACTIVATION_ENABLED === "true";
 export const PILOT_ACCESS_CODE = (import.meta.env.VITE_PILOT_ACCESS_CODE ?? "").trim();
+
+// Pilot deprecation banner — added during pilot exit (Phase F).
+// DEFAULT: deprecated mode ON (banner shown, activations blocked client-side).
+// To re-enable for future use (e.g., a new pricing experiment or a CEO-led
+// reuse of this product flow), set VITE_PILOT_DEPRECATED=false in the
+// frontend env and redeploy. Server-side `PILOT_ACTIVATION_ENABLED` env
+// var is the authoritative block; this banner is the UX layer.
+//
+// Banner contents are env-tunable too:
+//   VITE_PILOT_DEPRECATED_HEADLINE = override the headline string
+//   VITE_PILOT_DEPRECATED_DETAIL   = override the detail paragraph
+export const PILOT_DEPRECATED =
+  (import.meta.env.VITE_PILOT_DEPRECATED ?? "true") !== "false";
+export const PILOT_DEPRECATED_HEADLINE = (
+  import.meta.env.VITE_PILOT_DEPRECATED_HEADLINE ??
+  "Pilot has concluded — no new protections available"
+).toString();
+export const PILOT_DEPRECATED_DETAIL = (
+  import.meta.env.VITE_PILOT_DEPRECATED_DETAIL ??
+  "Atticus is no longer accepting new pilot protections. Existing positions are unaffected and will be honored through expiry. For questions, contact your Atticus operator."
+).toString();

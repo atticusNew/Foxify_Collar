@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, PILOT_TERMS_VERSION } from "./config";
+import {
+  API_BASE,
+  PILOT_TERMS_VERSION,
+  PILOT_DEPRECATED,
+  PILOT_DEPRECATED_HEADLINE,
+  PILOT_DEPRECATED_DETAIL
+} from "./config";
 
 type TierLevel = {
   name: string;
@@ -634,7 +640,10 @@ export function PilotApp() {
     quoteState === "ready" && quote?.quote?.expiresAt ? Date.parse(quote.quote.expiresAt) > Date.now() : false;
   const quoteLocked = quoteFresh && Boolean(quote?.quote?.quoteId);
   const quoteCapWarning = quote?.limits?.dailyCapExceededOnActivate === true;
-  const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning;
+  // Deprecation flag — when on, activations are hard-blocked client-side
+  // regardless of quote freshness. Server-side `PILOT_ACTIVATION_ENABLED`
+  // is the authoritative gate; this is the UX layer.
+  const canActivate = canQuote && Boolean(quote?.quote?.quoteId) && quoteFresh && !quoteCapWarning && !PILOT_DEPRECATED;
   const showQuoteSection = quoteState !== "idle" || Boolean(quote) || Boolean(error);
 
   const renewWindowReached = useMemo(() => {
@@ -1207,6 +1216,10 @@ export function PilotApp() {
   };
 
   const activateProtection = async () => {
+    if (PILOT_DEPRECATED) {
+      setError(PILOT_DEPRECATED_HEADLINE);
+      return;
+    }
     if (!canActivate) {
       setError("Get a fresh quote before activation.");
       return;
@@ -1716,6 +1729,27 @@ export function PilotApp() {
             </button>
           )}
         </div>
+
+        {PILOT_DEPRECATED && (
+          <div
+            className="section"
+            data-testid="pilot-deprecation-banner"
+            style={{
+              border: "2px solid #c0392b",
+              background: "#2a1717",
+              padding: "12px 16px",
+              borderRadius: 8,
+              marginBottom: 12
+            }}
+          >
+            <div style={{ fontWeight: 700, color: "#ff6b5d", fontSize: 14, marginBottom: 4 }}>
+              {PILOT_DEPRECATED_HEADLINE}
+            </div>
+            <div style={{ color: "#ddd", fontSize: 13, lineHeight: 1.5 }}>
+              {PILOT_DEPRECATED_DETAIL}
+            </div>
+          </div>
+        )}
 
         <div className="section section-compact">
           <div className="quote-market-banner quote-market-banner-micro">
