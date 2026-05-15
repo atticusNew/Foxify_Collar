@@ -14,3 +14,5 @@ docs/pilot-reports/raw-logs/*.txt
 !docs/pilot-reports/raw-logs/README.md
 docs/pilot-reports/raw-pilot-data/*/
 !docs/pilot-reports/raw-pilot-data/README.md
+.env.exit-assessment
+.env.*
