@@ -172,12 +172,26 @@ export const buildHedgeStructure = (params: {
     entryBtcPrice: params.entryBtcPrice,
     contractGranularityBtc: params.contractGranularityBtc
   });
-  const horizonDays = params.expiryHorizonDays ?? 1;
+  // P1a (2026-05-16): default tenor 1d → 14d (matched-tenor hedge).
+  // Production previously had no rollover for the 1-day hedge while
+  // VC positions can live up to 14 days — a 14d matched hedge eliminates
+  // that uncovered-from-day-2 gap. See PLAN §7 P1a + §13.
+  const horizonDays = params.expiryHorizonDays ?? 14;
   const expiryDate = new Date(Date.now() + horizonDays * 86_400_000);
-  // Snap to 08:00 UTC (typical option expiry for Bullish/Deribit)
+  // Snap to 08:00 UTC (typical option expiry boundary on Bullish/Deribit).
   expiryDate.setUTCHours(8, 0, 0, 0);
+  // If snap pulled us back before now (e.g., we're after 08:00 today
+  // and asked for "tomorrow"), advance one day.
   if (expiryDate.getTime() < Date.now()) {
     expiryDate.setUTCDate(expiryDate.getUTCDate() + 1);
+  }
+  // Sanity: matched-tenor must be ≥ horizon - 1 day (after 08:00 snap).
+  // For 14d horizon, expiry must be ≥ 13 days out.
+  if (horizonDays >= 14) {
+    const minExpiryMs = Date.now() + (horizonDays - 1) * 86_400_000;
+    if (expiryDate.getTime() < minExpiryMs) {
+      expiryDate.setUTCDate(expiryDate.getUTCDate() + 1);
+    }
   }
   const expiryIso = expiryDate.toISOString();
 
@@ -212,22 +226,24 @@ export const buildHedgeStructure = (params: {
 
 /**
  * Rough per-BTC option unit cost estimate, used when venue mark not yet
- * available (e.g., quote phase). Calibrated from salvage-band stress
- * test reference numbers:
- *   ±2% / 1% hedge → ~$227/day per cell strangle = ~$181/BTC unit cost
- *   ±5% / 3% hedge → ~$127/day
- *   ±10% / 5% hedge → ~$67/day
- *   ±15% / 7% hedge → ~$163/day
+ * available (e.g., quote phase). 14-day TENOR estimates (P1a 2026-05-16
+ * — switched from 1-day rolling to 14-day matched-tenor hedge).
+ *
+ * BS reference at $80k spot, vol 0.65, r 0.045, T=14/365:
+ *   ±2% trigger / 1% hedge: long put 1% OTM ≈ $1,500/BTC; same for call
+ *   ±5% trigger / 3% hedge: long put 3% OTM ≈ $700/BTC
+ *   ±10% trigger / 5% hedge: long put 5% OTM ≈ $300/BTC
+ *   ±15% trigger / 7% hedge: long put 7% OTM ≈ $150/BTC
  *
  * Returns USDC unit cost for ONE BTC of one leg (put OR call). Actual
  * cost computed by venue at execute time; this is just for capacity
  * planning / routing decisions.
  */
 const UNIT_COST_BY_TRIGGER: Record<string, number> = {
-  "0.02": 90,   // ~$181/strangle ÷ 2 legs ÷ ~1 BTC
-  "0.05": 50,
-  "0.1":  27,
-  "0.15": 65
+  "0.02": 1500,
+  "0.05": 700,
+  "0.1":  300,
+  "0.15": 150
 };
 
 export const estimateOptionUnitCostUsdc = (cell: CellDefinition): number => {

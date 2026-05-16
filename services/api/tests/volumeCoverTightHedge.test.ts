@@ -88,7 +88,7 @@ test("buildHedgeStructure produces 2 legs (put + call) with INSIDE-trigger strik
   assert.ok(call.strikeUsdc < 81_600);
 });
 
-test("buildHedgeStructure expiry snaps to 08:00 UTC tomorrow", () => {
+test("buildHedgeStructure default tenor is 14 days, snapped to 08:00 UTC", () => {
   const cell = findCellById("50k_2pct_1k")!;
   const structure = buildHedgeStructure({
     positionId: "test-pos-2",
@@ -98,7 +98,24 @@ test("buildHedgeStructure expiry snaps to 08:00 UTC tomorrow", () => {
   const expiry = new Date(structure.legs[0].expiryIso);
   assert.equal(expiry.getUTCHours(), 8);
   assert.equal(expiry.getUTCMinutes(), 0);
-  assert.ok(expiry.getTime() > Date.now()); // future
+  // P1a: matched-tenor 14d default. Allow 13-15 days due to UTC snap.
+  const daysOut = (expiry.getTime() - Date.now()) / 86_400_000;
+  assert.ok(daysOut >= 13 && daysOut <= 15, `expected 13-15d expiry, got ${daysOut.toFixed(2)}d`);
+});
+
+test("buildHedgeStructure honors expiryHorizonDays override (1d for testing)", () => {
+  const cell = findCellById("50k_2pct_1k")!;
+  const structure = buildHedgeStructure({
+    positionId: "test-pos-3",
+    cell,
+    entryBtcPrice: 80_000,
+    expiryHorizonDays: 1
+  });
+  const expiry = new Date(structure.legs[0].expiryIso);
+  assert.equal(expiry.getUTCHours(), 8);
+  const daysOut = (expiry.getTime() - Date.now()) / 86_400_000;
+  // 1d horizon snapped to 08:00 UTC: between 0 and 2 days
+  assert.ok(daysOut >= 0 && daysOut <= 2, `expected 0-2d expiry, got ${daysOut.toFixed(2)}d`);
 });
 
 test("estimateOptionUnitCostUsdc returns positive values for all matrix triggers", () => {
