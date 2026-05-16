@@ -22,7 +22,7 @@ import type { Pool } from "pg";
 import type { CellDefinition } from "./matrix";
 import { computeTriggerPrices } from "./matrix";
 import {
-  buildHedgeStructure,
+  buildHedgeStructureWithVenueGrid,
   executeHedgeStructure,
   type HedgeExecutor,
   type HedgeVenueChoice
@@ -122,8 +122,10 @@ export const openPosition = async (
     throw new Error(`volume_cover_position_insert_failed: ${err?.message ?? err}`);
   }
 
-  // Build hedge structure (P1c: vol-buffered sizing + grid snap)
-  const structure = buildHedgeStructure({
+  // Build hedge structure (P1c: vol-buffered sizing + grid snap +
+  // venue strike grid lookup when provider wired). Falls back to
+  // static grid snap if no provider or live fetch fails.
+  const structure = await buildHedgeStructureWithVenueGrid({
     positionId,
     cell: req.cell,
     entryBtcPrice: req.pairEntryBtcPrice,

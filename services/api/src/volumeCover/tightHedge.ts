@@ -27,6 +27,7 @@ import {
   snapHedgeStrike,
   type VolRegime
 } from "./strikeGrid";
+import { pickClosestStrike } from "./venueStrikeGrid";
 
 export type HedgeVenueChoice = "bullish" | "deribit";
 
@@ -174,6 +175,13 @@ export const buildHedgeStructure = (params: {
   regime?: VolRegime | null;
   /** P1c: optional grid-step override (e.g., from venue strike grid lookup). */
   gridStepUsdcOverride?: number;
+  /**
+   * P1c venueStrikeGrid: optional pre-resolved strikes from live
+   * venue chain. When provided, take precedence over static grid snap.
+   * Caller is buildHedgeStructureWithVenueGrid() typically.
+   */
+  putStrikeOverrideUsdc?: number;
+  callStrikeOverrideUsdc?: number;
 }): HedgeStructure => {
   const venue = resolveHedgeVenue(params.cell);
   // P1c: compute ideal strikes, then snap to venue grid (round toward
@@ -188,20 +196,24 @@ export const buildHedgeStructure = (params: {
     entryBtcPrice: params.entryBtcPrice
   });
   const gridStep = params.gridStepUsdcOverride ?? getGridStepUsdc(venue.primary);
-  const putStrikeBtc = snapHedgeStrike({
-    optionKind: "put",
-    idealStrikeUsdc: idealPutStrike,
-    spotUsdc: params.entryBtcPrice,
-    triggerBoundaryUsdc: triggerLowBtc,
-    gridStepUsdc: gridStep
-  });
-  const callStrikeBtc = snapHedgeStrike({
-    optionKind: "call",
-    idealStrikeUsdc: idealCallStrike,
-    spotUsdc: params.entryBtcPrice,
-    triggerBoundaryUsdc: triggerHighBtc,
-    gridStepUsdc: gridStep
-  });
+  const putStrikeBtc =
+    params.putStrikeOverrideUsdc ??
+    snapHedgeStrike({
+      optionKind: "put",
+      idealStrikeUsdc: idealPutStrike,
+      spotUsdc: params.entryBtcPrice,
+      triggerBoundaryUsdc: triggerLowBtc,
+      gridStepUsdc: gridStep
+    });
+  const callStrikeBtc =
+    params.callStrikeOverrideUsdc ??
+    snapHedgeStrike({
+      optionKind: "call",
+      idealStrikeUsdc: idealCallStrike,
+      spotUsdc: params.entryBtcPrice,
+      triggerBoundaryUsdc: triggerHighBtc,
+      gridStepUsdc: gridStep
+    });
   const { contractsBtc, intrinsicAtTriggerUsdc } = computeHedgeContractSize({
     cell: params.cell,
     entryBtcPrice: params.entryBtcPrice,
@@ -258,6 +270,71 @@ export const buildHedgeStructure = (params: {
     ],
     expectedTotalCostUsdc: expectedPut + expectedCall
   };
+};
+
+/**
+ * P1c venue-aware build: resolves strikes via live venue chain
+ * (60s cached) when a provider is wired; falls back to static grid
+ * snap when not. Otherwise identical to buildHedgeStructure.
+ *
+ * Caller chain:
+ *   - When operator has wired setVenueOptionChainProvider in server.ts,
+ *     this function picks the closest existing strike from the live
+ *     venue grid (Bullish or Deribit, per resolveHedgeVenue).
+ *   - When provider is null OR fetch fails, returns same result as
+ *     synchronous buildHedgeStructure (static grid step, round-toward-spot).
+ *
+ * Use this from positionLifecycle.openPosition for production paths.
+ */
+export const buildHedgeStructureWithVenueGrid = async (params: {
+  positionId: string;
+  cell: CellDefinition;
+  entryBtcPrice: number;
+  expiryHorizonDays?: number;
+  contractGranularityBtc?: number;
+  regime?: VolRegime | null;
+}): Promise<HedgeStructure> => {
+  const venue = resolveHedgeVenue(params.cell);
+  const horizonDays = params.expiryHorizonDays ?? 14;
+  const expiryDate = new Date(Date.now() + horizonDays * 86_400_000);
+  expiryDate.setUTCHours(8, 0, 0, 0);
+  if (expiryDate.getTime() < Date.now()) {
+    expiryDate.setUTCDate(expiryDate.getUTCDate() + 1);
+  }
+  if (horizonDays >= 14) {
+    const minExpiryMs = Date.now() + (horizonDays - 1) * 86_400_000;
+    if (expiryDate.getTime() < minExpiryMs) {
+      expiryDate.setUTCDate(expiryDate.getUTCDate() + 1);
+    }
+  }
+  const expiryIso = expiryDate.toISOString();
+
+  const triggerLowBtc = params.entryBtcPrice * (1 - params.cell.triggerPct);
+  const triggerHighBtc = params.entryBtcPrice * (1 + params.cell.triggerPct);
+  const idealPut = params.entryBtcPrice * (1 - params.cell.hedgePct);
+  const idealCall = params.entryBtcPrice * (1 + params.cell.hedgePct);
+
+  const [livePut, liveCall] = await Promise.all([
+    pickClosestStrike({
+      query: { venue: venue.primary, expiryIso, optionKind: "put" },
+      idealStrikeUsdc: idealPut,
+      spotUsdc: params.entryBtcPrice,
+      triggerBoundaryUsdc: triggerLowBtc
+    }).catch(() => null),
+    pickClosestStrike({
+      query: { venue: venue.primary, expiryIso, optionKind: "call" },
+      idealStrikeUsdc: idealCall,
+      spotUsdc: params.entryBtcPrice,
+      triggerBoundaryUsdc: triggerHighBtc
+    }).catch(() => null)
+  ]);
+
+  return buildHedgeStructure({
+    ...params,
+    putStrikeOverrideUsdc: livePut ?? undefined,
+    callStrikeOverrideUsdc: liveCall ?? undefined,
+    expiryHorizonDays: horizonDays
+  });
 };
 
 /**
