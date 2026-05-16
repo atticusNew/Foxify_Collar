@@ -37,10 +37,22 @@ export type TriggerDetectorConfig = {
   flashWarnPctMove: number;
 };
 
+// Default cadence tightened from 10s → 3s per CEO flow analysis
+// (2026-05-16 controller convo). Foxify perps fire SL near-instant on
+// their venue; if our trigger lags by 10s, perceived "where's the
+// payout" gap. 3s is the right balance: closes the gap without burning
+// excess spot-source API calls. Tunable via env.
 const DEFAULT_CONFIG: TriggerDetectorConfig = {
-  pollIntervalMs: 10_000,
+  pollIntervalMs: 3_000,
   maxPriceAgeMs: 30_000,
   flashWarnPctMove: 0.05
+};
+
+const readEnvConfig = (): Partial<TriggerDetectorConfig> => {
+  const out: Partial<TriggerDetectorConfig> = {};
+  const tick = Number(process.env.VOLUME_COVER_TRIGGER_DETECTOR_TICK_MS);
+  if (Number.isFinite(tick) && tick >= 1_000) out.pollIntervalMs = tick;
+  return out;
 };
 
 let runningHandle: NodeJS.Timeout | null = null;
@@ -52,7 +64,12 @@ export const startTriggerDetector = (params: {
   spotSource: SpotPriceSource;
   config?: Partial<TriggerDetectorConfig>;
 }): { stop: () => void } => {
-  const config: TriggerDetectorConfig = { ...DEFAULT_CONFIG, ...params.config };
+  // Precedence: explicit caller config > env override > DEFAULT_CONFIG
+  const config: TriggerDetectorConfig = {
+    ...DEFAULT_CONFIG,
+    ...readEnvConfig(),
+    ...params.config
+  };
 
   if (runningHandle !== null) {
     console.warn(`[volumeCover/triggerDetector] already running; ignoring start`);
