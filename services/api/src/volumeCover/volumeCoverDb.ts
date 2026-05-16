@@ -148,6 +148,23 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
     );
   `);
 
+  // ─── P1f (2026-05-16): hedge manager telemetry (per-tick log) ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS volume_cover_hedge_leg_telemetry (
+      id BIGSERIAL PRIMARY KEY,
+      leg_id TEXT NOT NULL,
+      position_id TEXT NOT NULL,
+      retained_role TEXT,
+      current_value_usdc NUMERIC(20, 8),
+      initial_cost_usdc NUMERIC(20, 8),
+      spot_btc NUMERIC(20, 8),
+      iv_annualized NUMERIC(8, 6),
+      rule_evaluated TEXT NOT NULL,
+      action TEXT NOT NULL,
+      cycled_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
   // Index creation — best-effort, pg-mem compatible.
   const safeIdx = async (sql: string): Promise<void> => {
     try { await pool.query(sql); } catch { /* index may already exist */ }
@@ -160,6 +177,8 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeIdx(`CREATE INDEX idx_volume_cover_salvage_pos ON volume_cover_salvage_event (position_id)`);
   await safeIdx(`CREATE INDEX idx_volume_cover_salvage_time ON volume_cover_salvage_event (triggered_at DESC)`);
   await safeIdx(`CREATE INDEX idx_vc_ladder_fingerprint ON volume_cover_ladder_netting_event (fingerprint_hash, created_at)`);
+  await safeIdx(`CREATE INDEX idx_vc_hm_telem_leg ON volume_cover_hedge_leg_telemetry (leg_id, cycled_at DESC)`);
+  await safeIdx(`CREATE INDEX idx_vc_hm_telem_time ON volume_cover_hedge_leg_telemetry (cycled_at DESC)`);
 };
 
 /**

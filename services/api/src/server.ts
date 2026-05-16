@@ -63,6 +63,7 @@ import { registerVolumeCoverRoutes } from "./volumeCover/volumeCoverRoutes";
 import { createHedgeExecutor } from "./volumeCover/hedgeExecutorAdapter";
 import { createSpotPriceSource } from "./volumeCover/spotPriceSource";
 import { startTriggerDetector } from "./volumeCover/triggerDetector";
+import { startHedgeManager } from "./volumeCover/volumeCoverHedgeManager";
 import { registerTreasuryRoutes } from "./pilot/treasuryRoutes";
 import { parseTreasuryConfig } from "./pilot/treasuryConfig";
 import { startTreasuryScheduler } from "./pilot/treasuryScheduler";
@@ -8258,6 +8259,28 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
         spotSource
       });
       console.log(`[VolumeCover] Trigger detector started`);
+    }
+
+    // P1f: VC hedge manager (60s tick) — manages Atticus-retained legs
+    // post-Foxify-close OR post-trigger via stub TP rules. Spot+IV
+    // source falls back to spotSource + fallback IV from env.
+    if (String(process.env.VOLUME_COVER_HEDGE_MANAGER_ENABLED ?? "true").toLowerCase() === "true") {
+      const { getPilotPool } = await import("./pilot/db");
+      const vcPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+      const fallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.65);
+      startHedgeManager({
+        pool: vcPool,
+        executor: hedgeExecutor,
+        spotIvSource: async () => {
+          const spot = await spotSource();
+          return {
+            spotBtcUsdc: spot.spotBtcPrice,
+            ivAnnualized: fallbackIv,
+            asOfMs: spot.asOfMs
+          };
+        }
+      });
+      console.log(`[VolumeCover] Hedge manager started (stub rules: 1+7+12+W1)`);
     }
   } catch (err) {
     console.error(`[VolumeCover] FAILED to register routes: ${(err as Error).message}`);

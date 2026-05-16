@@ -65,6 +65,10 @@ import {
   renderWeeklySettlementMarkdown
 } from "./weeklyReconciler";
 import { runOneDetectionCycle, type SpotPriceSource } from "./triggerDetector";
+import {
+  runOneHedgeManagerTick,
+  type SpotIvSource
+} from "./volumeCoverHedgeManager";
 import type { HedgeExecutor } from "./tightHedge";
 import {
   classifyVolumeCoverRegime,
@@ -189,6 +193,8 @@ export type RegisterVolumeCoverRoutesOptions = {
   hedgeExecutor: HedgeExecutor;
   /** Required: live spot source for trigger detector + Foxify entry-price sanity. */
   spotSource: SpotPriceSource;
+  /** Optional: spot+IV source for hedge manager; falls back to spotSource + fallbackIv. */
+  spotIvSource?: SpotIvSource;
   /** Optional: skip schema migration (tests provide pre-migrated pg-mem). */
   skipSchema?: boolean;
 };
@@ -670,6 +676,36 @@ export const registerVolumeCoverRoutes = async (
       return reply.send(cycle);
     } catch (err) {
       return reply.code(500).send({ error: "cycle_failed", message: (err as Error).message });
+    }
+  });
+
+  // P1f: manual hedge manager tick (ops + smoke testing)
+  app.post("/volume-cover/admin/hedge-manager/run", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const dryRun = String((req.query as any)?.dryRun ?? "false").toLowerCase() === "true";
+    try {
+      // Build a SpotIvSource from the SpotPriceSource if not provided.
+      // Falls back to env-configured fallback IV.
+      const spotIvSource: SpotIvSource =
+        opts.spotIvSource ??
+        (async () => {
+          const spot = await opts.spotSource();
+          const fallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.65);
+          return {
+            spotBtcUsdc: spot.spotBtcPrice,
+            ivAnnualized: fallbackIv,
+            asOfMs: spot.asOfMs
+          };
+        });
+      const result = await runOneHedgeManagerTick({
+        pool,
+        executor: opts.hedgeExecutor,
+        spotIvSource,
+        dryRun
+      });
+      return reply.send(result);
+    } catch (err) {
+      return reply.code(500).send({ error: "hedge_manager_tick_failed", message: (err as Error).message });
     }
   });
 };
