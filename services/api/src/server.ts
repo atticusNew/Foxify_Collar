@@ -8261,26 +8261,46 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
       console.log(`[VolumeCover] Trigger detector started`);
     }
 
-    // P1f: VC hedge manager (60s tick) — manages Atticus-retained legs
-    // post-Foxify-close OR post-trigger via stub TP rules. Spot+IV
-    // source falls back to spotSource + fallback IV from env.
+    // P1f + P2.5: VC hedge manager (60s tick) — manages Atticus-
+    // retained legs via the 12-rule TP curve. Spot+IV source uses the
+    // existing Deribit IV cache (15s TTL) for live ATM IV; rule 11
+    // (vol-spike) compares current IV vs 60min trailing baseline,
+    // which works correctly only when IV is real and time-varying.
+    // Falls back to env-configured constant IV if the cache returns
+    // its own fallback (Deribit unreachable).
     if (String(process.env.VOLUME_COVER_HEDGE_MANAGER_ENABLED ?? "true").toLowerCase() === "true") {
       const { getPilotPool } = await import("./pilot/db");
       const vcPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
-      const fallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.65);
+      const envFallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.65);
       startHedgeManager({
         pool: vcPool,
         executor: hedgeExecutor,
         spotIvSource: async () => {
           const spot = await spotSource();
+          let ivAnnualized = envFallbackIv;
+          try {
+            // ivCache is module-level below; it returns Decimal in
+            // either percent (Deribit mark_iv) or fraction form.
+            // normalizeIvValue scales percent → fraction so the
+            // ivAnnualized field stays in [0, ~5] consistent with
+            // bsPut/bsCall expectations.
+            const raw = await ivCache.getAtmIv("BTC");
+            const n = Number(raw.toString());
+            ivAnnualized = n > 1.5 ? n / 100 : n;
+            if (!Number.isFinite(ivAnnualized) || ivAnnualized <= 0) {
+              ivAnnualized = envFallbackIv;
+            }
+          } catch {
+            // venue cache hiccup; fallback IV
+          }
           return {
             spotBtcUsdc: spot.spotBtcPrice,
-            ivAnnualized: fallbackIv,
+            ivAnnualized,
             asOfMs: spot.asOfMs
           };
         }
       });
-      console.log(`[VolumeCover] Hedge manager started (stub rules: 1+7+12+W1)`);
+      console.log(`[VolumeCover] Hedge manager started (full 12-rule curve; live IV via deribitIvCache)`);
     }
   } catch (err) {
     console.error(`[VolumeCover] FAILED to register routes: ${(err as Error).message}`);
