@@ -76,7 +76,12 @@ import {
   type VolRegime
 } from "./strikeGrid";
 import { getCurrentRegime } from "../pilot/regimeClassifier";
-import { checkAntiBot, recordActivation, recordTriggerForFingerprint } from "./antiBot";
+import {
+  checkAntiBot,
+  recordActivation,
+  recordTriggerForFingerprint,
+  recordPatternStrike
+} from "./antiBot";
 
 // ────────────────────── Auth helpers ──────────────────────
 
@@ -362,11 +367,11 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
-    // P1g: anti-bot Layers 1 (same-cell repeat block) + 2 (cooldown).
-    // Bypass via X-Bypass-Antibot header equal to admin token.
+    // P1g + P3: anti-bot Layers 1-4. Bypass via X-Bypass-Antibot
+    // header equal to admin token.
     const bypassHeader = String(req.headers["x-bypass-antibot"] || "");
-    const bypass = bypassHeader.length > 0 &&
-      bypassHeader === resolveAdminToken();
+    const bypass = bypassHeader.length > 0 && bypassHeader === resolveAdminToken();
+    let surchargeMultiplier = 1.0;
     if (body.fingerprintHash && !bypass) {
       const decision = await checkAntiBot({
         pool,
@@ -374,6 +379,14 @@ export const registerVolumeCoverRoutes = async (
         cellId: cell.cellId
       });
       if (!decision.allowed) {
+        // P3 Layer 4: pattern-strike when Layer 1 blocks (repeat attempt)
+        if (decision.reason === "layer1_repeat_cell_window") {
+          try {
+            await recordPatternStrike({ pool, fingerprintHash: body.fingerprintHash });
+          } catch (err) {
+            req.log.warn(`[volume-cover/activate] recordPatternStrike failed: ${(err as Error).message}`);
+          }
+        }
         return reply.code(429).send({
           error: "antibot_blocked",
           reason: decision.reason,
@@ -381,18 +394,31 @@ export const registerVolumeCoverRoutes = async (
           retryAfterMs: decision.retryAfterMs
         });
       }
+      surchargeMultiplier = decision.surchargeMultiplier ?? 1.0;
     }
 
     // Salvage / loss / liability metrics for guard composer
     const metrics = await readSalvageMetrics(pool);
     const totalActiveLiability = await sumActivePayoutLiability(pool);
+
+    // P3: fetch live DVOL for stress-pause guard
+    let currentDvolForGuard = 0;
+    let regimeStatusForLog: any = null;
+    try {
+      const status = await getCurrentRegime();
+      regimeStatusForLog = status;
+      currentDvolForGuard = status.dvol ?? 0;
+    } catch (err) {
+      req.log.warn(`[volume-cover/activate] regime fetch (guard) failed: ${(err as Error).message}`);
+    }
+
     const guardVerdict = checkAllGuardsForVolumeCoverActivate({
       foxifyPoolBalanceUsdc: 0,
       totalActivePayoutLiabilityUsdc: totalActiveLiability,
       newPayoutLiabilityUsdc: cell.payoutUsdc,
       dbTrackedAtticusBalanceUsdc: null,
       venueReportedAtticusBalanceUsdc: null,
-      currentDvol: 0,
+      currentDvol: currentDvolForGuard,
       lastDvolThresholdCrossingMs: null,
       bullishHealth: { recent5xxRate: 0, recentP95LatencyMs: 0, sampleCount: 0 },
       todayPremiumIncomeUsdc: 0,
@@ -423,10 +449,13 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
-    const dailyPremium = resolveDailyPremium({
+    const baseDailyPremium = resolveDailyPremium({
       cell,
       dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc
     }).dailyPremiumUsdc;
+    // P3 Layer 4: apply surcharge multiplier if fingerprint is in
+    // surcharge state. Default 1.0 (no change).
+    const dailyPremium = Math.round(baseDailyPremium * surchargeMultiplier);
 
     // P1c: vol-buffered sizing. Fetch current regime via DVOL → 4-bucket
     // VC classification. Fall back to pilot regime classifier; null on
@@ -458,7 +487,8 @@ export const registerVolumeCoverRoutes = async (
         }
       });
 
-      // P1g: record activation for Layer 2 cooldown
+      // P1g + P3: record activation for Layer 2 cooldown. Surcharge
+      // applied to dailyPremium above is logged for audit.
       if (body.fingerprintHash) {
         try {
           await recordActivation({
@@ -469,6 +499,9 @@ export const registerVolumeCoverRoutes = async (
         } catch (err) {
           req.log.warn(`[volume-cover/activate] recordActivation failed: ${(err as Error).message}`);
         }
+      }
+      if (surchargeMultiplier > 1.0) {
+        req.log.info(`[volume-cover/activate] surcharge applied: ${surchargeMultiplier}\u00d7 base \$${baseDailyPremium} = \$${dailyPremium}`);
       }
 
       return reply.code(201).send({
