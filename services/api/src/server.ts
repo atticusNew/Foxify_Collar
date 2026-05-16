@@ -65,6 +65,7 @@ import { createSpotPriceSource } from "./volumeCover/spotPriceSource";
 import { startTriggerDetector } from "./volumeCover/triggerDetector";
 import { startHedgeManager } from "./volumeCover/volumeCoverHedgeManager";
 import { setVenueOptionChainProvider } from "./volumeCover/venueStrikeGrid";
+import { startChainWarmer } from "./volumeCover/chainWarmer";
 import { registerTreasuryRoutes } from "./pilot/treasuryRoutes";
 import { parseTreasuryConfig } from "./pilot/treasuryConfig";
 import { startTreasuryScheduler } from "./pilot/treasuryScheduler";
@@ -8330,6 +8331,11 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
       return [];
     });
     console.log(`[VolumeCover] Venue option-chain provider wired (Bullish + Deribit)`);
+
+    // Background chain warmer — keeps venueStrikeGrid cache hot so
+    // /activate's pickClosestStrike returns instantly rather than
+    // doing a 200-500ms venue REST call on the hot path.
+    startChainWarmer();
 
     await registerVolumeCoverRoutes(app, {
       hedgeExecutor,
