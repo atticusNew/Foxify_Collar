@@ -38,6 +38,41 @@ POSTGRES_URL=<connection string>
 ```
 # Trigger detector
 VOLUME_COVER_TRIGGER_DETECTOR_ENABLED=true
+VOLUME_COVER_TRIGGER_DETECTOR_TICK_MS=3000   # 3s default; tighten to 1000-2000 if Foxify reports detection lag
+
+# Background chain warmer (always-warm venue strike grid cache)
+VOLUME_COVER_CHAIN_WARM_ENABLED=true
+VC_CHAIN_WARM_TICK_MS=30000
+
+# Anti-bot — for CEO test pilot, Layer 1 (same-cell repeat block)
+# would prevent the bot's expected "Repeat" flow at 50k_2pct_1k.
+# DISABLE Layer 1 for the test pilot. Re-enable for multi-trader rollout.
+VOLUME_COVER_ANTIBOT_LAYER1_ENABLED=false   # !!! pilot-only; re-enable for prod multi-trader
+VOLUME_COVER_ANTIBOT_LAYER2_ENABLED=true    # cooldown still active (jitter dampens any rapid-fire bug)
+VOLUME_COVER_ANTIBOT_LAYER3_ENABLED=true    # post-trigger cooldown still useful
+VOLUME_COVER_ANTIBOT_LAYER4_ENABLED=true    # surcharge still useful
+
+# VC-specific stress regime pause (DVOL >= threshold)
+VC_STRESS_PAUSE_ENABLED=true
+VC_STRESS_PAUSE_DVOL_THRESHOLD=80
+
+
+# Hedge manager TP curve (full 12-rule); env-tunable per rule
+VOLUME_COVER_HEDGE_MANAGER_ENABLED=true
+VC_HM_USE_STUB=false                # set true to fall back to 4-rule stub if full curve misbehaves
+VC_HM_TICK_MS=60000
+VC_HM_FALLBACK_IV=0.65              # used only when deribitIvCache returns its own fallback
+
+# Hedge tenor + sizing
+# (no env knob; see services/api/src/volumeCover/tightHedge.ts)
+VC_VOL_BUFFER_ENABLED=true
+
+# Regime overlay pricing (CEO-approved per backtest, calm locked at base)
+VC_REGIME_OVERLAY_JSON='{"50k_2pct_1k":{"moderate":420,"elevated":525},"50k_5pct_2_5k":{"moderate":240,"elevated":300},"50k_10pct_5k":{"moderate":120,"elevated":150},"200k_5pct_10k":{"moderate":960,"elevated":1200},"200k_10pct_20k":{"moderate":480,"elevated":600},"200k_15pct_30k":{"moderate":444,"elevated":555}}'
+# (stress key intentionally omitted — VC_STRESS_PAUSE auto-halts at DVOL >= 80)
+
+# Loss kill-switch (tighter for first 48h; raise to 5000 after Day-1-3 review)
+VOLUME_COVER_GUARD_LOSS_KILL_USDC=1000
 
 # Mock mode (DO NOT USE IN PRODUCTION)
 VOLUME_COVER_HEDGE_MOCK=false
@@ -66,6 +101,34 @@ VOLUME_COVER_GUARDS_ALL_DISABLED=false
 ```
 
 ---
+
+## CEO test pilot — critical env settings (2026-05-16)
+
+Per CEO-clarified flow: bot calls `/activate` → we hedge → bot opens
+perps. The bot will repeat the same 50k_2pct_1k cell over and over.
+
+**Critical env adjustments for the CEO test pilot:**
+
+```
+# Disable Layer 1 — same-cell repeat block would block the CEO's
+# expected "Repeat" flow at 50k_2pct_1k. Layers 2-4 stay active.
+VOLUME_COVER_ANTIBOT_LAYER1_ENABLED=false
+
+# Tighter trigger detector cadence — Foxify perps fire SL near-instant
+# on their venue; 3s default closes the perceived "where's the
+# payout" gap. Drop to 1000-2000ms if CEO reports lag.
+VOLUME_COVER_TRIGGER_DETECTOR_TICK_MS=3000
+
+# Tight loss kill-switch first 48h
+VOLUME_COVER_GUARD_LOSS_KILL_USDC=1000
+
+# Throttle for safety (CEO will likely run multiple per hour, but
+# capped initially while live data accumulates)
+# (per-cell throttle set via DB, not env; default 5/day from matrix.ts)
+```
+
+**Re-enable Layer 1 for production multi-trader rollout.**
+**Raise loss kill to $5000 after Day-1-3 review.**
 
 ## Pre-launch checklist
 
