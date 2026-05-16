@@ -20,7 +20,13 @@
 
 import Decimal from "decimal.js";
 import { randomUUID } from "node:crypto";
-import { computeHedgeStrikes, type CellDefinition } from "./matrix";
+import { computeHedgeStrikes, computeTriggerPrices, type CellDefinition } from "./matrix";
+import {
+  applyVolBufferAndRound,
+  getGridStepUsdc,
+  snapHedgeStrike,
+  type VolRegime
+} from "./strikeGrid";
 
 export type HedgeVenueChoice = "bullish" | "deribit";
 
@@ -113,6 +119,8 @@ export const computeHedgeContractSize = (params: {
   entryBtcPrice: number;
   /** Venue contract granularity in BTC. Bullish=0.1, Deribit=0.1 typically. */
   contractGranularityBtc?: number;
+  /** Optional vol regime for vol-buffered sizing (P1c). null = no buffer. */
+  regime?: VolRegime | null;
 }): { contractsBtc: number; intrinsicAtTriggerUsdc: number } => {
   const granularity = params.contractGranularityBtc ?? 0.1;
   // Intrinsic at trigger = (trigger_price - hedge_strike) per BTC
@@ -130,14 +138,15 @@ export const computeHedgeContractSize = (params: {
     );
   }
   // Required BTC = payout / intrinsic per BTC
-  const requiredBtc = new Decimal(params.cell.payoutUsdc).div(intrinsicPerBtc);
-  // Round up to granularity
-  const contractsBtc = requiredBtc
-    .div(granularity)
-    .toDecimalPlaces(0, Decimal.ROUND_UP)
-    .mul(granularity);
+  const baseRequiredBtc = new Decimal(params.cell.payoutUsdc).div(intrinsicPerBtc).toNumber();
+  // P1c: vol-buffer + grid round-up
+  const contractsBtc = applyVolBufferAndRound({
+    baseContractsBtc: baseRequiredBtc,
+    regime: params.regime ?? null,
+    granularityBtc: granularity
+  });
   return {
-    contractsBtc: contractsBtc.toNumber(),
+    contractsBtc,
     intrinsicAtTriggerUsdc: intrinsicPerBtc.toNumber()
   };
 };
@@ -161,16 +170,43 @@ export const buildHedgeStructure = (params: {
   /** Venue-mark unit prices (USDC per BTC) — optional, used for expectedTotalCostUsdc */
   venueMarkPutPriceUsdc?: number;
   venueMarkCallPriceUsdc?: number;
+  /** P1c: optional vol regime for sizing buffer + can override grid step */
+  regime?: VolRegime | null;
+  /** P1c: optional grid-step override (e.g., from venue strike grid lookup). */
+  gridStepUsdcOverride?: number;
 }): HedgeStructure => {
   const venue = resolveHedgeVenue(params.cell);
-  const { putStrikeBtc, callStrikeBtc } = computeHedgeStrikes({
+  // P1c: compute ideal strikes, then snap to venue grid (round toward
+  // spot) so strikes always exist on venue AND stay inside the trigger
+  // band. Falls back to ideal-only behavior if grid step is 0.
+  const { putStrikeBtc: idealPutStrike, callStrikeBtc: idealCallStrike } = computeHedgeStrikes({
     cell: params.cell,
     entryBtcPrice: params.entryBtcPrice
+  });
+  const { triggerLowBtc, triggerHighBtc } = computeTriggerPrices({
+    cell: params.cell,
+    entryBtcPrice: params.entryBtcPrice
+  });
+  const gridStep = params.gridStepUsdcOverride ?? getGridStepUsdc(venue.primary);
+  const putStrikeBtc = snapHedgeStrike({
+    optionKind: "put",
+    idealStrikeUsdc: idealPutStrike,
+    spotUsdc: params.entryBtcPrice,
+    triggerBoundaryUsdc: triggerLowBtc,
+    gridStepUsdc: gridStep
+  });
+  const callStrikeBtc = snapHedgeStrike({
+    optionKind: "call",
+    idealStrikeUsdc: idealCallStrike,
+    spotUsdc: params.entryBtcPrice,
+    triggerBoundaryUsdc: triggerHighBtc,
+    gridStepUsdc: gridStep
   });
   const { contractsBtc, intrinsicAtTriggerUsdc } = computeHedgeContractSize({
     cell: params.cell,
     entryBtcPrice: params.entryBtcPrice,
-    contractGranularityBtc: params.contractGranularityBtc
+    contractGranularityBtc: params.contractGranularityBtc,
+    regime: params.regime ?? null
   });
   // P1a (2026-05-16): default tenor 1d → 14d (matched-tenor hedge).
   // Production previously had no rollover for the 1-day hedge while

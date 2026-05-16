@@ -27,6 +27,7 @@ import {
   type HedgeExecutor,
   type HedgeVenueChoice
 } from "./tightHedge";
+import type { VolRegime } from "./strikeGrid";
 import {
   insertPosition,
   insertHedgeLeg,
@@ -51,6 +52,11 @@ export type OpenPositionRequest = {
   fingerprintHash?: string | null;
   /** Optional override of the cell base premium (e.g., from cell row override) */
   effectiveDailyPremiumUsdc?: number;
+  /**
+   * P1c: optional vol regime for vol-buffered sizing. Routes pull this
+   * from regimeClassifier at quote time. null/undefined = no buffer.
+   */
+  regime?: VolRegime | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -109,11 +115,12 @@ export const openPosition = async (
     throw new Error(`volume_cover_position_insert_failed: ${err?.message ?? err}`);
   }
 
-  // Build + execute hedge
+  // Build + execute hedge (P1c: vol-buffered sizing + grid snap from regime)
   const structure = buildHedgeStructure({
     positionId,
     cell: req.cell,
-    entryBtcPrice: req.pairEntryBtcPrice
+    entryBtcPrice: req.pairEntryBtcPrice,
+    regime: req.regime ?? null
   });
 
   let executionResult;

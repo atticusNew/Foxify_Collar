@@ -62,6 +62,12 @@ import { readSalvageMetrics } from "./salvageTracker";
 import { buildFoxifyDailyReport, buildFoxifyRangeReport } from "./foxifyReport";
 import { runOneDetectionCycle, type SpotPriceSource } from "./triggerDetector";
 import type { HedgeExecutor } from "./tightHedge";
+import {
+  classifyVolumeCoverRegime,
+  translatePilotRegime,
+  type VolRegime
+} from "./strikeGrid";
+import { getCurrentRegime } from "../pilot/regimeClassifier";
 
 // ────────────────────── Auth helpers ──────────────────────
 
@@ -388,6 +394,19 @@ export const registerVolumeCoverRoutes = async (
       dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc
     }).dailyPremiumUsdc;
 
+    // P1c: vol-buffered sizing. Fetch current regime via DVOL → 4-bucket
+    // VC classification. Fall back to pilot regime classifier; null on
+    // failure so vol buffer is no-op (safe default).
+    let regime: VolRegime | null = null;
+    try {
+      const status = await getCurrentRegime();
+      // Prefer raw DVOL with VC's stricter 4-bucket thresholds
+      regime = classifyVolumeCoverRegime(status.dvol);
+      if (!regime) regime = translatePilotRegime(status.regime);
+    } catch (err) {
+      req.log.warn(`[volume-cover/activate] regime fetch failed: ${(err as Error).message}; vol buffer disabled`);
+    }
+
     try {
       const result = await openPosition(pool, opts.hedgeExecutor, {
         cell,
@@ -396,9 +415,11 @@ export const registerVolumeCoverRoutes = async (
         pairShortNotionalUsdc: body.pairShortNotionalUsdc,
         pairEntryBtcPrice: body.pairEntryBtcPrice,
         effectiveDailyPremiumUsdc: dailyPremium,
+        regime,
         metadata: {
           source: "foxify_api",
-          requestIp: req.ip
+          requestIp: req.ip,
+          regime
         }
       });
 
