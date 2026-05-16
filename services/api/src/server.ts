@@ -8244,10 +8244,53 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
     });
     const spotSource = createSpotPriceSource();
 
-    await registerVolumeCoverRoutes(app, { hedgeExecutor, spotSource });
+    // P3 §12.4: venue balance fetcher for weekly reconciliation drift
+    // halt. Sums Bullish USDC + Deribit BTC equity (× spot) into a
+    // single combined balance. 5s timeout per venue; reconciler
+    // tolerates failures gracefully (does NOT auto-halt on transient
+    // venue API errors — see weeklyReconciler.ts).
+    const venueBalanceFetcher = async (): Promise<number> => {
+      const withTimeout = async <T,>(p: Promise<T>, ms: number): Promise<T> => {
+        return Promise.race([
+          p,
+          new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))
+        ]);
+      };
+      let bullishUsdc = 0;
+      let deribitUsdc = 0;
+      try {
+        const { BullishTradingClient } = await import("./pilot/bullish");
+        const client = new BullishTradingClient(pilotConfig.bullish);
+        const balances = await withTimeout(client.getAssetBalances(), 5_000);
+        const usdcBalance = balances.find((b: any) => b.assetSymbol === "USDC" || b.assetSymbol === "USD");
+        if (usdcBalance) {
+          bullishUsdc = Number(usdcBalance.availableQuantity ?? 0);
+        }
+      } catch (err) {
+        console.warn(`[VolumeCover] Bullish balance fetch failed: ${(err as Error).message}`);
+      }
+      try {
+        const summary: any = await withTimeout(deribitLive.getAccountSummary("BTC"), 5_000);
+        const btcEquity = Number(summary?.result?.equity ?? 0);
+        if (btcEquity > 0) {
+          const spot = await spotSource();
+          deribitUsdc = btcEquity * spot.spotBtcPrice;
+        }
+      } catch (err) {
+        console.warn(`[VolumeCover] Deribit balance fetch failed: ${(err as Error).message}`);
+      }
+      return bullishUsdc + deribitUsdc;
+    };
+
+    await registerVolumeCoverRoutes(app, {
+      hedgeExecutor,
+      spotSource,
+      venueBalanceFetcher
+    });
     console.log(
       `[VolumeCover] Registered routes (mockFills=${useMockFills}, ` +
-        `auth_disabled=${process.env.VOLUME_COVER_AUTH_DISABLED ?? "false"})`
+        `auth_disabled=${process.env.VOLUME_COVER_AUTH_DISABLED ?? "false"}, ` +
+        `venueBalanceFetcher=wired)`
     );
 
     if (String(process.env.VOLUME_COVER_TRIGGER_DETECTOR_ENABLED ?? "true").toLowerCase() === "true") {
