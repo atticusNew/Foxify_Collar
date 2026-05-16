@@ -42,6 +42,7 @@ import {
 } from "./volumeCoverDb";
 import { recordTriggerEvent } from "./salvageTracker";
 import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
+import { attemptLadderNetting } from "./ladderNetting";
 
 export type OpenPositionRequest = {
   cell: CellDefinition;
@@ -65,6 +66,11 @@ export type OpenPositionResult = {
   hedgeLegs: HedgeLegRow[];
   totalHedgeCostUsdc: number;
   venue: HedgeVenueChoice;
+  /** P1e: ladder-netting outcome. */
+  laddered: boolean;
+  ladderedLegIds: string[];
+  ladderEstimatedSavingsUsdc: number;
+  ladderEventId: string | null;
 };
 
 /**
@@ -115,7 +121,7 @@ export const openPosition = async (
     throw new Error(`volume_cover_position_insert_failed: ${err?.message ?? err}`);
   }
 
-  // Build + execute hedge (P1c: vol-buffered sizing + grid snap from regime)
+  // Build hedge structure (P1c: vol-buffered sizing + grid snap)
   const structure = buildHedgeStructure({
     positionId,
     cell: req.cell,
@@ -123,24 +129,49 @@ export const openPosition = async (
     regime: req.regime ?? null
   });
 
-  let executionResult;
-  try {
-    executionResult = await executeHedgeStructure({
-      structure,
-      cell: req.cell,
-      executor
-    });
-  } catch (err: any) {
-    // Hedge failed; cancel the position so it doesn't show as active
-    await markPositionClosed(pool, {
-      id: positionId,
-      reason: `hedge_execution_failed: ${err?.message ?? err}`
-    });
-    throw new Error(`volume_cover_hedge_execution_failed: ${err?.message ?? err}`);
+  // P1e: attempt ladder netting BEFORE execute. Repurposes any
+  // matching Atticus-retained legs from a recent close/trigger of the
+  // same fingerprint+cell. Returns only the legs that still need to
+  // be bought from the venue.
+  const netting = await attemptLadderNetting({
+    pool,
+    newPositionId: positionId,
+    cell: req.cell,
+    fingerprintHash: req.fingerprintHash ?? null,
+    entryBtcPrice: req.pairEntryBtcPrice,
+    structure
+  });
+
+  // Execute only the legs that didn't ladder-net.
+  let executionResult: { venue: HedgeVenueChoice; legs: any[]; totalCostUsdc: number } = {
+    venue: structure.venue,
+    legs: [],
+    totalCostUsdc: 0
+  };
+  if (netting.remainingLegs.length > 0) {
+    try {
+      executionResult = await executeHedgeStructure({
+        structure: { ...structure, legs: netting.remainingLegs },
+        cell: req.cell,
+        executor
+      });
+    } catch (err: any) {
+      // Hedge failed; cancel the position. Note: any already-repurposed
+      // legs are now under this cancelled position. They retain on the
+      // current owner but their ladder lineage is lost; acceptable
+      // given lifecycle simplicity. The hedge manager will handle
+      // disposal via TP rules on the failed-cancelled position.
+      await markPositionClosed(pool, {
+        id: positionId,
+        reason: `hedge_execution_failed: ${err?.message ?? err}`
+      });
+      throw new Error(`volume_cover_hedge_execution_failed: ${err?.message ?? err}`);
+    }
   }
 
-  // Persist hedge legs
-  const hedgeLegs: HedgeLegRow[] = [];
+  // Persist newly-bought hedge legs (the repurposed ones already exist
+  // and were re-pointed at this position by attemptLadderNetting).
+  const hedgeLegs: HedgeLegRow[] = [...netting.repurposedLegs];
   for (const f of executionResult.legs) {
     const leg = await insertHedgeLeg(pool, {
       id: f.legId,
@@ -183,7 +214,12 @@ export const openPosition = async (
     position,
     hedgeLegs,
     totalHedgeCostUsdc: executionResult.totalCostUsdc,
-    venue: executionResult.venue
+    venue: executionResult.venue,
+    // P1e: surface ladder netting outcome for telemetry / smoke tests.
+    laddered: netting.repurposedLegs.length > 0,
+    ladderedLegIds: netting.repurposedLegs.map((l) => l.id),
+    ladderEstimatedSavingsUsdc: netting.estimatedSavingsUsdc,
+    ladderEventId: netting.ladderEventId
   };
 };
 
