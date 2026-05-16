@@ -60,6 +60,10 @@ import {
 } from "./volumeCoverGuardrails";
 import { readSalvageMetrics } from "./salvageTracker";
 import { buildFoxifyDailyReport, buildFoxifyRangeReport } from "./foxifyReport";
+import {
+  buildWeeklySettlement,
+  renderWeeklySettlementMarkdown
+} from "./weeklyReconciler";
 import { runOneDetectionCycle, type SpotPriceSource } from "./triggerDetector";
 import type { HedgeExecutor } from "./tightHedge";
 import {
@@ -592,6 +596,26 @@ export const registerVolumeCoverRoutes = async (
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const metrics = await readSalvageMetrics(pool);
     return reply.send(metrics);
+  });
+
+  // P1d: weekly settlement reconciler. Format: ?week=YYYY-Www
+  // Returns JSON by default; pass ?format=markdown for the Markdown view.
+  app.get("/volume-cover/admin/weekly-settlement", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const weekLabel = String((req.query as any)?.week ?? "");
+    if (!/^\d{4}-W\d{1,2}$/.test(weekLabel)) {
+      return reply.code(400).send({ error: "invalid_week_label", expected: "YYYY-Www" });
+    }
+    try {
+      const settlement = await buildWeeklySettlement({ pool, weekLabel });
+      const format = String((req.query as any)?.format ?? "json");
+      if (format === "markdown") {
+        return reply.type("text/markdown").send(renderWeeklySettlementMarkdown(settlement));
+      }
+      return reply.send(settlement);
+    } catch (err) {
+      return reply.code(500).send({ error: "settlement_failed", message: (err as Error).message });
+    }
   });
 
   app.post("/volume-cover/admin/halt", async (req, reply) => {

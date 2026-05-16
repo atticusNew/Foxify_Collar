@@ -158,22 +158,12 @@ export const openPosition = async (
     hedgeLegs.push(leg);
   }
 
-  // Ledger entries (best-effort; if either fails, log but don't roll back since
-  // hedge is already in market and position is real)
-  try {
-    await insertLedgerEntry(pool, {
-      poolId: "foxify_trader",
-      protectionId: positionId,
-      entryType: "premium_in",
-      amountUsdc: dailyPremium,
-      reference: `vc_premium:${req.cell.cellId}:${req.foxifyPairId}`,
-      metadata: { product: "volume_cover", cellId: req.cell.cellId }
-    });
-  } catch (err) {
-    console.warn(
-      `[volumeCover/lifecycle] premium_in ledger failed for position ${positionId}: ${(err as Error).message}`
-    );
-  }
+  // P1d (2026-05-16): NO open-time premium_in ledger entry. Premium is
+  // proportional to days held (Foxify pays only for held days, NOT
+  // upfront). Source of truth: position row (opened_at × dailyPremium).
+  // Final premium_in entry is written by closePosition with actual
+  // accrued amount; weekly reconciler also computes from position rows
+  // as the canonical view. See weeklyReconciler.buildWeeklySettlement.
   try {
     await insertLedgerEntry(pool, {
       poolId: "atticus_hedge",
@@ -295,12 +285,40 @@ export const fireTrigger = async (
     );
   }
 
+  // P1d: Accrue premium for the days position was active up to trigger.
+  // Foxify pays for held days only. Days are whole-day units rounded
+  // UP from partial (Foxify per-day billing convention). Triggered
+  // positions are billed up to the trigger moment.
+  try {
+    const openedAtMs = new Date(params.position.openedAt).getTime();
+    const triggerMs = Date.now();
+    const daysHeld = Math.max(1, Math.ceil((triggerMs - openedAtMs) / 86_400_000));
+    const accruedPremium = params.position.dailyPremiumUsdc * daysHeld;
+    await insertLedgerEntry(pool, {
+      poolId: "foxify_trader",
+      protectionId: params.position.id,
+      entryType: "premium_in",
+      amountUsdc: accruedPremium,
+      reference: `vc_premium_accrued_trigger:${params.position.cellId}:${params.position.id}`,
+      metadata: {
+        product: "volume_cover",
+        cellId: params.position.cellId,
+        daysHeld,
+        dailyPremiumUsdc: params.position.dailyPremiumUsdc,
+        accrual_basis: "trigger_close"
+      }
+    });
+  } catch (err) {
+    console.warn(
+      `[volumeCover/lifecycle] premium_in (trigger) ledger failed for position ${params.position.id}: ${(err as Error).message}`
+    );
+  }
+
   // Note: no separate "hedge_retained" ledger entry. Source of truth
   // for retention is the leg row (retained=TRUE, retained_role,
   // retained_at) plus salvage_event metadata (hedge_retained=true).
-  // The pilot_pool_ledger CHECK constraint only allows financial entry
-  // types; retention is operational, not financial. Real
-  // hedge_sell_in entries come from the VC hedge manager when legs sell.
+  // Real hedge_sell_in entries come from the VC hedge manager when
+  // legs sell.
 
   return {
     salvageEventId: salvageEvent.id,
@@ -390,6 +408,34 @@ export const closePosition = async (
     id: params.position.id,
     reason: params.reason
   });
+
+  // P1d: Accrue premium for held days. Foxify pays for held days only
+  // (not upfront, not full tenor).
+  try {
+    const openedAtMs = new Date(params.position.openedAt).getTime();
+    const closeMs = Date.now();
+    const daysHeld = Math.max(1, Math.ceil((closeMs - openedAtMs) / 86_400_000));
+    const accruedPremium = params.position.dailyPremiumUsdc * daysHeld;
+    await insertLedgerEntry(pool, {
+      poolId: "foxify_trader",
+      protectionId: params.position.id,
+      entryType: "premium_in",
+      amountUsdc: accruedPremium,
+      reference: `vc_premium_accrued_close:${params.position.cellId}:${params.position.id}`,
+      metadata: {
+        product: "volume_cover",
+        cellId: params.position.cellId,
+        daysHeld,
+        dailyPremiumUsdc: params.position.dailyPremiumUsdc,
+        accrual_basis: "foxify_close",
+        close_reason: params.reason
+      }
+    });
+  } catch (err) {
+    console.warn(
+      `[volumeCover/lifecycle] premium_in (close) ledger failed for position ${params.position.id}: ${(err as Error).message}`
+    );
+  }
 
   // Note: no separate "hedge_retained" ledger entry on close. Source
   // of truth is the leg row (retained=TRUE) + position row (status,

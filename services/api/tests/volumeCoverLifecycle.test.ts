@@ -70,14 +70,15 @@ test("openPosition: happy path persists position + hedge legs + ledger entries",
   assert.equal(result.hedgeLegs.length, 2);
   assert.ok(result.totalHedgeCostUsdc > 0);
 
-  // Ledger entries posted (premium_in to foxify, hedge_buy_out from atticus)
+  // P1d: hedge_buy_out at open. Premium NOT ledgered at open
+  // (proportional accrual; entry written at close/trigger only).
   const ledger = await pool.query(
     `SELECT entry_type, pool_id, amount_usdc FROM pilot_pool_ledger WHERE protection_id = $1 ORDER BY id`,
     [result.position.id]
   );
   const types = ledger.rows.map((r: any) => r.entry_type);
-  assert.ok(types.includes("premium_in"));
-  assert.ok(types.includes("hedge_buy_out"));
+  assert.ok(types.includes("hedge_buy_out"), "hedge_buy_out at open");
+  assert.ok(!types.includes("premium_in"), "premium_in NOT at open (accrual at close/trigger)");
 });
 
 test("openPosition: hedge failure cancels position and throws", async () => {
