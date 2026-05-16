@@ -233,9 +233,94 @@ test("renderWeeklySettlementMarkdown: produces non-empty markdown summary", asyn
       netAtticusObligationUsdc: 0
     },
     partial25PctUsdc: 0,
+    reconciliation: {
+      checked: false,
+      venueReportedBalanceUsdc: null,
+      ledgerExpectedBalanceUsdc: null,
+      driftPct: null,
+      driftHalt: false,
+      driftMessage: null
+    },
     generatedAtIso: "2026-05-18T00:00:00Z"
   };
   const md = renderWeeklySettlementMarkdown(settlement);
   assert.match(md, /Volume Cover/);
   assert.match(md, /2026-W20/);
+  assert.match(md, /Reconciliation drift check/);
+});
+
+test("§12.4 reconciliation drift halt: drift > 1% trips driftHalt", async () => {
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  const opened = await openPosition(pool, buildMockExecutor(), {
+    cell,
+    foxifyPairId: "FX-DRIFT-1",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000
+  });
+  await pool.query(
+    `UPDATE volume_cover_position SET opened_at = $1::timestamptz WHERE id = $2`,
+    ["2026-05-13T00:00:00Z", opened.position.id]
+  );
+  // Move ledger entries into target week
+  await pool.query(
+    `UPDATE pilot_pool_ledger SET effective_at = $1::timestamptz WHERE protection_id = $2`,
+    ["2026-05-13T00:00:00Z", opened.position.id]
+  );
+
+  // Ledger sum is roughly hedge_buy_out (negative ~$117 from 1.3 BTC × $90).
+  // Stub a venue fetcher that returns wildly different value.
+  const settlement = await buildWeeklySettlement({
+    pool,
+    weekLabel: "2026-W20",
+    nowMs: new Date("2026-05-18T00:00:00Z").getTime(),
+    venueBalanceFetcher: async () => 5_000  // way off ledger
+  });
+
+  assert.equal(settlement.reconciliation.checked, true);
+  assert.equal(settlement.reconciliation.driftHalt, true);
+  assert.ok((settlement.reconciliation.driftPct ?? 0) > 0.01);
+});
+
+test("§12.4 reconciliation: venue fetch error sets checked=false (no auto-halt)", async () => {
+  const pool = await buildPool();
+  const settlement = await buildWeeklySettlement({
+    pool,
+    weekLabel: "2026-W20",
+    nowMs: new Date("2026-05-18T00:00:00Z").getTime(),
+    venueBalanceFetcher: async () => {
+      throw new Error("venue_api_unreachable");
+    }
+  });
+  assert.equal(settlement.reconciliation.checked, false);
+  assert.equal(settlement.reconciliation.driftHalt, false);
+  assert.match(settlement.reconciliation.driftMessage ?? "", /venue_balance_fetch_failed/);
+});
+
+test("§12.4 reconciliation: venue balance close to ledger \u2192 driftHalt=false", async () => {
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  await openPosition(pool, buildMockExecutor(), {
+    cell,
+    foxifyPairId: "FX-DRIFT-OK",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000
+  });
+  // Read actual ledger sum to set venue balance within 1% of it.
+  const r = await pool.query(
+    `SELECT COALESCE(SUM(amount_usdc), 0) AS s
+     FROM pilot_pool_ledger
+     WHERE pool_id = 'atticus_hedge' AND reference LIKE 'vc_%'`
+  );
+  const ledgerSum = Number(r.rows[0].s);
+  const settlement = await buildWeeklySettlement({
+    pool,
+    weekLabel: "2026-W20",
+    nowMs: Date.now(),
+    venueBalanceFetcher: async () => ledgerSum * 1.005  // 0.5% off
+  });
+  assert.equal(settlement.reconciliation.checked, true);
+  assert.equal(settlement.reconciliation.driftHalt, false, `drift was ${(settlement.reconciliation.driftPct ?? 0) * 100}%`);
 });

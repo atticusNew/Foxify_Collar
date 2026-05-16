@@ -64,8 +64,34 @@ export type WeeklySettlement = {
   };
   /** 25% partial settlement amount; remaining 75% settles at EOM. */
   partial25PctUsdc: number;
+  /**
+   * P3 §12.4 reconciliation drift halt input. Populated when
+   * VenueBalanceFetcher provided. Compares venue balance to
+   * ledger-derived expected balance; if drift > driftHaltPct
+   * (default 1%), emits driftHalt=true.
+   */
+  reconciliation: {
+    checked: boolean;
+    venueReportedBalanceUsdc: number | null;
+    ledgerExpectedBalanceUsdc: number | null;
+    driftPct: number | null;
+    driftHalt: boolean;
+    driftMessage: string | null;
+  };
   generatedAtIso: string;
 };
+
+/**
+ * P3: optional venue balance fetcher. Operator wires this to actual
+ * Bullish/Deribit balance APIs. Returns the COMBINED USDC-equivalent
+ * working balance Atticus has across all hedge venues.
+ *
+ * Implementations should pull from venue REST endpoints; a 5s timeout
+ * is recommended. If the fetch fails, the reconciler treats it as
+ * "checked=false" — does NOT auto-halt the platform on a transient
+ * venue API blip.
+ */
+export type VenueBalanceFetcher = () => Promise<number>;
 
 /**
  * Snap a date to the nearest prior Monday 00:00 UTC.
@@ -147,6 +173,15 @@ export const buildWeeklySettlement = async (params: {
   weekLabel: string;
   /** Override "now" for tests / deterministic billing. */
   nowMs?: number;
+  /**
+   * P3: venue balance fetcher for reconciliation drift halt.
+   * If omitted, reconciliation.checked=false; settlement still emits.
+   */
+  venueBalanceFetcher?: VenueBalanceFetcher;
+  /**
+   * Drift halt threshold (fraction). Default 0.01 (1%) per PLAN §12.4.
+   */
+  driftHaltPct?: number;
 }): Promise<WeeklySettlement> => {
   const week = resolveWeekRange(params.weekLabel);
   const nowMs = params.nowMs ?? Date.now();
@@ -249,6 +284,62 @@ export const buildWeeklySettlement = async (params: {
 
   const partial25 = Decimal.max(0, netAtticusObligation.mul(0.25));
 
+  // P3 §12.4 — Reconciliation drift halt. Compares actual venue
+  // balance to ledger-derived expected balance. The expected balance
+  // is the sum of hedge_sell_in - hedge_buy_out flows on atticus_hedge
+  // pool (i.e., what Atticus's Bullish + Deribit account SHOULD show).
+  let reconciliation: WeeklySettlement["reconciliation"] = {
+    checked: false,
+    venueReportedBalanceUsdc: null,
+    ledgerExpectedBalanceUsdc: null,
+    driftPct: null,
+    driftHalt: false,
+    driftMessage: null
+  };
+
+  if (params.venueBalanceFetcher) {
+    const driftThreshold = params.driftHaltPct ?? 0.01;
+    try {
+      const ledgerBalanceResult = await params.pool.query(
+        `SELECT COALESCE(SUM(amount_usdc), 0) AS balance
+         FROM pilot_pool_ledger
+         WHERE pool_id = 'atticus_hedge'
+           AND reference LIKE 'vc_%'`
+      );
+      // hedge_buy_out is stored negative; hedge_sell_in positive.
+      // Sum gives net cash position relative to start (ignoring
+      // initial deposits which aren't tagged 'vc_'). For drift
+      // purposes, compare the absolute change from baseline to the
+      // venue's realized balance.
+      const ledgerBalance = Number(ledgerBalanceResult.rows[0].balance);
+      const venueBalance = await params.venueBalanceFetcher();
+      const driftAbs = Math.abs(venueBalance - ledgerBalance);
+      const denom = Math.max(1, Math.abs(venueBalance), Math.abs(ledgerBalance));
+      const driftPct = driftAbs / denom;
+      const halt = driftPct > driftThreshold;
+      reconciliation = {
+        checked: true,
+        venueReportedBalanceUsdc: venueBalance,
+        ledgerExpectedBalanceUsdc: ledgerBalance,
+        driftPct,
+        driftHalt: halt,
+        driftMessage: halt
+          ? `Venue \$${venueBalance.toFixed(2)} vs ledger \$${ledgerBalance.toFixed(2)} drift ${(driftPct * 100).toFixed(2)}% > ${(driftThreshold * 100).toFixed(2)}% threshold`
+          : null
+      };
+    } catch (err) {
+      // Non-fatal: do NOT auto-halt on venue API failure.
+      reconciliation = {
+        checked: false,
+        venueReportedBalanceUsdc: null,
+        ledgerExpectedBalanceUsdc: null,
+        driftPct: null,
+        driftHalt: false,
+        driftMessage: `venue_balance_fetch_failed: ${(err as Error).message}`
+      };
+    }
+  }
+
   return {
     week,
     perPosition,
@@ -260,6 +351,7 @@ export const buildWeeklySettlement = async (params: {
       netAtticusObligationUsdc: netAtticusObligation.toNumber()
     },
     partial25PctUsdc: partial25.toNumber(),
+    reconciliation,
     generatedAtIso: new Date(nowMs).toISOString()
   };
 };
@@ -285,6 +377,19 @@ export const renderWeeklySettlementMarkdown = (settlement: WeeklySettlement): st
   lines.push(`| Gross hedge sell-in (Atticus pool credit) | ${fmt(settlement.totals.grossHedgeSellInUsdc)} |`);
   lines.push(`| **Net Atticus obligation** | **${fmt(settlement.totals.netAtticusObligationUsdc)}** |`);
   lines.push(`| **25% partial settlement** | **${fmt(settlement.partial25PctUsdc)}** (remaining 75% at EOM) |`);
+  lines.push("");
+  lines.push(`## Reconciliation drift check`);
+  lines.push("");
+  if (!settlement.reconciliation.checked) {
+    lines.push(`Not run this period (no venue balance fetcher wired).`);
+  } else {
+    const r = settlement.reconciliation;
+    lines.push(`- Venue reported: ${fmt(r.venueReportedBalanceUsdc ?? 0)}`);
+    lines.push(`- Ledger expected: ${fmt(r.ledgerExpectedBalanceUsdc ?? 0)}`);
+    lines.push(`- Drift: ${(r.driftPct! * 100).toFixed(2)}%`);
+    lines.push(`- Halt status: ${r.driftHalt ? "**HALTED**" : "OK"}`);
+    if (r.driftMessage) lines.push(`- Message: ${r.driftMessage}`);
+  }
   lines.push("");
   lines.push(`## Per-position rollup (${settlement.perPosition.length} positions)`);
   lines.push("");

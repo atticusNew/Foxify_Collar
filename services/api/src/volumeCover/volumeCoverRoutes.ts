@@ -62,7 +62,8 @@ import { readSalvageMetrics } from "./salvageTracker";
 import { buildFoxifyDailyReport, buildFoxifyRangeReport } from "./foxifyReport";
 import {
   buildWeeklySettlement,
-  renderWeeklySettlementMarkdown
+  renderWeeklySettlementMarkdown,
+  type VenueBalanceFetcher
 } from "./weeklyReconciler";
 import { runOneDetectionCycle, type SpotPriceSource } from "./triggerDetector";
 import {
@@ -203,6 +204,14 @@ export type RegisterVolumeCoverRoutesOptions = {
   spotSource: SpotPriceSource;
   /** Optional: spot+IV source for hedge manager; falls back to spotSource + fallbackIv. */
   spotIvSource?: SpotIvSource;
+  /**
+   * Optional (P3 §12.4): venue balance fetcher for reconciliation
+   * drift halt. When provided, weekly settlement endpoint compares
+   * venue balance to ledger; emits driftHalt=true if drift > 1%.
+   * Operator wires Bullish + Deribit balance APIs (sum into single
+   * USDC-equivalent value).
+   */
+  venueBalanceFetcher?: VenueBalanceFetcher;
   /** Optional: skip schema migration (tests provide pre-migrated pg-mem). */
   skipSchema?: boolean;
 };
@@ -403,10 +412,8 @@ export const registerVolumeCoverRoutes = async (
 
     // P3: fetch live DVOL for stress-pause guard
     let currentDvolForGuard = 0;
-    let regimeStatusForLog: any = null;
     try {
       const status = await getCurrentRegime();
-      regimeStatusForLog = status;
       currentDvolForGuard = status.dvol ?? 0;
     } catch (err) {
       req.log.warn(`[volume-cover/activate] regime fetch (guard) failed: ${(err as Error).message}`);
@@ -684,7 +691,11 @@ export const registerVolumeCoverRoutes = async (
       return reply.code(400).send({ error: "invalid_week_label", expected: "YYYY-Www" });
     }
     try {
-      const settlement = await buildWeeklySettlement({ pool, weekLabel });
+      const settlement = await buildWeeklySettlement({
+        pool,
+        weekLabel,
+        venueBalanceFetcher: opts.venueBalanceFetcher
+      });
       const format = String((req.query as any)?.format ?? "json");
       if (format === "markdown") {
         return reply.type("text/markdown").send(renderWeeklySettlementMarkdown(settlement));
