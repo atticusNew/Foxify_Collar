@@ -32,10 +32,12 @@ import {
   insertHedgeLeg,
   listHedgeLegsForPosition,
   markHedgeLegSold,
+  markHedgeLegRetained,
   markPositionTriggered,
   markPositionClosed,
   type PositionRow,
-  type HedgeLegRow
+  type HedgeLegRow,
+  type RetainedRole
 } from "./volumeCoverDb";
 import { recordTriggerEvent } from "./salvageTracker";
 import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
@@ -189,16 +191,31 @@ export const openPosition = async (
 };
 
 /**
- * Fire a trigger event for an active position. Called by triggerDetector
- * when BTC spot crosses the position's trigger boundary.
+ * Fire a trigger event for an active position.
  *
- * Sells BOTH hedge legs (winning leg salvages near full payout; losing
- * leg salvages near zero), records salvage event, marks position triggered,
- * posts ledger entries.
+ * P1b (2026-05-16): Atticus RETAINS hedge legs after trigger.
+ *   Spec: "If protection triggers, hedge protection closes for Foxify
+ *   but we still own to TP and salvage."
+ *
+ *   On trigger:
+ *     1. Mark position triggered (closes Foxify-side obligation; payout owed)
+ *     2. Tag each leg with retained_role:
+ *          winner_post_trigger — leg whose strike side BTC crossed
+ *          loser_post_trigger  — opposite side leg
+ *     3. Mark legs retained=TRUE (status stays 'open' — Atticus owns option)
+ *     4. Insert payout_out ledger entry (Foxify owed)
+ *     5. Insert salvage_pending audit row in salvage_event with
+ *        hedge_sale_proceeds_usdc=0 (placeholder; finalized when hedge
+ *        manager actually sells the legs and writes the
+ *        hedge_sell_in ledger entries)
+ *
+ *   The VolumeCover hedge manager (60s tick) is responsible for the
+ *   actual sell, the proceeds ledger, and updating the salvage record
+ *   with realized salvage. This function does NOT call sellOptionLeg.
  */
 export const fireTrigger = async (
   pool: Pool,
-  executor: HedgeExecutor,
+  _executor: HedgeExecutor,
   params: {
     position: PositionRow;
     direction: "high" | "low";
@@ -206,45 +223,47 @@ export const fireTrigger = async (
   }
 ): Promise<{
   salvageEventId: string;
-  salvagePct: number;
-  totalProceedsUsdc: number;
-  netAtticusLossUsdc: number;
+  hedgeRetainedLegIds: string[];
+  payoutOwedUsdc: number;
 }> => {
   const legs = await listHedgeLegsForPosition(pool, params.position.id);
-  const openLegs = legs.filter((l) => l.status === "open");
+  const openLegs = legs.filter((l) => l.status === "open" && !l.retained);
 
-  // Sell every open leg
-  let totalProceeds = 0;
+  // Tag each leg's retained role based on trigger direction.
+  // direction='low'  → BTC dropped → put leg is the WINNER (now ITM)
+  // direction='high' → BTC rose    → call leg is the WINNER
+  const retainedLegIds: string[] = [];
   for (const leg of openLegs) {
+    const isWinner =
+      (params.direction === "low" && leg.optionKind === "put") ||
+      (params.direction === "high" && leg.optionKind === "call");
+    const role: RetainedRole = isWinner ? "winner_post_trigger" : "loser_post_trigger";
     try {
-      const sellResult = await executor.sellOptionLeg({
-        venue: leg.venue as HedgeVenueChoice,
-        optionKind: leg.optionKind,
-        strikeUsdc: leg.strikeUsdc,
-        expiryIso: leg.expiryIso,
-        contractsBtc: leg.contracts
-      });
-      totalProceeds += sellResult.totalProceedsUsdc;
-      await markHedgeLegSold(pool, {
+      await markHedgeLegRetained(pool, {
         id: leg.id,
-        sellPriceUsdc: sellResult.fillPriceUsdcPerBtc,
-        sellOrderId: sellResult.orderId
+        retainedReason: "trigger",
+        retainedRole: role
       });
+      retainedLegIds.push(leg.id);
     } catch (err) {
       console.warn(
-        `[volumeCover/lifecycle] sellOptionLeg failed for leg ${leg.id}: ${(err as Error).message}; ` +
-          `continuing with remaining legs (best-effort salvage)`
+        `[volumeCover/lifecycle] markHedgeLegRetained failed for leg ${leg.id} on trigger: ${(err as Error).message}`
       );
     }
   }
 
-  // Record salvage event
+  // Record salvage event with 0 proceeds (finalized later by hedge manager).
   const salvageEvent = await recordTriggerEvent(pool, {
     positionId: params.position.id,
     triggeredDirection: params.direction,
     payoutOwedUsdc: params.position.payoutUsdc,
-    hedgeSaleProceedsUsdc: totalProceeds,
-    metadata: { triggerSpotBtc: params.triggerSpotBtc ?? null }
+    hedgeSaleProceedsUsdc: 0,
+    metadata: {
+      triggerSpotBtc: params.triggerSpotBtc ?? null,
+      hedge_retained: true,
+      retained_leg_ids: retainedLegIds,
+      finalized: false
+    }
   });
 
   // Mark position triggered
@@ -253,7 +272,7 @@ export const fireTrigger = async (
     direction: params.direction
   });
 
-  // Ledger entries
+  // Ledger: payout owed to Foxify (always)
   try {
     await insertLedgerEntry(pool, {
       poolId: "foxify_trader",
@@ -268,28 +287,18 @@ export const fireTrigger = async (
       `[volumeCover/lifecycle] payout_out ledger failed for position ${params.position.id}: ${(err as Error).message}`
     );
   }
-  try {
-    if (totalProceeds > 0) {
-      await insertLedgerEntry(pool, {
-        poolId: "atticus_hedge",
-        protectionId: params.position.id,
-        entryType: "hedge_sell_in",
-        amountUsdc: totalProceeds,
-        reference: `vc_hedge_sell:${params.position.cellId}:${params.position.id}`,
-        metadata: { product: "volume_cover", direction: params.direction }
-      });
-    }
-  } catch (err) {
-    console.warn(
-      `[volumeCover/lifecycle] hedge_sell_in ledger failed for position ${params.position.id}: ${(err as Error).message}`
-    );
-  }
+
+  // Note: no separate "hedge_retained" ledger entry. Source of truth
+  // for retention is the leg row (retained=TRUE, retained_role,
+  // retained_at) plus salvage_event metadata (hedge_retained=true).
+  // The pilot_pool_ledger CHECK constraint only allows financial entry
+  // types; retention is operational, not financial. Real
+  // hedge_sell_in entries come from the VC hedge manager when legs sell.
 
   return {
     salvageEventId: salvageEvent.id,
-    salvagePct: salvageEvent.salvagePct,
-    totalProceedsUsdc: totalProceeds,
-    netAtticusLossUsdc: salvageEvent.netAtticusLossUsdc
+    hedgeRetainedLegIds: retainedLegIds,
+    payoutOwedUsdc: params.position.payoutUsdc
   };
 };
 
@@ -297,45 +306,75 @@ export const fireTrigger = async (
  * Explicit close (no trigger). Used by:
  *   - Foxify-initiated early close (POST /volume-cover/positions/:id/close)
  *   - Admin manual close
- *   - Expiry-driven close (hedge legs expired)
  *
- * Sells any open hedge legs at market. No payout to Foxify since no trigger.
+ * P1b (2026-05-16): Atticus RETAINS hedge legs after Foxify close.
+ *   Spec: "If foxify closes position it doesn't close the hedge option,
+ *   we still own to salvage."
+ *
+ *   On Foxify close:
+ *     1. Determine retained_role per leg:
+ *          near_atm_post_close — current spot within 0.5% of strike
+ *          stale_post_close    — current spot moved away from strike
+ *          (if currentSpotBtc not provided, default near_atm_post_close)
+ *     2. Mark legs retained=TRUE (status stays 'open' — Atticus owns)
+ *     3. Mark position closed
+ *     4. Insert hedge_retained audit row (amount=0)
+ *
+ *   Premium accrual is NOT computed here in P1b — handled by P1d
+ *   (daily ledger / weekly reconciler) using (closed_at - opened_at).
+ *
+ *   The VolumeCover hedge manager (60s tick) is responsible for the
+ *   actual sell + ledger entry. This function does NOT call sellOptionLeg.
+ *
+ * Natural-expiry close: separate code path (legs expired). For now,
+ * markHedgeLegSold path is unchanged for that case (handled by hedge
+ * manager's time-decay rule).
  */
 export const closePosition = async (
   pool: Pool,
-  executor: HedgeExecutor,
+  _executor: HedgeExecutor,
   params: {
     position: PositionRow;
     reason: string;
+    /** Optional current spot BTC at close time; tags retained_role. */
+    currentSpotBtc?: number;
   }
 ): Promise<{
-  totalProceedsUsdc: number;
-  legsSold: number;
+  hedgeRetainedLegIds: string[];
+  reason: string;
 }> => {
   const legs = await listHedgeLegsForPosition(pool, params.position.id);
-  const openLegs = legs.filter((l) => l.status === "open");
-  let totalProceeds = 0;
-  let legsSold = 0;
+  const openLegs = legs.filter((l) => l.status === "open" && !l.retained);
+  const retainedLegIds: string[] = [];
 
+  // Tag retained role per leg based on current spot vs strike.
+  // 0.5% threshold matches gamma-zone band in TP rule 3.
+  const stalePctThreshold = 0.005;
   for (const leg of openLegs) {
+    let role: RetainedRole = "near_atm_post_close";
+    if (typeof params.currentSpotBtc === "number" && params.currentSpotBtc > 0) {
+      const dist = Math.abs(params.currentSpotBtc - leg.strikeUsdc) / params.currentSpotBtc;
+      // "stale" = spot moved AWAY from this leg's strike side.
+      // For put leg (strike < entry), stale if spot > strike + threshold.
+      // For call leg (strike > entry), stale if spot < strike - threshold.
+      const spotAboveStrike = params.currentSpotBtc > leg.strikeUsdc;
+      const spotBelowStrike = params.currentSpotBtc < leg.strikeUsdc;
+      if (leg.optionKind === "put" && spotAboveStrike && dist > stalePctThreshold) {
+        role = "stale_post_close";
+      } else if (leg.optionKind === "call" && spotBelowStrike && dist > stalePctThreshold) {
+        role = "stale_post_close";
+      }
+    }
     try {
-      const sellResult = await executor.sellOptionLeg({
-        venue: leg.venue as HedgeVenueChoice,
-        optionKind: leg.optionKind,
-        strikeUsdc: leg.strikeUsdc,
-        expiryIso: leg.expiryIso,
-        contractsBtc: leg.contracts
-      });
-      totalProceeds += sellResult.totalProceedsUsdc;
-      legsSold += 1;
-      await markHedgeLegSold(pool, {
+      await markHedgeLegRetained(pool, {
         id: leg.id,
-        sellPriceUsdc: sellResult.fillPriceUsdcPerBtc,
-        sellOrderId: sellResult.orderId
+        retainedReason: "foxify_close",
+        retainedRole: role
       });
+      retainedLegIds.push(leg.id);
     } catch (err) {
       console.warn(
-        `[volumeCover/lifecycle] sellOptionLeg failed during close for leg ${leg.id}: ${(err as Error).message}`
+        `[volumeCover/lifecycle] markHedgeLegRetained failed for leg ${leg.id} on close: ${(err as Error).message}`
       );
     }
   }
@@ -345,22 +384,10 @@ export const closePosition = async (
     reason: params.reason
   });
 
-  if (totalProceeds > 0) {
-    try {
-      await insertLedgerEntry(pool, {
-        poolId: "atticus_hedge",
-        protectionId: params.position.id,
-        entryType: "hedge_sell_in",
-        amountUsdc: totalProceeds,
-        reference: `vc_close:${params.position.cellId}:${params.position.id}`,
-        metadata: { product: "volume_cover", reason: params.reason }
-      });
-    } catch (err) {
-      console.warn(
-        `[volumeCover/lifecycle] hedge_sell_in ledger failed during close for position ${params.position.id}: ${(err as Error).message}`
-      );
-    }
-  }
+  // Note: no separate "hedge_retained" ledger entry on close. Source
+  // of truth is the leg row (retained=TRUE) + position row (status,
+  // close_reason). Real hedge_sell_in ledger entries are written by
+  // the VC hedge manager when legs eventually sell.
 
-  return { totalProceedsUsdc: totalProceeds, legsSold };
+  return { hedgeRetainedLegIds: retainedLegIds, reason: params.reason };
 };

@@ -108,7 +108,7 @@ test("openPosition: hedge failure cancels position and throws", async () => {
   assert.equal(r.rows[0].status, "closed");
 });
 
-test("fireTrigger: sells legs, records salvage, ledger entries, marks triggered", async () => {
+test("fireTrigger: P1b — retains both legs (winner+loser tags), no sell calls, payout ledgered", async () => {
   const pool = await buildPool();
   const cell = findCellById("50k_2pct_1k")!;
   const opened = await openPosition(pool, buildMockExecutor(), {
@@ -118,41 +118,78 @@ test("fireTrigger: sells legs, records salvage, ledger entries, marks triggered"
     pairShortNotionalUsdc: 50_000,
     pairEntryBtcPrice: 80_000
   });
-  const result = await fireTrigger(pool, buildMockExecutor(), {
+
+  // Spy executor: should NOT have sellOptionLeg called.
+  let sellCalls = 0;
+  const spyExecutor = buildMockExecutor({
+    sellOptionLeg: async (params) => {
+      sellCalls++;
+      return {
+        venue: params.venue,
+        fillPriceUsdcPerBtc: 0,
+        totalProceedsUsdc: 0,
+        orderId: "SHOULD-NOT-BE-CALLED"
+      };
+    }
+  });
+
+  const result = await fireTrigger(pool, spyExecutor, {
     position: opened.position,
     direction: "low"
   });
 
-  // Salvage event recorded
+  // P1b: NO sell calls during fireTrigger; hedge manager owns disposition
+  assert.equal(sellCalls, 0, "fireTrigger must not call sellOptionLeg");
+
+  // Salvage event recorded with hedge_retained metadata
   const stats = await computeRollingSalvageStats(pool, 5);
   assert.equal(stats.count, 1);
-  assert.ok(stats.avgSalvagePct! > 0);
 
   // Position transitioned
   const fresh = await getPosition(pool, opened.position.id);
   assert.equal(fresh?.status, "triggered");
   assert.equal(fresh?.triggeredDirection, "low");
 
-  // All hedge legs sold
+  // Hedge legs RETAINED (status='open', retained=true) with role tags
   const legs = await listHedgeLegsForPosition(pool, opened.position.id);
+  assert.equal(legs.length, 2);
   for (const l of legs) {
-    assert.equal(l.status, "sold");
+    assert.equal(l.status, "open", `leg ${l.id} should still be open`);
+    assert.equal(l.retained, true, `leg ${l.id} should be retained`);
+    assert.equal(l.retainedReason, "trigger");
   }
+  // direction='low' → put is winner, call is loser
+  const put = legs.find((l) => l.optionKind === "put")!;
+  const call = legs.find((l) => l.optionKind === "call")!;
+  assert.equal(put.retainedRole, "winner_post_trigger");
+  assert.equal(call.retainedRole, "loser_post_trigger");
 
-  // payout_out + hedge_sell_in ledger entries
+  // payout_out present; NO hedge_sell_in yet (manager owns disposition).
+  // Retention audit lives on hedge_leg.retained + salvage_event metadata,
+  // not in pilot_pool_ledger (which is reserved for financial entries).
   const ledger = await pool.query(
     `SELECT entry_type FROM pilot_pool_ledger WHERE protection_id = $1`,
     [opened.position.id]
   );
   const types = ledger.rows.map((r: any) => r.entry_type);
-  assert.ok(types.includes("payout_out"));
-  assert.ok(types.includes("hedge_sell_in"));
+  assert.ok(types.includes("payout_out"), "payout_out must be ledgered");
+  assert.ok(!types.includes("hedge_sell_in"), "hedge_sell_in must NOT be present until manager sells");
 
-  // salvage proceeds positive
-  assert.ok(result.totalProceedsUsdc > 0);
+  // Salvage event must record hedge_retained=true and pending finalization
+  const sv = await pool.query(
+    `SELECT metadata FROM volume_cover_salvage_event WHERE position_id = $1`,
+    [opened.position.id]
+  );
+  assert.equal(sv.rows.length, 1);
+  const svMeta = typeof sv.rows[0].metadata === "string" ? JSON.parse(sv.rows[0].metadata) : sv.rows[0].metadata;
+  assert.equal(svMeta.hedge_retained, true);
+  assert.equal(svMeta.finalized, false);
+
+  assert.equal(result.payoutOwedUsdc, opened.position.payoutUsdc);
+  assert.equal(result.hedgeRetainedLegIds.length, 2);
 });
 
-test("closePosition: sells open legs at market and marks closed", async () => {
+test("closePosition: P1b — retains legs (no sell), tags near_atm vs stale by spot", async () => {
   const pool = await buildPool();
   const cell = findCellById("50k_2pct_1k")!;
   const opened = await openPosition(pool, buildMockExecutor(), {
@@ -162,13 +199,48 @@ test("closePosition: sells open legs at market and marks closed", async () => {
     pairShortNotionalUsdc: 50_000,
     pairEntryBtcPrice: 80_000
   });
-  const result = await closePosition(pool, buildMockExecutor(), {
-    position: opened.position,
-    reason: "foxify_early_close"
+
+  let sellCalls = 0;
+  const spyExecutor = buildMockExecutor({
+    sellOptionLeg: async (params) => {
+      sellCalls++;
+      return { venue: params.venue, fillPriceUsdcPerBtc: 0, totalProceedsUsdc: 0, orderId: "X" };
+    }
   });
-  assert.equal(result.legsSold, 2);
+
+  // Spot is far above put strike $79,200 and far above call strike $80,800
+  // → put leg is "stale" (spot moved away from strike), call is near-ATM
+  const result = await closePosition(pool, spyExecutor, {
+    position: opened.position,
+    reason: "foxify_early_close",
+    currentSpotBtc: 81_000
+  });
+  assert.equal(sellCalls, 0, "closePosition must not call sellOptionLeg");
+  assert.equal(result.hedgeRetainedLegIds.length, 2);
 
   const fresh = await getPosition(pool, opened.position.id);
   assert.equal(fresh?.status, "closed");
   assert.match(fresh?.closeReason ?? "", /foxify_early_close/);
+
+  const legs = await listHedgeLegsForPosition(pool, opened.position.id);
+  for (const l of legs) {
+    assert.equal(l.status, "open");
+    assert.equal(l.retained, true);
+    assert.equal(l.retainedReason, "foxify_close");
+  }
+  const put = legs.find((l) => l.optionKind === "put")!;
+  const call = legs.find((l) => l.optionKind === "call")!;
+  // spot 81_000 vs put strike 79_200: 81000 - 79200 = 1800 → 2.2% above → STALE put
+  assert.equal(put.retainedRole, "stale_post_close");
+  // spot 81_000 vs call strike 80_800: 200 above → 0.25% → near-ATM
+  assert.equal(call.retainedRole, "near_atm_post_close");
+
+  // No hedge_sell_in yet (manager owns disposition); retention audit
+  // is on the leg row, not the financial ledger.
+  const ledger = await pool.query(
+    `SELECT entry_type FROM pilot_pool_ledger WHERE protection_id = $1`,
+    [opened.position.id]
+  );
+  const types = ledger.rows.map((r: any) => r.entry_type);
+  assert.ok(!types.includes("hedge_sell_in"));
 });

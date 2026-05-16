@@ -105,6 +105,49 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
     );
   `);
 
+  // ─── P1b (2026-05-16): Atticus retention columns on hedge_leg ───
+  // Spec: Foxify close OR trigger does NOT auto-sell hedge legs;
+  // Atticus retains and runs TP/salvage. Adds `retained` flag,
+  // retention timestamp + reason, and post-retention role tag.
+  // Additive only — legacy rows default to retained=false.
+  //
+  // P1e (2026-05-16): ladder netting columns. When same-fingerprint
+  // same-cell reopen happens within 30 min, retained legs are
+  // repurposed back to status='open' under the new position_id.
+  // ladder_hop_count caps re-use to 1 hop per leg lineage.
+  const safeAlter = async (sql: string): Promise<void> => {
+    try { await pool.query(sql); } catch { /* column likely exists */ }
+  };
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN retained BOOLEAN NOT NULL DEFAULT FALSE`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN retained_at TIMESTAMPTZ`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN retained_reason TEXT`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN retained_role TEXT`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN repurposed_from_position_id TEXT`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN ladder_hop_count INTEGER NOT NULL DEFAULT 0`);
+
+  // Hedge-retained ledger info for audit (no balance impact). Not its
+  // own table; we use the existing pilot capital_pool_ledger via
+  // metadata. See positionLifecycle.
+
+  // ─── P1d (2026-05-16): premium accrual rollup audit per position
+  // (the canonical source of truth is the position row itself —
+  // (closed_at - opened_at) × dailyPremium — but we cache rollups
+  // for fast weekly-reconciler reads). Schema added in P1d.
+
+  // ─── P1e (2026-05-16): ladder netting events (audit + savings) ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS volume_cover_ladder_netting_event (
+      id TEXT PRIMARY KEY,
+      prior_position_id TEXT NOT NULL,
+      new_position_id TEXT NOT NULL,
+      fingerprint_hash TEXT,
+      cell_id TEXT NOT NULL,
+      legs_repurposed JSONB NOT NULL,
+      estimated_savings_usdc NUMERIC(20, 8) NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
   // Index creation — best-effort, pg-mem compatible.
   const safeIdx = async (sql: string): Promise<void> => {
     try { await pool.query(sql); } catch { /* index may already exist */ }
@@ -113,8 +156,10 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeIdx(`CREATE INDEX idx_volume_cover_position_cell ON volume_cover_position (cell_id, opened_at)`);
   await safeIdx(`CREATE INDEX idx_volume_cover_position_pair ON volume_cover_position (foxify_pair_id)`);
   await safeIdx(`CREATE INDEX idx_volume_cover_hedge_position ON volume_cover_hedge_leg (position_id, status)`);
+  await safeIdx(`CREATE INDEX idx_volume_cover_hedge_retained ON volume_cover_hedge_leg (retained, expiry_iso) WHERE retained = TRUE`);
   await safeIdx(`CREATE INDEX idx_volume_cover_salvage_pos ON volume_cover_salvage_event (position_id)`);
   await safeIdx(`CREATE INDEX idx_volume_cover_salvage_time ON volume_cover_salvage_event (triggered_at DESC)`);
+  await safeIdx(`CREATE INDEX idx_vc_ladder_fingerprint ON volume_cover_ladder_netting_event (fingerprint_hash, created_at)`);
 };
 
 /**
@@ -387,6 +432,8 @@ export const markPositionClosed = async (
 
 // ────────────────────── CRUD: Hedge legs ──────────────────────
 
+export type RetainedRole = "winner_post_trigger" | "loser_post_trigger" | "near_atm_post_close" | "stale_post_close";
+
 export type HedgeLegRow = {
   id: string;
   positionId: string;
@@ -403,6 +450,14 @@ export type HedgeLegRow = {
   openedAt: string;
   closedAt: string | null;
   metadata: Record<string, unknown>;
+  // P1b retention fields
+  retained: boolean;
+  retainedAt: string | null;
+  retainedReason: string | null;
+  retainedRole: RetainedRole | null;
+  // P1e ladder fields
+  repurposedFromPositionId: string | null;
+  ladderHopCount: number;
 };
 
 const rowToHedgeLeg = (r: any): HedgeLegRow => ({
@@ -415,12 +470,18 @@ const rowToHedgeLeg = (r: any): HedgeLegRow => ({
   contracts: Number(r.contracts),
   buyPriceUsdc: Number(r.buy_price_usdc),
   buyOrderId: r.buy_order_id ? String(r.buy_order_id) : null,
-  sellPriceUsdc: r.sell_price_usdc !== null ? Number(r.sell_price_usdc) : null,
+  sellPriceUsdc: r.sell_price_usdc !== null && r.sell_price_usdc !== undefined ? Number(r.sell_price_usdc) : null,
   sellOrderId: r.sell_order_id ? String(r.sell_order_id) : null,
   status: String(r.status) as HedgeLegRow["status"],
   openedAt: String(r.opened_at),
   closedAt: r.closed_at ? String(r.closed_at) : null,
-  metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) : (r.metadata ?? {})
+  metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) : (r.metadata ?? {}),
+  retained: Boolean(r.retained ?? false),
+  retainedAt: r.retained_at ? String(r.retained_at) : null,
+  retainedReason: r.retained_reason ? String(r.retained_reason) : null,
+  retainedRole: r.retained_role ? (String(r.retained_role) as RetainedRole) : null,
+  repurposedFromPositionId: r.repurposed_from_position_id ? String(r.repurposed_from_position_id) : null,
+  ladderHopCount: Number(r.ladder_hop_count ?? 0)
 });
 
 export const insertHedgeLeg = async (
@@ -492,6 +553,151 @@ export const markHedgeLegSold = async (
     [params.id, params.sellPriceUsdc, params.sellOrderId ?? null]
   );
   return r.rows[0] ? rowToHedgeLeg(r.rows[0]) : null;
+};
+
+/**
+ * P1b: mark a hedge leg as Atticus-retained (post-trigger or
+ * post-Foxify-close). Status stays 'open' (because it's still a live
+ * option Atticus owns), but retained=true flags it for the VC hedge
+ * manager. retained_role tags it for TP-rule dispatch.
+ */
+export const markHedgeLegRetained = async (
+  pool: DbExecutor,
+  params: {
+    id: string;
+    retainedReason: "foxify_close" | "trigger" | "natural_expiry" | string;
+    retainedRole: RetainedRole;
+    retainedAtIso?: string;
+  }
+): Promise<HedgeLegRow | null> => {
+  const r = await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET retained = TRUE,
+         retained_at = COALESCE($2::timestamptz, NOW()),
+         retained_reason = $3,
+         retained_role = $4
+     WHERE id = $1 AND status = 'open'
+     RETURNING *`,
+    [params.id, params.retainedAtIso ?? null, params.retainedReason, params.retainedRole]
+  );
+  return r.rows[0] ? rowToHedgeLeg(r.rows[0]) : null;
+};
+
+/**
+ * P1b: list legs currently retained by Atticus. Used by VC hedge
+ * manager (60s tick) and ladder netting (match check).
+ */
+export const listRetainedHedgeLegs = async (
+  pool: DbExecutor,
+  filter: {
+    fingerprintHash?: string | null;
+    cellId?: string;
+    expiryAfterIso?: string;
+    retainedAfterIso?: string;
+    optionKind?: "put" | "call";
+  } = {}
+): Promise<HedgeLegRow[]> => {
+  const where: string[] = [`l.retained = TRUE`, `l.status = 'open'`];
+  const values: any[] = [];
+  let idx = 1;
+  if (filter.fingerprintHash !== undefined && filter.fingerprintHash !== null) {
+    where.push(`p.fingerprint_hash = $${idx++}`);
+    values.push(filter.fingerprintHash);
+  }
+  if (filter.cellId) {
+    where.push(`p.cell_id = $${idx++}`);
+    values.push(filter.cellId);
+  }
+  if (filter.expiryAfterIso) {
+    where.push(`l.expiry_iso >= $${idx++}::timestamptz`);
+    values.push(filter.expiryAfterIso);
+  }
+  if (filter.retainedAfterIso) {
+    where.push(`l.retained_at >= $${idx++}::timestamptz`);
+    values.push(filter.retainedAfterIso);
+  }
+  if (filter.optionKind) {
+    where.push(`l.option_kind = $${idx++}`);
+    values.push(filter.optionKind);
+  }
+  const sql = `
+    SELECT l.*
+    FROM volume_cover_hedge_leg l
+    JOIN volume_cover_position p ON p.id = l.position_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY l.retained_at DESC NULLS LAST
+  `;
+  const r = await pool.query(sql, values);
+  return r.rows.map(rowToHedgeLeg);
+};
+
+/**
+ * P1e: repurpose a retained leg under a new position_id (ladder netting).
+ * Atomically: clear retention flags, point at new position, increment
+ * ladder_hop_count, record original position id. Idempotent failure
+ * (returns null if leg is no longer retained or already hopped).
+ */
+export const repurposeHedgeLeg = async (
+  pool: DbExecutor,
+  params: {
+    legId: string;
+    newPositionId: string;
+    /** Max hops permitted; default 1 (one repurpose per lineage). */
+    maxHops?: number;
+  }
+): Promise<HedgeLegRow | null> => {
+  const maxHops = params.maxHops ?? 1;
+  const r = await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET repurposed_from_position_id = position_id,
+         position_id = $2,
+         retained = FALSE,
+         retained_at = NULL,
+         retained_reason = NULL,
+         retained_role = NULL,
+         ladder_hop_count = ladder_hop_count + 1
+     WHERE id = $1
+       AND retained = TRUE
+       AND status = 'open'
+       AND ladder_hop_count < $3
+     RETURNING *`,
+    [params.legId, params.newPositionId, maxHops]
+  );
+  return r.rows[0] ? rowToHedgeLeg(r.rows[0]) : null;
+};
+
+/**
+ * P1e: insert ladder netting audit event.
+ */
+export const insertLadderNettingEvent = async (
+  pool: DbExecutor,
+  event: {
+    id: string;
+    priorPositionId: string;
+    newPositionId: string;
+    fingerprintHash?: string | null;
+    cellId: string;
+    legsRepurposed: Array<{ legId: string; optionKind: "put" | "call"; strikeUsdc: number; contractsBtc: number }>;
+    estimatedSavingsUsdc: number;
+  }
+): Promise<{ id: string }> => {
+  const r = await pool.query(
+    `INSERT INTO volume_cover_ladder_netting_event
+       (id, prior_position_id, new_position_id, fingerprint_hash, cell_id,
+        legs_repurposed, estimated_savings_usdc)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id`,
+    [
+      event.id,
+      event.priorPositionId,
+      event.newPositionId,
+      event.fingerprintHash ?? null,
+      event.cellId,
+      JSON.stringify(event.legsRepurposed),
+      event.estimatedSavingsUsdc
+    ]
+  );
+  return { id: String(r.rows[0].id) };
 };
 
 // ────────────────────── CRUD: Salvage events ──────────────────────

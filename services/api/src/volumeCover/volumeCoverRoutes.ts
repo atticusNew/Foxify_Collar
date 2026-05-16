@@ -478,8 +478,10 @@ export const registerVolumeCoverRoutes = async (
       return reply.send({
         positionId: id,
         status: "closed",
-        legsSold: result.legsSold,
-        totalProceedsUsdc: result.totalProceedsUsdc
+        // P1b: hedge legs are RETAINED (not sold). VC hedge manager
+        // owns disposition. legsSold field intentionally omitted.
+        hedgeRetainedLegIds: result.hedgeRetainedLegIds,
+        hedgeRetained: true
       });
     } catch (err) {
       req.log.error(`[volume-cover/close] failed: ${(err as Error).message}`);
@@ -604,8 +606,8 @@ export const registerVolumeCoverRoutes = async (
       return reply.send({
         positionId: id,
         status: "closed",
-        legsSold: result.legsSold,
-        totalProceedsUsdc: result.totalProceedsUsdc
+        hedgeRetainedLegIds: result.hedgeRetainedLegIds,
+        hedgeRetained: true
       });
     } catch (err) {
       return reply.code(500).send({ error: "close_failed", message: (err as Error).message });
