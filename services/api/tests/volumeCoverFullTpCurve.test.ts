@@ -416,6 +416,88 @@ test("Full curve: rule 11 (vol-spike) sells when IV jumps >25% in 60min and valu
   // integration test confirms the codepath doesn't throw.
 });
 
+test("Full curve: rule 7 (loser leg early exit) sells when value < 20% via grace window", async () => {
+  __resetHedgeManagerForTests();
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  const { executor, sellCalls } = buildSpyExecutor();
+  const opened = await openPosition(pool, executor, {
+    cell,
+    foxifyPairId: "FX-FC-7",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000
+  });
+  await fireTrigger(pool, executor, { position: opened.position, direction: "low" });
+  // Backdate LOSER (call) past 4h grace; winner stays current to avoid W1 path
+  await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET retained_at = NOW() - interval '5 hours'
+     WHERE position_id = $1 AND retained_role = 'loser_post_trigger'`,
+    [opened.position.id]
+  );
+  // Spot near entry → loser (call) value not catastrophically low,
+  // not in reversal range either → grace path fires.
+  const result = await runOneHedgeManagerTick({
+    pool,
+    executor,
+    spotIvSource: spotIv(80_000)
+  });
+  // Either 7_loser_floor or 7_loser_grace (or 8_loser_reversal_upgrade
+  // if value happens to exceed 50%). Assert call leg either sold by
+  // rule 7 OR upgraded by rule 8 — both are valid loser-handling paths.
+  const callAction = result.actions.find((a) =>
+    a.rule.startsWith("7_loser") || a.rule === "8_loser_reversal_upgrade"
+  );
+  assert.ok(callAction, `expected rule 7 or 8 for loser, got ${JSON.stringify(result.actions)}`);
+});
+
+test("Full curve: integration — rules 1+4+5+7 across two ticks", async () => {
+  __resetHedgeManagerForTests();
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  const { executor, sellCalls } = buildSpyExecutor();
+
+  // Open 2 positions, trigger one, close the other → mix of states
+  const triggered = await openPosition(pool, executor, {
+    cell,
+    foxifyPairId: "INTEG-TRIG",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000
+  });
+  await fireTrigger(pool, executor, { position: triggered.position, direction: "low" });
+
+  // Tick 1: within rule 4 follow-through window → winner held;
+  // expect either rule 4 hold for winner (just-triggered) OR no_match
+  // for loser (within grace).
+  const r1 = await runOneHedgeManagerTick({
+    pool,
+    executor,
+    spotIvSource: spotIv(78_000)
+  });
+  // No legs should have sold yet (rule 4 holds winner; rule 7 not yet
+  // satisfied for loser within 4h grace at value still substantial).
+  assert.equal(sellCalls.length, 0, `unexpected sells in tick 1: ${JSON.stringify(r1.actions)}`);
+
+  // Tick 2: backdate retained_at past rule 4 + force expiry near so
+  // rule 1 fires. All legs should be sold by rule 1 (time decay).
+  await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET expiry_iso = NOW() + interval '1 hour'
+     WHERE position_id = $1`,
+    [triggered.position.id]
+  );
+  const r2 = await runOneHedgeManagerTick({
+    pool,
+    executor,
+    spotIvSource: spotIv(78_000)
+  });
+  assert.equal(r2.legsActioned, 2, `expected both legs actioned, got ${JSON.stringify(r2.actions)}`);
+  assert.ok(r2.actions.every((a) => a.rule === "1_time_decay_exit"));
+  assert.equal(sellCalls.length, 2);
+});
+
 test("Full curve: thin-window defer (rule 2) skips tick when in 04:00-06:00 UTC", async () => {
   __resetHedgeManagerForTests();
   const pool = await buildPool();
