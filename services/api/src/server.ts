@@ -64,6 +64,7 @@ import { createHedgeExecutor } from "./volumeCover/hedgeExecutorAdapter";
 import { createSpotPriceSource } from "./volumeCover/spotPriceSource";
 import { startTriggerDetector } from "./volumeCover/triggerDetector";
 import { startHedgeManager } from "./volumeCover/volumeCoverHedgeManager";
+import { setVenueOptionChainProvider } from "./volumeCover/venueStrikeGrid";
 import { registerTreasuryRoutes } from "./pilot/treasuryRoutes";
 import { parseTreasuryConfig } from "./pilot/treasuryConfig";
 import { startTreasuryScheduler } from "./pilot/treasuryScheduler";
@@ -8281,6 +8282,54 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
       }
       return bullishUsdc + deribitUsdc;
     };
+
+    // P3 §7.3 P1c: venue option-chain provider — pickClosestStrike
+    // (in venueStrikeGrid.ts) uses this to snap to a strike that
+    // ACTUALLY exists on the venue. Falls back to static $200/$1000
+    // grid if provider returns null OR throws (graceful degradation).
+    setVenueOptionChainProvider(async ({ venue, expiryIso, optionKind }) => {
+      const targetDate = expiryIso.slice(0, 10); // YYYY-MM-DD
+      if (venue === "bullish") {
+        try {
+          const { BullishTradingClient } = await import("./pilot/bullish");
+          const client = new BullishTradingClient(pilotConfig.bullish);
+          // 60s cache inside the venueStrikeGrid layer; Bullish itself
+          // also has 30s internal cache. Both fine.
+          const markets = await client.getMarkets({ cacheTtlMs: 60_000 });
+          const kindUpper = optionKind === "put" ? "PUT" : "CALL";
+          return markets
+            .filter(m => (m.optionType ?? "").toUpperCase() === kindUpper)
+            .filter(m => (m.expiryDatetime ?? "").slice(0, 10) === targetDate)
+            .filter(m => (m.underlyingBaseSymbol ?? "").toUpperCase() === "BTC")
+            .filter(m => m.marketEnabled && m.createOrderEnabled)
+            .map(m => Number(m.optionStrikePrice ?? "0"))
+            .filter(s => Number.isFinite(s) && s > 0);
+        } catch (err) {
+          console.warn(`[VolumeCover] Bullish chain fetch failed: ${(err as Error).message}`);
+          return [];
+        }
+      }
+      if (venue === "deribit") {
+        try {
+          const r: any = await deribitLive.listInstruments("BTC");
+          const items: any[] = Array.isArray(r?.result) ? r.result : [];
+          const expiryMs = new Date(expiryIso).getTime();
+          // Allow ±1 day fuzz on expiry (venue rounds to UTC 08:00; our
+          // computed expiry rounds the same but daylight/timezone edges
+          // can shift by a day on snap).
+          return items
+            .filter(i => String(i.option_type).toLowerCase() === optionKind)
+            .filter(i => Math.abs(Number(i.expiration_timestamp) - expiryMs) < 86_400_000)
+            .map(i => Number(i.strike))
+            .filter(s => Number.isFinite(s) && s > 0);
+        } catch (err) {
+          console.warn(`[VolumeCover] Deribit chain fetch failed: ${(err as Error).message}`);
+          return [];
+        }
+      }
+      return [];
+    });
+    console.log(`[VolumeCover] Venue option-chain provider wired (Bullish + Deribit)`);
 
     await registerVolumeCoverRoutes(app, {
       hedgeExecutor,
