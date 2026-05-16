@@ -410,13 +410,16 @@ export const registerVolumeCoverRoutes = async (
     const metrics = await readSalvageMetrics(pool);
     const totalActiveLiability = await sumActivePayoutLiability(pool);
 
-    // P3: fetch live DVOL for stress-pause guard
+    // P3 §13 + P1c: fetch live DVOL ONCE, reuse for guard, pricing, sizing.
     let currentDvolForGuard = 0;
+    let regime: VolRegime | null = null;
     try {
       const status = await getCurrentRegime();
       currentDvolForGuard = status.dvol ?? 0;
+      regime = classifyVolumeCoverRegime(status.dvol);
+      if (!regime) regime = translatePilotRegime(status.regime);
     } catch (err) {
-      req.log.warn(`[volume-cover/activate] regime fetch (guard) failed: ${(err as Error).message}`);
+      req.log.warn(`[volume-cover/activate] regime fetch failed: ${(err as Error).message}`);
     }
 
     const guardVerdict = checkAllGuardsForVolumeCoverActivate({
@@ -456,27 +459,21 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
-    const baseDailyPremium = resolveDailyPremium({
+    // P3 §13: regime-aware pricing. resolveDailyPremium reads
+    // VC_REGIME_OVERLAY_JSON env (post-Phase-2 sign-off) and applies
+    // moderate/elevated/stress overlays. Calm always uses base/DB.
+    const premiumQuote = resolveDailyPremium({
       cell,
-      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc
-    }).dailyPremiumUsdc;
+      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
+      regime
+    });
+    const baseDailyPremium = premiumQuote.dailyPremiumUsdc;
     // P3 Layer 4: apply surcharge multiplier if fingerprint is in
     // surcharge state. Default 1.0 (no change).
     const dailyPremium = Math.round(baseDailyPremium * surchargeMultiplier);
 
-    // P1c: vol-buffered sizing. Fetch current regime via DVOL → 4-bucket
-    // VC classification. Fall back to pilot regime classifier; null on
-    // failure so vol buffer is no-op (safe default).
-    let regime: VolRegime | null = null;
-    try {
-      const status = await getCurrentRegime();
-      // Prefer raw DVOL with VC's stricter 4-bucket thresholds
-      regime = classifyVolumeCoverRegime(status.dvol);
-      if (!regime) regime = translatePilotRegime(status.regime);
-    } catch (err) {
-      req.log.warn(`[volume-cover/activate] regime fetch failed: ${(err as Error).message}; vol buffer disabled`);
-    }
-
+    // P1c: vol-buffered sizing reuses the regime fetched once above
+    // for guard + pricing.
     try {
       const result = await openPosition(pool, opts.hedgeExecutor, {
         cell,
