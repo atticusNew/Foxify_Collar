@@ -167,6 +167,34 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
     );
   `);
 
+  // ─── 2026-05-16 follow-up: pair-event audit log (timing breakdown) ───
+  // One row per /activate request. Captures wall-clock timing across
+  // the hot-path stages so we can monitor P50/P95/P99 latency live
+  // and reconcile against Foxify's perp-open timestamps.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS volume_cover_pair_event (
+      id TEXT PRIMARY KEY,
+      foxify_pair_id TEXT NOT NULL,
+      cell_id TEXT NOT NULL,
+      fingerprint_hash TEXT,
+      pair_entry_btc_price NUMERIC(20, 8),
+      result TEXT NOT NULL,
+      reject_reason TEXT,
+      position_id TEXT,
+      received_at TIMESTAMPTZ NOT NULL,
+      guards_passed_at TIMESTAMPTZ,
+      hedge_buy_submitted_at TIMESTAMPTZ,
+      hedge_fill_at TIMESTAMPTZ,
+      response_sent_at TIMESTAMPTZ NOT NULL,
+      total_latency_ms INTEGER NOT NULL,
+      laddered BOOLEAN NOT NULL DEFAULT FALSE,
+      ladder_savings_usdc NUMERIC(20, 8) DEFAULT 0,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      CONSTRAINT volume_cover_pair_event_result_check
+        CHECK (result IN ('activated', 'idempotent', 'rejected', 'failed'))
+    );
+  `);
+
   // ─── P1f (2026-05-16): hedge manager telemetry (per-tick log) ───
   await pool.query(`
     CREATE TABLE IF NOT EXISTS volume_cover_hedge_leg_telemetry (
@@ -199,6 +227,9 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeIdx(`CREATE INDEX idx_vc_hm_telem_leg ON volume_cover_hedge_leg_telemetry (leg_id, cycled_at DESC)`);
   await safeIdx(`CREATE INDEX idx_vc_hm_telem_time ON volume_cover_hedge_leg_telemetry (cycled_at DESC)`);
   await safeIdx(`CREATE INDEX idx_vc_fp_next_allowed ON volume_cover_fingerprint_state (next_allowed_activate_at)`);
+  await safeIdx(`CREATE INDEX idx_vc_pair_event_received ON volume_cover_pair_event (received_at DESC)`);
+  await safeIdx(`CREATE INDEX idx_vc_pair_event_position ON volume_cover_pair_event (position_id)`);
+  await safeIdx(`CREATE INDEX idx_vc_pair_event_fingerprint ON volume_cover_pair_event (fingerprint_hash, received_at DESC)`);
 };
 
 /**
@@ -734,6 +765,130 @@ export const updateHedgeLegTpState = async (
      WHERE id = $1`,
     [params.legId, params.currentValueUsdc]
   );
+};
+
+/**
+ * Pair-event audit log helpers (per-/activate timing breakdown).
+ */
+export type PairEventResult = "activated" | "idempotent" | "rejected" | "failed";
+
+export type PairEventRow = {
+  id: string;
+  foxifyPairId: string;
+  cellId: string;
+  fingerprintHash: string | null;
+  pairEntryBtcPrice: number | null;
+  result: PairEventResult;
+  rejectReason: string | null;
+  positionId: string | null;
+  receivedAtIso: string;
+  guardsPassedAtIso: string | null;
+  hedgeBuySubmittedAtIso: string | null;
+  hedgeFillAtIso: string | null;
+  responseSentAtIso: string;
+  totalLatencyMs: number;
+  laddered: boolean;
+  ladderSavingsUsdc: number;
+  metadata: Record<string, unknown>;
+};
+
+export const insertPairEvent = async (
+  pool: DbExecutor,
+  ev: Omit<PairEventRow, "id"> & { id?: string }
+): Promise<{ id: string }> => {
+  const id = ev.id ?? `vc-evt-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  await pool.query(
+    `INSERT INTO volume_cover_pair_event
+       (id, foxify_pair_id, cell_id, fingerprint_hash, pair_entry_btc_price,
+        result, reject_reason, position_id,
+        received_at, guards_passed_at, hedge_buy_submitted_at, hedge_fill_at,
+        response_sent_at, total_latency_ms, laddered, ladder_savings_usdc, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+             $9::timestamptz, $10::timestamptz, $11::timestamptz, $12::timestamptz,
+             $13::timestamptz, $14, $15, $16, $17)`,
+    [
+      id,
+      ev.foxifyPairId,
+      ev.cellId,
+      ev.fingerprintHash,
+      ev.pairEntryBtcPrice,
+      ev.result,
+      ev.rejectReason,
+      ev.positionId,
+      ev.receivedAtIso,
+      ev.guardsPassedAtIso,
+      ev.hedgeBuySubmittedAtIso,
+      ev.hedgeFillAtIso,
+      ev.responseSentAtIso,
+      Math.round(ev.totalLatencyMs),
+      ev.laddered,
+      ev.ladderSavingsUsdc,
+      JSON.stringify(ev.metadata ?? {})
+    ]
+  );
+  return { id };
+};
+
+const rowToPairEvent = (r: any): PairEventRow => ({
+  id: String(r.id),
+  foxifyPairId: String(r.foxify_pair_id),
+  cellId: String(r.cell_id),
+  fingerprintHash: r.fingerprint_hash ? String(r.fingerprint_hash) : null,
+  pairEntryBtcPrice: r.pair_entry_btc_price !== null && r.pair_entry_btc_price !== undefined ? Number(r.pair_entry_btc_price) : null,
+  result: String(r.result) as PairEventResult,
+  rejectReason: r.reject_reason ? String(r.reject_reason) : null,
+  positionId: r.position_id ? String(r.position_id) : null,
+  receivedAtIso: String(r.received_at),
+  guardsPassedAtIso: r.guards_passed_at ? String(r.guards_passed_at) : null,
+  hedgeBuySubmittedAtIso: r.hedge_buy_submitted_at ? String(r.hedge_buy_submitted_at) : null,
+  hedgeFillAtIso: r.hedge_fill_at ? String(r.hedge_fill_at) : null,
+  responseSentAtIso: String(r.response_sent_at),
+  totalLatencyMs: Number(r.total_latency_ms ?? 0),
+  laddered: Boolean(r.laddered ?? false),
+  ladderSavingsUsdc: Number(r.ladder_savings_usdc ?? 0),
+  metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) : (r.metadata ?? {})
+});
+
+export const listRecentPairEvents = async (
+  pool: DbExecutor,
+  limit = 100
+): Promise<PairEventRow[]> => {
+  const r = await pool.query(
+    `SELECT * FROM volume_cover_pair_event ORDER BY received_at DESC LIMIT $1`,
+    [limit]
+  );
+  return r.rows.map(rowToPairEvent);
+};
+
+export const computePairEventLatencyStats = async (
+  pool: DbExecutor,
+  windowHours = 24
+): Promise<{
+  count: number;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  p99Ms: number | null;
+  avgMs: number | null;
+}> => {
+  const r = await pool.query(
+    `SELECT total_latency_ms FROM volume_cover_pair_event
+     WHERE received_at >= NOW() - ($1 || ' hours')::interval
+       AND result = 'activated'
+     ORDER BY total_latency_ms ASC`,
+    [String(windowHours)]
+  );
+  const samples = r.rows.map((row: any) => Number(row.total_latency_ms));
+  const n = samples.length;
+  if (n === 0) return { count: 0, p50Ms: null, p95Ms: null, p99Ms: null, avgMs: null };
+  const pct = (p: number) => samples[Math.min(n - 1, Math.floor(n * p))];
+  const sum = samples.reduce((s, x) => s + x, 0);
+  return {
+    count: n,
+    p50Ms: pct(0.5),
+    p95Ms: pct(0.95),
+    p99Ms: pct(0.99),
+    avgMs: Math.round(sum / n)
+  };
 };
 
 /**

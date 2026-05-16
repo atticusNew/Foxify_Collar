@@ -49,7 +49,10 @@ import {
   getPositionByPairId,
   listActivePositions,
   listPositionsForCellToday,
-  sumActivePayoutLiability
+  sumActivePayoutLiability,
+  insertPairEvent,
+  listRecentPairEvents,
+  computePairEventLatencyStats
 } from "./volumeCoverDb";
 import { openPosition, closePosition } from "./positionLifecycle";
 import {
@@ -318,12 +321,59 @@ export const registerVolumeCoverRoutes = async (
   });
 
   app.post("/volume-cover/activate", async (req: FastifyRequest, reply: FastifyReply) => {
+    // Pair-event audit timing capture. Stages tracked:
+    //   receivedAt        — request arrival (this point)
+    //   guardsPassedAtMs  — after anti-bot + guard composer
+    //   hedgeBuySubmitMs  — just before openPosition (which fires venue order)
+    //   hedgeFillMs       — after openPosition returns (venue confirmed)
+    //   responseSentAt    — final reply
+    const receivedAtMs = Date.now();
+    let guardsPassedAtMs: number | null = null;
+    let hedgeBuySubmittedAtMs: number | null = null;
+    let hedgeFillAtMs: number | null = null;
+
+    const writeEvent = async (params: {
+      result: "activated" | "idempotent" | "rejected" | "failed";
+      rejectReason?: string;
+      positionId?: string;
+      laddered?: boolean;
+      ladderSavingsUsdc?: number;
+      metadata?: Record<string, unknown>;
+    }) => {
+      try {
+        const responseSentAtMs = Date.now();
+        await insertPairEvent(pool, {
+          foxifyPairId: (req.body as any)?.foxifyPairId ?? "unknown",
+          cellId: (req.body as any)?.cellId ?? "unknown",
+          fingerprintHash: (req.body as any)?.fingerprintHash ?? null,
+          pairEntryBtcPrice: Number((req.body as any)?.pairEntryBtcPrice ?? 0) || null,
+          result: params.result,
+          rejectReason: params.rejectReason ?? null,
+          positionId: params.positionId ?? null,
+          receivedAtIso: new Date(receivedAtMs).toISOString(),
+          guardsPassedAtIso: guardsPassedAtMs ? new Date(guardsPassedAtMs).toISOString() : null,
+          hedgeBuySubmittedAtIso: hedgeBuySubmittedAtMs ? new Date(hedgeBuySubmittedAtMs).toISOString() : null,
+          hedgeFillAtIso: hedgeFillAtMs ? new Date(hedgeFillAtMs).toISOString() : null,
+          responseSentAtIso: new Date(responseSentAtMs).toISOString(),
+          totalLatencyMs: responseSentAtMs - receivedAtMs,
+          laddered: params.laddered ?? false,
+          ladderSavingsUsdc: params.ladderSavingsUsdc ?? 0,
+          metadata: params.metadata ?? {}
+        });
+      } catch (err) {
+        // best-effort; never fail the request because of audit insert
+        req.log.warn(`[volume-cover/activate] pair-event audit insert failed: ${(err as Error).message}`);
+      }
+    };
+
     const auth = isFoxifyAuthorized(req);
     if (!auth.ok) {
+      void writeEvent({ result: "rejected", rejectReason: `unauthorized:${auth.reason}` });
       return reply.code(401).send({ error: "unauthorized", reason: auth.reason });
     }
     const parse = ActivateRequestSchema.safeParse(req.body);
     if (!parse.success) {
+      void writeEvent({ result: "rejected", rejectReason: "invalid_request" });
       return reply.code(400).send({ error: "invalid_request", issues: parse.error.issues });
     }
     const body = parse.data;
@@ -369,6 +419,7 @@ export const registerVolumeCoverRoutes = async (
     // return it (Foxify may retry on network error).
     const existing = await getPositionByPairId(pool, body.foxifyPairId);
     if (existing && existing.status === "active") {
+      void writeEvent({ result: "idempotent", positionId: existing.id });
       return reply.code(200).send({
         positionId: existing.id,
         status: existing.status,
@@ -396,6 +447,7 @@ export const registerVolumeCoverRoutes = async (
             req.log.warn(`[volume-cover/activate] recordPatternStrike failed: ${(err as Error).message}`);
           }
         }
+        void writeEvent({ result: "rejected", rejectReason: `antibot:${decision.reason}` });
         return reply.code(429).send({
           error: "antibot_blocked",
           reason: decision.reason,
@@ -439,6 +491,7 @@ export const registerVolumeCoverRoutes = async (
       rolling24hTriggerCount: metrics.rolling24hTriggerCount
     });
     if (!guardVerdict.allowed) {
+      void writeEvent({ result: "rejected", rejectReason: `guard:${guardVerdict.reason}` });
       return reply.code(403).send({
         error: "guardrail_blocked",
         reason: guardVerdict.reason,
@@ -450,6 +503,7 @@ export const registerVolumeCoverRoutes = async (
     const effectiveThrottle =
       guardVerdict.throttleOverridePerDay ?? cellRow.throttleMaxPerDay;
     if (todayPositions.length >= effectiveThrottle) {
+      void writeEvent({ result: "rejected", rejectReason: "daily_throttle_exceeded" });
       return reply.code(429).send({
         error: "daily_throttle_exceeded",
         cellId: cell.cellId,
@@ -458,6 +512,7 @@ export const registerVolumeCoverRoutes = async (
         salvageState: guardVerdict.salvageState
       });
     }
+    guardsPassedAtMs = Date.now();
 
     // P3 §13: regime-aware pricing. resolveDailyPremium reads
     // VC_REGIME_OVERLAY_JSON env (post-Phase-2 sign-off) and applies
@@ -475,6 +530,7 @@ export const registerVolumeCoverRoutes = async (
     // P1c: vol-buffered sizing reuses the regime fetched once above
     // for guard + pricing.
     try {
+      hedgeBuySubmittedAtMs = Date.now();
       const result = await openPosition(pool, opts.hedgeExecutor, {
         cell,
         foxifyPairId: body.foxifyPairId,
@@ -490,6 +546,7 @@ export const registerVolumeCoverRoutes = async (
           regime
         }
       });
+      hedgeFillAtMs = Date.now();
 
       // P1g + P3: record activation for Layer 2 cooldown. Surcharge
       // applied to dailyPremium above is logged for audit.
@@ -508,6 +565,13 @@ export const registerVolumeCoverRoutes = async (
         req.log.info(`[volume-cover/activate] surcharge applied: ${surchargeMultiplier}\u00d7 base \$${baseDailyPremium} = \$${dailyPremium}`);
       }
 
+      void writeEvent({
+        result: "activated",
+        positionId: result.position.id,
+        laddered: result.laddered,
+        ladderSavingsUsdc: result.ladderEstimatedSavingsUsdc,
+        metadata: { regime, surchargeMultiplier }
+      });
       return reply.code(201).send({
         positionId: result.position.id,
         status: result.position.status,
@@ -526,6 +590,7 @@ export const registerVolumeCoverRoutes = async (
       });
     } catch (err) {
       req.log.error(`[volume-cover/activate] failed: ${(err as Error).message}`);
+      void writeEvent({ result: "failed", rejectReason: (err as Error).message });
       return reply.code(500).send({
         error: "activate_failed",
         message: (err as Error).message
@@ -742,6 +807,26 @@ export const registerVolumeCoverRoutes = async (
     } catch (err) {
       return reply.code(500).send({ error: "close_failed", message: (err as Error).message });
     }
+  });
+
+  // Pair-event audit log endpoints for ops monitoring.
+  app.get("/volume-cover/admin/pair-events", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const limitRaw = Number((req.query as any)?.limit ?? 100);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 1000 ? limitRaw : 100;
+    const events = await listRecentPairEvents(pool, limit);
+    return reply.send({ events });
+  });
+
+  app.get("/volume-cover/admin/pair-event-stats", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const windowHoursRaw = Number((req.query as any)?.windowHours ?? 24);
+    const windowHours =
+      Number.isFinite(windowHoursRaw) && windowHoursRaw > 0 && windowHoursRaw <= 168
+        ? windowHoursRaw
+        : 24;
+    const stats = await computePairEventLatencyStats(pool, windowHours);
+    return reply.send({ windowHours, ...stats });
   });
 
   app.post("/volume-cover/admin/trigger-detector/run", async (req, reply) => {
