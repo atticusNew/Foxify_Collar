@@ -140,6 +140,45 @@ const classifyRegime = (vol: number): Regime => {
   return "stress";
 };
 
+/**
+ * Regime-conditional REFERENCE IMPLIED VOL for BS hedge cost calculation.
+ *
+ * Calibrated to live Bullish data 2026-05-16:
+ *   - Calm (DVOL < 50): live 3-day ATM IV was ~33%
+ *   - Moderate (50-70): typical IV 50-55% (skew ~5% above ATM)
+ *   - Elevated (70-90): typical IV 70-75%
+ *   - Stress (>90): typical IV 90-100%
+ *
+ * Why we DON'T use raw historical realized vol as IV input to BS:
+ * Realized vol is computed from past returns and can be highly
+ * inflated by single-day spikes. Implied vol (what the market
+ * actually charges for options) is smoother and reflects forward-
+ * looking expectations. Using realized vol as IV overstates hedge
+ * cost in moderate/elevated regimes by 20-40%.
+ *
+ * Path D fix: use these regime-conditional IVs for hedge BS pricing,
+ * while still using historical price paths to detect actual triggers
+ * (i.e., realized vol drives WHETHER triggers fire; implied vol
+ * drives HOW MUCH we pay for the hedge).
+ */
+const REGIME_CONDITIONAL_IV: Record<Regime, number> = {
+  calm: 0.35,
+  moderate: 0.55,
+  elevated: 0.75,
+  stress: 0.95
+};
+
+export const getRegimeConditionalIv = (regime: Regime): number => {
+  // Allow env override for sensitivity testing
+  const envKey = `SS_BT_IV_${regime.toUpperCase()}`;
+  const envVal = process.env[envKey];
+  if (envVal) {
+    const n = Number(envVal);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return REGIME_CONDITIONAL_IV[regime];
+};
+
 export const loadHistoricalData = async (): Promise<{
   candles: Candle[];
   vols: Record<string, number>;
@@ -358,16 +397,28 @@ export const simulateSingleSideCover = (params: {
 
   const entryDay = candles[startIdx];
   const entrySpot = entryDay.close;
-  const iv = vols[entryDay.date] ?? 0.65;
+  // Path D: separate realized vs implied vol.
+  //   - realizedVol: from historical price returns; drives regime
+  //     classification + the IV-aware pricing scaling input
+  //   - hedgeIv: regime-conditional reference IV used for BS hedge cost
+  //     (what the market actually charges for the option, smoother than
+  //     realized vol)
+  const realizedVol = vols[entryDay.date] ?? 0.65;
   const regime = regimes[entryDay.date] ?? "moderate";
+  const hedgeIv = getRegimeConditionalIv(regime);
+  // For backward compat with tests + telemetry, expose hedgeIv as 'iv'
+  const iv = hedgeIv;
   const direction = params.direction ?? (Math.random() < 0.5 ? "long" : "short");
 
   // Apply trigger-rate multiplier for selection bias
   const triggerMultiplier = scenario.triggerRateMultiplier ?? 2.0;
 
-  // IV-aware base price + regime overlay
+  // IV-aware base price + regime overlay.
+  // Path D: scaling reflects the hedgeIv (regime-conditional implied vol),
+  // not realized vol. This matches what production code will actually
+  // charge — current Bullish IV at quote time, anchored to 33% reference.
   const useIvAware = scenario.ivAwarePricing !== false;
-  const ivMultiplier = useIvAware ? computeIvMultiplier(iv, 0.33, 0.7) : 1.0;
+  const ivMultiplier = useIvAware ? computeIvMultiplier(hedgeIv, 0.33, 0.7) : 1.0;
   const overlay = scenario.regimeOverlay ?? DEFAULT_REGIME_OVERLAY;
   const overlayMult = overlay[regime];
 
