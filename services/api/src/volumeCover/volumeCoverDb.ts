@@ -148,6 +148,21 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
     );
   `);
 
+  // ─── P1g (2026-05-16): anti-bot fingerprint state ───
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS volume_cover_fingerprint_state (
+      fingerprint_hash TEXT PRIMARY KEY,
+      last_activate_at TIMESTAMPTZ,
+      last_activate_cell_id TEXT,
+      next_allowed_activate_at TIMESTAMPTZ,
+      last_trigger_at TIMESTAMPTZ,
+      pattern_strikes INTEGER NOT NULL DEFAULT 0,
+      surcharge_until TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
   // ─── P1f (2026-05-16): hedge manager telemetry (per-tick log) ───
   await pool.query(`
     CREATE TABLE IF NOT EXISTS volume_cover_hedge_leg_telemetry (
@@ -179,6 +194,7 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeIdx(`CREATE INDEX idx_vc_ladder_fingerprint ON volume_cover_ladder_netting_event (fingerprint_hash, created_at)`);
   await safeIdx(`CREATE INDEX idx_vc_hm_telem_leg ON volume_cover_hedge_leg_telemetry (leg_id, cycled_at DESC)`);
   await safeIdx(`CREATE INDEX idx_vc_hm_telem_time ON volume_cover_hedge_leg_telemetry (cycled_at DESC)`);
+  await safeIdx(`CREATE INDEX idx_vc_fp_next_allowed ON volume_cover_fingerprint_state (next_allowed_activate_at)`);
 };
 
 /**

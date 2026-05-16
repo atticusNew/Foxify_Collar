@@ -76,6 +76,7 @@ import {
   type VolRegime
 } from "./strikeGrid";
 import { getCurrentRegime } from "../pilot/regimeClassifier";
+import { checkAntiBot, recordActivation, recordTriggerForFingerprint } from "./antiBot";
 
 // ────────────────────── Auth helpers ──────────────────────
 
@@ -167,7 +168,9 @@ const ActivateRequestSchema = z.object({
   cellId: z.string().min(1),
   pairLongNotionalUsdc: z.number().positive().finite(),
   pairShortNotionalUsdc: z.number().positive().finite(),
-  pairEntryBtcPrice: z.number().positive().finite()
+  pairEntryBtcPrice: z.number().positive().finite(),
+  /** P1g: fingerprint hash for anti-bot Layers 1+2 + ladder netting. */
+  fingerprintHash: z.string().min(1).max(128).optional()
 });
 
 const CloseRequestSchema = z.object({
@@ -359,6 +362,27 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
+    // P1g: anti-bot Layers 1 (same-cell repeat block) + 2 (cooldown).
+    // Bypass via X-Bypass-Antibot header equal to admin token.
+    const bypassHeader = String(req.headers["x-bypass-antibot"] || "");
+    const bypass = bypassHeader.length > 0 &&
+      bypassHeader === resolveAdminToken();
+    if (body.fingerprintHash && !bypass) {
+      const decision = await checkAntiBot({
+        pool,
+        fingerprintHash: body.fingerprintHash,
+        cellId: cell.cellId
+      });
+      if (!decision.allowed) {
+        return reply.code(429).send({
+          error: "antibot_blocked",
+          reason: decision.reason,
+          message: decision.message,
+          retryAfterMs: decision.retryAfterMs
+        });
+      }
+    }
+
     // Salvage / loss / liability metrics for guard composer
     const metrics = await readSalvageMetrics(pool);
     const totalActiveLiability = await sumActivePayoutLiability(pool);
@@ -426,12 +450,26 @@ export const registerVolumeCoverRoutes = async (
         pairEntryBtcPrice: body.pairEntryBtcPrice,
         effectiveDailyPremiumUsdc: dailyPremium,
         regime,
+        fingerprintHash: body.fingerprintHash ?? null,
         metadata: {
           source: "foxify_api",
           requestIp: req.ip,
           regime
         }
       });
+
+      // P1g: record activation for Layer 2 cooldown
+      if (body.fingerprintHash) {
+        try {
+          await recordActivation({
+            pool,
+            fingerprintHash: body.fingerprintHash,
+            cellId: cell.cellId
+          });
+        } catch (err) {
+          req.log.warn(`[volume-cover/activate] recordActivation failed: ${(err as Error).message}`);
+        }
+      }
 
       return reply.code(201).send({
         positionId: result.position.id,

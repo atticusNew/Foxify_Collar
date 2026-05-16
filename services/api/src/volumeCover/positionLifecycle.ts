@@ -43,6 +43,7 @@ import {
 import { recordTriggerEvent } from "./salvageTracker";
 import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
 import { attemptLadderNetting } from "./ladderNetting";
+import { recordTriggerForFingerprint } from "./antiBot";
 
 export type OpenPositionRequest = {
   cell: CellDefinition;
@@ -319,6 +320,20 @@ export const fireTrigger = async (
     console.warn(
       `[volumeCover/lifecycle] payout_out ledger failed for position ${params.position.id}: ${(err as Error).message}`
     );
+  }
+
+  // P1g: record trigger for fingerprint (Layer 3 prereq)
+  if (params.position.fingerprintHash) {
+    try {
+      await recordTriggerForFingerprint({
+        pool,
+        fingerprintHash: params.position.fingerprintHash
+      });
+    } catch (err) {
+      console.warn(
+        `[volumeCover/lifecycle] recordTriggerForFingerprint failed: ${(err as Error).message}`
+      );
+    }
   }
 
   // P1d: Accrue premium for the days position was active up to trigger.
