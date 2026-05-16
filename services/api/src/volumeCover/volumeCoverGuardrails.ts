@@ -232,6 +232,40 @@ export const checkTriggerSurge = (params: {
   return ALLOWED;
 };
 
+// ────────────────────── Guard D: VC-specific DVOL stress pause ──────────────────────
+
+/**
+ * P3 §12.2 — VC-specific stress regime pause.
+ *
+ * Operator-confirmed (2026-05-16): stress regime = pause new VC
+ * activations. The pilot biweekly product's existing high-DVOL
+ * extreme-crisis pause is at DVOL >= 100 (Wave 2); that's tuned for
+ * extreme conditions, not VC's stress regime threshold (>= 80).
+ * This separate guard pauses VC alone without affecting pilot
+ * biweekly economics.
+ *
+ * Threshold default: 80 (= VC stress-bucket boundary per
+ * classifyVolumeCoverRegime in strikeGrid.ts).
+ *
+ * Env: VC_STRESS_PAUSE_DVOL_THRESHOLD (default 80)
+ *      VC_STRESS_PAUSE_ENABLED (default true)
+ */
+export const checkVolumeCoverStressPause = (params: {
+  currentDvol: number;
+}): GuardVerdict => {
+  if (!isGuardEnabled("VC_STRESS_PAUSE_ENABLED", true)) return ALLOWED;
+  const threshold = Number(process.env.VC_STRESS_PAUSE_DVOL_THRESHOLD ?? "80");
+  if (params.currentDvol >= threshold) {
+    return {
+      allowed: false,
+      reason: "vc_stress_regime_pause",
+      message: `BTC DVOL ${params.currentDvol.toFixed(1)} >= VC stress threshold ${threshold}. New Volume Cover activations paused while regime persists.`,
+      details: { currentDvol: params.currentDvol, threshold }
+    };
+  }
+  return ALLOWED;
+};
+
 // ────────────────────── Composer ──────────────────────
 
 export type VolumeCoverGuardCheckParams = {
@@ -321,6 +355,12 @@ export const checkAllGuardsForVolumeCoverActivate = (
     rollingAvgPremiumIncomeUsdc: params.rollingAvgPremiumIncomeUsdc
   });
   if (!wave2.allowed) return wrapBlocked(wave2);
+
+  // 4b. P3: VC-specific stress regime pause (DVOL >= 80). Independent
+  // of pilot's high-DVOL extreme-crisis halt at 100; this is the
+  // operator-confirmed "stress = pause" policy for VC alone.
+  const stressPause = checkVolumeCoverStressPause({ currentDvol: params.currentDvol });
+  if (!stressPause.allowed) return wrapBlocked(stressPause);
 
   // 5. Volume Cover Guard A
   const guardA = checkCumulativeLossKill({

@@ -5,6 +5,7 @@ import {
   checkCumulativeLossKill,
   checkSalvageRate,
   checkTriggerSurge,
+  checkVolumeCoverStressPause,
   checkAllGuardsForVolumeCoverActivate,
   setManualHalt,
   getManualHalt,
@@ -133,6 +134,71 @@ test("Guard C: trigger surge — over max blocks + arms cooldown", () => {
   const futureMs = nowMs + 31 * 60_000;
   const v3 = checkTriggerSurge({ rolling24hTriggerCount: 1, nowMs: futureMs });
   assert.equal(v3.allowed, true);
+});
+
+test("Guard D: VC stress pause — DVOL < 80 passes", () => {
+  resetAll();
+  const v = checkVolumeCoverStressPause({ currentDvol: 65 });
+  assert.equal(v.allowed, true);
+});
+
+test("Guard D: VC stress pause — DVOL >= 80 blocks", () => {
+  resetAll();
+  const v = checkVolumeCoverStressPause({ currentDvol: 82 });
+  assert.equal(v.allowed, false);
+  assert.equal(v.reason, "vc_stress_regime_pause");
+});
+
+test("Guard D: VC stress pause — env override threshold", () => {
+  resetAll();
+  process.env.VC_STRESS_PAUSE_DVOL_THRESHOLD = "70";
+  try {
+    const v = checkVolumeCoverStressPause({ currentDvol: 75 });
+    assert.equal(v.allowed, false);
+  } finally {
+    delete process.env.VC_STRESS_PAUSE_DVOL_THRESHOLD;
+  }
+});
+
+test("Guard D: env disable bypasses block", () => {
+  resetAll();
+  process.env.VC_STRESS_PAUSE_ENABLED = "false";
+  try {
+    const v = checkVolumeCoverStressPause({ currentDvol: 100 });
+    assert.equal(v.allowed, true);
+  } finally {
+    delete process.env.VC_STRESS_PAUSE_ENABLED;
+  }
+});
+
+test("Composer: VC stress pause fires before pilot extreme-crisis (100)", () => {
+  resetAll();
+  process.env.PILOT_GUARDS_ALL_DISABLED = "false"; // enable Wave 2 normally
+  process.env.PILOT_GUARD_DVOL_HIGH_THRESHOLD = "100";
+  try {
+    // DVOL 85: VC stress (>=80) fires; pilot extreme (>=100) does NOT
+    const v = checkAllGuardsForVolumeCoverActivate({
+      foxifyPoolBalanceUsdc: 0,
+      totalActivePayoutLiabilityUsdc: 0,
+      newPayoutLiabilityUsdc: 1_000,
+      dbTrackedAtticusBalanceUsdc: null,
+      venueReportedAtticusBalanceUsdc: null,
+      currentDvol: 85,
+      lastDvolThresholdCrossingMs: null,
+      bullishHealth: { recent5xxRate: 0, recentP95LatencyMs: 0, sampleCount: 0 },
+      todayPremiumIncomeUsdc: 0,
+      rollingAvgPremiumIncomeUsdc: 0,
+      rolling7dayAtticusLossUsdc: 0,
+      rolling5TriggerSalvagePct: null,
+      rolling5TriggerSampleCount: 0,
+      rolling24hTriggerCount: 0
+    });
+    assert.equal(v.allowed, false);
+    assert.equal(v.reason, "vc_stress_regime_pause");
+  } finally {
+    delete process.env.PILOT_GUARD_DVOL_HIGH_THRESHOLD;
+    process.env.PILOT_GUARDS_ALL_DISABLED = "true"; // restore for other tests
+  }
 });
 
 test("Manual halt: setManualHalt + clear cycle", () => {
