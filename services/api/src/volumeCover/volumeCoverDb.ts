@@ -124,6 +124,10 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN retained_role TEXT`);
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN repurposed_from_position_id TEXT`);
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN ladder_hop_count INTEGER NOT NULL DEFAULT 0`);
+  // ─── P2.5 (2026-05-16): full TP curve state ───
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN running_max_value_usdc NUMERIC(20, 8)`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN last_value_usdc NUMERIC(20, 8)`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN last_value_at TIMESTAMPTZ`);
 
   // Hedge-retained ledger info for audit (no balance impact). Not its
   // own table; we use the existing pilot capital_pool_ledger via
@@ -493,6 +497,10 @@ export type HedgeLegRow = {
   // P1e ladder fields
   repurposedFromPositionId: string | null;
   ladderHopCount: number;
+  // P2.5 TP state
+  runningMaxValueUsdc: number | null;
+  lastValueUsdc: number | null;
+  lastValueAt: string | null;
 };
 
 const rowToHedgeLeg = (r: any): HedgeLegRow => ({
@@ -516,7 +524,14 @@ const rowToHedgeLeg = (r: any): HedgeLegRow => ({
   retainedReason: r.retained_reason ? String(r.retained_reason) : null,
   retainedRole: r.retained_role ? (String(r.retained_role) as RetainedRole) : null,
   repurposedFromPositionId: r.repurposed_from_position_id ? String(r.repurposed_from_position_id) : null,
-  ladderHopCount: Number(r.ladder_hop_count ?? 0)
+  ladderHopCount: Number(r.ladder_hop_count ?? 0),
+  runningMaxValueUsdc: r.running_max_value_usdc !== null && r.running_max_value_usdc !== undefined
+    ? Number(r.running_max_value_usdc)
+    : null,
+  lastValueUsdc: r.last_value_usdc !== null && r.last_value_usdc !== undefined
+    ? Number(r.last_value_usdc)
+    : null,
+  lastValueAt: r.last_value_at ? String(r.last_value_at) : null
 });
 
 export const insertHedgeLeg = async (
@@ -699,6 +714,26 @@ export const repurposeHedgeLeg = async (
     [params.legId, params.newPositionId, maxHops]
   );
   return r.rows[0] ? rowToHedgeLeg(r.rows[0]) : null;
+};
+
+/**
+ * P2.5: update per-leg running max + last value (TP rule 5/6 inputs).
+ */
+export const updateHedgeLegTpState = async (
+  pool: DbExecutor,
+  params: {
+    legId: string;
+    currentValueUsdc: number;
+  }
+): Promise<void> => {
+  await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET running_max_value_usdc = GREATEST(COALESCE(running_max_value_usdc, 0), $2),
+         last_value_usdc = $2,
+         last_value_at = NOW()
+     WHERE id = $1`,
+    [params.legId, params.currentValueUsdc]
+  );
 };
 
 /**

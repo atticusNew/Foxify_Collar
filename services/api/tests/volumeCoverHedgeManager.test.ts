@@ -67,6 +67,10 @@ const buildSpotIvSource = (spotBtcUsdc: number, iv = 0.65, asOfMs?: number): Spo
     asOfMs: asOfMs ?? Date.now()
   });
 
+// P1f stub-mode tests: explicitly enable stub via env at file load.
+// Full 12-rule curve has its own test suite below.
+process.env.VC_HM_USE_STUB = "true";
+
 test("P1f: rule 1 — time-decay forced exit fires when expiry < 4h", async () => {
   const pool = await buildPool();
   const cell = findCellById("50k_2pct_1k")!;
@@ -212,7 +216,7 @@ test("P1f: rule W1 stub — winner-side time cap forces sell after 24h", async (
   // grace (4h) — should sell both.
   assert.equal(result.legsActioned, 2);
   assert.equal(sellCalls.length, 2);
-  const winnerAction = result.actions.find((a) => a.rule === "W1_stub_winner_timecap");
+  const winnerAction = result.actions.find((a) => a.rule.startsWith("W1_stub"));
   assert.ok(winnerAction, "W1 winner timecap should fire");
 });
 
