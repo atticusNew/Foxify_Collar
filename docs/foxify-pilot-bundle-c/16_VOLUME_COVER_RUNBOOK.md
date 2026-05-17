@@ -9,18 +9,36 @@
 
 | Need to... | Do |
 |---|---|
+| **Pre-flight check before cutover** | `npx tsx services/api/scripts/volume-cover/preflight-check.ts` |
 | See live state | `GET /volume-cover/admin/dashboard` (markdown) |
 | Pull daily report | `GET /volume-cover/admin/foxify-report?date=YYYY-MM-DD` |
 | Check salvage stats | `GET /volume-cover/admin/salvage-stats` |
+| **Pair-event audit log** | `GET /volume-cover/admin/pair-events?limit=100` |
+| **Latency P50/P95/P99** | `GET /volume-cover/admin/pair-event-stats?windowHours=24` |
+| **Weekly settlement** | `GET /volume-cover/admin/weekly-settlement?week=2026-W21` |
 | Disable a cell | `POST /volume-cover/admin/cells/<cellId>/toggle` `{ "enabled": false }` |
 | Raise per-cell throttle | `POST /volume-cover/admin/cells/<cellId>/toggle` `{ "throttleMaxPerDay": 30 }` |
-| Adjust cell premium | `POST /volume-cover/admin/cells/<cellId>/toggle` `{ "dailyPremiumUsdc": 425 }` |
+| Adjust cell premium (calm hot-fix) | `POST /volume-cover/admin/cells/<cellId>/toggle` `{ "dailyPremiumUsdc": 425 }` |
 | HALT all activations | `POST /volume-cover/admin/halt` `{ "reason": "<why>" }` |
 | Resume after halt | `POST /volume-cover/admin/halt/clear` `{}` |
 | Force trigger detector cycle | `POST /volume-cover/admin/trigger-detector/run` |
+| Force hedge manager tick | `POST /volume-cover/admin/hedge-manager/run?dryRun=true` |
 | Close a position manually | `POST /volume-cover/admin/positions/:id/close` `{ "reason": "..." }` |
 
 All admin endpoints require `X-Admin-Token: $PILOT_ADMIN_TOKEN` header.
+
+---
+
+## Spot price source-of-truth
+
+**Primary:** Bullish hybrid orderbook (BTCUSDC) — top-of-book bid/ask mid.
+**Fallback:** Coinbase BTC-USD spot (auto-engages when Bullish API unavailable).
+
+Why Bullish primary: zero-basis between trigger detection and hedge execution venue.
+
+**Drift detection:** if Bullish vs Coinbase diverge >50bp, console.warn fires (cooldown 60s). Operator review recommended; >100bp warrants halt + investigation.
+
+Source visible in `/admin/pair-events` per-event `metadata.source` field.
 
 ---
 
@@ -142,15 +160,148 @@ Run through this before flipping `VOLUME_COVER_ENABLED=true` in Render:
 - [ ] Quote test from Foxify-side: HMAC-signed `POST /volume-cover/quote` returns a valid price
 - [ ] Trigger detector logs visible in Render logs: `[VolumeCover] Trigger detector started`
 
-## Day 1 launch sequence
+## Day 1 launch sequence (final, post-2026-05-16 hardening)
 
-1. Deploy code via merge to production branch (Render auto-deploys).
-2. Confirm health endpoint green.
-3. Set `VOLUME_COVER_ENABLED=true` in Render env, redeploy.
-4. Run smoke quote + activate from your laptop (use the smoke script as template).
-5. Verify position appears in admin dashboard.
-6. Hand HMAC secret to Foxify CEO in person at signing.
-7. Signal go-live to Foxify ops.
+### Step 1 — provision credentials (BEFORE deploy)
+
+**Bullish API keys** (operator generates in Bullish dashboard → API Keys):
+- `PILOT_BULLISH_PUBLIC_KEY`  (PEM format, ECDSA)
+- `PILOT_BULLISH_PRIVATE_KEY` (PEM format — NEVER commit, NEVER log)
+- `PILOT_BULLISH_METADATA`    (base64 metadata blob from Bullish)
+
+**Foxify HMAC secret** (operator generates one time):
+```bash
+openssl rand -hex 32
+# Output: e.g., "8f3a9b2c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a"
+```
+Set as `FOXIFY_API_KEY_HMAC_SECRET` in Render. Share the same value with Foxify CEO/dev in person or via secure channel — NEVER email or chat.
+
+**Atticus admin token**:
+```bash
+openssl rand -hex 32
+```
+Set as `PILOT_ADMIN_TOKEN`. Operator keeps this private; used to call admin endpoints.
+
+### Step 2 — set Render env (full block)
+
+```
+# Required
+VOLUME_COVER_ENABLED=true
+PILOT_ADMIN_TOKEN=<from Step 1>
+FOXIFY_API_KEY_HMAC_SECRET=<from Step 1>
+POSTGRES_URL=<existing pilot DB connection>
+PILOT_BULLISH_ENABLED=true
+PILOT_BULLISH_PUBLIC_KEY=<from Step 1>
+PILOT_BULLISH_PRIVATE_KEY=<from Step 1>
+PILOT_BULLISH_METADATA=<from Step 1>
+DERIBIT_ENV=live
+DERIBIT_PAPER=false
+
+# CEO-approved regime overlay pricing (paste exactly)
+VC_REGIME_OVERLAY_JSON='{"50k_2pct_1k":{"moderate":420,"elevated":525},"50k_5pct_2_5k":{"moderate":240,"elevated":300},"50k_10pct_5k":{"moderate":120,"elevated":150},"200k_5pct_10k":{"moderate":960,"elevated":1200},"200k_10pct_20k":{"moderate":480,"elevated":600},"200k_15pct_30k":{"moderate":444,"elevated":555}}'
+
+# Stress regime auto-pause at DVOL>=80
+VC_STRESS_PAUSE_ENABLED=true
+VC_STRESS_PAUSE_DVOL_THRESHOLD=80
+
+# Trigger detector cadence (3s for fast detection)
+VOLUME_COVER_TRIGGER_DETECTOR_ENABLED=true
+VOLUME_COVER_TRIGGER_DETECTOR_TICK_MS=3000
+
+# Hedge manager (full 12-rule TP curve)
+VOLUME_COVER_HEDGE_MANAGER_ENABLED=true
+VC_HM_USE_STUB=false
+VC_HM_TICK_MS=60000
+VC_HM_FALLBACK_IV=0.65
+
+# Sizing
+VC_VOL_BUFFER_ENABLED=true
+
+# Background chain warmer (always-warm cache)
+VOLUME_COVER_CHAIN_WARM_ENABLED=true
+VC_CHAIN_WARM_TICK_MS=30000
+
+# Anti-bot Layers (all 4 active for live multi-trader; Layer 1 disabled
+# only for CEO-bot-only test pilot — re-enable for prod multi-trader rollout)
+VOLUME_COVER_ANTIBOT_LAYER1_ENABLED=true
+VOLUME_COVER_ANTIBOT_LAYER2_BASE_MS=60000
+VOLUME_COVER_ANTIBOT_LAYER2_JITTER_MS_MAX=300000
+VOLUME_COVER_ANTIBOT_LAYER3_ENABLED=true
+VOLUME_COVER_ANTIBOT_LAYER3_COOLDOWN_MS=14400000
+VOLUME_COVER_ANTIBOT_LAYER4_ENABLED=true
+
+# Risk caps (tighter for first 48h; raise after Day-1-3 review)
+VOLUME_COVER_GUARD_LOSS_KILL_USDC=1000
+VOLUME_COVER_GUARD_LOSS_KILL_ENABLED=true
+VOLUME_COVER_GUARD_SALVAGE_THROTTLE_ENABLED=true
+VOLUME_COVER_GUARD_TRIGGER_SURGE_ENABLED=true
+```
+
+### Step 3 — DB seed (auto-runs on boot)
+
+`ensureVolumeCoverSchema` + `seedVolumeCoverCellsIfNeeded` run on startup. Seeds 6 cells with default base prices + `enabled=true`. Operator can disable cells they don't want active:
+
+```bash
+# Example: disable everything except 50k_2pct_1k for CEO test pilot
+curl -X POST -H "X-Admin-Token: $TOKEN" \
+  "${BASE}/volume-cover/admin/cells/50k_5pct_2_5k/toggle" \
+  -d '{"enabled": false}'
+# Repeat for 50k_10pct_5k, 200k_5pct_10k, 200k_10pct_20k, 200k_15pct_30k
+```
+
+CEO will start with **2 × 50k_2pct_1k pairs**. Set throttle:
+
+```bash
+curl -X POST -H "X-Admin-Token: $TOKEN" \
+  "${BASE}/volume-cover/admin/cells/50k_2pct_1k/toggle" \
+  -d '{"throttleMaxPerDay": 2}'
+```
+
+### Step 4 — pre-flight smoke (BEFORE flipping ENABLED=true)
+
+```bash
+PILOT_API_BASE=https://staging.atticus-platform.com \
+PILOT_ADMIN_TOKEN=<token> \
+npx tsx services/api/scripts/volume-cover/preflight-check.ts
+```
+
+Expect GREEN verdict. If YELLOW: review warnings, decide whether safe. If RED: fix issues, do NOT cut over.
+
+Repeat against production URL after Render auto-deploy.
+
+### Step 5 — share Foxify HMAC + endpoint URL with CEO
+
+Share with Foxify CEO/dev:
+- Endpoint: `https://<production-url>/volume-cover/activate`
+- HMAC secret (the one from Step 1)
+- Signing scheme: see `docs/foxify-pilot-bundle-c/api.md`
+- Cell ID: `50k_2pct_1k`
+- Initial throttle: 2 pairs/day
+
+### Step 6 — first cover under operator watch
+
+CEO bot opens first 50k_2pct_1k pair. Operator watches:
+- `/volume-cover/admin/pair-events?limit=10` for activation timing
+- `/volume-cover/admin/positions?status=active` for position state
+- Render logs for any warnings/errors
+- Bullish account UI for actual hedge fill
+
+If anything looks wrong: `POST /volume-cover/admin/halt`. Investigate. Resume only when confident.
+
+### Step 7 — first 4-hour close watch
+
+- Operator monitors every 30 minutes
+- Any auto-halt → page CEO within 10 minutes
+- Compare actual P&L (from pair-event audit log) to backtest projection
+
+### Step 8 — Day-1-3 review
+
+After 3 days of live trades:
+- Pull `/volume-cover/admin/pair-event-stats?windowHours=72`
+- Pull `/volume-cover/admin/weekly-settlement?week=<current>`
+- Compare per-cover avg P&L to backtest 24_BACKTEST_HARNESS_REVISED_REPORT.md
+- If aligned: raise loss kill `VOLUME_COVER_GUARD_LOSS_KILL_USDC=5000`
+- If divergent >25%: halt, audit, retune before continuing
 
 ## Daily operations (during pilot)
 
