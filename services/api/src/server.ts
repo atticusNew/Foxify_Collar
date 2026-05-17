@@ -8244,7 +8244,24 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
       deribit: deribitAdapter,
       mockFills: useMockFills
     });
-    const spotSource = createSpotPriceSource();
+    // VC source-of-truth (2026-05-16): Bullish hybrid orderbook primary
+    // + Coinbase fallback + drift detection. Per Foxify CEO direction
+    // "use our feed". Bullish chosen as primary because it's the
+    // hedge-execution venue (zero basis between trigger detection
+    // and hedge math). Coinbase serves as graceful fallback when
+    // Bullish API is down. Drift > 50bp emits operator warning.
+    const spotSource = createSpotPriceSource({
+      bullishOrderbookFn: async (symbol) => {
+        const { BullishTradingClient } = await import("./pilot/bullish");
+        const client = new BullishTradingClient(pilotConfig.bullish);
+        const book = await client.getHybridOrderBook(symbol);
+        return {
+          bids: book.bids ?? [],
+          asks: book.asks ?? []
+        };
+      },
+      bullishSymbol: "BTCUSDC"
+    });
 
     // P3 §12.4: venue balance fetcher for weekly reconciliation drift
     // halt. Sums Bullish USDC + Deribit BTC equity (× spot) into a
