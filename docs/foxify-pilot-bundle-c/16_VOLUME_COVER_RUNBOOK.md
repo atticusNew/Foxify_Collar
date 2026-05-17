@@ -10,6 +10,7 @@
 | Need to... | Do |
 |---|---|
 | **Pre-flight check before cutover** | `npx tsx services/api/scripts/volume-cover/preflight-check.ts` |
+| **Operator self-test (no Foxify needed)** | `POST /volume-cover/admin/test-activate` with `premiumOverrideUsdc` |
 | See live state | `GET /volume-cover/admin/dashboard` (markdown) |
 | Pull daily report | `GET /volume-cover/admin/foxify-report?date=YYYY-MM-DD` |
 | Check salvage stats | `GET /volume-cover/admin/salvage-stats` |
@@ -159,6 +160,200 @@ Run through this before flipping `VOLUME_COVER_ENABLED=true` in Render:
 - [ ] `GET /volume-cover/admin/cells` returns all 6 cells with admin token
 - [ ] Quote test from Foxify-side: HMAC-signed `POST /volume-cover/quote` returns a valid price
 - [ ] Trigger detector logs visible in Render logs: `[VolumeCover] Trigger detector started`
+
+## Pre-launch self-test workflow (operator runs BEFORE first Foxify trade)
+
+Lets you exercise the full lifecycle end-to-end with real money on
+Bullish/Deribit but a discounted premium, no Foxify dependency, and
+without delivering the HMAC secret yet.
+
+### Prerequisites
+
+1. Render env set per "Day 1 launch sequence" (next section)
+2. Bullish API credentials provisioned + working
+3. Pre-flight smoke returned GREEN
+4. `PILOT_ADMIN_TOKEN` saved locally
+
+### Step 1 — open the test position
+
+Set environment locally:
+```bash
+export API_BASE=https://<your-render-url>
+export ADMIN_TOKEN=<your admin token>
+```
+
+Open via the admin test-activate endpoint (bypasses Foxify HMAC):
+
+```bash
+curl -X POST "$API_BASE/volume-cover/admin/test-activate" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "foxifyPairId": "OPERATOR-TEST-001",
+    "cellId": "50k_2pct_1k",
+    "pairEntryBtcPrice": 78200,
+    "premiumOverrideUsdc": 10
+  }'
+```
+
+Response includes:
+- `positionId` — save this
+- `triggerHighBtc` / `triggerLowBtc` — your trigger band
+- `hedgeLegs` — actual Bullish/Deribit fills with strikes + costs
+- `totalHedgeCostUsdc` — what Atticus paid for the hedge
+- `note` — flagging this is an operator test
+
+**Real money is now spent.** The hedge is actually purchased on the venue.
+
+### Step 2 — verify in the UI
+
+Visit `https://<frontend-url>/volume-cover`. Paste your admin token.
+
+You should see:
+- Status strip showing live spot + 1 active position
+- Pair feed: 1 event with `OPERATOR-TEST-001` and `result: activated`
+  - Latency in milliseconds — sanity-check this
+- Active positions: 1 row with cell, status, trigger band, distance %
+- Click row → expand to see hedge legs (venue, strike, contracts, buy price)
+
+### Step 3 — let it run, or force-close
+
+**Option A — wait for natural trigger:** could take hours/days at calm vol. Watch UI, refresh occasionally. When BTC moves ±2%:
+- Trigger detector fires (within 3s of spot crossing)
+- Position status flips to `triggered`
+- Legs marked retained
+- Hedge manager runs TP curve over next 24h
+
+**Option B — force-close after a sanity period (faster):**
+```bash
+# Wait at least 5 minutes so hedge has settled
+# Then close manually
+curl -X POST "$API_BASE/volume-cover/admin/positions/$POS_ID/close" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "operator_self_test_close"}'
+```
+
+Position closes, hedge legs marked `retained` (status='open', retained=true).
+
+### Step 4 — watch the hedge manager TP cycle
+
+Hedge manager runs every 60s on retained legs. Force a tick to see it work immediately:
+
+```bash
+curl -X POST "$API_BASE/volume-cover/admin/hedge-manager/run" \
+  -H "X-Admin-Token: $ADMIN_TOKEN"
+```
+
+Returns the actions taken. You may see:
+- `held` — leg not yet ready for TP (gamma-zone, follow-through, etc.)
+- `sold` — TP rule fired, leg sold; check the rule (1=time-decay, 5=trail, 7=loser-floor, etc.)
+
+After enough ticks:
+- All retained legs eventually sell (Rule 1 forces exit at expiry-4h)
+- UI shows leg status flip from `open (retained)` → `sold`
+- `/admin/pair-events?limit=10` shows the activate event with timing
+- Bullish account shows hedge sale fills
+
+### Step 5 — check final P&L
+
+Get the weekly settlement:
+```bash
+curl "$API_BASE/volume-cover/admin/weekly-settlement?week=2026-W$(date +%V)" \
+  -H "X-Admin-Token: $ADMIN_TOKEN" | jq
+```
+
+Reconcile:
+- Premium accrued (= held days × $10) — should be ~$10-30
+- Hedge buy cost — from /activate response
+- Hedge sale proceeds — from `/admin/pair-events`
+- Net Atticus result
+
+### Step 6 — restore production settings before going live
+
+```bash
+# 1. Verify Foxify HMAC is enforced (no env override)
+# Check Render env: VOLUME_COVER_AUTH_DISABLED should be UNSET (or false)
+
+# 2. Restore loss kill to tight setting
+# Render env: VOLUME_COVER_GUARD_LOSS_KILL_USDC=1000
+
+# 3. (Optional) restore cell premium if you tweaked via admin
+# (Not needed if you used premiumOverrideUsdc on test-activate; that
+# only applies to that single position, not the cell)
+
+# 4. Sanity-check: pre-flight should return GREEN
+PILOT_ADMIN_TOKEN=$ADMIN_TOKEN PILOT_API_BASE=$API_BASE \
+  npx tsx services/api/scripts/volume-cover/preflight-check.ts
+```
+
+### Common test-mode pitfalls
+
+- **`premiumOverrideUsdc` only applies to that test position.** Doesn't change the cell's base premium; subsequent Foxify activations use the cell's full pricing.
+- **The hedge IS real money.** A $50k notional position buys ~1.3 BTC of options at ~$80-130 cost. Don't forget you paid that.
+- **Force-closing doesn't sell the hedge.** Per spec, Atticus retains hedge legs after close. Hedge sale happens via the manager's TP rules over hours/days.
+- **Test events appear in Foxify reports.** The `metadata.source = 'admin_test_activate'` lets you filter them out of CFO reports if needed.
+
+---
+
+## Merging VC code into production (Option A — recommended)
+
+Per AGENT_HANDOFF.md, your existing pilot Render service deploys from
+`cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4`. The VC work
+lives on `cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425`. To
+go live, merge VC work into the production deploy branch:
+
+```bash
+# From a clean local checkout:
+git fetch origin --prune
+
+# Check out the production deploy branch (where Render auto-deploys from)
+git checkout cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4
+git pull origin cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4
+
+# Merge in the VC work branch
+git merge cursor/-bc-3aa2d238-ebb4-479a-98c7-2ade2838103f-6425
+
+# If there are conflicts (unlikely; VC code is mostly new files):
+#   resolve them, prioritizing the VC branch for any volumeCover/* files
+
+# Push to production
+git push origin cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4
+```
+
+Render auto-deploys within ~2-5 minutes. Watch deploy logs.
+
+**During the deploy, expect:**
+- `[VolumeCover] Registered routes` log line (after a few seconds)
+- `[VolumeCover] Trigger detector started`
+- `[VolumeCover] Hedge manager started (full 12-rule curve; live IV via deribitIvCache)`
+- `[VolumeCover] Venue option-chain provider wired (Bullish + Deribit)`
+- `[VolumeCover] Chain warmer: N/M queries cached` (after ~30s)
+
+If any of those don't appear, check env var values (especially
+`PILOT_BULLISH_*` and `POSTGRES_URL`).
+
+**Database migration:** runs automatically on first boot (idempotent
+`CREATE TABLE IF NOT EXISTS`). No manual migration step needed. Verify:
+```sql
+\dt volume_cover_*
+-- expect: volume_cover_cell, volume_cover_position, volume_cover_hedge_leg,
+--         volume_cover_salvage_event, volume_cover_ladder_netting_event,
+--         volume_cover_hedge_leg_telemetry, volume_cover_fingerprint_state,
+--         volume_cover_pair_event
+```
+
+**Frontend deploy** (separate Render Static Site, see Q8 in your runbook
+prep notes):
+1. Render dashboard → New → Static Site → connect same repo
+2. Branch: same as backend (`cursor/-bc-c2468b87-...-6ba4`)
+3. Build command: `cd apps/web && npm install && npm run build`
+4. Publish directory: `apps/web/dist`
+5. Env: `VITE_API_BASE=https://<your-backend-url>`
+6. Deploy → get URL like `vc-admin-xyz.onrender.com`
+7. Visit `https://vc-admin-xyz.onrender.com/volume-cover`
+
+---
 
 ## Day 1 launch sequence (final, post-2026-05-16 hardening)
 
