@@ -709,6 +709,97 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  /**
+   * Detailed active-positions endpoint for the live ops UI.
+   * Joins positions + hedge legs + recent telemetry per leg so the
+   * UI can render one row per position with expandable leg detail.
+   */
+  app.get("/volume-cover/admin/active-positions-detail", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const limitRaw = Number((req.query as any)?.limit ?? 50);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 200 ? limitRaw : 50;
+
+    // Pull active + recently-triggered + recently-closed (so UI shows
+    // a few terminal rows for context without overwhelming).
+    const posResult = await pool.query(
+      `SELECT * FROM volume_cover_position
+       WHERE status IN ('active', 'triggered')
+          OR (status = 'closed' AND closed_at >= NOW() - interval '6 hours')
+       ORDER BY opened_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    const positions = await Promise.all(
+      posResult.rows.map(async (row) => {
+        const legsResult = await pool.query(
+          `SELECT id, venue, option_kind, strike_usdc, expiry_iso,
+                  contracts, buy_price_usdc, sell_price_usdc, status,
+                  retained, retained_role, retained_at, opened_at, closed_at
+           FROM volume_cover_hedge_leg
+           WHERE position_id = $1
+           ORDER BY opened_at`,
+          [row.id]
+        );
+        const legs = legsResult.rows.map((l) => ({
+          id: String(l.id),
+          venue: String(l.venue),
+          optionKind: String(l.option_kind),
+          strikeUsdc: Number(l.strike_usdc),
+          expiryIso: String(l.expiry_iso),
+          contracts: Number(l.contracts),
+          buyPriceUsdc: Number(l.buy_price_usdc),
+          sellPriceUsdc: l.sell_price_usdc !== null ? Number(l.sell_price_usdc) : null,
+          status: String(l.status),
+          retained: Boolean(l.retained),
+          retainedRole: l.retained_role ? String(l.retained_role) : null,
+          retainedAt: l.retained_at ? String(l.retained_at) : null,
+          openedAt: String(l.opened_at),
+          closedAt: l.closed_at ? String(l.closed_at) : null
+        }));
+
+        return {
+          id: String(row.id),
+          cellId: String(row.cell_id),
+          foxifyPairId: String(row.foxify_pair_id),
+          fingerprintHash: row.fingerprint_hash ? String(row.fingerprint_hash) : null,
+          pairLongNotionalUsdc: Number(row.pair_long_notional_usdc),
+          pairShortNotionalUsdc: Number(row.pair_short_notional_usdc),
+          pairEntryBtcPrice: Number(row.pair_entry_btc_price),
+          triggerHighBtc: Number(row.trigger_high_btc),
+          triggerLowBtc: Number(row.trigger_low_btc),
+          dailyPremiumUsdc: Number(row.daily_premium_usdc),
+          payoutUsdc: Number(row.payout_usdc),
+          status: String(row.status),
+          openedAt: String(row.opened_at),
+          triggeredAt: row.triggered_at ? String(row.triggered_at) : null,
+          triggeredDirection: row.triggered_direction ? String(row.triggered_direction) : null,
+          closedAt: row.closed_at ? String(row.closed_at) : null,
+          closeReason: row.close_reason ? String(row.close_reason) : null,
+          legs
+        };
+      })
+    );
+
+    // Also pull current spot for trigger-distance display
+    let currentSpotBtc: number | null = null;
+    let spotSource: string | null = null;
+    try {
+      const spot = await opts.spotSource();
+      currentSpotBtc = spot.spotBtcPrice;
+      spotSource = spot.source;
+    } catch {
+      // best-effort
+    }
+
+    return reply.send({
+      positions,
+      currentSpotBtc,
+      spotSource,
+      generatedAtIso: new Date().toISOString()
+    });
+  });
+
   app.get("/volume-cover/admin/foxify-report", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const dateParam = String((req.query as any)?.date ?? "");

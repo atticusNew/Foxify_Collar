@@ -449,3 +449,63 @@ test("/volume-cover/admin/dashboard returns markdown", async () => {
     await harness.close();
   }
 });
+
+test("/volume-cover/admin/active-positions-detail returns positions + legs + spot", async () => {
+  const harness = await buildHarness();
+  try {
+    // Open a position first
+    const body = {
+      foxifyPairId: "FX-DETAIL-1",
+      cellId: "50k_2pct_1k",
+      pairLongNotionalUsdc: 50_000,
+      pairShortNotionalUsdc: 50_000,
+      pairEntryBtcPrice: 80_000
+    };
+    const activate = await harness.app.inject({
+      method: "POST",
+      url: "/volume-cover/activate",
+      headers: foxifyHeaders({ method: "POST", path: "/volume-cover/activate", body }),
+      payload: body
+    });
+    assert.equal(activate.statusCode, 201);
+    const activateBody = JSON.parse(activate.body);
+
+    const r = await harness.app.inject({
+      method: "GET",
+      url: "/volume-cover/admin/active-positions-detail",
+      headers: adminHeaders()
+    });
+    assert.equal(r.statusCode, 200);
+    const json = JSON.parse(r.body);
+    assert.ok(Array.isArray(json.positions));
+    assert.ok(json.positions.length >= 1);
+    const pos = json.positions.find((p: any) => p.id === activateBody.positionId);
+    assert.ok(pos, "expected newly-opened position in detail response");
+    assert.equal(pos.cellId, "50k_2pct_1k");
+    assert.ok(Array.isArray(pos.legs));
+    assert.equal(pos.legs.length, 2, "expected 2 legs (put + call)");
+    for (const leg of pos.legs) {
+      assert.ok(leg.optionKind === "put" || leg.optionKind === "call");
+      assert.ok(leg.strikeUsdc > 0);
+      assert.ok(leg.contracts > 0);
+    }
+    // Spot snapshot included
+    assert.ok(json.currentSpotBtc > 0);
+    assert.ok(json.spotSource);
+  } finally {
+    await harness.close();
+  }
+});
+
+test("/volume-cover/admin/active-positions-detail requires admin token", async () => {
+  const harness = await buildHarness();
+  try {
+    const r = await harness.app.inject({
+      method: "GET",
+      url: "/volume-cover/admin/active-positions-detail"
+    });
+    assert.equal(r.statusCode, 403);
+  } finally {
+    await harness.close();
+  }
+});
