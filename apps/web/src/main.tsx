@@ -7,6 +7,7 @@ import { AdminDashboardPage } from "./AdminDashboard";
 import { TreasuryDashboard } from "./TreasuryDashboard";
 import { TreasuryAdmin } from "./TreasuryAdmin";
 import { SimpleSimPilotApp } from "./SimpleSimPilotApp";
+import { VolumeCoverAdmin } from "./VolumeCoverAdmin";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET, PILOT_ACCESS_CODE } from "./config";
 import "./styles.css";
 
@@ -109,6 +110,10 @@ function AppRouter() {
 
   if (path === "/admin" || path.startsWith("/admin/")) {
     return <AdminDashboardPage />;
+  }
+
+  if (path === "/volume-cover" || path.startsWith("/volume-cover/")) {
+    return <VolumeCoverAdmin />;
   }
 
   if (path === "/treasury/admin") {
