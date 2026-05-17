@@ -25,6 +25,7 @@
  */
 
 import * as fs from "node:fs/promises";
+import { getRegimeIv as sharedGetRegimeIv } from "../lib/regimeIv";
 
 const SQRT2 = Math.SQRT2;
 const nCDF = (x: number): number => {
@@ -141,43 +142,14 @@ const classifyRegime = (vol: number): Regime => {
 };
 
 /**
- * Regime-conditional REFERENCE IMPLIED VOL for BS hedge cost calculation.
+ * Regime-conditional implied vol for BS hedge cost.
+ * Imported from shared lib (services/api/scripts/backtest/lib/regimeIv.ts)
+ * so all backtests use the same calibration table.
  *
- * Calibrated to live Bullish data 2026-05-16:
- *   - Calm (DVOL < 50): live 3-day ATM IV was ~33%
- *   - Moderate (50-70): typical IV 50-55% (skew ~5% above ATM)
- *   - Elevated (70-90): typical IV 70-75%
- *   - Stress (>90): typical IV 90-100%
- *
- * Why we DON'T use raw historical realized vol as IV input to BS:
- * Realized vol is computed from past returns and can be highly
- * inflated by single-day spikes. Implied vol (what the market
- * actually charges for options) is smoother and reflects forward-
- * looking expectations. Using realized vol as IV overstates hedge
- * cost in moderate/elevated regimes by 20-40%.
- *
- * Path D fix: use these regime-conditional IVs for hedge BS pricing,
- * while still using historical price paths to detect actual triggers
- * (i.e., realized vol drives WHETHER triggers fire; implied vol
- * drives HOW MUCH we pay for the hedge).
+ * See docs/foxify-pilot-bundle-c/28_BACKTEST_CALIBRATION_PRINCIPLES.md
+ * for rationale + env override knobs.
  */
-const REGIME_CONDITIONAL_IV: Record<Regime, number> = {
-  calm: 0.35,
-  moderate: 0.55,
-  elevated: 0.75,
-  stress: 0.95
-};
-
-export const getRegimeConditionalIv = (regime: Regime): number => {
-  // Allow env override for sensitivity testing
-  const envKey = `SS_BT_IV_${regime.toUpperCase()}`;
-  const envVal = process.env[envKey];
-  if (envVal) {
-    const n = Number(envVal);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  return REGIME_CONDITIONAL_IV[regime];
-};
+export const getRegimeConditionalIv = (regime: Regime): number => sharedGetRegimeIv(regime);
 
 export const loadHistoricalData = async (): Promise<{
   candles: Candle[];

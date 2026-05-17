@@ -22,6 +22,7 @@
  */
 
 import * as fs from "node:fs/promises";
+import { getRegimeIv } from "../lib/regimeIv";
 
 // ──────────────────────── BS pricing ────────────────────────
 
@@ -349,8 +350,14 @@ export const simulateCover = (params: {
 
   const entryDay = candles[startIdx];
   const entrySpot = entryDay.close;
-  const iv = vols[entryDay.date] ?? 0.65;
+  // Calibration (2026-05-16): separate realized vol (regime
+  // classification + trigger detection) from implied vol (BS hedge
+  // cost). Realized vol historically over-states moderate/elevated
+  // hedge cost by 20-40%; implied vol from regime IV table is
+  // smoother and matches what the option market actually charges.
+  // Tracked in services/api/scripts/backtest/lib/regimeIv.ts.
   const regime = regimes[entryDay.date] ?? "moderate";
+  const iv = getRegimeIv(regime);
 
   // Daily premium: regime overlay or cell base
   const dailyPremium = scenario.regimePremium?.[regime] ?? cell.dailyPremiumUsdc;
