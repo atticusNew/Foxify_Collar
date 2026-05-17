@@ -963,6 +963,173 @@ export const registerVolumeCoverRoutes = async (
       return reply.code(500).send({ error: "hedge_manager_tick_failed", message: (err as Error).message });
     }
   });
+
+  /**
+   * Operator self-test endpoint — bypasses Foxify HMAC, requires
+   * admin auth instead. Lets operator open a real position on the
+   * live venue (real money hedge buy) without delivering Foxify
+   * the HMAC secret yet, with optional premium override so the
+   * test doesn't bleed full pilot pricing.
+   *
+   * Usage:
+   *   POST /volume-cover/admin/test-activate
+   *   X-Admin-Token: <token>
+   *   Body:
+   *     {
+   *       "foxifyPairId": "TEST-001" (any unique string),
+   *       "cellId": "50k_2pct_1k",
+   *       "pairLongNotionalUsdc": 50000,
+   *       "pairShortNotionalUsdc": 50000,
+   *       "pairEntryBtcPrice": 78200,
+   *       "premiumOverrideUsdc": 10  // optional; uses cell base if omitted
+   *     }
+   *
+   * Returns: same shape as /volume-cover/activate (positionId, triggers, legs).
+   *
+   * Notes:
+   *   - All guardrails still apply (DVOL stress, kill-switch, etc.)
+   *   - Telemetry tagged with metadata.source = 'admin_test_activate'
+   *   - Anti-bot Layers SKIPPED (this is operator action, not bot)
+   *   - DOES NOT bypass capital pre-check or trigger surge guard
+   */
+  app.post("/volume-cover/admin/test-activate", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const TestActivateSchema = z.object({
+      foxifyPairId: z.string().min(1).max(128),
+      cellId: z.string().min(1),
+      pairLongNotionalUsdc: z.number().positive().finite().optional(),
+      pairShortNotionalUsdc: z.number().positive().finite().optional(),
+      pairEntryBtcPrice: z.number().positive().finite(),
+      premiumOverrideUsdc: z.number().positive().finite().optional()
+    });
+    const parse = TestActivateSchema.safeParse(req.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: "invalid_request", issues: parse.error.issues });
+    }
+    const body = parse.data;
+
+    const cell = findCellById(body.cellId);
+    if (!cell) {
+      return reply.code(400).send({ error: "cell_not_found", cellId: body.cellId });
+    }
+
+    const cellRow = await getCell(pool, cell.cellId);
+    if (!cellRow) {
+      return reply.code(503).send({ error: "cell_row_missing" });
+    }
+
+    // Use cell.notional as default if operator omits notional fields
+    const longNotional = body.pairLongNotionalUsdc ?? cell.notionalUsdc;
+    const shortNotional = body.pairShortNotionalUsdc ?? cell.notionalUsdc;
+
+    // Idempotency on the test pair ID
+    const existing = await getPositionByPairId(pool, body.foxifyPairId);
+    if (existing && existing.status === "active") {
+      return reply.code(200).send({
+        positionId: existing.id,
+        status: existing.status,
+        idempotent: true,
+        note: "test pair already active"
+      });
+    }
+
+    // Run only the financial guards (skip anti-bot since this is admin action)
+    const metrics = await readSalvageMetrics(pool);
+    const totalActiveLiability = await sumActivePayoutLiability(pool);
+    let currentDvolForGuard = 0;
+    let regime: VolRegime | null = null;
+    try {
+      const status = await getCurrentRegime();
+      currentDvolForGuard = status.dvol ?? 0;
+      regime = classifyVolumeCoverRegime(status.dvol);
+      if (!regime) regime = translatePilotRegime(status.regime);
+    } catch (err) {
+      req.log.warn(`[volume-cover/test-activate] regime fetch failed: ${(err as Error).message}`);
+    }
+    const guardVerdict = checkAllGuardsForVolumeCoverActivate({
+      foxifyPoolBalanceUsdc: 0,
+      totalActivePayoutLiabilityUsdc: totalActiveLiability,
+      newPayoutLiabilityUsdc: cell.payoutUsdc,
+      dbTrackedAtticusBalanceUsdc: null,
+      venueReportedAtticusBalanceUsdc: null,
+      currentDvol: currentDvolForGuard,
+      lastDvolThresholdCrossingMs: null,
+      bullishHealth: { recent5xxRate: 0, recentP95LatencyMs: 0, sampleCount: 0 },
+      todayPremiumIncomeUsdc: 0,
+      rollingAvgPremiumIncomeUsdc: 0,
+      rolling7dayAtticusLossUsdc: metrics.rolling7dayAtticusLossUsdc,
+      rolling5TriggerSalvagePct: metrics.rolling5TriggerSalvagePct,
+      rolling5TriggerSampleCount: metrics.rolling5TriggerSampleCount,
+      rolling24hTriggerCount: metrics.rolling24hTriggerCount
+    });
+    if (!guardVerdict.allowed) {
+      return reply.code(403).send({
+        error: "guardrail_blocked",
+        reason: guardVerdict.reason,
+        message: guardVerdict.message,
+        details: guardVerdict.details
+      });
+    }
+
+    // Premium: caller override OR matrix base (regime overlay still applies
+    // unless operator explicitly overrides).
+    const dailyPremium =
+      body.premiumOverrideUsdc !== undefined
+        ? body.premiumOverrideUsdc
+        : resolveDailyPremium({
+            cell,
+            dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
+            regime
+          }).dailyPremiumUsdc;
+
+    try {
+      const result = await openPosition(pool, opts.hedgeExecutor, {
+        cell,
+        foxifyPairId: body.foxifyPairId,
+        pairLongNotionalUsdc: longNotional,
+        pairShortNotionalUsdc: shortNotional,
+        pairEntryBtcPrice: body.pairEntryBtcPrice,
+        effectiveDailyPremiumUsdc: dailyPremium,
+        regime,
+        // No fingerprint = no anti-bot, no ladder netting (intentional for test)
+        fingerprintHash: null,
+        metadata: {
+          source: "admin_test_activate",
+          requestIp: req.ip,
+          regime,
+          premiumOverrideUsdc: body.premiumOverrideUsdc ?? null
+        }
+      });
+
+      return reply.code(201).send({
+        positionId: result.position.id,
+        status: result.position.status,
+        cellId: cell.cellId,
+        triggerHighBtc: result.position.triggerHighBtc,
+        triggerLowBtc: result.position.triggerLowBtc,
+        dailyPremiumUsdc: dailyPremium,
+        payoutUsdc: cell.payoutUsdc,
+        hedgeLegs: result.hedgeLegs.map((l) => ({
+          id: l.id,
+          venue: l.venue,
+          optionKind: l.optionKind,
+          strikeUsdc: l.strikeUsdc,
+          contractsBtc: l.contracts,
+          buyPriceUsdc: l.buyPriceUsdc
+        })),
+        totalHedgeCostUsdc: result.totalHedgeCostUsdc,
+        regime,
+        note: "OPERATOR TEST ACTIVATION — real venue hedge purchased. Use POST /admin/positions/:id/close to close."
+      });
+    } catch (err) {
+      req.log.error(`[volume-cover/test-activate] failed: ${(err as Error).message}`);
+      return reply.code(500).send({
+        error: "test_activate_failed",
+        message: (err as Error).message
+      });
+    }
+  });
 };
 
 // ────────────────────── Markdown dashboard ──────────────────────
