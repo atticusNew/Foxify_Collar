@@ -22,7 +22,8 @@ export type CellId =
   | "50k_10pct_5k"
   | "200k_5pct_10k"
   | "200k_10pct_20k"
-  | "200k_15pct_30k";
+  | "200k_15pct_30k"
+  | "1k_2pct_20";
 
 export type CellDefinition = {
   cellId: CellId;
@@ -42,6 +43,12 @@ export type CellDefinition = {
    * salvage validated.
    */
   defaultThrottleMaxPerDay: number;
+  /**
+   * Whether this cell is enabled at first seed. Defaults to true.
+   * Set to false for test/diagnostic cells that must be explicitly
+   * enabled by operator before use.
+   */
+  defaultEnabled?: boolean;
 };
 
 /**
@@ -106,6 +113,38 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.07,
     dailyPremiumUsdc: 370,
     defaultThrottleMaxPerDay: 5
+  },
+  /**
+   * 1k_2pct_20 — TEST/DIAGNOSTIC CELL
+   *
+   * NOT a production cell. Exists solely to enable cheap real-money
+   * validation of the full TP curve / Bullish execution path. Same
+   * shape as 50k_2pct_1k but 1/50th the size:
+   *   - $1k notional, ±2% trigger, $20 payout
+   *   - Hedge contracts size = max(0.026 BTC base, 0.1 BTC granularity)
+   *     → effectively 0.1 BTC per leg = ~$18 in real Bullish premium
+   *   - Net cost per round-trip: $5-15 after recovery
+   *
+   * DISABLED by default. Operator must explicitly enable via admin
+   * dashboard ('Toggle' button on Cells row) before activating.
+   *
+   * Hedge math note: the granularity-rounded contracts size means
+   * this cell's hedge OVER-COVERS the $20 payout (intrinsic at
+   * trigger ~$77 per leg). That's intentional for the test cell —
+   * makes salvage > 100% on trigger, which is fine for validation
+   * (loss is bounded by hedge cost, not payout).
+   *
+   * Throttle 1/day for safety; bump if needed.
+   */
+  {
+    cellId: "1k_2pct_20",
+    notionalUsdc: 1_000,
+    triggerPct: 0.02,
+    payoutUsdc: 20,
+    hedgePct: 0.01,
+    dailyPremiumUsdc: 1,
+    defaultThrottleMaxPerDay: 1,
+    defaultEnabled: false
   }
 ];
 
