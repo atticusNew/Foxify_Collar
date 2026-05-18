@@ -1,0 +1,19 @@
+{
+  "name": "@atticus-research/kalshi-shadow-backtest",
+  "version": "1.0.0",
+  "description": "Standalone Kalshi shadow-hedge backtest — completely independent of the live Foxify pilot",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "backtest": "npx tsx src/main.ts",
+    "backtest:tiered": "npx tsx src/mainTiered.ts",
+    "fetch-btc": "npx tsx src/fetchBtcPrices.ts"
+  },
+  "dependencies": {
+    "decimal.js": "^10.4.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
