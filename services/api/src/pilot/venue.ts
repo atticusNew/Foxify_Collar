@@ -3839,6 +3839,128 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
 
     if (!spotPrice || btcQty <= 0) return null;
 
+    // VC FAST-PATH (2026-05-18):
+    //
+    // When a caller passes an explicit, fully-qualified Bullish option
+    // symbol via req.instrumentId (e.g., 'BTC-USDC-20260601-76200-P'),
+    // honor it directly IF the symbol exists on Bullish AND is
+    // tradeable. This bypasses the legacy pilot scoring logic below
+    // which uses moneyness ranges + drawdown coverage heuristics
+    // tuned for the biweekly product, not the Volume Cover product's
+    // tight hedge-zone invariant (strike must sit between trigger
+    // boundary and spot).
+    //
+    // Without this fast-path, VC's caller-computed target strike
+    // (e.g., $76,200 put for a 1% hedge) was being silently replaced
+    // by an out-of-zone strike (e.g., $72,000) that satisfied the
+    // legacy scorer but NOT the VC structural requirement. Those
+    // orders subsequently REJECTED at Bullish (IOC unfilled at low
+    // limit) or filled at strikes that wouldn't be ITM at trigger.
+    //
+    // For non-VC callers (legacy pilot routes that don't supply an
+    // instrumentId or supply a non-canonical one), this block is a
+    // no-op and the legacy scoring applies as before.
+    if (req.instrumentId) {
+      const requestedSymbolUpper = String(req.instrumentId).trim().toUpperCase();
+      const requestedParsed = parseBullishOptionSymbol(requestedSymbolUpper);
+      if (
+        requestedParsed &&
+        requestedParsed.optionType === requestedOptionType
+      ) {
+        // Two-step match:
+        //   1. Exact symbol match (best — caller knew about this expiry)
+        //   2. Same strike + option type, closest available expiry (Bullish
+        //      may not have the exact day VC computed; e.g., VC asks for
+        //      June 1 but Bullish has May 29 or June 5). Snap to nearest.
+        const requestedExpiryDate = requestedParsed.expiry; // YYYYMMDD
+        const requestedExpiryMs = (() => {
+          const y = Number(requestedExpiryDate.slice(0, 4));
+          const m = Number(requestedExpiryDate.slice(4, 6));
+          const d = Number(requestedExpiryDate.slice(6, 8));
+          return Date.UTC(y, m - 1, d, 8, 0, 0);
+        })();
+
+        // Build an expiry candidate list: exact match first, then all
+        // markets with the same strike + option type, sorted by
+        // distance from requestedExpiryMs.
+        const sameStrikeSameKind = allMarkets
+          .map((m) => {
+            const sym = String((m as Record<string, unknown>).symbol || "").toUpperCase();
+            const parsed = parseBullishOptionSymbol(sym);
+            if (!parsed) return null;
+            if (parsed.optionType !== requestedOptionType) return null;
+            if (parsed.strike !== requestedParsed.strike) return null;
+            const expiryIso = String(
+              (m as Record<string, unknown>).expiryDatetime || ""
+            );
+            const expiryMs = Date.parse(expiryIso);
+            if (!Number.isFinite(expiryMs) || expiryMs <= now) return null;
+            const tradable =
+              (m as Record<string, unknown>).createOrderEnabled !== false &&
+              (m as Record<string, unknown>).marketEnabled !== false;
+            if (!tradable) return null;
+            return {
+              symbol: sym,
+              expiryMs,
+              distanceMs: Math.abs(expiryMs - requestedExpiryMs),
+              isExactMatch: sym === requestedSymbolUpper
+            };
+          })
+          .filter(Boolean) as Array<{
+          symbol: string;
+          expiryMs: number;
+          distanceMs: number;
+          isExactMatch: boolean;
+        }>;
+
+        // Sort: exact match first, then by smallest distance from
+        // requested expiry. Cap tenor drift at 7 days (don't snap a
+        // 14d hedge to 1d expiry — that breaks matched-tenor invariant).
+        sameStrikeSameKind.sort(
+          (a, b) =>
+            (a.isExactMatch ? -1 : b.isExactMatch ? 1 : 0) ||
+            a.distanceMs - b.distanceMs
+        );
+        const MAX_EXPIRY_DRIFT_DAYS = 7;
+        const maxDriftMs = MAX_EXPIRY_DRIFT_DAYS * 86_400_000;
+
+        for (const candidate of sameStrikeSameKind.slice(0, 3)) {
+          if (!candidate.isExactMatch && candidate.distanceMs > maxDriftMs) {
+            continue;
+          }
+          try {
+            const book = await this.client.getHybridOrderBook(candidate.symbol);
+            const bestAsk = book.asks[0];
+            const askPx = Number(bestAsk?.price ?? NaN);
+            const askQty = Number(bestAsk?.quantity ?? NaN);
+            if (
+              Number.isFinite(askPx) &&
+              askPx > 0 &&
+              Number.isFinite(askQty) &&
+              askQty > 0
+            ) {
+              return {
+                symbol: candidate.symbol,
+                strike: requestedParsed.strike,
+                hedgeCostPerUnit: askPx,
+                hedgeCostTotal: askPx * btcQty,
+                availableQty: askQty,
+                selectionReason: candidate.isExactMatch
+                  ? "vc_explicit_instrument_id"
+                  : `vc_explicit_strike_expiry_snapped_drift_${Math.round(candidate.distanceMs / 86_400_000)}d`
+              };
+            }
+          } catch {
+            // try next candidate
+          }
+        }
+        // None of the same-strike candidates had liquidity → fall
+        // through to the legacy scoring path. Better to fall back than
+        // to fail entirely; the operator will see selectionReason in
+        // the eventual fill record so the strike-snap is auditable.
+      }
+    }
+
     const maxHedgeCostPer1k = Number(process.env.PILOT_BULLISH_MAX_HEDGE_COST_PER_1K || "0") || null;
 
     const strikeRange = resolveDynamicStrikeRange({
