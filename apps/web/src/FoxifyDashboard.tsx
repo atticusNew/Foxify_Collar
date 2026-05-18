@@ -88,7 +88,29 @@ function TokenGate({ onSubmit }: { onSubmit: (t: string) => void }) {
         fontFamily: "monospace"
       }}
     >
-      <h2 style={{ marginBottom: 8 }}>Volume Cover — Foxify</h2>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          marginBottom: 16
+        }}
+      >
+        <img
+          src="https://i.ibb.co/PsGYPBkn/Foxify-200x200.png"
+          alt="Foxify"
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 8,
+            objectFit: "cover"
+          }}
+          onError={(e) => {
+            (e.target as HTMLImageElement).style.display = "none";
+          }}
+        />
+        <h2 style={{ margin: 0 }}>Volume Cover — Foxify</h2>
+      </div>
       <p style={{ color: "#888", fontSize: 13, marginBottom: 16 }}>
         Paste your Foxify dashboard token (provided by Atticus). Stored locally
         in this browser. To rotate, sign out and re-enter.
@@ -648,7 +670,24 @@ export function FoxifyDashboard() {
           marginBottom: 16
         }}
       >
-        <h1 style={{ fontSize: 18, margin: 0 }}>Volume Cover — Foxify</h1>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <img
+            src="https://i.ibb.co/PsGYPBkn/Foxify-200x200.png"
+            alt="Foxify"
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 6,
+              objectFit: "cover"
+            }}
+            onError={(e) => {
+              // If image fails to load, hide it gracefully rather than
+              // showing a broken-image icon next to the title.
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
+          />
+          <h1 style={{ fontSize: 18, margin: 0 }}>Volume Cover — Foxify</h1>
+        </div>
         <div style={{ fontSize: 11, color: "#888" }}>
           {status?.generatedAtIso
             ? `Updated ${fmtRelative(status.generatedAtIso)}`
