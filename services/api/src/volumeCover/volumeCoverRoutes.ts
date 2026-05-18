@@ -934,6 +934,50 @@ export const registerVolumeCoverRoutes = async (
     };
   };
 
+  /**
+   * Inspect Bullish ECDSA credentials for the OPERATOR to debug config
+   * issues without shell access. Returns SAFE metadata only — never
+   * the raw key material:
+   *   - publicKey/privateKey: { present, beginLabel, endLabel, bodyLength,
+   *                              invalidBodyCharCount, parses, parseError }
+   *   - metadataUserIdPresent: true if ECDSA_METADATA decodes to a userId
+   *   - environment: testnet/mainnet inferred from REST URL
+   *
+   * Use cases:
+   *   - "Did I paste the \\n correctly?" → bodyLength + parses tells you
+   *   - "Are my keys present at all?" → present field
+   *   - "Wrong PEM format?" → beginLabel + parseError
+   *   - "Wrong environment?" → environment + restBaseUrl
+   */
+  app.get("/volume-cover/admin/bullish-key-check", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const { inspectBullishEcdsaKeyMaterial } = await import("../pilot/bullish");
+    const inspection = inspectBullishEcdsaKeyMaterial({
+      publicKey: String(process.env.PILOT_BULLISH_ECDSA_PUBLIC_KEY || ""),
+      privateKey: String(process.env.PILOT_BULLISH_ECDSA_PRIVATE_KEY || ""),
+      metadata: String(process.env.PILOT_BULLISH_ECDSA_METADATA || "")
+    });
+    const tradingAccountIdSet = Boolean(
+      String(process.env.PILOT_BULLISH_TRADING_ACCOUNT_ID || "").trim()
+    );
+    return reply.send({
+      generatedAtIso: new Date().toISOString(),
+      environment: pilotConfig.bullish.restBaseUrl.includes("bullish-test.com")
+        ? "testnet"
+        : pilotConfig.bullish.restBaseUrl.includes("bullish.com")
+        ? "mainnet"
+        : "unknown",
+      restBaseUrl: pilotConfig.bullish.restBaseUrl,
+      bullishEnabled: pilotConfig.bullish.enabled,
+      authMode: pilotConfig.bullish.authMode,
+      tradingAccountIdSet,
+      tradingAccountIdLength: String(
+        process.env.PILOT_BULLISH_TRADING_ACCOUNT_ID || ""
+      ).trim().length,
+      ...inspection
+    });
+  });
+
   app.get("/volume-cover/admin/venue-balances", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
