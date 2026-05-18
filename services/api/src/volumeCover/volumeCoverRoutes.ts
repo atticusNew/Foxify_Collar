@@ -1280,12 +1280,40 @@ export const registerVolumeCoverRoutes = async (
         console.warn(`[VolumeCover] spot-convert audit log failed: ${(err as Error).message}`);
       });
 
-    // Format price + quantity per Bullish requirements (string with
-    // appropriate decimal precision). Bullish typically wants prices
-    // rounded to tick size; for BTCUSDC tick is $1 so integer is safe.
-    const priceStr = limitPrice.toFixed(2);
-    // Quantity precision: BTC step is 0.0001 typically.
-    const qtyStr = qty.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+    // Format price + quantity per Bullish requirements.
+    //
+    // Bullish enforces tick-size on prices (errorCode 6018
+    // PRICE_MUST_BE_OF_TICK_SIZE if violated). For BTCUSDC the tick
+    // is $1 (integer dollars only). We round in the SAFE direction
+    // for the side being submitted:
+    //   SELL: floor (further from best bid → keeps slippage bound,
+    //                less likely to fill above worst-acceptable)
+    //   BUY:  ceil  (further from best ask → keeps slippage bound)
+    //
+    // For pairs other than BTCUSDC the tick may differ; that's why
+    // the symbol allowlist exists. To support new pairs, fetch the
+    // tick from getMarkets() and apply per-pair rounding.
+    const TICK_SIZE_BTCUSDC = 1.0;
+    const tickRounded =
+      body.side === "SELL"
+        ? Math.floor(limitPrice / TICK_SIZE_BTCUSDC) * TICK_SIZE_BTCUSDC
+        : Math.ceil(limitPrice / TICK_SIZE_BTCUSDC) * TICK_SIZE_BTCUSDC;
+    const priceStr = tickRounded.toFixed(0);
+
+    // Quantity precision: BTC step is 0.0001 typically (lot size).
+    // Floor to that resolution to avoid LOT_SIZE rejection. Re-check
+    // notional after floor since rounding may shift it slightly.
+    const LOT_SIZE_BTC = 0.0001;
+    const qtyFloored =
+      Math.floor(qty / LOT_SIZE_BTC) * LOT_SIZE_BTC;
+    const qtyStr = qtyFloored.toFixed(4);
+    if (qtyFloored <= 0) {
+      return reply.code(400).send({
+        error: "quantity_below_lot_size",
+        requested: qty,
+        lotSizeBtc: LOT_SIZE_BTC
+      });
+    }
 
     // Step 4: dryRun short-circuit.
     if (body.dryRun) {
