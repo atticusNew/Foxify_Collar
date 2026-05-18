@@ -670,6 +670,14 @@ export class BullishTradingClient {
     clientOrderId?: string;
   }): Promise<unknown> {
     if (this.config.authMode === "ecdsa") {
+      // 2026-05-18: V3CreateOrder (ECDSA path) was missing the
+      // allowMargin / margin / allowBorrow fields. Bullish rejects
+      // option BUYs with status_reason 3003 ('Borrowing is
+      // unavailable, margin not enabled') if margin not requested.
+      // V2 path (HMAC) was already passing allowMargin; V3 wasn't.
+      // Now both paths honor PILOT_BULLISH_ALLOW_MARGIN env. The
+      // account itself must ALSO have margin enabled in Bullish UI
+      // for orders to actually accept (this just flags the request).
       return await this.submitCommand({
         commandType: "V3CreateOrder",
         symbol: params.symbol,
@@ -679,7 +687,10 @@ export class BullishTradingClient {
         quantity: params.quantity,
         timeInForce: this.config.orderTif,
         clientOrderId: params.clientOrderId || String(BigInt(Date.now()) * 1000n),
-        tradingAccountId: this.config.tradingAccountId
+        tradingAccountId: this.config.tradingAccountId,
+        allowMargin: this.config.allowMargin,
+        allowBorrow: this.config.allowMargin,
+        margin: this.config.allowMargin
       });
     }
     return await this.submitCommand({
