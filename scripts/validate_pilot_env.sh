@@ -21,12 +21,9 @@ value_of() {
 
 MODE="$(value_of "PILOT_VENUE_MODE")"
 HEDGE_POLICY="$(value_of "PILOT_HEDGE_POLICY")"
-BRIDGE_TRANSPORT="$(value_of "IBKR_BRIDGE_TRANSPORT")"
-BRIDGE_FALLBACK="$(value_of "IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC")"
-REQUIRE_LIVE="$(value_of "IBKR_REQUIRE_LIVE_TRANSPORT")"
-ENABLE_EXEC="$(value_of "IBKR_ENABLE_EXECUTION")"
 DERIBIT_ENV="$(value_of "DERIBIT_ENV")"
 DERIBIT_PAPER="$(value_of "DERIBIT_PAPER")"
+V7_ENABLED="$(value_of "V7_PRICING_ENABLED")"
 
 issues=0
 warn() {
@@ -41,28 +38,22 @@ if [[ -z "${MODE}" ]]; then
   err "PILOT_VENUE_MODE is required"
 fi
 
+# V7 validation
+if [[ "${V7_ENABLED}" == "true" || -z "${V7_ENABLED}" ]]; then
+  echo "V7 pricing enabled (default). Validating Bullish venue config..."
+  if [[ "${MODE}" != "bullish_testnet" ]]; then
+    warn "V7 pricing expects PILOT_VENUE_MODE=bullish_testnet, got: ${MODE}"
+  fi
+fi
+
+# IBKR modes are deprecated for V7 pilot
 if [[ "${MODE}" == ibkr_cme_live || "${MODE}" == ibkr_cme_paper ]]; then
-  [[ "${BRIDGE_TRANSPORT}" == "ib_socket" ]] || err "IBKR mode requires IBKR_BRIDGE_TRANSPORT=ib_socket"
-  [[ "${HEDGE_POLICY}" == "options_only_native" ]] || warn "Recommended PILOT_HEDGE_POLICY=options_only_native for pilot quote quality"
-  if [[ "${MODE}" == "ibkr_cme_live" ]]; then
-    [[ "${REQUIRE_LIVE}" == "true" ]] || warn "Recommended IBKR_REQUIRE_LIVE_TRANSPORT=true in live mode"
-    [[ "${BRIDGE_FALLBACK}" == "false" ]] || warn "Recommended IBKR_BRIDGE_FALLBACK_TO_SYNTHETIC=false in live mode"
-  fi
-  if [[ "${ENABLE_EXEC}" == "true" ]]; then
-    ACCOUNT_ID="$(value_of "IBKR_ACCOUNT_ID")"
-    [[ -n "${ACCOUNT_ID}" ]] || err "IBKR_ENABLE_EXECUTION=true requires IBKR_ACCOUNT_ID"
-  fi
+  warn "IBKR venue modes are deprecated for V7 pilot. Use bullish_testnet instead."
 fi
 
 if [[ "${MODE}" == "deribit_test" ]]; then
   [[ "${DERIBIT_ENV}" == "testnet" ]] || warn "Recommended DERIBIT_ENV=testnet for deribit_test"
   [[ "${DERIBIT_PAPER}" == "true" ]] || warn "Recommended DERIBIT_PAPER=true for deribit_test"
-fi
-
-if [[ "${MODE}" == ibkr_cme_live || "${MODE}" == ibkr_cme_paper ]]; then
-  if [[ "${DERIBIT_ENV}" == "live" && "${DERIBIT_PAPER}" == "false" ]]; then
-    warn "Deribit live flags are set while running IBKR mode; ensure this is intentional"
-  fi
 fi
 
 if [[ "${issues}" -gt 0 ]]; then

@@ -1,328 +1,228 @@
 /**
- * Backtest: 1-Day Tenor across all SL tiers
- * + Live Deribit pricing for 1-day BTC puts
- * 
- * Tests if shorter tenor dramatically reduces hedge cost
- * while maintaining protection value
+ * 1-Day Tenor Backtest — Tests daily cycling vs 2-day cycling
+ * with appropriate pricing for each.
  */
 
-const SL_TIERS = [1, 2, 3, 5, 10];
-const TENOR = 1;
-const NOTIONAL = 10_000;
-const RF = 0.05;
-const TEST_PREMIUMS = [3, 5, 7, 8, 10, 12, 15, 20, 25, 30];
+import { readFile } from "node:fs/promises";
 
-function nCDF(x: number): number {
-  const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911;
-  const s = x < 0 ? -1 : 1; x = Math.abs(x) / Math.sqrt(2);
-  const t = 1 / (1 + p * x);
-  return 0.5 * (1 + s * (1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x)));
-}
+const bsPut = (S: number, K: number, T: number, sigma: number): number => {
+  if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return Math.max(0, K - S);
+  const d1 = (Math.log(S / K) + (sigma * sigma / 2) * T) / (sigma * Math.sqrt(T));
+  const d2 = d1 - sigma * Math.sqrt(T);
+  const nCDF = (x: number) => {
+    const a = [0.254829592, -0.284496736, 1.421413741, -1.453152027, 1.061405429];
+    const p = 0.3275911;
+    const sign = x < 0 ? -1 : 1;
+    const ax = Math.abs(x) / Math.SQRT2;
+    const t = 1 / (1 + p * ax);
+    const y = 1 - ((((a[4] * t + a[3]) * t + a[2]) * t + a[1]) * t + a[0]) * t * Math.exp(-ax * ax);
+    return 0.5 * (1 + sign * y);
+  };
+  return K * nCDF(-d2) - S * nCDF(-d1);
+};
 
-function bsPut(S: number, K: number, T: number, r: number, v: number): number {
-  if (T <= 0 || v <= 0 || S <= 0 || K <= 0) return Math.max(0, K - S);
-  const d1 = (Math.log(S / K) + (r + v * v / 2) * T) / (v * Math.sqrt(T));
-  const d2 = d1 - v * Math.sqrt(T);
-  return K * Math.exp(-r * T) * nCDF(-d2) - S * nCDF(-d1);
-}
+type PricePoint = { tsMs: number; price: number };
+const HOUR_MS = 3600000;
+const DAY_MS = 86400000;
+const DVOL = 45;
+const SIGMA = DVOL / 100;
 
-function rVol(prices: number[], w: number): number {
-  if (prices.length < w + 1) return 0.5;
-  const rets: number[] = [];
-  for (let i = Math.max(0, prices.length - w - 1); i < prices.length - 1; i++) {
-    if (prices[i] > 0 && prices[i + 1] > 0) rets.push(Math.log(prices[i + 1] / prices[i]));
-  }
-  if (rets.length < 5) return 0.5;
-  const m = rets.reduce((s, r) => s + r, 0) / rets.length;
-  const v = rets.reduce((s, r) => s + (r - m) ** 2, 0) / (rets.length - 1);
-  return Math.sqrt(v * 365);
-}
+const adaptive = { coolingHours: 0.5, deepDropCoolingHours: 0.167, primeThreshold: 0.25, lateThreshold: 0.10, primeWindowEndHours: 8 };
 
-function regime(vol: number): "calm" | "normal" | "stress" {
-  return vol < 0.40 ? "calm" : vol < 0.65 ? "normal" : "stress";
-}
+type TierDef = { slPct: number; premiumPer1k: number; label: string };
 
-async function fetchPrices(start: string, end: string): Promise<{ date: string; price: number; low: number; high: number }[]> {
-  const all = new Map<string, { price: number; low: number; high: number }>();
-  let cur = new Date(start).getTime(); const eMs = new Date(end).getTime();
-  while (cur < eMs) {
-    const ce = Math.min(cur + 300 * 86400000, eMs);
-    const url = `https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=86400&start=${new Date(cur).toISOString()}&end=${new Date(ce).toISOString()}`;
-    let retries = 3;
-    while (retries-- > 0) {
-      try {
-        const res = await fetch(url);
-        if (res.status === 429) { await new Promise(r => setTimeout(r, 3000)); continue; }
-        if (!res.ok) throw new Error(`${res.status}`);
-        const c = await res.json() as number[][];
-        for (const [ts, lo, hi, op, cl] of c) {
-          all.set(new Date(ts * 1000).toISOString().slice(0, 10), { price: cl, low: lo, high: hi });
-        }
-        break;
-      } catch (e: any) { if (retries <= 0) throw e; await new Promise(r => setTimeout(r, 2000)); }
-    }
-    cur = ce; await new Promise(r => setTimeout(r, 500));
-  }
-  return Array.from(all.entries()).map(([d, v]) => ({ date: d, ...v })).sort((a, b) => a.date.localeCompare(b.date));
-}
+const runScenario = (prices: PricePoint[], tier: TierDef, notional: number, tenorDays: number, cycleHours: number) => {
+  const premium = notional / 1000 * tier.premiumPer1k;
+  const payout = notional * tier.slPct;
+  let totalPremium = 0, totalHedge = 0, totalPayouts = 0, totalTp = 0;
+  let cycles = 0, triggers = 0, tpSold = 0;
+  const reasons: Record<string, number> = {};
 
-async function main() {
-  console.log("═══════════════════════════════════════════════════════════════════════════");
-  console.log("  1-DAY TENOR BACKTEST + LIVE DERIBIT PRICING");
-  console.log("  SL Tiers: " + SL_TIERS.join("%, ") + "% | Tenor: " + TENOR + " day | Notional: $" + NOTIONAL.toLocaleString());
-  console.log("  " + new Date().toISOString());
-  console.log("═══════════════════════════════════════════════════════════════════════════\n");
+  // Adjust TP params for 1-day tenor
+  const nearExpirySalvageHours = tenorDays === 1 ? 6 : 10;
+  const activeSalvageHours = tenorDays === 1 ? 4 : 8;
 
-  const prices = await fetchPrices("2022-01-01", "2026-04-07");
-  console.log(`  ${prices.length} days loaded\n`);
-  const pv = prices.map(p => p.price);
+  let cycleStart = 0;
+  while (cycleStart < prices.length - 1) {
+    const entry = prices[cycleStart];
+    const floorPrice = entry.price * (1 - tier.slPct);
+    const strikeRaw = Math.round(floorPrice / 500) * 500;
+    const strike = strikeRaw <= floorPrice ? strikeRaw : strikeRaw - 500;
+    const expiryTs = entry.tsMs + tenorDays * DAY_MS;
+    const qty = notional / entry.price;
+    const hedgeCost = bsPut(entry.price, strike, tenorDays / 365.25, SIGMA) * qty;
 
-  // ═══════════════════════════════════════════════════════════════════
-  // BACKTEST: 1-DAY vs 7-DAY comparison
-  // ═══════════════════════════════════════════════════════════════════
+    totalPremium += premium;
+    totalHedge += hedgeCost;
+    cycles++;
 
-  for (const tenor of [1, 2, 7]) {
-    console.log("═══════════════════════════════════════════════════════════════════════════");
-    console.log(`  ${tenor}-DAY TENOR — Market IV (vol × 0.85)`);
-    console.log("═══════════════════════════════════════════════════════════════════════════\n");
+    let triggered = false, triggerTs = 0, tpDone = false;
 
-    console.log("  SL%  │ Trig Rt │ Hedge/$1k │ Payout/$1k │ Recov/$1k │ BE/$1k  │ P&L @$5 │ P&L @$8 │ P&L @$10 │ P&L @$15");
-    console.log("  ─────┼─────────┼───────────┼────────────┼───────────┼─────────┼─────────┼─────────┼──────────┼─────────");
+    for (let i = cycleStart + 1; i < prices.length; i++) {
+      const p = prices[i];
+      if (p.tsMs > expiryTs) break;
 
-    for (const sl of SL_TIERS) {
-      let triggers = 0, n = 0, totalHedge = 0, totalPayout = 0, totalRecov = 0;
-      const pnlAccum: Record<number, number[]> = {};
-      for (const p of TEST_PREMIUMS) pnlAccum[p] = [];
+      const T = Math.max(0, expiryTs - p.tsMs) / (365.25 * 24 * 3600 * 1000);
+      const intrinsic = Math.max(0, strike - p.price);
+      const total = Math.max(intrinsic, bsPut(p.price, strike, T, SIGMA)) * qty;
 
-      for (let i = 0; i + tenor < prices.length; i++) {
-        const entry = prices[i].price;
-        if (entry <= 0) continue;
-        n++;
-        const trigger = entry * (1 - sl / 100);
-        const qty = NOTIONAL / entry;
-        const T = tenor / 365;
-        const vol = rVol(pv.slice(0, i + 1), 30) * 0.85;
-        const hedge = bsPut(entry, trigger, T, RF, vol) * qty;
-        totalHedge += hedge;
-
-        // Use intraday low for 1-day check (more accurate than close-only)
-        let triggered = false;
-        if (tenor === 1) {
-          triggered = prices[i + 1]?.low <= trigger;
-        } else {
-          const window = prices.slice(i, i + tenor + 1);
-          const minPx = Math.min(...window.map(p => p.low));
-          triggered = minPx <= trigger;
-        }
-
-        const payout = triggered ? NOTIONAL * (sl / 100) : 0;
-        totalPayout += payout;
-        if (triggered) triggers++;
-
-        let recov = 0;
-        if (triggered) {
-          const expiryPx = prices[i + tenor]?.price || entry;
-          recov = Math.max(0, trigger - expiryPx) * qty;
-        }
-        totalRecov += recov;
-
-        for (const prem of TEST_PREMIUMS) {
-          pnlAccum[prem].push(prem - hedge / (NOTIONAL / 1000) - payout / (NOTIONAL / 1000) + recov / (NOTIONAL / 1000));
-        }
+      if (!triggered && p.price <= floorPrice) {
+        triggered = true; triggerTs = p.tsMs;
+        triggers++; totalPayouts += payout;
       }
 
-      const trigRate = triggers / n;
-      const avgH = totalHedge / n / (NOTIONAL / 1000);
-      const avgP = totalPayout / n / (NOTIONAL / 1000);
-      const avgR = totalRecov / n / (NOTIONAL / 1000);
-      const be = avgH + avgP - avgR;
+      if (triggered && !tpDone) {
+        const hSince = (p.tsMs - triggerTs) / HOUR_MS;
+        const hToExp = (expiryTs - p.tsMs) / HOUR_MS;
+        const dropFloor = ((floorPrice - p.price) / floorPrice) * 100;
+        const bounced = p.price > floorPrice;
+        const gapPct = Math.abs(strike - floorPrice) / floorPrice * 100;
+        const gapDead = gapPct >= 0.3 && !bounced && p.price > strike;
+        const effCool = gapDead ? adaptive.coolingHours + 0.5 : adaptive.coolingHours;
 
-      const p5 = pnlAccum[5] ? pnlAccum[5].reduce((s, v) => s + v, 0) / pnlAccum[5].length : 0;
-      const p8 = pnlAccum[8] ? pnlAccum[8].reduce((s, v) => s + v, 0) / pnlAccum[8].length : 0;
-      const p10 = pnlAccum[10] ? pnlAccum[10].reduce((s, v) => s + v, 0) / pnlAccum[10].length : 0;
-      const p15 = pnlAccum[15] ? pnlAccum[15].reduce((s, v) => s + v, 0) / pnlAccum[15].length : 0;
+        let sell = false, reason = "";
+        if (hToExp < nearExpirySalvageHours && total >= 3) { sell = true; reason = "near_expiry_salvage"; }
+        else if (dropFloor >= 1.5 && hSince >= adaptive.deepDropCoolingHours && total >= payout * adaptive.primeThreshold) { sell = true; reason = "deep_drop_tp"; }
+        else if (hSince >= effCool && bounced && total >= 3) { sell = true; reason = "bounce_recovery"; }
+        else if (hSince >= effCool && hSince < adaptive.primeWindowEndHours && total >= payout * adaptive.primeThreshold) { sell = true; reason = "take_profit_prime"; }
+        else if (hSince >= adaptive.primeWindowEndHours && total >= payout * adaptive.lateThreshold) { sell = true; reason = "take_profit_late"; }
 
-      const f = (v: number) => (v >= 0 ? `+${v.toFixed(2)}` : v.toFixed(2)).padStart(7);
-
-      console.log(`  ${String(sl).padStart(3)}%  │ ${(trigRate * 100).toFixed(1).padStart(5)}%  │ $${avgH.toFixed(2).padStart(7)} │ $${avgP.toFixed(2).padStart(8)} │ $${avgR.toFixed(2).padStart(7)} │ $${be.toFixed(2).padStart(5)}  │ $${f(p5)} │ $${f(p8)} │ $${f(p10)}  │ $${f(p15)}`);
-    }
-
-    // Win rates
-    console.log(`\n  Win rates:`);
-    console.log("  SL%  │ @$5   │ @$8   │ @$10  │ @$15  │ @$20  │ @$25  │ @$30 ");
-    console.log("  ─────┼───────┼───────┼───────┼───────┼───────┼───────┼──────");
-    for (const sl of SL_TIERS) {
-      let n = 0;
-      const pnlAccum: Record<number, number[]> = {};
-      for (const p of TEST_PREMIUMS) pnlAccum[p] = [];
-
-      for (let i = 0; i + tenor < prices.length; i++) {
-        const entry = prices[i].price;
-        if (entry <= 0) continue;
-        n++;
-        const trigger = entry * (1 - sl / 100);
-        const qty = NOTIONAL / entry;
-        const vol = rVol(pv.slice(0, i + 1), 30) * 0.85;
-        const hedge = bsPut(entry, trigger, tenor / 365, RF, vol) * qty;
-        let triggered = false;
-        if (tenor === 1) { triggered = prices[i + 1]?.low <= trigger; }
-        else { triggered = Math.min(...prices.slice(i, i + tenor + 1).map(p => p.low)) <= trigger; }
-        const payout = triggered ? NOTIONAL * (sl / 100) : 0;
-        let recov = 0;
-        if (triggered) { const ep = prices[i + tenor]?.price || entry; recov = Math.max(0, trigger - ep) * qty; }
-        for (const prem of TEST_PREMIUMS) {
-          pnlAccum[prem].push(prem - hedge / 10 - payout / 10 + recov / 10);
-        }
+        if (sell) { totalTp += total; tpDone = true; tpSold++; reasons[reason] = (reasons[reason] || 0) + 1; }
       }
 
-      const wr = (p: number) => pnlAccum[p] ? `${(pnlAccum[p].filter(v => v >= 0).length / pnlAccum[p].length * 100).toFixed(0)}%`.padStart(5) : "  N/A";
-      console.log(`  ${String(sl).padStart(3)}%  │ ${wr(5)} │ ${wr(8)} │ ${wr(10)} │ ${wr(15)} │ ${wr(20)} │ ${wr(25)} │ ${wr(30)}`);
-    }
-    console.log();
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
-  // CALM vs STRESS breakdown for 1-day tenor
-  // ═══════════════════════════════════════════════════════════════════
-  console.log("═══════════════════════════════════════════════════════════════════════════");
-  console.log("  1-DAY TENOR: CALM vs NORMAL vs STRESS");
-  console.log("═══════════════════════════════════════════════════════════════════════════\n");
-
-  for (const sl of SL_TIERS) {
-    const regimeData: Record<string, { n: number; hedge: number; payout: number; recov: number; triggers: number }> = {
-      calm: { n: 0, hedge: 0, payout: 0, recov: 0, triggers: 0 },
-      normal: { n: 0, hedge: 0, payout: 0, recov: 0, triggers: 0 },
-      stress: { n: 0, hedge: 0, payout: 0, recov: 0, triggers: 0 },
-    };
-
-    for (let i = 0; i + 1 < prices.length; i++) {
-      const entry = prices[i].price;
-      if (entry <= 0) continue;
-      const vol30 = rVol(pv.slice(0, i + 1), 30);
-      const reg = regime(vol30);
-      const d = regimeData[reg];
-      d.n++;
-      const trigger = entry * (1 - sl / 100);
-      const qty = NOTIONAL / entry;
-      const vol = vol30 * 0.85;
-      d.hedge += bsPut(entry, trigger, 1 / 365, RF, vol) * qty;
-      const triggered = prices[i + 1]?.low <= trigger;
-      const payout = triggered ? NOTIONAL * (sl / 100) : 0;
-      d.payout += payout;
-      if (triggered) d.triggers++;
-      if (triggered) {
-        const ep = prices[i + 1]?.price || entry;
-        d.recov += Math.max(0, trigger - ep) * qty;
+      // Active salvage for non-triggered positions near expiry
+      if (!triggered && !tpDone && (expiryTs - p.tsMs) / HOUR_MS < activeSalvageHours && total >= 5) {
+        totalTp += total; tpDone = true; tpSold++;
+        reasons["active_salvage"] = (reasons["active_salvage"] || 0) + 1;
       }
     }
 
-    console.log(`  ${sl}% SL (1-day):`);
-    for (const [reg, d] of Object.entries(regimeData)) {
-      if (d.n === 0) continue;
-      const tr = (d.triggers / d.n * 100).toFixed(1);
-      const h = (d.hedge / d.n / 10).toFixed(2);
-      const p = (d.payout / d.n / 10).toFixed(2);
-      const r = (d.recov / d.n / 10).toFixed(2);
-      const be = ((d.hedge + d.payout - d.recov) / d.n / 10).toFixed(2);
-      console.log(`    ${reg.padEnd(7)} │ N=${String(d.n).padStart(4)} │ Trig: ${tr.padStart(5)}% │ Hedge: $${h.padStart(5)}/$1k │ BE: $${be.padStart(5)}/$1k`);
-    }
-    console.log();
+    cycleStart += Math.max(1, Math.floor(cycleHours));
   }
 
-  // ═══════════════════════════════════════════════════════════════════
-  // LIVE DERIBIT PRICING
-  // ═══════════════════════════════════════════════════════════════════
-  console.log("═══════════════════════════════════════════════════════════════════════════");
-  console.log("  LIVE DERIBIT 1-DAY PUT PRICING (mainnet, public API)");
-  console.log("═══════════════════════════════════════════════════════════════════════════\n");
+  const netPnl = totalPremium - totalHedge - totalPayouts + totalTp;
+  return {
+    tenorDays, cycles, triggers, tpSold,
+    triggerRate: cycles > 0 ? triggers / cycles * 100 : 0,
+    tpRate: triggers > 0 ? tpSold / triggers * 100 : 0,
+    totalPremium, totalHedge, spread: totalPremium - totalHedge,
+    totalPayouts, totalTp, netPnl,
+    perCycle: cycles > 0 ? netPnl / cycles : 0,
+    annualized: cycles > 0 ? netPnl / (cycles / (365 / (cycleHours / 24))) : 0,
+    avgTp: tpSold > 0 ? totalTp / tpSold : 0,
+    avgTpPct: tpSold > 0 ? totalTp / tpSold / payout * 100 : 0,
+    reasons
+  };
+};
 
-  try {
-    const tickerRes = await fetch("https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL");
-    const tickerData = await tickerRes.json() as any;
-    const btcPrice = tickerData?.result?.last_price || tickerData?.result?.mark_price || 0;
-    console.log(`  BTC spot: $${Number(btcPrice).toFixed(2)}\n`);
+const main = async () => {
+  const csvPath = process.argv[2] || "artifacts/backtest/tp_v2/btc_usd_24m_1h.csv";
+  const raw = await readFile(csvPath, "utf8");
+  const prices: PricePoint[] = raw.trim().split("\n").slice(1).map(l => {
+    const [ts, p] = l.split(",");
+    return { tsMs: new Date(ts).getTime(), price: Number(p) };
+  }).filter(p => p.price > 0);
 
-    const instRes = await fetch("https://www.deribit.com/api/v2/public/get_instruments?currency=BTC&kind=option&expired=false");
-    const instData = await instRes.json() as any;
-    const instruments = instData?.result || [];
+  console.log("\n════════════════════════════════════════════════════════════════════════");
+  console.log("  1-DAY vs 2-DAY TENOR COMPARISON — 24 MONTH BACKTEST");
+  console.log("════════════════════════════════════════════════════════════════════════\n");
+  console.log(`Data: ${prices.length} points, BTC $${prices[0].price.toFixed(0)} → $${prices[prices.length-1].price.toFixed(0)}\n`);
 
-    const now = Date.now();
-    const puts = instruments.filter((i: any) =>
-      i.option_type === "put" &&
-      i.is_active &&
-      (i.expiration_timestamp - now) > 0 &&
-      (i.expiration_timestamp - now) < 3 * 86400000
-    );
+  const configs: { name: string; tenorDays: number; cycleHours: number; tiers: TierDef[] }[] = [
+    {
+      name: "2-DAY TENOR (Proposed A — current)",
+      tenorDays: 2, cycleHours: 48,
+      tiers: [
+        { slPct: 0.02, premiumPer1k: 7, label: "2%" },
+        { slPct: 0.03, premiumPer1k: 6, label: "3%" },
+        { slPct: 0.05, premiumPer1k: 3.5, label: "5%" },
+        { slPct: 0.10, premiumPer1k: 2.5, label: "10%" },
+      ]
+    },
+    {
+      name: "1-DAY TENOR ($4/3.50/2/1.50 per 1k)",
+      tenorDays: 1, cycleHours: 24,
+      tiers: [
+        { slPct: 0.02, premiumPer1k: 4, label: "2%" },
+        { slPct: 0.03, premiumPer1k: 3.5, label: "3%" },
+        { slPct: 0.05, premiumPer1k: 2, label: "5%" },
+        { slPct: 0.10, premiumPer1k: 1.5, label: "10%" },
+      ]
+    },
+    {
+      name: "1-DAY TENOR ($4.50/3.50/2.50/1.75 per 1k)",
+      tenorDays: 1, cycleHours: 24,
+      tiers: [
+        { slPct: 0.02, premiumPer1k: 4.5, label: "2%" },
+        { slPct: 0.03, premiumPer1k: 3.5, label: "3%" },
+        { slPct: 0.05, premiumPer1k: 2.5, label: "5%" },
+        { slPct: 0.10, premiumPer1k: 1.75, label: "10%" },
+      ]
+    },
+    {
+      name: "1-DAY TENOR ($5/4/3/2 per 1k — premium)",
+      tenorDays: 1, cycleHours: 24,
+      tiers: [
+        { slPct: 0.02, premiumPer1k: 5, label: "2%" },
+        { slPct: 0.03, premiumPer1k: 4, label: "3%" },
+        { slPct: 0.05, premiumPer1k: 3, label: "5%" },
+        { slPct: 0.10, premiumPer1k: 2, label: "10%" },
+      ]
+    },
+  ];
 
-    console.log(`  Found ${puts.length} puts expiring within 3 days\n`);
+  for (const config of configs) {
+    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+    console.log(`  ${config.name}`);
+    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`);
 
-    if (puts.length > 0) {
-      console.log("  SL%  │ Strike   │ Instrument                     │ Ask BTC    │ Hedge/$1k │ Expiry");
-      console.log("  ─────┼──────────┼────────────────────────────────┼────────────┼───────────┼────────");
-
-      for (const sl of SL_TIERS) {
-        const targetStrike = btcPrice * (1 - sl / 100);
-        const sorted = puts.sort((a: any, b: any) =>
-          Math.abs(a.strike - targetStrike) - Math.abs(b.strike - targetStrike)
-        );
-
-        for (const inst of sorted.slice(0, 1)) {
-          try {
-            const obRes = await fetch(`https://www.deribit.com/api/v2/public/get_order_book?instrument_name=${inst.instrument_name}`);
-            const obData = await obRes.json() as any;
-            const bestAsk = obData?.result?.best_ask_price || 0;
-            const askUsd = bestAsk * btcPrice;
-            const qty = NOTIONAL / btcPrice;
-            const hedgePer1k = (askUsd * qty) / (NOTIONAL / 1000);
-            const expiry = new Date(inst.expiration_timestamp).toISOString().slice(0, 16);
-            const otm = ((btcPrice - inst.strike) / btcPrice * 100).toFixed(1);
-
-            console.log(`  ${String(sl).padStart(3)}%  │ $${String(inst.strike).padStart(6)} │ ${inst.instrument_name.padEnd(30)} │ ${bestAsk.toFixed(6).padStart(10)} │ $${hedgePer1k.toFixed(2).padStart(7)} │ ${expiry}`);
-          } catch { continue; }
-          await new Promise(r => setTimeout(r, 200));
-        }
-      }
-    }
-  } catch (e: any) {
-    console.log(`  Deribit API error: ${e.message}`);
-  }
-
-  // ═══════════════════════════════════════════════════════════════════
-  // COMPARISON: 1-day vs 2-day vs 7-day break-even
-  // ═══════════════════════════════════════════════════════════════════
-  console.log("\n\n═══════════════════════════════════════════════════════════════════════════");
-  console.log("  TENOR COMPARISON: Break-Even per $1k (Market IV)");
-  console.log("═══════════════════════════════════════════════════════════════════════════\n");
-
-  console.log("  SL%  │ 1-Day BE/$1k │ 2-Day BE/$1k │ 7-Day BE/$1k │ 1d Cheaper? │ Trigger 1d │ Trigger 7d");
-  console.log("  ─────┼──────────────┼──────────────┼──────────────┼─────────────┼────────────┼───────────");
-
-  for (const sl of SL_TIERS) {
-    const bes: Record<number, { be: number; tr: number }> = {};
-    for (const tenor of [1, 2, 7]) {
-      let n = 0, totalH = 0, totalP = 0, totalR = 0, triggers = 0;
-      for (let i = 0; i + tenor < prices.length; i++) {
-        const entry = prices[i].price;
-        if (entry <= 0) continue;
-        n++;
-        const trigger = entry * (1 - sl / 100);
-        const qty = NOTIONAL / entry;
-        const vol = rVol(pv.slice(0, i + 1), 30) * 0.85;
-        totalH += bsPut(entry, trigger, tenor / 365, RF, vol) * qty;
-        let triggered = false;
-        if (tenor === 1) { triggered = prices[i + 1]?.low <= trigger; }
-        else { triggered = Math.min(...prices.slice(i, i + tenor + 1).map(p => p.low)) <= trigger; }
-        if (triggered) { triggers++; totalP += NOTIONAL * (sl / 100); const ep = prices[i + tenor]?.price || entry; totalR += Math.max(0, trigger - ep) * qty; }
-      }
-      bes[tenor] = { be: (totalH + totalP - totalR) / n / 10, tr: triggers / n };
+    // Trader view
+    console.log("  ── TRADER VIEW ($10k position) ──");
+    console.log("  SL%  │ Premium │ Payout │ Ratio  │ Period");
+    console.log("  ─────┼─────────┼────────┼────────┼────────");
+    for (const tier of config.tiers) {
+      const prem = 10000 / 1000 * tier.premiumPer1k;
+      const pay = 10000 * tier.slPct;
+      console.log(`  ${tier.label.padEnd(4)} │ $${prem.toFixed(0).padStart(5)}  │ $${pay.toFixed(0).padStart(4)}  │ ${(pay / prem).toFixed(1).padStart(5)}x │ ${config.tenorDays} day`);
     }
 
-    const d1 = bes[1], d2 = bes[2], d7 = bes[7];
-    const cheaper = d1.be < d7.be ? `${((1 - d1.be / d7.be) * 100).toFixed(0)}% cheaper` : `${((d1.be / d7.be - 1) * 100).toFixed(0)}% more`;
+    // Financials
+    console.log("\n  ── PLATFORM FINANCIALS (24mo, $10k) ──");
+    console.log("  SL%  │ Cycles │ Triggers │ Rate  │ Premium  │ Hedge    │ Spread   │ Payouts  │ TP $     │ Net P&L   │ $/cyc  │ TP%");
+    console.log("  ─────┼────────┼──────────┼───────┼──────────┼──────────┼──────────┼──────────┼──────────┼───────────┼────────┼─────");
 
-    console.log(`  ${String(sl).padStart(3)}%  │ $${d1.be.toFixed(2).padStart(10)} │ $${d2.be.toFixed(2).padStart(10)} │ $${d7.be.toFixed(2).padStart(10)} │ ${cheaper.padStart(11)} │ ${(d1.tr * 100).toFixed(1).padStart(8)}%  │ ${(d7.tr * 100).toFixed(1).padStart(7)}%`);
+    let bP = 0, bH = 0, bPay = 0, bTp = 0, bC = 0;
+    for (const tier of config.tiers) {
+      const r = runScenario(prices, tier, 10000, config.tenorDays, config.cycleHours);
+      bP += r.totalPremium; bH += r.totalHedge; bPay += r.totalPayouts; bTp += r.totalTp; bC += r.cycles;
+      console.log(`  ${tier.label.padEnd(4)} │ ${String(r.cycles).padStart(6)} │ ${String(r.triggers).padStart(8)} │ ${(r.triggerRate.toFixed(1) + "%").padStart(5)} │ $${r.totalPremium.toFixed(0).padStart(7)} │ $${r.totalHedge.toFixed(0).padStart(7)} │ $${r.spread.toFixed(0).padStart(7)} │ $${r.totalPayouts.toFixed(0).padStart(7)} │ $${r.totalTp.toFixed(0).padStart(7)} │ $${r.netPnl.toFixed(0).padStart(8)} │ $${r.perCycle.toFixed(1).padStart(5)} │ ${r.avgTpPct.toFixed(0).padStart(3)}%`);
+    }
+    const bNet = bP - bH - bPay + bTp;
+    console.log("  ─────┼────────┼──────────┼───────┼──────────┼──────────┼──────────┼──────────┼──────────┼───────────┼────────┼─────");
+    console.log(`  BLND │ ${String(bC).padStart(6)} │          │       │ $${bP.toFixed(0).padStart(7)} │ $${bH.toFixed(0).padStart(7)} │ $${(bP - bH).toFixed(0).padStart(7)} │ $${bPay.toFixed(0).padStart(7)} │ $${bTp.toFixed(0).padStart(7)} │ $${bNet.toFixed(0).padStart(8)} │ $${(bNet / bC).toFixed(1).padStart(5)} │`);
+
+    // TP reason breakdown for 2% tier
+    const r2 = runScenario(prices, config.tiers[0], 10000, config.tenorDays, config.cycleHours);
+    console.log(`\n  2% TP reasons: ${JSON.stringify(r2.reasons)}`);
   }
-  console.log();
-}
 
-main().catch(e => { console.error("Fatal:", e.message); process.exit(1); });
+  // Summary comparison
+  console.log("\n\n════════════════════════════════════════════════════════════════════════");
+  console.log("  SUMMARY COMPARISON (24mo, $10k, blended)");
+  console.log("════════════════════════════════════════════════════════════════════════\n");
+  console.log("  Config                              │ Cycles │ Premium  │ Spread   │ Payouts  │ TP $     │ Net P&L   │ Status");
+  console.log("  ────────────────────────────────────┼────────┼──────────┼──────────┼──────────┼──────────┼───────────┼────────");
+
+  for (const config of configs) {
+    let tP = 0, tH = 0, tPay = 0, tTp = 0, tC = 0;
+    for (const tier of config.tiers) {
+      const r = runScenario(prices, tier, 10000, config.tenorDays, config.cycleHours);
+      tP += r.totalPremium; tH += r.totalHedge; tPay += r.totalPayouts; tTp += r.totalTp; tC += r.cycles;
+    }
+    const net = tP - tH - tPay + tTp;
+    const shortName = config.name.split("(")[0].trim().padEnd(36);
+    console.log(`  ${shortName} │ ${String(tC).padStart(6)} │ $${tP.toFixed(0).padStart(7)} │ $${(tP - tH).toFixed(0).padStart(7)} │ $${tPay.toFixed(0).padStart(7)} │ $${tTp.toFixed(0).padStart(7)} │ $${net.toFixed(0).padStart(8)} │ ${net >= 0 ? "✓ PROFIT" : "✗ LOSS"}`);
+  }
+};
+
+main().catch(err => { console.error(err); process.exitCode = 1; });
