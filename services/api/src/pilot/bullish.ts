@@ -559,7 +559,17 @@ export class BullishTradingClient {
 
   async getMarkets(params?: { forceRefresh?: boolean; cacheTtlMs?: number }): Promise<BullishMarketRecord[]> {
     const forceRefresh = params?.forceRefresh === true;
-    const cacheTtlMs = Math.max(1000, Number(params?.cacheTtlMs || 0) || 30_000);
+    // 2026-05-18: bump default TTL from 30s → 120s. Multiple components
+    // hit /markets independently (chain warmer 30s tick, every
+    // activation's selectBullishOptionSymbol, venue-balance widget,
+    // chain analyzer endpoint, …) and each has its own client instance
+    // → its own cache. Combined uncoordinated rate triggered Bullish's
+    // 96100 RATE_LIMIT_EXCEEDED periodically. The market list rarely
+    // changes minute-to-minute (option chains add new strikes daily,
+    // not by the second), so 120s is safe operationally and cuts
+    // upstream pressure 4x. Callers that need fresh data can override
+    // via cacheTtlMs: 0 or forceRefresh.
+    const cacheTtlMs = Math.max(1000, Number(params?.cacheTtlMs || 0) || 120_000);
     if (!forceRefresh && this.marketsCache && this.marketsCache.expiresAtMs > Date.now()) {
       return this.marketsCache.records;
     }
