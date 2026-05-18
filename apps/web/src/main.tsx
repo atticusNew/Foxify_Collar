@@ -8,6 +8,7 @@ import { TreasuryDashboard } from "./TreasuryDashboard";
 import { TreasuryAdmin } from "./TreasuryAdmin";
 import { SimpleSimPilotApp } from "./SimpleSimPilotApp";
 import { VolumeCoverAdmin } from "./VolumeCoverAdmin";
+import { FoxifyDashboard } from "./FoxifyDashboard";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET, PILOT_ACCESS_CODE } from "./config";
 import "./styles.css";
 
@@ -114,6 +115,10 @@ function AppRouter() {
 
   if (path === "/volume-cover" || path.startsWith("/volume-cover/")) {
     return <VolumeCoverAdmin />;
+  }
+
+  if (path === "/foxify" || path.startsWith("/foxify/")) {
+    return <FoxifyDashboard />;
   }
 
   if (path === "/treasury/admin") {

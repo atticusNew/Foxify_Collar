@@ -8376,6 +8376,25 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
         `venueBalanceFetcher=wired)`
     );
 
+    // Foxify-facing read-mostly dashboard (separate auth, separate
+    // surface). Routes mounted at /volume-cover/foxify/*. Auth via
+    // FOXIFY_DASHBOARD_TOKEN (distinct from PILOT_ADMIN_TOKEN).
+    // Audit log table created automatically.
+    const { registerFoxifyDashboardRoutes } = await import(
+      "./volumeCover/foxifyDashboard"
+    );
+    await registerFoxifyDashboardRoutes(app, {
+      hedgeExecutor,
+      spotSource
+    });
+    const foxifyTokenSet = Boolean(
+      String(process.env.FOXIFY_DASHBOARD_TOKEN || "").trim()
+    );
+    console.log(
+      `[VolumeCover] Foxify dashboard mounted at /volume-cover/foxify/* ` +
+        `(token_configured=${foxifyTokenSet})`
+    );
+
     if (String(process.env.VOLUME_COVER_TRIGGER_DETECTOR_ENABLED ?? "true").toLowerCase() === "true") {
       const { getPilotPool } = await import("./pilot/db");
       const vcPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
