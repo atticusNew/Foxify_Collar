@@ -949,6 +949,172 @@ export const registerVolumeCoverRoutes = async (
    *   - "Wrong PEM format?" → beginLabel + parseError
    *   - "Wrong environment?" → environment + restBaseUrl
    */
+  /**
+   * Direct login-test endpoint. Performs the actual Bullish ECDSA
+   * login flow and returns the raw response (success OR error).
+   *
+   * Use this to see the EXACT Bullish-side response, bypassing all
+   * our wrapping. Helpful for debugging USER_NOT_EXISTS-style errors
+   * where the keys parse fine but Bullish rejects the identity.
+   *
+   * SAFE: never returns the raw private key, only the request payload
+   * (which is non-sensitive — userId + timestamps).
+   */
+  app.post("/volume-cover/admin/bullish-login-test", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const { createSign } = await import("node:crypto");
+    const {
+      parseBullishPrivateKey,
+      parseBullishPublicKey
+    } = await import("../pilot/bullish").then((m) => ({
+      // These aren't directly exported; we need to use BullishTradingClient.
+      parseBullishPrivateKey: null as any,
+      parseBullishPublicKey: null as any
+    }));
+
+    // Use the BullishTradingClient.loginWithEcdsa directly via reflection.
+    // Easier: just build and send the request manually here so we can
+    // capture the raw response.
+    const restBaseUrl = pilotConfig.bullish.restBaseUrl;
+    const loginPath = pilotConfig.bullish.ecdsaLoginPath || "/trading-api/v2/users/login";
+    const ecdsaPublicKey = String(process.env.PILOT_BULLISH_ECDSA_PUBLIC_KEY || "").trim();
+    const ecdsaPrivateKey = String(process.env.PILOT_BULLISH_ECDSA_PRIVATE_KEY || "").trim();
+    const ecdsaMetadata = String(process.env.PILOT_BULLISH_ECDSA_METADATA || "").trim();
+
+    if (!ecdsaPublicKey || !ecdsaPrivateKey || !ecdsaMetadata) {
+      return reply.code(400).send({
+        ok: false,
+        reason: "credentials_missing",
+        details: {
+          publicKeyPresent: Boolean(ecdsaPublicKey),
+          privateKeyPresent: Boolean(ecdsaPrivateKey),
+          metadataPresent: Boolean(ecdsaMetadata)
+        }
+      });
+    }
+
+    // Decode userId from metadata
+    let userId: string | null = null;
+    let metadataDecoded: Record<string, unknown> = {};
+    try {
+      const decoded = Buffer.from(ecdsaMetadata, "base64").toString("utf8");
+      metadataDecoded = JSON.parse(decoded);
+      userId = String((metadataDecoded as any).userId || "");
+    } catch (err) {
+      return reply.code(400).send({
+        ok: false,
+        reason: "metadata_decode_failed",
+        message: (err as Error).message
+      });
+    }
+    if (!userId) {
+      return reply.code(400).send({ ok: false, reason: "userId_missing_in_metadata" });
+    }
+
+    // Normalize private key (handle \n escapes etc.)
+    const normPriv = (() => {
+      const withoutQuotes =
+        (ecdsaPrivateKey.startsWith("'") && ecdsaPrivateKey.endsWith("'")) ||
+        (ecdsaPrivateKey.startsWith('"') && ecdsaPrivateKey.endsWith('"'))
+          ? ecdsaPrivateKey.slice(1, -1)
+          : ecdsaPrivateKey;
+      return withoutQuotes.replace(/\\n/g, "\n").trim();
+    })();
+    const normPub = (() => {
+      const withoutQuotes =
+        (ecdsaPublicKey.startsWith("'") && ecdsaPublicKey.endsWith("'")) ||
+        (ecdsaPublicKey.startsWith('"') && ecdsaPublicKey.endsWith('"'))
+          ? ecdsaPublicKey.slice(1, -1)
+          : ecdsaPublicKey;
+      return withoutQuotes.replace(/\\n/g, "\n").trim();
+    })();
+
+    // Build + sign login payload
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const loginPayload = {
+      userId,
+      nonce: nowSeconds,
+      expirationTime: nowSeconds + 300,
+      biometricsUsed: false,
+      sessionKey: null
+    };
+    const loginPayloadJson = JSON.stringify(loginPayload);
+    let signatureB64: string;
+    try {
+      const signer = createSign("sha256");
+      signer.update(loginPayloadJson);
+      signer.end();
+      signatureB64 = signer.sign(normPriv).toString("base64");
+    } catch (err) {
+      return reply.code(500).send({
+        ok: false,
+        reason: "signing_failed",
+        message: (err as Error).message
+      });
+    }
+
+    // POST to Bullish login
+    const url = new URL(loginPath, restBaseUrl).toString();
+    const body = JSON.stringify({
+      publicKey: normPub,
+      signature: signatureB64,
+      loginPayload
+    });
+
+    let status = 0;
+    let rawText = "";
+    let bullishHeaders: Record<string, string> = {};
+    let networkError: string | null = null;
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body
+      });
+      status = resp.status;
+      rawText = await resp.text();
+      bullishHeaders = Object.fromEntries(resp.headers.entries());
+    } catch (err) {
+      networkError = (err as Error).message;
+    }
+
+    let rawJson: any = null;
+    try {
+      rawJson = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      rawJson = null;
+    }
+
+    return reply.send({
+      ok: status >= 200 && status < 300,
+      request: {
+        url,
+        method: "POST",
+        loginPayload, // safe: contains userId + timestamps only
+        signatureB64Length: signatureB64.length,
+        publicKeyLength: normPub.length
+      },
+      response: {
+        status,
+        networkError,
+        bullishHeaders,
+        rawText: rawText.length > 2000 ? rawText.slice(0, 2000) + "...[truncated]" : rawText,
+        parsedJson: rawJson
+      },
+      metadata: {
+        decodedUserId: userId,
+        decodedCredentialId: (metadataDecoded as any).credentialId ?? null,
+        embeddedPublicKeyPresent: Boolean((metadataDecoded as any).publicKey),
+        embeddedPublicKeyMatchesEnv:
+          (metadataDecoded as any).publicKey
+            ? String((metadataDecoded as any).publicKey).replace(/\s+/g, "") ===
+              normPub.replace(/\s+/g, "")
+            : null
+      }
+    });
+  });
+
   app.get("/volume-cover/admin/bullish-key-check", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const { inspectBullishEcdsaKeyMaterial } = await import("../pilot/bullish");
