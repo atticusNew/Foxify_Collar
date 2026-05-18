@@ -1144,6 +1144,253 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  /**
+   * Bullish spot conversion — operator-driven rebalance of capital
+   * between BTC and USDC on Bullish. Used for ongoing pilot ops:
+   *   - Fund USDC for option premium when capital arrives as BTC
+   *   - Convert excess USDC to BTC for hedging at venue
+   *   - General portfolio rebalancing within the Bullish account
+   *
+   * Default behavior is SAFE LIMIT ORDER:
+   *   - Computes a price within slippageBps of best bid/ask
+   *   - Submits LIMIT order (not market) so fill price is bounded
+   *   - Polls order status for up to 8s to confirm fill
+   *   - Returns order ID + fill details
+   *
+   * Safety bounds (refuse to execute if violated):
+   *   - Symbol allowlist: BTCUSDC only (block accidental cross-pair)
+   *   - Side: BUY or SELL only
+   *   - Max notional per call: $5000 USDC (block accidental drain)
+   *   - dryRun=true returns the planned order without submitting
+   *
+   * Auth: admin token. Logged to volume_cover_foxify_access table
+   * (slight repurpose — captures all venue-fund-touching admin
+   * actions, not just Foxify dashboard access).
+   */
+  const SpotConvertSchema = z.object({
+    side: z.enum(["BUY", "SELL"]),
+    symbol: z.string().default("BTCUSDC"),
+    quantity: z.union([z.string(), z.number()]).transform((v) => String(v)),
+    slippageBps: z.number().int().min(0).max(500).default(50),
+    dryRun: z.boolean().default(false),
+    clientOrderId: z.string().max(64).optional()
+  });
+
+  app.post("/volume-cover/admin/bullish-spot-convert", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const parse = SpotConvertSchema.safeParse(req.body ?? {});
+    if (!parse.success) {
+      return reply.code(400).send({ error: "invalid_request", issues: parse.error.issues });
+    }
+    const body = parse.data;
+
+    // Symbol allowlist (block accidental cross-pair operations).
+    const ALLOWED_SYMBOLS = ["BTCUSDC"];
+    if (!ALLOWED_SYMBOLS.includes(body.symbol)) {
+      return reply.code(400).send({
+        error: "symbol_not_allowed",
+        symbol: body.symbol,
+        allowed: ALLOWED_SYMBOLS
+      });
+    }
+
+    // Quantity must be positive number string.
+    const qty = Number(body.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return reply.code(400).send({ error: "invalid_quantity", quantity: body.quantity });
+    }
+
+    const { BullishTradingClient } = await import("../pilot/bullish");
+    const client = new BullishTradingClient(pilotConfig.bullish);
+
+    // Step 1: fetch orderbook to get current bid/ask.
+    let bestBid: number | null = null;
+    let bestAsk: number | null = null;
+    let topOfBook: any = null;
+    try {
+      const book = await client.getHybridOrderBook(body.symbol);
+      bestBid = book.bids?.[0] ? Number(book.bids[0].price) : null;
+      bestAsk = book.asks?.[0] ? Number(book.asks[0].price) : null;
+      topOfBook = {
+        bids: (book.bids ?? []).slice(0, 3),
+        asks: (book.asks ?? []).slice(0, 3)
+      };
+    } catch (err) {
+      return reply.code(503).send({
+        error: "orderbook_fetch_failed",
+        message: (err as Error).message
+      });
+    }
+
+    if (!bestBid || !bestAsk || bestBid <= 0 || bestAsk <= 0) {
+      return reply.code(503).send({
+        error: "orderbook_empty",
+        bestBid,
+        bestAsk
+      });
+    }
+
+    // Step 2: compute limit price with slippage tolerance.
+    // For SELL we accept fills DOWN TO (best bid × (1 - slippage)).
+    // For BUY we accept fills UP TO (best ask × (1 + slippage)).
+    const slippageMultiplier = body.slippageBps / 10000;
+    const limitPrice =
+      body.side === "SELL"
+        ? bestBid * (1 - slippageMultiplier)
+        : bestAsk * (1 + slippageMultiplier);
+
+    // Step 3: notional safety cap. For BTCUSDC at ~$77k spot, $5000
+    // = ~0.065 BTC per call. Operator can do multiple calls if needed.
+    const MAX_NOTIONAL_USDC = 5000;
+    const notionalUsdc = qty * limitPrice;
+    if (notionalUsdc > MAX_NOTIONAL_USDC) {
+      return reply.code(400).send({
+        error: "notional_exceeds_max",
+        notionalUsdc,
+        maxNotionalUsdc: MAX_NOTIONAL_USDC,
+        message: "Split into multiple smaller calls or contact engineering to raise the cap."
+      });
+    }
+
+    // Audit-log this venue-fund-touching admin action. Best-effort:
+    // failures don't block the conversion. Reuses the foxify access
+    // log table (created by foxifyDashboard.ts on boot) since it's
+    // already a generic admin-action audit surface.
+    void pool
+      .query(
+        `INSERT INTO volume_cover_foxify_access
+           (method, endpoint, ip, user_agent, success, reject_reason)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          req.method.toUpperCase(),
+          req.url.split("?")[0] +
+            ` [side=${body.side} sym=${body.symbol} qty=${body.quantity} dryRun=${body.dryRun}]`,
+          String(
+            (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ||
+              req.ip ||
+              ""
+          ) || null,
+          String(req.headers["user-agent"] || "") || null,
+          true,
+          null
+        ]
+      )
+      .catch((err) => {
+        console.warn(`[VolumeCover] spot-convert audit log failed: ${(err as Error).message}`);
+      });
+
+    // Format price + quantity per Bullish requirements (string with
+    // appropriate decimal precision). Bullish typically wants prices
+    // rounded to tick size; for BTCUSDC tick is $1 so integer is safe.
+    const priceStr = limitPrice.toFixed(2);
+    // Quantity precision: BTC step is 0.0001 typically.
+    const qtyStr = qty.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+
+    // Step 4: dryRun short-circuit.
+    if (body.dryRun) {
+      return reply.send({
+        dryRun: true,
+        plan: {
+          side: body.side,
+          symbol: body.symbol,
+          quantityBase: qtyStr,
+          limitPrice: priceStr,
+          notionalUsdc: Number(notionalUsdc.toFixed(2)),
+          bestBid,
+          bestAsk,
+          slippageBps: body.slippageBps,
+          worstAcceptablePrice: priceStr
+        },
+        topOfBook,
+        note: "Dry run — no order submitted. Re-call with dryRun:false to execute."
+      });
+    }
+
+    // Step 5: submit the limit order.
+    let submitResult: any = null;
+    let submitError: string | null = null;
+    try {
+      submitResult = await client.createSpotLimitOrder({
+        symbol: body.symbol,
+        side: body.side,
+        price: priceStr,
+        quantity: qtyStr,
+        clientOrderId: body.clientOrderId
+      });
+    } catch (err) {
+      submitError = (err as Error).message;
+    }
+
+    if (submitError) {
+      return reply.code(502).send({
+        error: "order_submit_failed",
+        message: submitError,
+        plan: {
+          side: body.side,
+          symbol: body.symbol,
+          quantityBase: qtyStr,
+          limitPrice: priceStr,
+          notionalUsdc: Number(notionalUsdc.toFixed(2))
+        }
+      });
+    }
+
+    // Bullish responses vary in shape; try to extract orderId.
+    const submitData = (submitResult as any)?.data ?? submitResult;
+    const orderId =
+      String(
+        submitData?.orderId ??
+          submitData?.order_id ??
+          submitData?.id ??
+          ""
+      ).trim() || null;
+
+    // Step 6: poll for fill status (max 8s with 500ms intervals).
+    const pollStartMs = Date.now();
+    const pollMaxMs = 8000;
+    const pollIntervalMs = 500;
+    let finalStatus: any = null;
+    let pollAttempts = 0;
+
+    if (orderId) {
+      while (Date.now() - pollStartMs < pollMaxMs) {
+        pollAttempts++;
+        try {
+          const status = await client.getOrderStatus(orderId);
+          finalStatus = status;
+          // Terminal states — stop polling.
+          if (
+            ["FILLED", "CLOSED", "DONE", "CANCELLED", "REJECTED"].includes(status.status)
+          ) {
+            break;
+          }
+        } catch {
+          // Transient poll failure — keep trying.
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+    }
+
+    return reply.send({
+      submitted: true,
+      orderId,
+      submitResultRaw: submitResult,
+      pollAttempts,
+      finalStatus,
+      plan: {
+        side: body.side,
+        symbol: body.symbol,
+        quantityBase: qtyStr,
+        limitPrice: priceStr,
+        notionalUsdc: Number(notionalUsdc.toFixed(2)),
+        bestBidAtSubmit: bestBid,
+        bestAskAtSubmit: bestAsk,
+        slippageBps: body.slippageBps
+      }
+    });
+  });
+
   app.get("/volume-cover/admin/venue-balances", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
