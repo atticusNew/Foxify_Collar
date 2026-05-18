@@ -471,7 +471,16 @@ export const executeHedgeStructure = async (params: {
         if (fill) break;
       } catch (err: any) {
         lastError = err instanceof Error ? err : new Error(String(err));
-        // try fallback
+        // 2026-05-18: surface the venue error in logs. Previously the
+        // fallback path silently swallowed primary-venue failures,
+        // which masked real issues (e.g., Bullish auth/staleness/order
+        // rejections) and made primary-vs-fallback debugging
+        // impossible. Now logged at warn level for forensic visibility.
+        console.warn(
+          `[volumeCover/tightHedge] ${venue} ${leg.optionKind} leg failed ` +
+            `(strike=${leg.strikeUsdc} contracts=${leg.contractsBtc}): ` +
+            `${lastError.message}`
+        );
       }
     }
 
