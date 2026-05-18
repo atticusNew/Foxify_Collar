@@ -1115,6 +1115,214 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  /**
+   * Bullish option-chain feasibility analyzer for pilot cells.
+   *
+   * Operator-facing diagnostic: given current spot from spotSource(),
+   * computes target hedge strikes for each MATRIX cell and checks
+   * whether Bullish's actual option chain has strikes close enough
+   * to make the hedge work.
+   *
+   * Required strike proximity: hedge strikes must be CLOSER to spot
+   * than the trigger boundary, otherwise the option will not be ITM
+   * when the trigger fires (defeating the hedge).
+   *
+   *   For cell with hedgePct=0.01, triggerPct=0.02, spot $77000:
+   *     target put strike = spot × (1 - hedgePct) = $76,230
+   *     trigger low       = spot × (1 - triggerPct) = $75,460
+   *     hedge zone        = strikes in [$75,460, $77,000) for put leg
+   *     viable strike     = closest Bullish put strike inside that zone
+   *
+   * Returns per-cell:
+   *   - target put/call strikes
+   *   - trigger boundaries
+   *   - nearest Bullish strikes within the cell's expiry window
+   *   - viability flag (true if a strike exists within the hedge zone)
+   *   - reason if not viable
+   *
+   * Filters Bullish markets by:
+   *   - underlyingBaseSymbol === 'BTC'
+   *   - quote symbol USDC
+   *   - expiry within (now, now + 30 days]
+   *   - marketEnabled && createOrderEnabled
+   */
+  app.get("/volume-cover/admin/bullish-option-chain", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    let spot: number | null = null;
+    try {
+      const s = await opts.spotSource();
+      spot = s.spotBtcPrice;
+    } catch (err) {
+      return reply.code(503).send({
+        error: "spot_unavailable",
+        message: (err as Error).message
+      });
+    }
+    if (!spot || spot <= 0) {
+      return reply.code(503).send({ error: "spot_invalid", spot });
+    }
+
+    // Pull markets from Bullish (60s cache inside client).
+    const { BullishTradingClient } = await import("../pilot/bullish");
+    const client = new BullishTradingClient(pilotConfig.bullish);
+    let markets: any[] = [];
+    try {
+      markets = await client.getMarkets({ cacheTtlMs: 60_000 });
+    } catch (err) {
+      return reply.code(502).send({
+        error: "bullish_markets_fetch_failed",
+        message: (err as Error).message
+      });
+    }
+
+    // Filter to BTC options, enabled, in the next 30 days
+    const nowMs = Date.now();
+    const horizon30dMs = nowMs + 30 * 24 * 3600_000;
+    const btcOptions = markets
+      .filter((m) => (m.underlyingBaseSymbol ?? "").toUpperCase() === "BTC")
+      .filter((m) => Boolean(m.optionType) && Boolean(m.optionStrikePrice) && Boolean(m.expiryDatetime))
+      .filter((m) => m.marketEnabled && m.createOrderEnabled)
+      .map((m) => ({
+        symbol: String(m.symbol ?? ""),
+        optionType: String(m.optionType).toUpperCase(),
+        strike: Number(m.optionStrikePrice),
+        expiryIso: String(m.expiryDatetime),
+        expiryMs: new Date(String(m.expiryDatetime)).getTime()
+      }))
+      .filter((m) => Number.isFinite(m.strike) && m.strike > 0)
+      .filter((m) => m.expiryMs > nowMs && m.expiryMs <= horizon30dMs);
+
+    // Group by expiry → strikes
+    const byExpiry: Record<
+      string,
+      { puts: number[]; calls: number[]; expiryMs: number; daysOut: number }
+    > = {};
+    for (const m of btcOptions) {
+      const dayKey = new Date(m.expiryMs).toISOString().slice(0, 10);
+      if (!byExpiry[dayKey]) {
+        byExpiry[dayKey] = {
+          puts: [],
+          calls: [],
+          expiryMs: m.expiryMs,
+          daysOut: Math.round((m.expiryMs - nowMs) / 86_400_000)
+        };
+      }
+      if (m.optionType === "PUT") byExpiry[dayKey].puts.push(m.strike);
+      else if (m.optionType === "CALL") byExpiry[dayKey].calls.push(m.strike);
+    }
+    for (const k of Object.keys(byExpiry)) {
+      byExpiry[k].puts = [...new Set(byExpiry[k].puts)].sort((a, b) => a - b);
+      byExpiry[k].calls = [...new Set(byExpiry[k].calls)].sort((a, b) => a - b);
+    }
+
+    // Per-cell viability analysis. Pick the FIRST expiry >= 7 days out
+    // (matches typical pilot cell tenor; tightHedge picks 14d but we
+    // want any nearby for analysis purposes).
+    const expiries = Object.entries(byExpiry).sort(
+      ([, a], [, b]) => a.expiryMs - b.expiryMs
+    );
+
+    const { MATRIX } = await import("./matrix");
+    const cellAnalysis = MATRIX.map((cell) => {
+      const targetPutStrike = spot! * (1 - cell.hedgePct);
+      const targetCallStrike = spot! * (1 + cell.hedgePct);
+      const triggerLow = spot! * (1 - cell.triggerPct);
+      const triggerHigh = spot! * (1 + cell.triggerPct);
+
+      // Hedge zone: strike must be inside (triggerBoundary, spot) so
+      // option is ITM when trigger fires.
+      // Put zone: [triggerLow, spot)
+      // Call zone: (spot, triggerHigh]
+      const putZoneMin = triggerLow;
+      const putZoneMax = spot!;
+      const callZoneMin = spot!;
+      const callZoneMax = triggerHigh;
+
+      // Try each expiry, find the first one where BOTH legs have a
+      // viable strike.
+      const expiryAnalyses = expiries.map(([dayKey, ex]) => {
+        const putsInZone = ex.puts.filter((s) => s > putZoneMin && s < putZoneMax);
+        const callsInZone = ex.calls.filter((s) => s > callZoneMin && s < callZoneMax);
+        const closestPut =
+          ex.puts.length > 0
+            ? ex.puts.reduce(
+                (best, s) =>
+                  Math.abs(s - targetPutStrike) < Math.abs(best - targetPutStrike) ? s : best,
+                ex.puts[0]
+              )
+            : null;
+        const closestCall =
+          ex.calls.length > 0
+            ? ex.calls.reduce(
+                (best, s) =>
+                  Math.abs(s - targetCallStrike) < Math.abs(best - targetCallStrike) ? s : best,
+                ex.calls[0]
+              )
+            : null;
+        return {
+          expiryDate: dayKey,
+          daysOut: ex.daysOut,
+          totalPuts: ex.puts.length,
+          totalCalls: ex.calls.length,
+          putsInHedgeZone: putsInZone,
+          callsInHedgeZone: callsInZone,
+          closestPutStrike: closestPut,
+          closestCallStrike: closestCall,
+          closestPutDistanceFromTargetPct:
+            closestPut !== null
+              ? Math.abs(closestPut - targetPutStrike) / targetPutStrike
+              : null,
+          closestCallDistanceFromTargetPct:
+            closestCall !== null
+              ? Math.abs(closestCall - targetCallStrike) / targetCallStrike
+              : null,
+          viable: putsInZone.length > 0 && callsInZone.length > 0
+        };
+      });
+
+      const firstViableExpiry = expiryAnalyses.find((e) => e.viable);
+      const minHedgeWindowUsdc = spot! * cell.hedgePct;
+      const triggerWindowUsdc = spot! * cell.triggerPct;
+
+      return {
+        cellId: cell.cellId,
+        notionalUsdc: cell.notionalUsdc,
+        triggerPct: cell.triggerPct,
+        hedgePct: cell.hedgePct,
+        payoutUsdc: cell.payoutUsdc,
+        targetPutStrike: Number(targetPutStrike.toFixed(0)),
+        targetCallStrike: Number(targetCallStrike.toFixed(0)),
+        triggerLow: Number(triggerLow.toFixed(0)),
+        triggerHigh: Number(triggerHigh.toFixed(0)),
+        hedgeWindowWidthUsdc: Number(minHedgeWindowUsdc.toFixed(0)),
+        triggerWindowWidthUsdc: Number(triggerWindowUsdc.toFixed(0)),
+        viable: Boolean(firstViableExpiry),
+        firstViableExpiry: firstViableExpiry
+          ? {
+              expiry: firstViableExpiry.expiryDate,
+              daysOut: firstViableExpiry.daysOut,
+              putStrike: firstViableExpiry.putsInHedgeZone[0],
+              callStrike: firstViableExpiry.callsInHedgeZone[0]
+            }
+          : null,
+        reason: firstViableExpiry
+          ? "viable"
+          : "no_expiry_with_both_legs_in_hedge_zone",
+        perExpiry: expiryAnalyses
+      };
+    });
+
+    return reply.send({
+      generatedAtIso: new Date().toISOString(),
+      spotBtcUsdc: spot,
+      bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("bullish.com"),
+      totalBtcOptionMarkets: btcOptions.length,
+      expiriesInWindow: Object.keys(byExpiry).sort(),
+      cellAnalysis
+    });
+  });
+
   app.get("/volume-cover/admin/bullish-key-check", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const { inspectBullishEcdsaKeyMaterial } = await import("../pilot/bullish");
