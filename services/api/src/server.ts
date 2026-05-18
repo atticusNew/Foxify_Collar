@@ -8218,8 +8218,19 @@ await registerPilotRoutes(app, { deribit, deribitLive });
 if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true") {
   try {
     const { createPilotVenueAdapter } = await import("./pilot/venue");
+    // Bug fix (2026-05-18): The VC registration was throwing
+    // "bullish_testnet_disabled" silently because bullishEnabled +
+    // bullish config were never forwarded to the adapter factory.
+    // Without this fix the entire /volume-cover/* route surface
+    // (including /volume-cover/health) returns 404, and the only
+    // signal is a single `[VolumeCover] FAILED to register routes`
+    // log line that's easy to miss in production. Mirrors the
+    // pattern used in pilot/routes.ts at line ~957.
+    const { pilotConfig } = await import("./pilot/config");
     const bullishAdapter = createPilotVenueAdapter({
       mode: "bullish_testnet",
+      bullishEnabled: pilotConfig.bullish.enabled,
+      bullish: pilotConfig.bullish,
       falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
       deribit,
       quoteTtlMs: 30000,
