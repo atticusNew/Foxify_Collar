@@ -18,12 +18,15 @@
   },
   "devDependencies": {
     "@types/pg": "^8.18.0",
+    "esbuild": "^0.21.5",
     "pg-mem": "^3.0.14",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "build": "node build.mjs",
+    "start": "node dist/server.js",
     "test": "node scripts/run-tests.mjs",
     "test:bundle-c": "TEST_FILTER=pilot node scripts/run-tests.mjs",
     "test:no-live": "TEST_SKIP=ParityProbe node scripts/run-tests.mjs",
