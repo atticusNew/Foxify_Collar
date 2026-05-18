@@ -8340,15 +8340,24 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
     // (in venueStrikeGrid.ts) uses this to snap to a strike that
     // ACTUALLY exists on the venue. Falls back to static $200/$1000
     // grid if provider returns null OR throws (graceful degradation).
+    // Shared Bullish client for the venue option-chain provider.
+    // Hoisting this OUT of the closure means the 120s cache TTL on
+    // getMarkets actually works — previously every provider call
+    // (every chain warmer tick + every activation strike resolution)
+    // built a fresh client with its own empty cache, defeating
+    // caching entirely and triggering Bullish's 96100 RATE_LIMIT_
+    // EXCEEDED on the chain endpoint. Now: one client, shared cache,
+    // ~1 upstream call per 120s instead of every tick.
+    const { BullishTradingClient: SharedBullishClient } = await import("./pilot/bullish");
+    const sharedBullishClient = new SharedBullishClient(pilotConfig.bullish);
+
     setVenueOptionChainProvider(async ({ venue, expiryIso, optionKind }) => {
       const targetDate = expiryIso.slice(0, 10); // YYYY-MM-DD
       if (venue === "bullish") {
         try {
-          const { BullishTradingClient } = await import("./pilot/bullish");
-          const client = new BullishTradingClient(pilotConfig.bullish);
-          // 60s cache inside the venueStrikeGrid layer; Bullish itself
-          // also has 30s internal cache. Both fine.
-          const markets = await client.getMarkets({ cacheTtlMs: 60_000 });
+          // Use the shared client (above) so cache survives across
+          // calls. cacheTtlMs default is 120s (set at client level).
+          const markets = await sharedBullishClient.getMarkets({ cacheTtlMs: 120_000 });
           const kindUpper = optionKind === "put" ? "PUT" : "CALL";
           return markets
             .filter(m => (m.optionType ?? "").toUpperCase() === kindUpper)
