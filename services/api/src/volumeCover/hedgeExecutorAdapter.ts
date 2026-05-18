@@ -94,8 +94,33 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
       const quote = await adapter.quote(quoteRequest);
       const execution = await adapter.execute(quote);
 
+      // 2026-05-18: hard-fail if the venue adapter returned status
+      // 'failure'. Previously we read execution.premium regardless of
+      // status, which silently masked the case where the adapter
+      // refused to execute (e.g., enableExecution=false flag, price
+      // staleness rejection, account permission rejection). Symptom:
+      // position was recorded as 'active' with synthetic premium but
+      // no real order ever reached Bullish.
+      if (execution.status === "failure") {
+        const reason =
+          (execution.details as any)?.rejectionReason ??
+          (execution as any)?.message ??
+          "unknown_reason";
+        throw new Error(
+          `venue_execute_failed:${params.venue}:${reason}`
+        );
+      }
+
       const totalCost = Number(execution.premium ?? 0);
       const unitCost = params.contractsBtc > 0 ? totalCost / params.contractsBtc : 0;
+
+      // Defensive: if the venue claims success but premium is zero,
+      // that's also wrong. Bail rather than write a $0 hedge leg.
+      if (!Number.isFinite(totalCost) || totalCost <= 0) {
+        throw new Error(
+          `venue_execute_zero_premium:${params.venue}:status=${execution.status}`
+        );
+      }
 
       return {
         venue: params.venue,
