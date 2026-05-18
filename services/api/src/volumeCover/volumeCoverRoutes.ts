@@ -836,17 +836,36 @@ export const registerVolumeCoverRoutes = async (
   });
 
   /**
-   * Live venue balances — pulls Bullish asset balances (USDC + BTC)
-   * and Deribit BTC equity. Used by the admin dashboard header to
-   * show real available capital + drift detection vs. ledger.
+   * Live venue balances — pulls Bullish asset balances (USDC + BTC).
+   * Used by the admin dashboard header to show real available capital
+   * and confirm venue connectivity.
    *
-   * 5s timeout per venue. Returns whatever it gets; sets `error`
-   * field per venue if a fetch failed (transient venue API issues
-   * shouldn't block the entire dashboard).
+   * Server-side cached (default TTL 30s) so the 2s dashboard refresh
+   * loop doesn't hammer Bullish and trigger 429 RATE_LIMIT_EXCEEDED.
+   * Override TTL via VC_VENUE_BALANCE_CACHE_MS env (>=5000).
+   *
+   * Failed fetches are ALSO cached (shorter TTL of 5s) so an outage
+   * doesn't cause a retry storm. Returns previously-cached value with
+   * 'stale: true' flag while the underlying error is in cooldown.
+   *
+   * 5s timeout per Bullish call. Returns whatever it gets; sets
+   * `error` field per venue on failure (graceful degradation).
    */
-  app.get("/volume-cover/admin/venue-balances", async (req, reply) => {
-    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+  const venueBalanceCacheTtlMs = Math.max(
+    5_000,
+    Number(process.env.VC_VENUE_BALANCE_CACHE_MS ?? 30_000)
+  );
+  const venueBalanceFailureCooldownMs = 5_000;
 
+  type CachedVenueBalanceResp = {
+    fetchedAtMs: number;
+    payload: any;
+    wasError: boolean;
+  };
+  let venueBalanceCache: CachedVenueBalanceResp | null = null;
+  let venueBalanceInflight: Promise<CachedVenueBalanceResp> | null = null;
+
+  const fetchFreshVenueBalances = async (): Promise<CachedVenueBalanceResp> => {
     const withTimeout = async <T,>(p: Promise<T>, ms: number): Promise<T> => {
       return Promise.race([
         p,
@@ -875,7 +894,6 @@ export const registerVolumeCoverRoutes = async (
       bullishError = (err as Error).message;
     }
 
-    // Spot for BTC valuation
     let spotBtcUsdc: number | null = null;
     try {
       const spot = await opts.spotSource();
@@ -891,25 +909,74 @@ export const registerVolumeCoverRoutes = async (
         ? bullishUsdc + bullishBtcValueUsdc
         : bullishUsdc;
 
-    return reply.send({
-      generatedAtIso: new Date().toISOString(),
-      spotBtcUsdc,
-      bullish: {
-        connected: bullishError === null,
-        error: bullishError,
-        rawAssetCount: bullishRawCount,
-        usdcAvailable: bullishUsdc,
-        btcAvailable: bullishBtc,
-        btcValueUsdc: bullishBtcValueUsdc,
-        totalEquityUsdc: bullishTotalUsdc,
-        environment: pilotConfig.bullish.restBaseUrl.includes("bullish-test.com")
-          ? "testnet"
-          : pilotConfig.bullish.restBaseUrl.includes("bullish.com")
-          ? "mainnet"
-          : "unknown",
-        restBaseUrl: pilotConfig.bullish.restBaseUrl
+    return {
+      fetchedAtMs: Date.now(),
+      wasError: bullishError !== null,
+      payload: {
+        generatedAtIso: new Date().toISOString(),
+        spotBtcUsdc,
+        bullish: {
+          connected: bullishError === null,
+          error: bullishError,
+          rawAssetCount: bullishRawCount,
+          usdcAvailable: bullishUsdc,
+          btcAvailable: bullishBtc,
+          btcValueUsdc: bullishBtcValueUsdc,
+          totalEquityUsdc: bullishTotalUsdc,
+          environment: pilotConfig.bullish.restBaseUrl.includes("bullish-test.com")
+            ? "testnet"
+            : pilotConfig.bullish.restBaseUrl.includes("bullish.com")
+            ? "mainnet"
+            : "unknown",
+          restBaseUrl: pilotConfig.bullish.restBaseUrl
+        }
       }
-    });
+    };
+  };
+
+  app.get("/volume-cover/admin/venue-balances", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const now = Date.now();
+    if (venueBalanceCache) {
+      const ageMs = now - venueBalanceCache.fetchedAtMs;
+      const ttl = venueBalanceCache.wasError
+        ? venueBalanceFailureCooldownMs
+        : venueBalanceCacheTtlMs;
+      if (ageMs < ttl) {
+        return reply.send({
+          ...venueBalanceCache.payload,
+          cached: true,
+          cacheAgeMs: ageMs
+        });
+      }
+    }
+
+    // De-dupe concurrent fetches: if a refresh is already in flight,
+    // wait for it rather than starting a parallel one.
+    if (!venueBalanceInflight) {
+      venueBalanceInflight = fetchFreshVenueBalances()
+        .then((result) => {
+          venueBalanceCache = result;
+          return result;
+        })
+        .finally(() => {
+          venueBalanceInflight = null;
+        });
+    }
+
+    try {
+      const fresh = await venueBalanceInflight;
+      return reply.send({
+        ...fresh.payload,
+        cached: false,
+        cacheAgeMs: 0
+      });
+    } catch (err) {
+      // Should be unreachable (fetchFreshVenueBalances catches its own
+      // errors and embeds in payload), but defensive.
+      return reply.code(500).send({ error: "venue_balance_fetch_failed", message: (err as Error).message });
+    }
   });
 
   // P1d: weekly settlement reconciler. Format: ?week=YYYY-Www
