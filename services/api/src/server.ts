@@ -8287,7 +8287,18 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
         ]);
       };
       let bullishUsdc = 0;
+      let bullishBtcAsUsdc = 0;
       let deribitUsdc = 0;
+      // Spot is needed for both Bullish-BTC and Deribit-BTC valuations;
+      // fetch once and reuse to keep the math consistent (same spot
+      // applied to both venues).
+      let spotBtcUsdc: number | null = null;
+      try {
+        const spot = await spotSource();
+        spotBtcUsdc = spot.spotBtcPrice;
+      } catch (err) {
+        console.warn(`[VolumeCover] Spot fetch failed for venue balance: ${(err as Error).message}`);
+      }
       try {
         const { BullishTradingClient } = await import("./pilot/bullish");
         const client = new BullishTradingClient(pilotConfig.bullish);
@@ -8296,20 +8307,33 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
         if (usdcBalance) {
           bullishUsdc = Number(usdcBalance.availableQuantity ?? 0);
         }
+        // 2026-05-18: include Bullish BTC valued at current spot. This
+        // closes a drift-detection bug where operators holding capital
+        // as BTC (rather than USDC) on Bullish were causing weekly
+        // settlement reports to false-flag 100% drift halts. The
+        // venueBalanceFetcher must report TOTAL USD-equivalent venue
+        // value, not just USDC. Bullish BTC + USDC together are now
+        // both included.
+        const btcBalance = balances.find((b: any) => b.assetSymbol === "BTC");
+        if (btcBalance && spotBtcUsdc !== null) {
+          const btcQty = Number(btcBalance.availableQuantity ?? 0);
+          if (Number.isFinite(btcQty) && btcQty > 0) {
+            bullishBtcAsUsdc = btcQty * spotBtcUsdc;
+          }
+        }
       } catch (err) {
         console.warn(`[VolumeCover] Bullish balance fetch failed: ${(err as Error).message}`);
       }
       try {
         const summary: any = await withTimeout(deribitLive.getAccountSummary("BTC"), 5_000);
         const btcEquity = Number(summary?.result?.equity ?? 0);
-        if (btcEquity > 0) {
-          const spot = await spotSource();
-          deribitUsdc = btcEquity * spot.spotBtcPrice;
+        if (btcEquity > 0 && spotBtcUsdc !== null) {
+          deribitUsdc = btcEquity * spotBtcUsdc;
         }
       } catch (err) {
         console.warn(`[VolumeCover] Deribit balance fetch failed: ${(err as Error).message}`);
       }
-      return bullishUsdc + deribitUsdc;
+      return bullishUsdc + bullishBtcAsUsdc + deribitUsdc;
     };
 
     // P3 §7.3 P1c: venue option-chain provider — pickClosestStrike
