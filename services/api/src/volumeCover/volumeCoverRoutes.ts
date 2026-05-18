@@ -1360,6 +1360,89 @@ export const registerVolumeCoverRoutes = async (
     }
   });
 
+  /**
+   * Deribit auth + account snapshot. Diagnostic for live Deribit
+   * pivot — verifies DERIBIT_CLIENT_ID/SECRET work against the
+   * configured DERIBIT_ENV (live vs testnet) and returns the
+   * account summary (balance, equity, margin info).
+   *
+   * Use case: confirm Deribit credentials are accepted before
+   * routing real-money orders through Deribit primary.
+   *
+   * Returns:
+   *   - env: from DERIBIT_ENV
+   *   - paper: from DERIBIT_PAPER
+   *   - credentialsConfigured: bool
+   *   - authOk: bool (whether getAccountSummary succeeded)
+   *   - accountSummary: raw Deribit response (balance, equity, etc.)
+   *     OR error message if auth failed
+   */
+  app.get("/volume-cover/admin/deribit-auth-test", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const env = String(process.env.DERIBIT_ENV || "live").trim();
+    const paperRaw = String(process.env.DERIBIT_PAPER || "true").trim().toLowerCase();
+    const credentialsConfigured = Boolean(
+      String(process.env.DERIBIT_CLIENT_ID || "").trim() &&
+        String(process.env.DERIBIT_CLIENT_SECRET || "").trim() &&
+        String(process.env.DERIBIT_CLIENT_ID || "").trim() !== "placeholder" &&
+        String(process.env.DERIBIT_CLIENT_SECRET || "").trim() !== "placeholder"
+    );
+
+    if (!credentialsConfigured) {
+      return reply.send({
+        env,
+        paper: paperRaw,
+        credentialsConfigured: false,
+        authOk: false,
+        message:
+          "DERIBIT_CLIENT_ID/SECRET not configured (or set to 'placeholder'). " +
+          "Set real Deribit API credentials in Render env to enable auth + execution."
+      });
+    }
+
+    // Use the main `deribit` instance which is wired with env creds.
+    // We can't directly access it from here; instead, build a fresh
+    // connector with the same env config for this test.
+    let authOk = false;
+    let accountSummaryRaw: any = null;
+    let authError: string | null = null;
+    try {
+      const { DeribitConnector } = await import("@foxify/connectors");
+      const testConnector = new DeribitConnector(
+        env === "live" ? "live" : "testnet",
+        paperRaw === "true",
+        {
+          clientId: String(process.env.DERIBIT_CLIENT_ID || ""),
+          clientSecret: String(process.env.DERIBIT_CLIENT_SECRET || "")
+        }
+      );
+      const summary = await testConnector.getAccountSummary("BTC");
+      accountSummaryRaw = summary;
+      authOk = true;
+    } catch (err) {
+      authError = (err as Error).message;
+      authOk = false;
+    }
+
+    return reply.send({
+      env,
+      paper: paperRaw,
+      credentialsConfigured: true,
+      authOk,
+      authError,
+      accountSummary: accountSummaryRaw,
+      note:
+        env === "live" && paperRaw === "false"
+          ? "READY for live execution (env=live, paper=false, creds present)"
+          : env !== "live"
+          ? `WARNING: env=${env} (not 'live') — orders will route to testnet`
+          : paperRaw === "true"
+          ? "WARNING: paper=true — orders will be SIMULATED (synthetic fills, not real)"
+          : ""
+    });
+  });
+
   app.get("/volume-cover/admin/bullish-key-check", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const { inspectBullishEcdsaKeyMaterial } = await import("../pilot/bullish");
