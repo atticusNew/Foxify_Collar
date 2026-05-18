@@ -3867,11 +3867,6 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
         requestedParsed &&
         requestedParsed.optionType === requestedOptionType
       ) {
-        // Two-step match:
-        //   1. Exact symbol match (best — caller knew about this expiry)
-        //   2. Same strike + option type, closest available expiry (Bullish
-        //      may not have the exact day VC computed; e.g., VC asks for
-        //      June 1 but Bullish has May 29 or June 5). Snap to nearest.
         const requestedExpiryDate = requestedParsed.expiry; // YYYYMMDD
         const requestedExpiryMs = (() => {
           const y = Number(requestedExpiryDate.slice(0, 4));
@@ -3880,16 +3875,53 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
           return Date.UTC(y, m - 1, d, 8, 0, 0);
         })();
 
-        // Build an expiry candidate list: exact match first, then all
-        // markets with the same strike + option type, sorted by
-        // distance from requestedExpiryMs.
-        const sameStrikeSameKind = allMarkets
+        // 2026-05-18 (revised): Bullish's option chain is sparse for
+        // tight hedge cells; the exact strike+expiry combo VC computes
+        // often doesn't exist. Three-tier match:
+        //
+        //   1. Exact symbol match (best — VC's target available)
+        //   2. Same strike, nearby expiry within 14d drift
+        //      (Bullish has weekly+monthly gaps; need 14d to span them)
+        //   3. Nearby strike (±2% of target, same option type), nearby
+        //      expiry — picks the strike CLOSEST to VC's target inside
+        //      its hedge zone. Constrains direction so we don't snap
+        //      a put across spot.
+        //
+        // Without (3), tight cells fall through to legacy scoring which
+        // picks strikes outside the hedge zone (the original bug).
+        const MAX_EXPIRY_DRIFT_DAYS = 14;
+        const maxDriftMs = MAX_EXPIRY_DRIFT_DAYS * 86_400_000;
+        const STRIKE_TOLERANCE_PCT = 0.02; // ±2% of requested strike
+        const minAcceptableStrike =
+          requestedParsed.strike * (1 - STRIKE_TOLERANCE_PCT);
+        const maxAcceptableStrike =
+          requestedParsed.strike * (1 + STRIKE_TOLERANCE_PCT);
+
+        // Hedge structural rule:
+        //   PUT: strike must be ≤ spot (won't be ITM if strike > spot)
+        //   CALL: strike must be ≥ spot
+        // Use spotPrice for this constraint.
+        const isPut = requestedOptionType === "PUT";
+        const directionalBound = isPut
+          ? (s: number) => s <= spotPrice
+          : (s: number) => s >= spotPrice;
+
+        type Candidate = {
+          symbol: string;
+          strike: number;
+          expiryMs: number;
+          expiryDriftMs: number;
+          strikeDriftAbs: number;
+          isExactSymbol: boolean;
+          isExactStrike: boolean;
+        };
+
+        const candidates: Candidate[] = allMarkets
           .map((m) => {
             const sym = String((m as Record<string, unknown>).symbol || "").toUpperCase();
             const parsed = parseBullishOptionSymbol(sym);
             if (!parsed) return null;
             if (parsed.optionType !== requestedOptionType) return null;
-            if (parsed.strike !== requestedParsed.strike) return null;
             const expiryIso = String(
               (m as Record<string, unknown>).expiryDatetime || ""
             );
@@ -3899,35 +3931,41 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
               (m as Record<string, unknown>).createOrderEnabled !== false &&
               (m as Record<string, unknown>).marketEnabled !== false;
             if (!tradable) return null;
+            // Apply tolerance + directional constraints
+            if (parsed.strike < minAcceptableStrike) return null;
+            if (parsed.strike > maxAcceptableStrike) return null;
+            if (!directionalBound(parsed.strike)) return null;
+            const expiryDriftMs = Math.abs(expiryMs - requestedExpiryMs);
+            if (expiryDriftMs > maxDriftMs) return null;
             return {
               symbol: sym,
+              strike: parsed.strike,
               expiryMs,
-              distanceMs: Math.abs(expiryMs - requestedExpiryMs),
-              isExactMatch: sym === requestedSymbolUpper
+              expiryDriftMs,
+              strikeDriftAbs: Math.abs(parsed.strike - requestedParsed.strike),
+              isExactSymbol: sym === requestedSymbolUpper,
+              isExactStrike: parsed.strike === requestedParsed.strike
             };
           })
-          .filter(Boolean) as Array<{
-          symbol: string;
-          expiryMs: number;
-          distanceMs: number;
-          isExactMatch: boolean;
-        }>;
+          .filter(Boolean) as Candidate[];
 
-        // Sort: exact match first, then by smallest distance from
-        // requested expiry. Cap tenor drift at 7 days (don't snap a
-        // 14d hedge to 1d expiry — that breaks matched-tenor invariant).
-        sameStrikeSameKind.sort(
-          (a, b) =>
-            (a.isExactMatch ? -1 : b.isExactMatch ? 1 : 0) ||
-            a.distanceMs - b.distanceMs
-        );
-        const MAX_EXPIRY_DRIFT_DAYS = 7;
-        const maxDriftMs = MAX_EXPIRY_DRIFT_DAYS * 86_400_000;
+        // Sort:
+        //   1. Exact symbol match first
+        //   2. Then exact strike (regardless of expiry drift)
+        //   3. Then smallest combined penalty:
+        //        strikeDriftAbs (USD) + expiryDriftDays * $250
+        //      (treating 1 day of drift as $250 of strike mismatch —
+        //       roughly even importance for typical $200-grid books)
+        candidates.sort((a, b) => {
+          if (a.isExactSymbol !== b.isExactSymbol) return a.isExactSymbol ? -1 : 1;
+          if (a.isExactStrike !== b.isExactStrike) return a.isExactStrike ? -1 : 1;
+          const penaltyA = a.strikeDriftAbs + (a.expiryDriftMs / 86_400_000) * 250;
+          const penaltyB = b.strikeDriftAbs + (b.expiryDriftMs / 86_400_000) * 250;
+          return penaltyA - penaltyB;
+        });
 
-        for (const candidate of sameStrikeSameKind.slice(0, 3)) {
-          if (!candidate.isExactMatch && candidate.distanceMs > maxDriftMs) {
-            continue;
-          }
+        // Try top 5 candidates with liquidity check
+        for (const candidate of candidates.slice(0, 5)) {
           try {
             const book = await this.client.getHybridOrderBook(candidate.symbol);
             const bestAsk = book.asks[0];
@@ -3939,25 +3977,29 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
               Number.isFinite(askQty) &&
               askQty > 0
             ) {
+              const reasonParts = [];
+              if (candidate.isExactSymbol) {
+                reasonParts.push("vc_explicit_instrument_id");
+              } else {
+                if (candidate.isExactStrike) reasonParts.push("vc_strike_exact");
+                else reasonParts.push(`vc_strike_snap_${candidate.strikeDriftAbs}usd`);
+                const driftDays = Math.round(candidate.expiryDriftMs / 86_400_000);
+                if (driftDays > 0) reasonParts.push(`expiry_snap_${driftDays}d`);
+              }
               return {
                 symbol: candidate.symbol,
-                strike: requestedParsed.strike,
+                strike: candidate.strike,
                 hedgeCostPerUnit: askPx,
                 hedgeCostTotal: askPx * btcQty,
                 availableQty: askQty,
-                selectionReason: candidate.isExactMatch
-                  ? "vc_explicit_instrument_id"
-                  : `vc_explicit_strike_expiry_snapped_drift_${Math.round(candidate.distanceMs / 86_400_000)}d`
+                selectionReason: reasonParts.join("|")
               };
             }
           } catch {
             // try next candidate
           }
         }
-        // None of the same-strike candidates had liquidity → fall
-        // through to the legacy scoring path. Better to fall back than
-        // to fail entirely; the operator will see selectionReason in
-        // the eventual fill record so the strike-snap is auditable.
+        // No viable candidate → fall through to legacy scoring path
       }
     }
 
