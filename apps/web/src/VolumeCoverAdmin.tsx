@@ -126,6 +126,22 @@ type Cell = {
   throttleMaxPerDay: number;
 };
 
+type VenueBalances = {
+  generatedAtIso: string;
+  spotBtcUsdc: number | null;
+  bullish: {
+    connected: boolean;
+    error: string | null;
+    rawAssetCount: number;
+    usdcAvailable: number | null;
+    btcAvailable: number | null;
+    btcValueUsdc: number | null;
+    totalEquityUsdc: number | null;
+    environment: "testnet" | "mainnet" | "unknown";
+    restBaseUrl: string;
+  };
+};
+
 // ─── Token gate ──────────────────────────────────────────────────────
 
 const TOKEN_KEY = "vc_admin_token";
@@ -668,6 +684,111 @@ function CellsWidget({
   );
 }
 
+// ─── Venue balance widget ────────────────────────────────────────────
+
+function VenueBalanceWidget({ balances }: { balances: VenueBalances | null }) {
+  const bullish = balances?.bullish;
+  const envBadgeColor =
+    bullish?.environment === "mainnet"
+      ? "#d04060"
+      : bullish?.environment === "testnet"
+      ? "#3a8060"
+      : "#666";
+  const envBadgeLabel =
+    bullish?.environment === "mainnet"
+      ? "🔴 MAINNET"
+      : bullish?.environment === "testnet"
+      ? "🧪 TESTNET"
+      : "? UNKNOWN";
+
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "auto 1fr 1fr 1fr 1fr",
+        gap: 12,
+        padding: 12,
+        background: bullish?.connected ? "#1a1a1a" : "#2a1010",
+        borderRadius: 6,
+        marginBottom: 16,
+        fontSize: 13,
+        alignItems: "center",
+        color: "#ddd"
+      }}
+    >
+      <div>
+        <div style={{ color: "#888", fontSize: 11, marginBottom: 4 }}>
+          BULLISH VENUE
+        </div>
+        <div
+          style={{
+            padding: "3px 8px",
+            background: envBadgeColor,
+            color: "#fff",
+            fontSize: 11,
+            fontWeight: 700,
+            borderRadius: 3,
+            display: "inline-block"
+          }}
+        >
+          {envBadgeLabel}
+        </div>
+      </div>
+      <div>
+        <div style={{ color: "#888", fontSize: 11 }}>STATUS</div>
+        <div
+          style={{
+            fontSize: 13,
+            fontWeight: 700,
+            color: bullish?.connected ? "#69d171" : "#ff6b6b"
+          }}
+        >
+          {bullish?.connected
+            ? "✓ Connected"
+            : `✗ ${bullish?.error ?? "unknown"}`}
+        </div>
+        <div style={{ fontSize: 10, color: "#888" }}>
+          {bullish?.rawAssetCount ?? 0} assets
+        </div>
+      </div>
+      <div>
+        <div style={{ color: "#888", fontSize: 11 }}>USDC AVAILABLE</div>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>
+          {bullish?.usdcAvailable !== null && bullish?.usdcAvailable !== undefined
+            ? fmt$(bullish.usdcAvailable, 2)
+            : "—"}
+        </div>
+      </div>
+      <div>
+        <div style={{ color: "#888", fontSize: 11 }}>BTC AVAILABLE</div>
+        <div style={{ fontSize: 16, fontWeight: 700 }}>
+          {bullish?.btcAvailable !== null && bullish?.btcAvailable !== undefined
+            ? `${bullish.btcAvailable.toFixed(4)} BTC`
+            : "—"}
+        </div>
+        <div style={{ fontSize: 10, color: "#888" }}>
+          {bullish?.btcValueUsdc !== null && bullish?.btcValueUsdc !== undefined
+            ? `≈ ${fmt$(bullish.btcValueUsdc, 0)}`
+            : ""}
+        </div>
+      </div>
+      <div>
+        <div style={{ color: "#888", fontSize: 11 }}>TOTAL EQUITY</div>
+        <div style={{ fontSize: 18, fontWeight: 700, color: "#9ecfff" }}>
+          {bullish?.totalEquityUsdc !== null && bullish?.totalEquityUsdc !== undefined
+            ? fmt$(bullish.totalEquityUsdc, 2)
+            : "—"}
+        </div>
+        <div style={{ fontSize: 10, color: "#666" }}>
+          {balances?.generatedAtIso
+            ? `as of ${new Date(balances.generatedAtIso).toLocaleTimeString()}`
+            : ""}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main component ──────────────────────────────────────────────────
 
 export function VolumeCoverAdmin() {
@@ -680,19 +801,24 @@ export function VolumeCoverAdmin() {
   const [salvage, setSalvage] = useState<SalvageStats | null>(null);
   const [latency, setLatency] = useState<LatencyStats | null>(null);
   const [cells, setCells] = useState<Cell[]>([]);
+  const [venueBalances, setVenueBalances] = useState<VenueBalances | null>(null);
   const [error, setError] = useState<string | null>(null);
   const lastFetchRef = useRef<number>(0);
 
   const refresh = useCallback(async () => {
     if (!token) return;
     try {
-      const [h, e, ap, sg, lt, cl] = await Promise.all([
+      const [h, e, ap, sg, lt, cl, vb] = await Promise.all([
         apiCall(token, "/volume-cover/health").catch(() => null),
         apiCall(token, "/volume-cover/admin/pair-events?limit=50").catch(() => ({ events: [] })),
         apiCall(token, "/volume-cover/admin/active-positions-detail?limit=50").catch(() => ({ positions: [], currentSpotBtc: null, spotSource: null })),
         apiCall(token, "/volume-cover/admin/salvage-stats").catch(() => null),
         apiCall(token, "/volume-cover/admin/pair-event-stats?windowHours=24").catch(() => null),
-        apiCall(token, "/volume-cover/admin/cells").catch(() => ({ cells: [] }))
+        apiCall(token, "/volume-cover/admin/cells").catch(() => ({ cells: [] })),
+        // Venue balance is polled less frequently is fine, but reuse 2s tick.
+        // Per-call timeout in backend is 5s; .catch swallows failures so
+        // the rest of the dashboard renders if Bullish API is down.
+        apiCall(token, "/volume-cover/admin/venue-balances").catch(() => null)
       ]);
       setHealth(h);
       setEvents(e.events ?? []);
@@ -702,6 +828,7 @@ export function VolumeCoverAdmin() {
       setSalvage(sg);
       setLatency(lt);
       setCells(cl.cells ?? []);
+      setVenueBalances(vb);
       setError(null);
       lastFetchRef.current = Date.now();
     } catch (err) {
@@ -841,6 +968,7 @@ export function VolumeCoverAdmin() {
         latency={latency}
         onHaltClick={handleHaltClick}
       />
+      <VenueBalanceWidget balances={venueBalances} />
       <PairFeedWidget events={events} />
       <ActivePositionsWidget
         positions={positions}
