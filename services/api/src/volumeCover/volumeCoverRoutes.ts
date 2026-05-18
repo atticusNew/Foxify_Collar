@@ -1204,41 +1204,72 @@ export const registerVolumeCoverRoutes = async (
     const { BullishTradingClient } = await import("../pilot/bullish");
     const client = new BullishTradingClient(pilotConfig.bullish);
 
-    // Step 1: fetch orderbook to get current bid/ask.
+    // Step 1: get reference price for limit computation.
+    //
+    // PRIMARY SOURCE: opts.spotSource() — this is the same cached
+    // hybrid-orderbook spot we use for trigger evaluation, with built-
+    // in TTL + Coinbase fallback. Reusing it (instead of fetching the
+    // raw orderbook here) avoids hitting Bullish's per-IP rate limit
+    // (errorCode 96100) when the dashboard + trigger detector are
+    // already polling the orderbook on a tight cadence.
+    //
+    // FALLBACK: if spotSource fails, do a fresh getHybridOrderBook.
+    // That's the slow path; we accept the rate-limit risk only when
+    // the cached source can't serve us.
+    let referencePrice: number | null = null;
+    let priceSource = "unknown";
     let bestBid: number | null = null;
     let bestAsk: number | null = null;
     let topOfBook: any = null;
     try {
-      const book = await client.getHybridOrderBook(body.symbol);
-      bestBid = book.bids?.[0] ? Number(book.bids[0].price) : null;
-      bestAsk = book.asks?.[0] ? Number(book.asks[0].price) : null;
-      topOfBook = {
-        bids: (book.bids ?? []).slice(0, 3),
-        asks: (book.asks ?? []).slice(0, 3)
-      };
-    } catch (err) {
-      return reply.code(503).send({
-        error: "orderbook_fetch_failed",
-        message: (err as Error).message
-      });
+      const spot = await opts.spotSource();
+      referencePrice = spot.spotBtcPrice;
+      priceSource = `spotSource:${spot.source}`;
+    } catch {
+      // spotSource failed — try direct orderbook (rate-limit risk).
+      try {
+        const book = await client.getHybridOrderBook(body.symbol);
+        bestBid = book.bids?.[0] ? Number(book.bids[0].price) : null;
+        bestAsk = book.asks?.[0] ? Number(book.asks[0].price) : null;
+        topOfBook = {
+          bids: (book.bids ?? []).slice(0, 3),
+          asks: (book.asks ?? []).slice(0, 3)
+        };
+        if (bestBid && bestAsk) {
+          referencePrice = (bestBid + bestAsk) / 2;
+          priceSource = "orderbook_direct";
+        }
+      } catch (err) {
+        return reply.code(503).send({
+          error: "price_source_unavailable",
+          message: (err as Error).message,
+          note: "Both spotSource and direct orderbook fetch failed. Wait 30-60s and retry; rate limit may clear."
+        });
+      }
     }
 
-    if (!bestBid || !bestAsk || bestBid <= 0 || bestAsk <= 0) {
+    if (!referencePrice || referencePrice <= 0) {
       return reply.code(503).send({
-        error: "orderbook_empty",
-        bestBid,
-        bestAsk
+        error: "price_source_empty",
+        referencePrice,
+        priceSource
       });
     }
 
     // Step 2: compute limit price with slippage tolerance.
-    // For SELL we accept fills DOWN TO (best bid × (1 - slippage)).
-    // For BUY we accept fills UP TO (best ask × (1 + slippage)).
+    // Apply slippage to the reference (mid/spot) price:
+    //   SELL: refPrice × (1 - slippage)  → we accept fills at this
+    //                                       price OR HIGHER
+    //   BUY:  refPrice × (1 + slippage)  → we accept fills at this
+    //                                       price OR LOWER
+    // Note: when using spot mid, our slippage is conservative
+    // (effectively "1 + half-spread" worse than best bid/ask). For
+    // BTCUSDC where the spread is typically <1bp, this is fine.
     const slippageMultiplier = body.slippageBps / 10000;
     const limitPrice =
       body.side === "SELL"
-        ? bestBid * (1 - slippageMultiplier)
-        : bestAsk * (1 + slippageMultiplier);
+        ? referencePrice * (1 - slippageMultiplier)
+        : referencePrice * (1 + slippageMultiplier);
 
     // Step 3: notional safety cap. For BTCUSDC at ~$77k spot, $5000
     // = ~0.065 BTC per call. Operator can do multiple calls if needed.
@@ -1325,6 +1356,8 @@ export const registerVolumeCoverRoutes = async (
           quantityBase: qtyStr,
           limitPrice: priceStr,
           notionalUsdc: Number(notionalUsdc.toFixed(2)),
+          referencePrice,
+          priceSource,
           bestBid,
           bestAsk,
           slippageBps: body.slippageBps,
