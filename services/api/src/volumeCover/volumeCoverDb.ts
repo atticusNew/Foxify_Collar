@@ -253,7 +253,10 @@ export const seedVolumeCoverCellsIfNeeded = async (pool: Pool): Promise<void> =>
         cell.payoutUsdc,
         cell.hedgePct,
         cell.dailyPremiumUsdc,
-        true, // all 6 enabled at Day 1 per rev 2
+        // Default-enabled controlled per-cell. Test/diagnostic cells
+        // (e.g. 1k_2pct_20) opt out via defaultEnabled:false so they
+        // can't be accidentally activated until operator opts in.
+        cell.defaultEnabled ?? true,
         cell.defaultThrottleMaxPerDay
       ]
     );
