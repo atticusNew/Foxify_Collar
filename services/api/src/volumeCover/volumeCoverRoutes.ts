@@ -1323,6 +1323,43 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  /**
+   * Bullish order status checker — given an orderId, fetches the
+   * current state from Bullish and returns the raw response.
+   *
+   * Operator diagnostic for orders that were submitted but failed
+   * to fill silently (no poll loop ran, GTC pending, rejected by
+   * venue with reason buried in API response).
+   *
+   * Usage: GET /admin/bullish-order-status?orderId=976611473429627905
+   */
+  app.get("/volume-cover/admin/bullish-order-status", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const orderId = String((req.query as any)?.orderId ?? "").trim();
+    if (!orderId) {
+      return reply.code(400).send({ error: "missing_orderId_param" });
+    }
+    const { BullishTradingClient } = await import("../pilot/bullish");
+    const client = new BullishTradingClient(pilotConfig.bullish);
+    try {
+      const status = await client.getOrderStatus(orderId);
+      return reply.send({
+        orderId,
+        bullishStatus: status.status,
+        fillPrice: status.fillPrice,
+        fillQuantity: status.fillQuantity,
+        fees: status.fees,
+        rawBullishResponse: status.raw
+      });
+    } catch (err) {
+      return reply.code(502).send({
+        error: "bullish_order_status_fetch_failed",
+        orderId,
+        message: (err as Error).message
+      });
+    }
+  });
+
   app.get("/volume-cover/admin/bullish-key-check", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const { inspectBullishEcdsaKeyMaterial } = await import("../pilot/bullish");
