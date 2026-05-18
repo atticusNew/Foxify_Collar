@@ -835,6 +835,83 @@ export const registerVolumeCoverRoutes = async (
     return reply.send(metrics);
   });
 
+  /**
+   * Live venue balances — pulls Bullish asset balances (USDC + BTC)
+   * and Deribit BTC equity. Used by the admin dashboard header to
+   * show real available capital + drift detection vs. ledger.
+   *
+   * 5s timeout per venue. Returns whatever it gets; sets `error`
+   * field per venue if a fetch failed (transient venue API issues
+   * shouldn't block the entire dashboard).
+   */
+  app.get("/volume-cover/admin/venue-balances", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const withTimeout = async <T,>(p: Promise<T>, ms: number): Promise<T> => {
+      return Promise.race([
+        p,
+        new Promise<T>((_, rej) =>
+          setTimeout(() => rej(new Error(`timeout_${ms}ms`)), ms)
+        )
+      ]);
+    };
+
+    let bullishUsdc: number | null = null;
+    let bullishBtc: number | null = null;
+    let bullishError: string | null = null;
+    let bullishRawCount = 0;
+    try {
+      const { BullishTradingClient } = await import("../pilot/bullish");
+      const client = new BullishTradingClient(pilotConfig.bullish);
+      const balances: any[] = await withTimeout(client.getAssetBalances(), 5_000);
+      bullishRawCount = balances.length;
+      const usdc = balances.find(
+        (b: any) => b.assetSymbol === "USDC" || b.assetSymbol === "USD"
+      );
+      const btc = balances.find((b: any) => b.assetSymbol === "BTC");
+      if (usdc) bullishUsdc = Number(usdc.availableQuantity ?? 0);
+      if (btc) bullishBtc = Number(btc.availableQuantity ?? 0);
+    } catch (err) {
+      bullishError = (err as Error).message;
+    }
+
+    // Spot for BTC valuation
+    let spotBtcUsdc: number | null = null;
+    try {
+      const spot = await opts.spotSource();
+      spotBtcUsdc = spot.spotBtcPrice;
+    } catch {
+      // best-effort
+    }
+
+    const bullishBtcValueUsdc =
+      bullishBtc !== null && spotBtcUsdc !== null ? bullishBtc * spotBtcUsdc : null;
+    const bullishTotalUsdc =
+      bullishUsdc !== null && bullishBtcValueUsdc !== null
+        ? bullishUsdc + bullishBtcValueUsdc
+        : bullishUsdc;
+
+    return reply.send({
+      generatedAtIso: new Date().toISOString(),
+      spotBtcUsdc,
+      bullish: {
+        connected: bullishError === null,
+        error: bullishError,
+        rawAssetCount: bullishRawCount,
+        usdcAvailable: bullishUsdc,
+        btcAvailable: bullishBtc,
+        btcValueUsdc: bullishBtcValueUsdc,
+        totalEquityUsdc: bullishTotalUsdc,
+        environment: pilotConfig.bullish.restBaseUrl.includes("bullish-test.com")
+          ? "testnet"
+          : pilotConfig.bullish.restBaseUrl.includes("bullish.com")
+          ? "mainnet"
+          : "unknown",
+        restBaseUrl: pilotConfig.bullish.restBaseUrl
+      }
+    });
+  });
+
   // P1d: weekly settlement reconciler. Format: ?week=YYYY-Www
   // Returns JSON by default; pass ?format=markdown for the Markdown view.
   app.get("/volume-cover/admin/weekly-settlement", async (req, reply) => {
