@@ -1495,11 +1495,16 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
+    // Status MUST be 'failed' (not 'cancelled') to satisfy
+    // volume_cover_hedge_leg_status_check (open|sold|expired|failed).
+    // 'failed' is the correct domain value for legs that never
+    // actually filled at the venue — distinct from 'sold' (active
+    // unwind) and 'expired' (option matured worthless).
     let cancelled = 0;
     for (const p of phantoms) {
       await pool.query(
         `UPDATE volume_cover_hedge_leg
-            SET status = 'cancelled',
+            SET status = 'failed',
                 closed_at = NOW(),
                 metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
           WHERE id = $1`,
@@ -1519,7 +1524,7 @@ export const registerVolumeCoverRoutes = async (
       dryRun: false,
       phantomCount: phantoms.length,
       cancelled,
-      message: `Marked ${cancelled} Bullish phantom retained legs as cancelled.`
+      message: `Marked ${cancelled} Bullish phantom retained legs as status=failed.`
     });
   });
 
@@ -1581,10 +1586,12 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
-    // Mark sold in DB
+    // Mark sold in DB. Status MUST be 'sold' (not 'closed') to satisfy
+    // volume_cover_hedge_leg_status_check (open|sold|expired|failed).
+    // Matches the hedge-manager TP path which uses markHedgeLegSold.
     await pool.query(
       `UPDATE volume_cover_hedge_leg
-          SET status = 'closed',
+          SET status = 'sold',
               sell_price_usdc = $2,
               sell_order_id = $3,
               closed_at = NOW(),
