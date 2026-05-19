@@ -2591,20 +2591,38 @@ export const registerVolumeCoverRoutes = async (
   });
 
   // P1f: manual hedge manager tick (ops + smoke testing)
+  //
+  // Optional query overrides:
+  //   ?dryRun=true        — evaluate rules without selling
+  //   ?iv=0.40            — annualized IV override (e.g. 0.40 = 40%)
+  //                         critical: actual current BTC IV is far
+  //                         lower than the default fallback, so
+  //                         overriding here gives realistic values.
+  //   ?spotUsdc=76800     — spot override (rare; for diagnostic).
   app.post("/volume-cover/admin/hedge-manager/run", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
-    const dryRun = String((req.query as any)?.dryRun ?? "false").toLowerCase() === "true";
+    const q = (req.query as any) ?? {};
+    const dryRun = String(q.dryRun ?? "false").toLowerCase() === "true";
+    const ivOverrideRaw = q.iv != null && q.iv !== "" ? Number(q.iv) : null;
+    const ivOverride =
+      ivOverrideRaw != null && Number.isFinite(ivOverrideRaw) &&
+      ivOverrideRaw > 0 && ivOverrideRaw < 5
+        ? ivOverrideRaw
+        : null;
+    const spotOverrideRaw = q.spotUsdc != null && q.spotUsdc !== "" ? Number(q.spotUsdc) : null;
+    const spotOverride =
+      spotOverrideRaw != null && Number.isFinite(spotOverrideRaw) && spotOverrideRaw > 0
+        ? spotOverrideRaw
+        : null;
     try {
-      // Build a SpotIvSource from the SpotPriceSource if not provided.
-      // Falls back to env-configured fallback IV.
       const spotIvSource: SpotIvSource =
         opts.spotIvSource ??
         (async () => {
           const spot = await opts.spotSource();
-          const fallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.65);
+          const fallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.45);
           return {
-            spotBtcUsdc: spot.spotBtcPrice,
-            ivAnnualized: fallbackIv,
+            spotBtcUsdc: spotOverride ?? spot.spotBtcPrice,
+            ivAnnualized: ivOverride ?? fallbackIv,
             asOfMs: spot.asOfMs
           };
         });
@@ -2614,7 +2632,14 @@ export const registerVolumeCoverRoutes = async (
         spotIvSource,
         dryRun
       });
-      return reply.send(result);
+      return reply.send({
+        ...result,
+        overrides: {
+          ivOverride,
+          spotOverride,
+          fallbackIvEnv: Number(process.env.VC_HM_FALLBACK_IV ?? 0.45)
+        }
+      });
     } catch (err) {
       return reply.code(500).send({ error: "hedge_manager_tick_failed", message: (err as Error).message });
     }

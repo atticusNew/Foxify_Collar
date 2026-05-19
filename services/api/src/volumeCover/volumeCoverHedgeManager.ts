@@ -104,7 +104,11 @@ const DEFAULTS: HedgeManagerConfig = {
   hardFloorPct: 0.10,
   stubWinnerTimecapHours: 24,
   riskFreeRate: 0.045,
-  fallbackIv: 0.65
+  // 45% annualized: realistic BTC ATM IV range is 35-55% in normal
+  // markets. 65% is panic-only and inflates OTM leg values 2-5x.
+  // Override via VC_HM_FALLBACK_IV; production should set explicitly
+  // and / or wire a live IV source via spotIvSource.
+  fallbackIv: 0.45
 };
 
 const readConfig = (): HedgeManagerConfig => {
@@ -270,7 +274,19 @@ const evaluateFullRules = (params: {
     return { rule: "1_time_decay_exit", fire: true, reason: `${hoursToExpiry.toFixed(2)}h to expiry` };
   }
 
-  // Rule 2 — Asia thin liquidity defer (only override is rule 1)
+  // Rule 12 (hard floor) ALSO overrides rule 2. If value collapsed
+  // below hardFloorPct of initial we must exit even in Asia thin
+  // hours; otherwise a cliff drop during overnight could leak all
+  // remaining salvage to expiry. Mirrors evaluateStubRules ordering.
+  if (currentValueUsdc < initialCostUsdc * cfg.hardFloorPct) {
+    return {
+      rule: "12_hard_floor",
+      fire: true,
+      reason: `value ${currentValueUsdc.toFixed(2)} < ${(initialCostUsdc * cfg.hardFloorPct).toFixed(2)} (overrides rule 2)`
+    };
+  }
+
+  // Rule 2 — Asia thin liquidity defer (rules 1 + 12 override)
   const utcHour = new Date(nowMs).getUTCHours();
   const inThinWindow = cfg.thinWindowUtcStart <= cfg.thinWindowUtcEnd
     ? utcHour >= cfg.thinWindowUtcStart && utcHour < cfg.thinWindowUtcEnd
