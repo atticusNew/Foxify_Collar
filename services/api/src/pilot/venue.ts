@@ -565,6 +565,152 @@ class DeribitTestAdapter implements PilotVenueAdapter {
           }
         : null;
 
+    // ────────── VC FAST-PATH (2026-05-18) ──────────
+    //
+    // When the caller supplies a fully-qualified Deribit option symbol
+    // (matches DERIBIT_OPTION_REGEX), honor it directly instead of
+    // entering the legacy cost-scorer below. Mirrors the Bullish
+    // fast-path in selectBullishOptionSymbol.
+    //
+    // Without this, the VC-computed target strike (which sits inside
+    // the cell's hedge zone) was being silently replaced by whatever
+    // cheap deep-OTM strike won the cost-score — defeating the entire
+    // tight-hedge structure of the VC product. Symptom: 1k_2pct_20
+    // cell at $76.9k spot was getting filled at $69k put / $87k call
+    // (10-13% OTM, never ITM at trigger).
+    //
+    // Three-tier match:
+    //   1. Exact symbol match (best — VC's target available as-is)
+    //   2. Same strike + same option type, closest available expiry
+    //      within drift bound
+    //   3. Nearby strike (±2% of target, same option type, hedge-zone
+    //      directionally bounded by spot), nearby expiry
+    //
+    // Only triggers if requestedCandidate is set (i.e., caller knew
+    // what symbol they wanted). Legacy callers that omit
+    // requestedInstrument or supply non-canonical strings skip this
+    // entirely; behavior unchanged.
+    if (requestedCandidate) {
+      const VC_MAX_EXPIRY_DRIFT_DAYS = Math.max(
+        7,
+        Number.isFinite(effectiveMaxDriftDays) && effectiveMaxDriftDays > 0
+          ? effectiveMaxDriftDays
+          : 7
+      );
+      const VC_MAX_DRIFT_MS = VC_MAX_EXPIRY_DRIFT_DAYS * 86_400_000;
+      const VC_STRIKE_TOLERANCE_PCT = 0.02;
+      const minAcceptableStrike =
+        requestedCandidate.strike * (1 - VC_STRIKE_TOLERANCE_PCT);
+      const maxAcceptableStrike =
+        requestedCandidate.strike * (1 + VC_STRIKE_TOLERANCE_PCT);
+      // Hedge structural rule: PUT strike <= spot, CALL strike >= spot
+      const directionalOk = (s: number): boolean =>
+        targetOptionType === "put" ? s <= params.spot : s >= params.spot;
+
+      type VcCandidate = {
+        instrumentId: string;
+        strike: number;
+        expiryTs: number;
+        expiryDriftMs: number;
+        strikeDriftAbs: number;
+        isExactSymbol: boolean;
+        isExactStrike: boolean;
+      };
+
+      const requestedExpiryTs = requestedCandidate.expiryTs;
+      const vcCandidates: VcCandidate[] = list
+        .filter((item) => String(item?.option_type || "").toLowerCase() === targetOptionType)
+        .map((item): VcCandidate | null => {
+          const sym = String(item.instrument_name || "");
+          if (!sym) return null;
+          const strike = Number(
+            item.strike || parseDeribitStrike(sym) || 0
+          );
+          const expiryTs = Number(
+            item.expiration_timestamp || parseDeribitExpiry(sym) || 0
+          );
+          if (!Number.isFinite(strike) || strike <= 0) return null;
+          if (!Number.isFinite(expiryTs) || expiryTs <= now) return null;
+          if (strike < minAcceptableStrike) return null;
+          if (strike > maxAcceptableStrike) return null;
+          if (!directionalOk(strike)) return null;
+          const expiryDriftMs = Math.abs(expiryTs - requestedExpiryTs);
+          if (expiryDriftMs > VC_MAX_DRIFT_MS) return null;
+          return {
+            instrumentId: sym,
+            strike,
+            expiryTs,
+            expiryDriftMs,
+            strikeDriftAbs: Math.abs(strike - requestedCandidate.strike),
+            isExactSymbol: sym === params.requestedInstrument,
+            isExactStrike: strike === requestedCandidate.strike
+          };
+        })
+        .filter((c): c is VcCandidate => c !== null);
+
+      // Sort: exact symbol > exact strike > combined drift penalty
+      vcCandidates.sort((a, b) => {
+        if (a.isExactSymbol !== b.isExactSymbol) return a.isExactSymbol ? -1 : 1;
+        if (a.isExactStrike !== b.isExactStrike) return a.isExactStrike ? -1 : 1;
+        const penaltyA = a.strikeDriftAbs + (a.expiryDriftMs / 86_400_000) * 250;
+        const penaltyB = b.strikeDriftAbs + (b.expiryDriftMs / 86_400_000) * 250;
+        return penaltyA - penaltyB;
+      });
+
+      // Try top 5 with liquidity check
+      for (const candidate of vcCandidates.slice(0, 5)) {
+        try {
+          const book = await this.connector.getOrderBook(candidate.instrumentId);
+          const top = extractTopOfBook(book);
+          const mark = extractMarkPrice(book);
+          const askFromAsk = top.ask && top.ask > 0 ? top.ask : null;
+          const askFromMark =
+            this.quotePolicy === "ask_or_mark_fallback" && mark && mark > 0
+              ? mark
+              : null;
+          const ask = askFromAsk ?? askFromMark;
+          if (ask && ask > 0) {
+            const reasonParts: string[] = [];
+            if (candidate.isExactSymbol) {
+              reasonParts.push("vc_explicit_instrument_id");
+            } else {
+              if (candidate.isExactStrike) reasonParts.push("vc_strike_exact");
+              else
+                reasonParts.push(
+                  `vc_strike_snap_${Math.round(candidate.strikeDriftAbs)}usd`
+                );
+              const driftDays = Math.round(candidate.expiryDriftMs / 86_400_000);
+              if (driftDays > 0) reasonParts.push(`expiry_snap_${driftDays}d`);
+            }
+            console.log(
+              `[OptionSelection] VC fast-path WINNER: ${candidate.instrumentId} ` +
+                `strike=${candidate.strike} ask=${ask.toFixed(6)} ` +
+                `reason=${reasonParts.join("|")}`
+            );
+            return {
+              instrumentId: candidate.instrumentId,
+              ask,
+              askSize: top.askSize,
+              optionType: targetOptionType,
+              source: reasonParts.join("|"),
+              askSource: askFromAsk ? "ask" : "mark",
+              strike: candidate.strike,
+              expiryTs: candidate.expiryTs
+            };
+          }
+        } catch {
+          // try next candidate
+        }
+      }
+      console.warn(
+        `[OptionSelection] VC fast-path found no liquid candidate for ` +
+          `${params.requestedInstrument} (strike=${requestedCandidate.strike}, ` +
+          `tolerance ±${VC_STRIKE_TOLERANCE_PCT * 100}%, drift ${VC_MAX_EXPIRY_DRIFT_DAYS}d). ` +
+          `Falling through to legacy cost-scorer.`
+      );
+      // fall through to legacy scoring
+    }
+
     let candidates = list
       .filter((item) => String(item?.option_type || "").toLowerCase() === targetOptionType)
       .filter((item) => {
