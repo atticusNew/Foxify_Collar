@@ -140,6 +140,24 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
           ? buildBullishOptionInstrumentId(params)
           : buildDeribitOptionInstrumentId(params);
 
+      // 2026-05-18: Compute tenor info from the leg's target expiry
+      // and pass it to the venue adapter. Without this, downstream
+      // adapters default to requestedTenorDays=2 + use their internal
+      // maxTenorDriftDays default (~3d for Deribit), which fails VC's
+      // 14d target with 'tenor_drift_exceeded' even when the
+      // VC fast-path successfully selected a viable strike on a
+      // nearby expiry.
+      //
+      // Drift override of 14d matches the VC fast-path's allowance
+      // (also 14d) — venue's pre-filter, fast-path, and post-
+      // selection guard all use the same effective drift bound.
+      const targetExpiryMs = new Date(params.expiryIso).getTime();
+      const computedRequestedTenorDays = Math.max(
+        1,
+        Math.round((targetExpiryMs - Date.now()) / 86_400_000)
+      );
+      const VC_TENOR_DRIFT_OVERRIDE_DAYS = 14;
+
       const quoteRequest = {
         marketId: "BTC-USD",
         instrumentId,
@@ -147,7 +165,9 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
         quantity: params.contractsBtc,
         side: "buy" as const,
         protectionType: (params.optionKind === "put" ? "long" : "short") as "long" | "short",
-        clientOrderId: `vc-${randomUUID().slice(0, 12)}`
+        clientOrderId: `vc-${randomUUID().slice(0, 12)}`,
+        requestedTenorDays: computedRequestedTenorDays,
+        maxTenorDriftDaysOverride: VC_TENOR_DRIFT_OVERRIDE_DAYS
       };
 
       const quote = await adapter.quote(quoteRequest);
