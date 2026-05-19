@@ -32,6 +32,7 @@ import {
   listRetainedHedgeLegs,
   markHedgeLegSold,
   updateHedgeLegTpState,
+  finalizeSalvageProceedsForPosition,
   type HedgeLegRow,
   type RetainedRole
 } from "./volumeCoverDb";
@@ -707,6 +708,22 @@ export const runOneHedgeManagerTick = async (params: {
       } catch (err) {
         console.warn(
           `[vc/hedgeManager] hedge_sell_in ledger failed for leg ${leg.id}: ${(err as Error).message}`
+        );
+      }
+      // Finalize the position's salvage_event so Guard A (7d loss) and
+      // Guard B (rolling salvage %) read realized proceeds, not the
+      // 0-placeholder written at trigger time. Best-effort: ledger row
+      // above is the canonical source of truth, this is the
+      // guards-facing view.
+      try {
+        await finalizeSalvageProceedsForPosition(params.pool, {
+          positionId: leg.positionId,
+          proceedsUsdcDelta: sellResult.totalProceedsUsdc,
+          legId: leg.id
+        });
+      } catch (err) {
+        console.warn(
+          `[vc/hedgeManager] finalizeSalvageProceeds failed for leg ${leg.id}: ${(err as Error).message}`
         );
       }
       legsActioned++;

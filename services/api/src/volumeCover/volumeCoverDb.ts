@@ -990,6 +990,75 @@ export const insertSalvageEvent = async (
   return rowToSalvage(r.rows[0]);
 };
 
+/**
+ * Finalize a salvage event by adding realized proceeds from a sold
+ * retained leg. Called by the hedge manager after each successful
+ * sellOptionLeg + ledger entry.
+ *
+ * Increments `hedge_sale_proceeds_usdc` and recomputes both
+ * `salvage_pct` and `net_atticus_loss_usdc` server-side so Guard B
+ * (rolling salvage rate) and Guard A (rolling 7d loss) read the truth
+ * rather than the 0 placeholder written at trigger time.
+ *
+ * Returns null if no salvage_event row exists for the position (e.g.,
+ * leg was a courtesy-close pre-trigger sale — those don't have a salvage
+ * record). Caller treats null as a no-op.
+ *
+ * Idempotency note: this writes an INCREMENT, so calling it twice for
+ * the same leg would double-count. Hedge manager calls it once per
+ * successful sell, immediately after the hedge_sell_in ledger insert,
+ * guarded by the same try/catch block; if the increment fails the
+ * ledger row is already in place so the weekly reconciler will still
+ * see realized proceeds in the ledger. Tradeoff accepted: prefer
+ * accurate guards-typical-case over rare double-count edge.
+ */
+export const finalizeSalvageProceedsForPosition = async (
+  pool: DbExecutor,
+  params: {
+    positionId: string;
+    proceedsUsdcDelta: number;
+    legId?: string;
+    legProceedsBreakdown?: Record<string, number>;
+  }
+): Promise<SalvageEventRow | null> => {
+  if (!Number.isFinite(params.proceedsUsdcDelta) || params.proceedsUsdcDelta <= 0) {
+    return null;
+  }
+  // Two-step (SELECT id, then UPDATE by id) for pg-mem compatibility and
+  // clarity. salvage_event rows are otherwise insert-only in production,
+  // so there is no concurrent-update race between the two statements.
+  const find = await pool.query(
+    `SELECT id, payout_owed_usdc, hedge_sale_proceeds_usdc
+       FROM volume_cover_salvage_event
+      WHERE position_id = $1
+      ORDER BY triggered_at DESC
+      LIMIT 1`,
+    [params.positionId]
+  );
+  if (find.rows.length === 0) return null;
+  const target = find.rows[0];
+  const payoutOwedUsdc = Number(target.payout_owed_usdc);
+  const newProceeds = Number(target.hedge_sale_proceeds_usdc) + params.proceedsUsdcDelta;
+  const newSalvagePct = payoutOwedUsdc > 0 ? newProceeds / payoutOwedUsdc : 0;
+  const newNetLoss = Math.max(0, payoutOwedUsdc - newProceeds);
+  const upd = await pool.query(
+    `UPDATE volume_cover_salvage_event
+        SET hedge_sale_proceeds_usdc = $2,
+            salvage_pct = $3,
+            net_atticus_loss_usdc = $4
+      WHERE id = $1
+      RETURNING *`,
+    [
+      String(target.id),
+      newProceeds,
+      newSalvagePct,
+      newNetLoss
+    ]
+  );
+  if (upd.rows.length === 0) return null;
+  return rowToSalvage(upd.rows[0]);
+};
+
 export const listRecentSalvageEvents = async (
   pool: DbExecutor,
   limit = 50

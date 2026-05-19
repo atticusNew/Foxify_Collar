@@ -491,7 +491,20 @@ export const executeHedgeStructure = async (params: {
     }
 
     if (!fill) {
-      // Roll back any already-filled legs by selling them
+      // Roll back any already-filled legs by selling them. Each failure
+      // here means an UNHEDGED venue leg with no DB row — a real
+      // financial-position-vs-ledger drift. Surface loudly so ops alerting
+      // (log scrape) and the reconciler can find these.
+      const orphans: Array<{
+        legId: string;
+        venue: HedgeVenueChoice;
+        optionKind: "put" | "call";
+        strikeUsdc: number;
+        expiryIso: string;
+        contractsBtc: number;
+        orderId: string;
+        sellError: string;
+      }> = [];
       for (const f of filled) {
         try {
           await params.executor.sellOptionLeg({
@@ -501,13 +514,35 @@ export const executeHedgeStructure = async (params: {
             expiryIso: f.expiryIso,
             contractsBtc: f.contractsBtc
           });
-        } catch {
-          // best-effort rollback; lifecycle layer must alert
+        } catch (rollbackErr: any) {
+          const sellError =
+            rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr);
+          orphans.push({
+            legId: f.legId,
+            venue: f.venue,
+            optionKind: f.optionKind,
+            strikeUsdc: f.strikeUsdc,
+            expiryIso: f.expiryIso,
+            contractsBtc: f.contractsBtc,
+            orderId: f.orderId,
+            sellError
+          });
+          console.error(
+            `[VC ALERT] tightHedge rollback FAILED — orphan venue leg: ` +
+              `venue=${f.venue} optionKind=${f.optionKind} ` +
+              `strike=${f.strikeUsdc} contracts=${f.contractsBtc} ` +
+              `buyOrderId=${f.orderId} expiry=${f.expiryIso} ` +
+              `sellError=${JSON.stringify(sellError)}`
+          );
         }
       }
-      throw new Error(
-        `Volume Cover hedge execution failed for ${leg.optionKind} leg: ${lastError?.message ?? "no_venue_filled"}`
-      );
+      const baseMsg = `Volume Cover hedge execution failed for ${leg.optionKind} leg: ${lastError?.message ?? "no_venue_filled"}`;
+      if (orphans.length > 0) {
+        const err = new Error(`${baseMsg} | orphans=${JSON.stringify(orphans)}`);
+        (err as any).orphans = orphans;
+        throw err;
+      }
+      throw new Error(baseMsg);
     }
 
     // 2026-05-18: prefer actual filled strike/expiry from the venue
