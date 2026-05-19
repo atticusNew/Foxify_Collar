@@ -52,7 +52,8 @@ import {
   sumActivePayoutLiability,
   insertPairEvent,
   listRecentPairEvents,
-  computePairEventLatencyStats
+  computePairEventLatencyStats,
+  finalizeSalvageProceedsForPosition
 } from "./volumeCoverDb";
 import { openPosition, closePosition } from "./positionLifecycle";
 import {
@@ -1539,7 +1540,7 @@ export const registerVolumeCoverRoutes = async (
     if (!legId) return reply.code(400).send({ error: "missing_legId_param" });
 
     const r = await pool.query(
-      `SELECT id, venue, option_kind, strike_usdc, expiry_iso, contracts, status, retained
+      `SELECT id, position_id, venue, option_kind, strike_usdc, expiry_iso, contracts, status, retained
          FROM volume_cover_hedge_leg
         WHERE id = $1`,
       [legId]
@@ -1601,6 +1602,27 @@ export const registerVolumeCoverRoutes = async (
       ]
     );
 
+    // If this leg belongs to a triggered position, finalize that
+    // position's salvage_event so Guard A (7d loss) and Guard B
+    // (rolling salvage %) reflect realized proceeds.
+    const positionId = String(leg.position_id ?? "");
+    let salvageFinalized: boolean | null = null;
+    if (positionId) {
+      try {
+        const finalized = await finalizeSalvageProceedsForPosition(pool, {
+          positionId,
+          proceedsUsdcDelta: sellResult.totalProceedsUsdc,
+          legId
+        });
+        salvageFinalized = finalized !== null;
+      } catch (err) {
+        req.log.warn(
+          `[volume-cover/force-sell-leg] salvage finalize failed for leg ${legId}: ${(err as Error).message}`
+        );
+        salvageFinalized = false;
+      }
+    }
+
     return reply.send({
       success: true,
       legId,
@@ -1610,7 +1632,8 @@ export const registerVolumeCoverRoutes = async (
       contractsBtc,
       fillPriceUsdcPerBtc: sellResult.fillPriceUsdcPerBtc,
       totalProceedsUsdc: sellResult.totalProceedsUsdc,
-      orderId: sellResult.orderId
+      orderId: sellResult.orderId,
+      salvageFinalized
     });
   });
 

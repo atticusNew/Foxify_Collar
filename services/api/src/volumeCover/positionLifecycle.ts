@@ -174,22 +174,81 @@ export const openPosition = async (
 
   // Persist newly-bought hedge legs (the repurposed ones already exist
   // and were re-pointed at this position by attemptLadderNetting).
+  //
+  // Atomicity: if any insertHedgeLeg fails AFTER venue legs were
+  // successfully bought, we have UNHEDGED venue legs with no DB row —
+  // a real money-vs-ledger drift. Compensating action: best-effort sell
+  // back every venue leg we just bought + mark position closed + alert.
+  // If any compensating sell also fails, surface as orphan via [VC ALERT]
+  // so ops + reconciler can find it.
   const hedgeLegs: HedgeLegRow[] = [...netting.repurposedLegs];
   for (const f of executionResult.legs) {
-    const leg = await insertHedgeLeg(pool, {
-      id: f.legId,
-      positionId,
-      venue: f.venue,
-      optionKind: f.optionKind,
-      strikeUsdc: f.strikeUsdc,
-      expiryIso: f.expiryIso,
-      contracts: f.contractsBtc,
-      buyPriceUsdc: f.fillPriceUsdcPerBtc,
-      buyOrderId: f.orderId,
-      status: "open",
-      metadata: { totalCostUsdc: f.totalCostUsdc }
-    });
-    hedgeLegs.push(leg);
+    try {
+      const leg = await insertHedgeLeg(pool, {
+        id: f.legId,
+        positionId,
+        venue: f.venue,
+        optionKind: f.optionKind,
+        strikeUsdc: f.strikeUsdc,
+        expiryIso: f.expiryIso,
+        contracts: f.contractsBtc,
+        buyPriceUsdc: f.fillPriceUsdcPerBtc,
+        buyOrderId: f.orderId,
+        status: "open",
+        metadata: { totalCostUsdc: f.totalCostUsdc }
+      });
+      hedgeLegs.push(leg);
+    } catch (insertErr: any) {
+      console.error(
+        `[VC ALERT] insertHedgeLeg FAILED after venue fill — initiating compensating sell. ` +
+          `positionId=${positionId} legId=${f.legId} venue=${f.venue} ` +
+          `optionKind=${f.optionKind} strike=${f.strikeUsdc} ` +
+          `contracts=${f.contractsBtc} buyOrderId=${f.orderId} ` +
+          `dbError=${JSON.stringify(insertErr?.message ?? String(insertErr))}`
+      );
+      const orphans: Array<Record<string, unknown>> = [];
+      for (const toUnwind of executionResult.legs) {
+        try {
+          await executor.sellOptionLeg({
+            venue: toUnwind.venue,
+            optionKind: toUnwind.optionKind,
+            strikeUsdc: toUnwind.strikeUsdc,
+            expiryIso: toUnwind.expiryIso,
+            contractsBtc: toUnwind.contractsBtc
+          });
+        } catch (sellErr: any) {
+          const sellError = sellErr instanceof Error ? sellErr.message : String(sellErr);
+          orphans.push({
+            legId: toUnwind.legId,
+            venue: toUnwind.venue,
+            optionKind: toUnwind.optionKind,
+            strikeUsdc: toUnwind.strikeUsdc,
+            buyOrderId: toUnwind.orderId,
+            sellError
+          });
+          console.error(
+            `[VC ALERT] compensating sell FAILED — orphan venue leg: ` +
+              `positionId=${positionId} legId=${toUnwind.legId} ` +
+              `venue=${toUnwind.venue} buyOrderId=${toUnwind.orderId} ` +
+              `sellError=${JSON.stringify(sellError)}`
+          );
+        }
+      }
+      try {
+        await markPositionClosed(pool, {
+          id: positionId,
+          reason: `db_insert_failed_after_venue_fill: ${insertErr?.message ?? insertErr}`
+        });
+      } catch {
+        // Best-effort; position row may itself be inaccessible.
+      }
+      const finalErr = new Error(
+        `volume_cover_hedge_persist_failed: ${insertErr?.message ?? insertErr}` +
+          (orphans.length > 0 ? ` | orphans=${JSON.stringify(orphans)}` : "")
+      );
+      (finalErr as any).orphans = orphans;
+      throw finalErr;
+    }
   }
 
   // P1d (2026-05-16): NO open-time premium_in ledger entry. Premium is
