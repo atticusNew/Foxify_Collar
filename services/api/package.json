@@ -6,6 +6,7 @@
   "main": "src/server.ts",
   "dependencies": {
     "@fastify/cors": "^8.5.0",
+    "@fastify/rate-limit": "^9.1.0",
     "@foxify/connectors": "0.1.0",
     "@foxify/hedging": "0.1.0",
     "decimal.js": "^10.4.3",
@@ -17,13 +18,18 @@
   },
   "devDependencies": {
     "@types/pg": "^8.18.0",
+    "esbuild": "^0.21.5",
     "pg-mem": "^3.0.14",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "test": "tsx --test tests/**/*.test.ts",
+    "build": "node build.mjs",
+    "start": "node dist/server.js",
+    "test": "node scripts/run-tests.mjs",
+    "test:bundle-c": "TEST_FILTER=pilot node scripts/run-tests.mjs",
+    "test:no-live": "TEST_SKIP=ParityProbe node scripts/run-tests.mjs",
     "migrate:pilot": "tsx src/pilot/migrate.ts",
     "pilot:bullish:auth-debug": "tsx scripts/pilotBullishAuthDebug.ts",
     "pilot:bullish:pricing-compare": "tsx scripts/pilotBullishPricingCompare.ts",
@@ -44,6 +50,13 @@
     "pilot:backtest:consistent-matrix": "bash scripts/pilot_backtest_consistent_matrix.sh",
     "pilot:backfill:options-chain": "tsx scripts/pilotBackfillOptionsChain.ts",
     "pilot:backfill:rfq-history": "tsx scripts/pilotBackfillRfqHistory.ts",
-    "pilot:backfill:execution-quality": "tsx scripts/pilotBackfillExecutionQuality.ts"
+    "pilot:backfill:execution-quality": "tsx scripts/pilotBackfillExecutionQuality.ts",
+    "pilot:verify:dvol-source": "tsx scripts/pilotVerifyDvolSource.ts",
+    "pilot:phase0:live-analysis": "tsx scripts/pilotLiveAnalysisAdmin.ts",
+    "pilot:phase0:d1:biweekly-pricing": "tsx scripts/phase0/biweekly_pricing_calibration.ts",
+    "pilot:phase0:d2:trigger-replay": "tsx scripts/phase0/biweekly_trigger_replay_backtest.ts",
+    "pilot:phase0:d3:per-day-pricing": "tsx scripts/phase0/per_day_pricing_model.ts",
+    "pilot:phase0:d4:capital-requirements": "tsx scripts/phase0/capital_requirements_model.ts",
+    "pilot:phase2:chain-sample": "tsx scripts/pilotDeribitChainSampler.ts"
   }
 }

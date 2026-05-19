@@ -1,0 +1,343 @@
+═══════════════════════════════════════════════════════════════════════════
+  ATTICUS LOW-FLOOR BACKTEST V2 — COMPREHENSIVE ANALYSIS
+  SL Tiers: 1%, 2%, 3%, 5%, 10% | Tenor: 7d | Notional: $10,000
+  2026-04-07T21:48:02.944Z
+═══════════════════════════════════════════════════════════════════════════
+
+Fetching: Last 12mo (Apr 2025-Apr 2026)...
+  372 days loaded
+
+Fetching: Prior 12mo (Apr 2024-Apr 2025)...
+  366 days loaded
+
+Fetching: Q2 2022 Terra/Luna...
+  92 days loaded
+
+Fetching: Q4 2022 FTX...
+  93 days loaded
+
+Fetching: Q1 2024 ETF Rally...
+  92 days loaded
+
+Fetching: Q3 2024 Consolidation...
+  93 days loaded
+
+Fetching: Full 2022 (worst)...
+  366 days loaded
+
+Fetching: Full 2024 (bull)...
+  367 days loaded
+
+
+═══════════════════════════════════════════════════════════════════════════
+  1% STOP LOSS — FULL ANALYSIS
+═══════════════════════════════════════════════════════════════════════════
+
+  ── TEST 1: Win/Loss Breakdown ──
+
+  Premium/10k │ Wins    │ Losses  │ Win Rate │ Avg Win  │ Avg Loss │ Max Loss │ Net P&L/trade
+  ────────────┼─────────┼─────────┼──────────┼──────────┼──────────┼──────────┼─────────────
+  $       30  │     398 │    1387 │     22%  │ $   514  │ $  -262  │ $  -598  │ $-88.67
+  $       50  │     427 │    1358 │     24%  │ $   499  │ $  -247  │ $  -578  │ $-68.67
+  $       65  │     436 │    1349 │     24%  │ $   503  │ $  -234  │ $  -563  │ $-53.67
+  $       80  │     451 │    1334 │     25%  │ $   501  │ $  -221  │ $  -548  │ $-38.67
+  $      100  │     468 │    1317 │     26%  │ $   503  │ $  -204  │ $  -528  │ $-18.67
+  $      120  │     500 │    1285 │     28%  │ $   490  │ $  -189  │ $  -508  │ $1.33
+  $      150  │     550 │    1235 │     31%  │ $   474  │ $  -166  │ $  -478  │ $31.33
+
+  ── TEST 2: Hedge Coverage at Trigger ──
+
+  Triggered windows: 1192 / 1785 (66.8%)
+  Avg payout owed:               $100.00
+  Avg option value AT trigger:    $267.94 (268% coverage)
+  Avg option value AT expiry:     $350.60 (351% coverage)
+  Fully covered at expiry:        712 / 1192 (60%)
+
+  ── POST-BREACH OPTION PROFIT ──
+
+  Triggers with post-breach profit: 1182 / 1192 (99%)
+  Avg post-breach option value:     $350.60 per trigger
+  Max post-breach option value:     $3225.18
+  Avg net after payout (opt - pay): $250.60 per trigger
+  Total post-breach recovery:       $417913.96 across 1192 triggers
+
+  ── TEST 3: Treasury Cash Flow (${DAILY_NEW_PROTECTIONS}/day, $65/10k premium) ──
+
+  Last 12mo (Apr 2025-Apr 2026)  | Start: $10000 | End: $  -1779 | Min: $  -7429 | MaxDD: $ 17429 | Prem: $23725 | Pay: $22800 | Recov: $66374
+  Prior 12mo (Apr 2024-Apr 2025) | Start: $10000 | End: $ -18957 | Min: $ -19807 | MaxDD: $ 29807 | Prem: $23335 | Pay: $23800 | Recov: $66177
+  Q2 2022 Terra/Luna             | Start: $10000 | End: $  27185 | Min: $  10000 | MaxDD: $     0 | Prem: $5525 | Pay: $7400 | Recov: $52387
+  Q4 2022 FTX                    | Start: $10000 | End: $    951 | Min: $    951 | MaxDD: $  9049 | Prem: $5590 | Pay: $6100 | Recov: $19446
+  Q1 2024 ETF Rally              | Start: $10000 | End: $  -2308 | Min: $  -2308 | MaxDD: $ 12308 | Prem: $5525 | Pay: $4300 | Recov: $11480
+  Q3 2024 Consolidation          | Start: $10000 | End: $   1178 | Min: $   1000 | MaxDD: $  9000 | Prem: $5590 | Pay: $5400 | Recov: $18583
+  Full 2022 (worst)              | Start: $10000 | End: $   2151 | Min: $   1885 | MaxDD: $  8115 | Prem: $23335 | Pay: $26700 | Recov: $122468
+  Full 2024 (bull)               | Start: $10000 | End: $ -28463 | Min: $ -29510 | MaxDD: $ 39510 | Prem: $23400 | Pay: $22700 | Recov: $60998
+
+  ── TEST 4: Minimum Viable Premiums ──
+
+  Break-even (avg)          → $119/10k ($11.9/1k)
+  Accept -10% loss          → $2/10k ($0.2/1k)
+  Accept -20% loss          → $2/10k ($0.2/1k)
+
+  P&L at $30/10k: avg $-88.67 | at $50: avg $-68.67 | at $80: avg $-38.67
+
+  ── TEST 5: Calm vs Normal vs Stress ──
+
+  Calm (vol<40%)       │ N=  419 │ Trigger:  65% │ Hedge: $  159 │ BE: $    4 │ Suggest: $    6/10k
+  Normal (40-65%)      │ N=  967 │ Trigger:  64% │ Hedge: $  285 │ BE: $  116 │ Suggest: $  151/10k
+  Stress (vol>65%)     │ N=  399 │ Trigger:  75% │ Hedge: $  432 │ BE: $  244 │ Suggest: $  317/10k
+
+  ── TEST 6: Pass-Through Pricing Distribution ──
+
+  +20% margin │ Min: $ 105 │ P25: $ 247 │ Med: $ 347 │ P75: $ 411 │ P95: $ 563 │ Max: $   0
+  +30% margin │ Min: $ 114 │ P25: $ 268 │ Med: $ 375 │ P75: $ 445 │ P95: $ 610 │ Max: $   0
+  +40% margin │ Min: $ 122 │ P25: $ 289 │ Med: $ 404 │ P75: $ 479 │ P95: $ 657 │ Max: $   0
+  Raw hedge │ Min: $  87 │ P25: $ 206 │ Med: $ 289 │ P75: $ 342 │ P95: $ 469 │ Max: $   0
+
+═══════════════════════════════════════════════════════════════════════════
+  2% STOP LOSS — FULL ANALYSIS
+═══════════════════════════════════════════════════════════════════════════
+
+  ── TEST 1: Win/Loss Breakdown ──
+
+  Premium/10k │ Wins    │ Losses  │ Win Rate │ Avg Win  │ Avg Loss │ Max Loss │ Net P&L/trade
+  ────────────┼─────────┼─────────┼──────────┼──────────┼──────────┼──────────┼─────────────
+  $       30  │     290 │    1495 │     16%  │ $   519  │ $  -256  │ $  -650  │ $-129.73
+  $       50  │     315 │    1470 │     18%  │ $   497  │ $  -240  │ $  -630  │ $-109.73
+  $       65  │     324 │    1461 │     18%  │ $   498  │ $  -226  │ $  -615  │ $-94.73
+  $       80  │     346 │    1439 │     19%  │ $   481  │ $  -215  │ $  -600  │ $-79.73
+  $      100  │     393 │    1392 │     22%  │ $   442  │ $  -201  │ $  -580  │ $-59.73
+  $      120  │     450 │    1335 │     25%  │ $   405  │ $  -190  │ $  -560  │ $-39.73
+  $      150  │     560 │    1225 │     31%  │ $   352  │ $  -175  │ $  -530  │ $-9.73
+
+  ── TEST 2: Hedge Coverage at Trigger ──
+
+  Triggered windows: 993 / 1785 (55.6%)
+  Avg payout owed:               $200.00
+  Avg option value AT trigger:    $252.27 (126% coverage)
+  Avg option value AT expiry:     $347.78 (174% coverage)
+  Fully covered at expiry:        453 / 993 (46%)
+
+  ── POST-BREACH OPTION PROFIT ──
+
+  Triggers with post-breach profit: 986 / 993 (99%)
+  Avg post-breach option value:     $347.78 per trigger
+  Max post-breach option value:     $3125.18
+  Avg net after payout (opt - pay): $147.78 per trigger
+  Total post-breach recovery:       $345343.06 across 993 triggers
+
+  ── TEST 3: Treasury Cash Flow (${DAILY_NEW_PROTECTIONS}/day, $65/10k premium) ──
+
+  Last 12mo (Apr 2025-Apr 2026)  | Start: $10000 | End: $ -16133 | Min: $ -16133 | MaxDD: $ 26133 | Prem: $23725 | Pay: $38000 | Recov: $52316
+  Prior 12mo (Apr 2024-Apr 2025) | Start: $10000 | End: $ -33479 | Min: $ -33479 | MaxDD: $ 43479 | Prem: $23335 | Pay: $39800 | Recov: $52176
+  Q2 2022 Terra/Luna             | Start: $10000 | End: $  19576 | Min: $   7493 | MaxDD: $  2507 | Prem: $5525 | Pay: $13400 | Recov: $46843
+  Q4 2022 FTX                    | Start: $10000 | End: $   -416 | Min: $   -416 | MaxDD: $ 10416 | Prem: $5590 | Pay: $7600 | Recov: $15775
+  Q1 2024 ETF Rally              | Start: $10000 | End: $  -3960 | Min: $  -3960 | MaxDD: $ 13960 | Prem: $5525 | Pay: $7400 | Recov: $9193
+  Q3 2024 Consolidation          | Start: $10000 | End: $  -1371 | Min: $  -1392 | MaxDD: $ 11392 | Prem: $5590 | Pay: $8800 | Recov: $15571
+  Full 2022 (worst)              | Start: $10000 | End: $ -17489 | Min: $ -17489 | MaxDD: $ 27489 | Prem: $23335 | Pay: $45400 | Recov: $105305
+  Full 2024 (bull)               | Start: $10000 | End: $ -41145 | Min: $ -41145 | MaxDD: $ 51145 | Prem: $23400 | Pay: $38200 | Recov: $48163
+
+  ── TEST 4: Minimum Viable Premiums ──
+
+  Break-even (avg)          → $160/10k ($16.0/1k)
+  Accept -10% loss          → $2/10k ($0.2/1k)
+  Accept -20% loss          → $2/10k ($0.2/1k)
+
+  P&L at $30/10k: avg $-129.73 | at $50: avg $-109.73 | at $80: avg $-79.73
+
+  ── TEST 5: Calm vs Normal vs Stress ──
+
+  Calm (vol<40%)       │ N=  419 │ Trigger:  51% │ Hedge: $  120 │ BE: $   40 │ Suggest: $   52/10k
+  Normal (40-65%)      │ N=  967 │ Trigger:  54% │ Hedge: $  241 │ BE: $  155 │ Suggest: $  201/10k
+  Stress (vol>65%)     │ N=  399 │ Trigger:  66% │ Hedge: $  385 │ BE: $  297 │ Suggest: $  387/10k
+
+  ── TEST 6: Pass-Through Pricing Distribution ──
+
+  +20% margin │ Min: $  66 │ P25: $ 198 │ Med: $ 294 │ P75: $ 356 │ P95: $ 506 │ Max: $   0
+  +30% margin │ Min: $  71 │ P25: $ 214 │ Med: $ 318 │ P75: $ 386 │ P95: $ 548 │ Max: $   0
+  +40% margin │ Min: $  77 │ P25: $ 231 │ Med: $ 342 │ P75: $ 415 │ P95: $ 590 │ Max: $   0
+  Raw hedge │ Min: $  55 │ P25: $ 165 │ Med: $ 245 │ P75: $ 297 │ P95: $ 422 │ Max: $   0
+
+═══════════════════════════════════════════════════════════════════════════
+  3% STOP LOSS — FULL ANALYSIS
+═══════════════════════════════════════════════════════════════════════════
+
+  ── TEST 1: Win/Loss Breakdown ──
+
+  Premium/10k │ Wins    │ Losses  │ Win Rate │ Avg Win  │ Avg Loss │ Max Loss │ Net P&L/trade
+  ────────────┼─────────┼─────────┼──────────┼──────────┼──────────┼──────────┼─────────────
+  $       30  │     204 │    1581 │     11%  │ $   544  │ $  -241  │ $  -704  │ $-151.15
+  $       50  │     223 │    1562 │     12%  │ $   517  │ $  -224  │ $  -684  │ $-131.15
+  $       65  │     261 │    1524 │     15%  │ $   456  │ $  -214  │ $  -669  │ $-116.15
+  $       80  │     310 │    1475 │     17%  │ $   397  │ $  -206  │ $  -654  │ $-101.15
+  $      100  │     373 │    1412 │     21%  │ $   349  │ $  -195  │ $  -634  │ $-81.15
+  $      120  │     502 │    1283 │     28%  │ $   277  │ $  -193  │ $  -614  │ $-61.15
+  $      150  │     602 │    1183 │     34%  │ $   259  │ $  -179  │ $  -584  │ $-31.15
+
+  ── TEST 2: Hedge Coverage at Trigger ──
+
+  Triggered windows: 816 / 1785 (45.7%)
+  Avg payout owed:               $300.00
+  Avg option value AT trigger:    $242.72 (81% coverage)
+  Avg option value AT expiry:     $348.43 (116% coverage)
+  Fully covered at expiry:        282 / 816 (35%)
+
+  ── POST-BREACH OPTION PROFIT ──
+
+  Triggers with post-breach profit: 812 / 816 (100%)
+  Avg post-breach option value:     $348.43 per trigger
+  Max post-breach option value:     $3025.18
+  Avg net after payout (opt - pay): $48.43 per trigger
+  Total post-breach recovery:       $284320.13 across 816 triggers
+
+  ── TEST 3: Treasury Cash Flow (${DAILY_NEW_PROTECTIONS}/day, $65/10k premium) ──
+
+  Last 12mo (Apr 2025-Apr 2026)  | Start: $10000 | End: $ -30747 | Min: $ -30747 | MaxDD: $ 40747 | Prem: $18250 | Pay: $48300 | Recov: $40860
+  Prior 12mo (Apr 2024-Apr 2025) | Start: $10000 | End: $ -45052 | Min: $ -45052 | MaxDD: $ 55052 | Prem: $17950 | Pay: $47700 | Recov: $40268
+  Q2 2022 Terra/Luna             | Start: $10000 | End: $  12325 | Min: $   2225 | MaxDD: $  7775 | Prem: $4250 | Pay: $18000 | Recov: $41845
+  Q4 2022 FTX                    | Start: $10000 | End: $   -920 | Min: $   -920 | MaxDD: $ 10920 | Prem: $4300 | Pay: $7800 | Recov: $13358
+  Q1 2024 ETF Rally              | Start: $10000 | End: $  -5164 | Min: $  -5164 | MaxDD: $ 15164 | Prem: $4250 | Pay: $8700 | Recov: $7237
+  Q3 2024 Consolidation          | Start: $10000 | End: $  -4402 | Min: $  -4402 | MaxDD: $ 14402 | Prem: $4300 | Pay: $11400 | Recov: $12939
+  Full 2022 (worst)              | Start: $10000 | End: $ -34007 | Min: $ -34007 | MaxDD: $ 44007 | Prem: $17950 | Pay: $56700 | Recov: $90764
+  Full 2024 (bull)               | Start: $10000 | End: $ -51809 | Min: $ -51809 | MaxDD: $ 61809 | Prem: $18000 | Pay: $46200 | Recov: $37048
+
+  ── TEST 4: Minimum Viable Premiums ──
+
+  Break-even (avg)          → $182/10k ($18.2/1k)
+  Accept -10% loss          → $2/10k ($0.2/1k)
+  Accept -20% loss          → $2/10k ($0.2/1k)
+
+  P&L at $30/10k: avg $-151.15 | at $50: avg $-131.15 | at $80: avg $-101.15
+
+  ── TEST 5: Calm vs Normal vs Stress ──
+
+  Calm (vol<40%)       │ N=  419 │ Trigger:  38% │ Hedge: $   89 │ BE: $   53 │ Suggest: $   69/10k
+  Normal (40-65%)      │ N=  967 │ Trigger:  45% │ Hedge: $  202 │ BE: $  177 │ Suggest: $  230/10k
+  Stress (vol>65%)     │ N=  399 │ Trigger:  56% │ Hedge: $  342 │ BE: $  327 │ Suggest: $  425/10k
+
+═══════════════════════════════════════════════════════════════════════════
+  5% STOP LOSS — FULL ANALYSIS
+═══════════════════════════════════════════════════════════════════════════
+
+  ── TEST 1: Win/Loss Breakdown ──
+
+  Premium/10k │ Wins    │ Losses  │ Win Rate │ Avg Win  │ Avg Loss │ Max Loss │ Net P&L/trade
+  ────────────┼─────────┼─────────┼──────────┼──────────┼──────────┼──────────┼─────────────
+  $       30  │     166 │    1619 │      9%  │ $   383  │ $  -216  │ $  -828  │ $-160.54
+  $       50  │     271 │    1514 │     15%  │ $   251  │ $  -211  │ $  -808  │ $-140.54
+  $       65  │     415 │    1370 │     23%  │ $   176  │ $  -217  │ $  -793  │ $-125.54
+  $       80  │     480 │    1305 │     27%  │ $   166  │ $  -212  │ $  -778  │ $-110.54
+  $      100  │     587 │    1198 │     33%  │ $   154  │ $  -210  │ $  -758  │ $-90.54
+  $      120  │     709 │    1076 │     40%  │ $   145  │ $  -213  │ $  -738  │ $-70.54
+  $      150  │     845 │     940 │     47%  │ $   150  │ $  -212  │ $  -708  │ $-40.54
+
+  ── TEST 2: Hedge Coverage at Trigger ──
+
+  Triggered windows: 561 / 1785 (31.4%)
+  Avg payout owed:               $500.00
+  Avg option value AT trigger:    $210.33 (42% coverage)
+  Avg option value AT expiry:     $343.44 (69% coverage)
+  Fully covered at expiry:        121 / 561 (22%)
+
+  ── POST-BREACH OPTION PROFIT ──
+
+  Triggers with post-breach profit: 560 / 561 (100%)
+  Avg post-breach option value:     $343.44 per trigger
+  Max post-breach option value:     $2825.18
+  Avg net after payout (opt - pay): $-156.56 per trigger
+  Total post-breach recovery:       $192672.06 across 561 triggers
+
+  ── TEST 3: Treasury Cash Flow (${DAILY_NEW_PROTECTIONS}/day, $65/10k premium) ──
+
+  Last 12mo (Apr 2025-Apr 2026)  | Start: $10000 | End: $ -28411 | Min: $ -28411 | MaxDD: $ 38411 | Prem: $18250 | Pay: $48000 | Recov: $23809
+  Prior 12mo (Apr 2024-Apr 2025) | Start: $10000 | End: $ -43631 | Min: $ -43631 | MaxDD: $ 53631 | Prem: $17950 | Pay: $51000 | Recov: $23011
+  Q2 2022 Terra/Luna             | Start: $10000 | End: $   5495 | Min: $  -1042 | MaxDD: $ 11042 | Prem: $4250 | Pay: $23000 | Recov: $33700
+  Q4 2022 FTX                    | Start: $10000 | End: $   -618 | Min: $   -649 | MaxDD: $ 10649 | Prem: $4300 | Pay: $10000 | Recov: $10191
+  Q1 2024 ETF Rally              | Start: $10000 | End: $  -4508 | Min: $  -4508 | MaxDD: $ 14508 | Prem: $4250 | Pay: $10500 | Recov: $4200
+  Q3 2024 Consolidation          | Start: $10000 | End: $  -5735 | Min: $  -5735 | MaxDD: $ 15735 | Prem: $4300 | Pay: $14500 | Recov: $8805
+  Full 2022 (worst)              | Start: $10000 | End: $ -46150 | Min: $ -46181 | MaxDD: $ 56181 | Prem: $17950 | Pay: $71000 | Recov: $67873
+  Full 2024 (bull)               | Start: $10000 | End: $ -51490 | Min: $ -51490 | MaxDD: $ 61490 | Prem: $18000 | Pay: $52500 | Recov: $21084
+
+  ── TEST 4: Minimum Viable Premiums ──
+
+  Break-even (avg)          → $191/10k ($19.1/1k)
+  Accept -10% loss          → $2/10k ($0.2/1k)
+  Accept -20% loss          → $2/10k ($0.2/1k)
+
+  P&L at $30/10k: avg $-160.54 | at $50: avg $-140.54 | at $80: avg $-110.54
+
+  ── TEST 5: Calm vs Normal vs Stress ──
+
+  Calm (vol<40%)       │ N=  419 │ Trigger:  24% │ Hedge: $   45 │ BE: $   62 │ Suggest: $   81/10k
+  Normal (40-65%)      │ N=  967 │ Trigger:  31% │ Hedge: $  137 │ BE: $  183 │ Suggest: $  238/10k
+  Stress (vol>65%)     │ N=  399 │ Trigger:  41% │ Hedge: $  264 │ BE: $  344 │ Suggest: $  447/10k
+
+═══════════════════════════════════════════════════════════════════════════
+  10% STOP LOSS — FULL ANALYSIS
+═══════════════════════════════════════════════════════════════════════════
+
+  ── TEST 1: Win/Loss Breakdown ──
+
+  Premium/10k │ Wins    │ Losses  │ Win Rate │ Avg Win  │ Avg Loss │ Max Loss │ Net P&L/trade
+  ────────────┼─────────┼─────────┼──────────┼──────────┼──────────┼──────────┼─────────────
+  $       30  │     732 │    1053 │     41%  │ $    37  │ $  -154  │ $ -1157  │ $-75.76
+  $       50  │     925 │     860 │     52%  │ $    47  │ $  -167  │ $ -1137  │ $-55.76
+  $       65  │    1227 │     558 │     69%  │ $    49  │ $  -237  │ $ -1122  │ $-40.76
+  $       80  │    1315 │     470 │     74%  │ $    60  │ $  -265  │ $ -1107  │ $-25.76
+  $      100  │    1399 │     386 │     78%  │ $    76  │ $  -301  │ $ -1087  │ $-5.76
+  $      120  │    1450 │     335 │     81%  │ $    93  │ $  -326  │ $ -1067  │ $14.24
+  $      150  │    1582 │     203 │     89%  │ $   113  │ $  -495  │ $ -1037  │ $44.24
+
+  ── TEST 2: Hedge Coverage at Trigger ──
+
+  Triggered windows: 175 / 1785 (9.8%)
+  Avg payout owed:               $1000.00
+  Avg option value AT trigger:    $160.84 (16% coverage)
+  Avg option value AT expiry:     $440.48 (44% coverage)
+  Fully covered at expiry:        27 / 175 (15%)
+
+  ── POST-BREACH OPTION PROFIT ──
+
+  Triggers with post-breach profit: 175 / 175 (100%)
+  Avg post-breach option value:     $440.48 per trigger
+  Max post-breach option value:     $2325.18
+  Avg net after payout (opt - pay): $-559.52 per trigger
+  Total post-breach recovery:       $77083.19 across 175 triggers
+
+  ── TEST 3: Treasury Cash Flow (${DAILY_NEW_PROTECTIONS}/day, $65/10k premium) ──
+
+  Last 12mo (Apr 2025-Apr 2026)  | Start: $10000 | End: $  -8006 | Min: $  -8006 | MaxDD: $ 18006 | Prem: $10950 | Pay: $25000 | Recov: $5511
+  Prior 12mo (Apr 2024-Apr 2025) | Start: $10000 | End: $ -11442 | Min: $ -11442 | MaxDD: $ 21442 | Prem: $10770 | Pay: $24000 | Recov: $4936
+  Q2 2022 Terra/Luna             | Start: $10000 | End: $   3465 | Min: $   2529 | MaxDD: $  7471 | Prem: $2550 | Pay: $21000 | Recov: $20527
+  Q4 2022 FTX                    | Start: $10000 | End: $   4983 | Min: $   4580 | MaxDD: $  5420 | Prem: $2580 | Pay: $7000 | Recov: $5675
+  Q1 2024 ETF Rally              | Start: $10000 | End: $   1831 | Min: $   1831 | MaxDD: $  8169 | Prem: $2550 | Pay: $7000 | Recov: $602
+  Q3 2024 Consolidation          | Start: $10000 | End: $    161 | Min: $    126 | MaxDD: $  9874 | Prem: $2580 | Pay: $10000 | Recov: $2700
+  Full 2022 (worst)              | Start: $10000 | End: $ -34264 | Min: $ -34666 | MaxDD: $ 44666 | Prem: $10770 | Pay: $58000 | Recov: $33110
+  Full 2024 (bull)               | Start: $10000 | End: $ -13917 | Min: $ -13947 | MaxDD: $ 23947 | Prem: $10800 | Pay: $23000 | Recov: $4022
+
+  ── TEST 4: Minimum Viable Premiums ──
+
+  Break-even (avg)          → $106/10k ($10.6/1k)
+  Accept -10% loss          → $2/10k ($0.2/1k)
+  Accept -20% loss          → $2/10k ($0.2/1k)
+
+  P&L at $30/10k: avg $-75.76 | at $50: avg $-55.76 | at $80: avg $-25.76
+
+  ── TEST 5: Calm vs Normal vs Stress ──
+
+  Calm (vol<40%)       │ N=  419 │ Trigger:   9% │ Hedge: $    5 │ BE: $   51 │ Suggest: $   67/10k
+  Normal (40-65%)      │ N=  967 │ Trigger:  11% │ Hedge: $   42 │ BE: $  108 │ Suggest: $  140/10k
+  Stress (vol>65%)     │ N=  399 │ Trigger:   9% │ Hedge: $  125 │ BE: $  158 │ Suggest: $  206/10k
+
+
+═══════════════════════════════════════════════════════════════════════════
+  FINAL PREMIUM RECOMMENDATIONS
+═══════════════════════════════════════════════════════════════════════════
+
+  SL%  │ Adoption Price │ Sustainable │ Conservative │ Model          
+  ─────┼────────────────┼─────────────┼──────────────┼────────────────
+    1%  │ $ 110/10k      │ $ 145/10k   │ $  170/10k    │ Dynamic recommended
+    2%  │ $ 145/10k      │ $ 195/10k   │ $  225/10k    │ Dynamic recommended
+    3%  │ $ 165/10k      │ $ 220/10k   │ $  255/10k    │ Fixed viable
+    5%  │ $ 175/10k      │ $ 230/10k   │ $  270/10k    │ Fixed viable
+   10%  │ $ 100/10k      │ $ 130/10k   │ $  150/10k    │ Fixed safe
+

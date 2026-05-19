@@ -559,7 +559,17 @@ export class BullishTradingClient {
 
   async getMarkets(params?: { forceRefresh?: boolean; cacheTtlMs?: number }): Promise<BullishMarketRecord[]> {
     const forceRefresh = params?.forceRefresh === true;
-    const cacheTtlMs = Math.max(1000, Number(params?.cacheTtlMs || 0) || 30_000);
+    // 2026-05-18: bump default TTL from 30s → 120s. Multiple components
+    // hit /markets independently (chain warmer 30s tick, every
+    // activation's selectBullishOptionSymbol, venue-balance widget,
+    // chain analyzer endpoint, …) and each has its own client instance
+    // → its own cache. Combined uncoordinated rate triggered Bullish's
+    // 96100 RATE_LIMIT_EXCEEDED periodically. The market list rarely
+    // changes minute-to-minute (option chains add new strikes daily,
+    // not by the second), so 120s is safe operationally and cuts
+    // upstream pressure 4x. Callers that need fresh data can override
+    // via cacheTtlMs: 0 or forceRefresh.
+    const cacheTtlMs = Math.max(1000, Number(params?.cacheTtlMs || 0) || 120_000);
     if (!forceRefresh && this.marketsCache && this.marketsCache.expiresAtMs > Date.now()) {
       return this.marketsCache.records;
     }
@@ -600,6 +610,32 @@ export class BullishTradingClient {
     const session = await this.getJwtSession();
     const timestamp = Date.now().toString();
     const nonce = await this.getCommandNonce();
+
+    if (this.config.authMode === "ecdsa" && this.config.ecdsaPrivateKey) {
+      const requestPath = "/trading-api/v2/orders";
+      const bodyString = JSON.stringify(command);
+      const canonicalString = `${timestamp}${nonce}POST${requestPath}${bodyString}`;
+      const signer = createSign("sha256");
+      signer.update(canonicalString);
+      signer.end();
+      const signature = signer.sign(parseBullishPrivateKey(this.config.ecdsaPrivateKey)).toString("base64");
+
+      return await this.requestJson({
+        path: requestPath,
+        method: "POST",
+        timeoutMs: this.config.orderTimeoutMs,
+        body: bodyString,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.token}`,
+          "BX-TIMESTAMP": timestamp,
+          "BX-NONCE": nonce,
+          "BX-SIGNATURE": signature
+        }
+      });
+    }
+
     const requestPath = ensureLeadingSlash(this.config.commandPath);
     const payload = JSON.stringify({
       timestamp,
@@ -633,6 +669,30 @@ export class BullishTradingClient {
     quantity: string;
     clientOrderId?: string;
   }): Promise<unknown> {
+    if (this.config.authMode === "ecdsa") {
+      // 2026-05-18: V3CreateOrder (ECDSA path) was missing the
+      // allowMargin / margin / allowBorrow fields. Bullish rejects
+      // option BUYs with status_reason 3003 ('Borrowing is
+      // unavailable, margin not enabled') if margin not requested.
+      // V2 path (HMAC) was already passing allowMargin; V3 wasn't.
+      // Now both paths honor PILOT_BULLISH_ALLOW_MARGIN env. The
+      // account itself must ALSO have margin enabled in Bullish UI
+      // for orders to actually accept (this just flags the request).
+      return await this.submitCommand({
+        commandType: "V3CreateOrder",
+        symbol: params.symbol,
+        type: "LIMIT",
+        side: params.side,
+        price: params.price,
+        quantity: params.quantity,
+        timeInForce: this.config.orderTif,
+        clientOrderId: params.clientOrderId || String(BigInt(Date.now()) * 1000n),
+        tradingAccountId: this.config.tradingAccountId,
+        allowMargin: this.config.allowMargin,
+        allowBorrow: this.config.allowMargin,
+        margin: this.config.allowMargin
+      });
+    }
     return await this.submitCommand({
       commandType: "V2CreateOrder",
       handle: null,
@@ -647,6 +707,35 @@ export class BullishTradingClient {
       allowMargin: this.config.allowMargin,
       tradingAccountId: this.config.tradingAccountId
     });
+  }
+
+  async getOrderStatus(orderId: string): Promise<{
+    status: string;
+    fillPrice: number;
+    fillQuantity: number;
+    fees: { baseFee: string; quoteFee: string };
+    raw: unknown;
+  }> {
+    const headers = await this.buildJwtHeaders();
+    const raw = await this.requestJson<unknown>({
+      path: `/trading-api/v2/orders/${orderId}`,
+      method: "GET",
+      timeoutMs: this.config.orderTimeoutMs,
+      headers
+    });
+    const record = (raw as Record<string, unknown>)?.data as Record<string, unknown> | undefined
+      ?? raw as Record<string, unknown>;
+    const status = String(record?.status || record?.orderStatus || "UNKNOWN").toUpperCase();
+    return {
+      status,
+      fillPrice: Number(record?.averageFillPrice ?? record?.price ?? 0),
+      fillQuantity: Number(record?.quantityFilled ?? record?.filledQuantity ?? 0),
+      fees: {
+        baseFee: String(record?.baseFee ?? "0"),
+        quoteFee: String(record?.quoteFee ?? "0"),
+      },
+      raw,
+    };
   }
 
   async cancelOrder(params: { symbol: string; orderId: string; clientOrderId?: string }): Promise<unknown> {
@@ -785,4 +874,168 @@ export class BullishTradingClient {
       }
     });
   }
+
+  async waitForOrderFill(params: {
+    clientOrderId: string;
+    timeoutMs?: number;
+    tradingAccountId?: string;
+  }): Promise<BullishOrderFillResult> {
+    const session = await this.getJwtSession();
+    const url = new URL(this.config.privateWsUrl);
+    const tradingAccountId = params.tradingAccountId || this.config.tradingAccountId;
+    if (tradingAccountId) {
+      url.searchParams.set("tradingAccountId", tradingAccountId);
+    }
+    const timeoutMs = Math.max(2000, Number(params.timeoutMs || 15_000));
+
+    return await new Promise<BullishOrderFillResult>((resolve, reject) => {
+      const ws = new WebSocket(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${session.token}`,
+          COOKIE: `JWT_COOKIE=${session.token}`
+        }
+      });
+      const timeout = setTimeout(() => {
+        ws.close();
+        resolve({
+          status: "timeout",
+          orderId: null,
+          fillPrice: null,
+          fillQuantity: null,
+          fees: null,
+          orderStatus: null,
+          raw: null
+        });
+      }, timeoutMs);
+
+      ws.on("open", () => {
+        ws.send(JSON.stringify({
+          jsonrpc: "2.0",
+          type: "command",
+          method: "subscribe",
+          params: { topic: "orders" },
+          id: nextBullishWsRequestId()
+        }));
+        ws.send(JSON.stringify({
+          jsonrpc: "2.0",
+          type: "command",
+          method: "subscribe",
+          params: { topic: "trades" },
+          id: nextBullishWsRequestId()
+        }));
+      });
+
+      let matchedOrderId: string | null = null;
+
+      ws.on("message", (raw) => {
+        try {
+          const parsed = JSON.parse(String(raw)) as BullishWsMessage;
+          const dataType = String(parsed.dataType || "");
+          const dataArray = Array.isArray(parsed.data) ? parsed.data as Array<Record<string, unknown>> : [];
+
+          if (dataType === "V1TAOrder") {
+            for (const order of dataArray) {
+              const cid = String(order.clientOrderId || order.handle || "");
+              if (cid === params.clientOrderId || String(order.orderId || "") === params.clientOrderId) {
+                matchedOrderId = String(order.orderId || "");
+                const status = String(order.status || "").toUpperCase();
+                if (status === "CLOSED" || status === "CANCELLED" || status === "REJECTED") {
+                  clearTimeout(timeout);
+                  ws.close();
+                  const filled = status === "CLOSED" && String(order.statusReason || "") === "Executed";
+                  resolve({
+                    status: filled ? "filled" : "rejected",
+                    orderId: matchedOrderId,
+                    fillPrice: order.averageFillPrice ? String(order.averageFillPrice) : null,
+                    fillQuantity: order.quantityFilled ? String(order.quantityFilled) : null,
+                    fees: {
+                      baseFee: order.baseFee ? String(order.baseFee) : "0",
+                      quoteFee: order.quoteFee ? String(order.quoteFee) : "0"
+                    },
+                    orderStatus: status,
+                    raw: order
+                  });
+                }
+              }
+            }
+          }
+
+          if (dataType === "V1TATrade" && matchedOrderId) {
+            for (const trade of dataArray) {
+              if (String(trade.orderId || "") === matchedOrderId) {
+                clearTimeout(timeout);
+                ws.close();
+                resolve({
+                  status: "filled",
+                  orderId: matchedOrderId,
+                  fillPrice: trade.price ? String(trade.price) : null,
+                  fillQuantity: trade.quantity ? String(trade.quantity) : null,
+                  fees: {
+                    baseFee: trade.baseFee ? String(trade.baseFee) : "0",
+                    quoteFee: trade.quoteFee ? String(trade.quoteFee) : "0"
+                  },
+                  orderStatus: "CLOSED",
+                  raw: trade
+                });
+              }
+            }
+          }
+        } catch {
+          // Ignore malformed WS messages
+        }
+      });
+
+      ws.on("error", (error) => {
+        clearTimeout(timeout);
+        resolve({
+          status: "error",
+          orderId: null,
+          fillPrice: null,
+          fillQuantity: null,
+          fees: null,
+          orderStatus: null,
+          raw: { error: String(error?.message || error) }
+        });
+      });
+
+      ws.on("close", () => {
+        clearTimeout(timeout);
+      });
+    });
+  }
+
+  async getAssetBalances(params?: {
+    tradingAccountId?: string;
+    timeoutMs?: number;
+  }): Promise<BullishAssetBalance[]> {
+    const snapshot = await this.waitForPrivateTopicSnapshot({
+      topic: "assetAccounts",
+      timeoutMs: params?.timeoutMs || 10_000,
+      tradingAccountId: params?.tradingAccountId
+    });
+    const data = Array.isArray(snapshot.data) ? snapshot.data as Array<Record<string, unknown>> : [];
+    return data.map((item) => ({
+      assetSymbol: String(item.assetSymbol || ""),
+      availableQuantity: String(item.availableQuantity || "0"),
+      lockedQuantity: String(item.lockedQuantity || "0"),
+      borrowedQuantity: String(item.borrowedQuantity || "0")
+    }));
+  }
 }
+
+export type BullishOrderFillResult = {
+  status: "filled" | "rejected" | "timeout" | "error";
+  orderId: string | null;
+  fillPrice: string | null;
+  fillQuantity: string | null;
+  fees: { baseFee: string; quoteFee: string } | null;
+  orderStatus: string | null;
+  raw: unknown;
+};
+
+export type BullishAssetBalance = {
+  assetSymbol: string;
+  availableQuantity: string;
+  lockedQuantity: string;
+  borrowedQuantity: string;
+};

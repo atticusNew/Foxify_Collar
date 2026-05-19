@@ -1,0 +1,1399 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+import { API_BASE } from "./config";
+
+// ─── Types ───────────────────────────────────────────────────────────
+
+type AdminAuth = { token: string };
+
+type PlatformHealth = {
+  status: string;
+  checks: {
+    db: { status: string; detail?: string };
+    price: { status: string; marketId?: string; source?: string; detail?: string };
+    venue: Record<string, unknown>;
+  };
+};
+
+type MonitorStatus = {
+  status: string;
+  healthy: boolean;
+  consecutiveFailures: number;
+  fillRate?: number;
+  lastFillAt?: string;
+  lastFailureAt?: string;
+  lastFailureReason?: string;
+};
+
+type AdminMetrics = {
+  totalProtections: number;
+  activeProtections: number;
+  totalPremiumCollectedUsdc: string;
+  totalPayoutDueUsdc: string;
+  totalPayoutSettledUsdc: string;
+  reserveAfterOpenPayoutLiabilityUsdc: string;
+  startingReserveUsdc: string;
+  protections?: ProtectionSummary[];
+};
+
+type ProtectionSummary = {
+  id: string;
+  status: string;
+  tierName: string;
+  slPct: number | null;
+  hedgeStatus: string | null;
+  regime: string | null;
+  dvolAtPurchase: number | null;
+  protectedNotional: string;
+  entryPrice: string;
+  floorPrice: string;
+  drawdownFloorPct: string;
+  expiryAt: string;
+  premium: string;
+  autoRenew: boolean;
+  payoutDueAmount: string | null;
+  payoutSettledAmount: string | null;
+  venue: string;
+  instrumentId: string;
+  side: string | null;
+  size: string | null;
+  executionPrice: string | null;
+  createdAt: string;
+  metadata?: Record<string, unknown>;
+};
+
+type ExecutionQuality = {
+  day: string;
+  venue: string;
+  hedgeMode: string;
+  avgSlippageBps: string | null;
+  p95SlippageBps: string | null;
+  fillSuccessRatePct: string | null;
+  sampleCount: number;
+};
+
+type Alert = {
+  type: string;
+  severity: string;
+  message: string;
+  timestamp: string;
+  details?: Record<string, unknown>;
+};
+
+type TriggeredRow = {
+  id: string;
+  createdAt: string | null;
+  direction: "long" | "short";
+  slPct: number | null;
+  tierName: string | null;
+  protectedNotionalUsd: number;
+  entryPrice: number | null;
+  triggerPrice: number;
+  expiryAt: string | null;
+  status: string;
+  hedgeStatus: string | null;
+  selectedStrike: number | null;
+  strikeGapToTriggerUsd: number | null;
+  strikeIsItm: boolean;
+  triggeredAt: string | null;
+  soldAt: string | null;
+  timeFromTriggerToSellMin: number | null;
+  spotAtTrigger: number | null;
+  spotAtSell: number | null;
+  spotMoveThroughTriggerPct: number | null;
+  triggerPattern: "barely_graze" | "shallow" | "clear_breakout" | "unknown";
+  premiumCollectedUsd: number;
+  hedgeCostUsd: number;
+  hedgeRecoveryUsd: number;
+  payoutOwedUsd: number;
+  netPnlUsd: number;
+  recoveryRatioPct: number | null;
+};
+
+type TriggeredSummary = {
+  totalTriggered: number;
+  totalSold: number;
+  avgRecoveryRatioPct: number | null;
+  avgRecoveryRatioLongPct: number | null;
+  avgRecoveryRatioShortPct: number | null;
+  avgNetPnlUsd: number | null;
+  netPnlUsdSum: number;
+  baselineRecoveryRatioPct: number;
+  patternBreakdown: Record<string, number>;
+  itmStrikeRatePct: number | null;
+};
+
+type TreasurySnapshot = {
+  // Live Deribit balance snapshot (replaces the old Bullish-only response).
+  // Set by the "Check Balance" button which now hits /pilot/admin/deribit-balance.
+  balanceBtc?: number;
+  availableBtc?: number;
+  equityBtc?: number;
+  spotUsd?: number | null;
+  balanceUsd?: number | null;
+  availableUsd?: number | null;
+  equityUsd?: number | null;
+  marginModel?: string | null;
+  crossCollateralEnabled?: boolean | null;
+  accountId?: number | null;
+  username?: string | null;
+  asOf?: string;
+  // Legacy Bullish fields (kept so older callers don't break; unused by the new endpoint)
+  balance?: string;
+  currency?: string;
+  tradingAccountId?: string;
+};
+
+// ─── API helpers ─────────────────────────────────────────────────────
+
+const adminApi = async <T = unknown>(
+  path: string,
+  token: string,
+  opts?: RequestInit
+): Promise<T> => {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      "x-admin-token": token,
+      ...opts?.headers,
+    },
+  });
+  let json: any;
+  try { json = await res.json(); } catch { throw new Error(res.ok ? "invalid_response" : `HTTP ${res.status}`); }
+  if (!res.ok) throw new Error(json?.reason || json?.message || `HTTP ${res.status}`);
+  return json as T;
+};
+
+const fmtUsd = (v: string | number | null | undefined) => {
+  if (v === null || v === undefined) return "$0.00";
+  const n = typeof v === "string" ? Number(v) : v;
+  if (!Number.isFinite(n)) return "$0.00";
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
+};
+
+// ─── Login gate ──────────────────────────────────────────────────────
+
+function AdminLogin({ onLogin }: { onLogin: (token: string) => void }) {
+  const [token, setToken] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!token.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      await adminApi("/pilot/monitor/status", token.trim());
+      sessionStorage.setItem("pilot_admin_token", token.trim());
+      onLogin(token.trim());
+    } catch (e: any) {
+      setError(e?.message === "unauthorized" ? "Invalid admin token" : `Connection failed: ${e?.message || "unknown error"}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="shell">
+      <div className="card" style={{ maxWidth: 400 }}>
+        <div className="title">
+          <span>Admin Dashboard</span>
+        </div>
+        <form onSubmit={handleSubmit}>
+          <div style={{ marginBottom: 12 }}>
+            <input
+              type="password"
+              placeholder="Admin token"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              style={{
+                width: "100%", padding: "10px 12px", borderRadius: 8,
+                border: "1px solid var(--border)", background: "var(--card-2)",
+                color: "var(--text)", fontSize: 14, outline: "none",
+              }}
+            />
+          </div>
+          {error && <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 10 }}>{error}</div>}
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              width: "100%", padding: "10px 0", borderRadius: 8, border: "none",
+              background: "linear-gradient(135deg, var(--accent), var(--accent-2))",
+              color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer",
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? "Verifying..." : "Sign In"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ─── Settlement confirmation dialog ──────────────────────────────────
+
+function ConfirmDialog({
+  title, message, onConfirm, onCancel, loading,
+}: {
+  title: string; message: string;
+  onConfirm: () => void; onCancel: () => void; loading: boolean;
+}) {
+  return (
+    <div style={{
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+      background: "rgba(0,0,0,0.7)", display: "grid", placeItems: "center", zIndex: 1000,
+    }}>
+      <div style={{
+        background: "var(--card)", border: "1px solid var(--border)",
+        borderRadius: 14, padding: 24, maxWidth: 400, width: "90%",
+      }}>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>{title}</div>
+        <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 18, lineHeight: 1.5 }}>{message}</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            style={{
+              flex: 1, padding: "10px", borderRadius: 8, border: "1px solid var(--border)",
+              background: "var(--card-2)", color: "var(--text)", fontSize: 13, cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            style={{
+              flex: 1, padding: "10px", borderRadius: 8, border: "none",
+              background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer",
+              opacity: loading ? 0.6 : 1,
+            }}
+          >
+            {loading ? "Processing..." : "Confirm"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main dashboard ──────────────────────────────────────────────────
+
+function Dashboard({ token }: { token: string }) {
+  const [health, setHealth] = useState<PlatformHealth | null>(null);
+  const [monitorStatus, setMonitorStatus] = useState<MonitorStatus | null>(null);
+  const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
+  const [execQuality, setExecQuality] = useState<ExecutionQuality[]>([]);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  // Track the timestamp of the most recent alert the operator has viewed
+  // (persisted to localStorage). The red-dot / count badge on the Alerts
+  // tab only reflects alerts newer than this. Cleared on tab open below.
+  const [lastViewedAlertTs, setLastViewedAlertTs] = useState<string>(() => {
+    try { return localStorage.getItem("foxify_admin_last_viewed_alert_ts") || ""; } catch { return ""; }
+  });
+  const [treasury, setTreasury] = useState<TreasurySnapshot | null>(null);
+  const [treasuryLoading, setTreasuryLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<string>("");
+
+  // Settlement dialog state
+  const [settlementDialog, setSettlementDialog] = useState<{
+    type: "premium" | "payout";
+    protectionId: string;
+    amount: string;
+  } | null>(null);
+  const [settlementLoading, setSettlementLoading] = useState(false);
+
+  const [activePanel, setActivePanel] = useState<"health" | "protections" | "triggered" | "quality" | "alerts" | "config">("health");
+
+  // Config display
+  const [healthConfig, setHealthConfig] = useState<Record<string, unknown> | null>(null);
+
+  const [protectionsList, setProtectionsList] = useState<ProtectionSummary[]>([]);
+  const [triggeredRows, setTriggeredRows] = useState<TriggeredRow[]>([]);
+  const [triggeredSummary, setTriggeredSummary] = useState<TriggeredSummary | null>(null);
+  const [triggeredDirectionFilter, setTriggeredDirectionFilter] = useState<"all" | "long" | "short">("all");
+  // Default scope is "open" so cleared/expired/cancelled rows don't clutter
+  // the protections table. Toggle "Show all" to see lifecycle history.
+  const [protectionsScope, setProtectionsScope] = useState<"open" | "all">("open");
+  const [livePrice, setLivePrice] = useState<number | null>(null);
+  const livePriceRef = useRef(0);
+
+  useEffect(() => {
+    let on = true;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/pilot/reference-price`);
+        const d = await res.json();
+        if (on && d.status === "ok") {
+          const p = Number(d.reference?.price ?? 0);
+          if (p > 0) { setLivePrice(p); livePriceRef.current = Date.now(); }
+        }
+      } catch { /* best effort */ }
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => { on = false; clearInterval(id); };
+  }, []);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [healthRes, statusRes, metricsRes, qualityRes, alertsRes, protectionsRes, triggeredRes] = await Promise.allSettled([
+        adminApi<PlatformHealth>("/pilot/health", token).catch(() => null),
+        adminApi<MonitorStatus>("/pilot/monitor/status", token),
+        adminApi<{ metrics: AdminMetrics }>("/pilot/admin/metrics?scope=all", token),
+        adminApi<{ rows: ExecutionQuality[] }>("/pilot/admin/diagnostics/execution-quality?lookbackDays=30", token),
+        adminApi<{ alerts: Alert[] }>("/pilot/monitor/alerts?limit=20", token),
+        adminApi<{ status: string; protections: ProtectionSummary[] }>(`/pilot/protections?limit=200&scope=${protectionsScope}`, token),
+        adminApi<{ rows: TriggeredRow[]; summary: TriggeredSummary }>(
+          `/pilot/admin/diagnostics/triggered-protections?limit=50&direction=${triggeredDirectionFilter}`,
+          token
+        ).catch(() => null),
+      ]);
+
+      if (healthRes.status === "fulfilled" && healthRes.value) {
+        setHealth(healthRes.value);
+        setHealthConfig(healthRes.value as unknown as Record<string, unknown>);
+      }
+      if (statusRes.status === "fulfilled") setMonitorStatus(statusRes.value);
+      if (metricsRes.status === "fulfilled") setMetrics(metricsRes.value.metrics);
+      if (qualityRes.status === "fulfilled") setExecQuality(qualityRes.value.rows || []);
+      if (alertsRes.status === "fulfilled") setAlerts(alertsRes.value.alerts || []);
+      if (protectionsRes.status === "fulfilled") setProtectionsList(protectionsRes.value.protections || []);
+      if (triggeredRes.status === "fulfilled" && triggeredRes.value) {
+        setTriggeredRows(triggeredRes.value.rows || []);
+        setTriggeredSummary(triggeredRes.value.summary || null);
+      }
+      setLastRefresh(new Date().toLocaleTimeString());
+      const failures = [healthRes, statusRes, metricsRes, qualityRes, alertsRes, protectionsRes, triggeredRes]
+        .filter(r => r.status === "rejected");
+      setError(failures.length > 0 ? `${failures.length} endpoint(s) unavailable` : null);
+    } catch (e: any) {
+      setError(e.message);
+    }
+  }, [token, protectionsScope, triggeredDirectionFilter]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  // Auto-refresh every 30s
+  useEffect(() => {
+    const id = setInterval(refresh, 30000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  // Mark all alerts as viewed when the operator opens the Alerts tab.
+  // Stores the timestamp of the most recent alert in localStorage; the
+  // unread count badge in the nav uses this as the watermark. Runs on
+  // every panel switch to "alerts" — if a new alert arrives while the
+  // tab is already open, the operator stays on the tab and the next
+  // refresh will not re-mark (timestamp doesn't move backwards).
+  useEffect(() => {
+    if (activePanel !== "alerts") return;
+    if (alerts.length === 0) return;
+    const newest = alerts.reduce((acc, a) => {
+      const t = new Date(a.timestamp).getTime();
+      return t > acc ? t : acc;
+    }, 0);
+    if (newest <= 0) return;
+    const newestIso = new Date(newest).toISOString();
+    if (newestIso === lastViewedAlertTs) return;
+    setLastViewedAlertTs(newestIso);
+    try { localStorage.setItem("foxify_admin_last_viewed_alert_ts", newestIso); } catch { /* localStorage unavailable */ }
+  }, [activePanel, alerts, lastViewedAlertTs]);
+
+  const handleTreasuryCheck = async () => {
+    setTreasuryLoading(true);
+    try {
+      // 2026-04-23: switched from /pilot/monitor/treasury-check (Bullish — dead
+      // for retail pilot) to /pilot/admin/deribit-balance (live Deribit fetch).
+      // Endpoint returns {balanceBtc, availableBtc, equityBtc, balanceUsd, ...}
+      // straight from Deribit's get_account_summary plus a fresh spot price.
+      const res = await adminApi<TreasurySnapshot>("/pilot/admin/deribit-balance", token);
+      setTreasury(res);
+    } catch (e) {
+      console.error("Failed to fetch Deribit balance:", e);
+      setTreasury(null);
+    } finally {
+      setTreasuryLoading(false);
+    }
+  };
+
+  const handleSettlement = async () => {
+    if (!settlementDialog) return;
+    setSettlementLoading(true);
+    try {
+      const path = settlementDialog.type === "premium"
+        ? `/pilot/admin/protections/${settlementDialog.protectionId}/premium-settled`
+        : `/pilot/admin/protections/${settlementDialog.protectionId}/payout-settled`;
+      const body = settlementDialog.type === "premium"
+        ? { amount: Number(settlementDialog.amount) }
+        : { amount: Number(settlementDialog.amount) };
+      await adminApi(path, token, { method: "POST", body: JSON.stringify(body) });
+      setSettlementDialog(null);
+      refresh();
+    } catch (e: any) {
+      alert(`Settlement failed: ${e.message}`);
+    } finally {
+      setSettlementLoading(false);
+    }
+  };
+
+  const panels = [
+    { id: "health" as const, label: "Health" },
+    { id: "protections" as const, label: "Protections" },
+    { id: "triggered" as const, label: "Triggered Trades" },
+    { id: "quality" as const, label: "Execution" },
+    { id: "alerts" as const, label: "Alerts" },
+    { id: "config" as const, label: "Config" },
+  ];
+
+  const statusBadge = (status: string) => {
+    const color = status === "ok" || status === "healthy" ? "var(--success)" : "var(--danger)";
+    return (
+      <span style={{
+        display: "inline-flex", alignItems: "center", gap: 4,
+        fontSize: 11, fontWeight: 600, color,
+        background: status === "ok" || status === "healthy" ? "rgba(54,211,141,0.12)" : "rgba(255,107,107,0.12)",
+        padding: "2px 8px", borderRadius: 999,
+      }}>
+        <span style={{ width: 6, height: 6, borderRadius: "50%", background: color }} />
+        {status.toUpperCase()}
+      </span>
+    );
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "var(--bg)", color: "var(--text)", padding: 20 }}>
+      <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 18, fontWeight: 600 }}>
+              <span style={{ color: "var(--accent)" }}>Atticus</span> Admin
+            </div>
+            <div style={{ fontSize: 11, color: "var(--muted)" }}>
+              Last refresh: {lastRefresh || "loading..."}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {livePrice && (
+              <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 8, background: "var(--card-2)", border: "1px solid var(--border)" }}>
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>BTC</span>
+                <span style={{ fontSize: 14, fontWeight: 700, fontVariantNumeric: "tabular-nums", color: "var(--text)" }}>{fmtUsd(livePrice)}</span>
+                <span style={{ width: 6, height: 6, borderRadius: "50%", background: (Date.now() - livePriceRef.current) < 5000 ? "var(--success)" : "var(--muted)" }} />
+              </div>
+            )}
+            <button
+              onClick={refresh}
+              style={{
+                padding: "6px 14px", borderRadius: 8, border: "1px solid var(--border)",
+                background: "var(--card-2)", color: "var(--text)", fontSize: 12, cursor: "pointer",
+              }}
+            >
+              Refresh
+            </button>
+            <button
+              onClick={() => { sessionStorage.removeItem("pilot_admin_token"); window.location.reload(); }}
+              style={{
+                padding: "6px 14px", borderRadius: 8, border: "1px solid var(--border)",
+                background: "var(--card-2)", color: "var(--muted)", fontSize: 12, cursor: "pointer",
+              }}
+            >
+              Sign Out
+            </button>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ color: "var(--danger)", fontSize: 12, marginBottom: 14, padding: 10, background: "rgba(255,107,107,0.08)", borderRadius: 8 }}>
+            {error}
+          </div>
+        )}
+
+        {/* Nav tabs */}
+        <div style={{ display: "flex", gap: 0, marginBottom: 18, borderRadius: 10, overflow: "hidden", border: "1px solid var(--border)" }}>
+          {panels.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => setActivePanel(p.id)}
+              style={{
+                flex: 1, padding: "9px 0", border: "none", cursor: "pointer",
+                fontSize: 12, fontWeight: 600,
+                background: activePanel === p.id ? "rgba(184,90,28,0.15)" : "var(--card-2)",
+                color: activePanel === p.id ? "var(--accent)" : "var(--muted)",
+                transition: "all 0.15s ease",
+              }}
+            >
+              {p.label}
+              {p.id === "alerts" && (() => {
+                // Unread = alerts whose timestamp is strictly newer than
+                // the last-viewed timestamp the operator clicked into.
+                // First-time use (lastViewedAlertTs empty) treats every
+                // alert as unread, which matches user expectation.
+                const unreadCount = alerts.filter(
+                  (a) => !lastViewedAlertTs || new Date(a.timestamp).getTime() > new Date(lastViewedAlertTs).getTime()
+                ).length;
+                if (unreadCount === 0) return null;
+                return (
+                  <span style={{
+                    marginLeft: 4, fontSize: 10, background: "var(--danger)",
+                    color: "#fff", borderRadius: 999, padding: "1px 5px",
+                  }}>
+                    {unreadCount}
+                  </span>
+                );
+              })()}
+            </button>
+          ))}
+        </div>
+
+        {/* ─── Panel: Health ─── */}
+        {activePanel === "health" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            {/* System health */}
+            <div className="card">
+              <div className="title" style={{ fontSize: 13 }}>Platform Health</div>
+              {health ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>Overall</span>
+                    {statusBadge(health.status)}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>Database</span>
+                    {statusBadge(health.checks?.db?.status || "unknown")}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>Price Feed</span>
+                    {statusBadge(health.checks?.price?.status || "unknown")}
+                  </div>
+                  {health.checks?.price?.source && (
+                    <div style={{ fontSize: 11, color: "var(--muted)", marginTop: -4 }}>
+                      Source: {String(health.checks.price.source)}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--muted)", padding: "10px 0" }}>
+                  {monitorStatus ? "Health endpoint returned degraded — check Deribit connectivity in Render logs" : "Loading..."}
+                </div>
+              )}
+            </div>
+
+            {/* Monitor */}
+            <div className="card">
+              <div className="title" style={{ fontSize: 13 }}>Monitor</div>
+              {monitorStatus && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>Healthy</span>
+                    {statusBadge(monitorStatus.healthy ? "ok" : "degraded")}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>Consecutive Failures</span>
+                    <span style={{
+                      fontSize: 14, fontWeight: 600,
+                      color: monitorStatus.consecutiveFailures > 0 ? "var(--danger)" : "var(--success)",
+                    }}>
+                      {monitorStatus.consecutiveFailures}
+                    </span>
+                  </div>
+                  {monitorStatus.fillRate !== undefined && (
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: 12, color: "var(--muted)" }}>Fill Rate</span>
+                      <span style={{ fontSize: 14, fontWeight: 600 }}>
+                        {(monitorStatus.fillRate * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Treasury */}
+            <div className="card" style={{ gridColumn: "1 / -1" }}>
+              <div className="title" style={{ fontSize: 13 }}>
+                <span>Treasury</span>
+                <button
+                  onClick={handleTreasuryCheck}
+                  disabled={treasuryLoading}
+                  style={{
+                    padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border)",
+                    background: "var(--card-2)", color: "var(--muted)", fontSize: 11, cursor: "pointer",
+                  }}
+                >
+                  {treasuryLoading ? "Checking..." : "Check Balance"}
+                </button>
+              </div>
+              {metrics && (
+                <div className="stats" style={{ gridTemplateColumns: "repeat(4, 1fr)" }}>
+                  <div className="stat">
+                    <div className="label">Starting Reserve</div>
+                    <div className="value" style={{ fontSize: 13 }}>{fmtUsd(metrics.startingReserveUsdc)}</div>
+                  </div>
+                  <div className="stat">
+                    <div className="label">After Liabilities</div>
+                    <div className="value" style={{ fontSize: 13 }}>{fmtUsd(metrics.reserveAfterOpenPayoutLiabilityUsdc)}</div>
+                  </div>
+                  <div className="stat">
+                    <div className="label">Premium Collected</div>
+                    <div className="value" style={{ fontSize: 13, color: "var(--success)" }}>{fmtUsd(metrics.totalPremiumCollectedUsdc)}</div>
+                  </div>
+                  <div className="stat">
+                    <div className="label">Payouts Due</div>
+                    <div className="value" style={{ fontSize: 13, color: "var(--danger)" }}>{fmtUsd(metrics.totalPayoutDueUsdc)}</div>
+                  </div>
+                </div>
+              )}
+              {treasury && (treasury.balanceBtc !== undefined || treasury.balance) && (
+                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 8, lineHeight: 1.6 }}>
+                  {treasury.balanceBtc !== undefined ? (
+                    // New live-Deribit response shape
+                    <>
+                      <div>
+                        <strong style={{ color: "var(--text)" }}>Deribit live balance:</strong>{" "}
+                        {treasury.balanceBtc.toFixed(8)} BTC
+                        {treasury.balanceUsd !== null && treasury.balanceUsd !== undefined ? ` (≈ $${treasury.balanceUsd.toFixed(2)})` : ""}
+                      </div>
+                      {treasury.availableBtc !== undefined && (
+                        <div>
+                          Available: {treasury.availableBtc.toFixed(8)} BTC
+                          {treasury.availableUsd !== null && treasury.availableUsd !== undefined ? ` (≈ $${treasury.availableUsd.toFixed(2)})` : ""}
+                        </div>
+                      )}
+                      {treasury.marginModel && (
+                        <div style={{ fontSize: 10, opacity: 0.7 }}>
+                          margin: {treasury.marginModel}{treasury.crossCollateralEnabled ? " · cross-collateral on" : ""}
+                          {treasury.spotUsd ? ` · BTC index ${"$" + treasury.spotUsd.toFixed(0)}` : ""}
+                          {treasury.asOf ? ` · ${new Date(treasury.asOf).toLocaleTimeString()}` : ""}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    // Legacy Bullish response shape (defensive — shouldn't fire post-fix)
+                    <>Account balance: {fmtUsd(treasury.balance!)} {treasury.currency || "USDC"}</>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ─── Panel: Protections ─── */}
+        {activePanel === "protections" && (
+          <div className="card card-wide">
+            <div className="title" style={{ fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>
+                Protections
+                {metrics && (
+                  <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400, marginLeft: 8 }}>
+                    {metrics.activeProtections} active / {metrics.totalProtections} total
+                  </span>
+                )}
+                <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400, marginLeft: 8 }}>
+                  ({protectionsList.length} shown, scope: {protectionsScope})
+                </span>
+              </span>
+              <button
+                onClick={() => setProtectionsScope((s) => (s === "open" ? "all" : "open"))}
+                style={{
+                  fontSize: 11,
+                  padding: "4px 10px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  background: "transparent",
+                  color: "var(--muted)",
+                  cursor: "pointer",
+                  fontWeight: 500
+                }}
+                title="Toggle between 'open only' (active / triggered / pending) and 'all' (includes expired and cancelled history)"
+              >
+                {protectionsScope === "open" ? "Show all (history)" : "Show open only"}
+              </button>
+            </div>
+            {protectionsList.length > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      {["ID", "Status", "Type", "SL%", "AR", "Notional", "Entry", "Floor", "Strike", "Gap", "Premium", "Hedge", "Spread", "Payout", "TP $", "Time", "TP Status", "Actions"].map((h) => (
+                        <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {protectionsList.map((p) => {
+                      const isActive = p.status === "active" || p.status === "quoted";
+                      const isTriggered = p.status === "triggered";
+                      const isReconcile = p.status === "reconcile_pending";
+                      const isFailed = p.status === "activation_failed";
+                      const statusLabel: Record<string, string> = {
+                        active: "Protected",
+                        triggered: "Triggered",
+                        reconcile_pending: "⚠ Processing",
+                        activation_failed: "Failed",
+                        pending_activation: "Activating",
+                        expired_otm: "Expired",
+                        expired_itm: "Settled",
+                        awaiting_expiry_price: "Expiring",
+                        awaiting_renew_decision: "Renewing",
+                        cancelled: "Cancelled"
+                      };
+                      const execPrice = Number(p.executionPrice || 0);
+                      const size = Number(p.size || 0);
+                      // 2026-05-01 — biweekly venues (Deribit) write
+                      // executionPrice in BTC, not USD; multiplying
+                      // execPrice × size gives BTC qty, not USD cost.
+                      // Prefer metadata.hedgeCostUsd (stamped by
+                      // biweeklyActivate post-PR-#120-followup); fall
+                      // back to BTC × spotAtActivation if not present;
+                      // last resort use execPrice × size (legacy 1-day
+                      // path where execPrice was already USD).
+                      const meta = (p.metadata as any) || {};
+                      const hedgeCostFromMeta = Number(meta.hedgeCostUsd || 0);
+                      const spotAtActivation = Number(meta.spotAtActivation || 0);
+                      const isBiweekly = Number((p as any).tenorDays || 1) >= 2;
+                      const hedgeCost = hedgeCostFromMeta > 0
+                        ? hedgeCostFromMeta
+                        : isBiweekly && spotAtActivation > 0 && execPrice > 0 && size > 0
+                          ? execPrice * size * spotAtActivation
+                          : execPrice > 0 && size > 0 ? execPrice * size : 0;
+                      // 2026-05-01 — biweekly Premium / Spread are
+                      // DYNAMIC. Compute live from created_at + daily
+                      // rate so admin sees the running bill grow each
+                      // day without waiting for close-time
+                      // accumulated_charge_usd to be written.
+                      //
+                      // Billing rule (matches biweeklyPricing.ts
+                      // computeAccumulatedCharge):
+                      //   billedDays = ceil((now - created_at) / 1d)
+                      //   clamped to [1, 14]
+                      //   running = billedDays × dailyRate × notional/1000
+                      // For biweekly active rows we show "running / max"
+                      // so CEO sees both. For biweekly closed rows we
+                      // show the final accumulated_charge_usd.
+                      // For legacy 1-day, premium column = upfront
+                      // premium (one-shot, no daily accrual).
+                      const dailyRatePer1k = Number((p as any).dailyRateUsdPer1k || 0);
+                      const notionalNum = Number(p.protectedNotional || 0);
+                      const createdAtMs = new Date(p.createdAt).getTime();
+                      const liveBilledDays = isBiweekly && createdAtMs > 0
+                        ? Math.min(14, Math.max(1, Math.ceil((Date.now() - createdAtMs) / 86400000)))
+                        : 0;
+                      const liveAccrualUsd = isBiweekly && dailyRatePer1k > 0 && notionalNum > 0
+                        ? liveBilledDays * dailyRatePer1k * (notionalNum / 1000)
+                        : 0;
+                      const accumulatedCharge = Number((p as any).accumulatedChargeUsd || 0);
+                      // Choose display value: closed biweekly → final
+                      // accumulated; active biweekly → live accrual;
+                      // legacy 1-day → top-level premium column.
+                      const isClosedBiweekly = isBiweekly && (p.status === "cancelled" || p.status === "triggered" || p.status === "expired_otm" || p.status === "expired_itm");
+                      const displayedPremium = isBiweekly
+                        ? (isClosedBiweekly && accumulatedCharge > 0 ? accumulatedCharge : liveAccrualUsd)
+                        : Number(p.premium || 0);
+                      // Max ceiling for biweekly (= dailyRate × 14 ×
+                      // notional/1000). Stamped in metadata.maxProjectedChargeUsd
+                      // by biweeklyActivate post-PR-#122; fall back to
+                      // p.premium (which PR #122 stamps as the ceiling).
+                      const biweeklyCeiling = isBiweekly
+                        ? (Number(meta.maxProjectedChargeUsd || 0) > 0
+                            ? Number(meta.maxProjectedChargeUsd)
+                            : (dailyRatePer1k > 0 && notionalNum > 0
+                                ? 14 * dailyRatePer1k * (notionalNum / 1000)
+                                : Number(p.premium || 0)))
+                        : 0;
+                      // Spread tracks the LIVE displayed premium so
+                      // admin sees current platform margin (grows each
+                      // day for biweekly, fixed for legacy 1-day).
+                      const spread = displayedPremium > 0 && hedgeCost > 0
+                        ? displayedPremium - hedgeCost
+                        : null;
+                      const payout = Number(p.payoutDueAmount || 0);
+                      const payoutSettled = Number(p.payoutSettledAmount || 0);
+                      const payoutStatus = payout > 0 ? (payoutSettled > 0 ? "Settled" : "Due") : "";
+                      const msLeft = new Date(p.expiryAt).getTime() - Date.now();
+                      const timeLeft = msLeft <= 0 ? "Expired" : msLeft > 86400000 ? `${Math.floor(msLeft / 86400000)}d ${Math.floor((msLeft % 86400000) / 3600000)}h` : `${Math.floor(msLeft / 3600000)}h ${Math.floor((msLeft % 3600000) / 60000)}m`;
+                      const rawSide = String(p.metadata?.protectionType || p.side || "long");
+                      const protType = rawSide === "short" ? "short" : "long";
+                      const strikeMatch = String(p.instrumentId || "").match(/(\d+)-(P|C)$/);
+                      const hedgeStrike = strikeMatch ? Number(strikeMatch[1]) : null;
+                      const floorNum = Number(p.floorPrice || 0);
+                      const strikeGap = hedgeStrike && floorNum > 0 ? hedgeStrike - floorNum : null;
+                      return (
+                        <tr key={p.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                          <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>{p.id.slice(0, 8)}...</td>
+                          <td style={{ padding: "8px 6px" }}>
+                            <span style={{
+                              fontSize: 10, fontWeight: 600, padding: "2px 6px", borderRadius: 999,
+                              background: isActive ? "rgba(54,211,141,0.12)" : isTriggered ? "rgba(255,107,107,0.12)" : isReconcile ? "rgba(240,185,11,0.12)" : isFailed ? "rgba(255,107,107,0.08)" : "rgba(168,168,173,0.12)",
+                              color: isActive ? "var(--success)" : isTriggered ? "var(--danger)" : isReconcile ? "#f0b90b" : isFailed ? "var(--danger)" : "var(--muted)",
+                            }}>
+                              {statusLabel[p.status] || p.status}
+                            </span>
+                            {/* Courtesy-close indicator (2026-05-07): shows
+                                ⊘ courtesy badge when an admin-initiated
+                                courtesy close was applied (vs normal
+                                user_close, trigger, or natural expiry).
+                                Helps ops distinguish courtesy adjustments
+                                from organic closes during reconciliation. */}
+                            {(p.metadata as any)?.courtesyClose && (
+                              <span
+                                title={`Courtesy close by ${(p.metadata as any).courtesyClose.by}: ${(p.metadata as any).courtesyClose.reason}`}
+                                style={{
+                                  marginLeft: 4, fontSize: 9, fontWeight: 600,
+                                  padding: "1px 5px", borderRadius: 999,
+                                  background: "rgba(96,165,250,0.15)", color: "#60a5fa"
+                                }}
+                              >
+                                ⊘ courtesy
+                              </span>
+                            )}
+                            {/* Deferred-close indicator (2026-05-06): shows
+                                "Closing in HH:MM" when a scheduled close
+                                is pending. Status remains 'active' until
+                                the boundary fires. */}
+                            {(p as any).closeEffectiveAt && isActive && (() => {
+                              const remMs = new Date((p as any).closeEffectiveAt).getTime() - Date.now();
+                              if (remMs <= 0) return null;
+                              const hh = Math.floor(remMs / 3600000);
+                              const mm = Math.floor((remMs % 3600000) / 60000);
+                              return (
+                                <span
+                                  title={`Scheduled to close at ${new Date((p as any).closeEffectiveAt).toUTCString().slice(17, 25)} UTC`}
+                                  style={{
+                                    marginLeft: 4, fontSize: 9, fontWeight: 600,
+                                    padding: "1px 5px", borderRadius: 999,
+                                    background: "rgba(240,185,11,0.15)", color: "#f0b90b"
+                                  }}
+                                >
+                                  ⏱ {hh}h {mm}m
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, fontWeight: 600, textTransform: "uppercase", color: protType === "short" ? "var(--danger)" : "var(--success)" }}>{protType}</td>
+                          <td style={{ padding: "8px 6px", fontSize: 11, fontWeight: 600 }}>{p.slPct ? `${p.slPct}%` : p.tierName || "—"}</td>
+                          <td style={{ padding: "8px 6px", textAlign: "center" }}>
+                            {p.autoRenew ? <span style={{ fontSize: 9, fontWeight: 600, padding: "1px 4px", borderRadius: 999, background: "rgba(96,165,250,0.15)", color: "#60a5fa" }}>↻</span> : <span style={{ fontSize: 9, color: "var(--muted)" }}>—</span>}
+                          </td>
+                          <td style={{ padding: "8px 6px" }}>{fmtUsd(p.protectedNotional)}</td>
+                          <td style={{ padding: "8px 6px" }}>{p.entryPrice ? fmtUsd(p.entryPrice) : "—"}</td>
+                          <td style={{ padding: "8px 6px" }}>{p.floorPrice ? fmtUsd(p.floorPrice) : "—"}</td>
+                          <td style={{ padding: "8px 6px" }}>{hedgeStrike ? fmtUsd(hedgeStrike) : "—"}</td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, color: strikeGap !== null ? (strikeGap >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
+                            {strikeGap !== null ? `${strikeGap >= 0 ? "+" : ""}${fmtUsd(strikeGap)}` : "—"}
+                          </td>
+                          <td
+                            style={{ padding: "8px 6px" }}
+                            title={
+                              isBiweekly
+                                ? `Day ${liveBilledDays} of 14 — billed ${fmtUsd(displayedPremium)}. Daily rate ${fmtUsd(dailyRatePer1k * notionalNum / 1000)}/day. Max if held to expiry ${fmtUsd(biweeklyCeiling)}.`
+                                : undefined
+                            }
+                          >
+                            {isBiweekly && displayedPremium > 0
+                              ? <>
+                                  {fmtUsd(displayedPremium)}
+                                  <span style={{ fontSize: 9, color: "var(--muted)" }}>
+                                    {" "}/{fmtUsd(biweeklyCeiling)}
+                                  </span>
+                                </>
+                              : displayedPremium > 0 ? fmtUsd(displayedPremium) : "—"}
+                          </td>
+                          <td style={{ padding: "8px 6px" }}>{hedgeCost > 0 ? fmtUsd(hedgeCost) : "—"}</td>
+                          <td style={{ padding: "8px 6px", color: spread !== null ? (spread >= 0 ? "var(--success)" : "var(--danger)") : "var(--muted)" }}>
+                            {spread !== null ? fmtUsd(spread) : "—"}
+                          </td>
+                          <td style={{ padding: "8px 6px", fontSize: 10 }}>
+                            {payout > 0 ? <><span style={{ color: "var(--danger)" }}>{fmtUsd(payout)}</span> <span style={{ fontSize: 9, color: payoutStatus === "Settled" ? "var(--success)" : "var(--muted)" }}>{payoutStatus}</span></> : "—"}
+                          </td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, color: "var(--success)" }}>
+                            {(() => {
+                              const sr = (p.metadata as any)?.sellResult;
+                              const tp = sr?.totalProceeds ? Number(sr.totalProceeds) : 0;
+                              return tp > 0 ? fmtUsd(tp) : "—";
+                            })()}
+                          </td>
+                          <td style={{ padding: "8px 6px", fontSize: 10, color: msLeft < 3600000 && msLeft > 0 ? "var(--danger)" : "var(--muted)" }}>{(isActive || isTriggered) ? timeLeft : "—"}</td>
+                          <td style={{ padding: "8px 6px", fontSize: 10 }}>
+                            {(() => {
+                              const isExpired = p.status?.startsWith("expired") || false;
+                              const tpLabel =
+                                p.hedgeStatus === "tp_sold" ? "TP Sold"
+                                : p.hedgeStatus === "expired_settled" ? "Settled"
+                                : p.hedgeStatus === "active" && isTriggered ? "Awaiting TP"
+                                : p.hedgeStatus === "active" && isExpired ? "Expired (no TP)"
+                                : p.hedgeStatus || "—";
+                              const tpBg =
+                                p.hedgeStatus === "tp_sold" ? "rgba(54,211,141,0.12)"
+                                : p.hedgeStatus === "active" && isTriggered ? "rgba(240,185,11,0.12)"
+                                : p.hedgeStatus === "active" && isExpired ? "rgba(168,168,173,0.12)"
+                                : "rgba(168,168,173,0.08)";
+                              const tpColor =
+                                p.hedgeStatus === "tp_sold" ? "var(--success)"
+                                : p.hedgeStatus === "expired_settled" ? "var(--muted)"
+                                : p.hedgeStatus === "active" && isTriggered ? "#f0b90b"
+                                : "var(--muted)";
+                              return (
+                                <span style={{ padding: "1px 5px", borderRadius: 999, fontSize: 9, fontWeight: 600, background: tpBg, color: tpColor }}>
+                                  {tpLabel}
+                                </span>
+                              );
+                            })()}
+                          </td>
+                          <td style={{ padding: "8px 6px" }}>
+                            <div style={{ display: "flex", gap: 4 }}>
+                              <button
+                                onClick={() => setSettlementDialog({
+                                  type: "premium", protectionId: p.id,
+                                  amount: String(p.premium || 0),
+                                })}
+                                style={{
+                                  padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)",
+                                  background: "var(--card-2)", color: "var(--success)", fontSize: 10,
+                                  cursor: "pointer", whiteSpace: "nowrap",
+                                }}
+                              >
+                                Settle Premium
+                              </button>
+                              {Number(p.payoutDueAmount || 0) > 0 && (
+                                <button
+                                  onClick={() => setSettlementDialog({
+                                    type: "payout", protectionId: p.id,
+                                    amount: String(p.payoutDueAmount || 0),
+                                  })}
+                                  style={{
+                                    padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)",
+                                    background: "var(--card-2)", color: "var(--danger)", fontSize: 10,
+                                    cursor: "pointer", whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  Settle Payout
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {protectionsList.length > 0 && (() => {
+                      // 2026-05-01 — totals use the same live-bill
+                      // semantics as per-row Premium / Hedge / Spread.
+                      // Biweekly active rows accrue daily; biweekly
+                      // closed rows use accumulated_charge_usd; legacy
+                      // 1-day uses upfront premium column.
+                      const computePerRow = (p: any) => {
+                        const m = (p.metadata as any) || {};
+                        const isBw = Number(p.tenorDays || 1) >= 2;
+                        const ep = Number(p.executionPrice || 0);
+                        const sz = Number(p.size || 0);
+                        const spot = Number(m.spotAtActivation || 0);
+                        const hc =
+                          Number(m.hedgeCostUsd || 0) > 0
+                            ? Number(m.hedgeCostUsd)
+                            : isBw && spot > 0 && ep > 0 && sz > 0
+                              ? ep * sz * spot
+                              : ep > 0 && sz > 0 ? ep * sz : 0;
+                        const dr = Number(p.dailyRateUsdPer1k || 0);
+                        const nt = Number(p.protectedNotional || 0);
+                        const cm = new Date(p.createdAt).getTime();
+                        const ld = isBw && cm > 0
+                          ? Math.min(14, Math.max(1, Math.ceil((Date.now() - cm) / 86400000)))
+                          : 0;
+                        const live = isBw && dr > 0 && nt > 0 ? ld * dr * (nt / 1000) : 0;
+                        const acc = Number(p.accumulatedChargeUsd || 0);
+                        const closed = isBw && (p.status === "cancelled" || p.status === "triggered" || p.status === "expired_otm" || p.status === "expired_itm");
+                        const prem = isBw
+                          ? (closed && acc > 0 ? acc : live)
+                          : Number(p.premium || 0);
+                        return { prem, hc };
+                      };
+                      const allPremium = protectionsList.reduce((s, p) => s + computePerRow(p).prem, 0);
+                      const allHedge = protectionsList.reduce((s, p) => s + computePerRow(p).hc, 0);
+                      const allPayout = protectionsList.reduce((s, p) => s + Number(p.payoutDueAmount || 0), 0);
+                      const allTpRecovery = protectionsList.reduce((s, p) => {
+                        const sr = (p.metadata as any)?.sellResult;
+                        return s + (sr?.totalProceeds ? Number(sr.totalProceeds) : 0);
+                      }, 0);
+                      const allSpread = allPremium - allHedge;
+                      const netPnl = allPremium - allHedge - allPayout + allTpRecovery;
+                      const triggered = protectionsList.filter(p => p.status === "triggered").length;
+                      const active = protectionsList.filter(p => p.status === "active").length;
+                      const tpSold = protectionsList.filter(p => p.hedgeStatus === "tp_sold").length;
+                      return (
+                        <tr style={{ borderTop: "2px solid var(--border)", fontWeight: 600, fontSize: 11 }}>
+                          <td style={{ padding: "8px 6px" }} colSpan={9}>TOTALS — {active} active, {triggered} triggered, {tpSold} TP sold</td>
+                          <td style={{ padding: "8px 6px" }}>{fmtUsd(allPremium)}</td>
+                          <td style={{ padding: "8px 6px" }}>{fmtUsd(allHedge)}</td>
+                          <td style={{ padding: "8px 6px", color: allSpread >= 0 ? "var(--success)" : "var(--danger)" }}>{fmtUsd(allSpread)}</td>
+                          <td style={{ padding: "8px 6px", color: "var(--danger)" }}>{allPayout > 0 ? fmtUsd(allPayout) : "—"}</td>
+                          <td style={{ padding: "8px 6px", color: "var(--success)" }}>{allTpRecovery > 0 ? fmtUsd(allTpRecovery) : "—"}</td>
+                          <td style={{ padding: "8px 6px", color: netPnl >= 0 ? "var(--success)" : "var(--danger)" }} colSpan={3}>Net: {fmtUsd(netPnl)}</td>
+                        </tr>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
+                No protections found
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── Panel: Triggered Trades ─── */}
+        {activePanel === "triggered" && (
+          <div className="card card-wide">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div className="title" style={{ fontSize: 13 }}>Triggered Trades</div>
+              <div style={{ display: "flex", gap: 6, fontSize: 11 }}>
+                {(["all", "long", "short"] as const).map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setTriggeredDirectionFilter(d)}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 6,
+                      fontSize: 11,
+                      border: `1px solid ${triggeredDirectionFilter === d ? "var(--accent)" : "var(--border)"}`,
+                      background: triggeredDirectionFilter === d ? "rgba(99,179,237,0.1)" : "transparent",
+                      color: triggeredDirectionFilter === d ? "var(--accent)" : "var(--muted)",
+                      cursor: "pointer"
+                    }}
+                  >
+                    {d === "all" ? "All" : d === "long" ? "LONG" : "SHORT"}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Summary strip */}
+            {triggeredSummary && triggeredSummary.totalTriggered > 0 && (
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+                gap: 8,
+                padding: 10,
+                background: "var(--card-2)",
+                borderRadius: 8,
+                marginBottom: 12,
+                fontSize: 11
+              }}>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>Triggered / Sold</div>
+                  <div style={{ fontWeight: 600 }}>{triggeredSummary.totalTriggered} / {triggeredSummary.totalSold}</div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>Avg Recovery</div>
+                  <div style={{
+                    fontWeight: 600,
+                    color: triggeredSummary.avgRecoveryRatioPct === null
+                      ? "var(--muted)"
+                      : triggeredSummary.avgRecoveryRatioPct >= triggeredSummary.baselineRecoveryRatioPct - 10
+                        ? "var(--success)"
+                        : triggeredSummary.avgRecoveryRatioPct >= 30
+                          ? "#f2a65a"
+                          : "var(--danger)"
+                  }}>
+                    {triggeredSummary.avgRecoveryRatioPct !== null ? `${triggeredSummary.avgRecoveryRatioPct.toFixed(1)}%` : "—"}
+                    <span style={{ fontSize: 9, color: "var(--muted)", marginLeft: 4, fontWeight: 400 }}>
+                      vs {triggeredSummary.baselineRecoveryRatioPct}% R1
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>LONG Recovery</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {triggeredSummary.avgRecoveryRatioLongPct !== null ? `${triggeredSummary.avgRecoveryRatioLongPct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>SHORT Recovery</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {triggeredSummary.avgRecoveryRatioShortPct !== null ? `${triggeredSummary.avgRecoveryRatioShortPct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>Net P&amp;L (sum)</div>
+                  <div style={{
+                    fontWeight: 600,
+                    color: triggeredSummary.netPnlUsdSum >= 0 ? "var(--success)" : "var(--danger)"
+                  }}>
+                    {triggeredSummary.netPnlUsdSum >= 0 ? "+" : ""}${triggeredSummary.netPnlUsdSum.toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>ITM Strike Rate</div>
+                  <div style={{ fontWeight: 600 }}>
+                    {triggeredSummary.itmStrikeRatePct !== null ? `${triggeredSummary.itmStrikeRatePct.toFixed(1)}%` : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: "var(--muted)", marginBottom: 2 }}>Pattern Mix</div>
+                  <div style={{ fontWeight: 600, fontSize: 10 }}>
+                    {Object.entries(triggeredSummary.patternBreakdown)
+                      .map(([k, v]) => `${k.replace("_", " ")}:${v}`)
+                      .join(" · ") || "—"}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {triggeredRows.length > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      {[
+                        "Triggered",
+                        "Dir / SL",
+                        "Notional",
+                        "Trigger / Strike",
+                        "ITM?",
+                        "Pattern",
+                        "Sold After",
+                        "Recovery",
+                        "Net P&L",
+                        "Status"
+                      ].map((h) => (
+                        <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {triggeredRows.map((r) => (
+                      <tr key={r.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <td style={{ padding: "8px 6px", color: "var(--muted)", fontFamily: "monospace", fontSize: 10 }}>
+                          {r.triggeredAt ? new Date(r.triggeredAt).toLocaleString([], {
+                            month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"
+                          }) : "—"}
+                          <div style={{ fontSize: 9, color: "var(--muted)", marginTop: 2 }}>
+                            {r.id.slice(0, 8)}
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          <span style={{
+                            fontWeight: 600,
+                            color: r.direction === "short" ? "#f2a65a" : "var(--accent)"
+                          }}>
+                            {r.direction.toUpperCase()}
+                          </span>
+                          <span style={{ color: "var(--muted)", marginLeft: 4 }}>
+                            {r.slPct !== null ? `${r.slPct}%` : "—"}
+                          </span>
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>${r.protectedNotionalUsd.toLocaleString()}</td>
+                        <td style={{ padding: "8px 6px", fontFamily: "monospace", fontSize: 10 }}>
+                          ${Math.round(r.triggerPrice).toLocaleString()}
+                          <div style={{ color: "var(--muted)", marginTop: 2 }}>
+                            {r.selectedStrike !== null ? `K=$${Math.round(r.selectedStrike).toLocaleString()}` : "—"}
+                            {r.strikeGapToTriggerUsd !== null && (
+                              <span style={{ marginLeft: 4 }}>
+                                ({r.strikeGapToTriggerUsd >= 0 ? "+" : ""}${Math.round(r.strikeGapToTriggerUsd)})
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          <span style={{
+                            fontSize: 10, fontWeight: 600,
+                            color: r.strikeIsItm ? "var(--success)" : "#f2a65a"
+                          }}>
+                            {r.strikeIsItm ? "ITM" : "OTM"}
+                          </span>
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          <span style={{
+                            fontSize: 10,
+                            color: r.triggerPattern === "clear_breakout"
+                              ? "var(--success)"
+                              : r.triggerPattern === "barely_graze"
+                                ? "var(--danger)"
+                                : "var(--muted)"
+                          }}>
+                            {r.triggerPattern.replace("_", " ")}
+                          </span>
+                          {r.spotMoveThroughTriggerPct !== null && (
+                            <div style={{ fontSize: 9, color: "var(--muted)" }}>
+                              {r.spotMoveThroughTriggerPct >= 0 ? "+" : ""}{r.spotMoveThroughTriggerPct.toFixed(2)}%
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          {r.timeFromTriggerToSellMin !== null
+                            ? r.timeFromTriggerToSellMin < 60
+                              ? `${r.timeFromTriggerToSellMin}m`
+                              : `${(r.timeFromTriggerToSellMin / 60).toFixed(1)}h`
+                            : <span style={{ color: "var(--muted)" }}>—</span>}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          {r.recoveryRatioPct !== null ? (
+                            <span style={{
+                              fontWeight: 600,
+                              color: r.recoveryRatioPct >= 50 ? "var(--success)"
+                                : r.recoveryRatioPct >= 20 ? "#f2a65a"
+                                : "var(--danger)"
+                            }}>
+                              {r.recoveryRatioPct.toFixed(0)}%
+                            </span>
+                          ) : <span style={{ color: "var(--muted)" }}>—</span>}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          <span style={{
+                            fontWeight: 600,
+                            color: r.netPnlUsd >= 0 ? "var(--success)" : "var(--danger)"
+                          }}>
+                            {r.netPnlUsd >= 0 ? "+" : ""}${r.netPnlUsd.toFixed(0)}
+                          </span>
+                        </td>
+                        <td style={{ padding: "8px 6px", fontSize: 10, color: "var(--muted)" }}>
+                          {r.hedgeStatus || r.status}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
+                No triggered trades yet
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── Panel: Execution Quality ─── */}
+        {activePanel === "quality" && (
+          <div className="card card-wide">
+            <div className="title" style={{ fontSize: 13 }}>Execution Quality (30d)</div>
+            {execQuality.length > 0 ? (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      {["Date", "Venue", "Hedge Mode", "Fill Rate", "Avg Slippage (bps)", "P95 Slippage", "Samples"].map((h) => (
+                        <th key={h} style={{ padding: "8px 6px", textAlign: "left", color: "var(--muted)", fontWeight: 500 }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {execQuality.map((eq, i) => (
+                      <tr key={i} style={{ borderBottom: "1px solid var(--border)" }}>
+                        <td style={{ padding: "8px 6px" }}>{eq.day}</td>
+                        <td style={{ padding: "8px 6px" }}>{eq.venue}</td>
+                        <td style={{ padding: "8px 6px" }}>{eq.hedgeMode}</td>
+                        <td style={{ padding: "8px 6px", color: Number(eq.fillSuccessRatePct || 0) > 80 ? "var(--success)" : "var(--danger)" }}>
+                          {eq.fillSuccessRatePct ? `${Number(eq.fillSuccessRatePct).toFixed(1)}%` : "—"}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          {eq.avgSlippageBps ? `${Number(eq.avgSlippageBps).toFixed(2)}` : "—"}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>
+                          {eq.p95SlippageBps ? `${Number(eq.p95SlippageBps).toFixed(2)}` : "—"}
+                        </td>
+                        <td style={{ padding: "8px 6px" }}>{eq.sampleCount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
+                No execution quality data available
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── Panel: Alerts ─── */}
+        {activePanel === "alerts" && (
+          <div className="card card-wide">
+            <div className="title" style={{ fontSize: 13 }}>Recent Alerts</div>
+            {alerts.length > 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {alerts.map((a, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      padding: 10, borderRadius: 8,
+                      border: `1px solid ${a.severity === "critical" ? "rgba(255,107,107,0.3)" : a.severity === "warning" ? "rgba(242,166,90,0.3)" : "var(--border)"}`,
+                      background: a.severity === "critical" ? "rgba(255,107,107,0.04)" : a.severity === "warning" ? "rgba(242,166,90,0.04)" : "var(--card-2)",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, textTransform: "uppercase",
+                        color: a.severity === "critical" ? "var(--danger)" : a.severity === "warning" ? "#f2a65a" : "var(--muted)",
+                      }}>
+                        {a.type}
+                      </span>
+                      <span style={{ fontSize: 10, color: "var(--muted)" }}>
+                        {new Date(a.timestamp).toLocaleString()}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text)" }}>{a.message}</div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--success)", padding: "20px 0", textAlign: "center" }}>
+                No recent alerts
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ─── Panel: Config ─── */}
+        {activePanel === "config" && (
+          <div className="card card-wide">
+            <div className="title" style={{ fontSize: 13 }}>
+              <span>Configuration (Read-Only)</span>
+            </div>
+            {healthConfig || monitorStatus ? (
+              <pre style={{
+                fontSize: 11, lineHeight: 1.5, color: "var(--muted)",
+                background: "var(--card-2)", padding: 14, borderRadius: 8,
+                overflow: "auto", maxHeight: 500, border: "1px solid var(--border)",
+              }}>
+                {JSON.stringify(healthConfig || { monitor: monitorStatus, metrics: metrics }, null, 2)}
+              </pre>
+            ) : (
+              <div style={{ fontSize: 12, color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
+                No configuration data available. Health endpoint may be degraded.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Settlement dialog */}
+      {settlementDialog && (
+        <ConfirmDialog
+          title={settlementDialog.type === "premium" ? "Mark Premium Settled" : "Mark Payout Settled"}
+          message={
+            settlementDialog.type === "premium"
+              ? `Mark premium of ${fmtUsd(settlementDialog.amount)} as settled for protection ${settlementDialog.protectionId.slice(0, 12)}...?`
+              : `Mark payout of ${fmtUsd(settlementDialog.amount)} as settled for protection ${settlementDialog.protectionId.slice(0, 12)}...?`
+          }
+          onConfirm={handleSettlement}
+          onCancel={() => setSettlementDialog(null)}
+          loading={settlementLoading}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Root export ─────────────────────────────────────────────────────
+
+export function AdminDashboardPage() {
+  const [token, setToken] = useState<string | null>(() => sessionStorage.getItem("pilot_admin_token"));
+
+  if (!token) return <AdminLogin onLogin={setToken} />;
+  return <Dashboard token={token} />;
+}
