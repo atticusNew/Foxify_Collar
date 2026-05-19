@@ -222,6 +222,38 @@ test("finalizeSalvageProceedsForPosition: increments proceeds and recomputes sal
   // per sold leg, immediately after the ledger entry).
 });
 
+test("volume_cover_hedge_leg_status_check: 'sold' and 'failed' are valid; 'closed' and 'cancelled' are NOT", async () => {
+  // Locks the schema contract that force-sell-leg + cleanup-bullish-phantom-legs
+  // both depend on. Regression guard for the production 500 where the route
+  // wrote 'closed' but the CHECK only allows open|sold|expired|failed.
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  const result = await openPosition(pool, buildFillingExecutor(), {
+    cell,
+    foxifyPairId: "FX-CHECK-CONSTRAINT-1",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000
+  });
+  const legs = await listHedgeLegsForPosition(pool, result.position.id);
+  assert.ok(legs.length >= 1);
+  const legId = legs[0].id;
+
+  // 'sold' and 'failed' must succeed
+  await pool.query(`UPDATE volume_cover_hedge_leg SET status='sold' WHERE id=$1`, [legId]);
+  await pool.query(`UPDATE volume_cover_hedge_leg SET status='failed' WHERE id=$1`, [legId]);
+
+  // 'closed' and 'cancelled' must throw on the CHECK
+  await assert.rejects(
+    () => pool.query(`UPDATE volume_cover_hedge_leg SET status='closed' WHERE id=$1`, [legId]),
+    /check|constraint/i
+  );
+  await assert.rejects(
+    () => pool.query(`UPDATE volume_cover_hedge_leg SET status='cancelled' WHERE id=$1`, [legId]),
+    /check|constraint/i
+  );
+});
+
 test("finalizeSalvageProceedsForPosition: returns null when no salvage_event exists (pre-trigger close)", async () => {
   const pool = await buildPool();
   const cell = findCellById("50k_2pct_1k")!;
