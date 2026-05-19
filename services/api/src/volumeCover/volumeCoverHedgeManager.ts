@@ -698,6 +698,28 @@ export const runOneHedgeManagerTick = async (params: {
         expiryIso: leg.expiryIso,
         contractsBtc: leg.contracts
       });
+
+      // Slippage observability: compare realized proceeds vs the
+      // IV-implied current value the rule fired against. We do NOT
+      // refuse the sell here because the order already filled at the
+      // venue — refusing would create an orphan. Instead, emit a loud
+      // alert when slippage exceeds VC_HM_SELL_SLIPPAGE_ALERT_PCT
+      // (default 30%) so ops can investigate the IV model or venue
+      // liquidity. This is a post-hoc, non-blocking guardrail.
+      const slippageAlertPct = Number(process.env.VC_HM_SELL_SLIPPAGE_ALERT_PCT ?? 0.30);
+      if (currentValueUsdc > 0) {
+        const slippagePct = (currentValueUsdc - sellResult.totalProceedsUsdc) / currentValueUsdc;
+        if (slippagePct > slippageAlertPct) {
+          console.warn(
+            `[VC ALERT] hedge_sell slippage > ${(slippageAlertPct * 100).toFixed(0)}% — ` +
+              `legId=${leg.id} venue=${leg.venue} rule=${decision.rule} ` +
+              `expected=${currentValueUsdc.toFixed(2)} ` +
+              `actual=${sellResult.totalProceedsUsdc.toFixed(2)} ` +
+              `slippagePct=${(slippagePct * 100).toFixed(1)}%`
+          );
+        }
+      }
+
       await markHedgeLegSold(params.pool, {
         id: leg.id,
         sellPriceUsdc: sellResult.fillPriceUsdcPerBtc,

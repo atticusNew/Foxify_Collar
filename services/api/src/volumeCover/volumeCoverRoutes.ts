@@ -258,7 +258,18 @@ export const registerVolumeCoverRoutes = async (
 
   // ────────── FOXIFY-FACING ──────────
 
-  app.post("/volume-cover/quote", async (req: FastifyRequest, reply: FastifyReply) => {
+  // Tighter rate limits on Foxify-facing endpoints. The global limit
+  // (60/min) is already applied by the pilot router registration.
+  // These per-route values further constrain Foxify request bursts
+  // independent of total traffic from other consumers.
+  app.post("/volume-cover/quote", {
+    config: {
+      rateLimit: {
+        max: Number(process.env.VC_QUOTE_RATE_LIMIT_MAX ?? "30"),
+        timeWindow: Number(process.env.VC_QUOTE_RATE_LIMIT_WINDOW_MS ?? "60000")
+      }
+    }
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     const auth = isFoxifyAuthorized(req);
     if (!auth.ok) {
       return reply.code(401).send({ error: "unauthorized", reason: auth.reason });
@@ -322,7 +333,14 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
-  app.post("/volume-cover/activate", async (req: FastifyRequest, reply: FastifyReply) => {
+  app.post("/volume-cover/activate", {
+    config: {
+      rateLimit: {
+        max: Number(process.env.VC_ACTIVATE_RATE_LIMIT_MAX ?? "15"),
+        timeWindow: Number(process.env.VC_ACTIVATE_RATE_LIMIT_WINDOW_MS ?? "60000")
+      }
+    }
+  }, async (req: FastifyRequest, reply: FastifyReply) => {
     // Pair-event audit timing capture. Stages tracked:
     //   receivedAt        — request arrival (this point)
     //   guardsPassedAtMs  — after anti-bot + guard composer
