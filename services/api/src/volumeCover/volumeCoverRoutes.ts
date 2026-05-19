@@ -1443,6 +1443,177 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  /**
+   * Cleanup phantom retained legs from Bullish-rejected activations.
+   *
+   * Operator-driven cleanup of DB pollution caused by the silent
+   * Bullish-margin-not-enabled rejection bug. Those orders went to
+   * Bullish, came back as 'Command acknowledged' but were rejected
+   * during validation — yet our system recorded the legs as 'open'
+   * + 'retained=true' as if they were real holdings.
+   *
+   * This endpoint marks all retained Bullish legs as cancelled.
+   * SAFE: Bullish never actually filled any of them (verified via
+   * Bullish UI — no positions ever held). The DB rows are pure
+   * artifacts.
+   *
+   * Does NOT touch Deribit retained legs (those are real).
+   *
+   * Usage:
+   *   POST /admin/cleanup-bullish-phantom-legs            (dryRun=true by default)
+   *   POST /admin/cleanup-bullish-phantom-legs?confirm=true  (actually marks)
+   */
+  app.post("/volume-cover/admin/cleanup-bullish-phantom-legs", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const confirm = String((req.query as any)?.confirm ?? "false").toLowerCase() === "true";
+
+    const result = await pool.query(
+      `SELECT id, position_id, venue, option_kind, strike_usdc, retained, retained_role, retained_at, status
+         FROM volume_cover_hedge_leg
+        WHERE venue = 'bullish'
+          AND retained = TRUE
+          AND status = 'open'`
+    );
+    const phantoms = result.rows.map((r: any) => ({
+      legId: String(r.id),
+      positionId: String(r.position_id),
+      venue: String(r.venue),
+      optionKind: String(r.option_kind),
+      strikeUsdc: Number(r.strike_usdc),
+      retainedRole: r.retained_role ? String(r.retained_role) : null,
+      retainedAt: r.retained_at ? String(r.retained_at) : null
+    }));
+
+    if (!confirm) {
+      return reply.send({
+        dryRun: true,
+        phantomCount: phantoms.length,
+        phantoms,
+        note:
+          "Dry run — no rows changed. Re-call with ?confirm=true to mark these legs as cancelled."
+      });
+    }
+
+    let cancelled = 0;
+    for (const p of phantoms) {
+      await pool.query(
+        `UPDATE volume_cover_hedge_leg
+            SET status = 'cancelled',
+                closed_at = NOW(),
+                metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+          WHERE id = $1`,
+        [
+          p.legId,
+          JSON.stringify({
+            phantom_cleanup: true,
+            phantom_cleanup_reason: "bullish_never_filled_silent_rejection",
+            phantom_cleanup_at: new Date().toISOString()
+          })
+        ]
+      );
+      cancelled++;
+    }
+
+    return reply.send({
+      dryRun: false,
+      phantomCount: phantoms.length,
+      cancelled,
+      message: `Marked ${cancelled} Bullish phantom retained legs as cancelled.`
+    });
+  });
+
+  /**
+   * Force-sell a specific retained leg via the venue adapter,
+   * bypassing the hedge manager's TP curve. Operator-driven; useful
+   * for testing the sell path or for manual unwind decisions.
+   *
+   * Updates DB on success: status='closed', sell_price_usdc populated,
+   * sell_order_id populated.
+   *
+   * Usage:
+   *   POST /admin/force-sell-leg/:legId
+   */
+  app.post("/volume-cover/admin/force-sell-leg/:legId", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const legId = String((req.params as any)?.legId ?? "").trim();
+    if (!legId) return reply.code(400).send({ error: "missing_legId_param" });
+
+    const r = await pool.query(
+      `SELECT id, venue, option_kind, strike_usdc, expiry_iso, contracts, status, retained
+         FROM volume_cover_hedge_leg
+        WHERE id = $1`,
+      [legId]
+    );
+    if (r.rows.length === 0) {
+      return reply.code(404).send({ error: "leg_not_found", legId });
+    }
+    const leg = r.rows[0];
+    if (String(leg.status) !== "open") {
+      return reply.code(409).send({
+        error: "leg_not_sellable",
+        currentStatus: String(leg.status),
+        message: "Leg is not in 'open' status. Already sold, cancelled, or expired."
+      });
+    }
+
+    const venue = String(leg.venue) as "bullish" | "deribit";
+    const optionKind = String(leg.option_kind) as "put" | "call";
+    const strikeUsdc = Number(leg.strike_usdc);
+    const expiryIso = String(leg.expiry_iso);
+    const contractsBtc = Number(leg.contracts);
+
+    let sellResult: any = null;
+    try {
+      sellResult = await opts.hedgeExecutor.sellOptionLeg({
+        venue,
+        optionKind,
+        strikeUsdc,
+        expiryIso,
+        contractsBtc
+      });
+    } catch (err) {
+      return reply.code(502).send({
+        error: "sell_failed",
+        legId,
+        venue,
+        message: (err as Error).message
+      });
+    }
+
+    // Mark sold in DB
+    await pool.query(
+      `UPDATE volume_cover_hedge_leg
+          SET status = 'closed',
+              sell_price_usdc = $2,
+              sell_order_id = $3,
+              closed_at = NOW(),
+              metadata = COALESCE(metadata, '{}'::jsonb) || $4::jsonb
+        WHERE id = $1`,
+      [
+        legId,
+        sellResult.fillPriceUsdcPerBtc,
+        sellResult.orderId,
+        JSON.stringify({
+          force_sell: true,
+          force_sell_at: new Date().toISOString(),
+          force_sell_total_proceeds_usdc: sellResult.totalProceedsUsdc
+        })
+      ]
+    );
+
+    return reply.send({
+      success: true,
+      legId,
+      venue,
+      optionKind,
+      strikeUsdc,
+      contractsBtc,
+      fillPriceUsdcPerBtc: sellResult.fillPriceUsdcPerBtc,
+      totalProceedsUsdc: sellResult.totalProceedsUsdc,
+      orderId: sellResult.orderId
+    });
+  });
+
   app.get("/volume-cover/admin/bullish-key-check", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const { inspectBullishEcdsaKeyMaterial } = await import("../pilot/bullish");
