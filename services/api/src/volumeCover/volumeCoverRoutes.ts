@@ -87,6 +87,7 @@ import {
   recordTriggerForFingerprint,
   recordPatternStrike
 } from "./antiBot";
+import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
 
 // ────────────────────── Auth helpers ──────────────────────
 
@@ -1609,10 +1610,39 @@ export const registerVolumeCoverRoutes = async (
       ]
     );
 
+    // Ledger entry: hedge_sell_in. Canonical source of truth for
+    // realized proceeds. Without this row the weekly reconciler and
+    // Foxify reports under-report Atticus inflows.
+    const positionId = String(leg.position_id ?? "");
+    let ledgerInserted: boolean = false;
+    try {
+      await insertLedgerEntry(pool, {
+        poolId: "atticus_hedge",
+        protectionId: positionId || null,
+        entryType: "hedge_sell_in",
+        amountUsdc: sellResult.totalProceedsUsdc,
+        reference: `vc_hedge_sell_force:${legId}`,
+        metadata: {
+          product: "volume_cover",
+          source: "force-sell-leg",
+          venue,
+          option_kind: optionKind,
+          strike_usdc: strikeUsdc,
+          contracts_btc: contractsBtc,
+          fill_price_usdc_per_btc: sellResult.fillPriceUsdcPerBtc,
+          order_id: sellResult.orderId
+        }
+      });
+      ledgerInserted = true;
+    } catch (err) {
+      req.log.warn(
+        `[volume-cover/force-sell-leg] ledger insert failed for leg ${legId}: ${(err as Error).message}`
+      );
+    }
+
     // If this leg belongs to a triggered position, finalize that
     // position's salvage_event so Guard A (7d loss) and Guard B
     // (rolling salvage %) reflect realized proceeds.
-    const positionId = String(leg.position_id ?? "");
     let salvageFinalized: boolean | null = null;
     if (positionId) {
       try {
@@ -1640,6 +1670,7 @@ export const registerVolumeCoverRoutes = async (
       fillPriceUsdcPerBtc: sellResult.fillPriceUsdcPerBtc,
       totalProceedsUsdc: sellResult.totalProceedsUsdc,
       orderId: sellResult.orderId,
+      ledgerInserted,
       salvageFinalized
     });
   });
@@ -1720,8 +1751,39 @@ export const registerVolumeCoverRoutes = async (
       ]
     );
 
-    let salvageFinalized: boolean | null = null;
     const positionId = String(leg.position_id ?? "");
+
+    // Ledger entry: hedge_sell_in. Canonical source of truth for
+    // realized proceeds even when the venue side already filled
+    // and we are reconciling the DB after a 5xx.
+    let ledgerInserted: boolean = false;
+    try {
+      await insertLedgerEntry(pool, {
+        poolId: "atticus_hedge",
+        protectionId: positionId || null,
+        entryType: "hedge_sell_in",
+        amountUsdc: body.totalProceedsUsdc,
+        reference: `vc_hedge_sell_manual:${legId}`,
+        metadata: {
+          product: "volume_cover",
+          source: "mark-leg-sold-manual",
+          venue: String(leg.venue),
+          option_kind: String(leg.option_kind),
+          strike_usdc: Number(leg.strike_usdc),
+          contracts_btc: Number(leg.contracts),
+          fill_price_usdc_per_btc: body.fillPriceUsdcPerBtc,
+          order_id: body.orderId,
+          manual_reason: body.reason
+        }
+      });
+      ledgerInserted = true;
+    } catch (err) {
+      req.log.warn(
+        `[volume-cover/mark-leg-sold-manual] ledger insert failed for leg ${legId}: ${(err as Error).message}`
+      );
+    }
+
+    let salvageFinalized: boolean | null = null;
     if (positionId) {
       try {
         const finalized = await finalizeSalvageProceedsForPosition(pool, {
@@ -1750,7 +1812,101 @@ export const registerVolumeCoverRoutes = async (
       totalProceedsUsdc: body.totalProceedsUsdc,
       orderId: body.orderId,
       reason: body.reason,
+      ledgerInserted,
       salvageFinalized
+    });
+  });
+
+  /**
+   * Backfill a missing `hedge_sell_in` ledger entry for a leg that
+   * is already status='sold' in the DB. Idempotent: refuses if a
+   * `vc_hedge_sell_*:<legId>` reference already exists. Use ONLY
+   * to repair the small window of legs sold via the pre-fix
+   * `mark-leg-sold-manual` / `force-sell-leg` routes that did not
+   * write a ledger row.
+   *
+   * Body: { "totalProceedsUsdc": <number>, "reason": "<string>" }
+   */
+  app.post("/volume-cover/admin/backfill-ledger-sold-leg/:legId", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const legId = String((req.params as any)?.legId ?? "").trim();
+    if (!legId) return reply.code(400).send({ error: "missing_legId_param" });
+
+    const BackfillSchema = z.object({
+      totalProceedsUsdc: z.number().nonnegative().finite(),
+      reason: z.string().min(1).max(512)
+    });
+    const parse = BackfillSchema.safeParse(req.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: "invalid_request", issues: parse.error.issues });
+    }
+    const body = parse.data;
+
+    const lookup = await pool.query(
+      `SELECT id, position_id, venue, option_kind, strike_usdc, contracts,
+              status, sell_price_usdc, sell_order_id
+         FROM volume_cover_hedge_leg
+        WHERE id = $1`,
+      [legId]
+    );
+    if (lookup.rows.length === 0) {
+      return reply.code(404).send({ error: "leg_not_found", legId });
+    }
+    const leg = lookup.rows[0];
+    if (String(leg.status) !== "sold") {
+      return reply.code(409).send({
+        error: "leg_not_sold",
+        currentStatus: String(leg.status),
+        message: "Backfill only valid for legs already in status='sold'."
+      });
+    }
+
+    // Idempotency: do not write a second ledger row for the same leg.
+    const existing = await pool.query(
+      `SELECT id, reference, amount_usdc
+         FROM pilot_pool_ledger
+        WHERE entry_type = 'hedge_sell_in'
+          AND reference LIKE $1
+        LIMIT 1`,
+      [`vc_hedge_sell_%:${legId}`]
+    );
+    if (existing.rows.length > 0) {
+      return reply.code(409).send({
+        error: "ledger_already_exists",
+        existingLedgerId: existing.rows[0].id,
+        existingReference: existing.rows[0].reference,
+        existingAmountUsdc: existing.rows[0].amount_usdc
+      });
+    }
+
+    const positionId = String(leg.position_id ?? "");
+    await insertLedgerEntry(pool, {
+      poolId: "atticus_hedge",
+      protectionId: positionId || null,
+      entryType: "hedge_sell_in",
+      amountUsdc: body.totalProceedsUsdc,
+      reference: `vc_hedge_sell_backfill:${legId}`,
+      metadata: {
+        product: "volume_cover",
+        source: "backfill-ledger-sold-leg",
+        venue: String(leg.venue),
+        option_kind: String(leg.option_kind),
+        strike_usdc: Number(leg.strike_usdc),
+        contracts_btc: Number(leg.contracts),
+        fill_price_usdc_per_btc: leg.sell_price_usdc != null
+          ? Number(leg.sell_price_usdc)
+          : null,
+        order_id: leg.sell_order_id ?? null,
+        backfill_reason: body.reason
+      }
+    });
+
+    return reply.send({
+      success: true,
+      legId,
+      positionId,
+      totalProceedsUsdc: body.totalProceedsUsdc,
+      reason: body.reason
     });
   });
 
