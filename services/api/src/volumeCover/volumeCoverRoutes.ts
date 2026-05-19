@@ -1644,6 +1644,116 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  /**
+   * Recovery endpoint — manually mark an open leg as sold when the
+   * venue side already filled but the DB write failed (e.g., the
+   * pre-2026-05-19 'closed'-vs-'sold' CHECK constraint regression).
+   *
+   * Does NOT touch any venue; this is purely a DB reconciliation
+   * action. Use ONLY when you have verified the venue position is
+   * already flat (e.g., via Deribit web UI). Includes audit
+   * metadata so the action is traceable.
+   *
+   * Body:
+   *   {
+   *     "fillPriceUsdcPerBtc": <number>,    // from logs / Deribit fill confirmation
+   *     "totalProceedsUsdc": <number>,
+   *     "orderId": "<venue-order-id>",
+   *     "reason": "<human-readable reason>"
+   *   }
+   *
+   * Also finalizes the position's salvage_event (Guard A/B truth).
+   */
+  app.post("/volume-cover/admin/mark-leg-sold-manual/:legId", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const legId = String((req.params as any)?.legId ?? "").trim();
+    if (!legId) return reply.code(400).send({ error: "missing_legId_param" });
+
+    const ManualSoldSchema = z.object({
+      fillPriceUsdcPerBtc: z.number().nonnegative().finite(),
+      totalProceedsUsdc: z.number().nonnegative().finite(),
+      orderId: z.string().min(1).max(256),
+      reason: z.string().min(1).max(512)
+    });
+    const parse = ManualSoldSchema.safeParse(req.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: "invalid_request", issues: parse.error.issues });
+    }
+    const body = parse.data;
+
+    const lookup = await pool.query(
+      `SELECT id, position_id, venue, option_kind, strike_usdc, contracts, status
+         FROM volume_cover_hedge_leg
+        WHERE id = $1`,
+      [legId]
+    );
+    if (lookup.rows.length === 0) {
+      return reply.code(404).send({ error: "leg_not_found", legId });
+    }
+    const leg = lookup.rows[0];
+    if (String(leg.status) !== "open") {
+      return reply.code(409).send({
+        error: "leg_not_open",
+        currentStatus: String(leg.status),
+        message: "Leg is not 'open'; manual sold mark only valid for open legs."
+      });
+    }
+
+    await pool.query(
+      `UPDATE volume_cover_hedge_leg
+          SET status = 'sold',
+              sell_price_usdc = $2,
+              sell_order_id = $3,
+              closed_at = NOW(),
+              metadata = COALESCE(metadata, '{}'::jsonb) || $4::jsonb
+        WHERE id = $1`,
+      [
+        legId,
+        body.fillPriceUsdcPerBtc,
+        body.orderId,
+        JSON.stringify({
+          manual_sold_mark: true,
+          manual_sold_at: new Date().toISOString(),
+          manual_sold_reason: body.reason,
+          manual_sold_total_proceeds_usdc: body.totalProceedsUsdc
+        })
+      ]
+    );
+
+    let salvageFinalized: boolean | null = null;
+    const positionId = String(leg.position_id ?? "");
+    if (positionId) {
+      try {
+        const finalized = await finalizeSalvageProceedsForPosition(pool, {
+          positionId,
+          proceedsUsdcDelta: body.totalProceedsUsdc,
+          legId
+        });
+        salvageFinalized = finalized !== null;
+      } catch (err) {
+        req.log.warn(
+          `[volume-cover/mark-leg-sold-manual] salvage finalize failed for leg ${legId}: ${(err as Error).message}`
+        );
+        salvageFinalized = false;
+      }
+    }
+
+    return reply.send({
+      success: true,
+      legId,
+      positionId,
+      venue: String(leg.venue),
+      optionKind: String(leg.option_kind),
+      strikeUsdc: Number(leg.strike_usdc),
+      contractsBtc: Number(leg.contracts),
+      fillPriceUsdcPerBtc: body.fillPriceUsdcPerBtc,
+      totalProceedsUsdc: body.totalProceedsUsdc,
+      orderId: body.orderId,
+      reason: body.reason,
+      salvageFinalized
+    });
+  });
+
   app.get("/volume-cover/admin/bullish-key-check", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const { inspectBullishEcdsaKeyMaterial } = await import("../pilot/bullish");
