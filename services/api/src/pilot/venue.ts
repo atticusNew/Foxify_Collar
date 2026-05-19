@@ -1197,6 +1197,175 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     };
   }
 
+  /**
+   * Sell an open Deribit option leg (close-side of a previously-bought
+   * position). Used by VC hedge manager TP curve and the admin
+   * `/volume-cover/admin/force-sell-leg` endpoint.
+   *
+   * Units contract — IMPORTANT:
+   *   • Deribit quotes option prices in BTC per contract.
+   *   • Caller expects `fillPrice` in USDC per BTC and `totalProceeds`
+   *     in USDC (matches Bullish sellOption shape so the executor adapter
+   *     can write `sell_price_usdc` and ledger amounts uniformly).
+   *   • We convert via spot at fill time.
+   *
+   * Order semantics: market sell, IOC implicit on Deribit market orders.
+   * Quantity snapped to Deribit option granularity (0.1 BTC, multiples of 0.1).
+   *
+   * Paper-mode (`DERIBIT_PAPER=true`): connector simulates at best bid;
+   * we surface `status:"paper_filled"` as a successful sell. This lets
+   * the admin force-sell flow clear test DB rows without a live order.
+   */
+  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+    const requestedQty = Math.max(0.1, Math.floor(Number(params.quantity) * 10) / 10);
+    if (!Number.isFinite(requestedQty) || requestedQty <= 0) {
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: Number(params.quantity) || 0,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: "invalid_quantity", requestedQuantity: params.quantity }
+      };
+    }
+
+    const EXECUTE_TIMEOUT_MS = Number(process.env.PILOT_DERIBIT_EXECUTE_TIMEOUT_MS || "8000");
+    let raw: any;
+    try {
+      raw = (await Promise.race([
+        this.connector.placeOrder({
+          instrument: params.instrumentId,
+          amount: requestedQty,
+          side: "sell",
+          type: "market"
+        }),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("venue_sell_timeout")),
+            EXECUTE_TIMEOUT_MS
+          )
+        )
+      ])) as any;
+    } catch (err: any) {
+      console.error(`[DeribitAdapter] sellOption FAILED: ${err?.message ?? err}`);
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: requestedQty,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: null,
+        details: { reason: err?.message || "sell_request_failed" }
+      };
+    }
+
+    console.log(
+      `[DeribitAdapter] sellOption placeOrder raw:`,
+      JSON.stringify(raw).slice(0, 800)
+    );
+
+    const isPaper = raw?.status === "paper_filled" || raw?.status === "paper_rejected";
+    const paperRejected = raw?.status === "paper_rejected";
+    const orderData = isPaper ? raw : (raw?.result?.order ?? raw);
+    const trades = isPaper ? [] : (raw?.result?.trades ?? []);
+
+    const orderState = isPaper
+      ? String(raw?.status ?? "unknown")
+      : String(orderData?.order_state || orderData?.status || "unknown");
+    const isFilled = isPaper
+      ? raw?.status === "paper_filled"
+      : orderState === "filled" || orderState === "closed" ||
+        Number(orderData?.filled_amount || orderData?.filledAmount || 0) > 0;
+
+    if (!isFilled || paperRejected) {
+      const reason = paperRejected
+        ? String(raw?.reason ?? "paper_rejected")
+        : `not_filled:${orderState}`;
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: requestedQty,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: String(orderData?.order_id ?? orderData?.id ?? null) || null,
+        details: { reason, raw, orderState }
+      };
+    }
+
+    const filledAmount = Number(
+      orderData?.filled_amount ?? orderData?.filledAmount ?? (isPaper ? raw?.filledAmount : 0) ?? 0
+    );
+    const executedQuantity = Math.max(
+      0,
+      Number.isFinite(filledAmount) && filledAmount > 0 ? filledAmount : requestedQty
+    );
+
+    const fillPriceBtc = isPaper
+      ? Number(raw?.fillPrice ?? 0)
+      : Number(trades?.[0]?.price ?? orderData?.average_price ?? orderData?.price ?? 0);
+
+    let spotPriceUsd = 0;
+    try {
+      const idx = await this.connector.getIndexPrice("btc_usd");
+      spotPriceUsd = Number((idx as any)?.result?.index_price ?? 0);
+    } catch (err: any) {
+      console.warn(`[DeribitAdapter] sellOption: spot fetch failed: ${err?.message ?? err}`);
+    }
+
+    // Convert BTC-denominated option price to USDC per BTC (caller
+    // contract). If spot unavailable, fail closed — writing a
+    // BTC-denominated value into `sell_price_usdc` would corrupt
+    // accounting by ~5 orders of magnitude.
+    if (!(fillPriceBtc > 0) || !(spotPriceUsd > 0)) {
+      console.error(
+        `[DeribitAdapter] sellOption price conversion failed: fillPriceBtc=${fillPriceBtc} spotPriceUsd=${spotPriceUsd}`
+      );
+      return {
+        status: "failed",
+        instrumentId: params.instrumentId,
+        quantity: executedQuantity,
+        fillPrice: 0,
+        totalProceeds: 0,
+        orderId: String(orderData?.order_id ?? orderData?.id ?? null) || null,
+        details: {
+          reason: "price_conversion_failed",
+          fillPriceBtc,
+          spotPriceUsd,
+          raw
+        }
+      };
+    }
+
+    const fillPriceUsdc = fillPriceBtc * spotPriceUsd;
+    const totalProceedsUsdc = fillPriceUsdc * executedQuantity;
+    const orderId = String(orderData?.order_id ?? orderData?.id ?? `DERIBIT-SELL-${randomUUID()}`);
+
+    console.log(
+      `[DeribitAdapter] sellOption filled: instrument=${params.instrumentId} qty=${executedQuantity} priceBtc=${fillPriceBtc} priceUsdc=${fillPriceUsdc.toFixed(2)} proceedsUsdc=${totalProceedsUsdc.toFixed(2)} orderId=${orderId}`
+    );
+
+    return {
+      status: "sold",
+      instrumentId: params.instrumentId,
+      quantity: executedQuantity,
+      fillPrice: Number(fillPriceUsdc.toFixed(4)),
+      totalProceeds: Number(totalProceedsUsdc.toFixed(4)),
+      orderId,
+      details: {
+        venue: "deribit",
+        paper: isPaper,
+        orderState,
+        fillPriceBtc,
+        spotPriceUsd,
+        requestedQuantity: requestedQty,
+        executedQuantity,
+        trades: trades?.length ?? 0,
+        raw
+      }
+    };
+  }
+
   async getMark(params: { instrumentId: string; quantity: number }): Promise<{
     markPremium: number;
     unitPrice: number;
@@ -3944,7 +4113,11 @@ class DeribitLiveAdapter extends DeribitTestAdapter {
   }
 
   async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
-    return super.sellOption(params);
+    const result = await super.sellOption(params);
+    return {
+      ...result,
+      details: { ...(result.details ?? {}), venue: "deribit_live" }
+    };
   }
 }
 
