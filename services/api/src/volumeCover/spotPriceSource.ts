@@ -1,25 +1,22 @@
 /**
- * VC spot price source — Bullish primary + Coinbase fallback.
+ * VC spot price source — pluggable primary (Bullish or Deribit) +
+ * Coinbase fallback.
  *
- * Source-of-truth decision (operator + Foxify CEO 2026-05-16):
- * Foxify defers to "our feed". We choose Bullish hybrid orderbook as
- * primary because:
- *   1. ZERO basis between trigger detection and hedge execution venue
- *   2. Sub-bp top-of-book spreads on BTCUSDC pair
- *   3. Same data source we use for hedge sizing math
+ * 2026-05-19 update: Source-of-truth follows execution venue. When
+ * the system is locked to Deribit execution (VOLUME_COVER_VENUE_ROUTING_JSON
+ * pointing to deribit), set VC_SPOT_PRIMARY=deribit so trigger
+ * detection and hedge math reference the same venue's index.
  *
- * Coinbase remains as fallback for:
- *   - Bullish API outages (graceful degradation)
- *   - Cross-validation: drift > 50bp between Bullish + Coinbase
- *     emits an audit event flag that operator can review
+ * Source preference (in order):
+ *   1. VC_SPOT_PRIMARY=deribit  → Deribit BTC index_price (live or testnet)
+ *   2. VC_SPOT_PRIMARY=bullish  → Bullish hybrid orderbook mid (default if
+ *                                  bullishOrderbookFn passed)
+ *   3. Coinbase REST            → universal fallback
  *
- * Drift detection rationale: if Bullish vs Coinbase diverge by >50bp,
- * could indicate (a) Bullish oracle manipulation, (b) one venue's
- * feed stale/broken, (c) genuine market dislocation. Operator sees
- * the drift in pair-event audit log and can halt if needed.
+ * Whichever venues respond contribute to drift detection (> 50bp
+ * triggers an operator warning). All sources fall back gracefully.
  *
- * Cache: 2s TTL on the resolved source — both venues updated each
- * tick to keep drift detection live.
+ * Cache: 2s TTL on the resolved source.
  */
 
 import Decimal from "decimal.js";
@@ -49,6 +46,13 @@ export type SpotPriceSourceOptions = {
   }>;
   /** Bullish symbol (default BTCUSDC). */
   bullishSymbol?: string;
+  /**
+   * Optional Deribit index fetcher. When provided AND
+   * VC_SPOT_PRIMARY=deribit, used as primary source. The function
+   * should return Deribit's BTC USD index price (the same one used
+   * for option settlement on Deribit).
+   */
+  deribitIndexFn?: () => Promise<{ price: number; asOfMs: number } | null>;
 };
 
 /**
@@ -110,45 +114,80 @@ const tryCoinbase = async (opts: SpotPriceSourceOptions): Promise<{ price: numbe
 let lastDriftWarnAtMs = 0;
 const DRIFT_WARN_COOLDOWN_MS = 60_000;
 
+const tryDeribitIndex = async (
+  fn: NonNullable<SpotPriceSourceOptions["deribitIndexFn"]>
+): Promise<{ price: number; asOfMs: number } | null> => {
+  try {
+    const r = await fn();
+    if (!r || !Number.isFinite(r.price) || r.price <= 0) return null;
+    return r;
+  } catch {
+    return null;
+  }
+};
+
 export const createSpotPriceSource = (opts: SpotPriceSourceOptions = {}): SpotPriceSource => {
   const cacheTtl = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const bullishSymbol = opts.bullishSymbol ?? "BTCUSDC";
+  const primaryPref = (process.env.VC_SPOT_PRIMARY ?? "").toLowerCase().trim();
   return async () => {
     if (cached && Date.now() - cached.asOfMs < cacheTtl) {
       return { ...cached };
     }
 
-    // Fetch both venues in parallel for drift detection
-    const [bullishResult, coinbaseResult] = await Promise.all([
+    // Fetch all available venues in parallel for drift detection.
+    const [bullishResult, coinbaseResult, deribitResult] = await Promise.all([
       opts.bullishOrderbookFn ? tryBullishMid(opts.bullishOrderbookFn, bullishSymbol) : Promise.resolve(null),
-      tryCoinbase(opts)
+      tryCoinbase(opts),
+      opts.deribitIndexFn ? tryDeribitIndex(opts.deribitIndexFn) : Promise.resolve(null)
     ]);
 
-    // Drift detection: if both succeeded, compare
-    if (bullishResult && coinbaseResult) {
-      const driftBp =
-        Math.abs(bullishResult.price - coinbaseResult.price) /
-        Math.min(bullishResult.price, coinbaseResult.price) *
-        10000;
-      if (driftBp > DRIFT_THRESHOLD_BP) {
-        const now = Date.now();
-        if (now - lastDriftWarnAtMs > DRIFT_WARN_COOLDOWN_MS) {
-          console.warn(
-            `[volumeCover/spot] DRIFT WARNING: Bullish=$${bullishResult.price.toFixed(2)} vs Coinbase=$${coinbaseResult.price.toFixed(2)} drift=${driftBp.toFixed(0)}bp (>${DRIFT_THRESHOLD_BP}bp threshold). ` +
-              `Possible: oracle break, venue stale, or genuine dislocation. Operator review recommended.`
-          );
-          lastDriftWarnAtMs = now;
+    // Drift detection across whatever pair of venues responded
+    const pairs: Array<[string, { price: number }]> = [];
+    if (bullishResult) pairs.push(["bullish", bullishResult]);
+    if (deribitResult) pairs.push(["deribit", deribitResult]);
+    if (coinbaseResult) pairs.push(["coinbase", coinbaseResult]);
+    for (let i = 0; i < pairs.length - 1; i++) {
+      for (let j = i + 1; j < pairs.length; j++) {
+        const [an, a] = pairs[i];
+        const [bn, b] = pairs[j];
+        const driftBp =
+          Math.abs(a.price - b.price) / Math.min(a.price, b.price) * 10_000;
+        if (driftBp > DRIFT_THRESHOLD_BP) {
+          const now = Date.now();
+          if (now - lastDriftWarnAtMs > DRIFT_WARN_COOLDOWN_MS) {
+            console.warn(
+              `[volumeCover/spot] DRIFT WARNING: ${an}=$${a.price.toFixed(2)} vs ${bn}=$${b.price.toFixed(2)} drift=${driftBp.toFixed(0)}bp (>${DRIFT_THRESHOLD_BP}bp threshold). ` +
+                `Possible: oracle break, venue stale, or genuine dislocation. Operator review recommended.`
+            );
+            lastDriftWarnAtMs = now;
+          }
         }
       }
     }
 
-    // Source preference: Bullish primary, Coinbase fallback
+    // Source preference: VC_SPOT_PRIMARY=deribit elevates Deribit to
+    // primary so trigger detection references the same venue we
+    // execute hedges on. Otherwise default to Bullish primary
+    // (legacy). Coinbase is always the final fallback.
     let result: { price: number; asOfMs: number; source: string } | null = null;
-    if (bullishResult) {
+    if (primaryPref === "deribit" && deribitResult) {
+      result = {
+        price: deribitResult.price,
+        asOfMs: deribitResult.asOfMs,
+        source: "deribit_index"
+      };
+    } else if (bullishResult) {
       result = {
         price: bullishResult.price,
         asOfMs: bullishResult.asOfMs,
         source: "bullish_hybrid"
+      };
+    } else if (deribitResult) {
+      result = {
+        price: deribitResult.price,
+        asOfMs: deribitResult.asOfMs,
+        source: "deribit_index"
       };
     } else if (coinbaseResult) {
       result = {

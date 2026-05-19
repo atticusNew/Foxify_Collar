@@ -914,10 +914,38 @@ export const registerVolumeCoverRoutes = async (
       bullishError = (err as Error).message;
     }
 
+    let deribitEquityBtc: number | null = null;
+    let deribitBalanceBtc: number | null = null;
+    let deribitError: string | null = null;
+    let deribitEnv: string = "unknown";
+    let deribitPaper: boolean = true;
+    try {
+      const { DeribitConnector } = await import("@foxify/connectors");
+      deribitEnv = String(process.env.DERIBIT_ENV || "live").trim();
+      deribitPaper = String(process.env.DERIBIT_PAPER || "true").trim().toLowerCase() === "true";
+      const c = new DeribitConnector(
+        deribitEnv === "live" ? "live" : "testnet",
+        deribitPaper,
+        {
+          clientId: String(process.env.DERIBIT_CLIENT_ID || ""),
+          clientSecret: String(process.env.DERIBIT_CLIENT_SECRET || "")
+        }
+      );
+      const summary: any = await withTimeout(c.getAccountSummary("BTC"), 5_000);
+      const eq = Number(summary?.result?.equity ?? NaN);
+      const bal = Number(summary?.result?.balance ?? NaN);
+      if (Number.isFinite(eq)) deribitEquityBtc = eq;
+      if (Number.isFinite(bal)) deribitBalanceBtc = bal;
+    } catch (err) {
+      deribitError = (err as Error).message;
+    }
+
     let spotBtcUsdc: number | null = null;
+    let spotSourceName: string | null = null;
     try {
       const spot = await opts.spotSource();
       spotBtcUsdc = spot.spotBtcPrice;
+      spotSourceName = (spot as any).source ?? null;
     } catch {
       // best-effort
     }
@@ -929,12 +957,22 @@ export const registerVolumeCoverRoutes = async (
         ? bullishUsdc + bullishBtcValueUsdc
         : bullishUsdc;
 
+    const deribitEquityUsdc =
+      deribitEquityBtc !== null && spotBtcUsdc !== null
+        ? deribitEquityBtc * spotBtcUsdc
+        : null;
+    const deribitBalanceUsdc =
+      deribitBalanceBtc !== null && spotBtcUsdc !== null
+        ? deribitBalanceBtc * spotBtcUsdc
+        : null;
+
     return {
       fetchedAtMs: Date.now(),
-      wasError: bullishError !== null,
+      wasError: bullishError !== null && deribitError !== null,
       payload: {
         generatedAtIso: new Date().toISOString(),
         spotBtcUsdc,
+        spotSource: spotSourceName,
         bullish: {
           connected: bullishError === null,
           error: bullishError,
@@ -949,6 +987,16 @@ export const registerVolumeCoverRoutes = async (
             ? "mainnet"
             : "unknown",
           restBaseUrl: pilotConfig.bullish.restBaseUrl
+        },
+        deribit: {
+          connected: deribitError === null,
+          error: deribitError,
+          environment: deribitEnv,
+          paperMode: deribitPaper,
+          equityBtc: deribitEquityBtc,
+          balanceBtc: deribitBalanceBtc,
+          equityUsdc: deribitEquityUsdc,
+          balanceUsdc: deribitBalanceUsdc
         }
       }
     };
@@ -1832,6 +1880,82 @@ export const registerVolumeCoverRoutes = async (
       reason: body.reason,
       ledgerInserted,
       salvageFinalized
+    });
+  });
+
+  /**
+   * Clear test/admin-source pair_event rows from the audit log so
+   * the Foxify dashboard "activations today" counter reflects only
+   * real Foxify-driven activations.
+   *
+   * Default behavior (dry-run): returns the candidates that WOULD
+   * be deleted. Pass ?confirm=true to actually delete.
+   *
+   * Candidates are pair_events where ANY of:
+   *   - metadata.source = 'admin_test_activate'
+   *   - foxify_pair_id starts with 'ops-smoke-'
+   *   - foxify_pair_id starts with 'test-' or 'smoke-'
+   *
+   * Default window: last 72 hours (override with ?hours=N).
+   *
+   * Does NOT touch volume_cover_position or volume_cover_hedge_leg
+   * rows — those should be cleaned via mark-legs-failed-batch or
+   * direct close. This is purely audit-log cleanup.
+   */
+  app.post("/volume-cover/admin/clear-test-pair-events", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const confirm = String((req.query as any)?.confirm ?? "false").toLowerCase() === "true";
+    const hoursRaw = Number((req.query as any)?.hours ?? 72);
+    const hours = Number.isFinite(hoursRaw) && hoursRaw > 0 && hoursRaw <= 720 ? hoursRaw : 72;
+
+    const candidates = await pool.query(
+      `SELECT id, foxify_pair_id, cell_id, result, received_at, metadata
+         FROM volume_cover_pair_event
+        WHERE received_at >= NOW() - ($1::text || ' hours')::interval
+          AND (
+            (metadata->>'source') = 'admin_test_activate'
+            OR foxify_pair_id LIKE 'ops-smoke-%'
+            OR foxify_pair_id LIKE 'test-%'
+            OR foxify_pair_id LIKE 'smoke-%'
+          )
+        ORDER BY received_at DESC
+        LIMIT 500`,
+      [String(hours)]
+    );
+
+    if (!confirm) {
+      return reply.send({
+        dryRun: true,
+        hours,
+        candidateCount: candidates.rows.length,
+        candidates: candidates.rows.map((r: any) => ({
+          id: Number(r.id),
+          foxifyPairId: String(r.foxify_pair_id),
+          cellId: String(r.cell_id),
+          result: String(r.result),
+          receivedAt: r.received_at ? String(r.received_at) : null,
+          source: (r.metadata && (r.metadata as any).source) ?? null
+        })),
+        note: "Dry run — no rows deleted. Re-call with ?confirm=true to delete."
+      });
+    }
+
+    const del = await pool.query(
+      `DELETE FROM volume_cover_pair_event
+        WHERE received_at >= NOW() - ($1::text || ' hours')::interval
+          AND (
+            (metadata->>'source') = 'admin_test_activate'
+            OR foxify_pair_id LIKE 'ops-smoke-%'
+            OR foxify_pair_id LIKE 'test-%'
+            OR foxify_pair_id LIKE 'smoke-%'
+          )`,
+      [String(hours)]
+    );
+
+    return reply.send({
+      success: true,
+      hours,
+      deleted: del.rowCount ?? 0
     });
   });
 

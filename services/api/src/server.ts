@@ -8255,12 +8255,10 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
       deribit: deribitAdapter,
       mockFills: useMockFills
     });
-    // VC source-of-truth (2026-05-16): Bullish hybrid orderbook primary
-    // + Coinbase fallback + drift detection. Per Foxify CEO direction
-    // "use our feed". Bullish chosen as primary because it's the
-    // hedge-execution venue (zero basis between trigger detection
-    // and hedge math). Coinbase serves as graceful fallback when
-    // Bullish API is down. Drift > 50bp emits operator warning.
+    // VC source-of-truth: Bullish primary + Coinbase fallback by
+    // default. Override with VC_SPOT_PRIMARY=deribit to make Deribit
+    // the primary source (recommended when system is locked to
+    // Deribit execution). All three venues feed drift detection.
     const spotSource = createSpotPriceSource({
       bullishOrderbookFn: async (symbol) => {
         const { BullishTradingClient } = await import("./pilot/bullish");
@@ -8271,7 +8269,28 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
           asks: book.asks ?? []
         };
       },
-      bullishSymbol: "BTCUSDC"
+      bullishSymbol: "BTCUSDC",
+      deribitIndexFn: async () => {
+        try {
+          const { DeribitConnector } = await import("@foxify/connectors");
+          const env = String(process.env.DERIBIT_ENV || "live").trim();
+          const paper = String(process.env.DERIBIT_PAPER || "true").trim().toLowerCase() === "true";
+          const c = new DeribitConnector(
+            env === "live" ? "live" : "testnet",
+            paper,
+            {
+              clientId: String(process.env.DERIBIT_CLIENT_ID || ""),
+              clientSecret: String(process.env.DERIBIT_CLIENT_SECRET || "")
+            }
+          );
+          const r = await c.getIndexPrice("btc_usd");
+          const price = Number((r as any)?.result?.index_price ?? 0);
+          if (!Number.isFinite(price) || price <= 0) return null;
+          return { price, asOfMs: Date.now() };
+        } catch {
+          return null;
+        }
+      }
     });
 
     // P3 §12.4: venue balance fetcher for weekly reconciliation drift
