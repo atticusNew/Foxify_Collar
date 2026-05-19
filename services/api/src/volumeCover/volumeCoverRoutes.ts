@@ -87,6 +87,7 @@ import {
   recordTriggerForFingerprint,
   recordPatternStrike
 } from "./antiBot";
+import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
 
 // ────────────────────── Auth helpers ──────────────────────
 
@@ -1609,10 +1610,39 @@ export const registerVolumeCoverRoutes = async (
       ]
     );
 
+    // Ledger entry: hedge_sell_in. Canonical source of truth for
+    // realized proceeds. Without this row the weekly reconciler and
+    // Foxify reports under-report Atticus inflows.
+    const positionId = String(leg.position_id ?? "");
+    let ledgerInserted: boolean = false;
+    try {
+      await insertLedgerEntry(pool, {
+        poolId: "atticus_hedge",
+        protectionId: positionId || null,
+        entryType: "hedge_sell_in",
+        amountUsdc: sellResult.totalProceedsUsdc,
+        reference: `vc_hedge_sell_force:${legId}`,
+        metadata: {
+          product: "volume_cover",
+          source: "force-sell-leg",
+          venue,
+          option_kind: optionKind,
+          strike_usdc: strikeUsdc,
+          contracts_btc: contractsBtc,
+          fill_price_usdc_per_btc: sellResult.fillPriceUsdcPerBtc,
+          order_id: sellResult.orderId
+        }
+      });
+      ledgerInserted = true;
+    } catch (err) {
+      req.log.warn(
+        `[volume-cover/force-sell-leg] ledger insert failed for leg ${legId}: ${(err as Error).message}`
+      );
+    }
+
     // If this leg belongs to a triggered position, finalize that
     // position's salvage_event so Guard A (7d loss) and Guard B
     // (rolling salvage %) reflect realized proceeds.
-    const positionId = String(leg.position_id ?? "");
     let salvageFinalized: boolean | null = null;
     if (positionId) {
       try {
@@ -1640,6 +1670,7 @@ export const registerVolumeCoverRoutes = async (
       fillPriceUsdcPerBtc: sellResult.fillPriceUsdcPerBtc,
       totalProceedsUsdc: sellResult.totalProceedsUsdc,
       orderId: sellResult.orderId,
+      ledgerInserted,
       salvageFinalized
     });
   });
@@ -1720,8 +1751,39 @@ export const registerVolumeCoverRoutes = async (
       ]
     );
 
-    let salvageFinalized: boolean | null = null;
     const positionId = String(leg.position_id ?? "");
+
+    // Ledger entry: hedge_sell_in. Canonical source of truth for
+    // realized proceeds even when the venue side already filled
+    // and we are reconciling the DB after a 5xx.
+    let ledgerInserted: boolean = false;
+    try {
+      await insertLedgerEntry(pool, {
+        poolId: "atticus_hedge",
+        protectionId: positionId || null,
+        entryType: "hedge_sell_in",
+        amountUsdc: body.totalProceedsUsdc,
+        reference: `vc_hedge_sell_manual:${legId}`,
+        metadata: {
+          product: "volume_cover",
+          source: "mark-leg-sold-manual",
+          venue: String(leg.venue),
+          option_kind: String(leg.option_kind),
+          strike_usdc: Number(leg.strike_usdc),
+          contracts_btc: Number(leg.contracts),
+          fill_price_usdc_per_btc: body.fillPriceUsdcPerBtc,
+          order_id: body.orderId,
+          manual_reason: body.reason
+        }
+      });
+      ledgerInserted = true;
+    } catch (err) {
+      req.log.warn(
+        `[volume-cover/mark-leg-sold-manual] ledger insert failed for leg ${legId}: ${(err as Error).message}`
+      );
+    }
+
+    let salvageFinalized: boolean | null = null;
     if (positionId) {
       try {
         const finalized = await finalizeSalvageProceedsForPosition(pool, {
@@ -1750,7 +1812,300 @@ export const registerVolumeCoverRoutes = async (
       totalProceedsUsdc: body.totalProceedsUsdc,
       orderId: body.orderId,
       reason: body.reason,
+      ledgerInserted,
       salvageFinalized
+    });
+  });
+
+  /**
+   * Full inventory of open hedge legs across ALL positions
+   * (including positions long-closed). Used for venue-vs-DB
+   * reconciliation. Far broader than active-positions-detail,
+   * which filters to positions closed within the last 6 hours.
+   */
+  app.get("/volume-cover/admin/all-open-legs", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const venueFilter = String((req.query as any)?.venue ?? "").toLowerCase().trim();
+    const params: any[] = [];
+    let where = "WHERE l.status = 'open'";
+    if (venueFilter === "bullish" || venueFilter === "deribit") {
+      where += " AND l.venue = $1";
+      params.push(venueFilter);
+    }
+    const result = await pool.query(
+      `SELECT l.id, l.position_id, l.venue, l.option_kind, l.strike_usdc,
+              l.expiry_iso, l.contracts, l.buy_price_usdc, l.retained,
+              l.retained_role, l.opened_at,
+              p.status AS position_status, p.opened_at AS position_opened_at,
+              p.closed_at AS position_closed_at, p.triggered_at AS position_triggered_at
+         FROM volume_cover_hedge_leg l
+         LEFT JOIN volume_cover_position p ON p.id = l.position_id
+         ${where}
+        ORDER BY l.opened_at DESC
+        LIMIT 500`,
+      params
+    );
+    return reply.send({
+      count: result.rows.length,
+      legs: result.rows.map((r: any) => ({
+        legId: String(r.id),
+        positionId: String(r.position_id ?? ""),
+        venue: String(r.venue),
+        optionKind: String(r.option_kind),
+        strikeUsdc: Number(r.strike_usdc),
+        expiryIso: String(r.expiry_iso),
+        contractsBtc: Number(r.contracts),
+        buyPriceUsdc: r.buy_price_usdc != null ? Number(r.buy_price_usdc) : null,
+        retained: Boolean(r.retained),
+        retainedRole: r.retained_role ? String(r.retained_role) : null,
+        openedAt: r.opened_at ? String(r.opened_at) : null,
+        positionStatus: r.position_status ? String(r.position_status) : null,
+        positionOpenedAt: r.position_opened_at ? String(r.position_opened_at) : null,
+        positionClosedAt: r.position_closed_at ? String(r.position_closed_at) : null,
+        positionTriggeredAt: r.position_triggered_at ? String(r.position_triggered_at) : null
+      }))
+    });
+  });
+
+  /**
+   * Manually mark a single open leg as status='failed' when the
+   * operator has confirmed (via venue UI or a prior force-sell
+   * 404/not-filled response) that no actual position exists on
+   * the venue. Pure DB reconciliation. Writes audit metadata.
+   *
+   * Body: { "reason": "<string>", "evidence": "<string>" }
+   *   e.g. evidence: "force-sell-leg returned bullish_http_404
+   *                   at 2026-05-19T05:34Z"
+   */
+  app.post("/volume-cover/admin/mark-leg-failed-manual/:legId", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const legId = String((req.params as any)?.legId ?? "").trim();
+    if (!legId) return reply.code(400).send({ error: "missing_legId_param" });
+
+    const FailManualSchema = z.object({
+      reason: z.string().min(1).max(512),
+      evidence: z.string().min(1).max(1024)
+    });
+    const parse = FailManualSchema.safeParse(req.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: "invalid_request", issues: parse.error.issues });
+    }
+    const body = parse.data;
+
+    const lookup = await pool.query(
+      `SELECT id, status, venue, option_kind, strike_usdc, contracts
+         FROM volume_cover_hedge_leg
+        WHERE id = $1`,
+      [legId]
+    );
+    if (lookup.rows.length === 0) {
+      return reply.code(404).send({ error: "leg_not_found", legId });
+    }
+    const leg = lookup.rows[0];
+    if (String(leg.status) !== "open") {
+      return reply.code(409).send({
+        error: "leg_not_open",
+        currentStatus: String(leg.status),
+        message: "mark-leg-failed-manual is only valid for legs in status='open'."
+      });
+    }
+
+    await pool.query(
+      `UPDATE volume_cover_hedge_leg
+          SET status = 'failed',
+              closed_at = NOW(),
+              metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+        WHERE id = $1`,
+      [
+        legId,
+        JSON.stringify({
+          manual_fail_mark: true,
+          manual_fail_at: new Date().toISOString(),
+          manual_fail_reason: body.reason,
+          manual_fail_evidence: body.evidence
+        })
+      ]
+    );
+
+    return reply.send({
+      success: true,
+      legId,
+      venue: String(leg.venue),
+      optionKind: String(leg.option_kind),
+      strikeUsdc: Number(leg.strike_usdc),
+      contractsBtc: Number(leg.contracts),
+      reason: body.reason,
+      evidence: body.evidence
+    });
+  });
+
+  /**
+   * Batch variant of mark-leg-failed-manual. Marks every supplied
+   * leg id that is currently status='open' as 'failed'. Skips
+   * (does not error) on legs not found or already in a terminal
+   * status; returns per-leg outcome list.
+   *
+   * Body: { "legIds": ["..."], "reason": "<string>", "evidence": "<string>" }
+   */
+  app.post("/volume-cover/admin/mark-legs-failed-batch", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const FailBatchSchema = z.object({
+      legIds: z.array(z.string().min(1).max(256)).min(1).max(200),
+      reason: z.string().min(1).max(512),
+      evidence: z.string().min(1).max(1024)
+    });
+    const parse = FailBatchSchema.safeParse(req.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: "invalid_request", issues: parse.error.issues });
+    }
+    const body = parse.data;
+
+    const auditMetadata = JSON.stringify({
+      manual_fail_mark: true,
+      manual_fail_at: new Date().toISOString(),
+      manual_fail_reason: body.reason,
+      manual_fail_evidence: body.evidence,
+      manual_fail_batch: true
+    });
+
+    const results: Array<{
+      legId: string;
+      outcome: "marked_failed" | "not_found" | "already_terminal";
+      previousStatus?: string;
+    }> = [];
+
+    for (const legId of body.legIds) {
+      const lookup = await pool.query(
+        `SELECT status FROM volume_cover_hedge_leg WHERE id = $1`,
+        [legId]
+      );
+      if (lookup.rows.length === 0) {
+        results.push({ legId, outcome: "not_found" });
+        continue;
+      }
+      const status = String(lookup.rows[0].status);
+      if (status !== "open") {
+        results.push({ legId, outcome: "already_terminal", previousStatus: status });
+        continue;
+      }
+      await pool.query(
+        `UPDATE volume_cover_hedge_leg
+            SET status = 'failed',
+                closed_at = NOW(),
+                metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+          WHERE id = $1`,
+        [legId, auditMetadata]
+      );
+      results.push({ legId, outcome: "marked_failed" });
+    }
+
+    const summary = results.reduce(
+      (acc, r) => {
+        acc[r.outcome] = (acc[r.outcome] ?? 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>
+    );
+
+    return reply.send({
+      success: true,
+      reason: body.reason,
+      evidence: body.evidence,
+      summary,
+      results
+    });
+  });
+
+  /**
+   * Backfill a missing `hedge_sell_in` ledger entry for a leg that
+   * is already status='sold' in the DB. Idempotent: refuses if a
+   * `vc_hedge_sell_*:<legId>` reference already exists. Use ONLY
+   * to repair the small window of legs sold via the pre-fix
+   * `mark-leg-sold-manual` / `force-sell-leg` routes that did not
+   * write a ledger row.
+   *
+   * Body: { "totalProceedsUsdc": <number>, "reason": "<string>" }
+   */
+  app.post("/volume-cover/admin/backfill-ledger-sold-leg/:legId", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const legId = String((req.params as any)?.legId ?? "").trim();
+    if (!legId) return reply.code(400).send({ error: "missing_legId_param" });
+
+    const BackfillSchema = z.object({
+      totalProceedsUsdc: z.number().nonnegative().finite(),
+      reason: z.string().min(1).max(512)
+    });
+    const parse = BackfillSchema.safeParse(req.body);
+    if (!parse.success) {
+      return reply.code(400).send({ error: "invalid_request", issues: parse.error.issues });
+    }
+    const body = parse.data;
+
+    const lookup = await pool.query(
+      `SELECT id, position_id, venue, option_kind, strike_usdc, contracts,
+              status, sell_price_usdc, sell_order_id
+         FROM volume_cover_hedge_leg
+        WHERE id = $1`,
+      [legId]
+    );
+    if (lookup.rows.length === 0) {
+      return reply.code(404).send({ error: "leg_not_found", legId });
+    }
+    const leg = lookup.rows[0];
+    if (String(leg.status) !== "sold") {
+      return reply.code(409).send({
+        error: "leg_not_sold",
+        currentStatus: String(leg.status),
+        message: "Backfill only valid for legs already in status='sold'."
+      });
+    }
+
+    // Idempotency: do not write a second ledger row for the same leg.
+    const existing = await pool.query(
+      `SELECT id, reference, amount_usdc
+         FROM pilot_pool_ledger
+        WHERE entry_type = 'hedge_sell_in'
+          AND reference LIKE $1
+        LIMIT 1`,
+      [`vc_hedge_sell_%:${legId}`]
+    );
+    if (existing.rows.length > 0) {
+      return reply.code(409).send({
+        error: "ledger_already_exists",
+        existingLedgerId: existing.rows[0].id,
+        existingReference: existing.rows[0].reference,
+        existingAmountUsdc: existing.rows[0].amount_usdc
+      });
+    }
+
+    const positionId = String(leg.position_id ?? "");
+    await insertLedgerEntry(pool, {
+      poolId: "atticus_hedge",
+      protectionId: positionId || null,
+      entryType: "hedge_sell_in",
+      amountUsdc: body.totalProceedsUsdc,
+      reference: `vc_hedge_sell_backfill:${legId}`,
+      metadata: {
+        product: "volume_cover",
+        source: "backfill-ledger-sold-leg",
+        venue: String(leg.venue),
+        option_kind: String(leg.option_kind),
+        strike_usdc: Number(leg.strike_usdc),
+        contracts_btc: Number(leg.contracts),
+        fill_price_usdc_per_btc: leg.sell_price_usdc != null
+          ? Number(leg.sell_price_usdc)
+          : null,
+        order_id: leg.sell_order_id ?? null,
+        backfill_reason: body.reason
+      }
+    });
+
+    return reply.send({
+      success: true,
+      legId,
+      positionId,
+      totalProceedsUsdc: body.totalProceedsUsdc,
+      reason: body.reason
     });
   });
 
@@ -2236,20 +2591,38 @@ export const registerVolumeCoverRoutes = async (
   });
 
   // P1f: manual hedge manager tick (ops + smoke testing)
+  //
+  // Optional query overrides:
+  //   ?dryRun=true        — evaluate rules without selling
+  //   ?iv=0.40            — annualized IV override (e.g. 0.40 = 40%)
+  //                         critical: actual current BTC IV is far
+  //                         lower than the default fallback, so
+  //                         overriding here gives realistic values.
+  //   ?spotUsdc=76800     — spot override (rare; for diagnostic).
   app.post("/volume-cover/admin/hedge-manager/run", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
-    const dryRun = String((req.query as any)?.dryRun ?? "false").toLowerCase() === "true";
+    const q = (req.query as any) ?? {};
+    const dryRun = String(q.dryRun ?? "false").toLowerCase() === "true";
+    const ivOverrideRaw = q.iv != null && q.iv !== "" ? Number(q.iv) : null;
+    const ivOverride =
+      ivOverrideRaw != null && Number.isFinite(ivOverrideRaw) &&
+      ivOverrideRaw > 0 && ivOverrideRaw < 5
+        ? ivOverrideRaw
+        : null;
+    const spotOverrideRaw = q.spotUsdc != null && q.spotUsdc !== "" ? Number(q.spotUsdc) : null;
+    const spotOverride =
+      spotOverrideRaw != null && Number.isFinite(spotOverrideRaw) && spotOverrideRaw > 0
+        ? spotOverrideRaw
+        : null;
     try {
-      // Build a SpotIvSource from the SpotPriceSource if not provided.
-      // Falls back to env-configured fallback IV.
       const spotIvSource: SpotIvSource =
         opts.spotIvSource ??
         (async () => {
           const spot = await opts.spotSource();
-          const fallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.65);
+          const fallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.45);
           return {
-            spotBtcUsdc: spot.spotBtcPrice,
-            ivAnnualized: fallbackIv,
+            spotBtcUsdc: spotOverride ?? spot.spotBtcPrice,
+            ivAnnualized: ivOverride ?? fallbackIv,
             asOfMs: spot.asOfMs
           };
         });
@@ -2259,7 +2632,14 @@ export const registerVolumeCoverRoutes = async (
         spotIvSource,
         dryRun
       });
-      return reply.send(result);
+      return reply.send({
+        ...result,
+        overrides: {
+          ivOverride,
+          spotOverride,
+          fallbackIvEnv: Number(process.env.VC_HM_FALLBACK_IV ?? 0.45)
+        }
+      });
     } catch (err) {
       return reply.code(500).send({ error: "hedge_manager_tick_failed", message: (err as Error).message });
     }
