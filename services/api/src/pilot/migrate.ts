@@ -1,5 +1,9 @@
 import { pilotConfig } from "./config";
 import { ensurePilotSchema, getPilotPool } from "./db";
+import {
+  ensureVolumeCoverSchema,
+  seedVolumeCoverCellsIfNeeded
+} from "../volumeCover/volumeCoverDb";
 
 async function main() {
   if (!pilotConfig.postgresUrl) {
@@ -7,9 +11,11 @@ async function main() {
   }
   const pool = getPilotPool(pilotConfig.postgresUrl);
   await ensurePilotSchema(pool);
+  await ensureVolumeCoverSchema(pool);
+  await seedVolumeCoverCellsIfNeeded(pool);
   await pool.end();
   // eslint-disable-next-line no-console
-  console.log("Pilot schema migration complete.");
+  console.log("Pilot + Volume Cover schema migration complete.");
 }
 
 main().catch((error) => {

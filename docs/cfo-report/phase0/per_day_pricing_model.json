@@ -1,0 +1,162 @@
+{
+  "capturedAt": "2026-04-30T11:52:51.423Z",
+  "inputs": {
+    "tenorDays": 14,
+    "grossMarginFloor": 0.3,
+    "d1DatasetPath": "/tmp/d1-for-d4/biweekly_pricing_dataset.json"
+  },
+  "spreadByRegime": {
+    "low": 3.3,
+    "moderate": 5,
+    "elevated": 7,
+    "high": 10
+  },
+  "proposedRates": {
+    "low": {
+      "2": 2.5,
+      "3": 2.5,
+      "5": 1.5,
+      "10": 1
+    },
+    "moderate": {
+      "2": 3.5,
+      "3": 3,
+      "5": 2.5,
+      "10": 1
+    },
+    "elevated": {
+      "2": 5,
+      "3": 4.5,
+      "5": 3.5,
+      "10": 2
+    },
+    "high": {
+      "2": 6,
+      "3": 5.5,
+      "5": 5,
+      "10": 3
+    }
+  },
+  "bsCostsAvg": {
+    "low": {
+      "2": 1.8058303079620586,
+      "3": 1.5304379756393687,
+      "5": 1.0718282153356913,
+      "10": 0.3777457619038884
+    },
+    "moderate": {
+      "2": 2.3485009874173493,
+      "3": 2.058186352006023,
+      "5": 1.5545677812649095,
+      "10": 0.696385473615832
+    },
+    "elevated": {
+      "2": 3.2856546480221556,
+      "3": 2.979443939566101,
+      "5": 2.4267779541589856,
+      "10": 1.3718504993361376
+    },
+    "high": {
+      "2": 4.122343429457078,
+      "3": 3.8071560929548633,
+      "5": 3.226406144292774,
+      "10": 2.051950614387081
+    }
+  },
+  "pilotMix": {
+    "notional": [
+      {
+        "notionalUsd": 10000,
+        "share": 0.65
+      },
+      {
+        "notionalUsd": 15000,
+        "share": 0.1
+      },
+      {
+        "notionalUsd": 25000,
+        "share": 0.1
+      },
+      {
+        "notionalUsd": 35000,
+        "share": 0.1
+      },
+      {
+        "notionalUsd": 50000,
+        "share": 0.05
+      }
+    ],
+    "tier": [
+      {
+        "slPct": 2,
+        "share": 0.75
+      },
+      {
+        "slPct": 3,
+        "share": 0.15
+      },
+      {
+        "slPct": 5,
+        "share": 0.07
+      },
+      {
+        "slPct": 10,
+        "share": 0.03
+      }
+    ],
+    "triggerRate": {
+      "2": 0.4,
+      "3": 0.2,
+      "5": 0.05,
+      "10": 0.01
+    }
+  },
+  "avgDaysHeld": 7,
+  "recoveryRatioOfPayout": 1.5,
+  "evScenarios": [
+    {
+      "regime": "low",
+      "weighted": {
+        "revenueUsd": 275.4674999999999,
+        "hedgeBuyCostUsd": 391.74405528355953,
+        "expectedHedgeUnwindUsd": 342.76508511731936,
+        "expectedPayoutUsd": 117.2325,
+        "expectedNetUsd": 109.25602983375963,
+        "expectedNetMarginPct": 39.66203992621985
+      }
+    },
+    {
+      "regime": "moderate",
+      "weighted": {
+        "revenueUsd": 378.84,
+        "hedgeBuyCostUsd": 524.771289608214,
+        "expectedHedgeUnwindUsd": 395.49607219818887,
+        "expectedPayoutUsd": 117.2325,
+        "expectedNetUsd": 132.33228258997482,
+        "expectedNetMarginPct": 34.93091610969666
+      }
+    },
+    {
+      "regime": "elevated",
+      "weighted": {
+        "revenueUsd": 546.3149999999999,
+        "hedgeBuyCostUsd": 759.5587202191255,
+        "expectedHedgeUnwindUsd": 489.09369520783537,
+        "expectedPayoutUsd": 117.2325,
+        "expectedNetUsd": 158.61747498870983,
+        "expectedNetMarginPct": 29.03406917048037
+      }
+    },
+    {
+      "regime": "high",
+      "weighted": {
+        "revenueUsd": 665.8575000000001,
+        "hedgeBuyCostUsd": 988.3837343283351,
+        "expectedHedgeUnwindUsd": 569.6198844953631,
+        "expectedPayoutUsd": 117.2325,
+        "expectedNetUsd": 129.86115016702774,
+        "expectedNetMarginPct": 19.502844102083063
+      }
+    }
+  ]
+}
