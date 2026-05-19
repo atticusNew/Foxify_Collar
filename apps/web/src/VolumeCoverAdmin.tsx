@@ -129,6 +129,7 @@ type Cell = {
 type VenueBalances = {
   generatedAtIso: string;
   spotBtcUsdc: number | null;
+  spotSource?: string | null;
   bullish: {
     connected: boolean;
     error: string | null;
@@ -139,6 +140,16 @@ type VenueBalances = {
     totalEquityUsdc: number | null;
     environment: "testnet" | "mainnet" | "unknown";
     restBaseUrl: string;
+  };
+  deribit?: {
+    connected: boolean;
+    error: string | null;
+    environment: string;
+    paperMode: boolean;
+    equityBtc: number | null;
+    balanceBtc: number | null;
+    equityUsdc: number | null;
+    balanceUsdc: number | null;
   };
 };
 
@@ -688,101 +699,204 @@ function CellsWidget({
 
 function VenueBalanceWidget({ balances }: { balances: VenueBalances | null }) {
   const bullish = balances?.bullish;
-  const envBadgeColor =
+  const deribit = balances?.deribit;
+  const bullishEnvBadgeColor =
     bullish?.environment === "mainnet"
       ? "#d04060"
       : bullish?.environment === "testnet"
       ? "#3a8060"
       : "#666";
-  const envBadgeLabel =
+  const bullishEnvBadgeLabel =
     bullish?.environment === "mainnet"
       ? "🔴 MAINNET"
       : bullish?.environment === "testnet"
       ? "🧪 TESTNET"
       : "? UNKNOWN";
+  const deribitEnvBadgeColor =
+    deribit?.environment === "live" && !deribit.paperMode
+      ? "#d04060"
+      : deribit?.environment === "live" && deribit.paperMode
+      ? "#a07030"
+      : deribit?.environment === "testnet"
+      ? "#3a8060"
+      : "#666";
+  const deribitEnvBadgeLabel = deribit
+    ? deribit.environment === "live" && !deribit.paperMode
+      ? "🔴 LIVE"
+      : deribit.environment === "live" && deribit.paperMode
+      ? "📝 LIVE/PAPER"
+      : deribit.environment === "testnet"
+      ? "🧪 TESTNET"
+      : "? UNKNOWN"
+    : "? UNKNOWN";
+
+  const rowStyleBase = {
+    display: "grid",
+    gridTemplateColumns: "auto 1fr 1fr 1fr 1fr",
+    gap: 12,
+    padding: 12,
+    borderRadius: 6,
+    fontSize: 13,
+    alignItems: "center",
+    color: "#ddd"
+  } as const;
 
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "auto 1fr 1fr 1fr 1fr",
-        gap: 12,
-        padding: 12,
-        background: bullish?.connected ? "#1a1a1a" : "#2a1010",
-        borderRadius: 6,
-        marginBottom: 16,
-        fontSize: 13,
-        alignItems: "center",
-        color: "#ddd"
-      }}
-    >
-      <div>
-        <div style={{ color: "#888", fontSize: 11, marginBottom: 4 }}>
-          BULLISH VENUE
+    <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+      <div
+        style={{
+          ...rowStyleBase,
+          background: bullish?.connected ? "#1a1a1a" : "#2a1010"
+        }}
+      >
+        <div>
+          <div style={{ color: "#888", fontSize: 11, marginBottom: 4 }}>
+            BULLISH VENUE
+          </div>
+          <div
+            style={{
+              padding: "3px 8px",
+              background: bullishEnvBadgeColor,
+              color: "#fff",
+              fontSize: 11,
+              fontWeight: 700,
+              borderRadius: 3,
+              display: "inline-block"
+            }}
+          >
+            {bullishEnvBadgeLabel}
+          </div>
         </div>
-        <div
-          style={{
-            padding: "3px 8px",
-            background: envBadgeColor,
-            color: "#fff",
-            fontSize: 11,
-            fontWeight: 700,
-            borderRadius: 3,
-            display: "inline-block"
-          }}
-        >
-          {envBadgeLabel}
+        <div>
+          <div style={{ color: "#888", fontSize: 11 }}>STATUS</div>
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 700,
+              color: bullish?.connected ? "#69d171" : "#ff6b6b"
+            }}
+          >
+            {bullish?.connected
+              ? "✓ Connected"
+              : `✗ ${bullish?.error ?? "unknown"}`}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            {bullish?.rawAssetCount ?? 0} assets
+          </div>
+        </div>
+        <div>
+          <div style={{ color: "#888", fontSize: 11 }}>USDC AVAILABLE</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>
+            {bullish?.usdcAvailable !== null && bullish?.usdcAvailable !== undefined
+              ? fmt$(bullish.usdcAvailable, 2)
+              : "—"}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: "#888", fontSize: 11 }}>BTC AVAILABLE</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>
+            {bullish?.btcAvailable !== null && bullish?.btcAvailable !== undefined
+              ? `${bullish.btcAvailable.toFixed(4)} BTC`
+              : "—"}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            {bullish?.btcValueUsdc !== null && bullish?.btcValueUsdc !== undefined
+              ? `≈ ${fmt$(bullish.btcValueUsdc, 0)}`
+              : ""}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: "#888", fontSize: 11 }}>TOTAL EQUITY</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#9ecfff" }}>
+            {bullish?.totalEquityUsdc !== null && bullish?.totalEquityUsdc !== undefined
+              ? fmt$(bullish.totalEquityUsdc, 2)
+              : "—"}
+          </div>
+          <div style={{ fontSize: 10, color: "#666" }}>
+            {balances?.generatedAtIso
+              ? `as of ${new Date(balances.generatedAtIso).toLocaleTimeString()}`
+              : ""}
+          </div>
         </div>
       </div>
-      <div>
-        <div style={{ color: "#888", fontSize: 11 }}>STATUS</div>
-        <div
-          style={{
-            fontSize: 13,
-            fontWeight: 700,
-            color: bullish?.connected ? "#69d171" : "#ff6b6b"
-          }}
-        >
-          {bullish?.connected
-            ? "✓ Connected"
-            : `✗ ${bullish?.error ?? "unknown"}`}
+
+      <div
+        style={{
+          ...rowStyleBase,
+          background: deribit?.connected ? "#1a1a1a" : "#2a1010"
+        }}
+      >
+        <div>
+          <div style={{ color: "#888", fontSize: 11, marginBottom: 4 }}>
+            DERIBIT VENUE
+          </div>
+          <div
+            style={{
+              padding: "3px 8px",
+              background: deribitEnvBadgeColor,
+              color: "#fff",
+              fontSize: 11,
+              fontWeight: 700,
+              borderRadius: 3,
+              display: "inline-block"
+            }}
+          >
+            {deribitEnvBadgeLabel}
+          </div>
         </div>
-        <div style={{ fontSize: 10, color: "#888" }}>
-          {bullish?.rawAssetCount ?? 0} assets
+        <div>
+          <div style={{ color: "#888", fontSize: 11 }}>STATUS</div>
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 700,
+              color: deribit?.connected ? "#69d171" : "#ff6b6b"
+            }}
+          >
+            {deribit?.connected
+              ? "✓ Connected"
+              : `✗ ${deribit?.error ?? "unknown"}`}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            primary venue
+          </div>
         </div>
-      </div>
-      <div>
-        <div style={{ color: "#888", fontSize: 11 }}>USDC AVAILABLE</div>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>
-          {bullish?.usdcAvailable !== null && bullish?.usdcAvailable !== undefined
-            ? fmt$(bullish.usdcAvailable, 2)
-            : "—"}
+        <div>
+          <div style={{ color: "#888", fontSize: 11 }}>BALANCE</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>
+            {deribit?.balanceBtc !== null && deribit?.balanceBtc !== undefined
+              ? `${deribit.balanceBtc.toFixed(6)} BTC`
+              : "—"}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            {deribit?.balanceUsdc !== null && deribit?.balanceUsdc !== undefined
+              ? `≈ ${fmt$(deribit.balanceUsdc, 0)}`
+              : ""}
+          </div>
         </div>
-      </div>
-      <div>
-        <div style={{ color: "#888", fontSize: 11 }}>BTC AVAILABLE</div>
-        <div style={{ fontSize: 16, fontWeight: 700 }}>
-          {bullish?.btcAvailable !== null && bullish?.btcAvailable !== undefined
-            ? `${bullish.btcAvailable.toFixed(4)} BTC`
-            : "—"}
+        <div>
+          <div style={{ color: "#888", fontSize: 11 }}>EQUITY</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>
+            {deribit?.equityBtc !== null && deribit?.equityBtc !== undefined
+              ? `${deribit.equityBtc.toFixed(6)} BTC`
+              : "—"}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            {deribit?.equityUsdc !== null && deribit?.equityUsdc !== undefined
+              ? `≈ ${fmt$(deribit.equityUsdc, 0)}`
+              : ""}
+          </div>
         </div>
-        <div style={{ fontSize: 10, color: "#888" }}>
-          {bullish?.btcValueUsdc !== null && bullish?.btcValueUsdc !== undefined
-            ? `≈ ${fmt$(bullish.btcValueUsdc, 0)}`
-            : ""}
-        </div>
-      </div>
-      <div>
-        <div style={{ color: "#888", fontSize: 11 }}>TOTAL EQUITY</div>
-        <div style={{ fontSize: 18, fontWeight: 700, color: "#9ecfff" }}>
-          {bullish?.totalEquityUsdc !== null && bullish?.totalEquityUsdc !== undefined
-            ? fmt$(bullish.totalEquityUsdc, 2)
-            : "—"}
-        </div>
-        <div style={{ fontSize: 10, color: "#666" }}>
-          {balances?.generatedAtIso
-            ? `as of ${new Date(balances.generatedAtIso).toLocaleTimeString()}`
-            : ""}
+        <div>
+          <div style={{ color: "#888", fontSize: 11 }}>EQUITY USDC</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#9ecfff" }}>
+            {deribit?.equityUsdc !== null && deribit?.equityUsdc !== undefined
+              ? fmt$(deribit.equityUsdc, 2)
+              : "—"}
+          </div>
+          <div style={{ fontSize: 10, color: "#666" }}>
+            {balances?.spotSource ? `spot via ${balances.spotSource}` : ""}
+          </div>
         </div>
       </div>
     </div>

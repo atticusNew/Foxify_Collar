@@ -44,6 +44,21 @@ import { closePosition } from "./positionLifecycle";
 import type { HedgeExecutor } from "./tightHedge";
 import type { SpotPriceSource } from "./triggerDetector";
 
+// ────────────────────── Test-position exclusion ──────────────────────
+//
+// Positions opened via /volume-cover/admin/test-activate are tagged with
+// metadata.source = 'admin_test_activate' so the Foxify-facing dashboard
+// can suppress them. Production traffic from Foxify is tagged
+// metadata.source = 'foxify_api' (see volumeCoverRoutes.ts).
+//
+// SQL fragment is composable: takes the WHERE-clause prefix (e.g. " AND "
+// for chaining onto an existing WHERE, or " WHERE " for the first clause).
+// We keep NULL through-paths benign so positions opened before the tag
+// was introduced still render (pre-tag positions are pre-existing only;
+// new traffic always sets the tag).
+const HIDE_ADMIN_TEST_POSITIONS_SQL =
+  "(metadata->>'source' IS NULL OR metadata->>'source' <> 'admin_test_activate')";
+
 // ────────────────────── Auth ──────────────────────
 
 const resolveFoxifyToken = (): string => {
@@ -276,14 +291,16 @@ export const registerFoxifyDashboardRoutes = async (
     const since = startOfTodayUtcIso();
     const todayResult = await pool.query(
       `SELECT COUNT(*)::int AS cnt FROM volume_cover_position
-       WHERE opened_at >= $1`,
+       WHERE opened_at >= $1
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`,
       [since]
     );
     const todayActivations = Number(todayResult.rows[0]?.cnt ?? 0);
 
     const activeResult = await pool.query(
       `SELECT COUNT(*)::int AS cnt FROM volume_cover_position
-       WHERE status = 'active'`
+       WHERE status = 'active'
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`
     );
     const activeCount = Number(activeResult.rows[0]?.cnt ?? 0);
 
@@ -317,8 +334,14 @@ export const registerFoxifyDashboardRoutes = async (
     await logFoxifyAccess(pool, req, true);
 
     const positions = await listActivePositions(pool);
+    // Hide admin/operator test positions from Foxify view (see
+    // HIDE_ADMIN_TEST_POSITIONS_SQL for the canonical filter rule).
+    const foxifyVisible = positions.filter((p) => {
+      const src = (p.metadata as any)?.source;
+      return !src || src !== "admin_test_activate";
+    });
     return reply.send({
-      positions: positions.map(projectPositionForFoxify),
+      positions: foxifyVisible.map(projectPositionForFoxify),
       generatedAtIso: new Date().toISOString()
     });
   });
@@ -340,7 +363,8 @@ export const registerFoxifyDashboardRoutes = async (
       `SELECT COUNT(*)::int AS cnt,
               COALESCE(SUM(daily_premium_usdc), 0)::numeric AS premium_sum
        FROM volume_cover_position
-       WHERE opened_at >= $1 AND opened_at < $2`,
+       WHERE opened_at >= $1 AND opened_at < $2
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`,
       [dayStart, dayEnd]
     );
     const activationsToday = Number(openedResult.rows[0]?.cnt ?? 0);
@@ -351,7 +375,8 @@ export const registerFoxifyDashboardRoutes = async (
       `SELECT COUNT(*)::int AS cnt,
               COALESCE(SUM(payout_usdc), 0)::numeric AS payout_sum
        FROM volume_cover_position
-       WHERE triggered_at >= $1 AND triggered_at < $2`,
+       WHERE triggered_at >= $1 AND triggered_at < $2
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`,
       [dayStart, dayEnd]
     );
     const triggeredToday = Number(triggeredResult.rows[0]?.cnt ?? 0);
@@ -363,7 +388,8 @@ export const registerFoxifyDashboardRoutes = async (
          COUNT(*) FILTER (WHERE status = 'closed')::int AS closed_cnt,
          COUNT(*) FILTER (WHERE status = 'triggered' AND closed_at IS NOT NULL)::int AS expired_cnt
        FROM volume_cover_position
-       WHERE closed_at >= $1 AND closed_at < $2`,
+       WHERE closed_at >= $1 AND closed_at < $2
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`,
       [dayStart, dayEnd]
     );
     const closedEarlyToday = Number(closedResult.rows[0]?.closed_cnt ?? 0);
