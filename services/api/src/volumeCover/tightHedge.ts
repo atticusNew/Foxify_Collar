@@ -391,6 +391,12 @@ export interface HedgeExecutor {
     fillPriceUsdcPerBtc: number;
     totalCostUsdc: number;
     orderId: string;
+    /** Actual strike the venue filled (may differ from request if venue snapped to chain). */
+    actualStrikeUsdc?: number;
+    /** Actual expiry the venue filled (may differ from request after snap). */
+    actualExpiryIso?: string;
+    /** Actual venue symbol filled — for audit. */
+    actualSymbol?: string;
   }>;
 
   /**
@@ -504,11 +510,32 @@ export const executeHedgeStructure = async (params: {
       );
     }
 
+    // 2026-05-18: prefer actual filled strike/expiry from the venue
+    // when reported. Bullish (selectBullishOptionSymbol) and Deribit
+    // (resolveQuoteInstrument VC fast-path) snap target strikes to
+    // the nearest available on-chain strike, so leg.strikeUsdc is
+    // the TARGET we asked for, not what we actually got. Storing the
+    // actual fill values is correct for audit, dashboard display,
+    // hedge manager TP curve evaluation, and salvage math. Falls
+    // back to the leg-level target when venue doesn't report
+    // (e.g. mock fills, legacy adapter without snap support).
+    const actualStrike = fill.actualStrikeUsdc ?? leg.strikeUsdc;
+    const actualExpiry = fill.actualExpiryIso ?? leg.expiryIso;
+    if (
+      fill.actualStrikeUsdc !== undefined &&
+      Math.abs(fill.actualStrikeUsdc - leg.strikeUsdc) > 1
+    ) {
+      console.log(
+        `[volumeCover/tightHedge] strike snapped: requested=${leg.strikeUsdc.toFixed(2)} ` +
+          `filled=${fill.actualStrikeUsdc.toFixed(2)} ` +
+          `(symbol=${fill.actualSymbol ?? "unknown"})`
+      );
+    }
     filled.push({
       legId: newHedgeLegId(),
       optionKind: leg.optionKind,
-      strikeUsdc: leg.strikeUsdc,
-      expiryIso: leg.expiryIso,
+      strikeUsdc: actualStrike,
+      expiryIso: actualExpiry,
       contractsBtc: leg.contractsBtc,
       fillPriceUsdcPerBtc: fill.fillPriceUsdcPerBtc,
       totalCostUsdc: fill.totalCostUsdc,

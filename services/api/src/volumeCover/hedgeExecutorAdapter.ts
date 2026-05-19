@@ -53,6 +53,56 @@ export type HedgeExecutorAdapterOptions = {
   mockFills?: boolean;
 };
 
+/**
+ * Parse strike from a venue option symbol. Supports both formats:
+ *   Bullish: BTC-USDC-YYYYMMDD-STRIKE-{P|C}
+ *   Deribit: BTC-DDMMMYY-STRIKE-{P|C}
+ */
+const parseStrikeFromSymbol = (symbol: string): number | null => {
+  if (!symbol) return null;
+  // Bullish: 4 dash-separated parts, strike is the 4th
+  const bullishMatch = symbol.match(/^BTC-USDC-\d{8}-(\d+(?:\.\d+)?)-(P|C)$/i);
+  if (bullishMatch) {
+    const strike = Number(bullishMatch[1]);
+    return Number.isFinite(strike) ? strike : null;
+  }
+  // Deribit: 3 dash-separated parts, strike is the 3rd
+  const deribitMatch = symbol.match(/^BTC-\d{1,2}[A-Z]{3}\d{2}-(\d+)-(P|C)$/i);
+  if (deribitMatch) {
+    const strike = Number(deribitMatch[1]);
+    return Number.isFinite(strike) ? strike : null;
+  }
+  return null;
+};
+
+/**
+ * Parse expiry ISO from a venue option symbol.
+ *   Bullish YYYYMMDD → ISO at 08:00 UTC
+ *   Deribit DDMMMYY  → ISO at 08:00 UTC
+ */
+const parseExpiryFromSymbol = (symbol: string): string | null => {
+  if (!symbol) return null;
+  const bullishMatch = symbol.match(/^BTC-USDC-(\d{4})(\d{2})(\d{2})-/i);
+  if (bullishMatch) {
+    const [, y, m, d] = bullishMatch;
+    return `${y}-${m}-${d}T08:00:00.000Z`;
+  }
+  const deribitMatch = symbol.match(/^BTC-(\d{1,2})([A-Z]{3})(\d{2})-/i);
+  if (deribitMatch) {
+    const [, d, monShort, y2] = deribitMatch;
+    const monIdx =
+      ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"].indexOf(
+        monShort.toUpperCase()
+      );
+    if (monIdx < 0) return null;
+    const year = 2000 + Number(y2);
+    const day = Number(d);
+    if (!Number.isFinite(day) || day < 1 || day > 31) return null;
+    return `${year}-${String(monIdx + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}T08:00:00.000Z`;
+  }
+  return null;
+};
+
 export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExecutor => {
   return {
     async buyOptionLeg(params): Promise<{
@@ -60,6 +110,12 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
       fillPriceUsdcPerBtc: number;
       totalCostUsdc: number;
       orderId: string;
+      /** Actual strike that the venue filled (may differ from target if fast-path snapped) */
+      actualStrikeUsdc?: number;
+      /** Actual expiry that the venue filled (may differ from target after expiry snap) */
+      actualExpiryIso?: string;
+      /** Actual venue symbol filled (for audit log) */
+      actualSymbol?: string;
     }> {
       if (opts.mockFills) {
         // Mock fill: realistic price band per venue
@@ -68,7 +124,10 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
           venue: params.venue,
           fillPriceUsdcPerBtc: unitCost,
           totalCostUsdc: unitCost * params.contractsBtc,
-          orderId: `MOCK-BUY-${randomUUID().slice(0, 8)}`
+          orderId: `MOCK-BUY-${randomUUID().slice(0, 8)}`,
+          actualStrikeUsdc: params.strikeUsdc,
+          actualExpiryIso: params.expiryIso,
+          actualSymbol: `MOCK-${params.optionKind.toUpperCase()}-${params.strikeUsdc}`
         };
       }
 
@@ -122,11 +181,37 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
         );
       }
 
+      // 2026-05-18: extract the ACTUAL filled symbol from the venue's
+      // quote/execution result. The venue may have snapped the
+      // requested strike+expiry to nearest available (Bullish via
+      // selectBullishOptionSymbol, Deribit via resolveQuoteInstrument
+      // VC fast-path), so the actual fill can differ from params.
+      // Stored in DB for accurate audit + dashboard display.
+      //
+      // Sources, in order of preference:
+      //   1. quote.details.selectedInstrumentId (Bullish populates this)
+      //   2. quote.instrumentId (Deribit/Bullish — may equal request OR snapped)
+      //   3. execution.instrumentId (last resort)
+      const quoteDetails = ((quote as any)?.details || {}) as Record<string, unknown>;
+      const actualSymbol = String(
+        (quoteDetails.selectedInstrumentId as string | undefined) ||
+          (quote as any)?.instrumentId ||
+          (execution as any)?.instrumentId ||
+          ""
+      ).trim();
+      const actualStrikeUsdc =
+        parseStrikeFromSymbol(actualSymbol) ?? params.strikeUsdc;
+      const actualExpiryIso =
+        parseExpiryFromSymbol(actualSymbol) ?? params.expiryIso;
+
       return {
         venue: params.venue,
         fillPriceUsdcPerBtc: unitCost,
         totalCostUsdc: totalCost,
-        orderId: execution.externalOrderId ?? execution.quoteId
+        orderId: execution.externalOrderId ?? execution.quoteId,
+        actualStrikeUsdc,
+        actualExpiryIso,
+        actualSymbol: actualSymbol || undefined
       };
     },
 
