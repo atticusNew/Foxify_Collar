@@ -196,6 +196,17 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
         if (det.rejectionReason) reasonParts.push(String(det.rejectionReason));
         if (det.raw?.status) reasonParts.push(`raw_status=${det.raw.status}`);
         if (det.raw?.reason) reasonParts.push(`raw_reason=${det.raw.reason}`);
+        // Deribit JSON-RPC error response: { jsonrpc, id, error: { code, message, data } }
+        // 2026-05-20: surface error.code + error.message so live-mode rejections
+        // (e.g. account_not_enough_funds, scope_required, instrument_not_found,
+        // unauthorized) carry actionable detail instead of collapsing to
+        // orderState=unknown|fillRatio=0.
+        if (det.raw?.error?.code !== undefined)
+          reasonParts.push(`deribit_error_code=${det.raw.error.code}`);
+        if (det.raw?.error?.message)
+          reasonParts.push(`deribit_error=${det.raw.error.message}`);
+        if (det.raw?.error?.data?.reason)
+          reasonParts.push(`deribit_error_data_reason=${det.raw.error.data.reason}`);
         if (det.orderState) reasonParts.push(`orderState=${det.orderState}`);
         if (det.fillRatio !== undefined) reasonParts.push(`fillRatio=${det.fillRatio}`);
         if ((execution as any)?.message) reasonParts.push(String((execution as any).message));
