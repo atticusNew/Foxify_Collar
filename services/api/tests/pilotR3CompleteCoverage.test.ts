@@ -82,6 +82,79 @@ test("R3.B: DeribitTestAdapter.execute() throws venue_execute_timeout when place
   else process.env.PILOT_DERIBIT_EXECUTE_TIMEOUT_MS = original;
 });
 
+// ─── R3.B.2 — IOC-limit margin fix (2026-05-20) ────────────────────────────
+//
+// Regression test for the not_enough_funds (10039) fix. When the quote
+// provides `details.askPriceBtc`, execute() MUST send the order as a
+// limit + immediate_or_cancel at `ceil(ask × (1 + slippageBps/10000))`,
+// snapped to Deribit's option tick size. This keeps Deribit's pre-flight
+// margin reserve at `limit_price × amount` instead of `Max Buy Price ×
+// amount` (which would reserve 5× the realistic cost).
+test("R3.B.2: execute() sends IOC limit when quote includes askPriceBtc", async () => {
+  const captured: Array<Record<string, unknown>> = [];
+  const fakeConnector = {
+    placeOrder: async (req: Record<string, unknown>) => {
+      captured.push(req);
+      // Pretend the order filled instantly at the limit.
+      return {
+        result: {
+          order: {
+            order_id: "TEST-IOC-1",
+            order_state: "filled",
+            filled_amount: req.amount,
+            average_price: req.price
+          },
+          trades: [{ price: req.price }]
+        }
+      };
+    },
+    getIndexPrice: async () => ({ result: { index_price: 77_500 } }),
+    getOrderBook: async () => ({ result: {} }),
+    listInstruments: async () => ({ result: [] }),
+    getDVOL: async () => ({ dvol: 45, timestamp: Date.now() }),
+    getHistoricalVolatility: async () => ({ rvol: 40 }),
+    getTicker: async () => ({}),
+    getAccountSummary: async () => ({})
+  } as unknown as DeribitConnector;
+
+  const adapter = createPilotVenueAdapter({
+    mode: "deribit_test",
+    deribit: fakeConnector,
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" }
+  });
+
+  const askBtc = 0.0080;
+  await adapter.execute({
+    venue: "deribit_test",
+    quoteId: "test-quote-ioc",
+    instrumentId: "BTC-19APR26-76000-P",
+    side: "buy",
+    quantity: 0.8,
+    premium: 500,
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    quoteTs: new Date().toISOString(),
+    details: { askPriceBtc: askBtc, source: "test" }
+  });
+
+  assert.equal(captured.length, 1, "placeOrder must be called exactly once");
+  const req = captured[0]!;
+  assert.equal(req.type, "limit", "order type must be limit (not market)");
+  assert.equal(
+    req.timeInForce,
+    "immediate_or_cancel",
+    "time-in-force must be IOC so unfilled residue auto-cancels"
+  );
+  // Default slippage 1500 bps => 0.0080 × 1.15 = 0.0092 → tick 0.0005 → 0.0095.
+  const expectedLimit = Math.ceil((askBtc * 1.15) / 0.0005) * 0.0005;
+  assert.equal(
+    Number(req.price),
+    Number(expectedLimit.toFixed(4)),
+    `limit price must be ask × 1.15 snapped UP to tick (expected ${expectedLimit})`
+  );
+  assert.equal(req.amount, 0.8, "amount must match quote quantity");
+  assert.equal(req.side, "buy", "side must be buy");
+});
+
 // ─── R3.C — no-bid metadata persistence (production SQL semantics) ─────────
 
 // Hand-rolled in-memory pool that supports just enough of pg's interface for

@@ -1114,19 +1114,56 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     // the activate path catches venue_execute_timeout (already wired into
     // routes.ts response mapping) and returns a clean 504.
     const EXECUTE_TIMEOUT_MS = Number(process.env.PILOT_DERIBIT_EXECUTE_TIMEOUT_MS || "8000");
-    // 2026-05-20: log REQUEST shape too. Previously we only logged the
-    // response, so when Deribit rejected with not_enough_funds (10039)
-    // we couldn't see what amount/instrument was actually sent — making
-    // it hard to diagnose unit-conversion or sub-account issues.
+
+    // 2026-05-20: switch from pure `market` to `limit + immediate_or_cancel`.
+    //
+    // Background: Deribit's pre-flight margin check for market option
+    // orders reserves `Max Buy Price × amount` BTC, where Max Buy Price
+    // is ~5× the current ask. For a 0.8 BTC contract order at ~0.008 BTC
+    // mark that's 0.8 × 0.0375 = 0.030 BTC of reserve — more than our
+    // entire pilot balance. The order ACTUALLY fills at ~0.008 (≈$520)
+    // but Deribit rejects it pre-flight as `not_enough_funds_in_currency`
+    // (error 10039) because the theoretical worst-case reserve exceeds
+    // available funds.
+    //
+    // IOC limit at `ask × (1 + slippageBps/10000)` solves this:
+    //   1. Pre-flight reserve = limit_price × amount  (realistic, ~$520)
+    //   2. Order fills immediately at best available price ≤ limit
+    //   3. Any unfilled residue is auto-cancelled (no resting orders)
+    //   4. Behaves like a market order for our caller, but with
+    //      realistic margin math.
+    //
+    // Slippage cap default 1500 bps (15%) is generous enough to absorb
+    // an IV spike between quote and execute, while still keeping
+    // pre-flight reserve under our balance.
+    const askBtc = Number((quote.details as Record<string, unknown> | undefined)?.askPriceBtc ?? 0);
+    const slippageBps = Number(process.env.DERIBIT_BUY_SLIPPAGE_BPS || "1500");
+    let orderType: "limit" | "market" = "market";
+    let limitPriceBtc: number | undefined;
+    let timeInForce: "immediate_or_cancel" | undefined;
+    if (Number.isFinite(askBtc) && askBtc > 0) {
+      // Deribit option tick size: 0.0001 below 0.005, 0.0005 above.
+      const rawLimit = askBtc * (1 + slippageBps / 10000);
+      const tick = rawLimit >= 0.005 ? 0.0005 : 0.0001;
+      limitPriceBtc = Math.ceil(rawLimit / tick) * tick;
+      limitPriceBtc = Number(limitPriceBtc.toFixed(4));
+      orderType = "limit";
+      timeInForce = "immediate_or_cancel";
+    }
+
     console.log(
-      `[DeribitAdapter] placeOrder REQUEST instrument=${quote.instrumentId} amount=${deribitQty} side=buy type=market quoteQuantity=${quote.quantity} quotePremium=${(quote as any).premium ?? "?"}`
+      `[DeribitAdapter] placeOrder REQUEST instrument=${quote.instrumentId} amount=${deribitQty} side=buy type=${orderType} ` +
+      `limitPriceBtc=${limitPriceBtc ?? "(none)"} timeInForce=${timeInForce ?? "(none)"} ` +
+      `quoteAskBtc=${askBtc || "?"} quoteQuantity=${quote.quantity} quotePremium=${(quote as any).premium ?? "?"}`
     );
     const raw = (await Promise.race([
       this.connector.placeOrder({
         instrument: quote.instrumentId,
         amount: deribitQty,
         side: "buy",
-        type: "market"
+        type: orderType,
+        price: limitPriceBtc,
+        timeInForce
       }),
       new Promise((_, reject) =>
         setTimeout(
