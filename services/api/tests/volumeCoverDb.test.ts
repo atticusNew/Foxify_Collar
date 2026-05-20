@@ -22,7 +22,8 @@ import {
   insertSalvageEvent,
   computeRollingSalvageStats,
   countTriggersInWindow,
-  sumNetLossInWindow
+  sumNetLossInWindow,
+  countLifetimePositionsForCell
 } from "../src/volumeCover/volumeCoverDb";
 import { ensureCapitalPoolSchema } from "../src/pilot/capitalPoolSchema";
 
@@ -152,6 +153,41 @@ test("markPositionTriggered transitions status + records direction", async () =>
   });
   assert.equal(triggered?.status, "triggered");
   assert.equal(triggered?.triggeredDirection, "high");
+});
+
+test("countLifetimePositionsForCell excludes admin_test_activate AND hedge_execution_failed rows", async () => {
+  // 2026-05-20: failed activations leave a status='closed' row with
+  // close_reason='hedge_execution_failed: ...'. The lifetime cap is meant
+  // to gate REAL pilot opens, not count transient venue errors. Verify
+  // both admin_test_activate and hedge_execution_failed are excluded.
+  const pool = await buildPool();
+
+  // 1) Real successful open → COUNTS.
+  await insertPosition(pool, buildSamplePosition("vc-real-1"));
+
+  // 2) Real open that later closed normally → COUNTS.
+  await insertPosition(pool, { ...buildSamplePosition("vc-real-2"), foxifyPairId: "FX-2" });
+  await markPositionClosed(pool, { id: "vc-real-2", reason: "foxify_close" });
+
+  // 3) Admin test activation → DOES NOT COUNT.
+  await insertPosition(pool, {
+    ...buildSamplePosition("vc-admin-test"),
+    foxifyPairId: "FX-ADMIN",
+    metadata: { source: "admin_test_activate" }
+  });
+
+  // 4) Failed hedge execution → DOES NOT COUNT.
+  await insertPosition(pool, {
+    ...buildSamplePosition("vc-hedge-fail"),
+    foxifyPairId: "FX-FAIL"
+  });
+  await markPositionClosed(pool, {
+    id: "vc-hedge-fail",
+    reason: "hedge_execution_failed: venue_execute_failed:deribit:no_top_of_book"
+  });
+
+  const count = await countLifetimePositionsForCell(pool, { cellId: "50k_2pct_1k" });
+  assert.equal(count, 2, "only real opens (vc-real-1, vc-real-2) should count");
 });
 
 test("markPositionTriggered no-ops on non-active position", async () => {

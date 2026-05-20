@@ -528,6 +528,20 @@ export const countActivePositionsForCell = async (
  * Different from concurrent cap (active right now) and daily throttle
  * (opened today). Lifetime cap is monotone — only resets via env change.
  */
+/**
+ * Count "real" lifetime opens for a cell, for use by the VC_MAX_LIFETIME_PER_CELL_*
+ * pilot lock-down gate. A position counts toward the lifetime cap only if it
+ * represents a successful (or once-successful) activation. Excluded:
+ *   • admin_test_activate rows (operator diagnostics — never count)
+ *   • positions whose close_reason indicates hedge execution failure
+ *     (i.e. the activate route inserted a position row then the Deribit/
+ *     Bullish buy bombed → markPositionClosed wrote a row that NEVER
+ *     held a live hedge). Counting these would burn a pilot slot on a
+ *     transient venue error, which is not the intent of the cap.
+ *
+ * If a position opened successfully and was later closed/triggered, it
+ * STILL counts (that was a real lifetime open of the cell).
+ */
 export const countLifetimePositionsForCell = async (
   pool: DbExecutor,
   params: { cellId: string }
@@ -535,7 +549,8 @@ export const countLifetimePositionsForCell = async (
   const r = await pool.query(
     `SELECT COUNT(*)::int AS cnt FROM volume_cover_position
      WHERE cell_id = $1
-       AND (metadata->>'source' IS NULL OR metadata->>'source' <> 'admin_test_activate')`,
+       AND (metadata->>'source' IS NULL OR metadata->>'source' <> 'admin_test_activate')
+       AND (close_reason IS NULL OR close_reason NOT LIKE 'hedge_execution_failed%')`,
     [params.cellId]
   );
   return Number(r.rows[0]?.cnt ?? 0);
