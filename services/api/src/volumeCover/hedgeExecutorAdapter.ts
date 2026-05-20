@@ -181,10 +181,28 @@ export const createHedgeExecutor = (opts: HedgeExecutorAdapterOptions): HedgeExe
       // position was recorded as 'active' with synthetic premium but
       // no real order ever reached Bullish.
       if (execution.status === "failure") {
-        const reason =
-          (execution.details as any)?.rejectionReason ??
-          (execution as any)?.message ??
-          "unknown_reason";
+        // 2026-05-20: Different adapters surface failure reasons in different
+        // shapes:
+        //   • Bullish:  execution.details.rejectionReason  (e.g. "ioc_cancelled")
+        //   • Deribit:  execution.details.raw.reason       (e.g. "no_top_of_book")
+        //               execution.details.raw.status      (e.g. "paper_rejected")
+        //               execution.details.orderState      (e.g. "rejected")
+        // Previously we only checked the Bullish shape, so Deribit failures
+        // always surfaced as "unknown_reason" — unactionable on the operator
+        // side. Now we collect any of these signals and stuff them into the
+        // thrown error so the activate response carries actionable detail.
+        const det = (execution.details ?? {}) as any;
+        const reasonParts: string[] = [];
+        if (det.rejectionReason) reasonParts.push(String(det.rejectionReason));
+        if (det.raw?.status) reasonParts.push(`raw_status=${det.raw.status}`);
+        if (det.raw?.reason) reasonParts.push(`raw_reason=${det.raw.reason}`);
+        if (det.orderState) reasonParts.push(`orderState=${det.orderState}`);
+        if (det.fillRatio !== undefined) reasonParts.push(`fillRatio=${det.fillRatio}`);
+        if ((execution as any)?.message) reasonParts.push(String((execution as any).message));
+        const reason = reasonParts.length > 0 ? reasonParts.join("|") : "unknown_reason";
+        console.error(
+          `[hedgeExecutor] venue_execute_failed venue=${params.venue} instrument=${instrumentId} reason=${reason} fullDetails=${JSON.stringify(det).slice(0, 1500)}`
+        );
         throw new Error(
           `venue_execute_failed:${params.venue}:${reason}`
         );

@@ -98,14 +98,23 @@ services:
         value: "60000"
       - key: PILOT_MONITOR_ENABLED
         value: "true"
+      # Deribit production hedging venue for VC.
+      # 2026-05-20: flipped from testnet+paper to live execution. Paper
+      # mode was silently rejecting all hedges (testnet order books are
+      # thin for short-tenor OTM strikes), so activate calls failed with
+      # venue_execute_failed:deribit:no_top_of_book. With DERIBIT_PAPER
+      # =false the adapter goes against the real Deribit mainnet API.
       - key: DERIBIT_ENV
-        value: testnet
+        value: live
       - key: DERIBIT_PAPER
-        value: "true"
-      - key: DERIBIT_CLIENT_ID
-        value: placeholder
-      - key: DERIBIT_CLIENT_SECRET
-        value: placeholder
+        value: "false"
+      # Deribit credentials — inject via Render dashboard (never commit secrets).
+      # Required keys:
+      #   DERIBIT_CLIENT_ID
+      #   DERIBIT_CLIENT_SECRET
+      # If unset OR placeholder, server.ts forces paper mode (which fails)
+      # and execution is dead. Operator MUST configure these on Render
+      # dashboard before this deploy lands.
       - key: POSTGRES_URL
         fromDatabase:
           name: atticus-pilot-db
