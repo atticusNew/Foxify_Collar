@@ -1637,6 +1637,175 @@ export const registerVolumeCoverRoutes = async (
   });
 
   /**
+   * Dry-run an IOC limit BUY against live Deribit — proves the new
+   * (post-2026-05-20) order path works end-to-end without spending.
+   *
+   * How it works:
+   *   1. Pick a near-the-money BTC option (auto-resolved via getOrderBook).
+   *   2. Place a LIMIT BUY at `ask × 0.10` (i.e. ~90% BELOW the market
+   *      ask) with `time_in_force: immediate_or_cancel`.
+   *   3. Deribit accepts the order (pre-flight reserve is tiny because
+   *      limit_price × amount is tiny), tries to fill at the limit,
+   *      finds no seller anywhere near that price, and instantly
+   *      cancels the unfilled portion. Result: order_state="cancelled",
+   *      filled_amount=0, ZERO BTC spent, ZERO fees.
+   *
+   * What this proves:
+   *   • Deribit credentials work (private endpoint reached)
+   *   • `time_in_force: immediate_or_cancel` is accepted by Deribit
+   *   • Pre-flight margin math is honest (no 10039 rejection)
+   *   • Our request shape (instrument_name, amount, type, price, TIF)
+   *     is valid
+   *
+   * If THIS returns order_state="cancelled" with filled_amount=0, the
+   * REAL activate (which uses the same code path with a higher limit
+   * that WILL fill) is highly likely to succeed.
+   *
+   * Query params:
+   *   - instrument (optional, default = BTC-23MAY26-77000-P): the
+   *     instrument to test against. Pick something with a tight book.
+   *   - amount (optional, default = 0.1): contracts. Min 0.1, multiples
+   *     of 0.1.
+   *
+   * Auth: X-Admin-Token header (same as other admin endpoints).
+   */
+  app.post("/volume-cover/admin/deribit-dry-run-buy", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const env = String(process.env.DERIBIT_ENV || "live").trim();
+    const paperRaw = String(process.env.DERIBIT_PAPER || "true").trim().toLowerCase();
+    const credentialsConfigured = Boolean(
+      String(process.env.DERIBIT_CLIENT_ID || "").trim() &&
+        String(process.env.DERIBIT_CLIENT_SECRET || "").trim() &&
+        String(process.env.DERIBIT_CLIENT_ID || "").trim() !== "placeholder" &&
+        String(process.env.DERIBIT_CLIENT_SECRET || "").trim() !== "placeholder"
+    );
+    if (!credentialsConfigured) {
+      return reply.code(400).send({
+        ok: false,
+        error: "deribit_credentials_missing",
+        message: "Set DERIBIT_CLIENT_ID and DERIBIT_CLIENT_SECRET in Render env."
+      });
+    }
+    if (paperRaw === "true") {
+      return reply.code(400).send({
+        ok: false,
+        error: "deribit_paper_mode",
+        message:
+          "DERIBIT_PAPER=true — dry-run only meaningful against live API. " +
+          "Set DERIBIT_PAPER=false in Render env to run this test."
+      });
+    }
+
+    const q = (req as any).query || {};
+    const instrument = String(q.instrument || "BTC-23MAY26-77000-P").trim();
+    const amountRaw = Number(q.amount || "0.1");
+    const amount = Math.max(0.1, Math.floor(amountRaw * 10) / 10);
+
+    const { DeribitConnector } = await import("@foxify/connectors");
+    const connector = new DeribitConnector(
+      env === "live" ? "live" : "testnet",
+      false,
+      {
+        clientId: String(process.env.DERIBIT_CLIENT_ID || ""),
+        clientSecret: String(process.env.DERIBIT_CLIENT_SECRET || "")
+      }
+    );
+
+    // Step 1: fetch the orderbook to get a current ask we can size the
+    // intentionally-too-low limit against.
+    let bestAsk = 0;
+    let bestBid = 0;
+    let bookRaw: any = null;
+    try {
+      const book = await connector.getOrderBook(instrument);
+      bookRaw = book;
+      bestAsk = Number((book as any)?.result?.asks?.[0]?.[0] ?? 0);
+      bestBid = Number((book as any)?.result?.bids?.[0]?.[0] ?? 0);
+    } catch (err) {
+      return reply.code(502).send({
+        ok: false,
+        stage: "fetch_orderbook",
+        instrument,
+        error: (err as Error).message
+      });
+    }
+    if (!Number.isFinite(bestAsk) || bestAsk <= 0) {
+      return reply.code(502).send({
+        ok: false,
+        stage: "fetch_orderbook",
+        error: "no_ask",
+        instrument,
+        bookSnippet: JSON.stringify(bookRaw).slice(0, 400)
+      });
+    }
+
+    // Step 2: build a limit at ask × 0.10, snapped DOWN to tick
+    // (further from the market = even less likely to fill).
+    const rawLimit = bestAsk * 0.10;
+    const tick = rawLimit >= 0.005 ? 0.0005 : 0.0001;
+    const snappedLimit = Math.max(tick, Math.floor(rawLimit / tick) * tick);
+    const limitPriceBtc = Number(snappedLimit.toFixed(4));
+
+    console.log(
+      `[DryRun] deribit-dry-run-buy REQUEST instrument=${instrument} amount=${amount} ` +
+      `type=limit price=${limitPriceBtc} timeInForce=immediate_or_cancel ` +
+      `(bestAsk=${bestAsk} bestBid=${bestBid} → limit at 10% of ask, IOC-cancels)`
+    );
+
+    let raw: any;
+    let placeError: string | null = null;
+    try {
+      raw = await connector.placeOrder({
+        instrument,
+        amount,
+        side: "buy",
+        type: "limit",
+        price: limitPriceBtc,
+        timeInForce: "immediate_or_cancel"
+      });
+    } catch (err) {
+      placeError = (err as Error).message;
+    }
+
+    console.log(`[DryRun] deribit-dry-run-buy RESPONSE: ${JSON.stringify(raw).slice(0, 800)}`);
+
+    const orderData = raw?.result?.order ?? null;
+    const orderState = String(orderData?.order_state ?? "unknown");
+    const filledAmount = Number(orderData?.filled_amount ?? 0);
+    const cancelledNoFill = orderState === "cancelled" && filledAmount === 0;
+
+    return reply.send({
+      ok: true,
+      stage: "complete",
+      request: {
+        instrument,
+        amount,
+        side: "buy",
+        type: "limit",
+        price: limitPriceBtc,
+        timeInForce: "immediate_or_cancel"
+      },
+      orderbook: { bestAsk, bestBid, askInBtc: bestAsk, bidInBtc: bestBid },
+      response: {
+        orderState,
+        filledAmount,
+        orderId: orderData?.order_id ?? null,
+        cancelledNoFill,
+        raw
+      },
+      placeError,
+      verdict: cancelledNoFill
+        ? "PASS — IOC limit at 10% of ask was accepted by Deribit and cancelled with zero fill. " +
+          "Pre-flight + auth + time_in_force all confirmed working. Real activate at ask×1.15 will fill."
+        : filledAmount > 0
+        ? `WARNING — order partially or fully filled (${filledAmount} contracts). This shouldn't ` +
+          `happen at 10% of ask. Check the book — there may be stale resting bids near limit.`
+        : `REVIEW — order_state=${orderState}. Inspect 'response.raw' for Deribit's reason.`
+    });
+  });
+
+  /**
    * Cleanup phantom retained legs from Bullish-rejected activations.
    *
    * Operator-driven cleanup of DB pollution caused by the silent
