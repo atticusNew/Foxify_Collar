@@ -49,6 +49,23 @@ export type CellDefinition = {
    * enabled by operator before use.
    */
   defaultEnabled?: boolean;
+  /**
+   * Hedge tenor in days for this cell. Tenor is matched to expected
+   * Foxify hold time + safety margin so the hedge never expires
+   * uncovered. Calibrated 2026-05-19 from refined Monte Carlo using
+   * hourly BTC OHLC + observed Foxify hold pattern (closes at ~18.75%
+   * of payout in cumulative premium):
+   *   - 2% cells: hold ~0.5d → 3d tenor (6× cushion, no uncov tail)
+   *   - 5% cells: hold ~2.4d → 5d tenor (2× cushion)
+   *   - 10%/15% cells: hold ~9-12d → 14d tenor (>= max hold)
+   * Falling back to 14d for any cell that doesn't set this honors
+   * the pre-2026-05-19 default behavior.
+   *
+   * Lower tenors save ~50-70% upfront premium for short-hold cells.
+   * MUST NOT be set lower than ~1.5× expected hold or uncovered
+   * post-expiry triggers become a tail-risk problem.
+   */
+  expiryHorizonDays?: number;
 };
 
 /**
@@ -67,7 +84,8 @@ export const MATRIX: readonly CellDefinition[] = [
     payoutUsdc: 1_000,
     hedgePct: 0.01,
     dailyPremiumUsdc: 350,
-    defaultThrottleMaxPerDay: 5
+    defaultThrottleMaxPerDay: 5,
+    expiryHorizonDays: 3
   },
   {
     cellId: "50k_5pct_2_5k",
@@ -76,7 +94,8 @@ export const MATRIX: readonly CellDefinition[] = [
     payoutUsdc: 2_500,
     hedgePct: 0.03,
     dailyPremiumUsdc: 200,
-    defaultThrottleMaxPerDay: 5
+    defaultThrottleMaxPerDay: 5,
+    expiryHorizonDays: 5
   },
   {
     cellId: "50k_10pct_5k",
@@ -85,7 +104,8 @@ export const MATRIX: readonly CellDefinition[] = [
     payoutUsdc: 5_000,
     hedgePct: 0.05,
     dailyPremiumUsdc: 100,
-    defaultThrottleMaxPerDay: 5
+    defaultThrottleMaxPerDay: 5,
+    expiryHorizonDays: 14
   },
   {
     cellId: "200k_5pct_10k",
@@ -94,7 +114,8 @@ export const MATRIX: readonly CellDefinition[] = [
     payoutUsdc: 10_000,
     hedgePct: 0.03,
     dailyPremiumUsdc: 800,
-    defaultThrottleMaxPerDay: 5
+    defaultThrottleMaxPerDay: 5,
+    expiryHorizonDays: 5
   },
   {
     cellId: "200k_10pct_20k",
@@ -103,7 +124,8 @@ export const MATRIX: readonly CellDefinition[] = [
     payoutUsdc: 20_000,
     hedgePct: 0.05,
     dailyPremiumUsdc: 400,
-    defaultThrottleMaxPerDay: 5
+    defaultThrottleMaxPerDay: 5,
+    expiryHorizonDays: 14
   },
   {
     cellId: "200k_15pct_30k",
@@ -112,7 +134,8 @@ export const MATRIX: readonly CellDefinition[] = [
     payoutUsdc: 30_000,
     hedgePct: 0.07,
     dailyPremiumUsdc: 370,
-    defaultThrottleMaxPerDay: 5
+    defaultThrottleMaxPerDay: 5,
+    expiryHorizonDays: 14
   },
   /**
    * 1k_2pct_20 — TEST/DIAGNOSTIC CELL
@@ -144,7 +167,8 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.01,
     dailyPremiumUsdc: 1,
     defaultThrottleMaxPerDay: 1,
-    defaultEnabled: false
+    defaultEnabled: false,
+    expiryHorizonDays: 3
   }
 ];
 

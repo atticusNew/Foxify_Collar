@@ -70,7 +70,13 @@ export type LadderNettingConfig = {
 
 const DEFAULT_CONFIG: LadderNettingConfig = {
   maxRetainedAgeMs: 30 * 60 * 1_000,
-  minRemainingTenorMs: 7 * 86_400_000,
+  // 2026-05-19: lowered from 7d → 1d. The per-cell tenor change introduced
+  // 3-day tenors on the 2% cell, which previously disabled ALL ladder
+  // netting on short-tenor cells (legs only had 3 days at open, never
+  // ≥7 days remaining). 1d is the floor at which we'd still trust a
+  // retained leg as the primary hedge for a new position. Overridable
+  // via VC_LADDER_MIN_TENOR_MS.
+  minRemainingTenorMs: 86_400_000,
   maxStrikeDistancePct: 0.015,
   maxHopCount: 1
 };

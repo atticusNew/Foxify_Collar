@@ -254,7 +254,45 @@ test("/volume-cover/activate full happy path: 201 with hedge legs + ledger entri
     assert.ok(json.positionId);
     assert.equal(json.status, "active");
     assert.equal(json.hedgeLegs.length, 2);
+    assert.ok(json.coverExpiresAtIso);
+    assert.ok(json.hedgeLegs[0].expiryIso);
     assert.equal(json.salvageState, "normal");
+  } finally {
+    await harness.close();
+  }
+});
+
+test("/volume-cover/positions/:id returns hedge expiries + coverExpiresAtIso", async () => {
+  const harness = await buildHarness();
+  try {
+    const activateBody = {
+      foxifyPairId: "FX-POS-1",
+      cellId: "50k_2pct_1k",
+      pairLongNotionalUsdc: 50_000,
+      pairShortNotionalUsdc: 50_000,
+      pairEntryBtcPrice: 80_000
+    };
+    const activate = await harness.app.inject({
+      method: "POST",
+      url: "/volume-cover/activate",
+      headers: foxifyHeaders({ method: "POST", path: "/volume-cover/activate", body: activateBody }),
+      payload: activateBody
+    });
+    assert.equal(activate.statusCode, 201);
+    const positionId = activate.json().positionId as string;
+
+    const get = await harness.app.inject({
+      method: "GET",
+      url: `/volume-cover/positions/${positionId}`,
+      headers: foxifyHeaders({ method: "GET", path: `/volume-cover/positions/${positionId}` })
+    });
+    assert.equal(get.statusCode, 200);
+    const json = get.json();
+    assert.equal(json.positionId, positionId);
+    assert.ok(json.coverExpiresAtIso);
+    assert.equal(Array.isArray(json.hedgeLegs), true);
+    assert.equal(json.hedgeLegs.length, 2);
+    assert.ok(json.hedgeLegs[0].expiryIso);
   } finally {
     await harness.close();
   }
@@ -350,6 +388,133 @@ test("/volume-cover/activate enforces per-cell daily throttle", async () => {
     assert.equal(r.statusCode, 429);
     assert.equal(r.json().error, "daily_throttle_exceeded");
   } finally {
+    await harness.close();
+  }
+});
+
+test("/volume-cover/activate honors VC_MAX_CONCURRENT_PER_CELL env cap", async () => {
+  // P2 (2026-05-19): 2-position pilot cap. Env-driven so operator can lock
+  // the launch to N concurrent without changing the matrix schema.
+  const harness = await buildHarness();
+  const prev = process.env.VC_MAX_CONCURRENT_PER_CELL;
+  process.env.VC_MAX_CONCURRENT_PER_CELL = "2";
+  try {
+    for (let i = 0; i < 2; i++) {
+      const body = {
+        foxifyPairId: `FX-CONC-${i}`,
+        cellId: "50k_2pct_1k",
+        pairLongNotionalUsdc: 50_000,
+        pairShortNotionalUsdc: 50_000,
+        pairEntryBtcPrice: 80_000
+      };
+      const r = await harness.app.inject({
+        method: "POST",
+        url: "/volume-cover/activate",
+        headers: foxifyHeaders({ method: "POST", path: "/volume-cover/activate", body }),
+        payload: body
+      });
+      assert.equal(r.statusCode, 201, `expected 201 on concurrent ${i}, got ${r.statusCode}: ${r.body}`);
+    }
+    const overflow = {
+      foxifyPairId: "FX-CONC-OVERFLOW",
+      cellId: "50k_2pct_1k",
+      pairLongNotionalUsdc: 50_000,
+      pairShortNotionalUsdc: 50_000,
+      pairEntryBtcPrice: 80_000
+    };
+    const r = await harness.app.inject({
+      method: "POST",
+      url: "/volume-cover/activate",
+      headers: foxifyHeaders({ method: "POST", path: "/volume-cover/activate", body: overflow }),
+      payload: overflow
+    });
+    assert.equal(r.statusCode, 429);
+    assert.equal(r.json().error, "concurrent_throttle_exceeded");
+    assert.equal(r.json().maxConcurrent, 2);
+    assert.equal(r.json().activeNow, 2);
+  } finally {
+    if (prev === undefined) delete process.env.VC_MAX_CONCURRENT_PER_CELL;
+    else process.env.VC_MAX_CONCURRENT_PER_CELL = prev;
+    await harness.close();
+  }
+});
+
+test("/volume-cover/activate honors VC_MAX_LIFETIME_PER_CELL — blocks reopens after close", async () => {
+  // 2026-05-20: pilot launch lock-down. After N real positions have been
+  // opened for a cell, further activations are blocked — even after the
+  // earlier positions close (concurrent cap would allow reopens, lifetime
+  // cap does not).
+  const harness = await buildHarness();
+  const prev = process.env.VC_MAX_LIFETIME_PER_CELL;
+  process.env.VC_MAX_LIFETIME_PER_CELL = "2";
+  try {
+    // Open 2 positions.
+    const positionIds: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const body = {
+        foxifyPairId: `FX-LIFE-${i}`,
+        cellId: "50k_2pct_1k",
+        pairLongNotionalUsdc: 50_000,
+        pairShortNotionalUsdc: 50_000,
+        pairEntryBtcPrice: 80_000
+      };
+      const r = await harness.app.inject({
+        method: "POST",
+        url: "/volume-cover/activate",
+        headers: foxifyHeaders({ method: "POST", path: "/volume-cover/activate", body }),
+        payload: body
+      });
+      assert.equal(r.statusCode, 201, `expected 201 on lifetime ${i}, got ${r.statusCode}: ${r.body}`);
+      positionIds.push(r.json().positionId);
+    }
+
+    // Close the first position. Concurrent count would drop to 1, but
+    // lifetime count stays at 2.
+    const closeBody = { reason: "pilot_review" };
+    const closeR = await harness.app.inject({
+      method: "POST",
+      url: `/volume-cover/positions/${positionIds[0]}/close`,
+      headers: foxifyHeaders({
+        method: "POST",
+        path: `/volume-cover/positions/${positionIds[0]}/close`,
+        body: closeBody
+      }),
+      payload: closeBody
+    });
+    assert.equal(closeR.statusCode, 200);
+
+    // Attempt to open a 3rd position — lifetime cap rejects it.
+    const overflow = {
+      foxifyPairId: "FX-LIFE-OVERFLOW",
+      cellId: "50k_2pct_1k",
+      pairLongNotionalUsdc: 50_000,
+      pairShortNotionalUsdc: 50_000,
+      pairEntryBtcPrice: 80_000
+    };
+    const r = await harness.app.inject({
+      method: "POST",
+      url: "/volume-cover/activate",
+      headers: foxifyHeaders({ method: "POST", path: "/volume-cover/activate", body: overflow }),
+      payload: overflow
+    });
+    assert.equal(r.statusCode, 423);
+    assert.equal(r.json().error, "lifetime_cap_exceeded");
+    assert.equal(r.json().maxLifetime, 2);
+    assert.equal(r.json().openedEver, 2);
+
+    // Raise the cap → next activation succeeds (simulates operator
+    // unlocking after pilot review).
+    process.env.VC_MAX_LIFETIME_PER_CELL = "10";
+    const r2 = await harness.app.inject({
+      method: "POST",
+      url: "/volume-cover/activate",
+      headers: foxifyHeaders({ method: "POST", path: "/volume-cover/activate", body: overflow }),
+      payload: overflow
+    });
+    assert.equal(r2.statusCode, 201, `expected 201 after cap raise, got ${r2.statusCode}: ${r2.body}`);
+  } finally {
+    if (prev === undefined) delete process.env.VC_MAX_LIFETIME_PER_CELL;
+    else process.env.VC_MAX_LIFETIME_PER_CELL = prev;
     await harness.close();
   }
 });

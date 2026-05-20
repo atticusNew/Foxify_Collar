@@ -220,11 +220,16 @@ export const buildHedgeStructure = (params: {
     contractGranularityBtc: params.contractGranularityBtc,
     regime: params.regime ?? null
   });
-  // P1a (2026-05-16): default tenor 1d → 14d (matched-tenor hedge).
-  // Production previously had no rollover for the 1-day hedge while
-  // VC positions can live up to 14 days — a 14d matched hedge eliminates
-  // that uncovered-from-day-2 gap. See PLAN §7 P1a + §13.
-  const horizonDays = params.expiryHorizonDays ?? 14;
+  // P2 (2026-05-19): per-cell tenor. Sourced from CellDefinition.expiryHorizonDays
+  // so the hedge tenor matches each cell's observed Foxify hold pattern + safety
+  // cushion (see matrix.ts comment). Calibrated by hourly-OHLC Monte Carlo
+  // (`scripts/probes/vc_monte_carlo_v2.ts`):
+  //   - 2% cells: 3d  (hold ~0.5d)
+  //   - 5% cells: 5d  (hold ~2.4d)
+  //   - 10%/15% cells: 14d (hold runs near full window; uncovered tail otherwise)
+  // Explicit caller override (params.expiryHorizonDays) still wins; cell field
+  // is the next default; legacy 14d fallback for cells that omit the field.
+  const horizonDays = params.expiryHorizonDays ?? params.cell.expiryHorizonDays ?? 14;
   const expiryDate = new Date(Date.now() + horizonDays * 86_400_000);
   // Snap to 08:00 UTC (typical option expiry boundary on Bullish/Deribit).
   expiryDate.setUTCHours(8, 0, 0, 0);
@@ -295,7 +300,8 @@ export const buildHedgeStructureWithVenueGrid = async (params: {
   regime?: VolRegime | null;
 }): Promise<HedgeStructure> => {
   const venue = resolveHedgeVenue(params.cell);
-  const horizonDays = params.expiryHorizonDays ?? 14;
+  // P2 (2026-05-19): per-cell tenor. See `buildHedgeStructure` for details.
+  const horizonDays = params.expiryHorizonDays ?? params.cell.expiryHorizonDays ?? 14;
   const expiryDate = new Date(Date.now() + horizonDays * 86_400_000);
   expiryDate.setUTCHours(8, 0, 0, 0);
   if (expiryDate.getTime() < Date.now()) {

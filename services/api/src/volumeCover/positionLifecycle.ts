@@ -322,7 +322,10 @@ export const fireTrigger = async (
   payoutOwedUsdc: number;
 }> => {
   const legs = await listHedgeLegsForPosition(pool, params.position.id);
-  const openLegs = legs.filter((l) => l.status === "open" && !l.retained);
+  // Include already-retained legs (post-close-window triggers): we still
+  // want to refresh their retained_role to winner/loser so the hedge
+  // manager applies the right TP rule on the now-triggered position.
+  const openLegs = legs.filter((l) => l.status === "open");
 
   // Tag each leg's retained role based on trigger direction.
   // direction='low'  → BTC dropped → put leg is the WINNER (now ITM)
@@ -348,6 +351,9 @@ export const fireTrigger = async (
   }
 
   // Record salvage event with 0 proceeds (finalized later by hedge manager).
+  // post_close_trigger: trigger fired after Foxify-initiated close, but
+  // inside the still-paid coverage window. Payout still owed.
+  const postCloseTrigger = params.position.status === "closed";
   const salvageEvent = await recordTriggerEvent(pool, {
     positionId: params.position.id,
     triggeredDirection: params.direction,
@@ -357,7 +363,9 @@ export const fireTrigger = async (
       triggerSpotBtc: params.triggerSpotBtc ?? null,
       hedge_retained: true,
       retained_leg_ids: retainedLegIds,
-      finalized: false
+      finalized: false,
+      post_close_trigger: postCloseTrigger,
+      coverage_through: params.position.coverageThrough
     }
   });
 
@@ -401,29 +409,36 @@ export const fireTrigger = async (
   // Foxify pays for held days only. Days are whole-day units rounded
   // UP from partial (Foxify per-day billing convention). Triggered
   // positions are billed up to the trigger moment.
-  try {
-    const openedAtMs = new Date(params.position.openedAt).getTime();
-    const triggerMs = Date.now();
-    const daysHeld = Math.max(1, Math.ceil((triggerMs - openedAtMs) / 86_400_000));
-    const accruedPremium = params.position.dailyPremiumUsdc * daysHeld;
-    await insertLedgerEntry(pool, {
-      poolId: "foxify_trader",
-      protectionId: params.position.id,
-      entryType: "premium_in",
-      amountUsdc: accruedPremium,
-      reference: `vc_premium_accrued_trigger:${params.position.cellId}:${params.position.id}`,
-      metadata: {
-        product: "volume_cover",
-        cellId: params.position.cellId,
-        daysHeld,
-        dailyPremiumUsdc: params.position.dailyPremiumUsdc,
-        accrual_basis: "trigger_close"
-      }
-    });
-  } catch (err) {
-    console.warn(
-      `[volumeCover/lifecycle] premium_in (trigger) ledger failed for position ${params.position.id}: ${(err as Error).message}`
-    );
+  //
+  // 2026-05-19 coverage-window: if the position was already closed
+  // (Foxify-close, coverage window still open), premium was already
+  // accrued at close. Skip to avoid double-billing.
+  const alreadyBilledAtClose = params.position.status === "closed";
+  if (!alreadyBilledAtClose) {
+    try {
+      const openedAtMs = new Date(params.position.openedAt).getTime();
+      const triggerMs = Date.now();
+      const daysHeld = Math.max(1, Math.ceil((triggerMs - openedAtMs) / 86_400_000));
+      const accruedPremium = params.position.dailyPremiumUsdc * daysHeld;
+      await insertLedgerEntry(pool, {
+        poolId: "foxify_trader",
+        protectionId: params.position.id,
+        entryType: "premium_in",
+        amountUsdc: accruedPremium,
+        reference: `vc_premium_accrued_trigger:${params.position.cellId}:${params.position.id}`,
+        metadata: {
+          product: "volume_cover",
+          cellId: params.position.cellId,
+          daysHeld,
+          dailyPremiumUsdc: params.position.dailyPremiumUsdc,
+          accrual_basis: "trigger_close"
+        }
+      });
+    } catch (err) {
+      console.warn(
+        `[volumeCover/lifecycle] premium_in (trigger) ledger failed for position ${params.position.id}: ${(err as Error).message}`
+      );
+    }
   }
 
   // Note: no separate "hedge_retained" ledger entry. Source of truth
@@ -479,6 +494,9 @@ export const closePosition = async (
 ): Promise<{
   hedgeRetainedLegIds: string[];
   reason: string;
+  /** End-of-paid-coverage timestamp; triggers within this window still pay out. */
+  coverageThroughIso: string;
+  daysHeld: number;
 }> => {
   const legs = await listHedgeLegsForPosition(pool, params.position.id);
   const openLegs = legs.filter((l) => l.status === "open" && !l.retained);
@@ -516,17 +534,25 @@ export const closePosition = async (
     }
   }
 
+  // P1d / 2026-05-19 coverage-window:
+  //
+  //   Foxify pays per whole day (ceil of elapsed). Coverage extends through
+  //   opened_at + daysHeld × 24h so the customer gets the full paid period —
+  //   triggers in that window still pay out. We compute it once here so the
+  //   premium ledger and the coverage_through column stay in lockstep.
+  const openedAtMs = new Date(params.position.openedAt).getTime();
+  const closeMs = Date.now();
+  const daysHeld = Math.max(1, Math.ceil((closeMs - openedAtMs) / 86_400_000));
+  const coverageThroughMs = openedAtMs + daysHeld * 86_400_000;
+  const coverageThroughIso = new Date(coverageThroughMs).toISOString();
+
   await markPositionClosed(pool, {
     id: params.position.id,
-    reason: params.reason
+    reason: params.reason,
+    coverageThroughIso
   });
 
-  // P1d: Accrue premium for held days. Foxify pays for held days only
-  // (not upfront, not full tenor).
   try {
-    const openedAtMs = new Date(params.position.openedAt).getTime();
-    const closeMs = Date.now();
-    const daysHeld = Math.max(1, Math.ceil((closeMs - openedAtMs) / 86_400_000));
     const accruedPremium = params.position.dailyPremiumUsdc * daysHeld;
     await insertLedgerEntry(pool, {
       poolId: "foxify_trader",
@@ -540,7 +566,8 @@ export const closePosition = async (
         daysHeld,
         dailyPremiumUsdc: params.position.dailyPremiumUsdc,
         accrual_basis: "foxify_close",
-        close_reason: params.reason
+        close_reason: params.reason,
+        coverage_through: coverageThroughIso
       }
     });
   } catch (err) {
@@ -554,5 +581,10 @@ export const closePosition = async (
   // close_reason). Real hedge_sell_in ledger entries are written by
   // the VC hedge manager when legs eventually sell.
 
-  return { hedgeRetainedLegIds: retainedLegIds, reason: params.reason };
+  return {
+    hedgeRetainedLegIds: retainedLegIds,
+    reason: params.reason,
+    coverageThroughIso,
+    daysHeld
+  };
 };

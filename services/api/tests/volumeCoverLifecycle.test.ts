@@ -11,6 +11,8 @@ import {
   seedVolumeCoverCellsIfNeeded,
   getPosition,
   listHedgeLegsForPosition,
+  listActivePositions,
+  markPositionTriggered,
   computeRollingSalvageStats
 } from "../src/volumeCover/volumeCoverDb";
 import {
@@ -244,4 +246,144 @@ test("closePosition: P1b — retains legs (no sell), tags near_atm vs stale by s
   );
   const types = ledger.rows.map((r: any) => r.entry_type);
   assert.ok(!types.includes("hedge_sell_in"));
+});
+
+test("closePosition: sets coverage_through to opened_at + ceil(daysHeld) × 24h", async () => {
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  const opened = await openPosition(pool, buildMockExecutor(), {
+    cell,
+    foxifyPairId: "FX-COVERAGE-1",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000
+  });
+
+  const result = await closePosition(pool, buildMockExecutor(), {
+    position: opened.position,
+    reason: "foxify_close_window_test"
+  });
+
+  // daysHeld is 1 for any sub-24h close; coverage runs to opened_at + 24h.
+  assert.equal(result.daysHeld, 1);
+  const expectedThroughMs = new Date(opened.position.openedAt).getTime() + 86_400_000;
+  assert.equal(new Date(result.coverageThroughIso).getTime(), expectedThroughMs);
+
+  const fresh = await getPosition(pool, opened.position.id);
+  assert.equal(fresh?.status, "closed");
+  assert.equal(
+    fresh?.coverageThrough && new Date(fresh.coverageThrough).getTime(),
+    expectedThroughMs,
+    "coverage_through persisted on the row"
+  );
+
+  // Premium ledger must reflect the same daysHeld used for coverage.
+  const led = await pool.query(
+    `SELECT amount_usdc, metadata FROM pilot_pool_ledger
+     WHERE protection_id = $1 AND entry_type = 'premium_in'`,
+    [opened.position.id]
+  );
+  assert.equal(led.rows.length, 1);
+  assert.equal(Number(led.rows[0].amount_usdc), cell.dailyPremiumUsdc);
+});
+
+test("post-close coverage window: trigger inside window fires payout, no double-billing", async () => {
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  const opened = await openPosition(pool, buildMockExecutor(), {
+    cell,
+    foxifyPairId: "FX-COVERAGE-IN",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000
+  });
+
+  // Foxify closes immediately. Coverage runs ~24h forward, so the
+  // position should still appear in listActivePositions.
+  await closePosition(pool, buildMockExecutor(), {
+    position: opened.position,
+    reason: "foxify_close_then_trigger"
+  });
+
+  const stillCovered = await listActivePositions(pool);
+  assert.ok(
+    stillCovered.some((p) => p.id === opened.position.id),
+    "closed-but-in-coverage position must be returned by listActivePositions"
+  );
+
+  // Reload position (status='closed', coverage_through > NOW()) and
+  // fire the post-close trigger.
+  const closedPos = await getPosition(pool, opened.position.id);
+  assert.equal(closedPos?.status, "closed");
+
+  const triggerResult = await fireTrigger(pool, buildMockExecutor(), {
+    position: closedPos!,
+    direction: "low"
+  });
+  assert.equal(triggerResult.payoutOwedUsdc, opened.position.payoutUsdc);
+
+  const fresh = await getPosition(pool, opened.position.id);
+  assert.equal(fresh?.status, "triggered", "in-window trigger must transition to 'triggered'");
+
+  // Ledger: exactly ONE premium_in (from close) and ONE payout_out (from trigger).
+  // No duplicate premium_in (no double-billing).
+  const led = await pool.query(
+    `SELECT entry_type, amount_usdc FROM pilot_pool_ledger WHERE protection_id = $1 ORDER BY id`,
+    [opened.position.id]
+  );
+  const premiums = led.rows.filter((r: any) => r.entry_type === "premium_in");
+  const payouts = led.rows.filter((r: any) => r.entry_type === "payout_out");
+  assert.equal(premiums.length, 1, "exactly one premium_in (accrued at close, not re-accrued on post-close trigger)");
+  assert.equal(payouts.length, 1, "exactly one payout_out for the in-window trigger");
+  assert.equal(Number(payouts[0].amount_usdc), -opened.position.payoutUsdc);
+
+  // Salvage event tagged as post_close_trigger.
+  const sv = await pool.query(
+    `SELECT metadata FROM volume_cover_salvage_event WHERE position_id = $1`,
+    [opened.position.id]
+  );
+  const meta = typeof sv.rows[0].metadata === "string" ? JSON.parse(sv.rows[0].metadata) : sv.rows[0].metadata;
+  assert.equal(meta.post_close_trigger, true);
+});
+
+test("post-close coverage window: trigger AFTER window expires is blocked (no payout)", async () => {
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  const opened = await openPosition(pool, buildMockExecutor(), {
+    cell,
+    foxifyPairId: "FX-COVERAGE-OUT",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000
+  });
+
+  await closePosition(pool, buildMockExecutor(), {
+    position: opened.position,
+    reason: "foxify_close_then_trigger_after_window"
+  });
+
+  // Force the coverage window into the past to simulate elapsed time.
+  await pool.query(
+    `UPDATE volume_cover_position
+     SET coverage_through = NOW() - INTERVAL '1 hour'
+     WHERE id = $1`,
+    [opened.position.id]
+  );
+
+  // listActivePositions must NOT include the expired-coverage position.
+  const active = await listActivePositions(pool);
+  assert.ok(
+    !active.some((p) => p.id === opened.position.id),
+    "expired-coverage position must be excluded from listActivePositions"
+  );
+
+  // markPositionTriggered must NOT transition status — out of window.
+  const blocked = await markPositionTriggered(pool, {
+    id: opened.position.id,
+    direction: "low"
+  });
+  assert.equal(blocked, null, "trigger outside coverage window must return null");
+
+  const fresh = await getPosition(pool, opened.position.id);
+  assert.equal(fresh?.status, "closed", "status remains 'closed' after expired-window trigger attempt");
 });

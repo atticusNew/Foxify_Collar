@@ -129,6 +129,13 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN last_value_usdc NUMERIC(20, 8)`);
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN last_value_at TIMESTAMPTZ`);
 
+  // ─── 2026-05-19: coverage-window extension on close ───
+  // When Foxify (or admin) calls /close, premium is billed by ceil-of-days-held.
+  // Coverage extends through opened_at + ceil(daysHeld) × 24h so the customer
+  // gets the full paid period — a trigger fired within that window still pays
+  // out. NULL while status='active' (covered until close).
+  await safeAlter(`ALTER TABLE volume_cover_position ADD COLUMN coverage_through TIMESTAMPTZ`);
+
   // Hedge-retained ledger info for audit (no balance impact). Not its
   // own table; we use the existing pilot capital_pool_ledger via
   // metadata. See positionLifecycle.
@@ -353,6 +360,15 @@ export type PositionRow = {
   triggeredDirection: "high" | "low" | null;
   closedAt: string | null;
   closeReason: string | null;
+  /**
+   * End-of-paid-coverage timestamp. NULL while status='active' (customer is
+   * actively paying and covered indefinitely). On close, this is set to
+   * openedAt + ceil(daysHeld) × 24h: the customer paid for that many whole
+   * days so coverage runs through the end of the last paid day. While
+   * status='closed' and coverage_through > NOW(), the position is still
+   * eligible to trigger.
+   */
+  coverageThrough: string | null;
   fingerprintHash: string | null;
   metadata: Record<string, unknown>;
 };
@@ -374,6 +390,7 @@ const rowToPosition = (r: any): PositionRow => ({
   triggeredDirection: r.triggered_direction ? (String(r.triggered_direction) as "high" | "low") : null,
   closedAt: r.closed_at ? String(r.closed_at) : null,
   closeReason: r.close_reason ? String(r.close_reason) : null,
+  coverageThrough: r.coverage_through ? String(r.coverage_through) : null,
   fingerprintHash: r.fingerprint_hash ? String(r.fingerprint_hash) : null,
   metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) : (r.metadata ?? {})
 });
@@ -444,9 +461,23 @@ export const getPositionByPairId = async (
   return r.rows[0] ? rowToPosition(r.rows[0]) : null;
 };
 
+/**
+ * Positions that are eligible to fire a trigger right now.
+ *
+ * Includes:
+ *   - status='active'                                (currently paying)
+ *   - status='closed' AND coverage_through > NOW()   (paid window still open)
+ *
+ * The second bucket is the post-close coverage extension: customer was
+ * billed for ceil(daysHeld) whole days so triggers within that paid
+ * window still owe payout.
+ */
 export const listActivePositions = async (pool: DbExecutor): Promise<PositionRow[]> => {
   const r = await pool.query(
-    `SELECT * FROM volume_cover_position WHERE status = 'active' ORDER BY opened_at`
+    `SELECT * FROM volume_cover_position
+     WHERE status = 'active'
+        OR (status = 'closed' AND coverage_through IS NOT NULL AND coverage_through > NOW())
+     ORDER BY opened_at`
   );
   return r.rows.map(rowToPosition);
 };
@@ -464,6 +495,52 @@ export const listPositionsForCellToday = async (
   return r.rows.map(rowToPosition);
 };
 
+/**
+ * Count active (status='active') positions for a cell. Used by the
+ * activate endpoint's concurrent-cap check (env VC_MAX_CONCURRENT_PER_CELL).
+ * Counts regardless of opened_at — a position opened yesterday that is
+ * still active counts toward the concurrent cap.
+ */
+export const countActivePositionsForCell = async (
+  pool: DbExecutor,
+  params: { cellId: string }
+): Promise<number> => {
+  const r = await pool.query(
+    `SELECT COUNT(*)::int AS cnt FROM volume_cover_position
+     WHERE cell_id = $1 AND status = 'active'`,
+    [params.cellId]
+  );
+  return Number(r.rows[0]?.cnt ?? 0);
+};
+
+/**
+ * Count TOTAL positions opened for a cell, regardless of current status
+ * (active, triggered, closed). Excludes admin-test positions
+ * (metadata.source = 'admin_test_activate') so prior smoke tests don't
+ * pollute the count.
+ *
+ * Used by the activate endpoint's hard lifetime-cap check
+ * (env VC_MAX_LIFETIME_PER_CELL_<CELLID>). The cap prevents auto-reopens
+ * after pilot positions close or trigger — once N real positions have
+ * ever been opened for the cell, further activations are blocked until
+ * the operator raises/clears the env var.
+ *
+ * Different from concurrent cap (active right now) and daily throttle
+ * (opened today). Lifetime cap is monotone — only resets via env change.
+ */
+export const countLifetimePositionsForCell = async (
+  pool: DbExecutor,
+  params: { cellId: string }
+): Promise<number> => {
+  const r = await pool.query(
+    `SELECT COUNT(*)::int AS cnt FROM volume_cover_position
+     WHERE cell_id = $1
+       AND (metadata->>'source' IS NULL OR metadata->>'source' <> 'admin_test_activate')`,
+    [params.cellId]
+  );
+  return Number(r.rows[0]?.cnt ?? 0);
+};
+
 export const sumActivePayoutLiability = async (pool: DbExecutor): Promise<number> => {
   const r = await pool.query(
     `SELECT COALESCE(SUM(payout_usdc), 0) AS total FROM volume_cover_position WHERE status = 'active'`
@@ -471,6 +548,15 @@ export const sumActivePayoutLiability = async (pool: DbExecutor): Promise<number
   return Number(r.rows[0].total);
 };
 
+/**
+ * Mark a position triggered. Allowed transitions:
+ *   - status='active'                                                    → 'triggered'
+ *   - status='closed' AND coverage_through IS NOT NULL AND > NOW()       → 'triggered'
+ *
+ * The second case is a post-Foxify-close trigger that fires within the
+ * still-paid coverage window. Payout is owed; downstream lifecycle is
+ * the same as a normal trigger.
+ */
 export const markPositionTriggered = async (
   pool: DbExecutor,
   params: { id: string; direction: "high" | "low"; triggeredAtIso?: string }
@@ -480,7 +566,9 @@ export const markPositionTriggered = async (
      SET status = 'triggered',
          triggered_direction = $2,
          triggered_at = COALESCE($3::timestamptz, NOW())
-     WHERE id = $1 AND status = 'active'
+     WHERE id = $1
+       AND (status = 'active'
+            OR (status = 'closed' AND coverage_through IS NOT NULL AND coverage_through > NOW()))
      RETURNING *`,
     [params.id, params.direction, params.triggeredAtIso ?? null]
   );
@@ -489,16 +577,23 @@ export const markPositionTriggered = async (
 
 export const markPositionClosed = async (
   pool: DbExecutor,
-  params: { id: string; reason: string; closedAtIso?: string }
+  params: {
+    id: string;
+    reason: string;
+    closedAtIso?: string;
+    /** End-of-paid-coverage ISO timestamp; trigger eligibility runs through it. */
+    coverageThroughIso?: string | null;
+  }
 ): Promise<PositionRow | null> => {
   const r = await pool.query(
     `UPDATE volume_cover_position
      SET status = 'closed',
          close_reason = $2,
-         closed_at = COALESCE($3::timestamptz, NOW())
+         closed_at = COALESCE($3::timestamptz, NOW()),
+         coverage_through = COALESCE($4::timestamptz, coverage_through)
      WHERE id = $1
      RETURNING *`,
-    [params.id, params.reason, params.closedAtIso ?? null]
+    [params.id, params.reason, params.closedAtIso ?? null, params.coverageThroughIso ?? null]
   );
   return r.rows[0] ? rowToPosition(r.rows[0]) : null;
 };

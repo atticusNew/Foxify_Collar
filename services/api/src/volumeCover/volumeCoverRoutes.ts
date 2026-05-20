@@ -47,8 +47,11 @@ import {
   updateCell,
   getPosition,
   getPositionByPairId,
+  listHedgeLegsForPosition,
   listActivePositions,
   listPositionsForCellToday,
+  countActivePositionsForCell,
+  countLifetimePositionsForCell,
   sumActivePayoutLiability,
   insertPairEvent,
   listRecentPairEvents,
@@ -74,10 +77,12 @@ import {
   runOneHedgeManagerTick,
   type SpotIvSource
 } from "./volumeCoverHedgeManager";
-import type { HedgeExecutor } from "./tightHedge";
+import { resolveHedgeVenue, type HedgeExecutor } from "./tightHedge";
 import {
   classifyVolumeCoverRegime,
   translatePilotRegime,
+  getGridStepUsdc,
+  snapHedgeStrike,
   type VolRegime
 } from "./strikeGrid";
 import { getCurrentRegime } from "../pilot/regimeClassifier";
@@ -162,6 +167,17 @@ const isFoxifyAuthorized = (req: FastifyRequest): {
     return { ok: false, reason: "signature_compare_failed" };
   }
   return { ok: true };
+};
+
+const computeCoverExpiresAtIso = (expiryIsos: string[]): string | null => {
+  if (expiryIsos.length === 0) return null;
+  const maxMs = expiryIsos.reduce((acc, iso) => {
+    const ms = new Date(iso).getTime();
+    if (!Number.isFinite(ms)) return acc;
+    return Math.max(acc, ms);
+  }, Number.NEGATIVE_INFINITY);
+  if (!Number.isFinite(maxMs)) return null;
+  return new Date(maxMs).toISOString();
 };
 
 // ────────────────────── Zod schemas ──────────────────────
@@ -313,7 +329,29 @@ export const registerVolumeCoverRoutes = async (
     }
 
     const triggers = computeTriggerPrices({ cell: cellResult.cell, entryBtcPrice: entryBtc });
-    const strikes = computeHedgeStrikes({ cell: cellResult.cell, entryBtcPrice: entryBtc });
+    const idealStrikes = computeHedgeStrikes({ cell: cellResult.cell, entryBtcPrice: entryBtc });
+
+    // 2026-05-20: reflect ACTUAL venue routing + grid-snapped strikes that
+    // the matching activate call will use. Previously the quote response
+    // hardcoded "bullish_primary" for ≤5% triggers (ignoring the env-driven
+    // VOLUME_COVER_VENUE_ROUTING_JSON) and returned ungrid-snapped ideal
+    // strikes — both misleading to Foxify.
+    const venueRoutingCfg = resolveHedgeVenue(cellResult.cell);
+    const gridStepUsdc = getGridStepUsdc(venueRoutingCfg.primary);
+    const putStrikeSnapped = snapHedgeStrike({
+      optionKind: "put",
+      idealStrikeUsdc: idealStrikes.putStrikeBtc,
+      spotUsdc: entryBtc,
+      triggerBoundaryUsdc: triggers.triggerLowBtc,
+      gridStepUsdc
+    });
+    const callStrikeSnapped = snapHedgeStrike({
+      optionKind: "call",
+      idealStrikeUsdc: idealStrikes.callStrikeBtc,
+      spotUsdc: entryBtc,
+      triggerBoundaryUsdc: triggers.triggerHighBtc,
+      gridStepUsdc
+    });
 
     return reply.send({
       cellId: cellResult.cell.cellId,
@@ -323,9 +361,13 @@ export const registerVolumeCoverRoutes = async (
       triggerHighBtc: triggers.triggerHighBtc,
       triggerLowBtc: triggers.triggerLowBtc,
       hedgeStructure: {
-        venueRouting: cellResult.cell.triggerPct <= 0.05 ? "bullish_primary" : "deribit_primary",
-        putStrikeBtc: strikes.putStrikeBtc,
-        callStrikeBtc: strikes.callStrikeBtc
+        venueRouting: `${venueRoutingCfg.primary}_primary`,
+        venueFallback: venueRoutingCfg.fallback,
+        putStrikeBtc: putStrikeSnapped,
+        callStrikeBtc: callStrikeSnapped,
+        putStrikeIdealBtc: idealStrikes.putStrikeBtc,
+        callStrikeIdealBtc: idealStrikes.callStrikeBtc,
+        gridStepUsdc
       },
       throttleMaxPerDay: cellRow.throttleMaxPerDay,
       premiumSource: premium.source,
@@ -532,6 +574,60 @@ export const registerVolumeCoverRoutes = async (
         salvageState: guardVerdict.salvageState
       });
     }
+
+    // P2 (2026-05-19): per-cell concurrent-open cap for the pilot. Env-driven
+    // override so operator can set tight bounds for the 2-position launch
+    // (`VC_MAX_CONCURRENT_PER_CELL_50K_2PCT_1K=2`) without changing the matrix
+    // throttle (which is daily-count-based). Format:
+    //   VC_MAX_CONCURRENT_PER_CELL_<UPPERCASE_ID_NO_DOTS>=<N>
+    // Example: VC_MAX_CONCURRENT_PER_CELL_50K_2PCT_1K=2
+    // Or a global default: VC_MAX_CONCURRENT_PER_CELL=2 (applies to ALL cells).
+    const cellEnvKey = `VC_MAX_CONCURRENT_PER_CELL_${cell.cellId.toUpperCase()}`;
+    const concurrentCapRaw =
+      process.env[cellEnvKey] ?? process.env.VC_MAX_CONCURRENT_PER_CELL ?? "0";
+    const concurrentCap = Number(concurrentCapRaw);
+    if (Number.isFinite(concurrentCap) && concurrentCap > 0) {
+      const activeNow = await countActivePositionsForCell(pool, { cellId: cell.cellId });
+      if (activeNow >= concurrentCap) {
+        void writeEvent({ result: "rejected", rejectReason: "concurrent_throttle_exceeded" });
+        return reply.code(429).send({
+          error: "concurrent_throttle_exceeded",
+          cellId: cell.cellId,
+          activeNow,
+          maxConcurrent: concurrentCap,
+          message: `cell ${cell.cellId} has ${activeNow} active positions; cap=${concurrentCap}`
+        });
+      }
+    }
+
+    // 2026-05-20: per-cell LIFETIME cap. Counts every real (non-admin-test)
+    // position ever opened for the cell — regardless of current status.
+    // Used for the pilot launch lock-down: allow exactly N opens, then
+    // block all further activations (including auto-reopens after
+    // close/trigger) until operator manually raises the env var.
+    // Format:
+    //   VC_MAX_LIFETIME_PER_CELL_<UPPERCASE_ID_NO_DOTS>=<N>
+    // Example: VC_MAX_LIFETIME_PER_CELL_50K_2PCT_1K=2
+    // Or a global default: VC_MAX_LIFETIME_PER_CELL=2 (applies to ALL cells).
+    // Unset / 0 / negative ⇒ no lifetime cap (normal operation).
+    const lifetimeEnvKey = `VC_MAX_LIFETIME_PER_CELL_${cell.cellId.toUpperCase()}`;
+    const lifetimeCapRaw =
+      process.env[lifetimeEnvKey] ?? process.env.VC_MAX_LIFETIME_PER_CELL ?? "0";
+    const lifetimeCap = Number(lifetimeCapRaw);
+    if (Number.isFinite(lifetimeCap) && lifetimeCap > 0) {
+      const openedEver = await countLifetimePositionsForCell(pool, { cellId: cell.cellId });
+      if (openedEver >= lifetimeCap) {
+        void writeEvent({ result: "rejected", rejectReason: "lifetime_cap_exceeded" });
+        return reply.code(423).send({
+          error: "lifetime_cap_exceeded",
+          cellId: cell.cellId,
+          openedEver,
+          maxLifetime: lifetimeCap,
+          message: `cell ${cell.cellId} has ${openedEver} lifetime opens; cap=${lifetimeCap}. Raise ${lifetimeEnvKey} env to allow more.`
+        });
+      }
+    }
+
     guardsPassedAtMs = Date.now();
 
     // P3 §13: regime-aware pricing. resolveDailyPremium reads
@@ -604,8 +700,10 @@ export const registerVolumeCoverRoutes = async (
           id: l.id,
           venue: l.venue,
           optionKind: l.optionKind,
-          strikeUsdc: l.strikeUsdc
+          strikeUsdc: l.strikeUsdc,
+          expiryIso: l.expiryIso
         })),
+        coverExpiresAtIso: computeCoverExpiresAtIso(result.hedgeLegs.map((l) => l.expiryIso)),
         salvageState: guardVerdict.salvageState
       });
     } catch (err) {
@@ -628,11 +726,23 @@ export const registerVolumeCoverRoutes = async (
     if (!position) {
       return reply.code(404).send({ error: "position_not_found" });
     }
+    const hedgeLegs = await listHedgeLegsForPosition(pool, id);
+    // Effective protection state from Foxify's perspective. status='closed'
+    // with coverage_through > now means the customer is still inside their
+    // last paid day — a trigger within this window still pays out.
+    const nowMs = Date.now();
+    const coverageThroughMs = position.coverageThrough ? new Date(position.coverageThrough).getTime() : null;
+    const protectionActive =
+      position.status === "active" ||
+      (position.status === "closed" && coverageThroughMs !== null && coverageThroughMs > nowMs);
+
     return reply.send({
       positionId: position.id,
       cellId: position.cellId,
       foxifyPairId: position.foxifyPairId,
       status: position.status,
+      protectionActive,
+      coverageThroughIso: position.coverageThrough,
       triggerHighBtc: position.triggerHighBtc,
       triggerLowBtc: position.triggerLowBtc,
       payoutUsdc: position.payoutUsdc,
@@ -640,7 +750,16 @@ export const registerVolumeCoverRoutes = async (
       openedAt: position.openedAt,
       triggeredAt: position.triggeredAt,
       triggeredDirection: position.triggeredDirection,
-      closedAt: position.closedAt
+      closedAt: position.closedAt,
+      hedgeLegs: hedgeLegs.map((l) => ({
+        id: l.id,
+        venue: l.venue,
+        optionKind: l.optionKind,
+        strikeUsdc: l.strikeUsdc,
+        expiryIso: l.expiryIso,
+        status: l.status
+      })),
+      coverExpiresAtIso: computeCoverExpiresAtIso(hedgeLegs.map((l) => l.expiryIso))
     });
   });
 
@@ -672,7 +791,13 @@ export const registerVolumeCoverRoutes = async (
         // P1b: hedge legs are RETAINED (not sold). VC hedge manager
         // owns disposition. legsSold field intentionally omitted.
         hedgeRetainedLegIds: result.hedgeRetainedLegIds,
-        hedgeRetained: true
+        hedgeRetained: true,
+        // 2026-05-19: protection continues through the end of the last
+        // paid day. Triggers within this window still pay out the cell
+        // payout. Foxify can rely on this to keep coverage live for the
+        // remainder of the paid period after clicking close.
+        coverageThroughIso: result.coverageThroughIso,
+        daysBilled: result.daysHeld
       });
     } catch (err) {
       req.log.error(`[volume-cover/close] failed: ${(err as Error).message}`);
@@ -2691,7 +2816,9 @@ export const registerVolumeCoverRoutes = async (
         positionId: id,
         status: "closed",
         hedgeRetainedLegIds: result.hedgeRetainedLegIds,
-        hedgeRetained: true
+        hedgeRetained: true,
+        coverageThroughIso: result.coverageThroughIso,
+        daysBilled: result.daysHeld
       });
     } catch (err) {
       return reply.code(500).send({ error: "close_failed", message: (err as Error).message });

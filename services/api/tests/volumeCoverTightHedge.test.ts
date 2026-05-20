@@ -88,8 +88,9 @@ test("buildHedgeStructure produces 2 legs (put + call) with INSIDE-trigger strik
   assert.ok(call.strikeUsdc < 81_600);
 });
 
-test("buildHedgeStructure default tenor is 14 days, snapped to 08:00 UTC", () => {
+test("buildHedgeStructure 2% cell uses 3d tenor per matrix, snapped to 08:00 UTC", () => {
   const cell = findCellById("50k_2pct_1k")!;
+  assert.equal(cell.expiryHorizonDays, 3);
   const structure = buildHedgeStructure({
     positionId: "test-pos-2",
     cell,
@@ -98,9 +99,24 @@ test("buildHedgeStructure default tenor is 14 days, snapped to 08:00 UTC", () =>
   const expiry = new Date(structure.legs[0].expiryIso);
   assert.equal(expiry.getUTCHours(), 8);
   assert.equal(expiry.getUTCMinutes(), 0);
-  // P1a: matched-tenor 14d default. Allow 13-15 days due to UTC snap.
+  // P2 (2026-05-19): 2% cells use 3d tenor (matches ~0.5d Foxify hold + cushion).
+  // Allow 2-4d window due to UTC snap.
   const daysOut = (expiry.getTime() - Date.now()) / 86_400_000;
-  assert.ok(daysOut >= 13 && daysOut <= 15, `expected 13-15d expiry, got ${daysOut.toFixed(2)}d`);
+  assert.ok(daysOut >= 2 && daysOut <= 4, `expected 2-4d expiry for 3d cell, got ${daysOut.toFixed(2)}d`);
+});
+
+test("buildHedgeStructure 15% cell uses 14d tenor per matrix (long-hold cell)", () => {
+  const cell = findCellById("200k_15pct_30k")!;
+  assert.equal(cell.expiryHorizonDays, 14);
+  const structure = buildHedgeStructure({
+    positionId: "test-pos-2b",
+    cell,
+    entryBtcPrice: 80_000
+  });
+  const expiry = new Date(structure.legs[0].expiryIso);
+  // P2: long-hold cells keep 14d to avoid uncovered post-expiry tail risk.
+  const daysOut = (expiry.getTime() - Date.now()) / 86_400_000;
+  assert.ok(daysOut >= 13 && daysOut <= 15, `expected 13-15d expiry for 14d cell, got ${daysOut.toFixed(2)}d`);
 });
 
 test("buildHedgeStructure honors expiryHorizonDays override (1d for testing)", () => {
