@@ -1114,6 +1114,13 @@ class DeribitTestAdapter implements PilotVenueAdapter {
     // the activate path catches venue_execute_timeout (already wired into
     // routes.ts response mapping) and returns a clean 504.
     const EXECUTE_TIMEOUT_MS = Number(process.env.PILOT_DERIBIT_EXECUTE_TIMEOUT_MS || "8000");
+    // 2026-05-20: log REQUEST shape too. Previously we only logged the
+    // response, so when Deribit rejected with not_enough_funds (10039)
+    // we couldn't see what amount/instrument was actually sent — making
+    // it hard to diagnose unit-conversion or sub-account issues.
+    console.log(
+      `[DeribitAdapter] placeOrder REQUEST instrument=${quote.instrumentId} amount=${deribitQty} side=buy type=market quoteQuantity=${quote.quantity} quotePremium=${(quote as any).premium ?? "?"}`
+    );
     const raw = (await Promise.race([
       this.connector.placeOrder({
         instrument: quote.instrumentId,
