@@ -49,13 +49,19 @@ test("Schema migration creates 4 volume_cover tables + seeds 6 cells", async () 
   assert.ok(names.includes("volume_cover_salvage_event"));
 });
 
-test("Cells seeded with all 6 matrix entries, all enabled by default", async () => {
+test("Cells seeded with all matrix entries; production cells enabled-by-default", async () => {
   const pool = await buildPool();
   const cells = await listCells(pool);
-  assert.equal(cells.length, 6);
+  // 6 original production + 1k_2pct_20 diagnostic (defaultEnabled:false,
+  // throttle 1) + 30k_2pct_600 pilot variant (defaultEnabled:true, throttle 5).
+  assert.equal(cells.length, 8);
+  const diagnostic = cells.find((c) => c.cellId === "1k_2pct_20");
+  assert.ok(diagnostic, "diagnostic cell must be seeded");
+  assert.equal(diagnostic!.enabled, false, "diagnostic cell starts disabled");
   for (const c of cells) {
-    assert.equal(c.enabled, true);
-    assert.equal(c.throttleMaxPerDay, 5);
+    if (c.cellId === "1k_2pct_20") continue;
+    assert.equal(c.enabled, true, `${c.cellId} should be enabled by default`);
+    assert.equal(c.throttleMaxPerDay, 5, `${c.cellId} default throttle`);
   }
 });
 

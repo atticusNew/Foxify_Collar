@@ -129,7 +129,8 @@ test("/volume-cover/admin/cells requires admin token", async () => {
       headers: adminHeaders()
     });
     assert.equal(ok.statusCode, 200);
-    assert.equal(ok.json().cells.length, 6);
+    // 6 production + 1k_2pct_20 diagnostic + 30k_2pct_600 pilot variant.
+    assert.equal(ok.json().cells.length, 8);
   } finally {
     await harness.close();
   }
@@ -593,7 +594,7 @@ test("/volume-cover/admin/foxify-report builds a report for today", async () => 
     const report = r.json();
     assert.equal(report.positionsOpenedToday, 1);
     assert.equal(report.totalPremiumBilledToFoxifyUsdc, 350);
-    assert.equal(report.cellsStatus.length, 6);
+    assert.equal(report.cellsStatus.length, 8);
   } finally {
     await harness.close();
   }

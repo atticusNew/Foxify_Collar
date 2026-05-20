@@ -17,6 +17,7 @@
 import Decimal from "decimal.js";
 
 export type CellId =
+  | "30k_2pct_600"
   | "50k_2pct_1k"
   | "50k_5pct_2_5k"
   | "50k_10pct_5k"
@@ -77,6 +78,29 @@ export type CellDefinition = {
  * salvage scenarios.
  */
 export const MATRIX: readonly CellDefinition[] = [
+  /**
+   * 30k_2pct_600 — capital-efficient pilot variant of the 2% product.
+   *
+   * Same trigger/hedge structure as 50k_2pct_1k but smaller notional + payout.
+   * Added 2026-05-20 to unblock the live pilot launch when Deribit account
+   * balance was insufficient for the 1.3-BTC-per-leg sizing of the 50k
+   * cell at then-current IV. Hedge cost ~$1,200 per pair vs ~$1,700 for
+   * 50k, so 0.05 BTC ($~3,800) of Deribit collateral comfortably runs
+   * 1 pair (or 0.03 BTC tight).
+   *
+   * Premium scales linearly with payout: $210/day = 60% × 50k's $350.
+   * Hedge contracts: $600 / $775.17 ≈ 0.78 BTC → rounded to 0.8 BTC.
+   */
+  {
+    cellId: "30k_2pct_600",
+    notionalUsdc: 30_000,
+    triggerPct: 0.02,
+    payoutUsdc: 600,
+    hedgePct: 0.01,
+    dailyPremiumUsdc: 210,
+    defaultThrottleMaxPerDay: 5,
+    expiryHorizonDays: 3
+  },
   {
     cellId: "50k_2pct_1k",
     notionalUsdc: 50_000,

@@ -193,7 +193,8 @@ test("UI smoke: all 6 admin endpoints return 200 with valid shape", async () => 
     assert.equal(cl.statusCode, 200);
     const clJson = JSON.parse(cl.body);
     assert.ok(Array.isArray(clJson.cells));
-    assert.equal(clJson.cells.length, 6);
+    // 6 production + 1k_2pct_20 diagnostic + 30k_2pct_600 pilot variant.
+    assert.equal(clJson.cells.length, 8);
     for (const c of clJson.cells) {
       assert.ok(typeof c.cellId === "string");
       assert.ok(typeof c.notionalUsdc === "number");

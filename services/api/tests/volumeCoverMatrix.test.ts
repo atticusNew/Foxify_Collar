@@ -23,8 +23,11 @@ import { resolveDailyPremium } from "../src/volumeCover/pricing";
  *   - Cell selector handles both lookup styles
  */
 
-test("MATRIX has exactly 6 cells", () => {
-  assert.equal(MATRIX.length, 6);
+test("MATRIX has expected cells (6 production + 1 diagnostic + 1 smaller-pilot variant)", () => {
+  // 6 original production cells + 1k_2pct_20 diagnostic + 30k_2pct_600
+  // capital-efficient pilot variant. Length test is informational; the
+  // structural tests below are what really matter.
+  assert.equal(MATRIX.length, 8);
 });
 
 test("All cells satisfy TIGHT invariant: hedgePct < triggerPct", () => {
