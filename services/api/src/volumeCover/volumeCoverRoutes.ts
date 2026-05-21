@@ -1547,7 +1547,9 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
-    const clientOrderId = `SHADOW-TEST-${Date.now()}-${Math.floor(Math.random() * 999)}`;
+    // Bullish requires numeric clientOrderId (error 6104 INVALID_CLIENT_ORDER_ID
+    // on non-numeric strings). Match the production VC adapter format.
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
 
     // Single Bullish API call: createSpotLimitOrder. The client's
     // V3CreateOrder path passes allowMargin from config — we use the
