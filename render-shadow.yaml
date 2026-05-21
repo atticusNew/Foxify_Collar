@@ -34,6 +34,8 @@ services:
       # ── Tier + isolation ──
       - key: PILOT_DEPLOYMENT_TIER
         value: shadow
+      - key: VOLUME_COVER_ENABLED
+        value: "true"
       - key: VOLUME_COVER_HEDGE_MOCK
         value: "true"
       - key: NODE_ENV
