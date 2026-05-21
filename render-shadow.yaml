@@ -1,6 +1,7 @@
 databases:
   - name: foxify-pilot-shadow-db
     plan: basic-256mb
+    region: singapore
 
 services:
   # ───────────────────────────────────────────────────────────────────
@@ -23,6 +24,7 @@ services:
     name: foxify-pilot-shadow
     runtime: node
     plan: starter
+    region: singapore
     branch: vc-sandbox
     autoDeploy: true
     buildCommand: npm ci
