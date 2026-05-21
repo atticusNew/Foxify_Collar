@@ -245,6 +245,39 @@ export type RegisterVolumeCoverRoutesOptions = {
   skipSchema?: boolean;
 };
 
+// 2026-05-21 — Module-level singleton to avoid burning Bullish JWT
+// session quota. Each new BullishTradingClient creates a new login →
+// new session. Bullish caps active sessions per user (~10-20). When
+// every admin-debug endpoint creates its own client, we trip
+// MAX_SESSION_COUNT_REACHED (errorCode 8400). This singleton reuses
+// a single client → single session for all admin debug calls.
+//
+// Production VC adapter (BullishTestVenueAdapter) holds its own
+// client lifecycle, separate from this; we don't share with it.
+//
+// The cached client is invalidated and recreated if pilotConfig
+// references a different tradingAccountId or auth keys (env-var
+// changes via Render dashboard).
+let cachedBullishAdminClient: any = null;
+let cachedBullishAdminFingerprint: string | null = null;
+const getBullishAdminClient = async () => {
+  const cfg = pilotConfig.bullish;
+  // Fingerprint = anything that would invalidate the JWT session
+  const fingerprint = [
+    cfg.tradingAccountId,
+    cfg.ecdsaPublicKey?.slice(-32) ?? "",
+    cfg.ecdsaMetadata?.slice(-16) ?? "",
+    cfg.restBaseUrl
+  ].join("|");
+  if (cachedBullishAdminClient && cachedBullishAdminFingerprint === fingerprint) {
+    return cachedBullishAdminClient;
+  }
+  const { BullishTradingClient } = await import("../pilot/bullish");
+  cachedBullishAdminClient = new BullishTradingClient(cfg);
+  cachedBullishAdminFingerprint = fingerprint;
+  return cachedBullishAdminClient;
+};
+
 export const registerVolumeCoverRoutes = async (
   app: FastifyInstance,
   opts: RegisterVolumeCoverRoutesOptions
@@ -1555,8 +1588,9 @@ export const registerVolumeCoverRoutes = async (
     // V3CreateOrder path passes allowMargin from config — we use the
     // current PILOT_BULLISH_ALLOW_MARGIN env value (set to false on
     // shadow when testing limited-risk account status).
-    const { BullishTradingClient } = await import("../pilot/bullish");
-    const client = new BullishTradingClient(pilotConfig.bullish);
+    // Reuse a single JWT session across admin endpoints to avoid
+    // MAX_SESSION_COUNT_REACHED (errorCode 8400).
+    const client = await getBullishAdminClient();
 
     const requestPayload = {
       symbol,
@@ -1712,8 +1746,7 @@ export const registerVolumeCoverRoutes = async (
         });
       }
 
-      const { BullishTradingClient } = await import("../pilot/bullish");
-      const client = new BullishTradingClient(pilotConfig.bullish);
+      const client = await getBullishAdminClient();
 
       const startMs = Date.now();
       try {
@@ -1758,8 +1791,7 @@ export const registerVolumeCoverRoutes = async (
     }
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
-    const { BullishTradingClient } = await import("../pilot/bullish");
-    const client = new BullishTradingClient(pilotConfig.bullish);
+    const client = await getBullishAdminClient();
 
     const startMs = Date.now();
     try {
@@ -1943,8 +1975,7 @@ export const registerVolumeCoverRoutes = async (
 
     const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
 
-    const { BullishTradingClient } = await import("../pilot/bullish");
-    const client = new BullishTradingClient(pilotConfig.bullish);
+    const client = await getBullishAdminClient();
 
     const requestPayload = {
       symbol,
