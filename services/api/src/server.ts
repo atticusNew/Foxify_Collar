@@ -27,6 +27,7 @@ import {
 import { DeribitConnector } from "@foxify/connectors";
 import { runAutoRenewJob } from "./scheduler";
 import { loadAccountConfig } from "./configLoader";
+import { assertDeploymentInvariants, getDeploymentTier } from "./pilot/deploymentTier";
 import { createDeribitIvCache } from "./deribitIvCache";
 import { createBybitIvCache } from "./bybitIvCache";
 import { createDeribitIvLadderCache } from "./deribitIvLadder";
@@ -107,6 +108,17 @@ const EXCLUDED_AUDIT_EVENTS = [
 function isCeoRelevantEvent(eventName: string): boolean {
   return CEO_AUDIT_EVENTS.includes(eventName);
 }
+
+// Deployment tier invariants — must run BEFORE Fastify init so a
+// misconfigured shadow service crash-loops instead of accepting traffic.
+// See services/api/src/pilot/deploymentTier.ts for the rules.
+assertDeploymentInvariants();
+console.log(JSON.stringify({
+  level: "info",
+  msg: "deployment_tier_resolved",
+  tier: getDeploymentTier(),
+  ts: new Date().toISOString()
+}));
 
 const trustProxyEnv = String(process.env.PILOT_TRUST_PROXY || "").trim().toLowerCase();
 const trustProxy = trustProxyEnv === "true";

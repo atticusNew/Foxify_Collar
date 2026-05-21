@@ -36,6 +36,7 @@ import type { Pool } from "pg";
 
 import { pilotConfig } from "../pilot/config";
 import { getPilotPool } from "../pilot/db";
+import { tierBlocksFoxifyTraffic } from "../pilot/deploymentTier";
 import { selectCell } from "./cellSelector";
 import { resolveDailyPremium } from "./pricing";
 import { findCellById, computeTriggerPrices, computeHedgeStrikes } from "./matrix";
@@ -123,6 +124,13 @@ const isFoxifyAuthorized = (req: FastifyRequest): {
   ok: boolean;
   reason?: string;
 } => {
+  // Defense in depth: refuse all Foxify HMAC traffic on non-live tiers
+  // even before checking the signature. Shadow services accept admin
+  // traffic only.
+  if (tierBlocksFoxifyTraffic()) {
+    return { ok: false, reason: "shadow_tier_blocks_foxify_traffic" };
+  }
+
   const secret = getFoxifyHmacSecret();
   if (!secret) {
     // If no secret configured, allow only in test/dev. In prod the env
