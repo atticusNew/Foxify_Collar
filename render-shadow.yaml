@@ -55,7 +55,7 @@ services:
       - key: PILOT_ACTIVATION_ENABLED
         value: "true"
       - key: PILOT_PROFILE
-        value: shadow_v1
+        value: default
       - key: PILOT_VENUE_MODE
         value: deribit_live
       - key: PILOT_TENANT_SCOPE_ID
