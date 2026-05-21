@@ -36,7 +36,7 @@ import type { Pool } from "pg";
 
 import { pilotConfig } from "../pilot/config";
 import { getPilotPool } from "../pilot/db";
-import { tierBlocksFoxifyTraffic } from "../pilot/deploymentTier";
+import { tierBlocksFoxifyTraffic, isShadowTier } from "../pilot/deploymentTier";
 import { selectCell } from "./cellSelector";
 import { resolveDailyPremium } from "./pricing";
 import { findCellById, computeTriggerPrices, computeHedgeStrikes } from "./matrix";
@@ -1101,6 +1101,165 @@ export const registerVolumeCoverRoutes = async (
     } catch (err: any) {
       return reply.code(500).send({
         error: "slippage_floor_stats_failed",
+        message: err?.message ?? "unknown"
+      });
+    }
+  });
+
+  // 2026-05-21 — SHADOW-ONLY debug endpoint for stress-testing the TP
+  // slippage floor end-to-end.
+  //
+  // Discretionary rules (5/6/10/11) won't fire naturally on a fresh
+  // mock-retained leg — running_max starts at first-tick value, so
+  // "current < runningMax × 0.80" is impossible without state.
+  // This endpoint forces a leg into a "rule X fires next tick" state
+  // by writing the necessary fields directly. Used to validate the
+  // unfilled → defer → fallthrough chain on shadow.
+  //
+  // GUARDRAILS:
+  //   • Returns 403 unless PILOT_DEPLOYMENT_TIER=shadow
+  //   • Returns 403 unless admin token matches
+  //   • Only updates rows in volume_cover_hedge_leg by id
+  //
+  // Body shape:
+  //   {
+  //     legId: string,
+  //     scenario: "force_rule_5_trail_retrace"
+  //             | "force_rule_10_near_atm"
+  //             | "set_state",
+  //     // only for "set_state":
+  //     runningMaxValueUsdc?: number,
+  //     lastValueUsdc?: number,
+  //     lastValueAt?: string (ISO),
+  //     retainedRole?: "winner_post_trigger" | "loser_post_trigger" | "near_atm_post_close" | "stale_post_close",
+  //     tpDeferCount?: number
+  //   }
+  app.post("/volume-cover/admin/debug/force-leg-tp-state", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    const legId = String(body.legId ?? "");
+    if (!legId) {
+      return reply.code(400).send({ error: "missing_legId" });
+    }
+    const scenario = String(body.scenario ?? "set_state");
+
+    try {
+      // Read the current leg state
+      const legRes = await pool.query(
+        `SELECT id, position_id, contracts, buy_price_usdc, retained_role,
+                running_max_value_usdc, last_value_usdc, last_value_at, tp_defer_count
+         FROM volume_cover_hedge_leg
+         WHERE id = $1`,
+        [legId]
+      );
+      if (legRes.rows.length === 0) {
+        return reply.code(404).send({ error: "leg_not_found", legId });
+      }
+      const leg = legRes.rows[0];
+      const before = {
+        retainedRole: leg.retained_role,
+        runningMaxValueUsdc: leg.running_max_value_usdc !== null ? Number(leg.running_max_value_usdc) : null,
+        lastValueUsdc: leg.last_value_usdc !== null ? Number(leg.last_value_usdc) : null,
+        lastValueAt: leg.last_value_at,
+        tpDeferCount: Number(leg.tp_defer_count ?? 0)
+      };
+
+      let updates: Array<{ col: string; val: any }> = [];
+      let scenarioMeta: Record<string, unknown> = {};
+
+      if (scenario === "force_rule_5_trail_retrace") {
+        // Rule 5: current < runningMax × (1 - 0.20). To force fire on
+        // next tick, set runningMax = current_bs_value × 5 (5× higher
+        // than current → guaranteed retrace > 80%). Also bump role to
+        // winner_post_trigger so rule 5 is actually evaluated.
+        const initialCost = Number(leg.buy_price_usdc) * Number(leg.contracts);
+        const forcedRunningMax = initialCost * 5;
+        updates = [
+          { col: "running_max_value_usdc", val: forcedRunningMax },
+          { col: "retained_role", val: "winner_post_trigger" }
+        ];
+        scenarioMeta = {
+          forcedRunningMax,
+          rationale: "running_max set to 5× initial cost; next tick BS-implied current will be ~50% of initial → current < runningMax × 0.80 → rule 5 fires"
+        };
+      } else if (scenario === "force_rule_10_near_atm") {
+        // Rule 10: when role=near_atm_post_close AND current < initial × 0.65 → fire.
+        // Mock recovery is ~50% so it's already below 65% — just need role.
+        updates = [
+          { col: "retained_role", val: "near_atm_post_close" },
+          { col: "running_max_value_usdc", val: Number(leg.buy_price_usdc) * Number(leg.contracts) }
+        ];
+        scenarioMeta = {
+          rationale: "role flipped to near_atm_post_close; mock recovery (~50%) is below near_atm floor (65%) → rule 10 fires"
+        };
+      } else if (scenario === "set_state") {
+        // Free-form: caller chooses what to update.
+        if (typeof body.runningMaxValueUsdc === "number") {
+          updates.push({ col: "running_max_value_usdc", val: body.runningMaxValueUsdc });
+        }
+        if (typeof body.lastValueUsdc === "number") {
+          updates.push({ col: "last_value_usdc", val: body.lastValueUsdc });
+        }
+        if (typeof body.lastValueAt === "string") {
+          updates.push({ col: "last_value_at", val: body.lastValueAt });
+        }
+        if (typeof body.retainedRole === "string") {
+          updates.push({ col: "retained_role", val: body.retainedRole });
+        }
+        if (typeof body.tpDeferCount === "number") {
+          updates.push({ col: "tp_defer_count", val: body.tpDeferCount });
+        }
+        if (updates.length === 0) {
+          return reply.code(400).send({
+            error: "no_fields_to_update",
+            allowed: ["runningMaxValueUsdc", "lastValueUsdc", "lastValueAt", "retainedRole", "tpDeferCount"]
+          });
+        }
+      } else {
+        return reply.code(400).send({
+          error: "unknown_scenario",
+          allowed: ["force_rule_5_trail_retrace", "force_rule_10_near_atm", "set_state"]
+        });
+      }
+
+      const setClauses = updates.map((u, i) => `${u.col} = $${i + 2}`).join(", ");
+      const values = [legId, ...updates.map((u) => u.val)];
+      await pool.query(
+        `UPDATE volume_cover_hedge_leg SET ${setClauses} WHERE id = $1`,
+        values
+      );
+
+      const afterRes = await pool.query(
+        `SELECT retained_role, running_max_value_usdc, last_value_usdc, last_value_at, tp_defer_count
+         FROM volume_cover_hedge_leg WHERE id = $1`,
+        [legId]
+      );
+      const after = afterRes.rows[0];
+
+      return reply.send({
+        legId,
+        scenario,
+        scenarioMeta,
+        before,
+        after: {
+          retainedRole: after.retained_role,
+          runningMaxValueUsdc: after.running_max_value_usdc !== null ? Number(after.running_max_value_usdc) : null,
+          lastValueUsdc: after.last_value_usdc !== null ? Number(after.last_value_usdc) : null,
+          lastValueAt: after.last_value_at,
+          tpDeferCount: Number(after.tp_defer_count ?? 0)
+        },
+        nextSteps: "wait 60-180s for HedgeManager ticks; re-fetch /admin/slippage-floor-stats to observe defer/fallthrough counters"
+      });
+    } catch (err: any) {
+      return reply.code(500).send({
+        error: "force_leg_tp_state_failed",
         message: err?.message ?? "unknown"
       });
     }
