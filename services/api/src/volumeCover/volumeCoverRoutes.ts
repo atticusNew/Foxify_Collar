@@ -1612,7 +1612,39 @@ export const registerVolumeCoverRoutes = async (
         null;
     }
 
-    const success = !bullishError && !bullishStatusReasonCode;
+    // 2026-05-21: Bullish's REST POST /orders is async — "Command
+    // acknowledged" only confirms the create command was queued, NOT
+    // that the order actually filled or even passed risk checks at
+    // matching. Chain an order-status query to get the truth.
+    let orderStatusFinal: any = null;
+    let orderStatusError: string | null = null;
+    const orderId = (rawResponse as any)?.orderId
+      || (rawResponse as any)?.data?.orderId;
+    if (!bullishError && orderId) {
+      try {
+        // Brief settle wait — Bullish typically resolves within 1s
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        orderStatusFinal = await client.getOrderStatus(String(orderId));
+      } catch (statusErr: any) {
+        orderStatusError = statusErr?.message ?? "unknown";
+      }
+    }
+
+    // Re-derive truth from order status if available, since the
+    // synchronous create response is misleading.
+    const finalStatus = orderStatusFinal?.status ?? "UNKNOWN";
+    const finalFillPrice = orderStatusFinal?.fillPrice ?? 0;
+    const finalFillQty = orderStatusFinal?.fillQuantity ?? 0;
+    const finalReasonCode =
+      (orderStatusFinal?.raw as any)?.statusReasonCode ?? null;
+    const finalReason = (orderStatusFinal?.raw as any)?.statusReason ?? null;
+    const finalIs3003 =
+      String(finalReasonCode || "") === "3003" ||
+      bullishStatusReasonCode === 3003 ||
+      bullishErrorCode === "3003";
+    const trulyFilled =
+      finalStatus === "FILLED" && Number(finalFillQty) > 0;
+    const success = !bullishError && trulyFilled;
 
     return reply.send({
       ok: success,
@@ -1622,7 +1654,8 @@ export const registerVolumeCoverRoutes = async (
         allowMargin: pilotConfig.bullish.allowMargin,
         bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("api.exchange.bullish.com"),
         restBaseUrl: pilotConfig.bullish.restBaseUrl,
-        orderTif: pilotConfig.bullish.orderTif
+        orderTif: pilotConfig.bullish.orderTif,
+        tradingAccountId: pilotConfig.bullish.tradingAccountId
       },
       request: {
         ...requestPayload,
@@ -1635,7 +1668,15 @@ export const registerVolumeCoverRoutes = async (
         bullishHttpStatus,
         bullishErrorCode,
         bullishStatusReasonCode,
-        is3003: bullishStatusReasonCode === 3003 || bullishErrorCode === "3003"
+        is3003: finalIs3003,
+        // Authoritative — chained from order-status query
+        orderId,
+        finalStatus,
+        finalFillPrice,
+        finalFillQty,
+        finalReasonCode,
+        finalReason,
+        orderStatusError
       }
     });
   });
@@ -1954,7 +1995,28 @@ export const registerVolumeCoverRoutes = async (
         null;
     }
 
-    const success = !bullishError && !bullishStatusReasonCode;
+    let orderStatusFinal: any = null;
+    let orderStatusError: string | null = null;
+    const orderId = (rawResponse as any)?.orderId
+      || (rawResponse as any)?.data?.orderId;
+    if (!bullishError && orderId) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        orderStatusFinal = await client.getOrderStatus(String(orderId));
+      } catch (statusErr: any) {
+        orderStatusError = statusErr?.message ?? "unknown";
+      }
+    }
+
+    const finalStatus = orderStatusFinal?.status ?? "UNKNOWN";
+    const finalFillPrice = orderStatusFinal?.fillPrice ?? 0;
+    const finalFillQty = orderStatusFinal?.fillQuantity ?? 0;
+    const finalReasonCode =
+      (orderStatusFinal?.raw as any)?.statusReasonCode ?? null;
+    const finalReason = (orderStatusFinal?.raw as any)?.statusReason ?? null;
+    const trulyFilled =
+      finalStatus === "FILLED" && Number(finalFillQty) > 0;
+    const success = !bullishError && trulyFilled;
 
     return reply.send({
       ok: success,
@@ -1964,7 +2026,8 @@ export const registerVolumeCoverRoutes = async (
         allowMargin: pilotConfig.bullish.allowMargin,
         bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("api.exchange.bullish.com"),
         restBaseUrl: pilotConfig.bullish.restBaseUrl,
-        orderTif: pilotConfig.bullish.orderTif
+        orderTif: pilotConfig.bullish.orderTif,
+        tradingAccountId: pilotConfig.bullish.tradingAccountId
       },
       request: {
         ...requestPayload,
@@ -1975,7 +2038,14 @@ export const registerVolumeCoverRoutes = async (
         bullishError,
         bullishHttpStatus,
         bullishErrorCode,
-        bullishStatusReasonCode
+        bullishStatusReasonCode,
+        orderId,
+        finalStatus,
+        finalFillPrice,
+        finalFillQty,
+        finalReasonCode,
+        finalReason,
+        orderStatusError
       }
     });
   });
