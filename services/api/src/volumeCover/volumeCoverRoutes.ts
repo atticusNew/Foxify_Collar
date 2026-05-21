@@ -988,6 +988,124 @@ export const registerVolumeCoverRoutes = async (
     return reply.send(metrics);
   });
 
+  // 2026-05-21 — TP slippage-floor observability
+  //
+  // Returns counters from the volume_cover_hedge_leg_telemetry table
+  // bucketed by action so ops can see how often the floor fires,
+  // unfills, falls through, etc. Looks back over a configurable
+  // window (default 24h) so we can scope to recent activity.
+  //
+  // Body shape:
+  //   {
+  //     windowHours: 24,
+  //     enabled: true|false,                     ← feature flag state
+  //     config: { tolerance, maxDefers, ... },   ← active params
+  //     totals: { sold, unfilled, fallthrough, error, held, dryRun, skip },
+  //     byRule: [ { rule, sold, unfilled, fallthrough, ... }, ... ],
+  //     activeLegsWithDefers: [ { legId, positionId, deferCount }, ... ]
+  //   }
+  app.get("/volume-cover/admin/slippage-floor-stats", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const windowHours = Math.max(
+      1,
+      Math.min(168, Number((req.query as any)?.windowHours ?? "24"))
+    );
+    const cutoffIso = new Date(Date.now() - windowHours * 3_600_000).toISOString();
+
+    try {
+      const totalsRes = await pool.query(
+        `SELECT action, COUNT(*)::INT AS n
+         FROM volume_cover_hedge_leg_telemetry
+         WHERE cycled_at >= $1
+         GROUP BY action
+         ORDER BY action`,
+        [cutoffIso]
+      );
+
+      const byRuleRes = await pool.query(
+        `SELECT rule_evaluated AS rule, action, COUNT(*)::INT AS n
+         FROM volume_cover_hedge_leg_telemetry
+         WHERE cycled_at >= $1
+           AND action IN ('sold', 'unfilled', 'fallthrough_market', 'error')
+         GROUP BY rule_evaluated, action
+         ORDER BY rule_evaluated, action`,
+        [cutoffIso]
+      );
+
+      const deferRes = await pool.query(
+        `SELECT id AS leg_id, position_id, tp_defer_count
+         FROM volume_cover_hedge_leg
+         WHERE retained = TRUE
+           AND status = 'open'
+           AND tp_defer_count > 0
+         ORDER BY tp_defer_count DESC
+         LIMIT 100`
+      );
+
+      const totals: Record<string, number> = {};
+      for (const r of totalsRes.rows) {
+        totals[String(r.action)] = Number(r.n);
+      }
+
+      const ruleMap = new Map<string, Record<string, number>>();
+      for (const r of byRuleRes.rows) {
+        const rule = String(r.rule);
+        const action = String(r.action);
+        if (!ruleMap.has(rule)) ruleMap.set(rule, {});
+        ruleMap.get(rule)![action] = Number(r.n);
+      }
+
+      const byRule = Array.from(ruleMap.entries()).map(([rule, counts]) => ({
+        rule,
+        sold: counts.sold ?? 0,
+        unfilled: counts.unfilled ?? 0,
+        fallthroughMarket: counts.fallthrough_market ?? 0,
+        error: counts.error ?? 0
+      }));
+
+      // Effective ratio: of all sells (sold + fallthrough + unfilled),
+      // what fraction filled at the floor vs fell through? Higher =
+      // more revenue captured.
+      const totalSells =
+        (totals.sold ?? 0) + (totals.fallthrough_market ?? 0) + (totals.unfilled ?? 0);
+      const floorSuccessRate =
+        totalSells > 0 ? (totals.sold ?? 0) / totalSells : null;
+
+      return reply.send({
+        windowHours,
+        windowStart: cutoffIso,
+        enabled: String(process.env.VC_TP_SLIPPAGE_FLOOR_ENABLED ?? "false").toLowerCase() === "true",
+        config: {
+          bsTolerance: Number(process.env.VC_TP_SLIPPAGE_BS_TOLERANCE ?? "0.15"),
+          maxDefers: Number(process.env.VC_TP_SLIPPAGE_MAX_DEFERS ?? "3"),
+          discretionaryRules: (process.env.VC_TP_SLIPPAGE_DISCRETIONARY_RULES ?? "5_trail_retrace,6_theta_vs_momentum,10_near_atm,11_vol_spike").split(",").map((s) => s.trim()),
+          enabledVenues: (process.env.VC_TP_SLIPPAGE_VENUES ?? "deribit").split(",").map((s) => s.trim().toLowerCase())
+        },
+        totals: {
+          sold: totals.sold ?? 0,
+          unfilled: totals.unfilled ?? 0,
+          fallthroughMarket: totals.fallthrough_market ?? 0,
+          error: totals.error ?? 0,
+          held: totals.held ?? 0,
+          dryRun: totals.dry_run ?? 0,
+          skip: totals.skip ?? 0
+        },
+        floorSuccessRate,
+        byRule,
+        activeLegsWithDefers: deferRes.rows.map((r) => ({
+          legId: String(r.leg_id),
+          positionId: String(r.position_id),
+          deferCount: Number(r.tp_defer_count)
+        }))
+      });
+    } catch (err: any) {
+      return reply.code(500).send({
+        error: "slippage_floor_stats_failed",
+        message: err?.message ?? "unknown"
+      });
+    }
+  });
+
   /**
    * Live venue balances — pulls Bullish asset balances (USDC + BTC).
    * Used by the admin dashboard header to show real available capital

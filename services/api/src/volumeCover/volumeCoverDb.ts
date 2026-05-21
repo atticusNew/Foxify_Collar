@@ -128,6 +128,11 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN running_max_value_usdc NUMERIC(20, 8)`);
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN last_value_usdc NUMERIC(20, 8)`);
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN last_value_at TIMESTAMPTZ`);
+  // ─── 2026-05-21: TP slippage floor — limit-IOC defer counter.
+  // Increments each tick a discretionary rule fired but the limit IOC sell
+  // did not cross the book. After VC_TP_SLIPPAGE_MAX_DEFERS the manager
+  // falls through to a market sell. Reset to 0 on successful fill.
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN tp_defer_count INTEGER NOT NULL DEFAULT 0`);
 
   // ─── 2026-05-19: coverage-window extension on close ───
   // When Foxify (or admin) calls /close, premium is billed by ceil-of-days-held.
@@ -645,6 +650,8 @@ export type HedgeLegRow = {
   runningMaxValueUsdc: number | null;
   lastValueUsdc: number | null;
   lastValueAt: string | null;
+  // 2026-05-21: TP slippage-floor defer counter
+  tpDeferCount: number;
 };
 
 const rowToHedgeLeg = (r: any): HedgeLegRow => ({
@@ -675,7 +682,8 @@ const rowToHedgeLeg = (r: any): HedgeLegRow => ({
   lastValueUsdc: r.last_value_usdc !== null && r.last_value_usdc !== undefined
     ? Number(r.last_value_usdc)
     : null,
-  lastValueAt: r.last_value_at ? String(r.last_value_at) : null
+  lastValueAt: r.last_value_at ? String(r.last_value_at) : null,
+  tpDeferCount: Number(r.tp_defer_count ?? 0)
 });
 
 export const insertHedgeLeg = async (
@@ -877,6 +885,46 @@ export const updateHedgeLegTpState = async (
          last_value_at = NOW()
      WHERE id = $1`,
     [params.legId, params.currentValueUsdc]
+  );
+};
+
+/**
+ * 2026-05-21: TP slippage floor — increment the defer counter when a
+ * discretionary rule fired but the limit-IOC sell did not cross. The
+ * manager checks this counter against VC_TP_SLIPPAGE_MAX_DEFERS to
+ * decide when to fall through to a market sell.
+ *
+ * Returns the post-increment value so the caller can decide whether to
+ * fall through this tick.
+ */
+export const incrementHedgeLegTpDeferCount = async (
+  pool: DbExecutor,
+  params: { legId: string }
+): Promise<number> => {
+  const r = await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET tp_defer_count = COALESCE(tp_defer_count, 0) + 1
+     WHERE id = $1
+     RETURNING tp_defer_count`,
+    [params.legId]
+  );
+  return Number(r.rows[0]?.tp_defer_count ?? 0);
+};
+
+/**
+ * 2026-05-21: TP slippage floor — reset defer counter (called on a
+ * successful sell or on reclassify, so a leg never carries stale defer
+ * count across role transitions).
+ */
+export const resetHedgeLegTpDeferCount = async (
+  pool: DbExecutor,
+  params: { legId: string }
+): Promise<void> => {
+  await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET tp_defer_count = 0
+     WHERE id = $1`,
+    [params.legId]
   );
 };
 
