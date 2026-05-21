@@ -1640,6 +1640,112 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  // 2026-05-21 — SHADOW-ONLY Bullish order-status query.
+  //
+  // Returns Bullish's authoritative status for a given orderId. Use to
+  // determine whether an "Command acknowledged" order actually filled,
+  // expired, or was rejected at the matching engine.
+  //
+  // Bullish's REST POST /orders is async — the synchronous response
+  // only confirms the create command was accepted into their queue.
+  // Real status (FILLED / EXPIRED / REJECTED with reason) requires a
+  // GET on the order.
+  //
+  // GET /volume-cover/admin/bullish-order-status/:orderId
+  app.get<{ Params: { orderId: string } }>(
+    "/volume-cover/admin/bullish-order-status/:orderId",
+    async (req, reply) => {
+      if (!isShadowTier()) {
+        return reply.code(403).send({
+          error: "forbidden",
+          reason: "endpoint_requires_shadow_tier"
+        });
+      }
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+      const orderId = String(req.params.orderId || "").trim();
+      if (!orderId || !/^\d+$/.test(orderId)) {
+        return reply.code(400).send({
+          error: "invalid_orderId",
+          message: "orderId must be a numeric string"
+        });
+      }
+
+      const { BullishTradingClient } = await import("../pilot/bullish");
+      const client = new BullishTradingClient(pilotConfig.bullish);
+
+      const startMs = Date.now();
+      try {
+        const status = await client.getOrderStatus(orderId);
+        return reply.send({
+          ok: true,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          orderId,
+          status: status.status,
+          fillPrice: status.fillPrice,
+          fillQuantity: status.fillQuantity,
+          fees: status.fees,
+          raw: status.raw
+        });
+      } catch (err: any) {
+        return reply.code(502).send({
+          ok: false,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          orderId,
+          error: err?.message ?? "unknown"
+        });
+      }
+    }
+  );
+
+  // 2026-05-21 — SHADOW-ONLY Bullish asset-balances snapshot.
+  //
+  // Returns balance per asset (USDC, BTC, etc.) on the configured
+  // trading account, fetched via the private WebSocket assetAccounts
+  // topic. Use to verify USDC is actually parked on the correct
+  // trading account before placing orders.
+  //
+  // GET /volume-cover/admin/bullish-asset-balances
+  app.get("/volume-cover/admin/bullish-asset-balances", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const { BullishTradingClient } = await import("../pilot/bullish");
+    const client = new BullishTradingClient(pilotConfig.bullish);
+
+    const startMs = Date.now();
+    try {
+      const balances = await client.getAssetBalances({ timeoutMs: 8000 });
+      return reply.send({
+        ok: true,
+        generatedAtIso: new Date().toISOString(),
+        elapsedMs: Date.now() - startMs,
+        tradingAccountId: pilotConfig.bullish.tradingAccountId,
+        balances: balances.map((b) => ({
+          asset: b.assetSymbol,
+          available: b.availableQuantity,
+          locked: b.lockedQuantity,
+          borrowed: b.borrowedQuantity
+        }))
+      });
+    } catch (err: any) {
+      return reply.code(502).send({
+        ok: false,
+        generatedAtIso: new Date().toISOString(),
+        elapsedMs: Date.now() - startMs,
+        tradingAccountId: pilotConfig.bullish.tradingAccountId,
+        error: err?.message ?? "unknown"
+      });
+    }
+  });
+
   // 2026-05-21 — SHADOW-ONLY Bullish trading-accounts lister.
   //
   // Returns every trading account visible to the authenticated user
