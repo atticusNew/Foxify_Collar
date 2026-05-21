@@ -1640,6 +1640,75 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  // 2026-05-21 — SHADOW-ONLY Bullish trading-accounts lister.
+  //
+  // Returns every trading account visible to the authenticated user
+  // (the JWT we get from loginWithEcdsa). Useful for finding the
+  // correct account ID when Bullish provisioned multiple sub-accounts
+  // (spot, options, margin) and we need to know which to use for
+  // option orders.
+  //
+  // Bypasses the config-side filter that getTradingAccounts() applies,
+  // so we see the full list regardless of what's in
+  // PILOT_BULLISH_TRADING_ACCOUNT_ID.
+  app.get("/volume-cover/admin/bullish-list-accounts", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const { BullishTradingClient } = await import("../pilot/bullish");
+    // Build a client config that explicitly clears tradingAccountId
+    // so the lister returns ALL accounts (the default getTradingAccounts
+    // filters down to the configured one).
+    const baseConfig = pilotConfig.bullish;
+    const wideConfig = { ...baseConfig, tradingAccountId: "" };
+    const client = new BullishTradingClient(wideConfig);
+
+    const startMs = Date.now();
+    let raw: unknown = null;
+    let errorMessage: string | null = null;
+
+    try {
+      raw = await client.getTradingAccounts();
+    } catch (err: any) {
+      errorMessage = err?.message ?? "unknown";
+    }
+
+    const elapsedMs = Date.now() - startMs;
+
+    // Normalize the response to a flat list of {tradingAccountId, ...}
+    let accounts: Array<Record<string, unknown>> | null = null;
+    if (raw && typeof raw === "object") {
+      const data = (raw as any).data;
+      if (Array.isArray(data)) accounts = data;
+      else if (Array.isArray(raw)) accounts = raw as any;
+    }
+
+    return reply.send({
+      ok: errorMessage === null,
+      generatedAtIso: new Date().toISOString(),
+      elapsedMs,
+      authUserId: "(check bullish-key-check endpoint for userId from metadata)",
+      configuredTradingAccountId: baseConfig.tradingAccountId || null,
+      accounts: accounts
+        ? accounts.map((a) => ({
+            tradingAccountId: a.tradingAccountId ?? null,
+            label: a.label ?? a.name ?? a.accountType ?? null,
+            type: a.type ?? a.tradingAccountType ?? null,
+            isPrimary: a.isPrimary ?? null,
+            // Don't return balances here — that's a separate concern
+            // and can be fetched explicitly via /admin/venue-balances
+          }))
+        : null,
+      raw,
+      error: errorMessage
+    });
+  });
+
   // 2026-05-21 — SHADOW-ONLY Bullish test-sell endpoint.
   //
   // Mirror of bullish-test-buy, but submits a SELL IOC limit order.
