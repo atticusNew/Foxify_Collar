@@ -85,8 +85,14 @@ services:
       - key: VOLUME_COVER_VENUE_ROUTING_JSON
         value: '{"0.02":{"primary":"deribit","fallback":null},"0.05":{"primary":"deribit","fallback":null},"0.1":{"primary":"deribit","fallback":null},"0.15":{"primary":"deribit","fallback":null}}'
 
-      # ── Bullish — disabled until creds + round-trip probe land ──
+      # ── Bullish — adapter constructed but disabled at execution layer ──
+      # PILOT_BULLISH_ENABLED=true is required for VC route registration to
+      # succeed (the registration constructs a Bullish adapter even when
+      # we're not using it). With execution disabled and mock mode on,
+      # Bullish is never actually called — the adapter is just instantiated.
       - key: PILOT_BULLISH_ENABLED
+        value: "true"
+      - key: PILOT_BULLISH_ENABLE_EXECUTION
         value: "false"
       # When enabling Bullish: set the URLs to mainnet hosts and inject
       # PILOT_BULLISH_ECDSA_PRIVATE_KEY, _PUBLIC_KEY, _METADATA,
