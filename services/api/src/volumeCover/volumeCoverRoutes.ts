@@ -1640,6 +1640,171 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  // 2026-05-21 — SHADOW-ONLY Bullish test-sell endpoint.
+  //
+  // Mirror of bullish-test-buy, but submits a SELL IOC limit order.
+  // Designed for round-trip Phase 1 validation: buy a cheap option,
+  // then sell it back to confirm the close path works on Bullish.
+  //
+  // Trick: we set the limit price LOW (e.g., $0.01/BTC) so IOC SELL
+  // fills at the bid (price improvement), guaranteeing fill if any
+  // bid exists. Conversely, the maxNotionalUsdc cap protects against
+  // wildly-wrong fills (shouldn't happen on a real exchange but worth
+  // belt-and-suspenders).
+  //
+  // SAFETY (mirrors test-buy):
+  //   • 403 unless PILOT_DEPLOYMENT_TIER=shadow
+  //   • Admin-token gated
+  //   • Hard cap on contracts (≤ 0.1)
+  //   • Hard cap on maxNotionalUsdc (≤ $50)
+  //   • Single Bullish API call per invocation
+  //   • IOC self-cancels at venue
+  //
+  // CRITICAL: this endpoint will only be safe if you actually own the
+  // contracts you're trying to sell. Selling without an underlying
+  // position would require margin (PILOT_BULLISH_ALLOW_MARGIN=false
+  // means Bullish should reject; that's the system protecting you).
+  //
+  // Body shape:
+  //   {
+  //     symbol: "BTC-USDC-20260522-80000-C",
+  //     limitPriceUsdcPerBtc: 0.01,          // low — fills at bid
+  //     contractsBtc: 0.01,
+  //     maxNotionalUsdc: 25                  // hard cap on assumed proceeds
+  //   }
+  app.post("/volume-cover/admin/bullish-test-sell", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    const symbol = String(body.symbol ?? "").trim();
+    const limitPriceUsdcPerBtc = Number(body.limitPriceUsdcPerBtc);
+    const contractsBtc = Number(body.contractsBtc);
+    const maxNotionalUsdc = Number(body.maxNotionalUsdc ?? 25);
+
+    if (!symbol) return reply.code(400).send({ error: "missing_symbol" });
+    if (!Number.isFinite(limitPriceUsdcPerBtc) || limitPriceUsdcPerBtc <= 0) {
+      return reply.code(400).send({ error: "invalid_limitPriceUsdcPerBtc" });
+    }
+    if (!Number.isFinite(contractsBtc) || contractsBtc <= 0) {
+      return reply.code(400).send({ error: "invalid_contractsBtc" });
+    }
+
+    if (!/^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol)) {
+      return reply.code(400).send({
+        error: "invalid_symbol_format",
+        expected: "BTC-USDC-YYYYMMDD-STRIKE-(C|P)",
+        provided: symbol
+      });
+    }
+
+    if (contractsBtc > 0.1) {
+      return reply.code(400).send({
+        error: "contracts_exceed_safety_cap",
+        provided: contractsBtc,
+        maxAllowed: 0.1
+      });
+    }
+    const cappedMaxNotional = Math.min(maxNotionalUsdc, 50);
+
+    const formattedPrice = limitPriceUsdcPerBtc.toFixed(4);
+    const formattedQty = Math.floor(contractsBtc * 100) / 100;
+    const formattedQtyStr = formattedQty.toFixed(2);
+
+    if (formattedQty <= 0) {
+      return reply.code(400).send({
+        error: "qty_below_min",
+        provided: contractsBtc,
+        rounded: formattedQty,
+        message: "Bullish option min qty is 0.01 BTC"
+      });
+    }
+
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+
+    const { BullishTradingClient } = await import("../pilot/bullish");
+    const client = new BullishTradingClient(pilotConfig.bullish);
+
+    const requestPayload = {
+      symbol,
+      side: "SELL" as const,
+      price: formattedPrice,
+      quantity: formattedQtyStr,
+      clientOrderId
+    };
+
+    console.log(
+      `[bullish-test-sell] SUBMITTING symbol=${symbol} qty=${formattedQtyStr} ` +
+        `price=${formattedPrice} maxNotional=$${cappedMaxNotional} ` +
+        `allowMargin=${pilotConfig.bullish.allowMargin}`
+    );
+
+    const startMs = Date.now();
+    let rawResponse: unknown = null;
+    let bullishError: string | null = null;
+    let bullishHttpStatus: number | null = null;
+    let bullishStatusReasonCode: number | null = null;
+    let bullishErrorCode: string | null = null;
+
+    try {
+      rawResponse = await client.createSpotLimitOrder(requestPayload);
+    } catch (err: any) {
+      bullishError = err?.message ?? "unknown";
+      const match = String(bullishError).match(/bullish_http_(\d+):(.*)$/s);
+      if (match) {
+        bullishHttpStatus = Number(match[1]);
+        try {
+          const errBody = JSON.parse(match[2]);
+          bullishErrorCode = errBody.errorCodeName ?? errBody.errorCode ?? null;
+          bullishStatusReasonCode = errBody.statusReasonCode ?? null;
+        } catch {
+          // Leave parsed fields null
+        }
+      }
+    }
+
+    const elapsedMs = Date.now() - startMs;
+
+    if (rawResponse && typeof rawResponse === "object") {
+      const r = rawResponse as Record<string, any>;
+      bullishStatusReasonCode =
+        bullishStatusReasonCode ??
+        r.statusReasonCode ??
+        r.data?.statusReasonCode ??
+        null;
+    }
+
+    const success = !bullishError && !bullishStatusReasonCode;
+
+    return reply.send({
+      ok: success,
+      generatedAtIso: new Date().toISOString(),
+      elapsedMs,
+      config: {
+        allowMargin: pilotConfig.bullish.allowMargin,
+        bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("api.exchange.bullish.com"),
+        restBaseUrl: pilotConfig.bullish.restBaseUrl,
+        orderTif: pilotConfig.bullish.orderTif
+      },
+      request: {
+        ...requestPayload,
+        cap: cappedMaxNotional
+      },
+      result: {
+        rawResponse,
+        bullishError,
+        bullishHttpStatus,
+        bullishErrorCode,
+        bullishStatusReasonCode
+      }
+    });
+  });
+
   app.post("/volume-cover/admin/bullish-login-test", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
