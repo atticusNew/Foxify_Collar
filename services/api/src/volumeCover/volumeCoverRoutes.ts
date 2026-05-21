@@ -1715,6 +1715,73 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  // 2026-05-21 — SHADOW-ONLY Bullish single-symbol order book inspector.
+  //
+  // Returns the top of the book (and depth if requested) for a single
+  // symbol. Use to diagnose whether the book has bids/asks before
+  // attempting test orders, and to verify tick size from the actual
+  // resting prices.
+  //
+  // 1 Bullish API call per invocation. No auth needed in the venue
+  // call itself (orderbook is a public REST endpoint), but this admin
+  // route is gated on shadow + admin token like everything else.
+  app.get<{ Querystring: { symbol?: string; depth?: string } }>(
+    "/volume-cover/admin/bullish-orderbook",
+    async (req, reply) => {
+      if (!isShadowTier()) {
+        return reply.code(403).send({
+          error: "forbidden",
+          reason: "endpoint_requires_shadow_tier"
+        });
+      }
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+      const symbol = String(req.query.symbol ?? "").trim();
+      if (!symbol) return reply.code(400).send({ error: "missing_symbol" });
+      const depth = Math.max(1, Math.min(10, Number(req.query.depth ?? 5)));
+
+      const client = await getBullishAdminClient();
+      const startMs = Date.now();
+      try {
+        const book = await client.getHybridOrderBook(symbol);
+        const topBid = book.bids[0] ?? null;
+        const topAsk = book.asks[0] ?? null;
+        const midPrice =
+          topBid && topAsk
+            ? (Number(topBid.price) + Number(topAsk.price)) / 2
+            : null;
+        const spreadPct =
+          topBid && topAsk && midPrice
+            ? ((Number(topAsk.price) - Number(topBid.price)) / midPrice) * 100
+            : null;
+        return reply.send({
+          ok: true,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          symbol,
+          summary: {
+            topBid,
+            topAsk,
+            midPrice,
+            spreadPct: spreadPct !== null ? Number(spreadPct.toFixed(2)) : null,
+            bidLevels: book.bids.length,
+            askLevels: book.asks.length
+          },
+          bids: book.bids.slice(0, depth),
+          asks: book.asks.slice(0, depth)
+        });
+      } catch (err: any) {
+        return reply.code(502).send({
+          ok: false,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          symbol,
+          error: err?.message ?? "unknown"
+        });
+      }
+    }
+  );
+
   // 2026-05-21 — SHADOW-ONLY Bullish order-status query.
   //
   // Returns Bullish's authoritative status for a given orderId. Use to
