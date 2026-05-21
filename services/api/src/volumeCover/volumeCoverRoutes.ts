@@ -1438,6 +1438,206 @@ export const registerVolumeCoverRoutes = async (
    * SAFE: never returns the raw private key, only the request payload
    * (which is non-sensitive — userId + timestamps).
    */
+
+  // 2026-05-21 — SHADOW-ONLY Bullish test-buy endpoint.
+  //
+  // Places ONE limit-IOC buy on Bullish mainnet using whatever
+  // PILOT_BULLISH_ALLOW_MARGIN is set to. Designed to verify whether
+  // the "limited risk" account status removes the 3003 (margin
+  // required) error that previously blocked debit option buys with
+  // allowMargin=false.
+  //
+  // SAFETY (multi-layer):
+  //   • Returns 403 unless PILOT_DEPLOYMENT_TIER=shadow
+  //   • Admin-token gated
+  //   • Hard cap on contracts (defaults 0.01, max 0.1)
+  //   • Hard cap on premium (defaults $25, max $50)
+  //   • Pre-flight refusal if (price × qty) > maxPremiumUsdc
+  //   • Single Bullish API call per invocation — no chain lookup, no
+  //     balance check (cuts rate-limit pressure)
+  //   • IOC self-cancels at venue → no orphan orders
+  //
+  // Body shape:
+  //   {
+  //     symbol: "BTC-USDC-20260522-90000-C",   // explicit, user-supplied
+  //     limitPriceUsdcPerBtc: 50,              // limit price for the BUY
+  //     contractsBtc: 0.01,                    // size (0.01-0.1 max)
+  //     maxPremiumUsdc: 25                     // hard cap (default $25)
+  //   }
+  app.post("/volume-cover/admin/bullish-test-buy", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    const symbol = String(body.symbol ?? "").trim();
+    const limitPriceUsdcPerBtc = Number(body.limitPriceUsdcPerBtc);
+    const contractsBtc = Number(body.contractsBtc);
+    const maxPremiumUsdc = Number(body.maxPremiumUsdc ?? 25);
+
+    // Validate required fields
+    if (!symbol) return reply.code(400).send({ error: "missing_symbol" });
+    if (!Number.isFinite(limitPriceUsdcPerBtc) || limitPriceUsdcPerBtc <= 0) {
+      return reply.code(400).send({ error: "invalid_limitPriceUsdcPerBtc" });
+    }
+    if (!Number.isFinite(contractsBtc) || contractsBtc <= 0) {
+      return reply.code(400).send({ error: "invalid_contractsBtc" });
+    }
+
+    // Symbol shape sanity check
+    if (!/^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol)) {
+      return reply.code(400).send({
+        error: "invalid_symbol_format",
+        expected: "BTC-USDC-YYYYMMDD-STRIKE-(C|P)",
+        provided: symbol
+      });
+    }
+
+    // Hard caps — defense against fat-finger
+    if (contractsBtc > 0.1) {
+      return reply.code(400).send({
+        error: "contracts_exceed_safety_cap",
+        provided: contractsBtc,
+        maxAllowed: 0.1
+      });
+    }
+    const cappedMaxPremium = Math.min(maxPremiumUsdc, 50);
+
+    // Pre-flight premium check: limit price × size <= max premium
+    const expectedPremiumUsdc = limitPriceUsdcPerBtc * contractsBtc;
+    if (expectedPremiumUsdc > cappedMaxPremium) {
+      return reply.code(400).send({
+        error: "expected_premium_exceeds_cap",
+        expectedPremiumUsdc: Number(expectedPremiumUsdc.toFixed(2)),
+        cappedMaxPremium,
+        message: "lower limitPriceUsdcPerBtc or contractsBtc, or raise maxPremiumUsdc (≤ $50)"
+      });
+    }
+
+    // Bullish prices options in BTC per contract, not USDC. We need to
+    // convert. Each contract is 1 BTC of underlying; the price field
+    // on Bullish for an option is BTC per contract.
+    //
+    //   priceBtcPerContract = limitPriceUsdcPerBtc / spot_usdc
+    //
+    // We don't fetch fresh spot here to avoid an extra API call that
+    // could trip rate limits — the caller is expected to have computed
+    // limitPriceUsdcPerBtc with current spot in mind.
+    //
+    // Bullish price precision for options = 8 decimals (BTC); we'll
+    // pass the quantity at 2 decimals (option contracts).
+    //
+    // Actually inspection of placeBullishOption shows for options the
+    // price is sent in USDC-per-BTC at 4 decimals (the wire format
+    // Bullish accepts). We'll match that here.
+    const formattedPrice = limitPriceUsdcPerBtc.toFixed(4);
+    const formattedQty = Math.floor(contractsBtc * 100) / 100;
+    const formattedQtyStr = formattedQty.toFixed(2);
+
+    if (formattedQty <= 0) {
+      return reply.code(400).send({
+        error: "qty_below_min",
+        provided: contractsBtc,
+        rounded: formattedQty,
+        message: "Bullish option min qty is 0.01 BTC"
+      });
+    }
+
+    const clientOrderId = `SHADOW-TEST-${Date.now()}-${Math.floor(Math.random() * 999)}`;
+
+    // Single Bullish API call: createSpotLimitOrder. The client's
+    // V3CreateOrder path passes allowMargin from config — we use the
+    // current PILOT_BULLISH_ALLOW_MARGIN env value (set to false on
+    // shadow when testing limited-risk account status).
+    const { BullishTradingClient } = await import("../pilot/bullish");
+    const client = new BullishTradingClient(pilotConfig.bullish);
+
+    const requestPayload = {
+      symbol,
+      side: "BUY" as const,
+      price: formattedPrice,
+      quantity: formattedQtyStr,
+      clientOrderId
+    };
+
+    console.log(
+      `[bullish-test-buy] SUBMITTING symbol=${symbol} qty=${formattedQtyStr} ` +
+        `price=${formattedPrice} expectedPremium=$${expectedPremiumUsdc.toFixed(2)} ` +
+        `allowMargin=${pilotConfig.bullish.allowMargin}`
+    );
+
+    const startMs = Date.now();
+    let rawResponse: unknown = null;
+    let bullishError: string | null = null;
+    let bullishHttpStatus: number | null = null;
+    let bullishStatusReasonCode: number | null = null;
+    let bullishErrorCode: string | null = null;
+
+    try {
+      rawResponse = await client.createSpotLimitOrder(requestPayload);
+    } catch (err: any) {
+      bullishError = err?.message ?? "unknown";
+      // Best-effort: parse "bullish_http_NNN:{...}" pattern from the
+      // Bullish client's error message format.
+      const match = String(bullishError).match(/bullish_http_(\d+):(.*)$/s);
+      if (match) {
+        bullishHttpStatus = Number(match[1]);
+        try {
+          const errBody = JSON.parse(match[2]);
+          bullishErrorCode = errBody.errorCodeName ?? errBody.errorCode ?? null;
+          bullishStatusReasonCode = errBody.statusReasonCode ?? null;
+        } catch {
+          // Leave parsed fields null
+        }
+      }
+    }
+
+    const elapsedMs = Date.now() - startMs;
+
+    // Try to extract status reason code from response shape too (for
+    // accepted-but-rejected cases where order placed but failed at
+    // exchange-level checks).
+    if (rawResponse && typeof rawResponse === "object") {
+      const r = rawResponse as Record<string, any>;
+      bullishStatusReasonCode =
+        bullishStatusReasonCode ??
+        r.statusReasonCode ??
+        r.data?.statusReasonCode ??
+        null;
+    }
+
+    const success = !bullishError && !bullishStatusReasonCode;
+
+    return reply.send({
+      ok: success,
+      generatedAtIso: new Date().toISOString(),
+      elapsedMs,
+      config: {
+        allowMargin: pilotConfig.bullish.allowMargin,
+        bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("api.exchange.bullish.com"),
+        restBaseUrl: pilotConfig.bullish.restBaseUrl,
+        orderTif: pilotConfig.bullish.orderTif
+      },
+      request: {
+        ...requestPayload,
+        expectedPremiumUsdc: Number(expectedPremiumUsdc.toFixed(2)),
+        cap: cappedMaxPremium
+      },
+      result: {
+        rawResponse,
+        bullishError,
+        bullishHttpStatus,
+        bullishErrorCode,
+        bullishStatusReasonCode,
+        is3003: bullishStatusReasonCode === 3003 || bullishErrorCode === "3003"
+      }
+    });
+  });
+
   app.post("/volume-cover/admin/bullish-login-test", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
