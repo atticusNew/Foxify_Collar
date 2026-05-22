@@ -709,16 +709,24 @@ export class BullishTradingClient {
     });
   }
 
-  async getOrderStatus(orderId: string): Promise<{
+  async getOrderStatus(orderId: string, opts?: { tradingAccountId?: string }): Promise<{
     status: string;
     fillPrice: number;
     fillQuantity: number;
     fees: { baseFee: string; quoteFee: string };
     raw: unknown;
   }> {
+    // 2026-05-21: Bullish's GET /orders/:id is scoped per trading
+    // account. Without ?tradingAccountId=, Bullish returns 404 even
+    // for orders the auth context placed but on a different sub-
+    // account. Pass it explicitly when known.
     const headers = await this.buildJwtHeaders();
+    const tradingAccountId = opts?.tradingAccountId || this.config.tradingAccountId;
+    const queryString = tradingAccountId
+      ? `?tradingAccountId=${encodeURIComponent(tradingAccountId)}`
+      : "";
     const raw = await this.requestJson<unknown>({
-      path: `/trading-api/v2/orders/${orderId}`,
+      path: `/trading-api/v2/orders/${orderId}${queryString}`,
       method: "GET",
       timeoutMs: this.config.orderTimeoutMs,
       headers

@@ -35,10 +35,14 @@ import { handleBiweeklyClose, sweepBiweeklyNaturalExpiries, sweepScheduledCloses
  * detection on Bullish-routed protections.
  */
 const resolveBullishTriggerPrice = async (requestId: string, marketId: string): Promise<PriceSnapshotOutput> => {
-  const { BullishTradingClient, resolveBullishMarketSymbol } = await import("./bullish");
+  const { resolveBullishMarketSymbol } = await import("./bullish");
+  const { getCachedBullishOrderbook } = await import("./bullishClient");
   const symbol = resolveBullishMarketSymbol(pilotConfig.bullish, { marketId });
-  const client = new BullishTradingClient(pilotConfig.bullish);
-  const book = await client.getHybridOrderBook(symbol);
+  // 2026-05-22: 1s cache on trigger detection orderbook reads. Trigger monitor
+  // runs every 60s+, so 1s is effectively a no-op for staleness but coalesces
+  // any same-cycle duplicate reads (multiple positions on same marketId) and
+  // reuses the singleton client across cycles — avoiding fresh JWT/WS per tick.
+  const book = await getCachedBullishOrderbook(pilotConfig.bullish, symbol, 1_000);
   const bestBidStr = book.bids?.[0]?.price ?? null;
   const bestAskStr = book.asks?.[0]?.price ?? null;
   if (!bestBidStr && !bestAskStr) {

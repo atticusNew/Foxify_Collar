@@ -128,6 +128,11 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN running_max_value_usdc NUMERIC(20, 8)`);
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN last_value_usdc NUMERIC(20, 8)`);
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN last_value_at TIMESTAMPTZ`);
+  // ─── 2026-05-21: TP slippage floor — limit-IOC defer counter.
+  // Increments each tick a discretionary rule fired but the limit IOC sell
+  // did not cross the book. After VC_TP_SLIPPAGE_MAX_DEFERS the manager
+  // falls through to a market sell. Reset to 0 on successful fill.
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN tp_defer_count INTEGER NOT NULL DEFAULT 0`);
 
   // ─── 2026-05-19: coverage-window extension on close ───
   // When Foxify (or admin) calls /close, premium is billed by ceil-of-days-held.
@@ -482,6 +487,27 @@ export const listActivePositions = async (pool: DbExecutor): Promise<PositionRow
   return r.rows.map(rowToPosition);
 };
 
+/**
+ * 2026-05-22: Foxify-facing "live" position list. Returns positions still
+ * on the books from Foxify's perspective — both `active` (no trigger fired
+ * yet) and `triggered` (trigger fired, payout obligation locked, but pair
+ * still alive and accruing premium until the scheduled pair-close).
+ *
+ * Distinct from `listActivePositions` (which is used by trigger detector
+ * + admin views that explicitly want status='active' only). Adding
+ * triggered positions to the trigger detector loop would be incorrect
+ * (they've already triggered), but the Foxify dashboard MUST see them so
+ * the operator and Foxify can reconcile premium owed on the live pair.
+ */
+export const listLiveFoxifyPositions = async (pool: DbExecutor): Promise<PositionRow[]> => {
+  const r = await pool.query(
+    `SELECT * FROM volume_cover_position
+     WHERE status IN ('active', 'triggered')
+     ORDER BY opened_at`
+  );
+  return r.rows.map(rowToPosition);
+};
+
 export const listPositionsForCellToday = async (
   pool: DbExecutor,
   params: { cellId: string; sinceIso: string }
@@ -613,6 +639,62 @@ export const markPositionClosed = async (
   return r.rows[0] ? rowToPosition(r.rows[0]) : null;
 };
 
+/**
+ * 2026-05-22: Archive a position. Sets metadata.archived=true so the
+ * row is excluded from operational dashboards and salvage statistics
+ * but otherwise preserved (DB row + ledger entries + hedge legs intact
+ * for audit). Distinct from `status='cancelled'` — the position lifecycle
+ * status is unchanged.
+ *
+ * Intended use cases:
+ *   - Internal operator test trades that should not pollute production
+ *     telemetry (e.g. the May 18 Bullish phantom-leg test)
+ *   - Known-failure-class events where the loss is real but the salvage
+ *     denominator is not representative of normal operations
+ *
+ * Caller MUST ensure no hedge legs are status='open' before archiving;
+ * the route enforces this guard (refusing to archive while any leg is
+ * still active at the venue).
+ *
+ * Implementation note: uses JS-side read-merge-write rather than
+ * SQL-side `metadata || $::jsonb` because pg-mem 3.x cannot execute
+ * the JSONB concat operator with a parameterized RHS — see
+ * pilot/hedgeManager.ts:markExpiredWithAutopsy for the same pattern.
+ * The read-merge-write race window is acceptable for an admin-only
+ * endpoint with vanishing concurrent-call probability.
+ */
+export const markPositionArchived = async (
+  pool: DbExecutor,
+  params: { id: string; reason: string; archivedByToken?: string }
+): Promise<PositionRow | null> => {
+  const cur = await pool.query(
+    `SELECT metadata FROM volume_cover_position WHERE id = $1`,
+    [params.id]
+  );
+  if (cur.rows.length === 0) return null;
+  const existingRaw = cur.rows[0].metadata;
+  const existing = (typeof existingRaw === "string"
+    ? JSON.parse(existingRaw)
+    : (existingRaw ?? {})) as Record<string, unknown>;
+  const merged = {
+    ...existing,
+    archived: true,
+    archive_reason: params.reason,
+    archived_at: new Date().toISOString(),
+    archived_by_token_prefix: params.archivedByToken
+      ? params.archivedByToken.slice(0, 6) + "..."
+      : null
+  };
+  const r = await pool.query(
+    `UPDATE volume_cover_position
+     SET metadata = $2::jsonb
+     WHERE id = $1
+     RETURNING *`,
+    [params.id, JSON.stringify(merged)]
+  );
+  return r.rows[0] ? rowToPosition(r.rows[0]) : null;
+};
+
 // ────────────────────── CRUD: Hedge legs ──────────────────────
 
 export type RetainedRole = "winner_post_trigger" | "loser_post_trigger" | "near_atm_post_close" | "stale_post_close";
@@ -645,6 +727,8 @@ export type HedgeLegRow = {
   runningMaxValueUsdc: number | null;
   lastValueUsdc: number | null;
   lastValueAt: string | null;
+  // 2026-05-21: TP slippage-floor defer counter
+  tpDeferCount: number;
 };
 
 const rowToHedgeLeg = (r: any): HedgeLegRow => ({
@@ -675,7 +759,8 @@ const rowToHedgeLeg = (r: any): HedgeLegRow => ({
   lastValueUsdc: r.last_value_usdc !== null && r.last_value_usdc !== undefined
     ? Number(r.last_value_usdc)
     : null,
-  lastValueAt: r.last_value_at ? String(r.last_value_at) : null
+  lastValueAt: r.last_value_at ? String(r.last_value_at) : null,
+  tpDeferCount: Number(r.tp_defer_count ?? 0)
 });
 
 export const insertHedgeLeg = async (
@@ -877,6 +962,46 @@ export const updateHedgeLegTpState = async (
          last_value_at = NOW()
      WHERE id = $1`,
     [params.legId, params.currentValueUsdc]
+  );
+};
+
+/**
+ * 2026-05-21: TP slippage floor — increment the defer counter when a
+ * discretionary rule fired but the limit-IOC sell did not cross. The
+ * manager checks this counter against VC_TP_SLIPPAGE_MAX_DEFERS to
+ * decide when to fall through to a market sell.
+ *
+ * Returns the post-increment value so the caller can decide whether to
+ * fall through this tick.
+ */
+export const incrementHedgeLegTpDeferCount = async (
+  pool: DbExecutor,
+  params: { legId: string }
+): Promise<number> => {
+  const r = await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET tp_defer_count = COALESCE(tp_defer_count, 0) + 1
+     WHERE id = $1
+     RETURNING tp_defer_count`,
+    [params.legId]
+  );
+  return Number(r.rows[0]?.tp_defer_count ?? 0);
+};
+
+/**
+ * 2026-05-21: TP slippage floor — reset defer counter (called on a
+ * successful sell or on reclassify, so a leg never carries stale defer
+ * count across role transitions).
+ */
+export const resetHedgeLegTpDeferCount = async (
+  pool: DbExecutor,
+  params: { legId: string }
+): Promise<void> => {
+  await pool.query(
+    `UPDATE volume_cover_hedge_leg
+     SET tp_defer_count = 0
+     WHERE id = $1`,
+    [params.legId]
   );
 };
 
@@ -1180,6 +1305,15 @@ export const listRecentSalvageEvents = async (
   return r.rows.map(rowToSalvage);
 };
 
+// 2026-05-22: salvage queries exclude positions where metadata.archived
+// is set. Keeps test trades and known-failure events out of the rolling
+// statistics used by Guard A (7d loss kill) and Guard B (salvage
+// throttle). The underlying salvage rows remain in the table for audit.
+const NOT_ARCHIVED_JOIN = `
+  JOIN volume_cover_position p ON p.id = s.position_id
+  WHERE COALESCE((p.metadata->>'archived')::boolean, false) = false
+`;
+
 export const computeRollingSalvageStats = async (
   pool: DbExecutor,
   rollingCount = 5
@@ -1196,9 +1330,10 @@ export const computeRollingSalvageStats = async (
        SUM(net_atticus_loss_usdc) AS total_loss,
        AVG(payout_owed_usdc) AS avg_payout
      FROM (
-       SELECT salvage_pct, net_atticus_loss_usdc, payout_owed_usdc
-       FROM volume_cover_salvage_event
-       ORDER BY triggered_at DESC
+       SELECT s.salvage_pct, s.net_atticus_loss_usdc, s.payout_owed_usdc
+       FROM volume_cover_salvage_event s
+       ${NOT_ARCHIVED_JOIN}
+       ORDER BY s.triggered_at DESC
        LIMIT $1
      ) recent`,
     [rollingCount]
@@ -1218,8 +1353,10 @@ export const countTriggersInWindow = async (
   windowHours: number
 ): Promise<number> => {
   const r = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM volume_cover_salvage_event
-     WHERE triggered_at >= NOW() - ($1 || ' hours')::interval`,
+    `SELECT COUNT(*) AS cnt
+     FROM volume_cover_salvage_event s
+     ${NOT_ARCHIVED_JOIN}
+       AND s.triggered_at >= NOW() - ($1 || ' hours')::interval`,
     [String(windowHours)]
   );
   return Number(r.rows[0].cnt);
@@ -1230,9 +1367,10 @@ export const sumNetLossInWindow = async (
   windowHours: number
 ): Promise<number> => {
   const r = await pool.query(
-    `SELECT COALESCE(SUM(net_atticus_loss_usdc), 0) AS total
-     FROM volume_cover_salvage_event
-     WHERE triggered_at >= NOW() - ($1 || ' hours')::interval`,
+    `SELECT COALESCE(SUM(s.net_atticus_loss_usdc), 0) AS total
+     FROM volume_cover_salvage_event s
+     ${NOT_ARCHIVED_JOIN}
+       AND s.triggered_at >= NOW() - ($1 || ' hours')::interval`,
     [String(windowHours)]
   );
   return Number(r.rows[0].total);

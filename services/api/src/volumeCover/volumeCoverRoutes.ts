@@ -36,6 +36,7 @@ import type { Pool } from "pg";
 
 import { pilotConfig } from "../pilot/config";
 import { getPilotPool } from "../pilot/db";
+import { tierBlocksFoxifyTraffic, isShadowTier } from "../pilot/deploymentTier";
 import { selectCell } from "./cellSelector";
 import { resolveDailyPremium } from "./pricing";
 import { findCellById, computeTriggerPrices, computeHedgeStrikes } from "./matrix";
@@ -56,7 +57,8 @@ import {
   insertPairEvent,
   listRecentPairEvents,
   computePairEventLatencyStats,
-  finalizeSalvageProceedsForPosition
+  finalizeSalvageProceedsForPosition,
+  markPositionArchived
 } from "./volumeCoverDb";
 import { openPosition, closePosition } from "./positionLifecycle";
 import {
@@ -123,6 +125,13 @@ const isFoxifyAuthorized = (req: FastifyRequest): {
   ok: boolean;
   reason?: string;
 } => {
+  // Defense in depth: refuse all Foxify HMAC traffic on non-live tiers
+  // even before checking the signature. Shadow services accept admin
+  // traffic only.
+  if (tierBlocksFoxifyTraffic()) {
+    return { ok: false, reason: "shadow_tier_blocks_foxify_traffic" };
+  }
+
   const secret = getFoxifyHmacSecret();
   if (!secret) {
     // If no secret configured, allow only in test/dev. In prod the env
@@ -235,6 +244,26 @@ export type RegisterVolumeCoverRoutesOptions = {
   venueBalanceFetcher?: VenueBalanceFetcher;
   /** Optional: skip schema migration (tests provide pre-migrated pg-mem). */
   skipSchema?: boolean;
+};
+
+// 2026-05-21 — Module-level singleton to avoid burning Bullish JWT
+// session quota. Each new BullishTradingClient creates a new login →
+// new session. Bullish caps active sessions per user (~10-20). When
+// every admin-debug endpoint creates its own client, we trip
+// MAX_SESSION_COUNT_REACHED (errorCode 8400). This singleton reuses
+// a single client → single session for all admin debug calls.
+//
+// 2026-05-22 — Refactored to use the shared `pilot/bullishClient`
+// module so that admin routes, the spot price source, the venue
+// balance fetcher, and the trigger monitor all share ONE singleton.
+// Previously this was a local singleton scoped to admin routes only,
+// while 4 other callsites (server.ts spot/balance, triggerMonitor,
+// chain endpoint, wide-config lister) bypassed it and each spun fresh
+// clients. The dashboard auto-refresh + 60s trigger monitor combined
+// to exhaust Bullish's session quota within ~10 min of continuous use.
+const getBullishAdminClient = async () => {
+  const { getSharedBullishClient } = await import("../pilot/bullishClient");
+  return getSharedBullishClient(pilotConfig.bullish);
 };
 
 export const registerVolumeCoverRoutes = async (
@@ -866,10 +895,13 @@ export const registerVolumeCoverRoutes = async (
 
     // Pull active + recently-triggered + recently-closed (so UI shows
     // a few terminal rows for context without overwhelming).
+    // Archived positions (metadata.archived=true) excluded so test
+    // trades don't pollute the operational view.
     const posResult = await pool.query(
       `SELECT * FROM volume_cover_position
-       WHERE status IN ('active', 'triggered')
-          OR (status = 'closed' AND closed_at >= NOW() - interval '6 hours')
+       WHERE (status IN ('active', 'triggered')
+          OR (status = 'closed' AND closed_at >= NOW() - interval '6 hours'))
+         AND COALESCE((metadata->>'archived')::boolean, false) = false
        ORDER BY opened_at DESC
        LIMIT $1`,
       [limit]
@@ -980,6 +1012,283 @@ export const registerVolumeCoverRoutes = async (
     return reply.send(metrics);
   });
 
+  // 2026-05-21 — TP slippage-floor observability
+  //
+  // Returns counters from the volume_cover_hedge_leg_telemetry table
+  // bucketed by action so ops can see how often the floor fires,
+  // unfills, falls through, etc. Looks back over a configurable
+  // window (default 24h) so we can scope to recent activity.
+  //
+  // Body shape:
+  //   {
+  //     windowHours: 24,
+  //     enabled: true|false,                     ← feature flag state
+  //     config: { tolerance, maxDefers, ... },   ← active params
+  //     totals: { sold, unfilled, fallthrough, error, held, dryRun, skip },
+  //     byRule: [ { rule, sold, unfilled, fallthrough, ... }, ... ],
+  //     activeLegsWithDefers: [ { legId, positionId, deferCount }, ... ]
+  //   }
+  app.get("/volume-cover/admin/slippage-floor-stats", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const windowHours = Math.max(
+      1,
+      Math.min(168, Number((req.query as any)?.windowHours ?? "24"))
+    );
+    const cutoffIso = new Date(Date.now() - windowHours * 3_600_000).toISOString();
+
+    try {
+      const totalsRes = await pool.query(
+        `SELECT action, COUNT(*)::INT AS n
+         FROM volume_cover_hedge_leg_telemetry
+         WHERE cycled_at >= $1
+         GROUP BY action
+         ORDER BY action`,
+        [cutoffIso]
+      );
+
+      const byRuleRes = await pool.query(
+        `SELECT rule_evaluated AS rule, action, COUNT(*)::INT AS n
+         FROM volume_cover_hedge_leg_telemetry
+         WHERE cycled_at >= $1
+           AND action IN ('sold', 'unfilled', 'fallthrough_market', 'error')
+         GROUP BY rule_evaluated, action
+         ORDER BY rule_evaluated, action`,
+        [cutoffIso]
+      );
+
+      const deferRes = await pool.query(
+        `SELECT id AS leg_id, position_id, tp_defer_count
+         FROM volume_cover_hedge_leg
+         WHERE retained = TRUE
+           AND status = 'open'
+           AND tp_defer_count > 0
+         ORDER BY tp_defer_count DESC
+         LIMIT 100`
+      );
+
+      const totals: Record<string, number> = {};
+      for (const r of totalsRes.rows) {
+        totals[String(r.action)] = Number(r.n);
+      }
+
+      const ruleMap = new Map<string, Record<string, number>>();
+      for (const r of byRuleRes.rows) {
+        const rule = String(r.rule);
+        const action = String(r.action);
+        if (!ruleMap.has(rule)) ruleMap.set(rule, {});
+        ruleMap.get(rule)![action] = Number(r.n);
+      }
+
+      const byRule = Array.from(ruleMap.entries()).map(([rule, counts]) => ({
+        rule,
+        sold: counts.sold ?? 0,
+        unfilled: counts.unfilled ?? 0,
+        fallthroughMarket: counts.fallthrough_market ?? 0,
+        error: counts.error ?? 0
+      }));
+
+      // Effective ratio: of all sells (sold + fallthrough + unfilled),
+      // what fraction filled at the floor vs fell through? Higher =
+      // more revenue captured.
+      const totalSells =
+        (totals.sold ?? 0) + (totals.fallthrough_market ?? 0) + (totals.unfilled ?? 0);
+      const floorSuccessRate =
+        totalSells > 0 ? (totals.sold ?? 0) / totalSells : null;
+
+      return reply.send({
+        windowHours,
+        windowStart: cutoffIso,
+        enabled: String(process.env.VC_TP_SLIPPAGE_FLOOR_ENABLED ?? "false").toLowerCase() === "true",
+        config: {
+          bsTolerance: Number(process.env.VC_TP_SLIPPAGE_BS_TOLERANCE ?? "0.15"),
+          maxDefers: Number(process.env.VC_TP_SLIPPAGE_MAX_DEFERS ?? "3"),
+          discretionaryRules: (process.env.VC_TP_SLIPPAGE_DISCRETIONARY_RULES ?? "5_trail_retrace,6_theta_vs_momentum,10_near_atm,11_vol_spike").split(",").map((s) => s.trim()),
+          enabledVenues: (process.env.VC_TP_SLIPPAGE_VENUES ?? "deribit").split(",").map((s) => s.trim().toLowerCase())
+        },
+        totals: {
+          sold: totals.sold ?? 0,
+          unfilled: totals.unfilled ?? 0,
+          fallthroughMarket: totals.fallthrough_market ?? 0,
+          error: totals.error ?? 0,
+          held: totals.held ?? 0,
+          dryRun: totals.dry_run ?? 0,
+          skip: totals.skip ?? 0
+        },
+        floorSuccessRate,
+        byRule,
+        activeLegsWithDefers: deferRes.rows.map((r) => ({
+          legId: String(r.leg_id),
+          positionId: String(r.position_id),
+          deferCount: Number(r.tp_defer_count)
+        }))
+      });
+    } catch (err: any) {
+      return reply.code(500).send({
+        error: "slippage_floor_stats_failed",
+        message: err?.message ?? "unknown"
+      });
+    }
+  });
+
+  // 2026-05-21 — SHADOW-ONLY debug endpoint for stress-testing the TP
+  // slippage floor end-to-end.
+  //
+  // Discretionary rules (5/6/10/11) won't fire naturally on a fresh
+  // mock-retained leg — running_max starts at first-tick value, so
+  // "current < runningMax × 0.80" is impossible without state.
+  // This endpoint forces a leg into a "rule X fires next tick" state
+  // by writing the necessary fields directly. Used to validate the
+  // unfilled → defer → fallthrough chain on shadow.
+  //
+  // GUARDRAILS:
+  //   • Returns 403 unless PILOT_DEPLOYMENT_TIER=shadow
+  //   • Returns 403 unless admin token matches
+  //   • Only updates rows in volume_cover_hedge_leg by id
+  //
+  // Body shape:
+  //   {
+  //     legId: string,
+  //     scenario: "force_rule_5_trail_retrace"
+  //             | "force_rule_10_near_atm"
+  //             | "set_state",
+  //     // only for "set_state":
+  //     runningMaxValueUsdc?: number,
+  //     lastValueUsdc?: number,
+  //     lastValueAt?: string (ISO),
+  //     retainedRole?: "winner_post_trigger" | "loser_post_trigger" | "near_atm_post_close" | "stale_post_close",
+  //     tpDeferCount?: number
+  //   }
+  app.post("/volume-cover/admin/debug/force-leg-tp-state", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    const legId = String(body.legId ?? "");
+    if (!legId) {
+      return reply.code(400).send({ error: "missing_legId" });
+    }
+    const scenario = String(body.scenario ?? "set_state");
+
+    try {
+      // Read the current leg state
+      const legRes = await pool.query(
+        `SELECT id, position_id, contracts, buy_price_usdc, retained_role,
+                running_max_value_usdc, last_value_usdc, last_value_at, tp_defer_count
+         FROM volume_cover_hedge_leg
+         WHERE id = $1`,
+        [legId]
+      );
+      if (legRes.rows.length === 0) {
+        return reply.code(404).send({ error: "leg_not_found", legId });
+      }
+      const leg = legRes.rows[0];
+      const before = {
+        retainedRole: leg.retained_role,
+        runningMaxValueUsdc: leg.running_max_value_usdc !== null ? Number(leg.running_max_value_usdc) : null,
+        lastValueUsdc: leg.last_value_usdc !== null ? Number(leg.last_value_usdc) : null,
+        lastValueAt: leg.last_value_at,
+        tpDeferCount: Number(leg.tp_defer_count ?? 0)
+      };
+
+      let updates: Array<{ col: string; val: any }> = [];
+      let scenarioMeta: Record<string, unknown> = {};
+
+      if (scenario === "force_rule_5_trail_retrace") {
+        // Rule 5: current < runningMax × (1 - 0.20). To force fire on
+        // next tick, set runningMax = current_bs_value × 5 (5× higher
+        // than current → guaranteed retrace > 80%). Also bump role to
+        // winner_post_trigger so rule 5 is actually evaluated.
+        const initialCost = Number(leg.buy_price_usdc) * Number(leg.contracts);
+        const forcedRunningMax = initialCost * 5;
+        updates = [
+          { col: "running_max_value_usdc", val: forcedRunningMax },
+          { col: "retained_role", val: "winner_post_trigger" }
+        ];
+        scenarioMeta = {
+          forcedRunningMax,
+          rationale: "running_max set to 5× initial cost; next tick BS-implied current will be ~50% of initial → current < runningMax × 0.80 → rule 5 fires"
+        };
+      } else if (scenario === "force_rule_10_near_atm") {
+        // Rule 10: when role=near_atm_post_close AND current < initial × 0.65 → fire.
+        // Mock recovery is ~50% so it's already below 65% — just need role.
+        updates = [
+          { col: "retained_role", val: "near_atm_post_close" },
+          { col: "running_max_value_usdc", val: Number(leg.buy_price_usdc) * Number(leg.contracts) }
+        ];
+        scenarioMeta = {
+          rationale: "role flipped to near_atm_post_close; mock recovery (~50%) is below near_atm floor (65%) → rule 10 fires"
+        };
+      } else if (scenario === "set_state") {
+        // Free-form: caller chooses what to update.
+        if (typeof body.runningMaxValueUsdc === "number") {
+          updates.push({ col: "running_max_value_usdc", val: body.runningMaxValueUsdc });
+        }
+        if (typeof body.lastValueUsdc === "number") {
+          updates.push({ col: "last_value_usdc", val: body.lastValueUsdc });
+        }
+        if (typeof body.lastValueAt === "string") {
+          updates.push({ col: "last_value_at", val: body.lastValueAt });
+        }
+        if (typeof body.retainedRole === "string") {
+          updates.push({ col: "retained_role", val: body.retainedRole });
+        }
+        if (typeof body.tpDeferCount === "number") {
+          updates.push({ col: "tp_defer_count", val: body.tpDeferCount });
+        }
+        if (updates.length === 0) {
+          return reply.code(400).send({
+            error: "no_fields_to_update",
+            allowed: ["runningMaxValueUsdc", "lastValueUsdc", "lastValueAt", "retainedRole", "tpDeferCount"]
+          });
+        }
+      } else {
+        return reply.code(400).send({
+          error: "unknown_scenario",
+          allowed: ["force_rule_5_trail_retrace", "force_rule_10_near_atm", "set_state"]
+        });
+      }
+
+      const setClauses = updates.map((u, i) => `${u.col} = $${i + 2}`).join(", ");
+      const values = [legId, ...updates.map((u) => u.val)];
+      await pool.query(
+        `UPDATE volume_cover_hedge_leg SET ${setClauses} WHERE id = $1`,
+        values
+      );
+
+      const afterRes = await pool.query(
+        `SELECT retained_role, running_max_value_usdc, last_value_usdc, last_value_at, tp_defer_count
+         FROM volume_cover_hedge_leg WHERE id = $1`,
+        [legId]
+      );
+      const after = afterRes.rows[0];
+
+      return reply.send({
+        legId,
+        scenario,
+        scenarioMeta,
+        before,
+        after: {
+          retainedRole: after.retained_role,
+          runningMaxValueUsdc: after.running_max_value_usdc !== null ? Number(after.running_max_value_usdc) : null,
+          lastValueUsdc: after.last_value_usdc !== null ? Number(after.last_value_usdc) : null,
+          lastValueAt: after.last_value_at,
+          tpDeferCount: Number(after.tp_defer_count ?? 0)
+        },
+        nextSteps: "wait 60-180s for HedgeManager ticks; re-fetch /admin/slippage-floor-stats to observe defer/fallthrough counters"
+      });
+    } catch (err: any) {
+      return reply.code(500).send({
+        error: "force_leg_tp_state_failed",
+        message: err?.message ?? "unknown"
+      });
+    }
+  });
+
   /**
    * Live venue balances — pulls Bullish asset balances (USDC + BTC).
    * Used by the admin dashboard header to show real available capital
@@ -1025,9 +1334,11 @@ export const registerVolumeCoverRoutes = async (
     let bullishError: string | null = null;
     let bullishRawCount = 0;
     try {
-      const { BullishTradingClient } = await import("../pilot/bullish");
-      const client = new BullishTradingClient(pilotConfig.bullish);
-      const balances: any[] = await withTimeout(client.getAssetBalances(), 5_000);
+      const { getCachedBullishBalances } = await import("../pilot/bullishClient");
+      const balances: any[] = await withTimeout(
+        getCachedBullishBalances(pilotConfig.bullish, 30_000, 5_000),
+        5_000
+      );
       bullishRawCount = balances.length;
       const usdc = balances.find(
         (b: any) => b.assetSymbol === "USDC" || b.assetSymbol === "USD"
@@ -1153,6 +1464,707 @@ export const registerVolumeCoverRoutes = async (
    * SAFE: never returns the raw private key, only the request payload
    * (which is non-sensitive — userId + timestamps).
    */
+
+  // 2026-05-21 — SHADOW-ONLY Bullish test-buy endpoint.
+  //
+  // Places ONE limit-IOC buy on Bullish mainnet using whatever
+  // PILOT_BULLISH_ALLOW_MARGIN is set to. Designed to verify whether
+  // the "limited risk" account status removes the 3003 (margin
+  // required) error that previously blocked debit option buys with
+  // allowMargin=false.
+  //
+  // SAFETY (multi-layer):
+  //   • Returns 403 unless PILOT_DEPLOYMENT_TIER=shadow
+  //   • Admin-token gated
+  //   • Hard cap on contracts (defaults 0.01, max 0.1)
+  //   • Hard cap on premium (defaults $25, max $50)
+  //   • Pre-flight refusal if (price × qty) > maxPremiumUsdc
+  //   • Single Bullish API call per invocation — no chain lookup, no
+  //     balance check (cuts rate-limit pressure)
+  //   • IOC self-cancels at venue → no orphan orders
+  //
+  // Body shape:
+  //   {
+  //     symbol: "BTC-USDC-20260522-90000-C",   // explicit, user-supplied
+  //     limitPriceUsdcPerBtc: 50,              // limit price for the BUY
+  //     contractsBtc: 0.01,                    // size (0.01-0.1 max)
+  //     maxPremiumUsdc: 25                     // hard cap (default $25)
+  //   }
+  app.post("/volume-cover/admin/bullish-test-buy", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    const symbol = String(body.symbol ?? "").trim();
+    const limitPriceUsdcPerBtc = Number(body.limitPriceUsdcPerBtc);
+    const contractsBtc = Number(body.contractsBtc);
+    const maxPremiumUsdc = Number(body.maxPremiumUsdc ?? 25);
+
+    // Validate required fields
+    if (!symbol) return reply.code(400).send({ error: "missing_symbol" });
+    if (!Number.isFinite(limitPriceUsdcPerBtc) || limitPriceUsdcPerBtc <= 0) {
+      return reply.code(400).send({ error: "invalid_limitPriceUsdcPerBtc" });
+    }
+    if (!Number.isFinite(contractsBtc) || contractsBtc <= 0) {
+      return reply.code(400).send({ error: "invalid_contractsBtc" });
+    }
+
+    // Symbol shape sanity check
+    if (!/^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol)) {
+      return reply.code(400).send({
+        error: "invalid_symbol_format",
+        expected: "BTC-USDC-YYYYMMDD-STRIKE-(C|P)",
+        provided: symbol
+      });
+    }
+
+    // Hard caps — defense against fat-finger
+    if (contractsBtc > 0.1) {
+      return reply.code(400).send({
+        error: "contracts_exceed_safety_cap",
+        provided: contractsBtc,
+        maxAllowed: 0.1
+      });
+    }
+    const cappedMaxPremium = Math.min(maxPremiumUsdc, 50);
+
+    // Pre-flight premium check: limit price × size <= max premium
+    const expectedPremiumUsdc = limitPriceUsdcPerBtc * contractsBtc;
+    if (expectedPremiumUsdc > cappedMaxPremium) {
+      return reply.code(400).send({
+        error: "expected_premium_exceeds_cap",
+        expectedPremiumUsdc: Number(expectedPremiumUsdc.toFixed(2)),
+        cappedMaxPremium,
+        message: "lower limitPriceUsdcPerBtc or contractsBtc, or raise maxPremiumUsdc (≤ $50)"
+      });
+    }
+
+    // Bullish prices options in BTC per contract, not USDC. We need to
+    // convert. Each contract is 1 BTC of underlying; the price field
+    // on Bullish for an option is BTC per contract.
+    //
+    //   priceBtcPerContract = limitPriceUsdcPerBtc / spot_usdc
+    //
+    // We don't fetch fresh spot here to avoid an extra API call that
+    // could trip rate limits — the caller is expected to have computed
+    // limitPriceUsdcPerBtc with current spot in mind.
+    //
+    // Bullish price precision for options = 8 decimals (BTC); we'll
+    // pass the quantity at 2 decimals (option contracts).
+    //
+    // Actually inspection of placeBullishOption shows for options the
+    // price is sent in USDC-per-BTC at 4 decimals (the wire format
+    // Bullish accepts). We'll match that here.
+    const formattedPrice = limitPriceUsdcPerBtc.toFixed(4);
+    const formattedQty = Math.floor(contractsBtc * 100) / 100;
+    const formattedQtyStr = formattedQty.toFixed(2);
+
+    if (formattedQty <= 0) {
+      return reply.code(400).send({
+        error: "qty_below_min",
+        provided: contractsBtc,
+        rounded: formattedQty,
+        message: "Bullish option min qty is 0.01 BTC"
+      });
+    }
+
+    // Bullish requires numeric clientOrderId (error 6104 INVALID_CLIENT_ORDER_ID
+    // on non-numeric strings). Match the production VC adapter format.
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+
+    // Single Bullish API call: createSpotLimitOrder. The client's
+    // V3CreateOrder path passes allowMargin from config — we use the
+    // current PILOT_BULLISH_ALLOW_MARGIN env value (set to false on
+    // shadow when testing limited-risk account status).
+    // Reuse a single JWT session across admin endpoints to avoid
+    // MAX_SESSION_COUNT_REACHED (errorCode 8400).
+    const client = await getBullishAdminClient();
+
+    const requestPayload = {
+      symbol,
+      side: "BUY" as const,
+      price: formattedPrice,
+      quantity: formattedQtyStr,
+      clientOrderId
+    };
+
+    console.log(
+      `[bullish-test-buy] SUBMITTING symbol=${symbol} qty=${formattedQtyStr} ` +
+        `price=${formattedPrice} expectedPremium=$${expectedPremiumUsdc.toFixed(2)} ` +
+        `allowMargin=${pilotConfig.bullish.allowMargin}`
+    );
+
+    const startMs = Date.now();
+    let rawResponse: unknown = null;
+    let bullishError: string | null = null;
+    let bullishHttpStatus: number | null = null;
+    let bullishStatusReasonCode: number | null = null;
+    let bullishErrorCode: string | null = null;
+
+    try {
+      rawResponse = await client.createSpotLimitOrder(requestPayload);
+    } catch (err: any) {
+      bullishError = err?.message ?? "unknown";
+      // Best-effort: parse "bullish_http_NNN:{...}" pattern from the
+      // Bullish client's error message format.
+      const match = String(bullishError).match(/bullish_http_(\d+):(.*)$/s);
+      if (match) {
+        bullishHttpStatus = Number(match[1]);
+        try {
+          const errBody = JSON.parse(match[2]);
+          bullishErrorCode = errBody.errorCodeName ?? errBody.errorCode ?? null;
+          bullishStatusReasonCode = errBody.statusReasonCode ?? null;
+        } catch {
+          // Leave parsed fields null
+        }
+      }
+    }
+
+    const elapsedMs = Date.now() - startMs;
+
+    // Try to extract status reason code from response shape too (for
+    // accepted-but-rejected cases where order placed but failed at
+    // exchange-level checks).
+    if (rawResponse && typeof rawResponse === "object") {
+      const r = rawResponse as Record<string, any>;
+      bullishStatusReasonCode =
+        bullishStatusReasonCode ??
+        r.statusReasonCode ??
+        r.data?.statusReasonCode ??
+        null;
+    }
+
+    // 2026-05-21: Bullish's REST POST /orders is async — "Command
+    // acknowledged" only confirms the create command was queued, NOT
+    // that the order actually filled or even passed risk checks at
+    // matching. Chain an order-status query to get the truth.
+    let orderStatusFinal: any = null;
+    let orderStatusError: string | null = null;
+    const orderId = (rawResponse as any)?.orderId
+      || (rawResponse as any)?.data?.orderId;
+    if (!bullishError && orderId) {
+      try {
+        // Brief settle wait — Bullish typically resolves within 1s
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        orderStatusFinal = await client.getOrderStatus(String(orderId));
+      } catch (statusErr: any) {
+        orderStatusError = statusErr?.message ?? "unknown";
+      }
+    }
+
+    // Re-derive truth from order status if available, since the
+    // synchronous create response is misleading.
+    const finalStatus = orderStatusFinal?.status ?? "UNKNOWN";
+    const finalFillPrice = orderStatusFinal?.fillPrice ?? 0;
+    const finalFillQty = orderStatusFinal?.fillQuantity ?? 0;
+    const finalReasonCode =
+      (orderStatusFinal?.raw as any)?.statusReasonCode ?? null;
+    const finalReason = (orderStatusFinal?.raw as any)?.statusReason ?? null;
+    const finalIs3003 =
+      String(finalReasonCode || "") === "3003" ||
+      bullishStatusReasonCode === 3003 ||
+      bullishErrorCode === "3003";
+    // 2026-05-22: Bullish IOC orders that fully fill go to terminal status
+    // "CLOSED" with reasonCode 6002 (Executed) — they do NOT sit in
+    // "FILLED" status because there is no resting order remaining. The
+    // previous check (finalStatus === "FILLED") rejected every successful
+    // IOC fill as a failure, masking real-money trades as "ok: false".
+    // Authoritative truth: finalFillQty > 0 with no 3003/error AND not
+    // explicitly Expired/Rejected. Bullish reason codes:
+    //   6002 = Executed (success — full or partial fill, IOC terminal)
+    //   6004 = Expired  (no fill at price — failure)
+    //   3003 = margin rejection (failure)
+    const reasonStr = String(finalReason ?? "").toLowerCase();
+    const wasExpired = reasonStr === "expired" || String(finalReasonCode || "") === "6004";
+    const wasRejected =
+      reasonStr === "rejected" || finalStatus === "REJECTED" || finalIs3003;
+    const trulyFilled =
+      Number(finalFillQty) > 0 && !wasExpired && !wasRejected;
+    const success = !bullishError && trulyFilled;
+
+    return reply.send({
+      ok: success,
+      generatedAtIso: new Date().toISOString(),
+      elapsedMs,
+      config: {
+        allowMargin: pilotConfig.bullish.allowMargin,
+        bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("api.exchange.bullish.com"),
+        restBaseUrl: pilotConfig.bullish.restBaseUrl,
+        orderTif: pilotConfig.bullish.orderTif,
+        tradingAccountId: pilotConfig.bullish.tradingAccountId
+      },
+      request: {
+        ...requestPayload,
+        expectedPremiumUsdc: Number(expectedPremiumUsdc.toFixed(2)),
+        cap: cappedMaxPremium
+      },
+      result: {
+        rawResponse,
+        bullishError,
+        bullishHttpStatus,
+        bullishErrorCode,
+        bullishStatusReasonCode,
+        is3003: finalIs3003,
+        // Authoritative — chained from order-status query
+        orderId,
+        finalStatus,
+        finalFillPrice,
+        finalFillQty,
+        finalReasonCode,
+        finalReason,
+        wasExpired,
+        wasRejected,
+        orderStatusError
+      }
+    });
+  });
+
+  // 2026-05-21 — SHADOW-ONLY Bullish single-symbol order book inspector.
+  //
+  // Returns the top of the book (and depth if requested) for a single
+  // symbol. Use to diagnose whether the book has bids/asks before
+  // attempting test orders, and to verify tick size from the actual
+  // resting prices.
+  //
+  // 1 Bullish API call per invocation. No auth needed in the venue
+  // call itself (orderbook is a public REST endpoint), but this admin
+  // route is gated on shadow + admin token like everything else.
+  app.get<{ Querystring: { symbol?: string; depth?: string } }>(
+    "/volume-cover/admin/bullish-orderbook",
+    async (req, reply) => {
+      if (!isShadowTier()) {
+        return reply.code(403).send({
+          error: "forbidden",
+          reason: "endpoint_requires_shadow_tier"
+        });
+      }
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+      const symbol = String(req.query.symbol ?? "").trim();
+      if (!symbol) return reply.code(400).send({ error: "missing_symbol" });
+      const depth = Math.max(1, Math.min(10, Number(req.query.depth ?? 5)));
+
+      const client = await getBullishAdminClient();
+      const startMs = Date.now();
+      try {
+        const book = await client.getHybridOrderBook(symbol);
+        const topBid = book.bids[0] ?? null;
+        const topAsk = book.asks[0] ?? null;
+        const midPrice =
+          topBid && topAsk
+            ? (Number(topBid.price) + Number(topAsk.price)) / 2
+            : null;
+        const spreadPct =
+          topBid && topAsk && midPrice
+            ? ((Number(topAsk.price) - Number(topBid.price)) / midPrice) * 100
+            : null;
+        return reply.send({
+          ok: true,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          symbol,
+          summary: {
+            topBid,
+            topAsk,
+            midPrice,
+            spreadPct: spreadPct !== null ? Number(spreadPct.toFixed(2)) : null,
+            bidLevels: book.bids.length,
+            askLevels: book.asks.length
+          },
+          bids: book.bids.slice(0, depth),
+          asks: book.asks.slice(0, depth)
+        });
+      } catch (err: any) {
+        return reply.code(502).send({
+          ok: false,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          symbol,
+          error: err?.message ?? "unknown"
+        });
+      }
+    }
+  );
+
+  // 2026-05-21 — SHADOW-ONLY Bullish order-status query.
+  //
+  // Returns Bullish's authoritative status for a given orderId. Use to
+  // determine whether an "Command acknowledged" order actually filled,
+  // expired, or was rejected at the matching engine.
+  //
+  // Bullish's REST POST /orders is async — the synchronous response
+  // only confirms the create command was accepted into their queue.
+  // Real status (FILLED / EXPIRED / REJECTED with reason) requires a
+  // GET on the order.
+  //
+  // GET /volume-cover/admin/bullish-order-status/:orderId
+  app.get<{ Params: { orderId: string } }>(
+    "/volume-cover/admin/bullish-order-status/:orderId",
+    async (req, reply) => {
+      if (!isShadowTier()) {
+        return reply.code(403).send({
+          error: "forbidden",
+          reason: "endpoint_requires_shadow_tier"
+        });
+      }
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+      const orderId = String(req.params.orderId || "").trim();
+      if (!orderId || !/^\d+$/.test(orderId)) {
+        return reply.code(400).send({
+          error: "invalid_orderId",
+          message: "orderId must be a numeric string"
+        });
+      }
+
+      const client = await getBullishAdminClient();
+
+      const startMs = Date.now();
+      try {
+        const status = await client.getOrderStatus(orderId);
+        return reply.send({
+          ok: true,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          orderId,
+          status: status.status,
+          fillPrice: status.fillPrice,
+          fillQuantity: status.fillQuantity,
+          fees: status.fees,
+          raw: status.raw
+        });
+      } catch (err: any) {
+        return reply.code(502).send({
+          ok: false,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          orderId,
+          error: err?.message ?? "unknown"
+        });
+      }
+    }
+  );
+
+  // 2026-05-21 — SHADOW-ONLY Bullish asset-balances snapshot.
+  //
+  // Returns balance per asset (USDC, BTC, etc.) on the configured
+  // trading account, fetched via the private WebSocket assetAccounts
+  // topic. Use to verify USDC is actually parked on the correct
+  // trading account before placing orders.
+  //
+  // GET /volume-cover/admin/bullish-asset-balances
+  app.get("/volume-cover/admin/bullish-asset-balances", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const client = await getBullishAdminClient();
+
+    const startMs = Date.now();
+    try {
+      const balances = await client.getAssetBalances({ timeoutMs: 8000 });
+      return reply.send({
+        ok: true,
+        generatedAtIso: new Date().toISOString(),
+        elapsedMs: Date.now() - startMs,
+        tradingAccountId: pilotConfig.bullish.tradingAccountId,
+        balances: balances.map((b) => ({
+          asset: b.assetSymbol,
+          available: b.availableQuantity,
+          locked: b.lockedQuantity,
+          borrowed: b.borrowedQuantity
+        }))
+      });
+    } catch (err: any) {
+      return reply.code(502).send({
+        ok: false,
+        generatedAtIso: new Date().toISOString(),
+        elapsedMs: Date.now() - startMs,
+        tradingAccountId: pilotConfig.bullish.tradingAccountId,
+        error: err?.message ?? "unknown"
+      });
+    }
+  });
+
+  // 2026-05-21 — SHADOW-ONLY Bullish trading-accounts lister.
+  //
+  // Returns every trading account visible to the authenticated user
+  // (the JWT we get from loginWithEcdsa). Useful for finding the
+  // correct account ID when Bullish provisioned multiple sub-accounts
+  // (spot, options, margin) and we need to know which to use for
+  // option orders.
+  //
+  // Bypasses the config-side filter that getTradingAccounts() applies,
+  // so we see the full list regardless of what's in
+  // PILOT_BULLISH_TRADING_ACCOUNT_ID.
+  app.get("/volume-cover/admin/bullish-list-accounts", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    // Build a client config that explicitly clears tradingAccountId
+    // so the lister returns ALL accounts (the default getTradingAccounts
+    // filters down to the configured one). Use shared wide-singleton to
+    // avoid burning another Bullish session for diagnostic-only listing.
+    const { getSharedWideBullishClient } = await import("../pilot/bullishClient");
+    const client = getSharedWideBullishClient(pilotConfig.bullish);
+
+    const startMs = Date.now();
+    let raw: unknown = null;
+    let errorMessage: string | null = null;
+
+    try {
+      raw = await client.getTradingAccounts();
+    } catch (err: any) {
+      errorMessage = err?.message ?? "unknown";
+    }
+
+    const elapsedMs = Date.now() - startMs;
+
+    // Normalize the response to a flat list of {tradingAccountId, ...}
+    let accounts: Array<Record<string, unknown>> | null = null;
+    if (raw && typeof raw === "object") {
+      const data = (raw as any).data;
+      if (Array.isArray(data)) accounts = data;
+      else if (Array.isArray(raw)) accounts = raw as any;
+    }
+
+    return reply.send({
+      ok: errorMessage === null,
+      generatedAtIso: new Date().toISOString(),
+      elapsedMs,
+      authUserId: "(check bullish-key-check endpoint for userId from metadata)",
+      configuredTradingAccountId: pilotConfig.bullish.tradingAccountId || null,
+      accounts: accounts
+        ? accounts.map((a) => ({
+            tradingAccountId: a.tradingAccountId ?? null,
+            label: a.label ?? a.name ?? a.accountType ?? null,
+            type: a.type ?? a.tradingAccountType ?? null,
+            isPrimary: a.isPrimary ?? null,
+            // Don't return balances here — that's a separate concern
+            // and can be fetched explicitly via /admin/venue-balances
+          }))
+        : null,
+      raw,
+      error: errorMessage
+    });
+  });
+
+  // 2026-05-21 — SHADOW-ONLY Bullish test-sell endpoint.
+  //
+  // Mirror of bullish-test-buy, but submits a SELL IOC limit order.
+  // Designed for round-trip Phase 1 validation: buy a cheap option,
+  // then sell it back to confirm the close path works on Bullish.
+  //
+  // Trick: we set the limit price LOW (e.g., $0.01/BTC) so IOC SELL
+  // fills at the bid (price improvement), guaranteeing fill if any
+  // bid exists. Conversely, the maxNotionalUsdc cap protects against
+  // wildly-wrong fills (shouldn't happen on a real exchange but worth
+  // belt-and-suspenders).
+  //
+  // SAFETY (mirrors test-buy):
+  //   • 403 unless PILOT_DEPLOYMENT_TIER=shadow
+  //   • Admin-token gated
+  //   • Hard cap on contracts (≤ 0.1)
+  //   • Hard cap on maxNotionalUsdc (≤ $50)
+  //   • Single Bullish API call per invocation
+  //   • IOC self-cancels at venue
+  //
+  // CRITICAL: this endpoint will only be safe if you actually own the
+  // contracts you're trying to sell. Selling without an underlying
+  // position would require margin (PILOT_BULLISH_ALLOW_MARGIN=false
+  // means Bullish should reject; that's the system protecting you).
+  //
+  // Body shape:
+  //   {
+  //     symbol: "BTC-USDC-20260522-80000-C",
+  //     limitPriceUsdcPerBtc: 0.01,          // low — fills at bid
+  //     contractsBtc: 0.01,
+  //     maxNotionalUsdc: 25                  // hard cap on assumed proceeds
+  //   }
+  app.post("/volume-cover/admin/bullish-test-sell", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    const symbol = String(body.symbol ?? "").trim();
+    const limitPriceUsdcPerBtc = Number(body.limitPriceUsdcPerBtc);
+    const contractsBtc = Number(body.contractsBtc);
+    const maxNotionalUsdc = Number(body.maxNotionalUsdc ?? 25);
+
+    if (!symbol) return reply.code(400).send({ error: "missing_symbol" });
+    if (!Number.isFinite(limitPriceUsdcPerBtc) || limitPriceUsdcPerBtc <= 0) {
+      return reply.code(400).send({ error: "invalid_limitPriceUsdcPerBtc" });
+    }
+    if (!Number.isFinite(contractsBtc) || contractsBtc <= 0) {
+      return reply.code(400).send({ error: "invalid_contractsBtc" });
+    }
+
+    if (!/^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol)) {
+      return reply.code(400).send({
+        error: "invalid_symbol_format",
+        expected: "BTC-USDC-YYYYMMDD-STRIKE-(C|P)",
+        provided: symbol
+      });
+    }
+
+    if (contractsBtc > 0.1) {
+      return reply.code(400).send({
+        error: "contracts_exceed_safety_cap",
+        provided: contractsBtc,
+        maxAllowed: 0.1
+      });
+    }
+    const cappedMaxNotional = Math.min(maxNotionalUsdc, 50);
+
+    const formattedPrice = limitPriceUsdcPerBtc.toFixed(4);
+    const formattedQty = Math.floor(contractsBtc * 100) / 100;
+    const formattedQtyStr = formattedQty.toFixed(2);
+
+    if (formattedQty <= 0) {
+      return reply.code(400).send({
+        error: "qty_below_min",
+        provided: contractsBtc,
+        rounded: formattedQty,
+        message: "Bullish option min qty is 0.01 BTC"
+      });
+    }
+
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+
+    const client = await getBullishAdminClient();
+
+    const requestPayload = {
+      symbol,
+      side: "SELL" as const,
+      price: formattedPrice,
+      quantity: formattedQtyStr,
+      clientOrderId
+    };
+
+    console.log(
+      `[bullish-test-sell] SUBMITTING symbol=${symbol} qty=${formattedQtyStr} ` +
+        `price=${formattedPrice} maxNotional=$${cappedMaxNotional} ` +
+        `allowMargin=${pilotConfig.bullish.allowMargin}`
+    );
+
+    const startMs = Date.now();
+    let rawResponse: unknown = null;
+    let bullishError: string | null = null;
+    let bullishHttpStatus: number | null = null;
+    let bullishStatusReasonCode: number | null = null;
+    let bullishErrorCode: string | null = null;
+
+    try {
+      rawResponse = await client.createSpotLimitOrder(requestPayload);
+    } catch (err: any) {
+      bullishError = err?.message ?? "unknown";
+      const match = String(bullishError).match(/bullish_http_(\d+):(.*)$/s);
+      if (match) {
+        bullishHttpStatus = Number(match[1]);
+        try {
+          const errBody = JSON.parse(match[2]);
+          bullishErrorCode = errBody.errorCodeName ?? errBody.errorCode ?? null;
+          bullishStatusReasonCode = errBody.statusReasonCode ?? null;
+        } catch {
+          // Leave parsed fields null
+        }
+      }
+    }
+
+    const elapsedMs = Date.now() - startMs;
+
+    if (rawResponse && typeof rawResponse === "object") {
+      const r = rawResponse as Record<string, any>;
+      bullishStatusReasonCode =
+        bullishStatusReasonCode ??
+        r.statusReasonCode ??
+        r.data?.statusReasonCode ??
+        null;
+    }
+
+    let orderStatusFinal: any = null;
+    let orderStatusError: string | null = null;
+    const orderId = (rawResponse as any)?.orderId
+      || (rawResponse as any)?.data?.orderId;
+    if (!bullishError && orderId) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        orderStatusFinal = await client.getOrderStatus(String(orderId));
+      } catch (statusErr: any) {
+        orderStatusError = statusErr?.message ?? "unknown";
+      }
+    }
+
+    const finalStatus = orderStatusFinal?.status ?? "UNKNOWN";
+    const finalFillPrice = orderStatusFinal?.fillPrice ?? 0;
+    const finalFillQty = orderStatusFinal?.fillQuantity ?? 0;
+    const finalReasonCode =
+      (orderStatusFinal?.raw as any)?.statusReasonCode ?? null;
+    const finalReason = (orderStatusFinal?.raw as any)?.statusReason ?? null;
+    // 2026-05-22: see bullish-test-buy for the rationale. IOC SELL that
+    // fully fills returns status=CLOSED + reason=Executed (6002); the
+    // previous status==="FILLED" check incorrectly reported success=false
+    // on every successful sale.
+    const reasonStrSell = String(finalReason ?? "").toLowerCase();
+    const wasExpired = reasonStrSell === "expired" || String(finalReasonCode || "") === "6004";
+    const wasRejected = reasonStrSell === "rejected" || finalStatus === "REJECTED";
+    const trulyFilled =
+      Number(finalFillQty) > 0 && !wasExpired && !wasRejected;
+    const success = !bullishError && trulyFilled;
+
+    return reply.send({
+      ok: success,
+      generatedAtIso: new Date().toISOString(),
+      elapsedMs,
+      config: {
+        allowMargin: pilotConfig.bullish.allowMargin,
+        bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("api.exchange.bullish.com"),
+        restBaseUrl: pilotConfig.bullish.restBaseUrl,
+        orderTif: pilotConfig.bullish.orderTif,
+        tradingAccountId: pilotConfig.bullish.tradingAccountId
+      },
+      request: {
+        ...requestPayload,
+        cap: cappedMaxNotional
+      },
+      result: {
+        rawResponse,
+        bullishError,
+        bullishHttpStatus,
+        bullishErrorCode,
+        bullishStatusReasonCode,
+        orderId,
+        finalStatus,
+        finalFillPrice,
+        finalFillQty,
+        finalReasonCode,
+        finalReason,
+        wasExpired,
+        wasRejected,
+        orderStatusError
+      }
+    });
+  });
+
   app.post("/volume-cover/admin/bullish-login-test", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
@@ -1356,12 +2368,12 @@ export const registerVolumeCoverRoutes = async (
       return reply.code(503).send({ error: "spot_invalid", spot });
     }
 
-    // Pull markets from Bullish (60s cache inside client).
-    const { BullishTradingClient } = await import("../pilot/bullish");
-    const client = new BullishTradingClient(pilotConfig.bullish);
+    // Pull markets from Bullish via shared singleton (built-in 120s cache).
+    const { getSharedBullishClient } = await import("../pilot/bullishClient");
+    const client = getSharedBullishClient(pilotConfig.bullish);
     let markets: any[] = [];
     try {
-      markets = await client.getMarkets({ cacheTtlMs: 60_000 });
+      markets = await client.getMarkets({ cacheTtlMs: 120_000 });
     } catch (err) {
       return reply.code(502).send({
         error: "bullish_markets_fetch_failed",
@@ -1532,8 +2544,8 @@ export const registerVolumeCoverRoutes = async (
     if (!orderId) {
       return reply.code(400).send({ error: "missing_orderId_param" });
     }
-    const { BullishTradingClient } = await import("../pilot/bullish");
-    const client = new BullishTradingClient(pilotConfig.bullish);
+    const { getSharedBullishClient } = await import("../pilot/bullishClient");
+    const client = getSharedBullishClient(pilotConfig.bullish);
     try {
       const status = await client.getOrderStatus(orderId);
       return reply.send({
@@ -2992,6 +4004,103 @@ export const registerVolumeCoverRoutes = async (
     } catch (err) {
       return reply.code(500).send({ error: "close_failed", message: (err as Error).message });
     }
+  });
+
+  /**
+   * 2026-05-22: Archive a position. Adds metadata.archived=true so the
+   * position is excluded from operational dashboards (active-positions-
+   * detail, foxify daily report) and from rolling salvage statistics
+   * (Guard A 7d-loss kill, Guard B salvage throttle). DB row + ledger
+   * entries + hedge legs are preserved for audit.
+   *
+   * Use cases:
+   *   - Internal operator test trades that shouldn't pollute production
+   *     telemetry (e.g. the May 18 Bullish phantom-leg validation case)
+   *   - Known-failure-class events where the loss is real but the
+   *     salvage denominator is not representative of normal operations
+   *
+   * Guards:
+   *   - 404 if position not found
+   *   - 409 if any hedge leg is still status='open' at the venue.
+   *     Position must be fully wound down (sold/failed/expired) before
+   *     archive. This prevents accidentally hiding a position that
+   *     still has live venue exposure from the operational view.
+   *
+   * Usage:
+   *   POST /volume-cover/admin/positions/:id/archive
+   *   body: { "reason": "may18_bullish_test_trade_no_business_value" }
+   */
+  app.post("/volume-cover/admin/positions/:id/archive", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const id = (req.params as any).id as string;
+    const rawReason = (req.body as any)?.reason;
+    const reason = typeof rawReason === "string" && rawReason.trim().length > 0
+      ? rawReason.trim().slice(0, 256)
+      : null;
+    if (!reason) {
+      return reply.code(400).send({
+        error: "missing_reason",
+        message: "Archive requires a non-empty `reason` (max 256 chars) so the audit trail captures why the position was excluded from telemetry."
+      });
+    }
+
+    const position = await getPosition(pool, id);
+    if (!position) return reply.code(404).send({ error: "position_not_found" });
+
+    if (((position.metadata as any)?.archived as boolean | undefined) === true) {
+      return reply.send({
+        positionId: id,
+        status: position.status,
+        alreadyArchived: true,
+        archiveMetadata: {
+          archived: true,
+          archive_reason: (position.metadata as any)?.archive_reason ?? null,
+          archived_at: (position.metadata as any)?.archived_at ?? null
+        }
+      });
+    }
+
+    const legs = await listHedgeLegsForPosition(pool, id);
+    const openLegs = legs.filter((l) => l.status === "open");
+    if (openLegs.length > 0) {
+      return reply.code(409).send({
+        error: "open_legs_present",
+        message:
+          `Refusing to archive: ${openLegs.length} hedge leg(s) still status='open'. ` +
+          `Wind down all legs (sell, expire, or mark-failed) before archiving so the ` +
+          `position never silently hides live venue exposure from the ops view.`,
+        openLegIds: openLegs.map((l) => l.id)
+      });
+    }
+
+    const tokenHeader = String(
+      (req.headers as any)["x-admin-token"] ?? (req.headers as any)["X-Admin-Token"] ?? ""
+    );
+    const updated = await markPositionArchived(pool, {
+      id,
+      reason,
+      archivedByToken: tokenHeader || undefined
+    });
+    if (!updated) {
+      return reply.code(500).send({ error: "archive_failed" });
+    }
+    return reply.send({
+      positionId: id,
+      status: updated.status,
+      archived: true,
+      archiveMetadata: {
+        archived: true,
+        archive_reason: reason,
+        archived_at: (updated.metadata as any)?.archived_at ?? new Date().toISOString()
+      },
+      excludedFrom: [
+        "active-positions-detail",
+        "foxify-daily-report (triggeredToday count)",
+        "rolling-5-trigger salvage pct (Guard B)",
+        "rolling-24h trigger count",
+        "rolling-7d Atticus loss (Guard A kill switch)"
+      ]
+    });
   });
 
   // Pair-event audit log endpoints for ops monitoring.

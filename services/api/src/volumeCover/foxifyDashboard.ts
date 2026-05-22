@@ -38,6 +38,7 @@ import {
   getPosition,
   listActivePositions,
   listCells,
+  listLiveFoxifyPositions,
   listRecentPairEvents
 } from "./volumeCoverDb";
 import { closePosition } from "./positionLifecycle";
@@ -189,6 +190,17 @@ const projectPositionForFoxify = (p: {
       return v;
     }
   };
+  // 2026-05-22 fix: premiumPaidUsdc was previously sent as the per-day RATE
+  // (p.dailyPremiumUsdc), which Foxify reasonably interpreted as already-paid
+  // (rate × 1 day) → "no premium owed". Real meaning is cumulative accrued
+  // since open. Hourly precision so it updates smoothly. The daily rate is
+  // still exposed via the new dailyRateUsdc field for explicit display.
+  const accruedSinceOpen = premiumAccruedSinceOpenUsdc({
+    openedAtIso: iso(p.openedAt) ?? p.openedAt,
+    closedAtIso: iso(p.closedAt),
+    dailyRateUsdc: p.dailyPremiumUsdc
+  });
+
   return {
     id: p.id,
     cellId: p.cellId,
@@ -199,7 +211,13 @@ const projectPositionForFoxify = (p: {
     pairEntryBtcPrice: p.pairEntryBtcPrice,
     triggerHighBtc: p.triggerHighBtc,
     triggerLowBtc: p.triggerLowBtc,
-    premiumPaidUsdc: p.dailyPremiumUsdc,
+    // ─── Premium (2026-05-22 fix) ───
+    // premiumPaidUsdc kept for backward-compat with existing Foxify
+    // dashboard bindings; value semantics now corrected to be cumulative
+    // accrued since open (hourly precision). New explicit fields below.
+    premiumPaidUsdc: Number(accruedSinceOpen.toFixed(2)),
+    premiumAccruedUsdc: Number(accruedSinceOpen.toFixed(2)),
+    dailyRateUsdc: p.dailyPremiumUsdc,
     payoutUsdc: p.payoutUsdc,
     openedAtIso: iso(p.openedAt) ?? p.openedAt,
     triggeredAtIso: iso(p.triggeredAt),
@@ -241,6 +259,63 @@ const endOfTodayUtcIso = (): string => {
   d.setUTCHours(0, 0, 0, 0);
   d.setUTCDate(d.getUTCDate() + 1);
   return d.toISOString();
+};
+
+// ────────────────────── Premium accrual ──────────────────────
+//
+// 2026-05-22: dashboard previously sent dailyPremiumUsdc as `premiumPaidUsdc`
+// (per-day RATE shown in a field that implies a CUMULATIVE total). Foxify's
+// frontend rightly concluded "no premium owed" since the rate looked like
+// already-paid. Fix: compute hourly-precision accrued premium for both the
+// per-position projection and the /foxify/today aggregate counter.
+//
+// Hourly precision (not the round-up-to-whole-days rule the weekly settlement
+// reconciler uses) is correct here because this is a DISPLAY value — it must
+// update smoothly as time passes so Foxify can see real-time accrual.
+// Settlement billing (weeklyReconciler.ts:144) still uses the per-day
+// round-up rule and remains the authoritative billable amount.
+//
+// Inputs are ISO strings (or millisecond timestamps) and a daily rate.
+// Returns USDC accrued in the intersection of [openedAt, closedAt|now]
+// with [windowStart, windowEnd). Zero if no overlap.
+export const premiumAccruedInWindowUsdc = (params: {
+  openedAtIso: string;
+  closedAtIso: string | null;
+  windowStartIso: string;
+  windowEndIso: string;
+  dailyRateUsdc: number;
+  nowMs?: number;
+}): number => {
+  const openedMs = new Date(params.openedAtIso).getTime();
+  const closedMs = params.closedAtIso
+    ? new Date(params.closedAtIso).getTime()
+    : (params.nowMs ?? Date.now());
+  const winStartMs = new Date(params.windowStartIso).getTime();
+  const winEndMs = new Date(params.windowEndIso).getTime();
+  const overlapStart = Math.max(openedMs, winStartMs);
+  const overlapEnd = Math.min(closedMs, winEndMs);
+  const overlapMs = overlapEnd - overlapStart;
+  if (overlapMs <= 0 || params.dailyRateUsdc <= 0) return 0;
+  const overlapHours = overlapMs / 3_600_000;
+  return (overlapHours / 24) * params.dailyRateUsdc;
+};
+
+// Convenience: cumulative accrued since open (open-ended right side = now)
+const premiumAccruedSinceOpenUsdc = (params: {
+  openedAtIso: string;
+  closedAtIso: string | null;
+  dailyRateUsdc: number;
+  nowMs?: number;
+}): number => {
+  return premiumAccruedInWindowUsdc({
+    openedAtIso: params.openedAtIso,
+    closedAtIso: params.closedAtIso,
+    // Use opened-at as window start and now/closed as end → just hours-active × rate
+    windowStartIso: params.openedAtIso,
+    windowEndIso: params.closedAtIso ?? new Date(params.nowMs ?? Date.now()).toISOString(),
+    dailyRateUsdc: params.dailyRateUsdc,
+    nowMs: params.nowMs
+  });
 };
 
 // ────────────────────── Registration ──────────────────────
@@ -333,12 +408,20 @@ export const registerFoxifyDashboardRoutes = async (
     }
     await logFoxifyAccess(pool, req, true);
 
-    const positions = await listActivePositions(pool);
+    // 2026-05-22 fix: was listActivePositions (status='active' only) which
+    // hid TRIGGERED positions even though they remain on the books
+    // accruing premium until the Foxify pair's scheduled close. Switched
+    // to listLiveFoxifyPositions which returns status IN (active, triggered)
+    // sorted by opened_at. Closed positions remain hidden (correct).
+    const positions = await listLiveFoxifyPositions(pool);
     // Hide admin/operator test positions from Foxify view (see
     // HIDE_ADMIN_TEST_POSITIONS_SQL for the canonical filter rule).
+    // Also hide explicitly-archived positions (metadata.archived=true).
     const foxifyVisible = positions.filter((p) => {
-      const src = (p.metadata as any)?.source;
-      return !src || src !== "admin_test_activate";
+      const meta = (p.metadata as any) ?? {};
+      if (meta.source === "admin_test_activate") return false;
+      if (meta.archived === true) return false;
+      return true;
     });
     return reply.send({
       positions: foxifyVisible.map(projectPositionForFoxify),
@@ -358,25 +441,57 @@ export const registerFoxifyDashboardRoutes = async (
     const dayStart = startOfTodayUtcIso();
     const dayEnd = endOfTodayUtcIso();
 
-    // Activations today
+    // Activations today (count of positions OPENED today). Premium
+    // calculation moved below — previously this query SUM'd daily_premium_usdc
+    // for positions opened today, which is the daily-RATE sum, not actual
+    // accrued. We now compute hourly-precision accrued premium across all
+    // positions whose activity window overlaps today.
     const openedResult = await pool.query(
-      `SELECT COUNT(*)::int AS cnt,
-              COALESCE(SUM(daily_premium_usdc), 0)::numeric AS premium_sum
+      `SELECT COUNT(*)::int AS cnt
        FROM volume_cover_position
        WHERE opened_at >= $1 AND opened_at < $2
          AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`,
       [dayStart, dayEnd]
     );
     const activationsToday = Number(openedResult.rows[0]?.cnt ?? 0);
-    const premiumBilledToday = Number(openedResult.rows[0]?.premium_sum ?? 0);
 
-    // Triggers today + payouts owed
+    // 2026-05-22 fix: premium accrued IN [dayStart, dayEnd) across all
+    // positions with overlapping activity. Includes positions opened
+    // BEFORE today that are still alive (active or triggered, since both
+    // accrue until pair-close), and positions opened today regardless of
+    // whether they've since closed/triggered.
+    const accrualResult = await pool.query(
+      `SELECT id, opened_at, closed_at, daily_premium_usdc
+       FROM volume_cover_position
+       WHERE opened_at < $2
+         AND (closed_at IS NULL OR closed_at >= $1)
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
+         AND COALESCE((metadata->>'archived')::boolean, false) = false`,
+      [dayStart, dayEnd]
+    );
+    let premiumBilledToday = 0;
+    for (const row of accrualResult.rows) {
+      premiumBilledToday += premiumAccruedInWindowUsdc({
+        openedAtIso: String(row.opened_at),
+        closedAtIso: row.closed_at ? String(row.closed_at) : null,
+        windowStartIso: dayStart,
+        windowEndIso: dayEnd,
+        dailyRateUsdc: Number(row.daily_premium_usdc)
+      });
+    }
+
+    // Triggers today + payouts owed.
+    // Excludes both admin-test positions (HIDE_ADMIN_TEST_POSITIONS_SQL)
+    // and explicitly-archived positions (metadata.archived=true). The
+    // two filters serve different purposes and are AND'd together so
+    // either one alone is sufficient to hide a position from this view.
     const triggeredResult = await pool.query(
       `SELECT COUNT(*)::int AS cnt,
               COALESCE(SUM(payout_usdc), 0)::numeric AS payout_sum
        FROM volume_cover_position
        WHERE triggered_at >= $1 AND triggered_at < $2
-         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`,
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
+         AND COALESCE((metadata->>'archived')::boolean, false) = false`,
       [dayStart, dayEnd]
     );
     const triggeredToday = Number(triggeredResult.rows[0]?.cnt ?? 0);

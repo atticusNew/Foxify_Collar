@@ -32,6 +32,8 @@ import {
   listRetainedHedgeLegs,
   markHedgeLegSold,
   updateHedgeLegTpState,
+  incrementHedgeLegTpDeferCount,
+  resetHedgeLegTpDeferCount,
   finalizeSalvageProceedsForPosition,
   type HedgeLegRow,
   type RetainedRole
@@ -81,6 +83,40 @@ export type HedgeManagerConfig = {
   riskFreeRate: number;
   /** Default IV when venue IV cache unavailable. */
   fallbackIv: number;
+
+  // ─── 2026-05-21: TP slippage floor (Phase 1 hardening) ───
+  /**
+   * Master enable. When false (default) the manager uses the legacy
+   * market-sell path for every rule firing — zero behavior change.
+   * Flip to true on shadow first; promote to live after 24-48h soak.
+   */
+  slippageFloorEnabled: boolean;
+  /**
+   * Layer 1 tolerance: accept proceeds as low as
+   * (BS-implied current value) × (1 - slippageBsTolerance).
+   * Default 0.15 (i.e. up to 15% below BS mid is acceptable).
+   */
+  slippageBsTolerance: number;
+  /**
+   * Comma-separated list of rule prefixes that go through the floor
+   * (Layer 1, limit IOC). All other firings fall straight through to
+   * a market sell. Emergency rules (1 time-decay, 7 loser, 9 stale,
+   * 12 hard-floor, W1 stub-timecap) MUST NOT be in this list — those
+   * are designed to exit even at bad prices.
+   */
+  slippageDiscretionaryRules: ReadonlyArray<string>;
+  /**
+   * After this many consecutive deferrals on the same leg, fall
+   * through to a market sell on the next firing. Default 3 ticks
+   * (~3 minutes at 60s tick). Resets to 0 on any successful fill.
+   */
+  slippageMaxDefers: number;
+  /**
+   * Venues for which the manager is allowed to send limit IOC sells.
+   * Bullish/FalconX adapters do not yet honor limit_ioc, so by default
+   * only deribit is enabled. Override via VC_TP_SLIPPAGE_VENUES.
+   */
+  slippageEnabledVenues: ReadonlyArray<string>;
 };
 
 const DEFAULTS: HedgeManagerConfig = {
@@ -108,7 +144,13 @@ const DEFAULTS: HedgeManagerConfig = {
   // markets. 65% is panic-only and inflates OTM leg values 2-5x.
   // Override via VC_HM_FALLBACK_IV; production should set explicitly
   // and / or wire a live IV source via spotIvSource.
-  fallbackIv: 0.45
+  fallbackIv: 0.45,
+  // ─── 2026-05-21: TP slippage floor defaults ───
+  slippageFloorEnabled: false,
+  slippageBsTolerance: 0.15,
+  slippageDiscretionaryRules: ["5_trail_retrace", "6_theta_vs_momentum", "10_near_atm", "11_vol_spike"],
+  slippageMaxDefers: 3,
+  slippageEnabledVenues: ["deribit"]
 };
 
 const readConfig = (): HedgeManagerConfig => {
@@ -145,6 +187,23 @@ const readConfig = (): HedgeManagerConfig => {
   cfg.stubWinnerTimecapHours = num(env.VC_TP_STUB_WINNER_TIMECAP_HOURS, cfg.stubWinnerTimecapHours);
   cfg.riskFreeRate = num(env.VC_HM_RISK_FREE_RATE, cfg.riskFreeRate);
   cfg.fallbackIv = num(env.VC_HM_FALLBACK_IV, cfg.fallbackIv);
+  // ─── 2026-05-21: TP slippage floor envs ───
+  cfg.slippageFloorEnabled =
+    String(env.VC_TP_SLIPPAGE_FLOOR_ENABLED ?? "false").toLowerCase() === "true";
+  cfg.slippageBsTolerance = num(env.VC_TP_SLIPPAGE_BS_TOLERANCE, cfg.slippageBsTolerance);
+  cfg.slippageMaxDefers = num(env.VC_TP_SLIPPAGE_MAX_DEFERS, cfg.slippageMaxDefers);
+  if (env.VC_TP_SLIPPAGE_DISCRETIONARY_RULES) {
+    const list = env.VC_TP_SLIPPAGE_DISCRETIONARY_RULES.split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (list.length > 0) cfg.slippageDiscretionaryRules = list;
+  }
+  if (env.VC_TP_SLIPPAGE_VENUES) {
+    const venues = env.VC_TP_SLIPPAGE_VENUES.split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    if (venues.length > 0) cfg.slippageEnabledVenues = venues;
+  }
   return cfg;
 };
 
@@ -483,7 +542,12 @@ const insertTelemetry = async (
     spotBtc: number | null;
     ivAnnualized: number | null;
     ruleEvaluated: string;
-    action: "sold" | "dry_run" | "held" | "skip" | "error";
+    // 2026-05-21: "unfilled" added — limit IOC didn't cross the floor
+    // (deferral signal). "fallthrough_market" added — defer-cap hit,
+    // we fell through to a market sell instead of trying limit IOC
+    // again. Distinguishing these from generic "sold"/"error" lets ops
+    // count slippage-floor effectiveness in dashboards.
+    action: "sold" | "dry_run" | "held" | "skip" | "error" | "unfilled" | "fallthrough_market";
   }
 ): Promise<void> => {
   try {
@@ -507,6 +571,64 @@ const insertTelemetry = async (
   } catch {
     // Telemetry is best-effort; don't break the manager on insert failure.
   }
+};
+
+/**
+ * 2026-05-21: TP slippage floor — decide if a rule firing should go
+ * through Layer 1 (limit IOC at floor) vs Layer 2 (straight market).
+ *
+ * Returns the order type to use and the floor price (USDC/BTC) when
+ * applicable. Telemetry rule names like "5_trail_retrace" or
+ * "10_near_atm_floor" are matched by prefix against
+ * cfg.slippageDiscretionaryRules so suffix variants ("5_trail_retrace_…")
+ * route through the floor too.
+ *
+ * Layer 2 (market) is selected when ANY of:
+ *   • slippageFloorEnabled = false
+ *   • venue not in slippageEnabledVenues
+ *   • rule not in slippageDiscretionaryRules
+ *   • leg.tpDeferCount >= slippageMaxDefers (cap-hit fallthrough)
+ *   • currentValueUsdc <= 0 (BS says zero — no floor possible)
+ */
+export const decideOrderTypeAndFloor = (params: {
+  cfg: HedgeManagerConfig;
+  ruleName: string;
+  venue: string;
+  leg: HedgeLegRow;
+  currentValueUsdc: number;
+}): {
+  orderType: "market" | "limit_ioc";
+  floorPriceUsdcPerBtc: number | undefined;
+  /** "discretionary" → Layer 1 path; "fallthrough_cap" / "emergency" / "disabled" → Layer 2 path. */
+  reason:
+    | "discretionary"
+    | "fallthrough_cap"
+    | "emergency_rule"
+    | "venue_unsupported"
+    | "feature_disabled"
+    | "zero_value";
+} => {
+  const { cfg, ruleName, venue, leg, currentValueUsdc } = params;
+  if (!cfg.slippageFloorEnabled) {
+    return { orderType: "market", floorPriceUsdcPerBtc: undefined, reason: "feature_disabled" };
+  }
+  if (!cfg.slippageEnabledVenues.includes(venue.toLowerCase())) {
+    return { orderType: "market", floorPriceUsdcPerBtc: undefined, reason: "venue_unsupported" };
+  }
+  const isDiscretionary = cfg.slippageDiscretionaryRules.some((prefix) => ruleName.startsWith(prefix));
+  if (!isDiscretionary) {
+    return { orderType: "market", floorPriceUsdcPerBtc: undefined, reason: "emergency_rule" };
+  }
+  if ((leg.tpDeferCount ?? 0) >= cfg.slippageMaxDefers) {
+    return { orderType: "market", floorPriceUsdcPerBtc: undefined, reason: "fallthrough_cap" };
+  }
+  if (!(currentValueUsdc > 0) || !(leg.contracts > 0)) {
+    return { orderType: "market", floorPriceUsdcPerBtc: undefined, reason: "zero_value" };
+  }
+  // Floor is total USDC value × (1 - tolerance), divided by contracts.
+  const totalFloorUsdc = currentValueUsdc * (1 - cfg.slippageBsTolerance);
+  const floorPriceUsdcPerBtc = Math.max(0, totalFloorUsdc / leg.contracts);
+  return { orderType: "limit_ioc", floorPriceUsdcPerBtc, reason: "discretionary" };
 };
 
 /**
@@ -598,6 +720,11 @@ export const runOneHedgeManagerTick = async (params: {
           `UPDATE volume_cover_hedge_leg SET retained_role = $2 WHERE id = $1`,
           [leg.id, decision.reclassifyTo]
         );
+        // 2026-05-21: reset defer counter on role transition so the
+        // new rule set (near_atm uses rule 10) starts fresh — avoids a
+        // legacy loser-rule defer count forcing a market fallthrough
+        // on the very first near_atm firing.
+        await resetHedgeLegTpDeferCount(params.pool, { legId: leg.id });
       } catch (err) {
         console.warn(`[vc/hedgeManager] reclassify failed for leg ${leg.id}: ${(err as Error).message}`);
       }
@@ -689,6 +816,15 @@ export const runOneHedgeManagerTick = async (params: {
       continue;
     }
 
+    // ── 2026-05-21: TP slippage floor — Layer 1 vs Layer 2 routing ──
+    const floorDecision = decideOrderTypeAndFloor({
+      cfg,
+      ruleName: decision.rule,
+      venue: leg.venue,
+      leg,
+      currentValueUsdc
+    });
+
     // Sell the leg via executor
     try {
       const sellResult = await params.executor.sellOptionLeg({
@@ -696,8 +832,39 @@ export const runOneHedgeManagerTick = async (params: {
         optionKind: leg.optionKind,
         strikeUsdc: leg.strikeUsdc,
         expiryIso: leg.expiryIso,
-        contractsBtc: leg.contracts
+        contractsBtc: leg.contracts,
+        orderType: floorDecision.orderType,
+        floorPriceUsdcPerBtc: floorDecision.floorPriceUsdcPerBtc
       });
+
+      // Layer 1 path — limit IOC didn't cross the book. Defer.
+      if (!sellResult.filled) {
+        const newDeferCount = await incrementHedgeLegTpDeferCount(params.pool, { legId: leg.id });
+        console.log(
+          `[vc/hedgeManager] limit_ioc unfilled — legId=${leg.id} venue=${leg.venue} rule=${decision.rule} ` +
+            `floorUsdcPerBtc=${floorDecision.floorPriceUsdcPerBtc?.toFixed(2)} ` +
+            `deferCount=${newDeferCount}/${cfg.slippageMaxDefers}`
+        );
+        await insertTelemetry(params.pool, {
+          legId: leg.id,
+          positionId: leg.positionId,
+          retainedRole: leg.retainedRole,
+          currentValueUsdc,
+          initialCostUsdc,
+          spotBtc: spotIv.spotBtcUsdc,
+          ivAnnualized: spotIv.ivAnnualized,
+          ruleEvaluated: decision.rule,
+          action: "unfilled"
+        });
+        actions.push({
+          legId: leg.id,
+          rule: decision.rule,
+          action: "held",
+          currentValueUsdc,
+          initialCostUsdc
+        });
+        continue;
+      }
 
       // Slippage observability: compare realized proceeds vs the
       // IV-implied current value the rule fired against. We do NOT
@@ -713,11 +880,20 @@ export const runOneHedgeManagerTick = async (params: {
           console.warn(
             `[VC ALERT] hedge_sell slippage > ${(slippageAlertPct * 100).toFixed(0)}% — ` +
               `legId=${leg.id} venue=${leg.venue} rule=${decision.rule} ` +
+              `orderType=${floorDecision.orderType} floorReason=${floorDecision.reason} ` +
               `expected=${currentValueUsdc.toFixed(2)} ` +
               `actual=${sellResult.totalProceedsUsdc.toFixed(2)} ` +
               `slippagePct=${(slippagePct * 100).toFixed(1)}%`
           );
         }
+      }
+
+      // Reset defer counter on a successful fill so a leg never
+      // carries stale defer counts from a prior firing.
+      try {
+        await resetHedgeLegTpDeferCount(params.pool, { legId: leg.id });
+      } catch {
+        // best-effort
       }
 
       await markHedgeLegSold(params.pool, {
@@ -740,7 +916,12 @@ export const runOneHedgeManagerTick = async (params: {
             retainedRole: leg.retainedRole,
             currentValueUsdc,
             initialCostUsdc,
-            stub: true
+            stub: true,
+            // 2026-05-21: floor metadata for snapshot-collector dashboards.
+            tpFloorOrderType: floorDecision.orderType,
+            tpFloorReason: floorDecision.reason,
+            tpFloorPriceUsdcPerBtc: floorDecision.floorPriceUsdcPerBtc ?? null,
+            tpDeferCountAtSell: leg.tpDeferCount ?? 0
           }
         });
       } catch (err) {
@@ -765,6 +946,12 @@ export const runOneHedgeManagerTick = async (params: {
         );
       }
       legsActioned++;
+      // Distinguish "sold via floor (limit IOC)" vs "sold via fallthrough"
+      // in telemetry so dashboards can count them separately. The
+      // fallthrough_market action means we exhausted the defer budget
+      // and accepted whatever the book gave us.
+      const soldAction: "sold" | "fallthrough_market" =
+        floorDecision.reason === "fallthrough_cap" ? "fallthrough_market" : "sold";
       await insertTelemetry(params.pool, {
         legId: leg.id,
         positionId: leg.positionId,
@@ -774,7 +961,7 @@ export const runOneHedgeManagerTick = async (params: {
         spotBtc: spotIv.spotBtcUsdc,
         ivAnnualized: spotIv.ivAnnualized,
         ruleEvaluated: decision.rule,
-        action: "sold"
+        action: soldAction
       });
       actions.push({
         legId: leg.id,
