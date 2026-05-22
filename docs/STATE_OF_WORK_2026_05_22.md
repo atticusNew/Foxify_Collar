@@ -7,9 +7,34 @@ Use this as the "go back to here" reference if context is lost.
 
 | Branch | Tip | Purpose |
 |---|---|---|
-| `vc-sandbox` | `7a88d72` | Production-equivalent sandbox. Deployed to **live** + **shadow** Render services. Contains Bullish singleton/caching, slippage floor, archive endpoint, E1 microtest script. |
-| `vc-sandbox-spreads` | `394c6c2` (currently checked out) | Track 2 spread scaffolding. Contains everything in `vc-sandbox` PLUS the spread design doc, `spreadHedge.ts`, `matrix.ts` field additions, and the in-progress E2 microtest script. |
-| `vc/track1-archive-and-slippage-floor` | `da1b715` | Frozen — predecessor of `vc-sandbox`, kept as recovery point. |
+| `vc-sandbox` | `7a88d72` | Auto-deploys to **shadow** Render only. Contains Bullish singleton/caching, slippage floor, archive endpoint, E1 microtest script. |
+| `vc-sandbox-spreads` | `08bd5b9` (currently checked out) | Track 2 spread scaffolding. Contains everything in `vc-sandbox` PLUS the spread design doc, `spreadHedge.ts`, `matrix.ts` field additions, E2 microtest script. |
+| `cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4` | `9ee5af5` | **THIS IS THE LIVE BRANCH** — `foxify-pilot-new` on Render tracks this. Ops-managed, 27 commits behind `vc-sandbox`. |
+| `vc/track1-archive-and-slippage-floor` | `da1b715` | Source branch for slippage-floor commit `1926291`. NOT YET on live or vc-sandbox-shadow. |
+
+### CRITICAL: live deploy drift (corrected 2026-05-22 19:25 ET)
+
+Earlier assumption that "vc-sandbox deploys to live" was wrong. Verified via `render.yaml` and `render-shadow.yaml`:
+- **Shadow** auto-deploys from `vc-sandbox` (confirmed in render-shadow.yaml line 28).
+- **Live** is pinned to `cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4` (per render.yaml). Tip: `9ee5af5` from 2026-05-19.
+
+What's NOT on live but exists on vc-sandbox:
+
+| Commit | Description | Operational impact while undeployed |
+|---|---|---|
+| `c3eeb89` | slippage floor for limit-IOC discretionary TP exits | All TP-curve sells on live are market — no slippage defense |
+| `a9209cc` | shared Bullish singleton + caching | Every Bullish call from live opens fresh JWT → `MAX_SESSION_COUNT_REACHED` risk |
+| `f3d3858` | Bullish negative-cache for rate limit | No backoff on Bullish `RATE_LIMIT_EXCEEDED` (96100) |
+| `2421c83` | archive position endpoint | Test-position cleanup blocked (404 confirmed 2026-05-22) |
+| ~23 others | Bullish admin endpoints + probe scripts + tests | Low impact for live ops (mostly diagnostic tooling) |
+
+### Sync paths available
+
+1. **Merge `vc-sandbox` → live cursor branch + push.** Render auto-deploys (if cursor branch has `autoDeploy: true` in render.yaml). Brings everything at once. Lower-risk than it sounds because the 27 commits are mostly additive endpoints + scripts.
+2. **Cherry-pick top-3 highest-impact** (`c3eeb89` slippage floor, `a9209cc` Bullish singleton, `2421c83` archive) to the live cursor branch. Smaller blast radius, requires conflict-resolution.
+3. **Re-point `render.yaml` for live to track `vc-sandbox` directly.** Largest change but cleanest going forward.
+
+Until path is chosen, treat live as "frozen at `9ee5af5`" and route critical fixes via cherry-pick.
 
 ### Branch divergence (vc-sandbox-spreads ahead of vc-sandbox by)
 ```
@@ -19,10 +44,10 @@ Use this as the "go back to here" reference if context is lost.
 
 ## Render deployments
 
-| Service | Branch tracked | Status | Critical env vars |
-|---|---|---|---|
-| `foxify-pilot` (LIVE) | `vc-sandbox` | Hosting 1 live Foxify position (see below). Bullish balance tracking DISABLED. | `PILOT_DEPLOYMENT_TIER=live`, `BULLISH_BALANCE_TRACKING_ENABLED=false`, `PILOT_BULLISH_ALLOW_MARGIN=false` |
-| `foxify-pilot-shadow-3r1m` (SHADOW) | `vc-sandbox` | Used for E1 (passed). | `PILOT_DEPLOYMENT_TIER=shadow`, `BULLISH_BALANCE_TRACKING_ENABLED=true`, `PILOT_BULLISH_ALLOW_MARGIN=false` ← **needs flip to `true` before E2** |
+| Service | URL | Branch tracked | Status | Critical env vars |
+|---|---|---|---|---|
+| `foxify-pilot-new` (LIVE) | https://foxify-pilot-new.onrender.com | `cursor/-bc-c2468b87-...-6ba4` @ `9ee5af5` | Hosting vc-pos-e41890f0 (triggered, hedges sold, accruing premium to pair close Sun 12:13 UTC). Bullish balance tracking DISABLED. **27 commits behind vc-sandbox.** | `PILOT_DEPLOYMENT_TIER=live`, `BULLISH_BALANCE_TRACKING_ENABLED=false`, `PILOT_BULLISH_ALLOW_MARGIN=false` |
+| `foxify-pilot-shadow` (SHADOW) | https://foxify-pilot-shadow-3r1m.onrender.com | `vc-sandbox` (auto-deploy) | Used for E1 (passed). Always current with vc-sandbox. | `PILOT_DEPLOYMENT_TIER=shadow`, `BULLISH_BALANCE_TRACKING_ENABLED=true`, `PILOT_BULLISH_ALLOW_MARGIN=false` ← **needs flip to `true` before E2** |
 
 ## Open positions (live Foxify)
 
@@ -58,8 +83,8 @@ Use this as the "go back to here" reference if context is lost.
 
 ## Completed (this session)
 
-- **Track 1: slippage floor** for limit IOC discretionary TP exits — backported to live (commit `1926291` → on `vc-sandbox`).
-- **Track 1: archive position endpoint** — live (`8137ba6` + tests `c7fd032`).
+- **Track 1: slippage floor** for limit IOC discretionary TP exits — **on `vc-sandbox` ONLY (commit `c3eeb89`); NOT yet on live.** Earlier bookmark statement was incorrect. Live cursor branch is `9ee5af5`, predates this commit by 3 days.
+- **Track 1: archive position endpoint** — **on `vc-sandbox` ONLY (`2421c83`); NOT yet on live.** Confirmed via 404 from live admin call 2026-05-22 19:22 ET.
 - **vc-pos-e41890f triage** — see "Open positions" above. Force-sold both legs, finalized salvage event, projected −$190 final P&L at pair expiry. Cell to be disabled on live via toggle.
 - **Bullish singleton + caching** — pushed to `vc-sandbox` (`a9209cc`). 7 callsites migrated, orderbook+balance caching, negative cache for rate-limit, env gate.
 - **Bullish E1 (long round-trip) microtest** — VALIDATED on shadow.
