@@ -16,6 +16,19 @@ export interface DeribitOrderRequest {
   side: "buy" | "sell";
   type?: "limit" | "market";
   price?: number;
+  // 2026-05-22: time_in_force support added so the slippage-floor TP
+  // path can send IOC limit sells. Pure `market` orders are pre-flight-
+  // margin-checked against Deribit's Max Buy Price (~5× current ask)
+  // which inflates reserve requirements for sub-1 BTC contract sells.
+  // IOC limits use price × amount for pre-flight reserve while still
+  // cancelling unfilled residue, giving market-order-like semantics
+  // with realistic margin. Backported from 214b082 — type+forward only;
+  // the buy-path behavior change from that commit is NOT included here.
+  timeInForce?:
+    | "good_til_cancelled"
+    | "good_til_day"
+    | "fill_or_kill"
+    | "immediate_or_cancel";
 }
 
 interface AccessToken {
@@ -282,6 +295,9 @@ export class DeribitConnector {
     };
     if (request.price && request.type !== "market") {
       params.price = request.price;
+    }
+    if (request.timeInForce && request.type !== "market") {
+      params.time_in_force = request.timeInForce;
     }
 
     return this.privateRequest(path, params);
