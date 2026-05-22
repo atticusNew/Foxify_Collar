@@ -487,6 +487,27 @@ export const listActivePositions = async (pool: DbExecutor): Promise<PositionRow
   return r.rows.map(rowToPosition);
 };
 
+/**
+ * 2026-05-22: Foxify-facing "live" position list. Returns positions still
+ * on the books from Foxify's perspective — both `active` (no trigger fired
+ * yet) and `triggered` (trigger fired, payout obligation locked, but pair
+ * still alive and accruing premium until the scheduled pair-close).
+ *
+ * Distinct from `listActivePositions` (which is used by trigger detector
+ * + admin views that explicitly want status='active' only). Adding
+ * triggered positions to the trigger detector loop would be incorrect
+ * (they've already triggered), but the Foxify dashboard MUST see them so
+ * the operator and Foxify can reconcile premium owed on the live pair.
+ */
+export const listLiveFoxifyPositions = async (pool: DbExecutor): Promise<PositionRow[]> => {
+  const r = await pool.query(
+    `SELECT * FROM volume_cover_position
+     WHERE status IN ('active', 'triggered')
+     ORDER BY opened_at`
+  );
+  return r.rows.map(rowToPosition);
+};
+
 export const listPositionsForCellToday = async (
   pool: DbExecutor,
   params: { cellId: string; sinceIso: string }
