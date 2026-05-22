@@ -370,13 +370,18 @@ export const registerFoxifyDashboardRoutes = async (
     const activationsToday = Number(openedResult.rows[0]?.cnt ?? 0);
     const premiumBilledToday = Number(openedResult.rows[0]?.premium_sum ?? 0);
 
-    // Triggers today + payouts owed
+    // Triggers today + payouts owed.
+    // Excludes both admin-test positions (HIDE_ADMIN_TEST_POSITIONS_SQL)
+    // and explicitly-archived positions (metadata.archived=true). The
+    // two filters serve different purposes and are AND'd together so
+    // either one alone is sufficient to hide a position from this view.
     const triggeredResult = await pool.query(
       `SELECT COUNT(*)::int AS cnt,
               COALESCE(SUM(payout_usdc), 0)::numeric AS payout_sum
        FROM volume_cover_position
        WHERE triggered_at >= $1 AND triggered_at < $2
-         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`,
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
+         AND COALESCE((metadata->>'archived')::boolean, false) = false`,
       [dayStart, dayEnd]
     );
     const triggeredToday = Number(triggeredResult.rows[0]?.cnt ?? 0);
