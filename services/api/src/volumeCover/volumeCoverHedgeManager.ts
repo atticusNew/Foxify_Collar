@@ -590,7 +590,7 @@ const insertTelemetry = async (
  *   • leg.tpDeferCount >= slippageMaxDefers (cap-hit fallthrough)
  *   • currentValueUsdc <= 0 (BS says zero — no floor possible)
  */
-const decideOrderTypeAndFloor = (params: {
+export const decideOrderTypeAndFloor = (params: {
   cfg: HedgeManagerConfig;
   ruleName: string;
   venue: string;
