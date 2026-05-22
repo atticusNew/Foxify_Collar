@@ -58,7 +58,6 @@ import {
   listRecentPairEvents,
   computePairEventLatencyStats,
   finalizeSalvageProceedsForPosition,
-  listHedgeLegsForPosition,
   markPositionArchived
 } from "./volumeCoverDb";
 import { openPosition, closePosition } from "./positionLifecycle";
@@ -254,30 +253,17 @@ export type RegisterVolumeCoverRoutesOptions = {
 // MAX_SESSION_COUNT_REACHED (errorCode 8400). This singleton reuses
 // a single client → single session for all admin debug calls.
 //
-// Production VC adapter (BullishTestVenueAdapter) holds its own
-// client lifecycle, separate from this; we don't share with it.
-//
-// The cached client is invalidated and recreated if pilotConfig
-// references a different tradingAccountId or auth keys (env-var
-// changes via Render dashboard).
-let cachedBullishAdminClient: any = null;
-let cachedBullishAdminFingerprint: string | null = null;
+// 2026-05-22 — Refactored to use the shared `pilot/bullishClient`
+// module so that admin routes, the spot price source, the venue
+// balance fetcher, and the trigger monitor all share ONE singleton.
+// Previously this was a local singleton scoped to admin routes only,
+// while 4 other callsites (server.ts spot/balance, triggerMonitor,
+// chain endpoint, wide-config lister) bypassed it and each spun fresh
+// clients. The dashboard auto-refresh + 60s trigger monitor combined
+// to exhaust Bullish's session quota within ~10 min of continuous use.
 const getBullishAdminClient = async () => {
-  const cfg = pilotConfig.bullish;
-  // Fingerprint = anything that would invalidate the JWT session
-  const fingerprint = [
-    cfg.tradingAccountId,
-    cfg.ecdsaPublicKey?.slice(-32) ?? "",
-    cfg.ecdsaMetadata?.slice(-16) ?? "",
-    cfg.restBaseUrl
-  ].join("|");
-  if (cachedBullishAdminClient && cachedBullishAdminFingerprint === fingerprint) {
-    return cachedBullishAdminClient;
-  }
-  const { BullishTradingClient } = await import("../pilot/bullish");
-  cachedBullishAdminClient = new BullishTradingClient(cfg);
-  cachedBullishAdminFingerprint = fingerprint;
-  return cachedBullishAdminClient;
+  const { getSharedBullishClient } = await import("../pilot/bullishClient");
+  return getSharedBullishClient(pilotConfig.bullish);
 };
 
 export const registerVolumeCoverRoutes = async (
@@ -1348,9 +1334,11 @@ export const registerVolumeCoverRoutes = async (
     let bullishError: string | null = null;
     let bullishRawCount = 0;
     try {
-      const { BullishTradingClient } = await import("../pilot/bullish");
-      const client = new BullishTradingClient(pilotConfig.bullish);
-      const balances: any[] = await withTimeout(client.getAssetBalances(), 5_000);
+      const { getCachedBullishBalances } = await import("../pilot/bullishClient");
+      const balances: any[] = await withTimeout(
+        getCachedBullishBalances(pilotConfig.bullish, 30_000, 5_000),
+        5_000
+      );
       bullishRawCount = balances.length;
       const usdc = balances.find(
         (b: any) => b.assetSymbol === "USDC" || b.assetSymbol === "USD"
@@ -1911,13 +1899,12 @@ export const registerVolumeCoverRoutes = async (
     }
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
-    const { BullishTradingClient } = await import("../pilot/bullish");
     // Build a client config that explicitly clears tradingAccountId
     // so the lister returns ALL accounts (the default getTradingAccounts
-    // filters down to the configured one).
-    const baseConfig = pilotConfig.bullish;
-    const wideConfig = { ...baseConfig, tradingAccountId: "" };
-    const client = new BullishTradingClient(wideConfig);
+    // filters down to the configured one). Use shared wide-singleton to
+    // avoid burning another Bullish session for diagnostic-only listing.
+    const { getSharedWideBullishClient } = await import("../pilot/bullishClient");
+    const client = getSharedWideBullishClient(pilotConfig.bullish);
 
     const startMs = Date.now();
     let raw: unknown = null;
@@ -1944,7 +1931,7 @@ export const registerVolumeCoverRoutes = async (
       generatedAtIso: new Date().toISOString(),
       elapsedMs,
       authUserId: "(check bullish-key-check endpoint for userId from metadata)",
-      configuredTradingAccountId: baseConfig.tradingAccountId || null,
+      configuredTradingAccountId: pilotConfig.bullish.tradingAccountId || null,
       accounts: accounts
         ? accounts.map((a) => ({
             tradingAccountId: a.tradingAccountId ?? null,
@@ -2356,12 +2343,12 @@ export const registerVolumeCoverRoutes = async (
       return reply.code(503).send({ error: "spot_invalid", spot });
     }
 
-    // Pull markets from Bullish (60s cache inside client).
-    const { BullishTradingClient } = await import("../pilot/bullish");
-    const client = new BullishTradingClient(pilotConfig.bullish);
+    // Pull markets from Bullish via shared singleton (built-in 120s cache).
+    const { getSharedBullishClient } = await import("../pilot/bullishClient");
+    const client = getSharedBullishClient(pilotConfig.bullish);
     let markets: any[] = [];
     try {
-      markets = await client.getMarkets({ cacheTtlMs: 60_000 });
+      markets = await client.getMarkets({ cacheTtlMs: 120_000 });
     } catch (err) {
       return reply.code(502).send({
         error: "bullish_markets_fetch_failed",
@@ -2532,8 +2519,8 @@ export const registerVolumeCoverRoutes = async (
     if (!orderId) {
       return reply.code(400).send({ error: "missing_orderId_param" });
     }
-    const { BullishTradingClient } = await import("../pilot/bullish");
-    const client = new BullishTradingClient(pilotConfig.bullish);
+    const { getSharedBullishClient } = await import("../pilot/bullishClient");
+    const client = getSharedBullishClient(pilotConfig.bullish);
     try {
       const status = await client.getOrderStatus(orderId);
       return reply.send({

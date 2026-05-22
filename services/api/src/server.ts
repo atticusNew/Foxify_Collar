@@ -8273,9 +8273,12 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
     // Deribit execution). All three venues feed drift detection.
     const spotSource = createSpotPriceSource({
       bullishOrderbookFn: async (symbol) => {
-        const { BullishTradingClient } = await import("./pilot/bullish");
-        const client = new BullishTradingClient(pilotConfig.bullish);
-        const book = await client.getHybridOrderBook(symbol);
+        // 2026-05-22: use shared singleton + 5s orderbook cache to stop
+        // burning Bullish sessions on every spot tick (trigger monitor
+        // ticks every 60s; each tick previously built a fresh client →
+        // fresh JWT → fresh WS subscriptions). See pilot/bullishClient.ts.
+        const { getCachedBullishOrderbook } = await import("./pilot/bullishClient");
+        const book = await getCachedBullishOrderbook(pilotConfig.bullish, symbol, 5_000);
         return {
           bids: book.bids ?? [],
           asks: book.asks ?? []
@@ -8330,30 +8333,39 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
       } catch (err) {
         console.warn(`[VolumeCover] Spot fetch failed for venue balance: ${(err as Error).message}`);
       }
-      try {
-        const { BullishTradingClient } = await import("./pilot/bullish");
-        const client = new BullishTradingClient(pilotConfig.bullish);
-        const balances = await withTimeout(client.getAssetBalances(), 5_000);
-        const usdcBalance = balances.find((b: any) => b.assetSymbol === "USDC" || b.assetSymbol === "USD");
-        if (usdcBalance) {
-          bullishUsdc = Number(usdcBalance.availableQuantity ?? 0);
-        }
-        // 2026-05-18: include Bullish BTC valued at current spot. This
-        // closes a drift-detection bug where operators holding capital
-        // as BTC (rather than USDC) on Bullish were causing weekly
-        // settlement reports to false-flag 100% drift halts. The
-        // venueBalanceFetcher must report TOTAL USD-equivalent venue
-        // value, not just USDC. Bullish BTC + USDC together are now
-        // both included.
-        const btcBalance = balances.find((b: any) => b.assetSymbol === "BTC");
-        if (btcBalance && spotBtcUsdc !== null) {
-          const btcQty = Number(btcBalance.availableQuantity ?? 0);
-          if (Number.isFinite(btcQty) && btcQty > 0) {
-            bullishBtcAsUsdc = btcQty * spotBtcUsdc;
+      // 2026-05-22: env gate skips Bullish balance fetching entirely when
+      // BULLISH_BALANCE_TRACKING_ENABLED=false (default true). Live config
+      // should set false until Bullish is actively trading — drops dashboard
+      // Bullish call rate from ~1/tick to 0 and avoids session quota churn.
+      const { isBullishBalanceTrackingEnabled, getCachedBullishBalances } =
+        await import("./pilot/bullishClient");
+      if (isBullishBalanceTrackingEnabled()) {
+        try {
+          const balances = await withTimeout(
+            getCachedBullishBalances(pilotConfig.bullish, 30_000, 5_000),
+            5_000
+          );
+          const usdcBalance = balances.find((b: any) => b.assetSymbol === "USDC" || b.assetSymbol === "USD");
+          if (usdcBalance) {
+            bullishUsdc = Number(usdcBalance.availableQuantity ?? 0);
           }
+          // 2026-05-18: include Bullish BTC valued at current spot. This
+          // closes a drift-detection bug where operators holding capital
+          // as BTC (rather than USDC) on Bullish were causing weekly
+          // settlement reports to false-flag 100% drift halts. The
+          // venueBalanceFetcher must report TOTAL USD-equivalent venue
+          // value, not just USDC. Bullish BTC + USDC together are now
+          // both included.
+          const btcBalance = balances.find((b: any) => b.assetSymbol === "BTC");
+          if (btcBalance && spotBtcUsdc !== null) {
+            const btcQty = Number(btcBalance.availableQuantity ?? 0);
+            if (Number.isFinite(btcQty) && btcQty > 0) {
+              bullishBtcAsUsdc = btcQty * spotBtcUsdc;
+            }
+          }
+        } catch (err) {
+          console.warn(`[VolumeCover] Bullish balance fetch failed: ${(err as Error).message}`);
         }
-      } catch (err) {
-        console.warn(`[VolumeCover] Bullish balance fetch failed: ${(err as Error).message}`);
       }
       try {
         const summary: any = await withTimeout(deribitLive.getAccountSummary("BTC"), 5_000);
