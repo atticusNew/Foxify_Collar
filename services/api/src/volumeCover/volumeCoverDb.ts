@@ -508,6 +508,45 @@ export const markPositionClosed = async (
   return r.rows[0] ? rowToPosition(r.rows[0]) : null;
 };
 
+/**
+ * 2026-05-22: Archive a position. Sets metadata.archived=true so the
+ * row is excluded from operational dashboards and salvage statistics
+ * but otherwise preserved (DB row + ledger entries + hedge legs intact
+ * for audit). Distinct from `status='cancelled'` — the position lifecycle
+ * status is unchanged.
+ *
+ * Intended use cases:
+ *   - Internal operator test trades that should not pollute production
+ *     telemetry (e.g. the May 18 Bullish phantom-leg test)
+ *   - Known-failure-class events where the loss is real but the salvage
+ *     denominator is not representative of normal operations
+ *
+ * Caller MUST ensure no hedge legs are status='open' before archiving;
+ * the route enforces this guard (refusing to archive while any leg is
+ * still active at the venue).
+ */
+export const markPositionArchived = async (
+  pool: DbExecutor,
+  params: { id: string; reason: string; archivedByToken?: string }
+): Promise<PositionRow | null> => {
+  const archiveMeta = {
+    archived: true,
+    archive_reason: params.reason,
+    archived_at: new Date().toISOString(),
+    archived_by_token_prefix: params.archivedByToken
+      ? params.archivedByToken.slice(0, 6) + "..."
+      : null
+  };
+  const r = await pool.query(
+    `UPDATE volume_cover_position
+     SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+     WHERE id = $1
+     RETURNING *`,
+    [params.id, JSON.stringify(archiveMeta)]
+  );
+  return r.rows[0] ? rowToPosition(r.rows[0]) : null;
+};
+
 // ────────────────────── CRUD: Hedge legs ──────────────────────
 
 export type RetainedRole = "winner_post_trigger" | "loser_post_trigger" | "near_atm_post_close" | "stale_post_close";
@@ -1118,6 +1157,15 @@ export const listRecentSalvageEvents = async (
   return r.rows.map(rowToSalvage);
 };
 
+// 2026-05-22: salvage queries exclude positions where metadata.archived
+// is set. Keeps test trades and known-failure events out of the rolling
+// statistics used by Guard A (7d loss kill) and Guard B (salvage
+// throttle). The underlying salvage rows remain in the table for audit.
+const NOT_ARCHIVED_JOIN = `
+  JOIN volume_cover_position p ON p.id = s.position_id
+  WHERE COALESCE((p.metadata->>'archived')::boolean, false) = false
+`;
+
 export const computeRollingSalvageStats = async (
   pool: DbExecutor,
   rollingCount = 5
@@ -1134,9 +1182,10 @@ export const computeRollingSalvageStats = async (
        SUM(net_atticus_loss_usdc) AS total_loss,
        AVG(payout_owed_usdc) AS avg_payout
      FROM (
-       SELECT salvage_pct, net_atticus_loss_usdc, payout_owed_usdc
-       FROM volume_cover_salvage_event
-       ORDER BY triggered_at DESC
+       SELECT s.salvage_pct, s.net_atticus_loss_usdc, s.payout_owed_usdc
+       FROM volume_cover_salvage_event s
+       ${NOT_ARCHIVED_JOIN}
+       ORDER BY s.triggered_at DESC
        LIMIT $1
      ) recent`,
     [rollingCount]
@@ -1156,8 +1205,10 @@ export const countTriggersInWindow = async (
   windowHours: number
 ): Promise<number> => {
   const r = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM volume_cover_salvage_event
-     WHERE triggered_at >= NOW() - ($1 || ' hours')::interval`,
+    `SELECT COUNT(*) AS cnt
+     FROM volume_cover_salvage_event s
+     ${NOT_ARCHIVED_JOIN}
+       AND s.triggered_at >= NOW() - ($1 || ' hours')::interval`,
     [String(windowHours)]
   );
   return Number(r.rows[0].cnt);
@@ -1168,9 +1219,10 @@ export const sumNetLossInWindow = async (
   windowHours: number
 ): Promise<number> => {
   const r = await pool.query(
-    `SELECT COALESCE(SUM(net_atticus_loss_usdc), 0) AS total
-     FROM volume_cover_salvage_event
-     WHERE triggered_at >= NOW() - ($1 || ' hours')::interval`,
+    `SELECT COALESCE(SUM(s.net_atticus_loss_usdc), 0) AS total
+     FROM volume_cover_salvage_event s
+     ${NOT_ARCHIVED_JOIN}
+       AND s.triggered_at >= NOW() - ($1 || ' hours')::interval`,
     [String(windowHours)]
   );
   return Number(r.rows[0].total);
