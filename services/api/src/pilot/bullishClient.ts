@@ -52,6 +52,41 @@ const _orderbookCache: Map<string, OrderbookCacheEntry> = new Map();
 type BalancesCacheEntry = { expiresAtMs: number; balances: BullishAssetBalance[] };
 let _balancesCache: BalancesCacheEntry | null = null;
 
+// 2026-05-22 — Negative cache for rate-limit/session-quota errors. When
+// Bullish returns 96100 RATE_LIMIT_EXCEEDED or 8400 MAX_SESSION_COUNT_REACHED,
+// we cache the error for NEGATIVE_CACHE_TTL_MS and fast-fail subsequent
+// calls without re-hitting Bullish. Otherwise every dashboard tick or
+// script retry inside the cooldown window adds load and (depending on
+// the rate-limit algorithm) can extend the cooldown.
+type NegativeCacheEntry = { expiresAtMs: number; message: string };
+const _negativeCache: Map<string, NegativeCacheEntry> = new Map();
+const DEFAULT_NEGATIVE_CACHE_TTL_MS = 60_000;
+
+const isRateLimitOrSessionError = (err: unknown): { match: boolean; message: string } => {
+  const msg = (err as { message?: string } | null | undefined)?.message ?? String(err ?? "");
+  if (/RATE_LIMIT_EXCEEDED|96100|MAX_SESSION_COUNT_REACHED|8400|bullish_http_429|bullish_http_503/.test(msg)) {
+    return { match: true, message: msg };
+  }
+  return { match: false, message: msg };
+};
+
+const negKey = (op: string, subject: string): string => `${op}|${subject}`;
+const checkNegativeCache = (key: string): void => {
+  const entry = _negativeCache.get(key);
+  if (entry && entry.expiresAtMs > Date.now()) {
+    throw new Error(
+      `bullish_negative_cache_hit:${entry.message} (suppressed retry; ` +
+        `try again in ${Math.ceil((entry.expiresAtMs - Date.now()) / 1000)}s)`
+    );
+  }
+};
+const recordNegativeIfMatch = (key: string, err: unknown, ttlMs: number = DEFAULT_NEGATIVE_CACHE_TTL_MS): void => {
+  const r = isRateLimitOrSessionError(err);
+  if (r.match) {
+    _negativeCache.set(key, { expiresAtMs: Date.now() + Math.max(1000, ttlMs), message: r.message });
+  }
+};
+
 const fingerprint = (cfg: BullishClientConfig): string => {
   const c = cfg as Record<string, unknown>;
   const tail = (v: unknown, n: number): string => (typeof v === "string" ? v.slice(-n) : "");
@@ -87,10 +122,17 @@ export const getCachedBullishOrderbook = async (
 ): Promise<BullishHybridOrderbook> => {
   const cached = _orderbookCache.get(symbol);
   if (cached && cached.expiresAtMs > Date.now()) return cached.book;
+  const nKey = negKey("orderbook", symbol);
+  checkNegativeCache(nKey);
   const client = getSharedBullishClient(config);
-  const book = await client.getHybridOrderBook(symbol);
-  _orderbookCache.set(symbol, { expiresAtMs: Date.now() + Math.max(0, ttlMs), book });
-  return book;
+  try {
+    const book = await client.getHybridOrderBook(symbol);
+    _orderbookCache.set(symbol, { expiresAtMs: Date.now() + Math.max(0, ttlMs), book });
+    return book;
+  } catch (err) {
+    recordNegativeIfMatch(nKey, err);
+    throw err;
+  }
 };
 
 export const getCachedBullishBalances = async (
@@ -101,10 +143,17 @@ export const getCachedBullishBalances = async (
   if (_balancesCache && _balancesCache.expiresAtMs > Date.now()) {
     return _balancesCache.balances;
   }
+  const nKey = negKey("balances", "shared");
+  checkNegativeCache(nKey);
   const client = getSharedBullishClient(config);
-  const balances = await client.getAssetBalances({ timeoutMs });
-  _balancesCache = { expiresAtMs: Date.now() + Math.max(0, ttlMs), balances };
-  return balances;
+  try {
+    const balances = await client.getAssetBalances({ timeoutMs });
+    _balancesCache = { expiresAtMs: Date.now() + Math.max(0, ttlMs), balances };
+    return balances;
+  } catch (err) {
+    recordNegativeIfMatch(nKey, err);
+    throw err;
+  }
 };
 
 /**
@@ -134,4 +183,18 @@ export const __resetBullishClientStateForTests = (): void => {
   _wideClientFingerprint = null;
   _orderbookCache.clear();
   _balancesCache = null;
+  _negativeCache.clear();
+};
+
+/**
+ * Operator/debug helper: clear the rate-limit negative cache so a
+ * follow-up call retries Bullish even if the cooldown window hasn't
+ * naturally expired. Use sparingly — defeats the purpose of the
+ * back-off. Surfaced primarily for admin endpoints that want to
+ * deliberately probe whether the rate limit has cleared.
+ */
+export const clearBullishNegativeCache = (): { cleared: number } => {
+  const n = _negativeCache.size;
+  _negativeCache.clear();
+  return { cleared: n };
 };

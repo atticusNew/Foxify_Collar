@@ -74,6 +74,12 @@ MAX_NOTIONAL_SELL_USDC="${MAX_NOTIONAL_SELL_USDC:-25}"  # Hard safety cap (SELL 
 SETTLE_WAIT_SEC="${SETTLE_WAIT_SEC:-30}"       # Pause between buy and sell
 SKIP_SELL="${SKIP_SELL:-0}"                    # If 1, leave position open
 
+# Bypass the pre-flight orderbook check (use when Bullish is rate-
+# limiting the public orderbook endpoint but the private trading
+# endpoints are still working). Requires BUY_LIMIT_USDC to be set
+# explicitly because we can't auto-derive from the ask.
+SKIP_ORDERBOOK_CHECK="${SKIP_ORDERBOOK_CHECK:-0}"
+
 # Helpers ---------------------------------------------------------------
 say() { printf '\033[1;34m▶ %s\033[0m\n' "$*"; }
 ok()  { printf '\033[1;32m✓ %s\033[0m\n' "$*"; }
@@ -129,27 +135,46 @@ fi
 ok "Shadow reachable, admin token valid"
 
 # Confirm the symbol exists on Bullish + grab the live top ask.
-say "Verifying $SYMBOL is listed on Bullish..."
-OB=$(api GET "/volume-cover/admin/bullish-orderbook?symbol=$SYMBOL&depth=3")
-OB_OK=$(echo "$OB" | jq -r '.ok // false')
-if [[ "$OB_OK" != "true" ]]; then
-  err "Symbol $SYMBOL not on Bullish or orderbook fetch failed"
-  echo "$OB" | jq . 2>/dev/null | head -10 || echo "$OB" | head -3
-  exit 3
-fi
-TOP_ASK=$(echo "$OB" | jq -r '.summary.topAsk.price // "null"')
-TOP_BID=$(echo "$OB" | jq -r '.summary.topBid.price // "null"')
-TOP_ASK_QTY=$(echo "$OB" | jq -r '.summary.topAsk.quantity // "null"')
-ok "Orderbook ok — top bid \$$TOP_BID / top ask \$$TOP_ASK (ask qty $TOP_ASK_QTY BTC)"
-
-# Resolve buy limit if not pinned by env. Use top ask × buffer so IOC fills.
-if [[ -z "$BUY_LIMIT_USDC" ]]; then
-  if [[ "$TOP_ASK" == "null" || "$TOP_ASK" == "0" || "$TOP_ASK" == "0.0" ]]; then
-    err "Cannot auto-derive BUY_LIMIT_USDC — no top ask on orderbook"
+TOP_ASK="null"
+TOP_BID="null"
+if [[ "$SKIP_ORDERBOOK_CHECK" == "1" ]]; then
+  say "SKIP_ORDERBOOK_CHECK=1 → skipping orderbook pre-flight"
+  if [[ -z "$BUY_LIMIT_USDC" ]]; then
+    err "BUY_LIMIT_USDC must be set explicitly when SKIP_ORDERBOOK_CHECK=1"
+    err "  Suggested: BUY_LIMIT_USDC=700 (conservatively above $550 ask, well under $10 cap on 0.01 BTC)"
     exit 3
   fi
-  BUY_LIMIT_USDC=$(awk -v a="$TOP_ASK" -v b="$BUY_LIMIT_ASK_BUFFER_PCT" 'BEGIN { printf "%.4f", a*b }')
-  ok "BUY_LIMIT_USDC auto-set to \$$BUY_LIMIT_USDC ($TOP_ASK × $BUY_LIMIT_ASK_BUFFER_PCT)"
+  ok "Using pinned BUY_LIMIT_USDC=\$$BUY_LIMIT_USDC"
+else
+  say "Verifying $SYMBOL is listed on Bullish..."
+  OB=$(api GET "/volume-cover/admin/bullish-orderbook?symbol=$SYMBOL&depth=3")
+  OB_OK=$(echo "$OB" | jq -r '.ok // false')
+  if [[ "$OB_OK" != "true" ]]; then
+    err "Symbol $SYMBOL not on Bullish or orderbook fetch failed"
+    echo "$OB" | jq . 2>/dev/null | head -10 || echo "$OB" | head -3
+    # Special-case Bullish rate-limit: tell the user how to bypass.
+    if echo "$OB" | grep -q "RATE_LIMIT_EXCEEDED\|96100\|negative_cache_hit"; then
+      err "  Bullish is rate-limiting the public orderbook endpoint."
+      err "  Wait 60-300s for cooldown, OR bypass with:"
+      err "    SKIP_ORDERBOOK_CHECK=1 BUY_LIMIT_USDC=700 bash $0"
+      err "  (private trading endpoints likely have a separate rate-limit bucket)"
+    fi
+    exit 3
+  fi
+  TOP_ASK=$(echo "$OB" | jq -r '.summary.topAsk.price // "null"')
+  TOP_BID=$(echo "$OB" | jq -r '.summary.topBid.price // "null"')
+  TOP_ASK_QTY=$(echo "$OB" | jq -r '.summary.topAsk.quantity // "null"')
+  ok "Orderbook ok — top bid \$$TOP_BID / top ask \$$TOP_ASK (ask qty $TOP_ASK_QTY BTC)"
+
+  # Resolve buy limit if not pinned by env. Use top ask × buffer so IOC fills.
+  if [[ -z "$BUY_LIMIT_USDC" ]]; then
+    if [[ "$TOP_ASK" == "null" || "$TOP_ASK" == "0" || "$TOP_ASK" == "0.0" ]]; then
+      err "Cannot auto-derive BUY_LIMIT_USDC — no top ask on orderbook"
+      exit 3
+    fi
+    BUY_LIMIT_USDC=$(awk -v a="$TOP_ASK" -v b="$BUY_LIMIT_ASK_BUFFER_PCT" 'BEGIN { printf "%.4f", a*b }')
+    ok "BUY_LIMIT_USDC auto-set to \$$BUY_LIMIT_USDC ($TOP_ASK × $BUY_LIMIT_ASK_BUFFER_PCT)"
+  fi
 fi
 
 # Recompute expected debit + verify under cap before sending
@@ -218,9 +243,12 @@ say "Phase 3: pause ${SETTLE_WAIT_SEC}s to observe theta decay"
 hr
 sleep "$SETTLE_WAIT_SEC"
 
-# Re-check orderbook so we know the prevailing bid
-OB=$(api GET "/volume-cover/admin/bullish-orderbook?symbol=$SYMBOL&depth=1")
-POST_BID=$(echo "$OB" | jq -r '.summary.topBid.price // "null"')
+# Re-check orderbook so we know the prevailing bid (best-effort).
+POST_BID="null"
+if [[ "$SKIP_ORDERBOOK_CHECK" != "1" ]]; then
+  OB=$(api GET "/volume-cover/admin/bullish-orderbook?symbol=$SYMBOL&depth=1")
+  POST_BID=$(echo "$OB" | jq -r '.summary.topBid.price // "null"')
+fi
 say "Post-wait top bid: \$$POST_BID (will sell IOC at \$$SELL_LIMIT_USDC floor → fills at bid)"
 
 SELL_BODY=$(jq -n \

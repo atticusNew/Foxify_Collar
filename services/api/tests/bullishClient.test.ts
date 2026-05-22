@@ -22,6 +22,7 @@ import {
   getCachedBullishBalances,
   getCachedBullishOrderbook,
   isBullishBalanceTrackingEnabled,
+  clearBullishNegativeCache,
   __setBullishClientFactoryForTests,
   __resetBullishClientStateForTests
 } from "../src/pilot/bullishClient";
@@ -174,6 +175,54 @@ test("bullishClient: isBullishBalanceTrackingEnabled defaults to true when env u
     if (prev === undefined) delete process.env.BULLISH_BALANCE_TRACKING_ENABLED;
     else process.env.BULLISH_BALANCE_TRACKING_ENABLED = prev;
   }
+});
+
+test("bullishClient: negative cache suppresses retries during rate-limit cooldown", async () => {
+  _factoryCallCount = 0;
+  __resetBullishClientStateForTests();
+
+  // Stub client whose getHybridOrderBook always throws a Bullish 429.
+  __setBullishClientFactoryForTests((cfg) => {
+    const c = makeFakeClient(cfg) as any;
+    c.getHybridOrderBook = async (_symbol: string) => {
+      c.getHybridOrderBookCalls.set("_global", (c.getHybridOrderBookCalls.get("_global") ?? 0) + 1);
+      throw new Error(
+        `bullish_http_429:{"errorCode":96100,"errorCodeName":"RATE_LIMIT_EXCEEDED","message":"Rate limit exceeded"}`
+      );
+    };
+    return c;
+  });
+  try {
+    // First call: real Bullish hit, throws + records negative cache
+    await assert.rejects(
+      () => getCachedBullishOrderbook(baseConfig as any, "BTC-USDC-20260526-75000-P", 5_000),
+      /RATE_LIMIT_EXCEEDED/
+    );
+    // Second call: SAME symbol — should fast-fail from negative cache,
+    // NOT hit Bullish again. Error message should indicate negative cache hit.
+    await assert.rejects(
+      () => getCachedBullishOrderbook(baseConfig as any, "BTC-USDC-20260526-75000-P", 5_000),
+      /bullish_negative_cache_hit|RATE_LIMIT_EXCEEDED/
+    );
+    const client = getSharedBullishClient(baseConfig as any) as any;
+    const calls = client.getHybridOrderBookCalls.get("_global") ?? 0;
+    assert.equal(calls, 1, "Bullish hit only ONCE despite two cache reads");
+
+    // Different symbol = different negative cache key, hits Bullish
+    await assert.rejects(
+      () => getCachedBullishOrderbook(baseConfig as any, "BTC-USDC-20260526-76500-C", 5_000),
+      /RATE_LIMIT_EXCEEDED/
+    );
+    assert.equal(client.getHybridOrderBookCalls.get("_global") ?? 0, 2, "different symbol → fresh hit");
+
+    // clearBullishNegativeCache() forces a fresh try
+    clearBullishNegativeCache();
+    await assert.rejects(
+      () => getCachedBullishOrderbook(baseConfig as any, "BTC-USDC-20260526-75000-P", 5_000),
+      /RATE_LIMIT_EXCEEDED/
+    );
+    assert.equal(client.getHybridOrderBookCalls.get("_global") ?? 0, 3, "post-clear retries Bullish");
+  } finally { teardown(); }
 });
 
 test("bullishClient: isBullishBalanceTrackingEnabled honors explicit false / 0", () => {
