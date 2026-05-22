@@ -211,7 +211,17 @@ BUY_FINAL_STATUS=$(echo "$BUY_RESP" | jq -r '.result.finalStatus // "null"')
 BUY_FINAL_REASON=$(echo "$BUY_RESP" | jq -r '.result.finalReason // "null"')
 BUY_BULLISH_ERR=$(echo "$BUY_RESP" | jq -r '.result.bullishError // "null"')
 
-if [[ "$BUY_OK" != "true" ]]; then
+# Belt-and-suspenders success check: trust the endpoint's `ok` field
+# OR detect Bullish-confirmed execution (Executed reason with non-zero
+# fill qty). This makes the script resilient to the pre-2026-05-22-pm
+# endpoint version that incorrectly reported ok=false on successful
+# IOC fills (finalStatus="CLOSED" instead of "FILLED").
+BUY_LOOKS_EXECUTED="0"
+if [[ "$BUY_FINAL_REASON" == "Executed" ]] && (( $(awk -v q="$BUY_FILL_QTY" 'BEGIN { print (q > 0) ? 1 : 0 }') )); then
+  BUY_LOOKS_EXECUTED="1"
+fi
+
+if [[ "$BUY_OK" != "true" && "$BUY_LOOKS_EXECUTED" != "1" ]]; then
   err "BUY failed — finalStatus=$BUY_FINAL_STATUS finalReason=$BUY_FINAL_REASON bullishError=$BUY_BULLISH_ERR"
   if [[ "$BUY_FINAL_REASON" == "Expired" ]]; then
     err "  IOC limit \$$BUY_LIMIT_USDC was BELOW the resting ask \$$TOP_ASK → 0 fill."
@@ -219,7 +229,11 @@ if [[ "$BUY_OK" != "true" ]]; then
   fi
   exit 4
 fi
-ok "BUY accepted — orderId=$BUY_ORDER_ID fillPrice=$BUY_FILL_PRICE fillQty=$BUY_FILL_QTY status=$BUY_FINAL_STATUS"
+if [[ "$BUY_OK" != "true" && "$BUY_LOOKS_EXECUTED" == "1" ]]; then
+  ok "BUY actually FILLED ($BUY_FILL_QTY @ \$$BUY_FILL_PRICE) — endpoint ok-flag false-negative ignored"
+else
+  ok "BUY filled — orderId=$BUY_ORDER_ID fillPrice=$BUY_FILL_PRICE fillQty=$BUY_FILL_QTY status=$BUY_FINAL_STATUS"
+fi
 
 # --- Phase 2: Status poll (verify fill) -------------------------------
 # The /bullish-test-buy endpoint already chains a status query and
@@ -269,7 +283,12 @@ SELL_FINAL_STATUS=$(echo "$SELL_RESP" | jq -r '.result.finalStatus // "null"')
 SELL_FINAL_REASON=$(echo "$SELL_RESP" | jq -r '.result.finalReason // "null"')
 SELL_BULLISH_ERR=$(echo "$SELL_RESP" | jq -r '.result.bullishError // "null"')
 
-if [[ "$SELL_OK" != "true" ]]; then
+SELL_LOOKS_EXECUTED="0"
+if [[ "$SELL_FINAL_REASON" == "Executed" ]] && (( $(awk -v q="$SELL_FILL_QTY" 'BEGIN { print (q > 0) ? 1 : 0 }') )); then
+  SELL_LOOKS_EXECUTED="1"
+fi
+
+if [[ "$SELL_OK" != "true" && "$SELL_LOOKS_EXECUTED" != "1" ]]; then
   err "SELL failed — finalStatus=$SELL_FINAL_STATUS finalReason=$SELL_FINAL_REASON bullishError=$SELL_BULLISH_ERR"
   err "  Position is still OPEN. BUY orderId=$BUY_ORDER_ID"
   if [[ "$SELL_FINAL_REASON" == "Expired" ]]; then
@@ -277,7 +296,11 @@ if [[ "$SELL_OK" != "true" ]]; then
   fi
   exit 5
 fi
-ok "SELL accepted — orderId=$SELL_ORDER_ID fillPrice=$SELL_FILL_PRICE fillQty=$SELL_FILL_QTY status=$SELL_FINAL_STATUS"
+if [[ "$SELL_OK" != "true" && "$SELL_LOOKS_EXECUTED" == "1" ]]; then
+  ok "SELL actually FILLED ($SELL_FILL_QTY @ \$$SELL_FILL_PRICE) — endpoint ok-flag false-negative ignored"
+else
+  ok "SELL filled — orderId=$SELL_ORDER_ID fillPrice=$SELL_FILL_PRICE fillQty=$SELL_FILL_QTY status=$SELL_FINAL_STATUS"
+fi
 
 # --- Phase 4: Final accounting ----------------------------------------
 hr
