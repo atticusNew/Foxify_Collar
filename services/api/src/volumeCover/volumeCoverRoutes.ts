@@ -1669,8 +1669,22 @@ export const registerVolumeCoverRoutes = async (
       String(finalReasonCode || "") === "3003" ||
       bullishStatusReasonCode === 3003 ||
       bullishErrorCode === "3003";
+    // 2026-05-22: Bullish IOC orders that fully fill go to terminal status
+    // "CLOSED" with reasonCode 6002 (Executed) — they do NOT sit in
+    // "FILLED" status because there is no resting order remaining. The
+    // previous check (finalStatus === "FILLED") rejected every successful
+    // IOC fill as a failure, masking real-money trades as "ok: false".
+    // Authoritative truth: finalFillQty > 0 with no 3003/error AND not
+    // explicitly Expired/Rejected. Bullish reason codes:
+    //   6002 = Executed (success — full or partial fill, IOC terminal)
+    //   6004 = Expired  (no fill at price — failure)
+    //   3003 = margin rejection (failure)
+    const reasonStr = String(finalReason ?? "").toLowerCase();
+    const wasExpired = reasonStr === "expired" || String(finalReasonCode || "") === "6004";
+    const wasRejected =
+      reasonStr === "rejected" || finalStatus === "REJECTED" || finalIs3003;
     const trulyFilled =
-      finalStatus === "FILLED" && Number(finalFillQty) > 0;
+      Number(finalFillQty) > 0 && !wasExpired && !wasRejected;
     const success = !bullishError && trulyFilled;
 
     return reply.send({
@@ -1703,6 +1717,8 @@ export const registerVolumeCoverRoutes = async (
         finalFillQty,
         finalReasonCode,
         finalReason,
+        wasExpired,
+        wasRejected,
         orderStatusError
       }
     });
@@ -2104,8 +2120,15 @@ export const registerVolumeCoverRoutes = async (
     const finalReasonCode =
       (orderStatusFinal?.raw as any)?.statusReasonCode ?? null;
     const finalReason = (orderStatusFinal?.raw as any)?.statusReason ?? null;
+    // 2026-05-22: see bullish-test-buy for the rationale. IOC SELL that
+    // fully fills returns status=CLOSED + reason=Executed (6002); the
+    // previous status==="FILLED" check incorrectly reported success=false
+    // on every successful sale.
+    const reasonStrSell = String(finalReason ?? "").toLowerCase();
+    const wasExpired = reasonStrSell === "expired" || String(finalReasonCode || "") === "6004";
+    const wasRejected = reasonStrSell === "rejected" || finalStatus === "REJECTED";
     const trulyFilled =
-      finalStatus === "FILLED" && Number(finalFillQty) > 0;
+      Number(finalFillQty) > 0 && !wasExpired && !wasRejected;
     const success = !bullishError && trulyFilled;
 
     return reply.send({
@@ -2135,6 +2158,8 @@ export const registerVolumeCoverRoutes = async (
         finalFillQty,
         finalReasonCode,
         finalReason,
+        wasExpired,
+        wasRejected,
         orderStatusError
       }
     });
