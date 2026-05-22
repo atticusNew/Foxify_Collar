@@ -634,12 +634,29 @@ export const markPositionClosed = async (
  * Caller MUST ensure no hedge legs are status='open' before archiving;
  * the route enforces this guard (refusing to archive while any leg is
  * still active at the venue).
+ *
+ * Implementation note: uses JS-side read-merge-write rather than
+ * SQL-side `metadata || $::jsonb` because pg-mem 3.x cannot execute
+ * the JSONB concat operator with a parameterized RHS — see
+ * pilot/hedgeManager.ts:markExpiredWithAutopsy for the same pattern.
+ * The read-merge-write race window is acceptable for an admin-only
+ * endpoint with vanishing concurrent-call probability.
  */
 export const markPositionArchived = async (
   pool: DbExecutor,
   params: { id: string; reason: string; archivedByToken?: string }
 ): Promise<PositionRow | null> => {
-  const archiveMeta = {
+  const cur = await pool.query(
+    `SELECT metadata FROM volume_cover_position WHERE id = $1`,
+    [params.id]
+  );
+  if (cur.rows.length === 0) return null;
+  const existingRaw = cur.rows[0].metadata;
+  const existing = (typeof existingRaw === "string"
+    ? JSON.parse(existingRaw)
+    : (existingRaw ?? {})) as Record<string, unknown>;
+  const merged = {
+    ...existing,
     archived: true,
     archive_reason: params.reason,
     archived_at: new Date().toISOString(),
@@ -649,10 +666,10 @@ export const markPositionArchived = async (
   };
   const r = await pool.query(
     `UPDATE volume_cover_position
-     SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb
+     SET metadata = $2::jsonb
      WHERE id = $1
      RETURNING *`,
-    [params.id, JSON.stringify(archiveMeta)]
+    [params.id, JSON.stringify(merged)]
   );
   return r.rows[0] ? rowToPosition(r.rows[0]) : null;
 };
