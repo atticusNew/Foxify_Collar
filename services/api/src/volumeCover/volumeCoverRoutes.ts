@@ -53,7 +53,9 @@ import {
   insertPairEvent,
   listRecentPairEvents,
   computePairEventLatencyStats,
-  finalizeSalvageProceedsForPosition
+  finalizeSalvageProceedsForPosition,
+  listHedgeLegsForPosition,
+  markPositionArchived
 } from "./volumeCoverDb";
 import { openPosition, closePosition } from "./positionLifecycle";
 import {
@@ -723,10 +725,13 @@ export const registerVolumeCoverRoutes = async (
 
     // Pull active + recently-triggered + recently-closed (so UI shows
     // a few terminal rows for context without overwhelming).
+    // Archived positions (metadata.archived=true) excluded so test
+    // trades don't pollute the operational view.
     const posResult = await pool.query(
       `SELECT * FROM volume_cover_position
-       WHERE status IN ('active', 'triggered')
-          OR (status = 'closed' AND closed_at >= NOW() - interval '6 hours')
+       WHERE (status IN ('active', 'triggered')
+          OR (status = 'closed' AND closed_at >= NOW() - interval '6 hours'))
+         AND COALESCE((metadata->>'archived')::boolean, false) = false
        ORDER BY opened_at DESC
        LIMIT $1`,
       [limit]
@@ -835,6 +840,124 @@ export const registerVolumeCoverRoutes = async (
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const metrics = await readSalvageMetrics(pool);
     return reply.send(metrics);
+  });
+
+  // 2026-05-21 — TP slippage-floor observability
+  //
+  // Returns counters from the volume_cover_hedge_leg_telemetry table
+  // bucketed by action so ops can see how often the floor fires,
+  // unfills, falls through, etc. Looks back over a configurable
+  // window (default 24h) so we can scope to recent activity.
+  //
+  // Body shape:
+  //   {
+  //     windowHours: 24,
+  //     enabled: true|false,                     ← feature flag state
+  //     config: { tolerance, maxDefers, ... },   ← active params
+  //     totals: { sold, unfilled, fallthrough, error, held, dryRun, skip },
+  //     byRule: [ { rule, sold, unfilled, fallthrough, ... }, ... ],
+  //     activeLegsWithDefers: [ { legId, positionId, deferCount }, ... ]
+  //   }
+  app.get("/volume-cover/admin/slippage-floor-stats", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const windowHours = Math.max(
+      1,
+      Math.min(168, Number((req.query as any)?.windowHours ?? "24"))
+    );
+    const cutoffIso = new Date(Date.now() - windowHours * 3_600_000).toISOString();
+
+    try {
+      const totalsRes = await pool.query(
+        `SELECT action, COUNT(*)::INT AS n
+         FROM volume_cover_hedge_leg_telemetry
+         WHERE cycled_at >= $1
+         GROUP BY action
+         ORDER BY action`,
+        [cutoffIso]
+      );
+
+      const byRuleRes = await pool.query(
+        `SELECT rule_evaluated AS rule, action, COUNT(*)::INT AS n
+         FROM volume_cover_hedge_leg_telemetry
+         WHERE cycled_at >= $1
+           AND action IN ('sold', 'unfilled', 'fallthrough_market', 'error')
+         GROUP BY rule_evaluated, action
+         ORDER BY rule_evaluated, action`,
+        [cutoffIso]
+      );
+
+      const deferRes = await pool.query(
+        `SELECT id AS leg_id, position_id, tp_defer_count
+         FROM volume_cover_hedge_leg
+         WHERE retained = TRUE
+           AND status = 'open'
+           AND tp_defer_count > 0
+         ORDER BY tp_defer_count DESC
+         LIMIT 100`
+      );
+
+      const totals: Record<string, number> = {};
+      for (const r of totalsRes.rows) {
+        totals[String(r.action)] = Number(r.n);
+      }
+
+      const ruleMap = new Map<string, Record<string, number>>();
+      for (const r of byRuleRes.rows) {
+        const rule = String(r.rule);
+        const action = String(r.action);
+        if (!ruleMap.has(rule)) ruleMap.set(rule, {});
+        ruleMap.get(rule)![action] = Number(r.n);
+      }
+
+      const byRule = Array.from(ruleMap.entries()).map(([rule, counts]) => ({
+        rule,
+        sold: counts.sold ?? 0,
+        unfilled: counts.unfilled ?? 0,
+        fallthroughMarket: counts.fallthrough_market ?? 0,
+        error: counts.error ?? 0
+      }));
+
+      // Effective ratio: of all sells (sold + fallthrough + unfilled),
+      // what fraction filled at the floor vs fell through? Higher =
+      // more revenue captured.
+      const totalSells =
+        (totals.sold ?? 0) + (totals.fallthrough_market ?? 0) + (totals.unfilled ?? 0);
+      const floorSuccessRate =
+        totalSells > 0 ? (totals.sold ?? 0) / totalSells : null;
+
+      return reply.send({
+        windowHours,
+        windowStart: cutoffIso,
+        enabled: String(process.env.VC_TP_SLIPPAGE_FLOOR_ENABLED ?? "false").toLowerCase() === "true",
+        config: {
+          bsTolerance: Number(process.env.VC_TP_SLIPPAGE_BS_TOLERANCE ?? "0.15"),
+          maxDefers: Number(process.env.VC_TP_SLIPPAGE_MAX_DEFERS ?? "3"),
+          discretionaryRules: (process.env.VC_TP_SLIPPAGE_DISCRETIONARY_RULES ?? "5_trail_retrace,6_theta_vs_momentum,10_near_atm,11_vol_spike").split(",").map((s) => s.trim()),
+          enabledVenues: (process.env.VC_TP_SLIPPAGE_VENUES ?? "deribit").split(",").map((s) => s.trim().toLowerCase())
+        },
+        totals: {
+          sold: totals.sold ?? 0,
+          unfilled: totals.unfilled ?? 0,
+          fallthroughMarket: totals.fallthrough_market ?? 0,
+          error: totals.error ?? 0,
+          held: totals.held ?? 0,
+          dryRun: totals.dry_run ?? 0,
+          skip: totals.skip ?? 0
+        },
+        floorSuccessRate,
+        byRule,
+        activeLegsWithDefers: deferRes.rows.map((r) => ({
+          legId: String(r.leg_id),
+          positionId: String(r.position_id),
+          deferCount: Number(r.tp_defer_count)
+        }))
+      });
+    } catch (err: any) {
+      return reply.code(500).send({
+        error: "slippage_floor_stats_failed",
+        message: err?.message ?? "unknown"
+      });
+    }
   });
 
   /**
@@ -2554,6 +2677,103 @@ export const registerVolumeCoverRoutes = async (
     } catch (err) {
       return reply.code(500).send({ error: "close_failed", message: (err as Error).message });
     }
+  });
+
+  /**
+   * 2026-05-22: Archive a position. Adds metadata.archived=true so the
+   * position is excluded from operational dashboards (active-positions-
+   * detail, foxify daily report) and from rolling salvage statistics
+   * (Guard A 7d-loss kill, Guard B salvage throttle). DB row + ledger
+   * entries + hedge legs are preserved for audit.
+   *
+   * Use cases:
+   *   - Internal operator test trades that shouldn't pollute production
+   *     telemetry (e.g. the May 18 Bullish phantom-leg validation case)
+   *   - Known-failure-class events where the loss is real but the
+   *     salvage denominator is not representative of normal operations
+   *
+   * Guards:
+   *   - 404 if position not found
+   *   - 409 if any hedge leg is still status='open' at the venue.
+   *     Position must be fully wound down (sold/failed/expired) before
+   *     archive. This prevents accidentally hiding a position that
+   *     still has live venue exposure from the operational view.
+   *
+   * Usage:
+   *   POST /volume-cover/admin/positions/:id/archive
+   *   body: { "reason": "may18_bullish_test_trade_no_business_value" }
+   */
+  app.post("/volume-cover/admin/positions/:id/archive", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const id = (req.params as any).id as string;
+    const rawReason = (req.body as any)?.reason;
+    const reason = typeof rawReason === "string" && rawReason.trim().length > 0
+      ? rawReason.trim().slice(0, 256)
+      : null;
+    if (!reason) {
+      return reply.code(400).send({
+        error: "missing_reason",
+        message: "Archive requires a non-empty `reason` (max 256 chars) so the audit trail captures why the position was excluded from telemetry."
+      });
+    }
+
+    const position = await getPosition(pool, id);
+    if (!position) return reply.code(404).send({ error: "position_not_found" });
+
+    if (((position.metadata as any)?.archived as boolean | undefined) === true) {
+      return reply.send({
+        positionId: id,
+        status: position.status,
+        alreadyArchived: true,
+        archiveMetadata: {
+          archived: true,
+          archive_reason: (position.metadata as any)?.archive_reason ?? null,
+          archived_at: (position.metadata as any)?.archived_at ?? null
+        }
+      });
+    }
+
+    const legs = await listHedgeLegsForPosition(pool, id);
+    const openLegs = legs.filter((l) => l.status === "open");
+    if (openLegs.length > 0) {
+      return reply.code(409).send({
+        error: "open_legs_present",
+        message:
+          `Refusing to archive: ${openLegs.length} hedge leg(s) still status='open'. ` +
+          `Wind down all legs (sell, expire, or mark-failed) before archiving so the ` +
+          `position never silently hides live venue exposure from the ops view.`,
+        openLegIds: openLegs.map((l) => l.id)
+      });
+    }
+
+    const tokenHeader = String(
+      (req.headers as any)["x-admin-token"] ?? (req.headers as any)["X-Admin-Token"] ?? ""
+    );
+    const updated = await markPositionArchived(pool, {
+      id,
+      reason,
+      archivedByToken: tokenHeader || undefined
+    });
+    if (!updated) {
+      return reply.code(500).send({ error: "archive_failed" });
+    }
+    return reply.send({
+      positionId: id,
+      status: updated.status,
+      archived: true,
+      archiveMetadata: {
+        archived: true,
+        archive_reason: reason,
+        archived_at: (updated.metadata as any)?.archived_at ?? new Date().toISOString()
+      },
+      excludedFrom: [
+        "active-positions-detail",
+        "foxify-daily-report (triggeredToday count)",
+        "rolling-5-trigger salvage pct (Guard B)",
+        "rolling-24h trigger count",
+        "rolling-7d Atticus loss (Guard A kill switch)"
+      ]
+    });
   });
 
   // Pair-event audit log endpoints for ops monitoring.

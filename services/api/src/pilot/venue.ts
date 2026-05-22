@@ -383,7 +383,11 @@ const parseIbkrConId = (instrumentId: string): number | null => {
 };
 
 export type SellOptionResult = {
-  status: "sold" | "failed";
+  // 2026-05-21: "unfilled" added to support the TP slippage floor —
+  // when a limit-IOC sell does not cross the venue book the adapter
+  // returns status:"unfilled" (vs "failed" for genuine errors). The VC
+  // hedge manager treats unfilled as a deferral signal, not an error.
+  status: "sold" | "failed" | "unfilled";
   instrumentId: string;
   quantity: number;
   fillPrice: number;
@@ -402,7 +406,14 @@ export interface PilotVenueAdapter {
     asOf: string;
     details?: Record<string, unknown>;
   }>;
-  sellOption?(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult>;
+  sellOption?(params: {
+    instrumentId: string;
+    quantity: number;
+    // 2026-05-21: TP slippage-floor params (optional; legacy callers
+    // omit them and get the historical market-sell behavior).
+    orderType?: "market" | "limit_ioc";
+    floorPriceUsdcPerBtc?: number;
+  }): Promise<SellOptionResult>;
 }
 
 class MockFalconxAdapter implements PilotVenueAdapter {
@@ -1216,7 +1227,12 @@ class DeribitTestAdapter implements PilotVenueAdapter {
    * we surface `status:"paper_filled"` as a successful sell. This lets
    * the admin force-sell flow clear test DB rows without a live order.
    */
-  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+  async sellOption(params: {
+    instrumentId: string;
+    quantity: number;
+    orderType?: "market" | "limit_ioc";
+    floorPriceUsdcPerBtc?: number;
+  }): Promise<SellOptionResult> {
     const requestedQty = Math.max(0.1, Math.floor(Number(params.quantity) * 10) / 10);
     if (!Number.isFinite(requestedQty) || requestedQty <= 0) {
       return {
@@ -1230,16 +1246,94 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       };
     }
 
+    // ── 2026-05-21: limit-IOC branch (TP slippage floor) ──
+    // When the caller passes orderType:"limit_ioc" + a floor price in
+    // USDC/BTC, convert to BTC-per-contract (Deribit's native unit),
+    // snap to tick, and place a limit IOC. If the book doesn't cross
+    // the floor, Deribit returns 0 fill → we surface status:"unfilled"
+    // so the VC hedge manager knows to defer (not error).
+    const wantLimit = params.orderType === "limit_ioc";
+    let limitPriceBtc: number | undefined;
+    let floorSpotUsd = 0;
+    if (wantLimit) {
+      if (!Number.isFinite(params.floorPriceUsdcPerBtc) || (params.floorPriceUsdcPerBtc as number) <= 0) {
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: requestedQty,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: { reason: "limit_ioc_requires_positive_floor", floorPriceUsdcPerBtc: params.floorPriceUsdcPerBtc }
+        };
+      }
+      try {
+        const idx = await this.connector.getIndexPrice("btc_usd");
+        floorSpotUsd = Number((idx as any)?.result?.index_price ?? 0);
+      } catch (err: any) {
+        console.warn(`[DeribitAdapter] sellOption(limit): pre-fill spot fetch failed: ${err?.message ?? err}`);
+      }
+      if (!(floorSpotUsd > 0)) {
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: requestedQty,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: { reason: "limit_ioc_missing_spot_for_conversion" }
+        };
+      }
+      const rawBtc = (params.floorPriceUsdcPerBtc as number) / floorSpotUsd;
+      const tick = rawBtc >= 0.005 ? 0.0005 : 0.0001;
+      // Floor → snap DOWN (use floor, not ceil) so we never accept
+      // worse than the requested USDC floor due to rounding.
+      limitPriceBtc = Math.floor(rawBtc / tick) * tick;
+      limitPriceBtc = Number(limitPriceBtc.toFixed(4));
+      if (!(limitPriceBtc > 0)) {
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: requestedQty,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: {
+            reason: "limit_ioc_floor_below_min_tick",
+            floorPriceUsdcPerBtc: params.floorPriceUsdcPerBtc,
+            floorSpotUsd,
+            rawBtc,
+            tick
+          }
+        };
+      }
+      console.log(
+        `[DeribitAdapter] sellOption LIMIT_IOC instrument=${params.instrumentId} qty=${requestedQty} ` +
+          `floorUsdcPerBtc=${params.floorPriceUsdcPerBtc} spotUsd=${floorSpotUsd} limitBtc=${limitPriceBtc}`
+      );
+    }
+
     const EXECUTE_TIMEOUT_MS = Number(process.env.PILOT_DERIBIT_EXECUTE_TIMEOUT_MS || "8000");
     let raw: any;
     try {
       raw = (await Promise.race([
-        this.connector.placeOrder({
-          instrument: params.instrumentId,
-          amount: requestedQty,
-          side: "sell",
-          type: "market"
-        }),
+        this.connector.placeOrder(
+          wantLimit
+            ? {
+                instrument: params.instrumentId,
+                amount: requestedQty,
+                side: "sell",
+                type: "limit",
+                price: limitPriceBtc,
+                timeInForce: "immediate_or_cancel"
+              }
+            : {
+                instrument: params.instrumentId,
+                amount: requestedQty,
+                side: "sell",
+                type: "market"
+              }
+        ),
         new Promise((_, reject) =>
           setTimeout(
             () => reject(new Error("venue_sell_timeout")),
@@ -1256,7 +1350,7 @@ class DeribitTestAdapter implements PilotVenueAdapter {
         fillPrice: 0,
         totalProceeds: 0,
         orderId: null,
-        details: { reason: err?.message || "sell_request_failed" }
+        details: { reason: err?.message || "sell_request_failed", orderType: wantLimit ? "limit_ioc" : "market" }
       };
     }
 
@@ -1282,14 +1376,29 @@ class DeribitTestAdapter implements PilotVenueAdapter {
       const reason = paperRejected
         ? String(raw?.reason ?? "paper_rejected")
         : `not_filled:${orderState}`;
+      // 2026-05-21: For limit-IOC sells, a "not filled" outcome is the
+      // expected signal that the book didn't cross our floor — we
+      // surface "unfilled" (deferral signal) rather than "failed"
+      // (genuine error). Market sells continue to map to "failed" so
+      // the legacy contract holds.
+      const status: "unfilled" | "failed" =
+        wantLimit && !paperRejected ? "unfilled" : "failed";
       return {
-        status: "failed",
+        status,
         instrumentId: params.instrumentId,
         quantity: requestedQty,
         fillPrice: 0,
         totalProceeds: 0,
         orderId: String(orderData?.order_id ?? orderData?.id ?? null) || null,
-        details: { reason, raw, orderState }
+        details: {
+          reason,
+          raw,
+          orderState,
+          orderType: wantLimit ? "limit_ioc" : "market",
+          limitPriceBtc: limitPriceBtc ?? null,
+          floorPriceUsdcPerBtc: params.floorPriceUsdcPerBtc ?? null,
+          floorSpotUsd: floorSpotUsd || null
+        }
       };
     }
 
@@ -3996,7 +4105,15 @@ class FalconxAdapter implements PilotVenueAdapter {
     throw new Error("mark_unavailable");
   }
 
-  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+  async sellOption(params: {
+    instrumentId: string;
+    quantity: number;
+    orderType?: "market" | "limit_ioc";
+    floorPriceUsdcPerBtc?: number;
+  }): Promise<SellOptionResult> {
+    // FalconX adapter does not currently honor limit_ioc / floor; the
+    // VC manager only routes Deribit legs through the floor path. The
+    // signature is widened for TypeScript compatibility.
     try {
       const payload = {
         token_pair: { base_token: "BTC", quote_token: "USDC" },
@@ -4112,7 +4229,12 @@ class DeribitLiveAdapter extends DeribitTestAdapter {
     return { ...result, venue: "deribit_live" };
   }
 
-  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+  async sellOption(params: {
+    instrumentId: string;
+    quantity: number;
+    orderType?: "market" | "limit_ioc";
+    floorPriceUsdcPerBtc?: number;
+  }): Promise<SellOptionResult> {
     const result = await super.sellOption(params);
     return {
       ...result,
@@ -4831,7 +4953,17 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     };
   }
 
-  async sellOption(params: { instrumentId: string; quantity: number }): Promise<SellOptionResult> {
+  async sellOption(params: {
+    instrumentId: string;
+    quantity: number;
+    orderType?: "market" | "limit_ioc";
+    floorPriceUsdcPerBtc?: number;
+  }): Promise<SellOptionResult> {
+    // Bullish adapter currently only supports market sells (limit IOC
+    // not yet implemented venue-side). Signature widened so the
+    // executor adapter can pass through, but limit_ioc requests will
+    // fall through to market sell here. VC manager routes Deribit-only
+    // through the floor path today, so this branch is not exercised.
     if (!this.config.enableExecution) {
       return {
         status: "failed",
