@@ -68,7 +68,7 @@ CONTRACTS_BTC="${CONTRACTS_BTC:-0.01}"
 BUY_LIMIT_USDC="${BUY_LIMIT_USDC:-}"
 BUY_LIMIT_ASK_BUFFER_PCT="${BUY_LIMIT_ASK_BUFFER_PCT:-1.10}"  # 10% above current ask
 
-SELL_LIMIT_USDC="${SELL_LIMIT_USDC:-0.01}"     # Floor — IOC fills at the bid
+SELL_LIMIT_USDC="${SELL_LIMIT_USDC:-10}"       # Tick-safe floor: Bullish BTC option tick is $10. IOC at $10 fills at prevailing bid (price improvement).
 MAX_PREMIUM_USDC="${MAX_PREMIUM_USDC:-10}"     # Hard safety cap (BUY side)
 MAX_NOTIONAL_SELL_USDC="${MAX_NOTIONAL_SELL_USDC:-25}"  # Hard safety cap (SELL side)
 SETTLE_WAIT_SEC="${SETTLE_WAIT_SEC:-30}"       # Pause between buy and sell
@@ -118,7 +118,7 @@ if [[ -z "$BUY_LIMIT_USDC" ]]; then
 else
   echo "Buy limit:     \$$BUY_LIMIT_USDC / BTC  (expected debit: \$$(awk -v a="$BUY_LIMIT_USDC" -v b="$CONTRACTS_BTC" 'BEGIN { printf "%.2f", a*b }') )"
 fi
-echo "Sell limit:    \$$SELL_LIMIT_USDC / BTC (IOC, fills at bid)"
+echo "Sell limit:    \$$SELL_LIMIT_USDC / BTC (Bullish tick-grid; IOC fills at prevailing bid via price-improvement)"
 echo "Max premium:   \$$MAX_PREMIUM_USDC (buy side)"
 echo "Max notional:  \$$MAX_NOTIONAL_SELL_USDC (sell side)"
 echo "Settle wait:   ${SETTLE_WAIT_SEC}s"
@@ -291,8 +291,11 @@ fi
 if [[ "$SELL_OK" != "true" && "$SELL_LOOKS_EXECUTED" != "1" ]]; then
   err "SELL failed — finalStatus=$SELL_FINAL_STATUS finalReason=$SELL_FINAL_REASON bullishError=$SELL_BULLISH_ERR"
   err "  Position is still OPEN. BUY orderId=$BUY_ORDER_ID"
-  if [[ "$SELL_FINAL_REASON" == "Expired" ]]; then
-    err "  IOC sell at \$$SELL_LIMIT_USDC didn't fill — no bid in book?"
+  if echo "$SELL_BULLISH_ERR" | grep -q "PRICE_MUST_BE_OF_TICK_SIZE\|6018"; then
+    err "  Bullish tick-size rejection — current SELL_LIMIT_USDC=\$$SELL_LIMIT_USDC is below market tick (\$10 standard for BTC options)."
+    err "  Retry with: SELL_LIMIT_USDC=10 bash $0  (or any \$10 multiple)"
+  elif [[ "$SELL_FINAL_REASON" == "Expired" ]]; then
+    err "  IOC sell at \$$SELL_LIMIT_USDC didn't fill — no bid in book or limit above all bids?"
   fi
   exit 5
 fi
