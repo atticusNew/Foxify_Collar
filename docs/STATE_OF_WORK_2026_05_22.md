@@ -26,6 +26,7 @@ What's NOT on live but exists on vc-sandbox:
 | `a9209cc` | shared Bullish singleton + caching | Every Bullish call from live opens fresh JWT → `MAX_SESSION_COUNT_REACHED` risk |
 | `f3d3858` | Bullish negative-cache for rate limit | No backoff on Bullish `RATE_LIMIT_EXCEEDED` (96100) |
 | `2421c83` | archive position endpoint | Test-position cleanup blocked (404 confirmed 2026-05-22) |
+| `01ad919` | Foxify dashboard premium-math fix (F1/F2/F3) | Foxify dashboard shows wrong premium owed + hides triggered positions |
 | ~23 others | Bullish admin endpoints + probe scripts + tests | Low impact for live ops (mostly diagnostic tooling) |
 
 ### Sync paths available
@@ -85,6 +86,11 @@ Until path is chosen, treat live as "frozen at `9ee5af5`" and route critical fix
 
 - **Track 1: slippage floor** for limit IOC discretionary TP exits — **on `vc-sandbox` ONLY (commit `c3eeb89`); NOT yet on live.** Earlier bookmark statement was incorrect. Live cursor branch is `9ee5af5`, predates this commit by 3 days.
 - **Track 1: archive position endpoint** — **on `vc-sandbox` ONLY (`2421c83`); NOT yet on live.** Confirmed via 404 from live admin call 2026-05-22 19:22 ET.
+- **Foxify dashboard premium-math fix** (commit `01ad919` on `vc-sandbox` / `637102c` on `vc-sandbox-spreads`) — three bugs fixed in `foxifyDashboard.ts`:
+  - F1: `/foxify/positions` sent per-day RATE in `premiumPaidUsdc` (Foxify interpreted as already-paid → "owed = 0"). Now sends cumulative accrued since open (hourly precision). New explicit `premiumAccruedUsdc` + `dailyRateUsdc` fields.
+  - F2: `/foxify/today` summed daily rates of positions opened TODAY (missed yesterday's still-alive positions accruing all day). Now sums hourly-precision accrued in [dayStart, dayEnd) across all overlapping positions.
+  - F3: `/foxify/positions` used `listActivePositions` which filters to status='active' only, hiding TRIGGERED positions still on the books. Added `listLiveFoxifyPositions` helper that returns active+triggered. `listActivePositions` unchanged for trigger-detector + admin views.
+  - 9 unit tests cover the new `premiumAccruedInWindowUsdc` helper.
 - **vc-pos-e41890f triage** — see "Open positions" above. Force-sold both legs, finalized salvage event, projected −$190 final P&L at pair expiry. Cell to be disabled on live via toggle.
 - **Bullish singleton + caching** — pushed to `vc-sandbox` (`a9209cc`). 7 callsites migrated, orderbook+balance caching, negative cache for rate-limit, env gate.
 - **Bullish E1 (long round-trip) microtest** — VALIDATED on shadow.
