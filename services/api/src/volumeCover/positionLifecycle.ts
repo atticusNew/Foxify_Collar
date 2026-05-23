@@ -663,11 +663,79 @@ export const closePosition = async (
   const legs = await listHedgeLegsForPosition(pool, params.position.id);
   const openLegs = legs.filter((l) => l.status === "open" && !l.retained);
   const retainedLegIds: string[] = [];
+  let spreadShortProceedsUsdc = 0;
 
+  // ─── 2026-05-23: spread-executor close branch ───
+  // If these legs are a 4-leg spread, close BOTH shorts immediately
+  // (BUY back) and retain ONLY the longs for salvage. Retaining
+  // shorts indefinitely is wrong: shorts cost margin until expiry
+  // and can swing ITM, costing Atticus money. The hedge manager TP
+  // loop also only knows how to sell longs (sellOptionLeg).
+  //
+  // Mirrors the trigger semantics from fireTrigger().
+  const spreadLegs = openLegs.filter(
+    (l) => l.spreadGroupId !== null && l.legRole !== null
+  );
+  const strangleLegs = openLegs.filter((l) => l.spreadGroupId === null);
+
+  if (spreadLegs.length === 4) {
+    const cell = findCellById(params.position.cellId);
+    if (cell) {
+      try {
+        // Reuse the trigger-time helper. On Foxify-close (no trigger
+        // fired), we don't know "winner" vs "loser" wing — but both
+        // shorts close either way. Use direction="low" arbitrarily;
+        // the function closes BOTH shorts regardless.
+        const spreadOutcome = await executeSpreadPartialCloseOnTrigger({
+          pool,
+          positionId: params.position.id,
+          cell,
+          spreadLegs,
+          triggerDirection: "low"
+        });
+        spreadShortProceedsUsdc = spreadOutcome.shortLegProceedsUsdc;
+        retainedLegIds.push(...spreadOutcome.longLegIdsRetained);
+      } catch (err) {
+        console.error(
+          `[VC ALERT] spread Foxify-close failed for position ${params.position.id}: ${(err as Error).message}. ` +
+            `Falling back to retain-all (legacy strangle behavior). MANUAL CLEANUP MAY BE REQUIRED for retained shorts.`
+        );
+        // Fallback: retain all 4 legs (legacy behavior). Operator
+        // must manually close shorts via /admin/bullish-test-buy
+        // or /admin/force-sell-leg before margin accrues.
+        for (const leg of spreadLegs) {
+          try {
+            await markHedgeLegRetained(pool, {
+              id: leg.id,
+              retainedReason: "foxify_close_spread_fallback",
+              retainedRole: "near_atm_post_close"
+            });
+            retainedLegIds.push(leg.id);
+          } catch { /* best effort */ }
+        }
+      }
+    } else {
+      console.warn(
+        `[volumeCover/lifecycle] spread Foxify-close: cell ${params.position.cellId} not in registry; retain-all fallback`
+      );
+      for (const leg of spreadLegs) {
+        try {
+          await markHedgeLegRetained(pool, {
+            id: leg.id,
+            retainedReason: "foxify_close",
+            retainedRole: "near_atm_post_close"
+          });
+          retainedLegIds.push(leg.id);
+        } catch { /* best effort */ }
+      }
+    }
+  }
+
+  // ─── Strangle (legacy) retention path — runs for non-spread legs only ───
   // Tag retained role per leg based on current spot vs strike.
   // 0.5% threshold matches gamma-zone band in TP rule 3.
   const stalePctThreshold = 0.005;
-  for (const leg of openLegs) {
+  for (const leg of strangleLegs) {
     let role: RetainedRole = "near_atm_post_close";
     if (typeof params.currentSpotBtc === "number" && params.currentSpotBtc > 0) {
       const dist = Math.abs(params.currentSpotBtc - leg.strikeUsdc) / params.currentSpotBtc;
@@ -713,6 +781,28 @@ export const closePosition = async (
     reason: params.reason,
     coverageThroughIso
   });
+
+  // Spread-close: book realized short-leg proceeds immediately.
+  if (spreadShortProceedsUsdc > 0) {
+    try {
+      await insertLedgerEntry(pool, {
+        poolId: "atticus_hedge",
+        protectionId: params.position.id,
+        entryType: "hedge_sell_in",
+        amountUsdc: spreadShortProceedsUsdc,
+        reference: `vc_spread_short_foxify_close:${params.position.cellId}:${params.position.id}`,
+        metadata: {
+          product: "volume_cover",
+          executor: "spread",
+          source: "foxify_close_partial"
+        }
+      });
+    } catch (err) {
+      console.warn(
+        `[volumeCover/lifecycle] spread short_proceeds ledger failed for position ${params.position.id}: ${(err as Error).message}`
+      );
+    }
+  }
 
   try {
     const accruedPremium = params.position.dailyPremiumUsdc * daysHeld;
