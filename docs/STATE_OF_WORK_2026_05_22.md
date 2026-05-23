@@ -7,10 +7,10 @@ Use this as the "go back to here" reference if context is lost.
 
 | Branch | Tip | Purpose |
 |---|---|---|
-| `vc-sandbox` | `7a88d72` | Auto-deploys to **shadow** Render only. Contains Bullish singleton/caching, slippage floor, archive endpoint, E1 microtest script. |
-| `vc-sandbox-spreads` | `08bd5b9` (currently checked out) | Track 2 spread scaffolding. Contains everything in `vc-sandbox` PLUS the spread design doc, `spreadHedge.ts`, `matrix.ts` field additions, E2 microtest script. |
-| `cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4` | `9ee5af5` | **THIS IS THE LIVE BRANCH** — `foxify-pilot-new` on Render tracks this. Ops-managed, 27 commits behind `vc-sandbox`. |
-| `vc/track1-archive-and-slippage-floor` | `da1b715` | Source branch for slippage-floor commit `1926291`. NOT YET on live or vc-sandbox-shadow. |
+| `vc-sandbox` | `01ad919` | Auto-deploys to **shadow** Render only. Contains Bullish singleton/caching, slippage floor, archive endpoint, Foxify premium-math fix, E1 microtest script. |
+| `vc-sandbox-spreads` | `ebe94e3` (currently checked out) | Track 2 spread scaffolding. Contains everything in `vc-sandbox` PLUS the spread design doc, `spreadHedge.ts`, `matrix.ts` field additions, E2 microtest script. |
+| `cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4` | `b4e7a2b` (post-merge 2026-05-22 23:51 UTC) | **Was the LIVE-tracked branch per stale render.yaml.** Verify in Render dashboard for `foxify-pilot-new` whether it's still tracked. Merge of vc-sandbox just pushed; deploy status pending dashboard check. |
+| `vc/track1-archive-and-slippage-floor` | `da1b715` | Source branch for slippage-floor commit `1926291`. Equivalent functionality (different SHA) is in `c3eeb89` on `vc-sandbox` and now in the live cursor branch via merge `b4e7a2b`. |
 
 ### CRITICAL: live deploy drift (corrected 2026-05-22 19:25 ET)
 
@@ -45,10 +45,13 @@ Until path is chosen, treat live as "frozen at `9ee5af5`" and route critical fix
 
 ## Render deployments
 
-| Service | URL | Branch tracked | Status | Critical env vars |
+**IMPORTANT — `render.yaml` is NOT authoritative for live.** The yaml file lists service names `atticus-pilot-api` / `atticus-pilot-web`, but the **actual deployed Render services are `foxify-pilot-new` and `foxify-pilot-new-web`**, configured directly in the Render dashboard. Always check the Render dashboard for branch + autoDeploy + env vars — yaml may be stale.
+
+| Service (Render dashboard name) | URL | Branch tracked | Status | Critical env vars |
 |---|---|---|---|---|
-| `foxify-pilot-new` (LIVE) | https://foxify-pilot-new.onrender.com | `cursor/-bc-c2468b87-...-6ba4` @ `9ee5af5` | Hosting vc-pos-e41890f0 (triggered, hedges sold, accruing premium to pair close Sun 12:13 UTC). Bullish balance tracking DISABLED. **27 commits behind vc-sandbox.** | `PILOT_DEPLOYMENT_TIER=live`, `BULLISH_BALANCE_TRACKING_ENABLED=false`, `PILOT_BULLISH_ALLOW_MARGIN=false` |
-| `foxify-pilot-shadow` (SHADOW) | https://foxify-pilot-shadow-3r1m.onrender.com | `vc-sandbox` (auto-deploy) | Used for E1 (passed). Always current with vc-sandbox. | `PILOT_DEPLOYMENT_TIER=shadow`, `BULLISH_BALANCE_TRACKING_ENABLED=true`, `PILOT_BULLISH_ALLOW_MARGIN=false` ← **needs flip to `true` before E2** |
+| `foxify-pilot-new` (LIVE API) | https://foxify-pilot-new.onrender.com | **CHECK RENDER DASHBOARD** (was `cursor/-bc-c2468b87-...-6ba4` per stale render.yaml; merge `b4e7a2b` pushed to that branch 2026-05-22 23:51 UTC pending deploy verification) | Hosting vc-pos-e41890f0 (triggered, hedges sold, accruing premium to pair close Sun 12:13 UTC). Bullish balance tracking DISABLED. | `PILOT_DEPLOYMENT_TIER=live`, `BULLISH_BALANCE_TRACKING_ENABLED=false`, `PILOT_BULLISH_ALLOW_MARGIN=false`, `VC_TP_SLIPPAGE_FLOOR_ENABLED` (not set → default false) |
+| `foxify-pilot-new-web` (LIVE WEB) | (web frontend) | Same as API | Foxify-facing dashboard | (env unknown, check dashboard) |
+| `foxify-pilot-shadow` (SHADOW API) | https://foxify-pilot-shadow-3r1m.onrender.com | `vc-sandbox` (autoDeploy per render-shadow.yaml line 28-29) | Used for E1 (passed). Always current with vc-sandbox. | `PILOT_DEPLOYMENT_TIER=shadow`, `BULLISH_BALANCE_TRACKING_ENABLED=true`, `PILOT_BULLISH_ALLOW_MARGIN=false` ← **needs flip to `true` before E2** |
 
 ## Open positions (live Foxify)
 
@@ -86,11 +89,21 @@ Until path is chosen, treat live as "frozen at `9ee5af5`" and route critical fix
 
 - **Track 1: slippage floor** for limit IOC discretionary TP exits — **on `vc-sandbox` ONLY (commit `c3eeb89`); NOT yet on live.** Earlier bookmark statement was incorrect. Live cursor branch is `9ee5af5`, predates this commit by 3 days.
 - **Track 1: archive position endpoint** — **on `vc-sandbox` ONLY (`2421c83`); NOT yet on live.** Confirmed via 404 from live admin call 2026-05-22 19:22 ET.
-- **Foxify dashboard premium-math fix** (commit `01ad919` on `vc-sandbox` / `637102c` on `vc-sandbox-spreads`) — three bugs fixed in `foxifyDashboard.ts`:
-  - F1: `/foxify/positions` sent per-day RATE in `premiumPaidUsdc` (Foxify interpreted as already-paid → "owed = 0"). Now sends cumulative accrued since open (hourly precision). New explicit `premiumAccruedUsdc` + `dailyRateUsdc` fields.
-  - F2: `/foxify/today` summed daily rates of positions opened TODAY (missed yesterday's still-alive positions accruing all day). Now sums hourly-precision accrued in [dayStart, dayEnd) across all overlapping positions.
-  - F3: `/foxify/positions` used `listActivePositions` which filters to status='active' only, hiding TRIGGERED positions still on the books. Added `listLiveFoxifyPositions` helper that returns active+triggered. `listActivePositions` unchanged for trigger-detector + admin views.
-  - 9 unit tests cover the new `premiumAccruedInWindowUsdc` helper.
+- **Foxify dashboard premium-math fix** — two commits this session:
+  - **v1** (`01ad919` vc-sandbox / `637102c` vc-sandbox-spreads): fixed three bugs.
+    - F1: `/foxify/positions` sent per-day RATE in `premiumPaidUsdc` → Foxify read as already-paid → "owed = 0".
+    - F2: `/foxify/today` summed daily rates of positions opened TODAY, missing yesterday's still-alive positions.
+    - F3: `/foxify/positions` hid TRIGGERED positions (used `listActivePositions` which is status='active' only). Added `listLiveFoxifyPositions` (active+triggered).
+  - **v3** (`7cdf53c` vc-sandbox-spreads): operator-reported gap after v2 — Foxify dash payout number "disappeared" at UTC midnight. Root cause: `payoutsReceivedUsdc` was today's-window only; the only live trigger (vc-pos-e41890f0 fired Fri 22:44 UTC) moved into the "yesterday" window once the clock crossed midnight UTC. Same midnight-rollover pattern as the original premium F2 bug.
+    - Added `payoutExpectedUsdc` (sum of `payout_usdc` across all live active+triggered, non-archived, non-admin-test) — the "Foxify is expecting" headline that never vanishes.
+    - Granular splits: `payoutOwedTriggeredUsdc` (will be paid at pair-close) + `payoutPotentialActiveUsdc` (if-trigger-fires exposure).
+    - Frontend (`apps/web/src/FoxifyDashboard.tsx`): added Payout column to Active Protections table (per-position `payoutUsdc`); rebound the today panel headline from `payoutsReceivedUsdc` (today only) to `payoutExpectedUsdc` (lifetime, with the owed / if-triggered breakdown shown as a subline).
+  - **v2** (`97f0b3c`): operator-reported gap after merge — live dash showed $209 (today's hourly) but never showed yesterday's $210. Root cause: v1 used hourly-precision accrual everywhere, but **Foxify's contract bills per-day round-up** (any portion of a UTC day = 1 full day, per `weeklyReconciler.daysActiveInWindow`).
+    - Added `premiumBillableInWindowUsdc` helper (`ceil(overlap_hours/24) × dailyRate`).
+    - `/foxify/positions` per-position: `premiumPaidUsdc` is now BILLABLE since open (contract amount). vc-pos-e41890f0 → 2 days × $210 = $420. Hourly view still exposed via `premiumAccruedUsdc`.
+    - `/foxify/today` exposes all four views: `premiumBillableLifetime`, `premiumAccruedLifetime`, `premiumBillableToday`, `premiumAccruedToday`. Headline `premiumPaidUsdc` is now lifetime billable (cumulative across all live positions, contract rule).
+    - 15 unit tests (9 accrued + 6 billable).
+- **render.yaml clarification** (same v2 commit) — added a header comment documenting that yaml service names (`atticus-pilot-api` / `atticus-pilot-web`) are stale; actual live Render services are `foxify-pilot-new` / `foxify-pilot-new-web`. yaml branch + autoDeploy happen to currently match live (verified during the merge auto-deploy), but the Render dashboard is the authoritative source for live config. Always check there before any ops change.
 - **vc-pos-e41890f triage** — see "Open positions" above. Force-sold both legs, finalized salvage event, projected −$190 final P&L at pair expiry. Cell to be disabled on live via toggle.
 - **Bullish singleton + caching** — pushed to `vc-sandbox` (`a9209cc`). 7 callsites migrated, orderbook+balance caching, negative cache for rate-limit, env gate.
 - **Bullish E1 (long round-trip) microtest** — VALIDATED on shadow.
