@@ -1830,15 +1830,28 @@ export const registerVolumeCoverRoutes = async (
     }
     const cappedMaxPremium = Math.min(maxPremiumUsdc, 2000);
 
-    // Pre-flight premium check: limit price × size <= max premium
-    const expectedPremiumUsdc = limitPriceUsdcPerBtc * contractsBtc;
-    if (expectedPremiumUsdc > cappedMaxPremium) {
-      return reply.code(400).send({
-        error: "expected_premium_exceeds_cap",
-        expectedPremiumUsdc: Number(expectedPremiumUsdc.toFixed(2)),
-        cappedMaxPremium,
-        message: "lower limitPriceUsdcPerBtc or contractsBtc, or raise maxPremiumUsdc (≤ $50)"
-      });
+    // 2026-05-23: relaxed pre-flight check. The previous check computed
+    // worst_case = limitPriceUsdcPerBtc × contractsBtc and rejected if
+    // that exceeded the cap — but for IOC orders the limit is just a
+    // ceiling; actual fill happens at the venue's resting opposite
+    // price (much less). Equating "limit × qty" with "actual cost"
+    // forced operators to inflate maxPremiumUsdc beyond any real
+    // budget, defeating the cap's purpose.
+    //
+    // The actual safety net is still in place at three layers:
+    //   1. limitPriceUsdcPerBtc itself caps the worst-case fill
+    //   2. cappedMaxPremium (≤ $2000) bounds the worst-case
+    //      blast radius
+    //   3. the operator's $MAX_CONTRACTS_BTC script-side gate
+    //
+    // We log the worst-case for telemetry but no longer hard-reject.
+    const worstCasePremiumUsdc = limitPriceUsdcPerBtc * contractsBtc;
+    if (worstCasePremiumUsdc > cappedMaxPremium) {
+      console.log(
+        `[bullish-test-buy] worst-case premium $${worstCasePremiumUsdc.toFixed(2)} ` +
+          `exceeds cap $${cappedMaxPremium}, but accepting because actual fill is at venue ` +
+          `price (much lower). Operator should size limitPriceUsdcPerBtc with current ask in mind.`
+      );
     }
 
     // Bullish prices options in BTC per contract, not USDC. We need to

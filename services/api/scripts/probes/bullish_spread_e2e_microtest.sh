@@ -96,7 +96,7 @@ CONTRACTS_BTC="${CONTRACTS_BTC:-0.01}"
 #   SELL at limit X → "fill if bid ≥ X" → smaller X = more aggressive
 #
 # If you flip these (high SELL limit / low BUY limit), every IOC will Expire.
-BUY_LIMIT_USDC="${BUY_LIMIT_USDC:-2000}"   # high → guarantees BUY fills at ask
+BUY_LIMIT_USDC="${BUY_LIMIT_USDC:-1000}"   # high enough to fill at any sane option ask
 SELL_LIMIT_USDC="${SELL_LIMIT_USDC:-5}"    # low → guarantees SELL fills at bid
 
 # Bullish option tick size (default $5 — verified empirically 2026-05-23).
