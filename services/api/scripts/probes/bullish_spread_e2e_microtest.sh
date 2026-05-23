@@ -99,9 +99,12 @@ CONTRACTS_BTC="${CONTRACTS_BTC:-0.01}"
 BUY_LIMIT_USDC="${BUY_LIMIT_USDC:-1000}"   # high enough to fill at any sane option ask
 SELL_LIMIT_USDC="${SELL_LIMIT_USDC:-5}"    # low → guarantees SELL fills at bid
 
-# Bullish option tick size (default $5 — verified empirically 2026-05-23).
+# Bullish option tick size for BTC options (default $10 — verified
+# empirically 2026-05-23 against BTC-USDC-20260526-75000-P: $5 was
+# rejected with PRICE_MUST_BE_OF_TICK_SIZE; $10 accepted and filled
+# at the resting bid via price improvement).
 # Override only if a specific symbol uses a non-standard grid.
-TICK_SIZE_USDC="${TICK_SIZE_USDC:-5}"
+TICK_SIZE_USDC="${TICK_SIZE_USDC:-10}"
 
 # Snap a price to the tick grid. Direction:
 #   ceil  — round UP   (use for BUY limits, so we don't accidentally undershoot)
