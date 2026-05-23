@@ -57,8 +57,18 @@ type TodaySummary = {
   triggeredToday: number;
   closedEarlyToday: number;
   expiredUnusedToday: number;
+  // Premium fields (v2 fix: lifetime billable headline + 4 explicit views).
   premiumPaidUsdc: number;
-  payoutsReceivedUsdc: number;
+  premiumBillableLifetimeUsdc?: number;
+  premiumAccruedLifetimeUsdc?: number;
+  premiumBillableTodayUsdc?: number;
+  premiumAccruedTodayUsdc?: number;
+  // Payout fields (2026-05-23 fix: lifetime expected payout headline so the
+  // number doesn't vanish at UTC midnight when triggers move to "yesterday").
+  payoutExpectedUsdc?: number;
+  payoutOwedTriggeredUsdc?: number;
+  payoutPotentialActiveUsdc?: number;
+  payoutsReceivedUsdc: number; // today only, retained
   foxifyNetUsdc: number;
   generatedAtIso: string;
 };
@@ -309,6 +319,7 @@ function ActivePositionsPanel({
                 <th style={{ padding: "6px 8px" }}>Trigger Levels</th>
                 <th style={{ padding: "6px 8px" }}>Distance</th>
                 <th style={{ padding: "6px 8px" }}>Premium</th>
+                <th style={{ padding: "6px 8px" }}>Payout</th>
                 <th style={{ padding: "6px 8px" }}>Opened</th>
                 <th style={{ padding: "6px 8px" }}>Action</th>
               </tr>
@@ -366,6 +377,15 @@ function ActivePositionsPanel({
                     </td>
                     <td style={{ padding: "6px 8px" }}>
                       {fmt$(p.premiumPaidUsdc, 2)}
+                    </td>
+                    <td
+                      style={{
+                        padding: "6px 8px",
+                        color:
+                          p.status === "triggered" ? "#69d171" : "#bbb"
+                      }}
+                    >
+                      {fmt$(p.payoutUsdc, 0)}
                     </td>
                     <td style={{ padding: "6px 8px", fontSize: 11 }}>
                       {fmtRelative(p.openedAtIso)}
@@ -452,9 +472,22 @@ function TodaySummaryPanel({ today }: { today: TodaySummary | null }) {
           </div>
         </div>
         <div>
-          <div style={{ color: "#888", fontSize: 11 }}>Payouts Received</div>
+          <div style={{ color: "#888", fontSize: 11 }}>Payout Expecting</div>
           <div style={{ fontSize: 16, fontWeight: 700, color: "#69d171" }}>
-            {fmt$(today.payoutsReceivedUsdc)}
+            {fmt$(today.payoutExpectedUsdc ?? today.payoutsReceivedUsdc)}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            {today.payoutOwedTriggeredUsdc != null &&
+            today.payoutPotentialActiveUsdc != null ? (
+              <>
+                {fmt$(today.payoutOwedTriggeredUsdc, 0)} owed
+                {today.payoutPotentialActiveUsdc > 0
+                  ? ` + ${fmt$(today.payoutPotentialActiveUsdc, 0)} if-triggered`
+                  : ""}
+              </>
+            ) : (
+              "across all live positions"
+            )}
           </div>
         </div>
         <div style={{ gridColumn: "span 2" }}>
