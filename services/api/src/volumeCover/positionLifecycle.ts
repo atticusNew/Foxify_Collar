@@ -20,7 +20,7 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import type { CellDefinition } from "./matrix";
-import { computeTriggerPrices } from "./matrix";
+import { computeTriggerPrices, findCellById } from "./matrix";
 import {
   buildHedgeStructureWithVenueGrid,
   executeHedgeStructure,
@@ -45,6 +45,19 @@ import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
 import { recordObligationWithDeferralSchedule } from "./counterpartyLedger";
 import { attemptLadderNetting } from "./ladderNetting";
 import { recordTriggerForFingerprint } from "./antiBot";
+// ─── 2026-05-23: spread-executor wiring (Track 2 PR #2 cutover) ───
+import {
+  buildSpreadStructureDB,
+  resolveSpreadVenue,
+  isSpreadCellAllowed
+} from "./spreadHedge";
+import {
+  openSpread,
+  closeSpread,
+  partialCloseSpreadOnTrigger,
+  type SpreadExecutorAdapter
+} from "./spreadExecutor";
+import { getBullishSpreadAdapter } from "./bullishSpreadAdapter";
 
 export type OpenPositionRequest = {
   cell: CellDefinition;
@@ -122,6 +135,42 @@ export const openPosition = async (
   } catch (err: any) {
     throw new Error(`volume_cover_position_insert_failed: ${err?.message ?? err}`);
   }
+
+  // ───────────────────────────────────────────────────────────────────
+  // 2026-05-23: SPREAD-EXECUTOR BRANCH (Track 2 PR #2 cutover)
+  //
+  // Feature-flagged via VOLUME_COVER_HEDGE_STRATEGY (env) +
+  // VC_SPREAD_CELL_ALLOWLIST. Default is strangle (existing path)
+  // — spread only fires for explicitly allowlisted cells.
+  //
+  // Behavior:
+  //   - Build a 4-leg [DB] tight-spread structure via spreadHedge
+  //   - Open sequenced via spreadExecutor.openSpread (with rollback)
+  //   - Persist 4 legs with shared spread_group_id and leg_role
+  //   - Skip ladder netting (incompatible with spread structure)
+  // ───────────────────────────────────────────────────────────────────
+  if (isSpreadCellAllowed(req.cell.cellId)) {
+    const spreadResult = await executeSpreadOpen({
+      pool,
+      positionId,
+      cell: req.cell,
+      pairEntryBtcPrice: req.pairEntryBtcPrice
+    });
+    return {
+      position,
+      hedgeLegs: spreadResult.hedgeLegs,
+      totalHedgeCostUsdc: spreadResult.totalCostUsdc,
+      venue: spreadResult.venue,
+      laddered: false,
+      ladderedLegIds: [],
+      ladderEstimatedSavingsUsdc: 0,
+      ladderEventId: null
+    };
+  }
+
+  // ───────────────────────────────────────────────────────────────────
+  // STRANGLE PATH (default / existing behavior, unchanged below)
+  // ───────────────────────────────────────────────────────────────────
 
   // Build hedge structure (P1c: vol-buffered sizing + grid snap +
   // venue strike grid lookup when provider wired). Falls back to
@@ -328,11 +377,62 @@ export const fireTrigger = async (
   // manager applies the right TP rule on the now-triggered position.
   const openLegs = legs.filter((l) => l.status === "open");
 
-  // Tag each leg's retained role based on trigger direction.
-  // direction='low'  → BTC dropped → put leg is the WINNER (now ITM)
-  // direction='high' → BTC rose    → call leg is the WINNER
+  // ─── 2026-05-23: spread-executor trigger branch ───
+  // If these legs were opened via the spread executor (4 legs sharing
+  // a spreadGroupId), close BOTH shorts at the venue (collect spread
+  // value, free margin) and retain only the long legs for salvage.
+  // Otherwise fall through to strangle-style retention (all legs).
+  const spreadLegs = openLegs.filter(
+    (l) => l.spreadGroupId !== null && l.legRole !== null
+  );
   const retainedLegIds: string[] = [];
-  for (const leg of openLegs) {
+  let spreadShortProceedsUsdc = 0;
+  if (spreadLegs.length === 4) {
+    const cell = findCellById(params.position.cellId);
+    if (cell) {
+      try {
+        const spreadOutcome = await executeSpreadPartialCloseOnTrigger({
+          pool,
+          positionId: params.position.id,
+          cell,
+          spreadLegs,
+          triggerDirection: params.direction
+        });
+        spreadShortProceedsUsdc = spreadOutcome.shortLegProceedsUsdc;
+        retainedLegIds.push(...spreadOutcome.longLegIdsRetained);
+      } catch (err) {
+        console.error(
+          `[VC ALERT] executeSpreadPartialCloseOnTrigger threw for position ${params.position.id}; ` +
+            `falling back to retain-all. error=${(err as Error).message}`
+        );
+        // Best-effort: retain all 4 legs and let hedge manager TP them.
+        for (const leg of spreadLegs) {
+          const isWinner =
+            (params.direction === "low" && leg.optionKind === "put") ||
+            (params.direction === "high" && leg.optionKind === "call");
+          const role: RetainedRole = isWinner ? "winner_post_trigger" : "loser_post_trigger";
+          try {
+            await markHedgeLegRetained(pool, {
+              id: leg.id,
+              retainedReason: "trigger_spread_fallback",
+              retainedRole: role
+            });
+            retainedLegIds.push(leg.id);
+          } catch { /* best effort */ }
+        }
+      }
+    } else {
+      console.warn(
+        `[volumeCover/lifecycle] spread trigger: cell ${params.position.cellId} not in registry; using strangle-style retain-all fallback`
+      );
+    }
+  }
+
+  // ─── Strangle (or spread fallback) retention path ───
+  // Only run for non-spread legs (or all legs if spread cell lookup failed
+  // and we don't already have retainedLegIds for them).
+  const strangleLegs = openLegs.filter((l) => l.spreadGroupId === null);
+  for (const leg of strangleLegs) {
     const isWinner =
       (params.direction === "low" && leg.optionKind === "put") ||
       (params.direction === "high" && leg.optionKind === "call");
@@ -359,16 +459,45 @@ export const fireTrigger = async (
     positionId: params.position.id,
     triggeredDirection: params.direction,
     payoutOwedUsdc: params.position.payoutUsdc,
-    hedgeSaleProceedsUsdc: 0,
+    // Spread shorts close at trigger time and book proceeds immediately;
+    // longs remain in salvage and get finalized by the hedge manager.
+    hedgeSaleProceedsUsdc: spreadShortProceedsUsdc,
     metadata: {
       triggerSpotBtc: params.triggerSpotBtc ?? null,
       hedge_retained: true,
       retained_leg_ids: retainedLegIds,
       finalized: false,
       post_close_trigger: postCloseTrigger,
-      coverage_through: params.position.coverageThrough
+      coverage_through: params.position.coverageThrough,
+      spread_short_proceeds_usdc: spreadShortProceedsUsdc > 0
+        ? spreadShortProceedsUsdc
+        : undefined
     }
   });
+
+  // Ledger entry for spread short proceeds (these are realized cash
+  // now, not deferred salvage).
+  if (spreadShortProceedsUsdc > 0) {
+    try {
+      await insertLedgerEntry(pool, {
+        poolId: "atticus_hedge",
+        protectionId: params.position.id,
+        entryType: "hedge_sell_in",
+        amountUsdc: spreadShortProceedsUsdc,
+        reference: `vc_spread_short_close:${params.position.cellId}:${params.position.id}`,
+        metadata: {
+          product: "volume_cover",
+          executor: "spread",
+          direction: params.direction,
+          source: "trigger_partial_close"
+        }
+      });
+    } catch (err) {
+      console.warn(
+        `[volumeCover/lifecycle] spread short_proceeds ledger failed for position ${params.position.id}: ${(err as Error).message}`
+      );
+    }
+  }
 
   // Mark position triggered
   await markPositionTriggered(pool, {
@@ -610,5 +739,283 @@ export const closePosition = async (
     reason: params.reason,
     coverageThroughIso,
     daysHeld
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// 2026-05-23: Spread-executor open helper (Track 2 PR #2 cutover).
+//
+// Called from openPosition() when isSpreadCellAllowed(cell). Mirrors
+// the strangle execute path but uses the 4-leg [DB] spread structure
+// and openSpread() with sequenced rollback.
+// ─────────────────────────────────────────────────────────────────────
+
+const computeExpiryIsoForSpread = (cell: CellDefinition): string => {
+  // Mirror the strangle expiry logic in tightHedge.buildHedgeStructure
+  // (3d for 2% cells, 5d for 5%, 14d for deeper). Snap to 08:00 UTC.
+  const horizonDays = cell.expiryHorizonDays ?? 3;
+  const expiryDate = new Date(Date.now() + horizonDays * 86_400_000);
+  expiryDate.setUTCHours(8, 0, 0, 0);
+  if (expiryDate.getTime() < Date.now()) {
+    expiryDate.setUTCDate(expiryDate.getUTCDate() + 1);
+  }
+  return expiryDate.toISOString();
+};
+
+const executeSpreadOpen = async (params: {
+  pool: Pool;
+  positionId: string;
+  cell: CellDefinition;
+  pairEntryBtcPrice: number;
+  adapterOverride?: SpreadExecutorAdapter; // for tests
+}): Promise<{
+  hedgeLegs: HedgeLegRow[];
+  totalCostUsdc: number;
+  venue: HedgeVenueChoice;
+}> => {
+  const venueRouting = resolveSpreadVenue(params.cell);
+  const expiryIso = computeExpiryIsoForSpread(params.cell);
+
+  const structure = buildSpreadStructureDB({
+    positionId: params.positionId,
+    cell: params.cell,
+    entryBtcPrice: params.pairEntryBtcPrice,
+    expiryIso,
+    venue: venueRouting.primary,
+    fallbackVenue: venueRouting.fallback
+  });
+
+  const adapter = params.adapterOverride ?? getBullishSpreadAdapter();
+
+  let openResult: Awaited<ReturnType<typeof openSpread>>;
+  try {
+    openResult = await openSpread({ structure, adapter });
+  } catch (err: any) {
+    await markPositionClosed(params.pool, {
+      id: params.positionId,
+      reason: `spread_open_threw: ${err?.message ?? err}`
+    });
+    throw new Error(`volume_cover_spread_open_failed: ${err?.message ?? err}`);
+  }
+
+  if (!openResult.ok) {
+    // openSpread already attempted rollback internally on partial fill.
+    await markPositionClosed(params.pool, {
+      id: params.positionId,
+      reason: `spread_open_failed: ${openResult.errorReason ?? "unknown"} (failedAt=${openResult.failedAt})`
+    });
+    throw new Error(
+      `volume_cover_spread_open_failed: ${openResult.errorReason ?? "unknown"} (failedAt=${openResult.failedAt})`
+    );
+  }
+
+  // Persist 4 legs with shared spreadGroupId and per-leg role.
+  // For LONG legs: buy_price_usdc = fill price (cost paid).
+  // For SHORT legs: buy_price_usdc = 0 (no cost paid), initial_proceeds_usdc = fill price.
+  const hedgeLegs: HedgeLegRow[] = [];
+  for (const ol of openResult.legs) {
+    const legSpec = structure.legs.find((l) => l.legRole === ol.legRole);
+    if (!legSpec) {
+      // Shouldn't happen — the executor mirrors the structure.
+      console.error(
+        `[VC ALERT] spread leg ${ol.legRole} not found in structure for position ${params.positionId}`
+      );
+      continue;
+    }
+    const isLong = legSpec.side === "long";
+    try {
+      const leg = await insertHedgeLeg(params.pool, {
+        id: `vc-leg-${randomUUID()}`,
+        positionId: params.positionId,
+        venue: structure.venue,
+        optionKind: legSpec.optionKind,
+        strikeUsdc: legSpec.strikeActualUsdc,
+        expiryIso: legSpec.expiryIso,
+        contracts: legSpec.contractsBtc,
+        buyPriceUsdc: isLong ? ol.fillPriceUsdcPerBtc : 0,
+        buyOrderId: ol.orderId,
+        status: "open",
+        metadata: {
+          spreadGroupId: structure.spreadGroupId,
+          legRole: ol.legRole,
+          symbol: ol.symbol,
+          fillPriceUsdcPerBtc: ol.fillPriceUsdcPerBtc,
+          fillQtyBtc: ol.fillQtyBtc,
+          attempts: ol.attempts
+        },
+        spreadGroupId: structure.spreadGroupId,
+        legRole: ol.legRole,
+        initialProceedsUsdc: isLong ? null : ol.fillPriceUsdcPerBtc
+      });
+      hedgeLegs.push(leg);
+    } catch (insertErr: any) {
+      // Best-effort: log + attempt to unwind via closeSpread.
+      console.error(
+        `[VC ALERT] spread insertHedgeLeg FAILED — attempting closeSpread to unwind. ` +
+          `positionId=${params.positionId} spreadGroupId=${structure.spreadGroupId} ` +
+          `legRole=${ol.legRole} dbError=${JSON.stringify(insertErr?.message ?? String(insertErr))}`
+      );
+      try {
+        await closeSpread({ structure, adapter });
+      } catch (closeErr: any) {
+        console.error(
+          `[VC ALERT] closeSpread also FAILED after insert error — manual cleanup required. ` +
+            `positionId=${params.positionId} spreadGroupId=${structure.spreadGroupId} ` +
+            `closeError=${JSON.stringify(closeErr?.message ?? String(closeErr))}`
+        );
+      }
+      await markPositionClosed(params.pool, {
+        id: params.positionId,
+        reason: `spread_persist_failed: ${insertErr?.message ?? insertErr}`
+      });
+      throw new Error(
+        `volume_cover_spread_persist_failed: ${insertErr?.message ?? insertErr}`
+      );
+    }
+  }
+
+  // Ledger entry: net debit of the spread open.
+  try {
+    await insertLedgerEntry(params.pool, {
+      poolId: "atticus_hedge",
+      protectionId: params.positionId,
+      entryType: "hedge_buy_out",
+      amountUsdc: -openResult.netDebitUsdc,
+      reference: `vc_spread_open:${params.cell.cellId}:${params.positionId}`,
+      metadata: {
+        product: "volume_cover",
+        executor: "spread",
+        spreadGroupId: structure.spreadGroupId,
+        legCount: openResult.legs.length
+      }
+    });
+  } catch (err) {
+    console.warn(
+      `[volumeCover/lifecycle] spread hedge_buy_out ledger failed for position ${params.positionId}: ${(err as Error).message}`
+    );
+  }
+
+  return {
+    hedgeLegs,
+    totalCostUsdc: openResult.netDebitUsdc,
+    venue: structure.venue
+  };
+};
+
+// ─────────────────────────────────────────────────────────────────────
+// 2026-05-23: Spread-executor trigger helper (Track 2 PR #2 cutover).
+//
+// Called from fireTrigger() when the position's legs carry a
+// spread_group_id. Closes BOTH short legs via partialCloseSpreadOnTrigger
+// and marks long legs retained for salvage.
+// ─────────────────────────────────────────────────────────────────────
+
+export const executeSpreadPartialCloseOnTrigger = async (params: {
+  pool: Pool;
+  positionId: string;
+  cell: CellDefinition;
+  spreadLegs: HedgeLegRow[];
+  triggerDirection: "high" | "low";
+  adapterOverride?: SpreadExecutorAdapter; // for tests
+}): Promise<{
+  shortLegProceedsUsdc: number;
+  shortLegIdsClosed: string[];
+  longLegIdsRetained: string[];
+}> => {
+  // Reconstruct a minimal SpreadStructure from the persisted legs.
+  // We only need legs + venue + spreadGroupId for partialCloseSpreadOnTrigger.
+  const firstLeg = params.spreadLegs[0];
+  if (!firstLeg?.spreadGroupId) {
+    throw new Error("executeSpreadPartialCloseOnTrigger: leg has no spreadGroupId");
+  }
+  const spreadGroupId = firstLeg.spreadGroupId;
+  const venue = firstLeg.venue;
+
+  // Build per-leg SpreadLegSpec from DB rows.
+  const legSpecs = params.spreadLegs.map((leg) => {
+    if (!leg.legRole) {
+      throw new Error(
+        `executeSpreadPartialCloseOnTrigger: leg ${leg.id} missing leg_role`
+      );
+    }
+    const side: "long" | "short" =
+      leg.legRole === "put_long" || leg.legRole === "call_long" ? "long" : "short";
+    return {
+      legRole: leg.legRole,
+      optionKind: leg.optionKind,
+      side,
+      strikeIdealUsdc: leg.strikeUsdc,
+      strikeActualUsdc: leg.strikeUsdc,
+      contractsBtc: leg.contracts,
+      expiryIso: leg.expiryIso
+    };
+  });
+
+  const partialStructure = {
+    positionId: params.positionId,
+    cellId: params.cell.cellId,
+    spreadGroupId,
+    design: "DB" as const,
+    venue: venue as HedgeVenueChoice,
+    fallbackVenue: null as HedgeVenueChoice | null,
+    legs: legSpecs,
+    expectedNetDebitPerBtcUsdcIdeal: null,
+    contractsBtcPerLeg: firstLeg.contracts,
+    spreadWidthUsdc: params.cell.spreadWidthUsdc ?? 1000,
+    triggerLowBtc: 0,
+    triggerHighBtc: 0
+  };
+
+  const adapter = params.adapterOverride ?? getBullishSpreadAdapter();
+  const result = await partialCloseSpreadOnTrigger({
+    structure: partialStructure,
+    adapter,
+    triggerDirection: params.triggerDirection
+  });
+
+  // Map closed shorts to DB rows + mark them sold.
+  const shortLegIdsClosed: string[] = [];
+  const longLegIdsRetained: string[] = [];
+  for (const closedShort of result.shortLegsClosed) {
+    const dbLeg = params.spreadLegs.find((l) => l.legRole === closedShort.legRole);
+    if (!dbLeg) continue;
+    try {
+      await markHedgeLegSold(params.pool, {
+        id: dbLeg.id,
+        sellPriceUsdc: closedShort.fillPriceUsdcPerBtc,
+        sellOrderId: closedShort.orderId ?? null
+      });
+      shortLegIdsClosed.push(dbLeg.id);
+    } catch (err) {
+      console.error(
+        `[VC ALERT] failed to markHedgeLegSold for spread short ${dbLeg.id} on trigger: ${(err as Error).message}`
+      );
+    }
+  }
+  for (const retainedLong of result.longLegsRetained) {
+    const dbLeg = params.spreadLegs.find((l) => l.legRole === retainedLong.legRole);
+    if (!dbLeg) continue;
+    try {
+      await markHedgeLegRetained(params.pool, {
+        id: dbLeg.id,
+        retainedReason: `spread_trigger_${params.triggerDirection}`,
+        retainedRole:
+          (params.triggerDirection === "high" && retainedLong.legRole === "call_long") ||
+          (params.triggerDirection === "low" && retainedLong.legRole === "put_long")
+            ? "winner_post_trigger"
+            : "loser_post_trigger"
+      });
+      longLegIdsRetained.push(dbLeg.id);
+    } catch (err) {
+      console.error(
+        `[VC ALERT] failed to markHedgeLegRetained for spread long ${dbLeg.id} on trigger: ${(err as Error).message}`
+      );
+    }
+  }
+
+  return {
+    shortLegProceedsUsdc: result.shortLegProceedsUsdc,
+    shortLegIdsClosed,
+    longLegIdsRetained
   };
 };

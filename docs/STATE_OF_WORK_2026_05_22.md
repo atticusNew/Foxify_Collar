@@ -1,5 +1,75 @@
 # State of Work — 2026-05-22 19:00 ET (bookmark)
 
+## 2026-05-23 ~01:25 UTC: PRODUCTION-FLIP WIRING COMPLETE
+
+After end-to-end microtest validation (E3 4-leg at 0.1 BTC + E5 trigger/salvage at both directions, all clean), the spread executor was wired into the live `openPosition` / `fireTrigger` lifecycle path on `vc-sandbox`. Default behavior is unchanged — strangle still runs for all cells. Spread fires ONLY when `VOLUME_COVER_HEDGE_STRATEGY=auto` AND `VC_SPREAD_CELL_ALLOWLIST=<cellId>` is set.
+
+### What was wired
+
+| Layer | File | Behavior |
+|---|---|---|
+| **DB schema** | `volumeCoverDb.ts::ensureVolumeCoverSchema` | Added 3 columns: `spread_group_id TEXT`, `leg_role TEXT`, `initial_proceeds_usdc NUMERIC(20,8)`. Idempotent ALTER pattern. Indexed `spread_group_id`. |
+| **Row type** | `volumeCoverDb.ts::HedgeLegRow` | Extended with `spreadGroupId`, `legRole`, `initialProceedsUsdc`. Row mapper + `insertHedgeLeg` signature updated. |
+| **Adapter** | `volumeCover/bullishSpreadAdapter.ts` | NEW. Concrete `SpreadExecutorAdapter` wrapping `getSharedBullishClient`. Wires `getOrderbookTop`, `submitIocLimit` (with $10 tick-snap empirically verified, BUY→ceil / SELL→floor), `resolveSymbol` (`BTC-USDC-YYYYMMDD-STRIKE-(P|C)`). Polls `getOrderStatus` until terminal. |
+| **Open path** | `positionLifecycle.ts::openPosition` | After position insert, branches on `isSpreadCellAllowed(cell.cellId)`. If spread: builds via `buildSpreadStructureDB`, opens via `openSpread`, persists 4 legs with shared `spread_group_id`. Strangle path unchanged. |
+| **Trigger path** | `positionLifecycle.ts::fireTrigger` | If position's legs carry `spread_group_id` (count==4): calls `executeSpreadPartialCloseOnTrigger`, which closes both shorts (collecting proceeds → `hedge_sell_in` ledger entry) and retains longs as winner/loser. Strangle retains all. |
+| **Open helper** | `positionLifecycle.ts::executeSpreadOpen` | NEW. Encapsulates expiry computation (mirrors strangle's `expiryHorizonDays` snap), structure build, openSpread call, 4-leg persistence with `legRole`, ledger debit. On failure: `markPositionClosed` + throw. On post-fill DB insert error: best-effort `closeSpread` to unwind. |
+| **Trigger helper** | `positionLifecycle.ts::executeSpreadPartialCloseOnTrigger` | NEW. Reconstructs `SpreadStructure` from persisted legs, calls `partialCloseSpreadOnTrigger`, updates DB rows (`markHedgeLegSold` for shorts, `markHedgeLegRetained` with `winner_post_trigger` / `loser_post_trigger` for longs). |
+
+### Feature flag (default OFF, opt-in by cell)
+
+```bash
+# To enable spread for a specific cell (e.g., 50k_2pct_1k):
+VOLUME_COVER_HEDGE_STRATEGY=auto      # auto = use allowlist; strangle = force off; spread = all-cells (DANGEROUS)
+VC_SPREAD_CELL_ALLOWLIST=50k_2pct_1k  # comma-separated
+```
+
+Without these env vars set, behavior is **byte-identical** to pre-wiring strangle execution. The DB migration is additive (new columns default NULL), no existing rows or queries are affected.
+
+### Test status
+
+- **291 / 353** volumeCover unit tests pass (identical to pre-wiring baseline; the 62 pre-existing failures are pg-mem `gen_random_uuid()` limitations + TP curve mock issues, unrelated to this commit).
+- **32 / 32** spread-specific tests pass (`spreadExecutor`, `spreadHedge`, `spreadTpCurve`).
+- **0 new typecheck errors** introduced. Pre-existing errors in `pilot/routes.ts`, `pilot/bullish.ts`, etc. unchanged.
+
+### Microtest validation (pre-wiring)
+
+| Phase | Scale | Result |
+|---|---|---|
+| E3 (4-leg atomicity) | 0.1 BTC | Clean open + 30s hold + sequenced close. Bullish recognized portfolio margin (-$46 short-margin friction vs. expected naked $290). Net trip cost $5.98 USDC. |
+| E5-LOW (trigger + salvage) | 0.01 BTC | Clean: open → close both shorts (winning wing first) → 60s hold → sell retained longs → 0 residual positions. Net trip cost $0.60 USDC. |
+| E5-HIGH (trigger + salvage) | 0.01 BTC | Same flow, opposite direction. Clean. |
+
+### Pre-flight checklist before flipping live
+
+1. ✅ Schema migration committed (additive ALTER, runs idempotently on boot).
+2. ✅ Spread executor wired into lifecycle.
+3. ✅ Feature flag defaults OFF — no behavior change unless explicitly enabled.
+4. ✅ Existing strangle tests pass identically.
+5. ✅ Spread executor tests pass.
+6. ⏳ **Deploy to shadow first** (auto via `vc-sandbox` push). Run `bullish_spread_e2e_microtest.sh` against the deployed shadow with `VOLUME_COVER_HEDGE_STRATEGY=auto` + `VC_SPREAD_CELL_ALLOWLIST=50k_2pct_1k` to verify the wired path matches the validated probe path.
+7. ⏳ Merge `vc-sandbox` → live cursor branch (`cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4`).
+8. ⏳ Set live env vars when ready to flip the cell.
+
+### How to enable for one cell, live
+
+```bash
+# In Render env vars for foxify-pilot-new (live):
+VOLUME_COVER_HEDGE_STRATEGY=auto
+VC_SPREAD_CELL_ALLOWLIST=50k_2pct_1k
+
+# Verify:
+curl -sS "$LIVE/volume-cover/admin/diagnostics" -H "X-Admin-Token: $TOK" | jq '.spreadStrategy'
+```
+
+### Rollback
+
+To disable instantly: unset `VC_SPREAD_CELL_ALLOWLIST` (or set `VOLUME_COVER_HEDGE_STRATEGY=strangle`). No DB rollback needed — additive columns stay (NULL on strangle legs). In-flight spread positions continue running their lifecycle; only new activations revert to strangle.
+
+---
+
+
+
 This is a point-in-time snapshot of where the VC sandbox + spread work stands.
 Use this as the "go back to here" reference if context is lost.
 
