@@ -530,3 +530,116 @@ Latest authoritative commit on `vc-sandbox-spreads` at time of this update: see 
 - `aa22739` — E2 successful short-margin microtest
 - `6e8d281` / `97f0b3c` — Foxify dashboard v4/v2 (vc-sandbox tips for shadow)
 - `17aa4fd` / `0c1208c` — Foxify dashboard v4 + admin widget (live cursor branch tips)
+
+---
+
+# 2026-05-23 final UTC continuation — Track 2 PR #2 BUILD COMPLETE
+
+After the late-evening continuation captured above, the full Track 2
+PR #2 build list (Items 3-10 of the post-clarification scope) was
+implemented sequentially. Status as of `b017a5a` on
+`vc-sandbox-spreads`:
+
+| # | Item | Commit | Status |
+|---|------|--------|--------|
+| 3 | Vol-regime classifier (DVOL + hysteresis + admin endpoint) | `c75bc7c` | DONE |
+| 4 | Silent disruption (latency injection, 503 with Retry-After) | `97f3975` | DONE |
+| 5 | Counterparty credit ledger (schema, halt gate, admin endpoints) | `56eef1a` | DONE |
+| 6 | Bullish positions admin endpoint | `e129883` | DONE |
+| 7 | Hedge-execution jitter (open delay, inter-leg pacing, strike, size) | `bfee0a2` | DONE |
+| 8 | Empirical fill optimization (two-attempt IOC) | `7ccf519` | DONE |
+| 9 | Hedge pool architecture (schemas, selection, consumption, admin) | `f6aba70` | DONE |
+| 10 | Spread executor (4-leg sequenced + rollback + partial close) | `d467a35` | DONE |
+| 11 | Spread-aware TP curve (prime/full/bounce + regime tighten) | `6312deb` | DONE |
+| 12 | Phase E4 production-scale microtest (validator + manual rerun pattern) | `b017a5a` | DONE |
+| 13 | Phase E5 trigger-simulation + salvage microtest | `b017a5a` | DONE |
+
+### What is NOT done (deferred by design)
+
+1. **Live wiring of the new modules** — the executor, jitter, fill
+   optimizer, hedge pool, spread TP curve, and silent disruption
+   modules are all built + tested + admin-endpoint exposed, but the
+   activation handler still calls the original single-leg pilot
+   `placeHedge` path. The cutover from "scaffolded + tested" to
+   "called from the production hot path" is a separate deploy that
+   should happen after Phase E4 has been executed manually on shadow
+   at 1.0 BTC.
+
+2. **Phase E4 actual execution** — the validator script (`bullish_spread_e4_production_microtest.sh`)
+   confirms shadow can support production-scale liquidity and prints
+   the exact E3-rerun invocation. The actual 1.0 BTC submit has not
+   been run yet (intentionally — requires operator review of the
+   validator output first).
+
+3. **Phase E5 actual execution** — same pattern. Script is written
+   and bash-validated; full submit-flow on shadow is pending.
+
+4. **DB migration for `spread_group_id`** — the executor module
+   models legs in-memory via the `SpreadOpenResult.legs` array. The
+   persistent `volume_cover_hedge_leg.spread_group_id` migration was
+   deemed out of scope for the executor PR and is tracked separately
+   as a Track 2 PR #3 line item.
+
+5. **TP curve hookup to live hedge manager** — `evaluateSpreadTpRule`
+   is pure; the polling loop that calls it on each spread group is
+   not wired yet. It can be added as a thin wrapper in
+   `pilot/hedgeManager.ts` once the executor is live.
+
+### Module inventory (Track 2 PR #2 deliverables)
+
+```
+services/api/src/volumeCover/
+  strikeGrid.ts            # +VolRegimeThresholds, hysteretic classifier
+  silentDisruption.ts      # NEW
+  counterpartyLedger.ts    # NEW
+  hedgeJitter.ts           # NEW
+  fillOptimizer.ts         # NEW
+  hedgePool.ts             # NEW
+  spreadExecutor.ts        # NEW (the core)
+  spreadTpCurve.ts         # NEW
+  positionLifecycle.ts     # +recordObligationWithDeferralSchedule on trigger
+  volumeCoverRoutes.ts     # +6 admin endpoints, +regime/disruption/halt-gate integration
+
+services/api/scripts/probes/
+  bullish_spread_e4_production_microtest.sh           # NEW (validator)
+  bullish_spread_e5_trigger_salvage_microtest.sh      # NEW (full lifecycle)
+
+services/api/tests/
+  volumeCoverStrikeGrid.test.ts          # +8 tests (regime + hysteresis)
+  volumeCoverSilentDisruption.test.ts    # NEW (11 tests)
+  volumeCoverCounterpartyLedger.test.ts  # NEW (12 tests)
+  volumeCoverHedgeJitter.test.ts         # NEW (13 tests)
+  volumeCoverFillOptimizer.test.ts       # NEW (9 tests)
+  volumeCoverHedgePool.test.ts           # NEW (2 tests)
+  volumeCoverSpreadExecutor.test.ts      # NEW (9 tests)
+  volumeCoverSpreadTpCurve.test.ts       # NEW (11 tests)
+```
+
+Total: 8 new modules, 8 new test files (75 new tests), 2 new
+microtest scripts, 6 new admin endpoints, 0 changes to the live
+activation hot path.
+
+### Run order for cutover
+
+1. Operator runs E4 validator on shadow, reviews liquidity output.
+2. Operator runs E3 script manually with `CONTRACTS_BTC=1.0` (as
+   printed by validator) to confirm production-scale atomicity.
+3. Operator runs E5 (with TRIGGER_DIRECTION=high then =low) to
+   confirm partial-close + salvage path.
+4. Wire spread executor + spread TP curve into `pilot/hedgeManager.ts`
+   for the 50k_2pct_1k cell behind a feature flag.
+5. Enable the flag for Foxify's bot test against the new cell.
+6. Roll out to remaining cells.
+
+### Latest commit hashes on `vc-sandbox-spreads` (final)
+- `b017a5a` — E4 + E5 microtest scripts
+- `6312deb` — spread TP curve
+- `d467a35` — spread executor (the core)
+- `f6aba70` — hedge pool
+- `7ccf519` — fill optimizer
+- `bfee0a2` — hedge jitter
+- `e129883` — bullish positions admin endpoint
+- `56eef1a` — counterparty ledger
+- `97f3975` — silent disruption
+- `c75bc7c` — regime classifier hysteresis
+- `734057c` — late-evening bookmark continuation
