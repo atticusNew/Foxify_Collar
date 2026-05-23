@@ -257,13 +257,33 @@ echo "  USDC available:  $USDC_AVAILABLE_PRE → $USDC_AVAILABLE_SHORT  (Δ $D_A
 echo "  USDC locked:     $USDC_LOCKED_PRE → $USDC_LOCKED_SHORT  (Δ $D_LOCK)"
 echo "  USDC borrowed:   $USDC_BORROWED_PRE → $USDC_BORROWED_SHORT  (Δ $D_BORROW)"
 echo
-ok "Margin observation captured. Δ-available tells us the per-BTC margin requirement."
+ok "Margin observation captured. Both gross and net figures shown below."
 
-# Estimated margin per BTC for sizing extrapolation
-MARGIN_PER_BTC=$(awk -v d="$D_AVAIL" -v q="$CONTRACTS_BTC" 'BEGIN { if (q > 0) printf "%.2f", (-d) / q; else print "n/a" }')
-echo "  Implied margin per BTC: \$$MARGIN_PER_BTC (extrapolate to your production size)"
-echo "  For 50k_2pct_1k spread (0.5 BTC × 2 short legs):"
-echo "    Expected total margin: \$$(awk -v m="$MARGIN_PER_BTC" 'BEGIN { printf "%.2f", m * 1.0 }') USDC"
+# CRITICAL: Bullish's mark-to-market option margin model nets the proceeds
+# against the margin requirement, so Δavailable alone does NOT equal the
+# real margin posted. We have to add the proceeds back.
+#
+# Real math:
+#   proceeds = sell_fill_price × qty   (credited to available)
+#   true_margin = proceeds − Δavailable (since Δavailable = proceeds − margin)
+#   net_cost   = −Δavailable           (what an operator needs in USDC after
+#                                       proceeds offset the margin)
+PROCEEDS_USDC=$(awk -v p="$SELL_FILL_PRICE" -v q="$SELL_FILL_QTY" 'BEGIN { printf "%.4f", p*q }')
+TRUE_MARGIN=$(awk -v p="$PROCEEDS_USDC" -v d="$D_AVAIL" 'BEGIN { printf "%.4f", p - d }')
+NET_COST=$(awk -v d="$D_AVAIL" 'BEGIN { printf "%.4f", -d }')
+
+TRUE_MARGIN_PER_BTC=$(awk -v m="$TRUE_MARGIN" -v q="$CONTRACTS_BTC" 'BEGIN { if (q > 0) printf "%.2f", m / q; else print "n/a" }')
+NET_COST_PER_BTC=$(awk -v c="$NET_COST"   -v q="$CONTRACTS_BTC" 'BEGIN { if (q > 0) printf "%.2f", c / q; else print "n/a" }')
+
+echo "  Proceeds credited:           \$$PROCEEDS_USDC (sell_fill × qty)"
+echo "  Δ available:                 \$$D_AVAIL"
+echo "  True margin posted:          \$$TRUE_MARGIN  (\$$TRUE_MARGIN_PER_BTC per BTC)"
+echo "  Net cost to operator:        \$$NET_COST  (\$$NET_COST_PER_BTC per BTC, after proceeds offset)"
+echo
+echo "  Sizing for 50k_2pct_1k [DB] spread (1.0 BTC short notional total):"
+echo "    Expected true margin posted: \$$(awk -v m="$TRUE_MARGIN_PER_BTC" 'BEGIN { printf "%.2f", m * 1.0 }')"
+echo "    Expected net cost (margin − short proceeds): \$$(awk -v c="$NET_COST_PER_BTC" 'BEGIN { printf "%.2f", c * 1.0 }')"
+echo "    Add long-leg premium debits separately (those scale with strike distance)."
 
 # ============================================================================
 # Phase 5: pause

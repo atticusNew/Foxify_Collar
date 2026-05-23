@@ -111,6 +111,20 @@ Until path is chosen, treat live as "frozen at `9ee5af5`" and route critical fix
 - **render.yaml clarification** (same v2 commit) — added a header comment documenting that yaml service names (`atticus-pilot-api` / `atticus-pilot-web`) are stale; actual live Render services are `foxify-pilot-new` / `foxify-pilot-new-web`. yaml branch + autoDeploy happen to currently match live (verified during the merge auto-deploy), but the Render dashboard is the authoritative source for live config. Always check there before any ops change.
 - **vc-pos-e41890f triage** — see "Open positions" above. Force-sold both legs, finalized salvage event, projected −$190 final P&L at pair expiry. Cell to be disabled on live via toggle.
 - **Bullish singleton + caching** — pushed to `vc-sandbox` (`a9209cc`). 7 callsites migrated, orderbook+balance caching, negative cache for rate-limit, env gate.
+- **Bullish E2 (short-leg margin) microtest** — VALIDATED on shadow 2026-05-23 ~00:55 UTC.
+  - `PILOT_BULLISH_ALLOW_MARGIN=true` confirmed plumbed end-to-end (`config.allowMargin: true` in test-sell response).
+  - SELL-TO-OPEN 0.01 BTC `BTC-USDC-20260526-74000-P` @ $50 limit IOC → filled at bid $360, orderId `978098787586671617`.
+  - BUY-TO-CLOSE @ $700 limit IOC → filled at ask $410.
+  - Margin observation (the headline finding): Bullish uses a mark-to-market option margin model that nets proceeds against margin.
+    - Proceeds credited: $3.60 (0.01 BTC × $360)
+    - True margin posted: ~$3.68 (≈ $367.53/BTC)
+    - Net cost to operator: ~$0.075 (≈ $7.53/BTC after proceeds offset)
+    - `USDC locked` stayed $0 throughout (Bullish handles option margin internally, not via the spot-balance `locked` field)
+    - `USDC borrowed` stayed $0 → no borrowing required
+  - Round-trip economic cost: $0.15 on 0.01 BTC (script's price-math predicted $0.50; the $0.35 gap is likely Bullish IOC price improvement beyond reported `finalFillPrice`).
+  - Margin released cleanly after BUY-TO-CLOSE — no naked exposure or stuck margin.
+  - **Decision: GO for Bullish as the short-leg venue for Track 2.** Net cost per spread cell is dominated by the long-leg premium debit (~$300-400), not the short-leg margin (~$7.50/BTC × 1 BTC = ~$8). A `50k_2pct_1k` [DB] spread will need roughly **$370 USDC of capital per cell**.
+  - Script `bullish_short_e2e_microtest.sh` updated to report TRUE margin and NET cost separately (commit `11c617e`); prior version's "Implied margin per BTC" label was misleading (it was net cost, not gross margin).
 - **Bullish E1 (long round-trip) microtest** — VALIDATED on shadow.
   - Round-trip net cost: $0.40 on 0.01 BTC of `BTC-USDC-20260526-75000-P`
   - Buy filled at $560, sell filled at $520, fees $0.0001
