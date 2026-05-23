@@ -46,13 +46,32 @@ export type FillOptimizerConfig = {
   improvementFraction: number;
   /** Maximum improved attempts per leg (default 1; > 1 only matters if randomized). */
   maxAttempts: number;
+  /**
+   * 2026-05-23 (Foxify-001 post-mortem): when both improved + worst-case
+   * attempts expire (typical cause: orderbook depth at best ask/bid <
+   * order size), do a 3rd "deep-cross" attempt at (ask × (1 + bps/10000))
+   * for BUY or (bid × (1 - bps/10000)) for SELL. This walks the book by
+   * `bps` basis points to capture liquidity at the next price level.
+   * Tradeoff: more slippage on the leg, but spread atomicity preserved.
+   *
+   * Default 0 (off) to preserve historical behavior. Operators can set
+   * VC_FILL_OPTIMIZER_DEEP_CROSS_BPS=500 (5%) on Render to enable.
+   *
+   * The deep cross is hard-capped at 10% (1000 bps) to prevent runaway
+   * slippage on extremely thin books — if liquidity is THAT thin, an
+   * operational intervention is better than a 10%+ slippage fill.
+   */
+  deepCrossBps: number;
 };
 
 const DEFAULTS: FillOptimizerConfig = {
   enabled: true,
   improvementFraction: 0.25,
-  maxAttempts: 1
+  maxAttempts: 1,
+  deepCrossBps: 0
 };
+
+const MAX_DEEP_CROSS_BPS = 1000; // 10% hard cap
 
 const readNumber = (key: string, fallback: number): number => {
   const raw = process.env[key];
@@ -69,10 +88,12 @@ const readBool = (key: string, fallback: boolean): boolean => {
 
 export const getConfiguredFillOptimizer = (): FillOptimizerConfig => {
   const fraction = readNumber("VC_FILL_OPTIMIZER_IMPROVEMENT_FRACTION", DEFAULTS.improvementFraction);
+  const deepCrossRaw = readNumber("VC_FILL_OPTIMIZER_DEEP_CROSS_BPS", DEFAULTS.deepCrossBps);
   return {
     enabled: readBool("VC_FILL_OPTIMIZER_ENABLED", DEFAULTS.enabled),
     improvementFraction: Math.max(0, Math.min(0.5, fraction)),
-    maxAttempts: Math.max(1, Math.min(5, readNumber("VC_FILL_OPTIMIZER_MAX_ATTEMPTS", DEFAULTS.maxAttempts)))
+    maxAttempts: Math.max(1, Math.min(5, readNumber("VC_FILL_OPTIMIZER_MAX_ATTEMPTS", DEFAULTS.maxAttempts))),
+    deepCrossBps: Math.max(0, Math.min(MAX_DEEP_CROSS_BPS, deepCrossRaw))
   };
 };
 
@@ -214,6 +235,51 @@ export const executeOptimizedFill = async (params: {
     priceUsdc: worstCasePrice,
     quantityBtc: params.quantityBtc
   });
+  if (r2.filled) {
+    return {
+      filled: true,
+      fillPriceUsdc: r2.fillPriceUsdc,
+      fillQtyBtc: r2.fillQtyBtc,
+      finalReason: r2.finalReason,
+      orderId: r2.orderId,
+      attempts: attemptedPrices.length,
+      attemptedPrices,
+      raw: r2.raw
+    };
+  }
+  // 2026-05-23 (Foxify-001 post-mortem): when both improved + worst-case
+  // expire, depth at top-of-book was insufficient for our order size.
+  // If deepCrossBps configured, walk the book by that many bps to capture
+  // next-level liquidity. Only triggers on Expired (real liquidity gap),
+  // not on Rejected or other reasons. Hard-capped at 10% in config parse.
+  const isExpired = r2.finalReason && r2.finalReason.toLowerCase() === "expired";
+  if (cfg.deepCrossBps > 0 && isExpired) {
+    const bps = cfg.deepCrossBps / 10000;
+    const deepPrice = params.side === "BUY"
+      ? worstCasePrice * (1 + bps)
+      : worstCasePrice * (1 - bps);
+    attemptedPrices.push(deepPrice);
+    console.log(
+      `[fillOptimizer] deep-cross attempt symbol=${params.symbol} side=${params.side} ` +
+        `worstCase=${worstCasePrice} deep=${deepPrice} bps=${cfg.deepCrossBps}`
+    );
+    const r3 = await params.submitFn({
+      side: params.side,
+      symbol: params.symbol,
+      priceUsdc: deepPrice,
+      quantityBtc: params.quantityBtc
+    });
+    return {
+      filled: r3.filled,
+      fillPriceUsdc: r3.fillPriceUsdc,
+      fillQtyBtc: r3.fillQtyBtc,
+      finalReason: r3.finalReason,
+      orderId: r3.orderId,
+      attempts: attemptedPrices.length,
+      attemptedPrices,
+      raw: r3.raw
+    };
+  }
   return {
     filled: r2.filled,
     fillPriceUsdc: r2.fillPriceUsdc,
