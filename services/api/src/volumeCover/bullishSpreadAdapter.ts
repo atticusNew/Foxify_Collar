@@ -32,8 +32,14 @@ import { pilotConfig } from "../pilot/config";
 
 // ─── Constants validated empirically 2026-05-23 ──────────────────────
 const BTC_OPTION_TICK_USDC = 10;
-const ORDER_STATUS_POLL_INTERVAL_MS = 250;
-const ORDER_STATUS_POLL_MAX_ATTEMPTS = 40; // 10s total ceiling
+// 2026-05-23 (post-mortem): live's first activation hit poll_timeout at
+// 10s. Live Render region → Bullish has higher latency than shadow.
+// Increased poll time to 30s and interval to 500ms (so 60 attempts at
+// 500ms = 30s ceiling) to give Bullish time to settle the order. IOC
+// orders STILL fill in <100ms in practice; this only matters when the
+// status-feed propagation lags.
+const ORDER_STATUS_POLL_INTERVAL_MS = 500;
+const ORDER_STATUS_POLL_MAX_ATTEMPTS = 60; // 30s total ceiling
 const ORDERBOOK_TIMEOUT_MS = 5000;
 
 // ─── Tick snapping ───────────────────────────────────────────────────
@@ -136,14 +142,20 @@ const submitIocLimitAndPoll = async (params: {
     };
   }
 
-  // Poll until terminal status (Bullish IOC orders complete within ~1s
-  // in practice; 10s ceiling is generous defensive).
+  // Poll until terminal status. Pass tradingAccountId explicitly:
+  // Bullish's GET /orders/:id is scoped per account. Without it,
+  // Bullish 404s even for orders our auth context placed.
+  const tradingAccountId = pilotConfig.bullish.tradingAccountId;
+  let lastObservedStatus = "PENDING_NEW";
+  let pollErrorCount = 0;
+
   for (let attempt = 0; attempt < ORDER_STATUS_POLL_MAX_ATTEMPTS; attempt++) {
     await sleep(ORDER_STATUS_POLL_INTERVAL_MS);
     try {
       const c = getSharedBullishClient(pilotConfig.bullish);
-      const status = await c.getOrderStatus(orderId);
+      const status = await c.getOrderStatus(orderId, { tradingAccountId });
       const statusUpper = String(status.status).toUpperCase();
+      lastObservedStatus = statusUpper;
       const raw = status.raw as Record<string, unknown> | undefined;
       const statusReason = String(
         (raw?.statusReason ?? "") || ""
@@ -154,13 +166,25 @@ const submitIocLimitAndPoll = async (params: {
         statusUpper === "REJECTED" ||
         statusUpper === "CANCELLED" ||
         statusUpper === "FILLED";
-      if (!isTerminal) continue;
+      if (!isTerminal) {
+        if (attempt % 10 === 0) {
+          console.log(
+            `[bullishSpreadAdapter] poll attempt=${attempt} orderId=${orderId} ` +
+              `status=${statusUpper} (continuing)`
+          );
+        }
+        continue;
+      }
       const fillQty = Number(status.fillQuantity || 0);
       const fillPrice = Number(status.fillPrice || 0);
       const wasExpired =
         statusReason === "expired" || statusReasonCode === "6004";
       const wasRejected =
         statusReason === "rejected" || statusUpper === "REJECTED";
+      console.log(
+        `[bullishSpreadAdapter] terminal orderId=${orderId} status=${statusUpper} ` +
+          `fillQty=${fillQty} fillPrice=${fillPrice} reason=${statusReason || "n/a"}`
+      );
       return {
         filled: fillQty > 0 && !wasExpired && !wasRejected,
         fillPriceUsdcPerBtc: fillPrice,
@@ -170,27 +194,61 @@ const submitIocLimitAndPoll = async (params: {
         raw: status.raw
       };
     } catch (err) {
-      // Transient — keep polling until ceiling.
+      pollErrorCount++;
+      const errMsg = (err as Error).message;
+      // Surface rate-limit errors immediately — they won't self-resolve
+      // by polling more; back off the whole spread instead.
+      if (errMsg.includes("96100") || errMsg.includes("RATE_LIMIT_EXCEEDED")) {
+        console.warn(
+          `[bullishSpreadAdapter] RATE_LIMIT polling orderId=${orderId} attempt=${attempt} — aborting poll early`
+        );
+        return {
+          filled: false,
+          fillPriceUsdcPerBtc: 0,
+          fillQtyBtc: 0,
+          finalReason: `poll_rate_limit: ${errMsg}`,
+          orderId,
+          raw: { error: errMsg, attempt }
+        };
+      }
       if (attempt === ORDER_STATUS_POLL_MAX_ATTEMPTS - 1) {
         return {
           filled: false,
           fillPriceUsdcPerBtc: 0,
           fillQtyBtc: 0,
-          finalReason: `poll_error: ${(err as Error).message}`,
+          finalReason: `poll_error: ${errMsg}`,
           orderId,
-          raw: { error: (err as Error).message }
+          raw: { error: errMsg, pollErrorCount }
         };
       }
     }
+  }
+
+  // Timed out without ever seeing a terminal status. The order MIGHT
+  // have filled and Bullish just hasn't propagated the status into
+  // GET /orders/:id yet. Attempt best-effort cancel so the order
+  // doesn't sit on the book past IOC — also surfaces any actual
+  // fill state via the cancel response on some venues.
+  console.warn(
+    `[bullishSpreadAdapter] POLL_TIMEOUT orderId=${orderId} lastObservedStatus=${lastObservedStatus} ` +
+      `pollErrorCount=${pollErrorCount}. Attempting best-effort cancel.`
+  );
+  try {
+    const c = getSharedBullishClient(pilotConfig.bullish);
+    await c.cancelOrder({ symbol: params.symbol, orderId });
+  } catch (cancelErr) {
+    console.warn(
+      `[bullishSpreadAdapter] cancel after timeout failed orderId=${orderId}: ${(cancelErr as Error).message}`
+    );
   }
 
   return {
     filled: false,
     fillPriceUsdcPerBtc: 0,
     fillQtyBtc: 0,
-    finalReason: "poll_timeout",
+    finalReason: `poll_timeout (lastStatus=${lastObservedStatus})`,
     orderId,
-    raw: null
+    raw: { lastObservedStatus, pollErrorCount }
   };
 };
 
