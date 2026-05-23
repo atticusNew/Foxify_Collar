@@ -90,8 +90,41 @@ CONTRACTS_BTC="${CONTRACTS_BTC:-0.01}"
 # Limit prices for IOC orders. Buy at high to fill at ask; sell at low to fill at bid.
 # The endpoint enforces per-leg caps (cap arg below) so we can't accidentally
 # overspend even if the orderbook drifts.
-BUY_LIMIT_USDC="${BUY_LIMIT_USDC:-1000}"   # Buys fill at ask, capped by per-leg max
-SELL_LIMIT_USDC="${SELL_LIMIT_USDC:-50}"   # Sells fill at bid (price improvement)
+#
+# CRITICAL: limit semantics are the EXCHANGE STANDARD direction:
+#   BUY at limit X  → "fill if ask ≤ X" → bigger X = more aggressive
+#   SELL at limit X → "fill if bid ≥ X" → smaller X = more aggressive
+#
+# If you flip these (high SELL limit / low BUY limit), every IOC will Expire.
+BUY_LIMIT_USDC="${BUY_LIMIT_USDC:-2000}"   # high → guarantees BUY fills at ask
+SELL_LIMIT_USDC="${SELL_LIMIT_USDC:-5}"    # low → guarantees SELL fills at bid
+
+# Bullish option tick size (default $5 — verified empirically 2026-05-23).
+# Override only if a specific symbol uses a non-standard grid.
+TICK_SIZE_USDC="${TICK_SIZE_USDC:-5}"
+
+# Snap a price to the tick grid. Direction:
+#   ceil  — round UP   (use for BUY limits, so we don't accidentally undershoot)
+#   floor — round DOWN (use for SELL limits, so we don't accidentally overshoot)
+snap_tick() {
+  local px="$1"
+  local direction="${2:-floor}"
+  awk -v p="$px" -v t="$TICK_SIZE_USDC" -v d="$direction" 'BEGIN {
+    if (p <= 0) { print "0"; exit }
+    n = p / t
+    if (d == "ceil") {
+      r = (n == int(n)) ? n : int(n) + 1
+    } else {
+      r = int(n)
+      if (r < 1) r = 1
+    }
+    printf "%.4f", r * t
+  }'
+}
+
+# Pre-snap both default limits so they're always grid-valid.
+BUY_LIMIT_USDC=$(snap_tick "$BUY_LIMIT_USDC" ceil)
+SELL_LIMIT_USDC=$(snap_tick "$SELL_LIMIT_USDC" floor)
 
 MAX_PREMIUM_USDC="${MAX_PREMIUM_USDC:-10}"     # Per-leg BUY cap
 MAX_NOTIONAL_SELL_USDC="${MAX_NOTIONAL_SELL_USDC:-30}"  # Per-leg SELL cap
@@ -246,29 +279,49 @@ close_leg() {
 }
 
 # ─── Rollback ───────────────────────────────────────────────────────────────
+#
+# CRITICAL: rollback uses HARDCODED aggressive prices ($5 sell / $5000 buy
+# snapped to tick), NOT the operator's BUY_LIMIT_USDC / SELL_LIMIT_USDC.
+# If the operator passed bad limit prices in the first place, we must NOT
+# inherit them in rollback — that's how a partial spread becomes a stuck
+# spread. The endpoint-side cap is still in force.
 rollback_opened() {
+  local rb_buy_limit rb_sell_limit
+  rb_buy_limit=$(snap_tick 5000 ceil)
+  rb_sell_limit=$(snap_tick 5 floor)
   warn "Rolling back ${#OPENED_LEGS[@]} already-opened leg(s) in reverse order"
+  warn "  (rollback uses orderbook-aggressive prices: BUY @ \$$rb_buy_limit, SELL @ \$$rb_sell_limit)"
   local i
   for ((i=${#OPENED_LEGS[@]}-1; i>=0; i--)); do
     local entry="${OPENED_LEGS[$i]}"
     local sym side fpx oid
     sym=$(echo  "$entry" | awk -F: '{print $1}')
     side=$(echo "$entry" | awk -F: '{print $2}')
-    # Reverse the side to close
     local reverse_side
     if [[ "$side" == "BUY" ]]; then reverse_side="SELL"; else reverse_side="BUY"; fi
     warn "  rollback: closing $sym (was $side) with $reverse_side"
-    # Lowercase reverse_side for the URL path (bash 3 compatible — macOS
-    # ships bash 3.2 by default, so the ${var,,} expansion does not work).
     local reverse_side_lc
     reverse_side_lc=$(echo "$reverse_side" | tr '[:upper:]' '[:lower:]')
+
+    # Temporarily override the limits ONLY for this rollback leg.
+    local prev_buy="$BUY_LIMIT_USDC" prev_sell="$SELL_LIMIT_USDC"
+    BUY_LIMIT_USDC="$rb_buy_limit"
+    SELL_LIMIT_USDC="$rb_sell_limit"
     open_leg "ROLLBACK $sym" "$reverse_side" "$sym" "RB_$i" || {
       err "  ROLLBACK FAILED for $sym — manual intervention required."
-      err "    Submit by hand at higher limit:"
-      err "      curl -sS -X POST \"\$SHADOW_API/volume-cover/admin/bullish-test-$reverse_side_lc\" \\"
-      err "        -H \"X-Admin-Token: \$SHADOW_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\"
-      err "        -d '{\"symbol\":\"$sym\",\"limitPriceUsdcPerBtc\":1000,\"contractsBtc\":$CONTRACTS_BTC,\"maxPremiumUsdc\":$MAX_PREMIUM_USDC}'"
+      err "    Snapped recovery (uses tick-valid prices):"
+      if [[ "$reverse_side" == "SELL" ]]; then
+        err "      curl -sS -X POST \"\$SHADOW_API/volume-cover/admin/bullish-test-sell\" \\"
+        err "        -H \"X-Admin-Token: \$SHADOW_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\"
+        err "        -d '{\"symbol\":\"$sym\",\"limitPriceUsdcPerBtc\":$rb_sell_limit,\"contractsBtc\":$CONTRACTS_BTC,\"maxNotionalUsdc\":$MAX_NOTIONAL_SELL_USDC}'"
+      else
+        err "      curl -sS -X POST \"\$SHADOW_API/volume-cover/admin/bullish-test-buy\" \\"
+        err "        -H \"X-Admin-Token: \$SHADOW_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\"
+        err "        -d '{\"symbol\":\"$sym\",\"limitPriceUsdcPerBtc\":$rb_buy_limit,\"contractsBtc\":$CONTRACTS_BTC,\"maxPremiumUsdc\":$MAX_PREMIUM_USDC}'"
+      fi
     }
+    BUY_LIMIT_USDC="$prev_buy"
+    SELL_LIMIT_USDC="$prev_sell"
   done
 }
 
@@ -377,6 +430,34 @@ else
       exit 3
     fi
     ok "$sym ($label): bid \$$local_bid / ask \$$local_ask"
+
+    # Cache bid/ask per role for orderbook-aware rollback.
+    case "$sym" in
+      "$LONG_PUT_SYM")   LP_BID="$local_bid"; LP_ASK="$local_ask" ;;
+      "$SHORT_PUT_SYM")  SP_BID="$local_bid"; SP_ASK="$local_ask" ;;
+      "$LONG_CALL_SYM")  LC_BID="$local_bid"; LC_ASK="$local_ask" ;;
+      "$SHORT_CALL_SYM") SC_BID="$local_bid"; SC_ASK="$local_ask" ;;
+    esac
+
+    # Direction sanity: BUY limit must be ≥ ask, SELL limit must be ≤ bid.
+    # Without this, the IOC will Expire and rollback might cascade-fail.
+    if [[ "$side" == "ask" ]]; then
+      bad=$(awk -v lim="$BUY_LIMIT_USDC" -v ask="$local_ask" 'BEGIN { print (lim < ask) ? 1 : 0 }')
+      if [[ "$bad" == "1" ]]; then
+        err "BUY_LIMIT_USDC=\$$BUY_LIMIT_USDC < ask \$$local_ask on $sym — IOC will Expire."
+        err "  Raise BUY_LIMIT_USDC above the highest ask across all BUY legs."
+        exit 3
+      fi
+    else
+      bad=$(awk -v lim="$SELL_LIMIT_USDC" -v bid="$local_bid" 'BEGIN { print (lim > bid) ? 1 : 0 }')
+      if [[ "$bad" == "1" ]]; then
+        err "SELL_LIMIT_USDC=\$$SELL_LIMIT_USDC > bid \$$local_bid on $sym — IOC will Expire."
+        err "  For SELL legs, the limit is the MINIMUM acceptable price."
+        err "  Lower SELL_LIMIT_USDC below the LOWEST bid across all SELL legs."
+        err "  (Recommended: SELL_LIMIT_USDC=5, which fills at bid via price-improvement.)"
+        exit 3
+      fi
+    fi
   done
 fi
 
