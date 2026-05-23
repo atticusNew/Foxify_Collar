@@ -125,11 +125,23 @@ api() {
   fi
 }
 
-# Pre-trade safety: contract size cap
-SAFE_QTY=$(awk -v q="$CONTRACTS_BTC" 'BEGIN { print (q > 0.01) ? "0" : "1" }')
-if [[ "$SAFE_QTY" != "1" ]]; then
-  err "CONTRACTS_BTC=$CONTRACTS_BTC exceeds Phase E3 hard cap (0.01 BTC per leg)."
-  err "  Raise the cap only after E3 passes cleanly + Track 2 PR #2 ships."
+# Pre-trade safety: contract size cap.
+# Default 0.01 BTC for normal E3 runs. Override via MAX_CONTRACTS_BTC for
+# scale-up tests (e.g. 0.1 for pre-flip validation, 1.0 for production).
+# Hard ceiling is 1.0 BTC regardless of override.
+MAX_CONTRACTS_BTC="${MAX_CONTRACTS_BTC:-0.01}"
+ABSOLUTE_HARD_CAP_BTC=1.0
+ABOVE_OVERRIDE=$(awk -v q="$CONTRACTS_BTC" -v c="$MAX_CONTRACTS_BTC" 'BEGIN { print (q > c) ? "1" : "0" }')
+ABOVE_CEILING=$(awk -v q="$CONTRACTS_BTC" -v c="$ABSOLUTE_HARD_CAP_BTC" 'BEGIN { print (q > c) ? "1" : "0" }')
+if [[ "$ABOVE_CEILING" == "1" ]]; then
+  err "CONTRACTS_BTC=$CONTRACTS_BTC exceeds absolute hard ceiling ($ABSOLUTE_HARD_CAP_BTC BTC per leg)."
+  err "  This cap is not overridable. Exiting."
+  exit 2
+fi
+if [[ "$ABOVE_OVERRIDE" == "1" ]]; then
+  err "CONTRACTS_BTC=$CONTRACTS_BTC exceeds current MAX_CONTRACTS_BTC=$MAX_CONTRACTS_BTC."
+  err "  To run at this size, set MAX_CONTRACTS_BTC=$CONTRACTS_BTC explicitly."
+  err "  Example: MAX_CONTRACTS_BTC=0.1 CONTRACTS_BTC=0.1 bash ..."
   exit 2
 fi
 
@@ -247,7 +259,7 @@ rollback_opened() {
       err "    Submit by hand at higher limit:"
       err "      curl -sS -X POST \"\$SHADOW_API/volume-cover/admin/bullish-test-$reverse_side_lc\" \\"
       err "        -H \"X-Admin-Token: \$SHADOW_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\"
-      err "        -d '{\"symbol\":\"$sym\",\"limitPriceUsdcPerBtc\":1000,\"contractsBtc\":$CONTRACTS_BTC,\"maxPremiumUsdc\":15}'"
+      err "        -d '{\"symbol\":\"$sym\",\"limitPriceUsdcPerBtc\":1000,\"contractsBtc\":$CONTRACTS_BTC,\"maxPremiumUsdc\":$MAX_PREMIUM_USDC}'"
     }
   done
 }
@@ -297,9 +309,11 @@ if [[ -z "$USDC_PRE" || "$USDC_PRE" == "0" ]]; then
 fi
 ok "USDC available pre-trade: \$$USDC_PRE"
 
-# Sanity check enough USDC. Peak intra-trade usage on 0.01 BTC × 4 legs is ~$10-15.
-# We require ≥ $30 for safety margin. User can override by exporting MIN_USDC=lower.
-MIN_USDC="${MIN_USDC:-30}"
+# Sanity check enough USDC. Peak intra-trade usage scales with CONTRACTS_BTC:
+# baseline ~$30 covers 0.01 BTC; we scale up roughly $150 per 0.1 BTC.
+# Default formula: max(30, 1500 * CONTRACTS_BTC). Override via MIN_USDC.
+SCALED_MIN_USDC=$(awk -v q="$CONTRACTS_BTC" 'BEGIN { v = 1500 * q; if (v < 30) v = 30; printf "%.0f", v }')
+MIN_USDC="${MIN_USDC:-$SCALED_MIN_USDC}"
 if (( $(awk -v a="$USDC_PRE" -v m="$MIN_USDC" 'BEGIN { print (a < m) ? 1 : 0 }') )); then
   err "USDC available \$$USDC_PRE < required \$$MIN_USDC. Fund Bullish or lower MIN_USDC env."
   exit 2
@@ -447,7 +461,7 @@ close_leg "SC close" BUY  "$SHORT_CALL_SYM" SCC || {
   err "  ACTION REQUIRED: manually buy 0.01 BTC of $SHORT_CALL_SYM at \$1000 limit:"
   err "    curl -sS -X POST \"\$SHADOW_API/volume-cover/admin/bullish-test-buy\" \\"
   err "      -H \"X-Admin-Token: \$SHADOW_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\"
-  err "      -d '{\"symbol\":\"$SHORT_CALL_SYM\",\"limitPriceUsdcPerBtc\":1000,\"contractsBtc\":$CONTRACTS_BTC,\"maxPremiumUsdc\":15}'"
+  err "      -d '{\"symbol\":\"$SHORT_CALL_SYM\",\"limitPriceUsdcPerBtc\":1000,\"contractsBtc\":$CONTRACTS_BTC,\"maxPremiumUsdc\":$MAX_PREMIUM_USDC}'"
   exit 6
 }
 close_leg "LC close" SELL "$LONG_CALL_SYM" LCC || {
