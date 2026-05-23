@@ -307,12 +307,31 @@ fi
 
 if [[ "$SKIP_ORDERBOOK_CHECK" == "1" ]]; then
   warn "SKIP_ORDERBOOK_CHECK=1 → skipping per-leg orderbook pre-flight"
+  warn "  (strict liquidity gate disabled; opens may fail with Expired if a side has no resting order)"
 else
-  for sym in "$LONG_PUT_SYM" "$SHORT_PUT_SYM" "$LONG_CALL_SYM" "$SHORT_CALL_SYM"; do
+  # Per-leg liquidity requirements. Discovered the hard way 2026-05-23 in
+  # the first E3 run: 80000-C had ask=$30 but bid=null, so the SELL-to-open
+  # IOC immediately expired with 0 fills. Bullish lists the option but
+  # nobody bids on far-OTM strikes near expiry → naked SELL impossible.
+  #
+  # Required-side rule:
+  #   BUY-to-open  legs need a valid ASK  (we're crossing the spread to buy)
+  #   SELL-to-open legs need a valid BID  (we're crossing the spread to sell)
+  #
+  # The pair tuples below encode: SYMBOL|REQUIRED_SIDE|HUMAN_LABEL.
+  for tuple in \
+    "$LONG_PUT_SYM|ask|LONG put (BUY)" \
+    "$SHORT_PUT_SYM|bid|SHORT put (SELL)" \
+    "$LONG_CALL_SYM|ask|LONG call (BUY)" \
+    "$SHORT_CALL_SYM|bid|SHORT call (SELL)"; do
+    sym=$(echo "$tuple"   | awk -F'|' '{print $1}')
+    side=$(echo "$tuple"  | awk -F'|' '{print $2}')
+    label=$(echo "$tuple" | awk -F'|' '{print $3}')
+
     OB=$(api GET "/volume-cover/admin/bullish-orderbook?symbol=$sym&depth=1")
     OB_OK=$(echo "$OB" | jq -r '.ok // false')
     if [[ "$OB_OK" != "true" ]]; then
-      err "Orderbook unavailable for $sym:"
+      err "Orderbook unavailable for $sym ($label):"
       echo "$OB" | jq '{ok, error}' 2>/dev/null || echo "$OB" | head -2
       if echo "$OB" | grep -q "RATE_LIMIT_EXCEEDED\|96100\|negative_cache_hit"; then
         err "  Rate-limited — bypass with: SKIP_ORDERBOOK_CHECK=1 bash $0"
@@ -321,7 +340,21 @@ else
     fi
     local_bid=$(echo "$OB" | jq -r '.summary.topBid.price // "null"')
     local_ask=$(echo "$OB" | jq -r '.summary.topAsk.price // "null"')
-    ok "$sym: bid \$$local_bid / ask \$$local_ask"
+
+    # Strict liquidity gate on the side we will cross.
+    if [[ "$side" == "bid" && ( "$local_bid" == "null" || -z "$local_bid" ) ]]; then
+      err "$sym ($label): NO RESTING BID. A SELL-to-open IOC would expire with 0 fills."
+      err "  Pick a closer-to-ATM strike for the short or wait for liquidity."
+      err "  (Current: bid=\$$local_bid  ask=\$$local_ask)"
+      exit 3
+    fi
+    if [[ "$side" == "ask" && ( "$local_ask" == "null" || -z "$local_ask" ) ]]; then
+      err "$sym ($label): NO RESTING ASK. A BUY-to-open IOC would expire with 0 fills."
+      err "  Pick a closer-to-ATM strike for the long or wait for liquidity."
+      err "  (Current: bid=\$$local_bid  ask=\$$local_ask)"
+      exit 3
+    fi
+    ok "$sym ($label): bid \$$local_bid / ask \$$local_ask"
   done
 fi
 
