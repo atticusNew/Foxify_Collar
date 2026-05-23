@@ -436,10 +436,17 @@ export const registerFoxifyDashboardRoutes = async (
     );
     const todayActivations = Number(todayResult.rows[0]?.cnt ?? 0);
 
+    // 2026-05-23: changed semantic from status='active' only to live
+    // (active + triggered). A triggered position is still a protection
+    // on the books until pair-close (it accrues premium and will pay
+    // out at settlement). Matches what /foxify/positions returns and
+    // what the operator sees in the table, so the status-strip count
+    // no longer disagrees with the table row count.
     const activeResult = await pool.query(
       `SELECT COUNT(*)::int AS cnt FROM volume_cover_position
-       WHERE status = 'active'
-         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}`
+       WHERE status IN ('active', 'triggered')
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
+         AND COALESCE((metadata->>'archived')::boolean, false) = false`
     );
     const activeCount = Number(activeResult.rows[0]?.cnt ?? 0);
 
@@ -623,9 +630,13 @@ export const registerFoxifyDashboardRoutes = async (
     const triggeredToday = Number(triggeredResult.rows[0]?.cnt ?? 0);
     const payoutsReceivedToday = Number(triggeredResult.rows[0]?.payout_sum ?? 0);
 
-    // Lifetime expected payout across all currently-live positions.
+    // Lifetime expected payout + live counts across all currently-live
+    // positions. Same scope as the lifetime premium aggregation above.
     const livePayoutResult = await pool.query(
       `SELECT
+         COUNT(*) FILTER (WHERE status = 'triggered')::int AS count_triggered,
+         COUNT(*) FILTER (WHERE status = 'active')::int    AS count_active,
+         COUNT(*)::int                                     AS count_total,
          COALESCE(SUM(CASE WHEN status = 'triggered' THEN payout_usdc END), 0)::numeric AS payout_triggered,
          COALESCE(SUM(CASE WHEN status = 'active'    THEN payout_usdc END), 0)::numeric AS payout_active,
          COALESCE(SUM(payout_usdc), 0)::numeric                                        AS payout_total
@@ -634,6 +645,9 @@ export const registerFoxifyDashboardRoutes = async (
          AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
          AND COALESCE((metadata->>'archived')::boolean, false) = false`
     );
+    const liveTriggeredCount = Number(livePayoutResult.rows[0]?.count_triggered ?? 0);
+    const liveActiveCount = Number(livePayoutResult.rows[0]?.count_active ?? 0);
+    const liveTotalCount = Number(livePayoutResult.rows[0]?.count_total ?? 0);
     const payoutOwedTriggeredUsdc = Number(livePayoutResult.rows[0]?.payout_triggered ?? 0);
     const payoutPotentialActiveUsdc = Number(livePayoutResult.rows[0]?.payout_active ?? 0);
     const payoutExpectedUsdc = Number(livePayoutResult.rows[0]?.payout_total ?? 0);
@@ -651,13 +665,34 @@ export const registerFoxifyDashboardRoutes = async (
     const closedEarlyToday = Number(closedResult.rows[0]?.closed_cnt ?? 0);
     const expiredUnusedToday = Number(closedResult.rows[0]?.expired_cnt ?? 0);
 
-    // Foxify-side net (today): payouts received today - billable today
-    const foxifyNetUsdc = payoutsReceivedToday - premiumBilledToday;
+    // Foxify-side net.
+    //
+    // 2026-05-23 fix: switched from TODAY's window to LIFETIME so the
+    // figure reflects the actual net Foxify is sitting on. Prior calc
+    // (payoutsReceivedToday - premiumBilledToday) misled the operator
+    // after UTC midnight rolled the trigger into "yesterday": Foxify
+    // is genuinely +$180 ahead ($600 payout expected − $420 premium
+    // billable) but the dashboard read −$210 ($0 payouts received
+    // today − $210 billable today). Lifetime view aligns with the
+    // headline premium/payout fields above.
+    //
+    // For an operator-facing "today's flow only" view we keep
+    // foxifyNetTodayUsdc as an explicit secondary field.
+    const foxifyNetUsdc = payoutExpectedUsdc - premiumBillableLifetimeUsdc;
+    const foxifyNetTodayUsdc = payoutsReceivedToday - premiumBilledToday;
 
     return reply.send({
       reportDate: new Date().toISOString().slice(0, 10),
       activationsToday,
+      // 2026-05-23: triggeredToday is the count of pair-trigger EVENTS
+      // that fired in today's UTC window. Kept for back-compat. The
+      // new liveTriggeredCount is what the dashboard headline binds to
+      // — count of positions currently on the books in status='triggered'.
+      // That number doesn't vanish at UTC midnight.
       triggeredToday,
+      liveTriggeredCount,
+      liveActiveCount,
+      liveTotalCount,
       closedEarlyToday,
       expiredUnusedToday,
       // ─── Premium fields (2026-05-22 fix v2) ───
@@ -682,9 +717,11 @@ export const registerFoxifyDashboardRoutes = async (
       payoutPotentialActiveUsdc: Number(payoutPotentialActiveUsdc.toFixed(2)),
       // Legacy: realized today only (still useful but disappears at midnight).
       payoutsReceivedUsdc: Number(payoutsReceivedToday.toFixed(2)),
-      // foxifyNetUsdc remains TODAY only (consistent with the prior
-      // semantic that this field always carried the day's net).
+      // foxifyNetUsdc is now LIFETIME (payoutExpected − premiumBillableLifetime).
+      // The today-only flavour is exposed explicitly below for operators
+      // who want a daily-flow view.
       foxifyNetUsdc: Number(foxifyNetUsdc.toFixed(2)),
+      foxifyNetTodayUsdc: Number(foxifyNetTodayUsdc.toFixed(2)),
       generatedAtIso: new Date().toISOString()
     });
   });
