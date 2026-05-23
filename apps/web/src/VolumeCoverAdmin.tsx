@@ -793,15 +793,15 @@ function VenueBalanceWidget({ balances }: { balances: VenueBalances | null }) {
           </div>
         </div>
         <div>
-          <div style={{ color: "#888", fontSize: 11 }}>BTC AVAILABLE</div>
+          <div style={{ color: "#888", fontSize: 11 }}>BTC HOLDINGS (USDC)</div>
           <div style={{ fontSize: 16, fontWeight: 700 }}>
-            {bullish?.btcAvailable !== null && bullish?.btcAvailable !== undefined
-              ? `${bullish.btcAvailable.toFixed(4)} BTC`
+            {bullish?.btcValueUsdc !== null && bullish?.btcValueUsdc !== undefined
+              ? fmt$(bullish.btcValueUsdc, 2)
               : "—"}
           </div>
           <div style={{ fontSize: 10, color: "#888" }}>
-            {bullish?.btcValueUsdc !== null && bullish?.btcValueUsdc !== undefined
-              ? `≈ ${fmt$(bullish.btcValueUsdc, 0)}`
+            {bullish?.btcAvailable !== null && bullish?.btcAvailable !== undefined
+              ? `${bullish.btcAvailable.toFixed(6)} BTC`
               : ""}
           </div>
         </div>
