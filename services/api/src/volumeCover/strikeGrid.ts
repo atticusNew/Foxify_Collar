@@ -149,18 +149,172 @@ export const applyVolBufferAndRound = (params: {
  * 3-bucket scheme so we get a distinct "elevated" tier for vol-buffer
  * sizing + future regime price overlays.
  *
- * Thresholds (per consolidated #23 and PLAN §3):
+ * Default thresholds (per consolidated #23 and PLAN §3):
  *   DVOL < 50:    calm
  *   50 ≤ DVOL <65: moderate
  *   65 ≤ DVOL <80: elevated
  *   DVOL ≥ 80:    stress
+ *
+ * Defaults are preserved for backward-compatibility with existing
+ * tests + stress-pause guardrail. For production-tighter thresholds
+ * (Foxify spread cell pricing, 2026-05-23 operator decision), set:
+ *   VC_REGIME_DVOL_CALM_BELOW=35
+ *   VC_REGIME_DVOL_MODERATE_BELOW=50
+ *   VC_REGIME_DVOL_ELEVATED_BELOW=65
+ *
+ * Above 80 the stress-pause guardrail (VC_STRESS_PAUSE_DVOL_THRESHOLD)
+ * separately halts new cell openings — independent of pricing tier.
  */
-export const classifyVolumeCoverRegime = (dvol: number | null | undefined): VolRegime | null => {
+export type VolRegimeThresholds = {
+  calmBelow: number;
+  moderateBelow: number;
+  elevatedBelow: number;
+};
+
+const DEFAULT_THRESHOLDS: VolRegimeThresholds = {
+  calmBelow: 50,
+  moderateBelow: 65,
+  elevatedBelow: 80
+};
+
+const readEnvNumber = (key: string, fallback: number): number => {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+
+export const getConfiguredVolRegimeThresholds = (): VolRegimeThresholds => ({
+  calmBelow: readEnvNumber("VC_REGIME_DVOL_CALM_BELOW", DEFAULT_THRESHOLDS.calmBelow),
+  moderateBelow: readEnvNumber("VC_REGIME_DVOL_MODERATE_BELOW", DEFAULT_THRESHOLDS.moderateBelow),
+  elevatedBelow: readEnvNumber("VC_REGIME_DVOL_ELEVATED_BELOW", DEFAULT_THRESHOLDS.elevatedBelow)
+});
+
+export const classifyVolumeCoverRegime = (
+  dvol: number | null | undefined,
+  thresholdsOverride?: VolRegimeThresholds
+): VolRegime | null => {
   if (typeof dvol !== "number" || !Number.isFinite(dvol)) return null;
-  if (dvol < 50) return "calm";
-  if (dvol < 65) return "moderate";
-  if (dvol < 80) return "elevated";
+  const t = thresholdsOverride ?? getConfiguredVolRegimeThresholds();
+  if (dvol < t.calmBelow) return "calm";
+  if (dvol < t.moderateBelow) return "moderate";
+  if (dvol < t.elevatedBelow) return "elevated";
   return "stress";
+};
+
+// ─── Hysteresis wrapper ────────────────────────────────────────────────
+//
+// Without hysteresis the classifier flips regimes the moment DVOL crosses
+// a threshold, which can cause boundary jitter that:
+//   - Spams operator/log channels with regime changes
+//   - Bounces premium between two tiers within minutes
+//   - Triggers redundant hedge re-quoting in adjacent code paths
+//
+// Hysteresis enforces a minimum interval between regime flips. While
+// the cooldown is active the LAST committed regime is returned regardless
+// of the current raw classification. Reset on process restart (in-memory
+// state; no DB persistence — keeps a restart cleanly re-classifying).
+
+export type RegimeWithHysteresis = {
+  regime: VolRegime;
+  rawClassification: VolRegime;
+  flipSuppressed: boolean;
+  lastFlipAtMs: number;
+  asOfMs: number;
+};
+
+type HysteresisState = {
+  currentRegime: VolRegime | null;
+  lastFlipAtMs: number;
+};
+
+const hysteresisState: HysteresisState = {
+  currentRegime: null,
+  lastFlipAtMs: 0
+};
+
+const DEFAULT_FLIP_INTERVAL_MS = 3_600_000; // 1 hour
+
+const readFlipIntervalMs = (): number => {
+  const raw = process.env.VC_REGIME_HYSTERESIS_MIN_FLIP_INTERVAL_MS;
+  if (!raw) return DEFAULT_FLIP_INTERVAL_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_FLIP_INTERVAL_MS;
+};
+
+/**
+ * Classify with hysteresis cooldown. Same input as
+ * classifyVolumeCoverRegime but enforces minimum interval between
+ * committed regime flips (default 1h, configurable via env).
+ *
+ * Returns null if dvol is unusable (matches base classifier).
+ */
+export const classifyVolumeCoverRegimeHysteretic = (
+  dvol: number | null | undefined,
+  opts?: {
+    thresholds?: VolRegimeThresholds;
+    minFlipIntervalMs?: number;
+    nowMs?: number;
+  }
+): RegimeWithHysteresis | null => {
+  const raw = classifyVolumeCoverRegime(dvol, opts?.thresholds);
+  if (!raw) return null;
+
+  const now = opts?.nowMs ?? Date.now();
+  const minInterval = opts?.minFlipIntervalMs ?? readFlipIntervalMs();
+
+  // First-ever classification: commit immediately.
+  if (hysteresisState.currentRegime === null) {
+    hysteresisState.currentRegime = raw;
+    hysteresisState.lastFlipAtMs = now;
+    return {
+      regime: raw,
+      rawClassification: raw,
+      flipSuppressed: false,
+      lastFlipAtMs: now,
+      asOfMs: now
+    };
+  }
+
+  // Classification unchanged: trivial.
+  if (raw === hysteresisState.currentRegime) {
+    return {
+      regime: raw,
+      rawClassification: raw,
+      flipSuppressed: false,
+      lastFlipAtMs: hysteresisState.lastFlipAtMs,
+      asOfMs: now
+    };
+  }
+
+  // Classification differs from committed: check cooldown.
+  const elapsed = now - hysteresisState.lastFlipAtMs;
+  if (elapsed < minInterval) {
+    // Still in cooldown — suppress the flip, return the committed regime.
+    return {
+      regime: hysteresisState.currentRegime,
+      rawClassification: raw,
+      flipSuppressed: true,
+      lastFlipAtMs: hysteresisState.lastFlipAtMs,
+      asOfMs: now
+    };
+  }
+
+  // Cooldown elapsed — commit the new regime.
+  hysteresisState.currentRegime = raw;
+  hysteresisState.lastFlipAtMs = now;
+  return {
+    regime: raw,
+    rawClassification: raw,
+    flipSuppressed: false,
+    lastFlipAtMs: now,
+    asOfMs: now
+  };
+};
+
+export const __resetVolRegimeHysteresisForTests = (): void => {
+  hysteresisState.currentRegime = null;
+  hysteresisState.lastFlipAtMs = 0;
 };
 
 /**

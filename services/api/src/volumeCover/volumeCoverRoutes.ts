@@ -82,8 +82,10 @@ import {
 import { resolveHedgeVenue, type HedgeExecutor } from "./tightHedge";
 import {
   classifyVolumeCoverRegime,
+  classifyVolumeCoverRegimeHysteretic,
   translatePilotRegime,
   getGridStepUsdc,
+  getConfiguredVolRegimeThresholds,
   snapHedgeStrike,
   type VolRegime
 } from "./strikeGrid";
@@ -554,12 +556,17 @@ export const registerVolumeCoverRoutes = async (
     const totalActiveLiability = await sumActivePayoutLiability(pool);
 
     // P3 §13 + P1c: fetch live DVOL ONCE, reuse for guard, pricing, sizing.
+    // 2026-05-23: route the VC 4-bucket classification through the
+    // hysteresis wrapper so the activation/pricing tier doesn't flip
+    // more than once per VC_REGIME_HYSTERESIS_MIN_FLIP_INTERVAL_MS
+    // (default 1h). Prevents boundary jitter at DVOL threshold crossings.
     let currentDvolForGuard = 0;
     let regime: VolRegime | null = null;
     try {
       const status = await getCurrentRegime();
       currentDvolForGuard = status.dvol ?? 0;
-      regime = classifyVolumeCoverRegime(status.dvol);
+      const hysteretic = classifyVolumeCoverRegimeHysteretic(status.dvol);
+      regime = hysteretic?.regime ?? null;
       if (!regime) regime = translatePilotRegime(status.regime);
     } catch (err) {
       req.log.warn(`[volume-cover/activate] regime fetch failed: ${(err as Error).message}`);
@@ -1010,6 +1017,84 @@ export const registerVolumeCoverRoutes = async (
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
     const metrics = await readSalvageMetrics(pool);
     return reply.send(metrics);
+  });
+
+  // 2026-05-23 — Vol regime status + premium tier preview
+  //
+  // Surfaces:
+  //   - Current DVOL (Deribit), RVOL fallback
+  //   - Configured thresholds (env-driven for production tightening)
+  //   - Raw classification + hysteresis-committed regime
+  //   - For each cell: the premium that would be quoted right now
+  //
+  // Used by operator dashboard to verify the regime classifier is
+  // tracking expected market state + to preview what cells would
+  // charge if a customer activated this instant.
+  app.get("/volume-cover/admin/vol-regime", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const thresholds = getConfiguredVolRegimeThresholds();
+    let dvol: number | null = null;
+    let rvol: number | null = null;
+    let pilotRegimeName: "calm" | "normal" | "stress" | null = null;
+    try {
+      const status = await getCurrentRegime();
+      dvol = status.dvol ?? null;
+      rvol = status.rvol ?? null;
+      pilotRegimeName = status.regime;
+    } catch (err) {
+      return reply.send({
+        ok: false,
+        error: `regime_fetch_failed: ${(err as Error).message}`,
+        thresholds
+      });
+    }
+
+    const rawRegime = classifyVolumeCoverRegime(dvol, thresholds);
+    const hysteretic = classifyVolumeCoverRegimeHysteretic(dvol, { thresholds });
+    const effectiveRegime =
+      hysteretic?.regime ?? rawRegime ?? translatePilotRegime(pilotRegimeName) ?? null;
+
+    // Premium preview across all cells in the matrix.
+    const { MATRIX } = await import("./matrix");
+    const cellPreviews = MATRIX.map((cell) => {
+      const quote = resolveDailyPremium({
+        cell,
+        dbOverrideDailyPremiumUsdc: null,
+        regime: effectiveRegime
+      });
+      return {
+        cellId: cell.cellId,
+        baseDailyPremiumUsdc: cell.dailyPremiumUsdc,
+        effectiveDailyPremiumUsdc: quote.dailyPremiumUsdc,
+        source: quote.source,
+        payoutUsdc: cell.payoutUsdc
+      };
+    });
+
+    return reply.send({
+      ok: true,
+      generatedAtIso: new Date().toISOString(),
+      dvol,
+      rvol,
+      pilotRegime: pilotRegimeName,
+      vcRegime: {
+        rawClassification: rawRegime,
+        effective: effectiveRegime,
+        flipSuppressed: hysteretic?.flipSuppressed ?? false,
+        lastFlipAtIso: hysteretic
+          ? new Date(hysteretic.lastFlipAtMs).toISOString()
+          : null,
+        minFlipIntervalMs: Number(
+          process.env.VC_REGIME_HYSTERESIS_MIN_FLIP_INTERVAL_MS ?? 3_600_000
+        )
+      },
+      thresholds: {
+        ...thresholds,
+        stressPauseDvol: Number(process.env.VC_STRESS_PAUSE_DVOL_THRESHOLD ?? 80)
+      },
+      cellPreviews
+    });
   });
 
   // 2026-05-21 — TP slippage-floor observability
@@ -4263,6 +4348,7 @@ export const registerVolumeCoverRoutes = async (
     }
 
     // Run only the financial guards (skip anti-bot since this is admin action)
+    // 2026-05-23: hysteretic classifier for consistency with main activate path.
     const metrics = await readSalvageMetrics(pool);
     const totalActiveLiability = await sumActivePayoutLiability(pool);
     let currentDvolForGuard = 0;
@@ -4270,7 +4356,8 @@ export const registerVolumeCoverRoutes = async (
     try {
       const status = await getCurrentRegime();
       currentDvolForGuard = status.dvol ?? 0;
-      regime = classifyVolumeCoverRegime(status.dvol);
+      const hysteretic = classifyVolumeCoverRegimeHysteretic(status.dvol);
+      regime = hysteretic?.regime ?? null;
       if (!regime) regime = translatePilotRegime(status.regime);
     } catch (err) {
       req.log.warn(`[volume-cover/test-activate] regime fetch failed: ${(err as Error).message}`);

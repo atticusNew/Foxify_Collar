@@ -7,6 +7,9 @@ import {
   getVolBufferMultiplier,
   getGridStepUsdc,
   classifyVolumeCoverRegime,
+  classifyVolumeCoverRegimeHysteretic,
+  getConfiguredVolRegimeThresholds,
+  __resetVolRegimeHysteresisForTests,
   translatePilotRegime
 } from "../src/volumeCover/strikeGrid";
 import { buildHedgeStructure, computeHedgeContractSize } from "../src/volumeCover/tightHedge";
@@ -210,4 +213,98 @@ test("buildHedgeStructure: deribit-routed cell uses $1000 grid", () => {
   const call = structure.legs.find((l) => l.optionKind === "call")!;
   assert.equal(put.strikeUsdc, 76_000);
   assert.equal(call.strikeUsdc, 84_000);
+});
+
+// ─── 2026-05-23: configurable thresholds + hysteresis ──────────────────
+
+test("getConfiguredVolRegimeThresholds: defaults preserved when env unset", () => {
+  delete process.env.VC_REGIME_DVOL_CALM_BELOW;
+  delete process.env.VC_REGIME_DVOL_MODERATE_BELOW;
+  delete process.env.VC_REGIME_DVOL_ELEVATED_BELOW;
+  const t = getConfiguredVolRegimeThresholds();
+  assert.equal(t.calmBelow, 50);
+  assert.equal(t.moderateBelow, 65);
+  assert.equal(t.elevatedBelow, 80);
+});
+
+test("getConfiguredVolRegimeThresholds: env-driven tightening (35/50/65) is honored", () => {
+  process.env.VC_REGIME_DVOL_CALM_BELOW = "35";
+  process.env.VC_REGIME_DVOL_MODERATE_BELOW = "50";
+  process.env.VC_REGIME_DVOL_ELEVATED_BELOW = "65";
+  try {
+    const t = getConfiguredVolRegimeThresholds();
+    assert.equal(t.calmBelow, 35);
+    assert.equal(t.moderateBelow, 50);
+    assert.equal(t.elevatedBelow, 65);
+    // With tightened thresholds, DVOL 40 should now classify as moderate, not calm.
+    assert.equal(classifyVolumeCoverRegime(40), "moderate");
+    assert.equal(classifyVolumeCoverRegime(34.99), "calm");
+    assert.equal(classifyVolumeCoverRegime(50), "elevated");
+    assert.equal(classifyVolumeCoverRegime(65), "stress");
+  } finally {
+    delete process.env.VC_REGIME_DVOL_CALM_BELOW;
+    delete process.env.VC_REGIME_DVOL_MODERATE_BELOW;
+    delete process.env.VC_REGIME_DVOL_ELEVATED_BELOW;
+  }
+});
+
+test("classifyVolumeCoverRegimeHysteretic: first-ever classification commits immediately", () => {
+  __resetVolRegimeHysteresisForTests();
+  const result = classifyVolumeCoverRegimeHysteretic(60, { nowMs: 1_000_000 });
+  assert.equal(result?.regime, "moderate");
+  assert.equal(result?.rawClassification, "moderate");
+  assert.equal(result?.flipSuppressed, false);
+  assert.equal(result?.lastFlipAtMs, 1_000_000);
+});
+
+test("classifyVolumeCoverRegimeHysteretic: same regime is trivial (no flip)", () => {
+  __resetVolRegimeHysteresisForTests();
+  classifyVolumeCoverRegimeHysteretic(60, { nowMs: 1_000_000 });
+  const second = classifyVolumeCoverRegimeHysteretic(58, { nowMs: 1_001_000 });
+  assert.equal(second?.regime, "moderate");
+  assert.equal(second?.flipSuppressed, false);
+  assert.equal(second?.lastFlipAtMs, 1_000_000); // unchanged
+});
+
+test("classifyVolumeCoverRegimeHysteretic: differing regime within cooldown is SUPPRESSED", () => {
+  __resetVolRegimeHysteresisForTests();
+  classifyVolumeCoverRegimeHysteretic(60, { nowMs: 1_000_000 }); // moderate committed
+  // 30 minutes later — still under 1h cooldown
+  const result = classifyVolumeCoverRegimeHysteretic(85, {
+    nowMs: 1_000_000 + 30 * 60 * 1000
+  });
+  assert.equal(result?.regime, "moderate");           // committed kept
+  assert.equal(result?.rawClassification, "stress");  // raw shows the actual classification
+  assert.equal(result?.flipSuppressed, true);
+  assert.equal(result?.lastFlipAtMs, 1_000_000);
+});
+
+test("classifyVolumeCoverRegimeHysteretic: differing regime AFTER cooldown commits the flip", () => {
+  __resetVolRegimeHysteresisForTests();
+  classifyVolumeCoverRegimeHysteretic(60, { nowMs: 1_000_000 });
+  // 65 minutes later — past 1h cooldown
+  const result = classifyVolumeCoverRegimeHysteretic(85, {
+    nowMs: 1_000_000 + 65 * 60 * 1000
+  });
+  assert.equal(result?.regime, "stress");
+  assert.equal(result?.flipSuppressed, false);
+  assert.equal(result?.lastFlipAtMs, 1_000_000 + 65 * 60 * 1000);
+});
+
+test("classifyVolumeCoverRegimeHysteretic: cooldown resets after each committed flip", () => {
+  __resetVolRegimeHysteresisForTests();
+  classifyVolumeCoverRegimeHysteretic(60, { nowMs: 0 });             // commit moderate @ 0
+  classifyVolumeCoverRegimeHysteretic(85, { nowMs: 60 * 60 * 1000 }); // commit stress @ 1h
+  // Now try to flip down at 1h+30min — should be suppressed (cooldown re-armed at 1h)
+  const result = classifyVolumeCoverRegimeHysteretic(40, {
+    nowMs: 90 * 60 * 1000
+  });
+  assert.equal(result?.regime, "stress");
+  assert.equal(result?.flipSuppressed, true);
+});
+
+test("classifyVolumeCoverRegimeHysteretic: bad DVOL returns null", () => {
+  __resetVolRegimeHysteresisForTests();
+  assert.equal(classifyVolumeCoverRegimeHysteretic(null), null);
+  assert.equal(classifyVolumeCoverRegimeHysteretic(NaN), null);
 });
