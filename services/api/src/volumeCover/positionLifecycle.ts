@@ -776,13 +776,30 @@ const executeSpreadOpen = async (params: {
   const venueRouting = resolveSpreadVenue(params.cell);
   const expiryIso = computeExpiryIsoForSpread(params.cell);
 
+  // 2026-05-23: Bullish lists BTC weekly option strikes at $1k grid
+  // (74k/75k/76k/77k/78k empirically verified at this expiry; 73k/79k
+  // are NOT listed). The cell's hedgePct=0.01 formula produces non-grid
+  // strikes like 75240 — must snap or symbol resolves to a non-existent
+  // contract and the liquidity gate / order placement fails.
+  // VC_SPREAD_STRIKE_GRID_USDC env overrides (default $1000).
+  const gridUsdc = Math.max(
+    1,
+    Number(process.env.VC_SPREAD_STRIKE_GRID_USDC ?? 1000)
+  );
+  const snapToGrid = (params: {
+    targetUsdc: number;
+    side: "long" | "short";
+    kind: "put" | "call";
+  }): number => Math.round(params.targetUsdc / gridUsdc) * gridUsdc;
+
   const structure = buildSpreadStructureDB({
     positionId: params.positionId,
     cell: params.cell,
     entryBtcPrice: params.pairEntryBtcPrice,
     expiryIso,
     venue: venueRouting.primary,
-    fallbackVenue: venueRouting.fallback
+    fallbackVenue: venueRouting.fallback,
+    strikeSnapper: snapToGrid
   });
 
   const adapter = params.adapterOverride ?? getBullishSpreadAdapter();
