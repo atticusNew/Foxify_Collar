@@ -4690,7 +4690,11 @@ export const registerVolumeCoverRoutes = async (
       pairLongNotionalUsdc: z.number().positive().finite().optional(),
       pairShortNotionalUsdc: z.number().positive().finite().optional(),
       pairEntryBtcPrice: z.number().positive().finite(),
-      premiumOverrideUsdc: z.number().positive().finite().optional()
+      premiumOverrideUsdc: z.number().positive().finite().optional(),
+      // 2026-05-23: smoke-test override for spread cells. Force contracts
+      // per leg (e.g., 0.01) so we can validate the wired path on Bullish
+      // without sizing for the full $1k payout. Ignored on strangle cells.
+      contractsOverrideBtc: z.number().positive().finite().lte(1).optional()
     });
     const parse = TestActivateSchema.safeParse(req.body);
     if (!parse.success) {
@@ -4785,11 +4789,15 @@ export const registerVolumeCoverRoutes = async (
         regime,
         // No fingerprint = no anti-bot, no ladder netting (intentional for test)
         fingerprintHash: null,
+        // 2026-05-23: smoke-test sizing override (spread cells only).
+        // Pass-through from operator request body for /admin/test-activate.
+        contractsOverrideBtc: body.contractsOverrideBtc,
         metadata: {
           source: "admin_test_activate",
           requestIp: req.ip,
           regime,
-          premiumOverrideUsdc: body.premiumOverrideUsdc ?? null
+          premiumOverrideUsdc: body.premiumOverrideUsdc ?? null,
+          contractsOverrideBtc: body.contractsOverrideBtc ?? null
         }
       });
 

@@ -74,6 +74,14 @@ export type OpenPositionRequest = {
    */
   regime?: VolRegime | null;
   metadata?: Record<string, unknown>;
+  /**
+   * 2026-05-23: smoke-test only. Force contracts-per-leg for the spread
+   * branch (bypasses computeSpreadContractSize). Used by /admin/test-
+   * activate to prove the wired path at micro-size without burning live
+   * capital. Strangle path ignores this field — sizing there is fixed by
+   * the strangle structure builder.
+   */
+  contractsOverrideBtc?: number;
 };
 
 export type OpenPositionResult = {
@@ -154,7 +162,8 @@ export const openPosition = async (
       pool,
       positionId,
       cell: req.cell,
-      pairEntryBtcPrice: req.pairEntryBtcPrice
+      pairEntryBtcPrice: req.pairEntryBtcPrice,
+      contractsOverrideBtc: req.contractsOverrideBtc
     });
     return {
       position,
@@ -768,6 +777,7 @@ const executeSpreadOpen = async (params: {
   cell: CellDefinition;
   pairEntryBtcPrice: number;
   adapterOverride?: SpreadExecutorAdapter; // for tests
+  contractsOverrideBtc?: number; // smoke-test only
 }): Promise<{
   hedgeLegs: HedgeLegRow[];
   totalCostUsdc: number;
@@ -801,6 +811,19 @@ const executeSpreadOpen = async (params: {
     fallbackVenue: venueRouting.fallback,
     strikeSnapper: snapToGrid
   });
+
+  // Smoke-test override: forcibly resize each leg's contracts. Used by
+  // /admin/test-activate to prove the wired path at micro-size without
+  // burning live capital. NEVER set this from the real activate path.
+  if (
+    typeof params.contractsOverrideBtc === "number" &&
+    params.contractsOverrideBtc > 0
+  ) {
+    const overrideBtc = params.contractsOverrideBtc;
+    for (const leg of structure.legs) {
+      leg.contractsBtc = overrideBtc;
+    }
+  }
 
   const adapter = params.adapterOverride ?? getBullishSpreadAdapter();
 
