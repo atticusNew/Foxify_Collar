@@ -55,6 +55,11 @@ type TodaySummary = {
   reportDate: string;
   activationsToday: number;
   triggeredToday: number;
+  // 2026-05-23 v4 fix: live counts (current state, not today-only events).
+  // Frontend headline binds to these so they don't vanish at UTC midnight.
+  liveTriggeredCount?: number;
+  liveActiveCount?: number;
+  liveTotalCount?: number;
   closedEarlyToday: number;
   expiredUnusedToday: number;
   // Premium fields (v2 fix: lifetime billable headline + 4 explicit views).
@@ -63,13 +68,16 @@ type TodaySummary = {
   premiumAccruedLifetimeUsdc?: number;
   premiumBillableTodayUsdc?: number;
   premiumAccruedTodayUsdc?: number;
-  // Payout fields (2026-05-23 fix: lifetime expected payout headline so the
+  // Payout fields (v3 fix: lifetime expected payout headline so the
   // number doesn't vanish at UTC midnight when triggers move to "yesterday").
   payoutExpectedUsdc?: number;
   payoutOwedTriggeredUsdc?: number;
   payoutPotentialActiveUsdc?: number;
   payoutsReceivedUsdc: number; // today only, retained
+  // foxifyNetUsdc is now LIFETIME (v4 fix). foxifyNetTodayUsdc is the
+  // optional today-only flavour for operators who want it.
   foxifyNetUsdc: number;
+  foxifyNetTodayUsdc?: number;
   generatedAtIso: string;
 };
 
@@ -423,11 +431,20 @@ function ActivePositionsPanel({
 
 function TodaySummaryPanel({ today }: { today: TodaySummary | null }) {
   if (!today) return null;
+  // foxifyNetUsdc is LIFETIME (v4 fix). Falls back to old today-only
+  // semantic only if the backend is still on a pre-v4 build.
   const net = today.foxifyNetUsdc;
+  // Triggered count: prefer live (current state) over today-only event count.
+  const triggeredDisplay =
+    today.liveTriggeredCount ?? today.triggeredToday;
   return (
     <div style={{ marginBottom: 16 }}>
       <h3 style={{ marginBottom: 8, color: "#ddd" }}>
-        Today's Activity ({today.reportDate} UTC)
+        Activity Summary
+        <span style={{ color: "#666", fontSize: 12, fontWeight: 400 }}>
+          {" "}
+          (lifetime + today {today.reportDate} UTC)
+        </span>
       </h3>
       <div
         style={{
@@ -442,15 +459,27 @@ function TodaySummaryPanel({ today }: { today: TodaySummary | null }) {
         }}
       >
         <div>
-          <div style={{ color: "#888", fontSize: 11 }}>Activations</div>
+          <div style={{ color: "#888", fontSize: 11 }}>Activations Today</div>
           <div style={{ fontSize: 18, fontWeight: 700 }}>
             {today.activationsToday}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            new pairs opened today
           </div>
         </div>
         <div>
           <div style={{ color: "#888", fontSize: 11 }}>Triggered</div>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>
-            {today.triggeredToday}
+          <div
+            style={{
+              fontSize: 18,
+              fontWeight: 700,
+              color: triggeredDisplay > 0 ? "#ffa500" : "#ddd"
+            }}
+          >
+            {triggeredDisplay}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            currently live in triggered state
           </div>
         </div>
         <div>
@@ -491,7 +520,9 @@ function TodaySummaryPanel({ today }: { today: TodaySummary | null }) {
           </div>
         </div>
         <div style={{ gridColumn: "span 2" }}>
-          <div style={{ color: "#888", fontSize: 11 }}>Net (Foxify-side)</div>
+          <div style={{ color: "#888", fontSize: 11 }}>
+            Net (Foxify-side) — Lifetime
+          </div>
           <div
             style={{
               fontSize: 18,
@@ -501,6 +532,14 @@ function TodaySummaryPanel({ today }: { today: TodaySummary | null }) {
           >
             {net >= 0 ? "+" : ""}
             {fmt$(net)}
+          </div>
+          <div style={{ fontSize: 10, color: "#888" }}>
+            payout expecting − premium owed
+            {today.foxifyNetTodayUsdc != null
+              ? ` · today only: ${
+                  today.foxifyNetTodayUsdc >= 0 ? "+" : ""
+                }${fmt$(today.foxifyNetTodayUsdc, 0)}`
+              : ""}
           </div>
         </div>
       </div>
