@@ -49,11 +49,11 @@ CONTRACTS_BTC="${CONTRACTS_BTC:-0.01}"
 TRIGGER_DIRECTION="${TRIGGER_DIRECTION:-high}"  # 'high' or 'low'
 SALVAGE_HOLD_SEC="${SALVAGE_HOLD_SEC:-60}"
 
-# Per-leg hard caps (micro-test friendly)
-BUY_LIMIT_USDC_PER_BTC=1000
-SELL_LIMIT_USDC_PER_BTC=50
-MAX_BUY_NOTIONAL_USDC=20      # 0.01 BTC × $1000 = $10 + buffer
-MAX_SELL_NOTIONAL_USDC=30
+# Per-leg hard caps (mirror E3's sizing for 0.01 BTC microtest)
+BUY_LIMIT_USDC_PER_BTC="${BUY_LIMIT_USDC:-1000}"
+SELL_LIMIT_USDC_PER_BTC="${SELL_LIMIT_USDC:-1000}"
+MAX_BUY_NOTIONAL_USDC="${MAX_PREMIUM_USDC:-15}"    # 0.01 BTC × $1000 = $10 + buffer
+MAX_SELL_NOTIONAL_USDC="${MAX_NOTIONAL_SELL_USDC:-30}"
 
 LONG_PUT_SYM="${LONG_PUT_SYM:-BTC-USDC-${EXPIRY}-75000-P}"
 SHORT_PUT_SYM="${SHORT_PUT_SYM:-BTC-USDC-${EXPIRY}-74000-P}"
@@ -66,42 +66,50 @@ cyan() { printf "\033[36m%s\033[0m\n" "$1"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$1"; }
 bar() { printf "%s\n" "----------------------------------------------------------------"; }
 
-# Submit one IOC limit order via the existing admin proxy. Returns the
-# response JSON with finalStatus / finalFillPrice / finalFillQty fields.
+# Submit one IOC limit order via the existing admin proxy. Mirrors the
+# E3 script's open_leg helper: posts to /admin/bullish-test-buy or
+# /admin/bullish-test-sell with body { symbol, limitPriceUsdcPerBtc,
+# contractsBtc, (maxPremiumUsdc|maxNotionalUsdc) }.
 submit_ioc() {
   local SYM=$1
-  local SIDE=$2
-  local PRICE=$3
-  local QTY=$4
-  local CAP=$5
+  local SIDE=$2     # BUY or SELL
+  local PRICE=$3    # limitPriceUsdcPerBtc
+  local QTY=$4      # contractsBtc
+  local CAP=$5      # USDC cap
   local LBL=$6
   cyan "▶ $LBL ($SIDE $QTY $SYM @ \$$PRICE IOC, cap \$$CAP)"
-  local CID="vc-e5-$(date +%s%N)"
+  local ENDPOINT CAPKEY
+  if [ "$SIDE" = "BUY" ]; then
+    ENDPOINT="/volume-cover/admin/bullish-test-buy"
+    CAPKEY="maxPremiumUsdc"
+  else
+    ENDPOINT="/volume-cover/admin/bullish-test-sell"
+    CAPKEY="maxNotionalUsdc"
+  fi
   local BODY
   BODY=$(jq -nc \
     --arg sym "$SYM" \
-    --arg side "$SIDE" \
-    --arg price "$PRICE" \
-    --arg qty "$QTY" \
-    --arg cid "$CID" \
+    --argjson px "$PRICE" \
+    --argjson qty "$QTY" \
     --argjson cap "$CAP" \
-    '{symbol:$sym, side:$side, price:$price, quantity:$qty, clientOrderId:$cid, cap:$cap}')
+    --arg capkey "$CAPKEY" \
+    '{symbol:$sym, limitPriceUsdcPerBtc:$px, contractsBtc:$qty} + {($capkey): $cap}')
   local RESP
-  RESP=$(curl -sS -X POST "$SHADOW_API/volume-cover/admin/bullish-test-order" \
+  RESP=$(curl -sS -X POST "$SHADOW_API$ENDPOINT" \
     -H "X-Admin-Token: $SHADOW_ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
     -d "$BODY")
-  echo "$RESP" | jq '. | {ok, elapsedMs, orderId: .result.orderId, status: .result.finalStatus, fillPrice: .result.finalFillPrice, fillQty: .result.finalFillQty, reason: .result.finalReason}'
-  local OK
-  OK=$(echo "$RESP" | jq -r '.ok')
-  if [ "$OK" != "true" ]; then
-    red "✗ $LBL FAILED"
-    return 1
-  fi
-  local QTY_FILLED
+  echo "$RESP" | jq '{ok, elapsedMs, result:(.result | {orderId, finalStatus, finalFillPrice, finalFillQty, finalReason, bullishError})}' 2>/dev/null || echo "$RESP"
+  local OK FINAL_REASON QTY_FILLED
+  OK=$(echo "$RESP" | jq -r '.ok // false')
+  FINAL_REASON=$(echo "$RESP" | jq -r '.result.finalReason // "null"')
   QTY_FILLED=$(echo "$RESP" | jq -r '.result.finalFillQty // 0')
-  if [ "$QTY_FILLED" = "0" ] || [ -z "$QTY_FILLED" ]; then
-    red "✗ $LBL FILLED 0 quantity"
+  local EXECUTED=0
+  if [ "$FINAL_REASON" = "Executed" ] && [ "$(awk -v q="$QTY_FILLED" 'BEGIN{print (q>0)?1:0}')" = "1" ]; then
+    EXECUTED=1
+  fi
+  if [ "$OK" != "true" ] && [ "$EXECUTED" != "1" ]; then
+    red "✗ $LBL FAILED  finalReason=$FINAL_REASON  bullishError=$(echo "$RESP" | jq -r '.result.bullishError // "null"')"
     return 1
   fi
   green "✓ $LBL fill=$QTY_FILLED @ \$$(echo "$RESP" | jq -r '.result.finalFillPrice')"
