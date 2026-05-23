@@ -1903,6 +1903,14 @@ export const registerVolumeCoverRoutes = async (
       clientOrderId
     };
 
+    // 2026-05-23: expected_premium reference was previously bound to the
+    // hard-rejecting pre-flight check that we relaxed yesterday. The
+    // logging + response field still want the value. Recompute it here
+    // from the actual formatted price × quantity that's about to go
+    // on the wire — same math as the pre-flight used.
+    const expectedPremiumUsdc =
+      Number(formattedPrice) * Number(formattedQtyStr);
+
     console.log(
       `[bullish-test-buy] SUBMITTING symbol=${symbol} qty=${formattedQtyStr} ` +
         `price=${formattedPrice} expectedPremium=$${expectedPremiumUsdc.toFixed(2)} ` +
