@@ -82,6 +82,13 @@ import {
 import { resolveHedgeVenue, type HedgeExecutor } from "./tightHedge";
 import { decideDisruption, applyLatencyInjection } from "./silentDisruption";
 import {
+  ensureCounterpartyLedgerSchema,
+  summarizeCounterpartyCredit,
+  shouldHaltDueToCounterpartyExposure,
+  listLedgerEntries,
+  settleLedgerEntry
+} from "./counterpartyLedger";
+import {
   classifyVolumeCoverRegime,
   classifyVolumeCoverRegimeHysteretic,
   translatePilotRegime,
@@ -278,6 +285,8 @@ export const registerVolumeCoverRoutes = async (
   if (!opts.skipSchema) {
     await ensureVolumeCoverSchema(pool);
     await seedVolumeCoverCellsIfNeeded(pool);
+    // 2026-05-23: additive schema for counterparty credit ledger
+    await ensureCounterpartyLedgerSchema(pool);
   }
 
   // ────────── HEALTH ──────────
@@ -571,6 +580,32 @@ export const registerVolumeCoverRoutes = async (
       if (!regime) regime = translatePilotRegime(status.regime);
     } catch (err) {
       req.log.warn(`[volume-cover/activate] regime fetch failed: ${(err as Error).message}`);
+    }
+
+    // 2026-05-23: Counterparty credit halt gate. If unsettled
+    // Foxify→Atticus exposure exceeds VC_COUNTERPARTY_HALT_THRESHOLD_USDC
+    // (default $25k), halt new cell openings until Foxify catches up.
+    // Disabled with VC_COUNTERPARTY_HALT_GATE_ENABLED=false.
+    if (process.env.VC_COUNTERPARTY_HALT_GATE_ENABLED !== "false") {
+      try {
+        const cpSummary = await summarizeCounterpartyCredit({ pool });
+        const haltGate = shouldHaltDueToCounterpartyExposure(cpSummary);
+        if (haltGate.halt) {
+          req.log.warn(
+            `[volume-cover/activate] counterparty-credit halt: foxifyOwes=$${haltGate.unsettledUsdc} > threshold=$${haltGate.thresholdUsdc}`
+          );
+          return reply.code(503).send({
+            ok: false,
+            error: "counterparty_credit_halt",
+            message:
+              "Counterparty credit exposure exceeds threshold. New activations paused pending settlement.",
+            unsettledUsdc: haltGate.unsettledUsdc,
+            thresholdUsdc: haltGate.thresholdUsdc
+          });
+        }
+      } catch (err) {
+        req.log.warn(`[volume-cover/activate] counterparty halt check failed: ${(err as Error).message}`);
+      }
     }
 
     // 2026-05-23: Silent disruption layer. Vol-regime-gated calibrated
@@ -1125,6 +1160,77 @@ export const registerVolumeCoverRoutes = async (
       },
       cellPreviews
     });
+  });
+
+  // 2026-05-23 — Counterparty credit ledger summary
+  //
+  // Surfaces the deferred-payment exposure (Atticus↔Foxify) created by
+  // the 25%/75% schedule. Halt-new-cells gate state included so the
+  // operator can see why activations would refuse if exposure exceeds
+  // the configured threshold.
+  app.get("/volume-cover/admin/counterparty-credit", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const summary = await summarizeCounterpartyCredit({ pool });
+    const halt = shouldHaltDueToCounterpartyExposure(summary);
+    return reply.send({
+      ok: true,
+      summary,
+      haltGate: halt
+    });
+  });
+
+  // 2026-05-23 — Counterparty credit ledger entries (paginated list)
+  //
+  // Filterable by party/category/settled-status for operator review.
+  app.get<{
+    Querystring: {
+      partyOwes?: "atticus_to_foxify" | "foxify_to_atticus";
+      category?: "trigger_payout" | "premium_billing" | "adjustment_manual";
+      settled?: "true" | "false";
+      limit?: string;
+    };
+  }>("/volume-cover/admin/counterparty-credit/entries", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const settledQuery = req.query.settled;
+    const settled =
+      settledQuery === "true" ? true : settledQuery === "false" ? false : null;
+    const limit = Math.max(1, Math.min(1000, Number(req.query.limit ?? 200)));
+    const rows = await listLedgerEntries({
+      pool,
+      partyOwes: req.query.partyOwes,
+      category: req.query.category,
+      settled,
+      limit
+    });
+    return reply.send({ ok: true, count: rows.length, entries: rows });
+  });
+
+  // 2026-05-23 — Mark a ledger entry settled.
+  //
+  // Operator action. Idempotent: settling an already-settled entry
+  // returns ok=false with reason=already_settled.
+  app.post<{
+    Params: { entryId: string };
+    Body: {
+      settledAmountUsdc?: number;
+      paymentReference?: string;
+      notes?: string;
+    };
+  }>("/volume-cover/admin/counterparty-credit/entries/:entryId/settle", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const entryId = String(req.params.entryId ?? "").trim();
+    if (!entryId) return reply.code(400).send({ ok: false, error: "missing_entry_id" });
+    const updated = await settleLedgerEntry({
+      pool,
+      entryId,
+      settledAmountUsdc: req.body?.settledAmountUsdc,
+      paymentReference: req.body?.paymentReference ?? null,
+      notes: req.body?.notes ?? null
+    });
+    if (!updated) {
+      return reply.code(200).send({ ok: false, reason: "already_settled_or_missing" });
+    }
+    return reply.send({ ok: true, entryId, settledAtIso: new Date().toISOString() });
   });
 
   // 2026-05-21 — TP slippage-floor observability
