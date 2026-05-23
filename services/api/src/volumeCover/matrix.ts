@@ -142,7 +142,11 @@ export const MATRIX: readonly CellDefinition[] = [
     dailyPremiumUsdc: 350,
     defaultThrottleMaxPerDay: 5,
     expiryHorizonDays: 3,
-    spreadWidthUsdc: 2_000
+    // 2026-05-23: lowered from 2_000 → 1_000 after live orderbook probe
+    // revealed Bullish does NOT list 73k/79k strikes at the 3d weekly
+    // expiry — only every $1k from 74k-78k. The $1k width matches what
+    // E3/E5 microtests validated (74k/75k/77k/78k all listed).
+    spreadWidthUsdc: 1_000
   },
   {
     cellId: "50k_5pct_2_5k",
