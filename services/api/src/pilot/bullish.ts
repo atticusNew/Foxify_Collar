@@ -668,7 +668,16 @@ export class BullishTradingClient {
     price: string;
     quantity: string;
     clientOrderId?: string;
+    // 2026-05-23 (live-smoke-002 post-mortem): Spread executor MUST
+    // always submit IOC regardless of global PILOT_BULLISH_ORDER_TIF
+    // (which controls single-leg hedges). Without this override, an
+    // env misconfiguration on one side (DAY/GTC) leaves spread legs
+    // sitting OPEN on the book past the 30s poll window, causing
+    // poll_timeout and phantom positions. Pass `timeInForce: "IOC"`
+    // explicitly from `submitIocLimit` callers in spread adapters.
+    timeInForce?: "IOC" | "DAY" | "GTC";
   }): Promise<unknown> {
+    const tif = params.timeInForce || this.config.orderTif;
     if (this.config.authMode === "ecdsa") {
       // 2026-05-18: V3CreateOrder (ECDSA path) was missing the
       // allowMargin / margin / allowBorrow fields. Bullish rejects
@@ -685,7 +694,7 @@ export class BullishTradingClient {
         side: params.side,
         price: params.price,
         quantity: params.quantity,
-        timeInForce: this.config.orderTif,
+        timeInForce: tif,
         clientOrderId: params.clientOrderId || String(BigInt(Date.now()) * 1000n),
         tradingAccountId: this.config.tradingAccountId,
         allowMargin: this.config.allowMargin,
@@ -703,7 +712,7 @@ export class BullishTradingClient {
       price: params.price,
       stopPrice: null,
       quantity: params.quantity,
-      timeInForce: this.config.orderTif,
+      timeInForce: tif,
       allowMargin: this.config.allowMargin,
       tradingAccountId: this.config.tradingAccountId
     });

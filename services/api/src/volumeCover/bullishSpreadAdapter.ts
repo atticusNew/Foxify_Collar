@@ -111,7 +111,14 @@ const submitIocLimitAndPoll = async (params: {
       side: params.side,
       price: formattedPrice,
       quantity: formattedQty,
-      clientOrderId: params.clientOrderId
+      clientOrderId: params.clientOrderId,
+      // 2026-05-23 (live-smoke-002 post-mortem): Force IOC regardless
+      // of PILOT_BULLISH_ORDER_TIF env. Spread executor's atomicity
+      // and rollback logic depend on IOC semantics — a DAY/GTC leg
+      // sitting open on the book breaks rollback (we can't rollback
+      // a "partial" position that's still trying to fill) and creates
+      // phantom legs. Live had GTC set by accident, hence lastStatus=OPEN.
+      timeInForce: "IOC"
     });
   } catch (err) {
     createErr = err as Error;
