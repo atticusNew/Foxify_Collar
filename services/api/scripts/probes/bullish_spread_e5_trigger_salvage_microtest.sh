@@ -49,11 +49,34 @@ CONTRACTS_BTC="${CONTRACTS_BTC:-0.01}"
 TRIGGER_DIRECTION="${TRIGGER_DIRECTION:-high}"  # 'high' or 'low'
 SALVAGE_HOLD_SEC="${SALVAGE_HOLD_SEC:-60}"
 
-# Per-leg hard caps (mirror E3's sizing for 0.01 BTC microtest)
-BUY_LIMIT_USDC_PER_BTC="${BUY_LIMIT_USDC:-1000}"
-SELL_LIMIT_USDC_PER_BTC="${SELL_LIMIT_USDC:-1000}"
+# Per-leg hard caps (mirror E3's known-good sizing for 0.01 BTC microtest)
+# Limit semantics: BUY at high limit → fills at ask. SELL at low limit → fills at bid.
+# Defaults below match what E3 validated successfully at 0.1 BTC on 2026-05-23.
+BUY_LIMIT_USDC_PER_BTC="${BUY_LIMIT_USDC:-1000}"   # high enough to cross any sane ask
+SELL_LIMIT_USDC_PER_BTC="${SELL_LIMIT_USDC:-10}"   # low → guarantees SELL fills at bid
 MAX_BUY_NOTIONAL_USDC="${MAX_PREMIUM_USDC:-15}"    # 0.01 BTC × $1000 = $10 + buffer
 MAX_SELL_NOTIONAL_USDC="${MAX_NOTIONAL_SELL_USDC:-30}"
+
+# Bullish BTC option tick size — verified $10 empirically 2026-05-23.
+TICK_SIZE_USDC="${TICK_SIZE_USDC:-10}"
+
+# Snap a price to the tick grid (ceil for BUY, floor for SELL).
+snap_tick() {
+  local px="$1" direction="${2:-floor}"
+  awk -v p="$px" -v t="$TICK_SIZE_USDC" -v d="$direction" 'BEGIN {
+    if (p <= 0) { print "0"; exit }
+    n = p / t
+    if (d == "ceil") {
+      r = (n == int(n)) ? n : int(n) + 1
+    } else {
+      r = int(n)
+      if (r < 1) r = 1
+    }
+    printf "%.4f", r * t
+  }'
+}
+BUY_LIMIT_USDC_PER_BTC=$(snap_tick "$BUY_LIMIT_USDC_PER_BTC" ceil)
+SELL_LIMIT_USDC_PER_BTC=$(snap_tick "$SELL_LIMIT_USDC_PER_BTC" floor)
 
 LONG_PUT_SYM="${LONG_PUT_SYM:-BTC-USDC-${EXPIRY}-75000-P}"
 SHORT_PUT_SYM="${SHORT_PUT_SYM:-BTC-USDC-${EXPIRY}-74000-P}"
