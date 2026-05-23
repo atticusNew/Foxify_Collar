@@ -94,6 +94,11 @@ Until path is chosen, treat live as "frozen at `9ee5af5`" and route critical fix
     - F1: `/foxify/positions` sent per-day RATE in `premiumPaidUsdc` → Foxify read as already-paid → "owed = 0".
     - F2: `/foxify/today` summed daily rates of positions opened TODAY, missing yesterday's still-alive positions.
     - F3: `/foxify/positions` hid TRIGGERED positions (used `listActivePositions` which is status='active' only). Added `listLiveFoxifyPositions` (active+triggered).
+  - **v4** (`3b9321b` vc-sandbox-spreads / `6e8d281` vc-sandbox / `0c1208c` live): operator-reported three more midnight-rollover panels — Active Protections (status strip): 0, Triggered (today): 0, Net (Foxify-side): −$210. All three were today-only fields that emptied when UTC midnight rolled `vc-pos-e41890f0` into "yesterday" UTC. Fixed:
+    - `/foxify/status.activeCount`: changed semantic to `status IN ('active','triggered')` so a triggered position still counts as a live protection (matches the table). Now → 1.
+    - `/foxify/today`: added `liveActiveCount`, `liveTriggeredCount`, `liveTotalCount`. Frontend Triggered tile binds to `liveTriggeredCount`. Now → 1.
+    - `/foxify/today.foxifyNetUsdc`: changed from today-only flow (`payoutsReceivedToday − premiumBilledToday`) to lifetime (`payoutExpected − premiumBillableLifetime`). Now → +$180 ($600 expected payout − $420 billable premium). `foxifyNetTodayUsdc` retained as the explicit today-only flavour.
+    - Frontend retitled the panel "Activity Summary (lifetime + today UTC)" so the mix of lifetime/today fields no longer reads as contradictory.
   - **v3** (`7cdf53c` vc-sandbox-spreads): operator-reported gap after v2 — Foxify dash payout number "disappeared" at UTC midnight. Root cause: `payoutsReceivedUsdc` was today's-window only; the only live trigger (vc-pos-e41890f0 fired Fri 22:44 UTC) moved into the "yesterday" window once the clock crossed midnight UTC. Same midnight-rollover pattern as the original premium F2 bug.
     - Added `payoutExpectedUsdc` (sum of `payout_usdc` across all live active+triggered, non-archived, non-admin-test) — the "Foxify is expecting" headline that never vanishes.
     - Granular splits: `payoutOwedTriggeredUsdc` (will be paid at pair-close) + `payoutPotentialActiveUsdc` (if-trigger-fires exposure).
