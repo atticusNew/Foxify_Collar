@@ -14,7 +14,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { premiumAccruedInWindowUsdc } from "../src/volumeCover/foxifyDashboard";
+import {
+  premiumAccruedInWindowUsdc,
+  premiumBillableInWindowUsdc
+} from "../src/volumeCover/foxifyDashboard";
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
@@ -159,4 +162,88 @@ test("premiumAccruedInWindowUsdc: vc-pos-e41890f0 since-open accrual", () => {
     nowMs: now
   });
   assert.ok(accrued > 305 && accrued < 308, `expected ~$306.83, got ${accrued.toFixed(2)}`);
+});
+
+// ─── Billable (per-day round-up) tests ──────────────────────────────────────
+
+test("premiumBillableInWindowUsdc: any portion of one day = 1 day billable", () => {
+  // 11.78h overlap (Thu open at 12:13 → Thu 24:00) rounds UP to 1 day.
+  const billable = premiumBillableInWindowUsdc({
+    openedAtIso: "2026-05-21T12:13:00.000Z",
+    closedAtIso: null,
+    windowStartIso: "2026-05-21T00:00:00.000Z",
+    windowEndIso: "2026-05-22T00:00:00.000Z",
+    dailyRateUsdc: 210,
+    nowMs: new Date("2026-05-22T00:00:00.000Z").getTime()
+  });
+  assert.equal(billable, 210);
+});
+
+test("premiumBillableInWindowUsdc: vc-pos-e41890f0 lifetime = 2 days = $420", () => {
+  // Opened Thu 2026-05-21 12:13:48 UTC at $210/d. "Now" is Fri 23:54 UTC.
+  // ceil(35.7h / 24h) = 2 days → $420 billable.
+  const opened = "2026-05-21T12:13:48.000Z";
+  const now = new Date("2026-05-22T23:54:00.000Z").getTime();
+  const billable = premiumBillableInWindowUsdc({
+    openedAtIso: opened,
+    closedAtIso: null,
+    windowStartIso: opened,
+    windowEndIso: new Date(now).toISOString(),
+    dailyRateUsdc: 210,
+    nowMs: now
+  });
+  assert.equal(billable, 420);
+});
+
+test("premiumBillableInWindowUsdc: exactly 24h = 1 day (not 2)", () => {
+  const billable = premiumBillableInWindowUsdc({
+    openedAtIso: "2026-05-21T00:00:00.000Z",
+    closedAtIso: "2026-05-22T00:00:00.000Z",
+    windowStartIso: "2026-05-21T00:00:00.000Z",
+    windowEndIso: "2026-05-22T00:00:00.000Z",
+    dailyRateUsdc: 210
+  });
+  // 24.0h / 24h = exactly 1.0 → ceil → 1 day. (Strictly: 86400000/86400000 = 1)
+  assert.equal(billable, 210);
+});
+
+test("premiumBillableInWindowUsdc: 24h + 1 minute = 2 days", () => {
+  const billable = premiumBillableInWindowUsdc({
+    openedAtIso: "2026-05-21T00:00:00.000Z",
+    closedAtIso: "2026-05-22T00:01:00.000Z",
+    windowStartIso: "2026-05-21T00:00:00.000Z",
+    windowEndIso: "2026-05-23T00:00:00.000Z",
+    dailyRateUsdc: 210
+  });
+  // ceil(24.0167h / 24h) = 2 days
+  assert.equal(billable, 420);
+});
+
+test("premiumBillableInWindowUsdc: zero overlap = 0", () => {
+  const billable = premiumBillableInWindowUsdc({
+    openedAtIso: "2026-05-23T00:00:00.000Z",
+    closedAtIso: null,
+    windowStartIso: "2026-05-21T00:00:00.000Z",
+    windowEndIso: "2026-05-22T00:00:00.000Z",
+    dailyRateUsdc: 210,
+    nowMs: new Date("2026-05-23T05:00:00.000Z").getTime()
+  });
+  assert.equal(billable, 0);
+});
+
+test("billable vs accrued: contractual vs real-time on a partial day", () => {
+  // Same window. 6h active.
+  // Accrued: 6/24 × $210 = $52.50.
+  // Billable: ceil(6/24) = 1 day = $210.
+  const args = {
+    openedAtIso: "2026-05-22T00:00:00.000Z",
+    closedAtIso: "2026-05-22T06:00:00.000Z",
+    windowStartIso: "2026-05-22T00:00:00.000Z",
+    windowEndIso: "2026-05-23T00:00:00.000Z",
+    dailyRateUsdc: 210
+  } as const;
+  const accrued = premiumAccruedInWindowUsdc(args);
+  const billable = premiumBillableInWindowUsdc(args);
+  assert.equal(accrued.toFixed(2), "52.50");
+  assert.equal(billable, 210);
 });

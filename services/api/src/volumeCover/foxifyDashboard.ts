@@ -190,14 +190,22 @@ const projectPositionForFoxify = (p: {
       return v;
     }
   };
-  // 2026-05-22 fix: premiumPaidUsdc was previously sent as the per-day RATE
-  // (p.dailyPremiumUsdc), which Foxify reasonably interpreted as already-paid
-  // (rate × 1 day) → "no premium owed". Real meaning is cumulative accrued
-  // since open. Hourly precision so it updates smoothly. The daily rate is
-  // still exposed via the new dailyRateUsdc field for explicit display.
+  // 2026-05-22 (two-step fix). Step 1: stopped sending per-day rate as
+  // `premiumPaidUsdc` (Foxify dash read it as paid → "$0 owed"). Step 2:
+  // switched headline to BILLABLE (Foxify's per-day round-up contract rule).
+  // For a position active any portion of N UTC days, billable = N × dailyRate
+  // — matching weeklyReconciler.daysActiveInWindow. Hourly accrual still
+  // exposed via premiumAccruedUsdc for smooth real-time UIs.
+  const openedAtIso = iso(p.openedAt) ?? p.openedAt;
+  const closedAtIso = iso(p.closedAt);
   const accruedSinceOpen = premiumAccruedSinceOpenUsdc({
-    openedAtIso: iso(p.openedAt) ?? p.openedAt,
-    closedAtIso: iso(p.closedAt),
+    openedAtIso,
+    closedAtIso,
+    dailyRateUsdc: p.dailyPremiumUsdc
+  });
+  const billableSinceOpen = premiumBillableSinceOpenUsdc({
+    openedAtIso,
+    closedAtIso,
     dailyRateUsdc: p.dailyPremiumUsdc
   });
 
@@ -211,18 +219,21 @@ const projectPositionForFoxify = (p: {
     pairEntryBtcPrice: p.pairEntryBtcPrice,
     triggerHighBtc: p.triggerHighBtc,
     triggerLowBtc: p.triggerLowBtc,
-    // ─── Premium (2026-05-22 fix) ───
-    // premiumPaidUsdc kept for backward-compat with existing Foxify
-    // dashboard bindings; value semantics now corrected to be cumulative
-    // accrued since open (hourly precision). New explicit fields below.
-    premiumPaidUsdc: Number(accruedSinceOpen.toFixed(2)),
+    // ─── Premium (2026-05-22 fix v2) ───
+    // premiumPaidUsdc = CONTRACT BILLABLE cumulative since open (per-day
+    // round-up). For a position active any portion of N UTC days, value is
+    // N × dailyRate. This is what Foxify owes per the billing contract.
+    premiumPaidUsdc: Number(billableSinceOpen.toFixed(2)),
+    premiumBillableUsdc: Number(billableSinceOpen.toFixed(2)),
+    // Hourly precision since open — for smooth real-time UIs that want
+    // a number that updates by the second rather than jumping at midnight.
     premiumAccruedUsdc: Number(accruedSinceOpen.toFixed(2)),
     dailyRateUsdc: p.dailyPremiumUsdc,
     payoutUsdc: p.payoutUsdc,
-    openedAtIso: iso(p.openedAt) ?? p.openedAt,
+    openedAtIso,
     triggeredAtIso: iso(p.triggeredAt),
     triggeredDirection: p.triggeredDirection,
-    closedAtIso: iso(p.closedAt)
+    closedAtIso
   };
 };
 
@@ -263,21 +274,28 @@ const endOfTodayUtcIso = (): string => {
 
 // ────────────────────── Premium accrual ──────────────────────
 //
-// 2026-05-22: dashboard previously sent dailyPremiumUsdc as `premiumPaidUsdc`
-// (per-day RATE shown in a field that implies a CUMULATIVE total). Foxify's
-// frontend rightly concluded "no premium owed" since the rate looked like
-// already-paid. Fix: compute hourly-precision accrued premium for both the
-// per-position projection and the /foxify/today aggregate counter.
+// 2026-05-22: TWO premium views must be supported simultaneously:
 //
-// Hourly precision (not the round-up-to-whole-days rule the weekly settlement
-// reconciler uses) is correct here because this is a DISPLAY value — it must
-// update smoothly as time passes so Foxify can see real-time accrual.
-// Settlement billing (weeklyReconciler.ts:144) still uses the per-day
-// round-up rule and remains the authoritative billable amount.
+//   1. ACCRUED (hourly precision) — for real-time UI display that updates
+//      smoothly as time passes. e.g., at Fri 23:54 UTC of a position active
+//      since Thu 12:13 UTC at $210/d:
+//        Lifetime accrued = 35.7h × $210/24h = $312.40
 //
-// Inputs are ISO strings (or millisecond timestamps) and a daily rate.
-// Returns USDC accrued in the intersection of [openedAt, closedAt|now]
-// with [windowStart, windowEnd). Zero if no overlap.
+//   2. BILLABLE (per-day round-up) — Foxify's contractual billing rule.
+//      Any portion of a UTC day counts as a full day. weeklyReconciler.ts
+//      uses this rule (daysActiveInWindow ceil()). Settlement-authoritative.
+//      Same position at same time:
+//        Thu = ceil(11.78h/24) = 1 day → $210
+//        Fri = ceil(23.9h/24) = 1 day  → $210
+//        Lifetime billable = $420
+//
+// Foxify dashboard "owed" is the BILLABLE amount — that's what the contract
+// says they owe us. Accrued is informational.
+//
+// 2026-05-22 (later): /foxify/today previously sent only today's hourly
+// window which displayed $209 and hid yesterday's $210. Now exposes both
+// today-only AND lifetime fields, and renames headline `premiumPaidUsdc`
+// to reflect lifetime billable (contract owed).
 export const premiumAccruedInWindowUsdc = (params: {
   openedAtIso: string;
   closedAtIso: string | null;
@@ -300,6 +318,34 @@ export const premiumAccruedInWindowUsdc = (params: {
   return (overlapHours / 24) * params.dailyRateUsdc;
 };
 
+/**
+ * Billable amount over a window using Foxify's per-day round-up rule:
+ * ceil(overlap_hours/24) × dailyRate. Matches weeklyReconciler.daysActiveInWindow
+ * which is the authoritative settlement formula. Use this for "premium owed"
+ * displays that must match contractual billing.
+ */
+export const premiumBillableInWindowUsdc = (params: {
+  openedAtIso: string;
+  closedAtIso: string | null;
+  windowStartIso: string;
+  windowEndIso: string;
+  dailyRateUsdc: number;
+  nowMs?: number;
+}): number => {
+  const openedMs = new Date(params.openedAtIso).getTime();
+  const closedMs = params.closedAtIso
+    ? new Date(params.closedAtIso).getTime()
+    : (params.nowMs ?? Date.now());
+  const winStartMs = new Date(params.windowStartIso).getTime();
+  const winEndMs = new Date(params.windowEndIso).getTime();
+  const overlapStart = Math.max(openedMs, winStartMs);
+  const overlapEnd = Math.min(closedMs, winEndMs);
+  const overlapMs = overlapEnd - overlapStart;
+  if (overlapMs <= 0 || params.dailyRateUsdc <= 0) return 0;
+  const billableDays = Math.ceil(overlapMs / 86_400_000);
+  return billableDays * params.dailyRateUsdc;
+};
+
 // Convenience: cumulative accrued since open (open-ended right side = now)
 const premiumAccruedSinceOpenUsdc = (params: {
   openedAtIso: string;
@@ -311,6 +357,24 @@ const premiumAccruedSinceOpenUsdc = (params: {
     openedAtIso: params.openedAtIso,
     closedAtIso: params.closedAtIso,
     // Use opened-at as window start and now/closed as end → just hours-active × rate
+    windowStartIso: params.openedAtIso,
+    windowEndIso: params.closedAtIso ?? new Date(params.nowMs ?? Date.now()).toISOString(),
+    dailyRateUsdc: params.dailyRateUsdc,
+    nowMs: params.nowMs
+  });
+};
+
+// Convenience: cumulative BILLABLE since open (per-day round-up rule).
+// This is the Foxify-contractual "amount owed" headline number.
+const premiumBillableSinceOpenUsdc = (params: {
+  openedAtIso: string;
+  closedAtIso: string | null;
+  dailyRateUsdc: number;
+  nowMs?: number;
+}): number => {
+  return premiumBillableInWindowUsdc({
+    openedAtIso: params.openedAtIso,
+    closedAtIso: params.closedAtIso,
     windowStartIso: params.openedAtIso,
     windowEndIso: params.closedAtIso ?? new Date(params.nowMs ?? Date.now()).toISOString(),
     dailyRateUsdc: params.dailyRateUsdc,
@@ -455,12 +519,26 @@ export const registerFoxifyDashboardRoutes = async (
     );
     const activationsToday = Number(openedResult.rows[0]?.cnt ?? 0);
 
-    // 2026-05-22 fix: premium accrued IN [dayStart, dayEnd) across all
-    // positions with overlapping activity. Includes positions opened
-    // BEFORE today that are still alive (active or triggered, since both
-    // accrue until pair-close), and positions opened today regardless of
-    // whether they've since closed/triggered.
-    const accrualResult = await pool.query(
+    // 2026-05-22 fix (v2). Four premium aggregates exposed:
+    //
+    //   premiumBillableTodayUsdc   = today's window × per-day round-up rule.
+    //                                Matches the contract — any portion of
+    //                                today = 1 full day per active position.
+    //   premiumAccruedTodayUsdc    = today's window × hourly precision.
+    //                                Useful for real-time UIs.
+    //   premiumBillableLifetimeUsdc = cumulative across all LIVE (active +
+    //                                triggered, not archived) positions
+    //                                from each position's open through now,
+    //                                per-day round-up rule. THIS IS THE
+    //                                FOXIFY "AMOUNT OWED" HEADLINE.
+    //   premiumAccruedLifetimeUsdc = same scope, hourly precision.
+    //
+    // Earlier `premiumPaidUsdc` semantics ("today's hourly") hid yesterday's
+    // accrual entirely from a Foxify dashboard that displayed only today,
+    // which is why the dash showed "$0 yesterday $209 today" instead of the
+    // contractual $210 + $210 = $420 owed so far. Headline now reflects
+    // contract.
+    const todayResult = await pool.query(
       `SELECT id, opened_at, closed_at, daily_premium_usdc
        FROM volume_cover_position
        WHERE opened_at < $2
@@ -469,16 +547,52 @@ export const registerFoxifyDashboardRoutes = async (
          AND COALESCE((metadata->>'archived')::boolean, false) = false`,
       [dayStart, dayEnd]
     );
-    let premiumBilledToday = 0;
-    for (const row of accrualResult.rows) {
-      premiumBilledToday += premiumAccruedInWindowUsdc({
+
+    let premiumBillableTodayUsdc = 0;
+    let premiumAccruedTodayUsdc = 0;
+    for (const row of todayResult.rows) {
+      const args = {
         openedAtIso: String(row.opened_at),
         closedAtIso: row.closed_at ? String(row.closed_at) : null,
         windowStartIso: dayStart,
         windowEndIso: dayEnd,
         dailyRateUsdc: Number(row.daily_premium_usdc)
+      };
+      premiumBillableTodayUsdc += premiumBillableInWindowUsdc(args);
+      premiumAccruedTodayUsdc += premiumAccruedInWindowUsdc(args);
+    }
+
+    // Lifetime: every position currently on the books (active or triggered,
+    // not archived, not admin-test). Premium accrues from open until close.
+    // Closed positions excluded — they are settled separately by the weekly
+    // reconciler and should not duplicate-display in the "owed now" view.
+    const lifetimeResult = await pool.query(
+      `SELECT id, opened_at, closed_at, daily_premium_usdc
+       FROM volume_cover_position
+       WHERE status IN ('active', 'triggered')
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
+         AND COALESCE((metadata->>'archived')::boolean, false) = false`
+    );
+
+    let premiumBillableLifetimeUsdc = 0;
+    let premiumAccruedLifetimeUsdc = 0;
+    for (const row of lifetimeResult.rows) {
+      premiumBillableLifetimeUsdc += premiumBillableSinceOpenUsdc({
+        openedAtIso: String(row.opened_at),
+        closedAtIso: row.closed_at ? String(row.closed_at) : null,
+        dailyRateUsdc: Number(row.daily_premium_usdc)
+      });
+      premiumAccruedLifetimeUsdc += premiumAccruedSinceOpenUsdc({
+        openedAtIso: String(row.opened_at),
+        closedAtIso: row.closed_at ? String(row.closed_at) : null,
+        dailyRateUsdc: Number(row.daily_premium_usdc)
       });
     }
+
+    // premiumBilledToday kept as a local for the foxifyNetUsdc calc below;
+    // historical name preserved to keep that diff small. Semantically it's
+    // now "today's billable (contract)" which is what matters for net P&L.
+    const premiumBilledToday = premiumBillableTodayUsdc;
 
     // Triggers today + payouts owed.
     // Excludes both admin-test positions (HIDE_ADMIN_TEST_POSITIONS_SQL)
@@ -510,7 +624,7 @@ export const registerFoxifyDashboardRoutes = async (
     const closedEarlyToday = Number(closedResult.rows[0]?.closed_cnt ?? 0);
     const expiredUnusedToday = Number(closedResult.rows[0]?.expired_cnt ?? 0);
 
-    // Foxify-side net: payouts received - premium paid
+    // Foxify-side net (today): payouts received today - billable today
     const foxifyNetUsdc = payoutsReceivedToday - premiumBilledToday;
 
     return reply.send({
@@ -519,8 +633,20 @@ export const registerFoxifyDashboardRoutes = async (
       triggeredToday,
       closedEarlyToday,
       expiredUnusedToday,
-      premiumPaidUsdc: Number(premiumBilledToday.toFixed(2)),
+      // ─── Premium fields (2026-05-22 fix v2) ───
+      // HEADLINE: lifetime billable across all live positions, per Foxify's
+      // per-day round-up billing rule. This is the "amount owed" number.
+      // Replaces the prior today-only-hourly semantic that hid yesterday's
+      // accrual from a dashboard that displayed only this field.
+      premiumPaidUsdc: Number(premiumBillableLifetimeUsdc.toFixed(2)),
+      // Explicit aliases for each of the four views:
+      premiumBillableLifetimeUsdc: Number(premiumBillableLifetimeUsdc.toFixed(2)),
+      premiumAccruedLifetimeUsdc: Number(premiumAccruedLifetimeUsdc.toFixed(2)),
+      premiumBillableTodayUsdc: Number(premiumBillableTodayUsdc.toFixed(2)),
+      premiumAccruedTodayUsdc: Number(premiumAccruedTodayUsdc.toFixed(2)),
       payoutsReceivedUsdc: Number(payoutsReceivedToday.toFixed(2)),
+      // foxifyNetUsdc remains TODAY only (consistent with the prior
+      // semantic that this field always carried the day's net).
       foxifyNetUsdc: Number(foxifyNetUsdc.toFixed(2)),
       generatedAtIso: new Date().toISOString()
     });
