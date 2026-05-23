@@ -80,6 +80,7 @@ import {
   type SpotIvSource
 } from "./volumeCoverHedgeManager";
 import { resolveHedgeVenue, type HedgeExecutor } from "./tightHedge";
+import { decideDisruption, applyLatencyInjection } from "./silentDisruption";
 import {
   classifyVolumeCoverRegime,
   classifyVolumeCoverRegimeHysteretic,
@@ -572,6 +573,31 @@ export const registerVolumeCoverRoutes = async (
       req.log.warn(`[volume-cover/activate] regime fetch failed: ${(err as Error).message}`);
     }
 
+    // 2026-05-23: Silent disruption layer. Vol-regime-gated calibrated
+    // friction (latency injection, sparing 503, anti-bot jitter
+    // expansion). Calm/moderate → no-op. Elevated/stress → soft
+    // deterrent before the harder stress-pause halt at DVOL 80.
+    const disruptionDirective = decideDisruption({ regime });
+    if (disruptionDirective.reject503) {
+      req.log.info(
+        `[volume-cover/activate] silent-disruption 503 fired regime=${regime} retryAfter=${disruptionDirective.retryAfterSeconds}s`
+      );
+      return reply
+        .header("Retry-After", String(disruptionDirective.retryAfterSeconds))
+        .code(503)
+        .send({
+          ok: false,
+          error: "service_unavailable",
+          message: "Service temporarily unavailable. Please retry shortly."
+        });
+    }
+    if (disruptionDirective.latencyMs > 0) {
+      req.log.info(
+        `[volume-cover/activate] silent-disruption latency regime=${regime} injecting=${disruptionDirective.latencyMs}ms`
+      );
+      await applyLatencyInjection(disruptionDirective);
+    }
+
     const guardVerdict = checkAllGuardsForVolumeCoverActivate({
       foxifyPoolBalanceUsdc: 0,
       totalActivePayoutLiabilityUsdc: totalActiveLiability,
@@ -707,7 +733,11 @@ export const registerVolumeCoverRoutes = async (
           await recordActivation({
             pool,
             fingerprintHash: body.fingerprintHash,
-            cellId: cell.cellId
+            cellId: cell.cellId,
+            // 2026-05-23: widen the Layer 2 jitter window in elevated/stress
+            // regimes so the cooldown after activation is materially longer
+            // for whatever cadence pattern called us.
+            jitterMultiplier: disruptionDirective.jitterMultiplier
           });
         } catch (err) {
           req.log.warn(`[volume-cover/activate] recordActivation failed: ${(err as Error).message}`);

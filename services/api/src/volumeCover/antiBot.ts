@@ -217,12 +217,23 @@ export const recordActivation = async (params: {
   /** Test override of jitter for deterministic tests. */
   jitterFnForTest?: () => number;
   cfgOverride?: Partial<AntiBotConfig>;
+  /**
+   * 2026-05-23: silent-disruption jitter multiplier. Applied to the
+   * Layer 2 jitter window so the cooldown after a successful activation
+   * widens in elevated/stress regimes. Default 1.0 (no change).
+   */
+  jitterMultiplier?: number;
 }): Promise<{ nextAllowedAtIso: string }> => {
   const cfg = { ...readConfig(), ...(params.cfgOverride ?? {}) };
   const nowMs = params.nowMs ?? Date.now();
+  const jitterMultiplier =
+    typeof params.jitterMultiplier === "number" && params.jitterMultiplier >= 1
+      ? params.jitterMultiplier
+      : 1.0;
+  const jitterWindowMs = cfg.layer2JitterMaxMs * jitterMultiplier;
   const jitter = params.jitterFnForTest
     ? params.jitterFnForTest()
-    : Math.floor(Math.random() * cfg.layer2JitterMaxMs);
+    : Math.floor(Math.random() * jitterWindowMs);
   const nextAllowedMs = cfg.layer2Enabled ? nowMs + cfg.layer2BaseMs + jitter : nowMs;
   const nextAllowedAtIso = new Date(nextAllowedMs).toISOString();
   const lastActivateAtIso = new Date(nowMs).toISOString();
