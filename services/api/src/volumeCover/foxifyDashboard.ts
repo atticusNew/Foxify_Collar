@@ -594,11 +594,23 @@ export const registerFoxifyDashboardRoutes = async (
     // now "today's billable (contract)" which is what matters for net P&L.
     const premiumBilledToday = premiumBillableTodayUsdc;
 
-    // Triggers today + payouts owed.
-    // Excludes both admin-test positions (HIDE_ADMIN_TEST_POSITIONS_SQL)
-    // and explicitly-archived positions (metadata.archived=true). The
-    // two filters serve different purposes and are AND'd together so
-    // either one alone is sufficient to hide a position from this view.
+    // Triggers + payouts. Two scopes reported (parallel to premium):
+    //
+    //   payoutsReceivedTodayUsdc = positions triggered IN TODAY's UTC window.
+    //                              Realized only — empty after UTC midnight
+    //                              rolls a previously-triggered position into
+    //                              "yesterday".
+    //
+    //   payoutExpectedUsdc        = sum of payout_usdc across ALL LIVE
+    //                              (active + triggered, non-archived,
+    //                              non-admin-test) positions. The "what
+    //                              Foxify is expecting to receive" view:
+    //                              triggered → guaranteed at pair-close,
+    //                              active   → if-trigger-fires exposure.
+    //                              This is the field the headline should
+    //                              bind to so it never vanishes at midnight.
+    //
+    // Excludes admin-test positions and archived positions for both scopes.
     const triggeredResult = await pool.query(
       `SELECT COUNT(*)::int AS cnt,
               COALESCE(SUM(payout_usdc), 0)::numeric AS payout_sum
@@ -610,6 +622,21 @@ export const registerFoxifyDashboardRoutes = async (
     );
     const triggeredToday = Number(triggeredResult.rows[0]?.cnt ?? 0);
     const payoutsReceivedToday = Number(triggeredResult.rows[0]?.payout_sum ?? 0);
+
+    // Lifetime expected payout across all currently-live positions.
+    const livePayoutResult = await pool.query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN status = 'triggered' THEN payout_usdc END), 0)::numeric AS payout_triggered,
+         COALESCE(SUM(CASE WHEN status = 'active'    THEN payout_usdc END), 0)::numeric AS payout_active,
+         COALESCE(SUM(payout_usdc), 0)::numeric                                        AS payout_total
+       FROM volume_cover_position
+       WHERE status IN ('active', 'triggered')
+         AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
+         AND COALESCE((metadata->>'archived')::boolean, false) = false`
+    );
+    const payoutOwedTriggeredUsdc = Number(livePayoutResult.rows[0]?.payout_triggered ?? 0);
+    const payoutPotentialActiveUsdc = Number(livePayoutResult.rows[0]?.payout_active ?? 0);
+    const payoutExpectedUsdc = Number(livePayoutResult.rows[0]?.payout_total ?? 0);
 
     // Closes today (any reason)
     const closedResult = await pool.query(
@@ -639,11 +666,21 @@ export const registerFoxifyDashboardRoutes = async (
       // Replaces the prior today-only-hourly semantic that hid yesterday's
       // accrual from a dashboard that displayed only this field.
       premiumPaidUsdc: Number(premiumBillableLifetimeUsdc.toFixed(2)),
-      // Explicit aliases for each of the four views:
+      // Explicit aliases for each of the four premium views:
       premiumBillableLifetimeUsdc: Number(premiumBillableLifetimeUsdc.toFixed(2)),
       premiumAccruedLifetimeUsdc: Number(premiumAccruedLifetimeUsdc.toFixed(2)),
       premiumBillableTodayUsdc: Number(premiumBillableTodayUsdc.toFixed(2)),
       premiumAccruedTodayUsdc: Number(premiumAccruedTodayUsdc.toFixed(2)),
+      // ─── Payout fields (2026-05-23 fix) ───
+      // HEADLINE: lifetime payout exposure across all live positions.
+      // This is what Foxify is "expecting to receive" — guaranteed
+      // for triggered (paid at pair-close) plus potential for active
+      // (paid if a trigger fires). Won't vanish at UTC midnight.
+      payoutExpectedUsdc: Number(payoutExpectedUsdc.toFixed(2)),
+      // Granular splits:
+      payoutOwedTriggeredUsdc: Number(payoutOwedTriggeredUsdc.toFixed(2)),
+      payoutPotentialActiveUsdc: Number(payoutPotentialActiveUsdc.toFixed(2)),
+      // Legacy: realized today only (still useful but disappears at midnight).
       payoutsReceivedUsdc: Number(payoutsReceivedToday.toFixed(2)),
       // foxifyNetUsdc remains TODAY only (consistent with the prior
       // semantic that this field always carried the day's net).
