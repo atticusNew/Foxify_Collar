@@ -1,3 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────
+# render.yaml — REFERENCE / HISTORICAL ONLY; NOT AUTHORITATIVE FOR LIVE
+#
+# 2026-05-22 audit: the actually-deployed Render services for the LIVE
+# pilot are:
+#
+#   API:  foxify-pilot-new       (https://foxify-pilot-new.onrender.com)
+#   WEB:  foxify-pilot-new-web
+#
+# NOT the names `atticus-pilot-api` / `atticus-pilot-web` listed in this
+# file. The live service configuration (branch, autoDeploy, env vars,
+# build/start commands) is managed directly in the Render dashboard
+# for the foxify-pilot-new* services. Always treat the Render dashboard
+# as the source of truth.
+#
+# Verified during the 2026-05-22 vc-sandbox → live merge: pushing commit
+# b4e7a2b to the cursor/-bc-c2468b87-...-6ba4 branch DID trigger an
+# auto-deploy on foxify-pilot-new, so the dashboard config currently
+# tracks the same branch listed below. The yaml service NAMES are stale
+# but the branch + autoDeploy values happen to match. Do not rely on
+# this alignment; verify in the dashboard before any future ops change.
+#
+# The shadow service is correctly described by render-shadow.yaml and is
+# managed via that blueprint.
+# ─────────────────────────────────────────────────────────────────────
 databases:
   - name: atticus-pilot-db
     plan: basic-256mb
