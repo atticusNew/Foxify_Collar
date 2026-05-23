@@ -3744,7 +3744,8 @@ export const registerVolumeCoverRoutes = async (
     const result = await pool.query(
       `SELECT l.id, l.position_id, l.venue, l.option_kind, l.strike_usdc,
               l.expiry_iso, l.contracts, l.buy_price_usdc, l.retained,
-              l.retained_role, l.opened_at,
+              l.retained_role, l.opened_at, l.status,
+              l.spread_group_id, l.leg_role, l.initial_proceeds_usdc,
               p.status AS position_status, p.opened_at AS position_opened_at,
               p.closed_at AS position_closed_at, p.triggered_at AS position_triggered_at
          FROM volume_cover_hedge_leg l
@@ -3767,6 +3768,11 @@ export const registerVolumeCoverRoutes = async (
         buyPriceUsdc: r.buy_price_usdc != null ? Number(r.buy_price_usdc) : null,
         retained: Boolean(r.retained),
         retainedRole: r.retained_role ? String(r.retained_role) : null,
+        status: r.status ? String(r.status) : null,
+        // 2026-05-23: spread-executor fields
+        spreadGroupId: r.spread_group_id ? String(r.spread_group_id) : null,
+        legRole: r.leg_role ? String(r.leg_role) : null,
+        initialProceedsUsdc: r.initial_proceeds_usdc != null ? Number(r.initial_proceeds_usdc) : null,
         openedAt: r.opened_at ? String(r.opened_at) : null,
         positionStatus: r.position_status ? String(r.position_status) : null,
         positionOpenedAt: r.position_opened_at ? String(r.position_opened_at) : null,
