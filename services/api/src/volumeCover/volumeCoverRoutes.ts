@@ -89,6 +89,13 @@ import {
   settleLedgerEntry
 } from "./counterpartyLedger";
 import {
+  ensureHedgePoolSchema,
+  listActiveHedges,
+  listLinksForHedge,
+  computeHedgePoolEfficiency,
+  markHedgePoolClosed
+} from "./hedgePool";
+import {
   classifyVolumeCoverRegime,
   classifyVolumeCoverRegimeHysteretic,
   translatePilotRegime,
@@ -285,8 +292,9 @@ export const registerVolumeCoverRoutes = async (
   if (!opts.skipSchema) {
     await ensureVolumeCoverSchema(pool);
     await seedVolumeCoverCellsIfNeeded(pool);
-    // 2026-05-23: additive schema for counterparty credit ledger
+    // 2026-05-23: additive schemas for counterparty credit ledger + hedge pool
     await ensureCounterpartyLedgerSchema(pool);
+    await ensureHedgePoolSchema(pool);
   }
 
   // ────────── HEALTH ──────────
@@ -1232,6 +1240,70 @@ export const registerVolumeCoverRoutes = async (
     }
     return reply.send({ ok: true, entryId, settledAtIso: new Date().toISOString() });
   });
+
+  // 2026-05-23 — Hedge pool listing (active hedges + efficiency metrics)
+  //
+  // Operator view of Bullish [DB] spreads currently in the pool, with
+  // remaining capacity and cycles-per-hedge efficiency metric.
+  app.get<{ Querystring: { cellId?: string } }>(
+    "/volume-cover/admin/hedge-pool",
+    async (req, reply) => {
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+      const cellId = req.query.cellId ? String(req.query.cellId) : undefined;
+      const [hedges, efficiency] = await Promise.all([
+        listActiveHedges({ pool, cellId }),
+        computeHedgePoolEfficiency({ pool })
+      ]);
+      return reply.send({
+        ok: true,
+        generatedAtIso: new Date().toISOString(),
+        efficiency,
+        activeHedges: hedges
+      });
+    }
+  );
+
+  // 2026-05-23 — Hedge pool detail (one hedge + its links)
+  app.get<{ Params: { hedgeId: string }; Querystring: { activeOnly?: string } }>(
+    "/volume-cover/admin/hedge-pool/:hedgeId",
+    async (req, reply) => {
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+      const hedgeId = String(req.params.hedgeId ?? "").trim();
+      if (!hedgeId) return reply.code(400).send({ ok: false, error: "missing_hedge_id" });
+      const activeOnly = String(req.query.activeOnly ?? "").toLowerCase() === "true";
+      const links = await listLinksForHedge({ pool, hedgeId, activeOnly });
+      const allHedges = await listActiveHedges({ pool });
+      const hedge = allHedges.find((h) => h.hedgeId === hedgeId) ?? null;
+      return reply.send({
+        ok: true,
+        generatedAtIso: new Date().toISOString(),
+        hedge,
+        links,
+        linkCount: links.length
+      });
+    }
+  );
+
+  // 2026-05-23 — Hedge pool close (operator action)
+  //
+  // Marks a hedge pool entry status='closed' with reason='manual'. The
+  // executor (Track 2 PR #2) is expected to read this status and
+  // sequence-close the underlying Bullish legs on the next sweep.
+  app.post<{ Params: { hedgeId: string }; Body: { reason?: string } }>(
+    "/volume-cover/admin/hedge-pool/:hedgeId/close",
+    async (req, reply) => {
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+      const hedgeId = String(req.params.hedgeId ?? "").trim();
+      if (!hedgeId) return reply.code(400).send({ ok: false, error: "missing_hedge_id" });
+      const closed = await markHedgePoolClosed({
+        pool,
+        hedgeId,
+        reason: "manual"
+      });
+      if (!closed) return reply.send({ ok: false, reason: "already_closed_or_missing" });
+      return reply.send({ ok: true, hedgeId, closedAtIso: new Date().toISOString() });
+    }
+  );
 
   // 2026-05-21 — TP slippage-floor observability
   //
