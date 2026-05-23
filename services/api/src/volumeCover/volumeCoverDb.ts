@@ -134,6 +134,26 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   // falls through to a market sell. Reset to 0 on successful fill.
   await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN tp_defer_count INTEGER NOT NULL DEFAULT 0`);
 
+  // ─── 2026-05-23: spread-executor fields (Track 2 PR #2 cutover) ───
+  //
+  // spread_group_id: shared identifier for all 4 legs of a [DB] tight
+  //   spread, generated once per openSpread() call. NULL on strangle
+  //   legs (single-leg path). Set on all 4 spread legs.
+  // leg_role: one of 'put_long', 'put_short', 'call_long', 'call_short'
+  //   for spread legs. NULL on strangle legs.
+  // initial_proceeds_usdc: USDC received on SELL legs at open time. The
+  //   existing buy_price_usdc column only encodes BUY-side cost; for
+  //   short legs in a spread, we record the premium received here so
+  //   round-trip accounting works without re-querying Bullish.
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN spread_group_id TEXT`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN leg_role TEXT`);
+  await safeAlter(`ALTER TABLE volume_cover_hedge_leg ADD COLUMN initial_proceeds_usdc NUMERIC(20, 8)`);
+  await safeAlter(
+    `CREATE INDEX IF NOT EXISTS volume_cover_hedge_leg_spread_group_id_idx
+     ON volume_cover_hedge_leg(spread_group_id)
+     WHERE spread_group_id IS NOT NULL`
+  );
+
   // ─── 2026-05-19: coverage-window extension on close ───
   // When Foxify (or admin) calls /close, premium is billed by ceil-of-days-held.
   // Coverage extends through opened_at + ceil(daysHeld) × 24h so the customer
@@ -729,6 +749,10 @@ export type HedgeLegRow = {
   lastValueAt: string | null;
   // 2026-05-21: TP slippage-floor defer counter
   tpDeferCount: number;
+  // 2026-05-23: spread-executor fields (null on strangle legs)
+  spreadGroupId: string | null;
+  legRole: "put_long" | "put_short" | "call_long" | "call_short" | null;
+  initialProceedsUsdc: number | null;
 };
 
 const rowToHedgeLeg = (r: any): HedgeLegRow => ({
@@ -760,7 +784,15 @@ const rowToHedgeLeg = (r: any): HedgeLegRow => ({
     ? Number(r.last_value_usdc)
     : null,
   lastValueAt: r.last_value_at ? String(r.last_value_at) : null,
-  tpDeferCount: Number(r.tp_defer_count ?? 0)
+  tpDeferCount: Number(r.tp_defer_count ?? 0),
+  spreadGroupId: r.spread_group_id ? String(r.spread_group_id) : null,
+  legRole: r.leg_role
+    ? (String(r.leg_role) as HedgeLegRow["legRole"])
+    : null,
+  initialProceedsUsdc:
+    r.initial_proceeds_usdc !== null && r.initial_proceeds_usdc !== undefined
+      ? Number(r.initial_proceeds_usdc)
+      : null
 });
 
 export const insertHedgeLeg = async (
@@ -777,13 +809,18 @@ export const insertHedgeLeg = async (
     buyOrderId?: string | null;
     status?: "open" | "failed";
     metadata?: Record<string, unknown>;
+    // 2026-05-23: spread-executor fields (omit on strangle legs)
+    spreadGroupId?: string | null;
+    legRole?: "put_long" | "put_short" | "call_long" | "call_short" | null;
+    initialProceedsUsdc?: number | null;
   }
 ): Promise<HedgeLegRow> => {
   const r = await pool.query(
     `INSERT INTO volume_cover_hedge_leg
        (id, position_id, venue, option_kind, strike_usdc, expiry_iso,
-        contracts, buy_price_usdc, buy_order_id, status, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        contracts, buy_price_usdc, buy_order_id, status, metadata,
+        spread_group_id, leg_role, initial_proceeds_usdc)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
       leg.id,
@@ -796,7 +833,10 @@ export const insertHedgeLeg = async (
       leg.buyPriceUsdc,
       leg.buyOrderId ?? null,
       leg.status ?? "open",
-      JSON.stringify(leg.metadata ?? {})
+      JSON.stringify(leg.metadata ?? {}),
+      leg.spreadGroupId ?? null,
+      leg.legRole ?? null,
+      leg.initialProceedsUsdc ?? null
     ]
   );
   return rowToHedgeLeg(r.rows[0]);
