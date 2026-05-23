@@ -67,6 +67,33 @@ export type CellDefinition = {
    * post-expiry triggers become a tail-risk problem.
    */
   expiryHorizonDays?: number;
+  /**
+   * Track 2 — vertical spread width in USDC. Defines the strike distance
+   * between the long leg (inside trigger) and the short leg (past trigger).
+   * Used only by `VOLUME_COVER_HEDGE_STRATEGY=spread` (or `auto` with the
+   * cell on the spread-allowlist); ignored by the strangle path.
+   *
+   * Design B (TIGHT-spread):
+   *   long  put  K2 = closest strike to (spot − hedgePct×spot)        (inside trigger)
+   *   short put  K1 = K2 − spreadWidthUsdc                            (past trigger)
+   *   long  call K3 = closest strike to (spot + hedgePct×spot)        (inside trigger)
+   *   short call K4 = K3 + spreadWidthUsdc                            (past trigger)
+   *
+   * Sizing recipe (intrinsic-floor at trigger):
+   *   contracts = payoutUsdc / max(K2 − triggerLow, K4 − triggerHigh)
+   *
+   * Cell-by-cell rationale lives in
+   * docs/VOLUME_COVER_SPREAD_DESIGN_2026_05_22.md §3.
+   */
+  spreadWidthUsdc?: number;
+  /**
+   * Track 2 — when true, this cell is allowed to operate in shadow tier
+   * only. Activation in the live tier is rejected at the lifecycle gate
+   * with `reason: "cell_shadow_only"`. Used to keep diagnostic and
+   * test-only cells (`1k_2pct_20`, `30k_2pct_600`) out of live Foxify
+   * traffic per operator directive (2026-05-22).
+   */
+  shadowOnly?: boolean;
 };
 
 /**
@@ -99,7 +126,12 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.01,
     dailyPremiumUsdc: 210,
     defaultThrottleMaxPerDay: 5,
-    expiryHorizonDays: 3
+    expiryHorizonDays: 3,
+    spreadWidthUsdc: 2_000,
+    // 2026-05-22: per operator directive, 30k cell never goes to live
+    // production for Foxify. Retained in matrix solely to preserve
+    // shadow-tier diagnostic value. Live tier rejects activation.
+    shadowOnly: true
   },
   {
     cellId: "50k_2pct_1k",
@@ -109,7 +141,8 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.01,
     dailyPremiumUsdc: 350,
     defaultThrottleMaxPerDay: 5,
-    expiryHorizonDays: 3
+    expiryHorizonDays: 3,
+    spreadWidthUsdc: 2_000
   },
   {
     cellId: "50k_5pct_2_5k",
@@ -119,7 +152,8 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.03,
     dailyPremiumUsdc: 200,
     defaultThrottleMaxPerDay: 5,
-    expiryHorizonDays: 5
+    expiryHorizonDays: 5,
+    spreadWidthUsdc: 4_000
   },
   {
     cellId: "50k_10pct_5k",
@@ -129,7 +163,8 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.05,
     dailyPremiumUsdc: 100,
     defaultThrottleMaxPerDay: 5,
-    expiryHorizonDays: 14
+    expiryHorizonDays: 14,
+    spreadWidthUsdc: 8_000
   },
   {
     cellId: "200k_5pct_10k",
@@ -139,7 +174,8 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.03,
     dailyPremiumUsdc: 800,
     defaultThrottleMaxPerDay: 5,
-    expiryHorizonDays: 5
+    expiryHorizonDays: 5,
+    spreadWidthUsdc: 4_000
   },
   {
     cellId: "200k_10pct_20k",
@@ -149,7 +185,8 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.05,
     dailyPremiumUsdc: 400,
     defaultThrottleMaxPerDay: 5,
-    expiryHorizonDays: 14
+    expiryHorizonDays: 14,
+    spreadWidthUsdc: 8_000
   },
   {
     cellId: "200k_15pct_30k",
@@ -159,7 +196,8 @@ export const MATRIX: readonly CellDefinition[] = [
     hedgePct: 0.07,
     dailyPremiumUsdc: 370,
     defaultThrottleMaxPerDay: 5,
-    expiryHorizonDays: 14
+    expiryHorizonDays: 14,
+    spreadWidthUsdc: 12_000
   },
   /**
    * 1k_2pct_20 — TEST/DIAGNOSTIC CELL
@@ -192,7 +230,12 @@ export const MATRIX: readonly CellDefinition[] = [
     dailyPremiumUsdc: 1,
     defaultThrottleMaxPerDay: 1,
     defaultEnabled: false,
-    expiryHorizonDays: 3
+    expiryHorizonDays: 3,
+    spreadWidthUsdc: 2_000,
+    // 2026-05-22: explicit shadowOnly to match operator directive; this
+    // is a diagnostic cell only and must not appear in live activation
+    // requests.
+    shadowOnly: true
   }
 ];
 
@@ -253,10 +296,58 @@ export const computeHedgeStrikes = (params: {
 };
 
 /**
+ * Compute the four IDEAL strike prices for a [DB] TIGHT-spread at the
+ * given entry price. These are the "request" strikes; the venue-aware
+ * spread builder snaps each to the nearest listed strike on the chosen
+ * venue (so K2_actual may differ from K2_ideal by up to half a grid tick).
+ *
+ *   K1 = K2 − spreadWidthUsdc                  (short put, past trigger)
+ *   K2 = spot − hedgePct × spot                (long  put, inside trigger)
+ *   K3 = spot + hedgePct × spot                (long  call, inside trigger)
+ *   K4 = K3 + spreadWidthUsdc                  (short call, past trigger)
+ *
+ * Throws if the cell has no `spreadWidthUsdc` set — spread design requires
+ * an explicit width per cell to avoid silently mis-sizing capital efficiency.
+ */
+export const computeSpreadStrikesDB = (params: {
+  cell: CellDefinition;
+  entryBtcPrice: number;
+}): {
+  putShortIdealUsdc: number;
+  putLongIdealUsdc: number;
+  callLongIdealUsdc: number;
+  callShortIdealUsdc: number;
+  spreadWidthUsdc: number;
+} => {
+  const width = params.cell.spreadWidthUsdc;
+  if (!width || width <= 0) {
+    throw new Error(
+      `Volume Cover spread strike resolver: cell ${params.cell.cellId} ` +
+        `is missing spreadWidthUsdc; cannot compute [DB] strikes.`
+    );
+  }
+  const entry = new Decimal(params.entryBtcPrice);
+  const hedgeOffset = entry.mul(params.cell.hedgePct);
+  const putLong = entry.minus(hedgeOffset);
+  const callLong = entry.plus(hedgeOffset);
+  return {
+    putShortIdealUsdc: putLong.minus(width).toNumber(),
+    putLongIdealUsdc: putLong.toNumber(),
+    callLongIdealUsdc: callLong.toNumber(),
+    callShortIdealUsdc: callLong.plus(width).toNumber(),
+    spreadWidthUsdc: width
+  };
+};
+
+/**
  * Sanity check: hedge strike must be inside trigger boundary
  * (hedgePct < triggerPct) — this is the TIGHT structure invariant.
  * Throws if invariant violated. Called once at module load and in
  * unit tests.
+ *
+ * Track 2 additions:
+ *   - `spreadWidthUsdc`, if set, must be > 0 and > 2 × hedgeOffset_at_$70k
+ *     (loose lower bound: width must place short legs OUTSIDE trigger)
  */
 const validateMatrixInvariants = (): void => {
   for (const cell of MATRIX) {
@@ -271,6 +362,24 @@ const validateMatrixInvariants = (): void => {
       throw new Error(
         `Volume Cover matrix invariant violated: cell ${cell.cellId} has non-positive USDC value.`
       );
+    }
+    if (cell.spreadWidthUsdc !== undefined) {
+      if (cell.spreadWidthUsdc <= 0) {
+        throw new Error(
+          `Volume Cover matrix invariant violated: cell ${cell.cellId} ` +
+            `has non-positive spreadWidthUsdc ${cell.spreadWidthUsdc}.`
+        );
+      }
+      // Width must place short legs past trigger at a reasonable spot.
+      // Lower bound check uses spot=$70k as a conservative point.
+      const minWidthForSpot70k = (cell.triggerPct - cell.hedgePct) * 70_000;
+      if (cell.spreadWidthUsdc < minWidthForSpot70k * 0.5) {
+        throw new Error(
+          `Volume Cover matrix invariant violated: cell ${cell.cellId} ` +
+            `spreadWidthUsdc ${cell.spreadWidthUsdc} is too narrow to ` +
+            `place short legs past trigger (min ~${minWidthForSpot70k.toFixed(0)} at spot $70k).`
+        );
+      }
     }
   }
 };

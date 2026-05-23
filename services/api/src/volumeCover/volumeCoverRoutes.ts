@@ -80,10 +80,27 @@ import {
   type SpotIvSource
 } from "./volumeCoverHedgeManager";
 import { resolveHedgeVenue, type HedgeExecutor } from "./tightHedge";
+import { decideDisruption, applyLatencyInjection } from "./silentDisruption";
+import {
+  ensureCounterpartyLedgerSchema,
+  summarizeCounterpartyCredit,
+  shouldHaltDueToCounterpartyExposure,
+  listLedgerEntries,
+  settleLedgerEntry
+} from "./counterpartyLedger";
+import {
+  ensureHedgePoolSchema,
+  listActiveHedges,
+  listLinksForHedge,
+  computeHedgePoolEfficiency,
+  markHedgePoolClosed
+} from "./hedgePool";
 import {
   classifyVolumeCoverRegime,
+  classifyVolumeCoverRegimeHysteretic,
   translatePilotRegime,
   getGridStepUsdc,
+  getConfiguredVolRegimeThresholds,
   snapHedgeStrike,
   type VolRegime
 } from "./strikeGrid";
@@ -275,6 +292,9 @@ export const registerVolumeCoverRoutes = async (
   if (!opts.skipSchema) {
     await ensureVolumeCoverSchema(pool);
     await seedVolumeCoverCellsIfNeeded(pool);
+    // 2026-05-23: additive schemas for counterparty credit ledger + hedge pool
+    await ensureCounterpartyLedgerSchema(pool);
+    await ensureHedgePoolSchema(pool);
   }
 
   // ────────── HEALTH ──────────
@@ -554,15 +574,71 @@ export const registerVolumeCoverRoutes = async (
     const totalActiveLiability = await sumActivePayoutLiability(pool);
 
     // P3 §13 + P1c: fetch live DVOL ONCE, reuse for guard, pricing, sizing.
+    // 2026-05-23: route the VC 4-bucket classification through the
+    // hysteresis wrapper so the activation/pricing tier doesn't flip
+    // more than once per VC_REGIME_HYSTERESIS_MIN_FLIP_INTERVAL_MS
+    // (default 1h). Prevents boundary jitter at DVOL threshold crossings.
     let currentDvolForGuard = 0;
     let regime: VolRegime | null = null;
     try {
       const status = await getCurrentRegime();
       currentDvolForGuard = status.dvol ?? 0;
-      regime = classifyVolumeCoverRegime(status.dvol);
+      const hysteretic = classifyVolumeCoverRegimeHysteretic(status.dvol);
+      regime = hysteretic?.regime ?? null;
       if (!regime) regime = translatePilotRegime(status.regime);
     } catch (err) {
       req.log.warn(`[volume-cover/activate] regime fetch failed: ${(err as Error).message}`);
+    }
+
+    // 2026-05-23: Counterparty credit halt gate. If unsettled
+    // Foxify→Atticus exposure exceeds VC_COUNTERPARTY_HALT_THRESHOLD_USDC
+    // (default $25k), halt new cell openings until Foxify catches up.
+    // Disabled with VC_COUNTERPARTY_HALT_GATE_ENABLED=false.
+    if (process.env.VC_COUNTERPARTY_HALT_GATE_ENABLED !== "false") {
+      try {
+        const cpSummary = await summarizeCounterpartyCredit({ pool });
+        const haltGate = shouldHaltDueToCounterpartyExposure(cpSummary);
+        if (haltGate.halt) {
+          req.log.warn(
+            `[volume-cover/activate] counterparty-credit halt: foxifyOwes=$${haltGate.unsettledUsdc} > threshold=$${haltGate.thresholdUsdc}`
+          );
+          return reply.code(503).send({
+            ok: false,
+            error: "counterparty_credit_halt",
+            message:
+              "Counterparty credit exposure exceeds threshold. New activations paused pending settlement.",
+            unsettledUsdc: haltGate.unsettledUsdc,
+            thresholdUsdc: haltGate.thresholdUsdc
+          });
+        }
+      } catch (err) {
+        req.log.warn(`[volume-cover/activate] counterparty halt check failed: ${(err as Error).message}`);
+      }
+    }
+
+    // 2026-05-23: Silent disruption layer. Vol-regime-gated calibrated
+    // friction (latency injection, sparing 503, anti-bot jitter
+    // expansion). Calm/moderate → no-op. Elevated/stress → soft
+    // deterrent before the harder stress-pause halt at DVOL 80.
+    const disruptionDirective = decideDisruption({ regime });
+    if (disruptionDirective.reject503) {
+      req.log.info(
+        `[volume-cover/activate] silent-disruption 503 fired regime=${regime} retryAfter=${disruptionDirective.retryAfterSeconds}s`
+      );
+      return reply
+        .header("Retry-After", String(disruptionDirective.retryAfterSeconds))
+        .code(503)
+        .send({
+          ok: false,
+          error: "service_unavailable",
+          message: "Service temporarily unavailable. Please retry shortly."
+        });
+    }
+    if (disruptionDirective.latencyMs > 0) {
+      req.log.info(
+        `[volume-cover/activate] silent-disruption latency regime=${regime} injecting=${disruptionDirective.latencyMs}ms`
+      );
+      await applyLatencyInjection(disruptionDirective);
     }
 
     const guardVerdict = checkAllGuardsForVolumeCoverActivate({
@@ -700,7 +776,11 @@ export const registerVolumeCoverRoutes = async (
           await recordActivation({
             pool,
             fingerprintHash: body.fingerprintHash,
-            cellId: cell.cellId
+            cellId: cell.cellId,
+            // 2026-05-23: widen the Layer 2 jitter window in elevated/stress
+            // regimes so the cooldown after activation is materially longer
+            // for whatever cadence pattern called us.
+            jitterMultiplier: disruptionDirective.jitterMultiplier
           });
         } catch (err) {
           req.log.warn(`[volume-cover/activate] recordActivation failed: ${(err as Error).message}`);
@@ -1011,6 +1091,219 @@ export const registerVolumeCoverRoutes = async (
     const metrics = await readSalvageMetrics(pool);
     return reply.send(metrics);
   });
+
+  // 2026-05-23 — Vol regime status + premium tier preview
+  //
+  // Surfaces:
+  //   - Current DVOL (Deribit), RVOL fallback
+  //   - Configured thresholds (env-driven for production tightening)
+  //   - Raw classification + hysteresis-committed regime
+  //   - For each cell: the premium that would be quoted right now
+  //
+  // Used by operator dashboard to verify the regime classifier is
+  // tracking expected market state + to preview what cells would
+  // charge if a customer activated this instant.
+  app.get("/volume-cover/admin/vol-regime", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const thresholds = getConfiguredVolRegimeThresholds();
+    let dvol: number | null = null;
+    let rvol: number | null = null;
+    let pilotRegimeName: "calm" | "normal" | "stress" | null = null;
+    try {
+      const status = await getCurrentRegime();
+      dvol = status.dvol ?? null;
+      rvol = status.rvol ?? null;
+      pilotRegimeName = status.regime;
+    } catch (err) {
+      return reply.send({
+        ok: false,
+        error: `regime_fetch_failed: ${(err as Error).message}`,
+        thresholds
+      });
+    }
+
+    const rawRegime = classifyVolumeCoverRegime(dvol, thresholds);
+    const hysteretic = classifyVolumeCoverRegimeHysteretic(dvol, { thresholds });
+    const effectiveRegime =
+      hysteretic?.regime ?? rawRegime ?? translatePilotRegime(pilotRegimeName) ?? null;
+
+    // Premium preview across all cells in the matrix.
+    const { MATRIX } = await import("./matrix");
+    const cellPreviews = MATRIX.map((cell) => {
+      const quote = resolveDailyPremium({
+        cell,
+        dbOverrideDailyPremiumUsdc: null,
+        regime: effectiveRegime
+      });
+      return {
+        cellId: cell.cellId,
+        baseDailyPremiumUsdc: cell.dailyPremiumUsdc,
+        effectiveDailyPremiumUsdc: quote.dailyPremiumUsdc,
+        source: quote.source,
+        payoutUsdc: cell.payoutUsdc
+      };
+    });
+
+    return reply.send({
+      ok: true,
+      generatedAtIso: new Date().toISOString(),
+      dvol,
+      rvol,
+      pilotRegime: pilotRegimeName,
+      vcRegime: {
+        rawClassification: rawRegime,
+        effective: effectiveRegime,
+        flipSuppressed: hysteretic?.flipSuppressed ?? false,
+        lastFlipAtIso: hysteretic
+          ? new Date(hysteretic.lastFlipAtMs).toISOString()
+          : null,
+        minFlipIntervalMs: Number(
+          process.env.VC_REGIME_HYSTERESIS_MIN_FLIP_INTERVAL_MS ?? 3_600_000
+        )
+      },
+      thresholds: {
+        ...thresholds,
+        stressPauseDvol: Number(process.env.VC_STRESS_PAUSE_DVOL_THRESHOLD ?? 80)
+      },
+      cellPreviews
+    });
+  });
+
+  // 2026-05-23 — Counterparty credit ledger summary
+  //
+  // Surfaces the deferred-payment exposure (Atticus↔Foxify) created by
+  // the 25%/75% schedule. Halt-new-cells gate state included so the
+  // operator can see why activations would refuse if exposure exceeds
+  // the configured threshold.
+  app.get("/volume-cover/admin/counterparty-credit", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const summary = await summarizeCounterpartyCredit({ pool });
+    const halt = shouldHaltDueToCounterpartyExposure(summary);
+    return reply.send({
+      ok: true,
+      summary,
+      haltGate: halt
+    });
+  });
+
+  // 2026-05-23 — Counterparty credit ledger entries (paginated list)
+  //
+  // Filterable by party/category/settled-status for operator review.
+  app.get<{
+    Querystring: {
+      partyOwes?: "atticus_to_foxify" | "foxify_to_atticus";
+      category?: "trigger_payout" | "premium_billing" | "adjustment_manual";
+      settled?: "true" | "false";
+      limit?: string;
+    };
+  }>("/volume-cover/admin/counterparty-credit/entries", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const settledQuery = req.query.settled;
+    const settled =
+      settledQuery === "true" ? true : settledQuery === "false" ? false : null;
+    const limit = Math.max(1, Math.min(1000, Number(req.query.limit ?? 200)));
+    const rows = await listLedgerEntries({
+      pool,
+      partyOwes: req.query.partyOwes,
+      category: req.query.category,
+      settled,
+      limit
+    });
+    return reply.send({ ok: true, count: rows.length, entries: rows });
+  });
+
+  // 2026-05-23 — Mark a ledger entry settled.
+  //
+  // Operator action. Idempotent: settling an already-settled entry
+  // returns ok=false with reason=already_settled.
+  app.post<{
+    Params: { entryId: string };
+    Body: {
+      settledAmountUsdc?: number;
+      paymentReference?: string;
+      notes?: string;
+    };
+  }>("/volume-cover/admin/counterparty-credit/entries/:entryId/settle", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const entryId = String(req.params.entryId ?? "").trim();
+    if (!entryId) return reply.code(400).send({ ok: false, error: "missing_entry_id" });
+    const updated = await settleLedgerEntry({
+      pool,
+      entryId,
+      settledAmountUsdc: req.body?.settledAmountUsdc,
+      paymentReference: req.body?.paymentReference ?? null,
+      notes: req.body?.notes ?? null
+    });
+    if (!updated) {
+      return reply.code(200).send({ ok: false, reason: "already_settled_or_missing" });
+    }
+    return reply.send({ ok: true, entryId, settledAtIso: new Date().toISOString() });
+  });
+
+  // 2026-05-23 — Hedge pool listing (active hedges + efficiency metrics)
+  //
+  // Operator view of Bullish [DB] spreads currently in the pool, with
+  // remaining capacity and cycles-per-hedge efficiency metric.
+  app.get<{ Querystring: { cellId?: string } }>(
+    "/volume-cover/admin/hedge-pool",
+    async (req, reply) => {
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+      const cellId = req.query.cellId ? String(req.query.cellId) : undefined;
+      const [hedges, efficiency] = await Promise.all([
+        listActiveHedges({ pool, cellId }),
+        computeHedgePoolEfficiency({ pool })
+      ]);
+      return reply.send({
+        ok: true,
+        generatedAtIso: new Date().toISOString(),
+        efficiency,
+        activeHedges: hedges
+      });
+    }
+  );
+
+  // 2026-05-23 — Hedge pool detail (one hedge + its links)
+  app.get<{ Params: { hedgeId: string }; Querystring: { activeOnly?: string } }>(
+    "/volume-cover/admin/hedge-pool/:hedgeId",
+    async (req, reply) => {
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+      const hedgeId = String(req.params.hedgeId ?? "").trim();
+      if (!hedgeId) return reply.code(400).send({ ok: false, error: "missing_hedge_id" });
+      const activeOnly = String(req.query.activeOnly ?? "").toLowerCase() === "true";
+      const links = await listLinksForHedge({ pool, hedgeId, activeOnly });
+      const allHedges = await listActiveHedges({ pool });
+      const hedge = allHedges.find((h) => h.hedgeId === hedgeId) ?? null;
+      return reply.send({
+        ok: true,
+        generatedAtIso: new Date().toISOString(),
+        hedge,
+        links,
+        linkCount: links.length
+      });
+    }
+  );
+
+  // 2026-05-23 — Hedge pool close (operator action)
+  //
+  // Marks a hedge pool entry status='closed' with reason='manual'. The
+  // executor (Track 2 PR #2) is expected to read this status and
+  // sequence-close the underlying Bullish legs on the next sweep.
+  app.post<{ Params: { hedgeId: string }; Body: { reason?: string } }>(
+    "/volume-cover/admin/hedge-pool/:hedgeId/close",
+    async (req, reply) => {
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+      const hedgeId = String(req.params.hedgeId ?? "").trim();
+      if (!hedgeId) return reply.code(400).send({ ok: false, error: "missing_hedge_id" });
+      const closed = await markHedgePoolClosed({
+        pool,
+        hedgeId,
+        reason: "manual"
+      });
+      if (!closed) return reply.send({ ok: false, reason: "already_closed_or_missing" });
+      return reply.send({ ok: true, hedgeId, closedAtIso: new Date().toISOString() });
+    }
+  );
 
   // 2026-05-21 — TP slippage-floor observability
   //
@@ -1894,6 +2187,155 @@ export const registerVolumeCoverRoutes = async (
       });
     }
   });
+
+  // 2026-05-23 — SHADOW-ONLY Bullish OPTION positions endpoint.
+  //
+  // Returns only the rows from assetAccounts that look like option
+  // contracts (asset matches BTC-USDC-YYYYMMDD-NNNN-(P|C)). Used as
+  // "definitive residual position verification" — after any
+  // multi-leg test, hit this endpoint to see exactly what (if any)
+  // option exposure remains.
+  //
+  // Long position: available > 0
+  // Short position: borrowed > 0 (Bullish models naked-short option
+  //                                exposure via the borrowed field on
+  //                                the underlying contract asset row)
+  //
+  // Optional ?enrichMark=true triggers a per-symbol orderbook lookup
+  // (mid price) so the response shows mark-to-market USDC value of
+  // each position. Disabled by default to keep latency low.
+  //
+  // GET /volume-cover/admin/bullish-option-positions
+  app.get<{ Querystring: { enrichMark?: string } }>(
+    "/volume-cover/admin/bullish-option-positions",
+    async (req, reply) => {
+      if (!isShadowTier()) {
+        return reply.code(403).send({
+          error: "forbidden",
+          reason: "endpoint_requires_shadow_tier"
+        });
+      }
+      if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+      const enrichMark = String(req.query.enrichMark ?? "").toLowerCase() === "true";
+      const client = await getBullishAdminClient();
+      const startMs = Date.now();
+      try {
+        const balances = await client.getAssetBalances({ timeoutMs: 8000 });
+
+        // Bullish option contract symbols: BTC-USDC-YYYYMMDD-NNNNN-{P,C}
+        const optionSymbolRegex = /^([A-Z]+)-([A-Z]+)-(\d{8})-(\d+)-(P|C)$/;
+
+        type OptionPositionView = {
+          symbol: string;
+          underlying: string;
+          quote: string;
+          expiryIso: string;
+          strikeUsdc: number;
+          optionKind: "put" | "call";
+          availableQty: number;
+          lockedQty: number;
+          borrowedQty: number;
+          netQty: number; // available - borrowed
+          side: "long" | "short" | "neutral";
+          markUsdc: number | null;
+          markValueUsdc: number | null;
+        };
+
+        const parseExpiry = (yyyymmdd: string): string => {
+          const y = yyyymmdd.slice(0, 4);
+          const m = yyyymmdd.slice(4, 6);
+          const d = yyyymmdd.slice(6, 8);
+          return `${y}-${m}-${d}T08:00:00Z`; // Bullish 08:00 UTC settlement
+        };
+
+        const optionRows: OptionPositionView[] = [];
+        for (const b of balances) {
+          const m = b.assetSymbol.match(optionSymbolRegex);
+          if (!m) continue;
+          const available = Number(b.availableQuantity);
+          const locked = Number(b.lockedQuantity);
+          const borrowed = Number(b.borrowedQuantity);
+          if (!Number.isFinite(available) || !Number.isFinite(borrowed)) continue;
+          if (available === 0 && borrowed === 0 && locked === 0) continue;
+          const net = available - borrowed;
+          const side: OptionPositionView["side"] =
+            net > 1e-9 ? "long" : net < -1e-9 ? "short" : "neutral";
+          optionRows.push({
+            symbol: b.assetSymbol,
+            underlying: m[1],
+            quote: m[2],
+            expiryIso: parseExpiry(m[3]),
+            strikeUsdc: Number(m[4]),
+            optionKind: m[5] === "P" ? "put" : "call",
+            availableQty: available,
+            lockedQty: Number.isFinite(locked) ? locked : 0,
+            borrowedQty: borrowed,
+            netQty: net,
+            side,
+            markUsdc: null,
+            markValueUsdc: null
+          });
+        }
+
+        // Optional per-symbol mark-to-market via orderbook mid.
+        if (enrichMark && optionRows.length > 0) {
+          await Promise.all(
+            optionRows.map(async (row) => {
+              try {
+                const book = await client.getHybridOrderBook(row.symbol);
+                const topBid = Number(book.bids[0]?.price ?? NaN);
+                const topAsk = Number(book.asks[0]?.price ?? NaN);
+                if (Number.isFinite(topBid) && Number.isFinite(topAsk)) {
+                  const mid = (topBid + topAsk) / 2;
+                  row.markUsdc = Number(mid.toFixed(4));
+                  row.markValueUsdc = Number((mid * row.netQty).toFixed(4));
+                } else if (Number.isFinite(topBid)) {
+                  row.markUsdc = topBid;
+                  row.markValueUsdc = Number((topBid * row.netQty).toFixed(4));
+                } else if (Number.isFinite(topAsk)) {
+                  row.markUsdc = topAsk;
+                  row.markValueUsdc = Number((topAsk * row.netQty).toFixed(4));
+                }
+              } catch {
+                // Leave mark fields null; row still reported.
+              }
+            })
+          );
+        }
+
+        // Group totals.
+        const longCount = optionRows.filter((r) => r.side === "long").length;
+        const shortCount = optionRows.filter((r) => r.side === "short").length;
+        const totalMtmUsdc = optionRows.reduce(
+          (sum, r) => sum + (r.markValueUsdc ?? 0),
+          0
+        );
+
+        return reply.send({
+          ok: true,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          tradingAccountId: pilotConfig.bullish.tradingAccountId,
+          totals: {
+            optionPositionsCount: optionRows.length,
+            longCount,
+            shortCount,
+            totalMtmUsdc: enrichMark ? Number(totalMtmUsdc.toFixed(4)) : null
+          },
+          positions: optionRows
+        });
+      } catch (err: any) {
+        return reply.code(502).send({
+          ok: false,
+          generatedAtIso: new Date().toISOString(),
+          elapsedMs: Date.now() - startMs,
+          tradingAccountId: pilotConfig.bullish.tradingAccountId,
+          error: err?.message ?? "unknown"
+        });
+      }
+    }
+  );
 
   // 2026-05-21 — SHADOW-ONLY Bullish trading-accounts lister.
   //
@@ -4263,6 +4705,7 @@ export const registerVolumeCoverRoutes = async (
     }
 
     // Run only the financial guards (skip anti-bot since this is admin action)
+    // 2026-05-23: hysteretic classifier for consistency with main activate path.
     const metrics = await readSalvageMetrics(pool);
     const totalActiveLiability = await sumActivePayoutLiability(pool);
     let currentDvolForGuard = 0;
@@ -4270,7 +4713,8 @@ export const registerVolumeCoverRoutes = async (
     try {
       const status = await getCurrentRegime();
       currentDvolForGuard = status.dvol ?? 0;
-      regime = classifyVolumeCoverRegime(status.dvol);
+      const hysteretic = classifyVolumeCoverRegimeHysteretic(status.dvol);
+      regime = hysteretic?.regime ?? null;
       if (!regime) regime = translatePilotRegime(status.regime);
     } catch (err) {
       req.log.warn(`[volume-cover/test-activate] regime fetch failed: ${(err as Error).message}`);

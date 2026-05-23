@@ -42,6 +42,7 @@ import {
 } from "./volumeCoverDb";
 import { recordTriggerEvent } from "./salvageTracker";
 import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
+import { recordObligationWithDeferralSchedule } from "./counterpartyLedger";
 import { attemptLadderNetting } from "./ladderNetting";
 import { recordTriggerForFingerprint } from "./antiBot";
 
@@ -388,6 +389,29 @@ export const fireTrigger = async (
   } catch (err) {
     console.warn(
       `[volumeCover/lifecycle] payout_out ledger failed for position ${params.position.id}: ${(err as Error).message}`
+    );
+  }
+
+  // 2026-05-23 counterparty credit ledger: trigger payout obligation
+  // (Atticus owes Foxify the cell payout, settled per 25%/75% deferred
+  // schedule). Two ledger rows created — weekly_25 due next Friday +
+  // monthly_75 due end-of-month. Insert is idempotent on
+  // (category=trigger_payout, source_event_id=trigger:<positionId>).
+  try {
+    await recordObligationWithDeferralSchedule({
+      pool,
+      partyOwes: "atticus_to_foxify",
+      amountUsdc: params.position.payoutUsdc,
+      category: "trigger_payout",
+      sourceEventId: `trigger:${params.position.id}`,
+      cellId: params.position.cellId,
+      foxifyPositionId: params.position.id,
+      triggerEventId: salvageEvent?.id ?? null,
+      notes: `trigger direction=${params.direction}`
+    });
+  } catch (err) {
+    console.warn(
+      `[volumeCover/lifecycle] counterparty trigger-payout ledger failed for position ${params.position.id}: ${(err as Error).message}`
     );
   }
 
