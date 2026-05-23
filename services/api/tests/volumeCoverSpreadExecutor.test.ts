@@ -1,0 +1,329 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { SpreadStructure, SpreadLegSpec } from "../src/volumeCover/spreadHedge";
+import {
+  openSpread,
+  closeSpread,
+  partialCloseSpreadOnTrigger,
+  checkSpreadLiquidity,
+  __testHelpers,
+  type SpreadExecutorAdapter,
+  type ExecutorOrderResult,
+  type OrderbookTop
+} from "../src/volumeCover/spreadExecutor";
+
+const clearEnv = (): void => {
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("VC_HEDGE_JITTER_") || key.startsWith("VC_FILL_OPTIMIZER_")) {
+      delete process.env[key];
+    }
+  }
+  // Disable jitter sleeps for fast tests
+  process.env.VC_HEDGE_JITTER_OPEN_DELAY_ENABLED = "false";
+  process.env.VC_HEDGE_JITTER_INTERLEG_ENABLED = "false";
+};
+
+const expiryIso = "2026-05-26T08:00:00Z";
+
+const buildStructure = (): SpreadStructure => {
+  const legs: SpreadLegSpec[] = [
+    {
+      legRole: "put_long",
+      optionKind: "put",
+      side: "long",
+      strikeIdealUsdc: 75_000,
+      strikeActualUsdc: 75_000,
+      contractsBtc: 0.01,
+      expiryIso
+    },
+    {
+      legRole: "put_short",
+      optionKind: "put",
+      side: "short",
+      strikeIdealUsdc: 74_000,
+      strikeActualUsdc: 74_000,
+      contractsBtc: 0.01,
+      expiryIso
+    },
+    {
+      legRole: "call_long",
+      optionKind: "call",
+      side: "long",
+      strikeIdealUsdc: 77_000,
+      strikeActualUsdc: 77_000,
+      contractsBtc: 0.01,
+      expiryIso
+    },
+    {
+      legRole: "call_short",
+      optionKind: "call",
+      side: "short",
+      strikeIdealUsdc: 78_000,
+      strikeActualUsdc: 78_000,
+      contractsBtc: 0.01,
+      expiryIso
+    }
+  ];
+  return {
+    positionId: "pos-test-1",
+    cellId: "50k_2pct_1k",
+    spreadGroupId: "vc-spread-test",
+    design: "DB",
+    venue: "bullish",
+    fallbackVenue: "deribit",
+    legs,
+    expectedNetDebitPerBtcUsdcIdeal: null,
+    contractsBtcPerLeg: 0.01,
+    spreadWidthUsdc: 1_000,
+    triggerLowBtc: 74_480,
+    triggerHighBtc: 77_520
+  };
+};
+
+type Book = { topBid: number | null; topAsk: number | null };
+
+const buildMockAdapter = (params: {
+  books: Record<string, Book>;
+  submitOverrides?: Partial<Record<string, (call: number) => ExecutorOrderResult>>;
+}): {
+  adapter: SpreadExecutorAdapter;
+  calls: Array<{ symbol: string; side: string; intent: string; legRole: string; priceUsdcPerBtc: number }>;
+} => {
+  const calls: Array<{ symbol: string; side: string; intent: string; legRole: string; priceUsdcPerBtc: number }> = [];
+  const callsPerSymbol = new Map<string, number>();
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop({ symbol }): Promise<OrderbookTop> {
+      const b = params.books[symbol];
+      return {
+        topBidUsdc: b?.topBid ?? null,
+        topAskUsdc: b?.topAsk ?? null,
+        bidQtyBtc: 1,
+        askQtyBtc: 1
+      };
+    },
+    async submitIocLimit(p): Promise<ExecutorOrderResult> {
+      calls.push({
+        symbol: p.symbol,
+        side: p.side,
+        intent: p.intent,
+        legRole: p.legRole,
+        priceUsdcPerBtc: p.priceUsdcPerBtc
+      });
+      const callIdx = (callsPerSymbol.get(p.symbol) ?? 0) + 1;
+      callsPerSymbol.set(p.symbol, callIdx);
+
+      // Symbol-specific override (e.g. always fail this symbol)
+      const override = params.submitOverrides?.[p.symbol];
+      if (override) return override(callIdx);
+
+      // Default: fill at limit price
+      return {
+        filled: true,
+        fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+        fillQtyBtc: p.quantityBtc,
+        finalReason: "Executed",
+        orderId: `ORD-${callIdx}`
+      };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+  return { adapter, calls };
+};
+
+const happyBooks = (): Record<string, Book> => ({
+  "BTC-USDC-20260526-75000-P": { topBid: 600, topAsk: 700 },  // long put (BUY)
+  "BTC-USDC-20260526-74000-P": { topBid: 300, topAsk: 350 },  // short put (SELL)
+  "BTC-USDC-20260526-77000-C": { topBid: 200, topAsk: 250 },  // long call (BUY)
+  "BTC-USDC-20260526-78000-C": { topBid: 80, topAsk: 100 }    // short call (SELL)
+});
+
+test("openSpread: happy path opens all 4 legs in correct order", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await openSpread({ structure, adapter });
+  assert.equal(result.ok, true);
+  assert.equal(result.legs.length, 4);
+  assert.equal(result.failedAt, null);
+  assert.equal(result.rollbackResults.length, 0);
+
+  // Order: put_long, put_short, call_long, call_short
+  const sequence = calls.map((c) => c.legRole);
+  assert.deepEqual(sequence, ["put_long", "put_short", "call_long", "call_short"]);
+
+  // Sides: longs BUY, shorts SELL
+  assert.equal(calls[0].side, "BUY");
+  assert.equal(calls[1].side, "SELL");
+  assert.equal(calls[2].side, "BUY");
+  assert.equal(calls[3].side, "SELL");
+
+  // Net debit = sum BUYs - sum SELLs at fill prices
+  // Fill prices come from fill optimizer (improved = mid-25%):
+  //   put_long BUY at 700 - (700-600)*0.25 = 675
+  //   put_short SELL at 300 + 50*0.25 = 312.5 (rounded 312.5)
+  //   call_long BUY at 250 - 50*0.25 = 237.5
+  //   call_short SELL at 80 + 20*0.25 = 85
+  // net debit = (675 + 237.5 - 312.5 - 85) * 0.01 = 515 * 0.01 = 5.15
+  assert.ok(result.netDebitUsdc > 0);
+});
+
+test("openSpread: fails on liquidity gate when short call has no resting bid", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const books = happyBooks();
+  books["BTC-USDC-20260526-78000-C"] = { topBid: null, topAsk: 30 }; // no resting bid
+  const { adapter, calls } = buildMockAdapter({ books });
+  const result = await openSpread({ structure, adapter });
+  assert.equal(result.ok, false);
+  assert.equal(result.errorReason, "liquidity_gate_failed");
+  assert.equal(calls.length, 0); // never submitted anything
+  assert.equal(result.legs.length, 0);
+
+  // Liquidity check report identifies the bad leg
+  const badLeg = result.liquidityCheck.legChecks.find((c) => c.legRole === "call_short");
+  assert.equal(badLeg?.sufficient, false);
+  assert.equal(badLeg?.reason, "no_resting_bid_for_sell");
+});
+
+test("openSpread: short_call open fails → rollback runs in reverse order", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const books = happyBooks();
+  const { adapter, calls } = buildMockAdapter({
+    books,
+    submitOverrides: {
+      "BTC-USDC-20260526-78000-C": (callIdx) => {
+        // First call (the open attempt): Expired → triggers retry at worst-case;
+        // second call (worst-case attempt) also Expired → final failure;
+        // any subsequent calls (rollback): not for this symbol since the symbol
+        // wasn't opened. Rollback runs against the OTHER 3 symbols.
+        return {
+          filled: false,
+          fillPriceUsdcPerBtc: 0,
+          fillQtyBtc: 0,
+          finalReason: "Expired",
+          orderId: `ORD-EXP-${callIdx}`
+        };
+      }
+    }
+  });
+  const result = await openSpread({ structure, adapter, skipLiquidityGate: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.failedAt, "call_short");
+  assert.equal(result.legs.length, 3); // put_long, put_short, call_long opened
+  assert.equal(result.rollbackResults.length, 3);
+
+  // Verify rollback order: reverse of opening (call_long → put_short → put_long)
+  const rbOrder = result.rollbackResults.map((r) => r.legRole);
+  assert.deepEqual(rbOrder, ["call_long", "put_short", "put_long"]);
+
+  // Verify each rollback uses the REVERSED side:
+  //   call_long was BUY → rollback SELL
+  //   put_short was SELL → rollback BUY
+  //   put_long was BUY → rollback SELL
+  assert.equal(result.rollbackResults[0].side, "SELL");
+  assert.equal(result.rollbackResults[1].side, "BUY");
+  assert.equal(result.rollbackResults[2].side, "SELL");
+});
+
+test("closeSpread: sequenced close in reverse direction (shorts first within wing)", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await closeSpread({ structure, adapter });
+  assert.equal(result.ok, true);
+  assert.equal(result.legs.length, 4);
+
+  // Close order: call_short, call_long, put_short, put_long
+  const order = result.legs.map((l) => l.legRole);
+  assert.deepEqual(order, ["call_short", "call_long", "put_short", "put_long"]);
+
+  // Close sides:
+  //   call_short: was SELL on open → close = BUY back
+  //   call_long: was BUY on open → close = SELL
+  //   put_short: was SELL → close = BUY back
+  //   put_long: was BUY → close = SELL
+  assert.equal(result.legs[0].side, "BUY");
+  assert.equal(result.legs[1].side, "SELL");
+  assert.equal(result.legs[2].side, "BUY");
+  assert.equal(result.legs[3].side, "SELL");
+});
+
+test("partialCloseSpreadOnTrigger: high trigger closes call_short then put_short, retains long legs", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortLegsClosed.length, 2);
+  // High trigger: close call_short FIRST (winning wing) then put_short (losing wing)
+  assert.equal(result.shortLegsClosed[0].legRole, "call_short");
+  assert.equal(result.shortLegsClosed[1].legRole, "put_short");
+  // Both close-shorts are BUY-back
+  assert.equal(result.shortLegsClosed[0].side, "BUY");
+  assert.equal(result.shortLegsClosed[1].side, "BUY");
+  // Long legs retained
+  assert.equal(result.longLegsRetained.length, 2);
+  const retainedRoles = result.longLegsRetained.map((l) => l.legRole).sort();
+  assert.deepEqual(retainedRoles, ["call_long", "put_long"]);
+});
+
+test("partialCloseSpreadOnTrigger: low trigger closes put_short first then call_short", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "low"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortLegsClosed[0].legRole, "put_short");
+  assert.equal(result.shortLegsClosed[1].legRole, "call_short");
+});
+
+test("checkSpreadLiquidity: returns per-leg pass/fail breakdown", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const books = happyBooks();
+  books["BTC-USDC-20260526-78000-C"] = { topBid: null, topAsk: 30 };
+  const { adapter } = buildMockAdapter({ books });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open"
+  });
+  assert.equal(check.passed, false);
+  assert.equal(check.legChecks.length, 4);
+  const callShortCheck = check.legChecks.find((c) => c.legRole === "call_short")!;
+  assert.equal(callShortCheck.sufficient, false);
+  const putLongCheck = check.legChecks.find((c) => c.legRole === "put_long")!;
+  assert.equal(putLongCheck.sufficient, true);
+});
+
+test("__testHelpers.orderLegsForOpen / orderLegsForClose: invariant ordering", () => {
+  const legs = buildStructure().legs;
+  const openOrder = __testHelpers.orderLegsForOpen(legs).map((l) => l.legRole);
+  assert.deepEqual(openOrder, ["put_long", "put_short", "call_long", "call_short"]);
+  const closeOrder = __testHelpers.orderLegsForClose(legs).map((l) => l.legRole);
+  assert.deepEqual(closeOrder, ["call_short", "call_long", "put_short", "put_long"]);
+});
+
+test("__testHelpers.sideForLeg: open vs close direction", () => {
+  const legs = buildStructure().legs;
+  const longPut = legs.find((l) => l.legRole === "put_long")!;
+  const shortPut = legs.find((l) => l.legRole === "put_short")!;
+  assert.equal(__testHelpers.sideForLeg(longPut, "open"), "BUY");
+  assert.equal(__testHelpers.sideForLeg(longPut, "close"), "SELL");
+  assert.equal(__testHelpers.sideForLeg(shortPut, "open"), "SELL");
+  assert.equal(__testHelpers.sideForLeg(shortPut, "close"), "BUY");
+});
