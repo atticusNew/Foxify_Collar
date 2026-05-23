@@ -1816,15 +1816,19 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
-    // Hard caps — defense against fat-finger
-    if (contractsBtc > 0.1) {
+    // Hard caps — defense against fat-finger.
+    // 2026-05-23: raised from 0.1 → 1.0 BTC and $50 → $2000 to support
+    // pre-flip scale-up tests (0.1 BTC) and live production runs (1.0
+    // BTC). Caller is still expected to pass a sensible maxPremiumUsdc
+    // — these endpoint-side caps are the LAST-RESORT ceiling.
+    if (contractsBtc > 1.0) {
       return reply.code(400).send({
         error: "contracts_exceed_safety_cap",
         provided: contractsBtc,
-        maxAllowed: 0.1
+        maxAllowed: 1.0
       });
     }
-    const cappedMaxPremium = Math.min(maxPremiumUsdc, 50);
+    const cappedMaxPremium = Math.min(maxPremiumUsdc, 2000);
 
     // Pre-flight premium check: limit price × size <= max premium
     const expectedPremiumUsdc = limitPriceUsdcPerBtc * contractsBtc;
@@ -2468,14 +2472,16 @@ export const registerVolumeCoverRoutes = async (
       });
     }
 
-    if (contractsBtc > 0.1) {
+    // 2026-05-23: raised from 0.1 → 1.0 BTC and $50 → $2000 (same
+    // rationale as bullish-test-buy — pre-flip + production scale).
+    if (contractsBtc > 1.0) {
       return reply.code(400).send({
         error: "contracts_exceed_safety_cap",
         provided: contractsBtc,
-        maxAllowed: 0.1
+        maxAllowed: 1.0
       });
     }
-    const cappedMaxNotional = Math.min(maxNotionalUsdc, 50);
+    const cappedMaxNotional = Math.min(maxNotionalUsdc, 2000);
 
     const formattedPrice = limitPriceUsdcPerBtc.toFixed(4);
     const formattedQty = Math.floor(contractsBtc * 100) / 100;

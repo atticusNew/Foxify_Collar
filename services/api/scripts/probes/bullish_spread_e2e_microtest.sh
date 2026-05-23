@@ -197,7 +197,15 @@ open_leg() {
 
   local resp
   resp=$(api POST "$endpoint" "$body")
-  echo "$resp" | jq '{ok, elapsedMs, result: (.result | {orderId, finalStatus, finalFillPrice, finalFillQty, finalReason, bullishError})}' 2>/dev/null || echo "$resp"
+  # If the response carries `.error` (validation failure, server-side cap,
+  # etc.) print the FULL body so the operator can see the reason. Only
+  # when `.result` is present do we collapse to the canonical summary.
+  if echo "$resp" | jq -e '.result' > /dev/null 2>&1; then
+    echo "$resp" | jq '{ok, elapsedMs, result: (.result | {orderId, finalStatus, finalFillPrice, finalFillQty, finalReason, bullishError})}' 2>/dev/null
+  else
+    err "Endpoint returned without .result — full body:"
+    echo "$resp"
+  fi
 
   local ok_flag final_reason fill_qty fill_px order_id
   ok_flag=$(echo "$resp" | jq -r '.ok // false')
