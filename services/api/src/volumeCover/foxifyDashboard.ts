@@ -60,6 +60,23 @@ import type { SpotPriceSource } from "./triggerDetector";
 const HIDE_ADMIN_TEST_POSITIONS_SQL =
   "(metadata->>'source' IS NULL OR metadata->>'source' <> 'admin_test_activate')";
 
+// 2026-05-24 (PR-F): a position whose `metadata.foxify_acknowledged === true`
+// is hidden from the Foxify "My Active Protections" list and the active-count
+// header, but STAYS counted in lifetime premium/payout aggregates because the
+// financial obligation is still real (premium_in already on ledger, payout_out
+// already obligated). Used to clean up positions stuck in `triggered` state
+// where Foxify's bot never sent the close confirmation (May 22-24 incident).
+//
+// Composable in WHERE chains: prepend " AND " for chaining.
+const HIDE_FOXIFY_ACKNOWLEDGED_SQL =
+  "COALESCE((metadata->>'foxify_acknowledged')::boolean, false) = false";
+
+// 2026-05-24 (PR-F): pair_event result values suppressed from the Foxify
+// Recent Activity feed. These are internal-ops noise (throttle, cap,
+// leg-submit-error, hedge_execution_failed) that don't help Foxify operators
+// understand the partner-facing flow. /admin/pair-events still returns all.
+const FOXIFY_RECENT_EXCLUDED_RESULTS: ReadonlyArray<string> = ["rejected", "failed"];
+
 // ────────────────────── Auth ──────────────────────
 
 const resolveFoxifyToken = (): string => {
@@ -483,10 +500,14 @@ export const registerFoxifyDashboardRoutes = async (
     // what the operator sees in the table, so the status-strip count
     // no longer disagrees with the table row count.
     const activeResult = await pool.query(
+      // 2026-05-24 (PR-F): exclude foxify_acknowledged positions from the
+      // active-count header. They remain counted in the lifetime aggregates
+      // below (premium owed, payout expecting) — those use a different filter.
       `SELECT COUNT(*)::int AS cnt FROM volume_cover_position
        WHERE status IN ('active', 'triggered')
          AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
-         AND COALESCE((metadata->>'archived')::boolean, false) = false`
+         AND COALESCE((metadata->>'archived')::boolean, false) = false
+         AND ${HIDE_FOXIFY_ACKNOWLEDGED_SQL}`
     );
     const activeCount = Number(activeResult.rows[0]?.cnt ?? 0);
 
@@ -528,10 +549,14 @@ export const registerFoxifyDashboardRoutes = async (
     // Hide admin/operator test positions from Foxify view (see
     // HIDE_ADMIN_TEST_POSITIONS_SQL for the canonical filter rule).
     // Also hide explicitly-archived positions (metadata.archived=true).
+    // 2026-05-24 (PR-F): also hide foxify_acknowledged positions — Foxify
+    // confirmed they don't want to see these as open protections anymore.
+    // Lifetime aggregates below still include them (financial truth preserved).
     const foxifyVisible = positions.filter((p) => {
       const meta = (p.metadata as any) ?? {};
       if (meta.source === "admin_test_activate") return false;
       if (meta.archived === true) return false;
+      if (meta.foxify_acknowledged === true) return false;
       return true;
     });
     return reply.send({
@@ -792,7 +817,14 @@ export const registerFoxifyDashboardRoutes = async (
     const limit =
       Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 50 ? limitRaw : 20;
 
-    const events = await listRecentPairEvents(pool, limit);
+    // 2026-05-24 (PR-F): suppress 'rejected' and 'failed' events from the
+    // Foxify Recent Activity feed. These are internal-ops noise (lifetime_cap,
+    // throttle, leg-submit-error, hedge_execution_failed, etc.) that don't
+    // help Foxify operators understand the partner-facing flow. Internal
+    // /admin/pair-events still returns every event for ops triage.
+    const events = await listRecentPairEvents(pool, limit, {
+      excludeResults: FOXIFY_RECENT_EXCLUDED_RESULTS
+    });
     return reply.send({
       events: events.map(projectPairEventForFoxify),
       generatedAtIso: new Date().toISOString()

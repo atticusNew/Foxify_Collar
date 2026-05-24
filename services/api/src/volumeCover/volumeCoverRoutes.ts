@@ -58,7 +58,8 @@ import {
   listRecentPairEvents,
   computePairEventLatencyStats,
   finalizeSalvageProceedsForPosition,
-  markPositionArchived
+  markPositionArchived,
+  markPositionFoxifyAcknowledged
 } from "./volumeCoverDb";
 import { openPosition, closePosition } from "./positionLifecycle";
 import {
@@ -350,7 +351,13 @@ export const registerVolumeCoverRoutes = async (
             //                              already-triggered positions (defense
             //                              in depth; route also gates).
             prE_dashTriggeredAtCap: true,
-            prE_closeDoubleBillGuard: true
+            prE_closeDoubleBillGuard: true,
+            // 2026-05-24 (PR-F): foxify-acknowledge mark hides triggered
+            // positions from the Foxify Active Protections list while keeping
+            // them counted in lifetime premium/payout aggregates. Recent
+            // Activity feed also suppresses 'rejected' + 'failed' events.
+            prF_foxifyAcknowledge: true,
+            prF_recentActivityHidesRejectedFailed: true
           }
         }
       });
@@ -4875,6 +4882,111 @@ export const registerVolumeCoverRoutes = async (
         "rolling-5-trigger salvage pct (Guard B)",
         "rolling-24h trigger count",
         "rolling-7d Atticus loss (Guard A kill switch)"
+      ]
+    });
+  });
+
+  /**
+   * 2026-05-24 (PR-F): mark a triggered position as "Foxify-acknowledged".
+   *
+   * Distinct from /archive: archive fully hides the position from every
+   * Foxify-facing aggregate. Foxify-acknowledge is more surgical — the
+   * position drops off the "My Active Protections" list (Foxify confirmed
+   * they don't want to see it as an open protection anymore) but it STAYS
+   * counted in the "Premium Paid (lifetime)" and "Payout Expecting" tallies
+   * because the financial obligation is still real.
+   *
+   * Use case: stuck-in-`triggered` positions that Foxify's bot left without
+   * sending the close confirmation (the May 22-24 incident). Premium was
+   * already accrued at fireTrigger; payout was already obligated; only the
+   * dashboard display semantic was off.
+   *
+   * Guards:
+   *   - position.status MUST be 'triggered' (rejects 'active' to avoid
+   *     hiding live positions; rejects 'closed' because there's nothing
+   *     to acknowledge if the position was already cleanly closed).
+   *   - reason required (audit trail).
+   *   - No ledger writes; PR-E closePosition double-bill guard ensures
+   *     any future close attempt also won't double-write.
+   *
+   * Usage:
+   *   POST /volume-cover/admin/positions/:id/foxify-acknowledge
+   *   body: { "reason": "stale_triggered_pre_hybrid_v3_dash_cleanup_2026_05_24" }
+   */
+  app.post("/volume-cover/admin/positions/:id/foxify-acknowledge", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const id = (req.params as any).id as string;
+    const rawReason = (req.body as any)?.reason;
+    const reason = typeof rawReason === "string" && rawReason.trim().length > 0
+      ? rawReason.trim().slice(0, 256)
+      : null;
+    if (!reason) {
+      return reply.code(400).send({
+        error: "missing_reason",
+        message:
+          "Foxify-acknowledge requires a non-empty `reason` (max 256 chars). " +
+          "This is a permanent audit trail for why the position was hidden " +
+          "from Foxify's Active Protections list."
+      });
+    }
+
+    const position = await getPosition(pool, id);
+    if (!position) return reply.code(404).send({ error: "position_not_found" });
+
+    if (position.status !== "triggered") {
+      return reply.code(409).send({
+        error: "position_not_triggered",
+        message:
+          `Foxify-acknowledge is only valid on positions in status='triggered'. ` +
+          `This one is status='${position.status}'. Use /archive for closed/test positions.`,
+        currentStatus: position.status
+      });
+    }
+
+    if (((position.metadata as any)?.foxify_acknowledged as boolean | undefined) === true) {
+      return reply.send({
+        positionId: id,
+        status: position.status,
+        alreadyAcknowledged: true,
+        acknowledgedMetadata: {
+          foxify_acknowledged: true,
+          foxify_acknowledged_reason: (position.metadata as any)?.foxify_acknowledged_reason ?? null,
+          foxify_acknowledged_at: (position.metadata as any)?.foxify_acknowledged_at ?? null
+        }
+      });
+    }
+
+    const tokenHeader = String(
+      (req.headers as any)["x-admin-token"] ?? (req.headers as any)["X-Admin-Token"] ?? ""
+    );
+    const updated = await markPositionFoxifyAcknowledged(pool, {
+      id,
+      reason,
+      acknowledgedByToken: tokenHeader || undefined
+    });
+    if (!updated) {
+      return reply.code(500).send({ error: "foxify_acknowledge_failed" });
+    }
+    return reply.send({
+      positionId: id,
+      status: updated.status,
+      foxifyAcknowledged: true,
+      acknowledgedMetadata: {
+        foxify_acknowledged: true,
+        foxify_acknowledged_reason: reason,
+        foxify_acknowledged_at:
+          (updated.metadata as any)?.foxify_acknowledged_at ?? new Date().toISOString()
+      },
+      hiddenFrom: [
+        "/foxify/positions (My Active Protections list)",
+        "/foxify/today activeCount (header counter)",
+        "/foxify/status currentlyOpen counter"
+      ],
+      stillCountedIn: [
+        "/foxify/today premiumBillableLifetimeUsdc (Premium Paid)",
+        "/foxify/today payoutOwedTriggeredUsdc (Payout Expecting)",
+        "/foxify/today foxifyNetLifetimeUsdc (Net Foxify-side)",
+        "ledger entries (premium_in, payout_out — financial truth preserved)"
       ]
     });
   });

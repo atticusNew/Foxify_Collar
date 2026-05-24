@@ -746,6 +746,61 @@ export const markPositionClosed = async (
  * The read-merge-write race window is acceptable for an admin-only
  * endpoint with vanishing concurrent-call probability.
  */
+/**
+ * 2026-05-24 (PR-F): mark a position as "Foxify-acknowledged" — the partner
+ * has accepted that this position is settled-but-still-on-our-books and no
+ * longer wants to see it on their Active Protections list. Distinct from
+ * archive (which fully hides) because we still want the position to count
+ * toward Premium Paid (lifetime) and Payout Expecting on the Foxify dash —
+ * the financial obligations remain real until the payout actually flows.
+ *
+ * Effect on Foxify dash queries:
+ *   - /foxify/positions   → excluded (position vanishes from "My Active Protections")
+ *   - /foxify/today
+ *       activeCount       → excluded (header drops)
+ *       lifetime aggregate→ INCLUDED (premium tally preserved)
+ *       payout aggregate  → INCLUDED (still owed)
+ *
+ * No ledger writes — fireTrigger already settled the premium/payout entries.
+ * The PR-E closePosition double-bill guard ensures any future close attempt
+ * also won't double-write.
+ */
+export const markPositionFoxifyAcknowledged = async (
+  pool: DbExecutor,
+  params: {
+    id: string;
+    reason: string;
+    acknowledgedByToken?: string;
+  }
+): Promise<PositionRow | null> => {
+  const cur = await pool.query(
+    `SELECT metadata FROM volume_cover_position WHERE id = $1`,
+    [params.id]
+  );
+  if (cur.rows.length === 0) return null;
+  const existingRaw = cur.rows[0].metadata;
+  const existing = (typeof existingRaw === "string"
+    ? JSON.parse(existingRaw)
+    : (existingRaw ?? {})) as Record<string, unknown>;
+  const merged = {
+    ...existing,
+    foxify_acknowledged: true,
+    foxify_acknowledged_reason: params.reason,
+    foxify_acknowledged_at: new Date().toISOString(),
+    foxify_acknowledged_by_token_prefix: params.acknowledgedByToken
+      ? params.acknowledgedByToken.slice(0, 6) + "..."
+      : null
+  };
+  const r = await pool.query(
+    `UPDATE volume_cover_position
+     SET metadata = $2::jsonb
+     WHERE id = $1
+     RETURNING *`,
+    [params.id, JSON.stringify(merged)]
+  );
+  return r.rows[0] ? rowToPosition(r.rows[0]) : null;
+};
+
 export const markPositionArchived = async (
   pool: DbExecutor,
   params: { id: string; reason: string; archivedByToken?: string }
@@ -1190,13 +1245,39 @@ const rowToPairEvent = (r: any): PairEventRow => ({
   metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) : (r.metadata ?? {})
 });
 
+/**
+ * 2026-05-24 (PR-F): added optional `excludeResults` filter so the Foxify
+ * Recent Activity feed can suppress noise like 'rejected'/'failed' events
+ * (lifetime_cap_exceeded, daily_throttle, leg_*_submit_error, etc.) that are
+ * internal-ops noise and don't help Foxify operators understand the partner-
+ * facing flow. The admin /admin/pair-events route does NOT pass this filter
+ * — operators still see every event.
+ */
 export const listRecentPairEvents = async (
   pool: DbExecutor,
-  limit = 100
+  limit = 100,
+  options: {
+    excludeResults?: ReadonlyArray<string>;
+  } = {}
 ): Promise<PairEventRow[]> => {
+  const exclude = options.excludeResults ?? [];
+  if (exclude.length === 0) {
+    const r = await pool.query(
+      `SELECT * FROM volume_cover_pair_event ORDER BY received_at DESC LIMIT $1`,
+      [limit]
+    );
+    return r.rows.map(rowToPairEvent);
+  }
+  // Build a parameterized NOT IN ($2, $3, …) so we work on real Postgres AND
+  // on pg-mem (which doesn't support `<> ALL(text[])`). Each excluded value
+  // gets its own placeholder.
+  const placeholders = exclude.map((_, i) => `$${i + 2}`).join(", ");
   const r = await pool.query(
-    `SELECT * FROM volume_cover_pair_event ORDER BY received_at DESC LIMIT $1`,
-    [limit]
+    `SELECT * FROM volume_cover_pair_event
+     WHERE result NOT IN (${placeholders})
+     ORDER BY received_at DESC
+     LIMIT $1`,
+    [limit, ...exclude]
   );
   return r.rows.map(rowToPairEvent);
 };

@@ -8486,11 +8486,13 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
           `depthGate={floorBtc:${depth.minDepthBtcFloor},ratio:${depth.depthRatio},enforced:${depth.enforced}} ` +
           `sellLongsAtTrigger=${sellLongs} parallelLongSells=${parallelSells} ` +
           `slippageVenues=${slipVenues} fillOptDeepCrossBps=${deepCrossBps} ` +
-          // 2026-05-24 (PR-E): two correctness fixes shipped together,
+          // 2026-05-24 (PR-E + PR-F): correctness + UX fixes shipped together,
           // unconditionally on. Logged so /volume-cover/health AND startup
-          // logs both confirm the deploy picked up the projection cap and
-          // the closePosition double-bill guard.
-          `prE_dashTriggeredAtCap=true prE_closeDoubleBillGuard=true`
+          // logs both confirm the deploy picked up the projection cap, the
+          // closePosition double-bill guard, the Foxify acknowledge flow,
+          // and the Recent Activity suppression for rejected+failed events.
+          `prE_dashTriggeredAtCap=true prE_closeDoubleBillGuard=true ` +
+          `prF_foxifyAcknowledge=true prF_recentActivityHidesRejectedFailed=true`
       );
     } catch (err) {
       console.warn(
