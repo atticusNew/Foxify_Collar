@@ -318,3 +318,51 @@ test("sumNetLossInWindow aggregates loss across triggers", async () => {
   const total = await sumNetLossInWindow(pool, 24);
   assert.equal(total, 500); // 300 + 200
 });
+
+// ─── 2026-05-24 Phase 0.3: pricing attribution columns ────────────
+
+test("insertPosition: persists regime_at_open + base_daily_premium + surcharge_multiplier", async () => {
+  const pool = await buildPool();
+  const sample = {
+    ...buildSamplePosition("vc-attrib-1"),
+    dailyPremiumUsdc: 525, // = round(500 × 1.05)
+    regimeAtOpen: "moderate" as const,
+    baseDailyPremiumUsdc: 500,
+    surchargeMultiplierApplied: 1.05
+  };
+  const inserted = await insertPosition(pool, sample);
+  assert.equal(inserted.regimeAtOpen, "moderate");
+  assert.equal(inserted.baseDailyPremiumUsdc, 500);
+  assert.equal(inserted.surchargeMultiplierApplied, 1.05);
+  assert.equal(inserted.dailyPremiumUsdc, 525);
+
+  // Reload via getPosition to verify the row mapper consumes the
+  // new columns identically to the insert RETURNING * path.
+  const reloaded = await getPosition(pool, "vc-attrib-1");
+  assert.equal(reloaded?.regimeAtOpen, "moderate");
+  assert.equal(reloaded?.baseDailyPremiumUsdc, 500);
+  assert.equal(reloaded?.surchargeMultiplierApplied, 1.05);
+});
+
+test("insertPosition: legacy callers omitting attribution columns default cleanly", async () => {
+  const pool = await buildPool();
+  // No regimeAtOpen / baseDailyPremium / surcharge passed (existing
+  // tests + admin paths that don't yet supply attribution).
+  const inserted = await insertPosition(pool, buildSamplePosition("vc-legacy"));
+  assert.equal(inserted.regimeAtOpen, null);
+  assert.equal(inserted.baseDailyPremiumUsdc, null);
+  assert.equal(inserted.surchargeMultiplierApplied, 1.0); // default
+});
+
+test("insertPosition: surcharge=1.0 + base=daily implies no anti-bot surcharge", async () => {
+  const pool = await buildPool();
+  const inserted = await insertPosition(pool, {
+    ...buildSamplePosition("vc-no-surcharge"),
+    dailyPremiumUsdc: 350,
+    regimeAtOpen: "calm",
+    baseDailyPremiumUsdc: 350,
+    surchargeMultiplierApplied: 1.0
+  });
+  assert.equal(inserted.baseDailyPremiumUsdc, inserted.dailyPremiumUsdc);
+  assert.equal(inserted.surchargeMultiplierApplied, 1.0);
+});

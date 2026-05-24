@@ -760,6 +760,9 @@ export const registerVolumeCoverRoutes = async (
         pairEntryBtcPrice: body.pairEntryBtcPrice,
         effectiveDailyPremiumUsdc: dailyPremium,
         regime,
+        // 2026-05-24 (Phase 0.3): persist pricing inputs for PnL attribution.
+        baseDailyPremiumUsdc: baseDailyPremium,
+        surchargeMultiplierApplied: surchargeMultiplier,
         fingerprintHash: body.fingerprintHash ?? null,
         metadata: {
           source: "foxify_api",
@@ -958,7 +961,19 @@ export const registerVolumeCoverRoutes = async (
         openedAt: row.opened_at,
         triggeredAt: row.triggered_at,
         closedAt: row.closed_at,
-        payoutUsdc: Number(row.payout_usdc)
+        payoutUsdc: Number(row.payout_usdc),
+        dailyPremiumUsdc: Number(row.daily_premium_usdc),
+        // 2026-05-24 (Phase 0.3): pricing attribution surfaced for PnL
+        // reconciliation queries against this endpoint.
+        regimeAtOpen: row.regime_at_open ? String(row.regime_at_open) : null,
+        baseDailyPremiumUsdc:
+          row.base_daily_premium_usdc !== null && row.base_daily_premium_usdc !== undefined
+            ? Number(row.base_daily_premium_usdc)
+            : null,
+        surchargeMultiplierApplied:
+          row.surcharge_multiplier_applied !== null && row.surcharge_multiplier_applied !== undefined
+            ? Number(row.surcharge_multiplier_applied)
+            : 1.0
       }))
     });
   });
@@ -1033,6 +1048,16 @@ export const registerVolumeCoverRoutes = async (
           triggeredDirection: row.triggered_direction ? String(row.triggered_direction) : null,
           closedAt: row.closed_at ? String(row.closed_at) : null,
           closeReason: row.close_reason ? String(row.close_reason) : null,
+          // 2026-05-24 (Phase 0.3): pricing attribution for live ops UI.
+          regimeAtOpen: row.regime_at_open ? String(row.regime_at_open) : null,
+          baseDailyPremiumUsdc:
+            row.base_daily_premium_usdc !== null && row.base_daily_premium_usdc !== undefined
+              ? Number(row.base_daily_premium_usdc)
+              : null,
+          surchargeMultiplierApplied:
+            row.surcharge_multiplier_applied !== null && row.surcharge_multiplier_applied !== undefined
+              ? Number(row.surcharge_multiplier_applied)
+              : 1.0,
           legs
         };
       })
@@ -4980,14 +5005,15 @@ export const registerVolumeCoverRoutes = async (
 
     // Premium: caller override OR matrix base (regime overlay still applies
     // unless operator explicitly overrides).
+    const adminBaseDailyPremium = resolveDailyPremium({
+      cell,
+      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
+      regime
+    }).dailyPremiumUsdc;
     const dailyPremium =
       body.premiumOverrideUsdc !== undefined
         ? body.premiumOverrideUsdc
-        : resolveDailyPremium({
-            cell,
-            dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
-            regime
-          }).dailyPremiumUsdc;
+        : adminBaseDailyPremium;
 
     try {
       const result = await openPosition(pool, opts.hedgeExecutor, {
@@ -4998,6 +5024,13 @@ export const registerVolumeCoverRoutes = async (
         pairEntryBtcPrice: body.pairEntryBtcPrice,
         effectiveDailyPremiumUsdc: dailyPremium,
         regime,
+        // 2026-05-24 (Phase 0.3): pricing attribution. No surcharge on
+        // admin test paths (no anti-bot). Base reflects regime overlay;
+        // if operator overrode premium, base preserves regime-tiered
+        // value so attribution still reflects "what we would have
+        // charged" vs the override.
+        baseDailyPremiumUsdc: adminBaseDailyPremium,
+        surchargeMultiplierApplied: 1.0,
         // No fingerprint = no anti-bot, no ladder netting (intentional for test)
         fingerprintHash: null,
         // 2026-05-23: smoke-test sizing override (spread cells only).

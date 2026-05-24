@@ -82,6 +82,15 @@ export type OpenPositionRequest = {
    * the strangle structure builder.
    */
   contractsOverrideBtc?: number;
+  /**
+   * 2026-05-24 (Phase 0.3): pricing attribution. The route computes
+   * baseDailyPremium (from cell + regime overlay) and a surcharge
+   * multiplier (from anti-bot Layer 4), producing effectiveDailyPremium
+   * via base × multiplier. Persist all three so PnL attribution can
+   * reconstruct what we charged and why per regime.
+   */
+  baseDailyPremiumUsdc?: number;
+  surchargeMultiplierApplied?: number;
 };
 
 export type OpenPositionResult = {
@@ -138,7 +147,11 @@ export const openPosition = async (
       dailyPremiumUsdc: dailyPremium,
       payoutUsdc: req.cell.payoutUsdc,
       fingerprintHash: req.fingerprintHash ?? null,
-      metadata: req.metadata
+      metadata: req.metadata,
+      // 2026-05-24 (Phase 0.3): pricing attribution.
+      regimeAtOpen: req.regime ?? null,
+      baseDailyPremiumUsdc: req.baseDailyPremiumUsdc ?? null,
+      surchargeMultiplierApplied: req.surchargeMultiplierApplied ?? 1.0
     });
   } catch (err: any) {
     throw new Error(`volume_cover_position_insert_failed: ${err?.message ?? err}`);

@@ -161,6 +161,34 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   // out. NULL while status='active' (covered until close).
   await safeAlter(`ALTER TABLE volume_cover_position ADD COLUMN coverage_through TIMESTAMPTZ`);
 
+  // ─── 2026-05-24 (Phase 0.3): pricing attribution columns ───
+  //
+  // Captures the inputs that produced daily_premium_usdc so we can
+  // attribute PnL by regime cleanly without re-deriving from event
+  // logs. Existing `daily_premium_usdc` continues to store the value
+  // actually charged (= base × surcharge); these add:
+  //
+  //   regime_at_open           — VolRegime at the moment of pricing
+  //                              ('calm'|'moderate'|'elevated'|'stress')
+  //                              NULL on legacy rows or when DVOL fetch
+  //                              fails (regime classifier returns null).
+  //   base_daily_premium_usdc  — regime-tiered base premium BEFORE the
+  //                              Layer-4 surcharge multiplier. Equals the
+  //                              cell row's base + regime overlay.
+  //   surcharge_multiplier_applied — Layer-4 anti-bot surcharge multiplier
+  //                              that scaled base → charged. 1.0 = none.
+  //                              DEFAULT 1.0 so historical rows infer
+  //                              correctly (base = daily_premium for legacy).
+  //
+  // PnL attribution rule (per regime):
+  //   atticus_pnl_by_regime =
+  //     SUM(daily_premium_usdc) WHERE regime_at_open = R
+  //     − SUM(hedge_costs)
+  //     − SUM(payouts WHERE triggered_direction != NULL AND regime_at_open = R)
+  await safeAlter(`ALTER TABLE volume_cover_position ADD COLUMN regime_at_open TEXT`);
+  await safeAlter(`ALTER TABLE volume_cover_position ADD COLUMN base_daily_premium_usdc NUMERIC(20, 8)`);
+  await safeAlter(`ALTER TABLE volume_cover_position ADD COLUMN surcharge_multiplier_applied NUMERIC(8, 4) NOT NULL DEFAULT 1.0`);
+
   // Hedge-retained ledger info for audit (no balance impact). Not its
   // own table; we use the existing pilot capital_pool_ledger via
   // metadata. See positionLifecycle.
@@ -251,6 +279,8 @@ export const ensureVolumeCoverSchema = async (pool: Pool): Promise<void> => {
   await safeIdx(`CREATE INDEX idx_volume_cover_position_status ON volume_cover_position (status)`);
   await safeIdx(`CREATE INDEX idx_volume_cover_position_cell ON volume_cover_position (cell_id, opened_at)`);
   await safeIdx(`CREATE INDEX idx_volume_cover_position_pair ON volume_cover_position (foxify_pair_id)`);
+  // 2026-05-24 (Phase 0.3): index regime for fast PnL-by-regime queries.
+  await safeIdx(`CREATE INDEX idx_volume_cover_position_regime ON volume_cover_position (regime_at_open, opened_at) WHERE regime_at_open IS NOT NULL`);
   await safeIdx(`CREATE INDEX idx_volume_cover_hedge_position ON volume_cover_hedge_leg (position_id, status)`);
   await safeIdx(`CREATE INDEX idx_volume_cover_hedge_retained ON volume_cover_hedge_leg (retained, expiry_iso) WHERE retained = TRUE`);
   await safeIdx(`CREATE INDEX idx_volume_cover_salvage_pos ON volume_cover_salvage_event (position_id)`);
@@ -395,6 +425,21 @@ export type PositionRow = {
    */
   coverageThrough: string | null;
   fingerprintHash: string | null;
+  /**
+   * 2026-05-24 (Phase 0.3): pricing attribution.
+   * - regimeAtOpen: VolRegime captured at activation time (may be null
+   *   on legacy rows or if DVOL fetch failed at quote time).
+   * - baseDailyPremiumUsdc: regime-tiered base premium BEFORE the Layer-4
+   *   surcharge multiplier. Legacy rows: null (caller derives from
+   *   dailyPremiumUsdc / surchargeMultiplierApplied).
+   * - surchargeMultiplierApplied: Layer-4 anti-bot surcharge multiplier
+   *   that scaled base → charged. Defaults to 1.0 on legacy rows.
+   *
+   * Invariant (modulo rounding): dailyPremiumUsdc ≈ round(baseDailyPremiumUsdc × surchargeMultiplierApplied).
+   */
+  regimeAtOpen: "calm" | "moderate" | "elevated" | "stress" | null;
+  baseDailyPremiumUsdc: number | null;
+  surchargeMultiplierApplied: number;
   metadata: Record<string, unknown>;
 };
 
@@ -417,6 +462,13 @@ const rowToPosition = (r: any): PositionRow => ({
   closeReason: r.close_reason ? String(r.close_reason) : null,
   coverageThrough: r.coverage_through ? String(r.coverage_through) : null,
   fingerprintHash: r.fingerprint_hash ? String(r.fingerprint_hash) : null,
+  regimeAtOpen: r.regime_at_open ? (String(r.regime_at_open) as PositionRow["regimeAtOpen"]) : null,
+  baseDailyPremiumUsdc: r.base_daily_premium_usdc !== null && r.base_daily_premium_usdc !== undefined
+    ? Number(r.base_daily_premium_usdc)
+    : null,
+  surchargeMultiplierApplied: r.surcharge_multiplier_applied !== null && r.surcharge_multiplier_applied !== undefined
+    ? Number(r.surcharge_multiplier_applied)
+    : 1.0,
   metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) : (r.metadata ?? {})
 });
 
@@ -435,6 +487,13 @@ export const insertPosition = async (
     payoutUsdc: number;
     fingerprintHash?: string | null;
     metadata?: Record<string, unknown>;
+    /**
+     * 2026-05-24 (Phase 0.3): pricing attribution at open time. Optional
+     * to preserve legacy callers; new code SHOULD always populate these.
+     */
+    regimeAtOpen?: "calm" | "moderate" | "elevated" | "stress" | null;
+    baseDailyPremiumUsdc?: number | null;
+    surchargeMultiplierApplied?: number;
   }
 ): Promise<PositionRow> => {
   const r = await pool.query(
@@ -443,8 +502,9 @@ export const insertPosition = async (
         pair_long_notional_usdc, pair_short_notional_usdc, pair_entry_btc_price,
         trigger_high_btc, trigger_low_btc,
         daily_premium_usdc, payout_usdc,
-        fingerprint_hash, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        fingerprint_hash, metadata,
+        regime_at_open, base_daily_premium_usdc, surcharge_multiplier_applied)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
      RETURNING *`,
     [
       position.id,
@@ -458,7 +518,10 @@ export const insertPosition = async (
       position.dailyPremiumUsdc,
       position.payoutUsdc,
       position.fingerprintHash ?? null,
-      JSON.stringify(position.metadata ?? {})
+      JSON.stringify(position.metadata ?? {}),
+      position.regimeAtOpen ?? null,
+      position.baseDailyPremiumUsdc ?? null,
+      position.surchargeMultiplierApplied ?? 1.0
     ]
   );
   return rowToPosition(r.rows[0]);
