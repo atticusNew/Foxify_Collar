@@ -45,6 +45,7 @@ import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
 import { recordObligationWithDeferralSchedule } from "./counterpartyLedger";
 import { attemptLadderNetting } from "./ladderNetting";
 import { recordTriggerForFingerprint } from "./antiBot";
+import { recordTriggerForReview } from "./volumeCoverNewbornReview";
 // ─── 2026-05-23: spread-executor wiring (Track 2 PR #2 cutover) ───
 import {
   buildSpreadStructureDB,
@@ -643,6 +644,19 @@ export const fireTrigger = async (
   // retained_at) plus salvage_event metadata (hedge_retained=true).
   // Real hedge_sell_in entries come from the VC hedge manager when
   // legs sell.
+
+  // ─── 2026-05-24 (PR-D): newborn-trigger review ───
+  // Trigger lifecycle completed. If newborn review is enabled and the
+  // review budget is not yet exhausted, this auto-halts new activations
+  // until the operator clears via /admin/halt/clear after manual review.
+  // Failure of this hook is non-fatal — log and continue.
+  try {
+    recordTriggerForReview({ positionId: params.position.id });
+  } catch (err) {
+    console.warn(
+      `[volumeCover/lifecycle] recordTriggerForReview failed for position ${params.position.id}: ${(err as Error).message}`
+    );
+  }
 
   return {
     salvageEventId: salvageEvent.id,

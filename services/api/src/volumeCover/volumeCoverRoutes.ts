@@ -67,6 +67,11 @@ import {
   getManualHalt,
   __resetVolumeCoverGuardrailsForTests
 } from "./volumeCoverGuardrails";
+import { getNewbornReviewState } from "./volumeCoverNewbornReview";
+import {
+  getBullishSpreadAdapterRuntimeConfig
+} from "./bullishSpreadAdapter";
+import { getConfiguredDepthGate } from "./spreadExecutor";
 import { readSalvageMetrics } from "./salvageTracker";
 import { buildFoxifyDailyReport, buildFoxifyRangeReport } from "./foxifyReport";
 import {
@@ -305,13 +310,40 @@ export const registerVolumeCoverRoutes = async (
       const active = await listActivePositions(pool);
       const liability = await sumActivePayoutLiability(pool);
       const halt = getManualHalt();
+      // 2026-05-24 (PR-D): surface PR-A/B/C/D config so an operator
+      // can verify a deploy picked up the expected env values without
+      // shelling into Render.
+      const newbornReview = getNewbornReviewState();
+      const bullishSpread = getBullishSpreadAdapterRuntimeConfig();
+      const depthGate = getConfiguredDepthGate();
       return reply.send({
         status: "ok",
         cellsConfigured: cells.length,
         cellsEnabled: cells.filter((c) => c.enabled).length,
         activePositions: active.length,
         totalActivePayoutLiabilityUsdc: liability,
-        manualHalt: halt
+        manualHalt: halt,
+        config: {
+          newbornReview,
+          bullishSpreadAdapter: bullishSpread,
+          spreadDepthGate: {
+            minDepthBtcFloor: depthGate.minDepthBtcFloor,
+            depthRatio: depthGate.depthRatio,
+            enforced: depthGate.enforced
+          },
+          flags: {
+            sellLongsAtTrigger:
+              String(process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER ?? "true").toLowerCase() !==
+              "false",
+            parallelLongSells:
+              String(process.env.VC_SPREAD_PARALLEL_LONG_SELLS ?? "true").toLowerCase() !==
+              "false",
+            slippageEnabledVenues:
+              process.env.VC_SLIPPAGE_FLOOR_ENABLED_VENUES ?? "deribit,bullish",
+            fillOptimizerDeepCrossBps:
+              Number(process.env.VC_FILL_OPTIMIZER_DEEP_CROSS_BPS ?? "500")
+          }
+        }
       });
     } catch (err) {
       return reply.code(503).send({

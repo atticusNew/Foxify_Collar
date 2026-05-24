@@ -8452,6 +8452,47 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
         `venueBalanceFetcher=wired)`
     );
 
+    // 2026-05-24 (PR-D): startup log of PR-A/B/C/D config so an
+    // operator confirming a deploy can see exactly what envs took
+    // effect without curl'ing /health.
+    try {
+      const { getNewbornReviewState } = await import(
+        "./volumeCover/volumeCoverNewbornReview"
+      );
+      const { getBullishSpreadAdapterRuntimeConfig } = await import(
+        "./volumeCover/bullishSpreadAdapter"
+      );
+      const { getConfiguredDepthGate } = await import(
+        "./volumeCover/spreadExecutor"
+      );
+      const newborn = getNewbornReviewState();
+      const adapter = getBullishSpreadAdapterRuntimeConfig();
+      const depth = getConfiguredDepthGate();
+      const sellLongs = String(
+        process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER ?? "true"
+      ).toLowerCase() !== "false";
+      const parallelSells = String(
+        process.env.VC_SPREAD_PARALLEL_LONG_SELLS ?? "true"
+      ).toLowerCase() !== "false";
+      const slipVenues =
+        process.env.VC_SLIPPAGE_FLOOR_ENABLED_VENUES ?? "deribit,bullish";
+      const deepCrossBps = Number(
+        process.env.VC_FILL_OPTIMIZER_DEEP_CROSS_BPS ?? "500"
+      );
+      console.log(
+        `[VolumeCover] config: ` +
+          `newbornReview={enabled:${newborn.enabled},budget:${newborn.budget}} ` +
+          `bullishSpreadPoll={interval:${adapter.pollIntervalMs}ms,open:${adapter.openPollCeilingMs}ms,close:${adapter.closePollCeilingMs}ms} ` +
+          `depthGate={floorBtc:${depth.minDepthBtcFloor},ratio:${depth.depthRatio},enforced:${depth.enforced}} ` +
+          `sellLongsAtTrigger=${sellLongs} parallelLongSells=${parallelSells} ` +
+          `slippageVenues=${slipVenues} fillOptDeepCrossBps=${deepCrossBps}`
+      );
+    } catch (err) {
+      console.warn(
+        `[VolumeCover] startup config log skipped: ${(err as Error).message}`
+      );
+    }
+
     // Foxify-facing read-mostly dashboard (separate auth, separate
     // surface). Routes mounted at /volume-cover/foxify/*. Auth via
     // FOXIFY_DASHBOARD_TOKEN (distinct from PILOT_ADMIN_TOKEN).
