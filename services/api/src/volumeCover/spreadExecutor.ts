@@ -148,27 +148,77 @@ const reverseSideForRollback = (openSide: "BUY" | "SELL"): "BUY" | "SELL" =>
 
 export type LiquidityCheck = {
   passed: boolean;
+  /**
+   * 2026-05-24: depth-aware gate config snapshot for this check.
+   * `enforced` reflects whether thin-depth would fail the gate (default
+   * false: log-only mode). `minDepthBtc` is the threshold compared
+   * against observed bid/ask quantity on the side we're crossing.
+   */
+  depthGate: {
+    minDepthBtc: number;
+    enforced: boolean;
+  };
   legChecks: Array<{
     legRole: SpreadLegSpec["legRole"];
     symbol: string;
     crossesSide: "BUY" | "SELL";
     topBidUsdc: number | null;
     topAskUsdc: number | null;
+    /** 2026-05-24: observed depth in BTC on the side we're crossing. */
+    observedDepthBtc: number | null;
+    /** 2026-05-24: depthSufficient is true iff observedDepth ≥ minDepthBtc. */
+    depthSufficient: boolean;
     sufficient: boolean;
     reason: string | null;
   }>;
 };
 
 /**
+ * 2026-05-24 (Phase 0.2a): read depth-gate config from env.
+ *
+ * Defaults:
+ *   VC_SPREAD_MIN_DEPTH_BTC=0.3   (require ≥ 0.3 BTC on the crossing side)
+ *   VC_SPREAD_DEPTH_GATE_ENFORCED=false  (log-only by default; flip after
+ *                                          shadow soak shows acceptable
+ *                                          abort rate)
+ *
+ * Rationale: Bullish typical ATM-near option top-of-book depth in calm
+ * markets is 0.5-2 BTC. Tail/wing strikes can drop to 0.1 BTC. 0.3 BTC
+ * is the empirical threshold below which IOC limit fills start
+ * partial-filling (observed in Foxify-001 close: 50-63% partial fills
+ * on first attempt for several legs). Soak in shadow before enforcing.
+ */
+export const getConfiguredDepthGate = (): { minDepthBtc: number; enforced: boolean } => {
+  const rawMin = process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  const rawEnf = process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
+  const minRaw = rawMin !== undefined && rawMin !== "" ? Number(rawMin) : NaN;
+  const minDepthBtc = Number.isFinite(minRaw) && minRaw > 0 ? minRaw : 0.3;
+  const enforced = String(rawEnf ?? "").trim().toLowerCase() === "true";
+  return { minDepthBtc, enforced };
+};
+
+/**
  * Hardened liquidity gate (mirror of the E3 microtest's Phase 1).
  * For BUYs we need a resting ASK; for SELLs we need a resting BID.
  * Missing the side we cross would cause `Expired` returns at IOC time.
+ *
+ * 2026-05-24: enhanced with depth-aware checking. Verifies the
+ * orderbook has ≥ minDepthBtc of liquidity on the crossing side. By
+ * default this is LOG-ONLY (does not fail the gate) so we can soak
+ * telemetry in shadow before enforcing. Set
+ * VC_SPREAD_DEPTH_GATE_ENFORCED=true to enforce.
  */
 export const checkSpreadLiquidity = async (params: {
   structure: SpreadStructure;
   adapter: SpreadExecutorAdapter;
   action: "open" | "close";
+  /**
+   * Override the env-driven depth gate config. Tests use this to
+   * exercise enforce/log-only paths without env shenanigans.
+   */
+  depthGateOverride?: { minDepthBtc: number; enforced: boolean };
 }): Promise<LiquidityCheck> => {
+  const depthGate = params.depthGateOverride ?? getConfiguredDepthGate();
   const sequence = params.action === "open"
     ? orderLegsForOpen(params.structure.legs)
     : orderLegsForClose(params.structure.legs);
@@ -180,13 +230,32 @@ export const checkSpreadLiquidity = async (params: {
     const book = await params.adapter.getOrderbookTop({ symbol });
     let sufficient = false;
     let reason: string | null = null;
+    let observedDepthBtc: number | null = null;
     if (side === "BUY") {
       sufficient = typeof book.topAskUsdc === "number" && book.topAskUsdc > 0;
       if (!sufficient) reason = "no_resting_ask_for_buy";
+      observedDepthBtc = typeof book.askQtyBtc === "number" ? book.askQtyBtc : null;
     } else {
       sufficient = typeof book.topBidUsdc === "number" && book.topBidUsdc > 0;
       if (!sufficient) reason = "no_resting_bid_for_sell";
+      observedDepthBtc = typeof book.bidQtyBtc === "number" ? book.bidQtyBtc : null;
     }
+
+    // Depth check (telemetry always, enforcement gated)
+    const depthSufficient =
+      observedDepthBtc !== null && observedDepthBtc >= depthGate.minDepthBtc;
+    if (!depthSufficient) {
+      console.warn(
+        `[spreadExecutor] thin depth observed legRole=${leg.legRole} symbol=${symbol} ` +
+          `side=${side} observed=${observedDepthBtc ?? "null"} BTC min=${depthGate.minDepthBtc} BTC ` +
+          `enforced=${depthGate.enforced} action=${params.action} groupId=${params.structure.spreadGroupId}`
+      );
+      if (depthGate.enforced) {
+        sufficient = false;
+        reason = reason ?? `thin_depth_on_${side === "BUY" ? "ask" : "bid"}_${observedDepthBtc ?? "null"}_lt_${depthGate.minDepthBtc}`;
+      }
+    }
+
     if (!sufficient) allPassed = false;
     checks.push({
       legRole: leg.legRole,
@@ -194,11 +263,13 @@ export const checkSpreadLiquidity = async (params: {
       crossesSide: side,
       topBidUsdc: book.topBidUsdc,
       topAskUsdc: book.topAskUsdc,
+      observedDepthBtc,
+      depthSufficient,
       sufficient,
       reason
     });
   }
-  return { passed: allPassed, legChecks: checks };
+  return { passed: allPassed, legChecks: checks, depthGate };
 };
 
 // ─── Open result types ───────────────────────────────────────────────
@@ -294,8 +365,12 @@ export const openSpread = async (params: {
     : getConfiguredHedgeJitter();
 
   // 1) Liquidity gate
-  const liquidity = params.skipLiquidityGate
-    ? { passed: true, legChecks: [] as LiquidityCheck["legChecks"] }
+  const liquidity: LiquidityCheck = params.skipLiquidityGate
+    ? {
+        passed: true,
+        legChecks: [],
+        depthGate: { minDepthBtc: 0, enforced: false }
+      }
     : await checkSpreadLiquidity({
         structure: params.structure,
         adapter: params.adapter,

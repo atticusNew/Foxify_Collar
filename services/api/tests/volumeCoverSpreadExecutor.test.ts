@@ -7,6 +7,7 @@ import {
   closeSpread,
   partialCloseSpreadOnTrigger,
   checkSpreadLiquidity,
+  getConfiguredDepthGate,
   __testHelpers,
   type SpreadExecutorAdapter,
   type ExecutorOrderResult,
@@ -416,4 +417,141 @@ test("__testHelpers.sideForLeg: open vs close direction", () => {
   assert.equal(__testHelpers.sideForLeg(longPut, "close"), "SELL");
   assert.equal(__testHelpers.sideForLeg(shortPut, "open"), "SELL");
   assert.equal(__testHelpers.sideForLeg(shortPut, "close"), "BUY");
+});
+
+// ─── 2026-05-24 Phase 0.2a: depth-aware liquidity gate ────────────
+
+const buildThinDepthAdapter = (params: {
+  thinSymbols: Record<string, { bidQtyBtc: number; askQtyBtc: number }>;
+}): {
+  adapter: SpreadExecutorAdapter;
+} => {
+  const books = happyBooks();
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop({ symbol }): Promise<OrderbookTop> {
+      const b = books[symbol];
+      const thin = params.thinSymbols[symbol];
+      return {
+        topBidUsdc: b?.topBid ?? null,
+        topAskUsdc: b?.topAsk ?? null,
+        bidQtyBtc: thin?.bidQtyBtc ?? 1.0,
+        askQtyBtc: thin?.askQtyBtc ?? 1.0
+      };
+    },
+    async submitIocLimit(p): Promise<ExecutorOrderResult> {
+      return {
+        filled: true,
+        fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+        fillQtyBtc: p.quantityBtc,
+        finalReason: "Executed",
+        orderId: `ORD-1`
+      };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const k = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${k}`;
+    }
+  };
+  return { adapter };
+};
+
+test("checkSpreadLiquidity: depth gate log-only mode (default) — warns but passes", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  // call_long needs to BUY → cross the ask. Make ask depth super thin.
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-77000-C": { bidQtyBtc: 1.0, askQtyBtc: 0.05 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtc: 0.3, enforced: false }
+  });
+  assert.equal(check.passed, true, "log-only should not fail the gate");
+  assert.equal(check.depthGate.enforced, false);
+  const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
+  assert.equal(callLong.depthSufficient, false);
+  assert.equal(callLong.observedDepthBtc, 0.05);
+  assert.equal(callLong.sufficient, true, "still passes existence check");
+});
+
+test("checkSpreadLiquidity: depth gate enforced — thin leg fails the gate", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-77000-C": { bidQtyBtc: 1.0, askQtyBtc: 0.05 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+  });
+  assert.equal(check.passed, false, "enforced thin depth should fail");
+  const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
+  assert.equal(callLong.depthSufficient, false);
+  assert.equal(callLong.sufficient, false);
+  assert.ok(callLong.reason?.startsWith("thin_depth_on_ask"));
+});
+
+test("checkSpreadLiquidity: depth gate enforced — all legs deep, passes", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter } = buildThinDepthAdapter({ thinSymbols: {} });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+  });
+  assert.equal(check.passed, true);
+  for (const c of check.legChecks) {
+    assert.equal(c.depthSufficient, true, `${c.legRole} should be sufficient`);
+    assert.equal(c.sufficient, true);
+  }
+});
+
+test("checkSpreadLiquidity: action=close evaluates depth on close-side crossing", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  // On close: longs SELL (cross bid), shorts BUY (cross ask). Make put_long bid thin.
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-75000-P": { bidQtyBtc: 0.05, askQtyBtc: 1.0 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "close",
+    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+  });
+  const putLong = check.legChecks.find((c) => c.legRole === "put_long")!;
+  assert.equal(putLong.crossesSide, "SELL");
+  assert.equal(putLong.observedDepthBtc, 0.05);
+  assert.equal(putLong.depthSufficient, false);
+  assert.equal(putLong.sufficient, false);
+});
+
+test("getConfiguredDepthGate: env-driven config with defaults", () => {
+  clearEnv();
+  delete process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  delete process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
+  const d = getConfiguredDepthGate();
+  assert.equal(d.minDepthBtc, 0.3);
+  assert.equal(d.enforced, false);
+
+  process.env.VC_SPREAD_MIN_DEPTH_BTC = "0.5";
+  process.env.VC_SPREAD_DEPTH_GATE_ENFORCED = "true";
+  const d2 = getConfiguredDepthGate();
+  assert.equal(d2.minDepthBtc, 0.5);
+  assert.equal(d2.enforced, true);
+  delete process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  delete process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
 });
