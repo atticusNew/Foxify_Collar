@@ -858,28 +858,47 @@ export const closePosition = async (
     }
   }
 
-  try {
-    const accruedPremium = params.position.dailyPremiumUsdc * daysHeld;
-    await insertLedgerEntry(pool, {
-      poolId: "foxify_trader",
-      protectionId: params.position.id,
-      entryType: "premium_in",
-      amountUsdc: accruedPremium,
-      reference: `vc_premium_accrued_close:${params.position.cellId}:${params.position.id}`,
-      metadata: {
-        product: "volume_cover",
-        cellId: params.position.cellId,
-        daysHeld,
-        dailyPremiumUsdc: params.position.dailyPremiumUsdc,
-        accrual_basis: "foxify_close",
-        close_reason: params.reason,
-        coverage_through: coverageThroughIso
-      }
-    });
-  } catch (err) {
-    console.warn(
-      `[volumeCover/lifecycle] premium_in (close) ledger failed for position ${params.position.id}: ${(err as Error).message}`
+  // 2026-05-24 (PR-E): defense-in-depth double-bill guard.
+  //
+  // fireTrigger() already wrote a `premium_in` entry capped at the trigger
+  // moment (accrual_basis: 'trigger_close'). The route handler at
+  // /admin/positions/:id/close currently rejects non-active closes with
+  // 409 position_not_active, so this branch shouldn't fire today for a
+  // triggered position — but if anyone ever lifts that gate (e.g. to allow
+  // operator-finalize of a stuck-in-triggered position, which is exactly the
+  // class of cleanup the May 22-24 dash incident required) we MUST NOT
+  // re-bill premium that's already in the ledger. Skip the close-time
+  // premium_in when the position was already triggered.
+  const alreadyBilledAtTrigger = params.position.status === "triggered";
+  if (alreadyBilledAtTrigger) {
+    console.log(
+      `[volumeCover/lifecycle] closePosition skipping premium_in (close) for ${params.position.id}: ` +
+        `already billed at trigger (status=triggered, accrual_basis=trigger_close ledger entry exists)`
     );
+  } else {
+    try {
+      const accruedPremium = params.position.dailyPremiumUsdc * daysHeld;
+      await insertLedgerEntry(pool, {
+        poolId: "foxify_trader",
+        protectionId: params.position.id,
+        entryType: "premium_in",
+        amountUsdc: accruedPremium,
+        reference: `vc_premium_accrued_close:${params.position.cellId}:${params.position.id}`,
+        metadata: {
+          product: "volume_cover",
+          cellId: params.position.cellId,
+          daysHeld,
+          dailyPremiumUsdc: params.position.dailyPremiumUsdc,
+          accrual_basis: "foxify_close",
+          close_reason: params.reason,
+          coverage_through: coverageThroughIso
+        }
+      });
+    } catch (err) {
+      console.warn(
+        `[volumeCover/lifecycle] premium_in (close) ledger failed for position ${params.position.id}: ${(err as Error).message}`
+      );
+    }
   }
 
   // Note: no separate "hedge_retained" ledger entry on close. Source

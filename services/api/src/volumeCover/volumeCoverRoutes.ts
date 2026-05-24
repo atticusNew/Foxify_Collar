@@ -341,7 +341,16 @@ export const registerVolumeCoverRoutes = async (
             slippageEnabledVenues:
               process.env.VC_SLIPPAGE_FLOOR_ENABLED_VENUES ?? "deribit,bullish",
             fillOptimizerDeepCrossBps:
-              Number(process.env.VC_FILL_OPTIMIZER_DEEP_CROSS_BPS ?? "500")
+              Number(process.env.VC_FILL_OPTIMIZER_DEEP_CROSS_BPS ?? "500"),
+            // 2026-05-24 (PR-E): two display/ledger correctness fixes shipped
+            // together — both are unconditionally on (no env toggle).
+            //   prE_dashTriggeredAtCap   = Foxify dash premium projection caps
+            //                              at triggered_at (matches ledger).
+            //   prE_closeDoubleBillGuard = closePosition skips premium_in for
+            //                              already-triggered positions (defense
+            //                              in depth; route also gates).
+            prE_dashTriggeredAtCap: true,
+            prE_closeDoubleBillGuard: true
           }
         }
       });

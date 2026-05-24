@@ -198,14 +198,22 @@ const projectPositionForFoxify = (p: {
   // exposed via premiumAccruedUsdc for smooth real-time UIs.
   const openedAtIso = iso(p.openedAt) ?? p.openedAt;
   const closedAtIso = iso(p.closedAt);
+  // 2026-05-24 (PR-E): cap accrual at trigger time. fireTrigger writes the
+  // capped premium_in to the ledger; the dashboard projection must match or
+  // we display amounts higher than what was actually billed (the May 22-24
+  // dash-pollution incident — two stuck-in-triggered positions over-displayed
+  // by ~2× until they were archived).
+  const triggeredAtIso = iso(p.triggeredAt);
   const accruedSinceOpen = premiumAccruedSinceOpenUsdc({
     openedAtIso,
     closedAtIso,
+    triggeredAtIso,
     dailyRateUsdc: p.dailyPremiumUsdc
   });
   const billableSinceOpen = premiumBillableSinceOpenUsdc({
     openedAtIso,
     closedAtIso,
+    triggeredAtIso,
     dailyRateUsdc: p.dailyPremiumUsdc
   });
 
@@ -231,7 +239,7 @@ const projectPositionForFoxify = (p: {
     dailyRateUsdc: p.dailyPremiumUsdc,
     payoutUsdc: p.payoutUsdc,
     openedAtIso,
-    triggeredAtIso: iso(p.triggeredAt),
+    triggeredAtIso,
     triggeredDirection: p.triggeredDirection,
     closedAtIso
   };
@@ -299,19 +307,31 @@ const endOfTodayUtcIso = (): string => {
 export const premiumAccruedInWindowUsdc = (params: {
   openedAtIso: string;
   closedAtIso: string | null;
+  // 2026-05-24 (PR-E): premium accrual stops at trigger per the contract
+  // (matches what fireTrigger writes to ledger via the daysHeld cap). For a
+  // position stuck in `status='triggered'` the projection function used to
+  // re-extend accrual to (now − openedAt) which over-displayed premium by
+  // (now − triggeredAt) × dailyRate. Pass the row's triggered_at here and the
+  // effective right edge becomes min(triggered_at, closed_at, now).
+  triggeredAtIso?: string | null;
   windowStartIso: string;
   windowEndIso: string;
   dailyRateUsdc: number;
   nowMs?: number;
 }): number => {
   const openedMs = new Date(params.openedAtIso).getTime();
+  const fallbackEndMs = params.nowMs ?? Date.now();
   const closedMs = params.closedAtIso
     ? new Date(params.closedAtIso).getTime()
-    : (params.nowMs ?? Date.now());
+    : fallbackEndMs;
+  const triggeredMs = params.triggeredAtIso
+    ? new Date(params.triggeredAtIso).getTime()
+    : Number.POSITIVE_INFINITY;
+  const effectiveCloseMs = Math.min(closedMs, triggeredMs);
   const winStartMs = new Date(params.windowStartIso).getTime();
   const winEndMs = new Date(params.windowEndIso).getTime();
   const overlapStart = Math.max(openedMs, winStartMs);
-  const overlapEnd = Math.min(closedMs, winEndMs);
+  const overlapEnd = Math.min(effectiveCloseMs, winEndMs);
   const overlapMs = overlapEnd - overlapStart;
   if (overlapMs <= 0 || params.dailyRateUsdc <= 0) return 0;
   const overlapHours = overlapMs / 3_600_000;
@@ -323,23 +343,32 @@ export const premiumAccruedInWindowUsdc = (params: {
  * ceil(overlap_hours/24) × dailyRate. Matches weeklyReconciler.daysActiveInWindow
  * which is the authoritative settlement formula. Use this for "premium owed"
  * displays that must match contractual billing.
+ *
+ * 2026-05-24 (PR-E): also caps at triggered_at when supplied — see
+ * premiumAccruedInWindowUsdc for the full rationale.
  */
 export const premiumBillableInWindowUsdc = (params: {
   openedAtIso: string;
   closedAtIso: string | null;
+  triggeredAtIso?: string | null;
   windowStartIso: string;
   windowEndIso: string;
   dailyRateUsdc: number;
   nowMs?: number;
 }): number => {
   const openedMs = new Date(params.openedAtIso).getTime();
+  const fallbackEndMs = params.nowMs ?? Date.now();
   const closedMs = params.closedAtIso
     ? new Date(params.closedAtIso).getTime()
-    : (params.nowMs ?? Date.now());
+    : fallbackEndMs;
+  const triggeredMs = params.triggeredAtIso
+    ? new Date(params.triggeredAtIso).getTime()
+    : Number.POSITIVE_INFINITY;
+  const effectiveCloseMs = Math.min(closedMs, triggeredMs);
   const winStartMs = new Date(params.windowStartIso).getTime();
   const winEndMs = new Date(params.windowEndIso).getTime();
   const overlapStart = Math.max(openedMs, winStartMs);
-  const overlapEnd = Math.min(closedMs, winEndMs);
+  const overlapEnd = Math.min(effectiveCloseMs, winEndMs);
   const overlapMs = overlapEnd - overlapStart;
   if (overlapMs <= 0 || params.dailyRateUsdc <= 0) return 0;
   const billableDays = Math.ceil(overlapMs / 86_400_000);
@@ -347,16 +376,23 @@ export const premiumBillableInWindowUsdc = (params: {
 };
 
 // Convenience: cumulative accrued since open (open-ended right side = now)
+//
+// 2026-05-24 (PR-E): triggeredAtIso added so triggered positions stop accruing
+// at trigger time (contract-aligned). The in-window helper internally caps at
+// min(triggered_at, closed_at, now); we just thread the value through here.
 const premiumAccruedSinceOpenUsdc = (params: {
   openedAtIso: string;
   closedAtIso: string | null;
+  triggeredAtIso?: string | null;
   dailyRateUsdc: number;
   nowMs?: number;
 }): number => {
   return premiumAccruedInWindowUsdc({
     openedAtIso: params.openedAtIso,
     closedAtIso: params.closedAtIso,
-    // Use opened-at as window start and now/closed as end → just hours-active × rate
+    triggeredAtIso: params.triggeredAtIso,
+    // Use opened-at as window start and now/closed as end → just hours-active × rate.
+    // The in-window helper caps at min(closed,triggered,now) regardless.
     windowStartIso: params.openedAtIso,
     windowEndIso: params.closedAtIso ?? new Date(params.nowMs ?? Date.now()).toISOString(),
     dailyRateUsdc: params.dailyRateUsdc,
@@ -366,15 +402,19 @@ const premiumAccruedSinceOpenUsdc = (params: {
 
 // Convenience: cumulative BILLABLE since open (per-day round-up rule).
 // This is the Foxify-contractual "amount owed" headline number.
+//
+// 2026-05-24 (PR-E): see premiumAccruedSinceOpenUsdc for triggered_at rationale.
 const premiumBillableSinceOpenUsdc = (params: {
   openedAtIso: string;
   closedAtIso: string | null;
+  triggeredAtIso?: string | null;
   dailyRateUsdc: number;
   nowMs?: number;
 }): number => {
   return premiumBillableInWindowUsdc({
     openedAtIso: params.openedAtIso,
     closedAtIso: params.closedAtIso,
+    triggeredAtIso: params.triggeredAtIso,
     windowStartIso: params.openedAtIso,
     windowEndIso: params.closedAtIso ?? new Date(params.nowMs ?? Date.now()).toISOString(),
     dailyRateUsdc: params.dailyRateUsdc,
@@ -545,8 +585,12 @@ export const registerFoxifyDashboardRoutes = async (
     // which is why the dash showed "$0 yesterday $209 today" instead of the
     // contractual $210 + $210 = $420 owed so far. Headline now reflects
     // contract.
+    // 2026-05-24 (PR-E): SELECT triggered_at so the per-row premium calc can
+    // cap accrual at trigger time (matches the ledger). Without this, a
+    // position triggered late yesterday but stuck in `triggered` status will
+    // continue to add today-window premium that was never billed at fireTrigger.
     const todayResult = await pool.query(
-      `SELECT id, opened_at, closed_at, daily_premium_usdc
+      `SELECT id, opened_at, closed_at, triggered_at, daily_premium_usdc
        FROM volume_cover_position
        WHERE opened_at < $2
          AND (closed_at IS NULL OR closed_at >= $1)
@@ -561,6 +605,7 @@ export const registerFoxifyDashboardRoutes = async (
       const args = {
         openedAtIso: String(row.opened_at),
         closedAtIso: row.closed_at ? String(row.closed_at) : null,
+        triggeredAtIso: row.triggered_at ? String(row.triggered_at) : null,
         windowStartIso: dayStart,
         windowEndIso: dayEnd,
         dailyRateUsdc: Number(row.daily_premium_usdc)
@@ -573,8 +618,13 @@ export const registerFoxifyDashboardRoutes = async (
     // not archived, not admin-test). Premium accrues from open until close.
     // Closed positions excluded — they are settled separately by the weekly
     // reconciler and should not duplicate-display in the "owed now" view.
+    // 2026-05-24 (PR-E): SELECT triggered_at and pass into the per-row premium
+    // helpers so triggered positions stop accruing here too. This is the
+    // headline "Premium Paid (lifetime)" number on the Foxify dashboard, which
+    // pre-fix displayed up to 2× the contractually-billed amount when Foxify's
+    // bot left positions stuck in `triggered` status (the May 22-24 incident).
     const lifetimeResult = await pool.query(
-      `SELECT id, opened_at, closed_at, daily_premium_usdc
+      `SELECT id, opened_at, closed_at, triggered_at, daily_premium_usdc
        FROM volume_cover_position
        WHERE status IN ('active', 'triggered')
          AND ${HIDE_ADMIN_TEST_POSITIONS_SQL}
@@ -584,14 +634,17 @@ export const registerFoxifyDashboardRoutes = async (
     let premiumBillableLifetimeUsdc = 0;
     let premiumAccruedLifetimeUsdc = 0;
     for (const row of lifetimeResult.rows) {
+      const triggeredAtIso = row.triggered_at ? String(row.triggered_at) : null;
       premiumBillableLifetimeUsdc += premiumBillableSinceOpenUsdc({
         openedAtIso: String(row.opened_at),
         closedAtIso: row.closed_at ? String(row.closed_at) : null,
+        triggeredAtIso,
         dailyRateUsdc: Number(row.daily_premium_usdc)
       });
       premiumAccruedLifetimeUsdc += premiumAccruedSinceOpenUsdc({
         openedAtIso: String(row.opened_at),
         closedAtIso: row.closed_at ? String(row.closed_at) : null,
+        triggeredAtIso,
         dailyRateUsdc: Number(row.daily_premium_usdc)
       });
     }
