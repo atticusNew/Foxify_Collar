@@ -82,6 +82,25 @@ export type OpenPositionRequest = {
    * the strangle structure builder.
    */
   contractsOverrideBtc?: number;
+  /**
+   * 2026-05-24 (Phase 0.3): pricing attribution. The route computes
+   * baseDailyPremium (from cell + regime overlay) and a surcharge
+   * multiplier (from anti-bot Layer 4), producing effectiveDailyPremium
+   * via base × multiplier. Persist all three so PnL attribution can
+   * reconstruct what we charged and why per regime.
+   */
+  baseDailyPremiumUsdc?: number;
+  surchargeMultiplierApplied?: number;
+  /**
+   * 2026-05-24 (Hybrid v3): optional override of the cell base payout
+   * (e.g., from VC_PAYOUT_OVERLAY_JSON regime overlay). If unset, falls
+   * back to cell.payoutUsdc. Calm regime never overrides; moderate +
+   * elevated (and stress if not halted) can use a reduced payout per
+   * regime to match Atticus's hedge economics. Used end-to-end so
+   * position row, trigger payout, ledger entries, and obligation
+   * tracking all see the SAME regime-adjusted Y value.
+   */
+  effectivePayoutUsdc?: number;
 };
 
 export type OpenPositionResult = {
@@ -117,6 +136,8 @@ export const openPosition = async (
 ): Promise<OpenPositionResult> => {
   const positionId = `vc-pos-${randomUUID()}`;
   const dailyPremium = req.effectiveDailyPremiumUsdc ?? req.cell.dailyPremiumUsdc;
+  // 2026-05-24 (Hybrid v3): regime-adjusted payout if provided, else cell base.
+  const effectivePayout = req.effectivePayoutUsdc ?? req.cell.payoutUsdc;
 
   const { triggerHighBtc, triggerLowBtc } = computeTriggerPrices({
     cell: req.cell,
@@ -136,9 +157,13 @@ export const openPosition = async (
       triggerHighBtc,
       triggerLowBtc,
       dailyPremiumUsdc: dailyPremium,
-      payoutUsdc: req.cell.payoutUsdc,
+      payoutUsdc: effectivePayout,
       fingerprintHash: req.fingerprintHash ?? null,
-      metadata: req.metadata
+      metadata: req.metadata,
+      // 2026-05-24 (Phase 0.3): pricing attribution.
+      regimeAtOpen: req.regime ?? null,
+      baseDailyPremiumUsdc: req.baseDailyPremiumUsdc ?? null,
+      surchargeMultiplierApplied: req.surchargeMultiplierApplied ?? 1.0
     });
   } catch (err: any) {
     throw new Error(`volume_cover_position_insert_failed: ${err?.message ?? err}`);
@@ -408,7 +433,17 @@ export const fireTrigger = async (
           triggerDirection: params.direction
         });
         spreadShortProceedsUsdc = spreadOutcome.shortLegProceedsUsdc;
+        // 2026-05-23: longLegIdsSold are NOT added to retainedLegIds —
+        // they're already terminal (sold), no salvage tracking needed.
+        // longLegIdsRetained (fallback case) still goes through salvage.
         retainedLegIds.push(...spreadOutcome.longLegIdsRetained);
+        if (spreadOutcome.longLegIdsSold.length > 0) {
+          console.log(
+            `[volumeCover/lifecycle] spread trigger sold longs at fire: ` +
+              `position=${params.position.id} count=${spreadOutcome.longLegIdsSold.length} ` +
+              `proceeds=${spreadOutcome.longLegProceedsUsdc.toFixed(2)}`
+          );
+        }
       } catch (err) {
         console.error(
           `[VC ALERT] executeSpreadPartialCloseOnTrigger threw for position ${params.position.id}; ` +
@@ -686,12 +721,17 @@ export const closePosition = async (
         // fired), we don't know "winner" vs "loser" wing — but both
         // shorts close either way. Use direction="low" arbitrarily;
         // the function closes BOTH shorts regardless.
+        //
+        // 2026-05-23: pass sellLongsAtTriggerOverride=false because at
+        // Foxify-close (non-trigger), longs are at fair value not peak.
+        // The hedge manager's TP curve is the right tool here.
         const spreadOutcome = await executeSpreadPartialCloseOnTrigger({
           pool,
           positionId: params.position.id,
           cell,
           spreadLegs,
-          triggerDirection: "low"
+          triggerDirection: "low",
+          sellLongsAtTriggerOverride: false
         });
         spreadShortProceedsUsdc = spreadOutcome.shortLegProceedsUsdc;
         retainedLegIds.push(...spreadOutcome.longLegIdsRetained);
@@ -1047,9 +1087,19 @@ export const executeSpreadPartialCloseOnTrigger = async (params: {
   spreadLegs: HedgeLegRow[];
   triggerDirection: "high" | "low";
   adapterOverride?: SpreadExecutorAdapter; // for tests
+  /**
+   * 2026-05-23: override the sell-longs-at-trigger flag.
+   * - Trigger-fire path (fireTrigger): omit/true → captures peak value.
+   * - Foxify-close path (closePosition non-trigger): false → preserves
+   *   retain-and-hedge-manager behavior (longs are near fair value at
+   *   close, not at trigger peak, so capturing peak doesn't apply).
+   */
+  sellLongsAtTriggerOverride?: boolean;
 }): Promise<{
   shortLegProceedsUsdc: number;
+  longLegProceedsUsdc: number;
   shortLegIdsClosed: string[];
+  longLegIdsSold: string[];
   longLegIdsRetained: string[];
 }> => {
   // Reconstruct a minimal SpreadStructure from the persisted legs.
@@ -1100,11 +1150,13 @@ export const executeSpreadPartialCloseOnTrigger = async (params: {
   const result = await partialCloseSpreadOnTrigger({
     structure: partialStructure,
     adapter,
-    triggerDirection: params.triggerDirection
+    triggerDirection: params.triggerDirection,
+    sellLongsAtTriggerOverride: params.sellLongsAtTriggerOverride
   });
 
   // Map closed shorts to DB rows + mark them sold.
   const shortLegIdsClosed: string[] = [];
+  const longLegIdsSold: string[] = [];
   const longLegIdsRetained: string[] = [];
   for (const closedShort of result.shortLegsClosed) {
     const dbLeg = params.spreadLegs.find((l) => l.legRole === closedShort.legRole);
@@ -1122,6 +1174,27 @@ export const executeSpreadPartialCloseOnTrigger = async (params: {
       );
     }
   }
+  // 2026-05-23: when sell-longs-at-trigger is on (default), longs are
+  // SOLD here instead of retained. Mark them sold in DB so hedge
+  // manager doesn't pick them up later.
+  for (const soldLong of result.longLegsSold) {
+    const dbLeg = params.spreadLegs.find((l) => l.legRole === soldLong.legRole);
+    if (!dbLeg) continue;
+    try {
+      await markHedgeLegSold(params.pool, {
+        id: dbLeg.id,
+        sellPriceUsdc: soldLong.fillPriceUsdcPerBtc,
+        sellOrderId: soldLong.orderId ?? null
+      });
+      longLegIdsSold.push(dbLeg.id);
+    } catch (err) {
+      console.error(
+        `[VC ALERT] failed to markHedgeLegSold for spread long ${dbLeg.id} on trigger: ${(err as Error).message}`
+      );
+    }
+  }
+  // Any longs that fell back to retain (orderbook unavailable or sell
+  // failed) — mark them retained for hedge manager to handle later.
   for (const retainedLong of result.longLegsRetained) {
     const dbLeg = params.spreadLegs.find((l) => l.legRole === retainedLong.legRole);
     if (!dbLeg) continue;
@@ -1145,7 +1218,9 @@ export const executeSpreadPartialCloseOnTrigger = async (params: {
 
   return {
     shortLegProceedsUsdc: result.shortLegProceedsUsdc,
+    longLegProceedsUsdc: result.longLegProceedsUsdc,
     shortLegIdsClosed,
+    longLegIdsSold,
     longLegIdsRetained
   };
 };

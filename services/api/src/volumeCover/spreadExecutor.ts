@@ -148,27 +148,77 @@ const reverseSideForRollback = (openSide: "BUY" | "SELL"): "BUY" | "SELL" =>
 
 export type LiquidityCheck = {
   passed: boolean;
+  /**
+   * 2026-05-24: depth-aware gate config snapshot for this check.
+   * `enforced` reflects whether thin-depth would fail the gate (default
+   * false: log-only mode). `minDepthBtc` is the threshold compared
+   * against observed bid/ask quantity on the side we're crossing.
+   */
+  depthGate: {
+    minDepthBtc: number;
+    enforced: boolean;
+  };
   legChecks: Array<{
     legRole: SpreadLegSpec["legRole"];
     symbol: string;
     crossesSide: "BUY" | "SELL";
     topBidUsdc: number | null;
     topAskUsdc: number | null;
+    /** 2026-05-24: observed depth in BTC on the side we're crossing. */
+    observedDepthBtc: number | null;
+    /** 2026-05-24: depthSufficient is true iff observedDepth ≥ minDepthBtc. */
+    depthSufficient: boolean;
     sufficient: boolean;
     reason: string | null;
   }>;
 };
 
 /**
+ * 2026-05-24 (Phase 0.2a): read depth-gate config from env.
+ *
+ * Defaults:
+ *   VC_SPREAD_MIN_DEPTH_BTC=0.3   (require ≥ 0.3 BTC on the crossing side)
+ *   VC_SPREAD_DEPTH_GATE_ENFORCED=false  (log-only by default; flip after
+ *                                          shadow soak shows acceptable
+ *                                          abort rate)
+ *
+ * Rationale: Bullish typical ATM-near option top-of-book depth in calm
+ * markets is 0.5-2 BTC. Tail/wing strikes can drop to 0.1 BTC. 0.3 BTC
+ * is the empirical threshold below which IOC limit fills start
+ * partial-filling (observed in Foxify-001 close: 50-63% partial fills
+ * on first attempt for several legs). Soak in shadow before enforcing.
+ */
+export const getConfiguredDepthGate = (): { minDepthBtc: number; enforced: boolean } => {
+  const rawMin = process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  const rawEnf = process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
+  const minRaw = rawMin !== undefined && rawMin !== "" ? Number(rawMin) : NaN;
+  const minDepthBtc = Number.isFinite(minRaw) && minRaw > 0 ? minRaw : 0.3;
+  const enforced = String(rawEnf ?? "").trim().toLowerCase() === "true";
+  return { minDepthBtc, enforced };
+};
+
+/**
  * Hardened liquidity gate (mirror of the E3 microtest's Phase 1).
  * For BUYs we need a resting ASK; for SELLs we need a resting BID.
  * Missing the side we cross would cause `Expired` returns at IOC time.
+ *
+ * 2026-05-24: enhanced with depth-aware checking. Verifies the
+ * orderbook has ≥ minDepthBtc of liquidity on the crossing side. By
+ * default this is LOG-ONLY (does not fail the gate) so we can soak
+ * telemetry in shadow before enforcing. Set
+ * VC_SPREAD_DEPTH_GATE_ENFORCED=true to enforce.
  */
 export const checkSpreadLiquidity = async (params: {
   structure: SpreadStructure;
   adapter: SpreadExecutorAdapter;
   action: "open" | "close";
+  /**
+   * Override the env-driven depth gate config. Tests use this to
+   * exercise enforce/log-only paths without env shenanigans.
+   */
+  depthGateOverride?: { minDepthBtc: number; enforced: boolean };
 }): Promise<LiquidityCheck> => {
+  const depthGate = params.depthGateOverride ?? getConfiguredDepthGate();
   const sequence = params.action === "open"
     ? orderLegsForOpen(params.structure.legs)
     : orderLegsForClose(params.structure.legs);
@@ -180,13 +230,32 @@ export const checkSpreadLiquidity = async (params: {
     const book = await params.adapter.getOrderbookTop({ symbol });
     let sufficient = false;
     let reason: string | null = null;
+    let observedDepthBtc: number | null = null;
     if (side === "BUY") {
       sufficient = typeof book.topAskUsdc === "number" && book.topAskUsdc > 0;
       if (!sufficient) reason = "no_resting_ask_for_buy";
+      observedDepthBtc = typeof book.askQtyBtc === "number" ? book.askQtyBtc : null;
     } else {
       sufficient = typeof book.topBidUsdc === "number" && book.topBidUsdc > 0;
       if (!sufficient) reason = "no_resting_bid_for_sell";
+      observedDepthBtc = typeof book.bidQtyBtc === "number" ? book.bidQtyBtc : null;
     }
+
+    // Depth check (telemetry always, enforcement gated)
+    const depthSufficient =
+      observedDepthBtc !== null && observedDepthBtc >= depthGate.minDepthBtc;
+    if (!depthSufficient) {
+      console.warn(
+        `[spreadExecutor] thin depth observed legRole=${leg.legRole} symbol=${symbol} ` +
+          `side=${side} observed=${observedDepthBtc ?? "null"} BTC min=${depthGate.minDepthBtc} BTC ` +
+          `enforced=${depthGate.enforced} action=${params.action} groupId=${params.structure.spreadGroupId}`
+      );
+      if (depthGate.enforced) {
+        sufficient = false;
+        reason = reason ?? `thin_depth_on_${side === "BUY" ? "ask" : "bid"}_${observedDepthBtc ?? "null"}_lt_${depthGate.minDepthBtc}`;
+      }
+    }
+
     if (!sufficient) allPassed = false;
     checks.push({
       legRole: leg.legRole,
@@ -194,11 +263,13 @@ export const checkSpreadLiquidity = async (params: {
       crossesSide: side,
       topBidUsdc: book.topBidUsdc,
       topAskUsdc: book.topAskUsdc,
+      observedDepthBtc,
+      depthSufficient,
       sufficient,
       reason
     });
   }
-  return { passed: allPassed, legChecks: checks };
+  return { passed: allPassed, legChecks: checks, depthGate };
 };
 
 // ─── Open result types ───────────────────────────────────────────────
@@ -294,8 +365,12 @@ export const openSpread = async (params: {
     : getConfiguredHedgeJitter();
 
   // 1) Liquidity gate
-  const liquidity = params.skipLiquidityGate
-    ? { passed: true, legChecks: [] as LiquidityCheck["legChecks"] }
+  const liquidity: LiquidityCheck = params.skipLiquidityGate
+    ? {
+        passed: true,
+        legChecks: [],
+        depthGate: { minDepthBtc: 0, enforced: false }
+      }
     : await checkSpreadLiquidity({
         structure: params.structure,
         adapter: params.adapter,
@@ -564,6 +639,14 @@ export type SpreadPartialCloseResult = {
   spreadGroupId: string;
   triggerDirection: "high" | "low";
   shortLegsClosed: OpenLegRecord[];
+  /**
+   * 2026-05-23: dual-mode return. When `sellLongsAtTrigger=true` (the
+   * default after first live trigger post-mortem), `longLegsSold` is
+   * populated with actual fills + prices. When false (legacy behavior),
+   * `longLegsRetained` is populated and longs are kept for hedge mgr.
+   * EXACTLY ONE of these arrays has fills; the other is empty.
+   */
+  longLegsSold: OpenLegRecord[];
   longLegsRetained: Array<{
     legRole: SpreadLegSpec["legRole"];
     symbol: string;
@@ -573,6 +656,29 @@ export type SpreadPartialCloseResult = {
   failedAt: SpreadLegSpec["legRole"] | null;
   errorReason: string | null;
   shortLegProceedsUsdc: number;
+  longLegProceedsUsdc: number;
+};
+
+/**
+ * 2026-05-23 (Foxify-001 trigger post-mortem): Read sell-longs flag.
+ *
+ * The first real Foxify trigger (high direction, BTC spiked to ~$77,890
+ * then mean-reverted ~$1,000 in 30 minutes) revealed that hedge manager
+ * Rule 4 (active follow-through, hold winners 30 min post-trigger) holds
+ * call_long through reversals. Lost ~$970 of peak value on call_long
+ * alone vs selling at trigger fire.
+ *
+ * Default flipped to `true`: sell BOTH longs immediately at trigger fire.
+ * This captures the spread value while it's at peak intrinsic. Tradeoff:
+ * loses convexity if BTC continues moving past trigger (uncommon).
+ *
+ * Set VC_SPREAD_SELL_LONGS_AT_TRIGGER=false to preserve legacy
+ * retain-and-hedge-manager behavior (useful if Rule 4 is later refined).
+ */
+const shouldSellLongsAtTrigger = (): boolean => {
+  const raw = process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
+  if (raw === undefined || raw === null || raw === "") return true; // default ON
+  return String(raw).trim().toLowerCase() !== "false";
 };
 
 export const partialCloseSpreadOnTrigger = async (params: {
@@ -580,6 +686,11 @@ export const partialCloseSpreadOnTrigger = async (params: {
   adapter: SpreadExecutorAdapter;
   triggerDirection: "high" | "low";
   randFn?: () => number;
+  /**
+   * Override the env flag for tests. Production should always use
+   * env-driven default (true) so this is the only knob outside tests.
+   */
+  sellLongsAtTriggerOverride?: boolean;
 }): Promise<SpreadPartialCloseResult> => {
   const jitterCfg = getConfiguredHedgeJitter();
   // Per Item 1: close BOTH wings' SHORT legs immediately. Retain both LONG legs.
@@ -645,24 +756,111 @@ export const partialCloseSpreadOnTrigger = async (params: {
     0
   );
 
-  const longLegsRetained: SpreadPartialCloseResult["longLegsRetained"] = params.structure.legs
-    .filter((l) => l.side === "long")
-    .map((l) => ({
-      legRole: l.legRole,
-      symbol: params.adapter.resolveSymbol({ leg: l, expiryIso: l.expiryIso }),
-      contractsBtc: l.contractsBtc,
-      strikeActualUsdc: l.strikeActualUsdc
-    }));
+  // ─── 2026-05-23: sell longs at trigger ───
+  // Decide per env flag (or test override). Default: sell. The longs
+  // are at their PEAK value immediately after a trigger fire and decay
+  // rapidly as BTC mean-reverts. Sell winning side FIRST (highest
+  // intrinsic) to capture peak before placing the losing leg sell.
+  const sellLongsAtTrigger =
+    params.sellLongsAtTriggerOverride ?? shouldSellLongsAtTrigger();
+  const longLegsOrder: SpreadLegSpec["legRole"][] =
+    params.triggerDirection === "high"
+      ? ["call_long", "put_long"] // call is winner on high trigger
+      : ["put_long", "call_long"];
+
+  const longLegsSold: OpenLegRecord[] = [];
+  const longLegsRetained: SpreadPartialCloseResult["longLegsRetained"] = [];
+  let longLegProceedsUsdc = 0;
+
+  // If a short leg failed earlier, do NOT attempt long sales — bail
+  // out cleanly. Caller will handle the partial-close failure.
+  if (failedAt === null && sellLongsAtTrigger) {
+    for (let i = 0; i < longLegsOrder.length; i++) {
+      const role = longLegsOrder[i];
+      const leg = params.structure.legs.find((l) => l.legRole === role);
+      if (!leg) continue;
+      if (i > 0) {
+        const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
+        if (pace > 0) await jitterSleepMs(pace);
+      }
+      const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
+      const side: "BUY" | "SELL" = "SELL"; // close a long by selling
+      const book = await params.adapter.getOrderbookTop({ symbol });
+      if (
+        !Number.isFinite(book.topBidUsdc as number) ||
+        !Number.isFinite(book.topAskUsdc as number)
+      ) {
+        // Fallback to retain: orderbook unavailable, hedge manager
+        // will try again later via legacy Rule 4/5/7 path.
+        console.warn(
+          `[spreadExecutor] long sell skipped (no orderbook) legRole=${leg.legRole}; falling back to retain`
+        );
+        longLegsRetained.push({
+          legRole: leg.legRole,
+          symbol,
+          contractsBtc: leg.contractsBtc,
+          strikeActualUsdc: leg.strikeActualUsdc
+        });
+        continue;
+      }
+      const result = await executeOptimizedFill({
+        side,
+        symbol,
+        quantityBtc: leg.contractsBtc,
+        topBidUsdc: book.topBidUsdc as number,
+        topAskUsdc: book.topAskUsdc as number,
+        submitFn: submitFnFor(
+          params.adapter,
+          symbol,
+          "close",
+          leg.legRole,
+          params.structure.spreadGroupId
+        )
+      });
+      if (result.filled) {
+        const record = fillResultToLegRecord(leg, symbol, side, result);
+        longLegsSold.push(record);
+        longLegProceedsUsdc += record.fillPriceUsdcPerBtc * record.fillQtyBtc;
+      } else {
+        // Sell failed — fall back to retain so hedge manager can
+        // attempt later via its existing rule curve. This is the same
+        // path strangle mode legs take. NOT considered fatal: trigger
+        // partial-close was still successful (shorts closed); we just
+        // retain instead of sell on this one leg.
+        console.warn(
+          `[spreadExecutor] long sell failed legRole=${leg.legRole} reason=${result.finalReason}; falling back to retain`
+        );
+        longLegsRetained.push({
+          legRole: leg.legRole,
+          symbol,
+          contractsBtc: leg.contractsBtc,
+          strikeActualUsdc: leg.strikeActualUsdc
+        });
+      }
+    }
+  } else if (failedAt === null) {
+    // Legacy mode: retain all longs (hedge manager handles).
+    for (const leg of params.structure.legs.filter((l) => l.side === "long")) {
+      longLegsRetained.push({
+        legRole: leg.legRole,
+        symbol: params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso }),
+        contractsBtc: leg.contractsBtc,
+        strikeActualUsdc: leg.strikeActualUsdc
+      });
+    }
+  }
 
   return {
     ok: failedAt === null,
     spreadGroupId: params.structure.spreadGroupId,
     triggerDirection: params.triggerDirection,
     shortLegsClosed: closedShorts,
+    longLegsSold,
     longLegsRetained,
     failedAt,
     errorReason,
-    shortLegProceedsUsdc: Number(shortLegProceedsUsdc.toFixed(4))
+    shortLegProceedsUsdc: Number(shortLegProceedsUsdc.toFixed(4)),
+    longLegProceedsUsdc: Number(longLegProceedsUsdc.toFixed(4))
   };
 };
 

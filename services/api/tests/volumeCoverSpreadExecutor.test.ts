@@ -7,6 +7,7 @@ import {
   closeSpread,
   partialCloseSpreadOnTrigger,
   checkSpreadLiquidity,
+  getConfiguredDepthGate,
   __testHelpers,
   type SpreadExecutorAdapter,
   type ExecutorOrderResult,
@@ -254,14 +255,15 @@ test("closeSpread: sequenced close in reverse direction (shorts first within win
   assert.equal(result.legs[3].side, "SELL");
 });
 
-test("partialCloseSpreadOnTrigger: high trigger closes call_short then put_short, retains long legs", async () => {
+test("partialCloseSpreadOnTrigger: high trigger closes call_short then put_short, retains long legs (legacy mode)", async () => {
   clearEnv();
   const structure = buildStructure();
   const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
   const result = await partialCloseSpreadOnTrigger({
     structure,
     adapter,
-    triggerDirection: "high"
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: false // legacy retain behavior
   });
   assert.equal(result.ok, true);
   assert.equal(result.shortLegsClosed.length, 2);
@@ -284,11 +286,100 @@ test("partialCloseSpreadOnTrigger: low trigger closes put_short first then call_
   const result = await partialCloseSpreadOnTrigger({
     structure,
     adapter,
-    triggerDirection: "low"
+    triggerDirection: "low",
+    sellLongsAtTriggerOverride: false
   });
   assert.equal(result.ok, true);
   assert.equal(result.shortLegsClosed[0].legRole, "put_short");
   assert.equal(result.shortLegsClosed[1].legRole, "call_short");
+});
+
+test("partialCloseSpreadOnTrigger: sell-longs-at-trigger ON (default) sells winner first then loser", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: true
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortLegsClosed.length, 2);
+  assert.equal(result.longLegsSold.length, 2);
+  assert.equal(result.longLegsRetained.length, 0);
+  // Order check: shorts go first (call_short, put_short for high),
+  // then longs in winner-first order (call_long, put_long for high).
+  const submittedRoles = calls.map((c) => c.legRole);
+  assert.deepEqual(submittedRoles, [
+    "call_short",
+    "put_short",
+    "call_long",
+    "put_long"
+  ]);
+  // Long sells are SELL direction; shorts are BUY (close).
+  for (const c of calls) {
+    if (c.legRole === "call_long" || c.legRole === "put_long") {
+      assert.equal(c.side, "SELL");
+    } else {
+      assert.equal(c.side, "BUY");
+    }
+  }
+  assert.ok(result.longLegProceedsUsdc > 0, "long proceeds should be positive");
+});
+
+test("partialCloseSpreadOnTrigger: sell-longs-at-trigger low direction sells put_long first", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "low",
+    sellLongsAtTriggerOverride: true
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 2);
+  const submittedRoles = calls.map((c) => c.legRole);
+  assert.deepEqual(submittedRoles, [
+    "put_short",
+    "call_short",
+    "put_long",
+    "call_long"
+  ]);
+});
+
+test("partialCloseSpreadOnTrigger: env flag VC_SPREAD_SELL_LONGS_AT_TRIGGER=false disables sell", async () => {
+  clearEnv();
+  process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER = "false";
+  try {
+    const structure = buildStructure();
+    const { adapter } = buildMockAdapter({ books: happyBooks() });
+    const result = await partialCloseSpreadOnTrigger({
+      structure,
+      adapter,
+      triggerDirection: "high"
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.longLegsSold.length, 0);
+    assert.equal(result.longLegsRetained.length, 2);
+  } finally {
+    delete process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
+  }
+});
+
+test("partialCloseSpreadOnTrigger: env flag default (unset) sells longs", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 2);
+  assert.equal(result.longLegsRetained.length, 0);
 });
 
 test("checkSpreadLiquidity: returns per-leg pass/fail breakdown", async () => {
@@ -326,4 +417,141 @@ test("__testHelpers.sideForLeg: open vs close direction", () => {
   assert.equal(__testHelpers.sideForLeg(longPut, "close"), "SELL");
   assert.equal(__testHelpers.sideForLeg(shortPut, "open"), "SELL");
   assert.equal(__testHelpers.sideForLeg(shortPut, "close"), "BUY");
+});
+
+// ─── 2026-05-24 Phase 0.2a: depth-aware liquidity gate ────────────
+
+const buildThinDepthAdapter = (params: {
+  thinSymbols: Record<string, { bidQtyBtc: number; askQtyBtc: number }>;
+}): {
+  adapter: SpreadExecutorAdapter;
+} => {
+  const books = happyBooks();
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop({ symbol }): Promise<OrderbookTop> {
+      const b = books[symbol];
+      const thin = params.thinSymbols[symbol];
+      return {
+        topBidUsdc: b?.topBid ?? null,
+        topAskUsdc: b?.topAsk ?? null,
+        bidQtyBtc: thin?.bidQtyBtc ?? 1.0,
+        askQtyBtc: thin?.askQtyBtc ?? 1.0
+      };
+    },
+    async submitIocLimit(p): Promise<ExecutorOrderResult> {
+      return {
+        filled: true,
+        fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+        fillQtyBtc: p.quantityBtc,
+        finalReason: "Executed",
+        orderId: `ORD-1`
+      };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const k = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${k}`;
+    }
+  };
+  return { adapter };
+};
+
+test("checkSpreadLiquidity: depth gate log-only mode (default) — warns but passes", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  // call_long needs to BUY → cross the ask. Make ask depth super thin.
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-77000-C": { bidQtyBtc: 1.0, askQtyBtc: 0.05 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtc: 0.3, enforced: false }
+  });
+  assert.equal(check.passed, true, "log-only should not fail the gate");
+  assert.equal(check.depthGate.enforced, false);
+  const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
+  assert.equal(callLong.depthSufficient, false);
+  assert.equal(callLong.observedDepthBtc, 0.05);
+  assert.equal(callLong.sufficient, true, "still passes existence check");
+});
+
+test("checkSpreadLiquidity: depth gate enforced — thin leg fails the gate", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-77000-C": { bidQtyBtc: 1.0, askQtyBtc: 0.05 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+  });
+  assert.equal(check.passed, false, "enforced thin depth should fail");
+  const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
+  assert.equal(callLong.depthSufficient, false);
+  assert.equal(callLong.sufficient, false);
+  assert.ok(callLong.reason?.startsWith("thin_depth_on_ask"));
+});
+
+test("checkSpreadLiquidity: depth gate enforced — all legs deep, passes", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter } = buildThinDepthAdapter({ thinSymbols: {} });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+  });
+  assert.equal(check.passed, true);
+  for (const c of check.legChecks) {
+    assert.equal(c.depthSufficient, true, `${c.legRole} should be sufficient`);
+    assert.equal(c.sufficient, true);
+  }
+});
+
+test("checkSpreadLiquidity: action=close evaluates depth on close-side crossing", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  // On close: longs SELL (cross bid), shorts BUY (cross ask). Make put_long bid thin.
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-75000-P": { bidQtyBtc: 0.05, askQtyBtc: 1.0 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "close",
+    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+  });
+  const putLong = check.legChecks.find((c) => c.legRole === "put_long")!;
+  assert.equal(putLong.crossesSide, "SELL");
+  assert.equal(putLong.observedDepthBtc, 0.05);
+  assert.equal(putLong.depthSufficient, false);
+  assert.equal(putLong.sufficient, false);
+});
+
+test("getConfiguredDepthGate: env-driven config with defaults", () => {
+  clearEnv();
+  delete process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  delete process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
+  const d = getConfiguredDepthGate();
+  assert.equal(d.minDepthBtc, 0.3);
+  assert.equal(d.enforced, false);
+
+  process.env.VC_SPREAD_MIN_DEPTH_BTC = "0.5";
+  process.env.VC_SPREAD_DEPTH_GATE_ENFORCED = "true";
+  const d2 = getConfiguredDepthGate();
+  assert.equal(d2.minDepthBtc, 0.5);
+  assert.equal(d2.enforced, true);
+  delete process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  delete process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
 });

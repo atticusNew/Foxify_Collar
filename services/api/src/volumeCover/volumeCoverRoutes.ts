@@ -641,10 +641,22 @@ export const registerVolumeCoverRoutes = async (
       await applyLatencyInjection(disruptionDirective);
     }
 
+    // 2026-05-24 (Hybrid v3): resolve premium + regime-adjusted payout BEFORE
+    // the guard so liability checks use the actual obligation (smaller in
+    // moderate/elevated when payout overlay set), not the cell base. Pulled
+    // up so we can also pass the same effectivePayoutUsdc into openPosition
+    // for end-to-end consistency.
+    const earlyQuote = resolveDailyPremium({
+      cell,
+      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
+      regime
+    });
+    const effectivePayoutForGuard = earlyQuote.payoutUsdc;
+
     const guardVerdict = checkAllGuardsForVolumeCoverActivate({
       foxifyPoolBalanceUsdc: 0,
       totalActivePayoutLiabilityUsdc: totalActiveLiability,
-      newPayoutLiabilityUsdc: cell.payoutUsdc,
+      newPayoutLiabilityUsdc: effectivePayoutForGuard,
       dbTrackedAtticusBalanceUsdc: null,
       venueReportedAtticusBalanceUsdc: null,
       currentDvol: currentDvolForGuard,
@@ -735,15 +747,12 @@ export const registerVolumeCoverRoutes = async (
 
     guardsPassedAtMs = Date.now();
 
-    // P3 §13: regime-aware pricing. resolveDailyPremium reads
-    // VC_REGIME_OVERLAY_JSON env (post-Phase-2 sign-off) and applies
-    // moderate/elevated/stress overlays. Calm always uses base/DB.
-    const premiumQuote = resolveDailyPremium({
-      cell,
-      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
-      regime
-    });
+    // P3 §13: regime-aware pricing. Already resolved as `earlyQuote` above
+    // (we pulled it up so guard's liability check uses regime-adjusted payout).
+    // Reuse to avoid double-parsing the overlay JSON.
+    const premiumQuote = earlyQuote;
     const baseDailyPremium = premiumQuote.dailyPremiumUsdc;
+    const effectivePayout = premiumQuote.payoutUsdc;
     // P3 Layer 4: apply surcharge multiplier if fingerprint is in
     // surcharge state. Default 1.0 (no change).
     const dailyPremium = Math.round(baseDailyPremium * surchargeMultiplier);
@@ -759,7 +768,13 @@ export const registerVolumeCoverRoutes = async (
         pairShortNotionalUsdc: body.pairShortNotionalUsdc,
         pairEntryBtcPrice: body.pairEntryBtcPrice,
         effectiveDailyPremiumUsdc: dailyPremium,
+        // 2026-05-24 (Hybrid v3): pass regime-adjusted payout so position
+        // row, trigger payout, ledger, and obligation use the SAME Y value.
+        effectivePayoutUsdc: effectivePayout,
         regime,
+        // 2026-05-24 (Phase 0.3): persist pricing inputs for PnL attribution.
+        baseDailyPremiumUsdc: baseDailyPremium,
+        surchargeMultiplierApplied: surchargeMultiplier,
         fingerprintHash: body.fingerprintHash ?? null,
         metadata: {
           source: "foxify_api",
@@ -804,7 +819,11 @@ export const registerVolumeCoverRoutes = async (
         triggerHighBtc: result.position.triggerHighBtc,
         triggerLowBtc: result.position.triggerLowBtc,
         dailyPremiumUsdc: dailyPremium,
-        payoutUsdc: cell.payoutUsdc,
+        payoutUsdc: effectivePayout,
+        // 2026-05-24 (Hybrid v3): regime context for caller observability.
+        regime,
+        payoutSource: premiumQuote.payoutSource,
+        basePayoutUsdc: premiumQuote.basePayoutUsdc,
         hedgeLegs: result.hedgeLegs.map((l) => ({
           id: l.id,
           venue: l.venue,
@@ -958,7 +977,19 @@ export const registerVolumeCoverRoutes = async (
         openedAt: row.opened_at,
         triggeredAt: row.triggered_at,
         closedAt: row.closed_at,
-        payoutUsdc: Number(row.payout_usdc)
+        payoutUsdc: Number(row.payout_usdc),
+        dailyPremiumUsdc: Number(row.daily_premium_usdc),
+        // 2026-05-24 (Phase 0.3): pricing attribution surfaced for PnL
+        // reconciliation queries against this endpoint.
+        regimeAtOpen: row.regime_at_open ? String(row.regime_at_open) : null,
+        baseDailyPremiumUsdc:
+          row.base_daily_premium_usdc !== null && row.base_daily_premium_usdc !== undefined
+            ? Number(row.base_daily_premium_usdc)
+            : null,
+        surchargeMultiplierApplied:
+          row.surcharge_multiplier_applied !== null && row.surcharge_multiplier_applied !== undefined
+            ? Number(row.surcharge_multiplier_applied)
+            : 1.0
       }))
     });
   });
@@ -1033,6 +1064,16 @@ export const registerVolumeCoverRoutes = async (
           triggeredDirection: row.triggered_direction ? String(row.triggered_direction) : null,
           closedAt: row.closed_at ? String(row.closed_at) : null,
           closeReason: row.close_reason ? String(row.close_reason) : null,
+          // 2026-05-24 (Phase 0.3): pricing attribution for live ops UI.
+          regimeAtOpen: row.regime_at_open ? String(row.regime_at_open) : null,
+          baseDailyPremiumUsdc:
+            row.base_daily_premium_usdc !== null && row.base_daily_premium_usdc !== undefined
+              ? Number(row.base_daily_premium_usdc)
+              : null,
+          surchargeMultiplierApplied:
+            row.surcharge_multiplier_applied !== null && row.surcharge_multiplier_applied !== undefined
+              ? Number(row.surcharge_multiplier_applied)
+              : 1.0,
           legs
         };
       })
@@ -2042,7 +2083,7 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
-  // 2026-05-21 — SHADOW-ONLY Bullish single-symbol order book inspector.
+  // 2026-05-21 — Bullish single-symbol order book inspector.
   //
   // Returns the top of the book (and depth if requested) for a single
   // symbol. Use to diagnose whether the book has bids/asks before
@@ -2050,17 +2091,16 @@ export const registerVolumeCoverRoutes = async (
   // resting prices.
   //
   // 1 Bullish API call per invocation. No auth needed in the venue
-  // call itself (orderbook is a public REST endpoint), but this admin
-  // route is gated on shadow + admin token like everything else.
+  // call itself (orderbook is a public REST endpoint).
+  //
+  // 2026-05-24: Removed shadow-tier gate. This is READ-ONLY public
+  // market data (no order placement, no PII, no balance exposure),
+  // and is needed on live for ops validation + pricing analysis
+  // workflows (e.g. comparing Bullish vs Deribit during proposal
+  // negotiation calibration). Admin-token auth remains required.
   app.get<{ Querystring: { symbol?: string; depth?: string } }>(
     "/volume-cover/admin/bullish-orderbook",
     async (req, reply) => {
-      if (!isShadowTier()) {
-        return reply.code(403).send({
-          error: "forbidden",
-          reason: "endpoint_requires_shadow_tier"
-        });
-      }
       if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
       const symbol = String(req.query.symbol ?? "").trim();
@@ -2621,6 +2661,204 @@ export const registerVolumeCoverRoutes = async (
         bullishHttpStatus,
         bullishErrorCode,
         bullishStatusReasonCode,
+        orderId,
+        finalStatus,
+        finalFillPrice,
+        finalFillQty,
+        finalReasonCode,
+        finalReason,
+        wasExpired,
+        wasRejected,
+        orderStatusError
+      }
+    });
+  });
+
+  // ============================================================================
+  // POST /volume-cover/admin/bullish-cross-account-sell
+  //
+  // 2026-05-24 — One-shot cross-sub-account sell endpoint.
+  //
+  // CONTEXT: pilotConfig.bullish.tradingAccountId is hard-wired to the
+  // Options sub-account (111257696062450). Operators occasionally need to
+  // sell positions that live on OTHER sub-accounts owned by the same
+  // Bullish user (e.g. Primary 111804098837415). Bullish API auth is
+  // USER-scoped (JWT obtained via ECDSA login covers all sub-accounts the
+  // user owns); the sub-account is selected per-request via the
+  // `tradingAccountId` field in the V3CreateOrder command body. The
+  // standard test-sell endpoint uses `createSpotLimitOrder` which
+  // hard-codes config.tradingAccountId — so this endpoint bypasses that
+  // helper and submits the command directly via `submitCommand` with the
+  // caller-provided `tradingAccountId`.
+  //
+  // SAFETY (mirrors bullish-test-sell):
+  //   • 403 unless PILOT_DEPLOYMENT_TIER=shadow
+  //   • Admin-token gated
+  //   • Hard caps: contractsBtc ≤ 5.0, notional ≤ $5000
+  //   • Hard-coded IOC TIF (self-cancels at venue if no match)
+  //   • Single Bullish API call per invocation
+  //   • Polls order status for ≤ 8s after submit using the same
+  //     tradingAccountId (Bullish GET /orders/:id is per-sub-account)
+  //
+  // Body shape:
+  //   {
+  //     tradingAccountId: "111804098837415",          // required, 15 digits
+  //     symbol: "BTC-USDC-20260526-77000-C",          // required
+  //     side: "SELL",                                  // SELL only (safety)
+  //     price: "580",                                  // limit price in USDC/BTC
+  //     quantity: "0.498",                             // BTC contracts
+  //     timeInForce: "IOC"                             // IOC only (safety)
+  //   }
+  // ============================================================================
+  app.post("/volume-cover/admin/bullish-cross-account-sell", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    const tradingAccountId = String(body.tradingAccountId ?? "").trim();
+    const symbol = String(body.symbol ?? "").trim();
+    const side = String(body.side ?? "SELL").trim().toUpperCase();
+    const price = String(body.price ?? "").trim();
+    const quantity = String(body.quantity ?? "").trim();
+    const timeInForce = String(body.timeInForce ?? "IOC").trim().toUpperCase();
+    // 2026-05-24: Bullish rejects orders with statusReasonCode 3003
+    // ("Borrowing is unavailable, margin not enabled") on sub-accounts
+    // that don't have margin enabled (e.g. Primary 111804098837415).
+    // SELL-to-close of an existing long position never NEEDS margin, so
+    // default the margin flags to FALSE here. Caller can override via
+    // useMargin=true if explicitly needed (e.g. naked short open).
+    const useMargin = body.useMargin === true;
+
+    if (!/^\d{15}$/.test(tradingAccountId)) {
+      return reply.code(400).send({ error: "tradingAccountId_must_be_15_digit_numeric_string" });
+    }
+    if (!symbol || !/^[A-Z]+-[A-Z]+-\d{8}-\d+-(C|P)$/i.test(symbol)) {
+      return reply.code(400).send({
+        error: "invalid_symbol_format",
+        expected: "BTC-USDC-YYYYMMDD-STRIKE-(C|P)",
+        provided: symbol
+      });
+    }
+    if (side !== "SELL") {
+      return reply.code(400).send({ error: "side_must_be_SELL", note: "BUY blocked on this endpoint for safety" });
+    }
+    if (timeInForce !== "IOC") {
+      return reply.code(400).send({ error: "timeInForce_must_be_IOC", note: "DAY/GTC blocked for safety" });
+    }
+    const priceN = Number(price);
+    const qtyN = Number(quantity);
+    if (!Number.isFinite(priceN) || priceN <= 0) {
+      return reply.code(400).send({ error: "invalid_price", provided: price });
+    }
+    if (!Number.isFinite(qtyN) || qtyN <= 0 || qtyN > 5.0) {
+      return reply.code(400).send({ error: "invalid_quantity_or_exceeds_cap_5BTC", provided: quantity });
+    }
+    const notional = priceN * qtyN;
+    if (notional > 5000) {
+      return reply.code(400).send({ error: "notional_exceeds_cap_5000_USDC", notional });
+    }
+
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+
+    const client = await getBullishAdminClient();
+
+    // Build V3CreateOrder command directly (bypass createSpotLimitOrder helper
+    // which hard-codes config.tradingAccountId). Key order MUST match the
+    // platform's helper so signed canonical string is consistent with what
+    // the Bullish auth flow expects.
+    const command: Record<string, unknown> = {
+      commandType: "V3CreateOrder",
+      symbol,
+      type: "LIMIT",
+      side,
+      price,
+      quantity,
+      timeInForce,
+      clientOrderId,
+      tradingAccountId,
+      allowMargin: useMargin,
+      allowBorrow: useMargin,
+      margin: useMargin
+    };
+
+    console.log(
+      `[bullish-cross-account-sell] SUBMITTING tradingAccountId=${tradingAccountId} ` +
+        `symbol=${symbol} side=${side} qty=${quantity} price=${price} TIF=${timeInForce} ` +
+        `useMargin=${useMargin} clientOrderId=${clientOrderId}`
+    );
+
+    const startMs = Date.now();
+    let rawResponse: unknown = null;
+    let bullishError: string | null = null;
+    let bullishHttpStatus: number | null = null;
+    let bullishErrorCode: string | null = null;
+
+    try {
+      rawResponse = await client.submitCommand(command);
+    } catch (err: any) {
+      bullishError = err?.message ?? "unknown";
+      const match = String(bullishError).match(/bullish_http_(\d+):(.*)$/s);
+      if (match) {
+        bullishHttpStatus = Number(match[1]);
+        try {
+          const errBody = JSON.parse(match[2]);
+          bullishErrorCode = errBody.errorCodeName ?? errBody.errorCode ?? null;
+        } catch {
+          // Leave bullishErrorCode null
+        }
+      }
+    }
+
+    let orderStatusFinal: any = null;
+    let orderStatusError: string | null = null;
+    const orderId =
+      (rawResponse as any)?.orderId || (rawResponse as any)?.data?.orderId;
+    if (!bullishError && orderId) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        orderStatusFinal = await client.getOrderStatus(String(orderId), { tradingAccountId });
+      } catch (statusErr: any) {
+        orderStatusError = statusErr?.message ?? "unknown";
+      }
+    }
+
+    const finalStatus = orderStatusFinal?.status ?? "UNKNOWN";
+    const finalFillPrice = orderStatusFinal?.fillPrice ?? 0;
+    const finalFillQty = orderStatusFinal?.fillQuantity ?? 0;
+    const finalReasonCode = (orderStatusFinal?.raw as any)?.statusReasonCode ?? null;
+    const finalReason = (orderStatusFinal?.raw as any)?.statusReason ?? null;
+    const reasonStr = String(finalReason ?? "").toLowerCase();
+    const wasExpired = reasonStr === "expired" || String(finalReasonCode || "") === "6004";
+    const wasRejected = reasonStr === "rejected" || finalStatus === "REJECTED";
+    const trulyFilled = Number(finalFillQty) > 0 && !wasExpired && !wasRejected;
+    const success = !bullishError && trulyFilled;
+
+    return reply.send({
+      ok: success,
+      generatedAtIso: new Date().toISOString(),
+      elapsedMs: Date.now() - startMs,
+      config: {
+        platformDefaultTradingAccountId: pilotConfig.bullish.tradingAccountId,
+        targetTradingAccountId: tradingAccountId,
+        crossAccountSell:
+          pilotConfig.bullish.tradingAccountId !== tradingAccountId,
+        bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("api.exchange.bullish.com"),
+        restBaseUrl: pilotConfig.bullish.restBaseUrl
+      },
+      request: {
+        command,
+        notional
+      },
+      result: {
+        rawResponse,
+        bullishError,
+        bullishHttpStatus,
+        bullishErrorCode,
         orderId,
         finalStatus,
         finalFillPrice,
@@ -4756,10 +4994,19 @@ export const registerVolumeCoverRoutes = async (
     } catch (err) {
       req.log.warn(`[volume-cover/test-activate] regime fetch failed: ${(err as Error).message}`);
     }
+    // 2026-05-24 (Hybrid v3): resolve premium + regime-adjusted payout
+    // BEFORE the guard so liability check matches the actual obligation.
+    const adminEarlyQuote = resolveDailyPremium({
+      cell,
+      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
+      regime
+    });
+    const adminEffectivePayoutForGuard = adminEarlyQuote.payoutUsdc;
+
     const guardVerdict = checkAllGuardsForVolumeCoverActivate({
       foxifyPoolBalanceUsdc: 0,
       totalActivePayoutLiabilityUsdc: totalActiveLiability,
-      newPayoutLiabilityUsdc: cell.payoutUsdc,
+      newPayoutLiabilityUsdc: adminEffectivePayoutForGuard,
       dbTrackedAtticusBalanceUsdc: null,
       venueReportedAtticusBalanceUsdc: null,
       currentDvol: currentDvolForGuard,
@@ -4783,14 +5030,12 @@ export const registerVolumeCoverRoutes = async (
 
     // Premium: caller override OR matrix base (regime overlay still applies
     // unless operator explicitly overrides).
+    const adminBaseDailyPremium = adminEarlyQuote.dailyPremiumUsdc;
+    const adminEffectivePayout = adminEarlyQuote.payoutUsdc;
     const dailyPremium =
       body.premiumOverrideUsdc !== undefined
         ? body.premiumOverrideUsdc
-        : resolveDailyPremium({
-            cell,
-            dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
-            regime
-          }).dailyPremiumUsdc;
+        : adminBaseDailyPremium;
 
     try {
       const result = await openPosition(pool, opts.hedgeExecutor, {
@@ -4800,7 +5045,16 @@ export const registerVolumeCoverRoutes = async (
         pairShortNotionalUsdc: shortNotional,
         pairEntryBtcPrice: body.pairEntryBtcPrice,
         effectiveDailyPremiumUsdc: dailyPremium,
+        // 2026-05-24 (Hybrid v3): regime-adjusted payout for admin test path.
+        effectivePayoutUsdc: adminEffectivePayout,
         regime,
+        // 2026-05-24 (Phase 0.3): pricing attribution. No surcharge on
+        // admin test paths (no anti-bot). Base reflects regime overlay;
+        // if operator overrode premium, base preserves regime-tiered
+        // value so attribution still reflects "what we would have
+        // charged" vs the override.
+        baseDailyPremiumUsdc: adminBaseDailyPremium,
+        surchargeMultiplierApplied: 1.0,
         // No fingerprint = no anti-bot, no ladder netting (intentional for test)
         fingerprintHash: null,
         // 2026-05-23: smoke-test sizing override (spread cells only).
@@ -4822,7 +5076,9 @@ export const registerVolumeCoverRoutes = async (
         triggerHighBtc: result.position.triggerHighBtc,
         triggerLowBtc: result.position.triggerLowBtc,
         dailyPremiumUsdc: dailyPremium,
-        payoutUsdc: cell.payoutUsdc,
+        payoutUsdc: adminEffectivePayout,
+        basePayoutUsdc: adminEarlyQuote.basePayoutUsdc,
+        payoutSource: adminEarlyQuote.payoutSource,
         hedgeLegs: result.hedgeLegs.map((l) => ({
           id: l.id,
           venue: l.venue,
