@@ -138,3 +138,105 @@ test("Pricing: cache invalidates when env JSON changes mid-run", () => {
   delete process.env.VC_REGIME_OVERLAY_JSON;
   __resetPricingCacheForTests();
 });
+
+// ─── Hybrid v3: VC_PAYOUT_OVERLAY_JSON (Y overlay) tests ───
+// Added 2026-05-24 for Hybrid v3 pilot pricing. Premium (X) and payout
+// (Y) are independent overlays. Y override mirrors X overlay semantics:
+// calm-locked at base, moderate/elevated/stress can be overridden.
+
+test("Payout overlay: base payout when no VC_PAYOUT_OVERLAY_JSON set", () => {
+  __resetPricingCacheForTests();
+  delete process.env.VC_PAYOUT_OVERLAY_JSON;
+  const r = resolveDailyPremium({ cell, regime: "moderate" });
+  assert.equal(r.payoutUsdc, 1000);
+  assert.equal(r.payoutSource, "matrix_base");
+  assert.equal(r.basePayoutUsdc, 1000);
+});
+
+test("Payout overlay: applies for moderate (Hybrid v3 pilot: $750)", () => {
+  __resetPricingCacheForTests();
+  process.env.VC_PAYOUT_OVERLAY_JSON = JSON.stringify({
+    "50k_2pct_1k": { moderate: 750, elevated: 450 }
+  });
+  try {
+    const r = resolveDailyPremium({ cell, regime: "moderate" });
+    assert.equal(r.payoutUsdc, 750);
+    assert.equal(r.payoutSource, "regime_overlay");
+    assert.equal(r.basePayoutUsdc, 1000);
+  } finally {
+    delete process.env.VC_PAYOUT_OVERLAY_JSON;
+    __resetPricingCacheForTests();
+  }
+});
+
+test("Payout overlay: applies for elevated (Hybrid v3 pilot: $450)", () => {
+  __resetPricingCacheForTests();
+  process.env.VC_PAYOUT_OVERLAY_JSON = JSON.stringify({
+    "50k_2pct_1k": { moderate: 750, elevated: 450 }
+  });
+  try {
+    const r = resolveDailyPremium({ cell, regime: "elevated" });
+    assert.equal(r.payoutUsdc, 450);
+    assert.equal(r.payoutSource, "regime_overlay");
+  } finally {
+    delete process.env.VC_PAYOUT_OVERLAY_JSON;
+    __resetPricingCacheForTests();
+  }
+});
+
+test("Payout overlay: calm regime IGNORES Y overlay (locked at base)", () => {
+  __resetPricingCacheForTests();
+  process.env.VC_PAYOUT_OVERLAY_JSON = JSON.stringify({
+    "50k_2pct_1k": { calm: 500, moderate: 750 }
+  });
+  try {
+    const r = resolveDailyPremium({ cell, regime: "calm" });
+    assert.equal(r.payoutUsdc, 1000, "calm payout overlay must be ignored");
+    assert.equal(r.payoutSource, "matrix_base");
+  } finally {
+    delete process.env.VC_PAYOUT_OVERLAY_JSON;
+    __resetPricingCacheForTests();
+  }
+});
+
+test("Payout overlay: X and Y overlays are independent (X flat $350, Y regime-tiered)", () => {
+  // Hybrid v3 scenario: X stays flat at $350 across all regimes (calm base),
+  // Y varies by regime via payout overlay.
+  __resetPricingCacheForTests();
+  process.env.VC_REGIME_OVERLAY_JSON = JSON.stringify({
+    "50k_2pct_1k": { moderate: 350, elevated: 350 }
+  });
+  process.env.VC_PAYOUT_OVERLAY_JSON = JSON.stringify({
+    "50k_2pct_1k": { moderate: 750, elevated: 450 }
+  });
+  try {
+    const mod = resolveDailyPremium({ cell, regime: "moderate" });
+    assert.equal(mod.dailyPremiumUsdc, 350, "X flat at $350 in moderate");
+    assert.equal(mod.payoutUsdc, 750, "Y = $750 in moderate (Hybrid v3 pilot)");
+
+    const elev = resolveDailyPremium({ cell, regime: "elevated" });
+    assert.equal(elev.dailyPremiumUsdc, 350, "X flat at $350 in elevated");
+    assert.equal(elev.payoutUsdc, 450, "Y = $450 in elevated (Hybrid v3 pilot)");
+
+    const calm = resolveDailyPremium({ cell, regime: "calm" });
+    assert.equal(calm.dailyPremiumUsdc, 350, "X = $350 base in calm");
+    assert.equal(calm.payoutUsdc, 1000, "Y = $1000 base in calm");
+  } finally {
+    delete process.env.VC_REGIME_OVERLAY_JSON;
+    delete process.env.VC_PAYOUT_OVERLAY_JSON;
+    __resetPricingCacheForTests();
+  }
+});
+
+test("Payout overlay: malformed JSON falls back to base safely", () => {
+  __resetPricingCacheForTests();
+  process.env.VC_PAYOUT_OVERLAY_JSON = "{not valid json";
+  try {
+    const r = resolveDailyPremium({ cell, regime: "moderate" });
+    assert.equal(r.payoutUsdc, 1000);
+    assert.equal(r.payoutSource, "matrix_base");
+  } finally {
+    delete process.env.VC_PAYOUT_OVERLAY_JSON;
+    __resetPricingCacheForTests();
+  }
+});

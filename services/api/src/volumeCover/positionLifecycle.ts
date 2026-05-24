@@ -91,6 +91,16 @@ export type OpenPositionRequest = {
    */
   baseDailyPremiumUsdc?: number;
   surchargeMultiplierApplied?: number;
+  /**
+   * 2026-05-24 (Hybrid v3): optional override of the cell base payout
+   * (e.g., from VC_PAYOUT_OVERLAY_JSON regime overlay). If unset, falls
+   * back to cell.payoutUsdc. Calm regime never overrides; moderate +
+   * elevated (and stress if not halted) can use a reduced payout per
+   * regime to match Atticus's hedge economics. Used end-to-end so
+   * position row, trigger payout, ledger entries, and obligation
+   * tracking all see the SAME regime-adjusted Y value.
+   */
+  effectivePayoutUsdc?: number;
 };
 
 export type OpenPositionResult = {
@@ -126,6 +136,8 @@ export const openPosition = async (
 ): Promise<OpenPositionResult> => {
   const positionId = `vc-pos-${randomUUID()}`;
   const dailyPremium = req.effectiveDailyPremiumUsdc ?? req.cell.dailyPremiumUsdc;
+  // 2026-05-24 (Hybrid v3): regime-adjusted payout if provided, else cell base.
+  const effectivePayout = req.effectivePayoutUsdc ?? req.cell.payoutUsdc;
 
   const { triggerHighBtc, triggerLowBtc } = computeTriggerPrices({
     cell: req.cell,
@@ -145,7 +157,7 @@ export const openPosition = async (
       triggerHighBtc,
       triggerLowBtc,
       dailyPremiumUsdc: dailyPremium,
-      payoutUsdc: req.cell.payoutUsdc,
+      payoutUsdc: effectivePayout,
       fingerprintHash: req.fingerprintHash ?? null,
       metadata: req.metadata,
       // 2026-05-24 (Phase 0.3): pricing attribution.

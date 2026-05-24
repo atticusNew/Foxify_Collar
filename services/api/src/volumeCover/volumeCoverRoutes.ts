@@ -641,10 +641,22 @@ export const registerVolumeCoverRoutes = async (
       await applyLatencyInjection(disruptionDirective);
     }
 
+    // 2026-05-24 (Hybrid v3): resolve premium + regime-adjusted payout BEFORE
+    // the guard so liability checks use the actual obligation (smaller in
+    // moderate/elevated when payout overlay set), not the cell base. Pulled
+    // up so we can also pass the same effectivePayoutUsdc into openPosition
+    // for end-to-end consistency.
+    const earlyQuote = resolveDailyPremium({
+      cell,
+      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
+      regime
+    });
+    const effectivePayoutForGuard = earlyQuote.payoutUsdc;
+
     const guardVerdict = checkAllGuardsForVolumeCoverActivate({
       foxifyPoolBalanceUsdc: 0,
       totalActivePayoutLiabilityUsdc: totalActiveLiability,
-      newPayoutLiabilityUsdc: cell.payoutUsdc,
+      newPayoutLiabilityUsdc: effectivePayoutForGuard,
       dbTrackedAtticusBalanceUsdc: null,
       venueReportedAtticusBalanceUsdc: null,
       currentDvol: currentDvolForGuard,
@@ -735,15 +747,12 @@ export const registerVolumeCoverRoutes = async (
 
     guardsPassedAtMs = Date.now();
 
-    // P3 §13: regime-aware pricing. resolveDailyPremium reads
-    // VC_REGIME_OVERLAY_JSON env (post-Phase-2 sign-off) and applies
-    // moderate/elevated/stress overlays. Calm always uses base/DB.
-    const premiumQuote = resolveDailyPremium({
-      cell,
-      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
-      regime
-    });
+    // P3 §13: regime-aware pricing. Already resolved as `earlyQuote` above
+    // (we pulled it up so guard's liability check uses regime-adjusted payout).
+    // Reuse to avoid double-parsing the overlay JSON.
+    const premiumQuote = earlyQuote;
     const baseDailyPremium = premiumQuote.dailyPremiumUsdc;
+    const effectivePayout = premiumQuote.payoutUsdc;
     // P3 Layer 4: apply surcharge multiplier if fingerprint is in
     // surcharge state. Default 1.0 (no change).
     const dailyPremium = Math.round(baseDailyPremium * surchargeMultiplier);
@@ -759,6 +768,9 @@ export const registerVolumeCoverRoutes = async (
         pairShortNotionalUsdc: body.pairShortNotionalUsdc,
         pairEntryBtcPrice: body.pairEntryBtcPrice,
         effectiveDailyPremiumUsdc: dailyPremium,
+        // 2026-05-24 (Hybrid v3): pass regime-adjusted payout so position
+        // row, trigger payout, ledger, and obligation use the SAME Y value.
+        effectivePayoutUsdc: effectivePayout,
         regime,
         // 2026-05-24 (Phase 0.3): persist pricing inputs for PnL attribution.
         baseDailyPremiumUsdc: baseDailyPremium,
@@ -807,7 +819,11 @@ export const registerVolumeCoverRoutes = async (
         triggerHighBtc: result.position.triggerHighBtc,
         triggerLowBtc: result.position.triggerLowBtc,
         dailyPremiumUsdc: dailyPremium,
-        payoutUsdc: cell.payoutUsdc,
+        payoutUsdc: effectivePayout,
+        // 2026-05-24 (Hybrid v3): regime context for caller observability.
+        regime,
+        payoutSource: premiumQuote.payoutSource,
+        basePayoutUsdc: premiumQuote.basePayoutUsdc,
         hedgeLegs: result.hedgeLegs.map((l) => ({
           id: l.id,
           venue: l.venue,
@@ -4978,10 +4994,19 @@ export const registerVolumeCoverRoutes = async (
     } catch (err) {
       req.log.warn(`[volume-cover/test-activate] regime fetch failed: ${(err as Error).message}`);
     }
+    // 2026-05-24 (Hybrid v3): resolve premium + regime-adjusted payout
+    // BEFORE the guard so liability check matches the actual obligation.
+    const adminEarlyQuote = resolveDailyPremium({
+      cell,
+      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
+      regime
+    });
+    const adminEffectivePayoutForGuard = adminEarlyQuote.payoutUsdc;
+
     const guardVerdict = checkAllGuardsForVolumeCoverActivate({
       foxifyPoolBalanceUsdc: 0,
       totalActivePayoutLiabilityUsdc: totalActiveLiability,
-      newPayoutLiabilityUsdc: cell.payoutUsdc,
+      newPayoutLiabilityUsdc: adminEffectivePayoutForGuard,
       dbTrackedAtticusBalanceUsdc: null,
       venueReportedAtticusBalanceUsdc: null,
       currentDvol: currentDvolForGuard,
@@ -5005,11 +5030,8 @@ export const registerVolumeCoverRoutes = async (
 
     // Premium: caller override OR matrix base (regime overlay still applies
     // unless operator explicitly overrides).
-    const adminBaseDailyPremium = resolveDailyPremium({
-      cell,
-      dbOverrideDailyPremiumUsdc: cellRow.dailyPremiumUsdc,
-      regime
-    }).dailyPremiumUsdc;
+    const adminBaseDailyPremium = adminEarlyQuote.dailyPremiumUsdc;
+    const adminEffectivePayout = adminEarlyQuote.payoutUsdc;
     const dailyPremium =
       body.premiumOverrideUsdc !== undefined
         ? body.premiumOverrideUsdc
@@ -5023,6 +5045,8 @@ export const registerVolumeCoverRoutes = async (
         pairShortNotionalUsdc: shortNotional,
         pairEntryBtcPrice: body.pairEntryBtcPrice,
         effectiveDailyPremiumUsdc: dailyPremium,
+        // 2026-05-24 (Hybrid v3): regime-adjusted payout for admin test path.
+        effectivePayoutUsdc: adminEffectivePayout,
         regime,
         // 2026-05-24 (Phase 0.3): pricing attribution. No surcharge on
         // admin test paths (no anti-bot). Base reflects regime overlay;
@@ -5052,7 +5076,9 @@ export const registerVolumeCoverRoutes = async (
         triggerHighBtc: result.position.triggerHighBtc,
         triggerLowBtc: result.position.triggerLowBtc,
         dailyPremiumUsdc: dailyPremium,
-        payoutUsdc: cell.payoutUsdc,
+        payoutUsdc: adminEffectivePayout,
+        basePayoutUsdc: adminEarlyQuote.basePayoutUsdc,
+        payoutSource: adminEarlyQuote.payoutSource,
         hedgeLegs: result.hedgeLegs.map((l) => ({
           id: l.id,
           venue: l.venue,
