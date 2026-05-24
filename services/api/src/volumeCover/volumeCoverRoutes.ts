@@ -2634,6 +2634,197 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
+  // ============================================================================
+  // POST /volume-cover/admin/bullish-cross-account-sell
+  //
+  // 2026-05-24 — One-shot cross-sub-account sell endpoint.
+  //
+  // CONTEXT: pilotConfig.bullish.tradingAccountId is hard-wired to the
+  // Options sub-account (111257696062450). Operators occasionally need to
+  // sell positions that live on OTHER sub-accounts owned by the same
+  // Bullish user (e.g. Primary 111804098837415). Bullish API auth is
+  // USER-scoped (JWT obtained via ECDSA login covers all sub-accounts the
+  // user owns); the sub-account is selected per-request via the
+  // `tradingAccountId` field in the V3CreateOrder command body. The
+  // standard test-sell endpoint uses `createSpotLimitOrder` which
+  // hard-codes config.tradingAccountId — so this endpoint bypasses that
+  // helper and submits the command directly via `submitCommand` with the
+  // caller-provided `tradingAccountId`.
+  //
+  // SAFETY (mirrors bullish-test-sell):
+  //   • 403 unless PILOT_DEPLOYMENT_TIER=shadow
+  //   • Admin-token gated
+  //   • Hard caps: contractsBtc ≤ 5.0, notional ≤ $5000
+  //   • Hard-coded IOC TIF (self-cancels at venue if no match)
+  //   • Single Bullish API call per invocation
+  //   • Polls order status for ≤ 8s after submit using the same
+  //     tradingAccountId (Bullish GET /orders/:id is per-sub-account)
+  //
+  // Body shape:
+  //   {
+  //     tradingAccountId: "111804098837415",          // required, 15 digits
+  //     symbol: "BTC-USDC-20260526-77000-C",          // required
+  //     side: "SELL",                                  // SELL only (safety)
+  //     price: "580",                                  // limit price in USDC/BTC
+  //     quantity: "0.498",                             // BTC contracts
+  //     timeInForce: "IOC"                             // IOC only (safety)
+  //   }
+  // ============================================================================
+  app.post("/volume-cover/admin/bullish-cross-account-sell", async (req, reply) => {
+    if (!isShadowTier()) {
+      return reply.code(403).send({
+        error: "forbidden",
+        reason: "endpoint_requires_shadow_tier"
+      });
+    }
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+
+    const body = (req.body ?? {}) as Record<string, any>;
+    const tradingAccountId = String(body.tradingAccountId ?? "").trim();
+    const symbol = String(body.symbol ?? "").trim();
+    const side = String(body.side ?? "SELL").trim().toUpperCase();
+    const price = String(body.price ?? "").trim();
+    const quantity = String(body.quantity ?? "").trim();
+    const timeInForce = String(body.timeInForce ?? "IOC").trim().toUpperCase();
+
+    if (!/^\d{15}$/.test(tradingAccountId)) {
+      return reply.code(400).send({ error: "tradingAccountId_must_be_15_digit_numeric_string" });
+    }
+    if (!symbol || !/^[A-Z]+-[A-Z]+-\d{8}-\d+-(C|P)$/i.test(symbol)) {
+      return reply.code(400).send({
+        error: "invalid_symbol_format",
+        expected: "BTC-USDC-YYYYMMDD-STRIKE-(C|P)",
+        provided: symbol
+      });
+    }
+    if (side !== "SELL") {
+      return reply.code(400).send({ error: "side_must_be_SELL", note: "BUY blocked on this endpoint for safety" });
+    }
+    if (timeInForce !== "IOC") {
+      return reply.code(400).send({ error: "timeInForce_must_be_IOC", note: "DAY/GTC blocked for safety" });
+    }
+    const priceN = Number(price);
+    const qtyN = Number(quantity);
+    if (!Number.isFinite(priceN) || priceN <= 0) {
+      return reply.code(400).send({ error: "invalid_price", provided: price });
+    }
+    if (!Number.isFinite(qtyN) || qtyN <= 0 || qtyN > 5.0) {
+      return reply.code(400).send({ error: "invalid_quantity_or_exceeds_cap_5BTC", provided: quantity });
+    }
+    const notional = priceN * qtyN;
+    if (notional > 5000) {
+      return reply.code(400).send({ error: "notional_exceeds_cap_5000_USDC", notional });
+    }
+
+    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+
+    const client = await getBullishAdminClient();
+
+    // Build V3CreateOrder command directly (bypass createSpotLimitOrder helper
+    // which hard-codes config.tradingAccountId). Key order MUST match the
+    // platform's helper so signed canonical string is consistent with what
+    // the Bullish auth flow expects.
+    const command: Record<string, unknown> = {
+      commandType: "V3CreateOrder",
+      symbol,
+      type: "LIMIT",
+      side,
+      price,
+      quantity,
+      timeInForce,
+      clientOrderId,
+      tradingAccountId,
+      allowMargin: pilotConfig.bullish.allowMargin,
+      allowBorrow: pilotConfig.bullish.allowMargin,
+      margin: pilotConfig.bullish.allowMargin
+    };
+
+    console.log(
+      `[bullish-cross-account-sell] SUBMITTING tradingAccountId=${tradingAccountId} ` +
+        `symbol=${symbol} side=${side} qty=${quantity} price=${price} TIF=${timeInForce} ` +
+        `clientOrderId=${clientOrderId}`
+    );
+
+    const startMs = Date.now();
+    let rawResponse: unknown = null;
+    let bullishError: string | null = null;
+    let bullishHttpStatus: number | null = null;
+    let bullishErrorCode: string | null = null;
+
+    try {
+      rawResponse = await client.submitCommand(command);
+    } catch (err: any) {
+      bullishError = err?.message ?? "unknown";
+      const match = String(bullishError).match(/bullish_http_(\d+):(.*)$/s);
+      if (match) {
+        bullishHttpStatus = Number(match[1]);
+        try {
+          const errBody = JSON.parse(match[2]);
+          bullishErrorCode = errBody.errorCodeName ?? errBody.errorCode ?? null;
+        } catch {
+          // Leave bullishErrorCode null
+        }
+      }
+    }
+
+    let orderStatusFinal: any = null;
+    let orderStatusError: string | null = null;
+    const orderId =
+      (rawResponse as any)?.orderId || (rawResponse as any)?.data?.orderId;
+    if (!bullishError && orderId) {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        orderStatusFinal = await client.getOrderStatus(String(orderId), { tradingAccountId });
+      } catch (statusErr: any) {
+        orderStatusError = statusErr?.message ?? "unknown";
+      }
+    }
+
+    const finalStatus = orderStatusFinal?.status ?? "UNKNOWN";
+    const finalFillPrice = orderStatusFinal?.fillPrice ?? 0;
+    const finalFillQty = orderStatusFinal?.fillQuantity ?? 0;
+    const finalReasonCode = (orderStatusFinal?.raw as any)?.statusReasonCode ?? null;
+    const finalReason = (orderStatusFinal?.raw as any)?.statusReason ?? null;
+    const reasonStr = String(finalReason ?? "").toLowerCase();
+    const wasExpired = reasonStr === "expired" || String(finalReasonCode || "") === "6004";
+    const wasRejected = reasonStr === "rejected" || finalStatus === "REJECTED";
+    const trulyFilled = Number(finalFillQty) > 0 && !wasExpired && !wasRejected;
+    const success = !bullishError && trulyFilled;
+
+    return reply.send({
+      ok: success,
+      generatedAtIso: new Date().toISOString(),
+      elapsedMs: Date.now() - startMs,
+      config: {
+        platformDefaultTradingAccountId: pilotConfig.bullish.tradingAccountId,
+        targetTradingAccountId: tradingAccountId,
+        crossAccountSell:
+          pilotConfig.bullish.tradingAccountId !== tradingAccountId,
+        bullishMainnet: pilotConfig.bullish.restBaseUrl.includes("api.exchange.bullish.com"),
+        restBaseUrl: pilotConfig.bullish.restBaseUrl
+      },
+      request: {
+        command,
+        notional
+      },
+      result: {
+        rawResponse,
+        bullishError,
+        bullishHttpStatus,
+        bullishErrorCode,
+        orderId,
+        finalStatus,
+        finalFillPrice,
+        finalFillQty,
+        finalReasonCode,
+        finalReason,
+        wasExpired,
+        wasRejected,
+        orderStatusError
+      }
+    });
+  });
+
   app.post("/volume-cover/admin/bullish-login-test", async (req, reply) => {
     if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
