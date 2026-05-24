@@ -564,6 +564,14 @@ export type SpreadPartialCloseResult = {
   spreadGroupId: string;
   triggerDirection: "high" | "low";
   shortLegsClosed: OpenLegRecord[];
+  /**
+   * 2026-05-23: dual-mode return. When `sellLongsAtTrigger=true` (the
+   * default after first live trigger post-mortem), `longLegsSold` is
+   * populated with actual fills + prices. When false (legacy behavior),
+   * `longLegsRetained` is populated and longs are kept for hedge mgr.
+   * EXACTLY ONE of these arrays has fills; the other is empty.
+   */
+  longLegsSold: OpenLegRecord[];
   longLegsRetained: Array<{
     legRole: SpreadLegSpec["legRole"];
     symbol: string;
@@ -573,6 +581,29 @@ export type SpreadPartialCloseResult = {
   failedAt: SpreadLegSpec["legRole"] | null;
   errorReason: string | null;
   shortLegProceedsUsdc: number;
+  longLegProceedsUsdc: number;
+};
+
+/**
+ * 2026-05-23 (Foxify-001 trigger post-mortem): Read sell-longs flag.
+ *
+ * The first real Foxify trigger (high direction, BTC spiked to ~$77,890
+ * then mean-reverted ~$1,000 in 30 minutes) revealed that hedge manager
+ * Rule 4 (active follow-through, hold winners 30 min post-trigger) holds
+ * call_long through reversals. Lost ~$970 of peak value on call_long
+ * alone vs selling at trigger fire.
+ *
+ * Default flipped to `true`: sell BOTH longs immediately at trigger fire.
+ * This captures the spread value while it's at peak intrinsic. Tradeoff:
+ * loses convexity if BTC continues moving past trigger (uncommon).
+ *
+ * Set VC_SPREAD_SELL_LONGS_AT_TRIGGER=false to preserve legacy
+ * retain-and-hedge-manager behavior (useful if Rule 4 is later refined).
+ */
+const shouldSellLongsAtTrigger = (): boolean => {
+  const raw = process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
+  if (raw === undefined || raw === null || raw === "") return true; // default ON
+  return String(raw).trim().toLowerCase() !== "false";
 };
 
 export const partialCloseSpreadOnTrigger = async (params: {
@@ -580,6 +611,11 @@ export const partialCloseSpreadOnTrigger = async (params: {
   adapter: SpreadExecutorAdapter;
   triggerDirection: "high" | "low";
   randFn?: () => number;
+  /**
+   * Override the env flag for tests. Production should always use
+   * env-driven default (true) so this is the only knob outside tests.
+   */
+  sellLongsAtTriggerOverride?: boolean;
 }): Promise<SpreadPartialCloseResult> => {
   const jitterCfg = getConfiguredHedgeJitter();
   // Per Item 1: close BOTH wings' SHORT legs immediately. Retain both LONG legs.
@@ -645,24 +681,111 @@ export const partialCloseSpreadOnTrigger = async (params: {
     0
   );
 
-  const longLegsRetained: SpreadPartialCloseResult["longLegsRetained"] = params.structure.legs
-    .filter((l) => l.side === "long")
-    .map((l) => ({
-      legRole: l.legRole,
-      symbol: params.adapter.resolveSymbol({ leg: l, expiryIso: l.expiryIso }),
-      contractsBtc: l.contractsBtc,
-      strikeActualUsdc: l.strikeActualUsdc
-    }));
+  // ─── 2026-05-23: sell longs at trigger ───
+  // Decide per env flag (or test override). Default: sell. The longs
+  // are at their PEAK value immediately after a trigger fire and decay
+  // rapidly as BTC mean-reverts. Sell winning side FIRST (highest
+  // intrinsic) to capture peak before placing the losing leg sell.
+  const sellLongsAtTrigger =
+    params.sellLongsAtTriggerOverride ?? shouldSellLongsAtTrigger();
+  const longLegsOrder: SpreadLegSpec["legRole"][] =
+    params.triggerDirection === "high"
+      ? ["call_long", "put_long"] // call is winner on high trigger
+      : ["put_long", "call_long"];
+
+  const longLegsSold: OpenLegRecord[] = [];
+  const longLegsRetained: SpreadPartialCloseResult["longLegsRetained"] = [];
+  let longLegProceedsUsdc = 0;
+
+  // If a short leg failed earlier, do NOT attempt long sales — bail
+  // out cleanly. Caller will handle the partial-close failure.
+  if (failedAt === null && sellLongsAtTrigger) {
+    for (let i = 0; i < longLegsOrder.length; i++) {
+      const role = longLegsOrder[i];
+      const leg = params.structure.legs.find((l) => l.legRole === role);
+      if (!leg) continue;
+      if (i > 0) {
+        const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
+        if (pace > 0) await jitterSleepMs(pace);
+      }
+      const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
+      const side: "BUY" | "SELL" = "SELL"; // close a long by selling
+      const book = await params.adapter.getOrderbookTop({ symbol });
+      if (
+        !Number.isFinite(book.topBidUsdc as number) ||
+        !Number.isFinite(book.topAskUsdc as number)
+      ) {
+        // Fallback to retain: orderbook unavailable, hedge manager
+        // will try again later via legacy Rule 4/5/7 path.
+        console.warn(
+          `[spreadExecutor] long sell skipped (no orderbook) legRole=${leg.legRole}; falling back to retain`
+        );
+        longLegsRetained.push({
+          legRole: leg.legRole,
+          symbol,
+          contractsBtc: leg.contractsBtc,
+          strikeActualUsdc: leg.strikeActualUsdc
+        });
+        continue;
+      }
+      const result = await executeOptimizedFill({
+        side,
+        symbol,
+        quantityBtc: leg.contractsBtc,
+        topBidUsdc: book.topBidUsdc as number,
+        topAskUsdc: book.topAskUsdc as number,
+        submitFn: submitFnFor(
+          params.adapter,
+          symbol,
+          "close",
+          leg.legRole,
+          params.structure.spreadGroupId
+        )
+      });
+      if (result.filled) {
+        const record = fillResultToLegRecord(leg, symbol, side, result);
+        longLegsSold.push(record);
+        longLegProceedsUsdc += record.fillPriceUsdcPerBtc * record.fillQtyBtc;
+      } else {
+        // Sell failed — fall back to retain so hedge manager can
+        // attempt later via its existing rule curve. This is the same
+        // path strangle mode legs take. NOT considered fatal: trigger
+        // partial-close was still successful (shorts closed); we just
+        // retain instead of sell on this one leg.
+        console.warn(
+          `[spreadExecutor] long sell failed legRole=${leg.legRole} reason=${result.finalReason}; falling back to retain`
+        );
+        longLegsRetained.push({
+          legRole: leg.legRole,
+          symbol,
+          contractsBtc: leg.contractsBtc,
+          strikeActualUsdc: leg.strikeActualUsdc
+        });
+      }
+    }
+  } else if (failedAt === null) {
+    // Legacy mode: retain all longs (hedge manager handles).
+    for (const leg of params.structure.legs.filter((l) => l.side === "long")) {
+      longLegsRetained.push({
+        legRole: leg.legRole,
+        symbol: params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso }),
+        contractsBtc: leg.contractsBtc,
+        strikeActualUsdc: leg.strikeActualUsdc
+      });
+    }
+  }
 
   return {
     ok: failedAt === null,
     spreadGroupId: params.structure.spreadGroupId,
     triggerDirection: params.triggerDirection,
     shortLegsClosed: closedShorts,
+    longLegsSold,
     longLegsRetained,
     failedAt,
     errorReason,
-    shortLegProceedsUsdc: Number(shortLegProceedsUsdc.toFixed(4))
+    shortLegProceedsUsdc: Number(shortLegProceedsUsdc.toFixed(4)),
+    longLegProceedsUsdc: Number(longLegProceedsUsdc.toFixed(4))
   };
 };
 

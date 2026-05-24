@@ -254,14 +254,15 @@ test("closeSpread: sequenced close in reverse direction (shorts first within win
   assert.equal(result.legs[3].side, "SELL");
 });
 
-test("partialCloseSpreadOnTrigger: high trigger closes call_short then put_short, retains long legs", async () => {
+test("partialCloseSpreadOnTrigger: high trigger closes call_short then put_short, retains long legs (legacy mode)", async () => {
   clearEnv();
   const structure = buildStructure();
   const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
   const result = await partialCloseSpreadOnTrigger({
     structure,
     adapter,
-    triggerDirection: "high"
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: false // legacy retain behavior
   });
   assert.equal(result.ok, true);
   assert.equal(result.shortLegsClosed.length, 2);
@@ -284,11 +285,100 @@ test("partialCloseSpreadOnTrigger: low trigger closes put_short first then call_
   const result = await partialCloseSpreadOnTrigger({
     structure,
     adapter,
-    triggerDirection: "low"
+    triggerDirection: "low",
+    sellLongsAtTriggerOverride: false
   });
   assert.equal(result.ok, true);
   assert.equal(result.shortLegsClosed[0].legRole, "put_short");
   assert.equal(result.shortLegsClosed[1].legRole, "call_short");
+});
+
+test("partialCloseSpreadOnTrigger: sell-longs-at-trigger ON (default) sells winner first then loser", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: true
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortLegsClosed.length, 2);
+  assert.equal(result.longLegsSold.length, 2);
+  assert.equal(result.longLegsRetained.length, 0);
+  // Order check: shorts go first (call_short, put_short for high),
+  // then longs in winner-first order (call_long, put_long for high).
+  const submittedRoles = calls.map((c) => c.legRole);
+  assert.deepEqual(submittedRoles, [
+    "call_short",
+    "put_short",
+    "call_long",
+    "put_long"
+  ]);
+  // Long sells are SELL direction; shorts are BUY (close).
+  for (const c of calls) {
+    if (c.legRole === "call_long" || c.legRole === "put_long") {
+      assert.equal(c.side, "SELL");
+    } else {
+      assert.equal(c.side, "BUY");
+    }
+  }
+  assert.ok(result.longLegProceedsUsdc > 0, "long proceeds should be positive");
+});
+
+test("partialCloseSpreadOnTrigger: sell-longs-at-trigger low direction sells put_long first", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "low",
+    sellLongsAtTriggerOverride: true
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 2);
+  const submittedRoles = calls.map((c) => c.legRole);
+  assert.deepEqual(submittedRoles, [
+    "put_short",
+    "call_short",
+    "put_long",
+    "call_long"
+  ]);
+});
+
+test("partialCloseSpreadOnTrigger: env flag VC_SPREAD_SELL_LONGS_AT_TRIGGER=false disables sell", async () => {
+  clearEnv();
+  process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER = "false";
+  try {
+    const structure = buildStructure();
+    const { adapter } = buildMockAdapter({ books: happyBooks() });
+    const result = await partialCloseSpreadOnTrigger({
+      structure,
+      adapter,
+      triggerDirection: "high"
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.longLegsSold.length, 0);
+    assert.equal(result.longLegsRetained.length, 2);
+  } finally {
+    delete process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
+  }
+});
+
+test("partialCloseSpreadOnTrigger: env flag default (unset) sells longs", async () => {
+  clearEnv();
+  const structure = buildStructure();
+  const { adapter } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 2);
+  assert.equal(result.longLegsRetained.length, 0);
 });
 
 test("checkSpreadLiquidity: returns per-leg pass/fail breakdown", async () => {
