@@ -2686,6 +2686,13 @@ export const registerVolumeCoverRoutes = async (
     const price = String(body.price ?? "").trim();
     const quantity = String(body.quantity ?? "").trim();
     const timeInForce = String(body.timeInForce ?? "IOC").trim().toUpperCase();
+    // 2026-05-24: Bullish rejects orders with statusReasonCode 3003
+    // ("Borrowing is unavailable, margin not enabled") on sub-accounts
+    // that don't have margin enabled (e.g. Primary 111804098837415).
+    // SELL-to-close of an existing long position never NEEDS margin, so
+    // default the margin flags to FALSE here. Caller can override via
+    // useMargin=true if explicitly needed (e.g. naked short open).
+    const useMargin = body.useMargin === true;
 
     if (!/^\d{15}$/.test(tradingAccountId)) {
       return reply.code(400).send({ error: "tradingAccountId_must_be_15_digit_numeric_string" });
@@ -2734,15 +2741,15 @@ export const registerVolumeCoverRoutes = async (
       timeInForce,
       clientOrderId,
       tradingAccountId,
-      allowMargin: pilotConfig.bullish.allowMargin,
-      allowBorrow: pilotConfig.bullish.allowMargin,
-      margin: pilotConfig.bullish.allowMargin
+      allowMargin: useMargin,
+      allowBorrow: useMargin,
+      margin: useMargin
     };
 
     console.log(
       `[bullish-cross-account-sell] SUBMITTING tradingAccountId=${tradingAccountId} ` +
         `symbol=${symbol} side=${side} qty=${quantity} price=${price} TIF=${timeInForce} ` +
-        `clientOrderId=${clientOrderId}`
+        `useMargin=${useMargin} clientOrderId=${clientOrderId}`
     );
 
     const startMs = Date.now();
