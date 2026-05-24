@@ -47,9 +47,48 @@ import {
 // with `BullishTestnetAdapter.sellOption` (TP curve fallback). These
 // constants stay here because the spread-side ceiling is a separate
 // tunable from the per-leg sell-side ceiling.
-const ORDER_STATUS_POLL_INTERVAL_MS = 500;
-const ORDER_STATUS_POLL_MAX_ATTEMPTS = 60; // 30s total ceiling
+//
+// PR-C (2026-05-24): differentiate poll ceiling by intent. The CLOSE
+// path runs during a trigger fire — every 100ms costs real money as
+// BTC mean-reverts past the trigger boundary (Foxify-001 saw ~$1k
+// reversion in 30 minutes; the first ~30s after fire are critical).
+// The OPEN path is fire-and-forget within the IOC window so a longer
+// ceiling is only protective against status-feed lag, not P&L. Default
+// CLOSE ceiling is 8s (still 80x typical fill latency) to fail-fast
+// and let the fallback (deep-cross or retain) take over while the spread
+// still has intrinsic value. ROLLBACK uses CLOSE ceiling because it is
+// also under time pressure (price drift hurts unwind cost).
+// Runtime env reads — tests can override via process.env, and the
+// /admin/health endpoint surfaces the current effective values.
+const DEFAULT_POLL_INTERVAL_MS = 500;
+const DEFAULT_POLL_MAX_ATTEMPTS_OPEN = 60; // 60 × 500ms = 30s
+const DEFAULT_POLL_MAX_ATTEMPTS_CLOSE = 16; // 16 × 500ms = 8s
 const ORDERBOOK_TIMEOUT_MS = 5000;
+
+function readEnvPositiveInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || raw === "") return defaultValue;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return defaultValue;
+  return n;
+}
+
+const getPollIntervalMs = (): number =>
+  readEnvPositiveInt("VC_BULLISH_SPREAD_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS);
+
+const pollMaxAttemptsForIntent = (
+  intent: "open" | "close" | "rollback"
+): number => {
+  return intent === "open"
+    ? readEnvPositiveInt(
+        "VC_BULLISH_SPREAD_OPEN_POLL_MAX_ATTEMPTS",
+        DEFAULT_POLL_MAX_ATTEMPTS_OPEN
+      )
+    : readEnvPositiveInt(
+        "VC_BULLISH_SPREAD_CLOSE_POLL_MAX_ATTEMPTS",
+        DEFAULT_POLL_MAX_ATTEMPTS_CLOSE
+      );
+};
 
 // ─── Symbol resolution ───────────────────────────────────────────────
 // Bullish option symbol format: BTC-USDC-YYYYMMDD-STRIKE-(P|C)
@@ -100,6 +139,7 @@ const submitIocLimitAndPoll = async (params: {
   priceUsdcPerBtc: number;
   quantityBtc: number;
   clientOrderId: string;
+  intent: "open" | "close" | "rollback";
 }): Promise<ExecutorOrderResult> => {
   const client = getSharedBullishClient(pilotConfig.bullish);
   const result = await executeBullishIocLimit({
@@ -112,9 +152,9 @@ const submitIocLimitAndPoll = async (params: {
     tradingAccountId: pilotConfig.bullish.tradingAccountId,
     pricePrecision: 4,
     qtyPrecision: 2,
-    pollIntervalMs: ORDER_STATUS_POLL_INTERVAL_MS,
-    pollMaxAttempts: ORDER_STATUS_POLL_MAX_ATTEMPTS,
-    logPrefix: "[bullishSpreadAdapter]"
+    pollIntervalMs: getPollIntervalMs(),
+    pollMaxAttempts: pollMaxAttemptsForIntent(params.intent),
+    logPrefix: `[bullishSpreadAdapter:${params.intent}]`
   });
   return {
     filled: result.filled,
@@ -172,7 +212,8 @@ export const createBullishSpreadAdapter = (): SpreadExecutorAdapter => {
         side: params.side,
         priceUsdcPerBtc: snappedPrice,
         quantityBtc: params.quantityBtc,
-        clientOrderId
+        clientOrderId,
+        intent: params.intent
       });
     },
 
@@ -194,7 +235,37 @@ export const __testHelpers = {
   formatQty,
   formatPrice,
   formatExpiryYyyymmdd,
-  resolveBullishSymbol
+  resolveBullishSymbol,
+  pollMaxAttemptsForIntent,
+  getPollIntervalMs,
+  getCurrentPollCeilingMs: (): {
+    open: number;
+    close: number;
+    rollback: number;
+    intervalMs: number;
+  } => {
+    const intervalMs = getPollIntervalMs();
+    return {
+      open: pollMaxAttemptsForIntent("open") * intervalMs,
+      close: pollMaxAttemptsForIntent("close") * intervalMs,
+      rollback: pollMaxAttemptsForIntent("rollback") * intervalMs,
+      intervalMs
+    };
+  }
+};
+
+// Runtime config getter for /volume-cover/health surface (PR-D).
+export const getBullishSpreadAdapterRuntimeConfig = (): {
+  pollIntervalMs: number;
+  openPollCeilingMs: number;
+  closePollCeilingMs: number;
+} => {
+  const intervalMs = getPollIntervalMs();
+  return {
+    pollIntervalMs: intervalMs,
+    openPollCeilingMs: pollMaxAttemptsForIntent("open") * intervalMs,
+    closePollCeilingMs: pollMaxAttemptsForIntent("close") * intervalMs
+  };
 };
 
 void ORDERBOOK_TIMEOUT_MS;

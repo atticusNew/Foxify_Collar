@@ -731,6 +731,25 @@ const shouldSellLongsAtTrigger = (): boolean => {
   return String(raw).trim().toLowerCase() !== "false";
 };
 
+/**
+ * 2026-05-24 (PR-C): Parallelize the two long-leg sales after shorts
+ * close. Sequential implementation paid 50-200ms inter-leg jitter +
+ * waited for winner-side fill before placing loser-side, costing
+ * ~1-3s wall-clock during a fire while BTC mean-reverts. Parallel
+ * execution overlaps the IOC + status-poll for both legs concurrently.
+ *
+ * Default ON. Disable via VC_SPREAD_PARALLEL_LONG_SELLS=false to
+ * recover legacy sequential ordering (winner-first, then loser).
+ *
+ * Note: log/audit ordering is preserved as winner-first regardless of
+ * actual fill ordering by sorting `longLegsSold` after Promise.all.
+ */
+const shouldParallelizeLongSells = (): boolean => {
+  const raw = process.env.VC_SPREAD_PARALLEL_LONG_SELLS;
+  if (raw === undefined || raw === null || raw === "") return true; // default ON
+  return String(raw).trim().toLowerCase() !== "false";
+};
+
 export const partialCloseSpreadOnTrigger = async (params: {
   structure: SpreadStructure;
   adapter: SpreadExecutorAdapter;
@@ -822,71 +841,132 @@ export const partialCloseSpreadOnTrigger = async (params: {
   const longLegsRetained: SpreadPartialCloseResult["longLegsRetained"] = [];
   let longLegProceedsUsdc = 0;
 
+  // 2026-05-24 (PR-C): per-leg sale task. Returns either a sold record
+  // or a retained stub. Used by both sequential and parallel paths.
+  type LongSaleOutcome =
+    | {
+        kind: "sold";
+        order: number;
+        legRole: SpreadLegSpec["legRole"];
+        record: OpenLegRecord;
+      }
+    | {
+        kind: "retained";
+        order: number;
+        legRole: SpreadLegSpec["legRole"];
+        retained: SpreadPartialCloseResult["longLegsRetained"][number];
+      }
+    | null;
+
+  const sellOneLong = async (
+    role: SpreadLegSpec["legRole"],
+    order: number
+  ): Promise<LongSaleOutcome> => {
+    const leg = params.structure.legs.find((l) => l.legRole === role);
+    if (!leg) return null;
+    const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
+    const side: "BUY" | "SELL" = "SELL"; // close a long by selling
+    const book = await params.adapter.getOrderbookTop({ symbol });
+    if (
+      !Number.isFinite(book.topBidUsdc as number) ||
+      !Number.isFinite(book.topAskUsdc as number)
+    ) {
+      // Fallback to retain: orderbook unavailable, hedge manager
+      // will try again later via legacy Rule 4/5/7 path.
+      console.warn(
+        `[spreadExecutor] long sell skipped (no orderbook) legRole=${leg.legRole}; falling back to retain`
+      );
+      return {
+        kind: "retained",
+        order,
+        legRole: leg.legRole,
+        retained: {
+          legRole: leg.legRole,
+          symbol,
+          contractsBtc: leg.contractsBtc,
+          strikeActualUsdc: leg.strikeActualUsdc
+        }
+      };
+    }
+    const result = await executeOptimizedFill({
+      side,
+      symbol,
+      quantityBtc: leg.contractsBtc,
+      topBidUsdc: book.topBidUsdc as number,
+      topAskUsdc: book.topAskUsdc as number,
+      submitFn: submitFnFor(
+        params.adapter,
+        symbol,
+        "close",
+        leg.legRole,
+        params.structure.spreadGroupId
+      )
+    });
+    if (result.filled) {
+      const record = fillResultToLegRecord(leg, symbol, side, result);
+      return { kind: "sold", order, legRole: leg.legRole, record };
+    }
+    // Sell failed — fall back to retain so hedge manager can
+    // attempt later via its existing rule curve. This is the same
+    // path strangle mode legs take. NOT considered fatal: trigger
+    // partial-close was still successful (shorts closed); we just
+    // retain instead of sell on this one leg.
+    console.warn(
+      `[spreadExecutor] long sell failed legRole=${leg.legRole} reason=${result.finalReason}; falling back to retain`
+    );
+    return {
+      kind: "retained",
+      order,
+      legRole: leg.legRole,
+      retained: {
+        legRole: leg.legRole,
+        symbol,
+        contractsBtc: leg.contractsBtc,
+        strikeActualUsdc: leg.strikeActualUsdc
+      }
+    };
+  };
+
+  const collectLongOutcomes = (outcomes: Array<LongSaleOutcome>): void => {
+    // Sort by intended order (winner-first) for stable log/audit shape
+    // regardless of which leg's IOC settled first on the wire.
+    const ordered = outcomes
+      .filter((o): o is NonNullable<LongSaleOutcome> => o !== null)
+      .sort((a, b) => a.order - b.order);
+    for (const outcome of ordered) {
+      if (outcome.kind === "sold") {
+        longLegsSold.push(outcome.record);
+        longLegProceedsUsdc +=
+          outcome.record.fillPriceUsdcPerBtc * outcome.record.fillQtyBtc;
+      } else {
+        longLegsRetained.push(outcome.retained);
+      }
+    }
+  };
+
   // If a short leg failed earlier, do NOT attempt long sales — bail
   // out cleanly. Caller will handle the partial-close failure.
   if (failedAt === null && sellLongsAtTrigger) {
-    for (let i = 0; i < longLegsOrder.length; i++) {
-      const role = longLegsOrder[i];
-      const leg = params.structure.legs.find((l) => l.legRole === role);
-      if (!leg) continue;
-      if (i > 0) {
-        const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
-        if (pace > 0) await jitterSleepMs(pace);
+    if (shouldParallelizeLongSells()) {
+      // Parallel: kick off both long sales concurrently. Each task
+      // independently fetches its orderbook + fires IOC. The total
+      // wall-clock is max(t_winner, t_loser) instead of sum, which
+      // matters during trigger fire (every 100ms costs intrinsic).
+      const tasks = longLegsOrder.map((role, i) => sellOneLong(role, i));
+      const settled = await Promise.all(tasks);
+      collectLongOutcomes(settled);
+    } else {
+      // Sequential (legacy): winner-first, then loser, with inter-leg
+      // jitter pacing. Kept as escape hatch via env flag.
+      const outcomes: LongSaleOutcome[] = [];
+      for (let i = 0; i < longLegsOrder.length; i++) {
+        if (i > 0) {
+          const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
+          if (pace > 0) await jitterSleepMs(pace);
+        }
+        outcomes.push(await sellOneLong(longLegsOrder[i], i));
       }
-      const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
-      const side: "BUY" | "SELL" = "SELL"; // close a long by selling
-      const book = await params.adapter.getOrderbookTop({ symbol });
-      if (
-        !Number.isFinite(book.topBidUsdc as number) ||
-        !Number.isFinite(book.topAskUsdc as number)
-      ) {
-        // Fallback to retain: orderbook unavailable, hedge manager
-        // will try again later via legacy Rule 4/5/7 path.
-        console.warn(
-          `[spreadExecutor] long sell skipped (no orderbook) legRole=${leg.legRole}; falling back to retain`
-        );
-        longLegsRetained.push({
-          legRole: leg.legRole,
-          symbol,
-          contractsBtc: leg.contractsBtc,
-          strikeActualUsdc: leg.strikeActualUsdc
-        });
-        continue;
-      }
-      const result = await executeOptimizedFill({
-        side,
-        symbol,
-        quantityBtc: leg.contractsBtc,
-        topBidUsdc: book.topBidUsdc as number,
-        topAskUsdc: book.topAskUsdc as number,
-        submitFn: submitFnFor(
-          params.adapter,
-          symbol,
-          "close",
-          leg.legRole,
-          params.structure.spreadGroupId
-        )
-      });
-      if (result.filled) {
-        const record = fillResultToLegRecord(leg, symbol, side, result);
-        longLegsSold.push(record);
-        longLegProceedsUsdc += record.fillPriceUsdcPerBtc * record.fillQtyBtc;
-      } else {
-        // Sell failed — fall back to retain so hedge manager can
-        // attempt later via its existing rule curve. This is the same
-        // path strangle mode legs take. NOT considered fatal: trigger
-        // partial-close was still successful (shorts closed); we just
-        // retain instead of sell on this one leg.
-        console.warn(
-          `[spreadExecutor] long sell failed legRole=${leg.legRole} reason=${result.finalReason}; falling back to retain`
-        );
-        longLegsRetained.push({
-          legRole: leg.legRole,
-          symbol,
-          contractsBtc: leg.contractsBtc,
-          strikeActualUsdc: leg.strikeActualUsdc
-        });
-      }
+      collectLongOutcomes(outcomes);
     }
   } else if (failedAt === null) {
     // Legacy mode: retain all longs (hedge manager handles).
@@ -921,5 +1001,6 @@ export const __testHelpers = {
   orderLegsForClose,
   sideForLeg,
   reverseSideForRollback,
+  shouldParallelizeLongSells,
   newSpreadGroupId: () => `vc-spread-${randomUUID()}`
 };

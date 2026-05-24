@@ -382,6 +382,160 @@ test("partialCloseSpreadOnTrigger: env flag default (unset) sells longs", async 
   assert.equal(result.longLegsRetained.length, 0);
 });
 
+// ─── 2026-05-24 PR-C: parallel long-leg sales after shorts close ──
+
+test("PR-C parallel sells: completes in max(t1,t2), not sum (default ON)", async () => {
+  clearEnv();
+  delete process.env.VC_SPREAD_PARALLEL_LONG_SELLS;
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+
+  // Inject 100ms latency on each long sell submit. Parallel: ~100ms.
+  // Sequential: ~200ms (winner first, then loser).
+  const slowAdapter: SpreadExecutorAdapter = {
+    ...adapter,
+    async submitIocLimit(p) {
+      if (p.legRole === "call_long" || p.legRole === "put_long") {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return adapter.submitIocLimit(p);
+    }
+  };
+
+  const t0 = Date.now();
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter: slowAdapter,
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: true
+  });
+  const elapsedMs = Date.now() - t0;
+
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 2);
+  // With parallel sells, total long-sell wall-clock should be ~100ms (one
+  // leg's latency), not ~200ms (both summed). Allow generous slack for
+  // CI timer jitter — the key signal is < 180ms (not 200+).
+  assert.ok(
+    elapsedMs < 180,
+    `expected parallel execution < 180ms (got ${elapsedMs}ms — should be ~100ms with 100ms per-leg latency)`
+  );
+  // Result ordering must still be winner-first regardless of fill order.
+  const soldRoles = result.longLegsSold.map((l) => l.legRole);
+  assert.deepEqual(soldRoles, ["call_long", "put_long"]);
+  // Both legs were submitted (independent of order on the wire).
+  const longSubmits = calls.filter(
+    (c) => c.legRole === "call_long" || c.legRole === "put_long"
+  );
+  assert.equal(longSubmits.length, 2);
+});
+
+test("PR-C sequential fallback: VC_SPREAD_PARALLEL_LONG_SELLS=false preserves legacy ordering", async () => {
+  clearEnv();
+  process.env.VC_SPREAD_PARALLEL_LONG_SELLS = "false";
+  try {
+    const structure = buildStructure();
+    const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+
+    const slowAdapter: SpreadExecutorAdapter = {
+      ...adapter,
+      async submitIocLimit(p) {
+        if (p.legRole === "call_long" || p.legRole === "put_long") {
+          await new Promise((resolve) => setTimeout(resolve, 60));
+        }
+        return adapter.submitIocLimit(p);
+      }
+    };
+
+    const t0 = Date.now();
+    const result = await partialCloseSpreadOnTrigger({
+      structure,
+      adapter: slowAdapter,
+      triggerDirection: "high",
+      sellLongsAtTriggerOverride: true
+    });
+    const elapsedMs = Date.now() - t0;
+
+    assert.equal(result.ok, true);
+    assert.equal(result.longLegsSold.length, 2);
+    // Sequential should be ~120ms (60ms × 2 legs). Parallel would be ~60ms.
+    assert.ok(
+      elapsedMs >= 110,
+      `expected sequential execution >= 110ms (got ${elapsedMs}ms — should be ~120ms with 60ms per-leg latency)`
+    );
+    // Submit ordering should match winner-first sequence
+    const longRoles = calls
+      .filter((c) => c.legRole === "call_long" || c.legRole === "put_long")
+      .map((c) => c.legRole);
+    assert.deepEqual(longRoles, ["call_long", "put_long"]);
+  } finally {
+    delete process.env.VC_SPREAD_PARALLEL_LONG_SELLS;
+  }
+});
+
+test("PR-C parallel sells: one leg fails → other still succeeds; failed leg falls back to retain", async () => {
+  clearEnv();
+  delete process.env.VC_SPREAD_PARALLEL_LONG_SELLS;
+  const structure = buildStructure();
+  const callLongSym = "BTC-USDC-20260526-77000-C";
+  const { adapter } = buildMockAdapter({
+    books: happyBooks(),
+    submitOverrides: {
+      [callLongSym]: () => ({
+        filled: false,
+        fillPriceUsdcPerBtc: 0,
+        fillQtyBtc: 0,
+        finalReason: "Expired",
+        orderId: "ORD-FAIL"
+      })
+    }
+  });
+
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: true
+  });
+
+  // Whole partial-close still considered ok (shorts closed, long-sell
+  // failure is non-fatal — falls back to retain).
+  assert.equal(result.ok, true);
+  assert.equal(result.shortLegsClosed.length, 2);
+  assert.equal(result.longLegsSold.length, 1);
+  assert.equal(result.longLegsRetained.length, 1);
+  assert.equal(result.longLegsSold[0].legRole, "put_long");
+  assert.equal(result.longLegsRetained[0].legRole, "call_long");
+});
+
+test("PR-C parallel sells: __testHelpers.shouldParallelizeLongSells respects env", () => {
+  clearEnv();
+  delete process.env.VC_SPREAD_PARALLEL_LONG_SELLS;
+  assert.equal(__testHelpers.shouldParallelizeLongSells(), true, "default ON");
+
+  process.env.VC_SPREAD_PARALLEL_LONG_SELLS = "false";
+  try {
+    assert.equal(
+      __testHelpers.shouldParallelizeLongSells(),
+      false,
+      "explicit false disables"
+    );
+  } finally {
+    delete process.env.VC_SPREAD_PARALLEL_LONG_SELLS;
+  }
+
+  process.env.VC_SPREAD_PARALLEL_LONG_SELLS = "true";
+  try {
+    assert.equal(
+      __testHelpers.shouldParallelizeLongSells(),
+      true,
+      "explicit true enables"
+    );
+  } finally {
+    delete process.env.VC_SPREAD_PARALLEL_LONG_SELLS;
+  }
+});
+
 test("checkSpreadLiquidity: returns per-leg pass/fail breakdown", async () => {
   clearEnv();
   const structure = buildStructure();
