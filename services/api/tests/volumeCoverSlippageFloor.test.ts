@@ -206,27 +206,48 @@ test("Layer 2: emergency rule (W1_stub_winner_timecap) always falls through", ()
   assert.equal(decision.reason, "emergency_rule");
 });
 
-test("Layer 2: unsupported venue (bullish) falls through to market", () => {
+test("Layer 2: unsupported venue (falconx) falls through to market", () => {
+  // PR-B (2026-05-24): pilot Bullish `sellOption` now honors limit_ioc
+  // + floor through the shared executeBullishIocLimit primitive, so
+  // bullish is in the default `slippageEnabledVenues` list. FalconX
+  // still does not implement limit_ioc — kept as the unsupported
+  // sentinel here to assert the venue-gating path stays live.
   const decision = decideOrderTypeAndFloor({
-    cfg: baseConfig(),
+    cfg: baseConfig({ slippageEnabledVenues: ["deribit", "bullish"] }),
     ruleName: "5_trail_retrace",
-    venue: "bullish",
-    leg: baseLeg({ venue: "bullish" }),
+    venue: "falconx",
+    leg: baseLeg({ venue: "falconx" }),
     currentValueUsdc: 200
   });
   assert.equal(decision.orderType, "market");
   assert.equal(decision.reason, "venue_unsupported");
 });
 
-test("Layer 2: venue case-insensitive match (BULLISH treated same as bullish)", () => {
+test("Layer 2: venue case-insensitive match (FALCONX treated same as falconx)", () => {
   const decision = decideOrderTypeAndFloor({
-    cfg: baseConfig(),
+    cfg: baseConfig({ slippageEnabledVenues: ["deribit", "bullish"] }),
     ruleName: "5_trail_retrace",
-    venue: "BULLISH",
-    leg: baseLeg({ venue: "BULLISH" }),
+    venue: "FALCONX",
+    leg: baseLeg({ venue: "FALCONX" }),
     currentValueUsdc: 200
   });
   assert.equal(decision.reason, "venue_unsupported");
+});
+
+test("PR-B Layer 2: bullish IS supported now (limit_ioc + floor wired)", () => {
+  // Inverse of the legacy bullish-unsupported test: with the default
+  // venue list (which now includes bullish), a discretionary rule on a
+  // bullish leg goes through the slippage floor (limit_ioc + floor)
+  // instead of falling through to a market sell.
+  const decision = decideOrderTypeAndFloor({
+    cfg: baseConfig({ slippageEnabledVenues: ["deribit", "bullish"] }),
+    ruleName: "5_trail_retrace",
+    venue: "bullish",
+    leg: baseLeg({ venue: "bullish" }),
+    currentValueUsdc: 200
+  });
+  assert.equal(decision.orderType, "limit_ioc");
+  assert.equal(typeof decision.floorPriceUsdcPerBtc, "number");
 });
 
 test("Layer 2: defer-cap-reached (tpDeferCount >= maxDefers) falls through to market", () => {

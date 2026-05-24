@@ -1459,7 +1459,7 @@ export const registerVolumeCoverRoutes = async (
           bsTolerance: Number(process.env.VC_TP_SLIPPAGE_BS_TOLERANCE ?? "0.15"),
           maxDefers: Number(process.env.VC_TP_SLIPPAGE_MAX_DEFERS ?? "3"),
           discretionaryRules: (process.env.VC_TP_SLIPPAGE_DISCRETIONARY_RULES ?? "5_trail_retrace,6_theta_vs_momentum,10_near_atm,11_vol_spike").split(",").map((s) => s.trim()),
-          enabledVenues: (process.env.VC_TP_SLIPPAGE_VENUES ?? "deribit").split(",").map((s) => s.trim().toLowerCase())
+          enabledVenues: (process.env.VC_TP_SLIPPAGE_VENUES ?? "deribit,bullish").split(",").map((s) => s.trim().toLowerCase())
         },
         totals: {
           sold: totals.sold ?? 0,

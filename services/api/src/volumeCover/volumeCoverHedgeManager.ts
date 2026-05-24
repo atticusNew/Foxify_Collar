@@ -112,9 +112,16 @@ export type HedgeManagerConfig = {
    */
   slippageMaxDefers: number;
   /**
-   * Venues for which the manager is allowed to send limit IOC sells.
-   * Bullish/FalconX adapters do not yet honor limit_ioc, so by default
-   * only deribit is enabled. Override via VC_TP_SLIPPAGE_VENUES.
+   * Venues for which the manager is allowed to send limit IOC sells
+   * (slippage floor protected). Override via VC_TP_SLIPPAGE_VENUES
+   * (comma-separated, case-insensitive).
+   *
+   * 2026-05-24 (PR-B): Bullish added to defaults. The pilot Bullish
+   * `sellOption` now honors `orderType:"limit_ioc" + floorPriceUsdcPerBtc`
+   * via the shared `executeBullishIocLimit` primitive — previously it
+   * silently downgraded every retained-leg TP curve sell to an
+   * unprotected market sell at best-bid. FalconX still does not
+   * implement limit_ioc and stays unsupported.
    */
   slippageEnabledVenues: ReadonlyArray<string>;
 };
@@ -150,7 +157,7 @@ const DEFAULTS: HedgeManagerConfig = {
   slippageBsTolerance: 0.15,
   slippageDiscretionaryRules: ["5_trail_retrace", "6_theta_vs_momentum", "10_near_atm", "11_vol_spike"],
   slippageMaxDefers: 3,
-  slippageEnabledVenues: ["deribit"]
+  slippageEnabledVenues: ["deribit", "bullish"]
 };
 
 const readConfig = (): HedgeManagerConfig => {

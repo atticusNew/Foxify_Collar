@@ -21,6 +21,12 @@ import { selectBestHedgeCandidate } from "./hedgeScoring";
 import { resolveHedgeRegime } from "./regimePolicy";
 import { BullishTradingClient, resolveBullishMarketSymbol } from "./bullish";
 import {
+  executeBullishIocLimit,
+  snapTickCeil,
+  snapTickFloor,
+  BTC_OPTION_TICK_USDC
+} from "./bullishIocLimit";
+import {
   type HedgeOptimizationConfig,
   parseHedgeOptimizationConfig,
   resolveOptimalTenor,
@@ -5003,11 +5009,29 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
     orderType?: "market" | "limit_ioc";
     floorPriceUsdcPerBtc?: number;
   }): Promise<SellOptionResult> {
-    // Bullish adapter currently only supports market sells (limit IOC
-    // not yet implemented venue-side). Signature widened so the
-    // executor adapter can pass through, but limit_ioc requests will
-    // fall through to market sell here. VC manager routes Deribit-only
-    // through the floor path today, so this branch is not exercised.
+    // PR-B (2026-05-24): now honors `orderType: "limit_ioc"` +
+    // `floorPriceUsdcPerBtc` (TP slippage floor) AND forces IOC TIF
+    // for the market-style fallback. Previously this method:
+    //   1. Ignored both params and always market-sold at best-bid.
+    //   2. Did NOT explicitly set `timeInForce: "IOC"`, so it
+    //      depended on the env default `PILOT_BULLISH_ORDER_TIF`.
+    //      Live had GTC by accident, leaving phantom orders open.
+    // Both issues are fixed by routing through the shared
+    // `executeBullishIocLimit` primitive in `pilot/bullishIocLimit.ts`,
+    // which is the same hardened path used by the spread executor.
+    //
+    // Slippage floor semantics:
+    //   - SELL at limitPrice = floorPriceUsdcPerBtc (snapped UP to
+    //     the next $10 tick → the actual limit may be slightly
+    //     stricter than the BS-derived floor, never weaker).
+    //   - Bullish IOC matches against resting bids ≥ limitPrice. If
+    //     the best bid is below the floor, the order expires with
+    //     fill=0 → we surface status:"unfilled" so the VC hedge
+    //     manager treats it as a defer signal rather than an error.
+    //
+    // Market-style fallback (orderType="market" or unset):
+    //   - SELL at limitPrice = bestBid (snapped DOWN). Same IOC
+    //     semantics; partial fill on thin books, expire the rest.
     if (!this.config.enableExecution) {
       return {
         status: "failed",
@@ -5020,67 +5044,164 @@ class BullishTestnetAdapter implements PilotVenueAdapter {
       };
     }
 
-    const symbol = resolveBullishMarketSymbol(this.config, { instrumentId: params.instrumentId });
-    const book = await this.client.getHybridOrderBook(symbol);
-    const bestBid = Number(book.bids[0]?.price ?? NaN);
-    if (!Number.isFinite(bestBid) || bestBid <= 0) {
+    const requestedQty = Number(params.quantity);
+    if (!Number.isFinite(requestedQty) || requestedQty <= 0) {
       return {
         status: "failed",
         instrumentId: params.instrumentId,
-        quantity: params.quantity,
+        quantity: requestedQty || 0,
         fillPrice: 0,
         totalProceeds: 0,
         orderId: null,
-        details: { reason: "no_bid_available" }
+        details: { reason: "invalid_quantity", requestedQuantity: params.quantity }
       };
     }
 
-    const isOption = /^[A-Z]+-[A-Z]+-\d{8}-\d+(?:\.\d+)?-(C|P)$/i.test(symbol);
-    const pricePrecision = isOption ? 4 : 8;
-    const qtyPrecision = isOption ? 2 : 8;
-    const formattedPrice = bestBid.toFixed(pricePrecision);
-    const formattedQty = (Math.floor(params.quantity * Math.pow(10, qtyPrecision)) / Math.pow(10, qtyPrecision)).toFixed(qtyPrecision);
-    const clientOrderId = String(BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999)));
+    const symbol = resolveBullishMarketSymbol(this.config, { instrumentId: params.instrumentId });
+    const wantLimit = params.orderType === "limit_ioc";
 
-    console.log(`[BullishAdapter] Selling option: symbol=${symbol} side=SELL price=${formattedPrice} qty=${formattedQty} clientOrderId=${clientOrderId}`);
+    let limitPriceUsdc: number;
+    let bestBidObserved = 0;
+    if (wantLimit) {
+      const floor = Number(params.floorPriceUsdcPerBtc);
+      if (!Number.isFinite(floor) || floor <= 0) {
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: requestedQty,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: {
+            reason: "limit_ioc_requires_positive_floor",
+            floorPriceUsdcPerBtc: params.floorPriceUsdcPerBtc
+          }
+        };
+      }
+      // Snap UP from the floor: stricter (sell only at >= snapped),
+      // never weaker than the BS-derived floor. This costs us at most
+      // one tick ($10 USDC/BTC) of additional cushion.
+      limitPriceUsdc = snapTickCeil(floor);
+      if (limitPriceUsdc <= 0) {
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: requestedQty,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: {
+            reason: "limit_ioc_floor_below_min_tick",
+            floorPriceUsdcPerBtc: floor,
+            tickUsdc: BTC_OPTION_TICK_USDC
+          }
+        };
+      }
+    } else {
+      const book = await this.client.getHybridOrderBook(symbol);
+      const bestBid = Number(book.bids[0]?.price ?? NaN);
+      if (!Number.isFinite(bestBid) || bestBid <= 0) {
+        return {
+          status: "failed",
+          instrumentId: params.instrumentId,
+          quantity: requestedQty,
+          fillPrice: 0,
+          totalProceeds: 0,
+          orderId: null,
+          details: { reason: "no_bid_available" }
+        };
+      }
+      bestBidObserved = bestBid;
+      // Snap DOWN: cross at-or-below the bid so the IOC matches the
+      // resting buy side at this level. Above the bid would expire.
+      limitPriceUsdc = snapTickFloor(bestBid);
+      if (limitPriceUsdc <= 0) {
+        // Tick floor produced 0 (bestBid < $10). Use the smallest
+        // positive tick as a last resort.
+        limitPriceUsdc = BTC_OPTION_TICK_USDC;
+      }
+    }
 
-    try {
-      const response = await this.client.createSpotLimitOrder({
-        symbol,
-        side: "SELL",
-        price: formattedPrice,
-        quantity: formattedQty,
-        clientOrderId
-      });
+    const clientOrderId = String(
+      BigInt(Date.now()) * 1000n + BigInt(Math.floor(Math.random() * 999))
+    );
 
-      const responseRecord = response as Record<string, unknown>;
-      const orderId = String(responseRecord.orderId ?? (responseRecord.data as Record<string, unknown> | undefined)?.orderId ?? "");
-      const fillPrice = Number(responseRecord.averageFillPrice ?? bestBid);
-      const fillQty = Number(responseRecord.quantityFilled ?? params.quantity);
+    console.log(
+      `[BullishAdapter] sellOption ${wantLimit ? "LIMIT_IOC" : "MARKET_IOC"} ` +
+        `symbol=${symbol} qty=${requestedQty} limitUsdcPerBtc=${limitPriceUsdc} ` +
+        `floorUsdcPerBtc=${wantLimit ? params.floorPriceUsdcPerBtc : "n/a"} ` +
+        `bestBid=${bestBidObserved || "n/a"} clientOrderId=${clientOrderId}`
+    );
 
-      console.log(`[BullishAdapter] Sell option result: orderId=${orderId} fillPrice=${fillPrice} fillQty=${fillQty}`);
+    const result = await executeBullishIocLimit({
+      client: this.client,
+      symbol,
+      side: "SELL",
+      priceUsdcPerBtc: limitPriceUsdc,
+      quantityBtc: requestedQty,
+      clientOrderId,
+      tradingAccountId: this.config.tradingAccountId,
+      pricePrecision: 4,
+      qtyPrecision: 2,
+      logPrefix: "[BullishAdapter.sellOption]"
+    });
 
+    if (result.filled && result.fillQtyBtc > 0) {
+      const totalProceeds = result.fillPriceUsdcPerBtc * result.fillQtyBtc;
+      console.log(
+        `[BullishAdapter] sellOption FILLED instrument=${params.instrumentId} ` +
+          `qty=${result.fillQtyBtc} priceUsdcPerBtc=${result.fillPriceUsdcPerBtc} ` +
+          `proceedsUsdc=${totalProceeds.toFixed(2)} orderId=${result.orderId}`
+      );
       return {
         status: "sold",
         instrumentId: params.instrumentId,
-        quantity: fillQty,
-        fillPrice,
-        totalProceeds: fillPrice * fillQty,
-        orderId: orderId || null,
-        details: { symbol, bestBid, response: responseRecord }
-      };
-    } catch (err: any) {
-      console.error(`[BullishAdapter] Sell option FAILED: ${err?.message}`);
-      return {
-        status: "failed",
-        instrumentId: params.instrumentId,
-        quantity: params.quantity,
-        fillPrice: 0,
-        totalProceeds: 0,
-        orderId: null,
-        details: { reason: err?.message || "sell_order_failed" }
+        quantity: result.fillQtyBtc,
+        fillPrice: result.fillPriceUsdcPerBtc,
+        totalProceeds,
+        orderId: result.orderId,
+        details: {
+          venue: "bullish_testnet",
+          symbol,
+          orderType: wantLimit ? "limit_ioc" : "market",
+          limitPriceUsdcPerBtc: limitPriceUsdc,
+          floorPriceUsdcPerBtc: wantLimit ? params.floorPriceUsdcPerBtc ?? null : null,
+          bestBidUsdcPerBtc: bestBidObserved || null,
+          finalReason: result.finalReason,
+          lastStatus: result.lastObservedStatus
+        }
       };
     }
+
+    // Did not fill. For limit_ioc this is the slippage-floor "did not
+    // cross" signal → "unfilled" (defer). For market-IOC this is a
+    // genuine failure → "failed".
+    const status: "unfilled" | "failed" = wantLimit ? "unfilled" : "failed";
+    console.warn(
+      `[BullishAdapter] sellOption ${status.toUpperCase()} instrument=${params.instrumentId} ` +
+        `reason=${result.finalReason} lastStatus=${result.lastObservedStatus} ` +
+        `orderId=${result.orderId}`
+    );
+    return {
+      status,
+      instrumentId: params.instrumentId,
+      quantity: requestedQty,
+      fillPrice: 0,
+      totalProceeds: 0,
+      orderId: result.orderId,
+      details: {
+        venue: "bullish_testnet",
+        symbol,
+        orderType: wantLimit ? "limit_ioc" : "market",
+        limitPriceUsdcPerBtc: limitPriceUsdc,
+        floorPriceUsdcPerBtc: wantLimit ? params.floorPriceUsdcPerBtc ?? null : null,
+        bestBidUsdcPerBtc: bestBidObserved || null,
+        reason: wantLimit ? "limit_ioc_no_cross" : "market_ioc_no_fill",
+        finalReason: result.finalReason,
+        lastStatus: result.lastObservedStatus,
+        pollErrorCount: result.pollErrorCount
+      }
+    };
   }
 }
 
