@@ -2042,7 +2042,7 @@ export const registerVolumeCoverRoutes = async (
     });
   });
 
-  // 2026-05-21 — SHADOW-ONLY Bullish single-symbol order book inspector.
+  // 2026-05-21 — Bullish single-symbol order book inspector.
   //
   // Returns the top of the book (and depth if requested) for a single
   // symbol. Use to diagnose whether the book has bids/asks before
@@ -2050,17 +2050,16 @@ export const registerVolumeCoverRoutes = async (
   // resting prices.
   //
   // 1 Bullish API call per invocation. No auth needed in the venue
-  // call itself (orderbook is a public REST endpoint), but this admin
-  // route is gated on shadow + admin token like everything else.
+  // call itself (orderbook is a public REST endpoint).
+  //
+  // 2026-05-24: Removed shadow-tier gate. This is READ-ONLY public
+  // market data (no order placement, no PII, no balance exposure),
+  // and is needed on live for ops validation + pricing analysis
+  // workflows (e.g. comparing Bullish vs Deribit during proposal
+  // negotiation calibration). Admin-token auth remains required.
   app.get<{ Querystring: { symbol?: string; depth?: string } }>(
     "/volume-cover/admin/bullish-orderbook",
     async (req, reply) => {
-      if (!isShadowTier()) {
-        return reply.code(403).send({
-          error: "forbidden",
-          reason: "endpoint_requires_shadow_tier"
-        });
-      }
       if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
 
       const symbol = String(req.query.symbol ?? "").trim();
