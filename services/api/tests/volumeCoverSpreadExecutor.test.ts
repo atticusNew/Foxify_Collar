@@ -469,10 +469,11 @@ test("checkSpreadLiquidity: depth gate log-only mode (default) — warns but pas
     structure,
     adapter,
     action: "open",
-    depthGateOverride: { minDepthBtc: 0.3, enforced: false }
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0, enforced: false }
   });
   assert.equal(check.passed, true, "log-only should not fail the gate");
   assert.equal(check.depthGate.enforced, false);
+  assert.equal(check.depthGate.effectiveMinDepthBtc, 0.3);
   const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
   assert.equal(callLong.depthSufficient, false);
   assert.equal(callLong.observedDepthBtc, 0.05);
@@ -491,7 +492,7 @@ test("checkSpreadLiquidity: depth gate enforced — thin leg fails the gate", as
     structure,
     adapter,
     action: "open",
-    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0, enforced: true }
   });
   assert.equal(check.passed, false, "enforced thin depth should fail");
   const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
@@ -508,7 +509,7 @@ test("checkSpreadLiquidity: depth gate enforced — all legs deep, passes", asyn
     structure,
     adapter,
     action: "open",
-    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0, enforced: true }
   });
   assert.equal(check.passed, true);
   for (const c of check.legChecks) {
@@ -530,7 +531,7 @@ test("checkSpreadLiquidity: action=close evaluates depth on close-side crossing"
     structure,
     adapter,
     action: "close",
-    depthGateOverride: { minDepthBtc: 0.3, enforced: true }
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0, enforced: true }
   });
   const putLong = check.legChecks.find((c) => c.legRole === "put_long")!;
   assert.equal(putLong.crossesSide, "SELL");
@@ -542,16 +543,128 @@ test("checkSpreadLiquidity: action=close evaluates depth on close-side crossing"
 test("getConfiguredDepthGate: env-driven config with defaults", () => {
   clearEnv();
   delete process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  delete process.env.VC_SPREAD_DEPTH_RATIO_REQUIRED;
   delete process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
   const d = getConfiguredDepthGate();
-  assert.equal(d.minDepthBtc, 0.3);
+  assert.equal(d.minDepthBtcFloor, 0.3);
+  assert.equal(d.depthRatio, 0.7);
   assert.equal(d.enforced, false);
 
   process.env.VC_SPREAD_MIN_DEPTH_BTC = "0.5";
+  process.env.VC_SPREAD_DEPTH_RATIO_REQUIRED = "0.5";
   process.env.VC_SPREAD_DEPTH_GATE_ENFORCED = "true";
   const d2 = getConfiguredDepthGate();
-  assert.equal(d2.minDepthBtc, 0.5);
+  assert.equal(d2.minDepthBtcFloor, 0.5);
+  assert.equal(d2.depthRatio, 0.5);
   assert.equal(d2.enforced, true);
   delete process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  delete process.env.VC_SPREAD_DEPTH_RATIO_REQUIRED;
   delete process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
+});
+
+// ─── 2026-05-24 PR-A: ratio-based depth gate ─────────────────────
+//
+// Production cells (50k_2pct_1k) size ~1.0–1.3 BTC per leg at current
+// spot. The flat 0.3 BTC floor passes when depth is ~0.5 BTC even
+// though ~1 BTC orders will partial-fill on that book — exactly the
+// Foxify-001 failure mode. The ratio knob scales the threshold with
+// contract size to catch this.
+
+const buildLargeContractStructure = (contractsBtc: number): SpreadStructure => {
+  const base = buildStructure();
+  for (const leg of base.legs) leg.contractsBtc = contractsBtc;
+  return { ...base, contractsBtcPerLeg: contractsBtc };
+};
+
+test("PR-A ratio gate: production-sized contracts (1.32 BTC) fail at 0.5 BTC depth", async () => {
+  clearEnv();
+  // 1.32 BTC contracts × 0.7 ratio = 0.924 BTC required depth.
+  // 0.5 BTC observed → fails ratio check (and would have caught Foxify-001).
+  const structure = buildLargeContractStructure(1.32);
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-77000-C": { bidQtyBtc: 1.0, askQtyBtc: 0.5 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0.7, enforced: true }
+  });
+  assert.equal(check.passed, false, "0.5 BTC depth on 1.32 BTC order must fail with ratio=0.7");
+  // Effective threshold is the ratio component (0.924), not the floor (0.3).
+  assert.equal(
+    Math.round(check.depthGate.effectiveMinDepthBtc * 1000) / 1000,
+    0.924
+  );
+  const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
+  assert.equal(callLong.observedDepthBtc, 0.5);
+  assert.equal(callLong.depthSufficient, false);
+  assert.equal(callLong.sufficient, false);
+});
+
+test("PR-A ratio gate: production-sized contracts pass when depth ≥ ratio×contracts", async () => {
+  clearEnv();
+  // 1.32 BTC contracts × 0.7 ratio = 0.924 BTC required.
+  // All legs default 1.0 BTC depth in buildThinDepthAdapter → passes.
+  const structure = buildLargeContractStructure(1.32);
+  const { adapter } = buildThinDepthAdapter({ thinSymbols: {} });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0.7, enforced: true }
+  });
+  assert.equal(check.passed, true);
+  for (const c of check.legChecks) {
+    assert.equal(c.depthSufficient, true, `${c.legRole} sufficient at 1.0 BTC depth`);
+  }
+});
+
+test("PR-A ratio gate: floor protects when ratio×contracts is small", async () => {
+  clearEnv();
+  // Tiny contracts (0.01 BTC) × 0.7 = 0.007 — well below floor.
+  // Floor (0.3 BTC) MUST still apply. Depth of 0.2 must fail.
+  const structure = buildLargeContractStructure(0.01);
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-77000-C": { bidQtyBtc: 1.0, askQtyBtc: 0.2 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0.7, enforced: true }
+  });
+  assert.equal(check.passed, false);
+  assert.equal(check.depthGate.effectiveMinDepthBtc, 0.3);
+  const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
+  assert.equal(callLong.observedDepthBtc, 0.2);
+  assert.equal(callLong.depthSufficient, false);
+});
+
+test("PR-A ratio gate: log-only mode preserves passed=true even with ratio shortfall", async () => {
+  clearEnv();
+  // Same shortfall as the 1.32-BTC fail test, but enforced=false →
+  // gate WARNS but does not flip `passed`. Existence-check still
+  // succeeds, so the spread will attempt to open. This is the soak
+  // posture before the ENFORCED env flip on Render.
+  const structure = buildLargeContractStructure(1.32);
+  const { adapter } = buildThinDepthAdapter({
+    thinSymbols: {
+      "BTC-USDC-20260526-77000-C": { bidQtyBtc: 1.0, askQtyBtc: 0.5 }
+    }
+  });
+  const check = await checkSpreadLiquidity({
+    structure,
+    adapter,
+    action: "open",
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0.7, enforced: false }
+  });
+  assert.equal(check.passed, true);
+  const callLong = check.legChecks.find((c) => c.legRole === "call_long")!;
+  assert.equal(callLong.depthSufficient, false);
+  assert.equal(callLong.sufficient, true);
 });

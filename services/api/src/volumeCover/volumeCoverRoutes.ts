@@ -835,11 +835,33 @@ export const registerVolumeCoverRoutes = async (
         salvageState: guardVerdict.salvageState
       });
     } catch (err) {
-      req.log.error(`[volume-cover/activate] failed: ${(err as Error).message}`);
-      void writeEvent({ result: "failed", rejectReason: (err as Error).message });
+      const e = err as Error & { code?: string };
+      // PR-A (2026-05-24): depth-gate aborts surface as a clean 503
+      // retry signal. The position row was marked
+      // `hedge_execution_failed:spread_liquidity_gate_failed` so it
+      // does NOT count toward the cell's lifetime cap. Foxify's HMAC
+      // client should retry the same activation idempotency-keyed in
+      // 30s once the orderbook recovers.
+      if (e.code === "spread_liquidity_gate_failed") {
+        req.log.warn(
+          `[volume-cover/activate] depth-gate abort: ${e.message} (no venue order placed; retry safe)`
+        );
+        void writeEvent({ result: "rejected", rejectReason: "venue_book_thin" });
+        return reply
+          .header("Retry-After", "30")
+          .code(503)
+          .send({
+            error: "venue_book_thin",
+            message:
+              "Bullish orderbook depth insufficient on one or more legs; please retry shortly.",
+            retryAfterSeconds: 30
+          });
+      }
+      req.log.error(`[volume-cover/activate] failed: ${e.message}`);
+      void writeEvent({ result: "failed", rejectReason: e.message });
       return reply.code(500).send({
         error: "activate_failed",
-        message: (err as Error).message
+        message: e.message
       });
     }
   });
@@ -5092,10 +5114,27 @@ export const registerVolumeCoverRoutes = async (
         note: "OPERATOR TEST ACTIVATION — real venue hedge purchased. Use POST /admin/positions/:id/close to close."
       });
     } catch (err) {
-      req.log.error(`[volume-cover/test-activate] failed: ${(err as Error).message}`);
+      const e = err as Error & { code?: string };
+      // PR-A (2026-05-24): mirror /activate's depth-gate handling so
+      // operator-driven test-activations also see a 503 retry signal.
+      if (e.code === "spread_liquidity_gate_failed") {
+        req.log.warn(
+          `[volume-cover/test-activate] depth-gate abort: ${e.message} (no venue order placed; retry safe)`
+        );
+        return reply
+          .header("Retry-After", "30")
+          .code(503)
+          .send({
+            error: "venue_book_thin",
+            message:
+              "Bullish orderbook depth insufficient on one or more legs; please retry shortly.",
+            retryAfterSeconds: 30
+          });
+      }
+      req.log.error(`[volume-cover/test-activate] failed: ${e.message}`);
       return reply.code(500).send({
         error: "test_activate_failed",
-        message: (err as Error).message
+        message: e.message
       });
     }
   });

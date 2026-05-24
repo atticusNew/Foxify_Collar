@@ -970,10 +970,33 @@ const executeSpreadOpen = async (params: {
 
   if (!openResult.ok) {
     // openSpread already attempted rollback internally on partial fill.
+    //
+    // PR-A (2026-05-24): a depth-gate failure (errorReason ===
+    // "liquidity_gate_failed") aborts the open BEFORE any venue order is
+    // placed. We persist the row with a `hedge_execution_failed:*`
+    // close_reason so countLifetimePositionsForCell (which excludes
+    // 'hedge_execution_failed%') does NOT consume a lifetime-cap slot
+    // for this attempt — the only exclusion that already covers
+    // never-executed positions. We also throw a typed error so the
+    // route can surface a clean 503 retry signal to Foxify rather
+    // than a generic 500.
+    const isLiquidityGateFail = openResult.errorReason === "liquidity_gate_failed";
+    const closeReason = isLiquidityGateFail
+      ? `hedge_execution_failed:spread_liquidity_gate_failed`
+      : `spread_open_failed: ${openResult.errorReason ?? "unknown"} (failedAt=${openResult.failedAt})`;
     await markPositionClosed(params.pool, {
       id: params.positionId,
-      reason: `spread_open_failed: ${openResult.errorReason ?? "unknown"} (failedAt=${openResult.failedAt})`
+      reason: closeReason
     });
+    if (isLiquidityGateFail) {
+      const err = new Error("volume_cover_spread_liquidity_gate_failed") as Error & {
+        code?: string;
+        liquidityCheck?: typeof openResult.liquidityCheck;
+      };
+      err.code = "spread_liquidity_gate_failed";
+      err.liquidityCheck = openResult.liquidityCheck;
+      throw err;
+    }
     throw new Error(
       `volume_cover_spread_open_failed: ${openResult.errorReason ?? "unknown"} (failedAt=${openResult.failedAt})`
     );
