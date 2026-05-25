@@ -113,7 +113,16 @@ test("P1e: same-fingerprint same-cell reopen within 30min repurposes both legs",
   }
 });
 
-test("P1e: different fingerprint does NOT repurpose", async () => {
+test("Bundle-3-B follow-up (2026-05-25): cross-fingerprint reopen STILL repurposes (single-counterparty)", async () => {
+  // Pre-2026-05-25 this test asserted "different fingerprint → no
+  // ladder." That was the right behavior under multi-tenant
+  // assumptions, but the pilot has a single counterparty (Foxify).
+  // The fingerprint match gate was removed because:
+  //   1. Foxify wasn't sending fingerprintHash (verified, 0% laddering)
+  //   2. cell + strike + expiry + recency are sufficient gates
+  //   3. Other guardrails (tick spacing, max-hold, depth gate, capital
+  //      caps) cover the spam-prevention concerns Layer 1 anti-bot
+  //      was originally designed for.
   const pool = await buildPool();
   const cell = findCellById("50k_2pct_1k")!;
   const { executor, getBuyCount } = buildSpyExecutor();
@@ -141,8 +150,51 @@ test("P1e: different fingerprint does NOT repurpose", async () => {
     pairEntryBtcPrice: 80_000,
     fingerprintHash: "fp-B"
   });
-  assert.equal(second.laddered, false);
-  assert.equal(getBuyCount() - before, 2, "second cover bought 2 fresh legs");
+  assert.equal(second.laddered, true, "ladder fires across fingerprints");
+  assert.equal(
+    getBuyCount() - before,
+    0,
+    "second cover bought 0 fresh legs (both laddered)"
+  );
+});
+
+test("Bundle-3-B follow-up: NO fingerprint at all on either side STILL repurposes", async () => {
+  // Production reality: Foxify wasn't sending fingerprintHash on
+  // /activate. With the requirement removed, ladder netting fires
+  // when both opens omit fingerprint entirely.
+  const pool = await buildPool();
+  const cell = findCellById("50k_2pct_1k")!;
+  const { executor, getBuyCount } = buildSpyExecutor();
+
+  const first = await openPosition(pool, executor, {
+    cell,
+    foxifyPairId: "FX-NF-A",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000,
+    fingerprintHash: null
+  });
+  await closePosition(pool, executor, {
+    position: first.position,
+    reason: "test",
+    currentSpotBtc: 80_000
+  });
+  const before = getBuyCount();
+
+  const second = await openPosition(pool, executor, {
+    cell,
+    foxifyPairId: "FX-NF-B",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 80_000,
+    fingerprintHash: null
+  });
+  assert.equal(second.laddered, true, "ladder fires with no fingerprint on either side");
+  assert.equal(
+    getBuyCount() - before,
+    0,
+    "second cover bought 0 fresh legs (both laddered)"
+  );
 });
 
 test("P1e: different cell does NOT repurpose", async () => {

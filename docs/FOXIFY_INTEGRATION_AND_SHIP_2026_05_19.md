@@ -105,7 +105,7 @@ Both are overridable via `VC_QUOTE_RATE_LIMIT_MAX` / `VC_ACTIVATE_RATE_LIMIT_MAX
   "pairLongNotionalUsdc": 50000,
   "pairShortNotionalUsdc": 50000,
   "pairEntryBtcPrice": 76800,
-  "fingerprintHash": "optional opaque hash for anti-bot"
+  "fingerprintHash": "optional, audit-only — see note"
 }
 ```
 - Server validates `pairEntryBtcPrice` is within 1% of live spot. Larger drift → 400 `entry_price_drift_too_high`.
@@ -114,6 +114,15 @@ Both are overridable via `VC_QUOTE_RATE_LIMIT_MAX` / `VC_ACTIVATE_RATE_LIMIT_MAX
 - Recommended format: stable per-order identifier (for example
   `BTCUSD-<foxifyInternalOrderId>`). Avoid simple rolling counters that
   can collide across restarts/services.
+- **`fingerprintHash` (2026-05-25 update)**: now purely an audit /
+  forward-compat field. Atticus's ladder netting matches retained
+  hedge legs by `cell + option_kind + strike (±1.5%) + expiry + recency`
+  and no longer requires a fingerprint match (single-counterparty
+  pilot assumption + tight strike/expiry/cell gates make cross-pattern
+  mismatch impossible in practice). Foxify can omit this field
+  without affecting hedge economics. If sent, it is recorded on the
+  position row + the `volume_cover_ladder_netting_event` audit table
+  for surveillance.
 
 ### 2.4 Response shape (201 on activate success)
 

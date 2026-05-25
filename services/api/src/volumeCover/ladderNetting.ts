@@ -1,22 +1,40 @@
 /**
  * P1e — Volume Cover ladder netting.
  *
- * When a fingerprint reopens the SAME cell within 30 minutes of a
- * close or trigger, repurpose any matching Atticus-retained legs into
- * the new position instead of buying fresh. Saves the hedge cost of
- * the matched side(s) — material savings since pilot will start in
- * the hole at the locked $350/day base price.
+ * When a new position opens for a cell within 30 minutes of a prior
+ * close or trigger that left retained legs, repurpose the matching
+ * legs into the new position instead of buying fresh. Saves the
+ * hedge cost of the matched side(s) — material savings, especially
+ * post-Bundle-3-B where this is the dominant economic lever.
  *
  * Match criteria per leg (must all hold):
- *   - same fingerprint
  *   - same cell
  *   - same option_kind (put / call)
  *   - retained_at within 30 min of now
  *   - retained=TRUE, status='open'
- *   - expiry_iso ≥ now + 7 days (enough remaining tenor for new pair)
+ *   - expiry_iso ≥ now + 1 day (enough remaining tenor)
  *   - strike within ±1.5% of new pair's required strike
  *   - contractsBtc ≥ new pair's required size
  *   - ladder_hop_count < 1 (single hop per lineage)
+ *
+ * 2026-05-25 (Bundle-3-B follow-up): the prior `same fingerprint`
+ * requirement was REMOVED. Rationale:
+ *   1. Pilot has a single counterparty (Foxify) — all retained legs
+ *      come from the same source so cross-tenant mismatch is not a
+ *      concern.
+ *   2. The strike + expiry + cell match criteria are tight enough
+ *      that a "wrong" match would be functionally identical (same
+ *      option contract on the venue).
+ *   3. Foxify wasn't sending fingerprintHash on /activate (verified
+ *      via 12 historical pair_event audit rows — all null), so
+ *      requiring it produced 0% laddering — exactly the assumption
+ *      the post-Bundle-3-B Monte Carlo identified as the make-or-
+ *      break for pilot economics.
+ *   4. Other guardrails (tick spacing, max-hold, capital caps,
+ *      cell throttle, depth gate) remain in place.
+ *
+ * `fingerprintHash` is still accepted for telemetry + audit logging
+ * (forward compat). It is NOT a match gate.
  *
  * If matched: leg is repurposed via volumeCoverDb.repurposeHedgeLeg
  * (transaction-safe: clears retention flags, points at new
@@ -125,17 +143,9 @@ export const attemptLadderNetting = async (params: {
   const cfg = readConfig();
   const nowMs = params.nowMs ?? Date.now();
 
-  // Disable when no fingerprint (cannot match without a stable
-  // identity) or when env disabled.
+  // Bundle-3-B follow-up (2026-05-25): no fingerprint requirement —
+  // single-counterparty assumption locked in. Env flag still respected.
   if (process.env.VOLUME_COVER_LADDER_NETTING_ENABLED === "false") {
-    return {
-      remainingLegs: structure.legs,
-      repurposedLegs: [],
-      estimatedSavingsUsdc: 0,
-      ladderEventId: null
-    };
-  }
-  if (!fingerprintHash) {
     return {
       remainingLegs: structure.legs,
       repurposedLegs: [],
@@ -147,8 +157,9 @@ export const attemptLadderNetting = async (params: {
   const retainedAfterIso = new Date(nowMs - cfg.maxRetainedAgeMs).toISOString();
   const expiryAfterIso = new Date(nowMs + cfg.minRemainingTenorMs).toISOString();
 
+  // fingerprintHash NOT passed to the SQL query — match across all
+  // retained legs in the cell.
   const retainedLegs = await listRetainedHedgeLegs(pool, {
-    fingerprintHash,
     cellId: cell.cellId,
     expiryAfterIso,
     retainedAfterIso
@@ -306,13 +317,10 @@ export const attemptLadderNettingForSpread = async (params: {
       reason: "feature_disabled"
     })));
   }
-  if (!fingerprintHash) {
-    return noOp(structure.legs.map((l) => ({
-      legRole: l.legRole,
-      matched: false,
-      reason: "no_fingerprint"
-    })));
-  }
+  // Bundle-3-B follow-up (2026-05-25): fingerprintHash is no longer a
+  // match gate — single-counterparty assumption + tight strike/expiry
+  // criteria make cross-tenant mismatch impossible in practice. Field
+  // still accepted for audit logging.
 
   const longLegSpecs = structure.legs.filter((l) => l.side === "long");
   if (longLegSpecs.length === 0) {
@@ -327,8 +335,9 @@ export const attemptLadderNettingForSpread = async (params: {
   const retainedAfterIso = new Date(nowMs - cfg.maxRetainedAgeMs).toISOString();
   const expiryAfterIso = new Date(nowMs + cfg.minRemainingTenorMs).toISOString();
 
+  // fingerprintHash NOT passed to the SQL query — match across all
+  // retained legs in the cell.
   const retainedLegs = await listRetainedHedgeLegs(pool, {
-    fingerprintHash,
     cellId: cell.cellId,
     expiryAfterIso,
     retainedAfterIso

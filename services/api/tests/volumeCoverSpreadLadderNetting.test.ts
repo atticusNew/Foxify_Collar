@@ -142,23 +142,53 @@ const seedPriorPositionWithRetainedLongs = async (
   return { putLongId, callLongId };
 };
 
-test("PR-Bundle-3-B: no fingerprint → no ladder, all 4 legs to place", async () => {
+test("Bundle-3-B follow-up: no fingerprint still ladders when retained legs match (single-counterparty)", async () => {
+  // Pre-2026-05-25: ladder netting required fingerprintHash, which
+  // Foxify wasn't sending in production (verified via 12 historical
+  // pair_event audit rows — all null) → 0% laddering ever fired.
+  // Post follow-up: single-counterparty assumption locked in. Ladder
+  // matches retained legs by cell + strike + expiry + recency,
+  // independent of fingerprint state on either side.
   const pool = await buildPool();
   const cell = findCellById(CELL_ID)!;
-  const structure = buildNewSpreadStructure();
+  await seedPriorPositionWithRetainedLongs(pool, {
+    priorPositionId: "vc-pos-PRIOR-NF",
+    fingerprintHash: null, // prior has NO fingerprint either
+    putLongStrike: 75_000,
+    callLongStrike: 76_000,
+    putLongBuyPrice: 590,
+    callLongBuyPrice: 570,
+    contractsBtc: 1.0,
+    spreadGroupId: "vc-spread-PRIOR-NF"
+  });
+  await insertPosition(pool, {
+    id: "vc-pos-NEW-NF",
+    cellId: CELL_ID,
+    foxifyPairId: "pair-NEW-NF",
+    pairLongNotionalUsdc: 50_000,
+    pairShortNotionalUsdc: 50_000,
+    pairEntryBtcPrice: 75_500,
+    triggerHighBtc: 77_010,
+    triggerLowBtc: 73_990,
+    dailyPremiumUsdc: 350,
+    payoutUsdc: 1_000,
+    fingerprintHash: null
+  });
+  const structure = buildNewSpreadStructure({
+    positionId: "vc-pos-NEW-NF",
+    spreadGroupId: "vc-spread-NEW-NF"
+  });
   const r = await attemptLadderNettingForSpread({
     pool,
-    newPositionId: structure.positionId,
-    newSpreadGroupId: structure.spreadGroupId,
+    newPositionId: "vc-pos-NEW-NF",
+    newSpreadGroupId: "vc-spread-NEW-NF",
     cell,
     fingerprintHash: null,
     structure
   });
-  assert.equal(r.repurposedLegs.length, 0);
-  assert.equal(r.legsToPlace.length, 4);
-  assert.equal(r.estimatedSavingsUsdc, 0);
-  assert.equal(r.ladderEventId, null);
-  assert.equal(r.perLeg[0].reason, "no_fingerprint");
+  assert.equal(r.repurposedLegs.length, 2, "both longs ladder despite null fingerprint");
+  assert.equal(r.legsToPlace.length, 2, "only shorts to place");
+  assert.equal(r.estimatedSavingsUsdc, 590 * 1.0 + 570 * 1.0);
 });
 
 test("PR-Bundle-3-B: VOLUME_COVER_LADDER_NETTING_ENABLED=false bypasses entirely", async () => {
@@ -309,7 +339,12 @@ test("PR-Bundle-3-B: only loser retained (winner_only mode) → half-ladder, 3 l
   assert.equal(r.estimatedSavingsUsdc, 590);
 });
 
-test("PR-Bundle-3-B: different fingerprint → no match", async () => {
+test("Bundle-3-B follow-up: cross-fingerprint match allowed (single-counterparty)", async () => {
+  // Pre-2026-05-25 this test asserted "different fingerprint → no
+  // match." The fingerprint requirement was removed; now legs match
+  // by cell + strike + expiry + recency regardless of fingerprint
+  // state. Pilot has a single counterparty (Foxify) so cross-tenant
+  // mismatch isn't a concern.
   const pool = await buildPool();
   const cell = findCellById(CELL_ID)!;
   await seedPriorPositionWithRetainedLongs(pool, {
@@ -333,7 +368,7 @@ test("PR-Bundle-3-B: different fingerprint → no match", async () => {
     triggerLowBtc: 73_990,
     dailyPremiumUsdc: 350,
     payoutUsdc: 1_000,
-    fingerprintHash: FP // different from FP_OTHER
+    fingerprintHash: FP // different from FP_OTHER on prior
   });
   const structure = buildNewSpreadStructure({
     positionId: "vc-pos-NEW-C",
@@ -347,8 +382,13 @@ test("PR-Bundle-3-B: different fingerprint → no match", async () => {
     fingerprintHash: FP,
     structure
   });
-  assert.equal(r.repurposedLegs.length, 0, "different fingerprint → no match");
-  assert.equal(r.legsToPlace.length, 4);
+  assert.equal(
+    r.repurposedLegs.length,
+    2,
+    "ladder fires across fingerprints under single-counterparty assumption"
+  );
+  assert.equal(r.legsToPlace.length, 2);
+  assert.equal(r.estimatedSavingsUsdc, 590 + 570);
 });
 
 test("PR-Bundle-3-B: strike too far (>1.5%) → no match", async () => {
