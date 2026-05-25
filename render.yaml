@@ -1,3 +1,28 @@
+# ─────────────────────────────────────────────────────────────────────
+# render.yaml — REFERENCE / HISTORICAL ONLY; NOT AUTHORITATIVE FOR LIVE
+#
+# 2026-05-22 audit: the actually-deployed Render services for the LIVE
+# pilot are:
+#
+#   API:  foxify-pilot-new       (https://foxify-pilot-new.onrender.com)
+#   WEB:  foxify-pilot-new-web
+#
+# NOT the names `atticus-pilot-api` / `atticus-pilot-web` listed in this
+# file. The live service configuration (branch, autoDeploy, env vars,
+# build/start commands) is managed directly in the Render dashboard
+# for the foxify-pilot-new* services. Always treat the Render dashboard
+# as the source of truth.
+#
+# Verified during the 2026-05-22 vc-sandbox → live merge: pushing commit
+# b4e7a2b to the cursor/-bc-c2468b87-...-6ba4 branch DID trigger an
+# auto-deploy on foxify-pilot-new, so the dashboard config currently
+# tracks the same branch listed below. The yaml service NAMES are stale
+# but the branch + autoDeploy values happen to match. Do not rely on
+# this alignment; verify in the dashboard before any future ops change.
+#
+# The shadow service is correctly described by render-shadow.yaml and is
+# managed via that blueprint.
+# ─────────────────────────────────────────────────────────────────────
 databases:
   - name: atticus-pilot-db
     plan: basic-256mb
@@ -7,7 +32,7 @@ services:
     name: atticus-pilot-api
     runtime: node
     plan: starter
-    branch: cursor/foxify-pilot-readiness-d74a
+    branch: cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4
     autoDeploy: true
     buildCommand: npm ci
     startCommand: npm --workspace services/api exec tsx src/server.ts
@@ -17,18 +42,47 @@ services:
         value: production
       - key: PILOT_API_ENABLED
         value: "true"
+      - key: PILOT_ACTIVATION_ENABLED
+        value: "true"
+      - key: PILOT_PROFILE
+        value: bullish_locked_v1
       - key: PILOT_VENUE_MODE
-        value: deribit_test
-      - key: PILOT_FORCE_DERIBIT_TEST_MODE
+        value: bullish_testnet
+      - key: PILOT_BULLISH_ENABLED
+        value: "true"
+      - key: PILOT_BULLISH_ORDER_TIF
+        value: IOC
+      - key: PILOT_TENOR_DEFAULT_DAYS
+        value: "5"
+      - key: PILOT_ENFORCE_WINDOW
         value: "false"
-      - key: PILOT_DERIBIT_QUOTE_POLICY
-        value: ask_only
       - key: PILOT_STRIKE_SELECTION_MODE
         value: trigger_aligned
-      - key: DERIBIT_ENV
-        value: live
-      - key: DERIBIT_PAPER
+      - key: PILOT_MAX_PROTECTION_NOTIONAL_USDC
+        value: "50000"
+      - key: PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC
+        value: "500000"
+      - key: PILOT_STARTING_RESERVE_USDC
+        value: "10000"
+      # Bullish ECDSA credentials -- inject via Render dashboard (never commit secrets)
+      # PILOT_BULLISH_ECDSA_PRIVATE_KEY
+      # PILOT_BULLISH_ECDSA_PUBLIC_KEY
+      # PILOT_BULLISH_ECDSA_METADATA
+      # PILOT_BULLISH_TRADING_ACCOUNT_ID
+      - key: PILOT_BULLISH_REST_BASE_URL
+        value: https://api.simnext.bullish-test.com
+      - key: PILOT_BULLISH_PUBLIC_WS_URL
+        value: wss://api.simnext.bullish-test.com/trading-api/v1/market-data/orderbook
+      - key: PILOT_BULLISH_PRIVATE_WS_URL
+        value: wss://api.simnext.bullish-test.com/trading-api/v1/private-data
+      - key: PILOT_BULLISH_ENABLE_EXECUTION
         value: "true"
+      - key: PILOT_BULLISH_FILL_CONFIRM_ENABLED
+        value: "true"
+      - key: PILOT_BULLISH_FILL_CONFIRM_TIMEOUT_MS
+        value: "15000"
+      - key: PILOT_BULLISH_PRICE_STALENESS_MAX_PCT
+        value: "5"
       - key: PILOT_TENANT_SCOPE_ID
         value: foxify-pilot
       - key: PILOT_TERMS_VERSION
@@ -48,9 +102,9 @@ services:
       - key: PRICE_SINGLE_SOURCE
         value: "false"
       - key: PRICE_REFERENCE_URL
-        value: https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL
-      - key: FALLBACK_PRICE_URL
         value: https://api.exchange.coinbase.com/products/BTC-USD/ticker
+      - key: FALLBACK_PRICE_URL
+        value: https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL
       - key: PRICE_REFERENCE_MARKET_ID
         value: BTC-USD
       - key: PRICE_REQUEST_RETRY_ATTEMPTS
@@ -63,6 +117,29 @@ services:
         value: "2500"
       - key: PRICE_TIMEOUT_FALLBACK_MS
         value: "2500"
+      - key: PILOT_RATE_LIMIT_MAX
+        value: "300"
+      - key: PILOT_RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: PILOT_MONITOR_ENABLED
+        value: "true"
+      # Deribit production hedging venue for VC.
+      # 2026-05-20: flipped from testnet+paper to live execution. Paper
+      # mode was silently rejecting all hedges (testnet order books are
+      # thin for short-tenor OTM strikes), so activate calls failed with
+      # venue_execute_failed:deribit:no_top_of_book. With DERIBIT_PAPER
+      # =false the adapter goes against the real Deribit mainnet API.
+      - key: DERIBIT_ENV
+        value: live
+      - key: DERIBIT_PAPER
+        value: "false"
+      # Deribit credentials — inject via Render dashboard (never commit secrets).
+      # Required keys:
+      #   DERIBIT_CLIENT_ID
+      #   DERIBIT_CLIENT_SECRET
+      # If unset OR placeholder, server.ts forces paper mode (which fails)
+      # and execution is dead. Operator MUST configure these on Render
+      # dashboard before this deploy lands.
       - key: POSTGRES_URL
         fromDatabase:
           name: atticus-pilot-db
@@ -71,7 +148,7 @@ services:
   - type: web
     name: atticus-pilot-web
     runtime: static
-    branch: cursor/foxify-pilot-readiness-d74a
+    branch: cursor/-bc-c2468b87-16cc-4357-84a5-12c8079ff3c2-6ba4
     autoDeploy: true
     buildCommand: npm ci && npm --workspace apps/web run build
     staticPublishPath: apps/web/dist

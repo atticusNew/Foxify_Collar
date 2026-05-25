@@ -1,0 +1,284 @@
+══════════════════════════════════════════════════════════════════════════════════════════
+  ATTICUS DEFINITIVE BACKTEST V3: CEO-Ready Premium Report
+  2026-04-08T01:23:19.949Z
+  1558 days of BTC data (2022-01-01 to 2026-04-07)
+  All premiums use vol × 0.85 (market-realistic IV), best recovery (optimal TP day)
+══════════════════════════════════════════════════════════════════════════════════════════
+
+══════════════════════════════════════════════════════════════════════════════════════════
+  SECTION 1: FIXED PREMIUM SCHEDULE — Full cost to trader at all position sizes
+══════════════════════════════════════════════════════════════════════════════════════════
+  Premium = per $1k × (position / 1000). Payout = on stop-loss breach.
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  2-DAY PROTECTION
+  ────────────────────────────────────────────────────────────────────────────────
+
+  SL%  | Prem/$1k | TrigRate | WinRate |   Prem@$5k   Payout |  Prem@$10k   Payout |  Prem@$20k   Payout |  Prem@$25k   Payout |  Prem@$50k   Payout 
+  -----|----------|---------|--------|------------------- |------------------- |------------------- |------------------- |------------------- 
+    1% |    $7.00 |   41.2% |  58.2% |        $35      $50 |        $70     $100 |       $140     $200 |       $175     $250 |       $350     $500 
+    2% |    $5.00 |   28.3% |  56.9% |        $25     $100 |        $50     $200 |       $100     $400 |       $125     $500 |       $250   $1,000 
+    3% |    $5.00 |   18.7% |  72.0% |        $25     $150 |        $50     $300 |       $100     $600 |       $125     $750 |       $250   $1,500 
+    5% |    $3.00 |    8.0% |  83.7% |        $15     $250 |        $30     $500 |        $60   $1,000 |        $75   $1,250 |       $150   $2,500 
+   10% |    $1.00 |    1.0% |  99.2% |         $5     $500 |        $10   $1,000 |        $20   $2,000 |        $25   $2,500 |        $50   $5,000 
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  3-DAY PROTECTION
+  ────────────────────────────────────────────────────────────────────────────────
+
+  SL%  | Prem/$1k | TrigRate | WinRate |   Prem@$5k   Payout |  Prem@$10k   Payout |  Prem@$20k   Payout |  Prem@$25k   Payout |  Prem@$50k   Payout 
+  -----|----------|---------|--------|------------------- |------------------- |------------------- |------------------- |------------------- 
+    1% |    $9.00 |   48.9% |  59.9% |        $45      $50 |        $90     $100 |       $180     $200 |       $225     $250 |       $450     $500 
+    2% |    $7.00 |   36.7% |  56.0% |        $35     $100 |        $70     $200 |       $140     $400 |       $175     $500 |       $350   $1,000 
+    3% |    $6.00 |   26.4% |  63.9% |        $30     $150 |        $60     $300 |       $120     $600 |       $150     $750 |       $300   $1,500 
+    5% |    $5.00 |   12.6% |  80.3% |        $25     $250 |        $50     $500 |       $100   $1,000 |       $125   $1,250 |       $250   $2,500 
+   10% |    $2.00 |    2.4% |  97.2% |        $10     $500 |        $20   $1,000 |        $40   $2,000 |        $50   $2,500 |       $100   $5,000 
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  5-DAY PROTECTION
+  ────────────────────────────────────────────────────────────────────────────────
+
+  SL%  | Prem/$1k | TrigRate | WinRate |   Prem@$5k   Payout |  Prem@$10k   Payout |  Prem@$20k   Payout |  Prem@$25k   Payout |  Prem@$50k   Payout 
+  -----|----------|---------|--------|------------------- |------------------- |------------------- |------------------- |------------------- 
+    1% | N/A — no viable config at 5-day tenor
+    2% |   $10.00 |   46.1% |  56.9% |        $50     $100 |       $100     $200 |       $200     $400 |       $250     $500 |       $500   $1,000 
+    3% |    $9.00 |   36.6% |  58.8% |        $45     $150 |        $90     $300 |       $180     $600 |       $225     $750 |       $450   $1,500 
+    5% |    $7.00 |   20.7% |  69.2% |        $35     $250 |        $70     $500 |       $140   $1,000 |       $175   $1,250 |       $350   $2,500 
+   10% |    $3.00 |    5.0% |  57.4% |        $15     $500 |        $30   $1,000 |        $60   $2,000 |        $75   $2,500 |       $150   $5,000 
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  7-DAY PROTECTION
+  ────────────────────────────────────────────────────────────────────────────────
+
+  SL%  | Prem/$1k | TrigRate | WinRate |   Prem@$5k   Payout |  Prem@$10k   Payout |  Prem@$20k   Payout |  Prem@$25k   Payout |  Prem@$50k   Payout 
+  -----|----------|---------|--------|------------------- |------------------- |------------------- |------------------- |------------------- 
+    1% | N/A — no viable config at 7-day tenor
+    2% |   $12.00 |   52.8% |  56.7% |        $60     $100 |       $120     $200 |       $240     $400 |       $300     $500 |       $600   $1,000 
+    3% |   $11.00 |   42.6% |  56.4% |        $55     $150 |       $110     $300 |       $220     $600 |       $275     $750 |       $550   $1,500 
+    5% |    $9.00 |   27.3% |  65.3% |        $45     $250 |        $90     $500 |       $180   $1,000 |       $225   $1,250 |       $450   $2,500 
+   10% |    $5.00 |    8.0% |  58.8% |        $25     $500 |        $50   $1,000 |       $100   $2,000 |       $125   $2,500 |       $250   $5,000 
+
+
+══════════════════════════════════════════════════════════════════════════════════════════
+  SECTION 2: TOP CONFIGURATIONS — No deductible (1% is pass-through)
+══════════════════════════════════════════════════════════════════════════════════════════
+  Best trader value: lowest premium where platform is profitable.
+
+  SL%  | Tenor | Strike  | Prem/$1k | Prem/$10k | Payout/$10k | Return  | TrigRate | WinRate | BE/$1k | Plat Margin | Hedge/$1k | Recov/$1k
+  -----|-------|---------|----------|-----------|-------------|---------|----------|--------|--------|-------------|-----------|----------
+    1% |    2d | trigger |    $7.00 |       $70 |        $100 |    1.4× |    41.2% |  58.2% |  $1.72 |       $5.28 |     $7.96 |    $10.36
+    2% |    2d | trigger |    $5.00 |       $50 |        $200 |    4.0× |    28.3% |  56.9% |  $3.69 |       $1.31 |     $4.95 |     $6.92
+    3% |    2d | trigger |    $5.00 |       $50 |        $300 |    6.0× |    18.7% |  72.0% |  $4.01 |       $0.99 |     $2.99 |     $4.59
+    5% |    2d | trigger |    $3.00 |       $30 |        $500 |   16.7× |     8.0% |  83.7% |  $2.88 |       $0.12 |     $1.03 |     $2.16
+   10% |    2d | trigger |    $1.00 |       $10 |      $1,000 |  100.0× |     1.0% |  99.2% |  $0.62 |       $0.38 |     $0.06 |     $0.40
+
+  Trader cost table (same configs):
+
+  SL%  | Tenor |   $5k Prem |  $10k Prem |  $20k Prem |  $25k Prem |  $50k Prem |   $5k Pays |  $10k Pays |  $20k Pays |  $25k Pays |  $50k Pays
+  -----|-------|------------|------------|------------|------------|------------|------------|------------|------------|------------|------------
+    1% |    2d |        $35 |        $70 |       $140 |       $175 |       $350 |        $50 |       $100 |       $200 |       $250 |       $500
+    2% |    2d |        $25 |        $50 |       $100 |       $125 |       $250 |       $100 |       $200 |       $400 |       $500 |     $1,000
+    3% |    2d |        $25 |        $50 |       $100 |       $125 |       $250 |       $150 |       $300 |       $600 |       $750 |     $1,500
+    5% |    2d |        $15 |        $30 |        $60 |        $75 |       $150 |       $250 |       $500 |     $1,000 |     $1,250 |     $2,500
+   10% |    2d |         $5 |        $10 |        $20 |        $25 |        $50 |       $500 |     $1,000 |     $2,000 |     $2,500 |     $5,000
+
+══════════════════════════════════════════════════════════════════════════════════════════
+  SECTION 3: BEST CONFIGS WITH DEDUCTIBLES WHERE OPTIMAL
+══════════════════════════════════════════════════════════════════════════════════════════
+  Uses 1% deductible only where it improves economics. No deductible at 1% SL.
+
+  SL%  | Tenor | Strike  | Deduct | Prem/$1k | Prem/$10k | Payout/$10k | Return  | TrigRate | WinRate | BE/$1k | Plat Margin
+  -----|-------|---------|--------|----------|-----------|-------------|---------|----------|--------|--------|------------
+    1% |    2d | trigger | none   |    $7.00 |       $70 |        $100 |    1.4× |    41.2% |  58.2% |  $1.72 |       $5.28
+    2% |    2d | trigger | none   |    $5.00 |       $50 |        $200 |    4.0× |    28.3% |  56.9% |  $3.69 |       $1.31
+    3% |    2d | trigger | 1%     |    $3.00 |       $30 |        $200 |    6.7× |    18.7% |  61.1% |  $2.14 |       $0.86
+    5% |    2d | trigger | none   |    $3.00 |       $30 |        $500 |   16.7× |     8.0% |  83.7% |  $2.88 |       $0.12
+   10% |    2d | trigger | none   |    $1.00 |       $10 |      $1,000 |  100.0× |     1.0% |  99.2% |  $0.62 |       $0.38
+
+  Trader cost table:
+
+  SL%  | Ded  | Prem@$5k | Prem@$10k | Prem@$20k | Prem@$25k | Prem@$50k | Pays@$5k | Pays@$10k | Pays@$20k | Pays@$25k | Pays@$50k
+  -----|------|---------------------------------------------------------------------------------------------------------------------
+    1% | none |        $35 |        $70 |       $140 |       $175 |       $350 |        $50 |       $100 |       $200 |       $250 |       $500
+    2% | none |        $25 |        $50 |       $100 |       $125 |       $250 |       $100 |       $200 |       $400 |       $500 |     $1,000
+    3% | 1%   |        $15 |        $30 |        $60 |        $75 |       $150 |       $100 |       $200 |       $400 |       $500 |     $1,000
+    5% | none |        $15 |        $30 |        $60 |        $75 |       $150 |       $250 |       $500 |     $1,000 |     $1,250 |     $2,500
+   10% | none |         $5 |        $10 |        $20 |        $25 |        $50 |       $500 |     $1,000 |     $2,000 |     $2,500 |     $5,000
+
+══════════════════════════════════════════════════════════════════════════════════════════
+  SECTION 4: BEST CONFIGS USING PUT SPREADS
+══════════════════════════════════════════════════════════════════════════════════════════
+  Put spread = buy higher strike put, sell lower strike put. Cheaper hedge, capped recovery.
+
+  SL%  | Tenor | Upper   | Lower   | Prem/$1k | Prem/$10k | Payout/$10k | Return  | TrigRate | WinRate | BE/$1k | Hedge/$1k | vs Naked BE
+  -----|-------|---------|---------|----------|-----------|-------------|---------|----------|--------|--------|-----------|------------
+    2% |    5d | atm     | 3%      |    $5.00 |       $50 |        $200 |    4.0× |    46.1% |  58.1% |  $4.54 |    $11.20 |      -$3.41
+    3% |    2d | mid     | 4.5%    |    $5.00 |       $50 |        $300 |    6.0× |    18.7% |  55.5% |  $4.69 |     $4.96 |      -$1.25
+    5% |    2d | mid     | 7.5%    |    $3.00 |       $30 |        $500 |   16.7× |     8.0% |  55.5% |  $2.85 |     $3.61 |      -$0.60
+   10% |    2d | mid     | 15%     |    $1.00 |       $10 |      $1,000 |  100.0× |     1.0% |  71.7% | -$0.06 |     $1.03 |      -$0.11
+
+  Note: 1% SL excluded — spreads are not beneficial at such tight strikes.
+
+══════════════════════════════════════════════════════════════════════════════════════════
+  SECTION 5: HYBRID SPREAD / PROTECTIVE PUT / CALL STRATEGIES
+══════════════════════════════════════════════════════════════════════════════════════════
+  Analysis of whether combining strategies could improve economics.
+
+  STRATEGY ANALYSIS:
+
+  A) PUT SPREAD (tested in Section 4):
+     Buy OTM put at mid-strike, sell further OTM put.
+     VERDICT: Effective for 5-10% SL. Reduces hedge cost 30-60%.
+     Reduces recovery cap but at wider SL the cap is rarely hit.
+
+  B) PROTECTIVE PUT (current approach):
+     Buy naked put at trigger/mid/ATM strike.
+     VERDICT: Best for 1-3% SL where recovery routinely exceeds hedge cost.
+     The 'mid' strike captures value from small dips below entry.
+
+  C) COVERED CALL OVERLAY:
+     Sell OTM call to partially fund the put purchase.
+     Problem: Atticus does not hold the underlying BTC.
+     The trader holds the perp, not Atticus. Selling a call without
+     owning BTC creates unlimited upside risk for the platform.
+     VERDICT: NOT VIABLE for this product structure.
+
+  D) COLLAR (put + short call):
+     Same issue as covered call — Atticus doesn't hold BTC.
+     Could theoretically ask the trader to cap their upside,
+     but this defeats the product's purpose (protection without limits).
+     VERDICT: NOT VIABLE without fundamental product redesign.
+
+  E) HYBRID: PUT SPREAD (low SL) + NAKED PUT (high SL):
+     Use spreads for 5-10% SL tiers (lower cost, less recovery needed)
+     Use naked puts for 1-3% SL tiers (higher recovery is the profit driver)
+     VERDICT: RECOMMENDED. This is the optimal hybrid approach.
+
+  HYBRID RECOMMENDATION PER TIER:
+
+  SL%  | Strategy            | Tenor | Prem/$1k | Prem/$10k | Rationale
+  -----|---------------------|-------|----------|-----------|----------
+    1% | Naked trigger put    |    2d |    $7.00 |       $70 | Recovery > hedge cost; spread caps needed recovery
+    2% | Naked trigger put    |    2d |    $5.00 |       $50 | Recovery > hedge cost; spread caps needed recovery
+    3% | Naked trigger put    |    2d |    $5.00 |       $50 | Recovery > hedge cost; spread caps needed recovery
+    5% | Put spread 7.5%    |    2d |    $3.00 |       $30 | Cheaper hedge; recovery cap rarely hit at 5% OTM
+   10% | Put spread 15%    |    2d |    $1.00 |       $10 | Cheaper hedge; recovery cap rarely hit at 10% OTM
+
+══════════════════════════════════════════════════════════════════════════════════════════
+  SECTION 6: REGIME-BASED PRICING — Premium changes and % time at each price
+══════════════════════════════════════════════════════════════════════════════════════════
+  Vol < 40% = CALM | 40-65% = NORMAL | > 65% = STRESS
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  1% SL — 2-day tenor, trigger strike
+  ────────────────────────────────────────────────────────────────────────────────
+  Break-evens: Calm -$0.40/1k | Normal $1.47/1k | Stress $5.73/1k
+
+  Regime  | % of Time | Premium/$1k | Premium/$10k | Payout/$10k | Return   | Win Rate | P&L/$1k  | Action
+  --------|-----------|-------------|--------------|-------------|----------|----------|----------|-------
+  CALM    |     30.5% |       $4.00 |          $40 |        $100 |     2.5× |    55.7% |    $4.40 | Sell
+  NORMAL  |     50.3% |       $7.00 |          $70 |        $100 |     1.4× |    50.4% |    $5.53 | Sell
+  STRESS  |     19.3% |         N/A |          N/A |        $100 |        — |        — |        — | PAUSE
+
+  Weighted avg premium: $4.74/1k ($47/10k) — pausing in stress
+
+  What the trader pays at each regime (full position cost):
+
+  Regime  |      $5k |     $10k |     $20k |     $25k |     $50k
+  --------|---------|---------|---------|---------|---------
+  CALM    |      $20 |      $40 |      $80 |     $100 |     $200
+  NORMAL  |      $35 |      $70 |     $140 |     $175 |     $350
+  STRESS  |    PAUSE |    PAUSE |    PAUSE |    PAUSE |    PAUSE
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  2% SL — 2-day tenor, trigger strike
+  ────────────────────────────────────────────────────────────────────────────────
+  Break-evens: Calm $1.00/1k | Normal $3.53/1k | Stress $8.35/1k
+
+  Regime  | % of Time | Premium/$1k | Premium/$10k | Payout/$10k | Return   | Win Rate | P&L/$1k  | Action
+  --------|-----------|-------------|--------------|-------------|----------|----------|----------|-------
+  CALM    |     30.5% |       $2.00 |          $20 |        $200 |    10.0× |    57.6% |    $1.00 | Sell
+  NORMAL  |     50.3% |       $5.00 |          $50 |        $200 |     4.0× |    55.1% |    $1.47 | Sell
+  STRESS  |     19.3% |      $11.00 |         $110 |        $200 |     1.8× |    50.7% |    $2.65 | Consider PAUSE
+
+  Weighted avg premium: $5.24/1k ($52/10k)
+
+  What the trader pays at each regime (full position cost):
+
+  Regime  |      $5k |     $10k |     $20k |     $25k |     $50k
+  --------|---------|---------|---------|---------|---------
+  CALM    |      $10 |      $20 |      $40 |      $50 |     $100
+  NORMAL  |      $25 |      $50 |     $100 |     $125 |     $250
+  STRESS  |      $55 |     $110 |     $220 |     $275 |     $550
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  3% SL — 2-day tenor, trigger strike
+  ────────────────────────────────────────────────────────────────────────────────
+  Break-evens: Calm $0.88/1k | Normal $3.82/1k | Stress $9.43/1k
+
+  Regime  | % of Time | Premium/$1k | Premium/$10k | Payout/$10k | Return   | Win Rate | P&L/$1k  | Action
+  --------|-----------|-------------|--------------|-------------|----------|----------|----------|-------
+  CALM    |     30.5% |       $1.00 |          $10 |        $300 |    30.0× |    77.4% |    $0.12 | Sell
+  NORMAL  |     50.3% |       $4.00 |          $40 |        $300 |     7.5× |    76.1% |    $0.18 | Sell
+  STRESS  |     19.3% |      $10.00 |         $100 |        $300 |     3.0× |    78.0% |    $0.57 | Sell w/ surcharge
+
+  Weighted avg premium: $4.24/1k ($42/10k)
+
+  What the trader pays at each regime (full position cost):
+
+  Regime  |      $5k |     $10k |     $20k |     $25k |     $50k
+  --------|---------|---------|---------|---------|---------
+  CALM    |       $5 |      $10 |      $20 |      $25 |      $50
+  NORMAL  |      $20 |      $40 |      $80 |     $100 |     $200
+  STRESS  |      $50 |     $100 |     $200 |     $250 |     $500
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  5% SL — 2-day tenor, trigger strike
+  ────────────────────────────────────────────────────────────────────────────────
+  Break-evens: Calm $1.17/1k | Normal $2.61/1k | Stress $6.30/1k
+
+  Regime  | % of Time | Premium/$1k | Premium/$10k | Payout/$10k | Return   | Win Rate | P&L/$1k  | Action
+  --------|-----------|-------------|--------------|-------------|----------|----------|----------|-------
+  CALM    |     30.5% |       $2.00 |          $20 |        $500 |    25.0× |    95.1% |    $0.83 | Sell
+  NORMAL  |     50.3% |       $3.00 |          $30 |        $500 |    16.7× |    93.0% |    $0.39 | Sell
+  STRESS  |     19.3% |       $7.00 |          $70 |        $500 |     7.1× |    89.7% |    $0.70 | Sell w/ surcharge
+
+  Weighted avg premium: $3.47/1k ($35/10k)
+
+  What the trader pays at each regime (full position cost):
+
+  Regime  |      $5k |     $10k |     $20k |     $25k |     $50k
+  --------|---------|---------|---------|---------|---------
+  CALM    |      $10 |      $20 |      $40 |      $50 |     $100
+  NORMAL  |      $15 |      $30 |      $60 |      $75 |     $150
+  STRESS  |      $35 |      $70 |     $140 |     $175 |     $350
+
+
+  ────────────────────────────────────────────────────────────────────────────────
+  10% SL — 2-day tenor, trigger strike
+  ────────────────────────────────────────────────────────────────────────────────
+  Break-evens: Calm $0.41/1k | Normal $0.71/1k | Stress $0.68/1k
+
+  Regime  | % of Time | Premium/$1k | Premium/$10k | Payout/$10k | Return   | Win Rate | P&L/$1k  | Action
+  --------|-----------|-------------|--------------|-------------|----------|----------|----------|-------
+  CALM    |     30.5% |       $1.00 |          $10 |      $1,000 |   100.0× |    99.4% |    $0.59 | Sell
+  NORMAL  |     50.3% |       $1.00 |          $10 |      $1,000 |   100.0× |    99.0% |    $0.29 | Sell
+  STRESS  |     19.3% |       $1.00 |          $10 |      $1,000 |   100.0× |    99.3% |    $0.32 | Sell w/ surcharge
+
+  Weighted avg premium: $1.00/1k ($10/10k)
+
+  What the trader pays at each regime (full position cost):
+
+  Regime  |      $5k |     $10k |     $20k |     $25k |     $50k
+  --------|---------|---------|---------|---------|---------
+  CALM    |       $5 |      $10 |      $20 |      $25 |      $50
+  NORMAL  |       $5 |      $10 |      $20 |      $25 |      $50
+  STRESS  |       $5 |      $10 |      $20 |      $25 |      $50

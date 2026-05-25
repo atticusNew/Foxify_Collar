@@ -27,6 +27,7 @@ import {
 import { DeribitConnector } from "@foxify/connectors";
 import { runAutoRenewJob } from "./scheduler";
 import { loadAccountConfig } from "./configLoader";
+import { assertDeploymentInvariants, getDeploymentTier } from "./pilot/deploymentTier";
 import { createDeribitIvCache } from "./deribitIvCache";
 import { createBybitIvCache } from "./bybitIvCache";
 import { createDeribitIvLadderCache } from "./deribitIvLadder";
@@ -59,6 +60,16 @@ import { buildCoverageReport } from "./coverageReport";
 import { resolveCoverageTargetSize } from "./quoteCoverage";
 import { resolvePremiumMarkupPctForQuote } from "./markupProfile";
 import { registerPilotRoutes } from "./pilot/routes";
+import { registerVolumeCoverRoutes } from "./volumeCover/volumeCoverRoutes";
+import { createHedgeExecutor } from "./volumeCover/hedgeExecutorAdapter";
+import { createSpotPriceSource } from "./volumeCover/spotPriceSource";
+import { startTriggerDetector } from "./volumeCover/triggerDetector";
+import { startHedgeManager } from "./volumeCover/volumeCoverHedgeManager";
+import { setVenueOptionChainProvider } from "./volumeCover/venueStrikeGrid";
+import { startChainWarmer } from "./volumeCover/chainWarmer";
+import { registerTreasuryRoutes } from "./pilot/treasuryRoutes";
+import { parseTreasuryConfig } from "./pilot/treasuryConfig";
+import { startTreasuryScheduler } from "./pilot/treasuryScheduler";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -97,6 +108,17 @@ const EXCLUDED_AUDIT_EVENTS = [
 function isCeoRelevantEvent(eventName: string): boolean {
   return CEO_AUDIT_EVENTS.includes(eventName);
 }
+
+// Deployment tier invariants — must run BEFORE Fastify init so a
+// misconfigured shadow service crash-loops instead of accepting traffic.
+// See services/api/src/pilot/deploymentTier.ts for the rules.
+assertDeploymentInvariants();
+console.log(JSON.stringify({
+  level: "info",
+  msg: "deployment_tier_resolved",
+  tier: getDeploymentTier(),
+  ts: new Date().toISOString()
+}));
 
 const trustProxyEnv = String(process.env.PILOT_TRUST_PROXY || "").trim().toLowerCase();
 const trustProxy = trustProxyEnv === "true";
@@ -2065,23 +2087,14 @@ app.get("/risk/summary", async (req) => {
 });
 
 const pilotApiEnabled = process.env.PILOT_API_ENABLED === "true";
-const forceDeribitTestMode = pilotApiEnabled && process.env.PILOT_FORCE_DERIBIT_TEST_MODE !== "false";
 const deribitEnvRaw = (process.env.DERIBIT_ENV as "testnet" | "live") || "live";
-const deribitEnv: "testnet" | "live" = forceDeribitTestMode ? "testnet" : deribitEnvRaw;
+const deribitEnv: "testnet" | "live" = deribitEnvRaw;
 const deribitHasCredentials = Boolean(
   process.env.DERIBIT_CLIENT_ID && process.env.DERIBIT_CLIENT_SECRET
 );
 const deribitPaperEnv = process.env.DERIBIT_PAPER?.trim().toLowerCase();
-let deribitPaperRequested =
+const deribitPaperRequested =
   deribitPaperEnv !== undefined ? deribitPaperEnv === "true" : deribitEnv !== "live";
-if (forceDeribitTestMode) {
-  deribitPaperRequested = true;
-  if (deribitEnvRaw !== "testnet" || deribitPaperEnv === "false") {
-    console.warn(
-      "[Deribit] Pilot mode forcing DERIBIT_ENV=testnet and DERIBIT_PAPER=true for test-only execution."
-    );
-  }
-}
 const deribitPaper = deribitHasCredentials ? deribitPaperRequested : true;
 if (!deribitHasCredentials && deribitPaperEnv === "false") {
   console.warn(
@@ -2104,6 +2117,8 @@ const deribit = new DeribitConnector(
       }
     : undefined
 );
+const deribitLive = new DeribitConnector("live", true);
+console.log(`[Deribit] Live pricing connector: endpoint=live paper=true (read-only, no credentials)`);
 const executionRegistry = new ExecutionRegistry();
 executionRegistry.register(createDeribitExecutor(deribit));
 executionRegistry.register(createBybitExecutor());
@@ -8165,7 +8180,431 @@ app.post("/hedge/roll", async (req) => {
   };
 });
 
-await registerPilotRoutes(app, { deribit });
+// R2.E — Pilot Agreement §3.1 cap assertion. Verifies env values for
+// notional caps don't exceed agreement maxes. In 'enforce' mode this
+// throws and prevents boot; in 'warn' mode (default) it logs and
+// continues. Set PILOT_CAP_ENFORCEMENT_MODE=enforce on production Render.
+const { assertPilotAgreementCaps } = await import("./pilot/config");
+assertPilotAgreementCaps();
+
+// R7 — Configure outbound alert webhook destinations (Telegram / Slack /
+// Discord / generic). Reads PILOT_ALERT_* env vars; logs which destinations
+// were enabled. Calling this is idempotent.
+const { configureAlertDispatcher } = await import("./pilot/alertDispatcher");
+configureAlertDispatcher();
+
+// PR B (Gap 2) — Configure max-loss circuit breaker from env.
+//   PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT  (default 0.5 = 50%)
+//   PILOT_CIRCUIT_BREAKER_WINDOW_MS     (default 24h)
+//   PILOT_CIRCUIT_BREAKER_COOLDOWN_MS   (default 4h; set 0 for manual-only)
+//   PILOT_CIRCUIT_BREAKER_MIN_SAMPLES   (default 4)
+//   PILOT_CIRCUIT_BREAKER_ENFORCE       (default true; set 'false' for observe-only)
+const { configureCircuitBreaker } = await import("./pilot/circuitBreaker");
+configureCircuitBreaker({
+  maxLossPct: Number(process.env.PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT || "0.5"),
+  windowMs: Number(process.env.PILOT_CIRCUIT_BREAKER_WINDOW_MS || String(24 * 60 * 60 * 1000)),
+  cooldownMs: Number(process.env.PILOT_CIRCUIT_BREAKER_COOLDOWN_MS || String(4 * 60 * 60 * 1000)),
+  minSamplesForTrip: Number(process.env.PILOT_CIRCUIT_BREAKER_MIN_SAMPLES || "4"),
+  enforce: String(process.env.PILOT_CIRCUIT_BREAKER_ENFORCE || "true").toLowerCase() !== "false"
+});
+console.log("[CircuitBreaker] Configured from env");
+
+// R2.F — hedge-budget cap (Foxify Pilot Agreement v2 §3.1).
+// Env vars:
+//   PILOT_LIVE_START_DATE           ISO date, default: null (auto-detect from earliest live execution)
+//   PILOT_HEDGE_BUDGET_CAP_ENABLED  default 'true'
+const { configureHedgeBudgetCap } = await import("./pilot/hedgeBudgetCap");
+configureHedgeBudgetCap({
+  pilotStartIso: process.env.PILOT_LIVE_START_DATE || null,
+  enforce: String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() !== "false"
+});
+console.log(
+  `[HedgeBudgetCap] Configured: enforce=${
+    String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() !== "false"
+  } pilotStart=${process.env.PILOT_LIVE_START_DATE || "(auto)"}`
+);
+
+await registerPilotRoutes(app, { deribit, deribitLive });
+
+// ────────── Volume Cover product (Foxify B2B) ──────────
+if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true") {
+  try {
+    const { createPilotVenueAdapter } = await import("./pilot/venue");
+    // Bug fix (2026-05-18): The VC registration was throwing
+    // "bullish_testnet_disabled" silently because bullishEnabled +
+    // bullish config were never forwarded to the adapter factory.
+    // Without this fix the entire /volume-cover/* route surface
+    // (including /volume-cover/health) returns 404, and the only
+    // signal is a single `[VolumeCover] FAILED to register routes`
+    // log line that's easy to miss in production. Mirrors the
+    // pattern used in pilot/routes.ts at line ~957.
+    const { pilotConfig } = await import("./pilot/config");
+    const bullishAdapter = createPilotVenueAdapter({
+      mode: "bullish_testnet",
+      bullishEnabled: pilotConfig.bullish.enabled,
+      bullish: pilotConfig.bullish,
+      falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+      deribit,
+      quoteTtlMs: 30000,
+      deribitQuotePolicy: "ask_or_mark_fallback",
+      deribitStrikeSelectionMode: "trigger_aligned",
+      deribitMaxTenorDriftDays: 3
+    });
+    const deribitAdapter = createPilotVenueAdapter({
+      mode: "deribit_live",
+      falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+      deribit,
+      quoteTtlMs: 30000,
+      deribitQuotePolicy: "ask_or_mark_fallback",
+      deribitStrikeSelectionMode: "trigger_aligned",
+      deribitMaxTenorDriftDays: 3
+    });
+
+    const useMockFills =
+      String(process.env.VOLUME_COVER_HEDGE_MOCK ?? "false").toLowerCase() === "true";
+    const hedgeExecutor = createHedgeExecutor({
+      bullish: bullishAdapter,
+      deribit: deribitAdapter,
+      mockFills: useMockFills
+    });
+    // VC source-of-truth: Bullish primary + Coinbase fallback by
+    // default. Override with VC_SPOT_PRIMARY=deribit to make Deribit
+    // the primary source (recommended when system is locked to
+    // Deribit execution). All three venues feed drift detection.
+    const spotSource = createSpotPriceSource({
+      bullishOrderbookFn: async (symbol) => {
+        // 2026-05-22: use shared singleton + 5s orderbook cache to stop
+        // burning Bullish sessions on every spot tick (trigger monitor
+        // ticks every 60s; each tick previously built a fresh client →
+        // fresh JWT → fresh WS subscriptions). See pilot/bullishClient.ts.
+        const { getCachedBullishOrderbook } = await import("./pilot/bullishClient");
+        const book = await getCachedBullishOrderbook(pilotConfig.bullish, symbol, 5_000);
+        return {
+          bids: book.bids ?? [],
+          asks: book.asks ?? []
+        };
+      },
+      bullishSymbol: "BTCUSDC",
+      deribitIndexFn: async () => {
+        try {
+          const { DeribitConnector } = await import("@foxify/connectors");
+          const env = String(process.env.DERIBIT_ENV || "live").trim();
+          const paper = String(process.env.DERIBIT_PAPER || "true").trim().toLowerCase() === "true";
+          const c = new DeribitConnector(
+            env === "live" ? "live" : "testnet",
+            paper,
+            {
+              clientId: String(process.env.DERIBIT_CLIENT_ID || ""),
+              clientSecret: String(process.env.DERIBIT_CLIENT_SECRET || "")
+            }
+          );
+          const r = await c.getIndexPrice("btc_usd");
+          const price = Number((r as any)?.result?.index_price ?? 0);
+          if (!Number.isFinite(price) || price <= 0) return null;
+          return { price, asOfMs: Date.now() };
+        } catch {
+          return null;
+        }
+      }
+    });
+
+    // P3 §12.4: venue balance fetcher for weekly reconciliation drift
+    // halt. Sums Bullish USDC + Deribit BTC equity (× spot) into a
+    // single combined balance. 5s timeout per venue; reconciler
+    // tolerates failures gracefully (does NOT auto-halt on transient
+    // venue API errors — see weeklyReconciler.ts).
+    const venueBalanceFetcher = async (): Promise<number> => {
+      const withTimeout = async <T,>(p: Promise<T>, ms: number): Promise<T> => {
+        return Promise.race([
+          p,
+          new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))
+        ]);
+      };
+      let bullishUsdc = 0;
+      let bullishBtcAsUsdc = 0;
+      let deribitUsdc = 0;
+      // Spot is needed for both Bullish-BTC and Deribit-BTC valuations;
+      // fetch once and reuse to keep the math consistent (same spot
+      // applied to both venues).
+      let spotBtcUsdc: number | null = null;
+      try {
+        const spot = await spotSource();
+        spotBtcUsdc = spot.spotBtcPrice;
+      } catch (err) {
+        console.warn(`[VolumeCover] Spot fetch failed for venue balance: ${(err as Error).message}`);
+      }
+      // 2026-05-22: env gate skips Bullish balance fetching entirely when
+      // BULLISH_BALANCE_TRACKING_ENABLED=false (default true). Live config
+      // should set false until Bullish is actively trading — drops dashboard
+      // Bullish call rate from ~1/tick to 0 and avoids session quota churn.
+      const { isBullishBalanceTrackingEnabled, getCachedBullishBalances } =
+        await import("./pilot/bullishClient");
+      if (isBullishBalanceTrackingEnabled()) {
+        try {
+          const balances = await withTimeout(
+            getCachedBullishBalances(pilotConfig.bullish, 30_000, 5_000),
+            5_000
+          );
+          const usdcBalance = balances.find((b: any) => b.assetSymbol === "USDC" || b.assetSymbol === "USD");
+          if (usdcBalance) {
+            bullishUsdc = Number(usdcBalance.availableQuantity ?? 0);
+          }
+          // 2026-05-18: include Bullish BTC valued at current spot. This
+          // closes a drift-detection bug where operators holding capital
+          // as BTC (rather than USDC) on Bullish were causing weekly
+          // settlement reports to false-flag 100% drift halts. The
+          // venueBalanceFetcher must report TOTAL USD-equivalent venue
+          // value, not just USDC. Bullish BTC + USDC together are now
+          // both included.
+          const btcBalance = balances.find((b: any) => b.assetSymbol === "BTC");
+          if (btcBalance && spotBtcUsdc !== null) {
+            const btcQty = Number(btcBalance.availableQuantity ?? 0);
+            if (Number.isFinite(btcQty) && btcQty > 0) {
+              bullishBtcAsUsdc = btcQty * spotBtcUsdc;
+            }
+          }
+        } catch (err) {
+          console.warn(`[VolumeCover] Bullish balance fetch failed: ${(err as Error).message}`);
+        }
+      }
+      try {
+        const summary: any = await withTimeout(deribitLive.getAccountSummary("BTC"), 5_000);
+        const btcEquity = Number(summary?.result?.equity ?? 0);
+        if (btcEquity > 0 && spotBtcUsdc !== null) {
+          deribitUsdc = btcEquity * spotBtcUsdc;
+        }
+      } catch (err) {
+        console.warn(`[VolumeCover] Deribit balance fetch failed: ${(err as Error).message}`);
+      }
+      return bullishUsdc + bullishBtcAsUsdc + deribitUsdc;
+    };
+
+    // P3 §7.3 P1c: venue option-chain provider — pickClosestStrike
+    // (in venueStrikeGrid.ts) uses this to snap to a strike that
+    // ACTUALLY exists on the venue. Falls back to static $200/$1000
+    // grid if provider returns null OR throws (graceful degradation).
+    // Shared Bullish client for the venue option-chain provider.
+    // Hoisting this OUT of the closure means the 120s cache TTL on
+    // getMarkets actually works — previously every provider call
+    // (every chain warmer tick + every activation strike resolution)
+    // built a fresh client with its own empty cache, defeating
+    // caching entirely and triggering Bullish's 96100 RATE_LIMIT_
+    // EXCEEDED on the chain endpoint. Now: one client, shared cache,
+    // ~1 upstream call per 120s instead of every tick.
+    const { BullishTradingClient: SharedBullishClient } = await import("./pilot/bullish");
+    const sharedBullishClient = new SharedBullishClient(pilotConfig.bullish);
+
+    setVenueOptionChainProvider(async ({ venue, expiryIso, optionKind }) => {
+      const targetDate = expiryIso.slice(0, 10); // YYYY-MM-DD
+      if (venue === "bullish") {
+        try {
+          // Use the shared client (above) so cache survives across
+          // calls. cacheTtlMs default is 120s (set at client level).
+          const markets = await sharedBullishClient.getMarkets({ cacheTtlMs: 120_000 });
+          const kindUpper = optionKind === "put" ? "PUT" : "CALL";
+          return markets
+            .filter(m => (m.optionType ?? "").toUpperCase() === kindUpper)
+            .filter(m => (m.expiryDatetime ?? "").slice(0, 10) === targetDate)
+            .filter(m => (m.underlyingBaseSymbol ?? "").toUpperCase() === "BTC")
+            .filter(m => m.marketEnabled && m.createOrderEnabled)
+            .map(m => Number(m.optionStrikePrice ?? "0"))
+            .filter(s => Number.isFinite(s) && s > 0);
+        } catch (err) {
+          console.warn(`[VolumeCover] Bullish chain fetch failed: ${(err as Error).message}`);
+          return [];
+        }
+      }
+      if (venue === "deribit") {
+        try {
+          const r: any = await deribitLive.listInstruments("BTC");
+          const items: any[] = Array.isArray(r?.result) ? r.result : [];
+          const expiryMs = new Date(expiryIso).getTime();
+          // Allow ±1 day fuzz on expiry (venue rounds to UTC 08:00; our
+          // computed expiry rounds the same but daylight/timezone edges
+          // can shift by a day on snap).
+          return items
+            .filter(i => String(i.option_type).toLowerCase() === optionKind)
+            .filter(i => Math.abs(Number(i.expiration_timestamp) - expiryMs) < 86_400_000)
+            .map(i => Number(i.strike))
+            .filter(s => Number.isFinite(s) && s > 0);
+        } catch (err) {
+          console.warn(`[VolumeCover] Deribit chain fetch failed: ${(err as Error).message}`);
+          return [];
+        }
+      }
+      return [];
+    });
+    console.log(`[VolumeCover] Venue option-chain provider wired (Bullish + Deribit)`);
+
+    // Background chain warmer — keeps venueStrikeGrid cache hot so
+    // /activate's pickClosestStrike returns instantly rather than
+    // doing a 200-500ms venue REST call on the hot path.
+    startChainWarmer();
+
+    await registerVolumeCoverRoutes(app, {
+      hedgeExecutor,
+      spotSource,
+      venueBalanceFetcher
+    });
+    console.log(
+      `[VolumeCover] Registered routes (mockFills=${useMockFills}, ` +
+        `auth_disabled=${process.env.VOLUME_COVER_AUTH_DISABLED ?? "false"}, ` +
+        `venueBalanceFetcher=wired)`
+    );
+
+    // 2026-05-24 (PR-D): startup log of PR-A/B/C/D config so an
+    // operator confirming a deploy can see exactly what envs took
+    // effect without curl'ing /health.
+    try {
+      const { getNewbornReviewState } = await import(
+        "./volumeCover/volumeCoverNewbornReview"
+      );
+      const { getBullishSpreadAdapterRuntimeConfig } = await import(
+        "./volumeCover/bullishSpreadAdapter"
+      );
+      const { getConfiguredDepthGate } = await import(
+        "./volumeCover/spreadExecutor"
+      );
+      const newborn = getNewbornReviewState();
+      const adapter = getBullishSpreadAdapterRuntimeConfig();
+      const depth = getConfiguredDepthGate();
+      const sellLongs = String(
+        process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER ?? "true"
+      ).toLowerCase() !== "false";
+      const parallelSells = String(
+        process.env.VC_SPREAD_PARALLEL_LONG_SELLS ?? "true"
+      ).toLowerCase() !== "false";
+      const slipVenues =
+        process.env.VC_SLIPPAGE_FLOOR_ENABLED_VENUES ?? "deribit,bullish";
+      const deepCrossBps = Number(
+        process.env.VC_FILL_OPTIMIZER_DEEP_CROSS_BPS ?? "500"
+      );
+      console.log(
+        `[VolumeCover] config: ` +
+          `newbornReview={enabled:${newborn.enabled},budget:${newborn.budget}} ` +
+          `bullishSpreadPoll={interval:${adapter.pollIntervalMs}ms,open:${adapter.openPollCeilingMs}ms,close:${adapter.closePollCeilingMs}ms} ` +
+          `depthGate={floorBtc:${depth.minDepthBtcFloor},ratio:${depth.depthRatio},enforced:${depth.enforced}} ` +
+          `sellLongsAtTrigger=${sellLongs} parallelLongSells=${parallelSells} ` +
+          `slippageVenues=${slipVenues} fillOptDeepCrossBps=${deepCrossBps} ` +
+          // 2026-05-24 (PR-E + PR-F): correctness + UX fixes shipped together,
+          // unconditionally on. Logged so /volume-cover/health AND startup
+          // logs both confirm the deploy picked up the projection cap, the
+          // closePosition double-bill guard, the Foxify acknowledge flow,
+          // and the Recent Activity suppression for rejected+failed events.
+          `prE_dashTriggeredAtCap=true prE_closeDoubleBillGuard=true ` +
+          `prF_foxifyAcknowledge=true prF_recentActivityHidesRejectedFailed=true`
+      );
+    } catch (err) {
+      console.warn(
+        `[VolumeCover] startup config log skipped: ${(err as Error).message}`
+      );
+    }
+
+    // Foxify-facing read-mostly dashboard (separate auth, separate
+    // surface). Routes mounted at /volume-cover/foxify/*. Auth via
+    // FOXIFY_DASHBOARD_TOKEN (distinct from PILOT_ADMIN_TOKEN).
+    // Audit log table created automatically.
+    const { registerFoxifyDashboardRoutes } = await import(
+      "./volumeCover/foxifyDashboard"
+    );
+    await registerFoxifyDashboardRoutes(app, {
+      hedgeExecutor,
+      spotSource
+    });
+    const foxifyTokenSet = Boolean(
+      String(process.env.FOXIFY_DASHBOARD_TOKEN || "").trim()
+    );
+    console.log(
+      `[VolumeCover] Foxify dashboard mounted at /volume-cover/foxify/* ` +
+        `(token_configured=${foxifyTokenSet})`
+    );
+
+    if (String(process.env.VOLUME_COVER_TRIGGER_DETECTOR_ENABLED ?? "true").toLowerCase() === "true") {
+      const { getPilotPool } = await import("./pilot/db");
+      const vcPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+      startTriggerDetector({
+        pool: vcPool,
+        executor: hedgeExecutor,
+        spotSource
+      });
+      console.log(`[VolumeCover] Trigger detector started`);
+    }
+
+    // P1f + P2.5: VC hedge manager (60s tick) — manages Atticus-
+    // retained legs via the 12-rule TP curve. Spot+IV source uses the
+    // existing Deribit IV cache (15s TTL) for live ATM IV; rule 11
+    // (vol-spike) compares current IV vs 60min trailing baseline,
+    // which works correctly only when IV is real and time-varying.
+    // Falls back to env-configured constant IV if the cache returns
+    // its own fallback (Deribit unreachable).
+    if (String(process.env.VOLUME_COVER_HEDGE_MANAGER_ENABLED ?? "true").toLowerCase() === "true") {
+      const { getPilotPool } = await import("./pilot/db");
+      const vcPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+      const envFallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.65);
+      startHedgeManager({
+        pool: vcPool,
+        executor: hedgeExecutor,
+        spotIvSource: async () => {
+          const spot = await spotSource();
+          let ivAnnualized = envFallbackIv;
+          try {
+            // ivCache is module-level below; it returns Decimal in
+            // either percent (Deribit mark_iv) or fraction form.
+            // normalizeIvValue scales percent → fraction so the
+            // ivAnnualized field stays in [0, ~5] consistent with
+            // bsPut/bsCall expectations.
+            const raw = await ivCache.getAtmIv("BTC");
+            const n = Number(raw.toString());
+            ivAnnualized = n > 1.5 ? n / 100 : n;
+            if (!Number.isFinite(ivAnnualized) || ivAnnualized <= 0) {
+              ivAnnualized = envFallbackIv;
+            }
+          } catch {
+            // venue cache hiccup; fallback IV
+          }
+          return {
+            spotBtcUsdc: spot.spotBtcPrice,
+            ivAnnualized,
+            asOfMs: spot.asOfMs
+          };
+        }
+      });
+      console.log(`[VolumeCover] Hedge manager started (full 12-rule curve; live IV via deribitIvCache)`);
+    }
+  } catch (err) {
+    console.error(`[VolumeCover] FAILED to register routes: ${(err as Error).message}`);
+  }
+} else {
+  console.log(`[VolumeCover] Disabled (VOLUME_COVER_ENABLED=false)`);
+}
+
+const treasuryConfig = parseTreasuryConfig();
+if (treasuryConfig.enabled) {
+  const { getPilotPool } = await import("./pilot/db");
+  const treasuryPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+  const { createPilotVenueAdapter } = await import("./pilot/venue");
+  const treasuryVenue = createPilotVenueAdapter({
+    mode: "deribit_live",
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+    deribit,
+    quoteTtlMs: 30000,
+    deribitQuotePolicy: "ask_or_mark_fallback",
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 3
+  });
+  await registerTreasuryRoutes(app, {
+    pool: treasuryPool,
+    venue: treasuryVenue,
+    deribit,
+    config: treasuryConfig
+  });
+  startTreasuryScheduler({
+    pool: treasuryPool,
+    venue: treasuryVenue,
+    deribit,
+    config: treasuryConfig
+  });
+}
 
 const startServer = async () => {
   try {

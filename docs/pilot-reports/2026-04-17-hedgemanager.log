@@ -1,0 +1,50 @@
+2026-04-18T02:12:48.252794261Z [HedgeManager] Cycle complete: scanned=11 tpSold=0 salvaged=0 expired=0 noBid=0 errors=0 skipped=11 vol=high(133)
+2026-04-18T02:13:48.252201613Z [HedgeManager] Cycle complete: scanned=11 tpSold=0 salvaged=0 expired=0 noBid=0 errors=0 skipped=11 vol=high(133)
+2026-04-18T02:14:48.244756036Z [HedgeManager] Cycle complete: scanned=11 tpSold=0 salvaged=0 expired=0 noBid=0 errors=0 skipped=11 vol=high(133)
+2026-04-18T02:15:48.248515602Z [HedgeManager] Cycle complete: scanned=11 tpSold=0 salvaged=0 expired=0 noBid=0 errors=0 skipped=11 vol=high(133)
+2026-04-18T02:16:04.14327918Z [OptionSelection] score: BTC-19APR26-75000-P strike=75000 ask=0.000400 hedgeCost=$12.38 clientPrem=$140.00 margin=91.2% costScore=0.000821
+2026-04-18T02:16:04.304638362Z [OptionSelection] score: BTC-19APR26-74500-P strike=74500 ask=0.000300 hedgeCost=$9.29 clientPrem=$140.00 margin=93.4% costScore=0.003952
+2026-04-18T02:16:04.465952132Z [OptionSelection] score: BTC-19APR26-74000-P strike=74000 ask=0.000200 hedgeCost=$6.19 clientPrem=$140.00 margin=95.6% costScore=0.007082
+2026-04-18T02:16:04.627420997Z [OptionSelection] score: BTC-19APR26-73500-P strike=73500 ask=0.000200 hedgeCost=$6.19 clientPrem=$140.00 margin=95.6% costScore=0.010313
+2026-04-18T02:16:04.78881373Z [OptionSelection] score: BTC-19APR26-73000-P strike=73000 ask=0.000200 hedgeCost=$6.19 clientPrem=$140.00 margin=95.6% costScore=0.013543
+2026-04-18T02:16:04.949883484Z [OptionSelection] score: BTC-19APR26-72500-P strike=72500 ask=0.000200 hedgeCost=$6.19 clientPrem=$140.00 margin=95.6% costScore=0.016774
+2026-04-18T02:16:05.111683067Z [OptionSelection] score: BTC-19APR26-72000-P strike=72000 ask=0.000100 hedgeCost=$3.10 clientPrem=$140.00 margin=97.8% costScore=0.019905
+2026-04-18T02:16:05.275034819Z [OptionSelection] score: BTC-19APR26-71500-P strike=71500 ask=0.000100 hedgeCost=$3.10 clientPrem=$140.00 margin=97.8% costScore=0.023135
+2026-04-18T02:16:05.27505727Z [OptionSelection] WINNER: BTC-19APR26-75000-P strike=75000 ask=0.000400 hedgeCost=$12.38 margin=91.2% premium=$140.00 ✓
+2026-04-18T02:16:13.609069877Z [OptionSelection] score: BTC-19APR26-73500-P strike=73500 ask=0.000200 hedgeCost=$1.55 clientPrem=$45.00 margin=96.6% costScore=0.000308
+2026-04-18T02:16:13.772313377Z [OptionSelection] score: BTC-19APR26-73000-P strike=73000 ask=0.000200 hedgeCost=$1.55 clientPrem=$45.00 margin=96.6% costScore=0.003539
+2026-04-18T02:16:13.935342251Z [OptionSelection] score: BTC-19APR26-72500-P strike=72500 ask=0.000200 hedgeCost=$1.55 clientPrem=$45.00 margin=96.6% costScore=0.006769
+2026-04-18T02:16:14.099070363Z [OptionSelection] score: BTC-19APR26-72000-P strike=72000 ask=0.000100 hedgeCost=$0.77 clientPrem=$45.00 margin=98.3% costScore=0.009900
+2026-04-18T02:16:14.266318564Z [OptionSelection] score: BTC-19APR26-71500-P strike=71500 ask=0.000100 hedgeCost=$0.77 clientPrem=$45.00 margin=98.3% costScore=0.013131
+2026-04-18T02:16:14.432392706Z [OptionSelection] score: BTC-19APR26-71000-P strike=71000 ask=0.000100 hedgeCost=$0.77 clientPrem=$45.00 margin=98.3% costScore=0.016361
+2026-04-18T02:16:14.599521514Z [OptionSelection] score: BTC-19APR26-70000-P strike=70000 ask=0.000100 hedgeCost=$0.77 clientPrem=$45.00 margin=98.3% costScore=0.022822
+2026-04-18T02:16:14.764275702Z [OptionSelection] score: BTC-19APR26-69000-P strike=69000 ask=0.000100 hedgeCost=$0.77 clientPrem=$45.00 margin=98.3% costScore=0.029283
+2026-04-18T02:16:14.764296712Z [OptionSelection] WINNER: BTC-19APR26-73500-P strike=73500 ask=0.000200 hedgeCost=$1.55 margin=96.6% premium=$45.00 ✓
+2026-04-18T02:16:23.389461251Z [OptionSelection] score: BTC-19APR26-69000-P strike=69000 ask=0.000100 hedgeCost=$3.10 clientPrem=$70.00 margin=95.6% costScore=0.004230
+2026-04-18T02:16:23.55308952Z [OptionSelection] score: BTC-19APR26-68000-P strike=68000 ask=0.000100 hedgeCost=$3.10 clientPrem=$70.00 margin=95.6% costScore=0.010692
+2026-04-18T02:16:23.714866362Z [OptionSelection] score: BTC-19APR26-67000-P strike=67000 ask=0.000100 hedgeCost=$3.10 clientPrem=$70.00 margin=95.6% costScore=0.017153
+2026-04-18T02:16:23.877196969Z [OptionSelection] score: BTC-19APR26-66000-P strike=66000 ask=0.000100 hedgeCost=$3.10 clientPrem=$70.00 margin=95.6% costScore=0.023615
+2026-04-18T02:16:24.037462523Z [OptionSelection] score: BTC-19APR26-65000-P strike=65000 ask=0.000100 hedgeCost=$3.10 clientPrem=$70.00 margin=95.6% costScore=0.030077
+2026-04-18T02:16:24.199908492Z [OptionSelection] score: BTC-19APR26-70000-P strike=70000 ask=0.000100 hedgeCost=$3.10 clientPrem=$70.00 margin=95.6% costScore=0.002432
+2026-04-18T02:16:24.361226862Z [OptionSelection] score: BTC-20APR26-69000-P strike=69000 ask=0.000300 hedgeCost=$9.29 clientPrem=$70.00 margin=86.7% costScore=0.004430
+2026-04-18T02:16:24.524986625Z [OptionSelection] score: BTC-20APR26-68000-P strike=68000 ask=0.000200 hedgeCost=$6.19 clientPrem=$70.00 margin=91.2% costScore=0.010792
+2026-04-18T02:16:24.525024596Z [OptionSelection] WINNER: BTC-19APR26-70000-P strike=70000 ask=0.000100 hedgeCost=$3.10 margin=95.6% premium=$70.00 ✓
+2026-04-18T02:16:34.911153997Z [OptionSelection] score: BTC-19APR26-75000-P strike=75000 ask=0.000300 hedgeCost=$9.29 clientPrem=$140.00 margin=93.4% costScore=0.000616
+2026-04-18T02:16:35.07220089Z [OptionSelection] score: BTC-19APR26-74500-P strike=74500 ask=0.000300 hedgeCost=$9.29 clientPrem=$140.00 margin=93.4% costScore=0.003847
+2026-04-18T02:16:35.233025849Z [OptionSelection] score: BTC-19APR26-74000-P strike=74000 ask=0.000200 hedgeCost=$6.19 clientPrem=$140.00 margin=95.6% costScore=0.006978
+2026-04-18T02:16:35.394230116Z [OptionSelection] score: BTC-19APR26-73500-P strike=73500 ask=0.000200 hedgeCost=$6.19 clientPrem=$140.00 margin=95.6% costScore=0.010209
+2026-04-18T02:16:35.557548398Z [OptionSelection] score: BTC-19APR26-73000-P strike=73000 ask=0.000200 hedgeCost=$6.19 clientPrem=$140.00 margin=95.6% costScore=0.013440
+2026-04-18T02:16:35.718990352Z [OptionSelection] score: BTC-19APR26-72500-P strike=72500 ask=0.000200 hedgeCost=$6.19 clientPrem=$140.00 margin=95.6% costScore=0.016671
+2026-04-18T02:16:35.883049142Z [OptionSelection] score: BTC-19APR26-72000-P strike=72000 ask=0.000100 hedgeCost=$3.10 clientPrem=$140.00 margin=97.8% costScore=0.019802
+2026-04-18T02:16:36.045199464Z [OptionSelection] score: BTC-19APR26-71500-P strike=71500 ask=0.000100 hedgeCost=$3.10 clientPrem=$140.00 margin=97.8% costScore=0.023033
+2026-04-18T02:16:36.045272376Z [OptionSelection] WINNER: BTC-19APR26-75000-P strike=75000 ask=0.000300 hedgeCost=$9.29 margin=93.4% premium=$140.00 ✓
+2026-04-18T02:16:45.161216739Z [OptionSelection] score: BTC-19APR26-73500-P strike=73500 ask=0.000200 hedgeCost=$1.55 clientPrem=$30.00 margin=94.8% costScore=0.000252
+2026-04-18T02:16:45.322773356Z [OptionSelection] score: BTC-19APR26-73000-P strike=73000 ask=0.000200 hedgeCost=$1.55 clientPrem=$30.00 margin=94.8% costScore=0.003482
+2026-04-18T02:16:45.484350913Z [OptionSelection] score: BTC-19APR26-72500-P strike=72500 ask=0.000200 hedgeCost=$1.55 clientPrem=$30.00 margin=94.8% costScore=0.006713
+2026-04-18T02:16:45.647663224Z [OptionSelection] score: BTC-19APR26-72000-P strike=72000 ask=0.000100 hedgeCost=$0.77 clientPrem=$30.00 margin=97.4% costScore=0.009844
+2026-04-18T02:16:45.810538405Z [OptionSelection] score: BTC-19APR26-71500-P strike=71500 ask=0.000100 hedgeCost=$0.77 clientPrem=$30.00 margin=97.4% costScore=0.013075
+2026-04-18T02:16:45.974476302Z [OptionSelection] score: BTC-19APR26-71000-P strike=71000 ask=0.000100 hedgeCost=$0.77 clientPrem=$30.00 margin=97.4% costScore=0.016306
+2026-04-18T02:16:46.136056279Z [OptionSelection] score: BTC-19APR26-70000-P strike=70000 ask=0.000100 hedgeCost=$0.77 clientPrem=$30.00 margin=97.4% costScore=0.022767
+2026-04-18T02:16:46.299488083Z [OptionSelection] score: BTC-19APR26-69000-P strike=69000 ask=0.000100 hedgeCost=$0.77 clientPrem=$30.00 margin=97.4% costScore=0.029229
+2026-04-18T02:16:46.299511184Z [OptionSelection] WINNER: BTC-19APR26-73500-P strike=73500 ask=0.000200 hedgeCost=$1.55 margin=94.8% premium=$30.00 ✓
+2026-04-18T02:16:48.23525022Z [HedgeManager] Cycle complete: scanned=16 tpSold=0 salvaged=0 expired=0 noBid=0 errors=0 skipped=16 vol=high(133)

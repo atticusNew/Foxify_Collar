@@ -7,8 +7,8 @@
       "points_target": "100",
       "profit_target_usdc": "375",
       "drawdown_limit_pct": "0.20",
-      "fixed_price_usdc": "10",
-      "expiry_days": "7",
+      "fixed_price_usdc": "11",
+      "expiry_days": "5",
       "renew_window_minutes": "1440",
       "buffer_alert_pct": "2"
     },
@@ -19,8 +19,8 @@
       "points_target": "100",
       "profit_target_usdc": "750",
       "drawdown_limit_pct": "0.15",
-      "fixed_price_usdc": "15",
-      "expiry_days": "7",
+      "fixed_price_usdc": "11",
+      "expiry_days": "5",
       "renew_window_minutes": "1440",
       "buffer_alert_pct": "2"
     },
@@ -31,8 +31,8 @@
       "points_target": "100",
       "profit_target_usdc": "1125",
       "drawdown_limit_pct": "0.12",
-      "fixed_price_usdc": "25",
-      "expiry_days": "7",
+      "fixed_price_usdc": "11",
+      "expiry_days": "5",
       "renew_window_minutes": "1440",
       "buffer_alert_pct": "2"
     },
@@ -43,8 +43,8 @@
       "points_target": "100",
       "profit_target_usdc": "1500",
       "drawdown_limit_pct": "0.12",
-      "fixed_price_usdc": "35",
-      "expiry_days": "7",
+      "fixed_price_usdc": "11",
+      "expiry_days": "5",
       "renew_window_minutes": "1440",
       "buffer_alert_pct": "2"
     }

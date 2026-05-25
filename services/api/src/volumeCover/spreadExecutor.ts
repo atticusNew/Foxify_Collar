@@ -1,0 +1,1809 @@
+/**
+ * Volume Cover spread executor (Track 2 PR #2, 2026-05-23).
+ *
+ * Production analog of `bullish_spread_e2e_microtest.sh`. Provides the
+ * sequenced 4-leg open/close path for [DB] TIGHT-spread hedges with
+ * full rollback safety, hedge-pool reuse, jitter, and fill-optimizer
+ * integration.
+ *
+ * Safety invariants (mirrors the E3 microtest):
+ *
+ *   OPEN sequence (longs first):
+ *     1. BUY  long_put      — no naked exposure yet
+ *     2. SELL short_put     — covered by long_put
+ *     3. BUY  long_call     — covered combination still
+ *     4. SELL short_call    — covered by long_call
+ *
+ *   CLOSE sequence (shorts first, reverse):
+ *     1. BUY  short_call back — long_call still covers it
+ *     2. SELL long_call       — call side flat
+ *     3. BUY  short_put back  — long_put still covers it
+ *     4. SELL long_put        — fully flat
+ *
+ *   ROLLBACK (on partial open failure):
+ *     Unwind already-opened legs in reverse order of opening. Each
+ *     rollback fill is a real Bullish order against the live book.
+ *
+ *   PARTIAL CLOSE ON TRIGGER (Item 1 from 2026-05-22 product spec):
+ *     When Foxify's trigger fires, close BOTH wings of the spread but
+ *     RETAIN the long legs as Atticus salvage. Specifically:
+ *       - Close winning wing fully (collect the spread value)
+ *       - Close losing wing's short-leg back (free margin)
+ *       - Retain BOTH long legs in Atticus's pocket for sale at
+ *         discretion (salvage)
+ *
+ * This module is venue-agnostic at the executor interface boundary:
+ * caller passes a `SpreadExecutor` with buy/sell capabilities and
+ * orderbook reads. The Bullish-specific adapter lives elsewhere.
+ */
+
+import { randomUUID } from "node:crypto";
+import type { SpreadLegSpec, SpreadStructure } from "./spreadHedge";
+import {
+  sampleOpenDelayMs,
+  sampleInterLegPacingMs,
+  jitterSleepMs,
+  getConfiguredHedgeJitter
+} from "./hedgeJitter";
+import {
+  executeOptimizedFill,
+  getConfiguredFillOptimizer,
+  type FillOptimizerConfig,
+  type FillSubmitFn,
+  type FillResult
+} from "./fillOptimizer";
+
+// ─── PR-G2 (2026-05-25): mid-IOC short-leg buyback ───────────────────
+//
+// At trigger fire and at Foxify-close, the spread executor must BUY back
+// the two short legs to flatten the position. The pre-PR-G2 default ran
+// these buybacks through the standard `executeOptimizedFill` with a
+// `VC_FILL_OPTIMIZER_IMPROVEMENT_FRACTION` of 0.25 (25% inside spread).
+//
+// On Trade 1 (Foxify-001 trigger, 2026-05-23) the realized short-leg
+// buyback cost was $1,100 to extinguish ~$300 of fair-value time premium
+// — i.e., we paid roughly the worst-case ask. Pushing the first attempt
+// to the mid (0.5) keeps the same fall-through behavior (worst-case ask
+// on Expired, then deep-cross if `VC_FILL_OPTIMIZER_DEEP_CROSS_BPS` is
+// set) but tries to capture price improvement first.
+//
+// Tuned via `VC_SPREAD_SHORT_BUYBACK_MID_FRACTION` env (default 0.5):
+//   • 0.5  = true mid (PR-G2 default)
+//   • 0.25 = legacy optimizer behavior (parity with pre-PR-G2)
+//   • 0    = no improvement attempt; cross to ask immediately
+//
+// Hard-clamped to [0, 0.5] (the same range the underlying optimizer
+// enforces for `improvementFraction`) so a misconfigured env can't
+// place an order outside the bid/ask band.
+const SHORT_BUYBACK_MID_FRACTION_DEFAULT = 0.5;
+
+const getShortBuybackMidFraction = (): number => {
+  const raw = process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+  if (raw === undefined || raw === null || raw === "") {
+    return SHORT_BUYBACK_MID_FRACTION_DEFAULT;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SHORT_BUYBACK_MID_FRACTION_DEFAULT;
+  return Math.max(0, Math.min(0.5, n));
+};
+
+/**
+ * Build a fill-optimizer config tuned for the short-leg buyback path.
+ * Spreads the standard env-driven config and overrides only
+ * `improvementFraction`. The deep-cross fall-through behavior is
+ * inherited from the standard config so a thin-book buyback still
+ * walks to next-level liquidity rather than failing.
+ *
+ * Test override: pass `cfgOverride` to inject a deterministic config.
+ */
+const buildShortBuybackOptimizerCfg = (
+  cfgOverride?: FillOptimizerConfig
+): FillOptimizerConfig => {
+  const base = cfgOverride ?? getConfiguredFillOptimizer();
+  return {
+    ...base,
+    improvementFraction: cfgOverride
+      ? cfgOverride.improvementFraction
+      : getShortBuybackMidFraction()
+  };
+};
+
+// ─── Executor interface ──────────────────────────────────────────────
+
+export type ExecutorOrderResult = {
+  filled: boolean;
+  fillPriceUsdcPerBtc: number;
+  fillQtyBtc: number;
+  finalReason: string | null;
+  orderId: string | null;
+  raw?: unknown;
+};
+
+export type OrderbookTop = {
+  topBidUsdc: number | null;
+  topAskUsdc: number | null;
+  bidQtyBtc: number | null;
+  askQtyBtc: number | null;
+};
+
+/**
+ * Minimum surface the spread executor needs. Concrete adapters
+ * (Bullish, Deribit) implement this around their venue SDK.
+ */
+export type SpreadExecutorAdapter = {
+  /** Read top-of-book for a venue symbol. Returns null bid/ask if missing. */
+  getOrderbookTop(params: { symbol: string }): Promise<OrderbookTop>;
+
+  /**
+   * Submit ONE IOC limit order at the given price. This is the
+   * primitive that the fill optimizer composes around. The executor
+   * uses the venue's standard side semantics (BUY = buying the option,
+   * SELL = selling the option / opening a short).
+   */
+  submitIocLimit(params: {
+    symbol: string;
+    side: "BUY" | "SELL";
+    priceUsdcPerBtc: number;
+    quantityBtc: number;
+    intent: "open" | "close" | "rollback";
+    legRole: SpreadLegSpec["legRole"];
+    spreadGroupId: string;
+  }): Promise<ExecutorOrderResult>;
+
+  /**
+   * Map a SpreadLegSpec to the venue's contract symbol. e.g. for
+   * Bullish: BTC-USDC-YYYYMMDD-STRIKE-(P|C).
+   */
+  resolveSymbol(params: {
+    leg: SpreadLegSpec;
+    expiryIso: string;
+  }): string;
+};
+
+// ─── Leg helpers ─────────────────────────────────────────────────────
+
+type LegPlacement = {
+  legRole: SpreadLegSpec["legRole"];
+  symbol: string;
+  side: "BUY" | "SELL";
+  contractsBtc: number;
+  strikeUsdc: number;
+  expiryIso: string;
+};
+
+/**
+ * Order legs for the sequenced OPEN flow. Longs first then shorts
+ * within each wing; put pair before call pair.
+ */
+const orderLegsForOpen = (legs: SpreadLegSpec[]): SpreadLegSpec[] => {
+  const order: SpreadLegSpec["legRole"][] = ["put_long", "put_short", "call_long", "call_short"];
+  return [...legs].sort((a, b) => order.indexOf(a.legRole) - order.indexOf(b.legRole));
+};
+
+/**
+ * Order legs for the sequenced CLOSE flow. Shorts first then longs
+ * within each wing; reverse direction (call pair before put pair).
+ */
+const orderLegsForClose = (legs: SpreadLegSpec[]): SpreadLegSpec[] => {
+  const order: SpreadLegSpec["legRole"][] = ["call_short", "call_long", "put_short", "put_long"];
+  return [...legs].sort((a, b) => order.indexOf(a.legRole) - order.indexOf(b.legRole));
+};
+
+const sideForLeg = (leg: SpreadLegSpec, action: "open" | "close"): "BUY" | "SELL" => {
+  // OPEN: longs BUY, shorts SELL
+  // CLOSE: longs SELL, shorts BUY (reverse direction)
+  if (action === "open") {
+    return leg.side === "long" ? "BUY" : "SELL";
+  }
+  return leg.side === "long" ? "SELL" : "BUY";
+};
+
+const reverseSideForRollback = (openSide: "BUY" | "SELL"): "BUY" | "SELL" =>
+  openSide === "BUY" ? "SELL" : "BUY";
+
+// ─── Pre-trade liquidity gate ────────────────────────────────────────
+
+export type LiquidityCheck = {
+  passed: boolean;
+  /**
+   * Phase 0.2a → PR-A (2026-05-24): depth-aware gate config snapshot
+   * for this check.
+   *
+   *   minDepthBtcFloor    — absolute lower bound (BTC). Env:
+   *                         VC_SPREAD_MIN_DEPTH_BTC.
+   *   depthRatio          — fraction of contractsBtcPerLeg required as
+   *                         visible depth on the crossing side. Env:
+   *                         VC_SPREAD_DEPTH_RATIO_REQUIRED.
+   *   enforced            — when false, depth shortfalls only log
+   *                         telemetry (legacy log-only mode). When true,
+   *                         a thin leg fails the gate. Env:
+   *                         VC_SPREAD_DEPTH_GATE_ENFORCED.
+   *   effectiveMinDepthBtc — actual threshold applied for this check,
+   *                         computed as
+   *                           max(minDepthBtcFloor, depthRatio × contractsBtcPerLeg).
+   */
+  depthGate: {
+    minDepthBtcFloor: number;
+    depthRatio: number;
+    enforced: boolean;
+    effectiveMinDepthBtc: number;
+  };
+  legChecks: Array<{
+    legRole: SpreadLegSpec["legRole"];
+    symbol: string;
+    crossesSide: "BUY" | "SELL";
+    topBidUsdc: number | null;
+    topAskUsdc: number | null;
+    /** Observed depth in BTC on the side we're crossing. */
+    observedDepthBtc: number | null;
+    /** Depth sufficient iff observedDepth ≥ effectiveMinDepthBtc. */
+    depthSufficient: boolean;
+    sufficient: boolean;
+    reason: string | null;
+  }>;
+};
+
+/**
+ * Phase 0.2a → PR-A (2026-05-24): read depth-gate config from env.
+ *
+ * Defaults:
+ *   VC_SPREAD_MIN_DEPTH_BTC=0.3          absolute floor in BTC
+ *   VC_SPREAD_DEPTH_RATIO_REQUIRED=0.7   fraction of contract size required
+ *   VC_SPREAD_DEPTH_GATE_ENFORCED=false  log-only until flipped on Render
+ *
+ * Effective threshold per leg (computed in checkSpreadLiquidity from this
+ * config + structure.contractsBtcPerLeg):
+ *   max(VC_SPREAD_MIN_DEPTH_BTC, VC_SPREAD_DEPTH_RATIO_REQUIRED × contractsBtcPerLeg)
+ *
+ * Rationale (post Foxify-001):
+ *   The 50k_2pct_1k cell sizes ~1.0–1.3 BTC per leg at current spot. A
+ *   flat absolute floor (0.3 BTC) only catches the worst tail; partial
+ *   fills observed at 0.56 BTC depth on 77k-C with ~1 BTC orders. The
+ *   ratio knob makes the threshold scale with order size: at 1.32 BTC
+ *   contract × 0.7 ratio = 0.92 BTC required — would have caught the
+ *   Foxify-001 partial-fill scenario. The absolute floor is preserved
+ *   for the small/test cells where ratio×contracts is near zero.
+ */
+export const getConfiguredDepthGate = (): {
+  minDepthBtcFloor: number;
+  depthRatio: number;
+  enforced: boolean;
+} => {
+  const rawFloor = process.env.VC_SPREAD_MIN_DEPTH_BTC;
+  const rawRatio = process.env.VC_SPREAD_DEPTH_RATIO_REQUIRED;
+  const rawEnf = process.env.VC_SPREAD_DEPTH_GATE_ENFORCED;
+  const floorRaw = rawFloor !== undefined && rawFloor !== "" ? Number(rawFloor) : NaN;
+  const minDepthBtcFloor = Number.isFinite(floorRaw) && floorRaw > 0 ? floorRaw : 0.3;
+  const ratioRaw = rawRatio !== undefined && rawRatio !== "" ? Number(rawRatio) : NaN;
+  const depthRatio = Number.isFinite(ratioRaw) && ratioRaw >= 0 ? ratioRaw : 0.7;
+  const enforced = String(rawEnf ?? "").trim().toLowerCase() === "true";
+  return { minDepthBtcFloor, depthRatio, enforced };
+};
+
+/**
+ * Hardened liquidity gate (mirror of the E3 microtest's Phase 1).
+ * For BUYs we need a resting ASK; for SELLs we need a resting BID.
+ * Missing the side we cross would cause `Expired` returns at IOC time.
+ *
+ * Phase 0.2a → PR-A (2026-05-24): depth-aware checking. The effective
+ * minimum depth required scales with the per-leg contract size:
+ *
+ *   effectiveMinDepthBtc = max(minDepthBtcFloor, depthRatio × contractsBtcPerLeg)
+ *
+ * This catches the Foxify-001 partial-fill failure mode where ~1 BTC
+ * orders crossed into ~0.5 BTC tops without tripping the old flat 0.3
+ * BTC floor. The gate is LOG-ONLY by default; flipping
+ * VC_SPREAD_DEPTH_GATE_ENFORCED=true upgrades thin legs to a hard fail.
+ */
+export const checkSpreadLiquidity = async (params: {
+  structure: SpreadStructure;
+  adapter: SpreadExecutorAdapter;
+  action: "open" | "close";
+  /**
+   * Override the env-driven depth gate config. Tests use this to
+   * exercise enforce/log-only paths without env shenanigans.
+   */
+  depthGateOverride?: {
+    minDepthBtcFloor: number;
+    depthRatio: number;
+    enforced: boolean;
+  };
+}): Promise<LiquidityCheck> => {
+  const cfg = params.depthGateOverride ?? getConfiguredDepthGate();
+  const contractsBtc = params.structure.contractsBtcPerLeg;
+  const ratioComponent = cfg.depthRatio * contractsBtc;
+  const effectiveMinDepthBtc = Math.max(cfg.minDepthBtcFloor, ratioComponent);
+  const depthGate: LiquidityCheck["depthGate"] = {
+    minDepthBtcFloor: cfg.minDepthBtcFloor,
+    depthRatio: cfg.depthRatio,
+    enforced: cfg.enforced,
+    effectiveMinDepthBtc
+  };
+  const sequence = params.action === "open"
+    ? orderLegsForOpen(params.structure.legs)
+    : orderLegsForClose(params.structure.legs);
+  const checks: LiquidityCheck["legChecks"] = [];
+  let allPassed = true;
+  for (const leg of sequence) {
+    const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
+    const side = sideForLeg(leg, params.action);
+    const book = await params.adapter.getOrderbookTop({ symbol });
+    let sufficient = false;
+    let reason: string | null = null;
+    let observedDepthBtc: number | null = null;
+    if (side === "BUY") {
+      sufficient = typeof book.topAskUsdc === "number" && book.topAskUsdc > 0;
+      if (!sufficient) reason = "no_resting_ask_for_buy";
+      observedDepthBtc = typeof book.askQtyBtc === "number" ? book.askQtyBtc : null;
+    } else {
+      sufficient = typeof book.topBidUsdc === "number" && book.topBidUsdc > 0;
+      if (!sufficient) reason = "no_resting_bid_for_sell";
+      observedDepthBtc = typeof book.bidQtyBtc === "number" ? book.bidQtyBtc : null;
+    }
+
+    // Depth check (telemetry always, enforcement gated)
+    const depthSufficient =
+      observedDepthBtc !== null && observedDepthBtc >= effectiveMinDepthBtc;
+    if (!depthSufficient) {
+      console.warn(
+        `[spreadExecutor] thin depth observed legRole=${leg.legRole} symbol=${symbol} ` +
+          `side=${side} observed=${observedDepthBtc ?? "null"} BTC ` +
+          `effectiveMin=${effectiveMinDepthBtc} BTC (floor=${cfg.minDepthBtcFloor}, ratio=${cfg.depthRatio}, ` +
+          `contracts=${contractsBtc}) enforced=${depthGate.enforced} action=${params.action} ` +
+          `groupId=${params.structure.spreadGroupId}`
+      );
+      if (depthGate.enforced) {
+        sufficient = false;
+        reason = reason ?? `thin_depth_on_${side === "BUY" ? "ask" : "bid"}_${observedDepthBtc ?? "null"}_lt_${effectiveMinDepthBtc}`;
+      }
+    }
+
+    if (!sufficient) allPassed = false;
+    checks.push({
+      legRole: leg.legRole,
+      symbol,
+      crossesSide: side,
+      topBidUsdc: book.topBidUsdc,
+      topAskUsdc: book.topAskUsdc,
+      observedDepthBtc,
+      depthSufficient,
+      sufficient,
+      reason
+    });
+  }
+  return { passed: allPassed, legChecks: checks, depthGate };
+};
+
+// ─── Open result types ───────────────────────────────────────────────
+
+export type OpenLegRecord = {
+  legRole: SpreadLegSpec["legRole"];
+  symbol: string;
+  side: "BUY" | "SELL";
+  fillPriceUsdcPerBtc: number;
+  fillQtyBtc: number;
+  orderId: string | null;
+  attempts: number;
+  attemptedPrices: number[];
+  /**
+   * Bundle 4 (2026-05-25): set to true when this record represents a
+   * rollback attempt that did NOT close the leg at the venue. The leg
+   * was opened, the rollback IOC failed across all hardened attempts,
+   * and the contract is still owned by Atticus on Bullish. Caller MUST
+   * persist this to volume_cover_hedge_leg with status='failed' and
+   * metadata.rollback_failed_orphan=true so ops can sweep it manually.
+   *
+   * Distinct from a successful rollback (rollbackOrphan=false,
+   * fillQtyBtc>0) which leaves no on-venue position.
+   */
+  rollbackOrphan?: boolean;
+  /**
+   * Bundle 4: telemetry — whether this record came from a rollback
+   * attempt vs the original open. Useful when persisting orphan rows
+   * so ops sees the right context.
+   */
+  isRollbackAttempt?: boolean;
+};
+
+export type SpreadOpenResult = {
+  ok: boolean;
+  spreadGroupId: string;
+  legs: OpenLegRecord[];
+  failedAt: SpreadLegSpec["legRole"] | null;
+  rollbackResults: OpenLegRecord[];
+  errorReason: string | null;
+  liquidityCheck: LiquidityCheck;
+  netDebitUsdc: number;
+};
+
+// ─── OPEN ────────────────────────────────────────────────────────────
+
+const submitFnFor = (
+  adapter: SpreadExecutorAdapter,
+  symbol: string,
+  intent: "open" | "close" | "rollback",
+  legRole: SpreadLegSpec["legRole"],
+  spreadGroupId: string
+): FillSubmitFn => async ({ side, priceUsdc, quantityBtc }) => {
+  const r = await adapter.submitIocLimit({
+    symbol,
+    side,
+    priceUsdcPerBtc: priceUsdc,
+    quantityBtc,
+    intent,
+    legRole,
+    spreadGroupId
+  });
+  return {
+    filled: r.filled,
+    fillPriceUsdc: r.fillPriceUsdcPerBtc,
+    fillQtyBtc: r.fillQtyBtc,
+    finalReason: r.finalReason,
+    orderId: r.orderId,
+    raw: r.raw
+  };
+};
+
+const fillResultToLegRecord = (
+  leg: SpreadLegSpec,
+  symbol: string,
+  side: "BUY" | "SELL",
+  result: FillResult
+): OpenLegRecord => ({
+  legRole: leg.legRole,
+  symbol,
+  side,
+  fillPriceUsdcPerBtc: result.fillPriceUsdc ?? 0,
+  fillQtyBtc: result.fillQtyBtc ?? 0,
+  orderId: result.orderId,
+  attempts: result.attempts,
+  attemptedPrices: result.attemptedPrices
+});
+
+/**
+ * Sequenced 4-leg open with rollback. Each leg's IOC is routed through
+ * the fill optimizer (improved-price first, fallback to worst-case on
+ * Expired). Random open-delay + inter-leg pacing applied per
+ * hedgeJitter config.
+ */
+export const openSpread = async (params: {
+  structure: SpreadStructure;
+  adapter: SpreadExecutorAdapter;
+  /** When true, skip the liquidity gate (test path only). */
+  skipLiquidityGate?: boolean;
+  /** RNG override for deterministic tests. */
+  randFn?: () => number;
+  /** Override jitter config (test injection). */
+  noJitter?: boolean;
+}): Promise<SpreadOpenResult> => {
+  const jitterCfg = params.noJitter
+    ? {
+        ...getConfiguredHedgeJitter(),
+        openDelayEnabled: false,
+        interLegEnabled: false
+      }
+    : getConfiguredHedgeJitter();
+
+  // 1) Liquidity gate
+  const liquidity: LiquidityCheck = params.skipLiquidityGate
+    ? {
+        passed: true,
+        legChecks: [],
+        depthGate: {
+          minDepthBtcFloor: 0,
+          depthRatio: 0,
+          enforced: false,
+          effectiveMinDepthBtc: 0
+        }
+      }
+    : await checkSpreadLiquidity({
+        structure: params.structure,
+        adapter: params.adapter,
+        action: "open"
+      });
+
+  if (!liquidity.passed) {
+    return {
+      ok: false,
+      spreadGroupId: params.structure.spreadGroupId,
+      legs: [],
+      failedAt: null,
+      rollbackResults: [],
+      errorReason: "liquidity_gate_failed",
+      liquidityCheck: liquidity,
+      netDebitUsdc: 0
+    };
+  }
+
+  // 2) Optional random open delay before first leg
+  const openDelayMs = sampleOpenDelayMs({ cfg: jitterCfg, randFn: params.randFn });
+  if (openDelayMs > 0) await jitterSleepMs(openDelayMs);
+
+  // 3) Sequenced open
+  const sequence = orderLegsForOpen(params.structure.legs);
+  const placed: Array<{ leg: SpreadLegSpec; placement: LegPlacement; record: OpenLegRecord }> = [];
+  let failedAt: SpreadLegSpec["legRole"] | null = null;
+  let errorReason: string | null = null;
+
+  for (let i = 0; i < sequence.length; i++) {
+    const leg = sequence[i];
+    if (i > 0) {
+      const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
+      if (pace > 0) await jitterSleepMs(pace);
+    }
+    const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
+    const side = sideForLeg(leg, "open");
+    const book = await params.adapter.getOrderbookTop({ symbol });
+    if (
+      !Number.isFinite(book.topBidUsdc as number) ||
+      !Number.isFinite(book.topAskUsdc as number)
+    ) {
+      failedAt = leg.legRole;
+      errorReason = `book_unavailable_for_${leg.legRole}`;
+      break;
+    }
+    const fill = await executeOptimizedFill({
+      side,
+      symbol,
+      quantityBtc: leg.contractsBtc,
+      topBidUsdc: book.topBidUsdc as number,
+      topAskUsdc: book.topAskUsdc as number,
+      submitFn: submitFnFor(
+        params.adapter,
+        symbol,
+        "open",
+        leg.legRole,
+        params.structure.spreadGroupId
+      )
+    });
+    if (!fill.filled) {
+      // Bundle 7 (2026-05-25): partial-fill detection.
+      //
+      // The pre-Bundle-7 path treated `filled === false` as an atomic
+      // "nothing happened" — it broke out of the open loop without
+      // ever pushing the leg to `placed[]`. But Bullish (and most
+      // option venues) can return a partial-fill outcome:
+      //
+      //   • IOC submitted 1.13 BTC, only 0.89 BTC of bid depth at our
+      //     limit → 0.89 fills, remaining 0.24 rejected mid-fill
+      //     (typically max-leverage or insufficient-margin).
+      //   • Optimizer returns { filled: false, fillQtyBtc: 0.89, ... }
+      //
+      // Pre-Bundle-7 the rollback only ran on legs in `placed[]` so
+      // the 0.89 BTC stayed at the venue forever — a silent orphan
+      // not even Bundle 4's hardened rollback could detect (because
+      // it wasn't told the leg existed).
+      //
+      // Bundle 7: when fillQtyBtc > 0 on a "failed" leg, push the
+      // leg to `placed[]` with placement.contractsBtc = the actual
+      // partial size, then break. Bundle 4's rollback unwinds the
+      // partial in reverse-side at the correct quantity. If rollback
+      // also fails, Bundle 4 marks it as an orphan with the partial
+      // qty captured in metadata.
+      const partialQtyBtc = Number(fill.fillQtyBtc ?? 0);
+      if (partialQtyBtc > 0) {
+        console.warn(
+          `[VC ALERT] Bundle 7 partial-fill detected groupId=${params.structure.spreadGroupId} ` +
+            `legRole=${leg.legRole} symbol=${symbol} side=${side} ` +
+            `targetBtc=${leg.contractsBtc} filledBtc=${partialQtyBtc} ` +
+            `finalReason=${fill.finalReason ?? "null"} → adding to rollback queue`
+        );
+        placed.push({
+          leg,
+          placement: {
+            legRole: leg.legRole,
+            symbol,
+            side,
+            // CRITICAL: rollback unwinds based on placement.contractsBtc.
+            // Use the actual filled quantity, NOT leg.contractsBtc, so we
+            // don't try to sell more than the venue actually owes us.
+            contractsBtc: partialQtyBtc,
+            strikeUsdc: leg.strikeActualUsdc,
+            expiryIso: leg.expiryIso
+          },
+          record: {
+            ...fillResultToLegRecord(leg, symbol, side, fill),
+            // Bundle 7: mark this record as a partial-fill so callers
+            // (downstream persistence + telemetry) can distinguish it
+            // from a clean placement.
+            // The fillQtyBtc field already reflects the partial size.
+            isRollbackAttempt: false
+          }
+        });
+      }
+      failedAt = leg.legRole;
+      errorReason = fill.finalReason ? `leg_${leg.legRole}_${fill.finalReason}` : `leg_${leg.legRole}_unfilled`;
+      break;
+    }
+    placed.push({
+      leg,
+      placement: {
+        legRole: leg.legRole,
+        symbol,
+        side,
+        contractsBtc: leg.contractsBtc,
+        strikeUsdc: leg.strikeActualUsdc,
+        expiryIso: leg.expiryIso
+      },
+      record: fillResultToLegRecord(leg, symbol, side, fill)
+    });
+  }
+
+  if (failedAt !== null) {
+    // Rollback the already-placed legs in reverse order.
+    const rollback = await rollbackPlacedLegs({
+      adapter: params.adapter,
+      placed,
+      spreadGroupId: params.structure.spreadGroupId
+    });
+    return {
+      ok: false,
+      spreadGroupId: params.structure.spreadGroupId,
+      legs: placed.map((p) => p.record),
+      failedAt,
+      rollbackResults: rollback,
+      errorReason,
+      liquidityCheck: liquidity,
+      netDebitUsdc: 0
+    };
+  }
+
+  // 4) Compute net debit (sum BUYs paid − sum SELLs received).
+  const netDebitUsdc = placed.reduce((sum, p) => {
+    const legCostPerBtc = p.record.side === "BUY"
+      ? p.record.fillPriceUsdcPerBtc
+      : -p.record.fillPriceUsdcPerBtc;
+    return sum + legCostPerBtc * p.record.fillQtyBtc;
+  }, 0);
+
+  return {
+    ok: true,
+    spreadGroupId: params.structure.spreadGroupId,
+    legs: placed.map((p) => p.record),
+    failedAt: null,
+    rollbackResults: [],
+    errorReason: null,
+    liquidityCheck: liquidity,
+    netDebitUsdc: Number(netDebitUsdc.toFixed(4))
+  };
+};
+
+// ─── Rollback ────────────────────────────────────────────────────────
+
+// ─── Bundle 4 (2026-05-25): hardened rollback config ─────────────────
+//
+// The pre-Bundle-4 rollback used the standard `executeOptimizedFill`
+// with the env-driven optimizer config. In production this means:
+//   • improvementFraction=0.25 (mid-quartile attempt first)
+//   • deepCrossBps=0 by default (no walk-the-book fallback)
+// Combined with thin-book moments (the Foxify-001 partial-fill
+// scenario), a rollback could expire BOTH attempts and silently leave
+// the leg orphaned at Bullish while the upstream caller logged the
+// position as closed-with-zero-legs. That's exactly the failure mode
+// that produced the orphan cleanup we just performed.
+//
+// Bundle 4 hardens the rollback path with three changes:
+//
+//   1. Skip the "improved price" attempt entirely (improvementFraction=0).
+//      We're not optimizing for cost on rollback — we're optimizing for
+//      certainty of unwind. Cross to opposite top immediately.
+//   2. Force deepCrossBps to a high floor (1000 bps = 10%, the hard cap)
+//      regardless of env. This walks the book up to next-level liquidity
+//      so a single-tick-deep top doesn't strand the leg.
+//   3. After all attempts, if fillQtyBtc < contractsBtc (or === 0),
+//      the leg is marked rollbackOrphan=true so the caller persists
+//      it as an orphan in the DB.
+//
+// Tunable via env (defaults reflect the production-safe values):
+//   VC_ROLLBACK_DEEP_CROSS_BPS_MIN=1000   floor for rollback deep cross
+//   VC_ROLLBACK_IMPROVEMENT_FRACTION=0    set 0 to skip improvement attempt
+const ROLLBACK_DEEP_CROSS_BPS_FLOOR_DEFAULT = 1000; // 10%
+const ROLLBACK_IMPROVEMENT_FRACTION_DEFAULT = 0;
+
+const buildRollbackOptimizerCfg = (
+  cfgOverride?: FillOptimizerConfig
+): FillOptimizerConfig => {
+  const base = cfgOverride ?? getConfiguredFillOptimizer();
+  if (cfgOverride) {
+    // Test paths: respect override exactly so test scenarios can
+    // exercise the orphan-detection branch deterministically.
+    return cfgOverride;
+  }
+  const rawFloor = Number(process.env.VC_ROLLBACK_DEEP_CROSS_BPS_MIN);
+  const floorBps = Number.isFinite(rawFloor) && rawFloor >= 0
+    ? Math.min(rawFloor, 1000)
+    : ROLLBACK_DEEP_CROSS_BPS_FLOOR_DEFAULT;
+  const rawImpr = Number(process.env.VC_ROLLBACK_IMPROVEMENT_FRACTION);
+  const improvementFraction = Number.isFinite(rawImpr) && rawImpr >= 0
+    ? Math.min(rawImpr, 0.5)
+    : ROLLBACK_IMPROVEMENT_FRACTION_DEFAULT;
+  // When improvementFraction is 0 we'd otherwise submit at the same
+  // worst-case price twice (once for "improved", once for fallback) —
+  // wasteful + adds latency. Setting enabled=false skips the improved
+  // attempt entirely so the optimizer goes straight to:
+  //   attempt 1: worst-case (cross opposite top)
+  //   attempt 2: deep-cross (worst-case ± floorBps)
+  return {
+    ...base,
+    enabled: improvementFraction > 0,
+    improvementFraction,
+    deepCrossBps: Math.max(base.deepCrossBps, floorBps)
+  };
+};
+
+// ─── Bundle 8 (2026-05-25): absolute contract size cap ──────────────
+//
+// The Bundle 6 multiplier handles the over-hedge problem caused by
+// PR-G's payout overlay (matrix sizes for $1k coverage when actual
+// obligation is $800). What it does NOT handle is the **grid-edge
+// problem**: when the BTC entry price sits very close to a strike
+// grid line, the snap-to-grid produces a tiny min(K2−triggerLow,
+// K4−triggerHigh) and the formula contracts blow up 3-4×.
+//
+// Empirical examples observed today (2026-05-25):
+//
+//   Entry $75,497 (Trade #1):  K2−triggerLow = $1,013 → 0.99 BTC
+//   Entry $77,341 (afternoon): K2−triggerLow = $1,206 → 0.83 BTC
+//   Entry $77,260 (evening):   K2−triggerLow =   $285 → 3.51 BTC ←
+//
+// At entry $77,260 the multiplier 0.8 brings 3.51 → 2.81 BTC, which
+// at $540/BTC put_long premium needs $1,517 of cash. With $1,083
+// USDC we're $434 short → step 1 BUY put_long fails with
+// `Reached max leverage` (Bullish frames cash shortfall as leverage).
+//
+// Bundle 8 adds an ABSOLUTE upper bound on contract size that's
+// independent of the multiplier:
+//
+//   final_contracts = min(formula × multiplier, MAX_CONTRACTS_BTC)
+//
+// When grid alignment is favorable, the multiplier controls (e.g.,
+// 0.66-0.79 BTC). When grid alignment is bad, the cap kicks in
+// (e.g., 1.0 BTC instead of 2.81 BTC). Trade-off: the cell is
+// under-covered relative to the matrix payout in capped scenarios
+// (1.0 BTC × $285 = $285 of intrinsic vs $800 obligation = $515
+// uncovered gap). But activations succeed instead of failing
+// entirely. Atticus eats the gap on the rare grid-edge trigger.
+//
+// Configured the same way as Bundle 6 (global default + per-cell
+// JSON override):
+//
+//   VC_MAX_CONTRACTS_BTC_DEFAULT=1.0
+//   VC_MAX_CONTRACTS_BTC_JSON='{"50k_2pct_1k": 1.0, "1k_2pct_20": 0.1}'
+//
+// Hard caps:
+//   • Minimum 0.01 (Bullish granularity floor)
+//   • Maximum 10.0 (sanity ceiling — anything higher than 10 BTC
+//     per leg should be funded via larger cells)
+//
+// When neither env is set, returns Infinity = no cap (legacy).
+
+const MAX_CONTRACTS_HARD_FLOOR = 0.01;
+const MAX_CONTRACTS_HARD_CEILING = 10.0;
+
+export const getConfiguredMaxContractsBtc = (cellId: string): {
+  maxContractsBtc: number; // Infinity = no cap
+  source: "per-cell" | "default" | "no-cap";
+} => {
+  // Per-cell JSON override wins
+  const rawJson = process.env.VC_MAX_CONTRACTS_BTC_JSON;
+  if (rawJson && rawJson.trim() !== "") {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (
+        parsed && typeof parsed === "object"
+        && typeof parsed[cellId] === "number"
+        && Number.isFinite(parsed[cellId])
+      ) {
+        const m = Math.max(MAX_CONTRACTS_HARD_FLOOR, Math.min(MAX_CONTRACTS_HARD_CEILING, parsed[cellId]));
+        return { maxContractsBtc: m, source: "per-cell" };
+      }
+    } catch {
+      // Bad JSON — fall through to default
+    }
+  }
+  // Global default
+  const rawDefault = process.env.VC_MAX_CONTRACTS_BTC_DEFAULT;
+  if (rawDefault !== undefined && rawDefault !== "") {
+    const n = Number(rawDefault);
+    if (Number.isFinite(n) && n > 0) {
+      const m = Math.max(MAX_CONTRACTS_HARD_FLOOR, Math.min(MAX_CONTRACTS_HARD_CEILING, n));
+      return { maxContractsBtc: m, source: "default" };
+    }
+  }
+  // Neither set — return Infinity (no cap, legacy behavior)
+  return { maxContractsBtc: Infinity, source: "no-cap" };
+};
+
+/**
+ * Apply the configured contract size cap to a SpreadStructure. If
+ * any leg's contracts exceed the cap, ALL legs are scaled to the cap
+ * (rounded DOWN to 0.01 BTC granularity). Mutates in place.
+ *
+ * Returns whether the cap was applied + before/after for telemetry.
+ *
+ * Designed to be called AFTER applyContractMultiplier so the cap
+ * applies to the multiplier-scaled value (not the raw matrix value).
+ */
+export const applyMaxContractsCap = (params: {
+  structure: SpreadStructure;
+  cellId: string;
+  maxContractsOverride?: number;
+  granularityBtc?: number;
+}): {
+  capApplied: boolean;
+  maxContractsBtc: number;
+  source: "per-cell" | "default" | "no-cap" | "override";
+  beforeContractsBtc: number;
+  afterContractsBtc: number;
+} => {
+  const granularityBtc = params.granularityBtc ?? 0.01;
+  let maxContractsBtc: number;
+  let source: "per-cell" | "default" | "no-cap" | "override";
+  if (params.maxContractsOverride !== undefined && Number.isFinite(params.maxContractsOverride)) {
+    maxContractsBtc = Math.max(
+      MAX_CONTRACTS_HARD_FLOOR,
+      Math.min(MAX_CONTRACTS_HARD_CEILING, params.maxContractsOverride)
+    );
+    source = "override";
+  } else {
+    const cfg = getConfiguredMaxContractsBtc(params.cellId);
+    maxContractsBtc = cfg.maxContractsBtc;
+    source = cfg.source;
+  }
+  const before = params.structure.contractsBtcPerLeg;
+  if (before <= maxContractsBtc) {
+    // No cap needed — current size is within limits (or no cap set).
+    return {
+      capApplied: false,
+      maxContractsBtc,
+      source,
+      beforeContractsBtc: before,
+      afterContractsBtc: before
+    };
+  }
+  // Cap kicks in: scale ALL legs down to the cap, floor to granularity.
+  const capped = Math.max(
+    granularityBtc,
+    Math.floor(maxContractsBtc / granularityBtc) * granularityBtc
+  );
+  for (const leg of params.structure.legs) {
+    leg.contractsBtc = capped;
+  }
+  params.structure.contractsBtcPerLeg = capped;
+  return {
+    capApplied: true,
+    maxContractsBtc,
+    source,
+    beforeContractsBtc: before,
+    afterContractsBtc: capped
+  };
+};
+
+// ─── Bundle 6 (2026-05-25): per-cell contract multiplier ────────────
+//
+// The matrix-level contract sizing formula is:
+//
+//   contracts_btc = matrix.payoutUsdc / min(K2−triggerLow, K4−triggerHigh)
+//
+// This sizes the spread to deliver matrix.payoutUsdc of intrinsic at
+// trigger. PR-G's runtime payout overlay (VC_PAYOUT_OVERLAY_JSON) drops
+// the *Foxify-visible* payout below the matrix base — e.g., calm
+// regime: $1,000 base → $800 actual. The spread builder still sizes
+// for $1,000 of intrinsic though, leaving us systematically over-
+// hedged by 25% in calm regime: paying full premium for $1,000 cover
+// when our actual obligation to Foxify is $800.
+//
+// Bundle 6 lets the operator scale ALL spread legs by a multiplier:
+//
+//   final_contracts = formula_contracts × multiplier
+//
+// The intended production value is multiplier=0.8 in calm regime so
+// that final coverage matches the actual $800 Foxify obligation.
+// Operationally this:
+//   • Cuts hedge open cost ~20% (smaller premium paid)
+//   • Cuts margin reservation ~20% (smaller put + call vertical
+//     spreads on Bullish — important for capital-constrained pilot)
+//   • Improves no-trigger EV by reducing theta drag
+//   • Keeps spread intrinsic at trigger ≥ Foxify obligation (no
+//     uncovered payout gap when sized to overlay payout)
+//
+// Two ways to configure (per-cell takes precedence):
+//   VC_CONTRACT_MULT_DEFAULT=0.8       global default (any cell)
+//   VC_CONTRACT_MULT_JSON='{"50k_2pct_1k": 0.8, "1k_2pct_20": 1.0}'
+//                                       per-cell map
+//
+// Hard caps:
+//   • Minimum 0.1 (any lower and the legs round to zero on the 0.01
+//     Bullish granularity for sub-1 BTC structures).
+//   • Maximum 1.5 (we don't intentionally over-hedge by >50%; if the
+//     matrix base is wrong, fix the matrix not the multiplier).
+
+const CONTRACT_MULT_MIN = 0.1;
+const CONTRACT_MULT_MAX = 1.5;
+
+export const getConfiguredContractMultiplier = (cellId: string): {
+  multiplier: number;
+  source: "per-cell" | "default" | "matrix-base";
+} => {
+  // Per-cell JSON override wins
+  const rawJson = process.env.VC_CONTRACT_MULT_JSON;
+  if (rawJson && rawJson.trim() !== "") {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (
+        parsed && typeof parsed === "object"
+        && typeof parsed[cellId] === "number"
+        && Number.isFinite(parsed[cellId])
+      ) {
+        const m = Math.max(CONTRACT_MULT_MIN, Math.min(CONTRACT_MULT_MAX, parsed[cellId]));
+        return { multiplier: m, source: "per-cell" };
+      }
+    } catch {
+      // Bad JSON — fall through to default
+    }
+  }
+  // Global default
+  const rawDefault = process.env.VC_CONTRACT_MULT_DEFAULT;
+  if (rawDefault !== undefined && rawDefault !== "") {
+    const n = Number(rawDefault);
+    if (Number.isFinite(n)) {
+      const m = Math.max(CONTRACT_MULT_MIN, Math.min(CONTRACT_MULT_MAX, n));
+      return { multiplier: m, source: "default" };
+    }
+  }
+  // Neither set — return 1.0 (legacy behavior, matrix-base sizing)
+  return { multiplier: 1.0, source: "matrix-base" };
+};
+
+/**
+ * Apply the configured contract multiplier to a SpreadStructure. Each
+ * leg's contractsBtc is scaled, rounded to 0.01 BTC granularity, and
+ * the parent contractsBtcPerLeg is updated to match. Mutates in place.
+ *
+ * Returns the multiplier applied + before/after for telemetry.
+ */
+export const applyContractMultiplier = (params: {
+  structure: SpreadStructure;
+  cellId: string;
+  /** Test override to force a specific multiplier regardless of env. */
+  multiplierOverride?: number;
+  /** Test override to bypass min granularity rounding. */
+  granularityBtc?: number;
+}): {
+  multiplier: number;
+  source: "per-cell" | "default" | "matrix-base" | "override";
+  beforeContractsBtc: number;
+  afterContractsBtc: number;
+} => {
+  const granularityBtc = params.granularityBtc ?? 0.01;
+  let multiplier: number;
+  let source: "per-cell" | "default" | "matrix-base" | "override";
+  if (params.multiplierOverride !== undefined && Number.isFinite(params.multiplierOverride)) {
+    multiplier = Math.max(CONTRACT_MULT_MIN, Math.min(CONTRACT_MULT_MAX, params.multiplierOverride));
+    source = "override";
+  } else {
+    const cfg = getConfiguredContractMultiplier(params.cellId);
+    multiplier = cfg.multiplier;
+    source = cfg.source;
+  }
+  const before = params.structure.contractsBtcPerLeg;
+  if (multiplier === 1.0) {
+    return {
+      multiplier,
+      source,
+      beforeContractsBtc: before,
+      afterContractsBtc: before
+    };
+  }
+  // Round DOWN to granularity to avoid ever exceeding the un-multiplied
+  // size when multiplier < 1. Floor + max(granularity) so we never
+  // produce a zero-leg.
+  const rawScaled = before * multiplier;
+  const rounded = Math.max(
+    granularityBtc,
+    Math.floor(rawScaled / granularityBtc) * granularityBtc
+  );
+  for (const leg of params.structure.legs) {
+    leg.contractsBtc = rounded;
+  }
+  params.structure.contractsBtcPerLeg = rounded;
+  return {
+    multiplier,
+    source,
+    beforeContractsBtc: before,
+    afterContractsBtc: rounded
+  };
+};
+
+// ─── Bundle 5 (2026-05-25): auto-advance expiry on thin-leg ──────────
+//
+// The depth gate (PR-A) catches thin-leg situations BEFORE any order
+// goes to the venue, but only at a single fixed expiry — the cell's
+// configured `expiryHorizonDays`. In production we observed a recurring
+// rejection pattern on 50k_2pct_1k cells where:
+//
+//   • The cell's default 3d horizon → 1-day expiry on Bullish (after
+//     the next 08:00 UTC cutoff) is not always listed for the wing
+//     strikes (e.g., 79000-C may not be on the chain at the 1-day
+//     contract while 76k-78k are).
+//   • Even when listed, top-of-book depth on 1-day options can fall
+//     below the 0.7 × contractsBtc gate threshold during quiet hours.
+//   • The 2-day, 3-day, and 4-day contracts at the same strikes are
+//     uniformly liquid and well-listed.
+//
+// Bundle 5 adds a pre-flight probe across ±N days of candidate
+// expiries. The first expiry where ALL 4 legs pass the depth gate is
+// selected. Strikes don't depend on expiry so they are computed once
+// at the original expiry and reused for the probe (same SpreadLegSpec
+// shape, just different expiryIso per leg).
+//
+// Tuning:
+//   VC_EXPIRY_AUTO_ADVANCE_ENABLED=true   master switch (default true)
+//   VC_EXPIRY_AUTO_ADVANCE_MAX_DAYS=3     max days to advance from base
+//
+// When all probed expiries fail the gate, falls back to the original
+// expiry — the downstream openSpread liquidity gate will then reject
+// with the standard `liquidity_gate_failed` reason and the depth-gate
+// telemetry trail. No silent degradation.
+
+const EXPIRY_AUTO_ADVANCE_ENABLED_DEFAULT = true;
+const EXPIRY_AUTO_ADVANCE_MAX_DAYS_DEFAULT = 3;
+
+export const getConfiguredExpiryAutoAdvance = (): {
+  enabled: boolean;
+  maxAdvanceDays: number;
+} => {
+  const rawEnabled = process.env.VC_EXPIRY_AUTO_ADVANCE_ENABLED;
+  const enabled = rawEnabled === undefined || rawEnabled === ""
+    ? EXPIRY_AUTO_ADVANCE_ENABLED_DEFAULT
+    : String(rawEnabled).toLowerCase() !== "false";
+  const rawMax = Number(process.env.VC_EXPIRY_AUTO_ADVANCE_MAX_DAYS);
+  const maxAdvanceDays = Number.isFinite(rawMax) && rawMax >= 0
+    ? Math.min(7, Math.floor(rawMax)) // hard cap 7d to avoid runaway
+    : EXPIRY_AUTO_ADVANCE_MAX_DAYS_DEFAULT;
+  return { enabled, maxAdvanceDays };
+};
+
+/**
+ * Build candidate expiry ISO strings starting at the base expiry and
+ * advancing by 1 day per step up to `maxAdvanceDays`. Each candidate
+ * snaps to the same UTC hour as the base (to match Bullish's expiry
+ * cadence — typically 08:00 UTC).
+ */
+export const buildCandidateExpiries = (
+  baseExpiryIso: string,
+  maxAdvanceDays: number
+): string[] => {
+  const baseMs = Date.parse(baseExpiryIso);
+  if (!Number.isFinite(baseMs)) return [baseExpiryIso];
+  const out: string[] = [];
+  for (let d = 0; d <= maxAdvanceDays; d++) {
+    const ms = baseMs + d * 86_400_000;
+    out.push(new Date(ms).toISOString());
+  }
+  return out;
+};
+
+/**
+ * Bundle 5 (2026-05-25): probe candidate expiries and return the first
+ * one whose 4-leg depth gate fully passes. If none pass, returns the
+ * base expiry so the downstream openSpread liquidity gate handles the
+ * rejection (preserves pre-Bundle-5 behavior on a fully-thin chain).
+ *
+ * Strikes are reused unchanged — only the expiryIso on each leg
+ * differs across probes.
+ */
+export const chooseLiveExpiryForSpread = async (params: {
+  baseStructure: SpreadStructure;
+  adapter: SpreadExecutorAdapter;
+  /**
+   * Optional depth gate override for the probe phase. If omitted,
+   * uses the same env-driven config as the production gate.
+   */
+  depthGateOverride?: {
+    minDepthBtcFloor: number;
+    depthRatio: number;
+    enforced: boolean;
+  };
+  /** Test override to force a specific candidate list. */
+  candidateExpiriesIso?: string[];
+  /** Test override to force enabled/disabled regardless of env. */
+  enabledOverride?: boolean;
+  /** Test override to force max-advance regardless of env. */
+  maxAdvanceDaysOverride?: number;
+}): Promise<{
+  chosenExpiryIso: string;
+  probed: Array<{ expiryIso: string; passed: boolean; failedLegRoles: SpreadLegSpec["legRole"][] }>;
+  advancedDays: number;
+  enabled: boolean;
+}> => {
+  const cfg = getConfiguredExpiryAutoAdvance();
+  const enabled = params.enabledOverride ?? cfg.enabled;
+  const baseExpiryIso = params.baseStructure.legs[0]?.expiryIso ?? "";
+  if (!enabled || !baseExpiryIso) {
+    return {
+      chosenExpiryIso: baseExpiryIso,
+      probed: [],
+      advancedDays: 0,
+      enabled
+    };
+  }
+  const maxAdvanceDays = params.maxAdvanceDaysOverride ?? cfg.maxAdvanceDays;
+  const candidates = params.candidateExpiriesIso
+    ?? buildCandidateExpiries(baseExpiryIso, maxAdvanceDays);
+
+  const probes = await Promise.all(
+    candidates.map(async (expIso, idx) => {
+      const probeStructure: SpreadStructure = {
+        ...params.baseStructure,
+        legs: params.baseStructure.legs.map((l) => ({
+          ...l,
+          expiryIso: expIso
+        }))
+      };
+      const liq = await checkSpreadLiquidity({
+        structure: probeStructure,
+        adapter: params.adapter,
+        action: "open",
+        depthGateOverride: params.depthGateOverride ?? {
+          ...getConfiguredDepthGate(),
+          enforced: true // probe in enforce mode regardless of env so we
+                         // get accurate `passed` per candidate
+        }
+      });
+      return {
+        expiryIso: expIso,
+        idx,
+        passed: liq.passed,
+        failedLegRoles: liq.legChecks
+          .filter((c) => !c.sufficient)
+          .map((c) => c.legRole)
+      };
+    })
+  );
+
+  // First passing expiry wins — earlier expiries are preferred (lower
+  // theta cost for Atticus when no liquidity reason to skip).
+  const winner = probes.find((p) => p.passed);
+  if (winner) {
+    return {
+      chosenExpiryIso: winner.expiryIso,
+      probed: probes.map((p) => ({
+        expiryIso: p.expiryIso,
+        passed: p.passed,
+        failedLegRoles: p.failedLegRoles
+      })),
+      advancedDays: winner.idx,
+      enabled
+    };
+  }
+  // No candidate passed — return base expiry so downstream gate does
+  // its job. The full probe trail is included for telemetry.
+  return {
+    chosenExpiryIso: baseExpiryIso,
+    probed: probes.map((p) => ({
+      expiryIso: p.expiryIso,
+      passed: p.passed,
+      failedLegRoles: p.failedLegRoles
+    })),
+    advancedDays: 0,
+    enabled
+  };
+};
+
+/**
+ * Bundle 4 (2026-05-25) read-side getter so /health can surface the
+ * effective rollback hardening config. Used by the health route to
+ * confirm production env values applied as intended.
+ */
+export const getConfiguredRollbackHardening = (): {
+  improvementFraction: number;
+  deepCrossBpsFloor: number;
+} => {
+  const rawFloor = Number(process.env.VC_ROLLBACK_DEEP_CROSS_BPS_MIN);
+  const deepCrossBpsFloor = Number.isFinite(rawFloor) && rawFloor >= 0
+    ? Math.min(rawFloor, 1000)
+    : ROLLBACK_DEEP_CROSS_BPS_FLOOR_DEFAULT;
+  const rawImpr = Number(process.env.VC_ROLLBACK_IMPROVEMENT_FRACTION);
+  const improvementFraction = Number.isFinite(rawImpr) && rawImpr >= 0
+    ? Math.min(rawImpr, 0.5)
+    : ROLLBACK_IMPROVEMENT_FRACTION_DEFAULT;
+  return { improvementFraction, deepCrossBpsFloor };
+};
+
+const rollbackPlacedLegs = async (params: {
+  adapter: SpreadExecutorAdapter;
+  placed: Array<{ leg: SpreadLegSpec; placement: LegPlacement; record: OpenLegRecord }>;
+  spreadGroupId: string;
+  /** Test-only: deterministic optimizer cfg for unit tests. */
+  optimizerCfgOverride?: FillOptimizerConfig;
+}): Promise<OpenLegRecord[]> => {
+  const results: OpenLegRecord[] = [];
+  const cfg = buildRollbackOptimizerCfg(params.optimizerCfgOverride);
+  // Reverse the placement order — last opened gets unwound first.
+  for (let i = params.placed.length - 1; i >= 0; i--) {
+    const entry = params.placed[i];
+    const reverseSide = reverseSideForRollback(entry.placement.side);
+    const book = await params.adapter.getOrderbookTop({ symbol: entry.placement.symbol });
+    if (
+      !Number.isFinite(book.topBidUsdc as number) ||
+      !Number.isFinite(book.topAskUsdc as number)
+    ) {
+      // No book at all → guaranteed orphan. Persist with rollbackOrphan
+      // flag so the caller writes a DB row for ops sweep.
+      console.error(
+        `[VC ALERT] rollback orphan (no book) groupId=${params.spreadGroupId} ` +
+          `legRole=${entry.leg.legRole} symbol=${entry.placement.symbol} ` +
+          `qtyBtc=${entry.placement.contractsBtc} reverseSide=${reverseSide}`
+      );
+      results.push({
+        legRole: entry.leg.legRole,
+        symbol: entry.placement.symbol,
+        side: reverseSide,
+        fillPriceUsdcPerBtc: 0,
+        fillQtyBtc: 0,
+        orderId: null,
+        attempts: 0,
+        attemptedPrices: [],
+        rollbackOrphan: true,
+        isRollbackAttempt: true
+      });
+      continue;
+    }
+    const result = await executeOptimizedFill({
+      side: reverseSide,
+      symbol: entry.placement.symbol,
+      quantityBtc: entry.placement.contractsBtc,
+      topBidUsdc: book.topBidUsdc as number,
+      topAskUsdc: book.topAskUsdc as number,
+      cfg,
+      submitFn: submitFnFor(
+        params.adapter,
+        entry.placement.symbol,
+        "rollback",
+        entry.leg.legRole,
+        params.spreadGroupId
+      )
+    });
+    const record = fillResultToLegRecord(entry.leg, entry.placement.symbol, reverseSide, result);
+    record.isRollbackAttempt = true;
+    // Orphan iff the fill quantity is materially below the placement
+    // size. Using 0.5 of the contract as the boundary so a tiny partial
+    // (e.g., 0.0001 BTC dust on a 1 BTC order) is still treated as
+    // orphan — partial unwinds are operationally indistinguishable
+    // from full orphans for ops sweep purposes.
+    const filledBtc = Number(result.fillQtyBtc ?? 0);
+    const expectedBtc = Number(entry.placement.contractsBtc);
+    const filledRatio = expectedBtc > 0 ? filledBtc / expectedBtc : 0;
+    if (filledRatio < 0.5) {
+      record.rollbackOrphan = true;
+      console.error(
+        `[VC ALERT] rollback orphan (unfilled) groupId=${params.spreadGroupId} ` +
+          `legRole=${entry.leg.legRole} symbol=${entry.placement.symbol} ` +
+          `expectedBtc=${expectedBtc} filledBtc=${filledBtc} attempts=${result.attempts} ` +
+          `attemptedPrices=${JSON.stringify(result.attemptedPrices)} ` +
+          `finalReason=${result.finalReason ?? "null"}`
+      );
+    }
+    results.push(record);
+  }
+  return results;
+};
+
+// ─── CLOSE (full sequenced) ──────────────────────────────────────────
+
+export type SpreadCloseResult = {
+  ok: boolean;
+  spreadGroupId: string;
+  legs: OpenLegRecord[];
+  failedAt: SpreadLegSpec["legRole"] | null;
+  errorReason: string | null;
+  totalProceedsUsdc: number;
+};
+
+export const closeSpread = async (params: {
+  structure: SpreadStructure;
+  adapter: SpreadExecutorAdapter;
+  randFn?: () => number;
+}): Promise<SpreadCloseResult> => {
+  const jitterCfg = getConfiguredHedgeJitter();
+  const sequence = orderLegsForClose(params.structure.legs);
+  const closed: OpenLegRecord[] = [];
+  let failedAt: SpreadLegSpec["legRole"] | null = null;
+  let errorReason: string | null = null;
+
+  for (let i = 0; i < sequence.length; i++) {
+    const leg = sequence[i];
+    if (i > 0) {
+      const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
+      if (pace > 0) await jitterSleepMs(pace);
+    }
+    const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
+    const side = sideForLeg(leg, "close");
+    const book = await params.adapter.getOrderbookTop({ symbol });
+    if (
+      !Number.isFinite(book.topBidUsdc as number) ||
+      !Number.isFinite(book.topAskUsdc as number)
+    ) {
+      failedAt = leg.legRole;
+      errorReason = `book_unavailable_for_${leg.legRole}`;
+      break;
+    }
+    const result = await executeOptimizedFill({
+      side,
+      symbol,
+      quantityBtc: leg.contractsBtc,
+      topBidUsdc: book.topBidUsdc as number,
+      topAskUsdc: book.topAskUsdc as number,
+      submitFn: submitFnFor(
+        params.adapter,
+        symbol,
+        "close",
+        leg.legRole,
+        params.structure.spreadGroupId
+      )
+    });
+    if (!result.filled) {
+      failedAt = leg.legRole;
+      errorReason = result.finalReason ? `leg_${leg.legRole}_${result.finalReason}` : `leg_${leg.legRole}_unfilled`;
+      break;
+    }
+    closed.push(fillResultToLegRecord(leg, symbol, side, result));
+  }
+
+  // Total proceeds = sum (SELLs received − BUYs paid). For close, longs
+  // are sold (proceeds in), shorts are bought back (proceeds out).
+  const totalProceedsUsdc = closed.reduce((sum, l) => {
+    const sign = l.side === "SELL" ? 1 : -1;
+    return sum + sign * l.fillPriceUsdcPerBtc * l.fillQtyBtc;
+  }, 0);
+
+  return {
+    ok: failedAt === null,
+    spreadGroupId: params.structure.spreadGroupId,
+    legs: closed,
+    failedAt,
+    errorReason,
+    totalProceedsUsdc: Number(totalProceedsUsdc.toFixed(4))
+  };
+};
+
+// ─── PARTIAL CLOSE ON TRIGGER (Item 1) ───────────────────────────────
+
+/**
+ * Item 1 partial-close on Foxify trigger:
+ *
+ *   - Close the SHORT leg of the WINNING wing first (capture proceeds)
+ *   - Close the SHORT leg of the LOSING wing back (free margin)
+ *   - RETAIN both LONG legs in Atticus's pocket for salvage
+ *
+ * The long legs become the "salvage retention" — Atticus chooses when
+ * to sell them (separately tracked in volume_cover_hedge_leg with
+ * retained_role).
+ *
+ * Note: this is NOT the same as closeSpread. closeSpread closes ALL 4
+ * legs and ends the hedge pool entry. This partial-close consumes the
+ * pool entry's capacity by $1k but leaves Atticus with two long
+ * options to monetize on his timing.
+ */
+export type SpreadPartialCloseResult = {
+  ok: boolean;
+  spreadGroupId: string;
+  triggerDirection: "high" | "low";
+  shortLegsClosed: OpenLegRecord[];
+  /**
+   * 2026-05-23: dual-mode return. When `sellLongsAtTrigger=true` (the
+   * default after first live trigger post-mortem), `longLegsSold` is
+   * populated with actual fills + prices. When false (legacy behavior),
+   * `longLegsRetained` is populated and longs are kept for hedge mgr.
+   * EXACTLY ONE of these arrays has fills; the other is empty.
+   */
+  longLegsSold: OpenLegRecord[];
+  longLegsRetained: Array<{
+    legRole: SpreadLegSpec["legRole"];
+    symbol: string;
+    contractsBtc: number;
+    strikeActualUsdc: number;
+  }>;
+  failedAt: SpreadLegSpec["legRole"] | null;
+  errorReason: string | null;
+  shortLegProceedsUsdc: number;
+  longLegProceedsUsdc: number;
+};
+
+/**
+ * 2026-05-23 (Foxify-001 trigger post-mortem): how to handle the LONG
+ * legs of a [DB] spread when the trigger fires. Originally a boolean
+ * (`VC_SPREAD_SELL_LONGS_AT_TRIGGER`); 2026-05-25 (PR-Bundle-3-B)
+ * generalized to a 3-way mode because the winner and loser have very
+ * different profiles at trigger:
+ *
+ *   `both`        — sell both longs immediately at trigger fire (legacy
+ *                   PR-C default). Captures the winner's peak intrinsic
+ *                   but eats the loser's residual time value AND leaves
+ *                   nothing to ladder-net into the next position.
+ *   `winner_only` — sell the winner immediately (peak capture, PR-C
+ *                   benefit), retain the loser for the hedge manager's
+ *                   Rule 7 (loser_floor) + Rule 10 (near-ATM days
+ *                   remaining). Retained loser is also eligible for
+ *                   ladder netting into a same-fingerprint reopen.
+ *                   *** RECOMMENDED DEFAULT post-Bundle-3-B ***
+ *   `none`        — retain BOTH longs (legacy pre-PR-C behavior; useful
+ *                   only when reverting to debug something).
+ *
+ * Backward-compat: if `VC_SPREAD_LONG_TRIGGER_POLICY` is unset, fall
+ * through to the legacy `VC_SPREAD_SELL_LONGS_AT_TRIGGER` boolean
+ * (true → "both", false → "none"). Without either env, default to
+ * `winner_only`.
+ */
+export type LongTriggerPolicy = "both" | "winner_only" | "none";
+
+export const getConfiguredLongTriggerPolicy = (): LongTriggerPolicy => {
+  const raw = process.env.VC_SPREAD_LONG_TRIGGER_POLICY;
+  if (typeof raw === "string" && raw.length > 0) {
+    const v = raw.trim().toLowerCase();
+    if (v === "both" || v === "winner_only" || v === "none") return v;
+    // Fall through silently on garbage rather than block; default applies.
+  }
+  // Legacy boolean fallback for back-compat with pre-Bundle-3-B envs.
+  const legacy = process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
+  if (legacy !== undefined && legacy !== null && legacy !== "") {
+    return String(legacy).trim().toLowerCase() === "false" ? "none" : "both";
+  }
+  return "winner_only";
+};
+
+/**
+ * Legacy boolean form, preserved for tests + old env reads. Maps the
+ * 3-way mode back to a boolean for paths that only care whether ANY
+ * long-sell happens at trigger. Use `getConfiguredLongTriggerPolicy`
+ * for full fidelity.
+ */
+const shouldSellLongsAtTrigger = (): boolean => {
+  const policy = getConfiguredLongTriggerPolicy();
+  return policy === "both" || policy === "winner_only";
+};
+
+/**
+ * 2026-05-24 (PR-C): Parallelize the two long-leg sales after shorts
+ * close. Sequential implementation paid 50-200ms inter-leg jitter +
+ * waited for winner-side fill before placing loser-side, costing
+ * ~1-3s wall-clock during a fire while BTC mean-reverts. Parallel
+ * execution overlaps the IOC + status-poll for both legs concurrently.
+ *
+ * Default ON. Disable via VC_SPREAD_PARALLEL_LONG_SELLS=false to
+ * recover legacy sequential ordering (winner-first, then loser).
+ *
+ * Note: log/audit ordering is preserved as winner-first regardless of
+ * actual fill ordering by sorting `longLegsSold` after Promise.all.
+ */
+const shouldParallelizeLongSells = (): boolean => {
+  const raw = process.env.VC_SPREAD_PARALLEL_LONG_SELLS;
+  if (raw === undefined || raw === null || raw === "") return true; // default ON
+  return String(raw).trim().toLowerCase() !== "false";
+};
+
+export const partialCloseSpreadOnTrigger = async (params: {
+  structure: SpreadStructure;
+  adapter: SpreadExecutorAdapter;
+  triggerDirection: "high" | "low";
+  randFn?: () => number;
+  /**
+   * Legacy boolean override (kept for back-compat). When set, mapped to
+   *   true  → policy "both"
+   *   false → policy "none"
+   * Prefer `longTriggerPolicyOverride` for new code paths.
+   */
+  sellLongsAtTriggerOverride?: boolean;
+  /**
+   * PR-Bundle-3-B (2026-05-25): explicit 3-way policy override. Wins
+   * over `sellLongsAtTriggerOverride` and the env. Used by:
+   *   • Foxify-close path (closePosition): `none` (retain both)
+   *   • Tests asserting specific behavior
+   */
+  longTriggerPolicyOverride?: LongTriggerPolicy;
+  /**
+   * PR-G2: override the fill-optimizer config used for the SHORT-leg
+   * buyback path (test-only). Production reads
+   * VC_SPREAD_SHORT_BUYBACK_MID_FRACTION via getShortBuybackMidFraction.
+   * The long-sale path is NOT affected by this override; long sales
+   * keep the standard env-driven optimizer config.
+   */
+  shortBuybackOptimizerCfgOverride?: FillOptimizerConfig;
+}): Promise<SpreadPartialCloseResult> => {
+  const jitterCfg = getConfiguredHedgeJitter();
+  // PR-G2: build the short-buyback-specific optimizer config ONCE (so the
+  // env read is consistent across the two short legs of this trigger).
+  // Long sales below intentionally do NOT pass cfg, so they keep the
+  // standard 0.25 improvement fraction — only short buybacks aim at mid.
+  const shortBuybackCfg = buildShortBuybackOptimizerCfg(
+    params.shortBuybackOptimizerCfgOverride
+  );
+  // Per Item 1: close BOTH wings' SHORT legs immediately. Retain both LONG legs.
+  // Close order: winning side short FIRST (to lock in proceeds), then losing side short.
+  // For high trigger: winning side is calls; losing side is puts.
+  // For low  trigger: winning side is puts;  losing side is calls.
+  const shortLegsByDirection: Record<"high" | "low", SpreadLegSpec["legRole"][]> = {
+    high: ["call_short", "put_short"],
+    low: ["put_short", "call_short"]
+  };
+  const shortOrder = shortLegsByDirection[params.triggerDirection];
+  const shortLegs = shortOrder
+    .map((role) => params.structure.legs.find((l) => l.legRole === role))
+    .filter((l): l is SpreadLegSpec => !!l);
+
+  const closedShorts: OpenLegRecord[] = [];
+  let failedAt: SpreadLegSpec["legRole"] | null = null;
+  let errorReason: string | null = null;
+
+  for (let i = 0; i < shortLegs.length; i++) {
+    const leg = shortLegs[i];
+    if (i > 0) {
+      const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
+      if (pace > 0) await jitterSleepMs(pace);
+    }
+    const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
+    const side: "BUY" | "SELL" = "BUY"; // close a short by buying back
+    const book = await params.adapter.getOrderbookTop({ symbol });
+    if (
+      !Number.isFinite(book.topBidUsdc as number) ||
+      !Number.isFinite(book.topAskUsdc as number)
+    ) {
+      failedAt = leg.legRole;
+      errorReason = `book_unavailable_for_${leg.legRole}`;
+      break;
+    }
+    const result = await executeOptimizedFill({
+      side,
+      symbol,
+      quantityBtc: leg.contractsBtc,
+      topBidUsdc: book.topBidUsdc as number,
+      topAskUsdc: book.topAskUsdc as number,
+      // PR-G2: try mid first on short buybacks (default fraction 0.5).
+      // Falls through to worst-case ask + deep-cross via the standard
+      // optimizer cascade if mid expires.
+      cfg: shortBuybackCfg,
+      submitFn: submitFnFor(
+        params.adapter,
+        symbol,
+        "close",
+        leg.legRole,
+        params.structure.spreadGroupId
+      )
+    });
+    if (!result.filled) {
+      failedAt = leg.legRole;
+      errorReason = result.finalReason
+        ? `leg_${leg.legRole}_${result.finalReason}`
+        : `leg_${leg.legRole}_unfilled`;
+      break;
+    }
+    closedShorts.push(fillResultToLegRecord(leg, symbol, side, result));
+  }
+
+  const shortLegProceedsUsdc = closedShorts.reduce(
+    (sum, l) => sum + -1 * l.fillPriceUsdcPerBtc * l.fillQtyBtc, // BUY = cost
+    0
+  );
+
+  // ─── 2026-05-25 (PR-Bundle-3-B): long-trigger policy ───
+  // Resolve the policy in this precedence:
+  //   1. Explicit `longTriggerPolicyOverride` from caller (test injection
+  //      OR Foxify-close path setting "none")
+  //   2. Legacy `sellLongsAtTriggerOverride` boolean (back-compat;
+  //      true → "both", false → "none")
+  //   3. Env-driven default via getConfiguredLongTriggerPolicy
+  //      (post-Bundle-3-B default: "winner_only")
+  let longTriggerPolicy: LongTriggerPolicy;
+  if (params.longTriggerPolicyOverride !== undefined) {
+    longTriggerPolicy = params.longTriggerPolicyOverride;
+  } else if (params.sellLongsAtTriggerOverride !== undefined) {
+    longTriggerPolicy = params.sellLongsAtTriggerOverride ? "both" : "none";
+  } else {
+    longTriggerPolicy = getConfiguredLongTriggerPolicy();
+  }
+  // Winner is on the trigger side; loser is the opposite wing.
+  const winnerRole: SpreadLegSpec["legRole"] =
+    params.triggerDirection === "high" ? "call_long" : "put_long";
+  const loserRole: SpreadLegSpec["legRole"] =
+    params.triggerDirection === "high" ? "put_long" : "call_long";
+  const longLegsOrder: SpreadLegSpec["legRole"][] = [winnerRole, loserRole];
+
+  const longLegsSold: OpenLegRecord[] = [];
+  const longLegsRetained: SpreadPartialCloseResult["longLegsRetained"] = [];
+  let longLegProceedsUsdc = 0;
+
+  // 2026-05-24 (PR-C): per-leg sale task. Returns either a sold record
+  // or a retained stub. Used by both sequential and parallel paths.
+  type LongSaleOutcome =
+    | {
+        kind: "sold";
+        order: number;
+        legRole: SpreadLegSpec["legRole"];
+        record: OpenLegRecord;
+      }
+    | {
+        kind: "retained";
+        order: number;
+        legRole: SpreadLegSpec["legRole"];
+        retained: SpreadPartialCloseResult["longLegsRetained"][number];
+      }
+    | null;
+
+  const sellOneLong = async (
+    role: SpreadLegSpec["legRole"],
+    order: number
+  ): Promise<LongSaleOutcome> => {
+    const leg = params.structure.legs.find((l) => l.legRole === role);
+    if (!leg) return null;
+    const symbol = params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso });
+    const side: "BUY" | "SELL" = "SELL"; // close a long by selling
+    const book = await params.adapter.getOrderbookTop({ symbol });
+    if (
+      !Number.isFinite(book.topBidUsdc as number) ||
+      !Number.isFinite(book.topAskUsdc as number)
+    ) {
+      // Fallback to retain: orderbook unavailable, hedge manager
+      // will try again later via legacy Rule 4/5/7 path.
+      console.warn(
+        `[spreadExecutor] long sell skipped (no orderbook) legRole=${leg.legRole}; falling back to retain`
+      );
+      return {
+        kind: "retained",
+        order,
+        legRole: leg.legRole,
+        retained: {
+          legRole: leg.legRole,
+          symbol,
+          contractsBtc: leg.contractsBtc,
+          strikeActualUsdc: leg.strikeActualUsdc
+        }
+      };
+    }
+    const result = await executeOptimizedFill({
+      side,
+      symbol,
+      quantityBtc: leg.contractsBtc,
+      topBidUsdc: book.topBidUsdc as number,
+      topAskUsdc: book.topAskUsdc as number,
+      submitFn: submitFnFor(
+        params.adapter,
+        symbol,
+        "close",
+        leg.legRole,
+        params.structure.spreadGroupId
+      )
+    });
+    if (result.filled) {
+      const record = fillResultToLegRecord(leg, symbol, side, result);
+      return { kind: "sold", order, legRole: leg.legRole, record };
+    }
+    // Sell failed — fall back to retain so hedge manager can
+    // attempt later via its existing rule curve. This is the same
+    // path strangle mode legs take. NOT considered fatal: trigger
+    // partial-close was still successful (shorts closed); we just
+    // retain instead of sell on this one leg.
+    console.warn(
+      `[spreadExecutor] long sell failed legRole=${leg.legRole} reason=${result.finalReason}; falling back to retain`
+    );
+    return {
+      kind: "retained",
+      order,
+      legRole: leg.legRole,
+      retained: {
+        legRole: leg.legRole,
+        symbol,
+        contractsBtc: leg.contractsBtc,
+        strikeActualUsdc: leg.strikeActualUsdc
+      }
+    };
+  };
+
+  const collectLongOutcomes = (outcomes: Array<LongSaleOutcome>): void => {
+    // Sort by intended order (winner-first) for stable log/audit shape
+    // regardless of which leg's IOC settled first on the wire.
+    const ordered = outcomes
+      .filter((o): o is NonNullable<LongSaleOutcome> => o !== null)
+      .sort((a, b) => a.order - b.order);
+    for (const outcome of ordered) {
+      if (outcome.kind === "sold") {
+        longLegsSold.push(outcome.record);
+        longLegProceedsUsdc +=
+          outcome.record.fillPriceUsdcPerBtc * outcome.record.fillQtyBtc;
+      } else {
+        longLegsRetained.push(outcome.retained);
+      }
+    }
+  };
+
+  // If a short leg failed earlier, do NOT attempt long sales — bail
+  // out cleanly. Caller will handle the partial-close failure.
+  if (failedAt === null && longTriggerPolicy !== "none") {
+    // Resolve the SET of long-roles to sell based on policy.
+    //   "both"        → sell winner + loser (legacy PR-C behavior)
+    //   "winner_only" → sell winner only; loser falls through to retain
+    //   "none"        → handled by the else-branch (no sales)
+    const rolesToSell: SpreadLegSpec["legRole"][] =
+      longTriggerPolicy === "winner_only" ? [winnerRole] : longLegsOrder;
+    const rolesToRetain: SpreadLegSpec["legRole"][] =
+      longTriggerPolicy === "winner_only" ? [loserRole] : [];
+
+    if (rolesToSell.length === 1 || !shouldParallelizeLongSells()) {
+      // Sequential — necessary for winner_only (only one leg to sell)
+      // and legacy escape for "both" if VC_SPREAD_PARALLEL_LONG_SELLS=false.
+      const outcomes: LongSaleOutcome[] = [];
+      for (let i = 0; i < rolesToSell.length; i++) {
+        if (i > 0) {
+          const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
+          if (pace > 0) await jitterSleepMs(pace);
+        }
+        outcomes.push(await sellOneLong(rolesToSell[i], i));
+      }
+      collectLongOutcomes(outcomes);
+    } else {
+      // Parallel: kick off both long sales concurrently. Each task
+      // independently fetches its orderbook + fires IOC. The total
+      // wall-clock is max(t_winner, t_loser) instead of sum, which
+      // matters during trigger fire (every 100ms costs intrinsic).
+      const tasks = rolesToSell.map((role, i) => sellOneLong(role, i));
+      const settled = await Promise.all(tasks);
+      collectLongOutcomes(settled);
+    }
+
+    // Add retained-loser stubs (winner_only mode). Symbol resolution
+    // mirrors the orderbook-unavailable branch of sellOneLong so the
+    // hedge manager can pick them up cleanly via the regular Rule 7
+    // (loser_floor) + Rule 10 (near-ATM-days) path.
+    for (const role of rolesToRetain) {
+      const leg = params.structure.legs.find((l) => l.legRole === role);
+      if (!leg) continue;
+      longLegsRetained.push({
+        legRole: leg.legRole,
+        symbol: params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso }),
+        contractsBtc: leg.contractsBtc,
+        strikeActualUsdc: leg.strikeActualUsdc
+      });
+    }
+  } else if (failedAt === null) {
+    // policy === "none": retain both longs for the hedge manager.
+    for (const leg of params.structure.legs.filter((l) => l.side === "long")) {
+      longLegsRetained.push({
+        legRole: leg.legRole,
+        symbol: params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso }),
+        contractsBtc: leg.contractsBtc,
+        strikeActualUsdc: leg.strikeActualUsdc
+      });
+    }
+  }
+
+  return {
+    ok: failedAt === null,
+    spreadGroupId: params.structure.spreadGroupId,
+    triggerDirection: params.triggerDirection,
+    shortLegsClosed: closedShorts,
+    longLegsSold,
+    longLegsRetained,
+    failedAt,
+    errorReason,
+    shortLegProceedsUsdc: Number(shortLegProceedsUsdc.toFixed(4)),
+    longLegProceedsUsdc: Number(longLegProceedsUsdc.toFixed(4))
+  };
+};
+
+// ─── Utilities re-exported for tests ─────────────────────────────────
+
+export const __testHelpers = {
+  orderLegsForOpen,
+  orderLegsForClose,
+  sideForLeg,
+  reverseSideForRollback,
+  shouldParallelizeLongSells,
+  // PR-G2 short-buyback mid-IOC primitives — re-exported for tests so the
+  // env-default + override behavior can be asserted without spawning a
+  // subprocess.
+  getShortBuybackMidFraction,
+  buildShortBuybackOptimizerCfg,
+  // PR-Bundle-3-B long-trigger policy resolver — re-exported for tests.
+  shouldSellLongsAtTrigger,
+  newSpreadGroupId: () => `vc-spread-${randomUUID()}`
+};

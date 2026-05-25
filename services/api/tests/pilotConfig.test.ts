@@ -28,7 +28,7 @@ test("parsePilotVenueMode accepts known values", () => {
   assert.equal(parsePilotVenueMode("ibkr_cme_live"), "ibkr_cme_live");
   assert.equal(parsePilotVenueMode("ibkr_cme_paper"), "ibkr_cme_paper");
   assert.equal(parsePilotVenueMode("bullish_testnet"), "bullish_testnet");
-  assert.equal(parsePilotVenueMode(undefined), "deribit_test");
+  assert.equal(parsePilotVenueMode(undefined), "bullish_testnet");
 });
 
 test("parsePilotVenueMode fails fast on unknown values", () => {
@@ -97,10 +97,13 @@ test("parsePilotPricingMode validates known values", () => {
 });
 
 test("parsePilotQuoteMinNotionalUsdc enforces pilot floor", () => {
-  assert.equal(parsePilotQuoteMinNotionalUsdc(undefined), 1000);
-  assert.equal(parsePilotQuoteMinNotionalUsdc("1500"), 1500);
+  // Bundle C: pilot min notional floor raised to $10k (Foxify pilot
+  // §3.1 sizing). Configured values below the floor are clamped UP.
+  assert.equal(parsePilotQuoteMinNotionalUsdc(undefined), 10000);
+  assert.equal(parsePilotQuoteMinNotionalUsdc("15000"), 15000);
   // Never allow a configured value below the pilot safety floor.
-  assert.equal(parsePilotQuoteMinNotionalUsdc("100"), 500);
+  assert.equal(parsePilotQuoteMinNotionalUsdc("100"), 10000);
+  assert.equal(parsePilotQuoteMinNotionalUsdc("1500"), 10000);
   assert.throws(
     () => parsePilotQuoteMinNotionalUsdc("0"),
     /invalid_pilot_quote_min_notional_usdc/

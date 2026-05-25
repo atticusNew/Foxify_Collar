@@ -121,30 +121,30 @@ test("resolvePilotRoundedPremiumDisplay returns rounded UI chart without changin
     protectedNotionalUsd: new Decimal("5000"),
     drawdownFloorPct: new Decimal("0.2")
   });
-  assert.equal(bronze.roundedClientPremiumUsd.toFixed(10), "125.0000000000");
-  assert.equal(bronze.roundedPremiumPer1kUsd.toFixed(10), "25.0000000000");
+  assert.equal(bronze.roundedClientPremiumUsd.toFixed(10), "55.0000000000");
+  assert.equal(bronze.roundedPremiumPer1kUsd.toFixed(10), "11.0000000000");
 
   const silver = resolvePilotRoundedPremiumDisplay({
     tierName: "Pro (Silver)",
     protectedNotionalUsd: new Decimal("10000"),
     drawdownFloorPct: new Decimal("0.15")
   });
-  assert.equal(silver.roundedClientPremiumUsd.toFixed(10), "210.0000000000");
-  assert.equal(silver.roundedPremiumPer1kUsd.toFixed(10), "21.0000000000");
+  assert.equal(silver.roundedClientPremiumUsd.toFixed(10), "110.0000000000");
+  assert.equal(silver.roundedPremiumPer1kUsd.toFixed(10), "11.0000000000");
 
   const gold = resolvePilotRoundedPremiumDisplay({
     tierName: "Pro (Gold)",
     protectedNotionalUsd: new Decimal("25000"),
     drawdownFloorPct: new Decimal("0.12")
   });
-  assert.equal(gold.roundedClientPremiumUsd.toFixed(10), "450.0000000000");
-  assert.equal(gold.roundedPremiumPer1kUsd.toFixed(10), "18.0000000000");
+  assert.equal(gold.roundedClientPremiumUsd.toFixed(10), "275.0000000000");
+  assert.equal(gold.roundedPremiumPer1kUsd.toFixed(10), "11.0000000000");
 
   const platinum = resolvePilotRoundedPremiumDisplay({
     tierName: "Pro (Platinum)",
     protectedNotionalUsd: new Decimal("50000"),
     drawdownFloorPct: new Decimal("0.12")
   });
-  assert.equal(platinum.roundedClientPremiumUsd.toFixed(10), "850.0000000000");
-  assert.equal(platinum.roundedPremiumPer1kUsd.toFixed(10), "17.0000000000");
+  assert.equal(platinum.roundedClientPremiumUsd.toFixed(10), "550.0000000000");
+  assert.equal(platinum.roundedPremiumPer1kUsd.toFixed(10), "11.0000000000");
 });

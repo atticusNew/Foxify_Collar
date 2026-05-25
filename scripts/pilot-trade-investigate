@@ -1,0 +1,277 @@
+#!/usr/bin/env bash
+#
+# pilot-trade-investigate <protection-id> [--logs <path>]
+#
+# Pulls the full lifecycle of a single protection from the pilot API
+# (protection record, ledger entries, venue executions, price
+# snapshots) and prints a readable timeline. Optionally ingests a
+# pasted Render log file for cross-reference of [HedgeManager] /
+# [TriggerMonitor] / [OptionSelection] lines mentioning the
+# protection or its quote IDs.
+#
+# Setup once per shell:
+#   export PILOT_API="https://foxify-pilot-new.onrender.com"
+#   export PILOT_ADMIN_TOKEN="<your token>"
+#
+# Usage:
+#   ./scripts/pilot-trade-investigate c84dbbe9-f1c9-4811-bcb5-11999798b143
+#   ./scripts/pilot-trade-investigate c84dbbe9... --logs /tmp/render-tail.log
+#   ./scripts/pilot-trade-investigate c84dbbe9... --json
+#
+# Designed for post-hoc TP recovery analysis — answers "what happened
+# during this trade and why did TP recover what it recovered?"
+
+set -e
+set -o pipefail
+
+PROTECTION_ID=""
+LOG_PATH=""
+JSON=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --logs|-l)
+      LOG_PATH="$2"
+      shift 2
+      ;;
+    --json|-j)
+      JSON=1
+      shift
+      ;;
+    --help|-h)
+      sed -n '2,30p' "$0" | sed 's/^# //;s/^#//'
+      exit 0
+      ;;
+    *)
+      if [ -z "$PROTECTION_ID" ]; then
+        PROTECTION_ID="$1"
+      else
+        echo "Unknown argument: $1" >&2
+        exit 2
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [ -z "$PROTECTION_ID" ]; then
+  echo "ERROR: protection ID is required as first positional argument" >&2
+  echo "Usage: $0 <protection-id> [--logs <path>] [--json]" >&2
+  exit 2
+fi
+
+API="${PILOT_API:-https://foxify-pilot-new.onrender.com}"
+TOKEN="${PILOT_ADMIN_TOKEN}"
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: PILOT_ADMIN_TOKEN not set" >&2
+  exit 2
+fi
+
+if [ -t 1 ] && [ "$JSON" = "0" ]; then
+  GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+else
+  GREEN=''; YELLOW=''; RED=''; BLUE=''; BOLD=''; DIM=''; NC=''
+fi
+
+# Fetch lifecycle
+RESP=$(curl -s -H "x-admin-token: $TOKEN" "$API/pilot/admin/protections/$PROTECTION_ID/lifecycle")
+STATUS_CHECK=$(echo "$RESP" | python3 -c "import sys,json
+try: d=json.load(sys.stdin); print(d.get('status','?'))
+except: print('parse_error')" 2>/dev/null)
+
+if [ "$STATUS_CHECK" != "ok" ]; then
+  echo -e "${RED}ERROR:${NC} lifecycle fetch failed:" >&2
+  echo "$RESP" | python3 -m json.tool >&2 2>/dev/null || echo "$RESP" >&2
+  exit 1
+fi
+
+if [ "$JSON" = "1" ]; then
+  echo "$RESP" | python3 -m json.tool
+  exit 0
+fi
+
+# Extract key fields and emit a readable timeline.
+echo "$RESP" | python3 - <<'PYEOF'
+import json, sys
+d = json.load(sys.stdin)
+p = d.get("protection", {}) or {}
+ledger = d.get("ledger", []) or []
+execs = d.get("executions", []) or []
+snaps = d.get("priceSnapshots", []) or []
+
+bold  = "\033[1m"
+dim   = "\033[2m"
+green = "\033[0;32m"
+yel   = "\033[0;33m"
+red   = "\033[0;31m"
+blue  = "\033[0;34m"
+nc    = "\033[0m"
+
+def fmt_money(v):
+    try:
+        n = float(v)
+        return f"${n:,.2f}"
+    except Exception:
+        return str(v)
+
+print()
+print(f"{bold}TRADE LIFECYCLE — {p.get('id','?')}{nc}")
+print(f"{dim}{p.get('createdAt','?')}{nc}")
+print()
+
+# Header — what kind of trade is it
+md = p.get("metadata") or {}
+ptype = md.get("protectionType") or p.get("side") or "?"
+slpct = p.get("slPct") or md.get("slPct") or "?"
+status = p.get("status") or "?"
+hedge_status = p.get("hedgeStatus") or "?"
+
+status_color = green if status == "active" else yel if status == "triggered" else red if "fail" in str(status) else dim
+print(f"{bold}TYPE{nc}  {ptype.upper()} {slpct}% SL · {status_color}{status}{nc} · hedge {hedge_status}")
+print(f"{bold}SIZE{nc}  notional={fmt_money(p.get('protectedNotional','0'))} · qty={p.get('size','?')}")
+print(f"{bold}MKT{nc}   entry={fmt_money(p.get('entryPrice','?'))} · floor={fmt_money(p.get('floorPrice','?'))}")
+
+# Strike + gap
+strike = md.get("selectedStrike") or md.get("strike")
+gap = md.get("strikeGapToTriggerUsd")
+if strike is not None:
+    gap_str = ""
+    if gap is not None:
+        try:
+            gn = float(gap)
+            gap_str = f" · gap {fmt_money(gn)} {'ABOVE' if gn > 0 else 'BELOW'} trigger"
+        except Exception: pass
+    print(f"{bold}STRK{nc}  {fmt_money(strike)}{gap_str}")
+print(f"{bold}EXPRY{nc} {p.get('expiryAt','?')}")
+print()
+
+# Timeline
+print(f"{bold}TIMELINE{nc}")
+print(f"{dim}─────────────────────────────────────────────────────────────────{nc}")
+
+events = []
+
+# Creation
+events.append((p.get("createdAt"), f"{green}● created{nc} · {ptype.upper()} {slpct}% SL · notional {fmt_money(p.get('protectedNotional','0'))}"))
+
+# Price snapshots
+for s in snaps:
+    sn_type = s.get("snapshotType","?")
+    sn_color = blue if sn_type == "entry" else yel if sn_type == "trigger" else dim
+    events.append((s.get("createdAt") or s.get("priceTimestamp"),
+        f"{sn_color}◐ snapshot {sn_type}{nc} · {fmt_money(s.get('price','?'))} ({s.get('priceSource','?')})"))
+
+# Ledger entries
+for l in ledger:
+    et = l.get("entryType","?")
+    amt = l.get("amount","?")
+    settled_at = l.get("settledAt")
+    color = green if "premium" in et else red if "payout" in et else dim
+    events.append((l.get("createdAt"),
+        f"{color}◆ ledger {et}{nc} · {fmt_money(amt)}" + (f" · settled {settled_at}" if settled_at else "")))
+
+# Venue executions
+for e in execs:
+    is_buy = e.get("side","?").lower() == "buy"
+    e_color = blue if is_buy else green
+    label = "BUY hedge" if is_buy else "SELL hedge (TP)"
+    instr = e.get("instrumentId","?")
+    qty = e.get("quantity","?")
+    px = e.get("executionPrice","?")
+    prem = e.get("premium","?")
+    details = e.get("details") or {}
+    fill_btc = details.get("fillPriceBtc")
+    extra = ""
+    if fill_btc is not None:
+        extra = f" · fillBtc={fill_btc}"
+    e_status = e.get("status","?")
+    status_marker = green if e_status == "success" else yel if e_status in ("partial","no_bid") else red
+    events.append((e.get("executedAt") or e.get("createdAt"),
+        f"{e_color}■ exec {label}{nc} · {instr} qty={qty}{extra} · usd={fmt_money(prem)} {status_marker}[{e_status}]{nc}"))
+
+# Status transitions from metadata audit (if present)
+md_actions = []
+for k in ["activatedAt", "triggeredAt", "soldAt", "expiredAt", "archivedAt", "renewedAt"]:
+    if md.get(k):
+        md_actions.append((md[k], f"{yel}▲ status {k.replace('At','')}{nc}"))
+
+# Sort all events chronologically
+all_events = events + md_actions
+def event_key(ev):
+    ts = ev[0]
+    if not ts: return "9999"
+    return str(ts)
+all_events.sort(key=event_key)
+
+for ts, desc in all_events:
+    ts_str = (ts or "?")[:23] if ts else "  unknown timestamp   "
+    print(f"  {dim}{ts_str}{nc}  {desc}")
+
+print()
+
+# Cash summary
+prem_collected = 0.0
+hedge_cost = 0.0
+hedge_recovery = 0.0
+payout_owed = 0.0
+for l in ledger:
+    try:
+        amt = float(l.get("amount","0"))
+    except: amt = 0
+    et = str(l.get("entryType",""))
+    if et == "premium_due": prem_collected += amt
+    elif et == "premium_settled": pass  # informational
+    elif et in ("payout_due", "trigger_payout_due"): payout_owed += amt
+    elif et == "payout_settled": pass
+
+for e in execs:
+    try:
+        prem = float(e.get("premium","0"))
+    except: prem = 0
+    if e.get("side","").lower() == "buy":
+        hedge_cost += prem
+    else:
+        hedge_recovery += prem
+
+net = prem_collected - hedge_cost + hedge_recovery - payout_owed
+
+print(f"{bold}CASH SUMMARY{nc}")
+print(f"{dim}─────────────────────────────────────────────────────────────────{nc}")
+print(f"  Premium collected (paper):       {green}+{fmt_money(prem_collected)}{nc}")
+print(f"  Hedge bought (real, on Deribit): {red}-{fmt_money(hedge_cost)}{nc}")
+print(f"  TP hedge sold (real, on Deribit):{green}+{fmt_money(hedge_recovery)}{nc}")
+print(f"  Payout owed to trader (paper):   {red}-{fmt_money(payout_owed)}{nc}")
+print(f"  {bold}Net P&L:{nc}                          {(green if net >= 0 else red)}{('+' if net >= 0 else '')}{fmt_money(net)}{nc}")
+print()
+
+# Recovery ratio if triggered
+if payout_owed > 0:
+    recov_pct = (hedge_recovery / payout_owed) * 100 if payout_owed > 0 else 0
+    color = green if recov_pct >= 50 else yel if recov_pct >= 20 else red
+    print(f"{bold}RECOVERY RATIO{nc}")
+    print(f"{dim}─────────────────────────────────────────────────────────────────{nc}")
+    print(f"  TP recovery / payout owed = {color}{recov_pct:.1f}%{nc}")
+    print(f"  R1 baseline (n=9 calm): 68.3%")
+    if recov_pct < 30:
+        print(f"  {yel}⚠ Significantly below baseline.{nc} Likely cause: BTC barely grazed trigger and stalled,")
+        print(f"  {yel}   leaving hedge OTM at sell time. Check strike-floor gap and BTC trajectory.{nc}")
+    print()
+
+# Quote IDs for log cross-reference
+quote_ids = sorted(set(e.get("quoteId","") for e in execs if e.get("quoteId")))
+print(f"{bold}LOG SEARCH HINTS{nc}")
+print(f"{dim}─────────────────────────────────────────────────────────────────{nc}")
+print(f"  In Render logs, grep for any of:")
+print(f"    {dim}{p.get('id')}{nc}")
+for qid in quote_ids:
+    print(f"    {dim}{qid}{nc}")
+PYEOF
+
+# Optional log ingestion
+if [ -n "$LOG_PATH" ] && [ -f "$LOG_PATH" ]; then
+  echo
+  echo -e "${BOLD}LOG LINES MENTIONING THIS PROTECTION${NC}"
+  echo -e "${DIM}─────────────────────────────────────────────────────────────────${NC}"
+  PROT_SHORT="${PROTECTION_ID:0:8}"
+  grep -E "$PROTECTION_ID|$PROT_SHORT" "$LOG_PATH" | head -50 || echo "  (no log lines mention this protection)"
+fi
