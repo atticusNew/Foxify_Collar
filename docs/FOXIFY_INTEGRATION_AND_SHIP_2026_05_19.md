@@ -611,3 +611,120 @@ the first real $50k/2% pair.
 - **A leg shows `status: open` in DB but no position on the venue UI**: phantom. Run `force-sell-leg`; if it errors with `bullish_http_404` or `deribit:not_filled:unknown`, use `mark-leg-failed-manual` with the venue error as evidence.
 - **A leg shows on the venue UI but no row in DB**: orphan. Sell it directly via the venue UI (or build a one-off API call). Future periodic reconciler will catch these.
 - **Hedge-manager refuses to TP a leg you want sold**: check the `rule` it's firing — usually rule 2 (Asia thin window 04:00-06:00 UTC) or rule 3 (gamma zone hold). Override via `force-sell-leg`.
+
+---
+
+## 8. Operational env tuning — 2026-05-25 production calibration
+
+After the first ~10 days of pilot operation we identified four guardrail
+gates whose default thresholds were sized for adversarial bot prevention
+on a single-counterparty integration that doesn't match the legitimate
+Foxify auto-reopen pattern. Production-tuned values are below; **all four
+should be set on BOTH Render services** (`foxify-pilot-new` for Live and
+`foxify-pilot-shadow-3r1m` for Shadow) so test traffic on Shadow doesn't
+hit different rejection paths than Live.
+
+### 8.1 Required Render env vars for the Foxify pilot
+
+```
+PILOT_CIRCUIT_BREAKER_ENFORCE=false
+VOLUME_COVER_ANTIBOT_LAYER1_ENABLED=false
+VC_TICK_SPACING_MIN_MS=15000
+VC_TICK_SPACING_MIN_BTC_USDC=100
+```
+
+Rationale per var:
+
+| Env var | Default (code) | Pilot value | Why |
+|---|---|---|---|
+| `PILOT_CIRCUIT_BREAKER_ENFORCE` | `true` | **`false`** | Breaker monitors Deribit equity. Live's Deribit is essentially empty (Volume Cover routes through Bullish). Empty-account drawdown samples cause spurious trips that block the activate path. Observe-only mode keeps the safety net armed without the false-positive blocking. Re-enable when/if Deribit comes back into active use. |
+| `VOLUME_COVER_ANTIBOT_LAYER1_ENABLED` | `true` | **`false`** | Layer 1 enforces a 60-min same-cell cooldown per fingerprint. Foxify currently sends `fingerprintHash: null` (single-counterparty integration), so Layer 1 is a no-op AS-IS — but if Foxify ever begins sending a stable hash, the 60-min window would block all ladder-netting reopens (which run on a 30-min window). Disabling Layer 1 prevents that future regression while keeping Layers 2-4 (jitter cooldown, trigger cooldown, Layer-4 surcharge) fully active. |
+| `VC_TICK_SPACING_MIN_MS` | `60000` (60s) | **`15000`** (15s) | Foxify's auto-close-then-reopen logic completes in ~5-30s. The 60s gate blocks legitimate close→reopen cycles. 15s still prevents rapid-fire opens (no bot can usefully cycle <15s on this product) while letting the legitimate pattern through. |
+| `VC_TICK_SPACING_MIN_BTC_USDC` | `400` | **`100`** | Same reasoning. The OR-condition fires when BTC moves $400+ between same-cell opens (legitimate volatility-driven reopen). Lowering to $100 catches calm-regime reopens that would otherwise wait the full elapsed-MS window. |
+
+### 8.2 Verification curl (Live)
+
+After setting the env vars and Render redeploys (~90s), confirm via:
+
+```bash
+curl -sS https://foxify-pilot-new.onrender.com/volume-cover/health | jq '.config.flags | {antibot_layer1Enabled, prG_tickSpacing}'
+curl -sS -H "x-admin-token: $LIVE_TOKEN" https://foxify-pilot-new.onrender.com/pilot/admin/circuit-breaker | jq '.config.enforce'
+```
+
+Expected:
+- `antibot_layer1Enabled: false`
+- `prG_tickSpacing.minMs: 15000` and `minBtcUsdc: 100`
+- `enforce: false`
+
+### 8.3 Foxify error → fix table
+
+When Foxify CTO reports any of these errors, the response is in this
+table. The first column is the literal `reason` field on the 4xx/5xx
+response body.
+
+| Error reason | What it means | Fix (in priority order) |
+|---|---|---|
+| `circuit_breaker_active` | Pilot breaker tripped on Deribit drawdown | Add `PILOT_CIRCUIT_BREAKER_ENFORCE=false` (8.1). Until then, manual reset via `POST /pilot/admin/circuit-breaker/reset`. |
+| `tick_spacing_violation` | Same-cell reopen too soon after prior open | Wait the `retryAfterMs` shown in the response. Persistent: lower `VC_TICK_SPACING_MIN_MS` (8.1). |
+| `venue_book_thin` | Bullish orderbook depth < gate threshold on ≥1 leg | (1) Retry in 30s — books refill. (2) If recurring on 1-day expiry: bias to 2-day via spread builder fix (Bundle 5 candidate). (3) Last resort: `VC_SPREAD_DEPTH_RATIO_REQUIRED=0.4` (still better than no-gate, see Bundle 4 orphan handling below). |
+| `volume_cover_spread_open_failed: leg_*_Reached max leverage` | Bullish margin engine rejected a short leg open | Fund Bullish account; verify `marketRiskUSD < totalCollateralUSD` via `/admin/bullish-list-accounts`. Bundle 4 ensures any partial fill is captured as an orphan and not silently lost. |
+| `manual_halt_active` | Operator paused Volume Cover via `/admin/manual-halt` | Resume via `POST /admin/manual-halt` with `{ "halt": false }`. Check why halt was triggered before resuming. |
+| Any 5xx with no specific `reason` | Likely transient (Bullish API blip, Render cold-start, DB pool) | Retry once after 5s. If recurring 3+ times, capture timestamp + payload and ping Atticus on-call. |
+
+### 8.4 Bundle 4 — orphan-leg sweep procedure (2026-05-25)
+
+If Bullish's risk engine rejects a leg mid-sequence AND the spread
+executor's hardened rollback can't unwind the already-placed legs (rare
+post-Bundle-4 — was the Foxify-001 failure mode pre-Bundle-4), the
+affected legs are persisted with `status='failed'` +
+`metadata.rollback_failed_orphan=true` and exposed at:
+
+```
+GET /volume-cover/admin/orphan-legs
+  Headers: x-admin-token: $LIVE_TOKEN
+```
+
+Returns the resolved Bullish symbol, qty, opening side, and the rollback
+attempt history. Operator clears the orphan via:
+
+1. **Manual sweep on Bullish** using `bullish-cross-account-sell`
+   (SHORT-side opens needing buy-back) or `bullish-test-buy` (LONG-side
+   opens needing sell-back) — same admin endpoints used in the
+   2026-05-25 cleanup pass. **Note**: the rollback's REVERSE side is the
+   right action (i.e., if `opened_side: long`, sell on Bullish; if
+   `opened_side: short`, buy on Bullish to close).
+2. **Reconcile in DB** via `POST /admin/mark-leg-failed-manual/:legId`
+   with the venue order ID as `evidence`. Status flips from `failed`
+   (orphan-flagged) to `failed` (cleared).
+
+Bundle 4 health-flag visibility:
+
+```bash
+curl -sS https://foxify-pilot-new.onrender.com/volume-cover/health \
+  | jq '.config.flags.bundle4_rollbackHardening'
+```
+
+Expected: `{ "enabled": true, "improvementFraction": 0, "deepCrossBpsFloor": 1000 }`.
+
+### 8.5 Capital-state sanity check before Foxify activation
+
+Before Foxify reopens the activate path after an outage or env tuning
+push, run:
+
+```bash
+# Bullish margin health
+curl -sS -H "x-admin-token: $LIVE_TOKEN" \
+  https://foxify-pilot-new.onrender.com/volume-cover/admin/bullish-list-accounts \
+  | jq '.raw[] | select(.tradingAccountId=="111257696062450") | {totalCollateralUSD, marketRiskUSD, freeMargin: ((.totalCollateralUSD | tonumber) - (.marketRiskUSD | tonumber))}'
+
+# No orphans pending
+curl -sS -H "x-admin-token: $LIVE_TOKEN" \
+  https://foxify-pilot-new.onrender.com/volume-cover/admin/orphan-legs \
+  | jq '{count, hasOrphans: (.count > 0)}'
+```
+
+Healthy state:
+
+- `freeMargin > $500` (enough headroom for 1× `50k_2pct_1k` open)
+- `count: 0` from orphan-legs
+- `circuit-breaker.enforce: false` (or breaker not tripped if enforce stays on)
