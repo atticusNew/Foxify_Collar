@@ -184,14 +184,51 @@ test("Payout overlay: applies for elevated (Hybrid v3 pilot: $450)", () => {
   }
 });
 
-test("Payout overlay: calm regime IGNORES Y overlay (locked at base)", () => {
+test("PR-G (2026-05-25): calm regime now HONORS payout overlay when present", () => {
+  // Pre-PR-G: calm was hardcoded to ignore VC_PAYOUT_OVERLAY_JSON.
+  // PR-G removed that lock so the operator can drop calm Y from the
+  // matrix base ($1,000) toward the Foxify floor (Y − X ≥ $350 → Y ≥ $700)
+  // without a code change. The intended pilot value is calm=$800.
   __resetPricingCacheForTests();
   process.env.VC_PAYOUT_OVERLAY_JSON = JSON.stringify({
-    "50k_2pct_1k": { calm: 500, moderate: 750 }
+    "50k_2pct_1k": { calm: 800, moderate: 750 }
   });
   try {
     const r = resolveDailyPremium({ cell, regime: "calm" });
-    assert.equal(r.payoutUsdc, 1000, "calm payout overlay must be ignored");
+    assert.equal(r.payoutUsdc, 800, "calm payout overlay now honored");
+    assert.equal(r.payoutSource, "regime_overlay");
+  } finally {
+    delete process.env.VC_PAYOUT_OVERLAY_JSON;
+    __resetPricingCacheForTests();
+  }
+});
+
+test("PR-G: calm payout overlay falls back to base when calm key is absent (no-op deploy)", () => {
+  // The PR-G code change is intentionally a no-op until the operator
+  // adds the `calm` key to VC_PAYOUT_OVERLAY_JSON on Render. Until then,
+  // the deployed Y stays at the matrix base.
+  __resetPricingCacheForTests();
+  process.env.VC_PAYOUT_OVERLAY_JSON = JSON.stringify({
+    "50k_2pct_1k": { moderate: 750, elevated: 450 } // no calm key
+  });
+  try {
+    const r = resolveDailyPremium({ cell, regime: "calm" });
+    assert.equal(r.payoutUsdc, 1000, "calm without overlay key → matrix base");
+    assert.equal(r.payoutSource, "matrix_base");
+  } finally {
+    delete process.env.VC_PAYOUT_OVERLAY_JSON;
+    __resetPricingCacheForTests();
+  }
+});
+
+test("PR-G: calm payout overlay rejects negative + non-finite values, falls back to base", () => {
+  __resetPricingCacheForTests();
+  process.env.VC_PAYOUT_OVERLAY_JSON = JSON.stringify({
+    "50k_2pct_1k": { calm: -100 }
+  });
+  try {
+    const r = resolveDailyPremium({ cell, regime: "calm" });
+    assert.equal(r.payoutUsdc, 1000, "negative calm overlay rejected");
     assert.equal(r.payoutSource, "matrix_base");
   } finally {
     delete process.env.VC_PAYOUT_OVERLAY_JSON;

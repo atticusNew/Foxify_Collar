@@ -11,16 +11,23 @@
  *   2. DB override (admin cell toggle): per-cell `daily_premium_usdc`.
  *   3. Matrix base value (locked launch price per cell).
  *
- * PAYOUT (Y) precedence (added 2026-05-24 for Hybrid v3 pilot pricing):
+ * PAYOUT (Y) precedence (added 2026-05-24 for Hybrid v3 pilot pricing,
+ * extended 2026-05-25 in PR-G to cover calm regime):
  *   1. Regime overlay env:
- *      VC_PAYOUT_OVERLAY_JSON='{"50k_2pct_1k":{"moderate":750,"elevated":450,"stress":30}}'
- *      Applied when current regime matches a non-calm bucket. Calm is
- *      LOCKED at base payout (matches Foxify's current $1000 expectation).
- *   2. Matrix base payout value (locked launch payout per cell).
+ *      VC_PAYOUT_OVERLAY_JSON='{"50k_2pct_1k":{"calm":800,"moderate":750,"elevated":450,"stress":30}}'
+ *      Applied for ANY regime (including calm) when a value is present
+ *      for that regime in the overlay. If absent, falls through to
+ *      matrix base.
+ *   2. Matrix base payout value (per-cell launch default).
  *
  *   No DB override for payout (we want payout changes to be deliberate
- *   ops actions, not per-cell toggles). To change calm payout, you'd
- *   need a matrix.ts change + redeploy.
+ *   ops actions, not per-cell toggles).
+ *
+ *   NOTE: pre-PR-G, calm was hardcoded to ignore the overlay. Lock
+ *   removed because per-cycle EV at the matrix-base calm Y is
+ *   structurally underwater at observed h ≈ 0.68 + s ≈ 0.7. Operator
+ *   must explicitly populate the calm overlay value to change the
+ *   live payout; the code change alone is no-op without the env.
  *
  * The result is also potentially scaled by anti-bot Layer 4 surcharge
  * multiplier; that lives in the route layer (not here).
@@ -81,10 +88,24 @@ const resolvePayoutUsdc = (params: {
   regime: VolRegime | null | undefined;
 }): { payoutUsdc: number; source: "matrix_base" | "regime_overlay" } => {
   const basePayout = params.cell.payoutUsdc;
-  // Calm regime intentionally NEVER reads payout overlay (locked at base).
-  if (!params.regime || params.regime === "calm") {
+  if (!params.regime) {
     return { payoutUsdc: basePayout, source: "matrix_base" };
   }
+  // PR-G (2026-05-25): calm-overlay lock removed. Trade 1's −$1,250
+  // realized P&L vs the modeled payout-economics target showed the
+  // hardcoded calm Y=$1,000 is structurally underwater at current
+  // hedge cost (h≈0.68) and salvage (post-fix s≈0.7); dropping calm Y
+  // to $800 puts per-cycle EV firmly positive across the plausible
+  // P(trigger) range while still meeting Foxify's $350-net-on-trigger
+  // floor (Y−X = $800−$350 = $450). The overlay route is reused so
+  // the change is reversible without a redeploy.
+  //
+  // Operator MUST update VC_PAYOUT_OVERLAY_JSON on Render to add the
+  // calm key, e.g.:
+  //   {"50k_2pct_1k":{"calm":800,"moderate":750,"elevated":450,"stress":450}}
+  // Without that env, calm continues to read the matrix base ($1,000) —
+  // so this code change alone does NOT alter live behavior; the env
+  // update is the operational deploy.
   const overlay = readPayoutOverlayMap();
   const cellOverlay = overlay[params.cell.cellId];
   if (cellOverlay) {
