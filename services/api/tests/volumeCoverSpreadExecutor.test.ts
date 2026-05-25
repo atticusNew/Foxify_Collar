@@ -8,6 +8,7 @@ import {
   partialCloseSpreadOnTrigger,
   checkSpreadLiquidity,
   getConfiguredDepthGate,
+  getConfiguredLongTriggerPolicy,
   __testHelpers,
   type SpreadExecutorAdapter,
   type ExecutorOrderResult,
@@ -368,8 +369,13 @@ test("partialCloseSpreadOnTrigger: env flag VC_SPREAD_SELL_LONGS_AT_TRIGGER=fals
   }
 });
 
-test("partialCloseSpreadOnTrigger: env flag default (unset) sells longs", async () => {
+test("partialCloseSpreadOnTrigger: env unset defaults to 'winner_only' — sells winner, retains loser", async () => {
+  // PR-Bundle-3-B (2026-05-25): default flipped from "both" to
+  // "winner_only" so triggered positions retain the loser long for the
+  // hedge manager's Rule 7 + ladder-netting eligibility.
   clearEnv();
+  delete process.env.VC_SPREAD_LONG_TRIGGER_POLICY;
+  delete process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
   const structure = buildStructure();
   const { adapter } = buildMockAdapter({ books: happyBooks() });
   const result = await partialCloseSpreadOnTrigger({
@@ -378,8 +384,10 @@ test("partialCloseSpreadOnTrigger: env flag default (unset) sells longs", async 
     triggerDirection: "high"
   });
   assert.equal(result.ok, true);
-  assert.equal(result.longLegsSold.length, 2);
-  assert.equal(result.longLegsRetained.length, 0);
+  assert.equal(result.longLegsSold.length, 1, "winner sold");
+  assert.equal(result.longLegsSold[0].legRole, "call_long", "high trigger → call_long is winner");
+  assert.equal(result.longLegsRetained.length, 1, "loser retained");
+  assert.equal(result.longLegsRetained[0].legRole, "put_long", "high trigger → put_long is loser");
 });
 
 // ─── 2026-05-24 PR-C: parallel long-leg sales after shorts close ──
@@ -1004,4 +1012,206 @@ test("PR-G2: getShortBuybackMidFraction default is 0.5; env override honored; cl
   assert.equal(__testHelpers.getShortBuybackMidFraction(), 0.5, "falls back to default on garbage");
 
   delete process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+});
+
+// ─── PR-Bundle-3-B (2026-05-25): long-trigger policy ─────────────────
+//
+// Validates the new 3-way `VC_SPREAD_LONG_TRIGGER_POLICY` env:
+//   • winner_only (NEW DEFAULT): sell winner, retain loser
+//   • both: legacy PR-C behavior
+//   • none: legacy retain-all
+// Plus the boolean back-compat shim (VC_SPREAD_SELL_LONGS_AT_TRIGGER).
+
+const clearPolicyEnv = (): void => {
+  delete process.env.VC_SPREAD_LONG_TRIGGER_POLICY;
+  delete process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
+};
+
+test("PR-Bundle-3-B: getConfiguredLongTriggerPolicy default is 'winner_only' when both envs unset", () => {
+  clearPolicyEnv();
+  assert.equal(getConfiguredLongTriggerPolicy(), "winner_only");
+});
+
+test("PR-Bundle-3-B: VC_SPREAD_LONG_TRIGGER_POLICY env honored ('both' / 'winner_only' / 'none')", () => {
+  clearPolicyEnv();
+  try {
+    process.env.VC_SPREAD_LONG_TRIGGER_POLICY = "both";
+    assert.equal(getConfiguredLongTriggerPolicy(), "both");
+    process.env.VC_SPREAD_LONG_TRIGGER_POLICY = "winner_only";
+    assert.equal(getConfiguredLongTriggerPolicy(), "winner_only");
+    process.env.VC_SPREAD_LONG_TRIGGER_POLICY = "none";
+    assert.equal(getConfiguredLongTriggerPolicy(), "none");
+  } finally {
+    clearPolicyEnv();
+  }
+});
+
+test("PR-Bundle-3-B: legacy VC_SPREAD_SELL_LONGS_AT_TRIGGER='false' maps to 'none' (back-compat)", () => {
+  clearPolicyEnv();
+  process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER = "false";
+  try {
+    assert.equal(getConfiguredLongTriggerPolicy(), "none");
+  } finally {
+    clearPolicyEnv();
+  }
+});
+
+test("PR-Bundle-3-B: legacy VC_SPREAD_SELL_LONGS_AT_TRIGGER='true' maps to 'both' (back-compat)", () => {
+  clearPolicyEnv();
+  process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER = "true";
+  try {
+    assert.equal(getConfiguredLongTriggerPolicy(), "both");
+  } finally {
+    clearPolicyEnv();
+  }
+});
+
+test("PR-Bundle-3-B: explicit policy env beats legacy boolean", () => {
+  clearPolicyEnv();
+  process.env.VC_SPREAD_LONG_TRIGGER_POLICY = "winner_only";
+  process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER = "true"; // legacy says "both"
+  try {
+    assert.equal(
+      getConfiguredLongTriggerPolicy(),
+      "winner_only",
+      "explicit policy env wins over legacy boolean"
+    );
+  } finally {
+    clearPolicyEnv();
+  }
+});
+
+test("PR-Bundle-3-B: garbage policy value silently falls back to default", () => {
+  clearPolicyEnv();
+  process.env.VC_SPREAD_LONG_TRIGGER_POLICY = "bananas";
+  try {
+    assert.equal(getConfiguredLongTriggerPolicy(), "winner_only");
+  } finally {
+    clearPolicyEnv();
+  }
+});
+
+test("PR-Bundle-3-B partialClose: policy='winner_only' on HIGH trigger sells call_long, retains put_long", async () => {
+  clearEnv();
+  clearPolicyEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    longTriggerPolicyOverride: "winner_only"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.shortLegsClosed.length, 2, "both shorts always close at trigger");
+  assert.equal(result.longLegsSold.length, 1, "only winner sold");
+  assert.equal(result.longLegsSold[0].legRole, "call_long");
+  assert.equal(result.longLegsRetained.length, 1, "only loser retained");
+  assert.equal(result.longLegsRetained[0].legRole, "put_long");
+
+  // Sanity: only 3 venue submissions for the long-side at trigger
+  // (2 short buybacks + 1 winner sell). put_long is NOT submitted.
+  const winnerSells = calls.filter((c) => c.legRole === "call_long" && c.side === "SELL");
+  const loserSells = calls.filter((c) => c.legRole === "put_long" && c.side === "SELL");
+  assert.equal(winnerSells.length, 1, "exactly one call_long sell submitted");
+  assert.equal(loserSells.length, 0, "no put_long sell submitted (loser retained)");
+
+  // longLegProceedsUsdc should reflect ONLY the winner sale.
+  const expectedWinnerProceeds =
+    winnerSells[0].priceUsdcPerBtc * structure.contractsBtcPerLeg;
+  assert.equal(
+    result.longLegProceedsUsdc,
+    Number(expectedWinnerProceeds.toFixed(4)),
+    "long proceeds = winner only"
+  );
+});
+
+test("PR-Bundle-3-B partialClose: policy='winner_only' on LOW trigger sells put_long, retains call_long", async () => {
+  clearEnv();
+  clearPolicyEnv();
+  const structure = buildStructure();
+  const { adapter } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "low",
+    longTriggerPolicyOverride: "winner_only"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 1);
+  assert.equal(result.longLegsSold[0].legRole, "put_long");
+  assert.equal(result.longLegsRetained.length, 1);
+  assert.equal(result.longLegsRetained[0].legRole, "call_long");
+});
+
+test("PR-Bundle-3-B partialClose: policy='both' explicitly preserves PR-C parallel-sell behavior", async () => {
+  clearEnv();
+  clearPolicyEnv();
+  const structure = buildStructure();
+  const { adapter } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    longTriggerPolicyOverride: "both"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 2);
+  assert.equal(result.longLegsRetained.length, 0);
+  const sortedRoles = result.longLegsSold.map((l) => l.legRole).sort();
+  assert.deepEqual(sortedRoles, ["call_long", "put_long"]);
+});
+
+test("PR-Bundle-3-B partialClose: policy='none' retains both longs (legacy)", async () => {
+  clearEnv();
+  clearPolicyEnv();
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    longTriggerPolicyOverride: "none"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 0);
+  assert.equal(result.longLegsRetained.length, 2);
+  // No long sells submitted at all.
+  const longSells = calls.filter(
+    (c) => (c.legRole === "call_long" || c.legRole === "put_long") && c.side === "SELL"
+  );
+  assert.equal(longSells.length, 0);
+});
+
+test("PR-Bundle-3-B partialClose: legacy sellLongsAtTriggerOverride=false still maps to 'none'", async () => {
+  clearEnv();
+  clearPolicyEnv();
+  const structure = buildStructure();
+  const { adapter } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: false
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 0);
+  assert.equal(result.longLegsRetained.length, 2);
+});
+
+test("PR-Bundle-3-B partialClose: explicit policyOverride beats legacy boolean override", async () => {
+  clearEnv();
+  clearPolicyEnv();
+  const structure = buildStructure();
+  const { adapter } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: true, // legacy says "both"
+    longTriggerPolicyOverride: "winner_only" // explicit wins
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.longLegsSold.length, 1);
+  assert.equal(result.longLegsRetained.length, 1);
 });

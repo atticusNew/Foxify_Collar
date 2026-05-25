@@ -767,25 +767,56 @@ export type SpreadPartialCloseResult = {
 };
 
 /**
- * 2026-05-23 (Foxify-001 trigger post-mortem): Read sell-longs flag.
+ * 2026-05-23 (Foxify-001 trigger post-mortem): how to handle the LONG
+ * legs of a [DB] spread when the trigger fires. Originally a boolean
+ * (`VC_SPREAD_SELL_LONGS_AT_TRIGGER`); 2026-05-25 (PR-Bundle-3-B)
+ * generalized to a 3-way mode because the winner and loser have very
+ * different profiles at trigger:
  *
- * The first real Foxify trigger (high direction, BTC spiked to ~$77,890
- * then mean-reverted ~$1,000 in 30 minutes) revealed that hedge manager
- * Rule 4 (active follow-through, hold winners 30 min post-trigger) holds
- * call_long through reversals. Lost ~$970 of peak value on call_long
- * alone vs selling at trigger fire.
+ *   `both`        — sell both longs immediately at trigger fire (legacy
+ *                   PR-C default). Captures the winner's peak intrinsic
+ *                   but eats the loser's residual time value AND leaves
+ *                   nothing to ladder-net into the next position.
+ *   `winner_only` — sell the winner immediately (peak capture, PR-C
+ *                   benefit), retain the loser for the hedge manager's
+ *                   Rule 7 (loser_floor) + Rule 10 (near-ATM days
+ *                   remaining). Retained loser is also eligible for
+ *                   ladder netting into a same-fingerprint reopen.
+ *                   *** RECOMMENDED DEFAULT post-Bundle-3-B ***
+ *   `none`        — retain BOTH longs (legacy pre-PR-C behavior; useful
+ *                   only when reverting to debug something).
  *
- * Default flipped to `true`: sell BOTH longs immediately at trigger fire.
- * This captures the spread value while it's at peak intrinsic. Tradeoff:
- * loses convexity if BTC continues moving past trigger (uncommon).
- *
- * Set VC_SPREAD_SELL_LONGS_AT_TRIGGER=false to preserve legacy
- * retain-and-hedge-manager behavior (useful if Rule 4 is later refined).
+ * Backward-compat: if `VC_SPREAD_LONG_TRIGGER_POLICY` is unset, fall
+ * through to the legacy `VC_SPREAD_SELL_LONGS_AT_TRIGGER` boolean
+ * (true → "both", false → "none"). Without either env, default to
+ * `winner_only`.
+ */
+export type LongTriggerPolicy = "both" | "winner_only" | "none";
+
+export const getConfiguredLongTriggerPolicy = (): LongTriggerPolicy => {
+  const raw = process.env.VC_SPREAD_LONG_TRIGGER_POLICY;
+  if (typeof raw === "string" && raw.length > 0) {
+    const v = raw.trim().toLowerCase();
+    if (v === "both" || v === "winner_only" || v === "none") return v;
+    // Fall through silently on garbage rather than block; default applies.
+  }
+  // Legacy boolean fallback for back-compat with pre-Bundle-3-B envs.
+  const legacy = process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
+  if (legacy !== undefined && legacy !== null && legacy !== "") {
+    return String(legacy).trim().toLowerCase() === "false" ? "none" : "both";
+  }
+  return "winner_only";
+};
+
+/**
+ * Legacy boolean form, preserved for tests + old env reads. Maps the
+ * 3-way mode back to a boolean for paths that only care whether ANY
+ * long-sell happens at trigger. Use `getConfiguredLongTriggerPolicy`
+ * for full fidelity.
  */
 const shouldSellLongsAtTrigger = (): boolean => {
-  const raw = process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER;
-  if (raw === undefined || raw === null || raw === "") return true; // default ON
-  return String(raw).trim().toLowerCase() !== "false";
+  const policy = getConfiguredLongTriggerPolicy();
+  return policy === "both" || policy === "winner_only";
 };
 
 /**
@@ -813,10 +844,19 @@ export const partialCloseSpreadOnTrigger = async (params: {
   triggerDirection: "high" | "low";
   randFn?: () => number;
   /**
-   * Override the env flag for tests. Production should always use
-   * env-driven default (true) so this is the only knob outside tests.
+   * Legacy boolean override (kept for back-compat). When set, mapped to
+   *   true  → policy "both"
+   *   false → policy "none"
+   * Prefer `longTriggerPolicyOverride` for new code paths.
    */
   sellLongsAtTriggerOverride?: boolean;
+  /**
+   * PR-Bundle-3-B (2026-05-25): explicit 3-way policy override. Wins
+   * over `sellLongsAtTriggerOverride` and the env. Used by:
+   *   • Foxify-close path (closePosition): `none` (retain both)
+   *   • Tests asserting specific behavior
+   */
+  longTriggerPolicyOverride?: LongTriggerPolicy;
   /**
    * PR-G2: override the fill-optimizer config used for the SHORT-leg
    * buyback path (test-only). Production reads
@@ -901,17 +941,28 @@ export const partialCloseSpreadOnTrigger = async (params: {
     0
   );
 
-  // ─── 2026-05-23: sell longs at trigger ───
-  // Decide per env flag (or test override). Default: sell. The longs
-  // are at their PEAK value immediately after a trigger fire and decay
-  // rapidly as BTC mean-reverts. Sell winning side FIRST (highest
-  // intrinsic) to capture peak before placing the losing leg sell.
-  const sellLongsAtTrigger =
-    params.sellLongsAtTriggerOverride ?? shouldSellLongsAtTrigger();
-  const longLegsOrder: SpreadLegSpec["legRole"][] =
-    params.triggerDirection === "high"
-      ? ["call_long", "put_long"] // call is winner on high trigger
-      : ["put_long", "call_long"];
+  // ─── 2026-05-25 (PR-Bundle-3-B): long-trigger policy ───
+  // Resolve the policy in this precedence:
+  //   1. Explicit `longTriggerPolicyOverride` from caller (test injection
+  //      OR Foxify-close path setting "none")
+  //   2. Legacy `sellLongsAtTriggerOverride` boolean (back-compat;
+  //      true → "both", false → "none")
+  //   3. Env-driven default via getConfiguredLongTriggerPolicy
+  //      (post-Bundle-3-B default: "winner_only")
+  let longTriggerPolicy: LongTriggerPolicy;
+  if (params.longTriggerPolicyOverride !== undefined) {
+    longTriggerPolicy = params.longTriggerPolicyOverride;
+  } else if (params.sellLongsAtTriggerOverride !== undefined) {
+    longTriggerPolicy = params.sellLongsAtTriggerOverride ? "both" : "none";
+  } else {
+    longTriggerPolicy = getConfiguredLongTriggerPolicy();
+  }
+  // Winner is on the trigger side; loser is the opposite wing.
+  const winnerRole: SpreadLegSpec["legRole"] =
+    params.triggerDirection === "high" ? "call_long" : "put_long";
+  const loserRole: SpreadLegSpec["legRole"] =
+    params.triggerDirection === "high" ? "put_long" : "call_long";
+  const longLegsOrder: SpreadLegSpec["legRole"][] = [winnerRole, loserRole];
 
   const longLegsSold: OpenLegRecord[] = [];
   const longLegsRetained: SpreadPartialCloseResult["longLegsRetained"] = [];
@@ -1022,30 +1073,54 @@ export const partialCloseSpreadOnTrigger = async (params: {
 
   // If a short leg failed earlier, do NOT attempt long sales — bail
   // out cleanly. Caller will handle the partial-close failure.
-  if (failedAt === null && sellLongsAtTrigger) {
-    if (shouldParallelizeLongSells()) {
-      // Parallel: kick off both long sales concurrently. Each task
-      // independently fetches its orderbook + fires IOC. The total
-      // wall-clock is max(t_winner, t_loser) instead of sum, which
-      // matters during trigger fire (every 100ms costs intrinsic).
-      const tasks = longLegsOrder.map((role, i) => sellOneLong(role, i));
-      const settled = await Promise.all(tasks);
-      collectLongOutcomes(settled);
-    } else {
-      // Sequential (legacy): winner-first, then loser, with inter-leg
-      // jitter pacing. Kept as escape hatch via env flag.
+  if (failedAt === null && longTriggerPolicy !== "none") {
+    // Resolve the SET of long-roles to sell based on policy.
+    //   "both"        → sell winner + loser (legacy PR-C behavior)
+    //   "winner_only" → sell winner only; loser falls through to retain
+    //   "none"        → handled by the else-branch (no sales)
+    const rolesToSell: SpreadLegSpec["legRole"][] =
+      longTriggerPolicy === "winner_only" ? [winnerRole] : longLegsOrder;
+    const rolesToRetain: SpreadLegSpec["legRole"][] =
+      longTriggerPolicy === "winner_only" ? [loserRole] : [];
+
+    if (rolesToSell.length === 1 || !shouldParallelizeLongSells()) {
+      // Sequential — necessary for winner_only (only one leg to sell)
+      // and legacy escape for "both" if VC_SPREAD_PARALLEL_LONG_SELLS=false.
       const outcomes: LongSaleOutcome[] = [];
-      for (let i = 0; i < longLegsOrder.length; i++) {
+      for (let i = 0; i < rolesToSell.length; i++) {
         if (i > 0) {
           const pace = sampleInterLegPacingMs({ cfg: jitterCfg, randFn: params.randFn });
           if (pace > 0) await jitterSleepMs(pace);
         }
-        outcomes.push(await sellOneLong(longLegsOrder[i], i));
+        outcomes.push(await sellOneLong(rolesToSell[i], i));
       }
       collectLongOutcomes(outcomes);
+    } else {
+      // Parallel: kick off both long sales concurrently. Each task
+      // independently fetches its orderbook + fires IOC. The total
+      // wall-clock is max(t_winner, t_loser) instead of sum, which
+      // matters during trigger fire (every 100ms costs intrinsic).
+      const tasks = rolesToSell.map((role, i) => sellOneLong(role, i));
+      const settled = await Promise.all(tasks);
+      collectLongOutcomes(settled);
+    }
+
+    // Add retained-loser stubs (winner_only mode). Symbol resolution
+    // mirrors the orderbook-unavailable branch of sellOneLong so the
+    // hedge manager can pick them up cleanly via the regular Rule 7
+    // (loser_floor) + Rule 10 (near-ATM-days) path.
+    for (const role of rolesToRetain) {
+      const leg = params.structure.legs.find((l) => l.legRole === role);
+      if (!leg) continue;
+      longLegsRetained.push({
+        legRole: leg.legRole,
+        symbol: params.adapter.resolveSymbol({ leg, expiryIso: leg.expiryIso }),
+        contractsBtc: leg.contractsBtc,
+        strikeActualUsdc: leg.strikeActualUsdc
+      });
     }
   } else if (failedAt === null) {
-    // Legacy mode: retain all longs (hedge manager handles).
+    // policy === "none": retain both longs for the hedge manager.
     for (const leg of params.structure.legs.filter((l) => l.side === "long")) {
       longLegsRetained.push({
         legRole: leg.legRole,
@@ -1083,5 +1158,7 @@ export const __testHelpers = {
   // subprocess.
   getShortBuybackMidFraction,
   buildShortBuybackOptimizerCfg,
+  // PR-Bundle-3-B long-trigger policy resolver — re-exported for tests.
+  shouldSellLongsAtTrigger,
   newSpreadGroupId: () => `vc-spread-${randomUUID()}`
 };
