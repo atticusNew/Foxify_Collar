@@ -1,0 +1,303 @@
+{
+  "generatedAt": "2026-05-25T04:57:22.381Z",
+  "inputs": {
+    "btcHistoryDays": 180,
+    "barsLoaded": 4321,
+    "barsStart": "2025-11-26T04:00:00.000Z",
+    "barsEnd": "2026-05-25T04:00:00.000Z",
+    "X": 350,
+    "Y": {
+      "calm": 800,
+      "moderate": 750,
+      "elevated": 450,
+      "stress": 450
+    },
+    "h_verified": 0.68,
+    "s_modeled_default": 0.7,
+    "ladder_reopen_rate_default": 0.6,
+    "ladder_match_prob": 0.85,
+    "max_hold_hours": 72,
+    "hold_mean_days": 1,
+    "n_trials": 8000,
+    "regime_thresholds": {
+      "calm": 0.4,
+      "moderate": 0.55,
+      "elevated": 0.7
+    }
+  },
+  "baseline": {
+    "nTrials": 8000,
+    "nStressBlocked": 361,
+    "overall": {
+      "count": 8000,
+      "mean": 14.49,
+      "median": -91,
+      "p5": -434,
+      "p95": 747.18,
+      "min": -434,
+      "max": 959.56,
+      "stdev": 445.76,
+      "positiveRate": 0.4139
+    },
+    "triggered": {
+      "count": 4704,
+      "mean": -336.19,
+      "median": -385,
+      "p5": -434,
+      "p95": -84,
+      "min": -434,
+      "max": 266,
+      "stdev": 137.51,
+      "positiveRate": 0.0032
+    },
+    "noTrigger": {
+      "count": 3296,
+      "mean": 514.97,
+      "median": 492.07,
+      "p5": 291.86,
+      "p95": 821.98,
+      "min": 166.27,
+      "max": 959.56,
+      "stdev": 171.02,
+      "positiveRate": 1
+    },
+    "triggerRate": 0.588,
+    "byRegime": {
+      "calm": {
+        "n": 3633,
+        "triggerRate": 0.4726,
+        "stats": {
+          "count": 3633,
+          "mean": 60,
+          "median": 276.18,
+          "p5": -434,
+          "p95": 693.36,
+          "min": -434,
+          "max": 893.11,
+          "stdev": 448.67,
+          "positiveRate": 0.5277
+        }
+      },
+      "moderate": {
+        "n": 3681,
+        "triggerRate": 0.6558,
+        "stats": {
+          "count": 3681,
+          "mean": -33.16,
+          "median": -385,
+          "p5": -385,
+          "p95": 787.29,
+          "min": -385,
+          "max": 959.56,
+          "stdev": 464.93,
+          "positiveRate": 0.3442
+        }
+      },
+      "elevated": {
+        "n": 686,
+        "triggerRate": 0.8353,
+        "stats": {
+          "count": 686,
+          "mean": 29.11,
+          "median": -91,
+          "p5": -91,
+          "p95": 555.83,
+          "min": -91,
+          "max": 891.65,
+          "stdev": 261.23,
+          "positiveRate": 0.1851
+        }
+      },
+      "stress": {
+        "n": 0,
+        "triggerRate": 0,
+        "stats": {
+          "count": 0,
+          "mean": 0,
+          "median": 0,
+          "p5": 0,
+          "p95": 0,
+          "min": 0,
+          "max": 0,
+          "stdev": 0,
+          "positiveRate": 0
+        }
+      }
+    }
+  },
+  "salvageSweep": [
+    {
+      "s": 0.4,
+      "mean": -114.59,
+      "positiveRate": 0.4139,
+      "triggerEv": -555.71,
+      "noTrigEv": 514.97
+    },
+    {
+      "s": 0.55,
+      "mean": -50.05,
+      "positiveRate": 0.4139,
+      "triggerEv": -445.95,
+      "noTrigEv": 514.97
+    },
+    {
+      "s": 0.7,
+      "mean": 14.49,
+      "positiveRate": 0.4139,
+      "triggerEv": -336.19,
+      "noTrigEv": 514.97
+    },
+    {
+      "s": 0.8,
+      "mean": 57.51,
+      "positiveRate": 0.4368,
+      "triggerEv": -263.02,
+      "noTrigEv": 514.97
+    },
+    {
+      "s": 0.9,
+      "mean": 100.54,
+      "positiveRate": 0.4637,
+      "triggerEv": -189.85,
+      "noTrigEv": 514.97
+    }
+  ],
+  "ladderSweep": [
+    {
+      "reopenRate": 0,
+      "expectedSavingsPerCycle": 0,
+      "adjustedMeanCyclePnl": 14.49
+    },
+    {
+      "reopenRate": 0.3,
+      "expectedSavingsPerCycle": 167.07,
+      "adjustedMeanCyclePnl": 181.56
+    },
+    {
+      "reopenRate": 0.6,
+      "expectedSavingsPerCycle": 334.14,
+      "adjustedMeanCyclePnl": 348.63
+    },
+    {
+      "reopenRate": 0.9,
+      "expectedSavingsPerCycle": 501.2,
+      "adjustedMeanCyclePnl": 515.69
+    }
+  ],
+  "stressTest": {
+    "forcedP": 0.25,
+    "triggerEvFromBaseline": -336.19,
+    "noTrigEvFromBaseline": 514.97,
+    "forcedEv": 302.18
+  },
+  "capitalAdequacy": [
+    {
+      "capUsdc": 10000,
+      "pairs": 1,
+      "maxDrawdownUsdc": 7364.88,
+      "maxConcurrentExposureUsdc": 544,
+      "endBalanceUsdc": 4852.67,
+      "cyclesPerPair": 52,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 10000,
+      "pairs": 5,
+      "maxDrawdownUsdc": 29371.21,
+      "maxConcurrentExposureUsdc": 2720,
+      "endBalanceUsdc": -5054.63,
+      "cyclesPerPair": 51.8,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 10000,
+      "pairs": 10,
+      "maxDrawdownUsdc": 49374.11,
+      "maxConcurrentExposureUsdc": 5440,
+      "endBalanceUsdc": -6871.66,
+      "cyclesPerPair": 50.3,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 20000,
+      "pairs": 1,
+      "maxDrawdownUsdc": 4590.72,
+      "maxConcurrentExposureUsdc": 544,
+      "endBalanceUsdc": 18141.58,
+      "cyclesPerPair": 47,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 20000,
+      "pairs": 5,
+      "maxDrawdownUsdc": 27470.72,
+      "maxConcurrentExposureUsdc": 2720,
+      "endBalanceUsdc": 5738.95,
+      "cyclesPerPair": 49.8,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 20000,
+      "pairs": 10,
+      "maxDrawdownUsdc": 51944.24,
+      "maxConcurrentExposureUsdc": 5440,
+      "endBalanceUsdc": -1172.43,
+      "cyclesPerPair": 51.3,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 50000,
+      "pairs": 1,
+      "maxDrawdownUsdc": 2862.29,
+      "maxConcurrentExposureUsdc": 544,
+      "endBalanceUsdc": 50290.75,
+      "cyclesPerPair": 53,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 50000,
+      "pairs": 5,
+      "maxDrawdownUsdc": 23669.13,
+      "maxConcurrentExposureUsdc": 2720,
+      "endBalanceUsdc": 43446.48,
+      "cyclesPerPair": 51.2,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 50000,
+      "pairs": 10,
+      "maxDrawdownUsdc": 55957.09,
+      "maxConcurrentExposureUsdc": 5440,
+      "endBalanceUsdc": 22327.66,
+      "cyclesPerPair": 50.2,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 100000,
+      "pairs": 1,
+      "maxDrawdownUsdc": 5080.57,
+      "maxConcurrentExposureUsdc": 544,
+      "endBalanceUsdc": 96927.22,
+      "cyclesPerPair": 48,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 100000,
+      "pairs": 5,
+      "maxDrawdownUsdc": 28952.01,
+      "maxConcurrentExposureUsdc": 2720,
+      "endBalanceUsdc": 86849.43,
+      "cyclesPerPair": 49.8,
+      "capExceededPct": 0
+    },
+    {
+      "capUsdc": 100000,
+      "pairs": 10,
+      "maxDrawdownUsdc": 51981.74,
+      "maxConcurrentExposureUsdc": 5440,
+      "endBalanceUsdc": 87996.3,
+      "cyclesPerPair": 49.2,
+      "capExceededPct": 0
+    }
+  ]
+}
