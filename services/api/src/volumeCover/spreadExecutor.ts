@@ -557,6 +557,60 @@ export const openSpread = async (params: {
       )
     });
     if (!fill.filled) {
+      // Bundle 7 (2026-05-25): partial-fill detection.
+      //
+      // The pre-Bundle-7 path treated `filled === false` as an atomic
+      // "nothing happened" — it broke out of the open loop without
+      // ever pushing the leg to `placed[]`. But Bullish (and most
+      // option venues) can return a partial-fill outcome:
+      //
+      //   • IOC submitted 1.13 BTC, only 0.89 BTC of bid depth at our
+      //     limit → 0.89 fills, remaining 0.24 rejected mid-fill
+      //     (typically max-leverage or insufficient-margin).
+      //   • Optimizer returns { filled: false, fillQtyBtc: 0.89, ... }
+      //
+      // Pre-Bundle-7 the rollback only ran on legs in `placed[]` so
+      // the 0.89 BTC stayed at the venue forever — a silent orphan
+      // not even Bundle 4's hardened rollback could detect (because
+      // it wasn't told the leg existed).
+      //
+      // Bundle 7: when fillQtyBtc > 0 on a "failed" leg, push the
+      // leg to `placed[]` with placement.contractsBtc = the actual
+      // partial size, then break. Bundle 4's rollback unwinds the
+      // partial in reverse-side at the correct quantity. If rollback
+      // also fails, Bundle 4 marks it as an orphan with the partial
+      // qty captured in metadata.
+      const partialQtyBtc = Number(fill.fillQtyBtc ?? 0);
+      if (partialQtyBtc > 0) {
+        console.warn(
+          `[VC ALERT] Bundle 7 partial-fill detected groupId=${params.structure.spreadGroupId} ` +
+            `legRole=${leg.legRole} symbol=${symbol} side=${side} ` +
+            `targetBtc=${leg.contractsBtc} filledBtc=${partialQtyBtc} ` +
+            `finalReason=${fill.finalReason ?? "null"} → adding to rollback queue`
+        );
+        placed.push({
+          leg,
+          placement: {
+            legRole: leg.legRole,
+            symbol,
+            side,
+            // CRITICAL: rollback unwinds based on placement.contractsBtc.
+            // Use the actual filled quantity, NOT leg.contractsBtc, so we
+            // don't try to sell more than the venue actually owes us.
+            contractsBtc: partialQtyBtc,
+            strikeUsdc: leg.strikeActualUsdc,
+            expiryIso: leg.expiryIso
+          },
+          record: {
+            ...fillResultToLegRecord(leg, symbol, side, fill),
+            // Bundle 7: mark this record as a partial-fill so callers
+            // (downstream persistence + telemetry) can distinguish it
+            // from a clean placement.
+            // The fillQtyBtc field already reflects the partial size.
+            isRollbackAttempt: false
+          }
+        });
+      }
       failedAt = leg.legRole;
       errorReason = fill.finalReason ? `leg_${leg.legRole}_${fill.finalReason}` : `leg_${leg.legRole}_unfilled`;
       break;

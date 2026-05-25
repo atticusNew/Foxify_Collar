@@ -467,7 +467,16 @@ export const registerVolumeCoverRoutes = async (
               default: getConfiguredContractMultiplier("__nonexistent_cell__").multiplier,
               "50k_2pct_1k": getConfiguredContractMultiplier("50k_2pct_1k"),
               "1k_2pct_20": getConfiguredContractMultiplier("1k_2pct_20")
-            }
+            },
+            // Bundle 7 (2026-05-25): partial-fill detection inside the
+            // open path. Closes the Bundle 4 gap where a leg that
+            // partially-filled-then-rejected mid-IOC was treated as
+            // "never happened" and skipped by rollback. Now the
+            // partial is added to placed[] with the actual filled
+            // qty, so Bundle 4's hardened rollback unwinds it (or
+            // marks it as an orphan if rollback also fails).
+            // Always-on, no env knob — pure correctness fix.
+            bundle7_partialFillDetection: { enabled: true }
           }
         }
       });

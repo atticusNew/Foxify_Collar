@@ -1830,3 +1830,253 @@ test("Bundle 6: applyContractMultiplier never produces zero contracts (granulari
   assert.equal(r.afterContractsBtc, 0.01);
   assert.equal(structure.contractsBtcPerLeg, 0.01);
 });
+
+// ─── Bundle 7 (2026-05-25): partial-fill orphan detection ────────────
+
+test("Bundle 7: partial fill on call_long (filled=false, fillQtyBtc>0) is rolled back at partial qty", async () => {
+  clearEnv();
+  clearRollbackEnv();
+  const structure = buildStructure();
+  const books = happyBooks();
+  // Set per-leg contract size to 1.13 BTC (matches today's failed activation)
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 1.13;
+  }
+  structure.contractsBtcPerLeg = 1.13;
+
+  // Track which submissions go through with which side+qty so we can
+  // verify the rollback used the partial qty.
+  const submitLog: Array<{
+    symbol: string;
+    side: string;
+    intent: string;
+    qty: number;
+    price: number;
+  }> = [];
+
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop({ symbol }): Promise<OrderbookTop> {
+      const b = books[symbol];
+      return {
+        topBidUsdc: b?.topBid ?? null,
+        topAskUsdc: b?.topAsk ?? null,
+        bidQtyBtc: 5,
+        askQtyBtc: 5
+      };
+    },
+    async submitIocLimit(p): Promise<ExecutorOrderResult> {
+      submitLog.push({
+        symbol: p.symbol,
+        side: p.side,
+        intent: p.intent,
+        qty: p.quantityBtc,
+        price: p.priceUsdcPerBtc
+      });
+      // call_long (78000-C) on its OPEN attempt → simulate partial
+      // fill: 0.89 BTC filled then max-leverage rejected on the rest.
+      // Bullish typically returns finalReason="rejected" or
+      // "max leverage" with a non-zero fillQty in this case.
+      if (
+        p.symbol === "BTC-USDC-20260526-77000-C"
+        && p.intent === "open"
+      ) {
+        return {
+          filled: false, // overall not filled to target qty
+          fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+          fillQtyBtc: 0.89, // partial — Bundle 7 should catch this
+          finalReason: "Reached max leverage",
+          orderId: "PARTIAL-CL"
+        };
+      }
+      // All other submits fully fill (open or rollback) at limit price
+      return {
+        filled: true,
+        fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+        fillQtyBtc: p.quantityBtc,
+        finalReason: "Executed",
+        orderId: `OK-${p.symbol.slice(-5)}`
+      };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+
+  const result = await openSpread({ structure, adapter, skipLiquidityGate: true });
+
+  // Open should fail at call_long
+  assert.equal(result.ok, false);
+  assert.equal(result.failedAt, "call_long");
+
+  // Bundle 7: partial-filled call_long should be in placed[] (rollback
+  // queue) — pre-Bundle-7 it wouldn't be.
+  // placed legs include put_long, put_short, call_long(partial)
+  assert.equal(result.legs.length, 3);
+  const callLongRec = result.legs.find((l) => l.legRole === "call_long");
+  assert.ok(callLongRec, "call_long record should exist (Bundle 7)");
+  // The leg record reflects the actual fill (0.89), not the original
+  // 1.13 target.
+  assert.equal(callLongRec!.fillQtyBtc, 0.89);
+
+  // Rollback should have run on all 3 legs in REVERSE open order.
+  // Verify call_long was rolled back at the PARTIAL qty (0.89), not
+  // the original target qty (1.13).
+  const callLongRollback = submitLog.find(
+    (s) => s.symbol === "BTC-USDC-20260526-77000-C" && s.intent === "rollback"
+  );
+  assert.ok(callLongRollback, "call_long rollback IOC should have been submitted");
+  assert.equal(
+    callLongRollback!.qty,
+    0.89,
+    `rollback should unwind partial qty 0.89, got ${callLongRollback!.qty}`
+  );
+  assert.equal(callLongRollback!.side, "SELL"); // BUY → reverse SELL
+
+  // put_short rollback at FULL qty (1.13, since step 2 fully filled)
+  const putShortRollback = submitLog.find(
+    (s) => s.symbol === "BTC-USDC-20260526-74000-P" && s.intent === "rollback"
+  );
+  assert.ok(putShortRollback, "put_short rollback IOC should have been submitted");
+  assert.equal(putShortRollback!.qty, 1.13);
+
+  // put_long rollback at FULL qty (1.13)
+  const putLongRollback = submitLog.find(
+    (s) => s.symbol === "BTC-USDC-20260526-75000-P" && s.intent === "rollback"
+  );
+  assert.ok(putLongRollback, "put_long rollback IOC should have been submitted");
+  assert.equal(putLongRollback!.qty, 1.13);
+
+  // All 3 rollbacks should have non-orphan results since adapter
+  // approves them all — no rollbackOrphan flag set.
+  for (const r of result.rollbackResults) {
+    assert.notEqual(r.rollbackOrphan, true, `${r.legRole} should not be orphan`);
+  }
+});
+
+test("Bundle 7: partial fill on call_long where rollback ALSO fails → orphan record carries partial qty", async () => {
+  clearEnv();
+  clearRollbackEnv();
+  const structure = buildStructure();
+  const books = happyBooks();
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 1.13;
+  }
+  structure.contractsBtcPerLeg = 1.13;
+
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop({ symbol }): Promise<OrderbookTop> {
+      const b = books[symbol];
+      return {
+        topBidUsdc: b?.topBid ?? null,
+        topAskUsdc: b?.topAsk ?? null,
+        bidQtyBtc: 5,
+        askQtyBtc: 5
+      };
+    },
+    async submitIocLimit(p): Promise<ExecutorOrderResult> {
+      // Open: put_long + put_short fully fill, call_long PARTIAL
+      if (p.symbol === "BTC-USDC-20260526-77000-C" && p.intent === "open") {
+        return {
+          filled: false,
+          fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+          fillQtyBtc: 0.89,
+          finalReason: "Reached max leverage",
+          orderId: "PARTIAL-CL-OPEN"
+        };
+      }
+      // Rollback for call_long: also fails (book too thin to unwind 0.89)
+      if (p.symbol === "BTC-USDC-20260526-77000-C" && p.intent === "rollback") {
+        return {
+          filled: false,
+          fillPriceUsdcPerBtc: 0,
+          fillQtyBtc: 0,
+          finalReason: "Expired",
+          orderId: `ROLLBACK-EXP-${Date.now()}`
+        };
+      }
+      // All other submits succeed at limit price
+      return {
+        filled: true,
+        fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+        fillQtyBtc: p.quantityBtc,
+        finalReason: "Executed",
+        orderId: `OK-${p.symbol.slice(-5)}`
+      };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+
+  const result = await openSpread({ structure, adapter, skipLiquidityGate: true });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.failedAt, "call_long");
+
+  // call_long rollback failed → orphan
+  const callLongRb = result.rollbackResults.find((r) => r.legRole === "call_long");
+  assert.ok(callLongRb, "call_long should be in rollback results");
+  assert.equal(
+    callLongRb!.rollbackOrphan,
+    true,
+    "call_long rollback should be marked orphan since IOC expired"
+  );
+  // The orphan record itself shows zero fill on the rollback attempt
+  assert.equal(callLongRb!.fillQtyBtc, 0);
+  // But the original placement was for the PARTIAL qty (0.89), so
+  // when positionLifecycle persists the orphan, it'll know to flag
+  // 0.89 BTC of call_long as still on venue.
+  // We verify via the leg record in result.legs (which IS the partial):
+  const callLongOpenRec = result.legs.find((l) => l.legRole === "call_long");
+  assert.ok(callLongOpenRec);
+  assert.equal(callLongOpenRec!.fillQtyBtc, 0.89);
+});
+
+test("Bundle 7: leg with TRUE zero fill (filled=false, fillQtyBtc=0) is NOT added to placed[] (preserves pre-Bundle-7 path)", async () => {
+  clearEnv();
+  clearRollbackEnv();
+  const structure = buildStructure();
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop({ symbol }): Promise<OrderbookTop> {
+      return { topBidUsdc: 100, topAskUsdc: 110, bidQtyBtc: 5, askQtyBtc: 5 };
+    },
+    async submitIocLimit(p): Promise<ExecutorOrderResult> {
+      // call_long expires entirely (zero fill)
+      if (p.symbol === "BTC-USDC-20260526-77000-C" && p.intent === "open") {
+        return {
+          filled: false,
+          fillPriceUsdcPerBtc: 0,
+          fillQtyBtc: 0,
+          finalReason: "Expired",
+          orderId: "EXP-CL"
+        };
+      }
+      return {
+        filled: true,
+        fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+        fillQtyBtc: p.quantityBtc,
+        finalReason: "Executed",
+        orderId: `OK-${p.symbol.slice(-5)}`
+      };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+
+  const result = await openSpread({ structure, adapter, skipLiquidityGate: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.failedAt, "call_long");
+  // Pre-Bundle-7 behavior: only put_long + put_short in legs, call_long NOT
+  assert.equal(result.legs.length, 2);
+  const callLongRec = result.legs.find((l) => l.legRole === "call_long");
+  assert.equal(callLongRec, undefined);
+  // Rollback ran on the 2 fully-placed legs only
+  assert.equal(result.rollbackResults.length, 2);
+});
