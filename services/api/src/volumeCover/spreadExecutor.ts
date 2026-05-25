@@ -677,6 +677,142 @@ const buildRollbackOptimizerCfg = (
   };
 };
 
+// ─── Bundle 6 (2026-05-25): per-cell contract multiplier ────────────
+//
+// The matrix-level contract sizing formula is:
+//
+//   contracts_btc = matrix.payoutUsdc / min(K2−triggerLow, K4−triggerHigh)
+//
+// This sizes the spread to deliver matrix.payoutUsdc of intrinsic at
+// trigger. PR-G's runtime payout overlay (VC_PAYOUT_OVERLAY_JSON) drops
+// the *Foxify-visible* payout below the matrix base — e.g., calm
+// regime: $1,000 base → $800 actual. The spread builder still sizes
+// for $1,000 of intrinsic though, leaving us systematically over-
+// hedged by 25% in calm regime: paying full premium for $1,000 cover
+// when our actual obligation to Foxify is $800.
+//
+// Bundle 6 lets the operator scale ALL spread legs by a multiplier:
+//
+//   final_contracts = formula_contracts × multiplier
+//
+// The intended production value is multiplier=0.8 in calm regime so
+// that final coverage matches the actual $800 Foxify obligation.
+// Operationally this:
+//   • Cuts hedge open cost ~20% (smaller premium paid)
+//   • Cuts margin reservation ~20% (smaller put + call vertical
+//     spreads on Bullish — important for capital-constrained pilot)
+//   • Improves no-trigger EV by reducing theta drag
+//   • Keeps spread intrinsic at trigger ≥ Foxify obligation (no
+//     uncovered payout gap when sized to overlay payout)
+//
+// Two ways to configure (per-cell takes precedence):
+//   VC_CONTRACT_MULT_DEFAULT=0.8       global default (any cell)
+//   VC_CONTRACT_MULT_JSON='{"50k_2pct_1k": 0.8, "1k_2pct_20": 1.0}'
+//                                       per-cell map
+//
+// Hard caps:
+//   • Minimum 0.1 (any lower and the legs round to zero on the 0.01
+//     Bullish granularity for sub-1 BTC structures).
+//   • Maximum 1.5 (we don't intentionally over-hedge by >50%; if the
+//     matrix base is wrong, fix the matrix not the multiplier).
+
+const CONTRACT_MULT_MIN = 0.1;
+const CONTRACT_MULT_MAX = 1.5;
+
+export const getConfiguredContractMultiplier = (cellId: string): {
+  multiplier: number;
+  source: "per-cell" | "default" | "matrix-base";
+} => {
+  // Per-cell JSON override wins
+  const rawJson = process.env.VC_CONTRACT_MULT_JSON;
+  if (rawJson && rawJson.trim() !== "") {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (
+        parsed && typeof parsed === "object"
+        && typeof parsed[cellId] === "number"
+        && Number.isFinite(parsed[cellId])
+      ) {
+        const m = Math.max(CONTRACT_MULT_MIN, Math.min(CONTRACT_MULT_MAX, parsed[cellId]));
+        return { multiplier: m, source: "per-cell" };
+      }
+    } catch {
+      // Bad JSON — fall through to default
+    }
+  }
+  // Global default
+  const rawDefault = process.env.VC_CONTRACT_MULT_DEFAULT;
+  if (rawDefault !== undefined && rawDefault !== "") {
+    const n = Number(rawDefault);
+    if (Number.isFinite(n)) {
+      const m = Math.max(CONTRACT_MULT_MIN, Math.min(CONTRACT_MULT_MAX, n));
+      return { multiplier: m, source: "default" };
+    }
+  }
+  // Neither set — return 1.0 (legacy behavior, matrix-base sizing)
+  return { multiplier: 1.0, source: "matrix-base" };
+};
+
+/**
+ * Apply the configured contract multiplier to a SpreadStructure. Each
+ * leg's contractsBtc is scaled, rounded to 0.01 BTC granularity, and
+ * the parent contractsBtcPerLeg is updated to match. Mutates in place.
+ *
+ * Returns the multiplier applied + before/after for telemetry.
+ */
+export const applyContractMultiplier = (params: {
+  structure: SpreadStructure;
+  cellId: string;
+  /** Test override to force a specific multiplier regardless of env. */
+  multiplierOverride?: number;
+  /** Test override to bypass min granularity rounding. */
+  granularityBtc?: number;
+}): {
+  multiplier: number;
+  source: "per-cell" | "default" | "matrix-base" | "override";
+  beforeContractsBtc: number;
+  afterContractsBtc: number;
+} => {
+  const granularityBtc = params.granularityBtc ?? 0.01;
+  let multiplier: number;
+  let source: "per-cell" | "default" | "matrix-base" | "override";
+  if (params.multiplierOverride !== undefined && Number.isFinite(params.multiplierOverride)) {
+    multiplier = Math.max(CONTRACT_MULT_MIN, Math.min(CONTRACT_MULT_MAX, params.multiplierOverride));
+    source = "override";
+  } else {
+    const cfg = getConfiguredContractMultiplier(params.cellId);
+    multiplier = cfg.multiplier;
+    source = cfg.source;
+  }
+  const before = params.structure.contractsBtcPerLeg;
+  if (multiplier === 1.0) {
+    return {
+      multiplier,
+      source,
+      beforeContractsBtc: before,
+      afterContractsBtc: before
+    };
+  }
+  // Round DOWN to granularity to avoid ever exceeding the un-multiplied
+  // size when multiplier < 1. Floor + max(granularity) so we never
+  // produce a zero-leg.
+  const rawScaled = before * multiplier;
+  const rounded = Math.max(
+    granularityBtc,
+    Math.floor(rawScaled / granularityBtc) * granularityBtc
+  );
+  for (const leg of params.structure.legs) {
+    leg.contractsBtc = rounded;
+  }
+  params.structure.contractsBtcPerLeg = rounded;
+  return {
+    multiplier,
+    source,
+    beforeContractsBtc: before,
+    afterContractsBtc: rounded
+  };
+};
+
 // ─── Bundle 5 (2026-05-25): auto-advance expiry on thin-leg ──────────
 //
 // The depth gate (PR-A) catches thin-leg situations BEFORE any order

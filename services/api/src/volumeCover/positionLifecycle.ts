@@ -58,6 +58,7 @@ import {
   closeSpread,
   partialCloseSpreadOnTrigger,
   chooseLiveExpiryForSpread,
+  applyContractMultiplier,
   type SpreadExecutorAdapter
 } from "./spreadExecutor";
 import { getBullishSpreadAdapter } from "./bullishSpreadAdapter";
@@ -1039,9 +1040,35 @@ const executeSpreadOpen = async (params: {
     strikeSnapper: snapToGrid
   });
 
+  // Bundle 6 (2026-05-25): apply per-cell contract multiplier BEFORE
+  // any other downstream sizing (smoke-test override, expiry probe,
+  // ladder netting, openSpread). Operationally this scales the
+  // matrix-formula contracts to match the runtime payout overlay
+  // (e.g., calm Y=$800 + multiplier 0.8 → spread intrinsic at trigger
+  // = $800 = exact Foxify obligation, no over-hedge).
+  //
+  // Configured via:
+  //   VC_CONTRACT_MULT_DEFAULT=0.8   global default
+  //   VC_CONTRACT_MULT_JSON='{"50k_2pct_1k": 0.8}'   per-cell override
+  // When neither set, multiplier=1.0 (legacy matrix-base sizing).
+  const multResult = applyContractMultiplier({
+    structure,
+    cellId: params.cell.cellId
+  });
+  if (multResult.multiplier !== 1.0) {
+    console.log(
+      `[volumeCover/lifecycle] Bundle 6 contract multiplier applied: ` +
+        `position=${params.positionId} cell=${params.cell.cellId} ` +
+        `multiplier=${multResult.multiplier} source=${multResult.source} ` +
+        `before=${multResult.beforeContractsBtc} after=${multResult.afterContractsBtc}`
+    );
+  }
+
   // Smoke-test override: forcibly resize each leg's contracts. Used by
   // /admin/test-activate to prove the wired path at micro-size without
   // burning live capital. NEVER set this from the real activate path.
+  // Bundle 6: this override applies AFTER the production multiplier so
+  // tests can still force exact micro sizes.
   if (
     typeof params.contractsOverrideBtc === "number" &&
     params.contractsOverrideBtc > 0
@@ -1050,6 +1077,7 @@ const executeSpreadOpen = async (params: {
     for (const leg of structure.legs) {
       leg.contractsBtc = overrideBtc;
     }
+    structure.contractsBtcPerLeg = overrideBtc;
   }
 
   const adapter = params.adapterOverride ?? getBullishSpreadAdapter();

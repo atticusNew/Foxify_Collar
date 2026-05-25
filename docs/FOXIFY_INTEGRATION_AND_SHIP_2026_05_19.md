@@ -631,6 +631,7 @@ PILOT_CIRCUIT_BREAKER_ENFORCE=false
 VOLUME_COVER_ANTIBOT_LAYER1_ENABLED=false
 VC_TICK_SPACING_MIN_MS=15000
 VC_TICK_SPACING_MIN_BTC_USDC=100
+VC_CONTRACT_MULT_DEFAULT=0.8
 ```
 
 Rationale per var:
@@ -641,6 +642,12 @@ Rationale per var:
 | `VOLUME_COVER_ANTIBOT_LAYER1_ENABLED` | `true` | **`false`** | Layer 1 enforces a 60-min same-cell cooldown per fingerprint. Foxify currently sends `fingerprintHash: null` (single-counterparty integration), so Layer 1 is a no-op AS-IS — but if Foxify ever begins sending a stable hash, the 60-min window would block all ladder-netting reopens (which run on a 30-min window). Disabling Layer 1 prevents that future regression while keeping Layers 2-4 (jitter cooldown, trigger cooldown, Layer-4 surcharge) fully active. |
 | `VC_TICK_SPACING_MIN_MS` | `60000` (60s) | **`15000`** (15s) | Foxify's auto-close-then-reopen logic completes in ~5-30s. The 60s gate blocks legitimate close→reopen cycles. 15s still prevents rapid-fire opens (no bot can usefully cycle <15s on this product) while letting the legitimate pattern through. |
 | `VC_TICK_SPACING_MIN_BTC_USDC` | `400` | **`100`** | Same reasoning. The OR-condition fires when BTC moves $400+ between same-cell opens (legitimate volatility-driven reopen). Lowering to $100 catches calm-regime reopens that would otherwise wait the full elapsed-MS window. |
+| `VC_CONTRACT_MULT_DEFAULT` | `1.0` (matrix base) | **`0.8`** | The matrix sizes spread contracts to deliver `payoutUsdc=$1000` of intrinsic at trigger, but PR-G's overlay drops the actual Foxify payout to **$800 in calm regime**. Sizing for $1000 cover when only owing $800 = systematic 25% over-hedge. Multiplier 0.8 right-sizes contracts so spread intrinsic at trigger = $800 (matches obligation). Saves ~$110 of hedge cost per pair, improves no-trigger EV by ~$57, capital-efficient enough to fit the 4-leg open at $1,378 collateral. Keeps spread intrinsic ≥ Foxify obligation (no uncovered gap). |
+
+**Optional per-cell override** via JSON if you want different multipliers across cells:
+```
+VC_CONTRACT_MULT_JSON={"50k_2pct_1k": 0.8, "1k_2pct_20": 1.0}
+```
 
 ### 8.2 Verification curl (Live)
 

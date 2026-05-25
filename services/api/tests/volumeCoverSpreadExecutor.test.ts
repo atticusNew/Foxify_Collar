@@ -13,6 +13,8 @@ import {
   getConfiguredExpiryAutoAdvance,
   buildCandidateExpiries,
   chooseLiveExpiryForSpread,
+  getConfiguredContractMultiplier,
+  applyContractMultiplier,
   __testHelpers,
   type SpreadExecutorAdapter,
   type ExecutorOrderResult,
@@ -1671,4 +1673,160 @@ test("Bundle 5: chooseLiveExpiryForSpread prefers earliest passing expiry (theta
   );
   assert.equal(result.advancedDays, 0); // didn't advance
   assert.equal(result.probed[0].passed, true);
+});
+
+// ─── Bundle 6 (2026-05-25): contract multiplier ──────────────────────
+
+const clearContractMultEnv = (): void => {
+  delete process.env.VC_CONTRACT_MULT_DEFAULT;
+  delete process.env.VC_CONTRACT_MULT_JSON;
+};
+
+test("Bundle 6: getConfiguredContractMultiplier defaults to 1.0 when no env set", () => {
+  clearEnv();
+  clearContractMultEnv();
+  const cfg = getConfiguredContractMultiplier("50k_2pct_1k");
+  assert.equal(cfg.multiplier, 1.0);
+  assert.equal(cfg.source, "matrix-base");
+});
+
+test("Bundle 6: getConfiguredContractMultiplier reads VC_CONTRACT_MULT_DEFAULT", () => {
+  clearEnv();
+  clearContractMultEnv();
+  process.env.VC_CONTRACT_MULT_DEFAULT = "0.8";
+  try {
+    const cfg = getConfiguredContractMultiplier("50k_2pct_1k");
+    assert.equal(cfg.multiplier, 0.8);
+    assert.equal(cfg.source, "default");
+  } finally {
+    clearContractMultEnv();
+  }
+});
+
+test("Bundle 6: per-cell JSON override beats global default", () => {
+  clearEnv();
+  clearContractMultEnv();
+  process.env.VC_CONTRACT_MULT_DEFAULT = "0.8";
+  process.env.VC_CONTRACT_MULT_JSON = JSON.stringify({ "50k_2pct_1k": 0.5, "1k_2pct_20": 1.0 });
+  try {
+    const cfgA = getConfiguredContractMultiplier("50k_2pct_1k");
+    assert.equal(cfgA.multiplier, 0.5);
+    assert.equal(cfgA.source, "per-cell");
+    const cfgB = getConfiguredContractMultiplier("1k_2pct_20");
+    assert.equal(cfgB.multiplier, 1.0);
+    assert.equal(cfgB.source, "per-cell");
+    // Cell not in JSON falls back to default
+    const cfgC = getConfiguredContractMultiplier("missing_cell_id");
+    assert.equal(cfgC.multiplier, 0.8);
+    assert.equal(cfgC.source, "default");
+  } finally {
+    clearContractMultEnv();
+  }
+});
+
+test("Bundle 6: clamps multiplier to [0.1, 1.5]", () => {
+  clearEnv();
+  clearContractMultEnv();
+  process.env.VC_CONTRACT_MULT_DEFAULT = "0.05"; // below min
+  try {
+    assert.equal(getConfiguredContractMultiplier("any").multiplier, 0.1);
+  } finally {
+    clearContractMultEnv();
+  }
+  process.env.VC_CONTRACT_MULT_DEFAULT = "5.0"; // way above max
+  try {
+    assert.equal(getConfiguredContractMultiplier("any").multiplier, 1.5);
+  } finally {
+    clearContractMultEnv();
+  }
+});
+
+test("Bundle 6: malformed JSON falls back to default", () => {
+  clearEnv();
+  clearContractMultEnv();
+  process.env.VC_CONTRACT_MULT_JSON = "{not valid json";
+  process.env.VC_CONTRACT_MULT_DEFAULT = "0.7";
+  try {
+    const cfg = getConfiguredContractMultiplier("50k_2pct_1k");
+    assert.equal(cfg.multiplier, 0.7);
+    assert.equal(cfg.source, "default");
+  } finally {
+    clearContractMultEnv();
+  }
+});
+
+test("Bundle 6: applyContractMultiplier scales all 4 legs and contractsBtcPerLeg", () => {
+  clearEnv();
+  clearContractMultEnv();
+  const structure = buildStructure();
+  // Force every leg to 1.0 BTC for deterministic math
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 1.0;
+  }
+  structure.contractsBtcPerLeg = 1.0;
+  const r = applyContractMultiplier({
+    structure,
+    cellId: "50k_2pct_1k",
+    multiplierOverride: 0.8
+  });
+  assert.equal(r.multiplier, 0.8);
+  assert.equal(r.source, "override");
+  assert.equal(r.beforeContractsBtc, 1.0);
+  assert.equal(r.afterContractsBtc, 0.8); // 1.0 × 0.8 = 0.80, granular
+  assert.equal(structure.contractsBtcPerLeg, 0.8);
+  for (const leg of structure.legs) {
+    assert.equal(leg.contractsBtc, 0.8);
+  }
+});
+
+test("Bundle 6: applyContractMultiplier rounds DOWN to 0.01 BTC granularity", () => {
+  clearEnv();
+  clearContractMultEnv();
+  const structure = buildStructure();
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 1.13; // matches today's failed activation
+  }
+  structure.contractsBtcPerLeg = 1.13;
+  const r = applyContractMultiplier({
+    structure,
+    cellId: "50k_2pct_1k",
+    multiplierOverride: 0.8
+  });
+  // 1.13 × 0.8 = 0.904, floor to 0.01 = 0.90
+  assert.equal(r.afterContractsBtc, 0.9);
+  assert.equal(structure.contractsBtcPerLeg, 0.9);
+});
+
+test("Bundle 6: applyContractMultiplier no-op when multiplier is 1.0", () => {
+  clearEnv();
+  clearContractMultEnv();
+  const structure = buildStructure();
+  const before = structure.contractsBtcPerLeg;
+  const r = applyContractMultiplier({
+    structure,
+    cellId: "50k_2pct_1k"
+    // no override → reads env → defaults to 1.0
+  });
+  assert.equal(r.multiplier, 1.0);
+  assert.equal(r.source, "matrix-base");
+  assert.equal(structure.contractsBtcPerLeg, before);
+});
+
+test("Bundle 6: applyContractMultiplier never produces zero contracts (granularity floor)", () => {
+  clearEnv();
+  clearContractMultEnv();
+  const structure = buildStructure();
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 0.05;
+  }
+  structure.contractsBtcPerLeg = 0.05;
+  // Multiplier 0.1 (the min) × 0.05 = 0.005 → would round to 0
+  // Function should floor at granularity (0.01)
+  const r = applyContractMultiplier({
+    structure,
+    cellId: "tiny_cell",
+    multiplierOverride: 0.1
+  });
+  assert.equal(r.afterContractsBtc, 0.01);
+  assert.equal(structure.contractsBtcPerLeg, 0.01);
 });

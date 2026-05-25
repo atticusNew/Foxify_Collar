@@ -80,7 +80,8 @@ import {
 import {
   getConfiguredDepthGate,
   getConfiguredRollbackHardening,
-  getConfiguredExpiryAutoAdvance
+  getConfiguredExpiryAutoAdvance,
+  getConfiguredContractMultiplier
 } from "./spreadExecutor";
 import { readSalvageMetrics } from "./salvageTracker";
 import { buildFoxifyDailyReport, buildFoxifyRangeReport } from "./foxifyReport";
@@ -453,7 +454,20 @@ export const registerVolumeCoverRoutes = async (
             // picks the earliest fully-live candidate. When disabled
             // OR no candidate passes, falls back to original gate
             // behavior (preserves liquidity_gate_failed signal).
-            bundle5_expiryAutoAdvance: getConfiguredExpiryAutoAdvance()
+            bundle5_expiryAutoAdvance: getConfiguredExpiryAutoAdvance(),
+            // Bundle 6 (2026-05-25): per-cell contract multiplier for
+            // right-sizing hedge to runtime payout overlay (avoiding
+            // 25% over-hedge in calm regime when Y=$800 but matrix
+            // sizes for $1k coverage). Default 1.0 (matrix-base);
+            // production target 0.8 matches calm payout / matrix base.
+            // Surfaces the live default + the multiplier resolved for
+            // the active 50k_2pct_1k cell so operator can verify the
+            // env var wired correctly.
+            bundle6_contractMultiplier: {
+              default: getConfiguredContractMultiplier("__nonexistent_cell__").multiplier,
+              "50k_2pct_1k": getConfiguredContractMultiplier("50k_2pct_1k"),
+              "1k_2pct_20": getConfiguredContractMultiplier("1k_2pct_20")
+            }
           }
         }
       });
