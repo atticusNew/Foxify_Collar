@@ -1090,10 +1090,20 @@ export const registerVolumeCoverRoutes = async (
 
     const positions = await Promise.all(
       posResult.rows.map(async (row) => {
+        // PR-Admin-Surface (2026-05-25): include the spread-executor
+        // attribution columns so per-position hedge-cost reconciliation
+        // doesn't require crawling the Atticus pool ledger. For SHORT
+        // legs of a 4-leg spread:
+        //   buy_price_usdc       = 0 (sentinel; no cash paid at open)
+        //   initial_proceeds_usdc = USDC received when the short was sold-to-open
+        //   sell_price_usdc      = USDC paid to buy back at close (BUY-side fill)
+        // Combined with leg_role + spread_group_id, downstream consumers
+        // can compute net spread P&L per position without re-querying.
         const legsResult = await pool.query(
           `SELECT id, venue, option_kind, strike_usdc, expiry_iso,
                   contracts, buy_price_usdc, sell_price_usdc, status,
-                  retained, retained_role, retained_at, opened_at, closed_at
+                  retained, retained_role, retained_at, opened_at, closed_at,
+                  spread_group_id, leg_role, initial_proceeds_usdc
            FROM volume_cover_hedge_leg
            WHERE position_id = $1
            ORDER BY opened_at`,
@@ -1113,7 +1123,14 @@ export const registerVolumeCoverRoutes = async (
           retainedRole: l.retained_role ? String(l.retained_role) : null,
           retainedAt: l.retained_at ? String(l.retained_at) : null,
           openedAt: String(l.opened_at),
-          closedAt: l.closed_at ? String(l.closed_at) : null
+          closedAt: l.closed_at ? String(l.closed_at) : null,
+          // 2026-05-25 (PR-Admin-Surface): spread executor attribution.
+          spreadGroupId: l.spread_group_id ? String(l.spread_group_id) : null,
+          legRole: l.leg_role ? String(l.leg_role) : null,
+          initialProceedsUsdc:
+            l.initial_proceeds_usdc !== null && l.initial_proceeds_usdc !== undefined
+              ? Number(l.initial_proceeds_usdc)
+              : null
         }));
 
         return {
