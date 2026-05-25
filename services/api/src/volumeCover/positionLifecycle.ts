@@ -520,14 +520,31 @@ export const fireTrigger = async (
     }
   });
 
-  // Ledger entry for spread short proceeds (these are realized cash
-  // now, not deferred salvage).
-  if (spreadShortProceedsUsdc > 0) {
+  // Ledger entry for spread short proceeds (realized cash, not deferred
+  // salvage).
+  //
+  // PR-Ledger-Fix (2026-05-25): the executor's
+  // `partialCloseSpreadOnTrigger` returns
+  //   spreadShortProceedsUsdc = Σ(−1 × fillPrice × qty)
+  // which is NEGATIVE for the typical at-trigger buyback (we pay cash to
+  // close the short). The previous guard `> 0` silently skipped the
+  // insert in every realistic trigger scenario, so the Atticus pool
+  // ledger missed the buyback debit (~$1,100 on Foxify-001). Salvage_event
+  // still booked the truth so the dashboard `rolling7dayAtticusLossUsdc`
+  // metric was correct, but the pool ledger drifted.
+  //
+  // Fix: insert unconditionally on non-zero, picking the entry type from
+  // the sign:
+  //   - amount < 0 → `hedge_buy_out` (Atticus pays to flatten the short)
+  //   - amount > 0 → `hedge_sell_in` (rare, e.g. shorts expired ITM and
+  //                 Atticus collected; preserved for completeness)
+  if (Math.abs(spreadShortProceedsUsdc) > 1e-8) {
+    const isDebit = spreadShortProceedsUsdc < 0;
     try {
       await insertLedgerEntry(pool, {
         poolId: "atticus_hedge",
         protectionId: params.position.id,
-        entryType: "hedge_sell_in",
+        entryType: isDebit ? "hedge_buy_out" : "hedge_sell_in",
         amountUsdc: spreadShortProceedsUsdc,
         reference: `vc_spread_short_close:${params.position.cellId}:${params.position.id}`,
         metadata: {
@@ -837,12 +854,16 @@ export const closePosition = async (
   });
 
   // Spread-close: book realized short-leg proceeds immediately.
-  if (spreadShortProceedsUsdc > 0) {
+  //
+  // PR-Ledger-Fix (2026-05-25): see fireTrigger for the full rationale.
+  // Same guard fix here — non-zero, sign-aware entry type.
+  if (Math.abs(spreadShortProceedsUsdc) > 1e-8) {
+    const isDebit = spreadShortProceedsUsdc < 0;
     try {
       await insertLedgerEntry(pool, {
         poolId: "atticus_hedge",
         protectionId: params.position.id,
-        entryType: "hedge_sell_in",
+        entryType: isDebit ? "hedge_buy_out" : "hedge_sell_in",
         amountUsdc: spreadShortProceedsUsdc,
         reference: `vc_spread_short_foxify_close:${params.position.cellId}:${params.position.id}`,
         metadata: {
