@@ -822,3 +822,186 @@ test("PR-A ratio gate: log-only mode preserves passed=true even with ratio short
   assert.equal(callLong.depthSufficient, false);
   assert.equal(callLong.sufficient, true);
 });
+
+// ─── PR-G2 (2026-05-25): mid-IOC short-leg buyback ───────────────────
+//
+// Validates that the SHORT-leg buyback path uses an aggressive
+// fill-optimizer fraction (default 0.5 = true mid) while the LONG-sell
+// path keeps the standard 0.25 (the optimizer's normal default).
+//
+// Test strategy: the mock adapter's submitIocLimit fills at exactly the
+// limit price submitted, so inspecting `calls[].priceUsdcPerBtc` tells
+// us where each leg crossed the book.
+//
+// happyBooks() exposes:
+//   short_put 74000-P:  bid 300 / ask 350  (spread 50)
+//     mid (0.5):    350 − 0.5·50  = 325
+//     legacy (0.25): 350 − 0.25·50 = 337.5
+//   short_call 78000-C: bid 80  / ask 100  (spread 20)
+//     mid (0.5):    100 − 0.5·20  = 90
+//     legacy (0.25): 100 − 0.25·20 = 95
+//   long_put 75000-P:   bid 600 / ask 700  (spread 100)
+//     SELL legacy (0.25): 600 + 0.25·100 = 625
+//   long_call 77000-C:  bid 200 / ask 250  (spread 50)
+//     SELL legacy (0.25): 200 + 0.25·50  = 212.5
+
+test("PR-G2: short-buyback uses mid (0.5) fraction by default; longs keep 0.25", async () => {
+  clearEnv();
+  delete process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+  const structure = buildStructure();
+  const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+  const result = await partialCloseSpreadOnTrigger({
+    structure,
+    adapter,
+    triggerDirection: "high",
+    sellLongsAtTriggerOverride: true
+  });
+  assert.equal(result.ok, true);
+
+  const callShort = calls.find((c) => c.legRole === "call_short");
+  const putShort = calls.find((c) => c.legRole === "put_short");
+  const callLong = calls.find((c) => c.legRole === "call_long");
+  const putLong = calls.find((c) => c.legRole === "put_long");
+
+  // Shorts at MID
+  assert.equal(callShort?.priceUsdcPerBtc, 90, "call_short should buyback at mid (90)");
+  assert.equal(putShort?.priceUsdcPerBtc, 325, "put_short should buyback at mid (325)");
+  // Longs keep legacy 0.25 — UNCHANGED behavior
+  assert.equal(callLong?.priceUsdcPerBtc, 212.5, "call_long should sell at 0.25 fraction (212.5)");
+  assert.equal(putLong?.priceUsdcPerBtc, 625, "put_long should sell at 0.25 fraction (625)");
+});
+
+test("PR-G2: VC_SPREAD_SHORT_BUYBACK_MID_FRACTION=0.25 reverts to legacy short-buyback price", async () => {
+  clearEnv();
+  process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION = "0.25";
+  try {
+    const structure = buildStructure();
+    const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+    const result = await partialCloseSpreadOnTrigger({
+      structure,
+      adapter,
+      triggerDirection: "high",
+      sellLongsAtTriggerOverride: false
+    });
+    assert.equal(result.ok, true);
+
+    const callShort = calls.find((c) => c.legRole === "call_short");
+    const putShort = calls.find((c) => c.legRole === "put_short");
+    // Legacy fraction → 0.25 inside the spread
+    assert.equal(callShort?.priceUsdcPerBtc, 95, "call_short reverts to legacy (95)");
+    assert.equal(putShort?.priceUsdcPerBtc, 337.5, "put_short reverts to legacy (337.5)");
+  } finally {
+    delete process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+  }
+});
+
+test("PR-G2: VC_SPREAD_SHORT_BUYBACK_MID_FRACTION=0 crosses straight to ask on first attempt", async () => {
+  clearEnv();
+  process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION = "0";
+  try {
+    const structure = buildStructure();
+    const { adapter, calls } = buildMockAdapter({ books: happyBooks() });
+    const result = await partialCloseSpreadOnTrigger({
+      structure,
+      adapter,
+      triggerDirection: "low",
+      sellLongsAtTriggerOverride: false
+    });
+    assert.equal(result.ok, true);
+
+    const callShort = calls.find((c) => c.legRole === "call_short");
+    const putShort = calls.find((c) => c.legRole === "put_short");
+    // fraction=0 → improved attempt equals worst-case ask. The first
+    // (improved) submission lands at ask, fills, no second submission.
+    assert.equal(callShort?.priceUsdcPerBtc, 100, "call_short crosses to ask (100)");
+    assert.equal(putShort?.priceUsdcPerBtc, 350, "put_short crosses to ask (350)");
+  } finally {
+    delete process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+  }
+});
+
+test("PR-G2: short-buyback falls through to ask + deep-cross on Expired (parity with optimizer cascade)", async () => {
+  clearEnv();
+  // Confirm the cascade behavior: when MID expires, the optimizer falls
+  // back to worst-case ask, and if THAT expires too AND deepCrossBps>0,
+  // it walks to ask × (1 + bps/10000). With deepCrossBps unset (default 0),
+  // we get only the two attempts (mid then ask).
+  process.env.VC_FILL_OPTIMIZER_DEEP_CROSS_BPS = "500"; // 5% deep cross enabled
+  process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION = "0.5";
+  try {
+    const structure = buildStructure();
+    // Make the call_short symbol expire on attempts 1+2 then fill on attempt 3.
+    const { adapter, calls } = buildMockAdapter({
+      books: happyBooks(),
+      submitOverrides: {
+        "BTC-USDC-20260526-78000-C": (callIdx: number) => {
+          if (callIdx <= 2) {
+            return {
+              filled: false,
+              fillPriceUsdcPerBtc: 0,
+              fillQtyBtc: 0,
+              finalReason: "Expired",
+              orderId: null
+            };
+          }
+          return {
+            filled: true,
+            fillPriceUsdcPerBtc: 105, // deep cross fills at ask×1.05
+            fillQtyBtc: 0.01,
+            finalReason: "Executed",
+            orderId: `ORD-deep-${callIdx}`
+          };
+        }
+      }
+    });
+    const result = await partialCloseSpreadOnTrigger({
+      structure,
+      adapter,
+      triggerDirection: "high",
+      sellLongsAtTriggerOverride: false
+    });
+    assert.equal(result.ok, true);
+
+    const callShortAttempts = calls.filter(
+      (c) => c.legRole === "call_short"
+    );
+    assert.equal(callShortAttempts.length, 3, "should make 3 attempts (mid, ask, deep)");
+    assert.equal(callShortAttempts[0].priceUsdcPerBtc, 90, "attempt 1 = mid");
+    assert.equal(callShortAttempts[1].priceUsdcPerBtc, 100, "attempt 2 = worst-case ask");
+    assert.equal(callShortAttempts[2].priceUsdcPerBtc, 105, "attempt 3 = ask × 1.05 (deep cross)");
+
+    const closedShortCallShort = result.shortLegsClosed.find(
+      (l) => l.legRole === "call_short"
+    );
+    assert.equal(
+      closedShortCallShort?.fillPriceUsdcPerBtc,
+      105,
+      "fill records the deep-cross price"
+    );
+  } finally {
+    delete process.env.VC_FILL_OPTIMIZER_DEEP_CROSS_BPS;
+    delete process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+  }
+});
+
+test("PR-G2: getShortBuybackMidFraction default is 0.5; env override honored; clamped to [0, 0.5]", () => {
+  delete process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+  assert.equal(__testHelpers.getShortBuybackMidFraction(), 0.5, "default 0.5 when unset");
+
+  process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION = "0.25";
+  assert.equal(__testHelpers.getShortBuybackMidFraction(), 0.25, "honors 0.25");
+
+  process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION = "0";
+  assert.equal(__testHelpers.getShortBuybackMidFraction(), 0, "honors 0 (cross-ask immediately)");
+
+  process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION = "0.99"; // out of range
+  assert.equal(__testHelpers.getShortBuybackMidFraction(), 0.5, "clamps above-bound to 0.5");
+
+  process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION = "-0.1"; // out of range
+  assert.equal(__testHelpers.getShortBuybackMidFraction(), 0, "clamps below-bound to 0");
+
+  process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION = "not-a-number";
+  assert.equal(__testHelpers.getShortBuybackMidFraction(), 0.5, "falls back to default on garbage");
+
+  delete process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+});

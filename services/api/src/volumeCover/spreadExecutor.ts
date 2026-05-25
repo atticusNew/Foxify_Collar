@@ -47,9 +47,66 @@ import {
 } from "./hedgeJitter";
 import {
   executeOptimizedFill,
+  getConfiguredFillOptimizer,
+  type FillOptimizerConfig,
   type FillSubmitFn,
   type FillResult
 } from "./fillOptimizer";
+
+// ─── PR-G2 (2026-05-25): mid-IOC short-leg buyback ───────────────────
+//
+// At trigger fire and at Foxify-close, the spread executor must BUY back
+// the two short legs to flatten the position. The pre-PR-G2 default ran
+// these buybacks through the standard `executeOptimizedFill` with a
+// `VC_FILL_OPTIMIZER_IMPROVEMENT_FRACTION` of 0.25 (25% inside spread).
+//
+// On Trade 1 (Foxify-001 trigger, 2026-05-23) the realized short-leg
+// buyback cost was $1,100 to extinguish ~$300 of fair-value time premium
+// — i.e., we paid roughly the worst-case ask. Pushing the first attempt
+// to the mid (0.5) keeps the same fall-through behavior (worst-case ask
+// on Expired, then deep-cross if `VC_FILL_OPTIMIZER_DEEP_CROSS_BPS` is
+// set) but tries to capture price improvement first.
+//
+// Tuned via `VC_SPREAD_SHORT_BUYBACK_MID_FRACTION` env (default 0.5):
+//   • 0.5  = true mid (PR-G2 default)
+//   • 0.25 = legacy optimizer behavior (parity with pre-PR-G2)
+//   • 0    = no improvement attempt; cross to ask immediately
+//
+// Hard-clamped to [0, 0.5] (the same range the underlying optimizer
+// enforces for `improvementFraction`) so a misconfigured env can't
+// place an order outside the bid/ask band.
+const SHORT_BUYBACK_MID_FRACTION_DEFAULT = 0.5;
+
+const getShortBuybackMidFraction = (): number => {
+  const raw = process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+  if (raw === undefined || raw === null || raw === "") {
+    return SHORT_BUYBACK_MID_FRACTION_DEFAULT;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SHORT_BUYBACK_MID_FRACTION_DEFAULT;
+  return Math.max(0, Math.min(0.5, n));
+};
+
+/**
+ * Build a fill-optimizer config tuned for the short-leg buyback path.
+ * Spreads the standard env-driven config and overrides only
+ * `improvementFraction`. The deep-cross fall-through behavior is
+ * inherited from the standard config so a thin-book buyback still
+ * walks to next-level liquidity rather than failing.
+ *
+ * Test override: pass `cfgOverride` to inject a deterministic config.
+ */
+const buildShortBuybackOptimizerCfg = (
+  cfgOverride?: FillOptimizerConfig
+): FillOptimizerConfig => {
+  const base = cfgOverride ?? getConfiguredFillOptimizer();
+  return {
+    ...base,
+    improvementFraction: cfgOverride
+      ? cfgOverride.improvementFraction
+      : getShortBuybackMidFraction()
+  };
+};
 
 // ─── Executor interface ──────────────────────────────────────────────
 
@@ -760,8 +817,23 @@ export const partialCloseSpreadOnTrigger = async (params: {
    * env-driven default (true) so this is the only knob outside tests.
    */
   sellLongsAtTriggerOverride?: boolean;
+  /**
+   * PR-G2: override the fill-optimizer config used for the SHORT-leg
+   * buyback path (test-only). Production reads
+   * VC_SPREAD_SHORT_BUYBACK_MID_FRACTION via getShortBuybackMidFraction.
+   * The long-sale path is NOT affected by this override; long sales
+   * keep the standard env-driven optimizer config.
+   */
+  shortBuybackOptimizerCfgOverride?: FillOptimizerConfig;
 }): Promise<SpreadPartialCloseResult> => {
   const jitterCfg = getConfiguredHedgeJitter();
+  // PR-G2: build the short-buyback-specific optimizer config ONCE (so the
+  // env read is consistent across the two short legs of this trigger).
+  // Long sales below intentionally do NOT pass cfg, so they keep the
+  // standard 0.25 improvement fraction — only short buybacks aim at mid.
+  const shortBuybackCfg = buildShortBuybackOptimizerCfg(
+    params.shortBuybackOptimizerCfgOverride
+  );
   // Per Item 1: close BOTH wings' SHORT legs immediately. Retain both LONG legs.
   // Close order: winning side short FIRST (to lock in proceeds), then losing side short.
   // For high trigger: winning side is calls; losing side is puts.
@@ -802,6 +874,10 @@ export const partialCloseSpreadOnTrigger = async (params: {
       quantityBtc: leg.contractsBtc,
       topBidUsdc: book.topBidUsdc as number,
       topAskUsdc: book.topAskUsdc as number,
+      // PR-G2: try mid first on short buybacks (default fraction 0.5).
+      // Falls through to worst-case ask + deep-cross via the standard
+      // optimizer cascade if mid expires.
+      cfg: shortBuybackCfg,
       submitFn: submitFnFor(
         params.adapter,
         symbol,
@@ -1002,5 +1078,10 @@ export const __testHelpers = {
   sideForLeg,
   reverseSideForRollback,
   shouldParallelizeLongSells,
+  // PR-G2 short-buyback mid-IOC primitives — re-exported for tests so the
+  // env-default + override behavior can be asserted without spawning a
+  // subprocess.
+  getShortBuybackMidFraction,
+  buildShortBuybackOptimizerCfg,
   newSpreadGroupId: () => `vc-spread-${randomUUID()}`
 };
