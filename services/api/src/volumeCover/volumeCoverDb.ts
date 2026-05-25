@@ -1106,10 +1106,29 @@ export const repurposeHedgeLeg = async (
     newPositionId: string;
     /** Max hops permitted; default 1 (one repurpose per lineage). */
     maxHops?: number;
+    /**
+     * 2026-05-25 (PR-Bundle-3-B): when laddering INTO a 4-leg [DB] spread,
+     * caller passes the new spread group id + role so close-path code
+     * (partialCloseSpreadOnTrigger / closePosition spread branch) can
+     * identify the leg by role. Both fields preserved when unset, so
+     * strangle ladder netting (which doesn't set them) is unaffected.
+     */
+    newLegRole?: HedgeLegRow["legRole"];
+    newSpreadGroupId?: string | null;
   }
 ): Promise<HedgeLegRow | null> => {
   const maxHops = params.maxHops ?? 1;
-  const r = await pool.query(
+  // Build the SET clause dynamically so unset spread params don't NULL-out
+  // any pre-existing leg_role / spread_group_id (defensive).
+  const setSpread =
+    params.newSpreadGroupId !== undefined
+      ? `, spread_group_id = $4`
+      : "";
+  const setRole =
+    params.newLegRole !== undefined
+      ? `, leg_role = $${params.newSpreadGroupId !== undefined ? 5 : 4}`
+      : "";
+  const sql =
     `UPDATE volume_cover_hedge_leg
      SET repurposed_from_position_id = position_id,
          position_id = $2,
@@ -1117,14 +1136,16 @@ export const repurposeHedgeLeg = async (
          retained_at = NULL,
          retained_reason = NULL,
          retained_role = NULL,
-         ladder_hop_count = ladder_hop_count + 1
+         ladder_hop_count = ladder_hop_count + 1${setSpread}${setRole}
      WHERE id = $1
        AND retained = TRUE
        AND status = 'open'
        AND ladder_hop_count < $3
-     RETURNING *`,
-    [params.legId, params.newPositionId, maxHops]
-  );
+     RETURNING *`;
+  const values: any[] = [params.legId, params.newPositionId, maxHops];
+  if (params.newSpreadGroupId !== undefined) values.push(params.newSpreadGroupId);
+  if (params.newLegRole !== undefined) values.push(params.newLegRole);
+  const r = await pool.query(sql, values);
   return r.rows[0] ? rowToHedgeLeg(r.rows[0]) : null;
 };
 
