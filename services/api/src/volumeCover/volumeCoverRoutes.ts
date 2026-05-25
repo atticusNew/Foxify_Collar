@@ -39,6 +39,8 @@ import { getPilotPool } from "../pilot/db";
 import { tierBlocksFoxifyTraffic, isShadowTier } from "../pilot/deploymentTier";
 import { selectCell } from "./cellSelector";
 import { resolveDailyPremium } from "./pricing";
+import { evaluateTickSpacing, getConfiguredTickSpacing } from "./tickSpacing";
+import { getConfiguredMaxHold } from "./maxHoldSweep";
 import { findCellById, computeTriggerPrices, computeHedgeStrikes } from "./matrix";
 import {
   ensureVolumeCoverSchema,
@@ -48,6 +50,7 @@ import {
   updateCell,
   getPosition,
   getPositionByPairId,
+  getMostRecentPositionForCell,
   listHedgeLegsForPosition,
   listActivePositions,
   listPositionsForCellToday,
@@ -370,6 +373,29 @@ export const registerVolumeCoverRoutes = async (
               const n = Number(raw);
               if (!Number.isFinite(n)) return 0.5;
               return Math.max(0, Math.min(0.5, n));
+            })(),
+            // 2026-05-25 (PR-G): tick-spacing gate config. Activate route
+            // rejects rapid same-cell opens unless either cooldown elapsed
+            // OR BTC moved >= minBtcUsdc. Tunable via VC_TICK_SPACING_*.
+            prG_tickSpacing: getConfiguredTickSpacing(),
+            // 2026-05-25 (PR-G): max-hold cap config. trigger-detector loop
+            // sweeps active positions and auto-closes any past
+            // openedAt + maxHoldHours. Bounds Atticus tail risk at the
+            // hedge expiry boundary. Tunable via VC_MAX_HOLD_*.
+            prG_maxHold: getConfiguredMaxHold(),
+            // 2026-05-25 (PR-G): the parsed payout overlay map for the
+            // primary cell, so an operator can see at a glance whether the
+            // VC_PAYOUT_OVERLAY_JSON env update for calm landed. The full
+            // map is also exposed under prG_payoutOverlayJson.
+            prG_payoutOverlay50k_2pct_1k: (() => {
+              try {
+                const raw = process.env.VC_PAYOUT_OVERLAY_JSON;
+                if (!raw) return null;
+                const parsed = JSON.parse(raw);
+                return parsed?.["50k_2pct_1k"] ?? null;
+              } catch {
+                return { error: "invalid_json" };
+              }
             })()
           }
         }
@@ -577,6 +603,53 @@ export const registerVolumeCoverRoutes = async (
     } catch {
       // If spot source down, allow but log
       req.log.warn(`[volume-cover] spot source unavailable; skipping drift check`);
+    }
+
+    // PR-G tick spacing (2026-05-25): reject rapid same-spot opens on
+    // the same cell. Pass when either >=60s elapsed since the last open
+    // OR >=$400 BTC move. Fingerprint-agnostic — applies to any client
+    // hammering the cell. admin_test_activate rows are excluded by
+    // getMostRecentPositionForCell so operator diagnostics never trip
+    // the gate. Tunable via VC_TICK_SPACING_* env.
+    try {
+      const last = await getMostRecentPositionForCell(pool, { cellId: cell.cellId });
+      const decision = evaluateTickSpacing({
+        lastOpenedAtIso: last?.openedAt ?? null,
+        lastEntryBtcUsdc: last?.pairEntryBtcPrice ?? null,
+        currentEntryBtcUsdc: body.pairEntryBtcPrice
+      });
+      if (!decision.allowed) {
+        void writeEvent({
+          result: "rejected",
+          rejectReason: `tick_spacing:${decision.reason}`,
+          metadata: {
+            elapsedMs: decision.elapsedMs,
+            btcDeltaUsdc: decision.btcDeltaUsdc,
+            lastOpenedAtIso: decision.lastOpenedAtIso,
+            minMs: decision.minMs,
+            minBtcUsdc: decision.minBtcUsdc
+          }
+        });
+        return reply.code(429).send({
+          error: "tick_spacing_violation",
+          reason: decision.reason,
+          message: decision.message,
+          retryAfterMs: decision.retryAfterMs,
+          lastOpenedAtIso: decision.lastOpenedAtIso,
+          lastEntryBtcUsdc: decision.lastEntryBtcUsdc,
+          currentEntryBtcUsdc: decision.currentEntryBtcUsdc,
+          elapsedMs: decision.elapsedMs,
+          btcDeltaUsdc: decision.btcDeltaUsdc,
+          minMs: decision.minMs,
+          minBtcUsdc: decision.minBtcUsdc
+        });
+      }
+    } catch (err) {
+      // DB failure on the gate lookup is NOT fatal — fail-open keeps
+      // activations flowing. Logged for ops review.
+      req.log.warn(
+        `[volume-cover/activate] tick-spacing lookup failed; failing open: ${(err as Error).message}`
+      );
     }
 
     // Per-cell daily throttle

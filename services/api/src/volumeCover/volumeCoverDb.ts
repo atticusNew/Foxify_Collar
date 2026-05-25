@@ -605,6 +605,31 @@ export const listPositionsForCellToday = async (
 };
 
 /**
+ * PR-G tick-spacing (2026-05-25): return the most recently opened
+ * position for a cell, regardless of status. Excludes admin_test_activate
+ * rows so operator diagnostics never gate real Foxify activations.
+ *
+ * Used by the activate route's anti-bursty-open gate: if the previous
+ * pair on this cell was opened too recently AND at a near-identical
+ * spot (i.e., Foxify is hammering the same setup back-to-back), reject
+ * the new activation with retry-after.
+ */
+export const getMostRecentPositionForCell = async (
+  pool: DbExecutor,
+  params: { cellId: string }
+): Promise<PositionRow | null> => {
+  const r = await pool.query(
+    `SELECT * FROM volume_cover_position
+     WHERE cell_id = $1
+       AND (metadata->>'source' IS NULL OR metadata->>'source' <> 'admin_test_activate')
+     ORDER BY opened_at DESC
+     LIMIT 1`,
+    [params.cellId]
+  );
+  return r.rows[0] ? rowToPosition(r.rows[0]) : null;
+};
+
+/**
  * Count active (status='active') positions for a cell. Used by the
  * activate endpoint's concurrent-cap check (env VC_MAX_CONCURRENT_PER_CELL).
  * Counts regardless of opened_at — a position opened yesterday that is
