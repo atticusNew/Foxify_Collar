@@ -407,6 +407,26 @@ export const registerVolumeCoverRoutes = async (
             // Disabled when VOLUME_COVER_LADDER_NETTING_ENABLED=false.
             prG3b_spreadLadderNettingEnabled:
               String(process.env.VOLUME_COVER_LADDER_NETTING_ENABLED ?? "true")
+                .toLowerCase() !== "false",
+            // 2026-05-25: anti-bot Layer 1 state. Should be `false` to
+            // unblock ladder netting reopens within the 30-min window.
+            // `true` (default) blocks any same-fingerprint+cell repeat
+            // open within VOLUME_COVER_ANTIBOT_LAYER1_WINDOW_MS (60 min
+            // by default), which is wider than the ladder window and
+            // would prevent ladders from firing if Foxify ever sends a
+            // stable fingerprintHash. With Foxify omitting the field,
+            // Layer 1 is a no-op anyway.
+            antibot_layer1Enabled:
+              String(process.env.VOLUME_COVER_ANTIBOT_LAYER1_ENABLED ?? "true")
+                .toLowerCase() !== "false",
+            antibot_layer2Enabled:
+              String(process.env.VOLUME_COVER_ANTIBOT_LAYER2_ENABLED ?? "true")
+                .toLowerCase() !== "false",
+            antibot_layer3Enabled:
+              String(process.env.VOLUME_COVER_ANTIBOT_LAYER3_ENABLED ?? "true")
+                .toLowerCase() !== "false",
+            antibot_layer4Enabled:
+              String(process.env.VOLUME_COVER_ANTIBOT_LAYER4_ENABLED ?? "true")
                 .toLowerCase() !== "false"
           }
         }
