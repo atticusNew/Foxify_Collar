@@ -632,6 +632,7 @@ VOLUME_COVER_ANTIBOT_LAYER1_ENABLED=false
 VC_TICK_SPACING_MIN_MS=15000
 VC_TICK_SPACING_MIN_BTC_USDC=100
 VC_CONTRACT_MULT_DEFAULT=0.8
+VC_MAX_CONTRACTS_BTC_DEFAULT=1.0
 ```
 
 Rationale per var:
@@ -643,10 +644,12 @@ Rationale per var:
 | `VC_TICK_SPACING_MIN_MS` | `60000` (60s) | **`15000`** (15s) | Foxify's auto-close-then-reopen logic completes in ~5-30s. The 60s gate blocks legitimate close→reopen cycles. 15s still prevents rapid-fire opens (no bot can usefully cycle <15s on this product) while letting the legitimate pattern through. |
 | `VC_TICK_SPACING_MIN_BTC_USDC` | `400` | **`100`** | Same reasoning. The OR-condition fires when BTC moves $400+ between same-cell opens (legitimate volatility-driven reopen). Lowering to $100 catches calm-regime reopens that would otherwise wait the full elapsed-MS window. |
 | `VC_CONTRACT_MULT_DEFAULT` | `1.0` (matrix base) | **`0.8`** | The matrix sizes spread contracts to deliver `payoutUsdc=$1000` of intrinsic at trigger, but PR-G's overlay drops the actual Foxify payout to **$800 in calm regime**. Sizing for $1000 cover when only owing $800 = systematic 25% over-hedge. Multiplier 0.8 right-sizes contracts so spread intrinsic at trigger = $800 (matches obligation). Saves ~$110 of hedge cost per pair, improves no-trigger EV by ~$57, capital-efficient enough to fit the 4-leg open at $1,378 collateral. Keeps spread intrinsic ≥ Foxify obligation (no uncovered gap). |
+| `VC_MAX_CONTRACTS_BTC_DEFAULT` | `Infinity` (no cap) | **`1.0`** | The matrix-formula contract sizing depends on `min(K2−triggerLow, K4−triggerHigh)` which is grid-snap-sensitive. When BTC entry sits next to a $1k strike grid line, the snap can produce a tiny min intrinsic (e.g., $285) and contracts blow up 3-4× (formula: $1k payout / $285 intrinsic = 3.51 BTC). Even with the 0.8 multiplier that's 2.81 BTC, requiring $1,517 cash for step 1 — exceeds available $1,083 USDC and Bullish rejects with `Reached max leverage`. The cap acts as an absolute ceiling: when the formula × multiplier exceeds 1.0 BTC, scale all legs to 1.0 BTC. Activations succeed at the cost of under-coverage in grid-edge scenarios (~5% of activations expected at typical BTC volatility). |
 
-**Optional per-cell override** via JSON if you want different multipliers across cells:
+**Optional per-cell overrides** via JSON if you want different values across cells:
 ```
 VC_CONTRACT_MULT_JSON={"50k_2pct_1k": 0.8, "1k_2pct_20": 1.0}
+VC_MAX_CONTRACTS_BTC_JSON={"50k_2pct_1k": 1.0, "1k_2pct_20": 0.1}
 ```
 
 ### 8.2 Verification curl (Live)

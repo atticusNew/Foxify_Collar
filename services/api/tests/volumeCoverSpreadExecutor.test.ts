@@ -15,6 +15,8 @@ import {
   chooseLiveExpiryForSpread,
   getConfiguredContractMultiplier,
   applyContractMultiplier,
+  getConfiguredMaxContractsBtc,
+  applyMaxContractsCap,
   __testHelpers,
   type SpreadExecutorAdapter,
   type ExecutorOrderResult,
@@ -2079,4 +2081,185 @@ test("Bundle 7: leg with TRUE zero fill (filled=false, fillQtyBtc=0) is NOT adde
   assert.equal(callLongRec, undefined);
   // Rollback ran on the 2 fully-placed legs only
   assert.equal(result.rollbackResults.length, 2);
+});
+
+// ─── Bundle 8 (2026-05-25): absolute max-contracts cap ───────────────
+
+const clearMaxContractsEnv = (): void => {
+  delete process.env.VC_MAX_CONTRACTS_BTC_DEFAULT;
+  delete process.env.VC_MAX_CONTRACTS_BTC_JSON;
+};
+
+test("Bundle 8: getConfiguredMaxContractsBtc defaults to Infinity (no cap) when no env set", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  const cfg = getConfiguredMaxContractsBtc("50k_2pct_1k");
+  assert.equal(cfg.maxContractsBtc, Infinity);
+  assert.equal(cfg.source, "no-cap");
+});
+
+test("Bundle 8: getConfiguredMaxContractsBtc reads VC_MAX_CONTRACTS_BTC_DEFAULT", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  process.env.VC_MAX_CONTRACTS_BTC_DEFAULT = "1.0";
+  try {
+    const cfg = getConfiguredMaxContractsBtc("50k_2pct_1k");
+    assert.equal(cfg.maxContractsBtc, 1.0);
+    assert.equal(cfg.source, "default");
+  } finally {
+    clearMaxContractsEnv();
+  }
+});
+
+test("Bundle 8: per-cell JSON beats global default", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  process.env.VC_MAX_CONTRACTS_BTC_DEFAULT = "1.0";
+  process.env.VC_MAX_CONTRACTS_BTC_JSON = JSON.stringify({ "50k_2pct_1k": 0.5, "1k_2pct_20": 0.1 });
+  try {
+    const cfgA = getConfiguredMaxContractsBtc("50k_2pct_1k");
+    assert.equal(cfgA.maxContractsBtc, 0.5);
+    assert.equal(cfgA.source, "per-cell");
+    const cfgB = getConfiguredMaxContractsBtc("1k_2pct_20");
+    assert.equal(cfgB.maxContractsBtc, 0.1);
+    assert.equal(cfgB.source, "per-cell");
+    // Cell not in JSON falls back to default
+    const cfgC = getConfiguredMaxContractsBtc("missing_cell_id");
+    assert.equal(cfgC.maxContractsBtc, 1.0);
+    assert.equal(cfgC.source, "default");
+  } finally {
+    clearMaxContractsEnv();
+  }
+});
+
+test("Bundle 8: clamps cap to [0.01, 10.0]", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  process.env.VC_MAX_CONTRACTS_BTC_DEFAULT = "0.001"; // way below floor
+  try {
+    assert.equal(getConfiguredMaxContractsBtc("any").maxContractsBtc, 0.01);
+  } finally {
+    clearMaxContractsEnv();
+  }
+  process.env.VC_MAX_CONTRACTS_BTC_DEFAULT = "100"; // way above ceiling
+  try {
+    assert.equal(getConfiguredMaxContractsBtc("any").maxContractsBtc, 10.0);
+  } finally {
+    clearMaxContractsEnv();
+  }
+});
+
+test("Bundle 8: applyMaxContractsCap caps oversized structure (grid-edge scenario)", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  const structure = buildStructure();
+  // Simulate the evening grid-edge scenario: formula produced 2.81 BTC
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 2.81;
+  }
+  structure.contractsBtcPerLeg = 2.81;
+  const r = applyMaxContractsCap({
+    structure,
+    cellId: "50k_2pct_1k",
+    maxContractsOverride: 1.0
+  });
+  assert.equal(r.capApplied, true);
+  assert.equal(r.maxContractsBtc, 1.0);
+  assert.equal(r.beforeContractsBtc, 2.81);
+  assert.equal(r.afterContractsBtc, 1.0);
+  assert.equal(structure.contractsBtcPerLeg, 1.0);
+  for (const leg of structure.legs) {
+    assert.equal(leg.contractsBtc, 1.0);
+  }
+});
+
+test("Bundle 8: applyMaxContractsCap leaves under-cap structure untouched", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  const structure = buildStructure();
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 0.66; // typical good-grid scenario
+  }
+  structure.contractsBtcPerLeg = 0.66;
+  const r = applyMaxContractsCap({
+    structure,
+    cellId: "50k_2pct_1k",
+    maxContractsOverride: 1.0
+  });
+  assert.equal(r.capApplied, false);
+  assert.equal(r.beforeContractsBtc, 0.66);
+  assert.equal(r.afterContractsBtc, 0.66);
+  assert.equal(structure.contractsBtcPerLeg, 0.66);
+});
+
+test("Bundle 8: applyMaxContractsCap no-op when no env set (legacy)", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  const structure = buildStructure();
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 5.0;
+  }
+  structure.contractsBtcPerLeg = 5.0;
+  const r = applyMaxContractsCap({
+    structure,
+    cellId: "50k_2pct_1k"
+    // no override → reads env → defaults to Infinity (no cap)
+  });
+  assert.equal(r.capApplied, false);
+  assert.equal(r.maxContractsBtc, Infinity);
+  assert.equal(r.source, "no-cap");
+  assert.equal(structure.contractsBtcPerLeg, 5.0);
+});
+
+test("Bundle 8: applyMaxContractsCap floors cap to 0.01 BTC granularity", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  const structure = buildStructure();
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 2.0;
+  }
+  structure.contractsBtcPerLeg = 2.0;
+  // Cap at 0.555 → should floor to 0.55
+  const r = applyMaxContractsCap({
+    structure,
+    cellId: "any",
+    maxContractsOverride: 0.555
+  });
+  assert.equal(r.capApplied, true);
+  assert.equal(r.afterContractsBtc, 0.55);
+  assert.equal(structure.contractsBtcPerLeg, 0.55);
+});
+
+test("Bundle 8: combined Bundle 6 multiplier + Bundle 8 cap (production scenario)", () => {
+  clearEnv();
+  clearMaxContractsEnv();
+  clearContractMultEnv();
+  const structure = buildStructure();
+  // Simulate the formula producing 3.51 BTC at grid edge
+  for (const leg of structure.legs) {
+    leg.contractsBtc = 3.51;
+  }
+  structure.contractsBtcPerLeg = 3.51;
+
+  // Apply Bundle 6 multiplier 0.8 first → 2.81 BTC
+  const multResult = applyContractMultiplier({
+    structure,
+    cellId: "50k_2pct_1k",
+    multiplierOverride: 0.8
+  });
+  // 3.51 × 0.8 = 2.808 → floor 0.01 = 2.80 (float-close)
+  assert.ok(
+    Math.abs(multResult.afterContractsBtc - 2.8) < 0.001,
+    `expected ~2.80, got ${multResult.afterContractsBtc}`
+  );
+
+  // Then apply Bundle 8 cap at 1.0 → 1.0 BTC
+  const capResult = applyMaxContractsCap({
+    structure,
+    cellId: "50k_2pct_1k",
+    maxContractsOverride: 1.0
+  });
+  assert.equal(capResult.capApplied, true);
+  assert.equal(capResult.afterContractsBtc, 1.0);
+  assert.equal(structure.contractsBtcPerLeg, 1.0);
 });

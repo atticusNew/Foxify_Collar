@@ -81,7 +81,8 @@ import {
   getConfiguredDepthGate,
   getConfiguredRollbackHardening,
   getConfiguredExpiryAutoAdvance,
-  getConfiguredContractMultiplier
+  getConfiguredContractMultiplier,
+  getConfiguredMaxContractsBtc
 } from "./spreadExecutor";
 import { readSalvageMetrics } from "./salvageTracker";
 import { buildFoxifyDailyReport, buildFoxifyRangeReport } from "./foxifyReport";
@@ -476,7 +477,18 @@ export const registerVolumeCoverRoutes = async (
             // qty, so Bundle 4's hardened rollback unwinds it (or
             // marks it as an orphan if rollback also fails).
             // Always-on, no env knob — pure correctness fix.
-            bundle7_partialFillDetection: { enabled: true }
+            bundle7_partialFillDetection: { enabled: true },
+            // Bundle 8 (2026-05-25): absolute max-contracts cap.
+            // Bounds grid-edge blowups: when BTC entry sits next to a
+            // strike grid line and formula × multiplier produces a
+            // huge contract size (2-4 BTC), the cap prevents
+            // activations from failing on insufficient capital.
+            // Trade-off: under-coverage of payout in capped scenarios.
+            // Surfaces resolved cap for active cells.
+            bundle8_maxContractsCap: {
+              "50k_2pct_1k": getConfiguredMaxContractsBtc("50k_2pct_1k"),
+              "1k_2pct_20": getConfiguredMaxContractsBtc("1k_2pct_20")
+            }
           }
         }
       });

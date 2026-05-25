@@ -59,6 +59,7 @@ import {
   partialCloseSpreadOnTrigger,
   chooseLiveExpiryForSpread,
   applyContractMultiplier,
+  applyMaxContractsCap,
   type SpreadExecutorAdapter
 } from "./spreadExecutor";
 import { getBullishSpreadAdapter } from "./bullishSpreadAdapter";
@@ -1061,6 +1062,32 @@ const executeSpreadOpen = async (params: {
         `position=${params.positionId} cell=${params.cell.cellId} ` +
         `multiplier=${multResult.multiplier} source=${multResult.source} ` +
         `before=${multResult.beforeContractsBtc} after=${multResult.afterContractsBtc}`
+    );
+  }
+
+  // Bundle 8 (2026-05-25): apply absolute max-contracts cap AFTER the
+  // multiplier so the cap operates on the multiplier-scaled value.
+  // Designed to bound grid-edge blowups: when entry BTC sits near a
+  // strike grid line, formula × multiplier can still produce 2-4 BTC
+  // contracts that exceed available capital. The cap (configurable
+  // via VC_MAX_CONTRACTS_BTC_DEFAULT, default no-cap) lets the
+  // operator set an absolute ceiling regardless of grid math.
+  //
+  // Trade-off when cap fires: spread under-covers the matrix payout
+  // (e.g., 1.0 BTC × $285 intrinsic = $285 covered vs $800 obligation
+  // = $515 Atticus eats on trigger). But activations succeed instead
+  // of failing entirely, which is the right call during pilot.
+  const capResult = applyMaxContractsCap({
+    structure,
+    cellId: params.cell.cellId
+  });
+  if (capResult.capApplied) {
+    console.warn(
+      `[volumeCover/lifecycle] Bundle 8 max-contracts cap APPLIED: ` +
+        `position=${params.positionId} cell=${params.cell.cellId} ` +
+        `cap=${capResult.maxContractsBtc} source=${capResult.source} ` +
+        `before=${capResult.beforeContractsBtc} after=${capResult.afterContractsBtc} ` +
+        `(grid-edge alignment likely — spread will under-cover Foxify payout obligation)`
     );
   }
 

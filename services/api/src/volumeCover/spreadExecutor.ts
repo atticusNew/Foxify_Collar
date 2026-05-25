@@ -731,6 +731,154 @@ const buildRollbackOptimizerCfg = (
   };
 };
 
+// ─── Bundle 8 (2026-05-25): absolute contract size cap ──────────────
+//
+// The Bundle 6 multiplier handles the over-hedge problem caused by
+// PR-G's payout overlay (matrix sizes for $1k coverage when actual
+// obligation is $800). What it does NOT handle is the **grid-edge
+// problem**: when the BTC entry price sits very close to a strike
+// grid line, the snap-to-grid produces a tiny min(K2−triggerLow,
+// K4−triggerHigh) and the formula contracts blow up 3-4×.
+//
+// Empirical examples observed today (2026-05-25):
+//
+//   Entry $75,497 (Trade #1):  K2−triggerLow = $1,013 → 0.99 BTC
+//   Entry $77,341 (afternoon): K2−triggerLow = $1,206 → 0.83 BTC
+//   Entry $77,260 (evening):   K2−triggerLow =   $285 → 3.51 BTC ←
+//
+// At entry $77,260 the multiplier 0.8 brings 3.51 → 2.81 BTC, which
+// at $540/BTC put_long premium needs $1,517 of cash. With $1,083
+// USDC we're $434 short → step 1 BUY put_long fails with
+// `Reached max leverage` (Bullish frames cash shortfall as leverage).
+//
+// Bundle 8 adds an ABSOLUTE upper bound on contract size that's
+// independent of the multiplier:
+//
+//   final_contracts = min(formula × multiplier, MAX_CONTRACTS_BTC)
+//
+// When grid alignment is favorable, the multiplier controls (e.g.,
+// 0.66-0.79 BTC). When grid alignment is bad, the cap kicks in
+// (e.g., 1.0 BTC instead of 2.81 BTC). Trade-off: the cell is
+// under-covered relative to the matrix payout in capped scenarios
+// (1.0 BTC × $285 = $285 of intrinsic vs $800 obligation = $515
+// uncovered gap). But activations succeed instead of failing
+// entirely. Atticus eats the gap on the rare grid-edge trigger.
+//
+// Configured the same way as Bundle 6 (global default + per-cell
+// JSON override):
+//
+//   VC_MAX_CONTRACTS_BTC_DEFAULT=1.0
+//   VC_MAX_CONTRACTS_BTC_JSON='{"50k_2pct_1k": 1.0, "1k_2pct_20": 0.1}'
+//
+// Hard caps:
+//   • Minimum 0.01 (Bullish granularity floor)
+//   • Maximum 10.0 (sanity ceiling — anything higher than 10 BTC
+//     per leg should be funded via larger cells)
+//
+// When neither env is set, returns Infinity = no cap (legacy).
+
+const MAX_CONTRACTS_HARD_FLOOR = 0.01;
+const MAX_CONTRACTS_HARD_CEILING = 10.0;
+
+export const getConfiguredMaxContractsBtc = (cellId: string): {
+  maxContractsBtc: number; // Infinity = no cap
+  source: "per-cell" | "default" | "no-cap";
+} => {
+  // Per-cell JSON override wins
+  const rawJson = process.env.VC_MAX_CONTRACTS_BTC_JSON;
+  if (rawJson && rawJson.trim() !== "") {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (
+        parsed && typeof parsed === "object"
+        && typeof parsed[cellId] === "number"
+        && Number.isFinite(parsed[cellId])
+      ) {
+        const m = Math.max(MAX_CONTRACTS_HARD_FLOOR, Math.min(MAX_CONTRACTS_HARD_CEILING, parsed[cellId]));
+        return { maxContractsBtc: m, source: "per-cell" };
+      }
+    } catch {
+      // Bad JSON — fall through to default
+    }
+  }
+  // Global default
+  const rawDefault = process.env.VC_MAX_CONTRACTS_BTC_DEFAULT;
+  if (rawDefault !== undefined && rawDefault !== "") {
+    const n = Number(rawDefault);
+    if (Number.isFinite(n) && n > 0) {
+      const m = Math.max(MAX_CONTRACTS_HARD_FLOOR, Math.min(MAX_CONTRACTS_HARD_CEILING, n));
+      return { maxContractsBtc: m, source: "default" };
+    }
+  }
+  // Neither set — return Infinity (no cap, legacy behavior)
+  return { maxContractsBtc: Infinity, source: "no-cap" };
+};
+
+/**
+ * Apply the configured contract size cap to a SpreadStructure. If
+ * any leg's contracts exceed the cap, ALL legs are scaled to the cap
+ * (rounded DOWN to 0.01 BTC granularity). Mutates in place.
+ *
+ * Returns whether the cap was applied + before/after for telemetry.
+ *
+ * Designed to be called AFTER applyContractMultiplier so the cap
+ * applies to the multiplier-scaled value (not the raw matrix value).
+ */
+export const applyMaxContractsCap = (params: {
+  structure: SpreadStructure;
+  cellId: string;
+  maxContractsOverride?: number;
+  granularityBtc?: number;
+}): {
+  capApplied: boolean;
+  maxContractsBtc: number;
+  source: "per-cell" | "default" | "no-cap" | "override";
+  beforeContractsBtc: number;
+  afterContractsBtc: number;
+} => {
+  const granularityBtc = params.granularityBtc ?? 0.01;
+  let maxContractsBtc: number;
+  let source: "per-cell" | "default" | "no-cap" | "override";
+  if (params.maxContractsOverride !== undefined && Number.isFinite(params.maxContractsOverride)) {
+    maxContractsBtc = Math.max(
+      MAX_CONTRACTS_HARD_FLOOR,
+      Math.min(MAX_CONTRACTS_HARD_CEILING, params.maxContractsOverride)
+    );
+    source = "override";
+  } else {
+    const cfg = getConfiguredMaxContractsBtc(params.cellId);
+    maxContractsBtc = cfg.maxContractsBtc;
+    source = cfg.source;
+  }
+  const before = params.structure.contractsBtcPerLeg;
+  if (before <= maxContractsBtc) {
+    // No cap needed — current size is within limits (or no cap set).
+    return {
+      capApplied: false,
+      maxContractsBtc,
+      source,
+      beforeContractsBtc: before,
+      afterContractsBtc: before
+    };
+  }
+  // Cap kicks in: scale ALL legs down to the cap, floor to granularity.
+  const capped = Math.max(
+    granularityBtc,
+    Math.floor(maxContractsBtc / granularityBtc) * granularityBtc
+  );
+  for (const leg of params.structure.legs) {
+    leg.contractsBtc = capped;
+  }
+  params.structure.contractsBtcPerLeg = capped;
+  return {
+    capApplied: true,
+    maxContractsBtc,
+    source,
+    beforeContractsBtc: before,
+    afterContractsBtc: capped
+  };
+};
+
 // ─── Bundle 6 (2026-05-25): per-cell contract multiplier ────────────
 //
 // The matrix-level contract sizing formula is:
