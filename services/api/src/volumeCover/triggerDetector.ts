@@ -24,6 +24,7 @@ import type { Pool } from "pg";
 import { listActivePositions } from "./volumeCoverDb";
 import { fireTrigger } from "./positionLifecycle";
 import type { HedgeExecutor } from "./tightHedge";
+import { sweepMaxHoldExpiry, type MaxHoldSweepResult } from "./maxHoldSweep";
 
 export type SpotPriceSource = () => Promise<{
   spotBtcPrice: number;
@@ -122,9 +123,33 @@ export const runOneDetectionCycle = async (params: {
   triggers: Array<{ positionId: string; direction: "high" | "low"; spot: number }>;
   skipped: boolean;
   skipReason?: string;
+  /**
+   * PR-G max-hold sweep result, attached to every cycle (even spot-
+   * source failures, since the sweep is time-only and runs unconditionally).
+   * Null only if the sweep itself errored.
+   */
+  maxHoldSweep: MaxHoldSweepResult | null;
 }> => {
   const config: TriggerDetectorConfig = { ...DEFAULT_CONFIG, ...params.config };
   const cycledAt = new Date().toISOString();
+
+  // PR-G max-hold sweep (2026-05-25): runs FIRST, regardless of spot
+  // source health, because it's time-only. Auto-closes any active
+  // position past `VC_MAX_HOLD_HOURS` (default 72h). Bounded by
+  // `VC_MAX_HOLD_CLOSES_PER_CYCLE` (default 5) so a stale-price burst
+  // on Bullish doesn't stall the trigger loop. Disabled via
+  // VC_MAX_HOLD_ENABLED=false.
+  let maxHoldSweep: MaxHoldSweepResult | null = null;
+  try {
+    maxHoldSweep = await sweepMaxHoldExpiry({
+      pool: params.pool,
+      executor: params.executor
+    });
+  } catch (err) {
+    console.error(
+      `[volumeCover/triggerDetector] max-hold sweep threw: ${(err as Error).message}`
+    );
+  }
 
   let spot: Awaited<ReturnType<SpotPriceSource>>;
   try {
@@ -138,7 +163,8 @@ export const runOneDetectionCycle = async (params: {
       positionsTriggered: 0,
       triggers: [],
       skipped: true,
-      skipReason: `spot_source_error: ${(err as Error).message}`
+      skipReason: `spot_source_error: ${(err as Error).message}`,
+      maxHoldSweep
     };
   }
 
@@ -152,7 +178,8 @@ export const runOneDetectionCycle = async (params: {
       positionsTriggered: 0,
       triggers: [],
       skipped: true,
-      skipReason: `stale_spot_price: ${ageMs}ms > ${config.maxPriceAgeMs}ms`
+      skipReason: `stale_spot_price: ${ageMs}ms > ${config.maxPriceAgeMs}ms`,
+      maxHoldSweep
     };
   }
 
@@ -212,7 +239,8 @@ export const runOneDetectionCycle = async (params: {
     positionsScanned: activePositions.length,
     positionsTriggered: triggered.length,
     triggers: triggered,
-    skipped: false
+    skipped: false,
+    maxHoldSweep
   };
 };
 
