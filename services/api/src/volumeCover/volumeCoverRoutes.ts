@@ -357,7 +357,20 @@ export const registerVolumeCoverRoutes = async (
             // them counted in lifetime premium/payout aggregates. Recent
             // Activity feed also suppresses 'rejected' + 'failed' events.
             prF_foxifyAcknowledge: true,
-            prF_recentActivityHidesRejectedFailed: true
+            prF_recentActivityHidesRejectedFailed: true,
+            // 2026-05-25 (PR-G2): mid-IOC short-leg buyback fraction. Default
+            // 0.5 (true mid). At trigger fire and Foxify-close, the spread
+            // executor's `partialCloseSpreadOnTrigger` short-leg buyback path
+            // runs through executeOptimizedFill with this fraction (vs the
+            // standard 0.25 the long-sale path uses). Operator-tunable via
+            // VC_SPREAD_SHORT_BUYBACK_MID_FRACTION; clamped to [0, 0.5].
+            prG2_shortBuybackMidFraction: (() => {
+              const raw = process.env.VC_SPREAD_SHORT_BUYBACK_MID_FRACTION;
+              if (raw === undefined || raw === "") return 0.5;
+              const n = Number(raw);
+              if (!Number.isFinite(n)) return 0.5;
+              return Math.max(0, Math.min(0.5, n));
+            })()
           }
         }
       });
