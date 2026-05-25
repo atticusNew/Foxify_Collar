@@ -996,6 +996,37 @@ export const listHedgeLegsForPosition = async (
   return r.rows.map(rowToHedgeLeg);
 };
 
+/**
+ * Bundle 4 (2026-05-25): list orphan legs left at venue after a
+ * spread-open rollback failure. Each row represents an option contract
+ * that Atticus opened but couldn't unwind via rollback IOC across the
+ * hardened attempts (deep-cross + walked book). Status is 'failed'
+ * with metadata.rollback_failed_orphan=true; the leg is still owned at
+ * the venue and requires operator action via /admin/force-sell-leg
+ * (or the same Bullish admin endpoints we used for the 2026-05-25
+ * cleanup pass).
+ *
+ * Orphans are auto-cleared once the operator force-sells the leg
+ * (status flips to 'sold' via markHedgeLegSold) or once the option
+ * naturally expires (out of scope for this listing).
+ */
+export const listRollbackOrphanLegs = async (
+  pool: DbExecutor,
+  params?: { limit?: number }
+): Promise<HedgeLegRow[]> => {
+  const limit = Math.max(1, Math.min(500, params?.limit ?? 100));
+  const r = await pool.query(
+    `SELECT *
+       FROM volume_cover_hedge_leg
+      WHERE status = 'failed'
+        AND (metadata->>'rollback_failed_orphan')::boolean = TRUE
+      ORDER BY opened_at DESC
+      LIMIT $1`,
+    [limit]
+  );
+  return r.rows.map(rowToHedgeLeg);
+};
+
 export const markHedgeLegSold = async (
   pool: DbExecutor,
   params: {

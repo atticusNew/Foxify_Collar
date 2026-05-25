@@ -385,6 +385,24 @@ export type OpenLegRecord = {
   orderId: string | null;
   attempts: number;
   attemptedPrices: number[];
+  /**
+   * Bundle 4 (2026-05-25): set to true when this record represents a
+   * rollback attempt that did NOT close the leg at the venue. The leg
+   * was opened, the rollback IOC failed across all hardened attempts,
+   * and the contract is still owned by Atticus on Bullish. Caller MUST
+   * persist this to volume_cover_hedge_leg with status='failed' and
+   * metadata.rollback_failed_orphan=true so ops can sweep it manually.
+   *
+   * Distinct from a successful rollback (rollbackOrphan=false,
+   * fillQtyBtc>0) which leaves no on-venue position.
+   */
+  rollbackOrphan?: boolean;
+  /**
+   * Bundle 4: telemetry — whether this record came from a rollback
+   * attempt vs the original open. Useful when persisting orphan rows
+   * so ops sees the right context.
+   */
+  isRollbackAttempt?: boolean;
 };
 
 export type SpreadOpenResult = {
@@ -598,12 +616,96 @@ export const openSpread = async (params: {
 
 // ─── Rollback ────────────────────────────────────────────────────────
 
+// ─── Bundle 4 (2026-05-25): hardened rollback config ─────────────────
+//
+// The pre-Bundle-4 rollback used the standard `executeOptimizedFill`
+// with the env-driven optimizer config. In production this means:
+//   • improvementFraction=0.25 (mid-quartile attempt first)
+//   • deepCrossBps=0 by default (no walk-the-book fallback)
+// Combined with thin-book moments (the Foxify-001 partial-fill
+// scenario), a rollback could expire BOTH attempts and silently leave
+// the leg orphaned at Bullish while the upstream caller logged the
+// position as closed-with-zero-legs. That's exactly the failure mode
+// that produced the orphan cleanup we just performed.
+//
+// Bundle 4 hardens the rollback path with three changes:
+//
+//   1. Skip the "improved price" attempt entirely (improvementFraction=0).
+//      We're not optimizing for cost on rollback — we're optimizing for
+//      certainty of unwind. Cross to opposite top immediately.
+//   2. Force deepCrossBps to a high floor (1000 bps = 10%, the hard cap)
+//      regardless of env. This walks the book up to next-level liquidity
+//      so a single-tick-deep top doesn't strand the leg.
+//   3. After all attempts, if fillQtyBtc < contractsBtc (or === 0),
+//      the leg is marked rollbackOrphan=true so the caller persists
+//      it as an orphan in the DB.
+//
+// Tunable via env (defaults reflect the production-safe values):
+//   VC_ROLLBACK_DEEP_CROSS_BPS_MIN=1000   floor for rollback deep cross
+//   VC_ROLLBACK_IMPROVEMENT_FRACTION=0    set 0 to skip improvement attempt
+const ROLLBACK_DEEP_CROSS_BPS_FLOOR_DEFAULT = 1000; // 10%
+const ROLLBACK_IMPROVEMENT_FRACTION_DEFAULT = 0;
+
+const buildRollbackOptimizerCfg = (
+  cfgOverride?: FillOptimizerConfig
+): FillOptimizerConfig => {
+  const base = cfgOverride ?? getConfiguredFillOptimizer();
+  if (cfgOverride) {
+    // Test paths: respect override exactly so test scenarios can
+    // exercise the orphan-detection branch deterministically.
+    return cfgOverride;
+  }
+  const rawFloor = Number(process.env.VC_ROLLBACK_DEEP_CROSS_BPS_MIN);
+  const floorBps = Number.isFinite(rawFloor) && rawFloor >= 0
+    ? Math.min(rawFloor, 1000)
+    : ROLLBACK_DEEP_CROSS_BPS_FLOOR_DEFAULT;
+  const rawImpr = Number(process.env.VC_ROLLBACK_IMPROVEMENT_FRACTION);
+  const improvementFraction = Number.isFinite(rawImpr) && rawImpr >= 0
+    ? Math.min(rawImpr, 0.5)
+    : ROLLBACK_IMPROVEMENT_FRACTION_DEFAULT;
+  // When improvementFraction is 0 we'd otherwise submit at the same
+  // worst-case price twice (once for "improved", once for fallback) —
+  // wasteful + adds latency. Setting enabled=false skips the improved
+  // attempt entirely so the optimizer goes straight to:
+  //   attempt 1: worst-case (cross opposite top)
+  //   attempt 2: deep-cross (worst-case ± floorBps)
+  return {
+    ...base,
+    enabled: improvementFraction > 0,
+    improvementFraction,
+    deepCrossBps: Math.max(base.deepCrossBps, floorBps)
+  };
+};
+
+/**
+ * Bundle 4 (2026-05-25) read-side getter so /health can surface the
+ * effective rollback hardening config. Used by the health route to
+ * confirm production env values applied as intended.
+ */
+export const getConfiguredRollbackHardening = (): {
+  improvementFraction: number;
+  deepCrossBpsFloor: number;
+} => {
+  const rawFloor = Number(process.env.VC_ROLLBACK_DEEP_CROSS_BPS_MIN);
+  const deepCrossBpsFloor = Number.isFinite(rawFloor) && rawFloor >= 0
+    ? Math.min(rawFloor, 1000)
+    : ROLLBACK_DEEP_CROSS_BPS_FLOOR_DEFAULT;
+  const rawImpr = Number(process.env.VC_ROLLBACK_IMPROVEMENT_FRACTION);
+  const improvementFraction = Number.isFinite(rawImpr) && rawImpr >= 0
+    ? Math.min(rawImpr, 0.5)
+    : ROLLBACK_IMPROVEMENT_FRACTION_DEFAULT;
+  return { improvementFraction, deepCrossBpsFloor };
+};
+
 const rollbackPlacedLegs = async (params: {
   adapter: SpreadExecutorAdapter;
   placed: Array<{ leg: SpreadLegSpec; placement: LegPlacement; record: OpenLegRecord }>;
   spreadGroupId: string;
+  /** Test-only: deterministic optimizer cfg for unit tests. */
+  optimizerCfgOverride?: FillOptimizerConfig;
 }): Promise<OpenLegRecord[]> => {
   const results: OpenLegRecord[] = [];
+  const cfg = buildRollbackOptimizerCfg(params.optimizerCfgOverride);
   // Reverse the placement order — last opened gets unwound first.
   for (let i = params.placed.length - 1; i >= 0; i--) {
     const entry = params.placed[i];
@@ -613,7 +715,13 @@ const rollbackPlacedLegs = async (params: {
       !Number.isFinite(book.topBidUsdc as number) ||
       !Number.isFinite(book.topAskUsdc as number)
     ) {
-      // No liquidity to unwind — record as failed rollback for operator action.
+      // No book at all → guaranteed orphan. Persist with rollbackOrphan
+      // flag so the caller writes a DB row for ops sweep.
+      console.error(
+        `[VC ALERT] rollback orphan (no book) groupId=${params.spreadGroupId} ` +
+          `legRole=${entry.leg.legRole} symbol=${entry.placement.symbol} ` +
+          `qtyBtc=${entry.placement.contractsBtc} reverseSide=${reverseSide}`
+      );
       results.push({
         legRole: entry.leg.legRole,
         symbol: entry.placement.symbol,
@@ -622,7 +730,9 @@ const rollbackPlacedLegs = async (params: {
         fillQtyBtc: 0,
         orderId: null,
         attempts: 0,
-        attemptedPrices: []
+        attemptedPrices: [],
+        rollbackOrphan: true,
+        isRollbackAttempt: true
       });
       continue;
     }
@@ -632,6 +742,7 @@ const rollbackPlacedLegs = async (params: {
       quantityBtc: entry.placement.contractsBtc,
       topBidUsdc: book.topBidUsdc as number,
       topAskUsdc: book.topAskUsdc as number,
+      cfg,
       submitFn: submitFnFor(
         params.adapter,
         entry.placement.symbol,
@@ -640,7 +751,27 @@ const rollbackPlacedLegs = async (params: {
         params.spreadGroupId
       )
     });
-    results.push(fillResultToLegRecord(entry.leg, entry.placement.symbol, reverseSide, result));
+    const record = fillResultToLegRecord(entry.leg, entry.placement.symbol, reverseSide, result);
+    record.isRollbackAttempt = true;
+    // Orphan iff the fill quantity is materially below the placement
+    // size. Using 0.5 of the contract as the boundary so a tiny partial
+    // (e.g., 0.0001 BTC dust on a 1 BTC order) is still treated as
+    // orphan — partial unwinds are operationally indistinguishable
+    // from full orphans for ops sweep purposes.
+    const filledBtc = Number(result.fillQtyBtc ?? 0);
+    const expectedBtc = Number(entry.placement.contractsBtc);
+    const filledRatio = expectedBtc > 0 ? filledBtc / expectedBtc : 0;
+    if (filledRatio < 0.5) {
+      record.rollbackOrphan = true;
+      console.error(
+        `[VC ALERT] rollback orphan (unfilled) groupId=${params.spreadGroupId} ` +
+          `legRole=${entry.leg.legRole} symbol=${entry.placement.symbol} ` +
+          `expectedBtc=${expectedBtc} filledBtc=${filledBtc} attempts=${result.attempts} ` +
+          `attemptedPrices=${JSON.stringify(result.attemptedPrices)} ` +
+          `finalReason=${result.finalReason ?? "null"}`
+      );
+    }
+    results.push(record);
   }
   return results;
 };

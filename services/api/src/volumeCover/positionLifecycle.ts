@@ -1145,6 +1145,76 @@ const executeSpreadOpen = async (params: {
     // route can surface a clean 503 retry signal to Foxify rather
     // than a generic 500.
     const isLiquidityGateFail = openResult.errorReason === "liquidity_gate_failed";
+
+    // Bundle 4 (2026-05-25): persist any rollback orphans BEFORE marking
+    // the position closed. Each leg in openResult.rollbackResults whose
+    // rollbackOrphan flag is set represents a contract still owned by
+    // Atticus on Bullish that the spread executor's hardened rollback
+    // could not unwind. We write a hedge_leg row with status='failed'
+    // and metadata.rollback_failed_orphan=true so:
+    //   - /admin/orphan-legs surfaces it for ops sweep
+    //   - the volume_cover_hedge_leg table is the single source of
+    //     truth for what we own at venue (no DB-vs-Bullish drift)
+    //   - the existing /admin/force-sell-leg endpoint can clean it up
+    //     using the already-recorded symbol + qty + role
+    //
+    // The position itself is still marked closed (the protection
+    // contract is dead). Orphan legs are tracked separately as cleanup
+    // backlog — they are NOT counted toward active hedge inventory by
+    // any consumer (queries filter status='open' or status='sold').
+    const orphanLegs = (openResult.rollbackResults ?? []).filter(
+      (r) => r.rollbackOrphan === true
+    );
+    if (orphanLegs.length > 0) {
+      console.error(
+        `[VC ALERT] ${orphanLegs.length} rollback orphan(s) detected for position ${params.positionId} ` +
+          `groupId=${structure.spreadGroupId} symbols=${orphanLegs.map((o) => o.symbol).join(",")}`
+      );
+      for (const orphan of orphanLegs) {
+        const legSpec = structure.legs.find((l) => l.legRole === orphan.legRole);
+        if (!legSpec) continue;
+        try {
+          await insertHedgeLeg(params.pool, {
+            id: `vc-leg-${randomUUID()}`,
+            positionId: params.positionId,
+            venue: structure.venue,
+            optionKind: legSpec.optionKind,
+            strikeUsdc: legSpec.strikeActualUsdc,
+            expiryIso: legSpec.expiryIso,
+            contracts: legSpec.contractsBtc,
+            // For SHORT legs we sold-to-open (received USDC at the
+            // original open fill). For LONG legs we bought-to-open.
+            // The orphan is at the OPENING side; rollback would have
+            // been the reverse. Record buyPrice=0 sentinel; the open
+            // fill price lives in metadata for audit.
+            buyPriceUsdc: 0,
+            status: "failed",
+            spreadGroupId: structure.spreadGroupId,
+            legRole: legSpec.legRole,
+            metadata: {
+              rollback_failed_orphan: true,
+              opened_side: legSpec.side,
+              rollback_attempted_side: orphan.side,
+              rollback_attempts: orphan.attempts,
+              rollback_attempted_prices: orphan.attemptedPrices,
+              rollback_filled_qty_btc: orphan.fillQtyBtc,
+              detected_at_iso: new Date().toISOString(),
+              symbol_resolved: orphan.symbol,
+              expected_qty_btc: legSpec.contractsBtc
+            }
+          });
+        } catch (err) {
+          // Persistence MUST NOT mask the underlying open failure. Log
+          // and continue — the upstream alert log already captured the
+          // orphan symbol/qty for manual recovery.
+          console.error(
+            `[VC ALERT] failed to persist orphan leg row position=${params.positionId} ` +
+              `symbol=${orphan.symbol}: ${(err as Error).message}`
+          );
+        }
+      }
+    }
+
     const closeReason = isLiquidityGateFail
       ? `hedge_execution_failed:spread_liquidity_gate_failed`
       : `spread_open_failed: ${openResult.errorReason ?? "unknown"} (failedAt=${openResult.failedAt})`;

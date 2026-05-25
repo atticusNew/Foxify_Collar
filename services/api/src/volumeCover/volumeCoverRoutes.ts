@@ -53,6 +53,7 @@ import {
   getPositionByPairId,
   getMostRecentPositionForCell,
   listHedgeLegsForPosition,
+  listRollbackOrphanLegs,
   listActivePositions,
   listPositionsForCellToday,
   countActivePositionsForCell,
@@ -76,7 +77,7 @@ import { getNewbornReviewState } from "./volumeCoverNewbornReview";
 import {
   getBullishSpreadAdapterRuntimeConfig
 } from "./bullishSpreadAdapter";
-import { getConfiguredDepthGate } from "./spreadExecutor";
+import { getConfiguredDepthGate, getConfiguredRollbackHardening } from "./spreadExecutor";
 import { readSalvageMetrics } from "./salvageTracker";
 import { buildFoxifyDailyReport, buildFoxifyRangeReport } from "./foxifyReport";
 import {
@@ -427,7 +428,22 @@ export const registerVolumeCoverRoutes = async (
                 .toLowerCase() !== "false",
             antibot_layer4Enabled:
               String(process.env.VOLUME_COVER_ANTIBOT_LAYER4_ENABLED ?? "true")
-                .toLowerCase() !== "false"
+                .toLowerCase() !== "false",
+            // Bundle 4 (2026-05-25): defensive rollback hardening config
+            // surfaced for ops verification. Two effects:
+            //   • improvementFraction → 0 means rollback skips the
+            //     mid-attempt and crosses to opposite top immediately
+            //     (certainty over price improvement).
+            //   • deepCrossBpsFloor → 1000 forces the optimizer to walk
+            //     the book up to 10% beyond top to reach next-level
+            //     liquidity, preventing the "single-tick-deep top
+            //     stranded a leg" failure mode.
+            // Tunable via VC_ROLLBACK_IMPROVEMENT_FRACTION,
+            // VC_ROLLBACK_DEEP_CROSS_BPS_MIN.
+            bundle4_rollbackHardening: {
+              enabled: true,
+              ...getConfiguredRollbackHardening()
+            }
           }
         }
       });
@@ -4230,6 +4246,85 @@ export const registerVolumeCoverRoutes = async (
         positionTriggeredAt: r.position_triggered_at ? String(r.position_triggered_at) : null
       }))
     });
+  });
+
+  /**
+   * Bundle 4 (2026-05-25): list rollback orphans — legs left at venue
+   * after a spread-open partial-fill failure where the hardened rollback
+   * IOC could not unwind the position. Each row carries the resolved
+   * Bullish symbol + qty + opening side in metadata, so an operator can
+   * sweep with the same admin endpoints we used for the 2026-05-25
+   * cleanup pass (bullish-cross-account-sell for SHORT-side opens
+   * needing buy-back; bullish-test-buy for LONG-side opens needing
+   * sell-back — note: the rollback's REVERSE side is the right action).
+   *
+   * Status='failed' + metadata.rollback_failed_orphan=true is the
+   * canonical orphan marker (no schema change required).
+   *
+   * Read-only. To clear an orphan after sweeping, call
+   * /admin/mark-leg-failed-manual on it (already exists; flips status
+   * to 'failed' with evidence audit) — or, if the leg was actually
+   * sold via the venue admin endpoints, /admin/force-sell-leg will
+   * also reconcile it.
+   *
+   * Query params:
+   *   ?limit=N    cap result rows (default 100, max 500)
+   */
+  app.get("/volume-cover/admin/orphan-legs", async (req, reply) => {
+    if (!isAdminAuthorized(req)) return reply.code(403).send({ error: "forbidden" });
+    const limitRaw = Number((req.query as any)?.limit ?? 100);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0
+      ? Math.min(500, Math.floor(limitRaw))
+      : 100;
+    try {
+      const orphans = await listRollbackOrphanLegs(pool, { limit });
+      return reply.send({
+        ok: true,
+        count: orphans.length,
+        generatedAtIso: new Date().toISOString(),
+        legs: orphans.map((leg) => ({
+          legId: leg.id,
+          positionId: leg.positionId,
+          venue: leg.venue,
+          symbol:
+            (leg.metadata as Record<string, unknown> | undefined)?.symbol_resolved ??
+            null,
+          optionKind: leg.optionKind,
+          strikeUsdc: leg.strikeUsdc,
+          expiryIso: leg.expiryIso,
+          contractsBtc: leg.contracts,
+          legRole: leg.legRole,
+          spreadGroupId: leg.spreadGroupId,
+          openedSide:
+            (leg.metadata as Record<string, unknown> | undefined)?.opened_side ??
+            null,
+          rollbackAttemptedSide:
+            (leg.metadata as Record<string, unknown> | undefined)
+              ?.rollback_attempted_side ?? null,
+          rollbackAttempts:
+            (leg.metadata as Record<string, unknown> | undefined)
+              ?.rollback_attempts ?? null,
+          rollbackAttemptedPrices:
+            (leg.metadata as Record<string, unknown> | undefined)
+              ?.rollback_attempted_prices ?? null,
+          rollbackFilledQtyBtc:
+            (leg.metadata as Record<string, unknown> | undefined)
+              ?.rollback_filled_qty_btc ?? null,
+          detectedAtIso:
+            (leg.metadata as Record<string, unknown> | undefined)
+              ?.detected_at_iso ?? null,
+          status: leg.status,
+          openedAt: leg.openedAt,
+          metadata: leg.metadata
+        }))
+      });
+    } catch (err) {
+      return reply.code(500).send({
+        ok: false,
+        error: "orphan_legs_query_failed",
+        message: (err as Error).message
+      });
+    }
   });
 
   /**

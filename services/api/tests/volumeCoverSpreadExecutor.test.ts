@@ -9,6 +9,7 @@ import {
   checkSpreadLiquidity,
   getConfiguredDepthGate,
   getConfiguredLongTriggerPolicy,
+  getConfiguredRollbackHardening,
   __testHelpers,
   type SpreadExecutorAdapter,
   type ExecutorOrderResult,
@@ -1214,4 +1215,237 @@ test("PR-Bundle-3-B partialClose: explicit policyOverride beats legacy boolean o
   assert.equal(result.ok, true);
   assert.equal(result.longLegsSold.length, 1);
   assert.equal(result.longLegsRetained.length, 1);
+});
+
+// ─── Bundle 4 (2026-05-25): rollback hardening + orphan detection ────
+
+const clearRollbackEnv = (): void => {
+  delete process.env.VC_ROLLBACK_DEEP_CROSS_BPS_MIN;
+  delete process.env.VC_ROLLBACK_IMPROVEMENT_FRACTION;
+};
+
+test("Bundle 4: getConfiguredRollbackHardening returns floor defaults", () => {
+  clearEnv();
+  clearRollbackEnv();
+  const cfg = getConfiguredRollbackHardening();
+  assert.equal(cfg.improvementFraction, 0);
+  assert.equal(cfg.deepCrossBpsFloor, 1000);
+});
+
+test("Bundle 4: getConfiguredRollbackHardening respects env overrides within hard caps", () => {
+  clearEnv();
+  clearRollbackEnv();
+  process.env.VC_ROLLBACK_IMPROVEMENT_FRACTION = "0.25";
+  process.env.VC_ROLLBACK_DEEP_CROSS_BPS_MIN = "500";
+  try {
+    const cfg = getConfiguredRollbackHardening();
+    assert.equal(cfg.improvementFraction, 0.25);
+    assert.equal(cfg.deepCrossBpsFloor, 500);
+  } finally {
+    clearRollbackEnv();
+  }
+});
+
+test("Bundle 4: getConfiguredRollbackHardening clamps out-of-range env values", () => {
+  clearEnv();
+  clearRollbackEnv();
+  process.env.VC_ROLLBACK_IMPROVEMENT_FRACTION = "0.9"; // > 0.5 cap
+  process.env.VC_ROLLBACK_DEEP_CROSS_BPS_MIN = "5000"; // > 1000 cap
+  try {
+    const cfg = getConfiguredRollbackHardening();
+    assert.equal(cfg.improvementFraction, 0.5);
+    assert.equal(cfg.deepCrossBpsFloor, 1000);
+  } finally {
+    clearRollbackEnv();
+  }
+});
+
+test("Bundle 4: rollback marks legs orphan when reverse IOCs all expire (typical Foxify-001 failure mode)", async () => {
+  clearEnv();
+  clearRollbackEnv();
+  const structure = buildStructure();
+  const books = happyBooks();
+  // Set up an open path that fails on call_short, then ALL rollback IOCs
+  // (across the 3 already-placed legs) expire — simulating thin-book
+  // moments where neither worst-case nor deep-cross fills.
+  const expiredOnAllRollbackCalls = (callIdx: number) => ({
+    filled: false,
+    fillPriceUsdcPerBtc: 0,
+    fillQtyBtc: 0,
+    finalReason: "Expired",
+    orderId: `EXP-${callIdx}`
+  });
+  const { adapter, calls } = buildMockAdapter({
+    books,
+    submitOverrides: {
+      // Open fails on call_short (any call returns Expired)
+      "BTC-USDC-20260526-78000-C": expiredOnAllRollbackCalls,
+      // Rollback fails on the 3 already-opened legs (all Expired)
+      "BTC-USDC-20260526-77000-C": (callIdx) =>
+        callIdx === 1
+          ? // First call was the OPEN of call_long (must succeed for it to be
+            // in `placed` and need rollback). Use defaults for the open.
+            { filled: true, fillPriceUsdcPerBtc: 250, fillQtyBtc: 0.01, finalReason: "Executed", orderId: "OK-1" }
+          : expiredOnAllRollbackCalls(callIdx),
+      "BTC-USDC-20260526-75000-P": (callIdx) =>
+        callIdx === 1
+          ? { filled: true, fillPriceUsdcPerBtc: 700, fillQtyBtc: 0.01, finalReason: "Executed", orderId: "OK-2" }
+          : expiredOnAllRollbackCalls(callIdx),
+      "BTC-USDC-20260526-74000-P": (callIdx) =>
+        callIdx === 1
+          ? { filled: true, fillPriceUsdcPerBtc: 300, fillQtyBtc: 0.01, finalReason: "Executed", orderId: "OK-3" }
+          : expiredOnAllRollbackCalls(callIdx)
+    }
+  });
+
+  const result = await openSpread({ structure, adapter, skipLiquidityGate: true });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.failedAt, "call_short");
+  assert.equal(result.rollbackResults.length, 3);
+
+  // Every rollback record should be marked orphan (all 3 legs failed
+  // to unwind).
+  for (const r of result.rollbackResults) {
+    assert.equal(r.rollbackOrphan, true, `expected ${r.legRole} marked orphan`);
+    assert.equal(r.isRollbackAttempt, true);
+    assert.equal(r.fillQtyBtc, 0);
+  }
+
+  // Each rollback should have made >1 attempt at progressively worse
+  // prices (worst-case + deep-cross at 10%). Verify the deep-cross
+  // attempt happened by checking attemptedPrices.
+  for (const r of result.rollbackResults) {
+    assert.ok(
+      r.attempts >= 2,
+      `expected ${r.legRole} to have ≥2 attempts (worst-case + deep-cross), got ${r.attempts}`
+    );
+    assert.ok(
+      r.attemptedPrices.length >= 2,
+      `expected ${r.legRole} attemptedPrices to have ≥2 entries`
+    );
+  }
+
+  // Deep-cross direction sanity:
+  //   call_long was BUY → rollback SELL → deep cross should be BELOW worst-case bid
+  const callLongRb = result.rollbackResults.find((r) => r.legRole === "call_long")!;
+  const callLongPrices = callLongRb.attemptedPrices;
+  assert.ok(
+    callLongPrices[callLongPrices.length - 1] < callLongPrices[0],
+    `expected deep-cross SELL price below worst-case bid; saw ${callLongPrices.join(",")}`
+  );
+
+  // put_short was SELL → rollback BUY → deep cross should be ABOVE worst-case ask
+  const putShortRb = result.rollbackResults.find((r) => r.legRole === "put_short")!;
+  const putShortPrices = putShortRb.attemptedPrices;
+  assert.ok(
+    putShortPrices[putShortPrices.length - 1] > putShortPrices[0],
+    `expected deep-cross BUY price above worst-case ask; saw ${putShortPrices.join(",")}`
+  );
+
+  // Defensive sanity: there were rollback intent calls in the call log
+  const rollbackCalls = calls.filter((c) => c.intent === "rollback");
+  assert.ok(rollbackCalls.length >= 6, "expected ≥6 rollback IOCs (3 legs × ≥2 attempts each)");
+});
+
+test("Bundle 4: rollback succeeds → legs NOT marked orphan (negative case)", async () => {
+  clearEnv();
+  clearRollbackEnv();
+  const structure = buildStructure();
+  const books = happyBooks();
+  // Open fails on call_short, but rollback IOCs for the 3 placed legs
+  // succeed at worst-case price. Verify rollbackOrphan stays false.
+  const { adapter } = buildMockAdapter({
+    books,
+    submitOverrides: {
+      "BTC-USDC-20260526-78000-C": (callIdx) => ({
+        filled: false,
+        fillPriceUsdcPerBtc: 0,
+        fillQtyBtc: 0,
+        finalReason: "Expired",
+        orderId: `EXP-CS-${callIdx}`
+      })
+    }
+  });
+
+  const result = await openSpread({ structure, adapter, skipLiquidityGate: true });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.rollbackResults.length, 3);
+  for (const r of result.rollbackResults) {
+    // No orphan flag (legs successfully unwound at venue)
+    assert.notEqual(r.rollbackOrphan, true);
+    assert.equal(r.isRollbackAttempt, true);
+    assert.ok(r.fillQtyBtc > 0, `expected ${r.legRole} to have non-zero fill`);
+  }
+});
+
+test("Bundle 4: rollback marks orphan when book unavailable on a leg's symbol", async () => {
+  clearEnv();
+  clearRollbackEnv();
+  const structure = buildStructure();
+  const happy = happyBooks();
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop({ symbol }): Promise<OrderbookTop> {
+      // Open path: full books available
+      // Rollback path: book disappears for call_long (first leg unwound)
+      // We track call count via a closure since the mock doesn't pass call index.
+      const tracker = (adapter as any)._rbCounter ?? new Map<string, number>();
+      const n = (tracker.get(symbol) ?? 0) + 1;
+      tracker.set(symbol, n);
+      (adapter as any)._rbCounter = tracker;
+      // First read of each symbol = open path → return book.
+      // Subsequent reads (rollback) for call_long symbol → return null book.
+      if (n > 1 && symbol === "BTC-USDC-20260526-77000-C") {
+        return { topBidUsdc: null, topAskUsdc: null, bidQtyBtc: null, askQtyBtc: null };
+      }
+      const b = happy[symbol];
+      return {
+        topBidUsdc: b?.topBid ?? null,
+        topAskUsdc: b?.topAsk ?? null,
+        bidQtyBtc: 1,
+        askQtyBtc: 1
+      };
+    },
+    async submitIocLimit(p): Promise<ExecutorOrderResult> {
+      // call_short open Expired → triggers rollback path
+      if (p.symbol === "BTC-USDC-20260526-78000-C") {
+        return {
+          filled: false,
+          fillPriceUsdcPerBtc: 0,
+          fillQtyBtc: 0,
+          finalReason: "Expired",
+          orderId: "EXP-CS"
+        };
+      }
+      // All other submits succeed at limit (open + rollback alike)
+      return {
+        filled: true,
+        fillPriceUsdcPerBtc: p.priceUsdcPerBtc,
+        fillQtyBtc: p.quantityBtc,
+        finalReason: "Executed",
+        orderId: `OK-${p.symbol.slice(-5)}`
+      };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+
+  const result = await openSpread({ structure, adapter, skipLiquidityGate: true });
+
+  assert.equal(result.ok, false);
+  // call_long rollback fails because its book disappeared → orphan
+  const callLongRb = result.rollbackResults.find((r) => r.legRole === "call_long");
+  assert.ok(callLongRb, "expected call_long in rollback results");
+  assert.equal(callLongRb!.rollbackOrphan, true);
+  assert.equal(callLongRb!.attempts, 0); // never tried (no book)
+
+  // put_short and put_long should have rolled back successfully
+  const putShortRb = result.rollbackResults.find((r) => r.legRole === "put_short")!;
+  const putLongRb = result.rollbackResults.find((r) => r.legRole === "put_long")!;
+  assert.notEqual(putShortRb.rollbackOrphan, true);
+  assert.notEqual(putLongRb.rollbackOrphan, true);
 });
