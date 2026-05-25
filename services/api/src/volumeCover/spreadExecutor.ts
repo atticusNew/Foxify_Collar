@@ -677,6 +677,182 @@ const buildRollbackOptimizerCfg = (
   };
 };
 
+// ─── Bundle 5 (2026-05-25): auto-advance expiry on thin-leg ──────────
+//
+// The depth gate (PR-A) catches thin-leg situations BEFORE any order
+// goes to the venue, but only at a single fixed expiry — the cell's
+// configured `expiryHorizonDays`. In production we observed a recurring
+// rejection pattern on 50k_2pct_1k cells where:
+//
+//   • The cell's default 3d horizon → 1-day expiry on Bullish (after
+//     the next 08:00 UTC cutoff) is not always listed for the wing
+//     strikes (e.g., 79000-C may not be on the chain at the 1-day
+//     contract while 76k-78k are).
+//   • Even when listed, top-of-book depth on 1-day options can fall
+//     below the 0.7 × contractsBtc gate threshold during quiet hours.
+//   • The 2-day, 3-day, and 4-day contracts at the same strikes are
+//     uniformly liquid and well-listed.
+//
+// Bundle 5 adds a pre-flight probe across ±N days of candidate
+// expiries. The first expiry where ALL 4 legs pass the depth gate is
+// selected. Strikes don't depend on expiry so they are computed once
+// at the original expiry and reused for the probe (same SpreadLegSpec
+// shape, just different expiryIso per leg).
+//
+// Tuning:
+//   VC_EXPIRY_AUTO_ADVANCE_ENABLED=true   master switch (default true)
+//   VC_EXPIRY_AUTO_ADVANCE_MAX_DAYS=3     max days to advance from base
+//
+// When all probed expiries fail the gate, falls back to the original
+// expiry — the downstream openSpread liquidity gate will then reject
+// with the standard `liquidity_gate_failed` reason and the depth-gate
+// telemetry trail. No silent degradation.
+
+const EXPIRY_AUTO_ADVANCE_ENABLED_DEFAULT = true;
+const EXPIRY_AUTO_ADVANCE_MAX_DAYS_DEFAULT = 3;
+
+export const getConfiguredExpiryAutoAdvance = (): {
+  enabled: boolean;
+  maxAdvanceDays: number;
+} => {
+  const rawEnabled = process.env.VC_EXPIRY_AUTO_ADVANCE_ENABLED;
+  const enabled = rawEnabled === undefined || rawEnabled === ""
+    ? EXPIRY_AUTO_ADVANCE_ENABLED_DEFAULT
+    : String(rawEnabled).toLowerCase() !== "false";
+  const rawMax = Number(process.env.VC_EXPIRY_AUTO_ADVANCE_MAX_DAYS);
+  const maxAdvanceDays = Number.isFinite(rawMax) && rawMax >= 0
+    ? Math.min(7, Math.floor(rawMax)) // hard cap 7d to avoid runaway
+    : EXPIRY_AUTO_ADVANCE_MAX_DAYS_DEFAULT;
+  return { enabled, maxAdvanceDays };
+};
+
+/**
+ * Build candidate expiry ISO strings starting at the base expiry and
+ * advancing by 1 day per step up to `maxAdvanceDays`. Each candidate
+ * snaps to the same UTC hour as the base (to match Bullish's expiry
+ * cadence — typically 08:00 UTC).
+ */
+export const buildCandidateExpiries = (
+  baseExpiryIso: string,
+  maxAdvanceDays: number
+): string[] => {
+  const baseMs = Date.parse(baseExpiryIso);
+  if (!Number.isFinite(baseMs)) return [baseExpiryIso];
+  const out: string[] = [];
+  for (let d = 0; d <= maxAdvanceDays; d++) {
+    const ms = baseMs + d * 86_400_000;
+    out.push(new Date(ms).toISOString());
+  }
+  return out;
+};
+
+/**
+ * Bundle 5 (2026-05-25): probe candidate expiries and return the first
+ * one whose 4-leg depth gate fully passes. If none pass, returns the
+ * base expiry so the downstream openSpread liquidity gate handles the
+ * rejection (preserves pre-Bundle-5 behavior on a fully-thin chain).
+ *
+ * Strikes are reused unchanged — only the expiryIso on each leg
+ * differs across probes.
+ */
+export const chooseLiveExpiryForSpread = async (params: {
+  baseStructure: SpreadStructure;
+  adapter: SpreadExecutorAdapter;
+  /**
+   * Optional depth gate override for the probe phase. If omitted,
+   * uses the same env-driven config as the production gate.
+   */
+  depthGateOverride?: {
+    minDepthBtcFloor: number;
+    depthRatio: number;
+    enforced: boolean;
+  };
+  /** Test override to force a specific candidate list. */
+  candidateExpiriesIso?: string[];
+  /** Test override to force enabled/disabled regardless of env. */
+  enabledOverride?: boolean;
+  /** Test override to force max-advance regardless of env. */
+  maxAdvanceDaysOverride?: number;
+}): Promise<{
+  chosenExpiryIso: string;
+  probed: Array<{ expiryIso: string; passed: boolean; failedLegRoles: SpreadLegSpec["legRole"][] }>;
+  advancedDays: number;
+  enabled: boolean;
+}> => {
+  const cfg = getConfiguredExpiryAutoAdvance();
+  const enabled = params.enabledOverride ?? cfg.enabled;
+  const baseExpiryIso = params.baseStructure.legs[0]?.expiryIso ?? "";
+  if (!enabled || !baseExpiryIso) {
+    return {
+      chosenExpiryIso: baseExpiryIso,
+      probed: [],
+      advancedDays: 0,
+      enabled
+    };
+  }
+  const maxAdvanceDays = params.maxAdvanceDaysOverride ?? cfg.maxAdvanceDays;
+  const candidates = params.candidateExpiriesIso
+    ?? buildCandidateExpiries(baseExpiryIso, maxAdvanceDays);
+
+  const probes = await Promise.all(
+    candidates.map(async (expIso, idx) => {
+      const probeStructure: SpreadStructure = {
+        ...params.baseStructure,
+        legs: params.baseStructure.legs.map((l) => ({
+          ...l,
+          expiryIso: expIso
+        }))
+      };
+      const liq = await checkSpreadLiquidity({
+        structure: probeStructure,
+        adapter: params.adapter,
+        action: "open",
+        depthGateOverride: params.depthGateOverride ?? {
+          ...getConfiguredDepthGate(),
+          enforced: true // probe in enforce mode regardless of env so we
+                         // get accurate `passed` per candidate
+        }
+      });
+      return {
+        expiryIso: expIso,
+        idx,
+        passed: liq.passed,
+        failedLegRoles: liq.legChecks
+          .filter((c) => !c.sufficient)
+          .map((c) => c.legRole)
+      };
+    })
+  );
+
+  // First passing expiry wins — earlier expiries are preferred (lower
+  // theta cost for Atticus when no liquidity reason to skip).
+  const winner = probes.find((p) => p.passed);
+  if (winner) {
+    return {
+      chosenExpiryIso: winner.expiryIso,
+      probed: probes.map((p) => ({
+        expiryIso: p.expiryIso,
+        passed: p.passed,
+        failedLegRoles: p.failedLegRoles
+      })),
+      advancedDays: winner.idx,
+      enabled
+    };
+  }
+  // No candidate passed — return base expiry so downstream gate does
+  // its job. The full probe trail is included for telemetry.
+  return {
+    chosenExpiryIso: baseExpiryIso,
+    probed: probes.map((p) => ({
+      expiryIso: p.expiryIso,
+      passed: p.passed,
+      failedLegRoles: p.failedLegRoles
+    })),
+    advancedDays: 0,
+    enabled
+  };
+};
+
 /**
  * Bundle 4 (2026-05-25) read-side getter so /health can surface the
  * effective rollback hardening config. Used by the health route to

@@ -57,6 +57,7 @@ import {
   openSpread,
   closeSpread,
   partialCloseSpreadOnTrigger,
+  chooseLiveExpiryForSpread,
   type SpreadExecutorAdapter
 } from "./spreadExecutor";
 import { getBullishSpreadAdapter } from "./bullishSpreadAdapter";
@@ -1052,6 +1053,48 @@ const executeSpreadOpen = async (params: {
   }
 
   const adapter = params.adapterOverride ?? getBullishSpreadAdapter();
+
+  // Bundle 5 (2026-05-25): probe candidate expiries (base, +1d, +2d,
+  // +3d) for orderbook + depth liquidity. Pick the earliest expiry
+  // where ALL 4 legs pass the depth gate. This eliminates the
+  // recurring `liquidity_gate_failed` rejection pattern on 1-day
+  // expiry contracts that were either un-listed for far-OTM strikes
+  // or had thin top-of-book during quiet trading hours, while keeping
+  // theta-cost minimization (earlier expiries preferred) intact.
+  //
+  // When all candidates fail (chain entirely thin / unlisted), we
+  // proceed with the base expiry — the existing depth gate inside
+  // openSpread() will reject with `liquidity_gate_failed` and
+  // surface a 503 retry signal to Foxify, identical to pre-Bundle-5
+  // behavior.
+  const expiryProbe = await chooseLiveExpiryForSpread({
+    baseStructure: structure,
+    adapter
+  });
+  if (expiryProbe.advancedDays > 0) {
+    console.log(
+      `[volumeCover/lifecycle] Bundle 5 expiry auto-advance: ` +
+        `position=${params.positionId} cell=${params.cell.cellId} ` +
+        `baseExpiry=${expiryIso} chosenExpiry=${expiryProbe.chosenExpiryIso} ` +
+        `advancedDays=${expiryProbe.advancedDays} ` +
+        `probed=${JSON.stringify(expiryProbe.probed)}`
+    );
+    // Update each leg's expiry to the chosen one. Strikes are unchanged.
+    for (const leg of structure.legs) {
+      leg.expiryIso = expiryProbe.chosenExpiryIso;
+    }
+  } else if (expiryProbe.enabled && expiryProbe.probed.length > 0) {
+    // Probed but no candidate passed — keep base expiry and let the
+    // downstream gate handle it. Telemetry only.
+    const allFailedRoles = expiryProbe.probed
+      .map((p) => `${p.expiryIso}:[${p.failedLegRoles.join(",")}]`)
+      .join(" ");
+    console.warn(
+      `[volumeCover/lifecycle] Bundle 5 expiry probe found NO live ` +
+        `candidate position=${params.positionId} cell=${params.cell.cellId} ` +
+        `baseExpiry=${expiryIso} probed=${allFailedRoles}`
+    );
+  }
 
   // PR-Bundle-3-B (2026-05-25): attempt ladder netting BEFORE openSpread.
   // Match retained LONG legs by fingerprint + cell + option_kind + strike

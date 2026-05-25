@@ -77,7 +77,11 @@ import { getNewbornReviewState } from "./volumeCoverNewbornReview";
 import {
   getBullishSpreadAdapterRuntimeConfig
 } from "./bullishSpreadAdapter";
-import { getConfiguredDepthGate, getConfiguredRollbackHardening } from "./spreadExecutor";
+import {
+  getConfiguredDepthGate,
+  getConfiguredRollbackHardening,
+  getConfiguredExpiryAutoAdvance
+} from "./spreadExecutor";
 import { readSalvageMetrics } from "./salvageTracker";
 import { buildFoxifyDailyReport, buildFoxifyRangeReport } from "./foxifyReport";
 import {
@@ -443,7 +447,13 @@ export const registerVolumeCoverRoutes = async (
             bundle4_rollbackHardening: {
               enabled: true,
               ...getConfiguredRollbackHardening()
-            }
+            },
+            // Bundle 5 (2026-05-25): auto-advance to next expiry when
+            // base expiry has thin/unlisted legs. Probes ±N days and
+            // picks the earliest fully-live candidate. When disabled
+            // OR no candidate passes, falls back to original gate
+            // behavior (preserves liquidity_gate_failed signal).
+            bundle5_expiryAutoAdvance: getConfiguredExpiryAutoAdvance()
           }
         }
       });

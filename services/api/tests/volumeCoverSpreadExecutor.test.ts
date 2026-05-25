@@ -10,6 +10,9 @@ import {
   getConfiguredDepthGate,
   getConfiguredLongTriggerPolicy,
   getConfiguredRollbackHardening,
+  getConfiguredExpiryAutoAdvance,
+  buildCandidateExpiries,
+  chooseLiveExpiryForSpread,
   __testHelpers,
   type SpreadExecutorAdapter,
   type ExecutorOrderResult,
@@ -1448,4 +1451,224 @@ test("Bundle 4: rollback marks orphan when book unavailable on a leg's symbol", 
   const putLongRb = result.rollbackResults.find((r) => r.legRole === "put_long")!;
   assert.notEqual(putShortRb.rollbackOrphan, true);
   assert.notEqual(putLongRb.rollbackOrphan, true);
+});
+
+// ─── Bundle 5 (2026-05-25): auto-advance expiry on thin chain ────────
+
+const clearExpiryAutoAdvanceEnv = (): void => {
+  delete process.env.VC_EXPIRY_AUTO_ADVANCE_ENABLED;
+  delete process.env.VC_EXPIRY_AUTO_ADVANCE_MAX_DAYS;
+};
+
+test("Bundle 5: getConfiguredExpiryAutoAdvance defaults to enabled with 3-day max", () => {
+  clearEnv();
+  clearExpiryAutoAdvanceEnv();
+  const cfg = getConfiguredExpiryAutoAdvance();
+  assert.equal(cfg.enabled, true);
+  assert.equal(cfg.maxAdvanceDays, 3);
+});
+
+test("Bundle 5: getConfiguredExpiryAutoAdvance respects env disable", () => {
+  clearEnv();
+  clearExpiryAutoAdvanceEnv();
+  process.env.VC_EXPIRY_AUTO_ADVANCE_ENABLED = "false";
+  try {
+    const cfg = getConfiguredExpiryAutoAdvance();
+    assert.equal(cfg.enabled, false);
+  } finally {
+    clearExpiryAutoAdvanceEnv();
+  }
+});
+
+test("Bundle 5: getConfiguredExpiryAutoAdvance clamps maxAdvanceDays to 7d hard cap", () => {
+  clearEnv();
+  clearExpiryAutoAdvanceEnv();
+  process.env.VC_EXPIRY_AUTO_ADVANCE_MAX_DAYS = "100";
+  try {
+    const cfg = getConfiguredExpiryAutoAdvance();
+    assert.equal(cfg.maxAdvanceDays, 7);
+  } finally {
+    clearExpiryAutoAdvanceEnv();
+  }
+});
+
+test("Bundle 5: buildCandidateExpiries produces base + N days advanced ISOs", () => {
+  // Function normalizes ISOs via new Date().toISOString() which always
+  // produces the .000Z form, regardless of input format.
+  const base = "2026-05-26T08:00:00Z";
+  const out = buildCandidateExpiries(base, 3);
+  assert.equal(out.length, 4); // base, +1, +2, +3
+  // Base output is the normalized form of input
+  assert.equal(out[0], "2026-05-26T08:00:00.000Z");
+  assert.equal(out[1], "2026-05-27T08:00:00.000Z");
+  assert.equal(out[2], "2026-05-28T08:00:00.000Z");
+  assert.equal(out[3], "2026-05-29T08:00:00.000Z");
+});
+
+test("Bundle 5: chooseLiveExpiryForSpread picks earliest live expiry when base is thin", async () => {
+  clearEnv();
+  clearExpiryAutoAdvanceEnv();
+  // Custom adapter: 1-day expiry book is empty for one strike (79000-C),
+  // 2-day and 3-day expiries are fully liquid.
+  const baseStructure = buildStructure();
+  const baseExpiry = baseStructure.legs[0].expiryIso; // "2026-05-26T08:00:00Z"
+  const day2 = "2026-05-27T08:00:00.000Z";
+  const day3 = "2026-05-28T08:00:00.000Z";
+
+  // Call counter to observe which expiries got probed
+  const probedSymbols: string[] = [];
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop({ symbol }): Promise<OrderbookTop> {
+      probedSymbols.push(symbol);
+      // Day-1 79000-C call is empty (= un-listed contract)
+      if (symbol === "BTC-USDC-20260526-78000-C") {
+        return { topBidUsdc: null, topAskUsdc: null, bidQtyBtc: null, askQtyBtc: null };
+      }
+      // All others (other legs at any expiry, or 78000-C at day-2/day-3) are fine
+      return {
+        topBidUsdc: 100,
+        topAskUsdc: 110,
+        bidQtyBtc: 5,
+        askQtyBtc: 5
+      };
+    },
+    async submitIocLimit() {
+      return {
+        filled: true,
+        fillPriceUsdcPerBtc: 100,
+        fillQtyBtc: 0.01,
+        finalReason: "Executed",
+        orderId: "OK"
+      };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+
+  const result = await chooseLiveExpiryForSpread({
+    baseStructure,
+    adapter,
+    enabledOverride: true,
+    maxAdvanceDaysOverride: 3,
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0.7, enforced: true }
+  });
+
+  // Day 0 (base) should fail (78000-C empty), day 1 should pass (any
+  // strike available).
+  assert.notEqual(result.chosenExpiryIso, baseExpiry);
+  assert.equal(result.advancedDays >= 1, true);
+  assert.equal(result.probed.length, 4); // base + 3 advance days
+  assert.equal(result.probed[0].passed, false); // base fails
+  assert.equal(result.probed[1].passed, true); // day+1 passes
+  assert.equal(result.enabled, true);
+});
+
+test("Bundle 5: chooseLiveExpiryForSpread returns base when ALL candidates fail", async () => {
+  clearEnv();
+  clearExpiryAutoAdvanceEnv();
+  const baseStructure = buildStructure();
+  const baseExpiry = baseStructure.legs[0].expiryIso;
+  // All books empty across all expiries
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop() {
+      return { topBidUsdc: null, topAskUsdc: null, bidQtyBtc: null, askQtyBtc: null };
+    },
+    async submitIocLimit() {
+      return { filled: false, fillPriceUsdcPerBtc: 0, fillQtyBtc: 0, finalReason: null, orderId: null };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+
+  const result = await chooseLiveExpiryForSpread({
+    baseStructure,
+    adapter,
+    enabledOverride: true,
+    maxAdvanceDaysOverride: 3,
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0.7, enforced: true }
+  });
+  // Should fall back to base expiry (downstream gate will reject)
+  assert.equal(result.chosenExpiryIso, baseExpiry);
+  assert.equal(result.advancedDays, 0);
+  assert.equal(result.probed.length, 4);
+  assert.equal(result.probed.every((p) => !p.passed), true);
+});
+
+test("Bundle 5: chooseLiveExpiryForSpread no-ops when disabled", async () => {
+  clearEnv();
+  clearExpiryAutoAdvanceEnv();
+  const baseStructure = buildStructure();
+  const baseExpiry = baseStructure.legs[0].expiryIso;
+  // Adapter returns empty books — but disabled means we don't probe.
+  let probeCalls = 0;
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop() {
+      probeCalls++;
+      return { topBidUsdc: null, topAskUsdc: null, bidQtyBtc: null, askQtyBtc: null };
+    },
+    async submitIocLimit() {
+      return { filled: false, fillPriceUsdcPerBtc: 0, fillQtyBtc: 0, finalReason: null, orderId: null };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+
+  const result = await chooseLiveExpiryForSpread({
+    baseStructure,
+    adapter,
+    enabledOverride: false
+  });
+  assert.equal(result.chosenExpiryIso, baseExpiry);
+  assert.equal(result.advancedDays, 0);
+  assert.equal(result.probed.length, 0); // no probes when disabled
+  assert.equal(result.enabled, false);
+  assert.equal(probeCalls, 0);
+});
+
+test("Bundle 5: chooseLiveExpiryForSpread prefers earliest passing expiry (theta cost)", async () => {
+  clearEnv();
+  clearExpiryAutoAdvanceEnv();
+  const baseStructure = buildStructure();
+  const baseExpiry = baseStructure.legs[0].expiryIso;
+  // Base passes — picker should NOT advance even though later expiries
+  // are also live. We want minimum theta cost.
+  const adapter: SpreadExecutorAdapter = {
+    async getOrderbookTop() {
+      return { topBidUsdc: 100, topAskUsdc: 110, bidQtyBtc: 5, askQtyBtc: 5 };
+    },
+    async submitIocLimit() {
+      return { filled: true, fillPriceUsdcPerBtc: 100, fillQtyBtc: 0.01, finalReason: "Executed", orderId: "OK" };
+    },
+    resolveSymbol({ leg, expiryIso: e }) {
+      const dt = e.slice(0, 10).replace(/-/g, "");
+      const kind = leg.optionKind === "put" ? "P" : "C";
+      return `BTC-USDC-${dt}-${leg.strikeActualUsdc}-${kind}`;
+    }
+  };
+
+  const result = await chooseLiveExpiryForSpread({
+    baseStructure,
+    adapter,
+    enabledOverride: true,
+    maxAdvanceDaysOverride: 3,
+    depthGateOverride: { minDepthBtcFloor: 0.3, depthRatio: 0.7, enforced: true }
+  });
+  // chosen represents the same instant as base (allowing ISO
+  // normalization e.g. "Z" → ".000Z").
+  assert.equal(
+    Date.parse(result.chosenExpiryIso),
+    Date.parse(baseExpiry),
+    `chosen ${result.chosenExpiryIso} should be same instant as base ${baseExpiry}`
+  );
+  assert.equal(result.advancedDays, 0); // didn't advance
+  assert.equal(result.probed[0].passed, true);
 });
