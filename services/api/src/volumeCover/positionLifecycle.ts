@@ -36,6 +36,7 @@ import {
   markHedgeLegRetained,
   markPositionTriggered,
   markPositionClosed,
+  finalizeSalvageProceedsForPosition,
   type PositionRow,
   type HedgeLegRow,
   type RetainedRole
@@ -43,7 +44,7 @@ import {
 import { recordTriggerEvent } from "./salvageTracker";
 import { insertLedgerEntry } from "../pilot/capitalPoolLedger";
 import { recordObligationWithDeferralSchedule } from "./counterpartyLedger";
-import { attemptLadderNetting } from "./ladderNetting";
+import { attemptLadderNetting, attemptLadderNettingForSpread } from "./ladderNetting";
 import { recordTriggerForFingerprint } from "./antiBot";
 import { recordTriggerForReview } from "./volumeCoverNewbornReview";
 // ─── 2026-05-23: spread-executor wiring (Track 2 PR #2 cutover) ───
@@ -181,7 +182,9 @@ export const openPosition = async (
   //   - Build a 4-leg [DB] tight-spread structure via spreadHedge
   //   - Open sequenced via spreadExecutor.openSpread (with rollback)
   //   - Persist 4 legs with shared spread_group_id and leg_role
-  //   - Skip ladder netting (incompatible with spread structure)
+  //   - PR-Bundle-3-B (2026-05-25): ladder-net retained LONG legs from
+  //     prior close/trigger when fingerprint + cell + strike + expiry
+  //     align. Shorts always open fresh.
   // ───────────────────────────────────────────────────────────────────
   if (isSpreadCellAllowed(req.cell.cellId)) {
     const spreadResult = await executeSpreadOpen({
@@ -189,6 +192,7 @@ export const openPosition = async (
       positionId,
       cell: req.cell,
       pairEntryBtcPrice: req.pairEntryBtcPrice,
+      fingerprintHash: req.fingerprintHash ?? null,
       contractsOverrideBtc: req.contractsOverrideBtc
     });
     return {
@@ -196,10 +200,10 @@ export const openPosition = async (
       hedgeLegs: spreadResult.hedgeLegs,
       totalHedgeCostUsdc: spreadResult.totalCostUsdc,
       venue: spreadResult.venue,
-      laddered: false,
-      ladderedLegIds: [],
-      ladderEstimatedSavingsUsdc: 0,
-      ladderEventId: null
+      laddered: spreadResult.repurposedLegs.length > 0,
+      ladderedLegIds: spreadResult.repurposedLegs.map((l) => l.id),
+      ladderEstimatedSavingsUsdc: spreadResult.ladderEstimatedSavingsUsdc,
+      ladderEventId: spreadResult.ladderEventId
     };
   }
 
@@ -422,6 +426,7 @@ export const fireTrigger = async (
   );
   const retainedLegIds: string[] = [];
   let spreadShortProceedsUsdc = 0;
+  let spreadLongAtTriggerProceedsUsdc = 0;
   if (spreadLegs.length === 4) {
     const cell = findCellById(params.position.cellId);
     if (cell) {
@@ -434,6 +439,7 @@ export const fireTrigger = async (
           triggerDirection: params.direction
         });
         spreadShortProceedsUsdc = spreadOutcome.shortLegProceedsUsdc;
+        spreadLongAtTriggerProceedsUsdc = spreadOutcome.longLegProceedsUsdc;
         // 2026-05-23: longLegIdsSold are NOT added to retainedLegIds —
         // they're already terminal (sold), no salvage tracking needed.
         // longLegIdsRetained (fallback case) still goes through salvage.
@@ -496,16 +502,21 @@ export const fireTrigger = async (
     }
   }
 
-  // Record salvage event with 0 proceeds (finalized later by hedge manager).
+  // Record salvage event with the realized-at-trigger proceeds.
+  //
   // post_close_trigger: trigger fired after Foxify-initiated close, but
   // inside the still-paid coverage window. Payout still owed.
+  //
+  // PR-Bundle-3-B (2026-05-25): salvage_event seeded with shorts only;
+  // long-at-trigger proceeds are added via finalizeSalvageProceedsForPosition
+  // BELOW so the salvage_pct reflects the FULL realized close. (Both
+  // numbers feed in: shortLegProceedsUsdc is negative — we paid to
+  // buy back the shorts — and long_at_trigger_proceeds is positive.)
   const postCloseTrigger = params.position.status === "closed";
   const salvageEvent = await recordTriggerEvent(pool, {
     positionId: params.position.id,
     triggeredDirection: params.direction,
     payoutOwedUsdc: params.position.payoutUsdc,
-    // Spread shorts close at trigger time and book proceeds immediately;
-    // longs remain in salvage and get finalized by the hedge manager.
     hedgeSaleProceedsUsdc: spreadShortProceedsUsdc,
     metadata: {
       triggerSpotBtc: params.triggerSpotBtc ?? null,
@@ -516,9 +527,30 @@ export const fireTrigger = async (
       coverage_through: params.position.coverageThrough,
       spread_short_proceeds_usdc: spreadShortProceedsUsdc > 0
         ? spreadShortProceedsUsdc
-        : undefined
+        : undefined,
+      spread_long_at_trigger_proceeds_usdc:
+        spreadLongAtTriggerProceedsUsdc > 0
+          ? spreadLongAtTriggerProceedsUsdc
+          : undefined
     }
   });
+
+  // PR-Bundle-3-B: finalize the long-at-trigger proceeds into the
+  // salvage_event. finalizeSalvageProceedsForPosition silently returns
+  // null if the salvage_event row doesn't exist (e.g. courtesy close
+  // pre-trigger), or if the delta is non-positive — both are no-ops.
+  if (spreadLongAtTriggerProceedsUsdc > 1e-8) {
+    try {
+      await finalizeSalvageProceedsForPosition(pool, {
+        positionId: params.position.id,
+        proceedsUsdcDelta: spreadLongAtTriggerProceedsUsdc
+      });
+    } catch (err) {
+      console.warn(
+        `[volumeCover/lifecycle] spread long-at-trigger salvage finalize failed for position ${params.position.id}: ${(err as Error).message}`
+      );
+    }
+  }
 
   // Ledger entry for spread short proceeds (realized cash, not deferred
   // salvage).
@@ -960,12 +992,22 @@ const executeSpreadOpen = async (params: {
   positionId: string;
   cell: CellDefinition;
   pairEntryBtcPrice: number;
+  /**
+   * PR-Bundle-3-B: required for spread ladder netting. Without a stable
+   * fingerprint we cannot match a retained leg back to "the same Foxify
+   * pattern" so laddering is skipped (functionally identical to today).
+   */
+  fingerprintHash?: string | null;
   adapterOverride?: SpreadExecutorAdapter; // for tests
   contractsOverrideBtc?: number; // smoke-test only
 }): Promise<{
   hedgeLegs: HedgeLegRow[];
   totalCostUsdc: number;
   venue: HedgeVenueChoice;
+  // PR-Bundle-3-B: ladder netting outcome
+  repurposedLegs: HedgeLegRow[];
+  ladderEstimatedSavingsUsdc: number;
+  ladderEventId: string | null;
 }> => {
   const venueRouting = resolveSpreadVenue(params.cell);
   const expiryIso = computeExpiryIsoForSpread(params.cell);
@@ -1011,15 +1053,83 @@ const executeSpreadOpen = async (params: {
 
   const adapter = params.adapterOverride ?? getBullishSpreadAdapter();
 
-  let openResult: Awaited<ReturnType<typeof openSpread>>;
+  // PR-Bundle-3-B (2026-05-25): attempt ladder netting BEFORE openSpread.
+  // Match retained LONG legs by fingerprint + cell + option_kind + strike
+  // (±1.5%) + remaining tenor (≥1d). For each match: re-point the DB row
+  // at the new spread (updates spread_group_id + leg_role), and remove
+  // from the placement set so openSpread skips it. Coverage invariant
+  // preserved — the laddered long is already at venue from the prior
+  // position so the next short's sell-to-open is still covered.
+  let netting: Awaited<ReturnType<typeof attemptLadderNettingForSpread>>;
   try {
-    openResult = await openSpread({ structure, adapter });
-  } catch (err: any) {
-    await markPositionClosed(params.pool, {
-      id: params.positionId,
-      reason: `spread_open_threw: ${err?.message ?? err}`
+    netting = await attemptLadderNettingForSpread({
+      pool: params.pool,
+      newPositionId: params.positionId,
+      newSpreadGroupId: structure.spreadGroupId,
+      cell: params.cell,
+      fingerprintHash: params.fingerprintHash ?? null,
+      structure
     });
-    throw new Error(`volume_cover_spread_open_failed: ${err?.message ?? err}`);
+  } catch (err) {
+    // Ladder netting failure is NEVER fatal — fall through to a fresh
+    // open of all 4 legs. We log but don't block: the spread still works
+    // identically without the ladder, just at full hedge cost.
+    console.warn(
+      `[volumeCover/lifecycle] spread ladder netting threw; falling back to fresh open: ${(err as Error).message}`
+    );
+    netting = {
+      legsToPlace: structure.legs,
+      repurposedLegs: [],
+      estimatedSavingsUsdc: 0,
+      ladderEventId: null,
+      perLeg: []
+    };
+  }
+
+  if (netting.repurposedLegs.length > 0) {
+    console.log(
+      `[volumeCover/lifecycle] spread ladder netted ${netting.repurposedLegs.length} leg(s) ` +
+        `position=${params.positionId} cell=${params.cell.cellId} ` +
+        `legsToPlace=${netting.legsToPlace.length} ` +
+        `savings=$${netting.estimatedSavingsUsdc.toFixed(2)} eventId=${netting.ladderEventId}`
+    );
+  }
+
+  // Build the structure passed to openSpread: same shape, but only the
+  // legs that still need to be bought/sold at the venue. The full
+  // structure (with all 4 legs) is preserved for close-path code; only
+  // the OPEN sequence iterates this subset.
+  const placementStructure: SpreadStructure = {
+    ...structure,
+    legs: netting.legsToPlace
+  };
+
+  // Edge case: if all 4 legs ladder (theoretically possible if the prior
+  // position had retained both shorts somehow — not currently a path,
+  // but defensive), there's nothing for openSpread to do. Skip the
+  // executor call and treat as immediately successful.
+  let openResult: Awaited<ReturnType<typeof openSpread>>;
+  if (placementStructure.legs.length === 0) {
+    openResult = {
+      ok: true,
+      spreadGroupId: structure.spreadGroupId,
+      legs: [],
+      failedAt: null,
+      rollbackResults: [],
+      errorReason: null,
+      liquidityCheck: { passed: true, legChecks: [] },
+      netDebitUsdc: 0
+    };
+  } else {
+    try {
+      openResult = await openSpread({ structure: placementStructure, adapter });
+    } catch (err: any) {
+      await markPositionClosed(params.pool, {
+        id: params.positionId,
+        reason: `spread_open_threw: ${err?.message ?? err}`
+      });
+      throw new Error(`volume_cover_spread_open_failed: ${err?.message ?? err}`);
+    }
   }
 
   if (!openResult.ok) {
@@ -1056,10 +1166,15 @@ const executeSpreadOpen = async (params: {
     );
   }
 
-  // Persist 4 legs with shared spreadGroupId and per-leg role.
+  // Persist freshly-bought legs with shared spreadGroupId and per-leg role.
   // For LONG legs: buy_price_usdc = fill price (cost paid).
   // For SHORT legs: buy_price_usdc = 0 (no cost paid), initial_proceeds_usdc = fill price.
-  const hedgeLegs: HedgeLegRow[] = [];
+  //
+  // PR-Bundle-3-B: laddered legs already exist as DB rows (re-pointed at
+  // this position by attemptLadderNettingForSpread with updated
+  // spread_group_id + leg_role). Seed the result array with them so the
+  // caller sees all 4 legs of the position regardless of origin.
+  const hedgeLegs: HedgeLegRow[] = [...netting.repurposedLegs];
   for (const ol of openResult.legs) {
     const legSpec = structure.legs.find((l) => l.legRole === ol.legRole);
     if (!legSpec) {
@@ -1145,7 +1260,10 @@ const executeSpreadOpen = async (params: {
   return {
     hedgeLegs,
     totalCostUsdc: openResult.netDebitUsdc,
-    venue: structure.venue
+    venue: structure.venue,
+    repurposedLegs: netting.repurposedLegs,
+    ladderEstimatedSavingsUsdc: netting.estimatedSavingsUsdc,
+    ladderEventId: netting.ladderEventId
   };
 };
 
@@ -1254,6 +1372,15 @@ export const executeSpreadPartialCloseOnTrigger = async (params: {
   // 2026-05-23: when sell-longs-at-trigger is on (default), longs are
   // SOLD here instead of retained. Mark them sold in DB so hedge
   // manager doesn't pick them up later.
+  //
+  // PR-Bundle-3-B (2026-05-25): also book the proceeds to the
+  // atticus_hedge capital pool ledger as `hedge_sell_in`. Pre-Bundle-3-B,
+  // this path called markHedgeLegSold (which only updates the leg row)
+  // and never inserted a ledger entry — so the pool ledger silently
+  // under-reported hedge proceeds whenever PR-C was on. The hedge
+  // manager's Rule-curve-driven `vc_hedge_sell_managed:*` ledger
+  // entries handle retained-long disposal, but those rules don't fire
+  // for legs sold inside partialCloseSpreadOnTrigger.
   for (const soldLong of result.longLegsSold) {
     const dbLeg = params.spreadLegs.find((l) => l.legRole === soldLong.legRole);
     if (!dbLeg) continue;
@@ -1268,6 +1395,32 @@ export const executeSpreadPartialCloseOnTrigger = async (params: {
       console.error(
         `[VC ALERT] failed to markHedgeLegSold for spread long ${dbLeg.id} on trigger: ${(err as Error).message}`
       );
+    }
+    // Insert ledger entry for the sale proceeds. Total proceeds =
+    // fillPriceUsdcPerBtc × fillQtyBtc. Always positive (we sold a
+    // long → cash IN). Skip near-zero (defensive).
+    const proceedsUsdc = soldLong.fillPriceUsdcPerBtc * soldLong.fillQtyBtc;
+    if (Number.isFinite(proceedsUsdc) && proceedsUsdc > 1e-8) {
+      try {
+        await insertLedgerEntry(params.pool, {
+          poolId: "atticus_hedge",
+          protectionId: params.positionId,
+          entryType: "hedge_sell_in",
+          amountUsdc: proceedsUsdc,
+          reference: `vc_spread_long_at_trigger:${dbLeg.id}`,
+          metadata: {
+            product: "volume_cover",
+            executor: "spread",
+            legRole: soldLong.legRole,
+            triggerDirection: params.triggerDirection,
+            source: "trigger_partial_close_long"
+          }
+        });
+      } catch (err) {
+        console.warn(
+          `[volumeCover/lifecycle] spread long_at_trigger ledger failed for leg ${dbLeg.id}: ${(err as Error).message}`
+        );
+      }
     }
   }
   // Any longs that fell back to retain (orderbook unavailable or sell

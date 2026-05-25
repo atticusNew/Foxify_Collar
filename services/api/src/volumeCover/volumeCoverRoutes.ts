@@ -41,6 +41,7 @@ import { selectCell } from "./cellSelector";
 import { resolveDailyPremium } from "./pricing";
 import { evaluateTickSpacing, getConfiguredTickSpacing } from "./tickSpacing";
 import { getConfiguredMaxHold } from "./maxHoldSweep";
+import { getConfiguredLongTriggerPolicy } from "./spreadExecutor";
 import { findCellById, computeTriggerPrices, computeHedgeStrikes } from "./matrix";
 import {
   ensureVolumeCoverSchema,
@@ -396,7 +397,17 @@ export const registerVolumeCoverRoutes = async (
               } catch {
                 return { error: "invalid_json" };
               }
-            })()
+            })(),
+            // 2026-05-25 (PR-Bundle-3-B): how the spread executor handles
+            // LONG legs at trigger fire. Default 'winner_only' (sell winner,
+            // retain loser). Operator-tunable via VC_SPREAD_LONG_TRIGGER_POLICY
+            // (or legacy VC_SPREAD_SELL_LONGS_AT_TRIGGER boolean).
+            prG3b_longTriggerPolicy: getConfiguredLongTriggerPolicy(),
+            // 2026-05-25 (PR-Bundle-3-B): spread ladder-netting state.
+            // Disabled when VOLUME_COVER_LADDER_NETTING_ENABLED=false.
+            prG3b_spreadLadderNettingEnabled:
+              String(process.env.VOLUME_COVER_LADDER_NETTING_ENABLED ?? "true")
+                .toLowerCase() !== "false"
           }
         }
       });
