@@ -8,6 +8,8 @@ import { ensureTwoSidedSchema } from "../singleSide/twoSided/db";
 import { ensureDeferredPoolSchema } from "../singleSide/twoSided/deferredPool";
 import { ensureGuardrailsSchema } from "../singleSide/twoSided/guardrails";
 import { ensureNewbornReviewSchema } from "../singleSide/twoSided/featureFlag";
+import { ensureWebhookConfigSchema } from "../singleSide/twoSided/webhookConfig";
+import { ensureWebhookAttemptSchema } from "../singleSide/twoSided/webhookDelivery";
 
 async function main() {
   if (!pilotConfig.postgresUrl) {
@@ -21,6 +23,8 @@ async function main() {
   await ensureDeferredPoolSchema(pool);
   await ensureGuardrailsSchema(pool);
   await ensureNewbornReviewSchema(pool);
+  await ensureWebhookConfigSchema(pool);
+  await ensureWebhookAttemptSchema(pool);
   await pool.end();
   // eslint-disable-next-line no-console
   console.log("Pilot + Volume Cover + Two-Sided schema migration complete.");

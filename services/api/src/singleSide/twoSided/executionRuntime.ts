@@ -335,6 +335,26 @@ export class ExecutionRuntime {
     this.state.finalSalvageUsdc = salvage;
     this.state.status = "closed";
     this.stop();
+
+    // PR A7: deliver Foxify webhook (fire-and-forget; retry chain runs in background)
+    try {
+      const { deliverPairClosed } = await import("./webhookDelivery");
+      void deliverPairClosed(this.deps.pool, {
+        pair_id: this.pair.pairId,
+        foxify_pair_ref: this.pair.foxifyPairRef,
+        closed_at: new Date(Date.now()).toISOString(),
+        closed_reason: closedReason,
+        trigger_side: this.pair.triggerSide,
+        salvage_proceeds_usdc: salvage,
+        uplift_usdc: uplift,
+        foxify_share_usdc: foxifyShare,
+        atticus_share_usdc: atticusShare,
+        exit_mode: exitMode,
+        tier_at_settlement: this.pair.tierAtActivation
+      }).catch((e) => this.log(`webhook delivery failed: ${(e as Error).message}`));
+    } catch (e) {
+      this.log(`webhook module load failed: ${(e as Error).message}`);
+    }
   }
 
   private log(msg: string, meta?: Record<string, unknown>): void {

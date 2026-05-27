@@ -307,8 +307,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(400).send({ error: "invalid_request", message: "webhook_url and hmac_secret required" });
         return;
       }
-      // PR A7 wires the actual storage; for A3 this is a placeholder ack
-      reply.send({ stored: false, message: "Webhook delivery comes online in PR A7; config endpoint accepting but not persisting yet." });
+      try {
+        const { setWebhookConfig } = await import("./webhookConfig");
+        const cfg = await setWebhookConfig(deps.pool, webhook_url, hmac_secret);
+        reply.send({ stored: true, updated_at: cfg.updatedAt });
+      } catch (e) {
+        reply.code(400).send({ error: "invalid_request", message: (e as Error).message });
+      }
     }
   );
 
