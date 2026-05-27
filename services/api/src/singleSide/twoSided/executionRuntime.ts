@@ -270,24 +270,41 @@ export class ExecutionRuntime {
       );
     }
 
-    // Compute split (Phase 0 floor mechanic from PLAN §3):
-    //   uplift = salvage - hedge_cost
-    //   if uplift <= 0: atticus = 0, foxify = salvage
-    //   else: atticus = min(uplift, max(tier_pct * uplift, tier_floor)), foxify = hedge_cost + (uplift - atticus)
-    const uplift = salvage - this.pair.hedgeCostTotalUsdc;
-    let atticusShare = 0;
-    let foxifyShare: number;
-    if (uplift <= 0) {
-      foxifyShare = salvage;
-    } else {
-      // Read tier pct from pair.tierAtActivation. PR 6 will own the canonical tier lookup;
-      // we use the floor + a placeholder reading the tier pct via TIERS table.
-      const { TIERS } = await import("./types");
-      const tier = TIERS.find((t) => t.label === this.pair.tierAtActivation) ?? TIERS[0];
-      const proportional = tier.atticusPct * uplift;
-      const floored = Math.max(proportional, this.pair.atticusFloorUsdc);
-      atticusShare = Math.min(uplift, floored);
-      foxifyShare = this.pair.hedgeCostTotalUsdc + (uplift - atticusShare);
+    // Compute split via PR 6 settlementEngine (canonical math).
+    const { computeSplit, assertSplitInvariant } = await import("./settlementEngine");
+    const { TIERS } = await import("./types");
+    const tier = TIERS.find((t) => t.label === this.pair.tierAtActivation) ?? TIERS[0];
+    // Override floor with pair.atticusFloorUsdc (recorded at activation — pinned to
+    // tier-at-activation policy, not retroactive).
+    const tierWithPinnedFloor = { ...tier, atticusFloorUsdc: this.pair.atticusFloorUsdc };
+    const split = computeSplit({
+      salvageProceedsUsdc: salvage,
+      hedgeCostUsdc: this.pair.hedgeCostTotalUsdc,
+      tier: tierWithPinnedFloor
+    });
+    assertSplitInvariant(split);
+    const atticusShare = split.atticusShareUsdc;
+    const foxifyShare = split.foxifyShareUsdc;
+    const uplift = split.upliftUsdc;
+
+    // If deferred-pool is active, accrue Atticus share into the ledger (no payout).
+    // Foxify share still flows back to Foxify; pool tracks what Atticus is owed.
+    if (atticusShare > 0) {
+      try {
+        const { getPoolState, recordAccrual } = await import("./deferredPool");
+        const poolState = await getPoolState(this.deps.pool).catch(() => null);
+        if (poolState && poolState.active) {
+          const { randomUUID } = await import("node:crypto");
+          await recordAccrual(this.deps.pool, {
+            ledgerId: randomUUID(),
+            pairId: this.pair.pairId,
+            atticusShareUsdc: atticusShare,
+            upliftUsdc: uplift
+          });
+        }
+      } catch (e) {
+        this.log(`deferred-pool accrual skipped for ${this.pair.pairId}: ${(e as Error).message}`);
+      }
     }
 
     await updatePairStatus(this.deps.pool, this.pair.pairId, "settled", {
