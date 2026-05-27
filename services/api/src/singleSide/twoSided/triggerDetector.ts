@@ -57,6 +57,7 @@ export class TriggerDetector {
     this.timer = setInterval(() => {
       void this.tick().catch((e) => this.log(`tick error: ${(e as Error).message}`, { error: String(e) }));
     }, periodMs);
+    if (this.timer && typeof (this.timer as { unref?: () => void }).unref === "function") (this.timer as { unref: () => void }).unref();
   }
 
   stop(): void {

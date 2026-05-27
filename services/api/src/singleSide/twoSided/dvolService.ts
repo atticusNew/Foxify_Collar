@@ -88,6 +88,7 @@ export class DvolService {
         this.log(`dvol tick error: ${(e as Error).message}`, { error: String(e) })
       );
     }, period);
+    if (this.timer && typeof (this.timer as { unref?: () => void }).unref === "function") (this.timer as { unref: () => void }).unref();
   }
 
   stop(): void {

@@ -119,6 +119,7 @@ export class ExecutionRuntime {
         this.log(`tick error for ${this.pair.pairId}: ${(e as Error).message}`, { error: String(e) })
       );
     }, periodMs);
+    if (this.timer && typeof (this.timer as { unref?: () => void }).unref === "function") (this.timer as { unref: () => void }).unref();
   }
 
   stop(): void {
