@@ -1,6 +1,6 @@
 # Two-Sided Strangle Validation — Cooperative Cost-Pass-Through
 
-**Generated:** 2026-05-27T20:54:22.623Z
+**Generated:** 2026-05-27T21:01:14.620Z
 **Pair config:** 50k/2% with ±2% triggers, 1.4 BTC contracts, 3-day tenor
 **Split:** 80/20 (Foxify favor), no op fee
 **Spot anchor:** $75,128.735

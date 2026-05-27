@@ -46,14 +46,14 @@ const PAIR = {
   hedgeTenorDays: 3
 };
 
-type Strangle = {
+export type Strangle = {
   label: string;
   putStrike: number;
   callStrike: number;
   description: string;
 };
 
-const STRANGLES: Strangle[] = [
+export const STRANGLES: Strangle[] = [
   {
     label: "OTM ($74k/$78k)",
     putStrike: 74_000,
@@ -95,7 +95,7 @@ const fmtPct = (n: number, dec = 1) => `${(n * 100).toFixed(dec)}%`;
 
 // ─── Hedge cost calibration (B1: per-leg empirical anchoring) ───
 
-type LegAnchor = {
+export type LegAnchor = {
   strike: number;
   optionType: "put" | "call";
   venue: "bullish" | "deribit";
@@ -105,7 +105,7 @@ type LegAnchor = {
   pulledAt: string;                   // ISO timestamp
 };
 
-type LiveAnchors = {
+export type LiveAnchors = {
   generatedAt: string;
   spotAtPull: number;
   source: "live_pull" | "embedded_default";
@@ -118,7 +118,7 @@ type LiveAnchors = {
  * For non-anchored strikes (ATM $76k, OTM $74k/$78k), the closest-strike calibration multiplier is used.
  * Per-leg breakdown from docs/SINGLE_SIDE_TWO_SIDED_STRANGLE_VALIDATION.md and TRIGGER_SOURCE_AND_FEED_SPEC.md §4.3.
  */
-const EMBEDDED_DEFAULT_ANCHORS: LiveAnchors = {
+export const EMBEDDED_DEFAULT_ANCHORS: LiveAnchors = {
   generatedAt: "2026-05-26T22:32:48.525Z",
   spotAtPull: 75_994,
   source: "embedded_default",
@@ -218,7 +218,7 @@ const findCalibForLeg = (
  * by the calibrateRegimeVolMarkup.ts script (PR 0a follow-up). Current values are
  * conservative midpoints from prior single-side analysis docs.
  */
-const REGIME_COST_MARKUP: Record<"calm" | "moderate" | "elevated" | "stress", number> = {
+export const REGIME_COST_MARKUP: Record<"calm" | "moderate" | "elevated" | "stress", number> = {
   calm: 1.00,
   moderate: 1.08,
   elevated: 1.20,
@@ -243,7 +243,7 @@ const REGIME_COST_MARKUP: Record<"calm" | "moderate" | "elevated" | "stress", nu
  * If depth is unknown (null/zero), defaults to 0.85 to match prior MC baseline
  * but emits a flag to surface in the report.
  */
-const slippageHaircut = (contractsToSell: number, depthBtc: number | null): number => {
+export const slippageHaircut = (contractsToSell: number, depthBtc: number | null): number => {
   if (depthBtc == null || depthBtc <= 0) return 0.85;
   const ratio = contractsToSell / depthBtc;
   if (ratio <= 0.5) return 0.92;
@@ -257,7 +257,7 @@ const slippageHaircut = (contractsToSell: number, depthBtc: number | null): numb
  * Returns the MORE CONSERVATIVE of put-leg and call-leg slippage (worst-leg-wins
  * is conservative because we must clear both legs in the capture window).
  */
-const slippageForStrangle = (s: Strangle, anchors: LiveAnchors, contractsBtc: number): {
+export const slippageForStrangle = (s: Strangle, anchors: LiveAnchors, contractsBtc: number): {
   slip: number;
   putDepth: number | null;
   callDepth: number | null;
@@ -360,7 +360,7 @@ const simulateVolumeDistribution = (
   };
 };
 
-type StrangleCostBreakdown = {
+export type StrangleCostBreakdown = {
   putLegUsdc: number;
   callLegUsdc: number;
   totalUsdc: number;
@@ -370,7 +370,7 @@ type StrangleCostBreakdown = {
   regimeMarkup: number;
 };
 
-const computeStrangleCostDetailed = (
+export const computeStrangleCostDetailed = (
   s: Strangle,
   sigma: number,
   regime: "calm" | "moderate" | "elevated" | "stress",
@@ -397,7 +397,7 @@ const computeStrangleCostDetailed = (
 
 // Back-compat thin wrapper (other code calls computeStrangleCost(s, sigma) returning a number).
 // Defaults to calm regime if not specified; new code should call computeStrangleCostDetailed.
-const computeStrangleCost = (
+export const computeStrangleCost = (
   s: Strangle,
   sigma: number,
   regime: "calm" | "moderate" | "elevated" | "stress" = "calm",
@@ -1011,7 +1011,15 @@ const main = async () => {
   console.log(`\n✓ Two-sided strangle proof written: ${outPath}`);
 };
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Only run main() when this file is invoked directly (not when imported by tests).
+import { fileURLToPath } from "node:url";
+const isDirectInvocation =
+  typeof process !== "undefined" &&
+  process.argv[1] &&
+  process.argv[1] === fileURLToPath(import.meta.url);
+if (isDirectInvocation) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
