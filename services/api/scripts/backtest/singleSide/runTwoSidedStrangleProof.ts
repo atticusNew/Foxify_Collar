@@ -225,6 +225,60 @@ const REGIME_COST_MARKUP: Record<"calm" | "moderate" | "elevated" | "stress", nu
   stress: 1.35
 };
 
+/**
+ * Depth-aware slippage haircut applied to the captured peak option value
+ * at theta-aware TP exit (B3 — replaces the prior flat SLIP=0.85).
+ *
+ * Inputs:
+ *   - contractsToSell: BTC contracts being unwound (1.4 for current cell)
+ *   - depthBtc: top-of-book depth-within-2% on the limiting leg/venue
+ *
+ * Returns multiplier in [0.65, 0.95] applied to peak value at sell time.
+ * Bands (from VC slippage-floor analysis + operator margin-of-safety):
+ *   <= 0.5x depth  → 0.92  (well within top-of-book)
+ *   <= 1.0x depth  → 0.85  (one-touch sweep)
+ *   <= 1.5x depth  → 0.75  (deep cross required)
+ *   >  1.5x depth  → 0.65  (significant slippage / multi-venue mandatory)
+ *
+ * If depth is unknown (null/zero), defaults to 0.85 to match prior MC baseline
+ * but emits a flag to surface in the report.
+ */
+const slippageHaircut = (contractsToSell: number, depthBtc: number | null): number => {
+  if (depthBtc == null || depthBtc <= 0) return 0.85;
+  const ratio = contractsToSell / depthBtc;
+  if (ratio <= 0.5) return 0.92;
+  if (ratio <= 1.0) return 0.85;
+  if (ratio <= 1.5) return 0.75;
+  return 0.65;
+};
+
+/**
+ * Compute the depth-aware slippage for a strangle's combined unwind.
+ * Returns the MORE CONSERVATIVE of put-leg and call-leg slippage (worst-leg-wins
+ * is conservative because we must clear both legs in the capture window).
+ */
+const slippageForStrangle = (s: Strangle, anchors: LiveAnchors, contractsBtc: number): {
+  slip: number;
+  putDepth: number | null;
+  callDepth: number | null;
+  putSlip: number;
+  callSlip: number;
+} => {
+  const putAnchor = anchors.anchors.find((a) => a.optionType === "put" && a.strike === s.putStrike);
+  const callAnchor = anchors.anchors.find((a) => a.optionType === "call" && a.strike === s.callStrike);
+  const putDepth = putAnchor?.depthWithin2pctBtc ?? null;
+  const callDepth = callAnchor?.depthWithin2pctBtc ?? null;
+  const putSlip = slippageHaircut(contractsBtc, putDepth);
+  const callSlip = slippageHaircut(contractsBtc, callDepth);
+  return {
+    slip: Math.min(putSlip, callSlip),
+    putDepth,
+    callDepth,
+    putSlip,
+    callSlip
+  };
+};
+
 type StrangleCostBreakdown = {
   putLegUsdc: number;
   callLegUsdc: number;
@@ -301,7 +355,8 @@ const simulateTwoSidedPath = (
   s: Strangle,
   pathBars: { closes: number[]; highs: number[]; lows: number[] },
   sigma: number,
-  hedgeCostUsdc: number
+  hedgeCostUsdc: number,
+  slipOverride?: number
 ): TwoSidedOutcome => {
   const triggerDown = SPOT * (1 - PAIR.triggerPctDown);
   const triggerUp = SPOT * (1 + PAIR.triggerPctUp);
@@ -339,7 +394,9 @@ const simulateTwoSidedPath = (
   }
 
   // Triggered — apply theta-aware TP to combined option value
-  const SLIP = 0.85;
+  // SLIP is now depth-aware (B3). When invoked from runMc, the caller computes
+  // the depth-aware value via slippageForStrangle() and passes it as slipOverride.
+  const SLIP = slipOverride ?? 0.85;
   const TRAIL = 0.85;
   const CAPTURE_WIN = 6; // 30-min capture window
 
@@ -409,6 +466,8 @@ type StrangleResult = {
   strangle: Strangle;
   hedgeCost: number;
   costBreakdown: StrangleCostBreakdown;
+  slipUsed: number;
+  slipInfo: { putDepth: number | null; callDepth: number | null; putSlip: number; callSlip: number };
   nPaths: number;
   triggerRate: number;
   triggerDownRate: number;
@@ -433,7 +492,8 @@ const runMc = async (
   regime: "calm" | "moderate" | "elevated" | "stress",
   generator: "bootstrap" | "gbm",
   bars: { close: number; high: number; low: number; open: number }[] | undefined,
-  anchors: LiveAnchors
+  anchors: LiveAnchors,
+  slipOverrideForRun?: number
 ): Promise<StrangleResult> => {
   const costBreakdown = computeStrangleCostDetailed(strangle, sigma, regime, anchors);
   const hedgeCost = costBreakdown.totalUsdc;
@@ -445,6 +505,10 @@ const runMc = async (
     generator,
     seed: 42
   };
+
+  // Depth-aware slippage from anchor depths (B3)
+  const slipInfo = slippageForStrangle(strangle, anchors, PAIR.contractsBtc);
+  const slipForPath = slipOverrideForRun ?? slipInfo.slip;
 
   const foxifyEvs: number[] = [];
   const atticusEvs: number[] = [];
@@ -461,7 +525,7 @@ const runMc = async (
         ? generateBootstrapPath(SPOT, pathConfig, bars, rng)
         : generateGbmPath(SPOT, pathConfig, rng);
 
-    const outcome = simulateTwoSidedPath(strangle, pathBars, sigma, hedgeCost);
+    const outcome = simulateTwoSidedPath(strangle, pathBars, sigma, hedgeCost, slipForPath);
     if (outcome.triggered) triggers++;
     if (outcome.triggerType === "down") triggerDowns++;
     if (outcome.triggerType === "up") triggerUps++;
@@ -504,6 +568,13 @@ const runMc = async (
     strangle,
     hedgeCost,
     costBreakdown,
+    slipUsed: slipForPath,
+    slipInfo: {
+      putDepth: slipInfo.putDepth,
+      callDepth: slipInfo.callDepth,
+      putSlip: slipInfo.putSlip,
+      callSlip: slipInfo.callSlip
+    },
     nPaths: N_PATHS,
     triggerRate: triggers / N_PATHS,
     triggerDownRate: triggerDowns / N_PATHS,
@@ -564,6 +635,17 @@ const main = async () => {
         `  ${s.label} ${regime}: hedge=$${r.hedgeCost.toFixed(0)}, trigger=${fmtPct(r.triggerRate)} (down=${fmtPct(r.triggerDownRate)}, up=${fmtPct(r.triggerUpRate)}), F=${fmt$Signed(r.meanFoxifyEv)} A=${fmt$Signed(r.meanAtticusEv)}\n`
       );
     }
+  }
+
+  // ─── Slippage sensitivity sweep (B3) — ITM guts calm only ───
+  const slipBands = [0.92, 0.85, 0.75, 0.65];
+  const sensitivityResults: Record<number, StrangleResult> = {};
+  const itmGutsStr = STRANGLES.find((x) => x.label.startsWith("ITM guts"))!;
+  console.log("\nSlippage sensitivity sweep (ITM guts, calm, bootstrap):");
+  for (const sb of slipBands) {
+    const r = await runMc(itmGutsStr, REGIME_SIGMAS.calm, "calm", "bootstrap", bars, anchors, sb);
+    sensitivityResults[sb] = r;
+    console.log(`  slip=${sb.toFixed(2)} → hedge=$${r.hedgeCost.toFixed(0)} mean_salvage=$${r.meanSalvage.toFixed(0)} F=${fmt$Signed(r.meanFoxifyEv)} A=${fmt$Signed(r.meanAtticusEv)}`);
   }
 
   // Build report
@@ -666,6 +748,29 @@ const main = async () => {
     lines.push(`| Best Foxify single pair | ${fmt$Signed(r.bestFoxify)} |`);
     lines.push("");
   }
+
+  // Section 1.5: Slippage sensitivity (B3)
+  lines.push(`## 1.5 Slippage sensitivity (B3) — ITM guts, calm regime`);
+  lines.push("");
+  lines.push(`Per-leg depth (BTC): put=${allResults["ITM guts ($77k/$75k)_calm"].slipInfo.putDepth ?? "n/a"}, call=${allResults["ITM guts ($77k/$75k)_calm"].slipInfo.callDepth ?? "n/a"}.`);
+  lines.push(`Depth-aware slippage at single-pair unwind (1.4 BTC each leg): ${allResults["ITM guts ($77k/$75k)_calm"].slipUsed.toFixed(2)} (production setting).`);
+  lines.push("");
+  lines.push(`Sensitivity to varying slippage assumption (forced):`);
+  lines.push("");
+  lines.push(`| Slip | Hedge cost | Mean salvage | Salvage/hedge | Foxify EV/pair | Atticus EV/pair | %loss paths |`);
+  lines.push(`|---:|---:|---:|---:|---:|---:|---:|`);
+  for (const sb of [0.92, 0.85, 0.75, 0.65]) {
+    const r = sensitivityResults[sb];
+    const ratio = r.meanSalvage / r.hedgeCost;
+    lines.push(
+      `| ${sb.toFixed(2)} | ${fmt$(r.hedgeCost)} | ${fmt$(r.meanSalvage)} | ${ratio.toFixed(2)}× | ${fmt$Signed(r.meanFoxifyEv)} | ${fmt$Signed(r.meanAtticusEv)} | ${fmtPct(r.pctSalvageBelowHedge)} |`
+    );
+  }
+  lines.push("");
+  lines.push(`> **Reading:** Slip ≤ 0.75 → multi-pair concurrent unwind (3+ pairs in same minute) hits this band.`);
+  lines.push(`> If Foxify EV at slip=0.75 is below operator threshold, concurrent-trigger throttle (PR 9) must enforce`);
+  lines.push(`> single-pair-per-minute unwind queueing during high-trigger windows.`);
+  lines.push("");
 
   // Section 3: Across regimes
   lines.push(`## 2. Cross-regime — Foxify EV per pair`);

@@ -1,6 +1,6 @@
 # Two-Sided Strangle Validation — Cooperative Cost-Pass-Through
 
-**Generated:** 2026-05-27T20:28:09.445Z
+**Generated:** 2026-05-27T20:31:45.068Z
 **Pair config:** 50k/2% with ±2% triggers, 1.4 BTC contracts, 3-day tenor
 **Split:** 80/20 (Foxify favor), no op fee
 **Spot anchor:** $75,994
@@ -108,6 +108,24 @@ Either ±2% trigger closes the entire pair. Atticus hedges with a strangle
 | %Foxify-profitable pairs | 90.8% |
 | Worst Foxify single pair | -$371 |
 | Best Foxify single pair | +$2,004 |
+
+## 1.5 Slippage sensitivity (B3) — ITM guts, calm regime
+
+Per-leg depth (BTC): put=2.5, call=3.1.
+Depth-aware slippage at single-pair unwind (1.4 BTC each leg): 0.85 (production setting).
+
+Sensitivity to varying slippage assumption (forced):
+
+| Slip | Hedge cost | Mean salvage | Salvage/hedge | Foxify EV/pair | Atticus EV/pair | %loss paths |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.92 | $3,196 | $4,174 | 1.31× | +$778 | +$201 | 8.8% |
+| 0.85 | $3,196 | $3,881 | 1.21× | +$543 | +$142 | 9.2% |
+| 0.75 | $3,196 | $3,462 | 1.08× | +$205 | +$61 | 17.6% |
+| 0.65 | $3,196 | $3,043 | 0.95× | -$160 | +$6 | 79.0% |
+
+> **Reading:** Slip ≤ 0.75 → multi-pair concurrent unwind (3+ pairs in same minute) hits this band.
+> If Foxify EV at slip=0.75 is below operator threshold, concurrent-trigger throttle (PR 9) must enforce
+> single-pair-per-minute unwind queueing during high-trigger windows.
 
 ## 2. Cross-regime — Foxify EV per pair
 
