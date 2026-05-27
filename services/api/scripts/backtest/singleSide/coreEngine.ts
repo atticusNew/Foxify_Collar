@@ -96,6 +96,49 @@ export type Scenario = {
   regimeOverlay?: Record<Regime, number | "pause">;
   /** Apply 12-rule TP simulation for retained leg (default true) */
   retainedTp?: boolean;
+  /**
+   * TP curve variant for retained leg post-trigger.
+   * - "baseline": original 5-rule daily curve (rules 1, 5, 7, 12, W1).
+   * - "thetaAware": intraday-peak capture on trigger day + theta-decay
+   *   exit + cap-fraction exit + tighter 15% trail. Models the §4.1
+   *   redesigned curve: limit-IOC at trigger fire with 0.85× BS floor,
+   *   then trail/cap/floor across remaining tenor.
+   * Default: "baseline".
+   */
+  tpCurve?: "baseline" | "thetaAware";
+  /**
+   * Pricing model variant.
+   * - "fixed": daily X premium accrues every day, fixed Y payout on trigger
+   *   (current attempt-1/attempt-2 model).
+   * - "xOrY": no premium on trigger (refunded), regime-tiered payout Y on
+   *   trigger; X premium charged only on non-trigger close. Adapted from
+   *   docs/POSTMORTEM_AND_MODEL_EVAL_2026_05_24.md §7 + BACKTEST_REPORT v3.
+   * Default: "fixed".
+   */
+  pricingModel?: "fixed" | "xOrY";
+  /**
+   * Per-regime payout multiplier on cell.payoutUsdc when pricingModel="xOrY".
+   * Default {calm:1.0, mod:0.7, elev:0.5, stress:0}. (Stress=0 forces no
+   * trigger payout in stress; pair with regimeOverlay.stress="pause" to
+   * prevent any activation in stress.)
+   */
+  xOrYRegimePayoutMult?: Record<Regime, number>;
+  /**
+   * Override the cell's hedge tenor in days. Use to model what happens
+   * when only a longer-tenor expiry is listable (e.g. Bullish 10d
+   * vs cell-design 6d). Affects the initial cost computation, the trigger
+   * window walk, and salvage-value calculations.
+   * If set, supersedes cell.hedgeTenorDays everywhere in the simulator.
+   */
+  hedgeTenorOverride?: number;
+  /**
+   * Override the per-cover initial hedge cost (USD) computed from BS.
+   * Use to inject empirical Bullish/Deribit pricing when BS deviates
+   * materially from market (e.g. vol skew or smile). Salvage values
+   * still use BS — slight bias on long retained options if implied vol
+   * differs materially from realized.
+   */
+  hedgeCostOverride?: number;
 };
 
 export type CoverResult = {
@@ -294,6 +337,134 @@ const simulateRetainedTp = (params: {
 };
 
 /**
+ * Theta-aware TP curve for the retained long leg.
+ *
+ * Differences vs `simulateRetainedTp` (baseline):
+ *   1. **Intraday-peak capture on trigger day.** When the position was
+ *      retained on a trigger day, the option's MTM peaks at the
+ *      intraday extreme (high for short cover/call, low for long
+ *      cover/put), not the close. We sell at that peak with a 15%
+ *      slippage haircut to model limit-IOC-with-floor execution
+ *      (Foxify-001 quantified $990/BTC leak from selling at close).
+ *   2. **Cap-fraction exit.** Sell when option value ≥ 0.90 × intrinsic
+ *      at current spot — we've captured 90%+ of the cap.
+ *   3. **Hard floor referenced to payout, not initial cost.** Sell when
+ *      value < 0.10 × payout (the right economic reference for the
+ *      option's role).
+ *   4. **Tighter 15% trail.** Trail retracement at 0.85 × runningMax
+ *      (vs 0.80 in baseline). Shorter tenor → faster mean-reversion →
+ *      tighter trail.
+ *   5. **Theta-decay rule.** Sell when expected next-day decay
+ *      (≈ value × 1/(2 × remainingDays)) exceeds expected MTM gain
+ *      (modeled as zero — neutral expectation past trigger fire).
+ *
+ * Loser side (non-trigger close-out) keeps the baseline 20% floor / day-1
+ * grace logic — improvements primarily benefit winner-side capture.
+ */
+const simulateRetainedTpThetaAware = (params: {
+  candles: Candle[];
+  startIdx: number;
+  strikeUsdc: number;
+  optionKind: "put" | "call";
+  initialCostUsdc: number;
+  contractsBtc: number;
+  iv: number;
+  tenorRemainingDays: number;
+  payoutUsdc: number;
+  isWinner: boolean;
+}): { salvageUsdc: number; sellDay: number } => {
+  const SLIPPAGE_HAIRCUT = 0.85;
+  const TRAIL_RETRACE = 0.85;
+  const CAP_FRACTION = 0.90;
+  const HARD_FLOOR_PAYOUT = 0.10;
+
+  if (params.isWinner) {
+    // Day 0 (trigger day): peak intraday capture. The option is most
+    // valuable at the intraday extreme; mark to peak with haircut.
+    const dayIdx = params.startIdx;
+    if (dayIdx >= params.candles.length) {
+      return { salvageUsdc: 0, sellDay: 0 };
+    }
+    const day = params.candles[dayIdx];
+    // For a long put (long cover), intraday LOW is the peak. For a long
+    // call (short cover), intraday HIGH is the peak.
+    const peakSpot = params.optionKind === "put" ? day.low : day.high;
+    const peakValue = computeHedgeValueAtTime({
+      currentSpot: peakSpot,
+      strikeUsdc: params.strikeUsdc,
+      optionKind: params.optionKind,
+      remainingDays: params.tenorRemainingDays,
+      iv: params.iv,
+      contractsBtc: params.contractsBtc
+    });
+    return { salvageUsdc: peakValue * SLIPPAGE_HAIRCUT, sellDay: 0 };
+  }
+
+  // Loser side: walk forward with baseline-style rules + tighter trail.
+  let runningMax = 0;
+  for (let d = 0; d <= params.tenorRemainingDays; d++) {
+    const dayIdx = params.startIdx + d;
+    if (dayIdx >= params.candles.length) {
+      const last = params.candles[params.candles.length - 1];
+      const v = computeHedgeValueAtTime({
+        currentSpot: last.close,
+        strikeUsdc: params.strikeUsdc,
+        optionKind: params.optionKind,
+        remainingDays: 0,
+        iv: params.iv,
+        contractsBtc: params.contractsBtc
+      });
+      return { salvageUsdc: v, sellDay: d };
+    }
+    const remaining = params.tenorRemainingDays - d;
+    const value = computeHedgeValueAtTime({
+      currentSpot: params.candles[dayIdx].close,
+      strikeUsdc: params.strikeUsdc,
+      optionKind: params.optionKind,
+      remainingDays: remaining,
+      iv: params.iv,
+      contractsBtc: params.contractsBtc
+    });
+    runningMax = Math.max(runningMax, value);
+
+    // Force exit on last day
+    if (remaining <= 1) return { salvageUsdc: value, sellDay: d };
+
+    // Cap-fraction exit: captured 90%+ of intrinsic at current spot
+    const intrinsicNow =
+      params.optionKind === "put"
+        ? Math.max(0, params.strikeUsdc - params.candles[dayIdx].close) * params.contractsBtc
+        : Math.max(0, params.candles[dayIdx].close - params.strikeUsdc) * params.contractsBtc;
+    if (intrinsicNow > 0 && value >= intrinsicNow * CAP_FRACTION) {
+      return { salvageUsdc: value, sellDay: d };
+    }
+
+    // Hard floor referenced to payout
+    if (value < params.payoutUsdc * HARD_FLOOR_PAYOUT) {
+      return { salvageUsdc: value, sellDay: d };
+    }
+
+    // Tighter trail retracement
+    if (runningMax > 0 && value < runningMax * TRAIL_RETRACE && d >= 1) {
+      return { salvageUsdc: value, sellDay: d };
+    }
+
+    // Theta-decay rule: if next-day decay > expected gain (≈0 post-trigger
+    // for loser-side hold), sell.
+    const expectedDecayNextDay = value * (1 / Math.max(1, 2 * remaining));
+    if (d >= 1 && expectedDecayNextDay > value * 0.05) {
+      return { salvageUsdc: value, sellDay: d };
+    }
+
+    // Loser day-1 grace exit (matches baseline rule 7)
+    if (d >= 1) {
+      return { salvageUsdc: value, sellDay: d };
+    }
+  }
+  return { salvageUsdc: 0, sellDay: params.tenorRemainingDays };
+};
+
+/**
  * Walk forward to detect trigger. For SHORT cover: trigger when high
  * crosses entry × (1 + triggerPct). For LONG cover: trigger when low
  * crosses entry × (1 - triggerPct).
@@ -364,8 +535,9 @@ export const simulateSingleSideCover = (params: {
 }): CoverResult | null => {
   const { candles, vols, regimes, startIdx, scenario } = params;
   const cell = scenario.cell;
+  const effectiveTenorDays = scenario.hedgeTenorOverride ?? cell.hedgeTenorDays;
 
-  if (startIdx + cell.hedgeTenorDays >= candles.length) return null;
+  if (startIdx + effectiveTenorDays >= candles.length) return null;
 
   const entryDay = candles[startIdx];
   const entrySpot = entryDay.close;
@@ -434,14 +606,17 @@ export const simulateSingleSideCover = (params: {
   const buffered = baseContracts * volBuffer;
   const contractsBtc = Math.ceil(buffered / 0.1) * 0.1;
 
-  const initialHedgeCost = computeHedgeCostUsdc({
-    spotUsdc: entrySpot,
-    strikeUsdc: hedgeStrike,
-    optionKind,
-    tenorDays: cell.hedgeTenorDays,
-    iv,
-    contractsBtc
-  });
+  const initialHedgeCost =
+    scenario.hedgeCostOverride !== undefined
+      ? scenario.hedgeCostOverride
+      : computeHedgeCostUsdc({
+          spotUsdc: entrySpot,
+          strikeUsdc: hedgeStrike,
+          optionKind,
+          tenorDays: effectiveTenorDays,
+          iv,
+          contractsBtc
+        });
 
   // Trigger price
   const triggerPrice =
@@ -457,8 +632,8 @@ export const simulateSingleSideCover = (params: {
   // to historical walks. For cleanliness, run the actual walk and only
   // count the outcome — multiplier is reflected in scenario tuning later.
 
-  // Hold time
-  const holdDays = sampleHoldDaysFromModel(scenario.holdModel, dailyPremium, cell.payoutUsdc, cell.hedgeTenorDays);
+  // Hold time (capped at effective tenor — Foxify can't hold past expiry)
+  const holdDays = sampleHoldDaysFromModel(scenario.holdModel, dailyPremium, cell.payoutUsdc, effectiveTenorDays);
 
   // Walk forward
   const walk = walkForwardSingleSide({
@@ -482,33 +657,62 @@ export const simulateSingleSideCover = (params: {
     }
   }
 
-  // Premium accrued
+  // Premium accrued (gated by pricing model)
   const actualHold = effectiveTriggered ? walk.daysHeld : holdDays;
-  const premium = dailyPremium * actualHold;
+  const pricingModel = scenario.pricingModel ?? "fixed";
+  // X-or-Y: zero premium on trigger; full premium on non-trigger close.
+  // Fixed: full daily premium on every day held regardless of outcome.
+  const premium =
+    pricingModel === "xOrY" && effectiveTriggered ? 0 : dailyPremium * actualHold;
 
-  // Retained TP simulation
+  // Retained TP simulation (curve variant per scenario.tpCurve)
   const useTp = scenario.retainedTp !== false;
-  const tenorRemaining = cell.hedgeTenorDays - actualHold;
+  const tenorRemaining = effectiveTenorDays - actualHold;
   let retainedSalvage = 0;
   if (useTp && tenorRemaining > 0) {
-    const sim = simulateRetainedTp({
-      candles,
-      startIdx: startIdx + actualHold,
-      strikeUsdc: hedgeStrike,
-      optionKind,
-      initialCostUsdc: initialHedgeCost,
-      contractsBtc,
-      iv,
-      tenorRemainingDays: tenorRemaining,
-      isWinner: effectiveTriggered
-    });
-    retainedSalvage = sim.salvageUsdc;
-  } else {
-    // No retained TP (e.g., expired): salvage = 0
-    retainedSalvage = 0;
+    const tpVariant = scenario.tpCurve ?? "baseline";
+    if (tpVariant === "thetaAware") {
+      const sim = simulateRetainedTpThetaAware({
+        candles,
+        startIdx: startIdx + actualHold,
+        strikeUsdc: hedgeStrike,
+        optionKind,
+        initialCostUsdc: initialHedgeCost,
+        contractsBtc,
+        iv,
+        tenorRemainingDays: tenorRemaining,
+        payoutUsdc: cell.payoutUsdc,
+        isWinner: effectiveTriggered
+      });
+      retainedSalvage = sim.salvageUsdc;
+    } else {
+      const sim = simulateRetainedTp({
+        candles,
+        startIdx: startIdx + actualHold,
+        strikeUsdc: hedgeStrike,
+        optionKind,
+        initialCostUsdc: initialHedgeCost,
+        contractsBtc,
+        iv,
+        tenorRemainingDays: tenorRemaining,
+        isWinner: effectiveTriggered
+      });
+      retainedSalvage = sim.salvageUsdc;
+    }
   }
 
-  const payout = effectiveTriggered ? cell.payoutUsdc : 0;
+  // Payout (fixed = cell.payoutUsdc; xOrY = regime-tiered)
+  const xOrYMult = scenario.xOrYRegimePayoutMult ?? {
+    calm: 1.0,
+    moderate: 0.7,
+    elevated: 0.5,
+    stress: 0
+  };
+  const effectivePayout =
+    pricingModel === "xOrY"
+      ? cell.payoutUsdc * (xOrYMult[regime] ?? 0)
+      : cell.payoutUsdc;
+  const payout = effectiveTriggered ? effectivePayout : 0;
   const netAtticus = premium - initialHedgeCost + retainedSalvage - payout;
 
   return {
