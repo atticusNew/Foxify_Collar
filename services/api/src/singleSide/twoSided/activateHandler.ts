@@ -84,6 +84,9 @@ export type ActivateDeps = {
   getFeed: () => AggregatedFeed | null;
   feedVersion?: string;
   nowMs?: () => number;
+  /** Optional PR 9 hook — if injected, blocks activation when canActivate returns ok=false.
+   * Tests can omit this. Production wires to the real guardrails module. */
+  preActivateGuard?: (ctx: { pairHedgeCostUsdc: number; spot: number }) => Promise<{ ok: boolean; reason?: string; details?: Record<string, unknown> }>;
 };
 
 const isValidRequest = (req: unknown): req is ActivateRequest => {
@@ -165,6 +168,26 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
         details: quote.details
       }
     };
+  }
+
+  // 5.5 PR 9 guardrails gate (DVOL/capital pool/halts) — after quote so we know cost
+  if (deps.preActivateGuard) {
+    const guard = await deps.preActivateGuard({
+      pairHedgeCostUsdc: quote.totalHedgeCostUsdc,
+      spot
+    });
+    if (!guard.ok) {
+      return {
+        status: 503,
+        body: {
+          error: "atticus_halt",
+          message: `Activation blocked by guardrail: ${guard.reason ?? "unknown"}`,
+          retry_after_s: 60,
+          halt_reason_code: guard.reason ?? null,
+          details: guard.details
+        }
+      };
+    }
   }
 
   // 6. Price cap
