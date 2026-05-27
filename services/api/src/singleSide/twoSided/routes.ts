@@ -337,6 +337,12 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     }
   );
 
+  // Prometheus metrics scrape — typically network-gated rather than token-gated
+  app.get("/metrics", async (_req, reply) => {
+    const { getMetrics } = await import("./metrics");
+    reply.type("text/plain; version=0.0.4; charset=utf-8").send(getMetrics().renderPrometheus());
+  });
+
   app.get("/admin/foxify/v2/diagnostics", { preHandler: checkAdminToken }, async (_req, reply) => {
     const halt = await getHaltState(deps.pool);
     const pool = await getPoolState(deps.pool).catch(() => null);

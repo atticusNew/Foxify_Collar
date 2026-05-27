@@ -25,6 +25,7 @@ import type { Pool } from "pg";
 import type { AggregatedFeed } from "./feedAggregator";
 import { getEventsForPair, recordPairEvent, updatePairStatus } from "./db";
 import type { PairRecord, TriggerSide } from "./types";
+import { getMetrics, METRIC_NAMES } from "./metrics";
 
 export type DetectorDeps = {
   pool: Pool;
@@ -148,6 +149,7 @@ export class TriggerDetector {
 
         this.triggersFiredCount++;
         triggered++;
+        getMetrics().incrementCounter(METRIC_NAMES.PAIRS_TRIGGERED_TOTAL, { cell_id: pair.cellId, side });
 
         // PR A8: record newborn-review trigger so subsequent activations halt
         if (this.deps.getCurrentRegime && this.deps.recordNewbornForRegime) {

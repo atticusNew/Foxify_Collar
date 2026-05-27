@@ -20,6 +20,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getWebhookConfig } from "./webhookConfig";
+import { getMetrics, METRIC_NAMES } from "./metrics";
 
 const RETRY_DELAYS_MS = [
   0,         // attempt 1 immediate
@@ -172,6 +173,9 @@ const attemptDelivery = async (
     [attemptId, payload.pair_id, attemptSeq, webhookUrl, payloadHashShort, status, bodyPreview || null, errorMessage, success, nextRetryAt]
   );
   safeLog(opts, `pair=${payload.pair_id} attempt=${attemptSeq} status=${status} success=${success}${willRetry ? ` retry_in=${nextDelay}ms` : ""}`);
+  const m = getMetrics();
+  m.incrementCounter(METRIC_NAMES.WEBHOOK_DELIVERY_ATTEMPTS_TOTAL, { success: String(success), attempt: String(attemptSeq) });
+  if (success) m.incrementCounter(METRIC_NAMES.WEBHOOK_DELIVERY_SUCCESS_TOTAL, {});
 
   if (willRetry) {
     const schedule = opts.scheduleRetry ?? ((delayMs, cb) => {

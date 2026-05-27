@@ -34,6 +34,7 @@ import {
 } from "./db";
 import type { ExitMode, PairRecord, PairLegRecord } from "./types";
 import type { CloseExecutor, CloseStrangleResult } from "./closeExecutor";
+import { getMetrics, METRIC_NAMES } from "./metrics";
 import type { AggregatedFeed } from "./feedAggregator";
 
 export type RuntimeDeps = {
@@ -256,6 +257,7 @@ export class ExecutionRuntime {
       this.log(`close failed for ${this.pair.pairId}: ${closeResult.reason}`);
       this.stop();
       if (this.deps.unwindQueue) this.deps.unwindQueue.releaseSlot(this.pair.pairId);
+      getMetrics().incrementCounter(METRIC_NAMES.EXECUTION_STUCK_TOTAL, { cell_id: this.pair.cellId, reason: closeResult.reason });
       return;
     }
 
@@ -347,6 +349,12 @@ export class ExecutionRuntime {
     this.state.status = "closed";
     this.stop();
     if (this.deps.unwindQueue) this.deps.unwindQueue.releaseSlot(this.pair.pairId);
+
+    const m = getMetrics();
+    m.incrementCounter(METRIC_NAMES.PAIRS_SETTLED_TOTAL, { cell_id: this.pair.cellId, closed_reason: closedReason, exit_mode: exitMode });
+    m.decrementGauge(METRIC_NAMES.ACTIVE_PAIRS, { cell_id: this.pair.cellId });
+    m.observeHistogram(METRIC_NAMES.SALVAGE_UPLIFT_USDC, uplift, { cell_id: this.pair.cellId });
+    m.observeHistogram(METRIC_NAMES.UNWIND_LATENCY_MS, Date.now() - this.state.triggeredAtMs, { cell_id: this.pair.cellId });
 
     // PR A7: deliver Foxify webhook (fire-and-forget; retry chain runs in background)
     try {

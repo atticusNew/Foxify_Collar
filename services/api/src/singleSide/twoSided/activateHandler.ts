@@ -34,6 +34,7 @@ import { buildQuote, type LiveAnchorProvider, type QuoteResult } from "./quoteEn
 import { resolveCurrentTier } from "./tierResolver";
 import type { StrangleExecutor } from "./executor";
 import type { AggregatedFeed } from "./feedAggregator";
+import { getMetrics, METRIC_NAMES } from "./metrics";
 
 export type ActivateRequest = {
   cellId: string;
@@ -127,6 +128,7 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   // 2. Idempotency
   const existing = await getPairByFoxifyRef(deps.pool, req.foxifyPairRef);
   if (existing) {
+    getMetrics().incrementCounter(METRIC_NAMES.ACTIVATIONS_BLOCKED_TOTAL, { reason: "duplicate_ref" });
     return {
       status: 409,
       body: {
@@ -322,6 +324,11 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   const actualPutCost = execResult.putLeg.filledAskUsdcPerBtc * quote.contractsBtc;
   const actualCallCost = execResult.callLeg.filledAskUsdcPerBtc * quote.contractsBtc;
   const actualTotalCost = actualPutCost + actualCallCost;
+  const m = getMetrics();
+  m.incrementCounter(METRIC_NAMES.PAIRS_ACTIVATED_TOTAL, { cell_id: cell.cellId, tier: tier.label });
+  m.incrementGauge(METRIC_NAMES.ACTIVE_PAIRS, { cell_id: cell.cellId });
+  m.observeHistogram(METRIC_NAMES.ACTIVATE_LATENCY_MS, Date.now() - now, { cell_id: cell.cellId });
+
   return {
     status: 201,
     body: {
