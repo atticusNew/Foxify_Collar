@@ -222,7 +222,8 @@ export class ExecutionRuntime {
         symbol: putLeg.symbol,
         contractsBtc: putLeg.contractsBtc,
         expectedSellPxUsdcPerBtc: expectedPutValue / putLeg.contractsBtc,
-        minAcceptablePxUsdcPerBtc: 0 // PR 9 will plumb a real floor based on slippage-floor analysis
+        // PR A5 slippage floor: at worst, accept 0.65× expected (depth-aware worst case)
+        minAcceptablePxUsdcPerBtc: (expectedPutValue / putLeg.contractsBtc) * 0.65
       },
       callLeg: {
         legRole: "long_call",
@@ -230,7 +231,7 @@ export class ExecutionRuntime {
         symbol: callLeg.symbol,
         contractsBtc: callLeg.contractsBtc,
         expectedSellPxUsdcPerBtc: expectedCallValue / callLeg.contractsBtc,
-        minAcceptablePxUsdcPerBtc: 0
+        minAcceptablePxUsdcPerBtc: (expectedCallValue / callLeg.contractsBtc) * 0.65
       }
     });
 
