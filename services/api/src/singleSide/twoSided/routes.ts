@@ -68,6 +68,8 @@ export type FoxifyV2RoutesDeps = {
   spawnRuntimeForceClose?: (pairId: string) => Promise<void>;
   /** Feature flag config (used for newborn threshold etc). */
   newbornReviewThreshold?: number;
+  /** PR B1 unwind queue — when provided, surfaced in /admin/foxify/v2/diagnostics. */
+  unwindQueue?: { stats: () => { queueDepth: number; longestWaitMs: number; totalGranted: number; totalForceGranted: number; totalDenied: number; currentlyInWindow: number } };
 };
 
 // ───────────────────────── Auth helpers ─────────────────────────
@@ -354,6 +356,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       dvol,
       feed: feedHealth,
       deferredPool: pool,
+      unwindQueue: deps.unwindQueue?.stats() ?? null,
       env: {
         live_enabled: process.env.SS_TWO_SIDED_LIVE_ENABLED === "true",
         boot_halt: process.env.SS_TWO_SIDED_BOOT_HALT !== "false",

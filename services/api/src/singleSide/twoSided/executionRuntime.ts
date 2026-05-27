@@ -48,6 +48,8 @@ export type RuntimeDeps = {
   getCurrentSlippageHaircut: () => number;
   /** PR 9 hook — if returns false, runtime waits for next tick before posting close. */
   isUnwindSlotAvailable?: () => boolean;
+  /** PR B1: production unwind queue. Takes precedence over isUnwindSlotAvailable. */
+  unwindQueue?: { requestSlot: (pairId: string, triggeredAtMs: number, nowMs?: number) => { granted: boolean; reason?: string; queueDepth: number; waitMs: number; forceGranted?: boolean }; releaseSlot: (pairId: string) => void; };
   /** Poll period in ms (default 5_000). Lower in tests for speed. */
   pollPeriodMs?: number;
   /** Logger. */
@@ -172,10 +174,18 @@ export class ExecutionRuntime {
 
     if (decision.action === "wait") return decision;
 
-    // 3. Throttle gate (PR 9 hook)
-    if (this.deps.isUnwindSlotAvailable && !this.deps.isUnwindSlotAvailable()) {
+    // 3. Throttle gate — PR B1 unwindQueue takes precedence over PR 9 legacy hook
+    if (this.deps.unwindQueue) {
+      const grant = this.deps.unwindQueue.requestSlot(this.pair.pairId, this.state.triggeredAtMs);
+      if (!grant.granted) {
+        this.log(`unwind slot denied for ${this.pair.pairId}: ${grant.reason ?? "unknown"} (queue_depth=${grant.queueDepth}, wait=${grant.waitMs}ms)`);
+        return { ...decision, action: "wait" };
+      }
+      if (grant.forceGranted) {
+        this.log(`unwind slot force-granted for ${this.pair.pairId} after ${grant.waitMs}ms wait (deadline override)`);
+      }
+    } else if (this.deps.isUnwindSlotAvailable && !this.deps.isUnwindSlotAvailable()) {
       this.log(`unwind slot not available for ${this.pair.pairId}; waiting`);
-      // Re-emit "wait" so caller knows we deferred
       return { ...decision, action: "wait" };
     }
 
@@ -245,6 +255,7 @@ export class ExecutionRuntime {
       this.state.status = "failed";
       this.log(`close failed for ${this.pair.pairId}: ${closeResult.reason}`);
       this.stop();
+      if (this.deps.unwindQueue) this.deps.unwindQueue.releaseSlot(this.pair.pairId);
       return;
     }
 
@@ -335,6 +346,7 @@ export class ExecutionRuntime {
     this.state.finalSalvageUsdc = salvage;
     this.state.status = "closed";
     this.stop();
+    if (this.deps.unwindQueue) this.deps.unwindQueue.releaseSlot(this.pair.pairId);
 
     // PR A7: deliver Foxify webhook (fire-and-forget; retry chain runs in background)
     try {
