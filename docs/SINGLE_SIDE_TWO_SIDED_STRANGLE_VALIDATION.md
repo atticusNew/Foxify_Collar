@@ -1,6 +1,6 @@
 # Two-Sided Strangle Validation — Cooperative Cost-Pass-Through
 
-**Generated:** 2026-05-27T20:31:45.068Z
+**Generated:** 2026-05-27T20:37:04.342Z
 **Pair config:** 50k/2% with ±2% triggers, 1.4 BTC contracts, 3-day tenor
 **Split:** 80/20 (Foxify favor), no op fee
 **Spot anchor:** $75,994
@@ -192,6 +192,31 @@ If Foxify uses this as a TWO-SIDED volume facility (paired perp activations on p
 - 80/20 split, no op fee — same structure as single-side
 - 25 pairs/day = Foxify +$4.95M annual, Atticus +$1.30M annual
 - Foxify capital deployed: $79,904 peak (recycles 1d)
+
+## 6. Distribution stats — Foxify per-pair P&L + rolling 7d drawdown (B5)
+
+Per-pair P&L percentiles at calm regime, depth-aware slippage:
+
+| Strangle | P5 | P10 | P50 | P90 | P95 |
+|---|---:|---:|---:|---:|---:|
+| OTM ($74k/$78k) | -$569 | -$505 | +$226 | +$449 | +$534 |
+| ATM ($76k/$76k) | -$1,099 | -$60 | +$501 | +$785 | +$884 |
+| ITM guts ($77k/$75k) | -$303 | +$67 | +$614 | +$879 | +$975 |
+
+Rolling 7d drawdown (ITM guts, calm; 1000 simulated 365-day years; iid pair sampling):
+
+| Pairs/day | Daily P&L P10 | Daily P&L median | Worst rolling-7d P5 | Worst rolling-7d P10 | Worst rolling-7d median | Annual P&L median |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2 | +$367 | +$1,176 | +$2,506 | +$2,917 | +$3,885 | +$396.8k |
+| 5 | +$1,697 | +$2,785 | +$11,376 | +$11,894 | +$13,222 | +$990.7k |
+| 10 | +$4,001 | +$5,489 | +$26,988 | +$27,742 | +$29,947 | +$1.98M |
+| 25 | +$11,338 | +$13,631 | +$78,525 | +$79,323 | +$82,488 | +$4.95M |
+
+**Reading:**
+- Worst rolling-7d P5 = "1-in-20 chance of a 7-day window this bad or worse" — the kill-switch calibration anchor.
+- PR 9 weekly drawdown kill should fire at ~1.5× the rolling-7d P5 magnitude (margin of safety vs hitting the tail).
+- Per-pair P5 sets the per-pair kill-switch threshold (the deep-loss outcomes Foxify wants flagged for review).
+- iid pair sampling is OPTIMISTIC vs trending markets; real worst-7d may be 1.2-1.5× worse during sustained one-direction drift.
 
 ---
 

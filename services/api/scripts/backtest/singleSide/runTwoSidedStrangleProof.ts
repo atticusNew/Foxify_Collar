@@ -279,6 +279,87 @@ const slippageForStrangle = (s: Strangle, anchors: LiveAnchors, contractsBtc: nu
   };
 };
 
+// ─── Distribution stats (B5) ───
+//
+// Generates percentile views of per-pair Foxify P&L, rolling 7-day worst,
+// and annualized totals at varying pairs/day volume. Used to size PR 9
+// dollar-threshold kill switches.
+//
+// Note: pair outcomes are sampled iid from the MC's per-pair P&L array.
+// This understates downside in trending markets (where multiple consecutive
+// pairs may all lose). Phase 1 refinement: time-correlated bootstrap.
+
+type DistStats = {
+  p5: number;
+  p10: number;
+  p50: number;
+  p90: number;
+  p95: number;
+};
+
+const percentile = (sortedAsc: number[], p: number): number => {
+  if (sortedAsc.length === 0) return 0;
+  const idx = Math.min(sortedAsc.length - 1, Math.max(0, Math.floor(sortedAsc.length * p)));
+  return sortedAsc[idx];
+};
+
+const distStats = (arr: number[]): DistStats => {
+  const sorted = [...arr].sort((a, b) => a - b);
+  return {
+    p5: percentile(sorted, 0.05),
+    p10: percentile(sorted, 0.10),
+    p50: percentile(sorted, 0.50),
+    p90: percentile(sorted, 0.90),
+    p95: percentile(sorted, 0.95)
+  };
+};
+
+type VolumeDistResult = {
+  pairsPerDay: number;
+  dailyPnl: DistStats;
+  rolling7dWorst: DistStats;     // worst (most negative) rolling 7d window each simulated year, distribution across years
+  annualPnl: DistStats;
+};
+
+const simulateVolumeDistribution = (
+  pairPnls: number[],
+  pairsPerDay: number,
+  nDays: number,
+  nYears: number,
+  rng: () => number
+): VolumeDistResult => {
+  const dailyPnls: number[] = [];
+  const worstRolling7s: number[] = [];
+  const yearTotals: number[] = [];
+
+  for (let y = 0; y < nYears; y++) {
+    const yearDailies: number[] = [];
+    for (let d = 0; d < nDays; d++) {
+      let dayPnl = 0;
+      for (let p = 0; p < pairsPerDay; p++) {
+        dayPnl += pairPnls[Math.floor(rng() * pairPnls.length)];
+      }
+      yearDailies.push(dayPnl);
+      dailyPnls.push(dayPnl);
+    }
+    yearTotals.push(yearDailies.reduce((s, x) => s + x, 0));
+    let worst = Infinity;
+    for (let i = 0; i <= yearDailies.length - 7; i++) {
+      let w = 0;
+      for (let k = 0; k < 7; k++) w += yearDailies[i + k];
+      if (w < worst) worst = w;
+    }
+    worstRolling7s.push(worst);
+  }
+
+  return {
+    pairsPerDay,
+    dailyPnl: distStats(dailyPnls),
+    rolling7dWorst: distStats(worstRolling7s),
+    annualPnl: distStats(yearTotals)
+  };
+};
+
 type StrangleCostBreakdown = {
   putLegUsdc: number;
   callLegUsdc: number;
@@ -468,6 +549,8 @@ type StrangleResult = {
   costBreakdown: StrangleCostBreakdown;
   slipUsed: number;
   slipInfo: { putDepth: number | null; callDepth: number | null; putSlip: number; callSlip: number };
+  pairFoxifyPnls: number[];   // raw sampled per-pair Foxify P&L (for B5 distribution stats)
+  perPairDist: DistStats;
   nPaths: number;
   triggerRate: number;
   triggerDownRate: number;
@@ -575,6 +658,8 @@ const runMc = async (
       putSlip: slipInfo.putSlip,
       callSlip: slipInfo.callSlip
     },
+    pairFoxifyPnls: foxifyEvs,
+    perPairDist: distStats(foxifyEvs),
     nPaths: N_PATHS,
     triggerRate: triggers / N_PATHS,
     triggerDownRate: triggerDowns / N_PATHS,
@@ -875,6 +960,42 @@ const main = async () => {
   lines.push(`- 80/20 split, no op fee — same structure as single-side`);
   lines.push(`- 25 pairs/day = Foxify ${fmt$M(itmGuts.meanFoxifyEv * 25 * 365)} annual, Atticus ${fmt$M(itmGuts.meanAtticusEv * 25 * 365)} annual`);
   lines.push(`- Foxify capital deployed: ${fmt$(25 * itmGuts.hedgeCost)} peak (recycles 1d)`);
+  lines.push("");
+
+  // ─── Section 6 — Distribution stats (B5) ───
+  lines.push(`## 6. Distribution stats — Foxify per-pair P&L + rolling 7d drawdown (B5)`);
+  lines.push("");
+  lines.push(`Per-pair P&L percentiles at calm regime, depth-aware slippage:`);
+  lines.push("");
+  lines.push(`| Strangle | P5 | P10 | P50 | P90 | P95 |`);
+  lines.push(`|---|---:|---:|---:|---:|---:|`);
+  for (const s of STRANGLES) {
+    const r = allResults[`${s.label}_calm`];
+    const d = r.perPairDist;
+    lines.push(
+      `| ${s.label} | ${fmt$Signed(d.p5)} | ${fmt$Signed(d.p10)} | ${fmt$Signed(d.p50)} | ${fmt$Signed(d.p90)} | ${fmt$Signed(d.p95)} |`
+    );
+  }
+  lines.push("");
+  lines.push(`Rolling 7d drawdown (ITM guts, calm; 1000 simulated 365-day years; iid pair sampling):`);
+  lines.push("");
+  lines.push(`| Pairs/day | Daily P&L P10 | Daily P&L median | Worst rolling-7d P5 | Worst rolling-7d P10 | Worst rolling-7d median | Annual P&L median |`);
+  lines.push(`|---:|---:|---:|---:|---:|---:|---:|`);
+  const distRng = mulberry32(424242);
+  const itmCalm = allResults[`ITM guts ($77k/$75k)_calm`];
+  const volumeBands = [2, 5, 10, 25];
+  for (const v of volumeBands) {
+    const d = simulateVolumeDistribution(itmCalm.pairFoxifyPnls, v, 365, 1000, distRng);
+    lines.push(
+      `| ${v} | ${fmt$Signed(d.dailyPnl.p10)} | ${fmt$Signed(d.dailyPnl.p50)} | ${fmt$Signed(d.rolling7dWorst.p5)} | ${fmt$Signed(d.rolling7dWorst.p10)} | ${fmt$Signed(d.rolling7dWorst.p50)} | ${fmt$M(d.annualPnl.p50)} |`
+    );
+  }
+  lines.push("");
+  lines.push(`**Reading:**`);
+  lines.push(`- Worst rolling-7d P5 = "1-in-20 chance of a 7-day window this bad or worse" — the kill-switch calibration anchor.`);
+  lines.push(`- PR 9 weekly drawdown kill should fire at ~1.5× the rolling-7d P5 magnitude (margin of safety vs hitting the tail).`);
+  lines.push(`- Per-pair P5 sets the per-pair kill-switch threshold (the deep-loss outcomes Foxify wants flagged for review).`);
+  lines.push(`- iid pair sampling is OPTIMISTIC vs trending markets; real worst-7d may be 1.2-1.5× worse during sustained one-direction drift.`);
   lines.push("");
 
   lines.push(`---`);
