@@ -184,6 +184,9 @@ type DeribitOrderBook = {
   best_ask_amount: number;
   index_price: number;
   underlying_price: number;
+  mark_price?: number;
+  mark_iv?: number;
+  ask_iv?: number;
   asks: number[][];
 };
 
@@ -232,12 +235,24 @@ const probeDeribitLeg = async (
     if (px > askLimitBtc) break;
     depth += qty;
   }
+  // Spread-quality check (B1 hardening): Deribit ITM options often have stale/wide asks
+  // where ask_iv >> mark_iv (e.g. ask_iv=115 vs mark_iv=29 for ITM puts).
+  // If ask_iv > 2x mark_iv OR ask_iv > 80, flag wideSpread=true and let caller skip
+  // this venue for that strike (Bullish or fallback embedded default is used instead).
+  const askIv = ob.ask_iv ?? null;
+  const markIv = ob.mark_iv ?? null;
+  const wideSpread =
+    askIv != null && markIv != null && (askIv > 2 * markIv || askIv > 80);
   return {
     askPerBtc: askUsdPerBtc,
     depthBtc: depth,
     symbol: choice.i.instrument_name,
     expiry: new Date(choice.i.expiration_timestamp).toISOString(),
-    daysOut: choice.daysOut
+    daysOut: choice.daysOut,
+    markPerBtc: ob.mark_price ? ob.mark_price * ob.underlying_price : null,
+    askIv,
+    markIv,
+    wideSpread
   };
 };
 
@@ -304,20 +319,28 @@ const main = async () => {
     }
 
     // Pick lower-ask venue as production anchor (better price → lower hedge cost for Foxify).
-    // Both per-venue anchors are recorded if available.
+    // Filter out wide-spread Deribit anchors (stale ask quotes — Deribit ITM options are
+    // notorious for ask_iv >> mark_iv when no market maker is quoting the ask side).
     const bullishOk = bullishR && bullishR.askPerBtc > 0;
-    const deribitOk = deribitR && deribitR.askPerBtc > 0;
+    const deribitOk = deribitR && deribitR.askPerBtc > 0 && !deribitR.wideSpread;
+    const deribitWide = deribitR && deribitR.wideSpread;
     let chosenVenue: "bullish" | "deribit" | null = null;
     if (bullishOk && deribitOk) {
       chosenVenue = bullishR!.askPerBtc <= deribitR!.askPerBtc ? "bullish" : "deribit";
     } else if (bullishOk) chosenVenue = "bullish";
     else if (deribitOk) chosenVenue = "deribit";
 
+    const deribitNote = deribitOk
+      ? `DRBT=$${deribitR!.askPerBtc.toFixed(2)}/BTC d=${deribitR!.depthBtc.toFixed(2)} `
+      : deribitWide
+      ? `DRBT=$${deribitR!.askPerBtc.toFixed(2)}/BTC WIDE_SPREAD(ask_iv=${deribitR!.askIv?.toFixed(1)} vs mark_iv=${deribitR!.markIv?.toFixed(1)}) `
+      : "DRBT=n/a ";
+
     console.log(
       `  ${t.optionType.toUpperCase()} $${t.strike}: ` +
         (bullishOk ? `BLSH=$${bullishR!.askPerBtc.toFixed(2)}/BTC d=${bullishR!.depthBtc.toFixed(2)} ` : "BLSH=n/a ") +
-        (deribitOk ? `DRBT=$${deribitR!.askPerBtc.toFixed(2)}/BTC d=${deribitR!.depthBtc.toFixed(2)} ` : "DRBT=n/a ") +
-        (chosenVenue ? `→ chose ${chosenVenue}` : "→ no anchor available")
+        deribitNote +
+        (chosenVenue ? `→ chose ${chosenVenue}` : "→ NO ANCHOR (wide-spread fail or no venue)")
     );
 
     if (chosenVenue === "bullish" && bullishR) {

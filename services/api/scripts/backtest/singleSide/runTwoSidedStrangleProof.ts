@@ -26,7 +26,7 @@ import {
 import { bsPut, bsCall } from "./coreEngine";
 
 const RFR = 0.045;
-const SPOT = 75_994;
+let SPOT = 75_994;  // default; overridden in main() to anchors.spotAtPull when live anchors loaded
 const N_PATHS = 25_000;
 const BAR_MINUTES = 5;
 const BARS_PER_HOUR = 12;
@@ -689,6 +689,10 @@ const main = async () => {
   console.log(`Loaded ${bars.length.toLocaleString()} bars\n`);
 
   const anchors = await loadLiveAnchors();
+  if (anchors.source === "live_pull" && anchors.spotAtPull && Math.abs(anchors.spotAtPull - SPOT) > 100) {
+    console.log(`[anchors] overriding SPOT $${SPOT.toLocaleString()} → $${anchors.spotAtPull.toLocaleString()} (live anchor spot)`);
+    SPOT = anchors.spotAtPull;
+  }
   console.log(
     `Loaded ${anchors.anchors.length} live anchor(s) from source=${anchors.source} (generatedAt=${anchors.generatedAt})\n`
   );
