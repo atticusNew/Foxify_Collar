@@ -68,6 +68,7 @@ export const ensureTwoSidedSchema = async (pool: Pool): Promise<void> => {
       atticus_share_usdc                   NUMERIC(20, 8),
       exit_mode                            TEXT,
 
+      is_shadow                            BOOLEAN NOT NULL DEFAULT FALSE,
       metadata                             JSONB NOT NULL DEFAULT '{}'::jsonb,
       created_at                           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at                           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -133,7 +134,10 @@ export const ensureTwoSidedSchema = async (pool: Pool): Promise<void> => {
       /* pg-mem may not support all index syntax — production Postgres does */
     }
   };
+  // Idempotent column addition for existing databases (production Postgres only — pg-mem ignores via safeIndex catch).
+  await safeIndex(`ALTER TABLE two_sided_pair ADD COLUMN IF NOT EXISTS is_shadow BOOLEAN NOT NULL DEFAULT FALSE;`);
   await safeIndex(`CREATE INDEX IF NOT EXISTS two_sided_pair_status_idx ON two_sided_pair(status);`);
+  await safeIndex(`CREATE INDEX IF NOT EXISTS two_sided_pair_is_shadow_idx ON two_sided_pair(is_shadow);`);
   await safeIndex(`CREATE INDEX IF NOT EXISTS two_sided_pair_cell_idx ON two_sided_pair(cell_id);`);
   await safeIndex(`CREATE INDEX IF NOT EXISTS two_sided_pair_created_at_idx ON two_sided_pair(created_at);`);
   await safeIndex(`CREATE INDEX IF NOT EXISTS two_sided_pair_leg_pair_idx ON two_sided_pair_leg(pair_id);`);
@@ -168,6 +172,7 @@ const rowToPair = (r: Record<string, unknown>): PairRecord => ({
   foxifyShareUsdc: r.foxify_share_usdc == null ? null : Number(r.foxify_share_usdc),
   atticusShareUsdc: r.atticus_share_usdc == null ? null : Number(r.atticus_share_usdc),
   exitMode: (r.exit_mode as ExitMode | null) ?? null,
+  isShadow: Boolean(r.is_shadow),
   metadata: (r.metadata as Record<string, unknown>) ?? {},
   createdAt: r.created_at as string,
   updatedAt: r.updated_at as string
@@ -204,7 +209,7 @@ const rowToEvent = (r: Record<string, unknown>): PairEventRecord => ({
 
 export const insertPair = async (
   exec: DbExecutor,
-  input: Omit<PairRecord, "createdAt" | "updatedAt" | "status" | "triggeredAt" | "triggerSide" | "triggerFeedSnapshot" | "closedAt" | "closedReason" | "salvageProceedsUsdc" | "upliftUsdc" | "foxifyShareUsdc" | "atticusShareUsdc" | "exitMode"> & { status?: PairStatus }
+  input: Omit<PairRecord, "createdAt" | "updatedAt" | "status" | "triggeredAt" | "triggerSide" | "triggerFeedSnapshot" | "closedAt" | "closedReason" | "salvageProceedsUsdc" | "upliftUsdc" | "foxifyShareUsdc" | "atticusShareUsdc" | "exitMode" | "isShadow"> & { status?: PairStatus; isShadow?: boolean }
 ): Promise<PairRecord> => {
   const res = await exec.query(
     `
@@ -215,7 +220,7 @@ export const insertPair = async (
       hedge_tenor_days, expires_at, tp_force_exit_at,
       hedge_cost_total_usdc, foxify_capital_funded_usdc,
       tier_at_activation, atticus_floor_usdc,
-      metadata
+      metadata, is_shadow
     ) VALUES (
       $1, $2, $3, $4,
       $5, $6,
@@ -223,7 +228,7 @@ export const insertPair = async (
       $9, $10, $11,
       $12, $13,
       $14, $15,
-      $16
+      $16, $17
     ) RETURNING *;
     `,
     [
@@ -242,7 +247,8 @@ export const insertPair = async (
       input.foxifyCapitalFundedUsdc,
       input.tierAtActivation,
       input.atticusFloorUsdc,
-      JSON.stringify(input.metadata ?? {})
+      JSON.stringify(input.metadata ?? {}),
+      input.isShadow ?? false
     ]
   );
   return rowToPair(res.rows[0]);

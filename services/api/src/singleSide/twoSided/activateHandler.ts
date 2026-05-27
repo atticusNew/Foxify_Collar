@@ -40,6 +40,9 @@ export type ActivateRequest = {
   maxAcceptableHedgeCostUsdc: number;
   foxifyPairRef: string;
   metadata?: Record<string, unknown>;
+  /** If true, runs as a shadow trade (no real venue orders; uses ShadowStrangleExecutor).
+   * The pair gets is_shadow=true and segregates from live metrics downstream. */
+  isShadow?: boolean;
 };
 
 export type ActivateResponse =
@@ -185,6 +188,7 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     pairId,
     cellId: cell.cellId,
     foxifyPairRef: req.foxifyPairRef,
+    isShadow: req.isShadow ?? false,
     spotAtActivation: spot,
     feedSnapshotAtActivation: {
       feed_version: feedVersion,

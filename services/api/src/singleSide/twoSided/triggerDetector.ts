@@ -200,6 +200,7 @@ export class TriggerDetector {
       foxifyShareUsdc: r.foxify_share_usdc == null ? null : Number(r.foxify_share_usdc),
       atticusShareUsdc: r.atticus_share_usdc == null ? null : Number(r.atticus_share_usdc),
       exitMode: r.exit_mode ?? null,
+      isShadow: Boolean(r.is_shadow),
       metadata: r.metadata ?? {},
       createdAt: r.created_at,
       updatedAt: r.updated_at

@@ -100,6 +100,7 @@ export type PairRecord = {
   foxifyShareUsdc: number | null;
   atticusShareUsdc: number | null;
   exitMode: ExitMode | null;
+  isShadow: boolean;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
