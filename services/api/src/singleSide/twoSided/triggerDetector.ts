@@ -34,6 +34,10 @@ export type DetectorDeps = {
   /** Invoked after pair transitions to `triggered`. Errors are swallowed +
    * logged so a downstream failure doesn't block other pairs in the same tick. */
   onTrigger: (pair: PairRecord, side: TriggerSide, feedSnapshot: AggregatedFeed) => Promise<void> | void;
+  /** Optional: returns current regime for newborn-review counter tracking (PR A8). */
+  getCurrentRegime?: () => "calm" | "moderate" | "elevated" | "stress" | null;
+  /** Optional: invoked with regime when a trigger fires; used to increment newborn counter. */
+  recordNewbornForRegime?: (regime: "calm" | "moderate" | "elevated" | "stress") => Promise<void>;
   /** Stale threshold in ms (default 5000ms healthy, 2000ms degraded). */
   staleHealthyMs?: number;
   staleDegradedMs?: number;
@@ -144,6 +148,18 @@ export class TriggerDetector {
 
         this.triggersFiredCount++;
         triggered++;
+
+        // PR A8: record newborn-review trigger so subsequent activations halt
+        if (this.deps.getCurrentRegime && this.deps.recordNewbornForRegime) {
+          const regime = this.deps.getCurrentRegime();
+          if (regime) {
+            try {
+              await this.deps.recordNewbornForRegime(regime);
+            } catch (e) {
+              this.log(`newborn record failed for ${regime}: ${(e as Error).message}`);
+            }
+          }
+        }
 
         try {
           await this.deps.onTrigger({ ...pair, status: "triggered", triggeredAt: new Date(now).toISOString(), triggerSide: side }, side, feed);

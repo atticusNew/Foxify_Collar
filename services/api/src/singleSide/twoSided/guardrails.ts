@@ -171,6 +171,11 @@ export type ActivationContext = {
   capitalAvailableUsdc: number | null;
   /** Per-pair hedge cost expected for the activation. Used for capital pool gate. */
   pairHedgeCostUsdc: number;
+  /** Current regime (calm/moderate/elevated/stress). When provided, the
+   * newborn-review check fires for first N triggers per regime since deploy. */
+  currentRegime?: "calm" | "moderate" | "elevated" | "stress";
+  /** Threshold for newborn review (default 3 per regime). */
+  newbornReviewThreshold?: number;
 };
 
 export const DVOL_HALT_THRESHOLD = 60;
@@ -200,6 +205,29 @@ export const canActivate = async (
         required: ctx.pairHedgeCostUsdc * CAPITAL_POOL_HEADROOM_FACTOR
       }
     };
+  }
+
+  // Newborn-review gate (PR A8): for the first N triggers per regime since deploy,
+  // activations are blocked until operator clears the review. Each cleared trigger
+  // increments operatorApprovedCount; activations resume when approvedCount >= threshold
+  // OR triggers_observed <= approvedCount (no pending unreviewed triggers).
+  if (ctx.currentRegime) {
+    const threshold = ctx.newbornReviewThreshold ?? 3;
+    const { getNewbornState } = await import("./featureFlag");
+    const state = await getNewbornState(pool, ctx.currentRegime, threshold);
+    if (state.reviewRequired && state.triggersObserved > state.operatorApprovedCount) {
+      return {
+        ok: false,
+        reason: "newborn_review",
+        details: {
+          regime: ctx.currentRegime,
+          triggers_observed: state.triggersObserved,
+          operator_approved_count: state.operatorApprovedCount,
+          threshold,
+          pending_review: state.triggersObserved - state.operatorApprovedCount
+        }
+      };
+    }
   }
 
   return { ok: true };

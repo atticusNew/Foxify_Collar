@@ -117,10 +117,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       // Plumbs DVOL into guardrails.canActivate
       const { canActivate } = await import("./guardrails");
       const dvol = deps.dvolService.getCurrentDvol()?.dvol ?? null;
+      const regime = deps.dvolService.getCurrentDvol()?.regime ?? null;
       return canActivate(deps.pool, {
         dvol,
         capitalAvailableUsdc: null, // capital pool check is operator-side for Phase 0
-        pairHedgeCostUsdc
+        pairHedgeCostUsdc,
+        currentRegime: regime ?? undefined,
+        newbornReviewThreshold: deps.newbornReviewThreshold ?? 3
       });
     }
   };
