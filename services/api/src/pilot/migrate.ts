@@ -4,6 +4,7 @@ import {
   ensureVolumeCoverSchema,
   seedVolumeCoverCellsIfNeeded
 } from "../volumeCover/volumeCoverDb";
+import { ensureTwoSidedSchema } from "../singleSide/twoSided/db";
 
 async function main() {
   if (!pilotConfig.postgresUrl) {
@@ -13,9 +14,10 @@ async function main() {
   await ensurePilotSchema(pool);
   await ensureVolumeCoverSchema(pool);
   await seedVolumeCoverCellsIfNeeded(pool);
+  await ensureTwoSidedSchema(pool);
   await pool.end();
   // eslint-disable-next-line no-console
-  console.log("Pilot + Volume Cover schema migration complete.");
+  console.log("Pilot + Volume Cover + Two-Sided schema migration complete.");
 }
 
 main().catch((error) => {
