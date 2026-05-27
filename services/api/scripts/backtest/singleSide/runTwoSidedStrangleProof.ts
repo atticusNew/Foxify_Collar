@@ -93,26 +93,183 @@ const fmt$M = (n: number) => {
 };
 const fmtPct = (n: number, dec = 1) => `${(n * 100).toFixed(dec)}%`;
 
-// ─── Hedge cost calibration ───
+// ─── Hedge cost calibration (B1: per-leg empirical anchoring) ───
 
-/**
- * Calibrate strangle cost using single-leg empirical anchor.
- * Single-leg ITM ($77k put) at calm σ=0.35 today: $1,610.
- * Calibration multiplier = 1610 / (BS × 1.07 × 1.4).
- */
-const calibrationMultiplier = (sigma: number): number => {
-  const T = PAIR.hedgeTenorDays / 365;
-  const bsItmPut = bsPut(SPOT, 77_000, T, RFR, sigma);
-  return 1610 / (bsItmPut * 1.07 * PAIR.contractsBtc);
+type LegAnchor = {
+  strike: number;
+  optionType: "put" | "call";
+  venue: "bullish" | "deribit";
+  bestAskUsdcPerBtc: number;          // ask in USDC per BTC contract
+  depthWithin2pctBtc: number | null;  // top-of-book depth in BTC within 2% of best ask
+  ivAnnualAtPull: number;             // implied vol used to compute the BS reference at pull time
+  pulledAt: string;                   // ISO timestamp
 };
 
-const computeStrangleCost = (s: Strangle, sigma: number): number => {
+type LiveAnchors = {
+  generatedAt: string;
+  spotAtPull: number;
+  source: "live_pull" | "embedded_default";
+  anchors: LegAnchor[];
+};
+
+/**
+ * Default anchors embedded for reproducible runs when no live JSON exists.
+ * These are the 2026-05-26 empirical asks at calm σ=0.358 for the production strangle ($77k put + $75k call).
+ * For non-anchored strikes (ATM $76k, OTM $74k/$78k), the closest-strike calibration multiplier is used.
+ * Per-leg breakdown from docs/SINGLE_SIDE_TWO_SIDED_STRANGLE_VALIDATION.md and TRIGGER_SOURCE_AND_FEED_SPEC.md §4.3.
+ */
+const EMBEDDED_DEFAULT_ANCHORS: LiveAnchors = {
+  generatedAt: "2026-05-26T22:32:48.525Z",
+  spotAtPull: 75_994,
+  source: "embedded_default",
+  anchors: [
+    // ITM guts (production strangle)
+    {
+      strike: 77_000,
+      optionType: "put",
+      venue: "bullish",
+      bestAskUsdcPerBtc: 1_150.00,
+      depthWithin2pctBtc: 2.5,
+      ivAnnualAtPull: 0.358,
+      pulledAt: "2026-05-26T22:32:48.525Z"
+    },
+    {
+      strike: 75_000,
+      optionType: "call",
+      venue: "deribit",
+      bestAskUsdcPerBtc: 1_162.86,
+      depthWithin2pctBtc: 3.1,
+      ivAnnualAtPull: 0.358,
+      pulledAt: "2026-05-26T22:32:48.525Z"
+    }
+  ]
+};
+
+const ANCHORS_PATH = process.env.TWO_SIDED_ANCHORS_PATH ?? "/tmp/two_sided_anchors.json";
+
+const loadLiveAnchors = async (): Promise<LiveAnchors> => {
+  try {
+    const raw = await fs.readFile(ANCHORS_PATH, "utf8");
+    const parsed = JSON.parse(raw) as LiveAnchors;
+    if (!parsed.anchors || parsed.anchors.length === 0) {
+      console.warn(`[anchors] ${ANCHORS_PATH} present but empty; using embedded defaults`);
+      return EMBEDDED_DEFAULT_ANCHORS;
+    }
+    return { ...parsed, source: parsed.source ?? "live_pull" };
+  } catch {
+    console.warn(`[anchors] no live anchors at ${ANCHORS_PATH}; using embedded defaults from ${EMBEDDED_DEFAULT_ANCHORS.generatedAt}`);
+    return EMBEDDED_DEFAULT_ANCHORS;
+  }
+};
+
+/**
+ * Per-leg calibration multiplier from a live anchor.
+ *
+ *   calib_leg = anchor_ask_per_btc / BS_at_strike(σ_at_pull)
+ *
+ * This converts BS theoretical → market ask at the anchor's specific σ. We then
+ * apply the same calibration ratio when re-pricing at a different σ (the BS price
+ * scales appropriately with σ; the calibration captures the persistent venue/smile
+ * markup over BS theoretical).
+ */
+const calibLeg = (anchor: LegAnchor): number => {
+  const T = PAIR.hedgeTenorDays / 365;
+  const bs =
+    anchor.optionType === "put"
+      ? bsPut(SPOT, anchor.strike, T, RFR, anchor.ivAnnualAtPull)
+      : bsCall(SPOT, anchor.strike, T, RFR, anchor.ivAnnualAtPull);
+  if (bs <= 0) return 1.0;
+  return anchor.bestAskUsdcPerBtc / bs;
+};
+
+/**
+ * Find the best anchor for a leg. Prefer exact strike+type match; fallback to
+ * the closest-strike anchor of the same type; final fallback to any anchor of
+ * the same type. Returns the calibration multiplier and a provenance label.
+ */
+const findCalibForLeg = (
+  strike: number,
+  optionType: "put" | "call",
+  anchors: LiveAnchors
+): { calib: number; anchorStrike: number; interpolated: boolean } => {
+  const sameType = anchors.anchors.filter((a) => a.optionType === optionType);
+  const exact = sameType.find((a) => a.strike === strike);
+  if (exact) return { calib: calibLeg(exact), anchorStrike: exact.strike, interpolated: false };
+  if (sameType.length === 0) {
+    // No anchor of this type at all; conservative default multiplier of 1.07 (legacy fudge)
+    return { calib: 1.07, anchorStrike: 0, interpolated: true };
+  }
+  // Closest strike of same type
+  const closest = sameType.reduce((best, a) =>
+    Math.abs(a.strike - strike) < Math.abs(best.strike - strike) ? a : best
+  );
+  return { calib: calibLeg(closest), anchorStrike: closest.strike, interpolated: true };
+};
+
+/**
+ * Regime vol-markup for short-dated strangles (B2).
+ *
+ * Empirical ratio of stress-regime IV to calm-regime IV for 3d BTC options on Deribit:
+ * - moderate: ~1.08× calm cost (DVOL 40-60 → modest term-structure lift)
+ * - elevated: ~1.20× calm cost (DVOL 60-85 → meaningful vol-of-vol premium)
+ * - stress:   ~1.35× calm cost (DVOL 85+ → wide bid/ask + skew steepening)
+ *
+ * These multipliers should be re-calibrated against historical Deribit DVOL bands
+ * by the calibrateRegimeVolMarkup.ts script (PR 0a follow-up). Current values are
+ * conservative midpoints from prior single-side analysis docs.
+ */
+const REGIME_COST_MARKUP: Record<"calm" | "moderate" | "elevated" | "stress", number> = {
+  calm: 1.00,
+  moderate: 1.08,
+  elevated: 1.20,
+  stress: 1.35
+};
+
+type StrangleCostBreakdown = {
+  putLegUsdc: number;
+  callLegUsdc: number;
+  totalUsdc: number;
+  putCalibSource: { anchorStrike: number; interpolated: boolean };
+  callCalibSource: { anchorStrike: number; interpolated: boolean };
+  regime: "calm" | "moderate" | "elevated" | "stress";
+  regimeMarkup: number;
+};
+
+const computeStrangleCostDetailed = (
+  s: Strangle,
+  sigma: number,
+  regime: "calm" | "moderate" | "elevated" | "stress",
+  anchors: LiveAnchors
+): StrangleCostBreakdown => {
   const T = PAIR.hedgeTenorDays / 365;
   const bsP = bsPut(SPOT, s.putStrike, T, RFR, sigma);
   const bsC = bsCall(SPOT, s.callStrike, T, RFR, sigma);
-  // Use same calibration multiplier as single-leg (assumes vol-smile shape similar at $1k grid)
-  const calib = calibrationMultiplier(sigma);
-  return (bsP + bsC) * 1.07 * PAIR.contractsBtc * calib;
+  const putCalib = findCalibForLeg(s.putStrike, "put", anchors);
+  const callCalib = findCalibForLeg(s.callStrike, "call", anchors);
+  const markup = REGIME_COST_MARKUP[regime];
+  const putLeg = bsP * putCalib.calib * PAIR.contractsBtc * markup;
+  const callLeg = bsC * callCalib.calib * PAIR.contractsBtc * markup;
+  return {
+    putLegUsdc: putLeg,
+    callLegUsdc: callLeg,
+    totalUsdc: putLeg + callLeg,
+    putCalibSource: { anchorStrike: putCalib.anchorStrike, interpolated: putCalib.interpolated },
+    callCalibSource: { anchorStrike: callCalib.anchorStrike, interpolated: callCalib.interpolated },
+    regime,
+    regimeMarkup: markup
+  };
+};
+
+// Back-compat thin wrapper (other code calls computeStrangleCost(s, sigma) returning a number).
+// Defaults to calm regime if not specified; new code should call computeStrangleCostDetailed.
+const computeStrangleCost = (
+  s: Strangle,
+  sigma: number,
+  regime: "calm" | "moderate" | "elevated" | "stress" = "calm",
+  anchors?: LiveAnchors
+): number => {
+  const a = anchors ?? EMBEDDED_DEFAULT_ANCHORS;
+  return computeStrangleCostDetailed(s, sigma, regime, a).totalUsdc;
 };
 
 // ─── Combined option value at any spot ───
@@ -251,6 +408,7 @@ const simulateTwoSidedPath = (
 type StrangleResult = {
   strangle: Strangle;
   hedgeCost: number;
+  costBreakdown: StrangleCostBreakdown;
   nPaths: number;
   triggerRate: number;
   triggerDownRate: number;
@@ -272,10 +430,13 @@ type StrangleResult = {
 const runMc = async (
   strangle: Strangle,
   sigma: number,
+  regime: "calm" | "moderate" | "elevated" | "stress",
   generator: "bootstrap" | "gbm",
-  bars: { close: number; high: number; low: number; open: number }[] | undefined
+  bars: { close: number; high: number; low: number; open: number }[] | undefined,
+  anchors: LiveAnchors
 ): Promise<StrangleResult> => {
-  const hedgeCost = computeStrangleCost(strangle, sigma);
+  const costBreakdown = computeStrangleCostDetailed(strangle, sigma, regime, anchors);
+  const hedgeCost = costBreakdown.totalUsdc;
   const rng = mulberry32(42);
   const pathConfig: PathConfig = {
     tenorDays: PAIR.hedgeTenorDays,
@@ -342,6 +503,7 @@ const runMc = async (
   return {
     strangle,
     hedgeCost,
+    costBreakdown,
     nPaths: N_PATHS,
     triggerRate: triggers / N_PATHS,
     triggerDownRate: triggerDowns / N_PATHS,
@@ -370,6 +532,17 @@ const main = async () => {
   const bars = await load5MinBars();
   console.log(`Loaded ${bars.length.toLocaleString()} bars\n`);
 
+  const anchors = await loadLiveAnchors();
+  console.log(
+    `Loaded ${anchors.anchors.length} live anchor(s) from source=${anchors.source} (generatedAt=${anchors.generatedAt})\n`
+  );
+  for (const a of anchors.anchors) {
+    console.log(
+      `  anchor: ${a.optionType.toUpperCase()} \$${a.strike.toLocaleString()} @ ${a.venue} = \$${a.bestAskUsdcPerBtc.toFixed(2)}/BTC (depth ${a.depthWithin2pctBtc ?? "?"} BTC, σ=${a.ivAnnualAtPull})`
+    );
+  }
+  console.log("");
+
   // Run each strangle at each regime
   const REGIME_SIGMAS: Record<"calm" | "moderate" | "elevated" | "stress", number> = {
     calm: 0.35,
@@ -385,7 +558,7 @@ const main = async () => {
     for (const regime of ["calm", "moderate", "elevated", "stress"] as const) {
       const sigma = REGIME_SIGMAS[regime];
       const useBootstrap = regime === "calm";
-      const r = await runMc(s, sigma, useBootstrap ? "bootstrap" : "gbm", useBootstrap ? bars : undefined);
+      const r = await runMc(s, sigma, regime, useBootstrap ? "bootstrap" : "gbm", useBootstrap ? bars : undefined, anchors);
       allResults[`${s.label}_${regime}`] = r;
       process.stdout.write(
         `  ${s.label} ${regime}: hedge=$${r.hedgeCost.toFixed(0)}, trigger=${fmtPct(r.triggerRate)} (down=${fmtPct(r.triggerDownRate)}, up=${fmtPct(r.triggerUpRate)}), F=${fmt$Signed(r.meanFoxifyEv)} A=${fmt$Signed(r.meanAtticusEv)}\n`
@@ -408,6 +581,52 @@ const main = async () => {
   lines.push(`Two-sided pair = Foxify opens long perp + short perp simultaneously.`);
   lines.push(`Either ±2% trigger closes the entire pair. Atticus hedges with a strangle`);
   lines.push(`(long put + long call), splits salvage 80/20 per the cooperative model.`);
+  lines.push("");
+
+  // Section 0: Anchor provenance (B1)
+  lines.push(`## 0. Live-anchor provenance (per-leg empirical calibration)`);
+  lines.push("");
+  lines.push(`**Anchor source:** ${anchors.source}`);
+  lines.push(`**Anchor generated at:** ${anchors.generatedAt}`);
+  lines.push(`**Spot at anchor pull:** \$${anchors.spotAtPull.toLocaleString()}`);
+  lines.push("");
+  lines.push(`| Strike | Type | Venue | Ask (USDC/BTC) | Depth (BTC) | σ at pull | Pulled at |`);
+  lines.push(`|---:|---|---|---:|---:|---:|---|`);
+  for (const a of anchors.anchors) {
+    lines.push(
+      `| \$${a.strike.toLocaleString()} | ${a.optionType.toUpperCase()} | ${a.venue} | \$${a.bestAskUsdcPerBtc.toFixed(2)} | ${a.depthWithin2pctBtc?.toFixed(2) ?? "n/a"} | ${a.ivAnnualAtPull.toFixed(3)} | ${a.pulledAt} |`
+    );
+  }
+  lines.push("");
+  lines.push(`### Per-strangle per-leg cost breakdown (calm regime)`);
+  lines.push("");
+  lines.push(`| Strangle | Put leg | Call leg | Total | Put anchor | Call anchor | Regime markup |`);
+  lines.push(`|---|---:|---:|---:|---|---|---:|`);
+  for (const s of STRANGLES) {
+    const r = allResults[`${s.label}_calm`];
+    const cb = r.costBreakdown;
+    const putProv = cb.putCalibSource.interpolated
+      ? `interp from \$${cb.putCalibSource.anchorStrike.toLocaleString()}`
+      : `direct \$${cb.putCalibSource.anchorStrike.toLocaleString()}`;
+    const callProv = cb.callCalibSource.interpolated
+      ? `interp from \$${cb.callCalibSource.anchorStrike.toLocaleString()}`
+      : `direct \$${cb.callCalibSource.anchorStrike.toLocaleString()}`;
+    lines.push(
+      `| ${s.label} | ${fmt$(cb.putLegUsdc)} | ${fmt$(cb.callLegUsdc)} | ${fmt$(cb.totalUsdc)} | ${putProv} | ${callProv} | ${cb.regimeMarkup.toFixed(2)}× |`
+    );
+  }
+  lines.push("");
+  lines.push(`### Regime cost markup applied (B2)`);
+  lines.push("");
+  lines.push(`| Regime | Cost markup | Source |`);
+  lines.push(`|---|---:|---|`);
+  for (const [regime, markup] of Object.entries(REGIME_COST_MARKUP)) {
+    lines.push(`| ${regime} | ${(markup as number).toFixed(2)}× | ${markup === 1.00 ? "baseline" : "DVOL band midpoint"} |`);
+  }
+  lines.push("");
+  lines.push(`> **Note:** legs marked "interp from \$X" use the calibration multiplier from the nearest`);
+  lines.push(`> anchored strike of the same option type. Production strikes ($77k put + $75k call) MUST`);
+  lines.push(`> have direct anchors before live cutover. Run \`probeTwoSidedAnchors.ts\` to refresh.`);
   lines.push("");
 
   // Section 1: Per-strangle calm baseline
