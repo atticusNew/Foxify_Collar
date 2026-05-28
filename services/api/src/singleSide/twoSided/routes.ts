@@ -344,6 +344,58 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     reply.type("text/plain; version=0.0.4; charset=utf-8").send(getMetrics().renderPrometheus());
   });
 
+  app.post<{ Body: { regime: "calm" | "moderate" | "elevated" | "stress"; cell_id: string; enabled: boolean; reason?: string } }>(
+    "/admin/foxify/v2/cell-allowlist",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { regime, cell_id, enabled, reason } = req.body;
+      if (!["calm", "moderate", "elevated", "stress"].includes(regime)) {
+        reply.code(400).send({ error: "invalid_request", message: "regime must be calm|moderate|elevated|stress" });
+        return;
+      }
+      if (typeof cell_id !== "string" || cell_id.length === 0) {
+        reply.code(400).send({ error: "invalid_request", message: "cell_id required" });
+        return;
+      }
+      if (typeof enabled !== "boolean") {
+        reply.code(400).send({ error: "invalid_request", message: "enabled must be boolean" });
+        return;
+      }
+      const { setCellOverride, getEffectiveAllowlist } = await import("./cellAllowlist");
+      await setCellOverride(deps.pool, regime, cell_id, enabled, reason ?? "", "admin_api");
+      const effective = await getEffectiveAllowlist(deps.pool, regime);
+      reply.send({ regime, cell_id, enabled, reason: reason ?? "", effective_allowlist: effective });
+    }
+  );
+
+  app.get<{ Querystring: { regime?: string } }>(
+    "/admin/foxify/v2/cell-allowlist",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const regime = req.query.regime;
+      const { getEffectiveAllowlist, getOverrides, DEFAULT_CELL_ALLOWLIST } = await import("./cellAllowlist");
+      if (regime && ["calm", "moderate", "elevated", "stress"].includes(regime)) {
+        const r = regime as "calm" | "moderate" | "elevated" | "stress";
+        reply.send({
+          regime: r,
+          default_allowlist: DEFAULT_CELL_ALLOWLIST[r],
+          overrides: await getOverrides(deps.pool, r),
+          effective_allowlist: await getEffectiveAllowlist(deps.pool, r)
+        });
+      } else {
+        const all: Record<string, unknown> = {};
+        for (const r of ["calm", "moderate", "elevated", "stress"] as const) {
+          all[r] = {
+            default_allowlist: DEFAULT_CELL_ALLOWLIST[r],
+            effective_allowlist: await getEffectiveAllowlist(deps.pool, r)
+          };
+        }
+        all.overrides = await getOverrides(deps.pool);
+        reply.send(all);
+      }
+    }
+  );
+
   app.get("/admin/foxify/v2/diagnostics", { preHandler: checkAdminToken }, async (_req, reply) => {
     const halt = await getHaltState(deps.pool);
     const pool = await getPoolState(deps.pool).catch(() => null);
