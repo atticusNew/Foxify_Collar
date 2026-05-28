@@ -132,3 +132,62 @@ If costs are flat all day:
 
 To pause: in Render dashboard, suspend the service (no cost).
 To delete: dashboard → settings → delete service.
+
+---
+
+## Server boot wiring (LiquidChainCache + Bullish + Deribit)
+
+The production `server.ts` should construct the cache with both venues so live
+activations get the cheapest tradable strike across Bullish + Deribit. Snippet:
+
+```ts
+// At the top of server bootstrap, alongside other singletons:
+import { BullishTradingClient } from "./pilot/bullish";
+import { LiquidChainCache } from "./singleSide/twoSided/liquidChainCache";
+import { fetchFullChainSnapshot } from "../scripts/backtest/singleSide/liquidStrikePicker";
+import { fetchBullishChainSnapshot } from "./singleSide/twoSided/bullishChainProvider";
+
+// Reuse the shared Bullish client (same instance used by chain warmer)
+const sharedBullishClient = new BullishTradingClient(pilotConfig.bullish);
+
+// Per-cell defaults — adjust based on what cells are in allowlist.
+// Centered on whatever the current spot is at refresh time; deribit's spot
+// is used since fetchFullChainSnapshot returns it.
+const liquidChainCache = new LiquidChainCache({
+  ttlMs: 30_000,
+  staleMaxAgeMs: 5 * 60_000,
+  providers: [
+    {
+      venue: "deribit",
+      fetch: async () => await fetchFullChainSnapshot()
+    },
+    {
+      venue: "bullish",
+      fetch: async () => {
+        // Need an approximate spot to anchor window; pull from Deribit-side cache
+        const lastSnap = liquidChainCache.getCached();
+        const centerSpot = lastSnap?.spot ?? 75_000;
+        return await fetchBullishChainSnapshot(sharedBullishClient, centerSpot, {
+          centerSpot,
+          centerTenorDays: 3,      // matches Phase 0 cell tenor — widen if other cells active
+          strikeWindowUsdc: 6_000,
+          tenorWindowDays: 2,      // covers 1d, 2d, 3d cells
+          maxConcurrency: 4,
+          timeoutMs: 4_000
+        });
+      }
+    }
+  ]
+});
+
+// Then wire into routes:
+registerFoxifyV2Routes(app, {
+  // ...existing deps...
+  liquidChainCache
+});
+```
+
+After deploy, `/admin/foxify/v2/diagnostics` should reflect both venues
+quoting (you'll see venue counts in the merged snapshot). If Bullish creds
+are wrong / not set, the cache fail-opens to Deribit-only (logged with
+`venueStatus.bullish.ok = false`).

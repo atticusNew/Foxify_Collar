@@ -24,6 +24,11 @@ export type DeribitInstrument = {
   expiration_timestamp: number;
 };
 
+/**
+ * Venue-agnostic option quote. `venue` field distinguishes the source.
+ * (Type name kept as DeribitQuote for backward compat with standalone scripts;
+ * field set is venue-neutral.)
+ */
 export type DeribitQuote = {
   instrument_name: string;
   strike: number;
@@ -36,6 +41,7 @@ export type DeribitQuote = {
   markIv: number;
   askIv: number | null;
   underlyingPrice: number;
+  venue: "deribit" | "bullish";
 };
 
 export type PickerConfig = {
@@ -122,9 +128,25 @@ export const fetchFullChainSnapshot = async (now = Date.now()): Promise<{ spot: 
       spreadPct: (s.ask_price - s.bid_price) / midBtc,
       markIv: s.mark_iv,
       askIv: null,
-      underlyingPrice: s.underlying_price
+      underlyingPrice: s.underlying_price,
+      venue: "deribit"
     });
   }
+  return { spot, quotes };
+};
+
+/**
+ * Merge multiple per-venue chain snapshots into one. Quotes are kept separate
+ * (one VenueQuote per (venue, strike, type) tuple). pickLiquidStrike will then
+ * choose the best across all venues per strike+type pair.
+ */
+export const mergeChainSnapshots = (snapshots: Array<{ spot: number; quotes: DeribitQuote[] } | null>): { spot: number; quotes: DeribitQuote[] } => {
+  const valid = snapshots.filter((s): s is { spot: number; quotes: DeribitQuote[] } => s != null);
+  if (valid.length === 0) return { spot: 0, quotes: [] };
+  // Use median spot across venues as canonical (defends against one source being stale)
+  const spots = valid.map((s) => s.spot).sort((a, b) => a - b);
+  const spot = spots[Math.floor(spots.length / 2)];
+  const quotes = valid.flatMap((s) => s.quotes);
   return { spot, quotes };
 };
 
@@ -193,25 +215,36 @@ export const pickLiquidStrike = (
   }
 
   if (tradable.length === 0) {
-    // All in-window are illiquid. Fall back to the least-bad (lowest spread).
-    const best = [...inWindow].sort((a, b) => a.spreadPct - b.spreadPct)[0];
+    // All in-window are illiquid. Fall back to the lowest-ask (least cost) regardless of spread.
+    const best = [...inWindow].sort((a, b) => a.askUsdcPerBtc - b.askUsdcPerBtc)[0];
     return { picked: best, rejected, candidates: inWindow, picker: "fallback" };
   }
 
-  // Among tradable, prefer:
-  //   1. Closest strike to target (so we honor target geometry)
-  //   2. Tighter spread as tiebreaker
-  // First find exact-strike match if any
-  const exact = tradable.find((q) => q.strike === targetStrike);
-  if (exact) return { picked: exact, rejected, candidates: tradable, picker: "exact_strike" };
+  // If both venues have the same strike, dedupe to the cheaper ask (proper venue routing).
+  // We compute "venue winner" per strike: lowest ask among tradable instruments at this strike.
+  type StrikeKey = number;
+  const bestPerStrike = new Map<StrikeKey, DeribitQuote>();
+  for (const q of tradable) {
+    const existing = bestPerStrike.get(q.strike);
+    if (!existing || q.askUsdcPerBtc < existing.askUsdcPerBtc) {
+      bestPerStrike.set(q.strike, q);
+    }
+  }
+  const venueRoutedTradable = [...bestPerStrike.values()];
 
-  // Otherwise rank by composite score: spread % weighted heavier than strike distance
-  const ranked = [...tradable].sort((a, b) => {
-    const scoreA = a.spreadPct * 100 + Math.abs(a.strike - targetStrike) / 1_000;
-    const scoreB = b.spreadPct * 100 + Math.abs(b.strike - targetStrike) / 1_000;
+  // Now pick across strikes. Prefer:
+  //   1. Exact-strike match (honor cell geometry)
+  //   2. Lowest ask × spread composite for non-exact
+  const exact = venueRoutedTradable.find((q) => q.strike === targetStrike);
+  if (exact) return { picked: exact, rejected, candidates: venueRoutedTradable, picker: "exact_strike" };
+
+  // Composite: ask cost (heavier weight) + spread + strike distance
+  const ranked = [...venueRoutedTradable].sort((a, b) => {
+    const scoreA = a.askUsdcPerBtc + a.spreadPct * 1_000 + Math.abs(a.strike - targetStrike) / 2;
+    const scoreB = b.askUsdcPerBtc + b.spreadPct * 1_000 + Math.abs(b.strike - targetStrike) / 2;
     return scoreA - scoreB;
   });
-  return { picked: ranked[0], rejected, candidates: tradable, picker: "best_spread" };
+  return { picked: ranked[0], rejected, candidates: venueRoutedTradable, picker: "best_spread" };
 };
 
 // =============================================================================

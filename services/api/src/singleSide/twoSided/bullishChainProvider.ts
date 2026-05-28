@@ -1,0 +1,161 @@
+/**
+ * Bullish chain provider for the liquid strike picker.
+ *
+ * Pulls Bullish markets list + per-symbol orderbooks, returns quotes in the
+ * same VenueQuote (DeribitQuote-shaped, venue="bullish") format that the
+ * liquid picker consumes.
+ *
+ * Used by LiquidChainCache to merge Bullish into the chain snapshot alongside
+ * Deribit. Production wires this via the shared BullishTradingClient + cached
+ * orderbook helper (5s cache per symbol).
+ *
+ * Performance: fetching orderbooks for the entire chain is N API calls. We
+ * filter aggressively (strike window, tenor window, BTC only) BEFORE
+ * orderbook calls, typically yielding 20-40 calls per snapshot. With Bullish
+ * rate-limit (~10 req/sec for orderbook), this is ~3-4 seconds. Acceptable
+ * for a 30s cache refresh.
+ */
+
+import type { BullishTradingClient } from "../../pilot/bullish";
+import type { DeribitQuote } from "../../../scripts/backtest/singleSide/liquidStrikePicker";
+
+export type BullishProviderConfig = {
+  /** Strike-window radius in USD to filter markets before fetching orderbooks. */
+  strikeWindowUsdc: number;
+  /** Tenor-window radius in days to filter markets before fetching orderbooks. */
+  tenorWindowDays: number;
+  /** Spot price to anchor the strike window (typically passed from Deribit fetch). */
+  centerSpot: number;
+  /** Target tenor in days to anchor the tenor window. */
+  centerTenorDays: number;
+  /** Max concurrent orderbook fetches. Default 4 to respect Bullish rate limit. */
+  maxConcurrency?: number;
+  /** Per-orderbook fetch timeout in ms. Default 4000. */
+  timeoutMs?: number;
+};
+
+const DEFAULT_MAX_CONCURRENCY = 4;
+const DEFAULT_TIMEOUT_MS = 4_000;
+
+type BullishMarketLike = {
+  symbol: string;
+  marketEnabled: boolean;
+  createOrderEnabled: boolean;
+  optionType?: string;
+  optionStrikePrice?: string;
+  expiryDatetime?: string;
+  underlyingBaseSymbol?: string;
+};
+
+const parseBullishExpiry = (iso: string | undefined, nowMs: number): number | null => {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) && t > nowMs ? t : null;
+};
+
+/**
+ * Run promises with a concurrency limit. Simple promise pool.
+ */
+const runWithConcurrency = async <T, R>(
+  items: T[],
+  fn: (item: T) => Promise<R | null>,
+  concurrency: number
+): Promise<R[]> => {
+  const out: R[] = [];
+  let idx = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (idx < items.length) {
+      const i = idx++;
+      const r = await fn(items[i]);
+      if (r != null) out.push(r);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+};
+
+/**
+ * Fetch a Bullish chain snapshot for the strike + tenor window around target.
+ * Returns DeribitQuote-shaped entries with venue="bullish".
+ *
+ * @param client Shared BullishTradingClient instance from server boot.
+ * @param spot Approximate spot price (used as underlyingPrice in quotes).
+ * @param config Window parameters.
+ * @param fetchOrderbook Optional override for orderbook fetcher (for tests).
+ */
+export const fetchBullishChainSnapshot = async (
+  client: BullishTradingClient,
+  spot: number,
+  config: BullishProviderConfig,
+  fetchOrderbook?: (symbol: string) => Promise<{ bid: number | null; ask: number | null } | null>,
+  nowMs = Date.now()
+): Promise<{ spot: number; quotes: DeribitQuote[] }> => {
+  const concurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+  const targetTenorMs = config.centerTenorDays * 86_400_000;
+  const tenorWindowMs = config.tenorWindowDays * 86_400_000;
+
+  // 1. Get markets list (cached 120s by Bullish client)
+  const markets = await client.getMarkets({ cacheTtlMs: 120_000 });
+
+  // 2. Filter to BTC options inside strike + tenor window
+  const candidates: Array<{ market: BullishMarketLike; strike: number; optType: "put" | "call"; expiryMs: number }> = [];
+  for (const m of markets as BullishMarketLike[]) {
+    if (!m.marketEnabled || !m.createOrderEnabled) continue;
+    if ((m.underlyingBaseSymbol ?? "").toUpperCase() !== "BTC") continue;
+    const optTypeRaw = (m.optionType ?? "").toUpperCase();
+    if (optTypeRaw !== "PUT" && optTypeRaw !== "CALL") continue;
+    const strike = Number(m.optionStrikePrice ?? "0");
+    if (!Number.isFinite(strike) || strike <= 0) continue;
+    if (Math.abs(strike - config.centerSpot) > config.strikeWindowUsdc) continue;
+    const expiryMs = parseBullishExpiry(m.expiryDatetime, nowMs);
+    if (expiryMs == null) continue;
+    if (Math.abs((expiryMs - nowMs) - targetTenorMs) > tenorWindowMs) continue;
+    candidates.push({
+      market: m,
+      strike,
+      optType: optTypeRaw === "PUT" ? "put" : "call",
+      expiryMs
+    });
+  }
+
+  // 3. Fetch orderbook for each candidate concurrently
+  const defaultFetcher = async (symbol: string): Promise<{ bid: number | null; ask: number | null } | null> => {
+    try {
+      const book = await client.getHybridOrderBook(symbol);
+      const bid = book.bids?.[0]?.price ?? null;
+      const ask = book.asks?.[0]?.price ?? null;
+      return { bid: bid != null ? Number(bid) : null, ask: ask != null ? Number(ask) : null };
+    } catch {
+      return null;
+    }
+  };
+  const fetcher = fetchOrderbook ?? defaultFetcher;
+
+  const quotes = await runWithConcurrency(candidates, async (c) => {
+    const ob = await fetcher(c.market.symbol);
+    if (!ob || ob.bid == null || ob.ask == null) return null;
+    if (ob.bid <= 0 || ob.ask <= 0) return null;
+    const bidUsdcPerBtc = ob.bid;       // Bullish quotes are already in USDC per option
+    const askUsdcPerBtc = ob.ask;
+    const midUsdcPerBtc = (bidUsdcPerBtc + askUsdcPerBtc) / 2;
+    if (midUsdcPerBtc <= 0) return null;
+    const spreadPct = (askUsdcPerBtc - bidUsdcPerBtc) / midUsdcPerBtc;
+    const tenorHours = (c.expiryMs - nowMs) / 3_600_000;
+    return {
+      instrument_name: c.market.symbol,
+      strike: c.strike,
+      optType: c.optType,
+      tenorHours,
+      bidUsdcPerBtc,
+      askUsdcPerBtc,
+      midUsdcPerBtc,
+      spreadPct,
+      markIv: 0,        // Bullish doesn't expose IV in orderbook; left as 0
+      askIv: null,
+      underlyingPrice: spot,
+      venue: "bullish" as const
+    };
+  }, concurrency);
+
+  return { spot, quotes };
+};

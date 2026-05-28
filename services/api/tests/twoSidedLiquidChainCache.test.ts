@@ -10,8 +10,8 @@ import { PHASE_0_CELLS } from "../src/singleSide/twoSided/cellConfig";
 import { TIERS } from "../src/singleSide/twoSided/types";
 import type { DeribitQuote } from "../scripts/backtest/singleSide/liquidStrikePicker";
 
-const fakeQuote = (strike: number, optType: "put" | "call", askUsdcPerBtc: number, spreadPct = 0.10, tenorHours = 72): DeribitQuote => ({
-  instrument_name: `BTC-FAKE-${strike}-${optType[0].toUpperCase()}`,
+const fakeQuote = (strike: number, optType: "put" | "call", askUsdcPerBtc: number, spreadPct = 0.10, tenorHours = 72, venue: "deribit" | "bullish" = "deribit"): DeribitQuote => ({
+  instrument_name: `${venue.toUpperCase()}-FAKE-${strike}-${optType[0].toUpperCase()}`,
   strike,
   optType,
   tenorHours,
@@ -21,7 +21,8 @@ const fakeQuote = (strike: number, optType: "put" | "call", askUsdcPerBtc: numbe
   spreadPct,
   markIv: 35,
   askIv: null,
-  underlyingPrice: 75_000
+  underlyingPrice: 75_000,
+  venue
 });
 
 test("LiquidChainCache returns null if fetcher throws first call", async () => {
@@ -155,6 +156,61 @@ test("buildQuote with liquidChainCache shifts strikes and reports shift", async 
   assert.equal(result.callStrikeShifted, true);
   assert.equal(result.putLeg.askUsdcPerBtc, 500);  // liquid put ask
   assert.equal(result.callLeg.askUsdcPerBtc, 700); // liquid call ask
+});
+
+test("LiquidChainCache merges Deribit + Bullish providers, picks venue with cheaper ask", async () => {
+  // Same strike, both venues have it — Bullish ask cheaper, Bullish wins
+  const cache = new LiquidChainCache({
+    providers: [
+      {
+        venue: "deribit",
+        fetch: async () => ({ spot: 75_000, quotes: [fakeQuote(75_000, "put", 1000, 0.10, 72, "deribit")] })
+      },
+      {
+        venue: "bullish",
+        fetch: async () => ({ spot: 75_000, quotes: [fakeQuote(75_000, "put", 700, 0.08, 72, "bullish")] })
+      }
+    ]
+  });
+  const r = await pickLiquidForLeg(cache, 75_000, "put", 3, 75_000);
+  assert.equal(r.pickedStrike, 75_000);
+  assert.equal(r.venue, "bullish");
+  assert.equal(r.askUsdcPerBtc, 700);
+});
+
+test("LiquidChainCache surfaces per-venue status (one venue failed)", async () => {
+  const cache = new LiquidChainCache({
+    providers: [
+      {
+        venue: "deribit",
+        fetch: async () => ({ spot: 75_000, quotes: [fakeQuote(75_000, "put", 800, 0.10, 72, "deribit")] })
+      },
+      {
+        venue: "bullish",
+        fetch: async () => { throw new Error("bullish auth failed"); }
+      }
+    ]
+  });
+  const snap = await cache.getChain();
+  assert.ok(snap);
+  assert.equal(snap!.venueStatus.deribit.ok, true);
+  assert.equal(snap!.venueStatus.deribit.quoteCount, 1);
+  assert.equal(snap!.venueStatus.bullish.ok, false);
+  assert.equal(snap!.venueStatus.bullish.error, "bullish auth failed");
+  // Picker still works using Deribit quote
+  const pick = await pickLiquidForLeg(cache, 75_000, "put", 3, 75_000);
+  assert.equal(pick.venue, "deribit");
+});
+
+test("LiquidChainCache returns null when ALL providers fail (no stale fallback)", async () => {
+  const cache = new LiquidChainCache({
+    providers: [
+      { venue: "deribit", fetch: async () => { throw new Error("net1"); } },
+      { venue: "bullish", fetch: async () => { throw new Error("net2"); } }
+    ]
+  });
+  const snap = await cache.getChain();
+  assert.equal(snap, null);
 });
 
 test("buildQuote without liquidChainCache uses target strikes (backward compat)", async () => {
