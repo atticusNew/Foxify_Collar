@@ -267,6 +267,14 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     status: "pending"
   });
 
+  // Record counterparty ledger: Foxify funded the hedge (PR C6)
+  try {
+    const { recordActivateEntries } = await import("./counterpartyLedger");
+    await recordActivateEntries(deps.pool, pair.pairId, quote.totalHedgeCostUsdc);
+  } catch (e) {
+    // Ledger failure should not block activation — pool may not have schema yet (tests)
+  }
+
   // 8. Execute strangle
   const execResult = await deps.executor.executeStrangle({
     pairId: pair.pairId,

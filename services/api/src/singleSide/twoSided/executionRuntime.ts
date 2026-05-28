@@ -344,6 +344,23 @@ export class ExecutionRuntime {
       }
     });
 
+    // PR C6: counterparty ledger entries
+    try {
+      const { recordSettleEntries } = await import("./counterpartyLedger");
+      const { getPoolState } = await import("./deferredPool");
+      const poolState = await getPoolState(this.deps.pool).catch(() => null);
+      await recordSettleEntries(this.deps.pool, {
+        pairId: this.pair.pairId,
+        salvageProceedsUsdc: salvage,
+        foxifyShareUsdc: foxifyShare,
+        atticusShareUsdc: atticusShare,
+        upliftUsdc: uplift,
+        isDeferredPoolActive: poolState?.active ?? false
+      });
+    } catch (e) {
+      this.log(`ledger settle entries failed: ${(e as Error).message}`);
+    }
+
     this.state.exitMode = exitMode;
     this.state.finalSalvageUsdc = salvage;
     this.state.status = "closed";

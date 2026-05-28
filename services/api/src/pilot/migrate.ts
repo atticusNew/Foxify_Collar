@@ -11,6 +11,7 @@ import { ensureNewbornReviewSchema } from "../singleSide/twoSided/featureFlag";
 import { ensureWebhookConfigSchema } from "../singleSide/twoSided/webhookConfig";
 import { ensureWebhookAttemptSchema } from "../singleSide/twoSided/webhookDelivery";
 import { ensureCellAllowlistSchema } from "../singleSide/twoSided/cellAllowlist";
+import { ensureCounterpartyLedgerSchema } from "../singleSide/twoSided/counterpartyLedger";
 
 async function main() {
   if (!pilotConfig.postgresUrl) {
@@ -27,6 +28,7 @@ async function main() {
   await ensureWebhookConfigSchema(pool);
   await ensureWebhookAttemptSchema(pool);
   await ensureCellAllowlistSchema(pool);
+  await ensureCounterpartyLedgerSchema(pool);
   await pool.end();
   // eslint-disable-next-line no-console
   console.log("Pilot + Volume Cover + Two-Sided schema migration complete.");
