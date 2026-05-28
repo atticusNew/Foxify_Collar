@@ -522,6 +522,129 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   });
 
   /**
+   * GET /admin/foxify/v2/gate_with_ev
+   *
+   * Combined view: activation gate signal + per-cell EV estimate at current
+   * live conditions. Lets operator validate "would the gate say activate?"
+   * AND "what's the actual EV per cell right now?" in one call.
+   *
+   * EV estimation method: starts from V6 sweep reference (per-cell EV at
+   * V6's measured cost), applies linear cost-delta adjustment to current
+   * live cost. Not a fresh MC sim (too expensive per request), but a fast
+   * sanity check based on real V6 data + real live cost.
+   *
+   * Auth: X-Admin-Token.
+   */
+  app.get("/admin/foxify/v2/gate_with_ev", { preHandler: checkAdminToken }, async (_req, reply) => {
+    const { PHASE_0_CELLS } = await import("./cellConfig");
+    const { resolveCurrentTier } = await import("./tierResolver");
+    const { buildQuote } = await import("./quoteEngine");
+    const { computeActivationGate } = await import("./activationGate");
+
+    // Gate result (or degraded if no rvService)
+    let gate: Awaited<ReturnType<typeof computeActivationGate>> | { reason: string; good_to_activate: false };
+    if (deps.rvService) {
+      gate = await computeActivationGate({
+        dvolService: deps.dvolService,
+        rvService: deps.rvService,
+        liquidChainCache: deps.liquidChainCache ?? null
+      });
+    } else {
+      gate = { reason: "rv_service_not_wired", good_to_activate: false };
+    }
+    const halt = await getHaltState(deps.pool);
+    const haltActive = halt.foxifyHalt || halt.atticusHalt;
+
+    const feed = deps.feedService.getCurrentFeed();
+    if (!feed || feed.health === "unavailable" || feed.canonicalPrice == null) {
+      reply.code(503).send({ error: "feed_unavailable", message: "Cannot price cells without canonical spot" });
+      return;
+    }
+    const spot = feed.canonicalPrice;
+    const tier = await resolveCurrentTier(deps.pool, Date.now());
+
+    // V6 reference EV at calm regime (cost → mean_foxify_ev). From
+    // docs/PHASE_1_CELL_SWEEP_V6_2026-05-28.md and runCellSweepV6.ts.
+    // Linear-adjust by cost delta: ev_now ≈ ev_v6 + (cost_v6 - cost_now)
+    // because mean salvage is roughly cost-independent in calm sims (paths
+    // are sigma-driven, not cost-driven).
+    const V6_REF: Record<string, { calm_cost: number; calm_ev: number; mod_cost: number; mod_ev: number; elev_cost: number; elev_ev: number; stress_cost: number; stress_ev: number }> = {
+      pair_50k_2pct:          { calm_cost: 2959, calm_ev: -372,  mod_cost: 3403, mod_ev: 270,  elev_cost: 3994, elev_ev: 796,  stress_cost: 4734, stress_ev: 1191 },
+      pair_100k_3pct_itm_short:{ calm_cost: 5977, calm_ev: -1359, mod_cost: 6874, mod_ev: -861, elev_cost: 8069, elev_ev: -681, stress_cost: 9563, stress_ev: -801 },
+      pair_50k_3pct_atm:      { calm_cost: 2296, calm_ev: -478,  mod_cost: 2640, mod_ev: -128, elev_cost: 3100, elev_ev: 98,   stress_cost: 3674, stress_ev: 206 },
+      pair_50k_5pct_otm:      { calm_cost: 911,  calm_ev: -422,  mod_cost: 1048, mod_ev: 216,  elev_cost: 1230, elev_ev: 722,  stress_cost: 1458, stress_ev: 1159 },
+      pair_25k_5pct_otm_short:{ calm_cost: 233,  calm_ev: -101,  mod_cost: 268,  mod_ev: 88,   elev_cost: 315,  elev_ev: 296,  stress_cost: 373,  stress_ev: 484 },
+      pair_25k_5pct_otm_3d:   { calm_cost: 492,  calm_ev: -156,  mod_cost: 566,  mod_ev: 258,  elev_cost: 664,  elev_ev: 560,  stress_cost: 787,  stress_ev: 830 },
+      pair_50k_4pct_otm_short:{ calm_cost: 1203, calm_ev: -377,  mod_cost: 1383, mod_ev: 45,   elev_cost: 1624, elev_ev: 357,  stress_cost: 1925, stress_ev: 589 },
+      pair_25k_1pct_atm_micro:{ calm_cost: 370,  calm_ev: -53,   mod_cost: 426,  mod_ev: -53,  elev_cost: 500,  elev_ev: -68,  stress_cost: 592,  stress_ev: -102 }
+    };
+
+    const regime = deps.dvolService.getCurrentDvol()?.regime ?? "calm";
+
+    const results: Array<Record<string, unknown>> = [];
+    for (const cellId of Object.keys(PHASE_0_CELLS)) {
+      const cell = PHASE_0_CELLS[cellId];
+      try {
+        const quote = await buildQuote({
+          cell, spot, anchorProvider: deps.anchorProvider, tier,
+          liquidChainCache: deps.liquidChainCache ?? null
+        });
+        if (!quote.ok) {
+          results.push({ cellId, ok: false, reason: quote.reason });
+          continue;
+        }
+        const ref = V6_REF[cellId];
+        // Linear EV adjustment: lower current cost → better EV
+        const liveCost = quote.totalHedgeCostUsdc;
+        let evAtCurrentRegime: number | null = null;
+        let refCost: number | null = null;
+        let refEv: number | null = null;
+        if (ref) {
+          if (regime === "calm")     { refCost = ref.calm_cost;   refEv = ref.calm_ev;   }
+          else if (regime === "moderate") { refCost = ref.mod_cost; refEv = ref.mod_ev; }
+          else if (regime === "elevated") { refCost = ref.elev_cost; refEv = ref.elev_ev; }
+          else if (regime === "stress")   { refCost = ref.stress_cost; refEv = ref.stress_ev; }
+          if (refCost != null && refEv != null) {
+            evAtCurrentRegime = refEv + (refCost - liveCost); // linear adjustment
+          }
+        }
+        results.push({
+          cellId,
+          ok: true,
+          liveCost,
+          putVenue: quote.putLeg.venue,
+          callVenue: quote.callLeg.venue,
+          actualStrikes: { put: quote.putStrike, call: quote.callStrike },
+          v6_reference_cost: refCost,
+          v6_reference_ev: refEv,
+          estimated_ev_at_current_cost: evAtCurrentRegime,
+          ev_verdict: evAtCurrentRegime == null ? "no_v6_reference" :
+                      evAtCurrentRegime > 100 ? "✅ PROFITABLE" :
+                      evAtCurrentRegime > 0 ? "⚠️ MARGINAL_POSITIVE" :
+                      evAtCurrentRegime > -100 ? "⚠️ MARGINAL_NEGATIVE" :
+                      "❌ NEGATIVE"
+        });
+      } catch (e) {
+        results.push({ cellId, ok: false, reason: "quote_threw", message: (e as Error).message });
+      }
+    }
+
+    reply.send({
+      asOf: new Date().toISOString(),
+      spot,
+      regime,
+      tier: tier.label,
+      halt_active: haltActive,
+      gate,
+      cells: results,
+      methodology: {
+        ev_estimation: "Linear adjustment from V6 reference EV based on cost delta. ev_now ≈ v6_ev + (v6_cost - live_cost). Approximation valid when sim sigma is the dominant variable (calm regime). For high-accuracy, re-run runCellSweepV6.ts.",
+        gate_logic: "good_to_activate=true when regime in {moderate, elevated, stress} OR (regime=calm AND vrp < calmVrpThreshold). Halt overrides."
+      }
+    });
+  });
+
+  /**
    * GET /admin/foxify/v2/cell-costs
    *
    * Returns LIVE hedge cost projections for every cell in the registry, using

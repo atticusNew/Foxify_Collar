@@ -129,8 +129,12 @@ export const computeActivationGate = async (inputs: ActivationGateInputs): Promi
     };
   }
 
+  // Format VRP with explicit sign and 2dp percentage for human-readable reasons
+  const vrpPct = `${vrp >= 0 ? "+" : ""}${(vrp * 100).toFixed(2)}%`;
+  const thresholdPct = `${(calmVrpThreshold * 100).toFixed(2)}%`;
+
   if (vrp < calmVrpThreshold) {
-    // Negative VRP at calm — realized vol outpacing implied. Buy is +EV.
+    // VRP below threshold — realized vol outpacing implied. Buying is +EV.
     return {
       good_to_activate: true,
       regime: "calm",
@@ -139,8 +143,8 @@ export const computeActivationGate = async (inputs: ActivationGateInputs): Promi
       rv_annual: rvAnnual,
       vrp,
       vrp_threshold_for_calm: calmVrpThreshold,
-      reason: `calm_regime_but_vrp_negative_${(vrp * 100).toFixed(2)}%_below_threshold_${(calmVrpThreshold * 100).toFixed(0)}%`,
-      // OTM cells dominate when calm + negative VRP (they have lower trigger threshold so capture realized moves better)
+      reason: `calm_regime_vrp_${vrpPct}_below_threshold_${thresholdPct}_buying_is_+ev`,
+      // OTM cells dominate when calm + negative VRP (low trigger threshold captures realized moves)
       recommended_cells: ["pair_25k_5pct_otm_3d", "pair_50k_5pct_otm", "pair_25k_5pct_otm_short"],
       next_check_signal: "vrp_rises_above_threshold_or_regime_changes",
       asOf,
@@ -148,7 +152,7 @@ export const computeActivationGate = async (inputs: ActivationGateInputs): Promi
     };
   }
 
-  // Calm + positive VRP — typical pattern, hold
+  // Calm + VRP above threshold — typical pattern, hold
   return {
     good_to_activate: false,
     regime: "calm",
@@ -157,7 +161,7 @@ export const computeActivationGate = async (inputs: ActivationGateInputs): Promi
     rv_annual: rvAnnual,
     vrp,
     vrp_threshold_for_calm: calmVrpThreshold,
-    reason: `calm_regime_with_positive_vrp_${(vrp * 100).toFixed(2)}%_implied_is_rich`,
+    reason: `calm_regime_vrp_${vrpPct}_above_threshold_${thresholdPct}_implied_is_rich`,
     recommended_cells: [],
     next_check_signal: "vrp_drops_below_threshold_or_dvol_crosses_40",
     asOf,

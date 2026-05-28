@@ -110,7 +110,8 @@ test("activationGate: returns good_to_activate=true for calm + negative VRP", as
   assert.ok(r.vrp != null);
   assert.ok(r.vrp! < -0.02); // IV well below RV
   assert.equal(r.good_to_activate, true);
-  assert.match(r.reason, /vrp_negative/);
+  assert.match(r.reason, /below_threshold/);
+  assert.match(r.reason, /buying_is_\+ev/);
 });
 
 test("activationGate: handles DVOL unavailable gracefully", async () => {
