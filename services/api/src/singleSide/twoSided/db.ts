@@ -47,7 +47,7 @@ export const ensureTwoSidedSchema = async (pool: Pool): Promise<void> => {
       feed_snapshot_at_activation          JSONB NOT NULL DEFAULT '{}'::jsonb,
       trigger_down_price                   NUMERIC(20, 8) NOT NULL,
       trigger_up_price                     NUMERIC(20, 8) NOT NULL,
-      hedge_tenor_days                     INTEGER NOT NULL,
+      hedge_tenor_days                     NUMERIC(10, 4) NOT NULL,
       expires_at                           TIMESTAMPTZ NOT NULL,
       tp_force_exit_at                     TIMESTAMPTZ NOT NULL,
 
