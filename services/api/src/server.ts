@@ -8681,12 +8681,15 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     await v2DvolService.start();
     await v2RvService.start();
 
-    // Executor — Shadow by default; LIVE behind FOXIFY_V2_LIVE_EXECUTION=true env flag.
-    // Live executor fires REAL Bullish + Deribit orders. Operator must explicitly opt-in.
+    // Executors — Shadow by default; LIVE behind FOXIFY_V2_LIVE_EXECUTION=true env flag.
+    // Both activate-side (StrangleExecutor) and close-side (CloseExecutor) flip together.
+    // Live execution fires REAL Bullish + Deribit orders. Operator must explicitly opt-in.
     let v2Executor: import("./singleSide/twoSided/executor").StrangleExecutor;
+    let v2CloseExecutor: import("./singleSide/twoSided/closeExecutor").CloseExecutor;
     const liveExecutionEnabled = String(process.env.FOXIFY_V2_LIVE_EXECUTION ?? "false").toLowerCase() === "true";
     if (liveExecutionEnabled) {
       const { LiveStrangleExecutor } = await import("./singleSide/twoSided/liveStrangleExecutor");
+      const { LiveCloseExecutor } = await import("./singleSide/twoSided/liveCloseExecutor");
       const { BullishLegAdapter, DeribitLegAdapter } = await import("./singleSide/twoSided/liveVenueAdapters");
       if (!v2BullishClient) {
         throw new Error("FOXIFY_V2_LIVE_EXECUTION=true but Bullish creds missing (PILOT_BULLISH_ENABLED=false)");
@@ -8704,11 +8707,73 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         getCurrentSpotUsd: () => v2FeedService.getCurrentFeed()?.canonicalPrice ?? null
       });
       v2Executor = new LiveStrangleExecutor(bullishAdapter, deribitAdapter);
-      console.log("[FoxifyV2] ⚠️  LIVE EXECUTION ENABLED — real venue orders will fire on /foxify/v2/activate calls. Set FOXIFY_V2_LIVE_EXECUTION=false to revert to shadow.");
+      v2CloseExecutor = new LiveCloseExecutor(bullishAdapter, deribitAdapter);
+      console.log("[FoxifyV2] ⚠️  LIVE EXECUTION ENABLED — real venue orders will fire on /foxify/v2/activate AND close paths. Set FOXIFY_V2_LIVE_EXECUTION=false to revert to shadow.");
     } else {
+      const { ShadowCloseExecutor } = await import("./singleSide/twoSided/closeExecutor");
       v2Executor = new ShadowStrangleExecutor();
-      console.log("[FoxifyV2] Shadow executor active (no real orders). Set FOXIFY_V2_LIVE_EXECUTION=true for live.");
+      v2CloseExecutor = new ShadowCloseExecutor();
+      console.log("[FoxifyV2] Shadow executors active (activate + close). Set FOXIFY_V2_LIVE_EXECUTION=true for live.");
     }
+
+    // ─── Trigger detector + execution runtime registry ───
+    // Without these, activated pairs sit in DB forever and never close even
+    // if BTC moves through trigger boundaries. The detector watches the feed
+    // every second; when a pair crosses ±N%, it transitions to triggered and
+    // spawns an ExecutionRuntime that manages the close lifecycle.
+    const { TriggerDetector } = await import("./singleSide/twoSided/triggerDetector");
+    const { getRuntimeRegistry, bootResurrect } = await import("./singleSide/twoSided/runtimeRegistry");
+    const { getPairById } = await import("./singleSide/twoSided/db");
+    const { recordNewbornTrigger } = await import("./singleSide/twoSided/featureFlag");
+
+    const v2Registry = getRuntimeRegistry();
+    // RuntimeDeps shared across all per-pair runtimes (registry passes to each spawnRuntime).
+    const v2RuntimeDeps: import("./singleSide/twoSided/executionRuntime").RuntimeDeps = {
+      pool: v2Pool,
+      getFeed: () => v2FeedService.getCurrentFeed(),
+      closeExecutor: v2CloseExecutor,
+      getCurrentSigma: () => v2DvolService.getCurrentDvol()?.sigmaAnnual ?? 0.35,
+      getCurrentSlippageHaircut: () => 0.82, // matches V6 sim default; refine when LiveCloseExecutor fills land empirical data
+      calibrationFor: async () => ({ putCalib: 1.0, callCalib: 1.0, riskFreeRate: 0.045 })
+      // unwindQueue: omitted for now — runs without throttling (single-pair load)
+    };
+
+    const v2TriggerDetector = new TriggerDetector({
+      pool: v2Pool,
+      getFeed: () => v2FeedService.getCurrentFeed(),
+      onTrigger: async (pair) => {
+        try {
+          await v2Registry.spawnRuntime(pair, v2RuntimeDeps);
+          console.log(`[FoxifyV2] Spawned ExecutionRuntime for triggered pair=${pair.pairId}`);
+        } catch (e) {
+          console.error(`[FoxifyV2] Failed to spawn runtime for ${pair.pairId}: ${(e as Error).message}`);
+        }
+      },
+      getCurrentRegime: () => v2DvolService.getCurrentDvol()?.regime ?? null,
+      recordNewbornForRegime: async (regime) => recordNewbornTrigger(v2Pool, regime)
+    });
+    v2TriggerDetector.start(1_000); // 1-second poll
+    console.log("[FoxifyV2] Trigger detector started (1s polling)");
+
+    // Boot resurrection: any pair left in 'triggered' or 'unwinding' from a
+    // prior deploy gets its runtime spawned NOW so we resume managing it.
+    try {
+      const resurrected = await bootResurrect(v2Pool, v2RuntimeDeps);
+      if (resurrected.totalResumed > 0) {
+        console.log(`[FoxifyV2] bootResurrect resumed ${resurrected.totalResumed} pair(s) (${resurrected.triggeredResumed} triggered, ${resurrected.unwindingResumed} unwinding)`);
+      } else {
+        console.log("[FoxifyV2] bootResurrect: no in-progress pairs to resume");
+      }
+    } catch (e) {
+      console.error(`[FoxifyV2] bootResurrect failed: ${(e as Error).message}`);
+    }
+
+    // Spawn-for-force-close helper used by /foxify/v2/close handler
+    const v2SpawnForceClose = async (pairId: string): Promise<void> => {
+      const pair = await getPairById(v2Pool, pairId);
+      if (!pair) throw new Error(`pair_not_found: ${pairId}`);
+      await v2Registry.spawnRuntimeForceClose(pair, v2RuntimeDeps);
+    };
 
     await app.register(async (instance) => {
       await registerFoxifyV2Routes(instance, {
@@ -8719,6 +8784,8 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         anchorProvider: v2AnchorProvider,
         executor: v2Executor,
         liquidChainCache: v2LiquidCache,
+        getRuntime: (pairId) => v2Registry.getRuntime(pairId),
+        spawnRuntimeForceClose: v2SpawnForceClose,
         newbornReviewThreshold: Number(process.env.SS_TWO_SIDED_NEWBORN_REVIEW_PER_REGIME ?? "10")
       });
     });
