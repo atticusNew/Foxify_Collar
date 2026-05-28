@@ -115,6 +115,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     executor: deps.executor,
     getFeed: () => deps.feedService.getCurrentFeed(),
     feedVersion: "v1.0.0",
+    getCurrentRegime: () => deps.dvolService.getCurrentDvol()?.regime ?? null,
     preActivateGuard: async ({ pairHedgeCostUsdc }) => {
       // Plumbs DVOL into guardrails.canActivate
       const { canActivate } = await import("./guardrails");

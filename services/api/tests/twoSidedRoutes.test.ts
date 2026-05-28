@@ -21,6 +21,7 @@ import {
   ensureTwoSidedSchema
 } from "../src/singleSide/twoSided/db";
 import { ensureGuardrailsSchema } from "../src/singleSide/twoSided/guardrails";
+import { ensureCellAllowlistSchema } from "../src/singleSide/twoSided/cellAllowlist";
 import { ensureDeferredPoolSchema } from "../src/singleSide/twoSided/deferredPool";
 import { ensureNewbornReviewSchema } from "../src/singleSide/twoSided/featureFlag";
 import { registerFoxifyV2Routes } from "../src/singleSide/twoSided/routes";
@@ -40,6 +41,7 @@ const buildApp = async (): Promise<{ app: FastifyInstance; cleanup: () => Promis
   const db = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true });
   const pool = new (db.adapters.createPg().Pool)();
   await ensureTwoSidedSchema(pool);
+  await ensureCellAllowlistSchema(pool);
   await ensureGuardrailsSchema(pool);
   await ensureDeferredPoolSchema(pool);
   await ensureNewbornReviewSchema(pool);

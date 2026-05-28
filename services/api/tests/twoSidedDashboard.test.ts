@@ -18,6 +18,7 @@ import {
   updatePairStatus
 } from "../src/singleSide/twoSided/db";
 import { ensureDeferredPoolSchema } from "../src/singleSide/twoSided/deferredPool";
+import { ensureCellAllowlistSchema } from "../src/singleSide/twoSided/cellAllowlist";
 import {
   computeFoxifyStatus,
   explainPairOutcome,
@@ -29,6 +30,7 @@ const buildPool = async () => {
   const db = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true });
   const pool = new (db.adapters.createPg().Pool)();
   await ensureTwoSidedSchema(pool);
+  await ensureCellAllowlistSchema(pool);
   await ensureDeferredPoolSchema(pool);
   return pool;
 };
@@ -99,7 +101,7 @@ test("computeFoxifyStatus: counts today's activations + rolling pnl", async () =
   const pool = await buildPool();
   // Use real current time so seeded pairs (created_at = NOW()) fall within today's window
   const now = Date.now();
-  const todayMs = now - 3_600_000; // 1h ago, same UTC day
+  const todayMs = now - 1_000; // 1s ago, guaranteed same UTC day (test crossed midnight before)
   await seedPair(pool, {
     pairId: "p-win",
     finalStatus: "settled",

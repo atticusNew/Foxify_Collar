@@ -10,6 +10,7 @@ import { ensureGuardrailsSchema } from "../singleSide/twoSided/guardrails";
 import { ensureNewbornReviewSchema } from "../singleSide/twoSided/featureFlag";
 import { ensureWebhookConfigSchema } from "../singleSide/twoSided/webhookConfig";
 import { ensureWebhookAttemptSchema } from "../singleSide/twoSided/webhookDelivery";
+import { ensureCellAllowlistSchema } from "../singleSide/twoSided/cellAllowlist";
 
 async function main() {
   if (!pilotConfig.postgresUrl) {
@@ -25,6 +26,7 @@ async function main() {
   await ensureNewbornReviewSchema(pool);
   await ensureWebhookConfigSchema(pool);
   await ensureWebhookAttemptSchema(pool);
+  await ensureCellAllowlistSchema(pool);
   await pool.end();
   // eslint-disable-next-line no-console
   console.log("Pilot + Volume Cover + Two-Sided schema migration complete.");

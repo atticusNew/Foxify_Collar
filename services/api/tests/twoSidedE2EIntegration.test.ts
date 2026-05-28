@@ -28,6 +28,7 @@ import Fastify from "fastify";
 import { newDb } from "pg-mem";
 import { ensureTwoSidedSchema, insertPair, insertPairLeg, updatePairStatus, getPairById } from "../src/singleSide/twoSided/db";
 import { ensureGuardrailsSchema } from "../src/singleSide/twoSided/guardrails";
+import { ensureCellAllowlistSchema } from "../src/singleSide/twoSided/cellAllowlist";
 import { ensureDeferredPoolSchema } from "../src/singleSide/twoSided/deferredPool";
 import { ensureNewbornReviewSchema } from "../src/singleSide/twoSided/featureFlag";
 import { ensureWebhookConfigSchema, setWebhookConfig } from "../src/singleSide/twoSided/webhookConfig";
@@ -52,6 +53,7 @@ const buildE2E = async () => {
   const db = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true });
   const pool = new (db.adapters.createPg().Pool)();
   await ensureTwoSidedSchema(pool);
+  await ensureCellAllowlistSchema(pool);
   await ensureGuardrailsSchema(pool);
   await ensureDeferredPoolSchema(pool);
   await ensureNewbornReviewSchema(pool);

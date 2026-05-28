@@ -22,6 +22,7 @@ export type TwoSidedCell = {
 };
 
 export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
+  // ── Phase 0 (calm baseline) ──
   pair_50k_2pct: {
     cellId: "pair_50k_2pct",
     notionalUsdcPerLeg: 50_000,
@@ -31,6 +32,79 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     hedgeTenorDays: 3,
     putStrikeItmPct: 0.013,
     callStrikeItmPct: 0.013,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  // ── Phase 1 cells (per Wave C2 sweep) ──
+  pair_100k_3pct_itm_short: {
+    cellId: "pair_100k_3pct_itm_short",
+    notionalUsdcPerLeg: 100_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 2.0,
+    hedgeTenorDays: 2,
+    putStrikeItmPct: 0.005,
+    callStrikeItmPct: 0.005,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  pair_50k_3pct_atm: {
+    cellId: "pair_50k_3pct_atm",
+    notionalUsdcPerLeg: 50_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 1.0,
+    hedgeTenorDays: 2,
+    putStrikeItmPct: 0,
+    callStrikeItmPct: 0,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  pair_50k_5pct_otm: {
+    cellId: "pair_50k_5pct_otm",
+    notionalUsdcPerLeg: 50_000,
+    triggerPctDown: 0.05,
+    triggerPctUp: 0.05,
+    contractsBtc: 1.0,
+    hedgeTenorDays: 2,
+    putStrikeItmPct: -0.015,  // 1.5% OTM
+    callStrikeItmPct: -0.020,  // 2.0% OTM (asymmetric: BTC put-skew)
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  pair_25k_5pct_otm_short: {
+    cellId: "pair_25k_5pct_otm_short",
+    notionalUsdcPerLeg: 25_000,
+    triggerPctDown: 0.05,
+    triggerPctUp: 0.05,
+    contractsBtc: 0.5,
+    hedgeTenorDays: 1,
+    putStrikeItmPct: -0.020,
+    callStrikeItmPct: -0.025,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  pair_50k_4pct_otm_short: {
+    cellId: "pair_50k_4pct_otm_short",
+    notionalUsdcPerLeg: 50_000,
+    triggerPctDown: 0.04,
+    triggerPctUp: 0.04,
+    contractsBtc: 1.0,
+    hedgeTenorDays: 1,
+    putStrikeItmPct: -0.010,
+    callStrikeItmPct: -0.015,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  pair_25k_1pct_atm_micro: {
+    cellId: "pair_25k_1pct_atm_micro",
+    notionalUsdcPerLeg: 25_000,
+    triggerPctDown: 0.01,
+    triggerPctUp: 0.01,
+    contractsBtc: 0.3,
+    hedgeTenorDays: 0.167,  // 4h
+    putStrikeItmPct: 0,
+    callStrikeItmPct: 0,
     strikeGridUsdc: 1_000,
     enabled: true
   }

@@ -88,6 +88,8 @@ export type ActivateDeps = {
   /** Optional PR 9 hook — if injected, blocks activation when canActivate returns ok=false.
    * Tests can omit this. Production wires to the real guardrails module. */
   preActivateGuard?: (ctx: { pairHedgeCostUsdc: number; spot: number }) => Promise<{ ok: boolean; reason?: string; details?: Record<string, unknown> }>;
+  /** Optional PR C3: returns current regime for cell-allowlist enforcement. Tests can omit. */
+  getCurrentRegime?: () => "calm" | "moderate" | "elevated" | "stress" | null;
 };
 
 const isValidRequest = (req: unknown): req is ActivateRequest => {
@@ -125,6 +127,11 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   }
   const cell = getCellOrThrow(req.cellId);
 
+  // 1.5: Regime-cell allowlist check (PR C3)
+  // Only applies when DvolService has a current regime — otherwise skip silently
+  // (legacy compat for tests that don't wire DvolService).
+  // We resolve regime from the feed snapshot below.
+
   // 2. Idempotency
   const existing = await getPairByFoxifyRef(deps.pool, req.foxifyPairRef);
   if (existing) {
@@ -154,6 +161,31 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     };
   }
   const spot = feed.canonicalPrice;
+
+  // 3.5: Regime-cell allowlist enforcement (PR C3)
+  // Determine current regime from DVOL (if available via injected callback)
+  if (deps.getCurrentRegime) {
+    const regime = deps.getCurrentRegime();
+    if (regime) {
+      const { isCellAllowedInRegime } = await import("./cellAllowlist");
+      const check = await isCellAllowedInRegime(deps.pool, cell.cellId, regime);
+      if (!check.allowed) {
+        return {
+          status: 503,
+          body: {
+            error: "cell_disabled_in_regime",
+            message: `Cell '${cell.cellId}' is not enabled in '${regime}' regime. Try a suggested cell.`,
+            retry_after_s: 0,
+            details: {
+              regime,
+              cell_id: cell.cellId,
+              suggested_cells: check.suggestedCells
+            }
+          }
+        };
+      }
+    }
+  }
 
   // 4. Tier
   const tier = await resolveCurrentTier(deps.pool, now);
