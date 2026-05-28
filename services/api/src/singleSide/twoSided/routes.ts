@@ -563,23 +563,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     const spot = feed.canonicalPrice;
     const tier = await resolveCurrentTier(deps.pool, Date.now());
 
-    // V6 reference EV at calm regime (cost → mean_foxify_ev). From
-    // docs/PHASE_1_CELL_SWEEP_V6_2026-05-28.md and runCellSweepV6.ts.
-    // Linear-adjust by cost delta: ev_now ≈ ev_v6 + (cost_v6 - cost_now)
-    // because mean salvage is roughly cost-independent in calm sims (paths
-    // are sigma-driven, not cost-driven).
-    const V6_REF: Record<string, { calm_cost: number; calm_ev: number; mod_cost: number; mod_ev: number; elev_cost: number; elev_ev: number; stress_cost: number; stress_ev: number }> = {
-      pair_50k_2pct:          { calm_cost: 2959, calm_ev: -372,  mod_cost: 3403, mod_ev: 270,  elev_cost: 3994, elev_ev: 796,  stress_cost: 4734, stress_ev: 1191 },
-      pair_100k_3pct_itm_short:{ calm_cost: 5977, calm_ev: -1359, mod_cost: 6874, mod_ev: -861, elev_cost: 8069, elev_ev: -681, stress_cost: 9563, stress_ev: -801 },
-      pair_50k_3pct_atm:      { calm_cost: 2296, calm_ev: -478,  mod_cost: 2640, mod_ev: -128, elev_cost: 3100, elev_ev: 98,   stress_cost: 3674, stress_ev: 206 },
-      pair_50k_5pct_otm:      { calm_cost: 911,  calm_ev: -422,  mod_cost: 1048, mod_ev: 216,  elev_cost: 1230, elev_ev: 722,  stress_cost: 1458, stress_ev: 1159 },
-      pair_25k_5pct_otm_short:{ calm_cost: 233,  calm_ev: -101,  mod_cost: 268,  mod_ev: 88,   elev_cost: 315,  elev_ev: 296,  stress_cost: 373,  stress_ev: 484 },
-      pair_25k_5pct_otm_3d:   { calm_cost: 492,  calm_ev: -156,  mod_cost: 566,  mod_ev: 258,  elev_cost: 664,  elev_ev: 560,  stress_cost: 787,  stress_ev: 830 },
-      pair_50k_4pct_otm_short:{ calm_cost: 1203, calm_ev: -377,  mod_cost: 1383, mod_ev: 45,   elev_cost: 1624, elev_ev: 357,  stress_cost: 1925, stress_ev: 589 },
-      pair_25k_1pct_atm_micro:{ calm_cost: 370,  calm_ev: -53,   mod_cost: 426,  mod_ev: -53,  elev_cost: 500,  elev_ev: -68,  stress_cost: 592,  stress_ev: -102 }
-    };
-
-    const regime = deps.dvolService.getCurrentDvol()?.regime ?? "calm";
+    const regime = (deps.dvolService.getCurrentDvol()?.regime ?? "calm") as "calm" | "moderate" | "elevated" | "stress";
+    const { computeLiveCellEv } = await import("./liveCellEvService");
 
     const results: Array<Record<string, unknown>> = [];
     for (const cellId of Object.keys(PHASE_0_CELLS)) {
@@ -593,21 +578,19 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           results.push({ cellId, ok: false, reason: quote.reason });
           continue;
         }
-        const ref = V6_REF[cellId];
-        // Linear EV adjustment: lower current cost → better EV
         const liveCost = quote.totalHedgeCostUsdc;
-        let evAtCurrentRegime: number | null = null;
-        let refCost: number | null = null;
-        let refEv: number | null = null;
-        if (ref) {
-          if (regime === "calm")     { refCost = ref.calm_cost;   refEv = ref.calm_ev;   }
-          else if (regime === "moderate") { refCost = ref.mod_cost; refEv = ref.mod_ev; }
-          else if (regime === "elevated") { refCost = ref.elev_cost; refEv = ref.elev_ev; }
-          else if (regime === "stress")   { refCost = ref.stress_cost; refEv = ref.stress_ev; }
-          if (refCost != null && refEv != null) {
-            evAtCurrentRegime = refEv + (refCost - liveCost); // linear adjustment
-          }
-        }
+
+        // Live MC sim — no hardcoded reference. Runs 2k paths per (cell, regime,
+        // cost-bucket), cached 5min. Reflects current cost + current strikes +
+        // current spot. Always-fresh empirical EV.
+        const evSim = await computeLiveCellEv({
+          cellId, spot, hedgeCostAtCalm: liveCost,
+          putStrike: quote.putStrike, callStrike: quote.callStrike,
+          tenorDays: cell.hedgeTenorDays,
+          triggerPctDown: cell.triggerPctDown, triggerPctUp: cell.triggerPctUp,
+          regime, contractsBtc: cell.contractsBtc
+        });
+
         results.push({
           cellId,
           ok: true,
@@ -615,17 +598,23 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           putVenue: quote.putLeg.venue,
           callVenue: quote.callLeg.venue,
           actualStrikes: { put: quote.putStrike, call: quote.callStrike },
-          v6_reference_cost: refCost,
-          v6_reference_ev: refEv,
-          estimated_ev_at_current_cost: evAtCurrentRegime,
-          ev_verdict: evAtCurrentRegime == null ? "no_v6_reference" :
-                      evAtCurrentRegime > 100 ? "✅ PROFITABLE" :
-                      evAtCurrentRegime > 0 ? "⚠️ MARGINAL_POSITIVE" :
-                      evAtCurrentRegime > -100 ? "⚠️ MARGINAL_NEGATIVE" :
+          mc: {
+            hedge_cost_at_regime: evSim.hedgeCost,
+            mean_salvage: evSim.meanSalvage,
+            trigger_rate: evSim.triggerRate,
+            foxify_ev: evSim.meanFoxifyEv,
+            atticus_ev: evSim.meanAtticusEv,
+            pct_profit: evSim.pctProfit,
+            p5_foxify_ev: evSim.p5FoxifyEv,
+            n_paths: evSim.nPaths
+          },
+          ev_verdict: evSim.meanFoxifyEv > 100 ? "✅ PROFITABLE" :
+                      evSim.meanFoxifyEv > 0 ? "⚠️ MARGINAL_POSITIVE" :
+                      evSim.meanFoxifyEv > -100 ? "⚠️ MARGINAL_NEGATIVE" :
                       "❌ NEGATIVE"
         });
       } catch (e) {
-        results.push({ cellId, ok: false, reason: "quote_threw", message: (e as Error).message });
+        results.push({ cellId, ok: false, reason: "quote_or_sim_threw", message: (e as Error).message });
       }
     }
 
@@ -638,7 +627,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       gate,
       cells: results,
       methodology: {
-        ev_estimation: "Linear adjustment from V6 reference EV based on cost delta. ev_now ≈ v6_ev + (v6_cost - live_cost). Approximation valid when sim sigma is the dominant variable (calm regime). For high-accuracy, re-run runCellSweepV6.ts.",
+        ev_estimation: "Live MC sim per cell. 2k paths each, bootstrap (calm) or GBM (other regimes), uses current cost + actual strikes + current spot. Cached 5min per (cellId, regime, cost-bucket). NO HARDCODED REFERENCE — always fresh.",
         gate_logic: "good_to_activate=true when regime in {moderate, elevated, stress} OR (regime=calm AND vrp < calmVrpThreshold). Halt overrides."
       }
     });
