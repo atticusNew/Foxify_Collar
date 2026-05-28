@@ -17,32 +17,35 @@ import type { Pool, PoolClient } from "pg";
 import type { Regime } from "./featureFlag";
 
 /**
- * Hardcoded defaults per V3 cell sweep + redesign sweep 2026-05-28.
+ * Hardcoded defaults per V5 cell sweep (liquid-picker strikes) 2026-05-28.
  *
- * V3 multi-tenor live-spread MC + 23-variant redesign sweep proved:
- *   - calm (DVOL<40):     NO CELL POSITIVE — system should HALT (empty list)
- *     Least-bad calm variant: -$43/pair (pair_25k_5pct_otm_3d) — still loss
- *   - moderate (40-60):   pair_25k_5pct_otm_3d wins by 6x (+$252 vs +$41)
- *   - elevated (60-80):   pair_50k_5pct_otm (+$384), pair_50k_4pct_otm_short
- *   - stress (>80):       pair_50k_5pct_otm (+$692), pair_50k_4pct_otm_short
+ * Supersedes V3 defaults. V3 was systematically wrong about Phase 0 cell
+ * because it used exact-strike-match instruments (often illiquid) for cost.
+ * V5 uses the liquid-strike picker which selects the most-tradable strike
+ * within ±$3k of target while preserving moneyness side. This produces
+ * honest, internally-consistent EV.
  *
- * REMOVED from all defaults (proven loss-making in V3):
- *   - pair_50k_2pct (-$1,834 calm — old Phase 0 cell is structurally broken)
- *   - pair_100k_3pct_itm_short (-$2,335 calm)
- *   - pair_25k_1pct_atm_micro (-$145 to -$225 in ALL regimes — micro broken)
- *   - pair_50k_3pct_atm calm (-$597)
+ * V5 sweep proved (per docs/PHASE_1_CELL_SWEEP_V5_2026-05-28.md):
+ *   - calm (DVOL<40):     NO cell positive. Best is pair_25k_5pct_otm_3d (-$224).
+ *                          System HALTS by default. Operator may override.
+ *   - moderate (40-60):   pair_50k_2pct (Phase 0, +$326) leads, then otm_3d (+$136)
+ *   - elevated (60-80):   pair_50k_2pct (+$833), pair_50k_5pct_otm (+$455)
+ *   - stress (>80):       pair_50k_2pct (+$1,194) wins by a wide margin
  *
- * Operator may re-enable any cell via /admin/foxify/v2/cell-allowlist
- * (DB overrides take precedence over these defaults).
+ * REMOVED from defaults (V3-broken cells still loss-making in V5):
+ *   - pair_100k_3pct_itm_short  (still -$2k+ in all regimes)
+ *   - pair_25k_1pct_atm_micro   (still -$145 to -$225)
+ *   - pair_50k_3pct_atm         (still loss/marginal everywhere)
+ *   - pair_25k_5pct_otm_short   (marginal — replaced by _3d variant)
+ *   - pair_50k_4pct_otm_short   (marginal — kept in elevated/stress only)
  *
- * Calm allowlist is INTENTIONALLY EMPTY — operator must consciously override
- * to activate in calm, after acknowledging expected per-pair loss.
+ * Operator may re-enable any cell via /admin/foxify/v2/cell-allowlist.
  */
 export const DEFAULT_CELL_ALLOWLIST: Record<Regime, ReadonlyArray<string>> = {
   calm: [],
-  moderate: ["pair_25k_5pct_otm_3d", "pair_25k_5pct_otm_short", "pair_50k_4pct_otm_short"],
-  elevated: ["pair_50k_5pct_otm", "pair_50k_4pct_otm_short", "pair_25k_5pct_otm_3d", "pair_25k_5pct_otm_short"],
-  stress: ["pair_50k_5pct_otm", "pair_50k_4pct_otm_short", "pair_25k_5pct_otm_short"]
+  moderate: ["pair_50k_2pct", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"],
+  elevated: ["pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"],
+  stress: ["pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
 };
 
 export const ensureCellAllowlistSchema = async (pool: Pool): Promise<void> => {

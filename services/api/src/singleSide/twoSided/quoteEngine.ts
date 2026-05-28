@@ -13,6 +13,8 @@
 import { randomUUID } from "node:crypto";
 import { computeStrikes, computeTriggerBoundaries, type TwoSidedCell } from "./cellConfig";
 import type { TierDefinition, Venue } from "./types";
+import type { LiquidChainCache } from "./liquidChainCache";
+import { pickLiquidForLeg } from "./liquidChainCache";
 
 export const QUOTE_TTL_MS = 30_000;
 export const DEPTH_HEADROOM_FACTOR = 1.2; // require depth ≥ 1.2× contracts
@@ -43,6 +45,12 @@ export type QuoteResult =
       spot: number;
       putStrike: number;
       callStrike: number;
+      /** Original target strikes computed from cell.putStrikeItmPct/callStrikeItmPct.
+       * May differ from putStrike/callStrike if liquid picker shifted them. */
+      targetPutStrike: number;
+      targetCallStrike: number;
+      putStrikeShifted: boolean;
+      callStrikeShifted: boolean;
       contractsBtc: number;
       triggerDownPrice: number;
       triggerUpPrice: number;
@@ -91,11 +99,38 @@ export const buildQuote = async (params: {
   anchorProvider: LiveAnchorProvider;
   tier: TierDefinition;
   nowMs?: number;
+  /**
+   * Optional liquid-strike chain cache.
+   * If provided, buildQuote refines target strikes to the nearest LIQUID strike
+   * within ±$3k while preserving moneyness side. This fixes the V3 bug where
+   * exact-strike-match instruments were sometimes illiquid (93%+ spreads).
+   *
+   * Known limitation: liquid picker only sees Deribit quotes; Bullish anchor
+   * is still queried via anchorProvider for the picked strike. Asymmetric but
+   * acceptable — Deribit dominates ITM/ATM option liquidity.
+   */
+  liquidChainCache?: LiquidChainCache | null;
 }): Promise<QuoteResult> => {
   const { cell, spot, anchorProvider, tier } = params;
   const now = params.nowMs ?? Date.now();
-  const { putStrike, callStrike } = computeStrikes(cell, spot);
+  const targetStrikes = computeStrikes(cell, spot);
   const { triggerDown, triggerUp } = computeTriggerBoundaries(cell, spot);
+
+  // Step 1: refine strikes via liquid picker if cache provided
+  let putStrike = targetStrikes.putStrike;
+  let callStrike = targetStrikes.callStrike;
+  let putShifted = false;
+  let callShifted = false;
+  if (params.liquidChainCache) {
+    const [putPick, callPick] = await Promise.all([
+      pickLiquidForLeg(params.liquidChainCache, targetStrikes.putStrike, "put", cell.hedgeTenorDays, spot, now),
+      pickLiquidForLeg(params.liquidChainCache, targetStrikes.callStrike, "call", cell.hedgeTenorDays, spot, now)
+    ]);
+    if (putPick.pickedStrike) putStrike = putPick.pickedStrike;
+    if (callPick.pickedStrike) callStrike = callPick.pickedStrike;
+    putShifted = putPick.shifted;
+    callShifted = callPick.shifted;
+  }
 
   let putAnchors, callAnchors;
   try {
@@ -149,6 +184,10 @@ export const buildQuote = async (params: {
     spot,
     putStrike,
     callStrike,
+    targetPutStrike: targetStrikes.putStrike,
+    targetCallStrike: targetStrikes.callStrike,
+    putStrikeShifted: putShifted,
+    callStrikeShifted: callShifted,
     contractsBtc: cell.contractsBtc,
     triggerDownPrice: triggerDown,
     triggerUpPrice: triggerUp,

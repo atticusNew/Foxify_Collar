@@ -56,6 +56,7 @@ import { DvolService } from "./dvolService";
 import type { LiveAnchorProvider } from "./quoteEngine";
 import type { StrangleExecutor } from "./executor";
 import type { ExecutionRuntime } from "./executionRuntime";
+import type { LiquidChainCache } from "./liquidChainCache";
 
 export type FoxifyV2RoutesDeps = {
   pool: Pool;
@@ -70,6 +71,12 @@ export type FoxifyV2RoutesDeps = {
   newbornReviewThreshold?: number;
   /** PR B1 unwind queue — when provided, surfaced in /admin/foxify/v2/diagnostics. */
   unwindQueue?: { stats: () => { queueDepth: number; longestWaitMs: number; totalGranted: number; totalForceGranted: number; totalDenied: number; currentlyInWindow: number } };
+  /**
+   * Liquid-strike chain cache. When provided, quoteEngine refines target strikes
+   * to nearest liquid strike. Production wires this; tests typically omit it
+   * (default behaviour: target strike, no shift).
+   */
+  liquidChainCache?: LiquidChainCache | null;
 };
 
 // ───────────────────────── Auth helpers ─────────────────────────
@@ -113,6 +120,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     pool: deps.pool,
     anchorProvider: deps.anchorProvider,
     executor: deps.executor,
+    liquidChainCache: deps.liquidChainCache ?? null,
     getFeed: () => deps.feedService.getCurrentFeed(),
     feedVersion: "v1.0.0",
     getCurrentRegime: () => deps.dvolService.getCurrentDvol()?.regime ?? null,

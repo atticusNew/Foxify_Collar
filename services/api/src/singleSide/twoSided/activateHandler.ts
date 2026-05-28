@@ -85,6 +85,13 @@ export type ActivateDeps = {
   getFeed: () => AggregatedFeed | null;
   feedVersion?: string;
   nowMs?: () => number;
+  /**
+   * Optional liquid-strike chain cache. When provided, buildQuote refines
+   * target strikes to nearest liquid Deribit strike (within ±$3k, preserving
+   * moneyness side). Fixes the V3 illiquid-strike cost over-estimate.
+   * Tests omit this; production wires it.
+   */
+  liquidChainCache?: import("./liquidChainCache").LiquidChainCache | null;
   /** Optional PR 9 hook — if injected, blocks activation when canActivate returns ok=false.
    * Tests can omit this. Production wires to the real guardrails module. */
   preActivateGuard?: (ctx: { pairHedgeCostUsdc: number; spot: number }) => Promise<{ ok: boolean; reason?: string; details?: Record<string, unknown> }>;
@@ -191,7 +198,14 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   const tier = await resolveCurrentTier(deps.pool, now);
 
   // 5. Quote
-  const quote: QuoteResult = await buildQuote({ cell, spot, anchorProvider: deps.anchorProvider, tier, nowMs: now });
+  const quote: QuoteResult = await buildQuote({
+    cell,
+    spot,
+    anchorProvider: deps.anchorProvider,
+    tier,
+    nowMs: now,
+    liquidChainCache: deps.liquidChainCache ?? null
+  });
   if (!quote.ok) {
     return {
       status: 503,

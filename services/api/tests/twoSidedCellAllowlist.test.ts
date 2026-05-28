@@ -47,20 +47,40 @@ test("DEFAULT_CELL_ALLOWLIST: moderate/elevated/stress have at least 1 cell", ()
   }
 });
 
-test("DEFAULT_CELL_ALLOWLIST: moderate features pair_25k_5pct_otm_3d (top winner)", () => {
+test("DEFAULT_CELL_ALLOWLIST: moderate features pair_50k_2pct (V5 top moderate winner)", () => {
+  assert.ok(DEFAULT_CELL_ALLOWLIST.moderate.includes("pair_50k_2pct"));
   assert.ok(DEFAULT_CELL_ALLOWLIST.moderate.includes("pair_25k_5pct_otm_3d"));
 });
 
-test("isCellAllowedInRegimeDefault: V3-broken cells NOT in any default regime", () => {
-  for (const broken of ["pair_50k_2pct", "pair_100k_3pct_itm_short", "pair_25k_1pct_atm_micro"]) {
+test("DEFAULT_CELL_ALLOWLIST: stress features pair_50k_2pct (V5 best-in-class +$1,194)", () => {
+  assert.ok(DEFAULT_CELL_ALLOWLIST.stress.includes("pair_50k_2pct"));
+});
+
+test("isCellAllowedInRegimeDefault: V5-broken cells NOT in any default regime", () => {
+  // pair_50k_2pct was V3-broken but V5 reversed that — now in moderate/elevated/stress.
+  // Truly broken cells (per V5):
+  for (const broken of ["pair_100k_3pct_itm_short", "pair_25k_1pct_atm_micro"]) {
     for (const regime of ["calm", "moderate", "elevated", "stress"] as const) {
       assert.equal(
         isCellAllowedInRegimeDefault(broken, regime),
         false,
-        `V3 proved ${broken} loss-making in ${regime} — must not be in default`
+        `V5 proved ${broken} loss-making in ${regime} — must not be in default`
       );
     }
   }
+});
+
+test("isCellAllowedInRegimeDefault: pair_50k_2pct (Phase 0) IS in moderate/elevated/stress per V5", () => {
+  // V5 with liquid picker shows Phase 0 is profitable at moderate+ (+$326 to +$1,194)
+  for (const regime of ["moderate", "elevated", "stress"] as const) {
+    assert.equal(
+      isCellAllowedInRegimeDefault("pair_50k_2pct", regime),
+      true,
+      `V5 proves pair_50k_2pct profitable in ${regime} — must be in default`
+    );
+  }
+  // Still not allowed in calm (V5 says -$308 at calm)
+  assert.equal(isCellAllowedInRegimeDefault("pair_50k_2pct", "calm"), false);
 });
 
 test("isCellAllowedInRegime (DB): respects empty calm default", async () => {

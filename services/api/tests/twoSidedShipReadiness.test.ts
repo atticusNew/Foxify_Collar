@@ -104,11 +104,11 @@ test("ship readiness: cell NOT in regime allowlist → 503 cell_disabled_in_regi
   const { app, setRegime, cleanup } = await buildShipRig();
   try {
     await setRegime("moderate");
-    // pair_50k_2pct is V3-proven loss-making → NOT in any default allowlist
+    // pair_25k_1pct_atm_micro is V5-proven loss-making → NOT in any default allowlist
     const r = await app.inject({
       method: "POST", url: "/foxify/v2/activate",
       headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
-      payload: { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-block-${Date.now()}` }
+      payload: { cellId: "pair_25k_1pct_atm_micro", maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-block-${Date.now()}` }
     });
     assert.equal(r.statusCode, 503);
     assert.equal(r.json().error, "cell_disabled_in_regime");
