@@ -8592,7 +8592,8 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
 
     const { FeedService } = await import("./singleSide/twoSided/feedService");
     const { DvolService } = await import("./singleSide/twoSided/dvolService");
-    const { LiquidChainCache, type VenueChainProvider } = await import("./singleSide/twoSided/liquidChainCache");
+    const { LiquidChainCache } = await import("./singleSide/twoSided/liquidChainCache");
+    type VenueChainProvider = import("./singleSide/twoSided/liquidChainCache").VenueChainProvider;
     const { liquidChainAnchorProvider } = await import("./singleSide/twoSided/liquidChainAnchorProvider");
     const { fetchFullChainSnapshot } = await import("../scripts/backtest/singleSide/liquidStrikePicker");
     const { fetchBullishChainSnapshot } = await import("./singleSide/twoSided/bullishChainProvider");
