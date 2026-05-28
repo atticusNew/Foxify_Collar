@@ -8590,6 +8590,29 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     const { getPilotPool } = await import("./pilot/db");
     const v2Pool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
 
+    // ─── Auto-migrate foxify-v2 schemas at boot ───
+    // The standalone migrate:pilot script isn't part of Render's build/start
+    // lifecycle. Running ensure*Schema here makes the foxify-v2 surface
+    // self-migrating: enabling FOXIFY_V2_ENABLED=true on a fresh DB creates
+    // all required tables on first boot. Idempotent — safe to re-run.
+    const { ensureTwoSidedSchema } = await import("./singleSide/twoSided/db");
+    const { ensureDeferredPoolSchema } = await import("./singleSide/twoSided/deferredPool");
+    const { ensureGuardrailsSchema } = await import("./singleSide/twoSided/guardrails");
+    const { ensureNewbornReviewSchema } = await import("./singleSide/twoSided/featureFlag");
+    const { ensureWebhookConfigSchema } = await import("./singleSide/twoSided/webhookConfig");
+    const { ensureWebhookAttemptSchema } = await import("./singleSide/twoSided/webhookDelivery");
+    const { ensureCellAllowlistSchema } = await import("./singleSide/twoSided/cellAllowlist");
+    const { ensureCounterpartyLedgerSchema } = await import("./singleSide/twoSided/counterpartyLedger");
+    await ensureTwoSidedSchema(v2Pool);
+    await ensureDeferredPoolSchema(v2Pool);
+    await ensureGuardrailsSchema(v2Pool);
+    await ensureNewbornReviewSchema(v2Pool);
+    await ensureWebhookConfigSchema(v2Pool);
+    await ensureWebhookAttemptSchema(v2Pool);
+    await ensureCellAllowlistSchema(v2Pool);
+    await ensureCounterpartyLedgerSchema(v2Pool);
+    console.log("[FoxifyV2] Schema migrations applied (8 tables ensured)");
+
     const { FeedService } = await import("./singleSide/twoSided/feedService");
     const { DvolService } = await import("./singleSide/twoSided/dvolService");
     const { LiquidChainCache } = await import("./singleSide/twoSided/liquidChainCache");
