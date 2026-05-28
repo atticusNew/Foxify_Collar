@@ -416,6 +416,21 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     });
     const dvol = deps.dvolService.getCurrentDvol();
     const feedHealth = deps.feedService.getHealth();
+    // Refresh & surface liquid chain cache venue status
+    let liquidChainStatus: unknown = null;
+    if (deps.liquidChainCache) {
+      try {
+        const snap = await deps.liquidChainCache.getChain();
+        liquidChainStatus = snap ? {
+          fetched_at: new Date(snap.fetchedAtMs).toISOString(),
+          spot: snap.spot,
+          total_quote_count: snap.quotes.length,
+          venue_status: snap.venueStatus
+        } : { ok: false, reason: "cache empty (no providers returned data)" };
+      } catch (e) {
+        liquidChainStatus = { ok: false, reason: (e as Error).message };
+      }
+    }
     reply.send({
       asOf: new Date().toISOString(),
       halt,
@@ -424,6 +439,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       feed: feedHealth,
       deferredPool: pool,
       unwindQueue: deps.unwindQueue?.stats() ?? null,
+      liquidChainCache: liquidChainStatus,
       env: {
         live_enabled: process.env.SS_TWO_SIDED_LIVE_ENABLED === "true",
         boot_halt: process.env.SS_TWO_SIDED_BOOT_HALT !== "false",
@@ -433,6 +449,92 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           .map((s) => s.trim())
           .filter(Boolean)
       }
+    });
+  });
+
+  /**
+   * GET /admin/foxify/v2/cell-costs
+   *
+   * Returns LIVE hedge cost projections for every cell in the registry, using
+   * the same buildQuote path that activations use. Lets operator see at-a-glance
+   * which cells are currently tradable and at what cost without spinning up
+   * shadow activations.
+   *
+   * Query params (optional):
+   *   ?cells=pair_50k_2pct,pair_25k_5pct_otm_3d    — restrict to listed cells
+   */
+  app.get<{ Querystring: { cells?: string } }>("/admin/foxify/v2/cell-costs", { preHandler: checkAdminToken }, async (req, reply) => {
+    const { PHASE_0_CELLS } = await import("./cellConfig");
+    const { resolveCurrentTier } = await import("./tierResolver");
+    const { buildQuote } = await import("./quoteEngine");
+    const feed = deps.feedService.getCurrentFeed();
+    if (!feed || feed.health === "unavailable" || feed.canonicalPrice == null) {
+      reply.code(503).send({ error: "feed_unavailable", message: "Spot feed not currently aggregating; cannot price cells" });
+      return;
+    }
+    const spot = feed.canonicalPrice;
+    const tier = await resolveCurrentTier(deps.pool, Date.now());
+    const requested = req.query.cells?.split(",").map((s) => s.trim()).filter(Boolean) ?? Object.keys(PHASE_0_CELLS);
+    const results: Array<Record<string, unknown>> = [];
+    for (const cellId of requested) {
+      const cell = PHASE_0_CELLS[cellId];
+      if (!cell) {
+        results.push({ cellId, error: "unknown_cell" });
+        continue;
+      }
+      try {
+        const quote = await buildQuote({
+          cell,
+          spot,
+          anchorProvider: deps.anchorProvider,
+          tier,
+          liquidChainCache: deps.liquidChainCache ?? null
+        });
+        if (!quote.ok) {
+          results.push({
+            cellId,
+            ok: false,
+            reason: quote.reason,
+            details: quote.details
+          });
+          continue;
+        }
+        results.push({
+          cellId,
+          ok: true,
+          spot,
+          targetStrikes: { put: quote.targetPutStrike, call: quote.targetCallStrike },
+          actualStrikes: { put: quote.putStrike, call: quote.callStrike },
+          strikeShifted: { put: quote.putStrikeShifted, call: quote.callStrikeShifted },
+          putLeg: {
+            venue: quote.putLeg.venue,
+            symbol: quote.putLeg.symbol,
+            askUsdcPerBtc: quote.putLeg.askUsdcPerBtc,
+            legCostUsdc: quote.putLeg.legCostUsdc
+          },
+          callLeg: {
+            venue: quote.callLeg.venue,
+            symbol: quote.callLeg.symbol,
+            askUsdcPerBtc: quote.callLeg.askUsdcPerBtc,
+            legCostUsdc: quote.callLeg.legCostUsdc
+          },
+          totalHedgeCostUsdc: quote.totalHedgeCostUsdc,
+          contractsBtc: quote.contractsBtc,
+          triggerPctDown: cell.triggerPctDown,
+          triggerPctUp: cell.triggerPctUp,
+          hedgeTenorDays: cell.hedgeTenorDays
+        });
+      } catch (e) {
+        results.push({ cellId, ok: false, reason: "build_quote_threw", message: (e as Error).message });
+      }
+    }
+    reply.send({
+      asOf: new Date().toISOString(),
+      spot,
+      regime: deps.dvolService.getCurrentDvol()?.regime ?? null,
+      utcHour: new Date().getUTCHours(),
+      tier: tier.label,
+      results
     });
   });
 };
