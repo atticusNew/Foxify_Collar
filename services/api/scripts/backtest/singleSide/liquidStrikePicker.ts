@@ -387,7 +387,14 @@ const main = async () => {
   console.log(`\n✓ Report: ${outPath}`);
 };
 
-import { fileURLToPath } from "node:url";
-if (process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url)) {
+// Bundler-safe entry guard: only run main() when invoked DIRECTLY as a script
+// (via tsx). When this file is bundled into dist/server.js by esbuild, the
+// fileURLToPath(import.meta.url) === process.argv[1] check spuriously matches
+// because both point at the bundled server.js entry. Use basename suffix
+// matching instead — server.js never ends with this file's name.
+if (process.argv[1] && (
+  process.argv[1].endsWith("/liquidStrikePicker.ts") ||
+  process.argv[1].endsWith("\\liquidStrikePicker.ts")
+)) {
   main().catch((e) => { console.error(e); process.exit(1); });
 }
