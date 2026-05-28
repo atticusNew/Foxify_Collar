@@ -287,7 +287,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         iv_annual: dvol?.sigmaAnnual ?? null,
         rv_annual: null,
         vrp: null,
-        vrp_threshold_for_calm: -0.02,
+        vrp_threshold_for_calm: -0.015,
         reason: haltActive
           ? `halt_active:${halt.atticusHalt ? "atticus" : "foxify"}:${halt.atticusHaltReason ?? halt.foxifyHaltReason ?? "unknown"}`
           : dvol?.regime === "calm"
@@ -302,6 +302,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       return;
     }
     const { computeActivationGate } = await import("./activationGate");
+    const { recordGateSnapshot, computeVrpTrend, computeConsecutiveGoodSeconds } = await import("./gateHistory");
     const result = await computeActivationGate({
       dvolService: deps.dvolService,
       rvService: deps.rvService,
@@ -309,16 +310,43 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     });
     // Overlay halt state — even if gate says good, if halt is active, block
     const halt = await getHaltState(deps.pool);
-    if (halt.foxifyHalt || halt.atticusHalt) {
+    const haltActive = halt.foxifyHalt || halt.atticusHalt;
+    const finalGoodToActivate = !haltActive && result.good_to_activate;
+
+    // Record snapshot for trend computation BEFORE responding
+    const nowMs = Date.now();
+    recordGateSnapshot({
+      asOfMs: nowMs,
+      vrp: result.vrp,
+      goodToActivate: finalGoodToActivate,
+      regime: result.regime
+    });
+    const vrpTrend5min = computeVrpTrend(5, nowMs);
+    const vrpTrend15min = computeVrpTrend(15, nowMs);
+    const consecutiveGoodSeconds = computeConsecutiveGoodSeconds(nowMs);
+
+    const trends = {
+      vrp_change_5min: vrpTrend5min.delta,
+      vrp_change_15min: vrpTrend15min.delta,
+      consecutive_good_seconds: consecutiveGoodSeconds,
+      sustained_signal_confidence: consecutiveGoodSeconds == null ? "insufficient_history"
+        : consecutiveGoodSeconds === 0 ? "currently_bad"
+        : consecutiveGoodSeconds < 60 ? "low_just_flipped_good"
+        : consecutiveGoodSeconds < 180 ? "medium_1-3min_sustained"
+        : "high_3min+_sustained"
+    };
+
+    if (haltActive) {
       reply.send({
         ...result,
         good_to_activate: false,
         reason: `halt_active:${halt.atticusHalt ? "atticus" : "foxify"}:${halt.atticusHaltReason ?? halt.foxifyHaltReason ?? "unknown"}`,
-        recommended_cells: []
+        recommended_cells: [],
+        trends
       });
       return;
     }
-    reply.send(result);
+    reply.send({ ...result, trends });
   });
 
   app.get("/foxify/v2/regime", { preHandler: checkFoxifyToken }, async (_req, reply) => {
@@ -569,6 +597,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     const results: Array<Record<string, unknown>> = [];
     for (const cellId of Object.keys(PHASE_0_CELLS)) {
       const cell = PHASE_0_CELLS[cellId];
+      if (!cell.enabled) {
+        results.push({ cellId, ok: false, reason: "cell_deprecated" });
+        continue;
+      }
       try {
         const quote = await buildQuote({
           cell, spot, anchorProvider: deps.anchorProvider, tier,
@@ -664,6 +696,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const cell = PHASE_0_CELLS[cellId];
       if (!cell) {
         results.push({ cellId, error: "unknown_cell" });
+        continue;
+      }
+      if (!cell.enabled) {
+        results.push({ cellId, ok: false, reason: "cell_deprecated", message: "Cell exists in registry for backward compat but is disabled (always -EV per V5/V6)" });
         continue;
       }
       try {

@@ -21,8 +21,11 @@ export type ActivationGateInputs = {
   dvolService: DvolService;
   rvService: RvService;
   liquidChainCache?: LiquidChainCache | null;
-  /** VRP threshold for calm-regime override (default -0.02 = IV must be at
-   * least 2% BELOW RV for calm activation to be recommended). */
+  /** VRP threshold for calm-regime override. Tightened to -0.015 (was -0.02)
+   * 2026-05-28 based on observation that pair_50k_5pct_otm showed +EV at
+   * VRP=-1.01% (with Bullish active), suggesting -2% was too conservative.
+   * -1.5% catches that scenario while still requiring meaningfully negative
+   * vol risk premium. Operator may override per-call. */
   calmVrpThreshold?: number;
   nowMs?: number;
 };
@@ -50,7 +53,7 @@ export const computeActivationGate = async (inputs: ActivationGateInputs): Promi
   const now = inputs.nowMs ?? Date.now();
   const dvolSample = inputs.dvolService.getCurrentDvol(now);
   const rvSample = inputs.rvService.getCurrentRv(now);
-  const calmVrpThreshold = inputs.calmVrpThreshold ?? -0.02;
+  const calmVrpThreshold = inputs.calmVrpThreshold ?? -0.015;
   const asOf = new Date(now).toISOString();
 
   // Venue status from cache (if provided)

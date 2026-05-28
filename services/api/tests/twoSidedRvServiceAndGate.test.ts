@@ -77,6 +77,25 @@ test("activationGate: returns good_to_activate=true for moderate regime", async 
   assert.ok(r.recommended_cells.length > 0);
 });
 
+test("activationGate: default calmVrpThreshold is -0.015 (tightened 2026-05-28)", async () => {
+  const dvol = new DvolService({ fetchOverride: async () => 35 });
+  await dvol.tick();
+  const rv = new RvService({
+    fetchOverride: async () => Array.from({ length: 100 }, (_, i) => ({
+      ts: i,
+      // RV slightly higher than calm IV (0.35) → VRP ~-0.016 (between old -0.02 and new -0.015 thresholds)
+      close: 73000 + Math.sin(i / 6) * 700
+    }))
+  });
+  await rv.tick();
+  const r = await computeActivationGate({ dvolService: dvol, rvService: rv });
+  // VRP should be close to -0.016 → at default -0.015 threshold should still be GOOD
+  // (-0.016 < -0.015 = below threshold = good)
+  assert.equal(r.regime, "calm");
+  // Threshold reported as -0.015 in response
+  assert.equal(r.vrp_threshold_for_calm, -0.015);
+});
+
 test("activationGate: returns good_to_activate=false for calm + positive VRP", async () => {
   // Calm: DVOL=35 → IV=0.35
   // Low realized vol (flat prices) → RV << IV → VRP > 0

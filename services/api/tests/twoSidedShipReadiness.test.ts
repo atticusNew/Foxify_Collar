@@ -104,15 +104,31 @@ test("ship readiness: cell NOT in regime allowlist → 503 cell_disabled_in_regi
   const { app, setRegime, cleanup } = await buildShipRig();
   try {
     await setRegime("moderate");
-    // pair_25k_1pct_atm_micro is V5-proven loss-making → NOT in any default allowlist
+    // pair_100k_3pct_itm_short is enabled but NOT in any default allowlist (V5/V6 broken)
     const r = await app.inject({
       method: "POST", url: "/foxify/v2/activate",
       headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
-      payload: { cellId: "pair_25k_1pct_atm_micro", maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-block-${Date.now()}` }
+      payload: { cellId: "pair_100k_3pct_itm_short", maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-block-${Date.now()}` }
     });
     assert.equal(r.statusCode, 503);
     assert.equal(r.json().error, "cell_disabled_in_regime");
     assert.ok(Array.isArray(r.json().details.suggested_cells));
+  } finally { await cleanup(); }
+});
+
+test("ship readiness: deprecated cell (enabled: false) → 400 invalid_request", async () => {
+  const { app, setRegime, cleanup } = await buildShipRig();
+  try {
+    await setRegime("moderate");
+    // pair_25k_1pct_atm_micro is enabled: false (deprecated 2026-05-28)
+    const r = await app.inject({
+      method: "POST", url: "/foxify/v2/activate",
+      headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
+      payload: { cellId: "pair_25k_1pct_atm_micro", maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-dep-${Date.now()}` }
+    });
+    assert.equal(r.statusCode, 400);
+    assert.equal(r.json().error, "invalid_request");
+    assert.match(r.json().message, /disabled/);
   } finally { await cleanup(); }
 });
 
@@ -140,11 +156,18 @@ test("ship readiness: cell registry contains at least baseline + new 3d winner",
   assert.ok(cellIds.includes("pair_25k_5pct_otm_3d"), "moderate winner must be registered");
   for (const id of cellIds) {
     const c = PHASE_0_CELLS[id];
-    assert.ok(c.enabled);
+    // Validate shape; some cells are intentionally enabled:false (deprecated but
+    // kept for backward compat with shadow pairs referencing them).
+    assert.ok(typeof c.enabled === "boolean");
     assert.ok(c.notionalUsdcPerLeg > 0);
     assert.ok(c.contractsBtc > 0);
     assert.ok(c.hedgeTenorDays > 0);
   }
+  // At least the known winners should be enabled
+  const enabledIds = cellIds.filter((id) => PHASE_0_CELLS[id].enabled);
+  assert.ok(enabledIds.includes("pair_50k_2pct"));
+  assert.ok(enabledIds.includes("pair_25k_5pct_otm_3d"));
+  assert.ok(enabledIds.includes("pair_50k_5pct_otm"));
 });
 
 test("ship readiness: diagnostics surfaces all key system components", async () => {

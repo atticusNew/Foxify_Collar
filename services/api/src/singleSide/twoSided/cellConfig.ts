@@ -72,6 +72,12 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     strikeGridUsdc: 1_000,
     enabled: true
   },
+  /**
+   * DEPRECATED 2026-05-28. Live MC shows 0% trigger rate at calm (5% boundary
+   * in 1d tenor is effectively unreachable at typical BTC vol). Always -EV.
+   * Kept in registry for backward compat with old shadow pairs; operator
+   * cannot activate (enabled: false). Use pair_25k_5pct_otm_3d instead.
+   */
   pair_25k_5pct_otm_short: {
     cellId: "pair_25k_5pct_otm_short",
     notionalUsdcPerLeg: 25_000,
@@ -82,7 +88,7 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     putStrikeItmPct: -0.020,
     callStrikeItmPct: -0.025,
     strikeGridUsdc: 1_000,
-    enabled: true
+    enabled: false
   },
   /**
    * pair_25k_5pct_otm_3d — TOP MODERATE-REGIME CELL per cell-redesign sweep
@@ -115,6 +121,12 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     strikeGridUsdc: 1_000,
     enabled: true
   },
+  /**
+   * DEPRECATED 2026-05-28. Structurally always -EV across all regimes per
+   * V5/V6 sweeps. 4h tenor + 1% boundary + ATM strikes = trigger rate ~26%
+   * but salvage per trigger too small (1% × $73k × 0.3 BTC = $220 max raw
+   * payoff vs $300-400 cost). Kept for backward compat; cannot activate.
+   */
   pair_25k_1pct_atm_micro: {
     cellId: "pair_25k_1pct_atm_micro",
     notionalUsdcPerLeg: 25_000,
@@ -125,7 +137,7 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     putStrikeItmPct: 0,
     callStrikeItmPct: 0,
     strikeGridUsdc: 1_000,
-    enabled: true
+    enabled: false
   }
 };
 
