@@ -57,7 +57,7 @@ const BULLISH_PROBE_CONFIG = {
   strikeWindowUsdc: 6_000,
   tenorWindowDays: 2,    // covers 1d, 2d, 3d cells in one Bullish pull
   centerTenorDays: 3,    // central tenor — Bullish provider expects a focal point
-  maxConcurrency: 4,
+  maxConcurrency: 2,     // reduced from 4 to respect Bullish ~10 req/sec rate limit
   timeoutMs: 5_000
 };
 

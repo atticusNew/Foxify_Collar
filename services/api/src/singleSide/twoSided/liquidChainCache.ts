@@ -44,8 +44,14 @@ export type LiquidChainCacheConfig = {
 };
 
 export const DEFAULT_LIQUID_CHAIN_CACHE_CONFIG: LiquidChainCacheConfig = {
-  ttlMs: 30_000,
-  staleMaxAgeMs: 5 * 60_000
+  // Bumped from 30s → 120s. With multiple consumers (cell-costs endpoint,
+  // every activation, scheduled probe, VolumeCover chain warmer) all
+  // triggering Bullish chain refreshes, 30s × ~30 orderbook calls per refresh
+  // exceeded Bullish's ~10 req/sec rate limit (errorCode 96100). 120s aligns
+  // with the existing BullishTradingClient.getMarkets cache TTL and gives
+  // ~4 refreshes/min worth of headroom across all callers.
+  ttlMs: 120_000,
+  staleMaxAgeMs: 10 * 60_000
 };
 
 export class LiquidChainCache {

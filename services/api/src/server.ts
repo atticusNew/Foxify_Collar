@@ -8615,6 +8615,7 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
 
     const { FeedService } = await import("./singleSide/twoSided/feedService");
     const { DvolService } = await import("./singleSide/twoSided/dvolService");
+    const { RvService } = await import("./singleSide/twoSided/rvService");
     const { LiquidChainCache } = await import("./singleSide/twoSided/liquidChainCache");
     type VenueChainProvider = import("./singleSide/twoSided/liquidChainCache").VenueChainProvider;
     const { liquidChainAnchorProvider } = await import("./singleSide/twoSided/liquidChainAnchorProvider");
@@ -8655,7 +8656,7 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
             centerTenorDays: 3,         // covers Phase 0 (3d); 1d & 2d cells still inside tenor window
             strikeWindowUsdc: 6_000,
             tenorWindowDays: 2,
-            maxConcurrency: 4,
+            maxConcurrency: 2,          // reduced from 4 to respect Bullish ~10 req/sec rate limit
             timeoutMs: 4_000
           });
         }
@@ -8672,8 +8673,13 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     // recurring setInterval timer.
     const v2FeedService = new FeedService({ pollPeriodMs: 5_000 });
     const v2DvolService = new DvolService({ pollPeriodMs: 60_000 });
+    // RvService: realized-vol computation over rolling 24h, refreshed every 5min.
+    // Used by /foxify/v2/should_activate to compute vol risk premium (IV - RV)
+    // for calm-regime tactical override.
+    const v2RvService = new RvService({ pollPeriodMs: 5 * 60_000, lookbackHours: 24 });
     await v2FeedService.start();
     await v2DvolService.start();
+    await v2RvService.start();
 
     // Executor — Shadow ALWAYS in this iteration. Live execution wiring (with full
     // BullishIocLimit + DeribitConnector adapters) is gated behind a follow-up since
@@ -8686,6 +8692,7 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         pool: v2Pool,
         feedService: v2FeedService,
         dvolService: v2DvolService,
+        rvService: v2RvService,
         anchorProvider: v2AnchorProvider,
         executor: v2Executor,
         liquidChainCache: v2LiquidCache,

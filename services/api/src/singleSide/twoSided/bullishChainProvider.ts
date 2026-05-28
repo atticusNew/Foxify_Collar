@@ -37,6 +37,21 @@ export type BullishProviderConfig = {
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_TIMEOUT_MS = 4_000;
 
+/**
+ * Rate-limit backoff state (module-level singleton so all callers share it).
+ * When ANY Bullish call returns HTTP 429, we suppress further Bullish chain
+ * fetches for BACKOFF_MS to give the rate-limit window time to recover.
+ * Without this, repeated 429s would keep happening on every refresh.
+ */
+const BACKOFF_MS = 60_000;
+let _rateLimitedUntilMs = 0;
+
+const isRateLimited = (nowMs: number): boolean => nowMs < _rateLimitedUntilMs;
+const markRateLimited = (nowMs: number): void => { _rateLimitedUntilMs = nowMs + BACKOFF_MS; };
+/** For tests / observability. */
+export const __getBullishBackoffState = (): { rateLimitedUntilMs: number } => ({ rateLimitedUntilMs: _rateLimitedUntilMs });
+export const __resetBullishBackoffState = (): void => { _rateLimitedUntilMs = 0; };
+
 type BullishMarketLike = {
   symbol: string;
   marketEnabled: boolean;
@@ -90,12 +105,27 @@ export const fetchBullishChainSnapshot = async (
   fetchOrderbook?: (symbol: string) => Promise<{ bid: number | null; ask: number | null } | null>,
   nowMs = Date.now()
 ): Promise<{ spot: number; quotes: DeribitQuote[] }> => {
+  // Rate-limit short-circuit — skip fetch entirely if we're inside a backoff window.
+  // Returning empty quotes is fine: LiquidChainCache treats this as "Bullish unavailable
+  // for this refresh" and serves Deribit-only quotes from the merge.
+  if (isRateLimited(nowMs)) {
+    throw new Error(`bullish_rate_limited_until_${new Date(_rateLimitedUntilMs).toISOString()}`);
+  }
   const concurrency = config.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
   const targetTenorMs = config.centerTenorDays * 86_400_000;
   const tenorWindowMs = config.tenorWindowDays * 86_400_000;
 
   // 1. Get markets list (cached 120s by Bullish client)
-  const markets = await client.getMarkets({ cacheTtlMs: 120_000 });
+  let markets;
+  try {
+    markets = await client.getMarkets({ cacheTtlMs: 120_000 });
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (msg.includes("429") || msg.toLowerCase().includes("rate_limit")) {
+      markRateLimited(nowMs);
+    }
+    throw e;
+  }
 
   // 2. Filter to BTC options inside strike + tenor window
   const candidates: Array<{ market: BullishMarketLike; strike: number; optType: "put" | "call"; expiryMs: number }> = [];
@@ -118,14 +148,23 @@ export const fetchBullishChainSnapshot = async (
     });
   }
 
-  // 3. Fetch orderbook for each candidate concurrently
+  // 3. Fetch orderbook for each candidate concurrently. If we hit a 429 from
+  // any single orderbook call, immediately abort the rest and mark backoff —
+  // continuing would just keep hitting the rate limit.
+  let rateLimited = false;
   const defaultFetcher = async (symbol: string): Promise<{ bid: number | null; ask: number | null } | null> => {
+    if (rateLimited) return null; // short-circuit remaining in-flight
     try {
       const book = await client.getHybridOrderBook(symbol);
       const bid = book.bids?.[0]?.price ?? null;
       const ask = book.asks?.[0]?.price ?? null;
       return { bid: bid != null ? Number(bid) : null, ask: ask != null ? Number(ask) : null };
-    } catch {
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg.includes("429") || msg.toLowerCase().includes("rate_limit")) {
+        rateLimited = true;
+        markRateLimited(Date.now());
+      }
       return null;
     }
   };

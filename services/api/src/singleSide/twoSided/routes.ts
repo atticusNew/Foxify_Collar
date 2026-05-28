@@ -77,6 +77,11 @@ export type FoxifyV2RoutesDeps = {
    * (default behaviour: target strike, no shift).
    */
   liquidChainCache?: LiquidChainCache | null;
+  /**
+   * Realized-vol service. When provided, /foxify/v2/should_activate computes
+   * vol risk premium (IV - RV) for calm-regime tactical override.
+   */
+  rvService?: import("./rvService").RvService;
 };
 
 // ───────────────────────── Auth helpers ─────────────────────────
@@ -250,6 +255,70 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
 
   app.get("/foxify/v2/feed/health", { preHandler: checkFoxifyToken }, async (_req, reply) => {
     reply.send(deps.feedService.getHealth());
+  });
+
+  /**
+   * GET /foxify/v2/should_activate
+   *
+   * Polling endpoint for Foxify's bot. Returns whether the current moment is
+   * good for activating a new pair, based on:
+   *   - DVOL regime (moderate/elevated/stress always OK; calm conditional)
+   *   - Vol risk premium (VRP = IV - RV) — calm with negative VRP is OK
+   *   - Halt state
+   *
+   * Foxify's bot should poll this endpoint and only call /activate when
+   * `good_to_activate: true`. The `recommended_cells` field tells the bot
+   * which cells to activate; `next_check_signal` indicates what condition
+   * the bot should monitor for if currently waiting.
+   *
+   * Auth: X-Foxify-Token (same as other foxify-side endpoints).
+   */
+  app.get("/foxify/v2/should_activate", { preHandler: checkFoxifyToken }, async (_req, reply) => {
+    if (!deps.rvService) {
+      // RvService not wired — degrade to regime-only gate
+      const dvol = deps.dvolService.getCurrentDvol();
+      const halt = await getHaltState(deps.pool);
+      const haltActive = halt.foxifyHalt || halt.atticusHalt;
+      const good = !haltActive && dvol?.regime && dvol.regime !== "calm";
+      reply.send({
+        good_to_activate: Boolean(good),
+        regime: dvol?.regime ?? null,
+        dvol: dvol?.dvol ?? null,
+        iv_annual: dvol?.sigmaAnnual ?? null,
+        rv_annual: null,
+        vrp: null,
+        vrp_threshold_for_calm: -0.02,
+        reason: haltActive
+          ? `halt_active:${halt.atticusHalt ? "atticus" : "foxify"}:${halt.atticusHaltReason ?? halt.foxifyHaltReason ?? "unknown"}`
+          : dvol?.regime === "calm"
+            ? "calm_regime_default_halt_rv_service_not_configured"
+            : dvol?.regime
+              ? `regime_${dvol.regime}_positive_ev`
+              : "dvol_unavailable",
+        recommended_cells: [],
+        next_check_signal: "regime_change_or_rv_service_enabled",
+        asOf: new Date().toISOString()
+      });
+      return;
+    }
+    const { computeActivationGate } = await import("./activationGate");
+    const result = await computeActivationGate({
+      dvolService: deps.dvolService,
+      rvService: deps.rvService,
+      liquidChainCache: deps.liquidChainCache ?? null
+    });
+    // Overlay halt state — even if gate says good, if halt is active, block
+    const halt = await getHaltState(deps.pool);
+    if (halt.foxifyHalt || halt.atticusHalt) {
+      reply.send({
+        ...result,
+        good_to_activate: false,
+        reason: `halt_active:${halt.atticusHalt ? "atticus" : "foxify"}:${halt.atticusHaltReason ?? halt.foxifyHaltReason ?? "unknown"}`,
+        recommended_cells: []
+      });
+      return;
+    }
+    reply.send(result);
   });
 
   app.get("/foxify/v2/regime", { preHandler: checkFoxifyToken }, async (_req, reply) => {
