@@ -65,7 +65,14 @@ export type PickerConfig = {
 
 export const DEFAULT_PICKER_CONFIG: PickerConfig = {
   strikeToleranceUsdc: 3_000,
-  tenorToleranceDays: 0.3,
+  // ±1.5 days tolerance to handle expiry-calendar drift.
+  // Deribit has daily expiries at 08:00 UTC. Cells targeting a 3d tenor will,
+  // depending on the time of day, see the nearest expiry land anywhere from
+  // ~2d to ~3.5d away. ±0.3d was too tight — caused the picker to return null
+  // between roughly 14:00-24:00 UTC each day, silently breaking activations.
+  // ±1.5d gives us the full daily-expiry window without crossing weekly
+  // boundaries (weekly expiries are 7 days apart).
+  tenorToleranceDays: 1.5,
   maxSpreadPct: 0.30,
   minMidUsdc: 5,
   maxIvSpreadRatio: 2.0,
