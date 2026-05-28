@@ -117,42 +117,91 @@ export type DeribitClientLike = {
   }) => Promise<unknown>;
 };
 
+/**
+ * DeribitLegAdapter — bridges USDC-per-option pricing (our internal model)
+ * to BTC-per-option pricing (Deribit's native quote unit).
+ *
+ * Deribit option prices are quoted in BTC per option, NOT USDC.
+ * Example: BTC-31MAY26-72000-P at "price 0.005" means 0.005 BTC per contract,
+ * which at spot $73,500 = $367.50 per contract.
+ *
+ * Our internal cost model speaks USDC/BTC throughout (cell costs, EV, etc).
+ * This adapter converts at the venue boundary:
+ *   - Outbound: USDC limit → BTC limit (divide by spot)
+ *   - Inbound:  BTC fill → USDC fill (multiply by spot)
+ *
+ * Spot is provided via callback so it's always current (not snapshotted at
+ * adapter construction). Adapter calls getCurrentSpotUsd() at the moment
+ * each order fires.
+ *
+ * Tick precision: Deribit option tick is 0.0001 BTC. We round limit UP for
+ * buys (ensure crossable) and DOWN for sells.
+ */
+export type DeribitLegAdapterOpts = {
+  /** Called at order time to get current BTC/USDC spot for USDC↔BTC conversion. */
+  getCurrentSpotUsd: () => number | null;
+  /** Deribit option price tick (default 0.0001 BTC). */
+  priceTickBtc?: number;
+};
+
+const DEFAULT_DERIBIT_PRICE_TICK_BTC = 0.0001;
+
+const snapUpToTick = (px: number, tick: number): number => Math.ceil(px / tick) * tick;
+const snapDownToTick = (px: number, tick: number): number => Math.floor(px / tick) * tick;
+
 export class DeribitLegAdapter implements DeribitLegClient {
-  constructor(private readonly client: DeribitClientLike) {}
+  constructor(
+    private readonly client: DeribitClientLike,
+    private readonly opts: DeribitLegAdapterOpts
+  ) {}
 
   async buyLeg(req: DeribitLegBuyRequest): Promise<LegExecutionResult> {
-    // Deribit option prices are quoted in BTC per option. amount = contracts (BTC notional).
-    // For buy: limit price = max acceptable per BTC, converted to BTC-quoted price by
-    // dividing by Deribit's underlying. For simplicity in this adapter we pass USD price
-    // and let DeribitConnector interpret it appropriately at the venue layer; production
-    // wiring should pre-convert via the underlying price.
-    // NOTE: For Phase 0 microtests, we trust the caller to have computed a Deribit-native
-    // price already. The full bid/ask units handling is in PR C1 (smile model).
+    const spot = this.opts.getCurrentSpotUsd();
+    if (!spot || spot <= 0) {
+      return { ok: false, reason: "venue_error", detail: `Deribit buy: spot unavailable for USDC→BTC conversion (got ${spot})` };
+    }
+    // Convert USDC-per-BTC limit price to BTC-per-option:
+    //   priceBtc = (usdcPerBtcOption) / spot_usdc_per_btc
+    // Round UP so we don't accidentally limit below ask
+    const priceBtcRaw = req.maxAcceptableAskUsdcPerBtc / spot;
+    const priceBtc = snapUpToTick(priceBtcRaw, this.opts.priceTickBtc ?? DEFAULT_DERIBIT_PRICE_TICK_BTC);
+
     try {
       const resp = (await this.client.placeOrder({
         instrument: req.instrument,
         amount: req.contractsBtc,
         side: "buy",
         type: "limit",
-        price: req.maxAcceptableAskUsdcPerBtc,
+        price: priceBtc,
         timeInForce: "immediate_or_cancel"
       })) as { result?: { order?: { order_state?: string; average_price?: number; filled_amount?: number } }; status?: string; fillPrice?: number };
-      // Paper-mode response
+
+      // Paper-mode response: fillPrice is BTC-quoted (Deribit native)
       if (resp?.status === "paper_filled" && resp.fillPrice != null) {
-        return { ok: true, filledAskUsdcPerBtc: resp.fillPrice, filledAtIso: new Date().toISOString() };
+        return {
+          ok: true,
+          filledAskUsdcPerBtc: resp.fillPrice * spot,
+          filledAtIso: new Date().toISOString()
+        };
       }
-      // Live response shape: result.order.{order_state, average_price, filled_amount}
+
+      // Live response: result.order.{order_state, average_price (BTC), filled_amount}
       const order = resp?.result?.order;
       if (!order) {
         return { ok: false, reason: "venue_error", detail: `Deribit response missing order field: ${JSON.stringify(resp).slice(0, 200)}` };
       }
       const state = order.order_state;
       if (state !== "filled" || !order.average_price || !order.filled_amount) {
-        return { ok: false, reason: "venue_error", detail: `Deribit order not filled: state=${state}` };
+        return {
+          ok: false,
+          reason: "venue_error",
+          detail: `Deribit order not filled: state=${state} avg_px=${order.average_price} filled_amt=${order.filled_amount}. ` +
+                  `Limit was ${priceBtc.toFixed(4)} BTC (= \$${(priceBtc * spot).toFixed(2)} USDC/BTC at spot \$${spot.toFixed(0)})`
+        };
       }
       return {
         ok: true,
-        filledAskUsdcPerBtc: order.average_price,
+        filledAskUsdcPerBtc: order.average_price * spot,
         filledAtIso: new Date().toISOString()
       };
     } catch (e) {
@@ -161,23 +210,51 @@ export class DeribitLegAdapter implements DeribitLegClient {
   }
 
   async sellLeg(req: DeribitLegSellRequest): Promise<LegExecutionResult> {
+    const spot = this.opts.getCurrentSpotUsd();
+    if (!spot || spot <= 0) {
+      return { ok: false, reason: "venue_error", detail: `Deribit sell: spot unavailable for USDC→BTC conversion` };
+    }
+    // Convert USDC-per-BTC floor to BTC-per-option. Round DOWN so we don't
+    // accidentally set floor above bid (would prevent fill). For best-effort
+    // reverse (floor=0), use minimum 1 tick to satisfy Deribit's price > 0 requirement.
+    const priceBtcRaw = req.minAcceptableBidUsdcPerBtc > 0
+      ? req.minAcceptableBidUsdcPerBtc / spot
+      : 0.0001; // 1 tick = best-effort sell at any tradable price
+    const priceBtc = req.minAcceptableBidUsdcPerBtc > 0
+      ? snapDownToTick(priceBtcRaw, this.opts.priceTickBtc ?? DEFAULT_DERIBIT_PRICE_TICK_BTC)
+      : 0.0001;
+
     try {
       const resp = (await this.client.placeOrder({
         instrument: req.instrument,
         amount: req.contractsBtc,
         side: "sell",
         type: "limit",
-        price: req.minAcceptableBidUsdcPerBtc > 0 ? req.minAcceptableBidUsdcPerBtc : 0.0001,
+        price: priceBtc,
         timeInForce: "immediate_or_cancel"
       })) as { result?: { order?: { order_state?: string; average_price?: number; filled_amount?: number } }; status?: string; fillPrice?: number };
+
       if (resp?.status === "paper_filled" && resp.fillPrice != null) {
-        return { ok: true, filledAskUsdcPerBtc: resp.fillPrice, filledAtIso: new Date().toISOString() };
+        return {
+          ok: true,
+          filledAskUsdcPerBtc: resp.fillPrice * spot,
+          filledAtIso: new Date().toISOString()
+        };
       }
       const order = resp?.result?.order;
       if (!order || order.order_state !== "filled" || !order.average_price || !order.filled_amount) {
-        return { ok: false, reason: "venue_error", detail: `Deribit sell not filled: state=${order?.order_state}` };
+        return {
+          ok: false,
+          reason: "venue_error",
+          detail: `Deribit sell not filled: state=${order?.order_state}. ` +
+                  `Limit was ${priceBtc.toFixed(4)} BTC (= \$${(priceBtc * spot).toFixed(2)} USDC/BTC at spot \$${spot.toFixed(0)})`
+        };
       }
-      return { ok: true, filledAskUsdcPerBtc: order.average_price, filledAtIso: new Date().toISOString() };
+      return {
+        ok: true,
+        filledAskUsdcPerBtc: order.average_price * spot,
+        filledAtIso: new Date().toISOString()
+      };
     } catch (e) {
       return { ok: false, reason: "venue_error", detail: `Deribit sell threw: ${(e as Error).message}` };
     }

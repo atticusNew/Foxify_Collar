@@ -114,13 +114,32 @@ const main = async () => {
     String(process.env.DERIBIT_PAPER ?? "true").toLowerCase() === "true"
   );
 
-  // Set generous max-ask: assume spot ~$74k, ITM near-money options ~$2k/BTC max
+  // Spot for USDC↔BTC conversion on the Deribit side. Pull live from Deribit's
+  // index endpoint at script start.
+  console.log("Fetching live BTC spot for USDC↔BTC conversion...");
+  let smokeSpot: number;
+  try {
+    const idxRes = await fetch("https://www.deribit.com/api/v2/public/get_index_price?index_name=btc_usd");
+    const idx = (await idxRes.json()) as { result?: { index_price?: number } };
+    if (!idx.result?.index_price) throw new Error("missing index_price");
+    smokeSpot = idx.result.index_price;
+    console.log(`  spot: \$${smokeSpot.toFixed(2)}`);
+  } catch (e) {
+    console.error(`FAIL: Could not fetch BTC spot for unit conversion: ${(e as Error).message}`);
+    process.exit(1);
+  }
+
+  // Set generous max-ask: ITM near-money options ~$2k/BTC max
   const maxAcceptableAskUsdcPerBtc = Number(process.env.SMOKE_MAX_ASK_USDC_PER_BTC ?? "3000");
 
-  const executor = new LiveStrangleExecutor(
-    bullishClient ? new BullishLegAdapter(bullishClient, { tradingAccountId: pilotConfig.bullish.tradingAccountId }) : { buyLeg: async () => ({ ok: false, reason: "venue_error", detail: "bullish_disabled" }), sellLeg: async () => ({ ok: false, reason: "venue_error", detail: "bullish_disabled" }) },
-    new DeribitLegAdapter(deribitClient)
-  );
+  const deribitAdapter = new DeribitLegAdapter(deribitClient, {
+    getCurrentSpotUsd: () => smokeSpot
+  });
+  const bullishAdapter = bullishClient
+    ? new BullishLegAdapter(bullishClient, { tradingAccountId: pilotConfig.bullish.tradingAccountId })
+    : { buyLeg: async () => ({ ok: false as const, reason: "venue_error" as const, detail: "bullish_disabled" }), sellLeg: async () => ({ ok: false as const, reason: "venue_error" as const, detail: "bullish_disabled" }) };
+
+  const executor = new LiveStrangleExecutor(bullishAdapter, deribitAdapter);
 
   const order = {
     pairId: `smoke-${Date.now()}`,
@@ -172,17 +191,14 @@ const main = async () => {
 
   console.log("⚠️  Position is now LIVE in your venue accounts. Reversing immediately to close...");
   const reverseT0 = Date.now();
-  // Build a "reverse strangle" by re-using executeStrangle with sell-side... actually executor
-  // doesn't expose a public sell-strangle. We'd call the adapter sellLeg methods directly.
-  const bullishAdapter = bullishClient ? new BullishLegAdapter(bullishClient, { tradingAccountId: pilotConfig.bullish.tradingAccountId }) : null;
-  const deribitAdapter = new DeribitLegAdapter(deribitClient);
+  // Reuse the same adapters from above (no re-construction; preserves spot getter)
 
-  const sellPut = putVenue === "bullish" && bullishAdapter
-    ? await bullishAdapter.sellLeg({ symbol: putSymbol, contractsBtc, minAcceptableBidUsdcPerBtc: 0, clientOrderId: `${order.pairId}-sellput` })
-    : await deribitAdapter.sellLeg({ instrument: putSymbol, contractsBtc, minAcceptableBidUsdcPerBtc: 0.0001, clientOrderId: `${order.pairId}-sellput` });
-  const sellCall = callVenue === "bullish" && bullishAdapter
-    ? await bullishAdapter.sellLeg({ symbol: callSymbol, contractsBtc, minAcceptableBidUsdcPerBtc: 0, clientOrderId: `${order.pairId}-sellcall` })
-    : await deribitAdapter.sellLeg({ instrument: callSymbol, contractsBtc, minAcceptableBidUsdcPerBtc: 0.0001, clientOrderId: `${order.pairId}-sellcall` });
+  const sellPut = putVenue === "bullish" && bullishClient
+    ? await (bullishAdapter as BullishLegAdapter).sellLeg({ symbol: putSymbol, contractsBtc, minAcceptableBidUsdcPerBtc: 0, clientOrderId: `${order.pairId}-sellput` })
+    : await deribitAdapter.sellLeg({ instrument: putSymbol, contractsBtc, minAcceptableBidUsdcPerBtc: 0, clientOrderId: `${order.pairId}-sellput` });
+  const sellCall = callVenue === "bullish" && bullishClient
+    ? await (bullishAdapter as BullishLegAdapter).sellLeg({ symbol: callSymbol, contractsBtc, minAcceptableBidUsdcPerBtc: 0, clientOrderId: `${order.pairId}-sellcall` })
+    : await deribitAdapter.sellLeg({ instrument: callSymbol, contractsBtc, minAcceptableBidUsdcPerBtc: 0, clientOrderId: `${order.pairId}-sellcall` });
   const reverseMs = Date.now() - reverseT0;
 
   console.log(`Reverse completed in ${reverseMs}ms.`);

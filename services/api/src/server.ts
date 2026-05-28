@@ -8697,8 +8697,12 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       const bullishAdapter = new BullishLegAdapter(v2BullishClient, {
         tradingAccountId: v2PilotConfig.bullish.tradingAccountId
       });
-      // Reuse the existing module-level deribit connector from earlier in this file
-      const deribitAdapter = new DeribitLegAdapter(deribit);
+      // Reuse the existing module-level deribit connector from earlier in this file.
+      // Adapter needs current spot at order time to convert USDC↔BTC pricing (Deribit
+      // quotes options in BTC per option; our internal model uses USDC per BTC option).
+      const deribitAdapter = new DeribitLegAdapter(deribit, {
+        getCurrentSpotUsd: () => v2FeedService.getCurrentFeed()?.canonicalPrice ?? null
+      });
       v2Executor = new LiveStrangleExecutor(bullishAdapter, deribitAdapter);
       console.log("[FoxifyV2] ⚠️  LIVE EXECUTION ENABLED — real venue orders will fire on /foxify/v2/activate calls. Set FOXIFY_V2_LIVE_EXECUTION=false to revert to shadow.");
     } else {
