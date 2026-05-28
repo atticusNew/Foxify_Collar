@@ -94,6 +94,33 @@ test("pickLiquidForLeg shifts strike when exact match is illiquid", async () => 
   assert.equal(r.shifted, true);
 });
 
+test("pickLiquidForLeg shifts strike when exact match has wide-but-not-rejected spread (EV-preserving)", async () => {
+  // target = 75_000 has 25% spread (passes maxSpreadPct 30% but >exactStrikeMaxSpreadPct 20%)
+  // 74_000 has 5% spread (much tighter; preferred even though it's a strike-shift)
+  const quotes = [
+    fakeQuote(75_000, "put", 1500, 0.25),  // accepted as tradable BUT spread > 20% threshold
+    fakeQuote(74_000, "put", 1200, 0.05)   // tight, becomes preferred
+  ];
+  const cache = new LiquidChainCache({ fetcher: async () => ({ spot: 75_000, quotes }) });
+  const r = await pickLiquidForLeg(cache, 75_000, "put", 3, 75_000);
+  assert.equal(r.pickedStrike, 74_000); // shifted because exact target was too wide
+  assert.equal(r.shifted, true);
+  assert.equal(r.askUsdcPerBtc, 1200);
+});
+
+test("pickLiquidForLeg uses exact-target when spread is below EV threshold", async () => {
+  // target = 75_000 has 12% spread (under exactStrikeMaxSpreadPct 20%)
+  // 74_000 has 5% spread (tighter) but we honor exact target
+  const quotes = [
+    fakeQuote(75_000, "put", 1500, 0.12),  // exact match, acceptable spread
+    fakeQuote(74_000, "put", 1200, 0.05)   // tighter but not preferred (exact wins)
+  ];
+  const cache = new LiquidChainCache({ fetcher: async () => ({ spot: 75_000, quotes }) });
+  const r = await pickLiquidForLeg(cache, 75_000, "put", 3, 75_000);
+  assert.equal(r.pickedStrike, 75_000); // exact target preserved (EV-preserving)
+  assert.equal(r.shifted, false);
+});
+
 test("pickLiquidForLeg falls back to target on empty cache", async () => {
   const cache = new LiquidChainCache({ fetcher: async () => { throw new Error("net"); } });
   const r = await pickLiquidForLeg(cache, 75_000, "put", 3, 75_000);

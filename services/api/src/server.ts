@@ -8665,11 +8665,15 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     // Anchor provider — backed by the same cache (no double fetches per activation)
     const v2AnchorProvider = liquidChainAnchorProvider(v2LiquidCache);
 
-    // FeedService + DvolService (polling under the hood; pollPeriodMs is the option name)
+    // FeedService + DvolService — start() begins the polling loop.
+    // Bug fix: previously called tick() (one-shot fetch), so services only had
+    // one data point at boot, then DvolService went stale after 5 min and
+    // regime returned null. start() does an immediate tick AND schedules the
+    // recurring setInterval timer.
     const v2FeedService = new FeedService({ pollPeriodMs: 5_000 });
     const v2DvolService = new DvolService({ pollPeriodMs: 60_000 });
-    await v2FeedService.tick();
-    await v2DvolService.tick();
+    await v2FeedService.start();
+    await v2DvolService.start();
 
     // Executor — Shadow ALWAYS in this iteration. Live execution wiring (with full
     // BullishIocLimit + DeribitConnector adapters) is gated behind a follow-up since

@@ -47,7 +47,7 @@ export type DeribitQuote = {
 export type PickerConfig = {
   /** ±USD tolerance around target strike (default $3,000) */
   strikeToleranceUsdc: number;
-  /** ±days tolerance around target tenor (default 0.3) */
+  /** ±days tolerance around target tenor (default 1.5d) */
   tenorToleranceDays: number;
   /** Max acceptable spread as % of mid (default 0.30 = 30%) */
   maxSpreadPct: number;
@@ -61,22 +61,31 @@ export type PickerConfig = {
    * Default true — otherwise picker may make cheap-but-wrong-product picks.
    */
   preserveMoneynessSide: boolean;
+  /**
+   * EV-preserving heuristic: prefer exact-target-strike match ONLY when its
+   * spread is below this threshold (default 0.20 = 20%). Above this, fall back
+   * to ranked composite (which prefers tight-spread liquid neighbors).
+   *
+   * Why: cell intent encodes economic geometry (e.g., "1.3% ITM put" maximizes
+   * salvage at trigger). Honoring that geometry preserves EV. But when the
+   * exact strike has a wide spread, paying 30%+ over fair value destroys more
+   * EV than the strike-shift would. Threshold gates the tradeoff.
+   *
+   * 20% chosen empirically: typical Deribit ITM near-target spread is 5-15%,
+   * pathological is 30%+, so 20% catches "this strike is being mis-quoted"
+   * without rejecting normal market spreads.
+   */
+  exactStrikeMaxSpreadPct: number;
 };
 
 export const DEFAULT_PICKER_CONFIG: PickerConfig = {
   strikeToleranceUsdc: 3_000,
-  // ±1.5 days tolerance to handle expiry-calendar drift.
-  // Deribit has daily expiries at 08:00 UTC. Cells targeting a 3d tenor will,
-  // depending on the time of day, see the nearest expiry land anywhere from
-  // ~2d to ~3.5d away. ±0.3d was too tight — caused the picker to return null
-  // between roughly 14:00-24:00 UTC each day, silently breaking activations.
-  // ±1.5d gives us the full daily-expiry window without crossing weekly
-  // boundaries (weekly expiries are 7 days apart).
   tenorToleranceDays: 1.5,
   maxSpreadPct: 0.30,
   minMidUsdc: 5,
   maxIvSpreadRatio: 2.0,
-  preserveMoneynessSide: true
+  preserveMoneynessSide: true,
+  exactStrikeMaxSpreadPct: 0.20
 };
 
 const fetchJson = async <T>(url: string, timeoutMs = 8_000): Promise<T> => {
@@ -161,7 +170,7 @@ export type PickResult = {
   picked: DeribitQuote | null;
   rejected: Array<{ quote: DeribitQuote; reason: string }>;
   candidates: DeribitQuote[];
-  picker: "exact_strike" | "best_spread" | "fallback";
+  picker: "exact_strike" | "best_spread" | "best_spread_exact_too_wide" | "fallback";
 };
 
 /**
@@ -239,19 +248,37 @@ export const pickLiquidStrike = (
   }
   const venueRoutedTradable = [...bestPerStrike.values()];
 
-  // Now pick across strikes. Prefer:
-  //   1. Exact-strike match (honor cell geometry)
-  //   2. Lowest ask × spread composite for non-exact
+  // EV-preserving strike selection:
+  //   1. If exact-target strike exists AND its spread is reasonable, use it
+  //      (honors cell economic geometry → maximizes salvage at trigger).
+  //   2. If exact target has pathological spread (>exactStrikeMaxSpreadPct),
+  //      fall through to ranked composite — picks tighter-spread liquid
+  //      neighbor at the cost of slight strike-geometry shift.
+  //
+  // This trades a bit of geometric purity for execution reality: a 30%-spread
+  // strike paid at ask destroys more EV than a $1k strike shift to a tight
+  // liquid neighbor does. Threshold lets operator tune the tradeoff.
   const exact = venueRoutedTradable.find((q) => q.strike === targetStrike);
-  if (exact) return { picked: exact, rejected, candidates: venueRoutedTradable, picker: "exact_strike" };
+  if (exact && exact.spreadPct <= config.exactStrikeMaxSpreadPct) {
+    return { picked: exact, rejected, candidates: venueRoutedTradable, picker: "exact_strike" };
+  }
 
-  // Composite: ask cost (heavier weight) + spread + strike distance
+  // Composite ranking when exact target is illiquid OR doesn't exist.
+  // Score components (lower is better):
+  //   askUsdcPerBtc                    — direct cost
+  //   spreadPct × 2000                 — execution-risk penalty (was 1000 — strengthened)
+  //   distance-from-target × 0.5       — geometric drift penalty (small to allow shifts when needed)
   const ranked = [...venueRoutedTradable].sort((a, b) => {
-    const scoreA = a.askUsdcPerBtc + a.spreadPct * 1_000 + Math.abs(a.strike - targetStrike) / 2;
-    const scoreB = b.askUsdcPerBtc + b.spreadPct * 1_000 + Math.abs(b.strike - targetStrike) / 2;
+    const scoreA = a.askUsdcPerBtc + a.spreadPct * 2_000 + Math.abs(a.strike - targetStrike) * 0.5;
+    const scoreB = b.askUsdcPerBtc + b.spreadPct * 2_000 + Math.abs(b.strike - targetStrike) * 0.5;
     return scoreA - scoreB;
   });
-  return { picked: ranked[0], rejected, candidates: venueRoutedTradable, picker: "best_spread" };
+  return {
+    picked: ranked[0],
+    rejected,
+    candidates: venueRoutedTradable,
+    picker: exact ? "best_spread_exact_too_wide" : "best_spread"
+  };
 };
 
 // =============================================================================
