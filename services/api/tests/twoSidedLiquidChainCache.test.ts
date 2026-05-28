@@ -130,6 +130,8 @@ test("pickLiquidForLeg falls back to target on empty cache", async () => {
 });
 
 test("buildQuote with liquidChainCache shifts strikes and reports shift", async () => {
+  const { __resetQuoteCache } = await import("../src/singleSide/twoSided/quoteEngine");
+  __resetQuoteCache();
   const cell = PHASE_0_CELLS.pair_50k_2pct;
   const spot = 75_000;
   // Naive target strikes: putItmPct=0.013 → 75_975 → snap up to 76_000
@@ -170,7 +172,7 @@ test("buildQuote with liquidChainCache shifts strikes and reports shift", async 
     }
   };
 
-  const tier = TIERS.tier_1;
+  const tier = TIERS[0];
   const result = await buildQuote({ cell, spot, anchorProvider: provider, tier, liquidChainCache: cache });
 
   assert.ok(result.ok, JSON.stringify(result));
@@ -240,7 +242,90 @@ test("LiquidChainCache returns null when ALL providers fail (no stale fallback)"
   assert.equal(snap, null);
 });
 
+test("buildQuote stability cache: same (cell, spot-bucket, tier) returns same quote within TTL", async () => {
+  const { __resetQuoteCache, __getQuoteCacheStats } = await import("../src/singleSide/twoSided/quoteEngine");
+  __resetQuoteCache();
+  const cell = PHASE_0_CELLS.pair_50k_2pct;
+  const spot = 75_000;
+  let putAskCalls = 0;
+  let callAskCalls = 0;
+  // Provider whose ask changes per call — proves cache is short-circuiting
+  const provider: LiveAnchorProvider = {
+    getAnchorForLeg: async (strike, optType, _tenor) => {
+      if (optType === "put") putAskCalls++; else callAskCalls++;
+      const baseAsk = optType === "put" ? 1500 : 1000;
+      const drift = (optType === "put" ? putAskCalls : callAskCalls) * 100; // each call costs more
+      return {
+        bullish: null,
+        deribit: {
+          venue: "deribit",
+          symbol: `DERIBIT-${strike}`,
+          askUsdcPerBtc: baseAsk + drift,
+          depthWithin2pctBtc: 5,
+          pulledAt: new Date().toISOString()
+        }
+      };
+    }
+  };
+  const quote1 = await buildQuote({ cell, spot, anchorProvider: provider, tier: TIERS[0] });
+  const quote2 = await buildQuote({ cell, spot, anchorProvider: provider, tier: TIERS[0] });
+  assert.ok(quote1.ok && quote2.ok);
+  if (!quote1.ok || !quote2.ok) return;
+  // Same quote regardless of drift in provider
+  assert.equal(quote1.totalHedgeCostUsdc, quote2.totalHedgeCostUsdc);
+  assert.equal(quote1.quoteId, quote2.quoteId);
+  assert.equal(quote2.fromStabilityCache, true);
+  // Anchor provider was hit ONCE per leg (first call), not twice
+  assert.equal(putAskCalls, 1);
+  assert.equal(callAskCalls, 1);
+  assert.equal(__getQuoteCacheStats().size, 1);
+});
+
+test("buildQuote stability cache: spot moving across bucket invalidates", async () => {
+  const { __resetQuoteCache } = await import("../src/singleSide/twoSided/quoteEngine");
+  __resetQuoteCache();
+  const cell = PHASE_0_CELLS.pair_50k_2pct;
+  let callCount = 0;
+  const provider: LiveAnchorProvider = {
+    getAnchorForLeg: async (strike, _optType, _tenor) => {
+      callCount++;
+      return {
+        bullish: null,
+        deribit: { venue: "deribit", symbol: `D-${strike}`, askUsdcPerBtc: 1000, depthWithin2pctBtc: 5, pulledAt: new Date().toISOString() }
+      };
+    }
+  };
+  // Same bucket: $75,000 and $75,030 round to same $75,000 bucket
+  await buildQuote({ cell, spot: 75_000, anchorProvider: provider, tier: TIERS[0] });
+  await buildQuote({ cell, spot: 75_030, anchorProvider: provider, tier: TIERS[0] });
+  assert.equal(callCount, 2); // 1 per leg from first call, none from second (cache hit)
+  // Different bucket: $75,500 rounds to $75,500 — different from $75,000
+  await buildQuote({ cell, spot: 75_500, anchorProvider: provider, tier: TIERS[0] });
+  assert.equal(callCount, 4); // 2 more legs from fresh quote at new bucket
+});
+
+test("buildQuote stability cache: useStabilityCache=false forces fresh quote", async () => {
+  const { __resetQuoteCache } = await import("../src/singleSide/twoSided/quoteEngine");
+  __resetQuoteCache();
+  const cell = PHASE_0_CELLS.pair_50k_2pct;
+  let callCount = 0;
+  const provider: LiveAnchorProvider = {
+    getAnchorForLeg: async (strike, _optType, _tenor) => {
+      callCount++;
+      return {
+        bullish: null,
+        deribit: { venue: "deribit", symbol: `D-${strike}`, askUsdcPerBtc: 1000, depthWithin2pctBtc: 5, pulledAt: new Date().toISOString() }
+      };
+    }
+  };
+  await buildQuote({ cell, spot: 75_000, anchorProvider: provider, tier: TIERS[0] });
+  await buildQuote({ cell, spot: 75_000, anchorProvider: provider, tier: TIERS[0], useStabilityCache: false });
+  assert.equal(callCount, 4); // 2 legs × 2 calls (cache bypassed second time)
+});
+
 test("buildQuote without liquidChainCache uses target strikes (backward compat)", async () => {
+  const { __resetQuoteCache } = await import("../src/singleSide/twoSided/quoteEngine");
+  __resetQuoteCache();
   const cell = PHASE_0_CELLS.pair_50k_2pct;
   const spot = 75_000;
   const provider: LiveAnchorProvider = {
@@ -255,7 +340,7 @@ test("buildQuote without liquidChainCache uses target strikes (backward compat)"
       }
     })
   };
-  const result = await buildQuote({ cell, spot, anchorProvider: provider, tier: TIERS.tier_1 });
+  const result = await buildQuote({ cell, spot, anchorProvider: provider, tier: TIERS[0] });
   assert.ok(result.ok);
   if (!result.ok) return;
   assert.equal(result.putStrike, 76_000); // target preserved

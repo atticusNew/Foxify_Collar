@@ -706,7 +706,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           contractsBtc: quote.contractsBtc,
           triggerPctDown: cell.triggerPctDown,
           triggerPctUp: cell.triggerPctUp,
-          hedgeTenorDays: cell.hedgeTenorDays
+          hedgeTenorDays: cell.hedgeTenorDays,
+          fromStabilityCache: Boolean(quote.fromStabilityCache)
         });
       } catch (e) {
         results.push({ cellId, ok: false, reason: "build_quote_threw", message: (e as Error).message });

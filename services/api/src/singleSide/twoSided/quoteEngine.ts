@@ -16,6 +16,41 @@ import type { TierDefinition, Venue } from "./types";
 import type { LiquidChainCache } from "./liquidChainCache";
 import { pickLiquidForLeg } from "./liquidChainCache";
 
+/**
+ * Quote stability cache. Bounces in cost between consecutive calls were
+ * destabilizing Foxify-side decision-making (e.g., pair_50k_2pct flipping
+ * \$2,778 ↔ \$3,189 within 60 seconds as the picker oscillated near its
+ * exact-strike spread threshold). Cache key buckets spot to \$100 and ties
+ * to (cellId, tier) so the SAME quote is returned for repeated calls within
+ * the TTL window — until spot moves out of the bucket or TTL expires.
+ *
+ * Tradeoffs:
+ *   + Stable quotes for Foxify: bot can poll /cell-costs, then call /activate
+ *     within 30s and be guaranteed the same price.
+ *   + Reduces redundant chain lookups (one quote per cell per 30s).
+ *   - Quote may be slightly stale (up to 30s + bucket drift) if market moves.
+ *
+ * Spot-bucket of \$100 means a 0.14% spot move (typical for BTC in 1min) won't
+ * invalidate the cache. A 0.5% move (~\$350) crosses 3 buckets and re-quotes.
+ */
+const QUOTE_STABILITY_TTL_MS = 30_000;
+const QUOTE_STABILITY_SPOT_BUCKET = 100; // round spot to nearest $100
+
+type CachedQuote = { result: QuoteResult; expiresAtMs: number };
+const _quoteStabilityCache = new Map<string, CachedQuote>();
+
+const stabilityCacheKey = (cellId: string, spot: number, tierLabel: string): string => {
+  const spotBucket = Math.round(spot / QUOTE_STABILITY_SPOT_BUCKET) * QUOTE_STABILITY_SPOT_BUCKET;
+  return `${cellId}::${spotBucket}::${tierLabel}`;
+};
+
+/** For tests / observability. */
+export const __getQuoteCacheStats = (): { size: number; entries: Array<{ key: string; expiresAtMs: number }> } => ({
+  size: _quoteStabilityCache.size,
+  entries: Array.from(_quoteStabilityCache.entries()).map(([key, v]) => ({ key, expiresAtMs: v.expiresAtMs }))
+});
+export const __resetQuoteCache = (): void => { _quoteStabilityCache.clear(); };
+
 export const QUOTE_TTL_MS = 30_000;
 export const DEPTH_HEADROOM_FACTOR = 1.2; // require depth ≥ 1.2× contracts
 
@@ -59,6 +94,8 @@ export type QuoteResult =
       callLeg: { venue: Venue; symbol: string; askUsdcPerBtc: number; legCostUsdc: number; depthBtc: number; pulledAt: string };
       totalHedgeCostUsdc: number;
       tier: TierDefinition;
+      /** True if this quote came from the stability cache (was computed earlier within TTL window). */
+      fromStabilityCache?: boolean;
     }
   | {
       ok: false;
@@ -102,17 +139,30 @@ export const buildQuote = async (params: {
   /**
    * Optional liquid-strike chain cache.
    * If provided, buildQuote refines target strikes to the nearest LIQUID strike
-   * within ±$3k while preserving moneyness side. This fixes the V3 bug where
-   * exact-strike-match instruments were sometimes illiquid (93%+ spreads).
-   *
-   * Known limitation: liquid picker only sees Deribit quotes; Bullish anchor
-   * is still queried via anchorProvider for the picked strike. Asymmetric but
-   * acceptable — Deribit dominates ITM/ATM option liquidity.
+   * within ±$3k while preserving moneyness side.
    */
   liquidChainCache?: LiquidChainCache | null;
+  /**
+   * If true (default), buildQuote consults the quote-stability cache first.
+   * Set false for: (a) tests where determinism without stickiness is needed,
+   * (b) operator forcing a fresh quote regardless of stickiness.
+   */
+  useStabilityCache?: boolean;
 }): Promise<QuoteResult> => {
   const { cell, spot, anchorProvider, tier } = params;
   const now = params.nowMs ?? Date.now();
+  const useCache = params.useStabilityCache !== false;
+
+  // Stability cache check — return same quote for repeated calls within
+  // TTL window (avoid bouncing costs as picker oscillates near threshold).
+  if (useCache) {
+    const key = stabilityCacheKey(cell.cellId, spot, tier.label);
+    const cached = _quoteStabilityCache.get(key);
+    if (cached && cached.expiresAtMs > now && cached.result.ok) {
+      return { ...cached.result, fromStabilityCache: true };
+    }
+  }
+
   const targetStrikes = computeStrikes(cell, spot);
   const { triggerDown, triggerUp } = computeTriggerBoundaries(cell, spot);
 
@@ -177,7 +227,7 @@ export const buildQuote = async (params: {
   const callLegCost = callPick.chosen.askUsdcPerBtc * cell.contractsBtc;
   const total = putLegCost + callLegCost;
 
-  return {
+  const result: QuoteResult = {
     ok: true,
     quoteId: randomUUID(),
     validUntilMs: now + QUOTE_TTL_MS,
@@ -209,6 +259,15 @@ export const buildQuote = async (params: {
       pulledAt: callPick.chosen.pulledAt
     },
     totalHedgeCostUsdc: total,
-    tier
+    tier,
+    fromStabilityCache: false
   };
+
+  // Write to stability cache so subsequent calls within TTL get same quote
+  if (useCache) {
+    const key = stabilityCacheKey(cell.cellId, spot, tier.label);
+    _quoteStabilityCache.set(key, { result, expiresAtMs: now + QUOTE_STABILITY_TTL_MS });
+  }
+
+  return result;
 };
