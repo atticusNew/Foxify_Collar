@@ -213,6 +213,63 @@ export const explainPairOutcome = async (pool: Pool, pairId: string): Promise<Lo
   };
 };
 
+// ───────────────── Per-cell metrics (PR C9) ─────────────────
+
+export type CellMetrics = {
+  cellId: string;
+  pairsActivated: number;
+  pairsSettled: number;
+  pairsTriggered: number;
+  meanFoxifyEvUsdc: number;
+  totalFoxifyEvUsdc: number;
+  meanSalvageRatio: number;
+  triggerRate: number;
+};
+
+export const getCellMetrics = async (
+  pool: Pool,
+  cellId: string,
+  opts: { sinceIso?: string; untilIso?: string } = {}
+): Promise<CellMetrics> => {
+  const since = opts.sinceIso ?? new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const until = opts.untilIso ?? new Date().toISOString();
+  const r = await pool.query(
+    `SELECT
+       COALESCE(SUM(CASE WHEN created_at BETWEEN $2 AND $3 AND status <> 'cancelled' THEN 1 ELSE 0 END), 0)::int AS activated,
+       COALESCE(SUM(CASE WHEN status = 'settled' AND closed_at BETWEEN $2 AND $3 THEN 1 ELSE 0 END), 0)::int AS settled,
+       COALESCE(SUM(CASE WHEN triggered_at IS NOT NULL AND triggered_at BETWEEN $2 AND $3 THEN 1 ELSE 0 END), 0)::int AS triggered,
+       COALESCE(SUM(CASE WHEN status = 'settled' AND closed_at BETWEEN $2 AND $3 THEN foxify_share_usdc - hedge_cost_total_usdc ELSE 0 END), 0) AS total_foxify_ev,
+       COALESCE(AVG(CASE WHEN status = 'settled' AND closed_at BETWEEN $2 AND $3 THEN foxify_share_usdc - hedge_cost_total_usdc END), 0) AS mean_foxify_ev,
+       COALESCE(AVG(CASE WHEN status = 'settled' AND closed_at BETWEEN $2 AND $3 AND hedge_cost_total_usdc > 0 THEN salvage_proceeds_usdc / hedge_cost_total_usdc END), 0) AS mean_salvage_ratio
+     FROM two_sided_pair
+     WHERE cell_id = $1 AND is_shadow = FALSE`,
+    [cellId, since, until]
+  );
+  const row = r.rows[0];
+  const activated = Number(row.activated);
+  const triggered = Number(row.triggered);
+  return {
+    cellId,
+    pairsActivated: activated,
+    pairsSettled: Number(row.settled),
+    pairsTriggered: triggered,
+    meanFoxifyEvUsdc: Number(row.mean_foxify_ev),
+    totalFoxifyEvUsdc: Number(row.total_foxify_ev),
+    meanSalvageRatio: Number(row.mean_salvage_ratio),
+    triggerRate: activated > 0 ? triggered / activated : 0
+  };
+};
+
+export const getAllActiveCellMetrics = async (pool: Pool, opts: { sinceIso?: string; untilIso?: string } = {}): Promise<CellMetrics[]> => {
+  const since = opts.sinceIso ?? new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const r = await pool.query(
+    `SELECT DISTINCT cell_id FROM two_sided_pair WHERE is_shadow = FALSE AND created_at >= $1`,
+    [since]
+  );
+  const cells = r.rows.map((row) => row.cell_id);
+  return Promise.all(cells.map((c) => getCellMetrics(pool, c, opts)));
+};
+
 // ───────────────── Daily report (00:30 UTC cron output) ─────────────────
 
 export const generateDailyReport = async (pool: Pool, opts: { nowMs?: number } = {}): Promise<string> => {
@@ -245,6 +302,17 @@ export const generateDailyReport = async (pool: Pool, opts: { nowMs?: number } =
   lines.push(`  Deferred pool bal:    ${fmt$(status.capitalPosition.deferredPoolBalanceUsdc, false)}`);
   lines.push("");
   lines.push(`Halts: foxify=${status.haltStatus.foxifyHalt ? "ACTIVE" : "off"} atticus=${status.haltStatus.atticusHalt ? "ACTIVE" : "off"}${status.haltStatus.reason ? ` (${status.haltStatus.reason})` : ""}`);
+
+  // PR C9: per-cell rolling-7d breakdown
+  const cellMetrics = await getAllActiveCellMetrics(pool, { sinceIso: new Date(now - 7 * 86_400_000).toISOString() });
+  if (cellMetrics.length > 0) {
+    lines.push("");
+    lines.push(`Per-cell breakdown (rolling 7d):`);
+    for (const m of cellMetrics) {
+      lines.push(`  ${m.cellId}: ${m.pairsActivated} activated, ${m.pairsTriggered} triggered (${(m.triggerRate * 100).toFixed(0)}%), mean Foxify EV ${fmt$(m.meanFoxifyEvUsdc, true)}, total ${fmt$(m.totalFoxifyEvUsdc, true)}`);
+    }
+  }
+
   return lines.join("\n");
 };
 
