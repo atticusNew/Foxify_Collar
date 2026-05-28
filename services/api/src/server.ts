@@ -8681,11 +8681,30 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     await v2DvolService.start();
     await v2RvService.start();
 
-    // Executor — Shadow ALWAYS in this iteration. Live execution wiring (with full
-    // BullishIocLimit + DeribitConnector adapters) is gated behind a follow-up since
-    // it touches venue-execution credentials and requires its own smoke test.
-    const v2Executor = new ShadowStrangleExecutor();
-    console.log("[FoxifyV2] Shadow executor active (no real orders). Live wiring is a follow-up.");
+    // Executor — Shadow by default; LIVE behind FOXIFY_V2_LIVE_EXECUTION=true env flag.
+    // Live executor fires REAL Bullish + Deribit orders. Operator must explicitly opt-in.
+    let v2Executor: import("./singleSide/twoSided/executor").StrangleExecutor;
+    const liveExecutionEnabled = String(process.env.FOXIFY_V2_LIVE_EXECUTION ?? "false").toLowerCase() === "true";
+    if (liveExecutionEnabled) {
+      const { LiveStrangleExecutor } = await import("./singleSide/twoSided/liveStrangleExecutor");
+      const { BullishLegAdapter, DeribitLegAdapter } = await import("./singleSide/twoSided/liveVenueAdapters");
+      if (!v2BullishClient) {
+        throw new Error("FOXIFY_V2_LIVE_EXECUTION=true but Bullish creds missing (PILOT_BULLISH_ENABLED=false)");
+      }
+      if (!v2PilotConfig.bullish.tradingAccountId) {
+        throw new Error("FOXIFY_V2_LIVE_EXECUTION=true but PILOT_BULLISH_TRADING_ACCOUNT_ID is empty");
+      }
+      const bullishAdapter = new BullishLegAdapter(v2BullishClient, {
+        tradingAccountId: v2PilotConfig.bullish.tradingAccountId
+      });
+      // Reuse the existing module-level deribit connector from earlier in this file
+      const deribitAdapter = new DeribitLegAdapter(deribit);
+      v2Executor = new LiveStrangleExecutor(bullishAdapter, deribitAdapter);
+      console.log("[FoxifyV2] ⚠️  LIVE EXECUTION ENABLED — real venue orders will fire on /foxify/v2/activate calls. Set FOXIFY_V2_LIVE_EXECUTION=false to revert to shadow.");
+    } else {
+      v2Executor = new ShadowStrangleExecutor();
+      console.log("[FoxifyV2] Shadow executor active (no real orders). Set FOXIFY_V2_LIVE_EXECUTION=true for live.");
+    }
 
     await app.register(async (instance) => {
       await registerFoxifyV2Routes(instance, {
