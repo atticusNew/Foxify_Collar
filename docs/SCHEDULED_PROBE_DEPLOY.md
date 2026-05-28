@@ -135,59 +135,87 @@ To delete: dashboard → settings → delete service.
 
 ---
 
-## Server boot wiring (LiquidChainCache + Bullish + Deribit)
+## Server boot wiring (DONE in server.ts as of this commit)
 
-The production `server.ts` should construct the cache with both venues so live
-activations get the cheapest tradable strike across Bullish + Deribit. Snippet:
+`src/server.ts` now constructs the cache + registers routes when env flag
+is set:
 
-```ts
-// At the top of server bootstrap, alongside other singletons:
-import { BullishTradingClient } from "./pilot/bullish";
-import { LiquidChainCache } from "./singleSide/twoSided/liquidChainCache";
-import { fetchFullChainSnapshot } from "../scripts/backtest/singleSide/liquidStrikePicker";
-import { fetchBullishChainSnapshot } from "./singleSide/twoSided/bullishChainProvider";
-
-// Reuse the shared Bullish client (same instance used by chain warmer)
-const sharedBullishClient = new BullishTradingClient(pilotConfig.bullish);
-
-// Per-cell defaults — adjust based on what cells are in allowlist.
-// Centered on whatever the current spot is at refresh time; deribit's spot
-// is used since fetchFullChainSnapshot returns it.
-const liquidChainCache = new LiquidChainCache({
-  ttlMs: 30_000,
-  staleMaxAgeMs: 5 * 60_000,
-  providers: [
-    {
-      venue: "deribit",
-      fetch: async () => await fetchFullChainSnapshot()
-    },
-    {
-      venue: "bullish",
-      fetch: async () => {
-        // Need an approximate spot to anchor window; pull from Deribit-side cache
-        const lastSnap = liquidChainCache.getCached();
-        const centerSpot = lastSnap?.spot ?? 75_000;
-        return await fetchBullishChainSnapshot(sharedBullishClient, centerSpot, {
-          centerSpot,
-          centerTenorDays: 3,      // matches Phase 0 cell tenor — widen if other cells active
-          strikeWindowUsdc: 6_000,
-          tenorWindowDays: 2,      // covers 1d, 2d, 3d cells
-          maxConcurrency: 4,
-          timeoutMs: 4_000
-        });
-      }
-    }
-  ]
-});
-
-// Then wire into routes:
-registerFoxifyV2Routes(app, {
-  // ...existing deps...
-  liquidChainCache
-});
+```bash
+FOXIFY_V2_ENABLED=true
 ```
 
-After deploy, `/admin/foxify/v2/diagnostics` should reflect both venues
-quoting (you'll see venue counts in the merged snapshot). If Bullish creds
-are wrong / not set, the cache fail-opens to Deribit-only (logged with
-`venueStatus.bullish.ok = false`).
+When enabled, server boot does:
+1. Construct `LiquidChainCache` with Deribit provider always, Bullish provider
+   if `PILOT_BULLISH_ENABLED=true` and creds are set
+2. Construct `liquidChainAnchorProvider(cache)` so `buildQuote` reuses cache
+3. Start `FeedService` + `DvolService` (5s + 60s polling)
+4. Instantiate `ShadowStrangleExecutor` (no real orders by default)
+5. Call `registerFoxifyV2Routes(app, {...deps})` mounting `/foxify/v2/*` +
+   `/admin/foxify/v2/*`
+
+Boot log will print:
+```
+[FoxifyV2] Routes registered at /foxify/v2/* and /admin/foxify/v2/* (bullish_quotes=true)
+```
+
+If `PILOT_BULLISH_ENABLED=false`, you'll see:
+```
+[FoxifyV2] Bullish disabled (PILOT_BULLISH_ENABLED=false). Cache will run Deribit-only.
+```
+
+---
+
+## Pre-deploy smoke test (run BEFORE flipping FOXIFY_V2_ENABLED=true)
+
+Verifies real Bullish creds work end-to-end against the actual API:
+
+```bash
+cd services/api
+# Set all four Bullish env vars from Render dashboard (do NOT paste into chat).
+export PILOT_BULLISH_ENABLED=true
+export PILOT_BULLISH_ECDSA_PRIVATE_KEY="...from Render..."
+export PILOT_BULLISH_ECDSA_PUBLIC_KEY="...from Render..."
+export PILOT_BULLISH_ECDSA_METADATA="...from Render..."
+export PILOT_BULLISH_TRADING_ACCOUNT_ID="...from Render..."
+export PILOT_BULLISH_REST_BASE_URL="https://api.simnext.bullish-test.com"
+
+npx tsx scripts/integration/smokeBullishChainProvider.ts
+```
+
+Expected output (success):
+```
+# Bullish chain provider smoke test
+Config:
+  restBaseUrl: https://api.simnext.bullish-test.com
+  authMode:    ecdsa
+  tradingAccountId: (set)
+  ECDSA private key: (set)
+...
+Fetching Bullish markets list (auth smoke check)...
+  N markets total, M BTC options
+Fetching Bullish chain snapshot (tenor=1d, ...)
+  Got X quotes in Yms
+  Top 5 by ask: ...
+✓ Bullish chain provider smoke test PASSED
+```
+
+Failure modes:
+- "FAIL: PILOT_BULLISH_ENABLED is false" → set the env var
+- "FAIL: Bullish getMarkets failed: ..." → bad creds or wrong base URL
+- "Got 0 quotes" → strike/tenor window misses your venue's chain
+  (adjust centerSpot, strikeWindowUsdc, tenorWindowDays)
+
+---
+
+## Production rollout sequence
+
+1. **Verify smoke test passes locally** (with Render env vars copied to local shell, then unset).
+2. **Set `FOXIFY_V2_ENABLED=true` in Render dashboard**, redeploy.
+3. **Boot log check:** look for `[FoxifyV2] Routes registered` with `bullish_quotes=true`.
+4. **Sanity check `/foxify/v2/regime`:** should return current DVOL.
+5. **Shadow activation test:** POST `/foxify/v2/activate` with `isShadow=true`. Verify pair lands in `two_sided_pair` table.
+6. **Diagnostics:** GET `/admin/foxify/v2/diagnostics` should show per-venue
+   status under `liquid_chain_cache.venueStatus.bullish` and `.deribit`.
+
+Only after 14 days of shadow data validates V5 predictions, set
+`FOXIFY_V2_LIVE_EXECUTION=true` (follow-up — live wiring not in this commit).

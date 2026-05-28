@@ -8578,6 +8578,100 @@ if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true"
   console.log(`[VolumeCover] Disabled (VOLUME_COVER_ENABLED=false)`);
 }
 
+// ────────── Foxify v2 (two-sided cooperative) ──────────
+// Gated by FOXIFY_V2_ENABLED. When enabled, mounts /foxify/v2/* + /admin/foxify/v2/*
+// routes for the cooperative volume facility. By default uses ShadowStrangleExecutor
+// (no real orders); set FOXIFY_V2_LIVE_EXECUTION=true to enable LiveStrangleExecutor.
+//
+// LiquidChainCache pulls both Deribit + Bullish per refresh (30s TTL) so quoteEngine
+// gets honest cross-venue ask prices. Bullish creds reuse pilotConfig.bullish.
+if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
+  try {
+    const { getPilotPool } = await import("./pilot/db");
+    const v2Pool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+
+    const { FeedService } = await import("./singleSide/twoSided/feedService");
+    const { DvolService } = await import("./singleSide/twoSided/dvolService");
+    const { LiquidChainCache, type VenueChainProvider } = await import("./singleSide/twoSided/liquidChainCache");
+    const { liquidChainAnchorProvider } = await import("./singleSide/twoSided/liquidChainAnchorProvider");
+    const { fetchFullChainSnapshot } = await import("../scripts/backtest/singleSide/liquidStrikePicker");
+    const { fetchBullishChainSnapshot } = await import("./singleSide/twoSided/bullishChainProvider");
+    const { ShadowStrangleExecutor } = await import("./singleSide/twoSided/shadowExecutor");
+    const { registerFoxifyV2Routes } = await import("./singleSide/twoSided/routes");
+    const { BullishTradingClient: V2BullishClient } = await import("./pilot/bullish");
+    const { pilotConfig: v2PilotConfig } = await import("./pilot/config");
+
+    // Shared Bullish client (reuses the existing creds from env / Render dashboard)
+    const v2BullishClient = v2PilotConfig.bullish.enabled
+      ? new V2BullishClient(v2PilotConfig.bullish)
+      : null;
+    if (!v2BullishClient) {
+      console.warn("[FoxifyV2] Bullish disabled (PILOT_BULLISH_ENABLED=false). Cache will run Deribit-only.");
+    }
+
+    // Liquid chain cache — Deribit always, Bullish if creds present.
+    // Two-step init to allow Bullish provider to reference cache.getCached() for spot.
+    const v2Providers: VenueChainProvider[] = [
+      { venue: "deribit", fetch: async () => fetchFullChainSnapshot() }
+    ];
+    const v2LiquidCache: import("./singleSide/twoSided/liquidChainCache").LiquidChainCache =
+      new LiquidChainCache({
+        ttlMs: 30_000,
+        staleMaxAgeMs: 5 * 60_000,
+        providers: v2Providers
+      });
+    if (v2BullishClient) {
+      v2Providers.push({
+        venue: "bullish",
+        fetch: async () => {
+          const cached = v2LiquidCache.getCached();
+          const centerSpot: number = cached?.spot ?? 75_000;
+          return fetchBullishChainSnapshot(v2BullishClient, centerSpot, {
+            centerSpot,
+            centerTenorDays: 3,         // covers Phase 0 (3d); 1d & 2d cells still inside tenor window
+            strikeWindowUsdc: 6_000,
+            tenorWindowDays: 2,
+            maxConcurrency: 4,
+            timeoutMs: 4_000
+          });
+        }
+      });
+    }
+
+    // Anchor provider — backed by the same cache (no double fetches per activation)
+    const v2AnchorProvider = liquidChainAnchorProvider(v2LiquidCache);
+
+    // FeedService + DvolService (polling under the hood; pollPeriodMs is the option name)
+    const v2FeedService = new FeedService({ pollPeriodMs: 5_000 });
+    const v2DvolService = new DvolService({ pollPeriodMs: 60_000 });
+    await v2FeedService.tick();
+    await v2DvolService.tick();
+
+    // Executor — Shadow ALWAYS in this iteration. Live execution wiring (with full
+    // BullishIocLimit + DeribitConnector adapters) is gated behind a follow-up since
+    // it touches venue-execution credentials and requires its own smoke test.
+    const v2Executor = new ShadowStrangleExecutor();
+    console.log("[FoxifyV2] Shadow executor active (no real orders). Live wiring is a follow-up.");
+
+    await app.register(async (instance) => {
+      await registerFoxifyV2Routes(instance, {
+        pool: v2Pool,
+        feedService: v2FeedService,
+        dvolService: v2DvolService,
+        anchorProvider: v2AnchorProvider,
+        executor: v2Executor,
+        liquidChainCache: v2LiquidCache,
+        newbornReviewThreshold: Number(process.env.SS_TWO_SIDED_NEWBORN_REVIEW_PER_REGIME ?? "10")
+      });
+    });
+    console.log(`[FoxifyV2] Routes registered at /foxify/v2/* and /admin/foxify/v2/* (bullish_quotes=${Boolean(v2BullishClient)})`);
+  } catch (err) {
+    console.error(`[FoxifyV2] FAILED to register routes: ${(err as Error).message}`);
+  }
+} else {
+  console.log("[FoxifyV2] Disabled (FOXIFY_V2_ENABLED=false). Set to true to mount routes.");
+}
+
 const treasuryConfig = parseTreasuryConfig();
 if (treasuryConfig.enabled) {
   const { getPilotPool } = await import("./pilot/db");
