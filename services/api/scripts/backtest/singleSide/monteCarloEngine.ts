@@ -752,14 +752,84 @@ const _UNUSED_LEGACY_BLOCK = async (params: {
 
 // ─────────────────────────── Bootstrap data loader ───────────────────────────
 
+/**
+ * Multi-source bar loader for bootstrap MC paths.
+ *
+ * Try in order:
+ *   1. /tmp/btc_5min_ohlc.json (local dev, populated by fetch5minData.ts) — full ~487d
+ *   2. In-memory cache from a prior fetch (Render) — pulled at first call
+ *   3. Deribit's get_tradingview_chart_data over recent N days (Render boot fallback)
+ *
+ * Production (Render) hits path #2/#3. Local hits path #1.
+ * Cache TTL on fetched-from-Deribit bars: 1 hour (refreshes hourly).
+ */
+
+let _barsMemoryCache: { bars: Array<{ close: number; high: number; low: number; open: number }>; fetchedAtMs: number; source: string } | null = null;
+const BARS_CACHE_TTL_MS = 60 * 60_000; // 1 hour
+const DERIBIT_FALLBACK_LOOKBACK_DAYS = 30;
+
+const fetchBarsFromDeribit = async (lookbackDays: number): Promise<Array<{ close: number; high: number; low: number; open: number }>> => {
+  const now = Date.now();
+  const start = now - lookbackDays * 86_400_000;
+  const url = `https://www.deribit.com/api/v2/public/get_tradingview_chart_data?instrument_name=BTC-PERPETUAL&start_timestamp=${start}&end_timestamp=${now}&resolution=5`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(url, { headers: { Accept: "application/json" }, signal: controller.signal });
+    if (!res.ok) return [];
+    const body = (await res.json()) as {
+      result?: { open?: number[]; high?: number[]; low?: number[]; close?: number[]; ticks?: number[] };
+    };
+    const opens = body.result?.open ?? [];
+    const highs = body.result?.high ?? [];
+    const lows = body.result?.low ?? [];
+    const closes = body.result?.close ?? [];
+    const n = Math.min(opens.length, highs.length, lows.length, closes.length);
+    const out: Array<{ close: number; high: number; low: number; open: number }> = [];
+    for (let i = 0; i < n; i++) {
+      const o = opens[i], h = highs[i], l = lows[i], c = closes[i];
+      if (Number.isFinite(o) && Number.isFinite(h) && Number.isFinite(l) && Number.isFinite(c) && c > 0) {
+        out.push({ open: o, high: h, low: l, close: c });
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 export const load5MinBars = async (): Promise<
   { close: number; high: number; low: number; open: number }[]
 > => {
-  const data = JSON.parse(await fs.readFile("/tmp/btc_5min_ohlc.json", "utf8"));
-  return data.bars.map((b: { close: number; high: number; low: number; open: number }) => ({
-    close: b.close,
-    high: b.high,
-    low: b.low,
-    open: b.open
-  }));
+  const now = Date.now();
+  // Path 1: in-memory cache (Render warm path)
+  if (_barsMemoryCache && now - _barsMemoryCache.fetchedAtMs < BARS_CACHE_TTL_MS) {
+    return _barsMemoryCache.bars;
+  }
+  // Path 2: /tmp file (local dev with fetch5minData.ts pre-run)
+  try {
+    const data = JSON.parse(await fs.readFile("/tmp/btc_5min_ohlc.json", "utf8"));
+    const bars = data.bars.map((b: { close: number; high: number; low: number; open: number }) => ({
+      close: b.close,
+      high: b.high,
+      low: b.low,
+      open: b.open
+    }));
+    _barsMemoryCache = { bars, fetchedAtMs: now, source: "tmp_file" };
+    return bars;
+  } catch {
+    // Fall through to network fetch
+  }
+  // Path 3: Deribit fallback (Render cold path)
+  const bars = await fetchBarsFromDeribit(DERIBIT_FALLBACK_LOOKBACK_DAYS);
+  if (bars.length > 0) {
+    _barsMemoryCache = { bars, fetchedAtMs: now, source: `deribit_${DERIBIT_FALLBACK_LOOKBACK_DAYS}d` };
+  }
+  return bars;
 };
+
+/** For tests / observability — returns what source the most recent bars came from. */
+export const __getBarsCacheSource = (): string | null => _barsMemoryCache?.source ?? null;
+export const __resetBarsCache = (): void => { _barsMemoryCache = null; };

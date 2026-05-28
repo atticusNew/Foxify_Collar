@@ -28,6 +28,35 @@ test("computeLiveCellEv returns sensible structure for moderate regime", async (
   assert.ok(r.meanSalvage >= 0);
   assert.equal(r.nPaths, 2000);
   assert.ok(r.computedAtMs > 0);
+  // Path generator: moderate regime always uses GBM
+  assert.equal(r.pathGenerator, "gbm");
+  assert.equal(r.barsSource, null);
+  assert.equal(r.barsCount, 0);
+});
+
+test("computeLiveCellEv at calm reports path_generator based on bars availability", async () => {
+  __resetLiveCellEvCache();
+  const r = await computeLiveCellEv({
+    cellId: "calm_path_test",
+    spot: 73000,
+    hedgeCostAtCalm: 500,
+    putStrike: 72000,
+    callStrike: 74000,
+    tenorDays: 3,
+    triggerPctDown: 0.05,
+    triggerPctUp: 0.05,
+    regime: "calm",
+    contractsBtc: 0.5
+  });
+  // Either bootstrap (if bars loaded) or gbm fallback. Both valid.
+  assert.ok(["bootstrap", "gbm"].includes(r.pathGenerator));
+  if (r.pathGenerator === "bootstrap") {
+    assert.ok(r.barsCount > 0);
+    assert.ok(typeof r.barsSource === "string");
+  } else {
+    assert.equal(r.barsCount, 0);
+    assert.equal(r.barsSource, null);
+  }
 });
 
 test("computeLiveCellEv caches by (cellId, regime, cost-bucket)", async () => {

@@ -606,7 +606,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
             atticus_ev: evSim.meanAtticusEv,
             pct_profit: evSim.pctProfit,
             p5_foxify_ev: evSim.p5FoxifyEv,
-            n_paths: evSim.nPaths
+            n_paths: evSim.nPaths,
+            path_generator: evSim.pathGenerator,
+            bars_source: evSim.barsSource,
+            bars_count: evSim.barsCount
           },
           ev_verdict: evSim.meanFoxifyEv > 100 ? "✅ PROFITABLE" :
                       evSim.meanFoxifyEv > 0 ? "⚠️ MARGINAL_POSITIVE" :
@@ -627,7 +630,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       gate,
       cells: results,
       methodology: {
-        ev_estimation: "Live MC sim per cell. 2k paths each, bootstrap (calm) or GBM (other regimes), uses current cost + actual strikes + current spot. Cached 5min per (cellId, regime, cost-bucket). NO HARDCODED REFERENCE — always fresh.",
+        ev_estimation: "Live MC sim per cell. 2k paths each. Path generator: bootstrap (calm + bars available) else GBM. Cached 5min per (cellId, regime, cost-bucket). NO HARDCODED REFERENCE — always fresh. Per-cell mc.path_generator field shows which was used; mc.bars_source shows where bars came from (tmp_file, deribit_30d, etc).",
         gate_logic: "good_to_activate=true when regime in {moderate, elevated, stress} OR (regime=calm AND vrp < calmVrpThreshold). Halt overrides."
       }
     });

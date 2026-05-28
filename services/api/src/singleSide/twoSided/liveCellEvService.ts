@@ -21,6 +21,7 @@ import {
   generateGbmPath,
   load5MinBars,
   mulberry32,
+  __getBarsCacheSource,
   type PathConfig
 } from "../../../scripts/backtest/singleSide/monteCarloEngine";
 
@@ -57,6 +58,12 @@ export type LiveCellEvResult = {
   p5FoxifyEv: number;
   nPaths: number;
   computedAtMs: number;
+  /** Which path generator was used: 'bootstrap' (historical sampling) or 'gbm' (theoretical). */
+  pathGenerator: "bootstrap" | "gbm";
+  /** Source of bars if bootstrap (e.g., 'tmp_file', 'deribit_30d'). null if gbm. */
+  barsSource: string | null;
+  /** Number of bars available for sampling if bootstrap. 0 if gbm. */
+  barsCount: number;
 };
 
 type CacheEntry = { result: LiveCellEvResult; expiresAtMs: number };
@@ -163,6 +170,9 @@ export const computeLiveCellEv = async (inputs: LiveCellEvInputs): Promise<LiveC
   }
   const sortedF = [...foxifyEvs].sort((a, b) => a - b);
   const mean = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
+  // Identify which path generator was actually used. Bootstrap requires bars;
+  // GBM fallback fires when bars unavailable OR regime != calm.
+  const usedBootstrap = inputs.regime === "calm" && bars != null && bars.length > 0;
   const result: LiveCellEvResult = {
     hedgeCost,
     meanSalvage: mean(salvages),
@@ -172,7 +182,10 @@ export const computeLiveCellEv = async (inputs: LiveCellEvInputs): Promise<LiveC
     pctProfit: foxifyEvs.filter((x) => x > 0).length / foxifyEvs.length,
     p5FoxifyEv: sortedF[Math.floor(sortedF.length * 0.05)],
     nPaths: N_PATHS,
-    computedAtMs: now
+    computedAtMs: now,
+    pathGenerator: usedBootstrap ? "bootstrap" : "gbm",
+    barsSource: usedBootstrap ? __getBarsCacheSource() : null,
+    barsCount: usedBootstrap ? (bars?.length ?? 0) : 0
   };
   _resultCache.set(key, { result, expiresAtMs: now + CACHE_TTL_MS });
   return result;
