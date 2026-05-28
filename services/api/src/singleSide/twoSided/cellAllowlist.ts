@@ -17,21 +17,32 @@ import type { Pool, PoolClient } from "pg";
 import type { Regime } from "./featureFlag";
 
 /**
- * Hardcoded defaults per Wave C2 sweep findings.
+ * Hardcoded defaults per V3 cell sweep + redesign sweep 2026-05-28.
  *
- * The sweep at 2026-05-28 (spot ~$75k, BTC put-skew) showed:
- *   - calm: only micro cell positive-EV (high-vol day at sweep time)
- *     For consistent calm operations, pair_50k_2pct stays primary
- *   - moderate/elevated/stress: OTM + ATM variants positive
+ * V3 multi-tenor live-spread MC + 23-variant redesign sweep proved:
+ *   - calm (DVOL<40):     NO CELL POSITIVE — system should HALT (empty list)
+ *     Least-bad calm variant: -$43/pair (pair_25k_5pct_otm_3d) — still loss
+ *   - moderate (40-60):   pair_25k_5pct_otm_3d wins by 6x (+$252 vs +$41)
+ *   - elevated (60-80):   pair_50k_5pct_otm (+$384), pair_50k_4pct_otm_short
+ *   - stress (>80):       pair_50k_5pct_otm (+$692), pair_50k_4pct_otm_short
  *
- * Operator finalizes this list after PR C5 live validation against
- * actual venue chains.
+ * REMOVED from all defaults (proven loss-making in V3):
+ *   - pair_50k_2pct (-$1,834 calm — old Phase 0 cell is structurally broken)
+ *   - pair_100k_3pct_itm_short (-$2,335 calm)
+ *   - pair_25k_1pct_atm_micro (-$145 to -$225 in ALL regimes — micro broken)
+ *   - pair_50k_3pct_atm calm (-$597)
+ *
+ * Operator may re-enable any cell via /admin/foxify/v2/cell-allowlist
+ * (DB overrides take precedence over these defaults).
+ *
+ * Calm allowlist is INTENTIONALLY EMPTY — operator must consciously override
+ * to activate in calm, after acknowledging expected per-pair loss.
  */
 export const DEFAULT_CELL_ALLOWLIST: Record<Regime, ReadonlyArray<string>> = {
-  calm: ["pair_50k_2pct", "pair_100k_3pct_itm_short", "pair_50k_3pct_atm", "pair_25k_1pct_atm_micro"],
-  moderate: ["pair_50k_3pct_atm", "pair_50k_5pct_otm", "pair_50k_4pct_otm_short", "pair_25k_1pct_atm_micro"],
-  elevated: ["pair_50k_5pct_otm", "pair_25k_5pct_otm_short", "pair_50k_4pct_otm_short", "pair_25k_1pct_atm_micro"],
-  stress: ["pair_25k_1pct_atm_micro", "pair_25k_5pct_otm_short"]
+  calm: [],
+  moderate: ["pair_25k_5pct_otm_3d", "pair_25k_5pct_otm_short", "pair_50k_4pct_otm_short"],
+  elevated: ["pair_50k_5pct_otm", "pair_50k_4pct_otm_short", "pair_25k_5pct_otm_3d", "pair_25k_5pct_otm_short"],
+  stress: ["pair_50k_5pct_otm", "pair_50k_4pct_otm_short", "pair_25k_5pct_otm_short"]
 };
 
 export const ensureCellAllowlistSchema = async (pool: Pool): Promise<void> => {

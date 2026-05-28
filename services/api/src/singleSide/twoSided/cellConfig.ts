@@ -84,6 +84,25 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     strikeGridUsdc: 1_000,
     enabled: true
   },
+  /**
+   * pair_25k_5pct_otm_3d — TOP MODERATE-REGIME CELL per cell-redesign sweep
+   * 2026-05-28. V3 MC: +$252/pair Foxify EV at moderate regime (DVOL 40-60),
+   * crushing pair_25k_5pct_otm_short's +$41. Identical strike geometry, just
+   * 3d tenor instead of 1d — more time-value to capture on actual moves.
+   * Still loss-making at calm (-$104/pair) — DO NOT include in calm allowlist.
+   */
+  pair_25k_5pct_otm_3d: {
+    cellId: "pair_25k_5pct_otm_3d",
+    notionalUsdcPerLeg: 25_000,
+    triggerPctDown: 0.05,
+    triggerPctUp: 0.05,
+    contractsBtc: 0.5,
+    hedgeTenorDays: 3,
+    putStrikeItmPct: -0.020,
+    callStrikeItmPct: -0.025,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
   pair_50k_4pct_otm_short: {
     cellId: "pair_50k_4pct_otm_short",
     notionalUsdcPerLeg: 50_000,

@@ -104,7 +104,7 @@ test("ship readiness: cell NOT in regime allowlist → 503 cell_disabled_in_regi
   const { app, setRegime, cleanup } = await buildShipRig();
   try {
     await setRegime("moderate");
-    // pair_50k_2pct NOT in moderate allowlist (only in calm)
+    // pair_50k_2pct is V3-proven loss-making → NOT in any default allowlist
     const r = await app.inject({
       method: "POST", url: "/foxify/v2/activate",
       headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
@@ -119,11 +119,12 @@ test("ship readiness: cell NOT in regime allowlist → 503 cell_disabled_in_regi
 test("ship readiness: counterparty ledger records activate entries", async () => {
   const { app, pool, setRegime, cleanup } = await buildShipRig();
   try {
-    await setRegime("calm");
+    // moderate regime (calm allowlist is empty post-V3) and use moderate-allowed cell
+    await setRegime("moderate");
     const r = await app.inject({
       method: "POST", url: "/foxify/v2/activate",
       headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
-      payload: { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-ledger-${Date.now()}` }
+      payload: { cellId: "pair_25k_5pct_otm_3d", maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-ledger-${Date.now()}` }
     });
     assert.equal(r.statusCode, 201);
     const stmt = await getStatement(pool, "foxify");
@@ -133,9 +134,10 @@ test("ship readiness: counterparty ledger records activate entries", async () =>
   } finally { await cleanup(); }
 });
 
-test("ship readiness: all 7 cells in registry are accessible", () => {
+test("ship readiness: cell registry contains at least baseline + new 3d winner", () => {
   const cellIds = Object.keys(PHASE_0_CELLS);
-  assert.equal(cellIds.length, 7);
+  assert.ok(cellIds.length >= 7, `expected ≥7 cells, got ${cellIds.length}`);
+  assert.ok(cellIds.includes("pair_25k_5pct_otm_3d"), "moderate winner must be registered");
   for (const id of cellIds) {
     const c = PHASE_0_CELLS[id];
     assert.ok(c.enabled);

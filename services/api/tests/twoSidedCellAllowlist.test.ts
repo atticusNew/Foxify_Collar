@@ -1,5 +1,10 @@
 /**
  * PR C3 tests — cell allowlist + multi-cell registry.
+ * Updated 2026-05-28 to reflect V3 multi-tenor sweep findings:
+ *   - calm default is empty (no cell profitable; operator must override)
+ *   - pair_50k_2pct, pair_100k_3pct_itm_short, pair_25k_1pct_atm_micro removed
+ *     from all defaults (V3 proves them loss-making in every regime)
+ *   - pair_25k_5pct_otm_3d added as moderate winner (+$252/pair MC EV)
  */
 
 import assert from "node:assert/strict";
@@ -23,75 +28,82 @@ const buildPool = async () => {
   return pool;
 };
 
-test("PHASE_0_CELLS registry contains 7 cells (Phase 0 + 6 Phase 1)", () => {
+test("PHASE_0_CELLS registry contains all known cells including the new 3d winner", () => {
   const cellIds = Object.keys(PHASE_0_CELLS);
-  assert.equal(cellIds.length, 7);
-  assert.ok(cellIds.includes("pair_50k_2pct"));
+  assert.ok(cellIds.includes("pair_50k_2pct"), "old Phase 0 cell still in registry (override-only)");
   assert.ok(cellIds.includes("pair_50k_5pct_otm"));
-  assert.ok(cellIds.includes("pair_25k_1pct_atm_micro"));
+  assert.ok(cellIds.includes("pair_25k_1pct_atm_micro"), "micro cell still registered (override-only)");
+  assert.ok(cellIds.includes("pair_25k_5pct_otm_3d"), "new moderate winner from redesign sweep");
+  assert.ok(cellIds.length >= 7);
 });
 
-test("DEFAULT_CELL_ALLOWLIST: all 4 regimes have at least 1 cell", () => {
-  for (const regime of ["calm", "moderate", "elevated", "stress"] as const) {
+test("DEFAULT_CELL_ALLOWLIST: calm is intentionally EMPTY (no cell profitable per V3)", () => {
+  assert.equal(DEFAULT_CELL_ALLOWLIST.calm.length, 0, "operator must consciously override to activate in calm");
+});
+
+test("DEFAULT_CELL_ALLOWLIST: moderate/elevated/stress have at least 1 cell", () => {
+  for (const regime of ["moderate", "elevated", "stress"] as const) {
     assert.ok(DEFAULT_CELL_ALLOWLIST[regime].length > 0, `${regime} should have at least 1 cell`);
   }
 });
 
-test("isCellAllowedInRegimeDefault: Phase 0 cell allowed in calm but not stress", () => {
-  assert.equal(isCellAllowedInRegimeDefault("pair_50k_2pct", "calm"), true);
-  assert.equal(isCellAllowedInRegimeDefault("pair_50k_2pct", "stress"), false);
+test("DEFAULT_CELL_ALLOWLIST: moderate features pair_25k_5pct_otm_3d (top winner)", () => {
+  assert.ok(DEFAULT_CELL_ALLOWLIST.moderate.includes("pair_25k_5pct_otm_3d"));
 });
 
-test("isCellAllowedInRegimeDefault: micro cell allowed in all regimes", () => {
-  for (const regime of ["calm", "moderate", "elevated", "stress"] as const) {
-    assert.equal(isCellAllowedInRegimeDefault("pair_25k_1pct_atm_micro", regime), true);
+test("isCellAllowedInRegimeDefault: V3-broken cells NOT in any default regime", () => {
+  for (const broken of ["pair_50k_2pct", "pair_100k_3pct_itm_short", "pair_25k_1pct_atm_micro"]) {
+    for (const regime of ["calm", "moderate", "elevated", "stress"] as const) {
+      assert.equal(
+        isCellAllowedInRegimeDefault(broken, regime),
+        false,
+        `V3 proved ${broken} loss-making in ${regime} — must not be in default`
+      );
+    }
   }
 });
 
-test("isCellAllowedInRegime (DB): respects defaults when no override", async () => {
+test("isCellAllowedInRegime (DB): respects empty calm default", async () => {
   const pool = await buildPool();
-  const r = await isCellAllowedInRegime(pool, "pair_50k_2pct", "calm");
-  assert.equal(r.allowed, true);
-  assert.ok(r.suggestedCells.includes("pair_50k_2pct"));
+  const r = await isCellAllowedInRegime(pool, "pair_25k_5pct_otm_3d", "calm");
+  assert.equal(r.allowed, false);
+  assert.equal(r.suggestedCells.length, 0);
 });
 
-test("setCellOverride: adds cell to regime that didn't have it", async () => {
+test("setCellOverride: operator can enable a cell in calm (override empty default)", async () => {
   const pool = await buildPool();
-  // pair_50k_2pct is NOT in stress default
-  const before = await isCellAllowedInRegime(pool, "pair_50k_2pct", "stress");
+  const before = await isCellAllowedInRegime(pool, "pair_25k_5pct_otm_3d", "calm");
   assert.equal(before.allowed, false);
-  // Override to enable
-  await setCellOverride(pool, "stress", "pair_50k_2pct", true, "operator override for ramping test", "operator");
-  const after = await isCellAllowedInRegime(pool, "pair_50k_2pct", "stress");
+  await setCellOverride(pool, "calm", "pair_25k_5pct_otm_3d", true, "operator accepts expected loss", "operator");
+  const after = await isCellAllowedInRegime(pool, "pair_25k_5pct_otm_3d", "calm");
   assert.equal(after.allowed, true);
 });
 
-test("setCellOverride: disables a default-enabled cell", async () => {
+test("setCellOverride: operator can disable a default-enabled cell in moderate", async () => {
   const pool = await buildPool();
-  // pair_50k_2pct IS in calm default
-  const before = await isCellAllowedInRegime(pool, "pair_50k_2pct", "calm");
+  const before = await isCellAllowedInRegime(pool, "pair_25k_5pct_otm_3d", "moderate");
   assert.equal(before.allowed, true);
-  await setCellOverride(pool, "calm", "pair_50k_2pct", false, "temporarily disabled for investigation", "operator");
-  const after = await isCellAllowedInRegime(pool, "pair_50k_2pct", "calm");
+  await setCellOverride(pool, "moderate", "pair_25k_5pct_otm_3d", false, "temporarily disabled for investigation", "operator");
+  const after = await isCellAllowedInRegime(pool, "pair_25k_5pct_otm_3d", "moderate");
   assert.equal(after.allowed, false);
 });
 
 test("getEffectiveAllowlist: merges defaults + overrides correctly", async () => {
   const pool = await buildPool();
-  await setCellOverride(pool, "stress", "pair_50k_2pct", true, "ramp", "op");
-  await setCellOverride(pool, "stress", "pair_25k_1pct_atm_micro", false, "disabled", "op");
+  await setCellOverride(pool, "stress", "pair_25k_1pct_atm_micro", true, "ramp test", "op");
+  await setCellOverride(pool, "stress", "pair_50k_5pct_otm", false, "temporary disable", "op");
   const eff = await getEffectiveAllowlist(pool, "stress");
-  assert.ok(eff.includes("pair_50k_2pct"));
-  assert.ok(!eff.includes("pair_25k_1pct_atm_micro"));
+  assert.ok(eff.includes("pair_25k_1pct_atm_micro"));
+  assert.ok(!eff.includes("pair_50k_5pct_otm"));
 });
 
-test("getOverrides: returns all overrides", async () => {
+test("getOverrides: returns all overrides, optionally filtered by regime", async () => {
   const pool = await buildPool();
-  await setCellOverride(pool, "calm", "pair_50k_5pct_otm", true, "test", "op");
-  await setCellOverride(pool, "stress", "pair_50k_2pct", true, "ramp", "op");
+  await setCellOverride(pool, "calm", "pair_25k_5pct_otm_3d", true, "test", "op");
+  await setCellOverride(pool, "stress", "pair_25k_1pct_atm_micro", true, "ramp", "op");
   const all = await getOverrides(pool);
   assert.equal(all.length, 2);
   const calmOnly = await getOverrides(pool, "calm");
   assert.equal(calmOnly.length, 1);
-  assert.equal(calmOnly[0].cellId, "pair_50k_5pct_otm");
+  assert.equal(calmOnly[0].cellId, "pair_25k_5pct_otm_3d");
 });

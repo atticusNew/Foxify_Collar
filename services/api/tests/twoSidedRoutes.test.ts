@@ -64,7 +64,7 @@ const buildApp = async (): Promise<{ app: FastifyInstance; cleanup: () => Promis
   await feedService.start();
 
   const dvolService = new DvolService({
-    fetchOverride: async () => 38.0,
+    fetchOverride: async () => 50.0, // moderate regime — V3 sweep requires DVOL ≥ 40 for any cell to be activatable
     log: () => {}
   });
   await dvolService.tick();
@@ -173,8 +173,8 @@ test("GET /foxify/v2/regime returns regime classification", async () => {
     const r = await app.inject({ method: "GET", url: "/foxify/v2/regime", headers: { "x-foxify-token": FOXIFY_TOKEN } });
     assert.equal(r.statusCode, 200);
     const body = r.json();
-    assert.equal(body.regime, "calm");
-    assert.equal(body.dvol, 38.0);
+    assert.equal(body.regime, "moderate");
+    assert.equal(body.dvol, 50.0);
   } finally { await cleanup(); }
 });
 
@@ -186,7 +186,8 @@ test("POST /foxify/v2/activate end-to-end returns 201", async () => {
       url: "/foxify/v2/activate",
       headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
       payload: {
-        cellId: "pair_50k_2pct",
+        // Use moderate-allowlist cell (calm allowlist is empty per V3 sweep)
+        cellId: "pair_25k_5pct_otm_3d",
         maxAcceptableHedgeCostUsdc: 3_500,
         foxifyPairRef: "fxy-route-test-1"
       }

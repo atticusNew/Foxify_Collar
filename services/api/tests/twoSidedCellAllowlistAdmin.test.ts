@@ -103,15 +103,16 @@ test("GET /admin/foxify/v2/cell-allowlist: returns full per-regime payload", asy
 test("GET cell-allowlist with regime query: returns single regime details", async () => {
   const { app, cleanup } = await buildApp();
   try {
+    // Query moderate (which has cells in default per V3 sweep), since calm is now empty.
     const r = await app.inject({
       method: "GET",
-      url: "/admin/foxify/v2/cell-allowlist?regime=calm",
+      url: "/admin/foxify/v2/cell-allowlist?regime=moderate",
       headers: { "x-admin-token": ADMIN_TOKEN }
     });
     assert.equal(r.statusCode, 200);
     const body = r.json();
-    assert.equal(body.regime, "calm");
-    assert.ok(body.default_allowlist.includes("pair_50k_2pct"));
+    assert.equal(body.regime, "moderate");
+    assert.ok(body.default_allowlist.includes("pair_25k_5pct_otm_3d"));
   } finally { await cleanup(); }
 });
 
