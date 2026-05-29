@@ -49,8 +49,11 @@ const SLIP_HAIRCUT = 0.82;
 const ATTICUS_FEE_PCT = 0.10; // mid of 5-15% range from pitch
 const ATTICUS_FLOOR_USD = 25;
 
-// Placeholder friction estimates — operator can swap when Foxify shares real number
-const FRICTION_ESTIMATES_USD = [50, 100, 150, 250, 400];
+// Friction estimates. Updated 2026-05-29 with Foxify CEO's actual range:
+//   "$200-300 on a 50k short + 50k long, opens and closes" (his words)
+// Kept $50/$100 as low-end stress test (would only apply if Foxify finds
+// venue tier discounts) and $400 as conservative upper bound.
+const FRICTION_ESTIMATES_USD = [50, 100, 200, 250, 300, 400];
 
 // Historical BTC regime distribution rough estimate (BTC has had a mix over the
 // last 12 months; this is a defensible blended estimate for "what % of time
@@ -342,9 +345,11 @@ const buildMarkdown = (cells: CellSimResult[], meta: {
     return { friction: f, consNetPerPair, oppNetPerPair, consTotal90d, oppTotal90d };
   });
 
-  const md = `# Foxify Friction Coverage Analysis — 90 Day Projection
+  const md = `# Foxify Friction Coverage Analysis - 90 Day Projection
 
 Generated: ${meta.asOf} | Spot at analysis: $${meta.spot.toFixed(0)} | Bars analyzed: ${meta.bars_count} (${meta.bars_days}d)
+
+> **Friction estimate sourced from Foxify CEO (2026-05-29):** ~$200-300 per pair on a 50k long + 50k short, identical entry, TP/SL on both sides. Analysis uses his range as the primary scenarios, with $50-$400 bookends for sensitivity.
 
 ---
 
@@ -460,7 +465,7 @@ ${(() => {
 
 ## What This Doesn't Yet Include
 
-- **Foxify's REAL friction number.** We used placeholders ($50-$400/pair). When Foxify shares the actual per-pair friction estimate from their 90-day perp backtest, this analysis updates trivially — the structure already exists; just plug in the real number.
+- **Foxify's 90-day backtest validation.** Friction estimate sourced from Foxify CEO statement (2026-05-29): "$200-300 per pair on 50k long + 50k short, opens and closes." The underlying perp-side measurement (Foxify order book history) hasn't been independently re-simulated by us — we trust Foxify's number. This report scales linearly with it if refinement is needed after their full backtest.
 - **Activation cadence sensitivity.** We assumed ${PAIRS_PER_DAY_CONSERVATIVE}/day conservative and ${PAIRS_PER_DAY_OPPORTUNISTIC}/day opportunistic. Actual cadence depends on Foxify's bot polling behavior + the realized regime distribution over the test window. Wide ranges available on request.
 - **Correlation with Foxify's perp P&L.** The MC sim is path-independent of Foxify's perp side, which is conservative (assumes no correlation between option payback timing and perp loss timing). In practice, when BTC moves enough to trigger the option, the same move generates real perp friction (rebalancing, funding rate shifts). So the correlation is likely SLIGHTLY positive — the option pays back EXACTLY when friction spikes. This makes the model conservative.
 - **Volume tiers.** Atticus operator fee scales DOWN with volume (5-15% range). We used 10% (mid). At high Foxify volume, fee compresses to 5%, which improves Foxify net P&L by ~5% across the board.
