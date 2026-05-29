@@ -255,6 +255,102 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     }
   );
 
+  /**
+   * GET /foxify/v2/pairs/mtm
+   *
+   * Mark-to-market for ALL active Foxify pairs in one shot. Used by Foxify
+   * bot to decide when to early-close a pair (via POST /foxify/v2/close)
+   * to capture intermediate option appreciation that would cover their perp
+   * friction even without a trigger fire.
+   *
+   * Each pair includes:
+   *   - cost_paid_usdc                  (what Foxify paid up front)
+   *   - estimated_salvage_usdc          (what we'd credit if closed RIGHT NOW)
+   *   - pnl_if_close_now_usdc + pnl_pct (closing P&L vs cost)
+   *   - distance_to_trigger_*_pct       (how close to firing the auto-close)
+   *   - tenor_remaining_hours
+   *   - recommendation                  (HOLD | WATCH | TAKE_PROFIT_AVAILABLE
+   *                                       | STRONG_TAKE_PROFIT | TRIGGERED | EXPIRED)
+   *   - recommendation_reason           (human-readable explanation)
+   *
+   * Query params:
+   *   ?tp_threshold_pct=0.30    (TAKE_PROFIT_AVAILABLE when pnl >= this)
+   *   ?watch_threshold_pct=0.05 (WATCH when pnl >= this)
+   *   ?pair_id=...              (filter to one pair)
+   *
+   * Updated every call (no caching) - real spot, real BS valuation.
+   * Auth: X-Foxify-Token.
+   */
+  app.get<{ Querystring: { tp_threshold_pct?: string; watch_threshold_pct?: string; pair_id?: string } }>(
+    "/foxify/v2/pairs/mtm",
+    { preHandler: checkFoxifyToken },
+    async (req, reply) => {
+      const feed = deps.feedService.getCurrentFeed();
+      if (!feed || feed.canonicalPrice == null) {
+        reply.code(503).send({ error: "feed_unavailable", message: "Cannot compute MTM without canonical spot" });
+        return;
+      }
+      const dvol = deps.dvolService.getCurrentDvol();
+      const iv = dvol?.sigmaAnnual ?? 0.35;
+      const tpThresholdPct = req.query.tp_threshold_pct != null ? Number(req.query.tp_threshold_pct) : undefined;
+      const watchThresholdPct = req.query.watch_threshold_pct != null ? Number(req.query.watch_threshold_pct) : undefined;
+      const { listActivePairMtm, summarizeMtm } = await import("./mtmService");
+      const nowMs = Date.now();
+      const pairs = await listActivePairMtm({
+        pool: deps.pool,
+        currentSpot: feed.canonicalPrice,
+        ivAnnual: iv,
+        includeShadow: false, // Foxify-facing: only their real pairs
+        pairIdFilter: req.query.pair_id,
+        tpThresholdPct,
+        watchThresholdPct,
+        nowMs
+      });
+      const summary = summarizeMtm(pairs, {
+        currentSpot: feed.canonicalPrice,
+        ivAnnual: iv,
+        tpThresholdPct: tpThresholdPct ?? 0.30,
+        watchThresholdPct: watchThresholdPct ?? 0.05,
+        nowMs
+      });
+      reply.send(summary);
+    }
+  );
+
+  /**
+   * GET /foxify/v2/pairs/:pair_id/mtm — same shape, single pair.
+   */
+  app.get<{ Params: { pair_id: string }; Querystring: { tp_threshold_pct?: string; watch_threshold_pct?: string } }>(
+    "/foxify/v2/pairs/:pair_id/mtm",
+    { preHandler: checkFoxifyToken },
+    async (req, reply) => {
+      const feed = deps.feedService.getCurrentFeed();
+      if (!feed || feed.canonicalPrice == null) {
+        reply.code(503).send({ error: "feed_unavailable", message: "Cannot compute MTM without canonical spot" });
+        return;
+      }
+      const dvol = deps.dvolService.getCurrentDvol();
+      const iv = dvol?.sigmaAnnual ?? 0.35;
+      const tpThresholdPct = req.query.tp_threshold_pct != null ? Number(req.query.tp_threshold_pct) : undefined;
+      const watchThresholdPct = req.query.watch_threshold_pct != null ? Number(req.query.watch_threshold_pct) : undefined;
+      const { listActivePairMtm } = await import("./mtmService");
+      const pairs = await listActivePairMtm({
+        pool: deps.pool,
+        currentSpot: feed.canonicalPrice,
+        ivAnnual: iv,
+        includeShadow: false,
+        pairIdFilter: req.params.pair_id,
+        tpThresholdPct,
+        watchThresholdPct
+      });
+      if (pairs.length === 0) {
+        reply.code(404).send({ error: "pair_not_found_or_not_active", pair_id: req.params.pair_id });
+        return;
+      }
+      reply.send(pairs[0]);
+    }
+  );
+
   app.get("/foxify/v2/feed/current", { preHandler: checkFoxifyToken }, async (_req, reply) => {
     const feed = deps.feedService.getCurrentFeed();
     if (!feed) {
@@ -723,6 +819,58 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         pair_id: result.pair_id,
         audit_id: result.audit_id
       });
+    }
+  );
+
+  /**
+   * GET /admin/foxify/v2/pairs/mtm
+   *
+   * Operator-facing version of /foxify/v2/pairs/mtm. Same shape, but
+   * INCLUDES shadow pairs (Foxify-facing version excludes them).
+   * Useful for monitoring shadow lifecycle, validating MTM math against
+   * test-fired pairs, and seeing TP-AVAILABLE opportunities in the shadow
+   * portfolio.
+   *
+   * Query params:
+   *   ?include_shadow=false   (default true)
+   *   ?tp_threshold_pct=0.30
+   *   ?watch_threshold_pct=0.05
+   *   ?pair_id=...
+   */
+  app.get<{ Querystring: { include_shadow?: string; tp_threshold_pct?: string; watch_threshold_pct?: string; pair_id?: string } }>(
+    "/admin/foxify/v2/pairs/mtm",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const feed = deps.feedService.getCurrentFeed();
+      if (!feed || feed.canonicalPrice == null) {
+        reply.code(503).send({ error: "feed_unavailable", message: "Cannot compute MTM without canonical spot" });
+        return;
+      }
+      const dvol = deps.dvolService.getCurrentDvol();
+      const iv = dvol?.sigmaAnnual ?? 0.35;
+      const tpThresholdPct = req.query.tp_threshold_pct != null ? Number(req.query.tp_threshold_pct) : undefined;
+      const watchThresholdPct = req.query.watch_threshold_pct != null ? Number(req.query.watch_threshold_pct) : undefined;
+      const includeShadow = req.query.include_shadow !== "false";
+      const { listActivePairMtm, summarizeMtm } = await import("./mtmService");
+      const nowMs = Date.now();
+      const pairs = await listActivePairMtm({
+        pool: deps.pool,
+        currentSpot: feed.canonicalPrice,
+        ivAnnual: iv,
+        includeShadow,
+        pairIdFilter: req.query.pair_id,
+        tpThresholdPct,
+        watchThresholdPct,
+        nowMs
+      });
+      const summary = summarizeMtm(pairs, {
+        currentSpot: feed.canonicalPrice,
+        ivAnnual: iv,
+        tpThresholdPct: tpThresholdPct ?? 0.30,
+        watchThresholdPct: watchThresholdPct ?? 0.05,
+        nowMs
+      });
+      reply.send({ ...summary, includes_shadow: includeShadow });
     }
   );
 
