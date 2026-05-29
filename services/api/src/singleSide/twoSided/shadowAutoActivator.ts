@@ -494,10 +494,48 @@ export const forceShadowActivation = async (
       return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
     }
   } else {
-    // Auto-pick: prefer recommended cells if any, else fall back to any enabled cell ≤ maxTriggerPct
-    chosenCell = pickEligibleCell(gate.recommended_cells, [], config.maxCellTriggerPct);
+    // Auto-pick order of preference:
+    //   1. Highest-EV PROFITABLE cell from the current cell_opportunities list
+    //      (real economic ranking — what a smart operator would actually fire)
+    //   2. Fall back to gate.recommended_cells (global signal recommendations)
+    //   3. Final fallback: first registered enabled cell ≤ maxTriggerPct
+    try {
+      const { computeCellOpportunities } = await import("./cellOpportunities");
+      const { resolveCurrentTier } = await import("./tierResolver");
+      const tier = await resolveCurrentTier(pool, now);
+      const feed = deps.feedService.getCurrentFeed();
+      if (feed && feed.canonicalPrice != null) {
+        const opps = await computeCellOpportunities({
+          spot: feed.canonicalPrice,
+          regime: (gate.regime ?? "calm") as "calm" | "moderate" | "elevated" | "stress",
+          anchorProvider: deps.anchorProvider,
+          liquidChainCache: deps.liquidChainCache,
+          tier,
+          nowMs: now
+        });
+        // Already sorted by EV% DESC; take the first PROFITABLE or MARGINAL_PROFITABLE
+        const best = opps.opportunities.find((o) =>
+          o.verdict === "PROFITABLE" || o.verdict === "MARGINAL_PROFITABLE"
+        );
+        if (best) {
+          const cell = PHASE_0_CELLS[best.cell_id];
+          if (
+            cell && cell.enabled &&
+            cell.triggerPctDown <= config.maxCellTriggerPct &&
+            cell.triggerPctUp <= config.maxCellTriggerPct
+          ) {
+            chosenCell = best.cell_id;
+          }
+        }
+      }
+    } catch {
+      // Fall through to next strategy on any failure (opps not yet computed, etc.)
+    }
     if (!chosenCell) {
-      // No recommendations (e.g. calm regime) — pick first registered enabled cell ≤ maxTriggerPct
+      chosenCell = pickEligibleCell(gate.recommended_cells, [], config.maxCellTriggerPct);
+    }
+    if (!chosenCell) {
+      // Final fallback — pick first registered enabled cell ≤ maxTriggerPct
       for (const [id, cell] of Object.entries(PHASE_0_CELLS)) {
         if (!cell.enabled) continue;
         if (cell.triggerPctDown > config.maxCellTriggerPct || cell.triggerPctUp > config.maxCellTriggerPct) continue;
