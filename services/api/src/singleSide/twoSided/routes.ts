@@ -334,7 +334,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     const haltActive = halt.foxifyHalt || halt.atticusHalt;
     const finalGoodToActivate = !haltActive && result.good_to_activate;
 
-    // Record snapshot for trend computation BEFORE responding
+    // Record snapshot for trend computation BEFORE responding (in-memory ring)
     const nowMs = Date.now();
     recordGateSnapshot({
       asOfMs: nowMs,
@@ -342,6 +342,27 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       goodToActivate: finalGoodToActivate,
       regime: result.regime
     });
+
+    // Also persist to DB (deduped, ~1 row per 30s on quiet, more on transitions)
+    void (async () => {
+      try {
+        const { persistGateSnapshotIfChanged, ensureGateSnapshotSchema } = await import("./gateSnapshotPersist");
+        await ensureGateSnapshotSchema(deps.pool);
+        await persistGateSnapshotIfChanged(deps.pool, {
+          ts: new Date(nowMs),
+          good_to_activate: finalGoodToActivate,
+          regime: result.regime,
+          dvol: result.dvol,
+          vrp: result.vrp,
+          iv_annual: result.iv_annual,
+          rv_annual: result.rv_annual,
+          signal_tier: result.signal_tier,
+          signal_score: result.signal_score
+        });
+      } catch {
+        // never block the response on persistence; the in-memory ring still works
+      }
+    })();
     const vrpTrend5min = computeVrpTrend(5, nowMs);
     const vrpTrend15min = computeVrpTrend(15, nowMs);
     const consecutiveGoodSeconds = computeConsecutiveGoodSeconds(nowMs);
@@ -357,17 +378,45 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         : "high_3min+_sustained"
     };
 
+    // Cell-level opportunities: per-cell EV regardless of global signal.
+    // Foxify bot can opt to act on cell-level opportunities even when the
+    // global gate says WAIT (e.g. in calm regime, far-OTM cells often have
+    // +EV even when VRP hasn't crossed the global threshold).
+    let cellOpportunities: import("./cellOpportunities").CellOpportunity[] = [];
+    try {
+      const feed = deps.feedService.getCurrentFeed();
+      if (feed && feed.canonicalPrice != null) {
+        const { computeCellOpportunities } = await import("./cellOpportunities");
+        const { resolveCurrentTier } = await import("./tierResolver");
+        const tier = await resolveCurrentTier(deps.pool, nowMs);
+        const opps = await computeCellOpportunities({
+          spot: feed.canonicalPrice,
+          regime: (result.regime ?? "calm") as "calm" | "moderate" | "elevated" | "stress",
+          anchorProvider: deps.anchorProvider,
+          liquidChainCache: deps.liquidChainCache ?? null,
+          tier,
+          nowMs
+        });
+        cellOpportunities = opps.opportunities;
+      }
+    } catch (e) {
+      // Never block the gate response on cell-opp computation. Empty list signals
+      // "couldn't compute" — bot falls back to recommended_cells (global signal).
+      console.error(`[FoxifyV2] cell opportunities computation failed: ${(e as Error).message}`);
+    }
+
     if (haltActive) {
       reply.send({
         ...result,
         good_to_activate: false,
         reason: `halt_active:${halt.atticusHalt ? "atticus" : "foxify"}:${halt.atticusHaltReason ?? halt.foxifyHaltReason ?? "unknown"}`,
         recommended_cells: [],
+        cell_opportunities: [],
         trends
       });
       return;
     }
-    reply.send({ ...result, trends });
+    reply.send({ ...result, trends, cell_opportunities: cellOpportunities });
   });
 
   app.get("/foxify/v2/regime", { preHandler: checkFoxifyToken }, async (_req, reply) => {
@@ -519,6 +568,34 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         all.overrides = await getOverrides(deps.pool);
         reply.send(all);
       }
+    }
+  );
+
+  /**
+   * GET /admin/foxify/v2/signal-distribution?hours=24
+   *
+   * Returns the historical distribution of the activation signal over the
+   * last N hours. Answers questions like "what % of time was signal GO?",
+   * "how many transitions?", and "broken down by regime, what's the GO rate?"
+   *
+   * Uses the persisted two_sided_gate_snapshot table (populated by every
+   * gate computation, deduped to ~1 row per 30s on quiet stretches).
+   */
+  app.get<{ Querystring: { hours?: string } }>(
+    "/admin/foxify/v2/signal-distribution",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const hours = Math.max(0.1, Math.min(720, Number(req.query.hours ?? "24")));
+      const { computeSignalDistribution, ensureGateSnapshotSchema } = await import("./gateSnapshotPersist");
+      await ensureGateSnapshotSchema(deps.pool);
+      const dist = await computeSignalDistribution(deps.pool, hours);
+      reply.send({
+        window_hours: hours,
+        ...dist,
+        interpretation: dist.total_samples > 0
+          ? `Over the last ${hours}h, the signal was GO ${(dist.good_pct * 100).toFixed(1)}% of the time (${dist.good_samples} of ${dist.total_samples} sampled snapshots). Signal flipped state ${dist.transitions} times.`
+          : "No samples collected in this window yet (system may have just deployed or table just created)."
+      });
     }
   );
 

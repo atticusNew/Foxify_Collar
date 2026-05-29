@@ -8775,6 +8775,52 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       await v2Registry.spawnRuntimeForceClose(pair, v2RuntimeDeps);
     };
 
+    // ─── Gate snapshot persistence poller ───
+    // Always runs (independent of any other flag). Computes the gate every
+    // 30s and writes a deduped snapshot row so we can answer historical
+    // questions like "what % of time was signal GO?" with hard data.
+    try {
+      const { ensureGateSnapshotSchema, persistGateSnapshotIfChanged } = await import("./singleSide/twoSided/gateSnapshotPersist");
+      const { computeActivationGate } = await import("./singleSide/twoSided/activationGate");
+      const { recordGateSnapshot } = await import("./singleSide/twoSided/gateHistory");
+      await ensureGateSnapshotSchema(v2Pool);
+      const persistInterval = setInterval(async () => {
+        try {
+          const gate = await computeActivationGate({
+            dvolService: v2DvolService,
+            rvService: v2RvService,
+            liquidChainCache: v2LiquidCache
+          });
+          const halt = await (await import("./singleSide/twoSided/guardrails")).getHaltState(v2Pool);
+          const haltActive = halt.foxifyHalt || halt.atticusHalt;
+          const finalGood = !haltActive && gate.good_to_activate;
+          const nowMs = Date.now();
+          // Update in-memory ring too so trend computation has fresh data
+          recordGateSnapshot({ asOfMs: nowMs, vrp: gate.vrp, goodToActivate: finalGood, regime: gate.regime });
+          await persistGateSnapshotIfChanged(v2Pool, {
+            ts: new Date(nowMs),
+            good_to_activate: finalGood,
+            regime: gate.regime,
+            dvol: gate.dvol,
+            vrp: gate.vrp,
+            iv_annual: gate.iv_annual,
+            rv_annual: gate.rv_annual,
+            signal_tier: gate.signal_tier,
+            signal_score: gate.signal_score
+          });
+        } catch (e) {
+          console.error(`[FoxifyV2] gate snapshot persist tick failed: ${(e as Error).message}`);
+        }
+      }, 30_000);
+      // Don't keep the process alive just for this poller
+      if (typeof (persistInterval as { unref?: () => void }).unref === "function") {
+        (persistInterval as { unref: () => void }).unref();
+      }
+      console.log("[FoxifyV2] Gate snapshot poller started (30s interval, deduped writes)");
+    } catch (e) {
+      console.error(`[FoxifyV2] FAILED to start gate snapshot poller: ${(e as Error).message}`);
+    }
+
     // ─── Shadow auto-activator ───
     // Signal-driven shadow pair opener. Default OFF; enable with SHADOW_AUTO_ACTIVATE=true.
     // Always ensures the audit schema so the admin status endpoint works even when disabled.

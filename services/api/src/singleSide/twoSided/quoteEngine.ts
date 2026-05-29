@@ -33,8 +33,18 @@ import { pickLiquidForLeg } from "./liquidChainCache";
  * Spot-bucket of \$100 means a 0.14% spot move (typical for BTC in 1min) won't
  * invalidate the cache. A 0.5% move (~\$350) crosses 3 buckets and re-quotes.
  */
-const QUOTE_STABILITY_TTL_MS = 30_000;
-const QUOTE_STABILITY_SPOT_BUCKET = 100; // round spot to nearest $100
+// Quote stability cache — keeps the SAME picked strikes + same per-leg
+// quotes for `QUOTE_STABILITY_TTL_MS` within a `QUOTE_STABILITY_SPOT_BUCKET`
+// wide spot window. Set wide enough to absorb intra-minute spot drift +
+// minor liquid-chain refreshes so operator-visible costs don't oscillate
+// based on which side of a tight bucket boundary the spot happened to be on.
+//
+// Bumped 2026-05-29 from (30s, $100) → (300s, $500) after observing
+// pair_50k_2pct cost swing $2,862 → $5,037 → $4,997 in 10 min as the
+// picker shifted ITM strike depth on each cache miss. Wider window =
+// stable strikes, stable cost, deterministic operator experience.
+const QUOTE_STABILITY_TTL_MS = 300_000;       // 5 min (was 30s)
+const QUOTE_STABILITY_SPOT_BUCKET = 500;      // round spot to nearest $500 (was $100)
 
 type CachedQuote = { result: QuoteResult; expiresAtMs: number };
 const _quoteStabilityCache = new Map<string, CachedQuote>();

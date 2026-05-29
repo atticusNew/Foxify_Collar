@@ -197,14 +197,17 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   // 4. Tier
   const tier = await resolveCurrentTier(deps.pool, now);
 
-  // 5. Quote
+  // 5. Quote — ALWAYS fresh for actual activation. The operator-visibility
+  // endpoints (gate_with_ev, cell-costs) intentionally use the stability cache
+  // for stable display. The activation path should ALWAYS quote live.
   const quote: QuoteResult = await buildQuote({
     cell,
     spot,
     anchorProvider: deps.anchorProvider,
     tier,
     nowMs: now,
-    liquidChainCache: deps.liquidChainCache ?? null
+    liquidChainCache: deps.liquidChainCache ?? null,
+    useStabilityCache: false
   });
   if (!quote.ok) {
     return {
