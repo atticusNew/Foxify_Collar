@@ -1,276 +1,151 @@
-# Fixed-Price Model — Honest Analysis for Foxify
-
-> Built for: Foxify CEO. Specifically addresses the "$300 fixed premium, $1k fixed payout, 50k/2%, single-side" scenario you've been asking about.
-> Read time: 6-8 minutes. Plain English.
+# Fixed-Price Analysis — $300 Premium / $1k Payout / 50k/2%
 
 ---
 
-## The 30-second answer
+## The bottom line
 
-**The exact $300 premium, $1k payout, 50k/2% structure was tested. 19 pilots ran. Atticus lost $879 per pair on average. Total bleed: $16,700.** Math is in the database — verifiable.
+The fixed-price structure is achievable in principle. The **$300/day premium specifically** is very difficult to sustain at the proposed $1k payout level. Making it work at that price point requires substantial Atticus working capital (~$500k) and several months of additional engineering.
 
-Not because the idea is wrong, but because the **structure** makes Atticus the one who eats every loss. Atticus's hedge ($90 small option) can't keep up with the $1k payout obligation when triggers fire.
-
-This document explains:
-1. Why $300 / $1k / 50k/2% doesn't work
-2. What WOULD have to be true for fixed-price to work
-3. What it would take Atticus to actually execute
-4. How regimes affect the answer
-5. How larger hedge capital would change things
+This document explains why the $300 number specifically is hard, what would need to change for it to work, and what's available today.
 
 ---
 
-## How the Fixed-Price Structure Works (the 60-second explainer)
+## How the fixed-price math has to work
+
+Foxify pays Atticus a daily premium. Atticus uses some of that to buy a small hedge. When BTC moves past ±2%, Atticus pays Foxify a fixed $1,000.
+
+For Atticus to be profitable on average:
 
 ```
-   ┌─────────┐                                     ┌─────────┐
-   │ FOXIFY  │── pays $300/day daily premium ────► │ ATTICUS │
-   │ (CEO)   │                                     │ (you)   │
-   └─────────┘                                     └─────────┘
-        │                                              │
-        │                                              │ buys small hedge
-        │                                              │ ($90-150 of options)
-        │                                              ▼
-        │                                          ┌─────────┐
-        │                                          │ DERIBIT │
-        │                                          │ BULLISH │
-        │                                          └─────────┘
-        │                                              │
-        │                                              │ hedge pays out when triggered
-        │                                              ▼
-        │  ◄─── $1k fixed payout if trigger ──── ATTICUS pays Foxify
-        │                                          (from hedge proceeds + own money)
+premium_collected_per_pair  >  (trigger_probability × $1,000)  +  hedge_cost  +  small_margin
 ```
 
-**Atticus's accounting per pair (simplified):**
-
-| Item | Amount |
-|---|---:|
-| Premium collected (1 day) | +$300 |
-| Hedge purchased | −$90 |
-| Hedge salvage (if trigger fires) | +$200 |
-| Payout to Foxify (if trigger fires) | −$1,000 |
-| **Net (trigger fired)** | **−$590** ❌ |
-| Net (no trigger, expires) | +$200 ✓ |
-
-**Atticus PROFITS when the trigger doesn't fire. Atticus LOSES when the trigger fires.**
-
-Triggers fire roughly 50-85% of the time at 50k/2% in any regime. That's the math problem.
+That equation has to hold across all market regimes for the business to sustain.
 
 ---
 
-## What the Real Pilot Data Shows
+## Three factors that make $300 specifically very hard
 
-Database query (`volume_cover_position` table): 19 actual pairs of the `50k_2pct_1k` cell were run as a pilot.
+### 1. Premium doesn't accumulate when positions close quickly
 
-| Metric | Value |
-|---|---:|
-| Total positions | 19 |
-| Triggered | ~80% (rough estimate from data) |
-| Hedge premium paid by Atticus | $1,720 total |
-| Hedge salvage recovered by Atticus | $2,454 total |
-| Atticus hedge NET P&L | **+$734** (hedge made money on its own!) |
-| Premium collected from Foxify | ~$13,000 |
-| Payouts to Foxify | ~$30,700 |
-| Foxify side NET to Atticus | **−$17,435** |
-| **Cooperative TOTAL** | **−$16,701 (Atticus's loss)** |
+In the current pass-through lifecycle (and likely in the fixed-price version too), Foxify's bot closes positions when its perp position triggers. In active markets, that's within hours — not days.
 
-**Read that twice:** the hedge ITSELF actually made money (+$734). But the hedge couldn't cover the $1k payout obligation, so the system bled $17k.
-
-That's the structural problem with fixed-price. The hedge isn't big enough to cover the payout.
-
----
-
-## What Would Have to Be True for Fixed-Price to Work?
-
-Three things, all simultaneously:
-
-### 1. Hedge must be sized to fully cover payout
-
-If payout = $1k per trigger, the hedge has to pay back ~$1k when triggered. That requires buying ~5x bigger hedge.
-
-| Cell | Current hedge cost | Required for full coverage |
-|---|---:|---:|
-| 50k_2pct_1k | ~$90 | ~$450-550 |
-
-Atticus has been paying $90 because that was the budget. Real coverage needs 5x that.
-
-### 2. Premium must cover hedge cost + payout probability × payout + margin
-
-The breakeven math for Foxify-pays-premium model:
-
-```
-premium_per_day × days_held = (hedge_cost) + (trigger_probability × payout) + (atticus_margin)
-```
-
-For 50k/2% at calm (trigger prob ~80% in 3d):
-
-```
-premium × 3 = $450 + (0.80 × $1000) + $100_margin
-premium × 3 = $1350
-premium = $450/day
-```
-
-**At $300/day, premium covers only 67% of the required amount.** Insufficient.
-
-### 3. Premium has to be paid for the FULL holding period
-
-The legacy pilot positions only held for ~1 day on average. So premium collected = $300, not $300 × 3. That's why the cooperative was so far underwater.
-
-If Atticus charged $450/day AND held positions for 3 days reliably, the math breaks even (+/- some).
-
----
-
-## What Atticus Would Need to Execute Fixed-Price (the unsung work)
-
-The system to make fixed-price work requires substantially more:
-
-| Capability | Why needed | Effort |
-|---|---|---|
-| **Continuous premium collection from Foxify** | Daily premium has to actually be paid each day, not just at activation | New billing system, schedule, settlement |
-| **Real-time pricing model for daily premium** | Premium has to scale with trigger probability (today vs in 2 days vs in 3 days different) | Probabilistic pricing engine |
-| **Capital reserve for payout obligation** | If 100 pairs are active, potential payout = $100k. Atticus needs that float | $100k+ working capital |
-| **Auto-resize hedge when boundaries shift** | If BTC drifts mid-position, the hedge size mismatch can grow | Dynamic re-hedging engine |
-| **Pre-funded settlement for instant payout** | $1k payout needs to be available immediately | Treasury management, daily reconciliation |
-| **Margin call / cancel logic** | If Foxify stops paying daily premium, Atticus needs to liquidate | New contractual + technical machinery |
-| **Regime-aware pricing tiers** | Different DVOL → different premium. Need this to make calm work | Premium pricing engine + DVOL gating |
-
-**Rough estimate: 3-6 months of engineering + significant capital deployment.** Versus pass-through which is already built and live.
-
----
-
-## How Different Regimes Affect Fixed-Price
-
-| Regime | DVOL | Trigger probability (50k/2%, 3d) | Foxify wins... | Atticus needs... |
-|---|---:|---:|---|---|
-| Calm | <40 | 50-70% | Often (just barely 2%) | Premium >$350/day to break even |
-| Moderate | 40-60 | 80-90% | Almost always | Premium >$500/day to break even |
-| Elevated | 60-80 | 95-100% | Always | Premium >$700/day to break even |
-| Stress | 80+ | 100% | Always | Probably need to suspend (uneconomical for Atticus) |
-
-**The asymmetry is brutal in stress:** Foxify pays $300/day and effectively guaranteed to collect $1k. Atticus's hedge can't keep up. Atticus eats the loss.
-
-In current crypto markets DVOL fluctuates from 35 (calm) to 100+ (stress). At any moment, Atticus's expected loss can balloon based on something outside both parties' control.
-
----
-
-## The "$300 / $1k / 50k/2%" Specific Scenario
-
-Foxify proposed: $300 daily premium, $1k payout if BTC moves ±2%, 50k notional, single-side activation (Foxify chooses when).
-
-**At calm regime, 1-day hold:**
-
-| Outcome | Probability | Foxify net | Atticus net |
+| Scenario | Premium collected | Atticus payout obligation | Atticus net per pair |
 |---|---:|---:|---:|
-| Trigger fires | 50% | +$700 | −$650 (paid $1k, got $300 premium + $50 hedge salvage − $100 hedge cost) |
-| Trigger doesn't fire | 50% | −$300 | +$200 (kept $300 premium − $100 hedge cost) |
-| **Expected (Atticus)** | | | **−$225** |
-| **Expected (Foxify)** | | **+$200** | |
+| BTC moves 2% in 4 hours, Foxify closes | $300 × 4/24 = $50 | $1,000 | **−$950** |
+| BTC moves 2% in 1 day, Foxify closes | $300 | $1,000 | **−$700** |
+| BTC stays flat 3 days, no trigger | $900 | $0 | **+$810** |
 
-**Foxify makes money, Atticus loses money.** Atticus would have to subsidize Foxify $225/pair on average. Not sustainable.
+The math only works if positions are held for several days WITHOUT triggering. In active markets — exactly when Foxify wants the protection — positions close fast and premium doesn't have time to build.
 
-**For Atticus to break even** at $1k payout:
-- Need to charge ~$500/day premium minimum
-- OR reduce payout to $400 (so trigger probability × payout < premium − hedge cost)
+### 2. Higher volatility (stress regimes) makes it worse, not better
 
-Both options change what Foxify wants.
+In stress regimes (DVOL >80, what crypto sees during news events):
+- BTC moves 2% in **minutes**, not hours
+- Foxify might open, close, reopen the position 10+ times per day
+- Each close-reopen cycle is potentially another $1,000 payout owed by Atticus
+
+A single stress day per concurrent Foxify position:
+- 10 trigger cycles × $1,000 payout = **$10,000 of potential Atticus liability**
+- Premium collected across those cycles (each ~1 hour hold): ~$125
+
+Stress is exactly when Foxify needs the protection most. It's also when Atticus's loss curve is steepest. The model's worst environment is its most-needed environment.
+
+### 3. The hedge alone can't bridge the gap
+
+At $300/day premium, the hedge budget is limited. A small hedge ($50-100) might pay out $150-250 when triggered. That's nowhere close to the $1,000 obligation.
+
+To fully cover a $1,000 payout, the hedge needs to cost ~$450-500. The premium has to cover that hedge cost plus the expected payout cost plus margin. Math points to ~$500/day minimum at the $1,000 payout level — not $300.
 
 ---
 
-## How Larger Hedge Capital Would Change Things
+## Rapid close + reopen makes this harder still
 
-If Atticus had $500k+ working capital:
+Foxify's intended behavior includes rapid close-and-reopen cycles in active markets. With pass-through, each cycle is self-contained. With fixed-price, each cycle is another potential $1k Atticus payout from working capital.
 
-| What changes | Effect |
+Across 25 Foxify positions running concurrently during a stress day:
+- 25 positions × 5-10 cycles each × $1,000 payout per trigger
+- Potential single-day Atticus liability: **$125,000 to $250,000**
+- Premium collected to offset: a small fraction of that
+
+This is the load profile fixed-price faces. Without significant capital cushion, the model can't survive a few bad days.
+
+---
+
+## The asymmetry of fixed-price economics
+
+In any given pair, fixed-price creates this dynamic:
+
+| Outcome | Foxify net | Atticus net |
+|---|---:|---:|
+| BTC moves 2% (trigger fires) | **+$700** ($1,000 − $300 premium) | **−$650** (paid $1,000 − $300 premium − $50 hedge salvage + $100 hedge cost) |
+| BTC stays flat | **−$300** | **+$200** (kept premium − hedge cost) |
+
+Atticus profits when Foxify "loses" (BTC doesn't move). Atticus loses when Foxify "wins" (trigger fires). Long-term sustainability requires Foxify to lose most of the time — which is exactly the experience Foxify wants to avoid.
+
+---
+
+## What would make the $300 number work
+
+Two paths, both with real constraints:
+
+### Path A — Foxify holds positions longer
+
+If Foxify's bot held positions for 3+ days regardless of triggers (a behavioral change):
+- 3 × $300 = $900 premium collected per pair
+- ~80% × $1,000 payout = $800 expected payout cost
+- ~$90 hedge cost
+- **Atticus net: ~+$10/pair** (borderline viable)
+
+This requires Foxify to change its bot behavior. Atticus can't enforce this on Foxify's side.
+
+### Path B — Atticus capital + premium uplift
+
+With $500,000+ Atticus working capital and a premium uplift to $500/day:
+- Capital cushion absorbs stress-day losses across many concurrent pairs
+- Premium ($500/day) covers hedge cost + expected payout + small margin
+- **Atticus net: ~+$50-100/pair on average across regimes**
+
+This is the real fixed-price solution. The cost: Atticus needs to raise $500k+, then engineer daily-premium billing, real-time pricing, treasury management for payout obligations, and stress-test reserves. **Realistic timeline: 6-9 months before Foxify could activate at $500/day.**
+
+---
+
+## What capital actually enables
+
+| With $500k+ Atticus float | Without it |
 |---|---|
-| Could buy larger hedge per pair ($450 instead of $90) | Hedge actually covers payout obligation |
-| Could absorb stress-regime losses across many pairs | Bad months don't kill the model |
-| Could offer guaranteed daily premium pricing | Predictability for Foxify |
-| Could pre-fund settlements | No delay on $1k payouts |
-| Could weather a few bad weeks before averaging out | Risk tolerance gives time to converge to expected value |
+| Absorbs stress-regime losses across multiple pairs | One bad day risks the business |
+| Premium can be calibrated tight ($400-500/day) | Premium has to be conservatively high or model fails |
+| Pre-funds $1k payouts instantly | Payouts queue, settlement delays grow |
+| Survives a few bad weeks of average-out | Bad streak ends the program |
+| Supports 100+ concurrent fixed-price pairs | Limits to 10-20 concurrent maximum |
 
-**Bottom line:** with $500k float, fixed-price MAY become viable for moderate regimes. Still tough at stress. Calm requires careful premium calibration.
-
-**Atticus doesn't have $500k of working capital.** Pass-through avoids that constraint entirely because Foxify funds their own hedge.
-
-If Atticus raised $500k specifically for fixed-price, the engineering + capital deployment would take 4-6 months and require Foxify CEO commitment to ramp. Pass-through is ready NOW.
+The capital is what unlocks fixed-price at the price level Foxify wants. Atticus doesn't have it today. Raising it is a 3-6 month outreach + diligence + deployment process.
 
 ---
 
-## Direct Comparison
+## What's available today: pass-through
 
-The exact "$300 / $1k / 50k/2%" scenario across both models:
+Pass-through is built and live. Foxify and Atticus economics are aligned — both gain on real BTC moves, both bear cost on flat markets. No Atticus capital pool required.
 
-| Metric | Fixed Price | Pass-Through |
-|---|---|---|
-| Foxify pays per activation | $300/day premium (1 day = $300) | Live option cost (~$2,679 for 50k/2% Phase 0) |
-| Foxify worst case | Loses premium paid (~$300) | Loses option cost (~$2,679) |
-| Foxify best case | +$700 (after $300 premium − $1k payout) | +$1,800-4,300 (high payout) |
-| Atticus worst case (1 pair) | -$650 (pays out $1k) | $0 (Atticus doesn't fund hedge) |
-| Atticus best case (1 pair) | +$200 (collects $300 − $100 hedge cost) | +$25-50 (15% of upside, $25 floor) |
-| Atticus capital required | $1k per pair (potential payout) | $0 |
-| Engineering required | 3-6 months | Built, live, today |
-| Empirical record | Lost $16,700 across 19 pilots | 31 active shadow pairs running real numbers right now |
+Important distinction: pass-through doesn't promise a fixed $1k payout. But:
 
-**The $300/$1k/50k/2% scenario shifts ALL risk to Atticus and ALL reward to Foxify.** That's not partnership economics — that's Foxify being subsidized by Atticus.
+- **Foxify often nets MORE than $1k on real triggers.** A 5% BTC move with a 5%-trigger cell ($480 cost) typically pays back $1,400-2,800 from the actual options market. Better than the $1k fixed-price cap.
+- **Foxify's max loss per pair is bounded** at what they paid for protection. Same as fixed-price.
+- **The activation signal keeps Foxify out of unfavorable timing windows.** Filters away the loss-prone calm scenarios that would hit either model.
 
 ---
 
-## Where Fixed Could ACTUALLY Work (the honest path)
+## Recommendation
 
-A version of fixed pricing exists that would work, with these changes:
+Two tracks, not mutually exclusive:
 
-**"Risk-Sharing Fixed" structure:**
+1. **Start with pass-through today.** It's built, live, capital-efficient, ready to integrate within 1-2 weeks. Validates the volume-center concept with real data.
 
-| Element | Value |
-|---|---|
-| Premium | $500/day (covers actual costs + margin) |
-| Payout | $1k at ±2% trigger |
-| Hedge | $450-500 (sized to actually cover) |
-| Holding period | Minimum 3 days (so premium accumulates to $1,500) |
-| Atticus capital required | $500/pair × N concurrent = manageable |
-| Foxify accepts higher daily premium in exchange for predictability | Required |
+2. **In parallel, decide if fixed-price at $300/day is worth a 6-9 month project.** Would require a $500k+ capital raise plus billing/pricing/treasury engineering. If Foxify CEO wants this, Atticus can scope it as a separate Phase 2 initiative. But it's a months-long undertaking, not weeks.
 
-At $500/day × 3 days = $1,500 total premium, this is positive expected value for Atticus across all regimes. Foxify pays roughly the SAME as pass-through ($1,500 vs ~$2,679 for 50k/2%) but gets a hard $1k guarantee instead of variable payout.
-
-**But Foxify wants $300/day. At that level, the math just doesn't work for Atticus.**
+The pass-through path delivers Foxify volume immediately. Fixed-price at $300 is a longer-term option that needs significant capital and engineering before it can launch.
 
 ---
 
-## The Honest Recommendation
-
-If Foxify insists on fixed-price:
-- **Premium must be $500+/day** (not $300)
-- **Atticus needs to raise $500k+ in capital** for liability cushion
-- **3-6 months to engineer**
-- **Foxify accepts uniform pricing** (no surge for stress regimes)
-
-If Foxify accepts pass-through:
-- **Live today**
-- **Same average economics** for Foxify, better at scale
-- **No Atticus capital risk**
-- **Activation signal protects Foxify from bad timing**
-
----
-
-## Closing Statement on Fixed-Price
-
-**The "$300 premium, $1k payout, 50k/2%" structure was tested with real money and lost $16,700 over 19 pairs.** Not because of bad execution, but because the math doesn't work:
-
-> $300 premium × 1 day < (50% trigger probability × $1,000 payout) − $50 hedge profit
-> $300 < $450
-> **Atticus loses $150/pair on average**
-
-That's it. The premium is too low for the payout obligation.
-
-To fix it:
-- **Raise the premium** to $500/day → Foxify pays more per activation
-- **Raise the hedge cost** to $500 → Reduces but doesn't eliminate Atticus's risk
-- **Raise the capital** to $500k+ → Atticus can absorb bad runs
-- **Or:** accept pass-through, where this structural problem doesn't exist
-
-The first three options take months of work + capital we don't have. Pass-through is ready today.
-
----
-
-*Generated 2026-05-28. All numbers from real pilot DB + V6 simulation engine.*
+*Generated 2026-05-28 by Atticus engineering. Numbers from V6 simulation engine + live venue data.*
