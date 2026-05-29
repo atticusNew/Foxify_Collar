@@ -1,4 +1,4 @@
-# Foxify Volume Center - How It Works and Why It Wins
+# Foxify Volume Center: Pass-Through
 
 ---
 
