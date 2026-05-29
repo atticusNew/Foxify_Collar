@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
   ensureShadowAuditSchema,
+  forceShadowActivation,
   pickEligibleCell,
   countActivationsInCurrentWindow,
   runAutoActivatorTick,
@@ -335,6 +336,127 @@ test("readAutoActivatorConfig defaults to disabled when env unset", () => {
 test("readAutoActivatorConfig: SHADOW_AUTO_ACTIVATE=true enables", () => {
   const cfg = readAutoActivatorConfig({ SHADOW_AUTO_ACTIVATE: "true" });
   assert.equal(cfg.enabled, true);
+});
+
+// ─── forceShadowActivation (test-fire bypass) ──────────────────────────────
+
+test("forceShadowActivation: respects halt by default", async () => {
+  const pool = await buildPool();
+  clearHistoryForTesting();
+  await pool.query(
+    `UPDATE two_sided_halt_state SET atticus_halt = TRUE, atticus_halt_reason = 'cost_overrun', atticus_halt_since = NOW()
+     WHERE singleton_key = 'singleton'`
+  );
+  const result = await forceShadowActivation({
+    pool,
+    dvolService: stubDvolService("calm", 35, 0.35),
+    rvService: stubRvService(0.35),
+    feedService: stubFeedService,
+    liquidChainCache: null,
+    anchorProvider: stubAnchorProvider,
+    config: buildConfig()
+  });
+  assert.match(result.decision, /^test_skipped:halt:/);
+});
+
+test("forceShadowActivation: ignore_halt=true overrides halt check", async () => {
+  const pool = await buildPool();
+  clearHistoryForTesting();
+  await pool.query(
+    `UPDATE two_sided_halt_state SET atticus_halt = TRUE, atticus_halt_reason = 'manual', atticus_halt_since = NOW()
+     WHERE singleton_key = 'singleton'`
+  );
+  const result = await forceShadowActivation(
+    {
+      pool,
+      dvolService: stubDvolService("calm", 35, 0.35),
+      rvService: stubRvService(0.35),
+      feedService: stubFeedService,
+      liquidChainCache: null,
+      anchorProvider: stubAnchorProvider,
+      config: buildConfig(),
+      activateDepsOverride: () => ({
+        pool,
+        anchorProvider: stubAnchorProvider,
+        executor: { executeStrangle: async () => ({ ok: true, putLeg: { filledAskUsdcPerBtc: 500, filledAtIso: new Date().toISOString() }, callLeg: { filledAskUsdcPerBtc: 500, filledAtIso: new Date().toISOString() } }) } as unknown as import("../src/singleSide/twoSided/executor").StrangleExecutor,
+        getFeed: () => null,
+        feedVersion: "test",
+        nowMs: () => Date.now(),
+        liquidChainCache: null,
+        getCurrentRegime: () => "calm"
+      })
+    },
+    { ignoreHalt: true }
+  );
+  // halt skipped; should proceed past halt check (will fail activate due to no feed, but past halt)
+  assert.ok(!/^test_skipped:halt:/.test(result.decision), `should not be halt-skipped, got: ${result.decision}`);
+});
+
+test("forceShadowActivation: rejects unknown cell", async () => {
+  const pool = await buildPool();
+  clearHistoryForTesting();
+  const result = await forceShadowActivation(
+    {
+      pool,
+      dvolService: stubDvolService("calm", 35, 0.35),
+      rvService: stubRvService(0.35),
+      feedService: stubFeedService,
+      liquidChainCache: null,
+      anchorProvider: stubAnchorProvider,
+      config: buildConfig()
+    },
+    { cellId: "nonexistent_cell" }
+  );
+  assert.match(result.decision, /^test_skipped:invalid_cell:/);
+});
+
+test("forceShadowActivation: rejects disabled cell", async () => {
+  const pool = await buildPool();
+  clearHistoryForTesting();
+  // pair_25k_5pct_otm_short is deprecated/disabled in cellConfig
+  const result = await forceShadowActivation(
+    {
+      pool,
+      dvolService: stubDvolService("calm", 35, 0.35),
+      rvService: stubRvService(0.35),
+      feedService: stubFeedService,
+      liquidChainCache: null,
+      anchorProvider: stubAnchorProvider,
+      config: buildConfig()
+    },
+    { cellId: "pair_25k_5pct_otm_short" }
+  );
+  assert.match(result.decision, /^test_skipped:invalid_cell:/);
+});
+
+test("forceShadowActivation: auto-picks a cell when none specified, even in calm regime", async () => {
+  const pool = await buildPool();
+  clearHistoryForTesting();
+  // In calm, gate.recommended_cells is [] — auto-picker should fall back to registry scan
+  const result = await forceShadowActivation(
+    {
+      pool,
+      dvolService: stubDvolService("calm", 35, 0.35),
+      rvService: stubRvService(0.35),
+      feedService: stubFeedService,
+      liquidChainCache: null,
+      anchorProvider: stubAnchorProvider,
+      config: buildConfig(),
+      activateDepsOverride: () => ({
+        pool,
+        anchorProvider: stubAnchorProvider,
+        executor: { executeStrangle: async () => ({ ok: true, putLeg: { filledAskUsdcPerBtc: 500, filledAtIso: new Date().toISOString() }, callLeg: { filledAskUsdcPerBtc: 500, filledAtIso: new Date().toISOString() } }) } as unknown as import("../src/singleSide/twoSided/executor").StrangleExecutor,
+        getFeed: () => null,
+        feedVersion: "test",
+        nowMs: () => Date.now(),
+        liquidChainCache: null,
+        getCurrentRegime: () => "calm"
+      })
+    }
+  );
+  // Should have picked a cell — won't be no_eligible_cell
+  assert.ok(!/no_eligible_cell/.test(result.decision), `should have picked a cell, got: ${result.decision}`);
+  assert.ok(result.chosen_cell_id !== null, "should have auto-picked a cell");
 });
 
 test("readAutoActivatorConfig: env overrides win", () => {

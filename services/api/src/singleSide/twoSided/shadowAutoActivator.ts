@@ -408,6 +408,194 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
   }
 };
 
+// ─── Test-only force-fire helper ───────────────────────────────────────────
+
+/**
+ * Force-fire a shadow activation, bypassing the signal gate, sustained-good,
+ * rate-limit, and regime-allowlist checks. Still respects:
+ *   - cell exists + enabled + triggerPct ≤ maxCellTriggerPct
+ *   - halt state (still skipped if Atticus halt is active)
+ *
+ * Writes an audit row with decision = "test_activated" or "test_skipped:<reason>"
+ * so the entry is clearly distinguishable from automatic activations.
+ *
+ * Intended for operator use via POST /admin/foxify/v2/shadow-auto/test-activate
+ * when the real signal won't fire (e.g. calm market) and the operator needs
+ * to observe end-to-end shadow lifecycle behavior.
+ */
+export const forceShadowActivation = async (
+  deps: TickDeps,
+  opts: { cellId?: string; ignoreHalt?: boolean } = {}
+): Promise<TickResult> => {
+  const now = (deps.nowMs ?? Date.now)();
+  const { pool, config } = deps;
+
+  const gate = await computeActivationGate({
+    dvolService: deps.dvolService,
+    rvService: deps.rvService,
+    liquidChainCache: deps.liquidChainCache,
+    nowMs: now
+  });
+
+  const halt = await getHaltState(pool);
+  const haltActive = halt.foxifyHalt || halt.atticusHalt;
+
+  const auditBase = {
+    good_to_activate: gate.good_to_activate,
+    signal_tier: gate.signal_tier,
+    signal_score: gate.signal_score,
+    vrp: gate.vrp,
+    regime: gate.regime,
+    dvol: gate.dvol,
+    consecutive_good_seconds: null as number | null,
+    recommended_cells: gate.recommended_cells
+  };
+
+  if (haltActive && !opts.ignoreHalt) {
+    const decision = `test_skipped:halt:${halt.atticusHalt ? "atticus" : "foxify"}`;
+    const auditId = await insertAuditRow(pool, {
+      ...auditBase,
+      decision,
+      chosen_cell_id: null,
+      pair_id: null,
+      details: {
+        source: "test_activate",
+        atticus_halt_reason: halt.atticusHaltReason,
+        foxify_halt_reason: halt.foxifyHaltReason
+      }
+    });
+    return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
+  }
+
+  // Pick a cell: operator-specified OR first eligible from recommended OR first ≤5% enabled cell
+  let chosenCell: string | null = opts.cellId ?? null;
+  if (chosenCell) {
+    const cell = PHASE_0_CELLS[chosenCell];
+    if (!cell || !cell.enabled) {
+      const decision = `test_skipped:invalid_cell:${chosenCell}`;
+      const auditId = await insertAuditRow(pool, {
+        ...auditBase,
+        decision,
+        chosen_cell_id: null,
+        pair_id: null,
+        details: { source: "test_activate", requested_cell: chosenCell, reason: cell ? "disabled" : "not_in_registry" }
+      });
+      return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
+    }
+    if (cell.triggerPctDown > config.maxCellTriggerPct || cell.triggerPctUp > config.maxCellTriggerPct) {
+      const decision = `test_skipped:trigger_too_wide:${chosenCell}`;
+      const auditId = await insertAuditRow(pool, {
+        ...auditBase,
+        decision,
+        chosen_cell_id: null,
+        pair_id: null,
+        details: { source: "test_activate", requested_cell: chosenCell, max_trigger_pct: config.maxCellTriggerPct, cell_trigger_pct: Math.max(cell.triggerPctDown, cell.triggerPctUp) }
+      });
+      return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
+    }
+  } else {
+    // Auto-pick: prefer recommended cells if any, else fall back to any enabled cell ≤ maxTriggerPct
+    chosenCell = pickEligibleCell(gate.recommended_cells, [], config.maxCellTriggerPct);
+    if (!chosenCell) {
+      // No recommendations (e.g. calm regime) — pick first registered enabled cell ≤ maxTriggerPct
+      for (const [id, cell] of Object.entries(PHASE_0_CELLS)) {
+        if (!cell.enabled) continue;
+        if (cell.triggerPctDown > config.maxCellTriggerPct || cell.triggerPctUp > config.maxCellTriggerPct) continue;
+        chosenCell = id;
+        break;
+      }
+    }
+    if (!chosenCell) {
+      const decision = "test_skipped:no_eligible_cell";
+      const auditId = await insertAuditRow(pool, {
+        ...auditBase,
+        decision,
+        chosen_cell_id: null,
+        pair_id: null,
+        details: { source: "test_activate", max_trigger_pct: config.maxCellTriggerPct }
+      });
+      return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
+    }
+  }
+
+  // Fire shadow activation
+  const shadowExecutor = new ShadowStrangleExecutor();
+  const activateDeps: ActivateDeps = deps.activateDepsOverride
+    ? deps.activateDepsOverride(shadowExecutor)
+    : {
+        pool,
+        anchorProvider: deps.anchorProvider,
+        executor: shadowExecutor,
+        getFeed: () => deps.feedService.getCurrentFeed(),
+        feedVersion: "v1.0.0",
+        nowMs: () => now,
+        liquidChainCache: deps.liquidChainCache,
+        getCurrentRegime: () => deps.dvolService.getCurrentDvol(now)?.regime ?? null
+      };
+
+  const foxifyPairRef = `test-shadow-${Date.now()}-${randomBytes(4).toString("hex")}`;
+  try {
+    const result = await handleActivate(
+      {
+        cellId: chosenCell,
+        maxAcceptableHedgeCostUsdc: config.maxShadowCostUsdc,
+        foxifyPairRef,
+        isShadow: true,
+        metadata: {
+          source: "shadow_test_activate",
+          signal_tier_at_test: gate.signal_tier,
+          signal_score_at_test: gate.signal_score,
+          vrp: gate.vrp,
+          regime: gate.regime,
+          bypassed_signal_gate: true
+        }
+      },
+      activateDeps
+    );
+
+    if (result.status === 201) {
+      const decision = "test_activated";
+      const auditId = await insertAuditRow(pool, {
+        ...auditBase,
+        decision,
+        chosen_cell_id: chosenCell,
+        pair_id: result.body.pair_id,
+        details: {
+          source: "test_activate",
+          foxify_pair_ref: foxifyPairRef,
+          hedge_cost_usdc: result.body.total_hedge_cost_usdc,
+          spot_at_activation: result.body.spot_at_activation,
+          trigger_down: result.body.trigger_down_price,
+          trigger_up: result.body.trigger_up_price,
+          expires_at: result.body.expires_at,
+          bypassed_signal_gate: true
+        }
+      });
+      return { audit_id: auditId, decision, pair_id: result.body.pair_id, chosen_cell_id: chosenCell, signal_tier: gate.signal_tier };
+    }
+
+    const decision = `test_skipped:activate_failed:${result.status}`;
+    const auditId = await insertAuditRow(pool, {
+      ...auditBase,
+      decision,
+      chosen_cell_id: chosenCell,
+      pair_id: null,
+      details: { source: "test_activate", status: result.status, body: result.body }
+    });
+    return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: chosenCell, signal_tier: gate.signal_tier };
+  } catch (err) {
+    const decision = "test_skipped:activate_error";
+    const auditId = await insertAuditRow(pool, {
+      ...auditBase,
+      decision,
+      chosen_cell_id: chosenCell,
+      pair_id: null,
+      details: { source: "test_activate", error: (err as Error).message?.slice(0, 500) ?? String(err) }
+    });
+    return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: chosenCell, signal_tier: gate.signal_tier };
+  }
+};
+
 // ─── Long-running loop ─────────────────────────────────────────────────────
 
 export class ShadowAutoActivator {

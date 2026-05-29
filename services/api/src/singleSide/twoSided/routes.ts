@@ -544,6 +544,115 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     }
   );
 
+  /**
+   * POST /admin/foxify/v2/shadow-auto/test-activate
+   *
+   * Force-fire a single shadow activation right now, bypassing the
+   * good_to_activate / sustained-good / rate-limit / regime-allowlist
+   * gates. Still respects: cell exists + enabled + triggerPct ≤ 5%,
+   * and Atticus halt (unless ignore_halt=true).
+   *
+   * Body: { cell_id?: string, ignore_halt?: boolean }
+   *  - cell_id omitted → auto-picks first eligible cell (recommended_cells
+   *    if any, else first registered enabled ≤5% cell)
+   *  - ignore_halt=true → fires even when halt is active (for testing
+   *    halt-recovery flows)
+   *
+   * Writes an audit row with decision="test_activated" so the entry is
+   * clearly distinguishable from the auto-loop's "activated" rows.
+   *
+   * Intended for operator use when the signal won't naturally fire
+   * (e.g. calm market) and you need to observe end-to-end lifecycle.
+   */
+  app.post<{ Body?: { cell_id?: string; ignore_halt?: boolean } }>(
+    "/admin/foxify/v2/shadow-auto/test-activate",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      if (!deps.rvService) {
+        reply.code(503).send({ error: "rv_service_unavailable", message: "RvService not wired; cannot compute gate. Set up FOXIFY_V2 deps first." });
+        return;
+      }
+      const body = req.body ?? {};
+      const { forceShadowActivation, readAutoActivatorConfig, ensureShadowAuditSchema } = await import("./shadowAutoActivator");
+      await ensureShadowAuditSchema(deps.pool);
+      const cfg = deps.shadowAutoActivatorConfig ?? readAutoActivatorConfig();
+      const result = await forceShadowActivation(
+        {
+          pool: deps.pool,
+          dvolService: deps.dvolService,
+          rvService: deps.rvService,
+          feedService: deps.feedService,
+          liquidChainCache: deps.liquidChainCache ?? null,
+          anchorProvider: deps.anchorProvider,
+          config: cfg
+        },
+        {
+          cellId: typeof body.cell_id === "string" ? body.cell_id : undefined,
+          ignoreHalt: body.ignore_halt === true
+        }
+      );
+      const statusCode = result.decision.startsWith("test_activated") ? 201 : 422;
+      reply.code(statusCode).send({
+        decision: result.decision,
+        signal_tier: result.signal_tier,
+        chosen_cell_id: result.chosen_cell_id,
+        pair_id: result.pair_id,
+        audit_id: result.audit_id
+      });
+    }
+  );
+
+  /**
+   * GET /admin/foxify/v2/shadow-pairs?limit=20&status=active
+   *
+   * List recent shadow pairs (is_shadow=true), most-recent first. Lets
+   * operators inspect ongoing/closed shadow lifecycle without needing
+   * the Foxify token. Each entry includes status, cost, trigger band,
+   * expiry, and salvage/settlement if closed.
+   */
+  app.get<{ Querystring: { limit?: string; status?: string } }>(
+    "/admin/foxify/v2/shadow-pairs",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const limit = Math.max(1, Math.min(200, Number(req.query.limit ?? "20")));
+      const statusFilter = req.query.status;
+      const params: unknown[] = [limit];
+      let where = "WHERE is_shadow = TRUE";
+      if (statusFilter && typeof statusFilter === "string" && statusFilter.length > 0) {
+        where += ` AND status = $${params.length + 1}`;
+        params.push(statusFilter);
+      }
+      const result = await deps.pool.query(
+        `SELECT pair_id, cell_id, status, is_shadow,
+                spot_at_activation, trigger_down_price, trigger_up_price,
+                hedge_tenor_days, expires_at, tp_force_exit_at,
+                hedge_cost_total_usdc, foxify_capital_funded_usdc,
+                tier_at_activation, atticus_floor_usdc,
+                triggered_at, trigger_side, closed_at, closed_reason,
+                salvage_proceeds_usdc, uplift_usdc,
+                foxify_share_usdc, atticus_share_usdc, exit_mode,
+                metadata, created_at, updated_at
+           FROM two_sided_pair
+           ${where}
+           ORDER BY created_at DESC
+           LIMIT $1`,
+        params
+      );
+      const counts = await deps.pool.query(
+        `SELECT status, COUNT(*)::int AS n
+           FROM two_sided_pair
+          WHERE is_shadow = TRUE
+          GROUP BY status`
+      );
+      reply.send({
+        asOf: new Date().toISOString(),
+        total_shadow: counts.rows.reduce((s, r) => s + Number(r.n), 0),
+        by_status: Object.fromEntries(counts.rows.map((r) => [r.status, Number(r.n)])),
+        pairs: result.rows
+      });
+    }
+  );
+
   app.get("/admin/foxify/v2/diagnostics", { preHandler: checkAdminToken }, async (_req, reply) => {
     const halt = await getHaltState(deps.pool);
     const pool = await getPoolState(deps.pool).catch(() => null);
