@@ -4,7 +4,7 @@ import os, pathlib, markdown
 from weasyprint import HTML, CSS as WP_CSS
 
 CSS = """
-@page { size: Letter; margin: 0.75in 0.85in; }
+@page { size: Letter; margin: 0.7in 0.8in; }
 html, body {
   font-family: "Helvetica", "Arial", sans-serif;
   font-size: 10.5pt;
@@ -12,7 +12,14 @@ html, body {
   color: #1a1a1a;
   margin: 0;
   padding: 0;
+  orphans: 3;
+  widows: 3;
 }
+.page-break-before { page-break-before: always; break-before: page; }
+.keep-together { page-break-inside: avoid; break-inside: avoid; }
+p { orphans: 3; widows: 3; }
+/* Keep headings attached to following content (lists, paragraphs, tables, pre) */
+h1, h2, h3, h4 { page-break-after: avoid; break-after: avoid; }
 h1 {
   font-size: 22pt;
   font-weight: 700;
@@ -66,19 +73,23 @@ pre {
   background: #f7f7f7;
   border: 1px solid #e5e5e5;
   border-radius: 4px;
-  padding: 0.8em 1em;
+  padding: 6pt 8pt;
   page-break-inside: avoid;
+  break-inside: avoid;
   white-space: pre;
-  line-height: 1.35;
-  margin: 0.9em 0;
+  font-size: 6.5pt;
+  line-height: 1.1;
+  margin: 6pt 0;
   overflow: hidden;
 }
 pre code {
   background: transparent;
   padding: 0;
-  font-size: 8pt;
+  font-size: 6.5pt;
   color: #1a1a1a;
   white-space: pre;
+  line-height: 1.1;
+  font-family: "Menlo", "Consolas", "Courier New", monospace;
 }
 table {
   border-collapse: collapse;
@@ -86,7 +97,10 @@ table {
   margin: 0.9em 0;
   font-size: 9.5pt;
   page-break-inside: avoid;
+  break-inside: avoid;
 }
+ul, ol { page-break-inside: avoid; break-inside: avoid; }
+blockquote { page-break-inside: avoid; break-inside: avoid; }
 th {
   background: #fafafa;
   border-bottom: 2px solid #1a1a1a;
@@ -123,7 +137,7 @@ def convert(md_path, pdf_path):
     src = pathlib.Path(md_path).read_text(encoding="utf-8")
     html_body = markdown.markdown(
         src,
-        extensions=["tables", "fenced_code", "sane_lists", "attr_list"],
+        extensions=["tables", "fenced_code", "sane_lists", "attr_list", "md_in_html"],
     )
     title = pathlib.Path(md_path).stem
     html_str = HTML_TEMPLATE.format(title=title, body=html_body)

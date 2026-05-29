@@ -34,6 +34,8 @@ Foxify activates a position when the timing is right. Atticus buys protection on
 
 ---
 
+<div class="keep-together" markdown="1">
+
 ## The Full Lifecycle (Activate → Close → Reopen)
 
 This is the actual end-to-end cycle. Run as many times per day as the signal allows.
@@ -95,7 +97,10 @@ This is the actual end-to-end cycle. Run as many times per day as the signal all
                               (loop back to Step 1)
 ```
 
+</div>
+
 **Key points:**
+
 - Foxify drives the close (their bot decides when). Atticus's trigger detector is a backup safety net if Foxify's bot misses a boundary cross.
 - "Peak capture with trail stop" = we don't sell instantly on trigger. We wait up to 30 min to catch the highest value, but if the price drops 5% from observed peak we sell immediately. Disciplined, not gambling. Has a safety floor (auto-sell if value drops below cost).
 - After close, the signal IS the cooldown. Good markets = signal GO = reopen at will. Bad markets = signal WAIT = bot pauses. No artificial throttling needed.
@@ -172,6 +177,7 @@ Atticus takes a small operator fee on **profit only** - scaled to volume. The mo
 | Which exchange | Bullish often cheaper for some strikes | Different liquidity providers price differently |
 
 **Verifiable proof:**
+
 - BTC IV right now: ~37% annualized (you can verify on Deribit.com DVOL chart)
 - Our $480 cost for 5%-trigger 2-day strangle matches Deribit + Bullish best-ask exactly
 - You can pull our actual orderbook readings at any time via the diagnostics endpoint
@@ -227,6 +233,7 @@ In plain English: "Right now is a good time. BTC is moving enough that buying pr
 These aren't predictions of the future. They're observations of the present. The signal says "based on what's actually happening right now, your expected outcome is positive/negative."
 
 **Confidence levels:**
+
 - "low_just_flipped_good" (<60s good) - wait another minute, signal might be noise
 - "medium_1-3min_sustained" - real signal, OK to start activating
 - "high_3min+_sustained" - strong signal, deploy capital
@@ -283,6 +290,7 @@ Foxify doesn't need a big capital pool to start. Each pair is independent and se
 **Organic scaling:** profitable activations free up capital for the next round. Foxify keeps reinvesting winnings into more pairs. As trust in the system grows, Foxify can increase the concurrent-pair cap.
 
 **Recommended ramp:**
+
 1. **Week 1:** 1-2 pairs total (validate end-to-end works against real money)
 2. **Week 2-3:** 5-10 pairs across GO windows (validate signal correlates with profits)
 3. **Month 2+:** scale to 25, 50, then 100 concurrent based on Foxify's confidence
