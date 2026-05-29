@@ -66,9 +66,12 @@ export const readAutoActivatorConfig = (env: NodeJS.ProcessEnv = process.env): A
 // ─── DB schema ─────────────────────────────────────────────────────────────
 
 export const ensureShadowAuditSchema = async (pool: Pool): Promise<void> => {
+  // NOTE: two_sided_pair.pair_id is TEXT (not UUID) in the production schema.
+  // Use TEXT for both audit_id and pair_id here to match, and to keep the
+  // FK constraint valid. audit_id default uses gen_random_uuid()::text.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS two_sided_shadow_audit (
-      audit_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      audit_id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
       checked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       good_to_activate BOOLEAN NOT NULL,
       signal_tier TEXT NOT NULL,
@@ -80,7 +83,7 @@ export const ensureShadowAuditSchema = async (pool: Pool): Promise<void> => {
       recommended_cells JSONB NOT NULL DEFAULT '[]'::jsonb,
       decision TEXT NOT NULL,
       chosen_cell_id TEXT,
-      pair_id UUID REFERENCES two_sided_pair(pair_id) ON DELETE SET NULL,
+      pair_id TEXT REFERENCES two_sided_pair(pair_id) ON DELETE SET NULL,
       details JSONB NOT NULL DEFAULT '{}'::jsonb
     );
     CREATE INDEX IF NOT EXISTS idx_two_sided_shadow_audit_checked_at

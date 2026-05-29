@@ -46,10 +46,11 @@ const buildPool = async (): Promise<Pool> => {
     implementation: () => randomUUID()
   });
   const pool = new (db.adapters.createPg().Pool)();
-  // Auxiliary tables the audit refs (two_sided_pair FK) and the halt + allowlist used by tick
+  // Auxiliary tables the audit refs (two_sided_pair FK) and the halt + allowlist used by tick.
+  // pair_id is TEXT in production schema to match existing data.
   await pool.query(`
     CREATE TABLE IF NOT EXISTS two_sided_pair (
-      pair_id UUID PRIMARY KEY
+      pair_id TEXT PRIMARY KEY
     );
   `);
   await ensureCellAllowlistSchema(pool);
