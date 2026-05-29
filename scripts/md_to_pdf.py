@@ -149,6 +149,7 @@ if __name__ == "__main__":
     pairs = [
         ("docs/FOXIFY_PASS_THROUGH_PITCH.md", "docs/pdfs/FOXIFY_PASS_THROUGH_PITCH.pdf"),
         ("docs/FOXIFY_FIXED_PRICE_ANALYSIS.md", "docs/pdfs/FOXIFY_FIXED_PRICE_ANALYSIS.pdf"),
+        ("docs/RENDER_ENV_REFERENCE.md", "docs/pdfs/RENDER_ENV_REFERENCE.pdf"),
     ]
     # Auto-include any FOXIFY_FRICTION_COVERAGE_<date>.md docs
     for md in sorted(glob.glob("docs/FOXIFY_FRICTION_COVERAGE_*.md")):

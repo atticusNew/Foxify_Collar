@@ -140,6 +140,7 @@ test("countActivationsInCurrentWindow counts only 'activated' rows in window", a
 
 const buildConfig = (overrides: Partial<AutoActivatorConfig> = {}): AutoActivatorConfig => ({
   enabled: true,
+  policy: "conservative",
   pollMs: 60_000,
   sustainedGoodSeconds: 60,
   maxPerGoodWindow: 3,
@@ -473,4 +474,63 @@ test("readAutoActivatorConfig: env overrides win", () => {
   assert.equal(cfg.maxPerGoodWindow, 5);
   assert.equal(cfg.maxCellTriggerPct, 0.03);
   assert.equal(cfg.maxShadowCostUsdc, 50_000);
+});
+
+// ─── Policy ───────────────────────────────────────────────────────────────
+
+test("readAutoActivatorConfig: policy defaults to conservative", () => {
+  const cfg = readAutoActivatorConfig({});
+  assert.equal(cfg.policy, "conservative");
+});
+
+test("readAutoActivatorConfig: SHADOW_AUTO_POLICY=opportunistic sets policy", () => {
+  const cfg = readAutoActivatorConfig({ SHADOW_AUTO_POLICY: "opportunistic" });
+  assert.equal(cfg.policy, "opportunistic");
+});
+
+test("readAutoActivatorConfig: SHADOW_AUTO_POLICY=hybrid sets policy", () => {
+  const cfg = readAutoActivatorConfig({ SHADOW_AUTO_POLICY: "hybrid" });
+  assert.equal(cfg.policy, "hybrid");
+});
+
+test("readAutoActivatorConfig: SHADOW_AUTO_POLICY case-insensitive + trim", () => {
+  assert.equal(readAutoActivatorConfig({ SHADOW_AUTO_POLICY: "  OPPORTUNISTIC  " }).policy, "opportunistic");
+  assert.equal(readAutoActivatorConfig({ SHADOW_AUTO_POLICY: "Hybrid" }).policy, "hybrid");
+});
+
+test("readAutoActivatorConfig: invalid SHADOW_AUTO_POLICY falls back to conservative", () => {
+  assert.equal(readAutoActivatorConfig({ SHADOW_AUTO_POLICY: "garbage" }).policy, "conservative");
+  assert.equal(readAutoActivatorConfig({ SHADOW_AUTO_POLICY: "" }).policy, "conservative");
+});
+
+test("runAutoActivatorTick: conservative policy skips when global signal WAIT", async () => {
+  const pool = await buildPool();
+  clearHistoryForTesting();
+  const result = await runAutoActivatorTick({
+    pool,
+    dvolService: stubDvolService("calm", 35, 0.35),
+    rvService: stubRvService(0.34), // VRP positive, signal WAIT
+    feedService: stubFeedService,
+    liquidChainCache: null,
+    anchorProvider: stubAnchorProvider,
+    config: buildConfig({ policy: "conservative" })
+  });
+  assert.match(result.decision, /^skipped:not_good:/);
+});
+
+test("runAutoActivatorTick: conservative policy proceeds when global signal GO", async () => {
+  const pool = await buildPool();
+  clearHistoryForTesting();
+  const result = await runAutoActivatorTick({
+    pool,
+    // moderate regime → always good_to_activate
+    dvolService: stubDvolService("moderate", 50, 0.50),
+    rvService: stubRvService(0.40),
+    feedService: stubFeedService,
+    liquidChainCache: null,
+    anchorProvider: stubAnchorProvider,
+    config: buildConfig({ policy: "conservative" })
+  });
+  // First-tick — no sustained history — will skip with not_sustained
+  assert.equal(result.decision, "skipped:not_sustained");
 });

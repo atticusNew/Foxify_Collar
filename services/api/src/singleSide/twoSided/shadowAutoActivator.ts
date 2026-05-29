@@ -45,8 +45,30 @@ const DEFAULT_MAX_PER_WINDOW = 3;
 const DEFAULT_MAX_CELL_TRIGGER_PCT = 0.05;
 const DEFAULT_MAX_COST_USDC = 100_000; // shadow doesn't risk capital, generous cap
 
+/**
+ * Activation policy controls which signal triggers the loop to fire:
+ *
+ *   "conservative"  - Only fires when the GLOBAL signal flips good_to_activate=true.
+ *                     Strict; conservative; misses cell-level opportunities during
+ *                     calm regimes where individual cells can still be +EV.
+ *
+ *   "opportunistic" - Fires when ANY cell in cell_opportunities is verdict=PROFITABLE
+ *                     (regardless of global signal). Activates more often, especially
+ *                     in calm regime where OTM cells frequently show +EV even when
+ *                     the binary VRP gate is closed.
+ *
+ *   "hybrid"        - Fires when EITHER policy would fire (logical OR). Most
+ *                     activations, broadest coverage.
+ *
+ * Default: conservative. Validates the strict policy in shadow before any change
+ * to production behavior. Operator can flip to opportunistic / hybrid via
+ * SHADOW_AUTO_POLICY env var to see the comparison.
+ */
+export type ActivationPolicy = "conservative" | "opportunistic" | "hybrid";
+
 export type AutoActivatorConfig = {
   enabled: boolean;
+  policy: ActivationPolicy;
   pollMs: number;
   sustainedGoodSeconds: number;
   maxPerGoodWindow: number;
@@ -54,8 +76,16 @@ export type AutoActivatorConfig = {
   maxShadowCostUsdc: number;
 };
 
+const parsePolicy = (raw: string | undefined): ActivationPolicy => {
+  const v = (raw ?? "").toLowerCase().trim();
+  if (v === "opportunistic") return "opportunistic";
+  if (v === "hybrid") return "hybrid";
+  return "conservative";
+};
+
 export const readAutoActivatorConfig = (env: NodeJS.ProcessEnv = process.env): AutoActivatorConfig => ({
   enabled: env.SHADOW_AUTO_ACTIVATE === "true",
+  policy: parsePolicy(env.SHADOW_AUTO_POLICY),
   pollMs: Number(env.SHADOW_AUTO_POLL_MS ?? DEFAULT_POLL_MS),
   sustainedGoodSeconds: Number(env.SHADOW_AUTO_SUSTAINED_SEC ?? DEFAULT_SUSTAINED_GOOD_SEC),
   maxPerGoodWindow: Number(env.SHADOW_AUTO_MAX_PER_WINDOW ?? DEFAULT_MAX_PER_WINDOW),
@@ -260,19 +290,61 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
     return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
   }
 
-  if (!gate.good_to_activate) {
+  // Policy gate — determine whether THIS tick should attempt activation.
+  //   conservative: only when gate.good_to_activate
+  //   opportunistic: also when a cell shows verdict=PROFITABLE
+  //   hybrid: either of the above
+  let cellLevelOpportunity: { cellId: string; evPct: number } | null = null;
+  if (config.policy === "opportunistic" || config.policy === "hybrid") {
+    try {
+      const { computeCellOpportunities } = await import("./cellOpportunities");
+      const { resolveCurrentTier } = await import("./tierResolver");
+      const tier = await resolveCurrentTier(pool, now);
+      const feed = deps.feedService.getCurrentFeed();
+      if (feed && feed.canonicalPrice != null) {
+        const opps = await computeCellOpportunities({
+          spot: feed.canonicalPrice,
+          regime: (gate.regime ?? "calm") as "calm" | "moderate" | "elevated" | "stress",
+          anchorProvider: deps.anchorProvider,
+          liquidChainCache: deps.liquidChainCache,
+          tier,
+          nowMs: now
+        });
+        const best = opps.opportunities.find((o) => o.verdict === "PROFITABLE");
+        if (best) cellLevelOpportunity = { cellId: best.cell_id, evPct: best.foxify_ev_pct };
+      }
+    } catch {
+      // Fall through; treat as no cell-level opportunity available
+    }
+  }
+
+  const policyAllowsActivation =
+    (config.policy === "conservative" && gate.good_to_activate) ||
+    (config.policy === "opportunistic" && cellLevelOpportunity != null) ||
+    (config.policy === "hybrid" && (gate.good_to_activate || cellLevelOpportunity != null));
+
+  if (!policyAllowsActivation) {
     const decision = `skipped:not_good:${gate.signal_tier}`;
     const auditId = await insertAuditRow(pool, {
       ...auditBase,
       decision,
       chosen_cell_id: null,
       pair_id: null,
-      details: { reason: gate.reason }
+      details: {
+        reason: gate.reason,
+        policy: config.policy,
+        cell_level_opportunity_present: cellLevelOpportunity != null
+      }
     });
     return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
   }
 
-  if (consecutiveGoodSeconds == null || consecutiveGoodSeconds < config.sustainedGoodSeconds) {
+  // Sustained-good check applies ONLY when the trigger is the global signal
+  // (conservative or hybrid-on-global). Pure cell-level activations bypass it
+  // because cell EV is a per-tick computation, not sustained-over-time.
+  const triggeredByGlobalSignal = gate.good_to_activate &&
+    (config.policy === "conservative" || config.policy === "hybrid");
+  if (triggeredByGlobalSignal && (consecutiveGoodSeconds == null || consecutiveGoodSeconds < config.sustainedGoodSeconds)) {
     const decision = "skipped:not_sustained";
     const auditId = await insertAuditRow(pool, {
       ...auditBase,
@@ -287,7 +359,12 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
     return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
   }
 
-  const recentCount = await countActivationsInCurrentWindow(pool, consecutiveGoodSeconds, now);
+  // Rate-limit window: for cell-level activations use a fixed 5-min lookback
+  // since there's no "consecutive good seconds" anchor.
+  const rateLimitWindowSec = consecutiveGoodSeconds != null && consecutiveGoodSeconds > 0
+    ? consecutiveGoodSeconds
+    : 300;
+  const recentCount = await countActivationsInCurrentWindow(pool, rateLimitWindowSec, now);
   if (recentCount >= config.maxPerGoodWindow) {
     const decision = "skipped:rate_limit";
     const auditId = await insertAuditRow(pool, {
@@ -298,16 +375,33 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
       details: {
         recent_activations: recentCount,
         max_per_window: config.maxPerGoodWindow,
-        window_seconds: consecutiveGoodSeconds
+        window_seconds: rateLimitWindowSec,
+        policy: config.policy
       }
     });
     return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
   }
 
-  // 4. Pick eligible cell
+  // 4. Pick eligible cell — preference order:
+  //   1. The cell that drove the cell-level opportunity (opportunistic/hybrid path)
+  //   2. Top of gate.recommended_cells (conservative path or hybrid-on-global)
+  //   3. Fall back to first registered enabled cell that passes filters
   const regime = gate.regime ?? "calm";
   const allowlist = await getEffectiveAllowlist(pool, regime);
-  const chosenCell = pickEligibleCell(gate.recommended_cells, allowlist, config.maxCellTriggerPct);
+  let chosenCell: string | null = null;
+  if (cellLevelOpportunity) {
+    const cell = PHASE_0_CELLS[cellLevelOpportunity.cellId];
+    if (
+      cell && cell.enabled &&
+      cell.triggerPctDown <= config.maxCellTriggerPct &&
+      cell.triggerPctUp <= config.maxCellTriggerPct
+    ) {
+      chosenCell = cellLevelOpportunity.cellId;
+    }
+  }
+  if (!chosenCell) {
+    chosenCell = pickEligibleCell(gate.recommended_cells, allowlist, config.maxCellTriggerPct);
+  }
   if (!chosenCell) {
     const decision = "skipped:no_eligible_cell";
     const auditId = await insertAuditRow(pool, {
@@ -336,9 +430,14 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
         feedVersion: "v1.0.0",
         nowMs: () => now,
         liquidChainCache: deps.liquidChainCache,
-        getCurrentRegime: () => deps.dvolService.getCurrentDvol(now)?.regime ?? null
-        // preActivateGuard intentionally omitted for shadow — guardrails enforce
-        // capital limits etc. which don't apply to no-risk shadow activations.
+        // getCurrentRegime intentionally OMITTED. Reason: the shadow auto-loop
+        // has its own gating (signal-driven OR cell-level), and bypassing
+        // the regime allowlist allows opportunistic-policy shadow fires in
+        // calm regime where the default allowlist is empty by design. The
+        // regime allowlist is a real-money safety check, not relevant to
+        // no-risk shadow activations.
+        // preActivateGuard intentionally omitted — capital limits don't apply
+        // to no-risk shadow activations.
       };
 
   const foxifyPairRef = `auto-shadow-${Date.now()}-${randomBytes(4).toString("hex")}`;
