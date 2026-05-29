@@ -660,6 +660,8 @@ export type StatusSummary = {
   totals: {
     last_24h: number;
     activations_last_24h: number;
+    test_activations_last_24h?: number;
+    auto_activations_last_24h?: number;
     activations_today_utc: number;
   };
 };
@@ -695,24 +697,29 @@ export const readAutoActivatorStatus = async (
       LIMIT $1`,
     [limit]
   );
+  // Both 'activated' (auto-loop) and 'test_activated' (operator force-fire) count as activations.
   const lastActivationRes = await pool.query(
     `SELECT audit_id, checked_at, good_to_activate, signal_tier, signal_score,
             vrp, regime, dvol, consecutive_good_seconds,
             recommended_cells, decision, chosen_cell_id, pair_id, details
        FROM two_sided_shadow_audit
-      WHERE decision = 'activated'
+      WHERE decision IN ('activated', 'test_activated')
       ORDER BY checked_at DESC
       LIMIT 1`
   );
   const totalsRes = await pool.query<{
     last_24h: number;
     activations_last_24h: number;
+    test_activations_last_24h: number;
+    auto_activations_last_24h: number;
     activations_today_utc: number;
   }>(
     `SELECT
-       COUNT(*) FILTER (WHERE checked_at >= NOW() - INTERVAL '24 hours')::int                         AS last_24h,
-       COUNT(*) FILTER (WHERE checked_at >= NOW() - INTERVAL '24 hours' AND decision = 'activated')::int AS activations_last_24h,
-       COUNT(*) FILTER (WHERE checked_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AND decision = 'activated')::int AS activations_today_utc
+       COUNT(*) FILTER (WHERE checked_at >= NOW() - INTERVAL '24 hours')::int                                                   AS last_24h,
+       COUNT(*) FILTER (WHERE checked_at >= NOW() - INTERVAL '24 hours' AND decision IN ('activated', 'test_activated'))::int   AS activations_last_24h,
+       COUNT(*) FILTER (WHERE checked_at >= NOW() - INTERVAL '24 hours' AND decision = 'test_activated')::int                   AS test_activations_last_24h,
+       COUNT(*) FILTER (WHERE checked_at >= NOW() - INTERVAL '24 hours' AND decision = 'activated')::int                        AS auto_activations_last_24h,
+       COUNT(*) FILTER (WHERE checked_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AND decision IN ('activated', 'test_activated'))::int AS activations_today_utc
      FROM two_sided_shadow_audit`
   );
   const recentRows = recent.rows.map(normalizeAuditRow);
@@ -722,6 +729,12 @@ export const readAutoActivatorStatus = async (
     last_check: recentRows[0] ?? null,
     last_activation: lastActivationRes.rows[0] ? normalizeAuditRow(lastActivationRes.rows[0]) : null,
     recent_audit: recentRows,
-    totals: totalsRes.rows[0] ?? { last_24h: 0, activations_last_24h: 0, activations_today_utc: 0 }
+    totals: totalsRes.rows[0] ?? {
+      last_24h: 0,
+      activations_last_24h: 0,
+      test_activations_last_24h: 0,
+      auto_activations_last_24h: 0,
+      activations_today_utc: 0
+    }
   };
 };
