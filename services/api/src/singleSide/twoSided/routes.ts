@@ -775,6 +775,19 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           regime, contractsBtc: cell.contractsBtc
         });
 
+        // Foxify-facing EV as PERCENT of cost (the meaningful unit for a
+        // cost-payer). $200 gain on $100 spend reads very differently from
+        // $200 gain on $5,000 spend even though the absolute number is the same.
+        const foxifyEvPct = liveCost > 0 ? (evSim.meanFoxifyEv / liveCost) : 0;
+        const worstCasePct = liveCost > 0 ? (evSim.p5FoxifyEv / liveCost) : 0;
+        // Verdict now driven by % return, not raw dollars, so it's
+        // comparable across cells of very different sizes.
+        const verdict =
+          foxifyEvPct > 0.20 ? "✅ PROFITABLE" :
+          foxifyEvPct > 0.05 ? "✅ MARGINAL_PROFITABLE" :
+          foxifyEvPct > -0.05 ? "⚠️ BREAK_EVEN" :
+          foxifyEvPct > -0.20 ? "⚠️ MARGINAL_NEGATIVE" :
+          "❌ NEGATIVE";
         results.push({
           cellId,
           ok: true,
@@ -786,19 +799,22 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
             hedge_cost_at_regime: evSim.hedgeCost,
             mean_salvage: evSim.meanSalvage,
             trigger_rate: evSim.triggerRate,
-            foxify_ev: evSim.meanFoxifyEv,
-            atticus_ev: evSim.meanAtticusEv,
-            pct_profit: evSim.pctProfit,
-            p5_foxify_ev: evSim.p5FoxifyEv,
+            // Foxify-facing EV expressed as %-of-cost (primary metric)
+            foxify_ev_pct: foxifyEvPct,
+            // Worst 5% outcome expressed as %-of-cost (bounded loss)
+            worst_case_pct: worstCasePct,
+            // Raw dollar EVs kept for context — Foxify only (Atticus EV
+            // intentionally omitted from operator view per design decision:
+            // operator/CEO cares only about Foxify-side economics)
+            foxify_ev_usdc: evSim.meanFoxifyEv,
+            worst_case_usdc: evSim.p5FoxifyEv,
+            pct_profitable_paths: evSim.pctProfit,
             n_paths: evSim.nPaths,
             path_generator: evSim.pathGenerator,
             bars_source: evSim.barsSource,
             bars_count: evSim.barsCount
           },
-          ev_verdict: evSim.meanFoxifyEv > 100 ? "✅ PROFITABLE" :
-                      evSim.meanFoxifyEv > 0 ? "⚠️ MARGINAL_POSITIVE" :
-                      evSim.meanFoxifyEv > -100 ? "⚠️ MARGINAL_NEGATIVE" :
-                      "❌ NEGATIVE"
+          ev_verdict: verdict
         });
       } catch (e) {
         results.push({ cellId, ok: false, reason: "quote_or_sim_threw", message: (e as Error).message });
@@ -815,7 +831,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       cells: results,
       methodology: {
         ev_estimation: "Live MC sim per cell. 2k paths each. Path generator: bootstrap (calm + bars available) else GBM. Cached 5min per (cellId, regime, cost-bucket). NO HARDCODED REFERENCE — always fresh. Per-cell mc.path_generator field shows which was used; mc.bars_source shows where bars came from (tmp_file, deribit_30d, etc).",
-        gate_logic: "good_to_activate=true when regime in {moderate, elevated, stress} OR (regime=calm AND vrp < calmVrpThreshold). Halt overrides."
+        ev_units: "mc.foxify_ev_pct is the expected return AS A FRACTION OF COST (0.50 = +50% return on cost paid). mc.worst_case_pct is the 5th-percentile return (1-in-20 bad day). Verdict thresholds: PROFITABLE >+20%, MARGINAL_PROFITABLE +5-20%, BREAK_EVEN -5 to +5%, MARGINAL_NEGATIVE -5 to -20%, NEGATIVE <-20%.",
+        gate_logic: "good_to_activate=true when regime in {moderate, elevated, stress} OR (regime=calm AND vrp < calmVrpThreshold). Halt overrides.",
+        note_on_atticus_ev: "Atticus-side EV intentionally omitted from this response. This view is for Foxify/operator visibility into the pass-through economics."
       }
     });
   });
