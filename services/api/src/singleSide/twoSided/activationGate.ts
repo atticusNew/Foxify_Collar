@@ -74,18 +74,29 @@ export type ActivationGateResult = {
  * measurements that drive the binary good_to_activate decision (regime + VRP).
  * Pure function — no I/O.
  *
- * Calm regime (decision based on VRP < calmVrpThreshold):
- *   gap = calmVrpThreshold − VRP    (positive ⇒ favorable)
- *   score = clamp(gap / 0.015, −1, +1)
+ * The tier mapping is anchored to meaningful VRP boundaries so the tier
+ * provides real information across the full range of market conditions
+ * (not pegged at -1 during typical calm).
  *
- * Moderate/elevated/stress regime (decision is always good_to_activate):
- *   score derived from DVOL depth into the band, capped at +1.
+ * CALM REGIME (vrp-driven):
+ *   vrp >  +1.5%                → "negative"          (implied vol much richer than realized — deep wait)
+ *   0   <  vrp ≤ +1.5%          → "slightly_negative" (typical calm pattern — wait)
+ *   threshold < vrp ≤ 0         → "slightly_positive" (favorable but threshold not yet crossed)
+ *   vrp ≤ threshold (-1.5%)     → "positive"          (good_to_activate fires here)
  *
- * Bucket thresholds (symmetric around 0):
- *   score ≤ −0.5            → "negative"
- *   −0.5 < score ≤  0       → "slightly_negative"
- *    0  < score ≤  0.5      → "slightly_positive"
- *   score >  0.5            → "positive"
+ * NON-CALM REGIMES (good_to_activate is always true):
+ *   moderate                    → "slightly_positive"
+ *   elevated                    → "positive"
+ *   stress                      → "positive"
+ *
+ * Score is a continuous monotone function of vrp in [-1, +1]:
+ *   score = clamp(-vrp / 0.03, -1, +1)
+ * which produces:
+ *   vrp = +3%   → score = -1.0
+ *   vrp = +1.5% → score = -0.5  (negative ↔ slightly_negative boundary)
+ *   vrp =  0%   → score =  0.0  (slightly_negative ↔ slightly_positive boundary)
+ *   vrp = -1.5% → score = +0.5  (slightly_positive ↔ positive boundary — = calmVrpThreshold)
+ *   vrp = -3%   → score = +1.0
  */
 export const classifySignalTier = (params: {
   regime: "calm" | "moderate" | "elevated" | "stress" | null;
@@ -93,7 +104,7 @@ export const classifySignalTier = (params: {
   calmVrpThreshold: number;
   dvol: number | null;
 }): { tier: SignalTier; score: number; label: string } => {
-  const { regime, vrp, calmVrpThreshold, dvol } = params;
+  const { regime, vrp, dvol } = params;
 
   // No regime info → can't classify; assume worst-case negative
   if (regime == null) {
@@ -136,7 +147,7 @@ export const classifySignalTier = (params: {
     };
   }
 
-  // Calm: tier driven by VRP gap vs threshold
+  // Calm: tier driven by where VRP sits relative to 0 and the threshold
   if (vrp == null) {
     return {
       tier: "negative",
@@ -145,36 +156,36 @@ export const classifySignalTier = (params: {
     };
   }
 
-  // gap > 0 means VRP is below the threshold (favorable); gap < 0 means VRP exceeds threshold (unfavorable)
-  const gap = calmVrpThreshold - vrp;
-  // Scale: 1.5% wide bands on either side of the threshold
-  const score = Math.max(-1, Math.min(1, gap / 0.015));
+  // Continuous score: positive when vrp is below 0 (favorable), negative when above.
+  // Add 0 to normalize the -0 result of `-vrp` when vrp === 0.
+  const score = Math.max(-1, Math.min(1, -vrp / 0.03)) + 0;
 
-  if (score <= -0.5) {
+  // Tier from vrp itself for crisp, meaningful boundaries (not floating-point comparisons on score)
+  if (vrp <= params.calmVrpThreshold) {
     return {
-      tier: "negative",
+      tier: "positive",
       score,
-      label: "Strong WAIT — calm regime, implied vol well above realized (options expensive)"
+      label: "Strong GO — calm regime with VRP below threshold (realized > implied, +EV to buy)"
     };
   }
-  if (score <= 0) {
-    return {
-      tier: "slightly_negative",
-      score,
-      label: "Borderline WAIT — calm regime, implied modestly above realized (VRP narrowing)"
-    };
-  }
-  if (score <= 0.5) {
+  if (vrp <= 0) {
     return {
       tier: "slightly_positive",
       score,
-      label: "Borderline GO — calm regime, VRP just crossed favorable threshold"
+      label: "Borderline GO — calm regime, VRP favorable (implied ≤ realized) but threshold not yet crossed"
+    };
+  }
+  if (vrp <= 0.015) {
+    return {
+      tier: "slightly_negative",
+      score,
+      label: "Borderline WAIT — calm regime, typical pattern (implied modestly above realized)"
     };
   }
   return {
-    tier: "positive",
+    tier: "negative",
     score,
-    label: "Strong GO — calm regime with deeply negative VRP (realized > implied, +EV to buy)"
+    label: "Strong WAIT — calm regime, implied vol much richer than realized (options expensive)"
   };
 };
 
