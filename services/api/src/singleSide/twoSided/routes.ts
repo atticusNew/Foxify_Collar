@@ -280,6 +280,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const halt = await getHaltState(deps.pool);
       const haltActive = halt.foxifyHalt || halt.atticusHalt;
       const good = !haltActive && dvol?.regime && dvol.regime !== "calm";
+      const { classifySignalTier } = await import("./activationGate");
+      const tierInfo = classifySignalTier({
+        regime: dvol?.regime ?? null,
+        vrp: null,
+        calmVrpThreshold: -0.015,
+        dvol: dvol?.dvol ?? null
+      });
       reply.send({
         good_to_activate: Boolean(good),
         regime: dvol?.regime ?? null,
@@ -297,7 +304,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
               : "dvol_unavailable",
         recommended_cells: [],
         next_check_signal: "regime_change_or_rv_service_enabled",
-        asOf: new Date().toISOString()
+        asOf: new Date().toISOString(),
+        signal_tier: tierInfo.tier,
+        signal_score: tierInfo.score,
+        signal_label: tierInfo.label
       });
       return;
     }
