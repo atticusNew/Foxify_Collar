@@ -8775,6 +8775,31 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       await v2Registry.spawnRuntimeForceClose(pair, v2RuntimeDeps);
     };
 
+    // ─── Shadow auto-activator ───
+    // Signal-driven shadow pair opener. Default OFF; enable with SHADOW_AUTO_ACTIVATE=true.
+    // Always ensures the audit schema so the admin status endpoint works even when disabled.
+    const {
+      ShadowAutoActivator,
+      readAutoActivatorConfig,
+      ensureShadowAuditSchema
+    } = await import("./singleSide/twoSided/shadowAutoActivator");
+    const v2ShadowAutoCfg = readAutoActivatorConfig();
+    try {
+      await ensureShadowAuditSchema(v2Pool);
+    } catch (e) {
+      console.error(`[FoxifyV2] ensureShadowAuditSchema failed: ${(e as Error).message}`);
+    }
+    const v2ShadowAutoActivator = new ShadowAutoActivator({
+      pool: v2Pool,
+      dvolService: v2DvolService,
+      rvService: v2RvService,
+      feedService: v2FeedService,
+      liquidChainCache: v2LiquidCache,
+      anchorProvider: v2AnchorProvider,
+      config: v2ShadowAutoCfg
+    });
+    v2ShadowAutoActivator.start();
+
     await app.register(async (instance) => {
       await registerFoxifyV2Routes(instance, {
         pool: v2Pool,
@@ -8786,10 +8811,12 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         liquidChainCache: v2LiquidCache,
         getRuntime: (pairId) => v2Registry.getRuntime(pairId),
         spawnRuntimeForceClose: v2SpawnForceClose,
-        newbornReviewThreshold: Number(process.env.SS_TWO_SIDED_NEWBORN_REVIEW_PER_REGIME ?? "10")
+        newbornReviewThreshold: Number(process.env.SS_TWO_SIDED_NEWBORN_REVIEW_PER_REGIME ?? "10"),
+        shadowAutoActivator: v2ShadowAutoActivator,
+        shadowAutoActivatorConfig: v2ShadowAutoCfg
       });
     });
-    console.log(`[FoxifyV2] Routes registered at /foxify/v2/* and /admin/foxify/v2/* (bullish_quotes=${Boolean(v2BullishClient)})`);
+    console.log(`[FoxifyV2] Routes registered at /foxify/v2/* and /admin/foxify/v2/* (bullish_quotes=${Boolean(v2BullishClient)}, shadow_auto_activate=${v2ShadowAutoCfg.enabled})`);
   } catch (err) {
     console.error(`[FoxifyV2] FAILED to register routes: ${(err as Error).message}`);
   }

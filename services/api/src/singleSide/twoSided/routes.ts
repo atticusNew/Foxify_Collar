@@ -82,6 +82,17 @@ export type FoxifyV2RoutesDeps = {
    * vol risk premium (IV - RV) for calm-regime tactical override.
    */
   rvService?: import("./rvService").RvService;
+  /**
+   * Shadow auto-activator instance (env-gated). When provided, exposes
+   * /admin/foxify/v2/shadow-auto/status so the operator can inspect recent
+   * decisions and the audit trail.
+   */
+  shadowAutoActivator?: import("./shadowAutoActivator").ShadowAutoActivator;
+  /**
+   * Config for the shadow auto-activator (exposed via the status endpoint
+   * so the operator can see the active thresholds at a glance).
+   */
+  shadowAutoActivatorConfig?: import("./shadowAutoActivator").AutoActivatorConfig;
 };
 
 // ───────────────────────── Auth helpers ─────────────────────────
@@ -508,6 +519,28 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         all.overrides = await getOverrides(deps.pool);
         reply.send(all);
       }
+    }
+  );
+
+  /**
+   * GET /admin/foxify/v2/shadow-auto/status
+   *
+   * Inspect the shadow auto-activator: current config, last check, last
+   * activation, and the most recent N audit rows. Works even when the
+   * auto-activator is disabled — falls back to reading the audit table
+   * directly so the operator can still see historical activity.
+   */
+  app.get<{ Querystring: { limit?: string } }>(
+    "/admin/foxify/v2/shadow-auto/status",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const limit = Math.max(1, Math.min(200, Number(req.query.limit ?? "20")));
+      const { readAutoActivatorStatus, readAutoActivatorConfig, ensureShadowAuditSchema } = await import("./shadowAutoActivator");
+      // Ensure schema exists for first-time reads (idempotent CREATE IF NOT EXISTS).
+      await ensureShadowAuditSchema(deps.pool);
+      const cfg = deps.shadowAutoActivatorConfig ?? readAutoActivatorConfig();
+      const status = await readAutoActivatorStatus(deps.pool, cfg, limit);
+      reply.send(status);
     }
   );
 
