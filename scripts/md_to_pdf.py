@@ -145,10 +145,15 @@ def convert(md_path, pdf_path):
     print(f"  -> {pdf_path} ({os.path.getsize(pdf_path)} bytes)")
 
 if __name__ == "__main__":
+    import glob
     pairs = [
         ("docs/FOXIFY_PASS_THROUGH_PITCH.md", "docs/pdfs/FOXIFY_PASS_THROUGH_PITCH.pdf"),
         ("docs/FOXIFY_FIXED_PRICE_ANALYSIS.md", "docs/pdfs/FOXIFY_FIXED_PRICE_ANALYSIS.pdf"),
     ]
+    # Auto-include any FOXIFY_FRICTION_COVERAGE_<date>.md docs
+    for md in sorted(glob.glob("docs/FOXIFY_FRICTION_COVERAGE_*.md")):
+        pdf = md.replace("docs/", "docs/pdfs/").replace(".md", ".pdf")
+        pairs.append((md, pdf))
     for md, pdf in pairs:
         print(f"Converting {md} ...")
         convert(md, pdf)
