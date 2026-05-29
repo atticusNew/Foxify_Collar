@@ -1,4 +1,4 @@
-# Foxify Volume Center — How It Works and Why It Wins
+# Foxify Volume Center - How It Works and Why It Wins
 
 ---
 
@@ -27,7 +27,7 @@ Foxify activates a position when the timing is right. Atticus buys protection on
 **Three real things happen per activation:**
 
 1. Foxify is responsible for the option cost (e.g., $480 for one of the 5%-trigger cells)
-2. Atticus buys the actual options on real exchanges (no IOU, no synthetic — actual hedge contracts that real traders are also buying)
+2. Atticus buys the actual options on real exchanges (no IOU, no synthetic - actual hedge contracts that real traders are also buying)
 3. When Foxify's bot closes the position (or when timer expires), Atticus sells those options and gives Foxify back whatever they sold for, minus a small operator fee if there's profit
 
 **The payout IS whatever the real options market gives back.** Could be $0, could be $5,000. Foxify keeps whatever it earns, Atticus takes a small cut only when positive.
@@ -58,7 +58,7 @@ This is the actual end-to-end cycle. Run as many times per day as the signal all
               ↓                                          ↓
    ┌────────────────────┐                    ┌─────────────────────┐
    │ Foxify closes perp │                    │ BTC crosses trigger │
-   │ (manual, end of    │                    │ boundary — Atticus  │
+   │ (manual, end of    │                    │ boundary - Atticus  │
    │  session, etc.)    │                    │ auto-fires close    │
    └─────────┬──────────┘                    └──────────┬──────────┘
              │                                           │
@@ -118,10 +118,10 @@ Pulled from live data at the moment of writing (BTC at $73,611, calm regime):
 
 **Two things to note about cost:**
 
-1. **Daily cost varies widely** — from $148/day (5% trigger, 25k notional) up to $1,878/day (100k notional, tight trigger). Foxify picks the cell that matches their daily budget appetite.
+1. **Daily cost varies widely** - from $148/day (5% trigger, 25k notional) up to $1,878/day (100k notional, tight trigger). Foxify picks the cell that matches their daily budget appetite.
 2. **In this version, longer tenor = lower per-day cost** because Foxify pays once and the position runs for the full tenor. A 3-day position at $148/day total is much cheaper than a 1-day position at $743/day.
 
-**These numbers update every 30 seconds based on real market quotes.** Nothing is invented or modeled — these are the actual asks at Deribit and Bullish right now.
+**These numbers update every 30 seconds based on real market quotes.** Nothing is invented or modeled - these are the actual asks at Deribit and Bullish right now.
 
 ---
 
@@ -131,7 +131,7 @@ Payout = whatever the option sells for when we close (Foxify-initiated close OR 
 
 Two scenarios, both real:
 
-### Scenario A — BTC moves big enough to trigger
+### Scenario A - BTC moves big enough to trigger
 
 | Cell | Cost | Likely payout if triggered | Net to Foxify |
 |---|---:|---:|---:|
@@ -139,9 +139,9 @@ Two scenarios, both real:
 | pair_25k_5pct | $445 | $1,200-2,000 | **+$755 to +$1,555** |
 | pair_50k_2pct | $2,679 | $4,500-7,000 | **+$1,800 to +$4,300** |
 
-Atticus takes a small operator fee on **profit only** — scaled to volume. The more pairs Foxify runs, the lower the percentage. Typical range: **5%–15% of profit** depending on monthly volume, with a small per-pair minimum to cover execution costs. **0% on losses** — if a pair closes negative, Atticus eats the operations cost, Foxify just pays the option cost. Exact tier schedule finalized in the pilot agreement.
+Atticus takes a small operator fee on **profit only** - scaled to volume. The more pairs Foxify runs, the lower the percentage. Typical range: **5%–15% of profit** depending on monthly volume, with a small per-pair minimum to cover execution costs. **0% on losses** - if a pair closes negative, Atticus eats the operations cost, Foxify just pays the option cost. Exact tier schedule finalized in the pilot agreement.
 
-### Scenario B — BTC stays flat, no trigger
+### Scenario B - BTC stays flat, no trigger
 
 | Cell | Cost | Likely payout at expiry | Net to Foxify |
 |---|---:|---:|---:|
@@ -184,9 +184,9 @@ The current system holds positions until either trigger fires, Foxify's bot clos
 
 We could enable:
 
-- **Foxify-initiated early close at any moment** — Foxify's bot calls `/foxify/v2/close`, Atticus sells the options at whatever price the market gives. Foxify gets that price minus the small operator fee. Useful if market conditions change mid-position OR if Foxify wants to lock in a winning trade before expiry.
+- **Foxify-initiated early close at any moment** - Foxify's bot calls `/foxify/v2/close`, Atticus sells the options at whatever price the market gives. Foxify gets that price minus the small operator fee. Useful if market conditions change mid-position OR if Foxify wants to lock in a winning trade before expiry.
 
-The API endpoint already exists (`/foxify/v2/close`). It's actively used in the lifecycle diagram above when Foxify closes their perp. We can enable it for take-profit timing too once we observe more shadow trades. **No additional cost — just an option Foxify can choose to use.**
+The API endpoint already exists (`/foxify/v2/close`). It's actively used in the lifecycle diagram above when Foxify closes their perp. We can enable it for take-profit timing too once we observe more shadow trades. **No additional cost - just an option Foxify can choose to use.**
 
 ---
 
@@ -221,28 +221,28 @@ In plain English: "Right now is a bad time to activate. The market is pricing op
 In plain English: "Right now is a good time. BTC is moving enough that buying protection has positive expected value. Here are the cells to use."
 
 **Accuracy:** based on two real measures, computed continuously:
-1. **DVOL** (volatility level — public Deribit data)
+1. **DVOL** (volatility level - public Deribit data)
 2. **Vol risk premium** (IV minus realized vol over last 24h)
 
 These aren't predictions of the future. They're observations of the present. The signal says "based on what's actually happening right now, your expected outcome is positive/negative."
 
 **Confidence levels:**
-- "low_just_flipped_good" (<60s good) — wait another minute, signal might be noise
-- "medium_1-3min_sustained" — real signal, OK to start activating
-- "high_3min+_sustained" — strong signal, deploy capital
+- "low_just_flipped_good" (<60s good) - wait another minute, signal might be noise
+- "medium_1-3min_sustained" - real signal, OK to start activating
+- "high_3min+_sustained" - strong signal, deploy capital
 
-Foxify's bot only activates when confidence is medium or high. **This filters out one-tick noise that would otherwise produce false positives. Signal also serves as natural reopen cooldown — bot can't accidentally rapid-fire activations in unfavorable markets.**
+Foxify's bot only activates when confidence is medium or high. **This filters out one-tick noise that would otherwise produce false positives. Signal also serves as natural reopen cooldown - bot can't accidentally rapid-fire activations in unfavorable markets.**
 
 ---
 
 ## Why "Calm" is Bad to Activate In
 
-This is the most important point in the whole document — read carefully.
+This is the most important point in the whole document - read carefully.
 
 **In calm BTC markets, two things are simultaneously true:**
 
-1. **Triggers fire OFTEN** — at a ±2% trigger, BTC bounces through that boundary most days. So Foxify "gets paid" frequently.
-2. **The amount per trigger is SMALL** — when BTC just barely crosses 2%, the option is barely-in-the-money. Salvage is small (sometimes $2,500 vs $2,679 cost = $179 LOSS even after the trigger fired).
+1. **Triggers fire OFTEN** - at a ±2% trigger, BTC bounces through that boundary most days. So Foxify "gets paid" frequently.
+2. **The amount per trigger is SMALL** - when BTC just barely crosses 2%, the option is barely-in-the-money. Salvage is small (sometimes $2,500 vs $2,679 cost = $179 LOSS even after the trigger fired).
 
 So in calm regimes:
 - Foxify activates, BTC bounces, trigger fires, Foxify gets paid back ~95% of what was spent.
@@ -250,12 +250,12 @@ So in calm regimes:
 
 **The casino analogy that explains it:**
 
-> Imagine a slot machine that costs $100 per spin. It pays out something 90% of the time. But the payouts are small — usually $80-95. You "win" almost every spin, but average out losing $5-10 per spin. Calm BTC is that slot machine.
+> Imagine a slot machine that costs $100 per spin. It pays out something 90% of the time. But the payouts are small - usually $80-95. You "win" almost every spin, but average out losing $5-10 per spin. Calm BTC is that slot machine.
 
 **In active BTC markets (moderate/elevated/stress), two things change:**
 
 1. Triggers still fire often.
-2. **Salvage per trigger is MUCH larger** — when BTC moves 5%+, the option is deep-in-the-money. Salvage might be $4,000-6,000 on a $2,679 cost.
+2. **Salvage per trigger is MUCH larger** - when BTC moves 5%+, the option is deep-in-the-money. Salvage might be $4,000-6,000 on a $2,679 cost.
 
 That's when the math flips. Same activation, much bigger payout. **Net positive per pair, on average.**
 
@@ -287,7 +287,7 @@ Foxify doesn't need a big capital pool to start. Each pair is independent and se
 2. **Week 2-3:** 5-10 pairs across GO windows (validate signal correlates with profits)
 3. **Month 2+:** scale to 25, 50, then 100 concurrent based on Foxify's confidence
 
-**Scaling barrier in pass-through:** Foxify's appetite to deploy more capital. Each pair runs independently — no shared pool that could run dry. Atticus doesn't need a capital pool to scale.
+**Scaling barrier in pass-through:** Foxify's appetite to deploy more capital. Each pair runs independently - no shared pool that could run dry. Atticus doesn't need a capital pool to scale.
 
 ---
 
@@ -301,7 +301,7 @@ Foxify doesn't need a big capital pool to start. Each pair is independent and se
 | EV model | 8k-path bootstrap simulation against 17 days of real BTC price history; matches our internal sweep methodology |
 | Signal | Built on two observable measures (DVOL + realized vol), not predictions |
 | Stability | 100+ tests pass; runs in production with 31 active shadow pairs |
-| Cross-venue routing | Verified live — Bullish routing cuts costs 30-50% on certain cells |
+| Cross-venue routing | Verified live - Bullish routing cuts costs 30-50% on certain cells |
 
 **What's the 13% uncertainty?**
 - Real fill slippage vs sim slippage (we use 0.82, may be 0.75-0.90 in practice)

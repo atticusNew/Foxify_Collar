@@ -1,12 +1,12 @@
 # Fixed-Price Analysis
 
-A simple, factual look at the fixed-price model — what works, what's hard, and where the math breaks down at the proposed $300 premium / $1,000 payout level.
+A simple, factual look at the fixed-price model - what works, what's hard, and where the math breaks down at the proposed $300 premium / $1,000 payout level.
 
 ---
 
 ## 1. Conceptually, fixed price works
 
-Selling fixed-price options or "insurance-style" products is a real, established business. Traditional market makers and insurance writers do it every day. The core idea — collect a premium up front, pay out a fixed amount if a defined event happens — is sound and well-understood.
+Selling fixed-price options or "insurance-style" products is a real, established business. Traditional market makers and insurance writers do it every day. The core idea - collect a premium up front, pay out a fixed amount if a defined event happens - is sound and well-understood.
 
 So the question isn't whether the model exists. It does. The question is whether the **specific numbers being proposed** ($300 premium, $1,000 payout, 50k notional, 2% trigger) hold up against how the underlying options market actually behaves.
 
@@ -22,7 +22,7 @@ Even though the concept is clean, three things make a sustainable fixed-price pr
 
 **The capital requirement is large.** A fixed-price book has to be able to honor every payout instantly across many concurrent positions, including during clusters of triggers in stress days. Without significant working capital sitting in reserve, the book can't survive bad streaks that are mathematically going to happen.
 
-These are structural realities of writing fixed-payout products against a live derivatives market — not implementation details that go away with better engineering.
+These are structural realities of writing fixed-payout products against a live derivatives market - not implementation details that go away with better engineering.
 
 ---
 
@@ -60,7 +60,7 @@ You can't take a small-size pricing result and multiply it up. The cost curve be
 
 **Those tests were run in calm market conditions.** The favorable results from the $25/$200 configuration came from periods where realized volatility was low and trigger rates were at the low end of the range. The model wasn't stress-tested against the volatility environments it would actually face during real Foxify usage (which is precisely the periods Foxify uses the product for). Performance in calm is not a reliable predictor of performance in active markets.
 
-So the $25 case was close to working in calm at small size — but neither of those conditions are the operating environment for the proposed $300 / $1,000 / 50k structure.
+So the $25 case was close to working in calm at small size - but neither of those conditions are the operating environment for the proposed $300 / $1,000 / 50k structure.
 
 ---
 
@@ -70,7 +70,7 @@ Even setting aside the specific numbers, there are structural reasons fixed-pric
 
 **It requires near-perfect execution every cycle.** Every position must be hedged on time, at quoted prices, with minimal slippage, every minute the position is open. Any execution miss, any spread widening, any re-hedge that lags, compounds into real loss. There is very little margin for the normal friction that exists in any live system.
 
-**It requires absorbing extended stress periods from reserves.** Stress doesn't come politely spaced — it clusters. A fixed-price book has to survive consecutive stress days from working capital while still meeting payout obligations on time. That requires capital sitting idle waiting to absorb losses that will eventually arrive.
+**It requires absorbing extended stress periods from reserves.** Stress doesn't come politely spaced - it clusters. A fixed-price book has to survive consecutive stress days from working capital while still meeting payout obligations on time. That requires capital sitting idle waiting to absorb losses that will eventually arrive.
 
 **Capital efficiency is poor.** A large reserve has to back a thin per-pair margin. The same capital deployed in a pass-through model generates volume immediately, with no reserve requirement and no payout obligation sitting against it.
 
@@ -78,6 +78,4 @@ Even setting aside the specific numbers, there are structural reasons fixed-pric
 
 **The fixed payout doesn't actually serve Foxify better.** On a real move, the live options market typically pays back more than the $1,000 fixed cap. The pass-through model captures that upside for Foxify automatically. Capping it at $1,000 leaves money on the table for both sides.
 
-The model is real, the engineering is buildable, the capital is raisable. But it is a multi-month, capital-heavy undertaking with thin margins to defend a product that the pass-through structure already delivers — with better upside, simpler operations, and no reserve requirement — today.
-
-That's the honest read. Recommend launching on pass-through, validating the volume and the partnership, and revisiting fixed-price as a separate, properly-resourced workstream if and when the pilot proves out and the appetite is there to underwrite it.
+The model is real, the engineering is buildable, the capital is raisable. But it is a multi-month, capital-heavy undertaking with thin margins to defend a product that the pass-through structure already delivers - with better upside, simpler operations, and no reserve requirement - today.
