@@ -139,7 +139,7 @@ Two scenarios, both real:
 | pair_25k_5pct | $445 | $1,200-2,000 | **+$755 to +$1,555** |
 | pair_50k_2pct | $2,679 | $4,500-7,000 | **+$1,800 to +$4,300** |
 
-Atticus takes 15% of any profit (with $25/pair minimum). Foxify keeps 85%.
+Atticus takes a small operator fee on **profit only** — scaled to volume. The more pairs Foxify runs, the lower the percentage. Typical range: **5%–15% of profit** depending on monthly volume, with a small per-pair minimum to cover execution costs. **0% on losses** — if a pair closes negative, Atticus eats the operations cost, Foxify just pays the option cost. Exact tier schedule finalized in the pilot agreement.
 
 ### Scenario B — BTC stays flat, no trigger
 
