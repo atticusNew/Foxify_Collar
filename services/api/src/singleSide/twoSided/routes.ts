@@ -479,6 +479,53 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     }
   );
 
+  /**
+   * POST /admin/foxify/v2/webhook-config/test
+   *
+   * Fires a synthetic PairClosedPayload to either the configured webhook URL
+   * (when body is empty) or to a one-off url/secret override (when body
+   * provides them — useful for testing against requestbin.com / webhook.site
+   * / Foxify's staging URL without changing production config).
+   *
+   * Does NOT write to two_sided_webhook_attempt (test-only, no retry chain).
+   * Returns: { sent, http_status, http_body_preview, signature_sent,
+   *           payload_preview, latency_ms, error }
+   *
+   * Use to:
+   *   - Validate signature verification on the receiver side
+   *   - Sanity-check payload shape and HMAC implementation
+   *   - Pre-flight the webhook URL/secret before going live
+   */
+  app.post<{ Body?: { test_url?: string; test_secret?: string; override_payload?: Record<string, unknown> } }>(
+    "/admin/foxify/v2/webhook-config/test",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const body = req.body ?? {};
+      const { getWebhookConfig } = await import("./webhookConfig");
+      const { testFireWebhook } = await import("./webhookDelivery");
+      let url: string | undefined = typeof body.test_url === "string" ? body.test_url : undefined;
+      let secret: string | undefined = typeof body.test_secret === "string" ? body.test_secret : undefined;
+      if (!url || !secret) {
+        const cfg = await getWebhookConfig(deps.pool);
+        if (!url) url = cfg.webhookUrl ?? undefined;
+        if (!secret) secret = cfg.hmacSecret ?? undefined;
+      }
+      if (!url || !secret) {
+        reply.code(400).send({
+          error: "no_webhook_configured",
+          message: "Either set webhook config via POST /admin/foxify/v2/webhook-config first, OR pass test_url + test_secret in this request body."
+        });
+        return;
+      }
+      const result = await testFireWebhook(url, secret, body.override_payload as Record<string, unknown> | undefined);
+      reply.send({
+        webhook_url: url,
+        used_override_config: Boolean(typeof body.test_url === "string" || typeof body.test_secret === "string"),
+        ...result
+      });
+    }
+  );
+
   app.post<{ Body: { webhook_url: string; hmac_secret: string } }>(
     "/admin/foxify/v2/webhook-config",
     { preHandler: checkAdminToken },
@@ -865,6 +912,11 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           foxifyEvPct > -0.05 ? "⚠️ BREAK_EVEN" :
           foxifyEvPct > -0.20 ? "⚠️ MARGINAL_NEGATIVE" :
           "❌ NEGATIVE";
+        // Trigger-likelihood is a SEPARATE axis from EV verdict.
+        // Same cell can be "GO + FREQUENT" (high EV, expect many fast closes)
+        // OR "GO + TAIL" (high EV, expect to time-decay with rare jackpots).
+        const { labelTriggerLikelihood } = await import("./cellOpportunities");
+        const triggerLikelihood = labelTriggerLikelihood(evSim.triggerRate);
         results.push({
           cellId,
           ok: true,
@@ -886,12 +938,15 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
             foxify_ev_usdc: evSim.meanFoxifyEv,
             worst_case_usdc: evSim.p5FoxifyEv,
             pct_profitable_paths: evSim.pctProfit,
+            // Trigger likelihood label (separate axis from EV verdict)
+            trigger_likelihood: triggerLikelihood,
             n_paths: evSim.nPaths,
             path_generator: evSim.pathGenerator,
             bars_source: evSim.barsSource,
             bars_count: evSim.barsCount
           },
-          ev_verdict: verdict
+          ev_verdict: verdict,
+          trigger_likelihood: triggerLikelihood
         });
       } catch (e) {
         results.push({ cellId, ok: false, reason: "quote_or_sim_threw", message: (e as Error).message });
@@ -909,6 +964,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       methodology: {
         ev_estimation: "Live MC sim per cell. 2k paths each. Path generator: bootstrap (calm + bars available) else GBM. Cached 5min per (cellId, regime, cost-bucket). NO HARDCODED REFERENCE — always fresh. Per-cell mc.path_generator field shows which was used; mc.bars_source shows where bars came from (tmp_file, deribit_30d, etc).",
         ev_units: "mc.foxify_ev_pct is the expected return AS A FRACTION OF COST (0.50 = +50% return on cost paid). mc.worst_case_pct is the 5th-percentile return (1-in-20 bad day). Verdict thresholds: PROFITABLE >+20%, MARGINAL_PROFITABLE +5-20%, BREAK_EVEN -5 to +5%, MARGINAL_NEGATIVE -5 to -20%, NEGATIVE <-20%.",
+        trigger_likelihood: "Separate axis from EV verdict. FREQUENT >=60% trigger rate (most pairs close fast), OCCASIONAL 30-60% (mixed), RARE 10-30% (most time-decay; tail captures big), TAIL <10% (rare jackpots, mostly time-decay). A 'GO + TAIL' cell has high EV but most pairs will expire unfired — operational pattern differs from a 'GO + FREQUENT' cell with the same EV.",
         gate_logic: "good_to_activate=true when regime in {moderate, elevated, stress} OR (regime=calm AND vrp < calmVrpThreshold). Halt overrides.",
         note_on_atticus_ev: "Atticus-side EV intentionally omitted from this response. This view is for Foxify/operator visibility into the pass-through economics."
       }

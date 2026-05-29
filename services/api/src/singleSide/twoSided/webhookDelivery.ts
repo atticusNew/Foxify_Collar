@@ -197,6 +197,88 @@ const attemptDelivery = async (
 };
 
 /**
+ * TEST-FIRE: send a synthetic webhook with the production signing logic but
+ * WITHOUT writing to two_sided_webhook_attempt (no retry chain, no metrics).
+ * Used by the admin /webhook-config/test endpoint to verify wiring against
+ * a real receiver (the operator can point at requestbin.com / webhook.site /
+ * Foxify's staging URL) without polluting production audit data.
+ */
+export type WebhookTestResult = {
+  sent: boolean;
+  http_status: number | null;
+  http_body_preview: string;
+  signature_sent: string;
+  payload_preview: PairClosedPayload;
+  latency_ms: number;
+  error: string | null;
+};
+
+export const testFireWebhook = async (
+  webhookUrl: string,
+  hmacSecret: string,
+  overridePayload?: Partial<PairClosedPayload>,
+  timeoutMs: number = 10_000
+): Promise<WebhookTestResult> => {
+  const syntheticPairId = `test-${randomUUID()}`;
+  const payload: PairClosedPayload = {
+    pair_id: syntheticPairId,
+    foxify_pair_ref: `test-ref-${Date.now()}`,
+    closed_at: new Date().toISOString(),
+    closed_reason: "expiry",
+    trigger_side: null,
+    salvage_proceeds_usdc: 245.50,
+    uplift_usdc: 0,
+    foxify_share_usdc: 245.50,
+    atticus_share_usdc: 0,
+    exit_mode: "test_fire",
+    tier_at_settlement: "tier_1",
+    ...overridePayload
+  };
+  const body = JSON.stringify(payload);
+  const signature = signPayload(body, hmacSecret);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const startMs = Date.now();
+  try {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Atticus-Signature": signature,
+        "X-Atticus-Pair-Id": payload.pair_id,
+        "X-Atticus-Attempt-Seq": "1",
+        "X-Atticus-Test-Fire": "true"
+      },
+      body,
+      signal: controller.signal
+    });
+    const text = (await res.text()).slice(0, 500);
+    return {
+      sent: true,
+      http_status: res.status,
+      http_body_preview: text,
+      signature_sent: signature,
+      payload_preview: payload,
+      latency_ms: Date.now() - startMs,
+      error: null
+    };
+  } catch (e) {
+    return {
+      sent: false,
+      http_status: null,
+      http_body_preview: "",
+      signature_sent: signature,
+      payload_preview: payload,
+      latency_ms: Date.now() - startMs,
+      error: (e as Error).message
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
  * Helper for receivers: verify our signature.
  * Foxify's webhook handler should call this with the request body + our shared secret.
  */

@@ -32,16 +32,39 @@ import type { TierContext } from "./tierResolver";
 
 type Cell = (typeof PhaseCells)[keyof typeof PhaseCells];
 
+export type TriggerLikelihood = "FREQUENT" | "OCCASIONAL" | "RARE" | "TAIL" | "UNKNOWN";
+
 export type CellOpportunity = {
   cell_id: string;
   cost_usdc: number;
   foxify_ev_pct: number;
   worst_case_pct: number;
   trigger_rate: number;
+  /**
+   * How likely the cell is to trigger before expiry. Separate axis from EV
+   * verdict — a "GO + FREQUENT" cell triggers most of the time (operational
+   * pattern: many fast closes), while a "GO + TAIL" cell triggers rarely but
+   * pays big on the rare wins (operational pattern: mostly time-decays with
+   * occasional jackpots).
+   *
+   *   FREQUENT    trigger_rate ≥ 60%      → "expect to close most of these"
+   *   OCCASIONAL  30% ≤ trigger_rate < 60% → "expect to close about half"
+   *   RARE        10% ≤ trigger_rate < 30% → "most will time-decay; tail captures big"
+   *   TAIL        trigger_rate < 10%       → "almost none trigger; rare jackpots"
+   */
+  trigger_likelihood: TriggerLikelihood;
   verdict: "PROFITABLE" | "MARGINAL_PROFITABLE" | "BREAK_EVEN" | "MARGINAL_NEGATIVE" | "NEGATIVE" | "UNQUOTED";
   trigger_pct: number;
   tenor_days: number;
   unavailable_reason?: string;
+};
+
+export const labelTriggerLikelihood = (triggerRate: number): TriggerLikelihood => {
+  if (!Number.isFinite(triggerRate) || triggerRate < 0) return "UNKNOWN";
+  if (triggerRate >= 0.60) return "FREQUENT";
+  if (triggerRate >= 0.30) return "OCCASIONAL";
+  if (triggerRate >= 0.10) return "RARE";
+  return "TAIL";
 };
 
 export type CellOpportunitiesSnapshot = {
@@ -102,6 +125,7 @@ export const computeCellOpportunities = async (params: {
           foxify_ev_pct: 0,
           worst_case_pct: 0,
           trigger_rate: 0,
+          trigger_likelihood: "UNKNOWN",
           verdict: "UNQUOTED",
           trigger_pct: cell.triggerPctDown,
           tenor_days: cell.hedgeTenorDays,
@@ -129,6 +153,7 @@ export const computeCellOpportunities = async (params: {
         foxify_ev_pct: evPct,
         worst_case_pct: worstPct,
         trigger_rate: evSim.triggerRate,
+        trigger_likelihood: labelTriggerLikelihood(evSim.triggerRate),
         verdict: verdictFromPct(evPct),
         trigger_pct: cell.triggerPctDown,
         tenor_days: cell.hedgeTenorDays
@@ -140,6 +165,7 @@ export const computeCellOpportunities = async (params: {
         foxify_ev_pct: 0,
         worst_case_pct: 0,
         trigger_rate: 0,
+        trigger_likelihood: "UNKNOWN",
         verdict: "UNQUOTED",
         trigger_pct: cell.triggerPctDown,
         tenor_days: cell.hedgeTenorDays,

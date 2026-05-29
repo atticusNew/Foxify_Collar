@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   computeCellOpportunities,
+  labelTriggerLikelihood,
   __resetCellOpportunityCache
 } from "../src/singleSide/twoSided/cellOpportunities";
 import type { LiveAnchorProvider } from "../src/singleSide/twoSided/quoteEngine";
@@ -123,6 +124,70 @@ test("computeCellOpportunities: cache invalidated by spot crossing bucket", asyn
   });
   // Different cache entries → different computed_at
   assert.notEqual(snap1.computed_at, snap2.computed_at);
+});
+
+// ─── Trigger likelihood label ──────────────────────────────────────────────
+
+test("labelTriggerLikelihood: FREQUENT for >=60% trigger rate", () => {
+  assert.equal(labelTriggerLikelihood(0.60), "FREQUENT");
+  assert.equal(labelTriggerLikelihood(0.85), "FREQUENT");
+  assert.equal(labelTriggerLikelihood(1.0), "FREQUENT");
+});
+
+test("labelTriggerLikelihood: OCCASIONAL for 30-60%", () => {
+  assert.equal(labelTriggerLikelihood(0.30), "OCCASIONAL");
+  assert.equal(labelTriggerLikelihood(0.45), "OCCASIONAL");
+  assert.equal(labelTriggerLikelihood(0.599), "OCCASIONAL");
+});
+
+test("labelTriggerLikelihood: RARE for 10-30%", () => {
+  assert.equal(labelTriggerLikelihood(0.10), "RARE");
+  assert.equal(labelTriggerLikelihood(0.15), "RARE");
+  assert.equal(labelTriggerLikelihood(0.299), "RARE");
+});
+
+test("labelTriggerLikelihood: TAIL for <10%", () => {
+  assert.equal(labelTriggerLikelihood(0), "TAIL");
+  assert.equal(labelTriggerLikelihood(0.025), "TAIL");
+  assert.equal(labelTriggerLikelihood(0.099), "TAIL");
+});
+
+test("labelTriggerLikelihood: UNKNOWN for invalid inputs", () => {
+  assert.equal(labelTriggerLikelihood(NaN), "UNKNOWN");
+  assert.equal(labelTriggerLikelihood(-0.1), "UNKNOWN");
+  assert.equal(labelTriggerLikelihood(Infinity), "UNKNOWN"); // Infinity is non-finite
+});
+
+test("computeCellOpportunities: every opportunity has trigger_likelihood field", async () => {
+  __resetCellOpportunityCache();
+  const snap = await computeCellOpportunities({
+    spot: 73000,
+    regime: "elevated",
+    anchorProvider: stubAnchorProvider,
+    liquidChainCache: null,
+    tier: stubTier
+  });
+  for (const o of snap.opportunities) {
+    assert.ok(
+      ["FREQUENT", "OCCASIONAL", "RARE", "TAIL", "UNKNOWN"].includes(o.trigger_likelihood),
+      `invalid trigger_likelihood: ${o.trigger_likelihood}`
+    );
+  }
+});
+
+test("computeCellOpportunities: trigger_likelihood consistent with trigger_rate", async () => {
+  __resetCellOpportunityCache();
+  const snap = await computeCellOpportunities({
+    spot: 73000,
+    regime: "elevated",
+    anchorProvider: stubAnchorProvider,
+    liquidChainCache: null,
+    tier: stubTier
+  });
+  for (const o of snap.opportunities) {
+    if (o.verdict === "UNQUOTED") continue;
+    assert.equal(o.trigger_likelihood, labelTriggerLikelihood(o.trigger_rate));
+  }
 });
 
 test("computeCellOpportunities: verdict mapping is consistent with EV%", async () => {
