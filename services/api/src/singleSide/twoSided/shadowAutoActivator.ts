@@ -518,7 +518,9 @@ export const forceShadowActivation = async (
     }
   }
 
-  // Fire shadow activation
+  // Fire shadow activation. Test path INTENTIONALLY omits getCurrentRegime
+  // so the activate handler skips the regime-allowlist check — the whole
+  // point of test-fire is to bypass signal-side gates including allowlist.
   const shadowExecutor = new ShadowStrangleExecutor();
   const activateDeps: ActivateDeps = deps.activateDepsOverride
     ? deps.activateDepsOverride(shadowExecutor)
@@ -529,8 +531,8 @@ export const forceShadowActivation = async (
         getFeed: () => deps.feedService.getCurrentFeed(),
         feedVersion: "v1.0.0",
         nowMs: () => now,
-        liquidChainCache: deps.liquidChainCache,
-        getCurrentRegime: () => deps.dvolService.getCurrentDvol(now)?.regime ?? null
+        liquidChainCache: deps.liquidChainCache
+        // getCurrentRegime intentionally omitted to bypass regime allowlist for test-fire
       };
 
   const foxifyPairRef = `test-shadow-${Date.now()}-${randomBytes(4).toString("hex")}`;
@@ -547,7 +549,8 @@ export const forceShadowActivation = async (
           signal_score_at_test: gate.signal_score,
           vrp: gate.vrp,
           regime: gate.regime,
-          bypassed_signal_gate: true
+          bypassed_signal_gate: true,
+          bypassed_regime_allowlist: true
         }
       },
       activateDeps
