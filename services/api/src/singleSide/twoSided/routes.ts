@@ -832,6 +832,100 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/bullish-whitelist-probe
+   *
+   * Fires a single test request from this server's IP to either:
+   *   - registered.api.exchange.bullish.com (default — to check whitelist)
+   *   - api.exchange.bullish.com (the public endpoint we currently use)
+   * Returns the raw HTTP status, response body preview, and timing so we
+   * can tell exactly what Bullish's edge is doing for our IP.
+   *
+   * Interpretation guide:
+   *   - HTTP 200/401/403 with JSON body → reached Bullish, whitelist OK
+   *   - HTTP 403 with "forbidden" / "blocked" / Cloudflare body → NOT whitelisted
+   *   - HTTP 429 → reached server, just rate-limited (still good signal)
+   *   - timeout / ECONNREFUSED / network error → blocked at network layer
+   *
+   * No authentication is attempted — we're only probing the network path.
+   * Use query param ?endpoint=public to probe the public endpoint instead.
+   */
+  app.get<{ Querystring: { endpoint?: "registered" | "public"; path?: string } }>(
+    "/admin/foxify/v2/bullish-whitelist-probe",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const which = req.query.endpoint === "public" ? "public" : "registered";
+      const host = which === "registered" ? "registered.api.exchange.bullish.com" : "api.exchange.bullish.com";
+      // Use a lightweight public-ish path; "/trading-api/v1/time" is a server-time endpoint
+      // that exists on Bullish and doesn't require auth — perfect for connectivity check.
+      const path = req.query.path && typeof req.query.path === "string" ? req.query.path : "/trading-api/v1/time";
+      const url = `https://${host}${path}`;
+      const startMs = Date.now();
+      let result: {
+        ok: boolean;
+        url: string;
+        http_status: number | null;
+        body_preview: string | null;
+        latency_ms: number;
+        error: string | null;
+        interpretation: string;
+      };
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 8_000);
+        const res = await fetch(url, {
+          method: "GET",
+          headers: { "User-Agent": "Atticus-WhitelistProbe/1.0" },
+          signal: ctrl.signal
+        }).finally(() => clearTimeout(timer));
+        const text = await res.text().catch(() => "");
+        const preview = text.slice(0, 500);
+        let interpretation: string;
+        if (res.status === 200) interpretation = "REACHED_AND_OK — whitelist + endpoint healthy";
+        else if (res.status === 401) interpretation = "REACHED_NEEDS_AUTH — whitelist OK (server is asking for credentials)";
+        else if (res.status === 403) {
+          const lower = preview.toLowerCase();
+          if (lower.includes("cloudflare") || lower.includes("blocked") || lower.includes("not allowed")) {
+            interpretation = "BLOCKED — appears to be edge/firewall block (likely NOT whitelisted yet)";
+          } else {
+            interpretation = "REACHED_BUT_FORBIDDEN — server reached, returned 403 with non-block body (could be auth-related)";
+          }
+        }
+        else if (res.status === 429) interpretation = "REACHED_RATE_LIMITED — server reached, just rate limited";
+        else interpretation = `REACHED_HTTP_${res.status} — server responded, see body_preview`;
+        result = {
+          ok: res.status >= 200 && res.status < 500,
+          url,
+          http_status: res.status,
+          body_preview: preview,
+          latency_ms: Date.now() - startMs,
+          error: null,
+          interpretation
+        };
+      } catch (e) {
+        const msg = (e as Error).message;
+        let interpretation = `NETWORK_ERROR — ${msg}`;
+        if (msg.includes("ETIMEDOUT") || msg.includes("aborted") || msg.includes("timeout")) {
+          interpretation = "TIMEOUT — request never got a response (likely blocked at network layer; NOT whitelisted)";
+        } else if (msg.includes("ECONNREFUSED")) {
+          interpretation = "CONNECTION_REFUSED — server refused TCP connection (NOT whitelisted)";
+        } else if (msg.includes("ENOTFOUND") || msg.includes("EAI_AGAIN")) {
+          interpretation = "DNS_ERROR — could not resolve hostname";
+        }
+        result = {
+          ok: false,
+          url,
+          http_status: null,
+          body_preview: null,
+          latency_ms: Date.now() - startMs,
+          error: msg,
+          interpretation
+        };
+      }
+      reply.send(result);
+    }
+  );
+
+  /**
    * POST /admin/foxify/v2/force-trigger
    *
    * Validation tool. Synthetically triggers a SHADOW pair so we can observe
