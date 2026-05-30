@@ -8775,6 +8775,25 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       await v2Registry.spawnRuntimeForceClose(pair, v2RuntimeDeps);
     };
 
+    // ─── Expiry handler ───
+    // Auto-settles pairs that hit expires_at WITHOUT triggering. Without this,
+    // active-but-never-triggered pairs sit in 'active' status forever.
+    // Trigger detector handles boundary crossings; close handler handles
+    // Foxify-initiated close; this handles the no-trigger-by-expiry case.
+    try {
+      const { ExpiryHandler } = await import("./singleSide/twoSided/expiryHandler");
+      const v2ExpiryHandler = new ExpiryHandler({
+        pool: v2Pool,
+        liquidChainCache: v2LiquidCache,
+        getCurrentIvAnnual: () => v2DvolService.getCurrentDvol()?.sigmaAnnual ?? 0.35,
+        pollMs: 60_000, // 60s; expiry isn't time-sensitive
+        log: (m, x) => console.log(`[FoxifyV2/expiry] ${m}`, x ?? "")
+      });
+      v2ExpiryHandler.start();
+    } catch (e) {
+      console.error(`[FoxifyV2] FAILED to start expiry handler: ${(e as Error).message}`);
+    }
+
     // ─── Gate snapshot persistence poller ───
     // Always runs (independent of any other flag). Computes the gate every
     // 30s and writes a deduped snapshot row so we can answer historical
