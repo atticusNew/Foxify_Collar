@@ -26,10 +26,19 @@
  */
 
 import type { Pool } from "pg";
-import { bsCall, bsPut, timeToExpiryYears } from "../../pilot/blackScholes";
+import { bsCall, bsPut } from "../../pilot/blackScholes";
+import type { LiquidChainCache } from "./liquidChainCache";
 
 const DEFAULT_RFR = 0.045;
-const SELL_SLIPPAGE_HAIRCUT = 0.88; // 88% of BS mid value; conservative real-sale estimate
+// Bid-based salvage: bid is what we'd ACTUALLY receive on a market sell.
+// 5% haircut accounts for fill slippage from bid (rare moves between quote
+// fetch and actual fill, plus IOC limit-order semantics).
+const BID_BASED_HAIRCUT = 0.95;
+// BS-based fallback haircut: when we can't find a venue bid (cache miss,
+// stale snapshot, illiquid strike), fall back to BS valuation. Apply a
+// LARGER haircut because BS uses market-wide IV that overstates value
+// for OTM/ITM strikes due to vol skew.
+const BS_FALLBACK_HAIRCUT = 0.70;
 const DEFAULT_TP_THRESHOLD_PCT = 0.30; // suggest TAKE_PROFIT_AVAILABLE at +30% pnl
 const DEFAULT_WATCH_THRESHOLD_PCT = 0.05; // suggest WATCH at +5% pnl
 
@@ -66,6 +75,12 @@ export type PairMtm = {
   estimated_salvage_usdc: number;     // after slippage haircut; what we'd actually credit
   pnl_if_close_now_usdc: number;       // estimated_salvage - cost
   pnl_pct: number;                      // pnl / cost
+  // Valuation methodology: tells operator HOW we computed the salvage so
+  // they know the accuracy level. "venue_bid" = real venue prices used.
+  // "bs_fallback" = theoretical Black-Scholes (less accurate; flag in logs).
+  valuation_method: "venue_bid" | "bs_fallback" | "mixed";
+  put_valuation_method: "venue_bid" | "bs_fallback";
+  call_valuation_method: "venue_bid" | "bs_fallback";
   // Trigger geometry
   trigger_down_price: number;
   trigger_up_price: number;
@@ -84,6 +99,13 @@ export type ListMtmInputs = {
   pool: Pool;
   currentSpot: number;
   ivAnnual: number;
+  /**
+   * Optional liquid chain cache for venue-bid lookups. When provided, MTM
+   * uses ACTUAL bid prices from Bullish/Deribit for valuation (much more
+   * accurate than BS). When omitted or when cache misses a strike, falls
+   * back to Black-Scholes with the provided ivAnnual.
+   */
+  liquidChainCache?: LiquidChainCache | null;
   includeShadow?: boolean;
   pairIdFilter?: string;
   tpThresholdPct?: number;
@@ -168,6 +190,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       p.is_shadow,
       MAX(CASE WHEN l.leg_role IN ('long_put', 'put') THEN l.strike_usdc ELSE NULL END) AS put_strike,
       MAX(CASE WHEN l.leg_role IN ('long_call', 'call') THEN l.strike_usdc ELSE NULL END) AS call_strike,
+      MAX(CASE WHEN l.leg_role IN ('long_put', 'put') THEN l.venue ELSE NULL END) AS put_venue,
+      MAX(CASE WHEN l.leg_role IN ('long_call', 'call') THEN l.venue ELSE NULL END) AS call_venue,
       MAX(l.contracts_btc) AS contracts_btc
     FROM two_sided_pair p
     LEFT JOIN two_sided_pair_leg l ON p.pair_id = l.pair_id
@@ -176,35 +200,84 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
              p.trigger_up_price, p.hedge_cost_total_usdc, p.expires_at, p.created_at, p.is_shadow
     ORDER BY p.created_at DESC
   `;
-  const result = await inputs.pool.query<ActivePairLite>(sql, params);
+  const result = await inputs.pool.query<ActivePairLite & { put_venue: string | null; call_venue: string | null }>(sql, params);
+
+  /**
+   * Value ONE leg using the cache's bid if available, else BS.
+   * The cache lookup uses preferVenue (the venue we ACTUALLY bought on)
+   * so we get the bid from the same venue we'd be selling to.
+   */
+  const valueLeg = (leg: {
+    side: "put" | "call";
+    strike: number;
+    contracts: number;
+    tenorRemainingHours: number;
+    preferVenue: "deribit" | "bullish" | null;
+  }): { valueTotal: number; perBtc: number; method: "venue_bid" | "bs_fallback"; sourceDetail: string } => {
+    if (inputs.liquidChainCache) {
+      const bid = inputs.liquidChainCache.getBidForLeg({
+        strike: leg.strike,
+        optType: leg.side,
+        tenorRemainingHours: leg.tenorRemainingHours,
+        preferVenue: leg.preferVenue ?? undefined
+      });
+      if (bid) {
+        const perBtc = bid.bidUsdcPerBtc * BID_BASED_HAIRCUT;
+        return {
+          valueTotal: perBtc * leg.contracts,
+          perBtc,
+          method: "venue_bid",
+          sourceDetail: `${bid.venue}:bid=${bid.bidUsdcPerBtc.toFixed(2)}USD haircut=${(BID_BASED_HAIRCUT * 100).toFixed(0)}%`
+        };
+      }
+    }
+    // BS fallback (less accurate due to vol skew vs index IV)
+    const T = leg.tenorRemainingHours / (24 * 365);
+    const raw = leg.side === "put"
+      ? Math.max(0, bsPut(inputs.currentSpot, leg.strike, T, DEFAULT_RFR, inputs.ivAnnual))
+      : Math.max(0, bsCall(inputs.currentSpot, leg.strike, T, DEFAULT_RFR, inputs.ivAnnual));
+    const perBtc = raw * BS_FALLBACK_HAIRCUT;
+    return {
+      valueTotal: perBtc * leg.contracts,
+      perBtc,
+      method: "bs_fallback",
+      sourceDetail: `bs(iv=${(inputs.ivAnnual * 100).toFixed(1)}%) haircut=${(BS_FALLBACK_HAIRCUT * 100).toFixed(0)}%`
+    };
+  };
 
   const out: PairMtm[] = [];
   for (const r of result.rows) {
     const expiresAt = new Date(r.expires_at);
-    const T = timeToExpiryYears(expiresAt.getTime(), now);
     const putStrike = Number(r.put_strike);
     const callStrike = Number(r.call_strike);
     const contracts = Number(r.contracts_btc);
+    const putVenue = (r.put_venue as "deribit" | "bullish" | null) ?? null;
+    const callVenue = (r.call_venue as "deribit" | "bullish" | null) ?? null;
 
-    // Skip if strikes weren't joined (corrupt data or no legs yet)
     if (!Number.isFinite(putStrike) || !Number.isFinite(callStrike) || !Number.isFinite(contracts) || contracts <= 0) {
       continue;
     }
 
-    const putValuePerBtc = Math.max(0, bsPut(inputs.currentSpot, putStrike, T, DEFAULT_RFR, inputs.ivAnnual));
-    const callValuePerBtc = Math.max(0, bsCall(inputs.currentSpot, callStrike, T, DEFAULT_RFR, inputs.ivAnnual));
-    const putValueTotal = putValuePerBtc * contracts;
-    const callValueTotal = callValuePerBtc * contracts;
+    const tenorRemainingHours = Math.max(0, (expiresAt.getTime() - now) / 3_600_000);
+
+    const putV = valueLeg({ side: "put", strike: putStrike, contracts, tenorRemainingHours, preferVenue: putVenue });
+    const callV = valueLeg({ side: "call", strike: callStrike, contracts, tenorRemainingHours, preferVenue: callVenue });
+
+    const putValueTotal = putV.valueTotal;
+    const callValueTotal = callV.valueTotal;
     const optionMark = putValueTotal + callValueTotal;
-    const estimatedSalvage = optionMark * SELL_SLIPPAGE_HAIRCUT;
+    // Values are already post-haircut per-leg, so mark == salvage estimate
+    const estimatedSalvage = optionMark;
     const cost = Number(r.hedge_cost_total_usdc);
     const pnlAbs = estimatedSalvage - cost;
     const pnlPct = cost > 0 ? pnlAbs / cost : 0;
 
-    const distDown = (inputs.currentSpot - Number(r.trigger_down_price)) / inputs.currentSpot; // positive when above trigger
-    const distUp = (Number(r.trigger_up_price) - inputs.currentSpot) / inputs.currentSpot;   // positive when below trigger
+    const overallMethod: "venue_bid" | "bs_fallback" | "mixed" =
+      putV.method === callV.method ? putV.method : "mixed";
+
+    const distDown = (inputs.currentSpot - Number(r.trigger_down_price)) / inputs.currentSpot;
+    const distUp = (Number(r.trigger_up_price) - inputs.currentSpot) / inputs.currentSpot;
     const closestTriggerPct = Math.min(distDown, distUp);
-    const tenorRemainingHours = Math.max(0, (expiresAt.getTime() - now) / 3_600_000);
 
     const rec = computeRecommendation(pnlPct, closestTriggerPct, tenorRemainingHours, tpThresholdPct, watchThresholdPct);
 
@@ -224,6 +297,9 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       estimated_salvage_usdc: estimatedSalvage,
       pnl_if_close_now_usdc: pnlAbs,
       pnl_pct: pnlPct,
+      valuation_method: overallMethod,
+      put_valuation_method: putV.method,
+      call_valuation_method: callV.method,
       trigger_down_price: Number(r.trigger_down_price),
       trigger_up_price: Number(r.trigger_up_price),
       distance_to_trigger_down_pct: distDown,
@@ -246,6 +322,7 @@ export type MtmSummary = {
   watch_threshold_pct: number;
   total_active: number;
   by_recommendation: Record<string, number>;
+  by_valuation_method: Record<string, number>;
   total_cost_paid_usdc: number;
   total_estimated_salvage_usdc: number;
   total_pnl_if_close_all_now_usdc: number;
@@ -257,10 +334,12 @@ export const summarizeMtm = (
   meta: { currentSpot: number; ivAnnual: number; tpThresholdPct: number; watchThresholdPct: number; nowMs: number }
 ): MtmSummary => {
   const byRec: Record<string, number> = {};
+  const byMethod: Record<string, number> = {};
   let totalCost = 0;
   let totalSalv = 0;
   for (const p of pairs) {
     byRec[p.recommendation] = (byRec[p.recommendation] ?? 0) + 1;
+    byMethod[p.valuation_method] = (byMethod[p.valuation_method] ?? 0) + 1;
     totalCost += p.cost_paid_usdc;
     totalSalv += p.estimated_salvage_usdc;
   }
@@ -272,6 +351,7 @@ export const summarizeMtm = (
     watch_threshold_pct: meta.watchThresholdPct,
     total_active: pairs.length,
     by_recommendation: byRec,
+    by_valuation_method: byMethod,
     total_cost_paid_usdc: totalCost,
     total_estimated_salvage_usdc: totalSalv,
     total_pnl_if_close_all_now_usdc: totalSalv - totalCost,

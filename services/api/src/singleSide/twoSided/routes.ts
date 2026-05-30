@@ -300,6 +300,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         pool: deps.pool,
         currentSpot: feed.canonicalPrice,
         ivAnnual: iv,
+        liquidChainCache: deps.liquidChainCache ?? null,
         includeShadow: false, // Foxify-facing: only their real pairs
         pairIdFilter: req.query.pair_id,
         tpThresholdPct,
@@ -338,6 +339,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         pool: deps.pool,
         currentSpot: feed.canonicalPrice,
         ivAnnual: iv,
+        liquidChainCache: deps.liquidChainCache ?? null,
         includeShadow: false,
         pairIdFilter: req.params.pair_id,
         tpThresholdPct,
@@ -905,6 +907,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         pool: deps.pool,
         currentSpot: feed.canonicalPrice,
         ivAnnual: iv,
+        liquidChainCache: deps.liquidChainCache ?? null,
         includeShadow,
         pairIdFilter: req.query.pair_id,
         tpThresholdPct,

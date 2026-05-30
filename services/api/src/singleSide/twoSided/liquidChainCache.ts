@@ -123,6 +123,70 @@ export class LiquidChainCache {
 
   /** For tests / introspection. */
   getCached(): LiquidChainSnapshot | null { return this.snapshot; }
+
+  /**
+   * Look up the BID price for a specific instrument (used by MTM service for
+   * realistic close-side valuation). Returns the matching quote if found,
+   * preferring exact venue match, then closest tenor.
+   *
+   * Used by the MTM service to estimate realizable salvage using ACTUAL
+   * venue bid prices rather than theoretical BS valuations. The difference
+   * matters: BS uses market-wide IV which often overstates value for
+   * strike-specific quotes that trade at lower implied vol (vol skew).
+   */
+  getBidForLeg(opts: {
+    strike: number;
+    optType: "put" | "call";
+    tenorRemainingHours: number;
+    preferVenue?: "deribit" | "bullish";
+    /** Max tenor drift in hours (default 36 = ±1.5 days). */
+    maxTenorDriftHours?: number;
+  }): {
+    bidUsdcPerBtc: number;
+    askUsdcPerBtc: number;
+    midUsdcPerBtc: number;
+    spreadPct: number;
+    venue: "deribit" | "bullish";
+    instrumentName: string;
+    tenorHours: number;
+    markIv: number;
+    pulledAtMs: number;
+  } | null {
+    if (!this.snapshot) return null;
+    const maxDrift = opts.maxTenorDriftHours ?? 36;
+    const candidates = this.snapshot.quotes.filter(
+      (q) =>
+        q.strike === opts.strike &&
+        q.optType === opts.optType &&
+        Math.abs(q.tenorHours - opts.tenorRemainingHours) <= maxDrift &&
+        q.bidUsdcPerBtc > 0
+    );
+    if (candidates.length === 0) return null;
+    // Sort: prefer venue match, then closest tenor, then HIGHEST bid (best for seller)
+    candidates.sort((a, b) => {
+      if (opts.preferVenue) {
+        if (a.venue === opts.preferVenue && b.venue !== opts.preferVenue) return -1;
+        if (b.venue === opts.preferVenue && a.venue !== opts.preferVenue) return 1;
+      }
+      const aDrift = Math.abs(a.tenorHours - opts.tenorRemainingHours);
+      const bDrift = Math.abs(b.tenorHours - opts.tenorRemainingHours);
+      if (Math.abs(aDrift - bDrift) > 2) return aDrift - bDrift;
+      // Within similar tenor, prefer higher bid (better for seller)
+      return b.bidUsdcPerBtc - a.bidUsdcPerBtc;
+    });
+    const best = candidates[0];
+    return {
+      bidUsdcPerBtc: best.bidUsdcPerBtc,
+      askUsdcPerBtc: best.askUsdcPerBtc,
+      midUsdcPerBtc: best.midUsdcPerBtc,
+      spreadPct: best.spreadPct,
+      venue: best.venue,
+      instrumentName: best.instrument_name,
+      tenorHours: best.tenorHours,
+      markIv: best.markIv,
+      pulledAtMs: this.snapshot.fetchedAtMs
+    };
+  }
 }
 
 /**
