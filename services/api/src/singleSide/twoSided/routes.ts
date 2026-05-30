@@ -823,6 +823,54 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/venue-routing
+   *
+   * Shows WHERE pair legs are being bought (Bullish vs Deribit) and WHY
+   * the picker chose each venue. Two sections:
+   *
+   * 1. historical: aggregate stats across active pairs (volume + count
+   *    by venue, broken down by cell)
+   *
+   * 2. forward: what the picker WOULD do RIGHT NOW for each cell,
+   *    including the cost comparison between venues and the picker's
+   *    reasoning ("deribit cheaper by 3.2%", "bullish only — deribit
+   *    insufficient depth", etc.)
+   *
+   * Query params:
+   *   ?include_closed=true  - include closed/settled pairs in historical (default: active only)
+   *   ?cells=cell1,cell2    - restrict forward analysis to specific cells
+   */
+  app.get<{ Querystring: { include_closed?: string; cells?: string } }>(
+    "/admin/foxify/v2/venue-routing",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { getHistoricalRoutingStats, getForwardRoutingExplanation } = await import("./venueRouting");
+      const includeClosed = req.query.include_closed === "true";
+      const cellsFilter = req.query.cells?.split(",").map((s) => s.trim()).filter(Boolean);
+
+      const historical = await getHistoricalRoutingStats(deps.pool, { activeOnly: !includeClosed });
+
+      // Forward-looking — needs feed + anchor provider
+      let forward: import("./venueRouting").CellRoutingExplanation[] = [];
+      const feed = deps.feedService.getCurrentFeed();
+      if (feed && feed.canonicalPrice != null) {
+        try {
+          forward = await getForwardRoutingExplanation({
+            spot: feed.canonicalPrice,
+            anchorProvider: deps.anchorProvider,
+            liquidChainCache: deps.liquidChainCache ?? null,
+            cells: cellsFilter
+          });
+        } catch (e) {
+          console.error(`[venue-routing] forward analysis failed: ${(e as Error).message}`);
+        }
+      }
+
+      reply.send({ historical, forward });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/pairs/mtm
    *
    * Operator-facing version of /foxify/v2/pairs/mtm. Same shape, but
