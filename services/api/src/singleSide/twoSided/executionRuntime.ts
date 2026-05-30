@@ -226,6 +226,11 @@ export class ExecutionRuntime {
     const expectedPutValue = referenceValue * putShare * slip;
     const expectedCallValue = referenceValue * callShare * slip;
 
+    // Compute tenor remaining (hours) so the close executor can match bids
+    // from LiquidChainCache at the leg's effective expiry.
+    const nowForExpiry = Date.now();
+    const tenorRemainingHoursForExpiry = Math.max(0, (Date.parse(this.pair.expiresAt) - nowForExpiry) / 3_600_000);
+
     const closeResult: CloseStrangleResult = await this.deps.closeExecutor.closeStrangle({
       pairId: this.pair.pairId,
       putLeg: {
@@ -235,7 +240,12 @@ export class ExecutionRuntime {
         contractsBtc: putLeg.contractsBtc,
         expectedSellPxUsdcPerBtc: expectedPutValue / putLeg.contractsBtc,
         // PR A5 slippage floor: at worst, accept 0.65× expected (depth-aware worst case)
-        minAcceptablePxUsdcPerBtc: (expectedPutValue / putLeg.contractsBtc) * 0.65
+        minAcceptablePxUsdcPerBtc: (expectedPutValue / putLeg.contractsBtc) * 0.65,
+        // Bid-based valuation lookup inputs (ShadowCloseExecutor uses these
+        // to fetch the actual venue bid rather than relying on BS estimate)
+        strikeUsdc: Number(putLeg.strikeUsdc),
+        optType: "put",
+        tenorRemainingHours: tenorRemainingHoursForExpiry
       },
       callLeg: {
         legRole: "long_call",
@@ -243,7 +253,10 @@ export class ExecutionRuntime {
         symbol: callLeg.symbol,
         contractsBtc: callLeg.contractsBtc,
         expectedSellPxUsdcPerBtc: expectedCallValue / callLeg.contractsBtc,
-        minAcceptablePxUsdcPerBtc: (expectedCallValue / callLeg.contractsBtc) * 0.65
+        minAcceptablePxUsdcPerBtc: (expectedCallValue / callLeg.contractsBtc) * 0.65,
+        strikeUsdc: Number(callLeg.strikeUsdc),
+        optType: "call",
+        tenorRemainingHours: tenorRemainingHoursForExpiry
       }
     });
 
@@ -340,7 +353,14 @@ export class ExecutionRuntime {
         foxifyShare,
         atticusShare,
         exitMode,
-        closedReason
+        closedReason,
+        // Audit trail: how was each leg's sell price derived?
+        //   "venue_bid"   = real Bullish/Deribit bid × slippage haircut (realistic)
+        //   "bs_expected" = Black-Scholes theoretical (fallback when bid unavailable)
+        put_valuation_method: closeResult.putLeg.valuationMethod ?? null,
+        call_valuation_method: closeResult.callLeg.valuationMethod ?? null,
+        put_raw_venue_bid_usdc_per_btc: closeResult.putLeg.rawVenueBidUsdcPerBtc ?? null,
+        call_raw_venue_bid_usdc_per_btc: closeResult.callLeg.rawVenueBidUsdcPerBtc ?? null
       }
     });
 

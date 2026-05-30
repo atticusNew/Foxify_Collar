@@ -8716,8 +8716,17 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     } else {
       const { ShadowCloseExecutor } = await import("./singleSide/twoSided/closeExecutor");
       v2Executor = new ShadowStrangleExecutor();
-      v2CloseExecutor = new ShadowCloseExecutor();
-      console.log("[FoxifyV2] Shadow executors active (activate + close). Set FOXIFY_V2_LIVE_EXECUTION=true for live.");
+      // CRITICAL: pass the LiquidChainCache so ShadowCloseExecutor uses REAL
+      // venue bids for salvage valuation (not BS theoretical). Without this,
+      // shadow PnL gets systematically overstated when our quoted ask is
+      // unusually tight relative to the BS-theoretical value of the strike.
+      // See closeExecutor.ts header comment for the full economics rationale.
+      v2CloseExecutor = new ShadowCloseExecutor({
+        chainCache: v2LiquidCache,
+        bidSlippageHaircut: 0.95,
+        log: (msg) => console.log(`[FoxifyV2] ${msg}`)
+      });
+      console.log("[FoxifyV2] Shadow executors active (activate + close). Close uses REAL venue bids via LiquidChainCache (fallback to BS only on cache miss). Set FOXIFY_V2_LIVE_EXECUTION=true for live.");
     }
 
     // ─── Trigger detector + execution runtime registry ───

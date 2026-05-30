@@ -832,6 +832,129 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/chain-probe
+   *
+   * Dumps raw bid/ask data from the LiquidChainCache for arbitrary strikes,
+   * so we can independently verify what quotes Bullish/Deribit are publishing
+   * for the strikes our picker selects. Critical for diagnosing
+   * "too-good-to-be-true" cell economics.
+   *
+   * Query params:
+   *   ?strikes=73000,75000   (CSV of strike prices in USD)
+   *   ?opt_type=both|put|call (default: both)
+   *   ?tenor_hours=48         (target tenor; default: 48)
+   *   ?force_refresh=true     (bypass TTL and pull fresh)
+   *
+   * Returns per-strike, per-side: bid USDC/BTC, ask USDC/BTC, spread %,
+   * mark IV, venue, instrument name, tenor hours. Plus snapshot age and
+   * venue health.
+   */
+  app.get<{ Querystring: { strikes?: string; opt_type?: "both" | "put" | "call"; tenor_hours?: string; force_refresh?: "true" | "false" } }>(
+    "/admin/foxify/v2/chain-probe",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      if (!deps.liquidChainCache) {
+        reply.code(503).send({ error: "chain_cache_unavailable", message: "LiquidChainCache not configured on this server" });
+        return;
+      }
+      const strikesRaw = req.query.strikes ?? "";
+      const strikes = strikesRaw.split(",").map((s) => Number(s.trim())).filter((s) => Number.isFinite(s) && s > 0);
+      if (strikes.length === 0) {
+        reply.code(400).send({ error: "invalid_request", message: "?strikes=<csv of strike prices> required (e.g. ?strikes=73000,75000)" });
+        return;
+      }
+      const optType = req.query.opt_type ?? "both";
+      if (!["both", "put", "call"].includes(optType)) {
+        reply.code(400).send({ error: "invalid_request", message: "opt_type must be 'both'|'put'|'call'" });
+        return;
+      }
+      const tenorHours = Number(req.query.tenor_hours ?? "48");
+      if (!Number.isFinite(tenorHours) || tenorHours <= 0) {
+        reply.code(400).send({ error: "invalid_request", message: "tenor_hours must be a positive number" });
+        return;
+      }
+      const forceRefresh = req.query.force_refresh === "true";
+
+      // Pull/refresh snapshot
+      const now = Date.now();
+      const snapshot = forceRefresh
+        ? await deps.liquidChainCache.refresh(now)
+        : await deps.liquidChainCache.getChain(now);
+      if (!snapshot) {
+        reply.code(503).send({ error: "no_chain_snapshot", message: "Chain cache returned null — all venues unreachable" });
+        return;
+      }
+
+      const wantPut = optType === "both" || optType === "put";
+      const wantCall = optType === "both" || optType === "call";
+
+      const result = strikes.map((strike) => {
+        const sideResults: Record<string, unknown> = { strike };
+        for (const side of (["put", "call"] as const)) {
+          if (side === "put" && !wantPut) continue;
+          if (side === "call" && !wantCall) continue;
+          // Get all quotes matching this strike+side from the raw snapshot
+          const allMatches = snapshot.quotes.filter(
+            (q) => q.strike === strike && q.optType === side
+          );
+          // Sort by tenor closeness to requested tenor
+          allMatches.sort((a, b) =>
+            Math.abs(a.tenorHours - tenorHours) - Math.abs(b.tenorHours - tenorHours)
+          );
+          sideResults[`${side}_quotes`] = allMatches.slice(0, 6).map((q) => ({
+            venue: q.venue,
+            instrument: q.instrument_name,
+            tenor_days: +(q.tenorHours / 24).toFixed(2),
+            bid_usdc_per_btc: q.bidUsdcPerBtc,
+            ask_usdc_per_btc: q.askUsdcPerBtc,
+            mid_usdc_per_btc: q.midUsdcPerBtc,
+            spread_pct: q.spreadPct,
+            mark_iv: q.markIv,
+            has_bid: q.bidUsdcPerBtc > 0,
+            // For 1 BTC of contracts, what would we pay/receive?
+            // (handy for sanity-checking against displayed cell costs)
+            cost_for_1_btc_ask: q.askUsdcPerBtc,
+            proceeds_for_1_btc_bid: q.bidUsdcPerBtc
+          }));
+          // Also surface our picker's chosen bid (matches what ShadowCloseExecutor uses)
+          const pickerChoice = deps.liquidChainCache!.getBidForLeg({
+            strike,
+            optType: side,
+            tenorRemainingHours: tenorHours,
+            preferVenue: "bullish"
+          });
+          sideResults[`${side}_picker_bid_choice`] = pickerChoice
+            ? {
+                venue: pickerChoice.venue,
+                instrument: pickerChoice.instrumentName,
+                bid_usdc_per_btc: pickerChoice.bidUsdcPerBtc,
+                ask_usdc_per_btc: pickerChoice.askUsdcPerBtc,
+                spread_pct: pickerChoice.spreadPct,
+                tenor_hours: pickerChoice.tenorHours,
+                mark_iv: pickerChoice.markIv
+              }
+            : null;
+        }
+        return sideResults;
+      });
+
+      reply.send({
+        snapshot_fetched_at: new Date(snapshot.fetchedAtMs).toISOString(),
+        snapshot_age_ms: now - snapshot.fetchedAtMs,
+        spot: snapshot.spot,
+        venue_status: snapshot.venueStatus,
+        requested_tenor_hours: tenorHours,
+        strikes: result,
+        interpretation_guide: {
+          spread_pct_red_flag: "spread > 20% suggests illiquid quote; sell-side execution will be poor",
+          missing_bid: "bid_usdc_per_btc = 0 means venue has no resting buyer — we'd fall back to BS valuation on close",
+          ask_vs_picker: "if ask quoted is much lower than BS theoretical for similar strikes, the quote may be stale or thin"
+        }
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/bullish-whitelist-probe
    *
    * Fires a single test request from this server's IP to either:
