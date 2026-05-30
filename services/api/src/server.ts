@@ -8779,6 +8779,63 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       await v2Registry.spawnRuntimeForceClose(pair, v2RuntimeDeps);
     };
 
+    // Force-trigger probe (validation tool, SHADOW ONLY).
+    // Synthetically transitions an active pair to triggered, then spawns the
+    // ExecutionRuntime to handle the close lifecycle. Used to validate the
+    // trigger → close → settle path without waiting for real BTC moves.
+    const v2ForceTriggerPair = async (
+      pairId: string,
+      side: "down" | "up"
+    ): Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean } | { ok: false; error: string; details?: Record<string, unknown> }> => {
+      const { recordPairEvent: rpe, updatePairStatus: ups } = await import("./singleSide/twoSided/db");
+      const pair = await getPairById(v2Pool, pairId);
+      if (!pair) return { ok: false, error: "pair_not_found", details: { pair_id: pairId } };
+      if (!pair.isShadow) {
+        return { ok: false, error: "refuses_live_pair", details: { reason: "force-trigger is shadow-only; live pairs must trigger via real boundary cross" } };
+      }
+      if (pair.status !== "active") {
+        return { ok: false, error: "pair_not_active", details: { current_status: pair.status, expected: "active" } };
+      }
+      const feed = v2FeedService.getCurrentFeed();
+      const canonicalPrice = feed?.canonicalPrice ?? pair.spotAtActivation;
+      const nowIso = new Date().toISOString();
+      const syntheticSnapshot = {
+        canonical_price: canonicalPrice,
+        as_of_ms: Date.now(),
+        health: feed?.health ?? "healthy",
+        forced: true,
+        forced_reason: "admin_validation_probe",
+        forced_side: side
+      };
+      // Record + transition (mirrors TriggerDetector exactly)
+      await rpe(v2Pool, {
+        pairId,
+        kind: "trigger_detected",
+        details: {
+          side,
+          canonical_price: canonicalPrice,
+          trigger_down_price: pair.triggerDownPrice,
+          trigger_up_price: pair.triggerUpPrice,
+          feed_snapshot: syntheticSnapshot,
+          forced_via_admin_probe: true
+        }
+      });
+      await ups(v2Pool, pairId, "triggered", {
+        triggeredAt: nowIso,
+        triggerSide: side,
+        triggerFeedSnapshot: syntheticSnapshot
+      });
+      // Spawn runtime to drive the close
+      try {
+        const updated = await getPairById(v2Pool, pairId);
+        if (!updated) throw new Error("pair_disappeared_after_transition");
+        await v2Registry.spawnRuntime(updated, v2RuntimeDeps);
+        return { ok: true, pair_id: pairId, triggered_at: nowIso, runtime_started: true };
+      } catch (e) {
+        return { ok: false, error: "runtime_spawn_failed", details: { message: (e as Error).message } };
+      }
+    };
+
     // ─── Shadow auto-TP handler ───
     // Auto-closes shadow pairs that hit TP threshold (simulates Foxify-bot
     // 'close early on profit' behavior). SHADOW ONLY — never touches live
@@ -8899,6 +8956,7 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         liquidChainCache: v2LiquidCache,
         getRuntime: (pairId) => v2Registry.getRuntime(pairId),
         spawnRuntimeForceClose: v2SpawnForceClose,
+        forceTriggerPair: v2ForceTriggerPair,
         newbornReviewThreshold: Number(process.env.SS_TWO_SIDED_NEWBORN_REVIEW_PER_REGIME ?? "10"),
         shadowAutoActivator: v2ShadowAutoActivator,
         shadowAutoActivatorConfig: v2ShadowAutoCfg
