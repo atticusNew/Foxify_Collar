@@ -75,6 +75,12 @@ export type PairMtm = {
   estimated_salvage_usdc: number;     // after slippage haircut; what we'd actually credit
   pnl_if_close_now_usdc: number;       // estimated_salvage - cost
   pnl_pct: number;                      // pnl / cost
+  // VALIDATION: surfaces the raw bid used per leg so operators can
+  // independently verify against the live venue order book.
+  put_bid_used_usdc_per_btc?: number;   // null when valuation_method='bs_fallback'
+  call_bid_used_usdc_per_btc?: number;  // null when valuation_method='bs_fallback'
+  put_venue?: string;                    // venue we'd sell the put leg to
+  call_venue?: string;                   // venue we'd sell the call leg to
   // Valuation methodology: tells operator HOW we computed the salvage so
   // they know the accuracy level. "venue_bid" = real venue prices used.
   // "bs_fallback" = theoretical Black-Scholes (less accurate; flag in logs).
@@ -213,7 +219,14 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     contracts: number;
     tenorRemainingHours: number;
     preferVenue: "deribit" | "bullish" | null;
-  }): { valueTotal: number; perBtc: number; method: "venue_bid" | "bs_fallback"; sourceDetail: string } => {
+  }): {
+    valueTotal: number;
+    perBtc: number;
+    method: "venue_bid" | "bs_fallback";
+    sourceDetail: string;
+    rawBidUsdcPerBtc?: number;
+    venue?: string;
+  } => {
     if (inputs.liquidChainCache) {
       const bid = inputs.liquidChainCache.getBidForLeg({
         strike: leg.strike,
@@ -227,7 +240,9 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
           valueTotal: perBtc * leg.contracts,
           perBtc,
           method: "venue_bid",
-          sourceDetail: `${bid.venue}:bid=${bid.bidUsdcPerBtc.toFixed(2)}USD haircut=${(BID_BASED_HAIRCUT * 100).toFixed(0)}%`
+          sourceDetail: `${bid.venue}:bid=${bid.bidUsdcPerBtc.toFixed(2)}USD haircut=${(BID_BASED_HAIRCUT * 100).toFixed(0)}%`,
+          rawBidUsdcPerBtc: bid.bidUsdcPerBtc,
+          venue: bid.venue
         };
       }
     }
@@ -300,6 +315,10 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       valuation_method: overallMethod,
       put_valuation_method: putV.method,
       call_valuation_method: callV.method,
+      put_bid_used_usdc_per_btc: putV.rawBidUsdcPerBtc,
+      call_bid_used_usdc_per_btc: callV.rawBidUsdcPerBtc,
+      put_venue: putV.venue,
+      call_venue: callV.venue,
       trigger_down_price: Number(r.trigger_down_price),
       trigger_up_price: Number(r.trigger_up_price),
       distance_to_trigger_down_pct: distDown,
