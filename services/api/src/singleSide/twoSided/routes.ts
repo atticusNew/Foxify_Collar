@@ -73,7 +73,12 @@ export type FoxifyV2RoutesDeps = {
    * the ExecutionRuntime to handle the close lifecycle. SHADOW ONLY.
    * Production wires this; tests can omit.
    */
-  forceTriggerPair?: (pairId: string, side: "down" | "up", mode?: "natural" | "fast") => Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean; mode: "natural" | "fast"; note: string } | { ok: false; error: string; details?: Record<string, unknown> }>;
+  forceTriggerPair?: (
+    pairId: string,
+    side: "down" | "up",
+    mode?: "natural" | "fast",
+    spotOverride?: number
+  ) => Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean; mode: "natural" | "fast"; spot_override?: number; note: string } | { ok: false; error: string; details?: Record<string, unknown> }>;
   /** Feature flag config (used for newborn threshold etc). */
   newbornReviewThreshold?: number;
   /** PR B1 unwind queue — when provided, surfaced in /admin/foxify/v2/diagnostics. */
@@ -832,6 +837,209 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/ev-by-regime
+   *
+   * Cross-regime EV matrix per cell, with real-bid realism applied. Answers
+   * "are there ANY market conditions under which these cells profit?"
+   *
+   * For each cell × each regime in {calm, moderate, elevated, stress}:
+   *   - Run live MC sim with that regime's vol + cost markup
+   *   - Apply the SAME realism multiplier as gate_with_ev (real_bid / bs at current spot)
+   *   - Report Foxify EV %, trigger rate, verdict
+   *
+   * Use to see if a cell that's NEGATIVE in calm becomes PROFITABLE in elevated/stress
+   * (typical: higher vol → tighter spreads → higher real-bid haircut → better EV).
+   *
+   * Query params (optional):
+   *   ?realism_override=0.85  — fix realism multiplier (skip per-cell bid lookup)
+   *   ?cells=cellA,cellB      — restrict to listed cells
+   */
+  app.get<{ Querystring: { realism_override?: string; cells?: string } }>(
+    "/admin/foxify/v2/ev-by-regime",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { PHASE_0_CELLS } = await import("./cellConfig");
+      const { resolveCurrentTier } = await import("./tierResolver");
+      const { buildQuote } = await import("./quoteEngine");
+      const { computeLiveCellEv } = await import("./liveCellEvService");
+      const { bsPut: bsP, bsCall: bsC } = await import("../../../scripts/backtest/singleSide/coreEngine");
+
+      // Validate query inputs FIRST (cheap) before doing any DB/tier work
+      const realismOverride = req.query.realism_override != null
+        ? Number(req.query.realism_override)
+        : undefined;
+      if (realismOverride != null && (!Number.isFinite(realismOverride) || realismOverride < 0 || realismOverride > 1.5)) {
+        reply.code(400).send({ error: "invalid_request", message: "realism_override must be in [0, 1.5]" });
+        return;
+      }
+      const cellFilter = req.query.cells ? req.query.cells.split(",").map((s) => s.trim()).filter(Boolean) : null;
+
+      const feed = deps.feedService.getCurrentFeed();
+      if (!feed || feed.health === "unavailable" || feed.canonicalPrice == null) {
+        reply.code(503).send({ error: "feed_unavailable", message: "Cannot price cells without canonical spot" });
+        return;
+      }
+      const spot = feed.canonicalPrice;
+      const tier = await resolveCurrentTier(deps.pool, Date.now());
+
+      const REGIMES = ["calm", "moderate", "elevated", "stress"] as const;
+      const cellResults: Array<Record<string, unknown>> = [];
+
+      for (const cellId of Object.keys(PHASE_0_CELLS)) {
+        if (cellFilter && !cellFilter.includes(cellId)) continue;
+        const cell = PHASE_0_CELLS[cellId];
+        if (!cell.enabled) {
+          cellResults.push({ cellId, ok: false, reason: "cell_deprecated" });
+          continue;
+        }
+        try {
+          const quote = await buildQuote({
+            cell, spot, anchorProvider: deps.anchorProvider, tier,
+            liquidChainCache: deps.liquidChainCache ?? null
+          });
+          if (!quote.ok) {
+            cellResults.push({ cellId, ok: false, reason: quote.reason });
+            continue;
+          }
+          const liveCost = quote.totalHedgeCostUsdc;
+
+          // Compute realism multiplier (override OR derived from chain)
+          let realismMultiplier = 1.0;
+          let realismSource = "bs_only_legacy";
+          let bidDetail: Record<string, number | null> = {};
+          if (realismOverride != null) {
+            realismMultiplier = realismOverride;
+            realismSource = "override";
+          } else if (deps.liquidChainCache) {
+            const tenorHours = cell.hedgeTenorDays * 24;
+            const putBidLookup = deps.liquidChainCache.getBidForSymbol({
+              venue: quote.putLeg.venue,
+              instrumentSymbol: quote.putLeg.symbol
+            }) ?? deps.liquidChainCache.getBidForLeg({
+              strike: quote.putStrike, optType: "put",
+              tenorRemainingHours: tenorHours, preferVenue: quote.putLeg.venue
+            });
+            const callBidLookup = deps.liquidChainCache.getBidForSymbol({
+              venue: quote.callLeg.venue,
+              instrumentSymbol: quote.callLeg.symbol
+            }) ?? deps.liquidChainCache.getBidForLeg({
+              strike: quote.callStrike, optType: "call",
+              tenorRemainingHours: tenorHours, preferVenue: quote.callLeg.venue
+            });
+            const realPutBid = putBidLookup?.bidUsdcPerBtc ?? 0;
+            const realCallBid = callBidLookup?.bidUsdcPerBtc ?? 0;
+            const T = cell.hedgeTenorDays / 365;
+            const bsPutVal = Math.max(0, bsP(spot, quote.putStrike, T, 0.045, 0.36));
+            const bsCallVal = Math.max(0, bsC(spot, quote.callStrike, T, 0.045, 0.36));
+            if (bsPutVal + bsCallVal > 0 && realPutBid + realCallBid > 0) {
+              realismMultiplier = Math.max(0, Math.min(1.5, (realPutBid + realCallBid) / (bsPutVal + bsCallVal)));
+              realismSource = "bid_calibrated";
+              bidDetail = {
+                real_put_bid: realPutBid,
+                real_call_bid: realCallBid,
+                bs_put: bsPutVal,
+                bs_call: bsCallVal
+              };
+            } else {
+              realismSource = "bid_unavailable_using_bs";
+            }
+          }
+
+          // Sweep all regimes
+          const byRegime: Record<string, unknown> = {};
+          for (const regime of REGIMES) {
+            const evSim = await computeLiveCellEv({
+              cellId, spot, hedgeCostAtCalm: liveCost,
+              putStrike: quote.putStrike, callStrike: quote.callStrike,
+              tenorDays: cell.hedgeTenorDays,
+              triggerPctDown: cell.triggerPctDown, triggerPctUp: cell.triggerPctUp,
+              regime, contractsBtc: cell.contractsBtc,
+              salvageRealismMultiplier: realismMultiplier
+            });
+            const evPct = evSim.hedgeCost > 0 ? evSim.meanFoxifyEv / evSim.hedgeCost : 0;
+            const worstPct = evSim.hedgeCost > 0 ? evSim.p5FoxifyEv / evSim.hedgeCost : 0;
+            const verdict =
+              evPct > 0.20 ? "PROFITABLE" :
+              evPct > 0.05 ? "MARGINAL_PROFITABLE" :
+              evPct > -0.05 ? "BREAK_EVEN" :
+              evPct > -0.20 ? "MARGINAL_NEGATIVE" : "NEGATIVE";
+            byRegime[regime] = {
+              cost_at_regime: evSim.hedgeCost,
+              mean_salvage: evSim.meanSalvage,
+              trigger_rate: evSim.triggerRate,
+              foxify_ev_pct: evPct,
+              worst_case_pct: worstPct,
+              foxify_ev_usdc: evSim.meanFoxifyEv,
+              verdict
+            };
+          }
+
+          // Cross-regime summary: any regime profitable?
+          const profitableRegimes = REGIMES.filter((r) => {
+            const v = (byRegime[r] as { verdict: string }).verdict;
+            return v === "PROFITABLE" || v === "MARGINAL_PROFITABLE";
+          });
+          const bestRegime = REGIMES.reduce<{ regime: string; ev_pct: number } | null>((best, r) => {
+            const evPct = (byRegime[r] as { foxify_ev_pct: number }).foxify_ev_pct;
+            if (!best || evPct > best.ev_pct) return { regime: r, ev_pct: evPct };
+            return best;
+          }, null);
+
+          cellResults.push({
+            cellId,
+            ok: true,
+            live_cost: liveCost,
+            put_venue: quote.putLeg.venue,
+            call_venue: quote.callLeg.venue,
+            actual_strikes: { put: quote.putStrike, call: quote.callStrike },
+            realism: {
+              multiplier: realismMultiplier,
+              source: realismSource,
+              ...bidDetail
+            },
+            by_regime: byRegime,
+            summary: {
+              profitable_in_regimes: profitableRegimes,
+              best_regime: bestRegime?.regime,
+              best_regime_ev_pct: bestRegime?.ev_pct,
+              recommendation: profitableRegimes.length === 0
+                ? "AVOID_ALL_REGIMES — no condition produces positive EV with current realism"
+                : profitableRegimes.length === 4
+                  ? "ROBUST_ALL_REGIMES — profitable in every regime"
+                  : `SELECTIVE — profitable only in ${profitableRegimes.join(", ")}`
+            }
+          });
+        } catch (e) {
+          cellResults.push({ cellId, ok: false, reason: "sim_threw", message: (e as Error).message });
+        }
+      }
+
+      reply.send({
+        asOf: new Date().toISOString(),
+        spot,
+        realism_override: realismOverride ?? null,
+        regimes: REGIMES,
+        cells: cellResults,
+        methodology: {
+          ev_estimation: "Live MC sim per cell × regime. 2k paths each. Bootstrap (calm + bars) else GBM. Cached per (cellId, regime, cost-bucket, realism-bucket).",
+          realism_calibration: "By default, multiplier = (real_put_bid + real_call_bid) / (bs_put_at_spot + bs_call_at_spot) for the cell's strikes at current spot, applied uniformly to all salvages in MC. ?realism_override=X to fix at a specific value (e.g. 0.85 = assume 15% bid haircut everywhere). Same path as gate_with_ev — cross-checks consistency.",
+          regime_definitions: {
+            calm: "DVOL <40, σ=0.35, cost markup 1.00",
+            moderate: "DVOL 40-50, σ=0.55, cost markup 1.15",
+            elevated: "DVOL 50-65, σ=0.75, cost markup 1.35",
+            stress: "DVOL >65, σ=0.95, cost markup 1.60"
+          },
+          interpretation: {
+            ROBUST_ALL_REGIMES: "Cell is profitable across all market conditions — strong candidate for steady allocation",
+            SELECTIVE: "Cell only profits in certain regimes — operator should gate activations by regime",
+            AVOID_ALL_REGIMES: "No regime produces positive EV — cell may be structurally broken for current calibration"
+          }
+        }
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/chain-probe
    *
    * Dumps raw bid/ask data from the LiquidChainCache for arbitrary strikes,
@@ -1065,13 +1273,20 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Use to validate: trigger detector → ExecutionRuntime → close executor
    * → settlement path end-to-end before going live.
    */
-  app.post<{ Body: { pair_id: string; side?: "down" | "up"; mode?: "natural" | "fast" } }>(
+  app.post<{ Body: { pair_id: string; side?: "down" | "up"; mode?: "natural" | "fast"; spot_override?: number } }>(
     "/admin/foxify/v2/force-trigger",
     { preHandler: checkAdminToken },
     async (req, reply) => {
       const { pair_id } = req.body ?? {};
       const side = req.body?.side ?? "up";
       const mode = req.body?.mode ?? "natural";
+      // Optional: override the spot the runtime sees. Used to simulate
+      // "what if spot were AT trigger boundary right now?" without waiting
+      // for BTC to actually move. Combined with mode=fast, this answers the
+      // critical question: what salvage do we receive when option is deep ITM?
+      const spotOverride = typeof req.body?.spot_override === "number" && Number.isFinite(req.body.spot_override) && req.body.spot_override > 0
+        ? req.body.spot_override
+        : undefined;
       if (!pair_id || typeof pair_id !== "string") {
         reply.code(400).send({ error: "invalid_request", message: "pair_id required (string)" });
         return;
@@ -1088,7 +1303,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(503).send({ error: "force_trigger_unavailable", message: "forceTriggerPair callback not wired in server" });
         return;
       }
-      const result = await deps.forceTriggerPair(pair_id, side, mode);
+      const result = await deps.forceTriggerPair(pair_id, side, mode, spotOverride);
       if (!result.ok) {
         reply.code(409).send(result);
         return;

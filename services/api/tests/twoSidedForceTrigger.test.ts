@@ -178,6 +178,47 @@ test("POST /admin/foxify/v2/force-trigger: 409 when callback returns ok:false", 
   } finally { await app.close(); }
 });
 
+test("POST /admin/foxify/v2/force-trigger: accepts spot_override", async () => {
+  let captured: { spotOverride?: number } = {};
+  const app = await startApp(minimalDeps({
+    forceTriggerPair: async (_pairId, _side, _mode, spotOverride) => {
+      captured = { spotOverride };
+      return { ok: true as const, pair_id: "x", triggered_at: "x", runtime_started: true, mode: "fast" as const, spot_override: spotOverride, note: "n" };
+    }
+  }));
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/admin/foxify/v2/force-trigger",
+      headers: { "x-admin-token": ADMIN_TOKEN, "content-type": "application/json" },
+      payload: JSON.stringify({ pair_id: "p1", side: "up", mode: "fast", spot_override: 77000 })
+    });
+    assert.equal(res.statusCode, 202);
+    const body = JSON.parse(res.body);
+    assert.equal(body.spot_override, 77000);
+    assert.equal(captured.spotOverride, 77000);
+  } finally { await app.close(); }
+});
+
+test("POST /admin/foxify/v2/force-trigger: ignores invalid spot_override (negative)", async () => {
+  let captured: { spotOverride?: number } = {};
+  const app = await startApp(minimalDeps({
+    forceTriggerPair: async (_pairId, _side, _mode, spotOverride) => {
+      captured = { spotOverride };
+      return okResp();
+    }
+  }));
+  try {
+    await app.inject({
+      method: "POST",
+      url: "/admin/foxify/v2/force-trigger",
+      headers: { "x-admin-token": ADMIN_TOKEN, "content-type": "application/json" },
+      payload: JSON.stringify({ pair_id: "p1", spot_override: -100 })
+    });
+    assert.equal(captured.spotOverride, undefined, "negative spot_override should be filtered out");
+  } finally { await app.close(); }
+});
+
 test("POST /admin/foxify/v2/force-trigger: rejects without admin token", async () => {
   const app = await startApp(minimalDeps({ forceTriggerPair: async () => okResp() }));
   try {

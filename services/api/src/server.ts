@@ -8795,8 +8795,9 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     const v2ForceTriggerPair = async (
       pairId: string,
       side: "down" | "up",
-      mode: "natural" | "fast" = "natural"
-    ): Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean; mode: "natural" | "fast"; note: string } | { ok: false; error: string; details?: Record<string, unknown> }> => {
+      mode: "natural" | "fast" = "natural",
+      spotOverride?: number
+    ): Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean; mode: "natural" | "fast"; spot_override?: number; note: string } | { ok: false; error: string; details?: Record<string, unknown> }> => {
       const { recordPairEvent: rpe, updatePairStatus: ups } = await import("./singleSide/twoSided/db");
       const pair = await getPairById(v2Pool, pairId);
       if (!pair) return { ok: false, error: "pair_not_found", details: { pair_id: pairId } };
@@ -8807,16 +8808,21 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         return { ok: false, error: "pair_not_active", details: { current_status: pair.status, expected: "active" } };
       }
       const feed = v2FeedService.getCurrentFeed();
-      const canonicalPrice = feed?.canonicalPrice ?? pair.spotAtActivation;
+      const realCanonicalPrice = feed?.canonicalPrice ?? pair.spotAtActivation;
+      // If spot_override provided, use that as the synthetic spot the runtime sees.
+      // Otherwise use real current spot.
+      const canonicalPrice = spotOverride ?? realCanonicalPrice;
       const nowIso = new Date().toISOString();
       const syntheticSnapshot = {
         canonical_price: canonicalPrice,
+        real_canonical_price: realCanonicalPrice,
         as_of_ms: Date.now(),
         health: feed?.health ?? "healthy",
         forced: true,
         forced_reason: "admin_validation_probe",
         forced_side: side,
-        forced_mode: mode
+        forced_mode: mode,
+        spot_override_applied: spotOverride != null
       };
       // Record + transition (mirrors TriggerDetector exactly)
       await rpe(v2Pool, {
@@ -8840,18 +8846,53 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       // Spawn runtime to drive the close.
       //   natural: runtime ticks 30min capture window before selling (mirrors real triggers)
       //   fast:    runtime immediately forceClose()'s on next tick (~5s) — for fast validation
+      //
+      // When spot_override is provided, we wrap getFeed() to return a synthetic
+      // feed at the override spot. The runtime's BS valuation will use the
+      // override spot (great for "what would salvage be at trigger boundary?").
+      // ShadowCloseExecutor still uses real venue bids (current chain), so the
+      // salvage reflects BS@override × slip when bid isn't found, or real bid
+      // × haircut when it is (rare for deep ITM strikes at moved spot).
       try {
         const updated = await getPairById(v2Pool, pairId);
         if (!updated) throw new Error("pair_disappeared_after_transition");
+
+        // Build deps for this probe — possibly with overridden getFeed
+        const probeDeps = spotOverride != null
+          ? {
+              ...v2RuntimeDeps,
+              getFeed: (): import("./singleSide/twoSided/feedAggregator").AggregatedFeed => ({
+                canonicalPrice: spotOverride,
+                asOfMs: Date.now(),
+                sources: [{ source: "spot_override_probe", price: spotOverride, ts: Date.now() }],
+                rejected: [],
+                expired: [],
+                health: "healthy" as const,
+                medianCalcDescription: `synthetic spot=${spotOverride} for admin force-trigger probe`
+              })
+            }
+          : v2RuntimeDeps;
+
         if (mode === "fast") {
-          await v2Registry.spawnRuntimeForceClose(updated, v2RuntimeDeps);
+          await v2Registry.spawnRuntimeForceClose(updated, probeDeps);
         } else {
-          await v2Registry.spawnRuntime(updated, v2RuntimeDeps);
+          await v2Registry.spawnRuntime(updated, probeDeps);
         }
+        const overrideNote = spotOverride != null
+          ? ` Runtime uses synthetic spot=${spotOverride} (real spot=${realCanonicalPrice.toFixed(2)}). Salvage will reflect option value at that spot (BS-based when chain has no bid at moved-spot strikes).`
+          : "";
         const note = mode === "fast"
-          ? "Runtime spawned in force-close mode; pair will settle on next tick (~5s)."
-          : "Runtime spawned in natural mode; pair will settle after 30min capture window or other TP rule fires.";
-        return { ok: true, pair_id: pairId, triggered_at: nowIso, runtime_started: true, mode, note };
+          ? `Runtime spawned in force-close mode; pair will settle on next tick (~5s).${overrideNote}`
+          : `Runtime spawned in natural mode; pair will settle after 30min capture window or other TP rule fires.${overrideNote}`;
+        return {
+          ok: true,
+          pair_id: pairId,
+          triggered_at: nowIso,
+          runtime_started: true,
+          mode,
+          spot_override: spotOverride,
+          note
+        };
       } catch (e) {
         return { ok: false, error: "runtime_spawn_failed", details: { message: (e as Error).message } };
       }
