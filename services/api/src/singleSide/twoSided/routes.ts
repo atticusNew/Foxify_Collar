@@ -825,6 +825,116 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/settled-summary
+   *
+   * Aggregated view of all settled pairs broken down by exit_mode. Includes
+   * total counts, costs, salvages, and net PnL per category. Plus the most
+   * recent N settled pairs with full settlement detail.
+   *
+   * Designed so the operator doesn't need direct DB access for PnL reporting.
+   *
+   * Query params:
+   *   ?recent_limit=20    (number of recent pairs to return in detail)
+   *   ?include_live=true  (default false — shadow only)
+   */
+  app.get<{ Querystring: { recent_limit?: string; include_live?: string } }>(
+    "/admin/foxify/v2/settled-summary",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const recentLimit = Math.max(1, Math.min(200, Number(req.query.recent_limit ?? "20")));
+      const includeLive = req.query.include_live === "true";
+
+      // Aggregate by exit_mode
+      const aggSql = `
+        SELECT exit_mode,
+               COUNT(*)::int AS n,
+               SUM(hedge_cost_total_usdc::numeric)::float AS total_cost,
+               SUM(salvage_proceeds_usdc::numeric)::float AS total_salvage,
+               SUM(foxify_share_usdc::numeric)::float AS total_foxify_share,
+               SUM(atticus_share_usdc::numeric)::float AS total_atticus_share
+        FROM two_sided_pair
+        WHERE status = 'settled'
+          ${includeLive ? "" : "AND is_shadow = TRUE"}
+        GROUP BY exit_mode
+        ORDER BY exit_mode
+      `;
+      const aggRes = await deps.pool.query(aggSql);
+      const byExitMode = aggRes.rows.map((r) => {
+        const cost = Number(r.total_cost ?? 0);
+        const salvage = Number(r.total_salvage ?? 0);
+        return {
+          exit_mode: r.exit_mode,
+          count: Number(r.n),
+          total_cost_usdc: cost,
+          total_salvage_usdc: salvage,
+          total_foxify_share_usdc: Number(r.total_foxify_share ?? 0),
+          total_atticus_share_usdc: Number(r.total_atticus_share ?? 0),
+          net_pnl_usdc: salvage - cost,
+          pnl_pct_of_cost: cost > 0 ? (salvage - cost) / cost : 0
+        };
+      });
+
+      // Overall totals
+      const totalCount = byExitMode.reduce((s, r) => s + r.count, 0);
+      const totalCost = byExitMode.reduce((s, r) => s + r.total_cost_usdc, 0);
+      const totalSalvage = byExitMode.reduce((s, r) => s + r.total_salvage_usdc, 0);
+      const totalFoxify = byExitMode.reduce((s, r) => s + r.total_foxify_share_usdc, 0);
+      const totalAtticus = byExitMode.reduce((s, r) => s + r.total_atticus_share_usdc, 0);
+
+      // Recent settled pairs with full detail
+      const recentSql = `
+        SELECT pair_id, cell_id, exit_mode, closed_reason, is_shadow,
+               hedge_cost_total_usdc::float AS cost,
+               salvage_proceeds_usdc::float AS salvage,
+               foxify_share_usdc::float AS foxify_share,
+               atticus_share_usdc::float AS atticus_share,
+               closed_at, created_at
+        FROM two_sided_pair
+        WHERE status = 'settled'
+          ${includeLive ? "" : "AND is_shadow = TRUE"}
+        ORDER BY closed_at DESC
+        LIMIT ${recentLimit}
+      `;
+      const recentRes = await deps.pool.query(recentSql);
+      const recentPairs = recentRes.rows.map((r) => {
+        const cost = Number(r.cost ?? 0);
+        const salvage = Number(r.salvage ?? 0);
+        return {
+          pair_id: r.pair_id,
+          cell_id: r.cell_id,
+          exit_mode: r.exit_mode,
+          closed_reason: r.closed_reason,
+          is_shadow: r.is_shadow,
+          cost_usdc: cost,
+          salvage_usdc: salvage,
+          net_pnl_usdc: salvage - cost,
+          pnl_pct: cost > 0 ? (salvage - cost) / cost : 0,
+          foxify_share_usdc: Number(r.foxify_share ?? 0),
+          atticus_share_usdc: Number(r.atticus_share ?? 0),
+          closed_at: r.closed_at,
+          created_at: r.created_at
+        };
+      });
+
+      reply.send({
+        as_of: new Date().toISOString(),
+        filter: includeLive ? "shadow + live" : "shadow only",
+        overall: {
+          total_settled: totalCount,
+          total_cost_usdc: totalCost,
+          total_salvage_usdc: totalSalvage,
+          total_foxify_share_usdc: totalFoxify,
+          total_atticus_share_usdc: totalAtticus,
+          net_pnl_usdc: totalSalvage - totalCost,
+          pnl_pct_of_cost: totalCost > 0 ? (totalSalvage - totalCost) / totalCost : 0
+        },
+        by_exit_mode: byExitMode,
+        recent_pairs: recentPairs
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/venue-routing
    *
    * Shows WHERE pair legs are being bought (Bullish vs Deribit) and WHY
