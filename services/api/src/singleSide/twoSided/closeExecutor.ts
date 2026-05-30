@@ -181,12 +181,39 @@ export class ShadowCloseExecutor implements CloseExecutor {
         method = "bs_expected";
         this.log(`shadow_close ${leg.legRole}: NO venue bid found (symbol=${leg.symbol} venue=${leg.venue} strike=${leg.strikeUsdc} type=${leg.optType} tenor=${leg.tenorRemainingHours}h) — falling back to bs_expected=${fillPx.toFixed(4)}`);
       }
-      if (fillPx < leg.minAcceptablePxUsdcPerBtc) {
-        return {
-          ok: false,
-          reason: "min_px_violated",
-          detail: `${method} fill px ${fillPx.toFixed(4)} below min ${leg.minAcceptablePxUsdcPerBtc.toFixed(4)}`
-        };
+      // Floor check: ONLY enforced when using BS-expected fallback.
+      //
+      // For real venue bids (exact_symbol / fuzzy_strike_tenor) the bid IS the
+      // market price. Rejecting it as "below min" doesn't make sense in shadow
+      // because we're simulating what the market would pay, not gating live
+      // execution. (In LiveCloseExecutor the floor is correct because it
+      // catches bad fills / stale books that would lose us real money.)
+      //
+      // We still require fillPx > 0 to record a sane settlement — a 0 bid
+      // would mean "nobody will buy this at any price" which the runtime
+      // should treat as a fall-back-to-BS situation, not a successful close.
+      const isRealBid = method === "exact_symbol" || method === "fuzzy_strike_tenor";
+      if (isRealBid) {
+        if (fillPx <= 0) {
+          return {
+            ok: false,
+            reason: "min_px_violated",
+            detail: `${method} returned non-positive fill px ${fillPx.toFixed(4)} — treat as no liquidity`
+          };
+        }
+        if (fillPx < leg.minAcceptablePxUsdcPerBtc) {
+          this.log(`shadow_close ${leg.legRole}: real-bid fill ${fillPx.toFixed(4)} is below BS-derived floor ${leg.minAcceptablePxUsdcPerBtc.toFixed(4)} — ACCEPTING anyway (real bid is the market). ratio=${(fillPx / leg.minAcceptablePxUsdcPerBtc).toFixed(3)}. This indicates BS theoretical is overstating value relative to live bids (vol skew or stale BS inputs).`);
+        }
+      } else {
+        // BS-expected fallback: still enforce the floor — these numbers are
+        // estimates and a too-low estimate means our model is broken.
+        if (fillPx < leg.minAcceptablePxUsdcPerBtc) {
+          return {
+            ok: false,
+            reason: "min_px_violated",
+            detail: `${method} fill px ${fillPx.toFixed(4)} below min ${leg.minAcceptablePxUsdcPerBtc.toFixed(4)}`
+          };
+        }
       }
       return {
         ok: true,

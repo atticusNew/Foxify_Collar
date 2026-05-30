@@ -106,20 +106,32 @@ test("ShadowCloseExecutor: mixed — put has bid, call doesn't", async () => {
   assert.equal(r.callLeg.valuationMethod, "bs_expected");
 });
 
-test("ShadowCloseExecutor: rejects fill below min_acceptable (venue_bid path)", async () => {
+test("ShadowCloseExecutor: ACCEPTS real-bid fill below BS-derived floor (real bid IS the market)", async () => {
+  // Critical semantic: shadow accepts whatever real bid the venue is
+  // showing, even if below the BS-derived floor. The floor only catches
+  // bad fills in live trading; in shadow we record reality.
   const exec = new ShadowCloseExecutor({
     bidLookup: () => 50, // bid * 0.95 = 47.5, below min 100
     bidSlippageHaircut: 0.95,
     log: () => {}
   });
   const r = await exec.closeStrangle(baseReq);
-  assert.equal(r.ok, false);
-  if (r.ok) return;
-  assert.equal(r.reason, "both_failed");
-  assert.equal(r.putLegResult.ok, false);
-  if (r.putLegResult.ok) return;
-  assert.equal(r.putLegResult.reason, "min_px_violated");
-  assert.match(r.putLegResult.detail, /exact_symbol/);
+  assert.equal(r.ok, true, "shadow should accept real bid even when below BS floor");
+  if (!r.ok) return;
+  assert.equal(r.putLeg.filledPxUsdcPerBtc, 47.5);
+  assert.equal(r.putLeg.valuationMethod, "exact_symbol");
+  assert.equal(r.putLeg.rawVenueBidUsdcPerBtc, 50);
+});
+
+test("ShadowCloseExecutor: rejects real-bid path if bid is zero (no liquidity)", async () => {
+  const exec = new ShadowCloseExecutor({
+    bidLookup: () => 0, // zero bid is treated as no liquidity, not a real bid
+    log: () => {}
+  });
+  const r = await exec.closeStrangle(baseReq);
+  assert.equal(r.ok, true, "zero bid falls through to BS-expected fallback (not stuck)");
+  if (!r.ok) return;
+  assert.equal(r.putLeg.valuationMethod, "bs_expected");
 });
 
 test("ShadowCloseExecutor: rejects fill below min_acceptable (bs_expected path)", async () => {
