@@ -42,6 +42,7 @@ import { ShadowStrangleExecutor } from "./shadowExecutor";
 const DEFAULT_POLL_MS = 60_000;
 const DEFAULT_SUSTAINED_GOOD_SEC = 60;
 const DEFAULT_MAX_PER_WINDOW = 3;
+const DEFAULT_MAX_PER_DAY = 10; // realistic Foxify-bot cadence baseline
 const DEFAULT_MAX_CELL_TRIGGER_PCT = 0.05;
 const DEFAULT_MAX_COST_USDC = 100_000; // shadow doesn't risk capital, generous cap
 
@@ -72,6 +73,11 @@ export type AutoActivatorConfig = {
   pollMs: number;
   sustainedGoodSeconds: number;
   maxPerGoodWindow: number;
+  /** Hard daily cap on activations (UTC day rollover). Defaults to 10.
+   * Without this, in calm regimes with opportunistic policy, the loop can
+   * fire hundreds of activations per day. A real Foxify bot would activate
+   * 5-20 pairs/day; this cap simulates that operational discipline. */
+  maxPerDay: number;
   maxCellTriggerPct: number;
   maxShadowCostUsdc: number;
 };
@@ -89,6 +95,7 @@ export const readAutoActivatorConfig = (env: NodeJS.ProcessEnv = process.env): A
   pollMs: Number(env.SHADOW_AUTO_POLL_MS ?? DEFAULT_POLL_MS),
   sustainedGoodSeconds: Number(env.SHADOW_AUTO_SUSTAINED_SEC ?? DEFAULT_SUSTAINED_GOOD_SEC),
   maxPerGoodWindow: Number(env.SHADOW_AUTO_MAX_PER_WINDOW ?? DEFAULT_MAX_PER_WINDOW),
+  maxPerDay: Number(env.SHADOW_AUTO_MAX_PER_DAY ?? DEFAULT_MAX_PER_DAY),
   maxCellTriggerPct: Number(env.SHADOW_AUTO_MAX_CELL_TRIGGER_PCT ?? DEFAULT_MAX_CELL_TRIGGER_PCT),
   maxShadowCostUsdc: Number(env.SHADOW_AUTO_MAX_COST_USDC ?? DEFAULT_MAX_COST_USDC)
 });
@@ -175,6 +182,27 @@ export const countActivationsInCurrentWindow = async (
       WHERE checked_at >= $1
         AND decision = 'activated'`,
     [windowStartIso]
+  );
+  return result.rows[0]?.n ?? 0;
+};
+
+/**
+ * Count auto-activations since UTC midnight (today). Used to enforce
+ * SHADOW_AUTO_MAX_PER_DAY cap so the loop simulates realistic Foxify-bot
+ * cadence (5-20/day) rather than 100+/day.
+ */
+export const countActivationsToday = async (
+  pool: Pool,
+  nowMs: number = Date.now()
+): Promise<number> => {
+  const dayStart = new Date(nowMs);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const result = await pool.query(
+    `SELECT COUNT(*)::int AS n
+       FROM two_sided_shadow_audit
+      WHERE checked_at >= $1
+        AND decision = 'activated'`,
+    [dayStart.toISOString()]
   );
   return result.rows[0]?.n ?? 0;
 };
@@ -354,6 +382,25 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
       details: {
         sustained_required_s: config.sustainedGoodSeconds,
         sustained_actual_s: consecutiveGoodSeconds
+      }
+    });
+    return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
+  }
+
+  // Daily cap check (FIRST gate after policy/halt — simulates realistic Foxify
+  // bot operational discipline of 5-20 pairs/day rather than 100+/day).
+  const dailyCount = await countActivationsToday(pool, now);
+  if (dailyCount >= config.maxPerDay) {
+    const decision = "skipped:daily_cap";
+    const auditId = await insertAuditRow(pool, {
+      ...auditBase,
+      decision,
+      chosen_cell_id: null,
+      pair_id: null,
+      details: {
+        activations_today: dailyCount,
+        max_per_day: config.maxPerDay,
+        policy: config.policy
       }
     });
     return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };

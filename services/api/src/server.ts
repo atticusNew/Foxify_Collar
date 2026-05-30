@@ -8779,6 +8779,25 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       await v2Registry.spawnRuntimeForceClose(pair, v2RuntimeDeps);
     };
 
+    // ─── Shadow auto-TP handler ───
+    // Auto-closes shadow pairs that hit TP threshold (simulates Foxify-bot
+    // 'close early on profit' behavior). SHADOW ONLY — never touches live
+    // pairs (those are the real bot's responsibility).
+    try {
+      const { ShadowAutoTpHandler, readAutoTpConfig } = await import("./singleSide/twoSided/shadowAutoTpHandler");
+      const tpConfig = readAutoTpConfig();
+      const v2AutoTp = new ShadowAutoTpHandler({
+        pool: v2Pool,
+        liquidChainCache: v2LiquidCache,
+        getCurrentIvAnnual: () => v2DvolService.getCurrentDvol()?.sigmaAnnual ?? 0.35,
+        config: tpConfig,
+        log: (m, x) => console.log(`[FoxifyV2/autoTp] ${m}`, x ?? "")
+      });
+      v2AutoTp.start();
+    } catch (e) {
+      console.error(`[FoxifyV2] FAILED to start shadow auto-TP handler: ${(e as Error).message}`);
+    }
+
     // ─── Expiry handler ───
     // Auto-settles pairs that hit expires_at WITHOUT triggering. Without this,
     // active-but-never-triggered pairs sit in 'active' status forever.

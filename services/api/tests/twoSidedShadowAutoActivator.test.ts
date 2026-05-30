@@ -144,6 +144,7 @@ const buildConfig = (overrides: Partial<AutoActivatorConfig> = {}): AutoActivato
   pollMs: 60_000,
   sustainedGoodSeconds: 60,
   maxPerGoodWindow: 3,
+  maxPerDay: 1000, // tests don't care unless explicitly testing the cap
   maxCellTriggerPct: 0.05,
   maxShadowCostUsdc: 100_000,
   ...overrides
@@ -516,6 +517,39 @@ test("runAutoActivatorTick: conservative policy skips when global signal WAIT", 
     config: buildConfig({ policy: "conservative" })
   });
   assert.match(result.decision, /^skipped:not_good:/);
+});
+
+test("runAutoActivatorTick: daily cap (maxPerDay) blocks further activations", async () => {
+  const pool = await buildPool();
+  clearHistoryForTesting();
+  // Pre-seed 10 'activated' rows TODAY in the audit table
+  const now = Date.now();
+  const dayStart = new Date(now);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  for (let i = 0; i < 10; i++) {
+    await pool.query(
+      `INSERT INTO two_sided_shadow_audit (
+        checked_at, good_to_activate, signal_tier, signal_score,
+        recommended_cells, decision
+      ) VALUES ($1, TRUE, 'positive', 1, '[]'::jsonb, 'activated')`,
+      [new Date(dayStart.getTime() + i * 60_000).toISOString()]
+    );
+  }
+  // Pre-seed sustained-good history so we'd otherwise proceed
+  for (let i = 0; i < 30; i++) {
+    recordGateSnapshot({ asOfMs: now - (30 - i) * 10_000, vrp: -0.02, goodToActivate: true, regime: "elevated" });
+  }
+  const result = await runAutoActivatorTick({
+    pool,
+    dvolService: stubDvolService("elevated", 65, 0.55),
+    rvService: stubRvService(0.4),
+    feedService: stubFeedService,
+    liquidChainCache: null,
+    anchorProvider: stubAnchorProvider,
+    config: buildConfig({ policy: "conservative", maxPerDay: 10, sustainedGoodSeconds: 30 }),
+    nowMs: () => now
+  });
+  assert.equal(result.decision, "skipped:daily_cap");
 });
 
 test("runAutoActivatorTick: conservative policy proceeds when global signal GO", async () => {
