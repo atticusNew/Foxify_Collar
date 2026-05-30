@@ -87,6 +87,10 @@ export type PairMtm = {
   valuation_method: "venue_bid" | "bs_fallback" | "mixed";
   put_valuation_method: "venue_bid" | "bs_fallback";
   call_valuation_method: "venue_bid" | "bs_fallback";
+  // Tier of bid match — exact_symbol is most accurate, fuzzy is a proxy
+  // (different expiry sharing strike) which may overstate value
+  put_match_tier?: "exact_symbol" | "fuzzy_strike_tenor" | "bs_theoretical";
+  call_match_tier?: "exact_symbol" | "fuzzy_strike_tenor" | "bs_theoretical";
   // Trigger geometry
   trigger_down_price: number;
   trigger_up_price: number;
@@ -198,6 +202,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       MAX(CASE WHEN l.leg_role IN ('long_call', 'call') THEN l.strike_usdc ELSE NULL END) AS call_strike,
       MAX(CASE WHEN l.leg_role IN ('long_put', 'put') THEN l.venue ELSE NULL END) AS put_venue,
       MAX(CASE WHEN l.leg_role IN ('long_call', 'call') THEN l.venue ELSE NULL END) AS call_venue,
+      MAX(CASE WHEN l.leg_role IN ('long_put', 'put') THEN l.symbol ELSE NULL END) AS put_symbol,
+      MAX(CASE WHEN l.leg_role IN ('long_call', 'call') THEN l.symbol ELSE NULL END) AS call_symbol,
       MAX(l.contracts_btc) AS contracts_btc
     FROM two_sided_pair p
     LEFT JOIN two_sided_pair_leg l ON p.pair_id = l.pair_id
@@ -206,12 +212,18 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
              p.trigger_up_price, p.hedge_cost_total_usdc, p.expires_at, p.created_at, p.is_shadow
     ORDER BY p.created_at DESC
   `;
-  const result = await inputs.pool.query<ActivePairLite & { put_venue: string | null; call_venue: string | null }>(sql, params);
+  const result = await inputs.pool.query<ActivePairLite & { put_venue: string | null; call_venue: string | null; put_symbol: string | null; call_symbol: string | null }>(sql, params);
 
   /**
-   * Value ONE leg using the cache's bid if available, else BS.
-   * The cache lookup uses preferVenue (the venue we ACTUALLY bought on)
-   * so we get the bid from the same venue we'd be selling to.
+   * Value ONE leg using a tiered bid strategy:
+   *   1. EXACT instrument symbol on the venue we hold (most accurate)
+   *   2. Fuzzy strike+tenor on the same venue (proxy; may overstate if
+   *      another expiry shares the strike)
+   *   3. BS theoretical (fallback when chain is unreachable)
+   *
+   * The tiered approach prevents the "wrong expiry overstates value" bug
+   * where getBidForLeg's drift-window match picked a 2.5d option's bid as
+   * a proxy for our 1.5d holding (2x value inflation).
    */
   const valueLeg = (leg: {
     side: "put" | "call";
@@ -219,15 +231,37 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     contracts: number;
     tenorRemainingHours: number;
     preferVenue: "deribit" | "bullish" | null;
+    instrumentSymbol: string | null;
   }): {
     valueTotal: number;
     perBtc: number;
     method: "venue_bid" | "bs_fallback";
+    matchTier: "exact_symbol" | "fuzzy_strike_tenor" | "bs_theoretical";
     sourceDetail: string;
     rawBidUsdcPerBtc?: number;
     venue?: string;
   } => {
     if (inputs.liquidChainCache) {
+      // Tier 1: exact instrument match (only when we have venue + symbol)
+      if (leg.preferVenue && leg.instrumentSymbol) {
+        const exact = inputs.liquidChainCache.getBidForSymbol({
+          venue: leg.preferVenue,
+          instrumentSymbol: leg.instrumentSymbol
+        });
+        if (exact && exact.bidUsdcPerBtc > 0) {
+          const perBtc = exact.bidUsdcPerBtc * BID_BASED_HAIRCUT;
+          return {
+            valueTotal: perBtc * leg.contracts,
+            perBtc,
+            method: "venue_bid",
+            matchTier: "exact_symbol",
+            sourceDetail: `${exact.venue}:exact ${exact.instrumentName} bid=${exact.bidUsdcPerBtc.toFixed(2)}USD haircut=${(BID_BASED_HAIRCUT * 100).toFixed(0)}%`,
+            rawBidUsdcPerBtc: exact.bidUsdcPerBtc,
+            venue: exact.venue
+          };
+        }
+      }
+      // Tier 2: fuzzy proxy (closest strike+tenor)
       const bid = inputs.liquidChainCache.getBidForLeg({
         strike: leg.strike,
         optType: leg.side,
@@ -240,13 +274,14 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
           valueTotal: perBtc * leg.contracts,
           perBtc,
           method: "venue_bid",
-          sourceDetail: `${bid.venue}:bid=${bid.bidUsdcPerBtc.toFixed(2)}USD haircut=${(BID_BASED_HAIRCUT * 100).toFixed(0)}%`,
+          matchTier: "fuzzy_strike_tenor",
+          sourceDetail: `${bid.venue}:proxy ${bid.instrumentName} bid=${bid.bidUsdcPerBtc.toFixed(2)}USD haircut=${(BID_BASED_HAIRCUT * 100).toFixed(0)}%`,
           rawBidUsdcPerBtc: bid.bidUsdcPerBtc,
           venue: bid.venue
         };
       }
     }
-    // BS fallback (less accurate due to vol skew vs index IV)
+    // Tier 3: BS theoretical fallback (least accurate)
     const T = leg.tenorRemainingHours / (24 * 365);
     const raw = leg.side === "put"
       ? Math.max(0, bsPut(inputs.currentSpot, leg.strike, T, DEFAULT_RFR, inputs.ivAnnual))
@@ -256,6 +291,7 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       valueTotal: perBtc * leg.contracts,
       perBtc,
       method: "bs_fallback",
+      matchTier: "bs_theoretical",
       sourceDetail: `bs(iv=${(inputs.ivAnnual * 100).toFixed(1)}%) haircut=${(BS_FALLBACK_HAIRCUT * 100).toFixed(0)}%`
     };
   };
@@ -268,6 +304,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     const contracts = Number(r.contracts_btc);
     const putVenue = (r.put_venue as "deribit" | "bullish" | null) ?? null;
     const callVenue = (r.call_venue as "deribit" | "bullish" | null) ?? null;
+    const putSymbol = (r.put_symbol as string | null) ?? null;
+    const callSymbol = (r.call_symbol as string | null) ?? null;
 
     if (!Number.isFinite(putStrike) || !Number.isFinite(callStrike) || !Number.isFinite(contracts) || contracts <= 0) {
       continue;
@@ -275,8 +313,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
 
     const tenorRemainingHours = Math.max(0, (expiresAt.getTime() - now) / 3_600_000);
 
-    const putV = valueLeg({ side: "put", strike: putStrike, contracts, tenorRemainingHours, preferVenue: putVenue });
-    const callV = valueLeg({ side: "call", strike: callStrike, contracts, tenorRemainingHours, preferVenue: callVenue });
+    const putV = valueLeg({ side: "put", strike: putStrike, contracts, tenorRemainingHours, preferVenue: putVenue, instrumentSymbol: putSymbol });
+    const callV = valueLeg({ side: "call", strike: callStrike, contracts, tenorRemainingHours, preferVenue: callVenue, instrumentSymbol: callSymbol });
 
     const putValueTotal = putV.valueTotal;
     const callValueTotal = callV.valueTotal;
@@ -319,6 +357,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       call_bid_used_usdc_per_btc: callV.rawBidUsdcPerBtc,
       put_venue: putV.venue,
       call_venue: callV.venue,
+      put_match_tier: putV.matchTier,
+      call_match_tier: callV.matchTier,
       trigger_down_price: Number(r.trigger_down_price),
       trigger_up_price: Number(r.trigger_up_price),
       distance_to_trigger_down_pct: distDown,

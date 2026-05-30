@@ -40,7 +40,16 @@ export type CloseLegRequest = {
   tenorRemainingHours?: number;
 };
 
-export type ValuationMethod = "venue_bid" | "bs_expected";
+/**
+ * How the close fill price was determined.
+ *   - "exact_symbol"      → real bid for the specific instrument we hold (best)
+ *   - "fuzzy_strike_tenor"→ real bid for a similar instrument (proxy; less accurate)
+ *   - "bs_expected"       → BS-derived expected from the runtime (fallback)
+ *
+ * Backward-compatible alias "venue_bid" is preserved at type level for any
+ * older readers; new code should distinguish exact vs fuzzy.
+ */
+export type ValuationMethod = "exact_symbol" | "fuzzy_strike_tenor" | "bs_expected" | "venue_bid";
 
 export type CloseLegResult =
   | {
@@ -155,22 +164,22 @@ export class ShadowCloseExecutor implements CloseExecutor {
     const haircut = this.deps.bidSlippageHaircut ?? DEFAULT_BID_SLIPPAGE_HAIRCUT;
 
     const fillLeg = (leg: CloseLegRequest): CloseLegResult => {
-      const bid = this.lookupBidForLeg(leg);
+      const lookup = this.lookupBidForLeg(leg);
       let fillPx: number;
       let method: ValuationMethod;
       let rawBid: number | undefined;
-      if (bid != null && bid > 0) {
-        fillPx = bid * haircut;
-        method = "venue_bid";
-        rawBid = bid;
-        this.log(`shadow_close ${leg.legRole}: venue_bid=${bid.toFixed(4)} USDC/BTC × ${haircut} haircut → fill=${fillPx.toFixed(4)} (symbol=${leg.symbol})`);
+      if (lookup != null) {
+        fillPx = lookup.bid * haircut;
+        method = lookup.method;
+        rawBid = lookup.bid;
+        this.log(`shadow_close ${leg.legRole}: ${lookup.method} bid=${lookup.bid.toFixed(4)} USDC/BTC × ${haircut} haircut → fill=${fillPx.toFixed(4)} (symbol=${leg.symbol})`);
       } else {
         // No reachable bid — fall back to BS-derived expected (legacy behavior).
         // This is INTENTIONALLY conservative: if we can't get a real bid, we
         // honor the runtime's BS estimate so we don't break unwinding entirely.
         fillPx = leg.expectedSellPxUsdcPerBtc;
         method = "bs_expected";
-        this.log(`shadow_close ${leg.legRole}: NO venue bid found (strike=${leg.strikeUsdc} type=${leg.optType} tenor=${leg.tenorRemainingHours}h) — falling back to bs_expected=${fillPx.toFixed(4)} (symbol=${leg.symbol})`);
+        this.log(`shadow_close ${leg.legRole}: NO venue bid found (symbol=${leg.symbol} venue=${leg.venue} strike=${leg.strikeUsdc} type=${leg.optType} tenor=${leg.tenorRemainingHours}h) — falling back to bs_expected=${fillPx.toFixed(4)}`);
       }
       if (fillPx < leg.minAcceptablePxUsdcPerBtc) {
         return {
@@ -205,20 +214,52 @@ export class ShadowCloseExecutor implements CloseExecutor {
     };
   }
 
-  private lookupBidForLeg(leg: CloseLegRequest): number | null {
-    if (this.deps.bidLookup) return this.deps.bidLookup(leg);
+  /**
+   * Bid lookup strategy (tiered for correctness + safety):
+   *   1. EXACT symbol match — the right answer when the chain has fresh
+   *      data on the SPECIFIC instrument we hold (e.g. BTC-1JUN26-73000-P).
+   *      Returns a true sellable bid.
+   *   2. Fuzzy strike+tenor match on the same venue — fallback when the
+   *      exact symbol isn't in the snapshot (e.g. chain window doesn't
+   *      include this strike, or the fetch was partial). Less accurate
+   *      because the matched quote may be a different expiry.
+   *   3. null — caller falls back to BS-derived expected.
+   *
+   * We deliberately split the two paths so the audit trail can record
+   * which one fired. "venue_bid" should ideally be "exact_symbol" in
+   * practice; if we see lots of "fuzzy_match" in production it tells us
+   * the chain window is too narrow.
+   */
+  private lookupBidForLeg(leg: CloseLegRequest): { bid: number; method: "exact_symbol" | "fuzzy_strike_tenor" } | null {
+    if (this.deps.bidLookup) {
+      const b = this.deps.bidLookup(leg);
+      if (b != null && b > 0) return { bid: b, method: "exact_symbol" };
+      return null;
+    }
     if (!this.deps.chainCache) return null;
+    // Tier 1: exact instrument symbol on the venue we hold the leg on
+    const exact = this.deps.chainCache.getBidForSymbol({
+      venue: leg.venue,
+      instrumentSymbol: leg.symbol
+    });
+    if (exact && exact.bidUsdcPerBtc > 0) {
+      return { bid: exact.bidUsdcPerBtc, method: "exact_symbol" };
+    }
+    // Tier 2: fuzzy strike+tenor — only if we have the required metadata
     if (leg.strikeUsdc == null || leg.optType == null || leg.tenorRemainingHours == null) {
       return null;
     }
-    const got = this.deps.chainCache.getBidForLeg({
+    const fuzzy = this.deps.chainCache.getBidForLeg({
       strike: leg.strikeUsdc,
       optType: leg.optType,
       tenorRemainingHours: leg.tenorRemainingHours,
       preferVenue: leg.venue,
       maxTenorDriftHours: this.deps.maxTenorDriftHours
     });
-    return got?.bidUsdcPerBtc ?? null;
+    if (fuzzy && fuzzy.bidUsdcPerBtc > 0) {
+      return { bid: fuzzy.bidUsdcPerBtc, method: "fuzzy_strike_tenor" };
+    }
+    return null;
   }
 
   private log(msg: string, meta?: Record<string, unknown>): void {

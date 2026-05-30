@@ -125,14 +125,70 @@ export class LiquidChainCache {
   getCached(): LiquidChainSnapshot | null { return this.snapshot; }
 
   /**
-   * Look up the BID price for a specific instrument (used by MTM service for
-   * realistic close-side valuation). Returns the matching quote if found,
-   * preferring exact venue match, then closest tenor.
+   * EXACT instrument bid lookup — the right tool for valuing a position
+   * we actually hold (the only thing we can sell is what we bought).
    *
-   * Used by the MTM service to estimate realizable salvage using ACTUAL
-   * venue bid prices rather than theoretical BS valuations. The difference
-   * matters: BS uses market-wide IV which often overstates value for
-   * strike-specific quotes that trade at lower implied vol (vol skew).
+   * Returns the live bid for the SPECIFIC instrument symbol we own (e.g.
+   * "BTC-1JUN26-73000-P"). If the snapshot does not contain that exact
+   * symbol — or contains it but with zero bid (no resting buyer) — this
+   * returns null and the caller must decide how to fall back.
+   *
+   * Why this matters:
+   *   getBidForLeg() uses fuzzy tenor matching with a higher-bid tiebreaker.
+   *   That helps with strike-only lookups but produces WRONG numbers when
+   *   we need to value a specific holding: a 2.54-day option's bid is NOT
+   *   a valid proxy for our 1.54-day option, even though both share strike.
+   *   Same-strike different-expiry are different products.
+   */
+  getBidForSymbol(opts: {
+    venue: "deribit" | "bullish";
+    instrumentSymbol: string;
+  }): {
+    bidUsdcPerBtc: number;
+    askUsdcPerBtc: number;
+    midUsdcPerBtc: number;
+    spreadPct: number;
+    venue: "deribit" | "bullish";
+    instrumentName: string;
+    tenorHours: number;
+    markIv: number;
+    pulledAtMs: number;
+  } | null {
+    if (!this.snapshot) return null;
+    const match = this.snapshot.quotes.find(
+      (q) =>
+        q.venue === opts.venue &&
+        q.instrument_name === opts.instrumentSymbol &&
+        q.bidUsdcPerBtc > 0
+    );
+    if (!match) return null;
+    return {
+      bidUsdcPerBtc: match.bidUsdcPerBtc,
+      askUsdcPerBtc: match.askUsdcPerBtc,
+      midUsdcPerBtc: match.midUsdcPerBtc,
+      spreadPct: match.spreadPct,
+      venue: match.venue,
+      instrumentName: match.instrument_name,
+      tenorHours: match.tenorHours,
+      markIv: match.markIv,
+      pulledAtMs: this.snapshot.fetchedAtMs
+    };
+  }
+
+  /**
+   * Look up the BID price for a strike+tenor combination (proxy lookup).
+   * Used when the caller does NOT have a specific instrument symbol —
+   * e.g. estimating realizable salvage for a hypothetical position, or
+   * pricing a cell quote.
+   *
+   * For valuing positions we actually hold, prefer getBidForSymbol().
+   *
+   * Sort order (post-tightening):
+   *   1. Prefer venue match
+   *   2. Strictly closest tenor (no bid-based tiebreaker — that produces
+   *      WRONG values because different-expiry options are different products)
+   *   3. If venue match has zero or no bid, fall through to cross-venue
+   *      closest-tenor (consumer should be aware this is a proxy)
    */
   getBidForLeg(opts: {
     strike: number;
@@ -162,7 +218,10 @@ export class LiquidChainCache {
         q.bidUsdcPerBtc > 0
     );
     if (candidates.length === 0) return null;
-    // Sort: prefer venue match, then closest tenor, then HIGHEST bid (best for seller)
+    // Tightened sort: venue preference, then STRICTLY closest tenor. NO
+    // bid-based tiebreaker (different-expiry quotes are different products
+    // and the higher-bid one is typically the longer-dated option, which
+    // overstates value for our actual shorter-dated holding).
     candidates.sort((a, b) => {
       if (opts.preferVenue) {
         if (a.venue === opts.preferVenue && b.venue !== opts.preferVenue) return -1;
@@ -170,9 +229,10 @@ export class LiquidChainCache {
       }
       const aDrift = Math.abs(a.tenorHours - opts.tenorRemainingHours);
       const bDrift = Math.abs(b.tenorHours - opts.tenorRemainingHours);
-      if (Math.abs(aDrift - bDrift) > 2) return aDrift - bDrift;
-      // Within similar tenor, prefer higher bid (better for seller)
-      return b.bidUsdcPerBtc - a.bidUsdcPerBtc;
+      if (aDrift !== bDrift) return aDrift - bDrift;
+      // True tie (same drift, e.g. same expiry across venues): prefer
+      // tighter spread = better execution quality.
+      return a.spreadPct - b.spreadPct;
     });
     const best = candidates[0];
     return {
