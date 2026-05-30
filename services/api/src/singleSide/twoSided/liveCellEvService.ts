@@ -46,6 +46,30 @@ export type LiveCellEvInputs = {
   contractsBtc: number;
   splitPct?: number;                  // default 0.85
   floorUsdc?: number;                 // default 25
+  /**
+   * REALISM CALIBRATION (added 2026-05-30):
+   *
+   * The MC sim values salvage via Black-Scholes at sim spot+remaining-time.
+   * Real markets quote OTM/ITM strikes BELOW BS theoretical (due to vol skew,
+   * spread, and bid-side discount). Live shadow probes have shown the gap
+   * can be 2-3x — meaning a "PROFITABLE" verdict from BS-only MC can flip
+   * to NEGATIVE once real bids are used.
+   *
+   * This multiplier scales every salvage value in the sim, simulating the
+   * realistic bid-side haircut observed at activation time. Typical values:
+   *   1.0  = no haircut (legacy BS-only — overstates EV)
+   *   0.5  = real bids are half of BS theoretical (observed in calm conditions)
+   *   0.7  = moderate haircut
+   *
+   * Defaults to 1.0 for back-compat. Caller (routes.ts) computes the ratio
+   * from current bid vs current BS for the cell's actual strikes, then passes
+   * the result so MC reflects what would actually be received on close.
+   *
+   * NOTE: this is an approximation — the ratio at current spot may differ
+   * from the ratio at trigger spot. A deeper fix would haircut per-path
+   * based on per-path market conditions (see PLAN.md option 3).
+   */
+  salvageRealismMultiplier?: number;
 };
 
 export type LiveCellEvResult = {
@@ -64,6 +88,8 @@ export type LiveCellEvResult = {
   barsSource: string | null;
   /** Number of bars available for sampling if bootstrap. 0 if gbm. */
   barsCount: number;
+  /** Salvage realism multiplier applied (1.0 = BS-only legacy, <1.0 = bid-adjusted). */
+  salvageRealismMultiplier: number;
 };
 
 type CacheEntry = { result: LiveCellEvResult; expiresAtMs: number };
@@ -86,7 +112,11 @@ const cacheKey = (inputs: LiveCellEvInputs): string => {
   const costBucket = Math.round(inputs.hedgeCostAtCalm / 50) * 50;
   // Round spot to $500 for similar reason
   const spotBucket = Math.round(inputs.spot / 500) * 500;
-  return `${inputs.cellId}::${inputs.regime}::${costBucket}::${spotBucket}::${inputs.putStrike}::${inputs.callStrike}`;
+  // Bucket realism multiplier to nearest 0.05 (e.g. 0.50, 0.55, 0.60)
+  // so small bid drift doesn't bust cache, but distinct levels are separate
+  const realism = inputs.salvageRealismMultiplier ?? 1.0;
+  const realismBucket = Math.round(realism * 20) / 20;
+  return `${inputs.cellId}::${inputs.regime}::${costBucket}::${spotBucket}::${inputs.putStrike}::${inputs.callStrike}::r${realismBucket}`;
 };
 
 /**
@@ -106,6 +136,10 @@ export const computeLiveCellEv = async (inputs: LiveCellEvInputs): Promise<LiveC
   const slip = 0.82;
   const splitPct = inputs.splitPct ?? 0.85;
   const floorUsdc = inputs.floorUsdc ?? 25;
+  // Realism multiplier applied to ALL salvages (both triggered and untriggered
+  // paths). Default 1.0 = legacy BS-only behavior. <1.0 simulates the real
+  // bid-side discount observed in live shadow probes.
+  const realism = Math.max(0, Math.min(1.5, inputs.salvageRealismMultiplier ?? 1.0));
 
   const triggerDownPx = inputs.spot * (1 - inputs.triggerPctDown);
   const triggerUpPx = inputs.spot * (1 + inputs.triggerPctUp);
@@ -140,7 +174,7 @@ export const computeLiveCellEv = async (inputs: LiveCellEvInputs): Promise<LiveC
       const sp = pathBars.closes[sellAt];
       const remDays = ((pathBars.closes.length - 1 - sellAt) * BAR_MINUTES) / (60 * 24);
       const T2 = Math.max(0, remDays / 365);
-      salvage = (Math.max(0, bsPut(sp, inputs.putStrike, T2, RFR, sigma)) + Math.max(0, bsCall(sp, inputs.callStrike, T2, RFR, sigma))) * inputs.contractsBtc * slip;
+      salvage = (Math.max(0, bsPut(sp, inputs.putStrike, T2, RFR, sigma)) + Math.max(0, bsCall(sp, inputs.callStrike, T2, RFR, sigma))) * inputs.contractsBtc * slip * realism;
     } else {
       triggers++;
       const captureEnd = Math.min(triggerBar + 6, pathBars.closes.length - 1);
@@ -153,7 +187,7 @@ export const computeLiveCellEv = async (inputs: LiveCellEvInputs): Promise<LiveC
         const v = (Math.max(0, bsPut(sp, inputs.putStrike, T2, RFR, sigma)) + Math.max(0, bsCall(sp, inputs.callStrike, T2, RFR, sigma))) * inputs.contractsBtc;
         if (v > peak) peak = v;
       }
-      salvage = peak * slip;
+      salvage = peak * slip * realism;
     }
     salvages.push(salvage);
     const uplift = salvage - hedgeCost;
@@ -185,7 +219,8 @@ export const computeLiveCellEv = async (inputs: LiveCellEvInputs): Promise<LiveC
     computedAtMs: now,
     pathGenerator: usedBootstrap ? "bootstrap" : "gbm",
     barsSource: usedBootstrap ? __getBarsCacheSource() : null,
-    barsCount: usedBootstrap ? (bars?.length ?? 0) : 0
+    barsCount: usedBootstrap ? (bars?.length ?? 0) : 0,
+    salvageRealismMultiplier: realism
   };
   _resultCache.set(key, { result, expiresAtMs: now + CACHE_TTL_MS });
   return result;

@@ -1421,11 +1421,14 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *
    * Auth: X-Admin-Token.
    */
-  app.get("/admin/foxify/v2/gate_with_ev", { preHandler: checkAdminToken }, async (_req, reply) => {
+  app.get<{ Querystring: { use_real_bids?: "true" | "false"; show_both?: "true" | "false" } }>("/admin/foxify/v2/gate_with_ev", { preHandler: checkAdminToken }, async (req, reply) => {
+    const useRealBids = req.query.use_real_bids !== "false"; // default: show real-bid view
+    const showBoth = req.query.show_both === "true";          // optional: side-by-side
     const { PHASE_0_CELLS } = await import("./cellConfig");
     const { resolveCurrentTier } = await import("./tierResolver");
     const { buildQuote } = await import("./quoteEngine");
     const { computeActivationGate } = await import("./activationGate");
+    const { bsPut, bsCall } = await import("../../../scripts/backtest/singleSide/coreEngine");
 
     // Gate result (or degraded if no rvService)
     let gate: Awaited<ReturnType<typeof computeActivationGate>> | { reason: string; good_to_activate: false };
@@ -1470,6 +1473,70 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         }
         const liveCost = quote.totalHedgeCostUsdc;
 
+        // REALISM MULTIPLIER: compute the ratio of current real bid to current
+        // BS theoretical for THIS cell's actual strikes. The MC sim values
+        // salvage via BS; multiplying by this ratio simulates the bid-side
+        // discount we'd actually receive. When use_real_bids=false (legacy),
+        // multiplier is 1.0 (pure BS, overstates EV).
+        let realismMultiplier = 1.0;
+        let realismDetail: Record<string, number | string | null> = { mode: "bs_only_legacy" };
+        if (useRealBids && deps.liquidChainCache) {
+          const tenorHours = cell.hedgeTenorDays * 24;
+          // Real bids: prefer exact symbol (the quote we'd actually sell to)
+          const putBidLookup = deps.liquidChainCache.getBidForSymbol({
+            venue: quote.putLeg.venue,
+            instrumentSymbol: quote.putLeg.symbol
+          }) ?? deps.liquidChainCache.getBidForLeg({
+            strike: quote.putStrike,
+            optType: "put",
+            tenorRemainingHours: tenorHours,
+            preferVenue: quote.putLeg.venue
+          });
+          const callBidLookup = deps.liquidChainCache.getBidForSymbol({
+            venue: quote.callLeg.venue,
+            instrumentSymbol: quote.callLeg.symbol
+          }) ?? deps.liquidChainCache.getBidForLeg({
+            strike: quote.callStrike,
+            optType: "call",
+            tenorRemainingHours: tenorHours,
+            preferVenue: quote.callLeg.venue
+          });
+          const realPutBid = putBidLookup?.bidUsdcPerBtc ?? 0;
+          const realCallBid = callBidLookup?.bidUsdcPerBtc ?? 0;
+          // BS theoretical at CURRENT spot + FULL tenor (the highest-value
+          // moment, matches the MC's first-bar valuation perspective)
+          const T = cell.hedgeTenorDays / 365;
+          const bsPutAtSpot = Math.max(0, bsPut(spot, quote.putStrike, T, 0.045, 0.36));
+          const bsCallAtSpot = Math.max(0, bsCall(spot, quote.callStrike, T, 0.045, 0.36));
+          const bsCombined = bsPutAtSpot + bsCallAtSpot;
+          const realCombined = realPutBid + realCallBid;
+          if (bsCombined > 0 && realCombined > 0) {
+            realismMultiplier = Math.max(0, Math.min(1.5, realCombined / bsCombined));
+            realismDetail = {
+              mode: "real_bid_calibrated",
+              real_put_bid_usdc_per_btc: realPutBid,
+              real_call_bid_usdc_per_btc: realCallBid,
+              real_combined_per_btc: realCombined,
+              bs_put_at_spot_per_btc: bsPutAtSpot,
+              bs_call_at_spot_per_btc: bsCallAtSpot,
+              bs_combined_per_btc: bsCombined,
+              multiplier: realismMultiplier,
+              interpretation: realismMultiplier < 0.7
+                ? "real_bids_well_below_bs_high_skew_or_thin_market"
+                : realismMultiplier < 0.95
+                  ? "moderate_haircut_normal_for_otm"
+                  : "real_bids_match_bs_theoretical"
+            };
+          } else {
+            realismDetail = {
+              mode: "bs_only_no_bid_data",
+              real_put_bid_usdc_per_btc: realPutBid,
+              real_call_bid_usdc_per_btc: realCallBid,
+              note: "no_real_bid_in_chain_cache_falling_back_to_bs"
+            };
+          }
+        }
+
         // Live MC sim — no hardcoded reference. Runs 2k paths per (cell, regime,
         // cost-bucket), cached 5min. Reflects current cost + current strikes +
         // current spot. Always-fresh empirical EV.
@@ -1478,8 +1545,22 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           putStrike: quote.putStrike, callStrike: quote.callStrike,
           tenorDays: cell.hedgeTenorDays,
           triggerPctDown: cell.triggerPctDown, triggerPctUp: cell.triggerPctUp,
-          regime, contractsBtc: cell.contractsBtc
+          regime, contractsBtc: cell.contractsBtc,
+          salvageRealismMultiplier: realismMultiplier
         });
+
+        // Optional: also compute BS-only EV side-by-side for comparison
+        let evSimBsOnly: Awaited<ReturnType<typeof computeLiveCellEv>> | null = null;
+        if (showBoth && useRealBids && realismMultiplier !== 1.0) {
+          evSimBsOnly = await computeLiveCellEv({
+            cellId, spot, hedgeCostAtCalm: liveCost,
+            putStrike: quote.putStrike, callStrike: quote.callStrike,
+            tenorDays: cell.hedgeTenorDays,
+            triggerPctDown: cell.triggerPctDown, triggerPctUp: cell.triggerPctUp,
+            regime, contractsBtc: cell.contractsBtc,
+            salvageRealismMultiplier: 1.0
+          });
+        }
 
         // Foxify-facing EV as PERCENT of cost (the meaningful unit for a
         // cost-payer). $200 gain on $100 spend reads very differently from
@@ -1499,6 +1580,16 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         // OR "GO + TAIL" (high EV, expect to time-decay with rare jackpots).
         const { labelTriggerLikelihood } = await import("./cellOpportunities");
         const triggerLikelihood = labelTriggerLikelihood(evSim.triggerRate);
+        // Optional side-by-side comparison
+        const bsOnlyComparison = evSimBsOnly ? {
+          mean_salvage_bs_only: evSimBsOnly.meanSalvage,
+          foxify_ev_pct_bs_only: liveCost > 0 ? evSimBsOnly.meanFoxifyEv / liveCost : 0,
+          foxify_ev_usdc_bs_only: evSimBsOnly.meanFoxifyEv,
+          overstatement_pct: liveCost > 0
+            ? ((evSimBsOnly.meanFoxifyEv - evSim.meanFoxifyEv) / liveCost)
+            : 0
+        } : null;
+
         results.push({
           cellId,
           ok: true,
@@ -1525,7 +1616,11 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
             n_paths: evSim.nPaths,
             path_generator: evSim.pathGenerator,
             bars_source: evSim.barsSource,
-            bars_count: evSim.barsCount
+            bars_count: evSim.barsCount,
+            // NEW: realism calibration audit
+            salvage_realism_multiplier: evSim.salvageRealismMultiplier,
+            realism_detail: realismDetail,
+            ...(bsOnlyComparison ? { bs_only_comparison: bsOnlyComparison } : {})
           },
           ev_verdict: verdict,
           trigger_likelihood: triggerLikelihood
@@ -1543,10 +1638,19 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       halt_active: haltActive,
       gate,
       cells: results,
+      query_params: {
+        use_real_bids: useRealBids,
+        show_both: showBoth,
+        use_real_bids_description: "When true (DEFAULT), MC salvage values are scaled by the ratio of (current real bid) / (current BS theoretical) for each cell's actual strikes. When false, legacy BS-only sim (overstates EV).",
+        show_both_description: "When true, response includes mc.bs_only_comparison for each cell so you can see exactly how much the BS-only model was overstating."
+      },
       methodology: {
-        ev_estimation: "Live MC sim per cell. 2k paths each. Path generator: bootstrap (calm + bars available) else GBM. Cached 5min per (cellId, regime, cost-bucket). NO HARDCODED REFERENCE — always fresh. Per-cell mc.path_generator field shows which was used; mc.bars_source shows where bars came from (tmp_file, deribit_30d, etc).",
+        ev_estimation: useRealBids
+          ? "Live MC sim per cell, salvage CALIBRATED to current real bids via salvage_realism_multiplier. The multiplier = (real_put_bid + real_call_bid) / (bs_put_at_spot + bs_call_at_spot) for the cell's actual strikes. Reflects what we'd actually receive on close, not what BS theoretical says. 2k paths each. Path generator: bootstrap (calm + bars) else GBM. Cached 5min per (cellId, regime, cost-bucket, realism-bucket)."
+          : "Live MC sim per cell, BS-only salvage (LEGACY). Overstates EV when real bids trade below BS theoretical (common for OTM strikes due to vol skew and spread). Set ?use_real_bids=true to calibrate.",
         ev_units: "mc.foxify_ev_pct is the expected return AS A FRACTION OF COST (0.50 = +50% return on cost paid). mc.worst_case_pct is the 5th-percentile return (1-in-20 bad day). Verdict thresholds: PROFITABLE >+20%, MARGINAL_PROFITABLE +5-20%, BREAK_EVEN -5 to +5%, MARGINAL_NEGATIVE -5 to -20%, NEGATIVE <-20%.",
         trigger_likelihood: "Separate axis from EV verdict. FREQUENT >=60% trigger rate (most pairs close fast), OCCASIONAL 30-60% (mixed), RARE 10-30% (most time-decay; tail captures big), TAIL <10% (rare jackpots, mostly time-decay). A 'GO + TAIL' cell has high EV but most pairs will expire unfired — operational pattern differs from a 'GO + FREQUENT' cell with the same EV.",
+        realism_calibration: "salvage_realism_multiplier < 1.0 means real bids trade below BS theoretical for this cell's strikes. multiplier=0.5 means halving every MC salvage; multiplier=1.0 means no haircut. Validated against live shadow probes 2026-05-30.",
         gate_logic: "good_to_activate=true when regime in {moderate, elevated, stress} OR (regime=calm AND vrp < calmVrpThreshold). Halt overrides.",
         note_on_atticus_ev: "Atticus-side EV intentionally omitted from this response. This view is for Foxify/operator visibility into the pass-through economics."
       }
