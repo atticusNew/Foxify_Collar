@@ -8785,8 +8785,9 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     // trigger → close → settle path without waiting for real BTC moves.
     const v2ForceTriggerPair = async (
       pairId: string,
-      side: "down" | "up"
-    ): Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean } | { ok: false; error: string; details?: Record<string, unknown> }> => {
+      side: "down" | "up",
+      mode: "natural" | "fast" = "natural"
+    ): Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean; mode: "natural" | "fast"; note: string } | { ok: false; error: string; details?: Record<string, unknown> }> => {
       const { recordPairEvent: rpe, updatePairStatus: ups } = await import("./singleSide/twoSided/db");
       const pair = await getPairById(v2Pool, pairId);
       if (!pair) return { ok: false, error: "pair_not_found", details: { pair_id: pairId } };
@@ -8805,7 +8806,8 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         health: feed?.health ?? "healthy",
         forced: true,
         forced_reason: "admin_validation_probe",
-        forced_side: side
+        forced_side: side,
+        forced_mode: mode
       };
       // Record + transition (mirrors TriggerDetector exactly)
       await rpe(v2Pool, {
@@ -8817,7 +8819,8 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
           trigger_down_price: pair.triggerDownPrice,
           trigger_up_price: pair.triggerUpPrice,
           feed_snapshot: syntheticSnapshot,
-          forced_via_admin_probe: true
+          forced_via_admin_probe: true,
+          forced_mode: mode
         }
       });
       await ups(v2Pool, pairId, "triggered", {
@@ -8825,12 +8828,21 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         triggerSide: side,
         triggerFeedSnapshot: syntheticSnapshot
       });
-      // Spawn runtime to drive the close
+      // Spawn runtime to drive the close.
+      //   natural: runtime ticks 30min capture window before selling (mirrors real triggers)
+      //   fast:    runtime immediately forceClose()'s on next tick (~5s) — for fast validation
       try {
         const updated = await getPairById(v2Pool, pairId);
         if (!updated) throw new Error("pair_disappeared_after_transition");
-        await v2Registry.spawnRuntime(updated, v2RuntimeDeps);
-        return { ok: true, pair_id: pairId, triggered_at: nowIso, runtime_started: true };
+        if (mode === "fast") {
+          await v2Registry.spawnRuntimeForceClose(updated, v2RuntimeDeps);
+        } else {
+          await v2Registry.spawnRuntime(updated, v2RuntimeDeps);
+        }
+        const note = mode === "fast"
+          ? "Runtime spawned in force-close mode; pair will settle on next tick (~5s)."
+          : "Runtime spawned in natural mode; pair will settle after 30min capture window or other TP rule fires.";
+        return { ok: true, pair_id: pairId, triggered_at: nowIso, runtime_started: true, mode, note };
       } catch (e) {
         return { ok: false, error: "runtime_spawn_failed", details: { message: (e as Error).message } };
       }

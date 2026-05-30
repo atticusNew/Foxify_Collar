@@ -33,8 +33,11 @@ const startApp = async (deps: FoxifyV2RoutesDeps): Promise<FastifyInstance> => {
   return app;
 };
 
+const okResp = (overrides: Partial<{ pair_id: string; mode: "natural" | "fast" }> = {}) =>
+  ({ ok: true as const, pair_id: overrides.pair_id ?? "x", triggered_at: "x", runtime_started: true, mode: overrides.mode ?? "natural" as const, note: "test" });
+
 test("POST /admin/foxify/v2/force-trigger: 400 when pair_id missing", async () => {
-  const app = await startApp(minimalDeps({ forceTriggerPair: async () => ({ ok: true as const, pair_id: "x", triggered_at: "x", runtime_started: true }) }));
+  const app = await startApp(minimalDeps({ forceTriggerPair: async () => okResp() }));
   try {
     const res = await app.inject({
       method: "POST",
@@ -48,7 +51,7 @@ test("POST /admin/foxify/v2/force-trigger: 400 when pair_id missing", async () =
 });
 
 test("POST /admin/foxify/v2/force-trigger: 400 when side invalid", async () => {
-  const app = await startApp(minimalDeps({ forceTriggerPair: async () => ({ ok: true as const, pair_id: "x", triggered_at: "x", runtime_started: true }) }));
+  const app = await startApp(minimalDeps({ forceTriggerPair: async () => okResp() }));
   try {
     const res = await app.inject({
       method: "POST",
@@ -75,12 +78,12 @@ test("POST /admin/foxify/v2/force-trigger: 503 when callback not wired", async (
   } finally { await app.close(); }
 });
 
-test("POST /admin/foxify/v2/force-trigger: 202 on success", async () => {
-  let calledWith: { pairId?: string; side?: string } = {};
+test("POST /admin/foxify/v2/force-trigger: 202 on success (natural mode default)", async () => {
+  let calledWith: { pairId?: string; side?: string; mode?: string } = {};
   const app = await startApp(minimalDeps({
-    forceTriggerPair: async (pairId, side) => {
-      calledWith = { pairId, side };
-      return { ok: true as const, pair_id: pairId, triggered_at: "2026-05-30T12:00:00Z", runtime_started: true };
+    forceTriggerPair: async (pairId, side, mode) => {
+      calledWith = { pairId, side, mode };
+      return { ok: true as const, pair_id: pairId, triggered_at: "2026-05-30T12:00:00Z", runtime_started: true, mode: mode ?? "natural", note: "n" };
     }
   }));
   try {
@@ -95,17 +98,19 @@ test("POST /admin/foxify/v2/force-trigger: 202 on success", async () => {
     assert.equal(body.ok, true);
     assert.equal(body.pair_id, "abc-123");
     assert.equal(body.runtime_started, true);
+    assert.equal(body.mode, "natural");
     assert.equal(calledWith.pairId, "abc-123");
     assert.equal(calledWith.side, "up");
+    assert.equal(calledWith.mode, "natural");
   } finally { await app.close(); }
 });
 
-test("POST /admin/foxify/v2/force-trigger: defaults side to 'up'", async () => {
-  let capturedSide: string | undefined;
+test("POST /admin/foxify/v2/force-trigger: defaults side to 'up' and mode to 'natural'", async () => {
+  let captured: { side?: string; mode?: string } = {};
   const app = await startApp(minimalDeps({
-    forceTriggerPair: async (_pairId, side) => {
-      capturedSide = side;
-      return { ok: true as const, pair_id: "x", triggered_at: "x", runtime_started: true };
+    forceTriggerPair: async (_pairId, side, mode) => {
+      captured = { side, mode };
+      return okResp({ mode: mode ?? "natural" });
     }
   }));
   try {
@@ -115,7 +120,44 @@ test("POST /admin/foxify/v2/force-trigger: defaults side to 'up'", async () => {
       headers: { "x-admin-token": ADMIN_TOKEN, "content-type": "application/json" },
       payload: JSON.stringify({ pair_id: "p1" })
     });
-    assert.equal(capturedSide, "up");
+    assert.equal(captured.side, "up");
+    assert.equal(captured.mode, "natural");
+  } finally { await app.close(); }
+});
+
+test("POST /admin/foxify/v2/force-trigger: accepts mode=fast", async () => {
+  let capturedMode: string | undefined;
+  const app = await startApp(minimalDeps({
+    forceTriggerPair: async (_pairId, _side, mode) => {
+      capturedMode = mode;
+      return okResp({ mode: mode ?? "natural" });
+    }
+  }));
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/admin/foxify/v2/force-trigger",
+      headers: { "x-admin-token": ADMIN_TOKEN, "content-type": "application/json" },
+      payload: JSON.stringify({ pair_id: "p1", side: "up", mode: "fast" })
+    });
+    assert.equal(res.statusCode, 202);
+    const body = JSON.parse(res.body);
+    assert.equal(body.mode, "fast");
+    assert.equal(capturedMode, "fast");
+  } finally { await app.close(); }
+});
+
+test("POST /admin/foxify/v2/force-trigger: 400 on invalid mode", async () => {
+  const app = await startApp(minimalDeps({ forceTriggerPair: async () => okResp() }));
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/admin/foxify/v2/force-trigger",
+      headers: { "x-admin-token": ADMIN_TOKEN, "content-type": "application/json" },
+      payload: JSON.stringify({ pair_id: "p1", mode: "ludicrous" })
+    });
+    assert.equal(res.statusCode, 400);
+    assert.match(res.body, /mode must be 'natural' or 'fast'/);
   } finally { await app.close(); }
 });
 
@@ -137,7 +179,7 @@ test("POST /admin/foxify/v2/force-trigger: 409 when callback returns ok:false", 
 });
 
 test("POST /admin/foxify/v2/force-trigger: rejects without admin token", async () => {
-  const app = await startApp(minimalDeps({ forceTriggerPair: async () => ({ ok: true as const, pair_id: "x", triggered_at: "x", runtime_started: true }) }));
+  const app = await startApp(minimalDeps({ forceTriggerPair: async () => okResp() }));
   try {
     const res = await app.inject({
       method: "POST",

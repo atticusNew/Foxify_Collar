@@ -73,7 +73,7 @@ export type FoxifyV2RoutesDeps = {
    * the ExecutionRuntime to handle the close lifecycle. SHADOW ONLY.
    * Production wires this; tests can omit.
    */
-  forceTriggerPair?: (pairId: string, side: "down" | "up") => Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean } | { ok: false; error: string; details?: Record<string, unknown> }>;
+  forceTriggerPair?: (pairId: string, side: "down" | "up", mode?: "natural" | "fast") => Promise<{ ok: true; pair_id: string; triggered_at: string; runtime_started: boolean; mode: "natural" | "fast"; note: string } | { ok: false; error: string; details?: Record<string, unknown> }>;
   /** Feature flag config (used for newborn threshold etc). */
   newbornReviewThreshold?: number;
   /** PR B1 unwind queue — when provided, surfaced in /admin/foxify/v2/diagnostics. */
@@ -848,12 +848,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Use to validate: trigger detector → ExecutionRuntime → close executor
    * → settlement path end-to-end before going live.
    */
-  app.post<{ Body: { pair_id: string; side?: "down" | "up" } }>(
+  app.post<{ Body: { pair_id: string; side?: "down" | "up"; mode?: "natural" | "fast" } }>(
     "/admin/foxify/v2/force-trigger",
     { preHandler: checkAdminToken },
     async (req, reply) => {
       const { pair_id } = req.body ?? {};
       const side = req.body?.side ?? "up";
+      const mode = req.body?.mode ?? "natural";
       if (!pair_id || typeof pair_id !== "string") {
         reply.code(400).send({ error: "invalid_request", message: "pair_id required (string)" });
         return;
@@ -862,11 +863,15 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(400).send({ error: "invalid_request", message: "side must be 'down' or 'up'" });
         return;
       }
+      if (mode !== "natural" && mode !== "fast") {
+        reply.code(400).send({ error: "invalid_request", message: "mode must be 'natural' or 'fast'" });
+        return;
+      }
       if (!deps.forceTriggerPair) {
         reply.code(503).send({ error: "force_trigger_unavailable", message: "forceTriggerPair callback not wired in server" });
         return;
       }
-      const result = await deps.forceTriggerPair(pair_id, side);
+      const result = await deps.forceTriggerPair(pair_id, side, mode);
       if (!result.ok) {
         reply.code(409).send(result);
         return;
