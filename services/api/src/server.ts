@@ -8641,8 +8641,12 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     ];
     const v2LiquidCache: import("./singleSide/twoSided/liquidChainCache").LiquidChainCache =
       new LiquidChainCache({
-        ttlMs: 30_000,
-        staleMaxAgeMs: 5 * 60_000,
+        // 180s — reduces Bullish API pressure substantially. We were hitting
+        // Bullish rate limit 96100 (account-level throttle) with 30s TTL
+        // because each refresh fires ~30 orderbook calls. 180s gives Bullish
+        // 6x more headroom while still being fresh enough for MTM accuracy.
+        ttlMs: 180_000,
+        staleMaxAgeMs: 10 * 60_000,
         providers: v2Providers
       });
     if (v2BullishClient) {
@@ -8653,10 +8657,10 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
           const centerSpot: number = cached?.spot ?? 75_000;
           return fetchBullishChainSnapshot(v2BullishClient, centerSpot, {
             centerSpot,
-            centerTenorDays: 3,         // covers Phase 0 (3d); 1d & 2d cells still inside tenor window
-            strikeWindowUsdc: 6_000,
-            tenorWindowDays: 2,
-            maxConcurrency: 2,          // reduced from 4 to respect Bullish ~10 req/sec rate limit
+            centerTenorDays: 2,         // narrower: was 3d, now 2d (covers 1-3d cells well enough)
+            strikeWindowUsdc: 4_000,    // narrower: was $6k, now $4k (skip far-OTM strikes we never trade)
+            tenorWindowDays: 1.5,       // narrower: was 2d, now 1.5d
+            maxConcurrency: 2,          // unchanged: 2 concurrent orderbook calls
             timeoutMs: 4_000
           });
         }
