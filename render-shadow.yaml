@@ -1,0 +1,152 @@
+databases:
+  - name: foxify-pilot-shadow-db
+    plan: basic-256mb
+    region: singapore
+
+services:
+  # ───────────────────────────────────────────────────────────────────
+  # Shadow Volume Cover service
+  #
+  # Mirror of the live foxify-pilot-new code path with strict isolation:
+  #   - PILOT_DEPLOYMENT_TIER=shadow → Foxify HMAC routes return 403
+  #     regardless of signature (admin-only on shadow).
+  #   - VOLUME_COVER_HEDGE_MOCK=true → no real venue orders; full code
+  #     path runs but the venue-execute step returns synthetic fills.
+  #   - Distinct admin token + HMAC secret (Render generateValue) means
+  #     even if shadow accidentally accepted Foxify signatures, the
+  #     secrets wouldn't match.
+  #   - Distinct DB so production data is never touched.
+  #
+  # Live foxify-pilot-new is ops-managed on a different branch and is
+  # not affected by this blueprint.
+  # ───────────────────────────────────────────────────────────────────
+  - type: web
+    name: foxify-pilot-shadow
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: vc-sandbox
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx src/server.ts
+    healthCheckPath: /volume-cover/health
+    envVars:
+      # ── Tier + isolation ──
+      - key: PILOT_DEPLOYMENT_TIER
+        value: shadow
+      - key: VOLUME_COVER_ENABLED
+        value: "true"
+      - key: VOLUME_COVER_HEDGE_MOCK
+        value: "true"
+      - key: NODE_ENV
+        value: production
+
+      # ── Generated secrets — distinct from live, never share ──
+      - key: PILOT_ADMIN_TOKEN
+        generateValue: true
+      - key: FOXIFY_API_KEY_HMAC_SECRET
+        generateValue: true
+      - key: PILOT_PROOF_TOKEN
+        generateValue: true
+      - key: PILOT_INTERNAL_TOKEN
+        generateValue: true
+      - key: USER_HASH_SECRET
+        generateValue: true
+
+      # ── Volume Cover defaults (mirror live, low caps) ──
+      - key: PILOT_API_ENABLED
+        value: "true"
+      - key: PILOT_ACTIVATION_ENABLED
+        value: "true"
+      - key: PILOT_PROFILE
+        value: default
+      - key: PILOT_VENUE_MODE
+        value: deribit_live
+      - key: PILOT_TENANT_SCOPE_ID
+        value: shadow-pilot
+      - key: PILOT_TERMS_VERSION
+        value: v1.0
+      - key: PILOT_MAX_PROTECTION_NOTIONAL_USDC
+        value: "5000"
+      - key: PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC
+        value: "50000"
+      - key: PILOT_STARTING_RESERVE_USDC
+        value: "5000"
+      - key: VC_HM_FALLBACK_IV
+        value: "0.45"
+      - key: VC_ACTIVATE_RATE_LIMIT_MAX
+        value: "15"
+      - key: VC_QUOTE_RATE_LIMIT_MAX
+        value: "30"
+
+      # ── Venue routing — Deribit-primary, Bullish disabled by default ──
+      # Same shape as live; flip cohorts to bullish-primary later when
+      # Bullish mainnet creds are added and a round-trip probe passes.
+      - key: VOLUME_COVER_VENUE_ROUTING_JSON
+        value: '{"0.02":{"primary":"deribit","fallback":null},"0.05":{"primary":"deribit","fallback":null},"0.1":{"primary":"deribit","fallback":null},"0.15":{"primary":"deribit","fallback":null}}'
+
+      # ── Bullish — adapter constructed but disabled at execution layer ──
+      # PILOT_BULLISH_ENABLED=true is required for VC route registration to
+      # succeed (the registration constructs a Bullish adapter even when
+      # we're not using it). With execution disabled and mock mode on,
+      # Bullish is never actually called — the adapter is just instantiated.
+      - key: PILOT_BULLISH_ENABLED
+        value: "true"
+      - key: PILOT_BULLISH_ENABLE_EXECUTION
+        value: "false"
+      # When enabling Bullish: set the URLs to mainnet hosts and inject
+      # PILOT_BULLISH_ECDSA_PRIVATE_KEY, _PUBLIC_KEY, _METADATA,
+      # _TRADING_ACCOUNT_ID, and PILOT_BULLISH_ALLOW_MARGIN=true via
+      # the Render dashboard. Then flip PILOT_BULLISH_ENABLED=true and
+      # PILOT_SHADOW_ALLOW_REAL_FILLS=true on the cohort being tested.
+
+      # ── Deribit — credentials injected via dashboard, paper by default ──
+      - key: DERIBIT_ENV
+        value: live
+      - key: DERIBIT_PAPER
+        value: "true"
+      # Inject when ready for a real Deribit round-trip on shadow:
+      # DERIBIT_CLIENT_ID
+      # DERIBIT_CLIENT_SECRET
+      # And set DERIBIT_PAPER=false + PILOT_SHADOW_ALLOW_REAL_FILLS=true
+      # on a per-test basis.
+
+      # ── Pricing + spot ──
+      - key: PRICE_SINGLE_SOURCE
+        value: "false"
+      - key: PRICE_REFERENCE_URL
+        value: https://api.exchange.coinbase.com/products/BTC-USD/ticker
+      - key: FALLBACK_PRICE_URL
+        value: https://www.deribit.com/api/v2/public/ticker?instrument_name=BTC-PERPETUAL
+      - key: PRICE_REFERENCE_MARKET_ID
+        value: BTC-USD
+      - key: PRICE_FRESHNESS_MAX_MS
+        value: "30000"
+      - key: PRICE_TIMEOUT_PRIMARY_MS
+        value: "2500"
+      - key: PRICE_TIMEOUT_FALLBACK_MS
+        value: "2500"
+      - key: PRICE_REQUEST_RETRY_ATTEMPTS
+        value: "5"
+      - key: PRICE_REQUEST_RETRY_DELAY_MS
+        value: "250"
+
+      # ── Rate limits ──
+      - key: PILOT_RATE_LIMIT_MAX
+        value: "300"
+      - key: PILOT_RATE_LIMIT_WINDOW_MS
+        value: "60000"
+
+      # ── Schedulers ──
+      - key: PILOT_MONITOR_ENABLED
+        value: "true"
+      - key: LOOP_INTERVAL_MS
+        value: "0"
+      - key: MTM_INTERVAL_MS
+        value: "0"
+
+      # ── DB autowired from blueprint ──
+      - key: POSTGRES_URL
+        fromDatabase:
+          name: foxify-pilot-shadow-db
+          property: connectionString

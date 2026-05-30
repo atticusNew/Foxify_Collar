@@ -1,0 +1,332 @@
+═══════════════════════════════════════════════════════════════════════════
+  ATTICUS V4: COMPLETE FINANCIAL SIMULATION
+  2026-04-07T22:16:21.993Z
+═══════════════════════════════════════════════════════════════════════════
+
+  1558 days loaded (2022-01-01 → 2026-04-07)
+
+═══════════════════════════════════════════════════════════════════════════
+  PART 1: WHAT THE TRADER SEES
+═══════════════════════════════════════════════════════════════════════════
+
+  ┌──────┬─────────────────────────────────┬──────────────────────────────────────────────┐
+  │ SL%  │ Trader Pays (per $10k, 7 days)  │ What They Get                                │
+  ├──────┼─────────────────────────────────┼──────────────────────────────────────────────┤
+  │   1% │ $60-$170                        │ $100 if SL hit                               │
+  │   2% │ $50-$150                        │ $200 if SL hit                               │
+  │   3% │ $65-$120                        │ $300 if SL hit                               │
+  │   5% │ $50                             │ $500 if SL hit                               │
+  │  10% │ $30                             │ $1000 if SL hit                              │
+  └──────┴─────────────────────────────────┴──────────────────────────────────────────────┘
+
+  Detailed breakdown per tier:
+
+  ── 1% Stop Loss ──
+    Model:             Regime-adjusted, no deductible
+    Premium:           Calm $60 | Normal $110 | Stress $170 (per $10k)
+    Payout on breach:  $100
+    Example: BTC long at $70,000, SL at $69,300 (-1%)
+      → Trader pays $110 (normal market)
+      → If BTC drops to $69,300, trader receives $100
+      → Max loss WITH protection: $110 (the premium)
+      → Max loss WITHOUT protection: $100
+      → Savings on breach: $-10
+
+  ── 2% Stop Loss ──
+    Model:             Regime-adjusted, no deductible
+    Premium:           Calm $50 | Normal $90 | Stress $150 (per $10k)
+    Payout on breach:  $200
+    Example: BTC long at $70,000, SL at $68,600 (-2%)
+      → Trader pays $90 (normal market)
+      → If BTC drops to $68,600, trader receives $200
+      → Max loss WITH protection: $90 (the premium)
+      → Max loss WITHOUT protection: $200
+      → Savings on breach: $110
+
+  ── 3% Stop Loss ──
+    Model:             Fixed base + stress surcharge
+    Premium:           Calm $65 | Normal $80 | Stress $120 (per $10k)
+    Payout on breach:  $300
+    Example: BTC long at $70,000, SL at $67,900 (-3%)
+      → Trader pays $80 (normal market)
+      → If BTC drops to $67,900, trader receives $300
+      → Max loss WITH protection: $80 (the premium)
+      → Max loss WITHOUT protection: $300
+      → Savings on breach: $220
+
+  ── 5% Stop Loss ──
+    Model:             Fixed price, stress surcharge
+    Premium:           Calm $50 | Normal $50 | Stress $80 (per $10k)
+    Payout on breach:  $500
+    Example: BTC long at $70,000, SL at $66,500 (-5%)
+      → Trader pays $50 (normal market)
+      → If BTC drops to $66,500, trader receives $500
+      → Max loss WITH protection: $50 (the premium)
+      → Max loss WITHOUT protection: $500
+      → Savings on breach: $450
+
+  ── 10% Stop Loss ──
+    Model:             Fixed price, crash protection
+    Premium:           Calm $30 | Normal $30 | Stress $50 (per $10k)
+    Payout on breach:  $1000
+    Example: BTC long at $70,000, SL at $63,000 (-10%)
+      → Trader pays $30 (normal market)
+      → If BTC drops to $63,000, trader receives $1000
+      → Max loss WITH protection: $30 (the premium)
+      → Max loss WITHOUT protection: $1000
+      → Savings on breach: $970
+
+
+═══════════════════════════════════════════════════════════════════════════
+  PART 2: PLATFORM P&L SIMULATION (${DAILY_PROTECTIONS}/day, regime pricing)
+═══════════════════════════════════════════════════════════════════════════
+
+
+  ── 1% SL | Regime-adjusted, no deductible ──
+
+    Treasury $50k:
+      Ending treasury:   $      2770 (LOSS)
+      Min treasury:      $     -7832 (day 1353)
+      Max drawdown:      $     57832
+      Total premiums:    $    165360
+      Total hedge costs: $    407522
+      Total payouts:     $     98700
+      Option recovery:   $    293631
+      Net P&L:           $    -47230
+      Annualized P&L:    $    -11065/year
+      Trigger rate:      63.6%
+      Avg premium:       $106.62/trade
+      Avg hedge cost:    $262.75/trade
+      Avg P&L per trade: $-30.45
+      Worst month:       $-7305
+      Best month:        $14078
+      TP potential:      $453871 (if sold at deepest point after breach)
+
+    Treasury $100k:
+      Ending treasury:   $     52770 (LOSS)
+      Min treasury:      $     42168 (day 1353)
+      Max drawdown:      $     57832
+      Total premiums:    $    165360
+      Total hedge costs: $    407522
+      Total payouts:     $     98700
+      Option recovery:   $    293631
+      Net P&L:           $    -47230
+      Annualized P&L:    $    -11065/year
+      Trigger rate:      63.6%
+      Avg premium:       $106.62/trade
+      Avg hedge cost:    $262.75/trade
+      Avg P&L per trade: $-30.45
+      Worst month:       $-7305
+      Best month:        $14078
+      TP potential:      $453871 (if sold at deepest point after breach)
+
+
+  ── 2% SL | Regime-adjusted, no deductible ──
+
+    Treasury $50k:
+      Ending treasury:   $    -79455 (LOSS)
+      Min treasury:      $    -79455 (day 1550)
+      Max drawdown:      $    129455
+      Total premiums:    $    138990
+      Total hedge costs: $    341471
+      Total payouts:     $    163800
+      Option recovery:   $    236826
+      Net P&L:           $   -129455
+      Annualized P&L:    $    -30328/year
+      Trigger rate:      52.8%
+      Avg premium:       $89.61/trade
+      Avg hedge cost:    $220.16/trade
+      Avg P&L per trade: $-83.47
+      Worst month:       $-9063
+      Best month:        $10298
+      TP potential:      $363952 (if sold at deepest point after breach)
+
+    Treasury $100k:
+      Ending treasury:   $    -29455 (LOSS)
+      Min treasury:      $    -29455 (day 1550)
+      Max drawdown:      $    129455
+      Total premiums:    $    138990
+      Total hedge costs: $    341471
+      Total payouts:     $    163800
+      Option recovery:   $    236826
+      Net P&L:           $   -129455
+      Annualized P&L:    $    -30328/year
+      Trigger rate:      52.8%
+      Avg premium:       $89.61/trade
+      Avg hedge cost:    $220.16/trade
+      Avg P&L per trade: $-83.47
+      Worst month:       $-9063
+      Best month:        $10298
+      TP potential:      $363952 (if sold at deepest point after breach)
+
+
+  ── 3% SL | Fixed base + stress surcharge ──
+
+    Treasury $50k:
+      Ending treasury:   $   -112000 (LOSS)
+      Min treasury:      $   -112000 (day 1550)
+      Max drawdown:      $    162000
+      Total premiums:    $    129105
+      Total hedge costs: $    283853
+      Total payouts:     $    198300
+      Option recovery:   $    191048
+      Net P&L:           $   -162000
+      Annualized P&L:    $    -37952/year
+      Trigger rate:      42.6%
+      Avg premium:       $83.24/trade
+      Avg hedge cost:    $183.01/trade
+      Avg P&L per trade: $-104.45
+      Worst month:       $-10533
+      Best month:        $7616
+      TP potential:      $290360 (if sold at deepest point after breach)
+
+    Treasury $100k:
+      Ending treasury:   $    -62000 (LOSS)
+      Min treasury:      $    -62000 (day 1550)
+      Max drawdown:      $    162000
+      Total premiums:    $    129105
+      Total hedge costs: $    283853
+      Total payouts:     $    198300
+      Option recovery:   $    191048
+      Net P&L:           $   -162000
+      Annualized P&L:    $    -37952/year
+      Trigger rate:      42.6%
+      Avg premium:       $83.24/trade
+      Avg hedge cost:    $183.01/trade
+      Avg P&L per trade: $-104.45
+      Worst month:       $-10533
+      Best month:        $7616
+      TP potential:      $290360 (if sold at deepest point after breach)
+
+
+  ── 5% SL | Fixed price, stress surcharge ──
+
+    Treasury $50k:
+      Ending treasury:   $   -144581 (LOSS)
+      Min treasury:      $   -144581 (day 1550)
+      Max drawdown:      $    194581
+      Total premiums:    $     86550
+      Total hedge costs: $    191949
+      Total payouts:     $    212000
+      Option recovery:   $    122818
+      Net P&L:           $   -194581
+      Annualized P&L:    $    -45585/year
+      Trigger rate:      27.3%
+      Avg premium:       $55.80/trade
+      Avg hedge cost:    $123.76/trade
+      Avg P&L per trade: $-125.46
+      Worst month:       $-11127
+      Best month:        $3069
+      TP potential:      $184073 (if sold at deepest point after breach)
+
+    Treasury $100k:
+      Ending treasury:   $    -94581 (LOSS)
+      Min treasury:      $    -94581 (day 1550)
+      Max drawdown:      $    194581
+      Total premiums:    $     86550
+      Total hedge costs: $    191949
+      Total payouts:     $    212000
+      Option recovery:   $    122818
+      Net P&L:           $   -194581
+      Annualized P&L:    $    -45585/year
+      Trigger rate:      27.3%
+      Avg premium:       $55.80/trade
+      Avg hedge cost:    $123.76/trade
+      Avg P&L per trade: $-125.46
+      Worst month:       $-11127
+      Best month:        $3069
+      TP potential:      $184073 (if sold at deepest point after breach)
+
+
+  ── 10% SL | Fixed price, crash protection ──
+
+    Treasury $50k:
+      Ending treasury:   $    -43333 (LOSS)
+      Min treasury:      $    -43333 (day 1550)
+      Max drawdown:      $     93333
+      Total premiums:    $     52530
+      Total hedge costs: $     65248
+      Total payouts:     $    124000
+      Option recovery:   $     43384
+      Net P&L:           $    -93333
+      Annualized P&L:    $    -21866/year
+      Trigger rate:      8.0%
+      Avg premium:       $33.87/trade
+      Avg hedge cost:    $42.07/trade
+      Avg P&L per trade: $-60.18
+      Worst month:       $-7788
+      Best month:        $870
+      TP potential:      $63181 (if sold at deepest point after breach)
+
+    Treasury $100k:
+      Ending treasury:   $      6667 (LOSS)
+      Min treasury:      $      6667 (day 1550)
+      Max drawdown:      $     93333
+      Total premiums:    $     52530
+      Total hedge costs: $     65248
+      Total payouts:     $    124000
+      Option recovery:   $     43384
+      Net P&L:           $    -93333
+      Annualized P&L:    $    -21866/year
+      Trigger rate:      8.0%
+      Avg premium:       $33.87/trade
+      Avg hedge cost:    $42.07/trade
+      Avg P&L per trade: $-60.18
+      Worst month:       $-7788
+      Best month:        $870
+      TP potential:      $63181 (if sold at deepest point after breach)
+
+═══════════════════════════════════════════════════════════════════════════
+  PART 3: TAKE-PROFIT ON BREACH — SELL OPTION EARLY VS HOLD TO EXPIRY
+═══════════════════════════════════════════════════════════════════════════
+
+  1% SL (987 trigger events):
+    Hold to expiry:     $297.50 avg | $293631 total
+    Take-profit (2d):   $337.03 avg | $332651 total
+    TP better:          648 times (66%)
+    Hold better:        339 times (34%)
+    Improvement:        +$39020 total (13%)
+
+  2% SL (819 trigger events):
+    Hold to expiry:     $289.16 avg | $236826 total
+    Take-profit (2d):   $334.00 avg | $273544 total
+    TP better:          544 times (66%)
+    Hold better:        275 times (34%)
+    Improvement:        +$36718 total (16%)
+
+  3% SL (661 trigger events):
+    Hold to expiry:     $289.03 avg | $191048 total
+    Take-profit (2d):   $348.38 avg | $230281 total
+    TP better:          443 times (67%)
+    Hold better:        218 times (33%)
+    Improvement:        +$39233 total (21%)
+
+  5% SL (424 trigger events):
+    Hold to expiry:     $289.67 avg | $122818 total
+    Take-profit (2d):   $362.72 avg | $153794 total
+    TP better:          281 times (66%)
+    Hold better:        143 times (34%)
+    Improvement:        +$30976 total (25%)
+
+  10% SL (124 trigger events):
+    Hold to expiry:     $349.87 avg | $43384 total
+    Take-profit (2d):   $463.17 avg | $57433 total
+    TP better:          73 times (59%)
+    Hold better:        51 times (41%)
+    Improvement:        +$14049 total (32%)
+
+
+═══════════════════════════════════════════════════════════════════════════
+  PART 4: COMBINED SUMMARY — TRADER vs PLATFORM
+═══════════════════════════════════════════════════════════════════════════
+
+  ┌──────┬───────────────────────────────────────┬────────────────────────────────────────────┐
+  │ SL%  │ TRADER                                │ PLATFORM ($100k treasury)                  │
+  ├──────┼───────────────────────────────────────┼────────────────────────────────────────────┤
+  │   1% │ Pays $107 avg | Gets $100 on breach   │ Net $-47230 | Min $42168 | End $52770    │
+  │   2% │ Pays $90 avg | Gets $200 on breach    │ Net $-129455 | Min $-29455 | End $-29455 │
+  │   3% │ Pays $83 avg | Gets $300 on breach    │ Net $-162000 | Min $-62000 | End $-62000 │
+  │   5% │ Pays $56 avg | Gets $500 on breach    │ Net $-194581 | Min $-94581 | End $-94581 │
+  │  10% │ Pays $34 avg | Gets $1000 on breach   │ Net $-93333 | Min $6667 | End $6667      │
+  └──────┴───────────────────────────────────────┴────────────────────────────────────────────┘
+

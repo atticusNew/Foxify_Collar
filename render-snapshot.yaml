@@ -1,0 +1,41 @@
+databases:
+  - name: foxify-snapshot-db
+    plan: basic-256mb
+    region: singapore
+
+services:
+  - type: worker
+    name: foxify-snapshot-collector
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: vc-sandbox
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/snapshotCollector start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SNAPSHOT_FOXIFY_PILOT_URL
+        value: https://foxify-pilot-new.onrender.com
+      # Set in dashboard — copy the LIVE foxify-pilot-new PILOT_ADMIN_TOKEN here.
+      # Read-only access; never share with the shadow service.
+      # SNAPSHOT_FOXIFY_ADMIN_TOKEN
+      - key: SNAPSHOT_FAST_INTERVAL_MS
+        value: "60000"
+      - key: SNAPSHOT_FULL_INTERVAL_MS
+        value: "300000"
+      - key: SNAPSHOT_DAILY_ROLLUP_HOUR
+        value: "1"
+      - key: SNAPSHOT_HEDGE_MGR_DRY_RUN_ENABLED
+        value: "false"
+      - key: SNAPSHOT_FETCH_TIMEOUT_MS
+        value: "15000"
+      - key: SNAPSHOT_DB_POOL_MAX
+        value: "4"
+      - key: SNAPSHOT_RUN_MIGRATIONS_ON_BOOT
+        value: "true"
+      - key: SNAPSHOT_POSTGRES_URL
+        fromDatabase:
+          name: foxify-snapshot-db
+          property: connectionString

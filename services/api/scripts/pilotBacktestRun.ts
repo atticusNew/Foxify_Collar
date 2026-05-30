@@ -291,7 +291,13 @@ const parseArgs = (argv: string[]): Args => {
     }
     if (token === "--hybrid-schedule" && argv[i + 1]) {
       const value = String(argv[i + 1]).trim().toLowerCase();
-      if (value === "current" || value === "cheaper") {
+      if (
+        value === "current" ||
+        value === "cheaper" ||
+        value === "strict_band_low" ||
+        value === "strict_band_mid" ||
+        value === "strict_band_high"
+      ) {
         args.hybridSchedule = value;
       } else {
         throw new Error(`invalid_hybrid_schedule:${value}`);

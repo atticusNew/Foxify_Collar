@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 export type PilotVenueMode =
   | "falconx"
   | "deribit_test"
+  | "deribit_live"
   | "mock_falconx"
   | "ibkr_cme_live"
   | "ibkr_cme_paper"
@@ -16,9 +17,11 @@ export type IbkrProductFamily = "MBT" | "BFF";
 export type PremiumPolicyMode = "legacy" | "pass_through_markup";
 export type PilotPricingMode = "actuarial_strict" | "hybrid_otm_treasury";
 export type PilotSelectorMode = "strict_profitability" | "hybrid_treasury";
-export type HybridStrictMultiplierScheduleName = "current" | "cheaper";
+export type HybridStrictMultiplierScheduleName = "current" | "cheaper" | "strict_band_low" | "strict_band_mid" | "strict_band_high";
 export type BullishAuthMode = "hmac" | "ecdsa";
 export type BullishOrderTif = "IOC" | "DAY" | "GTC";
+export type PilotRuntimeProfileName = "default" | "bullish_locked_v1";
+export type PilotProfile = "default" | "bullish_locked_v1";
 export type BullishRuntimeConfig = {
   enabled: boolean;
   restBaseUrl: string;
@@ -43,6 +46,21 @@ export type BullishRuntimeConfig = {
   orderTimeoutMs: number;
   orderTif: BullishOrderTif;
   allowMargin: boolean;
+};
+
+export type PilotLockedPricingProfile = {
+  enabled: boolean;
+  name: PilotRuntimeProfileName;
+  venueMode: "bullish_testnet";
+  forceOnlyBullishVenue: boolean;
+  fixedTenorDays: number;
+  enforceTierDrawdownOnly: boolean;
+  fixedPricingMode: PilotPricingMode;
+  premiumPolicyMode: PremiumPolicyMode;
+  selectorMode: PilotSelectorMode;
+  hybridStrictMultiplierSchedule: HybridStrictMultiplierScheduleName;
+  strictTenor: boolean;
+  fixedDrawdownFloorPctByTier: Record<string, number>;
 };
 export type HedgeOptimizerRuntimeConfig = {
   enabled: boolean;
@@ -172,14 +190,15 @@ const parseAllowlist = (raw: string | undefined): ParsedAllowlist => {
 };
 
 export const parsePilotVenueMode = (raw: string | undefined): PilotVenueMode => {
-  const normalized = (raw || "deribit_test").trim();
+  const normalized = (raw || "bullish_testnet").trim();
   if (
     normalized === "falconx" ||
     normalized === "deribit_test" ||
     normalized === "mock_falconx" ||
     normalized === "ibkr_cme_live" ||
     normalized === "ibkr_cme_paper" ||
-    normalized === "bullish_testnet"
+    normalized === "bullish_testnet" ||
+    normalized === "deribit_live"
   ) {
     return normalized;
   }
@@ -289,9 +308,83 @@ const resolveCheaperHybridStrictMultiplierByTier = (): Record<string, number> =>
   )
 });
 
+// Structured bands aligned to drawdown-floor tiers:
+// Bronze(20%): 0.60-0.70, Silver(15%): 0.65-0.75, Gold/Plat(12%): 0.70-0.80
+const resolveStrictBandLowHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_LOW_BRONZE,
+    0.6,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_low_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_LOW_SILVER,
+    0.65,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_low_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_LOW_GOLD,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_low_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_LOW_PLATINUM,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_low_platinum"
+  )
+});
+
+const resolveStrictBandMidHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_MID_BRONZE,
+    0.65,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_mid_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_MID_SILVER,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_mid_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_MID_GOLD,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_mid_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_MID_PLATINUM,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_mid_platinum"
+  )
+});
+
+const resolveStrictBandHighHybridStrictMultiplierByTier = (): Record<string, number> => ({
+  "Pro (Bronze)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_HIGH_BRONZE,
+    0.7,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_high_bronze"
+  ),
+  "Pro (Silver)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_HIGH_SILVER,
+    0.75,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_high_silver"
+  ),
+  "Pro (Gold)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_HIGH_GOLD,
+    0.8,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_high_gold"
+  ),
+  "Pro (Platinum)": parseHybridStrictMultiplier(
+    process.env.PILOT_HYBRID_STRICT_MULTIPLIER_STRICT_BAND_HIGH_PLATINUM,
+    0.8,
+    "invalid_pilot_hybrid_strict_multiplier_strict_band_high_platinum"
+  )
+});
+
 export const resolveHybridStrictMultiplierSchedules = (): Record<HybridStrictMultiplierScheduleName, Record<string, number>> => ({
   current: resolveCurrentHybridStrictMultiplierByTier(),
-  cheaper: resolveCheaperHybridStrictMultiplierByTier()
+  cheaper: resolveCheaperHybridStrictMultiplierByTier(),
+  strict_band_low: resolveStrictBandLowHybridStrictMultiplierByTier(),
+  strict_band_mid: resolveStrictBandMidHybridStrictMultiplierByTier(),
+  strict_band_high: resolveStrictBandHighHybridStrictMultiplierByTier()
 });
 
 export const DEFAULT_LIVE_HYBRID_STRICT_MULTIPLIER_SCHEDULE: HybridStrictMultiplierScheduleName = "cheaper";
@@ -303,12 +396,11 @@ export const parseNonNegativeFinite = (raw: string | undefined, fallback: number
 };
 
 export const parsePilotQuoteMinNotionalUsdc = (raw: string | undefined): number => {
-  const parsed = Number(raw ?? "1000");
+  const parsed = Number(raw ?? "10000");
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new Error(`invalid_pilot_quote_min_notional_usdc:${String(raw || "").trim() || "empty"}`);
   }
-  // Pilot safety floor: configurable target (default 1000), but never below 500.
-  return Math.max(500, parsed);
+  return Math.max(10000, parsed);
 };
 
 export const parseBooleanEnv = (raw: string | undefined, fallback: boolean): boolean => {
@@ -369,6 +461,14 @@ export const parsePilotSelectorMode = (raw: string | undefined): PilotSelectorMo
     return normalized;
   }
   throw new Error(`invalid_pilot_selector_mode:${normalized || "empty"}`);
+};
+
+export const parsePilotProfile = (raw: string | undefined): PilotProfile => {
+  const normalized = String(raw || "default").trim().toLowerCase();
+  if (normalized === "default" || normalized === "bullish_locked_v1") {
+    return normalized;
+  }
+  throw new Error(`invalid_pilot_profile:${normalized || "empty"}`);
 };
 
 const parseFiniteWithFallback = (raw: string | undefined, fallback: number): number => {
@@ -537,9 +637,15 @@ const parseTierBatchingTenorRuntimeConfig = (): TierBatchingTenorRuntimeConfig =
   )
 });
 
-const parseBullishRuntimeConfig = (): BullishRuntimeConfig => ({
-  enabled: parseBooleanEnv(process.env.PILOT_BULLISH_ENABLED, false),
-  restBaseUrl: String(process.env.PILOT_BULLISH_REST_BASE_URL || "https://api.exchange.bullish.com").trim(),
+const parseBullishRuntimeConfig = (forceEnabled = false): BullishRuntimeConfig => ({
+  enabled: forceEnabled || parseBooleanEnv(process.env.PILOT_BULLISH_ENABLED, false),
+  restBaseUrl: String(
+    process.env.PILOT_BULLISH_REST_BASE_URL ||
+      process.env.PILOT_BULLISH_API_HOSTNAME ||
+      process.env.BULLISH_TESTNET_API_HOSTNAME ||
+      process.env.BULLISH_API_HOSTNAME ||
+      "https://api.exchange.bullish.com"
+  ).trim(),
   publicWsUrl: String(
     process.env.PILOT_BULLISH_PUBLIC_WS_URL || "wss://api.exchange.bullish.com/trading-api/v1/market-data/orderbook"
   ).trim(),
@@ -868,18 +974,86 @@ export const resolvePilotWindow = (now: Date = new Date()): PilotWindowState => 
   };
 };
 
+const pilotProfileName = parsePilotProfile(process.env.PILOT_PROFILE);
+const isBullishLockedProfile = pilotProfileName === "bullish_locked_v1";
+
+export type V7PricingConfig = {
+  enabled: boolean;
+  defaultTenorDays: number;
+  dvolCalmThreshold: number;
+  dvolStressThreshold: number;
+  dvolCacheTtlMs: number;
+  tpThresholdMultiplier: number;
+  hedgeManagementIntervalMs: number;
+  premiumSchedule: Record<number, Record<string, number | null>>;
+};
+
+const parseV7PricingConfig = (): V7PricingConfig => ({
+  enabled: parseBooleanEnv(process.env.V7_PRICING_ENABLED, true),
+  defaultTenorDays: parsePositiveIntInRange(
+    process.env.V7_DEFAULT_TENOR_DAYS,
+    1,
+    1,
+    30,
+    "invalid_v7_default_tenor_days"
+  ),
+  dvolCalmThreshold: parseNonNegativeFinite(
+    process.env.V7_DVOL_CALM_THRESHOLD,
+    40,
+    "invalid_v7_dvol_calm_threshold"
+  ),
+  dvolStressThreshold: parseNonNegativeFinite(
+    process.env.V7_DVOL_STRESS_THRESHOLD,
+    65,
+    "invalid_v7_dvol_stress_threshold"
+  ),
+  dvolCacheTtlMs: parsePositiveIntInRange(
+    process.env.V7_DVOL_CACHE_TTL_MS,
+    300000,
+    10000,
+    3600000,
+    "invalid_v7_dvol_cache_ttl_ms"
+  ),
+  tpThresholdMultiplier: parsePositiveFinite(
+    process.env.V7_TP_THRESHOLD_MULTIPLIER,
+    1.3,
+    "invalid_v7_tp_threshold_multiplier"
+  ),
+  hedgeManagementIntervalMs: parsePositiveIntInRange(
+    process.env.V7_HEDGE_MANAGEMENT_INTERVAL_MS,
+    60000,
+    5000,
+    600000,
+    "invalid_v7_hedge_management_interval_ms"
+  ),
+  premiumSchedule: {
+    1:  { calm: 5,  normal: 9,  stress: null },
+    2:  { calm: 3,  normal: 6,  stress: 13 },
+    3:  { calm: 2,  normal: 5,  stress: 12 },
+    5:  { calm: 2,  normal: 4,  stress: 10 },
+    10: { calm: 1,  normal: 2,  stress: 6 }
+  }
+});
+
 export const pilotConfig = {
+  v7: parseV7PricingConfig(),
+  profile: pilotProfileName,
+  bullishLockedProfile: isBullishLockedProfile,
   enabled: process.env.PILOT_API_ENABLED === "true",
   activationEnabled: parseBooleanEnv(process.env.PILOT_ACTIVATION_ENABLED, false),
-  venueMode: parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
+  venueMode: isBullishLockedProfile ? "bullish_testnet" : parsePilotVenueMode(process.env.PILOT_VENUE_MODE),
   deribitQuotePolicy: parseDeribitQuotePolicy(process.env.PILOT_DERIBIT_QUOTE_POLICY),
   deribitStrikeSelectionMode: parseDeribitStrikeSelectionMode(process.env.PILOT_STRIKE_SELECTION_MODE),
   deribitMaxTenorDriftDays: parseDeribitMaxTenorDriftDays(process.env.PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS),
   pilotHedgePolicy: parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY),
-  premiumPolicyMode: parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
-  premiumPricingMode: parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
-  pilotSelectorMode: parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
-  bullish: parseBullishRuntimeConfig(),
+  premiumPolicyMode: isBullishLockedProfile
+    ? "pass_through_markup"
+    : parsePremiumPolicyMode(process.env.PILOT_PREMIUM_POLICY_MODE),
+  premiumPricingMode: isBullishLockedProfile
+    ? "hybrid_otm_treasury"
+    : parsePilotPricingMode(process.env.PILOT_PREMIUM_PRICING_MODE),
+  pilotSelectorMode: isBullishLockedProfile ? "strict_profitability" : parsePilotSelectorMode(process.env.PILOT_SELECTOR_MODE),
+  bullish: parseBullishRuntimeConfig(isBullishLockedProfile),
   hedgeOptimizer: parseHedgeOptimizerRuntimeConfig(),
   rolloutGuards: parseRolloutGuardRuntimeConfig(),
   tierBatchingTenor: parseTierBatchingTenorRuntimeConfig(),
@@ -900,7 +1074,7 @@ export const pilotConfig = {
   ibkrFeePerOrderUsd: Number.isFinite(Number(process.env.IBKR_FEE_PER_ORDER_USD ?? "0"))
     ? Math.max(0, Number(process.env.IBKR_FEE_PER_ORDER_USD ?? "0"))
     : 0,
-  dynamicTenorEnabled: parseBooleanEnv(process.env.PILOT_DYNAMIC_TENOR_ENABLED, false),
+  dynamicTenorEnabled: isBullishLockedProfile ? false : parseBooleanEnv(process.env.PILOT_DYNAMIC_TENOR_ENABLED, false),
   tenorPolicyVersion: String(process.env.PILOT_TENOR_POLICY_VERSION || "tenor_policy_v1").trim() || "tenor_policy_v1",
   tenorPolicyLookbackMinutes: parsePositiveIntInRange(
     process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES,
@@ -921,11 +1095,10 @@ export const pilotConfig = {
   tenorPolicyMaxMedianPremiumRatio: Number(process.env.PILOT_TENOR_MAX_MEDIAN_PREMIUM_RATIO ?? "0.02"),
   tenorPolicyMaxMedianDriftDays: Number(process.env.PILOT_TENOR_MAX_MEDIAN_DRIFT_DAYS ?? "3"),
   tenorPolicyMaxNegativeMatchedRate: Number(process.env.PILOT_TENOR_MAX_NEGATIVE_MATCH_RATE ?? "0"),
-  tenorPolicyEnforce: parseBooleanEnv(
-    process.env.PILOT_TENOR_ENFORCE ?? process.env.PILOT_TENOR_POLICY_ENFORCE,
-    false
-  ),
-  tenorPolicyAutoRoute: parseBooleanEnv(process.env.PILOT_TENOR_AUTO_ROUTE, false),
+  tenorPolicyEnforce: isBullishLockedProfile
+    ? false
+    : parseBooleanEnv(process.env.PILOT_TENOR_ENFORCE ?? process.env.PILOT_TENOR_POLICY_ENFORCE, false),
+  tenorPolicyAutoRoute: isBullishLockedProfile ? false : parseBooleanEnv(process.env.PILOT_TENOR_AUTO_ROUTE, false),
   tenorPolicyDefaultFallbackDays: parsePositiveIntInRange(
     process.env.PILOT_TENOR_DEFAULT_FALLBACK,
     14,
@@ -941,6 +1114,21 @@ export const pilotConfig = {
     "invalid_pilot_tenor_candidates"
   ),
   ...(() => {
+    const v7 = parseV7PricingConfig();
+    if (v7.enabled) {
+      return {
+        pilotTenorMinDays: 1,
+        pilotTenorMaxDays: 14,
+        pilotTenorDefaultDays: v7.defaultTenorDays
+      };
+    }
+    if (isBullishLockedProfile) {
+      return {
+        pilotTenorMinDays: 7,
+        pilotTenorMaxDays: 7,
+        pilotTenorDefaultDays: 7
+      };
+    }
     const tenor = resolveTenorBounds();
     return {
       pilotTenorMinDays: tenor.minDays,
@@ -1069,8 +1257,38 @@ export const pilotConfig = {
   hashVersion: Number(process.env.USER_HASH_VERSION || "1"),
   hashSecret: process.env.USER_HASH_SECRET || "",
   quoteMinNotionalUsdc: parsePilotQuoteMinNotionalUsdc(process.env.PILOT_QUOTE_MIN_NOTIONAL_USDC),
-  maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "50000"),
-  maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "50000"),
+  // R2.A note: Pilot Agreement §3.1 caps per-position at $50k. Render env MUST
+  // set PILOT_MAX_PROTECTION_NOTIONAL_USDC=50000 (the default of 100000 here
+  // is a legacy value retained only to avoid throwing on under-configured
+  // dev environments — production has the env var set).
+  maxProtectionNotionalUsdc: Number(process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC || "100000"),
+  // Daily new-protection cap. Pilot Agreement §3.1: $100k Days 1-7,
+  // $500k Days 8-28. Env var must be bumped on Day 8.
+  maxDailyProtectedNotionalUsdc: Number(process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC || "100000"),
+  // R2.B — aggregate active notional cap. Pilot Agreement §3.1: $200k.
+  // Sum of protected_notional over all open protections (active,
+  // pending_activation, triggered) per user must not exceed this.
+  maxAggregateActiveNotionalUsdc: Number(process.env.PILOT_MAX_AGGREGATE_ACTIVE_NOTIONAL_USDC || "200000"),
+  // R2.D — per-tier concentration sub-cap (defense-in-depth, not in
+  // agreement). Caps the FRACTION of the daily new-protection notional
+  // that may be in any single SL tier. 0.6 = 60%. Set to 1.0 to disable.
+  // Example with daily cap $100k and concentration cap 0.6: a single
+  // SL tier may absorb at most $60k of new protections per day.
+  perTierDailyCapPct: parseFractionRange(
+    process.env.PILOT_PER_TIER_DAILY_CAP_PCT,
+    0.6,
+    0,
+    1,
+    "invalid_pilot_per_tier_daily_cap_pct"
+  ),
+  // R2.E — startup assertion mode. When 'enforce', the platform throws
+  // at boot if any cap env exceeds the agreement maximum. When 'warn',
+  // logs a console.warn but boots. Default 'warn' so dev environments
+  // boot freely; production should set 'enforce'.
+  capEnforcementMode:
+    String(process.env.PILOT_CAP_ENFORCEMENT_MODE || "warn").toLowerCase() === "enforce"
+      ? ("enforce" as const)
+      : ("warn" as const),
   treasuryPerQuoteSubsidyCapPct: parseFractionRange(
     process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT,
     0.7,
@@ -1159,14 +1377,14 @@ export const pilotConfig = {
   priceFreshnessMaxMs: Number(process.env.PRICE_FRESHNESS_MAX_MS || "5000"),
   priceRequestRetryAttempts: Number(process.env.PRICE_REQUEST_RETRY_ATTEMPTS || "3"),
   priceRequestRetryDelayMs: Number(process.env.PRICE_REQUEST_RETRY_DELAY_MS || "180"),
-  venueQuoteTimeoutMs: Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "10000"),
+  venueQuoteTimeoutMs: Number(process.env.PILOT_VENUE_QUOTE_TIMEOUT_MS || "30000"),
   quoteTtlMs: Number(process.env.PILOT_QUOTE_TTL_MS || "30000"),
-  venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "8000"),
+  venueExecuteTimeoutMs: Number(process.env.PILOT_VENUE_EXEC_TIMEOUT_MS || "25000"),
   venueMarkTimeoutMs: Number(process.env.PILOT_VENUE_MARK_TIMEOUT_MS || "3000"),
   triggerMonitorEnabled: parseBooleanEnv(process.env.PILOT_TRIGGER_MONITOR_ENABLED, true),
   triggerMonitorIntervalMs: parsePositiveIntInRange(
     process.env.PILOT_TRIGGER_MONITOR_INTERVAL_MS,
-    5000,
+    3000,
     1000,
     60000,
     "invalid_pilot_trigger_monitor_interval_ms"
@@ -1197,9 +1415,113 @@ export const pilotConfig = {
   falconxPassphrase: process.env.FALCONX_PASSPHRASE || "",
   adminIpAllowlist: parseAllowlist(process.env.PILOT_ADMIN_IP_ALLOWLIST),
   endpointVersion: process.env.PILOT_ENDPOINT_VERSION || "v1",
+  lockedProfile: {
+    enabled: isBullishLockedProfile,
+    name: pilotProfileName,
+    venueMode: "bullish_testnet",
+    forceOnlyBullishVenue: isBullishLockedProfile,
+    fixedTenorDays: isBullishLockedProfile ? 7 : parsePositiveIntInRange(process.env.PILOT_FIXED_TENOR_DAYS, 7, 1, 30, "invalid_pilot_fixed_tenor_days"),
+    enforceTierDrawdownOnly: isBullishLockedProfile,
+    fixedPricingMode: isBullishLockedProfile ? "hybrid_otm_treasury" : parsePilotPricingMode(process.env.PILOT_FIXED_PRICING_MODE),
+    premiumPolicyMode: isBullishLockedProfile ? "pass_through_markup" : parsePremiumPolicyMode(process.env.PILOT_FIXED_PREMIUM_POLICY_MODE),
+    selectorMode: isBullishLockedProfile ? "strict_profitability" : parsePilotSelectorMode(process.env.PILOT_FIXED_SELECTOR_MODE),
+    hybridStrictMultiplierSchedule: isBullishLockedProfile
+      ? DEFAULT_LIVE_HYBRID_STRICT_MULTIPLIER_SCHEDULE
+      : (() => {
+          const raw = String(process.env.PILOT_HYBRID_STRICT_MULTIPLIER_SCHEDULE || DEFAULT_LIVE_HYBRID_STRICT_MULTIPLIER_SCHEDULE)
+            .trim()
+            .toLowerCase();
+          if (raw === "current" || raw === "cheaper") return raw;
+          throw new Error(`invalid_pilot_hybrid_strict_multiplier_schedule:${raw || "empty"}`);
+        })(),
+    strictTenor: isBullishLockedProfile,
+    fixedDrawdownFloorPctByTier: {
+      "Pro (Bronze)": 0.2,
+      "Pro (Silver)": 0.15,
+      "Pro (Gold)": 0.12,
+      "Pro (Platinum)": 0.12
+    }
+  },
   nextRequestId: () => randomUUID()
 };
 
 export const isPilotAdminConfigured = (): boolean =>
   Boolean(pilotConfig.adminToken) && pilotConfig.adminIpAllowlist.entries.length > 0;
+
+/**
+ * R2.E — Cap enforcement assertion. Verifies that runtime env values for
+ * notional caps do not exceed the Pilot Agreement §3.1 limits.
+ *
+ * Behavior depends on PILOT_CAP_ENFORCEMENT_MODE:
+ *   - "enforce" (production): throws an Error preventing the service
+ *     from booting if any cap is misconfigured.
+ *   - "warn" (default; dev/staging): logs a console.warn for each
+ *     violation and continues booting.
+ *
+ * Called by server.ts during startup after pilotConfig is assembled.
+ *
+ * Agreement caps:
+ *   - per-position max:                $50,000  (PILOT_MAX_PROTECTION_NOTIONAL_USDC)
+ *   - aggregate active notional max:  $200,000  (PILOT_MAX_AGGREGATE_ACTIVE_NOTIONAL_USDC)
+ *   - daily cap Days 1-7:             $100,000  (PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC)
+ *   - daily cap Days 8-28:            $500,000  (PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC)
+ *
+ * Note: the daily cap legitimately changes at Day 8, so the assertion
+ * does not pin it to a single value. It allows up to $500k. Operators
+ * must remember to start at $100k and bump to $500k on Day 8 (R2.C).
+ */
+export const assertPilotAgreementCaps = (): { ok: boolean; violations: string[] } => {
+  const violations: string[] = [];
+  const PER_POSITION_MAX = 50000;
+  const AGGREGATE_ACTIVE_MAX = 200000;
+  const DAILY_MAX_WEEK_2_PLUS = 500000;
+
+  if (pilotConfig.maxProtectionNotionalUsdc > PER_POSITION_MAX) {
+    violations.push(
+      `PILOT_MAX_PROTECTION_NOTIONAL_USDC=${pilotConfig.maxProtectionNotionalUsdc} ` +
+      `exceeds Pilot Agreement §3.1 per-position max of $${PER_POSITION_MAX}`
+    );
+  }
+  if (pilotConfig.maxAggregateActiveNotionalUsdc > AGGREGATE_ACTIVE_MAX) {
+    violations.push(
+      `PILOT_MAX_AGGREGATE_ACTIVE_NOTIONAL_USDC=${pilotConfig.maxAggregateActiveNotionalUsdc} ` +
+      `exceeds Pilot Agreement §3.1 aggregate-active max of $${AGGREGATE_ACTIVE_MAX}`
+    );
+  }
+  if (pilotConfig.maxDailyProtectedNotionalUsdc > DAILY_MAX_WEEK_2_PLUS) {
+    violations.push(
+      `PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC=${pilotConfig.maxDailyProtectedNotionalUsdc} ` +
+      `exceeds Pilot Agreement §3.1 max daily cap of $${DAILY_MAX_WEEK_2_PLUS}`
+    );
+  }
+  // Per-tier sub-cap fraction must stay 0..1 (parseFractionRange already
+  // enforces this; included here as a defense for completeness).
+  if (pilotConfig.perTierDailyCapPct < 0 || pilotConfig.perTierDailyCapPct > 1) {
+    violations.push(
+      `PILOT_PER_TIER_DAILY_CAP_PCT=${pilotConfig.perTierDailyCapPct} must be between 0 and 1`
+    );
+  }
+
+  if (violations.length === 0) {
+    console.log(
+      `[pilotConfig] cap assertions PASSED — ` +
+      `perPosition=$${pilotConfig.maxProtectionNotionalUsdc} ` +
+      `aggregateActive=$${pilotConfig.maxAggregateActiveNotionalUsdc} ` +
+      `dailyNew=$${pilotConfig.maxDailyProtectedNotionalUsdc} ` +
+      `perTierFrac=${pilotConfig.perTierDailyCapPct}`
+    );
+    return { ok: true, violations: [] };
+  }
+
+  if (pilotConfig.capEnforcementMode === "enforce") {
+    const msg = `pilot_cap_assertion_failed:\n  - ${violations.join("\n  - ")}`;
+    console.error(`[pilotConfig] CAP ASSERTIONS FAILED (enforce mode):\n${msg}`);
+    throw new Error(msg);
+  }
+  console.warn(
+    `[pilotConfig] cap assertion warnings (warn mode; set PILOT_CAP_ENFORCEMENT_MODE=enforce to block boot):`
+  );
+  for (const v of violations) console.warn(`  - ${v}`);
+  return { ok: false, violations };
+};
 

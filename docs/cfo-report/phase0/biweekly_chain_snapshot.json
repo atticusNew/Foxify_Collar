@@ -1,0 +1,141 @@
+{
+  "capturedAt": "2026-04-30T10:58:21.486Z",
+  "spotUsd": 75992,
+  "dvolNow": 39.41,
+  "expiry": "2026-05-15T08:00:00.000Z",
+  "daysToExpiry": 14.876166458333334,
+  "rows": [
+    {
+      "instrument": "BTC-15MAY26-70000-C",
+      "type": "C",
+      "strike": 70000,
+      "bidBtc": 0.0825,
+      "askBtc": 0.0895,
+      "askUsd": 6801.284,
+      "markIv": 42.16,
+      "bsAtDvolUsd": 6445.74305275637,
+      "bsAtMarkIvUsd": 6543.777261112205
+    },
+    {
+      "instrument": "BTC-15MAY26-70000-P",
+      "type": "P",
+      "strike": 70000,
+      "bidBtc": 0.007,
+      "askBtc": 0.0075,
+      "askUsd": 569.9399999999999,
+      "markIv": 42.16,
+      "bsAtDvolUsd": 453.74295300562335,
+      "bsAtMarkIvUsd": 551.7771469858435
+    },
+    {
+      "instrument": "BTC-15MAY26-72000-C",
+      "type": "C",
+      "strike": 72000,
+      "bidBtc": 0.0615,
+      "askBtc": 0.067,
+      "askUsd": 5091.464,
+      "markIv": 40.27,
+      "bsAtDvolUsd": 4863.265703416568,
+      "bsAtMarkIvUsd": 4904.120187381486
+    },
+    {
+      "instrument": "BTC-15MAY26-72000-P",
+      "type": "P",
+      "strike": 72000,
+      "bidBtc": 0.0115,
+      "askBtc": 0.012,
+      "askUsd": 911.904,
+      "markIv": 40.27,
+      "bsAtDvolUsd": 871.2655649905537,
+      "bsAtMarkIvUsd": 912.1200445574068
+    },
+    {
+      "instrument": "BTC-15MAY26-74000-C",
+      "type": "C",
+      "strike": 74000,
+      "bidBtc": 0.0445,
+      "askBtc": 0.046,
+      "askUsd": 3495.632,
+      "markIv": 38.32,
+      "bsAtDvolUsd": 3506.3583232492965,
+      "bsAtMarkIvUsd": 3444.2656029047284
+    },
+    {
+      "instrument": "BTC-15MAY26-74000-P",
+      "type": "P",
+      "strike": 74000,
+      "bidBtc": 0.019,
+      "askBtc": 0.0195,
+      "askUsd": 1481.844,
+      "markIv": 38.32,
+      "bsAtDvolUsd": 1514.358159678006,
+      "bsAtMarkIvUsd": 1452.265444361612
+    },
+    {
+      "instrument": "BTC-15MAY26-78000-C",
+      "type": "C",
+      "strike": 78000,
+      "bidBtc": 0.017,
+      "askBtc": 0.018,
+      "askUsd": 1367.856,
+      "markIv": 35.48,
+      "bsAtDvolUsd": 1568.4946269245302,
+      "bsAtMarkIvUsd": 1339.1764267578837
+    },
+    {
+      "instrument": "BTC-15MAY26-78000-P",
+      "type": "P",
+      "strike": 78000,
+      "bidBtc": 0.043,
+      "askBtc": 0.0455,
+      "askUsd": 3457.636,
+      "markIv": 35.48,
+      "bsAtDvolUsd": 3576.4944595530906,
+      "bsAtMarkIvUsd": 3347.1762779367054
+    },
+    {
+      "instrument": "BTC-15MAY26-80000-C",
+      "type": "C",
+      "strike": 80000,
+      "bidBtc": 0.0095,
+      "askBtc": 0.01,
+      "askUsd": 759.92,
+      "markIv": 34.83,
+      "bsAtDvolUsd": 969.1211588420047,
+      "bsAtMarkIvUsd": 742.2379517090994
+    },
+    {
+      "instrument": "BTC-15MAY26-80000-P",
+      "type": "P",
+      "strike": 80000,
+      "bidBtc": 0.0595,
+      "askBtc": 0.065,
+      "askUsd": 4939.4800000000005,
+      "markIv": 34.83,
+      "bsAtDvolUsd": 4977.121012121104,
+      "bsAtMarkIvUsd": 4750.237829389385
+    },
+    {
+      "instrument": "BTC-15MAY26-84000-C",
+      "type": "C",
+      "strike": 84000,
+      "bidBtc": 0.0025,
+      "askBtc": 0.0029,
+      "askUsd": 220.37679999999997,
+      "markIv": 35.08,
+      "bsAtDvolUsd": 314.83368177710327,
+      "bsAtMarkIvUsd": 200.48447394259074
+    },
+    {
+      "instrument": "BTC-15MAY26-84000-P",
+      "type": "P",
+      "strike": 84000,
+      "bidBtc": 0.1035,
+      "askBtc": 0.1125,
+      "askUsd": 8549.1,
+      "markIv": 35.08,
+      "bsAtDvolUsd": 8322.833597095378,
+      "bsAtMarkIvUsd": 8208.484412707243
+    }
+  ]
+}

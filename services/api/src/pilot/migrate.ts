@@ -1,5 +1,17 @@
 import { pilotConfig } from "./config";
 import { ensurePilotSchema, getPilotPool } from "./db";
+import {
+  ensureVolumeCoverSchema,
+  seedVolumeCoverCellsIfNeeded
+} from "../volumeCover/volumeCoverDb";
+import { ensureTwoSidedSchema } from "../singleSide/twoSided/db";
+import { ensureDeferredPoolSchema } from "../singleSide/twoSided/deferredPool";
+import { ensureGuardrailsSchema } from "../singleSide/twoSided/guardrails";
+import { ensureNewbornReviewSchema } from "../singleSide/twoSided/featureFlag";
+import { ensureWebhookConfigSchema } from "../singleSide/twoSided/webhookConfig";
+import { ensureWebhookAttemptSchema } from "../singleSide/twoSided/webhookDelivery";
+import { ensureCellAllowlistSchema } from "../singleSide/twoSided/cellAllowlist";
+import { ensureCounterpartyLedgerSchema } from "../singleSide/twoSided/counterpartyLedger";
 
 async function main() {
   if (!pilotConfig.postgresUrl) {
@@ -7,9 +19,19 @@ async function main() {
   }
   const pool = getPilotPool(pilotConfig.postgresUrl);
   await ensurePilotSchema(pool);
+  await ensureVolumeCoverSchema(pool);
+  await seedVolumeCoverCellsIfNeeded(pool);
+  await ensureTwoSidedSchema(pool);
+  await ensureDeferredPoolSchema(pool);
+  await ensureGuardrailsSchema(pool);
+  await ensureNewbornReviewSchema(pool);
+  await ensureWebhookConfigSchema(pool);
+  await ensureWebhookAttemptSchema(pool);
+  await ensureCellAllowlistSchema(pool);
+  await ensureCounterpartyLedgerSchema(pool);
   await pool.end();
   // eslint-disable-next-line no-console
-  console.log("Pilot schema migration complete.");
+  console.log("Pilot + Volume Cover + Two-Sided schema migration complete.");
 }
 
 main().catch((error) => {

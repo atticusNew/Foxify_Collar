@@ -27,6 +27,7 @@ import {
 import { DeribitConnector } from "@foxify/connectors";
 import { runAutoRenewJob } from "./scheduler";
 import { loadAccountConfig } from "./configLoader";
+import { assertDeploymentInvariants, getDeploymentTier } from "./pilot/deploymentTier";
 import { createDeribitIvCache } from "./deribitIvCache";
 import { createBybitIvCache } from "./bybitIvCache";
 import { createDeribitIvLadderCache } from "./deribitIvLadder";
@@ -59,6 +60,16 @@ import { buildCoverageReport } from "./coverageReport";
 import { resolveCoverageTargetSize } from "./quoteCoverage";
 import { resolvePremiumMarkupPctForQuote } from "./markupProfile";
 import { registerPilotRoutes } from "./pilot/routes";
+import { registerVolumeCoverRoutes } from "./volumeCover/volumeCoverRoutes";
+import { createHedgeExecutor } from "./volumeCover/hedgeExecutorAdapter";
+import { createSpotPriceSource } from "./volumeCover/spotPriceSource";
+import { startTriggerDetector } from "./volumeCover/triggerDetector";
+import { startHedgeManager } from "./volumeCover/volumeCoverHedgeManager";
+import { setVenueOptionChainProvider } from "./volumeCover/venueStrikeGrid";
+import { startChainWarmer } from "./volumeCover/chainWarmer";
+import { registerTreasuryRoutes } from "./pilot/treasuryRoutes";
+import { parseTreasuryConfig } from "./pilot/treasuryConfig";
+import { startTreasuryScheduler } from "./pilot/treasuryScheduler";
 
 // ═══════════════════════════════════════════════════════════
 // CEO-FOCUSED AUDIT EVENTS (Filter for Modal Display)
@@ -97,6 +108,17 @@ const EXCLUDED_AUDIT_EVENTS = [
 function isCeoRelevantEvent(eventName: string): boolean {
   return CEO_AUDIT_EVENTS.includes(eventName);
 }
+
+// Deployment tier invariants — must run BEFORE Fastify init so a
+// misconfigured shadow service crash-loops instead of accepting traffic.
+// See services/api/src/pilot/deploymentTier.ts for the rules.
+assertDeploymentInvariants();
+console.log(JSON.stringify({
+  level: "info",
+  msg: "deployment_tier_resolved",
+  tier: getDeploymentTier(),
+  ts: new Date().toISOString()
+}));
 
 const trustProxyEnv = String(process.env.PILOT_TRUST_PROXY || "").trim().toLowerCase();
 const trustProxy = trustProxyEnv === "true";
@@ -2065,23 +2087,14 @@ app.get("/risk/summary", async (req) => {
 });
 
 const pilotApiEnabled = process.env.PILOT_API_ENABLED === "true";
-const forceDeribitTestMode = pilotApiEnabled && process.env.PILOT_FORCE_DERIBIT_TEST_MODE !== "false";
 const deribitEnvRaw = (process.env.DERIBIT_ENV as "testnet" | "live") || "live";
-const deribitEnv: "testnet" | "live" = forceDeribitTestMode ? "testnet" : deribitEnvRaw;
+const deribitEnv: "testnet" | "live" = deribitEnvRaw;
 const deribitHasCredentials = Boolean(
   process.env.DERIBIT_CLIENT_ID && process.env.DERIBIT_CLIENT_SECRET
 );
 const deribitPaperEnv = process.env.DERIBIT_PAPER?.trim().toLowerCase();
-let deribitPaperRequested =
+const deribitPaperRequested =
   deribitPaperEnv !== undefined ? deribitPaperEnv === "true" : deribitEnv !== "live";
-if (forceDeribitTestMode) {
-  deribitPaperRequested = true;
-  if (deribitEnvRaw !== "testnet" || deribitPaperEnv === "false") {
-    console.warn(
-      "[Deribit] Pilot mode forcing DERIBIT_ENV=testnet and DERIBIT_PAPER=true for test-only execution."
-    );
-  }
-}
 const deribitPaper = deribitHasCredentials ? deribitPaperRequested : true;
 if (!deribitHasCredentials && deribitPaperEnv === "false") {
   console.warn(
@@ -2104,6 +2117,8 @@ const deribit = new DeribitConnector(
       }
     : undefined
 );
+const deribitLive = new DeribitConnector("live", true);
+console.log(`[Deribit] Live pricing connector: endpoint=live paper=true (read-only, no credentials)`);
 const executionRegistry = new ExecutionRegistry();
 executionRegistry.register(createDeribitExecutor(deribit));
 executionRegistry.register(createBybitExecutor());
@@ -8165,7 +8180,765 @@ app.post("/hedge/roll", async (req) => {
   };
 });
 
-await registerPilotRoutes(app, { deribit });
+// R2.E — Pilot Agreement §3.1 cap assertion. Verifies env values for
+// notional caps don't exceed agreement maxes. In 'enforce' mode this
+// throws and prevents boot; in 'warn' mode (default) it logs and
+// continues. Set PILOT_CAP_ENFORCEMENT_MODE=enforce on production Render.
+const { assertPilotAgreementCaps } = await import("./pilot/config");
+assertPilotAgreementCaps();
+
+// R7 — Configure outbound alert webhook destinations (Telegram / Slack /
+// Discord / generic). Reads PILOT_ALERT_* env vars; logs which destinations
+// were enabled. Calling this is idempotent.
+const { configureAlertDispatcher } = await import("./pilot/alertDispatcher");
+configureAlertDispatcher();
+
+// PR B (Gap 2) — Configure max-loss circuit breaker from env.
+//   PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT  (default 0.5 = 50%)
+//   PILOT_CIRCUIT_BREAKER_WINDOW_MS     (default 24h)
+//   PILOT_CIRCUIT_BREAKER_COOLDOWN_MS   (default 4h; set 0 for manual-only)
+//   PILOT_CIRCUIT_BREAKER_MIN_SAMPLES   (default 4)
+//   PILOT_CIRCUIT_BREAKER_ENFORCE       (default true; set 'false' for observe-only)
+const { configureCircuitBreaker } = await import("./pilot/circuitBreaker");
+configureCircuitBreaker({
+  maxLossPct: Number(process.env.PILOT_CIRCUIT_BREAKER_MAX_LOSS_PCT || "0.5"),
+  windowMs: Number(process.env.PILOT_CIRCUIT_BREAKER_WINDOW_MS || String(24 * 60 * 60 * 1000)),
+  cooldownMs: Number(process.env.PILOT_CIRCUIT_BREAKER_COOLDOWN_MS || String(4 * 60 * 60 * 1000)),
+  minSamplesForTrip: Number(process.env.PILOT_CIRCUIT_BREAKER_MIN_SAMPLES || "4"),
+  enforce: String(process.env.PILOT_CIRCUIT_BREAKER_ENFORCE || "true").toLowerCase() !== "false"
+});
+console.log("[CircuitBreaker] Configured from env");
+
+// R2.F — hedge-budget cap (Foxify Pilot Agreement v2 §3.1).
+// Env vars:
+//   PILOT_LIVE_START_DATE           ISO date, default: null (auto-detect from earliest live execution)
+//   PILOT_HEDGE_BUDGET_CAP_ENABLED  default 'true'
+const { configureHedgeBudgetCap } = await import("./pilot/hedgeBudgetCap");
+configureHedgeBudgetCap({
+  pilotStartIso: process.env.PILOT_LIVE_START_DATE || null,
+  enforce: String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() !== "false"
+});
+console.log(
+  `[HedgeBudgetCap] Configured: enforce=${
+    String(process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED || "true").toLowerCase() !== "false"
+  } pilotStart=${process.env.PILOT_LIVE_START_DATE || "(auto)"}`
+);
+
+await registerPilotRoutes(app, { deribit, deribitLive });
+
+// ────────── Volume Cover product (Foxify B2B) ──────────
+if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true") {
+  try {
+    const { createPilotVenueAdapter } = await import("./pilot/venue");
+    // Bug fix (2026-05-18): The VC registration was throwing
+    // "bullish_testnet_disabled" silently because bullishEnabled +
+    // bullish config were never forwarded to the adapter factory.
+    // Without this fix the entire /volume-cover/* route surface
+    // (including /volume-cover/health) returns 404, and the only
+    // signal is a single `[VolumeCover] FAILED to register routes`
+    // log line that's easy to miss in production. Mirrors the
+    // pattern used in pilot/routes.ts at line ~957.
+    const { pilotConfig } = await import("./pilot/config");
+    const bullishAdapter = createPilotVenueAdapter({
+      mode: "bullish_testnet",
+      bullishEnabled: pilotConfig.bullish.enabled,
+      bullish: pilotConfig.bullish,
+      falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+      deribit,
+      quoteTtlMs: 30000,
+      deribitQuotePolicy: "ask_or_mark_fallback",
+      deribitStrikeSelectionMode: "trigger_aligned",
+      deribitMaxTenorDriftDays: 3
+    });
+    const deribitAdapter = createPilotVenueAdapter({
+      mode: "deribit_live",
+      falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+      deribit,
+      quoteTtlMs: 30000,
+      deribitQuotePolicy: "ask_or_mark_fallback",
+      deribitStrikeSelectionMode: "trigger_aligned",
+      deribitMaxTenorDriftDays: 3
+    });
+
+    const useMockFills =
+      String(process.env.VOLUME_COVER_HEDGE_MOCK ?? "false").toLowerCase() === "true";
+    const hedgeExecutor = createHedgeExecutor({
+      bullish: bullishAdapter,
+      deribit: deribitAdapter,
+      mockFills: useMockFills
+    });
+    // VC source-of-truth: Bullish primary + Coinbase fallback by
+    // default. Override with VC_SPOT_PRIMARY=deribit to make Deribit
+    // the primary source (recommended when system is locked to
+    // Deribit execution). All three venues feed drift detection.
+    const spotSource = createSpotPriceSource({
+      bullishOrderbookFn: async (symbol) => {
+        // 2026-05-22: use shared singleton + 5s orderbook cache to stop
+        // burning Bullish sessions on every spot tick (trigger monitor
+        // ticks every 60s; each tick previously built a fresh client →
+        // fresh JWT → fresh WS subscriptions). See pilot/bullishClient.ts.
+        const { getCachedBullishOrderbook } = await import("./pilot/bullishClient");
+        const book = await getCachedBullishOrderbook(pilotConfig.bullish, symbol, 5_000);
+        return {
+          bids: book.bids ?? [],
+          asks: book.asks ?? []
+        };
+      },
+      bullishSymbol: "BTCUSDC",
+      deribitIndexFn: async () => {
+        try {
+          const { DeribitConnector } = await import("@foxify/connectors");
+          const env = String(process.env.DERIBIT_ENV || "live").trim();
+          const paper = String(process.env.DERIBIT_PAPER || "true").trim().toLowerCase() === "true";
+          const c = new DeribitConnector(
+            env === "live" ? "live" : "testnet",
+            paper,
+            {
+              clientId: String(process.env.DERIBIT_CLIENT_ID || ""),
+              clientSecret: String(process.env.DERIBIT_CLIENT_SECRET || "")
+            }
+          );
+          const r = await c.getIndexPrice("btc_usd");
+          const price = Number((r as any)?.result?.index_price ?? 0);
+          if (!Number.isFinite(price) || price <= 0) return null;
+          return { price, asOfMs: Date.now() };
+        } catch {
+          return null;
+        }
+      }
+    });
+
+    // P3 §12.4: venue balance fetcher for weekly reconciliation drift
+    // halt. Sums Bullish USDC + Deribit BTC equity (× spot) into a
+    // single combined balance. 5s timeout per venue; reconciler
+    // tolerates failures gracefully (does NOT auto-halt on transient
+    // venue API errors — see weeklyReconciler.ts).
+    const venueBalanceFetcher = async (): Promise<number> => {
+      const withTimeout = async <T,>(p: Promise<T>, ms: number): Promise<T> => {
+        return Promise.race([
+          p,
+          new Promise<T>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))
+        ]);
+      };
+      let bullishUsdc = 0;
+      let bullishBtcAsUsdc = 0;
+      let deribitUsdc = 0;
+      // Spot is needed for both Bullish-BTC and Deribit-BTC valuations;
+      // fetch once and reuse to keep the math consistent (same spot
+      // applied to both venues).
+      let spotBtcUsdc: number | null = null;
+      try {
+        const spot = await spotSource();
+        spotBtcUsdc = spot.spotBtcPrice;
+      } catch (err) {
+        console.warn(`[VolumeCover] Spot fetch failed for venue balance: ${(err as Error).message}`);
+      }
+      // 2026-05-22: env gate skips Bullish balance fetching entirely when
+      // BULLISH_BALANCE_TRACKING_ENABLED=false (default true). Live config
+      // should set false until Bullish is actively trading — drops dashboard
+      // Bullish call rate from ~1/tick to 0 and avoids session quota churn.
+      const { isBullishBalanceTrackingEnabled, getCachedBullishBalances } =
+        await import("./pilot/bullishClient");
+      if (isBullishBalanceTrackingEnabled()) {
+        try {
+          const balances = await withTimeout(
+            getCachedBullishBalances(pilotConfig.bullish, 30_000, 5_000),
+            5_000
+          );
+          const usdcBalance = balances.find((b: any) => b.assetSymbol === "USDC" || b.assetSymbol === "USD");
+          if (usdcBalance) {
+            bullishUsdc = Number(usdcBalance.availableQuantity ?? 0);
+          }
+          // 2026-05-18: include Bullish BTC valued at current spot. This
+          // closes a drift-detection bug where operators holding capital
+          // as BTC (rather than USDC) on Bullish were causing weekly
+          // settlement reports to false-flag 100% drift halts. The
+          // venueBalanceFetcher must report TOTAL USD-equivalent venue
+          // value, not just USDC. Bullish BTC + USDC together are now
+          // both included.
+          const btcBalance = balances.find((b: any) => b.assetSymbol === "BTC");
+          if (btcBalance && spotBtcUsdc !== null) {
+            const btcQty = Number(btcBalance.availableQuantity ?? 0);
+            if (Number.isFinite(btcQty) && btcQty > 0) {
+              bullishBtcAsUsdc = btcQty * spotBtcUsdc;
+            }
+          }
+        } catch (err) {
+          console.warn(`[VolumeCover] Bullish balance fetch failed: ${(err as Error).message}`);
+        }
+      }
+      try {
+        const summary: any = await withTimeout(deribitLive.getAccountSummary("BTC"), 5_000);
+        const btcEquity = Number(summary?.result?.equity ?? 0);
+        if (btcEquity > 0 && spotBtcUsdc !== null) {
+          deribitUsdc = btcEquity * spotBtcUsdc;
+        }
+      } catch (err) {
+        console.warn(`[VolumeCover] Deribit balance fetch failed: ${(err as Error).message}`);
+      }
+      return bullishUsdc + bullishBtcAsUsdc + deribitUsdc;
+    };
+
+    // P3 §7.3 P1c: venue option-chain provider — pickClosestStrike
+    // (in venueStrikeGrid.ts) uses this to snap to a strike that
+    // ACTUALLY exists on the venue. Falls back to static $200/$1000
+    // grid if provider returns null OR throws (graceful degradation).
+    // Shared Bullish client for the venue option-chain provider.
+    // Hoisting this OUT of the closure means the 120s cache TTL on
+    // getMarkets actually works — previously every provider call
+    // (every chain warmer tick + every activation strike resolution)
+    // built a fresh client with its own empty cache, defeating
+    // caching entirely and triggering Bullish's 96100 RATE_LIMIT_
+    // EXCEEDED on the chain endpoint. Now: one client, shared cache,
+    // ~1 upstream call per 120s instead of every tick.
+    const { BullishTradingClient: SharedBullishClient } = await import("./pilot/bullish");
+    const sharedBullishClient = new SharedBullishClient(pilotConfig.bullish);
+
+    setVenueOptionChainProvider(async ({ venue, expiryIso, optionKind }) => {
+      const targetDate = expiryIso.slice(0, 10); // YYYY-MM-DD
+      if (venue === "bullish") {
+        try {
+          // Use the shared client (above) so cache survives across
+          // calls. cacheTtlMs default is 120s (set at client level).
+          const markets = await sharedBullishClient.getMarkets({ cacheTtlMs: 120_000 });
+          const kindUpper = optionKind === "put" ? "PUT" : "CALL";
+          return markets
+            .filter(m => (m.optionType ?? "").toUpperCase() === kindUpper)
+            .filter(m => (m.expiryDatetime ?? "").slice(0, 10) === targetDate)
+            .filter(m => (m.underlyingBaseSymbol ?? "").toUpperCase() === "BTC")
+            .filter(m => m.marketEnabled && m.createOrderEnabled)
+            .map(m => Number(m.optionStrikePrice ?? "0"))
+            .filter(s => Number.isFinite(s) && s > 0);
+        } catch (err) {
+          console.warn(`[VolumeCover] Bullish chain fetch failed: ${(err as Error).message}`);
+          return [];
+        }
+      }
+      if (venue === "deribit") {
+        try {
+          const r: any = await deribitLive.listInstruments("BTC");
+          const items: any[] = Array.isArray(r?.result) ? r.result : [];
+          const expiryMs = new Date(expiryIso).getTime();
+          // Allow ±1 day fuzz on expiry (venue rounds to UTC 08:00; our
+          // computed expiry rounds the same but daylight/timezone edges
+          // can shift by a day on snap).
+          return items
+            .filter(i => String(i.option_type).toLowerCase() === optionKind)
+            .filter(i => Math.abs(Number(i.expiration_timestamp) - expiryMs) < 86_400_000)
+            .map(i => Number(i.strike))
+            .filter(s => Number.isFinite(s) && s > 0);
+        } catch (err) {
+          console.warn(`[VolumeCover] Deribit chain fetch failed: ${(err as Error).message}`);
+          return [];
+        }
+      }
+      return [];
+    });
+    console.log(`[VolumeCover] Venue option-chain provider wired (Bullish + Deribit)`);
+
+    // Background chain warmer — keeps venueStrikeGrid cache hot so
+    // /activate's pickClosestStrike returns instantly rather than
+    // doing a 200-500ms venue REST call on the hot path.
+    startChainWarmer();
+
+    await registerVolumeCoverRoutes(app, {
+      hedgeExecutor,
+      spotSource,
+      venueBalanceFetcher
+    });
+    console.log(
+      `[VolumeCover] Registered routes (mockFills=${useMockFills}, ` +
+        `auth_disabled=${process.env.VOLUME_COVER_AUTH_DISABLED ?? "false"}, ` +
+        `venueBalanceFetcher=wired)`
+    );
+
+    // 2026-05-24 (PR-D): startup log of PR-A/B/C/D config so an
+    // operator confirming a deploy can see exactly what envs took
+    // effect without curl'ing /health.
+    try {
+      const { getNewbornReviewState } = await import(
+        "./volumeCover/volumeCoverNewbornReview"
+      );
+      const { getBullishSpreadAdapterRuntimeConfig } = await import(
+        "./volumeCover/bullishSpreadAdapter"
+      );
+      const { getConfiguredDepthGate } = await import(
+        "./volumeCover/spreadExecutor"
+      );
+      const newborn = getNewbornReviewState();
+      const adapter = getBullishSpreadAdapterRuntimeConfig();
+      const depth = getConfiguredDepthGate();
+      const sellLongs = String(
+        process.env.VC_SPREAD_SELL_LONGS_AT_TRIGGER ?? "true"
+      ).toLowerCase() !== "false";
+      const parallelSells = String(
+        process.env.VC_SPREAD_PARALLEL_LONG_SELLS ?? "true"
+      ).toLowerCase() !== "false";
+      const slipVenues =
+        process.env.VC_SLIPPAGE_FLOOR_ENABLED_VENUES ?? "deribit,bullish";
+      const deepCrossBps = Number(
+        process.env.VC_FILL_OPTIMIZER_DEEP_CROSS_BPS ?? "500"
+      );
+      console.log(
+        `[VolumeCover] config: ` +
+          `newbornReview={enabled:${newborn.enabled},budget:${newborn.budget}} ` +
+          `bullishSpreadPoll={interval:${adapter.pollIntervalMs}ms,open:${adapter.openPollCeilingMs}ms,close:${adapter.closePollCeilingMs}ms} ` +
+          `depthGate={floorBtc:${depth.minDepthBtcFloor},ratio:${depth.depthRatio},enforced:${depth.enforced}} ` +
+          `sellLongsAtTrigger=${sellLongs} parallelLongSells=${parallelSells} ` +
+          `slippageVenues=${slipVenues} fillOptDeepCrossBps=${deepCrossBps} ` +
+          // 2026-05-24 (PR-E + PR-F): correctness + UX fixes shipped together,
+          // unconditionally on. Logged so /volume-cover/health AND startup
+          // logs both confirm the deploy picked up the projection cap, the
+          // closePosition double-bill guard, the Foxify acknowledge flow,
+          // and the Recent Activity suppression for rejected+failed events.
+          `prE_dashTriggeredAtCap=true prE_closeDoubleBillGuard=true ` +
+          `prF_foxifyAcknowledge=true prF_recentActivityHidesRejectedFailed=true`
+      );
+    } catch (err) {
+      console.warn(
+        `[VolumeCover] startup config log skipped: ${(err as Error).message}`
+      );
+    }
+
+    // Foxify-facing read-mostly dashboard (separate auth, separate
+    // surface). Routes mounted at /volume-cover/foxify/*. Auth via
+    // FOXIFY_DASHBOARD_TOKEN (distinct from PILOT_ADMIN_TOKEN).
+    // Audit log table created automatically.
+    const { registerFoxifyDashboardRoutes } = await import(
+      "./volumeCover/foxifyDashboard"
+    );
+    await registerFoxifyDashboardRoutes(app, {
+      hedgeExecutor,
+      spotSource
+    });
+    const foxifyTokenSet = Boolean(
+      String(process.env.FOXIFY_DASHBOARD_TOKEN || "").trim()
+    );
+    console.log(
+      `[VolumeCover] Foxify dashboard mounted at /volume-cover/foxify/* ` +
+        `(token_configured=${foxifyTokenSet})`
+    );
+
+    if (String(process.env.VOLUME_COVER_TRIGGER_DETECTOR_ENABLED ?? "true").toLowerCase() === "true") {
+      const { getPilotPool } = await import("./pilot/db");
+      const vcPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+      startTriggerDetector({
+        pool: vcPool,
+        executor: hedgeExecutor,
+        spotSource
+      });
+      console.log(`[VolumeCover] Trigger detector started`);
+    }
+
+    // P1f + P2.5: VC hedge manager (60s tick) — manages Atticus-
+    // retained legs via the 12-rule TP curve. Spot+IV source uses the
+    // existing Deribit IV cache (15s TTL) for live ATM IV; rule 11
+    // (vol-spike) compares current IV vs 60min trailing baseline,
+    // which works correctly only when IV is real and time-varying.
+    // Falls back to env-configured constant IV if the cache returns
+    // its own fallback (Deribit unreachable).
+    if (String(process.env.VOLUME_COVER_HEDGE_MANAGER_ENABLED ?? "true").toLowerCase() === "true") {
+      const { getPilotPool } = await import("./pilot/db");
+      const vcPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+      const envFallbackIv = Number(process.env.VC_HM_FALLBACK_IV ?? 0.65);
+      startHedgeManager({
+        pool: vcPool,
+        executor: hedgeExecutor,
+        spotIvSource: async () => {
+          const spot = await spotSource();
+          let ivAnnualized = envFallbackIv;
+          try {
+            // ivCache is module-level below; it returns Decimal in
+            // either percent (Deribit mark_iv) or fraction form.
+            // normalizeIvValue scales percent → fraction so the
+            // ivAnnualized field stays in [0, ~5] consistent with
+            // bsPut/bsCall expectations.
+            const raw = await ivCache.getAtmIv("BTC");
+            const n = Number(raw.toString());
+            ivAnnualized = n > 1.5 ? n / 100 : n;
+            if (!Number.isFinite(ivAnnualized) || ivAnnualized <= 0) {
+              ivAnnualized = envFallbackIv;
+            }
+          } catch {
+            // venue cache hiccup; fallback IV
+          }
+          return {
+            spotBtcUsdc: spot.spotBtcPrice,
+            ivAnnualized,
+            asOfMs: spot.asOfMs
+          };
+        }
+      });
+      console.log(`[VolumeCover] Hedge manager started (full 12-rule curve; live IV via deribitIvCache)`);
+    }
+  } catch (err) {
+    console.error(`[VolumeCover] FAILED to register routes: ${(err as Error).message}`);
+  }
+} else {
+  console.log(`[VolumeCover] Disabled (VOLUME_COVER_ENABLED=false)`);
+}
+
+// ────────── Foxify v2 (two-sided cooperative) ──────────
+// Gated by FOXIFY_V2_ENABLED. When enabled, mounts /foxify/v2/* + /admin/foxify/v2/*
+// routes for the cooperative volume facility. By default uses ShadowStrangleExecutor
+// (no real orders); set FOXIFY_V2_LIVE_EXECUTION=true to enable LiveStrangleExecutor.
+//
+// LiquidChainCache pulls both Deribit + Bullish per refresh (30s TTL) so quoteEngine
+// gets honest cross-venue ask prices. Bullish creds reuse pilotConfig.bullish.
+if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
+  try {
+    const { getPilotPool } = await import("./pilot/db");
+    const v2Pool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+
+    // ─── Auto-migrate foxify-v2 schemas at boot ───
+    // The standalone migrate:pilot script isn't part of Render's build/start
+    // lifecycle. Running ensure*Schema here makes the foxify-v2 surface
+    // self-migrating: enabling FOXIFY_V2_ENABLED=true on a fresh DB creates
+    // all required tables on first boot. Idempotent — safe to re-run.
+    const { ensureTwoSidedSchema } = await import("./singleSide/twoSided/db");
+    const { ensureDeferredPoolSchema } = await import("./singleSide/twoSided/deferredPool");
+    const { ensureGuardrailsSchema } = await import("./singleSide/twoSided/guardrails");
+    const { ensureNewbornReviewSchema } = await import("./singleSide/twoSided/featureFlag");
+    const { ensureWebhookConfigSchema } = await import("./singleSide/twoSided/webhookConfig");
+    const { ensureWebhookAttemptSchema } = await import("./singleSide/twoSided/webhookDelivery");
+    const { ensureCellAllowlistSchema } = await import("./singleSide/twoSided/cellAllowlist");
+    const { ensureCounterpartyLedgerSchema } = await import("./singleSide/twoSided/counterpartyLedger");
+    await ensureTwoSidedSchema(v2Pool);
+    await ensureDeferredPoolSchema(v2Pool);
+    await ensureGuardrailsSchema(v2Pool);
+    await ensureNewbornReviewSchema(v2Pool);
+    await ensureWebhookConfigSchema(v2Pool);
+    await ensureWebhookAttemptSchema(v2Pool);
+    await ensureCellAllowlistSchema(v2Pool);
+    await ensureCounterpartyLedgerSchema(v2Pool);
+    console.log("[FoxifyV2] Schema migrations applied (8 tables ensured)");
+
+    const { FeedService } = await import("./singleSide/twoSided/feedService");
+    const { DvolService } = await import("./singleSide/twoSided/dvolService");
+    const { RvService } = await import("./singleSide/twoSided/rvService");
+    const { LiquidChainCache } = await import("./singleSide/twoSided/liquidChainCache");
+    type VenueChainProvider = import("./singleSide/twoSided/liquidChainCache").VenueChainProvider;
+    const { liquidChainAnchorProvider } = await import("./singleSide/twoSided/liquidChainAnchorProvider");
+    const { fetchFullChainSnapshot } = await import("../scripts/backtest/singleSide/liquidStrikePicker");
+    const { fetchBullishChainSnapshot } = await import("./singleSide/twoSided/bullishChainProvider");
+    const { ShadowStrangleExecutor } = await import("./singleSide/twoSided/shadowExecutor");
+    const { registerFoxifyV2Routes } = await import("./singleSide/twoSided/routes");
+    const { BullishTradingClient: V2BullishClient } = await import("./pilot/bullish");
+    const { pilotConfig: v2PilotConfig } = await import("./pilot/config");
+
+    // Shared Bullish client (reuses the existing creds from env / Render dashboard)
+    const v2BullishClient = v2PilotConfig.bullish.enabled
+      ? new V2BullishClient(v2PilotConfig.bullish)
+      : null;
+    if (!v2BullishClient) {
+      console.warn("[FoxifyV2] Bullish disabled (PILOT_BULLISH_ENABLED=false). Cache will run Deribit-only.");
+    }
+
+    // Liquid chain cache — Deribit always, Bullish if creds present.
+    // Two-step init to allow Bullish provider to reference cache.getCached() for spot.
+    const v2Providers: VenueChainProvider[] = [
+      { venue: "deribit", fetch: async () => fetchFullChainSnapshot() }
+    ];
+    const v2LiquidCache: import("./singleSide/twoSided/liquidChainCache").LiquidChainCache =
+      new LiquidChainCache({
+        // 180s — reduces Bullish API pressure substantially. We were hitting
+        // Bullish rate limit 96100 (account-level throttle) with 30s TTL
+        // because each refresh fires ~30 orderbook calls. 180s gives Bullish
+        // 6x more headroom while still being fresh enough for MTM accuracy.
+        ttlMs: 180_000,
+        staleMaxAgeMs: 10 * 60_000,
+        providers: v2Providers
+      });
+    if (v2BullishClient) {
+      v2Providers.push({
+        venue: "bullish",
+        fetch: async () => {
+          const cached = v2LiquidCache.getCached();
+          const centerSpot: number = cached?.spot ?? 75_000;
+          return fetchBullishChainSnapshot(v2BullishClient, centerSpot, {
+            centerSpot,
+            centerTenorDays: 2,         // narrower: was 3d, now 2d (covers 1-3d cells well enough)
+            strikeWindowUsdc: 4_000,    // narrower: was $6k, now $4k (skip far-OTM strikes we never trade)
+            tenorWindowDays: 1.5,       // narrower: was 2d, now 1.5d
+            maxConcurrency: 2,          // unchanged: 2 concurrent orderbook calls
+            timeoutMs: 4_000
+          });
+        }
+      });
+    }
+
+    // Anchor provider — backed by the same cache (no double fetches per activation)
+    const v2AnchorProvider = liquidChainAnchorProvider(v2LiquidCache);
+
+    // FeedService + DvolService — start() begins the polling loop.
+    // Bug fix: previously called tick() (one-shot fetch), so services only had
+    // one data point at boot, then DvolService went stale after 5 min and
+    // regime returned null. start() does an immediate tick AND schedules the
+    // recurring setInterval timer.
+    const v2FeedService = new FeedService({ pollPeriodMs: 5_000 });
+    const v2DvolService = new DvolService({ pollPeriodMs: 60_000 });
+    // RvService: realized-vol computation over rolling 24h, refreshed every 5min.
+    // Used by /foxify/v2/should_activate to compute vol risk premium (IV - RV)
+    // for calm-regime tactical override.
+    const v2RvService = new RvService({ pollPeriodMs: 5 * 60_000, lookbackHours: 24 });
+    await v2FeedService.start();
+    await v2DvolService.start();
+    await v2RvService.start();
+
+    // Executors — Shadow by default; LIVE behind FOXIFY_V2_LIVE_EXECUTION=true env flag.
+    // Both activate-side (StrangleExecutor) and close-side (CloseExecutor) flip together.
+    // Live execution fires REAL Bullish + Deribit orders. Operator must explicitly opt-in.
+    let v2Executor: import("./singleSide/twoSided/executor").StrangleExecutor;
+    let v2CloseExecutor: import("./singleSide/twoSided/closeExecutor").CloseExecutor;
+    const liveExecutionEnabled = String(process.env.FOXIFY_V2_LIVE_EXECUTION ?? "false").toLowerCase() === "true";
+    if (liveExecutionEnabled) {
+      const { LiveStrangleExecutor } = await import("./singleSide/twoSided/liveStrangleExecutor");
+      const { LiveCloseExecutor } = await import("./singleSide/twoSided/liveCloseExecutor");
+      const { BullishLegAdapter, DeribitLegAdapter } = await import("./singleSide/twoSided/liveVenueAdapters");
+      if (!v2BullishClient) {
+        throw new Error("FOXIFY_V2_LIVE_EXECUTION=true but Bullish creds missing (PILOT_BULLISH_ENABLED=false)");
+      }
+      if (!v2PilotConfig.bullish.tradingAccountId) {
+        throw new Error("FOXIFY_V2_LIVE_EXECUTION=true but PILOT_BULLISH_TRADING_ACCOUNT_ID is empty");
+      }
+      const bullishAdapter = new BullishLegAdapter(v2BullishClient, {
+        tradingAccountId: v2PilotConfig.bullish.tradingAccountId
+      });
+      // Reuse the existing module-level deribit connector from earlier in this file.
+      // Adapter needs current spot at order time to convert USDC↔BTC pricing (Deribit
+      // quotes options in BTC per option; our internal model uses USDC per BTC option).
+      const deribitAdapter = new DeribitLegAdapter(deribit, {
+        getCurrentSpotUsd: () => v2FeedService.getCurrentFeed()?.canonicalPrice ?? null
+      });
+      v2Executor = new LiveStrangleExecutor(bullishAdapter, deribitAdapter);
+      v2CloseExecutor = new LiveCloseExecutor(bullishAdapter, deribitAdapter);
+      console.log("[FoxifyV2] ⚠️  LIVE EXECUTION ENABLED — real venue orders will fire on /foxify/v2/activate AND close paths. Set FOXIFY_V2_LIVE_EXECUTION=false to revert to shadow.");
+    } else {
+      const { ShadowCloseExecutor } = await import("./singleSide/twoSided/closeExecutor");
+      v2Executor = new ShadowStrangleExecutor();
+      v2CloseExecutor = new ShadowCloseExecutor();
+      console.log("[FoxifyV2] Shadow executors active (activate + close). Set FOXIFY_V2_LIVE_EXECUTION=true for live.");
+    }
+
+    // ─── Trigger detector + execution runtime registry ───
+    // Without these, activated pairs sit in DB forever and never close even
+    // if BTC moves through trigger boundaries. The detector watches the feed
+    // every second; when a pair crosses ±N%, it transitions to triggered and
+    // spawns an ExecutionRuntime that manages the close lifecycle.
+    const { TriggerDetector } = await import("./singleSide/twoSided/triggerDetector");
+    const { getRuntimeRegistry, bootResurrect } = await import("./singleSide/twoSided/runtimeRegistry");
+    const { getPairById } = await import("./singleSide/twoSided/db");
+    const { recordNewbornTrigger } = await import("./singleSide/twoSided/featureFlag");
+
+    const v2Registry = getRuntimeRegistry();
+    // RuntimeDeps shared across all per-pair runtimes (registry passes to each spawnRuntime).
+    const v2RuntimeDeps: import("./singleSide/twoSided/executionRuntime").RuntimeDeps = {
+      pool: v2Pool,
+      getFeed: () => v2FeedService.getCurrentFeed(),
+      closeExecutor: v2CloseExecutor,
+      getCurrentSigma: () => v2DvolService.getCurrentDvol()?.sigmaAnnual ?? 0.35,
+      getCurrentSlippageHaircut: () => 0.82, // matches V6 sim default; refine when LiveCloseExecutor fills land empirical data
+      calibrationFor: async () => ({ putCalib: 1.0, callCalib: 1.0, riskFreeRate: 0.045 })
+      // unwindQueue: omitted for now — runs without throttling (single-pair load)
+    };
+
+    const v2TriggerDetector = new TriggerDetector({
+      pool: v2Pool,
+      getFeed: () => v2FeedService.getCurrentFeed(),
+      onTrigger: async (pair) => {
+        try {
+          await v2Registry.spawnRuntime(pair, v2RuntimeDeps);
+          console.log(`[FoxifyV2] Spawned ExecutionRuntime for triggered pair=${pair.pairId}`);
+        } catch (e) {
+          console.error(`[FoxifyV2] Failed to spawn runtime for ${pair.pairId}: ${(e as Error).message}`);
+        }
+      },
+      getCurrentRegime: () => v2DvolService.getCurrentDvol()?.regime ?? null,
+      recordNewbornForRegime: async (regime) => recordNewbornTrigger(v2Pool, regime)
+    });
+    v2TriggerDetector.start(1_000); // 1-second poll
+    console.log("[FoxifyV2] Trigger detector started (1s polling)");
+
+    // Boot resurrection: any pair left in 'triggered' or 'unwinding' from a
+    // prior deploy gets its runtime spawned NOW so we resume managing it.
+    try {
+      const resurrected = await bootResurrect(v2Pool, v2RuntimeDeps);
+      if (resurrected.totalResumed > 0) {
+        console.log(`[FoxifyV2] bootResurrect resumed ${resurrected.totalResumed} pair(s) (${resurrected.triggeredResumed} triggered, ${resurrected.unwindingResumed} unwinding)`);
+      } else {
+        console.log("[FoxifyV2] bootResurrect: no in-progress pairs to resume");
+      }
+    } catch (e) {
+      console.error(`[FoxifyV2] bootResurrect failed: ${(e as Error).message}`);
+    }
+
+    // Spawn-for-force-close helper used by /foxify/v2/close handler
+    const v2SpawnForceClose = async (pairId: string): Promise<void> => {
+      const pair = await getPairById(v2Pool, pairId);
+      if (!pair) throw new Error(`pair_not_found: ${pairId}`);
+      await v2Registry.spawnRuntimeForceClose(pair, v2RuntimeDeps);
+    };
+
+    // ─── Shadow auto-TP handler ───
+    // Auto-closes shadow pairs that hit TP threshold (simulates Foxify-bot
+    // 'close early on profit' behavior). SHADOW ONLY — never touches live
+    // pairs (those are the real bot's responsibility).
+    try {
+      const { ShadowAutoTpHandler, readAutoTpConfig } = await import("./singleSide/twoSided/shadowAutoTpHandler");
+      const tpConfig = readAutoTpConfig();
+      const v2AutoTp = new ShadowAutoTpHandler({
+        pool: v2Pool,
+        liquidChainCache: v2LiquidCache,
+        getCurrentIvAnnual: () => v2DvolService.getCurrentDvol()?.sigmaAnnual ?? 0.35,
+        config: tpConfig,
+        log: (m, x) => console.log(`[FoxifyV2/autoTp] ${m}`, x ?? "")
+      });
+      v2AutoTp.start();
+    } catch (e) {
+      console.error(`[FoxifyV2] FAILED to start shadow auto-TP handler: ${(e as Error).message}`);
+    }
+
+    // ─── Expiry handler ───
+    // Auto-settles pairs that hit expires_at WITHOUT triggering. Without this,
+    // active-but-never-triggered pairs sit in 'active' status forever.
+    // Trigger detector handles boundary crossings; close handler handles
+    // Foxify-initiated close; this handles the no-trigger-by-expiry case.
+    try {
+      const { ExpiryHandler } = await import("./singleSide/twoSided/expiryHandler");
+      const v2ExpiryHandler = new ExpiryHandler({
+        pool: v2Pool,
+        liquidChainCache: v2LiquidCache,
+        getCurrentIvAnnual: () => v2DvolService.getCurrentDvol()?.sigmaAnnual ?? 0.35,
+        pollMs: 60_000, // 60s; expiry isn't time-sensitive
+        log: (m, x) => console.log(`[FoxifyV2/expiry] ${m}`, x ?? "")
+      });
+      v2ExpiryHandler.start();
+    } catch (e) {
+      console.error(`[FoxifyV2] FAILED to start expiry handler: ${(e as Error).message}`);
+    }
+
+    // ─── Gate snapshot persistence poller ───
+    // Always runs (independent of any other flag). Computes the gate every
+    // 30s and writes a deduped snapshot row so we can answer historical
+    // questions like "what % of time was signal GO?" with hard data.
+    try {
+      const { ensureGateSnapshotSchema, persistGateSnapshotIfChanged } = await import("./singleSide/twoSided/gateSnapshotPersist");
+      const { computeActivationGate } = await import("./singleSide/twoSided/activationGate");
+      const { recordGateSnapshot } = await import("./singleSide/twoSided/gateHistory");
+      await ensureGateSnapshotSchema(v2Pool);
+      const persistInterval = setInterval(async () => {
+        try {
+          const gate = await computeActivationGate({
+            dvolService: v2DvolService,
+            rvService: v2RvService,
+            liquidChainCache: v2LiquidCache
+          });
+          const halt = await (await import("./singleSide/twoSided/guardrails")).getHaltState(v2Pool);
+          const haltActive = halt.foxifyHalt || halt.atticusHalt;
+          const finalGood = !haltActive && gate.good_to_activate;
+          const nowMs = Date.now();
+          // Update in-memory ring too so trend computation has fresh data
+          recordGateSnapshot({ asOfMs: nowMs, vrp: gate.vrp, goodToActivate: finalGood, regime: gate.regime });
+          await persistGateSnapshotIfChanged(v2Pool, {
+            ts: new Date(nowMs),
+            good_to_activate: finalGood,
+            regime: gate.regime,
+            dvol: gate.dvol,
+            vrp: gate.vrp,
+            iv_annual: gate.iv_annual,
+            rv_annual: gate.rv_annual,
+            signal_tier: gate.signal_tier,
+            signal_score: gate.signal_score
+          });
+        } catch (e) {
+          console.error(`[FoxifyV2] gate snapshot persist tick failed: ${(e as Error).message}`);
+        }
+      }, 30_000);
+      // Don't keep the process alive just for this poller
+      if (typeof (persistInterval as { unref?: () => void }).unref === "function") {
+        (persistInterval as { unref: () => void }).unref();
+      }
+      console.log("[FoxifyV2] Gate snapshot poller started (30s interval, deduped writes)");
+    } catch (e) {
+      console.error(`[FoxifyV2] FAILED to start gate snapshot poller: ${(e as Error).message}`);
+    }
+
+    // ─── Shadow auto-activator ───
+    // Signal-driven shadow pair opener. Default OFF; enable with SHADOW_AUTO_ACTIVATE=true.
+    // Always ensures the audit schema so the admin status endpoint works even when disabled.
+    const {
+      ShadowAutoActivator,
+      readAutoActivatorConfig,
+      ensureShadowAuditSchema
+    } = await import("./singleSide/twoSided/shadowAutoActivator");
+    const v2ShadowAutoCfg = readAutoActivatorConfig();
+    try {
+      await ensureShadowAuditSchema(v2Pool);
+    } catch (e) {
+      console.error(`[FoxifyV2] ensureShadowAuditSchema failed: ${(e as Error).message}`);
+    }
+    const v2ShadowAutoActivator = new ShadowAutoActivator({
+      pool: v2Pool,
+      dvolService: v2DvolService,
+      rvService: v2RvService,
+      feedService: v2FeedService,
+      liquidChainCache: v2LiquidCache,
+      anchorProvider: v2AnchorProvider,
+      config: v2ShadowAutoCfg
+    });
+    v2ShadowAutoActivator.start();
+
+    await app.register(async (instance) => {
+      await registerFoxifyV2Routes(instance, {
+        pool: v2Pool,
+        feedService: v2FeedService,
+        dvolService: v2DvolService,
+        rvService: v2RvService,
+        anchorProvider: v2AnchorProvider,
+        executor: v2Executor,
+        liquidChainCache: v2LiquidCache,
+        getRuntime: (pairId) => v2Registry.getRuntime(pairId),
+        spawnRuntimeForceClose: v2SpawnForceClose,
+        newbornReviewThreshold: Number(process.env.SS_TWO_SIDED_NEWBORN_REVIEW_PER_REGIME ?? "10"),
+        shadowAutoActivator: v2ShadowAutoActivator,
+        shadowAutoActivatorConfig: v2ShadowAutoCfg
+      });
+    });
+    console.log(`[FoxifyV2] Routes registered at /foxify/v2/* and /admin/foxify/v2/* (bullish_quotes=${Boolean(v2BullishClient)}, shadow_auto_activate=${v2ShadowAutoCfg.enabled})`);
+  } catch (err) {
+    console.error(`[FoxifyV2] FAILED to register routes: ${(err as Error).message}`);
+  }
+} else {
+  console.log("[FoxifyV2] Disabled (FOXIFY_V2_ENABLED=false). Set to true to mount routes.");
+}
+
+const treasuryConfig = parseTreasuryConfig();
+if (treasuryConfig.enabled) {
+  const { getPilotPool } = await import("./pilot/db");
+  const treasuryPool = getPilotPool(process.env.POSTGRES_URL || process.env.DATABASE_URL || "");
+  const { createPilotVenueAdapter } = await import("./pilot/venue");
+  const treasuryVenue = createPilotVenueAdapter({
+    mode: "deribit_live",
+    falconx: { baseUrl: "", apiKey: "", secret: "", passphrase: "" },
+    deribit,
+    quoteTtlMs: 30000,
+    deribitQuotePolicy: "ask_or_mark_fallback",
+    deribitStrikeSelectionMode: "trigger_aligned",
+    deribitMaxTenorDriftDays: 3
+  });
+  await registerTreasuryRoutes(app, {
+    pool: treasuryPool,
+    venue: treasuryVenue,
+    deribit,
+    config: treasuryConfig
+  });
+  startTreasuryScheduler({
+    pool: treasuryPool,
+    venue: treasuryVenue,
+    deribit,
+    config: treasuryConfig
+  });
+}
 
 const startServer = async () => {
   try {
