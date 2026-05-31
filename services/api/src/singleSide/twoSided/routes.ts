@@ -857,6 +857,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     { preHandler: checkAdminToken },
     async (req, reply) => {
       const { runFullCellSweep, ensureCellSweepSchema } = await import("./cellSweep");
+      const { classifyRegime } = await import("./featureFlag");
       const feed = deps.feedService.getCurrentFeed();
       const body = req.body ?? {};
       const spot = typeof body.spot === "number" ? body.spot : feed?.canonicalPrice;
@@ -864,13 +865,28 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(503).send({ error: "feed_unavailable", message: "Cannot sweep without canonical spot" });
         return;
       }
+      if (!deps.liquidChainCache) {
+        reply.code(503).send({ error: "chain_cache_unavailable", message: "Sweep requires liquidChainCache for real-price lookups" });
+        return;
+      }
+      const currentDvol = deps.dvolService.getCurrentDvol();
+      if (!currentDvol) {
+        reply.code(503).send({ error: "dvol_unavailable", message: "Cannot determine current regime without live DVOL" });
+        return;
+      }
+      const currentRegime = classifyRegime(currentDvol.dvol);
       try {
         await ensureCellSweepSchema(deps.pool);
       } catch (e) {
         reply.code(500).send({ error: "schema_init_failed", message: (e as Error).message });
         return;
       }
-      // Reply IMMEDIATELY with run launch — sweep runs in background
+      // Venue mode: auto (default), bullish, deribit
+      const venueParam = typeof body.venue === "string" ? body.venue : "auto";
+      if (venueParam !== "auto" && venueParam !== "bullish" && venueParam !== "deribit") {
+        reply.code(400).send({ error: "invalid_request", message: "venue must be 'auto' | 'bullish' | 'deribit'" });
+        return;
+      }
       const acceptedAt = new Date().toISOString();
       const config: Parameters<typeof runFullCellSweep>[1] = {
         spot,
@@ -881,7 +897,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         autoClosePnlPcts: Array.isArray(body.autoClosePnlPcts) ? body.autoClosePnlPcts as number[] : undefined,
         autoCloseAbsoluteUsdcs: Array.isArray(body.autoCloseAbsoluteUsdcs) ? body.autoCloseAbsoluteUsdcs as number[] : undefined,
         nPaths: typeof body.nPaths === "number" ? body.nPaths : undefined,
-        syntheticRealismByRegime: body.syntheticRealismByRegime as Record<"calm" | "moderate" | "elevated" | "stress", number> | undefined
+        venue: venueParam,
+        liquidChainCache: deps.liquidChainCache,
+        dvolService: deps.dvolService,
+        currentRegime
       };
       void runFullCellSweep(deps.pool, config, {
         progressLog: (msg) => console.log(`[cellSweep] ${msg}`),
@@ -894,7 +913,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       reply.code(202).send({
         accepted_at: acceptedAt,
         message: "Sweep launched in background. Poll /admin/foxify/v2/cell-sweep/latest for results.",
-        spot
+        spot,
+        current_regime: currentRegime,
+        venue: venueParam,
+        note: "Cells in non-current regimes are marked 'estimate' (chain only knows TODAY). Real-time cell selection should use rankings.<regime>.topCells where result_tier='real'."
       });
     }
   );

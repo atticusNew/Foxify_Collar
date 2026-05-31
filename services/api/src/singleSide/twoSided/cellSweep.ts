@@ -2,44 +2,52 @@
  * Cell sweep — runs runFoxifyDurationMc across a grid of cell parameters
  * × regimes × auto-close thresholds and ranks the survivors per regime.
  *
+ * REAL-PRICING REWRITE (2026-05-30):
+ *   Cost and salvage realism now come from REAL chain data via priceOption.
+ *   No more BS × synthetic_markup. For cells where chain has no quote at
+ *   the candidate strike/tenor → cell is marked chain_unavailable and
+ *   EXCLUDED from rankings (no synthetic backfill).
+ *
+ *   Non-current regimes can only ever produce ESTIMATE results because we
+ *   only have today's chain. Those results are tagged "estimate" and
+ *   ineligible for the rankings_actionable view.
+ *
  * Search space (configurable):
  *   - strike moneyness:      ATM, -1% OTM, -2% OTM, -3% OTM, -5% OTM (5)
  *   - tenor days:            1, 2, 3, 5, 7 (5)
  *   - notional:              25k, 50k, 100k (3)
  *   - trigger %:             0.02, 0.03, 0.04, 0.05 (4)
  *   - auto-close pnl %:      0.20, 0.30, 0.50, 1.00 (4)
- *   - regime:                calm, moderate, elevated, stress (4)
+ *   - regime:                calm, moderate, elevated, stress (4) — non-current = estimate
  *   = 4,800 unique cell-x-regime sims per default sweep
  *
- * Each cell is evaluated PER REGIME — a cell's verdict can differ across
- * regimes (e.g. profitable in elevated, negative in calm).
- *
- * Selection criteria per regime (in order):
+ * Cell selection per regime (only from REAL results):
  *   1. mean Foxify net per pair → target $200-300 (user spec)
  *   2. pct profitable >= 60% (consistency)
- *   3. lower capital ratio at equal expected net (capital efficiency)
- *   4. smaller p5 loss (tail safety)
- *
- * Output: per-regime ranked list of top-N cells, plus full result matrix
- * for inspection. Persisted to two_sided_cell_sweep_run + _result tables.
+ *   3. lower capital ratio at equal expected net
+ *   4. smaller p5 loss
  */
 
 import type { Pool, PoolClient } from "pg";
 import { randomUUID } from "node:crypto";
 import { runFoxifyDurationMc, type FoxifyDurationMcResult } from "./foxifyDurationMc";
 import type { Regime } from "./featureFlag";
+import { classifyRegime } from "./featureFlag";
 import { getRegimeCalibration } from "./regimeCalibration";
+import { priceOption } from "./optionPricing";
+import type { LiquidChainCache } from "./liquidChainCache";
+import type { DvolService } from "./dvolService";
 
 export type CellCandidate = {
-  /** Synthetic ID encoding the parameters. */
   cellId: string;
   notionalUsdcPerLeg: number;
   triggerPct: number;
-  strikeMoneynessPct: number; // 0 = ATM, -0.05 = 5% OTM, +0.02 = 2% ITM
+  strikeMoneynessPct: number;
   tenorDays: number;
-  /** Inferred contracts per leg from notional and spot. */
   contractsBtc: number;
 };
+
+export type SweepVenue = "auto" | "bullish" | "deribit";
 
 export type SweepConfig = {
   spot: number;
@@ -48,31 +56,41 @@ export type SweepConfig = {
   strikeMoneyness?: number[];
   tenors?: number[];
   autoClosePnlPcts?: number[];
-  /** Default $250 ≈ Foxify target. Use 1e9 to disable absolute trigger. */
   autoCloseAbsoluteUsdcs?: number[];
-  /** Hedge cost ALWAYS pulled from priceOption (real bids) — but for sweep
-   * we synthesize the cost from BS at current spot × calibration markup × 2 (legs)
-   * because actual chain data isn't keyed by these synthetic strikes. The
-   * realism multiplier is also synthesized from calibration. */
-  syntheticRealismByRegime?: Record<Regime, number>;
   nPaths?: number;
+  /**
+   * Venue preference for price lookups:
+   *   "auto"    → priceOption picks best venue (exact_symbol → fuzzy → bs)
+   *   "bullish" → only consider Bullish quotes for cost + salvage
+   *   "deribit" → only consider Deribit quotes
+   *
+   * Use "bullish" or "deribit" to compare venue-specific economics.
+   */
+  venue?: SweepVenue;
+  /** Liquid chain cache for real price lookups. REQUIRED. */
+  liquidChainCache: LiquidChainCache;
+  /** DvolService for live IV. Optional but recommended. */
+  dvolService?: DvolService | null;
+  /**
+   * Current regime (typically classifyRegime(currentDvol)). Cells in this
+   * regime get rated "real" if chain has quotes; cells in other regimes
+   * are always "estimate" (we can't simulate other-regime conditions
+   * without historical chain data).
+   */
+  currentRegime: Regime;
 };
 
 const DEFAULT_NOTIONALS = [25_000, 50_000, 100_000];
 const DEFAULT_TRIGGERS = [0.02, 0.03, 0.04, 0.05];
-const DEFAULT_STRIKE_MONEYNESS = [0, -0.01, -0.02, -0.03, -0.05]; // ATM, OTM
+const DEFAULT_STRIKE_MONEYNESS = [0, -0.01, -0.02, -0.03, -0.05];
 const DEFAULT_TENORS = [1, 2, 3, 5, 7];
 const DEFAULT_AUTO_CLOSE_PCTS = [0.20, 0.30, 0.50, 1.00];
-const DEFAULT_AUTO_CLOSE_ABS = [200, 250, 300]; // user target $200-300
+const DEFAULT_AUTO_CLOSE_ABS = [200, 250, 300];
 
 const REGIMES: Regime[] = ["calm", "moderate", "elevated", "stress"];
-
 const STRIKE_GRID_USDC = 1000;
-
-// Helper: snap to $1k strike grid
 const snapStrike = (raw: number): number => Math.round(raw / STRIKE_GRID_USDC) * STRIKE_GRID_USDC;
 
-// Helper: synthesize cellId from parameters
 const buildCellId = (params: CellCandidate, autoCloseUsdc: number, autoClosePct: number): string => {
   const kNotional = `${params.notionalUsdcPerLeg / 1000}k`;
   const triggerStr = `${(params.triggerPct * 100).toFixed(0)}pct`;
@@ -81,6 +99,11 @@ const buildCellId = (params: CellCandidate, autoCloseUsdc: number, autoClosePct:
     : `${(params.strikeMoneynessPct * 100).toFixed(0)}itm`;
   return `sweep_${kNotional}_${triggerStr}_${moneyStr}_${params.tenorDays}d_tp${(autoClosePct * 100).toFixed(0)}_abs${autoCloseUsdc}`;
 };
+
+/** What the cost came from. */
+export type CostSource = "real_ask_bullish" | "real_ask_deribit" | "chain_unavailable";
+/** What the salvage realism came from. */
+export type SalvageSource = "real_bid_bullish" | "real_bid_deribit" | "chain_unavailable";
 
 export type CellSweepResult = {
   cellId: string;
@@ -95,34 +118,58 @@ export type CellSweepResult = {
   putStrike: number;
   callStrike: number;
   sigmaUsed: number;
-  syntheticHedgeCostUsdc: number;
-  mc: FoxifyDurationMcResult;
+  /** Cost in USDC for one pair (both legs). */
+  hedgeCostUsdc: number;
+  /** Source of cost: which venue's ask we used, or chain_unavailable. */
+  costSourcePut: CostSource;
+  costSourceCall: CostSource;
+  /** Realism multiplier used in MC (real_bid / bs_at_spot). */
+  salvageRealismMultiplier: number;
+  salvageSourcePut: SalvageSource;
+  salvageSourceCall: SalvageSource;
+  /** Whether this result is REAL (current regime + chain available) or ESTIMATE. */
+  resultTier: "real" | "estimate" | "chain_unavailable";
+  mc: FoxifyDurationMcResult | null;
+};
+
+export type RankedCell = {
+  cellId: string;
+  mean_foxify_net_usdc: number;
+  pct_profitable: number;
+  p5_foxify_net_usdc: number;
+  capital_per_pair: number;
+  pnl_per_dollar_at_risk: number;
+  auto_close_pct: number;
+  trigger_pct: number;
+  expiry_pct: number;
+  cost_source_put: CostSource;
+  cost_source_call: CostSource;
+  salvage_source_put: SalvageSource;
+  salvage_source_call: SalvageSource;
+  result_tier: "real" | "estimate";
+  params: {
+    notional: number;
+    trigger: number;
+    moneyness: number;
+    tenor_days: number;
+    auto_close_pnl_pct: number;
+    auto_close_absolute_usdc: number;
+    put_strike: number;
+    call_strike: number;
+  };
 };
 
 export type RegimeRanking = {
   regime: Regime;
-  topCells: Array<{
-    cellId: string;
-    mean_foxify_net_usdc: number;
-    pct_profitable: number;
-    p5_foxify_net_usdc: number;
-    capital_per_pair: number;
-    pnl_per_dollar_at_risk: number;
-    auto_close_pct: number;
-    trigger_pct: number;
-    expiry_pct: number;
-    params: {
-      notional: number;
-      trigger: number;
-      moneyness: number;
-      tenor_days: number;
-      auto_close_pnl_pct: number;
-      auto_close_absolute_usdc: number;
-    };
-  }>;
-  /** Number of cells that passed both Foxify-target ($200-300) and consistency (>=60% profitable) checks. */
+  result_tier: "real" | "estimate" | "chain_unavailable";
+  /** Cells where chain had quotes (cost + salvage both real). */
+  cellsWithChainData: number;
+  /** Cells skipped because no chain quote. */
+  cellsSkippedNoChain: number;
+  /** Cells passing Foxify target ($200-300 net, >= 60% profitable). */
   cellsMatchingFoxifyTarget: number;
-  /** All cells evaluated for this regime (for full inspection). */
+  /** Top-10 cells ranked by mean net. */
+  topCells: RankedCell[];
   totalCellsEvaluated: number;
 };
 
@@ -132,6 +179,8 @@ export type FullSweepReport = {
   completedAt: string;
   totalSims: number;
   spot: number;
+  currentRegime: Regime;
+  venue: SweepVenue;
   calibrationUsed: Record<Regime, { sigma: number; markup: number; sigmaSource: string; markupSource: string }>;
   rankings: Record<Regime, RegimeRanking>;
   resultCount: number;
@@ -148,6 +197,8 @@ export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
       total_sims INTEGER NOT NULL,
       spot NUMERIC(12,2) NOT NULL,
       result_count INTEGER NOT NULL DEFAULT 0,
+      current_regime TEXT,
+      venue TEXT,
       calibration_json TEXT NOT NULL,
       rankings_json TEXT
     );
@@ -158,6 +209,7 @@ export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
       run_id TEXT NOT NULL REFERENCES two_sided_cell_sweep_run(run_id),
       cell_id TEXT NOT NULL,
       regime TEXT NOT NULL,
+      result_tier TEXT NOT NULL,
       notional_usdc_per_leg NUMERIC(12,2) NOT NULL,
       trigger_pct NUMERIC(6,4) NOT NULL,
       strike_moneyness_pct NUMERIC(6,4) NOT NULL,
@@ -168,16 +220,21 @@ export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
       put_strike NUMERIC(12,2) NOT NULL,
       call_strike NUMERIC(12,2) NOT NULL,
       sigma_used NUMERIC(8,5) NOT NULL,
-      synthetic_hedge_cost_usdc NUMERIC(12,2) NOT NULL,
-      mean_foxify_net_usdc NUMERIC(12,2) NOT NULL,
-      median_foxify_net_usdc NUMERIC(12,2) NOT NULL,
-      p5_foxify_net_usdc NUMERIC(12,2) NOT NULL,
-      p95_foxify_net_usdc NUMERIC(12,2) NOT NULL,
-      pct_profitable NUMERIC(6,4) NOT NULL,
-      auto_close_pct NUMERIC(6,4) NOT NULL,
-      trigger_pct_outcome NUMERIC(6,4) NOT NULL,
-      expiry_pct NUMERIC(6,4) NOT NULL,
-      n_paths INTEGER NOT NULL
+      hedge_cost_usdc NUMERIC(12,2) NOT NULL,
+      cost_source_put TEXT NOT NULL,
+      cost_source_call TEXT NOT NULL,
+      salvage_realism_multiplier NUMERIC(6,4) NOT NULL,
+      salvage_source_put TEXT NOT NULL,
+      salvage_source_call TEXT NOT NULL,
+      mean_foxify_net_usdc NUMERIC(12,2),
+      median_foxify_net_usdc NUMERIC(12,2),
+      p5_foxify_net_usdc NUMERIC(12,2),
+      p95_foxify_net_usdc NUMERIC(12,2),
+      pct_profitable NUMERIC(6,4),
+      auto_close_pct NUMERIC(6,4),
+      trigger_pct_outcome NUMERIC(6,4),
+      expiry_pct NUMERIC(6,4),
+      n_paths INTEGER
     );
   `);
   try {
@@ -186,11 +243,141 @@ export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
   } catch { /* pg-mem may not support */ }
 };
 
-// ─────────────────────────── Synthesis ───────────────────────────
+// ─────────────────────────── Real pricing per candidate ───────────────────────────
 
 /**
- * Build the list of cell × regime × auto-close combinations to evaluate.
+ * For a candidate cell at the current spot, query priceOption for REAL bid/ask
+ * on both legs. Returns null when chain has no usable quote for either leg.
+ *
+ * The cost is `(real_put_ask + real_call_ask) × contractsBtc`.
+ * The realism multiplier is `(real_put_bid + real_call_bid) / (bs_put + bs_call)`
+ * computed at current spot — same approach as gate_with_ev / ev-by-regime.
+ *
+ * When venue is "bullish" or "deribit", we only count quotes from that venue.
  */
+type RealPricingResult = {
+  hedgeCostUsdc: number;
+  costSourcePut: CostSource;
+  costSourceCall: CostSource;
+  salvageRealismMultiplier: number;
+  salvageSourcePut: SalvageSource;
+  salvageSourceCall: SalvageSource;
+  putBidPerBtc: number;
+  callBidPerBtc: number;
+  putAskPerBtc: number;
+  callAskPerBtc: number;
+  bsPutPerBtc: number;
+  bsCallPerBtc: number;
+};
+
+const sourceLabel = (
+  venue: "deribit" | "bullish" | null,
+  side: "ask" | "bid"
+): CostSource | SalvageSource => {
+  if (!venue) return "chain_unavailable" as CostSource;
+  if (side === "ask") return venue === "bullish" ? "real_ask_bullish" : "real_ask_deribit";
+  return venue === "bullish" ? "real_bid_bullish" : "real_bid_deribit";
+};
+
+const priceCandidateLeg = (
+  spot: number,
+  strike: number,
+  optType: "put" | "call",
+  tenorDays: number,
+  contractsBtc: number,
+  liquidChainCache: LiquidChainCache,
+  dvolService: DvolService | null,
+  venuePreference: SweepVenue
+) => {
+  // Use priceOption for cost (purpose: fair_value with bidHaircut=1.0 gives us raw bid+ask+bs)
+  const preferVenue: "deribit" | "bullish" | undefined =
+    venuePreference === "bullish" ? "bullish" :
+    venuePreference === "deribit" ? "deribit" : undefined;
+  const result = priceOption({
+    spot, strike, optType,
+    tenorRemainingMs: tenorDays * 86_400_000,
+    contractsBtc,
+    venue: preferVenue ?? null,
+    instrumentSymbol: null, // synthetic strike — no specific symbol to match
+    liquidChainCache,
+    dvolService: dvolService ?? null,
+    purpose: "fair_value",
+    bidHaircut: 1.0
+  });
+  // Venue filter: when venuePreference is bullish/deribit, REJECT quotes from other venues
+  if ((venuePreference === "bullish" || venuePreference === "deribit") && result.venue_used && result.venue_used !== venuePreference) {
+    return {
+      askPerBtc: null,
+      bidPerBtc: null,
+      bsPerBtc: result.bs_theoretical_per_btc,
+      venue: null as "deribit" | "bullish" | null,
+      askSource: "chain_unavailable" as CostSource,
+      bidSource: "chain_unavailable" as SalvageSource
+    };
+  }
+  // Quality gate: if source is bs_only, treat as chain_unavailable (we want REAL only)
+  if (result.source === "bs_only") {
+    return {
+      askPerBtc: null,
+      bidPerBtc: null,
+      bsPerBtc: result.bs_theoretical_per_btc,
+      venue: null,
+      askSource: "chain_unavailable" as CostSource,
+      bidSource: "chain_unavailable" as SalvageSource
+    };
+  }
+  return {
+    askPerBtc: result.ask_per_btc,
+    bidPerBtc: result.bid_per_btc,
+    bsPerBtc: result.bs_theoretical_per_btc,
+    venue: result.venue_used,
+    askSource: sourceLabel(result.venue_used, "ask") as CostSource,
+    bidSource: sourceLabel(result.venue_used, "bid") as SalvageSource
+  };
+};
+
+const computeRealPricing = (
+  spot: number,
+  putStrike: number,
+  callStrike: number,
+  contractsBtc: number,
+  tenorDays: number,
+  liquidChainCache: LiquidChainCache,
+  dvolService: DvolService | null,
+  venuePreference: SweepVenue
+): RealPricingResult | null => {
+  const putP = priceCandidateLeg(spot, putStrike, "put", tenorDays, contractsBtc, liquidChainCache, dvolService, venuePreference);
+  const callP = priceCandidateLeg(spot, callStrike, "call", tenorDays, contractsBtc, liquidChainCache, dvolService, venuePreference);
+  // Need real ask on BOTH legs to compute real cost
+  if (putP.askPerBtc == null || callP.askPerBtc == null) {
+    return null;
+  }
+  // Need real bid on BOTH legs (or fall back to bs_only realism = 1.0 which we explicitly reject)
+  if (putP.bidPerBtc == null || callP.bidPerBtc == null) {
+    return null;
+  }
+  const hedgeCostUsdc = (putP.askPerBtc + callP.askPerBtc) * contractsBtc;
+  const realCombined = putP.bidPerBtc + callP.bidPerBtc;
+  const bsCombined = putP.bsPerBtc + callP.bsPerBtc;
+  const realismMultiplier = bsCombined > 0 ? Math.max(0, Math.min(1.5, realCombined / bsCombined)) : 1.0;
+  return {
+    hedgeCostUsdc,
+    costSourcePut: putP.askSource,
+    costSourceCall: callP.askSource,
+    salvageRealismMultiplier: realismMultiplier,
+    salvageSourcePut: putP.bidSource,
+    salvageSourceCall: callP.bidSource,
+    putBidPerBtc: putP.bidPerBtc,
+    callBidPerBtc: callP.bidPerBtc,
+    putAskPerBtc: putP.askPerBtc,
+    callAskPerBtc: callP.askPerBtc,
+    bsPutPerBtc: putP.bsPerBtc,
+    bsCallPerBtc: callP.bsPerBtc
+  };
+};
+
+// ─────────────────────────── Sweep ───────────────────────────
+
 const buildSearchGrid = (spot: number, config: SweepConfig): CellCandidate[] => {
   const notionals = config.notionals ?? DEFAULT_NOTIONALS;
   const triggers = config.triggers ?? DEFAULT_TRIGGERS;
@@ -217,31 +404,6 @@ const buildSearchGrid = (spot: number, config: SweepConfig): CellCandidate[] => 
   return candidates;
 };
 
-/**
- * For a sweep cell, synthesize the hedge cost: pure BS at current spot
- * × regime markup × 2 legs × bid_haircut. Real activations will use live
- * venue asks but for sweep purposes this is a defensible proxy.
- */
-import { bsPut, bsCall } from "../../../scripts/backtest/singleSide/coreEngine";
-import { RISK_FREE_RATE } from "./optionPricing";
-
-const synthesizeHedgeCost = (
-  spot: number,
-  putStrike: number,
-  callStrike: number,
-  contractsBtc: number,
-  tenorDays: number,
-  sigma: number,
-  regimeMarkup: number
-): number => {
-  const T = tenorDays / 365;
-  const bsP = Math.max(0, bsPut(spot, putStrike, T, RISK_FREE_RATE, sigma));
-  const bsC = Math.max(0, bsCall(spot, callStrike, T, RISK_FREE_RATE, sigma));
-  return (bsP + bsC) * contractsBtc * regimeMarkup;
-};
-
-// ─────────────────────────── Sweep ───────────────────────────
-
 export const runFullCellSweep = async (
   pool: Pool,
   config: SweepConfig,
@@ -252,6 +414,7 @@ export const runFullCellSweep = async (
 ): Promise<FullSweepReport> => {
   const log = opts.progressLog ?? (() => {});
   const persistResults = opts.persistResults !== false;
+  const venue: SweepVenue = config.venue ?? "auto";
   const runId = randomUUID();
   const startedAt = new Date();
   const candidates = buildSearchGrid(config.spot, config);
@@ -260,12 +423,12 @@ export const runFullCellSweep = async (
   const totalSims = candidates.length * REGIMES.length * autoClosePcts.length * autoCloseAbs.length;
   const calibration = await getRegimeCalibration(pool);
 
-  log(`sweep runId=${runId} cells=${candidates.length} regimes=${REGIMES.length} auto-close-combos=${autoClosePcts.length * autoCloseAbs.length} total_sims=${totalSims}`);
+  log(`sweep runId=${runId} cells=${candidates.length} regimes=${REGIMES.length} auto-close-combos=${autoClosePcts.length * autoCloseAbs.length} total_sims=${totalSims} venue=${venue} current_regime=${config.currentRegime}`);
 
   if (persistResults) {
     await pool.query(
-      `INSERT INTO two_sided_cell_sweep_run (run_id, started_at, total_sims, spot, calibration_json) VALUES ($1::text, $2::timestamptz, $3, $4, $5)`,
-      [runId, startedAt.toISOString(), totalSims, config.spot,
+      `INSERT INTO two_sided_cell_sweep_run (run_id, started_at, total_sims, spot, current_regime, venue, calibration_json) VALUES ($1::text, $2::timestamptz, $3, $4::numeric, $5::text, $6::text, $7::text)`,
+      [runId, startedAt.toISOString(), totalSims, config.spot, config.currentRegime, venue,
        JSON.stringify(Object.fromEntries(REGIMES.map((r) => [r, calibration[r]])))]
     );
   }
@@ -274,32 +437,61 @@ export const runFullCellSweep = async (
   let simIdx = 0;
 
   for (const candidate of candidates) {
+    // Strikes are derived from spot once per candidate (regime-independent)
+    const rawPut = config.spot * (1 - candidate.strikeMoneynessPct);
+    const rawCall = config.spot * (1 + candidate.strikeMoneynessPct);
+    const putStrike = snapStrike(rawPut);
+    const callStrike = snapStrike(rawCall);
+
+    // REAL PRICING — query chain for current spot quotes. Same answer used
+    // across all regimes for this candidate (the chain only knows TODAY).
+    const pricing = computeRealPricing(
+      config.spot, putStrike, callStrike, candidate.contractsBtc,
+      candidate.tenorDays, config.liquidChainCache, config.dvolService ?? null, venue
+    );
+
     for (const regime of REGIMES) {
       const cal = calibration[regime];
-      const sigma = cal.sigma;
-      const markup = cal.markup;
-      const realism = config.syntheticRealismByRegime?.[regime] ?? 0.80;
-      // Snap strikes — put goes UP (more ITM for moneyness>0), call goes DOWN
-      const rawPut = config.spot * (1 - candidate.strikeMoneynessPct);
-      const rawCall = config.spot * (1 + candidate.strikeMoneynessPct);
-      const putStrike = snapStrike(rawPut);
-      const callStrike = snapStrike(rawCall);
-      const hedgeCost = synthesizeHedgeCost(
-        config.spot, putStrike, callStrike, candidate.contractsBtc,
-        candidate.tenorDays, sigma, markup
-      );
+      const sigma = cal.sigma; // for the MC's per-tick BS valuation (still uses calibration sigma)
 
       for (const autoClosePct of autoClosePcts) {
         for (const autoCloseAbsUsdc of autoCloseAbs) {
           simIdx++;
           if (simIdx % 200 === 0) log(`progress: ${simIdx}/${totalSims} sims complete`);
           const cellId = buildCellId(candidate, autoCloseAbsUsdc, autoClosePct);
+
+          // CASE 1: Chain has no quote → skip; no synthetic backfill
+          if (!pricing) {
+            const result: CellSweepResult = {
+              cellId, regime,
+              notionalUsdcPerLeg: candidate.notionalUsdcPerLeg,
+              triggerPct: candidate.triggerPct,
+              strikeMoneynessPct: candidate.strikeMoneynessPct,
+              tenorDays: candidate.tenorDays,
+              autoClosePnlPct: autoClosePct,
+              autoCloseAbsoluteUsdc: autoCloseAbsUsdc,
+              contractsBtc: candidate.contractsBtc,
+              putStrike, callStrike,
+              sigmaUsed: sigma,
+              hedgeCostUsdc: 0,
+              costSourcePut: "chain_unavailable",
+              costSourceCall: "chain_unavailable",
+              salvageRealismMultiplier: 0,
+              salvageSourcePut: "chain_unavailable",
+              salvageSourceCall: "chain_unavailable",
+              resultTier: "chain_unavailable",
+              mc: null
+            };
+            allResults.push(result);
+            continue;
+          }
+
+          // CASE 2: Run MC with real cost + real realism multiplier
           const mc = await runFoxifyDurationMc({
             cellId,
             spot: config.spot,
-            hedgeCostUsdc: hedgeCost,
-            putStrike,
-            callStrike,
+            hedgeCostUsdc: pricing.hedgeCostUsdc,
+            putStrike, callStrike,
             tenorDays: candidate.tenorDays,
             triggerPctDown: candidate.triggerPct,
             triggerPctUp: candidate.triggerPct,
@@ -308,9 +500,11 @@ export const runFullCellSweep = async (
             contractsBtc: candidate.contractsBtc,
             autoClosePnlPct: autoClosePct,
             autoCloseAbsoluteUsdc: autoCloseAbsUsdc,
-            salvageRealismMultiplier: realism,
-            nPaths: config.nPaths ?? 500 // smaller per-sim for sweep speed
+            salvageRealismMultiplier: pricing.salvageRealismMultiplier,
+            nPaths: config.nPaths ?? 500
           });
+          const resultTier: "real" | "estimate" =
+            regime === config.currentRegime ? "real" : "estimate";
           const result: CellSweepResult = {
             cellId, regime,
             notionalUsdcPerLeg: candidate.notionalUsdcPerLeg,
@@ -322,7 +516,13 @@ export const runFullCellSweep = async (
             contractsBtc: candidate.contractsBtc,
             putStrike, callStrike,
             sigmaUsed: sigma,
-            syntheticHedgeCostUsdc: hedgeCost,
+            hedgeCostUsdc: pricing.hedgeCostUsdc,
+            costSourcePut: pricing.costSourcePut,
+            costSourceCall: pricing.costSourceCall,
+            salvageRealismMultiplier: pricing.salvageRealismMultiplier,
+            salvageSourcePut: pricing.salvageSourcePut,
+            salvageSourceCall: pricing.salvageSourceCall,
+            resultTier,
             mc
           };
           allResults.push(result);
@@ -331,75 +531,94 @@ export const runFullCellSweep = async (
     }
   }
 
-  // Persist each result row
+  // Persist all results
   if (persistResults) {
     for (const r of allResults) {
       await pool.query(
         `INSERT INTO two_sided_cell_sweep_result (
-          run_id, cell_id, regime, notional_usdc_per_leg, trigger_pct,
+          run_id, cell_id, regime, result_tier, notional_usdc_per_leg, trigger_pct,
           strike_moneyness_pct, tenor_days, auto_close_pnl_pct, auto_close_absolute_usdc,
-          contracts_btc, put_strike, call_strike, sigma_used, synthetic_hedge_cost_usdc,
+          contracts_btc, put_strike, call_strike, sigma_used, hedge_cost_usdc,
+          cost_source_put, cost_source_call, salvage_realism_multiplier,
+          salvage_source_put, salvage_source_call,
           mean_foxify_net_usdc, median_foxify_net_usdc, p5_foxify_net_usdc, p95_foxify_net_usdc,
           pct_profitable, auto_close_pct, trigger_pct_outcome, expiry_pct, n_paths
         ) VALUES (
-          $1, $2, $3, $4::numeric, $5::numeric, $6::numeric, $7::numeric, $8::numeric, $9::numeric,
-          $10::numeric, $11::numeric, $12::numeric, $13::numeric, $14::numeric,
-          $15::numeric, $16::numeric, $17::numeric, $18::numeric,
-          $19::numeric, $20::numeric, $21::numeric, $22::numeric, $23
+          $1, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8::numeric, $9::numeric, $10::numeric,
+          $11::numeric, $12::numeric, $13::numeric, $14::numeric, $15::numeric,
+          $16, $17, $18::numeric, $19, $20,
+          $21, $22, $23, $24, $25, $26, $27, $28, $29
         )`,
         [
-          runId, r.cellId, r.regime, r.notionalUsdcPerLeg, r.triggerPct,
+          runId, r.cellId, r.regime, r.resultTier, r.notionalUsdcPerLeg, r.triggerPct,
           r.strikeMoneynessPct, r.tenorDays, r.autoClosePnlPct, r.autoCloseAbsoluteUsdc,
-          r.contractsBtc, r.putStrike, r.callStrike, r.sigmaUsed, r.syntheticHedgeCostUsdc,
-          r.mc.meanFoxifyNetUsdc, r.mc.medianFoxifyNetUsdc, r.mc.p5FoxifyNetUsdc, r.mc.p95FoxifyNetUsdc,
-          r.mc.pctProfitable, r.mc.exitDistribution.foxify_auto_close,
-          r.mc.exitDistribution.trigger_peak, r.mc.exitDistribution.expiry, r.mc.nPaths
+          r.contractsBtc, r.putStrike, r.callStrike, r.sigmaUsed, r.hedgeCostUsdc,
+          r.costSourcePut, r.costSourceCall, r.salvageRealismMultiplier,
+          r.salvageSourcePut, r.salvageSourceCall,
+          r.mc?.meanFoxifyNetUsdc ?? null, r.mc?.medianFoxifyNetUsdc ?? null,
+          r.mc?.p5FoxifyNetUsdc ?? null, r.mc?.p95FoxifyNetUsdc ?? null,
+          r.mc?.pctProfitable ?? null, r.mc?.exitDistribution.foxify_auto_close ?? null,
+          r.mc?.exitDistribution.trigger_peak ?? null, r.mc?.exitDistribution.expiry ?? null,
+          r.mc?.nPaths ?? null
         ]
       );
     }
   }
 
-  // Rank per regime
+  // Rank per regime — but only REAL results are eligible for ranking
   const rankings: Record<Regime, RegimeRanking> = {} as Record<Regime, RegimeRanking>;
   for (const regime of REGIMES) {
     const regimeResults = allResults.filter((r) => r.regime === regime);
-    // Filter: must satisfy primary (net >= $200) AND secondary (pct >= 60%)
-    const meeting = regimeResults.filter((r) =>
-      r.mc.meanFoxifyNetUsdc >= 200 && r.mc.pctProfitable >= 0.60
+    const eligibleResults = regimeResults.filter((r) => r.mc != null && r.resultTier !== "chain_unavailable");
+    const chainAvailable = regimeResults.filter((r) => r.resultTier !== "chain_unavailable").length;
+    const chainUnavailable = regimeResults.filter((r) => r.resultTier === "chain_unavailable").length;
+    const meeting = eligibleResults.filter((r) =>
+      (r.mc?.meanFoxifyNetUsdc ?? 0) >= 200 && (r.mc?.pctProfitable ?? 0) >= 0.60
     );
-    // Sort by mean net descending, tiebreak by lower capital, then higher p5
-    const ranked = [...regimeResults].sort((a, b) => {
-      if (Math.abs(a.mc.meanFoxifyNetUsdc - b.mc.meanFoxifyNetUsdc) > 5) {
-        return b.mc.meanFoxifyNetUsdc - a.mc.meanFoxifyNetUsdc;
-      }
-      if (Math.abs(a.syntheticHedgeCostUsdc - b.syntheticHedgeCostUsdc) > 5) {
-        return a.syntheticHedgeCostUsdc - b.syntheticHedgeCostUsdc;
-      }
-      return b.mc.p5FoxifyNetUsdc - a.mc.p5FoxifyNetUsdc;
+    const ranked = [...eligibleResults].sort((a, b) => {
+      const aNet = a.mc?.meanFoxifyNetUsdc ?? -Infinity;
+      const bNet = b.mc?.meanFoxifyNetUsdc ?? -Infinity;
+      if (Math.abs(aNet - bNet) > 5) return bNet - aNet;
+      if (Math.abs(a.hedgeCostUsdc - b.hedgeCostUsdc) > 5) return a.hedgeCostUsdc - b.hedgeCostUsdc;
+      return (b.mc?.p5FoxifyNetUsdc ?? -Infinity) - (a.mc?.p5FoxifyNetUsdc ?? -Infinity);
     });
-    const top = ranked.slice(0, 10).map((r) => ({
+    const top: RankedCell[] = ranked.slice(0, 10).map((r) => ({
       cellId: r.cellId,
-      mean_foxify_net_usdc: +r.mc.meanFoxifyNetUsdc.toFixed(2),
-      pct_profitable: +r.mc.pctProfitable.toFixed(4),
-      p5_foxify_net_usdc: +r.mc.p5FoxifyNetUsdc.toFixed(2),
-      capital_per_pair: +r.syntheticHedgeCostUsdc.toFixed(2),
-      pnl_per_dollar_at_risk: +(r.mc.meanFoxifyNetUsdc / r.syntheticHedgeCostUsdc).toFixed(4),
-      auto_close_pct: +r.mc.exitDistribution.foxify_auto_close.toFixed(4),
-      trigger_pct: +r.mc.exitDistribution.trigger_peak.toFixed(4),
-      expiry_pct: +r.mc.exitDistribution.expiry.toFixed(4),
+      mean_foxify_net_usdc: +((r.mc?.meanFoxifyNetUsdc ?? 0)).toFixed(2),
+      pct_profitable: +((r.mc?.pctProfitable ?? 0)).toFixed(4),
+      p5_foxify_net_usdc: +((r.mc?.p5FoxifyNetUsdc ?? 0)).toFixed(2),
+      capital_per_pair: +r.hedgeCostUsdc.toFixed(2),
+      pnl_per_dollar_at_risk: r.hedgeCostUsdc > 0 ? +((r.mc?.meanFoxifyNetUsdc ?? 0) / r.hedgeCostUsdc).toFixed(4) : 0,
+      auto_close_pct: +((r.mc?.exitDistribution.foxify_auto_close ?? 0)).toFixed(4),
+      trigger_pct: +((r.mc?.exitDistribution.trigger_peak ?? 0)).toFixed(4),
+      expiry_pct: +((r.mc?.exitDistribution.expiry ?? 0)).toFixed(4),
+      cost_source_put: r.costSourcePut,
+      cost_source_call: r.costSourceCall,
+      salvage_source_put: r.salvageSourcePut,
+      salvage_source_call: r.salvageSourceCall,
+      result_tier: r.resultTier as "real" | "estimate",
       params: {
         notional: r.notionalUsdcPerLeg,
         trigger: r.triggerPct,
         moneyness: r.strikeMoneynessPct,
         tenor_days: r.tenorDays,
         auto_close_pnl_pct: r.autoClosePnlPct,
-        auto_close_absolute_usdc: r.autoCloseAbsoluteUsdc
+        auto_close_absolute_usdc: r.autoCloseAbsoluteUsdc,
+        put_strike: r.putStrike,
+        call_strike: r.callStrike
       }
     }));
+    // The regime's overall tier — "real" only if the current regime, else "estimate"
+    const regimeTier: "real" | "estimate" | "chain_unavailable" =
+      chainAvailable === 0 ? "chain_unavailable"
+      : regime === config.currentRegime ? "real" : "estimate";
     rankings[regime] = {
       regime,
-      topCells: top,
+      result_tier: regimeTier,
+      cellsWithChainData: chainAvailable,
+      cellsSkippedNoChain: chainUnavailable,
       cellsMatchingFoxifyTarget: meeting.length,
+      topCells: top,
       totalCellsEvaluated: regimeResults.length
     };
   }
@@ -411,13 +630,15 @@ export const runFullCellSweep = async (
       [completedAt.toISOString(), allResults.length, JSON.stringify(rankings), runId]
     );
   }
-  log(`sweep complete: ${allResults.length} results, persisted=${persistResults}, runId=${runId}`);
+  log(`sweep complete: ${allResults.length} results (chain_available_pct=${(allResults.filter(r => r.resultTier !== "chain_unavailable").length / allResults.length * 100).toFixed(1)}%), runId=${runId}`);
   return {
     runId,
     startedAt: startedAt.toISOString(),
     completedAt: completedAt.toISOString(),
     totalSims,
     spot: config.spot,
+    currentRegime: config.currentRegime,
+    venue,
     calibrationUsed: Object.fromEntries(REGIMES.map((r) => [r, {
       sigma: calibration[r].sigma,
       markup: calibration[r].markup,
@@ -435,6 +656,7 @@ export const getLatestSweepRun = async (pool: Pool | PoolClient): Promise<FullSw
   const r = await pool.query<{
     run_id: string; started_at: string; completed_at: string | null;
     total_sims: number; spot: string; result_count: number;
+    current_regime: string | null; venue: string | null;
     calibration_json: string; rankings_json: string | null;
   }>(`SELECT * FROM two_sided_cell_sweep_run ORDER BY started_at DESC LIMIT 1`);
   if (r.rows.length === 0) return null;
@@ -446,6 +668,8 @@ export const getLatestSweepRun = async (pool: Pool | PoolClient): Promise<FullSw
     completedAt: row.completed_at,
     totalSims: row.total_sims,
     spot: Number(row.spot),
+    currentRegime: (row.current_regime as Regime) ?? classifyRegime(35),
+    venue: (row.venue as SweepVenue) ?? "auto",
     calibrationUsed: JSON.parse(row.calibration_json),
     rankings: JSON.parse(row.rankings_json),
     resultCount: row.result_count
