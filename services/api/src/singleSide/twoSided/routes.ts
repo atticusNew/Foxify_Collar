@@ -1083,6 +1083,35 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/vega-timing — calm-edge research (pure REAL DVOL history).
+   * Backtests: does buying a long-vega ATM straddle when IV is in a LOW percentile
+   * (calm) and exiting after a hold profit from IV expansion (vega) beyond theta?
+   * Query: ?entry_percentile=0.25&hold_days=2&tenor_days=7&lookback_days=30&calm_only=true
+   */
+  app.get<{ Querystring: { entry_percentile?: string; hold_days?: string; tenor_days?: string; lookback_days?: string; calm_only?: string; ref_spot?: string } }>(
+    "/admin/foxify/v2/vega-timing",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { backtestVegaTiming } = await import("./vegaTimingBacktest");
+      const q = req.query;
+      const numQ = (v: string | undefined): number | undefined => (v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : undefined);
+      try {
+        const result = await backtestVegaTiming(deps.pool, {
+          entryPercentile: numQ(q.entry_percentile),
+          holdDays: numQ(q.hold_days),
+          tenorDays: numQ(q.tenor_days),
+          lookbackDays: numQ(q.lookback_days),
+          refSpot: numQ(q.ref_spot),
+          calmOnly: q.calm_only !== "false"
+        });
+        reply.send(result);
+      } catch (e) {
+        reply.code(500).send({ error: "vega_timing_failed", message: (e as Error).message });
+      }
+    }
+  );
+
+  /**
    * POST /admin/foxify/v2/dvol-backfill
    *
    * Phase 6: backfill historical Deribit DVOL into two_sided_dvol_history so
