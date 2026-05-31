@@ -190,6 +190,7 @@ export type FullSweepReport = {
 // ─────────────────────────── DB schema ───────────────────────────
 
 export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
+  // 1. Base table CREATE (no-op if exists)
   await pool.query(`
     CREATE TABLE IF NOT EXISTS two_sided_cell_sweep_run (
       run_id TEXT PRIMARY KEY,
@@ -198,8 +199,6 @@ export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
       total_sims INTEGER NOT NULL,
       spot NUMERIC(12,2) NOT NULL,
       result_count INTEGER NOT NULL DEFAULT 0,
-      current_regime TEXT,
-      venue TEXT,
       calibration_json TEXT NOT NULL,
       rankings_json TEXT
     );
@@ -210,7 +209,6 @@ export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
       run_id TEXT NOT NULL REFERENCES two_sided_cell_sweep_run(run_id),
       cell_id TEXT NOT NULL,
       regime TEXT NOT NULL,
-      result_tier TEXT NOT NULL,
       notional_usdc_per_leg NUMERIC(12,2) NOT NULL,
       trigger_pct NUMERIC(6,4) NOT NULL,
       strike_moneyness_pct NUMERIC(6,4) NOT NULL,
@@ -221,23 +219,50 @@ export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
       put_strike NUMERIC(12,2) NOT NULL,
       call_strike NUMERIC(12,2) NOT NULL,
       sigma_used NUMERIC(8,5) NOT NULL,
-      hedge_cost_usdc NUMERIC(12,2) NOT NULL,
-      cost_source_put TEXT NOT NULL,
-      cost_source_call TEXT NOT NULL,
-      salvage_realism_multiplier NUMERIC(6,4) NOT NULL,
-      salvage_source_put TEXT NOT NULL,
-      salvage_source_call TEXT NOT NULL,
-      mean_foxify_net_usdc NUMERIC(12,2),
-      median_foxify_net_usdc NUMERIC(12,2),
-      p5_foxify_net_usdc NUMERIC(12,2),
-      p95_foxify_net_usdc NUMERIC(12,2),
-      pct_profitable NUMERIC(6,4),
-      auto_close_pct NUMERIC(6,4),
-      trigger_pct_outcome NUMERIC(6,4),
-      expiry_pct NUMERIC(6,4),
-      n_paths INTEGER
+      hedge_cost_usdc NUMERIC(12,2) NOT NULL
     );
   `);
+
+  // 2. Idempotent ADD COLUMN migrations (handle tables created by prior schemas).
+  //    Each runs independently with its own try/catch so one missing column
+  //    doesn't block the rest. Postgres ADD COLUMN IF NOT EXISTS is safe.
+  const additions: Array<{ table: string; column: string; definition: string }> = [
+    // _run table additions (post-2026-05-31)
+    { table: "two_sided_cell_sweep_run", column: "current_regime", definition: "TEXT" },
+    { table: "two_sided_cell_sweep_run", column: "venue", definition: "TEXT" },
+    // _result table additions
+    { table: "two_sided_cell_sweep_result", column: "result_tier", definition: "TEXT NOT NULL DEFAULT 'estimate'" },
+    { table: "two_sided_cell_sweep_result", column: "cost_source_put", definition: "TEXT NOT NULL DEFAULT 'unknown'" },
+    { table: "two_sided_cell_sweep_result", column: "cost_source_call", definition: "TEXT NOT NULL DEFAULT 'unknown'" },
+    { table: "two_sided_cell_sweep_result", column: "salvage_realism_multiplier", definition: "NUMERIC(6,4) NOT NULL DEFAULT 0" },
+    { table: "two_sided_cell_sweep_result", column: "salvage_source_put", definition: "TEXT NOT NULL DEFAULT 'unknown'" },
+    { table: "two_sided_cell_sweep_result", column: "salvage_source_call", definition: "TEXT NOT NULL DEFAULT 'unknown'" },
+    { table: "two_sided_cell_sweep_result", column: "mean_foxify_net_usdc", definition: "NUMERIC(12,2)" },
+    { table: "two_sided_cell_sweep_result", column: "median_foxify_net_usdc", definition: "NUMERIC(12,2)" },
+    { table: "two_sided_cell_sweep_result", column: "p5_foxify_net_usdc", definition: "NUMERIC(12,2)" },
+    { table: "two_sided_cell_sweep_result", column: "p95_foxify_net_usdc", definition: "NUMERIC(12,2)" },
+    { table: "two_sided_cell_sweep_result", column: "pct_profitable", definition: "NUMERIC(6,4)" },
+    { table: "two_sided_cell_sweep_result", column: "auto_close_pct", definition: "NUMERIC(6,4)" },
+    { table: "two_sided_cell_sweep_result", column: "trigger_pct_outcome", definition: "NUMERIC(6,4)" },
+    { table: "two_sided_cell_sweep_result", column: "expiry_pct", definition: "NUMERIC(6,4)" },
+    { table: "two_sided_cell_sweep_result", column: "n_paths", definition: "INTEGER" }
+  ];
+  for (const a of additions) {
+    try {
+      await pool.query(`ALTER TABLE ${a.table} ADD COLUMN IF NOT EXISTS ${a.column} ${a.definition}`);
+    } catch (e) {
+      // pg-mem doesn't support ADD COLUMN IF NOT EXISTS — try without the IF NOT EXISTS
+      try {
+        await pool.query(`ALTER TABLE ${a.table} ADD COLUMN ${a.column} ${a.definition}`);
+      } catch (e2) {
+        // Column already exists in fresh schema (test setup) — swallow
+        if (!String(e2).match(/already exists|duplicate column|column exists/i)) {
+          console.warn(`[cellSweepSchema] add column failed: ${a.table}.${a.column}: ${(e2 as Error).message}`);
+        }
+      }
+    }
+  }
+
   try {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_two_sided_cell_sweep_result_run ON two_sided_cell_sweep_result(run_id);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_two_sided_cell_sweep_result_regime_net ON two_sided_cell_sweep_result(regime, mean_foxify_net_usdc DESC);`);
