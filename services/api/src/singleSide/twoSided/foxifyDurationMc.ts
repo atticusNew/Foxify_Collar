@@ -86,6 +86,8 @@ export type FoxifyDurationMcInputs = {
   barsOverride?: { highs: number[]; lows: number[]; closes: number[] } | null;
   /** Deterministic RNG seed. */
   seed?: number;
+  /** When true, the result includes the raw per-path Foxify-net array (for bootstrapping projections). */
+  returnNets?: boolean;
   /**
    * GAMMA SCALP MODE (Phase 4.5). When true, the option position is treated as
    * delta-hedged via Foxify's perp pair: each tick we rehedge the combined delta
@@ -151,6 +153,8 @@ export type FoxifyDurationMcResult = {
   // Metadata
   nPaths: number;
   pathGenerator: "bootstrap" | "gbm";
+  /** Raw per-path Foxify-net samples — present only when returnNets was set (for projections). */
+  nets?: number[];
   /**
    * Gamma-scalp diagnostics — null unless gammaScalpWithPerpHedge was set.
    * Decomposes the delta-hedged economics so the operator can see WHERE the
@@ -467,6 +471,7 @@ export const runFoxifyDurationMc = async (
     meanAtticusShareUsdc: mean(atticusShares),
     nPaths,
     pathGenerator: bars && inputs.regime === "calm" ? "bootstrap" : "gbm",
+    nets: inputs.returnNets ? foxifyNets : undefined,
     gammaScalp: gammaScalpMode ? {
       meanPerpHedgePnlUsdc: mean(gsPerpPnls),
       meanPerpFrictionUsdc: mean(gsFrictions),

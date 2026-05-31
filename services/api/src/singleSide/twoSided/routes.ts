@@ -1128,6 +1128,44 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * POST /admin/foxify/v2/scaling-projection — 30-day capital-scaling projection.
+   * From a hedge budget, projects concurrent pairs + cumulative volume/profit +
+   * drawdown over N days, recycling profits (no split), with LIVE pricing + the
+   * MC's real net distribution (p5/median/p95).
+   * Body: { cell_id, regime?, budget_usdc, days?=30, cycle_days?, market_availability?,
+   *         max_concurrent?, n_runs?, spot? }
+   */
+  app.post<{ Body?: Record<string, unknown> }>(
+    "/admin/foxify/v2/scaling-projection",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { projectScaling } = await import("./scalingProjection");
+      const b = req.body ?? {};
+      const num = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = typeof b.spot === "number" ? b.spot : feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      if (!deps.liquidChainCache) { reply.code(503).send({ error: "chain_cache_unavailable" }); return; }
+      const cellId = typeof b.cell_id === "string" ? b.cell_id : "pair_50k_3pct_atm_3d";
+      const validRegimes = ["calm", "moderate", "elevated", "stress"];
+      const regime = (typeof b.regime === "string" && validRegimes.includes(b.regime) ? b.regime : "moderate") as "calm" | "moderate" | "elevated" | "stress";
+      const budgetUsdc = num(b.budget_usdc);
+      if (!budgetUsdc || budgetUsdc <= 0) { reply.code(400).send({ error: "invalid_request", message: "budget_usdc (positive number) required" }); return; }
+      try {
+        const result = await projectScaling(deps.pool, {
+          cellId, regime, budgetUsdc, spot,
+          liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
+          days: num(b.days), cycleDays: num(b.cycle_days), marketAvailability: num(b.market_availability),
+          maxConcurrent: num(b.max_concurrent), nRuns: num(b.n_runs)
+        });
+        reply.send(result);
+      } catch (e) {
+        reply.code(500).send({ error: "projection_failed", message: (e as Error).message });
+      }
+    }
+  );
+
+  /**
    * POST /admin/foxify/v2/dvol-backfill
    *
    * Phase 6: backfill historical Deribit DVOL into two_sided_dvol_history so
