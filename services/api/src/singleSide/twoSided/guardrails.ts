@@ -176,6 +176,8 @@ export type ActivationContext = {
   currentRegime?: "calm" | "moderate" | "elevated" | "stress";
   /** Threshold for newborn review (default 3 per regime). */
   newbornReviewThreshold?: number;
+  /** True for shadow activations — uses the (higher) shadow DVOL halt + skips the live capital-at-risk cap. */
+  isShadow?: boolean;
 };
 
 export const DVOL_HALT_THRESHOLD = 60;
@@ -185,14 +187,36 @@ export const CAPITAL_POOL_HEADROOM_FACTOR = 1.5;
 export const canActivate = async (
   pool: Pool,
   ctx: ActivationContext
-): Promise<{ ok: boolean; reason?: HaltReason | "manual_foxify" | "manual_operator"; details?: Record<string, unknown> }> => {
+): Promise<{ ok: boolean; reason?: HaltReason | "manual_foxify" | "manual_operator" | "capital_at_risk_cap"; details?: Record<string, unknown> }> => {
   const halt = await getHaltState(pool);
   if (halt.foxifyHalt) return { ok: false, reason: "manual_foxify", details: { reason_str: halt.foxifyHaltReason } };
   if (halt.atticusHalt) return { ok: false, reason: halt.atticusHaltReason ?? "manual_operator", details: { since: halt.atticusHaltSince } };
 
-  // DVOL gate
-  if (ctx.dvol != null && ctx.dvol > DVOL_HALT_THRESHOLD) {
-    return { ok: false, reason: "dvol_high", details: { dvol: ctx.dvol, threshold: DVOL_HALT_THRESHOLD } };
+  // DVOL gate — GRADUATED: live halts at the (conservative) live threshold; shadow
+  // uses a higher threshold so it can VALIDATE elevated/stress before they go live.
+  const liveHalt = Number(process.env.SS_TWO_SIDED_DVOL_HALT_LIVE ?? String(DVOL_HALT_THRESHOLD));
+  const shadowHalt = Number(process.env.SS_TWO_SIDED_DVOL_HALT_SHADOW ?? "1000"); // default: shadow validates all regimes
+  const dvolThreshold = ctx.isShadow ? shadowHalt : liveHalt;
+  if (ctx.dvol != null && ctx.dvol > dvolThreshold) {
+    return { ok: false, reason: "dvol_high", details: { dvol: ctx.dvol, threshold: dvolThreshold, mode: ctx.isShadow ? "shadow" : "live" } };
+  }
+
+  // Capital-at-risk cap (LIVE only) — caps TOTAL $ deployed across open real pairs,
+  // not just pair count (high-vol premiums balloon, so a count cap under-controls).
+  // Env SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC; unset = no cap.
+  if (!ctx.isShadow) {
+    const capRaw = process.env.SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC;
+    const cap = capRaw != null && capRaw !== "" ? Number(capRaw) : null;
+    if (cap != null && Number.isFinite(cap) && cap > 0) {
+      const dep = await pool.query<{ deployed: string }>(
+        `SELECT COALESCE(SUM(hedge_cost_total_usdc), 0)::text AS deployed
+         FROM two_sided_pair WHERE is_shadow = FALSE AND status IN ('active','triggered','unwinding')`
+      );
+      const deployed = Number(dep.rows[0]?.deployed ?? 0);
+      if (deployed + ctx.pairHedgeCostUsdc > cap) {
+        return { ok: false, reason: "capital_at_risk_cap", details: { deployed, adding: ctx.pairHedgeCostUsdc, cap, would_be: deployed + ctx.pairHedgeCostUsdc } };
+      }
+    }
   }
 
   // Capital pool gate

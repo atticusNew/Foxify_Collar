@@ -206,3 +206,41 @@ test("evaluateAutoHalts: no halt when conditions normal", async () => {
 test("DVOL_HALT_THRESHOLD is 60 (B2 finding)", () => {
   assert.equal(DVOL_HALT_THRESHOLD, 60);
 });
+
+test("guardrails: graduated DVOL halt — live blocked >60, shadow validates elevated", async () => {
+  const pool = await buildPool();
+  const live = await canActivate(pool, { dvol: 75, capitalAvailableUsdc: 100_000, pairHedgeCostUsdc: 1_500, isShadow: false });
+  assert.equal(live.ok, false);
+  assert.equal(live.reason, "dvol_high");
+  const shadow = await canActivate(pool, { dvol: 75, capitalAvailableUsdc: 100_000, pairHedgeCostUsdc: 1_500, isShadow: true });
+  assert.equal(shadow.ok, true, "shadow halt defaults high (1000) so elevated/stress can be validated in shadow");
+  await pool.end();
+});
+
+test("guardrails: capital-at-risk cap blocks live when deployed+new exceeds cap; shadow exempt", async () => {
+  const pool = await buildPool();
+  await pool.query(
+    `INSERT INTO two_sided_pair (pair_id, cell_id, status, foxify_pair_ref, spot_at_activation,
+       trigger_down_price, trigger_up_price, hedge_tenor_days, expires_at, tp_force_exit_at,
+       hedge_cost_total_usdc, foxify_capital_funded_usdc, tier_at_activation, atticus_floor_usdc, is_shadow)
+     VALUES ('cap-1','pair_50k_2pct','active','ref-cap-1',73000,71000,75000,3,NOW(),NOW(),2000,2000,'tier_1',25,FALSE)`
+  );
+  const prev = process.env.SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC;
+  process.env.SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC = "3000";
+  try {
+    // deployed 2000 + new 1500 = 3500 > 3000 → blocked (live)
+    const live = await canActivate(pool, { dvol: 38, capitalAvailableUsdc: 100_000, pairHedgeCostUsdc: 1_500, isShadow: false });
+    assert.equal(live.ok, false);
+    assert.equal(live.reason, "capital_at_risk_cap");
+    // shadow exempt (no real capital)
+    const shadow = await canActivate(pool, { dvol: 38, capitalAvailableUsdc: 100_000, pairHedgeCostUsdc: 1_500, isShadow: true });
+    assert.equal(shadow.ok, true);
+    // within cap: 2000 + 500 = 2500 <= 3000 → ok
+    const ok = await canActivate(pool, { dvol: 38, capitalAvailableUsdc: 100_000, pairHedgeCostUsdc: 500, isShadow: false });
+    assert.equal(ok.ok, true);
+  } finally {
+    if (prev === undefined) delete process.env.SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC;
+    else process.env.SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC = prev;
+  }
+  await pool.end();
+});

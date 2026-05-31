@@ -166,7 +166,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     getFeed: () => deps.feedService.getCurrentFeed(),
     feedVersion: "v1.0.0",
     getCurrentRegime: () => deps.dvolService.getCurrentDvol()?.regime ?? null,
-    preActivateGuard: async ({ pairHedgeCostUsdc }) => {
+    preActivateGuard: async ({ pairHedgeCostUsdc, isShadow }) => {
       // Plumbs DVOL into guardrails.canActivate
       const { canActivate } = await import("./guardrails");
       const dvol = deps.dvolService.getCurrentDvol()?.dvol ?? null;
@@ -176,7 +176,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         capitalAvailableUsdc: null, // capital pool check is operator-side for Phase 0
         pairHedgeCostUsdc,
         currentRegime: regime ?? undefined,
-        newbornReviewThreshold: deps.newbornReviewThreshold ?? 3
+        newbornReviewThreshold: deps.newbornReviewThreshold ?? 3,
+        isShadow
       });
     }
   };

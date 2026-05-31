@@ -94,7 +94,7 @@ export type ActivateDeps = {
   liquidChainCache?: import("./liquidChainCache").LiquidChainCache | null;
   /** Optional PR 9 hook — if injected, blocks activation when canActivate returns ok=false.
    * Tests can omit this. Production wires to the real guardrails module. */
-  preActivateGuard?: (ctx: { pairHedgeCostUsdc: number; spot: number }) => Promise<{ ok: boolean; reason?: string; details?: Record<string, unknown> }>;
+  preActivateGuard?: (ctx: { pairHedgeCostUsdc: number; spot: number; isShadow: boolean }) => Promise<{ ok: boolean; reason?: string; details?: Record<string, unknown> }>;
   /** Optional PR C3: returns current regime for cell-allowlist enforcement. Tests can omit. */
   getCurrentRegime?: () => "calm" | "moderate" | "elevated" | "stress" | null;
 };
@@ -225,7 +225,8 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   if (deps.preActivateGuard) {
     const guard = await deps.preActivateGuard({
       pairHedgeCostUsdc: quote.totalHedgeCostUsdc,
-      spot
+      spot,
+      isShadow: req.isShadow ?? false
     });
     if (!guard.ok) {
       return {
