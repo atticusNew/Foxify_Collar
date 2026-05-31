@@ -1040,8 +1040,20 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Use to verify that history is accumulating and that sigmas/markups
    * are converging to plausible values before we trust the MC sweep.
    */
-  app.get("/admin/foxify/v2/regime-calibration", { preHandler: checkAdminToken }, async (_req, reply) => {
-    const { getCalibrationSummary } = await import("./regimeCalibration");
+  app.get<{ Querystring: { weighting?: string; half_life_days?: string } }>(
+    "/admin/foxify/v2/regime-calibration", { preHandler: checkAdminToken }, async (req, reply) => {
+    const { getCalibrationSummary, getRegimeCalibration } = await import("./regimeCalibration");
+    // ?weighting=ewma|median → return that calibration view (for A/B vs median);
+    // no param → the standard summary (env-driven default).
+    if (req.query.weighting === "ewma" || req.query.weighting === "median") {
+      const cal = await getRegimeCalibration(deps.pool, {
+        weighting: req.query.weighting,
+        halfLifeDays: req.query.half_life_days ? Number(req.query.half_life_days) : undefined,
+        bypassCache: true
+      });
+      reply.send({ weighting: req.query.weighting, half_life_days: req.query.half_life_days ? Number(req.query.half_life_days) : 14, calibration: cal });
+      return;
+    }
     const summary = await getCalibrationSummary(deps.pool);
     reply.send(summary);
   });
@@ -1053,7 +1065,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * (cost+realism from real chain, sigma from empirical calibration).
    * Query: ?regime= (default current), n_paths=, auto_close_abs=, auto_close_pct=
    */
-  app.get<{ Querystring: { regime?: string; n_paths?: string; auto_close_abs?: string; auto_close_pct?: string } }>(
+  app.get<{ Querystring: { regime?: string; n_paths?: string; auto_close_abs?: string; auto_close_pct?: string; weighting?: string; half_life_days?: string } }>(
     "/admin/foxify/v2/realized-vs-mc",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -1073,7 +1085,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           regime, spot, liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
           nPaths: req.query.n_paths ? Number(req.query.n_paths) : undefined,
           autoCloseAbsoluteUsdc: req.query.auto_close_abs ? Number(req.query.auto_close_abs) : undefined,
-          autoClosePnlPct: req.query.auto_close_pct ? Number(req.query.auto_close_pct) : undefined
+          autoClosePnlPct: req.query.auto_close_pct ? Number(req.query.auto_close_pct) : undefined,
+          weighting: req.query.weighting === "ewma" ? "ewma" : (req.query.weighting === "median" ? "median" : undefined),
+          halfLifeDays: req.query.half_life_days ? Number(req.query.half_life_days) : undefined
         });
         reply.send(report);
       } catch (e) {

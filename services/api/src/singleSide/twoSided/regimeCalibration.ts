@@ -51,7 +51,7 @@ const CALIBRATION_CACHE_TTL_MS = Number(process.env.CALIBRATION_CACHE_TTL_MS ?? 
 export type RegimeCalibration = {
   regime: Regime;
   sigma: number;
-  sigmaSource: "empirical_median" | "synthetic_default";
+  sigmaSource: "empirical_median" | "empirical_ewma" | "synthetic_default";
   sigmaSampleCount: number;
   markup: number;
   markupSource: "empirical_median" | "synthetic_default";
@@ -62,7 +62,7 @@ export type FullRegimeCalibration = Record<Regime, RegimeCalibration>;
 
 // ──────────── Cache ────────────
 
-let _cache: { result: FullRegimeCalibration; expiresAtMs: number } | null = null;
+let _cache: { result: FullRegimeCalibration; expiresAtMs: number; weighting: "median" | "ewma" } | null = null;
 
 export const __resetCalibrationCache = (): void => {
   _cache = null;
@@ -84,18 +84,25 @@ const lookbackForRegime = (regime: Regime): number => {
  */
 export const getRegimeCalibration = async (
   pool: Pool | PoolClient,
-  opts: { nowMs?: number; bypassCache?: boolean } = {}
+  opts: { nowMs?: number; bypassCache?: boolean; weighting?: "median" | "ewma"; halfLifeDays?: number } = {}
 ): Promise<FullRegimeCalibration> => {
   const nowMs = opts.nowMs ?? Date.now();
-  if (!opts.bypassCache && _cache && _cache.expiresAtMs > nowMs) {
+  // Recency-weighting: median (default, stable) or ewma (tracks transitions faster).
+  // Env-selectable (SS_CALIB_WEIGHTING / SS_CALIB_HALFLIFE_DAYS); opts override env.
+  const weighting: "median" | "ewma" = opts.weighting
+    ?? ((process.env.SS_CALIB_WEIGHTING === "ewma") ? "ewma" : "median");
+  const halfLifeDays = opts.halfLifeDays ?? Number(process.env.SS_CALIB_HALFLIFE_DAYS ?? "14");
+  // Cache is keyed on weighting so median/ewma don't collide.
+  if (!opts.bypassCache && _cache && _cache.expiresAtMs > nowMs && _cache.weighting === weighting) {
     return _cache.result;
   }
 
-  // Use uniform 30d lookback for sigma stats query (most lenient), then
-  // per-regime sample-count gates for fallback decisions.
+  // Use uniform 90d lookback for sigma stats query, then per-regime sample-count
+  // gates for fallback decisions.
   const sigmaStats = await getAllRegimeSigmaStats(pool as Pool, {
     lookbackMs: 90 * 86_400_000, // pull 90d, gates filter per-regime
-    nowMs
+    nowMs,
+    halfLifeDays
   });
   const markupStats = await getRegimeMarkupStats(pool as Pool, {
     lookbackMs: 90 * 86_400_000,
@@ -107,12 +114,13 @@ export const getRegimeCalibration = async (
   for (const regime of regimes) {
     const ss = sigmaStats[regime];
     const ms = markupStats[regime];
-    const useEmpiricalSigma = ss.sampleCount >= MIN_SIGMA_SAMPLES && ss.medianSigma != null && ss.medianSigma > 0;
+    const empiricalSigma = weighting === "ewma" ? ss.ewmaSigma : ss.medianSigma;
+    const useEmpiricalSigma = ss.sampleCount >= MIN_SIGMA_SAMPLES && empiricalSigma != null && empiricalSigma > 0;
     const useEmpiricalMarkup = ms.sampleCount >= MIN_MARKUP_SAMPLES && ms.markupVsCalm != null && ms.markupVsCalm > 0;
     out[regime] = {
       regime,
-      sigma: useEmpiricalSigma ? (ss.medianSigma as number) : SYNTHETIC_REGIME_SIGMAS[regime],
-      sigmaSource: useEmpiricalSigma ? "empirical_median" : "synthetic_default",
+      sigma: useEmpiricalSigma ? (empiricalSigma as number) : SYNTHETIC_REGIME_SIGMAS[regime],
+      sigmaSource: useEmpiricalSigma ? (weighting === "ewma" ? "empirical_ewma" : "empirical_median") : "synthetic_default",
       sigmaSampleCount: ss.sampleCount,
       markup: useEmpiricalMarkup ? (ms.markupVsCalm as number) : SYNTHETIC_REGIME_MARKUPS[regime],
       markupSource: useEmpiricalMarkup ? "empirical_median" : "synthetic_default",
@@ -120,7 +128,7 @@ export const getRegimeCalibration = async (
     };
   }
   const result = out as FullRegimeCalibration;
-  _cache = { result, expiresAtMs: nowMs + CALIBRATION_CACHE_TTL_MS };
+  _cache = { result, expiresAtMs: nowMs + CALIBRATION_CACHE_TTL_MS, weighting };
   return result;
 };
 

@@ -120,13 +120,15 @@ export const reconcileRealizedVsMc = async (
     autoClosePnlPct?: number;
     autoCloseAbsoluteUsdc?: number;
     nowMs?: number;
+    weighting?: "median" | "ewma";
+    halfLifeDays?: number;
   }
 ): Promise<ReconcileReport> => {
   const nPaths = opts.nPaths ?? 500;
   const autoClosePnlPct = opts.autoClosePnlPct ?? 0.30;
   const autoCloseAbsoluteUsdc = opts.autoCloseAbsoluteUsdc ?? 250;
   const venue: SweepVenue = opts.venue ?? "auto";
-  const calibration = await getRegimeCalibration(pool, { nowMs: opts.nowMs });
+  const calibration = await getRegimeCalibration(pool, { nowMs: opts.nowMs, bypassCache: true, weighting: opts.weighting, halfLifeDays: opts.halfLifeDays });
   const sigma = calibration[opts.regime].sigma;
   const realizedResult = await getRealizedShadowStats(pool, { regime: opts.regime });
   const realized = realizedResult.stats;

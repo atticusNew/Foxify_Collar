@@ -78,6 +78,8 @@ export type RegimeSigmaStats = {
   sampleCount: number;
   meanSigma: number | null;
   medianSigma: number | null;
+  /** Recency-weighted (half-life) mean sigma — tracks regime transitions faster than median. */
+  ewmaSigma: number | null;
   p25Sigma: number | null;
   p75Sigma: number | null;
   minSigma: number | null;
@@ -110,10 +112,12 @@ export const getRegimeSigmaStats = async (
   opts: {
     lookbackMs?: number;
     nowMs?: number;
+    halfLifeDays?: number;
   } = {}
 ): Promise<RegimeSigmaStats> => {
   const lookbackMs = opts.lookbackMs ?? 30 * 86_400_000; // 30d default
   const nowMs = opts.nowMs ?? Date.now();
+  const halfLifeDays = opts.halfLifeDays ?? 14;
   const cutoff = new Date(nowMs - lookbackMs).toISOString();
   const r = await pool.query<{ sigma_annual: string; ts: string }>(
     `SELECT sigma_annual, ts FROM two_sided_dvol_history
@@ -127,6 +131,7 @@ export const getRegimeSigmaStats = async (
       sampleCount: 0,
       meanSigma: null,
       medianSigma: null,
+      ewmaSigma: null,
       p25Sigma: null,
       p75Sigma: null,
       minSigma: null,
@@ -138,11 +143,25 @@ export const getRegimeSigmaStats = async (
   const sigmas = r.rows.map((row) => Number(row.sigma_annual)).filter((s) => Number.isFinite(s) && s > 0);
   const sorted = [...sigmas].sort((a, b) => a - b);
   const sum = sigmas.reduce((s, x) => s + x, 0);
+  // EWMA: weight each sample by 0.5^(ageDays/halfLifeDays) relative to the newest
+  // sample, so recent DVOL dominates — tracks regime transitions faster than median.
+  const newestTs = Date.parse(r.rows[r.rows.length - 1].ts);
+  const halfLifeMs = Math.max(1, halfLifeDays) * 86_400_000;
+  let wSum = 0;
+  let wvSum = 0;
+  for (const row of r.rows) {
+    const s = Number(row.sigma_annual);
+    if (!Number.isFinite(s) || s <= 0) continue;
+    const w = Math.pow(0.5, (newestTs - Date.parse(row.ts)) / halfLifeMs);
+    wSum += w;
+    wvSum += w * s;
+  }
   return {
     regime,
     sampleCount: sigmas.length,
     meanSigma: sigmas.length > 0 ? sum / sigmas.length : null,
     medianSigma: median(sorted),
+    ewmaSigma: wSum > 0 ? wvSum / wSum : null,
     p25Sigma: percentile(sorted, 0.25),
     p75Sigma: percentile(sorted, 0.75),
     minSigma: sorted[0] ?? null,
@@ -160,6 +179,7 @@ export const getAllRegimeSigmaStats = async (
   opts: {
     lookbackMs?: number;
     nowMs?: number;
+    halfLifeDays?: number;
   } = {}
 ): Promise<Record<Regime, RegimeSigmaStats>> => {
   const regimes: Regime[] = ["calm", "moderate", "elevated", "stress"];

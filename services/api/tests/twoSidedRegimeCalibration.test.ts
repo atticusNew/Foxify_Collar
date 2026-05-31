@@ -145,3 +145,25 @@ test("regime classification matches: stored regime aligns with classifyRegime(dv
   assert.equal(classifyRegime(70), "elevated");
   assert.equal(classifyRegime(90), "stress");
 });
+
+test("calibration: EWMA weighting tracks a recent IV rise faster than median", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await ensureDvolHistorySchema(pool);
+  await ensureChainSnapshotSchema(pool);
+  const now = 1_780_000_000_000;
+  // 150 calm samples over the prior ~6 days: OLD half dvol=30, RECENT half dvol=38.
+  const base = now - 150 * 3_600_000;
+  for (let i = 0; i < 150; i++) {
+    const dvol = i < 75 ? 30 : 38; // recent half higher
+    await persistDvolSample(pool, { asOfMs: base + i * 3_600_000, dvol, sigmaAnnual: dvol / 100 });
+  }
+  const calMedian = await getRegimeCalibration(pool, { nowMs: now, bypassCache: true, weighting: "median" });
+  const calEwma = await getRegimeCalibration(pool, { nowMs: now, bypassCache: true, weighting: "ewma", halfLifeDays: 2 });
+  assert.equal(calMedian.calm.sigmaSource, "empirical_median");
+  assert.equal(calEwma.calm.sigmaSource, "empirical_ewma");
+  // EWMA weights the recent dvol=38 (sigma 0.38) more → higher than the median (~0.34)
+  assert.ok(calEwma.calm.sigma > calMedian.calm.sigma,
+    `ewma ${calEwma.calm.sigma} should exceed median ${calMedian.calm.sigma} when IV recently rose`);
+  assert.ok(calEwma.calm.sigma > 0.35, `ewma should lean toward recent 0.38, got ${calEwma.calm.sigma}`);
+});
