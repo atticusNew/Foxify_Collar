@@ -277,3 +277,35 @@ test("GET /admin/foxify/v2/diagnostics returns full snapshot", async () => {
     assert.ok("env" in body);
   } finally { await cleanup(); }
 });
+
+test("hardening: admin POST tolerates form-urlencoded body (no 415)", async () => {
+  const { app, cleanup } = await buildApp();
+  try {
+    // curl -d '{...}' sends application/x-www-form-urlencoded; the scoped parser
+    // should accept it + JSON-parse the string body rather than 415.
+    const r = await app.inject({
+      method: "POST",
+      url: "/admin/foxify/v2/halt",
+      headers: { "x-admin-token": ADMIN_TOKEN, "content-type": "application/x-www-form-urlencoded" },
+      payload: JSON.stringify({ kind: "atticus", reason: "urlencoded_test", notes: "hardening" })
+    });
+    assert.notEqual(r.statusCode, 415, "must not 415 on urlencoded body");
+    assert.equal(r.statusCode, 200);
+    assert.equal(r.json().atticusHalt, true);
+    await app.inject({ method: "POST", url: "/admin/foxify/v2/resume", headers: { "x-admin-token": ADMIN_TOKEN, "content-type": "application/json" }, payload: { kind: "atticus" } });
+  } finally { await cleanup(); }
+});
+
+test("hardening: admin POST with no body / no Content-Type does not 415", async () => {
+  const { app, cleanup } = await buildApp();
+  try {
+    // cell-sweep has an optional body; no payload + no content-type must not 415
+    // (will be 503/202 depending on feed/chain availability in the harness).
+    const r = await app.inject({
+      method: "POST",
+      url: "/admin/foxify/v2/cell-sweep",
+      headers: { "x-admin-token": ADMIN_TOKEN }
+    });
+    assert.notEqual(r.statusCode, 415, "must not 415 on missing body");
+  } finally { await cleanup(); }
+});

@@ -143,6 +143,20 @@ const checkAdminToken = async (req: FastifyRequest, reply: FastifyReply): Promis
 // ───────────────────────── Plugin ─────────────────────────
 
 export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = async (app, deps) => {
+  // ── Robust body parsing (scoped to this plugin's encapsulated context) ──
+  // Operators frequently POST admin endpoints with `curl -d '{}'` (which sends
+  // application/x-www-form-urlencoded) or with no body / no Content-Type. The
+  // default JSON-only parser rejects those with 415. This catch-all accepts any
+  // non-JSON content type (and empty bodies), parsing as JSON when possible and
+  // falling back to {} otherwise — so admin POSTs never 415 on a missing header.
+  // application/json keeps Fastify's stricter default parser (most-specific match).
+  // ENCAPSULATED: does NOT affect pilot / volumeCover / other app routes.
+  app.addContentTypeParser("*", { parseAs: "string" }, (_req, body, done) => {
+    const raw = typeof body === "string" ? body.trim() : "";
+    if (raw === "") return done(null, {});
+    try { done(null, JSON.parse(raw)); } catch { done(null, {}); }
+  });
+
   // Wrap handleActivate with deps closure
   const activateDeps: ActivateDeps = {
     pool: deps.pool,
