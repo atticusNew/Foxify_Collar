@@ -410,6 +410,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    */
   app.get("/foxify/v2/should_activate", { preHandler: checkFoxifyToken }, async (_req, reply) => {
     const { selectStructureForRegime } = await import("./structureSelector");
+    const { getEffectiveAllowlist } = await import("./cellAllowlist");
     if (!deps.rvService) {
       // RvService not wired — degrade to regime-only gate
       const dvol = deps.dvolService.getCurrentDvol();
@@ -438,7 +439,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
             : dvol?.regime
               ? `regime_${dvol.regime}_positive_ev`
               : "dvol_unavailable",
-        recommended_cells: [],
+        recommended_cells: good && dvol?.regime ? await getEffectiveAllowlist(deps.pool, dvol.regime) : [],
         recommended_structure: dvol?.regime ? selectStructureForRegime(dvol.regime).structure : null,
         structure_rationale: dvol?.regime ? selectStructureForRegime(dvol.regime).rationale : null,
         next_check_signal: "regime_change_or_rv_service_enabled",
@@ -544,7 +545,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       return;
     }
     const recSel = result.regime ? selectStructureForRegime(result.regime) : null;
+    const recCells = (finalGoodToActivate && result.regime)
+      ? await getEffectiveAllowlist(deps.pool, result.regime) : [];
     reply.send({ ...result, trends, cell_opportunities: cellOpportunities,
+      recommended_cells: recCells,
       recommended_structure: recSel?.structure ?? null, structure_rationale: recSel?.rationale ?? null });
   });
 

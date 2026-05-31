@@ -42,10 +42,14 @@ import type { Regime } from "./featureFlag";
  * Operator may re-enable any cell via /admin/foxify/v2/cell-allowlist.
  */
 export const DEFAULT_CELL_ALLOWLIST: Record<Regime, ReadonlyArray<string>> = {
+  // calm stays empty — validated stand-down (no options structure covers friction).
   calm: [],
-  moderate: ["pair_50k_2pct", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"],
-  elevated: ["pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"],
-  stress: ["pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
+  // pair_50k_3pct_atm_3d = friction-aware sweep winner (ATM straddle); added to
+  // moderate+ for end-to-end shadow validation. Live activation still gated by
+  // SS_TWO_SIDED_LIVE_ENABLED=false until real-tier validation + shadow gauntlet.
+  moderate: ["pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"],
+  elevated: ["pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"],
+  stress: ["pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
 };
 
 export const ensureCellAllowlistSchema = async (pool: Pool): Promise<void> => {

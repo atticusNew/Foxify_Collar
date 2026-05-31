@@ -138,6 +138,28 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     callStrikeItmPct: 0,
     strikeGridUsdc: 1_000,
     enabled: false
+  },
+  /**
+   * pair_50k_3pct_atm_3d — moderate+ STRADDLE, the friction-aware sweep winner
+   * (real-priced 2026-05-31): ATM straddle, 3% trigger, 3-day tenor. Estimate-tier
+   * net +$238 (moderate) / +$809 (elevated) / +$1,285 (stress), all 100% profitable
+   * and covering the ~$200-300 perp friction with room. NOT for calm (stand-down).
+   * NOTE: contractsBtc≈0.68 = 50k notional / ~$74k spot — sizing should track the
+   * perp notional (Foxify opens perps at the same size as protection); the legacy
+   * hardcoded contractsBtc on older cells is stale vs current spot. Activation is
+   * still globally gated by SS_TWO_SIDED_LIVE_ENABLED=false (shadow-only).
+   */
+  pair_50k_3pct_atm_3d: {
+    cellId: "pair_50k_3pct_atm_3d",
+    notionalUsdcPerLeg: 50_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 0.68,
+    hedgeTenorDays: 3,
+    putStrikeItmPct: 0,
+    callStrikeItmPct: 0,
+    strikeGridUsdc: 1_000,
+    enabled: true
   }
 };
 
