@@ -41,7 +41,7 @@
  * — so the optimization sweep can rank cells with apples-to-apples numbers.
  */
 
-import { bsPut, bsCall } from "../../../scripts/backtest/singleSide/coreEngine";
+import { bsPut, bsCall, bsPutDelta, bsCallDelta } from "../../../scripts/backtest/singleSide/coreEngine";
 import {
   generateBootstrapPath,
   generateGbmPath,
@@ -86,6 +86,39 @@ export type FoxifyDurationMcInputs = {
   barsOverride?: { highs: number[]; lows: number[]; closes: number[] } | null;
   /** Deterministic RNG seed. */
   seed?: number;
+  /**
+   * GAMMA SCALP MODE (Phase 4.5). When true, the option position is treated as
+   * delta-hedged via Foxify's perp pair: each tick we rehedge the combined delta
+   * to ~0 through the perp and harvest realized gamma. The trigger peak-capture
+   * branch is DISABLED (a delta-neutral book has no directional windfall).
+   * Net Foxify P&L = (option salvage - cost) + perp-hedge P&L - perp friction.
+   * A delta-hedged option at fair IV is ~zero-EV minus costs by construction —
+   * profit comes only when realized vol exceeds the IV the option was priced at.
+   * Default false → legacy behavior unchanged.
+   */
+  gammaScalpWithPerpHedge?: boolean;
+  /**
+   * REAL perp round-trip friction in basis points, applied to |Δdelta|×spot
+   * notional on every rebalance (and the initial hedge). MUST be supplied by the
+   * caller from the venue fee schedule (env FOXIFY_PERP_FRICTION_BPS) when gamma
+   * scalp mode is on — no hardcoded default (avoids rigging EV). Required iff
+   * gammaScalpWithPerpHedge.
+   */
+  perpFrictionBps?: number;
+  /**
+   * Optional perp funding cost in bps/day on the held hedge notional (env
+   * FOXIFY_PERP_FUNDING_BPS_PER_DAY). Default 0 (short tenors often ignore it).
+   */
+  perpFundingBpsPerDay?: number;
+  /**
+   * Implied vol the option is PRICED + decayed at (gamma scalp valuation/delta),
+   * decoupled from sigmaAnnual which is the REALIZED path vol. Gamma scalping is
+   * profitable exactly when realized (sigmaAnnual) exceeds implied
+   * (impliedSigmaAnnual). Default = sigmaAnnual (realized==implied → ~zero-EV
+   * carry, the neutral baseline). For the REAL sweep, set impliedSigmaAnnual to
+   * the IV embedded in the option's market ask. Only used in gamma scalp mode.
+   */
+  impliedSigmaAnnual?: number;
 };
 
 export type FoxifyExitMode = "foxify_auto_close" | "trigger_peak" | "expiry";
@@ -109,6 +142,17 @@ export type FoxifyDurationMcResult = {
   // Metadata
   nPaths: number;
   pathGenerator: "bootstrap" | "gbm";
+  /**
+   * Gamma-scalp diagnostics — null unless gammaScalpWithPerpHedge was set.
+   * Decomposes the delta-hedged economics so the operator can see WHERE the
+   * P&L came from (perp hedge harvest vs friction drag).
+   */
+  gammaScalp: {
+    meanPerpHedgePnlUsdc: number;   // mean realized perp-hedge P&L per path
+    meanPerpFrictionUsdc: number;   // mean total friction paid per path
+    meanRebalances: number;         // mean # of perp rebalances per path
+    frictionBps: number;            // friction bps used (echo of input)
+  } | null;
 };
 
 const median = (sorted: number[]): number => {
@@ -137,6 +181,101 @@ const combinedValueAt = (
   const bsP = Math.max(0, bsPut(spot, putStrike, T, RFR, sigma));
   const bsC = Math.max(0, bsCall(spot, callStrike, T, RFR, sigma));
   return (bsP + bsC) * contractsBtc * realismMultiplier;
+};
+
+// Combined option net delta (BTC) — put delta + call delta, scaled by contracts.
+// Used by gamma-scalp mode to size the perp delta hedge each tick.
+const combinedDeltaAt = (
+  spot: number,
+  putStrike: number,
+  callStrike: number,
+  contractsBtc: number,
+  remainingMs: number,
+  sigma: number
+): number => {
+  const T = Math.max(0, remainingMs / (365 * 86_400_000));
+  return (bsPutDelta(spot, putStrike, T, RFR, sigma) + bsCallDelta(spot, callStrike, T, RFR, sigma)) * contractsBtc;
+};
+
+/**
+ * Simulate ONE gamma-scalp path: delta-hedge the straddle via the perp each
+ * tick and harvest realized gamma. Returns the Foxify net (after the 85/15
+ * Atticus split on positive uplift) plus diagnostics. Pure + deterministic.
+ */
+const simulateGammaScalpPath = (
+  path: { highs: number[]; lows: number[]; closes: number[] },
+  inputs: FoxifyDurationMcInputs,
+  realismMultiplier: number,
+  bidSlip: number,
+  splitPct: number,
+  floorUsdc: number,
+  frictionBps: number,
+  fundingBpsPerDay: number,
+  valuationSigma: number
+): {
+  foxifyNet: number;
+  atticusShare: number;
+  exitMode: FoxifyExitMode;
+  exitedAtBar: number;
+  autoCloseTick: number | null;
+  perpHedgePnl: number;
+  friction: number;
+  rebalances: number;
+} => {
+  const contracts = inputs.contractsBtc;
+  const cost = inputs.hedgeCostUsdc;
+  // Option valuation + delta use IMPLIED vol; the path (realized vol) is the
+  // sigmaAnnual the bars were generated at. realized>implied => gamma profit.
+  const sigma = valuationSigma;
+  const nBars = path.closes.length;
+  const barMs = BAR_MINUTES * 60_000;
+  const frictionRate = frictionBps / 10_000;
+  const fundingPerBar = (fundingBpsPerDay / 10_000) * (BAR_MINUTES / (60 * 24));
+  const totalTenorMs = inputs.tenorDays * 86_400_000;
+
+  // Initial hedge: short the option net delta via perp (combined delta ~0).
+  let hedgeUnits = -combinedDeltaAt(path.closes[0], inputs.putStrike, inputs.callStrike, contracts, totalTenorMs, sigma);
+  let cumPerpPnl = 0;
+  let cumFriction = Math.abs(hedgeUnits) * path.closes[0] * frictionRate; // entry hedge cost
+  let rebalances = 1;
+
+  const settle = (uplift: number): { foxifyNet: number; atticusShare: number } => {
+    if (uplift <= 0) return { foxifyNet: uplift, atticusShare: 0 };
+    const atticusShare = Math.min(uplift, Math.max((1 - splitPct) * uplift, floorUsdc));
+    return { foxifyNet: uplift - atticusShare, atticusShare };
+  };
+
+  for (let i = 1; i < nBars; i++) {
+    const S = path.closes[i];
+    const Sprev = path.closes[i - 1];
+    // 1. Perp hedge P&L over the tick (linear in spot) + funding on held notional.
+    cumPerpPnl += hedgeUnits * (S - Sprev);
+    cumFriction += Math.abs(hedgeUnits) * S * fundingPerBar;
+    const remMs = (nBars - 1 - i) * barMs;
+    // 2. Mark net P&L = (option salvage - cost) + perp P&L - friction.
+    const optSalvage = combinedValueAt(S, inputs.putStrike, inputs.callStrike, contracts, remMs, sigma, realismMultiplier) * bidSlip;
+    const netNow = (optSalvage - cost) + cumPerpPnl - cumFriction;
+    const pnlPct = cost > 0 ? netNow / cost : 0;
+    if (pnlPct >= inputs.autoClosePnlPct || netNow >= inputs.autoCloseAbsoluteUsdc) {
+      const { foxifyNet, atticusShare } = settle(netNow);
+      return { foxifyNet, atticusShare, exitMode: "foxify_auto_close", exitedAtBar: i, autoCloseTick: i, perpHedgePnl: cumPerpPnl, friction: cumFriction, rebalances };
+    }
+    // 3. Rebalance perp to new option delta (charge friction on the change).
+    const newHedge = -combinedDeltaAt(S, inputs.putStrike, inputs.callStrike, contracts, remMs, sigma);
+    const delta = Math.abs(newHedge - hedgeUnits);
+    if (delta > 1e-9) {
+      cumFriction += delta * S * frictionRate;
+      rebalances++;
+    }
+    hedgeUnits = newHedge;
+  }
+
+  // Expiry: close option at terminal salvage + realized perp P&L - friction.
+  const Sfin = path.closes[nBars - 1];
+  const optSalvageFin = combinedValueAt(Sfin, inputs.putStrike, inputs.callStrike, contracts, 0, sigma, realismMultiplier) * bidSlip;
+  const netFin = (optSalvageFin - cost) + cumPerpPnl - cumFriction;
+  const { foxifyNet, atticusShare } = settle(netFin);
+  return { foxifyNet, atticusShare, exitMode: "expiry", exitedAtBar: nBars - 1, autoCloseTick: null, perpHedgePnl: cumPerpPnl, friction: cumFriction, rebalances };
 };
 
 /**
@@ -181,10 +320,36 @@ export const runFoxifyDurationMc = async (
     expiry: 0
   };
 
+  // Gamma-scalp mode setup (Phase 4.5): require REAL friction, prep diagnostics.
+  const gammaScalpMode = inputs.gammaScalpWithPerpHedge === true;
+  if (gammaScalpMode && (inputs.perpFrictionBps == null || !Number.isFinite(inputs.perpFrictionBps) || inputs.perpFrictionBps < 0)) {
+    throw new Error("runFoxifyDurationMc: gammaScalpWithPerpHedge requires perpFrictionBps (>=0) from the venue fee schedule (env FOXIFY_PERP_FRICTION_BPS) — no hardcoded default");
+  }
+  const frictionBps = inputs.perpFrictionBps ?? 0;
+  const fundingBpsPerDay = inputs.perpFundingBpsPerDay ?? 0;
+  const valuationSigma = inputs.impliedSigmaAnnual ?? inputs.sigmaAnnual;
+  const gsPerpPnls: number[] = [];
+  const gsFrictions: number[] = [];
+  const gsRebalances: number[] = [];
+
   for (let p = 0; p < nPaths; p++) {
     const path = bars && inputs.regime === "calm"
       ? generateBootstrapPath(inputs.spot, pathConfig, bars, rng)
       : generateGbmPath(inputs.spot, pathConfig, rng);
+
+    // ─── Gamma-scalp branch (Phase 4.5): delta-hedge via perp; no trigger capture ───
+    if (gammaScalpMode) {
+      const gs = simulateGammaScalpPath(path, inputs, realismMultiplier, bidSlip, splitPct, floorUsdc, frictionBps, fundingBpsPerDay, valuationSigma);
+      foxifyNets.push(gs.foxifyNet);
+      atticusShares.push(gs.atticusShare);
+      exitTicks.push(gs.exitedAtBar);
+      if (gs.autoCloseTick != null) autoCloseTicks.push(gs.autoCloseTick);
+      exitCounts[gs.exitMode]++;
+      gsPerpPnls.push(gs.perpHedgePnl);
+      gsFrictions.push(gs.friction);
+      gsRebalances.push(gs.rebalances);
+      continue;
+    }
 
     let foxifyNet = 0;
     let atticusShare = 0;
@@ -292,6 +457,12 @@ export const runFoxifyDurationMc = async (
     meanTicksToAutoClose: meanAuto,
     meanAtticusShareUsdc: mean(atticusShares),
     nPaths,
-    pathGenerator: bars && inputs.regime === "calm" ? "bootstrap" : "gbm"
+    pathGenerator: bars && inputs.regime === "calm" ? "bootstrap" : "gbm",
+    gammaScalp: gammaScalpMode ? {
+      meanPerpHedgePnlUsdc: mean(gsPerpPnls),
+      meanPerpFrictionUsdc: mean(gsFrictions),
+      meanRebalances: mean(gsRebalances),
+      frictionBps
+    } : null
   };
 };

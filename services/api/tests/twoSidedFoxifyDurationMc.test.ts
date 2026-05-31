@@ -114,3 +114,85 @@ test("foxifyDurationMc: percentile ordering is correct (p5 <= median <= p95)", a
   assert.ok(r.p5FoxifyNetUsdc <= r.medianFoxifyNetUsdc);
   assert.ok(r.medianFoxifyNetUsdc <= r.p95FoxifyNetUsdc);
 });
+
+// ──────────────────────────── Phase 4.5: gamma scalp mode ────────────────────────────
+
+const gsBase = {
+  ...baseInputs,
+  putStrike: 73950, callStrike: 73950, // ATM straddle (max gamma)
+  sigmaAnnual: 0.55,
+  hedgeCostUsdc: 3400,
+  autoClosePnlPct: 100, autoCloseAbsoluteUsdc: 1e9, // disable auto-close → hold to expiry
+  gammaScalpWithPerpHedge: true as const,
+  perpFrictionBps: 5,
+  nPaths: 1500, seed: 11
+};
+
+test("gamma scalp: requires perpFrictionBps (no hardcoded default)", async () => {
+  await assert.rejects(
+    () => runFoxifyDurationMc({ ...gsBase, perpFrictionBps: undefined }),
+    /perpFrictionBps/,
+    "must throw when friction not supplied in gamma scalp mode"
+  );
+});
+
+test("gamma scalp: populates gammaScalp diagnostics; legacy mode leaves it null", async () => {
+  const gs = await runFoxifyDurationMc(gsBase);
+  assert.ok(gs.gammaScalp, "gammaScalp present in gamma scalp mode");
+  assert.equal(gs.gammaScalp!.frictionBps, 5);
+  assert.ok(gs.gammaScalp!.meanRebalances > 0, "rebalances occur");
+  assert.ok(gs.gammaScalp!.meanPerpFrictionUsdc > 0, "friction paid");
+  const legacy = await runFoxifyDurationMc(baseInputs);
+  assert.equal(legacy.gammaScalp, null, "legacy mode -> gammaScalp null");
+});
+
+test("gamma scalp: trigger peak-capture disabled (delta-neutral has no directional windfall)", async () => {
+  const gs = await runFoxifyDurationMc({ ...gsBase, triggerPctDown: 0.01, triggerPctUp: 0.01 });
+  assert.equal(gs.exitDistribution.trigger_peak, 0, "no trigger_peak exits in gamma scalp mode");
+  const total = gs.exitDistribution.foxify_auto_close + gs.exitDistribution.trigger_peak + gs.exitDistribution.expiry;
+  assert.ok(Math.abs(total - 1) < 1e-6, "exit distribution sums to 1");
+});
+
+test("gamma scalp: deterministic across runs (same seed)", async () => {
+  const a = await runFoxifyDurationMc(gsBase);
+  const b = await runFoxifyDurationMc(gsBase);
+  assert.equal(a.meanFoxifyNetUsdc, b.meanFoxifyNetUsdc);
+  assert.equal(a.gammaScalp!.meanPerpFrictionUsdc, b.gammaScalp!.meanPerpFrictionUsdc);
+});
+
+test("gamma scalp: higher perp friction → lower mean net (monotonic)", async () => {
+  const lowFric = await runFoxifyDurationMc({ ...gsBase, perpFrictionBps: 1 });
+  const highFric = await runFoxifyDurationMc({ ...gsBase, perpFrictionBps: 60 });
+  assert.ok(highFric.gammaScalp!.meanPerpFrictionUsdc > lowFric.gammaScalp!.meanPerpFrictionUsdc, "more friction paid");
+  assert.ok(highFric.meanFoxifyNetUsdc < lowFric.meanFoxifyNetUsdc, "higher friction → lower net");
+});
+
+test("gamma scalp: delta hedge cuts net dispersion vs unhedged straddle", async () => {
+  // Same straddle, hold-to-expiry, zero friction for a clean comparison.
+  const common = { ...gsBase, perpFrictionBps: 0 };
+  const hedged = await runFoxifyDurationMc(common);
+  const unhedged = await runFoxifyDurationMc({ ...common, gammaScalpWithPerpHedge: false });
+  const spread = (r: { p95FoxifyNetUsdc: number; p5FoxifyNetUsdc: number }) => r.p95FoxifyNetUsdc - r.p5FoxifyNetUsdc;
+  console.log(`[EMPIRICAL][gamma-scalp] dispersion (p95-p5): hedged=$${spread(hedged).toFixed(0)} unhedged=$${spread(unhedged).toFixed(0)}; ` +
+    `hedged meanNet=$${hedged.meanFoxifyNetUsdc.toFixed(0)} (perpPnL=$${hedged.gammaScalp!.meanPerpHedgePnlUsdc.toFixed(0)}) ` +
+    `unhedged meanNet=$${unhedged.meanFoxifyNetUsdc.toFixed(0)}`);
+  assert.ok(spread(hedged) < spread(unhedged),
+    `delta hedge should reduce net dispersion (hedged ${spread(hedged).toFixed(0)} < unhedged ${spread(unhedged).toFixed(0)})`);
+});
+
+test("gamma scalp: realized vol > implied vol → higher harvest (the core thesis)", async () => {
+  // Option priced/decayed at implied=0.40; compare realized path vol 0.40 vs 0.90.
+  const common = {
+    ...gsBase, impliedSigmaAnnual: 0.40, hedgeCostUsdc: 2500, perpFrictionBps: 2,
+    regime: "moderate" as const, nPaths: 2000, seed: 21
+  };
+  const realizedEqImplied = await runFoxifyDurationMc({ ...common, sigmaAnnual: 0.40 });
+  const realizedGtImplied = await runFoxifyDurationMc({ ...common, sigmaAnnual: 0.90 });
+  console.log(`[EMPIRICAL][realized-vs-implied] implied=40%: ` +
+    `realized=40% net=$${realizedEqImplied.meanFoxifyNetUsdc.toFixed(0)} (perpPnL=$${realizedEqImplied.gammaScalp!.meanPerpHedgePnlUsdc.toFixed(0)}) | ` +
+    `realized=90% net=$${realizedGtImplied.meanFoxifyNetUsdc.toFixed(0)} (perpPnL=$${realizedGtImplied.gammaScalp!.meanPerpHedgePnlUsdc.toFixed(0)})`);
+  assert.ok(
+    realizedGtImplied.meanFoxifyNetUsdc > realizedEqImplied.meanFoxifyNetUsdc,
+    "realized>>implied should harvest more gamma → higher mean net"
+  );
+});
