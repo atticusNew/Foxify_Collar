@@ -1,0 +1,15 @@
+{
+  "name": "@atticus-research/hyperliquid-pitch",
+  "version": "0.1.0",
+  "description": "Atticus → Hyperliquid pitch backtest. Standalone perp-protection analysis. Zero Foxify pilot dependencies.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "backtest": "npx tsx src/main.ts",
+    "smoke-deribit": "npx tsx src/_smokeDeribit.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
