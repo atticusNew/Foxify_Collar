@@ -58,22 +58,36 @@ export type ReconcileReport = {
   n_paths: number;
   auto_close_pnl_pct: number;
   auto_close_absolute_usdc: number;
+  /** Settled shadow pairs tagged with a regime-at-activation (usable for the exact gate). */
+  regime_tagged_pairs: number;
+  /** Legacy settled shadow pairs with NO regime tag (excluded from the regime-filtered realized). */
+  untagged_pairs: number;
   rows: ReconcileRow[];
   caveats: string[];
 };
 
 /** Pull settled shadow pairs and aggregate realized stats per cell (JS-side, pg-mem safe). */
-export const getRealizedShadowStats = async (pool: Pool | PoolClient): Promise<RealizedCellStats[]> => {
-  const r = await pool.query<{ cell_id: string; hedge_cost_total_usdc: string; foxify_share_usdc: string | null; exit_mode: string | null }>(
-    `SELECT cell_id, hedge_cost_total_usdc, foxify_share_usdc, exit_mode
+export const getRealizedShadowStats = async (
+  pool: Pool | PoolClient,
+  opts: { regime?: Regime } = {}
+): Promise<{ stats: RealizedCellStats[]; taggedPairs: number; untaggedPairs: number }> => {
+  const r = await pool.query<{ cell_id: string; hedge_cost_total_usdc: string; foxify_share_usdc: string | null; exit_mode: string | null; regime_at_activation: string | null }>(
+    `SELECT cell_id, hedge_cost_total_usdc, foxify_share_usdc, exit_mode, regime_at_activation
      FROM two_sided_pair
      WHERE status = 'settled' AND is_shadow = TRUE AND foxify_share_usdc IS NOT NULL`
   );
+  let taggedPairs = 0;
+  let untaggedPairs = 0;
   const byCell = new Map<string, { nets: number[]; costs: number[]; exits: Record<string, number> }>();
   for (const row of r.rows) {
     const cost = Number(row.hedge_cost_total_usdc);
     const fox = Number(row.foxify_share_usdc);
     if (!Number.isFinite(cost) || !Number.isFinite(fox)) continue;
+    const rg = row.regime_at_activation ?? null;
+    if (rg == null) untaggedPairs++; else taggedPairs++;
+    // When a regime filter is set, only count pairs ACTIVATED in that regime
+    // (legacy untagged pairs are excluded — that's how the gate becomes exact).
+    if (opts.regime && rg !== opts.regime) continue;
     const net = fox - cost;
     const g = byCell.get(row.cell_id) ?? { nets: [], costs: [], exits: {} };
     g.nets.push(net);
@@ -83,7 +97,7 @@ export const getRealizedShadowStats = async (pool: Pool | PoolClient): Promise<R
     byCell.set(row.cell_id, g);
   }
   const mean = (a: number[]): number => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
-  return [...byCell.entries()].map(([cellId, g]) => ({
+  const stats = [...byCell.entries()].map(([cellId, g]) => ({
     cellId,
     n: g.nets.length,
     meanRealizedNetUsdc: +mean(g.nets).toFixed(2),
@@ -91,6 +105,7 @@ export const getRealizedShadowStats = async (pool: Pool | PoolClient): Promise<R
     meanCostUsdc: +mean(g.costs).toFixed(2),
     exitModeCounts: g.exits
   }));
+  return { stats, taggedPairs, untaggedPairs };
 };
 
 export const reconcileRealizedVsMc = async (
@@ -113,7 +128,8 @@ export const reconcileRealizedVsMc = async (
   const venue: SweepVenue = opts.venue ?? "auto";
   const calibration = await getRegimeCalibration(pool, { nowMs: opts.nowMs });
   const sigma = calibration[opts.regime].sigma;
-  const realized = await getRealizedShadowStats(pool);
+  const realizedResult = await getRealizedShadowStats(pool, { regime: opts.regime });
+  const realized = realizedResult.stats;
 
   const rows: ReconcileRow[] = [];
   for (const rz of realized) {
@@ -164,10 +180,12 @@ export const reconcileRealizedVsMc = async (
     as_of: new Date(opts.nowMs ?? Date.now()).toISOString(),
     regime: opts.regime, spot: opts.spot, n_paths: nPaths,
     auto_close_pnl_pct: autoClosePnlPct, auto_close_absolute_usdc: autoCloseAbsoluteUsdc,
+    regime_tagged_pairs: realizedResult.taggedPairs,
+    untagged_pairs: realizedResult.untaggedPairs,
     rows,
     caveats: [
-      "Realized spans whatever regimes pairs were activated in (regime-at-activation is NOT recorded); MC prediction is for the single requested regime. Treat within_15pct as directional until regime-at-activation is persisted.",
-      "MC uses a default auto-close target (abs/pct) that may differ from Foxify's actual close timing.",
+      `Realized is FILTERED to regime='${opts.regime}' via regime-at-activation. ${realizedResult.untaggedPairs} legacy pair(s) without a regime tag are excluded; ${realizedResult.taggedPairs} are tagged. As tagged pairs accumulate, within_15pct becomes an EXACT gate (apples-to-apples vs the same-regime MC).`,
+      "MC uses a default auto-close target (abs/pct) that may differ from Foxify's actual close timing — pass auto_close_abs / auto_close_pct to match.",
       "No synthetic prices: cost+realism from real chain (computeRealPricing), sigma from empirical calibration."
     ]
   };

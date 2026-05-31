@@ -101,6 +101,8 @@ export type PairRecord = {
   atticusShareUsdc: number | null;
   exitMode: ExitMode | null;
   isShadow: boolean;
+  /** Regime classified at activation — enables exact realized-vs-MC reconciliation. Null for legacy pairs. */
+  regimeAtActivation: "calm" | "moderate" | "elevated" | "stress" | null;
   metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;

@@ -281,6 +281,7 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     tierAtActivation: tier.label,
     atticusFloorUsdc: tier.atticusFloorUsdc,
     metadata: req.metadata ?? {},
+    regimeAtActivation: deps.getCurrentRegime ? deps.getCurrentRegime() : null,
     status: "pending"
   });
 
