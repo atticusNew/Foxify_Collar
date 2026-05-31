@@ -837,6 +837,88 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * POST /admin/foxify/v2/cell-sweep
+   *
+   * Runs the Foxify-duration cell optimization sweep. By default uses
+   * current live spot + current calibration. Persists results to
+   * two_sided_cell_sweep_run/_result so caller can later query
+   * /admin/foxify/v2/cell-sweep/latest for the rankings.
+   *
+   * Body (optional):
+   *   { spot?, notionals?, triggers?, strikeMoneyness?, tenors?,
+   *     autoClosePnlPcts?, autoCloseAbsoluteUsdcs?, nPaths?,
+   *     syntheticRealismByRegime? }
+   *
+   * Heads up: this is HEAVY — default config is ~4,800 cells × 12 auto-close
+   * combos = 57,600 sims at 500 paths each ≈ 28.8M iterations. Plan ~30 min.
+   * For faster iteration use smaller grid or fewer auto-close combos.
+   */
+  app.post<{ Body?: Record<string, unknown> }>("/admin/foxify/v2/cell-sweep",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { runFullCellSweep, ensureCellSweepSchema } = await import("./cellSweep");
+      const feed = deps.feedService.getCurrentFeed();
+      const body = req.body ?? {};
+      const spot = typeof body.spot === "number" ? body.spot : feed?.canonicalPrice;
+      if (!spot || spot <= 0) {
+        reply.code(503).send({ error: "feed_unavailable", message: "Cannot sweep without canonical spot" });
+        return;
+      }
+      try {
+        await ensureCellSweepSchema(deps.pool);
+      } catch (e) {
+        reply.code(500).send({ error: "schema_init_failed", message: (e as Error).message });
+        return;
+      }
+      // Reply IMMEDIATELY with run launch — sweep runs in background
+      const acceptedAt = new Date().toISOString();
+      const config: Parameters<typeof runFullCellSweep>[1] = {
+        spot,
+        notionals: Array.isArray(body.notionals) ? body.notionals as number[] : undefined,
+        triggers: Array.isArray(body.triggers) ? body.triggers as number[] : undefined,
+        strikeMoneyness: Array.isArray(body.strikeMoneyness) ? body.strikeMoneyness as number[] : undefined,
+        tenors: Array.isArray(body.tenors) ? body.tenors as number[] : undefined,
+        autoClosePnlPcts: Array.isArray(body.autoClosePnlPcts) ? body.autoClosePnlPcts as number[] : undefined,
+        autoCloseAbsoluteUsdcs: Array.isArray(body.autoCloseAbsoluteUsdcs) ? body.autoCloseAbsoluteUsdcs as number[] : undefined,
+        nPaths: typeof body.nPaths === "number" ? body.nPaths : undefined,
+        syntheticRealismByRegime: body.syntheticRealismByRegime as Record<"calm" | "moderate" | "elevated" | "stress", number> | undefined
+      };
+      void runFullCellSweep(deps.pool, config, {
+        progressLog: (msg) => console.log(`[cellSweep] ${msg}`),
+        persistResults: true
+      }).then((report) => {
+        console.log(`[cellSweep] completed runId=${report.runId} results=${report.resultCount}`);
+      }).catch((e) => {
+        console.error(`[cellSweep] failed: ${(e as Error).message}`);
+      });
+      reply.code(202).send({
+        accepted_at: acceptedAt,
+        message: "Sweep launched in background. Poll /admin/foxify/v2/cell-sweep/latest for results.",
+        spot
+      });
+    }
+  );
+
+  /**
+   * GET /admin/foxify/v2/cell-sweep/latest
+   *
+   * Returns the latest completed sweep's rankings. 404 if no sweep has
+   * completed yet.
+   */
+  app.get("/admin/foxify/v2/cell-sweep/latest",
+    { preHandler: checkAdminToken },
+    async (_req, reply) => {
+      const { getLatestSweepRun } = await import("./cellSweep");
+      const report = await getLatestSweepRun(deps.pool);
+      if (!report) {
+        reply.code(404).send({ error: "no_completed_sweep", message: "No completed sweep yet. POST /admin/foxify/v2/cell-sweep to run one." });
+        return;
+      }
+      reply.send(report);
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/regime-calibration
    *
    * Inspect the empirical regime calibration: per-regime sigma + cost
