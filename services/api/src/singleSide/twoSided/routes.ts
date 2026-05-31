@@ -1088,7 +1088,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * (calm) and exiting after a hold profit from IV expansion (vega) beyond theta?
    * Query: ?entry_percentile=0.25&hold_days=2&tenor_days=7&lookback_days=30&calm_only=true
    */
-  app.get<{ Querystring: { entry_percentile?: string; hold_days?: string; tenor_days?: string; lookback_days?: string; calm_only?: string; ref_spot?: string } }>(
+  app.get<{ Querystring: { entry_percentile?: string; hold_days?: string; tenor_days?: string; lookback_days?: string; calm_only?: string; ref_spot?: string; granularity_hours?: string } }>(
     "/admin/foxify/v2/vega-timing",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -1102,6 +1102,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           tenorDays: numQ(q.tenor_days),
           lookbackDays: numQ(q.lookback_days),
           refSpot: numQ(q.ref_spot),
+          granularityHours: numQ(q.granularity_hours),
           calmOnly: q.calm_only !== "false"
         });
         reply.send(result);

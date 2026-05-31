@@ -58,3 +58,19 @@ test("vega-timing: flat IV → no cheap entries (insufficient/no edge)", async (
   assert.ok(r.verdict.includes("INSUFFICIENT"), "verdict flags insufficient");
   await pool.end();
 });
+
+test("vega-timing: downsampling collapses dense (1/min) samples to ~1/hour", async () => {
+  const pool = makePool();
+  await ensureDvolHistorySchema(pool);
+  const base = 1_780_000_000_000 - 24 * HOUR;
+  // 180 minutes of 1/min samples (dense) — should downsample to ~3 hourly buckets
+  for (let m = 0; m < 180; m++) {
+    await persistDvolSample(pool, { asOfMs: base + m * 60_000, dvol: 35, sigmaAnnual: 0.35 });
+  }
+  const r = await backtestVegaTiming(pool, { granularityHours: 1, lookbackDays: 3, minTrailing: 1 });
+  assert.ok(r.total_samples >= 170, `raw count ~180, got ${r.total_samples}`);
+  assert.ok(r.downsampled_samples <= 5, `hourly downsample ~3, got ${r.downsampled_samples}`);
+  assert.ok(r.downsampled_samples < r.total_samples, "downsampled < raw");
+  assert.equal(r.granularity_hours, 1);
+  await pool.end();
+});

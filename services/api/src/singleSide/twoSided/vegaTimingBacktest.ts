@@ -39,7 +39,9 @@ export type VegaTimingResult = {
   lookback_days: number;
   ref_spot: number;
   calm_only: boolean;
+  granularity_hours: number;
   total_samples: number;
+  downsampled_samples: number;
   eligible_entries: number;
   mean_pnl_per_btc_usdc: number;
   pct_profitable: number;
@@ -60,6 +62,7 @@ export const backtestVegaTiming = async (
     refSpot?: number;
     calmOnly?: boolean;
     minTrailing?: number;
+    granularityHours?: number;
   } = {}
 ): Promise<VegaTimingResult> => {
   const entryPercentile = opts.entryPercentile ?? 0.25;
@@ -69,14 +72,23 @@ export const backtestVegaTiming = async (
   const refSpot = opts.refSpot ?? 73000;
   const calmOnly = opts.calmOnly ?? true;
   const minTrailing = opts.minTrailing ?? 20;
+  const granularityHours = opts.granularityHours ?? 1;
   const r = RISK_FREE_RATE;
 
   const res = await pool.query<{ ts: string; dvol: string }>(
     `SELECT ts, dvol FROM two_sided_dvol_history ORDER BY ts ASC`
   );
-  const rows = res.rows
+  const rawRows = res.rows
     .map((x) => ({ tsMs: new Date(x.ts).getTime(), dvol: Number(x.dvol) }))
-    .filter((x) => Number.isFinite(x.tsMs) && Number.isFinite(x.dvol) && x.dvol > 0);
+    .filter((x) => Number.isFinite(x.tsMs) && Number.isFinite(x.dvol) && x.dvol > 0)
+    .sort((a, b) => a.tsMs - b.tsMs);
+  // Downsample to one sample per `granularityHours` bucket so dense live samples
+  // (~1/min) don't swamp the sparser backfill (~1/hr) and bias entries toward the
+  // most recent flat period. Keeps the LAST sample in each bucket.
+  const granMs = granularityHours * 3_600_000;
+  const bucket = new Map<number, { tsMs: number; dvol: number }>();
+  for (const x of rawRows) bucket.set(Math.floor(x.tsMs / granMs), x);
+  const rows = [...bucket.values()].sort((a, b) => a.tsMs - b.tsMs);
 
   const lookbackMs = lookbackDays * MS_PER_DAY;
   const holdMs = holdDays * MS_PER_DAY;
@@ -132,7 +144,8 @@ export const backtestVegaTiming = async (
   return {
     entry_percentile: entryPercentile, hold_days: holdDays, tenor_days: tenorDays,
     lookback_days: lookbackDays, ref_spot: refSpot, calm_only: calmOnly,
-    total_samples: rows.length, eligible_entries: pnls.length,
+    granularity_hours: granularityHours,
+    total_samples: rawRows.length, downsampled_samples: rows.length, eligible_entries: pnls.length,
     mean_pnl_per_btc_usdc: meanPnl, pct_profitable: pctProfitable,
     mean_entry_iv: meanIv0, mean_exit_iv: meanIv1, mean_iv_change: +(meanIv1 - meanIv0).toFixed(4),
     verdict,
