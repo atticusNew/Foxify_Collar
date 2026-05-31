@@ -103,6 +103,13 @@ export type SweepConfig = {
   atticusSplitPct?: number;
   /** Atticus floor on positive uplift (USDC). Default env SS_ATTICUS_FLOOR_USDC or 25. */
   atticusFloorUsdc?: number;
+  /**
+   * Foxify's perp-pair round-trip friction (fees+slippage) in USDC that the
+   * option must COVER for the pair to be viable (CEO: ~$200-300 on a 50k/50k).
+   * Default env FOXIFY_PERP_FRICTION_USDC or 0. Each ranked cell reports
+   * net_after_friction + covers_friction against this.
+   */
+  perpPairFrictionUsdc?: number;
   /** Liquid chain cache for real price lookups. REQUIRED. */
   liquidChainCache: LiquidChainCache;
   /** DvolService for live IV. Optional but recommended. */
@@ -192,6 +199,12 @@ export type RankedCell = {
   salvage_source_put: SalvageSource;
   salvage_source_call: SalvageSource;
   result_tier: "real" | "estimate";
+  /** Perp-pair round-trip friction (fees+slippage) this option must cover (USDC). */
+  perp_pair_friction_usdc: number;
+  /** Option net minus the perp friction it must cover (the TRUE pair P&L to Foxify). */
+  net_after_friction_usdc: number;
+  /** True when the option net covers the perp friction (net_after_friction >= 0). */
+  covers_friction: boolean;
   /**
    * Gamma-scalp economics breakdown — non-null ONLY for straddle_gamma_scalp
    * cells. Lets the operator audit WHY a gamma-scalp cell's net is what it is
@@ -226,6 +239,10 @@ export type RegimeRanking = {
   cellsSkippedNoChain: number;
   /** Cells passing Foxify target ($200-300 net, >= 60% profitable). */
   cellsMatchingFoxifyTarget: number;
+  /** Perp-pair friction (USDC) cells were scored against this run. */
+  perp_pair_friction_usdc: number;
+  /** Count of eligible cells whose option net COVERS the perp friction. */
+  cells_covering_friction: number;
   /** Top-10 cells ranked by mean net. */
   topCells: RankedCell[];
   /** Best eligible straddle cell for this regime (null if none priced). */
@@ -475,7 +492,7 @@ const computeRealPricing = (
 // ─────────────────────────── Sweep ───────────────────────────
 
 /** Map an eligible CellSweepResult to the ranked-cell view used in reports. */
-const toRankedCell = (r: CellSweepResult): RankedCell => ({
+const toRankedCell = (r: CellSweepResult, perpPairFrictionUsdc: number): RankedCell => ({
   cellId: r.cellId,
   mean_foxify_net_usdc: +((r.mc?.meanFoxifyNetUsdc ?? 0)).toFixed(2),
   pct_profitable: +((r.mc?.pctProfitable ?? 0)).toFixed(4),
@@ -490,6 +507,9 @@ const toRankedCell = (r: CellSweepResult): RankedCell => ({
   salvage_source_put: r.salvageSourcePut,
   salvage_source_call: r.salvageSourceCall,
   result_tier: r.resultTier as "real" | "estimate",
+  perp_pair_friction_usdc: +perpPairFrictionUsdc.toFixed(2),
+  net_after_friction_usdc: +(((r.mc?.meanFoxifyNetUsdc ?? 0) - perpPairFrictionUsdc)).toFixed(2),
+  covers_friction: (r.mc?.meanFoxifyNetUsdc ?? 0) - perpPairFrictionUsdc >= 0,
   gamma_scalp: r.mc?.gammaScalp ? {
     perp_hedge_pnl_usdc: +r.mc.gammaScalp.meanPerpHedgePnlUsdc.toFixed(2),
     perp_friction_usdc: +r.mc.gammaScalp.meanPerpFrictionUsdc.toFixed(2),
@@ -806,6 +826,7 @@ export const runFullCellSweep = async (
   }
 
   // Rank per regime — but only REAL results are eligible for ranking
+  const perpPairFriction = config.perpPairFrictionUsdc ?? Number(process.env.FOXIFY_PERP_FRICTION_USDC ?? "0");
   const rankings: Record<Regime, RegimeRanking> = {} as Record<Regime, RegimeRanking>;
   for (const regime of REGIMES) {
     const regimeResults = allResults.filter((r) => r.regime === regime);
@@ -822,14 +843,17 @@ export const runFullCellSweep = async (
       if (Math.abs(a.hedgeCostUsdc - b.hedgeCostUsdc) > 5) return a.hedgeCostUsdc - b.hedgeCostUsdc;
       return (b.mc?.p5FoxifyNetUsdc ?? -Infinity) - (a.mc?.p5FoxifyNetUsdc ?? -Infinity);
     });
-    const top: RankedCell[] = ranked.slice(0, 10).map(toRankedCell);
+    const top: RankedCell[] = ranked.slice(0, 10).map((r) => toRankedCell(r, perpPairFriction));
+    const cells_covering_friction = eligibleResults.filter(
+      (r) => (r.mc?.meanFoxifyNetUsdc ?? -Infinity) - perpPairFriction >= 0
+    ).length;
     // Per-structure bests (ranked is already net-sorted) for the CTO comparison.
     const bestStraddleRes = ranked.find((r) => r.structure === "straddle") ?? null;
     const bestStrangleRes = ranked.find((r) => r.structure === "strangle") ?? null;
     const bestGammaScalpRes = ranked.find((r) => r.structure === "straddle_gamma_scalp") ?? null;
-    const top_straddle = bestStraddleRes ? toRankedCell(bestStraddleRes) : null;
-    const top_strangle = bestStrangleRes ? toRankedCell(bestStrangleRes) : null;
-    const top_straddle_gamma_scalp = bestGammaScalpRes ? toRankedCell(bestGammaScalpRes) : null;
+    const top_straddle = bestStraddleRes ? toRankedCell(bestStraddleRes, perpPairFriction) : null;
+    const top_strangle = bestStrangleRes ? toRankedCell(bestStrangleRes, perpPairFriction) : null;
+    const top_straddle_gamma_scalp = bestGammaScalpRes ? toRankedCell(bestGammaScalpRes, perpPairFriction) : null;
     const structure_verdict = structureVerdict([
       { label: "straddle", cell: top_straddle },
       { label: "strangle", cell: top_strangle },
@@ -845,6 +869,8 @@ export const runFullCellSweep = async (
       cellsWithChainData: chainAvailable,
       cellsSkippedNoChain: chainUnavailable,
       cellsMatchingFoxifyTarget: meeting.length,
+      perp_pair_friction_usdc: +perpPairFriction.toFixed(2),
+      cells_covering_friction,
       topCells: top,
       top_straddle,
       top_strangle,

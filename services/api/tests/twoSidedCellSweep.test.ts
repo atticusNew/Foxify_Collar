@@ -545,3 +545,28 @@ test("sweep: gamma_scalp diagnostics surfaced on gamma cells, null on others", a
   assert.ok(gs!.gamma_scalp!.rebalances > 0, "rebalances recorded");
   assert.equal(st && st.gamma_scalp, null, "plain straddle cell has null gamma_scalp diagnostics");
 });
+
+test("sweep: friction-aware ranking flags covers_friction + net_after_friction", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  // Strong bids so the straddle nets positive in calm, to exercise both sides of the friction bar.
+  const chain = makeChain([
+    { venue: "deribit", strike: 73000, optType: "put", tenorHours: 72, bid: 2400, ask: 2000 },
+    { venue: "deribit", strike: 73000, optType: "call", tenorHours: 72, bid: 2400, ask: 2000 }
+  ]);
+  const report = await runFullCellSweep(pool, {
+    spot: 73000, notionals: [50000], triggers: [0.03], strikeMoneyness: [0], tenors: [3],
+    autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 150, venue: "auto",
+    structures: ["straddle"], perpPairFrictionUsdc: 250, liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: false });
+  const calm = report.rankings.calm;
+  assert.equal(calm.perp_pair_friction_usdc, 250, "friction echoed on regime");
+  assert.ok(calm.topCells.length >= 1);
+  const top = calm.topCells[0];
+  assert.equal(top.perp_pair_friction_usdc, 250);
+  // net_after_friction = mean_net - friction; covers_friction = (that >= 0)
+  assert.ok(Math.abs(top.net_after_friction_usdc - (top.mean_foxify_net_usdc - 250)) < 0.01);
+  assert.equal(top.covers_friction, top.mean_foxify_net_usdc - 250 >= 0);
+  assert.equal(typeof calm.cells_covering_friction, "number");
+});
