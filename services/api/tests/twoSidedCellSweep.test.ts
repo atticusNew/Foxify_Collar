@@ -444,3 +444,34 @@ test("MC gamma hypothesis: straddle vs OTM strangle auto-close (empirical, non-b
   assert.ok(straddle.meanCostPaid > strangle.meanCostPaid,
     "ATM straddle costs more than OTM strangle");
 });
+
+test("sweep: structure_verdict + top_straddle/top_strangle populated for both structures", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  // Chain returns a quote for ANY strike so both straddle (ATM) and strangle
+  // (OTM wings) price out and the per-regime verdict can compare them.
+  const anyChain = {
+    getBidForSymbol: () => null,
+    getBidForLeg: (opts: { strike: number; optType: "put" | "call" }) => ({
+      bidUsdcPerBtc: 1800, askUsdcPerBtc: 2000, midUsdcPerBtc: 1900,
+      spreadPct: 0.1, venue: "deribit" as const,
+      instrumentName: `BTC-${opts.strike}-${opts.optType.toUpperCase()}`,
+      tenorHours: 72, markIv: 0.4, pulledAtMs: Date.now()
+    }),
+    getCached: () => null
+  } as unknown as LiquidChainCache;
+  const report = await runFullCellSweep(pool, {
+    spot: 73000, notionals: [50000], triggers: [0.03], strikeMoneyness: [0, -0.03], tenors: [3],
+    autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 100,
+    venue: "auto", structures: ["strangle", "straddle"], liquidChainCache: anyChain, currentRegime: "calm"
+  }, { persistResults: false });
+  const calm = report.rankings.calm;
+  assert.ok(calm.top_straddle, "top_straddle present");
+  assert.ok(calm.top_strangle, "top_strangle present");
+  assert.equal((calm.top_straddle as NonNullable<typeof calm.top_straddle>).params.structure, "straddle");
+  assert.equal((calm.top_strangle as NonNullable<typeof calm.top_strangle>).params.structure, "strangle");
+  assert.equal(typeof calm.structure_verdict, "string");
+  assert.ok(calm.structure_verdict.length > 0, "verdict non-empty");
+  console.log(`[EMPIRICAL][verdict-test] calm (real tier): ${calm.structure_verdict}`);
+});

@@ -201,6 +201,16 @@ export type RegimeRanking = {
   cellsMatchingFoxifyTarget: number;
   /** Top-10 cells ranked by mean net. */
   topCells: RankedCell[];
+  /** Best eligible straddle cell for this regime (null if none priced). */
+  top_straddle: RankedCell | null;
+  /** Best eligible strangle cell for this regime (null if none priced). */
+  top_strangle: RankedCell | null;
+  /**
+   * Human-readable per-regime structure comparison, e.g.
+   * "straddle wins by $123 net" | "strangle wins by $45 net" |
+   * "indeterminate (within $5)" | "only straddle evaluated" | "no eligible cells".
+   */
+  structure_verdict: string;
   totalCellsEvaluated: number;
 };
 
@@ -434,6 +444,52 @@ const computeRealPricing = (
 };
 
 // ─────────────────────────── Sweep ───────────────────────────
+
+/** Map an eligible CellSweepResult to the ranked-cell view used in reports. */
+const toRankedCell = (r: CellSweepResult): RankedCell => ({
+  cellId: r.cellId,
+  mean_foxify_net_usdc: +((r.mc?.meanFoxifyNetUsdc ?? 0)).toFixed(2),
+  pct_profitable: +((r.mc?.pctProfitable ?? 0)).toFixed(4),
+  p5_foxify_net_usdc: +((r.mc?.p5FoxifyNetUsdc ?? 0)).toFixed(2),
+  capital_per_pair: +r.hedgeCostUsdc.toFixed(2),
+  pnl_per_dollar_at_risk: r.hedgeCostUsdc > 0 ? +((r.mc?.meanFoxifyNetUsdc ?? 0) / r.hedgeCostUsdc).toFixed(4) : 0,
+  auto_close_pct: +((r.mc?.exitDistribution.foxify_auto_close ?? 0)).toFixed(4),
+  trigger_pct: +((r.mc?.exitDistribution.trigger_peak ?? 0)).toFixed(4),
+  expiry_pct: +((r.mc?.exitDistribution.expiry ?? 0)).toFixed(4),
+  cost_source_put: r.costSourcePut,
+  cost_source_call: r.costSourceCall,
+  salvage_source_put: r.salvageSourcePut,
+  salvage_source_call: r.salvageSourceCall,
+  result_tier: r.resultTier as "real" | "estimate",
+  params: {
+    notional: r.notionalUsdcPerLeg,
+    trigger: r.triggerPct,
+    moneyness: r.strikeMoneynessPct,
+    tenor_days: r.tenorDays,
+    auto_close_pnl_pct: r.autoClosePnlPct,
+    auto_close_absolute_usdc: r.autoCloseAbsoluteUsdc,
+    put_strike: r.putStrike,
+    call_strike: r.callStrike,
+    structure: r.structure
+  }
+});
+
+/**
+ * Compare the best straddle vs best strangle (already net-sorted) and produce a
+ * one-line verdict for the CTO hypothesis test. Threshold $5 = "indeterminate".
+ */
+const structureVerdict = (topStraddle: RankedCell | null, topStrangle: RankedCell | null): string => {
+  if (!topStraddle && !topStrangle) return "no eligible cells";
+  if (topStraddle && !topStrangle) return "only straddle evaluated";
+  if (!topStraddle && topStrangle) return "only strangle evaluated";
+  const sNet = (topStraddle as RankedCell).mean_foxify_net_usdc;
+  const gNet = (topStrangle as RankedCell).mean_foxify_net_usdc;
+  const diff = sNet - gNet;
+  if (Math.abs(diff) <= 5) return `indeterminate (within $5: straddle $${sNet.toFixed(0)} vs strangle $${gNet.toFixed(0)})`;
+  return diff > 0
+    ? `straddle wins by $${diff.toFixed(0)} net (straddle $${sNet.toFixed(0)} vs strangle $${gNet.toFixed(0)})`
+    : `strangle wins by $${(-diff).toFixed(0)} net (strangle $${gNet.toFixed(0)} vs straddle $${sNet.toFixed(0)})`;
+};
 
 export const buildSearchGrid = (spot: number, config: SweepConfig): CellCandidate[] => {
   const notionals = config.notionals ?? DEFAULT_NOTIONALS;
@@ -694,33 +750,13 @@ export const runFullCellSweep = async (
       if (Math.abs(a.hedgeCostUsdc - b.hedgeCostUsdc) > 5) return a.hedgeCostUsdc - b.hedgeCostUsdc;
       return (b.mc?.p5FoxifyNetUsdc ?? -Infinity) - (a.mc?.p5FoxifyNetUsdc ?? -Infinity);
     });
-    const top: RankedCell[] = ranked.slice(0, 10).map((r) => ({
-      cellId: r.cellId,
-      mean_foxify_net_usdc: +((r.mc?.meanFoxifyNetUsdc ?? 0)).toFixed(2),
-      pct_profitable: +((r.mc?.pctProfitable ?? 0)).toFixed(4),
-      p5_foxify_net_usdc: +((r.mc?.p5FoxifyNetUsdc ?? 0)).toFixed(2),
-      capital_per_pair: +r.hedgeCostUsdc.toFixed(2),
-      pnl_per_dollar_at_risk: r.hedgeCostUsdc > 0 ? +((r.mc?.meanFoxifyNetUsdc ?? 0) / r.hedgeCostUsdc).toFixed(4) : 0,
-      auto_close_pct: +((r.mc?.exitDistribution.foxify_auto_close ?? 0)).toFixed(4),
-      trigger_pct: +((r.mc?.exitDistribution.trigger_peak ?? 0)).toFixed(4),
-      expiry_pct: +((r.mc?.exitDistribution.expiry ?? 0)).toFixed(4),
-      cost_source_put: r.costSourcePut,
-      cost_source_call: r.costSourceCall,
-      salvage_source_put: r.salvageSourcePut,
-      salvage_source_call: r.salvageSourceCall,
-      result_tier: r.resultTier as "real" | "estimate",
-      params: {
-        notional: r.notionalUsdcPerLeg,
-        trigger: r.triggerPct,
-        moneyness: r.strikeMoneynessPct,
-        tenor_days: r.tenorDays,
-        auto_close_pnl_pct: r.autoClosePnlPct,
-        auto_close_absolute_usdc: r.autoCloseAbsoluteUsdc,
-        put_strike: r.putStrike,
-        call_strike: r.callStrike,
-        structure: r.structure
-      }
-    }));
+    const top: RankedCell[] = ranked.slice(0, 10).map(toRankedCell);
+    // Per-structure bests (ranked is already net-sorted) for the CTO comparison.
+    const bestStraddleRes = ranked.find((r) => r.structure === "straddle") ?? null;
+    const bestStrangleRes = ranked.find((r) => r.structure === "strangle") ?? null;
+    const top_straddle = bestStraddleRes ? toRankedCell(bestStraddleRes) : null;
+    const top_strangle = bestStrangleRes ? toRankedCell(bestStrangleRes) : null;
+    const structure_verdict = structureVerdict(top_straddle, top_strangle);
     // The regime's overall tier — "real" only if the current regime, else "estimate"
     const regimeTier: "real" | "estimate" | "chain_unavailable" =
       chainAvailable === 0 ? "chain_unavailable"
@@ -732,6 +768,9 @@ export const runFullCellSweep = async (
       cellsSkippedNoChain: chainUnavailable,
       cellsMatchingFoxifyTarget: meeting.length,
       topCells: top,
+      top_straddle,
+      top_strangle,
+      structure_verdict,
       totalCellsEvaluated: regimeResults.length
     };
   }

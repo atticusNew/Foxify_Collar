@@ -887,6 +887,17 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(400).send({ error: "invalid_request", message: "venue must be 'auto' | 'bullish' | 'deribit'" });
         return;
       }
+      // Structure mode: which option structures to sweep (default both).
+      let structuresParam: Array<"strangle" | "straddle"> | undefined;
+      if (body.structures !== undefined) {
+        if (!Array.isArray(body.structures) ||
+            body.structures.length === 0 ||
+            !body.structures.every((s) => s === "strangle" || s === "straddle")) {
+          reply.code(400).send({ error: "invalid_request", message: "structures must be a non-empty subset of ['strangle','straddle']" });
+          return;
+        }
+        structuresParam = body.structures as Array<"strangle" | "straddle">;
+      }
       const acceptedAt = new Date().toISOString();
       const config: Parameters<typeof runFullCellSweep>[1] = {
         spot,
@@ -898,6 +909,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         autoCloseAbsoluteUsdcs: Array.isArray(body.autoCloseAbsoluteUsdcs) ? body.autoCloseAbsoluteUsdcs as number[] : undefined,
         nPaths: typeof body.nPaths === "number" ? body.nPaths : undefined,
         venue: venueParam,
+        structures: structuresParam,
         liquidChainCache: deps.liquidChainCache,
         dvolService: deps.dvolService,
         currentRegime
@@ -916,7 +928,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         spot,
         current_regime: currentRegime,
         venue: venueParam,
-        note: "Cells in non-current regimes are marked 'estimate' (chain only knows TODAY). Real-time cell selection should use rankings.<regime>.topCells where result_tier='real'."
+        structures: structuresParam ?? ["strangle", "straddle"],
+        note: "Cells in non-current regimes are marked 'estimate' (chain only knows TODAY). Real-time cell selection should use rankings.<regime>.topCells where result_tier='real'. Each topCell carries params.structure ('strangle'|'straddle'); see rankings.<regime>.structure_verdict for the per-regime comparison."
       });
     }
   );
