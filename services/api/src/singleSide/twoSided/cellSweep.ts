@@ -34,10 +34,11 @@ import { runFoxifyDurationMc, type FoxifyDurationMcResult } from "./foxifyDurati
 import type { Regime } from "./featureFlag";
 import { classifyRegime } from "./featureFlag";
 import { getRegimeCalibration } from "./regimeCalibration";
-import { priceOption } from "./optionPricing";
+import { priceOption, RISK_FREE_RATE } from "./optionPricing";
 import type { LiquidChainCache } from "./liquidChainCache";
 import type { DvolService } from "./dvolService";
 import { load5MinBars } from "../../../scripts/backtest/singleSide/monteCarloEngine";
+import { impliedVolFromPrice } from "../../../scripts/backtest/singleSide/coreEngine";
 
 /**
  * Option structure variant for a candidate cell.
@@ -51,7 +52,7 @@ import { load5MinBars } from "../../../scripts/backtest/singleSide/monteCarloEng
  * collisions and makes the sweep self-documenting (empirical finding #2: ATM
  * dominates every regime -> those winners are de-facto straddles).
  */
-export type CellStructure = "strangle" | "straddle";
+export type CellStructure = "strangle" | "straddle" | "straddle_gamma_scalp";
 
 export type CellCandidate = {
   cellId: string;
@@ -90,6 +91,14 @@ export type SweepConfig = {
    *                  straddle, so it is skipped here to avoid duplicate sims)
    */
   structures?: CellStructure[];
+  /**
+   * REAL perp round-trip friction (bps) for "straddle_gamma_scalp" cells, from
+   * the venue fee schedule (env FOXIFY_PERP_FRICTION_BPS). REQUIRED iff the grid
+   * includes gamma-scalp cells (runFullCellSweep throws otherwise — no rigging).
+   */
+  perpFrictionBps?: number;
+  /** Optional perp funding (bps/day) for gamma-scalp cells (env FOXIFY_PERP_FUNDING_BPS_PER_DAY). */
+  perpFundingBpsPerDay?: number;
   /** Liquid chain cache for real price lookups. REQUIRED. */
   liquidChainCache: LiquidChainCache;
   /** DvolService for live IV. Optional but recommended. */
@@ -118,14 +127,16 @@ const snapStrike = (raw: number): number => Math.round(raw / STRIKE_GRID_USDC) *
 const buildCellId = (params: CellCandidate, autoCloseUsdc: number, autoClosePct: number): string => {
   const kNotional = `${params.notionalUsdcPerLeg / 1000}k`;
   const triggerStr = `${(params.triggerPct * 100).toFixed(0)}pct`;
-  const structureStr = params.structure === "straddle" ? "STRADDLE" : "STRANGLE";
   const moneyStr = params.strikeMoneynessPct === 0 ? "atm"
     : params.strikeMoneynessPct < 0 ? `${Math.abs(params.strikeMoneynessPct * 100).toFixed(0)}otm`
     : `${(params.strikeMoneynessPct * 100).toFixed(0)}itm`;
-  // Straddle is ATM by definition → omit the redundant moneyness token.
-  // straddle: sweep_50k_3pct_STRADDLE_3d_tp30_abs250
-  // strangle: sweep_50k_3pct_2otm_STRANGLE_3d_tp30_abs250
-  const geom = params.structure === "straddle" ? structureStr : `${moneyStr}_${structureStr}`;
+  // Straddle / gamma-scalp are ATM by definition → omit the redundant moneyness token.
+  // straddle:    sweep_50k_3pct_STRADDLE_3d_tp30_abs250
+  // gamma scalp: sweep_50k_3pct_GAMMASCALP_3d_tp30_abs250
+  // strangle:    sweep_50k_3pct_2otm_STRANGLE_3d_tp30_abs250
+  const geom = params.structure === "straddle" ? "STRADDLE"
+    : params.structure === "straddle_gamma_scalp" ? "GAMMASCALP"
+    : `${moneyStr}_STRANGLE`;
   return `sweep_${kNotional}_${triggerStr}_${geom}_${params.tenorDays}d_tp${(autoClosePct * 100).toFixed(0)}_abs${autoCloseUsdc}`;
 };
 
@@ -205,6 +216,8 @@ export type RegimeRanking = {
   top_straddle: RankedCell | null;
   /** Best eligible strangle cell for this regime (null if none priced). */
   top_strangle: RankedCell | null;
+  /** Best eligible gamma-scalp (delta-hedged straddle) cell (null if not swept). */
+  top_straddle_gamma_scalp: RankedCell | null;
   /**
    * Human-readable per-regime structure comparison, e.g.
    * "straddle wins by $123 net" | "strangle wins by $45 net" |
@@ -478,17 +491,15 @@ const toRankedCell = (r: CellSweepResult): RankedCell => ({
  * Compare the best straddle vs best strangle (already net-sorted) and produce a
  * one-line verdict for the CTO hypothesis test. Threshold $5 = "indeterminate".
  */
-const structureVerdict = (topStraddle: RankedCell | null, topStrangle: RankedCell | null): string => {
-  if (!topStraddle && !topStrangle) return "no eligible cells";
-  if (topStraddle && !topStrangle) return "only straddle evaluated";
-  if (!topStraddle && topStrangle) return "only strangle evaluated";
-  const sNet = (topStraddle as RankedCell).mean_foxify_net_usdc;
-  const gNet = (topStrangle as RankedCell).mean_foxify_net_usdc;
-  const diff = sNet - gNet;
-  if (Math.abs(diff) <= 5) return `indeterminate (within $5: straddle $${sNet.toFixed(0)} vs strangle $${gNet.toFixed(0)})`;
-  return diff > 0
-    ? `straddle wins by $${diff.toFixed(0)} net (straddle $${sNet.toFixed(0)} vs strangle $${gNet.toFixed(0)})`
-    : `strangle wins by $${(-diff).toFixed(0)} net (strangle $${gNet.toFixed(0)} vs straddle $${sNet.toFixed(0)})`;
+const structureVerdict = (entries: Array<{ label: string; cell: RankedCell | null }>): string => {
+  const present = entries.filter((e) => e.cell) as Array<{ label: string; cell: RankedCell }>;
+  if (present.length === 0) return "no eligible cells";
+  if (present.length === 1) return `only ${present[0].label} evaluated ($${present[0].cell.mean_foxify_net_usdc.toFixed(0)} net)`;
+  present.sort((a, b) => b.cell.mean_foxify_net_usdc - a.cell.mean_foxify_net_usdc);
+  const detail = present.map((p) => `${p.label} $${p.cell.mean_foxify_net_usdc.toFixed(0)}`).join(" vs ");
+  const diff = present[0].cell.mean_foxify_net_usdc - present[1].cell.mean_foxify_net_usdc;
+  if (Math.abs(diff) <= 5) return `indeterminate (within $5: ${detail})`;
+  return `${present[0].label} wins by $${diff.toFixed(0)} net (${detail})`;
 };
 
 export const buildSearchGrid = (spot: number, config: SweepConfig): CellCandidate[] => {
@@ -499,6 +510,7 @@ export const buildSearchGrid = (spot: number, config: SweepConfig): CellCandidat
   const structures = config.structures ?? DEFAULT_STRUCTURES;
   const wantStraddle = structures.includes("straddle");
   const wantStrangle = structures.includes("strangle");
+  const wantGammaScalp = structures.includes("straddle_gamma_scalp");
   const moneyLabel = (m: number): string =>
     m === 0 ? "atm" : m < 0 ? `${Math.abs(m * 100).toFixed(0)}otm` : `${(m * 100).toFixed(0)}itm`;
   const candidates: CellCandidate[] = [];
@@ -516,6 +528,18 @@ export const buildSearchGrid = (spot: number, config: SweepConfig): CellCandidat
             tenorDays: tenor,
             contractsBtc,
             structure: "straddle"
+          });
+        }
+        // STRADDLE_GAMMA_SCALP: same ATM geometry, delta-hedged via perp (MC mode).
+        if (wantGammaScalp) {
+          candidates.push({
+            cellId: `${notional / 1000}k_${(trigger * 100).toFixed(0)}pct_gammascalp_${tenor}d`,
+            notionalUsdcPerLeg: notional,
+            triggerPct: trigger,
+            strikeMoneynessPct: 0,
+            tenorDays: tenor,
+            contractsBtc,
+            structure: "straddle_gamma_scalp"
           });
         }
         // STRANGLE: OTM-wing variants only. Skip m===0 — that ATM case is owned
@@ -555,6 +579,10 @@ export const runFullCellSweep = async (
   const runId = randomUUID();
   const startedAt = new Date();
   const candidates = buildSearchGrid(config.spot, config);
+  const hasGammaScalp = candidates.some((c) => c.structure === "straddle_gamma_scalp");
+  if (hasGammaScalp && (config.perpFrictionBps == null || !Number.isFinite(config.perpFrictionBps) || config.perpFrictionBps < 0)) {
+    throw new Error("runFullCellSweep: straddle_gamma_scalp cells require config.perpFrictionBps (>=0) from the venue fee schedule (env FOXIFY_PERP_FRICTION_BPS) — no hardcoded default");
+  }
   const autoClosePcts = config.autoClosePnlPcts ?? DEFAULT_AUTO_CLOSE_PCTS;
   const autoCloseAbs = config.autoCloseAbsoluteUsdcs ?? DEFAULT_AUTO_CLOSE_ABS;
   const totalSims = candidates.length * REGIMES.length * autoClosePcts.length * autoCloseAbs.length;
@@ -600,6 +628,19 @@ export const runFullCellSweep = async (
       config.spot, putStrike, callStrike, candidate.contractsBtc,
       candidate.tenorDays, config.liquidChainCache, config.dvolService ?? null, venue
     );
+
+    // For gamma-scalp cells, back out the IMPLIED vol from the REAL leg asks (the
+    // vol the option is priced/decayed at). Realized vol stays the regime
+    // calibration sigma — so the cell's EV literally tests realized>implied from
+    // real data. Venue-agnostic (no markIv dependency).
+    const isGammaScalp = candidate.structure === "straddle_gamma_scalp";
+    let impliedSigmaGs: number | null = null;
+    if (isGammaScalp && pricing) {
+      const Tyr = candidate.tenorDays / 365;
+      const putIv = impliedVolFromPrice(pricing.putAskPerBtc, config.spot, putStrike, Tyr, RISK_FREE_RATE, "put");
+      const callIv = impliedVolFromPrice(pricing.callAskPerBtc, config.spot, callStrike, Tyr, RISK_FREE_RATE, "call");
+      if (putIv != null && callIv != null) impliedSigmaGs = (putIv + callIv) / 2;
+    }
 
     for (const regime of REGIMES) {
       const cal = calibration[regime];
@@ -656,7 +697,14 @@ export const runFullCellSweep = async (
             autoCloseAbsoluteUsdc: autoCloseAbsUsdc,
             salvageRealismMultiplier: pricing.salvageRealismMultiplier,
             nPaths: config.nPaths ?? 500,
-            barsOverride: preloadedBars
+            barsOverride: preloadedBars,
+            ...(isGammaScalp ? {
+              gammaScalpWithPerpHedge: true,
+              perpFrictionBps: config.perpFrictionBps,
+              perpFundingBpsPerDay: config.perpFundingBpsPerDay,
+              // implied vol from real ask; realized = calibration sigma above
+              impliedSigmaAnnual: impliedSigmaGs ?? sigma
+            } : {})
           });
           const resultTier: "real" | "estimate" =
             regime === config.currentRegime ? "real" : "estimate";
@@ -754,9 +802,15 @@ export const runFullCellSweep = async (
     // Per-structure bests (ranked is already net-sorted) for the CTO comparison.
     const bestStraddleRes = ranked.find((r) => r.structure === "straddle") ?? null;
     const bestStrangleRes = ranked.find((r) => r.structure === "strangle") ?? null;
+    const bestGammaScalpRes = ranked.find((r) => r.structure === "straddle_gamma_scalp") ?? null;
     const top_straddle = bestStraddleRes ? toRankedCell(bestStraddleRes) : null;
     const top_strangle = bestStrangleRes ? toRankedCell(bestStrangleRes) : null;
-    const structure_verdict = structureVerdict(top_straddle, top_strangle);
+    const top_straddle_gamma_scalp = bestGammaScalpRes ? toRankedCell(bestGammaScalpRes) : null;
+    const structure_verdict = structureVerdict([
+      { label: "straddle", cell: top_straddle },
+      { label: "strangle", cell: top_strangle },
+      { label: "gamma_scalp", cell: top_straddle_gamma_scalp }
+    ]);
     // The regime's overall tier — "real" only if the current regime, else "estimate"
     const regimeTier: "real" | "estimate" | "chain_unavailable" =
       chainAvailable === 0 ? "chain_unavailable"
@@ -770,6 +824,7 @@ export const runFullCellSweep = async (
       topCells: top,
       top_straddle,
       top_strangle,
+      top_straddle_gamma_scalp,
       structure_verdict,
       totalCellsEvaluated: regimeResults.length
     };

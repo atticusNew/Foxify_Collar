@@ -475,3 +475,42 @@ test("sweep: structure_verdict + top_straddle/top_strangle populated for both st
   assert.ok(calm.structure_verdict.length > 0, "verdict non-empty");
   console.log(`[EMPIRICAL][verdict-test] calm (real tier): ${calm.structure_verdict}`);
 });
+
+test("sweep: gamma-scalp structure requires friction, emits labeled cell + 3-way verdict", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  const spot = 73000, sig = 0.40, T = 3 / 365;
+  const chain = {
+    getBidForSymbol: () => null,
+    getBidForLeg: (o: { strike: number; optType: "put" | "call" }) => {
+      const bs = o.optType === "put" ? bsPut(spot, o.strike, T, 0.045, sig) : bsCall(spot, o.strike, T, 0.045, sig);
+      const mid = Math.max(5, bs);
+      return { bidUsdcPerBtc: mid * 0.95, askUsdcPerBtc: mid * 1.05, midUsdcPerBtc: mid,
+        spreadPct: 0.1, venue: "deribit" as const, instrumentName: `BTC-${o.strike}-${o.optType.toUpperCase()}`,
+        tenorHours: 72, markIv: sig, pulledAtMs: Date.now() };
+    },
+    getCached: () => null
+  } as unknown as LiquidChainCache;
+  // (a) gamma-scalp requested without friction → throws (no hardcoded default)
+  await assert.rejects(
+    () => runFullCellSweep(pool, {
+      spot, notionals: [50000], triggers: [0.03], tenors: [3], strikeMoneyness: [0],
+      autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 50, venue: "auto",
+      structures: ["straddle_gamma_scalp"], liquidChainCache: chain, currentRegime: "calm"
+    }, { persistResults: false }),
+    /perpFrictionBps/
+  );
+  // (b) with friction → labeled cell + 3-way verdict
+  const report = await runFullCellSweep(pool, {
+    spot, notionals: [50000], triggers: [0.03], tenors: [3], strikeMoneyness: [0],
+    autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 200, venue: "auto",
+    structures: ["straddle", "straddle_gamma_scalp"], perpFrictionBps: 5,
+    liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: false });
+  const calm = report.rankings.calm;
+  assert.ok(calm.top_straddle_gamma_scalp, "gamma-scalp cell present");
+  assert.equal((calm.top_straddle_gamma_scalp as NonNullable<typeof calm.top_straddle_gamma_scalp>).params.structure, "straddle_gamma_scalp");
+  assert.ok((calm.top_straddle_gamma_scalp as NonNullable<typeof calm.top_straddle_gamma_scalp>).cellId.includes("GAMMASCALP"), "cellId carries GAMMASCALP token");
+  console.log(`[EMPIRICAL][sweep-3way] calm verdict: ${calm.structure_verdict}`);
+});

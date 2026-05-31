@@ -848,8 +848,11 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *   { spot?, notionals?, triggers?, strikeMoneyness?, tenors?,
    *     autoClosePnlPcts?, autoCloseAbsoluteUsdcs?, nPaths?, venue?,
    *     structures? }
-   *   structures: subset of ["strangle","straddle"] (default both). Straddle =
-   *     ATM (moneyness=0); strangle = non-zero OTM-wing moneyness only.
+   *   structures: subset of ["strangle","straddle","straddle_gamma_scalp"]
+   *     (default strangle+straddle). Straddle = ATM (moneyness=0); strangle =
+   *     non-zero OTM-wing moneyness; straddle_gamma_scalp = ATM delta-hedged via
+   *     perp (needs FOXIFY_PERP_FRICTION_BPS env or body.perpFrictionBps).
+   *   perpFrictionBps / perpFundingBpsPerDay: REAL perp costs for gamma scalp.
    *
    * Heads up: this is HEAVY — default config is ~4,800 cells × 12 auto-close
    * combos = 57,600 sims at 500 paths each ≈ 28.8M iterations. Plan ~30 min.
@@ -889,16 +892,30 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(400).send({ error: "invalid_request", message: "venue must be 'auto' | 'bullish' | 'deribit'" });
         return;
       }
-      // Structure mode: which option structures to sweep (default both).
-      let structuresParam: Array<"strangle" | "straddle"> | undefined;
+      // Structure mode: which option structures to sweep (default strangle+straddle).
+      const VALID_STRUCTURES = ["strangle", "straddle", "straddle_gamma_scalp"];
+      let structuresParam: Array<"strangle" | "straddle" | "straddle_gamma_scalp"> | undefined;
       if (body.structures !== undefined) {
         if (!Array.isArray(body.structures) ||
             body.structures.length === 0 ||
-            !body.structures.every((s) => s === "strangle" || s === "straddle")) {
-          reply.code(400).send({ error: "invalid_request", message: "structures must be a non-empty subset of ['strangle','straddle']" });
+            !body.structures.every((s) => typeof s === "string" && VALID_STRUCTURES.includes(s))) {
+          reply.code(400).send({ error: "invalid_request", message: "structures must be a non-empty subset of ['strangle','straddle','straddle_gamma_scalp']" });
           return;
         }
-        structuresParam = body.structures as Array<"strangle" | "straddle">;
+        structuresParam = body.structures as Array<"strangle" | "straddle" | "straddle_gamma_scalp">;
+      }
+      // Gamma-scalp cells need REAL perp friction (env, NOT hardcoded). Body may
+      // override for what-if analysis; otherwise read FOXIFY_PERP_FRICTION_BPS.
+      const wantsGammaScalp = (structuresParam ?? []).includes("straddle_gamma_scalp");
+      const perpFrictionBps = typeof body.perpFrictionBps === "number"
+        ? body.perpFrictionBps
+        : (process.env.FOXIFY_PERP_FRICTION_BPS != null ? Number(process.env.FOXIFY_PERP_FRICTION_BPS) : undefined);
+      const perpFundingBpsPerDay = typeof body.perpFundingBpsPerDay === "number"
+        ? body.perpFundingBpsPerDay
+        : (process.env.FOXIFY_PERP_FUNDING_BPS_PER_DAY != null ? Number(process.env.FOXIFY_PERP_FUNDING_BPS_PER_DAY) : undefined);
+      if (wantsGammaScalp && (perpFrictionBps == null || !Number.isFinite(perpFrictionBps) || perpFrictionBps < 0)) {
+        reply.code(400).send({ error: "invalid_request", message: "straddle_gamma_scalp requires real perp friction: set FOXIFY_PERP_FRICTION_BPS env (or pass perpFrictionBps in body) — no hardcoded default" });
+        return;
       }
       const acceptedAt = new Date().toISOString();
       const config: Parameters<typeof runFullCellSweep>[1] = {
@@ -912,6 +929,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         nPaths: typeof body.nPaths === "number" ? body.nPaths : undefined,
         venue: venueParam,
         structures: structuresParam,
+        perpFrictionBps,
+        perpFundingBpsPerDay,
         liquidChainCache: deps.liquidChainCache,
         dvolService: deps.dvolService,
         currentRegime
