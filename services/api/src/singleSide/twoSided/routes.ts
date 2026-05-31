@@ -1057,6 +1057,30 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/structure-selector
+   *
+   * Phase 5 (read-only): shows which option STRUCTURE the regime selector would
+   * route to for each regime + the current live regime's selection. INFORMATIONAL
+   * ONLY — not yet wired into the live activation gate (that waits until the cell
+   * sweep + DVOL backfill validate per-regime winners). Override mapping via env
+   * SS_STRUCTURE_BY_REGIME (JSON).
+   */
+  app.get("/admin/foxify/v2/structure-selector", { preHandler: checkAdminToken }, async (_req, reply) => {
+    const { getFullStructureMap, selectStructureForRegime } = await import("./structureSelector");
+    const { classifyRegime } = await import("./featureFlag");
+    const currentDvol = deps.dvolService.getCurrentDvol();
+    const currentRegime = currentDvol ? classifyRegime(currentDvol.dvol) : null;
+    reply.send({
+      current_dvol: currentDvol?.dvol ?? null,
+      current_regime: currentRegime,
+      current_selection: currentRegime ? selectStructureForRegime(currentRegime) : null,
+      map: getFullStructureMap(),
+      wired_into_activation: false,
+      note: "Informational only. The regime→structure mapping is the CTO strategic framework; cell parameters within each structure are still gated by cellAllowlist (validated by the sweep). Wiring into live activation is deferred until Phase 4/4.5 winners are validated on real data."
+    });
+  });
+
+  /**
    * GET /admin/foxify/v2/ev-by-regime
    *
    * Cross-regime EV matrix per cell, with real-bid realism applied. Answers
