@@ -60,7 +60,7 @@ export type IronCondorMcInputs = {
   atticusFloorUsdc?: number;
   nPaths?: number;
   seed?: number;
-  barsOverride?: { highs: number[]; lows: number[]; closes: number[] } | null;
+  barsOverride?: Awaited<ReturnType<typeof load5MinBars>> | null;
 };
 
 export type IronCondorMcResult = {

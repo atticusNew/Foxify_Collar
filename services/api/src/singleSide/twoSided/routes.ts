@@ -1101,6 +1101,107 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   });
 
   /**
+   * POST /admin/foxify/v2/iron-condor-probe
+   *
+   * Phase 7: price a SHORT iron condor from the REAL chain (sell inner put+call,
+   * buy outer wings) and run the income MC across regimes. Answers "can a calm
+   * iron condor collect enough credit to cover Foxify's perp friction?" with real
+   * bid/ask — not synthetic. Selling requires venue margin (available on Bullish).
+   *
+   * Body (optional): { spot?, notional?=50000, shortWidthPct?=0.03, wingWidthPct?=0.02,
+   *   tenorDays?=3, profitTargetUsdc?=250, trailStopUsdc?=300, perpPairFrictionUsdc?, nPaths?=500 }
+   */
+  app.post<{ Body?: Record<string, unknown> }>(
+    "/admin/foxify/v2/iron-condor-probe",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { priceOption } = await import("./optionPricing");
+      const { getRegimeCalibration } = await import("./regimeCalibration");
+      const { classifyRegime } = await import("./featureFlag");
+      const { runIronCondorMc } = await import("./ironCondorMc");
+      const b = req.body ?? {};
+      const num = (v: unknown, d: number): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = typeof b.spot === "number" ? b.spot : feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable", message: "need canonical spot" }); return; }
+      if (!deps.liquidChainCache) { reply.code(503).send({ error: "chain_cache_unavailable" }); return; }
+      const currentDvol = deps.dvolService.getCurrentDvol();
+      if (!currentDvol) { reply.code(503).send({ error: "dvol_unavailable" }); return; }
+      const currentRegime = classifyRegime(currentDvol.dvol);
+
+      const notional = num(b.notional, 50000);
+      const shortWidthPct = num(b.shortWidthPct, 0.03);
+      const wingWidthPct = num(b.wingWidthPct, 0.02);
+      const tenorDays = num(b.tenorDays, 3);
+      const profitTargetUsdc = num(b.profitTargetUsdc, 250);
+      const trailStopUsdc = num(b.trailStopUsdc, 300);
+      const friction = typeof b.perpPairFrictionUsdc === "number" ? b.perpPairFrictionUsdc
+        : (process.env.FOXIFY_PERP_FRICTION_USDC != null ? Number(process.env.FOXIFY_PERP_FRICTION_USDC) : 0);
+      const nPaths = num(b.nPaths, 500);
+      const contractsBtc = +(notional / spot).toFixed(3);
+      const snap = (x: number): number => Math.round(x / 1000) * 1000;
+      const putShort = snap(spot * (1 - shortWidthPct));
+      const putLong = snap(spot * (1 - shortWidthPct - wingWidthPct));
+      const callShort = snap(spot * (1 + shortWidthPct));
+      const callLong = snap(spot * (1 + shortWidthPct + wingWidthPct));
+      const tenorMs = tenorDays * 86_400_000;
+      const px = (strike: number, optType: "put" | "call") => priceOption({
+        spot, strike, optType, tenorRemainingMs: tenorMs, contractsBtc,
+        venue: null, instrumentSymbol: null, liquidChainCache: deps.liquidChainCache,
+        dvolService: deps.dvolService, purpose: "fair_value", bidHaircut: 1.0
+      });
+      const pPutShort = px(putShort, "put");
+      const pPutLong = px(putLong, "put");
+      const pCallShort = px(callShort, "call");
+      const pCallLong = px(callLong, "call");
+      const strikes = { put_long: putLong, put_short: putShort, call_short: callShort, call_long: callLong };
+      // Need real BID on the legs we SELL + real ASK on the wings we BUY.
+      const missing: string[] = [];
+      if (pPutShort.bid_per_btc == null) missing.push("put_short.bid");
+      if (pPutLong.ask_per_btc == null) missing.push("put_long.ask");
+      if (pCallShort.bid_per_btc == null) missing.push("call_short.bid");
+      if (pCallLong.ask_per_btc == null) missing.push("call_long.ask");
+      if (missing.length > 0) { reply.send({ ok: false, error: "chain_unavailable", missing, strikes }); return; }
+      const entryCreditPerBtc = (pPutShort.bid_per_btc! - pPutLong.ask_per_btc!) + (pCallShort.bid_per_btc! - pCallLong.ask_per_btc!);
+      const entryCreditUsdc = entryCreditPerBtc * contractsBtc;
+      if (!(entryCreditUsdc > 0)) {
+        reply.send({ ok: false, error: "non_positive_credit", entry_credit_usdc: +entryCreditUsdc.toFixed(2), strikes,
+          note: "Net credit is <= 0 at these strikes/widths (wings cost more than the inner legs pay). Widen shortWidthPct or narrow wingWidthPct." });
+        return;
+      }
+      const calibration = await getRegimeCalibration(deps.pool);
+      const regimes: Array<"calm" | "moderate" | "elevated" | "stress"> = ["calm", "moderate", "elevated", "stress"];
+      const byRegime: Record<string, unknown> = {};
+      for (const regime of regimes) {
+        const sigma = calibration[regime].sigma;
+        const mc = await runIronCondorMc({
+          cellId: `ic_${regime}`, spot,
+          putShortStrike: putShort, putLongStrike: putLong, callShortStrike: callShort, callLongStrike: callLong,
+          tenorDays, regime, sigmaAnnual: sigma, contractsBtc, entryCreditUsdc, profitTargetUsdc, trailStopUsdc, nPaths
+        });
+        byRegime[regime] = {
+          tier: regime === currentRegime ? "real" : "estimate",
+          sigma_used: sigma, sigma_source: calibration[regime].sigmaSource,
+          mean_net_usdc: +mc.meanFoxifyNetUsdc.toFixed(2),
+          pct_profitable: +mc.pctProfitable.toFixed(4),
+          net_after_friction_usdc: +(mc.meanFoxifyNetUsdc - friction).toFixed(2),
+          covers_friction: mc.meanFoxifyNetUsdc - friction >= 0,
+          p5_usdc: +mc.p5FoxifyNetUsdc.toFixed(2), p95_usdc: +mc.p95FoxifyNetUsdc.toFixed(2),
+          exit_distribution: mc.exitDistribution, max_loss_usdc: +mc.maxLossUsdc.toFixed(2)
+        };
+      }
+      reply.send({
+        ok: true, spot, current_regime: currentRegime, notional, contracts_btc: contractsBtc,
+        strikes, tenor_days: tenorDays,
+        entry_credit_usdc: +entryCreditUsdc.toFixed(2), max_profit_usdc: +entryCreditUsdc.toFixed(2),
+        profit_target_usdc: profitTargetUsdc, trail_stop_usdc: trailStopUsdc, perp_pair_friction_usdc: friction,
+        by_regime: byRegime,
+        note: "SHORT iron condor priced from REAL chain bid/ask. Per-tick buyback uses BS at calibration sigma. Selling requires venue margin (Bullish). Only current_regime is REAL tier; others are estimate. Condor profits in CALM (range-bound), loses in high vol — mirror image of the long straddle."
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/ev-by-regime
    *
    * Cross-regime EV matrix per cell, with real-bid realism applied. Answers
