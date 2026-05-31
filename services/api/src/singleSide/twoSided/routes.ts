@@ -409,6 +409,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Auth: X-Foxify-Token (same as other foxify-side endpoints).
    */
   app.get("/foxify/v2/should_activate", { preHandler: checkFoxifyToken }, async (_req, reply) => {
+    const { selectStructureForRegime } = await import("./structureSelector");
     if (!deps.rvService) {
       // RvService not wired — degrade to regime-only gate
       const dvol = deps.dvolService.getCurrentDvol();
@@ -438,6 +439,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
               ? `regime_${dvol.regime}_positive_ev`
               : "dvol_unavailable",
         recommended_cells: [],
+        recommended_structure: dvol?.regime ? selectStructureForRegime(dvol.regime).structure : null,
+        structure_rationale: dvol?.regime ? selectStructureForRegime(dvol.regime).rationale : null,
         next_check_signal: "regime_change_or_rv_service_enabled",
         asOf: new Date().toISOString(),
         signal_tier: tierInfo.tier,
@@ -540,7 +543,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       });
       return;
     }
-    reply.send({ ...result, trends, cell_opportunities: cellOpportunities });
+    const recSel = result.regime ? selectStructureForRegime(result.regime) : null;
+    reply.send({ ...result, trends, cell_opportunities: cellOpportunities,
+      recommended_structure: recSel?.structure ?? null, structure_rationale: recSel?.rationale ?? null });
   });
 
   app.get("/foxify/v2/regime", { preHandler: checkFoxifyToken }, async (_req, reply) => {
@@ -1184,6 +1189,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           sigma_used: sigma, sigma_source: calibration[regime].sigmaSource,
           mean_net_usdc: +mc.meanFoxifyNetUsdc.toFixed(2),
           pct_profitable: +mc.pctProfitable.toFixed(4),
+          // The option's own net = the MAX perp friction this structure can cover
+          // while staying >= 0. (Negative ⇒ loses even at $0 friction.)
+          breakeven_friction_usdc: +mc.meanFoxifyNetUsdc.toFixed(2),
           net_after_friction_usdc: +(mc.meanFoxifyNetUsdc - friction).toFixed(2),
           covers_friction: mc.meanFoxifyNetUsdc - friction >= 0,
           p5_usdc: +mc.p5FoxifyNetUsdc.toFixed(2), p95_usdc: +mc.p95FoxifyNetUsdc.toFixed(2),
