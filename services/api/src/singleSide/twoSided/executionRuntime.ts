@@ -25,7 +25,6 @@ import {
   tpEvaluate,
   type TpDecision
 } from "./tpEngine";
-import { computeCombinedOptionValue } from "./optionValueLookup";
 import {
   getLegsForPair,
   getPairById,
@@ -36,6 +35,8 @@ import type { ExitMode, PairRecord, PairLegRecord } from "./types";
 import type { CloseExecutor, CloseStrangleResult } from "./closeExecutor";
 import { getMetrics, METRIC_NAMES } from "./metrics";
 import type { AggregatedFeed } from "./feedAggregator";
+import type { LiquidChainCache } from "./liquidChainCache";
+import { priceStrangle } from "./optionPricing";
 
 export type RuntimeDeps = {
   pool: Pool;
@@ -57,8 +58,14 @@ export type RuntimeDeps = {
   log?: (msg: string, meta?: Record<string, unknown>) => void;
   /** Calibration multipliers captured at activation; passed in per pair so the
    * runtime doesn't have to re-pull anchors. Caller derives from pair_leg
-   * (live_anchor_ask / BS_at_anchor_sigma). */
+   * (live_anchor_ask / BS_at_anchor_sigma).
+   * NOTE: post-Phase-1 (unified pricing), calibration multipliers are only
+   * used when priceOption falls all the way to bs_only. When real bids are
+   * available, they take priority over BS+calibration. */
   calibrationFor: (pair: PairRecord) => Promise<{ putCalib: number; callCalib: number; riskFreeRate: number }>;
+  /** Liquid chain cache for bid lookups in priceOption. Optional; when omitted,
+   * priceOption falls straight to BS+calibration (legacy behavior). */
+  liquidChainCache?: LiquidChainCache | null;
 };
 
 const RFR_DEFAULT = 0.045;
@@ -138,25 +145,47 @@ export class ExecutionRuntime {
     this.state.lastTickMs = nowMs;
     this.state.ticks++;
 
-    // 1. Snapshot feed for current spot
+    // 1. Snapshot feed for current spot; price each leg via unified pricing
+    //    primitive. purpose="fair_value" → uses MID (or raw BS if no bid) so
+    //    the TP curve tracks the same value that other consumers (MTM, EV)
+    //    would see. Calibration multipliers are still derived but only become
+    //    relevant when priceOption falls to bs_only (rare; means chain cache
+    //    has no quote for either the exact instrument or fuzzy strike+tenor).
     const feed = this.deps.getFeed();
     let currentValue = 0;
     if (feed?.canonicalPrice != null) {
       const sigma = this.deps.getCurrentSigma();
-      const { putCalib, callCalib, riskFreeRate } = await this.deps.calibrationFor(this.pair);
-      const expiryMs = Date.parse(this.pair.expiresAt);
-      const v = computeCombinedOptionValue({
-        spot: feed.canonicalPrice,
-        putStrike: Number(this.legs.find((l) => l.legRole === "long_put")!.strikeUsdc),
-        callStrike: Number(this.legs.find((l) => l.legRole === "long_call")!.strikeUsdc),
-        contractsBtc: this.legs[0].contractsBtc,
-        msToExpiry: Math.max(0, expiryMs - nowMs),
-        sigmaAnnual: sigma,
-        riskFreeRate: riskFreeRate ?? RFR_DEFAULT,
-        putCalibrationMultiplier: putCalib,
-        callCalibrationMultiplier: callCalib
+      const putLeg = this.legs.find((l) => l.legRole === "long_put")!;
+      const callLeg = this.legs.find((l) => l.legRole === "long_call")!;
+      const tenorRemainingMs = Math.max(0, Date.parse(this.pair.expiresAt) - nowMs);
+      const strangle = priceStrangle({
+        put: {
+          spot: feed.canonicalPrice,
+          strike: Number(putLeg.strikeUsdc),
+          contractsBtc: putLeg.contractsBtc,
+          tenorRemainingMs,
+          optType: "put",
+          venue: putLeg.venue,
+          instrumentSymbol: putLeg.symbol,
+          liquidChainCache: this.deps.liquidChainCache ?? null,
+          ivAnnualOverride: sigma,
+          nowMs
+        },
+        call: {
+          spot: feed.canonicalPrice,
+          strike: Number(callLeg.strikeUsdc),
+          contractsBtc: callLeg.contractsBtc,
+          tenorRemainingMs,
+          optType: "call",
+          venue: callLeg.venue,
+          instrumentSymbol: callLeg.symbol,
+          liquidChainCache: this.deps.liquidChainCache ?? null,
+          ivAnnualOverride: sigma,
+          nowMs
+        },
+        purpose: "fair_value"
       });
-      currentValue = v.totalUsdc;
+      currentValue = strangle.combined_value_total;
     }
     if (currentValue > this.state.peakValueUsdc) this.state.peakValueUsdc = currentValue;
 

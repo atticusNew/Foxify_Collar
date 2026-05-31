@@ -862,7 +862,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const { resolveCurrentTier } = await import("./tierResolver");
       const { buildQuote } = await import("./quoteEngine");
       const { computeLiveCellEv } = await import("./liveCellEvService");
-      const { bsPut: bsP, bsCall: bsC } = await import("../../../scripts/backtest/singleSide/coreEngine");
+      const { priceOption: priceOpt } = await import("./optionPricing");
 
       // Validate query inputs FIRST (cheap) before doing any DB/tier work
       const realismOverride = req.query.realism_override != null
@@ -911,26 +911,25 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
             realismMultiplier = realismOverride;
             realismSource = "override";
           } else if (deps.liquidChainCache) {
-            const tenorHours = cell.hedgeTenorDays * 24;
-            const putBidLookup = deps.liquidChainCache.getBidForSymbol({
-              venue: quote.putLeg.venue,
-              instrumentSymbol: quote.putLeg.symbol
-            }) ?? deps.liquidChainCache.getBidForLeg({
-              strike: quote.putStrike, optType: "put",
-              tenorRemainingHours: tenorHours, preferVenue: quote.putLeg.venue
+            const tenorMs = cell.hedgeTenorDays * 86_400_000;
+            const putP = priceOpt({
+              spot, strike: quote.putStrike, optType: "put",
+              tenorRemainingMs: tenorMs, contractsBtc: cell.contractsBtc,
+              venue: quote.putLeg.venue, instrumentSymbol: quote.putLeg.symbol,
+              liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
+              purpose: "fair_value", bidHaircut: 1.0
             });
-            const callBidLookup = deps.liquidChainCache.getBidForSymbol({
-              venue: quote.callLeg.venue,
-              instrumentSymbol: quote.callLeg.symbol
-            }) ?? deps.liquidChainCache.getBidForLeg({
-              strike: quote.callStrike, optType: "call",
-              tenorRemainingHours: tenorHours, preferVenue: quote.callLeg.venue
+            const callP = priceOpt({
+              spot, strike: quote.callStrike, optType: "call",
+              tenorRemainingMs: tenorMs, contractsBtc: cell.contractsBtc,
+              venue: quote.callLeg.venue, instrumentSymbol: quote.callLeg.symbol,
+              liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
+              purpose: "fair_value", bidHaircut: 1.0
             });
-            const realPutBid = putBidLookup?.bidUsdcPerBtc ?? 0;
-            const realCallBid = callBidLookup?.bidUsdcPerBtc ?? 0;
-            const T = cell.hedgeTenorDays / 365;
-            const bsPutVal = Math.max(0, bsP(spot, quote.putStrike, T, 0.045, 0.36));
-            const bsCallVal = Math.max(0, bsC(spot, quote.callStrike, T, 0.045, 0.36));
+            const realPutBid = putP.bid_per_btc ?? 0;
+            const realCallBid = callP.bid_per_btc ?? 0;
+            const bsPutVal = putP.bs_theoretical_per_btc;
+            const bsCallVal = callP.bs_theoretical_per_btc;
             if (bsPutVal + bsCallVal > 0 && realPutBid + realCallBid > 0) {
               realismMultiplier = Math.max(0, Math.min(1.5, (realPutBid + realCallBid) / (bsPutVal + bsCallVal)));
               realismSource = "bid_calibrated";
@@ -1643,7 +1642,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     const { resolveCurrentTier } = await import("./tierResolver");
     const { buildQuote } = await import("./quoteEngine");
     const { computeActivationGate } = await import("./activationGate");
-    const { bsPut, bsCall } = await import("../../../scripts/backtest/singleSide/coreEngine");
+    const { priceOption } = await import("./optionPricing");
 
     // Gate result (or degraded if no rvService)
     let gate: Awaited<ReturnType<typeof computeActivationGate>> | { reason: string; good_to_activate: false };
@@ -1688,41 +1687,50 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         }
         const liveCost = quote.totalHedgeCostUsdc;
 
-        // REALISM MULTIPLIER: compute the ratio of current real bid to current
-        // BS theoretical for THIS cell's actual strikes. The MC sim values
-        // salvage via BS; multiplying by this ratio simulates the bid-side
-        // discount we'd actually receive. When use_real_bids=false (legacy),
-        // multiplier is 1.0 (pure BS, overstates EV).
+        // REALISM MULTIPLIER (Phase 1 — uses unified priceOption primitive)
+        //
+        // Compute the ratio of current real bid to current BS theoretical
+        // for THIS cell's actual strikes. The MC sim values salvage via BS;
+        // multiplying by this ratio simulates the bid-side discount we'd
+        // actually receive. When use_real_bids=false (legacy), multiplier
+        // is 1.0 (pure BS, overstates EV).
+        //
+        // Migrated to priceOption to ensure THIS calculation sees the SAME
+        // bid as MTM and ShadowCloseExecutor would for the same instruments.
         let realismMultiplier = 1.0;
         let realismDetail: Record<string, number | string | null> = { mode: "bs_only_legacy" };
         if (useRealBids && deps.liquidChainCache) {
-          const tenorHours = cell.hedgeTenorDays * 24;
-          // Real bids: prefer exact symbol (the quote we'd actually sell to)
-          const putBidLookup = deps.liquidChainCache.getBidForSymbol({
-            venue: quote.putLeg.venue,
-            instrumentSymbol: quote.putLeg.symbol
-          }) ?? deps.liquidChainCache.getBidForLeg({
+          const tenorMs = cell.hedgeTenorDays * 86_400_000;
+          const putPricing = priceOption({
+            spot,
             strike: quote.putStrike,
             optType: "put",
-            tenorRemainingHours: tenorHours,
-            preferVenue: quote.putLeg.venue
+            tenorRemainingMs: tenorMs,
+            contractsBtc: cell.contractsBtc,
+            venue: quote.putLeg.venue,
+            instrumentSymbol: quote.putLeg.symbol,
+            liquidChainCache: deps.liquidChainCache,
+            dvolService: deps.dvolService,
+            purpose: "fair_value", // gets us mid+BS for ratio calc
+            bidHaircut: 1.0
           });
-          const callBidLookup = deps.liquidChainCache.getBidForSymbol({
-            venue: quote.callLeg.venue,
-            instrumentSymbol: quote.callLeg.symbol
-          }) ?? deps.liquidChainCache.getBidForLeg({
+          const callPricing = priceOption({
+            spot,
             strike: quote.callStrike,
             optType: "call",
-            tenorRemainingHours: tenorHours,
-            preferVenue: quote.callLeg.venue
+            tenorRemainingMs: tenorMs,
+            contractsBtc: cell.contractsBtc,
+            venue: quote.callLeg.venue,
+            instrumentSymbol: quote.callLeg.symbol,
+            liquidChainCache: deps.liquidChainCache,
+            dvolService: deps.dvolService,
+            purpose: "fair_value",
+            bidHaircut: 1.0
           });
-          const realPutBid = putBidLookup?.bidUsdcPerBtc ?? 0;
-          const realCallBid = callBidLookup?.bidUsdcPerBtc ?? 0;
-          // BS theoretical at CURRENT spot + FULL tenor (the highest-value
-          // moment, matches the MC's first-bar valuation perspective)
-          const T = cell.hedgeTenorDays / 365;
-          const bsPutAtSpot = Math.max(0, bsPut(spot, quote.putStrike, T, 0.045, 0.36));
-          const bsCallAtSpot = Math.max(0, bsCall(spot, quote.callStrike, T, 0.045, 0.36));
+          const realPutBid = putPricing.bid_per_btc ?? 0;
+          const realCallBid = callPricing.bid_per_btc ?? 0;
+          const bsPutAtSpot = putPricing.bs_theoretical_per_btc;
+          const bsCallAtSpot = callPricing.bs_theoretical_per_btc;
           const bsCombined = bsPutAtSpot + bsCallAtSpot;
           const realCombined = realPutBid + realCallBid;
           if (bsCombined > 0 && realCombined > 0) {
@@ -1736,6 +1744,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
               bs_call_at_spot_per_btc: bsCallAtSpot,
               bs_combined_per_btc: bsCombined,
               multiplier: realismMultiplier,
+              iv_used: putPricing.iv_used,
+              iv_source: putPricing.iv_source,
+              put_source: putPricing.source,
+              call_source: callPricing.source,
               interpretation: realismMultiplier < 0.7
                 ? "real_bids_well_below_bs_high_skew_or_thin_market"
                 : realismMultiplier < 0.95
@@ -1747,6 +1759,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
               mode: "bs_only_no_bid_data",
               real_put_bid_usdc_per_btc: realPutBid,
               real_call_bid_usdc_per_btc: realCallBid,
+              put_source: putPricing.source,
+              call_source: callPricing.source,
               note: "no_real_bid_in_chain_cache_falling_back_to_bs"
             };
           }

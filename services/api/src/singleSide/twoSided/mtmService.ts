@@ -26,19 +26,9 @@
  */
 
 import type { Pool } from "pg";
-import { bsCall, bsPut } from "../../pilot/blackScholes";
 import type { LiquidChainCache } from "./liquidChainCache";
+import { priceOption } from "./optionPricing";
 
-const DEFAULT_RFR = 0.045;
-// Bid-based salvage: bid is what we'd ACTUALLY receive on a market sell.
-// 5% haircut accounts for fill slippage from bid (rare moves between quote
-// fetch and actual fill, plus IOC limit-order semantics).
-const BID_BASED_HAIRCUT = 0.95;
-// BS-based fallback haircut: when we can't find a venue bid (cache miss,
-// stale snapshot, illiquid strike), fall back to BS valuation. Apply a
-// LARGER haircut because BS uses market-wide IV that overstates value
-// for OTM/ITM strikes due to vol skew.
-const BS_FALLBACK_HAIRCUT = 0.70;
 const DEFAULT_TP_THRESHOLD_PCT = 0.30; // suggest TAKE_PROFIT_AVAILABLE at +30% pnl
 const DEFAULT_WATCH_THRESHOLD_PCT = 0.05; // suggest WATCH at +5% pnl
 
@@ -215,15 +205,12 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
   const result = await inputs.pool.query<ActivePairLite & { put_venue: string | null; call_venue: string | null; put_symbol: string | null; call_symbol: string | null }>(sql, params);
 
   /**
-   * Value ONE leg using a tiered bid strategy:
-   *   1. EXACT instrument symbol on the venue we hold (most accurate)
-   *   2. Fuzzy strike+tenor on the same venue (proxy; may overstate if
-   *      another expiry shares the strike)
-   *   3. BS theoretical (fallback when chain is unreachable)
+   * Value ONE leg using the unified pricing primitive (priceOption).
    *
-   * The tiered approach prevents the "wrong expiry overstates value" bug
-   * where getBidForLeg's drift-window match picked a 2.5d option's bid as
-   * a proxy for our 1.5d holding (2x value inflation).
+   * Delegates 100% of the cascade decision (exact → fuzzy → bs) to optionPricing
+   * so MTM, ShadowCloseExecutor, runtime TP loop, and EV all use the same logic.
+   * This eliminates the previous bug where each component had its own slightly
+   * different fallback rules producing inconsistent values.
    */
   const valueLeg = (leg: {
     side: "put" | "call";
@@ -241,58 +228,36 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     rawBidUsdcPerBtc?: number;
     venue?: string;
   } => {
-    if (inputs.liquidChainCache) {
-      // Tier 1: exact instrument match (only when we have venue + symbol)
-      if (leg.preferVenue && leg.instrumentSymbol) {
-        const exact = inputs.liquidChainCache.getBidForSymbol({
-          venue: leg.preferVenue,
-          instrumentSymbol: leg.instrumentSymbol
-        });
-        if (exact && exact.bidUsdcPerBtc > 0) {
-          const perBtc = exact.bidUsdcPerBtc * BID_BASED_HAIRCUT;
-          return {
-            valueTotal: perBtc * leg.contracts,
-            perBtc,
-            method: "venue_bid",
-            matchTier: "exact_symbol",
-            sourceDetail: `${exact.venue}:exact ${exact.instrumentName} bid=${exact.bidUsdcPerBtc.toFixed(2)}USD haircut=${(BID_BASED_HAIRCUT * 100).toFixed(0)}%`,
-            rawBidUsdcPerBtc: exact.bidUsdcPerBtc,
-            venue: exact.venue
-          };
-        }
-      }
-      // Tier 2: fuzzy proxy (closest strike+tenor)
-      const bid = inputs.liquidChainCache.getBidForLeg({
-        strike: leg.strike,
-        optType: leg.side,
-        tenorRemainingHours: leg.tenorRemainingHours,
-        preferVenue: leg.preferVenue ?? undefined
-      });
-      if (bid) {
-        const perBtc = bid.bidUsdcPerBtc * BID_BASED_HAIRCUT;
-        return {
-          valueTotal: perBtc * leg.contracts,
-          perBtc,
-          method: "venue_bid",
-          matchTier: "fuzzy_strike_tenor",
-          sourceDetail: `${bid.venue}:proxy ${bid.instrumentName} bid=${bid.bidUsdcPerBtc.toFixed(2)}USD haircut=${(BID_BASED_HAIRCUT * 100).toFixed(0)}%`,
-          rawBidUsdcPerBtc: bid.bidUsdcPerBtc,
-          venue: bid.venue
-        };
-      }
-    }
-    // Tier 3: BS theoretical fallback (least accurate)
-    const T = leg.tenorRemainingHours / (24 * 365);
-    const raw = leg.side === "put"
-      ? Math.max(0, bsPut(inputs.currentSpot, leg.strike, T, DEFAULT_RFR, inputs.ivAnnual))
-      : Math.max(0, bsCall(inputs.currentSpot, leg.strike, T, DEFAULT_RFR, inputs.ivAnnual));
-    const perBtc = raw * BS_FALLBACK_HAIRCUT;
+    const result = priceOption({
+      spot: inputs.currentSpot,
+      strike: leg.strike,
+      optType: leg.side,
+      tenorRemainingMs: leg.tenorRemainingHours * 3_600_000,
+      contractsBtc: leg.contracts,
+      venue: leg.preferVenue,
+      instrumentSymbol: leg.instrumentSymbol,
+      liquidChainCache: inputs.liquidChainCache ?? null,
+      ivAnnualOverride: inputs.ivAnnual,
+      purpose: "mtm",
+      nowMs: inputs.nowMs
+    });
+    const method: "venue_bid" | "bs_fallback" =
+      result.source === "bs_only" ? "bs_fallback" : "venue_bid";
+    const matchTier: "exact_symbol" | "fuzzy_strike_tenor" | "bs_theoretical" =
+      result.source === "exact_symbol" ? "exact_symbol"
+        : result.source === "fuzzy_strike_tenor" ? "fuzzy_strike_tenor"
+        : "bs_theoretical";
+    const sourceDetail = result.source === "bs_only"
+      ? `bs(iv=${(result.iv_used * 100).toFixed(1)}%/${result.iv_source}) haircut=${(result.haircut_applied * 100).toFixed(0)}%`
+      : `${result.venue_used}:${result.source} ${result.instrument_used} bid=${result.bid_per_btc?.toFixed(2)}USD haircut=${(result.haircut_applied * 100).toFixed(0)}%`;
     return {
-      valueTotal: perBtc * leg.contracts,
-      perBtc,
-      method: "bs_fallback",
-      matchTier: "bs_theoretical",
-      sourceDetail: `bs(iv=${(inputs.ivAnnual * 100).toFixed(1)}%) haircut=${(BS_FALLBACK_HAIRCUT * 100).toFixed(0)}%`
+      valueTotal: result.primary_value_total,
+      perBtc: result.primary_value_per_btc,
+      method,
+      matchTier,
+      sourceDetail,
+      rawBidUsdcPerBtc: result.bid_per_btc ?? undefined,
+      venue: result.venue_used ?? undefined
     };
   };
 

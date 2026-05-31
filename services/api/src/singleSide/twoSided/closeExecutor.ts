@@ -23,6 +23,7 @@
 
 import type { LegRole, Venue } from "./types";
 import type { LiquidChainCache } from "./liquidChainCache";
+import { priceOption } from "./optionPricing";
 
 export type CloseLegRequest = {
   legRole: LegRole;
@@ -242,20 +243,15 @@ export class ShadowCloseExecutor implements CloseExecutor {
   }
 
   /**
-   * Bid lookup strategy (tiered for correctness + safety):
-   *   1. EXACT symbol match — the right answer when the chain has fresh
-   *      data on the SPECIFIC instrument we hold (e.g. BTC-1JUN26-73000-P).
-   *      Returns a true sellable bid.
-   *   2. Fuzzy strike+tenor match on the same venue — fallback when the
-   *      exact symbol isn't in the snapshot (e.g. chain window doesn't
-   *      include this strike, or the fetch was partial). Less accurate
-   *      because the matched quote may be a different expiry.
-   *   3. null — caller falls back to BS-derived expected.
+   * Bid lookup — delegates to the unified priceOption primitive.
    *
-   * We deliberately split the two paths so the audit trail can record
-   * which one fired. "venue_bid" should ideally be "exact_symbol" in
-   * practice; if we see lots of "fuzzy_match" in production it tells us
-   * the chain window is too narrow.
+   * Test injection (bidLookup) takes priority over chainCache so existing
+   * tests keep working with synchronous mock bids. Without bidLookup, we
+   * call priceOption which does the canonical cascade (exact → fuzzy → bs).
+   *
+   * Returns the bid + which method fired, OR null when priceOption fell
+   * all the way to bs_only (caller treats null as "use BS-expected from
+   * runtime" — the existing fallback semantic preserved).
    */
   private lookupBidForLeg(leg: CloseLegRequest): { bid: number; method: "exact_symbol" | "fuzzy_strike_tenor" } | null {
     if (this.deps.bidLookup) {
@@ -264,27 +260,36 @@ export class ShadowCloseExecutor implements CloseExecutor {
       return null;
     }
     if (!this.deps.chainCache) return null;
-    // Tier 1: exact instrument symbol on the venue we hold the leg on
-    const exact = this.deps.chainCache.getBidForSymbol({
-      venue: leg.venue,
-      instrumentSymbol: leg.symbol
-    });
-    if (exact && exact.bidUsdcPerBtc > 0) {
-      return { bid: exact.bidUsdcPerBtc, method: "exact_symbol" };
-    }
-    // Tier 2: fuzzy strike+tenor — only if we have the required metadata
+    // Need spot + strike + tenor for priceOption to do bid lookup
     if (leg.strikeUsdc == null || leg.optType == null || leg.tenorRemainingHours == null) {
       return null;
     }
-    const fuzzy = this.deps.chainCache.getBidForLeg({
+    // Derive spot from current ask anchor (the cheapest way without injecting
+    // a feed dependency into the close executor). For shadow close path, the
+    // BS valuation is reused from runtime; we only need bid lookup here.
+    // Use a sentinel spot — priceOption only uses it for BS fallback which we
+    // explicitly reject below.
+    const sentinelSpot = leg.strikeUsdc; // any positive value; not used since we filter on source
+    const result = priceOption({
+      spot: sentinelSpot,
       strike: leg.strikeUsdc,
       optType: leg.optType,
-      tenorRemainingHours: leg.tenorRemainingHours,
-      preferVenue: leg.venue,
+      tenorRemainingMs: leg.tenorRemainingHours * 3_600_000,
+      contractsBtc: leg.contractsBtc,
+      venue: leg.venue,
+      instrumentSymbol: leg.symbol,
+      liquidChainCache: this.deps.chainCache,
+      purpose: "salvage_estimate",
+      // 1.0 haircut here because we return the raw bid; the calling fillLeg
+      // applies its own bidSlippageHaircut. Avoids double-haircut.
+      bidHaircut: 1.0,
       maxTenorDriftHours: this.deps.maxTenorDriftHours
     });
-    if (fuzzy && fuzzy.bidUsdcPerBtc > 0) {
-      return { bid: fuzzy.bidUsdcPerBtc, method: "fuzzy_strike_tenor" };
+    if (result.source === "exact_symbol" && result.bid_per_btc != null && result.bid_per_btc > 0) {
+      return { bid: result.bid_per_btc, method: "exact_symbol" };
+    }
+    if (result.source === "fuzzy_strike_tenor" && result.bid_per_btc != null && result.bid_per_btc > 0) {
+      return { bid: result.bid_per_btc, method: "fuzzy_strike_tenor" };
     }
     return null;
   }

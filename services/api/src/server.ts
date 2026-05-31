@@ -8747,7 +8747,11 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       closeExecutor: v2CloseExecutor,
       getCurrentSigma: () => v2DvolService.getCurrentDvol()?.sigmaAnnual ?? 0.35,
       getCurrentSlippageHaircut: () => 0.82, // matches V6 sim default; refine when LiveCloseExecutor fills land empirical data
-      calibrationFor: async () => ({ putCalib: 1.0, callCalib: 1.0, riskFreeRate: 0.045 })
+      calibrationFor: async () => ({ putCalib: 1.0, callCalib: 1.0, riskFreeRate: 0.045 }),
+      // Phase 1 (unified pricing): pass chain cache so runtime TP tick uses
+      // priceOption with bid-side data when available, falling back to BS
+      // only when chain has no quote. Same source as MTM + close executor.
+      liquidChainCache: v2LiquidCache
       // unwindQueue: omitted for now — runs without throttling (single-pair load)
     };
 

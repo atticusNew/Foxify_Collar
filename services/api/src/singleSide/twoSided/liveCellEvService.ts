@@ -24,12 +24,17 @@ import {
   __getBarsCacheSource,
   type PathConfig
 } from "../../../scripts/backtest/singleSide/monteCarloEngine";
+import { RISK_FREE_RATE } from "./optionPricing";
 
-const RFR = 0.045;
+const RFR = RISK_FREE_RATE; // pulls from BS_RISK_FREE_RATE env via optionPricing module
 const N_PATHS = 2_000;            // smaller than V6's 8k for speed (still statistically meaningful)
 const BAR_MINUTES = 5;
 const CACHE_TTL_MS = 5 * 60_000;  // 5 min per (cellId, regime, costBucket)
 
+// PHASE 1 NOTE: REGIME_SIGMAS and REGIME_MARKUP are still hardcoded here
+// because Phase 2 will replace them with empirical calibration from chain
+// history (TODO PHASE 2). For now we use these synthetic defaults; Phase 1
+// only unifies the bid-side pricing path (salvage valuation).
 const REGIME_SIGMAS = { calm: 0.35, moderate: 0.55, elevated: 0.75, stress: 0.95 } as const;
 const REGIME_MARKUP = { calm: 1.0, moderate: 1.15, elevated: 1.35, stress: 1.60 } as const;
 
