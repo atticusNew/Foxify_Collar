@@ -837,6 +837,22 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/regime-calibration
+   *
+   * Inspect the empirical regime calibration: per-regime sigma + cost
+   * markup, whether each comes from real history or synthetic fallback,
+   * sample counts, and the synthetic-default reference.
+   *
+   * Use to verify that history is accumulating and that sigmas/markups
+   * are converging to plausible values before we trust the MC sweep.
+   */
+  app.get("/admin/foxify/v2/regime-calibration", { preHandler: checkAdminToken }, async (_req, reply) => {
+    const { getCalibrationSummary } = await import("./regimeCalibration");
+    const summary = await getCalibrationSummary(deps.pool);
+    reply.send(summary);
+  });
+
+  /**
    * GET /admin/foxify/v2/ev-by-regime
    *
    * Cross-regime EV matrix per cell, with real-bid realism applied. Answers

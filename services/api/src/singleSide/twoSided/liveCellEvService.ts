@@ -25,18 +25,21 @@ import {
   type PathConfig
 } from "../../../scripts/backtest/singleSide/monteCarloEngine";
 import { RISK_FREE_RATE } from "./optionPricing";
+import { getCachedRegimeCalibrationOrDefault, SYNTHETIC_REGIME_SIGMAS, SYNTHETIC_REGIME_MARKUPS } from "./regimeCalibration";
 
 const RFR = RISK_FREE_RATE; // pulls from BS_RISK_FREE_RATE env via optionPricing module
 const N_PATHS = 2_000;            // smaller than V6's 8k for speed (still statistically meaningful)
 const BAR_MINUTES = 5;
 const CACHE_TTL_MS = 5 * 60_000;  // 5 min per (cellId, regime, costBucket)
 
-// PHASE 1 NOTE: REGIME_SIGMAS and REGIME_MARKUP are still hardcoded here
-// because Phase 2 will replace them with empirical calibration from chain
-// history (TODO PHASE 2). For now we use these synthetic defaults; Phase 1
-// only unifies the bid-side pricing path (salvage valuation).
-const REGIME_SIGMAS = { calm: 0.35, moderate: 0.55, elevated: 0.75, stress: 0.95 } as const;
-const REGIME_MARKUP = { calm: 1.0, moderate: 1.15, elevated: 1.35, stress: 1.60 } as const;
+// PHASE 2 (2026-05-30): regime sigmas + markups now come from
+// regimeCalibration.getCachedRegimeCalibrationOrDefault() which prefers
+// empirical medians from dvolHistory + chainSnapshotPersist over the
+// synthetic defaults. Synthetic defaults (SYNTHETIC_REGIME_SIGMAS,
+// SYNTHETIC_REGIME_MARKUPS) are the fallback when sample count is
+// insufficient. The calibration cache is refreshed every 5 min.
+const REGIME_SIGMAS = SYNTHETIC_REGIME_SIGMAS;  // fallback only
+const REGIME_MARKUP = SYNTHETIC_REGIME_MARKUPS; // fallback only
 
 export type LiveCellEvInputs = {
   cellId: string;
@@ -95,6 +98,18 @@ export type LiveCellEvResult = {
   barsCount: number;
   /** Salvage realism multiplier applied (1.0 = BS-only legacy, <1.0 = bid-adjusted). */
   salvageRealismMultiplier: number;
+  /** Sigma actually used in this sim (from empirical calibration or synthetic default). */
+  sigmaUsed: number;
+  /** Source of sigma — "empirical_median" or "synthetic_default". Phase 2. */
+  sigmaSource: "empirical_median" | "synthetic_default";
+  /** How many DVOL history samples backed the empirical sigma. */
+  sigmaSampleCount: number;
+  /** Cost markup applied (1.0 = calm baseline). */
+  markupUsed: number;
+  /** Source of markup. */
+  markupSource: "empirical_median" | "synthetic_default";
+  /** How many chain snapshots backed the empirical markup. */
+  markupSampleCount: number;
 };
 
 type CacheEntry = { result: LiveCellEvResult; expiresAtMs: number };
@@ -135,8 +150,12 @@ export const computeLiveCellEv = async (inputs: LiveCellEvInputs): Promise<LiveC
   if (cached && cached.expiresAtMs > now) return cached.result;
 
   const bars = await getBars();
-  const sigma = REGIME_SIGMAS[inputs.regime];
-  const regimeMarkup = REGIME_MARKUP[inputs.regime];
+  // Phase 2: use empirical calibration when available; falls back to
+  // synthetic defaults marked as "synthetic_default" via the calibration
+  // structure (operator can inspect source via admin endpoint).
+  const calibration = getCachedRegimeCalibrationOrDefault();
+  const sigma = calibration[inputs.regime].sigma;
+  const regimeMarkup = calibration[inputs.regime].markup;
   const hedgeCost = inputs.hedgeCostAtCalm * regimeMarkup;
   const slip = 0.82;
   const splitPct = inputs.splitPct ?? 0.85;
@@ -225,7 +244,13 @@ export const computeLiveCellEv = async (inputs: LiveCellEvInputs): Promise<LiveC
     pathGenerator: usedBootstrap ? "bootstrap" : "gbm",
     barsSource: usedBootstrap ? __getBarsCacheSource() : null,
     barsCount: usedBootstrap ? (bars?.length ?? 0) : 0,
-    salvageRealismMultiplier: realism
+    salvageRealismMultiplier: realism,
+    sigmaUsed: sigma,
+    sigmaSource: calibration[inputs.regime].sigmaSource,
+    sigmaSampleCount: calibration[inputs.regime].sigmaSampleCount,
+    markupUsed: regimeMarkup,
+    markupSource: calibration[inputs.regime].markupSource,
+    markupSampleCount: calibration[inputs.regime].markupSampleCount
   };
   _resultCache.set(key, { result, expiresAtMs: now + CACHE_TTL_MS });
   return result;

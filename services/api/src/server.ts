@@ -8685,6 +8685,50 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     await v2DvolService.start();
     await v2RvService.start();
 
+    // Phase 2: DVOL history persister — writes one row/min to power
+    // regimeCalibration's empirical sigma lookup. Schema is idempotent
+    // CREATE IF NOT EXISTS; no-op when table already exists.
+    const { ensureDvolHistorySchema, startDvolPersister } = await import("./singleSide/twoSided/dvolHistory");
+    try {
+      await ensureDvolHistorySchema(v2Pool);
+      startDvolPersister({
+        pool: v2Pool,
+        dvolService: v2DvolService,
+        intervalMs: 60_000
+      });
+      console.log("[FoxifyV2] DVOL history persister started (1 sample/min)");
+    } catch (e) {
+      console.error(`[FoxifyV2] DVOL history persister failed to start: ${(e as Error).message}`);
+    }
+
+    // Phase 2: chain snapshot persister — writes one ATM snapshot/min for
+    // empirical cost markup calibration (REGIME_MARKUP replacement).
+    const { ensureChainSnapshotSchema, startChainSnapshotPersister } = await import("./singleSide/twoSided/chainSnapshotPersist");
+    try {
+      await ensureChainSnapshotSchema(v2Pool);
+      startChainSnapshotPersister({
+        pool: v2Pool,
+        liquidChainCache: v2LiquidCache,
+        getCurrentDvol: () => v2DvolService.getCurrentDvol(),
+        getCurrentSpot: () => v2FeedService.getCurrentFeed()?.canonicalPrice ?? null,
+        intervalMs: 60_000,
+        tenorDays: 2
+      });
+      console.log("[FoxifyV2] Chain snapshot persister started (ATM 2d, 1/min)");
+    } catch (e) {
+      console.error(`[FoxifyV2] Chain snapshot persister failed to start: ${(e as Error).message}`);
+    }
+
+    // Phase 2: warm the calibration cache at boot so first MC sim uses
+    // either empirical (if any history exists) or marked synthetic_default.
+    try {
+      const { getRegimeCalibration } = await import("./singleSide/twoSided/regimeCalibration");
+      const cal = await getRegimeCalibration(v2Pool);
+      console.log(`[FoxifyV2] Regime calibration warmed: ${Object.entries(cal).map(([r, c]) => `${r}=${c.sigma.toFixed(3)}σ/${c.markup.toFixed(2)}×(${c.sigmaSource[0]}${c.sigmaSampleCount})`).join(", ")}`);
+    } catch (e) {
+      console.error(`[FoxifyV2] Regime calibration warmup failed: ${(e as Error).message}`);
+    }
+
     // Executors — Shadow by default; LIVE behind FOXIFY_V2_LIVE_EXECUTION=true env flag.
     // Both activate-side (StrangleExecutor) and close-side (CloseExecutor) flip together.
     // Live execution fires REAL Bullish + Deribit orders. Operator must explicitly opt-in.
