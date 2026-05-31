@@ -53,6 +53,60 @@ export const bsCall = (S: number, K: number, T: number, r: number, sigma: number
   return S * nCDF(d1) - K * Math.exp(-r * T) * nCDF(d2);
 };
 
+// ──────────────────────── Black-Scholes Greeks ────────────────────────
+// Standard normal probability density (exact). nCDF above is the CDF.
+const nPDF = (x: number): number => Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+
+const d1d2 = (S: number, K: number, T: number, r: number, sigma: number): { d1: number; d2: number } => {
+  const sqrtT = Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / (sigma * sqrtT);
+  return { d1, d2: d1 - sigma * sqrtT };
+};
+
+/**
+ * Greeks for European options on BTC priced in USD. Conventions:
+ *   - S, K in USD; T in YEARS; sigma annualized; r annual cont-comp.
+ *   - delta: dPrice/dS (call ∈ [0,1], put ∈ [-1,0]).
+ *   - gamma: d²Price/dS² (per $1 spot; same for call/put).
+ *   - vega:  dPrice/dσ per 1.00 (=100%) vol change (divide by 100 for per-1%).
+ *   - theta: dPrice/dT per YEAR (negative = decay; divide by 365 for per-day).
+ * Degenerate inputs (T<=0 or sigma<=0) return the limiting values so callers
+ * (e.g. MC per-tick hedging) never see NaN.
+ */
+export const bsCallDelta = (S: number, K: number, T: number, r: number, sigma: number): number => {
+  if (T <= 0 || sigma <= 0) return S > K ? 1 : 0;
+  return nCDF(d1d2(S, K, T, r, sigma).d1);
+};
+
+export const bsPutDelta = (S: number, K: number, T: number, r: number, sigma: number): number => {
+  if (T <= 0 || sigma <= 0) return S < K ? -1 : 0;
+  return nCDF(d1d2(S, K, T, r, sigma).d1) - 1;
+};
+
+export const bsGamma = (S: number, K: number, T: number, r: number, sigma: number): number => {
+  if (T <= 0 || sigma <= 0 || S <= 0) return 0;
+  const { d1 } = d1d2(S, K, T, r, sigma);
+  return nPDF(d1) / (S * sigma * Math.sqrt(T));
+};
+
+export const bsVega = (S: number, K: number, T: number, r: number, sigma: number): number => {
+  if (T <= 0 || sigma <= 0) return 0;
+  const { d1 } = d1d2(S, K, T, r, sigma);
+  return S * nPDF(d1) * Math.sqrt(T);
+};
+
+export const bsCallTheta = (S: number, K: number, T: number, r: number, sigma: number): number => {
+  if (T <= 0 || sigma <= 0) return 0;
+  const { d1, d2 } = d1d2(S, K, T, r, sigma);
+  return -(S * nPDF(d1) * sigma) / (2 * Math.sqrt(T)) - r * K * Math.exp(-r * T) * nCDF(d2);
+};
+
+export const bsPutTheta = (S: number, K: number, T: number, r: number, sigma: number): number => {
+  if (T <= 0 || sigma <= 0) return 0;
+  const { d1, d2 } = d1d2(S, K, T, r, sigma);
+  return -(S * nPDF(d1) * sigma) / (2 * Math.sqrt(T)) + r * K * Math.exp(-r * T) * nCDF(-d2);
+};
+
 const RFR = 0.045;
 
 // ──────────────────────── Types ────────────────────────
