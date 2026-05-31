@@ -846,8 +846,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *
    * Body (optional):
    *   { spot?, notionals?, triggers?, strikeMoneyness?, tenors?,
-   *     autoClosePnlPcts?, autoCloseAbsoluteUsdcs?, nPaths?,
-   *     syntheticRealismByRegime? }
+   *     autoClosePnlPcts?, autoCloseAbsoluteUsdcs?, nPaths?, venue?,
+   *     structures? }
+   *   structures: subset of ["strangle","straddle"] (default both). Straddle =
+   *     ATM (moneyness=0); strangle = non-zero OTM-wing moneyness only.
    *
    * Heads up: this is HEAVY — default config is ~4,800 cells × 12 auto-close
    * combos = 57,600 sims at 500 paths each ≈ 28.8M iterations. Plan ~30 min.
