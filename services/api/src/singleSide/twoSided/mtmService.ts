@@ -27,7 +27,8 @@
 
 import type { Pool } from "pg";
 import type { LiquidChainCache } from "./liquidChainCache";
-import { priceOption } from "./optionPricing";
+import { priceOption, RISK_FREE_RATE } from "./optionPricing";
+import { combinedStraddleGreeks } from "../../../scripts/backtest/singleSide/coreEngine";
 
 const DEFAULT_TP_THRESHOLD_PCT = 0.30; // suggest TAKE_PROFIT_AVAILABLE at +30% pnl
 const DEFAULT_WATCH_THRESHOLD_PCT = 0.05; // suggest WATCH at +5% pnl
@@ -93,6 +94,8 @@ export type PairMtm = {
   // Operator-actionable recommendation
   recommendation: "HOLD" | "WATCH" | "TAKE_PROFIT_AVAILABLE" | "STRONG_TAKE_PROFIT" | "TRIGGERED" | "EXPIRED";
   recommendation_reason: string;
+  /** Live position greeks at current spot/IV/remaining-tenor. delta/gamma per $1; vega per 1% IV; theta per day. */
+  greeks: { delta: number; gamma: number; vega_per_pct: number; theta_per_day: number };
 };
 
 export type ListMtmInputs = {
@@ -313,6 +316,7 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       current_call_value_usdc: callValueTotal,
       current_option_mark_usdc: optionMark,
       estimated_salvage_usdc: estimatedSalvage,
+      greeks: combinedStraddleGreeks(inputs.currentSpot, putStrike, callStrike, contracts, tenorRemainingHours / 24 / 365, RISK_FREE_RATE, inputs.ivAnnual ?? 0.35),
       pnl_if_close_now_usdc: pnlAbs,
       pnl_pct: pnlPct,
       valuation_method: overallMethod,

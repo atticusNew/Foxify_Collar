@@ -66,3 +66,15 @@ test("impliedVolFromPrice: round-trips BS price back to sigma (call & put)", asy
   assert.equal(impliedVolFromPrice(0, Sx, Kx, Tx, rx, "call"), null, "zero price -> null");
   assert.equal(impliedVolFromPrice(100, Sx, Kx, 0, rx, "call"), null, "T=0 -> null");
 });
+
+test("combinedStraddleGreeks: ATM straddle ~delta-neutral, +gamma, +vega, -theta", async () => {
+  const { combinedStraddleGreeks } = await import("../scripts/backtest/singleSide/coreEngine");
+  const g = combinedStraddleGreeks(73000, 73000, 73000, 1, 3 / 365, 0.045, 0.55);
+  assert.ok(Math.abs(g.delta) < 0.1, `ATM straddle ~delta-neutral, got ${g.delta}`);
+  assert.ok(g.gamma > 0, "positive gamma");
+  assert.ok(g.vega_per_pct > 0, "positive vega (long premium)");
+  assert.ok(g.theta_per_day < 0, "negative theta (long premium decays)");
+  // strangle (wider) has less gamma than ATM straddle
+  const wide = combinedStraddleGreeks(73000, 71000, 75000, 1, 3 / 365, 0.045, 0.55);
+  assert.ok(wide.gamma < g.gamma, "OTM strangle gamma < ATM straddle gamma");
+});

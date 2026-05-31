@@ -38,7 +38,7 @@ import { priceOption, RISK_FREE_RATE } from "./optionPricing";
 import type { LiquidChainCache } from "./liquidChainCache";
 import type { DvolService } from "./dvolService";
 import { load5MinBars } from "../../../scripts/backtest/singleSide/monteCarloEngine";
-import { impliedVolFromPrice } from "../../../scripts/backtest/singleSide/coreEngine";
+import { impliedVolFromPrice, combinedStraddleGreeks } from "../../../scripts/backtest/singleSide/coreEngine";
 
 /**
  * Option structure variant for a candidate cell.
@@ -205,6 +205,8 @@ export type RankedCell = {
   net_after_friction_usdc: number;
   /** True when the option net covers the perp friction (net_after_friction >= 0). */
   covers_friction: boolean;
+  /** Position greeks at entry (spot, calibration sigma, tenor). delta/gamma per $1; vega per 1% IV; theta per day. */
+  greeks: { delta: number; gamma: number; vega_per_pct: number; theta_per_day: number };
   /**
    * Gamma-scalp economics breakdown — non-null ONLY for straddle_gamma_scalp
    * cells. Lets the operator audit WHY a gamma-scalp cell's net is what it is
@@ -492,7 +494,7 @@ export const computeRealPricing = (
 // ─────────────────────────── Sweep ───────────────────────────
 
 /** Map an eligible CellSweepResult to the ranked-cell view used in reports. */
-const toRankedCell = (r: CellSweepResult, perpPairFrictionUsdc: number): RankedCell => ({
+const toRankedCell = (r: CellSweepResult, perpPairFrictionUsdc: number, spot: number): RankedCell => ({
   cellId: r.cellId,
   mean_foxify_net_usdc: +((r.mc?.meanFoxifyNetUsdc ?? 0)).toFixed(2),
   pct_profitable: +((r.mc?.pctProfitable ?? 0)).toFixed(4),
@@ -510,6 +512,7 @@ const toRankedCell = (r: CellSweepResult, perpPairFrictionUsdc: number): RankedC
   perp_pair_friction_usdc: +perpPairFrictionUsdc.toFixed(2),
   net_after_friction_usdc: +(((r.mc?.meanFoxifyNetUsdc ?? 0) - perpPairFrictionUsdc)).toFixed(2),
   covers_friction: (r.mc?.meanFoxifyNetUsdc ?? 0) - perpPairFrictionUsdc >= 0,
+  greeks: combinedStraddleGreeks(spot, r.putStrike, r.callStrike, r.contractsBtc, r.tenorDays / 365, RISK_FREE_RATE, r.sigmaUsed),
   gamma_scalp: r.mc?.gammaScalp ? {
     perp_hedge_pnl_usdc: +r.mc.gammaScalp.meanPerpHedgePnlUsdc.toFixed(2),
     perp_friction_usdc: +r.mc.gammaScalp.meanPerpFrictionUsdc.toFixed(2),
@@ -843,7 +846,7 @@ export const runFullCellSweep = async (
       if (Math.abs(a.hedgeCostUsdc - b.hedgeCostUsdc) > 5) return a.hedgeCostUsdc - b.hedgeCostUsdc;
       return (b.mc?.p5FoxifyNetUsdc ?? -Infinity) - (a.mc?.p5FoxifyNetUsdc ?? -Infinity);
     });
-    const top: RankedCell[] = ranked.slice(0, 10).map((r) => toRankedCell(r, perpPairFriction));
+    const top: RankedCell[] = ranked.slice(0, 10).map((r) => toRankedCell(r, perpPairFriction, config.spot));
     const cells_covering_friction = eligibleResults.filter(
       (r) => (r.mc?.meanFoxifyNetUsdc ?? -Infinity) - perpPairFriction >= 0
     ).length;
@@ -851,9 +854,9 @@ export const runFullCellSweep = async (
     const bestStraddleRes = ranked.find((r) => r.structure === "straddle") ?? null;
     const bestStrangleRes = ranked.find((r) => r.structure === "strangle") ?? null;
     const bestGammaScalpRes = ranked.find((r) => r.structure === "straddle_gamma_scalp") ?? null;
-    const top_straddle = bestStraddleRes ? toRankedCell(bestStraddleRes, perpPairFriction) : null;
-    const top_strangle = bestStrangleRes ? toRankedCell(bestStrangleRes, perpPairFriction) : null;
-    const top_straddle_gamma_scalp = bestGammaScalpRes ? toRankedCell(bestGammaScalpRes, perpPairFriction) : null;
+    const top_straddle = bestStraddleRes ? toRankedCell(bestStraddleRes, perpPairFriction, config.spot) : null;
+    const top_strangle = bestStrangleRes ? toRankedCell(bestStrangleRes, perpPairFriction, config.spot) : null;
+    const top_straddle_gamma_scalp = bestGammaScalpRes ? toRankedCell(bestGammaScalpRes, perpPairFriction, config.spot) : null;
     const structure_verdict = structureVerdict([
       { label: "straddle", cell: top_straddle },
       { label: "strangle", cell: top_strangle },

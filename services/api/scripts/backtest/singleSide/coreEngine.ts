@@ -114,6 +114,26 @@ export const bsPutTheta = (S: number, K: number, T: number, r: number, sigma: nu
  * vol of a real venue quote (works for any venue — derives IV from the real
  * price itself, no markIv dependency, no synthetic assumption).
  */
+/**
+ * Combined greeks for a long put + long call (straddle when strikes equal,
+ * strangle when different). delta/gamma per $1 spot; vega per 1% IV; theta per
+ * calendar day. Surfaces position risk in the sweep + MTM.
+ */
+export const combinedStraddleGreeks = (
+  spot: number, putStrike: number, callStrike: number, contractsBtc: number, T: number, r: number, sigma: number
+): { delta: number; gamma: number; vega_per_pct: number; theta_per_day: number } => {
+  const delta = (bsPutDelta(spot, putStrike, T, r, sigma) + bsCallDelta(spot, callStrike, T, r, sigma)) * contractsBtc;
+  const gamma = (bsGamma(spot, putStrike, T, r, sigma) + bsGamma(spot, callStrike, T, r, sigma)) * contractsBtc;
+  const vega = (bsVega(spot, putStrike, T, r, sigma) + bsVega(spot, callStrike, T, r, sigma)) * contractsBtc;
+  const theta = (bsPutTheta(spot, putStrike, T, r, sigma) + bsCallTheta(spot, callStrike, T, r, sigma)) * contractsBtc;
+  return {
+    delta: +delta.toFixed(4),
+    gamma: +gamma.toFixed(6),
+    vega_per_pct: +(vega / 100).toFixed(2),
+    theta_per_day: +(theta / 365).toFixed(2)
+  };
+};
+
 export const impliedVolFromPrice = (
   price: number, S: number, K: number, T: number, r: number, optType: "put" | "call",
   opts?: { lo?: number; hi?: number; tol?: number; maxIter?: number }
