@@ -449,7 +449,7 @@ const priceCandidateLeg = (
   };
 };
 
-const computeRealPricing = (
+export const computeRealPricing = (
   spot: number,
   putStrike: number,
   callStrike: number,

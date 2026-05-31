@@ -1047,6 +1047,42 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   });
 
   /**
+   * GET /admin/foxify/v2/realized-vs-mc — production-readiness reconciliation.
+   * Per cell: realized mean Foxify net from SETTLED shadow pairs vs the MC's
+   * prediction at the requested regime; flags within ±15%. Real data only
+   * (cost+realism from real chain, sigma from empirical calibration).
+   * Query: ?regime= (default current), n_paths=, auto_close_abs=, auto_close_pct=
+   */
+  app.get<{ Querystring: { regime?: string; n_paths?: string; auto_close_abs?: string; auto_close_pct?: string } }>(
+    "/admin/foxify/v2/realized-vs-mc",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { reconcileRealizedVsMc } = await import("./realizedVsMc");
+      const { classifyRegime } = await import("./featureFlag");
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      if (!deps.liquidChainCache) { reply.code(503).send({ error: "chain_cache_unavailable" }); return; }
+      const currentDvol = deps.dvolService.getCurrentDvol();
+      const valid = ["calm", "moderate", "elevated", "stress"];
+      const regime = (valid.includes(req.query.regime ?? "")
+        ? req.query.regime
+        : (currentDvol ? classifyRegime(currentDvol.dvol) : "calm")) as "calm" | "moderate" | "elevated" | "stress";
+      try {
+        const report = await reconcileRealizedVsMc(deps.pool, {
+          regime, spot, liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
+          nPaths: req.query.n_paths ? Number(req.query.n_paths) : undefined,
+          autoCloseAbsoluteUsdc: req.query.auto_close_abs ? Number(req.query.auto_close_abs) : undefined,
+          autoClosePnlPct: req.query.auto_close_pct ? Number(req.query.auto_close_pct) : undefined
+        });
+        reply.send(report);
+      } catch (e) {
+        reply.code(500).send({ error: "reconcile_failed", message: (e as Error).message });
+      }
+    }
+  );
+
+  /**
    * POST /admin/foxify/v2/dvol-backfill
    *
    * Phase 6: backfill historical Deribit DVOL into two_sided_dvol_history so
