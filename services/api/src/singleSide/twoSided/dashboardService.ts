@@ -93,6 +93,12 @@ export const computeFoxifyStatus = async (
       break;
     }
   }
+  // Apply the SS_ATTICUS_SPLIT_PCT single-knob override so the dashboard shows
+  // the split that will actually be used, not the raw table value.
+  {
+    const { applySplitOverride } = await import("./tierResolver");
+    currentTier = applySplitOverride(currentTier);
+  }
 
   const activeCapitalQ = await pool.query(
     `SELECT COALESCE(SUM(foxify_capital_funded_usdc), 0) AS deployed

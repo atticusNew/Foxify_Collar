@@ -52,8 +52,41 @@ export const getRolling24hPairsCount = async (pool: Pool, nowMs?: number): Promi
   return r.rows[0]?.n ?? 0;
 };
 
+/**
+ * SINGLE KNOB for the profit split. When env SS_ATTICUS_SPLIT_PCT is set (the
+ * Foxify-keep fraction, e.g. 0.85 → Atticus gets the remaining 0.15), it
+ * overrides EVERY tier's split — the same env the sim/sweep use, so live and
+ * simulated economics share one control. SS_ATTICUS_FLOOR_USDC likewise
+ * overrides the per-pair Atticus floor. When unset, the volume-based TIERS
+ * table applies (current behavior). Invalid values are ignored.
+ */
+export const applySplitOverride = (tier: TierDefinition): TierDefinition => {
+  let out = tier;
+  const splitRaw = process.env.SS_ATTICUS_SPLIT_PCT;
+  if (splitRaw != null && splitRaw !== "") {
+    const foxifyPct = Number(splitRaw);
+    if (Number.isFinite(foxifyPct) && foxifyPct > 0 && foxifyPct < 1) {
+      out = { ...out, foxifyPct, atticusPct: +(1 - foxifyPct).toFixed(6) };
+    }
+  }
+  const floorRaw = process.env.SS_ATTICUS_FLOOR_USDC;
+  if (floorRaw != null && floorRaw !== "") {
+    const floor = Number(floorRaw);
+    if (Number.isFinite(floor) && floor >= 0) {
+      out = { ...out, atticusFloorUsdc: floor };
+    }
+  }
+  return out;
+};
+
+/** Tier definition for a label, with the split override applied. */
+export const getTierByLabel = (label: string): TierDefinition => {
+  const t = TIERS.find((x) => x.label === label) ?? TIERS[0];
+  return applySplitOverride(t);
+};
+
 /** Resolve current tier for activation. Per-activation lookup, not retroactive. */
 export const resolveCurrentTier = async (pool: Pool, nowMs?: number): Promise<TierDefinition> => {
   const n = await getRolling24hPairsCount(pool, nowMs);
-  return tierFromPairsPerDay(n);
+  return applySplitOverride(tierFromPairsPerDay(n));
 };

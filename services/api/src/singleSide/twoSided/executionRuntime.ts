@@ -329,8 +329,10 @@ export class ExecutionRuntime {
 
     // Compute split via PR 6 settlementEngine (canonical math).
     const { computeSplit, assertSplitInvariant } = await import("./settlementEngine");
-    const { TIERS } = await import("./types");
-    const tier = TIERS.find((t) => t.label === this.pair.tierAtActivation) ?? TIERS[0];
+    // Use getTierByLabel so the SS_ATTICUS_SPLIT_PCT single-knob override applies
+    // at settlement too (floor stays pinned to activation below).
+    const { getTierByLabel } = await import("./tierResolver");
+    const tier = getTierByLabel(this.pair.tierAtActivation);
     // Override floor with pair.atticusFloorUsdc (recorded at activation — pinned to
     // tier-at-activation policy, not retroactive).
     const tierWithPinnedFloor = { ...tier, atticusFloorUsdc: this.pair.atticusFloorUsdc };
