@@ -39,6 +39,20 @@ import type { LiquidChainCache } from "./liquidChainCache";
 import type { DvolService } from "./dvolService";
 import { load5MinBars } from "../../../scripts/backtest/singleSide/monteCarloEngine";
 
+/**
+ * Option structure variant for a candidate cell.
+ *   - "strangle": put_strike != call_strike (OTM wings; the legacy behavior)
+ *   - "straddle": put_strike == call_strike (both ATM-snapped; max gamma)
+ *
+ * NOTE: at moneyness=0 the legacy "strangle" was geometrically already a
+ * straddle (put==call==ATM). Phase 4 makes this explicit: the ATM point is
+ * owned by the straddle structure, and the strangle structure covers ONLY the
+ * non-zero OTM moneyness wings. This avoids duplicate identical sims + cellId
+ * collisions and makes the sweep self-documenting (empirical finding #2: ATM
+ * dominates every regime -> those winners are de-facto straddles).
+ */
+export type CellStructure = "strangle" | "straddle";
+
 export type CellCandidate = {
   cellId: string;
   notionalUsdcPerLeg: number;
@@ -46,6 +60,7 @@ export type CellCandidate = {
   strikeMoneynessPct: number;
   tenorDays: number;
   contractsBtc: number;
+  structure: CellStructure;
 };
 
 export type SweepVenue = "auto" | "bullish" | "deribit";
@@ -68,6 +83,13 @@ export type SweepConfig = {
    * Use "bullish" or "deribit" to compare venue-specific economics.
    */
   venue?: SweepVenue;
+  /**
+   * Which option structures to sweep. Default: both.
+   *   - "straddle" → one ATM (moneyness=0) candidate per (notional,trigger,tenor)
+   *   - "strangle" → OTM-wing candidates (non-zero moneyness only; m=0 is the
+   *                  straddle, so it is skipped here to avoid duplicate sims)
+   */
+  structures?: CellStructure[];
   /** Liquid chain cache for real price lookups. REQUIRED. */
   liquidChainCache: LiquidChainCache;
   /** DvolService for live IV. Optional but recommended. */
@@ -87,6 +109,7 @@ const DEFAULT_STRIKE_MONEYNESS = [0, -0.01, -0.02, -0.03, -0.05];
 const DEFAULT_TENORS = [1, 2, 3, 5, 7];
 const DEFAULT_AUTO_CLOSE_PCTS = [0.20, 0.30, 0.50, 1.00];
 const DEFAULT_AUTO_CLOSE_ABS = [200, 250, 300];
+const DEFAULT_STRUCTURES: CellStructure[] = ["strangle", "straddle"];
 
 const REGIMES: Regime[] = ["calm", "moderate", "elevated", "stress"];
 const STRIKE_GRID_USDC = 1000;
@@ -95,10 +118,15 @@ const snapStrike = (raw: number): number => Math.round(raw / STRIKE_GRID_USDC) *
 const buildCellId = (params: CellCandidate, autoCloseUsdc: number, autoClosePct: number): string => {
   const kNotional = `${params.notionalUsdcPerLeg / 1000}k`;
   const triggerStr = `${(params.triggerPct * 100).toFixed(0)}pct`;
+  const structureStr = params.structure === "straddle" ? "STRADDLE" : "STRANGLE";
   const moneyStr = params.strikeMoneynessPct === 0 ? "atm"
     : params.strikeMoneynessPct < 0 ? `${Math.abs(params.strikeMoneynessPct * 100).toFixed(0)}otm`
     : `${(params.strikeMoneynessPct * 100).toFixed(0)}itm`;
-  return `sweep_${kNotional}_${triggerStr}_${moneyStr}_${params.tenorDays}d_tp${(autoClosePct * 100).toFixed(0)}_abs${autoCloseUsdc}`;
+  // Straddle is ATM by definition → omit the redundant moneyness token.
+  // straddle: sweep_50k_3pct_STRADDLE_3d_tp30_abs250
+  // strangle: sweep_50k_3pct_2otm_STRANGLE_3d_tp30_abs250
+  const geom = params.structure === "straddle" ? structureStr : `${moneyStr}_${structureStr}`;
+  return `sweep_${kNotional}_${triggerStr}_${geom}_${params.tenorDays}d_tp${(autoClosePct * 100).toFixed(0)}_abs${autoCloseUsdc}`;
 };
 
 /** What the cost came from. */
@@ -109,6 +137,7 @@ export type SalvageSource = "real_bid_bullish" | "real_bid_deribit" | "chain_una
 export type CellSweepResult = {
   cellId: string;
   regime: Regime;
+  structure: CellStructure;
   notionalUsdcPerLeg: number;
   triggerPct: number;
   strikeMoneynessPct: number;
@@ -157,6 +186,7 @@ export type RankedCell = {
     auto_close_absolute_usdc: number;
     put_strike: number;
     call_strike: number;
+    structure: CellStructure;
   };
 };
 
@@ -232,6 +262,7 @@ export const ensureCellSweepSchema = async (pool: Pool): Promise<void> => {
     { table: "two_sided_cell_sweep_run", column: "venue", definition: "TEXT" },
     // _result table additions
     { table: "two_sided_cell_sweep_result", column: "result_tier", definition: "TEXT NOT NULL DEFAULT 'estimate'" },
+    { table: "two_sided_cell_sweep_result", column: "structure", definition: "TEXT NOT NULL DEFAULT 'strangle'" },
     { table: "two_sided_cell_sweep_result", column: "cost_source_put", definition: "TEXT NOT NULL DEFAULT 'unknown'" },
     { table: "two_sided_cell_sweep_result", column: "cost_source_call", definition: "TEXT NOT NULL DEFAULT 'unknown'" },
     { table: "two_sided_cell_sweep_result", column: "salvage_realism_multiplier", definition: "NUMERIC(6,4) NOT NULL DEFAULT 0" },
@@ -404,25 +435,49 @@ const computeRealPricing = (
 
 // ─────────────────────────── Sweep ───────────────────────────
 
-const buildSearchGrid = (spot: number, config: SweepConfig): CellCandidate[] => {
+export const buildSearchGrid = (spot: number, config: SweepConfig): CellCandidate[] => {
   const notionals = config.notionals ?? DEFAULT_NOTIONALS;
   const triggers = config.triggers ?? DEFAULT_TRIGGERS;
   const moneyness = config.strikeMoneyness ?? DEFAULT_STRIKE_MONEYNESS;
   const tenors = config.tenors ?? DEFAULT_TENORS;
+  const structures = config.structures ?? DEFAULT_STRUCTURES;
+  const wantStraddle = structures.includes("straddle");
+  const wantStrangle = structures.includes("strangle");
+  const moneyLabel = (m: number): string =>
+    m === 0 ? "atm" : m < 0 ? `${Math.abs(m * 100).toFixed(0)}otm` : `${(m * 100).toFixed(0)}itm`;
   const candidates: CellCandidate[] = [];
   for (const notional of notionals) {
     const contractsBtc = +(notional / spot).toFixed(3);
     for (const trigger of triggers) {
-      for (const m of moneyness) {
-        for (const tenor of tenors) {
+      for (const tenor of tenors) {
+        // STRADDLE: a single ATM point (moneyness=0 → put==call==ATM, max gamma).
+        if (wantStraddle) {
           candidates.push({
-            cellId: `${notional / 1000}k_${(trigger * 100).toFixed(0)}pct_${m === 0 ? "atm" : `${Math.abs(m * 100).toFixed(0)}otm`}_${tenor}d`,
+            cellId: `${notional / 1000}k_${(trigger * 100).toFixed(0)}pct_straddle_${tenor}d`,
             notionalUsdcPerLeg: notional,
             triggerPct: trigger,
-            strikeMoneynessPct: m,
+            strikeMoneynessPct: 0,
             tenorDays: tenor,
-            contractsBtc
+            contractsBtc,
+            structure: "straddle"
           });
+        }
+        // STRANGLE: OTM-wing variants only. Skip m===0 — that ATM case is owned
+        // by the straddle structure above (avoids duplicate identical sims +
+        // cellId collisions).
+        if (wantStrangle) {
+          for (const m of moneyness) {
+            if (m === 0) continue;
+            candidates.push({
+              cellId: `${notional / 1000}k_${(trigger * 100).toFixed(0)}pct_${moneyLabel(m)}_strangle_${tenor}d`,
+              notionalUsdcPerLeg: notional,
+              triggerPct: trigger,
+              strikeMoneynessPct: m,
+              tenorDays: tenor,
+              contractsBtc,
+              structure: "strangle"
+            });
+          }
         }
       }
     }
@@ -504,6 +559,7 @@ export const runFullCellSweep = async (
           if (!pricing) {
             const result: CellSweepResult = {
               cellId, regime,
+              structure: candidate.structure,
               notionalUsdcPerLeg: candidate.notionalUsdcPerLeg,
               triggerPct: candidate.triggerPct,
               strikeMoneynessPct: candidate.strikeMoneynessPct,
@@ -550,6 +606,7 @@ export const runFullCellSweep = async (
             regime === config.currentRegime ? "real" : "estimate";
           const result: CellSweepResult = {
             cellId, regime,
+            structure: candidate.structure,
             notionalUsdcPerLeg: candidate.notionalUsdcPerLeg,
             triggerPct: candidate.triggerPct,
             strikeMoneynessPct: candidate.strikeMoneynessPct,
@@ -590,12 +647,14 @@ export const runFullCellSweep = async (
             cost_source_put, cost_source_call, salvage_realism_multiplier,
             salvage_source_put, salvage_source_call,
             mean_foxify_net_usdc, median_foxify_net_usdc, p5_foxify_net_usdc, p95_foxify_net_usdc,
-            pct_profitable, auto_close_pct, trigger_pct_outcome, expiry_pct, n_paths
+            pct_profitable, auto_close_pct, trigger_pct_outcome, expiry_pct, n_paths,
+            structure
           ) VALUES (
             $1, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8::numeric, $9::numeric, $10::numeric,
             $11::numeric, $12::numeric, $13::numeric, $14::numeric, $15::numeric,
             $16, $17, $18::numeric, $19, $20,
-            $21, $22, $23, $24, $25, $26, $27, $28, $29
+            $21, $22, $23, $24, $25, $26, $27, $28, $29,
+            $30
           )`,
           [
             runId, r.cellId, r.regime, r.resultTier, r.notionalUsdcPerLeg, r.triggerPct,
@@ -607,7 +666,8 @@ export const runFullCellSweep = async (
             r.mc?.p5FoxifyNetUsdc ?? null, r.mc?.p95FoxifyNetUsdc ?? null,
             r.mc?.pctProfitable ?? null, r.mc?.exitDistribution.foxify_auto_close ?? null,
             r.mc?.exitDistribution.trigger_peak ?? null, r.mc?.exitDistribution.expiry ?? null,
-            r.mc?.nPaths ?? null
+            r.mc?.nPaths ?? null,
+            r.structure
           ]
         );
       } catch (e) {
@@ -657,7 +717,8 @@ export const runFullCellSweep = async (
         auto_close_pnl_pct: r.autoClosePnlPct,
         auto_close_absolute_usdc: r.autoCloseAbsoluteUsdc,
         put_strike: r.putStrike,
-        call_strike: r.callStrike
+        call_strike: r.callStrike,
+        structure: r.structure
       }
     }));
     // The regime's overall tier — "real" only if the current regime, else "estimate"
