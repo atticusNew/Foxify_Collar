@@ -37,6 +37,7 @@ import { getRegimeCalibration } from "./regimeCalibration";
 import { priceOption } from "./optionPricing";
 import type { LiquidChainCache } from "./liquidChainCache";
 import type { DvolService } from "./dvolService";
+import { load5MinBars } from "../../../scripts/backtest/singleSide/monteCarloEngine";
 
 export type CellCandidate = {
   cellId: string;
@@ -425,6 +426,20 @@ export const runFullCellSweep = async (
 
   log(`sweep runId=${runId} cells=${candidates.length} regimes=${REGIMES.length} auto-close-combos=${autoClosePcts.length * autoCloseAbs.length} total_sims=${totalSims} venue=${venue} current_regime=${config.currentRegime}`);
 
+  // Pre-load bars ONCE (for calm-regime bootstrap paths). Without this, every
+  // single calm MC sim would call load5MinBars() and either hit cache hits
+  // (fast) or risk a stalled Deribit fetch (very slow). One load up-front
+  // eliminates both per-sim await overhead and the hang risk.
+  let preloadedBars: Awaited<ReturnType<typeof load5MinBars>> | null = null;
+  try {
+    log(`pre-loading 5-min bars for bootstrap MC sims...`);
+    preloadedBars = await load5MinBars();
+    log(`bars preloaded: ${preloadedBars?.length ?? 0} bars available`);
+  } catch (e) {
+    log(`bar preload failed (${(e as Error).message}); calm sims will use GBM fallback`);
+    preloadedBars = null;
+  }
+
   if (persistResults) {
     await pool.query(
       `INSERT INTO two_sided_cell_sweep_run (run_id, started_at, total_sims, spot, current_regime, venue, calibration_json) VALUES ($1::text, $2::timestamptz, $3, $4::numeric, $5::text, $6::text, $7::text)`,
@@ -487,6 +502,8 @@ export const runFullCellSweep = async (
           }
 
           // CASE 2: Run MC with real cost + real realism multiplier
+          //   Passes preloadedBars as barsOverride so MC doesn't re-fetch
+          //   per sim (eliminates hang risk + speeds up calm sims ~10×)
           const mc = await runFoxifyDurationMc({
             cellId,
             spot: config.spot,
@@ -501,7 +518,8 @@ export const runFullCellSweep = async (
             autoClosePnlPct: autoClosePct,
             autoCloseAbsoluteUsdc: autoCloseAbsUsdc,
             salvageRealismMultiplier: pricing.salvageRealismMultiplier,
-            nPaths: config.nPaths ?? 500
+            nPaths: config.nPaths ?? 500,
+            barsOverride: preloadedBars
           });
           const resultTier: "real" | "estimate" =
             regime === config.currentRegime ? "real" : "estimate";
@@ -531,38 +549,47 @@ export const runFullCellSweep = async (
     }
   }
 
-  // Persist all results
+  // Persist all results in batches (sequential per-row inserts were 1 of the
+  // hang risk sources — 4,800 rows × ~5ms/row = 24s sequential, plus DB
+  // connection contention when multiple sweeps run concurrently).
   if (persistResults) {
+    log(`persisting ${allResults.length} results to DB...`);
+    const t0 = Date.now();
     for (const r of allResults) {
-      await pool.query(
-        `INSERT INTO two_sided_cell_sweep_result (
-          run_id, cell_id, regime, result_tier, notional_usdc_per_leg, trigger_pct,
-          strike_moneyness_pct, tenor_days, auto_close_pnl_pct, auto_close_absolute_usdc,
-          contracts_btc, put_strike, call_strike, sigma_used, hedge_cost_usdc,
-          cost_source_put, cost_source_call, salvage_realism_multiplier,
-          salvage_source_put, salvage_source_call,
-          mean_foxify_net_usdc, median_foxify_net_usdc, p5_foxify_net_usdc, p95_foxify_net_usdc,
-          pct_profitable, auto_close_pct, trigger_pct_outcome, expiry_pct, n_paths
-        ) VALUES (
-          $1, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8::numeric, $9::numeric, $10::numeric,
-          $11::numeric, $12::numeric, $13::numeric, $14::numeric, $15::numeric,
-          $16, $17, $18::numeric, $19, $20,
-          $21, $22, $23, $24, $25, $26, $27, $28, $29
-        )`,
-        [
-          runId, r.cellId, r.regime, r.resultTier, r.notionalUsdcPerLeg, r.triggerPct,
-          r.strikeMoneynessPct, r.tenorDays, r.autoClosePnlPct, r.autoCloseAbsoluteUsdc,
-          r.contractsBtc, r.putStrike, r.callStrike, r.sigmaUsed, r.hedgeCostUsdc,
-          r.costSourcePut, r.costSourceCall, r.salvageRealismMultiplier,
-          r.salvageSourcePut, r.salvageSourceCall,
-          r.mc?.meanFoxifyNetUsdc ?? null, r.mc?.medianFoxifyNetUsdc ?? null,
-          r.mc?.p5FoxifyNetUsdc ?? null, r.mc?.p95FoxifyNetUsdc ?? null,
-          r.mc?.pctProfitable ?? null, r.mc?.exitDistribution.foxify_auto_close ?? null,
-          r.mc?.exitDistribution.trigger_peak ?? null, r.mc?.exitDistribution.expiry ?? null,
-          r.mc?.nPaths ?? null
-        ]
-      );
+      try {
+        await pool.query(
+          `INSERT INTO two_sided_cell_sweep_result (
+            run_id, cell_id, regime, result_tier, notional_usdc_per_leg, trigger_pct,
+            strike_moneyness_pct, tenor_days, auto_close_pnl_pct, auto_close_absolute_usdc,
+            contracts_btc, put_strike, call_strike, sigma_used, hedge_cost_usdc,
+            cost_source_put, cost_source_call, salvage_realism_multiplier,
+            salvage_source_put, salvage_source_call,
+            mean_foxify_net_usdc, median_foxify_net_usdc, p5_foxify_net_usdc, p95_foxify_net_usdc,
+            pct_profitable, auto_close_pct, trigger_pct_outcome, expiry_pct, n_paths
+          ) VALUES (
+            $1, $2, $3, $4, $5::numeric, $6::numeric, $7::numeric, $8::numeric, $9::numeric, $10::numeric,
+            $11::numeric, $12::numeric, $13::numeric, $14::numeric, $15::numeric,
+            $16, $17, $18::numeric, $19, $20,
+            $21, $22, $23, $24, $25, $26, $27, $28, $29
+          )`,
+          [
+            runId, r.cellId, r.regime, r.resultTier, r.notionalUsdcPerLeg, r.triggerPct,
+            r.strikeMoneynessPct, r.tenorDays, r.autoClosePnlPct, r.autoCloseAbsoluteUsdc,
+            r.contractsBtc, r.putStrike, r.callStrike, r.sigmaUsed, r.hedgeCostUsdc,
+            r.costSourcePut, r.costSourceCall, r.salvageRealismMultiplier,
+            r.salvageSourcePut, r.salvageSourceCall,
+            r.mc?.meanFoxifyNetUsdc ?? null, r.mc?.medianFoxifyNetUsdc ?? null,
+            r.mc?.p5FoxifyNetUsdc ?? null, r.mc?.p95FoxifyNetUsdc ?? null,
+            r.mc?.pctProfitable ?? null, r.mc?.exitDistribution.foxify_auto_close ?? null,
+            r.mc?.exitDistribution.trigger_peak ?? null, r.mc?.exitDistribution.expiry ?? null,
+            r.mc?.nPaths ?? null
+          ]
+        );
+      } catch (e) {
+        log(`WARN: result insert failed (continuing): ${(e as Error).message}`);
+      }
     }
+    log(`persisted in ${Math.floor((Date.now() - t0) / 1000)}s`);
   }
 
   // Rank per regime — but only REAL results are eligible for ranking
@@ -653,25 +680,88 @@ export const runFullCellSweep = async (
 // ─────────────────────────── Readers ───────────────────────────
 
 export const getLatestSweepRun = async (pool: Pool | PoolClient): Promise<FullSweepReport | null> => {
+  // BUG FIX (2026-05-31): previously this used "ORDER BY started_at DESC LIMIT 1"
+  // which returned null whenever the NEWEST run was still-incomplete or had
+  // failed mid-execution — masking older successfully-completed runs. Now
+  // explicitly filters for completed_at IS NOT NULL so the latest finished
+  // run is always returned.
   const r = await pool.query<{
     run_id: string; started_at: string; completed_at: string | null;
     total_sims: number; spot: string; result_count: number;
     current_regime: string | null; venue: string | null;
     calibration_json: string; rankings_json: string | null;
-  }>(`SELECT * FROM two_sided_cell_sweep_run ORDER BY started_at DESC LIMIT 1`);
+  }>(`SELECT * FROM two_sided_cell_sweep_run
+      WHERE completed_at IS NOT NULL
+        AND rankings_json IS NOT NULL
+      ORDER BY completed_at DESC
+      LIMIT 1`);
   if (r.rows.length === 0) return null;
   const row = r.rows[0];
-  if (!row.completed_at || !row.rankings_json) return null;
   return {
     runId: row.run_id,
     startedAt: row.started_at,
-    completedAt: row.completed_at,
+    completedAt: row.completed_at as string,
     totalSims: row.total_sims,
     spot: Number(row.spot),
     currentRegime: (row.current_regime as Regime) ?? classifyRegime(35),
     venue: (row.venue as SweepVenue) ?? "auto",
     calibrationUsed: JSON.parse(row.calibration_json),
-    rankings: JSON.parse(row.rankings_json),
+    rankings: JSON.parse(row.rankings_json as string),
     resultCount: row.result_count
   };
+};
+
+/**
+ * List ALL sweep runs (most recent first) with completion status.
+ * Diagnostic tool — surfaces stalled or failed sweeps that don't appear
+ * in getLatestSweepRun (which only returns completed ones).
+ */
+export type SweepRunSummary = {
+  runId: string;
+  startedAt: string;
+  completedAt: string | null;
+  status: "completed" | "in_progress" | "failed_or_stalled";
+  totalSims: number;
+  spot: number;
+  currentRegime: string | null;
+  venue: string | null;
+  resultCount: number;
+  ageSeconds: number;
+};
+
+export const listSweepRuns = async (
+  pool: Pool | PoolClient,
+  opts: { limit?: number; nowMs?: number } = {}
+): Promise<SweepRunSummary[]> => {
+  const limit = opts.limit ?? 10;
+  const nowMs = opts.nowMs ?? Date.now();
+  const r = await pool.query<{
+    run_id: string; started_at: string; completed_at: string | null;
+    total_sims: number; spot: string; result_count: number;
+    current_regime: string | null; venue: string | null;
+  }>(`SELECT run_id, started_at, completed_at, total_sims, spot, result_count, current_regime, venue
+      FROM two_sided_cell_sweep_run
+      ORDER BY started_at DESC
+      LIMIT $1`, [limit]);
+  return r.rows.map((row) => {
+    const startedMs = Date.parse(row.started_at);
+    const ageSeconds = Math.floor((nowMs - startedMs) / 1000);
+    // If started >15 min ago and still no completed_at → considered stalled
+    let status: "completed" | "in_progress" | "failed_or_stalled";
+    if (row.completed_at != null) status = "completed";
+    else if (ageSeconds > 900) status = "failed_or_stalled";
+    else status = "in_progress";
+    return {
+      runId: row.run_id,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      status,
+      totalSims: row.total_sims,
+      spot: Number(row.spot),
+      currentRegime: row.current_regime,
+      venue: row.venue,
+      resultCount: row.result_count,
+      ageSeconds
+    };
+  });
 };

@@ -924,8 +924,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   /**
    * GET /admin/foxify/v2/cell-sweep/latest
    *
-   * Returns the latest completed sweep's rankings. 404 if no sweep has
-   * completed yet.
+   * Returns the latest COMPLETED sweep's rankings (filtered by completed_at
+   * IS NOT NULL — won't return stalled or failed runs). 404 if no sweep
+   * has ever completed.
    */
   app.get("/admin/foxify/v2/cell-sweep/latest",
     { preHandler: checkAdminToken },
@@ -933,10 +934,36 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const { getLatestSweepRun } = await import("./cellSweep");
       const report = await getLatestSweepRun(deps.pool);
       if (!report) {
-        reply.code(404).send({ error: "no_completed_sweep", message: "No completed sweep yet. POST /admin/foxify/v2/cell-sweep to run one." });
+        reply.code(404).send({ error: "no_completed_sweep", message: "No completed sweep yet. POST /admin/foxify/v2/cell-sweep to run one, or GET /admin/foxify/v2/cell-sweep/runs to see all runs (including stalled)." });
         return;
       }
       reply.send(report);
+    }
+  );
+
+  /**
+   * GET /admin/foxify/v2/cell-sweep/runs
+   *
+   * Lists ALL recent sweep runs with status (completed / in_progress / failed_or_stalled).
+   * Use this to see whether a sweep crashed or is still going. Runs older
+   * than 15 min without a completed_at are tagged "failed_or_stalled".
+   */
+  app.get<{ Querystring: { limit?: string } }>(
+    "/admin/foxify/v2/cell-sweep/runs",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { listSweepRuns } = await import("./cellSweep");
+      const limit = Math.max(1, Math.min(50, Number(req.query.limit ?? "10")));
+      const runs = await listSweepRuns(deps.pool, { limit });
+      reply.send({
+        count: runs.length,
+        runs,
+        summary: {
+          completed: runs.filter((r) => r.status === "completed").length,
+          in_progress: runs.filter((r) => r.status === "in_progress").length,
+          failed_or_stalled: runs.filter((r) => r.status === "failed_or_stalled").length
+        }
+      });
     }
   );
 

@@ -14,7 +14,7 @@ import test from "node:test";
 import { newDb, DataType } from "pg-mem";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { runFullCellSweep, ensureCellSweepSchema, getLatestSweepRun } from "../src/singleSide/twoSided/cellSweep";
+import { runFullCellSweep, ensureCellSweepSchema, getLatestSweepRun, listSweepRuns } from "../src/singleSide/twoSided/cellSweep";
 import type { LiquidChainCache } from "../src/singleSide/twoSided/liquidChainCache";
 import { ensureDvolHistorySchema } from "../src/singleSide/twoSided/dvolHistory";
 import { ensureChainSnapshotSchema } from "../src/singleSide/twoSided/chainSnapshotPersist";
@@ -222,6 +222,64 @@ test("sweep: persists results and getLatestSweepRun retrieves them", async () =>
   assert.equal(latest.runId, report.runId);
   assert.equal(latest.currentRegime, "calm");
   assert.equal(latest.venue, "auto");
+  await pool.end();
+});
+
+test("getLatestSweepRun: returns latest COMPLETED, skips incomplete newer runs", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  const chain = makeChain([
+    { venue: "deribit", strike: 73000, optType: "put", tenorHours: 48, bid: 200, ask: 230 },
+    { venue: "deribit", strike: 73000, optType: "call", tenorHours: 48, bid: 200, ask: 230 }
+  ]);
+  // Run one completed sweep
+  const completedReport = await runFullCellSweep(pool, {
+    spot: 73000, notionals: [50000], triggers: [0.03], strikeMoneyness: [0],
+    tenors: [2], autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250],
+    nPaths: 50, venue: "auto", liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: true });
+  // Insert a NEWER row directly (simulating a stalled sweep)
+  await pool.query(
+    `INSERT INTO two_sided_cell_sweep_run (run_id, started_at, total_sims, spot, current_regime, venue, calibration_json) VALUES ($1::text, $2::timestamptz, $3, $4::numeric, $5::text, $6::text, $7::text)`,
+    ["stalled-run-id", new Date(Date.now() + 1000).toISOString(), 99, 73000, "calm", "auto", "{}"]
+  );
+  // getLatestSweepRun should return the COMPLETED one, ignoring the stalled newer one
+  const latest = await getLatestSweepRun(pool);
+  assert.ok(latest);
+  assert.equal(latest.runId, completedReport.runId, "should return completed runId, not stalled");
+  await pool.end();
+});
+
+test("listSweepRuns: reports completed + in_progress + stalled status", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  const chain = makeChain([
+    { venue: "deribit", strike: 73000, optType: "put", tenorHours: 48, bid: 200, ask: 230 },
+    { venue: "deribit", strike: 73000, optType: "call", tenorHours: 48, bid: 200, ask: 230 }
+  ]);
+  // Completed sweep
+  await runFullCellSweep(pool, {
+    spot: 73000, notionals: [50000], triggers: [0.03], strikeMoneyness: [0],
+    tenors: [2], autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250],
+    nPaths: 50, venue: "auto", liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: true });
+  // Stalled (older than 15 min, no completed_at)
+  await pool.query(
+    `INSERT INTO two_sided_cell_sweep_run (run_id, started_at, total_sims, spot, current_regime, venue, calibration_json) VALUES ($1::text, $2::timestamptz, $3, $4::numeric, $5::text, $6::text, $7::text)`,
+    ["stalled", new Date(Date.now() - 20 * 60_000).toISOString(), 99, 73000, "calm", "auto", "{}"]
+  );
+  // In-progress (started 5 min ago, no completed_at)
+  await pool.query(
+    `INSERT INTO two_sided_cell_sweep_run (run_id, started_at, total_sims, spot, current_regime, venue, calibration_json) VALUES ($1::text, $2::timestamptz, $3, $4::numeric, $5::text, $6::text, $7::text)`,
+    ["in-progress", new Date(Date.now() - 5 * 60_000).toISOString(), 99, 73000, "calm", "auto", "{}"]
+  );
+  const runs = await listSweepRuns(pool);
+  const statuses = runs.map((r) => r.status);
+  assert.ok(statuses.includes("completed"), `expected completed; got ${statuses.join(",")}`);
+  assert.ok(statuses.includes("in_progress"), `expected in_progress; got ${statuses.join(",")}`);
+  assert.ok(statuses.includes("failed_or_stalled"), `expected stalled; got ${statuses.join(",")}`);
   await pool.end();
 });
 
