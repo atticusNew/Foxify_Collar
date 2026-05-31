@@ -160,6 +160,11 @@ export const buildQuote = async (params: {
   useStabilityCache?: boolean;
 }): Promise<QuoteResult> => {
   const { cell, spot, anchorProvider, tier } = params;
+  // Sizing reconcile: derive option contracts from the cell's notional and the
+  // LIVE spot so the option size tracks the perp notional (Foxify opens the perp
+  // at the protection size). Replaces the stale hardcoded contractsBtc that was
+  // set at old BTC prices. No hardcode — purely notionalUsdcPerLeg / real spot.
+  const contractsBtc = +(cell.notionalUsdcPerLeg / spot).toFixed(3);
   const now = params.nowMs ?? Date.now();
   const useCache = params.useStabilityCache !== false;
 
@@ -202,7 +207,7 @@ export const buildQuote = async (params: {
     return { ok: false, reason: "anchor_fetch_failed", details: { message: (e as Error).message } };
   }
 
-  const putPick = pickLegVenue(putAnchors.bullish, putAnchors.deribit, cell.contractsBtc);
+  const putPick = pickLegVenue(putAnchors.bullish, putAnchors.deribit, contractsBtc);
   if (putPick.reason !== "ok" || !putPick.chosen) {
     return {
       ok: false,
@@ -213,11 +218,11 @@ export const buildQuote = async (params: {
         bullish_depth: putAnchors.bullish?.depthWithin2pctBtc ?? null,
         deribit_ask: putAnchors.deribit?.askUsdcPerBtc ?? null,
         deribit_depth: putAnchors.deribit?.depthWithin2pctBtc ?? null,
-        required_depth: cell.contractsBtc * DEPTH_HEADROOM_FACTOR
+        required_depth: contractsBtc * DEPTH_HEADROOM_FACTOR
       }
     };
   }
-  const callPick = pickLegVenue(callAnchors.bullish, callAnchors.deribit, cell.contractsBtc);
+  const callPick = pickLegVenue(callAnchors.bullish, callAnchors.deribit, contractsBtc);
   if (callPick.reason !== "ok" || !callPick.chosen) {
     return {
       ok: false,
@@ -228,13 +233,13 @@ export const buildQuote = async (params: {
         bullish_depth: callAnchors.bullish?.depthWithin2pctBtc ?? null,
         deribit_ask: callAnchors.deribit?.askUsdcPerBtc ?? null,
         deribit_depth: callAnchors.deribit?.depthWithin2pctBtc ?? null,
-        required_depth: cell.contractsBtc * DEPTH_HEADROOM_FACTOR
+        required_depth: contractsBtc * DEPTH_HEADROOM_FACTOR
       }
     };
   }
 
-  const putLegCost = putPick.chosen.askUsdcPerBtc * cell.contractsBtc;
-  const callLegCost = callPick.chosen.askUsdcPerBtc * cell.contractsBtc;
+  const putLegCost = putPick.chosen.askUsdcPerBtc * contractsBtc;
+  const callLegCost = callPick.chosen.askUsdcPerBtc * contractsBtc;
   const total = putLegCost + callLegCost;
 
   const result: QuoteResult = {
@@ -248,7 +253,7 @@ export const buildQuote = async (params: {
     targetCallStrike: targetStrikes.callStrike,
     putStrikeShifted: putShifted,
     callStrikeShifted: callShifted,
-    contractsBtc: cell.contractsBtc,
+    contractsBtc: contractsBtc,
     triggerDownPrice: triggerDown,
     triggerUpPrice: triggerUp,
     hedgeTenorDays: cell.hedgeTenorDays,

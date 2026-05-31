@@ -118,15 +118,17 @@ test("handleActivate: 201 happy path returns full payload + writes DB", async ()
   // callStrike = floor(76000 * 0.987 / 1000) * 1000 = floor(75.012) * 1000 = 75000
   assert.equal(body.put_strike, 77_000);
   assert.equal(body.call_strike, 75_000);
-  assert.equal(body.contracts_btc, 1.4);
+  // Sizing reconcile: contractsBtc derived from notional/spot = 50000/76000 = 0.658
+  // (option size tracks the perp notional at live spot; no stale hardcode).
+  assert.equal(body.contracts_btc, 0.658);
   // triggers: 76000 ± 2% = 74480 / 77520
   assert.equal(body.trigger_down_price, 74_480);
   assert.equal(body.trigger_up_price, 77_520);
   assert.equal(body.tier_at_activation, "tier_1");
   assert.equal(body.atticus_split_pct, 0.15);
   assert.equal(body.atticus_floor_usdc, 25);
-  // Total cost = 1.4 × 1150 + 1.4 × 1162.86 ≈ 3238
-  assert.ok(body.total_hedge_cost_usdc > 3_200 && body.total_hedge_cost_usdc < 3_300);
+  // Total cost = 0.658 × 1150 + 0.658 × 1162.86 ≈ 1522
+  assert.ok(body.total_hedge_cost_usdc > 1_480 && body.total_hedge_cost_usdc < 1_560);
 
   // DB writes
   const pair = await getPairById(pool, body.pair_id);
@@ -179,7 +181,7 @@ test("handleActivate: 503 when leg depth below required headroom", async () => {
     { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 3_500, foxifyPairRef: "fxy-thindepth" },
     {
       pool,
-      anchorProvider: makeAnchorProvider({ putDepth: 1.0 }), // contracts=1.4, headroom 1.2 → required 1.68
+      anchorProvider: makeAnchorProvider({ putDepth: 0.5 }), // contracts≈0.658, headroom 1.2 → required ≈0.79; 0.5 < 0.79 → insufficient
       executor: new MockStrangleExecutor(),
       getFeed: () => makeFeed()
     }
