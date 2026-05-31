@@ -188,6 +188,18 @@ export type RankedCell = {
   salvage_source_put: SalvageSource;
   salvage_source_call: SalvageSource;
   result_tier: "real" | "estimate";
+  /**
+   * Gamma-scalp economics breakdown — non-null ONLY for straddle_gamma_scalp
+   * cells. Lets the operator audit WHY a gamma-scalp cell's net is what it is
+   * (realized harvest via the perp hedge vs friction drag), so the
+   * structure_verdict is explainable to the dollar.
+   */
+  gamma_scalp: {
+    perp_hedge_pnl_usdc: number;
+    perp_friction_usdc: number;
+    rebalances: number;
+    friction_bps: number;
+  } | null;
   params: {
     notional: number;
     trigger: number;
@@ -474,6 +486,12 @@ const toRankedCell = (r: CellSweepResult): RankedCell => ({
   salvage_source_put: r.salvageSourcePut,
   salvage_source_call: r.salvageSourceCall,
   result_tier: r.resultTier as "real" | "estimate",
+  gamma_scalp: r.mc?.gammaScalp ? {
+    perp_hedge_pnl_usdc: +r.mc.gammaScalp.meanPerpHedgePnlUsdc.toFixed(2),
+    perp_friction_usdc: +r.mc.gammaScalp.meanPerpFrictionUsdc.toFixed(2),
+    rebalances: +r.mc.gammaScalp.meanRebalances.toFixed(1),
+    friction_bps: r.mc.gammaScalp.frictionBps
+  } : null,
   params: {
     notional: r.notionalUsdcPerLeg,
     trigger: r.triggerPct,

@@ -514,3 +514,34 @@ test("sweep: gamma-scalp structure requires friction, emits labeled cell + 3-way
   assert.ok((calm.top_straddle_gamma_scalp as NonNullable<typeof calm.top_straddle_gamma_scalp>).cellId.includes("GAMMASCALP"), "cellId carries GAMMASCALP token");
   console.log(`[EMPIRICAL][sweep-3way] calm verdict: ${calm.structure_verdict}`);
 });
+
+test("sweep: gamma_scalp diagnostics surfaced on gamma cells, null on others", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  const spot = 73000, sig = 0.40, T = 3 / 365;
+  const chain = {
+    getBidForSymbol: () => null,
+    getBidForLeg: (o: { strike: number; optType: "put" | "call" }) => {
+      const bs = o.optType === "put" ? bsPut(spot, o.strike, T, 0.045, sig) : bsCall(spot, o.strike, T, 0.045, sig);
+      const mid = Math.max(5, bs);
+      return { bidUsdcPerBtc: mid * 0.95, askUsdcPerBtc: mid * 1.05, midUsdcPerBtc: mid,
+        spreadPct: 0.1, venue: "deribit" as const, instrumentName: `BTC-${o.strike}-${o.optType.toUpperCase()}`,
+        tenorHours: 72, markIv: sig, pulledAtMs: Date.now() };
+    },
+    getCached: () => null
+  } as unknown as LiquidChainCache;
+  const report = await runFullCellSweep(pool, {
+    spot, notionals: [50000], triggers: [0.03], tenors: [3], strikeMoneyness: [0],
+    autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 150, venue: "auto",
+    structures: ["straddle", "straddle_gamma_scalp"], perpFrictionBps: 7,
+    liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: false });
+  const gs = report.rankings.calm.top_straddle_gamma_scalp;
+  const st = report.rankings.calm.top_straddle;
+  assert.ok(gs, "gamma-scalp cell present");
+  assert.ok(gs!.gamma_scalp, "gamma-scalp cell carries gamma_scalp diagnostics");
+  assert.equal(gs!.gamma_scalp!.friction_bps, 7, "friction bps echoed");
+  assert.ok(gs!.gamma_scalp!.rebalances > 0, "rebalances recorded");
+  assert.equal(st && st.gamma_scalp, null, "plain straddle cell has null gamma_scalp diagnostics");
+});
