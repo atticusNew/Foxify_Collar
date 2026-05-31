@@ -386,6 +386,29 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   m.incrementGauge(METRIC_NAMES.ACTIVE_PAIRS, { cell_id: cell.cellId });
   m.observeHistogram(METRIC_NAMES.ACTIVATE_LATENCY_MS, Date.now() - now, { cell_id: cell.cellId });
 
+  // Foxify ACTIVATION-time signal (fire-and-forget; retries in background; no-op
+  // if no webhook configured). MUST never block or fail the 201 activation.
+  try {
+    const { deliverPairActivated } = await import("./webhookDelivery");
+    void deliverPairActivated(deps.pool, {
+      pair_id: pair.pairId,
+      foxify_pair_ref: req.foxifyPairRef,
+      cell_id: cell.cellId,
+      activated_at: new Date(now).toISOString(),
+      spot_at_activation: spot,
+      put_strike: quote.putStrike,
+      call_strike: quote.callStrike,
+      contracts_btc: quote.contractsBtc,
+      total_hedge_cost_usdc: actualTotalCost,
+      trigger_down_price: quote.triggerDownPrice,
+      trigger_up_price: quote.triggerUpPrice,
+      tier_at_activation: tier.label,
+      hedge_tenor_days: cell.hedgeTenorDays,
+      expires_at: pair.expiresAt,
+      is_shadow: req.isShadow ?? false
+    }).catch(() => { /* delivery logs + retries internally; never block activation */ });
+  } catch { /* webhook module optional — never block activation */ }
+
   return {
     status: 201,
     body: {

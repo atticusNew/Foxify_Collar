@@ -35,7 +35,10 @@ const RETRY_DELAYS_MS = [
 const MAX_ATTEMPTS = RETRY_DELAYS_MS.length;
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+export type WebhookEvent = "pair_activated" | "pair_closed";
+
 export type PairClosedPayload = {
+  event?: WebhookEvent;          // "pair_closed" (defaulted on send)
   pair_id: string;
   foxify_pair_ref: string;
   closed_at: string;
@@ -47,6 +50,32 @@ export type PairClosedPayload = {
   atticus_share_usdc: number;
   exit_mode: string | null;
   tier_at_settlement: string;
+};
+
+/**
+ * Foxify ACTIVATION-time signal — emitted the moment a pair goes active (hedge
+ * filled). Lets Foxify reconcile the open position in real time, not just at
+ * close. Same HMAC signing + retry chain as PairClosedPayload; distinguished by
+ * the `event` field + X-Atticus-Event header.
+ * NOTE: field set is a sensible default — confirm exact shape with Foxify.
+ */
+export type PairActivatedPayload = {
+  event?: WebhookEvent;          // "pair_activated" (defaulted on send)
+  pair_id: string;
+  foxify_pair_ref: string;
+  cell_id: string;
+  activated_at: string;
+  spot_at_activation: number;
+  put_strike: number;
+  call_strike: number;
+  contracts_btc: number;
+  total_hedge_cost_usdc: number;
+  trigger_down_price: number;
+  trigger_up_price: number;
+  tier_at_activation: string;
+  hedge_tenor_days: number;
+  expires_at: string;
+  is_shadow: boolean;
 };
 
 export const ensureWebhookAttemptSchema = async (pool: Pool): Promise<void> => {
@@ -65,6 +94,14 @@ export const ensureWebhookAttemptSchema = async (pool: Pool): Promise<void> => {
       next_retry_at TIMESTAMPTZ
     );
   `);
+  // Idempotent: distinguish activation vs close deliveries (default 'pair_closed'
+  // for rows written before this column existed).
+  try {
+    await pool.query(`ALTER TABLE two_sided_webhook_attempt ADD COLUMN IF NOT EXISTS event TEXT NOT NULL DEFAULT 'pair_closed'`);
+  } catch (e) {
+    try { await pool.query(`ALTER TABLE two_sided_webhook_attempt ADD COLUMN event TEXT NOT NULL DEFAULT 'pair_closed'`); }
+    catch (e2) { if (!String(e2).match(/already exists|duplicate column|column exists/i)) { /* swallow */ } }
+  }
   try {
     await pool.query(`CREATE INDEX IF NOT EXISTS two_sided_webhook_attempt_pair_idx ON two_sided_webhook_attempt(pair_id);`);
     await pool.query(`CREATE INDEX IF NOT EXISTS two_sided_webhook_attempt_pending_idx ON two_sided_webhook_attempt(next_retry_at) WHERE success = FALSE AND next_retry_at IS NOT NULL;`);
@@ -116,18 +153,36 @@ export const deliverPairClosed = async (
     safeLog(opts, `webhook not configured; skipping delivery for pair=${payload.pair_id}`);
     return { attemptsMade: 0, finalSuccess: false, scheduledRetryFor: null };
   }
-  return attemptDelivery(pool, payload, cfg.webhookUrl, cfg.hmacSecret, 1, opts);
+  return attemptDelivery(pool, "pair_closed", payload, cfg.webhookUrl, cfg.hmacSecret, 1, opts);
+};
+
+/**
+ * Deliver the ACTIVATION-time signal to Foxify (fire-and-forget; retries in
+ * background). Same signing/retry as deliverPairClosed; event="pair_activated".
+ */
+export const deliverPairActivated = async (
+  pool: Pool,
+  payload: PairActivatedPayload,
+  opts: DeliveryOpts = {}
+): Promise<DeliveryResult> => {
+  const cfg = await getWebhookConfig(pool);
+  if (!cfg.webhookUrl || !cfg.hmacSecret) {
+    safeLog(opts, `webhook not configured; skipping activation signal for pair=${payload.pair_id}`);
+    return { attemptsMade: 0, finalSuccess: false, scheduledRetryFor: null };
+  }
+  return attemptDelivery(pool, "pair_activated", payload, cfg.webhookUrl, cfg.hmacSecret, 1, opts);
 };
 
 const attemptDelivery = async (
   pool: Pool,
-  payload: PairClosedPayload,
+  event: WebhookEvent,
+  payload: { pair_id: string } & Record<string, unknown>,
   webhookUrl: string,
   hmacSecret: string,
   attemptSeq: number,
   opts: DeliveryOpts
 ): Promise<DeliveryResult> => {
-  const body = JSON.stringify(payload);
+  const body = JSON.stringify({ ...payload, event });
   const signature = signPayload(body, hmacSecret);
   const payloadHashShort = hashPayload(body);
   const attemptId = randomUUID();
@@ -149,6 +204,7 @@ const attemptDelivery = async (
         "Content-Type": "application/json",
         "X-Atticus-Signature": signature,
         "X-Atticus-Pair-Id": payload.pair_id,
+        "X-Atticus-Event": event,
         "X-Atticus-Attempt-Seq": String(attemptSeq)
       },
       body,
@@ -168,9 +224,9 @@ const attemptDelivery = async (
   const nextRetryAt = nextDelay != null ? new Date(Date.now() + nextDelay).toISOString() : null;
 
   await pool.query(
-    `INSERT INTO two_sided_webhook_attempt (attempt_id, pair_id, attempt_seq, webhook_url, payload_hash, response_status, response_body_preview, error_message, success, next_retry_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-    [attemptId, payload.pair_id, attemptSeq, webhookUrl, payloadHashShort, status, bodyPreview || null, errorMessage, success, nextRetryAt]
+    `INSERT INTO two_sided_webhook_attempt (attempt_id, pair_id, attempt_seq, webhook_url, payload_hash, response_status, response_body_preview, error_message, success, next_retry_at, event)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    [attemptId, payload.pair_id, attemptSeq, webhookUrl, payloadHashShort, status, bodyPreview || null, errorMessage, success, nextRetryAt, event]
   );
   safeLog(opts, `pair=${payload.pair_id} attempt=${attemptSeq} status=${status} success=${success}${willRetry ? ` retry_in=${nextDelay}ms` : ""}`);
   const m = getMetrics();
@@ -183,7 +239,7 @@ const attemptDelivery = async (
       if (t && typeof (t as { unref?: () => void }).unref === "function") (t as { unref: () => void }).unref();
     });
     schedule(nextDelay!, () => {
-      void attemptDelivery(pool, payload, webhookUrl, hmacSecret, attemptSeq + 1, opts).catch((e) =>
+      void attemptDelivery(pool, event, payload, webhookUrl, hmacSecret, attemptSeq + 1, opts).catch((e) =>
         safeLog(opts, `attempt ${attemptSeq + 1} chain failure: ${(e as Error).message}`)
       );
     });

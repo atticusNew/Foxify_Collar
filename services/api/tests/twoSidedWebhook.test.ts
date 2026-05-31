@@ -14,8 +14,10 @@ import {
 import {
   ensureWebhookAttemptSchema,
   deliverPairClosed,
+  deliverPairActivated,
   verifyAtticusSignature,
-  type PairClosedPayload
+  type PairClosedPayload,
+  type PairActivatedPayload
 } from "../src/singleSide/twoSided/webhookDelivery";
 import { createHmac } from "node:crypto";
 
@@ -165,4 +167,70 @@ test("verifyAtticusSignature: tampered body returns false", () => {
   const body = JSON.stringify({ test: "payload" });
   const sig = createHmac("sha256", "secret-key-1234").update(body).digest("hex");
   assert.equal(verifyAtticusSignature(body + "tampered", sig, "secret-key-1234"), false);
+});
+
+// ──────────────────────────── activation-time signal ────────────────────────────
+
+const sampleActivated = (): PairActivatedPayload => ({
+  pair_id: "p-act-1",
+  foxify_pair_ref: "fxy-act-1",
+  cell_id: "pair_50k_2pct",
+  activated_at: "2026-05-31T03:00:00Z",
+  spot_at_activation: 73950,
+  put_strike: 74000,
+  call_strike: 74000,
+  contracts_btc: 1.4,
+  total_hedge_cost_usdc: 1149.43,
+  trigger_down_price: 72471,
+  trigger_up_price: 75429,
+  tier_at_activation: "tier_1",
+  hedge_tenor_days: 3,
+  expires_at: "2026-06-03T03:00:00Z",
+  is_shadow: true
+});
+
+test("activation: deliverPairActivated sends event=pair_activated + valid signature", async () => {
+  const pool = await buildPool();
+  await setWebhookConfig(pool, "https://foxify.example.com/webhook", "secret-1234567890ab");
+  let captured: { body: string; event: string; pairId: string; sig: string } | null = null;
+  const r = await deliverPairActivated(pool, sampleActivated(), {
+    fetchOverride: async (url, init) => {
+      captured = { body: init.body, event: init.headers["X-Atticus-Event"], pairId: init.headers["X-Atticus-Pair-Id"], sig: init.headers["X-Atticus-Signature"] };
+      return { ok: true, status: 200, text: async () => "OK" };
+    },
+    log: () => {}
+  });
+  assert.equal(r.finalSuccess, true);
+  assert.ok(captured, "fetch was called");
+  const cap = captured as NonNullable<typeof captured>;
+  assert.equal(cap.event, "pair_activated", "X-Atticus-Event header");
+  assert.equal(cap.pairId, "p-act-1");
+  const parsed = JSON.parse(cap.body);
+  assert.equal(parsed.event, "pair_activated", "event in body");
+  assert.equal(parsed.cell_id, "pair_50k_2pct");
+  assert.equal(parsed.total_hedge_cost_usdc, 1149.43);
+  // signature verifies over the EXACT body (incl. event)
+  assert.ok(verifyAtticusSignature(cap.body, cap.sig, "secret-1234567890ab"), "HMAC verifies");
+  // recorded with event column
+  const rows = await pool.query("SELECT * FROM two_sided_webhook_attempt WHERE pair_id = $1", ["p-act-1"]);
+  assert.equal(rows.rows.length, 1);
+  assert.equal(rows.rows[0].event, "pair_activated");
+});
+
+test("activation: unconfigured webhook → silent skip", async () => {
+  const pool = await buildPool();
+  const r = await deliverPairActivated(pool, sampleActivated(), { log: () => {} });
+  assert.equal(r.attemptsMade, 0);
+  assert.equal(r.finalSuccess, false);
+});
+
+test("close webhook still tags event=pair_closed (backward compat)", async () => {
+  const pool = await buildPool();
+  await setWebhookConfig(pool, "https://foxify.example.com/webhook", "secret-1234567890ab");
+  let event = "";
+  await deliverPairClosed(pool, samplePayload(), {
+    fetchOverride: async (_url, init) => { event = init.headers["X-Atticus-Event"]; return { ok: true, status: 200, text: async () => "OK" }; },
+    log: () => {}
+  });
+  assert.equal(event, "pair_closed");
 });
