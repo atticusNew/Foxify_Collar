@@ -1018,6 +1018,45 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   });
 
   /**
+   * POST /admin/foxify/v2/dvol-backfill
+   *
+   * Phase 6: backfill historical Deribit DVOL into two_sided_dvol_history so
+   * regime calibration becomes EMPIRICAL for ALL regimes immediately (instead of
+   * waiting ~2 weeks for live accumulation). REAL data (Deribit's published vol
+   * index, historical), idempotent (minute-dedupe). Run once, then re-check
+   * GET /admin/foxify/v2/regime-calibration — non-calm regimes should flip to
+   * empirical_median, making the cell sweep's cross-regime results actionable.
+   *
+   * Body (optional): { days?=90, resolutionSec?=3600, windowDays?=10 }
+   */
+  app.post<{ Body?: { days?: number; resolutionSec?: number; windowDays?: number } }>(
+    "/admin/foxify/v2/dvol-backfill",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { backfillDvolHistory } = await import("../../../scripts/calibration/backfillDvolHistory");
+      const body = req.body ?? {};
+      const days = typeof body.days === "number" && body.days > 0 ? Math.min(365, body.days) : 90;
+      const resolutionSec = typeof body.resolutionSec === "number" && body.resolutionSec > 0 ? body.resolutionSec : 3600;
+      const windowDays = typeof body.windowDays === "number" && body.windowDays > 0 ? Math.min(30, body.windowDays) : 10;
+      try {
+        const result = await backfillDvolHistory(deps.pool, {
+          days, resolutionSec, windowDays,
+          log: (msg) => console.log(`[dvolBackfill] ${msg}`)
+        });
+        reply.send({
+          ok: true,
+          ...result,
+          oldestIso: result.oldestMs ? new Date(result.oldestMs).toISOString() : null,
+          newestIso: result.newestMs ? new Date(result.newestMs).toISOString() : null,
+          note: "Re-check GET /admin/foxify/v2/regime-calibration — regimes with >=100 samples now use empirical_median."
+        });
+      } catch (e) {
+        reply.code(502).send({ error: "backfill_failed", message: (e as Error).message });
+      }
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/ev-by-regime
    *
    * Cross-regime EV matrix per cell, with real-bid realism applied. Answers
