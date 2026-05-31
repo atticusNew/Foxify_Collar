@@ -14,7 +14,10 @@ import test from "node:test";
 import { newDb, DataType } from "pg-mem";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { runFullCellSweep, ensureCellSweepSchema, getLatestSweepRun, listSweepRuns } from "../src/singleSide/twoSided/cellSweep";
+import { runFullCellSweep, ensureCellSweepSchema, getLatestSweepRun, listSweepRuns, buildSearchGrid, type CellStructure } from "../src/singleSide/twoSided/cellSweep";
+import { runFoxifyDurationMc } from "../src/singleSide/twoSided/foxifyDurationMc";
+import { bsPut, bsCall } from "../scripts/backtest/singleSide/coreEngine";
+import { RISK_FREE_RATE } from "../src/singleSide/twoSided/optionPricing";
 import type { LiquidChainCache } from "../src/singleSide/twoSided/liquidChainCache";
 import { ensureDvolHistorySchema } from "../src/singleSide/twoSided/dvolHistory";
 import { ensureChainSnapshotSchema } from "../src/singleSide/twoSided/chainSnapshotPersist";
@@ -305,4 +308,139 @@ test("sweep: result includes hedge_cost from real ask (not synthetic BS × marku
   }
   void contractsBtc; // silence unused
   await pool.end();
+});
+
+// ──────────────────────────── Phase 4: structure variants ────────────────────────────
+
+test("grid: emits straddle (ATM) + strangle (OTM wings only); m=0 strangle skipped", () => {
+  const dummyChain = makeChain([]);
+  const grid = buildSearchGrid(73000, {
+    spot: 73000,
+    notionals: [50000],
+    triggers: [0.03],
+    tenors: [3],
+    strikeMoneyness: [0, -0.02, -0.03],
+    liquidChainCache: dummyChain,
+    currentRegime: "calm"
+  });
+  const straddles = grid.filter((c) => c.structure === "straddle");
+  const strangles = grid.filter((c) => c.structure === "strangle");
+  // straddle: 1 ATM point; strangle: 2 wings (m=-0.02,-0.03); m=0 skipped for strangle
+  assert.equal(straddles.length, 1, "exactly one straddle (ATM)");
+  assert.equal(strangles.length, 2, "two strangle wings (m=0 skipped)");
+  assert.equal(straddles[0].strikeMoneynessPct, 0);
+  assert.ok(strangles.every((c) => c.strikeMoneynessPct !== 0), "no m=0 in strangle");
+  // No duplicate candidate cellIds
+  const ids = grid.map((c) => c.cellId);
+  assert.equal(new Set(ids).size, ids.length, `cellIds must be unique: ${ids.join(",")}`);
+});
+
+test("grid: structures=['straddle'] yields only ATM straddle; ['strangle'] with m=[0] yields none", () => {
+  const dummyChain = makeChain([]);
+  const onlyStraddle = buildSearchGrid(73000, {
+    spot: 73000, notionals: [50000], triggers: [0.03], tenors: [3],
+    strikeMoneyness: [0, -0.02], structures: ["straddle"],
+    liquidChainCache: dummyChain, currentRegime: "calm"
+  });
+  assert.equal(onlyStraddle.length, 1);
+  assert.equal(onlyStraddle[0].structure, "straddle");
+  const onlyStrangleAtm = buildSearchGrid(73000, {
+    spot: 73000, notionals: [50000], triggers: [0.03], tenors: [3],
+    strikeMoneyness: [0], structures: ["strangle"],
+    liquidChainCache: dummyChain, currentRegime: "calm"
+  });
+  assert.equal(onlyStrangleAtm.length, 0, "strangle with only m=0 produces no candidates");
+});
+
+test("sweep: straddle cell produces real tier with structure label + equal strikes", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  // ATM straddle snaps to 73000 for both legs
+  const chain = makeChain([
+    { venue: "deribit", strike: 73000, optType: "put", tenorHours: 72, bid: 1800, ask: 2000 },
+    { venue: "deribit", strike: 73000, optType: "call", tenorHours: 72, bid: 1800, ask: 2000 }
+  ]);
+  const report = await runFullCellSweep(pool, {
+    spot: 73000, notionals: [50000], triggers: [0.03], strikeMoneyness: [0], tenors: [3],
+    autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 100,
+    venue: "auto", structures: ["straddle"], liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: false });
+  const calm = report.rankings.calm;
+  assert.equal(calm.cellsWithChainData, 1, "one straddle candidate priced");
+  assert.equal(calm.result_tier, "real");
+  assert.ok(calm.topCells.length >= 1);
+  const top = calm.topCells[0];
+  assert.equal(top.params.structure, "straddle");
+  assert.equal(top.params.put_strike, top.params.call_strike, "straddle = equal strikes");
+  assert.ok(top.cellId.includes("STRADDLE"), `cellId carries structure token: ${top.cellId}`);
+});
+
+test("sweep: persisted straddle round-trips structure via getLatestSweepRun", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  const chain = makeChain([
+    { venue: "deribit", strike: 73000, optType: "put", tenorHours: 72, bid: 1800, ask: 2000 },
+    { venue: "deribit", strike: 73000, optType: "call", tenorHours: 72, bid: 1800, ask: 2000 }
+  ]);
+  const report = await runFullCellSweep(pool, {
+    spot: 73000, notionals: [50000], triggers: [0.03], strikeMoneyness: [0], tenors: [3],
+    autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 100,
+    venue: "auto", structures: ["straddle"], liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: true });
+  const latest = await getLatestSweepRun(pool);
+  assert.ok(latest);
+  assert.equal(latest.runId, report.runId);
+  const top = latest.rankings.calm.topCells[0];
+  assert.equal(top.params.structure, "straddle", "structure survives DB round-trip");
+  await pool.end();
+});
+
+test("MC gamma hypothesis: straddle vs OTM strangle auto-close (empirical, non-breaking)", async () => {
+  // Identical params; only strike geometry differs.
+  // Straddle: both legs ATM (max gamma). Strangle: 3% OTM wings (lower gamma).
+  const spot = 73000;
+  const sigma = 0.55;
+  const tenorDays = 3;
+  const contractsBtc = 1;
+  const T = tenorDays / 365;
+  // Derive each structure's entry cost from its OWN BS value (realistic + fair):
+  // both start equally "in the hole" after the 0.85 realism + 0.95 slip, so the
+  // auto-close comparison isolates gamma (recovery speed), not a rigged cost gap.
+  const cost = (pk: number, ck: number) =>
+    (Math.max(0, bsPut(spot, pk, T, RISK_FREE_RATE, sigma)) +
+     Math.max(0, bsCall(spot, ck, T, RISK_FREE_RATE, sigma))) * contractsBtc;
+  const base = {
+    cellId: "gamma_test", spot, hedgeCostUsdc: 0,
+    tenorDays, triggerPctDown: 0.05, triggerPctUp: 0.05,
+    regime: "calm" as const, sigmaAnnual: sigma, contractsBtc,
+    autoClosePnlPct: 0.15, autoCloseAbsoluteUsdc: 1e9, // % trigger isolates gamma harvest
+    salvageRealismMultiplier: 0.85, bidSlipHaircut: 0.95, nPaths: 1500, seed: 7,
+    barsOverride: null
+  };
+  const straddle = await runFoxifyDurationMc({
+    ...base, putStrike: 73000, callStrike: 73000, hedgeCostUsdc: cost(73000, 73000)
+  });
+  const strangle = await runFoxifyDurationMc({
+    ...base, putStrike: 70810, callStrike: 75190, hedgeCostUsdc: cost(70810, 75190)
+  });
+  // Structural invariants that MUST hold (deterministic):
+  assert.ok(straddle.pctProfitable >= 0 && straddle.pctProfitable <= 1);
+  assert.ok(strangle.pctProfitable >= 0 && strangle.pctProfitable <= 1);
+  const sAuto = straddle.exitDistribution.foxify_auto_close;
+  const gAuto = strangle.exitDistribution.foxify_auto_close;
+  // EMPIRICAL FINDING (logged, not asserted — refinement B): the CTO hypothesis
+  // is that ATM straddle's higher gamma yields a higher auto-close rate.
+  const verdict = sAuto > gAuto
+    ? `CONFIRMED straddle higher (${(sAuto * 100).toFixed(1)}% vs ${(gAuto * 100).toFixed(1)}%)`
+    : sAuto < gAuto
+      ? `REJECTED strangle higher (${(gAuto * 100).toFixed(1)}% vs ${(sAuto * 100).toFixed(1)}%)`
+      : `INDETERMINATE equal (${(sAuto * 100).toFixed(1)}%)`;
+  console.log(`[EMPIRICAL][gamma-hypothesis] auto-close rate: ${verdict}; ` +
+    `straddle netMean=$${straddle.meanFoxifyNetUsdc.toFixed(0)} ` +
+    `strangle netMean=$${strangle.meanFoxifyNetUsdc.toFixed(0)}`);
+  // Always-true sanity: straddle ATM is strictly more expensive than OTM strangle.
+  assert.ok(straddle.meanCostPaid > strangle.meanCostPaid,
+    "ATM straddle costs more than OTM strangle");
 });
