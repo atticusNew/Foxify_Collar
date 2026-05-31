@@ -99,6 +99,10 @@ export type SweepConfig = {
   perpFrictionBps?: number;
   /** Optional perp funding (bps/day) for gamma-scalp cells (env FOXIFY_PERP_FUNDING_BPS_PER_DAY). */
   perpFundingBpsPerDay?: number;
+  /** Atticus profit-share split (Foxify keeps this fraction). Default env SS_ATTICUS_SPLIT_PCT or 0.85. */
+  atticusSplitPct?: number;
+  /** Atticus floor on positive uplift (USDC). Default env SS_ATTICUS_FLOOR_USDC or 25. */
+  atticusFloorUsdc?: number;
   /** Liquid chain cache for real price lookups. REQUIRED. */
   liquidChainCache: LiquidChainCache;
   /** DvolService for live IV. Optional but recommended. */
@@ -716,6 +720,8 @@ export const runFullCellSweep = async (
             salvageRealismMultiplier: pricing.salvageRealismMultiplier,
             nPaths: config.nPaths ?? 500,
             barsOverride: preloadedBars,
+            atticusSplitPct: config.atticusSplitPct,
+            atticusFloorUsdc: config.atticusFloorUsdc,
             ...(isGammaScalp ? {
               gammaScalpWithPerpHedge: true,
               perpFrictionBps: config.perpFrictionBps,

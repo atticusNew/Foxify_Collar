@@ -119,6 +119,15 @@ export type FoxifyDurationMcInputs = {
    * the IV embedded in the option's market ask. Only used in gamma scalp mode.
    */
   impliedSigmaAnnual?: number;
+  /**
+   * Atticus profit-share fraction of the uplift Foxify keeps... i.e. Foxify
+   * keeps splitPct, Atticus takes (1-splitPct) of positive uplift (floored at
+   * atticusFloorUsdc). Default = env SS_ATTICUS_SPLIT_PCT or 0.85 (85/15).
+   * EASILY ADJUSTABLE: set the env, or pass per-sim, without code changes.
+   */
+  atticusSplitPct?: number;
+  /** Minimum Atticus share on positive uplift (USDC). Default env SS_ATTICUS_FLOOR_USDC or 25. */
+  atticusFloorUsdc?: number;
 };
 
 export type FoxifyExitMode = "foxify_auto_close" | "trigger_peak" | "expiry";
@@ -293,8 +302,8 @@ export const runFoxifyDurationMc = async (
   const realismMultiplier = inputs.salvageRealismMultiplier ?? 1.0;
   const bidSlip = inputs.bidSlipHaircut ?? 0.95;
   const seed = inputs.seed ?? 42;
-  const splitPct = 0.85;
-  const floorUsdc = 25;
+  const splitPct = inputs.atticusSplitPct ?? Number(process.env.SS_ATTICUS_SPLIT_PCT ?? "0.85");
+  const floorUsdc = inputs.atticusFloorUsdc ?? Number(process.env.SS_ATTICUS_FLOOR_USDC ?? "25");
 
   const bars = inputs.barsOverride ?? (inputs.regime === "calm" ? await load5MinBars().catch(() => null) : null);
   const pathConfig: PathConfig = {

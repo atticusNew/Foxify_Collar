@@ -196,3 +196,18 @@ test("gamma scalp: realized vol > implied vol → higher harvest (the core thesi
     "realized>>implied should harvest more gamma → higher mean net"
   );
 });
+
+test("split: higher Atticus split (Foxify keeps more) -> higher Foxify net (configurable)", async () => {
+  const cfg = {
+    ...baseInputs, salvageRealismMultiplier: 1.0,
+    autoCloseAbsoluteUsdc: 100, autoClosePnlPct: 0.10,
+    atticusFloorUsdc: 0, // isolate the % split from the floor
+    nPaths: 1000, seed: 5
+  };
+  const foxifyKeeps95 = await runFoxifyDurationMc({ ...cfg, atticusSplitPct: 0.95 });
+  const foxifyKeeps50 = await runFoxifyDurationMc({ ...cfg, atticusSplitPct: 0.50 });
+  assert.ok(
+    foxifyKeeps95.meanFoxifyNetUsdc > foxifyKeeps50.meanFoxifyNetUsdc,
+    `Foxify keeping 95% should net more than keeping 50% (${foxifyKeeps95.meanFoxifyNetUsdc} vs ${foxifyKeeps50.meanFoxifyNetUsdc})`
+  );
+});

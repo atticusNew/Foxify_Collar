@@ -931,6 +931,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         structures: structuresParam,
         perpFrictionBps,
         perpFundingBpsPerDay,
+        atticusSplitPct: typeof body.atticusSplitPct === "number" ? body.atticusSplitPct
+          : (process.env.SS_ATTICUS_SPLIT_PCT != null ? Number(process.env.SS_ATTICUS_SPLIT_PCT) : undefined),
+        atticusFloorUsdc: typeof body.atticusFloorUsdc === "number" ? body.atticusFloorUsdc
+          : (process.env.SS_ATTICUS_FLOOR_USDC != null ? Number(process.env.SS_ATTICUS_FLOOR_USDC) : undefined),
         liquidChainCache: deps.liquidChainCache,
         dvolService: deps.dvolService,
         currentRegime
