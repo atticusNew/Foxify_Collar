@@ -51,3 +51,18 @@ test("greeks: degenerate inputs never NaN", () => {
   assert.equal(bsCallDelta(80000, 73000, 0, r, 0.5), 1, "ITM call delta at expiry = 1");
   assert.equal(bsPutDelta(70000, 73000, 0, r, 0.5), -1, "ITM put delta at expiry = -1");
 });
+
+test("impliedVolFromPrice: round-trips BS price back to sigma (call & put)", async () => {
+  const { impliedVolFromPrice } = await import("../scripts/backtest/singleSide/coreEngine");
+  const Sx = 73000, Kx = 73000, Tx = 3 / 365, rx = 0.045;
+  for (const sig of [0.20, 0.45, 0.80, 1.20]) {
+    const cPrice = bsCall(Sx, Kx, Tx, rx, sig);
+    const pPrice = bsPut(Sx, Kx, Tx, rx, sig);
+    const cIv = impliedVolFromPrice(cPrice, Sx, Kx, Tx, rx, "call")!;
+    const pIv = impliedVolFromPrice(pPrice, Sx, Kx, Tx, rx, "put")!;
+    assert.ok(Math.abs(cIv - sig) < 1e-3, `call IV ${cIv} ~ ${sig}`);
+    assert.ok(Math.abs(pIv - sig) < 1e-3, `put IV ${pIv} ~ ${sig}`);
+  }
+  assert.equal(impliedVolFromPrice(0, Sx, Kx, Tx, rx, "call"), null, "zero price -> null");
+  assert.equal(impliedVolFromPrice(100, Sx, Kx, 0, rx, "call"), null, "T=0 -> null");
+});

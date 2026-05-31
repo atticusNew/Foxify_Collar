@@ -107,6 +107,37 @@ export const bsPutTheta = (S: number, K: number, T: number, r: number, sigma: nu
   return -(S * nPDF(d1) * sigma) / (2 * Math.sqrt(T)) + r * K * Math.exp(-r * T) * nCDF(-d2);
 };
 
+/**
+ * Implied volatility backed out of a REAL option price via bisection. BS price
+ * is monotonically increasing in sigma, so bisection is robust. Returns null
+ * for degenerate inputs. Used by the gamma-scalp sweep to source the IMPLIED
+ * vol of a real venue quote (works for any venue — derives IV from the real
+ * price itself, no markIv dependency, no synthetic assumption).
+ */
+export const impliedVolFromPrice = (
+  price: number, S: number, K: number, T: number, r: number, optType: "put" | "call",
+  opts?: { lo?: number; hi?: number; tol?: number; maxIter?: number }
+): number | null => {
+  if (!(price > 0) || T <= 0 || S <= 0 || K <= 0) return null;
+  let lo = opts?.lo ?? 0.001;
+  let hi = opts?.hi ?? 5.0;
+  const tol = opts?.tol ?? 1e-4;
+  const maxIter = opts?.maxIter ?? 128;
+  const f = (sig: number): number =>
+    (optType === "put" ? bsPut(S, K, T, r, sig) : bsCall(S, K, T, r, sig)) - price;
+  const flo = f(lo);
+  const fhi = f(hi);
+  if (flo > 0) return lo;   // price below min-vol value → clamp to floor
+  if (fhi < 0) return hi;   // price above max-vol value → clamp to cap
+  for (let i = 0; i < maxIter; i++) {
+    const mid = (lo + hi) / 2;
+    const fm = f(mid);
+    if (Math.abs(fm) < tol * Math.max(1, price)) return mid;
+    if (fm > 0) hi = mid; else lo = mid;
+  }
+  return (lo + hi) / 2;
+};
+
 const RFR = 0.045;
 
 // ──────────────────────── Types ────────────────────────
