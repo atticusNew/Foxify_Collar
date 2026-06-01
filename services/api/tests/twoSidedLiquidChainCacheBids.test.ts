@@ -180,6 +180,27 @@ test("getBidForLeg: prefers venue match before tenor when both reasonable", asyn
   assert.equal(r.bidUsdcPerBtc, 150);
 });
 
+test("getBidForLeg: CLOSE-PATH contract — values on the HELD venue, not the partner", async () => {
+  // The close/expiry/TP paths (shadowAutoTpHandler, expiryHandler) pass
+  // preferVenue = the venue the leg is actually held on, so we value/sell each
+  // leg on the venue we own it. This is DIFFERENT from the chain-probe display,
+  // which passes preferVenue:'bullish' purely to surface "what would Bullish give
+  // us here" — that probe choice is NOT the binding close logic. This test locks
+  // the distinction (the source of an earlier "why did it pick Bullish's lower
+  // bid?" confusion).
+  const cache = buildCacheWithSnapshot();
+  await cache.getChain();
+  // Deribit-held leg → values at Deribit's 37h bid (177), even though a same-tenor
+  // Bullish quote (bid 150) exists.
+  const held = cache.getBidForLeg({ strike: 73000, optType: "put", tenorRemainingHours: 37, preferVenue: "deribit" });
+  assert.ok(held);
+  assert.equal(held.venue, "deribit");
+  assert.equal(held.bidUsdcPerBtc, 177, "held-on-deribit leg values at Deribit's bid");
+  // The probe's partner view (preferVenue:'bullish') is a display choice → shows Bullish.
+  const probeView = cache.getBidForLeg({ strike: 73000, optType: "put", tenorRemainingHours: 37, preferVenue: "bullish" });
+  assert.equal(probeView?.venue, "bullish", "probe's bullish-preference is display-only, not the close decision");
+});
+
 test("getBidForLeg: filters out zero-bid candidates", async () => {
   const cache = new LiquidChainCache({
     fetcher: async () => ({

@@ -227,6 +227,19 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
   }
 };
 
+/**
+ * Calm LOSS-LEADER cells, in preference order (PRIMARY first). The shadow
+ * auto-loop and the should_activate signal use this ordered list when calm
+ * loss-leader mode is on: it tries the PRIMARY (2d, breakeven DVOL ~45) first
+ * and falls through to the cheaper 1d if the 2d's premium exceeds the per-pair
+ * budget (SS_TWO_SIDED_CALM_MAX_LOSS_USDC). Both are 5%-OTM 25k strangles whose
+ * hedge legs route to Deribit (Bullish has no resting book at the OTM wings).
+ */
+export const CALM_LOSS_LEADER_CELLS: ReadonlyArray<string> = [
+  "pair_25k_5otm_strangle_2d",
+  "pair_25k_5otm_strangle_1d"
+];
+
 /** Pick put + call strikes for the given spot, snapping to grid. */
 export const computeStrikes = (cell: TwoSidedCell, spotUsdc: number): { putStrike: number; callStrike: number } => {
   // TRUE ATM straddle (both legs 0% ITM): snap BOTH legs to the SAME nearest grid

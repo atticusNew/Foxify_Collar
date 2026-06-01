@@ -67,10 +67,16 @@ export const isCalmShadowAllowed = (): boolean =>
 export const isCalmLossLeaderEnabled = (): boolean =>
   String(process.env.SS_TWO_SIDED_CALM_LOSS_LEADER ?? "false").toLowerCase() === "true";
 
-/** Per-pair max acceptable calm loss-leader cost (USDC). Default 25. */
+/**
+ * Per-pair max acceptable calm loss-leader cost (USDC). Default 55 — sized to
+ * admit BOTH wired loss-leader cells at current vol: the 2d primary (~$52
+ * premium, breakeven DVOL ~45) and the cheaper 1d (~$18). Lower it to ~$45 for
+ * a 1d-only deep-calm posture, or raise it to widen the budget. Override via
+ * SS_TWO_SIDED_CALM_MAX_LOSS_USDC on the deploy.
+ */
 export const calmMaxLossUsdc = (): number => {
-  const v = Number(process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC ?? "25");
-  return Number.isFinite(v) && v >= 0 ? v : 25;
+  const v = Number(process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC ?? "55");
+  return Number.isFinite(v) && v >= 0 ? v : 55;
 };
 
 export type ActivateRequest = {

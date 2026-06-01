@@ -137,12 +137,12 @@ const withLossLeader = async (enabled: boolean, maxLoss: string | undefined, fn:
   }
 };
 
-test("isCalmLossLeaderEnabled default false; calmMaxLossUsdc default 25", () => {
+test("isCalmLossLeaderEnabled default false; calmMaxLossUsdc default 55 (admits 2d primary + 1d)", () => {
   const prev = process.env.SS_TWO_SIDED_CALM_LOSS_LEADER, prevM = process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC;
   try {
     delete process.env.SS_TWO_SIDED_CALM_LOSS_LEADER; delete process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC;
     assert.equal(isCalmLossLeaderEnabled(), false);
-    assert.equal(calmMaxLossUsdc(), 25);
+    assert.equal(calmMaxLossUsdc(), 55);
     process.env.SS_TWO_SIDED_CALM_LOSS_LEADER = "true"; process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC = "40";
     assert.equal(isCalmLossLeaderEnabled(), true);
     assert.equal(calmMaxLossUsdc(), 40);

@@ -24,10 +24,10 @@
 
 import { randomBytes } from "node:crypto";
 import type { Pool } from "pg";
-import { handleActivate, isCalmShadowAllowed, type ActivateDeps } from "./activateHandler";
+import { handleActivate, isCalmShadowAllowed, isCalmLossLeaderEnabled, calmMaxLossUsdc, type ActivateDeps } from "./activateHandler";
 import { computeActivationGate } from "./activationGate";
 import { getEffectiveAllowlist } from "./cellAllowlist";
-import { PHASE_0_CELLS } from "./cellConfig";
+import { CALM_LOSS_LEADER_CELLS, PHASE_0_CELLS } from "./cellConfig";
 import type { DvolService } from "./dvolService";
 import type { FeedService } from "./feedService";
 import { computeConsecutiveGoodSeconds, recordGateSnapshot } from "./gateHistory";
@@ -265,6 +265,151 @@ export type TickResult = {
   signal_tier: string;
 };
 
+type AuditBase = Pick<
+  AuditRow,
+  "good_to_activate" | "signal_tier" | "signal_score" | "vrp" | "regime" | "dvol" | "consecutive_good_seconds" | "recommended_cells"
+>;
+
+/**
+ * CALM LOSS-LEADER auto-fire (Phase 3 wiring). Independent of the profit signal:
+ * when the market is calm AND loss-leader mode is on (SS_TWO_SIDED_CALM_LOSS_LEADER),
+ * autonomously fire a budget-eligible loss-leader cell to generate (shadow) volume
+ * at a known, capped cost. Tries the cells in CALM_LOSS_LEADER_CELLS order (2d
+ * primary → 1d) and falls through to the cheaper cell when the pricier one's premium
+ * exceeds the per-pair budget. The activate handler enforces the budget itself — we
+ * pass getCurrentRegime=calm so its calm gate + allowlist + budget checks all run.
+ *
+ * Respects: calm-shadow suppression, the daily cap, and the rate-limit window —
+ * the same operational discipline the signal-driven path uses.
+ */
+const fireCalmLossLeaderTick = async (
+  deps: TickDeps,
+  auditBase: AuditBase,
+  now: number
+): Promise<TickResult> => {
+  const { pool, config } = deps;
+  const llDetail = { source: "calm_loss_leader", budget_usdc: calmMaxLossUsdc() };
+
+  // Respect explicit calm-shadow suppression.
+  if (!isCalmShadowAllowed()) {
+    const decision = "skipped:calm_disabled";
+    const auditId = await insertAuditRow(pool, {
+      ...auditBase, decision, chosen_cell_id: null, pair_id: null,
+      details: { ...llDetail, reason: "calm_shadow_suppressed" }
+    });
+    return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: auditBase.signal_tier };
+  }
+
+  // Daily cap.
+  const dailyCount = await countActivationsToday(pool, now);
+  if (dailyCount >= config.maxPerDay) {
+    const decision = "skipped:daily_cap";
+    const auditId = await insertAuditRow(pool, {
+      ...auditBase, decision, chosen_cell_id: null, pair_id: null,
+      details: { ...llDetail, activations_today: dailyCount, max_per_day: config.maxPerDay }
+    });
+    return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: auditBase.signal_tier };
+  }
+
+  // Rate-limit window (calm has no "consecutive good" anchor → fixed 5-min lookback).
+  const recentCount = await countActivationsInCurrentWindow(pool, 300, now);
+  if (recentCount >= config.maxPerGoodWindow) {
+    const decision = "skipped:rate_limit";
+    const auditId = await insertAuditRow(pool, {
+      ...auditBase, decision, chosen_cell_id: null, pair_id: null,
+      details: { ...llDetail, recent_activations: recentCount, max_per_window: config.maxPerGoodWindow, window_seconds: 300 }
+    });
+    return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: auditBase.signal_tier };
+  }
+
+  // Candidate cells: the ordered loss-leader list ∩ enabled ∩ trigger-ok ∩ calm allowlist.
+  const allowlist = await getEffectiveAllowlist(pool, "calm");
+  const candidates = CALM_LOSS_LEADER_CELLS.filter((id) => {
+    const cell = PHASE_0_CELLS[id];
+    return Boolean(
+      cell && cell.enabled &&
+      cell.triggerPctDown <= config.maxCellTriggerPct &&
+      cell.triggerPctUp <= config.maxCellTriggerPct &&
+      allowlist.includes(id)
+    );
+  });
+  if (candidates.length === 0) {
+    const decision = "skipped:loss_leader_no_cell";
+    const auditId = await insertAuditRow(pool, {
+      ...auditBase, decision, chosen_cell_id: null, pair_id: null,
+      details: { ...llDetail, reason: "no enabled loss-leader cell in calm allowlist", loss_leader_cells: CALM_LOSS_LEADER_CELLS, allowlist }
+    });
+    return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: auditBase.signal_tier };
+  }
+
+  // Build activate deps with getCurrentRegime FORCED to calm so the handler runs its
+  // calm gate + allowlist + per-pair budget checks (the budget is the whole point).
+  const shadowExecutor = new ShadowStrangleExecutor();
+  const baseDeps: ActivateDeps = deps.activateDepsOverride
+    ? deps.activateDepsOverride(shadowExecutor)
+    : {
+        pool,
+        anchorProvider: deps.anchorProvider,
+        executor: shadowExecutor,
+        getFeed: () => deps.feedService.getCurrentFeed(),
+        feedVersion: "v1.0.0",
+        nowMs: () => now,
+        liquidChainCache: deps.liquidChainCache
+      };
+  const activateDeps: ActivateDeps = { ...baseDeps, getCurrentRegime: () => "calm" };
+
+  // Try each candidate in order; fall through when the premium exceeds budget.
+  let lastFailure: { cell_id: string; status: number; body: unknown } | null = null;
+  for (const cellId of candidates) {
+    const foxifyPairRef = `auto-lossleader-${Date.now()}-${randomBytes(4).toString("hex")}`;
+    try {
+      const result = await handleActivate(
+        {
+          cellId,
+          maxAcceptableHedgeCostUsdc: config.maxShadowCostUsdc,
+          foxifyPairRef,
+          isShadow: true,
+          regimeAtActivationOverride: "calm",
+          metadata: {
+            source: "calm_loss_leader",
+            loss_leader: true,
+            budget_usdc: calmMaxLossUsdc(),
+            regime: "calm"
+          }
+        },
+        activateDeps
+      );
+      if (result.status === 201) {
+        const decision = "activated";
+        const auditId = await insertAuditRow(pool, {
+          ...auditBase, decision, chosen_cell_id: cellId, pair_id: result.body.pair_id,
+          details: {
+            ...llDetail, loss_leader: true, foxify_pair_ref: foxifyPairRef,
+            hedge_cost_usdc: result.body.total_hedge_cost_usdc,
+            spot_at_activation: result.body.spot_at_activation,
+            expires_at: result.body.expires_at
+          }
+        });
+        return { audit_id: auditId, decision, pair_id: result.body.pair_id, chosen_cell_id: cellId, signal_tier: auditBase.signal_tier };
+      }
+      // Non-201 (e.g. premium > budget) → remember and try the next (cheaper) cell.
+      lastFailure = { cell_id: cellId, status: result.status, body: result.body };
+    } catch (err) {
+      lastFailure = { cell_id: cellId, status: 0, body: { error: (err as Error).message?.slice(0, 300) ?? String(err) } };
+    }
+  }
+
+  // No candidate fit the budget / all failed.
+  const overBudget = lastFailure != null && typeof lastFailure.body === "object" && lastFailure.body !== null &&
+    (lastFailure.body as { error?: string }).error === "calm_loss_exceeds_budget";
+  const decision = overBudget ? "skipped:loss_leader_over_budget" : "skipped:loss_leader_failed";
+  const auditId = await insertAuditRow(pool, {
+    ...auditBase, decision, chosen_cell_id: lastFailure?.cell_id ?? null, pair_id: null,
+    details: { ...llDetail, candidates, last_failure: lastFailure }
+  });
+  return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: lastFailure?.cell_id ?? null, signal_tier: auditBase.signal_tier };
+};
+
 export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> => {
   const now = (deps.nowMs ?? Date.now)();
   const { pool, config } = deps;
@@ -316,6 +461,14 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
       }
     });
     return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
+  }
+
+  // CALM LOSS-LEADER branch — independent of the profit signal. In calm, the
+  // profit signal always stands down (good_to_activate=false, recommended_cells=[]),
+  // so the normal path can never fire. When loss-leader mode is enabled, fire a
+  // budget-eligible loss-leader cell here instead (capped volume at a known cost).
+  if (gate.regime === "calm" && isCalmLossLeaderEnabled()) {
+    return await fireCalmLossLeaderTick(deps, auditBase, now);
   }
 
   // Policy gate — determine whether THIS tick should attempt activation.
