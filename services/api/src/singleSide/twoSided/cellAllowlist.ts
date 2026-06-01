@@ -42,11 +42,20 @@ import type { Regime } from "./featureFlag";
  * Operator may re-enable any cell via /admin/foxify/v2/cell-allowlist.
  */
 export const DEFAULT_CELL_ALLOWLIST: Record<Regime, ReadonlyArray<string>> = {
-  // calm stays empty — validated stand-down. Confirmed 2026-05-31: no structure is
-  // profitable in calm — long (theta+friction) AND short premium (iron-condor probe:
-  // negative EV, WORSENS with size: -$71@50k → -$131@100k → -$302@150k, 0% profitable
-  // at 150k). Enforced hard by SS_TWO_SIDED_ALLOW_CALM=false (see activateHandler).
-  calm: [],
+  // calm = validated stand-down. No structure is profitable in calm — long
+  // (theta+friction) AND short premium (iron-condor probe: negative EV, WORSENS
+  // with size: -$71@50k → -$131@100k → -$302@150k, 0% profitable at 150k).
+  //
+  // The two entries below are the CALM LOSS-LEADER cells (cheap 5%-OTM 25k
+  // strangles, breakeven-ladder 2026-06-01) for the CEO-controlled budgeted
+  // volume mode. Their presence here does NOT relax the stand-down: calm
+  // activation is still hard-gated in activateHandler — calm fires require
+  // loss-leader mode (SS_TWO_SIDED_CALM_LOSS_LEADER=true) AND premium
+  // <= SS_TWO_SIDED_CALM_MAX_LOSS_USDC, OR a blanket SS_TWO_SIDED_ALLOW_CALM=true
+  // override. With both flags off (default) the allowlist is never consulted for
+  // calm. pair_25k_5otm_strangle_2d is the PRIMARY (breakeven ~42.6); the 1d is
+  // the cheapest deep-calm option (breakeven ~50).
+  calm: ["pair_25k_5otm_strangle_2d", "pair_25k_5otm_strangle_1d"],
   // pair_150k_3pct_atm_3d = empirical sweep winner (ATM straddle, ~$224–247 net,
   // ~98–99% profitable). pair_50k_3pct_atm_3d = capital-light ATM. pair_25k_5pct_otm_3d
   // = lowest-premium (live-test) cell + redesign-sweep moderate winner. pair_50k_5pct_otm

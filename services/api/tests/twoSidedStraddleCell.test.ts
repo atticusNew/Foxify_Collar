@@ -54,5 +54,12 @@ test("allowlist: straddle cell enabled in moderate/elevated/stress, NOT calm", (
   for (const r of ["moderate", "elevated", "stress"] as const) {
     assert.equal(isCellAllowedInRegimeDefault(CELL, r), true, `allowed in ${r}`);
   }
-  assert.deepEqual(DEFAULT_CELL_ALLOWLIST.calm, [], "calm allowlist stays empty");
+  // calm holds only the budgeted loss-leader cells now (still hard-gated); the
+  // profit-seeking straddle is never calm-allowed.
+  assert.deepEqual(
+    [...DEFAULT_CELL_ALLOWLIST.calm].sort(),
+    ["pair_25k_5otm_strangle_1d", "pair_25k_5otm_strangle_2d"],
+    "calm allowlist = loss-leader cells only"
+  );
+  assert.ok(!DEFAULT_CELL_ALLOWLIST.calm.includes(CELL), "straddle cell not in calm");
 });

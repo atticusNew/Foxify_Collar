@@ -187,6 +187,43 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     callStrikeItmPct: 0,
     strikeGridUsdc: 1_000,
     enabled: true
+  },
+  /**
+   * CALM LOSS-LEADER cells (breakeven-ladder 2026-06-01, REAL-tier). Cheap 5%-OTM
+   * 25k strangles for the budgeted calm volume mode (SS_TWO_SIDED_CALM_LOSS_LEADER).
+   * They are calm-allowlisted but STILL hard-gated: calm activation requires
+   * loss-leader mode AND premium <= SS_TWO_SIDED_CALM_MAX_LOSS_USDC (calm stands
+   * down by default). Strikes: putStrikeItmPct/callStrikeItmPct = -0.05 → put 5%
+   * BELOW spot + call 5% ABOVE spot (true OTM strangle, per computeStrikes).
+   *
+   * 2d (PRIMARY): cost ~$40, ~−$27 loss/pair in calm, breakeven DVOL ~42.6
+   * (flips just past the calm→moderate line), ramps to +$145 at DVOL 60.
+   * 1d: cheapest deep-calm volume (cost ~$12.50, ~−$12/pair loss), breakeven
+   * DVOL ~50 — only profitable once vol is solidly moderate.
+   */
+  pair_25k_5otm_strangle_2d: {
+    cellId: "pair_25k_5otm_strangle_2d",
+    notionalUsdcPerLeg: 25_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 0.34,
+    hedgeTenorDays: 2,
+    putStrikeItmPct: -0.05,
+    callStrikeItmPct: -0.05,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  pair_25k_5otm_strangle_1d: {
+    cellId: "pair_25k_5otm_strangle_1d",
+    notionalUsdcPerLeg: 25_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 0.34,
+    hedgeTenorDays: 1,
+    putStrikeItmPct: -0.05,
+    callStrikeItmPct: -0.05,
+    strikeGridUsdc: 1_000,
+    enabled: true
   }
 };
 

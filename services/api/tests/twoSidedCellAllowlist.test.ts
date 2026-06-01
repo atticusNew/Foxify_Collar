@@ -1,7 +1,8 @@
 /**
  * PR C3 tests — cell allowlist + multi-cell registry.
  * Updated 2026-05-28 to reflect V3 multi-tenor sweep findings:
- *   - calm default is empty (no cell profitable; operator must override)
+ *   - calm default holds ONLY the budgeted loss-leader cells (2026-06-01); all
+ *     profit-seeking cells require an operator override to run in calm
  *   - pair_50k_2pct, pair_100k_3pct_itm_short, pair_25k_1pct_atm_micro removed
  *     from all defaults (V3 proves them loss-making in every regime)
  *   - pair_25k_5pct_otm_3d added as moderate winner (+$252/pair MC EV)
@@ -37,8 +38,19 @@ test("PHASE_0_CELLS registry contains all known cells including the new 3d winne
   assert.ok(cellIds.length >= 7);
 });
 
-test("DEFAULT_CELL_ALLOWLIST: calm is intentionally EMPTY (no cell profitable per V3)", () => {
-  assert.equal(DEFAULT_CELL_ALLOWLIST.calm.length, 0, "operator must consciously override to activate in calm");
+test("DEFAULT_CELL_ALLOWLIST: calm holds ONLY the budgeted loss-leader cells (still hard-gated)", () => {
+  // calm is no longer empty: it carries the two cheap 5%-OTM 25k loss-leader
+  // strangles for the CEO-controlled budgeted volume mode. Their presence does
+  // NOT relax stand-down — calm activation is still hard-gated in activateHandler
+  // (requires SS_TWO_SIDED_CALM_LOSS_LEADER + budget, or blanket SS_TWO_SIDED_ALLOW_CALM).
+  assert.deepEqual(
+    [...DEFAULT_CELL_ALLOWLIST.calm].sort(),
+    ["pair_25k_5otm_strangle_1d", "pair_25k_5otm_strangle_2d"],
+    "calm default = exactly the two loss-leader cells"
+  );
+  // No profit-seeking / normal cell may sneak into calm defaults.
+  assert.ok(!DEFAULT_CELL_ALLOWLIST.calm.includes("pair_50k_2pct"));
+  assert.ok(!DEFAULT_CELL_ALLOWLIST.calm.includes("pair_150k_3pct_atm_3d"));
 });
 
 test("DEFAULT_CELL_ALLOWLIST: moderate/elevated/stress have at least 1 cell", () => {
@@ -85,11 +97,19 @@ test("isCellAllowedInRegimeDefault: pair_50k_2pct deprecated — NOT in any defa
   }
 });
 
-test("isCellAllowedInRegime (DB): respects empty calm default", async () => {
+test("isCellAllowedInRegime (DB): calm default = loss-leader cells only; non-loss-leader cell not allowed", async () => {
   const pool = await buildPool();
+  // A normal moderate cell is NOT calm-allowed by default...
   const r = await isCellAllowedInRegime(pool, "pair_25k_5pct_otm_3d", "calm");
   assert.equal(r.allowed, false);
-  assert.equal(r.suggestedCells.length, 0);
+  assert.deepEqual(
+    [...r.suggestedCells].sort(),
+    ["pair_25k_5otm_strangle_1d", "pair_25k_5otm_strangle_2d"],
+    "calm suggested cells = the loss-leader pair"
+  );
+  // ...but the loss-leader cells ARE on the calm allowlist (gate enforces budget).
+  const ll = await isCellAllowedInRegime(pool, "pair_25k_5otm_strangle_2d", "calm");
+  assert.equal(ll.allowed, true);
 });
 
 test("setCellOverride: operator can enable a cell in calm (override empty default)", async () => {

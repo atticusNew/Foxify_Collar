@@ -64,25 +64,38 @@ const buildShipRig = async () => {
   };
 };
 
-test("ship readiness: cells allowed in calm/moderate activate (DVOL halt blocks elevated/stress)", async () => {
+test("ship readiness: moderate cells activate; calm stands down by default (DVOL halt blocks elevated/stress)", async () => {
   // DVOL halt at >60 blocks elevated/stress. This is correct production behavior
   // until operator relaxes the threshold based on Wave C5 live validation.
   const { app, setRegime, cleanup } = await buildShipRig();
   try {
-    const results: Array<{ regime: Regime; cellId: string; status: number }> = [];
-    for (const regime of ["calm", "moderate"] as Regime[]) {
-      await setRegime(regime);
-      for (const cellId of DEFAULT_CELL_ALLOWLIST[regime]) {
-        const r = await app.inject({
-          method: "POST", url: "/foxify/v2/activate",
-          headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
-          payload: { cellId, maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-${regime}-${cellId}-${Date.now()}-${Math.random()}` }
-        });
-        results.push({ regime, cellId, status: r.statusCode });
-      }
+    // Moderate: every allowlisted cell must activate (201).
+    await setRegime("moderate");
+    const modFailures: Array<{ cellId: string; status: number }> = [];
+    for (const cellId of DEFAULT_CELL_ALLOWLIST.moderate) {
+      const r = await app.inject({
+        method: "POST", url: "/foxify/v2/activate",
+        headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
+        payload: { cellId, maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-moderate-${cellId}-${Date.now()}-${Math.random()}` }
+      });
+      if (r.statusCode !== 201) modFailures.push({ cellId, status: r.statusCode });
     }
-    const failures = results.filter((x) => x.status !== 201);
-    assert.equal(failures.length, 0, `Calm/moderate failures: ${JSON.stringify(failures)}`);
+    assert.equal(modFailures.length, 0, `Moderate failures: ${JSON.stringify(modFailures)}`);
+
+    // Calm: the allowlist now holds the budgeted loss-leader cells, but calm is a
+    // hard stand-down by DEFAULT (no SS_TWO_SIDED_ALLOW_CALM / SS_TWO_SIDED_CALM_LOSS_LEADER
+    // in this rig) — every calm cell must be blocked with calm_regime_disabled.
+    await setRegime("calm");
+    assert.ok(DEFAULT_CELL_ALLOWLIST.calm.length > 0, "calm holds loss-leader cells");
+    for (const cellId of DEFAULT_CELL_ALLOWLIST.calm) {
+      const r = await app.inject({
+        method: "POST", url: "/foxify/v2/activate",
+        headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
+        payload: { cellId, maxAcceptableHedgeCostUsdc: 20_000, foxifyPairRef: `fxy-calm-${cellId}-${Date.now()}-${Math.random()}` }
+      });
+      assert.equal(r.statusCode, 503, `calm cell ${cellId} must stand down by default`);
+      assert.equal(r.json().error, "calm_regime_disabled", `calm cell ${cellId} → calm_regime_disabled`);
+    }
   } finally { await cleanup(); }
 });
 
