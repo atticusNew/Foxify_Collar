@@ -129,6 +129,27 @@ Everything else has sensible defaults you usually don't need to think about.
 | `FOXIFY_PERP_FRICTION_BPS` | (unset) | REAL perp round-trip friction (bps) for `straddle_gamma_scalp` sweep cells. Required (no hardcoded default) when sweeping gamma-scalp; from the venue fee schedule. |
 | `FOXIFY_PERP_FUNDING_BPS_PER_DAY` | `0` | Optional perp funding (bps/day) on held hedge notional for gamma-scalp cells. |
 | `FOXIFY_PERP_FRICTION_USDC` | `0` | Perp-pair round-trip friction (USDC) a cell's option net must COVER; ranked cells report `covers_friction` against this. Set to the real ~$200–300 for an honest read. |
+| `SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC` | (unset = no cap) | LIVE capital-at-risk ceiling: blocks a live activation if currently-deployed hedge cost + this pair's hedge cost would exceed the cap. Leave unset during shadow; set when sizing up to 150k–175k pairs (see capital note below). |
+| `BULLISH_RATE_LIMIT_BACKOFF_MS` | `60000` | Cool-off after a Bullish HTTP 429: chain serves Deribit-only for this long before retrying Bullish. Widen (e.g. `300000`) if 429s persist on the public endpoint, to avoid compounding rate limits until authed `registered.` access lands. |
+
+### Capital requirements for the moderate straddle winner (sizing-up note)
+
+The empirical sweep winner `pair_150k_3pct_atm_3d` (150k ATM straddle, 3d) costs
+**≈ $3.7k per pair** at ~$73.5k spot (175k ≈ **$4.3k/pair**). With the 1.5×
+capital-pool headroom factor, budget per concurrent pair:
+
+| Cell | Hedge cost/pair | + 1.5× headroom | Net (est.) | Covers $250 friction? |
+|---|---|---|---|---|
+| pair_50k_3pct_atm_3d (capital-light) | ~$1.27k | ~$1.9k | ~$85 | No (volume only) |
+| pair_100k_3pct_atm_3d-equiv | ~$2.45k | ~$3.7k | ~$164 | No (close) |
+| **pair_150k_3pct_atm_3d (winner)** | **~$3.7k** | **~$5.5k** | **~$224–247** | **~breakeven** |
+| ~175k (scale-up target) | ~$4.3k | ~$6.4k | ~$255+ | Yes, with margin |
+
+For exact, live-priced budget-to-concurrency, call
+`POST /admin/foxify/v2/scaling-projection` with `{"cell_id":"pair_150k_3pct_atm_3d","regime":"moderate","budget_usdc":<B>}`
+and read `cost_per_pair_usdc` + `budget_to_reach_concurrent`. **Initial capital is
+not required to launch** (moderate auto-accrual runs in shadow); set
+`SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC` to your funded ceiling only when flipping live.
 
 ---
 
