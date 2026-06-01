@@ -1133,7 +1133,12 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * drawdown over N days, recycling profits (no split), with LIVE pricing + the
    * MC's real net distribution (p5/median/p95).
    * Body: { cell_id, regime?, budget_usdc, days?=30, cycle_days?, market_availability?,
-   *         max_concurrent?, n_runs?, spot? }
+   *         max_concurrent?, n_runs?, spot?,
+   *         realized_mode? ('off'|'blend'|'replace', default env/blend),
+   *         min_validated_settlements? (default env/20) }
+   * Once a cell has >= N regime-tagged validated shadow settlements, the net
+   * distribution shifts from MC (estimate) toward the REAL realized one
+   * (response: net_source, blend_weight, realized_n, realized_mean_net_usdc).
    */
   app.post<{ Body?: Record<string, unknown> }>(
     "/admin/foxify/v2/scaling-projection",
@@ -1151,12 +1156,20 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const regime = (typeof b.regime === "string" && validRegimes.includes(b.regime) ? b.regime : "moderate") as "calm" | "moderate" | "elevated" | "stress";
       const budgetUsdc = num(b.budget_usdc);
       if (!budgetUsdc || budgetUsdc <= 0) { reply.code(400).send({ error: "invalid_request", message: "budget_usdc (positive number) required" }); return; }
+      // Realized-net wiring controls (Deliverable 1). Default to env/blend when omitted.
+      const validModes = ["off", "blend", "replace"];
+      const realizedMode = (typeof b.realized_mode === "string" && validModes.includes(b.realized_mode))
+        ? (b.realized_mode as "off" | "blend" | "replace") : undefined;
+      if (b.realized_mode !== undefined && realizedMode === undefined) {
+        reply.code(400).send({ error: "invalid_request", message: "realized_mode must be 'off' | 'blend' | 'replace'" }); return;
+      }
       try {
         const result = await projectScaling(deps.pool, {
           cellId, regime, budgetUsdc, spot,
           liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
           days: num(b.days), cycleDays: num(b.cycle_days), marketAvailability: num(b.market_availability),
-          maxConcurrent: num(b.max_concurrent), nRuns: num(b.n_runs)
+          maxConcurrent: num(b.max_concurrent), nRuns: num(b.n_runs),
+          realizedMode, minValidatedSettlements: num(b.min_validated_settlements)
         });
         reply.send(result);
       } catch (e) {
