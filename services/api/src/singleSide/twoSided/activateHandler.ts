@@ -36,6 +36,16 @@ import type { StrangleExecutor } from "./executor";
 import type { AggregatedFeed } from "./feedAggregator";
 import { getMetrics, METRIC_NAMES } from "./metrics";
 
+/**
+ * Calm is a VALIDATED permanent stand-down (2026-05-31): no option structure is
+ * profitable in calm — long (theta + friction beat appreciation) AND short premium
+ * (iron-condor probe: negative EV that WORSENS with size, 0% profitable at 150k).
+ * Activation in calm is therefore hard-disabled by default. Escape hatch for
+ * deliberate research/loss-leader volume only: SS_TWO_SIDED_ALLOW_CALM=true.
+ */
+export const isCalmActivationAllowed = (): boolean =>
+  String(process.env.SS_TWO_SIDED_ALLOW_CALM ?? "false").toLowerCase() === "true";
+
 export type ActivateRequest = {
   cellId: string;
   maxAcceptableHedgeCostUsdc: number;
@@ -173,6 +183,21 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   // Determine current regime from DVOL (if available via injected callback)
   if (deps.getCurrentRegime) {
     const regime = deps.getCurrentRegime();
+    // CALM HARD-DISABLE: block BEFORE the allowlist/override lookup so that a DB
+    // override (setCellOverride) cannot silently re-enable calm. This is the
+    // provable "calm never activates" guarantee (default ON; env to override).
+    if (regime === "calm" && !isCalmActivationAllowed()) {
+      getMetrics().incrementCounter(METRIC_NAMES.ACTIVATIONS_BLOCKED_TOTAL, { reason: "calm_regime_disabled" });
+      return {
+        status: 503,
+        body: {
+          error: "calm_regime_disabled",
+          message: "Activation is hard-disabled in calm regime (validated permanent stand-down — no structure profitable). Set SS_TWO_SIDED_ALLOW_CALM=true only for deliberate loss-leader volume.",
+          retry_after_s: 0,
+          details: { regime, cell_id: cell.cellId }
+        }
+      };
+    }
     if (regime) {
       const { isCellAllowedInRegime } = await import("./cellAllowlist");
       const check = await isCellAllowedInRegime(deps.pool, cell.cellId, regime);
