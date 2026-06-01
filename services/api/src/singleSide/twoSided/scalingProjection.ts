@@ -68,6 +68,8 @@ export type ScalingProjectionResult = {
   cost_per_pair_usdc: number;
   per_pair_perp_notional_usdc: number;
   cycle_days: number;
+  /** Where cycle_days came from: explicit override, real settlements, MC ticks, or tenor. */
+  cycle_days_source: "explicit" | "realized_settlements" | "mc_ticks" | "tenor";
   market_availability: number;
   max_concurrent_cap: number | null;
   mc_mean_net_usdc: number;
@@ -163,13 +165,16 @@ export const projectScaling = async (
   const realizedMode: ProjectionRealizedMode = opts.realizedMode ?? DEFAULT_REALIZED_MODE;
   const minValidated = Math.max(1, opts.minValidatedSettlements ?? DEFAULT_MIN_VALIDATED_SETTLEMENTS);
   let realizedNets: number[] = [];
+  let realizedDurationsDays: number[] = [];
   if (realizedMode !== "off") {
     try {
       const realizedRes = await getRealizedShadowStats(pool, { regime, returnSamples: true });
       const cellStats = realizedRes.stats.find((s) => s.cellId === opts.cellId);
       realizedNets = cellStats?.nets ?? [];
+      realizedDurationsDays = cellStats?.durationsDays ?? [];
     } catch {
       realizedNets = []; // realized lookup is best-effort; fall back to MC
+      realizedDurationsDays = [];
     }
   }
   const realizedN = realizedNets.length;
@@ -197,10 +202,26 @@ export const projectScaling = async (
     return mcNets[Math.floor(rng() * mcNets.length)];
   };
 
-  // cycle time: mean ticks to auto-close → days; else tenor (ran to expiry)
-  const cycleDays = opts.cycleDays ?? (mc.meanTicksToAutoClose != null
-    ? Math.max(0.1, (mc.meanTicksToAutoClose * BAR_MINUTES) / (60 * 24))
-    : cell.hedgeTenorDays);
+  // cycle time priority: explicit override → REAL observed settlement duration
+  // (when realized nets are in play) → MC mean ticks-to-auto-close → tenor.
+  // Using the observed hold duration once validated settlements exist makes the
+  // recycling cadence (and thus volume/throughput) reflect reality, not the MC.
+  const useRealizedCycle = useRealizedDraw && realizedDurationsDays.length > 0;
+  let cycleDaysSource: "explicit" | "realized_settlements" | "mc_ticks" | "tenor";
+  let cycleDays: number;
+  if (opts.cycleDays != null) {
+    cycleDays = opts.cycleDays;
+    cycleDaysSource = "explicit";
+  } else if (useRealizedCycle) {
+    cycleDays = Math.max(0.1, mean(realizedDurationsDays));
+    cycleDaysSource = "realized_settlements";
+  } else if (mc.meanTicksToAutoClose != null) {
+    cycleDays = Math.max(0.1, (mc.meanTicksToAutoClose * BAR_MINUTES) / (60 * 24));
+    cycleDaysSource = "mc_ticks";
+  } else {
+    cycleDays = cell.hedgeTenorDays;
+    cycleDaysSource = "tenor";
+  }
 
   // market availability: fraction of DVOL history in this regime (default 0.67 for moderate)
   let marketAvailability = opts.marketAvailability ?? null;
@@ -269,6 +290,7 @@ export const projectScaling = async (
     cost_per_pair_usdc: +costPerPair.toFixed(2),
     per_pair_perp_notional_usdc: perPairNotional,
     cycle_days: +cycleDays.toFixed(3),
+    cycle_days_source: cycleDaysSource,
     market_availability: +(marketAvailability as number).toFixed(4),
     max_concurrent_cap: Number.isFinite(maxConcurrent) ? maxConcurrent : null,
     mc_mean_net_usdc: +mc.meanFoxifyNetUsdc.toFixed(2),
@@ -295,7 +317,9 @@ export const projectScaling = async (
         : netSource === "blend"
           ? `Net per pair is a BLEND: ${(blendWeight * 100).toFixed(0)}% from ${realizedN} real settlement(s) + ${((1 - blendWeight) * 100).toFixed(0)}% from MC ('${calibration[regime].sigmaSource}'-calibrated). Trust shifts fully to realized at N=${minValidated}. Recycled amount = GROSS option uplift (split=1.0, per spec).`
           : `Net per pair is MC '${calibration[regime].sigmaSource}'-calibrated and (for moderate+) ESTIMATE tier until validated — ${realizedMode === "off" ? "realized-net wiring is OFF" : `accruing realized settlements (${realizedN}/${minValidated} for cell '${opts.cellId}' in '${regime}')`}. Recycled amount = GROSS option uplift (split=1.0, per spec).`,
-      `Cycle time ≈ ${(+cycleDays.toFixed(2))}d from the MC's mean-ticks-to-close (or tenor); measure from real shadow settlement durations to refine.`,
+      cycleDaysSource === "realized_settlements"
+        ? `Cycle time ≈ ${(+cycleDays.toFixed(2))}d from ${realizedDurationsDays.length} REAL observed shadow settlement duration(s) (closed_at − created_at).`
+        : `Cycle time ≈ ${(+cycleDays.toFixed(2))}d from ${cycleDaysSource === "explicit" ? "operator override" : cycleDaysSource === "mc_ticks" ? "the MC's mean-ticks-to-close" : "the hedge tenor"}; refines to real shadow settlement durations once validated settlements accrue.`,
       `Market availability ${(marketAvailability as number * 100).toFixed(0)}% = DVOL-history fraction in '${regime}'.`,
       "Sequential-cycle recycling is a simplification (pairs deploy/close per cycle). Depth/liquidity cap applied only if max_concurrent is set.",
       "Range is p5/median/p95 across MC runs — treat p5/drawdown as the LP buffer, not the median, for budgeting."

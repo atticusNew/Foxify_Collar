@@ -44,15 +44,22 @@ const chain = {
 } as unknown as LiquidChainCache;
 
 let refSeq = 0;
-const insertSettled = async (pool: Pool, cellId: string, cost: number, foxifyShare: number, regime: string | null) => {
+const insertSettled = async (
+  pool: Pool, cellId: string, cost: number, foxifyShare: number, regime: string | null,
+  opts: { durationDays?: number } = {}
+) => {
+  // created_at = now - durationDays, closed_at = now → observed hold = durationDays.
+  const closed = new Date();
+  const created = new Date(closed.getTime() - (opts.durationDays ?? 1) * 86_400_000);
   await pool.query(
     `INSERT INTO two_sided_pair (pair_id, cell_id, status, foxify_pair_ref, spot_at_activation,
        trigger_down_price, trigger_up_price, hedge_tenor_days, expires_at, tp_force_exit_at,
        hedge_cost_total_usdc, foxify_capital_funded_usdc, tier_at_activation, atticus_floor_usdc,
-       is_shadow, regime_at_activation, salvage_proceeds_usdc, foxify_share_usdc, atticus_share_usdc, exit_mode)
+       is_shadow, regime_at_activation, salvage_proceeds_usdc, foxify_share_usdc, atticus_share_usdc, exit_mode,
+       created_at, closed_at)
      VALUES ($1,$2,'settled',$3,73000, 71000,75000,3, NOW(), NOW(),
-       $4,$4,'tier_1',25, TRUE, $5, $6, $6, 0, 'foxify_close')`,
-    [randomUUID(), cellId, `ref-${refSeq++}`, cost, regime, foxifyShare]
+       $4,$4,'tier_1',25, TRUE, $5, $6, $6, 0, 'foxify_close', $7::timestamptz, $8::timestamptz)`,
+    [randomUUID(), cellId, `ref-${refSeq++}`, cost, regime, foxifyShare, created.toISOString(), closed.toISOString()]
   );
 };
 
@@ -141,5 +148,33 @@ test("projectScaling: blend mode with 0<n<N reports partial blend weight", async
   assert.equal(r.realized_n, 5);
   assert.equal(r.blend_weight, 0.25);
   assert.ok(r.caveats.some((c) => c.includes("BLEND")), "caveat reflects blend");
+  await pool.end();
+});
+
+test("projectScaling: cycle-time uses REAL observed settlement duration once realized is in play", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await ensureTwoSidedSchema(pool);
+  await ensureDvolHistorySchema(pool);
+  await ensureChainSnapshotSchema(pool);
+  // 25 settled moderate pairs each held ~1.5 days → observed cycle should be ~1.5d.
+  for (let i = 0; i < 25; i++) await insertSettled(pool, CELL, 2740, 2740 + 500, "moderate", { durationDays: 1.5 });
+  const r = await projectScaling(pool, {
+    cellId: CELL, regime: "moderate", budgetUsdc: 20_000, spot: 73_000,
+    liquidChainCache: chain, days: 30, marketAvailability: 1.0, nRuns: 100, nPaths: 100, seed: 7,
+    realizedMode: "replace", minValidatedSettlements: 20
+  });
+  assert.equal(r.cycle_days_source, "realized_settlements");
+  assert.ok(Math.abs(r.cycle_days - 1.5) < 0.05, `cycle_days ${r.cycle_days} ~ 1.5`);
+  assert.ok(r.caveats.some((c) => c.includes("REAL observed shadow settlement")), "caveat reflects real cycle source");
+
+  // Control: explicit cycle_days override always wins.
+  const r2 = await projectScaling(pool, {
+    cellId: CELL, regime: "moderate", budgetUsdc: 20_000, spot: 73_000,
+    liquidChainCache: chain, days: 30, marketAvailability: 1.0, nRuns: 100, nPaths: 100, seed: 7,
+    realizedMode: "replace", minValidatedSettlements: 20, cycleDays: 2
+  });
+  assert.equal(r2.cycle_days_source, "explicit");
+  assert.equal(r2.cycle_days, 2);
   await pool.end();
 });

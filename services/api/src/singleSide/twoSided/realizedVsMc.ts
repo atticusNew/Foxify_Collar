@@ -44,6 +44,13 @@ export type RealizedCellStats = {
    * small.
    */
   nets?: number[];
+  /**
+   * Per-pair observed hold duration in DAYS (closed_at − created_at), present
+   * ONLY when `returnSamples: true` and both timestamps exist. Lets the scaling
+   * projection use the REAL mean settlement duration as its cycle-time input
+   * once enough validated settlements accrue (instead of the MC tick estimate).
+   */
+  durationsDays?: number[];
 };
 
 export type ReconcileRow = {
@@ -79,14 +86,14 @@ export const getRealizedShadowStats = async (
   pool: Pool | PoolClient,
   opts: { regime?: Regime; returnSamples?: boolean } = {}
 ): Promise<{ stats: RealizedCellStats[]; taggedPairs: number; untaggedPairs: number }> => {
-  const r = await pool.query<{ cell_id: string; hedge_cost_total_usdc: string; foxify_share_usdc: string | null; exit_mode: string | null; regime_at_activation: string | null }>(
-    `SELECT cell_id, hedge_cost_total_usdc, foxify_share_usdc, exit_mode, regime_at_activation
+  const r = await pool.query<{ cell_id: string; hedge_cost_total_usdc: string; foxify_share_usdc: string | null; exit_mode: string | null; regime_at_activation: string | null; created_at: string | null; closed_at: string | null }>(
+    `SELECT cell_id, hedge_cost_total_usdc, foxify_share_usdc, exit_mode, regime_at_activation, created_at, closed_at
      FROM two_sided_pair
      WHERE status = 'settled' AND is_shadow = TRUE AND foxify_share_usdc IS NOT NULL`
   );
   let taggedPairs = 0;
   let untaggedPairs = 0;
-  const byCell = new Map<string, { nets: number[]; costs: number[]; exits: Record<string, number> }>();
+  const byCell = new Map<string, { nets: number[]; costs: number[]; exits: Record<string, number>; durations: number[] }>();
   for (const row of r.rows) {
     const cost = Number(row.hedge_cost_total_usdc);
     const fox = Number(row.foxify_share_usdc);
@@ -97,11 +104,16 @@ export const getRealizedShadowStats = async (
     // (legacy untagged pairs are excluded — that's how the gate becomes exact).
     if (opts.regime && rg !== opts.regime) continue;
     const net = fox - cost;
-    const g = byCell.get(row.cell_id) ?? { nets: [], costs: [], exits: {} };
+    const g = byCell.get(row.cell_id) ?? { nets: [], costs: [], exits: {}, durations: [] };
     g.nets.push(net);
     g.costs.push(cost);
     const em = row.exit_mode ?? "unknown";
     g.exits[em] = (g.exits[em] ?? 0) + 1;
+    // Observed hold duration in days (only when both timestamps are present + sane).
+    if (row.created_at && row.closed_at) {
+      const durMs = Date.parse(row.closed_at) - Date.parse(row.created_at);
+      if (Number.isFinite(durMs) && durMs > 0) g.durations.push(durMs / 86_400_000);
+    }
     byCell.set(row.cell_id, g);
   }
   const mean = (a: number[]): number => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
@@ -112,9 +124,9 @@ export const getRealizedShadowStats = async (
     pctProfitable: +(g.nets.filter((x) => x > 0).length / g.nets.length).toFixed(4),
     meanCostUsdc: +mean(g.costs).toFixed(2),
     exitModeCounts: g.exits,
-    // Raw samples only when requested (projection blend). Defensive copy so
-    // callers can't mutate internal accumulators.
-    ...(opts.returnSamples ? { nets: [...g.nets] } : {})
+    // Raw samples only when requested (projection blend + cycle-time). Defensive
+    // copies so callers can't mutate internal accumulators.
+    ...(opts.returnSamples ? { nets: [...g.nets], durationsDays: [...g.durations] } : {})
   }));
   return { stats, taggedPairs, untaggedPairs };
 };
