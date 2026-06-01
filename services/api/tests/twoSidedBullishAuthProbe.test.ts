@@ -133,8 +133,24 @@ test("bullish-markets-probe: a matching near-3d contract → diagnoses quotable"
   try {
     const b = (await app.inject({ method: "GET", url: "/admin/foxify/v2/bullish-markets-probe?tenor_days=3", headers: { "x-admin-token": ADMIN } })).json();
     assert.equal(b.funnel.within_both >= 1, true);
-    assert.equal(b.orderbook_sample.has_book, true);
-    assert.match(b.diagnosis, /matching|quotable/i);
+    assert.ok(b.near_atm_books_with_liquidity >= 1, "at least one near-ATM book has liquidity");
+    assert.equal(b.orderbook_samples[0].has_book, true);
+    assert.match(b.diagnosis, /quotable/i);
+  } finally { await cleanup(); }
+});
+
+test("bullish-markets-probe: matching contracts but EMPTY books → diagnoses no resting / RFQ", async () => {
+  const markets = [mkMarket(73000, "PUT", 3), mkMarket(73000, "CALL", 3)];
+  const probe: ProbeClient = {
+    getTradingAccounts: async () => [],
+    getMarkets: async () => markets,
+    getHybridOrderBook: async () => ({ bids: [], asks: [] }) // listed but empty book
+  };
+  const { app, cleanup } = await buildApp(probe);
+  try {
+    const b = (await app.inject({ method: "GET", url: "/admin/foxify/v2/bullish-markets-probe?tenor_days=3", headers: { "x-admin-token": ADMIN } })).json();
+    assert.equal(b.near_atm_books_with_liquidity, 0);
+    assert.match(b.diagnosis, /EMPTY|RFQ|resting/i);
   } finally { await cleanup(); }
 });
 

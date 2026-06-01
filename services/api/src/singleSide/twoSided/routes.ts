@@ -1906,20 +1906,29 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         return Number.isFinite(t) && t > nowMs && Math.abs((t - nowMs) - targetTenorMs) <= tenorWindowMs;
       });
       const withinBoth = withinTenor.filter((m) => Math.abs(num(m.optionStrikePrice) - spot) <= strikeWindow);
-      // Sample one orderbook from withinBoth (or nearest-tenor) to confirm bid/ask present.
-      let orderbookSample: Record<string, unknown> | null = null;
-      const sampleMkt = withinBoth[0] ?? withinTenor[0] ?? enabled[0];
-      if (sampleMkt && typeof client.getHybridOrderBook === "function") {
-        try {
-          const ob = await client.getHybridOrderBook(String(sampleMkt.symbol));
-          orderbookSample = {
-            symbol: sampleMkt.symbol,
-            top_bid: ob.bids?.[0]?.price ?? null,
-            top_ask: ob.asks?.[0]?.price ?? null,
-            has_book: (ob.bids?.length ?? 0) > 0 && (ob.asks?.length ?? 0) > 0
-          };
-        } catch (e) { orderbookSample = { symbol: sampleMkt.symbol, error: (e as Error).message }; }
+      // Sample the orderbooks of the strikes NEAREST spot (ATM is where liquidity
+      // lives — one ITM sample can be misleadingly empty). Distinguishes genuinely
+      // empty books vs throttled fetches (429) vs RFQ/quote-driven (no resting book).
+      const orderbookSamples: Array<Record<string, unknown>> = [];
+      if (typeof client.getHybridOrderBook === "function") {
+        const nearest = [...withinBoth]
+          .sort((a, b) => Math.abs(num(a.optionStrikePrice) - spot) - Math.abs(num(b.optionStrikePrice) - spot))
+          .slice(0, 6);
+        for (const m of nearest) {
+          try {
+            const ob = await client.getHybridOrderBook(String(m.symbol));
+            orderbookSamples.push({
+              symbol: m.symbol, strike: num(m.optionStrikePrice), opt: String(m.optionType),
+              top_bid: ob.bids?.[0]?.price ?? null, top_ask: ob.asks?.[0]?.price ?? null,
+              has_book: (ob.bids?.length ?? 0) > 0 && (ob.asks?.length ?? 0) > 0
+            });
+          } catch (e) {
+            orderbookSamples.push({ symbol: m.symbol, strike: num(m.optionStrikePrice), error: (e as Error).message });
+          }
+        }
       }
+      const booksWithLiquidity = orderbookSamples.filter((s) => s.has_book === true).length;
+      const fetchErr = orderbookSamples.find((s) => s.error)?.error as string | undefined;
       reply.send({
         ok: true,
         spot,
@@ -1934,13 +1943,15 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         },
         btc_option_expiries: expiries,
         btc_strike_range: strikes.length ? { min: Math.min(...strikes), max: Math.max(...strikes), count: strikes.length } : null,
-        orderbook_sample: orderbookSample,
+        orderbook_samples: orderbookSamples,
+        near_atm_books_with_liquidity: booksWithLiquidity,
         diagnosis:
           enabled.length === 0 ? "Bullish lists NO enabled BTC options right now (account/market gating)."
           : withinTenor.length === 0 ? `Bullish lists BTC options but NONE within ±${tenorWindowDays}d of ${targetTenorDays}d — sparse expiry calendar vs the provider window. Nearest expiries: ${expiries.slice(0, 5).map((e) => e.days + "d").join(", ")}. FIX: widen tenor window or align cell tenor to a listed expiry.`
           : withinBoth.length === 0 ? `Expiry matches but strikes outside ±$${strikeWindow} of spot ${spot}. Widen strike window.`
-          : orderbookSample && orderbookSample.has_book === false ? "Markets match the window but orderbooks are EMPTY (no resting liquidity)."
-          : "Bullish has matching, quotable contracts — 0 quotes was likely transient/rate-limit; re-check chain-probe."
+          : fetchErr ? `Orderbook fetches ERRORING (likely 429 rate-limit): "${fetchErr}". Auth OK but the data endpoint is throttled → 0 quotes. FIX: widen BULLISH_RATE_LIMIT_BACKOFF_MS / slow the poll, or use authed higher-limit host.`
+          : booksWithLiquidity === 0 ? `${withinBoth.length} contracts match the window but ALL ${orderbookSamples.length} sampled NEAR-ATM orderbooks are EMPTY (no resting bids/asks). Either Bullish MMs pulled resting liquidity, OR Bullish options are RFQ/quote-driven (liquidity appears on request, not as a resting book) — in which case the provider must request a quote rather than read top-of-book.`
+          : `${booksWithLiquidity}/${orderbookSamples.length} near-ATM orderbooks HAVE resting liquidity — Bullish IS quotable. The earlier 0 was transient/rate-limit or an unlucky ITM sample; re-run chain-probe (force_refresh).`
       });
     } catch (e) {
       reply.send({ ok: false, error: (e as Error).message, interpretation: "Authed markets fetch failed — see error (429 rate-limit / auth / network)." });
