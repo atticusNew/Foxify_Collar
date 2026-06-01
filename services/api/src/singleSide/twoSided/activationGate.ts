@@ -236,12 +236,16 @@ export const computeActivationGate = async (inputs: ActivationGateInputs): Promi
 
   // Path 1 — moderate/elevated/stress: always good per V5/V6 sweeps
   if (dvolSample.regime !== "calm") {
+    // ATM straddle winners FIRST (empirical sweep 2026-05-31): pair_150k = the
+    // moderate+ winner (~$224–247 net), pair_50k = capital-light fallback. Listed
+    // ahead of the legacy guts/OTM cells so the shadow auto-loop preferentially
+    // accrues validation settlements on the validated structure when moderate+ hits.
     const recommended =
       dvolSample.regime === "moderate"
-        ? ["pair_50k_2pct", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"]
+        ? ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"]
         : dvolSample.regime === "elevated"
-          ? ["pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
-          : ["pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"];
+          ? ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
+          : ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"];
     const tierInfo = classifySignalTier({ regime: dvolSample.regime, vrp, calmVrpThreshold, dvol: dvolSample.dvol });
     return {
       good_to_activate: true,
