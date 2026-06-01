@@ -105,6 +105,13 @@ export type FoxifyV2RoutesDeps = {
    * so the operator can see the active thresholds at a glance).
    */
   shadowAutoActivatorConfig?: import("./shadowAutoActivator").AutoActivatorConfig;
+  /**
+   * Optional Bullish client for the authenticated whitelist/auth probe endpoint
+   * (GET /admin/foxify/v2/bullish-auth-probe). Runs SERVER-SIDE so the call
+   * originates from the deployment's whitelisted IP. Structural type to avoid
+   * coupling routes to the pilot client; production passes the shared client.
+   */
+  bullishProbeClient?: { getTradingAccounts: () => Promise<unknown> } | null;
 };
 
 // ───────────────────────── Auth helpers ─────────────────────────
@@ -1788,6 +1795,63 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       reply.send(result);
     }
   );
+
+  /**
+   * GET /admin/foxify/v2/bullish-auth-probe
+   *
+   * DEFINITIVE Bullish whitelist + auth test. Unlike bullish-whitelist-probe
+   * (unauthenticated network reachability), this makes ONE *authenticated*
+   * Bullish call (getTradingAccounts — signed, account-scoped) using the server's
+   * shared client, so it originates from the deployment's WHITELISTED IP
+   * (Singapore). Single request — no hammering. Interpretation:
+   *   - success (accounts returned)  → whitelist + ECDSA auth WORKING ✅
+   *   - 401 / signature / auth error → creds loaded but signing/metadata wrong
+   *   - 403 / forbidden              → IP NOT whitelisted (or account not permissioned)
+   *   - 429 / rate_limit             → reached + authed, just rate-limited
+   *   - timeout / network            → blocked at network layer (NOT whitelisted)
+   */
+  app.get("/admin/foxify/v2/bullish-auth-probe", { preHandler: checkAdminToken }, async (_req, reply) => {
+    if (!deps.bullishProbeClient) {
+      reply.code(503).send({ error: "bullish_client_unavailable", message: "No Bullish client wired (PILOT_BULLISH_ENABLED=false or creds missing). Cannot run authenticated probe." });
+      return;
+    }
+    const startMs = Date.now();
+    try {
+      const accounts = await deps.bullishProbeClient.getTradingAccounts();
+      const n = Array.isArray(accounts) ? accounts.length
+        : (accounts && typeof accounts === "object" && Array.isArray((accounts as { data?: unknown[] }).data)) ? (accounts as { data: unknown[] }).data.length
+        : (accounts != null ? 1 : 0);
+      reply.send({
+        ok: true,
+        authenticated: true,
+        whitelist: "active",
+        trading_accounts_count: n,
+        latency_ms: Date.now() - startMs,
+        interpretation: "REACHED_AND_AUTHED — Bullish whitelist + ECDSA auth working from the deployment IP ✅"
+      });
+    } catch (e) {
+      const msg = (e as Error).message;
+      const lower = msg.toLowerCase();
+      let interpretation: string;
+      let whitelist: "active" | "likely_not_whitelisted" | "unknown" = "unknown";
+      if (msg.includes("429") || lower.includes("rate_limit") || lower.includes("96100")) {
+        interpretation = "REACHED_RATE_LIMITED — authed request reached Bullish, just rate-limited (whitelist OK)";
+        whitelist = "active";
+      } else if (msg.includes("401") || lower.includes("signature") || lower.includes("unauthorized") || lower.includes("auth")) {
+        interpretation = "AUTH_ERROR — creds loaded but signing/metadata likely wrong (run pilot:bullish:auth-debug)";
+        whitelist = "unknown";
+      } else if (msg.includes("403") || lower.includes("forbidden") || lower.includes("not allowed")) {
+        interpretation = "FORBIDDEN — IP likely NOT whitelisted (or account lacks permission)";
+        whitelist = "likely_not_whitelisted";
+      } else if (lower.includes("etimedout") || lower.includes("timeout") || lower.includes("aborted") || lower.includes("econnrefused")) {
+        interpretation = "TIMEOUT/REFUSED — blocked at network layer (NOT whitelisted)";
+        whitelist = "likely_not_whitelisted";
+      } else {
+        interpretation = `ERROR — ${msg}`;
+      }
+      reply.send({ ok: false, authenticated: false, whitelist, latency_ms: Date.now() - startMs, error: msg, interpretation });
+    }
+  });
 
   /**
    * POST /admin/foxify/v2/force-trigger

@@ -9069,7 +9069,9 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         forceTriggerPair: v2ForceTriggerPair,
         newbornReviewThreshold: Number(process.env.SS_TWO_SIDED_NEWBORN_REVIEW_PER_REGIME ?? "10"),
         shadowAutoActivator: v2ShadowAutoActivator,
-        shadowAutoActivatorConfig: v2ShadowAutoCfg
+        shadowAutoActivatorConfig: v2ShadowAutoCfg,
+        // Server-side authed Bullish probe (runs from the whitelisted deploy IP).
+        bullishProbeClient: v2BullishClient
       });
     });
     console.log(`[FoxifyV2] Routes registered at /foxify/v2/* and /admin/foxify/v2/* (bullish_quotes=${Boolean(v2BullishClient)}, shadow_auto_activate=${v2ShadowAutoCfg.enabled})`);
