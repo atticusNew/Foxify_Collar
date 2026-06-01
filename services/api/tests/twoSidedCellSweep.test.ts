@@ -123,6 +123,27 @@ test("sweep: current regime gets result_tier='real', others get 'estimate'", asy
   await pool.end();
 });
 
+test("sweep: negative moneyness = OTM strangle (put below spot, call above spot)", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  // spot 73000, moneyness -0.04 → put ~70080→70000, call ~75920→76000 (OTM both sides).
+  const chain = makeChain([
+    { venue: "deribit", strike: 70000, optType: "put", tenorHours: 48, bid: 150, ask: 180 },
+    { venue: "deribit", strike: 76000, optType: "call", tenorHours: 48, bid: 150, ask: 180 }
+  ]);
+  const report = await runFullCellSweep(pool, {
+    spot: 73000, notionals: [50000], triggers: [0.03], strikeMoneyness: [-0.04], tenors: [2],
+    autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 50, venue: "auto",
+    regimes: ["calm"], structures: ["strangle"], liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: false });
+  const cell = report.rankings.calm.topCells[0];
+  assert.ok(cell, "OTM strangle cell priced + ranked");
+  assert.ok(cell.params.put_strike < 73000, `put OTM (below spot): ${cell.params.put_strike}`);
+  assert.ok(cell.params.call_strike > 73000, `call OTM (above spot): ${cell.params.call_strike}`);
+  await pool.end();
+});
+
 test("sweep: regimes filter restricts compute to requested regimes (others skipped)", async () => {
   __resetCalibrationCache();
   const pool = makePool();

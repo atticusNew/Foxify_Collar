@@ -692,8 +692,12 @@ export const runFullCellSweep = async (
 
   for (const candidate of candidates) {
     // Strikes are derived from spot once per candidate (regime-independent)
-    const rawPut = config.spot * (1 - candidate.strikeMoneynessPct);
-    const rawCall = config.spot * (1 + candidate.strikeMoneynessPct);
+    // Sign convention (matches cellConfig.computeStrikes): NEGATIVE moneyness = OTM.
+    //   m<0 → put below spot (OTM put) + call above spot (OTM call) = OTM strangle.
+    //   m=0 → both at spot = ATM straddle. (Previously the signs were flipped, which
+    //   mis-struck "otm" strangles as expensive ITM guts.)
+    const rawPut = config.spot * (1 + candidate.strikeMoneynessPct);
+    const rawCall = config.spot * (1 - candidate.strikeMoneynessPct);
     const putStrike = snapStrike(rawPut);
     const callStrike = snapStrike(rawCall);
 
