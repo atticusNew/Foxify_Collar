@@ -1252,6 +1252,55 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/breakeven-ladder
+   *
+   * Phase 2 (calm loss-leader decision input). For one candidate cell, runs the MC
+   * across a DVOL ladder at the REAL current chain cost and returns net-vs-DVOL +
+   * the interpolated breakeven DVOL (where loss -> profit). Lets the bot/CEO see
+   * "at current DVOL this cell loses ~$X; it turns positive at DVOL Y."
+   *
+   * Query: ?notional=25000 ?moneyness=-0.05 ?tenor_days=1 ?structure=strangle
+   *        ?trigger=0.03 ?auto_close_pct=0.30 ?auto_close_abs=250
+   *        ?dvols=30,35,40,45,50 ?venue=deribit ?n_paths=800
+   */
+  app.get<{ Querystring: Record<string, string | undefined> }>(
+    "/admin/foxify/v2/breakeven-ladder", { preHandler: checkAdminToken }, async (req, reply) => {
+      if (!deps.liquidChainCache) { reply.code(503).send({ error: "chain_cache_unavailable" }); return; }
+      const spot = deps.feedService.getCurrentFeed()?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      const q = req.query;
+      const num = (v: string | undefined, d: number): number => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
+      const structure = q.structure === "straddle" ? "straddle" : "strangle";
+      const dvols = (q.dvols ? q.dvols.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0) : [30, 35, 40, 45, 50]);
+      const venue = (q.venue === "bullish" || q.venue === "deribit") ? q.venue : "auto";
+      const { computeBreakevenLadder } = await import("./breakevenLadder");
+      try {
+        const result = await computeBreakevenLadder({
+          spot,
+          notionalUsdcPerLeg: num(q.notional, 25000),
+          strikeMoneynessPct: num(q.moneyness, structure === "straddle" ? 0 : -0.05),
+          tenorDays: num(q.tenor_days, 1),
+          structure,
+          triggerPct: num(q.trigger, 0.03),
+          autoClosePnlPct: num(q.auto_close_pct, 0.30),
+          autoCloseAbsoluteUsdc: num(q.auto_close_abs, 250),
+          dvols: dvols.length ? dvols : [30, 35, 40, 45, 50],
+          liquidChainCache: deps.liquidChainCache,
+          dvolService: deps.dvolService,
+          venue,
+          nPaths: q.n_paths ? Number(q.n_paths) : 800,
+          perpPairFrictionUsdc: q.perp_pair_friction != null ? Number(q.perp_pair_friction)
+            : (process.env.FOXIFY_PERP_FRICTION_USDC != null ? Number(process.env.FOXIFY_PERP_FRICTION_USDC) : 0)
+        });
+        if (!result.ok) { reply.code(503).send(result); return; }
+        reply.send(result);
+      } catch (e) {
+        reply.code(500).send({ error: "ladder_failed", message: (e as Error).message });
+      }
+    }
+  );
+
+  /**
    * POST /admin/foxify/v2/dvol-backfill
    *
    * Phase 6: backfill historical Deribit DVOL into two_sided_dvol_history so
