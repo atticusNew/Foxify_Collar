@@ -62,6 +62,16 @@ const buildUrl = (baseUrl: string, requestPath: string): string =>
 
 const sha256Hex = (value: string): string => createHash("sha256").update(value).digest("hex");
 
+/**
+ * Whether the hybrid-orderbook (price) read should be sent AUTHENTICATED so it uses
+ * the IP-whitelisted account path with Bullish's higher per-account rate limit.
+ * Default OFF (public read, unchanged legacy behaviour). Flip on the deployed,
+ * whitelisted host and confirm via /admin/foxify/v2/chain-probe that Bullish quote
+ * counts hold steady (no 429s) before relying on it.
+ */
+const isOrderbookAuthEnabled = (): boolean =>
+  String(process.env.BULLISH_ORDERBOOK_AUTHED ?? "false").toLowerCase().trim() === "true";
+
 const normalizePem = (value: string): string => {
   const normalized = String(value || "").trim();
   if (!normalized) return "";
@@ -531,6 +541,23 @@ export class BullishTradingClient {
 
   async getHybridOrderBook(symbol: string): Promise<BullishHybridOrderbook> {
     const requestPath = this.config.orderbookPathTemplate.replace(":symbol", encodeURIComponent(symbol));
+    const headers: Record<string, string> = { Accept: "application/json" };
+    // OPT-IN (BULLISH_ORDERBOOK_AUTHED=true): attach the account JWT so the orderbook
+    // (price) read goes over the IP-WHITELISTED AUTHENTICATED path, which carries
+    // Bullish's higher per-account rate limit. Default OFF → unchanged PUBLIC read.
+    // The price path is otherwise unauthenticated, so the IP whitelist (which gates
+    // authenticated endpoints) does NOT raise its limit — this lever lets the operator
+    // leverage the whitelist for pricing once validated on the deployed host. Degrades
+    // gracefully: if a session can't be obtained, we fall back to the public read.
+    if (isOrderbookAuthEnabled()) {
+      try {
+        const session = await this.getJwtSession();
+        headers.Authorization = `Bearer ${session.token}`;
+        headers.COOKIE = `JWT_COOKIE=${session.token}`;
+      } catch {
+        /* no creds / login failed → fall back to the public (unauthenticated) read */
+      }
+    }
     const payload = await this.requestJson<{
       bids?: unknown;
       asks?: unknown;
@@ -541,7 +568,7 @@ export class BullishTradingClient {
       path: requestPath,
       method: "GET",
       timeoutMs: this.config.orderTimeoutMs,
-      headers: { Accept: "application/json" }
+      headers
     });
     return {
       symbol,

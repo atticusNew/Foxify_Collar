@@ -146,6 +146,32 @@ Everything else has sensible defaults you usually don't need to think about.
 | `SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC` | (unset = no cap) | LIVE capital-at-risk ceiling: blocks a live activation if currently-deployed hedge cost + this pair's hedge cost would exceed the cap. Leave unset during shadow; set when sizing up to 150k–175k pairs (see capital note below). |
 | `BULLISH_CHAIN_MAX_ORDERBOOK_FETCHES` | `24` | Max Bullish orderbook fetches per chain refresh (nearest-ATM strikes). Higher = more consistent ATM coverage / venue routing; lower = less rate-limit pressure. Default 24 balances both (shared client + cache keep total calls down). |
 | `BULLISH_RATE_LIMIT_BACKOFF_MS` | `60000` | Cool-off after a Bullish HTTP 429: chain serves Deribit-only for this long before retrying Bullish. Widen (e.g. `300000`) if 429s persist on the public endpoint, to avoid compounding rate limits until authed `registered.` access lands. |
+| `BULLISH_ORDERBOOK_AUTHED` | `false` | **Leverage the IP whitelist for the PRICE path.** The hybrid-orderbook read (option bid/ask that feeds the v2 chain cache + venue selection) is an UNAUTHENTICATED public read by default — so the account IP-whitelist (which raises limits on *authenticated* endpoints) does NOT help it. Set `true` to attach the account JWT so the orderbook read uses the whitelisted, higher-rate-limit authenticated path. Degrades gracefully (falls back to the public read if no session). **Roll-out:** flip to `true` on the whitelisted deploy, then confirm via `chain-probe` that Bullish quote counts hold steady with no 429s before relying on it; revert to `false` to roll back instantly. |
+
+### Verifying Bullish prices are flowing (deployed, whitelisted host)
+
+Run these against the deployed service (they read the live v2 chain cache / venue
+selector — no activation):
+
+```bash
+# 1. Auth/whitelist reachability (should report whitelist active)
+curl -s -H "x-admin-token: $ADMIN" "$HOST/admin/foxify/v2/bullish-auth-probe" | jq .
+
+# 2. Per-venue quote counts in the live chain cache (look for venue_status.bullish
+#    quoteCount > 0 with ok:true; deribit should also be populated)
+curl -s -H "x-admin-token: $ADMIN" "$HOST/admin/foxify/v2/chain-probe?force_refresh=true" | jq '.venue_status, .spot'
+
+# 3. Per-strike bullish vs deribit bid/ask at the cells you trade (ATM ± a few strikes)
+curl -s -H "x-admin-token: $ADMIN" "$HOST/admin/foxify/v2/chain-probe?strikes=ATM" | jq '.strikes'
+
+# 4. What the venue selector actually picks per leg (round-trip aware), incl. partner state
+curl -s -H "x-admin-token: $ADMIN" "$HOST/admin/foxify/v2/venue-probe?cell_id=pair_50k_3pct_atm_3d" | jq .
+```
+
+**"Bullish prices are flowing" = ** `bullish-auth-probe` → whitelist active; `chain-probe`
+`venue_status.bullish` → `ok:true` with `quoteCount > 0` **consistently across refreshes**;
+`venue-probe` shows Bullish ask/bid populated per leg. If `quoteCount` flickers to 0 with a
+429, raise `BULLISH_RATE_LIMIT_BACKOFF_MS` and/or set `BULLISH_ORDERBOOK_AUTHED=true` (above).
 
 ### Capital requirements for the moderate straddle winner (sizing-up note)
 
