@@ -41,6 +41,25 @@ test("computeStrikes: true ATM (0% ITM) snaps BOTH legs to the SAME nearest stri
   assert.equal(hi.callStrike, 74000);
 });
 
+test("pair_5k_atm_1d_smoke: tiny near-ATM Bullish smoke cell (5k, ATM, 1d, single-strike)", () => {
+  const cell = PHASE_0_CELLS["pair_5k_atm_1d_smoke"];
+  assert.ok(cell, "smoke cell exists in registry");
+  assert.equal(cell.enabled, true);
+  assert.equal(cell.notionalUsdcPerLeg, 5_000, "tiny notional → ~$100 premium");
+  assert.equal(cell.hedgeTenorDays, 1);
+  assert.equal(cell.putStrikeItmPct, 0, "ATM put (near-ATM so Bullish quotes it)");
+  assert.equal(cell.callStrikeItmPct, 0, "ATM call");
+  // ATM → both legs snap to the SAME single nearest-$1k strike (where Bullish quotes).
+  const s = computeStrikes(cell, 70_934);
+  assert.equal(s.putStrike, 71_000);
+  assert.equal(s.callStrike, 71_000);
+  assert.equal(s.putStrike, s.callStrike, "single ATM strike");
+  // It is NOT in any default allowlist (operator allowlists it only for the smoke test).
+  for (const r of ["calm", "moderate", "elevated", "stress"] as const) {
+    assert.equal(isCellAllowedInRegimeDefault("pair_5k_atm_1d_smoke", r), false, `not in ${r} default`);
+  }
+});
+
 test("computeStrikes: guts cell (non-zero ITM) keeps the ceil/floor two-strike split", () => {
   // pair_50k_2pct: putItm/callItm 0.013 → ceil(76988)→77000 put, floor(75012)→75000 call.
   const guts = computeStrikes(PHASE_0_CELLS["pair_50k_2pct"], 76000);

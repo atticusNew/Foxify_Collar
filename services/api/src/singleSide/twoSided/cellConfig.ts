@@ -224,6 +224,31 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     callStrikeItmPct: -0.05,
     strikeGridUsdc: 1_000,
     enabled: true
+  },
+  /**
+   * LIVE BULLISH SMOKE-TEST cell. Tiny 5k ATM 1d straddle — deliberately NEAR-ATM
+   * (0% ITM → single ATM strike) so BULLISH actually quotes it (Bullish has no
+   * resting book at the OTM wings). Premium ≈ $100 at current spot. Sole purpose:
+   * prove LIVE Bullish order placement end-to-end at minimal cost.
+   *
+   * ROUTING NOTE: Bullish is ~2–7% wider round-trip than Deribit at ATM, so by
+   * default the venue selector still picks Deribit. To force the hedge onto Bullish
+   * for the smoke test, widen SS_VENUE_PARTNER_MAX_SPREAD_PCT (~0.08) and confirm
+   * via /admin/foxify/v2/venue-probe?cell_id=pair_5k_atm_1d_smoke that
+   * chosen_venue="bullish" BEFORE arming live. NOT for normal trading — operator
+   * allowlists it only for the smoke test, then removes it.
+   */
+  pair_5k_atm_1d_smoke: {
+    cellId: "pair_5k_atm_1d_smoke",
+    notionalUsdcPerLeg: 5_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 0.07,
+    hedgeTenorDays: 1,
+    putStrikeItmPct: 0,
+    callStrikeItmPct: 0,
+    strikeGridUsdc: 1_000,
+    enabled: true
   }
 };
 

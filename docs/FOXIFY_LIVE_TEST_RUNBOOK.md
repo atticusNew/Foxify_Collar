@@ -61,6 +61,69 @@ npx tsx scripts/integration/foxifyShadowBot.ts
 - **In moderate+:** the bot fires from `recommended_cells` (ATM straddle etc.) — these CAN route to Bullish if Bullish is round-trip-competitive (check `venue-probe`).
 - **To force a Bullish live fill:** use a near-ATM cell and confirm via `GET /admin/foxify/v2/venue-probe?cell_id=<cell>` that `chosen_venue: "bullish"` on at least one leg BEFORE arming live.
 
+## 1.8. The two cheapest live tests (copy-paste recipes)
+
+> Both fire EXACTLY ONE real pair, then you revert. The kill switch (§6) works at any point.
+> `SS_TWO_SIDED_CELL_ALLOWLIST` is the LIVE cell gate — **CSV, no quotes/brackets** (e.g.
+> `pair_a,pair_b`). The jq `[...]` you see in responses is display only.
+
+### A) Deribit cheap test (~$18, simplest — uses the calm loss-leader path)
+The 1d loss-leader is in the calm allowlist + under the $55 budget, so calm loss-leader
+mode admits it — **no blanket calm-allow needed**.
+```
+# Render env:
+SS_TWO_SIDED_LIVE_ENABLED=true
+FOXIFY_V2_LIVE_EXECUTION=true
+SS_TWO_SIDED_CALM_LOSS_LEADER=true            # already on
+SS_TWO_SIDED_CALM_MAX_LOSS_USDC=55            # already set
+SS_TWO_SIDED_CELL_ALLOWLIST=pair_25k_5otm_strangle_1d
+SS_TWO_SIDED_MAX_PAIRS_PER_DAY=1
+```
+Redeploy → clear boot halt (§3 resume curl) → fire ONE pair via the bot:
+```bash
+export FOXIFY_API_URL="$PILOT_API_BASE" FOXIFY_API_KEY="$FOXIFY_API_KEY"
+export SHADOW_BOT_LIVE=true SHADOW_BOT_PAIRS_PER_DAY=1 SHADOW_BOT_STOP_AFTER_HOURS=2
+npx tsx scripts/integration/foxifyShadowBot.ts
+# It reads should_activate → calm_loss_leader → fires pair_25k_5otm_strangle_1d on DERIBIT.
+```
+
+### B) Bullish smoke test (~$100, proves live BULLISH order placement)
+Uses the dedicated near-ATM cell `pair_5k_atm_1d_smoke`. Bullish only quotes near-ATM, and
+is ~2–7% wider round-trip than Deribit there, so you must (1) allow calm (the smoke cell's
+~$100 premium exceeds the $55 loss-leader budget, so it can't go through the loss-leader
+path), (2) widen the partner band so Bullish wins, (3) confirm routing first.
+```
+# Render env:
+SS_TWO_SIDED_LIVE_ENABLED=true
+FOXIFY_V2_LIVE_EXECUTION=true
+SS_TWO_SIDED_ALLOW_CALM=true                  # blanket calm allow FOR THE TEST ONLY (no budget cap)
+SS_TWO_SIDED_CELL_ALLOWLIST=pair_5k_atm_1d_smoke
+SS_TWO_SIDED_MAX_PAIRS_PER_DAY=1
+SS_VENUE_PARTNER=bullish
+SS_VENUE_PARTNER_MAX_SPREAD_PCT=0.08          # let Bullish win round-trip at ATM
+```
+Add the smoke cell to the calm DB allowlist (so the regime check passes), redeploy, resume halt, then **confirm Bullish routing BEFORE firing**:
+```bash
+# allow the smoke cell in calm:
+curl --http1.1 -sS -X POST -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  "$PILOT_API_BASE/admin/foxify/v2/cell-allowlist" \
+  -d '{"regime":"calm","cell_id":"pair_5k_atm_1d_smoke","enabled":true,"reason":"bullish smoke test"}'
+
+# MUST show chosen_venue:"bullish" on at least one leg before you arm:
+curl --http1.1 -sS -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" \
+  "$PILOT_API_BASE/admin/foxify/v2/venue-probe?cell_id=pair_5k_atm_1d_smoke" \
+  | jq '[.legs[]|{leg,chosen_venue,bullish:[.candidates[]|select(.venue=="bullish")][0]}]'
+
+# fire ONE pair:
+export FOXIFY_API_URL="$PILOT_API_BASE" FOXIFY_API_KEY="$FOXIFY_API_KEY"
+export SHADOW_BOT_LIVE=true SHADOW_BOT_PAIRS_PER_DAY=1 SHADOW_BOT_STOP_AFTER_HOURS=2 SHADOW_BOT_LOSS_LEADER=false
+npx tsx scripts/integration/foxifyShadowBot.ts
+```
+**Revert after:** remove `SS_TWO_SIDED_ALLOW_CALM`, set `SS_TWO_SIDED_LIVE_ENABLED=false` +
+`FOXIFY_V2_LIVE_EXECUTION=false`, disable the smoke cell override, redeploy. If `venue-probe`
+does NOT show `bullish`, widen `SS_VENUE_PARTNER_MAX_SPREAD_PCT` until it does (or abort —
+don't fire a Bullish test that routes to Deribit).
+
 ## 2. Pick the lowest-premium cell + confirm its real cost
 Candidates (cheapest first): `pair_25k_5pct_otm_3d` (~$200–300), then `pair_50k_3pct_atm_3d` (~$1.3k, validated ATM).
 ```bash
