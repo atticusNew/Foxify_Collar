@@ -192,6 +192,17 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
 
 /** Pick put + call strikes for the given spot, snapping to grid. */
 export const computeStrikes = (cell: TwoSidedCell, spotUsdc: number): { putStrike: number; callStrike: number } => {
+  // TRUE ATM straddle (both legs 0% ITM): snap BOTH legs to the SAME nearest grid
+  // strike (= the cell-sweep's snapStrike = round). This reproduces the validated
+  // single-strike straddle winner (e.g. pair_150k_3pct_atm_3d). WITHOUT this, the
+  // ceil(put)/floor(call) logic below would split a 0%-ITM cell into two ADJACENT
+  // strikes (a mild ITM "guts"), baking in ~$1k/BTC of extra intrinsic and ~30%
+  // higher cost than the structure the sweep actually proved. Guts/OTM cells
+  // (non-zero ITM pcts) keep the ceil/floor behavior unchanged.
+  if (cell.putStrikeItmPct === 0 && cell.callStrikeItmPct === 0) {
+    const atm = Math.round(spotUsdc / cell.strikeGridUsdc) * cell.strikeGridUsdc;
+    return { putStrike: atm, callStrike: atm };
+  }
   const rawPut = spotUsdc * (1 + cell.putStrikeItmPct);
   const rawCall = spotUsdc * (1 - cell.callStrikeItmPct);
   // Snap put UP to nearest grid (ensures ≥ desired ITM-ness, conservative)

@@ -28,6 +28,27 @@ test("straddle cell: ATM strikes straddle the spot (within one grid step)", () =
   assert.ok(Math.abs(putStrike - callStrike) <= 1000, "ATM: strikes within one $1k grid step");
 });
 
+test("computeStrikes: true ATM (0% ITM) snaps BOTH legs to the SAME nearest strike (matches sweep winner)", () => {
+  // Reproduces the cell-sweep snapStrike (round) so the live cell == validated single-strike straddle.
+  for (const cellId of [CELL, "pair_150k_3pct_atm_3d"]) {
+    const { putStrike, callStrike } = computeStrikes(PHASE_0_CELLS[cellId], 73451);
+    assert.equal(putStrike, callStrike, `${cellId}: single-strike straddle (put==call)`);
+    assert.equal(putStrike, 73000, `${cellId}: round(73451/1000)*1000`);
+  }
+  // and snaps UP correctly past the midpoint
+  const hi = computeStrikes(PHASE_0_CELLS[CELL], 73600);
+  assert.equal(hi.putStrike, 74000);
+  assert.equal(hi.callStrike, 74000);
+});
+
+test("computeStrikes: guts cell (non-zero ITM) keeps the ceil/floor two-strike split", () => {
+  // pair_50k_2pct: putItm/callItm 0.013 → ceil(76988)→77000 put, floor(75012)→75000 call.
+  const guts = computeStrikes(PHASE_0_CELLS["pair_50k_2pct"], 76000);
+  assert.equal(guts.putStrike, 77000);
+  assert.equal(guts.callStrike, 75000);
+  assert.notEqual(guts.putStrike, guts.callStrike, "guts geometry unchanged (two strikes)");
+});
+
 test("allowlist: straddle cell enabled in moderate/elevated/stress, NOT calm", () => {
   assert.equal(isCellAllowedInRegimeDefault(CELL, "calm"), false, "never in calm (stand-down)");
   for (const r of ["moderate", "elevated", "stress"] as const) {
