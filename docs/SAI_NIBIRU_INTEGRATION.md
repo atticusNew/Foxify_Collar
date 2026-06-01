@@ -20,6 +20,29 @@ mechanism and a differentiated trader product with no custody exposure.
 
 ---
 
+## Why This Matters for Sai
+
+- **New revenue line.** Offer paid floor and protection products to traders; premium revenue is shared with Sai.
+- **Lower bad-debt losses and a smaller insurance fund.** Replace an idle worst-case reserve with a known premium stream — a direct balance-sheet saving.
+- **Trader acquisition and retention.** Defined-max-loss products and liquidation protection that most perp venues do not offer.
+- **Low-risk to adopt.** Non-custodial, no exchange balance-sheet or underwriting risk, and a pilot can begin on a single market behind a flag.
+
+**Differentiator:** Atticus settles **real, exchange-traded option liquidity on-chain** — not synthetic cover from a pool whose payouts depend on the pool's own solvency.
+
+## At a Glance
+
+| Feature | Who pays | Who benefits | Core value |
+|---|---|---|---|
+| Leveraged Floor | Trader | Trader (and exchange) | Trade larger with a bounded, defined maximum loss |
+| Bad Debt Protection | Exchange (configurable) | Exchange | Transfer gap risk; operate a smaller insurance fund |
+| Liquidation / treasury / MM / credits | Configurable | Trader / exchange / MM | Defined-risk protection across the platform |
+
+A pilot can start with **one feature, BTC-only, via backend API behind a flag** — no deep
+margin-engine work is required to evaluate. Economics are aligned: **Atticus earns
+alongside Sai through shared premium, not at its expense.**
+
+---
+
 ## 2. Terminology
 
 | Term | Meaning in this document |
@@ -72,7 +95,9 @@ liquidation risk; the exchange benefits from healthier positions, lower liquidat
 bad-debt incidence, and a premium product offering.
 
 **Risk profile.** Downside is bounded for the covered tenor at the option strike; upside is
-unaffected. The premium is the trader's defined cost for the protection.
+unaffected. The premium is the trader's defined cost for the protection. In practice the
+trader carries a defined maximum loss and can hold through volatility without a forced
+liquidation for the covered tenor — the trader-facing retention hook for Sai.
 
 **Sizing.** Premium scales with notional, tenor, and the prevailing volatility regime;
 option notional matches the protected exposure. Strike placement is at the liquidation
