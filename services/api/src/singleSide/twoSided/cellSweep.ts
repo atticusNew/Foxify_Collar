@@ -616,12 +616,20 @@ export const runFullCellSweep = async (
   opts: {
     progressLog?: (msg: string) => void;
     persistResults?: boolean;
+    /** Caller-supplied run id so the launcher can return it before the sweep finishes. */
+    runId?: string;
   } = {}
 ): Promise<FullSweepReport> => {
   const log = opts.progressLog ?? (() => {});
   const persistResults = opts.persistResults !== false;
   const venue: SweepVenue = config.venue ?? "auto";
-  const runId = randomUUID();
+  const runId = opts.runId ?? randomUUID();
+  // Cooperative event-loop yield cadence. The MC inner loop is synchronous CPU;
+  // without periodically ceding the macrotask queue, a full sweep (~14k sims)
+  // starves the HTTP server (observed: empty replies on /cell-sweep/latest) and
+  // can trip the platform health check → instance restart kills the orphaned
+  // background sweep. Yielding every N sims keeps the API responsive.
+  const yieldEvery = Math.max(1, Number(process.env.SS_SWEEP_YIELD_EVERY ?? "25"));
   const startedAt = new Date();
   const candidates = buildSearchGrid(config.spot, config);
   const hasGammaScalp = candidates.some((c) => c.structure === "straddle_gamma_scalp");
@@ -695,6 +703,9 @@ export const runFullCellSweep = async (
         for (const autoCloseAbsUsdc of autoCloseAbs) {
           simIdx++;
           if (simIdx % 200 === 0) log(`progress: ${simIdx}/${totalSims} sims complete`);
+          // Cede the event loop periodically so concurrent HTTP requests (e.g.
+          // /cell-sweep/latest polls, health checks) are served during the sweep.
+          if (simIdx % yieldEvery === 0) await new Promise<void>((resolve) => setImmediate(resolve));
           const cellId = buildCellId(candidate, autoCloseAbsUsdc, autoClosePct);
 
           // CASE 1: Chain has no quote → skip; no synthetic backfill

@@ -32,7 +32,7 @@
 
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
-import { timingSafeEqual } from "node:crypto";
+import { timingSafeEqual, randomUUID } from "node:crypto";
 import { handleActivate, type ActivateDeps } from "./activateHandler";
 import { handleClose } from "./closeHandler";
 import {
@@ -942,6 +942,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         return;
       }
       const acceptedAt = new Date().toISOString();
+      const sweepRunId = randomUUID();
       const config: Parameters<typeof runFullCellSweep>[1] = {
         spot,
         notionals: Array.isArray(body.notionals) ? body.notionals as number[] : undefined,
@@ -967,15 +968,17 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       };
       void runFullCellSweep(deps.pool, config, {
         progressLog: (msg) => console.log(`[cellSweep] ${msg}`),
-        persistResults: true
+        persistResults: true,
+        runId: sweepRunId
       }).then((report) => {
         console.log(`[cellSweep] completed runId=${report.runId} results=${report.resultCount}`);
       }).catch((e) => {
-        console.error(`[cellSweep] failed: ${(e as Error).message}`);
+        console.error(`[cellSweep] failed runId=${sweepRunId}: ${(e as Error).message}`);
       });
       reply.code(202).send({
         accepted_at: acceptedAt,
-        message: "Sweep launched in background. Poll /admin/foxify/v2/cell-sweep/latest for results.",
+        run_id: sweepRunId,
+        message: "Sweep launched in background. Poll /admin/foxify/v2/cell-sweep/runs (by run_id) or /admin/foxify/v2/cell-sweep/latest for results.",
         spot,
         current_regime: currentRegime,
         venue: venueParam,
