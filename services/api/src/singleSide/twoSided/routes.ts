@@ -111,7 +111,11 @@ export type FoxifyV2RoutesDeps = {
    * originates from the deployment's whitelisted IP. Structural type to avoid
    * coupling routes to the pilot client; production passes the shared client.
    */
-  bullishProbeClient?: { getTradingAccounts: () => Promise<unknown> } | null;
+  bullishProbeClient?: {
+    getTradingAccounts: () => Promise<unknown>;
+    getMarkets?: (params?: { forceRefresh?: boolean; cacheTtlMs?: number }) => Promise<Array<Record<string, unknown>>>;
+    getHybridOrderBook?: (symbol: string) => Promise<{ bids?: Array<{ price: string | number }>; asks?: Array<{ price: string | number }> }>;
+  } | null;
 };
 
 // ───────────────────────── Auth helpers ─────────────────────────
@@ -1850,6 +1854,96 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         interpretation = `ERROR — ${msg}`;
       }
       reply.send({ ok: false, authenticated: false, whitelist, latency_ms: Date.now() - startMs, error: msg, interpretation });
+    }
+  });
+
+  /**
+   * GET /admin/foxify/v2/bullish-markets-probe
+   *
+   * Diagnoses WHY the Bullish chain yields 0 quotes despite working auth. Pulls
+   * the authed Bullish markets list and reports the FULL filter funnel + Bullish's
+   * actual BTC-option expiry calendar and strike range, so we can see whether the
+   * provider's strike/tenor window (centerTenorDays/tenorWindowDays/strikeWindowUsdc)
+   * is excluding real liquidity (likely cause: Bullish lists sparse weekly/monthly
+   * expiries that miss the narrow 0.5–3.5d window Deribit's daily expiries always hit).
+   *
+   * Query: ?tenor_days=3 ?strike_window=6000 ?tenor_window_days=1.5 (the window to TEST)
+   */
+  app.get<{ Querystring: { tenor_days?: string; strike_window?: string; tenor_window_days?: string } }>(
+    "/admin/foxify/v2/bullish-markets-probe", { preHandler: checkAdminToken }, async (req, reply) => {
+    const client = deps.bullishProbeClient;
+    if (!client || typeof client.getMarkets !== "function") {
+      reply.code(503).send({ error: "bullish_client_unavailable", message: "No Bullish client (or getMarkets) wired." });
+      return;
+    }
+    const nowMs = Date.now();
+    const spot = deps.feedService.getCurrentFeed()?.canonicalPrice ?? 75_000;
+    const targetTenorDays = Number(req.query.tenor_days ?? "3");
+    const strikeWindow = Number(req.query.strike_window ?? "6000");
+    const tenorWindowDays = Number(req.query.tenor_window_days ?? "1.5");
+    const targetTenorMs = targetTenorDays * 86_400_000;
+    const tenorWindowMs = tenorWindowDays * 86_400_000;
+    try {
+      const markets = await client.getMarkets({ forceRefresh: true });
+      const num = (v: unknown): number => Number(v ?? "0");
+      const isBtcOption = (m: Record<string, unknown>): boolean =>
+        String(m.underlyingBaseSymbol ?? "").toUpperCase() === "BTC" &&
+        ["PUT", "CALL"].includes(String(m.optionType ?? "").toUpperCase());
+      const btcOpts = markets.filter(isBtcOption);
+      const enabled = btcOpts.filter((m) => m.marketEnabled && m.createOrderEnabled);
+      // Distinct expiries (days-to-expiry) across enabled BTC options.
+      const expiryDaysSet = new Map<string, number>();
+      for (const m of enabled) {
+        const iso = String(m.expiryDatetime ?? "");
+        const t = Date.parse(iso);
+        if (Number.isFinite(t)) expiryDaysSet.set(iso, +((t - nowMs) / 86_400_000).toFixed(2));
+      }
+      const expiries = [...expiryDaysSet.entries()].map(([iso, days]) => ({ iso, days })).sort((a, b) => a.days - b.days);
+      const strikes = enabled.map((m) => num(m.optionStrikePrice)).filter((s) => s > 0);
+      const withinStrike = enabled.filter((m) => Math.abs(num(m.optionStrikePrice) - spot) <= strikeWindow);
+      const withinTenor = enabled.filter((m) => {
+        const t = Date.parse(String(m.expiryDatetime ?? ""));
+        return Number.isFinite(t) && t > nowMs && Math.abs((t - nowMs) - targetTenorMs) <= tenorWindowMs;
+      });
+      const withinBoth = withinTenor.filter((m) => Math.abs(num(m.optionStrikePrice) - spot) <= strikeWindow);
+      // Sample one orderbook from withinBoth (or nearest-tenor) to confirm bid/ask present.
+      let orderbookSample: Record<string, unknown> | null = null;
+      const sampleMkt = withinBoth[0] ?? withinTenor[0] ?? enabled[0];
+      if (sampleMkt && typeof client.getHybridOrderBook === "function") {
+        try {
+          const ob = await client.getHybridOrderBook(String(sampleMkt.symbol));
+          orderbookSample = {
+            symbol: sampleMkt.symbol,
+            top_bid: ob.bids?.[0]?.price ?? null,
+            top_ask: ob.asks?.[0]?.price ?? null,
+            has_book: (ob.bids?.length ?? 0) > 0 && (ob.asks?.length ?? 0) > 0
+          };
+        } catch (e) { orderbookSample = { symbol: sampleMkt.symbol, error: (e as Error).message }; }
+      }
+      reply.send({
+        ok: true,
+        spot,
+        tested_window: { target_tenor_days: targetTenorDays, tenor_window_days: tenorWindowDays, strike_window_usdc: strikeWindow },
+        funnel: {
+          total_markets: markets.length,
+          btc_options: btcOpts.length,
+          enabled_btc_options: enabled.length,
+          within_strike_window: withinStrike.length,
+          within_tenor_window: withinTenor.length,
+          within_both: withinBoth.length
+        },
+        btc_option_expiries: expiries,
+        btc_strike_range: strikes.length ? { min: Math.min(...strikes), max: Math.max(...strikes), count: strikes.length } : null,
+        orderbook_sample: orderbookSample,
+        diagnosis:
+          enabled.length === 0 ? "Bullish lists NO enabled BTC options right now (account/market gating)."
+          : withinTenor.length === 0 ? `Bullish lists BTC options but NONE within ±${tenorWindowDays}d of ${targetTenorDays}d — sparse expiry calendar vs the provider window. Nearest expiries: ${expiries.slice(0, 5).map((e) => e.days + "d").join(", ")}. FIX: widen tenor window or align cell tenor to a listed expiry.`
+          : withinBoth.length === 0 ? `Expiry matches but strikes outside ±$${strikeWindow} of spot ${spot}. Widen strike window.`
+          : orderbookSample && orderbookSample.has_book === false ? "Markets match the window but orderbooks are EMPTY (no resting liquidity)."
+          : "Bullish has matching, quotable contracts — 0 quotes was likely transient/rate-limit; re-check chain-probe."
+      });
+    } catch (e) {
+      reply.send({ ok: false, error: (e as Error).message, interpretation: "Authed markets fetch failed — see error (429 rate-limit / auth / network)." });
     }
   });
 
