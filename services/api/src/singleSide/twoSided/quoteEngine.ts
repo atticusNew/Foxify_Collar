@@ -118,11 +118,29 @@ export type QuoteResult =
       details: Record<string, unknown>;
     };
 
+/**
+ * NO-BIAS best-execution venue selection with an optional PARTNER tie-breaker.
+ *
+ * Default = pure best execution: among depth-qualified venues, pick the cheapest ask.
+ *
+ * Partner tie-breaker (opt-in, env-gated): when `SS_VENUE_PARTNER` is set (e.g.
+ * "bullish", for the partnership volume goal), route to the partner ONLY when its
+ * ask is within `SS_VENUE_PARTNER_MAX_SPREAD_PCT` of the best venue's ask — i.e.
+ * we send volume to the partner when it costs the platform (essentially) nothing,
+ * but NEVER when the partner is materially worse. This is auditable: the result
+ * carries best_venue / spread_vs_best_pct / partner_preferred.
+ */
 const pickLegVenue = (
   bullish: LegAnchorQuote | null,
   deribit: LegAnchorQuote | null,
   contractsBtc: number
-): { chosen: LegAnchorQuote | null; reason: "ok" | "no_venue" | "depth_insufficient" } => {
+): {
+  chosen: LegAnchorQuote | null;
+  reason: "ok" | "no_venue" | "depth_insufficient";
+  best_venue?: Venue;
+  partner_preferred?: boolean;
+  spread_vs_best_pct?: number;
+} => {
   const candidates: LegAnchorQuote[] = [];
   for (const c of [bullish, deribit]) {
     if (!c) continue;
@@ -137,7 +155,21 @@ const pickLegVenue = (
     return { chosen: null, reason: "no_venue" };
   }
   candidates.sort((a, b) => a.askUsdcPerBtc - b.askUsdcPerBtc);
-  return { chosen: candidates[0], reason: "ok" };
+  const best = candidates[0];
+
+  // Partner tie-breaker (env-gated; default disabled → pure best execution).
+  const partnerVenue = String(process.env.SS_VENUE_PARTNER ?? "").toLowerCase();
+  const maxSpreadPct = Number(process.env.SS_VENUE_PARTNER_MAX_SPREAD_PCT ?? "0");
+  if (partnerVenue && maxSpreadPct > 0 && best.venue !== partnerVenue) {
+    const partner = candidates.find((c) => c.venue === partnerVenue);
+    if (partner && best.askUsdcPerBtc > 0) {
+      const spreadVsBest = (partner.askUsdcPerBtc - best.askUsdcPerBtc) / best.askUsdcPerBtc;
+      if (spreadVsBest <= maxSpreadPct) {
+        return { chosen: partner, reason: "ok", best_venue: best.venue, partner_preferred: true, spread_vs_best_pct: +spreadVsBest.toFixed(5) };
+      }
+    }
+  }
+  return { chosen: best, reason: "ok", best_venue: best.venue, partner_preferred: false, spread_vs_best_pct: 0 };
 };
 
 export const buildQuote = async (params: {

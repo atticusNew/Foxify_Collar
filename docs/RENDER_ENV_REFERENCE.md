@@ -114,6 +114,12 @@ Everything else has sensible defaults you usually don't need to think about.
 | `VOLUME_COVER_HEDGE_MANAGER_ENABLED` | `true` | Volume-cover hedge manager. |
 | `VOLUME_COVER_AUTH_DISABLED` | `false` | Disable auth on volume-cover routes (dev only). |
 
+### Venue selection (best execution + partner tie-breaker)
+| Variable | Default | Description |
+|---|---|---|
+| `SS_VENUE_PARTNER` | (unset) | Partner venue for volume routing (e.g. `bullish`). When unset → **pure best execution** (cheapest depth-qualified venue wins, no bias). |
+| `SS_VENUE_PARTNER_MAX_SPREAD_PCT` | `0` (disabled) | Route a leg to `SS_VENUE_PARTNER` only when its ask is within this fraction of the BEST venue's ask (e.g. `0.02` = ≤2% worse). Sends partnership volume to the partner when it costs the platform ≈nothing, but NEVER when materially worse. `0` = tie-breaker off. Decision is auditable (best_venue / spread_vs_best_pct / partner_preferred). |
+
 ### Regime calibration + projection + sweep tuning (two-sided)
 | Variable | Default | Description |
 |---|---|---|
