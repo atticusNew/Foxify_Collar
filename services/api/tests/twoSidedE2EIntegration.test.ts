@@ -38,6 +38,8 @@ import { FeedService } from "../src/singleSide/twoSided/feedService";
 import { DvolService } from "../src/singleSide/twoSided/dvolService";
 import { MockStrangleExecutor } from "../src/singleSide/twoSided/executor";
 import type { LiveAnchorProvider } from "../src/singleSide/twoSided/quoteEngine";
+import type { Regime } from "../src/singleSide/twoSided/featureFlag";
+import type { DvolSample } from "../src/singleSide/twoSided/dvolService";
 
 const FOXIFY_TOKEN = "test-foxify-e2e-token";
 const ADMIN_TOKEN = "test-admin-e2e-token";
@@ -46,7 +48,16 @@ const NETWORK_AVAILABLE = process.env.BLOCK_NETWORK_TESTS !== "1";
 const skipIfNoNetwork = (name: string, fn: () => Promise<void>) =>
   NETWORK_AVAILABLE ? test(name, fn) : test(`SKIPPED (no network): ${name}`, () => { /* skip */ });
 
-const buildE2E = async () => {
+/**
+ * @param opts.forceRegime When set, pins the regime the routes see (overriding the
+ *   live DVOL classification) so the activation tests are DETERMINISTIC instead of
+ *   depending on whatever volatility BTC happens to be in. The price FEED stays live
+ *   (real spot). We force `moderate` (DVOL 50) for activation tests because: calm is a
+ *   hard stand-down, and elevated/stress (DVOL>60) trip the Atticus halt — only
+ *   moderate cleanly activates. Without this the tests false-fail whenever the market
+ *   is calm (the common case) or use the now-pruned pair_50k_2pct cell.
+ */
+const buildE2E = async (opts: { forceRegime?: { regime: Regime; dvol: number } } = {}) => {
   process.env.FOXIFY_API_KEY = FOXIFY_TOKEN;
   process.env.PILOT_ADMIN_TOKEN = ADMIN_TOKEN;
 
@@ -69,6 +80,13 @@ const buildE2E = async () => {
 
   const dvolService = new DvolService({ log: () => {} });
   await dvolService.tick(); // one real DVOL poll
+
+  // Pin the regime for deterministic activation tests (keeps the live price feed).
+  if (opts.forceRegime) {
+    const { regime, dvol } = opts.forceRegime;
+    const forced: DvolSample = { dvol, sigmaAnnual: dvol / 100, regime, asOfMs: Date.now() };
+    dvolService.getCurrentDvol = () => forced;
+  }
 
   // Mock anchor provider returns deterministic anchors based on current feed spot
   const feed = feedService.getCurrentFeed();
@@ -147,14 +165,16 @@ skipIfNoNetwork("E2E: live DVOL reaches /foxify/v2/regime with regime classifica
 });
 
 skipIfNoNetwork("E2E: full activate flow with live feed produces 201 + DB writes", async () => {
-  const { app, pool, cleanup } = await buildE2E();
+  // Deterministic moderate regime + a currently-allowlisted ATM straddle cell
+  // (pair_50k_2pct was pruned 2026-06-01). Live price feed still real.
+  const { app, pool, cleanup } = await buildE2E({ forceRegime: { regime: "moderate", dvol: 50 } });
   try {
     const r = await app.inject({
       method: "POST",
       url: "/foxify/v2/activate",
       headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
       payload: {
-        cellId: "pair_50k_2pct",
+        cellId: "pair_50k_3pct_atm_3d",
         maxAcceptableHedgeCostUsdc: 10_000, // generous cap
         foxifyPairRef: "fxy-e2e-" + Date.now()
       }
@@ -170,7 +190,13 @@ skipIfNoNetwork("E2E: full activate flow with live feed produces 201 + DB writes
     assert.ok(body.call_strike > 0);
     assert.ok(body.trigger_down_price > 0);
     assert.ok(body.trigger_up_price > body.trigger_down_price);
-    
+    // Both venues are represented end-to-end (mock anchors route put→bullish,
+    // call→deribit) — confirms the cross-venue leg routing carries the venue
+    // through activation. (Real Bullish *price* reachability is proven by the
+    // live BULLISH_LIVE probe + the deployed chain-probe/venue-probe endpoints.)
+    assert.ok(["bullish", "deribit"].includes(body.put_leg.venue), `put venue: ${body.put_leg.venue}`);
+    assert.ok(["bullish", "deribit"].includes(body.call_leg.venue), `call venue: ${body.call_leg.venue}`);
+
     // Verify DB has the pair
     const pair = await getPairById(pool, body.pair_id);
     assert.ok(pair);
@@ -179,14 +205,14 @@ skipIfNoNetwork("E2E: full activate flow with live feed produces 201 + DB writes
 });
 
 skipIfNoNetwork("E2E: full lifecycle: activate → manually transition to triggered → status reflects", async () => {
-  const { app, pool, cleanup } = await buildE2E();
+  const { app, pool, cleanup } = await buildE2E({ forceRegime: { regime: "moderate", dvol: 50 } });
   try {
     const activate = await app.inject({
       method: "POST",
       url: "/foxify/v2/activate",
       headers: { "x-foxify-token": FOXIFY_TOKEN, "content-type": "application/json" },
       payload: {
-        cellId: "pair_50k_2pct",
+        cellId: "pair_50k_3pct_atm_3d",
         maxAcceptableHedgeCostUsdc: 10_000,
         foxifyPairRef: "fxy-e2e-lifecycle-" + Date.now()
       }

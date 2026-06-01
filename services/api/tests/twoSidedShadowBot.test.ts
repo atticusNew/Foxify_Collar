@@ -4,10 +4,11 @@
  * touching the live Render endpoint.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, before, after } from "node:test";
+import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { spawn, type ChildProcess } from "node:child_process";
-import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 type MockState = {
   regime: string;
@@ -33,7 +34,7 @@ const resetState = (): void => {
   };
 };
 
-beforeAll(async () => {
+before(async () => {
   resetState();
   await new Promise<void>((resolve) => {
     server = createServer((req, res) => {
@@ -80,14 +81,19 @@ beforeAll(async () => {
   });
 });
 
-afterAll(async () => {
+after(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
 const runBotForOneTick = async (waitMs = 5_000): Promise<{ stdout: string; stderr: string }> => {
-  const scriptPath = path.resolve(__dirname, "../scripts/integration/foxifyShadowBot.ts");
+  const scriptPath = fileURLToPath(new URL("../scripts/integration/foxifyShadowBot.ts", import.meta.url));
   return new Promise((resolve) => {
+    // detached:true → the child is its own process-group leader, so we can kill the
+    // WHOLE tree (npx → node → tsx → bot) via the negative PID. Without this, SIGKILL
+    // on the `npx` wrapper leaves the bot grandchild alive, holding the stdio pipes
+    // open and HANGING the test runner after the assertions pass.
     const child: ChildProcess = spawn("npx", ["tsx", scriptPath], {
+      detached: true,
       env: {
         ...process.env,
         FOXIFY_API_URL: `http://127.0.0.1:${serverPort}`,
@@ -103,7 +109,14 @@ const runBotForOneTick = async (waitMs = 5_000): Promise<{ stdout: string; stder
     const finish = (): void => {
       if (resolved) return;
       resolved = true;
-      try { child.kill("SIGKILL"); } catch { /* already dead */ }
+      // Kill the entire detached process group (negative PID) so no grandchild
+      // (the bot) survives to keep the event loop / pipes alive.
+      try {
+        if (typeof child.pid === "number") process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        try { child.kill("SIGKILL"); } catch { /* already dead */ }
+      }
       resolve({ stdout, stderr });
     };
     child.stdout?.on("data", (d) => {
@@ -128,11 +141,11 @@ describe("foxifyShadowBot", () => {
 
     await runBotForOneTick();
 
-    expect(state.activateCalls.length).toBeGreaterThanOrEqual(1);
+    assert.ok(state.activateCalls.length >= 1, `expected >=1 activate call, got ${state.activateCalls.length}`);
     const call = state.activateCalls[0];
-    expect(call.cellId).toBe("pair_25k_5pct_otm_short");
-    expect(call.isShadow).toBe(true);
-    expect(call.foxifyPairRef).toMatch(/^shadow-bot-/);
+    assert.equal(call.cellId, "pair_25k_5pct_otm_short");
+    assert.equal(call.isShadow, true);
+    assert.match(call.foxifyPairRef, /^shadow-bot-/);
   });
 
   it("falls through to second preferred cell when first rejected", { timeout: 30_000 }, async () => {
@@ -142,9 +155,9 @@ describe("foxifyShadowBot", () => {
 
     await runBotForOneTick();
 
-    expect(state.activateCalls.length).toBe(2);
-    expect(state.activateCalls[0].cellId).toBe("pair_25k_5pct_otm_short");
-    expect(state.activateCalls[1].cellId).toBe("pair_50k_4pct_otm_short");
+    assert.equal(state.activateCalls.length, 2);
+    assert.equal(state.activateCalls[0].cellId, "pair_25k_5pct_otm_short");
+    assert.equal(state.activateCalls[1].cellId, "pair_50k_4pct_otm_short");
   });
 
   it("skips activation when atticus halt active", { timeout: 30_000 }, async () => {
@@ -155,8 +168,8 @@ describe("foxifyShadowBot", () => {
 
     const r = await runBotForOneTick();
 
-    expect(state.activateCalls.length).toBe(0);
-    expect(r.stdout).toMatch(/activate skipped — halt active/);
+    assert.equal(state.activateCalls.length, 0);
+    assert.match(r.stdout, /activate skipped — halt active/);
   });
 
   it("uses elevated regime cells when regime is elevated", { timeout: 30_000 }, async () => {
@@ -165,8 +178,8 @@ describe("foxifyShadowBot", () => {
 
     await runBotForOneTick();
 
-    expect(state.activateCalls.length).toBeGreaterThanOrEqual(1);
+    assert.ok(state.activateCalls.length >= 1, `expected >=1 activate call, got ${state.activateCalls.length}`);
     // elevated prefers pair_50k_5pct_otm first
-    expect(state.activateCalls[0].cellId).toBe("pair_50k_5pct_otm");
+    assert.equal(state.activateCalls[0].cellId, "pair_50k_5pct_otm");
   });
 });
