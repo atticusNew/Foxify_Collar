@@ -46,6 +46,17 @@ import { getMetrics, METRIC_NAMES } from "./metrics";
 export const isCalmActivationAllowed = (): boolean =>
   String(process.env.SS_TWO_SIDED_ALLOW_CALM ?? "false").toLowerCase() === "true";
 
+/**
+ * Calm SHADOW activation is allowed by DEFAULT (separate from the LIVE block
+ * above). Shadow fires risk no real money (gated by SS_TWO_SIDED_LIVE_ENABLED),
+ * but they generate valuable close-stack + realized-vs-MC reconciliation data
+ * while the market sits in calm (which is most of the time). Set
+ * SS_TWO_SIDED_ALLOW_CALM_SHADOW=false to suppress even shadow calm fires.
+ * NOTE: calm LIVE remains hard-disabled regardless of this flag.
+ */
+export const isCalmShadowAllowed = (): boolean =>
+  String(process.env.SS_TWO_SIDED_ALLOW_CALM_SHADOW ?? "true").toLowerCase() === "true";
+
 export type ActivateRequest = {
   cellId: string;
   maxAcceptableHedgeCostUsdc: number;

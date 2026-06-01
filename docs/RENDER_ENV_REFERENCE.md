@@ -70,6 +70,7 @@ Everything else has sensible defaults you usually don't need to think about.
 | `SS_TWO_SIDED_MAX_PAIRS_PER_DAY` | int | `2` | Hard cap on real-money activations per day. Increase incrementally as confidence grows. |
 | `SS_TWO_SIDED_CELL_ALLOWLIST` | csv | `pair_50k_2pct` | Global cell allowlist (env-level). Per-regime allowlists are stored in DB; override via `/admin/foxify/v2/cell-allowlist`. |
 | `SS_TWO_SIDED_NEWBORN_REVIEW_PER_REGIME` | int | `10` | After N newborn triggers in a regime, system auto-halts for operator review. |
+| `SS_TWO_SIDED_ALLOW_CALM_SHADOW` | bool | `true` | Allows **calm SHADOW** activations (zero real money — gated by `SS_TWO_SIDED_LIVE_ENABLED`) so close-stack + realized-vs-MC validation data accrues while the market is calm. Calm **LIVE** stays hard-off regardless. Set `false` to suppress even shadow calm fires. |
 | `SS_TWO_SIDED_ALLOW_CALM` | bool | `false` | Calm is a **validated permanent stand-down** — no structure is profitable in calm (long loses to theta+friction; short premium / iron condor is negative-EV and *worsens* with size, 0% profitable at 150k). When `false` (default), activation in calm is **hard-disabled** in the activate handler (before the allowlist, so a DB override can't re-enable it) AND in the shadow auto-loop. Set `true` ONLY for deliberate loss-leader volume / research. |
 
 ---

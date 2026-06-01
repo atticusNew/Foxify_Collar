@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { newDb } from "pg-mem";
 import { ensureTwoSidedSchema } from "../src/singleSide/twoSided/db";
-import { handleActivate, isCalmActivationAllowed } from "../src/singleSide/twoSided/activateHandler";
+import { handleActivate, isCalmActivationAllowed, isCalmShadowAllowed } from "../src/singleSide/twoSided/activateHandler";
 import { MockStrangleExecutor } from "../src/singleSide/twoSided/executor";
 import { PHASE_0_CELLS } from "../src/singleSide/twoSided/cellConfig";
 import { DEFAULT_CELL_ALLOWLIST, ensureCellAllowlistSchema } from "../src/singleSide/twoSided/cellAllowlist";
@@ -62,6 +62,21 @@ test("isCalmActivationAllowed: default false; true only when env === 'true'", as
   await withEnv("false", async () => assert.equal(isCalmActivationAllowed(), false));
   await withEnv("TRUE", async () => assert.equal(isCalmActivationAllowed(), true));
   await withEnv("true", async () => assert.equal(isCalmActivationAllowed(), true));
+});
+
+test("isCalmShadowAllowed: default TRUE (calm shadow data accrues); false only when explicitly disabled", () => {
+  const prev = process.env.SS_TWO_SIDED_ALLOW_CALM_SHADOW;
+  try {
+    delete process.env.SS_TWO_SIDED_ALLOW_CALM_SHADOW;
+    assert.equal(isCalmShadowAllowed(), true, "default allows calm shadow (zero-risk data)");
+    process.env.SS_TWO_SIDED_ALLOW_CALM_SHADOW = "true";
+    assert.equal(isCalmShadowAllowed(), true);
+    process.env.SS_TWO_SIDED_ALLOW_CALM_SHADOW = "false";
+    assert.equal(isCalmShadowAllowed(), false, "operator can suppress calm shadow");
+  } finally {
+    if (prev === undefined) delete process.env.SS_TWO_SIDED_ALLOW_CALM_SHADOW;
+    else process.env.SS_TWO_SIDED_ALLOW_CALM_SHADOW = prev;
+  }
 });
 
 test("handleActivate: calm is hard-disabled by default (503 calm_regime_disabled, before allowlist)", async () => {

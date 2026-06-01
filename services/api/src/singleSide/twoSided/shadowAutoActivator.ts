@@ -24,7 +24,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { Pool } from "pg";
-import { handleActivate, isCalmActivationAllowed, type ActivateDeps } from "./activateHandler";
+import { handleActivate, isCalmShadowAllowed, type ActivateDeps } from "./activateHandler";
 import { computeActivationGate } from "./activationGate";
 import { getEffectiveAllowlist } from "./cellAllowlist";
 import { PHASE_0_CELLS } from "./cellConfig";
@@ -367,12 +367,11 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
     return { audit_id: auditId, decision, pair_id: null, chosen_cell_id: null, signal_tier: gate.signal_tier };
   }
 
-  // CALM HARD-DISABLE: suppress even no-risk shadow fires in calm by default
-  // (validated permanent stand-down — no structure profitable). The shadow loop
-  // omits getCurrentRegime so the activate-handler calm gate doesn't fire here;
-  // this is the equivalent guard. Escape hatch: SS_TWO_SIDED_ALLOW_CALM=true
-  // (deliberate loss-leader volume / research only).
-  if (gate.regime === "calm" && !isCalmActivationAllowed()) {
+  // CALM SHADOW: allowed by DEFAULT so zero-risk validation data accrues while
+  // the market is calm (close stack + realized-vs-MC). Calm LIVE stays hard-off
+  // (activate-handler gate + SS_TWO_SIDED_LIVE_ENABLED). Suppress calm shadow
+  // only if the operator explicitly sets SS_TWO_SIDED_ALLOW_CALM_SHADOW=false.
+  if (gate.regime === "calm" && !isCalmShadowAllowed()) {
     const decision = "skipped:calm_disabled";
     const auditId = await insertAuditRow(pool, {
       ...auditBase,
