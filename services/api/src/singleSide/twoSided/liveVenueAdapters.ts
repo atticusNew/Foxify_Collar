@@ -161,14 +161,21 @@ const snapUpToTick = (px: number, tick: number): number => Math.ceil(px / tick) 
 const snapDownToTick = (px: number, tick: number): number => Math.floor(px / tick) * tick;
 
 /**
- * Snap an option amount (BTC) to Deribit's contract step (0.01 BTC), rounding to the
- * NEAREST valid size. Returns 0 if the result is below the venue minimum (caller must
- * reject). Without this, a derived size like 0.35211 BTC (= notional/spot) is rejected by
- * Deribit ("amount not a multiple of contract size"), so the order never fills.
+ * Snap an option amount (BTC) DOWN to Deribit's contract step (0.1 BTC). Flooring (not
+ * rounding) is deliberate: it guarantees the traded size never EXCEEDS the quoted /
+ * budget-gated size, and it matches Bullish's per-venue behaviour (bullishIocLimit floors
+ * qty to its 0.01 step). Returns 0 if the floored result is below the venue minimum
+ * (caller rejects). Without this, a derived size like 0.35211 BTC (= notional/spot) is
+ * rejected by Deribit ("amount must be a multiple of the minimum order size").
+ *
+ * Snapping is PER-VENUE at the boundary ON PURPOSE — NOT at quote time — because the two
+ * legs can route to different venues with different steps (Deribit 0.1 vs Bullish 0.01);
+ * a single quote-level snap would wrongly coarsen the finer-grained venue.
  */
 const snapAmountToStep = (btc: number, step: number, min: number): number => {
   if (!Number.isFinite(btc) || btc <= 0) return 0;
-  const snapped = +(Math.round(btc / step) * step).toFixed(8);
+  // +1e-9 absorbs float-division error (e.g. 0.3/0.1 = 2.9999996 in JS would floor to 2).
+  const snapped = +(Math.floor(btc / step + 1e-9) * step).toFixed(8);
   return snapped < min ? 0 : snapped;
 };
 

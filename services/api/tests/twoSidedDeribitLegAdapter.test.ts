@@ -24,11 +24,11 @@ const makeClient = (cap: Captured): DeribitClientLike => ({
 const adapter = (cap: Captured, spot: number | null) =>
   new DeribitLegAdapter(makeClient(cap), { getCurrentSpotUsd: () => spot });
 
-test("buyLeg: snaps full-precision 0.35211 → 0.4 BTC (nearest 0.1 step) and converts USDC→BTC price", async () => {
+test("buyLeg: snaps full-precision 0.35211 → 0.3 BTC (floors to 0.1 step, never exceeds quoted size) and converts USDC→BTC price", async () => {
   const cap: Captured = {};
   const r = await adapter(cap, 73_000).buyLeg({ instrument: "BTC-3JUN26-70000-P", contractsBtc: 0.35211, maxAcceptableAskUsdcPerBtc: 1_150, clientOrderId: "x" });
   assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(cap.order?.amount, 0.4, "amount snapped to a valid 0.1 multiple");
+  assert.equal(cap.order?.amount, 0.3, "amount floored to a valid 0.1 multiple");
   assert.equal(cap.order?.side, "buy");
   assert.equal(cap.order?.timeInForce, "immediate_or_cancel");
   // price: 1150/73000 = 0.01575 → snap UP to 0.0001 tick = 0.0158
@@ -51,11 +51,11 @@ test("buyLeg: amount below venue min (0.04 → 0) is REJECTED before any order i
   assert.equal(cap.order, undefined, "no order placed for sub-min size");
 });
 
-test("sellLeg: snaps amount to 0.1 step (0.35211 → 0.4) so close matches the held size", async () => {
+test("sellLeg: floors amount to 0.1 step (0.35211 → 0.3) so close matches the held size", async () => {
   const cap: Captured = {};
   const r = await adapter(cap, 73_000).sellLeg({ instrument: "i", contractsBtc: 0.35211, minAcceptableBidUsdcPerBtc: 500, clientOrderId: "x" });
   assert.equal(r.ok, true);
-  assert.equal(cap.order?.amount, 0.4);
+  assert.equal(cap.order?.amount, 0.3);
   assert.equal(cap.order?.side, "sell");
 });
 
