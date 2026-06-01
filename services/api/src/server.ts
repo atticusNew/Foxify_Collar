@@ -8638,6 +8638,15 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       console.warn("[FoxifyV2] Bullish disabled (PILOT_BULLISH_ENABLED=false). Cache will run Deribit-only.");
     }
 
+    // Live feed FIRST — the Bullish chain fetch centers its strike window on the CURRENT
+    // spot (below), so the feed service must exist before the cache providers reference it.
+    // (Previously the Bullish fetch used cached?.spot ?? 75_000, which defaulted to 75k
+    // whenever the cache snapshot was null mid-refresh → it centered the Bullish strike
+    // window ~$3k above the real ATM and missed the strikes where Bullish actually quotes,
+    // chronically under-covering Bullish in venue selection.)
+    const v2FeedService = new FeedService({ pollPeriodMs: 5_000 });
+    await v2FeedService.start();
+
     // Liquid chain cache — Deribit always, Bullish if creds present.
     // Two-step init to allow Bullish provider to reference cache.getCached() for spot.
     const v2Providers: VenueChainProvider[] = [
@@ -8657,8 +8666,14 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       v2Providers.push({
         venue: "bullish",
         fetch: async () => {
+          // Center the Bullish strike window on the LIVE feed spot (always current),
+          // falling back to the cache's last spot, then a constant. This guarantees we
+          // fetch the orderbooks at the strikes Bullish is quoting around the real ATM.
+          const liveSpot = v2FeedService.getCurrentFeed()?.canonicalPrice;
           const cached = v2LiquidCache.getCached();
-          const centerSpot: number = cached?.spot ?? 75_000;
+          const centerSpot: number = (typeof liveSpot === "number" && liveSpot > 0)
+            ? liveSpot
+            : (cached?.spot ?? 75_000);
           return fetchBullishChainSnapshot(v2BullishClient, centerSpot, {
             centerSpot,
             centerTenorDays: 2,         // narrower: was 3d, now 2d (covers 1-3d cells well enough)
@@ -8692,13 +8707,13 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     // one data point at boot, then DvolService went stale after 5 min and
     // regime returned null. start() does an immediate tick AND schedules the
     // recurring setInterval timer.
-    const v2FeedService = new FeedService({ pollPeriodMs: 5_000 });
+    // (v2FeedService created + started above, before the chain cache, so the Bullish
+    // provider can center on the live spot.)
     const v2DvolService = new DvolService({ pollPeriodMs: 60_000 });
     // RvService: realized-vol computation over rolling 24h, refreshed every 5min.
     // Used by /foxify/v2/should_activate to compute vol risk premium (IV - RV)
     // for calm-regime tactical override.
     const v2RvService = new RvService({ pollPeriodMs: 5 * 60_000, lookbackHours: 24 });
-    await v2FeedService.start();
     await v2DvolService.start();
     await v2RvService.start();
 
