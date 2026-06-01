@@ -296,6 +296,20 @@ test("hardening: admin POST tolerates form-urlencoded body (no 415)", async () =
   } finally { await cleanup(); }
 });
 
+test("seed-settlements: guards when rvService/forceTriggerPair not wired (503)", async () => {
+  const { app, cleanup } = await buildApp(); // harness wires neither rvService nor forceTriggerPair
+  try {
+    const r = await app.inject({
+      method: "POST",
+      url: "/admin/foxify/v2/shadow-auto/seed-settlements",
+      headers: { "x-admin-token": ADMIN_TOKEN, "content-type": "application/json" },
+      payload: JSON.stringify({ cell_id: "pair_25k_5pct_otm_3d", count: 3 })
+    });
+    assert.equal(r.statusCode, 503);
+    assert.match(r.json().error, /rv_service_unavailable|force_trigger_unavailable/);
+  } finally { await cleanup(); }
+});
+
 test("venue-probe: shows per-leg venue choice; legs can split across venues", async () => {
   const { app, cleanup } = await buildApp();
   try {

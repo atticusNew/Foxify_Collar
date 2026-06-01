@@ -872,6 +872,56 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * POST /admin/foxify/v2/shadow-auto/seed-settlements
+   *
+   * Batch helper to BUILD the realized-vs-MC validation dataset without manual
+   * looping: force-activates N shadow pairs (bypassing signal/allowlist, shadow-
+   * only — zero real money) and force-triggers each (mode=fast) so they head to
+   * settlement via the runtime. After they settle, GET /realized-vs-mc shows the
+   * reconciliation. Intended for calm markets where the signal won't fire.
+   *
+   * Body: { cell_id?, count?=5 (1..25), side?="down"|"up" }
+   */
+  app.post<{ Body?: { cell_id?: string; count?: number; side?: "down" | "up" } }>(
+    "/admin/foxify/v2/shadow-auto/seed-settlements",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      if (!deps.rvService) { reply.code(503).send({ error: "rv_service_unavailable" }); return; }
+      if (!deps.forceTriggerPair) { reply.code(503).send({ error: "force_trigger_unavailable", message: "forceTriggerPair not wired" }); return; }
+      const body = req.body ?? {};
+      const count = Math.max(1, Math.min(25, Math.floor(Number(body.count ?? 5))));
+      const cellId = typeof body.cell_id === "string" ? body.cell_id : undefined;
+      const side: "down" | "up" = body.side === "up" ? "up" : "down";
+      const { forceShadowActivation, readAutoActivatorConfig, ensureShadowAuditSchema } = await import("./shadowAutoActivator");
+      await ensureShadowAuditSchema(deps.pool);
+      const cfg = deps.shadowAutoActivatorConfig ?? readAutoActivatorConfig();
+      const activated: string[] = [];
+      const triggered: string[] = [];
+      const failures: Array<Record<string, unknown>> = [];
+      for (let i = 0; i < count; i++) {
+        try {
+          const act = await forceShadowActivation(
+            { pool: deps.pool, dvolService: deps.dvolService, rvService: deps.rvService, feedService: deps.feedService, liquidChainCache: deps.liquidChainCache ?? null, anchorProvider: deps.anchorProvider, config: cfg },
+            { cellId, ignoreHalt: true }
+          );
+          if (!act.pair_id) { failures.push({ i, step: "activate", decision: act.decision }); continue; }
+          activated.push(act.pair_id);
+          const trig = await deps.forceTriggerPair(act.pair_id, side, "fast");
+          if (trig.ok) triggered.push(act.pair_id);
+          else failures.push({ i, step: "trigger", pair_id: act.pair_id, error: trig.error });
+        } catch (e) {
+          failures.push({ i, step: "exception", error: (e as Error).message });
+        }
+      }
+      reply.send({
+        requested: count, activated: activated.length, triggered: triggered.length,
+        pair_ids: activated, failures,
+        note: "SHADOW ONLY (no real money). Pairs were force-triggered (mode=fast) and settle via the runtime shortly. Re-check GET /admin/foxify/v2/realized-vs-mc?regime=<current> once settled. Tagged with the regime at activation (calm now)."
+      });
+    }
+  );
+
+  /**
    * POST /admin/foxify/v2/cell-sweep
    *
    * Runs the Foxify-duration cell optimization sweep. By default uses
