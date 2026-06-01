@@ -193,6 +193,57 @@ Then in Render set `SS_TWO_SIDED_LIVE_ENABLED=false` (and `FOXIFY_V2_LIVE_EXECUT
 - Move allowlist to the validated `pair_150k_3pct_atm_3d` and raise `SS_TWO_SIDED_MAX_PAIRS_PER_DAY` incrementally.
 - Set `SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC` to the funded ceiling (see RENDER_ENV_REFERENCE capital table).
 
+## 9. Closing a live pair + reconciling an OUT-OF-BAND (manual venue) close
+
+There are two ways a live pair's legs get sold, and they need **different** tools:
+
+| Situation | Legs still held by us? | Tool |
+|-----------|------------------------|------|
+| In-system close (let the engine sell) | yes | `POST /foxify/v2/close` (active) or `respawn-close` (stuck unwinding) |
+| You closed the legs **directly on the venue** (Bullish/Deribit UI/API) | **no** | `POST /admin/foxify/v2/reconcile-settle` |
+
+⚠️ **Do NOT use `respawn-close` after closing on the venue.** It re-drives the
+force-close runtime, which will try to **re-sell legs you no longer hold** (a
+real order against a flat position — risks opening a short). Use
+`reconcile-settle`, which records the realized proceeds and settles with **zero
+orders**.
+
+### 9.1 Find pairs that need reconciling
+```bash
+# Lists non-terminal pairs; likely_out_of_band=true ⇒ closed on-venue, not synced.
+curl --http1.1 -sS -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" \
+  "$PILOT_API_BASE/admin/foxify/v2/stuck-pairs" \
+  | jq '{total_non_terminal, likely_out_of_band_count, pairs}'
+```
+
+### 9.2 Reconcile-settle from the REAL venue proceeds (no orders placed)
+Use the actual USDC you received per leg from the venue fills. Per-leg is best
+(it also writes each leg's sell record); a single total also works.
+```bash
+# Per-leg (preferred):
+curl --http1.1 -sS -X POST -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  "$PILOT_API_BASE/admin/foxify/v2/reconcile-settle" \
+  -d '{"pair_id":"<PAIR_ID>","put_proceeds_usdc":<PUT_USDC>,"call_proceeds_usdc":<CALL_USDC>,"note":"closed both legs on Deribit UI"}' | jq .
+
+# OR a single total if you only know the combined salvage:
+curl --http1.1 -sS -X POST -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  "$PILOT_API_BASE/admin/foxify/v2/reconcile-settle" \
+  -d '{"pair_id":"<PAIR_ID>","salvage_proceeds_usdc":<TOTAL_USDC>,"note":"manual venue close"}' | jq .
+```
+Response shows `status:"settled"`, `stepped_from`, `salvage_proceeds_usdc`,
+`uplift_usdc`, `foxify_share_usdc`, `atticus_share_usdc`, `outcome`. The pair is
+now terminal and drops out of `bootResurrect` (so a redeploy won't touch it).
+`deliver_webhook:true` is opt-in (default off — don't notify Foxify for a test).
+
+### 9.3 See the live (real-money) E2E balance
+The loss-leader scorecard is **shadow-only** — live pairs never appear there.
+Use `live-pnl` for real-money P&L (includes reconciled pairs, flagged `reconciled:true`):
+```bash
+curl --http1.1 -sS -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" \
+  "$PILOT_API_BASE/admin/foxify/v2/live-pnl" \
+  | jq '{overall, pairs:[.pairs[]|{id:.pair_id_short,cell:.cell_id,cost:.hedge_cost_total_usdc,salvage:.salvage_proceeds_usdc,net:.foxify_net_usdc,reconciled,exit_mode}]}'
+```
+
 ## Monitoring cadence (while any live pair is open)
 - `/diagnostics` every few minutes: feed health, venue status, halt state, active pair count.
 - `/admin/foxify/v2/shadow-auto/status` for the auto-loop decisions (if enabled).
