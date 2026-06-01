@@ -142,12 +142,33 @@ export type DeribitLegAdapterOpts = {
   getCurrentSpotUsd: () => number | null;
   /** Deribit option price tick (default 0.0001 BTC). */
   priceTickBtc?: number;
+  /** Deribit option AMOUNT step in BTC (default 0.01 — BTC options trade in 0.01 increments). */
+  amountStepBtc?: number;
+  /** Deribit option MIN amount in BTC (default 0.01). Orders below this (after snapping) are rejected. */
+  minAmountBtc?: number;
 };
 
 const DEFAULT_DERIBIT_PRICE_TICK_BTC = 0.0001;
+// Deribit BTC options: contract size 1 BTC, min order 0.01 BTC, amount step 0.01 BTC
+// (per Deribit support + public/get_instrument min_trade_amount). For a production-grade
+// build these could be read per-instrument from get_instrument; 0.01 is the correct default.
+const DEFAULT_DERIBIT_AMOUNT_STEP_BTC = 0.01;
+const DEFAULT_DERIBIT_MIN_AMOUNT_BTC = 0.01;
 
 const snapUpToTick = (px: number, tick: number): number => Math.ceil(px / tick) * tick;
 const snapDownToTick = (px: number, tick: number): number => Math.floor(px / tick) * tick;
+
+/**
+ * Snap an option amount (BTC) to Deribit's contract step (0.01 BTC), rounding to the
+ * NEAREST valid size. Returns 0 if the result is below the venue minimum (caller must
+ * reject). Without this, a derived size like 0.35211 BTC (= notional/spot) is rejected by
+ * Deribit ("amount not a multiple of contract size"), so the order never fills.
+ */
+const snapAmountToStep = (btc: number, step: number, min: number): number => {
+  if (!Number.isFinite(btc) || btc <= 0) return 0;
+  const snapped = +(Math.round(btc / step) * step).toFixed(8);
+  return snapped < min ? 0 : snapped;
+};
 
 export class DeribitLegAdapter implements DeribitLegClient {
   constructor(
@@ -166,10 +187,20 @@ export class DeribitLegAdapter implements DeribitLegClient {
     const priceBtcRaw = req.maxAcceptableAskUsdcPerBtc / spot;
     const priceBtc = snapUpToTick(priceBtcRaw, this.opts.priceTickBtc ?? DEFAULT_DERIBIT_PRICE_TICK_BTC);
 
+    // Snap amount to Deribit's 0.1 BTC contract step (reject if below the venue min).
+    const amount = snapAmountToStep(
+      req.contractsBtc,
+      this.opts.amountStepBtc ?? DEFAULT_DERIBIT_AMOUNT_STEP_BTC,
+      this.opts.minAmountBtc ?? DEFAULT_DERIBIT_MIN_AMOUNT_BTC
+    );
+    if (amount <= 0) {
+      return { ok: false, reason: "venue_error", detail: `Deribit buy: contracts ${req.contractsBtc} BTC below venue min ${this.opts.minAmountBtc ?? DEFAULT_DERIBIT_MIN_AMOUNT_BTC} after snapping to ${this.opts.amountStepBtc ?? DEFAULT_DERIBIT_AMOUNT_STEP_BTC} BTC step` };
+    }
+
     try {
       const resp = (await this.client.placeOrder({
         instrument: req.instrument,
-        amount: req.contractsBtc,
+        amount,
         side: "buy",
         type: "limit",
         price: priceBtc,
@@ -224,10 +255,20 @@ export class DeribitLegAdapter implements DeribitLegClient {
       ? snapDownToTick(priceBtcRaw, this.opts.priceTickBtc ?? DEFAULT_DERIBIT_PRICE_TICK_BTC)
       : 0.0001;
 
+    // Snap amount to Deribit's 0.1 BTC contract step (same as buy — must match the held size).
+    const amount = snapAmountToStep(
+      req.contractsBtc,
+      this.opts.amountStepBtc ?? DEFAULT_DERIBIT_AMOUNT_STEP_BTC,
+      this.opts.minAmountBtc ?? DEFAULT_DERIBIT_MIN_AMOUNT_BTC
+    );
+    if (amount <= 0) {
+      return { ok: false, reason: "venue_error", detail: `Deribit sell: contracts ${req.contractsBtc} BTC below venue min after snapping to ${this.opts.amountStepBtc ?? DEFAULT_DERIBIT_AMOUNT_STEP_BTC} BTC step` };
+    }
+
     try {
       const resp = (await this.client.placeOrder({
         instrument: req.instrument,
-        amount: req.contractsBtc,
+        amount,
         side: "sell",
         type: "limit",
         price: priceBtc,
