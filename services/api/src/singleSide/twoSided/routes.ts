@@ -1194,9 +1194,12 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * GET /admin/foxify/v2/regime-calibration — non-calm regimes should flip to
    * empirical_median, making the cell sweep's cross-regime results actionable.
    *
-   * Body (optional): { days?=90, resolutionSec?=3600, windowDays?=10 }
+   * Body (optional): { days?=90, resolutionSec?=3600, windowDays?=10,
+   *   start_iso?, end_iso? } — when BOTH start_iso+end_iso are given they target
+   *   an explicit HISTORICAL window (e.g. a past elevated/stress period to make
+   *   those regimes' calibration empirical). Span capped at 400 days.
    */
-  app.post<{ Body?: { days?: number; resolutionSec?: number; windowDays?: number } }>(
+  app.post<{ Body?: { days?: number; resolutionSec?: number; windowDays?: number; start_iso?: string; end_iso?: string } }>(
     "/admin/foxify/v2/dvol-backfill",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -1205,9 +1208,25 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const days = typeof body.days === "number" && body.days > 0 ? Math.min(365, body.days) : 90;
       const resolutionSec = typeof body.resolutionSec === "number" && body.resolutionSec > 0 ? body.resolutionSec : 3600;
       const windowDays = typeof body.windowDays === "number" && body.windowDays > 0 ? Math.min(30, body.windowDays) : 10;
+      // Optional explicit historical window (target a past volatile period).
+      let startMs: number | undefined;
+      let endMs: number | undefined;
+      if (typeof body.start_iso === "string" && typeof body.end_iso === "string") {
+        const s = Date.parse(body.start_iso);
+        const e = Date.parse(body.end_iso);
+        if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s) {
+          reply.code(400).send({ error: "invalid_request", message: "start_iso/end_iso must be valid ISO timestamps with end_iso > start_iso" });
+          return;
+        }
+        if (e - s > 400 * 86_400_000) {
+          reply.code(400).send({ error: "invalid_request", message: "explicit window span capped at 400 days" });
+          return;
+        }
+        startMs = s; endMs = e;
+      }
       try {
         const result = await backfillDvolHistory(deps.pool, {
-          days, resolutionSec, windowDays,
+          days, resolutionSec, windowDays, startMs, endMs,
           log: (msg) => console.log(`[dvolBackfill] ${msg}`)
         });
         reply.send({

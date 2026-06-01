@@ -43,7 +43,11 @@ const DEFAULT_TIMEOUT_MS = 4_000;
  * fetches for BACKOFF_MS to give the rate-limit window time to recover.
  * Without this, repeated 429s would keep happening on every refresh.
  */
-const BACKOFF_MS = 60_000;
+// Env-configurable so the operator can widen the cool-off if 429s persist on the
+// public endpoint (until Bullish whitelist / authed `registered.` access lands).
+// Wider backoff = fewer Bullish attempts = less chance of compounding rate limits
+// (chain just serves Deribit-only during the window). Default 60s.
+const BACKOFF_MS = Math.max(1_000, Number(process.env.BULLISH_RATE_LIMIT_BACKOFF_MS ?? "60000"));
 let _rateLimitedUntilMs = 0;
 
 const isRateLimited = (nowMs: number): boolean => nowMs < _rateLimitedUntilMs;

@@ -80,6 +80,15 @@ export const backfillDvolHistory = async (
     days?: number;
     resolutionSec?: number;
     windowDays?: number;
+    /**
+     * Explicit absolute window (ms epoch). When BOTH startMs and endMs are
+     * provided they OVERRIDE the `days`/`now` relative window — use this to
+     * target a HISTORICAL VOLATILE period (e.g. a past elevated/stress month)
+     * so regime calibration becomes empirical for those regimes. Still REAL
+     * Deribit data, just an arbitrary date range. endMs must be > startMs.
+     */
+    startMs?: number;
+    endMs?: number;
     fetch?: DvolBackfillFetch;
     nowMs?: number;
     log?: (msg: string) => void;
@@ -90,7 +99,10 @@ export const backfillDvolHistory = async (
   const windowDays = opts.windowDays ?? 10;
   const fetcher = opts.fetch ?? ((s, e, r) => fetchDvolWindowFromDeribit(s, e, r));
   const now = opts.nowMs ?? Date.now();
-  const start = now - days * MS_PER_DAY;
+  // Explicit window overrides the relative one (target historical vol periods).
+  const useExplicit = opts.startMs != null && opts.endMs != null && opts.endMs > opts.startMs;
+  const start = useExplicit ? (opts.startMs as number) : now - days * MS_PER_DAY;
+  const end = useExplicit ? (opts.endMs as number) : now;
   const log = opts.log ?? (() => {});
 
   await ensureDvolHistorySchema(pool);
@@ -103,8 +115,8 @@ export const backfillDvolHistory = async (
   let oldestMs: number | null = null;
   let newestMs: number | null = null;
 
-  for (let wStart = start; wStart < now; wStart += windowDays * MS_PER_DAY) {
-    const wEnd = Math.min(now, wStart + windowDays * MS_PER_DAY);
+  for (let wStart = start; wStart < end; wStart += windowDays * MS_PER_DAY) {
+    const wEnd = Math.min(end, wStart + windowDays * MS_PER_DAY);
     windows++;
     let bars: DvolBar[];
     try {
@@ -126,7 +138,8 @@ export const backfillDvolHistory = async (
 
   const after = await countRows(pool);
   return {
-    days, resolutionSec, windows, windowsFailed,
+    days: useExplicit ? +((end - start) / MS_PER_DAY).toFixed(2) : days,
+    resolutionSec, windows, windowsFailed,
     barsFetched, barsInserted: after - before,
     regimeBreakdown, oldestMs, newestMs
   };

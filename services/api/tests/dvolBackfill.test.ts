@@ -66,6 +66,24 @@ test("backfill: flips regime calibration to empirical for all regimes", async ()
   await pool.end();
 });
 
+test("backfill: explicit startMs/endMs targets a historical window (overrides days)", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  // Target a 30-day window ~200 days ago (e.g. a past volatile period), NOT now-days.
+  const endMs = NOW - 170 * 86_400_000;
+  const startMs = NOW - 200 * 86_400_000;
+  const res = await backfillDvolHistory(pool, {
+    days: 90, // should be IGNORED because explicit window provided
+    resolutionSec: 3600, windowDays: 10, fetch: cyclingFetch, nowMs: NOW, startMs, endMs
+  });
+  assert.equal(res.windows, 3, "30d / 10d = 3 windows");
+  assert.equal(res.barsFetched, 720, "30d hourly = 720 bars (explicit span, not 90d)");
+  assert.equal(res.barsInserted, 720);
+  assert.ok((res.oldestMs ?? 0) >= startMs && (res.newestMs ?? 0) < endMs, "bars fall inside the explicit window");
+  assert.ok(Math.abs(res.days - 30) < 0.01, "reported days reflects the explicit span");
+  await pool.end();
+});
+
 test("backfill: a failing window is counted but does not abort the rest", async () => {
   __resetCalibrationCache();
   const pool = makePool();
