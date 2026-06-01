@@ -74,16 +74,15 @@ export const computeLivePnl = async (
   pool: Pool | PoolClient,
   opts: { cells?: string[]; sinceIso?: string } = {}
 ): Promise<LivePnl> => {
+  // NOTE: cell filtering is applied in JS (below), not via SQL `= ANY($array)` —
+  // pg-mem does not bind array params reliably, and the live-pair set is tiny.
   const clauses = ["status = 'settled'", "is_shadow = FALSE", "foxify_share_usdc IS NOT NULL"];
   const params: unknown[] = [];
-  if (opts.cells && opts.cells.length > 0) {
-    params.push(opts.cells);
-    clauses.push(`cell_id = ANY($${params.length})`);
-  }
   if (opts.sinceIso) {
     params.push(opts.sinceIso);
     clauses.push(`created_at >= $${params.length}`);
   }
+  const cellFilter = opts.cells && opts.cells.length > 0 ? new Set(opts.cells) : null;
   const r = await pool.query<{
     pair_id: string;
     cell_id: string;
@@ -107,7 +106,8 @@ export const computeLivePnl = async (
     params
   );
 
-  const pairs: LivePnlPair[] = r.rows.map((row) => {
+  const filteredRows = cellFilter ? r.rows.filter((row) => cellFilter.has(row.cell_id)) : r.rows;
+  const pairs: LivePnlPair[] = filteredRows.map((row) => {
     const cost = Number(row.hedge_cost_total_usdc);
     const salvage = row.salvage_proceeds_usdc == null ? 0 : Number(row.salvage_proceeds_usdc);
     const foxifyShare = row.foxify_share_usdc == null ? 0 : Number(row.foxify_share_usdc);

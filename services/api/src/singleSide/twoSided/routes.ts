@@ -50,7 +50,7 @@ import {
 } from "./guardrails";
 import { togglePool, getPoolState } from "./deferredPool";
 import { clearNewbornReview, classifyRegime, getNewbornState, type Regime } from "./featureFlag";
-import { getEventsForPair, getLegsForPair, getPairById } from "./db";
+import { getEventsForPair, getPairById } from "./db";
 import { FeedService } from "./feedService";
 import { DvolService } from "./dvolService";
 import type { LiveAnchorProvider } from "./quoteEngine";
@@ -1309,45 +1309,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     async (req, reply) => {
       const staleMinutes = req.query.stale_minutes ? Number(req.query.stale_minutes) : 15;
       const { getRuntimeRegistry } = await import("./runtimeRegistry");
+      const { detectStuckPairs } = await import("./stuckPairs");
       const reg = getRuntimeRegistry();
-      const now = Date.now();
-      const r = await deps.pool.query(
-        `SELECT pair_id, cell_id, is_shadow, status, expires_at, updated_at, created_at
-           FROM two_sided_pair
-          WHERE status IN ('active','triggered','unwinding')
-          ORDER BY updated_at ASC`
-      );
-      const rows = [] as Array<Record<string, unknown>>;
-      for (const row of r.rows) {
-        const pairId = row.pair_id as string;
-        const updatedMs = row.updated_at ? Date.parse(String(row.updated_at)) : now;
-        const ageMin = Math.max(0, (now - updatedMs) / 60_000);
-        const pastExpiry = row.expires_at ? now > Date.parse(String(row.expires_at)) : false;
-        const hasRuntime = reg.getRuntime(pairId) != null;
-        const legs = await getLegsForPair(deps.pool, pairId);
-        const legsSold = legs.length === 2 && legs.every((l) => l.sellFilledAt != null);
-        const status = row.status as string;
-        const likelyOutOfBand = status === "unwinding" && ageMin >= staleMinutes && !hasRuntime;
-        rows.push({
-          pair_id: pairId,
-          cell_id: row.cell_id,
-          is_shadow: Boolean(row.is_shadow),
-          status,
-          age_minutes: +ageMin.toFixed(1),
-          past_expiry: pastExpiry,
-          has_runtime: hasRuntime,
-          legs_sold: legsSold,
-          likely_out_of_band: likelyOutOfBand
-        });
-      }
-      reply.send({
-        as_of: new Date(now).toISOString(),
-        stale_minutes: staleMinutes,
-        total_non_terminal: rows.length,
-        likely_out_of_band_count: rows.filter((x) => x.likely_out_of_band === true).length,
-        pairs: rows,
-        note: "likely_out_of_band pairs are candidates for POST /admin/foxify/v2/reconcile-settle (legs already closed on-venue). Pairs WITH a runtime / still-held legs should use respawn-close instead."
+      const report = await detectStuckPairs(deps.pool, {
+        staleMinutes,
+        hasRuntime: (pairId) => reg.getRuntime(pairId) != null
       });
+      reply.send(report);
     }
   );
 
