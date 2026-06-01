@@ -2,7 +2,7 @@
 
 Comprehensive list of every environment variable the platform reads, what it controls, the default value, and when to flip it. Grouped by category for fast operator lookup.
 
-Last updated: 2026-05-29
+Last updated: 2026-05-31
 
 ---
 
@@ -111,6 +111,23 @@ Everything else has sensible defaults you usually don't need to think about.
 | `VOLUME_COVER_TRIGGER_DETECTOR_ENABLED` | `true` | Volume-cover trigger detector poll. |
 | `VOLUME_COVER_HEDGE_MANAGER_ENABLED` | `true` | Volume-cover hedge manager. |
 | `VOLUME_COVER_AUTH_DISABLED` | `false` | Disable auth on volume-cover routes (dev only). |
+
+### Regime calibration + projection + sweep tuning (two-sided)
+| Variable | Default | Description |
+|---|---|---|
+| `SS_CALIB_WEIGHTING` | `median` | Calibration recency weighting: `median` (stable) or `ewma` (tracks regime transitions faster). |
+| `SS_CALIB_HALFLIFE_DAYS` | `14` | EWMA half-life in days (only used when weighting=`ewma`). |
+| `MIN_SIGMA_CALIB_SAMPLES` | `100` | Min DVOL samples in a regime before its sigma uses empirical (else synthetic default). |
+| `MIN_MARKUP_CALIB_SAMPLES` | `100` | Min chain-snapshot samples before a regime's markup uses empirical. |
+| `CALIBRATION_CACHE_TTL_MS` | `300000` | Regime-calibration cache TTL (5 min). Use `GET /admin/foxify/v2/regime-calibration?bypass_cache=true` to recompute immediately (e.g. right after a `dvol-backfill`). |
+| `SS_PROJECTION_REALIZED_MODE` | `blend` | How `scaling-projection` sources per-pair net once a cell has validated settlements: `off` (MC only), `blend` (weight=min(1,n/N) toward realized), `replace` (realized once n≥N). Per-call override via body `realized_mode`. |
+| `SS_PROJECTION_MIN_VALIDATED_SETTLEMENTS` | `20` | N — regime-tagged settled shadow pairs needed for full trust transfer to realized net (and real observed cycle-time). Per-call override via body `min_validated_settlements`. |
+| `SS_SWEEP_YIELD_EVERY` | `25` | Cell-sweep cedes the event loop every N sims so the API stays responsive during a full sweep (prevents empty replies / health-check restarts). Lower = more responsive, slightly slower sweep. |
+| `SS_ATTICUS_SPLIT_PCT` | `0.85` | Foxify keeps this fraction of positive option uplift; Atticus takes the rest (floored). Used by MC + sweep + projection. |
+| `SS_ATTICUS_FLOOR_USDC` | `25` | Minimum Atticus share on positive uplift (USDC). |
+| `FOXIFY_PERP_FRICTION_BPS` | (unset) | REAL perp round-trip friction (bps) for `straddle_gamma_scalp` sweep cells. Required (no hardcoded default) when sweeping gamma-scalp; from the venue fee schedule. |
+| `FOXIFY_PERP_FUNDING_BPS_PER_DAY` | `0` | Optional perp funding (bps/day) on held hedge notional for gamma-scalp cells. |
+| `FOXIFY_PERP_FRICTION_USDC` | `0` | Perp-pair round-trip friction (USDC) a cell's option net must COVER; ranked cells report `covers_friction` against this. Set to the real ~$200–300 for an honest read. |
 
 ---
 
