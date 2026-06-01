@@ -123,6 +123,29 @@ test("sweep: current regime gets result_tier='real', others get 'estimate'", asy
   await pool.end();
 });
 
+test("sweep: regimes filter restricts compute to requested regimes (others skipped)", async () => {
+  __resetCalibrationCache();
+  const pool = makePool();
+  await setupPool(pool);
+  const chain = makeChain([
+    { venue: "deribit", strike: 73000, optType: "put", tenorHours: 48, bid: 200, ask: 230 },
+    { venue: "deribit", strike: 73000, optType: "call", tenorHours: 48, bid: 200, ask: 230 }
+  ]);
+  const report = await runFullCellSweep(pool, {
+    spot: 73000, notionals: [50000], triggers: [0.03], strikeMoneyness: [0], tenors: [2],
+    autoClosePnlPcts: [0.30], autoCloseAbsoluteUsdcs: [250], nPaths: 50, venue: "auto",
+    regimes: ["calm"], liquidChainCache: chain, currentRegime: "calm"
+  }, { persistResults: false });
+  assert.equal(report.rankings.calm.result_tier, "real");
+  assert.ok(report.rankings.calm.topCells.length > 0, "calm computed");
+  for (const r of ["moderate", "elevated", "stress"] as const) {
+    assert.equal(report.rankings[r].result_tier, "chain_unavailable", `${r} should be skipped`);
+    assert.equal(report.rankings[r].topCells.length, 0);
+  }
+  assert.equal(report.resultCount, 1, "only the single calm sim was computed (no other-regime work)");
+  await pool.end();
+});
+
 test("sweep: cost_source and salvage_source fields populated when real prices used", async () => {
   __resetCalibrationCache();
   const pool = makePool();
