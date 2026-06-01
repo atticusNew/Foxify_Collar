@@ -52,6 +52,10 @@ export const liquidChainAnchorProvider = (cache: LiquidChainCache): LiveAnchorPr
         venue,
         symbol: q.instrument_name,
         askUsdcPerBtc: q.askUsdcPerBtc,
+        // Carry the bid so pickLegVenue can rank by ROUND-TRIP cost (buy ask →
+        // sell bid) — critical for venues with wide spreads (e.g. Bullish ~25%
+        // vs Deribit ~6%): a competitive ask alone is not best execution.
+        bidUsdcPerBtc: q.bidUsdcPerBtc,
         depthWithin2pctBtc: DEFAULT_DEPTH_BTC,
         pulledAt
       };

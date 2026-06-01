@@ -68,6 +68,9 @@ export type LegAnchorQuote = {
   venue: Venue;
   symbol: string;          // venue's instrument symbol
   askUsdcPerBtc: number;
+  /** Top-of-book bid (USDC/BTC). Optional — when present, venue selection ranks
+   * by ROUND-TRIP cost (buy ask → sell bid), penalizing wide spreads. */
+  bidUsdcPerBtc?: number;
   depthWithin2pctBtc: number;
   pulledAt: string;        // ISO
 };
@@ -154,18 +157,30 @@ const pickLegVenue = (
     if (hadAnyQuote) return { chosen: null, reason: "depth_insufficient" };
     return { chosen: null, reason: "no_venue" };
   }
-  candidates.sort((a, b) => a.askUsdcPerBtc - b.askUsdcPerBtc);
+  // ROUND-TRIP cost metric: the strategy BUYS (pays ask) then SELLS (receives
+  // bid), so a venue with a competitive ask but a WIDE spread (low bid) is NOT
+  // best execution. effective = 2·ask − bid (penalizes both a high ask AND a wide
+  // spread). When a venue's bid is unavailable, fall back to ask-only (entry cost)
+  // so callers without bid data behave exactly as before.
+  const effCost = (c: LegAnchorQuote): number =>
+    (c.bidUsdcPerBtc != null && Number.isFinite(c.bidUsdcPerBtc) && c.bidUsdcPerBtc > 0)
+      ? 2 * c.askUsdcPerBtc - c.bidUsdcPerBtc
+      : c.askUsdcPerBtc;
+  candidates.sort((a, b) => effCost(a) - effCost(b));
   const best = candidates[0];
 
   // Partner tie-breaker (env-gated; default disabled → pure best execution).
+  // Routes partnership volume to the partner venue ONLY when its ROUND-TRIP cost
+  // is within maxSpreadPct of the best venue's — never when materially worse.
   const partnerVenue = String(process.env.SS_VENUE_PARTNER ?? "").toLowerCase();
   const maxSpreadPct = Number(process.env.SS_VENUE_PARTNER_MAX_SPREAD_PCT ?? "0");
   if (partnerVenue && maxSpreadPct > 0 && best.venue !== partnerVenue) {
     const partner = candidates.find((c) => c.venue === partnerVenue);
-    if (partner && best.askUsdcPerBtc > 0) {
-      const spreadVsBest = (partner.askUsdcPerBtc - best.askUsdcPerBtc) / best.askUsdcPerBtc;
-      if (spreadVsBest <= maxSpreadPct) {
-        return { chosen: partner, reason: "ok", best_venue: best.venue, partner_preferred: true, spread_vs_best_pct: +spreadVsBest.toFixed(5) };
+    const bestEff = effCost(best);
+    if (partner && bestEff > 0) {
+      const costVsBest = (effCost(partner) - bestEff) / bestEff;
+      if (costVsBest <= maxSpreadPct) {
+        return { chosen: partner, reason: "ok", best_venue: best.venue, partner_preferred: true, spread_vs_best_pct: +costVsBest.toFixed(5) };
       }
     }
   }

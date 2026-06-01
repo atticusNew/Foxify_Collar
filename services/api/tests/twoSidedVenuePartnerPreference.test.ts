@@ -60,3 +60,31 @@ test("partner tie-breaker: Bullish is already cheapest → naturally chosen", as
     assert.equal(await quoteVenue(980), "bullish", "partner is best → chosen on price alone");
   });
 });
+
+// ── ROUND-TRIP AWARE: rank by 2·ask − bid (penalize wide spreads), not ask alone ──
+
+const anchorProviderRT = (bullishAsk: number, bullishBid: number, deribitAsk: number, deribitBid: number): LiveAnchorProvider => ({
+  getAnchorForLeg: async (strike, optType) => ({
+    bullish: { venue: "bullish", symbol: `B-${strike}-${optType}`, askUsdcPerBtc: bullishAsk, bidUsdcPerBtc: bullishBid, depthWithin2pctBtc: 50, pulledAt: new Date().toISOString() },
+    deribit: { venue: "deribit", symbol: `D-${strike}-${optType}`, askUsdcPerBtc: deribitAsk, bidUsdcPerBtc: deribitBid, depthWithin2pctBtc: 50, pulledAt: new Date().toISOString() }
+  })
+});
+const quoteVenueRT = async (bA: number, bB: number, dA: number, dB: number): Promise<string> => {
+  const r = await buildQuote({ cell: CELL, spot: SPOT, anchorProvider: anchorProviderRT(bA, bB, dA, dB), tier: TIERS[0], useStabilityCache: false });
+  if (!r.ok) throw new Error("quote failed");
+  return r.putLeg.venue;
+};
+
+test("round-trip: Bullish ask competitive (1010 vs 1000) but WIDE spread → REJECTED (the real Bullish case)", async () => {
+  await withEnv({ SS_VENUE_PARTNER: "bullish", SS_VENUE_PARTNER_MAX_SPREAD_PCT: "0.02" }, async () => {
+    // Deribit 1000/940 (tight); Bullish 1010/800 (wide). effCost: D=1060, B=1220 → +15% → reject.
+    assert.equal(await quoteVenueRT(1010, 800, 1000, 940), "deribit", "wide Bullish spread loses on round-trip despite competitive ask");
+  });
+});
+
+test("round-trip: Bullish ask slightly higher (1010 vs 1000) but TIGHTER spread → chosen (round-trip better)", async () => {
+  await withEnv({ SS_VENUE_PARTNER: "bullish", SS_VENUE_PARTNER_MAX_SPREAD_PCT: "0.02" }, async () => {
+    // Deribit 1000/940 (effCost 1060); Bullish 1010/990 (effCost 1030) → Bullish better round-trip.
+    assert.equal(await quoteVenueRT(1010, 990, 1000, 940), "bullish", "tighter Bullish round-trip wins even at higher ask");
+  });
+});

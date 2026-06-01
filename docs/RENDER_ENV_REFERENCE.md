@@ -118,7 +118,7 @@ Everything else has sensible defaults you usually don't need to think about.
 | Variable | Default | Description |
 |---|---|---|
 | `SS_VENUE_PARTNER` | (unset) | Partner venue for volume routing (e.g. `bullish`). When unset → **pure best execution** (cheapest depth-qualified venue wins, no bias). |
-| `SS_VENUE_PARTNER_MAX_SPREAD_PCT` | `0` (disabled) | Route a leg to `SS_VENUE_PARTNER` only when its ask is within this fraction of the BEST venue's ask (e.g. `0.02` = ≤2% worse). Sends partnership volume to the partner when it costs the platform ≈nothing, but NEVER when materially worse. `0` = tie-breaker off. Decision is auditable (best_venue / spread_vs_best_pct / partner_preferred). |
+| `SS_VENUE_PARTNER_MAX_SPREAD_PCT` | `0` (disabled) | Route a leg to `SS_VENUE_PARTNER` only when its **round-trip** cost (`2·ask − bid`, i.e. buy-ask→sell-bid, penalizing wide spreads) is within this fraction of the BEST venue's round-trip cost (e.g. `0.02` = ≤2% worse). Sends partnership volume to the partner when it costs the platform ≈nothing, but NEVER when materially worse — so a competitive *ask* with a wide *spread* (e.g. Bullish ~25% vs Deribit ~6%) is correctly rejected. `0` = tie-breaker off. Auditable (best_venue / spread_vs_best_pct / partner_preferred). Venue selection ranks by round-trip cost whenever bids are available. |
 
 ### Regime calibration + projection + sweep tuning (two-sided)
 | Variable | Default | Description |
