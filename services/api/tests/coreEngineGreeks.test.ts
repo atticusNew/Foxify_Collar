@@ -5,11 +5,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  bsCall, bsPut, bsCallDelta, bsPutDelta, bsGamma, bsVega, bsCallTheta, bsPutTheta
+  bsCall, bsPut, bsCallDelta, bsPutDelta, bsGamma, bsVega, bsCallTheta, bsPutTheta,
+  combinedStraddleGreeks, combinedStraddleGreeksSkew
 } from "../scripts/backtest/singleSide/coreEngine";
 
 // Hull (Options, Futures & Other Derivatives) worked example:
 const S = 49, K = 50, r = 0.05, sigma = 0.20, T = 0.3846;
+
+test("skew greeks: equal per-leg σ reduces to the single-σ straddle greeks", () => {
+  const flat = combinedStraddleGreeks(73000, 73000, 73000, 1, 3 / 365, 0.045, 0.5);
+  const skew = combinedStraddleGreeksSkew(73000, 73000, 73000, 1, 3 / 365, 0.045, 0.5, 0.5);
+  assert.deepEqual(skew, flat, "putσ==callσ → identical to single-σ form");
+});
+
+test("skew greeks: higher per-leg σ raises vega (smile-aware)", () => {
+  const lo = combinedStraddleGreeksSkew(73000, 71000, 75000, 1, 3 / 365, 0.045, 0.45, 0.45);
+  const hi = combinedStraddleGreeksSkew(73000, 71000, 75000, 1, 3 / 365, 0.045, 0.60, 0.60);
+  assert.ok(hi.vega_per_pct > lo.vega_per_pct, "higher IV → higher vega");
+});
 
 test("greeks: Hull known-answer values", () => {
   assert.ok(Math.abs(bsCallDelta(S, K, T, r, sigma) - 0.522) < 0.005, "call delta ~0.522");

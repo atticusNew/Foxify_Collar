@@ -38,7 +38,7 @@ import { priceOption, RISK_FREE_RATE } from "./optionPricing";
 import type { LiquidChainCache } from "./liquidChainCache";
 import type { DvolService } from "./dvolService";
 import { load5MinBars } from "../../../scripts/backtest/singleSide/monteCarloEngine";
-import { impliedVolFromPrice, combinedStraddleGreeks } from "../../../scripts/backtest/singleSide/coreEngine";
+import { impliedVolFromPrice, combinedStraddleGreeks, combinedStraddleGreeksSkew } from "../../../scripts/backtest/singleSide/coreEngine";
 
 /**
  * Option structure variant for a candidate cell.
@@ -181,6 +181,9 @@ export type CellSweepResult = {
   salvageSourceCall: SalvageSource;
   /** Whether this result is REAL (current regime + chain available) or ESTIMATE. */
   resultTier: "real" | "estimate" | "chain_unavailable";
+  /** Per-leg market-implied vol backed out of the real ask (skew-aware greeks). Null when chain unavailable / unsolvable. */
+  putIv: number | null;
+  callIv: number | null;
   mc: FoxifyDurationMcResult | null;
 };
 
@@ -512,7 +515,12 @@ const toRankedCell = (r: CellSweepResult, perpPairFrictionUsdc: number, spot: nu
   perp_pair_friction_usdc: +perpPairFrictionUsdc.toFixed(2),
   net_after_friction_usdc: +(((r.mc?.meanFoxifyNetUsdc ?? 0) - perpPairFrictionUsdc)).toFixed(2),
   covers_friction: (r.mc?.meanFoxifyNetUsdc ?? 0) - perpPairFrictionUsdc >= 0,
-  greeks: combinedStraddleGreeks(spot, r.putStrike, r.callStrike, r.contractsBtc, r.tenorDays / 365, RISK_FREE_RATE, r.sigmaUsed),
+  // Skew-aware greeks: use each leg's market-implied vol (from the real ask) when
+  // available — more accurate for non-ATM strangles. Falls back to single
+  // calibration σ when per-leg IV couldn't be solved (e.g. chain unavailable).
+  greeks: (r.putIv != null && r.callIv != null)
+    ? combinedStraddleGreeksSkew(spot, r.putStrike, r.callStrike, r.contractsBtc, r.tenorDays / 365, RISK_FREE_RATE, r.putIv, r.callIv)
+    : combinedStraddleGreeks(spot, r.putStrike, r.callStrike, r.contractsBtc, r.tenorDays / 365, RISK_FREE_RATE, r.sigmaUsed),
   gamma_scalp: r.mc?.gammaScalp ? {
     perp_hedge_pnl_usdc: +r.mc.gammaScalp.meanPerpHedgePnlUsdc.toFixed(2),
     perp_friction_usdc: +r.mc.gammaScalp.meanPerpFrictionUsdc.toFixed(2),
@@ -686,14 +694,18 @@ export const runFullCellSweep = async (
     // vol the option is priced/decayed at). Realized vol stays the regime
     // calibration sigma — so the cell's EV literally tests realized>implied from
     // real data. Venue-agnostic (no markIv dependency).
-    const isGammaScalp = candidate.structure === "straddle_gamma_scalp";
-    let impliedSigmaGs: number | null = null;
-    if (isGammaScalp && pricing) {
+    // Per-leg market-implied vol from the REAL asks (skew). Computed once per
+    // candidate; reused for both skew-aware greeks and the gamma-scalp implied σ.
+    let putIvReal: number | null = null;
+    let callIvReal: number | null = null;
+    if (pricing) {
       const Tyr = candidate.tenorDays / 365;
-      const putIv = impliedVolFromPrice(pricing.putAskPerBtc, config.spot, putStrike, Tyr, RISK_FREE_RATE, "put");
-      const callIv = impliedVolFromPrice(pricing.callAskPerBtc, config.spot, callStrike, Tyr, RISK_FREE_RATE, "call");
-      if (putIv != null && callIv != null) impliedSigmaGs = (putIv + callIv) / 2;
+      putIvReal = impliedVolFromPrice(pricing.putAskPerBtc, config.spot, putStrike, Tyr, RISK_FREE_RATE, "put");
+      callIvReal = impliedVolFromPrice(pricing.callAskPerBtc, config.spot, callStrike, Tyr, RISK_FREE_RATE, "call");
     }
+    const isGammaScalp = candidate.structure === "straddle_gamma_scalp";
+    const impliedSigmaGs: number | null = (isGammaScalp && putIvReal != null && callIvReal != null)
+      ? (putIvReal + callIvReal) / 2 : null;
 
     for (const regime of REGIMES) {
       const cal = calibration[regime];
@@ -729,6 +741,8 @@ export const runFullCellSweep = async (
               salvageSourcePut: "chain_unavailable",
               salvageSourceCall: "chain_unavailable",
               resultTier: "chain_unavailable",
+              putIv: null,
+              callIv: null,
               mc: null
             };
             allResults.push(result);
@@ -785,6 +799,8 @@ export const runFullCellSweep = async (
             salvageSourcePut: pricing.salvageSourcePut,
             salvageSourceCall: pricing.salvageSourceCall,
             resultTier,
+            putIv: putIvReal,
+            callIv: callIvReal,
             mc
           };
           allResults.push(result);

@@ -134,6 +134,29 @@ export const combinedStraddleGreeks = (
   };
 };
 
+/**
+ * Skew-aware variant: same as combinedStraddleGreeks but takes a SEPARATE σ for
+ * each leg (per-strike implied vol). For non-ATM strangles the put and call sit
+ * on different points of the vol smile, so a single σ misstates their greeks;
+ * passing each leg's market-implied vol (backed out of the real ask) is more
+ * accurate. For a true ATM straddle (putσ ≈ callσ) it reduces to the single-σ form.
+ */
+export const combinedStraddleGreeksSkew = (
+  spot: number, putStrike: number, callStrike: number, contractsBtc: number, T: number, r: number,
+  putSigma: number, callSigma: number
+): { delta: number; gamma: number; vega_per_pct: number; theta_per_day: number } => {
+  const delta = (bsPutDelta(spot, putStrike, T, r, putSigma) + bsCallDelta(spot, callStrike, T, r, callSigma)) * contractsBtc;
+  const gamma = (bsGamma(spot, putStrike, T, r, putSigma) + bsGamma(spot, callStrike, T, r, callSigma)) * contractsBtc;
+  const vega = (bsVega(spot, putStrike, T, r, putSigma) + bsVega(spot, callStrike, T, r, callSigma)) * contractsBtc;
+  const theta = (bsPutTheta(spot, putStrike, T, r, putSigma) + bsCallTheta(spot, callStrike, T, r, callSigma)) * contractsBtc;
+  return {
+    delta: +delta.toFixed(4),
+    gamma: +gamma.toFixed(6),
+    vega_per_pct: +(vega / 100).toFixed(2),
+    theta_per_day: +(theta / 365).toFixed(2)
+  };
+};
+
 export const impliedVolFromPrice = (
   price: number, S: number, K: number, T: number, r: number, optType: "put" | "call",
   opts?: { lo?: number; hi?: number; tol?: number; maxIter?: number }
