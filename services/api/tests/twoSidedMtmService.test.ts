@@ -3,15 +3,21 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { beforeEach } from "node:test";
 import { newDb, DataType } from "pg-mem";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import {
   listActivePairMtm,
   summarizeMtm,
+  __clearMtmStabilityCache,
   type PairMtm
 } from "../src/singleSide/twoSided/mtmService";
+
+// The MTM last-good-bid stability cache is a module singleton (intentional, for
+// cross-poll stability in prod). Reset it between tests so a venue_bid cached by
+// one test doesn't substitute for a later test's intended BS-fallback assertion.
+beforeEach(() => { __clearMtmStabilityCache(); });
 
 const buildPool = async (): Promise<Pool> => {
   const db = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true });

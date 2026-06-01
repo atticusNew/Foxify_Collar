@@ -156,6 +156,63 @@ const computeRecommendation = (
   };
 };
 
+// ── MTM value stability (avoid venue_bid ↔ bs_fallback jitter) ──────────────
+// When the exact-instrument bid momentarily drops out of the chain snapshot (a
+// refresh race), priceOption falls back to Black-Scholes — which severely
+// UNDERvalues the OTM wings (BS has no skew), making the MTM jitter (observed:
+// $11.89 venue_bid → $1.27 BS for the same position seconds apart). We cache the
+// last-good venue valuation per instrument for a short TTL and substitute it when
+// a poll yields a BS fallback, so the mark stays stable instead of collapsing to
+// the skew-blind theoretical value.
+type LastGoodVenueVal = { valuePerBtc: number; rawBid?: number; venue?: string; matchTier: "exact_symbol" | "fuzzy_strike_tenor"; atMs: number };
+const _lastGoodVenueVal = new Map<string, LastGoodVenueVal>();
+const LAST_GOOD_TTL_MS = 5 * 60_000;
+/** Test hook to reset the module-level stability cache. */
+export const __clearMtmStabilityCache = (): void => { _lastGoodVenueVal.clear(); };
+
+export type LegValuation = {
+  valuePerBtc: number;
+  method: "venue_bid" | "bs_fallback";
+  matchTier: "exact_symbol" | "fuzzy_strike_tenor" | "bs_theoretical";
+  rawBidUsdcPerBtc?: number;
+  venue?: string;
+  sourceDetail: string;
+};
+
+/**
+ * Stabilize a leg valuation: cache fresh venue_bid values; when a poll yields a BS
+ * fallback (exact bid missing this refresh) but a recent venue value exists, return
+ * that instead of the skew-blind BS value. Pure w.r.t. the passed cache map (testable).
+ */
+export const stabilizeLegValuation = (
+  cache: Map<string, LastGoodVenueVal>,
+  key: string,
+  v: LegValuation,
+  nowMs: number,
+  ttlMs: number = LAST_GOOD_TTL_MS
+): { v: LegValuation; stabilized: boolean } => {
+  if (v.method === "venue_bid" && (v.matchTier === "exact_symbol" || v.matchTier === "fuzzy_strike_tenor")) {
+    cache.set(key, { valuePerBtc: v.valuePerBtc, rawBid: v.rawBidUsdcPerBtc, venue: v.venue, matchTier: v.matchTier, atMs: nowMs });
+    return { v, stabilized: false };
+  }
+  const lg = cache.get(key);
+  if (lg && nowMs - lg.atMs <= ttlMs) {
+    const ageS = Math.round((nowMs - lg.atMs) / 1000);
+    return {
+      v: {
+        valuePerBtc: lg.valuePerBtc,
+        method: "venue_bid",
+        matchTier: lg.matchTier,
+        rawBidUsdcPerBtc: lg.rawBid,
+        venue: lg.venue,
+        sourceDetail: `last_good_venue_bid (${ageS}s old — exact bid missing this refresh; held to avoid BS-undervaluation jitter on the OTM wings)`
+      },
+      stabilized: true
+    };
+  }
+  return { v, stabilized: false };
+};
+
 /**
  * Load all active pairs (joined with their put + call leg strikes), compute
  * MTM for each. Pure function — no I/O beyond the DB read.
@@ -253,14 +310,23 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     const sourceDetail = result.source === "bs_only"
       ? `bs(iv=${(result.iv_used * 100).toFixed(1)}%/${result.iv_source}) haircut=${(result.haircut_applied * 100).toFixed(0)}%`
       : `${result.venue_used}:${result.source} ${result.instrument_used} bid=${result.bid_per_btc?.toFixed(2)}USD haircut=${(result.haircut_applied * 100).toFixed(0)}%`;
+    // Stabilize: if this poll fell back to BS but we have a recent venue value for
+    // this exact instrument, hold the last-good venue value (avoids the wing jitter).
+    const key = leg.instrumentSymbol ?? `${leg.side}:${leg.strike}`;
+    const { v: stable } = stabilizeLegValuation(
+      _lastGoodVenueVal,
+      key,
+      { valuePerBtc: result.primary_value_per_btc, method, matchTier, rawBidUsdcPerBtc: result.bid_per_btc ?? undefined, venue: result.venue_used ?? undefined, sourceDetail },
+      now
+    );
     return {
-      valueTotal: result.primary_value_total,
-      perBtc: result.primary_value_per_btc,
-      method,
-      matchTier,
-      sourceDetail,
-      rawBidUsdcPerBtc: result.bid_per_btc ?? undefined,
-      venue: result.venue_used ?? undefined
+      valueTotal: stable.valuePerBtc * leg.contracts,
+      perBtc: stable.valuePerBtc,
+      method: stable.method,
+      matchTier: stable.matchTier,
+      sourceDetail: stable.sourceDetail,
+      rawBidUsdcPerBtc: stable.rawBidUsdcPerBtc,
+      venue: stable.venue
     };
   };
 
