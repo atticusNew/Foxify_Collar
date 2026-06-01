@@ -1152,6 +1152,33 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * (cost+realism from real chain, sigma from empirical calibration).
    * Query: ?regime= (default current), n_paths=, auto_close_abs=, auto_close_pct=
    */
+  /**
+   * GET /admin/foxify/v2/loss-leader-scorecard
+   *
+   * Cumulative realized-PnL scorecard for the calm loss-leader cells — the RIGHT
+   * way to judge a long-convexity position (vs the within-15% gate, which flags
+   * false on every real move). Splits WINS (convexity payoffs) from LOSSES (calm
+   * bleed) so the "does the payoff outweigh the bleed?" economics are explicit.
+   *
+   * Query: ?regime= (optional filter by regime-at-activation), ?organic_only=true|false
+   *        (default true — excludes force-triggered/test pairs), ?cells=a,b (default the
+   *        wired loss-leader cells).
+   */
+  app.get<{ Querystring: { regime?: string; organic_only?: string; cells?: string } }>(
+    "/admin/foxify/v2/loss-leader-scorecard",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { computeLossLeaderScorecard } = await import("./lossLeaderScorecard");
+      const regimeRaw = req.query.regime;
+      const regime = (regimeRaw === "calm" || regimeRaw === "moderate" || regimeRaw === "elevated" || regimeRaw === "stress")
+        ? regimeRaw : undefined;
+      const organicOnly = req.query.organic_only !== "false";
+      const cells = req.query.cells ? req.query.cells.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+      const scorecard = await computeLossLeaderScorecard(deps.pool, { regime, organicOnly, cells });
+      reply.send(scorecard);
+    }
+  );
+
   app.get<{ Querystring: { regime?: string; n_paths?: string; auto_close_abs?: string; auto_close_pct?: string; weighting?: string; half_life_days?: string; organic_only?: string } }>(
     "/admin/foxify/v2/realized-vs-mc",
     { preHandler: checkAdminToken },
