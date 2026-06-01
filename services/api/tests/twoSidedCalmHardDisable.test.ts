@@ -13,10 +13,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { newDb } from "pg-mem";
 import { ensureTwoSidedSchema } from "../src/singleSide/twoSided/db";
-import { handleActivate, isCalmActivationAllowed, isCalmShadowAllowed } from "../src/singleSide/twoSided/activateHandler";
+import { handleActivate, isCalmActivationAllowed, isCalmShadowAllowed, isCalmLossLeaderEnabled, calmMaxLossUsdc } from "../src/singleSide/twoSided/activateHandler";
 import { MockStrangleExecutor } from "../src/singleSide/twoSided/executor";
 import { PHASE_0_CELLS } from "../src/singleSide/twoSided/cellConfig";
-import { DEFAULT_CELL_ALLOWLIST, ensureCellAllowlistSchema } from "../src/singleSide/twoSided/cellAllowlist";
+import { DEFAULT_CELL_ALLOWLIST, ensureCellAllowlistSchema, setCellOverride } from "../src/singleSide/twoSided/cellAllowlist";
 import type { AggregatedFeed } from "../src/singleSide/twoSided/feedAggregator";
 import type { LiveAnchorProvider } from "../src/singleSide/twoSided/quoteEngine";
 
@@ -116,6 +116,75 @@ test("handleActivate: non-calm (moderate) is unaffected by the calm gate (201)",
       depsWithRegime(pool, "moderate")
     );
     assert.equal(res.status, 201, `expected 201, got ${res.status} ${JSON.stringify((res as { body: unknown }).body)}`);
+  });
+});
+
+// ── Phase 3: calm loss-leader (budgeted) ──
+
+const withLossLeader = async (enabled: boolean, maxLoss: string | undefined, fn: () => Promise<void>) => {
+  const prevLL = process.env.SS_TWO_SIDED_CALM_LOSS_LEADER;
+  const prevMax = process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC;
+  const prevAllow = process.env.SS_TWO_SIDED_ALLOW_CALM;
+  delete process.env.SS_TWO_SIDED_ALLOW_CALM; // ensure NOT blanket-allow
+  process.env.SS_TWO_SIDED_CALM_LOSS_LEADER = enabled ? "true" : "false";
+  if (maxLoss === undefined) delete process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC;
+  else process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC = maxLoss;
+  try { await fn(); } finally {
+    if (prevLL === undefined) delete process.env.SS_TWO_SIDED_CALM_LOSS_LEADER; else process.env.SS_TWO_SIDED_CALM_LOSS_LEADER = prevLL;
+    if (prevMax === undefined) delete process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC; else process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC = prevMax;
+    if (prevAllow === undefined) delete process.env.SS_TWO_SIDED_ALLOW_CALM; else process.env.SS_TWO_SIDED_ALLOW_CALM = prevAllow;
+  }
+};
+
+test("isCalmLossLeaderEnabled default false; calmMaxLossUsdc default 25", () => {
+  const prev = process.env.SS_TWO_SIDED_CALM_LOSS_LEADER, prevM = process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC;
+  try {
+    delete process.env.SS_TWO_SIDED_CALM_LOSS_LEADER; delete process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC;
+    assert.equal(isCalmLossLeaderEnabled(), false);
+    assert.equal(calmMaxLossUsdc(), 25);
+    process.env.SS_TWO_SIDED_CALM_LOSS_LEADER = "true"; process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC = "40";
+    assert.equal(isCalmLossLeaderEnabled(), true);
+    assert.equal(calmMaxLossUsdc(), 40);
+  } finally {
+    if (prev === undefined) delete process.env.SS_TWO_SIDED_CALM_LOSS_LEADER; else process.env.SS_TWO_SIDED_CALM_LOSS_LEADER = prev;
+    if (prevM === undefined) delete process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC; else process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC = prevM;
+  }
+});
+
+test("calm loss-leader: mode relaxes the calm hard-gate (reaches allowlist instead of calm_regime_disabled)", async () => {
+  const pool = await buildPool();
+  await withLossLeader(true, "5000", async () => {
+    // pair_50k_2pct is NOT in the (empty) calm allowlist → with the gate relaxed we
+    // should fall through to the allowlist check, not the calm hard-disable.
+    const res = await handleActivate(
+      { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 6000, foxifyPairRef: "ll-gate-1" },
+      depsWithRegime(pool, "calm")
+    );
+    assert.equal(res.status, 503);
+    if (res.status !== 503) return;
+    assert.equal(res.body.error, "cell_disabled_in_regime", "gate relaxed → allowlist enforced (not calm_regime_disabled)");
+  });
+});
+
+test("calm loss-leader: enforces per-pair budget (over → blocked, within → activates)", async () => {
+  const pool = await buildPool();
+  // Allow pair_50k_2pct in calm so we reach the budget check.
+  await setCellOverride(pool, "calm", "pair_50k_2pct", true, "loss-leader test", "test");
+  // Premium ~ 0.658 BTC * (1150+1162) ≈ $1,521 at the harness anchors.
+  await withLossLeader(true, "50", async () => {
+    const over = await handleActivate(
+      { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 6000, foxifyPairRef: "ll-over-1" },
+      depsWithRegime(pool, "calm")
+    );
+    assert.equal(over.status, 503);
+    if (over.status === 503) assert.equal(over.body.error, "calm_loss_exceeds_budget", "premium > $50 budget → blocked");
+  });
+  await withLossLeader(true, "5000", async () => {
+    const within = await handleActivate(
+      { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 6000, foxifyPairRef: "ll-within-1" },
+      depsWithRegime(pool, "calm")
+    );
+    assert.equal(within.status, 201, `within budget → activates; got ${within.status} ${JSON.stringify((within as { body: unknown }).body)}`);
   });
 });
 

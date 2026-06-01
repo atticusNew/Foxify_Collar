@@ -57,6 +57,22 @@ export const isCalmActivationAllowed = (): boolean =>
 export const isCalmShadowAllowed = (): boolean =>
   String(process.env.SS_TWO_SIDED_ALLOW_CALM_SHADOW ?? "true").toLowerCase() === "true";
 
+/**
+ * Calm LOSS-LEADER mode (Phase 3). When enabled, calm activation is permitted —
+ * but ONLY for cells whose premium (= the position's bounded max loss) is within
+ * SS_TWO_SIDED_CALM_MAX_LOSS_USDC. This lets the CEO buy perp volume in calm at a
+ * known, capped per-pair cost, while everything outside budget still stands down.
+ * Independent of SS_TWO_SIDED_ALLOW_CALM (which is a blanket allow). Default off.
+ */
+export const isCalmLossLeaderEnabled = (): boolean =>
+  String(process.env.SS_TWO_SIDED_CALM_LOSS_LEADER ?? "false").toLowerCase() === "true";
+
+/** Per-pair max acceptable calm loss-leader cost (USDC). Default 25. */
+export const calmMaxLossUsdc = (): number => {
+  const v = Number(process.env.SS_TWO_SIDED_CALM_MAX_LOSS_USDC ?? "25");
+  return Number.isFinite(v) && v >= 0 ? v : 25;
+};
+
 export type ActivateRequest = {
   cellId: string;
   maxAcceptableHedgeCostUsdc: number;
@@ -199,19 +215,22 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
   const spot = feed.canonicalPrice;
 
   // 3.5: Regime-cell allowlist enforcement (PR C3)
-  // Determine current regime from DVOL (if available via injected callback)
-  if (deps.getCurrentRegime) {
-    const regime = deps.getCurrentRegime();
-    // CALM HARD-DISABLE: block BEFORE the allowlist/override lookup so that a DB
-    // override (setCellOverride) cannot silently re-enable calm. This is the
-    // provable "calm never activates" guarantee (default ON; env to override).
-    if (regime === "calm" && !isCalmActivationAllowed()) {
+  // Determine current regime from DVOL (if available via injected callback). Hoisted
+  // so the calm loss-leader budget check (post-quote) can reuse it.
+  const currentRegime = deps.getCurrentRegime ? deps.getCurrentRegime() : null;
+  if (currentRegime) {
+    const regime = currentRegime;
+    // CALM gate: hard-disabled UNLESS blanket-allow (SS_TWO_SIDED_ALLOW_CALM) OR
+    // loss-leader mode (SS_TWO_SIDED_CALM_LOSS_LEADER). Checked BEFORE the allowlist
+    // so a DB override can't silently re-enable calm. In loss-leader mode the
+    // per-pair budget is still enforced after the quote (below).
+    if (regime === "calm" && !isCalmActivationAllowed() && !isCalmLossLeaderEnabled()) {
       getMetrics().incrementCounter(METRIC_NAMES.ACTIVATIONS_BLOCKED_TOTAL, { reason: "calm_regime_disabled" });
       return {
         status: 503,
         body: {
           error: "calm_regime_disabled",
-          message: "Activation is hard-disabled in calm regime (validated permanent stand-down — no structure profitable). Set SS_TWO_SIDED_ALLOW_CALM=true only for deliberate loss-leader volume.",
+          message: "Activation is hard-disabled in calm regime (validated permanent stand-down). Set SS_TWO_SIDED_ALLOW_CALM=true (blanket) or SS_TWO_SIDED_CALM_LOSS_LEADER=true (budgeted) to enable.",
           retry_after_s: 0,
           details: { regime, cell_id: cell.cellId }
         }
@@ -263,6 +282,25 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
         details: quote.details
       }
     };
+  }
+
+  // 5.4 CALM LOSS-LEADER BUDGET (Phase 3). In calm loss-leader mode (and not blanket
+  // allow), the position's premium = its bounded max loss; reject if it exceeds the
+  // per-pair budget. This makes calm a CAPPED volume cost, not open-ended bleed.
+  if (currentRegime === "calm" && isCalmLossLeaderEnabled() && !isCalmActivationAllowed()) {
+    const budget = calmMaxLossUsdc();
+    if (quote.totalHedgeCostUsdc > budget) {
+      getMetrics().incrementCounter(METRIC_NAMES.ACTIVATIONS_BLOCKED_TOTAL, { reason: "calm_loss_exceeds_budget" });
+      return {
+        status: 503,
+        body: {
+          error: "calm_loss_exceeds_budget",
+          message: `Calm loss-leader: premium ${quote.totalHedgeCostUsdc.toFixed(2)} exceeds per-pair budget ${budget.toFixed(2)} (SS_TWO_SIDED_CALM_MAX_LOSS_USDC). Use a cheaper cell or raise the budget.`,
+          retry_after_s: 0,
+          details: { regime: currentRegime, cell_id: cell.cellId, premium_usdc: +quote.totalHedgeCostUsdc.toFixed(2), budget_usdc: budget }
+        }
+      };
+    }
   }
 
   // 5.5 PR 9 guardrails gate (DVOL/capital pool/halts) — after quote so we know cost

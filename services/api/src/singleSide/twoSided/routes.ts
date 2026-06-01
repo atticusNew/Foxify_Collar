@@ -33,7 +33,7 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import { timingSafeEqual, randomUUID } from "node:crypto";
-import { handleActivate, type ActivateDeps } from "./activateHandler";
+import { handleActivate, isCalmLossLeaderEnabled, calmMaxLossUsdc, type ActivateDeps } from "./activateHandler";
 import { handleClose } from "./closeHandler";
 import {
   computeFoxifyStatus,
@@ -559,9 +559,21 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     const recSel = result.regime ? selectStructureForRegime(result.regime) : null;
     const recCells = (finalGoodToActivate && result.regime)
       ? await getEffectiveAllowlist(deps.pool, result.regime) : [];
+    // Calm loss-leader: when enabled and the market is calm, surface it as an
+    // explicit, budgeted opt-in so the bot can CHOOSE to buy volume at a capped
+    // per-pair loss (good_to_activate stays false — calm is not a +EV GO).
+    const calmLossLeader = (result.regime === "calm" && isCalmLossLeaderEnabled())
+      ? {
+          enabled: true,
+          max_loss_usdc: calmMaxLossUsdc(),
+          eligible_cells: await getEffectiveAllowlist(deps.pool, "calm"),
+          note: "Optional volume loss-leader. Activates only for cells whose premium (max loss) <= max_loss_usdc. Loss shrinks as DVOL rises toward moderate; see /admin/foxify/v2/breakeven-ladder."
+        }
+      : { enabled: false };
     reply.send({ ...result, trends, cell_opportunities: cellOpportunities,
       recommended_cells: recCells,
-      recommended_structure: recSel?.structure ?? null, structure_rationale: recSel?.rationale ?? null });
+      recommended_structure: recSel?.structure ?? null, structure_rationale: recSel?.rationale ?? null,
+      calm_loss_leader: calmLossLeader });
   });
 
   app.get("/foxify/v2/regime", { preHandler: checkFoxifyToken }, async (_req, reply) => {
