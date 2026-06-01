@@ -65,6 +65,14 @@ export type ActivateRequest = {
   /** If true, runs as a shadow trade (no real venue orders; uses ShadowStrangleExecutor).
    * The pair gets is_shadow=true and segregates from live metrics downstream. */
   isShadow?: boolean;
+  /**
+   * Explicit regime to STAMP onto the pair's regime_at_activation, independent of
+   * deps.getCurrentRegime (which the shadow path omits to bypass allowlist
+   * enforcement). Without this, shadow pairs settle UNTAGGED and the realized-vs-MC
+   * gate (regime-filtered) can never see them. Shadow callers pass gate.regime here.
+   * Does NOT trigger allowlist/calm enforcement (that's keyed on deps.getCurrentRegime).
+   */
+  regimeAtActivationOverride?: "calm" | "moderate" | "elevated" | "stress" | null;
 };
 
 export type ActivateResponse =
@@ -318,7 +326,8 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     tierAtActivation: tier.label,
     atticusFloorUsdc: tier.atticusFloorUsdc,
     metadata: req.metadata ?? {},
-    regimeAtActivation: deps.getCurrentRegime ? deps.getCurrentRegime() : null,
+    // Tag regime: explicit override (shadow path) wins, else the live getCurrentRegime.
+    regimeAtActivation: req.regimeAtActivationOverride ?? (deps.getCurrentRegime ? deps.getCurrentRegime() : null),
     status: "pending"
   });
 

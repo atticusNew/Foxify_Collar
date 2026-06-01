@@ -511,6 +511,9 @@ export const runAutoActivatorTick = async (deps: TickDeps): Promise<TickResult> 
         maxAcceptableHedgeCostUsdc: config.maxShadowCostUsdc,
         foxifyPairRef,
         isShadow: true,
+        // Stamp the regime so the realized-vs-MC gate can see this shadow pair
+        // (shadow omits getCurrentRegime, so without this it settles UNTAGGED).
+        regimeAtActivationOverride: gate.regime,
         metadata: {
           source: "shadow_auto_activator",
           signal_tier: gate.signal_tier,
@@ -743,6 +746,8 @@ export const forceShadowActivation = async (
         maxAcceptableHedgeCostUsdc: config.maxShadowCostUsdc,
         foxifyPairRef,
         isShadow: true,
+        // Stamp regime so realized-vs-MC can reconcile this (force) shadow pair.
+        regimeAtActivationOverride: gate.regime,
         metadata: {
           source: "shadow_test_activate",
           signal_tier_at_test: gate.signal_tier,

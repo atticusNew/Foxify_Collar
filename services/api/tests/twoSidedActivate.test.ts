@@ -140,6 +140,20 @@ test("handleActivate: 201 happy path returns full payload + writes DB", async ()
   assert.ok(events.some((e) => e.kind === "activated"));
 });
 
+// ─── regime tagging via override (shadow path) ───
+
+test("handleActivate: regimeAtActivationOverride stamps regime_at_activation (shadow path, no getCurrentRegime)", async () => {
+  const { pool, deps } = await happyDeps(); // happyDeps has NO getCurrentRegime (mirrors shadow)
+  const res = await handleActivate(
+    { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 3_500, foxifyPairRef: "fxy-regime-tag", isShadow: true, regimeAtActivationOverride: "moderate" },
+    deps
+  );
+  assert.equal(res.status, 201);
+  if (res.status !== 201) return;
+  const pair = await getPairById(pool, res.body.pair_id);
+  assert.equal(pair!.regimeAtActivation, "moderate", "shadow pair must be regime-tagged so realized-vs-MC can see it");
+});
+
 // ─── 422 price exceeded ───
 
 test("handleActivate: 422 when live cost exceeds max_acceptable", async () => {
