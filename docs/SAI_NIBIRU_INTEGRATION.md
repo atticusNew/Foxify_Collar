@@ -1,463 +1,398 @@
 # Atticus × Sai (Nibiru) — Options-Based Protection Integration
 
-Audience: Sai founder + technical team. Goal: enough depth to evaluate feasibility,
-integration shape, cost, and risk. Pragmatic, not academic.
+Technical integration documentation for the Sai perp exchange on Nibiru. Covers the
+protection features Atticus can provide, the integration surface, the settlement model,
+and the data Atticus requires. Primary supported markets are **BTC and ETH**; other
+markets are supported as venue liquidity allows and are noted as configurable.
 
 ---
 
 ## 1. Executive Summary
 
-Atticus is a **non-custodial, options-based protection layer** for perp exchanges. It
-prices and executes **real listed options** on major venues (Deribit, Bullish) using
-live bid/ask and live implied volatility, and settles outcomes to **smart contracts on
-the partner chain** — for Sai, contracts on Nibiru. For Sai it delivers three things:
-(1) a **paid collateral-floor upgrade** that lets leveraged traders trade larger with a
-bounded downside, (2) **bad-debt / tail insurance** that transfers gap-risk off Sai's
-balance sheet and shrinks the insurance-fund requirement, and (3) a menu of
-**configurable** trader/exchange/MM protections. Because Atticus **passes through real
-option liquidity** (rather than minting synthetic cover from an AMM pool) and settles on
-Nibiru without holding user funds, Sai gets a capital-efficient risk-transfer rail and a
-trader-facing competitive edge with no custody exposure.
-
-**v1 hedgeable universe: BTC and ETH** (deep, liquid listed options). Other markets are
-supported **as venue liquidity allows** and are flagged as configurable throughout.
+Atticus is a non-custodial, options-based protection layer for perpetual exchanges. It
+prices and executes real listed options on major venues and settles outcomes to
+smart contracts on the partner chain — for Sai, contracts on Nibiru. Three integration
+features are described here: a paid **collateral-floor upgrade** for leveraged traders,
+**bad-debt / tail protection** for the exchange, and a set of **configurable** trader,
+treasury, and market-maker protections. Because Atticus routes real option liquidity and
+settles on-chain without holding user funds, Sai gains a capital-efficient risk-transfer
+mechanism and a differentiated trader product with no custody exposure.
 
 ---
 
-## 2. How Atticus Works (Plain English)
+## 2. Terminology
 
-A trader or the exchange pays a **premium**. That premium flows into an **Atticus smart
-contract on Nibiru** (no end-user custody). Atticus then buys a **matching real option**
-at a venue — a put to protect a long, a call to protect a short — sized and struck to the
-exposure being protected. When the position closes, the option expires, or a protection
-trigger is hit, the option's value is realized and **settled back through the contract**
-to the trader or the exchange treasury per the agreed terms. Atticus earns a **transparent
-spread/fee**; it is a **pass-through intermediary of real options**, not a synthetic
-underwriter — it does not warehouse the tail risk on its own balance sheet.
-
-Two properties make this defensible versus a generic "coverage protocol": **real venue
-pricing** (premiums reflect live, tradable markets, not a model or a pool's solvency) and
-**regime-aware structure selection** (Atticus chooses the appropriate option structure —
-e.g. single-leg put/call, spread, strangle — based on the current volatility regime, so
-protection is cost-efficient in calm markets and robust in stressed ones). Settlement is
-**non-custodial at the user and exchange layer**; the mechanics of where the option itself
-lives are covered honestly in Section 8.
-
----
-
-## 3. Feature 1 — Leveraged Floor (Pay-to-Trade-Bigger)
-
-A trader pays a small premium and receives an **expanded effective collateral floor**:
-because their maximum loss on the position is now **bounded by an option**, Sai's margin
-engine can safely recognize additional headroom and let them trade larger (or sit closer
-to the line without the same liquidation risk).
-
-**Mechanics (premium → option → floor uplift):**
-
-1. Trader has (or opens) a perp position on Sai — say long BTC.
-2. Trader elects "Leveraged Floor" and pays a premium.
-3. Atticus buys a **protective put** struck at/near the position's liquidation price for a
-   chosen tenor, sized to the position's exposure.
-4. That option is **recognized as collateral** by Sai's margin engine, which lifts the
-   trader's effective floor (the bounded downside reduces required maintenance margin).
-5. The trader trades the perp with the expanded floor for the protection tenor.
-
-**Who pays / who benefits:** the **trader pays** the premium. The trader benefits (more
-size / less liquidation risk); the exchange benefits indirectly (healthier positions,
-lower liquidation/bad-debt incidence, a premium product to offer).
-
-**Risk profile:** downside is **capped** for the covered tenor at the option's strike
-(the floor); **upside is uncapped**. The premium is the trader's only at-risk outlay for
-the protection itself. The protection is only as good as the strike placement and the
-tenor (see rollover, below).
-
-**Sizing model:** premium scales with **notional × tenor × volatility regime**. The option
-notional is matched to the protected exposure; the strike is placed at the liquidation
-price (full floor) or with a configurable buffer (cheaper, partial floor). Real-time
-quotes come from live venue bid/ask and implied vol.
-
-**Settlement:** when the trader **closes the perp** or the **option expires**, Atticus
-computes the option's salvage/settlement value and delivers the net to the trader (or
-exchange) contract per terms. If the adverse move occurred, the option payout offsets the
-loss up to the floor; if not, the option expires with residual time value (if any) and the
-net cost to the trader is the premium minus salvage.
-
-**Tenor / rollover (important):** a perp is perpetual; a listed option is **dated**.
-Protection is therefore provided in **tenor windows** (e.g. multi-day) and **rolled** at
-expiry. There is a cost and a brief coverage seam at each roll. Auto-roll and roll cadence
-are configurable.
-
-**Customization knobs:** max leverage uplift, premium model, eligible markets (BTC/ETH
-live), strike placement (at-liq vs buffered), tenor and auto-roll policy, structure
-(single-leg vs spread for cost control).
-
-**Dependency on Sai (not an API call — an integration):** Sai's **margin/liquidation
-engine must recognize the Atticus option position as collateral** for the floor uplift to
-be real. Atticus provides the option + an attestable position reference; Sai's risk engine
-consumes it. This is the main Sai-side build for Feature 1.
-
----
-
-## 4. Feature 2 — Bad Debt Protection
-
-When a position blows through its margin faster than the engine can liquidate — a gap, a
-liquidation cascade, or oracle lag — the exchange absorbs the deficit. Atticus transfers
-that gap risk to **real options**, settled to the exchange treasury.
-
-**The bad-debt scenario (concrete):**
-
-| Step | Value |
+| Term | Meaning in this document |
 |---|---|
-| Trader position | Long BTC, $100,000 notional at 10x |
+| Premium | Up-front amount paid to obtain protection for a defined tenor |
+| Tenor | The time window a protection covers (options are dated; coverage is rolled) |
+| Strike | The price level at which an option's protection engages |
+| Floor | The bounded worst-case loss a covered position can incur |
+| Trigger | The condition (price level and/or attested event) that fires a payout |
+| Coverage | An active protection instance attached to a position, account, or treasury |
+| Settlement | On-chain delivery of a protection's net result to the designated contract |
+
+---
+
+## 3. How Atticus Works
+
+A payer (a trader or the exchange) submits a premium, which is received by an Atticus
+settlement contract on Nibiru. Atticus executes a corresponding real option at a venue —
+a put to protect a long, a call to protect a short — sized and struck to the exposure
+being protected. When the protected position closes, the option reaches expiry, or a
+trigger condition is met, the option's realized value is settled back through the contract
+to the trader or exchange treasury under the agreed terms. Atticus operates as a
+pass-through intermediary of real options and earns a transparent spread or fee; it does
+not pool user funds or act as a synthetic underwriter.
+
+Premiums and structures are quoted in real time from live venue markets and prevailing
+volatility, and the protective structure is selected in a volatility-regime-aware manner so
+that coverage is cost-efficient in calm conditions and robust in stressed conditions. The
+internal pricing and structure-selection logic is proprietary; integration consumers
+interact only with quoted terms and outcomes (Section 8). Settlement is non-custodial at
+the trader and exchange layer; the venue-execution model is described precisely in
+Section 10.
+
+---
+
+## 4. Feature 1 — Leveraged Floor
+
+A trader pays a premium and receives an expanded effective collateral floor. Because the
+position's maximum loss is bounded by an option for the coverage tenor, the exchange's
+margin engine can recognize additional headroom and permit larger size (or reduced
+liquidation risk at equal size).
+
+**Mechanics.** The trader elects coverage and pays a premium; Atticus executes a protective
+option struck at or near the position's liquidation price for a chosen tenor and sized to
+the exposure; the option is referenced as collateral by the margin engine, which applies
+the floor uplift; the trader trades the perp under the expanded floor for the tenor.
+
+**Who pays / benefits.** The trader pays the premium. The trader gains size and reduced
+liquidation risk; the exchange benefits from healthier positions, lower liquidation and
+bad-debt incidence, and a premium product offering.
+
+**Risk profile.** Downside is bounded for the covered tenor at the option strike; upside is
+unaffected. The premium is the trader's defined cost for the protection.
+
+**Sizing.** Premium scales with notional, tenor, and the prevailing volatility regime;
+option notional matches the protected exposure. Strike placement is at the liquidation
+price (full floor) or buffered (lower premium, partial floor).
+
+**Settlement.** On perp close or option expiry, the option's value is realized and the net
+delivered to the designated contract. If the adverse move occurred, the payout offsets the
+loss up to the floor; otherwise the net cost is the premium less any residual option value.
+
+**Tenor and rollover.** A perpetual position is covered in dated tenor windows that are
+rolled at expiry under a configurable policy; each roll carries a cost and a brief coverage
+seam.
+
+**Customization.** Maximum leverage uplift, eligible markets, strike placement, tenor and
+roll policy, premium model, and protective structure are all tunable (Section 14).
+
+**Exchange-side requirement.** The margin/liquidation engine must recognize the referenced
+option as collateral for the floor uplift to take effect. Atticus supplies the option and
+an attestable coverage reference; the exchange's risk engine consumes it.
+
+---
+
+## 5. Feature 2 — Bad Debt Protection
+
+When a position moves through its margin faster than liquidation can complete — a price
+gap, a liquidation cascade, or oracle lag — the exchange absorbs the deficit. Atticus
+transfers that exposure to real options that settle to the exchange treasury.
+
+**Illustrative scenario.**
+
+| Item | Value |
+|---|---|
+| Position | Long BTC, $100,000 notional at 10x |
 | Posted margin | $10,000 |
-| Gap move | BTC drops 12% before liquidation completes |
+| Gap move | BTC declines ~12% before liquidation completes |
 | Loss on position | ~$12,000 |
 | Margin available | $10,000 |
-| **Deficit the exchange eats** | **~$2,000 (bad debt)** |
+| Deficit absorbed by exchange | ~$2,000 (bad debt) |
 
-**How Atticus prevents it:** the exchange holds **out-of-the-money protective options**
-(puts against net-long exposure, calls against net-short) at strikes aligned to where
-deficits begin. On the gap, the option is in-the-money and its payout — sized to the
-covered gap — **settles automatically to the exchange treasury contract** on Nibiru. The
-insurance-fund draw is replaced by an option payout.
+**Mechanics.** The exchange holds out-of-the-money protective options (puts against
+net-long exposure, calls against net-short) struck where deficits begin. On a qualifying
+move, the option is in-the-money and its payout settles automatically to the treasury
+contract; the insurance-fund draw is replaced by an option payout.
 
-**Who pays:** typically the **exchange**, as a cost of insurance. Configurable: a
-**per-trade fee shared with traders**, or a hybrid where high-leverage trades carry the
-premium.
+**Who pays.** Typically the exchange, as a cost of insurance. Configurable alternatives
+include a per-trade fee shared with traders or a leverage-tiered premium.
 
-**Coverage scope (configurable):**
+**Coverage scope (configurable).**
 
-| Scope | What it covers | Sizing |
+| Scope | Covers | Sizing |
 |---|---|---|
-| Single-trade | One flagged position | Static, matched to that position |
+| Single-trade | One flagged position | Static, matched to the position |
 | Position-level | A specific account/market | Matched per position |
-| Portfolio-level | The exchange's **net** book | **Dynamic** — sized to net exposure, rebalanced as the book shifts |
+| Portfolio-level | The exchange's net book | Dynamic, sized to net exposure and rebalanced |
 
-Portfolio-level is the most capital-efficient but requires **continuous net-exposure
-sizing** (more build — see Section 13).
+**Claim mechanics.** No manual claims. A trigger — price through the coverage strike with a
+confirmed deficit — is established via the attestation mechanism (Section 12) and
+authorizes automatic settlement to the exchange contract.
 
-**Claim mechanics:** **no manual claims.** A trigger (price through the coverage strike +
-a confirmed deficit) is detected via the **oracle/attestation bridge** (Section 10), which
-authorizes **automatic settlement** of the option payout to the exchange contract.
-
-**Capital efficiency for the exchange:**
+**Capital efficiency.**
 
 | Model | Capital posture | Tail behavior |
 |---|---|---|
-| Self-insured fund | Large idle reserve held against worst case | Reserve can still be exhausted by a big enough gap |
-| Atticus protection | Pay premium per tenor; little idle capital | Tail transferred to real option payout (bounded by coverage) |
+| Self-insured fund | Large idle reserve held against worst case | Reserve can be exhausted by a sufficiently large gap |
+| Atticus protection | Premium per tenor; minimal idle capital | Tail transferred to a real option payout, bounded by coverage |
 
-The exchange can run a **smaller insurance fund** and pay a known premium stream instead
-of reserving for the worst case.
+The exchange can operate a smaller insurance fund and pay a known premium stream rather
+than reserving against the worst case.
 
-**Tenor / basis caveats:** same rollover dynamic as Feature 1, and coverage references a
-venue index (BTC-USD / ETH-USD) — basis vs Nibiru's perp index is addressed in Section 10.
-
----
-
-## 5. Feature 3 — Additional Use Cases (configurable)
-
-Each is supported in principle on the same pass-through rails; depth/build varies, flagged
-where relevant.
-
-**Liquidation protection for traders.** A trader buys a put/call struck at (or just above)
-their liquidation price. If price approaches/crosses it, the option payout offsets the
-loss, giving the trader a defined "stop with a rebate" rather than a hard liquidation.
-Mechanically a focused case of Feature 1 (protection without the floor-uplift integration);
-available for BTC/ETH today, configurable on tenor and strike.
-
-**Funding-rate hedge.** Protects a trader or the exchange from sustained one-sided funding.
-Listed options do not directly express funding, so this is **synthetic** (constructed from
-a funding reference + a structured payout) and is flagged as **design-required**, not
-available off-the-shelf. Best treated as a later workstream once Features 1–2 are live.
-
-**Treasury protection.** The exchange's own treasury (token holdings, fee reserves) hedged
-against market downturns using the same pricing/structure engine — a direct application of
-the protection rail to Sai's balance sheet. Available for BTC/ETH exposure today;
-configurable scope and tenor.
-
-**Market-maker capital efficiency.** MMs hold protective options so their **defined-risk**
-positions require less posted capital to maintain depth, freeing capital for tighter
-quotes. Requires Sai's margin engine to recognize options as collateral (same dependency
-as Feature 1); configurable per MM program.
-
-**Pre-funded trading credits.** Exchange-funded promotions (e.g. "trade with house
-credit") where Atticus covers the downside so the exchange's promotional exposure is
-bounded. Configurable on credit size, eligible markets, and coverage terms.
+**Behavioral notes.** Coverage uses the same dated-tenor rollover model as Feature 1 and
+references a venue index (BTC-USD / ETH-USD); basis considerations are covered in
+Section 12.
 
 ---
 
-## 6. Transaction Flow / Architecture
+## 6. Feature 3 — Additional Use Cases (configurable)
 
-**Overall architecture.**
+These run on the same protection rails; depth varies and is noted where relevant.
+
+**Trader liquidation protection.** A focused case of Feature 1 without the floor-uplift
+integration: a trader holds an option struck at or above the liquidation price, converting
+a hard liquidation into a defined stop with a payout. Available for BTC/ETH; configurable
+strike and tenor.
+
+**Funding-rate hedge.** Protection against sustained one-sided funding. Listed options do
+not directly express funding, so this is a structured/synthetic construction and is treated
+as a configurable, design-led workstream rather than a standard instrument.
+
+**Treasury protection.** The exchange's own treasury hedged against market downturns using
+the same pricing and structure engine; configurable scope and tenor for BTC/ETH exposure.
+
+**Market-maker capital efficiency.** Market makers hold protective options so their
+defined-risk positions require less posted capital to maintain depth. Requires the margin
+engine to recognize options as collateral (as in Feature 1); configurable per program.
+
+**Pre-funded trading credits.** Exchange-funded promotions in which Atticus bounds the
+downside of house-credited trading; configurable on credit size, eligible markets, and
+terms.
+
+---
+
+## 7. Architecture & Protection Lifecycle
+
+**Architecture.**
 
 ```mermaid
 flowchart LR
-  subgraph Nibiru["Nibiru chain"]
-    SAI["Sai perp exchange<br/>(positions, margin engine)"]
-    AC["Atticus settlement<br/>contract(s)"]
-    TR["Trader / Treasury<br/>contracts"]
-  end
-  subgraph Atticus["Atticus off-chain engine"]
-    RELAY["Relayer<br/>(detect deposits/triggers)"]
-    PRICE["Pricing + structure<br/>selection (live DVOL)"]
-    EXEC["Venue execution<br/>+ best-execution routing"]
-  end
-  subgraph Venues["Option venues"]
-    DV["Deribit"]
-    BU["Bullish"]
-  end
-  SAI -- "read positions" --> RELAY
-  TR -- "premium" --> AC
-  AC -- "deposit event" --> RELAY
-  RELAY --> PRICE --> EXEC
-  EXEC -- "buy real option" --> DV
-  EXEC -- "buy real option" --> BU
-  DV -- "salvage / payout" --> EXEC
-  EXEC -- "settle result" --> AC
-  AC -- "payout" --> TR
+  Payer["Trader / Exchange"] -- premium --> C["Atticus contract (Nibiru)"]
+  Sai["Sai positions"] -. read .-> E["Atticus engine"]
+  C -- deposit event --> E
+  E -- execute real option --> V["Deribit / Bullish"]
+  V -- payout / salvage --> E
+  E -- settle --> C
+  C -- payout --> Payee["Trader / Treasury"]
 ```
 
-**Feature 1 — Leveraged Floor.**
+**Protection lifecycle (common to all features).**
 
 ```mermaid
 sequenceDiagram
-  participant T as Trader
-  participant S as Sai (widget + margin engine)
-  participant A as Atticus contract (Nibiru)
-  participant X as Atticus engine + venue
-  T->>S: "Buy Leveraged Floor: pay premium for expanded floor"
-  T->>A: Premium deposited
-  A->>X: Deposit detected (relayer)
-  X->>X: Price + buy protective put (at/near liq price, tenor)
-  X->>S: Option reference attested -> floor uplift applied
-  T->>S: Trades perp with expanded floor
-  Note over T,X: On trader close OR option expiry
-  X->>X: Compute option salvage/payout
-  X->>A: Settle net result
-  A->>T: Net payout (option value minus uncovered loss) per terms
+  participant P as Payer
+  participant C as Atticus contract (Nibiru)
+  participant A as Atticus engine + venue
+  P->>C: Premium
+  C->>A: Deposit detected
+  A->>A: Quote + execute real option (regime-aware)
+  A-->>P: Coverage active
+  Note over P,A: On close, expiry/roll, or trigger
+  A->>A: Realize option value
+  A->>C: Settle
+  C->>P: Payout per terms
 ```
 
-**Feature 2 — Bad Debt Protection.**
+**Per-feature differences.**
 
-```mermaid
-sequenceDiagram
-  participant E as Sai exchange
-  participant A as Atticus contract (Nibiru)
-  participant X as Atticus engine + venue
-  participant O as Oracle / attestation
-  E->>A: Premium (insurance) deposited
-  A->>X: Deposit detected
-  X->>X: Buy OTM tail options sized to net/flagged exposure
-  Note over E,O: Gap / cascade -> deficit forms
-  O->>A: Trigger + deficit attested (price through strike + confirmed gap)
-  A->>X: Authorize settlement
-  X->>X: Realize option payout
-  X->>A: Deliver payout
-  A->>E: Settle to exchange treasury contract (no manual claim)
-```
-
-**Feature 3 (representative — trader liquidation protection).**
-
-```mermaid
-sequenceDiagram
-  participant T as Trader
-  participant A as Atticus contract (Nibiru)
-  participant X as Atticus engine + venue
-  T->>A: Premium for liquidation protection
-  A->>X: Buy protective option at/above liq price
-  Note over T,X: Price approaches/crosses protected level
-  X->>A: Option payout settled
-  A->>T: Payout offsets loss (defined stop + rebate)
-```
-
----
-
-## 7. Integration Surface
-
-Sai can integrate at the level that fits its stack. All three can coexist.
-
-| Integration model | What it is | Best for |
+| Feature | What "coverage active" enables | Settlement trigger |
 |---|---|---|
-| **Widget** | Embeddable UI ("Buy Floor / Protection") that handles quote + premium deposit | Fastest trader-facing launch |
-| **Button / link** | Minimal CTA that opens the Atticus flow | Light touch, low UI work |
-| **Backend API** | Sai's backend requests quotes + triggers protection programmatically (e.g. auto-attach bad-debt cover) | Exchange-level / portfolio features |
-
-**What Sai exposes to Atticus:** a **position read interface** (Section 9), a **settlement
-contract address** on Nibiru and the settlement asset, the **eligible market list**
-(BTC/ETH for v1), and — for Feature 1/MM — a hook for the **margin engine to recognize the
-option as collateral**.
-
-**What Atticus provides back:** real-time **quote API** (premium for a given exposure /
-tenor / structure), **execution + settlement**, **status webhooks** (protection active /
-rolled / settled), and a **read endpoint** for current coverage per account/position.
+| Leveraged Floor | Margin-engine floor uplift | Perp close or expiry |
+| Bad Debt Protection | Treasury-level tail cover | Attested deficit / strike breach |
+| Additional cases | Per use case (stop, treasury, MM, credits) | Per configured terms |
 
 ---
 
-## 8. Smart Contract / Non-Custodial Model
+## 8. API Sketch (Illustrative)
 
-Flow of value:
+The following illustrates the integration interface. Field names and shapes are
+representative and finalized per partner agreement. Inputs and outputs are shown; internal
+pricing and structure-selection logic is proprietary and not exposed.
+
+**Request a quote.**
 
 ```
-Trader / Exchange  --premium-->  Atticus contract (Nibiru)
-Atticus contract   --deposit event-->  Atticus engine
-Atticus engine     --executes real option-->  Venue (Deribit / Bullish)
-Venue              --salvage / payout-->  Atticus engine
-Atticus engine     --settle-->  Atticus contract (Nibiru)
-Atticus contract   --payout-->  Trader / Exchange / Treasury contract
+POST /v1/quote
+{
+  "market": "BTC",
+  "side": "long",
+  "notional_usd": 100000,
+  "protect": "floor",          // "floor" | "bad_debt" | "liquidation" | ...
+  "reference_price": 74000,    // e.g. liquidation price or coverage level
+  "tenor_days": 3
+}
+
+-> 200
+{
+  "quote_id": "...",
+  "premium_usd": 412.50,       // quoted from live markets; derivation not exposed
+  "structure": "protective_put",   // generic label only
+  "strike": 74000,
+  "expiry": "2026-06-04T08:00:00Z",
+  "coverage_terms": { "floor_uplift_usd": 95000, "rollable": true },
+  "expires_at": "2026-06-01T00:00:30Z"   // quote validity
+}
 ```
 
-**Non-custodial — stated precisely (a builder will check this):** Sai's **users and
-treasury never hand custody to Atticus**; premiums and payouts move through **on-chain
-contracts on Nibiru**, and rules (who is owed what, when) are enforced there. The **option
-itself is held in Atticus's account at a centralized venue** (Deribit/Bullish) — that is
-where real liquidity lives — so Atticus operates **venue accounts** as the execution
-intermediary. In short: **non-custodial at the user/exchange layer; Atticus is a custodial
-execution agent at the venue.** The trust model is therefore "Atticus executes and settles
-honestly against on-chain rules + venue fills," not "a pool holds everyone's money." Venue
-fills are attestable; settlement is contract-enforced.
+**Activate coverage** (premium is paid into the Nibiru contract; this binds it to a
+position/treasury reference).
+
+```
+POST /v1/protect
+{
+  "quote_id": "...",
+  "position_ref": "sai:acct:1234:BTC-PERP",   // or "treasury" for exchange-level
+  "settlement_contract": "nibiru1...",
+  "auto_roll": true
+}
+
+-> 201
+{ "coverage_id": "...", "status": "active", "expiry": "2026-06-04T08:00:00Z" }
+```
+
+**Query coverage.**
+
+```
+GET /v1/coverage/{coverage_id}
+-> 200
+{ "coverage_id": "...", "status": "active", "current_value_usd": 980.0, "rolled_count": 0 }
+```
+
+**Webhook events** (Atticus → Sai) for lifecycle changes:
+
+```
+coverage.active   { coverage_id, position_ref, strike, expiry }
+coverage.rolled   { coverage_id, old_expiry, new_expiry, roll_cost_usd }
+coverage.settled  { coverage_id, payout_usd, settled_to, reason }   // reason: close | expiry | trigger
+```
 
 ---
 
-## 9. Read Access Requirement
+## 9. Integration Surface
 
-To know what to protect (and to size/strike correctly), Atticus needs **read access to
-positions**. No write access, no custody.
+| Model | Description | Best for |
+|---|---|---|
+| Widget | Embeddable UI that handles quote and premium deposit | Fastest trader-facing launch |
+| Button / link | Minimal call-to-action opening the protection flow | Light-touch UI |
+| Backend API | Programmatic quote + activate (e.g. auto-attach bad-debt cover) | Exchange- and portfolio-level features |
 
-| Field | Why needed |
+Sai exposes: a position read interface (Section 11), a settlement contract address and
+settlement asset on Nibiru, the eligible market list, and — for floor and MM features — a
+hook for margin-engine collateral recognition. Atticus returns: real-time quotes,
+execution and settlement, lifecycle webhooks, and a coverage read endpoint.
+
+---
+
+## 10. Non-Custodial & Settlement Model
+
+Value flow:
+
+```
+Payer            -- premium -->        Atticus contract (Nibiru)
+Atticus contract -- deposit event -->  Atticus engine
+Atticus engine   -- executes option -> Venue (Deribit / Bullish)
+Venue            -- payout / salvage ->Atticus engine
+Atticus engine   -- settle -->         Atticus contract (Nibiru)
+Atticus contract -- payout -->         Trader / Treasury contract
+```
+
+Custody model, stated precisely: Sai's users and treasury do not transfer custody to
+Atticus. Premiums and payouts move through on-chain contracts on Nibiru, and the rules
+governing them are enforced on-chain. The option position itself is held in an Atticus
+venue account at the executing exchange, where real liquidity resides. The model is
+therefore non-custodial at the trader and exchange layer, with Atticus acting as the
+execution intermediary at the venue. Venue fills are attestable and settlement is
+contract-enforced.
+
+---
+
+## 11. Read Access Requirement
+
+Atticus requires read access to positions to size and strike coverage correctly. No write
+access and no custody are required.
+
+| Field | Purpose |
 |---|---|
 | Account / position id | Reference the protected position |
-| Market (e.g. BTC, ETH) | Determine hedgeable venue instrument |
-| Side (long/short) | Put vs call |
+| Market (BTC, ETH) | Map to a venue instrument |
+| Side (long / short) | Put vs call |
 | Size / notional | Option sizing |
-| Entry price | Context / P&L |
-| Mark price + index source | Strike placement, basis assessment |
-| Maintenance margin / liquidation price | Strike placement (the floor / trigger level) |
-| Position open/close/size-change events | Re-size, roll, or release coverage |
+| Entry price | Context and P&L |
+| Mark price + index source | Strike placement and basis assessment |
+| Maintenance margin / liquidation price | Floor / trigger level |
+| Open / close / size-change events | Re-size, roll, or release coverage |
 
-**Polling vs webhook:** webhook (push on position change) is preferred for accuracy;
-polling is acceptable. **Latency:** because protection is **pre-positioned** (the option is
-bought ahead of the move, not reactively during a gap), **sub-second latency is not
-required** — minutes-fresh position data is sufficient for Features 1–2. Exact cadence is
-configurable per partner agreement. (Reactive, intra-gap hedging is a different, harder
-model and is not what these features rely on.)
+Push (webhook on position change) is preferred for accuracy; polling is acceptable. Because
+coverage is pre-positioned (the option is in place ahead of a move, not executed reactively
+during a gap), sub-second freshness is not required; an acceptable freshness window is set
+per partner agreement.
 
 ---
 
-## 10. Risk + Settlement Mechanics
-
-**Who bears what:**
+## 12. Risk & Settlement Mechanics
 
 | Party | Bears | Bounded by |
 |---|---|---|
-| Trader (Feature 1) | Premium cost | The premium (downside capped at the floor) |
-| Exchange (Feature 2) | Premium cost + any deficit **beyond** the coverage size/strike | Chosen coverage scope/strike |
-| Atticus | Execution, basis, and venue-fill risk on the pass-through; earns a spread/fee | Not a tail warehouse (pass-through) |
+| Trader (Feature 1) | Premium cost | Premium; downside capped at the floor |
+| Exchange (Feature 2) | Premium cost and any deficit beyond the configured coverage | Chosen coverage scope/strike |
+| Atticus | Execution, basis, and venue-fill risk on the pass-through | Spread/fee model; not a tail warehouse |
 
-**When settlement fires:** on **perp close** (Feature 1), **option expiry/roll**, or a
-**trigger event** (Feature 2 — price through the coverage strike plus a confirmed deficit).
-
-**Oracle / attestation (load-bearing, net-new):** automatic settlement to a Nibiru contract
-requires an authoritative signal of (a) the relevant price and (b) for bad debt, the
-deficit amount. Options: Nibiru's own price oracle, an exchange-signed attestation of the
-deficit, or a combination, with a short **dispute/confirmation window** before payout
-finalizes. The exact source and window are **to be determined per partner agreement**.
-
-**Basis risk:** Sai's perp index (Nibiru) and the venue option index (Deribit/Bullish
-BTC-USD / ETH-USD) are not guaranteed identical. For BTC/ETH the indices are highly
-correlated, but a **residual basis** can leave a small portion of a move uncovered. This is
-disclosed, measurable, and configurable (e.g. buffer the strike). Assets without a liquid
-venue index are not hedgeable via pass-through.
-
-**Tenor / rollover:** dated options protect perpetual positions in **windows** with
-**rolls**; there is a roll cost and a brief seam. Auto-roll policy is configurable.
-
-**Dispute handling:** settlement is rule-based on the contract; disputes reduce to the
-attestation source and the confirmation window, not manual claims.
+Settlement fires on perp close (Feature 1), option expiry/roll, or a trigger event
+(Feature 2). Automatic settlement to a Nibiru contract relies on an attestation of the
+relevant price and, for bad debt, the deficit amount; the source (chain oracle,
+exchange-signed attestation, or a combination) and a confirmation window are set per
+partner agreement. Coverage references a venue index (BTC-USD / ETH-USD); for BTC and ETH
+these are highly correlated with a Nibiru perp index, with a residual basis that can be
+buffered via strike placement. Dated options cover perpetual positions in rolled tenor
+windows. Disputes reduce to the attestation source and confirmation window rather than
+manual claims.
 
 ---
 
-## 11. Pricing Model (High-Level)
+## 13. Pricing (High-Level)
 
-Premium is **quoted in real time** from live venue bid/ask and live implied volatility:
+Premiums are quoted in real time from live venue markets and prevailing volatility:
 
 ```
 premium  ≈  f( notional , tenor , volatility regime , structure , strike distance )
 ```
 
-- **Notional** and **tenor** scale premium roughly proportionally and with time.
-- **Volatility regime** is read from live market vol; calm regimes are cheaper, stressed
-  regimes cost more (the protection is priced off the same markets it's bought in).
-- **Structure** is selected for cost-efficiency (e.g. a spread instead of a naked option to
-  cap premium where appropriate).
-- **Who pays** depends on the feature/model: trader (Feature 1), exchange (Feature 2), or a
-  shared per-trade fee — configurable.
-- **Revenue share** with Sai (e.g. a markup or fee split on premiums) is supported and set
-  **per partner agreement**.
-
-No fixed fees, caps, or latency numbers are committed here; all are set per agreement.
+Premium scales with notional and tenor, rises with volatility, and is reduced by
+cost-efficient structures where appropriate. The functional form and structure-selection
+rules are proprietary and not exposed through the interface. Who pays depends on the feature
+and chosen model (trader, exchange, or shared); a revenue-share arrangement with Sai is
+supported and set per partner agreement. Specific fees, caps, and latencies are determined
+per agreement and are not fixed here.
 
 ---
 
-## 12. Customization Knobs
+## 14. Customization Knobs
 
-| Knob | What Sai tunes |
+| Knob | Tunable by Sai |
 |---|---|
-| Eligible markets | BTC/ETH live; others as venue liquidity allows |
-| Max leverage uplift (Feature 1) | How much extra floor an option may unlock |
-| Strike placement | At liquidation price (full) vs buffered (cheaper, partial) |
+| Eligible markets | BTC/ETH supported; others as venue liquidity allows |
+| Maximum leverage uplift (Feature 1) | Extra floor an option may unlock |
+| Strike placement | At liquidation price (full) vs buffered (partial) |
 | Coverage scope (Feature 2) | Single-trade / position / portfolio (net) |
 | Premium model | Who pays (trader / exchange / shared), markup |
-| Payout rules | Where net settles (trader vs treasury), partial vs full |
+| Payout rules | Settlement destination (trader vs treasury), partial vs full |
 | Trigger thresholds | Where protection/coverage activates |
-| Tenor + auto-roll | Window length and roll cadence |
-| Structure policy | Single-leg vs spread vs strangle (cost/robustness trade-off) |
+| Tenor and auto-roll | Window length and roll cadence |
+| Structure policy | Cost vs robustness trade-off |
 | Revenue share | Fee split with Sai |
 
----
-
-## 13. What's Not Built Yet (Honesty)
-
-Clear separation of **what exists today** versus **what this integration needs built**.
-Effort is qualitative (Small / Medium / Large); no dates are committed.
-
-| Component | Status | Effort |
-|---|---|---|
-| Real-time option pricing (live bid/ask + implied vol), BTC/ETH | **Exists** | — |
-| Regime-aware structure selection | **Exists** | — |
-| Venue execution + best-execution routing (Deribit/Bullish) | **Exists** | — |
-| Sizing / payout stress-testing (simulation) | **Exists** | — |
-| Settlement/close execution + operational guardrails (kill switch) | **Exists** | — |
-| **Nibiru settlement contract(s)** (premium-in / payout-out, rules) | **To build** | Medium |
-| **Cross-chain premium → venue → payout relayer** | **To build** | Medium |
-| **Sai position read integration** (webhook/poll) | **To build** (joint) | Small–Medium |
-| **Trigger oracle / attestation bridge** (esp. bad-debt deficit) | **To build** | Medium–Large |
-| **Margin-engine recognition of option-as-collateral** (Feature 1, MM) | **To build (Sai-side)** | Medium |
-| **Portfolio-level dynamic net-exposure sizing** (Feature 2 advanced) | **To build** | Large |
-| **Funding-rate hedge** (synthetic) | **Design required** | Large |
-
-Single-trade / position-level protection for BTC/ETH (Features 1, 2 basic, and most of the
-Feature 3 cases) sits closest to existing capability; portfolio-level dynamic coverage,
-the oracle bridge, and funding hedges are the larger lifts.
-
----
-
-## 14. Next Steps for Sai
-
-To move from documentation to a scoped integration, Atticus needs:
-
-1. **Market list confirmation** — confirm v1 is BTC/ETH (and flag any other assets you'd
-   want, so we can assess venue hedgeability).
-2. **Position read API spec** — fields per Section 9, push (webhook) or poll, and an
-   acceptable freshness window.
-3. **Nibiru settlement details** — settlement asset (e.g. a stablecoin or NIBI), and the
-   contract(s)/treasury address protection should settle into.
-4. **Feature prioritization** — which of Feature 1 / Feature 2 / specific Feature 3 cases
-   to build first (we recommend starting with one trader-facing feature + bad-debt basic).
-5. **Integration model** — widget, button, or backend API (or a combination).
-6. **Oracle / attestation approach** — your preference for the price source and the
-   bad-debt deficit attestation + acceptable confirmation window.
-7. **Commercial model** — who pays per feature, and revenue-share structure.
-
-With (1)–(3) and a chosen first feature, Atticus can return a concrete scope, the specific
-build items from Section 13 that apply, and an integration sequence.
+Coverage, settlement destination, who pays, and trigger behavior are all configured per
+partner agreement; the interface in Section 8 is the integration point for all features.
