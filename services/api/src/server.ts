@@ -8623,12 +8623,16 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     const { fetchBullishChainSnapshot } = await import("./singleSide/twoSided/bullishChainProvider");
     const { ShadowStrangleExecutor } = await import("./singleSide/twoSided/shadowExecutor");
     const { registerFoxifyV2Routes } = await import("./singleSide/twoSided/routes");
-    const { BullishTradingClient: V2BullishClient } = await import("./pilot/bullish");
     const { pilotConfig: v2PilotConfig } = await import("./pilot/config");
+    const { getSharedBullishClient, getCachedBullishOrderbook } = await import("./pilot/bullishClient");
 
-    // Shared Bullish client (reuses the existing creds from env / Render dashboard)
+    // Use the SHARED singleton Bullish client (one login/JWT for the WHOLE server)
+    // so Foxify v2 does NOT open a SECOND Bullish session. Previously v2 created its
+    // own `new BullishTradingClient` → 2 sessions + 2x rate-budget consumption +
+    // session-count pressure (8400). Now volumeCover + dashboard + v2 share one
+    // client, one rate budget, and the shared 60s negative-cache (coordinated backoff).
     const v2BullishClient = v2PilotConfig.bullish.enabled
-      ? new V2BullishClient(v2PilotConfig.bullish)
+      ? getSharedBullishClient(v2PilotConfig.bullish)
       : null;
     if (!v2BullishClient) {
       console.warn("[FoxifyV2] Bullish disabled (PILOT_BULLISH_ENABLED=false). Cache will run Deribit-only.");
@@ -8663,6 +8667,13 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
             maxConcurrency: 2,          // unchanged: 2 concurrent orderbook calls
             maxOrderbookFetches: 16,    // RATE-LIMIT FIX: only the ~16 nearest-ATM strikes (was ~70/refresh → 429 → 0 quotes)
             timeoutMs: 4_000
+          }, async (symbol) => {
+            // Route orderbook reads through the SHARED cached layer (per-symbol cache
+            // + 60s negative-cache) so v2 dedups with volumeCover and a 429 from ANY
+            // consumer backs everyone off together — instead of v2 hitting Bullish raw.
+            const book = await getCachedBullishOrderbook(v2PilotConfig.bullish, symbol, 30_000);
+            const px = (v: unknown): number | null => (v != null && Number.isFinite(Number(v)) ? Number(v) : null);
+            return { bid: px(book.bids?.[0]?.price), ask: px(book.asks?.[0]?.price) };
           });
         }
       });
