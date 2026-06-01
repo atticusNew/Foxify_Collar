@@ -1153,6 +1153,49 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Query: ?regime= (default current), n_paths=, auto_close_abs=, auto_close_pct=
    */
   /**
+   * POST /admin/foxify/v2/respawn-close
+   *
+   * OPERATOR RECOVERY: re-drive a pair stuck in "unwinding" (or "triggered") back through
+   * the force-close runtime. Used when a force-close runtime died/aborted and left the pair
+   * hung in unwinding with its legs unsold. Spawns a fresh force-close runtime → it sells
+   * both legs on the next tick (REAL orders when live execution is on; Bullish legs
+   * serialized). Body: { pair_id }. For "active" pairs use POST /foxify/v2/close instead.
+   */
+  app.post<{ Body: { pair_id?: string } }>(
+    "/admin/foxify/v2/respawn-close",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const pairId = req.body?.pair_id;
+      if (!pairId || typeof pairId !== "string") {
+        reply.code(400).send({ error: "invalid_request", message: "pair_id required (string)" });
+        return;
+      }
+      if (!deps.spawnRuntimeForceClose) {
+        reply.code(503).send({ error: "spawn_unavailable", message: "spawnRuntimeForceClose not wired in server" });
+        return;
+      }
+      const { getPairById } = await import("./db");
+      const pair = await getPairById(deps.pool, pairId);
+      if (!pair) { reply.code(404).send({ error: "pair_not_found" }); return; }
+      if (pair.status !== "unwinding" && pair.status !== "triggered") {
+        reply.code(409).send({
+          error: "not_respawnable",
+          message: `pair status=${pair.status}; respawn-close only re-drives 'unwinding'/'triggered'. For 'active' use POST /foxify/v2/close.`,
+          details: { status: pair.status }
+        });
+        return;
+      }
+      await deps.spawnRuntimeForceClose(pairId);
+      reply.send({
+        ok: true,
+        pair_id: pairId,
+        from_status: pair.status,
+        note: "Re-spawned the force-close runtime. It sells both legs on the next tick (REAL orders if live; Bullish legs serialized). Re-check pair status in ~30-60s; expect 'settled'."
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/loss-leader-scorecard
    *
    * Cumulative realized-PnL scorecard for the calm loss-leader cells — the RIGHT
