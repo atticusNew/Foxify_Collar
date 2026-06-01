@@ -28,11 +28,33 @@ import { PHASE_0_CELLS, computeStrikes } from "./cellConfig";
 import { computeRealPricing, type SweepVenue } from "./cellSweep";
 import { getRegimeCalibration } from "./regimeCalibration";
 import { runFoxifyDurationMc } from "./foxifyDurationMc";
+import { getRealizedShadowStats } from "./realizedVsMc";
 import { mulberry32 } from "../../../scripts/backtest/singleSide/monteCarloEngine";
 import type { LiquidChainCache } from "./liquidChainCache";
 import type { DvolService } from "./dvolService";
 
 const BAR_MINUTES = 5;
+
+/**
+ * How the projection sources its per-pair net distribution:
+ *   - "off"     → always MC (legacy behavior).
+ *   - "blend"   → weight = min(1, realized_n / N); each draw picks from the
+ *                 realized pool with probability `weight`, else MC. Smoothly
+ *                 transfers trust to reality as validated settlements accrue.
+ *   - "replace" → once realized_n >= N, sample ONLY realized; below N, MC.
+ */
+export type ProjectionRealizedMode = "off" | "blend" | "replace";
+
+const DEFAULT_REALIZED_MODE: ProjectionRealizedMode =
+  ((process.env.SS_PROJECTION_REALIZED_MODE as ProjectionRealizedMode) === "off" ||
+   (process.env.SS_PROJECTION_REALIZED_MODE as ProjectionRealizedMode) === "replace")
+    ? (process.env.SS_PROJECTION_REALIZED_MODE as ProjectionRealizedMode)
+    : "blend";
+const DEFAULT_MIN_VALIDATED_SETTLEMENTS = Math.max(
+  1,
+  Number(process.env.SS_PROJECTION_MIN_VALIDATED_SETTLEMENTS ?? "20")
+);
+
 const pct = (sorted: number[], p: number): number =>
   sorted.length === 0 ? 0 : sorted[Math.max(0, Math.min(sorted.length - 1, Math.floor(p * sorted.length)))];
 const mean = (a: number[]): number => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
@@ -50,6 +72,18 @@ export type ScalingProjectionResult = {
   max_concurrent_cap: number | null;
   mc_mean_net_usdc: number;
   mc_pct_profitable: number;
+  /** Net distribution source actually used for the recycle sampling. */
+  net_source: "mc" | "blend" | "realized";
+  /** Realized-net wiring mode in effect (off | blend | replace). */
+  realized_mode: ProjectionRealizedMode;
+  /** Validated-settlement threshold N for full-trust transfer. */
+  min_validated_settlements: number;
+  /** Count of regime-tagged settled shadow pairs found for this cell+regime. */
+  realized_n: number;
+  /** Mean of the realized per-pair nets (null when realized_n === 0). */
+  realized_mean_net_usdc: number | null;
+  /** Blend weight applied to the realized pool (0 = pure MC, 1 = pure realized). */
+  blend_weight: number;
   starting_concurrent: number;
   budget_to_reach_concurrent: Record<string, number>;
   projection: {
@@ -81,6 +115,10 @@ export const projectScaling = async (
     nPaths?: number;
     seed?: number;
     nowMs?: number;
+    /** Realized-net wiring mode; defaults to env SS_PROJECTION_REALIZED_MODE or "blend". */
+    realizedMode?: ProjectionRealizedMode;
+    /** Validated-settlement threshold N; defaults to env or 20. */
+    minValidatedSettlements?: number;
   }
 ): Promise<ScalingProjectionResult> => {
   const regime = opts.regime ?? "moderate";
@@ -114,7 +152,50 @@ export const projectScaling = async (
     atticusSplitPct: 1.0, atticusFloorUsdc: 0,
     nPaths, returnNets: true, barsOverride: null
   });
-  const nets = (mc.nets && mc.nets.length > 0) ? mc.nets : [mc.meanFoxifyNetUsdc];
+  const mcNets = (mc.nets && mc.nets.length > 0) ? mc.nets : [mc.meanFoxifyNetUsdc];
+
+  // ─── Realized-net wiring (Deliverable 1) ───
+  // Once a cell has >=N regime-tagged validated settlements, transfer trust
+  // from the (estimate-tier) MC distribution to the REAL realized one. Mode:
+  //   off     → MC only (legacy);
+  //   blend   → weight = min(1, n/N); per-draw pick realized w.p. weight else MC;
+  //   replace → realized once n>=N, else MC.
+  const realizedMode: ProjectionRealizedMode = opts.realizedMode ?? DEFAULT_REALIZED_MODE;
+  const minValidated = Math.max(1, opts.minValidatedSettlements ?? DEFAULT_MIN_VALIDATED_SETTLEMENTS);
+  let realizedNets: number[] = [];
+  if (realizedMode !== "off") {
+    try {
+      const realizedRes = await getRealizedShadowStats(pool, { regime, returnSamples: true });
+      const cellStats = realizedRes.stats.find((s) => s.cellId === opts.cellId);
+      realizedNets = cellStats?.nets ?? [];
+    } catch {
+      realizedNets = []; // realized lookup is best-effort; fall back to MC
+    }
+  }
+  const realizedN = realizedNets.length;
+  const realizedMeanNet = realizedN > 0 ? +mean(realizedNets).toFixed(2) : null;
+  // Effective weight on the realized pool.
+  const blendWeight = realizedMode === "off" || realizedN === 0
+    ? 0
+    : realizedMode === "replace"
+      ? (realizedN >= minValidated ? 1 : 0)
+      : Math.min(1, realizedN / minValidated); // blend
+  // Only take the new (extra-rng) code path when realized actually contributes;
+  // when blendWeight === 0 the draw is byte-identical to legacy (regression-safe).
+  const useRealizedDraw = blendWeight > 0 && realizedNets.length > 0;
+  const netSource: "mc" | "blend" | "realized" =
+    !useRealizedDraw ? "mc" : blendWeight >= 1 ? "realized" : "blend";
+  /**
+   * Draw one per-pair net sample. When realized is not in play this is exactly
+   * the legacy `mcNets[floor(rng()*len)]` (single rng() call → preserves the
+   * existing random stream and numeric output). When realized IS in play, an
+   * extra rng() selects the source per draw.
+   */
+  const drawNet = (rng: () => number): number => {
+    if (!useRealizedDraw) return mcNets[Math.floor(rng() * mcNets.length)];
+    if (rng() < blendWeight) return realizedNets[Math.floor(rng() * realizedNets.length)];
+    return mcNets[Math.floor(rng() * mcNets.length)];
+  };
 
   // cycle time: mean ticks to auto-close → days; else tenor (ran to expiry)
   const cycleDays = opts.cycleDays ?? (mc.meanTicksToAutoClose != null
@@ -160,7 +241,7 @@ export const projectScaling = async (
       peakConc = Math.max(peakConc, concurrent);
       let cycleNet = 0;
       for (let p = 0; p < concurrent; p++) {
-        cycleNet += nets[Math.floor(rng() * nets.length)];
+        cycleNet += drawNet(rng);
       }
       capital += cycleNet; // recycle: cost returns + net (gross uplift)
       totalPairs += concurrent;
@@ -192,6 +273,12 @@ export const projectScaling = async (
     max_concurrent_cap: Number.isFinite(maxConcurrent) ? maxConcurrent : null,
     mc_mean_net_usdc: +mc.meanFoxifyNetUsdc.toFixed(2),
     mc_pct_profitable: +mc.pctProfitable.toFixed(4),
+    net_source: netSource,
+    realized_mode: realizedMode,
+    min_validated_settlements: minValidated,
+    realized_n: realizedN,
+    realized_mean_net_usdc: realizedMeanNet,
+    blend_weight: +blendWeight.toFixed(4),
     starting_concurrent: Math.floor(opts.budgetUsdc / costPerPair),
     budget_to_reach_concurrent: reach,
     projection: {
@@ -203,7 +290,11 @@ export const projectScaling = async (
       max_drawdown_pct: band(ddArr)
     },
     caveats: [
-      `Net per pair is MC ${regime === calibration[regime].regime ? "" : ""}'${calibration[regime].sigmaSource}'-calibrated and (for moderate+) ESTIMATE tier until validated — re-run on realized data as it accrues. Recycled amount = GROSS option uplift (split=1.0, per spec).`,
+      netSource === "realized"
+        ? `Net per pair sourced from ${realizedN} REAL validated settlement(s) (>= N=${minValidated}); MC retained only for reference. Recycled amount = GROSS option uplift (split=1.0, per spec).`
+        : netSource === "blend"
+          ? `Net per pair is a BLEND: ${(blendWeight * 100).toFixed(0)}% from ${realizedN} real settlement(s) + ${((1 - blendWeight) * 100).toFixed(0)}% from MC ('${calibration[regime].sigmaSource}'-calibrated). Trust shifts fully to realized at N=${minValidated}. Recycled amount = GROSS option uplift (split=1.0, per spec).`
+          : `Net per pair is MC '${calibration[regime].sigmaSource}'-calibrated and (for moderate+) ESTIMATE tier until validated — ${realizedMode === "off" ? "realized-net wiring is OFF" : `accruing realized settlements (${realizedN}/${minValidated} for cell '${opts.cellId}' in '${regime}')`}. Recycled amount = GROSS option uplift (split=1.0, per spec).`,
       `Cycle time ≈ ${(+cycleDays.toFixed(2))}d from the MC's mean-ticks-to-close (or tenor); measure from real shadow settlement durations to refine.`,
       `Market availability ${(marketAvailability as number * 100).toFixed(0)}% = DVOL-history fraction in '${regime}'.`,
       "Sequential-cycle recycling is a simplification (pairs deploy/close per cycle). Depth/liquidity cap applied only if max_concurrent is set.",
