@@ -12,10 +12,11 @@ import { fileURLToPath } from "node:url";
 
 type MockState = {
   regime: string;
-  dvol: number | null;
-  haltAtticus: boolean;
-  haltReason: string | null;
-  activateCalls: Array<{ cellId: string; foxifyPairRef: string; isShadow: boolean }>;
+  goodToActivate: boolean;
+  reason: string | null;
+  recommendedCells: string[];
+  calmLossLeader: { enabled: boolean; max_loss_usdc?: number; eligible_cells?: string[] };
+  activateCalls: Array<{ cellId: string; foxifyPairRef: string; isShadow: boolean; maxCost: number; mode: string | undefined }>;
   activateBehavior: "ok" | "reject-cell-disabled" | "reject-price-exceeded";
 };
 
@@ -26,9 +27,10 @@ let state: MockState;
 const resetState = (): void => {
   state = {
     regime: "moderate",
-    dvol: 45,
-    haltAtticus: false,
-    haltReason: null,
+    goodToActivate: true,
+    reason: null,
+    recommendedCells: ["pair_50k_3pct_atm_3d", "pair_25k_5pct_otm_3d"],
+    calmLossLeader: { enabled: false },
     activateCalls: [],
     activateBehavior: "ok"
   };
@@ -41,20 +43,25 @@ before(async () => {
       let body = "";
       req.on("data", (chunk) => { body += chunk; });
       req.on("end", () => {
-        if (req.url === "/foxify/v2/regime") {
+        if (req.url === "/foxify/v2/should_activate") {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({
+            good_to_activate: state.goodToActivate,
+            reason: state.reason,
             regime: state.regime,
-            dvol: state.dvol,
-            sigma_annual: 0.6,
-            as_of_ms: Date.now(),
-            halt: { foxify: false, atticus: state.haltAtticus, reason: state.haltReason }
+            signal_tier: state.goodToActivate ? "positive" : "stand_down",
+            recommended_cells: state.recommendedCells,
+            recommended_structure: "straddle",
+            calm_loss_leader: state.calmLossLeader
           }));
           return;
         }
         if (req.url === "/foxify/v2/activate" && req.method === "POST") {
           const parsed = JSON.parse(body);
-          state.activateCalls.push({ cellId: parsed.cellId, foxifyPairRef: parsed.foxifyPairRef, isShadow: parsed.isShadow });
+          state.activateCalls.push({
+            cellId: parsed.cellId, foxifyPairRef: parsed.foxifyPairRef, isShadow: parsed.isShadow,
+            maxCost: parsed.maxAcceptableHedgeCostUsdc, mode: parsed.metadata?.mode
+          });
           if (state.activateBehavior === "reject-cell-disabled") {
             res.writeHead(503, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "cell_disabled_in_regime", message: "cell not allowed in current regime" }));
@@ -134,37 +141,38 @@ const runBotForOneTick = async (waitMs = 5_000): Promise<{ stdout: string; stder
 };
 
 describe("foxifyShadowBot", () => {
-  it("sends shadow activate in moderate regime with first preferred cell", { timeout: 30_000 }, async () => {
+  it("fires the first recommended_cell when good_to_activate (signal mode, shadow)", { timeout: 30_000 }, async () => {
     resetState();
-    state.regime = "moderate";
-    state.activateBehavior = "ok";
+    state.goodToActivate = true;
+    state.recommendedCells = ["pair_50k_3pct_atm_3d", "pair_25k_5pct_otm_3d"];
 
     await runBotForOneTick();
 
     assert.ok(state.activateCalls.length >= 1, `expected >=1 activate call, got ${state.activateCalls.length}`);
     const call = state.activateCalls[0];
-    assert.equal(call.cellId, "pair_25k_5pct_otm_short");
-    assert.equal(call.isShadow, true);
-    assert.match(call.foxifyPairRef, /^shadow-bot-/);
+    assert.equal(call.cellId, "pair_50k_3pct_atm_3d", "fires the top recommended cell");
+    assert.equal(call.isShadow, true, "shadow by default (no SHADOW_BOT_LIVE)");
+    assert.equal(call.mode, "signal");
+    assert.match(call.foxifyPairRef, /^foxify-bot-/);
   });
 
-  it("falls through to second preferred cell when first rejected", { timeout: 30_000 }, async () => {
+  it("falls through to the second recommended_cell when the first is rejected", { timeout: 30_000 }, async () => {
     resetState();
-    state.regime = "moderate";
+    state.goodToActivate = true;
+    state.recommendedCells = ["pair_50k_3pct_atm_3d", "pair_25k_5pct_otm_3d"];
     state.activateBehavior = "reject-cell-disabled";
 
     await runBotForOneTick();
 
     assert.equal(state.activateCalls.length, 2);
-    assert.equal(state.activateCalls[0].cellId, "pair_25k_5pct_otm_short");
-    assert.equal(state.activateCalls[1].cellId, "pair_50k_4pct_otm_short");
+    assert.equal(state.activateCalls[0].cellId, "pair_50k_3pct_atm_3d");
+    assert.equal(state.activateCalls[1].cellId, "pair_25k_5pct_otm_3d");
   });
 
-  it("skips activation when atticus halt active", { timeout: 30_000 }, async () => {
+  it("skips activation when the signal reports a halt", { timeout: 30_000 }, async () => {
     resetState();
-    state.regime = "moderate";
-    state.haltAtticus = true;
-    state.haltReason = "dvol_calm";
+    state.goodToActivate = false;
+    state.reason = "halt_active:atticus:dvol_high";
 
     const r = await runBotForOneTick();
 
@@ -172,14 +180,33 @@ describe("foxifyShadowBot", () => {
     assert.match(r.stdout, /activate skipped — halt active/);
   });
 
-  it("uses elevated regime cells when regime is elevated", { timeout: 30_000 }, async () => {
+  it("fires a budgeted loss-leader cell in calm when offered (loss_leader mode, capped cost)", { timeout: 30_000 }, async () => {
     resetState();
-    state.regime = "elevated";
+    state.regime = "calm";
+    state.goodToActivate = false; // calm is never a +EV GO
+    state.recommendedCells = [];
+    state.calmLossLeader = { enabled: true, max_loss_usdc: 55, eligible_cells: ["pair_25k_5otm_strangle_2d", "pair_25k_5otm_strangle_1d"] };
 
     await runBotForOneTick();
 
-    assert.ok(state.activateCalls.length >= 1, `expected >=1 activate call, got ${state.activateCalls.length}`);
-    // elevated prefers pair_50k_5pct_otm first
-    assert.equal(state.activateCalls[0].cellId, "pair_50k_5pct_otm");
+    assert.ok(state.activateCalls.length >= 1, `expected a loss-leader fire, got ${state.activateCalls.length}`);
+    const call = state.activateCalls[0];
+    assert.equal(call.cellId, "pair_25k_5otm_strangle_2d", "fires the first eligible loss-leader cell");
+    assert.equal(call.mode, "loss_leader");
+    assert.equal(call.maxCost, 55, "caps the bid at the loss-leader budget");
+    assert.equal(call.isShadow, true);
+  });
+
+  it("stands down when not good and no loss-leader offered", { timeout: 30_000 }, async () => {
+    resetState();
+    state.regime = "calm";
+    state.goodToActivate = false;
+    state.recommendedCells = [];
+    state.calmLossLeader = { enabled: false };
+
+    const r = await runBotForOneTick();
+
+    assert.equal(state.activateCalls.length, 0);
+    assert.match(r.stdout, /activate skipped — stand down/);
   });
 });

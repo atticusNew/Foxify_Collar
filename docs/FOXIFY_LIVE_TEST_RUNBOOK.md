@@ -10,11 +10,14 @@ step as reversible — the kill switch is one curl.
 ---
 
 ## 0. Golden rules
-- **Calm regime can never go live** (hard-disabled, `SS_TWO_SIDED_ALLOW_CALM=false`). A live test requires the market to be in **moderate+**.
+- **Calm regime can never go live by default** (hard-disabled, `SS_TWO_SIDED_ALLOW_CALM=false`). A moderate+ live test requires the market to be in **moderate+**. **Exception:** the **calm loss-leader** path (`SS_TWO_SIDED_CALM_LOSS_LEADER=true`) deliberately allows budgeted calm activations ≤ `SS_TWO_SIDED_CALM_MAX_LOSS_USDC` — this is the cheapest way to run a live E2E test *right now* without waiting for a moderate window (see §1.6).
 - Start with `SS_TWO_SIDED_MAX_PAIRS_PER_DAY=1` and a **single-cell allowlist**.
 - Keep a second terminal open with the **kill switch** (§6) ready to paste.
 - Lowest premium ≠ best EV — this is a *plumbing* proof. Graduate to the validated
   `pair_150k_3pct_atm_3d` only after the plumbing test passes.
+- **VENUE REALITY (2026-06-01):** Bullish only quotes **near-ATM** strikes; the cheap **5% OTM** loss-leader cells have **no Bullish book**, so they hedge on **Deribit**. To exercise **live Bullish order placement** you must use a **near-ATM** cell (e.g. `pair_50k_3pct_atm_3d`, ~$1.3k, or a small near-ATM cell). You cannot get *both* "lowest premium" *and* "on Bullish" — pick one:
+  - **Cheapest E2E (Deribit):** calm loss-leader 1d strangle (~$18) or 2d (~$52). Real plumbing, Deribit hedge.
+  - **Bullish E2E (pricier):** near-ATM cell (~$1.3k at 50k, or add a small near-ATM cell for ~$200).
 
 ## 1. Pre-flight health (must all be green)
 ```bash
@@ -30,6 +33,33 @@ curl --http1.1 -sS -H "X-Foxify-Token: $FOXIFY_API_KEY" "$PILOT_API_BASE/foxify/
 ```bash
 curl --http1.1 -sS -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" "$PILOT_API_BASE/admin/foxify/v2/bullish-auth-probe" | jq '{ok, whitelist, interpretation}'
 ```
+
+## 1.6. Drive the test with the reference bot (recommended)
+The reference Foxify bot (`services/api/scripts/integration/foxifyShadowBot.ts`) IS the
+production-shaped activation driver — it polls `GET /foxify/v2/should_activate` and fires
+exactly what Atticus recommends (`recommended_cells` when good, or a budgeted
+`calm_loss_leader` cell), then the server's TP/expiry handlers run the pair to close.
+This gives you the full "as-if-Foxify" E2E loop (watch signal → activate → trigger/TP →
+settle → reconcile).
+
+**Single controlled live pair via the bot:**
+```bash
+export FOXIFY_API_URL="$PILOT_API_BASE"
+export FOXIFY_API_KEY="$FOXIFY_API_KEY"
+export SHADOW_BOT_LIVE=true            # fire is_shadow=false (REAL). Also needs server FOXIFY_V2_LIVE_EXECUTION=true (§3).
+export SHADOW_BOT_PAIRS_PER_DAY=1      # ~1 attempt; combined with the server day-cap = at most 1
+export SHADOW_BOT_STOP_AFTER_HOURS=1   # bot self-exits after 1h
+# (default SHADOW_BOT_LOSS_LEADER=true → in calm it will fire a budgeted loss-leader cell)
+npx tsx scripts/integration/foxifyShadowBot.ts
+```
+- **SHADOW first:** run the exact command with `SHADOW_BOT_LIVE` unset (default shadow) and confirm it fires + settles before flipping live.
+- The bot logs every decision as JSON (`signal`, `ACTIVATE OK (LIVE)`, `activate skipped — stand down`, etc.).
+- It NEVER fires more than the server allows — `SS_TWO_SIDED_MAX_PAIRS_PER_DAY` + the auto-loop day-cap still bound it.
+
+## 1.7. Which cell will the bot fire? (venue + premium)
+- **In calm with loss-leader on:** the bot fires `pair_25k_5otm_strangle_2d` (~$52) or, if over budget, `pair_25k_5otm_strangle_1d` (~$18). **Both hedge on Deribit** (Bullish has no OTM book). Cheapest live proof.
+- **In moderate+:** the bot fires from `recommended_cells` (ATM straddle etc.) — these CAN route to Bullish if Bullish is round-trip-competitive (check `venue-probe`).
+- **To force a Bullish live fill:** use a near-ATM cell and confirm via `GET /admin/foxify/v2/venue-probe?cell_id=<cell>` that `chosen_venue: "bullish"` on at least one leg BEFORE arming live.
 
 ## 2. Pick the lowest-premium cell + confirm its real cost
 Candidates (cheapest first): `pair_25k_5pct_otm_3d` (~$200–300), then `pair_50k_3pct_atm_3d` (~$1.3k, validated ATM).

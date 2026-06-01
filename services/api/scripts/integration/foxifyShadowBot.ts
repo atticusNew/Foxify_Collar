@@ -1,39 +1,33 @@
 /**
- * Foxify shadow bot — drives realistic activation patterns into /foxify/v2/activate
- * in shadow mode (is_shadow=true) for empirical EV validation.
+ * Foxify integration bot — the REFERENCE implementation of the Foxify-side
+ * activation driver. This is what Foxify's bot does (or literally runs): it
+ * watches Atticus's canonical signal and opens hedged pairs via the public API.
  *
- * Purpose:
- *   The cell sweep MC models (V1/V2/V3) all have known limitations. Real proof
- *   requires running the activation flow against real BTC paths and seeing
- *   actual settled PnL after 14 days.
+ * PRODUCTION SIGNAL: it consumes GET /foxify/v2/should_activate (the canonical
+ * bot-facing decision), NOT a hardcoded cell list. It fires exactly what Atticus
+ * recommends:
+ *   - good_to_activate=true  → fire from `recommended_cells` (the regime's live
+ *                              allowlist, in order; fall through on per-cell reject)
+ *   - calm_loss_leader.enabled → (opt-in) fire a budgeted loss-leader cell from
+ *                              `eligible_cells` at <= max_loss_usdc (capped calm volume)
+ *   - otherwise              → stand down
  *
- * What the bot does:
- *   1. Polls current regime via /foxify/v2/regime
- *   2. Picks the best-EV cell for the current regime (from regime allowlist)
- *   3. Activates a shadow pair via POST /foxify/v2/activate {isShadow: true}
- *   4. Repeats at the configured cadence (e.g., 25/day = ~57 min interval)
- *   5. Stops automatically if Atticus halts (canActivate returns 503)
- *   6. Logs all activity to stdout as JSON (Render/CloudWatch captures)
+ * SHADOW vs LIVE:
+ *   Default SHADOW (is_shadow=true) — zero real-money risk; validates the full
+ *   lifecycle (trigger detect, TP curve, settlement, webhooks) against real BTC
+ *   paths. Set SHADOW_BOT_LIVE=true to fire REAL pairs (is_shadow=false) — this
+ *   ALSO requires the server to have FOXIFY_V2_LIVE_EXECUTION=true for real venue
+ *   orders to actually place; otherwise the server still shadows. The bot logs a
+ *   loud warning on every live fire.
  *
- * What it proves:
- *   - Foxify-side API integration (Foxify's bot would do exactly this)
- *   - Trigger detection fires on real BTC moves
- *   - TP curve captures actual peaks
- *   - Settlement math matches MC predictions within drift threshold
- *   - Webhook delivery reliability
- *   - Multi-pair concurrency under realistic load
- *
- * Operator runbook:
- *   Set FOXIFY_API_KEY + endpoint env. Run as a background process on Render
- *   or local VM. Let it accumulate 14 days of shadow data. Then query:
- *     GET /foxify/v2/status — daily aggregate
- *     GET /admin/foxify/v2/diagnostics — full state
- *     SELECT * FROM two_sided_pair WHERE is_shadow = TRUE — raw data
+ * Operator runbook: see docs/FOXIFY_LIVE_TEST_RUNBOOK.md.
  *
  * Usage:
  *   export FOXIFY_API_KEY=<token>
  *   export FOXIFY_API_URL=<atticus-api-base-url>
  *   export SHADOW_BOT_PAIRS_PER_DAY=25
+ *   # optional live single-pair test:
+ *   #   export SHADOW_BOT_LIVE=true SHADOW_BOT_PAIRS_PER_DAY=1 SHADOW_BOT_STOP_AFTER_HOURS=1
  *   npx tsx scripts/integration/foxifyShadowBot.ts
  */
 
@@ -43,17 +37,12 @@ const PAIRS_PER_DAY = Number(process.env.SHADOW_BOT_PAIRS_PER_DAY ?? "25");
 const POLL_INTERVAL_MS = Math.max(60_000, Math.floor(86_400_000 / PAIRS_PER_DAY));
 const MAX_ACCEPTABLE_HEDGE_USD = Number(process.env.SHADOW_BOT_MAX_HEDGE_USD ?? "10000");
 const STOP_AFTER_HOURS = Number(process.env.SHADOW_BOT_STOP_AFTER_HOURS ?? "0");
-
-/**
- * Regime → preferred cells (per V3 sweep).
- * Bot tries cells in order; first one that activates wins.
- */
-const CELL_PREFERENCE_BY_REGIME: Record<string, string[]> = {
-  calm: ["pair_25k_5pct_otm_short"],
-  moderate: ["pair_25k_5pct_otm_short", "pair_50k_4pct_otm_short"],
-  elevated: ["pair_50k_5pct_otm", "pair_50k_4pct_otm_short", "pair_25k_5pct_otm_short"],
-  stress: ["pair_50k_5pct_otm", "pair_50k_4pct_otm_short", "pair_25k_5pct_otm_short"]
-};
+/** Fire REAL pairs (is_shadow=false). Default false = shadow. Live venue orders
+ *  ALSO require the server FOXIFY_V2_LIVE_EXECUTION=true. */
+const LIVE = String(process.env.SHADOW_BOT_LIVE ?? "false").toLowerCase() === "true";
+/** Whether to act on the calm loss-leader opt-in (default true; the SERVER gates
+ *  whether it's offered at all via SS_TWO_SIDED_CALM_LOSS_LEADER). */
+const LOSS_LEADER = String(process.env.SHADOW_BOT_LOSS_LEADER ?? "true").toLowerCase() === "true";
 
 const log = (msg: string, meta?: Record<string, unknown>): void => {
   const entry = { ts: new Date().toISOString(), svc: "foxify-shadow-bot", msg, ...meta };
@@ -80,14 +69,22 @@ const fetchJson = async <T>(
   }
 };
 
-type RegimeResp = { regime: string; dvol: number | null; halt: { atticus: boolean; foxify: boolean; reason: string | null } };
+type ShouldActivateResp = {
+  good_to_activate: boolean;
+  reason?: string | null;
+  regime: string | null;
+  signal_tier?: string;
+  recommended_cells?: string[];
+  recommended_structure?: string | null;
+  calm_loss_leader?: { enabled: boolean; max_loss_usdc?: number; eligible_cells?: string[] };
+};
 
-const getCurrentRegime = async (): Promise<RegimeResp | null> => {
-  const r = await fetchJson<RegimeResp>(`${FOXIFY_API_URL}/foxify/v2/regime`, {
+const getSignal = async (): Promise<ShouldActivateResp | null> => {
+  const r = await fetchJson<ShouldActivateResp>(`${FOXIFY_API_URL}/foxify/v2/should_activate`, {
     headers: { "X-Foxify-Token": FOXIFY_API_KEY }
   });
   if (!r.ok || !r.body) {
-    log("regime fetch failed", { status: r.status, raw: r.raw.slice(0, 200) });
+    log("should_activate fetch failed", { status: r.status, raw: r.raw.slice(0, 200) });
     return null;
   }
   return r.body;
@@ -96,17 +93,23 @@ const getCurrentRegime = async (): Promise<RegimeResp | null> => {
 type ActivateResp = { pair_id: string; status: string; foxify_pair_ref: string };
 type ErrResp = { error: string; message?: string; details?: Record<string, unknown>; retry_after_s?: number };
 
-const activateShadowPair = async (cellId: string): Promise<{ success: boolean; pairId?: string; reason?: string; details?: unknown }> => {
-  const foxifyPairRef = `shadow-bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const activatePair = async (
+  cellId: string,
+  maxCostUsdc: number,
+  mode: "signal" | "loss_leader"
+): Promise<{ success: boolean; pairId?: string; reason?: string; details?: unknown }> => {
+  const foxifyPairRef = `foxify-bot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const r = await fetchJson<ActivateResp | ErrResp>(`${FOXIFY_API_URL}/foxify/v2/activate`, {
     method: "POST",
     headers: { "X-Foxify-Token": FOXIFY_API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({
       cellId,
-      maxAcceptableHedgeCostUsdc: MAX_ACCEPTABLE_HEDGE_USD,
+      maxAcceptableHedgeCostUsdc: maxCostUsdc,
       foxifyPairRef,
-      isShadow: true,
-      metadata: { source: "shadow_bot", bot_version: "1.0.0" }
+      // is_shadow=false ONLY in explicit LIVE mode. Real venue orders also require
+      // the SERVER to have FOXIFY_V2_LIVE_EXECUTION=true.
+      isShadow: !LIVE,
+      metadata: { source: LIVE ? "foxify_bot_live" : "foxify_bot_shadow", mode, bot_version: "2.0.0" }
     })
   });
   if (r.status === 201 && r.body && "pair_id" in r.body) {
@@ -116,6 +119,9 @@ const activateShadowPair = async (cellId: string): Promise<{ success: boolean; p
   return { success: false, reason: err, details: r.body };
 };
 
+// Reject reasons that mean "try the next candidate cell" (vs a hard stop).
+const FALLTHROUGH_REASONS = new Set(["cell_disabled_in_regime", "price_exceeded", "calm_loss_exceeds_budget"]);
+
 let tickCount = 0;
 let successCount = 0;
 let blockedCount = 0;
@@ -124,42 +130,58 @@ const startMs = Date.now();
 
 const tick = async (): Promise<void> => {
   tickCount++;
-  const regime = await getCurrentRegime();
-  if (!regime) {
-    log("tick skipped — regime fetch failed");
+  const sig = await getSignal();
+  if (!sig) {
+    log("tick skipped — signal fetch failed");
     return;
   }
-  log("regime", { regime: regime.regime, dvol: regime.dvol, halt: regime.halt });
+  log("signal", {
+    regime: sig.regime, good_to_activate: sig.good_to_activate, tier: sig.signal_tier,
+    reason: sig.reason, recommended_cells: sig.recommended_cells,
+    loss_leader: sig.calm_loss_leader?.enabled ? { budget: sig.calm_loss_leader.max_loss_usdc, cells: sig.calm_loss_leader.eligible_cells } : false
+  });
 
-  if (regime.halt.atticus || regime.halt.foxify) {
+  // Halt → stand down (should_activate sets reason=halt_active:* and good_to_activate=false).
+  if (typeof sig.reason === "string" && sig.reason.startsWith("halt_active")) {
     blockedCount++;
-    const reason = `halt:${regime.halt.atticus ? "atticus" : "foxify"}:${regime.halt.reason ?? "unknown"}`;
-    blockReasonCounts[reason] = (blockReasonCounts[reason] ?? 0) + 1;
-    log("activate skipped — halt active", { reason });
+    blockReasonCounts[sig.reason] = (blockReasonCounts[sig.reason] ?? 0) + 1;
+    log("activate skipped — halt active", { reason: sig.reason });
     return;
   }
 
-  const preferred = CELL_PREFERENCE_BY_REGIME[regime.regime] ?? [];
-  if (preferred.length === 0) {
+  // Decide the candidate cells + per-pair cost cap from the canonical signal.
+  let candidates: string[] = [];
+  let maxCost = MAX_ACCEPTABLE_HEDGE_USD;
+  let mode: "signal" | "loss_leader" = "signal";
+  if (sig.good_to_activate && (sig.recommended_cells?.length ?? 0) > 0) {
+    candidates = sig.recommended_cells!;
+    mode = "signal";
+  } else if (LOSS_LEADER && sig.calm_loss_leader?.enabled && (sig.calm_loss_leader.eligible_cells?.length ?? 0) > 0) {
+    // Budgeted calm volume: cap the bid at the loss-leader budget so we never pay
+    // above max_loss_usdc (the server also enforces this).
+    candidates = sig.calm_loss_leader.eligible_cells!;
+    maxCost = sig.calm_loss_leader.max_loss_usdc ?? MAX_ACCEPTABLE_HEDGE_USD;
+    mode = "loss_leader";
+  } else {
     blockedCount++;
-    log("activate skipped — no cells preferred for regime", { regime: regime.regime });
+    log("activate skipped — stand down", { regime: sig.regime, good: sig.good_to_activate, loss_leader: sig.calm_loss_leader?.enabled ?? false });
     return;
   }
 
-  for (const cellId of preferred) {
-    const r = await activateShadowPair(cellId);
+  if (LIVE) log("⚠️  LIVE MODE — firing REAL pair (is_shadow=false)", { mode, maxCost });
+
+  for (const cellId of candidates) {
+    const r = await activatePair(cellId, maxCost, mode);
     if (r.success) {
       successCount++;
-      log("ACTIVATE OK", { cellId, pairId: r.pairId });
+      log(LIVE ? "ACTIVATE OK (LIVE)" : "ACTIVATE OK", { cellId, pairId: r.pairId, mode });
       return;
     }
     const reasonStr = String(r.reason);
     blockReasonCounts[reasonStr] = (blockReasonCounts[reasonStr] ?? 0) + 1;
-    log("activate rejected", { cellId, reason: r.reason, details: r.details });
-    if (reasonStr === "cell_disabled_in_regime" || reasonStr === "price_exceeded") {
-      continue;
-    }
-    break;
+    log("activate rejected", { cellId, reason: r.reason, mode, details: r.details });
+    if (FALLTHROUGH_REASONS.has(reasonStr)) continue; // try the next candidate
+    break; // hard error (feed_unavailable, depth, halt, etc.) — stop this tick
   }
   blockedCount++;
 };
@@ -182,13 +204,19 @@ const main = async (): Promise<void> => {
     console.error("FOXIFY_API_URL env var required (e.g. https://<your-render-host>)");
     process.exit(1);
   }
-  log("Foxify shadow bot starting", {
+  log(LIVE ? "⚠️  Foxify bot starting in LIVE mode (REAL pairs)" : "Foxify bot starting (SHADOW mode)", {
     api_url: FOXIFY_API_URL,
+    mode: LIVE ? "LIVE" : "shadow",
+    loss_leader_enabled: LOSS_LEADER,
     pairs_per_day: PAIRS_PER_DAY,
     poll_interval_ms: POLL_INTERVAL_MS,
     max_acceptable_hedge_usd: MAX_ACCEPTABLE_HEDGE_USD,
-    stop_after_hours: STOP_AFTER_HOURS
+    stop_after_hours: STOP_AFTER_HOURS,
+    signal_source: "/foxify/v2/should_activate"
   });
+  if (LIVE) {
+    log("⚠️  LIVE: is_shadow=false on every fire. Real venue orders also require server FOXIFY_V2_LIVE_EXECUTION=true. Use SHADOW_BOT_PAIRS_PER_DAY=1 + SHADOW_BOT_STOP_AFTER_HOURS for a single controlled test.");
+  }
 
   await tick().catch((e) => log("tick error", { error: (e as Error).message }));
 
