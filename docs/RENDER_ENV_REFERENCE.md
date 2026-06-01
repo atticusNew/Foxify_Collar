@@ -114,6 +114,10 @@ Everything else has sensible defaults you usually don't need to think about.
 | `VOLUME_COVER_HEDGE_MANAGER_ENABLED` | `true` | Volume-cover hedge manager. |
 | `VOLUME_COVER_AUTH_DISABLED` | `false` | Disable auth on volume-cover routes (dev only). |
 
+### Validation / webhook
+- **Webhook delivery validation** (no env): `POST /admin/foxify/v2/webhook-config/test` fires a signed synthetic `PairClosedPayload` (HMAC `X-Atticus-Signature`) to the configured webhook (or a `test_url`/`test_secret` in the body) and returns delivery status/latency/response. Use to validate against Foxify's real receiver before live.
+- **Realized-vs-MC reconciliation** defaults to `nPaths=2000` (stable MC mean) and `organic_only=true` (excludes force-triggered/test pairs). Override per-call with `?n_paths=` / `?organic_only=false`.
+
 ### Venue selection (best execution + partner tie-breaker)
 | Variable | Default | Description |
 |---|---|---|

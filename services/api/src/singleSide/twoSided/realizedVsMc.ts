@@ -164,7 +164,10 @@ export const reconcileRealizedVsMc = async (
   }
 ): Promise<ReconcileReport> => {
   const organicOnly = opts.organicOnly !== false;
-  const nPaths = opts.nPaths ?? 500;
+  // 2000 (was 500): the realized-vs-MC GATE needs a STABLE MC mean. High-tail cells
+  // (e.g. pair_50k_2pct 2% trigger) swung ±90% run-to-run at 500 paths, making the
+  // ±15% comparison meaningless. 2000 cuts the std error ~2× for a few seconds more.
+  const nPaths = opts.nPaths ?? 2000;
   const autoClosePnlPct = opts.autoClosePnlPct ?? 0.30;
   const autoCloseAbsoluteUsdc = opts.autoCloseAbsoluteUsdc ?? 250;
   const venue: SweepVenue = opts.venue ?? "auto";
