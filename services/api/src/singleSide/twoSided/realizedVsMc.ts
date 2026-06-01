@@ -36,6 +36,14 @@ export type RealizedCellStats = {
   pctProfitable: number;
   meanCostUsdc: number;
   exitModeCounts: Record<string, number>;
+  /**
+   * Raw per-pair realized Foxify-net samples (USDC), present ONLY when the
+   * caller passes `returnSamples: true`. Used by the scaling projection to
+   * sample from the REAL realized distribution (blend with MC) once a cell has
+   * >=N validated settlements. Omitted by default to keep the report payload
+   * small.
+   */
+  nets?: number[];
 };
 
 export type ReconcileRow = {
@@ -69,7 +77,7 @@ export type ReconcileReport = {
 /** Pull settled shadow pairs and aggregate realized stats per cell (JS-side, pg-mem safe). */
 export const getRealizedShadowStats = async (
   pool: Pool | PoolClient,
-  opts: { regime?: Regime } = {}
+  opts: { regime?: Regime; returnSamples?: boolean } = {}
 ): Promise<{ stats: RealizedCellStats[]; taggedPairs: number; untaggedPairs: number }> => {
   const r = await pool.query<{ cell_id: string; hedge_cost_total_usdc: string; foxify_share_usdc: string | null; exit_mode: string | null; regime_at_activation: string | null }>(
     `SELECT cell_id, hedge_cost_total_usdc, foxify_share_usdc, exit_mode, regime_at_activation
@@ -103,7 +111,10 @@ export const getRealizedShadowStats = async (
     meanRealizedNetUsdc: +mean(g.nets).toFixed(2),
     pctProfitable: +(g.nets.filter((x) => x > 0).length / g.nets.length).toFixed(4),
     meanCostUsdc: +mean(g.costs).toFixed(2),
-    exitModeCounts: g.exits
+    exitModeCounts: g.exits,
+    // Raw samples only when requested (projection blend). Defensive copy so
+    // callers can't mutate internal accumulators.
+    ...(opts.returnSamples ? { nets: [...g.nets] } : {})
   }));
   return { stats, taggedPairs, untaggedPairs };
 };
