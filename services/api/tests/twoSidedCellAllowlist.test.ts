@@ -47,13 +47,15 @@ test("DEFAULT_CELL_ALLOWLIST: moderate/elevated/stress have at least 1 cell", ()
   }
 });
 
-test("DEFAULT_CELL_ALLOWLIST: moderate features pair_50k_2pct (V5 top moderate winner)", () => {
-  assert.ok(DEFAULT_CELL_ALLOWLIST.moderate.includes("pair_50k_2pct"));
+test("DEFAULT_CELL_ALLOWLIST: moderate features the empirical ATM straddle winner", () => {
+  assert.ok(DEFAULT_CELL_ALLOWLIST.moderate.includes("pair_150k_3pct_atm_3d"));
   assert.ok(DEFAULT_CELL_ALLOWLIST.moderate.includes("pair_25k_5pct_otm_3d"));
 });
 
-test("DEFAULT_CELL_ALLOWLIST: stress features pair_50k_2pct (V5 best-in-class +$1,194)", () => {
-  assert.ok(DEFAULT_CELL_ALLOWLIST.stress.includes("pair_50k_2pct"));
+test("DEFAULT_CELL_ALLOWLIST: pair_50k_2pct PRUNED from all regimes (deprecated 2026-06-01; synthetic-era EV, superseded by ATM straddle)", () => {
+  for (const regime of ["calm", "moderate", "elevated", "stress"] as const) {
+    assert.ok(!DEFAULT_CELL_ALLOWLIST[regime].includes("pair_50k_2pct"), `pair_50k_2pct must NOT be in ${regime} default`);
+  }
 });
 
 test("isCellAllowedInRegimeDefault: V5-broken cells NOT in any default regime", () => {
@@ -70,17 +72,17 @@ test("isCellAllowedInRegimeDefault: V5-broken cells NOT in any default regime", 
   }
 });
 
-test("isCellAllowedInRegimeDefault: pair_50k_2pct (Phase 0) IS in moderate/elevated/stress per V5", () => {
-  // V5 with liquid picker shows Phase 0 is profitable at moderate+ (+$326 to +$1,194)
-  for (const regime of ["moderate", "elevated", "stress"] as const) {
+test("isCellAllowedInRegimeDefault: pair_50k_2pct deprecated — NOT in any default regime (2026-06-01 prune)", () => {
+  // Its V5 +$326..+$1,194 were SYNTHETIC-era; the ITM-guts structure was NOT
+  // revalidated by the empirical sweep (which validated the ATM straddle). Per
+  // "real validation > synthetic confidence" it is pruned. Re-enable via DB override.
+  for (const regime of ["calm", "moderate", "elevated", "stress"] as const) {
     assert.equal(
       isCellAllowedInRegimeDefault("pair_50k_2pct", regime),
-      true,
-      `V5 proves pair_50k_2pct profitable in ${regime} — must be in default`
+      false,
+      `pair_50k_2pct deprecated — must NOT be in ${regime} default`
     );
   }
-  // Still not allowed in calm (V5 says -$308 at calm)
-  assert.equal(isCellAllowedInRegimeDefault("pair_50k_2pct", "calm"), false);
 });
 
 test("isCellAllowedInRegime (DB): respects empty calm default", async () => {

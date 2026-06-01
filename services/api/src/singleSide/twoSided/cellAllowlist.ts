@@ -48,12 +48,20 @@ export const DEFAULT_CELL_ALLOWLIST: Record<Regime, ReadonlyArray<string>> = {
   // at 150k). Enforced hard by SS_TWO_SIDED_ALLOW_CALM=false (see activateHandler).
   calm: [],
   // pair_150k_3pct_atm_3d = empirical sweep winner (ATM straddle, ~$224–247 net,
-  // ~98–99% profitable — nearly covers $250 friction at 150k). pair_50k_3pct_atm_3d
-  // kept as capital-light option. Live activation still gated by
-  // SS_TWO_SIDED_LIVE_ENABLED=false until real-tier validation + shadow gauntlet.
-  moderate: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"],
-  elevated: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"],
-  stress: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_2pct", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
+  // ~98–99% profitable). pair_50k_3pct_atm_3d = capital-light ATM. pair_25k_5pct_otm_3d
+  // = lowest-premium (live-test) cell + redesign-sweep moderate winner. pair_50k_5pct_otm
+  // / pair_50k_4pct_otm_short = OTM strategy variants (elevated/stress).
+  //
+  // PRUNED 2026-06-01 (handoff directive): pair_50k_2pct REMOVED from all regimes.
+  // It was the V5 "top winner" (+$326–$1,194) — but those numbers are SYNTHETIC-era
+  // (pre-empirical-calibration) and its ITM-guts structure was NOT revalidated by the
+  // empirical sweep (which validated the ATM straddle). Per "real validation >
+  // synthetic confidence" it is deprecated/superseded. Still in PHASE_0_CELLS registry;
+  // re-enable per-regime via /admin/foxify/v2/cell-allowlist if ever revalidated.
+  // Live activation still gated by SS_TWO_SIDED_LIVE_ENABLED=false.
+  moderate: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"],
+  elevated: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"],
+  stress: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
 };
 
 export const ensureCellAllowlistSchema = async (pool: Pool): Promise<void> => {

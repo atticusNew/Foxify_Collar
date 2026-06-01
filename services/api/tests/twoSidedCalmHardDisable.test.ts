@@ -110,8 +110,9 @@ test("handleActivate: SS_TWO_SIDED_ALLOW_CALM=true bypasses the calm hard-gate (
 test("handleActivate: non-calm (moderate) is unaffected by the calm gate (201)", async () => {
   const pool = await buildPool();
   await withEnv(undefined, async () => {
+    // Use an allowlisted moderate cell (pair_50k_2pct was pruned 2026-06-01).
     const res = await handleActivate(
-      { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 3_500, foxifyPairRef: "mod-ok-1" },
+      { cellId: "pair_50k_3pct_atm_3d", maxAcceptableHedgeCostUsdc: 6_000, foxifyPairRef: "mod-ok-1" },
       depsWithRegime(pool, "moderate")
     );
     assert.equal(res.status, 201, `expected 201, got ${res.status} ${JSON.stringify((res as { body: unknown }).body)}`);
