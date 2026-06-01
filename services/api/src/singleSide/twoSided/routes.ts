@@ -50,7 +50,7 @@ import {
 } from "./guardrails";
 import { togglePool, getPoolState } from "./deferredPool";
 import { clearNewbornReview, classifyRegime, getNewbornState, type Regime } from "./featureFlag";
-import { getEventsForPair, getPairById } from "./db";
+import { getEventsForPair, getLegsForPair, getPairById } from "./db";
 import { FeedService } from "./feedService";
 import { DvolService } from "./dvolService";
 import type { LiveAnchorProvider } from "./quoteEngine";
@@ -1190,7 +1190,163 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         ok: true,
         pair_id: pairId,
         from_status: pair.status,
-        note: "Re-spawned the force-close runtime. It sells both legs on the next tick (REAL orders if live; Bullish legs serialized). Re-check pair status in ~30-60s; expect 'settled'."
+        note: "Re-spawned the force-close runtime. It sells both legs on the next tick (REAL orders if live; Bullish legs serialized). Re-check pair status in ~30-60s; expect 'settled'. WARNING: only use this when the legs are STILL HELD. If the legs were already closed OUT OF BAND (manually on the venue), use POST /admin/foxify/v2/reconcile-settle instead — respawn-close would try to re-sell positions you no longer hold."
+      });
+    }
+  );
+
+  /**
+   * POST /admin/foxify/v2/reconcile-settle
+   *
+   * OUT-OF-BAND CLOSE RECONCILIATION: settle a pair from REAL venue proceeds
+   * WITHOUT placing any venue orders. Use when a pair's legs were closed directly
+   * on the venue (Bullish/Deribit UI/API) so our system never recorded it and the
+   * pair is stuck in active/triggered/unwinding. Walks the pair to 'settled' using
+   * the SAME split math as the live runtime (computeSplit + pinned tier floor), so
+   * P&L / ledgers stay consistent. Places NO orders — pure bookkeeping.
+   *
+   * Body: {
+   *   pair_id: string,
+   *   put_proceeds_usdc?: number, call_proceeds_usdc?: number,   // preferred (writes leg sell_*)
+   *   salvage_proceeds_usdc?: number,                            // OR a single total
+   *   closed_reason?: "foxify_close"|"expiry"|"trigger",         // default foxify_close
+   *   exit_mode?: ExitMode,                                      // default foxify_close
+   *   note?: string,
+   *   deliver_webhook?: boolean                                  // default false
+   * }
+   */
+  app.post<{ Body: {
+    pair_id?: string;
+    put_proceeds_usdc?: number;
+    call_proceeds_usdc?: number;
+    salvage_proceeds_usdc?: number;
+    closed_reason?: string;
+    exit_mode?: string;
+    note?: string;
+    deliver_webhook?: boolean;
+  } }>(
+    "/admin/foxify/v2/reconcile-settle",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const b = req.body ?? {};
+      if (!b.pair_id || typeof b.pair_id !== "string") {
+        reply.code(400).send({ error: "invalid_request", message: "pair_id required (string)" });
+        return;
+      }
+      const { reconcileSettlePair } = await import("./reconcileSettle");
+      const validReason = (b.closed_reason === "foxify_close" || b.closed_reason === "expiry" || b.closed_reason === "trigger")
+        ? b.closed_reason : undefined;
+      const result = await reconcileSettlePair(deps.pool, {
+        pairId: b.pair_id,
+        putProceedsUsdc: typeof b.put_proceeds_usdc === "number" ? b.put_proceeds_usdc : undefined,
+        callProceedsUsdc: typeof b.call_proceeds_usdc === "number" ? b.call_proceeds_usdc : undefined,
+        salvageProceedsUsdc: typeof b.salvage_proceeds_usdc === "number" ? b.salvage_proceeds_usdc : undefined,
+        closedReason: validReason,
+        exitMode: typeof b.exit_mode === "string" ? (b.exit_mode as never) : undefined,
+        note: typeof b.note === "string" ? b.note : undefined,
+        deliverWebhook: b.deliver_webhook === true
+      });
+      if (!result.ok) {
+        const code = result.error === "pair_not_found" ? 404
+          : result.error === "already_terminal" ? 409
+          : 400;
+        reply.code(code).send({ error: result.error, message: result.message, details: result.details ?? null });
+        return;
+      }
+      reply.send({
+        ok: true,
+        pair_id: result.pair.pairId,
+        status: result.pair.status,
+        stepped_from: result.steppedFrom,
+        per_leg_applied: result.perLegApplied,
+        salvage_proceeds_usdc: result.salvageProceedsUsdc,
+        hedge_cost_total_usdc: result.pair.hedgeCostTotalUsdc,
+        uplift_usdc: result.split.upliftUsdc,
+        foxify_share_usdc: result.split.foxifyShareUsdc,
+        atticus_share_usdc: result.split.atticusShareUsdc,
+        outcome: result.split.outcomeCategory,
+        note: "Reconciled from real venue proceeds; NO orders placed. Pair is now 'settled' and excluded from bootResurrect. View it in GET /admin/foxify/v2/live-pnl."
+      });
+    }
+  );
+
+  /**
+   * GET /admin/foxify/v2/live-pnl
+   *
+   * Cumulative P&L over settled REAL (is_shadow=FALSE) pairs — the live-money
+   * counterpart to loss-leader-scorecard (which is shadow-only). Shows total cost,
+   * salvage, Foxify net, Atticus share, wins/losses, and a per-pair breakdown
+   * (including pairs reconciled via reconcile-settle, flagged reconciled:true).
+   *
+   * Query: ?cells=a,b (filter by cell), ?since_iso= (created_at >=).
+   */
+  app.get<{ Querystring: { cells?: string; since_iso?: string } }>(
+    "/admin/foxify/v2/live-pnl",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { computeLivePnl } = await import("./livePnl");
+      const cells = req.query.cells ? req.query.cells.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+      const sinceIso = req.query.since_iso && req.query.since_iso.length > 0 ? req.query.since_iso : undefined;
+      const out = await computeLivePnl(deps.pool, { cells, sinceIso });
+      reply.send(out);
+    }
+  );
+
+  /**
+   * GET /admin/foxify/v2/stuck-pairs
+   *
+   * Read-only detector for pairs that may need reconciliation: any non-terminal
+   * pair (active/triggered/unwinding) with age, past-expiry, runtime-presence, and
+   * legs-sold flags. Flags `likely_out_of_band` when a pair is 'unwinding', older
+   * than the threshold, and has NO live runtime — i.e. a close that stalled or was
+   * done on-venue and never synced. Use this to FIND pairs for reconcile-settle.
+   *
+   * Query: ?stale_minutes= (default 15).
+   */
+  app.get<{ Querystring: { stale_minutes?: string } }>(
+    "/admin/foxify/v2/stuck-pairs",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const staleMinutes = req.query.stale_minutes ? Number(req.query.stale_minutes) : 15;
+      const { getRuntimeRegistry } = await import("./runtimeRegistry");
+      const reg = getRuntimeRegistry();
+      const now = Date.now();
+      const r = await deps.pool.query(
+        `SELECT pair_id, cell_id, is_shadow, status, expires_at, updated_at, created_at
+           FROM two_sided_pair
+          WHERE status IN ('active','triggered','unwinding')
+          ORDER BY updated_at ASC`
+      );
+      const rows = [] as Array<Record<string, unknown>>;
+      for (const row of r.rows) {
+        const pairId = row.pair_id as string;
+        const updatedMs = row.updated_at ? Date.parse(String(row.updated_at)) : now;
+        const ageMin = Math.max(0, (now - updatedMs) / 60_000);
+        const pastExpiry = row.expires_at ? now > Date.parse(String(row.expires_at)) : false;
+        const hasRuntime = reg.getRuntime(pairId) != null;
+        const legs = await getLegsForPair(deps.pool, pairId);
+        const legsSold = legs.length === 2 && legs.every((l) => l.sellFilledAt != null);
+        const status = row.status as string;
+        const likelyOutOfBand = status === "unwinding" && ageMin >= staleMinutes && !hasRuntime;
+        rows.push({
+          pair_id: pairId,
+          cell_id: row.cell_id,
+          is_shadow: Boolean(row.is_shadow),
+          status,
+          age_minutes: +ageMin.toFixed(1),
+          past_expiry: pastExpiry,
+          has_runtime: hasRuntime,
+          legs_sold: legsSold,
+          likely_out_of_band: likelyOutOfBand
+        });
+      }
+      reply.send({
+        as_of: new Date(now).toISOString(),
+        stale_minutes: staleMinutes,
+        total_non_terminal: rows.length,
+        likely_out_of_band_count: rows.filter((x) => x.likely_out_of_band === true).length,
+        pairs: rows,
+        note: "likely_out_of_band pairs are candidates for POST /admin/foxify/v2/reconcile-settle (legs already closed on-venue). Pairs WITH a runtime / still-held legs should use respawn-close instead."
       });
     }
   );

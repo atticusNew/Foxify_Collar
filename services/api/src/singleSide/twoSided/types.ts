@@ -49,6 +49,7 @@ export type PairEventKind =
   | "execution_stuck"
   | "leg_fill_partial"
   | "leg_fill_complete"
+  | "manual_reconcile"
   | "cancelled";
 
 // ─── Tier configuration (PLAN.md §3) ───
