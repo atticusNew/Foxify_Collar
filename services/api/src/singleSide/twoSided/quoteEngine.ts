@@ -133,7 +133,7 @@ export type QuoteResult =
  * but NEVER when the partner is materially worse. This is auditable: the result
  * carries best_venue / spread_vs_best_pct / partner_preferred.
  */
-const pickLegVenue = (
+export const pickLegVenue = (
   bullish: LegAnchorQuote | null,
   deribit: LegAnchorQuote | null,
   contractsBtc: number

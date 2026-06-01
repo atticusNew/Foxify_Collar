@@ -296,6 +296,26 @@ test("hardening: admin POST tolerates form-urlencoded body (no 415)", async () =
   } finally { await cleanup(); }
 });
 
+test("venue-probe: shows per-leg venue choice; legs can split across venues", async () => {
+  const { app, cleanup } = await buildApp();
+  try {
+    const r = await app.inject({
+      method: "GET",
+      url: "/admin/foxify/v2/venue-probe?cell_id=pair_50k_3pct_atm_3d",
+      headers: { "x-admin-token": ADMIN_TOKEN }
+    });
+    assert.equal(r.statusCode, 200);
+    const b = r.json();
+    assert.equal(b.legs.length, 2);
+    const put = b.legs.find((l: { leg: string }) => l.leg === "put");
+    const call = b.legs.find((l: { leg: string }) => l.leg === "call");
+    // harness anchorProvider: put only on bullish, call only on deribit → legs split.
+    assert.equal(put.chosen_venue, "bullish");
+    assert.equal(call.chosen_venue, "deribit");
+    assert.ok("partner_routing" in b, "surfaces partner routing config");
+  } finally { await cleanup(); }
+});
+
 test("hardening: admin POST with no body / no Content-Type does not 415", async () => {
   const { app, cleanup } = await buildApp();
   try {

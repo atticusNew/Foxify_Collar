@@ -1959,6 +1959,57 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   });
 
   /**
+   * GET /admin/foxify/v2/venue-probe
+   *
+   * Shows EXACTLY what venue each leg would be routed to (and WHY), using the same
+   * pickLegVenue logic + live anchors a real activation uses — WITHOUT activating,
+   * and regardless of regime (selection is pure price/round-trip, regime-independent).
+   * Per leg: every venue's ask/bid/spread/round-trip cost (2·ask−bid), the chosen
+   * venue, the best venue, and whether the partner tie-breaker fired.
+   *
+   * Query: ?cell_id=pair_50k_3pct_atm_3d
+   */
+  app.get<{ Querystring: { cell_id?: string } }>(
+    "/admin/foxify/v2/venue-probe", { preHandler: checkAdminToken }, async (req, reply) => {
+    const { PHASE_0_CELLS, computeStrikes } = await import("./cellConfig");
+    const { pickLegVenue } = await import("./quoteEngine");
+    const cellId = req.query.cell_id ?? "pair_50k_3pct_atm_3d";
+    const cell = PHASE_0_CELLS[cellId];
+    if (!cell) { reply.code(400).send({ error: "unknown_cell", message: `cell '${cellId}' not in config`, known: Object.keys(PHASE_0_CELLS) }); return; }
+    const spot = deps.feedService.getCurrentFeed()?.canonicalPrice;
+    if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+    const { putStrike, callStrike } = computeStrikes(cell, spot);
+    const contractsBtc = +(cell.notionalUsdcPerLeg / spot).toFixed(3);
+    const partnerVenue = String(process.env.SS_VENUE_PARTNER ?? "").toLowerCase() || null;
+    const maxSpreadPct = Number(process.env.SS_VENUE_PARTNER_MAX_SPREAD_PCT ?? "0");
+    const rt = (a: { askUsdcPerBtc: number; bidUsdcPerBtc?: number }): number =>
+      (a.bidUsdcPerBtc != null && a.bidUsdcPerBtc > 0) ? +(2 * a.askUsdcPerBtc - a.bidUsdcPerBtc).toFixed(2) : a.askUsdcPerBtc;
+    const describe = (a: { venue: string; askUsdcPerBtc: number; bidUsdcPerBtc?: number; depthWithin2pctBtc: number } | null) =>
+      a ? { venue: a.venue, ask: a.askUsdcPerBtc, bid: a.bidUsdcPerBtc ?? null, roundtrip_cost: rt(a), depth: a.depthWithin2pctBtc } : null;
+    const legs: Array<Record<string, unknown>> = [];
+    for (const [optType, strike] of [["put", putStrike], ["call", callStrike]] as const) {
+      const anchors = await deps.anchorProvider.getAnchorForLeg(strike, optType, cell.hedgeTenorDays);
+      const decision = pickLegVenue(anchors.bullish, anchors.deribit, contractsBtc);
+      legs.push({
+        leg: optType, strike,
+        chosen_venue: decision.chosen?.venue ?? null,
+        reason: decision.reason,
+        best_venue: decision.best_venue ?? null,
+        partner_preferred: decision.partner_preferred ?? false,
+        spread_vs_best_pct: decision.spread_vs_best_pct ?? null,
+        candidates: [describe(anchors.bullish), describe(anchors.deribit)].filter(Boolean)
+      });
+    }
+    reply.send({
+      cell_id: cellId, spot, contracts_btc: contractsBtc, tenor_days: cell.hedgeTenorDays,
+      current_regime: deps.dvolService.getCurrentDvol()?.regime ?? null,
+      partner_routing: { partner: partnerVenue, max_spread_pct: maxSpreadPct, active: !!(partnerVenue && maxSpreadPct > 0) },
+      legs,
+      note: "Selection ranks by ROUND-TRIP cost (2·ask−bid) since options are venue-locked (buy+sell same venue). Legs are chosen INDEPENDENTLY. partner_preferred=true means the partner won the tie-breaker (within max_spread_pct of best round-trip). Regime-independent — valid in calm."
+    });
+  });
+
+  /**
    * POST /admin/foxify/v2/force-trigger
    *
    * Validation tool. Synthetically triggers a SHADOW pair so we can observe
