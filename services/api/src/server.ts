@@ -8665,7 +8665,12 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
             strikeWindowUsdc: 4_000,    // narrower: was $6k, now $4k (skip far-OTM strikes we never trade)
             tenorWindowDays: 1.5,       // narrower: was 2d, now 1.5d
             maxConcurrency: 2,          // unchanged: 2 concurrent orderbook calls
-            maxOrderbookFetches: 16,    // RATE-LIMIT FIX: only the ~16 nearest-ATM strikes (was ~70/refresh → 429 → 0 quotes)
+            // Nearest-ATM orderbook fetch cap. 24 (was 16) gives the ATM band more
+            // headroom so the strikes we trade are RELIABLY in the chain every
+            // refresh (consistent venue routing), while the shared-client + cached
+            // layer keeps total Bullish call volume under the rate limit. Env-tunable:
+            // raise if ATM coverage flickers, lower if 429s reappear.
+            maxOrderbookFetches: Number(process.env.BULLISH_CHAIN_MAX_ORDERBOOK_FETCHES ?? "24"),
             timeoutMs: 4_000
           }, async (symbol) => {
             // Route orderbook reads through the SHARED cached layer (per-symbol cache

@@ -138,6 +138,7 @@ Everything else has sensible defaults you usually don't need to think about.
 | `FOXIFY_PERP_FUNDING_BPS_PER_DAY` | `0` | Optional perp funding (bps/day) on held hedge notional for gamma-scalp cells. |
 | `FOXIFY_PERP_FRICTION_USDC` | `0` | Perp-pair round-trip friction (USDC) a cell's option net must COVER; ranked cells report `covers_friction` against this. Set to the real ~$200–300 for an honest read. |
 | `SS_TWO_SIDED_MAX_CAPITAL_AT_RISK_USDC` | (unset = no cap) | LIVE capital-at-risk ceiling: blocks a live activation if currently-deployed hedge cost + this pair's hedge cost would exceed the cap. Leave unset during shadow; set when sizing up to 150k–175k pairs (see capital note below). |
+| `BULLISH_CHAIN_MAX_ORDERBOOK_FETCHES` | `24` | Max Bullish orderbook fetches per chain refresh (nearest-ATM strikes). Higher = more consistent ATM coverage / venue routing; lower = less rate-limit pressure. Default 24 balances both (shared client + cache keep total calls down). |
 | `BULLISH_RATE_LIMIT_BACKOFF_MS` | `60000` | Cool-off after a Bullish HTTP 429: chain serves Deribit-only for this long before retrying Bullish. Widen (e.g. `300000`) if 429s persist on the public endpoint, to avoid compounding rate limits until authed `registered.` access lands. |
 
 ### Capital requirements for the moderate straddle winner (sizing-up note)
