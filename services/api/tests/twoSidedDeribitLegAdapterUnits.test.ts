@@ -40,7 +40,7 @@ test("DeribitLegAdapter.buyLeg converts USDC limit to BTC limit before order", a
 
   await adapter.buyLeg({
     instrument: "BTC-31MAY26-72000-P",
-    contractsBtc: 0.01,
+    contractsBtc: 0.1,
     maxAcceptableAskUsdcPerBtc: 5000,
     clientOrderId: "test-buy-1"
   });
@@ -62,7 +62,7 @@ test("DeribitLegAdapter.buyLeg converts BTC fill back to USDC for caller", async
 
   const result = await adapter.buyLeg({
     instrument: "BTC-31MAY26-72000-P",
-    contractsBtc: 0.01,
+    contractsBtc: 0.1,
     maxAcceptableAskUsdcPerBtc: 5000,
     clientOrderId: "test-buy-2"
   });
@@ -82,7 +82,7 @@ test("DeribitLegAdapter.sellLeg converts USDC floor to BTC floor before order (s
 
   await adapter.sellLeg({
     instrument: "BTC-31MAY26-72000-P",
-    contractsBtc: 0.01,
+    contractsBtc: 0.1,
     minAcceptableBidUsdcPerBtc: 300, // $300 USDC floor
     clientOrderId: "test-sell-1"
   });
@@ -103,7 +103,7 @@ test("DeribitLegAdapter.sellLeg with floor=0 uses 1 tick (0.0001 BTC) as best-ef
 
   await adapter.sellLeg({
     instrument: "BTC-31MAY26-72000-P",
-    contractsBtc: 0.01,
+    contractsBtc: 0.1,
     minAcceptableBidUsdcPerBtc: 0, // Best-effort reverse
     clientOrderId: "test-sell-2"
   });
@@ -119,7 +119,7 @@ test("DeribitLegAdapter returns clear error when spot unavailable", async () => 
 
   const result = await adapter.buyLeg({
     instrument: "BTC-31MAY26-72000-P",
-    contractsBtc: 0.01,
+    contractsBtc: 0.1,
     maxAcceptableAskUsdcPerBtc: 5000,
     clientOrderId: "test-no-spot"
   });
@@ -139,7 +139,7 @@ test("DeribitLegAdapter paper-mode fillPrice also gets USDC conversion", async (
   );
   const result = await adapter.buyLeg({
     instrument: "BTC-X-Y-P",
-    contractsBtc: 0.01,
+    contractsBtc: 0.1,
     maxAcceptableAskUsdcPerBtc: 5000,
     clientOrderId: "paper-1"
   });
@@ -157,7 +157,7 @@ test("DeribitLegAdapter rejects orders that would fall below 0 after conversion 
   );
   const result = await adapter.buyLeg({
     instrument: "BTC-X-Y-P",
-    contractsBtc: 0.01,
+    contractsBtc: 0.1,
     maxAcceptableAskUsdcPerBtc: 5000,
     clientOrderId: "bad-spot"
   });

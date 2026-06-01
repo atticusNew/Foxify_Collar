@@ -142,18 +142,20 @@ export type DeribitLegAdapterOpts = {
   getCurrentSpotUsd: () => number | null;
   /** Deribit option price tick (default 0.0001 BTC). */
   priceTickBtc?: number;
-  /** Deribit option AMOUNT step in BTC (default 0.01 — BTC options trade in 0.01 increments). */
+  /** Deribit option AMOUNT step in BTC (default 0.1 — BTC options trade in 0.1 increments). */
   amountStepBtc?: number;
-  /** Deribit option MIN amount in BTC (default 0.01). Orders below this (after snapping) are rejected. */
+  /** Deribit option MIN amount in BTC (default 0.1). Orders below this (after snapping) are rejected. */
   minAmountBtc?: number;
 };
 
 const DEFAULT_DERIBIT_PRICE_TICK_BTC = 0.0001;
-// Deribit BTC options: contract size 1 BTC, min order 0.01 BTC, amount step 0.01 BTC
-// (per Deribit support + public/get_instrument min_trade_amount). For a production-grade
-// build these could be read per-instrument from get_instrument; 0.01 is the correct default.
-const DEFAULT_DERIBIT_AMOUNT_STEP_BTC = 0.01;
-const DEFAULT_DERIBIT_MIN_AMOUNT_BTC = 0.01;
+// Deribit BTC options: contract size 1 BTC, AMOUNT must be a multiple of min_trade_amount
+// = 0.1 BTC (verified live via public/get_instrument: min_trade_amount 0.1, contract_size 1).
+// Sending a non-0.1-multiple (e.g. 0.35211 = notional/spot) returns -32602 "must be a
+// multiple of the minimum order size". For a production-grade build, read min_trade_amount
+// PER-INSTRUMENT from get_instrument (some venues/instruments vary); 0.1 is correct for BTC options today.
+const DEFAULT_DERIBIT_AMOUNT_STEP_BTC = 0.1;
+const DEFAULT_DERIBIT_MIN_AMOUNT_BTC = 0.1;
 
 const snapUpToTick = (px: number, tick: number): number => Math.ceil(px / tick) * tick;
 const snapDownToTick = (px: number, tick: number): number => Math.floor(px / tick) * tick;
