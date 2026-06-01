@@ -8661,6 +8661,7 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
             strikeWindowUsdc: 4_000,    // narrower: was $6k, now $4k (skip far-OTM strikes we never trade)
             tenorWindowDays: 1.5,       // narrower: was 2d, now 1.5d
             maxConcurrency: 2,          // unchanged: 2 concurrent orderbook calls
+            maxOrderbookFetches: 16,    // RATE-LIMIT FIX: only the ~16 nearest-ATM strikes (was ~70/refresh → 429 → 0 quotes)
             timeoutMs: 4_000
           });
         }

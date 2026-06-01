@@ -32,6 +32,14 @@ export type BullishProviderConfig = {
   maxConcurrency?: number;
   /** Per-orderbook fetch timeout in ms. Default 4000. */
   timeoutMs?: number;
+  /**
+   * Cap on the number of orderbook fetches per refresh — keep ONLY the strikes
+   * NEAREST centerSpot (per side/expiry, by |strike − centerSpot|). We trade
+   * near-ATM, so fetching every in-window strike (often 50-70) hammers Bullish's
+   * rate limit → 429 → backoff → 0 quotes. Default 16 (≈ a few strikes × both
+   * sides × a couple expiries). Set 0/undefined to fetch all (legacy).
+   */
+  maxOrderbookFetches?: number;
 };
 
 const DEFAULT_MAX_CONCURRENCY = 4;
@@ -152,6 +160,17 @@ export const fetchBullishChainSnapshot = async (
     });
   }
 
+  // 2b. RATE-LIMIT GUARD: cap orderbook fetches to the strikes NEAREST centerSpot.
+  // We trade near-ATM; fetching every in-window strike (often 50-70) is what was
+  // tripping Bullish's 429 → backoff → 0 quotes (even though ATM is liquid).
+  const maxFetches = config.maxOrderbookFetches ?? 16;
+  let fetchCandidates = candidates;
+  if (maxFetches > 0 && candidates.length > maxFetches) {
+    fetchCandidates = [...candidates]
+      .sort((a, b) => Math.abs(a.strike - config.centerSpot) - Math.abs(b.strike - config.centerSpot))
+      .slice(0, maxFetches);
+  }
+
   // 3. Fetch orderbook for each candidate concurrently. If we hit a 429 from
   // any single orderbook call, immediately abort the rest and mark backoff —
   // continuing would just keep hitting the rate limit.
@@ -174,7 +193,7 @@ export const fetchBullishChainSnapshot = async (
   };
   const fetcher = fetchOrderbook ?? defaultFetcher;
 
-  const quotes = await runWithConcurrency(candidates, async (c) => {
+  const quotes = await runWithConcurrency(fetchCandidates, async (c) => {
     const ob = await fetcher(c.market.symbol);
     if (!ob || ob.bid == null || ob.ask == null) return null;
     if (ob.bid <= 0 || ob.ask <= 0) return null;

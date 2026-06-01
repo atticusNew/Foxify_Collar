@@ -78,6 +78,25 @@ test("fetchBullishChainSnapshot skips entries with null/zero bid or ask", async 
   assert.equal(r.quotes[0].strike, 75_000);
 });
 
+test("fetchBullishChainSnapshot caps orderbook fetches to nearest-ATM (maxOrderbookFetches) — rate-limit guard", async () => {
+  const nowMs = Date.now();
+  const exp = new Date(nowMs + 3 * 86_400_000).toISOString();
+  const strikes: number[] = [];
+  for (let k = 70_000; k <= 80_000; k += 1_000) strikes.push(k); // 11 strikes, all in ±6k window
+  const client = buildMockClient(strikes.map((k) => ({
+    symbol: `BTC-CALL-${k}`, optionType: "CALL", optionStrikePrice: String(k), expiryDatetime: exp, underlyingBaseSymbol: "BTC"
+  })));
+  let calls = 0;
+  const ob = async () => { calls++; return { bid: 100, ask: 110 }; };
+  const r = await fetchBullishChainSnapshot(client, 75_000, {
+    centerSpot: 75_000, centerTenorDays: 3, strikeWindowUsdc: 6_000, tenorWindowDays: 1, maxOrderbookFetches: 6
+  }, ob, nowMs);
+  assert.equal(calls, 6, "only 6 orderbook fetches despite 11 in-window strikes (nearest-ATM cap)");
+  assert.equal(r.quotes.length, 6);
+  const qStrikes = r.quotes.map((q) => q.strike);
+  assert.ok(Math.min(...qStrikes) >= 72_000 && Math.max(...qStrikes) <= 78_000, "kept only the nearest-ATM strikes");
+});
+
 test("fetchBullishChainSnapshot tolerates individual orderbook failures (returns null)", async () => {
   const nowMs = Date.now();
   const exp = new Date(nowMs + 3 * 86_400_000).toISOString();
