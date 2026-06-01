@@ -1044,9 +1044,12 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Use to verify that history is accumulating and that sigmas/markups
    * are converging to plausible values before we trust the MC sweep.
    */
-  app.get<{ Querystring: { weighting?: string; half_life_days?: string } }>(
+  app.get<{ Querystring: { weighting?: string; half_life_days?: string; bypass_cache?: string } }>(
     "/admin/foxify/v2/regime-calibration", { preHandler: checkAdminToken }, async (req, reply) => {
     const { getCalibrationSummary, getRegimeCalibration } = await import("./regimeCalibration");
+    // ?bypass_cache=true → recompute from DB (use right after a dvol-backfill;
+    // the 5-min cache otherwise serves the pre-backfill calibration).
+    const bypassCache = req.query.bypass_cache === "true";
     // ?weighting=ewma|median → return that calibration view (for A/B vs median);
     // no param → the standard summary (env-driven default).
     if (req.query.weighting === "ewma" || req.query.weighting === "median") {
@@ -1058,7 +1061,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       reply.send({ weighting: req.query.weighting, half_life_days: req.query.half_life_days ? Number(req.query.half_life_days) : 14, calibration: cal });
       return;
     }
-    const summary = await getCalibrationSummary(deps.pool);
+    const summary = await getCalibrationSummary(deps.pool, undefined, { bypassCache });
     reply.send(summary);
   });
 

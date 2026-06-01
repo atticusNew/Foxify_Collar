@@ -180,7 +180,22 @@ const percentile = (sorted: number[], p: number): number => {
   return sorted[idx];
 };
 
-// Combined BS value × realism multiplier — the per-tick valuation
+/**
+ * Combined BS value × realism multiplier — the per-tick valuation.
+ *
+ * SANCTIONED EXCEPTION to the "every pricing component calls the same
+ * priceOption primitive" rule (operating rule #2):
+ *   Across thousands of paths × hundreds of ticks, a live chain lookup
+ *   (priceOption) per tick is computationally infeasible AND meaningless —
+ *   the chain only knows the CURRENT spot, not the hypothetical evolved spot
+ *   on a simulated path. So the MC values each tick with Black-Scholes at the
+ *   path spot, then multiplies by `realismMultiplier`, which is itself derived
+ *   from priceOption's REAL bid/ask at entry (real_bid_combined / bs_at_spot in
+ *   cellSweep.computeRealPricing). This keeps the simulation anchored to real
+ *   venue economics (no synthetic markup) while staying tractable. MTM, close
+ *   executor, and EV display all still call priceOption directly on real spot —
+ *   only the forward-simulated path valuation uses this BS×realism form.
+ */
 const combinedValueAt = (
   spot: number,
   putStrike: number,

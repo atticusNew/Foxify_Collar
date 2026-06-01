@@ -175,10 +175,13 @@ export type CalibrationSummary = {
 
 export const getCalibrationSummary = async (
   pool: Pool,
-  nowMs?: number
+  nowMs?: number,
+  opts: { bypassCache?: boolean } = {}
 ): Promise<CalibrationSummary> => {
   const now = nowMs ?? Date.now();
-  const calibration = await getRegimeCalibration(pool, { nowMs: now });
+  // bypassCache=true recomputes from the DB (e.g. right after a DVOL backfill,
+  // where the 5-min cache would otherwise serve the pre-backfill calibration).
+  const calibration = await getRegimeCalibration(pool, { nowMs: now, bypassCache: opts.bypassCache });
   const cacheAge = _cache ? now - (_cache.expiresAtMs - CALIBRATION_CACHE_TTL_MS) : null;
   return {
     asOf: new Date(now).toISOString(),
