@@ -54,6 +54,25 @@ import { RISK_FREE_RATE } from "./optionPricing";
 const BAR_MINUTES = 5;
 const BARS_PER_HOUR = 60 / BAR_MINUTES;
 const RFR = RISK_FREE_RATE;
+const FIVE_MIN_BARS_PER_YEAR = 365 * 24 * 12;
+
+/**
+ * Annualized realized σ of a 5-min bar series (stdev of log-returns × √barsPerYear).
+ * Used to scale a real-bar bootstrap up to a target regime σ in fat-tail mode.
+ * Returns 0 on degenerate input (caller then leaves scale=1).
+ */
+const annualizedSigmaFrom5MinBars = (bars: { close: number }[]): number => {
+  if (!Array.isArray(bars) || bars.length < 3) return 0;
+  const rets: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const p = bars[i - 1]?.close, c = bars[i]?.close;
+    if (p > 0 && c > 0) rets.push(Math.log(c / p));
+  }
+  if (rets.length < 2) return 0;
+  const m = rets.reduce((s, x) => s + x, 0) / rets.length;
+  const v = rets.reduce((s, x) => s + (x - m) ** 2, 0) / (rets.length - 1);
+  return Math.sqrt(v) * Math.sqrt(FIVE_MIN_BARS_PER_YEAR);
+};
 
 export type FoxifyDurationMcInputs = {
   cellId: string;
@@ -84,6 +103,15 @@ export type FoxifyDurationMcInputs = {
   nPaths?: number;
   /** Optional bars cache (avoids repeated load5MinBars when caller has them). */
   barsOverride?: { highs: number[]; lows: number[]; closes: number[] } | null;
+  /**
+   * FAT-TAIL MODE (opt-in). When true, ALL regimes use a real-5min-bar bootstrap
+   * (preserving BTC's fat tails / autocorrelation) scaled to the regime σ, instead
+   * of GBM for non-calm. Default false (GBM for non-calm) — preserves the validated
+   * sweep numbers byte-for-byte until the operator deliberately flips it and
+   * re-validates. Env default: SS_MC_BOOTSTRAP_ALL_REGIMES=true. Falls back to GBM
+   * if bars are unavailable.
+   */
+  bootstrapAllRegimes?: boolean;
   /** Deterministic RNG seed. */
   seed?: number;
   /** When true, the result includes the raw per-path Foxify-net array (for bootstrapping projections). */
@@ -324,13 +352,25 @@ export const runFoxifyDurationMc = async (
   const splitPct = inputs.atticusSplitPct ?? Number(process.env.SS_ATTICUS_SPLIT_PCT ?? "0.85");
   const floorUsdc = inputs.atticusFloorUsdc ?? Number(process.env.SS_ATTICUS_FLOOR_USDC ?? "25");
 
-  const bars = inputs.barsOverride ?? (inputs.regime === "calm" ? await load5MinBars().catch(() => null) : null);
+  // Fat-tail mode: bootstrap real bars for ALL regimes (scaled to regime σ), not
+  // just calm. Opt-in (default off → legacy GBM for non-calm, validated numbers
+  // unchanged). Env SS_MC_BOOTSTRAP_ALL_REGIMES=true flips the default.
+  const bootstrapAll = inputs.bootstrapAllRegimes ?? (process.env.SS_MC_BOOTSTRAP_ALL_REGIMES === "true");
+  const bars = inputs.barsOverride ?? ((inputs.regime === "calm" || bootstrapAll) ? await load5MinBars().catch(() => null) : null);
+  const useBootstrap = bars != null && (inputs.regime === "calm" || bootstrapAll);
+  // When bootstrapping a NON-calm regime, scale the (calm-ish) historical bars up
+  // to the regime σ. Calm bootstrap stays unscaled (bars already ~calm) so legacy
+  // calm behavior is byte-identical.
+  const histSigma = bootstrapAll && bars ? annualizedSigmaFrom5MinBars(bars) : null;
+  const bootstrapVolScale = (bootstrapAll && histSigma != null && histSigma > 0)
+    ? inputs.sigmaAnnual / histSigma : 1;
   const pathConfig: PathConfig = {
     tenorDays: inputs.tenorDays,
     sigmaAnnual: inputs.sigmaAnnual,
     driftAnnual: 0,
-    generator: inputs.regime === "calm" && bars ? "bootstrap" : "gbm",
-    seed
+    generator: useBootstrap ? "bootstrap" : "gbm",
+    seed,
+    bootstrapVolScale
   };
 
   const triggerDownPx = inputs.spot * (1 - inputs.triggerPctDown);
@@ -361,8 +401,8 @@ export const runFoxifyDurationMc = async (
   const gsRebalances: number[] = [];
 
   for (let p = 0; p < nPaths; p++) {
-    const path = bars && inputs.regime === "calm"
-      ? generateBootstrapPath(inputs.spot, pathConfig, bars, rng)
+    const path = useBootstrap
+      ? generateBootstrapPath(inputs.spot, pathConfig, bars as Parameters<typeof generateBootstrapPath>[2], rng)
       : generateGbmPath(inputs.spot, pathConfig, rng);
 
     // ─── Gamma-scalp branch (Phase 4.5): delta-hedge via perp; no trigger capture ───
@@ -485,7 +525,7 @@ export const runFoxifyDurationMc = async (
     meanTicksToAutoClose: meanAuto,
     meanAtticusShareUsdc: mean(atticusShares),
     nPaths,
-    pathGenerator: bars && inputs.regime === "calm" ? "bootstrap" : "gbm",
+    pathGenerator: useBootstrap ? "bootstrap" : "gbm",
     nets: inputs.returnNets ? foxifyNets : undefined,
     gammaScalp: gammaScalpMode ? {
       meanPerpHedgePnlUsdc: mean(gsPerpPnls),

@@ -211,3 +211,41 @@ test("split: higher Atticus split (Foxify keeps more) -> higher Foxify net (conf
     `Foxify keeping 95% should net more than keeping 50% (${foxifyKeeps95.meanFoxifyNetUsdc} vs ${foxifyKeeps50.meanFoxifyNetUsdc})`
   );
 });
+
+// ──────────────────────────── #2: fat-tail bootstrap for all regimes ────────────────────────────
+
+// Deterministic synthetic 5-min bars (~calm historical vol) for offline bootstrap tests.
+const synthBars = (() => {
+  const bars: { open: number; high: number; low: number; close: number }[] = [];
+  let px = 73000, s = 987654321;
+  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+  for (let i = 0; i < 4000; i++) {
+    const r = (rnd() - 0.5) * 0.004; // ~0.2% per 5-min step
+    px = px * (1 + r);
+    bars.push({ open: px, high: px * 1.0008, low: px * 0.9992, close: px });
+  }
+  return bars;
+})();
+
+test("fat-tail mode: bootstrapAllRegimes uses bootstrap for a non-calm regime (not GBM)", async () => {
+  const r = await runFoxifyDurationMc({
+    ...baseInputs, regime: "stress", sigmaAnnual: 0.95,
+    bootstrapAllRegimes: true, barsOverride: synthBars as unknown as typeof baseInputs.barsOverride
+  });
+  assert.equal(r.pathGenerator, "bootstrap", "non-calm regime should bootstrap in fat-tail mode");
+});
+
+test("fat-tail mode: higher regime σ scales the bootstrap → wider net dispersion", async () => {
+  const common = { ...baseInputs, autoCloseAbsoluteUsdc: 1e9, autoClosePnlPct: 1e9, triggerPctDown: 1, triggerPctUp: 1, nPaths: 800, seed: 9, bootstrapAllRegimes: true, barsOverride: synthBars as unknown as typeof baseInputs.barsOverride };
+  // Disable auto-close/trigger so dispersion reflects the path vol, not exits.
+  const lowVol = await runFoxifyDurationMc({ ...common, regime: "moderate", sigmaAnnual: 0.40 });
+  const highVol = await runFoxifyDurationMc({ ...common, regime: "stress", sigmaAnnual: 1.20 });
+  const spread = (x: { p95FoxifyNetUsdc: number; p5FoxifyNetUsdc: number }) => x.p95FoxifyNetUsdc - x.p5FoxifyNetUsdc;
+  assert.ok(spread(highVol) > spread(lowVol),
+    `higher σ should widen dispersion: high=${spread(highVol).toFixed(0)} vs low=${spread(lowVol).toFixed(0)}`);
+});
+
+test("fat-tail mode OFF (default) → non-calm stays GBM (validated numbers unchanged)", async () => {
+  const r = await runFoxifyDurationMc({ ...baseInputs, regime: "moderate", sigmaAnnual: 0.44, barsOverride: null });
+  assert.equal(r.pathGenerator, "gbm", "default: non-calm uses GBM");
+});

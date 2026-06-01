@@ -43,6 +43,14 @@ export type PathConfig = {
   generator: "bootstrap" | "gbm";
   /** Optional seed for reproducibility */
   seed?: number;
+  /**
+   * Bootstrap vol scaling: multiplies each sampled historical LOG-return by this
+   * factor so a real-bar bootstrap (which preserves fat tails / shape) can be
+   * scaled to a target regime σ (factor = targetσ / historicalσ). Default 1 =
+   * unscaled (legacy behavior; existing callers are byte-identical). Only used
+   * by generateBootstrapPath. ret_scaled = ret ** factor.
+   */
+  bootstrapVolScale?: number;
 };
 
 export type CoverConfig = {
@@ -161,15 +169,21 @@ export const generateBootstrapPath = (
   const closes: number[] = [spotEntry];
   const highs: number[] = [spotEntry];
   const lows: number[] = [spotEntry];
+  // Vol scaling: factor on log-returns so the real-bar shape (fat tails) is kept
+  // but the vol level is matched to the target regime σ. Default 1 → unchanged.
+  const volScale = config.bootstrapVolScale != null && Number.isFinite(config.bootstrapVolScale) && config.bootstrapVolScale > 0
+    ? config.bootstrapVolScale : 1;
   for (let i = 1; i <= totalBars; i++) {
     const histPrev = bars[startIdx + i - 1].close;
     const histCurr = bars[startIdx + i].close;
     const histHigh = bars[startIdx + i].high;
     const histLow = bars[startIdx + i].low;
-    const ret = histCurr / histPrev;
+    const rawRet = histCurr / histPrev;
+    // Scale the log-return: ret_scaled = rawRet ** volScale (volScale=1 → identity).
+    const ret = volScale === 1 ? rawRet : Math.pow(rawRet, volScale);
     const newClose = closes[i - 1] * ret;
-    // Scale historical intra-bar high/low by current ratio
-    const histRange = (histHigh - histLow) / histPrev;
+    // Scale historical intra-bar high/low range by the same vol factor.
+    const histRange = ((histHigh - histLow) / histPrev) * volScale;
     const newHigh = newClose + (newClose * histRange) / 2;
     const newLow = newClose - (newClose * histRange) / 2;
     closes.push(newClose);
