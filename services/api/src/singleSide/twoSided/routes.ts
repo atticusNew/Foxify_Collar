@@ -1969,11 +1969,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *
    * Query: ?cell_id=pair_50k_3pct_atm_3d
    */
-  app.get<{ Querystring: { cell_id?: string } }>(
+  app.get<{ Querystring: { cell_id?: string; snap_to_bullish?: "true" | "false" } }>(
     "/admin/foxify/v2/venue-probe", { preHandler: checkAdminToken }, async (req, reply) => {
     const { PHASE_0_CELLS, computeStrikes } = await import("./cellConfig");
     const { pickLegVenue } = await import("./quoteEngine");
+    type Anchor = Parameters<typeof pickLegVenue>[0];
     const cellId = req.query.cell_id ?? "pair_50k_3pct_atm_3d";
+    const snapToBullish = req.query.snap_to_bullish === "true";
     const cell = PHASE_0_CELLS[cellId];
     if (!cell) { reply.code(400).send({ error: "unknown_cell", message: `cell '${cellId}' not in config`, known: Object.keys(PHASE_0_CELLS) }); return; }
     const spot = deps.feedService.getCurrentFeed()?.canonicalPrice;
@@ -1986,6 +1988,51 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       (a.bidUsdcPerBtc != null && a.bidUsdcPerBtc > 0) ? +(2 * a.askUsdcPerBtc - a.bidUsdcPerBtc).toFixed(2) : a.askUsdcPerBtc;
     const describe = (a: { venue: string; askUsdcPerBtc: number; bidUsdcPerBtc?: number; depthWithin2pctBtc: number } | null) =>
       a ? { venue: a.venue, ask: a.askUsdcPerBtc, bid: a.bidUsdcPerBtc ?? null, roundtrip_cost: rt(a), depth: a.depthWithin2pctBtc } : null;
+
+    // ── SNAP-TO-BULLISH WHAT-IF (read-only; does NOT change activation routing) ──
+    // For each leg, snap to Bullish's NEAREST listed strike and compare BOTH venues
+    // at that snapped strike (Deribit shown at the same strike for apples-to-apples).
+    // Shows whether aligning cell strikes to Bullish's grid would make Bullish win.
+    if (snapToBullish) {
+      if (!deps.liquidChainCache) { reply.code(503).send({ error: "chain_cache_unavailable", message: "snap_to_bullish needs liquidChainCache" }); return; }
+      const chain = await deps.liquidChainCache.getChain();
+      if (!chain) { reply.code(503).send({ error: "no_chain_snapshot" }); return; }
+      const targetHours = cell.hedgeTenorDays * 24;
+      const pulledAt = new Date(chain.fetchedAtMs).toISOString();
+      const inTenor = (q: { tenorHours: number }) => Math.abs(q.tenorHours - targetHours) <= 36;
+      const legsSnap: Array<Record<string, unknown>> = [];
+      for (const [optType, targetStrike] of [["put", putStrike], ["call", callStrike]] as const) {
+        const bull = chain.quotes
+          .filter((q) => q.venue === "bullish" && q.optType === optType && inTenor(q) && q.bidUsdcPerBtc > 0)
+          .sort((a, b) => Math.abs(a.strike - targetStrike) - Math.abs(b.strike - targetStrike) || Math.abs(a.tenorHours - targetHours) - Math.abs(b.tenorHours - targetHours))[0] ?? null;
+        const snappedStrike = bull?.strike ?? targetStrike;
+        const der = chain.quotes
+          .filter((q) => q.venue === "deribit" && q.optType === optType && q.strike === snappedStrike && inTenor(q))
+          .sort((a, b) => Math.abs(a.tenorHours - targetHours) - Math.abs(b.tenorHours - targetHours))[0] ?? null;
+        const mk = (q: typeof bull, venue: "bullish" | "deribit"): Anchor =>
+          q ? { venue, symbol: q.instrument_name, askUsdcPerBtc: q.askUsdcPerBtc, bidUsdcPerBtc: q.bidUsdcPerBtc, depthWithin2pctBtc: 999, pulledAt } : null;
+        const bAnchor = mk(bull, "bullish");
+        const dAnchor = mk(der, "deribit");
+        const decision = pickLegVenue(bAnchor, dAnchor, contractsBtc);
+        legsSnap.push({
+          leg: optType, target_strike: targetStrike, snapped_bullish_strike: snappedStrike, snapped: snappedStrike !== targetStrike,
+          chosen_venue: decision.chosen?.venue ?? null,
+          best_venue: decision.best_venue ?? null,
+          partner_preferred: decision.partner_preferred ?? false,
+          spread_vs_best_pct: decision.spread_vs_best_pct ?? null,
+          candidates: [describe(bAnchor), describe(dAnchor)].filter(Boolean)
+        });
+      }
+      reply.send({
+        cell_id: cellId, mode: "snap_to_bullish", spot, contracts_btc: contractsBtc, tenor_days: cell.hedgeTenorDays,
+        current_regime: deps.dvolService.getCurrentDvol()?.regime ?? null,
+        partner_routing: { partner: partnerVenue, max_spread_pct: maxSpreadPct, active: !!(partnerVenue && maxSpreadPct > 0) },
+        legs: legsSnap,
+        note: "WHAT-IF ONLY — does NOT change activation. Each leg snapped to Bullish's nearest listed strike; both venues compared at that strike. Shows if aligning cell strikes to Bullish's grid would let Bullish win the round-trip."
+      });
+      return;
+    }
+
     const legs: Array<Record<string, unknown>> = [];
     for (const [optType, strike] of [["put", putStrike], ["call", callStrike]] as const) {
       const anchors = await deps.anchorProvider.getAnchorForLeg(strike, optType, cell.hedgeTenorDays);
@@ -2001,11 +2048,11 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       });
     }
     reply.send({
-      cell_id: cellId, spot, contracts_btc: contractsBtc, tenor_days: cell.hedgeTenorDays,
+      cell_id: cellId, mode: "exact_strike", spot, contracts_btc: contractsBtc, tenor_days: cell.hedgeTenorDays,
       current_regime: deps.dvolService.getCurrentDvol()?.regime ?? null,
       partner_routing: { partner: partnerVenue, max_spread_pct: maxSpreadPct, active: !!(partnerVenue && maxSpreadPct > 0) },
       legs,
-      note: "Selection ranks by ROUND-TRIP cost (2·ask−bid) since options are venue-locked (buy+sell same venue). Legs are chosen INDEPENDENTLY. partner_preferred=true means the partner won the tie-breaker (within max_spread_pct of best round-trip). Regime-independent — valid in calm."
+      note: "Selection ranks by ROUND-TRIP cost (2·ask−bid) since options are venue-locked (buy+sell same venue). Legs are chosen INDEPENDENTLY. Add ?snap_to_bullish=true for the strike-alignment what-if. Regime-independent — valid in calm."
     });
   });
 
