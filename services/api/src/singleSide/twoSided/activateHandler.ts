@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { getCellOrThrow, PHASE_0_CELLS } from "./cellConfig";
 import {
+  countLivePairsToday,
   getPairByFoxifyRef,
   insertPair,
   insertPairLeg,
@@ -133,6 +134,14 @@ export type ActivateDeps = {
   pool: Pool;
   anchorProvider: LiveAnchorProvider;
   executor: StrangleExecutor;
+  /**
+   * Optional SHADOW executor. When provided, a request with isShadow=true ALWAYS
+   * executes through this (paper) executor — even if `executor` is the LIVE one.
+   * This is the hard rail that guarantees is_shadow=true can never place real
+   * venue orders. If omitted, falls back to `executor` (fine when the server is
+   * already in shadow mode).
+   */
+  shadowExecutor?: StrangleExecutor;
   getFeed: () => AggregatedFeed | null;
   feedVersion?: string;
   nowMs?: () => number;
@@ -263,6 +272,32 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     }
   }
 
+  // 3.6 LIVE-ACTIVATION GATE (hard safety rail). Only when the server is actually
+  // in live-execution mode AND this is a non-shadow (live-intent) activation do we
+  // enforce the live feature flag: SS_TWO_SIDED_LIVE_ENABLED + SS_TWO_SIDED_CELL_ALLOWLIST
+  // + SS_TWO_SIDED_MAX_PAIRS_PER_DAY (hard daily cap on real pairs). Shadow activations
+  // and shadow-execution deploys skip this entirely (no real-money risk). This is the
+  // rail that bounds which cells can fire live and how many real pairs per day.
+  const liveExecutionOn = String(process.env.FOXIFY_V2_LIVE_EXECUTION ?? "false").toLowerCase() === "true";
+  if (liveExecutionOn && req.isShadow !== true) {
+    const { getLiveFlagConfig, checkLiveEnabled } = await import("./featureFlag");
+    const liveCfg = getLiveFlagConfig();
+    const liveToday = await countLivePairsToday(deps.pool, now);
+    const liveCheck = checkLiveEnabled(liveCfg, cell.cellId, liveToday);
+    if (!liveCheck.allowed) {
+      getMetrics().incrementCounter(METRIC_NAMES.ACTIVATIONS_BLOCKED_TOTAL, { reason: liveCheck.reason ?? "live_disabled" });
+      return {
+        status: 503,
+        body: {
+          error: liveCheck.reason ?? "live_disabled",
+          message: `Live activation blocked (${liveCheck.reason}). Gated by SS_TWO_SIDED_LIVE_ENABLED + SS_TWO_SIDED_CELL_ALLOWLIST + SS_TWO_SIDED_MAX_PAIRS_PER_DAY.`,
+          retry_after_s: 0,
+          details: liveCheck.details
+        }
+      };
+    }
+  }
+
   // 4. Tier
   const tier = await resolveCurrentTier(deps.pool, now);
 
@@ -383,8 +418,12 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     // Ledger failure should not block activation — pool may not have schema yet (tests)
   }
 
-  // 8. Execute strangle
-  const execResult = await deps.executor.executeStrangle({
+  // 8. Execute strangle.
+  // RAIL: a shadow-flagged request ALWAYS executes through the shadow executor (if
+  // provided), even when the server is wired for LIVE execution — so is_shadow=true
+  // can never place real venue orders. Non-shadow uses the configured executor.
+  const execExecutor = (req.isShadow === true && deps.shadowExecutor) ? deps.shadowExecutor : deps.executor;
+  const execResult = await execExecutor.executeStrangle({
     pairId: pair.pairId,
     putLeg: {
       venue: quote.putLeg.venue,

@@ -268,6 +268,25 @@ export const getPairByFoxifyRef = async (exec: DbExecutor, foxifyPairRef: string
   return res.rows.length === 0 ? null : rowToPair(res.rows[0]);
 };
 
+/**
+ * Count REAL (non-shadow) pairs activated since UTC midnight today, excluding
+ * cancelled (failed-execution) pairs. Used by the live-activation gate to enforce
+ * SS_TWO_SIDED_MAX_PAIRS_PER_DAY — the hard daily cap on real-money pairs.
+ */
+export const countLivePairsToday = async (exec: DbExecutor, nowMs: number = Date.now()): Promise<number> => {
+  const dayStart = new Date(nowMs);
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const res = await exec.query(
+    `SELECT COUNT(*)::int AS n
+       FROM two_sided_pair
+      WHERE is_shadow = FALSE
+        AND created_at >= $1
+        AND status <> 'cancelled'`,
+    [dayStart.toISOString()]
+  );
+  return res.rows[0]?.n ?? 0;
+};
+
 export const updatePairStatus = async (
   exec: DbExecutor,
   pairId: string,

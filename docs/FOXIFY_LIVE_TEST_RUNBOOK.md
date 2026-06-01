@@ -9,6 +9,15 @@ step as reversible — the kill switch is one curl.
 
 ---
 
+## Safety rails (ENFORCED as of 2026-06-01)
+The live path now has hard rails in `handleActivate` (only active when `FOXIFY_V2_LIVE_EXECUTION=true`):
+- **`SS_TWO_SIDED_LIVE_ENABLED=true` is required** for any non-shadow activation (else `503 live_flag_disabled`).
+- **`SS_TWO_SIDED_CELL_ALLOWLIST` is enforced** — only listed cells fire live (else `503 cell_not_in_allowlist`).
+- **`SS_TWO_SIDED_MAX_PAIRS_PER_DAY` is a hard cap** on real pairs/day (else `503 daily_cap_reached`).
+- **`is_shadow=true` can never place real orders** — it's force-routed to the shadow executor even when live execution is wired.
+
+So a single-pair live test is bounded by config, not just discipline. (Boot halt + DVOL/newborn guardrails still apply on top.)
+
 ## 0. Golden rules
 - **Calm regime can never go live by default** (hard-disabled, `SS_TWO_SIDED_ALLOW_CALM=false`). A moderate+ live test requires the market to be in **moderate+**. **Exception:** the **calm loss-leader** path (`SS_TWO_SIDED_CALM_LOSS_LEADER=true`) deliberately allows budgeted calm activations ≤ `SS_TWO_SIDED_CALM_MAX_LOSS_USDC` — this is the cheapest way to run a live E2E test *right now* without waiting for a moderate window (see §1.6).
 - Start with `SS_TWO_SIDED_MAX_PAIRS_PER_DAY=1` and a **single-cell allowlist**.

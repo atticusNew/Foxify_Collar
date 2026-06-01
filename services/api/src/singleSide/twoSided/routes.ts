@@ -55,6 +55,7 @@ import { FeedService } from "./feedService";
 import { DvolService } from "./dvolService";
 import type { LiveAnchorProvider } from "./quoteEngine";
 import type { StrangleExecutor } from "./executor";
+import { ShadowStrangleExecutor } from "./shadowExecutor";
 import type { ExecutionRuntime } from "./executionRuntime";
 import type { LiquidChainCache } from "./liquidChainCache";
 
@@ -173,6 +174,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     pool: deps.pool,
     anchorProvider: deps.anchorProvider,
     executor: deps.executor,
+    // Hard rail: is_shadow=true ALWAYS uses this paper executor, even when
+    // `executor` is the LIVE one — a shadow request can never place real orders.
+    shadowExecutor: new ShadowStrangleExecutor(),
     liquidChainCache: deps.liquidChainCache ?? null,
     getFeed: () => deps.feedService.getCurrentFeed(),
     feedVersion: "v1.0.0",
