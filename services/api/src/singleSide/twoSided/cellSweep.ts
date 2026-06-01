@@ -121,6 +121,12 @@ export type SweepConfig = {
    * without historical chain data).
    */
   currentRegime: Regime;
+  /**
+   * Restrict the sweep to these regimes only (e.g. ["calm"]). Skips MC for all
+   * other regimes — ~4x less work for single-regime queries (the calm
+   * loss-leader search). Omit to sweep all four regimes.
+   */
+  regimes?: Regime[];
 };
 
 const DEFAULT_NOTIONALS = [25_000, 50_000, 100_000];
@@ -637,7 +643,15 @@ export const runFullCellSweep = async (
   // starves the HTTP server (observed: empty replies on /cell-sweep/latest) and
   // can trip the platform health check → instance restart kills the orphaned
   // background sweep. Yielding every N sims keeps the API responsive.
-  const yieldEvery = Math.max(1, Number(process.env.SS_SWEEP_YIELD_EVERY ?? "25"));
+  // Default 1 = yield after EVERY sim so a running sweep never blocks the request
+  // path long enough to drop responses (observed: empty replies / box pinned by a
+  // big background sweep). Env-overridable upward to run faster on an idle box.
+  const yieldEvery = Math.max(1, Number(process.env.SS_SWEEP_YIELD_EVERY ?? "1"));
+  // Restrict to requested regimes (default all). Skipping non-active regimes cuts
+  // MC work proportionally (e.g. calm-only = ~1/4 the sims).
+  const activeRegimes: Regime[] = (config.regimes && config.regimes.length > 0)
+    ? REGIMES.filter((r) => config.regimes!.includes(r))
+    : REGIMES;
   const startedAt = new Date();
   const candidates = buildSearchGrid(config.spot, config);
   const hasGammaScalp = candidates.some((c) => c.structure === "straddle_gamma_scalp");
@@ -646,7 +660,7 @@ export const runFullCellSweep = async (
   }
   const autoClosePcts = config.autoClosePnlPcts ?? DEFAULT_AUTO_CLOSE_PCTS;
   const autoCloseAbs = config.autoCloseAbsoluteUsdcs ?? DEFAULT_AUTO_CLOSE_ABS;
-  const totalSims = candidates.length * REGIMES.length * autoClosePcts.length * autoCloseAbs.length;
+  const totalSims = candidates.length * activeRegimes.length * autoClosePcts.length * autoCloseAbs.length;
   const calibration = await getRegimeCalibration(pool);
 
   log(`sweep runId=${runId} cells=${candidates.length} regimes=${REGIMES.length} auto-close-combos=${autoClosePcts.length * autoCloseAbs.length} total_sims=${totalSims} venue=${venue} current_regime=${config.currentRegime}`);
@@ -708,6 +722,9 @@ export const runFullCellSweep = async (
       ? (putIvReal + callIvReal) / 2 : null;
 
     for (const regime of REGIMES) {
+      // Skip regimes not requested — no MC computed; they appear as
+      // chain_unavailable in rankings (cuts work for single-regime sweeps).
+      if (!activeRegimes.includes(regime)) continue;
       const cal = calibration[regime];
       const sigma = cal.sigma; // for the MC's per-tick BS valuation (still uses calibration sigma)
 
