@@ -160,6 +160,33 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     callStrikeItmPct: 0,
     strikeGridUsdc: 1_000,
     enabled: true
+  },
+  /**
+   * pair_150k_3pct_atm_3d — MODERATE+ STRADDLE WINNER (empirical sweep 2026-05-31,
+   * Deribit-priced, empirical moderate sigma 0.441). Same ATM/3%/3d geometry as
+   * pair_50k_3pct_atm_3d but sized to 150k — the sweep proved net scales ~linearly
+   * with notional (50k≈$85 → 100k≈$164 → 150k≈$224–247 Foxify net at ~98–99%
+   * profitable), which is the size needed to (nearly) cover the ~$250 perp friction.
+   * Net/$ is flat ~6.7%, so size buys absolute net + volume at equal capital
+   * efficiency. NOTE (capital): straddle cost ≈ $3.7k/pair at current spot — this is
+   * the "more hedge capital, scale into it" path; keep pair_50k_3pct_atm_3d as the
+   * capital-light option. To clear $250 with margin: scale to ~175k OR let winners
+   * run (Foxify auto-close higher). Results are ESTIMATE-tier until validated in a
+   * real moderate regime window. Live activation still globally gated by
+   * SS_TWO_SIDED_LIVE_ENABLED=false. contractsBtc is a reference only — quoteEngine
+   * derives it live from notional/spot.
+   */
+  pair_150k_3pct_atm_3d: {
+    cellId: "pair_150k_3pct_atm_3d",
+    notionalUsdcPerLeg: 150_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 2.04,
+    hedgeTenorDays: 3,
+    putStrikeItmPct: 0,
+    callStrikeItmPct: 0,
+    strikeGridUsdc: 1_000,
+    enabled: true
   }
 };
 
