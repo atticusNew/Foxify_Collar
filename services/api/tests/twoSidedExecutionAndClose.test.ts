@@ -188,6 +188,26 @@ test("ExecutionRuntime: foxify force close → reason=foxify_close + closedReaso
   assert.equal(fresh!.exitMode, "foxify_close");
 });
 
+test("ExecutionRuntime: force-close of a pair already in 'unwinding' SETTLES (regression: active-pair force-close hung)", async () => {
+  // Reproduces the live bug: Foxify early-close of an ACTIVE pair → handleClose moves it
+  // active → unwinding, then spawns the force-close runtime. The runtime used to require
+  // status==='triggered' and ABORTED on 'unwinding' → the pair hung in unwinding with the
+  // real legs never sold. After the fix it must proceed to close + settle.
+  const pool = await buildPool();
+  const pair = await seedTriggeredPair(pool);
+  await updatePairStatus(pool, pair.pairId, "unwinding"); // simulate handleClose(active→unwinding)
+  const fresh0 = await getPairById(pool, pair.pairId);
+  const rt = new ExecutionRuntime(baseDeps(pool, () => 74_000), fresh0!);
+  await rt.init();
+  rt.forceClose();
+  const d = await rt.tick(TRIGGERED_AT + 2 * 60_000);
+  assert.equal(d.action, "sell", "must proceed to sell, not abort");
+  const fresh = await getPairById(pool, pair.pairId);
+  assert.equal(fresh!.status, "settled", "force-close from unwinding now settles (was stuck before fix)");
+  assert.equal(fresh!.exitMode, "foxify_close");
+  assert.ok(fresh!.salvageProceedsUsdc != null, "salvage realized");
+});
+
 test("ExecutionRuntime: close executor failure → execution_stuck event + status unwinding (not settled)", async () => {
   const pool = await buildPool();
   const pair = await seedTriggeredPair(pool);

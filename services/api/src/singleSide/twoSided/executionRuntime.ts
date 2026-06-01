@@ -225,15 +225,23 @@ export class ExecutionRuntime {
   }
 
   private async executeClose(decision: TpDecision, currentValue: number): Promise<void> {
-    // Transition triggered → unwinding
     const fresh = await getPairById(this.deps.pool, this.pair.pairId);
-    if (!fresh || fresh.status !== "triggered") {
-      this.log(`pair ${this.pair.pairId} is not triggered (status=${fresh?.status}); aborting close`);
+    // Closeable from "triggered" (normal boundary-cross path) OR "unwinding" (Foxify
+    // FORCE-close of an ACTIVE pair — handleClose already moved active → unwinding before
+    // spawning this runtime). Previously this required exactly "triggered", so a Foxify
+    // early-close of a not-yet-triggered pair aborted here and the pair hung in unwinding
+    // with the real legs never sold. Anything else (settled/cancelled/active) is not closeable.
+    if (!fresh || (fresh.status !== "triggered" && fresh.status !== "unwinding")) {
+      this.log(`pair ${this.pair.pairId} is not closeable (status=${fresh?.status}); aborting close`);
       this.state.status = "failed";
       this.stop();
       return;
     }
-    await updatePairStatus(this.deps.pool, this.pair.pairId, "unwinding");
+    // Transition to unwinding only if still "triggered"; if it's already "unwinding"
+    // (force-close path) skip — re-transitioning unwinding → unwinding is an invalid move.
+    if (fresh.status === "triggered") {
+      await updatePairStatus(this.deps.pool, this.pair.pairId, "unwinding");
+    }
     await recordPairEvent(this.deps.pool, {
       pairId: this.pair.pairId,
       kind: "unwinding_started",
