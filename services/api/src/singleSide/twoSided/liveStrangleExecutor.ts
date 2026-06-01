@@ -98,11 +98,23 @@ export class LiveStrangleExecutor implements StrangleExecutor {
       clientOrderId: callClientId
     };
 
-    // Execute both legs concurrently
-    const [putR, callR] = await Promise.all([
-      this.buyLeg(order.putLeg.venue, "put", putReq),
-      this.buyLeg(order.callLeg.venue, "call", { ...callReq, instrument: callReq.symbol })
-    ]);
+    // Execute both legs. Concurrent for cross-venue (halved latency), but SEQUENTIAL
+    // when BOTH legs are Bullish: Bullish requires strictly-increasing nonces per
+    // request, and concurrent submission races the nonce → one leg rejected with
+    // "invalid nonce" (observed live). Serializing the two Bullish orders keeps the
+    // nonces ordered.
+    const bothBullish = order.putLeg.venue === "bullish" && order.callLeg.venue === "bullish";
+    let putR: LegExecutionResult;
+    let callR: LegExecutionResult;
+    if (bothBullish) {
+      putR = await this.buyLeg(order.putLeg.venue, "put", putReq);
+      callR = await this.buyLeg(order.callLeg.venue, "call", { ...callReq, instrument: callReq.symbol });
+    } else {
+      [putR, callR] = await Promise.all([
+        this.buyLeg(order.putLeg.venue, "put", putReq),
+        this.buyLeg(order.callLeg.venue, "call", { ...callReq, instrument: callReq.symbol })
+      ]);
+    }
 
     // Happy path: both succeeded
     if (putR.ok && callR.ok) {

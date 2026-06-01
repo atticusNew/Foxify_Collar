@@ -59,10 +59,20 @@ export class LiveCloseExecutor implements CloseExecutor {
   ) {}
 
   async closeStrangle(req: CloseStrangleRequest): Promise<CloseStrangleResult> {
-    const [putR, callR] = await Promise.all([
-      this.sellLegWithRetry(req.pairId, "put", req.putLeg),
-      this.sellLegWithRetry(req.pairId, "call", req.callLeg)
-    ]);
+    // SEQUENTIAL when both legs are Bullish (strictly-increasing nonce per request;
+    // concurrent submission races the nonce → "invalid nonce"). Concurrent otherwise.
+    const bothBullish = req.putLeg.venue === "bullish" && req.callLeg.venue === "bullish";
+    let putR: CloseLegResult;
+    let callR: CloseLegResult;
+    if (bothBullish) {
+      putR = await this.sellLegWithRetry(req.pairId, "put", req.putLeg);
+      callR = await this.sellLegWithRetry(req.pairId, "call", req.callLeg);
+    } else {
+      [putR, callR] = await Promise.all([
+        this.sellLegWithRetry(req.pairId, "put", req.putLeg),
+        this.sellLegWithRetry(req.pairId, "call", req.callLeg)
+      ]);
+    }
 
     if (putR.ok && callR.ok) {
       const totalProceeds =
