@@ -22,15 +22,16 @@ const makePool = (): Pool => {
 };
 
 let refSeq = 0;
-const insertSettled = async (pool: Pool, cellId: string, cost: number, foxifyShare: number, exitMode: string, regime: string | null) => {
+const insertSettled = async (pool: Pool, cellId: string, cost: number, foxifyShare: number, exitMode: string, regime: string | null, source?: string) => {
   await pool.query(
     `INSERT INTO two_sided_pair (pair_id, cell_id, status, foxify_pair_ref, spot_at_activation,
        trigger_down_price, trigger_up_price, hedge_tenor_days, expires_at, tp_force_exit_at,
        hedge_cost_total_usdc, foxify_capital_funded_usdc, tier_at_activation, atticus_floor_usdc,
-       is_shadow, regime_at_activation, salvage_proceeds_usdc, foxify_share_usdc, atticus_share_usdc, exit_mode)
+       is_shadow, regime_at_activation, salvage_proceeds_usdc, foxify_share_usdc, atticus_share_usdc, exit_mode, metadata)
      VALUES ($1,$2,'settled',$3,73000, 71000,75000,3, NOW(), NOW(),
-       $4,$4,'tier_1',25, TRUE, $5, $6, $6, 0, $7)`,
-    [randomUUID(), cellId, `ref-${refSeq++}`, cost, regime, foxifyShare, exitMode]
+       $4,$4,'tier_1',25, TRUE, $5, $6, $6, 0, $7, $8::jsonb)`,
+    [randomUUID(), cellId, `ref-${refSeq++}`, cost, regime, foxifyShare, exitMode,
+     source ? JSON.stringify({ source }) : "{}"]
   );
 };
 
@@ -51,6 +52,28 @@ test("realized: aggregates settled shadow pairs per cell + reports tag coverage"
   const am = mod.stats.find((s) => s.cellId === "pair_50k_2pct")!;
   assert.equal(am.n, 2, "moderate filter -> 2 pairs");
   assert.ok(Math.abs(am.meanRealizedNetUsdc - (-125)) < 0.01, `moderate mean ${am.meanRealizedNetUsdc}`);
+  await pool.end();
+});
+
+test("organic-only: excludes force-triggered/test-activated pairs (source=shadow_test_activate)", async () => {
+  const pool = makePool();
+  await ensureTwoSidedSchema(pool);
+  // 2 organic (auto-loop) calm pairs + 3 forced/test calm pairs.
+  await insertSettled(pool, "pair_25k_5pct_otm_3d", 250, 230, "no_trigger_expiry", "calm", "shadow_auto_activator"); // -20 organic
+  await insertSettled(pool, "pair_25k_5pct_otm_3d", 250, 210, "no_trigger_expiry", "calm", "shadow_auto_activator"); // -40 organic
+  await insertSettled(pool, "pair_25k_5pct_otm_3d", 250, 240, "capture_window_peak", "calm", "shadow_test_activate"); // forced
+  await insertSettled(pool, "pair_25k_5pct_otm_3d", 250, 245, "capture_window_peak", "calm", "shadow_test_activate"); // forced
+  await insertSettled(pool, "pair_25k_5pct_otm_3d", 250, 248, "capture_window_peak", "calm", "shadow_test_activate"); // forced
+
+  const all = await getRealizedShadowStats(pool, { regime: "calm" });
+  assert.equal(all.stats.find((s) => s.cellId === "pair_25k_5pct_otm_3d")!.n, 5, "no filter -> all 5");
+  assert.equal(all.forcedExcluded, 0);
+
+  const organic = await getRealizedShadowStats(pool, { regime: "calm", organicOnly: true });
+  const o = organic.stats.find((s) => s.cellId === "pair_25k_5pct_otm_3d")!;
+  assert.equal(o.n, 2, "organic-only -> only the 2 auto-loop pairs");
+  assert.equal(organic.forcedExcluded, 3, "3 force-triggered/test pairs excluded");
+  assert.ok(Math.abs(o.meanRealizedNetUsdc - (-30)) < 0.01, `organic mean ${o.meanRealizedNetUsdc}`);
   await pool.end();
 });
 

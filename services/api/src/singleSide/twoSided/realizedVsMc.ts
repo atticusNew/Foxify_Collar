@@ -77,6 +77,10 @@ export type ReconcileReport = {
   regime_tagged_pairs: number;
   /** Legacy settled shadow pairs with NO regime tag (excluded from the regime-filtered realized). */
   untagged_pairs: number;
+  /** True when force-triggered/test-activated pairs are excluded (the trustworthy gate mode). */
+  organic_only: boolean;
+  /** Count of force-triggered/test pairs excluded by organic_only (0 when organic_only=false). */
+  forced_excluded: number;
   rows: ReconcileRow[];
   caveats: string[];
 };
@@ -84,20 +88,30 @@ export type ReconcileReport = {
 /** Pull settled shadow pairs and aggregate realized stats per cell (JS-side, pg-mem safe). */
 export const getRealizedShadowStats = async (
   pool: Pool | PoolClient,
-  opts: { regime?: Regime; returnSamples?: boolean } = {}
-): Promise<{ stats: RealizedCellStats[]; taggedPairs: number; untaggedPairs: number }> => {
-  const r = await pool.query<{ cell_id: string; hedge_cost_total_usdc: string; foxify_share_usdc: string | null; exit_mode: string | null; regime_at_activation: string | null; created_at: string | null; closed_at: string | null }>(
-    `SELECT cell_id, hedge_cost_total_usdc, foxify_share_usdc, exit_mode, regime_at_activation, created_at, closed_at
+  opts: { regime?: Regime; returnSamples?: boolean; organicOnly?: boolean } = {}
+): Promise<{ stats: RealizedCellStats[]; taggedPairs: number; untaggedPairs: number; forcedExcluded: number }> => {
+  const r = await pool.query<{ cell_id: string; hedge_cost_total_usdc: string; foxify_share_usdc: string | null; exit_mode: string | null; regime_at_activation: string | null; created_at: string | null; closed_at: string | null; metadata: unknown }>(
+    `SELECT cell_id, hedge_cost_total_usdc, foxify_share_usdc, exit_mode, regime_at_activation, created_at, closed_at, metadata
      FROM two_sided_pair
      WHERE status = 'settled' AND is_shadow = TRUE AND foxify_share_usdc IS NOT NULL`
   );
   let taggedPairs = 0;
   let untaggedPairs = 0;
+  let forcedExcluded = 0;
   const byCell = new Map<string, { nets: number[]; costs: number[]; exits: Record<string, number>; durations: number[] }>();
   for (const row of r.rows) {
     const cost = Number(row.hedge_cost_total_usdc);
     const fox = Number(row.foxify_share_usdc);
     if (!Number.isFinite(cost) || !Number.isFinite(fox)) continue;
+    // ORGANIC-ONLY: exclude force-triggered / test-activated pairs. Their close was
+    // artificial (force-trigger) so they don't follow the MC's natural path — they
+    // systematically dodge expiry-loss scenarios and would bias the ±15% gate.
+    // Identified by activation metadata.source = "shadow_test_activate".
+    if (opts.organicOnly) {
+      const mdRaw = row.metadata;
+      const md = (typeof mdRaw === "string" ? (() => { try { return JSON.parse(mdRaw); } catch { return {}; } })() : (mdRaw ?? {})) as { source?: string };
+      if (md.source === "shadow_test_activate") { forcedExcluded++; continue; }
+    }
     const rg = row.regime_at_activation ?? null;
     if (rg == null) untaggedPairs++; else taggedPairs++;
     // When a regime filter is set, only count pairs ACTIVATED in that regime
@@ -128,7 +142,7 @@ export const getRealizedShadowStats = async (
     // copies so callers can't mutate internal accumulators.
     ...(opts.returnSamples ? { nets: [...g.nets], durationsDays: [...g.durations] } : {})
   }));
-  return { stats, taggedPairs, untaggedPairs };
+  return { stats, taggedPairs, untaggedPairs, forcedExcluded };
 };
 
 export const reconcileRealizedVsMc = async (
@@ -145,15 +159,18 @@ export const reconcileRealizedVsMc = async (
     nowMs?: number;
     weighting?: "median" | "ewma";
     halfLifeDays?: number;
+    /** Exclude force-triggered/test-activated pairs from the gate (default true). */
+    organicOnly?: boolean;
   }
 ): Promise<ReconcileReport> => {
+  const organicOnly = opts.organicOnly !== false;
   const nPaths = opts.nPaths ?? 500;
   const autoClosePnlPct = opts.autoClosePnlPct ?? 0.30;
   const autoCloseAbsoluteUsdc = opts.autoCloseAbsoluteUsdc ?? 250;
   const venue: SweepVenue = opts.venue ?? "auto";
   const calibration = await getRegimeCalibration(pool, { nowMs: opts.nowMs, bypassCache: true, weighting: opts.weighting, halfLifeDays: opts.halfLifeDays });
   const sigma = calibration[opts.regime].sigma;
-  const realizedResult = await getRealizedShadowStats(pool, { regime: opts.regime });
+  const realizedResult = await getRealizedShadowStats(pool, { regime: opts.regime, organicOnly });
   const realized = realizedResult.stats;
 
   const rows: ReconcileRow[] = [];
@@ -207,8 +224,13 @@ export const reconcileRealizedVsMc = async (
     auto_close_pnl_pct: autoClosePnlPct, auto_close_absolute_usdc: autoCloseAbsoluteUsdc,
     regime_tagged_pairs: realizedResult.taggedPairs,
     untagged_pairs: realizedResult.untaggedPairs,
+    organic_only: organicOnly,
+    forced_excluded: realizedResult.forcedExcluded,
     rows,
     caveats: [
+      organicOnly
+        ? `ORGANIC-ONLY: ${realizedResult.forcedExcluded} force-triggered/test-activated pair(s) (source=shadow_test_activate) EXCLUDED — their artificial close dodges the expiry-loss scenarios that dominate the MC mean, so they bias the ±15% gate. Pass ?organic_only=false to include them (plumbing checks only).`
+        : `INCLUDING force-triggered/test pairs (organic_only=false) — the ±15% gate is NOT trustworthy in this mode; forced closes don't follow the MC's natural path.`,
       `Realized is FILTERED to regime='${opts.regime}' via regime-at-activation. ${realizedResult.untaggedPairs} legacy pair(s) without a regime tag are excluded; ${realizedResult.taggedPairs} are tagged. As tagged pairs accumulate, within_15pct becomes an EXACT gate (apples-to-apples vs the same-regime MC).`,
       "MC uses a default auto-close target (abs/pct) that may differ from Foxify's actual close timing — pass auto_close_abs / auto_close_pct to match.",
       "No synthetic prices: cost+realism from real chain (computeRealPricing), sigma from empirical calibration."

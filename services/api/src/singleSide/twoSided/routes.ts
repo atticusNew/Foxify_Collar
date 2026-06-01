@@ -1133,7 +1133,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * (cost+realism from real chain, sigma from empirical calibration).
    * Query: ?regime= (default current), n_paths=, auto_close_abs=, auto_close_pct=
    */
-  app.get<{ Querystring: { regime?: string; n_paths?: string; auto_close_abs?: string; auto_close_pct?: string; weighting?: string; half_life_days?: string } }>(
+  app.get<{ Querystring: { regime?: string; n_paths?: string; auto_close_abs?: string; auto_close_pct?: string; weighting?: string; half_life_days?: string; organic_only?: string } }>(
     "/admin/foxify/v2/realized-vs-mc",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -1155,7 +1155,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           autoCloseAbsoluteUsdc: req.query.auto_close_abs ? Number(req.query.auto_close_abs) : undefined,
           autoClosePnlPct: req.query.auto_close_pct ? Number(req.query.auto_close_pct) : undefined,
           weighting: req.query.weighting === "ewma" ? "ewma" : (req.query.weighting === "median" ? "median" : undefined),
-          halfLifeDays: req.query.half_life_days ? Number(req.query.half_life_days) : undefined
+          halfLifeDays: req.query.half_life_days ? Number(req.query.half_life_days) : undefined,
+          // Organic-only by default (excludes force-triggered/test pairs that distort
+          // the gate). Pass ?organic_only=false to include them (e.g. plumbing checks).
+          organicOnly: req.query.organic_only !== "false"
         });
         reply.send(report);
       } catch (e) {
