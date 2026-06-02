@@ -60,6 +60,25 @@ test("pair_5k_atm_1d_smoke: tiny near-ATM Bullish smoke cell (5k, ATM, 1d, singl
   }
 });
 
+test("pair_10k_atm_3d: small near-ATM Bullish-fill cell (10k, ATM, 3d, single-strike, moderate+)", () => {
+  const cell = PHASE_0_CELLS["pair_10k_atm_3d"];
+  assert.ok(cell, "cell exists in registry");
+  assert.equal(cell.enabled, true);
+  assert.equal(cell.notionalUsdcPerLeg, 10_000, "small notional → guaranteed Bullish fill");
+  assert.equal(cell.hedgeTenorDays, 3, "3d window to HOLD through a vol move (not the 1d smoke)");
+  assert.equal(cell.putStrikeItmPct, 0, "ATM put");
+  assert.equal(cell.callStrikeItmPct, 0, "ATM call");
+  // ATM → both legs snap to the SAME single nearest-$1k strike (where Bullish quotes).
+  const s = computeStrikes(cell, 70_934);
+  assert.equal(s.putStrike, 71_000);
+  assert.equal(s.callStrike, 71_000);
+  // Allowlisted moderate+ (so the manual live trade can activate), NOT calm.
+  assert.equal(isCellAllowedInRegimeDefault("pair_10k_atm_3d", "calm"), false, "never in calm (stand-down)");
+  for (const r of ["moderate", "elevated", "stress"] as const) {
+    assert.equal(isCellAllowedInRegimeDefault("pair_10k_atm_3d", r), true, `allowed in ${r}`);
+  }
+});
+
 test("computeStrikes: guts cell (non-zero ITM) keeps the ceil/floor two-strike split", () => {
   // pair_50k_2pct: putItm/callItm 0.013 → ceil(76988)→77000 put, floor(75012)→75000 call.
   const guts = computeStrikes(PHASE_0_CELLS["pair_50k_2pct"], 76000);

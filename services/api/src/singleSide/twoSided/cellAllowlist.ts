@@ -68,9 +68,13 @@ export const DEFAULT_CELL_ALLOWLIST: Record<Regime, ReadonlyArray<string>> = {
   // synthetic confidence" it is deprecated/superseded. Still in PHASE_0_CELLS registry;
   // re-enable per-regime via /admin/foxify/v2/cell-allowlist if ever revalidated.
   // Live activation still gated by SS_TWO_SIDED_LIVE_ENABLED=false.
-  moderate: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"],
-  elevated: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"],
-  stress: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
+  // pair_10k_atm_3d = SMALL near-ATM straddle for guaranteed Bullish fill (partnership
+  // volume) — same ATM/3%/3d geometry as the winners, sized to clear Bullish's thin
+  // near-ATM book. Allowlisted moderate+ so the manual live Bullish trade can activate
+  // once DVOL crosses; shadow auto-loop may also exercise it (shadow-only, no real money).
+  moderate: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_10k_atm_3d", "pair_25k_5pct_otm_3d", "pair_50k_5pct_otm"],
+  elevated: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_10k_atm_3d", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"],
+  stress: ["pair_150k_3pct_atm_3d", "pair_50k_3pct_atm_3d", "pair_10k_atm_3d", "pair_50k_5pct_otm", "pair_25k_5pct_otm_3d", "pair_50k_4pct_otm_short"]
 };
 
 export const ensureCellAllowlistSchema = async (pool: Pool): Promise<void> => {

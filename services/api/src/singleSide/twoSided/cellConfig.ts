@@ -162,6 +162,35 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     enabled: true
   },
   /**
+   * pair_10k_atm_3d — SMALL near-ATM straddle for GUARANTEED BULLISH FILL (partnership
+   * volume). Same ATM/3%/3d geometry as the 50k winner but sized to 10k (~0.14 BTC/leg
+   * at ~$70k) — small enough to clear Bullish's THIN near-ATM book (the proven smoke
+   * fill was 0.07 BTC; this is ~2× that), while the 3-DAY tenor gives room to HOLD
+   * through a vol expansion (unlike the 1d smoke cell, which is theta-heavy). Purpose:
+   * route real OPTION volume to BULLISH (the partnership venue) when DVOL crosses into
+   * moderate, at a size that fills reliably. ATM (0% ITM) → single nearest-$1k strike,
+   * which is exactly where Bullish quotes. To actually ROUTE to Bullish (Bullish ATM
+   * round-trip is ~2–7% wider than Deribit), set SS_VENUE_PARTNER=bullish +
+   * SS_VENUE_PARTNER_MAX_SPREAD_PCT~0.08 and confirm chosen_venue="bullish" via
+   * venue-probe BEFORE arming. Verify Bullish ATM depth covers ~0.14 BTC at go-time
+   * (chain-probe); reduce if the book is thin. Moderate+ only (calm = stand-down).
+   * Live activation still globally gated by SS_TWO_SIDED_LIVE_ENABLED + the live
+   * allowlist + FOXIFY_V2_LIVE_EXECUTION. contractsBtc is a reference only — quoteEngine
+   * derives it live from notional/spot.
+   */
+  pair_10k_atm_3d: {
+    cellId: "pair_10k_atm_3d",
+    notionalUsdcPerLeg: 10_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 0.14,
+    hedgeTenorDays: 3,
+    putStrikeItmPct: 0,
+    callStrikeItmPct: 0,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  /**
    * pair_150k_3pct_atm_3d — MODERATE+ STRADDLE WINNER (empirical sweep 2026-05-31,
    * Deribit-priced, empirical moderate sigma 0.441). Same ATM/3%/3d geometry as
    * pair_50k_3pct_atm_3d but sized to 150k — the sweep proved net scales ~linearly
