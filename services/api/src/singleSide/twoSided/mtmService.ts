@@ -81,6 +81,16 @@ export type PairMtm = {
   put_spread_pct?: number;               // bid-ask width on the put quote (null on BS fallback)
   call_spread_pct?: number;              // bid-ask width on the call quote
   mark_basis_note: string;               // explains executable-vs-mid for operators
+  // ── Valuation freshness (why our line is steady while the venue UI flaps) ──
+  // When a venue's own book/mark momentarily drops out (e.g. Bullish's thin ATM
+  // mark blinking to 0), the venue UI's MTM jumps. We HOLD the last-good venue
+  // value for a short TTL so our mark stays steady. valuation_held=true means at
+  // least one leg is being held from cache this poll (not freshly priced).
+  valuation_held: boolean;
+  put_valuation_stabilized: boolean;
+  call_valuation_stabilized: boolean;
+  put_quote_age_ms?: number;             // age of the fresh put quote (null when held/BS)
+  call_quote_age_ms?: number;
   // VALIDATION: surfaces the raw bid used per leg so operators can
   // independently verify against the live venue order book.
   put_bid_used_usdc_per_btc?: number;   // null when valuation_method='bs_fallback'
@@ -312,6 +322,12 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     sourceDetail: string;
     rawBidUsdcPerBtc?: number;
     venue?: string;
+    /** True when this poll's value was HELD from the last-good cache (exact bid
+     *  missing this refresh) instead of freshly priced — explains a steady line
+     *  while the venue's own book/mark is flapping. */
+    stabilized: boolean;
+    /** Age (ms) of the fresh venue quote used this poll (null when stabilized/BS). */
+    quoteAgeMs?: number;
   } => {
     const result = priceOption({
       spot: inputs.currentSpot,
@@ -338,7 +354,7 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     // Stabilize: if this poll fell back to BS but we have a recent venue value for
     // this exact instrument, hold the last-good venue value (avoids the wing jitter).
     const key = leg.instrumentSymbol ?? `${leg.side}:${leg.strike}`;
-    const { v: stable } = stabilizeLegValuation(
+    const { v: stable, stabilized } = stabilizeLegValuation(
       _lastGoodVenueVal,
       key,
       { valuePerBtc: result.primary_value_per_btc, method, matchTier, rawBidUsdcPerBtc: result.bid_per_btc ?? undefined, midPerBtc: result.mid_per_btc ?? undefined, spreadPct: result.spread_pct ?? undefined, venue: result.venue_used ?? undefined, sourceDetail },
@@ -353,7 +369,9 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       matchTier: stable.matchTier,
       sourceDetail: stable.sourceDetail,
       rawBidUsdcPerBtc: stable.rawBidUsdcPerBtc,
-      venue: stable.venue
+      venue: stable.venue,
+      stabilized,
+      quoteAgeMs: result.age_ms ?? undefined
     };
   };
 
@@ -424,6 +442,11 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       pnl_pct_mid: pnlMidPct,
       put_spread_pct: putV.spreadPct,
       call_spread_pct: callV.spreadPct,
+      valuation_held: putV.stabilized || callV.stabilized,
+      put_valuation_stabilized: putV.stabilized,
+      call_valuation_stabilized: callV.stabilized,
+      put_quote_age_ms: putV.quoteAgeMs,
+      call_quote_age_ms: callV.quoteAgeMs,
       mark_basis_note:
         "pnl_if_close_now_usdc is the EXECUTABLE (bid×haircut) value — what you'd actually receive selling now, and the basis for TP/close. pnl_if_close_now_mid_usdc is the MID mark (≈ exchange UI unrealized PnL); the gap is the bid-ask spread (see *_spread_pct).",
       greeks: combinedStraddleGreeks(inputs.currentSpot, putStrike, callStrike, contracts, tenorRemainingHours / 24 / 365, RISK_FREE_RATE, inputs.ivAnnual ?? 0.35),

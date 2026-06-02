@@ -489,6 +489,46 @@ test("listActivePairMtm: BS fallback produces lower value than original 88% hair
   assert.ok(r[0].estimated_salvage_usdc > 100, "BS valuation should produce positive value");
 });
 
+// ─── Valuation freshness / stabilization (steady line vs flapping venue UI) ──
+
+test("listActivePairMtm: holds last-good venue value when the bid drops out (valuation_held=true)", async () => {
+  const pool = await buildPool();
+  const expiresAt = new Date(Date.now() + 24 * 3_600_000);
+  await insertPair(pool, {
+    pair_id: "flap",
+    cell_id: "test",
+    spot_at_activation: 73000,
+    trigger_down: 70000,
+    trigger_up: 76000,
+    cost: 100,
+    expires_at: expiresAt,
+    put_strike: 73000,
+    call_strike: 73000,
+    contracts: 1.0,
+    put_venue: "bullish",
+    call_venue: "bullish"
+  });
+  // Poll 1: live Bullish bids present → fresh venue_bid, not held.
+  const liveCache = makeMockCache([
+    { strike: 73000, optType: "put", venue: "bullish", bid: 100, ask: 180 },
+    { strike: 73000, optType: "call", venue: "bullish", bid: 100, ask: 180 }
+  ]);
+  const poll1 = await listActivePairMtm({ pool, currentSpot: 73000, ivAnnual: 0.35, liquidChainCache: liveCache });
+  assert.equal(poll1[0].valuation_held, false, "fresh quote → not held");
+  assert.equal(poll1[0].valuation_method, "venue_bid");
+  const heldMark = poll1[0].estimated_salvage_usdc;
+
+  // Poll 2: Bullish book drops out (cache misses the strikes — mark flapping to 0 on the UI).
+  // We should HOLD the last-good venue value rather than collapse to BS.
+  const emptyCache = makeMockCache([{ strike: 99000, optType: "put", venue: "bullish", bid: 1, ask: 2 }]);
+  const poll2 = await listActivePairMtm({ pool, currentSpot: 73000, ivAnnual: 0.35, liquidChainCache: emptyCache });
+  assert.equal(poll2[0].valuation_held, true, "bid dropped out → held from last-good cache");
+  assert.equal(poll2[0].put_valuation_stabilized, true);
+  assert.equal(poll2[0].call_valuation_stabilized, true);
+  // Held value stays at the last-good venue mark (steady), NOT collapsed to BS.
+  assert.ok(Math.abs(poll2[0].estimated_salvage_usdc - heldMark) < 0.01, "held value == last-good (steady line)");
+});
+
 // ─── summarizeMtm ───────────────────────────────────────────────────────────
 
 test("summarizeMtm: aggregates totals + counts by recommendation", () => {
@@ -502,6 +542,7 @@ test("summarizeMtm: aggregates totals + counts by recommendation", () => {
     pnl_if_close_now_usdc: 0, pnl_pct: 0,
     current_put_mark_mid_usdc: 0, current_call_mark_mid_usdc: 0, current_option_mark_mid_usdc: 0,
     pnl_if_close_now_mid_usdc: 0, pnl_pct_mid: 0, mark_basis_note: "",
+    valuation_held: false, put_valuation_stabilized: false, call_valuation_stabilized: false,
     valuation_method: "venue_bid", put_valuation_method: "venue_bid", call_valuation_method: "venue_bid",
     trigger_down_price: 70000, trigger_up_price: 76000,
     distance_to_trigger_down_pct: 0.04, distance_to_trigger_up_pct: 0.04,

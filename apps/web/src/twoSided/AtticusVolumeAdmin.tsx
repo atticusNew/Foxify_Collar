@@ -184,6 +184,7 @@ function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<str
     // book this is higher than the executable value — the gap is the bid-ask spread.
     { key: "pnl_mid", label: "P&L (mid/UI)", align: "right", render: (p) => p.pnl_if_close_now_mid_usdc == null ? "—" : <span style={{ color: pnlColor(p.pnl_if_close_now_mid_usdc as number) }}>{fmtSignedUsd(p.pnl_if_close_now_mid_usdc as number)}</span> },
     { key: "spread", label: "Spread", align: "right", render: (p) => spreadLabel(p) },
+    { key: "quote", label: "Quote", render: (p) => p.valuation_held ? <Pill text="held" color={C.amber} /> : <Pill text="live" color={C.green} /> },
     { key: "ttl", label: "Left", align: "right", render: (p) => fmtHours(p.tenor_remaining_hours as number) },
     { key: "rec", label: "Signal", render: (p) => String(p.recommendation ?? "—") }
   ];
@@ -205,6 +206,7 @@ function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<str
         <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.4 }}>
           <b>P&L (exec)</b> = realizable value at the venue <b>bid</b> (what you'd actually get selling now) — this is what TP/auto-close decides on.
           {" "}<b>P&L (mid/UI)</b> = value at the bid-ask <b>mid</b>, matching the Bullish/Deribit UI's unrealized PnL. On a wide book the UI looks more profitable than is realizable; the difference is the <b>Spread</b> column.
+          {" "}<b>Quote=held</b> means the venue's live bid dropped out this poll (its UI mark may be flapping/0) and we're holding the last-good value to keep the mark steady — TP still acts on this stabilized value.
         </div>
       </Panel>
       {/* SHADOW — paper / data engine, clearly separated. */}
