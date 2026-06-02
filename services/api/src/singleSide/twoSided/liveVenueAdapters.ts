@@ -159,8 +159,22 @@ const DEFAULT_DERIBIT_PRICE_TICK_BTC = 0.0001;
 const DEFAULT_DERIBIT_AMOUNT_STEP_BTC = 0.1;
 const DEFAULT_DERIBIT_MIN_AMOUNT_BTC = 0.1;
 
-const snapUpToTick = (px: number, tick: number): number => Math.ceil(px / tick) * tick;
-const snapDownToTick = (px: number, tick: number): number => Math.floor(px / tick) * tick;
+const snapUpToTick = (px: number, tick: number): number => +(Math.ceil(px / tick - 1e-9) * tick).toFixed(8);
+const snapDownToTick = (px: number, tick: number): number => +(Math.floor(px / tick + 1e-9) * tick).toFixed(8);
+
+/**
+ * Deribit BTC-option PRICE tick is TIERED (per get_instrument tick_size_steps):
+ *   price >= 0.005 BTC → 0.0005 tick   (ATM / expensive options)
+ *   price <  0.005 BTC → 0.0001 tick   (cheap OTM options)
+ * A fixed 0.0001 tick gets ATM orders REJECTED with "must conform to tick size"
+ * (verified live 2026-06-02 on the ATM straddle; the cheap-OTM Jun-1 trade passed
+ * only because its price was < 0.005). Caller may still override via opts.priceTickBtc.
+ * Robustness follow-up: read tick_size + tick_size_steps PER-INSTRUMENT from get_instrument.
+ */
+const deribitPriceTickBtc = (priceBtc: number, override?: number): number => {
+  if (override != null && override > 0) return override;
+  return priceBtc >= 0.005 ? 0.0005 : 0.0001;
+};
 
 /**
  * Snap an option amount (BTC) DOWN to Deribit's contract step (0.1 BTC). Flooring (not
@@ -196,7 +210,7 @@ export class DeribitLegAdapter implements DeribitLegClient {
     //   priceBtc = (usdcPerBtcOption) / spot_usdc_per_btc
     // Round UP so we don't accidentally limit below ask
     const priceBtcRaw = req.maxAcceptableAskUsdcPerBtc / spot;
-    const priceBtc = snapUpToTick(priceBtcRaw, this.opts.priceTickBtc ?? DEFAULT_DERIBIT_PRICE_TICK_BTC);
+    const priceBtc = snapUpToTick(priceBtcRaw, deribitPriceTickBtc(priceBtcRaw, this.opts.priceTickBtc));
 
     // Snap amount to Deribit's 0.1 BTC contract step (reject if below the venue min).
     const amount = snapAmountToStep(
@@ -267,7 +281,7 @@ export class DeribitLegAdapter implements DeribitLegClient {
       ? req.minAcceptableBidUsdcPerBtc / spot
       : 0.0001; // 1 tick = best-effort sell at any tradable price
     const priceBtc = req.minAcceptableBidUsdcPerBtc > 0
-      ? snapDownToTick(priceBtcRaw, this.opts.priceTickBtc ?? DEFAULT_DERIBIT_PRICE_TICK_BTC)
+      ? snapDownToTick(priceBtcRaw, deribitPriceTickBtc(priceBtcRaw, this.opts.priceTickBtc))
       : 0.0001;
 
     // Snap amount to Deribit's 0.1 BTC contract step (same as buy — must match the held size).
