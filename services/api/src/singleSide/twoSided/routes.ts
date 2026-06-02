@@ -596,6 +596,41 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     });
   });
 
+  /**
+   * GET /foxify/v2/cells — Foxify-safe catalog of available protection cells.
+   *
+   * Lists the ENABLED cells with their PROTECTION STRUCTURE (notional, trigger band,
+   * tenor window, strike geometry) + the regimes where each is offered to the bot by
+   * default. Deliberately Foxify-safe: NO economics/EV/calibration/pricing internals —
+   * just "here are the protection structures and when they're used". Powers the
+   * Foxify dashboard's "available cells" menu even when the bot isn't activating.
+   */
+  app.get("/foxify/v2/cells", { preHandler: checkFoxifyToken }, async (_req, reply) => {
+    const { PHASE_0_CELLS } = await import("./cellConfig");
+    const { isCellAllowedInRegimeDefault } = await import("./cellAllowlist");
+    const regimes = ["calm", "moderate", "elevated", "stress"] as const;
+    const structureOf = (putItm: number, callItm: number): string => {
+      if (putItm === 0 && callItm === 0) return "atm_straddle";
+      if (putItm < 0 || callItm < 0) return "otm_strangle";
+      return "itm_guts_strangle";
+    };
+    const cells = Object.values(PHASE_0_CELLS)
+      .filter((c) => c.enabled)
+      .map((c) => ({
+        cell_id: c.cellId,
+        structure: structureOf(c.putStrikeItmPct, c.callStrikeItmPct),
+        notional_usdc_per_leg: c.notionalUsdcPerLeg,
+        trigger_pct_down: c.triggerPctDown,
+        trigger_pct_up: c.triggerPctUp,
+        hedge_tenor_days: c.hedgeTenorDays,
+        put_strike_itm_pct: c.putStrikeItmPct,
+        call_strike_itm_pct: c.callStrikeItmPct,
+        // strike offsets relative to spot (put strike = spot×(1+putStrikeItmPct))
+        offered_in_regimes: regimes.filter((r) => isCellAllowedInRegimeDefault(c.cellId, r))
+      }));
+    reply.send({ count: cells.length, cells });
+  });
+
   // ─── Admin ───
 
   app.post<{ Body: { kind: HaltKind; reason: HaltReason | string; notes?: string } }>(

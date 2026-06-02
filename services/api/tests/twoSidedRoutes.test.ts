@@ -178,6 +178,35 @@ test("GET /foxify/v2/regime returns regime classification", async () => {
   } finally { await cleanup(); }
 });
 
+test("GET /foxify/v2/cells returns Foxify-safe catalog (structure + window, no economics)", async () => {
+  const { app, cleanup } = await buildApp();
+  try {
+    const r = await app.inject({ method: "GET", url: "/foxify/v2/cells", headers: { "x-foxify-token": FOXIFY_TOKEN } });
+    assert.equal(r.statusCode, 200);
+    const body = r.json();
+    assert.ok(Array.isArray(body.cells) && body.cells.length > 0, "non-empty catalog");
+    assert.equal(body.count, body.cells.length);
+    const c = body.cells[0];
+    // Foxify-safe protection-structure fields present…
+    for (const k of ["cell_id", "structure", "notional_usdc_per_leg", "trigger_pct_down", "trigger_pct_up", "hedge_tenor_days", "offered_in_regimes"]) {
+      assert.ok(k in c, `field ${k} present`);
+    }
+    // …and NO economics / pricing internals leak through.
+    for (const k of ["ev", "net_usdc", "cost_usdc", "sigma", "calibration", "atticus_share_usdc"]) {
+      assert.ok(!(k in c), `economics field ${k} must NOT be exposed`);
+    }
+    assert.ok(["atm_straddle", "otm_strangle", "itm_guts_strangle"].includes(c.structure));
+  } finally { await cleanup(); }
+});
+
+test("auth: /foxify/v2/cells rejects missing token", async () => {
+  const { app, cleanup } = await buildApp();
+  try {
+    const r = await app.inject({ method: "GET", url: "/foxify/v2/cells" });
+    assert.equal(r.statusCode, 401);
+  } finally { await cleanup(); }
+});
+
 test("POST /foxify/v2/activate end-to-end returns 201", async () => {
   const { app, cleanup } = await buildApp();
   try {
