@@ -157,6 +157,43 @@ function PnlTab({ livePnl, scorecard }: { livePnl: LivePnl | null; scorecard: Sc
 }
 
 // ─── Positions + controls ───
+// Validated production cell set (display-only flag; source of truth = cellConfig.CELL_STATUS).
+// Anything NOT here is experimental/deprecated — shown muted so legacy shadow noise (e.g.
+// pair_50k_2pct) is obvious and not mistaken for go-live volume.
+const PRODUCTION_CELLS = new Set([
+  "pair_50k_3pct_atm_3d", "pair_150k_3pct_atm_3d", "pair_10k_atm_2d",
+  "pair_25k_5otm_strangle_2d", "pair_25k_5otm_strangle_1d"
+]);
+
+type Subtotal = { n: number; cost: number; mark: number; pnl: number };
+/** Aggregate cost / close-value / P&L across a set of MTM pairs. */
+function aggregate(pairs: Array<Record<string, unknown>>): Subtotal {
+  return pairs.reduce<Subtotal>((s, p) => ({
+    n: s.n + 1,
+    cost: s.cost + (Number(p.cost_paid_usdc) || 0),
+    mark: s.mark + (Number(p.estimated_salvage_usdc) || 0),
+    pnl: s.pnl + (Number(p.pnl_if_close_now_usdc) || 0)
+  }), { n: 0, cost: 0, mark: 0, pnl: 0 });
+}
+/** Group MTM pairs by cell_id → subtotal, sorted most-negative P&L first. */
+function byCell(pairs: Array<Record<string, unknown>>): Array<{ cell: string; sub: Subtotal }> {
+  const m = new Map<string, Array<Record<string, unknown>>>();
+  for (const p of pairs) {
+    const c = String(p.cell_id ?? "—");
+    (m.get(c) ?? m.set(c, []).get(c)!).push(p);
+  }
+  return [...m.entries()].map(([cell, ps]) => ({ cell, sub: aggregate(ps) })).sort((a, b) => a.sub.pnl - b.sub.pnl);
+}
+/** Compact subtotal line: "N pairs · cost $X · close $Y · P&L ±$Z". */
+function SubtotalLine({ label, sub }: { label: string; sub: Subtotal }) {
+  return (
+    <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
+      <b style={{ color: C.text }}>{label}:</b> {sub.n} pairs · cost {fmtUsd(sub.cost)} · close value {fmtUsd(sub.mark)} ·{" "}
+      <span style={{ color: pnlColor(sub.pnl) }}>P&L {fmtSignedUsd(sub.pnl)}</span>
+    </div>
+  );
+}
+
 /** Widest leg bid-ask spread for a pair, as a compact "NN%" (amber when wide). */
 function spreadLabel(p: Record<string, unknown>) {
   const ps = Number(p.put_spread_pct); const cs = Number(p.call_spread_pct);
@@ -189,6 +226,16 @@ function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<str
     { key: "rec", label: "Signal", render: (p) => String(p.recommendation ?? "—") }
   ];
   const liveNet = livePairs.reduce((s, p) => s + (Number(p.pnl_if_close_now_usdc) || 0), 0);
+  const liveSub = aggregate(livePairs);
+  const shadowSub = aggregate(shadowPairs);
+  const shadowByCell = byCell(shadowPairs);
+  const cellSubCols: Col<{ cell: string; sub: Subtotal }>[] = [
+    { key: "cell", label: "Cell", render: (r) => <span>{r.cell}{PRODUCTION_CELLS.has(r.cell) ? "" : " "}{!PRODUCTION_CELLS.has(r.cell) && <Pill text="non-prod" color={C.muted} />}</span> },
+    { key: "n", label: "Pairs", align: "right", render: (r) => String(r.sub.n) },
+    { key: "cost", label: "Cost", align: "right", render: (r) => fmtUsd(r.sub.cost) },
+    { key: "mark", label: "Close value", align: "right", render: (r) => fmtUsd(r.sub.mark) },
+    { key: "pnl", label: "P&L", align: "right", render: (r) => <span style={{ color: pnlColor(r.sub.pnl) }}>{fmtSignedUsd(r.sub.pnl)}</span> }
+  ];
   const stuckCols: Col<Record<string, unknown>>[] = [
     { key: "pair", label: "Pair", render: (p) => short(p.pair_id as string) },
     { key: "cell_id", label: "Cell" }, { key: "status", label: "Status" },
@@ -208,10 +255,22 @@ function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<str
           {" "}<b>P&L (mid/UI)</b> = value at the bid-ask <b>mid</b>, matching the Bullish/Deribit UI's unrealized PnL. On a wide book the UI looks more profitable than is realizable; the difference is the <b>Spread</b> column.
           {" "}<b>Quote=held</b> means the venue's live bid dropped out this poll (its UI mark may be flapping/0) and we're holding the last-good value to keep the mark steady — TP still acts on this stabilized value.
         </div>
+        <SubtotalLine label="LIVE subtotal" sub={liveSub} />
       </Panel>
-      {/* SHADOW — paper / data engine, clearly separated. */}
+      {/* SHADOW — paper / data engine, clearly separated. Subtotaled + grouped by cell
+          so a long list of negatives reads as aggregates, and non-production cells (e.g.
+          deprecated pair_50k_2pct) are visibly flagged rather than mistaken for go-live. */}
       <Panel title={`Shadow positions — paper / data engine (${shadowPairs.length})`}>
-        <Table cols={cols} rows={shadowPairs} keyOf={(p) => p.pair_id as string} />
+        <SubtotalLine label="SHADOW subtotal (all)" sub={shadowSub} />
+        <div style={{ fontSize: 11, color: C.muted, margin: "4px 0 8px" }}>
+          Shadow = paper-executed for model/data accrual — <b>no real money</b>. Negatives here are mostly calm loss-leaders + legacy/deprecated cells; they are NOT a forecast of live P&L. See the per-cell breakdown.
+        </div>
+        <div style={{ fontSize: 12, color: C.text, fontWeight: 700, margin: "6px 0 2px" }}>By cell (worst P&L first)</div>
+        <Table cols={cellSubCols} rows={shadowByCell} keyOf={(r) => r.cell} />
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: "pointer", fontSize: 12, color: C.blue }}>Show all {shadowPairs.length} shadow positions</summary>
+          <Table cols={cols} rows={shadowPairs} keyOf={(p) => p.pair_id as string} />
+        </details>
       </Panel>
       <Panel title={`Stuck / out-of-band (${stuck?.likely_out_of_band_count ?? 0} flagged of ${stuck?.total_non_terminal ?? 0})`}>
         <Table cols={stuckCols} rows={stuck?.pairs ?? []} keyOf={(p) => p.pair_id as string} />
