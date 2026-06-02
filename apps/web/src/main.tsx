@@ -9,6 +9,8 @@ import { TreasuryAdmin } from "./TreasuryAdmin";
 import { SimpleSimPilotApp } from "./SimpleSimPilotApp";
 import { VolumeCoverAdmin } from "./VolumeCoverAdmin";
 import { FoxifyDashboard } from "./FoxifyDashboard";
+import { FoxifyVolumeDashboard } from "./twoSided/FoxifyVolumeDashboard";
+import { AtticusVolumeAdmin } from "./twoSided/AtticusVolumeAdmin";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET, PILOT_ACCESS_CODE } from "./config";
 import "./styles.css";
 
@@ -115,6 +117,14 @@ function AppRouter() {
 
   if (path === "/volume-cover" || path.startsWith("/volume-cover/")) {
     return <VolumeCoverAdmin />;
+  }
+
+  // Two-sided cooperative-volume facility (v2). Admin path checked FIRST.
+  if (path === "/cover/admin" || path.startsWith("/cover/admin")) {
+    return <AtticusVolumeAdmin />;
+  }
+  if (path === "/cover" || path.startsWith("/cover/")) {
+    return <FoxifyVolumeDashboard />;
   }
 
   if (path === "/foxify" || path.startsWith("/foxify/")) {
