@@ -27,6 +27,9 @@ export type BullishLegAdapterOpts = {
   pricePrecision?: number;
   qtyPrecision?: number;
   /** Bullish tick is $10 USDC for BTC options — caller snaps before passing. */
+  /** Slippage headroom (fraction) added to the BUY IOC limit so it crosses a moved/wide
+   *  ask. Default reads SS_BULLISH_IOC_SLIPPAGE_PCT (0.05). Fill is at the real ask. */
+  buySlippagePct?: number;
 };
 
 const POLL_CEILING_MS = 8_000;
@@ -35,6 +38,24 @@ const DEFAULT_POLL_ATTEMPTS = POLL_CEILING_MS / DEFAULT_POLL_INTERVAL; // 16
 
 const snapPriceUpUsdc = (px: number, tick = 10): number => Math.ceil(px / tick) * tick;
 const snapPriceDownUsdc = (px: number, tick = 10): number => Math.floor(px / tick) * tick;
+
+/**
+ * Bullish BUY IOC limit price (USDC/BTC), snapped UP to the $10 tick, with SLIPPAGE
+ * HEADROOM above the quoted ask. WHY: legs fire sequentially (put, then call), and on
+ * Bullish's wide/thin ATM the second leg's ask can tick above the original quote ask by
+ * the time its order lands → the IOC limit is below the ask → "Expired (last=CLOSED)",
+ * no fill (verified live 2026-06-02). The limit is a CEILING — IOC fills at the real
+ * resting ask (reported back), so headroom mainly guarantees the order CROSSES rather
+ * than overpaying. Env-tunable: SS_BULLISH_IOC_SLIPPAGE_PCT (default 0.05 = 5%).
+ */
+export const bullishBuyLimitUsdc = (askUsdcPerBtc: number, slippagePct: number, tick = 10): number =>
+  // -1e-9 absorbs float error (e.g. 800*1.10 = 880.0000000001 would ceil to 890).
+  +(Math.ceil((askUsdcPerBtc * (1 + Math.max(0, slippagePct))) / tick - 1e-9) * tick).toFixed(2);
+
+const defaultBullishBuySlippagePct = (): number => {
+  const v = Number(process.env.SS_BULLISH_IOC_SLIPPAGE_PCT ?? "0.05");
+  return Number.isFinite(v) && v >= 0 ? v : 0.05;
+};
 
 export class BullishLegAdapter implements BullishLegClient {
   constructor(
@@ -45,7 +66,8 @@ export class BullishLegAdapter implements BullishLegClient {
   async buyLeg(req: BullishLegBuyRequest): Promise<LegExecutionResult> {
     // Bullish requires numeric clientOrderId; map UUID-ish to numeric via hash
     const numericClientOrderId = String(Math.abs(hashString(req.clientOrderId)) % 1_000_000_000_000);
-    const limitPx = snapPriceUpUsdc(req.maxAcceptableAskUsdcPerBtc);
+    const slippagePct = this.opts.buySlippagePct ?? defaultBullishBuySlippagePct();
+    const limitPx = bullishBuyLimitUsdc(req.maxAcceptableAskUsdcPerBtc, slippagePct);
     const result = await executeBullishIocLimit({
       client: this.client,
       symbol: req.symbol,
