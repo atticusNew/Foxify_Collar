@@ -157,6 +157,15 @@ function PnlTab({ livePnl, scorecard }: { livePnl: LivePnl | null; scorecard: Sc
 }
 
 // ─── Positions + controls ───
+/** Widest leg bid-ask spread for a pair, as a compact "NN%" (amber when wide). */
+function spreadLabel(p: Record<string, unknown>) {
+  const ps = Number(p.put_spread_pct); const cs = Number(p.call_spread_pct);
+  const vals = [ps, cs].filter((v) => Number.isFinite(v));
+  if (vals.length === 0) return "—";
+  const wide = Math.max(...vals);
+  return <span style={{ color: wide >= 0.15 ? C.amber : C.muted }}>{(wide * 100).toFixed(0)}%</span>;
+}
+
 function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<string, unknown>> } | null; stuck: StuckPairs | null; onAction: () => void }) {
   const allPairs = mtm?.pairs ?? [];
   // SEPARATE live (real-money) from shadow (paper) — they were mixed before, which made
@@ -168,8 +177,13 @@ function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<str
     { key: "cell_id", label: "Cell" },
     { key: "venue", label: "Venue", render: (p) => `${p.put_venue}/${p.call_venue}` },
     { key: "cost", label: "Cost", align: "right", render: (p) => fmtUsd(p.cost_paid_usdc as number) },
-    { key: "mark", label: "MTM", align: "right", render: (p) => fmtUsd(p.estimated_salvage_usdc as number) },
-    { key: "pnl", label: "P&L", align: "right", render: (p) => <span style={{ color: pnlColor(p.pnl_if_close_now_usdc as number) }}>{fmtSignedUsd(p.pnl_if_close_now_usdc as number)}</span> },
+    // EXECUTABLE = bid×haircut: what we'd actually receive selling now. Drives TP/close.
+    { key: "mark", label: "Mark (exec)", align: "right", render: (p) => fmtUsd(p.estimated_salvage_usdc as number) },
+    { key: "pnl", label: "P&L (exec)", align: "right", render: (p) => <span style={{ color: pnlColor(p.pnl_if_close_now_usdc as number) }}>{fmtSignedUsd(p.pnl_if_close_now_usdc as number)}</span> },
+    // MID = venue-UI-comparable (Bullish/Deribit show unrealized PnL at mid). On a wide
+    // book this is higher than the executable value — the gap is the bid-ask spread.
+    { key: "pnl_mid", label: "P&L (mid/UI)", align: "right", render: (p) => p.pnl_if_close_now_mid_usdc == null ? "—" : <span style={{ color: pnlColor(p.pnl_if_close_now_mid_usdc as number) }}>{fmtSignedUsd(p.pnl_if_close_now_mid_usdc as number)}</span> },
+    { key: "spread", label: "Spread", align: "right", render: (p) => spreadLabel(p) },
     { key: "ttl", label: "Left", align: "right", render: (p) => fmtHours(p.tenor_remaining_hours as number) },
     { key: "rec", label: "Signal", render: (p) => String(p.recommendation ?? "—") }
   ];
@@ -188,6 +202,10 @@ function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<str
       <Panel title={`🟢 LIVE positions — real money (${livePairs.length})`} style={{ border: `1px solid ${C.green}55`, borderRadius: 6 }}
         right={<span style={{ fontSize: 12, color: pnlColor(liveNet) }}>net {fmtSignedUsd(liveNet)}</span>}>
         <Table cols={cols} rows={livePairs} keyOf={(p) => p.pair_id as string} />
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 6, lineHeight: 1.4 }}>
+          <b>P&L (exec)</b> = realizable value at the venue <b>bid</b> (what you'd actually get selling now) — this is what TP/auto-close decides on.
+          {" "}<b>P&L (mid/UI)</b> = value at the bid-ask <b>mid</b>, matching the Bullish/Deribit UI's unrealized PnL. On a wide book the UI looks more profitable than is realizable; the difference is the <b>Spread</b> column.
+        </div>
       </Panel>
       {/* SHADOW — paper / data engine, clearly separated. */}
       <Panel title={`Shadow positions — paper / data engine (${shadowPairs.length})`}>
