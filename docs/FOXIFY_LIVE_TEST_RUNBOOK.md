@@ -230,6 +230,22 @@ curl --http1.1 -sS -X POST -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" -H "Content-T
   "$PILOT_API_BASE/admin/foxify/v2/reconcile-settle" \
   -d '{"pair_id":"<PAIR_ID>","salvage_proceeds_usdc":<TOTAL_USDC>,"note":"manual venue close"}' | jq .
 ```
+
+**MTM-settled venues (Bullish).** Bullish settles options **hourly** (Settlement
+History tab), so there is no single sale price — only a net P&L (sum of the
+Settled P&L column for both legs). Pass `net_pnl_usdc` instead; salvage is derived
+as cost + net P&L:
+```bash
+curl --http1.1 -sS -X POST -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  "$PILOT_API_BASE/admin/foxify/v2/reconcile-settle" \
+  -d '{"pair_id":"<PAIR_ID>","net_pnl_usdc":<NET_PNL>,"note":"bullish hourly settled P&L"}' | jq .
+```
+
+**Correcting the recorded cost.** If the venue filled a different size than we
+recorded (e.g. Deribit floors to the 0.1-BTC step, so a 0.35 cell trades 0.3),
+add `hedge_cost_override_usdc` with the TRUE gross premium paid — it becomes the
+cost basis for the split and is persisted (original kept in metadata):
+`-d '{"pair_id":"...","put_proceeds_usdc":...,"call_proceeds_usdc":...,"hedge_cost_override_usdc":<TRUE_FILL_USDC>}'`.
 Response shows `status:"settled"`, `stepped_from`, `salvage_proceeds_usdc`,
 `uplift_usdc`, `foxify_share_usdc`, `atticus_share_usdc`, `outcome`. The pair is
 now terminal and drops out of `bootResurrect` (so a redeploy won't touch it).
