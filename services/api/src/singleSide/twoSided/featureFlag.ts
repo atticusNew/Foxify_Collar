@@ -140,6 +140,32 @@ export const clearNewbornReview = async (pool: Pool, regime: Regime): Promise<vo
   );
 };
 
+/**
+ * AUTO-GRADUATE a regime's newborn review — lifts the manual-review requirement by
+ * setting operator_approved_count to (at least) the threshold. Sticky (won't re-block).
+ * Used by the auto-approve gate once a regime has accrued enough validated settlements,
+ * so a production Foxify bot isn't blocked on its first fire in a proven regime.
+ */
+export const graduateNewbornReview = async (pool: Pool, regime: Regime, threshold: number): Promise<void> => {
+  await pool.query(
+    `UPDATE two_sided_newborn_review
+     SET operator_approved_count = GREATEST(operator_approved_count, $2),
+         last_approved_at = NOW()
+     WHERE regime = $1`,
+    [regime, threshold]
+  );
+};
+
+/**
+ * N validated settlements after which newborn review auto-graduates (env
+ * SS_NEWBORN_AUTO_APPROVE_AFTER_N). Default 0 = DISABLED (manual review only,
+ * unchanged behavior). Set > 0 to make a regime self-graduate once proven.
+ */
+export const newbornAutoApproveAfterN = (env: NodeJS.ProcessEnv = process.env): number => {
+  const v = Number(env.SS_NEWBORN_AUTO_APPROVE_AFTER_N ?? "0");
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+};
+
 /** Classify DVOL into regime band — matches calibrateRegimeVolMarkup.ts and the validation MD. */
 export const classifyRegime = (dvol: number): Regime => {
   if (dvol < 40) return "calm";

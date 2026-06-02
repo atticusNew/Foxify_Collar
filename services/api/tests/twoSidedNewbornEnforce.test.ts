@@ -134,6 +134,77 @@ test("TriggerDetector: invokes recordNewbornForRegime on trigger", async () => {
   assert.equal(recordedRegime, "calm");
 });
 
+const seedSettled = async (pool: Awaited<ReturnType<typeof buildPool>>, id: string, regime: "calm" | "moderate" | "elevated" | "stress") => {
+  await insertPair(pool, {
+    pairId: id, cellId: "pair_50k_3pct_atm_3d", foxifyPairRef: `fxy-${id}`,
+    spotAtActivation: 70_000, feedSnapshotAtActivation: {},
+    triggerDownPrice: 67_900, triggerUpPrice: 72_100, hedgeTenorDays: 3,
+    expiresAt: "2026-06-10T18:00:00Z", tpForceExitAt: "2026-06-10T14:00:00Z",
+    hedgeCostTotalUsdc: 1_000, foxifyCapitalFundedUsdc: 1_000,
+    tierAtActivation: "tier_2", atticusFloorUsdc: 30, metadata: {},
+    regimeAtActivation: regime
+  });
+  await updatePairStatus(pool, id, "active");
+  await updatePairStatus(pool, id, "unwinding");
+  await updatePairStatus(pool, id, "settled", {
+    closedAt: "2026-06-08T00:00:00Z", closedReason: "foxify_close",
+    salvageProceedsUsdc: 900, upliftUsdc: -100, foxifyShareUsdc: 900, atticusShareUsdc: 0, exitMode: "foxify_close"
+  });
+};
+
+test("canActivate: AUTO-APPROVE — N validated settlements graduates the regime (no manual clear)", async () => {
+  const pool = await buildPool();
+  await recordNewbornTrigger(pool, "moderate"); // pending review → would normally block
+  await seedSettled(pool, "m1", "moderate");
+  await seedSettled(pool, "m2", "moderate"); // 2 validated settlements in moderate
+  process.env.SS_NEWBORN_AUTO_APPROVE_AFTER_N = "2";
+  try {
+    const r = await canActivate(pool, {
+      dvol: 45, capitalAvailableUsdc: null, pairHedgeCostUsdc: 1_000,
+      currentRegime: "moderate", newbornReviewThreshold: 3
+    });
+    assert.equal(r.ok, true, "2 validated settlements >= N(2) → auto-graduated, activation passes");
+    // Sticky: state now shows reviewRequired false
+    const st = await getNewbornState(pool, "moderate", 3);
+    assert.equal(st.reviewRequired, false);
+  } finally {
+    delete process.env.SS_NEWBORN_AUTO_APPROVE_AFTER_N;
+  }
+});
+
+test("canActivate: auto-approve below N still blocks + surfaces progress", async () => {
+  const pool = await buildPool();
+  await recordNewbornTrigger(pool, "moderate");
+  await seedSettled(pool, "m1", "moderate"); // only 1 validated, need 3
+  process.env.SS_NEWBORN_AUTO_APPROVE_AFTER_N = "3";
+  try {
+    const r = await canActivate(pool, {
+      dvol: 45, capitalAvailableUsdc: null, pairHedgeCostUsdc: 1_000,
+      currentRegime: "moderate", newbornReviewThreshold: 3
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, "newborn_review");
+    assert.equal((r.details as { validated_settlements?: number }).validated_settlements, 1);
+    assert.equal((r.details as { auto_approve_after_n?: number }).auto_approve_after_n, 3);
+  } finally {
+    delete process.env.SS_NEWBORN_AUTO_APPROVE_AFTER_N;
+  }
+});
+
+test("canActivate: auto-approve disabled by default (N=0) → manual review unchanged", async () => {
+  const pool = await buildPool();
+  await recordNewbornTrigger(pool, "moderate");
+  await seedSettled(pool, "m1", "moderate");
+  await seedSettled(pool, "m2", "moderate");
+  // No env set → autoN=0 → no auto-approve, still blocks
+  const r = await canActivate(pool, {
+    dvol: 45, capitalAvailableUsdc: null, pairHedgeCostUsdc: 1_000,
+    currentRegime: "moderate", newbornReviewThreshold: 3
+  });
+  assert.equal(r.ok, false, "default behavior unchanged: manual review still required");
+  assert.equal(r.reason, "newborn_review");
+});
+
 test("End-to-end: trigger → activate blocked → operator clears → activate passes", async () => {
   const pool = await buildPool();
   // Simulate: 1 trigger observed in calm regime

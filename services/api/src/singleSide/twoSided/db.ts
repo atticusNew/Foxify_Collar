@@ -287,6 +287,21 @@ export const countLivePairsToday = async (exec: DbExecutor, nowMs: number = Date
   return res.rows[0]?.n ?? 0;
 };
 
+/**
+ * Count SETTLED pairs tagged to a regime — the "validated settlements" used by the
+ * newborn-review auto-approve gate. A settled pair proves the full activate→close
+ * lifecycle worked in that regime. Shadow + live both count (both validate the path).
+ */
+export const countSettledPairsByRegime = async (exec: DbExecutor, regime: string): Promise<number> => {
+  const res = await exec.query(
+    `SELECT COUNT(*)::int AS n
+       FROM two_sided_pair
+      WHERE status = 'settled' AND regime_at_activation = $1`,
+    [regime]
+  );
+  return res.rows[0]?.n ?? 0;
+};
+
 export const updatePairStatus = async (
   exec: DbExecutor,
   pairId: string,

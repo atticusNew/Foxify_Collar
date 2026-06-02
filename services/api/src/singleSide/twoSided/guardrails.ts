@@ -237,8 +237,24 @@ export const canActivate = async (
   // OR triggers_observed <= approvedCount (no pending unreviewed triggers).
   if (ctx.currentRegime) {
     const threshold = ctx.newbornReviewThreshold ?? 3;
-    const { getNewbornState } = await import("./featureFlag");
-    const state = await getNewbornState(pool, ctx.currentRegime, threshold);
+    const { getNewbornState, graduateNewbornReview, newbornAutoApproveAfterN } = await import("./featureFlag");
+    let state = await getNewbornState(pool, ctx.currentRegime, threshold);
+
+    // AUTO-APPROVE: once the regime has proven itself with >= N validated (settled)
+    // pairs, auto-graduate the review so a production Foxify bot isn't blocked on its
+    // first fire in an already-proven regime. Opt-in via SS_NEWBORN_AUTO_APPROVE_AFTER_N
+    // (default 0 = manual-only, unchanged). Sticky once graduated.
+    const autoN = newbornAutoApproveAfterN();
+    let validatedSettlements: number | null = null;
+    if (autoN > 0 && state.reviewRequired) {
+      const { countSettledPairsByRegime } = await import("./db");
+      validatedSettlements = await countSettledPairsByRegime(pool, ctx.currentRegime);
+      if (validatedSettlements >= autoN) {
+        await graduateNewbornReview(pool, ctx.currentRegime, threshold);
+        state = await getNewbornState(pool, ctx.currentRegime, threshold); // reviewRequired now false
+      }
+    }
+
     if (state.reviewRequired && state.triggersObserved > state.operatorApprovedCount) {
       return {
         ok: false,
@@ -248,7 +264,10 @@ export const canActivate = async (
           triggers_observed: state.triggersObserved,
           operator_approved_count: state.operatorApprovedCount,
           threshold,
-          pending_review: state.triggersObserved - state.operatorApprovedCount
+          pending_review: state.triggersObserved - state.operatorApprovedCount,
+          // Surface auto-approve progress so the operator sees how close it is.
+          auto_approve_after_n: autoN > 0 ? autoN : null,
+          validated_settlements: validatedSettlements
         }
       };
     }
