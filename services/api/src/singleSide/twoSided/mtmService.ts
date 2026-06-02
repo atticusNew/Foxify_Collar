@@ -70,8 +70,10 @@ export type PairMtm = {
   // independently verify against the live venue order book.
   put_bid_used_usdc_per_btc?: number;   // null when valuation_method='bs_fallback'
   call_bid_used_usdc_per_btc?: number;  // null when valuation_method='bs_fallback'
-  put_venue?: string;                    // venue we'd sell the put leg to
-  call_venue?: string;                   // venue we'd sell the call leg to
+  put_venue?: string;                    // venue the put leg is HELD on (from the leg record)
+  call_venue?: string;                   // venue the call leg is HELD on (from the leg record)
+  put_valuation_venue?: string;          // venue we PRICED the put against this poll (may differ from held)
+  call_valuation_venue?: string;         // venue we PRICED the call against this poll (may differ from held)
   // Valuation methodology: tells operator HOW we computed the salvage so
   // they know the accuracy level. "venue_bid" = real venue prices used.
   // "bs_fallback" = theoretical Black-Scholes (less accurate; flag in logs).
@@ -390,8 +392,16 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       call_valuation_method: callV.method,
       put_bid_used_usdc_per_btc: putV.rawBidUsdcPerBtc,
       call_bid_used_usdc_per_btc: callV.rawBidUsdcPerBtc,
-      put_venue: putV.venue,
-      call_venue: callV.venue,
+      // put_venue/call_venue = where the position is HELD (from the leg record) — the truthful
+      // answer to "what venue is this on". Falls back to the valuation venue only if the leg
+      // venue is somehow missing. The venue we PRICED against this poll (which can differ when
+      // the held strike isn't currently quoted on the held venue) is put/call_valuation_venue.
+      // (Previously put_venue reported the valuation venue, which falsely looked like the
+      //  position had "moved" to Deribit when Bullish stopped quoting the strike — see 2026-06-02.)
+      put_venue: putVenue ?? putV.venue,
+      call_venue: callVenue ?? callV.venue,
+      put_valuation_venue: putV.venue,
+      call_valuation_venue: callV.venue,
       put_match_tier: putV.matchTier,
       call_match_tier: callV.matchTier,
       trigger_down_price: Number(r.trigger_down_price),
