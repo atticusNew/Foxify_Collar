@@ -8997,6 +8997,52 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       console.error(`[FoxifyV2] FAILED to start shadow auto-TP handler: ${(e as Error).message}`);
     }
 
+    // ─── LIVE auto-TP watcher ───
+    // Take-profit / trailing-stop for REAL (is_shadow=false) ACTIVE pairs — the one
+    // gap not covered by the trigger runtime (auto-manages triggered pairs) or the
+    // expiry handler (auto-sells at expiry). Closes via the REAL venue path
+    // (handleClose → spawnRuntimeForceClose → LiveCloseExecutor), never paper-settles.
+    // Default OFF (SS_LIVE_AUTO_TP_ENABLED); optional SS_LIVE_AUTO_TP_PAIR_IDS scoping.
+    try {
+      const { LiveAutoTpHandler, readLiveAutoTpConfig } = await import("./singleSide/twoSided/liveAutoTpHandler");
+      const { listActivePairMtm } = await import("./singleSide/twoSided/mtmService");
+      const { handleClose } = await import("./singleSide/twoSided/closeHandler");
+      const liveTpConfig = readLiveAutoTpConfig();
+      const v2LiveAutoTp = new LiveAutoTpHandler({
+        config: liveTpConfig,
+        getActivePairsMtm: async () => {
+          const spot = v2FeedService.getCurrentFeed()?.canonicalPrice;
+          if (!spot || spot <= 0) return [];
+          const rows = await listActivePairMtm({
+            pool: v2Pool,
+            currentSpot: spot,
+            ivAnnual: v2DvolService.getCurrentDvol()?.sigmaAnnual ?? 0.35,
+            liquidChainCache: v2LiquidCache,
+            includeShadow: false, // LIVE only
+            tpThresholdPct: liveTpConfig.tpThresholdPct
+          });
+          return rows.map((r) => ({
+            pair_id: r.pair_id,
+            is_shadow: r.is_shadow,
+            pnl_pct: r.pnl_pct,
+            pnl_if_close_now_usdc: r.pnl_if_close_now_usdc,
+            estimated_salvage_usdc: r.estimated_salvage_usdc
+          }));
+        },
+        closePair: async (pairId, reason) => {
+          const r = await handleClose(
+            { pairId, foxifyCloseReason: `live_auto_tp:${reason}` },
+            { pool: v2Pool, getRuntime: (id) => v2Registry.getRuntime(id), spawnRuntimeForceClose: v2SpawnForceClose }
+          );
+          if (r.status !== 200) throw new Error(`handleClose returned ${r.status}: ${JSON.stringify(r.body)}`);
+        },
+        log: (m, x) => console.log(`[FoxifyV2/liveAutoTp] ${m}`, x ?? "")
+      });
+      v2LiveAutoTp.start();
+    } catch (e) {
+      console.error(`[FoxifyV2] FAILED to start live auto-TP watcher: ${(e as Error).message}`);
+    }
+
     // ─── Expiry handler ───
     // Auto-settles pairs that hit expires_at WITHOUT triggering. Without this,
     // active-but-never-triggered pairs sit in 'active' status forever.
