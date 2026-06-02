@@ -614,7 +614,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Foxify dashboard's "available cells" menu even when the bot isn't activating.
    */
   app.get("/foxify/v2/cells", { preHandler: checkFoxifyToken }, async (_req, reply) => {
-    const { PHASE_0_CELLS } = await import("./cellConfig");
+    const { PHASE_0_CELLS, cellStatus } = await import("./cellConfig");
     const { isCellAllowedInRegimeDefault } = await import("./cellAllowlist");
     const regimes = ["calm", "moderate", "elevated", "stress"] as const;
     const structureOf = (putItm: number, callItm: number): string => {
@@ -626,6 +626,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       .filter((c) => c.enabled)
       .map((c) => ({
         cell_id: c.cellId,
+        status: cellStatus(c.cellId),
         structure: structureOf(c.putStrikeItmPct, c.callStrikeItmPct),
         notional_usdc_per_leg: c.notionalUsdcPerLeg,
         trigger_pct_down: c.triggerPctDown,

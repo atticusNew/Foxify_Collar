@@ -323,6 +323,58 @@ export const CALM_LOSS_LEADER_CELLS: ReadonlyArray<string> = [
   "pair_25k_5otm_strangle_1d"
 ];
 
+/**
+ * CELL CLASSIFICATION (authoritative "what's real" map — added Phase-A cleanup 2026-06-02).
+ *
+ * The registry accreted across the V3/V5/V6 sweeps + the live Bullish work; this map is the
+ * single source of truth for what each cell IS, so operators/admin stop guessing:
+ *
+ *   production   — validated, intended for real volume. The moderate-regime ATM straddle
+ *                  winners (empirical sweep) + the Bullish-partnership cell + the calm
+ *                  budgeted loss-leaders.
+ *   experimental — plausible but NOT validated as the production structure (OTM strangle
+ *                  variants); kept for research / may be promoted or cut.
+ *   deprecated   — superseded/synthetic-era; do NOT use (kept in registry for back-compat +
+ *                  as test fixtures + DB-override escape hatch).
+ *   test         — operator smoke-test only (never in default allowlists).
+ *   disabled     — enabled:false; cannot activate.
+ *
+ * NOTE: this is INFORMATIONAL (surfaced in /foxify/v2/cells + the admin view). The operative
+ * activation control remains DEFAULT_CELL_ALLOWLIST + the enabled flag. Trimming the allowlists
+ * to production-only is the deliberate Phase-A.2/B follow-up (it's coupled to many tests).
+ */
+export type CellStatus = "production" | "experimental" | "deprecated" | "test" | "disabled";
+
+export const CELL_STATUS: Readonly<Record<string, CellStatus>> = {
+  // ── PRODUCTION ──
+  pair_50k_3pct_atm_3d: "production",   // moderate ATM straddle winner (capital-light)
+  pair_150k_3pct_atm_3d: "production",  // moderate ATM straddle winner (scaled)
+  pair_10k_atm_2d: "production",        // Bullish-partnership ATM (2d, $500 grid — Bullish-competitive)
+  pair_25k_5otm_strangle_2d: "production", // calm budgeted loss-leader (primary)
+  pair_25k_5otm_strangle_1d: "production", // calm budgeted loss-leader (cheap)
+  // ── EXPERIMENTAL (OTM strangle variants — not the validated production structure) ──
+  pair_25k_5pct_otm_3d: "experimental",
+  pair_50k_5pct_otm: "experimental",
+  pair_50k_4pct_otm_short: "experimental",
+  pair_10k_atm_3d: "experimental",      // superseded by the 2d Bullish cell (3d Bullish = uncompetitive)
+  // ── DEPRECATED (synthetic-era / superseded; do not use) ──
+  pair_50k_2pct: "deprecated",
+  pair_100k_3pct_itm_short: "deprecated",
+  pair_50k_3pct_atm: "deprecated",      // non-3d; superseded by pair_50k_3pct_atm_3d
+  // ── TEST ──
+  pair_5k_atm_1d_smoke: "test",
+  // ── DISABLED ──
+  pair_25k_5pct_otm_short: "disabled",
+  pair_25k_1pct_atm_micro: "disabled"
+};
+
+/** The validated production cell set (intended for real volume). */
+export const PRODUCTION_CELLS: ReadonlyArray<string> =
+  Object.keys(CELL_STATUS).filter((c) => CELL_STATUS[c] === "production");
+
+/** Status for a cell (defaults to "deprecated" for anything unclassified — fail-safe). */
+export const cellStatus = (cellId: string): CellStatus => CELL_STATUS[cellId] ?? "deprecated";
+
 /** Pick put + call strikes for the given spot, snapping to grid. */
 export const computeStrikes = (cell: TwoSidedCell, spotUsdc: number): { putStrike: number; callStrike: number } => {
   // TRUE ATM straddle (both legs 0% ITM): snap BOTH legs to the SAME nearest grid
