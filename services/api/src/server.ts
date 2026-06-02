@@ -8224,7 +8224,20 @@ console.log(
   } pilotStart=${process.env.PILOT_LIVE_START_DATE || "(auto)"}`
 );
 
-await registerPilotRoutes(app, { deribit, deribitLive });
+// ────────── Legacy pilot routes (DECOMMISSIONING) ──────────
+// Phase-B decommission: the v2 two-sided facility is the go-forward system; the legacy
+// single-protection pilot is being retired. Gated behind LEGACY_PILOT_ENABLED so this is
+// REVERSIBLE and the code deploy is BEHAVIOR-NEUTRAL (default "true" = current behavior).
+// Operator sets LEGACY_PILOT_ENABLED=false to decommission. This ONLY skips the pilot HTTP
+// route registration — the module-level `deribit` connector, pilotConfig, and the shared
+// Bullish client (all reused by the v2 facility) are created elsewhere and are UNAFFECTED.
+// volumeCover (VOLUME_COVER_ENABLED) + treasury (TREASURY_ENABLED) are already flag-gated
+// (default off); v2 is its own gated block (FOXIFY_V2_ENABLED). No DB tables are dropped.
+if (String(process.env.LEGACY_PILOT_ENABLED ?? "true").toLowerCase() !== "false") {
+  await registerPilotRoutes(app, { deribit, deribitLive });
+} else {
+  console.log("[Pilot] Legacy pilot routes DISABLED (LEGACY_PILOT_ENABLED=false) — decommissioned; v2 two-sided facility unaffected.");
+}
 
 // ────────── Volume Cover product (Foxify B2B) ──────────
 if (String(process.env.VOLUME_COVER_ENABLED ?? "false").toLowerCase() === "true") {
