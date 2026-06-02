@@ -34,12 +34,14 @@ import { reconcileSettlePair } from "../src/singleSide/twoSided/reconcileSettle"
 import { computeSplit } from "../src/singleSide/twoSided/settlementEngine";
 import { getTierByLabel } from "../src/singleSide/twoSided/tierResolver";
 import { __resetRegistryForTests, getRuntimeRegistry } from "../src/singleSide/twoSided/runtimeRegistry";
+import { ensureCounterpartyLedgerSchema, getBalance } from "../src/singleSide/twoSided/counterpartyLedger";
 import type { ExecutionRuntime } from "../src/singleSide/twoSided/executionRuntime";
 
 const buildPool = async () => {
   const db = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true });
   const pool = new (db.adapters.createPg().Pool)();
   await ensureTwoSidedSchema(pool);
+  await ensureCounterpartyLedgerSchema(pool);
   return pool;
 };
 
@@ -309,6 +311,75 @@ test("reconcile: pending pair → not_settleable", async () => {
   assert.equal(res.ok, false);
   if (res.ok) return;
   assert.equal(res.error, "not_settleable");
+});
+
+test("reconcile force_correct: overwrites a SETTLED pair + reverses prior ledger split (net = corrected)", async () => {
+  const pool = await buildPool();
+  await seedPair(pool, { status: "unwinding", hedgeCost: 22.53, floor: 30, tier: "tier_2" });
+  // First: normal reconcile that settles with the ESTIMATED numbers (salvage 14.22).
+  const first = await reconcileSettlePair(pool, { pairId: "pair-recon-1", salvageProceedsUsdc: 14.22, nowMs: NOW });
+  assert.equal(first.ok, true);
+  if (!first.ok) return;
+  assert.equal(first.corrected, false);
+  // Loss path → foxify share = salvage = 14.22, atticus 0. Ledger foxify balance = 14.22.
+  const foxBal0 = await getBalance(pool, "foxify");
+  assert.ok(Math.abs(foxBal0 - 14.22) < 1e-6, `foxify ledger should be 14.22, got ${foxBal0}`);
+
+  // Without force, a second call is refused.
+  const refused = await reconcileSettlePair(pool, { pairId: "pair-recon-1", salvageProceedsUsdc: 12.82, nowMs: NOW });
+  assert.equal(refused.ok, false);
+  if (refused.ok) return;
+  assert.equal(refused.error, "already_terminal");
+  assert.match(refused.message, /force:true/);
+
+  // force_correct to the TRUE venue numbers: salvage 12.82, true cost 19.31.
+  const corrected = await reconcileSettlePair(pool, {
+    pairId: "pair-recon-1",
+    putProceedsUsdc: 10.68,
+    callProceedsUsdc: 2.14,
+    hedgeCostOverrideUsdc: 19.31,
+    force: true,
+    note: "correct to true Deribit fill",
+    nowMs: NOW
+  });
+  assert.equal(corrected.ok, true);
+  if (!corrected.ok) return;
+  assert.equal(corrected.corrected, true);
+  assert.equal(corrected.steppedFrom, "settled");
+  assert.ok(Math.abs(corrected.salvageProceedsUsdc - 12.82) < 1e-6);
+  assert.ok(Math.abs(corrected.split.upliftUsdc - -6.49) < 1e-6);
+
+  // Pair fields overwritten; cost corrected; still settled.
+  const fresh = await getPairById(pool, "pair-recon-1");
+  assert.equal(fresh!.status, "settled");
+  assert.ok(Math.abs(fresh!.salvageProceedsUsdc! - 12.82) < 1e-6);
+  assert.ok(Math.abs(fresh!.hedgeCostTotalUsdc - 19.31) < 1e-6);
+  const md = fresh!.metadata as { reconcile_corrected?: boolean; reconcile_prev_salvage_usdc?: number };
+  assert.equal(md.reconcile_corrected, true);
+  assert.ok(Math.abs(md.reconcile_prev_salvage_usdc! - 14.22) < 1e-6);
+
+  // Ledger NET = corrected foxify share (14.22 reversed, 12.82 re-recorded → 12.82).
+  const foxBal1 = await getBalance(pool, "foxify");
+  assert.ok(Math.abs(foxBal1 - 12.82) < 1e-6, `foxify ledger should net to 12.82, got ${foxBal1}`);
+});
+
+test("reconcile force_correct: cancelled pair is NEVER correctable", async () => {
+  const pool = await buildPool();
+  await seedPair(pool, { status: "active", hedgeCost: 22.53 });
+  // Drive to cancelled (active→cancelled is illegal; use the pending→cancelled path on a fresh pair).
+  await insertPair(pool, {
+    pairId: "cxl", cellId: "pair_25k_5otm_strangle_1d", foxifyPairRef: "fxy-cxl",
+    spotAtActivation: 71_500, feedSnapshotAtActivation: {}, triggerDownPrice: 69_355, triggerUpPrice: 73_645,
+    hedgeTenorDays: 1, expiresAt: new Date(EXPIRES_AT).toISOString(), tpForceExitAt: new Date(FORCE_EXIT).toISOString(),
+    hedgeCostTotalUsdc: 22.53, foxifyCapitalFundedUsdc: 22.53, tierAtActivation: "tier_2", atticusFloorUsdc: 30,
+    metadata: {}, status: "pending"
+  });
+  await updatePairStatus(pool, "cxl", "cancelled");
+  const res = await reconcileSettlePair(pool, { pairId: "cxl", salvageProceedsUsdc: 10, force: true, nowMs: NOW });
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.error, "already_terminal");
+  assert.match(res.message, /cancelled/);
 });
 
 test("reconcile: missing pair → pair_not_found", async () => {

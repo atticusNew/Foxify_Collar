@@ -1214,8 +1214,12 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *   closed_reason?: "foxify_close"|"expiry"|"trigger",         // default foxify_close
    *   exit_mode?: ExitMode,                                      // default foxify_close
    *   note?: string,
-   *   deliver_webhook?: boolean                                  // default false
+   *   deliver_webhook?: boolean,                                 // default false
+   *   force?: boolean                                            // CORRECT an already-settled pair in place
    * }
+   * force:true overwrites a 'settled' pair's salvage/shares with the true venue
+   * numbers and reverses the prior counterparty-ledger split (no status change).
+   * 'cancelled' is never correctable. Without force, terminal pairs are refused.
    */
   app.post<{ Body: {
     pair_id?: string;
@@ -1228,6 +1232,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     exit_mode?: string;
     note?: string;
     deliver_webhook?: boolean;
+    force?: boolean;
   } }>(
     "/admin/foxify/v2/reconcile-settle",
     { preHandler: checkAdminToken },
@@ -1250,7 +1255,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         closedReason: validReason,
         exitMode: typeof b.exit_mode === "string" ? (b.exit_mode as never) : undefined,
         note: typeof b.note === "string" ? b.note : undefined,
-        deliverWebhook: b.deliver_webhook === true
+        deliverWebhook: b.deliver_webhook === true,
+        force: b.force === true
       });
       if (!result.ok) {
         const code = result.error === "pair_not_found" ? 404
@@ -1263,6 +1269,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         ok: true,
         pair_id: result.pair.pairId,
         status: result.pair.status,
+        corrected: result.corrected,
         stepped_from: result.steppedFrom,
         per_leg_applied: result.perLegApplied,
         salvage_proceeds_usdc: result.salvageProceedsUsdc,
@@ -1271,7 +1278,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         foxify_share_usdc: result.split.foxifyShareUsdc,
         atticus_share_usdc: result.split.atticusShareUsdc,
         outcome: result.split.outcomeCategory,
-        note: "Reconciled from real venue proceeds; NO orders placed. Pair is now 'settled' and excluded from bootResurrect. View it in GET /admin/foxify/v2/live-pnl."
+        note: result.corrected
+          ? "CORRECTED an already-settled pair to the true venue numbers; prior split reversed in the ledger (net = corrected). View it in GET /admin/foxify/v2/live-pnl."
+          : "Reconciled from real venue proceeds; NO orders placed. Pair is now 'settled' and excluded from bootResurrect. View it in GET /admin/foxify/v2/live-pnl."
       });
     }
   );

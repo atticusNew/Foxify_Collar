@@ -171,6 +171,50 @@ export const recordSettleEntries = async (
   }
 };
 
+/**
+ * Reverse a prior settle's economic entries for a pair (used by force_correct
+ * reconciliation). Records offsetting (negative) entries of the SAME kinds so the
+ * event-sourced balance nets back out; a fresh `recordSettleEntries` with the
+ * corrected shares then re-establishes the right balance. Net effect across the
+ * reversal + re-record = corrected balance, with a full audit trail (no deletes).
+ */
+export const reverseSettleEntries = async (
+  exec: Pool | PoolClient,
+  input: {
+    pairId: string;
+    foxifyShareUsdc: number;
+    atticusShareUsdc: number;
+    upliftUsdc: number;
+    isDeferredPoolActive?: boolean;
+  }
+): Promise<void> => {
+  const { pairId } = input;
+  await recordEntry(exec, {
+    party: "foxify",
+    kind: "tier_split_foxify",
+    amountUsdc: -input.foxifyShareUsdc,
+    pairId,
+    details: { reversal: true, reversed_share: input.foxifyShareUsdc, uplift: input.upliftUsdc }
+  });
+  if (input.isDeferredPoolActive) {
+    await recordEntry(exec, {
+      party: "atticus",
+      kind: "pool_accrual",
+      amountUsdc: 0,
+      pairId,
+      details: { reversal: true, reversed_share_accrued: input.atticusShareUsdc, uplift: input.upliftUsdc }
+    });
+  } else {
+    await recordEntry(exec, {
+      party: "atticus",
+      kind: "tier_split_atticus",
+      amountUsdc: -input.atticusShareUsdc,
+      pairId,
+      details: { reversal: true, reversed_share: input.atticusShareUsdc, uplift: input.upliftUsdc }
+    });
+  }
+};
+
 export const recordPoolSettlement = async (
   exec: Pool | PoolClient,
   totalAccruedUsdc: number,

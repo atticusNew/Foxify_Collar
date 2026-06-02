@@ -57,6 +57,15 @@ export type ReconcileSettleInput = {
   /** Fire the Foxify pair-closed webhook (default FALSE — manual reconciles are
    *  usually operator-known test pairs; avoid double-notifying). */
   deliverWebhook?: boolean;
+  /**
+   * CORRECT an already-SETTLED pair in place (e.g. it auto-settled with an
+   * estimated salvage and you now have the true venue numbers). Without this,
+   * terminal pairs are refused (`already_terminal`). When true and status is
+   * 'settled', the prior split is reversed in the counterparty ledger and the
+   * pair's settlement fields are overwritten with the corrected values — no
+   * status transition (it stays settled). 'cancelled' is never correctable.
+   */
+  force?: boolean;
   /** Testability hook. */
   nowMs?: number;
 };
@@ -69,6 +78,8 @@ export type ReconcileSettleOk = {
   /** The status the pair was in before reconciliation (active/triggered/unwinding). */
   steppedFrom: PairStatus;
   perLegApplied: boolean;
+  /** True when this was an in-place correction of an already-settled pair. */
+  corrected: boolean;
 };
 
 export type ReconcileSettleErr = {
@@ -98,11 +109,22 @@ export const reconcileSettlePair = async (
   if (!pair) {
     return { ok: false, error: "pair_not_found", message: `Pair ${input.pairId} not found` };
   }
-  if (pair.status === "settled" || pair.status === "cancelled") {
+  // 'cancelled' never opened a position — nothing to settle/correct, ever.
+  if (pair.status === "cancelled") {
     return {
       ok: false,
       error: "already_terminal",
-      message: `Pair ${input.pairId} is already terminal (status=${pair.status}); nothing to reconcile`,
+      message: `Pair ${input.pairId} is 'cancelled' (never opened); cannot reconcile`,
+      details: { status: pair.status }
+    };
+  }
+  // 'settled' is correctable ONLY with force=true (in-place overwrite + ledger reversal).
+  const correcting = pair.status === "settled";
+  if (correcting && input.force !== true) {
+    return {
+      ok: false,
+      error: "already_terminal",
+      message: `Pair ${input.pairId} is already terminal (status=settled); pass force:true to CORRECT it in place with the true venue numbers`,
       details: { status: pair.status }
     };
   }
@@ -114,7 +136,7 @@ export const reconcileSettlePair = async (
       details: { status: pair.status }
     };
   }
-  // From here: status ∈ {active, triggered, unwinding}.
+  // From here: status ∈ {active, triggered, unwinding} (settle) OR settled+force (correct).
 
   // ── Resolve effective cost basis (optional override for true venue fill) ────
   let effectiveCost = pair.hedgeCostTotalUsdc;
@@ -167,10 +189,12 @@ export const reconcileSettlePair = async (
     log(`runtime stop skipped for ${pair.pairId}: ${(e as Error).message}`);
   }
 
-  // ── Step the status machine legally to settled ─────────────────────────────
+  // ── Step the status machine legally to settled (settle mode only) ──────────
   // stateMachine permits: active→unwinding, triggered→unwinding, unwinding→settled.
   // It forbids active→settled and triggered→settled directly, so step via unwinding.
-  if (pair.status === "active" || pair.status === "triggered") {
+  // In correction mode the pair is already 'settled' — no transition (settled→settled
+  // is illegal); we overwrite the settlement fields directly below.
+  if (!correcting && (pair.status === "active" || pair.status === "triggered")) {
     await updatePairStatus(pool, pair.pairId, "unwinding");
   }
 
@@ -212,35 +236,87 @@ export const reconcileSettlePair = async (
   const closedReason: CloseReason = input.closedReason ?? "foxify_close";
   const exitMode: ExitMode = input.exitMode ?? "foxify_close";
 
-  // ── Deferred-pool accrual (mirror runtime; tolerant) ────────────────────────
-  if (atticusShare > 0) {
+  // ── Determine if the deferred pool is active once (reused for accrual+ledger) ─
+  let poolActive = false;
+  try {
+    const { getPoolState } = await import("./deferredPool");
+    const poolState = await getPoolState(pool).catch(() => null);
+    poolActive = poolState?.active ?? false;
+  } catch { /* pool state unavailable → treat as inactive */ }
+
+  // ── Ledger reversal FIRST when correcting (negate the prior settle) ─────────
+  if (correcting) {
     try {
-      const { getPoolState, recordAccrual } = await import("./deferredPool");
-      const poolState = await getPoolState(pool).catch(() => null);
-      if (poolState && poolState.active) {
+      const { reverseSettleEntries } = await import("./counterpartyLedger");
+      await reverseSettleEntries(pool, {
+        pairId: pair.pairId,
+        foxifyShareUsdc: pair.foxifyShareUsdc ?? 0,
+        atticusShareUsdc: pair.atticusShareUsdc ?? 0,
+        upliftUsdc: pair.upliftUsdc ?? 0,
+        isDeferredPoolActive: poolActive
+      });
+    } catch (e) {
+      log(`ledger reversal skipped for ${pair.pairId}: ${(e as Error).message}`);
+    }
+    // Reverse the prior deferred-pool accrual too (record an offsetting negative).
+    if (poolActive && (pair.atticusShareUsdc ?? 0) > 0) {
+      try {
+        const { recordAccrual } = await import("./deferredPool");
         const { randomUUID } = await import("node:crypto");
         await recordAccrual(pool, {
           ledgerId: randomUUID(),
           pairId: pair.pairId,
-          atticusShareUsdc: atticusShare,
-          upliftUsdc: uplift
+          atticusShareUsdc: -(pair.atticusShareUsdc ?? 0),
+          upliftUsdc: -(pair.upliftUsdc ?? 0)
         });
+      } catch (e) {
+        log(`deferred-pool reversal skipped for ${pair.pairId}: ${(e as Error).message}`);
       }
+    }
+  }
+
+  // ── Deferred-pool accrual for the NEW (corrected) share (mirror runtime) ────
+  if (atticusShare > 0 && poolActive) {
+    try {
+      const { recordAccrual } = await import("./deferredPool");
+      const { randomUUID } = await import("node:crypto");
+      await recordAccrual(pool, {
+        ledgerId: randomUUID(),
+        pairId: pair.pairId,
+        atticusShareUsdc: atticusShare,
+        upliftUsdc: uplift
+      });
     } catch (e) {
       log(`deferred-pool accrual skipped for ${pair.pairId}: ${(e as Error).message}`);
     }
   }
 
   // ── Persist settlement ──────────────────────────────────────────────────────
-  const settled = await updatePairStatus(pool, pair.pairId, "settled", {
-    closedAt: nowIso,
-    closedReason,
-    salvageProceedsUsdc: salvage,
-    upliftUsdc: uplift,
-    foxifyShareUsdc: foxifyShare,
-    atticusShareUsdc: atticusShare,
-    exitMode
-  });
+  // Settle mode: legal unwinding→settled transition (with patch).
+  // Correct mode: pair is already settled (settled→settled is illegal), so overwrite
+  // the settlement columns with a direct UPDATE.
+  let settled: PairRecord;
+  if (correcting) {
+    await pool.query(
+      `UPDATE two_sided_pair
+          SET closed_at = $2, closed_reason = $3, salvage_proceeds_usdc = $4,
+              uplift_usdc = $5, foxify_share_usdc = $6, atticus_share_usdc = $7,
+              exit_mode = $8, updated_at = NOW()
+        WHERE pair_id = $1`,
+      [pair.pairId, nowIso, closedReason, salvage, uplift, foxifyShare, atticusShare, exitMode]
+    );
+    settled = (await getPairById(pool, pair.pairId))!;
+  } else {
+    settled = await updatePairStatus(pool, pair.pairId, "settled", {
+      closedAt: nowIso,
+      closedReason,
+      salvageProceedsUsdc: salvage,
+      upliftUsdc: uplift,
+      foxifyShareUsdc: foxifyShare,
+      atticusShareUsdc: atticusShare,
+      exitMode
+    });
+  }
 
   // ── Stamp metadata.reconciled + optionally correct recorded cost ────────────
   //    (read-modify-write — pg-mem safe, no jsonb ||)
@@ -254,7 +330,13 @@ export const reconcileSettlePair = async (
       reconcile_at: nowIso,
       reconcile_stepped_from: steppedFrom,
       ...(input.netPnlUsdc != null ? { reconcile_net_pnl_usdc: input.netPnlUsdc } : {}),
-      ...(costCorrected ? { reconcile_original_cost_usdc: pair.hedgeCostTotalUsdc } : {})
+      ...(costCorrected ? { reconcile_original_cost_usdc: pair.hedgeCostTotalUsdc } : {}),
+      ...(correcting ? {
+        reconcile_corrected: true,
+        reconcile_prev_salvage_usdc: pair.salvageProceedsUsdc,
+        reconcile_prev_foxify_share_usdc: pair.foxifyShareUsdc,
+        reconcile_prev_atticus_share_usdc: pair.atticusShareUsdc
+      } : {})
     };
     // When a cost override is supplied, persist it to hedge_cost_total_usdc so the
     // split, live-pnl, and any later read all agree on the true fill cost.
@@ -281,6 +363,7 @@ export const reconcileSettlePair = async (
     kind: "manual_reconcile",
     details: {
       source: "manual_reconcile",
+      corrected: correcting,
       stepped_from: steppedFrom,
       note: input.note ?? null,
       salvage,
@@ -290,6 +373,10 @@ export const reconcileSettlePair = async (
       hedge_cost_override_usdc: input.hedgeCostOverrideUsdc ?? null,
       effective_cost_usdc: effectiveCost,
       per_leg_applied: perLegApplied,
+      ...(correcting ? {
+        prev: { salvage: pair.salvageProceedsUsdc, foxify_share: pair.foxifyShareUsdc, atticus_share: pair.atticusShareUsdc },
+        new: { salvage, foxify_share: foxifyShare, atticus_share: atticusShare }
+      } : {}),
       reconciled_at: nowIso
     },
     occurredAt: nowIso
@@ -309,18 +396,16 @@ export const reconcileSettlePair = async (
     occurredAt: nowIso
   });
 
-  // ── Counterparty ledger (mirror runtime; tolerant) ──────────────────────────
+  // ── Counterparty ledger — record the (corrected) settle entries (tolerant) ──
   try {
     const { recordSettleEntries } = await import("./counterpartyLedger");
-    const { getPoolState } = await import("./deferredPool");
-    const poolState = await getPoolState(pool).catch(() => null);
     await recordSettleEntries(pool, {
       pairId: pair.pairId,
       salvageProceedsUsdc: salvage,
       foxifyShareUsdc: foxifyShare,
       atticusShareUsdc: atticusShare,
       upliftUsdc: uplift,
-      isDeferredPoolActive: poolState?.active ?? false
+      isDeferredPoolActive: poolActive
     });
   } catch (e) {
     log(`ledger settle entries skipped for ${pair.pairId}: ${(e as Error).message}`);
@@ -348,7 +433,7 @@ export const reconcileSettlePair = async (
     }
   }
 
-  log(`reconciled ${pair.pairId}: ${steppedFrom} → settled, salvage=$${salvage.toFixed(2)}, uplift=$${uplift.toFixed(2)}, foxify=$${foxifyShare.toFixed(2)}, atticus=$${atticusShare.toFixed(2)}`);
+  log(`${correcting ? "CORRECTED" : "reconciled"} ${pair.pairId}: ${steppedFrom} → settled, salvage=$${salvage.toFixed(2)}, uplift=$${uplift.toFixed(2)}, foxify=$${foxifyShare.toFixed(2)}, atticus=$${atticusShare.toFixed(2)}`);
 
-  return { ok: true, pair: finalPair, split, salvageProceedsUsdc: salvage, steppedFrom, perLegApplied };
+  return { ok: true, pair: finalPair, split, salvageProceedsUsdc: salvage, steppedFrom, perLegApplied, corrected: correcting };
 };
