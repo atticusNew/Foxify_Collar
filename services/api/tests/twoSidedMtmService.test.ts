@@ -500,6 +500,8 @@ test("summarizeMtm: aggregates totals + counts by recommendation", () => {
     current_put_value_usdc: 0, current_call_value_usdc: 0,
     current_option_mark_usdc: 0, estimated_salvage_usdc: 0,
     pnl_if_close_now_usdc: 0, pnl_pct: 0,
+    current_put_mark_mid_usdc: 0, current_call_mark_mid_usdc: 0, current_option_mark_mid_usdc: 0,
+    pnl_if_close_now_mid_usdc: 0, pnl_pct_mid: 0, mark_basis_note: "",
     valuation_method: "venue_bid", put_valuation_method: "venue_bid", call_valuation_method: "venue_bid",
     trigger_down_price: 70000, trigger_up_price: 76000,
     distance_to_trigger_down_pct: 0.04, distance_to_trigger_up_pct: 0.04,
@@ -514,6 +516,7 @@ test("summarizeMtm: aggregates totals + counts by recommendation", () => {
       current_put_value_usdc: 30, current_call_value_usdc: 30,
       current_option_mark_usdc: 60, estimated_salvage_usdc: 53,
       pnl_if_close_now_usdc: -47, pnl_pct: -0.47,
+      current_option_mark_mid_usdc: 75, pnl_if_close_now_mid_usdc: -25,
       recommendation: "HOLD"
     }),
     baseShape({
@@ -521,6 +524,7 @@ test("summarizeMtm: aggregates totals + counts by recommendation", () => {
       current_put_value_usdc: 10, current_call_value_usdc: 200,
       current_option_mark_usdc: 210, estimated_salvage_usdc: 185,
       pnl_if_close_now_usdc: 85, pnl_pct: 0.85,
+      current_option_mark_mid_usdc: 230, pnl_if_close_now_mid_usdc: 130,
       closest_trigger_pct: 0.027,
       recommendation: "STRONG_TAKE_PROFIT"
     })
@@ -532,6 +536,49 @@ test("summarizeMtm: aggregates totals + counts by recommendation", () => {
   assert.equal(summary.total_cost_paid_usdc, 200);
   assert.equal(summary.total_estimated_salvage_usdc, 238);
   assert.equal(summary.total_pnl_if_close_all_now_usdc, 38);
+  // Mid (venue-UI-comparable) totals: 75 + 230 = 305 mark, 305 - 200 cost = 105.
+  assert.equal(summary.total_estimated_mark_mid_usdc, 305);
+  assert.equal(summary.total_pnl_if_close_all_now_mid_usdc, 105);
   assert.equal(summary.by_recommendation.HOLD, 1);
   assert.equal(summary.by_recommendation.STRONG_TAKE_PROFIT, 1);
+});
+
+// ─── Executable (bid) vs MID mark — explains the venue-UI discrepancy ────────
+
+test("listActivePairMtm: surfaces MID mark + spread alongside executable bid (wide book = big gap)", async () => {
+  const pool = await buildPool();
+  const expiresAt = new Date(Date.now() + 24 * 3_600_000);
+  await insertPair(pool, {
+    pair_id: "wide-book",
+    cell_id: "test",
+    spot_at_activation: 73000,
+    trigger_down: 70000,
+    trigger_up: 76000,
+    cost: 200,
+    expires_at: expiresAt,
+    put_strike: 73000,
+    call_strike: 73000,
+    contracts: 1.0,
+    put_venue: "bullish",
+    call_venue: "bullish"
+  });
+  // Wide Bullish ATM book: bid 100 / ask 180 per leg → mid 140, spread ~44%.
+  const cache = makeMockCache([
+    { strike: 73000, optType: "put", venue: "bullish", bid: 100, ask: 180 },
+    { strike: 73000, optType: "call", venue: "bullish", bid: 100, ask: 180 }
+  ]);
+  const r = await listActivePairMtm({ pool, currentSpot: 73000, ivAnnual: 0.35, liquidChainCache: cache });
+  const p = r[0];
+  // Executable = (100 + 100) × 0.95 haircut = 190 → pnl -10 (the "platform" number).
+  assert.ok(Math.abs(p.estimated_salvage_usdc - 190) < 0.5, `executable ~$190, got ${p.estimated_salvage_usdc}`);
+  assert.ok(Math.abs(p.pnl_if_close_now_usdc - (-10)) < 0.5);
+  // MID mark = (140 + 140) = 280 → pnl +80 (the "venue UI" number).
+  assert.ok(Math.abs(p.current_option_mark_mid_usdc - 280) < 0.5, `mid mark ~$280, got ${p.current_option_mark_mid_usdc}`);
+  assert.ok(Math.abs(p.pnl_if_close_now_mid_usdc - 80) < 0.5);
+  // Mid mark must exceed the executable mark, and the spread is surfaced.
+  assert.ok(p.current_option_mark_mid_usdc > p.current_option_mark_usdc, "mid > executable on a wide book");
+  assert.ok((p.put_spread_pct ?? 0) > 0.4 && (p.call_spread_pct ?? 0) > 0.4, "spread surfaced (~44%)");
+  // Recommendation/TP must use the EXECUTABLE pnl (negative here → HOLD), NOT the mid.
+  assert.equal(p.recommendation, "HOLD");
+  assert.ok(p.mark_basis_note.includes("EXECUTABLE"));
 });

@@ -66,6 +66,21 @@ export type PairMtm = {
   estimated_salvage_usdc: number;     // after slippage haircut; what we'd actually credit
   pnl_if_close_now_usdc: number;       // estimated_salvage - cost
   pnl_pct: number;                      // pnl / cost
+  // ── Venue-UI-comparable MID mark (informational; NOT used for TP) ──
+  // Exchanges (e.g. Bullish/Deribit UIs) show unrealized PnL at the MID/mark
+  // price. On a wide book the mid sits well above the executable bid, so the
+  // venue UI looks MORE profitable than what we'd actually realize on a sale.
+  // We expose both so a -$X executable read vs a +$Y venue-UI read is explained
+  // by the bid-ask spread, not mistaken for a bug. The TP/close engine uses the
+  // EXECUTABLE (bid) pnl above — selling a long option fills at the bid.
+  current_put_mark_mid_usdc: number;     // mid-based leg mark (≈ venue UI), no haircut
+  current_call_mark_mid_usdc: number;
+  current_option_mark_mid_usdc: number;  // put_mid + call_mid (≈ venue UI total mark)
+  pnl_if_close_now_mid_usdc: number;     // mid mark - cost (the venue-UI-comparable unrealized PnL)
+  pnl_pct_mid: number;
+  put_spread_pct?: number;               // bid-ask width on the put quote (null on BS fallback)
+  call_spread_pct?: number;              // bid-ask width on the call quote
+  mark_basis_note: string;               // explains executable-vs-mid for operators
   // VALIDATION: surfaces the raw bid used per leg so operators can
   // independently verify against the live venue order book.
   put_bid_used_usdc_per_btc?: number;   // null when valuation_method='bs_fallback'
@@ -166,7 +181,7 @@ const computeRecommendation = (
 // last-good venue valuation per instrument for a short TTL and substitute it when
 // a poll yields a BS fallback, so the mark stays stable instead of collapsing to
 // the skew-blind theoretical value.
-type LastGoodVenueVal = { valuePerBtc: number; rawBid?: number; venue?: string; matchTier: "exact_symbol" | "fuzzy_strike_tenor"; atMs: number };
+type LastGoodVenueVal = { valuePerBtc: number; rawBid?: number; midPerBtc?: number; spreadPct?: number; venue?: string; matchTier: "exact_symbol" | "fuzzy_strike_tenor"; atMs: number };
 const _lastGoodVenueVal = new Map<string, LastGoodVenueVal>();
 const LAST_GOOD_TTL_MS = 5 * 60_000;
 /** Test hook to reset the module-level stability cache. */
@@ -177,6 +192,10 @@ export type LegValuation = {
   method: "venue_bid" | "bs_fallback";
   matchTier: "exact_symbol" | "fuzzy_strike_tenor" | "bs_theoretical";
   rawBidUsdcPerBtc?: number;
+  /** Bid-ask MID per BTC (the venue-UI-comparable mark; null on BS fallback). */
+  midPerBtc?: number;
+  /** Bid-ask spread fraction at the quote (e.g. 0.25 = 25% wide). */
+  spreadPct?: number;
   venue?: string;
   sourceDetail: string;
 };
@@ -194,7 +213,7 @@ export const stabilizeLegValuation = (
   ttlMs: number = LAST_GOOD_TTL_MS
 ): { v: LegValuation; stabilized: boolean } => {
   if (v.method === "venue_bid" && (v.matchTier === "exact_symbol" || v.matchTier === "fuzzy_strike_tenor")) {
-    cache.set(key, { valuePerBtc: v.valuePerBtc, rawBid: v.rawBidUsdcPerBtc, venue: v.venue, matchTier: v.matchTier, atMs: nowMs });
+    cache.set(key, { valuePerBtc: v.valuePerBtc, rawBid: v.rawBidUsdcPerBtc, midPerBtc: v.midPerBtc, spreadPct: v.spreadPct, venue: v.venue, matchTier: v.matchTier, atMs: nowMs });
     return { v, stabilized: false };
   }
   const lg = cache.get(key);
@@ -206,6 +225,8 @@ export const stabilizeLegValuation = (
         method: "venue_bid",
         matchTier: lg.matchTier,
         rawBidUsdcPerBtc: lg.rawBid,
+        midPerBtc: lg.midPerBtc,
+        spreadPct: lg.spreadPct,
         venue: lg.venue,
         sourceDetail: `last_good_venue_bid (${ageS}s old — exact bid missing this refresh; held to avoid BS-undervaluation jitter on the OTM wings)`
       },
@@ -284,6 +305,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
   }): {
     valueTotal: number;
     perBtc: number;
+    midPerBtc?: number;
+    spreadPct?: number;
     method: "venue_bid" | "bs_fallback";
     matchTier: "exact_symbol" | "fuzzy_strike_tenor" | "bs_theoretical";
     sourceDetail: string;
@@ -318,12 +341,14 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     const { v: stable } = stabilizeLegValuation(
       _lastGoodVenueVal,
       key,
-      { valuePerBtc: result.primary_value_per_btc, method, matchTier, rawBidUsdcPerBtc: result.bid_per_btc ?? undefined, venue: result.venue_used ?? undefined, sourceDetail },
+      { valuePerBtc: result.primary_value_per_btc, method, matchTier, rawBidUsdcPerBtc: result.bid_per_btc ?? undefined, midPerBtc: result.mid_per_btc ?? undefined, spreadPct: result.spread_pct ?? undefined, venue: result.venue_used ?? undefined, sourceDetail },
       now
     );
     return {
       valueTotal: stable.valuePerBtc * leg.contracts,
       perBtc: stable.valuePerBtc,
+      midPerBtc: stable.midPerBtc,
+      spreadPct: stable.spreadPct,
       method: stable.method,
       matchTier: stable.matchTier,
       sourceDetail: stable.sourceDetail,
@@ -361,6 +386,14 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     const pnlAbs = estimatedSalvage - cost;
     const pnlPct = cost > 0 ? pnlAbs / cost : 0;
 
+    // Venue-UI-comparable MID mark. Fall back to the executable per-leg value when
+    // a mid isn't available (BS fallback) so the totals stay coherent.
+    const putMidTotal = (putV.midPerBtc ?? putV.perBtc) * contracts;
+    const callMidTotal = (callV.midPerBtc ?? callV.perBtc) * contracts;
+    const optionMarkMid = putMidTotal + callMidTotal;
+    const pnlMidAbs = optionMarkMid - cost;
+    const pnlMidPct = cost > 0 ? pnlMidAbs / cost : 0;
+
     const overallMethod: "venue_bid" | "bs_fallback" | "mixed" =
       putV.method === callV.method ? putV.method : "mixed";
 
@@ -384,6 +417,15 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       current_call_value_usdc: callValueTotal,
       current_option_mark_usdc: optionMark,
       estimated_salvage_usdc: estimatedSalvage,
+      current_put_mark_mid_usdc: putMidTotal,
+      current_call_mark_mid_usdc: callMidTotal,
+      current_option_mark_mid_usdc: optionMarkMid,
+      pnl_if_close_now_mid_usdc: pnlMidAbs,
+      pnl_pct_mid: pnlMidPct,
+      put_spread_pct: putV.spreadPct,
+      call_spread_pct: callV.spreadPct,
+      mark_basis_note:
+        "pnl_if_close_now_usdc is the EXECUTABLE (bid×haircut) value — what you'd actually receive selling now, and the basis for TP/close. pnl_if_close_now_mid_usdc is the MID mark (≈ exchange UI unrealized PnL); the gap is the bid-ask spread (see *_spread_pct).",
       greeks: combinedStraddleGreeks(inputs.currentSpot, putStrike, callStrike, contracts, tenorRemainingHours / 24 / 365, RISK_FREE_RATE, inputs.ivAnnual ?? 0.35),
       pnl_if_close_now_usdc: pnlAbs,
       pnl_pct: pnlPct,
@@ -430,6 +472,9 @@ export type MtmSummary = {
   total_cost_paid_usdc: number;
   total_estimated_salvage_usdc: number;
   total_pnl_if_close_all_now_usdc: number;
+  /** Venue-UI-comparable MID totals (informational; TP uses the executable totals above). */
+  total_estimated_mark_mid_usdc: number;
+  total_pnl_if_close_all_now_mid_usdc: number;
   pairs: PairMtm[];
 };
 
@@ -441,11 +486,13 @@ export const summarizeMtm = (
   const byMethod: Record<string, number> = {};
   let totalCost = 0;
   let totalSalv = 0;
+  let totalMid = 0;
   for (const p of pairs) {
     byRec[p.recommendation] = (byRec[p.recommendation] ?? 0) + 1;
     byMethod[p.valuation_method] = (byMethod[p.valuation_method] ?? 0) + 1;
     totalCost += p.cost_paid_usdc;
     totalSalv += p.estimated_salvage_usdc;
+    totalMid += p.current_option_mark_mid_usdc;
   }
   return {
     as_of: new Date(meta.nowMs).toISOString(),
@@ -459,6 +506,8 @@ export const summarizeMtm = (
     total_cost_paid_usdc: totalCost,
     total_estimated_salvage_usdc: totalSalv,
     total_pnl_if_close_all_now_usdc: totalSalv - totalCost,
+    total_estimated_mark_mid_usdc: totalMid,
+    total_pnl_if_close_all_now_mid_usdc: totalMid - totalCost,
     pairs
   };
 };
