@@ -451,13 +451,22 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
       kind: "cancelled",
       details: { reason: execResult.reason, put_leg_result: execResult.putLegResult, call_leg_result: execResult.callLegResult }
     });
+    // Surface the per-leg results (venue error text + partial-fill REVERSE status) and
+    // the pair_id so the operator can immediately see WHY a live fire failed and whether
+    // a filled leg was safely reversed (vs a dangling venue position). Previously the 503
+    // hid all of this, forcing a hunt for the cancelled pair's events.
     return {
       status: 503,
       body: {
         error: "execution_failed",
         message: `Strangle execution failed: ${execResult.reason}`,
         retry_after_s: 30,
-        details: { reason: execResult.reason }
+        details: {
+          reason: execResult.reason,
+          pair_id: pair.pairId,
+          put_leg_result: execResult.putLegResult,
+          call_leg_result: execResult.callLegResult
+        }
       }
     };
   }
