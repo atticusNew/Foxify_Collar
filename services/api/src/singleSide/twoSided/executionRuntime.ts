@@ -312,6 +312,25 @@ export class ExecutionRuntime {
     }
 
     const salvage = closeResult.totalProceedsUsdc;
+
+    // D3: log estimate-vs-realized close fill for slippage-haircut calibration.
+    // referenceValue = pre-haircut combined option value; salvage = realized proceeds.
+    // Best-effort (swallows errors); shadow closes are tagged + excluded from tuning.
+    try {
+      const { recordCloseFillObservation } = await import("./closeFillCalibration");
+      await recordCloseFillObservation(this.deps.pool, {
+        pairId: this.pair.pairId,
+        cellId: this.pair.cellId,
+        isShadow: this.pair.isShadow,
+        exitMode: decision.reason ?? null,
+        rawCombinedValueUsdc: referenceValue,
+        slippageHaircut: slip,
+        realizedSalvageUsdc: salvage,
+        putValuationMethod: closeResult.putLeg.valuationMethod ?? null,
+        callValuationMethod: closeResult.callLeg.valuationMethod ?? null
+      });
+    } catch { /* calibration logging never blocks settlement */ }
+
     const closedReason =
       decision.reason === "foxify_close"
         ? "foxify_close"

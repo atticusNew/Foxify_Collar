@@ -1346,6 +1346,26 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *        (default true — excludes force-triggered/test pairs), ?cells=a,b (default the
    *        wired loss-leader cells).
    */
+  /**
+   * GET /admin/foxify/v2/close-fill-calibration
+   *
+   * Estimate-vs-realized close-fill stats for tuning the close slippage haircut.
+   * Every settled close logs the pre-haircut combined value, applied haircut, and
+   * realized proceeds; this aggregates the LIVE closes (shadow closes value at the
+   * same bid they "fill" at, so they're ~1.0 and excluded from tuning). Surfaces a
+   * recommendation once ≥5 live closes accrue. Query: ?cells=a,b.
+   */
+  app.get<{ Querystring: { cells?: string } }>(
+    "/admin/foxify/v2/close-fill-calibration",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { getCloseFillCalibration } = await import("./closeFillCalibration");
+      const cells = req.query.cells ? req.query.cells.split(",").map((s) => s.trim()).filter(Boolean) : undefined;
+      const out = await getCloseFillCalibration(deps.pool, { cells });
+      reply.send(out);
+    }
+  );
+
   app.get<{ Querystring: { regime?: string; organic_only?: string; cells?: string } }>(
     "/admin/foxify/v2/loss-leader-scorecard",
     { preHandler: checkAdminToken },
