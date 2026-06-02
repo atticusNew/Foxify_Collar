@@ -260,6 +260,28 @@ curl --http1.1 -sS -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" \
   | jq '{overall, pairs:[.pairs[]|{id:.pair_id_short,cell:.cell_id,cost:.hedge_cost_total_usdc,salvage:.salvage_proceeds_usdc,net:.foxify_net_usdc,reconciled,exit_mode}]}'
 ```
 
+### 9.4 Correct an ALREADY-SETTLED pair to the true venue numbers (`force`)
+If a pair auto-settled with an estimated salvage (e.g. `bootResurrect` shadow-closed
+an orphan) and you now have the real venue numbers, correct it in place with
+`force:true`. This overwrites salvage/shares (+cost via override) and **reverses the
+prior counterparty-ledger split** so balances net to the corrected values — no new
+orders, no status change.
+```bash
+curl --http1.1 -sS -X POST -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" -H "Content-Type: application/json" \
+  "$PILOT_API_BASE/admin/foxify/v2/reconcile-settle" \
+  -d '{"pair_id":"<PAIR_ID>","put_proceeds_usdc":...,"call_proceeds_usdc":...,"hedge_cost_override_usdc":...,"force":true,"note":"correct to true venue fill"}' | jq .
+```
+`'cancelled'` pairs are never correctable. Without `force`, settled pairs are refused.
+
+### 9.5 Close-fill calibration (tune the slippage haircut with evidence)
+Every settled close logs estimated vs realized fill. Once ≥5 LIVE closes accrue, this
+recommends a slippage-haircut adjustment (shadow closes are excluded — they value at
+the same bid they "fill" at):
+```bash
+curl --http1.1 -sS -H "X-Admin-Token: $RENDER_ADMIN_TOKEN" \
+  "$PILOT_API_BASE/admin/foxify/v2/close-fill-calibration" | jq '{n,live_n,shadow_n,live,recommendation}'
+```
+
 ## Monitoring cadence (while any live pair is open)
 - `/diagnostics` every few minutes: feed health, venue status, halt state, active pair count.
 - `/admin/foxify/v2/shadow-auto/status` for the auto-loop decisions (if enabled).
