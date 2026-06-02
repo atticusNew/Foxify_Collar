@@ -201,6 +201,57 @@ test("reconcile: uplift-negative (salvage < cost) → atticus 0, foxify = salvag
   assert.equal(fresh!.foxifyShareUsdc, 5);
 });
 
+test("reconcile: net_pnl_usdc mode (Bullish MTM) → salvage = cost + netPnl, uplift = netPnl", async () => {
+  const pool = await buildPool();
+  const hedgeCost = 87.5;
+  await seedPair(pool, { status: "unwinding", hedgeCost, floor: 30, tier: "tier_2" });
+  const res = await reconcileSettlePair(pool, { pairId: "pair-recon-1", netPnlUsdc: -9.8, note: "bullish hourly settled P&L", nowMs: NOW });
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  // salvage = 87.5 + (-9.8) = 77.7 ; uplift = -9.8 (loss path)
+  assert.ok(Math.abs(res.salvageProceedsUsdc - 77.7) < 1e-6);
+  assert.ok(Math.abs(res.split.upliftUsdc - -9.8) < 1e-6);
+  assert.equal(res.split.atticusShareUsdc, 0);
+  assert.ok(Math.abs(res.split.foxifyShareUsdc - 77.7) < 1e-6);
+  const fresh = await getPairById(pool, "pair-recon-1");
+  assert.equal((fresh!.metadata as { reconcile_net_pnl_usdc?: number }).reconcile_net_pnl_usdc, -9.8);
+});
+
+test("reconcile: net_pnl below -cost (long option can't lose more than premium) → invalid_proceeds", async () => {
+  const pool = await buildPool();
+  await seedPair(pool, { status: "unwinding", hedgeCost: 20 });
+  const res = await reconcileSettlePair(pool, { pairId: "pair-recon-1", netPnlUsdc: -25, nowMs: NOW });
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.error, "invalid_proceeds");
+});
+
+test("reconcile: hedge_cost_override corrects the recorded cost + drives the split (Deribit 0.35→0.3 fill)", async () => {
+  const pool = await buildPool();
+  // Recorded cost 22.53 (on 0.35), true gross fill 19.31 (on 0.3). Per-leg proceeds 10.68+2.14.
+  await seedPair(pool, { status: "unwinding", hedgeCost: 22.53, floor: 30, tier: "tier_2" });
+  const res = await reconcileSettlePair(pool, {
+    pairId: "pair-recon-1",
+    putProceedsUsdc: 10.68,
+    callProceedsUsdc: 2.14,
+    hedgeCostOverrideUsdc: 19.31,
+    note: "deribit true fill",
+    nowMs: NOW
+  });
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  // salvage 12.82, cost basis 19.31 → uplift = -6.49 (NOT -9.71 against the recorded 22.53)
+  assert.ok(Math.abs(res.salvageProceedsUsdc - 12.82) < 1e-6);
+  assert.ok(Math.abs(res.split.upliftUsdc - -6.49) < 1e-6, `uplift should be -6.49, got ${res.split.upliftUsdc}`);
+  assert.equal(res.split.atticusShareUsdc, 0);
+  // Persisted: hedge_cost_total_usdc corrected to 19.31, original kept in metadata.
+  const fresh = await getPairById(pool, "pair-recon-1");
+  assert.ok(Math.abs(fresh!.hedgeCostTotalUsdc - 19.31) < 1e-6, "recorded cost corrected to true fill");
+  assert.ok(Math.abs((fresh!.metadata as { reconcile_original_cost_usdc?: number }).reconcile_original_cost_usdc! - 22.53) < 1e-6);
+  // live-pnl would now show net = foxify_share - corrected_cost = 12.82 - 19.31 = -6.49
+  assert.ok(Math.abs((fresh!.foxifyShareUsdc ?? 0) - 12.82) < 1e-6);
+});
+
 test("reconcile: active → settled steps through unwinding (stepped_from=active)", async () => {
   const pool = await buildPool();
   await seedPair(pool, { status: "active", hedgeCost: 22.53 });

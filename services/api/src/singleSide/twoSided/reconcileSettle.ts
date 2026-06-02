@@ -32,6 +32,22 @@ export type ReconcileSettleInput = {
   callProceedsUsdc?: number;
   /** Alternative: a single total realized salvage (USDC) when per-leg is unknown. */
   salvageProceedsUsdc?: number;
+  /**
+   * Alternative for MTM-settled venues (e.g. Bullish settles options hourly, so
+   * there is no single "sale proceeds" — only a net realized P&L). When provided,
+   * salvage = effectiveCost + netPnlUsdc, where effectiveCost is
+   * hedgeCostOverrideUsdc ?? pair.hedgeCostTotalUsdc. uplift then equals netPnlUsdc
+   * exactly. A long option cannot lose more than its premium, so netPnlUsdc must be
+   * >= -effectiveCost (else invalid_proceeds).
+   */
+  netPnlUsdc?: number;
+  /**
+   * Correct the recorded hedge cost to the TRUE venue fill (e.g. Deribit floored
+   * 0.35→0.3 contracts, so the recorded ask-based cost overstates what was paid).
+   * When provided it becomes the cost basis for the split AND is persisted to
+   * hedge_cost_total_usdc (original kept in metadata.reconcile_original_cost_usdc).
+   */
+  hedgeCostOverrideUsdc?: number;
   /** Recorded close reason (default "foxify_close" — the manual-close analog). */
   closedReason?: CloseReason;
   /** Recorded exit mode (default "foxify_close"). */
@@ -100,6 +116,15 @@ export const reconcileSettlePair = async (
   }
   // From here: status ∈ {active, triggered, unwinding}.
 
+  // ── Resolve effective cost basis (optional override for true venue fill) ────
+  let effectiveCost = pair.hedgeCostTotalUsdc;
+  if (input.hedgeCostOverrideUsdc != null) {
+    if (!Number.isFinite(input.hedgeCostOverrideUsdc) || input.hedgeCostOverrideUsdc < 0) {
+      return { ok: false, error: "invalid_proceeds", message: `hedge_cost_override_usdc must be finite and >= 0 (got ${input.hedgeCostOverrideUsdc})` };
+    }
+    effectiveCost = input.hedgeCostOverrideUsdc;
+  }
+
   // ── Resolve salvage proceeds ──────────────────────────────────────────────
   const hasPerLeg = input.putProceedsUsdc != null || input.callProceedsUsdc != null;
   let salvage: number;
@@ -110,11 +135,20 @@ export const reconcileSettlePair = async (
       return { ok: false, error: "invalid_proceeds", message: `Per-leg proceeds must be finite and >= 0 (put=${input.putProceedsUsdc}, call=${input.callProceedsUsdc})` };
     }
     salvage = put + call;
-  } else {
-    if (input.salvageProceedsUsdc == null || !Number.isFinite(input.salvageProceedsUsdc) || input.salvageProceedsUsdc < 0) {
-      return { ok: false, error: "invalid_proceeds", message: `Provide per-leg proceeds (put_proceeds_usdc/call_proceeds_usdc) OR a finite salvage_proceeds_usdc >= 0` };
+  } else if (input.salvageProceedsUsdc != null) {
+    if (!Number.isFinite(input.salvageProceedsUsdc) || input.salvageProceedsUsdc < 0) {
+      return { ok: false, error: "invalid_proceeds", message: `salvage_proceeds_usdc must be finite and >= 0` };
     }
     salvage = input.salvageProceedsUsdc;
+  } else if (input.netPnlUsdc != null) {
+    // MTM-settled venue (Bullish): salvage = effectiveCost + net P&L. A long option
+    // can't lose more than its premium, so a net P&L below -effectiveCost is invalid.
+    if (!Number.isFinite(input.netPnlUsdc) || input.netPnlUsdc < -effectiveCost) {
+      return { ok: false, error: "invalid_proceeds", message: `net_pnl_usdc must be finite and >= -${effectiveCost} (a long option cannot lose more than its premium); got ${input.netPnlUsdc}` };
+    }
+    salvage = effectiveCost + input.netPnlUsdc;
+  } else {
+    return { ok: false, error: "invalid_proceeds", message: `Provide one of: per-leg proceeds (put_proceeds_usdc/call_proceeds_usdc), salvage_proceeds_usdc, or net_pnl_usdc` };
   }
 
   const steppedFrom = pair.status;
@@ -168,7 +202,7 @@ export const reconcileSettlePair = async (
   const tierWithPinnedFloor = { ...tier, atticusFloorUsdc: pair.atticusFloorUsdc };
   const split = computeSplit({
     salvageProceedsUsdc: salvage,
-    hedgeCostUsdc: pair.hedgeCostTotalUsdc,
+    hedgeCostUsdc: effectiveCost,
     tier: tierWithPinnedFloor
   });
   assertSplitInvariant(split);
@@ -208,7 +242,9 @@ export const reconcileSettlePair = async (
     exitMode
   });
 
-  // ── Stamp metadata.reconciled (read-modify-write — pg-mem safe, no jsonb ||) ─
+  // ── Stamp metadata.reconciled + optionally correct recorded cost ────────────
+  //    (read-modify-write — pg-mem safe, no jsonb ||)
+  const costCorrected = input.hedgeCostOverrideUsdc != null && effectiveCost !== pair.hedgeCostTotalUsdc;
   let finalPair = settled;
   try {
     const mergedMeta = {
@@ -216,12 +252,21 @@ export const reconcileSettlePair = async (
       reconciled: true,
       reconcile_note: input.note ?? null,
       reconcile_at: nowIso,
-      reconcile_stepped_from: steppedFrom
+      reconcile_stepped_from: steppedFrom,
+      ...(input.netPnlUsdc != null ? { reconcile_net_pnl_usdc: input.netPnlUsdc } : {}),
+      ...(costCorrected ? { reconcile_original_cost_usdc: pair.hedgeCostTotalUsdc } : {})
     };
-    const r = await pool.query(
-      `UPDATE two_sided_pair SET metadata = $2, updated_at = NOW() WHERE pair_id = $1 RETURNING *`,
-      [pair.pairId, JSON.stringify(mergedMeta)]
-    );
+    // When a cost override is supplied, persist it to hedge_cost_total_usdc so the
+    // split, live-pnl, and any later read all agree on the true fill cost.
+    const r = costCorrected
+      ? await pool.query(
+          `UPDATE two_sided_pair SET metadata = $2, hedge_cost_total_usdc = $3, updated_at = NOW() WHERE pair_id = $1 RETURNING *`,
+          [pair.pairId, JSON.stringify(mergedMeta), effectiveCost]
+        )
+      : await pool.query(
+          `UPDATE two_sided_pair SET metadata = $2, updated_at = NOW() WHERE pair_id = $1 RETURNING *`,
+          [pair.pairId, JSON.stringify(mergedMeta)]
+        );
     if (r.rows[0]) {
       const refreshed = await getPairById(pool, pair.pairId);
       if (refreshed) finalPair = refreshed;
@@ -241,6 +286,9 @@ export const reconcileSettlePair = async (
       salvage,
       put_proceeds_usdc: input.putProceedsUsdc ?? null,
       call_proceeds_usdc: input.callProceedsUsdc ?? null,
+      net_pnl_usdc: input.netPnlUsdc ?? null,
+      hedge_cost_override_usdc: input.hedgeCostOverrideUsdc ?? null,
+      effective_cost_usdc: effectiveCost,
       per_leg_applied: perLegApplied,
       reconciled_at: nowIso
     },

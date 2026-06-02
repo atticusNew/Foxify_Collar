@@ -1209,6 +1209,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *   pair_id: string,
    *   put_proceeds_usdc?: number, call_proceeds_usdc?: number,   // preferred (writes leg sell_*)
    *   salvage_proceeds_usdc?: number,                            // OR a single total
+   *   net_pnl_usdc?: number,                                     // OR net P&L (MTM-settled venues e.g. Bullish)
+   *   hedge_cost_override_usdc?: number,                         // correct recorded cost to the true venue fill
    *   closed_reason?: "foxify_close"|"expiry"|"trigger",         // default foxify_close
    *   exit_mode?: ExitMode,                                      // default foxify_close
    *   note?: string,
@@ -1220,6 +1222,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     put_proceeds_usdc?: number;
     call_proceeds_usdc?: number;
     salvage_proceeds_usdc?: number;
+    net_pnl_usdc?: number;
+    hedge_cost_override_usdc?: number;
     closed_reason?: string;
     exit_mode?: string;
     note?: string;
@@ -1241,6 +1245,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         putProceedsUsdc: typeof b.put_proceeds_usdc === "number" ? b.put_proceeds_usdc : undefined,
         callProceedsUsdc: typeof b.call_proceeds_usdc === "number" ? b.call_proceeds_usdc : undefined,
         salvageProceedsUsdc: typeof b.salvage_proceeds_usdc === "number" ? b.salvage_proceeds_usdc : undefined,
+        netPnlUsdc: typeof b.net_pnl_usdc === "number" ? b.net_pnl_usdc : undefined,
+        hedgeCostOverrideUsdc: typeof b.hedge_cost_override_usdc === "number" ? b.hedge_cost_override_usdc : undefined,
         closedReason: validReason,
         exitMode: typeof b.exit_mode === "string" ? (b.exit_mode as never) : undefined,
         note: typeof b.note === "string" ? b.note : undefined,
