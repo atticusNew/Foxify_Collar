@@ -467,7 +467,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       return;
     }
     const { computeActivationGate } = await import("./activationGate");
-    const { recordGateSnapshot, computeVrpTrend, computeConsecutiveGoodSeconds } = await import("./gateHistory");
+    const { recordGateSnapshot, computeVrpTrend, computeDvolTrend, computeConsecutiveGoodSeconds } = await import("./gateHistory");
+    const { computeRegimeProximity } = await import("./regimeProximity");
     const result = await computeActivationGate({
       dvolService: deps.dvolService,
       rvService: deps.rvService,
@@ -484,7 +485,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       asOfMs: nowMs,
       vrp: result.vrp,
       goodToActivate: finalGoodToActivate,
-      regime: result.regime
+      regime: result.regime,
+      dvol: result.dvol
     });
 
     // Also persist to DB (deduped, ~1 row per 30s on quiet, more on transitions)
@@ -522,6 +524,11 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         : "high_3min+_sustained"
     };
 
+    // Regime proximity — heads-up as DVOL nears the next boundary (pre-position
+    // before the binary good_to_activate flip). Trend from the DVOL ring (15min).
+    const dvolTrend15 = computeDvolTrend(15, nowMs);
+    const regimeProximity = computeRegimeProximity(result.dvol, { trendDelta: dvolTrend15.delta });
+
     // Cell-level opportunities: per-cell EV regardless of global signal.
     // Foxify bot can opt to act on cell-level opportunities even when the
     // global gate says WAIT (e.g. in calm regime, far-OTM cells often have
@@ -556,7 +563,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reason: `halt_active:${halt.atticusHalt ? "atticus" : "foxify"}:${halt.atticusHaltReason ?? halt.foxifyHaltReason ?? "unknown"}`,
         recommended_cells: [],
         cell_opportunities: [],
-        trends
+        trends,
+        regime_proximity: regimeProximity
       });
       return;
     }
@@ -574,7 +582,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           note: "Optional volume loss-leader. Activates only for cells whose premium (max loss) <= max_loss_usdc. Loss shrinks as DVOL rises toward moderate; see /admin/foxify/v2/breakeven-ladder."
         }
       : { enabled: false };
-    reply.send({ ...result, trends, cell_opportunities: cellOpportunities,
+    reply.send({ ...result, trends, regime_proximity: regimeProximity, cell_opportunities: cellOpportunities,
       recommended_cells: recCells,
       recommended_structure: recSel?.structure ?? null, structure_rationale: recSel?.rationale ?? null,
       calm_loss_leader: calmLossLeader });

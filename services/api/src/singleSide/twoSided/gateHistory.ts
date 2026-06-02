@@ -19,6 +19,8 @@ export type GateHistoryEntry = {
   vrp: number | null;
   goodToActivate: boolean;
   regime: string | null;
+  /** DVOL at snapshot — optional/additive, used for regime-proximity trend. */
+  dvol?: number | null;
 };
 
 const MAX_ENTRIES = 3600;
@@ -53,6 +55,26 @@ export const computeVrpTrend = (lookbackMinutes: number, nowMs = Date.now()): { 
   return {
     delta: newest.vrp - oldest.vrp,
     sampleCount: oldEnoughEntries.length,
+    ageRangeMin: (newest.asOfMs - oldest.asOfMs) / 60_000
+  };
+};
+
+/**
+ * DVOL trend = current_dvol - dvol_N_min_ago. Positive = rising (approaching the
+ * next regime-up boundary); negative = falling. Null if no DVOL history.
+ */
+export const computeDvolTrend = (lookbackMinutes: number, nowMs = Date.now()): { delta: number | null; sampleCount: number; ageRangeMin: number | null } => {
+  const lookbackMs = lookbackMinutes * 60_000;
+  const oldEnough = _history.filter((e) => e.dvol != null && e.asOfMs <= nowMs - lookbackMs * 0.8);
+  const newest = _history.length > 0 ? _history[_history.length - 1] : null;
+  if (oldEnough.length === 0 || newest == null || newest.dvol == null) {
+    return { delta: null, sampleCount: 0, ageRangeMin: null };
+  }
+  const oldest = oldEnough[0];
+  if (oldest.dvol == null) return { delta: null, sampleCount: 0, ageRangeMin: null };
+  return {
+    delta: +(newest.dvol - oldest.dvol).toFixed(3),
+    sampleCount: oldEnough.length,
     ageRangeMin: (newest.asOfMs - oldest.asOfMs) / 60_000
   };
 };
