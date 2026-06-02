@@ -136,8 +136,17 @@ test("handleActivate: 201 happy path returns full payload + writes DB", async ()
   assert.equal(pair!.status, "active");
   const legs = await getLegsForPair(pool, body.pair_id);
   assert.equal(legs.length, 2);
+  // Phase C: each leg persists the venue-assigned order id for reconciliation/audit.
+  for (const leg of legs) {
+    const oid = (leg.metadata as { venue_order_id?: string | null }).venue_order_id;
+    assert.ok(typeof oid === "string" && oid.startsWith("mock-"), "leg records venue_order_id");
+  }
   const events = await getEventsForPair(pool, body.pair_id);
-  assert.ok(events.some((e) => e.kind === "activated"));
+  const activatedEvt = events.find((e) => e.kind === "activated");
+  assert.ok(activatedEvt);
+  const d = activatedEvt!.details as { put_venue_order_id?: string | null; call_venue_order_id?: string | null };
+  assert.ok(typeof d.put_venue_order_id === "string" && d.put_venue_order_id.startsWith("mock-put-"));
+  assert.ok(typeof d.call_venue_order_id === "string" && d.call_venue_order_id.startsWith("mock-call-"));
 });
 
 // ─── D2: actual filled-size accounting (Deribit 0.1-step floor) ───

@@ -120,8 +120,8 @@ export class LiveStrangleExecutor implements StrangleExecutor {
     if (putR.ok && callR.ok) {
       return {
         ok: true,
-        putLeg: { filledAskUsdcPerBtc: putR.filledAskUsdcPerBtc, filledAtIso: putR.filledAtIso, filledContractsBtc: putR.filledContractsBtc },
-        callLeg: { filledAskUsdcPerBtc: callR.filledAskUsdcPerBtc, filledAtIso: callR.filledAtIso, filledContractsBtc: callR.filledContractsBtc }
+        putLeg: { filledAskUsdcPerBtc: putR.filledAskUsdcPerBtc, filledAtIso: putR.filledAtIso, filledContractsBtc: putR.filledContractsBtc, filledOrderId: putR.filledOrderId },
+        callLeg: { filledAskUsdcPerBtc: callR.filledAskUsdcPerBtc, filledAtIso: callR.filledAtIso, filledContractsBtc: callR.filledContractsBtc, filledOrderId: callR.filledOrderId }
       };
     }
 

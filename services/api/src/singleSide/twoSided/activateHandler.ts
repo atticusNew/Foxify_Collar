@@ -495,7 +495,7 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     buyFilledAt: execResult.putLeg.filledAtIso,
     liveAnchorAskUsdcPerBtc: quote.putLeg.askUsdcPerBtc,
     liveAnchorPulledAt: quote.putLeg.pulledAt,
-    metadata: { quote_id: quote.quoteId, requested_contracts_btc: quote.contractsBtc }
+    metadata: { quote_id: quote.quoteId, requested_contracts_btc: quote.contractsBtc, venue_order_id: execResult.putLeg.filledOrderId ?? null }
   });
   await insertPairLeg(deps.pool, {
     legId: randomUUID(),
@@ -510,7 +510,7 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     buyFilledAt: execResult.callLeg.filledAtIso,
     liveAnchorAskUsdcPerBtc: quote.callLeg.askUsdcPerBtc,
     liveAnchorPulledAt: quote.callLeg.pulledAt,
-    metadata: { quote_id: quote.quoteId, requested_contracts_btc: quote.contractsBtc }
+    metadata: { quote_id: quote.quoteId, requested_contracts_btc: quote.contractsBtc, venue_order_id: execResult.callLeg.filledOrderId ?? null }
   });
 
   // Correct the pair's recorded hedge cost to the ACTUAL total fill (it was inserted
@@ -539,6 +539,8 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
       call_fill: execResult.callLeg.filledAskUsdcPerBtc,
       put_filled_contracts_btc: putFilledContracts,
       call_filled_contracts_btc: callFilledContracts,
+      put_venue_order_id: execResult.putLeg.filledOrderId ?? null,
+      call_venue_order_id: execResult.callLeg.filledOrderId ?? null,
       tier: tier.label
     }
   });

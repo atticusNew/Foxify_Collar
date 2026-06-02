@@ -30,6 +30,13 @@ export type LegExecutionResult = {
    * Recording this makes the persisted hedge cost reflect what truly traded.
    */
   filledContractsBtc?: number;
+  /**
+   * Venue-assigned order id for the fill (Bullish orderId / Deribit order.order_id).
+   * Persisted on the leg + activated event so a live pair can be reconciled back to
+   * the exact venue order (audit trail / phantom-position investigation). Optional for
+   * backward compatibility (mocks / paper mode may omit or echo a synthetic id).
+   */
+  filledOrderId?: string;
 } | {
   ok: false;
   reason: "venue_error" | "ask_exceeded" | "depth_insufficient" | "timeout" | "halted";
@@ -44,8 +51,8 @@ export type StrangleOrder = {
 
 export type StrangleExecutionResult = {
   ok: true;
-  putLeg: { filledAskUsdcPerBtc: number; filledAtIso: string; filledContractsBtc?: number };
-  callLeg: { filledAskUsdcPerBtc: number; filledAtIso: string; filledContractsBtc?: number };
+  putLeg: { filledAskUsdcPerBtc: number; filledAtIso: string; filledContractsBtc?: number; filledOrderId?: string };
+  callLeg: { filledAskUsdcPerBtc: number; filledAtIso: string; filledContractsBtc?: number; filledOrderId?: string };
 } | {
   ok: false;
   reason: "put_failed" | "call_failed" | "both_failed";
@@ -79,11 +86,11 @@ export class MockStrangleExecutor implements StrangleExecutor {
 
     const putResult: LegExecutionResult = this.behavior.failPutLeg
       ? { ok: false, reason: "venue_error", detail: this.behavior.failPutLeg.detail }
-      : { ok: true, filledAskUsdcPerBtc: order.putLeg.maxAcceptableAskUsdcPerBtc * mult, filledAtIso: now, filledContractsBtc: this.behavior.putFilledContractsBtc ?? order.putLeg.contractsBtc };
+      : { ok: true, filledAskUsdcPerBtc: order.putLeg.maxAcceptableAskUsdcPerBtc * mult, filledAtIso: now, filledContractsBtc: this.behavior.putFilledContractsBtc ?? order.putLeg.contractsBtc, filledOrderId: `mock-put-${order.pairId}` };
 
     const callResult: LegExecutionResult = this.behavior.failCallLeg
       ? { ok: false, reason: "venue_error", detail: this.behavior.failCallLeg.detail }
-      : { ok: true, filledAskUsdcPerBtc: order.callLeg.maxAcceptableAskUsdcPerBtc * mult, filledAtIso: now, filledContractsBtc: this.behavior.callFilledContractsBtc ?? order.callLeg.contractsBtc };
+      : { ok: true, filledAskUsdcPerBtc: order.callLeg.maxAcceptableAskUsdcPerBtc * mult, filledAtIso: now, filledContractsBtc: this.behavior.callFilledContractsBtc ?? order.callLeg.contractsBtc, filledOrderId: `mock-call-${order.pairId}` };
 
     if (!putResult.ok && !callResult.ok) {
       return { ok: false, reason: "both_failed", putLegResult: putResult, callLegResult: callResult };
@@ -96,8 +103,8 @@ export class MockStrangleExecutor implements StrangleExecutor {
     }
     return {
       ok: true,
-      putLeg: { filledAskUsdcPerBtc: putResult.filledAskUsdcPerBtc, filledAtIso: putResult.filledAtIso, filledContractsBtc: putResult.filledContractsBtc },
-      callLeg: { filledAskUsdcPerBtc: callResult.filledAskUsdcPerBtc, filledAtIso: callResult.filledAtIso, filledContractsBtc: callResult.filledContractsBtc }
+      putLeg: { filledAskUsdcPerBtc: putResult.filledAskUsdcPerBtc, filledAtIso: putResult.filledAtIso, filledContractsBtc: putResult.filledContractsBtc, filledOrderId: putResult.filledOrderId },
+      callLeg: { filledAskUsdcPerBtc: callResult.filledAskUsdcPerBtc, filledAtIso: callResult.filledAtIso, filledContractsBtc: callResult.filledContractsBtc, filledOrderId: callResult.filledOrderId }
     };
   }
 }
