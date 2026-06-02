@@ -9175,6 +9175,22 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
       }
     };
 
+    // Phase C: per-venue position reader for the live↔venue reconciliation probe.
+    // Deribit exposes a positions feed (instrument_name + size); Bullish exposes
+    // holdings as asset balances. Reads run from the credentialed clients.
+    const v2VenuePositionReader = {
+      getDeribitPositions: async (): Promise<Array<{ instrument_name?: string; size?: number; direction?: string }>> => {
+        const positions = await deribit.getPositions("BTC");
+        return Array.isArray(positions) ? (positions as Array<{ instrument_name?: string; size?: number; direction?: string }>) : [];
+      },
+      getBullishAssetBalances: v2BullishClient
+        ? async (): Promise<Array<{ assetSymbol?: string; availableQuantity?: string; lockedQuantity?: string }>> => {
+            const balances = await v2BullishClient.getAssetBalances({ tradingAccountId: v2PilotConfig.bullish.tradingAccountId });
+            return Array.isArray(balances) ? balances : [];
+          }
+        : undefined
+    };
+
     await app.register(async (instance) => {
       await registerFoxifyV2Routes(instance, {
         pool: v2Pool,
@@ -9193,7 +9209,9 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         // Server-side authed Bullish probe (runs from the whitelisted deploy IP).
         bullishProbeClient: v2BullishClient,
         // Phase C: pre-fire per-venue balance guard reader.
-        venueBalanceReader: v2VenueBalanceReader
+        venueBalanceReader: v2VenueBalanceReader,
+        // Phase C: live↔venue reconciliation probe reader.
+        venuePositionReader: v2VenuePositionReader
       });
     });
     console.log(`[FoxifyV2] Routes registered at /foxify/v2/* and /admin/foxify/v2/* (bullish_quotes=${Boolean(v2BullishClient)}, shadow_auto_activate=${v2ShadowAutoCfg.enabled})`);

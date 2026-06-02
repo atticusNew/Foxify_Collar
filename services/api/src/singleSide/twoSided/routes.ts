@@ -124,6 +124,13 @@ export type FoxifyV2RoutesDeps = {
    * Omitted in shadow-only deploys + tests → guard is a no-op.
    */
   venueBalanceReader?: import("./venueBalanceGuard").VenueBalanceReader;
+  /**
+   * Optional Phase C: per-venue position reader for the live↔venue reconciliation
+   * probe (GET /admin/foxify/v2/venue-positions). Production wires it from the
+   * credentialed Deribit connector (getPositions) + the Bullish client
+   * (getAssetBalances). Omitted in shadow-only deploys + tests.
+   */
+  venuePositionReader?: import("./venueReconciliation").VenuePositionReader;
 };
 
 // ───────────────────────── Auth helpers ─────────────────────────
@@ -2287,6 +2294,29 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       reply.send({ ok: false, authenticated: false, whitelist, latency_ms: Date.now() - startMs, error: msg, interpretation });
     }
   });
+
+  /**
+   * GET /admin/foxify/v2/venue-positions  (alias: /admin/foxify/v2/bullish-positions)
+   *
+   * Live↔venue reconciliation probe. Compares our live (non-shadow) held legs against
+   * the venues' actual reported positions/holdings. Surfaces PHANTOM (we hold per DB,
+   * venue doesn't), ORPHAN (venue holds, no DB record), and size deltas. Read-only.
+   */
+  const venuePositionsHandler = async (_req: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    if (!deps.venuePositionReader) {
+      reply.code(503).send({ error: "venue_position_reader_unavailable", message: "No venue position reader wired (shadow-only deploy or creds missing)." });
+      return;
+    }
+    try {
+      const { reconcileVenuePositions } = await import("./venueReconciliation");
+      const report = await reconcileVenuePositions(deps.pool, deps.venuePositionReader);
+      reply.send(report);
+    } catch (e) {
+      reply.code(500).send({ error: "reconciliation_failed", message: (e as Error).message });
+    }
+  };
+  app.get("/admin/foxify/v2/venue-positions", { preHandler: checkAdminToken }, venuePositionsHandler);
+  app.get("/admin/foxify/v2/bullish-positions", { preHandler: checkAdminToken }, venuePositionsHandler);
 
   /**
    * GET /admin/foxify/v2/bullish-markets-probe
