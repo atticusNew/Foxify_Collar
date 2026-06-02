@@ -79,6 +79,24 @@ test("pair_10k_atm_3d: small near-ATM Bullish-fill cell (10k, ATM, 3d, single-st
   }
 });
 
+test("pair_10k_atm_2d: 2-day near-ATM Bullish-competitive cell (10k, ATM, 2d, single-strike, moderate+)", () => {
+  const cell = PHASE_0_CELLS["pair_10k_atm_2d"];
+  assert.ok(cell, "cell exists in registry");
+  assert.equal(cell.enabled, true);
+  assert.equal(cell.notionalUsdcPerLeg, 10_000);
+  assert.equal(cell.hedgeTenorDays, 2, "2-day = the tenor where Bullish wins the round-trip");
+  assert.equal(cell.putStrikeItmPct, 0, "ATM put");
+  assert.equal(cell.callStrikeItmPct, 0, "ATM call");
+  const s = computeStrikes(cell, 67_325);
+  assert.equal(s.putStrike, 67_000);
+  assert.equal(s.callStrike, 67_000);
+  assert.equal(s.putStrike, s.callStrike, "single ATM strike (where Bullish quotes)");
+  assert.equal(isCellAllowedInRegimeDefault("pair_10k_atm_2d", "calm"), false, "never in calm");
+  for (const r of ["moderate", "elevated", "stress"] as const) {
+    assert.equal(isCellAllowedInRegimeDefault("pair_10k_atm_2d", r), true, `allowed in ${r}`);
+  }
+});
+
 test("computeStrikes: guts cell (non-zero ITM) keeps the ceil/floor two-strike split", () => {
   // pair_50k_2pct: putItm/callItm 0.013 → ceil(76988)→77000 put, floor(75012)→75000 call.
   const guts = computeStrikes(PHASE_0_CELLS["pair_50k_2pct"], 76000);

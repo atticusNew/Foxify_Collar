@@ -191,6 +191,31 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     enabled: true
   },
   /**
+   * pair_10k_atm_2d — SMALL near-ATM straddle on the 2-DAY tenor, where Bullish is
+   * actually COMPETITIVE. Live chain comparison (2026-06-02) showed Bullish WINS the
+   * round-trip vs Deribit at the 2d ATM (put RT 930 vs 992, call 830 vs 850), but LOSES
+   * badly at 3d (~+18%). So this cell routes to BULLISH naturally (it's the best venue —
+   * no partner-band widening needed) at a size (~0.15 BTC/leg, ~$320 premium at moderate)
+   * that clears Bullish's thin near-ATM book and fits a ~$1k Bullish balance with buffer.
+   * Purpose: real, competitively-priced Bullish partnership volume + a small long-vol hold.
+   * 2-day gives more hold-room than the 1d smoke without entering Bullish's wide-3d zone.
+   * ATM (0% ITM) → single nearest-$1k strike (where Bullish quotes). Moderate+ only.
+   * Live activation still gated by SS_TWO_SIDED_LIVE_ENABLED + live allowlist +
+   * FOXIFY_V2_LIVE_EXECUTION. contractsBtc is a reference only (quoteEngine derives live).
+   */
+  pair_10k_atm_2d: {
+    cellId: "pair_10k_atm_2d",
+    notionalUsdcPerLeg: 10_000,
+    triggerPctDown: 0.03,
+    triggerPctUp: 0.03,
+    contractsBtc: 0.15,
+    hedgeTenorDays: 2,
+    putStrikeItmPct: 0,
+    callStrikeItmPct: 0,
+    strikeGridUsdc: 1_000,
+    enabled: true
+  },
+  /**
    * pair_150k_3pct_atm_3d — MODERATE+ STRADDLE WINNER (empirical sweep 2026-05-31,
    * Deribit-priced, empirical moderate sigma 0.441). Same ATM/3%/3d geometry as
    * pair_50k_3pct_atm_3d but sized to 150k — the sweep proved net scales ~linearly
