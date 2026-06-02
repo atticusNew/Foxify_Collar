@@ -199,8 +199,12 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
    * that clears Bullish's thin near-ATM book and fits a ~$1k Bullish balance with buffer.
    * Purpose: real, competitively-priced Bullish partnership volume + a small long-vol hold.
    * 2-day gives more hold-room than the 1d smoke without entering Bullish's wide-3d zone.
-   * ATM (0% ITM) → single nearest-$1k strike (where Bullish quotes). Moderate+ only.
-   * Live activation still gated by SS_TWO_SIDED_LIVE_ENABLED + live allowlist +
+   * ATM (0% ITM) → single nearest strike. strikeGridUsdc = 500 ON PURPOSE: Bullish quotes
+   * its near-ATM book on a $500 grid (verified live 2026-06-02 — at spot ~$67.5k Bullish
+   * quotes 67500, NOT 67000), so a $1k grid would round to a strike Bullish doesn't quote
+   * and the cell would never route Bullish. Deribit co-quotes the $500 strikes near ATM
+   * (verified), so the $500 grid keeps a Deribit fallback too. Moderate+ only. Live
+   * activation still gated by SS_TWO_SIDED_LIVE_ENABLED + live allowlist +
    * FOXIFY_V2_LIVE_EXECUTION. contractsBtc is a reference only (quoteEngine derives live).
    */
   pair_10k_atm_2d: {
@@ -212,7 +216,7 @@ export const PHASE_0_CELLS: Record<string, TwoSidedCell> = {
     hedgeTenorDays: 2,
     putStrikeItmPct: 0,
     callStrikeItmPct: 0,
-    strikeGridUsdc: 1_000,
+    strikeGridUsdc: 500,
     enabled: true
   },
   /**

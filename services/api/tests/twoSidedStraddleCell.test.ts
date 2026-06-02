@@ -87,10 +87,12 @@ test("pair_10k_atm_2d: 2-day near-ATM Bullish-competitive cell (10k, ATM, 2d, si
   assert.equal(cell.hedgeTenorDays, 2, "2-day = the tenor where Bullish wins the round-trip");
   assert.equal(cell.putStrikeItmPct, 0, "ATM put");
   assert.equal(cell.callStrikeItmPct, 0, "ATM call");
+  assert.equal(cell.strikeGridUsdc, 500, "$500 grid to match Bullish's near-ATM strike grid");
+  // $500 grid → round(67325/500)*500 = 67500 (Bullish quotes 67500, not 67000).
   const s = computeStrikes(cell, 67_325);
-  assert.equal(s.putStrike, 67_000);
-  assert.equal(s.callStrike, 67_000);
-  assert.equal(s.putStrike, s.callStrike, "single ATM strike (where Bullish quotes)");
+  assert.equal(s.putStrike, 67_500);
+  assert.equal(s.callStrike, 67_500);
+  assert.equal(s.putStrike, s.callStrike, "single ATM strike on the $500 grid (where Bullish quotes)");
   assert.equal(isCellAllowedInRegimeDefault("pair_10k_atm_2d", "calm"), false, "never in calm");
   for (const r of ["moderate", "elevated", "stress"] as const) {
     assert.equal(isCellAllowedInRegimeDefault("pair_10k_atm_2d", r), true, `allowed in ${r}`);
