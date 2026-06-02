@@ -91,6 +91,14 @@ export type PairMtm = {
   call_valuation_stabilized: boolean;
   put_quote_age_ms?: number;             // age of the fresh put quote (null when held/BS)
   call_quote_age_ms?: number;
+  // ── Exact-vs-proxy diagnostic (catches fuzzy mis-valuation) ──
+  // *_symbol_held = the instrument we actually OWN; *_instrument_used = what we PRICED
+  // against. If they differ (and match_tier=fuzzy_strike_tenor), the value is a PROXY
+  // off a different strike/tenor — investigate why the exact bid wasn't found.
+  put_symbol_held?: string | null;
+  call_symbol_held?: string | null;
+  put_instrument_used?: string;
+  call_instrument_used?: string;
   // VALIDATION: surfaces the raw bid used per leg so operators can
   // independently verify against the live venue order book.
   put_bid_used_usdc_per_btc?: number;   // null when valuation_method='bs_fallback'
@@ -328,6 +336,10 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
     stabilized: boolean;
     /** Age (ms) of the fresh venue quote used this poll (null when stabilized/BS). */
     quoteAgeMs?: number;
+    /** The instrument symbol we actually PRICED against this poll. When this differs
+     *  from the held symbol, the value came from a fuzzy PROXY (different strike/tenor)
+     *  — a key accuracy red flag for both MTM and TP. */
+    instrumentUsed?: string;
   } => {
     const result = priceOption({
       spot: inputs.currentSpot,
@@ -371,7 +383,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       rawBidUsdcPerBtc: stable.rawBidUsdcPerBtc,
       venue: stable.venue,
       stabilized,
-      quoteAgeMs: result.age_ms ?? undefined
+      quoteAgeMs: result.age_ms ?? undefined,
+      instrumentUsed: result.instrument_used ?? undefined
     };
   };
 
@@ -447,6 +460,10 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       call_valuation_stabilized: callV.stabilized,
       put_quote_age_ms: putV.quoteAgeMs,
       call_quote_age_ms: callV.quoteAgeMs,
+      put_symbol_held: putSymbol,
+      call_symbol_held: callSymbol,
+      put_instrument_used: putV.instrumentUsed,
+      call_instrument_used: callV.instrumentUsed,
       mark_basis_note:
         "pnl_if_close_now_usdc is the EXECUTABLE (bid×haircut) value — what you'd actually receive selling now, and the basis for TP/close. pnl_if_close_now_mid_usdc is the MID mark (≈ exchange UI unrealized PnL); the gap is the bid-ask spread (see *_spread_pct).",
       greeks: combinedStraddleGreeks(inputs.currentSpot, putStrike, callStrike, contracts, tenorRemainingHours / 24 / 365, RISK_FREE_RATE, inputs.ivAnnual ?? 0.35),

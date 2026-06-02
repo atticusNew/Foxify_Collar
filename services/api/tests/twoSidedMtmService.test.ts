@@ -622,4 +622,8 @@ test("listActivePairMtm: surfaces MID mark + spread alongside executable bid (wi
   // Recommendation/TP must use the EXECUTABLE pnl (negative here → HOLD), NOT the mid.
   assert.equal(p.recommendation, "HOLD");
   assert.ok(p.mark_basis_note.includes("EXECUTABLE"));
+  // Diagnostic: the instrument we priced against is surfaced (here a fuzzy proxy, since
+  // these legs carry no stored symbol → exact-symbol lookup is skipped).
+  assert.ok(typeof p.put_instrument_used === "string" && p.put_instrument_used.length > 0);
+  assert.equal(p.put_match_tier, "fuzzy_strike_tenor");
 });
