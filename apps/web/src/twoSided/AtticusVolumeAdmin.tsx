@@ -255,22 +255,68 @@ function ForceTriggerForm({ onAction }: { onAction: () => void }) {
 }
 
 // ─── Signal / Strategy ───
+const REGIMES = ["calm", "moderate", "elevated", "stress"] as const;
+type AllowlistAll = Record<string, { default_allowlist?: string[]; effective_allowlist?: string[] }>;
+
 function SignalTab() {
-  const [data, setData] = useState<{ signal?: unknown; allowlist?: unknown; selector?: unknown; calibration?: unknown } | null>(null);
+  const [data, setData] = useState<{ signal?: unknown; selector?: unknown; calibration?: unknown } | null>(null);
+  const [allowlist, setAllowlist] = useState<AllowlistAll | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [addInputs, setAddInputs] = useState<Record<string, string>>({});
+
+  const loadAllowlist = useCallback(async () => {
+    try { setAllowlist(await adminGet<AllowlistAll>("/admin/foxify/v2/cell-allowlist")); } catch (e) { setMsg({ ok: false, msg: (e as Error).message }); }
+  }, []);
+
   useEffect(() => {
+    void loadAllowlist();
     void (async () => {
       const r = await settleAll({
         signal: adminGet("/admin/foxify/v2/signal-distribution"),
-        allowlist: adminGet("/admin/foxify/v2/cell-allowlist"),
         selector: adminGet("/admin/foxify/v2/structure-selector"),
         calibration: adminGet("/admin/foxify/v2/regime-calibration")
       });
-      setData({ signal: r.signal, allowlist: r.allowlist, selector: r.selector, calibration: r.calibration });
+      setData({ signal: r.signal, selector: r.selector, calibration: r.calibration });
     })();
-  }, []);
+  }, [loadAllowlist]);
+
+  const toggle = async (regime: string, cellId: string, enabled: boolean) => {
+    try {
+      await adminPost("/admin/foxify/v2/cell-allowlist", { regime, cell_id: cellId, enabled, reason: "via admin UI" });
+      setMsg({ ok: true, msg: `${enabled ? "added" : "removed"} ${cellId} ${enabled ? "to" : "from"} ${regime}` });
+      void loadAllowlist();
+    } catch (e) { setMsg({ ok: false, msg: (e as Error).message }); }
+  };
+
   return (
     <>
-      <Panel title="Cell allowlist (per regime)"><JsonView data={data?.allowlist} /></Panel>
+      <Panel title="Cell allowlist — per regime (manual control)">
+        <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Effective allowlist (default ± overrides). Remove a cell or add one by ID — applies a DB override immediately (live activation still gated by env).</div>
+        {REGIMES.map((r) => {
+          const eff = allowlist?.[r]?.effective_allowlist ?? [];
+          return (
+            <div key={r} style={{ marginBottom: 10, paddingBottom: 8, borderBottom: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 12, color: r === "calm" ? C.muted : C.text, fontWeight: 700, marginBottom: 4 }}>{r}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                {eff.length === 0 ? <span style={{ color: "#666", fontSize: 11 }}>empty (stand-down)</span> : eff.map((cid) => (
+                  <span key={cid} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 8px", borderRadius: 10, fontSize: 11, background: "#16241a", color: C.text, border: `1px solid ${C.border}` }}>
+                    {cid}
+                    <span onClick={() => toggle(r, cid, false)} title="remove" style={{ cursor: "pointer", color: C.red }}>×</span>
+                  </span>
+                ))}
+                <input
+                  style={{ ...fieldStyle, width: 200 }}
+                  placeholder="add cell_id…"
+                  value={addInputs[r] ?? ""}
+                  onChange={(e) => setAddInputs((s) => ({ ...s, [r]: e.target.value }))}
+                  onKeyDown={(e) => { if (e.key === "Enter" && (addInputs[r] ?? "").trim()) { toggle(r, addInputs[r].trim(), true); setAddInputs((s) => ({ ...s, [r]: "" })); } }}
+                />
+              </div>
+            </div>
+          );
+        })}
+        <ActionResult r={msg} />
+      </Panel>
       <Panel title="Structure selector"><JsonView data={data?.selector} /></Panel>
       <Panel title="Signal distribution"><JsonView data={data?.signal} /></Panel>
       <Panel title="Regime calibration"><JsonView data={data?.calibration} /></Panel>

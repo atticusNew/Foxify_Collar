@@ -48,6 +48,8 @@ type MtmPair = {
   greeks?: { delta: number; gamma: number; vega_per_pct: number; theta_per_day: number };
 };
 type MtmResp = { current_spot: number; total_active: number; total_cost_paid_usdc: number; total_estimated_salvage_usdc: number; total_pnl_if_close_all_now_usdc: number; pairs: MtmPair[] };
+type Leg = { legRole: string; venue: string; symbol: string; strikeUsdc: number; contractsBtc: number; buyAskUsdcPerBtc: number; buyCostUsdc: number; sellAskUsdcPerBtc: number | null; sellProceedsUsdc: number | null };
+type PairDetail = { pair: { tierAtActivation: string; atticusFloorUsdc: number; hedgeCostTotalUsdc: number; status: string; salvageProceedsUsdc: number | null; upliftUsdc: number | null; atticusShareUsdc: number | null; foxifyShareUsdc: number | null }; legs: Leg[] };
 
 const recColor = (r: string): string =>
   r?.startsWith("STRONG") ? C.green : r === "TAKE_PROFIT_AVAILABLE" ? C.green : r === "TRIGGERED" ? C.amber : r === "EXPIRED" ? C.red : C.muted;
@@ -60,7 +62,7 @@ export function FoxifyVolumeDashboard() {
   const [catalog, setCatalog] = useState<CatalogCell[]>([]);
   const [mtm, setMtm] = useState<MtmResp | null>(null);
   const [selectedCell, setSelectedCell] = useState<string | null>(null);
-  const [drill, setDrill] = useState<{ id: string; explain: unknown; audit: unknown } | null>(null);
+  const [drill, setDrill] = useState<{ id: string; detail: PairDetail | null; explain: unknown; audit: unknown } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const live = useRef(authed);
   live.current = authed;
@@ -106,8 +108,12 @@ export function FoxifyVolumeDashboard() {
 
   const openDrill = useCallback(async (id: string) => {
     try {
-      const r = await settleAll({ explain: foxifyGet(`/foxify/v2/pairs/${id}/explain`), audit: foxifyGet(`/foxify/v2/pairs/${id}/feed-audit`) });
-      setDrill({ id, explain: r.explain, audit: r.audit });
+      const r = await settleAll({
+        detail: foxifyGet<PairDetail>(`/foxify/v2/pairs/${id}`),
+        explain: foxifyGet(`/foxify/v2/pairs/${id}/explain`),
+        audit: foxifyGet(`/foxify/v2/pairs/${id}/feed-audit`)
+      });
+      setDrill({ id, detail: r.detail, explain: r.explain, audit: r.audit });
     } catch (e) { alert(`Audit fetch failed: ${(e as Error).message}`); }
   }, []);
 
@@ -210,8 +216,44 @@ export function FoxifyVolumeDashboard() {
       </Panel>
 
       {drill && (
-        <Panel title={`Audit — ${short(drill.id)}`} right={<span onClick={() => setDrill(null)} style={{ color: C.blue, cursor: "pointer", fontSize: 12 }}>close</span>}>
-          <div style={{ fontSize: 12, color: C.muted, marginBottom: 6 }}>Outcome explanation + the exact feed snapshot used at activation/trigger (full audit trail).</div>
+        <Panel title={`Pair detail & audit — ${short(drill.id)}`} right={<span onClick={() => setDrill(null)} style={{ color: C.blue, cursor: "pointer", fontSize: 12 }}>close</span>}>
+          {drill.detail && (
+            <>
+              {/* Per-leg ACTUAL fills — exchange + real cost, leg by leg (full transparency). */}
+              <div style={{ fontSize: 12, color: C.text, marginBottom: 4, fontWeight: 700 }}>Legs — actual fills</div>
+              <Table
+                cols={[
+                  { key: "legRole", label: "Leg", render: (l: Leg) => l.legRole === "long_put" ? "put" : "call" },
+                  { key: "venue", label: "Exchange", render: (l: Leg) => l.venue },
+                  { key: "symbol", label: "Instrument" },
+                  { key: "contractsBtc", label: "Contracts", align: "right", render: (l: Leg) => l.contractsBtc.toFixed(4) },
+                  { key: "buyAsk", label: "Buy $/BTC", align: "right", render: (l: Leg) => fmtUsd(l.buyAskUsdcPerBtc) },
+                  { key: "buyCost", label: "Buy cost", align: "right", render: (l: Leg) => fmtUsd(l.buyCostUsdc) },
+                  { key: "sellPx", label: "Sell $/BTC", align: "right", render: (l: Leg) => l.sellAskUsdcPerBtc != null ? fmtUsd(l.sellAskUsdcPerBtc) : "—" },
+                  { key: "sellProc", label: "Sell proceeds", align: "right", render: (l: Leg) => l.sellProceedsUsdc != null ? fmtUsd(l.sellProceedsUsdc) : "—" }
+                ]}
+                rows={drill.detail.legs}
+                keyOf={(l) => l.legRole}
+              />
+              {/* The exact split — what Atticus takes vs what flows to Foxify. Shown ON PURPOSE. */}
+              <div style={{ marginTop: 10, padding: 10, background: "#13201a", borderRadius: 6, fontSize: 12 }}>
+                <div style={{ color: C.muted, marginBottom: 4 }}>Cooperative split (full transparency — this is exactly what Atticus takes)</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+                  <div><span style={{ color: C.muted }}>Hedge cost paid:</span> {fmtUsd(drill.detail.pair.hedgeCostTotalUsdc)}</div>
+                  <div><span style={{ color: C.muted }}>Tier / Atticus floor:</span> {drill.detail.pair.tierAtActivation} / {fmtUsd(drill.detail.pair.atticusFloorUsdc)}</div>
+                  {drill.detail.pair.status === "settled" ? (
+                    <>
+                      <div><span style={{ color: C.muted }}>Salvage / uplift:</span> {fmtUsd(drill.detail.pair.salvageProceedsUsdc ?? 0)} / <span style={{ color: pnlColor(drill.detail.pair.upliftUsdc) }}>{fmtSignedUsd(drill.detail.pair.upliftUsdc ?? 0)}</span></div>
+                      <div><span style={{ color: C.muted }}>Atticus / Foxify share:</span> <span style={{ color: C.amber }}>{fmtUsd(drill.detail.pair.atticusShareUsdc ?? 0)}</span> / <span style={{ color: C.green }}>{fmtUsd(drill.detail.pair.foxifyShareUsdc ?? 0)}</span></div>
+                    </>
+                  ) : (
+                    <div style={{ gridColumn: "span 2", color: C.muted }}>Split realizes at settlement — Atticus only collects on positive uplift (loss paths: Atticus $0, Foxify keeps all salvage).</div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+          <div style={{ fontSize: 12, color: C.muted, margin: "10px 0 6px" }}>Outcome explanation + the exact feed snapshot used at activation/trigger (full audit trail).</div>
           <pre style={{ fontSize: 11, color: C.text, whiteSpace: "pre-wrap", margin: 0 }}>{JSON.stringify(drill.explain, null, 2)}</pre>
           <pre style={{ fontSize: 11, color: "#9bb", whiteSpace: "pre-wrap", marginTop: 8 }}>{JSON.stringify(drill.audit, null, 2)}</pre>
         </Panel>
