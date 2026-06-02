@@ -40,6 +40,15 @@ export type BullishProviderConfig = {
    * sides × a couple expiries). Set 0/undefined to fetch all (legacy).
    */
   maxOrderbookFetches?: number;
+  /**
+   * Exact instrument symbols to ALWAYS fetch, bypassing the strike+tenor window AND
+   * the nearest-N cap. Used to PIN the instruments of currently-held live positions
+   * so they are valued on their EXACT venue quote even after spot moves the strike out
+   * of the ATM fetch window. Without this, a held strike that drifts away from spot
+   * falls out of the snapshot → MTM cross-values it off the other venue (a misleading
+   * proxy). Held positions are few (1-2 pairs), so the extra fetches are negligible.
+   */
+  pinnedSymbols?: string[];
 };
 
 const DEFAULT_MAX_CONCURRENCY = 4;
@@ -139,8 +148,11 @@ export const fetchBullishChainSnapshot = async (
     throw e;
   }
 
-  // 2. Filter to BTC options inside strike + tenor window
-  const candidates: Array<{ market: BullishMarketLike; strike: number; optType: "put" | "call"; expiryMs: number }> = [];
+  // 2. Filter to BTC options inside strike + tenor window. PINNED symbols (held
+  // positions) bypass the windows so a held strike is always fetched even after
+  // spot drifts away from it.
+  const pinnedSet = new Set((config.pinnedSymbols ?? []).filter(Boolean));
+  const candidates: Array<{ market: BullishMarketLike; strike: number; optType: "put" | "call"; expiryMs: number; isPinned: boolean }> = [];
   for (const m of markets as BullishMarketLike[]) {
     if (!m.marketEnabled || !m.createOrderEnabled) continue;
     if ((m.underlyingBaseSymbol ?? "").toUpperCase() !== "BTC") continue;
@@ -148,27 +160,42 @@ export const fetchBullishChainSnapshot = async (
     if (optTypeRaw !== "PUT" && optTypeRaw !== "CALL") continue;
     const strike = Number(m.optionStrikePrice ?? "0");
     if (!Number.isFinite(strike) || strike <= 0) continue;
-    if (Math.abs(strike - config.centerSpot) > config.strikeWindowUsdc) continue;
     const expiryMs = parseBullishExpiry(m.expiryDatetime, nowMs);
     if (expiryMs == null) continue;
-    if (Math.abs((expiryMs - nowMs) - targetTenorMs) > tenorWindowMs) continue;
+    const isPinned = pinnedSet.has(m.symbol);
+    if (!isPinned) {
+      if (Math.abs(strike - config.centerSpot) > config.strikeWindowUsdc) continue;
+      if (Math.abs((expiryMs - nowMs) - targetTenorMs) > tenorWindowMs) continue;
+    }
     candidates.push({
       market: m,
       strike,
       optType: optTypeRaw === "PUT" ? "put" : "call",
-      expiryMs
+      expiryMs,
+      isPinned
     });
   }
 
   // 2b. RATE-LIMIT GUARD: cap orderbook fetches to the strikes NEAREST centerSpot.
   // We trade near-ATM; fetching every in-window strike (often 50-70) is what was
   // tripping Bullish's 429 → backoff → 0 quotes (even though ATM is liquid).
+  // PINNED (held) symbols are ALWAYS fetched on top of the nearest-N cap — they
+  // are few and must be valued on their exact quote regardless of distance to spot.
   const maxFetches = config.maxOrderbookFetches ?? 16;
-  let fetchCandidates = candidates;
-  if (maxFetches > 0 && candidates.length > maxFetches) {
-    fetchCandidates = [...candidates]
+  const pinnedCands = candidates.filter((c) => c.isPinned);
+  const windowCands = candidates.filter((c) => !c.isPinned);
+  let fetchCandidates = windowCands;
+  if (maxFetches > 0 && windowCands.length > maxFetches) {
+    fetchCandidates = [...windowCands]
       .sort((a, b) => Math.abs(a.strike - config.centerSpot) - Math.abs(b.strike - config.centerSpot))
       .slice(0, maxFetches);
+  }
+  if (pinnedCands.length > 0) {
+    const seen = new Set(fetchCandidates.map((c) => c.market.symbol));
+    fetchCandidates = [...fetchCandidates];
+    for (const pc of pinnedCands) {
+      if (!seen.has(pc.market.symbol)) { fetchCandidates.push(pc); seen.add(pc.market.symbol); }
+    }
   }
 
   // 3. Fetch orderbook for each candidate concurrently. If we hit a 429 from

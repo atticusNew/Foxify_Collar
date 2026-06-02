@@ -97,6 +97,40 @@ test("fetchBullishChainSnapshot caps orderbook fetches to nearest-ATM (maxOrderb
   assert.ok(Math.min(...qStrikes) >= 72_000 && Math.max(...qStrikes) <= 78_000, "kept only the nearest-ATM strikes");
 });
 
+test("fetchBullishChainSnapshot: pinnedSymbols (held positions) are fetched even outside strike/tenor window + beyond the cap", async () => {
+  const nowMs = Date.now();
+  const inWindowExp = new Date(nowMs + 2 * 86_400_000).toISOString();   // 2d (target)
+  const heldExp = new Date(nowMs + 1 * 86_400_000).toISOString();        // 1d — outside a tight tenor window
+  // Spot has drifted to 64000; the held 67500 strike is now $3.5k away (outside a $2k window).
+  const strikes: number[] = [];
+  for (let k = 63_000; k <= 65_000; k += 500) strikes.push(k);           // ATM band around 64000
+  const markets = strikes.map((k) => ({
+    symbol: `BTC-USDC-ATM-${k}-P`, optionType: "PUT", optionStrikePrice: String(k), expiryDatetime: inWindowExp, underlyingBaseSymbol: "BTC"
+  }));
+  // The HELD instrument: far strike (67500) AND a different (1d) expiry → would be filtered out twice.
+  markets.push({ symbol: "BTC-USDC-20260605-67500-P", optionType: "PUT", optionStrikePrice: "67500", expiryDatetime: heldExp, underlyingBaseSymbol: "BTC" });
+  const client = buildMockClient(markets);
+
+  const fetched: string[] = [];
+  const ob = async (sym: string) => { fetched.push(sym); return { bid: 1500, ask: 1700 }; };
+  const r = await fetchBullishChainSnapshot(client, 64_000, {
+    centerSpot: 64_000,
+    centerTenorDays: 2,
+    strikeWindowUsdc: 2_000,        // 67500 is $3.5k away → out of window
+    tenorWindowDays: 0.25,          // 1d held expiry is outside the ±0.25d tenor window
+    maxOrderbookFetches: 3,         // tight cap — pinned must be added ON TOP
+    pinnedSymbols: ["BTC-USDC-20260605-67500-P"]
+  }, ob, nowMs);
+
+  // The held instrument must be fetched + present despite being out of both windows and past the cap.
+  assert.ok(fetched.includes("BTC-USDC-20260605-67500-P"), "pinned held symbol was fetched");
+  const held = r.quotes.find((q) => q.instrument_name === "BTC-USDC-20260605-67500-P");
+  assert.ok(held, "pinned held symbol is in the snapshot → exact-symbol valuation will match");
+  assert.equal(held!.strike, 67_500);
+  // And the nearest-ATM cap still applied to the NON-pinned strikes (3 of them).
+  assert.equal(r.quotes.filter((q) => q.strike !== 67_500).length, 3, "non-pinned still capped at 3");
+});
+
 test("fetchBullishChainSnapshot tolerates individual orderbook failures (returns null)", async () => {
   const nowMs = Date.now();
   const exp = new Date(nowMs + 3 * 86_400_000).toISOString();

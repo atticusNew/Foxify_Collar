@@ -8687,11 +8687,29 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
           const centerSpot: number = (typeof liveSpot === "number" && liveSpot > 0)
             ? liveSpot
             : (cached?.spot ?? 75_000);
+          // PIN the exact instruments of currently-held live Bullish legs so they are
+          // ALWAYS fetched/valued on their own quote — even after spot drifts the strike
+          // out of the ATM window (otherwise MTM cross-values them off Deribit, a proxy).
+          let pinnedSymbols: string[] = [];
+          try {
+            const heldRes = await v2Pool.query(
+              `SELECT DISTINCT l.symbol
+                 FROM two_sided_pair_leg l
+                 JOIN two_sided_pair p ON p.pair_id = l.pair_id
+                WHERE p.is_shadow = FALSE
+                  AND p.status IN ('active','triggered','unwinding')
+                  AND l.venue = 'bullish'
+                  AND l.sell_filled_at IS NULL
+                  AND l.symbol IS NOT NULL`
+            );
+            pinnedSymbols = heldRes.rows.map((r) => String(r.symbol)).filter(Boolean);
+          } catch { /* best-effort — never break the chain refresh on a pin-query hiccup */ }
           return fetchBullishChainSnapshot(v2BullishClient, centerSpot, {
             centerSpot,
             centerTenorDays: 2,         // narrower: was 3d, now 2d (covers 1-3d cells well enough)
             strikeWindowUsdc: 4_000,    // narrower: was $6k, now $4k (skip far-OTM strikes we never trade)
             tenorWindowDays: 1.5,       // narrower: was 2d, now 1.5d
+            pinnedSymbols,              // held-position instruments — always fetched (bypass window+cap)
             maxConcurrency: 2,          // unchanged: 2 concurrent orderbook calls
             // Nearest-ATM orderbook fetch cap. 24 (was 16) gives the ATM band more
             // headroom so the strikes we trade are RELIABLY in the chain every
