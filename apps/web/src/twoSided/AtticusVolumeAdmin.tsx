@@ -158,11 +158,14 @@ function PnlTab({ livePnl, scorecard }: { livePnl: LivePnl | null; scorecard: Sc
 
 // ─── Positions + controls ───
 function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<string, unknown>> } | null; stuck: StuckPairs | null; onAction: () => void }) {
-  const pairs = mtm?.pairs ?? [];
+  const allPairs = mtm?.pairs ?? [];
+  // SEPARATE live (real-money) from shadow (paper) — they were mixed before, which made
+  // it hard to tell real exposure from the data-engine's paper pairs.
+  const livePairs = allPairs.filter((p) => !p.is_shadow);
+  const shadowPairs = allPairs.filter((p) => p.is_shadow);
   const cols: Col<Record<string, unknown>>[] = [
     { key: "pair", label: "Pair", render: (p) => short(p.pair_id as string) },
     { key: "cell_id", label: "Cell" },
-    { key: "shadow", label: "Type", render: (p) => p.is_shadow ? <Pill text="shadow" color={C.muted} /> : <Pill text="LIVE" color={C.green} /> },
     { key: "venue", label: "Venue", render: (p) => `${p.put_venue}/${p.call_venue}` },
     { key: "cost", label: "Cost", align: "right", render: (p) => fmtUsd(p.cost_paid_usdc as number) },
     { key: "mark", label: "MTM", align: "right", render: (p) => fmtUsd(p.estimated_salvage_usdc as number) },
@@ -170,16 +173,26 @@ function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<str
     { key: "ttl", label: "Left", align: "right", render: (p) => fmtHours(p.tenor_remaining_hours as number) },
     { key: "rec", label: "Signal", render: (p) => String(p.recommendation ?? "—") }
   ];
+  const liveNet = livePairs.reduce((s, p) => s + (Number(p.pnl_if_close_now_usdc) || 0), 0);
   const stuckCols: Col<Record<string, unknown>>[] = [
     { key: "pair", label: "Pair", render: (p) => short(p.pair_id as string) },
     { key: "cell_id", label: "Cell" }, { key: "status", label: "Status" },
+    { key: "shadow", label: "Type", render: (p) => p.is_shadow ? <Pill text="shadow" color={C.muted} /> : <Pill text="LIVE" color={C.green} /> },
     { key: "age", label: "Age (min)", align: "right", render: (p) => String(p.age_minutes ?? "—") },
     { key: "rt", label: "Runtime", render: (p) => (p.has_runtime ? "yes" : "no") },
     { key: "oob", label: "Out-of-band?", render: (p) => p.likely_out_of_band ? <Pill text="reconcile" color={C.amber} /> : "—" }
   ];
   return (
     <>
-      <Panel title={`Active positions (${pairs.length}, incl. shadow)`}><Table cols={cols} rows={pairs} keyOf={(p) => p.pair_id as string} /></Panel>
+      {/* LIVE — real money, kept visually distinct (green border) and first. */}
+      <Panel title={`🟢 LIVE positions — real money (${livePairs.length})`} style={{ border: `1px solid ${C.green}55`, borderRadius: 6 }}
+        right={<span style={{ fontSize: 12, color: pnlColor(liveNet) }}>net {fmtSignedUsd(liveNet)}</span>}>
+        <Table cols={cols} rows={livePairs} keyOf={(p) => p.pair_id as string} />
+      </Panel>
+      {/* SHADOW — paper / data engine, clearly separated. */}
+      <Panel title={`Shadow positions — paper / data engine (${shadowPairs.length})`}>
+        <Table cols={cols} rows={shadowPairs} keyOf={(p) => p.pair_id as string} />
+      </Panel>
       <Panel title={`Stuck / out-of-band (${stuck?.likely_out_of_band_count ?? 0} flagged of ${stuck?.total_non_terminal ?? 0})`}>
         <Table cols={stuckCols} rows={stuck?.pairs ?? []} keyOf={(p) => p.pair_id as string} />
       </Panel>
@@ -373,10 +386,30 @@ function OpsTab({ diag, onAction }: { diag: Diag | null; onAction: () => void })
         <Stat label="BULLISH" value={venue?.bullish?.ok ? `ok (${venue.bullish.quoteCount})` : "down"} color={venue?.bullish?.ok ? C.green : C.red} />
         <Stat label="LIVE EXEC" value={String((env?.live_enabled ?? "—"))} sub="real-money gate" color={env?.live_enabled ? C.amber : C.muted} />
       </StatGrid>
+      <RegimeProximityWidget prox={diag?.regime_proximity as Record<string, unknown> | undefined} />
       <HaltControls haltOn={!!haltOn} onAction={onAction} />
       <BackfillForm onAction={onAction} />
       <Panel title="Full diagnostics"><JsonView data={diag} /></Panel>
     </>
+  );
+}
+
+function RegimeProximityWidget({ prox }: { prox?: Record<string, unknown> }) {
+  if (!prox) return null;
+  const trend = String(prox.trend ?? "unknown");
+  const trendColor = trend === "rising" ? C.green : trend === "falling" ? C.red : C.muted;
+  const approaching = prox.approaching_up === true;
+  return (
+    <Panel title="Regime proximity (pre-position before the cross)">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12 }}>
+        <Stat label="DVOL" value={String(prox.dvol ?? "—")} />
+        <Stat label="REGIME" value={String(prox.regime ?? "—")} />
+        <Stat label={`→ ${String(prox.next_regime_up ?? "top")}`} value={prox.dvol_to_next_up != null ? `${prox.dvol_to_next_up} away` : "—"} sub={prox.next_threshold_up != null ? `@ ${prox.next_threshold_up}` : ""} color={approaching ? C.amber : C.text} />
+        <Stat label="TREND (15m)" value={trend} color={trendColor} />
+        <Stat label="APPROACHING" value={approaching ? "YES" : "no"} color={approaching ? C.amber : C.muted} />
+      </div>
+      {prox.note != null && <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>{String(prox.note)}</div>}
+    </Panel>
   );
 }
 
