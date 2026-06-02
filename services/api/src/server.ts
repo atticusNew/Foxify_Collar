@@ -9147,6 +9147,34 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     });
     v2ShadowAutoActivator.start();
 
+    // Phase C: per-venue balance reader for the pre-fire balance guard (live path only).
+    // Bullish premium is paid in USDC (read availableQuantity for USDC); Deribit premium
+    // is paid in BTC (read available_funds from the BTC account summary). Reads run from
+    // the credentialed clients; any failure returns null → guard fails open by default.
+    const v2VenueBalanceReader = {
+      getBullishAvailableUsdc: v2BullishClient
+        ? async (): Promise<number | null> => {
+            try {
+              const balances = await v2BullishClient.getAssetBalances({ tradingAccountId: v2PilotConfig.bullish.tradingAccountId });
+              const usdc = balances.find((b) => b.assetSymbol === "USDC");
+              const v = usdc ? Number(usdc.availableQuantity) : null;
+              return Number.isFinite(v as number) ? (v as number) : null;
+            } catch {
+              return null;
+            }
+          }
+        : undefined,
+      getDeribitAvailableBtc: async (): Promise<number | null> => {
+        try {
+          const summary = (await deribit.getAccountSummary("BTC")) as { result?: { available_funds?: number } };
+          const v = summary?.result?.available_funds;
+          return Number.isFinite(v as number) ? (v as number) : null;
+        } catch {
+          return null;
+        }
+      }
+    };
+
     await app.register(async (instance) => {
       await registerFoxifyV2Routes(instance, {
         pool: v2Pool,
@@ -9163,7 +9191,9 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
         shadowAutoActivator: v2ShadowAutoActivator,
         shadowAutoActivatorConfig: v2ShadowAutoCfg,
         // Server-side authed Bullish probe (runs from the whitelisted deploy IP).
-        bullishProbeClient: v2BullishClient
+        bullishProbeClient: v2BullishClient,
+        // Phase C: pre-fire per-venue balance guard reader.
+        venueBalanceReader: v2VenueBalanceReader
       });
     });
     console.log(`[FoxifyV2] Routes registered at /foxify/v2/* and /admin/foxify/v2/* (bullish_quotes=${Boolean(v2BullishClient)}, shadow_auto_activate=${v2ShadowAutoCfg.enabled})`);

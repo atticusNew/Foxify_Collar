@@ -117,6 +117,13 @@ export type FoxifyV2RoutesDeps = {
     getMarkets?: (params?: { forceRefresh?: boolean; cacheTtlMs?: number }) => Promise<Array<Record<string, unknown>>>;
     getHybridOrderBook?: (symbol: string) => Promise<{ bids?: Array<{ price: string | number }>; asks?: Array<{ price: string | number }> }>;
   } | null;
+  /**
+   * Optional Phase C: per-venue balance reader for the pre-fire balance guard on
+   * the LIVE activation path. Production wires it from the shared Bullish client
+   * (getAssetBalances) + the credentialed Deribit connector (getAccountSummary).
+   * Omitted in shadow-only deploys + tests → guard is a no-op.
+   */
+  venueBalanceReader?: import("./venueBalanceGuard").VenueBalanceReader;
 };
 
 // ───────────────────────── Auth helpers ─────────────────────────
@@ -181,6 +188,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     getFeed: () => deps.feedService.getCurrentFeed(),
     feedVersion: "v1.0.0",
     getCurrentRegime: () => deps.dvolService.getCurrentDvol()?.regime ?? null,
+    venueBalanceReader: deps.venueBalanceReader,
     preActivateGuard: async ({ pairHedgeCostUsdc, isShadow }) => {
       // Plumbs DVOL into guardrails.canActivate
       const { canActivate } = await import("./guardrails");

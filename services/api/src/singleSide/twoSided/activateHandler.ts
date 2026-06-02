@@ -157,6 +157,13 @@ export type ActivateDeps = {
   preActivateGuard?: (ctx: { pairHedgeCostUsdc: number; spot: number; isShadow: boolean }) => Promise<{ ok: boolean; reason?: string; details?: Record<string, unknown> }>;
   /** Optional PR C3: returns current regime for cell-allowlist enforcement. Tests can omit. */
   getCurrentRegime?: () => "calm" | "moderate" | "elevated" | "stress" | null;
+  /**
+   * Optional Phase C: pre-fire per-venue balance reader. When provided AND the
+   * server is in live execution mode for a non-shadow activation, the chosen
+   * venue(s) are checked for sufficient available premium BEFORE any order fires
+   * (prevents half-filled strangles from an underfunded venue). Tests omit it.
+   */
+  venueBalanceReader?: import("./venueBalanceGuard").VenueBalanceReader;
 };
 
 const isValidRequest = (req: unknown): req is ActivateRequest => {
@@ -377,6 +384,41 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
         feed_snapshot: { canonical_price: spot, as_of_ms: feed.asOfMs, health: feed.health }
       }
     };
+  }
+
+  // 6.5 PRE-FIRE PER-VENUE BALANCE GUARD (Phase C). On the LIVE path only, confirm the
+  // chosen venue(s) hold enough premium BEFORE we insert a pending pair or fire any order.
+  // Blocking here avoids a half-filled strangle (one leg fills, the underfunded venue's leg
+  // rejects → reverse-sell cost / dangling exposure). Shadow fires + non-live deploys skip it.
+  if (liveExecutionOn && req.isShadow !== true && deps.venueBalanceReader) {
+    const { isBalanceGuardEnabled, getBalanceGuardConfig, checkVenueBalances } = await import("./venueBalanceGuard");
+    if (isBalanceGuardEnabled()) {
+      const balCheck = await checkVenueBalances(
+        deps.venueBalanceReader,
+        {
+          putVenue: quote.putLeg.venue,
+          putCostUsdc: quote.putLeg.legCostUsdc,
+          callVenue: quote.callLeg.venue,
+          callCostUsdc: quote.callLeg.legCostUsdc,
+          spot
+        },
+        getBalanceGuardConfig()
+      );
+      if (!balCheck.ok) {
+        getMetrics().incrementCounter(METRIC_NAMES.ACTIVATIONS_BLOCKED_TOTAL, { reason: balCheck.reason });
+        return {
+          status: 503,
+          body: {
+            error: balCheck.reason,
+            message: balCheck.reason === "insufficient_venue_balance"
+              ? "A chosen venue lacks sufficient available balance to fund this hedge premium. Top up the venue or pick a cheaper cell."
+              : "A chosen venue's balance could not be read and the guard is in fail-closed mode (SS_TWO_SIDED_BALANCE_GUARD_FAIL_CLOSED).",
+            retry_after_s: 30,
+            details: balCheck.details
+          }
+        };
+      }
+    }
   }
 
   // 7. Insert pending pair

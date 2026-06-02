@@ -124,6 +124,41 @@ test("Rail 1: daily cap enforced — second live pair blocked with daily_cap_rea
   });
 });
 
+test("Rail 3 (Phase C): live ON + balance reader reports insufficient venue funds → 503 insufficient_venue_balance, executor NOT used", async () => {
+  const pool = await buildPool();
+  const tag = { used: false };
+  await withEnv({ FOXIFY_V2_LIVE_EXECUTION: "true", SS_TWO_SIDED_LIVE_ENABLED: "true", SS_TWO_SIDED_CELL_ALLOWLIST: CELL, SS_TWO_SIDED_MAX_PAIRS_PER_DAY: "5" }, async () => {
+    const deps: ActivateDeps = {
+      ...baseDeps(pool, markerExecutor(tag)),
+      venueBalanceReader: {
+        getBullishAvailableUsdc: async () => 10, // way short of the bullish put-leg premium
+        getDeribitAvailableBtc: async () => 100  // ample on deribit
+      }
+    };
+    const r = await activate(deps);
+    assert.equal(r.status, 503, `expected 503, got ${r.status} ${JSON.stringify((r as { body: unknown }).body)}`);
+    if (r.status === 503) assert.equal(r.body.error, "insufficient_venue_balance");
+    assert.equal(tag.used, false, "no order should fire when a venue is underfunded");
+  });
+});
+
+test("Rail 3 (Phase C): live ON + balance reader reports ample funds → 201 (guard passes through)", async () => {
+  const pool = await buildPool();
+  const tag = { used: false };
+  await withEnv({ FOXIFY_V2_LIVE_EXECUTION: "true", SS_TWO_SIDED_LIVE_ENABLED: "true", SS_TWO_SIDED_CELL_ALLOWLIST: CELL, SS_TWO_SIDED_MAX_PAIRS_PER_DAY: "5" }, async () => {
+    const deps: ActivateDeps = {
+      ...baseDeps(pool, markerExecutor(tag)),
+      venueBalanceReader: {
+        getBullishAvailableUsdc: async () => 1_000_000,
+        getDeribitAvailableBtc: async () => 100
+      }
+    };
+    const r = await activate(deps);
+    assert.equal(r.status, 201, `expected 201, got ${r.status} ${JSON.stringify((r as { body: unknown }).body)}`);
+    assert.equal(tag.used, true, "executor fires once balances are sufficient");
+  });
+});
+
 test("Rail 2: isShadow=true uses the SHADOW executor (paper), never the live executor — and skips the live gate", async () => {
   const pool = await buildPool();
   const live = { used: false };
