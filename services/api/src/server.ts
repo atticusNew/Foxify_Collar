@@ -8766,7 +8766,8 @@ if (String(process.env.FOXIFY_V2_ENABLED ?? "false").toLowerCase() === "true") {
     // Live execution fires REAL Bullish + Deribit orders. Operator must explicitly opt-in.
     let v2Executor: import("./singleSide/twoSided/executor").StrangleExecutor;
     let v2CloseExecutor: import("./singleSide/twoSided/closeExecutor").CloseExecutor;
-    const liveExecutionEnabled = String(process.env.FOXIFY_V2_LIVE_EXECUTION ?? "false").toLowerCase() === "true";
+    const { isLiveExecutionEnabled } = await import("./singleSide/twoSided/featureFlag");
+    const liveExecutionEnabled = isLiveExecutionEnabled();
     if (liveExecutionEnabled) {
       const { LiveStrangleExecutor } = await import("./singleSide/twoSided/liveStrangleExecutor");
       const { LiveCloseExecutor } = await import("./singleSide/twoSided/liveCloseExecutor");

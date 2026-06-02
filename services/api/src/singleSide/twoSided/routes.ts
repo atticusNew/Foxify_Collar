@@ -49,7 +49,7 @@ import {
   type HaltReason
 } from "./guardrails";
 import { togglePool, getPoolState } from "./deferredPool";
-import { clearNewbornReview, classifyRegime, getNewbornState, type Regime } from "./featureFlag";
+import { clearNewbornReview, classifyRegime, getNewbornState, isLiveExecutionEnabled, type Regime } from "./featureFlag";
 import { getEventsForPair, getPairById } from "./db";
 import { FeedService } from "./feedService";
 import { DvolService } from "./dvolService";
@@ -763,6 +763,35 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       reply.send({ regime, cleared: true, state, notes: notes ?? "" });
     }
   );
+
+  /**
+   * GET /admin/foxify/v2/newborn-review — per-regime newborn-review state for the admin UI.
+   * Shows triggers/approvals/threshold + auto-approve progress (validated settlements vs N),
+   * so the operator can see what's gating and one-click CLEAR (POST .../clear) from the panel.
+   */
+  app.get("/admin/foxify/v2/newborn-review", { preHandler: checkAdminToken }, async (_req, reply) => {
+    const threshold = deps.newbornReviewThreshold ?? 3;
+    const { getNewbornState, newbornAutoApproveAfterN } = await import("./featureFlag");
+    const { countSettledPairsByRegime } = await import("./db");
+    const autoN = newbornAutoApproveAfterN();
+    const regimes = ["calm", "moderate", "elevated", "stress"] as const;
+    const rows = await Promise.all(regimes.map(async (r) => {
+      const st = await getNewbornState(deps.pool, r, threshold);
+      const validated = await countSettledPairsByRegime(deps.pool, r);
+      return {
+        regime: r,
+        triggers_observed: st.triggersObserved,
+        operator_approved_count: st.operatorApprovedCount,
+        review_required: st.reviewRequired,
+        threshold,
+        pending_review: Math.max(0, st.triggersObserved - st.operatorApprovedCount),
+        validated_settlements: validated,
+        auto_approve_after_n: autoN > 0 ? autoN : null,
+        auto_approve_eligible: autoN > 0 && validated >= autoN
+      };
+    }));
+    reply.send({ threshold, auto_approve_after_n: autoN > 0 ? autoN : null, regimes: rows });
+  });
 
   // Prometheus metrics scrape — typically network-gated rather than token-gated
   app.get("/metrics", async (_req, reply) => {
@@ -2794,17 +2823,32 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         liquidChainStatus = { ok: false, reason: (e as Error).message };
       }
     }
+    // Regime proximity — heads-up as DVOL nears the next regime boundary (admin widget).
+    let regimeProximity: unknown = null;
+    try {
+      const { computeRegimeProximity } = await import("./regimeProximity");
+      const { computeDvolTrend } = await import("./gateHistory");
+      regimeProximity = computeRegimeProximity(dvol?.dvol ?? null, { trendDelta: computeDvolTrend(15).delta });
+    } catch { /* non-fatal */ }
     reply.send({
       asOf: new Date().toISOString(),
       halt,
       status,
       dvol,
+      regime_proximity: regimeProximity,
       feed: feedHealth,
       deferredPool: pool,
       unwindQueue: deps.unwindQueue?.stats() ?? null,
       liquidChainCache: liquidChainStatus,
       env: {
+        // live_enabled = the live GATE (SS_TWO_SIDED_LIVE_ENABLED).
         live_enabled: process.env.SS_TWO_SIDED_LIVE_ENABLED === "true",
+        // live_execution = the EXECUTOR flag (FOXIFY_V2_LIVE_EXECUTION). These are
+        // DIFFERENT: real orders need BOTH. executor_mode shows which executor is
+        // actually wired so "live gate on but still paper-trading" can't hide.
+        live_execution: isLiveExecutionEnabled(),
+        executor_mode: isLiveExecutionEnabled() ? "live" : "shadow",
+        foxify_v2_live_execution_raw: process.env.FOXIFY_V2_LIVE_EXECUTION ?? null,
         boot_halt: process.env.SS_TWO_SIDED_BOOT_HALT !== "false",
         max_pairs_per_day: Number(process.env.SS_TWO_SIDED_MAX_PAIRS_PER_DAY ?? "2"),
         cell_allowlist: (process.env.SS_TWO_SIDED_CELL_ALLOWLIST ?? "pair_50k_2pct")

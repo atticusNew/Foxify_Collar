@@ -166,6 +166,23 @@ export const newbornAutoApproveAfterN = (env: NodeJS.ProcessEnv = process.env): 
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
 };
 
+/**
+ * Is v2 LIVE execution armed? Controls whether the server wires the REAL
+ * Bullish/Deribit executor vs the shadow (paper) executor.
+ *
+ * Accepts common truthy tokens — `true | live | 1 | yes | on` (case-insensitive).
+ * RATIONALE: previously this was a strict `=== "true"` check, so a value like
+ * `FOXIFY_V2_LIVE_EXECUTION=live` SILENTLY fell back to the shadow executor — an
+ * isShadow=false activate then paper-filled (recorded the routed venue + a quote-ask
+ * "fill") with NO real venue order, looking live but trading nothing. Accepting the
+ * obvious truthy tokens prevents that silent-paper footgun. Default (unset/false/
+ * anything-else) = shadow, so going live still requires an explicit truthy value.
+ */
+export const isLiveExecutionEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => {
+  const v = String(env.FOXIFY_V2_LIVE_EXECUTION ?? "false").toLowerCase().trim();
+  return v === "true" || v === "live" || v === "1" || v === "yes" || v === "on";
+};
+
 /** Classify DVOL into regime band — matches calibrateRegimeVolMarkup.ts and the validation MD. */
 export const classifyRegime = (dvol: number): Regime => {
   if (dvol < 40) return "calm";
