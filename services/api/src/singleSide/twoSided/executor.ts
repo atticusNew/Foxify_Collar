@@ -23,6 +23,13 @@ export type LegExecutionResult = {
   ok: true;
   filledAskUsdcPerBtc: number;
   filledAtIso: string;
+  /**
+   * Actual filled size in BTC. May differ from the requested contractsBtc — e.g.
+   * Deribit floors to its 0.1-BTC step (0.35→0.3), or a partial fill. Optional for
+   * backward compatibility; when absent, callers fall back to the requested size.
+   * Recording this makes the persisted hedge cost reflect what truly traded.
+   */
+  filledContractsBtc?: number;
 } | {
   ok: false;
   reason: "venue_error" | "ask_exceeded" | "depth_insufficient" | "timeout" | "halted";
@@ -37,8 +44,8 @@ export type StrangleOrder = {
 
 export type StrangleExecutionResult = {
   ok: true;
-  putLeg: { filledAskUsdcPerBtc: number; filledAtIso: string };
-  callLeg: { filledAskUsdcPerBtc: number; filledAtIso: string };
+  putLeg: { filledAskUsdcPerBtc: number; filledAtIso: string; filledContractsBtc?: number };
+  callLeg: { filledAskUsdcPerBtc: number; filledAtIso: string; filledContractsBtc?: number };
 } | {
   ok: false;
   reason: "put_failed" | "call_failed" | "both_failed";
@@ -58,6 +65,9 @@ export type MockExecutorBehavior = {
   failCallLeg?: { reason: LegExecutionResult & { ok: false }; detail: string };
   /** Pretend the fill came in at this offset from max acceptable (1.0 = exactly at cap, 0.95 = 5% better). */
   fillPriceMultiplier?: number;
+  /** Simulate a venue-floored / partial fill size (e.g. Deribit 0.35→0.3). When unset, echoes the requested size. */
+  putFilledContractsBtc?: number;
+  callFilledContractsBtc?: number;
 };
 
 export class MockStrangleExecutor implements StrangleExecutor {
@@ -69,11 +79,11 @@ export class MockStrangleExecutor implements StrangleExecutor {
 
     const putResult: LegExecutionResult = this.behavior.failPutLeg
       ? { ok: false, reason: "venue_error", detail: this.behavior.failPutLeg.detail }
-      : { ok: true, filledAskUsdcPerBtc: order.putLeg.maxAcceptableAskUsdcPerBtc * mult, filledAtIso: now };
+      : { ok: true, filledAskUsdcPerBtc: order.putLeg.maxAcceptableAskUsdcPerBtc * mult, filledAtIso: now, filledContractsBtc: this.behavior.putFilledContractsBtc ?? order.putLeg.contractsBtc };
 
     const callResult: LegExecutionResult = this.behavior.failCallLeg
       ? { ok: false, reason: "venue_error", detail: this.behavior.failCallLeg.detail }
-      : { ok: true, filledAskUsdcPerBtc: order.callLeg.maxAcceptableAskUsdcPerBtc * mult, filledAtIso: now };
+      : { ok: true, filledAskUsdcPerBtc: order.callLeg.maxAcceptableAskUsdcPerBtc * mult, filledAtIso: now, filledContractsBtc: this.behavior.callFilledContractsBtc ?? order.callLeg.contractsBtc };
 
     if (!putResult.ok && !callResult.ok) {
       return { ok: false, reason: "both_failed", putLegResult: putResult, callLegResult: callResult };
@@ -86,8 +96,8 @@ export class MockStrangleExecutor implements StrangleExecutor {
     }
     return {
       ok: true,
-      putLeg: { filledAskUsdcPerBtc: putResult.filledAskUsdcPerBtc, filledAtIso: putResult.filledAtIso },
-      callLeg: { filledAskUsdcPerBtc: callResult.filledAskUsdcPerBtc, filledAtIso: callResult.filledAtIso }
+      putLeg: { filledAskUsdcPerBtc: putResult.filledAskUsdcPerBtc, filledAtIso: putResult.filledAtIso, filledContractsBtc: putResult.filledContractsBtc },
+      callLeg: { filledAskUsdcPerBtc: callResult.filledAskUsdcPerBtc, filledAtIso: callResult.filledAtIso, filledContractsBtc: callResult.filledContractsBtc }
     };
   }
 }

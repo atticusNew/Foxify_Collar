@@ -140,6 +140,45 @@ test("handleActivate: 201 happy path returns full payload + writes DB", async ()
   assert.ok(events.some((e) => e.kind === "activated"));
 });
 
+// ─── D2: actual filled-size accounting (Deribit 0.1-step floor) ───
+
+test("handleActivate: records ACTUAL filled size + cost when executor floors the fill", async () => {
+  const pool = await buildPool();
+  // Executor reports a floored fill (0.658 requested → 0.6 filled, mimicking Deribit's 0.1 step).
+  const deps = {
+    pool,
+    anchorProvider: makeAnchorProvider(),
+    executor: new MockStrangleExecutor({ putFilledContractsBtc: 0.6, callFilledContractsBtc: 0.6 }),
+    getFeed: () => makeFeed(),
+    feedVersion: "v1.0.0",
+    nowMs: () => Date.parse("2026-05-27T18:00:00Z")
+  };
+  const res = await handleActivate(
+    { cellId: "pair_50k_2pct", maxAcceptableHedgeCostUsdc: 3_500, foxifyPairRef: "fxy-filled-size" },
+    deps
+  );
+  assert.equal(res.status, 201);
+  if (res.status !== 201) return;
+
+  // Payload reflects the FILLED size (0.6), not the requested 0.658.
+  assert.equal(res.body.put_leg.contracts_btc, 0.6);
+  assert.equal(res.body.call_leg.contracts_btc, 0.6);
+  // Leg cost = fill price × FILLED size (put ask 1150, call ask 1162.86).
+  assert.ok(Math.abs(res.body.put_leg.leg_cost_usdc - 1_150 * 0.6) < 1e-6);
+  assert.ok(Math.abs(res.body.call_leg.leg_cost_usdc - 1_162.86 * 0.6) < 1e-6);
+  const expectedTotal = 1_150 * 0.6 + 1_162.86 * 0.6;
+  assert.ok(Math.abs(res.body.total_hedge_cost_usdc - expectedTotal) < 1e-6);
+
+  // DB: legs carry the filled size + requested size in metadata; pair cost corrected.
+  const legs = await getLegsForPair(pool, res.body.pair_id);
+  for (const leg of legs) {
+    assert.equal(leg.contractsBtc, 0.6, "leg records the FILLED size");
+    assert.equal((leg.metadata as { requested_contracts_btc?: number }).requested_contracts_btc, 0.658);
+  }
+  const pair = await getPairById(pool, res.body.pair_id);
+  assert.ok(Math.abs(pair!.hedgeCostTotalUsdc - expectedTotal) < 1e-6, "pair hedge_cost corrected to actual fill");
+});
+
 // ─── regime tagging via override (shadow path) ───
 
 test("handleActivate: regimeAtActivationOverride stamps regime_at_activation (shadow path, no getCurrentRegime)", async () => {

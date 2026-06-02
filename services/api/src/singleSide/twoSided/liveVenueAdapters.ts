@@ -66,7 +66,8 @@ export class BullishLegAdapter implements BullishLegClient {
     return {
       ok: true,
       filledAskUsdcPerBtc: result.fillPriceUsdcPerBtc,
-      filledAtIso: new Date().toISOString()
+      filledAtIso: new Date().toISOString(),
+      filledContractsBtc: result.fillQtyBtc
     };
   }
 
@@ -96,7 +97,8 @@ export class BullishLegAdapter implements BullishLegClient {
     return {
       ok: true,
       filledAskUsdcPerBtc: result.fillPriceUsdcPerBtc, // really fill price; same field name for both directions
-      filledAtIso: new Date().toISOString()
+      filledAtIso: new Date().toISOString(),
+      filledContractsBtc: result.fillQtyBtc
     };
   }
 }
@@ -216,12 +218,14 @@ export class DeribitLegAdapter implements DeribitLegClient {
         timeInForce: "immediate_or_cancel"
       })) as { result?: { order?: { order_state?: string; average_price?: number; filled_amount?: number } }; status?: string; fillPrice?: number };
 
-      // Paper-mode response: fillPrice is BTC-quoted (Deribit native)
+      // Paper-mode response: fillPrice is BTC-quoted (Deribit native). The traded
+      // size is the snapped `amount` (0.1-step floored).
       if (resp?.status === "paper_filled" && resp.fillPrice != null) {
         return {
           ok: true,
           filledAskUsdcPerBtc: resp.fillPrice * spot,
-          filledAtIso: new Date().toISOString()
+          filledAtIso: new Date().toISOString(),
+          filledContractsBtc: amount
         };
       }
 
@@ -242,7 +246,9 @@ export class DeribitLegAdapter implements DeribitLegClient {
       return {
         ok: true,
         filledAskUsdcPerBtc: order.average_price * spot,
-        filledAtIso: new Date().toISOString()
+        filledAtIso: new Date().toISOString(),
+        // The ACTUAL traded size from Deribit (reflects the 0.1-step floor / any partial).
+        filledContractsBtc: order.filled_amount
       };
     } catch (e) {
       return { ok: false, reason: "venue_error", detail: `Deribit buy threw: ${(e as Error).message}` };
@@ -288,7 +294,8 @@ export class DeribitLegAdapter implements DeribitLegClient {
         return {
           ok: true,
           filledAskUsdcPerBtc: resp.fillPrice * spot,
-          filledAtIso: new Date().toISOString()
+          filledAtIso: new Date().toISOString(),
+          filledContractsBtc: amount
         };
       }
       const order = resp?.result?.order;
@@ -303,7 +310,8 @@ export class DeribitLegAdapter implements DeribitLegClient {
       return {
         ok: true,
         filledAskUsdcPerBtc: order.average_price * spot,
-        filledAtIso: new Date().toISOString()
+        filledAtIso: new Date().toISOString(),
+        filledContractsBtc: order.filled_amount
       };
     } catch (e) {
       return { ok: false, reason: "venue_error", detail: `Deribit sell threw: ${(e as Error).message}` };

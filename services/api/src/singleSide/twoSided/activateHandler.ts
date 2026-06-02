@@ -462,7 +462,17 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     };
   }
 
-  // 9. Insert legs + transition to active
+  // 9. Insert legs + transition to active.
+  // Use the ACTUAL filled size from the executor (e.g. Deribit floors to its 0.1-BTC
+  // step: 0.35→0.3). Falls back to the requested quote size when the executor doesn't
+  // report a fill size (mocks / legacy). This makes the persisted cost reflect the
+  // true fill, so MTM / close / live-pnl all reconcile against reality.
+  const putFilledContracts = execResult.putLeg.filledContractsBtc ?? quote.contractsBtc;
+  const callFilledContracts = execResult.callLeg.filledContractsBtc ?? quote.contractsBtc;
+  const actualPutCost = execResult.putLeg.filledAskUsdcPerBtc * putFilledContracts;
+  const actualCallCost = execResult.callLeg.filledAskUsdcPerBtc * callFilledContracts;
+  const actualTotalCost = actualPutCost + actualCallCost;
+
   await insertPairLeg(deps.pool, {
     legId: randomUUID(),
     pairId: pair.pairId,
@@ -470,13 +480,13 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     venue: quote.putLeg.venue,
     symbol: quote.putLeg.symbol,
     strikeUsdc: quote.putStrike,
-    contractsBtc: quote.contractsBtc,
+    contractsBtc: putFilledContracts,
     buyAskUsdcPerBtc: execResult.putLeg.filledAskUsdcPerBtc,
-    buyCostUsdc: execResult.putLeg.filledAskUsdcPerBtc * quote.contractsBtc,
+    buyCostUsdc: actualPutCost,
     buyFilledAt: execResult.putLeg.filledAtIso,
     liveAnchorAskUsdcPerBtc: quote.putLeg.askUsdcPerBtc,
     liveAnchorPulledAt: quote.putLeg.pulledAt,
-    metadata: { quote_id: quote.quoteId }
+    metadata: { quote_id: quote.quoteId, requested_contracts_btc: quote.contractsBtc }
   });
   await insertPairLeg(deps.pool, {
     legId: randomUUID(),
@@ -485,14 +495,28 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     venue: quote.callLeg.venue,
     symbol: quote.callLeg.symbol,
     strikeUsdc: quote.callStrike,
-    contractsBtc: quote.contractsBtc,
+    contractsBtc: callFilledContracts,
     buyAskUsdcPerBtc: execResult.callLeg.filledAskUsdcPerBtc,
-    buyCostUsdc: execResult.callLeg.filledAskUsdcPerBtc * quote.contractsBtc,
+    buyCostUsdc: actualCallCost,
     buyFilledAt: execResult.callLeg.filledAtIso,
     liveAnchorAskUsdcPerBtc: quote.callLeg.askUsdcPerBtc,
     liveAnchorPulledAt: quote.callLeg.pulledAt,
-    metadata: { quote_id: quote.quoteId }
+    metadata: { quote_id: quote.quoteId, requested_contracts_btc: quote.contractsBtc }
   });
+
+  // Correct the pair's recorded hedge cost to the ACTUAL total fill (it was inserted
+  // with the quote estimate before execution). Keeps hedge_cost_total_usdc /
+  // foxify_capital_funded_usdc consistent with the legs + live-pnl.
+  if (Math.abs(actualTotalCost - quote.totalHedgeCostUsdc) > 1e-9) {
+    try {
+      await deps.pool.query(
+        `UPDATE two_sided_pair SET hedge_cost_total_usdc = $2, foxify_capital_funded_usdc = $2, updated_at = NOW() WHERE pair_id = $1`,
+        [pair.pairId, actualTotalCost]
+      );
+    } catch (e) {
+      // Non-fatal: cost correction is best-effort; the legs still carry the true fill.
+    }
+  }
 
   await updatePairStatus(deps.pool, pair.pairId, "active");
   await recordPairEvent(deps.pool, {
@@ -500,17 +524,17 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
     kind: "activated",
     details: {
       spot,
-      total_hedge_cost: quote.totalHedgeCostUsdc,
+      total_hedge_cost: actualTotalCost,
+      quoted_hedge_cost: quote.totalHedgeCostUsdc,
       put_fill: execResult.putLeg.filledAskUsdcPerBtc,
       call_fill: execResult.callLeg.filledAskUsdcPerBtc,
+      put_filled_contracts_btc: putFilledContracts,
+      call_filled_contracts_btc: callFilledContracts,
       tier: tier.label
     }
   });
 
   // 10. Build 201 payload
-  const actualPutCost = execResult.putLeg.filledAskUsdcPerBtc * quote.contractsBtc;
-  const actualCallCost = execResult.callLeg.filledAskUsdcPerBtc * quote.contractsBtc;
-  const actualTotalCost = actualPutCost + actualCallCost;
   const m = getMetrics();
   m.incrementCounter(METRIC_NAMES.PAIRS_ACTIVATED_TOTAL, { cell_id: cell.cellId, tier: tier.label });
   m.incrementGauge(METRIC_NAMES.ACTIVE_PAIRS, { cell_id: cell.cellId });
@@ -556,7 +580,7 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
         venue: quote.putLeg.venue,
         symbol: quote.putLeg.symbol,
         ask_filled_usdc_per_btc: execResult.putLeg.filledAskUsdcPerBtc,
-        contracts_btc: quote.contractsBtc,
+        contracts_btc: putFilledContracts,
         leg_cost_usdc: actualPutCost,
         filled_at: execResult.putLeg.filledAtIso
       },
@@ -564,7 +588,7 @@ export const handleActivate = async (req: unknown, deps: ActivateDeps): Promise<
         venue: quote.callLeg.venue,
         symbol: quote.callLeg.symbol,
         ask_filled_usdc_per_btc: execResult.callLeg.filledAskUsdcPerBtc,
-        contracts_btc: quote.contractsBtc,
+        contracts_btc: callFilledContracts,
         leg_cost_usdc: actualCallCost,
         filled_at: execResult.callLeg.filledAtIso
       },
