@@ -139,8 +139,8 @@ export function FoxifyVolumeDashboard() {
     { key: "window", label: "Trigger window", render: (p) => `${fmtUsd(p.trigger_down_price, 0)} – ${fmtUsd(p.trigger_up_price, 0)}` },
     { key: "dist", label: "Dist", align: "right", render: (p) => fmtPct(p.closest_trigger_pct) },
     { key: "ttl", label: "Window left", align: "right", render: (p) => fmtHours(p.tenor_remaining_hours) },
-    { key: "mark", label: "MTM", align: "right", render: (p) => fmtUsd(p.estimated_salvage_usdc) },
-    { key: "pnl", label: "P&L", align: "right", render: (p) => <span style={{ color: pnlColor(p.pnl_if_close_now_usdc) }}>{fmtSignedUsd(p.pnl_if_close_now_usdc)} ({fmtPct(p.pnl_pct)})</span> },
+    { key: "mark", label: "Close value", align: "right", render: (p) => fmtUsd(p.estimated_salvage_usdc) },
+    { key: "pnl", label: "P&L if close now", align: "right", render: (p) => <span style={{ color: pnlColor(p.pnl_if_close_now_usdc) }}>{fmtSignedUsd(p.pnl_if_close_now_usdc)} ({fmtPct(p.pnl_pct)})</span> },
     { key: "rec", label: "Signal", render: (p) => <Pill text={p.recommendation} color={recColor(p.recommendation)} /> },
     { key: "act", label: "", render: (p) => (
       <span style={{ whiteSpace: "nowrap" }}>
@@ -209,10 +209,13 @@ export function FoxifyVolumeDashboard() {
         <Table cols={pairCols} rows={shownPairs} keyOf={(p) => p.pair_id} />
         {realPairs.length > 0 && (
           <div style={{ color: C.muted, fontSize: 11, marginTop: 8 }}>
-            Totals — cost {fmtUsd(realPairs.reduce((s, p) => s + p.cost_paid_usdc, 0))} · MTM {fmtUsd(realPairs.reduce((s, p) => s + p.estimated_salvage_usdc, 0))} ·{" "}
+            Totals — cost {fmtUsd(realPairs.reduce((s, p) => s + p.cost_paid_usdc, 0))} · Close value {fmtUsd(realPairs.reduce((s, p) => s + p.estimated_salvage_usdc, 0))} ·{" "}
             <span style={{ color: pnlColor(realPairs.reduce((s, p) => s + p.pnl_if_close_now_usdc, 0)) }}>P&L {fmtSignedUsd(realPairs.reduce((s, p) => s + p.pnl_if_close_now_usdc, 0))}</span>
           </div>
         )}
+        <div style={{ color: C.muted, fontSize: 11, marginTop: 6, lineHeight: 1.4 }}>
+          <b>Close value</b> = what you'd actually receive closing now — valued at the live exchange <b>bid</b> for your exact contracts, net of a small slippage buffer. This is the <i>executable</i> number, deliberately conservative. It is <b>not</b> the exchange-screen "mark" (mid price), which reads higher by the bid-ask spread and isn't realizable on a sale.
+        </div>
       </Panel>
 
       {drill && (
