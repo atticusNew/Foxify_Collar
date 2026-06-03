@@ -403,7 +403,7 @@ const sourceLabel = (
   return venue === "bullish" ? "real_bid_bullish" : "real_bid_deribit";
 };
 
-const priceCandidateLeg = (
+export const priceCandidateLeg = (
   spot: number,
   strike: number,
   optType: "put" | "call",

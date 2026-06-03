@@ -11,7 +11,7 @@
 import type { Pool } from "pg";
 import type { Regime } from "./featureFlag";
 import { PHASE_0_CELLS, computeStrikes, type TwoSidedCell } from "./cellConfig";
-import { computeRealPricing, type SweepVenue } from "./cellSweep";
+import { computeRealPricing, priceCandidateLeg, type SweepVenue } from "./cellSweep";
 import { getRegimeCalibration } from "./regimeCalibration";
 import { runFoxifyDurationMc } from "./foxifyDurationMc";
 import { structureCostAndRealism, theta1dUsdc, type OptionStructure, type LegPrices } from "./optionStructures";
@@ -97,16 +97,19 @@ export const compareStructures = async (
     // for a put spread (the spread "bets" on a move up to the trigger).
     let shortStrike: number | undefined;
     let legs: LegPrices = pricing;
+    // Price ONLY the short leg's needed option type via the single-leg pricer
+    // (computeRealPricing requires BOTH put+call at a strike — the ITM side of an OTM
+    // short strike is often illiquid → it would falsely fail the whole spread).
     if (structure === "vertical_spread_call") {
       shortStrike = Math.round(opts.spot * (1 + cell.triggerPctUp));
-      const sp = computeRealPricing(opts.spot, shortStrike, shortStrike, cell.contractsBtc, cell.hedgeTenorDays, opts.liquidChainCache, opts.dvolService ?? null, venue);
-      if (!sp) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
-      legs = { ...pricing, shortAskPerBtc: sp.callAskPerBtc, shortBidPerBtc: sp.callBidPerBtc, shortBsPerBtc: sp.bsCallPerBtc };
+      const sl = priceCandidateLeg(opts.spot, shortStrike, "call", cell.hedgeTenorDays, cell.contractsBtc, opts.liquidChainCache, opts.dvolService ?? null, venue);
+      if (sl.askPerBtc == null || sl.bidPerBtc == null) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
+      legs = { ...pricing, shortAskPerBtc: sl.askPerBtc, shortBidPerBtc: sl.bidPerBtc, shortBsPerBtc: sl.bsPerBtc };
     } else if (structure === "vertical_spread_put") {
       shortStrike = Math.round(opts.spot * (1 - cell.triggerPctDown));
-      const sp = computeRealPricing(opts.spot, shortStrike, shortStrike, cell.contractsBtc, cell.hedgeTenorDays, opts.liquidChainCache, opts.dvolService ?? null, venue);
-      if (!sp) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
-      legs = { ...pricing, shortAskPerBtc: sp.putAskPerBtc, shortBidPerBtc: sp.putBidPerBtc, shortBsPerBtc: sp.bsPutPerBtc };
+      const sl = priceCandidateLeg(opts.spot, shortStrike, "put", cell.hedgeTenorDays, cell.contractsBtc, opts.liquidChainCache, opts.dvolService ?? null, venue);
+      if (sl.askPerBtc == null || sl.bidPerBtc == null) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
+      legs = { ...pricing, shortAskPerBtc: sl.askPerBtc, shortBidPerBtc: sl.bidPerBtc, shortBsPerBtc: sl.bsPerBtc };
     }
     const { hedgeCostUsdc, salvageRealismMultiplier } = structureCostAndRealism(legs, structure, cell.contractsBtc);
     const theta = theta1dUsdc(structure, opts.spot, putStrike, callStrike, cell.contractsBtc, cell.hedgeTenorDays, sigma, salvageRealismMultiplier, shortStrike);
