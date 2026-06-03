@@ -360,6 +360,11 @@ export const runFoxifyDurationMc = async (
   const splitPct = inputs.atticusSplitPct ?? Number(process.env.SS_ATTICUS_SPLIT_PCT ?? "0.85");
   const floorUsdc = inputs.atticusFloorUsdc ?? Number(process.env.SS_ATTICUS_FLOOR_USDC ?? "25");
   const structure: OptionStructure = inputs.structure ?? "straddle";
+  // Slippage on a SIGNED structure value: a positive (asset) value sells at bid×haircut;
+  // a NEGATIVE value (a short-leg liability, e.g. collar on an up-move) costs MORE to close
+  // (÷haircut → more negative). For long structures every value is ≥0 → identical to ×bidSlip
+  // (keeps the validated straddle numbers byte-for-byte).
+  const applySlip = (v: number): number => (v >= 0 ? v * bidSlip : v / bidSlip);
 
   // Fat-tail mode: bootstrap real bars for ALL regimes (scaled to regime σ), not
   // just calm. Opt-in (default off → legacy GBM for non-calm, validated numbers
@@ -442,7 +447,10 @@ export const runFoxifyDurationMc = async (
         // Peak capture: scan next 6 bars (30 min) for the best value
         const captureEnd = Math.min(i + 6, path.closes.length - 1);
         const triggerSide = path.lows[i] <= triggerDownPx ? "down" : "up";
-        let peak = 0;
+        // peak = -Infinity (NOT 0): for a short-containing structure (collar) the value can
+        // be NEGATIVE on an adverse move; flooring at 0 would HIDE that loss. For long
+        // structures (value ≥ 0) the captured max is unchanged → byte-identical.
+        let peak = -Infinity;
         let peakBar = i;
         for (let j = i; j <= captureEnd; j++) {
           const sp = triggerSide === "down" ? path.lows[j] : path.highs[j];
@@ -450,7 +458,7 @@ export const runFoxifyDurationMc = async (
           const v = structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier);
           if (v > peak) { peak = v; peakBar = j; }
         }
-        const salvageGross = peak * bidSlip;
+        const salvageGross = applySlip(peak);
         const uplift = salvageGross - inputs.hedgeCostUsdc;
         if (uplift <= 0) {
           foxifyNet = salvageGross - inputs.hedgeCostUsdc;
@@ -468,11 +476,11 @@ export const runFoxifyDurationMc = async (
       // 2. Compute MTM at this tick + check Foxify auto-close
       const remMs = (path.closes.length - 1 - i) * BAR_MINUTES * 60_000;
       const mtmGross = structureValueAt(structure, path.closes[i], inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier);
-      const mtmNetAfterSlip = mtmGross * bidSlip - inputs.hedgeCostUsdc;
+      const mtmNetAfterSlip = applySlip(mtmGross) - inputs.hedgeCostUsdc;
       const mtmPnlPct = inputs.hedgeCostUsdc > 0 ? mtmNetAfterSlip / inputs.hedgeCostUsdc : 0;
       if (mtmPnlPct >= inputs.autoClosePnlPct || mtmNetAfterSlip >= inputs.autoCloseAbsoluteUsdc) {
         // Foxify closes here
-        const salvageGross = mtmGross * bidSlip;
+        const salvageGross = applySlip(mtmGross);
         const uplift = salvageGross - inputs.hedgeCostUsdc;
         if (uplift <= 0) {
           foxifyNet = uplift;
@@ -493,7 +501,7 @@ export const runFoxifyDurationMc = async (
     if (exitMode === "expiry") {
       const sp = path.closes[path.closes.length - 1];
       const remMs = 0;
-      const salvageGross = structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier) * bidSlip;
+      const salvageGross = applySlip(structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier));
       const uplift = salvageGross - inputs.hedgeCostUsdc;
       if (uplift <= 0) {
         foxifyNet = uplift;
