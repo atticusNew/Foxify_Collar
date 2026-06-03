@@ -2319,6 +2319,23 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   app.get("/admin/foxify/v2/bullish-positions", { preHandler: checkAdminToken }, venuePositionsHandler);
 
   /**
+   * GET /admin/foxify/v2/settlement-funnel
+   *
+   * Explains WHY active positions aren't (yet) feeding the realized-vs-MC validation
+   * gate: open vs settled, regime-tagged vs untagged, organic vs seeded, per cell.
+   * Read-only.
+   */
+  app.get("/admin/foxify/v2/settlement-funnel", { preHandler: checkAdminToken }, async (_req, reply) => {
+    try {
+      const { getSettlementFunnel } = await import("./settlementFunnel");
+      const funnel = await getSettlementFunnel(deps.pool);
+      reply.send(funnel);
+    } catch (e) {
+      reply.code(500).send({ error: "funnel_failed", message: (e as Error).message });
+    }
+  });
+
+  /**
    * GET /admin/foxify/v2/bullish-markets-probe
    *
    * Diagnoses WHY the Bullish chain yields 0 quotes despite working auth. Pulls
