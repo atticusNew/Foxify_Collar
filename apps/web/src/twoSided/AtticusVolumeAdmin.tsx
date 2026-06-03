@@ -204,11 +204,15 @@ function spreadLabel(p: Record<string, unknown>) {
 }
 
 function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<string, unknown>> } | null; stuck: StuckPairs | null; onAction: () => void }) {
+  const [prodOnly, setProdOnly] = useState(false);
   const allPairs = mtm?.pairs ?? [];
   // SEPARATE live (real-money) from shadow (paper) — they were mixed before, which made
   // it hard to tell real exposure from the data-engine's paper pairs.
   const livePairs = allPairs.filter((p) => !p.is_shadow);
-  const shadowPairs = allPairs.filter((p) => p.is_shadow);
+  // Production-only toggle hides deprecated/experimental cells (e.g. legacy pair_50k_2pct
+  // shadow noise) so the view reflects go-live cells only.
+  const shadowAll = allPairs.filter((p) => p.is_shadow);
+  const shadowPairs = prodOnly ? shadowAll.filter((p) => PRODUCTION_CELLS.has(String(p.cell_id))) : shadowAll;
   const cols: Col<Record<string, unknown>>[] = [
     { key: "pair", label: "Pair", render: (p) => short(p.pair_id as string) },
     { key: "cell_id", label: "Cell" },
@@ -260,8 +264,9 @@ function PositionsTab({ mtm, stuck, onAction }: { mtm: { pairs: Array<Record<str
       {/* SHADOW — paper / data engine, clearly separated. Subtotaled + grouped by cell
           so a long list of negatives reads as aggregates, and non-production cells (e.g.
           deprecated pair_50k_2pct) are visibly flagged rather than mistaken for go-live. */}
-      <Panel title={`Shadow positions — paper / data engine (${shadowPairs.length})`}>
-        <SubtotalLine label="SHADOW subtotal (all)" sub={shadowSub} />
+      <Panel title={`Shadow positions — paper / data engine (${shadowPairs.length}${prodOnly ? ` of ${shadowAll.length}` : ""})`}
+        right={<label style={{ fontSize: 12, color: C.muted, cursor: "pointer" }}><input type="checkbox" checked={prodOnly} onChange={(e) => setProdOnly(e.target.checked)} style={{ marginRight: 5 }} />production cells only</label>}>
+        <SubtotalLine label={prodOnly ? "SHADOW subtotal (production cells)" : "SHADOW subtotal (all)"} sub={shadowSub} />
         <div style={{ fontSize: 11, color: C.muted, margin: "4px 0 8px" }}>
           Shadow = paper-executed for model/data accrual — <b>no real money</b>. Negatives here are mostly calm loss-leaders + legacy/deprecated cells; they are NOT a forecast of live P&L. See the per-cell breakdown.
         </div>
@@ -350,9 +355,41 @@ function ForceTriggerForm({ onAction }: { onAction: () => void }) {
 const REGIMES = ["calm", "moderate", "elevated", "stress"] as const;
 type AllowlistAll = Record<string, { default_allowlist?: string[]; effective_allowlist?: string[] }>;
 
+type Funnel = {
+  shadow: { open: { total: number; by_regime: Record<string, number> }; settled: { total: number; counted_in_gate: number; counted_by_regime: Record<string, number>; excluded_untagged: number; excluded_seeded: number } };
+  live: { open: number; settled: number };
+};
+
+/** Data-readiness funnel: shows WHY positions are/aren't feeding the realized-vs-MC gate. */
+function FunnelPanel({ funnel }: { funnel: Funnel | null }) {
+  if (!funnel) return null;
+  const f = funnel;
+  const regimeStr = (m: Record<string, number>) => {
+    const e = Object.entries(m).filter(([, n]) => n > 0);
+    return e.length ? e.map(([k, n]) => `${k}:${n}`).join(" · ") : "—";
+  };
+  return (
+    <Panel title="Data readiness — why positions do / don't feed the MC validation gate">
+      <StatGrid cols={4}>
+        <Stat label="SHADOW OPEN" value={f.shadow.open.total} sub="not counted until SETTLED" color={C.amber} />
+        <Stat label="COUNTED IN GATE" value={f.shadow.settled.counted_in_gate} sub="settled + tagged + organic" color={C.green} />
+        <Stat label="EXCLUDED (untagged)" value={f.shadow.settled.excluded_untagged} sub="pre-tagging-fix" color={C.muted} />
+        <Stat label="EXCLUDED (seeded)" value={f.shadow.settled.excluded_seeded} sub="test/force-triggered" color={C.muted} />
+      </StatGrid>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
+        <div>Shadow OPEN by regime: <b style={{ color: C.text }}>{regimeStr(f.shadow.open.by_regime)}</b> — these have no realized outcome yet; they feed the gate only after they <b>settle</b> (trigger/expiry → close).</div>
+        <div>Counted-in-gate by regime: <b style={{ color: C.text }}>{regimeStr(f.shadow.settled.counted_by_regime)}</b></div>
+        <div>Real (live) pairs: {f.live.open} open · {f.live.settled} settled — <b>excluded</b> from this gate (MC validation is shadow-only; real pairs feed Live P&L).</div>
+        <div style={{ marginTop: 4 }}>Note: σ calibration is fed by <b>DVOL history</b>, not settled pairs — moderate σ is empirical regardless. This funnel is the realized-vs-MC <i>validation</i> step.</div>
+      </div>
+    </Panel>
+  );
+}
+
 function SignalTab() {
   const [data, setData] = useState<{ signal?: unknown; selector?: unknown; calibration?: unknown } | null>(null);
   const [allowlist, setAllowlist] = useState<AllowlistAll | null>(null);
+  const [funnel, setFunnel] = useState<Funnel | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; msg: string } | null>(null);
   const [addInputs, setAddInputs] = useState<Record<string, string>>({});
 
@@ -366,9 +403,11 @@ function SignalTab() {
       const r = await settleAll({
         signal: adminGet("/admin/foxify/v2/signal-distribution"),
         selector: adminGet("/admin/foxify/v2/structure-selector"),
-        calibration: adminGet("/admin/foxify/v2/regime-calibration")
+        calibration: adminGet("/admin/foxify/v2/regime-calibration"),
+        funnel: adminGet<Funnel>("/admin/foxify/v2/settlement-funnel")
       });
       setData({ signal: r.signal, selector: r.selector, calibration: r.calibration });
+      if (r.funnel) setFunnel(r.funnel as Funnel);
     })();
   }, [loadAllowlist]);
 
@@ -382,6 +421,7 @@ function SignalTab() {
 
   return (
     <>
+      <FunnelPanel funnel={funnel} />
       <Panel title="Cell allowlist — per regime (manual control)">
         <div style={{ fontSize: 11, color: C.muted, marginBottom: 8 }}>Effective allowlist (default ± overrides). Remove a cell or add one by ID — applies a DB override immediately (live activation still gated by env).</div>
         {REGIMES.map((r) => {
