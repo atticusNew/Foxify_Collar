@@ -1552,6 +1552,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     async (req, reply) => {
       const { compareStructures } = await import("./structureComparison");
       const { classifyRegime } = await import("./featureFlag");
+      const { PHASE_0_CELLS } = await import("./cellConfig");
       const feed = deps.feedService.getCurrentFeed();
       const spot = feed?.canonicalPrice;
       if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
