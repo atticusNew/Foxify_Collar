@@ -788,12 +788,14 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   app.get("/admin/foxify/v2/newborn-review", { preHandler: checkAdminToken }, async (_req, reply) => {
     const threshold = deps.newbornReviewThreshold ?? 3;
     const { getNewbornState, newbornAutoApproveAfterN } = await import("./featureFlag");
-    const { countSettledPairsByRegime } = await import("./db");
+    const { countValidatedSettlementsByRegime } = await import("./db");
+    const { PRODUCTION_CELLS } = await import("./cellConfig");
     const autoN = newbornAutoApproveAfterN();
     const regimes = ["calm", "moderate", "elevated", "stress"] as const;
     const rows = await Promise.all(regimes.map(async (r) => {
       const st = await getNewbornState(deps.pool, r, threshold);
-      const validated = await countSettledPairsByRegime(deps.pool, r);
+      // Match the gate: organic + production-cell settled pairs only.
+      const validated = await countValidatedSettlementsByRegime(deps.pool, r, PRODUCTION_CELLS);
       return {
         regime: r,
         triggers_observed: st.triggersObserved,

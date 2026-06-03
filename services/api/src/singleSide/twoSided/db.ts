@@ -302,6 +302,38 @@ export const countSettledPairsByRegime = async (exec: DbExecutor, regime: string
   return res.rows[0]?.n ?? 0;
 };
 
+/**
+ * STRICTER validated-settlement count for the newborn-review auto-approve gate:
+ * counts settled, regime-tagged pairs that are BOTH organic (not seeded/force-triggered)
+ * AND on a PRODUCTION cell. This is what should "graduate" a regime to live — genuine
+ * performance on the cells we'll actually trade, not old/seeded/deprecated noise.
+ * Production cells are passed in (keeps db.ts free of cellConfig coupling). Cell + source
+ * filtering is JS-side (pg-mem can't bind =ANY($array) / json ops reliably).
+ */
+export const countValidatedSettlementsByRegime = async (
+  exec: DbExecutor,
+  regime: string,
+  productionCells: ReadonlyArray<string>
+): Promise<number> => {
+  const res = await exec.query<{ cell_id: string; metadata: unknown }>(
+    `SELECT cell_id, metadata
+       FROM two_sided_pair
+      WHERE status = 'settled' AND regime_at_activation = $1`,
+    [regime]
+  );
+  const prod = new Set(productionCells);
+  let n = 0;
+  for (const row of res.rows) {
+    if (!prod.has(row.cell_id)) continue; // production cells only
+    const md = (typeof row.metadata === "string"
+      ? (() => { try { return JSON.parse(row.metadata as string); } catch { return {}; } })()
+      : (row.metadata ?? {})) as { source?: string };
+    if (md.source === "shadow_test_activate") continue; // organic only (exclude seeded/force)
+    n++;
+  }
+  return n;
+};
+
 export const updatePairStatus = async (
   exec: DbExecutor,
   pairId: string,

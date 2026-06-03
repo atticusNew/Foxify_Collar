@@ -247,8 +247,12 @@ export const canActivate = async (
     const autoN = newbornAutoApproveAfterN();
     let validatedSettlements: number | null = null;
     if (autoN > 0 && state.reviewRequired) {
-      const { countSettledPairsByRegime } = await import("./db");
-      validatedSettlements = await countSettledPairsByRegime(pool, ctx.currentRegime);
+      // STRICT: only ORGANIC, PRODUCTION-cell settled pairs count toward auto-graduation
+      // (seeded/force-triggered + deprecated/experimental cells excluded — they don't
+      // validate the live strategy). Keeps the gate from opening off old/seeded noise.
+      const { countValidatedSettlementsByRegime } = await import("./db");
+      const { PRODUCTION_CELLS } = await import("./cellConfig");
+      validatedSettlements = await countValidatedSettlementsByRegime(pool, ctx.currentRegime, PRODUCTION_CELLS);
       if (validatedSettlements >= autoN) {
         await graduateNewbornReview(pool, ctx.currentRegime, threshold);
         state = await getNewbornState(pool, ctx.currentRegime, threshold); // reviewRequired now false
