@@ -50,6 +50,7 @@ import {
   type PathConfig
 } from "../../../scripts/backtest/singleSide/monteCarloEngine";
 import { RISK_FREE_RATE } from "./optionPricing";
+import { structureValueAt, type OptionStructure } from "./optionStructures";
 
 const BAR_MINUTES = 5;
 const BARS_PER_HOUR = 60 / BAR_MINUTES;
@@ -86,6 +87,13 @@ export type FoxifyDurationMcInputs = {
   regime: "calm" | "moderate" | "elevated" | "stress";
   sigmaAnnual: number;               // from regimeCalibration
   contractsBtc: number;
+  /**
+   * Hedge structure to simulate (default "straddle" → long put + call; byte-identical
+   * to legacy for all existing callers). Other structures (one_sided_put/call, collar)
+   * change ONLY the per-tick valuation via structureValueAt — the path, triggers, and
+   * auto-close logic are shared. Gamma-scalp mode ignores this (straddle-only branch).
+   */
+  structure?: OptionStructure;
   /** Foxify auto-close trigger: percent-of-cost PnL threshold. e.g. 0.30 = +30%. */
   autoClosePnlPct: number;
   /** Foxify auto-close absolute trigger: USDC. e.g. 250 = close once +$250 net. */
@@ -351,6 +359,7 @@ export const runFoxifyDurationMc = async (
   const seed = inputs.seed ?? 42;
   const splitPct = inputs.atticusSplitPct ?? Number(process.env.SS_ATTICUS_SPLIT_PCT ?? "0.85");
   const floorUsdc = inputs.atticusFloorUsdc ?? Number(process.env.SS_ATTICUS_FLOOR_USDC ?? "25");
+  const structure: OptionStructure = inputs.structure ?? "straddle";
 
   // Fat-tail mode: bootstrap real bars for ALL regimes (scaled to regime σ), not
   // just calm. Opt-in (default off → legacy GBM for non-calm, validated numbers
@@ -438,7 +447,7 @@ export const runFoxifyDurationMc = async (
         for (let j = i; j <= captureEnd; j++) {
           const sp = triggerSide === "down" ? path.lows[j] : path.highs[j];
           const remMs = (path.closes.length - 1 - j) * BAR_MINUTES * 60_000;
-          const v = combinedValueAt(sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier);
+          const v = structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier);
           if (v > peak) { peak = v; peakBar = j; }
         }
         const salvageGross = peak * bidSlip;
@@ -458,7 +467,7 @@ export const runFoxifyDurationMc = async (
 
       // 2. Compute MTM at this tick + check Foxify auto-close
       const remMs = (path.closes.length - 1 - i) * BAR_MINUTES * 60_000;
-      const mtmGross = combinedValueAt(path.closes[i], inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier);
+      const mtmGross = structureValueAt(structure, path.closes[i], inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier);
       const mtmNetAfterSlip = mtmGross * bidSlip - inputs.hedgeCostUsdc;
       const mtmPnlPct = inputs.hedgeCostUsdc > 0 ? mtmNetAfterSlip / inputs.hedgeCostUsdc : 0;
       if (mtmPnlPct >= inputs.autoClosePnlPct || mtmNetAfterSlip >= inputs.autoCloseAbsoluteUsdc) {
@@ -484,7 +493,7 @@ export const runFoxifyDurationMc = async (
     if (exitMode === "expiry") {
       const sp = path.closes[path.closes.length - 1];
       const remMs = 0;
-      const salvageGross = combinedValueAt(sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier) * bidSlip;
+      const salvageGross = structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier) * bidSlip;
       const uplift = salvageGross - inputs.hedgeCostUsdc;
       if (uplift <= 0) {
         foxifyNet = uplift;

@@ -1540,6 +1540,41 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/structure-comparison — side-by-side hedge structures.
+   * For a cell + regime: two-sided straddle vs one-sided put/call vs collar — net cost,
+   * 1-day theta drag, MC mean net / %profitable / p5-p95. Answers whether a directional
+   * (one-sided/collar) hedge beats the full two-sided straddle for Foxify's bet.
+   * Query: ?cell_id=&regime=&n_paths=
+   */
+  app.get<{ Querystring: { cell_id?: string; regime?: string; n_paths?: string } }>(
+    "/admin/foxify/v2/structure-comparison",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { compareStructures } = await import("./structureComparison");
+      const { classifyRegime } = await import("./featureFlag");
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      if (!deps.liquidChainCache) { reply.code(503).send({ error: "chain_cache_unavailable" }); return; }
+      const cellId = req.query.cell_id || "pair_10k_atm_2d";
+      if (!PHASE_0_CELLS[cellId]) { reply.code(400).send({ error: "unknown_cell", message: `cell '${cellId}' not in config`, known: Object.keys(PHASE_0_CELLS) }); return; }
+      const currentDvol = deps.dvolService.getCurrentDvol();
+      const regime = (["calm", "moderate", "elevated", "stress"].includes(req.query.regime ?? "")
+        ? req.query.regime
+        : (currentDvol ? classifyRegime(currentDvol.dvol) : "calm")) as "calm" | "moderate" | "elevated" | "stress";
+      try {
+        const report = await compareStructures(deps.pool, {
+          cellId, regime, spot, liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
+          nPaths: req.query.n_paths ? Number(req.query.n_paths) : undefined
+        });
+        reply.send(report);
+      } catch (e) {
+        reply.code(500).send({ error: "comparison_failed", message: (e as Error).message });
+      }
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/vega-timing — calm-edge research (pure REAL DVOL history).
    * Backtests: does buying a long-vega ATM straddle when IV is in a LOW percentile
    * (calm) and exiting after a hold profit from IV expansion (vega) beyond theta?
