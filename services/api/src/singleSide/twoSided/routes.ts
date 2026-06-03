@@ -1546,7 +1546,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * (one-sided/collar) hedge beats the full two-sided straddle for Foxify's bet.
    * Query: ?cell_id=&regime=&n_paths=
    */
-  app.get<{ Querystring: { cell_id?: string; regime?: string; n_paths?: string; auto_close_pct?: string; auto_close_abs?: string } }>(
+  app.get<{ Querystring: { cell_id?: string; regime?: string; regimes?: string; n_paths?: string; auto_close_pct?: string; auto_close_abs?: string; win_rate?: string; frictionless?: string } }>(
     "/admin/foxify/v2/structure-comparison",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -1559,21 +1559,30 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       if (!deps.liquidChainCache) { reply.code(503).send({ error: "chain_cache_unavailable" }); return; }
       const cellId = req.query.cell_id || "pair_10k_atm_2d";
       if (!PHASE_0_CELLS[cellId]) { reply.code(400).send({ error: "unknown_cell", message: `cell '${cellId}' not in config`, known: Object.keys(PHASE_0_CELLS) }); return; }
+      const valid = ["calm", "moderate", "elevated", "stress"] as const;
+      // regimes CSV (default moderate,elevated,stress) — see where structures flip +EV.
       const currentDvol = deps.dvolService.getCurrentDvol();
-      const regime = (["calm", "moderate", "elevated", "stress"].includes(req.query.regime ?? "")
+      const fallback = req.query.regime && (valid as readonly string[]).includes(req.query.regime)
         ? req.query.regime
-        : (currentDvol ? classifyRegime(currentDvol.dvol) : "calm")) as "calm" | "moderate" | "elevated" | "stress";
-      // auto_close_pct / auto_close_abs let the operator test a LOOSER cap (e.g. 2.0 = +200%)
-      // to reveal a long directional option's true convex upside (default +30% clips it).
+        : (currentDvol ? classifyRegime(currentDvol.dvol) : "moderate");
+      const regimes = (req.query.regimes
+        ? req.query.regimes.split(",").map((s) => s.trim()).filter((r) => (valid as readonly string[]).includes(r))
+        : ["moderate", "elevated", "stress"]) as Array<"calm" | "moderate" | "elevated" | "stress">;
+      const regimeList = regimes.length ? regimes : [fallback as "calm" | "moderate" | "elevated" | "stress"];
       const autoClosePnlPct = req.query.auto_close_pct != null && Number.isFinite(Number(req.query.auto_close_pct)) ? Number(req.query.auto_close_pct) : undefined;
       const autoCloseAbsoluteUsdc = req.query.auto_close_abs != null && Number.isFinite(Number(req.query.auto_close_abs)) ? Number(req.query.auto_close_abs) : undefined;
+      const directionalWinRate = req.query.win_rate != null && Number.isFinite(Number(req.query.win_rate)) ? Number(req.query.win_rate) : undefined;
+      const frictionless = req.query.frictionless === "true";
       try {
-        const report = await compareStructures(deps.pool, {
-          cellId, regime, spot, liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
-          nPaths: req.query.n_paths ? Number(req.query.n_paths) : undefined,
-          autoClosePnlPct, autoCloseAbsoluteUsdc
-        });
-        reply.send(report);
+        const reports = [];
+        for (const regime of regimeList) {
+          reports.push(await compareStructures(deps.pool, {
+            cellId, regime, spot, liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
+            nPaths: req.query.n_paths ? Number(req.query.n_paths) : undefined,
+            autoClosePnlPct, autoCloseAbsoluteUsdc, directionalWinRate, frictionless
+          }));
+        }
+        reply.send({ cell_id: cellId, spot, directional_win_rate: directionalWinRate ?? 0.5, frictionless, regimes: reports });
       } catch (e) {
         reply.code(500).send({ error: "comparison_failed", message: (e as Error).message });
       }

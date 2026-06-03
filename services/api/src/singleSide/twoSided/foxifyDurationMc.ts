@@ -96,6 +96,12 @@ export type FoxifyDurationMcInputs = {
   structure?: OptionStructure;
   /** Short-leg strike for vertical spreads (the OTM leg sold). Ignored by other structures. */
   shortStrike?: number;
+  /**
+   * Annualized GBM drift for the path (RESEARCH ONLY — models a directional EDGE, e.g.
+   * Foxify being right ~60-65% on direction). Default 0 = no edge → byte-identical to
+   * legacy. Signed: + drifts up (favors call/bull structures), − drifts down.
+   */
+  driftAnnual?: number;
   /** Foxify auto-close trigger: percent-of-cost PnL threshold. e.g. 0.30 = +30%. */
   autoClosePnlPct: number;
   /** Foxify auto-close absolute trigger: USDC. e.g. 250 = close once +$250 net. */
@@ -383,7 +389,7 @@ export const runFoxifyDurationMc = async (
   const pathConfig: PathConfig = {
     tenorDays: inputs.tenorDays,
     sigmaAnnual: inputs.sigmaAnnual,
-    driftAnnual: 0,
+    driftAnnual: inputs.driftAnnual ?? 0,
     generator: useBootstrap ? "bootstrap" : "gbm",
     seed,
     bootstrapVolScale

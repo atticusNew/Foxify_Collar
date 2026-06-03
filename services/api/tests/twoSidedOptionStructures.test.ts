@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { structureValueAt, structureCostAndRealism, theta1dUsdc, type LegPrices } from "../src/singleSide/twoSided/optionStructures";
+import { structureValueAt, structureCostAndRealism, theta1dUsdc, favoredDirection, type LegPrices } from "../src/singleSide/twoSided/optionStructures";
 
 const SPOT = 70_000, K = 70_000, C = 1.0, SIG = 0.5;
 const REM = 2 * 86_400_000; // 2 days
@@ -43,6 +43,47 @@ test("structureCostAndRealism: vertical spread = long ask − short bid (a debit
   // long call ask 1000 − short call bid 360 = 640 net debit (cheaper than the bare 1000 call).
   assert.equal(callSpread.hedgeCostUsdc, 640);
   assert.ok(callSpread.salvageRealismMultiplier > 0 && callSpread.salvageRealismMultiplier <= 1.5);
+});
+
+test("favoredDirection: bull=+1, bear=−1, non-directional=0", () => {
+  assert.equal(favoredDirection("one_sided_call"), 1);
+  assert.equal(favoredDirection("vertical_spread_call"), 1);
+  assert.equal(favoredDirection("credit_spread_put"), 1);   // bull put credit
+  assert.equal(favoredDirection("one_sided_put"), -1);
+  assert.equal(favoredDirection("credit_spread_call"), -1); // bear call credit
+  assert.equal(favoredDirection("collar"), -1);
+  assert.equal(favoredDirection("straddle"), 0);
+  assert.equal(favoredDirection("short_strangle"), 0);
+});
+
+test("short / credit structures: cost is a CREDIT (≤0) and value is a liability (≤0)", () => {
+  const legs: LegPrices = {
+    putAskPerBtc: 1000, callAskPerBtc: 1000, putBidPerBtc: 950, callBidPerBtc: 950,
+    bsPutPerBtc: 980, bsCallPerBtc: 980, shortAskPerBtc: 400, shortBidPerBtc: 360, shortBsPerBtc: 380
+  };
+  // short strangle: sell put+call → net credit = −(950+950) = −1900.
+  const ss = structureCostAndRealism(legs, "short_strangle", 1);
+  assert.equal(ss.hedgeCostUsdc, -1900, "short strangle = credit");
+  // bull put credit: short near put (recv 950) − long wing put (pay 400) → cost = 400 − 950 = −550 (credit).
+  const cp = structureCostAndRealism(legs, "credit_spread_put", 1);
+  assert.equal(cp.hedgeCostUsdc, 400 - 950, "credit put spread = net credit −550");
+  // value(t) for a short straddle-ish (ATM) is a liability (≤ 0).
+  const ssVal = structureValueAt("short_strangle", 70_000, 70_000, 70_000, 1, 2 * 86_400_000, 0.5, 1.0);
+  assert.ok(ssVal < 0, "short strangle value is a liability");
+  // credit_spread_put value = bsWing − bsNear ≤ 0.
+  const cpVal = structureValueAt("credit_spread_put", 70_000, 70_000, 70_000, 1, 2 * 86_400_000, 0.5, 1.0, 67_000);
+  assert.ok(cpVal <= 0, "credit put spread value is a (capped) liability");
+});
+
+test("frictionless costs less than with-spread (trades at mid)", () => {
+  const legs: LegPrices = {
+    putAskPerBtc: 1000, callAskPerBtc: 1000, putBidPerBtc: 900, callBidPerBtc: 900,
+    bsPutPerBtc: 950, bsCallPerBtc: 950
+  };
+  const withSpread = structureCostAndRealism(legs, "straddle", 1, false);
+  const frictionless = structureCostAndRealism(legs, "straddle", 1, true);
+  assert.equal(withSpread.hedgeCostUsdc, 2000, "ask-based cost = 2000");
+  assert.equal(frictionless.hedgeCostUsdc, 1900, "mid-based cost = 1900 (no spread paid)");
 });
 
 test("theta1dUsdc: straddle bleeds most; one-sided ~half; collar ≈ 0", () => {

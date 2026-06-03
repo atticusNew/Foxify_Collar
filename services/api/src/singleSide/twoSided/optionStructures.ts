@@ -28,7 +28,10 @@ export type OptionStructure =
   | "one_sided_call"
   | "collar"
   | "vertical_spread_call"   // bull call DEBIT spread: long call @ callStrike − short call @ shortStrike(OTM up)
-  | "vertical_spread_put";   // bear put DEBIT spread: long put @ putStrike − short put @ shortStrike(OTM down)
+  | "vertical_spread_put"    // bear put DEBIT spread: long put @ putStrike − short put @ shortStrike(OTM down)
+  | "credit_spread_put"      // bull put CREDIT spread: short put @ putStrike − long put @ shortStrike(OTM down). +EV-up/flat, capped.
+  | "credit_spread_call"     // bear call CREDIT spread: short call @ callStrike − long call @ shortStrike(OTM up).
+  | "short_strangle";        // short put + short call (sell premium / VRP harvest; non-directional)
 
 const RFR = Number(process.env.BS_RISK_FREE_RATE ?? "0.045");
 const MS_PER_YEAR = 365 * 86_400_000;
@@ -36,6 +39,18 @@ const MS_PER_YEAR = 365 * 86_400_000;
 /** Is this a two-long-legs structure (put + call)? */
 const isTwoLeg = (s: OptionStructure): boolean =>
   s === "strangle" || s === "straddle" || s === "straddle_gamma_scalp";
+
+/**
+ * The directional view a structure expresses (for the win-rate→drift edge):
+ *   +1 = bullish/up (long call, bull call debit, bull put credit)
+ *   −1 = bearish/down (long put, bear put debit, bear call credit, collar)
+ *    0 = non-directional (straddle, short strangle — no side is "predicted")
+ */
+export const favoredDirection = (s: OptionStructure): -1 | 0 | 1 => {
+  if (s === "one_sided_call" || s === "vertical_spread_call" || s === "credit_spread_put") return 1;
+  if (s === "one_sided_put" || s === "vertical_spread_put" || s === "credit_spread_call" || s === "collar") return -1;
+  return 0; // straddle, strangle, gamma, short_strangle
+};
 
 /**
  * Per-structure option value (USDC) at a hypothetical path spot, via Black-Scholes ×
@@ -66,10 +81,22 @@ export const structureValueAt = (
     // bull call debit spread: long call(callStrike) − short call(shortStrike, OTM up)
     const bsShort = Math.max(0, bsCall(spot, shortStrike ?? callStrike, T, RFR, sigma));
     perBtc = bsC - bsShort;
-  } else {
-    // vertical_spread_put — bear put debit spread: long put(putStrike) − short put(shortStrike, OTM down)
+  } else if (structure === "vertical_spread_put") {
+    // bear put debit spread: long put(putStrike) − short put(shortStrike, OTM down)
     const bsShort = Math.max(0, bsPut(spot, shortStrike ?? putStrike, T, RFR, sigma));
     perBtc = bsP - bsShort;
+  } else if (structure === "credit_spread_put") {
+    // bull put credit spread: SHORT put(putStrike) + LONG put(shortStrike, OTM down).
+    // Liability to close = −short + long = bsWing − bsNear (≤ 0).
+    const bsWing = Math.max(0, bsPut(spot, shortStrike ?? putStrike, T, RFR, sigma));
+    perBtc = bsWing - bsP;
+  } else if (structure === "credit_spread_call") {
+    // bear call credit spread: SHORT call(callStrike) + LONG call(shortStrike, OTM up).
+    const bsWing = Math.max(0, bsCall(spot, shortStrike ?? callStrike, T, RFR, sigma));
+    perBtc = bsWing - bsC;
+  } else {
+    // short_strangle: short put + short call → liability = −(P + C)
+    perBtc = -(bsP + bsC);
   }
   return perBtc * contractsBtc * realismMultiplier;
 };
@@ -103,52 +130,55 @@ export type StructureCost = {
 export const structureCostAndRealism = (
   legs: LegPrices,
   structure: OptionStructure,
-  contractsBtc: number
+  contractsBtc: number,
+  /** Frictionless: trade at MID (no bid-ask spread paid), value anchored to mid. */
+  frictionless = false
 ): StructureCost => {
+  // Per-leg price selectors. Normal: pay ASK (long), receive BID (short), value at BID.
+  // Frictionless: every leg trades at MID (no spread). `anchorPx` is the value-side price.
+  const mid = (ask: number, bid: number) => (ask + bid) / 2;
+  const pay = (ask: number, bid: number) => (frictionless ? mid(ask, bid) : ask);
+  const recv = (ask: number, bid: number) => (frictionless ? mid(ask, bid) : bid);
+  const anchorPx = (ask: number, bid: number) => (frictionless ? mid(ask, bid) : bid);
+  const sAsk = legs.shortAskPerBtc ?? 0, sBid = legs.shortBidPerBtc ?? 0;
+
   let costPerBtc: number;
-  let realBid: number;   // signed liquidation value at bid-side
-  let bsCombined: number;
+  let realAnchor: number;   // value-side real price of the anchor leg(s)
+  let bsAnchor: number;
   if (isTwoLeg(structure)) {
-    costPerBtc = legs.putAskPerBtc + legs.callAskPerBtc;
-    realBid = legs.putBidPerBtc + legs.callBidPerBtc;
-    bsCombined = legs.bsPutPerBtc + legs.bsCallPerBtc;
+    costPerBtc = pay(legs.putAskPerBtc, legs.putBidPerBtc) + pay(legs.callAskPerBtc, legs.callBidPerBtc);
+    realAnchor = anchorPx(legs.putAskPerBtc, legs.putBidPerBtc) + anchorPx(legs.callAskPerBtc, legs.callBidPerBtc);
+    bsAnchor = legs.bsPutPerBtc + legs.bsCallPerBtc;
   } else if (structure === "one_sided_put") {
-    costPerBtc = legs.putAskPerBtc;
-    realBid = legs.putBidPerBtc;
-    bsCombined = legs.bsPutPerBtc;
+    costPerBtc = pay(legs.putAskPerBtc, legs.putBidPerBtc);
+    realAnchor = anchorPx(legs.putAskPerBtc, legs.putBidPerBtc); bsAnchor = legs.bsPutPerBtc;
   } else if (structure === "one_sided_call") {
-    costPerBtc = legs.callAskPerBtc;
-    realBid = legs.callBidPerBtc;
-    bsCombined = legs.bsCallPerBtc;
+    costPerBtc = pay(legs.callAskPerBtc, legs.callBidPerBtc);
+    realAnchor = anchorPx(legs.callAskPerBtc, legs.callBidPerBtc); bsAnchor = legs.bsCallPerBtc;
   } else if (structure === "collar") {
-    // collar: pay put ask, receive call bid (short) → net premium. A single net real/bs
-    // ratio is ill-defined for a mixed long/short (it can go negative), so anchor the
-    // realism multiplier to the LONG PROTECTIVE PUT (the dominant risk leg); the short
-    // call is modeled at BS. This keeps the multiplier positive + meaningful.
-    costPerBtc = legs.putAskPerBtc - legs.callBidPerBtc;
-    realBid = legs.putBidPerBtc;
-    bsCombined = legs.bsPutPerBtc;
+    costPerBtc = pay(legs.putAskPerBtc, legs.putBidPerBtc) - recv(legs.callAskPerBtc, legs.callBidPerBtc);
+    realAnchor = anchorPx(legs.putAskPerBtc, legs.putBidPerBtc); bsAnchor = legs.bsPutPerBtc;
   } else if (structure === "vertical_spread_call") {
-    // bull call debit spread: pay long call ask, collect short call bid (net debit ≥ 0).
-    // Realism anchored to the long (dominant) leg.
-    costPerBtc = legs.callAskPerBtc - (legs.shortBidPerBtc ?? 0);
-    realBid = legs.callBidPerBtc;
-    bsCombined = legs.bsCallPerBtc;
+    costPerBtc = pay(legs.callAskPerBtc, legs.callBidPerBtc) - recv(sAsk, sBid);
+    realAnchor = anchorPx(legs.callAskPerBtc, legs.callBidPerBtc); bsAnchor = legs.bsCallPerBtc;
+  } else if (structure === "vertical_spread_put") {
+    costPerBtc = pay(legs.putAskPerBtc, legs.putBidPerBtc) - recv(sAsk, sBid);
+    realAnchor = anchorPx(legs.putAskPerBtc, legs.putBidPerBtc); bsAnchor = legs.bsPutPerBtc;
+  } else if (structure === "credit_spread_put") {
+    // SHORT near put (receive bid) + LONG wing put (pay ask) → net CREDIT (cost ≤ 0).
+    costPerBtc = pay(sAsk, sBid) - recv(legs.putAskPerBtc, legs.putBidPerBtc);
+    realAnchor = anchorPx(legs.putAskPerBtc, legs.putBidPerBtc); bsAnchor = legs.bsPutPerBtc;
+  } else if (structure === "credit_spread_call") {
+    costPerBtc = pay(sAsk, sBid) - recv(legs.callAskPerBtc, legs.callBidPerBtc);
+    realAnchor = anchorPx(legs.callAskPerBtc, legs.callBidPerBtc); bsAnchor = legs.bsCallPerBtc;
   } else {
-    // vertical_spread_put — bear put debit spread.
-    costPerBtc = legs.putAskPerBtc - (legs.shortBidPerBtc ?? 0);
-    realBid = legs.putBidPerBtc;
-    bsCombined = legs.bsPutPerBtc;
+    // short_strangle: SELL put + call → net CREDIT.
+    costPerBtc = -(recv(legs.putAskPerBtc, legs.putBidPerBtc) + recv(legs.callAskPerBtc, legs.callBidPerBtc));
+    realAnchor = anchorPx(legs.putAskPerBtc, legs.putBidPerBtc) + anchorPx(legs.callAskPerBtc, legs.callBidPerBtc);
+    bsAnchor = legs.bsPutPerBtc + legs.bsCallPerBtc;
   }
-  // Realism = real/bs, clamped to [0,1.5]. For signed values near zero, fall back to 1.0
-  // to avoid blow-ups when bsCombined ≈ 0.
-  const realism = Math.abs(bsCombined) > 1e-6
-    ? Math.max(0, Math.min(1.5, realBid / bsCombined))
-    : 1.0;
-  return {
-    hedgeCostUsdc: costPerBtc * contractsBtc,
-    salvageRealismMultiplier: realism
-  };
+  const realism = Math.abs(bsAnchor) > 1e-6 ? Math.max(0, Math.min(1.5, realAnchor / bsAnchor)) : 1.0;
+  return { hedgeCostUsdc: costPerBtc * contractsBtc, salvageRealismMultiplier: realism };
 };
 
 /**
