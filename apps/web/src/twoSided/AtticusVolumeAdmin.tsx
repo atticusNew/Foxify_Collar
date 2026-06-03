@@ -22,6 +22,17 @@ type LivePnl = {
 type Scorecard = { overall: { n: number; cumulative_net_usdc: number; mean_net_usdc: number; wins: { count: number; sum_usdc: number }; losses: { count: number; sum_usdc: number } }; interpretation: string };
 type StuckPairs = { total_non_terminal: number; likely_out_of_band_count: number; pairs: Array<Record<string, unknown>> };
 type Diag = Record<string, unknown>;
+type FoxifyEconomics = {
+  regime: string; spot: number; sigma_annual: number; min_validated_n: number;
+  rows: Array<{
+    cell_id: string; role: string; structure: string; notional_usdc_per_leg: number; tenor_days: number;
+    cost_usdc: number | null; mc_mean_net_usdc: number | null; mc_pct_profitable: number | null;
+    mc_p5_net_usdc: number | null; mc_p95_net_usdc: number | null;
+    realized_n: number; realized_mean_net_usdc: number | null; within_15pct: boolean | null; validated: boolean;
+    mc_status: string;
+  }>;
+  framing: string[];
+};
 
 const JsonView = ({ data }: { data: unknown }) => (
   <pre style={{ fontSize: 11, color: C.text, whiteSpace: "pre-wrap", margin: 0, maxHeight: 520, overflow: "auto" }}>{data == null ? "—" : JSON.stringify(data, null, 2)}</pre>
@@ -47,6 +58,7 @@ export function AtticusVolumeAdmin() {
   const [adminMtm, setAdminMtm] = useState<{ pairs: Array<Record<string, unknown>> } | null>(null);
   const [stuck, setStuck] = useState<StuckPairs | null>(null);
   const [diag, setDiag] = useState<Diag | null>(null);
+  const [econ, setEcon] = useState<FoxifyEconomics | null>(null);
   // research explorer
   const [research, setResearch] = useState<{ label: string; data: unknown } | null>(null);
 
@@ -70,6 +82,10 @@ export function AtticusVolumeAdmin() {
       } else if (t === "ops") {
         const r = await settleAll({ d: adminGet<Diag>("/admin/foxify/v2/diagnostics") });
         if (r.d) setDiag(r.d);
+        flagAuth(r.__errors);
+      } else if (t === "foxify") {
+        const r = await settleAll({ e: adminGet<FoxifyEconomics>("/admin/foxify/v2/foxify-economics") });
+        if (r.e) setEcon(r.e);
         flagAuth(r.__errors);
       }
       setUpdated(new Date().toISOString());
@@ -98,15 +114,55 @@ export function AtticusVolumeAdmin() {
       <ErrorBar msg={err} />
       <Tabs active={tab} onChange={setTab} tabs={[
         { id: "pnl", label: "P&L" }, { id: "positions", label: "Positions" },
+        { id: "foxify", label: "Foxify view" },
         { id: "signal", label: "Signal / Strategy" }, { id: "research", label: "Research" }, { id: "ops", label: "Ops" }
       ]} />
 
       {tab === "pnl" && <PnlTab livePnl={livePnl} scorecard={scorecard} />}
       {tab === "positions" && <PositionsTab mtm={adminMtm} stuck={stuck} onAction={() => void refresh()} />}
+      {tab === "foxify" && <FoxifyEconomicsTab econ={econ} />}
       {tab === "signal" && <SignalTab />}
       {tab === "research" && <ResearchTab research={research} setResearch={setResearch} />}
       {tab === "ops" && <OpsTab diag={diag} onAction={() => void refresh()} />}
     </Shell>
+  );
+}
+
+// ─── Foxify view — shareable expected economics (production cells only) ───
+function FoxifyEconomicsTab({ econ }: { econ: FoxifyEconomics | null }) {
+  if (!econ) return <Empty text="Loading expected economics…" />;
+  const profit = econ.rows.filter((r) => r.role === "profit_engine");
+  const cost = econ.rows.filter((r) => r.role === "loss_leader_cost");
+  const cols: Col<FoxifyEconomics["rows"][number]>[] = [
+    { key: "cell", label: "Cell", render: (r) => r.cell_id },
+    { key: "struct", label: "Structure", render: (r) => `${r.structure} ${r.tenor_days}d` },
+    { key: "notional", label: "Notional/leg", align: "right", render: (r) => fmtUsd(r.notional_usdc_per_leg, 0) },
+    { key: "cost", label: "Cost", align: "right", render: (r) => r.cost_usdc == null ? (r.mc_status === "chain_unavailable" ? "chain n/a" : "—") : fmtUsd(r.cost_usdc) },
+    { key: "mc", label: "Expected net (MC)", align: "right", render: (r) => r.mc_mean_net_usdc == null ? "—" : <span style={{ color: pnlColor(r.mc_mean_net_usdc) }}>{fmtSignedUsd(r.mc_mean_net_usdc)}</span> },
+    { key: "win", label: "Win%", align: "right", render: (r) => r.mc_pct_profitable == null ? "—" : fmtPct(r.mc_pct_profitable) },
+    { key: "range", label: "p5 – p95", align: "right", render: (r) => r.mc_p5_net_usdc == null ? "—" : `${fmtSignedUsd(r.mc_p5_net_usdc)} – ${fmtSignedUsd(r.mc_p95_net_usdc!)}` },
+    { key: "real", label: "Realized (n)", align: "right", render: (r) => r.realized_n > 0 ? <span style={{ color: pnlColor(r.realized_mean_net_usdc ?? 0) }}>{fmtSignedUsd(r.realized_mean_net_usdc ?? 0)} ({r.realized_n})</span> : <span style={{ color: C.muted }}>no data</span> },
+    { key: "val", label: "Validated", render: (r) => r.validated ? <Pill text="validated" color={C.green} /> : r.realized_n > 0 ? <Pill text={`${r.realized_n}/${econ.min_validated_n}`} color={C.amber} /> : <Pill text="projection" color={C.muted} /> }
+  ];
+  return (
+    <>
+      <StatGrid cols={3}>
+        <Stat label="REGIME" value={econ.regime} sub={`σ ${(econ.sigma_annual * 100).toFixed(1)}%`} color={econ.regime === "calm" ? C.muted : C.amber} />
+        <Stat label="SPOT" value={fmtUsd(econ.spot, 0)} />
+        <Stat label="PRODUCTION CELLS" value={econ.rows.length} sub="deprecated/experimental excluded" />
+      </StatGrid>
+      <Panel title="Profit engine — moderate+ ATM straddles (expected economics)">
+        <Table cols={cols} rows={profit} keyOf={(r) => r.cell_id} />
+      </Panel>
+      <Panel title="Loss-leader cost — calm budgeted strangles (a capped volume-buy COST, not profit)">
+        <Table cols={cols} rows={cost} keyOf={(r) => r.cell_id} />
+      </Panel>
+      <Panel title="How to read this (share-safe framing)">
+        <ul style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, margin: 0, paddingLeft: 18 }}>
+          {econ.framing.map((f, i) => <li key={i}>{f}</li>)}
+        </ul>
+      </Panel>
+    </>
   );
 }
 

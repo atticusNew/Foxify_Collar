@@ -1504,6 +1504,40 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/foxify-economics — Foxify-SHAREABLE expected economics.
+   * PRODUCTION cells only, for a regime (default current): real-chain cost, MC
+   * expected net / %profitable / p5-p95, and the realized overlay (organic settled
+   * shadow) + validated flag. Curated to be safe to share with the partner — NOT
+   * the raw shadow position list. Query: ?regime=&n_paths=&min_validated_n=
+   */
+  app.get<{ Querystring: { regime?: string; n_paths?: string; min_validated_n?: string } }>(
+    "/admin/foxify/v2/foxify-economics",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { computeFoxifyEconomics } = await import("./foxifyEconomics");
+      const { classifyRegime } = await import("./featureFlag");
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      if (!deps.liquidChainCache) { reply.code(503).send({ error: "chain_cache_unavailable" }); return; }
+      const currentDvol = deps.dvolService.getCurrentDvol();
+      const regime = (["calm", "moderate", "elevated", "stress"].includes(req.query.regime ?? "")
+        ? req.query.regime
+        : (currentDvol ? classifyRegime(currentDvol.dvol) : "calm")) as "calm" | "moderate" | "elevated" | "stress";
+      try {
+        const report = await computeFoxifyEconomics(deps.pool, {
+          regime, spot, liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
+          nPaths: req.query.n_paths ? Number(req.query.n_paths) : undefined,
+          minValidatedN: req.query.min_validated_n ? Number(req.query.min_validated_n) : undefined
+        });
+        reply.send(report);
+      } catch (e) {
+        reply.code(500).send({ error: "economics_failed", message: (e as Error).message });
+      }
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/vega-timing — calm-edge research (pure REAL DVOL history).
    * Backtests: does buying a long-vega ATM straddle when IV is in a LOW percentile
    * (calm) and exiting after a hold profit from IV expansion (vega) beyond theta?
