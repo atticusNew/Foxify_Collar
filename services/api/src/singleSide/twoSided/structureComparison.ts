@@ -35,6 +35,7 @@ export type StructureComparisonRow = {
   structure: OptionStructure;
   role: string;
   short_strike: number | null;         // OTM short-leg strike for spreads (null otherwise)
+  note?: string;                        // why a row is unavailable (e.g. short leg not quoted)
   net_cost_usdc: number | null;
   theta_1d_usdc: number | null;        // value lost in 1 day at flat spot (the bleed)
   mc_mean_net_usdc: number | null;
@@ -99,16 +100,18 @@ export const compareStructures = async (
     let legs: LegPrices = pricing;
     // Price ONLY the short leg's needed option type via the single-leg pricer
     // (computeRealPricing requires BOTH put+call at a strike — the ITM side of an OTM
-    // short strike is often illiquid → it would falsely fail the whole spread).
+    // short strike is often illiquid → it would falsely fail the whole spread). Snap the
+    // short strike to the nearest $500 listed-grid so it aligns with a real quoted strike.
+    const snap500 = (x: number): number => Math.round(x / 500) * 500;
     if (structure === "vertical_spread_call") {
-      shortStrike = Math.round(opts.spot * (1 + cell.triggerPctUp));
+      shortStrike = snap500(opts.spot * (1 + cell.triggerPctUp));
       const sl = priceCandidateLeg(opts.spot, shortStrike, "call", cell.hedgeTenorDays, cell.contractsBtc, opts.liquidChainCache, opts.dvolService ?? null, venue);
-      if (sl.askPerBtc == null || sl.bidPerBtc == null) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
+      if (sl.askPerBtc == null || sl.bidPerBtc == null) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, note: `short CALL @ ${shortStrike} has no live quote (venue=${venue}) — chain lacks that OTM strike/tenor`, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
       legs = { ...pricing, shortAskPerBtc: sl.askPerBtc, shortBidPerBtc: sl.bidPerBtc, shortBsPerBtc: sl.bsPerBtc };
     } else if (structure === "vertical_spread_put") {
-      shortStrike = Math.round(opts.spot * (1 - cell.triggerPctDown));
+      shortStrike = snap500(opts.spot * (1 - cell.triggerPctDown));
       const sl = priceCandidateLeg(opts.spot, shortStrike, "put", cell.hedgeTenorDays, cell.contractsBtc, opts.liquidChainCache, opts.dvolService ?? null, venue);
-      if (sl.askPerBtc == null || sl.bidPerBtc == null) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
+      if (sl.askPerBtc == null || sl.bidPerBtc == null) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, note: `short PUT @ ${shortStrike} has no live quote (venue=${venue}) — chain lacks that OTM strike/tenor`, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
       legs = { ...pricing, shortAskPerBtc: sl.askPerBtc, shortBidPerBtc: sl.bidPerBtc, shortBsPerBtc: sl.bsPerBtc };
     }
     const { hedgeCostUsdc, salvageRealismMultiplier } = structureCostAndRealism(legs, structure, cell.contractsBtc);
