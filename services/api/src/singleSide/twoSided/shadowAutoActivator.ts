@@ -992,6 +992,18 @@ export class ShadowAutoActivator {
     if (this.running) return; // re-entrancy guard
     this.running = true;
     try {
+      // Housekeeping: flush deprecated OPEN shadow pairs to 'cancelled' so legacy
+      // noise (e.g. pair_50k_2pct) stops polluting the positions view + funnel.
+      // Shadow + deprecated-only — never touches real money or production cells.
+      try {
+        const { isDeprecatedFlushEnabled, flushDeprecatedOpenShadowPairs } = await import("./deprecatedShadowFlush");
+        if (isDeprecatedFlushEnabled()) {
+          const fr = await flushDeprecatedOpenShadowPairs(this.deps.pool);
+          if (fr.flushed > 0) console.log(`[ShadowAutoActivator] flushed ${fr.flushed} deprecated open shadow pair(s)`);
+        }
+      } catch (e) {
+        console.warn(`[ShadowAutoActivator] deprecated-flush skipped: ${(e as Error).message}`);
+      }
       const result = await runAutoActivatorTick(this.deps);
       if (result.decision === "activated") {
         console.log(`[ShadowAutoActivator] ✓ activated cell=${result.chosen_cell_id} pair=${result.pair_id}`);

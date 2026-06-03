@@ -2370,6 +2370,24 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   });
 
   /**
+   * POST /admin/foxify/v2/flush-deprecated-shadow
+   *
+   * On-demand flush of deprecated OPEN shadow pairs → cancelled (paper noise cleanup).
+   * The shadow auto-loop also does this each tick; this is the manual trigger. Body:
+   * { dry_run?: true } to preview the count/ids without cancelling.
+   */
+  app.post<{ Body: { dry_run?: boolean } }>("/admin/foxify/v2/flush-deprecated-shadow", { preHandler: checkAdminToken }, async (req, reply) => {
+    try {
+      const { flushDeprecatedOpenShadowPairs } = await import("./deprecatedShadowFlush");
+      const dryRun = req.body?.dry_run === true;
+      const result = await flushDeprecatedOpenShadowPairs(deps.pool, { dryRun });
+      reply.send({ ...result, dry_run: dryRun, note: dryRun ? "preview only — no pairs cancelled" : "deprecated open shadow pairs cancelled (paper; excluded from realized stats)" });
+    } catch (e) {
+      reply.code(500).send({ error: "flush_failed", message: (e as Error).message });
+    }
+  });
+
+  /**
    * GET /admin/foxify/v2/bullish-markets-probe
    *
    * Diagnoses WHY the Bullish chain yields 0 quotes despite working auth. Pulls
