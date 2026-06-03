@@ -26,7 +26,9 @@ export type OptionStructure =
   | "straddle_gamma_scalp"
   | "one_sided_put"
   | "one_sided_call"
-  | "collar";
+  | "collar"
+  | "vertical_spread_call"   // bull call DEBIT spread: long call @ callStrike − short call @ shortStrike(OTM up)
+  | "vertical_spread_put";   // bear put DEBIT spread: long put @ putStrike − short put @ shortStrike(OTM down)
 
 const RFR = Number(process.env.BS_RISK_FREE_RATE ?? "0.045");
 const MS_PER_YEAR = 365 * 86_400_000;
@@ -48,7 +50,9 @@ export const structureValueAt = (
   contractsBtc: number,
   remainingMs: number,
   sigma: number,
-  realismMultiplier: number
+  realismMultiplier: number,
+  /** Short-leg strike for vertical spreads (the OTM leg sold). Ignored by other structures. */
+  shortStrike?: number
 ): number => {
   const T = Math.max(0, remainingMs / MS_PER_YEAR);
   const bsP = Math.max(0, bsPut(spot, putStrike, T, RFR, sigma));
@@ -57,7 +61,16 @@ export const structureValueAt = (
   if (isTwoLeg(structure)) perBtc = bsP + bsC;
   else if (structure === "one_sided_put") perBtc = bsP;
   else if (structure === "one_sided_call") perBtc = bsC;
-  else /* collar */ perBtc = bsP - bsC; // long put − short call (can be negative)
+  else if (structure === "collar") perBtc = bsP - bsC; // long put − short call (can be negative)
+  else if (structure === "vertical_spread_call") {
+    // bull call debit spread: long call(callStrike) − short call(shortStrike, OTM up)
+    const bsShort = Math.max(0, bsCall(spot, shortStrike ?? callStrike, T, RFR, sigma));
+    perBtc = bsC - bsShort;
+  } else {
+    // vertical_spread_put — bear put debit spread: long put(putStrike) − short put(shortStrike, OTM down)
+    const bsShort = Math.max(0, bsPut(spot, shortStrike ?? putStrike, T, RFR, sigma));
+    perBtc = bsP - bsShort;
+  }
   return perBtc * contractsBtc * realismMultiplier;
 };
 
@@ -69,6 +82,10 @@ export type LegPrices = {
   callBidPerBtc: number;
   bsPutPerBtc: number;
   bsCallPerBtc: number;
+  /** Short-leg (OTM) prices for vertical spreads — same option type as the long leg. */
+  shortAskPerBtc?: number;
+  shortBidPerBtc?: number;
+  shortBsPerBtc?: number;
 };
 
 export type StructureCost = {
@@ -103,12 +120,23 @@ export const structureCostAndRealism = (
     costPerBtc = legs.callAskPerBtc;
     realBid = legs.callBidPerBtc;
     bsCombined = legs.bsCallPerBtc;
-  } else {
+  } else if (structure === "collar") {
     // collar: pay put ask, receive call bid (short) → net premium. A single net real/bs
     // ratio is ill-defined for a mixed long/short (it can go negative), so anchor the
     // realism multiplier to the LONG PROTECTIVE PUT (the dominant risk leg); the short
     // call is modeled at BS. This keeps the multiplier positive + meaningful.
     costPerBtc = legs.putAskPerBtc - legs.callBidPerBtc;
+    realBid = legs.putBidPerBtc;
+    bsCombined = legs.bsPutPerBtc;
+  } else if (structure === "vertical_spread_call") {
+    // bull call debit spread: pay long call ask, collect short call bid (net debit ≥ 0).
+    // Realism anchored to the long (dominant) leg.
+    costPerBtc = legs.callAskPerBtc - (legs.shortBidPerBtc ?? 0);
+    realBid = legs.callBidPerBtc;
+    bsCombined = legs.bsCallPerBtc;
+  } else {
+    // vertical_spread_put — bear put debit spread.
+    costPerBtc = legs.putAskPerBtc - (legs.shortBidPerBtc ?? 0);
     realBid = legs.putBidPerBtc;
     bsCombined = legs.bsPutPerBtc;
   }
@@ -136,12 +164,13 @@ export const theta1dUsdc = (
   contractsBtc: number,
   tenorDays: number,
   sigma: number,
-  realismMultiplier: number
+  realismMultiplier: number,
+  shortStrike?: number
 ): number => {
   const fullMs = tenorDays * 86_400_000;
   const dayMs = 86_400_000;
-  if (fullMs <= dayMs) return structureValueAt(structure, spot, putStrike, callStrike, contractsBtc, fullMs, sigma, realismMultiplier);
-  const now = structureValueAt(structure, spot, putStrike, callStrike, contractsBtc, fullMs, sigma, realismMultiplier);
-  const inOneDay = structureValueAt(structure, spot, putStrike, callStrike, contractsBtc, fullMs - dayMs, sigma, realismMultiplier);
+  if (fullMs <= dayMs) return structureValueAt(structure, spot, putStrike, callStrike, contractsBtc, fullMs, sigma, realismMultiplier, shortStrike);
+  const now = structureValueAt(structure, spot, putStrike, callStrike, contractsBtc, fullMs, sigma, realismMultiplier, shortStrike);
+  const inOneDay = structureValueAt(structure, spot, putStrike, callStrike, contractsBtc, fullMs - dayMs, sigma, realismMultiplier, shortStrike);
   return +(now - inOneDay).toFixed(2);
 };

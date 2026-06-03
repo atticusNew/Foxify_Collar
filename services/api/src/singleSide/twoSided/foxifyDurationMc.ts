@@ -94,6 +94,8 @@ export type FoxifyDurationMcInputs = {
    * auto-close logic are shared. Gamma-scalp mode ignores this (straddle-only branch).
    */
   structure?: OptionStructure;
+  /** Short-leg strike for vertical spreads (the OTM leg sold). Ignored by other structures. */
+  shortStrike?: number;
   /** Foxify auto-close trigger: percent-of-cost PnL threshold. e.g. 0.30 = +30%. */
   autoClosePnlPct: number;
   /** Foxify auto-close absolute trigger: USDC. e.g. 250 = close once +$250 net. */
@@ -455,7 +457,7 @@ export const runFoxifyDurationMc = async (
         for (let j = i; j <= captureEnd; j++) {
           const sp = triggerSide === "down" ? path.lows[j] : path.highs[j];
           const remMs = (path.closes.length - 1 - j) * BAR_MINUTES * 60_000;
-          const v = structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier);
+          const v = structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier, inputs.shortStrike);
           if (v > peak) { peak = v; peakBar = j; }
         }
         const salvageGross = applySlip(peak);
@@ -475,7 +477,7 @@ export const runFoxifyDurationMc = async (
 
       // 2. Compute MTM at this tick + check Foxify auto-close
       const remMs = (path.closes.length - 1 - i) * BAR_MINUTES * 60_000;
-      const mtmGross = structureValueAt(structure, path.closes[i], inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier);
+      const mtmGross = structureValueAt(structure, path.closes[i], inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier, inputs.shortStrike);
       const mtmNetAfterSlip = applySlip(mtmGross) - inputs.hedgeCostUsdc;
       const mtmPnlPct = inputs.hedgeCostUsdc > 0 ? mtmNetAfterSlip / inputs.hedgeCostUsdc : 0;
       if (mtmPnlPct >= inputs.autoClosePnlPct || mtmNetAfterSlip >= inputs.autoCloseAbsoluteUsdc) {
@@ -501,7 +503,7 @@ export const runFoxifyDurationMc = async (
     if (exitMode === "expiry") {
       const sp = path.closes[path.closes.length - 1];
       const remMs = 0;
-      const salvageGross = applySlip(structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier));
+      const salvageGross = applySlip(structureValueAt(structure, sp, inputs.putStrike, inputs.callStrike, inputs.contractsBtc, remMs, inputs.sigmaAnnual, realismMultiplier, inputs.shortStrike));
       const uplift = salvageGross - inputs.hedgeCostUsdc;
       if (uplift <= 0) {
         foxifyNet = uplift;

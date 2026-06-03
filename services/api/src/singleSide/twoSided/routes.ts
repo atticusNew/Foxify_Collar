@@ -1546,7 +1546,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * (one-sided/collar) hedge beats the full two-sided straddle for Foxify's bet.
    * Query: ?cell_id=&regime=&n_paths=
    */
-  app.get<{ Querystring: { cell_id?: string; regime?: string; n_paths?: string } }>(
+  app.get<{ Querystring: { cell_id?: string; regime?: string; n_paths?: string; auto_close_pct?: string; auto_close_abs?: string } }>(
     "/admin/foxify/v2/structure-comparison",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -1563,10 +1563,15 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const regime = (["calm", "moderate", "elevated", "stress"].includes(req.query.regime ?? "")
         ? req.query.regime
         : (currentDvol ? classifyRegime(currentDvol.dvol) : "calm")) as "calm" | "moderate" | "elevated" | "stress";
+      // auto_close_pct / auto_close_abs let the operator test a LOOSER cap (e.g. 2.0 = +200%)
+      // to reveal a long directional option's true convex upside (default +30% clips it).
+      const autoClosePnlPct = req.query.auto_close_pct != null && Number.isFinite(Number(req.query.auto_close_pct)) ? Number(req.query.auto_close_pct) : undefined;
+      const autoCloseAbsoluteUsdc = req.query.auto_close_abs != null && Number.isFinite(Number(req.query.auto_close_abs)) ? Number(req.query.auto_close_abs) : undefined;
       try {
         const report = await compareStructures(deps.pool, {
           cellId, regime, spot, liquidChainCache: deps.liquidChainCache, dvolService: deps.dvolService,
-          nPaths: req.query.n_paths ? Number(req.query.n_paths) : undefined
+          nPaths: req.query.n_paths ? Number(req.query.n_paths) : undefined,
+          autoClosePnlPct, autoCloseAbsoluteUsdc
         });
         reply.send(report);
       } catch (e) {

@@ -14,22 +14,27 @@ import { PHASE_0_CELLS, computeStrikes, type TwoSidedCell } from "./cellConfig";
 import { computeRealPricing, type SweepVenue } from "./cellSweep";
 import { getRegimeCalibration } from "./regimeCalibration";
 import { runFoxifyDurationMc } from "./foxifyDurationMc";
-import { structureCostAndRealism, theta1dUsdc, type OptionStructure } from "./optionStructures";
+import { structureCostAndRealism, theta1dUsdc, type OptionStructure, type LegPrices } from "./optionStructures";
 import type { LiquidChainCache } from "./liquidChainCache";
 import type { DvolService } from "./dvolService";
 
-const COMPARE_STRUCTURES: OptionStructure[] = ["straddle", "one_sided_put", "one_sided_call", "collar"];
+const COMPARE_STRUCTURES: OptionStructure[] = [
+  "straddle", "one_sided_put", "one_sided_call", "collar", "vertical_spread_call", "vertical_spread_put"
+];
 
 const roleOf = (s: OptionStructure): string =>
   s === "straddle" ? "two_sided (movement insurance — pays either direction)"
     : s === "one_sided_put" ? "directional: DOWN-protection (long put)"
     : s === "one_sided_call" ? "directional: UP-protection (long call)"
     : s === "collar" ? "directional collar (long put − short call; ~zero theta, capped)"
+    : s === "vertical_spread_call" ? "directional UP debit spread (long call − short OTM call; cheap, low theta, capped)"
+    : s === "vertical_spread_put" ? "directional DOWN debit spread (long put − short OTM put; cheap, low theta, capped)"
     : s;
 
 export type StructureComparisonRow = {
   structure: OptionStructure;
   role: string;
+  short_strike: number | null;         // OTM short-leg strike for spreads (null otherwise)
   net_cost_usdc: number | null;
   theta_1d_usdc: number | null;        // value lost in 1 day at flat spot (the bleed)
   mc_mean_net_usdc: number | null;
@@ -84,21 +89,38 @@ export const compareStructures = async (
   const rows: StructureComparisonRow[] = [];
   for (const structure of COMPARE_STRUCTURES) {
     if (!pricing) {
-      rows.push({ structure, role: roleOf(structure), net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" });
+      rows.push({ structure, role: roleOf(structure), short_strike: null, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" });
       continue;
     }
-    const { hedgeCostUsdc, salvageRealismMultiplier } = structureCostAndRealism(pricing, structure, cell.contractsBtc);
-    const theta = theta1dUsdc(structure, opts.spot, putStrike, callStrike, cell.contractsBtc, cell.hedgeTenorDays, sigma, salvageRealismMultiplier);
+    // For vertical spreads, price the OTM SHORT leg at the cell's trigger distance and
+    // fold it into the leg prices. shortStrike: up-trigger for a call spread, down-trigger
+    // for a put spread (the spread "bets" on a move up to the trigger).
+    let shortStrike: number | undefined;
+    let legs: LegPrices = pricing;
+    if (structure === "vertical_spread_call") {
+      shortStrike = Math.round(opts.spot * (1 + cell.triggerPctUp));
+      const sp = computeRealPricing(opts.spot, shortStrike, shortStrike, cell.contractsBtc, cell.hedgeTenorDays, opts.liquidChainCache, opts.dvolService ?? null, venue);
+      if (!sp) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
+      legs = { ...pricing, shortAskPerBtc: sp.callAskPerBtc, shortBidPerBtc: sp.callBidPerBtc, shortBsPerBtc: sp.bsCallPerBtc };
+    } else if (structure === "vertical_spread_put") {
+      shortStrike = Math.round(opts.spot * (1 - cell.triggerPctDown));
+      const sp = computeRealPricing(opts.spot, shortStrike, shortStrike, cell.contractsBtc, cell.hedgeTenorDays, opts.liquidChainCache, opts.dvolService ?? null, venue);
+      if (!sp) { rows.push({ structure, role: roleOf(structure), short_strike: shortStrike, net_cost_usdc: null, theta_1d_usdc: null, mc_mean_net_usdc: null, mc_pct_profitable: null, mc_p5_net_usdc: null, mc_p95_net_usdc: null, mc_status: "chain_unavailable" }); continue; }
+      legs = { ...pricing, shortAskPerBtc: sp.putAskPerBtc, shortBidPerBtc: sp.putBidPerBtc, shortBsPerBtc: sp.bsPutPerBtc };
+    }
+    const { hedgeCostUsdc, salvageRealismMultiplier } = structureCostAndRealism(legs, structure, cell.contractsBtc);
+    const theta = theta1dUsdc(structure, opts.spot, putStrike, callStrike, cell.contractsBtc, cell.hedgeTenorDays, sigma, salvageRealismMultiplier, shortStrike);
     const mc = await runFoxifyDurationMc({
       cellId: opts.cellId, spot: opts.spot, hedgeCostUsdc, putStrike, callStrike,
       tenorDays: cell.hedgeTenorDays, triggerPctDown: cell.triggerPctDown, triggerPctUp: cell.triggerPctUp,
       regime: opts.regime, sigmaAnnual: sigma, contractsBtc: cell.contractsBtc,
       autoClosePnlPct, autoCloseAbsoluteUsdc, salvageRealismMultiplier, nPaths,
-      structure, barsOverride: null
+      structure, shortStrike, barsOverride: null
     });
     rows.push({
       structure,
       role: roleOf(structure),
+      short_strike: shortStrike ?? null,
       net_cost_usdc: +hedgeCostUsdc.toFixed(2),
       theta_1d_usdc: theta,
       mc_mean_net_usdc: +mc.meanFoxifyNetUsdc.toFixed(2),
@@ -122,8 +144,10 @@ export const compareStructures = async (
       "Models the HEDGE OPTION LEGS only (approach A) — the protected directional position is Foxify's own P&L, not modeled here.",
       "net_cost = entry premium. straddle = full two-sided premium; one-sided ≈ half; collar ≈ put−call (often ~0 or a credit).",
       "theta_1d = value lost in ONE day at flat spot — the 'guaranteed-losing hedge' bleed. straddle bleeds most; one-sided ~half; collar ≈ 0 (short-call decay offsets the long put).",
-      "mc_* = Foxify-duration MC at the regime σ. one-sided + collar are DIRECTIONAL (they pay only if the move goes the protected way / against the short call); the straddle pays either direction.",
-      "Read it as: if Foxify has a directional view, one-sided/collar deliver protection far cheaper (less/no theta) at the cost of being directional — exactly the trade-off being evaluated."
+      "vertical spreads (debit) = long leg − short OTM leg at the trigger distance: cheap, low theta, directional, payoff CAPPED at the strike width. Best vehicle when the edge is 'right on direction more often than not' rather than 'a big move is coming'.",
+      "mc_* = Foxify-duration MC at the regime σ. one-sided/collar/spreads are DIRECTIONAL; the straddle pays either direction.",
+      "UPSIDE IS SENSITIVE TO auto_close_pct/abs: the MC banks winners at the auto-close threshold (default +30%), which CLIPS a long option's convex tail. For a directional long bet, pass a HIGHER auto_close_pct to see the true upside; spreads are inherently capped so they're less sensitive.",
+      "Read it as: if Foxify has a directional view, one-sided/spread/collar deliver protection far cheaper (less/no theta) at the cost of being directional — exactly the trade-off being evaluated."
     ]
   };
 };

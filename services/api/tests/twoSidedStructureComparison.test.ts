@@ -31,7 +31,7 @@ test("compareStructures: returns straddle + one-sided + collar, role-labeled; ch
     cellId: "pair_10k_atm_2d", regime: "moderate", spot: 66_500, liquidChainCache: emptyCache, dvolService: null, nPaths: 50
   });
   const structs = r.rows.map((x) => x.structure).sort();
-  assert.deepEqual(structs, ["collar", "one_sided_call", "one_sided_put", "straddle"]);
+  assert.deepEqual(structs, ["collar", "one_sided_call", "one_sided_put", "straddle", "vertical_spread_call", "vertical_spread_put"]);
   for (const row of r.rows) {
     assert.equal(row.mc_status, "chain_unavailable", "no chain → no MC");
     assert.equal(row.net_cost_usdc, null);
@@ -41,6 +41,9 @@ test("compareStructures: returns straddle + one-sided + collar, role-labeled; ch
   assert.ok(r.rows.find((x) => x.structure === "straddle")!.role.includes("two_sided"));
   assert.ok(r.rows.find((x) => x.structure === "collar")!.role.includes("collar"));
   assert.ok(r.rows.find((x) => x.structure === "one_sided_put")!.role.includes("DOWN"));
+  assert.ok(r.rows.find((x) => x.structure === "vertical_spread_call")!.role.includes("debit spread"));
+  assert.ok(r.rows.find((x) => x.structure === "vertical_spread_put")!.role.includes("debit spread"));
+  // (short_strike is only populated when the chain is available — null here by design.)
   assert.ok(r.framing.length >= 4);
   assert.equal(r.cell_id, "pair_10k_atm_2d");
   assert.equal(r.regime, "moderate");

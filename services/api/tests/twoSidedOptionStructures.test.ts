@@ -23,6 +23,28 @@ test("structureValueAt: straddle = put + call; collar = put − call; one-sided 
   assert.ok(Math.abs(collar) < 0.02 * straddle, "ATM collar value ≈ 0");
 });
 
+test("structureValueAt: vertical spreads = long leg − short OTM leg, value ≥ 0 and < the bare long leg", () => {
+  const shortUp = 73_500, shortDown = 66_500; // OTM legs
+  const longCall = structureValueAt("one_sided_call", SPOT, K, K, C, REM, SIG, 1.0);
+  const callSpread = structureValueAt("vertical_spread_call", SPOT, K, K, C, REM, SIG, 1.0, shortUp);
+  const longPut = structureValueAt("one_sided_put", SPOT, K, K, C, REM, SIG, 1.0);
+  const putSpread = structureValueAt("vertical_spread_put", SPOT, K, K, C, REM, SIG, 1.0, shortDown);
+  // A debit spread is cheaper than the bare long leg (you sold the OTM wing) but still > 0.
+  assert.ok(callSpread > 0 && callSpread < longCall, "call spread between 0 and the long call");
+  assert.ok(putSpread > 0 && putSpread < longPut, "put spread between 0 and the long put");
+});
+
+test("structureCostAndRealism: vertical spread = long ask − short bid (a debit)", () => {
+  const legs: LegPrices = {
+    putAskPerBtc: 1000, callAskPerBtc: 1000, putBidPerBtc: 950, callBidPerBtc: 950,
+    bsPutPerBtc: 980, bsCallPerBtc: 980, shortAskPerBtc: 400, shortBidPerBtc: 360, shortBsPerBtc: 380
+  };
+  const callSpread = structureCostAndRealism(legs, "vertical_spread_call", 1);
+  // long call ask 1000 − short call bid 360 = 640 net debit (cheaper than the bare 1000 call).
+  assert.equal(callSpread.hedgeCostUsdc, 640);
+  assert.ok(callSpread.salvageRealismMultiplier > 0 && callSpread.salvageRealismMultiplier <= 1.5);
+});
+
 test("theta1dUsdc: straddle bleeds most; one-sided ~half; collar ≈ 0", () => {
   const straddleTheta = theta1dUsdc("straddle", SPOT, K, K, C, 2, SIG, 1.0);
   const putTheta = theta1dUsdc("one_sided_put", SPOT, K, K, C, 2, SIG, 1.0);
