@@ -1590,6 +1590,53 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/okx-probe — READ-ONLY liquidity probe. Shows OKX vs Bullish vs
+   * Deribit spread/depth at a cell's strikes (OKX via public REST, no keys). Purely
+   * additive — does not touch routing/execution. Query: ?cell_id=
+   */
+  app.get<{ Querystring: { cell_id?: string } }>(
+    "/admin/foxify/v2/okx-probe",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { okxProbe } = await import("./okxProbe");
+      const { PHASE_0_CELLS, computeStrikes } = await import("./cellConfig");
+      const { priceCandidateLeg } = await import("./cellSweep");
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      const cellId = req.query.cell_id || "pair_10k_atm_2d";
+      const cell = PHASE_0_CELLS[cellId];
+      if (!cell) { reply.code(400).send({ error: "unknown_cell", known: Object.keys(PHASE_0_CELLS) }); return; }
+      const { putStrike, callStrike } = computeStrikes(cell, spot);
+      try {
+        const okx = await okxProbe({ spot, putStrike, callStrike, tenorDays: cell.hedgeTenorDays });
+        // Bullish + Deribit at the same strikes from the existing chain cache (read-only).
+        const sprd = (ask: number | null, bid: number | null) =>
+          ask != null && bid != null && ask + bid > 0 ? +(((ask - bid) / ((ask + bid) / 2))).toFixed(4) : null;
+        const venueLeg = (strike: number, optType: "put" | "call", v: "bullish" | "deribit") => {
+          if (!deps.liquidChainCache) return { ask: null, bid: null, spread_pct: null };
+          const r = priceCandidateLeg(spot, strike, optType, cell.hedgeTenorDays, cell.contractsBtc, deps.liquidChainCache, deps.dvolService, v);
+          return { ask: r.askPerBtc, bid: r.bidPerBtc, spread_pct: sprd(r.askPerBtc, r.bidPerBtc) };
+        };
+        const compare = (["put", "call"] as const).map((optType) => {
+          const strike = optType === "put" ? putStrike : callStrike;
+          const okxLeg = okx.legs.find((l) => l.opt_type === optType);
+          return {
+            leg: optType, strike,
+            okx: okxLeg ? { ask: okxLeg.ask_usdc_per_btc, bid: okxLeg.bid_usdc_per_btc, spread_pct: okxLeg.spread_pct, bid_size: okxLeg.bid_size, ask_size: okxLeg.ask_size, instId: okxLeg.instId } : null,
+            bullish: venueLeg(strike, optType, "bullish"),
+            deribit: venueLeg(strike, optType, "deribit")
+          };
+        });
+        reply.send({ as_of: new Date().toISOString(), cell_id: cellId, spot, okx_status: okx.ok ? "ok" : okx.error, okx_expiry: okx.expiry_iso ?? null, comparison: compare,
+          note: "READ-ONLY measurement. OKX = public market data (no trading). Spreads are unitless (compare directly). OKX sizes are contracts (~0.01 BTC each — confirm multiplier). OKX is NOT a routing/execution venue yet." });
+      } catch (e) {
+        reply.code(500).send({ error: "okx_probe_failed", message: (e as Error).message });
+      }
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=
