@@ -28,6 +28,7 @@
 import type { Pool } from "pg";
 import type { LiquidChainCache } from "./liquidChainCache";
 import { priceOption, RISK_FREE_RATE } from "./optionPricing";
+import { sizeImpactFraction, getSizeImpactConfig } from "./sizeImpact";
 import { combinedStraddleGreeks } from "../../../scripts/backtest/singleSide/coreEngine";
 
 const DEFAULT_TP_THRESHOLD_PCT = 0.30; // suggest TAKE_PROFIT_AVAILABLE at +30% pnl
@@ -99,6 +100,10 @@ export type PairMtm = {
   call_symbol_held?: string | null;
   put_instrument_used?: string;
   call_instrument_used?: string;
+  // Market-impact applied to the executable value for THIS position's size (0 for small
+  // cells; >0 for large cells that walk the book on a sale). The mid mark is unimpacted.
+  put_size_impact_pct: number;
+  call_size_impact_pct: number;
   // VALIDATION: surfaces the raw bid used per leg so operators can
   // independently verify against the live venue order book.
   put_bid_used_usdc_per_btc?: number;   // null when valuation_method='bs_fallback'
@@ -263,6 +268,7 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
   const tpThresholdPct = inputs.tpThresholdPct ?? DEFAULT_TP_THRESHOLD_PCT;
   const watchThresholdPct = inputs.watchThresholdPct ?? DEFAULT_WATCH_THRESHOLD_PCT;
   const includeShadow = inputs.includeShadow !== false;
+  const sizeImpactCfg = getSizeImpactConfig();
 
   // Pull active pairs joined with leg strikes
   const params: unknown[] = [];
@@ -340,6 +346,9 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
      *  from the held symbol, the value came from a fuzzy PROXY (different strike/tenor)
      *  — a key accuracy red flag for both MTM and TP. */
     instrumentUsed?: string;
+    /** Market-impact fraction applied to the executable value for this leg's size (0 for
+     *  small cells; grows for large cells that would walk the book on a sale). */
+    sizeImpactPct: number;
   } => {
     const result = priceOption({
       spot: inputs.currentSpot,
@@ -372,8 +381,12 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       { valuePerBtc: result.primary_value_per_btc, method, matchTier, rawBidUsdcPerBtc: result.bid_per_btc ?? undefined, midPerBtc: result.mid_per_btc ?? undefined, spreadPct: result.spread_pct ?? undefined, venue: result.venue_used ?? undefined, sourceDetail },
       now
     );
+    // Size-aware market impact: a large sale walks the book below the top bid. Applied
+    // to the EXECUTABLE value only (NOT the mid mark). No-op for small cells (size <=
+    // free_btc). Makes TP/close decisions on the realizable-at-size value.
+    const sizeFrac = sizeImpactFraction(leg.contracts, sizeImpactCfg);
     return {
-      valueTotal: stable.valuePerBtc * leg.contracts,
+      valueTotal: stable.valuePerBtc * leg.contracts * (1 - sizeFrac),
       perBtc: stable.valuePerBtc,
       midPerBtc: stable.midPerBtc,
       spreadPct: stable.spreadPct,
@@ -384,7 +397,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       venue: stable.venue,
       stabilized,
       quoteAgeMs: result.age_ms ?? undefined,
-      instrumentUsed: result.instrument_used ?? undefined
+      instrumentUsed: result.instrument_used ?? undefined,
+      sizeImpactPct: sizeFrac
     };
   };
 
@@ -464,6 +478,8 @@ export const listActivePairMtm = async (inputs: ListMtmInputs): Promise<PairMtm[
       call_symbol_held: callSymbol,
       put_instrument_used: putV.instrumentUsed,
       call_instrument_used: callV.instrumentUsed,
+      put_size_impact_pct: putV.sizeImpactPct,
+      call_size_impact_pct: callV.sizeImpactPct,
       mark_basis_note:
         "pnl_if_close_now_usdc is the EXECUTABLE (bid×haircut) value — what you'd actually receive selling now, and the basis for TP/close. pnl_if_close_now_mid_usdc is the MID mark (≈ exchange UI unrealized PnL); the gap is the bid-ask spread (see *_spread_pct).",
       greeks: combinedStraddleGreeks(inputs.currentSpot, putStrike, callStrike, contracts, tenorRemainingHours / 24 / 365, RISK_FREE_RATE, inputs.ivAnnual ?? 0.35),

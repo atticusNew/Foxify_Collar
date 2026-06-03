@@ -489,6 +489,31 @@ test("listActivePairMtm: BS fallback produces lower value than original 88% hair
   assert.ok(r[0].estimated_salvage_usdc > 100, "BS valuation should produce positive value");
 });
 
+// ─── Size-aware market impact (large cells walk the book) ────────────────────
+
+test("listActivePairMtm: large position gets a size-impact haircut on EXECUTABLE (mid unimpacted); small position does not", async () => {
+  const pool = await buildPool();
+  const expiresAt = new Date(Date.now() + 24 * 3_600_000);
+  // BIG position: 3.0 contracts/leg (≈ a 150k-scale cell). With defaults free=1.0,
+  // per=0.05 → impact = 0.05 × (3.0 − 1.0) = 0.10 (10%).
+  await insertPair(pool, {
+    pair_id: "big", cell_id: "pair_150k_3pct_atm_3d", spot_at_activation: 73000,
+    trigger_down: 70000, trigger_up: 76000, cost: 500, expires_at: expiresAt,
+    put_strike: 73000, call_strike: 73000, contracts: 3.0, put_venue: "deribit", call_venue: "deribit"
+  });
+  const cache = makeMockCache([
+    { strike: 73000, optType: "put", venue: "deribit", bid: 100, ask: 180 },
+    { strike: 73000, optType: "call", venue: "deribit", bid: 100, ask: 180 }
+  ]);
+  const r = await listActivePairMtm({ pool, currentSpot: 73000, ivAnnual: 0.35, liquidChainCache: cache });
+  const p = r[0];
+  assert.ok(Math.abs((p.put_size_impact_pct ?? 0) - 0.10) < 1e-9, `expected 10% impact, got ${p.put_size_impact_pct}`);
+  // Executable per leg = bid 100 × 0.95 haircut × 3.0 × (1 − 0.10) = 256.5 → total 513.
+  assert.ok(Math.abs(p.estimated_salvage_usdc - 513) < 0.5, `executable ~$513 after impact, got ${p.estimated_salvage_usdc}`);
+  // MID mark is NOT impacted: mid 140 × 3.0 × 2 legs = 840.
+  assert.ok(Math.abs(p.current_option_mark_mid_usdc - 840) < 0.5, `mid ~$840 (no impact), got ${p.current_option_mark_mid_usdc}`);
+});
+
 // ─── Valuation freshness / stabilization (steady line vs flapping venue UI) ──
 
 test("listActivePairMtm: holds last-good venue value when the bid drops out (valuation_held=true)", async () => {
@@ -543,6 +568,7 @@ test("summarizeMtm: aggregates totals + counts by recommendation", () => {
     current_put_mark_mid_usdc: 0, current_call_mark_mid_usdc: 0, current_option_mark_mid_usdc: 0,
     pnl_if_close_now_mid_usdc: 0, pnl_pct_mid: 0, mark_basis_note: "",
     valuation_held: false, put_valuation_stabilized: false, call_valuation_stabilized: false,
+    put_size_impact_pct: 0, call_size_impact_pct: 0,
     valuation_method: "venue_bid", put_valuation_method: "venue_bid", call_valuation_method: "venue_bid",
     trigger_down_price: 70000, trigger_up_price: 76000,
     distance_to_trigger_down_pct: 0.04, distance_to_trigger_up_pct: 0.04,
