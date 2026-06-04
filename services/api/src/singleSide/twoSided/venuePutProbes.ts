@@ -9,7 +9,7 @@
 
 import type { OkxFetcher } from "./okxProbe";
 
-export type VenuePut = { venue: string; ask_usdc_per_btc: number | null; instrument: string | null; expiry_iso?: string | null };
+export type VenuePut = { venue: string; ask_usdc_per_btc: number | null; instrument: string | null; strike?: number | null; expiry_iso?: string | null };
 
 const DERIBIT_BASE = process.env.DERIBIT_REST_BASE ?? "https://www.deribit.com";
 const defaultFetcher: OkxFetcher = async (url) => {
@@ -39,6 +39,7 @@ export const deribitPutProbe = async (opts: {
       venue: "deribit",
       ask_usdc_per_btc: askBtc != null && askBtc > 0 ? +(askBtc * opts.spot).toFixed(2) : null,
       instrument: inst.instrument_name ?? null,
+      strike: inst.strike ?? null,
       expiry_iso: new Date(expiry).toISOString()
     };
   } catch {
@@ -69,7 +70,7 @@ export const bullishPutProbe = async (
     const inst = puts.filter((p) => p.expiryMs === expiry).sort((a, b) => Math.abs(a.strike - opts.strike) - Math.abs(b.strike - opts.strike))[0];
     const ob = await client.getHybridOrderBook(inst.symbol);
     const ask = ob.asks?.[0]?.price != null ? Number(ob.asks[0].price) : null; // Bullish quotes USDC per option
-    return { venue: "bullish", ask_usdc_per_btc: ask != null && ask > 0 ? +ask.toFixed(2) : null, instrument: inst.symbol, expiry_iso: new Date(expiry).toISOString() };
+    return { venue: "bullish", ask_usdc_per_btc: ask != null && ask > 0 ? +ask.toFixed(2) : null, instrument: inst.symbol, strike: inst.strike ?? null, expiry_iso: new Date(expiry).toISOString() };
   } catch {
     return { venue: "bullish", ask_usdc_per_btc: null, instrument: null };
   }

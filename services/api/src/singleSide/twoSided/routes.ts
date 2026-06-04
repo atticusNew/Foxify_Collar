@@ -1731,7 +1731,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       if (fractions.length === 0) { reply.code(400).send({ error: "invalid_request", message: "tiers must be comma-separated fractions in (0,4)" }); return; }
 
       // Price the cheapest LONG PUT at each tier's strike across all three venues, in parallel.
-      const priceStrike = async (strike: number): Promise<{ venue: string; ask_usdc_per_btc: number | null; instrument?: string | null } | null> => {
+      const priceStrike = async (strike: number): Promise<{ venue: string; ask_usdc_per_btc: number | null; instrument?: string | null; strike?: number | null } | null> => {
         const okxPut = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays })
           .then((o) => o.legs.find((l) => l.opt_type === "put"))
           .catch(() => null);
@@ -1739,10 +1739,12 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           deribitPutProbe({ spot, strike, tenorDays }),
           bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays })
         ]);
+        // Carry the ACTUAL listed strike each venue priced (they snap to their grid) so the tier
+        // economics describe one real instrument, not the theoretical target strike.
         const quotes = [
-          { venue: "okx", ask_usdc_per_btc: okxPut?.ask_usdc_per_btc ?? null, instrument: okxPut?.instId ?? null },
-          { venue: "deribit", ask_usdc_per_btc: deribit.ask_usdc_per_btc, instrument: deribit.instrument },
-          { venue: "bullish", ask_usdc_per_btc: bullish.ask_usdc_per_btc, instrument: bullish.instrument }
+          { venue: "okx", ask_usdc_per_btc: okxPut?.ask_usdc_per_btc ?? null, instrument: okxPut?.instId ?? null, strike: okxPut?.strike ?? null },
+          { venue: "deribit", ask_usdc_per_btc: deribit.ask_usdc_per_btc, instrument: deribit.instrument, strike: deribit.strike ?? null },
+          { venue: "bullish", ask_usdc_per_btc: bullish.ask_usdc_per_btc, instrument: bullish.instrument, strike: bullish.strike ?? null }
         ].filter((q) => q.ask_usdc_per_btc != null && q.ask_usdc_per_btc > 0);
         if (quotes.length === 0) return null;
         return quotes.reduce((b, q) => (q.ask_usdc_per_btc! < b.ask_usdc_per_btc! ? q : b));

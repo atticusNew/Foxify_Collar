@@ -86,6 +86,47 @@ test("buildFloorTierBundle: full bundle with one recommended tier", () => {
   assert.ok(bundle.tiers.every((t) => t.available));
 });
 
+test("buildFloorTier: worst case is computed from the ACTUAL priced strike (venue snapping)", () => {
+  // Target strike for 50% @ 10x is 62700, but the venue actually priced the 62000 strike.
+  const t = buildFloorTier(base, 0.5, { venue: "okx", ask_usdc_per_btc: 1000, strike: 62000 });
+  assert.equal(t.available, true);
+  assert.equal(t.floor_strike, 62000, "uses the actual listed strike, not the theoretical target");
+  // worst case must use 62000: (66000-62000)*1 + 1000 = 4000 + 1000 = 5000 (NOT the 62700 figure).
+  assert.equal(t.max_loss_usdc, 5000);
+});
+
+test("buildFloorTierBundle: tiers that snap to the SAME listed strike are de-duplicated", () => {
+  const sameStrike: TierPutQuote = { venue: "okx", ask_usdc_per_btc: 661.44, strike: 61000 };
+  const quotes = new Map<number, TierPutQuote | null>([
+    [0.25, { venue: "okx", ask_usdc_per_btc: 864.96, strike: 61500 }],
+    [0.5, sameStrike],
+    [0.75, sameStrike]
+  ]);
+  const bundle = buildFloorTierBundle({ ...base, fractions: [0.25, 0.5, 0.75] }, quotes);
+  // 0.5 and 0.75 both priced the 61000 strike → collapse to one; 0.25 (61500) stays distinct.
+  assert.equal(bundle.tiers.length, 2);
+  const strikes = bundle.tiers.map((t) => t.floor_strike).sort((a, b) => a - b);
+  assert.deepEqual(strikes, [61000, 61500]);
+  assert.equal(bundle.tiers.filter((t) => t.recommended).length, 1);
+});
+
+test("buildFloorTier: high leverage where the nearest listed strike falls at/below liq → unavailable", () => {
+  // 40x → liq 2.5% (liq price 64350). Nearest listed put landed at 60000 (9.1% below) → no floor.
+  const hi = { spot: 66000, sizeBtc: 1, leverage: 40, tenorDays: 3 };
+  const t = buildFloorTier(hi, 0.5, { venue: "okx", ask_usdc_per_btc: 300, strike: 60000 });
+  assert.equal(t.available, false);
+  assert.equal(t.adds_value, false);
+  assert.ok(/liquidation|reduce leverage/.test(t.unavailable_reason ?? ""));
+});
+
+test("buildFloorTierBundle: when no listed strike is tradable, returns rows but none available", () => {
+  const hi = { spot: 66000, sizeBtc: 1, leverage: 40, tenorDays: 3, fractions: [0.25, 0.5, 0.75] };
+  const farQuote: TierPutQuote = { venue: "okx", ask_usdc_per_btc: 300, strike: 60000 }; // 9.1% below, outside 2.5% liq
+  const quotes = new Map<number, TierPutQuote | null>([[0.25, farQuote], [0.5, farQuote], [0.75, farQuote]]);
+  const bundle = buildFloorTierBundle(hi, quotes);
+  assert.equal(bundle.tiers.every((t) => !t.available), true);
+});
+
 test("buildFloorTierBundle: 40x position keeps all sub-100%-margin tiers valid (inside liq)", () => {
   const quotes = new Map<number, TierPutQuote | null>([
     [0.25, { venue: "okx", ask_usdc_per_btc: 400 }],

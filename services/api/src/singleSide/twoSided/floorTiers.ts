@@ -26,7 +26,7 @@ import { computeFloorEconomics, type FloorEconomics } from "./floorQuote";
 /** Default menu: "risk 25% / 50% / 75% of your margin." */
 export const DEFAULT_TIER_FRACTIONS = [0.25, 0.5, 0.75] as const;
 
-export type TierPutQuote = { venue: string; ask_usdc_per_btc: number | null; instrument?: string | null };
+export type TierPutQuote = { venue: string; ask_usdc_per_btc: number | null; instrument?: string | null; strike?: number | null };
 
 export type FloorTier = {
   /** Fraction of margin the trader risks to price moves before the cap (e.g. 0.5). */
@@ -84,46 +84,57 @@ export const strikeForMarginFraction = (spot: number, leverage: number, fraction
   return { floorPct, strike: spot * (1 - floorPct) };
 };
 
-/** Build one tier from injected pricing (the cheapest live put quote at that tier's strike). */
+/**
+ * Build one tier from injected pricing. CORRECTNESS: when the quote carries the ACTUAL listed
+ * strike it was priced at (venues snap to the nearest listed strike), we recompute the floor
+ * and worst case from THAT strike — so strike, premium, and worst case always describe ONE
+ * instrument. The requested `fraction` is only the targeting knob (and the tier name).
+ */
 export const buildFloorTier = (
   inputs: FloorTierBundleInputs,
   fraction: number,
   best: TierPutQuote | null
 ): FloorTier => {
   const { spot, sizeBtc, leverage, tenorDays } = inputs;
-  const { floorPct, strike } = strikeForMarginFraction(spot, leverage, fraction);
-  const margin = leverage > 0 ? (sizeBtc * spot) / leverage : sizeBtc * spot;
+  const { floorPct: targetFloorPct, strike: targetStrike } = strikeForMarginFraction(spot, leverage, fraction);
   const liqDropPct = leverage > 0 ? 1 / leverage : 1;
-  const addsValue = floorPct < liqDropPct; // equivalently fraction < 1
-
   const label = `Risk ${Math.round(fraction * 100)}% of your margin`;
 
+  // No live quote → carry the target strike for display, mark unavailable.
+  if (!best || best.ask_usdc_per_btc == null || best.ask_usdc_per_btc <= 0) {
+    const targetAdds = targetFloorPct > 0 && targetFloorPct < liqDropPct;
+    return {
+      margin_fraction: fraction, label, floor_pct: +targetFloorPct.toFixed(4), floor_strike: +targetStrike.toFixed(2),
+      adds_value: targetAdds, available: false,
+      unavailable_reason: targetAdds ? `no live put quote near ${usd(targetStrike)}` : `floor at ${pctStr(targetFloorPct)} sits at/beyond liquidation (${pctStr(liqDropPct)}) — reduce leverage`,
+      venue: null, instrument: null, put_cost_usdc: null, cost_per_day_usdc: null, max_loss_usdc: null,
+      headline: targetAdds ? `No live quote — try another tenor` : `Unavailable at ${leverage}× — reduce leverage`, recommended: false
+    };
+  }
+
+  // Use the ACTUAL strike the venue priced (snapped to its listed grid) when available.
+  const actualStrike = best.strike != null && best.strike > 0 ? best.strike : targetStrike;
+  const floorPctActual = (spot - actualStrike) / spot;
+  const addsValue = floorPctActual > 0 && floorPctActual < liqDropPct;
+
+  // The nearest listed strike landed at/below the liquidation price → no tradable floor here.
   if (!addsValue) {
     return {
-      margin_fraction: fraction, label, floor_pct: +floorPct.toFixed(4), floor_strike: +strike.toFixed(2),
+      margin_fraction: fraction, label, floor_pct: +floorPctActual.toFixed(4), floor_strike: +actualStrike.toFixed(2),
       adds_value: false, available: false,
-      unavailable_reason: `floor at ${pctStr(floorPct)} sits at/beyond liquidation (${pctStr(liqDropPct)}) — lower leverage to unlock`,
-      venue: null, instrument: null, put_cost_usdc: null, cost_per_day_usdc: null, max_loss_usdc: null,
+      unavailable_reason: `nearest listed floor (${usd(actualStrike)}, ${pctStr(floorPctActual)}) sits at/below liquidation (${pctStr(liqDropPct)}) — reduce leverage`,
+      venue: best.venue, instrument: best.instrument ?? null, put_cost_usdc: null, cost_per_day_usdc: null, max_loss_usdc: null,
       headline: `Unavailable at ${leverage}× — reduce leverage`, recommended: false
     };
   }
 
-  if (!best || best.ask_usdc_per_btc == null || best.ask_usdc_per_btc <= 0) {
-    return {
-      margin_fraction: fraction, label, floor_pct: +floorPct.toFixed(4), floor_strike: +strike.toFixed(2),
-      adds_value: true, available: false,
-      unavailable_reason: `no live put quote near ${usd(strike)}`,
-      venue: null, instrument: null, put_cost_usdc: null, cost_per_day_usdc: null, max_loss_usdc: null,
-      headline: `No live quote — try another tenor`, recommended: false
-    };
-  }
-
-  // Reuse the canonical economics engine for the cap math (gap-proof, includes premium).
-  const econ: FloorEconomics = computeFloorEconomics({ spot, sizeBtc, leverage, floorPct, tenorDays }, best.ask_usdc_per_btc);
+  // Reuse the canonical economics engine — fed the ACTUAL strike's floorPct so the cap math
+  // (gap-proof, includes premium) is consistent with the priced instrument.
+  const econ: FloorEconomics = computeFloorEconomics({ spot, sizeBtc, leverage, floorPct: floorPctActual, tenorDays }, best.ask_usdc_per_btc);
   const costPerDay = tenorDays > 0 ? econ.put_cost_usdc / tenorDays : econ.put_cost_usdc;
 
   return {
-    margin_fraction: fraction, label, floor_pct: +floorPct.toFixed(4), floor_strike: +strike.toFixed(2),
+    margin_fraction: fraction, label, floor_pct: +floorPctActual.toFixed(4), floor_strike: +actualStrike.toFixed(2),
     adds_value: true, available: true, unavailable_reason: null,
     venue: best.venue, instrument: best.instrument ?? null,
     put_cost_usdc: econ.put_cost_usdc,
@@ -177,7 +188,22 @@ export const buildFloorTierBundle = (
 ): FloorTierBundle => {
   const fractions = (inputs.fractions && inputs.fractions.length > 0 ? inputs.fractions : DEFAULT_TIER_FRACTIONS).slice();
   const margin = inputs.leverage > 0 ? (inputs.sizeBtc * inputs.spot) / inputs.leverage : inputs.sizeBtc * inputs.spot;
-  const tiers = fractions.map((f) => buildFloorTier(inputs, f, quotesByFraction.get(f) ?? null));
+  const built = fractions.map((f) => buildFloorTier(inputs, f, quotesByFraction.get(f) ?? null));
+
+  // De-duplicate: venues snap to listed strikes, so several requested fractions can resolve to
+  // the SAME real floor. Keep one distinct floor per strike (the first = safest intent). If no
+  // tier is tradable (very high leverage), keep the built rows so the UI shows an honest reason.
+  const seen = new Set<number>();
+  const distinct: FloorTier[] = [];
+  for (const t of built) {
+    if (!t.available) continue;
+    const key = Math.round(t.floor_strike);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    distinct.push(t);
+  }
+  const tiers = distinct.length > 0 ? distinct : built;
+
   const recIdx = pickRecommended(tiers, margin);
   if (recIdx >= 0) tiers[recIdx].recommended = true;
   return { position: buildPositionCard(inputs), tenor_days: inputs.tenorDays, tiers };
