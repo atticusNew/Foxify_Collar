@@ -11,6 +11,7 @@ import { VolumeCoverAdmin } from "./VolumeCoverAdmin";
 import { FoxifyDashboard } from "./FoxifyDashboard";
 import { FoxifyVolumeDashboard } from "./twoSided/FoxifyVolumeDashboard";
 import { AtticusVolumeAdmin } from "./twoSided/AtticusVolumeAdmin";
+import { ProtectedLeverageWidget } from "./twoSided/ProtectedLeverageWidget";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET, PILOT_ACCESS_CODE } from "./config";
 import "./styles.css";
 
@@ -117,6 +118,11 @@ function AppRouter() {
 
   if (path === "/volume-cover" || path.startsWith("/volume-cover/")) {
     return <VolumeCoverAdmin />;
+  }
+
+  // Protected Leverage floor widget (Sai sales artifact / prospect sandbox, read-only).
+  if (path === "/protect" || path.startsWith("/protect")) {
+    return <ProtectedLeverageWidget />;
   }
 
   // Two-sided cooperative-volume facility (v2). Admin path checked FIRST.
