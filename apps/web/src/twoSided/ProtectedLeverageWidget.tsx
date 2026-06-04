@@ -82,6 +82,20 @@ export function ProtectedLeverageWidget() {
     return () => clearTimeout(id);
   }, [authed, load]);
 
+  // Route-scoped tab title + favicon (reverts on unmount so other dashboards are unaffected).
+  useEffect(() => {
+    const prevTitle = document.title;
+    document.title = "Protected Leverage";
+    const link = document.querySelector("link[rel='icon']") as HTMLLinkElement | null;
+    const prevHref = link?.href ?? null;
+    const prevType = link?.type ?? null;
+    if (link) { link.href = "https://i.ibb.co/8DxSMJFc/EEvm4m-G-bigger.jpg"; link.type = "image/jpeg"; }
+    return () => {
+      document.title = prevTitle;
+      if (link && prevHref) { link.href = prevHref; if (prevType) link.type = prevType; }
+    };
+  }, []);
+
   if (!authed) return <TokenGate role="admin" title="Protected Leverage — demo access" onSubmit={() => setAuthed(true)} />;
 
   const spot = wick?.inputs.spot ?? cap?.position.spot ?? null;
@@ -163,9 +177,10 @@ function WickCard({ wick, spot, liqDrop, margin, activated, onActivate }: {
         <SectionLabel>Stay in your trade</SectionLabel>
         <DetailRow label="Survive a wick to" value={`−${pct(k2Drop)}`} sub={`a −${pct(liqDrop)} dip won't liquidate you`} valueColor={C.green} strong />
         <DetailRow label="Cost" value={usd2(best.cost_usdc)} sub={`${(best.pct_margin * 100).toFixed(0)}% of margin · ${best.venue.toUpperCase()}`} valueColor={C.green} strong last />
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
-          <SimBox tone="bad" heading={`−${pct(exampleDip)} wick`} big="Liquidated" sub={`lost ${usd(margin)}`} />
-          <SimBox tone="good" heading={`−${pct(exampleDip)} wick`} big="Still in" sub="keep your trade" />
+        <div style={{ ...SUB, textAlign: "center", marginTop: 16 }}>If BTC wicks −{pct(exampleDip)} and recovers</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
+          <SimBox tone="bad" big="Liquidated" sub={`lost ${usd(margin)}`} />
+          <SimBox tone="good" big="Still in" sub="keep your trade" />
         </div>
         <ActivateRow activated={activated} onActivate={onActivate} />
       </Card>
@@ -212,14 +227,16 @@ function CapSection({ cap, margin, liqPrice, liqDrop, spot, selected, setSelecte
 }
 
 /* ── presentational ── */
-const LABEL = "#9aa3ad"; // brighter than muted for row labels
+const LABEL = "#9aa3ad";          // brighter than muted for row labels
+const GOLD = "#d6b56a";           // section-header accent (warm gold, matches dark theme)
+const SUB: React.CSSProperties = { fontSize: 11, color: C.muted, marginTop: 2 }; // unified subtext
 const input: React.CSSProperties = { width: "100%", padding: "10px 12px", fontSize: 15, background: C.panel2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, boxSizing: "border-box" };
 
 function Card({ children, highlight }: { children: React.ReactNode; highlight?: boolean }) {
   return <div style={{ background: C.panel, borderRadius: 10, padding: 20, marginBottom: 14, border: highlight ? `1px solid ${C.green}55` : `1px solid ${C.border}` }}>{children}</div>;
 }
 function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 11, fontWeight: 700, color: LABEL, letterSpacing: 1, textTransform: "uppercase", marginBottom: 14 }}>{children}</div>;
+  return <div style={{ fontSize: 11.5, fontWeight: 800, color: GOLD, letterSpacing: 1.4, textTransform: "uppercase", marginBottom: 14 }}>{children}</div>;
 }
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
@@ -234,7 +251,7 @@ function DetailRow({ label, value, sub, tag, valueColor, strong, last }: {
       <span style={{ fontSize: 13, color: LABEL, flexShrink: 0 }}>{label}{tag && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: tag.color + "22", color: tag.color, border: `1px solid ${tag.color}44` }}>{tag.text}</span>}</span>
       <span style={{ textAlign: "right" }}>
         <span style={{ fontSize: strong ? 16 : 14, fontWeight: strong ? 700 : 600, color: valueColor ?? C.text }}>{value}</span>
-        {sub && <span style={{ display: "block", fontSize: 11, color: C.muted, marginTop: 2 }}>{sub}</span>}
+        {sub && <span style={{ display: "block", ...SUB }}>{sub}</span>}
       </span>
     </div>
   );
@@ -261,11 +278,10 @@ function ActivateRow({ activated, onActivate }: { activated: boolean; onActivate
       : <span style={{ fontSize: 14, color: C.green, fontWeight: 700 }}>✓ Protection active</span>}
   </div>;
 }
-function SimBox({ tone, heading, big, sub }: { tone: "good" | "bad"; heading: string; big: string; sub: string }) {
+function SimBox({ tone, big, sub }: { tone: "good" | "bad"; big: string; sub: string }) {
   const col = tone === "good" ? C.green : C.red;
-  return <div style={{ background: col + "10", border: `1px solid ${col}33`, borderRadius: 8, padding: "12px 14px", textAlign: "center" }}>
-    <div style={{ fontSize: 11, color: C.muted }}>{heading}</div>
-    <div style={{ fontSize: 19, fontWeight: 800, color: col, margin: "4px 0" }}>{big}</div>
+  return <div style={{ background: col + "10", border: `1px solid ${col}33`, borderRadius: 8, padding: "14px", textAlign: "center" }}>
+    <div style={{ fontSize: 19, fontWeight: 800, color: col, marginBottom: 4 }}>{big}</div>
     <div style={{ fontSize: 11, color: C.muted }}>{sub}</div></div>;
 }
 function TierRow({ tier, selected, onClick }: { tier: FloorTier; selected: boolean; onClick: () => void }) {
@@ -273,11 +289,11 @@ function TierRow({ tier, selected, onClick }: { tier: FloorTier; selected: boole
     <div>
       <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{tierName(tier.margin_fraction)}
         {tier.recommended && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: C.green + "22", color: C.green, border: `1px solid ${C.green}55` }}>recommended</span>}</div>
-      <div style={{ fontSize: 13, color: C.text, marginTop: 4 }}>Worst case <b>{usd(tier.max_loss_usdc)}</b></div>
+      <div style={SUB}>Worst case {usd(tier.max_loss_usdc)}</div>
     </div>
     <div style={{ textAlign: "right" }}>
       <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{usd2(tier.put_cost_usdc)}</div>
-      <div style={{ fontSize: 12, color: C.text, marginTop: 2 }}>{usd2(tier.cost_per_day_usdc)}/day</div>
+      <div style={SUB}>{usd2(tier.cost_per_day_usdc)}/day</div>
     </div></div>;
 }
 function Pricing({ note, rows, cols, dollars }: { note: string; rows: Array<{ k: string; a: number | null; b: number | null; dollars?: boolean }>; cols: string[]; dollars?: boolean }) {
