@@ -15,16 +15,19 @@ import { API_BASE } from "../config";
 
 export const FOXIFY_TOKEN_KEY = "ts_foxify_token";
 export const ADMIN_TOKEN_KEY = "ts_admin_token";
+export const DEMO_TOKEN_KEY = "ts_demo_token";
 
-export type Role = "foxify" | "admin";
+export type Role = "foxify" | "admin" | "demo";
 
 const HEADER_FOR: Record<Role, string> = {
   foxify: "X-Foxify-Token",
-  admin: "X-Admin-Token"
+  admin: "X-Admin-Token",
+  demo: "X-Demo-Token"
 };
 const KEY_FOR: Record<Role, string> = {
   foxify: FOXIFY_TOKEN_KEY,
-  admin: ADMIN_TOKEN_KEY
+  admin: ADMIN_TOKEN_KEY,
+  demo: DEMO_TOKEN_KEY
 };
 
 export class UnauthorizedError extends Error {
@@ -71,6 +74,8 @@ const request = async <T>(role: Role, path: string, init: RequestInit = {}): Pro
 export const foxifyGet = <T>(path: string): Promise<T> => request<T>("foxify", path);
 export const foxifyPost = <T>(path: string, body?: unknown): Promise<T> =>
   request<T>("foxify", path, { method: "POST", body: body == null ? undefined : JSON.stringify(body) });
+
+export const demoGet = <T>(path: string): Promise<T> => request<T>("demo", path);
 
 export const adminGet = <T>(path: string): Promise<T> => request<T>("admin", path);
 export const adminPost = <T>(path: string, body?: unknown): Promise<T> =>

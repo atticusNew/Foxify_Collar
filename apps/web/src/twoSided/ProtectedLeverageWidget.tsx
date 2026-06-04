@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useState, useCallback } from "react";
-import { adminGet, getToken, clearToken, UnauthorizedError } from "./api";
+import { demoGet, getToken, clearToken, UnauthorizedError } from "./api";
 import { TokenGate, Shell, COLORS as C } from "./widgets";
 
 type FloorTier = {
@@ -39,9 +39,10 @@ const HIGH_LEV = 25;
 const tierName = (f: number) => (f <= 0.33 ? "Safer" : f <= 0.6 ? "Balanced" : "Cheapest");
 
 export function ProtectedLeverageWidget() {
-  const [authed, setAuthed] = useState(() => !!getToken("admin"));
+  const [authed, setAuthed] = useState(() => !!getToken("demo"));
   const [collateral, setCollateral] = useState(500);
   const [leverage, setLeverage] = useState(10);
+  const [tenorDays, setTenorDays] = useState(3);
   const [selected, setSelected] = useState<number | null>(null);
   const [activated, setActivated] = useState(false);
 
@@ -53,17 +54,17 @@ export function ProtectedLeverageWidget() {
   const highLev = leverage >= HIGH_LEV;
 
   const load = useCallback(async () => {
-    if (!getToken("admin")) { setAuthed(false); return; }
+    if (!getToken("demo")) { setAuthed(false); return; }
     setLoading(true); setErr(null);
     try {
       if (leverage >= HIGH_LEV) {
         const liqDrop = 1 / leverage;
         const k1 = Math.max(0.005, +(liqDrop * 0.8).toFixed(4));
         const k2 = Math.min(0.5, +(liqDrop * 1.6).toFixed(4));
-        const data = await adminGet<WickResp>(`/admin/foxify/v2/wick-insurance?collateral=${collateral}&leverage=${leverage}&tenor_days=1&k1_pct=${k1}&k2_pct=${k2}`);
+        const data = await demoGet<WickResp>(`/admin/foxify/v2/wick-insurance?collateral=${collateral}&leverage=${leverage}&tenor_days=${tenorDays}&k1_pct=${k1}&k2_pct=${k2}`);
         setWick(data); setCap(null);
       } else {
-        const data = await adminGet<CapBundle>(`/admin/foxify/v2/floor-quote/tiers?collateral=${collateral}&leverage=${leverage}&tenor_days=3`);
+        const data = await demoGet<CapBundle>(`/admin/foxify/v2/floor-quote/tiers?collateral=${collateral}&leverage=${leverage}&tenor_days=${tenorDays}`);
         setCap(data); setWick(null);
         const rec = data.tiers.findIndex((t) => t.recommended);
         const firstAvail = data.tiers.findIndex((t) => t.available);
@@ -73,7 +74,7 @@ export function ProtectedLeverageWidget() {
       if (e instanceof UnauthorizedError) { setAuthed(false); return; }
       setErr((e as Error).message); setCap(null); setWick(null);
     } finally { setLoading(false); }
-  }, [collateral, leverage]);
+  }, [collateral, leverage, tenorDays]);
 
   useEffect(() => {
     if (!authed) return;
@@ -96,7 +97,7 @@ export function ProtectedLeverageWidget() {
     };
   }, []);
 
-  if (!authed) return <TokenGate role="admin" title="Protected Leverage — demo access" onSubmit={() => setAuthed(true)} />;
+  if (!authed) return <TokenGate role="demo" title="Protected Leverage — demo access" onSubmit={() => setAuthed(true)} />;
 
   const spot = wick?.inputs.spot ?? cap?.position.spot ?? null;
   const notional = wick?.position.notional_usdc ?? cap?.position.notional_usdc ?? null;
@@ -107,7 +108,7 @@ export function ProtectedLeverageWidget() {
 
   return (
     <Shell title="Protected Leverage" subtitle="Trade leveraged — without the wipe-out. Read-only demo."
-      updatedIso={wick?.as_of ?? cap?.as_of} onSignOut={() => { clearToken("admin"); setAuthed(false); }}>
+      updatedIso={wick?.as_of ?? cap?.as_of} onSignOut={() => { clearToken("demo"); setAuthed(false); }}>
       <div style={{ maxWidth: 540, margin: "0 auto" }}>
         {/* Spot */}
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 16, padding: "0 2px" }}>
@@ -129,9 +130,14 @@ export function ProtectedLeverageWidget() {
           <FieldRow label="Leverage">
             <Stepper value={leverage} onChange={(v) => setLeverage(Math.min(MAX_LEV, Math.max(1, v)))} />
           </FieldRow>
+          <FieldRow label="Cover for">
+            <div style={{ display: "flex", gap: 6 }}>
+              {[1, 3, 7].map((d) => <Chip key={d} active={tenorDays === d} label={`${d}d`} onClick={() => setTenorDays(d)} />)}
+            </div>
+          </FieldRow>
           {havePos && (
             <div style={{ marginTop: 6, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <DetailRow label="Position" value={usd(notional)} />
+              <DetailRow label="Position" value={usd(notional)} sub="long · short-side coming soon" />
               <DetailRow label="Margin" value={usd(margin)} tag={highLev ? { text: "high leverage", color: C.amber } : { text: "moderate", color: C.muted }} last />
             </div>
           )}
@@ -156,6 +162,13 @@ export function ProtectedLeverageWidget() {
               selected={selected} setSelected={(i) => { setSelected(i); setActivated(false); }}
               activated={activated} onActivate={() => setActivated(true)} loading={loading} />
           )}
+
+        {/* Honest disclaimer */}
+        <div style={{ fontSize: 10.5, color: C.muted, textAlign: "center", lineHeight: 1.6, margin: "18px 6px 8px", opacity: 0.75 }}>
+          Illustrative demo · live option pricing across OKX / Deribit / Bullish. Simplified liquidation
+          (ignores maintenance margin, funding, fees, slippage). True no-liquidation requires exchange
+          margin integration; standalone, the put bounds net loss at the same figure. Not financial advice.
+        </div>
       </div>
     </Shell>
   );
@@ -270,6 +283,10 @@ function Stepper({ value, onChange }: { value: number; onChange: (v: number) => 
   );
 }
 const stepBtn: React.CSSProperties = { width: 34, height: 38, border: "none", background: "transparent", color: C.text, fontSize: 18, cursor: "pointer", lineHeight: 1 };
+
+function Chip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return <div onClick={onClick} style={{ padding: "7px 13px", borderRadius: 6, fontSize: 14, cursor: "pointer", background: active ? C.blue + "22" : C.panel2, color: active ? C.blue : C.muted, border: `1px solid ${active ? C.blue + "66" : C.border}`, fontWeight: active ? 700 : 400 }}>{label}</div>;
+}
 
 function ActivateRow({ activated, onActivate }: { activated: boolean; onActivate: () => void }) {
   return <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>

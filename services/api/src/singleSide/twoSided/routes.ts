@@ -166,6 +166,38 @@ const checkAdminToken = async (req: FastifyRequest, reply: FastifyReply): Promis
   return true;
 };
 
+/**
+ * READ-ONLY demo gate for the prospect-facing Protected-Leverage widget. Accepts EITHER the
+ * full admin token (x-admin-token) OR a dedicated read-only demo token (x-demo-token, env
+ * SS_DEMO_READONLY_TOKEN). The demo token is safe to share externally: it only unlocks the
+ * read-only floor-quote / wick-insurance endpoints below — it CANNOT reach any other admin
+ * route (each of those still requires checkAdminToken).
+ */
+const checkDemoOrAdminToken = async (req: FastifyRequest, reply: FastifyReply): Promise<boolean> => {
+  const admin = process.env.PILOT_ADMIN_TOKEN ?? "";
+  const demo = process.env.SS_DEMO_READONLY_TOKEN ?? "";
+  const adminProvided = (req.headers["x-admin-token"] as string | undefined) ?? "";
+  const demoProvided = (req.headers["x-demo-token"] as string | undefined) ?? "";
+  if (admin && adminProvided && safeCompare(admin, adminProvided)) return true;
+  if (demo && demoProvided && safeCompare(demo, demoProvided)) return true;
+  await reply.code(401).send({ error: "unauthorized", message: "Missing or invalid X-Admin-Token or X-Demo-Token" });
+  return false;
+};
+
+// Short in-memory TTL cache for the read-only demo quote endpoints (each fires several live
+// venue probes). Keeps the prospect widget snappy and shields venues from rapid slider spam.
+const _demoQuoteCache = new Map<string, { at: number; data: unknown }>();
+const DEMO_QUOTE_TTL_MS = 20_000;
+const demoCacheGet = (key: string): unknown | null => {
+  const e = _demoQuoteCache.get(key);
+  if (e && Date.now() - e.at < DEMO_QUOTE_TTL_MS) return e.data;
+  return null;
+};
+const demoCacheSet = (key: string, data: unknown): void => {
+  _demoQuoteCache.set(key, { at: Date.now(), data });
+  if (_demoQuoteCache.size > 200) { const k = _demoQuoteCache.keys().next().value; if (k) _demoQuoteCache.delete(k); }
+};
+
 // ───────────────────────── Plugin ─────────────────────────
 
 export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = async (app, deps) => {
@@ -1645,7 +1677,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    */
   app.get<{ Querystring: { size?: string; leverage?: string; floor_pct?: string; tenor_days?: string; spot?: string } }>(
     "/admin/foxify/v2/floor-quote",
-    { preHandler: checkAdminToken },
+    { preHandler: checkDemoOrAdminToken },
     async (req, reply) => {
       const { computeFloorEconomics, bestPutVenue } = await import("./floorQuote");
       const { okxProbe } = await import("./okxProbe");
@@ -1706,7 +1738,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    */
   app.get<{ Querystring: { size?: string; collateral?: string; leverage?: string; tenor_days?: string; spot?: string; tiers?: string } }>(
     "/admin/foxify/v2/floor-quote/tiers",
-    { preHandler: checkAdminToken },
+    { preHandler: checkDemoOrAdminToken },
     async (req, reply) => {
       const { buildFloorTierBundle, strikeForMarginFraction, DEFAULT_TIER_FRACTIONS } = await import("./floorTiers");
       const { okxProbe } = await import("./okxProbe");
@@ -1729,6 +1761,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         ? req.query.tiers.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0 && n < 4)
         : [...DEFAULT_TIER_FRACTIONS]);
       if (fractions.length === 0) { reply.code(400).send({ error: "invalid_request", message: "tiers must be comma-separated fractions in (0,4)" }); return; }
+
+      const cacheKey = `tiers:${sizeBtc.toFixed(6)}:${leverage}:${tenorDays}:${Math.round(spot / 10) * 10}:${fractions.join(",")}`;
+      const cached = demoCacheGet(cacheKey);
+      if (cached) { reply.send(cached); return; }
 
       // Price the cheapest LONG PUT at each tier's strike across all three venues, in parallel.
       const priceStrike = async (strike: number): Promise<{ venue: string; ask_usdc_per_btc: number | null; instrument?: string | null; strike?: number | null } | null> => {
@@ -1759,11 +1795,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const quotesByFraction = new Map(priced);
 
       const bundle = buildFloorTierBundle({ spot, sizeBtc, leverage, tenorDays, fractions }, quotesByFraction);
-      reply.send({
+      const payload = {
         as_of: new Date().toISOString(),
         ...bundle,
         note: "READ-ONLY illustrative quote (Phase 1, cross-venue). Each tier = cheapest live LONG PUT across Bullish/Deribit/OKX. 'Risk X% of margin' caps your price loss; worst case = that + premium (gap-proof). Simplified liquidation (ignores maintenance margin/funding/fees/slippage). The perp still liquidates on the exchange; the put bounds NET loss — true no-liquidation needs exchange margin integration."
-      });
+      };
+      demoCacheSet(cacheKey, payload);
+      reply.send(payload);
     }
   );
 
@@ -1778,7 +1816,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    */
   app.get<{ Querystring: { collateral?: string; leverage?: string; tenor_days?: string; k1_pct?: string; k2_pct?: string; spot?: string } }>(
     "/admin/foxify/v2/wick-insurance",
-    { preHandler: checkAdminToken },
+    { preHandler: checkDemoOrAdminToken },
     async (req, reply) => {
       const { computeWickInsurance } = await import("./wickInsurance");
       const { okxProbe } = await import("./okxProbe");
@@ -1798,6 +1836,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const k1 = spot * (1 - k1Pct);
       const k2 = spot * (1 - k2Pct);
 
+      const wkCacheKey = `wick:${collateral}:${leverage}:${tenorDays}:${k1Pct}:${k2Pct}:${Math.round(spot / 10) * 10}`;
+      const wkCached = demoCacheGet(wkCacheKey);
+      if (wkCached) { reply.send(wkCached); return; }
+
       // Long leg (K1) ask + short leg (K2) bid, per venue, in parallel.
       const [okxK1, okxK2, derK1, derK2, bullK1, bullK2] = await Promise.all([
         okxProbe({ spot, putStrike: k1, callStrike: k1, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === "put")).catch(() => null),
@@ -1815,12 +1857,14 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       ];
 
       const result = computeWickInsurance({ spot, collateralUsdc: collateral, leverage, tenorDays }, quotes);
-      reply.send({
+      const wkPayload = {
         as_of: new Date().toISOString(),
         inputs: { spot, collateral, leverage, tenor_days: tenorDays, k1_pct: k1Pct, k2_pct: k2Pct, k1_target: +k1.toFixed(2), k2_target: +k2.toFixed(2) },
         ...result,
         note: "READ-ONLY research. 'Wick insurance' at high leverage: value is staying in the trade through a spike (no forced liquidation) + keeping upside, NOT reducing max loss. single_put = long put@K1; put_spread = long K1 / short K2 (cheaper, but exposed again below K2). pct_margin is premium ÷ posted margin. Bullish only prices when run server-side (creds + whitelisted IP)."
-      });
+      };
+      demoCacheSet(wkCacheKey, wkPayload);
+      reply.send(wkPayload);
     }
   );
 
