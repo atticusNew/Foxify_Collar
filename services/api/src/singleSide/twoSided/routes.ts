@@ -1869,6 +1869,58 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/pooled-tail-hedge — PLATFORM-economics research (Phase 2 backstop).
+   * Models hedging the deep-crash tail at the BOOK level on the NET (long−short) exposure vs
+   * every position self-insuring its gross tail. Prices the band-edge put live (cheapest of
+   * OKX/Deribit/Bullish). Admin-only (internal economics, not trader-facing).
+   * Query: ?long_notional=&short_notional=&band_pct=0.04&tenor_days=7&premiums=&spot=(override)
+   */
+  app.get<{ Querystring: { long_notional?: string; short_notional?: string; band_pct?: string; tenor_days?: string; premiums?: string; spot?: string } }>(
+    "/admin/foxify/v2/pooled-tail-hedge",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { computePooledTailHedge } = await import("./pooledTailHedge");
+      const { okxProbe } = await import("./okxProbe");
+      const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = req.query.spot != null && Number(req.query.spot) > 0 ? Number(req.query.spot) : feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      const longNotionalUsdc = Number(req.query.long_notional ?? "5000000");
+      const shortNotionalUsdc = Number(req.query.short_notional ?? "4000000");
+      const bandPct = Number(req.query.band_pct ?? "0.04");
+      const tenorDays = Number(req.query.tenor_days ?? "7");
+      const premiums = req.query.premiums != null ? Number(req.query.premiums) : undefined;
+      if (!(longNotionalUsdc >= 0) || !(shortNotionalUsdc >= 0) || !(bandPct > 0 && bandPct < 1) || !(tenorDays > 0)) {
+        reply.code(400).send({ error: "invalid_request", message: "long_notional>=0, short_notional>=0, 0<band_pct<1, tenor_days>0" });
+        return;
+      }
+      // Price the band-edge put (strike where per-trader cover ends) — cheapest ask across venues.
+      const strike = spot * (1 - bandPct);
+      const okxPut = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === "put")).catch(() => null);
+      const [deribit, bullish] = await Promise.all([
+        deribitPutProbe({ spot, strike, tenorDays }),
+        bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays })
+      ]);
+      const asks = [
+        { venue: "okx", ask: okxPut?.ask_usdc_per_btc ?? null },
+        { venue: "deribit", ask: deribit.ask_usdc_per_btc },
+        { venue: "bullish", ask: bullish.ask_usdc_per_btc }
+      ].filter((q) => q.ask != null && q.ask > 0) as { venue: string; ask: number }[];
+      if (asks.length === 0) { reply.code(503).send({ error: "no_put_quote", message: `no put quote near ${Math.round(strike)}` }); return; }
+      const best = asks.reduce((b, q) => (q.ask < b.ask ? q : b));
+
+      const result = computePooledTailHedge({ spot, longNotionalUsdc, shortNotionalUsdc, bandPct, tenorDays, premiumsCollectedUsdc: premiums }, best.ask);
+      reply.send({
+        as_of: new Date().toISOString(),
+        inputs: { spot, long_notional_usdc: longNotionalUsdc, short_notional_usdc: shortNotionalUsdc, band_pct: bandPct, tenor_days: tenorDays },
+        hedge_put: { strike: +strike.toFixed(2), venue: best.venue, ask_usdc_per_btc: best.ask },
+        ...result,
+        note: "READ-ONLY platform economics. Pooled hedge prices a deep put at the band-edge strike on the NET (long−short) book — a crash hurts longs but helps shorts, so net << gross. v1 assumes a net-long book hedged with PUTS; a net-short book is the mirror (calls), not yet priced. Ignores basis/roll/funding."
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=
