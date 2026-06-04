@@ -22,12 +22,13 @@ type CapPosition = { spot: number; size_btc: number; leverage: number; notional_
 type CapBundle = { as_of: string; position: CapPosition; tenor_days: number; tiers: FloorTier[]; note: string };
 
 type WickVenue = { venue: string; k1_strike: number | null; k2_strike: number | null; single_put_pct_margin: number | null; put_spread_pct_margin: number | null };
-type WickBest = { venue: string; cost_usdc: number; pct_margin: number } | null;
+type WickBestSingle = { venue: string; cost_usdc: number; pct_margin: number; strike: number } | null;
+type WickBestSpread = { long_venue: string; short_venue: string; cost_usdc: number; pct_margin: number; k1_strike: number; k2_strike: number } | null;
 type WickResp = {
   as_of: string;
   inputs: { spot: number; collateral: number; leverage: number; tenor_days: number; k1_pct: number; k2_pct: number };
   position: { notional_usdc: number; margin_usdc: number; size_btc: number; liquidation_price: number; liq_drop_pct: number };
-  venues: WickVenue[]; best_single: WickBest; best_spread: WickBest; note: string;
+  venues: WickVenue[]; best_single: WickBestSingle; best_spread: WickBestSpread; note: string;
 };
 
 const usd = (x: number | null | undefined) => (x == null ? "—" : `$${Math.round(x).toLocaleString()}`);
@@ -174,31 +175,71 @@ export function ProtectedLeverageWidget() {
   );
 }
 
-/* ── ≥25×: wick insurance ── */
+/* ── ≥25×: wick insurance. Default = gap-proof single put; spread is the cheaper alt. ── */
 function WickCard({ wick, spot, liqDrop, margin, activated, onActivate }: {
   wick: WickResp; spot: number; liqDrop: number; margin: number; activated: boolean; onActivate: () => void;
 }) {
-  const best = wick.best_spread;
-  if (!best) return <Card><SectionLabel>Stay in your trade</SectionLabel><div style={{ fontSize: 13, color: C.amber }}>No spread quotes right now — try again shortly.</div></Card>;
-  const v = wick.venues.find((x) => x.venue === best.venue);
-  const k1Drop = v?.k1_strike != null ? (spot - v.k1_strike) / spot : null;
-  const k2Drop = v?.k2_strike != null ? (spot - v.k2_strike) / spot : null;
-  const exampleDip = Math.min((liqDrop + (k2Drop ?? liqDrop)) / 2, k2Drop ?? liqDrop);
+  const single = wick.best_single;
+  const spread = wick.best_spread;
+  const [opt, setOpt] = useState<"full" | "spread">("full");
+  const effective: "full" | "spread" = opt === "full" && !single ? "spread" : opt === "spread" && !spread ? "full" : opt;
+
+  if (!single && !spread) return <Card><SectionLabel>Stay in your trade</SectionLabel><div style={{ fontSize: 13, color: C.amber }}>No quotes right now — try again shortly.</div></Card>;
+
+  const singleDrop = single ? (spot - single.strike) / spot : null;
+  const k2Drop = spread ? (spot - spread.k2_strike) / spot : null;
+  const exampleDip = effective === "full" ? Math.max(liqDrop + 0.02, (k2Drop ?? liqDrop) + 0.03) : Math.min((liqDrop + (k2Drop ?? liqDrop)) / 2, k2Drop ?? liqDrop);
+
   return (
     <>
-      <Card highlight>
+      <Card>
         <SectionLabel>Stay in your trade</SectionLabel>
-        <DetailRow label="Survive a wick to" value={`−${pct(k2Drop)}`} sub={`a −${pct(liqDrop)} dip won't liquidate you`} valueColor={C.green} strong />
-        <DetailRow label="Cost" value={usd2(best.cost_usdc)} sub={`${(best.pct_margin * 100).toFixed(0)}% of margin · ${best.venue.toUpperCase()}`} valueColor={C.green} strong last />
+        <div style={{ display: "grid", gap: 8 }}>
+          {single && <OptionRow name="Full protection" recommended sub="Gap-proof · survive any drop" cost={single.cost_usdc} pctM={single.pct_margin} selected={effective === "full"} onClick={() => setOpt("full")} />}
+          {spread && <OptionRow name="Wick spread" sub={`Survive to −${pct(k2Drop)} · cheaper, exposed deeper`} cost={spread.cost_usdc} pctM={spread.pct_margin} selected={effective === "spread"} onClick={() => setOpt("spread")} />}
+        </div>
+      </Card>
+
+      <Card highlight>
+        <SectionLabel>With this protection</SectionLabel>
+        {effective === "full" && single ? (
+          <>
+            <DetailRow label="Survive a drop of" value="Any depth" sub="gap-proof — you can't be wicked out" valueColor={C.green} strong />
+            <DetailRow label="Protection starts" value={`${usd(single.strike)} (−${pct(singleDrop)})`} />
+            <DetailRow label="Cost" value={usd2(single.cost_usdc)} sub={`${(single.pct_margin * 100).toFixed(0)}% of margin · ${single.venue.toUpperCase()}`} valueColor={C.green} strong last />
+          </>
+        ) : spread ? (
+          <>
+            <DetailRow label="Survive a wick to" value={`−${pct(k2Drop)}`} sub="exposed if it falls deeper" valueColor={C.green} strong />
+            <DetailRow label="Cost" value={usd2(spread.cost_usdc)} sub={`${(spread.pct_margin * 100).toFixed(0)}% of margin · long ${spread.long_venue.toUpperCase()} / short ${spread.short_venue.toUpperCase()}`} valueColor={C.green} strong last />
+          </>
+        ) : null}
         <div style={{ ...SUB, textAlign: "center", marginTop: 16 }}>If BTC wicks −{pct(exampleDip)} and recovers</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
-          <SimBox tone="bad" big="Liquidated" sub={`lost ${usd(margin)}`} />
-          <SimBox tone="good" big="Still in" sub="keep your trade" />
+          <SimBox tone="bad" big="Liquidated" sub={`unprotected — lost ${usd(margin)}`} />
+          <SimBox tone="good" big="Still in" sub="protected — keep your trade" />
         </div>
         <ActivateRow activated={activated} onActivate={onActivate} />
       </Card>
       <Pricing note={wick.note} cols={["Venue", "Single", "Spread"]} rows={wick.venues.map((x) => ({ k: x.venue.toUpperCase(), a: x.single_put_pct_margin, b: x.put_spread_pct_margin }))} />
     </>
+  );
+}
+
+/** Selectable protection option (gap-proof full vs cheaper spread). */
+function OptionRow({ name, sub, cost, pctM, recommended, selected, onClick }: { name: string; sub: string; cost: number; pctM: number; recommended?: boolean; selected: boolean; onClick: () => void }) {
+  return (
+    <div onClick={onClick} style={{ padding: "13px 15px", borderRadius: 8, cursor: "pointer", background: selected ? C.green + "12" : C.panel2, border: `1px solid ${selected ? C.green + "88" : "#333"}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{name}
+          {recommended && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: C.green + "22", color: C.green, border: `1px solid ${C.green}55` }}>recommended</span>}</div>
+        <div style={SUB}>{sub}</div>
+      </div>
+      <div style={{ textAlign: "right" }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{usd2(cost)}</div>
+        <div style={SUB}>{(pctM * 100).toFixed(0)}% of margin</div>
+      </div>
+    </div>
   );
 }
 

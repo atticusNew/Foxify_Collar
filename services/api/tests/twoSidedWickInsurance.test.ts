@@ -44,7 +44,7 @@ test("spread invalid when K2 >= K1 (short leg not deeper)", () => {
   assert.ok(/no valid spread/.test(r.venues[0].note ?? ""));
 });
 
-test("best_single and best_spread pick the cheapest venue (incl. Bullish)", () => {
+test("best_single picks cheapest long ask across venues (incl. Bullish)", () => {
   const q: VenueLegQuotes[] = [
     { venue: "okx", k1AskUsdcPerBtc: 1000, k1Strike: 61000, k2BidUsdcPerBtc: 600, k2Strike: 59000 },
     { venue: "deribit", k1AskUsdcPerBtc: 1100, k1Strike: 61000, k2BidUsdcPerBtc: 580, k2Strike: 59000 },
@@ -52,8 +52,28 @@ test("best_single and best_spread pick the cheapest venue (incl. Bullish)", () =
   ];
   const r = computeWickInsurance(base, q);
   assert.equal(r.best_single?.venue, "bullish", "bullish has the cheapest long put");
-  // spread nets: okx 400, deribit 520, bullish 250 → bullish cheapest spread
-  assert.equal(r.best_spread?.venue, "bullish");
+});
+
+test("best_spread ROUTES legs cross-venue: long where ask cheapest, short where bid highest", () => {
+  const q: VenueLegQuotes[] = [
+    { venue: "okx", k1AskUsdcPerBtc: 1000, k1Strike: 61000, k2BidUsdcPerBtc: 600, k2Strike: 59000 },
+    { venue: "deribit", k1AskUsdcPerBtc: 1100, k1Strike: 61000, k2BidUsdcPerBtc: 580, k2Strike: 59000 },
+    { venue: "bullish", k1AskUsdcPerBtc: 900, k1Strike: 61000, k2BidUsdcPerBtc: 650, k2Strike: 59000 }
+  ];
+  const r = computeWickInsurance(base, q);
+  // long = bullish (ask 900, cheapest); short = bullish (bid 650, highest) → net 250 × 0.6452
+  assert.equal(r.best_spread?.long_venue, "bullish");
+  assert.equal(r.best_spread?.short_venue, "bullish");
+  // If bullish absent, legs split: long okx(1000) / short okx(600)… verify a true split:
+  const q2: VenueLegQuotes[] = [
+    { venue: "okx", k1AskUsdcPerBtc: 1000, k1Strike: 61000, k2BidUsdcPerBtc: 600, k2Strike: 59000 },
+    { venue: "deribit", k1AskUsdcPerBtc: 1100, k1Strike: 61000, k2BidUsdcPerBtc: 700, k2Strike: 59000 }
+  ];
+  const r2 = computeWickInsurance(base, q2);
+  assert.equal(r2.best_spread?.long_venue, "okx", "long routed to cheapest ask");
+  assert.equal(r2.best_spread?.short_venue, "deribit", "short routed to highest bid");
+  // net = 1000 (okx ask) − 700 (deribit bid) = 300 × (40000/62000) = 193.55
+  assert.equal(r2.best_spread?.cost_usdc, 193.55);
 });
 
 test("venues with no quotes are skipped in best-of", () => {

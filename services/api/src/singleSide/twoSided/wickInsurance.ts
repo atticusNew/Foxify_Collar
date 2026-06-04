@@ -43,6 +43,12 @@ export type VenueWickResult = {
   note: string | null;
 };
 
+/** Cheapest long put (K1) across venues. */
+export type BestSingle = { venue: string; cost_usdc: number; pct_margin: number; strike: number } | null;
+/** Cross-venue routed spread: long K1 at cheapest ask, short K2 at highest bid (legs may
+ *  live on different venues for best execution). */
+export type BestSpread = { long_venue: string; short_venue: string; cost_usdc: number; pct_margin: number; k1_strike: number; k2_strike: number } | null;
+
 export type WickInsuranceResult = {
   position: {
     notional_usdc: number;
@@ -52,8 +58,8 @@ export type WickInsuranceResult = {
     liq_drop_pct: number;
   };
   venues: VenueWickResult[];
-  best_single: { venue: string; cost_usdc: number; pct_margin: number } | null;
-  best_spread: { venue: string; cost_usdc: number; pct_margin: number } | null;
+  best_single: BestSingle;
+  best_spread: BestSpread;
 };
 
 const round2 = (x: number) => +x.toFixed(2);
@@ -88,14 +94,26 @@ export const computeWickInsurance = (inputs: WickInsuranceInputs, quotes: VenueL
     };
   });
 
-  const best = (sel: (v: VenueWickResult) => number | null) => {
-    const usable = venues
-      .map((v) => ({ v, c: sel(v) }))
-      .filter((x): x is { v: VenueWickResult; c: number } => x.c != null && x.c > 0);
-    if (usable.length === 0) return null;
-    const w = usable.reduce((b, x) => (x.c < b.c ? x : b));
-    return { venue: w.v.venue, cost_usdc: w.c, pct_margin: margin > 0 ? round4(w.c / margin) : 0 };
-  };
+  // ── Cross-venue per-leg routing: buy the long (K1) where the ask is cheapest, sell the
+  //    short (K2) where the bid is highest — legs may land on different venues. ──
+  const longCands = quotes
+    .map((q) => ({ venue: q.venue, ask: q.k1AskUsdcPerBtc, strike: q.k1Strike }))
+    .filter((x): x is { venue: string; ask: number; strike: number } => x.ask != null && x.ask > 0 && x.strike != null && x.strike > 0);
+  const shortCands = quotes
+    .map((q) => ({ venue: q.venue, bid: q.k2BidUsdcPerBtc, strike: q.k2Strike }))
+    .filter((x): x is { venue: string; bid: number; strike: number } => x.bid != null && x.bid > 0 && x.strike != null && x.strike > 0);
+  const longLeg = longCands.length ? longCands.reduce((b, x) => (x.ask < b.ask ? x : b)) : null;
+  const shortLeg = shortCands.length ? shortCands.reduce((b, x) => (x.bid > b.bid ? x : b)) : null;
+
+  const best_single: BestSingle = longLeg
+    ? { venue: longLeg.venue, cost_usdc: round2(longLeg.ask * size), pct_margin: margin > 0 ? round4((longLeg.ask * size) / margin) : 0, strike: longLeg.strike }
+    : null;
+
+  // Valid spread only if the short strike is strictly DEEPER (below) the long strike.
+  const spreadNetPerBtc = longLeg && shortLeg && shortLeg.strike < longLeg.strike ? longLeg.ask - shortLeg.bid : null;
+  const best_spread: BestSpread = spreadNetPerBtc != null && spreadNetPerBtc > 0 && longLeg && shortLeg
+    ? { long_venue: longLeg.venue, short_venue: shortLeg.venue, cost_usdc: round2(spreadNetPerBtc * size), pct_margin: margin > 0 ? round4((spreadNetPerBtc * size) / margin) : 0, k1_strike: longLeg.strike, k2_strike: shortLeg.strike }
+    : null;
 
   return {
     position: {
@@ -106,7 +124,7 @@ export const computeWickInsurance = (inputs: WickInsuranceInputs, quotes: VenueL
       liq_drop_pct: round4(liqDropPct)
     },
     venues,
-    best_single: best((v) => v.single_put_cost_usdc),
-    best_spread: best((v) => v.put_spread_cost_usdc)
+    best_single,
+    best_spread
   };
 };
