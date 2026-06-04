@@ -1695,6 +1695,71 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/floor-quote/tiers — READ-ONLY "Protected Leverage" tier bundle (the
+   * engine behind the prospect widget for Sai). For ONE loaded leveraged position it returns
+   * the position card + a small menu of protective-PUT floor tiers framed as "risk X% of your
+   * margin", each priced as the cheapest LONG PUT across Bullish + Deribit + OKX. One call,
+   * no client-side fan-out. No orders/execution.
+   * Query: ?size=(BTC)&leverage=&tenor_days=&spot=(override)&tiers=0.25,0.5,0.75
+   */
+  app.get<{ Querystring: { size?: string; leverage?: string; tenor_days?: string; spot?: string; tiers?: string } }>(
+    "/admin/foxify/v2/floor-quote/tiers",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { buildFloorTierBundle, strikeForMarginFraction, DEFAULT_TIER_FRACTIONS } = await import("./floorTiers");
+      const { okxProbe } = await import("./okxProbe");
+      const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = req.query.spot != null && Number(req.query.spot) > 0 ? Number(req.query.spot) : feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      const sizeBtc = Number(req.query.size ?? "1");
+      const leverage = Number(req.query.leverage ?? "10");
+      const tenorDays = Number(req.query.tenor_days ?? "3");
+      if (!(sizeBtc > 0) || !(leverage > 0) || leverage > 40 || !(tenorDays > 0)) {
+        reply.code(400).send({ error: "invalid_request", message: "size>0, 0<leverage<=40, tenor_days>0" });
+        return;
+      }
+      const fractions = (req.query.tiers
+        ? req.query.tiers.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0 && n < 4)
+        : [...DEFAULT_TIER_FRACTIONS]);
+      if (fractions.length === 0) { reply.code(400).send({ error: "invalid_request", message: "tiers must be comma-separated fractions in (0,4)" }); return; }
+
+      // Price the cheapest LONG PUT at each tier's strike across all three venues, in parallel.
+      const priceStrike = async (strike: number): Promise<{ venue: string; ask_usdc_per_btc: number | null; instrument?: string | null } | null> => {
+        const okxPut = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays })
+          .then((o) => o.legs.find((l) => l.opt_type === "put"))
+          .catch(() => null);
+        const [deribit, bullish] = await Promise.all([
+          deribitPutProbe({ spot, strike, tenorDays }),
+          bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays })
+        ]);
+        const quotes = [
+          { venue: "okx", ask_usdc_per_btc: okxPut?.ask_usdc_per_btc ?? null, instrument: okxPut?.instId ?? null },
+          { venue: "deribit", ask_usdc_per_btc: deribit.ask_usdc_per_btc, instrument: deribit.instrument },
+          { venue: "bullish", ask_usdc_per_btc: bullish.ask_usdc_per_btc, instrument: bullish.instrument }
+        ].filter((q) => q.ask_usdc_per_btc != null && q.ask_usdc_per_btc > 0);
+        if (quotes.length === 0) return null;
+        return quotes.reduce((b, q) => (q.ask_usdc_per_btc! < b.ask_usdc_per_btc! ? q : b));
+      };
+
+      const priced = await Promise.all(
+        fractions.map(async (f) => {
+          const { strike } = strikeForMarginFraction(spot, leverage, f);
+          return [f, await priceStrike(strike)] as const;
+        })
+      );
+      const quotesByFraction = new Map(priced);
+
+      const bundle = buildFloorTierBundle({ spot, sizeBtc, leverage, tenorDays, fractions }, quotesByFraction);
+      reply.send({
+        as_of: new Date().toISOString(),
+        ...bundle,
+        note: "READ-ONLY illustrative quote (Phase 1, cross-venue). Each tier = cheapest live LONG PUT across Bullish/Deribit/OKX. 'Risk X% of margin' caps your price loss; worst case = that + premium (gap-proof). Simplified liquidation (ignores maintenance margin/funding/fees/slippage). The perp still liquidates on the exchange; the put bounds NET loss — true no-liquidation needs exchange margin integration."
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=
