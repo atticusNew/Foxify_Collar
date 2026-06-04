@@ -1768,6 +1768,63 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/wick-insurance — RESEARCH: what protection actually works at HIGH
+   * leverage (30–40×). Prices the "don't get wicked out" structures around the liquidation
+   * zone across Bullish + Deribit + OKX, as a % of margin (the decision number):
+   *   - single_put : long put at K1 (spot×(1−k1_pct))
+   *   - put_spread : long K1 / short deeper K2 (spot×(1−k2_pct))
+   * Bullish requires server-side creds + whitelisted IP (i.e. run on Render).
+   * Query: ?collateral=&leverage=&tenor_days=&k1_pct=0.015&k2_pct=0.05&spot=(override)
+   */
+  app.get<{ Querystring: { collateral?: string; leverage?: string; tenor_days?: string; k1_pct?: string; k2_pct?: string; spot?: string } }>(
+    "/admin/foxify/v2/wick-insurance",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { computeWickInsurance } = await import("./wickInsurance");
+      const { okxProbe } = await import("./okxProbe");
+      const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = req.query.spot != null && Number(req.query.spot) > 0 ? Number(req.query.spot) : feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      const collateral = Number(req.query.collateral ?? "1000");
+      const leverage = Number(req.query.leverage ?? "40");
+      const tenorDays = Number(req.query.tenor_days ?? "1");
+      const k1Pct = Number(req.query.k1_pct ?? "0.015");
+      const k2Pct = Number(req.query.k2_pct ?? "0.05");
+      if (!(collateral > 0) || !(leverage > 0) || !(tenorDays > 0) || !(k1Pct > 0 && k1Pct < 1) || !(k2Pct > k1Pct && k2Pct < 1)) {
+        reply.code(400).send({ error: "invalid_request", message: "collateral>0, leverage>0, tenor_days>0, 0<k1_pct<k2_pct<1" });
+        return;
+      }
+      const k1 = spot * (1 - k1Pct);
+      const k2 = spot * (1 - k2Pct);
+
+      // Long leg (K1) ask + short leg (K2) bid, per venue, in parallel.
+      const [okxK1, okxK2, derK1, derK2, bullK1, bullK2] = await Promise.all([
+        okxProbe({ spot, putStrike: k1, callStrike: k1, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === "put")).catch(() => null),
+        okxProbe({ spot, putStrike: k2, callStrike: k2, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === "put")).catch(() => null),
+        deribitPutProbe({ spot, strike: k1, tenorDays }),
+        deribitPutProbe({ spot, strike: k2, tenorDays }),
+        bullishPutProbe(deps.bullishProbeClient, { spot, strike: k1, tenorDays }),
+        bullishPutProbe(deps.bullishProbeClient, { spot, strike: k2, tenorDays })
+      ]);
+
+      const quotes = [
+        { venue: "okx", k1AskUsdcPerBtc: okxK1?.ask_usdc_per_btc ?? null, k1Strike: okxK1?.strike ?? null, k2BidUsdcPerBtc: okxK2?.bid_usdc_per_btc ?? null, k2Strike: okxK2?.strike ?? null },
+        { venue: "deribit", k1AskUsdcPerBtc: derK1.ask_usdc_per_btc, k1Strike: derK1.strike ?? null, k2BidUsdcPerBtc: derK2.bid_usdc_per_btc ?? null, k2Strike: derK2.strike ?? null },
+        { venue: "bullish", k1AskUsdcPerBtc: bullK1.ask_usdc_per_btc, k1Strike: bullK1.strike ?? null, k2BidUsdcPerBtc: bullK2.bid_usdc_per_btc ?? null, k2Strike: bullK2.strike ?? null }
+      ];
+
+      const result = computeWickInsurance({ spot, collateralUsdc: collateral, leverage, tenorDays }, quotes);
+      reply.send({
+        as_of: new Date().toISOString(),
+        inputs: { spot, collateral, leverage, tenor_days: tenorDays, k1_pct: k1Pct, k2_pct: k2Pct, k1_target: +k1.toFixed(2), k2_target: +k2.toFixed(2) },
+        ...result,
+        note: "READ-ONLY research. 'Wick insurance' at high leverage: value is staying in the trade through a spike (no forced liquidation) + keeping upside, NOT reducing max loss. single_put = long put@K1; put_spread = long K1 / short K2 (cheaper, but exposed again below K2). pct_margin is premium ÷ posted margin. Bullish only prices when run server-side (creds + whitelisted IP)."
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=

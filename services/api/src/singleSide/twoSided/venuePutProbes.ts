@@ -9,7 +9,7 @@
 
 import type { OkxFetcher } from "./okxProbe";
 
-export type VenuePut = { venue: string; ask_usdc_per_btc: number | null; instrument: string | null; strike?: number | null; expiry_iso?: string | null };
+export type VenuePut = { venue: string; ask_usdc_per_btc: number | null; bid_usdc_per_btc?: number | null; instrument: string | null; strike?: number | null; expiry_iso?: string | null };
 
 const DERIBIT_BASE = process.env.DERIBIT_REST_BASE ?? "https://www.deribit.com";
 const defaultFetcher: OkxFetcher = async (url) => {
@@ -33,11 +33,13 @@ export const deribitPutProbe = async (opts: {
     const expiries = [...new Set(puts.map((p) => p.expiration_timestamp!))].sort((a, b) => Math.abs(a - targetMs) - Math.abs(b - targetMs));
     const expiry = expiries[0];
     const inst = puts.filter((p) => p.expiration_timestamp === expiry).sort((a, b) => Math.abs(a.strike! - opts.strike) - Math.abs(b.strike! - opts.strike))[0];
-    const ob = (await fetcher(`${DERIBIT_BASE}/api/v2/public/get_order_book?instrument_name=${inst.instrument_name}`)) as { result?: { best_ask_price?: number } };
+    const ob = (await fetcher(`${DERIBIT_BASE}/api/v2/public/get_order_book?instrument_name=${inst.instrument_name}`)) as { result?: { best_ask_price?: number; best_bid_price?: number } };
     const askBtc = ob.result?.best_ask_price;
+    const bidBtc = ob.result?.best_bid_price;
     return {
       venue: "deribit",
       ask_usdc_per_btc: askBtc != null && askBtc > 0 ? +(askBtc * opts.spot).toFixed(2) : null,
+      bid_usdc_per_btc: bidBtc != null && bidBtc > 0 ? +(bidBtc * opts.spot).toFixed(2) : null,
       instrument: inst.instrument_name ?? null,
       strike: inst.strike ?? null,
       expiry_iso: new Date(expiry).toISOString()
@@ -50,7 +52,7 @@ export const deribitPutProbe = async (opts: {
 /** Bullish put probe via the shared client (USDC-quoted → no spot conversion). */
 export type BullishProbeClientLike = {
   getMarkets?: (params?: { forceRefresh?: boolean; cacheTtlMs?: number }) => Promise<Array<Record<string, unknown>>>;
-  getHybridOrderBook?: (symbol: string) => Promise<{ asks?: Array<{ price: string | number }> }>;
+  getHybridOrderBook?: (symbol: string) => Promise<{ asks?: Array<{ price: string | number }>; bids?: Array<{ price: string | number }> }>;
 };
 export const bullishPutProbe = async (
   client: BullishProbeClientLike | null | undefined,
@@ -70,7 +72,8 @@ export const bullishPutProbe = async (
     const inst = puts.filter((p) => p.expiryMs === expiry).sort((a, b) => Math.abs(a.strike - opts.strike) - Math.abs(b.strike - opts.strike))[0];
     const ob = await client.getHybridOrderBook(inst.symbol);
     const ask = ob.asks?.[0]?.price != null ? Number(ob.asks[0].price) : null; // Bullish quotes USDC per option
-    return { venue: "bullish", ask_usdc_per_btc: ask != null && ask > 0 ? +ask.toFixed(2) : null, instrument: inst.symbol, strike: inst.strike ?? null, expiry_iso: new Date(expiry).toISOString() };
+    const bid = ob.bids?.[0]?.price != null ? Number(ob.bids[0].price) : null;
+    return { venue: "bullish", ask_usdc_per_btc: ask != null && ask > 0 ? +ask.toFixed(2) : null, bid_usdc_per_btc: bid != null && bid > 0 ? +bid.toFixed(2) : null, instrument: inst.symbol, strike: inst.strike ?? null, expiry_iso: new Date(expiry).toISOString() };
   } catch {
     return { venue: "bullish", ask_usdc_per_btc: null, instrument: null };
   }
