@@ -1,12 +1,17 @@
 /**
  * Protected Leverage — read-only floor widget (Phase 1, Sai exchange sales artifact / sandbox).
  *
- * Story (the integrated product): trade leveraged, but with a hard floor that REPLACES your
- * liquidation line with a known worst case — you can't be wiped out, and you keep your upside.
- * Pricing is real (cheapest long PUT across Bullish/Deribit/OKX, at the actual listed strike).
+ * Story (the integrated product): trade leveraged, but a protective PUT means you CAN'T be
+ * liquidated — your loss is capped at a known worst case and you survive any drop, while your
+ * upside stays yours. Pricing is real (cheapest long PUT across Bullish/Deribit/OKX, at the
+ * actual listed strike).
  *
- * Honesty footnote: true no-liquidation needs the exchange margin integration (Phase 2). The
- * standalone version caps NET loss at the same number. The worst-case $ is real either way.
+ * Why the floor strike sits ABOVE the old liquidation price: the put must engage BEFORE the
+ * liquidation point to catch you. Below the strike, the put's gains offset the perp's losses
+ * 1:1, so your loss stops growing and you can't be liquidated — survive to $0, max loss fixed.
+ *
+ * Honesty footnote (in details): true no-liquidation needs the exchange margin integration
+ * (Phase 2). The standalone version caps NET loss at the same number.
  *
  * READ-ONLY. Calls GET /admin/foxify/v2/floor-quote/tiers. Admin-token gated for now.
  */
@@ -121,50 +126,39 @@ export function ProtectedLeverageWidget() {
           <div style={{ fontSize: 26, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{pos ? usd(pos.spot) : "—"}</div>
         </div>
 
-        {/* 1 · Position */}
+        {/* 1 · Position — labels left, inputs right */}
         <Card>
-          <Row>
-            <label style={lbl}>Collateral</label>
-            <div style={{ flex: 1, position: "relative" }}>
+          <FieldRow label="Collateral">
+            <div style={{ position: "relative", width: 160 }}>
               <span style={{ position: "absolute", left: 10, top: 9, color: C.muted, fontSize: 14 }}>$</span>
               <input type="number" min={10} step={50} value={collateral}
                 onChange={(e) => setCollateral(Math.max(10, Number(e.target.value) || 10))}
-                style={{ ...input, paddingLeft: 22 }} />
+                style={{ ...input, paddingLeft: 22, textAlign: "right" }} />
+              <span style={{ position: "absolute", right: 10, top: 9, color: C.muted, fontSize: 11 }}>USDC</span>
             </div>
-            <span style={{ color: C.muted, fontSize: 11 }}>USDC</span>
-          </Row>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-            <label style={lbl}>Leverage</label>
-            <div style={{ display: "flex", gap: 6, flex: 1, flexWrap: "wrap" }}>
-              {LEV_PRESETS.map((l) => (
-                <Chip key={l} active={leverage === l} label={`${l}×`} onClick={() => setLeverage(l)} />
-              ))}
-              <input type="number" min={1} max={MAX_LEV} value={leverage}
-                onChange={(e) => setLeverage(Math.min(MAX_LEV, Math.max(1, Math.round(Number(e.target.value) || 1))))}
-                style={{ ...input, width: 58, flex: "0 0 auto", textAlign: "center", padding: "6px 6px" }} />
+          </FieldRow>
+          <FieldRow label="Leverage">
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+              {LEV_PRESETS.map((l) => <Chip key={l} active={leverage === l} label={`${l}×`} onClick={() => setLeverage(l)} />)}
+              <span style={{ color: C.border, fontSize: 14 }}>|</span>
+              <div style={{ position: "relative", width: 64 }}>
+                <input type="number" min={1} max={MAX_LEV} value={leverage}
+                  onChange={(e) => setLeverage(Math.min(MAX_LEV, Math.max(1, Math.round(Number(e.target.value) || 1))))}
+                  style={{ ...input, width: 64, padding: "6px 18px 6px 8px", textAlign: "right", borderColor: LEV_PRESETS.includes(leverage) ? C.border : C.blue + "88" }} />
+                <span style={{ position: "absolute", right: 8, top: 7, color: C.muted, fontSize: 12 }}>×</span>
+              </div>
             </div>
-          </div>
+          </FieldRow>
           {pos && (
-            <div style={{ fontSize: 12, color: C.muted, marginTop: 8 }}>
-              You control <b style={{ color: C.text }}>{usd(pos.notional_usdc)}</b> of BTC at {leverage}× on <b style={{ color: C.text }}>{usd(pos.margin_usdc)}</b> margin.
+            <div style={{ fontSize: 12, color: C.muted, marginTop: 6 }}>
+              Position <b style={{ color: C.text }}>{usd(pos.notional_usdc)}</b> · margin <b style={{ color: C.text }}>{usd(pos.margin_usdc)}</b>
             </div>
           )}
         </Card>
 
         {err && <div style={{ padding: "10px 14px", background: "#3a1010", color: C.red, fontSize: 12, borderRadius: 6, marginBottom: 14 }}>{err}</div>}
 
-        {/* 2 · The transformation (price ladder) */}
-        {pos && sel?.available && (
-          <Card>
-            <div style={{ fontSize: 20, fontWeight: 800, color: C.green, marginBottom: 4 }}>Can&apos;t be wiped out</div>
-            <div style={{ fontSize: 12, color: C.muted, marginBottom: 16, lineHeight: 1.5 }}>
-              Your floor catches you <b style={{ color: C.text }}>before</b> liquidation. Worst case <b style={{ color: C.green }}>{usd(sel.max_loss_usdc)}</b> — your upside stays yours.
-            </div>
-            <PriceLadder spot={pos.spot} floorStrike={sel.floor_strike} liqPrice={pos.liquidation_price} worstCase={sel.max_loss_usdc} margin={pos.margin_usdc} />
-          </Card>
-        )}
-
-        {/* 3 · Choose floor */}
+        {/* 2 · Protection tiers (moved up — they tell the story) */}
         {pos && (
           <Card>
             <SectionLabel>Choose your protection {loading && <span style={{ color: C.muted, fontWeight: 400 }}>· pricing…</span>}</SectionLabel>
@@ -183,17 +177,20 @@ export function ProtectedLeverageWidget() {
           </Card>
         )}
 
-        {/* 4 · Confirm + simulate */}
+        {/* 3 · Protection details — labels left, outputs right */}
         {pos && sel?.available && (
           <Card highlight>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-              <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6 }}>
-                Floor your worst case at <b style={{ color: C.green }}>{usd(sel.max_loss_usdc)}</b> for{" "}
-                <b>{usd2(sel.put_cost_usdc)}</b> <span style={{ color: C.muted }}>({usd2(sel.cost_per_day_usdc)}/day · {bundle?.tenor_days}d)</span>.
-              </div>
+            <SectionLabel>With this protection</SectionLabel>
+            <DetailRow label="If BTC keeps falling" value="No liquidation — survive any drop" valueColor={C.green} strong />
+            <DetailRow label="Most you can lose" value={usd(sel.max_loss_usdc)} valueColor={C.green} strong />
+            <DetailRow label="Losses stop at" value={`${usd(sel.floor_strike)} (−${pct((pos.spot - sel.floor_strike) / pos.spot)})`} />
+            <DetailRow label="Without protection" value={`Liquidated −${pct(pos.liq_drop_pct)} (${usd(pos.liquidation_price)}) · lose ${usd(pos.margin_usdc)}`} valueColor={C.red} />
+            <DetailRow label="Protection cost" value={`${usd2(sel.put_cost_usdc)}  ·  ${usd2(sel.cost_per_day_usdc)}/day · ${bundle?.tenor_days}d`} last />
+
+            <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
               {!activated ? (
                 <button onClick={() => { setActivated(true); setSimDropPct(0); }}
-                  style={{ padding: "10px 18px", background: C.green, color: "#06210a", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+                  style={{ padding: "10px 18px", background: C.green, color: "#06210a", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                   Activate protection
                 </button>
               ) : (
@@ -204,33 +201,9 @@ export function ProtectedLeverageWidget() {
           </Card>
         )}
 
-        {/* details */}
         {bundle && <Details bundle={bundle} />}
       </div>
     </Shell>
-  );
-}
-
-/** Vertical price ladder: spot on top → green floor (loss capped) → red, struck-through liq. */
-function PriceLadder({ spot, floorStrike, liqPrice, worstCase, margin }: { spot: number; floorStrike: number; liqPrice: number; worstCase: number | null; margin: number }) {
-  const rows = [
-    { color: C.text, dot: C.muted, label: "BTC now", price: spot, note: "your entry", strike: false },
-    { color: C.green, dot: C.green, label: "Your floor", price: floorStrike, note: `loss capped at ${usd(worstCase)}`, strike: false },
-    { color: C.red, dot: C.red, label: "Old liquidation", price: liqPrice, note: `you'd lose your ${usd(margin)} — not anymore`, strike: true }
-  ];
-  return (
-    <div style={{ borderLeft: `2px solid ${C.border}`, marginLeft: 6, paddingLeft: 16 }}>
-      {rows.map((r, i) => (
-        <div key={i} style={{ position: "relative", paddingBottom: i < rows.length - 1 ? 18 : 0 }}>
-          <span style={{ position: "absolute", left: -23, top: 4, width: 10, height: 10, borderRadius: 6, background: r.dot, border: `2px solid ${C.panel}` }} />
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
-            <span style={{ fontSize: 12, color: C.muted }}>{r.label}</span>
-            <span style={{ fontSize: 16, fontWeight: 700, color: r.color, textDecoration: r.strike ? "line-through" : "none", fontVariantNumeric: "tabular-nums" }}>{usd(r.price)}</span>
-          </div>
-          <div style={{ fontSize: 11, color: r.color === C.text ? C.muted : r.color, opacity: r.color === C.text ? 1 : 0.85, marginTop: 2 }}>{r.note}</div>
-        </div>
-      ))}
-    </div>
   );
 }
 
@@ -292,7 +265,6 @@ function Details({ bundle }: { bundle: Bundle }) {
 
 // ── presentational helpers ──
 const td: React.CSSProperties = { padding: "5px 8px" };
-const lbl: React.CSSProperties = { width: 80, fontSize: 13, color: C.muted };
 const input: React.CSSProperties = { width: "100%", padding: "8px 10px", fontSize: 14, background: C.panel2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, boxSizing: "border-box" };
 
 function Card({ children, highlight }: { children: React.ReactNode; highlight?: boolean }) {
@@ -301,8 +273,22 @@ function Card({ children, highlight }: { children: React.ReactNode; highlight?: 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 11, fontWeight: 700, color: C.text, letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 12 }}>{children}</div>;
 }
-function Row({ children }: { children: React.ReactNode }) {
-  return <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>{children}</div>;
+/** Label left, control/value right. */
+function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 12 }}>
+      <label style={{ fontSize: 13, color: C.muted }}>{label}</label>
+      <div>{children}</div>
+    </div>
+  );
+}
+function DetailRow({ label, value, valueColor, strong, last }: { label: string; value: string; valueColor?: string; strong?: boolean; last?: boolean }) {
+  return (
+    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, padding: "7px 0", borderBottom: last ? "none" : `1px solid ${C.border}` }}>
+      <span style={{ fontSize: 12, color: C.muted }}>{label}</span>
+      <span style={{ fontSize: strong ? 14 : 12, fontWeight: strong ? 700 : 500, color: valueColor ?? C.text, textAlign: "right" }}>{value}</span>
+    </div>
+  );
 }
 function Chip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
   return (
