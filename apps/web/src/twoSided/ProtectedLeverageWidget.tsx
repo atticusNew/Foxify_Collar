@@ -44,6 +44,7 @@ export function ProtectedLeverageWidget() {
   const [collateral, setCollateral] = useState(500);
   const [leverage, setLeverage] = useState(10);
   const [tenorDays, setTenorDays] = useState(3);
+  const [tenorTouched, setTenorTouched] = useState(false); // once the user picks a tenor, stop auto-defaulting
   const [selected, setSelected] = useState<number | null>(null);
   const [activated, setActivated] = useState(false);
 
@@ -54,6 +55,10 @@ export function ProtectedLeverageWidget() {
 
   const highLev = leverage >= HIGH_LEV;
 
+  // High-leverage defaults to 1d (where the gap-proof single put is cheap, ~14% margin);
+  // moderate defaults to 3d. The user's explicit tenor pick overrides this.
+  const effTenor = tenorTouched ? tenorDays : (leverage >= HIGH_LEV ? 1 : 3);
+
   const load = useCallback(async () => {
     if (!getToken("demo")) { setAuthed(false); return; }
     setLoading(true); setErr(null);
@@ -62,10 +67,10 @@ export function ProtectedLeverageWidget() {
         const liqDrop = 1 / leverage;
         const k1 = Math.max(0.005, +(liqDrop * 0.8).toFixed(4));
         const k2 = Math.min(0.5, +(liqDrop * 1.6).toFixed(4));
-        const data = await demoGet<WickResp>(`/admin/foxify/v2/wick-insurance?collateral=${collateral}&leverage=${leverage}&tenor_days=${tenorDays}&k1_pct=${k1}&k2_pct=${k2}`);
+        const data = await demoGet<WickResp>(`/admin/foxify/v2/wick-insurance?collateral=${collateral}&leverage=${leverage}&tenor_days=${effTenor}&k1_pct=${k1}&k2_pct=${k2}`);
         setWick(data); setCap(null);
       } else {
-        const data = await demoGet<CapBundle>(`/admin/foxify/v2/floor-quote/tiers?collateral=${collateral}&leverage=${leverage}&tenor_days=${tenorDays}`);
+        const data = await demoGet<CapBundle>(`/admin/foxify/v2/floor-quote/tiers?collateral=${collateral}&leverage=${leverage}&tenor_days=${effTenor}`);
         setCap(data); setWick(null);
         const rec = data.tiers.findIndex((t) => t.recommended);
         const firstAvail = data.tiers.findIndex((t) => t.available);
@@ -75,7 +80,7 @@ export function ProtectedLeverageWidget() {
       if (e instanceof UnauthorizedError) { setAuthed(false); return; }
       setErr((e as Error).message); setCap(null); setWick(null);
     } finally { setLoading(false); }
-  }, [collateral, leverage, tenorDays]);
+  }, [collateral, leverage, effTenor]);
 
   useEffect(() => {
     if (!authed) return;
@@ -133,7 +138,7 @@ export function ProtectedLeverageWidget() {
           </FieldRow>
           <FieldRow label="Cover for">
             <div style={{ display: "flex", gap: 6 }}>
-              {[1, 3, 7].map((d) => <Chip key={d} active={tenorDays === d} label={`${d}d`} onClick={() => setTenorDays(d)} />)}
+              {[1, 3, 7].map((d) => <Chip key={d} active={effTenor === d} label={`${d}d`} onClick={() => { setTenorDays(d); setTenorTouched(true); }} />)}
             </div>
           </FieldRow>
           {havePos && (
