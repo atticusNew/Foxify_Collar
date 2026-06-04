@@ -8,32 +8,30 @@ import { computeFloorEconomics, bestPutVenue, type FloorQuoteInputs } from "../s
 
 const base: FloorQuoteInputs = { spot: 66000, sizeBtc: 1, leverage: 10, floorPct: 0.10, tenorDays: 7 };
 
-test("computeFloorEconomics: floor caps loss; leverage-additive computed", () => {
-  // protective put ask = 0.02 BTC-equiv... here pass USDC/BTC directly: say $1,200/BTC.
+test("computeFloorEconomics: 10x + 10% floor is the DEGENERATE case (floor at liquidation → no value)", () => {
   const e = computeFloorEconomics(base, 1200);
-  // notional = 66000; margin = 6600 (10x).
   assert.equal(e.notional_usdc, 66000);
   assert.equal(e.margin_usdc, 6600);
-  // floor strike = 66000 × 0.90 = 59400.
   assert.equal(e.floor_strike, 59400);
-  // liq ≈ 66000 × (1 − 1/10) = 59400 (coincidentally near the floor at 10x/10%).
   assert.equal(e.liquidation_price, 59400);
-  // put cost = 1200 × 1 = 1200.
+  assert.equal(e.unprotected_liq_drop_pct, 0.1);
+  assert.equal(e.floor_drop_pct, 0.1);
   assert.equal(e.put_cost_usdc, 1200);
-  // max loss with floor = (66000−59400)×1 + 1200 = 6600 + 1200 = 7800.
-  assert.equal(e.max_loss_with_floor_usdc, 7800);
-  // unprotected max loss = margin 6600.
-  assert.equal(e.max_loss_without_floor_usdc, 6600);
-  // equivalent leverage = notional / maxLossWithFloor = 66000/7800 ≈ 8.46.
-  assert.ok(Math.abs(e.equivalent_leverage! - 8.46) < 0.05);
-  assert.ok(e.payoff.length > 5);
+  assert.equal(e.max_loss_with_floor_usdc, 7800);   // (6600 floor distance) + 1200 premium
+  assert.equal(e.max_loss_without_floor_usdc, 6600); // margin
+  // floor at 10% == liq at 10% → floor adds NO value (this was the negative-additive case).
+  assert.equal(e.floor_adds_value, false);
+  assert.ok(/INSIDE|TIGHTER/.test(e.survival_summary));
 });
 
-test("computeFloorEconomics: deeper floor (smaller distance) → cheaper max loss, higher equiv leverage", () => {
-  const tight = computeFloorEconomics({ ...base, floorPct: 0.03 }, 1500); // floor only 3% down
-  // max loss with floor = (66000×0.03)×1 + 1500 = 1980 + 1500 = 3480 → equiv lev = 66000/3480 ≈ 18.97
-  assert.ok(tight.equivalent_leverage! > base.leverage, "tighter floor → can run more leverage for same risk");
-  assert.ok(tight.leverage_additive! > 0);
+test("computeFloorEconomics: floor TIGHTER than liquidation distance → floor_adds_value, capped loss < margin", () => {
+  const tight = computeFloorEconomics({ ...base, floorPct: 0.03 }, 1500); // 3% floor at 10x (liq 10%)
+  assert.equal(tight.floor_adds_value, true, "3% floor < 10% liq → adds value");
+  // max loss with floor = 66000×0.03 + 1500 = 1980 + 1500 = 3480 < margin 6600.
+  assert.equal(tight.max_loss_with_floor_usdc, 3480);
+  assert.ok(tight.max_loss_with_floor_usdc < tight.max_loss_without_floor_usdc, "capped below margin");
+  assert.ok(/SURVIVE/.test(tight.survival_summary));
+  assert.ok(tight.equivalent_unprotected_leverage! > base.leverage);
 });
 
 test("bestPutVenue: picks lowest non-null ask", () => {

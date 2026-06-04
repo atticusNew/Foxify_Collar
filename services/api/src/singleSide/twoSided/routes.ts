@@ -1648,8 +1648,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     { preHandler: checkAdminToken },
     async (req, reply) => {
       const { computeFloorEconomics, bestPutVenue } = await import("./floorQuote");
-      const { priceCandidateLeg } = await import("./cellSweep");
       const { okxProbe } = await import("./okxProbe");
+      const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
       const feed = deps.feedService.getCurrentFeed();
       const spot = req.query.spot != null && Number(req.query.spot) > 0 ? Number(req.query.spot) : feed?.canonicalPrice;
       if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
@@ -1662,19 +1662,20 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         return;
       }
       const floorStrike = spot * (1 - floorPct);
-      // Price the protective put at the floor across all three venues (live).
-      const quotes: Array<{ venue: string; ask_usdc_per_btc: number | null; instrument?: string | null }> = [];
-      if (deps.liquidChainCache) {
-        for (const v of ["bullish", "deribit"] as const) {
-          const r = priceCandidateLeg(spot, floorStrike, "put", tenorDays, sizeBtc, deps.liquidChainCache, deps.dvolService, v);
-          quotes.push({ venue: v, ask_usdc_per_btc: r.askPerBtc });
-        }
-      }
-      try {
-        const okx = await okxProbe({ spot, putStrike: floorStrike, callStrike: floorStrike, tenorDays });
-        const okxPut = okx.legs.find((l) => l.opt_type === "put");
-        quotes.push({ venue: "okx", ask_usdc_per_btc: okxPut?.ask_usdc_per_btc ?? null, instrument: okxPut?.instId ?? null });
-      } catch { quotes.push({ venue: "okx", ask_usdc_per_btc: null }); }
+      // Price the protective put at the floor across all three venues — DIRECTLY at the
+      // target strike+tenor (not the vol-facility chain cache, which only holds ~2d ATM).
+      const okxPut = await okxProbe({ spot, putStrike: floorStrike, callStrike: floorStrike, tenorDays })
+        .then((o) => o.legs.find((l) => l.opt_type === "put"))
+        .catch(() => null);
+      const [deribit, bullish] = await Promise.all([
+        deribitPutProbe({ spot, strike: floorStrike, tenorDays }),
+        bullishPutProbe(deps.bullishProbeClient, { spot, strike: floorStrike, tenorDays })
+      ]);
+      const quotes: Array<{ venue: string; ask_usdc_per_btc: number | null; instrument?: string | null }> = [
+        { venue: "okx", ask_usdc_per_btc: okxPut?.ask_usdc_per_btc ?? null, instrument: okxPut?.instId ?? null },
+        { venue: "deribit", ask_usdc_per_btc: deribit.ask_usdc_per_btc, instrument: deribit.instrument },
+        { venue: "bullish", ask_usdc_per_btc: bullish.ask_usdc_per_btc, instrument: bullish.instrument }
+      ];
 
       const best = bestPutVenue(quotes);
       if (!best || best.ask_usdc_per_btc == null) {

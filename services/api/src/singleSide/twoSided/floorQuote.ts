@@ -31,41 +31,50 @@ export type FloorEconomics = {
   margin_usdc: number;
   floor_strike: number;
   liquidation_price: number;
-  max_loss_without_floor_usdc: number;   // ≈ margin (liquidation loss)
+  // ── Survive-the-move framing ──
+  unprotected_liq_drop_pct: number;        // the drop that liquidates you unprotected (= 1/leverage)
+  floor_drop_pct: number;                  // the drop you survive WITH the floor (= floorPct)
+  max_loss_without_floor_usdc: number;     // ≈ margin at liquidation (and an UNCAPPED gap/ADL tail beyond)
+  max_loss_with_floor_usdc: number;        // (entry−strike)×size + premium — HARD cap, gap-proof
   put_cost_usdc: number;
-  max_loss_with_floor_usdc: number;       // (entry−strike)×size + premium, capped
-  /** Leverage at which an UNPROTECTED position carries the same max loss as the floored one. */
-  equivalent_leverage: number | null;
-  /** equivalent_leverage − current leverage (how much more leverage the floor "buys"). */
-  leverage_additive: number | null;
+  /** True when the floor caps loss BEFORE liquidation (floorPct < 1/leverage) — i.e. it adds protection,
+   *  not just cost. When false, leverage is so high that liquidation hits before the floor → floor is cost-only. */
+  floor_adds_value: boolean;
+  /** To cap your loss at the floored amount WITHOUT a floor, you'd have to cut leverage to ≤ this. */
+  equivalent_unprotected_leverage: number | null;
+  survival_summary: string;
   payoff: Array<{ price: number; pnl_without_floor_usdc: number; pnl_with_floor_usdc: number }>;
 };
 
-/** Pure economics given the best protective-put ask (USDC per BTC). */
+/** Pure economics given the best protective-put ask (USDC per BTC). Survive-the-move (b) framing. */
 export const computeFloorEconomics = (inputs: FloorQuoteInputs, bestPutAskUsdcPerBtc: number): FloorEconomics => {
   const notional = inputs.sizeBtc * inputs.spot;
   const margin = inputs.leverage > 0 ? notional / inputs.leverage : notional;
   const floorStrike = inputs.spot * (1 - inputs.floorPct);
-  const liqPrice = inputs.leverage > 0 ? inputs.spot * (1 - 1 / inputs.leverage) : 0;
+  const liqDropPct = inputs.leverage > 0 ? 1 / inputs.leverage : 1;
+  const liqPrice = inputs.spot * (1 - liqDropPct);
   const putCost = bestPutAskUsdcPerBtc * inputs.sizeBtc;
-  const floorDistanceLoss = (inputs.spot - floorStrike) * inputs.sizeBtc; // loss from entry down to the floor
-  const maxLossWithFloor = floorDistanceLoss + putCost;
-  const maxLossWithoutFloor = margin; // liquidation forfeits posted margin
-  const equivLeverage = maxLossWithFloor > 0 ? notional / maxLossWithFloor : null;
+  const maxLossWithFloor = (inputs.spot - floorStrike) * inputs.sizeBtc + putCost; // hard, gap-proof cap
+  const maxLossWithoutFloor = margin; // liquidation forfeits margin (and a gap can cost MORE)
+  const floorAddsValue = inputs.floorPct < liqDropPct; // floor caps before liquidation
+  const equivUnprotectedLev = maxLossWithFloor > 0 ? notional / maxLossWithFloor : null;
 
-  // Payoff curve from −1 floor-distance below the floor up to +floorPct above spot.
+  const pct = (x: number) => `${(x * 100).toFixed(1)}%`;
+  const usd = (x: number) => `$${Math.round(x).toLocaleString()}`;
+  const survival_summary = floorAddsValue
+    ? `Unprotected at ${inputs.leverage}×, a ${pct(liqDropPct)} drop liquidates you (lose ~${usd(margin)} margin, and a fast gap can cost MORE). With a floor at ${pct(inputs.floorPct)} below, you SURVIVE the drop with loss hard-capped at ${usd(maxLossWithFloor)} — gap-proof, no liquidation wipeout.`
+    : `At ${inputs.leverage}× the liquidation point (${pct(liqDropPct)} drop) is INSIDE the ${pct(inputs.floorPct)} floor — so the put can't protect before you're liquidated. Use a floor TIGHTER than ${pct(liqDropPct)} (or lower leverage) for the floor to add value.`;
+
+  // Payoff curve: protected line is flat-capped at the floor; unprotected is floored at −margin (liquidation).
   const payoff: FloorEconomics["payoff"] = [];
-  const lo = floorStrike * 0.97;
+  const lo = floorStrike * 0.95;
   const hi = inputs.spot * (1 + inputs.floorPct);
   const steps = 12;
   for (let i = 0; i <= steps; i++) {
     const price = lo + ((hi - lo) * i) / steps;
     const perpPnl = (price - inputs.spot) * inputs.sizeBtc;
-    // Unprotected: floored at −margin (liquidation).
-    const pnlWithout = Math.max(perpPnl, -margin);
-    // Protected: long perp + long put(strike). Below strike the put offsets further losses.
-    const putPayoff = Math.max(0, floorStrike - price) * inputs.sizeBtc;
-    const pnlWith = perpPnl + putPayoff - putCost;
+    const pnlWithout = Math.max(perpPnl, -margin); // liquidation caps the loss at margin
+    const pnlWith = perpPnl + Math.max(0, floorStrike - price) * inputs.sizeBtc - putCost; // put offsets below strike
     payoff.push({ price: +price.toFixed(2), pnl_without_floor_usdc: +pnlWithout.toFixed(2), pnl_with_floor_usdc: +pnlWith.toFixed(2) });
   }
 
@@ -74,11 +83,14 @@ export const computeFloorEconomics = (inputs: FloorQuoteInputs, bestPutAskUsdcPe
     margin_usdc: +margin.toFixed(2),
     floor_strike: +floorStrike.toFixed(2),
     liquidation_price: +liqPrice.toFixed(2),
+    unprotected_liq_drop_pct: +liqDropPct.toFixed(4),
+    floor_drop_pct: +inputs.floorPct.toFixed(4),
     max_loss_without_floor_usdc: +maxLossWithoutFloor.toFixed(2),
-    put_cost_usdc: +putCost.toFixed(2),
     max_loss_with_floor_usdc: +maxLossWithFloor.toFixed(2),
-    equivalent_leverage: equivLeverage != null ? +equivLeverage.toFixed(2) : null,
-    leverage_additive: equivLeverage != null ? +(equivLeverage - inputs.leverage).toFixed(2) : null,
+    put_cost_usdc: +putCost.toFixed(2),
+    floor_adds_value: floorAddsValue,
+    equivalent_unprotected_leverage: equivUnprotectedLev != null ? +equivUnprotectedLev.toFixed(2) : null,
+    survival_summary,
     payoff
   };
 };
