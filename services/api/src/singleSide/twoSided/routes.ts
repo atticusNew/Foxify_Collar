@@ -1637,6 +1637,63 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/floor-quote — READ-ONLY leverage-additive / perp-floor-protection
+   * calculator (the engine behind the prospect widget). Prices a protective PUT at the floor
+   * across Bullish + Deribit + OKX (best ask) and returns max-loss with/without the floor,
+   * the floor cost, payoff curve, and the leverage-additive headline. No orders/execution.
+   * Query: ?size=(BTC)&leverage=&floor_pct=&tenor_days=&spot=(override)
+   */
+  app.get<{ Querystring: { size?: string; leverage?: string; floor_pct?: string; tenor_days?: string; spot?: string } }>(
+    "/admin/foxify/v2/floor-quote",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { computeFloorEconomics, bestPutVenue } = await import("./floorQuote");
+      const { priceCandidateLeg } = await import("./cellSweep");
+      const { okxProbe } = await import("./okxProbe");
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = req.query.spot != null && Number(req.query.spot) > 0 ? Number(req.query.spot) : feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      const sizeBtc = Number(req.query.size ?? "1");
+      const leverage = Number(req.query.leverage ?? "10");
+      const floorPct = Number(req.query.floor_pct ?? "0.10");
+      const tenorDays = Number(req.query.tenor_days ?? "7");
+      if (!(sizeBtc > 0) || !(leverage > 0) || !(floorPct > 0 && floorPct < 1) || !(tenorDays > 0)) {
+        reply.code(400).send({ error: "invalid_request", message: "size>0, leverage>0, 0<floor_pct<1, tenor_days>0" });
+        return;
+      }
+      const floorStrike = spot * (1 - floorPct);
+      // Price the protective put at the floor across all three venues (live).
+      const quotes: Array<{ venue: string; ask_usdc_per_btc: number | null; instrument?: string | null }> = [];
+      if (deps.liquidChainCache) {
+        for (const v of ["bullish", "deribit"] as const) {
+          const r = priceCandidateLeg(spot, floorStrike, "put", tenorDays, sizeBtc, deps.liquidChainCache, deps.dvolService, v);
+          quotes.push({ venue: v, ask_usdc_per_btc: r.askPerBtc });
+        }
+      }
+      try {
+        const okx = await okxProbe({ spot, putStrike: floorStrike, callStrike: floorStrike, tenorDays });
+        const okxPut = okx.legs.find((l) => l.opt_type === "put");
+        quotes.push({ venue: "okx", ask_usdc_per_btc: okxPut?.ask_usdc_per_btc ?? null, instrument: okxPut?.instId ?? null });
+      } catch { quotes.push({ venue: "okx", ask_usdc_per_btc: null }); }
+
+      const best = bestPutVenue(quotes);
+      if (!best || best.ask_usdc_per_btc == null) {
+        reply.code(503).send({ error: "no_put_quote", message: `No live protective-put quote at ~${Math.round(floorStrike)} across venues`, venue_quotes: quotes });
+        return;
+      }
+      const econ = computeFloorEconomics({ spot, sizeBtc, leverage, floorPct, tenorDays }, best.ask_usdc_per_btc);
+      reply.send({
+        as_of: new Date().toISOString(),
+        inputs: { spot, size_btc: sizeBtc, leverage, floor_pct: floorPct, tenor_days: tenorDays },
+        floor_venue: best.venue, floor_put_instrument: best.instrument ?? null, floor_put_ask_usdc_per_btc: best.ask_usdc_per_btc,
+        venue_quotes: quotes,
+        ...econ,
+        note: "READ-ONLY illustrative quote. Floor = protective put priced live (best of Bullish/Deribit/OKX). Simplified liquidation (ignores maintenance margin/funding/fees/slippage). leverage_additive = extra leverage an unprotected position would carry the same max loss as the floored one."
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=
