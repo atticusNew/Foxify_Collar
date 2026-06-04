@@ -19,15 +19,16 @@ const defaultFetcher: OkxFetcher = async (url) => {
 
 /** Deribit public put probe — premium quoted in BTC → ×spot = USDC/BTC. */
 export const deribitPutProbe = async (opts: {
-  spot: number; strike: number; tenorDays: number; nowMs?: number; fetcher?: OkxFetcher;
+  spot: number; strike: number; tenorDays: number; optType?: "put" | "call"; nowMs?: number; fetcher?: OkxFetcher;
 }): Promise<VenuePut> => {
   const fetcher = opts.fetcher ?? defaultFetcher;
   const now = opts.nowMs ?? Date.now();
+  const optType = opts.optType ?? "put";
   try {
     const resp = (await fetcher(`${DERIBIT_BASE}/api/v2/public/get_instruments?currency=BTC&kind=option&expired=false`)) as {
       result?: Array<{ instrument_name?: string; strike?: number; option_type?: string; expiration_timestamp?: number }>;
     };
-    const puts = (resp.result ?? []).filter((r) => r.option_type === "put" && r.strike != null && r.expiration_timestamp != null && r.expiration_timestamp > now);
+    const puts = (resp.result ?? []).filter((r) => r.option_type === optType && r.strike != null && r.expiration_timestamp != null && r.expiration_timestamp > now);
     if (puts.length === 0) return { venue: "deribit", ask_usdc_per_btc: null, instrument: null };
     const targetMs = now + opts.tenorDays * 86_400_000;
     const expiries = [...new Set(puts.map((p) => p.expiration_timestamp!))].sort((a, b) => Math.abs(a - targetMs) - Math.abs(b - targetMs));
@@ -56,14 +57,15 @@ export type BullishProbeClientLike = {
 };
 export const bullishPutProbe = async (
   client: BullishProbeClientLike | null | undefined,
-  opts: { spot: number; strike: number; tenorDays: number; nowMs?: number }
+  opts: { spot: number; strike: number; tenorDays: number; optType?: "put" | "call"; nowMs?: number }
 ): Promise<VenuePut> => {
   if (!client?.getMarkets || !client?.getHybridOrderBook) return { venue: "bullish", ask_usdc_per_btc: null, instrument: null };
   const now = opts.nowMs ?? Date.now();
+  const optType = (opts.optType ?? "put").toUpperCase();
   try {
     const markets = await client.getMarkets({ cacheTtlMs: 60_000 });
     const puts = markets
-      .filter((m) => String(m.underlyingBaseSymbol ?? "").toUpperCase() === "BTC" && String(m.optionType ?? "").toUpperCase() === "PUT" && m.marketEnabled)
+      .filter((m) => String(m.underlyingBaseSymbol ?? "").toUpperCase() === "BTC" && String(m.optionType ?? "").toUpperCase() === optType && m.marketEnabled)
       .map((m) => ({ symbol: String(m.symbol ?? ""), strike: Number(m.optionStrikePrice ?? 0), expiryMs: Date.parse(String(m.expiryDatetime ?? "")) }))
       .filter((m) => m.strike > 0 && Number.isFinite(m.expiryMs) && m.expiryMs > now);
     if (puts.length === 0) return { venue: "bullish", ask_usdc_per_btc: null, instrument: null };

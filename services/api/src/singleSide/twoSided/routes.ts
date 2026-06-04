@@ -1873,9 +1873,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Models hedging the deep-crash tail at the BOOK level on the NET (long−short) exposure vs
    * every position self-insuring its gross tail. Prices the band-edge put live (cheapest of
    * OKX/Deribit/Bullish). Admin-only (internal economics, not trader-facing).
-   * Query: ?long_notional=&short_notional=&band_pct=0.04&tenor_days=7&premiums=&spot=(override)
+   * Query: ?long_notional=&short_notional=&band_pct=0.04&tenor_days=7&stress_haircut=0.25&premiums=&spot=(override)
    */
-  app.get<{ Querystring: { long_notional?: string; short_notional?: string; band_pct?: string; tenor_days?: string; premiums?: string; spot?: string } }>(
+  app.get<{ Querystring: { long_notional?: string; short_notional?: string; band_pct?: string; tenor_days?: string; stress_haircut?: string; premiums?: string; spot?: string } }>(
     "/admin/foxify/v2/pooled-tail-hedge",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -1889,33 +1889,36 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const shortNotionalUsdc = Number(req.query.short_notional ?? "4000000");
       const bandPct = Number(req.query.band_pct ?? "0.04");
       const tenorDays = Number(req.query.tenor_days ?? "7");
+      const stressHaircut = req.query.stress_haircut != null ? Number(req.query.stress_haircut) : 0.25;
       const premiums = req.query.premiums != null ? Number(req.query.premiums) : undefined;
-      if (!(longNotionalUsdc >= 0) || !(shortNotionalUsdc >= 0) || !(bandPct > 0 && bandPct < 1) || !(tenorDays > 0)) {
-        reply.code(400).send({ error: "invalid_request", message: "long_notional>=0, short_notional>=0, 0<band_pct<1, tenor_days>0" });
+      if (!(longNotionalUsdc >= 0) || !(shortNotionalUsdc >= 0) || !(bandPct > 0 && bandPct < 1) || !(tenorDays > 0) || !(stressHaircut >= 0 && stressHaircut <= 1)) {
+        reply.code(400).send({ error: "invalid_request", message: "long_notional>=0, short_notional>=0, 0<band_pct<1, tenor_days>0, 0<=stress_haircut<=1" });
         return;
       }
-      // Price the band-edge put (strike where per-trader cover ends) — cheapest ask across venues.
-      const strike = spot * (1 - bandPct);
-      const okxPut = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === "put")).catch(() => null);
+      // Net-short books hedge the PUMP tail with CALLS (strike above spot); net-long/flat hedge
+      // the CRASH tail with PUTS (strike below spot).
+      const hedgeSide: "put" | "call" = (longNotionalUsdc - shortNotionalUsdc) < 0 ? "call" : "put";
+      const strike = hedgeSide === "call" ? spot * (1 + bandPct) : spot * (1 - bandPct);
+      const okxLeg = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === hedgeSide)).catch(() => null);
       const [deribit, bullish] = await Promise.all([
-        deribitPutProbe({ spot, strike, tenorDays }),
-        bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays })
+        deribitPutProbe({ spot, strike, tenorDays, optType: hedgeSide }),
+        bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType: hedgeSide })
       ]);
       const asks = [
-        { venue: "okx", ask: okxPut?.ask_usdc_per_btc ?? null },
+        { venue: "okx", ask: okxLeg?.ask_usdc_per_btc ?? null },
         { venue: "deribit", ask: deribit.ask_usdc_per_btc },
         { venue: "bullish", ask: bullish.ask_usdc_per_btc }
       ].filter((q) => q.ask != null && q.ask > 0) as { venue: string; ask: number }[];
-      if (asks.length === 0) { reply.code(503).send({ error: "no_put_quote", message: `no put quote near ${Math.round(strike)}` }); return; }
+      if (asks.length === 0) { reply.code(503).send({ error: "no_quote", message: `no ${hedgeSide} quote near ${Math.round(strike)}` }); return; }
       const best = asks.reduce((b, q) => (q.ask < b.ask ? q : b));
 
-      const result = computePooledTailHedge({ spot, longNotionalUsdc, shortNotionalUsdc, bandPct, tenorDays, premiumsCollectedUsdc: premiums }, best.ask);
+      const result = computePooledTailHedge({ spot, longNotionalUsdc, shortNotionalUsdc, bandPct, tenorDays, stressHaircut, premiumsCollectedUsdc: premiums }, best.ask);
       reply.send({
         as_of: new Date().toISOString(),
-        inputs: { spot, long_notional_usdc: longNotionalUsdc, short_notional_usdc: shortNotionalUsdc, band_pct: bandPct, tenor_days: tenorDays },
-        hedge_put: { strike: +strike.toFixed(2), venue: best.venue, ask_usdc_per_btc: best.ask },
+        inputs: { spot, long_notional_usdc: longNotionalUsdc, short_notional_usdc: shortNotionalUsdc, band_pct: bandPct, tenor_days: tenorDays, stress_haircut: stressHaircut },
+        hedge_instrument: { side: hedgeSide, strike: +strike.toFixed(2), venue: best.venue, ask_usdc_per_btc: best.ask },
         ...result,
-        note: "READ-ONLY platform economics. Pooled hedge prices a deep put at the band-edge strike on the NET (long−short) book — a crash hurts longs but helps shorts, so net << gross. v1 assumes a net-long book hedged with PUTS; a net-short book is the mirror (calls), not yet priced. Ignores basis/roll/funding."
+        note: "READ-ONLY platform economics. Pooled hedge prices the band-edge option on the NET (long−short) book — a crash hurts longs but helps shorts, so net << gross. Net-long/flat hedged with PUTS (crash), net-short with CALLS (pump). stress_haircut hedges a fraction of (gross−net) for gap safety. Ignores basis/roll/funding."
       });
     }
   );

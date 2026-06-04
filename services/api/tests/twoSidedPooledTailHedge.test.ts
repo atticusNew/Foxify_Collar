@@ -28,17 +28,39 @@ test("cost in bps of book is the per-$ price to traders", () => {
   assert.equal(r.cost_bps_of_book, 17.92);
 });
 
-test("delta-flat book → pooled hedge ≈ 0 (self-hedging)", () => {
+test("delta-flat book (no haircut) → pooled hedge ≈ 0 (self-hedges)", () => {
   const r = computePooledTailHedge({ spot, longNotionalUsdc: 4_000_000, shortNotionalUsdc: 4_000_000, bandPct: 0.04, tenorDays: 7 }, put);
   assert.equal(r.net_side, "flat");
+  assert.equal(r.hedge_side, "put");
   assert.equal(r.pooled_hedge_cost_usdc, 0);
-  assert.ok(/self-hedging/.test(r.summary));
+  assert.ok(/self-hedge/.test(r.summary));
 });
 
-test("net-short book is detected (mirror side)", () => {
+test("net-long hedges with PUTS (crash, strike below spot)", () => {
+  const r = computePooledTailHedge({ spot, longNotionalUsdc: 5_000_000, shortNotionalUsdc: 4_000_000, bandPct: 0.04, tenorDays: 7 }, put);
+  assert.equal(r.hedge_side, "put");
+  assert.equal(r.band_strike, +(spot * 0.96).toFixed(2));
+});
+
+test("net-short book hedges with CALLS (pump, strike above spot)", () => {
   const r = computePooledTailHedge({ spot, longNotionalUsdc: 2_000_000, shortNotionalUsdc: 5_000_000, bandPct: 0.04, tenorDays: 7 }, put);
   assert.equal(r.net_side, "short");
   assert.equal(r.net_notional_usdc, 3_000_000);
+  assert.equal(r.hedge_side, "call");
+  assert.equal(r.band_strike, +(spot * 1.04).toFixed(2));
+});
+
+test("stress haircut hedges net + fraction of (gross−net)", () => {
+  const r = computePooledTailHedge({ spot, longNotionalUsdc: 5_000_000, shortNotionalUsdc: 4_000_000, bandPct: 0.04, tenorDays: 7, stressHaircut: 0.25 }, put);
+  // net 1M + 0.25×(9M−1M)=2M → hedge 3M
+  assert.equal(r.hedged_notional_usdc, 3_000_000);
+  assert.equal(r.stress_haircut, 0.25);
+  // pooled = 1000 × (3M/62000) = 48,387.10
+  assert.equal(r.pooled_hedge_cost_usdc, 48387.1);
+  // flat book WITH haircut now hedges a stress slice (not zero)
+  const flat = computePooledTailHedge({ spot, longNotionalUsdc: 4_000_000, shortNotionalUsdc: 4_000_000, bandPct: 0.04, tenorDays: 7, stressHaircut: 0.25 }, put);
+  assert.equal(flat.hedged_notional_usdc, 2_000_000); // 0 + 0.25×8M
+  assert.ok(flat.pooled_hedge_cost_usdc > 0);
 });
 
 test("funding check: premiums vs pooled hedge cost", () => {
