@@ -1,19 +1,11 @@
 /**
  * Protected Leverage — read-only widget (Phase 1, Sai exchange sales artifact / sandbox).
  *
- * TWO products, auto-selected by leverage:
- *  - Moderate leverage (< 25×): "Cap your loss" — a single protective PUT caps your worst
- *    case well below your margin and you can't be liquidated. (GET /floor-quote/tiers)
- *  - High leverage (≥ 25×): "Wick insurance" — a short-dated put SPREAD around the
- *    liquidation zone so a brief spike doesn't force you out; you stay in the trade and keep
- *    the upside. Single puts cost ~your whole margin at 40×, the spread is ~15%. (GET
- *    /wick-insurance — OKX-led; Bullish quotes but is priciest.)
+ * Two products, auto-selected by leverage:
+ *  - < 25×  "Cap your loss"   — single protective PUT caps worst case below margin, no liq.
+ *  - ≥ 25×  "Stay in your trade" — short-dated put SPREAD around the liq zone (wick insurance).
  *
- * Integrated-model truth: a put whose strike sits ABOVE the liquidation price keeps the
- * position open (the put's value covers the margin shortfall). Needs exchange margin
- * integration (Sai); cross-venue today the put bounds NET loss at the same number.
- *
- * READ-ONLY. Admin-token gated for now.
+ * Clean label-left / value-right throughout; succinct copy. READ-ONLY, admin-token gated.
  */
 
 import { useEffect, useState, useCallback } from "react";
@@ -29,11 +21,11 @@ type FloorTier = {
 type CapPosition = { spot: number; size_btc: number; leverage: number; notional_usdc: number; margin_usdc: number; liquidation_price: number; liq_drop_pct: number };
 type CapBundle = { as_of: string; position: CapPosition; tenor_days: number; tiers: FloorTier[]; note: string };
 
-type WickVenue = { venue: string; k1_strike: number | null; k2_strike: number | null; single_put_cost_usdc: number | null; single_put_pct_margin: number | null; put_spread_cost_usdc: number | null; put_spread_pct_margin: number | null };
+type WickVenue = { venue: string; k1_strike: number | null; k2_strike: number | null; single_put_pct_margin: number | null; put_spread_pct_margin: number | null };
 type WickBest = { venue: string; cost_usdc: number; pct_margin: number } | null;
 type WickResp = {
   as_of: string;
-  inputs: { spot: number; collateral: number; leverage: number; tenor_days: number; k1_pct: number; k2_pct: number; k1_target: number; k2_target: number };
+  inputs: { spot: number; collateral: number; leverage: number; tenor_days: number; k1_pct: number; k2_pct: number };
   position: { notional_usdc: number; margin_usdc: number; size_btc: number; liquidation_price: number; liq_drop_pct: number };
   venues: WickVenue[]; best_single: WickBest; best_spread: WickBest; note: string;
 };
@@ -42,9 +34,8 @@ const usd = (x: number | null | undefined) => (x == null ? "—" : `$${Math.roun
 const usd2 = (x: number | null | undefined) => (x == null ? "—" : `$${x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const pct = (x: number | null | undefined) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
 
-const LEV_PRESETS = [2, 5, 10, 20, 40];
 const MAX_LEV = 40;
-const HIGH_LEV = 25; // ≥ this → wick-insurance mode
+const HIGH_LEV = 25;
 const tierName = (f: number) => (f <= 0.33 ? "Safer" : f <= 0.6 ? "Balanced" : "Cheapest");
 
 export function ProtectedLeverageWidget() {
@@ -93,7 +84,6 @@ export function ProtectedLeverageWidget() {
 
   if (!authed) return <TokenGate role="admin" title="Protected Leverage — demo access" onSubmit={() => setAuthed(true)} />;
 
-  // Unified position view across both endpoints.
   const spot = wick?.inputs.spot ?? cap?.position.spot ?? null;
   const notional = wick?.position.notional_usdc ?? cap?.position.notional_usdc ?? null;
   const margin = wick?.position.margin_usdc ?? cap?.position.margin_usdc ?? null;
@@ -104,15 +94,16 @@ export function ProtectedLeverageWidget() {
   return (
     <Shell title="Protected Leverage" subtitle="Trade leveraged — without the wipe-out. Read-only demo."
       updatedIso={wick?.as_of ?? cap?.as_of} onSignOut={() => { clearToken("admin"); setAuthed(false); }}>
-      <div style={{ maxWidth: 560, margin: "0 auto" }}>
-        {/* Spot header */}
+      <div style={{ maxWidth: 540, margin: "0 auto" }}>
+        {/* Spot */}
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 16, padding: "0 2px" }}>
           <div style={{ fontSize: 13, color: C.muted, letterSpacing: 0.5 }}>BTC / USD{loading && " · …"}</div>
           <div style={{ fontSize: 30, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{spot != null ? usd(spot) : "—"}</div>
         </div>
 
-        {/* Inputs */}
+        {/* Your position: inputs + derived, one clean section */}
         <Card>
+          <SectionLabel>Your position</SectionLabel>
           <FieldRow label="Collateral">
             <div style={{ position: "relative", width: 150 }}>
               <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
@@ -122,89 +113,68 @@ export function ProtectedLeverageWidget() {
             </div>
           </FieldRow>
           <FieldRow label="Leverage">
-            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-              {LEV_PRESETS.map((l) => <Chip key={l} active={leverage === l} label={`${l}×`} onClick={() => setLeverage(l)} />)}
-              <Stepper value={leverage} onChange={(v) => setLeverage(Math.min(MAX_LEV, Math.max(1, v)))} />
-            </div>
+            <Stepper value={leverage} onChange={(v) => setLeverage(Math.min(MAX_LEV, Math.max(1, v)))} />
           </FieldRow>
           {havePos && (
-            <div style={{ fontSize: 13, color: C.muted, marginTop: 8 }}>
-              Position <b style={{ color: C.text }}>{usd(notional)}</b> · margin <b style={{ color: C.text }}>{usd(margin)}</b>
-              <span style={{ marginLeft: 8, color: highLev ? C.amber : C.muted }}>{highLev ? "high leverage" : "moderate leverage"}</span>
+            <div style={{ marginTop: 6, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+              <DetailRow label="Position" value={usd(notional)} />
+              <DetailRow label="Margin" value={usd(margin)} tag={highLev ? { text: "high leverage", color: C.amber } : { text: "moderate", color: C.muted }} last />
             </div>
           )}
         </Card>
 
         {err && <div style={{ padding: "10px 14px", background: "#3a1010", color: C.red, fontSize: 13, borderRadius: 6, marginBottom: 14 }}>{err}</div>}
 
-        {/* Baseline — the problem (shared, dynamic) */}
+        {/* Without protection */}
         {havePos && (
           <Card>
             <SectionLabel>Without protection</SectionLabel>
             <DetailRow label="Liquidation" value={`−${pct(liqDrop)} · ${usd(liqPrice)}`} valueColor={C.red} strong />
-            <DetailRow label="You lose" value={`${usd(margin)} — your full margin`} valueColor={C.red} />
-            <DetailRow label="The risk" value={`a brief wick past −${pct(liqDrop)} wipes you, even if it bounces back`} last />
+            <DetailRow label="You lose" value={usd(margin)} valueColor={C.red} sub="your full margin" last />
           </Card>
         )}
 
         {/* Protection */}
-        {highLev && wick && havePos && (
-          <WickCard wick={wick} spot={spot!} liqDrop={liqDrop!} margin={margin!} activated={activated} onActivate={() => setActivated(true)} />
-        )}
-        {!highLev && cap && havePos && (
-          <CapSection cap={cap} margin={margin!} liqPrice={liqPrice!} liqDrop={liqDrop!} spot={spot!}
-            selected={selected} setSelected={(i) => { setSelected(i); setActivated(false); }}
-            activated={activated} onActivate={() => setActivated(true)} loading={loading} />
-        )}
+        {highLev && wick && havePos
+          ? <WickCard wick={wick} spot={spot!} liqDrop={liqDrop!} margin={margin!} activated={activated} onActivate={() => setActivated(true)} />
+          : (!highLev && cap && havePos) && (
+            <CapSection cap={cap} margin={margin!} liqPrice={liqPrice!} liqDrop={liqDrop!} spot={spot!}
+              selected={selected} setSelected={(i) => { setSelected(i); setActivated(false); }}
+              activated={activated} onActivate={() => setActivated(true)} loading={loading} />
+          )}
       </div>
     </Shell>
   );
 }
 
-/* ── High-leverage: wick insurance (put spread) ── */
+/* ── ≥25×: wick insurance ── */
 function WickCard({ wick, spot, liqDrop, margin, activated, onActivate }: {
   wick: WickResp; spot: number; liqDrop: number; margin: number; activated: boolean; onActivate: () => void;
 }) {
   const best = wick.best_spread;
-  if (!best) {
-    return <Card><SectionLabel>Wick insurance</SectionLabel>
-      <div style={{ fontSize: 13, color: C.amber }}>No spread quotes available right now — try again shortly.</div></Card>;
-  }
+  if (!best) return <Card><SectionLabel>Stay in your trade</SectionLabel><div style={{ fontSize: 13, color: C.amber }}>No spread quotes right now — try again shortly.</div></Card>;
   const v = wick.venues.find((x) => x.venue === best.venue);
-  const k1 = v?.k1_strike ?? null, k2 = v?.k2_strike ?? null;
-  const k1Drop = k1 != null ? (spot - k1) / spot : null;
-  const k2Drop = k2 != null ? (spot - k2) / spot : null;
-  const exampleDip = Math.min((liqDrop + (k2Drop ?? liqDrop)) / 2, k2Drop ?? liqDrop); // a wick inside the protected band
-
+  const k1Drop = v?.k1_strike != null ? (spot - v.k1_strike) / spot : null;
+  const k2Drop = v?.k2_strike != null ? (spot - v.k2_strike) / spot : null;
+  const exampleDip = Math.min((liqDrop + (k2Drop ?? liqDrop)) / 2, k2Drop ?? liqDrop);
   return (
-    <Card highlight>
-      <SectionLabel>Stay in your trade {/* wick insurance */}</SectionLabel>
-      <div style={{ fontSize: 13, color: C.text, lineHeight: 1.6, marginBottom: 14 }}>
-        A short-dated put spread keeps a spike from liquidating you. You ride through the wick and keep your position — and all your upside.
-      </div>
-
-      <DetailRow label="Protects the wick zone" value={`−${pct(k1Drop)} to −${pct(k2Drop)}  (covers your −${pct(liqDrop)} liquidation)`} strong />
-      <DetailRow label="Cost" value={`${usd2(best.cost_usdc)}  ·  ${(best.pct_margin * 100).toFixed(0)}% of your ${usd(margin)} margin`} valueColor={C.green} strong />
-      <DetailRow label="Cheapest venue" value={best.venue.toUpperCase()} />
-      <DetailRow label="Full-put alternative" value={wick.best_single ? `${usd2(wick.best_single.cost_usdc)} (${(wick.best_single.pct_margin * 100).toFixed(0)}% — dearer)` : "—"} last />
-
-      {/* wick illustration */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
-        <SimBox tone="bad" heading={`If BTC wicks −${pct(exampleDip)} & recovers`} big="LIQUIDATED" sub={`unprotected — lost ${usd(margin)}`} />
-        <SimBox tone="good" heading={`If BTC wicks −${pct(exampleDip)} & recovers`} big="Still in" sub="protected — you keep the trade" />
-      </div>
-
-      <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
-        {!activated
-          ? <button onClick={onActivate} style={btn}>Activate protection</button>
-          : <span style={{ fontSize: 13, color: C.green, fontWeight: 700 }}>✓ Protection active</span>}
-      </div>
-      <Pricing note={wick.note} rows={wick.venues.map((x) => ({ venue: x.venue, a: x.single_put_pct_margin, b: x.put_spread_pct_margin }))} cols={["Venue", "Single %", "Spread %"]} />
-    </Card>
+    <>
+      <Card highlight>
+        <SectionLabel>Stay in your trade</SectionLabel>
+        <DetailRow label="Survive a wick to" value={`−${pct(k2Drop)}`} sub={`a −${pct(liqDrop)} dip won't liquidate you`} valueColor={C.green} strong />
+        <DetailRow label="Cost" value={usd2(best.cost_usdc)} sub={`${(best.pct_margin * 100).toFixed(0)}% of margin · ${best.venue.toUpperCase()}`} valueColor={C.green} strong last />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
+          <SimBox tone="bad" heading={`−${pct(exampleDip)} wick`} big="Liquidated" sub={`lost ${usd(margin)}`} />
+          <SimBox tone="good" heading={`−${pct(exampleDip)} wick`} big="Still in" sub="keep your trade" />
+        </div>
+        <ActivateRow activated={activated} onActivate={onActivate} />
+      </Card>
+      <Pricing note={wick.note} cols={["Venue", "Single", "Spread"]} rows={wick.venues.map((x) => ({ k: x.venue.toUpperCase(), a: x.single_put_pct_margin, b: x.put_spread_pct_margin }))} />
+    </>
   );
 }
 
-/* ── Moderate-leverage: cap your loss (single put tiers) ── */
+/* ── <25×: cap your loss ── */
 function CapSection({ cap, margin, liqPrice, liqDrop, spot, selected, setSelected, activated, onActivate, loading }: {
   cap: CapBundle; margin: number; liqPrice: number; liqDrop: number; spot: number;
   selected: number | null; setSelected: (i: number) => void; activated: boolean; onActivate: () => void; loading: boolean;
@@ -223,68 +193,79 @@ function CapSection({ cap, margin, liqPrice, liqDrop, spot, selected, setSelecte
               return <TierRow key={t.floor_strike} tier={t} selected={selected === idx} onClick={() => setSelected(idx)} />;
             })}
           </div>
-        ) : <div style={{ fontSize: 13, color: C.amber, lineHeight: 1.5 }}>No tradable floor sits inside your liquidation distance — lower your leverage.</div>}
+        ) : <div style={{ fontSize: 13, color: C.amber, lineHeight: 1.5 }}>No tradable floor inside your liquidation distance — lower your leverage.</div>}
       </Card>
 
       {sel?.available && (
         <Card highlight>
           <SectionLabel>With this protection</SectionLabel>
-          <DetailRow label="Liquidation" value="Removed — you can't be wiped out" valueColor={C.green} strong />
-          <DetailRow label="Most you can lose" value={usd(sel.max_loss_usdc)} valueColor={C.green} strong />
-          <DetailRow label="Loss capped at" value={`${usd(sel.floor_strike)} (−${pct((spot - sel.floor_strike) / spot)})`} />
-          <DetailRow label="Unprotected" value={`Liquidated −${pct(liqDrop)} (${usd(liqPrice)}) · lose ${usd(margin)}`} valueColor={C.red} />
-          <DetailRow label="Cost" value={`${usd2(sel.put_cost_usdc)}  ·  ${usd2(sel.cost_per_day_usdc)}/day · ${cap.tenor_days}d`} last />
-          <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
-            {!activated ? <button onClick={onActivate} style={btn}>Activate protection</button> : <span style={{ fontSize: 13, color: C.green, fontWeight: 700 }}>✓ Protection active</span>}
-          </div>
+          <DetailRow label="Liquidation" value="Removed" valueColor={C.green} strong />
+          <DetailRow label="Max loss" value={usd(sel.max_loss_usdc)} sub={`capped at ${usd(sel.floor_strike)} (−${pct((spot - sel.floor_strike) / spot)})`} valueColor={C.green} strong />
+          <DetailRow label="Without protection" value={`−${pct(liqDrop)} · lose ${usd(margin)}`} valueColor={C.red} />
+          <DetailRow label="Cost" value={usd2(sel.put_cost_usdc)} sub={`${usd2(sel.cost_per_day_usdc)}/day · ${cap.tenor_days}d`} last />
+          <ActivateRow activated={activated} onActivate={onActivate} />
         </Card>
       )}
-      <Pricing note={cap.note} rows={tiers.map((t) => ({ venue: `${tierName(t.margin_fraction)} · ${(t.venue ?? "—").toUpperCase()}`, a: t.put_cost_usdc, b: null }))} cols={["Tier · venue", "Premium $", ""]} dollars />
+      <Pricing note={cap.note} cols={["Tier · venue", "Premium", ""]} rows={tiers.map((t) => ({ k: `${tierName(t.margin_fraction)} · ${(t.venue ?? "—").toUpperCase()}`, a: t.put_cost_usdc, b: null, dollars: true }))} dollars />
     </>
   );
 }
 
-/* ── shared presentational ── */
+/* ── presentational ── */
+const LABEL = "#9aa3ad"; // brighter than muted for row labels
 const input: React.CSSProperties = { width: "100%", padding: "10px 12px", fontSize: 15, background: C.panel2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, boxSizing: "border-box" };
-const btn: React.CSSProperties = { padding: "11px 20px", background: C.green, color: "#06210a", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer" };
 
 function Card({ children, highlight }: { children: React.ReactNode; highlight?: boolean }) {
   return <div style={{ background: C.panel, borderRadius: 10, padding: 20, marginBottom: 14, border: highlight ? `1px solid ${C.green}55` : `1px solid ${C.border}` }}>{children}</div>;
 }
 function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <div style={{ fontSize: 12, fontWeight: 700, color: C.text, letterSpacing: 0.6, textTransform: "uppercase", marginBottom: 14 }}>{children}</div>;
+  return <div style={{ fontSize: 11, fontWeight: 700, color: LABEL, letterSpacing: 1, textTransform: "uppercase", marginBottom: 14 }}>{children}</div>;
 }
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
-    <label style={{ fontSize: 14, color: C.muted }}>{label}</label><div>{children}</div></div>;
+    <label style={{ fontSize: 14, color: LABEL }}>{label}</label><div>{children}</div></div>;
 }
-function DetailRow({ label, value, valueColor, strong, last }: { label: string; value: string; valueColor?: string; strong?: boolean; last?: boolean }) {
-  return <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 14, padding: "9px 0", borderBottom: last ? "none" : `1px solid ${C.border}` }}>
-    <span style={{ fontSize: 13, color: C.muted, flexShrink: 0 }}>{label}</span>
-    <span style={{ fontSize: strong ? 15 : 13, fontWeight: strong ? 700 : 500, color: valueColor ?? C.text, textAlign: "right" }}>{value}</span></div>;
-}
-function Chip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
-  return <div onClick={onClick} style={{ padding: "7px 13px", borderRadius: 6, fontSize: 14, cursor: "pointer", background: active ? C.blue + "22" : C.panel2, color: active ? C.blue : C.muted, border: `1px solid ${active ? C.blue + "66" : C.border}`, fontWeight: active ? 700 : 400 }}>{label}</div>;
-}
-function Stepper({ value, onChange }: { value: number; onChange: (v: number) => void }) {
-  const custom = !LEV_PRESETS.includes(value);
+/** Label left; value (+ optional sub under it, + optional tag) right. */
+function DetailRow({ label, value, sub, tag, valueColor, strong, last }: {
+  label: string; value: string; sub?: string; tag?: { text: string; color: string }; valueColor?: string; strong?: boolean; last?: boolean;
+}) {
   return (
-    <div style={{ display: "flex", alignItems: "center", border: `1px solid ${custom ? C.blue + "88" : C.border}`, borderRadius: 6, overflow: "hidden", background: C.panel2 }}>
-      <button onClick={() => onChange(value - 1)} style={stepBtn}>−</button>
-      <input type="number" min={1} max={MAX_LEV} value={value} onChange={(e) => onChange(Math.round(Number(e.target.value) || 1))}
-        style={{ width: 40, textAlign: "center", border: "none", background: "transparent", color: custom ? C.blue : C.text, fontSize: 14, fontWeight: 700, outline: "none", MozAppearance: "textfield" as const }} />
-      <span style={{ color: C.muted, fontSize: 13, paddingRight: 6 }}>×</span>
-      <button onClick={() => onChange(value + 1)} style={stepBtn}>+</button>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "10px 0", borderBottom: last ? "none" : `1px solid ${C.border}` }}>
+      <span style={{ fontSize: 13, color: LABEL, flexShrink: 0 }}>{label}{tag && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: tag.color + "22", color: tag.color, border: `1px solid ${tag.color}44` }}>{tag.text}</span>}</span>
+      <span style={{ textAlign: "right" }}>
+        <span style={{ fontSize: strong ? 16 : 14, fontWeight: strong ? 700 : 600, color: valueColor ?? C.text }}>{value}</span>
+        {sub && <span style={{ display: "block", fontSize: 11, color: C.muted, marginTop: 2 }}>{sub}</span>}
+      </span>
     </div>
   );
 }
-const stepBtn: React.CSSProperties = { width: 28, height: 34, border: "none", background: "transparent", color: C.muted, fontSize: 16, cursor: "pointer", lineHeight: 1 };
+function Stepper({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", border: `1px solid ${C.border}`, borderRadius: 8, overflow: "hidden", background: C.panel2 }}>
+      <button onClick={() => onChange(value - 1)} style={stepBtn} aria-label="decrease">−</button>
+      <div style={{ display: "flex", alignItems: "baseline", padding: "0 2px" }}>
+        <input type="number" min={1} max={MAX_LEV} value={value} onChange={(e) => onChange(Math.round(Number(e.target.value) || 1))}
+          style={{ width: 38, textAlign: "right", border: "none", background: "transparent", color: C.text, fontSize: 16, fontWeight: 700, outline: "none", MozAppearance: "textfield" as const }} />
+        <span style={{ color: C.muted, fontSize: 14, fontWeight: 700 }}>×</span>
+      </div>
+      <button onClick={() => onChange(value + 1)} style={stepBtn} aria-label="increase">+</button>
+    </div>
+  );
+}
+const stepBtn: React.CSSProperties = { width: 34, height: 38, border: "none", background: "transparent", color: C.text, fontSize: 18, cursor: "pointer", lineHeight: 1 };
 
+function ActivateRow({ activated, onActivate }: { activated: boolean; onActivate: () => void }) {
+  return <div style={{ marginTop: 16, display: "flex", justifyContent: "flex-end" }}>
+    {!activated
+      ? <button onClick={onActivate} style={{ padding: "11px 20px", background: C.green, color: "#06210a", border: "none", borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Activate protection</button>
+      : <span style={{ fontSize: 14, color: C.green, fontWeight: 700 }}>✓ Protection active</span>}
+  </div>;
+}
 function SimBox({ tone, heading, big, sub }: { tone: "good" | "bad"; heading: string; big: string; sub: string }) {
   const col = tone === "good" ? C.green : C.red;
   return <div style={{ background: col + "10", border: `1px solid ${col}33`, borderRadius: 8, padding: "12px 14px", textAlign: "center" }}>
-    <div style={{ fontSize: 11, color: C.muted, minHeight: 26 }}>{heading}</div>
-    <div style={{ fontSize: 18, fontWeight: 800, color: col, margin: "4px 0" }}>{big}</div>
+    <div style={{ fontSize: 11, color: C.muted }}>{heading}</div>
+    <div style={{ fontSize: 19, fontWeight: 800, color: col, margin: "4px 0" }}>{big}</div>
     <div style={{ fontSize: 11, color: C.muted }}>{sub}</div></div>;
 }
 function TierRow({ tier, selected, onClick }: { tier: FloorTier; selected: boolean; onClick: () => void }) {
@@ -292,18 +273,18 @@ function TierRow({ tier, selected, onClick }: { tier: FloorTier; selected: boole
     <div>
       <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{tierName(tier.margin_fraction)}
         {tier.recommended && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: C.green + "22", color: C.green, border: `1px solid ${C.green}55` }}>recommended</span>}</div>
-      <div style={{ fontSize: 13, color: C.muted, marginTop: 3 }}>Worst case {usd(tier.max_loss_usdc)}</div>
+      <div style={{ fontSize: 13, color: C.text, marginTop: 4 }}>Worst case <b>{usd(tier.max_loss_usdc)}</b></div>
     </div>
     <div style={{ textAlign: "right" }}>
-      <div style={{ fontSize: 15, fontWeight: 700, color: C.green }}>{usd2(tier.put_cost_usdc)}</div>
-      <div style={{ fontSize: 11, color: C.muted }}>{usd2(tier.cost_per_day_usdc)}/day</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{usd2(tier.put_cost_usdc)}</div>
+      <div style={{ fontSize: 12, color: C.text, marginTop: 2 }}>{usd2(tier.cost_per_day_usdc)}/day</div>
     </div></div>;
 }
-function Pricing({ note, rows, cols, dollars }: { note: string; rows: Array<{ venue: string; a: number | null; b: number | null }>; cols: string[]; dollars?: boolean }) {
+function Pricing({ note, rows, cols, dollars }: { note: string; rows: Array<{ k: string; a: number | null; b: number | null; dollars?: boolean }>; cols: string[]; dollars?: boolean }) {
   const [show, setShow] = useState(false);
-  const fmt = (x: number | null) => x == null ? "—" : dollars ? usd2(x) : `${(x * 100).toFixed(0)}%`;
+  const fmt = (x: number | null, d?: boolean) => x == null ? "—" : (d ?? dollars) ? usd2(x) : `${(x * 100).toFixed(0)}%`;
   return (
-    <div style={{ marginTop: 14, textAlign: "center" }}>
+    <div style={{ marginTop: 12, textAlign: "center" }}>
       <span onClick={() => setShow((s) => !s)} style={{ color: C.muted, fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>{show ? "Hide pricing" : "How it's priced"}</span>
       {show && (
         <div style={{ marginTop: 10, fontSize: 11, color: C.muted, background: "#141414", borderRadius: 6, padding: 12, textAlign: "left" }}>
@@ -311,7 +292,7 @@ function Pricing({ note, rows, cols, dollars }: { note: string; rows: Array<{ ve
             <thead><tr style={{ color: C.muted, textAlign: "left" }}>{cols.map((c, i) => <th key={i} style={{ padding: "4px 8px" }}>{c}</th>)}</tr></thead>
             <tbody>{rows.map((r, i) => (
               <tr key={i} style={{ borderTop: `1px solid ${C.border}`, color: C.text }}>
-                <td style={{ padding: "4px 8px" }}>{r.venue}</td><td style={{ padding: "4px 8px" }}>{fmt(r.a)}</td><td style={{ padding: "4px 8px" }}>{r.b == null ? "" : fmt(r.b)}</td>
+                <td style={{ padding: "4px 8px" }}>{r.k}</td><td style={{ padding: "4px 8px" }}>{fmt(r.a, r.dollars)}</td><td style={{ padding: "4px 8px" }}>{r.b == null ? "" : fmt(r.b, r.dollars)}</td>
               </tr>))}</tbody>
           </table>
           <div style={{ marginTop: 10, lineHeight: 1.5 }}>{note}</div>
