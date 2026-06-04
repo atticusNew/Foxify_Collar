@@ -1700,9 +1700,11 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * the position card + a small menu of protective-PUT floor tiers framed as "risk X% of your
    * margin", each priced as the cheapest LONG PUT across Bullish + Deribit + OKX. One call,
    * no client-side fan-out. No orders/execution.
-   * Query: ?size=(BTC)&leverage=&tenor_days=&spot=(override)&tiers=0.25,0.5,0.75
+   * Query: ?collateral=(USDC margin)|size=(BTC)&leverage=&tenor_days=&spot=(override)&tiers=0.25,0.5,0.75
+   *   collateral (USDC the trader posts) is the preferred input → notional = collateral×leverage,
+   *   sizeBtc = notional/spot. `size` (BTC) still works as a fallback.
    */
-  app.get<{ Querystring: { size?: string; leverage?: string; tenor_days?: string; spot?: string; tiers?: string } }>(
+  app.get<{ Querystring: { size?: string; collateral?: string; leverage?: string; tenor_days?: string; spot?: string; tiers?: string } }>(
     "/admin/foxify/v2/floor-quote/tiers",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -1712,11 +1714,15 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const feed = deps.feedService.getCurrentFeed();
       const spot = req.query.spot != null && Number(req.query.spot) > 0 ? Number(req.query.spot) : feed?.canonicalPrice;
       if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
-      const sizeBtc = Number(req.query.size ?? "1");
       const leverage = Number(req.query.leverage ?? "10");
       const tenorDays = Number(req.query.tenor_days ?? "3");
+      // Collateral (USDC margin posted) is the preferred input; derive BTC size from it.
+      const collateral = req.query.collateral != null ? Number(req.query.collateral) : null;
+      const sizeBtc = collateral != null && collateral > 0 && leverage > 0
+        ? (collateral * leverage) / spot
+        : Number(req.query.size ?? "1");
       if (!(sizeBtc > 0) || !(leverage > 0) || leverage > 40 || !(tenorDays > 0)) {
-        reply.code(400).send({ error: "invalid_request", message: "size>0, 0<leverage<=40, tenor_days>0" });
+        reply.code(400).send({ error: "invalid_request", message: "collateral>0 (or size>0), 0<leverage<=40, tenor_days>0" });
         return;
       }
       const fractions = (req.query.tiers
