@@ -34,6 +34,8 @@ type WickResp = {
 const usd = (x: number | null | undefined) => (x == null ? "—" : `$${Math.round(x).toLocaleString()}`);
 const usd2 = (x: number | null | undefined) => (x == null ? "—" : `$${x.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const pct = (x: number | null | undefined) => (x == null ? "—" : `${(x * 100).toFixed(1)}%`);
+/** Signed move % by side: longs are hurt by a drop (−), shorts by a rally (+). */
+const signed = (x: number | null | undefined, side: "long" | "short") => (x == null ? "—" : `${side === "short" ? "+" : "−"}${pct(x)}`);
 
 const MAX_LEV = 40;
 const HIGH_LEV = 25;
@@ -43,6 +45,7 @@ export function ProtectedLeverageWidget() {
   const [authed, setAuthed] = useState(() => !!getToken("demo"));
   const [collateral, setCollateral] = useState(500);
   const [leverage, setLeverage] = useState(10);
+  const [side, setSide] = useState<"long" | "short">("long");
   const [tenorDays, setTenorDays] = useState(3);
   const [tenorTouched, setTenorTouched] = useState(false); // once the user picks a tenor, stop auto-defaulting
   const [selected, setSelected] = useState<number | null>(null);
@@ -67,10 +70,10 @@ export function ProtectedLeverageWidget() {
         const liqDrop = 1 / leverage;
         const k1 = Math.max(0.005, +(liqDrop * 0.8).toFixed(4));
         const k2 = Math.min(0.5, +(liqDrop * 1.6).toFixed(4));
-        const data = await demoGet<WickResp>(`/admin/foxify/v2/wick-insurance?collateral=${collateral}&leverage=${leverage}&tenor_days=${effTenor}&k1_pct=${k1}&k2_pct=${k2}`);
+        const data = await demoGet<WickResp>(`/admin/foxify/v2/wick-insurance?collateral=${collateral}&leverage=${leverage}&tenor_days=${effTenor}&k1_pct=${k1}&k2_pct=${k2}&side=${side}`);
         setWick(data); setCap(null);
       } else {
-        const data = await demoGet<CapBundle>(`/admin/foxify/v2/floor-quote/tiers?collateral=${collateral}&leverage=${leverage}&tenor_days=${effTenor}`);
+        const data = await demoGet<CapBundle>(`/admin/foxify/v2/floor-quote/tiers?collateral=${collateral}&leverage=${leverage}&tenor_days=${effTenor}&side=${side}`);
         setCap(data); setWick(null);
         const rec = data.tiers.findIndex((t) => t.recommended);
         const firstAvail = data.tiers.findIndex((t) => t.available);
@@ -80,7 +83,7 @@ export function ProtectedLeverageWidget() {
       if (e instanceof UnauthorizedError) { setAuthed(false); return; }
       setErr((e as Error).message); setCap(null); setWick(null);
     } finally { setLoading(false); }
-  }, [collateral, leverage, effTenor]);
+  }, [collateral, leverage, effTenor, side]);
 
   useEffect(() => {
     if (!authed) return;
@@ -125,6 +128,12 @@ export function ProtectedLeverageWidget() {
         {/* Your position: inputs + derived, one clean section */}
         <Card>
           <SectionLabel>Your position</SectionLabel>
+          <FieldRow label="Direction">
+            <div style={{ display: "flex", gap: 6 }}>
+              <Chip active={side === "long"} label="Long" onClick={() => { setSide("long"); setActivated(false); }} />
+              <Chip active={side === "short"} label="Short" onClick={() => { setSide("short"); setActivated(false); }} />
+            </div>
+          </FieldRow>
           <FieldRow label="Collateral">
             <div style={{ position: "relative", width: 150 }}>
               <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
@@ -143,7 +152,7 @@ export function ProtectedLeverageWidget() {
           </FieldRow>
           {havePos && (
             <div style={{ marginTop: 6, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
-              <DetailRow label="Position" value={usd(notional)} sub="long · short-side coming soon" />
+              <DetailRow label="Position" value={usd(notional)} sub={side === "short" ? "short" : "long"} />
               <DetailRow label="Margin" value={usd(margin)} tag={highLev ? { text: "high leverage", color: C.amber } : { text: "moderate", color: C.muted }} last />
             </div>
           )}
@@ -155,16 +164,16 @@ export function ProtectedLeverageWidget() {
         {havePos && (
           <Card>
             <SectionLabel>Without protection</SectionLabel>
-            <DetailRow label="Liquidation" value={`−${pct(liqDrop)} · ${usd(liqPrice)}`} valueColor={C.red} strong />
+            <DetailRow label="Liquidation" value={`${signed(liqDrop, side)} · ${usd(liqPrice)}`} valueColor={C.red} strong />
             <DetailRow label="You lose" value={usd(margin)} valueColor={C.red} sub="your full margin" last />
           </Card>
         )}
 
         {/* Protection */}
         {highLev && wick && havePos
-          ? <WickCard wick={wick} spot={spot!} liqDrop={liqDrop!} margin={margin!} activated={activated} onActivate={() => setActivated(true)} />
+          ? <WickCard wick={wick} side={side} spot={spot!} liqDrop={liqDrop!} margin={margin!} activated={activated} onActivate={() => setActivated(true)} />
           : (!highLev && cap && havePos) && (
-            <CapSection cap={cap} margin={margin!} liqPrice={liqPrice!} liqDrop={liqDrop!} spot={spot!}
+            <CapSection cap={cap} side={side} margin={margin!} liqPrice={liqPrice!} liqDrop={liqDrop!} spot={spot!}
               selected={selected} setSelected={(i) => { setSelected(i); setActivated(false); }}
               activated={activated} onActivate={() => setActivated(true)} loading={loading} />
           )}
@@ -173,16 +182,16 @@ export function ProtectedLeverageWidget() {
         <div style={{ fontSize: 10.5, color: C.muted, textAlign: "center", lineHeight: 1.6, margin: "18px 6px 8px", opacity: 0.75 }}>
           Illustrative demo · live option pricing across OKX / Deribit / Bullish. Simplified liquidation
           (ignores maintenance margin, funding, fees, slippage). True no-liquidation requires exchange
-          margin integration; standalone, the put bounds net loss at the same figure. Not financial advice.
+          margin integration; standalone, the option bounds net loss at the same figure. Not financial advice.
         </div>
       </div>
     </Shell>
   );
 }
 
-/* ── ≥25×: wick insurance. Default = gap-proof single put; spread is the cheaper alt. ── */
-function WickCard({ wick, spot, liqDrop, margin, activated, onActivate }: {
-  wick: WickResp; spot: number; liqDrop: number; margin: number; activated: boolean; onActivate: () => void;
+/* ── ≥25×: wick insurance. Default = gap-proof single option; spread is the cheaper alt. ── */
+function WickCard({ wick, side, spot, liqDrop, margin, activated, onActivate }: {
+  wick: WickResp; side: "long" | "short"; spot: number; liqDrop: number; margin: number; activated: boolean; onActivate: () => void;
 }) {
   const single = wick.best_single;
   const spread = wick.best_spread;
@@ -191,8 +200,11 @@ function WickCard({ wick, spot, liqDrop, margin, activated, onActivate }: {
 
   if (!single && !spread) return <Card><SectionLabel>Stay in your trade</SectionLabel><div style={{ fontSize: 13, color: C.amber }}>No quotes right now — try again shortly.</div></Card>;
 
-  const singleDrop = single ? (spot - single.strike) / spot : null;
-  const k2Drop = spread ? (spot - spread.k2_strike) / spot : null;
+  // Distance of a strike from spot as a positive fraction (below for long, above for short).
+  const dist = (strike: number) => (side === "short" ? (strike - spot) / spot : (spot - strike) / spot);
+  const moveWord = side === "short" ? "spike" : "wick";
+  const singleDrop = single ? dist(single.strike) : null;
+  const k2Drop = spread ? dist(spread.k2_strike) : null;
   const exampleDip = effective === "full" ? Math.max(liqDrop + 0.02, (k2Drop ?? liqDrop) + 0.03) : Math.min((liqDrop + (k2Drop ?? liqDrop)) / 2, k2Drop ?? liqDrop);
 
   return (
@@ -200,8 +212,8 @@ function WickCard({ wick, spot, liqDrop, margin, activated, onActivate }: {
       <Card>
         <SectionLabel>Stay in your trade</SectionLabel>
         <div style={{ display: "grid", gap: 8 }}>
-          {single && <OptionRow name="Full protection" recommended sub="Gap-proof · survive any drop" cost={single.cost_usdc} pctM={single.pct_margin} selected={effective === "full"} onClick={() => setOpt("full")} />}
-          {spread && <OptionRow name="Wick spread" sub={`Survive to −${pct(k2Drop)} · cheaper, exposed deeper`} cost={spread.cost_usdc} pctM={spread.pct_margin} selected={effective === "spread"} onClick={() => setOpt("spread")} />}
+          {single && <OptionRow name="Full protection" recommended sub="Gap-proof · survive any move" cost={single.cost_usdc} pctM={single.pct_margin} selected={effective === "full"} onClick={() => setOpt("full")} />}
+          {spread && <OptionRow name={`${moveWord === "spike" ? "Spike" : "Wick"} spread`} sub={`Survive to ${signed(k2Drop, side)} · cheaper, exposed deeper`} cost={spread.cost_usdc} pctM={spread.pct_margin} selected={effective === "spread"} onClick={() => setOpt("spread")} />}
         </div>
       </Card>
 
@@ -209,17 +221,17 @@ function WickCard({ wick, spot, liqDrop, margin, activated, onActivate }: {
         <SectionLabel>With this protection</SectionLabel>
         {effective === "full" && single ? (
           <>
-            <DetailRow label="Survive a drop of" value="Any depth" sub="gap-proof — you can't be wicked out" valueColor={C.green} strong />
-            <DetailRow label="Protection starts" value={`${usd(single.strike)} (−${pct(singleDrop)})`} />
+            <DetailRow label="Survive a move of" value="Any size" sub="gap-proof — you can't be wicked out" valueColor={C.green} strong />
+            <DetailRow label="Protection starts" value={`${usd(single.strike)} (${signed(singleDrop, side)})`} />
             <DetailRow label="Cost" value={usd2(single.cost_usdc)} sub={`${(single.pct_margin * 100).toFixed(0)}% of margin · ${single.venue.toUpperCase()}`} valueColor={C.green} strong last />
           </>
         ) : spread ? (
           <>
-            <DetailRow label="Survive a wick to" value={`−${pct(k2Drop)}`} sub="exposed if it falls deeper" valueColor={C.green} strong />
+            <DetailRow label={`Survive a ${moveWord} to`} value={signed(k2Drop, side)} sub="exposed if it runs further" valueColor={C.green} strong />
             <DetailRow label="Cost" value={usd2(spread.cost_usdc)} sub={`${(spread.pct_margin * 100).toFixed(0)}% of margin · long ${spread.long_venue.toUpperCase()} / short ${spread.short_venue.toUpperCase()}`} valueColor={C.green} strong last />
           </>
         ) : null}
-        <div style={{ ...SUB, textAlign: "center", marginTop: 16 }}>If BTC wicks −{pct(exampleDip)} and recovers</div>
+        <div style={{ ...SUB, textAlign: "center", marginTop: 16 }}>If BTC {moveWord}s {signed(exampleDip, side)} and recovers</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 8 }}>
           <SimBox tone="bad" big="Liquidated" sub={`unprotected — lost ${usd(margin)}`} />
           <SimBox tone="good" big="Still in" sub="protected — keep your trade" />
@@ -249,13 +261,15 @@ function OptionRow({ name, sub, cost, pctM, recommended, selected, onClick }: { 
 }
 
 /* ── <25×: cap your loss ── */
-function CapSection({ cap, margin, liqPrice, liqDrop, spot, selected, setSelected, activated, onActivate, loading }: {
-  cap: CapBundle; margin: number; liqPrice: number; liqDrop: number; spot: number;
+function CapSection({ cap, side, margin, liqPrice, liqDrop, spot, selected, setSelected, activated, onActivate, loading }: {
+  cap: CapBundle; side: "long" | "short"; margin: number; liqPrice: number; liqDrop: number; spot: number;
   selected: number | null; setSelected: (i: number) => void; activated: boolean; onActivate: () => void; loading: boolean;
 }) {
   const tiers = cap.tiers;
   const sel = selected != null ? tiers[selected] : null;
   const anyAvail = tiers.some((t) => t.available);
+  const capWord = side === "short" ? "ceiling" : "floor";
+  const strikeDist = (strike: number) => (side === "short" ? (strike - spot) / spot : (spot - strike) / spot);
   return (
     <>
       <Card>
@@ -267,15 +281,15 @@ function CapSection({ cap, margin, liqPrice, liqDrop, spot, selected, setSelecte
               return <TierRow key={t.floor_strike} tier={t} selected={selected === idx} onClick={() => setSelected(idx)} />;
             })}
           </div>
-        ) : <div style={{ fontSize: 13, color: C.amber, lineHeight: 1.5 }}>No tradable floor inside your liquidation distance — lower your leverage.</div>}
+        ) : <div style={{ fontSize: 13, color: C.amber, lineHeight: 1.5 }}>No tradable {capWord} inside your liquidation distance — lower your leverage.</div>}
       </Card>
 
       {sel?.available && (
         <Card highlight>
           <SectionLabel>With this protection</SectionLabel>
           <DetailRow label="Liquidation" value="Removed" valueColor={C.green} strong />
-          <DetailRow label="Max loss" value={usd(sel.max_loss_usdc)} sub={`capped at ${usd(sel.floor_strike)} (−${pct((spot - sel.floor_strike) / spot)})`} valueColor={C.green} strong />
-          <DetailRow label="Without protection" value={`−${pct(liqDrop)} · lose ${usd(margin)}`} valueColor={C.red} />
+          <DetailRow label="Max loss" value={usd(sel.max_loss_usdc)} sub={`capped at ${usd(sel.floor_strike)} (${signed(strikeDist(sel.floor_strike), side)})`} valueColor={C.green} strong />
+          <DetailRow label="Without protection" value={`${signed(liqDrop, side)} (${usd(liqPrice)}) · lose ${usd(margin)}`} valueColor={C.red} />
           <DetailRow label="Cost" value={usd2(sel.put_cost_usdc)} sub={`${usd2(sel.cost_per_day_usdc)}/day · ${cap.tenor_days}d`} last />
           <ActivateRow activated={activated} onActivate={onActivate} />
         </Card>

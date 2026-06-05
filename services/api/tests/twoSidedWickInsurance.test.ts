@@ -76,6 +76,21 @@ test("best_spread ROUTES legs cross-venue: long where ask cheapest, short where 
   assert.equal(r2.best_spread?.cost_usdc, 193.55);
 });
 
+test("SHORT side: liq above spot; spread valid when K2 > K1 (calls, deeper = higher strike)", () => {
+  const q: VenueLegQuotes[] = [{ venue: "okx", k1AskUsdcPerBtc: 1000, k1Strike: 62800, k2BidUsdcPerBtc: 600, k2Strike: 64000 }];
+  const r = computeWickInsurance({ spot: 62000, collateralUsdc: 1000, leverage: 40, tenorDays: 1, side: "short" }, q);
+  assert.equal(r.position.liquidation_price, 63550); // 62000 × (1 + 1/40)
+  assert.ok(r.best_spread, "call spread valid when short strike is higher (deeper OTM)");
+  assert.equal(r.best_spread?.k1_strike, 62800);
+  assert.equal(r.best_spread?.k2_strike, 64000);
+});
+
+test("SHORT side: a put-style ordering (K2<K1) is NOT a valid call spread", () => {
+  const q: VenueLegQuotes[] = [{ venue: "okx", k1AskUsdcPerBtc: 1000, k1Strike: 62800, k2BidUsdcPerBtc: 600, k2Strike: 61000 }];
+  const r = computeWickInsurance({ spot: 62000, collateralUsdc: 1000, leverage: 40, tenorDays: 1, side: "short" }, q);
+  assert.equal(r.best_spread, null);
+});
+
 test("venues with no quotes are skipped in best-of", () => {
   const q: VenueLegQuotes[] = [
     { venue: "okx", k1AskUsdcPerBtc: null, k1Strike: null, k2BidUsdcPerBtc: null, k2Strike: null },

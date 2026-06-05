@@ -24,6 +24,23 @@ test("strikeForMarginFraction: floorPct = fraction / leverage (clean mapping)", 
   assert.deepEqual(strikeForMarginFraction(66000, 20, 0.5), { floorPct: 0.025, strike: 64350 });
 });
 
+test("strikeForMarginFraction SHORT: protective call ABOVE spot", () => {
+  assert.deepEqual(strikeForMarginFraction(66000, 10, 0.5, "short"), { floorPct: 0.05, strike: 69300 });
+});
+
+test("SHORT side: call ceiling above spot, liq on a rally, same cap math", () => {
+  const shortInputs = { spot: 66000, sizeBtc: 1, leverage: 10, tenorDays: 3, side: "short" as const };
+  const card = buildPositionCard(shortInputs);
+  assert.equal(card.side, "short");
+  assert.equal(card.liquidation_price, 72600); // 66000 × 1.1
+  assert.ok(/rally/.test(card.liq_summary));
+  // Call priced at 69300 (snapped): worst case = (69300−66000)×1 + 1000 = 3300 + 1000 = 4300
+  const t = buildFloorTier(shortInputs, 0.5, { venue: "okx", ask_usdc_per_btc: 1000, strike: 69300 });
+  assert.equal(t.available, true);
+  assert.equal(t.floor_strike, 69300);
+  assert.equal(t.max_loss_usdc, 4300);
+});
+
 test("buildPositionCard: notional/margin/liq are correct", () => {
   const c = buildPositionCard(base);
   assert.equal(c.notional_usdc, 66000);
@@ -60,7 +77,7 @@ test("buildFloorTier: no live quote → available=false with reason", () => {
   const t = buildFloorTier(base, 0.5, { venue: "okx", ask_usdc_per_btc: null });
   assert.equal(t.adds_value, true);
   assert.equal(t.available, false);
-  assert.ok(/no live put quote/.test(t.unavailable_reason ?? ""));
+  assert.ok(/no live quote/.test(t.unavailable_reason ?? ""));
 });
 
 test("pickRecommended: prefers the balanced 50% tier when it's worth it", () => {

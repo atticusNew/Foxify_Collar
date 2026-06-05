@@ -30,6 +30,9 @@ export type WickInsuranceInputs = {
   collateralUsdc: number;   // = margin posted
   leverage: number;
   tenorDays: number;
+  /** long = liq on a drop, protect with PUTs (K2 deeper = lower strike); short = liq on a pump,
+   *  protect with CALLs (K2 deeper = HIGHER strike). Default long. */
+  side?: "long" | "short";
 };
 
 export type VenueWickResult = {
@@ -66,20 +69,24 @@ const round2 = (x: number) => +x.toFixed(2);
 const round4 = (x: number) => +x.toFixed(4);
 
 export const computeWickInsurance = (inputs: WickInsuranceInputs, quotes: VenueLegQuotes[]): WickInsuranceResult => {
-  const { spot, collateralUsdc, leverage, tenorDays: _tenorDays } = inputs;
+  const { spot, collateralUsdc, leverage } = inputs;
+  const side = inputs.side ?? "long";
   const notional = collateralUsdc * leverage;
   const margin = collateralUsdc;
   const size = spot > 0 ? notional / spot : 0;
   const liqDropPct = leverage > 0 ? 1 / leverage : 1;
-  const liqPrice = spot * (1 - liqDropPct);
+  const liqPrice = side === "short" ? spot * (1 + liqDropPct) : spot * (1 - liqDropPct);
+  // A valid spread needs the short leg (K2) strictly DEEPER than the long leg (K1): lower
+  // strike for puts (long), higher strike for calls (short).
+  const deeper = (k2: number, k1: number) => (side === "short" ? k2 > k1 : k2 < k1);
 
   const venues: VenueWickResult[] = quotes.map((q) => {
     const singleCost = q.k1AskUsdcPerBtc != null && q.k1AskUsdcPerBtc > 0 ? q.k1AskUsdcPerBtc * size : null;
-    // Spread requires BOTH a long ask (K1) and a short bid (K2), with K2 strictly below K1.
+    // Spread requires BOTH a long ask (K1) and a short bid (K2), with K2 strictly deeper than K1.
     const spreadOk =
       q.k1AskUsdcPerBtc != null && q.k1AskUsdcPerBtc > 0 &&
       q.k2BidUsdcPerBtc != null && q.k2BidUsdcPerBtc > 0 &&
-      q.k1Strike != null && q.k2Strike != null && q.k2Strike < q.k1Strike;
+      q.k1Strike != null && q.k2Strike != null && deeper(q.k2Strike, q.k1Strike);
     const spreadNetPerBtc = spreadOk ? (q.k1AskUsdcPerBtc as number) - (q.k2BidUsdcPerBtc as number) : null;
     const spreadCost = spreadNetPerBtc != null && spreadNetPerBtc > 0 ? spreadNetPerBtc * size : null;
     return {
@@ -109,8 +116,8 @@ export const computeWickInsurance = (inputs: WickInsuranceInputs, quotes: VenueL
     ? { venue: longLeg.venue, cost_usdc: round2(longLeg.ask * size), pct_margin: margin > 0 ? round4((longLeg.ask * size) / margin) : 0, strike: longLeg.strike }
     : null;
 
-  // Valid spread only if the short strike is strictly DEEPER (below) the long strike.
-  const spreadNetPerBtc = longLeg && shortLeg && shortLeg.strike < longLeg.strike ? longLeg.ask - shortLeg.bid : null;
+  // Valid spread only if the short strike is strictly DEEPER than the long strike (side-aware).
+  const spreadNetPerBtc = longLeg && shortLeg && deeper(shortLeg.strike, longLeg.strike) ? longLeg.ask - shortLeg.bid : null;
   const best_spread: BestSpread = spreadNetPerBtc != null && spreadNetPerBtc > 0 && longLeg && shortLeg
     ? { long_venue: longLeg.venue, short_venue: shortLeg.venue, cost_usdc: round2(spreadNetPerBtc * size), pct_margin: margin > 0 ? round4((spreadNetPerBtc * size) / margin) : 0, k1_strike: longLeg.strike, k2_strike: shortLeg.strike }
     : null;

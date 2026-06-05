@@ -1736,7 +1736,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *   collateral (USDC the trader posts) is the preferred input → notional = collateral×leverage,
    *   sizeBtc = notional/spot. `size` (BTC) still works as a fallback.
    */
-  app.get<{ Querystring: { size?: string; collateral?: string; leverage?: string; tenor_days?: string; spot?: string; tiers?: string } }>(
+  app.get<{ Querystring: { size?: string; collateral?: string; leverage?: string; tenor_days?: string; spot?: string; tiers?: string; side?: string } }>(
     "/admin/foxify/v2/floor-quote/tiers",
     { preHandler: checkDemoOrAdminToken },
     async (req, reply) => {
@@ -1748,6 +1748,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
       const leverage = Number(req.query.leverage ?? "10");
       const tenorDays = Number(req.query.tenor_days ?? "3");
+      const side: "long" | "short" = req.query.side === "short" ? "short" : "long";
+      const optType: "put" | "call" = side === "short" ? "call" : "put"; // shorts protect upside with calls
       // Collateral (USDC margin posted) is the preferred input; derive BTC size from it.
       const collateral = req.query.collateral != null ? Number(req.query.collateral) : null;
       const sizeBtc = collateral != null && collateral > 0 && leverage > 0
@@ -1762,23 +1764,24 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         : [...DEFAULT_TIER_FRACTIONS]);
       if (fractions.length === 0) { reply.code(400).send({ error: "invalid_request", message: "tiers must be comma-separated fractions in (0,4)" }); return; }
 
-      const cacheKey = `tiers:${sizeBtc.toFixed(6)}:${leverage}:${tenorDays}:${Math.round(spot / 10) * 10}:${fractions.join(",")}`;
+      const cacheKey = `tiers:${side}:${sizeBtc.toFixed(6)}:${leverage}:${tenorDays}:${Math.round(spot / 10) * 10}:${fractions.join(",")}`;
       const cached = demoCacheGet(cacheKey);
       if (cached) { reply.send(cached); return; }
 
-      // Price the cheapest LONG PUT at each tier's strike across all three venues, in parallel.
+      // Price the cheapest protective option at each tier's strike across all three venues, in
+      // parallel — PUTs (below spot) for longs, CALLs (above spot) for shorts.
       const priceStrike = async (strike: number): Promise<{ venue: string; ask_usdc_per_btc: number | null; instrument?: string | null; strike?: number | null } | null> => {
-        const okxPut = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays })
-          .then((o) => o.legs.find((l) => l.opt_type === "put"))
+        const okxLeg = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays })
+          .then((o) => o.legs.find((l) => l.opt_type === optType))
           .catch(() => null);
         const [deribit, bullish] = await Promise.all([
-          deribitPutProbe({ spot, strike, tenorDays }),
-          bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays })
+          deribitPutProbe({ spot, strike, tenorDays, optType }),
+          bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
         ]);
         // Carry the ACTUAL listed strike each venue priced (they snap to their grid) so the tier
         // economics describe one real instrument, not the theoretical target strike.
         const quotes = [
-          { venue: "okx", ask_usdc_per_btc: okxPut?.ask_usdc_per_btc ?? null, instrument: okxPut?.instId ?? null, strike: okxPut?.strike ?? null },
+          { venue: "okx", ask_usdc_per_btc: okxLeg?.ask_usdc_per_btc ?? null, instrument: okxLeg?.instId ?? null, strike: okxLeg?.strike ?? null },
           { venue: "deribit", ask_usdc_per_btc: deribit.ask_usdc_per_btc, instrument: deribit.instrument, strike: deribit.strike ?? null },
           { venue: "bullish", ask_usdc_per_btc: bullish.ask_usdc_per_btc, instrument: bullish.instrument, strike: bullish.strike ?? null }
         ].filter((q) => q.ask_usdc_per_btc != null && q.ask_usdc_per_btc > 0);
@@ -1788,17 +1791,17 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
 
       const priced = await Promise.all(
         fractions.map(async (f) => {
-          const { strike } = strikeForMarginFraction(spot, leverage, f);
+          const { strike } = strikeForMarginFraction(spot, leverage, f, side);
           return [f, await priceStrike(strike)] as const;
         })
       );
       const quotesByFraction = new Map(priced);
 
-      const bundle = buildFloorTierBundle({ spot, sizeBtc, leverage, tenorDays, fractions }, quotesByFraction);
+      const bundle = buildFloorTierBundle({ spot, sizeBtc, leverage, tenorDays, side, fractions }, quotesByFraction);
       const payload = {
         as_of: new Date().toISOString(),
         ...bundle,
-        note: "READ-ONLY illustrative quote (Phase 1, cross-venue). Each tier = cheapest live LONG PUT across Bullish/Deribit/OKX. 'Risk X% of margin' caps your price loss; worst case = that + premium (gap-proof). Simplified liquidation (ignores maintenance margin/funding/fees/slippage). The perp still liquidates on the exchange; the put bounds NET loss — true no-liquidation needs exchange margin integration."
+        note: `READ-ONLY illustrative quote (Phase 1, cross-venue). ${side === "short" ? "SHORT: protective CALL ceiling above spot (liq on a pump)." : "LONG: protective PUT floor below spot (liq on a drop)."} Each tier = cheapest live ${optType.toUpperCase()} across Bullish/Deribit/OKX. 'Risk X% of margin' caps your loss; worst case = that + premium. Simplified liquidation. The perp still liquidates on the exchange; the option bounds NET loss — true no-liquidation needs exchange margin integration.`
       };
       demoCacheSet(cacheKey, payload);
       reply.send(payload);
@@ -1814,7 +1817,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * Bullish requires server-side creds + whitelisted IP (i.e. run on Render).
    * Query: ?collateral=&leverage=&tenor_days=&k1_pct=0.015&k2_pct=0.05&spot=(override)
    */
-  app.get<{ Querystring: { collateral?: string; leverage?: string; tenor_days?: string; k1_pct?: string; k2_pct?: string; spot?: string } }>(
+  app.get<{ Querystring: { collateral?: string; leverage?: string; tenor_days?: string; k1_pct?: string; k2_pct?: string; spot?: string; side?: string } }>(
     "/admin/foxify/v2/wick-insurance",
     { preHandler: checkDemoOrAdminToken },
     async (req, reply) => {
@@ -1829,25 +1832,28 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const tenorDays = Number(req.query.tenor_days ?? "1");
       const k1Pct = Number(req.query.k1_pct ?? "0.015");
       const k2Pct = Number(req.query.k2_pct ?? "0.05");
+      const side: "long" | "short" = req.query.side === "short" ? "short" : "long";
+      const optType: "put" | "call" = side === "short" ? "call" : "put";
       if (!(collateral > 0) || !(leverage > 0) || !(tenorDays > 0) || !(k1Pct > 0 && k1Pct < 1) || !(k2Pct > k1Pct && k2Pct < 1)) {
         reply.code(400).send({ error: "invalid_request", message: "collateral>0, leverage>0, tenor_days>0, 0<k1_pct<k2_pct<1" });
         return;
       }
-      const k1 = spot * (1 - k1Pct);
-      const k2 = spot * (1 - k2Pct);
+      // long: protective puts BELOW spot; short: protective calls ABOVE spot. K2 is deeper OTM.
+      const k1 = side === "short" ? spot * (1 + k1Pct) : spot * (1 - k1Pct);
+      const k2 = side === "short" ? spot * (1 + k2Pct) : spot * (1 - k2Pct);
 
-      const wkCacheKey = `wick:${collateral}:${leverage}:${tenorDays}:${k1Pct}:${k2Pct}:${Math.round(spot / 10) * 10}`;
+      const wkCacheKey = `wick:${side}:${collateral}:${leverage}:${tenorDays}:${k1Pct}:${k2Pct}:${Math.round(spot / 10) * 10}`;
       const wkCached = demoCacheGet(wkCacheKey);
       if (wkCached) { reply.send(wkCached); return; }
 
       // Long leg (K1) ask + short leg (K2) bid, per venue, in parallel.
       const [okxK1, okxK2, derK1, derK2, bullK1, bullK2] = await Promise.all([
-        okxProbe({ spot, putStrike: k1, callStrike: k1, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === "put")).catch(() => null),
-        okxProbe({ spot, putStrike: k2, callStrike: k2, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === "put")).catch(() => null),
-        deribitPutProbe({ spot, strike: k1, tenorDays }),
-        deribitPutProbe({ spot, strike: k2, tenorDays }),
-        bullishPutProbe(deps.bullishProbeClient, { spot, strike: k1, tenorDays }),
-        bullishPutProbe(deps.bullishProbeClient, { spot, strike: k2, tenorDays })
+        okxProbe({ spot, putStrike: k1, callStrike: k1, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null),
+        okxProbe({ spot, putStrike: k2, callStrike: k2, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null),
+        deribitPutProbe({ spot, strike: k1, tenorDays, optType }),
+        deribitPutProbe({ spot, strike: k2, tenorDays, optType }),
+        bullishPutProbe(deps.bullishProbeClient, { spot, strike: k1, tenorDays, optType }),
+        bullishPutProbe(deps.bullishProbeClient, { spot, strike: k2, tenorDays, optType })
       ]);
 
       const quotes = [
@@ -1856,10 +1862,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         { venue: "bullish", k1AskUsdcPerBtc: bullK1.ask_usdc_per_btc, k1Strike: bullK1.strike ?? null, k2BidUsdcPerBtc: bullK2.bid_usdc_per_btc ?? null, k2Strike: bullK2.strike ?? null }
       ];
 
-      const result = computeWickInsurance({ spot, collateralUsdc: collateral, leverage, tenorDays }, quotes);
+      const result = computeWickInsurance({ spot, collateralUsdc: collateral, leverage, tenorDays, side }, quotes);
       const wkPayload = {
         as_of: new Date().toISOString(),
-        inputs: { spot, collateral, leverage, tenor_days: tenorDays, k1_pct: k1Pct, k2_pct: k2Pct, k1_target: +k1.toFixed(2), k2_target: +k2.toFixed(2) },
+        inputs: { spot, collateral, leverage, tenor_days: tenorDays, side, k1_pct: k1Pct, k2_pct: k2Pct, k1_target: +k1.toFixed(2), k2_target: +k2.toFixed(2) },
         ...result,
         note: "READ-ONLY research. 'Wick insurance' at high leverage: value is staying in the trade through a spike (no forced liquidation) + keeping upside, NOT reducing max loss. single_put = long put@K1; put_spread = long K1 / short K2 (cheaper, but exposed again below K2). pct_margin is premium ÷ posted margin. Bullish only prices when run server-side (creds + whitelisted IP)."
       };

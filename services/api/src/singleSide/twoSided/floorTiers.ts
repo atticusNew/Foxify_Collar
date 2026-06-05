@@ -21,7 +21,6 @@
  *   True worst case (reported honestly) = price-loss cap + premium = f·margin + put_cost.
  */
 
-import { computeFloorEconomics, type FloorEconomics } from "./floorQuote";
 
 /** Default menu: "risk 25% / 50% / 75% of your margin." */
 export const DEFAULT_TIER_FRACTIONS = [0.25, 0.5, 0.75] as const;
@@ -50,11 +49,15 @@ export type FloorTier = {
   recommended: boolean;
 };
 
+export type TradeSide = "long" | "short";
+
 export type FloorTierBundleInputs = {
   spot: number;
   sizeBtc: number;
   leverage: number;
   tenorDays: number;
+  /** long = protect downside with PUTs (liq on a drop); short = protect upside with CALLs (liq on a pump). */
+  side?: TradeSide;
   fractions?: ReadonlyArray<number>;
 };
 
@@ -62,6 +65,7 @@ export type PositionCard = {
   spot: number;
   size_btc: number;
   leverage: number;
+  side: TradeSide;
   notional_usdc: number;
   margin_usdc: number;
   liquidation_price: number;
@@ -78,10 +82,12 @@ export type FloorTierBundle = {
 const usd = (x: number) => `$${Math.round(x).toLocaleString()}`;
 const pctStr = (x: number) => `${(x * 100).toFixed(1)}%`;
 
-/** Strike that delivers a "risk f of margin" price-loss cap: floorPct = f/leverage. */
-export const strikeForMarginFraction = (spot: number, leverage: number, fraction: number): { floorPct: number; strike: number } => {
+/** Strike that delivers a "risk f of margin" loss cap: floorPct = f/leverage. PUT below spot
+ *  for a long; CALL above spot for a short. */
+export const strikeForMarginFraction = (spot: number, leverage: number, fraction: number, side: TradeSide = "long"): { floorPct: number; strike: number } => {
   const floorPct = leverage > 0 ? fraction / leverage : fraction;
-  return { floorPct, strike: spot * (1 - floorPct) };
+  const strike = side === "short" ? spot * (1 + floorPct) : spot * (1 - floorPct);
+  return { floorPct, strike };
 };
 
 /**
@@ -96,9 +102,13 @@ export const buildFloorTier = (
   best: TierPutQuote | null
 ): FloorTier => {
   const { spot, sizeBtc, leverage, tenorDays } = inputs;
-  const { floorPct: targetFloorPct, strike: targetStrike } = strikeForMarginFraction(spot, leverage, fraction);
+  const side: TradeSide = inputs.side ?? "long";
+  const { floorPct: targetFloorPct, strike: targetStrike } = strikeForMarginFraction(spot, leverage, fraction, side);
   const liqDropPct = leverage > 0 ? 1 / leverage : 1;
   const label = `Risk ${Math.round(fraction * 100)}% of your margin`;
+  // Distance of the protection strike from spot, as a positive fraction (below for long, above for short).
+  const strikeDist = (strike: number) => (side === "short" ? (strike - spot) / spot : (spot - strike) / spot);
+  const optWord = side === "short" ? "ceiling" : "floor";
 
   // No live quote → carry the target strike for display, mark unavailable.
   if (!best || best.ask_usdc_per_btc == null || best.ask_usdc_per_btc <= 0) {
@@ -106,7 +116,7 @@ export const buildFloorTier = (
     return {
       margin_fraction: fraction, label, floor_pct: +targetFloorPct.toFixed(4), floor_strike: +targetStrike.toFixed(2),
       adds_value: targetAdds, available: false,
-      unavailable_reason: targetAdds ? `no live put quote near ${usd(targetStrike)}` : `floor at ${pctStr(targetFloorPct)} sits at/beyond liquidation (${pctStr(liqDropPct)}) — reduce leverage`,
+      unavailable_reason: targetAdds ? `no live quote near ${usd(targetStrike)}` : `${optWord} at ${pctStr(targetFloorPct)} sits at/beyond liquidation (${pctStr(liqDropPct)}) — reduce leverage`,
       venue: null, instrument: null, put_cost_usdc: null, cost_per_day_usdc: null, max_loss_usdc: null,
       headline: targetAdds ? `No live quote — try another tenor` : `Unavailable at ${leverage}× — reduce leverage`, recommended: false
     };
@@ -114,33 +124,33 @@ export const buildFloorTier = (
 
   // Use the ACTUAL strike the venue priced (snapped to its listed grid) when available.
   const actualStrike = best.strike != null && best.strike > 0 ? best.strike : targetStrike;
-  const floorPctActual = (spot - actualStrike) / spot;
+  const floorPctActual = strikeDist(actualStrike);
   const addsValue = floorPctActual > 0 && floorPctActual < liqDropPct;
 
-  // The nearest listed strike landed at/below the liquidation price → no tradable floor here.
+  // The nearest listed strike landed at/beyond the liquidation price → no tradable protection here.
   if (!addsValue) {
     return {
       margin_fraction: fraction, label, floor_pct: +floorPctActual.toFixed(4), floor_strike: +actualStrike.toFixed(2),
       adds_value: false, available: false,
-      unavailable_reason: `nearest listed floor (${usd(actualStrike)}, ${pctStr(floorPctActual)}) sits at/below liquidation (${pctStr(liqDropPct)}) — reduce leverage`,
+      unavailable_reason: `nearest listed ${optWord} (${usd(actualStrike)}, ${pctStr(floorPctActual)}) sits at/beyond liquidation (${pctStr(liqDropPct)}) — reduce leverage`,
       venue: best.venue, instrument: best.instrument ?? null, put_cost_usdc: null, cost_per_day_usdc: null, max_loss_usdc: null,
       headline: `Unavailable at ${leverage}× — reduce leverage`, recommended: false
     };
   }
 
-  // Reuse the canonical economics engine — fed the ACTUAL strike's floorPct so the cap math
-  // (gap-proof, includes premium) is consistent with the priced instrument.
-  const econ: FloorEconomics = computeFloorEconomics({ spot, sizeBtc, leverage, floorPct: floorPctActual, tenorDays }, best.ask_usdc_per_btc);
-  const costPerDay = tenorDays > 0 ? econ.put_cost_usdc / tenorDays : econ.put_cost_usdc;
+  // Cap math (works for both sides, from the ACTUAL priced strike): max loss = distance×size + premium.
+  const premium = best.ask_usdc_per_btc * sizeBtc;
+  const maxLoss = floorPctActual * sizeBtc * spot + premium;
+  const costPerDay = tenorDays > 0 ? premium / tenorDays : premium;
 
   return {
     margin_fraction: fraction, label, floor_pct: +floorPctActual.toFixed(4), floor_strike: +actualStrike.toFixed(2),
     adds_value: true, available: true, unavailable_reason: null,
     venue: best.venue, instrument: best.instrument ?? null,
-    put_cost_usdc: econ.put_cost_usdc,
+    put_cost_usdc: +premium.toFixed(2),
     cost_per_day_usdc: +costPerDay.toFixed(2),
-    max_loss_usdc: econ.max_loss_with_floor_usdc,
-    headline: `Cap your worst case at ${usd(econ.max_loss_with_floor_usdc)} — ${usd(econ.put_cost_usdc)} (${usd(costPerDay)}/day)`,
+    max_loss_usdc: +maxLoss.toFixed(2),
+    headline: `Cap your worst case at ${usd(maxLoss)} — ${usd(premium)} (${usd(costPerDay)}/day)`,
     recommended: false
   };
 };
@@ -166,15 +176,17 @@ export const pickRecommended = (tiers: FloorTier[], margin: number): number => {
 
 export const buildPositionCard = (inputs: FloorTierBundleInputs): PositionCard => {
   const { spot, sizeBtc, leverage } = inputs;
+  const side: TradeSide = inputs.side ?? "long";
   const notional = sizeBtc * spot;
   const margin = leverage > 0 ? notional / leverage : notional;
   const liqDropPct = leverage > 0 ? 1 / leverage : 1;
-  const liqPrice = spot * (1 - liqDropPct);
+  const liqPrice = side === "short" ? spot * (1 + liqDropPct) : spot * (1 - liqDropPct);
+  const moveWord = side === "short" ? "rally" : "drop";
   return {
-    spot: +spot.toFixed(2), size_btc: sizeBtc, leverage,
+    spot: +spot.toFixed(2), size_btc: sizeBtc, leverage, side,
     notional_usdc: +notional.toFixed(2), margin_usdc: +margin.toFixed(2),
     liquidation_price: +liqPrice.toFixed(2), liq_drop_pct: +liqDropPct.toFixed(4),
-    liq_summary: `At ${leverage}×, a ${pctStr(liqDropPct)} drop liquidates you — you lose your ~${usd(margin)} margin (a fast gap can cost MORE).`
+    liq_summary: `At ${leverage}×, a ${pctStr(liqDropPct)} ${moveWord} liquidates you — you lose your ~${usd(margin)} margin (a fast gap can cost MORE).`
   };
 };
 
@@ -188,7 +200,7 @@ export const buildFloorTierBundle = (
 ): FloorTierBundle => {
   const fractions = (inputs.fractions && inputs.fractions.length > 0 ? inputs.fractions : DEFAULT_TIER_FRACTIONS).slice();
   const margin = inputs.leverage > 0 ? (inputs.sizeBtc * inputs.spot) / inputs.leverage : inputs.sizeBtc * inputs.spot;
-  const built = fractions.map((f) => buildFloorTier(inputs, f, quotesByFraction.get(f) ?? null));
+  const built = fractions.map((f) => buildFloorTier({ ...inputs, side: inputs.side ?? "long" }, f, quotesByFraction.get(f) ?? null));
 
   // De-duplicate: venues snap to listed strikes, so several requested fractions can resolve to
   // the SAME real floor. Keep one distinct floor per strike (the first = safest intent). If no
