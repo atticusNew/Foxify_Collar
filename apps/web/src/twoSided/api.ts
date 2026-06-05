@@ -77,6 +77,18 @@ export const foxifyPost = <T>(path: string, body?: unknown): Promise<T> =>
 
 export const demoGet = <T>(path: string): Promise<T> => request<T>("demo", path);
 
+/** Ungated public GET (no token) for the public-safe demo endpoints (/public/*). */
+export const publicGet = async <T>(path: string): Promise<T> => {
+  const r = await fetch(`${API_BASE}${path}`, { headers: { "Content-Type": "application/json" } });
+  if (!r.ok) {
+    let detail = `${r.status} ${r.statusText}`;
+    try { const b = await r.json(); if (b?.message || b?.error) detail = `${b.error ?? ""} ${b.message ?? ""}`.trim(); } catch { /* non-JSON */ }
+    throw new Error(detail);
+  }
+  const text = await r.text();
+  return (text ? JSON.parse(text) : {}) as T;
+};
+
 export const adminGet = <T>(path: string): Promise<T> => request<T>("admin", path);
 export const adminPost = <T>(path: string, body?: unknown): Promise<T> =>
   request<T>("admin", path, { method: "POST", body: body == null ? undefined : JSON.stringify(body) });

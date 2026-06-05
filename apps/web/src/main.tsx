@@ -12,6 +12,7 @@ import { FoxifyDashboard } from "./FoxifyDashboard";
 import { FoxifyVolumeDashboard } from "./twoSided/FoxifyVolumeDashboard";
 import { AtticusVolumeAdmin } from "./twoSided/AtticusVolumeAdmin";
 import { ProtectedLeverageWidget } from "./twoSided/ProtectedLeverageWidget";
+import { PublicProtectWidget } from "./twoSided/PublicProtectWidget";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET, PILOT_ACCESS_CODE } from "./config";
 import "./styles.css";
 
@@ -120,7 +121,12 @@ function AppRouter() {
     return <VolumeCoverAdmin />;
   }
 
-  // Protected Leverage floor widget (Sai sales artifact / prospect sandbox, read-only).
+  // Public-safe, ungated demo (LinkedIn-shareable) — checked BEFORE /protect.
+  if (path === "/protect-public" || path.startsWith("/protect-public")) {
+    return <PublicProtectWidget />;
+  }
+
+  // Protected Leverage floor widget (Sai sales artifact / prospect sandbox, read-only, token-gated).
   if (path === "/protect" || path.startsWith("/protect")) {
     return <ProtectedLeverageWidget />;
   }

@@ -1929,6 +1929,46 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     }
   );
 
+  // ── Public-safe demo (UNGATED) ──────────────────────────────────────────────
+  // Background refresher keeps a sanitized preset matrix warm (OKX+Deribit only, never the
+  // Bullish client). Public requests read ONLY this cache → no live venue calls per request.
+  if (process.env.SS_PUBLIC_DEMO_ENABLED !== "false") {
+    const tick = async () => {
+      try {
+        const { refreshPublicSnapshots } = await import("./publicSnapshot");
+        await refreshPublicSnapshots(() => deps.feedService.getCurrentFeed()?.canonicalPrice);
+      } catch { /* best-effort */ }
+    };
+    setTimeout(() => { void tick(); }, 5_000);
+    const iv = setInterval(() => { void tick(); }, 120_000);
+    if (typeof iv.unref === "function") iv.unref();
+  }
+
+  /**
+   * GET /public/protect — UNGATED, sanitized, cache-served Protected-Leverage demo data.
+   * No token. No live venue calls (reads the background snapshot). Percentages only — no venue
+   * names, no instruments, no absolute strikes/market levels. Leverage snaps to a preset.
+   * Query: ?side=long|short&leverage=&tenor_days=
+   */
+  app.get<{ Querystring: { side?: string; leverage?: string; tenor_days?: string } }>(
+    "/public/protect",
+    async (req, reply) => {
+      const { getPublicSnapshot, PUBLIC_PRESET_TENOR, PUBLIC_PRESET_LEVERAGE, nearestPresetLeverage } = await import("./publicSnapshot");
+      const side: "long" | "short" = req.query.side === "short" ? "short" : "long";
+      const levRaw = Number(req.query.leverage ?? "10");
+      const tenRaw = Number(req.query.tenor_days ?? "1");
+      const leverage = nearestPresetLeverage(Number.isFinite(levRaw) && levRaw > 0 ? levRaw : 10);
+      const tenor = PUBLIC_PRESET_TENOR.reduce((b, t) => (Math.abs(t - tenRaw) < Math.abs(b - tenRaw) ? t : b), PUBLIC_PRESET_TENOR[0]);
+      const snap = getPublicSnapshot(side, leverage, tenor);
+      if (!snap) { reply.code(503).send({ error: "warming_up", message: "Demo data is warming up — retry in a moment." }); return; }
+      reply.send({
+        ...snap,
+        presets: { leverage: [...PUBLIC_PRESET_LEVERAGE], tenor_days: [...PUBLIC_PRESET_TENOR] },
+        note: "Indicative, ~2-minute delayed. Illustrative simulation only — not an offer, not financial advice, not a live product."
+      });
+    }
+  );
+
   /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
