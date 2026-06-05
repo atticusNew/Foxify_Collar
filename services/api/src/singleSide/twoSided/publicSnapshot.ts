@@ -14,7 +14,7 @@
  * READ-ONLY. No tokens. No DB. No orders.
  */
 
-import { okxProbe } from "./okxProbe";
+import { okxProbe, type OkxFetcher } from "./okxProbe";
 import { deribitPutProbe } from "./venuePutProbes";
 import { buildFloorTierBundle, strikeForMarginFraction, type TradeSide, type TierPutQuote } from "./floorTiers";
 import { computeWickInsurance, type VenueLegQuotes } from "./wickInsurance";
@@ -63,10 +63,25 @@ export const getPublicSnapshot = (side: TradeSide, lev: number, tenor: number): 
 
 export const publicSnapshotCount = (): number => cache.size;
 
+/**
+ * Cycle-scoped caching fetcher: memoizes each URL once per refresh cycle. The (large) venue
+ * instrument lists are fetched ONCE instead of on every probe, and overlapping orderbooks are
+ * reused across combos — collapsing the cycle from ~minute to a few seconds. A fresh fetcher
+ * each cycle keeps prices as current as the cycle (the "~2-min indicative" contract).
+ */
+const makeCycleFetcher = (): OkxFetcher => {
+  const memo = new Map<string, Promise<unknown>>();
+  return (url: string) => {
+    let p = memo.get(url);
+    if (!p) { p = fetch(url, { signal: AbortSignal.timeout(8000) }).then((r) => r.json()); memo.set(url, p); }
+    return p;
+  };
+};
+
 /** Cheapest ask (long leg) across OKX+Deribit at a strike, with the actual strike + a bid. */
-const cheapestLeg = async (spot: number, strike: number, optType: "put" | "call", tenorDays: number) => {
-  const okx = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
-  const der = await deribitPutProbe({ spot, strike, tenorDays, optType });
+const cheapestLeg = async (spot: number, strike: number, optType: "put" | "call", tenorDays: number, fetcher: OkxFetcher) => {
+  const okx = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays, fetcher }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
+  const der = await deribitPutProbe({ spot, strike, tenorDays, optType, fetcher });
   const asks = [
     { ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null },
     { ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null }
@@ -75,7 +90,7 @@ const cheapestLeg = async (spot: number, strike: number, optType: "put" | "call"
   return asks.reduce((b, q) => (q.ask < b.ask ? q : b));
 };
 
-const computeOne = async (spot: number, side: TradeSide, leverage: number, tenorDays: number): Promise<PublicSnapshot> => {
+const computeOne = async (spot: number, side: TradeSide, leverage: number, tenorDays: number, fetcher: OkxFetcher): Promise<PublicSnapshot> => {
   const margin = REF_COLLATERAL;
   const sizeBtc = (REF_COLLATERAL * leverage) / spot;
   const liqMove = leverage > 0 ? 1 / leverage : 1;
@@ -86,7 +101,7 @@ const computeOne = async (spot: number, side: TradeSide, leverage: number, tenor
     const k1p = Math.max(0.005, liqMove * 0.8), k2p = Math.min(0.5, liqMove * 1.6);
     const k1 = side === "short" ? spot * (1 + k1p) : spot * (1 - k1p);
     const k2 = side === "short" ? spot * (1 + k2p) : spot * (1 - k2p);
-    const [l1, l2] = await Promise.all([cheapestLeg(spot, k1, optType, tenorDays), cheapestLeg(spot, k2, optType, tenorDays)]);
+    const [l1, l2] = await Promise.all([cheapestLeg(spot, k1, optType, tenorDays, fetcher), cheapestLeg(spot, k2, optType, tenorDays, fetcher)]);
     const quotes: VenueLegQuotes[] = [{ venue: "blended", k1AskUsdcPerBtc: l1?.ask ?? null, k1Strike: l1?.strike ?? null, k2BidUsdcPerBtc: l2?.bid ?? null, k2Strike: l2?.strike ?? null }];
     const r = computeWickInsurance({ spot, collateralUsdc: REF_COLLATERAL, leverage, tenorDays, side }, quotes);
     const k2Dist = r.best_spread ? Math.abs((r.best_spread.k2_strike - spot) / spot) : null;
@@ -103,7 +118,7 @@ const computeOne = async (spot: number, side: TradeSide, leverage: number, tenor
   const quotesByFraction = new Map<number, TierPutQuote | null>();
   for (const f of FRACTIONS) {
     const { strike } = strikeForMarginFraction(spot, leverage, f, side);
-    const leg = await cheapestLeg(spot, strike, optType, tenorDays);
+    const leg = await cheapestLeg(spot, strike, optType, tenorDays, fetcher);
     quotesByFraction.set(f, leg ? { venue: "blended", ask_usdc_per_btc: leg.ask, strike: leg.strike } : null);
   }
   const bundle = buildFloorTierBundle({ spot, sizeBtc, leverage, tenorDays, side, fractions: FRACTIONS }, quotesByFraction);
@@ -124,17 +139,25 @@ const computeOne = async (spot: number, side: TradeSide, leverage: number, tenor
 export const refreshPublicSnapshots = async (getSpot: () => number | null | undefined): Promise<number> => {
   const spot = getSpot();
   if (!spot || spot <= 0) return 0;
+  const fetcher = makeCycleFetcher(); // one memoized fetcher for the whole cycle
+  // Build the combo list, then run with bounded concurrency (shared memoized fetcher dedupes
+  // the instrument list + overlapping orderbooks across combos → fast, without bursting venues).
+  const combos: Array<{ side: TradeSide; lev: number; tenor: number }> = [];
+  for (const side of ["long", "short"] as const)
+    for (const lev of PUBLIC_PRESET_LEVERAGE)
+      for (const tenor of PUBLIC_PRESET_TENOR) combos.push({ side, lev, tenor });
+
   let n = 0;
-  for (const side of ["long", "short"] as const) {
-    for (const lev of PUBLIC_PRESET_LEVERAGE) {
-      for (const tenor of PUBLIC_PRESET_TENOR) {
-        try {
-          const snap = await computeOne(spot, side, lev, tenor);
-          cache.set(keyOf(side, lev, tenor), snap);
-          n++;
-        } catch { /* skip this combo this cycle */ }
-      }
-    }
+  const CONCURRENCY = 6;
+  for (let i = 0; i < combos.length; i += CONCURRENCY) {
+    const batch = combos.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async ({ side, lev, tenor }) => {
+      try {
+        const snap = await computeOne(spot, side, lev, tenor, fetcher);
+        cache.set(keyOf(side, lev, tenor), snap);
+        n++;
+      } catch { /* skip this combo this cycle */ }
+    }));
   }
   return n;
 };
