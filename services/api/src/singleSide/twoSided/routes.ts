@@ -2204,6 +2204,18 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * GET /admin/foxify/v2/perp-protect/spot — ultra-light live mark for the trader widget's price
+   * header. Returns ONLY the canonical feed price (no venue probes, no cache) so the widget can poll
+   * it every few seconds for a "live" feel without paying the cost of a full quote. Demo-or-admin.
+   */
+  app.get("/admin/foxify/v2/perp-protect/spot", { preHandler: checkDemoOrAdminToken }, async (_req, reply) => {
+    const feed = deps.feedService.getCurrentFeed();
+    const spot = feed?.canonicalPrice;
+    if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+    reply.send({ spot: +spot.toFixed(2), as_of: new Date(feed!.asOfMs).toISOString() });
+  });
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=

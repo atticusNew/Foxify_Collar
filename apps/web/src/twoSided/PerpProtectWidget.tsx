@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useState, useCallback, useMemo } from "react";
-import { demoPost, getToken, clearToken, UnauthorizedError } from "./api";
+import { demoPost, demoGet, getToken, clearToken, UnauthorizedError } from "./api";
 import { TokenGate, Shell, COLORS as C } from "./widgets";
 import { createDemoPositionSource, createFoxifyPositionSource, type PositionSnapshot, type PositionSource } from "../adapters/positionSource";
 import { DATA_MODE, FOXIFY_POSITION_ENDPOINT } from "../config";
@@ -77,6 +77,7 @@ export function PerpProtectWidget() {
   const [quote, setQuote] = useState<PPQuote | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [liveSpot, setLiveSpot] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     if (!getToken("demo")) { setAuthed(false); return; }
@@ -123,6 +124,22 @@ export function PerpProtectWidget() {
     return () => clearTimeout(id);
   }, [authed, load]);
 
+  // Live price header: poll the lightweight spot endpoint on its own short clock so BTC/USD stays
+  // current without re-running the (expensive) quote. Decoupled from input-driven quotes.
+  useEffect(() => {
+    if (!authed) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const r = await demoGet<{ spot: number }>("/admin/foxify/v2/perp-protect/spot");
+        if (!cancelled && r?.spot > 0) setLiveSpot(r.spot);
+      } catch { /* transient feed blip — keep last good price */ }
+    };
+    tick();
+    const id = setInterval(tick, 4000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [authed]);
+
   useEffect(() => {
     const prevTitle = document.title;
     document.title = "Perp Protect";
@@ -142,7 +159,7 @@ export function PerpProtectWidget() {
         {/* Spot */}
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 16, padding: "0 2px" }}>
           <div style={{ fontSize: 13, color: C.muted, letterSpacing: 0.5 }}>BTC / USD{loading && " · …"}</div>
-          <div style={{ fontSize: 30, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{pos ? usd(pos.spot) : "—"}</div>
+          <div style={{ fontSize: 30, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{(liveSpot ?? pos?.spot) ? usd(liveSpot ?? pos!.spot) : "—"}</div>
         </div>
 
         {/* Your position — read-only when synced from a live position (production), editable in demo. */}

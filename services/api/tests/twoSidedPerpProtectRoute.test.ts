@@ -104,6 +104,21 @@ test("perp-protect: size_btc still works (back-compat) and admin sees venues_use
   } finally { await cleanup(); }
 });
 
+test("perp-protect/spot: lightweight live mark from the feed (no venue probes)", { timeout: 30_000 }, async () => {
+  const { app, cleanup } = await buildApp();
+  try {
+    const r = await app.inject({
+      method: "GET",
+      url: "/admin/foxify/v2/perp-protect/spot",
+      headers: { "x-demo-token": DEMO_TOKEN }
+    });
+    assert.equal(r.statusCode, 200);
+    const body = r.json();
+    assert.equal(body.spot, MARK);
+    assert.ok(typeof body.as_of === "string");
+  } finally { await cleanup(); }
+});
+
 test("perp-protect: rejects when neither size_usd nor size_btc is positive", { timeout: 30_000 }, async () => {
   const { app, cleanup } = await buildApp();
   try {
