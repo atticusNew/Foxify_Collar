@@ -1970,6 +1970,89 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * POST /admin/foxify/v2/perp-protect/quote — PERP PROTECT (separate product from Protected
+   * Leverage). Prices protection for a trader's REAL open perp position (entry/size/side/leverage)
+   * — the Bybit-Perp-Protect equivalent. Underwriter model; settlement_style pluggable (european
+   * now). Returns single (capped) + optional spread (cheaper, banded) options, priced cheapest
+   * across OKX/Deribit/Bullish. Phase 1 = QUOTE only (no execution yet).
+   * Body: { side, size_btc, entry_price, leverage, tenor_days, mark_price?, settlement_style? }
+   */
+  app.post<{ Body: { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string } }>(
+    "/admin/foxify/v2/perp-protect/quote",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { buildPerpProtectQuote, liquidationOf } = await import("./perpProtectQuote");
+      const { strikeForMarginFraction } = await import("./floorTiers");
+      const { okxProbe } = await import("./okxProbe");
+      const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
+      const b = (req.body ?? {}) as { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string };
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = b.mark_price != null && Number(b.mark_price) > 0 ? Number(b.mark_price) : feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      const side: "long" | "short" = b.side === "short" ? "short" : "long";
+      const sizeBtc = Number(b.size_btc ?? 0);
+      const entryPrice = Number(b.entry_price ?? spot);
+      const leverage = Number(b.leverage ?? 0);
+      const tenorDays = Number(b.tenor_days ?? 7);
+      const settlementStyle = (["european", "american", "auto_close"].includes(b.settlement_style ?? "") ? b.settlement_style : "european") as "european" | "american" | "auto_close";
+      if (!(sizeBtc > 0) || !(entryPrice > 0) || !(leverage > 0) || leverage > 100 || !(tenorDays > 0)) {
+        reply.code(400).send({ error: "invalid_request", message: "size_btc>0, entry_price>0, 0<leverage<=100, tenor_days>0" });
+        return;
+      }
+      const optType: "put" | "call" = side === "short" ? "call" : "put";
+
+      // Probe a strike across venues → cheapest ask (long) + highest bid (short), with actual strikes.
+      const probeStrike = async (strike: number) => {
+        const okx = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
+        const [der, bull] = await Promise.all([
+          deribitPutProbe({ spot, strike, tenorDays, optType }),
+          bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
+        ]);
+        const rows = [
+          { ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null },
+          { ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null },
+          { ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null }
+        ];
+        const asks = rows.filter((r) => r.ask != null && r.ask > 0 && r.strike != null) as { ask: number; bid: number | null; strike: number }[];
+        const bids = rows.filter((r) => r.bid != null && r.bid > 0 && r.strike != null) as { ask: number | null; bid: number; strike: number }[];
+        const bestAsk = asks.length ? asks.reduce((a, r) => (r.ask < a.ask ? r : a)) : null;
+        const bestBid = bids.length ? bids.reduce((a, r) => (r.bid > a.bid ? r : a)) : null;
+        return { bestAsk, bestBid };
+      };
+
+      // Single-option tiers: Safer / Balanced / Cheapest at fraction/leverage from spot.
+      const singleFracs = [0.25, 0.5, 0.75];
+      const singleStrikes = singleFracs.map((f) => strikeForMarginFraction(spot, leverage, f, side).strike);
+      // Spread legs: long just inside the liq distance, short deeper.
+      const liqMove = 1 / leverage;
+      const k1 = side === "short" ? spot * (1 + Math.max(0.005, liqMove * 0.8)) : spot * (1 - Math.max(0.005, liqMove * 0.8));
+      const k2 = side === "short" ? spot * (1 + Math.min(0.5, liqMove * 1.6)) : spot * (1 - Math.min(0.5, liqMove * 1.6));
+
+      const [s0, s1, s2, spL, spS] = await Promise.all([
+        probeStrike(singleStrikes[0]), probeStrike(singleStrikes[1]), probeStrike(singleStrikes[2]),
+        probeStrike(k1), probeStrike(k2)
+      ]);
+      const singles = [s0, s1, s2]
+        .map((p) => (p.bestAsk ? { strike: p.bestAsk.strike, askUsdcPerBtc: p.bestAsk.ask } : null))
+        .filter((x): x is { strike: number; askUsdcPerBtc: number } => x != null);
+      const spread = spL.bestAsk && spS.bestBid
+        ? { long: { strike: spL.bestAsk.strike, askUsdcPerBtc: spL.bestAsk.ask }, short: { strike: spS.bestBid.strike, askUsdcPerBtc: 0, bidUsdcPerBtc: spS.bestBid.bid } }
+        : null;
+
+      const quote = buildPerpProtectQuote({ spot, entryPrice, sizeBtc, side, leverage, tenorDays }, { singles, spread, settlementStyle });
+      const liq = liquidationOf({ spot, entryPrice, sizeBtc, side, leverage, tenorDays });
+      reply.send({
+        as_of: new Date().toISOString(),
+        quote_id: `pp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        quote_expires_at: new Date(Date.now() + 30_000).toISOString(),
+        ...quote,
+        liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
+        note: "READ-ONLY quote (Phase 1, underwriter model). Protection for a REAL perp position; single = gap-proof capped, spread = cheaper but exposed beyond the short strike. Priced cheapest across Bullish/Deribit/OKX. European settlement (pluggable). No execution yet."
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=
