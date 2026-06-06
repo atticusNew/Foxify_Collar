@@ -2017,9 +2017,12 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(400).send({ error: "limit_exceeded", message: `size_btc<=${maxSizeBtc}, notional<=$${maxNotionalUsdc.toLocaleString()}, tenor_days<=${maxTenorDays}` });
         return;
       }
+      // Admin callers additionally receive the INTERNAL Bybit price-competitiveness diagnostic; demo
+      // (trader) callers never do. Detected here so it can scope both the cache key and the payload.
+      const isAdmin = !!(process.env.PILOT_ADMIN_TOKEN && safeCompare(process.env.PILOT_ADMIN_TOKEN, String(req.headers["x-admin-token"] ?? "")));
       // Short-TTL cache (reuses the demo-widget cache): identical inputs within the window reuse the
       // quote, keeping the trader widget snappy and shielding venues from slider-spam.
-      const cacheKey = `pp:${side}:${sizeBtc}:${entryPrice}:${leverage}:${tenorDays}:${settlementStyle}:${Math.round(spot)}:${b.liquidation_prevented === true}`;
+      const cacheKey = `pp:${side}:${sizeBtc}:${entryPrice}:${leverage}:${tenorDays}:${settlementStyle}:${Math.round(spot)}:${b.liquidation_prevented === true}:${isAdmin}`;
       const cached = demoCacheGet(cacheKey);
       if (cached) { reply.send(cached); return; }
       const optType: "put" | "call" = side === "short" ? "call" : "put";
@@ -2145,13 +2148,34 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         return { ...o, fair_value, depth };
       });
 
-      // Value benchmark vs Bybit Perp Protect (~"as low as 2% of initial margin", single-venue).
-      const recommended = quote.options.find((o) => o.recommended) ?? quote.options[0] ?? null;
-      const bybitBenchmark = {
-        atticus_recommended_cost_pct_margin: recommended ? recommended.cost_pct_margin : null,
-        bybit_reference_pct_margin: 0.02,
-        basis: "Atticus sources the cheapest qualifying option across OKX/Deribit/Bullish (vs Bybit's single book) and adds a transparent underwriter load; the recommended tier's cost as a % of margin is comparable to Bybit's '~2% of initial margin' headline."
-      };
+      // INTERNAL price-competitiveness vs Bybit's comparable listed option (admin-only; NOT shown to
+      // the trader). Verifies we beat Bybit on both the raw hedge and the retail premium. Sourced only
+      // for admin callers + when enabled; Bybit mainnet is region-gated (works on the Singapore
+      // deploy, degrades to null elsewhere) so it never blocks or slows the trader quote.
+      let priceCompetitiveness: unknown = undefined;
+      if (isAdmin && process.env.PERP_PROTECT_BYBIT_CHECK !== "false") {
+        try {
+          const { getBybitOptionAsk } = await import("../../bybitAdapter");
+          const { compareToBybit } = await import("./perpProtectBybit");
+          const cmpOpt = (quote.options.find((o) => o.recommended && o.capped)
+            ?? quote.options.find((o) => o.capped) ?? quote.options[0]) ?? null;
+          if (cmpOpt) {
+            const snap = snapshotOptions.find((s) => s.id === cmpOpt.id);
+            const longLeg = snap?.legs.find((l) => l.role === "long");
+            const targetExpiryMs = longLeg?.expiry_iso ? Date.parse(longLeg.expiry_iso) : nowMs + tenorDays * 86_400_000;
+            const bybit = await getBybitOptionAsk("BTC", targetExpiryMs, cmpOpt.strike, optType === "call" ? "C" : "P");
+            priceCompetitiveness = compareToBybit({
+              optionId: cmpOpt.id,
+              bybit,
+              sizeBtc,
+              atticusPremiumUsdc: cmpOpt.premium_usdc,
+              atticusHedgeCostUsdc: cmpOpt.hedge_cost_usdc
+            });
+          }
+        } catch (e) {
+          priceCompetitiveness = { available: false, error: (e as Error).message };
+        }
+      }
       const payload = {
         as_of: new Date(nowMs).toISOString(),
         quote_id: quoteId,
@@ -2159,7 +2183,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         ...quote,
         options: optionsWithFairValue,
         liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
-        bybit_benchmark: bybitBenchmark,
+        ...(priceCompetitiveness !== undefined ? { price_competitiveness: priceCompetitiveness } : {}),
         note: "READ-ONLY quote (underwriter model). Position-aware protection for a REAL perp position across ALL leverages: single = gap-proof capped (truly hard once liquidation_prevented), spread = cheaper but exposed beyond the short strike. Each premium is a transparent build-up (premium_breakdown) over the cheapest cross-venue hedge. whipsaw_exposed/liquidation_whipsaw_risk_usdc surface pre-liquidation-prevention risk honestly. European settlement (pluggable). No execution yet."
       };
       demoCacheSet(cacheKey, payload);

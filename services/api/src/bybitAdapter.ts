@@ -364,6 +364,71 @@ export async function getBybitAtmIv(asset: string = "BTC"): Promise<number | nul
   }
 }
 
+/**
+ * Find Bybit's comparable option ask for a target strike + expiry (INTERNAL price check).
+ * Pulls the full option ticker list, picks the listed expiry nearest `targetExpiryMs`, then the
+ * strike nearest `targetStrike`, and returns its top-of-book ask/bid. Bybit quotes the premium in
+ * USDC per 1 BTC of underlying → returned values are already USDC-per-BTC. Read-only; null on any
+ * failure (region-gated / no listing / network).
+ */
+export async function getBybitOptionAsk(
+  asset: string,
+  targetExpiryMs: number,
+  targetStrike: number,
+  optionType: "C" | "P"
+): Promise<{ ask_usdc_per_btc: number; bid_usdc_per_btc: number | null; strike: number; expiry_ms: number; symbol: string } | null> {
+  try {
+    const url = `${BYBIT_BASE_URL}/market/tickers?category=option&baseCoin=${asset}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), BYBIT_TIMEOUT_MS);
+    const response = await fetch(url, { signal: controller.signal, headers: { "Content-Type": "application/json" } });
+    clearTimeout(timeout);
+    if (!response.ok) {
+      console.log(`[Bybit] Option-ask HTTP ${response.status}`);
+      return null;
+    }
+    const data = await response.json();
+    if (data?.retCode !== 0) {
+      console.log(`[Bybit] Option-ask API error ${data?.retCode}: ${data?.retMsg}`);
+      return null;
+    }
+    const list = Array.isArray(data?.result?.list) ? data.result.list : [];
+    const now = Date.now();
+    const parsed = list
+      .map((item: any) => {
+        const symbol = String(item?.symbol || "");
+        const parts = symbol.split("-"); // BTC-DDMMMYY-STRIKE-C/P[-USDT]
+        if (parts.length < 4) return null;
+        const strike = Number(parts[2]);
+        const optType = String(parts[3] || "").toUpperCase();
+        const expiryDate = parseBybitExpiryTag(parts[1]);
+        const ask = Number(item?.ask1Price || 0);
+        const bid = Number(item?.bid1Price || 0);
+        if (!expiryDate || !Number.isFinite(strike) || strike <= 0) return null;
+        if (optType !== optionType) return null;
+        if (!Number.isFinite(ask) || ask <= 0) return null;
+        return { symbol, strike, expiryMs: expiryDate.getTime(), ask, bid: Number.isFinite(bid) && bid > 0 ? bid : null };
+      })
+      .filter(Boolean) as Array<{ symbol: string; strike: number; expiryMs: number; ask: number; bid: number | null }>;
+    const future = parsed.filter((p) => p.expiryMs > now);
+    const pool = future.length ? future : parsed;
+    if (!pool.length) return null;
+    // Nearest listed expiry to target, then nearest strike within that expiry.
+    const nearestExpiry = pool.reduce((acc, p) =>
+      Math.abs(p.expiryMs - targetExpiryMs) < Math.abs(acc.expiryMs - targetExpiryMs) ? p : acc
+    ).expiryMs;
+    const sameExpiry = pool.filter((p) => p.expiryMs === nearestExpiry);
+    const best = sameExpiry.reduce((acc, p) =>
+      Math.abs(p.strike - targetStrike) < Math.abs(acc.strike - targetStrike) ? p : acc
+    );
+    return { ask_usdc_per_btc: best.ask, bid_usdc_per_btc: best.bid, strike: best.strike, expiry_ms: best.expiryMs, symbol: best.symbol };
+  } catch (error: any) {
+    if (error?.name === "AbortError") console.log(`[Bybit] Option-ask timeout after ${BYBIT_TIMEOUT_MS}ms`);
+    else console.log(`[Bybit] Option-ask error: ${error?.message ?? "unknown error"}`);
+    return null;
+  }
+}
+
 export function parseBybitExpiryTag(expiryTag: string): Date | null {
   const match = expiryTag.match(/^(\d{1,2})([A-Z]{3})(\d{2})$/);
   if (!match) return null;
