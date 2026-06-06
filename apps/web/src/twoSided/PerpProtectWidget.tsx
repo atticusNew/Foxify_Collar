@@ -11,9 +11,11 @@
  * whipsaw framing. Pricing is sourced cheapest across OKX / Deribit / Bullish.
  */
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { demoPost, getToken, clearToken, UnauthorizedError } from "./api";
 import { TokenGate, Shell, COLORS as C } from "./widgets";
+import { createDemoPositionSource, createFoxifyPositionSource, type PositionSnapshot, type PositionSource } from "../adapters/positionSource";
+import { DATA_MODE, FOXIFY_POSITION_ENDPOINT } from "../config";
 
 type Breakdown = {
   hedge_cost_usdc: number; slippage_buffer_usdc: number; tail_load_usdc: number;
@@ -57,7 +59,18 @@ export function PerpProtectWidget() {
   const [tenorDays, setTenorDays] = useState(3);
   const [entryStr, setEntryStr] = useState("");
   const [entryTouched, setEntryTouched] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  // Position source: demo lets the prospect model any position (entry defaults to mark); live reads
+  // the trader's REAL open position from the platform and locks the inputs. Flipping to production
+  // is a one-line config swap (VITE_DATA_MODE=foxify + VITE_FOXIFY_POSITION_ENDPOINT) — no rewrite.
+  const positionSource = useMemo<PositionSource>(
+    () => (DATA_MODE === "foxify" && FOXIFY_POSITION_ENDPOINT ? createFoxifyPositionSource(FOXIFY_POSITION_ENDPOINT) : createDemoPositionSource()),
+    []
+  );
+  const [livePosition, setLivePosition] = useState<PositionSnapshot | null>(null);
+  const locked = livePosition != null; // true in production once a real position is synced
 
   const [quote, setQuote] = useState<PPQuote | null>(null);
   const [loading, setLoading] = useState(false);
@@ -67,9 +80,17 @@ export function PerpProtectWidget() {
     if (!getToken("demo")) { setAuthed(false); return; }
     setLoading(true); setErr(null);
     try {
-      const entry = entryTouched ? Number(entryStr) : NaN;
-      const body: Record<string, unknown> = { side, size_usd: sizeUsd, leverage, tenor_days: tenorDays };
-      if (Number.isFinite(entry) && entry > 0) body.entry_price = entry;
+      const body: Record<string, unknown> = { side, leverage, tenor_days: tenorDays };
+      if (locked && livePosition) {
+        // Production: send the EXACT on-chain size in BTC + the real entry (cost basis).
+        body.size_btc = livePosition.positionSizeBtc;
+        if (livePosition.entryPrice && livePosition.entryPrice > 0) body.entry_price = livePosition.entryPrice;
+      } else {
+        // Demo: trader thinks in USD notional; entry is optional (defaults to mark unless set).
+        body.size_usd = sizeUsd;
+        const entry = entryTouched ? Number(entryStr) : NaN;
+        if (Number.isFinite(entry) && entry > 0) body.entry_price = entry;
+      }
       const data = await demoPost<PPQuote>("/admin/foxify/v2/perp-protect/quote", body);
       setQuote(data);
       const rec = data.options.find((o) => o.recommended) ?? data.options[0] ?? null;
@@ -78,7 +99,21 @@ export function PerpProtectWidget() {
       if (e instanceof UnauthorizedError) { setAuthed(false); return; }
       setErr((e as Error).message); setQuote(null);
     } finally { setLoading(false); }
-  }, [side, sizeUsd, leverage, tenorDays, entryTouched, entryStr]);
+  }, [side, sizeUsd, leverage, tenorDays, entryTouched, entryStr, locked, livePosition]);
+
+  // On auth, pull the trader's real position (production). Demo source returns null → manual entry.
+  useEffect(() => {
+    if (!authed) return;
+    let cancelled = false;
+    positionSource.fetchPosition().then((p) => {
+      if (cancelled || !p || !(p.positionSizeBtc > 0)) return;
+      setLivePosition(p);
+      if (p.side) setSide(p.side);
+      if (p.leverage && p.leverage > 0) setLeverage(p.leverage);
+      if (p.entryPrice && p.entryPrice > 0) { setEntryStr(String(Math.round(p.entryPrice))); setEntryTouched(true); }
+    }).catch(() => { /* no live position → stay in manual/demo mode */ });
+    return () => { cancelled = true; };
+  }, [authed, positionSource]);
 
   useEffect(() => {
     if (!authed) return;
@@ -108,34 +143,54 @@ export function PerpProtectWidget() {
           <div style={{ fontSize: 30, fontWeight: 800, color: C.text, fontVariantNumeric: "tabular-nums" }}>{pos ? usd(pos.spot) : "—"}</div>
         </div>
 
-        {/* Your position */}
+        {/* Your position — read-only when synced from a live position (production), editable in demo. */}
         <Card>
-          <SectionLabel>Your position</SectionLabel>
-          <FieldRow label="Direction">
-            <div style={{ display: "flex", gap: 6 }}>
-              <Chip active={side === "long"} label="Long" onClick={() => setSide("long")} />
-              <Chip active={side === "short"} label="Short" onClick={() => setSide("short")} />
-            </div>
-          </FieldRow>
-          <FieldRow label="Size">
-            <div style={{ position: "relative", width: 150 }}>
-              <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
-              <input type="number" min={100} step={1000} value={sizeUsd}
-                onChange={(e) => setSizeUsd(Math.max(100, Number(e.target.value) || 100))}
-                style={{ ...input, paddingLeft: 24, textAlign: "right" }} />
-            </div>
-          </FieldRow>
-          <FieldRow label="Entry price">
-            <div style={{ position: "relative", width: 150 }}>
-              <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
-              <input type="number" min={0} step={100} value={entryDisplay} placeholder="at mark"
-                onChange={(e) => { setEntryTouched(true); setEntryStr(e.target.value); }}
-                style={{ ...input, paddingLeft: 24, textAlign: "right" }} />
-            </div>
-          </FieldRow>
-          <FieldRow label="Leverage">
-            <Stepper value={leverage} onChange={(v) => setLeverage(Math.min(MAX_LEV, Math.max(1, v)))} />
-          </FieldRow>
+          <SectionLabel>Your position {locked && <span style={{ color: C.muted, fontWeight: 400 }}>· synced</span>}</SectionLabel>
+          {locked ? (
+            <>
+              <FieldRow label="Direction"><ReadVal>{side === "short" ? "Short" : "Long"}</ReadVal></FieldRow>
+              <FieldRow label="Size"><ReadVal>{pos ? usd(pos.notional_usdc) : "—"}</ReadVal></FieldRow>
+              <FieldRow label="Entry price"><ReadVal>{pos ? usd(pos.entry_price) : (livePosition?.entryPrice ? usd(livePosition.entryPrice) : "at mark")}</ReadVal></FieldRow>
+              <FieldRow label="Leverage"><ReadVal>{leverage}×</ReadVal></FieldRow>
+            </>
+          ) : (
+            <>
+              <FieldRow label="Direction">
+                <div style={{ display: "flex", gap: 6 }}>
+                  <Chip active={side === "long"} label="Long" onClick={() => setSide("long")} />
+                  <Chip active={side === "short"} label="Short" onClick={() => setSide("short")} />
+                </div>
+              </FieldRow>
+              <FieldRow label="Size">
+                <div style={{ position: "relative", width: 150 }}>
+                  <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
+                  <input type="number" min={100} step={1000} value={sizeUsd}
+                    onChange={(e) => setSizeUsd(Math.max(100, Number(e.target.value) || 100))}
+                    style={{ ...input, paddingLeft: 24, textAlign: "right" }} />
+                </div>
+              </FieldRow>
+              <FieldRow label="Leverage">
+                <Stepper value={leverage} onChange={(v) => setLeverage(Math.min(MAX_LEV, Math.max(1, v)))} />
+              </FieldRow>
+              {/* Entry defaults to the live mark; tucked under Advanced to keep the default flow lean. */}
+              {advanced ? (
+                <FieldRow label="Entry price">
+                  <div style={{ position: "relative", width: 150 }}>
+                    <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
+                    <input type="number" min={0} step={100} value={entryDisplay} placeholder="at mark"
+                      onChange={(e) => { setEntryTouched(true); setEntryStr(e.target.value); }}
+                      style={{ ...input, paddingLeft: 24, textAlign: "right" }} />
+                  </div>
+                </FieldRow>
+              ) : (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
+                  <span onClick={() => setAdvanced(true)} style={{ fontSize: 11, color: C.muted, cursor: "pointer", textDecoration: "underline" }}>
+                    Advanced · set entry price
+                  </span>
+                </div>
+              )}
+            </>
+          )}
           <FieldRow label="Protect for">
             <div style={{ display: "flex", gap: 6 }}>
               {TENORS.map((d) => <Chip key={d} active={tenorDays === d} label={`${d}d`} onClick={() => setTenorDays(d)} />)}
@@ -265,6 +320,9 @@ const GOLD = "#d6b56a";
 const SUB: React.CSSProperties = { fontSize: 11, color: C.muted, marginTop: 2 };
 const input: React.CSSProperties = { width: "100%", padding: "10px 12px", fontSize: 15, background: C.panel2, color: C.text, border: `1px solid ${C.border}`, borderRadius: 6, boxSizing: "border-box" };
 
+function ReadVal({ children }: { children: React.ReactNode }) {
+  return <span style={{ fontSize: 15, fontWeight: 700, color: C.text, fontVariantNumeric: "tabular-nums" }}>{children}</span>;
+}
 function Card({ children, highlight }: { children: React.ReactNode; highlight?: boolean }) {
   return <div style={{ background: C.panel, borderRadius: 10, padding: 20, marginBottom: 14, border: highlight ? `1px solid ${C.green}55` : `1px solid ${C.border}` }}>{children}</div>;
 }
