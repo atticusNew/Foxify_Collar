@@ -24,6 +24,9 @@ export type PriceCompetitiveness = {
   bybit_symbol: string | null;
   bybit_strike: number | null;
   bybit_ask_usdc_per_btc: number | null;
+  bybit_bid_usdc_per_btc: number | null;     // top-of-book bid (for the fillability check)
+  bybit_spread_pct: number | null;           // (ask−bid)/mid; null when a side is missing
+  bybit_fillable: boolean | null;            // false when the book is too wide for the ask to be a real fill
   bybit_premium_usdc: number | null;         // Bybit ask × size (their comparable premium to the trader)
   atticus_premium_usdc: number | null;       // our retail premium for the compared option
   atticus_hedge_cost_usdc: number | null;    // our cheapest cross-venue hedge cost
@@ -33,7 +36,19 @@ export type PriceCompetitiveness = {
   hedge_edge_usdc: number | null;            // (Bybit ask − our hedge) × size
 };
 
+/** Max top-of-book spread for Bybit's ask to be treated as a real, fillable price (else it's a
+ *  wide/illiquid quote and "Bybit cheaper" on the ask is misleading). Env-tunable. */
+const FILLABLE_MAX_SPREAD_PCT = Number(process.env.PERP_PROTECT_BYBIT_MAX_SPREAD_PCT ?? 0.30);
+
 const round2 = (x: number): number => +x.toFixed(2);
+const round4 = (x: number): number => +x.toFixed(4);
+
+/** Top-of-book relative spread (ask−bid)/mid; null unless both sides are present and positive. */
+const spreadPctOf = (ask: number | null, bid: number | null): number | null => {
+  if (ask == null || bid == null || ask <= 0 || bid <= 0) return null;
+  const mid = (ask + bid) / 2;
+  return mid > 0 ? round4((ask - bid) / mid) : null;
+};
 
 /** Build the internal competitiveness diagnostic from our compared option + the Bybit leg (or null). */
 export const compareToBybit = (args: {
@@ -51,6 +66,9 @@ export const compareToBybit = (args: {
       bybit_symbol: bybit?.symbol ?? null,
       bybit_strike: bybit?.strike ?? null,
       bybit_ask_usdc_per_btc: bybit?.ask_usdc_per_btc ?? null,
+      bybit_bid_usdc_per_btc: bybit?.bid_usdc_per_btc ?? null,
+      bybit_spread_pct: null,
+      bybit_fillable: null,
       bybit_premium_usdc: null,
       atticus_premium_usdc: round2(atticusPremiumUsdc),
       atticus_hedge_cost_usdc: round2(atticusHedgeCostUsdc),
@@ -62,12 +80,19 @@ export const compareToBybit = (args: {
   }
   const bybitPremium = bybit.ask_usdc_per_btc * sizeBtc;
   const hedgeEdge = (bybit.ask_usdc_per_btc - atticusHedgeCostUsdc / sizeBtc) * sizeBtc;
+  const spreadPct = spreadPctOf(bybit.ask_usdc_per_btc, bybit.bid_usdc_per_btc);
+  // Fillable only when the book is two-sided AND tight enough; a wide/one-sided ask is not a real
+  // price, so "Bybit cheaper" on that ask would be misleading.
+  const fillable = spreadPct == null ? false : spreadPct <= FILLABLE_MAX_SPREAD_PCT;
   return {
     available: true,
     compared_option_id: optionId,
     bybit_symbol: bybit.symbol,
     bybit_strike: bybit.strike,
     bybit_ask_usdc_per_btc: round2(bybit.ask_usdc_per_btc),
+    bybit_bid_usdc_per_btc: bybit.bid_usdc_per_btc != null ? round2(bybit.bid_usdc_per_btc) : null,
+    bybit_spread_pct: spreadPct,
+    bybit_fillable: fillable,
     bybit_premium_usdc: round2(bybitPremium),
     atticus_premium_usdc: round2(atticusPremiumUsdc),
     atticus_hedge_cost_usdc: round2(atticusHedgeCostUsdc),

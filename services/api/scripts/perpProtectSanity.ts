@@ -102,9 +102,14 @@ async function main() {
     const optType = p.side === "short" ? "CALL" : "PUT";
     console.log(`\nBYBIT — apples-to-apples (same strike, nearest expiry, same ${p.size_btc} BTC):`);
     if (c.available) {
+      const spreadStr = c.bybit_spread_pct == null ? "n/a (one-sided book)" : `${(c.bybit_spread_pct * 100).toFixed(1)}%`;
       console.log(`  Atticus  ${optType} @ ${usd(cmp?.strike)}        premium ${usd(c.atticus_premium_usdc)}   (raw hedge ${usd(c.atticus_hedge_cost_usdc)})`);
-      console.log(`  Bybit    ${c.bybit_symbol ?? `${optType} @ ${usd(c.bybit_strike)}`}   ask ${usd(c.bybit_ask_usdc_per_btc)}/BTC → premium ${usd(c.bybit_premium_usdc)}`);
+      console.log(`  Bybit    ${c.bybit_symbol ?? `${optType} @ ${usd(c.bybit_strike)}`}`);
+      console.log(`           bid ${usd(c.bybit_bid_usdc_per_btc)} / ask ${usd(c.bybit_ask_usdc_per_btc)} per BTC  ·  spread ${spreadStr}  ·  ask→premium ${usd(c.bybit_premium_usdc)}`);
       console.log(`  → retail: ${c.beats_bybit_retail ? "WE WIN" : "Bybit cheaper"} by ${usd(Math.abs(c.retail_edge_usdc))}   ·   hedge headroom vs Bybit: ${usd(c.hedge_edge_usdc)}`);
+      if (c.bybit_fillable === false) {
+        console.log(`  ⚠ Bybit ask is NOT fillable (book too wide / one-sided) — treat "Bybit cheaper" with caution; you likely couldn't transact at that ask.`);
+      }
       if (cmp && c.bybit_strike != null && Math.round(cmp.strike) !== Math.round(c.bybit_strike)) {
         console.log(`  ⚠ strike mismatch: ours ${usd(cmp.strike)} vs Bybit ${usd(c.bybit_strike)} — comparison is nearest-listed, not identical.`);
       }
