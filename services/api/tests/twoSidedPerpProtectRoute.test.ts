@@ -82,6 +82,7 @@ test("perp-protect: size_usd is treated as USD notional (size_btc = size_usd / m
     // Trader (demo) payload must NOT carry internal diagnostics.
     assert.equal(body.price_competitiveness, undefined);
     assert.equal(body.venues_used, undefined);
+    assert.equal(body.venues_considered, undefined);
     assert.equal(body.bybit_benchmark, undefined);
   } finally { await cleanup(); }
 });
@@ -99,8 +100,9 @@ test("perp-protect: size_btc still works (back-compat) and admin sees venues_use
     const body = r.json();
     assert.equal(body.position.size_btc, 0.25);
     assert.equal(body.position.notional_usdc, 0.25 * MARK);
-    // Admin payload includes the coverage surface (array; may be empty offline).
+    // Admin payload includes the coverage surfaces (arrays; may be empty offline).
     assert.ok(Array.isArray(body.venues_used));
+    assert.ok(Array.isArray(body.venues_considered));
   } finally { await cleanup(); }
 });
 

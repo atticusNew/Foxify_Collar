@@ -2057,7 +2057,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           { ...depthRow("bullish", bull.ask_usdc_per_btc, bull.bid_usdc_per_btc ?? null, bull.ask_levels, bull.bid_levels), strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null, instrument: bull.instrument ?? null, expiryIso: bull.expiry_iso ?? null }
         ];
         const { bestAsk, bestBid } = pickBestLegs(rows, { targetTenorDays: tenorDays });
-        return { bestAsk, bestBid };
+        // Venues that returned a usable quote (reachable + listing the strike) — for the admin-only
+        // coverage diagnostic, distinct from which venue actually WON on price.
+        const considered = rows.filter((r) => (r.ask != null && r.ask > 0) || (r.bid != null && r.bid > 0)).map((r) => r.venue);
+        return { bestAsk, bestBid, considered };
       };
 
       const liquidationPrevented = b.liquidation_prevented === true; // Phase-4 hook; false today
@@ -2180,12 +2183,17 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       // all participating — esp. Bullish, which only quotes from the whitelisted Render deploy). Not
       // exposed to traders (the product intentionally hides per-leg routing).
       let venuesUsed: string[] | undefined = undefined;
+      let venuesConsidered: string[] | undefined = undefined;
       if (isAdmin) {
         const vs = new Set<string>();
         longLegByStrike.forEach((leg) => { if (leg.venue) vs.add(leg.venue); });
         if (spLProbe?.bestAsk?.venue) vs.add(spLProbe.bestAsk.venue);
         if (spSProbe?.bestBid?.venue) vs.add(spSProbe.bestBid.venue);
         venuesUsed = [...vs];
+        // All venues that returned a usable quote on any probed strike (reachability check, vs winners).
+        const cs = new Set<string>();
+        [...singleProbes, spLProbe, spSProbe].forEach((p) => (p?.considered ?? []).forEach((v) => cs.add(v)));
+        venuesConsidered = [...cs];
       }
       const payload = {
         as_of: new Date(nowMs).toISOString(),
@@ -2194,6 +2202,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         ...quote,
         options: optionsWithFairValue,
         liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
+        ...(venuesConsidered !== undefined ? { venues_considered: venuesConsidered } : {}),
         ...(venuesUsed !== undefined ? { venues_used: venuesUsed } : {}),
         ...(priceCompetitiveness !== undefined ? { price_competitiveness: priceCompetitiveness } : {}),
         note: "READ-ONLY quote (underwriter model). Position-aware protection for a REAL perp position across ALL leverages: single = gap-proof capped (truly hard once liquidation_prevented), spread = cheaper but exposed beyond the short strike. Each premium is a transparent build-up (premium_breakdown) over the cheapest cross-venue hedge. whipsaw_exposed/liquidation_whipsaw_risk_usdc surface pre-liquidation-prevention risk honestly. European settlement (pluggable). No execution yet."

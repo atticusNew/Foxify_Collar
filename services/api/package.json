@@ -35,6 +35,7 @@
     "pilot:bullish:pricing-compare": "tsx scripts/pilotBullishPricingCompare.ts",
     "pilot:bullish:key-check": "tsx scripts/pilotBullishKeyCheck.ts",
     "pilot:bullish:smoke": "tsx scripts/pilotBullishSmokeTest.ts",
+    "perp-protect:sanity": "tsx scripts/perpProtectSanity.ts",
     "pilot:compare-models": "tsx scripts/pilotCompareModels.ts",
     "pilot:backtest:fetch-btc": "tsx scripts/pilotBacktestFetchBtc.ts",
     "pilot:backtest:run": "tsx scripts/pilotBacktestRun.ts",
