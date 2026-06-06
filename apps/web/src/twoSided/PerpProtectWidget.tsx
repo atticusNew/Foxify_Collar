@@ -50,6 +50,8 @@ const signed = (x: number | null | undefined, side: "long" | "short") => (x == n
 
 const MAX_LEV = 100;
 const TENORS = [1, 3, 7];
+/** Pricing-breakdown panel hidden for the demo; flip to true to re-enable "How it's priced". */
+const SHOW_HOW_PRICED = false;
 
 export function PerpProtectWidget() {
   const [authed, setAuthed] = useState(() => !!getToken("demo"));
@@ -172,16 +174,25 @@ export function PerpProtectWidget() {
               <FieldRow label="Leverage">
                 <Stepper value={leverage} onChange={(v) => setLeverage(Math.min(MAX_LEV, Math.max(1, v)))} />
               </FieldRow>
-              {/* Entry defaults to the live mark; tucked under Advanced to keep the default flow lean. */}
+              {/* Entry defaults to the live mark; tucked under Advanced to keep the default flow lean.
+                  The toggle collapses again and resets entry back to mark (entryTouched=false). */}
               {advanced ? (
-                <FieldRow label="Entry price">
-                  <div style={{ position: "relative", width: 150 }}>
-                    <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
-                    <input type="number" min={0} step={100} value={entryDisplay} placeholder="at mark"
-                      onChange={(e) => { setEntryTouched(true); setEntryStr(e.target.value); }}
-                      style={{ ...input, paddingLeft: 24, textAlign: "right" }} />
+                <>
+                  <FieldRow label="Entry price">
+                    <div style={{ position: "relative", width: 150 }}>
+                      <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
+                      <input type="number" min={0} step={100} value={entryDisplay} placeholder="at mark"
+                        onChange={(e) => { setEntryTouched(true); setEntryStr(e.target.value); }}
+                        style={{ ...input, paddingLeft: 24, textAlign: "right" }} />
+                    </div>
+                  </FieldRow>
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14, marginTop: -6 }}>
+                    <span onClick={() => { setAdvanced(false); setEntryTouched(false); setEntryStr(""); }}
+                      style={{ fontSize: 11, color: C.muted, cursor: "pointer", textDecoration: "underline" }}>
+                      Use current price
+                    </span>
                   </div>
-                </FieldRow>
+                </>
               ) : (
                 <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 14 }}>
                   <span onClick={() => setAdvanced(true)} style={{ fontSize: 11, color: C.muted, cursor: "pointer", textDecoration: "underline" }}>
@@ -206,12 +217,11 @@ export function PerpProtectWidget() {
 
         {err && <div style={{ padding: "10px 14px", background: "#3a1010", color: C.red, fontSize: 13, borderRadius: 6, marginBottom: 14 }}>{err === "feed_unavailable" ? "Live price feed unavailable — try again shortly." : err}</div>}
 
-        {/* Without protection */}
+        {/* Without protection — the liquidation floor is the one fact that matters here. */}
         {pos && (
           <Card>
             <SectionLabel>Without protection</SectionLabel>
-            <DetailRow label="Liquidation" value={`${signed(pos.liq_move_pct, side)} · ${usd(pos.liquidation_price)}`} valueColor={C.red} strong />
-            <DetailRow label="You lose" value={usd(pos.margin_usdc)} valueColor={C.red} sub="your full margin (a fast gap can cost more)" last />
+            <DetailRow label="Liquidated at" value={`${usd(pos.liquidation_price)} (${signed(pos.liq_move_pct, side)})`} valueColor={C.red} strong sub={`you lose your ${usd(pos.margin_usdc)} margin`} last />
           </Card>
         )}
 
@@ -229,19 +239,22 @@ export function PerpProtectWidget() {
             )
         )}
 
-        {/* Selected detail */}
+        {/* Selected detail — premium is the hero; one plain value line; then the protection floor. */}
         {sel && pos && (
           <Card highlight>
             <SectionLabel>With this protection</SectionLabel>
-            <DetailRow label="Premium" value={usd2(sel.premium_usdc)} sub={`${usd2(sel.cost_per_day_usdc)}/day · ${quote.tenor_days}d`} valueColor={C.green} strong />
-            <DetailRow label="Most you can lose" value={usd(sel.worst_case_usdc)} sub={sel.capped ? "hard cap" : `exposed beyond ${usd(sel.exposed_beyond)}`} valueColor={C.green} strong />
-            <DetailRow label="Protection from" value={`${usd(sel.strike)} (${signed(sel.protect_move_pct, side)})`} sub={sel.short_strike ? `band to ${usd(sel.short_strike)}` : undefined} />
-            <DetailRow label="Breakeven" value={usd(sel.breakeven_price)} last={!sel.whipsaw_exposed && !(sel.depth?.size_liquidity_warning)} />
-            {sel.whipsaw_exposed && (
-              <div style={{ marginTop: 10, fontSize: 11.5, color: C.amber, lineHeight: 1.5, background: C.amber + "12", border: `1px solid ${C.amber}33`, borderRadius: 6, padding: "8px 10px" }}>
-                ⚠ A wick to liquidation that then recovers can still cost up to {usd(sel.liquidation_whipsaw_risk_usdc)} until exchange liquidation-prevention is live.
-              </div>
-            )}
+            <div style={{ textAlign: "center", padding: "4px 0 12px" }}>
+              <div style={{ fontSize: 11, color: C.muted, letterSpacing: 1, textTransform: "uppercase" }}>You pay</div>
+              <div style={{ fontSize: 34, fontWeight: 800, color: C.green, fontVariantNumeric: "tabular-nums", lineHeight: 1.15 }}>{usd2(sel.premium_usdc)}</div>
+              <div style={{ fontSize: 11.5, color: C.muted }}>{usd2(sel.cost_per_day_usdc)}/day · {quote.tenor_days}d</div>
+            </div>
+            <div style={{ fontSize: 13, color: C.text, textAlign: "center", lineHeight: 1.5, background: C.panel2, borderRadius: 8, padding: "10px 12px" }}>
+              Capped loss <b style={{ color: C.green }}>{usd(sel.worst_case_usdc)}</b>{sel.capped ? "" : ` (exposed beyond ${usd(sel.exposed_beyond)})`}
+              <span style={{ color: C.muted }}> · vs </span><b style={{ color: C.red }}>{usd(pos.margin_usdc)}</b><span style={{ color: C.muted }}> unprotected</span>
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <DetailRow label="Protection from" value={`${usd(sel.strike)} (${signed(sel.protect_move_pct, side)})`} sub={sel.short_strike ? `band to ${usd(sel.short_strike)}` : undefined} last />
+            </div>
             {sel.depth?.size_liquidity_warning && (
               <div style={{ marginTop: 8, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>⚠ {sel.depth.size_liquidity_warning}</div>
             )}
@@ -251,8 +264,8 @@ export function PerpProtectWidget() {
           </Card>
         )}
 
-        {/* How it's priced */}
-        {sel && <HowPriced o={sel} />}
+        {/* How it's priced — hidden for the demo (kept behind a flag to re-enable later). */}
+        {SHOW_HOW_PRICED && sel && <HowPriced o={sel} />}
 
         {/* Disclaimer */}
         <div style={{ fontSize: 10.5, color: C.muted, textAlign: "center", lineHeight: 1.6, margin: "18px 6px 8px", opacity: 0.75 }}>
