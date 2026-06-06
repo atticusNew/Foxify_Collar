@@ -1985,6 +1985,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const { strikeForMarginFraction } = await import("./floorTiers");
       const { okxProbe } = await import("./okxProbe");
       const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
+      const { pickBestLegs } = await import("./perpProtectLegSelect");
       const b = (req.body ?? {}) as { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string };
       const feed = deps.feedService.getCurrentFeed();
       const spot = b.mark_price != null && Number(b.mark_price) > 0 ? Number(b.mark_price) : feed?.canonicalPrice;
@@ -2001,7 +2002,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       }
       const optType: "put" | "call" = side === "short" ? "call" : "put";
 
-      // Probe a strike across venues → cheapest ask (long) + highest bid (short), with actual strikes.
+      // Probe a strike across venues → cheapest qualifying ask (long) + highest qualifying bid
+      // (short), with actual strikes. Selection is expiry-normalized (A1) + liquidity-guarded (B2)
+      // via pickBestLegs, so a shorter-dated/illiquid quote cannot silently win.
       const probeStrike = async (strike: number) => {
         const okx = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
         const [der, bull] = await Promise.all([
@@ -2009,14 +2012,11 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
         ]);
         const rows = [
-          { ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null },
-          { ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null },
-          { ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null }
+          { venue: "okx", ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null, daysToExpiry: okx?.days_to_expiry ?? null, spreadPct: okx?.spread_pct ?? null },
+          { venue: "deribit", ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null, daysToExpiry: der.days_to_expiry ?? null, spreadPct: der.spread_pct ?? null },
+          { venue: "bullish", ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null }
         ];
-        const asks = rows.filter((r) => r.ask != null && r.ask > 0 && r.strike != null) as { ask: number; bid: number | null; strike: number }[];
-        const bids = rows.filter((r) => r.bid != null && r.bid > 0 && r.strike != null) as { ask: number | null; bid: number; strike: number }[];
-        const bestAsk = asks.length ? asks.reduce((a, r) => (r.ask < a.ask ? r : a)) : null;
-        const bestBid = bids.length ? bids.reduce((a, r) => (r.bid > a.bid ? r : a)) : null;
+        const { bestAsk, bestBid } = pickBestLegs(rows, { targetTenorDays: tenorDays });
         return { bestAsk, bestBid };
       };
 
@@ -2033,9 +2033,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         probeStrike(k1), probeStrike(k2)
       ]);
       const singles = [s0, s1, s2]
-        .map((p) => (p.bestAsk ? { strike: p.bestAsk.strike, askUsdcPerBtc: p.bestAsk.ask } : null))
+        .map((p) => (p.bestAsk && p.bestAsk.ask != null ? { strike: p.bestAsk.strike, askUsdcPerBtc: p.bestAsk.ask } : null))
         .filter((x): x is { strike: number; askUsdcPerBtc: number } => x != null);
-      const spread = spL.bestAsk && spS.bestBid
+      const spread = spL.bestAsk && spL.bestAsk.ask != null && spS.bestBid && spS.bestBid.bid != null
         ? { long: { strike: spL.bestAsk.strike, askUsdcPerBtc: spL.bestAsk.ask }, short: { strike: spS.bestBid.strike, askUsdcPerBtc: 0, bidUsdcPerBtc: spS.bestBid.bid } }
         : null;
 

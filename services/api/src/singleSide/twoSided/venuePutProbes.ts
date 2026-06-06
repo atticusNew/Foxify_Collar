@@ -9,12 +9,30 @@
 
 import type { OkxFetcher } from "./okxProbe";
 
-export type VenuePut = { venue: string; ask_usdc_per_btc: number | null; bid_usdc_per_btc?: number | null; instrument: string | null; strike?: number | null; expiry_iso?: string | null };
+export type VenuePut = {
+  venue: string;
+  ask_usdc_per_btc: number | null;
+  bid_usdc_per_btc?: number | null;
+  instrument: string | null;
+  strike?: number | null;
+  expiry_iso?: string | null;
+  /** Top-of-book relative spread (ask−bid)/mid in [0,∞); null when a side is missing. Liquidity-quality signal. */
+  spread_pct?: number | null;
+  /** Days from now to the chosen listed expiry (so the caller can normalize cross-venue tenor). */
+  days_to_expiry?: number | null;
+};
 
 const DERIBIT_BASE = process.env.DERIBIT_REST_BASE ?? "https://www.deribit.com";
 const defaultFetcher: OkxFetcher = async (url) => {
   const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
   return res.json();
+};
+
+/** Relative top-of-book spread (ask−bid)/mid in USDC terms; null unless both sides are present and positive. */
+const spreadPctOf = (askUsdc: number | null, bidUsdc: number | null): number | null => {
+  if (askUsdc == null || bidUsdc == null || askUsdc <= 0 || bidUsdc <= 0) return null;
+  const mid = (askUsdc + bidUsdc) / 2;
+  return mid > 0 ? +(((askUsdc - bidUsdc) / mid)).toFixed(4) : null;
 };
 
 /** Deribit public put probe — premium quoted in BTC → ×spot = USDC/BTC. */
@@ -37,13 +55,17 @@ export const deribitPutProbe = async (opts: {
     const ob = (await fetcher(`${DERIBIT_BASE}/api/v2/public/get_order_book?instrument_name=${inst.instrument_name}`)) as { result?: { best_ask_price?: number; best_bid_price?: number } };
     const askBtc = ob.result?.best_ask_price;
     const bidBtc = ob.result?.best_bid_price;
+    const askU = askBtc != null && askBtc > 0 ? +(askBtc * opts.spot).toFixed(2) : null;
+    const bidU = bidBtc != null && bidBtc > 0 ? +(bidBtc * opts.spot).toFixed(2) : null;
     return {
       venue: "deribit",
-      ask_usdc_per_btc: askBtc != null && askBtc > 0 ? +(askBtc * opts.spot).toFixed(2) : null,
-      bid_usdc_per_btc: bidBtc != null && bidBtc > 0 ? +(bidBtc * opts.spot).toFixed(2) : null,
+      ask_usdc_per_btc: askU,
+      bid_usdc_per_btc: bidU,
       instrument: inst.instrument_name ?? null,
       strike: inst.strike ?? null,
-      expiry_iso: new Date(expiry).toISOString()
+      expiry_iso: new Date(expiry).toISOString(),
+      spread_pct: spreadPctOf(askU, bidU),
+      days_to_expiry: +((expiry - now) / 86_400_000).toFixed(2)
     };
   } catch {
     return { venue: "deribit", ask_usdc_per_btc: null, instrument: null };
@@ -75,7 +97,18 @@ export const bullishPutProbe = async (
     const ob = await client.getHybridOrderBook(inst.symbol);
     const ask = ob.asks?.[0]?.price != null ? Number(ob.asks[0].price) : null; // Bullish quotes USDC per option
     const bid = ob.bids?.[0]?.price != null ? Number(ob.bids[0].price) : null;
-    return { venue: "bullish", ask_usdc_per_btc: ask != null && ask > 0 ? +ask.toFixed(2) : null, bid_usdc_per_btc: bid != null && bid > 0 ? +bid.toFixed(2) : null, instrument: inst.symbol, strike: inst.strike ?? null, expiry_iso: new Date(expiry).toISOString() };
+    const askU = ask != null && ask > 0 ? +ask.toFixed(2) : null;
+    const bidU = bid != null && bid > 0 ? +bid.toFixed(2) : null;
+    return {
+      venue: "bullish",
+      ask_usdc_per_btc: askU,
+      bid_usdc_per_btc: bidU,
+      instrument: inst.symbol,
+      strike: inst.strike ?? null,
+      expiry_iso: new Date(expiry).toISOString(),
+      spread_pct: spreadPctOf(askU, bidU),
+      days_to_expiry: +((expiry - now) / 86_400_000).toFixed(2)
+    };
   } catch {
     return { venue: "bullish", ask_usdc_per_btc: null, instrument: null };
   }
