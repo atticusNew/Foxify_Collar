@@ -1988,6 +1988,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const { generateStrikeCandidates, spreadTargets, structureConfigFromEnv } = await import("./perpProtectStructure");
       const { makePerpProtectPricer, pricingConfigFromEnv } = await import("./perpProtectPricing");
       const { defaultPerpProtectQuoteStore } = await import("./perpProtectQuoteStore");
+      const { fairValueDiagnostic, fairValueConfigFromEnv } = await import("./perpProtectFairValue");
       const b = (req.body ?? {}) as { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string; liquidation_prevented?: boolean };
       const feed = deps.feedService.getCurrentFeed();
       const spot = b.mark_price != null && Number(b.mark_price) > 0 ? Number(b.mark_price) : feed?.canonicalPrice;
@@ -2080,6 +2081,20 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         options: snapshotOptions
       });
 
+      // Advisory price-quality (B3): invert each option's hedge ask into implied vol and flag only
+      // implausible (stale/garbage) prints — skew-agnostic, never rejects, complements the B2 guard.
+      const fvCfg = fairValueConfigFromEnv();
+      const optionsWithFairValue = quote.options.map((o) => {
+        const snap = snapshotOptions.find((s) => s.id === o.id);
+        const longLeg = snap?.legs.find((l) => l.role === "long");
+        let fair_value = null as null | ReturnType<typeof fairValueDiagnostic>;
+        if (longLeg?.ask_usdc_per_btc != null && longLeg.expiry_iso) {
+          const tYears = Math.max(0, (Date.parse(longLeg.expiry_iso) - nowMs) / (365 * 86_400_000));
+          fair_value = fairValueDiagnostic({ type: o.structure.startsWith("call") ? "call" : "put", spot, strike: o.strike, tYears, priceUsdcPerBtc: longLeg.ask_usdc_per_btc }, fvCfg);
+        }
+        return { ...o, fair_value };
+      });
+
       // Value benchmark vs Bybit Perp Protect (~"as low as 2% of initial margin", single-venue).
       const recommended = quote.options.find((o) => o.recommended) ?? quote.options[0] ?? null;
       const bybitBenchmark = {
@@ -2092,6 +2107,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         quote_id: quoteId,
         quote_expires_at: new Date(nowMs + ttlMs).toISOString(),
         ...quote,
+        options: optionsWithFairValue,
         liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
         bybit_benchmark: bybitBenchmark,
         note: "READ-ONLY quote (underwriter model). Position-aware protection for a REAL perp position across ALL leverages: single = gap-proof capped (truly hard once liquidation_prevented), spread = cheaper but exposed beyond the short strike. Each premium is a transparent build-up (premium_breakdown) over the cheapest cross-venue hedge. whipsaw_exposed/liquidation_whipsaw_risk_usdc surface pre-liquidation-prevention risk honestly. European settlement (pluggable). No execution yet."
