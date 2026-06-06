@@ -135,6 +135,15 @@ const round4 = (x: number) => +x.toFixed(4);
 const usd = (x: number) => `$${Math.round(x).toLocaleString()}`;
 const pctStr = (x: number) => `${(x * 100).toFixed(1)}%`;
 
+/** Truthful Floor/Ceiling label from the ACTUAL (snapped) strike's distance from spot. Venues snap
+ *  targets to their listed grid, so the displayed move must reflect the real strike, not the target. */
+const floorLabel = (side: TradeSide, movePct: number): string => {
+  const word = side === "short" ? "Ceiling" : "Floor";
+  const sign = side === "short" ? "+" : "−";
+  const p = movePct * 100;
+  return `${word} ${sign}${p.toFixed(p < 10 ? 1 : 0)}%`;
+};
+
 /** Liquidation price + |move| for the perp (simplified: ignores maintenance margin/funding). */
 export const liquidationOf = (position: PerpPosition): { price: number; movePct: number } => {
   const movePct = position.leverage > 0 ? 1 / position.leverage : 1;
@@ -182,9 +191,13 @@ export const buildSingleOption = (position: PerpPosition, q: StrikeQuote, idx: n
   const note = whipsaw
     ? `${structure} compensates to a ${usd(worstCase)} loss if ${dropWord} and stays there. Pre-liquidation-prevention, a wick to liquidation then a recovery can still cost up to ${usd(whipsawRisk as number)}.`
     : `Gap-proof ${structure}: loss hard-capped at ${usd(worstCase)} no matter how far ${dropWord}.`;
+  // Label from the ACTUAL strike: keep "Stay alive" only when the strike truly sits inside liq;
+  // otherwise it's a plain Floor/Ceiling at its real distance (no overstated target moves).
+  const actualMove = strikeDist(side, spot, q.strike);
+  const label = q.label === "Stay alive" && beforeLiq ? "Stay alive" : floorLabel(side, actualMove);
   return {
     id: `single-${idx}`,
-    label: q.label ?? "Protection",
+    label,
     structure,
     strike: round2(q.strike),
     short_strike: null,
@@ -238,7 +251,7 @@ export const buildSpreadOption = (position: PerpPosition, longLeg: StrikeQuote, 
   const liqNote = whipsaw && !shortInsideLiq ? ` Note: the band extends past the liquidation price, so pre-liquidation-prevention the lower band is only realized if liquidation is avoided.` : "";
   return {
     id: "spread",
-    label: longLeg.label ? `${longLeg.label} (spread)` : "Spread",
+    label: `${floorLabel(side, strikeDist(side, spot, longLeg.strike))} (spread)`,
     structure,
     strike: round2(longLeg.strike),
     short_strike: round2(shortLeg.strike),
@@ -311,18 +324,6 @@ export const buildPerpProtectQuote = (
   if (inputs.spread) {
     const sp = buildSpreadOption(position, inputs.spread.long, inputs.spread.short, pricer);
     if (sp) options.push(sp);
-  }
-
-  // Honesty guard: a "Stay alive" option must actually be in-the-money BEFORE liquidation. If venue
-  // strike-snapping pushed the chosen strike outside the liq price, it's just a deeper floor — relabel
-  // it as such so the menu never shows a "Stay alive" that wouldn't keep the trader alive.
-  for (const o of options) {
-    if (o.label === "Stay alive" && !o.protects_before_liq) {
-      const word = side === "short" ? "Ceiling" : "Floor";
-      const sign = side === "short" ? "+" : "−";
-      const p = o.protect_move_pct * 100;
-      o.label = `${word} ${sign}${p.toFixed(p < 10 ? 1 : 0)}%`;
-    }
   }
 
   const recId = pickRecommendedOption(options, margin, inputs.recMaxWorstCasePctMargin ?? 0.6);

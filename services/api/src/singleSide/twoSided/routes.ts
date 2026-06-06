@@ -2086,10 +2086,18 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         spreadGeom ? probeStrike(spreadGeom.shortStrike) : Promise.resolve(null)
       ]);
 
+      // Drop "far-snap" tiers: when a target strike isn't listed (e.g. deep floors on a short tenor),
+      // the venue snaps to the closest available strike, which can be a totally different (shallower)
+      // protection level — a redundant, mislabeled tier. If the snapped strike deviates from the
+      // target by more than this fraction, drop it (the nearer tiers already cover that level).
+      const maxSnapDev = Number(process.env.PERP_PROTECT_MAX_SNAP_DEVIATION_PCT ?? 0.08);
       const singles = singleProbes
-        .map((p, i) => (p.bestAsk && p.bestAsk.ask != null
-          ? { strike: p.bestAsk.strike, askUsdcPerBtc: p.bestAsk.ask, label: candidates[i].label, spreadPct: p.bestAsk.spreadPct }
-          : null))
+        .map((p, i) => {
+          if (!(p.bestAsk && p.bestAsk.ask != null)) return null;
+          const target = candidates[i].targetStrike;
+          if (target > 0 && Math.abs(p.bestAsk.strike - target) / target > maxSnapDev) return null;
+          return { strike: p.bestAsk.strike, askUsdcPerBtc: p.bestAsk.ask, label: candidates[i].label, spreadPct: p.bestAsk.spreadPct };
+        })
         .filter((x): x is { strike: number; askUsdcPerBtc: number; label: string; spreadPct: number | null } => x != null);
       const spread = spLProbe?.bestAsk && spLProbe.bestAsk.ask != null && spSProbe?.bestBid && spSProbe.bestBid.bid != null
         ? {

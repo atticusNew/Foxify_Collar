@@ -6,12 +6,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  buildSingleOption, buildPerpProtectQuote, pickRecommendedOption,
+  buildSingleOption, buildSpreadOption, buildPerpProtectQuote, pickRecommendedOption,
   type PerpPosition, type PremiumPricer
 } from "../src/singleSide/twoSided/perpProtectQuote";
 
 const longPos: PerpPosition = { spot: 60000, entryPrice: 60000, sizeBtc: 1, side: "long", leverage: 10, tenorDays: 7 };
-// liq price = 54000, margin = 6000.
+const shortPos: PerpPosition = { ...longPos, side: "short" };
+// liq price = 54000 (long) / 66000 (short), margin = 6000.
 
 test("leveraged + not prevented: whipsaw_exposed, risk = margin + premium", () => {
   const o = buildSingleOption(longPos, { strike: 57000, askUsdcPerBtc: 800 }, 0);
@@ -104,6 +105,24 @@ test("honesty guard: a 'Stay alive' strike snapped BELOW liq is relabeled as a p
   assert.equal(o.protects_before_liq, false);
   assert.notEqual(o.label, "Stay alive");
   assert.match(o.label, /^Floor −/);
+});
+
+test("label reflects the ACTUAL snapped strike, not the target intent label", () => {
+  // Candidate targeted −20% but the venue snapped to 54000 (−10% from 60000 spot) → label must
+  // show the REAL protection level, never the overstated target.
+  const o = buildSingleOption(longPos, { strike: 54000, askUsdcPerBtc: 200, label: "Floor −20%" }, 0);
+  assert.equal(o.label, "Floor −10%"); // (60000−54000)/60000 = 0.10
+});
+
+test("ceiling label for shorts is derived from the actual strike", () => {
+  const o = buildSingleOption(shortPos, { strike: 66000, askUsdcPerBtc: 200, label: "Ceiling +20%" }, 0);
+  assert.equal(o.label, "Ceiling +10%"); // (66000−60000)/60000 = 0.10
+});
+
+test("spread label uses the actual long-leg strike move", () => {
+  const sp = buildSpreadOption(longPos, { strike: 58000, askUsdcPerBtc: 600, label: "Floor −20%" }, { strike: 55000, askUsdcPerBtc: 0, bidUsdcPerBtc: 250 });
+  assert.ok(sp);
+  assert.equal(sp!.label, "Floor −3.3% (spread)"); // (60000−58000)/60000 = 0.0333
 });
 
 test("honesty guard: a 'Stay alive' strike inside liq keeps its label", () => {
