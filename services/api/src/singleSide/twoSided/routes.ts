@@ -1979,13 +1979,18 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    */
   app.post<{ Body: { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string } }>(
     "/admin/foxify/v2/perp-protect/quote",
-    { preHandler: checkAdminToken },
+    { preHandler: checkDemoOrAdminToken },
     async (req, reply) => {
       const { buildPerpProtectQuote, liquidationOf } = await import("./perpProtectQuote");
-      const { strikeForMarginFraction } = await import("./floorTiers");
       const { okxProbe } = await import("./okxProbe");
       const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
-      const b = (req.body ?? {}) as { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string };
+      const { pickBestLegs } = await import("./perpProtectLegSelect");
+      const { vwapToFill } = await import("./perpProtectDepth");
+      const { generateStrikeCandidates, spreadTargets, structureConfigFromEnv } = await import("./perpProtectStructure");
+      const { makePerpProtectPricer, pricingConfigFromEnv } = await import("./perpProtectPricing");
+      const { defaultPerpProtectQuoteStore } = await import("./perpProtectQuoteStore");
+      const { fairValueDiagnostic, fairValueConfigFromEnv } = await import("./perpProtectFairValue");
+      const b = (req.body ?? {}) as { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string; liquidation_prevented?: boolean };
       const feed = deps.feedService.getCurrentFeed();
       const spot = b.mark_price != null && Number(b.mark_price) > 0 ? Number(b.mark_price) : feed?.canonicalPrice;
       if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
@@ -1999,56 +2004,162 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(400).send({ error: "invalid_request", message: "size_btc>0, entry_price>0, 0<leverage<=100, tenor_days>0" });
         return;
       }
+      // Function-essential safety caps (env-overridable). Bound size, protected notional, and tenor
+      // so a single quote can't request an unhedgeable position or hammer venues with absurd inputs.
+      const maxSizeBtc = Number(process.env.PERP_PROTECT_MAX_SIZE_BTC ?? 50);
+      const maxNotionalUsdc = Number(process.env.PERP_PROTECT_MAX_NOTIONAL_USDC ?? 5_000_000);
+      const maxTenorDays = Number(process.env.PERP_PROTECT_MAX_TENOR_DAYS ?? 90);
+      const reqNotional = sizeBtc * spot;
+      if (sizeBtc > maxSizeBtc || reqNotional > maxNotionalUsdc || tenorDays > maxTenorDays) {
+        reply.code(400).send({ error: "limit_exceeded", message: `size_btc<=${maxSizeBtc}, notional<=$${maxNotionalUsdc.toLocaleString()}, tenor_days<=${maxTenorDays}` });
+        return;
+      }
+      // Short-TTL cache (reuses the demo-widget cache): identical inputs within the window reuse the
+      // quote, keeping the trader widget snappy and shielding venues from slider-spam.
+      const cacheKey = `pp:${side}:${sizeBtc}:${entryPrice}:${leverage}:${tenorDays}:${settlementStyle}:${Math.round(spot)}:${b.liquidation_prevented === true}`;
+      const cached = demoCacheGet(cacheKey);
+      if (cached) { reply.send(cached); return; }
       const optType: "put" | "call" = side === "short" ? "call" : "put";
 
-      // Probe a strike across venues → cheapest ask (long) + highest bid (short), with actual strikes.
+      // Probe a strike across venues → cheapest qualifying ask (long) + highest qualifying bid
+      // (short), with actual strikes. Selection is expiry-normalized (A1) + liquidity-guarded (B2)
+      // via pickBestLegs, so a shorter-dated/illiquid quote cannot silently win.
       const probeStrike = async (strike: number) => {
         const okx = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
         const [der, bull] = await Promise.all([
           deribitPutProbe({ spot, strike, tenorDays, optType }),
           bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
         ]);
+        // Size-aware (B4) effective price: walk the venue book for size_btc (TOB fallback when no
+        // depth). Selection + premium then both reflect the real fill, not just top-of-book.
+        const depthRow = (venue: string, askTob: number | null, bidTob: number | null, askLevels?: Array<{ price_usdc_per_btc: number; size_btc: number }>, bidLevels?: Array<{ price_usdc_per_btc: number; size_btc: number }>) => {
+          const a = askLevels && askLevels.length ? vwapToFill(askLevels.map((l) => ({ priceUsdcPerBtc: l.price_usdc_per_btc, sizeBtc: l.size_btc })), sizeBtc, "ask") : null;
+          const bd = bidLevels && bidLevels.length ? vwapToFill(bidLevels.map((l) => ({ priceUsdcPerBtc: l.price_usdc_per_btc, sizeBtc: l.size_btc })), sizeBtc, "bid") : null;
+          return {
+            venue,
+            ask: a?.effective_usdc_per_btc ?? askTob,
+            bid: bd?.effective_usdc_per_btc ?? bidTob,
+            askCovered: a ? a.covered : null,
+            askSlippagePct: a ? a.slippage_vs_top_pct : null,
+            bidCovered: bd ? bd.covered : null,
+            bidSlippagePct: bd ? bd.slippage_vs_top_pct : null
+          };
+        };
         const rows = [
-          { ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null },
-          { ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null },
-          { ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null }
+          { ...depthRow("okx", okx?.ask_usdc_per_btc ?? null, okx?.bid_usdc_per_btc ?? null, okx?.ask_levels, okx?.bid_levels), strike: okx?.strike ?? null, daysToExpiry: okx?.days_to_expiry ?? null, spreadPct: okx?.spread_pct ?? null, instrument: okx?.instId ?? null, expiryIso: okx?.expiry_iso ?? null },
+          { ...depthRow("deribit", der.ask_usdc_per_btc, der.bid_usdc_per_btc ?? null, der.ask_levels, der.bid_levels), strike: der.strike ?? null, daysToExpiry: der.days_to_expiry ?? null, spreadPct: der.spread_pct ?? null, instrument: der.instrument ?? null, expiryIso: der.expiry_iso ?? null },
+          { ...depthRow("bullish", bull.ask_usdc_per_btc, bull.bid_usdc_per_btc ?? null, bull.ask_levels, bull.bid_levels), strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null, instrument: bull.instrument ?? null, expiryIso: bull.expiry_iso ?? null }
         ];
-        const asks = rows.filter((r) => r.ask != null && r.ask > 0 && r.strike != null) as { ask: number; bid: number | null; strike: number }[];
-        const bids = rows.filter((r) => r.bid != null && r.bid > 0 && r.strike != null) as { ask: number | null; bid: number; strike: number }[];
-        const bestAsk = asks.length ? asks.reduce((a, r) => (r.ask < a.ask ? r : a)) : null;
-        const bestBid = bids.length ? bids.reduce((a, r) => (r.bid > a.bid ? r : a)) : null;
+        const { bestAsk, bestBid } = pickBestLegs(rows, { targetTenorDays: tenorDays });
         return { bestAsk, bestBid };
       };
 
-      // Single-option tiers: Safer / Balanced / Cheapest at fraction/leverage from spot.
-      const singleFracs = [0.25, 0.5, 0.75];
-      const singleStrikes = singleFracs.map((f) => strikeForMarginFraction(spot, leverage, f, side).strike);
-      // Spread legs: long just inside the liq distance, short deeper.
-      const liqMove = 1 / leverage;
-      const k1 = side === "short" ? spot * (1 + Math.max(0.005, liqMove * 0.8)) : spot * (1 - Math.max(0.005, liqMove * 0.8));
-      const k2 = side === "short" ? spot * (1 + Math.min(0.5, liqMove * 1.6)) : spot * (1 - Math.min(0.5, liqMove * 1.6));
+      const liquidationPrevented = b.liquidation_prevented === true; // Phase-4 hook; false today
 
-      const [s0, s1, s2, spL, spS] = await Promise.all([
-        probeStrike(singleStrikes[0]), probeStrike(singleStrikes[1]), probeStrike(singleStrikes[2]),
-        probeStrike(k1), probeStrike(k2)
+      // Position-aware strike menu (drawdown floors for all positions; liquidation-insurance +
+      // margin-cap tiers when leveraged) — replaces the leverage-only fraction tiers.
+      const structureCfg = structureConfigFromEnv();
+      const candidates = generateStrikeCandidates({ spot, side, leverage }, structureCfg);
+      // Spread aligned to a representative (median/balanced) tier: long there, short one step deeper.
+      const spreadAnchor = candidates.length ? candidates[Math.floor((candidates.length - 1) / 2)] : null;
+      const spreadGeom = spreadAnchor ? spreadTargets({ spot, side, leverage }, spreadAnchor.targetMovePct, structureCfg) : null;
+
+      const [singleProbes, spLProbe, spSProbe] = await Promise.all([
+        Promise.all(candidates.map((c) => probeStrike(c.targetStrike))),
+        spreadGeom ? probeStrike(spreadGeom.longStrike) : Promise.resolve(null),
+        spreadGeom ? probeStrike(spreadGeom.shortStrike) : Promise.resolve(null)
       ]);
-      const singles = [s0, s1, s2]
-        .map((p) => (p.bestAsk ? { strike: p.bestAsk.strike, askUsdcPerBtc: p.bestAsk.ask } : null))
-        .filter((x): x is { strike: number; askUsdcPerBtc: number } => x != null);
-      const spread = spL.bestAsk && spS.bestBid
-        ? { long: { strike: spL.bestAsk.strike, askUsdcPerBtc: spL.bestAsk.ask }, short: { strike: spS.bestBid.strike, askUsdcPerBtc: 0, bidUsdcPerBtc: spS.bestBid.bid } }
+
+      const singles = singleProbes
+        .map((p, i) => (p.bestAsk && p.bestAsk.ask != null
+          ? { strike: p.bestAsk.strike, askUsdcPerBtc: p.bestAsk.ask, label: candidates[i].label, spreadPct: p.bestAsk.spreadPct }
+          : null))
+        .filter((x): x is { strike: number; askUsdcPerBtc: number; label: string; spreadPct: number | null } => x != null);
+      const spread = spLProbe?.bestAsk && spLProbe.bestAsk.ask != null && spSProbe?.bestBid && spSProbe.bestBid.bid != null
+        ? {
+            long: { strike: spLProbe.bestAsk.strike, askUsdcPerBtc: spLProbe.bestAsk.ask, label: spreadAnchor?.label, spreadPct: spLProbe.bestAsk.spreadPct },
+            short: { strike: spSProbe.bestBid.strike, askUsdcPerBtc: 0, bidUsdcPerBtc: spSProbe.bestBid.bid }
+          }
         : null;
 
-      const quote = buildPerpProtectQuote({ spot, entryPrice, sizeBtc, side, leverage, tenorDays }, { singles, spread, settlementStyle });
+      const pricer = makePerpProtectPricer(pricingConfigFromEnv());
+      const quote = buildPerpProtectQuote({ spot, entryPrice, sizeBtc, side, leverage, tenorDays, liquidationPrevented }, { singles, spread, settlementStyle, pricer });
       const liq = liquidationOf({ spot, entryPrice, sizeBtc, side, leverage, tenorDays });
-      reply.send({
-        as_of: new Date().toISOString(),
-        quote_id: `pp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-        quote_expires_at: new Date(Date.now() + 30_000).toISOString(),
-        ...quote,
-        liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
-        note: "READ-ONLY quote (Phase 1, underwriter model). Protection for a REAL perp position; single = gap-proof capped, spread = cheaper but exposed beyond the short strike. Priced cheapest across Bullish/Deribit/OKX. European settlement (pluggable). No execution yet."
+
+      // Persist the EXACT priced legs per quote_id so a later /activate can execute the same
+      // instruments (venue/instrument/strike/expiry), keyed for the life of the 30s TTL.
+      const quoteId = `pp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const nowMs = Date.now();
+      const ttlMs = 30_000;
+      const longLegByStrike = new Map<number, { venue: string | null; instrument: string | null; expiry: string | null; ask: number | null; covered: boolean | null; slippagePct: number | null }>();
+      singleProbes.forEach((p) => { if (p.bestAsk) longLegByStrike.set(Math.round(p.bestAsk.strike), { venue: p.bestAsk.venue, instrument: p.bestAsk.instrument, expiry: p.bestAsk.expiryIso, ask: p.bestAsk.ask, covered: p.bestAsk.askCovered, slippagePct: p.bestAsk.askSlippagePct }); });
+      const snapshotOptions = quote.options.map((o) => {
+        const legs: Array<{ role: "long" | "short"; venue: string | null; instrument: string | null; strike: number; expiry_iso: string | null; ask_usdc_per_btc: number | null; bid_usdc_per_btc: number | null }> = [];
+        if (o.structure === "put" || o.structure === "call") {
+          const leg = longLegByStrike.get(Math.round(o.strike));
+          legs.push({ role: "long", venue: leg?.venue ?? null, instrument: leg?.instrument ?? null, strike: o.strike, expiry_iso: leg?.expiry ?? null, ask_usdc_per_btc: leg?.ask ?? null, bid_usdc_per_btc: null });
+        } else {
+          if (spLProbe?.bestAsk) legs.push({ role: "long", venue: spLProbe.bestAsk.venue, instrument: spLProbe.bestAsk.instrument, strike: spLProbe.bestAsk.strike, expiry_iso: spLProbe.bestAsk.expiryIso, ask_usdc_per_btc: spLProbe.bestAsk.ask, bid_usdc_per_btc: null });
+          if (spSProbe?.bestBid) legs.push({ role: "short", venue: spSProbe.bestBid.venue, instrument: spSProbe.bestBid.instrument, strike: spSProbe.bestBid.strike, expiry_iso: spSProbe.bestBid.expiryIso, ask_usdc_per_btc: null, bid_usdc_per_btc: spSProbe.bestBid.bid });
+        }
+        return { id: o.id, structure: o.structure, strike: o.strike, short_strike: o.short_strike, premium_usdc: o.premium_usdc, hedge_cost_usdc: o.hedge_cost_usdc, legs };
       });
+      defaultPerpProtectQuoteStore.put({
+        quote_id: quoteId,
+        created_at_ms: nowMs,
+        expires_at_ms: nowMs + ttlMs,
+        position: { side, size_btc: sizeBtc, entry_price: entryPrice, leverage, tenor_days: tenorDays, spot, settlement_style: settlementStyle, liquidation_prevented: liquidationPrevented },
+        options: snapshotOptions
+      });
+
+      // Advisory price-quality (B3): invert each option's hedge ask into implied vol and flag only
+      // implausible (stale/garbage) prints — skew-agnostic, never rejects, complements the B2 guard.
+      const fvCfg = fairValueConfigFromEnv();
+      const optionsWithFairValue = quote.options.map((o) => {
+        const snap = snapshotOptions.find((s) => s.id === o.id);
+        const longLeg = snap?.legs.find((l) => l.role === "long");
+        let fair_value = null as null | ReturnType<typeof fairValueDiagnostic>;
+        if (longLeg?.ask_usdc_per_btc != null && longLeg.expiry_iso) {
+          const tYears = Math.max(0, (Date.parse(longLeg.expiry_iso) - nowMs) / (365 * 86_400_000));
+          fair_value = fairValueDiagnostic({ type: o.structure.startsWith("call") ? "call" : "put", spot, strike: o.strike, tYears, priceUsdcPerBtc: longLeg.ask_usdc_per_btc }, fvCfg);
+        }
+        // Depth-aware (B4) fill quality for the size requested: covered + slippage vs top-of-book.
+        const isSpread = o.structure.endsWith("spread");
+        const dLong = isSpread ? (spLProbe?.bestAsk ?? null) : null;
+        const longCovered = isSpread ? dLong?.askCovered ?? null : longLegByStrike.get(Math.round(o.strike))?.covered ?? null;
+        const longSlip = isSpread ? dLong?.askSlippagePct ?? null : longLegByStrike.get(Math.round(o.strike))?.slippagePct ?? null;
+        const shortCovered = isSpread ? spSProbe?.bestBid?.bidCovered ?? null : null;
+        const depth = {
+          size_btc: sizeBtc,
+          long_covered: longCovered,
+          long_slippage_vs_top_pct: longSlip,
+          short_covered: shortCovered,
+          size_liquidity_warning: longCovered === false || shortCovered === false
+            ? `Displayed book may not fully cover ${sizeBtc} BTC at quoted depth — execution could fill worse; reduce size or expect slippage.`
+            : null
+        };
+        return { ...o, fair_value, depth };
+      });
+
+      // Value benchmark vs Bybit Perp Protect (~"as low as 2% of initial margin", single-venue).
+      const recommended = quote.options.find((o) => o.recommended) ?? quote.options[0] ?? null;
+      const bybitBenchmark = {
+        atticus_recommended_cost_pct_margin: recommended ? recommended.cost_pct_margin : null,
+        bybit_reference_pct_margin: 0.02,
+        basis: "Atticus sources the cheapest qualifying option across OKX/Deribit/Bullish (vs Bybit's single book) and adds a transparent underwriter load; the recommended tier's cost as a % of margin is comparable to Bybit's '~2% of initial margin' headline."
+      };
+      const payload = {
+        as_of: new Date(nowMs).toISOString(),
+        quote_id: quoteId,
+        quote_expires_at: new Date(nowMs + ttlMs).toISOString(),
+        ...quote,
+        options: optionsWithFairValue,
+        liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
+        bybit_benchmark: bybitBenchmark,
+        note: "READ-ONLY quote (underwriter model). Position-aware protection for a REAL perp position across ALL leverages: single = gap-proof capped (truly hard once liquidation_prevented), spread = cheaper but exposed beyond the short strike. Each premium is a transparent build-up (premium_breakdown) over the cheapest cross-venue hedge. whipsaw_exposed/liquidation_whipsaw_risk_usdc surface pre-liquidation-prevention risk honestly. European settlement (pluggable). No execution yet."
+      };
+      demoCacheSet(cacheKey, payload);
+      reply.send(payload);
     }
   );
 
