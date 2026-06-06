@@ -26,6 +26,11 @@ export type LegRow = {
   /** Venue instrument id of the priced leg (kept so a later /activate can execute the SAME option). */
   instrument?: string | null;
   expiryIso?: string | null;
+  /** Depth diagnostics for the size-aware (B4) effective price already reflected in ask/bid. */
+  askCovered?: boolean | null;
+  askSlippagePct?: number | null;
+  bidCovered?: boolean | null;
+  bidSlippagePct?: number | null;
 };
 
 export type LegSelectConfig = {
@@ -45,6 +50,10 @@ export type PickedLeg = {
   spreadPct: number | null;
   instrument: string | null;
   expiryIso: string | null;
+  askCovered: boolean | null;
+  askSlippagePct: number | null;
+  bidCovered: boolean | null;
+  bidSlippagePct: number | null;
 };
 
 export type LegSelection = {
@@ -96,7 +105,11 @@ export const pickBestLegs = (rows: LegRow[], cfg: LegSelectConfig): LegSelection
     daysToExpiry: r.daysToExpiry ?? null,
     spreadPct: r.spreadPct ?? null,
     instrument: r.instrument ?? null,
-    expiryIso: r.expiryIso ?? null
+    expiryIso: r.expiryIso ?? null,
+    askCovered: r.askCovered ?? null,
+    askSlippagePct: r.askSlippagePct ?? null,
+    bidCovered: r.bidCovered ?? null,
+    bidSlippagePct: r.bidSlippagePct ?? null
   });
 
   // Cheapest ASK by per-day cost (tie → lower absolute ask).

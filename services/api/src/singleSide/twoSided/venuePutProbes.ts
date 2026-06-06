@@ -20,6 +20,9 @@ export type VenuePut = {
   spread_pct?: number | null;
   /** Days from now to the chosen listed expiry (so the caller can normalize cross-venue tenor). */
   days_to_expiry?: number | null;
+  /** Book levels normalized to USDC/BTC price + BTC size. For depth-aware (B4) pricing. */
+  ask_levels?: Array<{ price_usdc_per_btc: number; size_btc: number }>;
+  bid_levels?: Array<{ price_usdc_per_btc: number; size_btc: number }>;
 };
 
 const DERIBIT_BASE = process.env.DERIBIT_REST_BASE ?? "https://www.deribit.com";
@@ -52,11 +55,16 @@ export const deribitPutProbe = async (opts: {
     const expiries = [...new Set(puts.map((p) => p.expiration_timestamp!))].sort((a, b) => Math.abs(a - targetMs) - Math.abs(b - targetMs));
     const expiry = expiries[0];
     const inst = puts.filter((p) => p.expiration_timestamp === expiry).sort((a, b) => Math.abs(a.strike! - opts.strike) - Math.abs(b.strike! - opts.strike))[0];
-    const ob = (await fetcher(`${DERIBIT_BASE}/api/v2/public/get_order_book?instrument_name=${inst.instrument_name}`)) as { result?: { best_ask_price?: number; best_bid_price?: number } };
+    const ob = (await fetcher(`${DERIBIT_BASE}/api/v2/public/get_order_book?instrument_name=${inst.instrument_name}`)) as { result?: { best_ask_price?: number; best_bid_price?: number; asks?: number[][]; bids?: number[][] } };
     const askBtc = ob.result?.best_ask_price;
     const bidBtc = ob.result?.best_bid_price;
     const askU = askBtc != null && askBtc > 0 ? +(askBtc * opts.spot).toFixed(2) : null;
     const bidU = bidBtc != null && bidBtc > 0 ? +(bidBtc * opts.spot).toFixed(2) : null;
+    // Deribit BTC options: contract_size = 1.0 → order-book amount is already in BTC (public-API confirmed).
+    const toLevels = (rows?: number[][]) =>
+      (rows ?? [])
+        .map((r) => ({ price_usdc_per_btc: +(Number(r[0]) * opts.spot).toFixed(2), size_btc: +Number(r[1]).toFixed(8) }))
+        .filter((l) => l.price_usdc_per_btc > 0 && l.size_btc > 0);
     return {
       venue: "deribit",
       ask_usdc_per_btc: askU,
@@ -65,7 +73,9 @@ export const deribitPutProbe = async (opts: {
       strike: inst.strike ?? null,
       expiry_iso: new Date(expiry).toISOString(),
       spread_pct: spreadPctOf(askU, bidU),
-      days_to_expiry: +((expiry - now) / 86_400_000).toFixed(2)
+      days_to_expiry: +((expiry - now) / 86_400_000).toFixed(2),
+      ask_levels: toLevels(ob.result?.asks),
+      bid_levels: toLevels(ob.result?.bids)
     };
   } catch {
     return { venue: "deribit", ask_usdc_per_btc: null, instrument: null };

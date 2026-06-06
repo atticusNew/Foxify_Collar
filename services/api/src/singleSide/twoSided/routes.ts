@@ -1985,6 +1985,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const { okxProbe } = await import("./okxProbe");
       const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
       const { pickBestLegs } = await import("./perpProtectLegSelect");
+      const { vwapToFill } = await import("./perpProtectDepth");
       const { generateStrikeCandidates, spreadTargets, structureConfigFromEnv } = await import("./perpProtectStructure");
       const { makePerpProtectPricer, pricingConfigFromEnv } = await import("./perpProtectPricing");
       const { defaultPerpProtectQuoteStore } = await import("./perpProtectQuoteStore");
@@ -2014,10 +2015,25 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           deribitPutProbe({ spot, strike, tenorDays, optType }),
           bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
         ]);
+        // Size-aware (B4) effective price: walk the venue book for size_btc (TOB fallback when no
+        // depth). Selection + premium then both reflect the real fill, not just top-of-book.
+        const depthRow = (venue: string, askTob: number | null, bidTob: number | null, askLevels?: Array<{ price_usdc_per_btc: number; size_btc: number }>, bidLevels?: Array<{ price_usdc_per_btc: number; size_btc: number }>) => {
+          const a = askLevels && askLevels.length ? vwapToFill(askLevels.map((l) => ({ priceUsdcPerBtc: l.price_usdc_per_btc, sizeBtc: l.size_btc })), sizeBtc, "ask") : null;
+          const bd = bidLevels && bidLevels.length ? vwapToFill(bidLevels.map((l) => ({ priceUsdcPerBtc: l.price_usdc_per_btc, sizeBtc: l.size_btc })), sizeBtc, "bid") : null;
+          return {
+            venue,
+            ask: a?.effective_usdc_per_btc ?? askTob,
+            bid: bd?.effective_usdc_per_btc ?? bidTob,
+            askCovered: a ? a.covered : null,
+            askSlippagePct: a ? a.slippage_vs_top_pct : null,
+            bidCovered: bd ? bd.covered : null,
+            bidSlippagePct: bd ? bd.slippage_vs_top_pct : null
+          };
+        };
         const rows = [
-          { venue: "okx", ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null, daysToExpiry: okx?.days_to_expiry ?? null, spreadPct: okx?.spread_pct ?? null, instrument: okx?.instId ?? null, expiryIso: okx?.expiry_iso ?? null },
-          { venue: "deribit", ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null, daysToExpiry: der.days_to_expiry ?? null, spreadPct: der.spread_pct ?? null, instrument: der.instrument ?? null, expiryIso: der.expiry_iso ?? null },
-          { venue: "bullish", ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null, instrument: bull.instrument ?? null, expiryIso: bull.expiry_iso ?? null }
+          { ...depthRow("okx", okx?.ask_usdc_per_btc ?? null, okx?.bid_usdc_per_btc ?? null, okx?.ask_levels, okx?.bid_levels), strike: okx?.strike ?? null, daysToExpiry: okx?.days_to_expiry ?? null, spreadPct: okx?.spread_pct ?? null, instrument: okx?.instId ?? null, expiryIso: okx?.expiry_iso ?? null },
+          { ...depthRow("deribit", der.ask_usdc_per_btc, der.bid_usdc_per_btc ?? null, der.ask_levels, der.bid_levels), strike: der.strike ?? null, daysToExpiry: der.days_to_expiry ?? null, spreadPct: der.spread_pct ?? null, instrument: der.instrument ?? null, expiryIso: der.expiry_iso ?? null },
+          { ...depthRow("bullish", bull.ask_usdc_per_btc, bull.bid_usdc_per_btc ?? null, bull.ask_levels, bull.bid_levels), strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null, instrument: bull.instrument ?? null, expiryIso: bull.expiry_iso ?? null }
         ];
         const { bestAsk, bestBid } = pickBestLegs(rows, { targetTenorDays: tenorDays });
         return { bestAsk, bestBid };
@@ -2060,8 +2076,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const quoteId = `pp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       const nowMs = Date.now();
       const ttlMs = 30_000;
-      const longLegByStrike = new Map<number, { venue: string | null; instrument: string | null; expiry: string | null; ask: number | null }>();
-      singleProbes.forEach((p) => { if (p.bestAsk) longLegByStrike.set(Math.round(p.bestAsk.strike), { venue: p.bestAsk.venue, instrument: p.bestAsk.instrument, expiry: p.bestAsk.expiryIso, ask: p.bestAsk.ask }); });
+      const longLegByStrike = new Map<number, { venue: string | null; instrument: string | null; expiry: string | null; ask: number | null; covered: boolean | null; slippagePct: number | null }>();
+      singleProbes.forEach((p) => { if (p.bestAsk) longLegByStrike.set(Math.round(p.bestAsk.strike), { venue: p.bestAsk.venue, instrument: p.bestAsk.instrument, expiry: p.bestAsk.expiryIso, ask: p.bestAsk.ask, covered: p.bestAsk.askCovered, slippagePct: p.bestAsk.askSlippagePct }); });
       const snapshotOptions = quote.options.map((o) => {
         const legs: Array<{ role: "long" | "short"; venue: string | null; instrument: string | null; strike: number; expiry_iso: string | null; ask_usdc_per_btc: number | null; bid_usdc_per_btc: number | null }> = [];
         if (o.structure === "put" || o.structure === "call") {
@@ -2092,7 +2108,22 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           const tYears = Math.max(0, (Date.parse(longLeg.expiry_iso) - nowMs) / (365 * 86_400_000));
           fair_value = fairValueDiagnostic({ type: o.structure.startsWith("call") ? "call" : "put", spot, strike: o.strike, tYears, priceUsdcPerBtc: longLeg.ask_usdc_per_btc }, fvCfg);
         }
-        return { ...o, fair_value };
+        // Depth-aware (B4) fill quality for the size requested: covered + slippage vs top-of-book.
+        const isSpread = o.structure.endsWith("spread");
+        const dLong = isSpread ? (spLProbe?.bestAsk ?? null) : null;
+        const longCovered = isSpread ? dLong?.askCovered ?? null : longLegByStrike.get(Math.round(o.strike))?.covered ?? null;
+        const longSlip = isSpread ? dLong?.askSlippagePct ?? null : longLegByStrike.get(Math.round(o.strike))?.slippagePct ?? null;
+        const shortCovered = isSpread ? spSProbe?.bestBid?.bidCovered ?? null : null;
+        const depth = {
+          size_btc: sizeBtc,
+          long_covered: longCovered,
+          long_slippage_vs_top_pct: longSlip,
+          short_covered: shortCovered,
+          size_liquidity_warning: longCovered === false || shortCovered === false
+            ? `Displayed book may not fully cover ${sizeBtc} BTC at quoted depth — execution could fill worse; reduce size or expect slippage.`
+            : null
+        };
+        return { ...o, fair_value, depth };
       });
 
       // Value benchmark vs Bybit Perp Protect (~"as low as 2% of initial margin", single-venue).

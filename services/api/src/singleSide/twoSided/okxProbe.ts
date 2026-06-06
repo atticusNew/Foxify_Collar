@@ -31,9 +31,15 @@ export type OkxLegQuote = {
   ask_usdc_per_btc: number | null;
   mid_usdc_per_btc: number | null;
   spread_pct: number | null;
-  bid_size: number | null;   // OKX contracts (≈0.01 BTC each — confirm multiplier)
+  bid_size: number | null;   // OKX contracts (1 contract = 0.01 BTC; ctVal=1×ctMult=0.01, public-API confirmed)
   ask_size: number | null;
+  /** Book levels normalized to USDC/BTC price + BTC size (size = contracts × 0.01). For depth-aware pricing. */
+  ask_levels?: Array<{ price_usdc_per_btc: number; size_btc: number }>;
+  bid_levels?: Array<{ price_usdc_per_btc: number; size_btc: number }>;
 };
+
+/** OKX coin-margined BTC-USD option: 1 contract = 0.01 BTC (ctVal=1, ctMult=0.01; confirmed from the public instruments endpoint). */
+const OKX_CONTRACT_BTC = 0.01;
 
 /** Parse a coin-margined OKX option instId: BTC-USD-YYMMDD-STRIKE-C/P. Excludes _UM. */
 export const parseOkxOption = (instId: string): { strike: number; optType: "put" | "call"; expiryMs: number } | null => {
@@ -74,7 +80,7 @@ export const okxProbe = async (opts: {
     for (const [optType, target] of [["put", opts.putStrike], ["call", opts.callStrike]] as const) {
       const inst = pickNearest(optType, target);
       if (!inst) continue;
-      const book = (await fetcher(`${OKX_BASE}/api/v5/market/books?instId=${inst.instId}&sz=1`)) as { data?: Array<{ bids?: string[][]; asks?: string[][] }> };
+      const book = (await fetcher(`${OKX_BASE}/api/v5/market/books?instId=${inst.instId}&sz=25`)) as { data?: Array<{ bids?: string[][]; asks?: string[][] }> };
       const top = book.data?.[0];
       const bidBtc = top?.bids?.[0]?.[0] != null ? Number(top.bids[0][0]) : null;
       const askBtc = top?.asks?.[0]?.[0] != null ? Number(top.asks[0][0]) : null;
@@ -82,6 +88,13 @@ export const okxProbe = async (opts: {
       const askSz = top?.asks?.[0]?.[1] != null ? Number(top.asks[0][1]) : null;
       const bidU = bidBtc != null ? bidBtc * opts.spot : null;
       const askU = askBtc != null ? askBtc * opts.spot : null;
+      // Book levels → USDC/BTC price, BTC size (contracts × 0.01). For depth-aware (B4) pricing.
+      const toLevels = (rows?: string[][]) =>
+        (rows ?? [])
+          .map((r) => ({ price_usdc_per_btc: +(Number(r[0]) * opts.spot).toFixed(2), size_btc: +(Number(r[1]) * OKX_CONTRACT_BTC).toFixed(8) }))
+          .filter((l) => l.price_usdc_per_btc > 0 && l.size_btc > 0);
+      const askLevels = toLevels(top?.asks);
+      const bidLevels = toLevels(top?.bids);
       const mid = bidU != null && askU != null ? (bidU + askU) / 2 : null;
       const spread = bidU != null && askU != null && mid != null && mid > 0 ? (askU - bidU) / mid : null;
       legs.push({
@@ -92,7 +105,8 @@ export const okxProbe = async (opts: {
         ask_usdc_per_btc: askU != null ? +askU.toFixed(2) : null,
         mid_usdc_per_btc: mid != null ? +mid.toFixed(2) : null,
         spread_pct: spread != null ? +spread.toFixed(4) : null,
-        bid_size: bidSz, ask_size: askSz
+        bid_size: bidSz, ask_size: askSz,
+        ask_levels: askLevels, bid_levels: bidLevels
       });
     }
     return { ok: true, expiry_iso: new Date(expiry).toISOString(), legs };
