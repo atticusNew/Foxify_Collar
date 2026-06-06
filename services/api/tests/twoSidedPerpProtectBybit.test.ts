@@ -23,6 +23,16 @@ test("we win on both retail and hedge when cheaper than Bybit", () => {
   assert.equal(r.bybit_fillable, true);
 });
 
+test("size-aware ask drives the premium; TOB ask only informs spread/fillability", () => {
+  // Tight top-of-book ($1000/$980) but only a sliver there → size-aware (VWAP) ask is $1200.
+  const thin = { ask_usdc_per_btc: 1200, tob_ask_usdc_per_btc: 1000, bid_usdc_per_btc: 980, strike: 57000, expiry_ms: 1, symbol: "X" };
+  const r = compareToBybit({ optionId: "single-0", bybit: thin, sizeBtc: 0.5, atticusPremiumUsdc: 560, atticusHedgeCostUsdc: 500 });
+  assert.equal(r.bybit_premium_usdc, 600);            // size-aware 1200 × 0.5 (not the 1000 TOB)
+  assert.equal(r.bybit_tob_ask_usdc_per_btc, 1000);
+  assert.equal(r.bybit_fillable, true);               // spread judged on TOB 1000/980 ≈ 2%
+  assert.equal(r.beats_bybit_retail, true);           // our 560 ≤ 600 size-aware
+});
+
 test("wide / one-sided Bybit book → fillable=false (don't trust the ask)", () => {
   const wide = { ...bybit, bid_usdc_per_btc: 100 }; // ask 1000 / bid 100 → spread ≈ 1.64 (164%)
   const r = compareToBybit({ optionId: "single-0", bybit: wide, sizeBtc: 0.5, atticusPremiumUsdc: 600, atticusHedgeCostUsdc: 360 });

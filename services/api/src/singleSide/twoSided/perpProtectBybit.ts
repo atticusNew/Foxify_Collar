@@ -11,7 +11,11 @@
  */
 
 export type BybitLegQuote = {
+  /** The ask used for the premium comparison — SIZE-AWARE (VWAP walked for the requested size),
+   *  consistent with how we source our own hedge. Falls back to top-of-book when no depth. */
   ask_usdc_per_btc: number;
+  /** Top-of-book ask (for the spread/fillability check only; the headline a thin book advertises). */
+  tob_ask_usdc_per_btc?: number | null;
   bid_usdc_per_btc: number | null;
   strike: number;
   expiry_ms: number;
@@ -23,7 +27,8 @@ export type PriceCompetitiveness = {
   compared_option_id: string | null;        // which option this compares (the recommended single)
   bybit_symbol: string | null;
   bybit_strike: number | null;
-  bybit_ask_usdc_per_btc: number | null;
+  bybit_ask_usdc_per_btc: number | null;     // SIZE-AWARE effective ask (VWAP for the requested size)
+  bybit_tob_ask_usdc_per_btc: number | null; // top-of-book ask (headline; for reference + spread)
   bybit_bid_usdc_per_btc: number | null;     // top-of-book bid (for the fillability check)
   bybit_spread_pct: number | null;           // (ask−bid)/mid; null when a side is missing
   bybit_fillable: boolean | null;            // false when the book is too wide for the ask to be a real fill
@@ -75,6 +80,7 @@ export const compareToBybit = (args: {
       bybit_symbol: bybit?.symbol ?? null,
       bybit_strike: bybit?.strike ?? null,
       bybit_ask_usdc_per_btc: bybit?.ask_usdc_per_btc ?? null,
+      bybit_tob_ask_usdc_per_btc: bybit?.tob_ask_usdc_per_btc ?? null,
       bybit_bid_usdc_per_btc: bybit?.bid_usdc_per_btc ?? null,
       bybit_spread_pct: null,
       bybit_fillable: null,
@@ -91,7 +97,8 @@ export const compareToBybit = (args: {
   }
   const bybitPremium = bybit.ask_usdc_per_btc * sizeBtc;
   const hedgeEdge = (bybit.ask_usdc_per_btc - atticusHedgeCostUsdc / sizeBtc) * sizeBtc;
-  const spreadPct = spreadPctOf(bybit.ask_usdc_per_btc, bybit.bid_usdc_per_btc);
+  // Spread/fillability is judged on the TOP-OF-BOOK quote (the headline), not the size-aware ask.
+  const spreadPct = spreadPctOf(bybit.tob_ask_usdc_per_btc ?? bybit.ask_usdc_per_btc, bybit.bid_usdc_per_btc);
   // Fillable only when the book is two-sided AND tight enough; a wide/one-sided ask is not a real
   // price, so "Bybit cheaper" on that ask would be misleading.
   const fillable = spreadPct == null ? false : spreadPct <= FILLABLE_MAX_SPREAD_PCT;
@@ -101,6 +108,7 @@ export const compareToBybit = (args: {
     bybit_symbol: bybit.symbol,
     bybit_strike: bybit.strike,
     bybit_ask_usdc_per_btc: round2(bybit.ask_usdc_per_btc),
+    bybit_tob_ask_usdc_per_btc: bybit.tob_ask_usdc_per_btc != null ? round2(bybit.tob_ask_usdc_per_btc) : round2(bybit.ask_usdc_per_btc),
     bybit_bid_usdc_per_btc: bybit.bid_usdc_per_btc != null ? round2(bybit.bid_usdc_per_btc) : null,
     bybit_spread_pct: spreadPct,
     bybit_fillable: fillable,

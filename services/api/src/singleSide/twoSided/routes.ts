@@ -2173,7 +2173,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       let priceCompetitiveness: unknown = undefined;
       if (isAdmin && process.env.PERP_PROTECT_BYBIT_CHECK !== "false") {
         try {
-          const { getBybitOptionAsk } = await import("../../bybitAdapter");
+          const { getBybitOptionBook } = await import("../../bybitAdapter");
           const { compareToBybit } = await import("./perpProtectBybit");
           const cmpOpt = (quote.options.find((o) => o.recommended && o.capped)
             ?? quote.options.find((o) => o.capped) ?? quote.options[0]) ?? null;
@@ -2181,7 +2181,21 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
             const snap = snapshotOptions.find((s) => s.id === cmpOpt.id);
             const longLeg = snap?.legs.find((l) => l.role === "long");
             const targetExpiryMs = longLeg?.expiry_iso ? Date.parse(longLeg.expiry_iso) : nowMs + tenorDays * 86_400_000;
-            const bybit = await getBybitOptionAsk("BTC", targetExpiryMs, cmpOpt.strike, optType === "call" ? "C" : "P");
+            const book = await getBybitOptionBook("BTC", targetExpiryMs, cmpOpt.strike, optType === "call" ? "C" : "P");
+            // SIZE-AWARE Bybit ask: walk their book for the SAME size we'd hedge (consistent with our
+            // own sourcing), so a thin top-of-book can't make Bybit look cheaper than it's fillable.
+            let bybit: { ask_usdc_per_btc: number; tob_ask_usdc_per_btc: number | null; bid_usdc_per_btc: number | null; strike: number; expiry_ms: number; symbol: string } | null = null;
+            if (book && book.ask_usdc_per_btc != null) {
+              const vw = book.ask_levels.length
+                ? vwapToFill(book.ask_levels.map((l) => ({ priceUsdcPerBtc: l.price_usdc_per_btc, sizeBtc: l.size_btc })), sizeBtc, "ask")
+                : null;
+              bybit = {
+                ask_usdc_per_btc: vw?.effective_usdc_per_btc ?? book.ask_usdc_per_btc,
+                tob_ask_usdc_per_btc: book.ask_usdc_per_btc,
+                bid_usdc_per_btc: book.bid_usdc_per_btc,
+                strike: book.strike, expiry_ms: book.expiry_ms, symbol: book.symbol
+              };
+            }
             priceCompetitiveness = compareToBybit({
               optionId: cmpOpt.id,
               bybit,

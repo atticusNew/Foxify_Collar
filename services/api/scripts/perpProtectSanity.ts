@@ -104,8 +104,10 @@ async function main() {
     if (c.available) {
       const spreadStr = c.bybit_spread_pct == null ? "n/a (one-sided book)" : `${(c.bybit_spread_pct * 100).toFixed(1)}%`;
       console.log(`  Atticus  ${optType} @ ${usd(cmp?.strike)}        premium ${usd(c.atticus_premium_usdc)}   (raw hedge ${usd(c.atticus_hedge_cost_usdc)})`);
+      const tob = c.bybit_tob_ask_usdc_per_btc;
+      const tobNote = tob != null && Math.round(tob) !== Math.round(c.bybit_ask_usdc_per_btc) ? ` [top-of-book ${usd(tob)}]` : "";
       console.log(`  Bybit    ${c.bybit_symbol ?? `${optType} @ ${usd(c.bybit_strike)}`}`);
-      console.log(`           bid ${usd(c.bybit_bid_usdc_per_btc)} / ask ${usd(c.bybit_ask_usdc_per_btc)} per BTC  ·  spread ${spreadStr}  ·  ask→premium ${usd(c.bybit_premium_usdc)}`);
+      console.log(`           bid ${usd(c.bybit_bid_usdc_per_btc)} / ask ${usd(c.bybit_ask_usdc_per_btc)}/BTC (size-aware)${tobNote}  ·  spread ${spreadStr}  ·  ask→premium ${usd(c.bybit_premium_usdc)}`);
       console.log(`  → retail: ${c.beats_bybit_retail ? "WE WIN" : "Bybit cheaper"} by ${usd(Math.abs(c.retail_edge_usdc))}   ·   hedge headroom vs Bybit: ${usd(c.hedge_edge_usdc)}   ·   hedge sourced on: ${c.hedge_venue ?? "—"}`);
       if (c.note) console.log(`  ℹ ${c.note}`);
       if (c.bybit_fillable === false) {

@@ -326,8 +326,19 @@ export const buildPerpProtectQuote = (
     if (sp) options.push(sp);
   }
 
-  const recId = pickRecommendedOption(options, margin, inputs.recMaxWorstCasePctMargin ?? 0.6);
-  if (recId) { const r = options.find((o) => o.id === recId); if (r) r.recommended = true; }
+  // Drop sub-liquidation tiers when the perp can actually be liquidated (leveraged, pre-Phase-4):
+  // a strike beyond the liq price can't protect before liquidation, so it offers NO real protection
+  // and only clutters the menu with scary >100%-of-margin worst cases. Kept when liquidation is
+  // prevented (the cap is real) or when nothing protective would remain.
+  const liquidatable = position.liquidationPrevented !== true && position.leverage > 1;
+  let shown = options;
+  if (liquidatable) {
+    const protective = options.filter((o) => o.protects_before_liq);
+    if (protective.length > 0) shown = protective;
+  }
+
+  const recId = pickRecommendedOption(shown, margin, inputs.recMaxWorstCasePctMargin ?? 0.6);
+  if (recId) { const r = shown.find((o) => o.id === recId); if (r) r.recommended = true; }
 
   return {
     position: {
@@ -339,6 +350,6 @@ export const buildPerpProtectQuote = (
     settlement_style: inputs.settlementStyle ?? "european",
     liquidation_prevented: position.liquidationPrevented === true,
     tenor_days: tenorDays,
-    options
+    options: shown
   };
 };
