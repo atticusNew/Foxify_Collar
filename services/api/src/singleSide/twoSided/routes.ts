@@ -1977,7 +1977,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    * across OKX/Deribit/Bullish. Phase 1 = QUOTE only (no execution yet).
    * Body: { side, size_btc, entry_price, leverage, tenor_days, mark_price?, settlement_style? }
    */
-  app.post<{ Body: { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string } }>(
+  app.post<{ Body: { side?: string; size_usd?: number; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string } }>(
     "/admin/foxify/v2/perp-protect/quote",
     { preHandler: checkDemoOrAdminToken },
     async (req, reply) => {
@@ -1990,18 +1990,21 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const { makePerpProtectPricer, pricingConfigFromEnv } = await import("./perpProtectPricing");
       const { defaultPerpProtectQuoteStore } = await import("./perpProtectQuoteStore");
       const { fairValueDiagnostic, fairValueConfigFromEnv } = await import("./perpProtectFairValue");
-      const b = (req.body ?? {}) as { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string; liquidation_prevented?: boolean };
+      const b = (req.body ?? {}) as { side?: string; size_usd?: number; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string; liquidation_prevented?: boolean };
       const feed = deps.feedService.getCurrentFeed();
       const spot = b.mark_price != null && Number(b.mark_price) > 0 ? Number(b.mark_price) : feed?.canonicalPrice;
       if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
       const side: "long" | "short" = b.side === "short" ? "short" : "long";
-      const sizeBtc = Number(b.size_btc ?? 0);
+      // Position size is entered in USD NOTIONAL (preferred — traders think in $); derive BTC at the
+      // live mark. `size_btc` stays supported as a fallback for older callers/tests.
+      const sizeUsd = Number(b.size_usd ?? 0);
+      const sizeBtc = sizeUsd > 0 ? sizeUsd / spot : Number(b.size_btc ?? 0);
       const entryPrice = Number(b.entry_price ?? spot);
       const leverage = Number(b.leverage ?? 0);
       const tenorDays = Number(b.tenor_days ?? 7);
       const settlementStyle = (["european", "american", "auto_close"].includes(b.settlement_style ?? "") ? b.settlement_style : "european") as "european" | "american" | "auto_close";
       if (!(sizeBtc > 0) || !(entryPrice > 0) || !(leverage > 0) || leverage > 100 || !(tenorDays > 0)) {
-        reply.code(400).send({ error: "invalid_request", message: "size_btc>0, entry_price>0, 0<leverage<=100, tenor_days>0" });
+        reply.code(400).send({ error: "invalid_request", message: "size_usd>0 (or size_btc>0), entry_price>0, 0<leverage<=100, tenor_days>0" });
         return;
       }
       // Function-essential safety caps (env-overridable). Bound size, protected notional, and tenor

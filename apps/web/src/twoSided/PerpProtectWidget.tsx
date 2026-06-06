@@ -53,7 +53,7 @@ const TENORS = [7, 14, 30];
 export function PerpProtectWidget() {
   const [authed, setAuthed] = useState(() => !!getToken("demo"));
   const [side, setSide] = useState<"long" | "short">("long");
-  const [sizeBtc, setSizeBtc] = useState(0.5);
+  const [sizeUsd, setSizeUsd] = useState(30000);
   const [leverage, setLeverage] = useState(10);
   const [tenorDays, setTenorDays] = useState(7);
   const [entryStr, setEntryStr] = useState("");
@@ -69,7 +69,7 @@ export function PerpProtectWidget() {
     setLoading(true); setErr(null);
     try {
       const entry = entryTouched ? Number(entryStr) : NaN;
-      const body: Record<string, unknown> = { side, size_btc: sizeBtc, leverage, tenor_days: tenorDays };
+      const body: Record<string, unknown> = { side, size_usd: sizeUsd, leverage, tenor_days: tenorDays };
       if (Number.isFinite(entry) && entry > 0) body.entry_price = entry;
       const data = await demoPost<PPQuote>("/admin/foxify/v2/perp-protect/quote", body);
       setQuote(data);
@@ -79,7 +79,7 @@ export function PerpProtectWidget() {
       if (e instanceof UnauthorizedError) { setAuthed(false); return; }
       setErr((e as Error).message); setQuote(null);
     } finally { setLoading(false); }
-  }, [side, sizeBtc, leverage, tenorDays, entryTouched, entryStr]);
+  }, [side, sizeUsd, leverage, tenorDays, entryTouched, entryStr]);
 
   useEffect(() => {
     if (!authed) return;
@@ -118,10 +118,13 @@ export function PerpProtectWidget() {
               <Chip active={side === "short"} label="Short" onClick={() => setSide("short")} />
             </div>
           </FieldRow>
-          <FieldRow label="Size (BTC)">
-            <input type="number" min={0.001} step={0.1} value={sizeBtc}
-              onChange={(e) => setSizeBtc(Math.max(0.001, Number(e.target.value) || 0.001))}
-              style={{ ...input, width: 130, textAlign: "right" }} />
+          <FieldRow label="Size">
+            <div style={{ position: "relative", width: 150 }}>
+              <span style={{ position: "absolute", left: 12, top: 11, color: C.muted, fontSize: 15 }}>$</span>
+              <input type="number" min={100} step={1000} value={sizeUsd}
+                onChange={(e) => setSizeUsd(Math.max(100, Number(e.target.value) || 100))}
+                style={{ ...input, paddingLeft: 24, textAlign: "right" }} />
+            </div>
           </FieldRow>
           <FieldRow label="Entry price">
             <div style={{ position: "relative", width: 150 }}>
