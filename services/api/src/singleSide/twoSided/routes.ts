@@ -1987,6 +1987,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const { pickBestLegs } = await import("./perpProtectLegSelect");
       const { generateStrikeCandidates, spreadTargets, structureConfigFromEnv } = await import("./perpProtectStructure");
       const { makePerpProtectPricer, pricingConfigFromEnv } = await import("./perpProtectPricing");
+      const { defaultPerpProtectQuoteStore } = await import("./perpProtectQuoteStore");
       const b = (req.body ?? {}) as { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string; liquidation_prevented?: boolean };
       const feed = deps.feedService.getCurrentFeed();
       const spot = b.mark_price != null && Number(b.mark_price) > 0 ? Number(b.mark_price) : feed?.canonicalPrice;
@@ -2013,9 +2014,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
         ]);
         const rows = [
-          { venue: "okx", ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null, daysToExpiry: okx?.days_to_expiry ?? null, spreadPct: okx?.spread_pct ?? null },
-          { venue: "deribit", ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null, daysToExpiry: der.days_to_expiry ?? null, spreadPct: der.spread_pct ?? null },
-          { venue: "bullish", ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null }
+          { venue: "okx", ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null, daysToExpiry: okx?.days_to_expiry ?? null, spreadPct: okx?.spread_pct ?? null, instrument: okx?.instId ?? null, expiryIso: okx?.expiry_iso ?? null },
+          { venue: "deribit", ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null, daysToExpiry: der.days_to_expiry ?? null, spreadPct: der.spread_pct ?? null, instrument: der.instrument ?? null, expiryIso: der.expiry_iso ?? null },
+          { venue: "bullish", ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null, instrument: bull.instrument ?? null, expiryIso: bull.expiry_iso ?? null }
         ];
         const { bestAsk, bestBid } = pickBestLegs(rows, { targetTenorDays: tenorDays });
         return { bestAsk, bestBid };
@@ -2053,6 +2054,32 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const quote = buildPerpProtectQuote({ spot, entryPrice, sizeBtc, side, leverage, tenorDays, liquidationPrevented }, { singles, spread, settlementStyle, pricer });
       const liq = liquidationOf({ spot, entryPrice, sizeBtc, side, leverage, tenorDays });
 
+      // Persist the EXACT priced legs per quote_id so a later /activate can execute the same
+      // instruments (venue/instrument/strike/expiry), keyed for the life of the 30s TTL.
+      const quoteId = `pp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+      const nowMs = Date.now();
+      const ttlMs = 30_000;
+      const longLegByStrike = new Map<number, { venue: string | null; instrument: string | null; expiry: string | null; ask: number | null }>();
+      singleProbes.forEach((p) => { if (p.bestAsk) longLegByStrike.set(Math.round(p.bestAsk.strike), { venue: p.bestAsk.venue, instrument: p.bestAsk.instrument, expiry: p.bestAsk.expiryIso, ask: p.bestAsk.ask }); });
+      const snapshotOptions = quote.options.map((o) => {
+        const legs: Array<{ role: "long" | "short"; venue: string | null; instrument: string | null; strike: number; expiry_iso: string | null; ask_usdc_per_btc: number | null; bid_usdc_per_btc: number | null }> = [];
+        if (o.structure === "put" || o.structure === "call") {
+          const leg = longLegByStrike.get(Math.round(o.strike));
+          legs.push({ role: "long", venue: leg?.venue ?? null, instrument: leg?.instrument ?? null, strike: o.strike, expiry_iso: leg?.expiry ?? null, ask_usdc_per_btc: leg?.ask ?? null, bid_usdc_per_btc: null });
+        } else {
+          if (spLProbe?.bestAsk) legs.push({ role: "long", venue: spLProbe.bestAsk.venue, instrument: spLProbe.bestAsk.instrument, strike: spLProbe.bestAsk.strike, expiry_iso: spLProbe.bestAsk.expiryIso, ask_usdc_per_btc: spLProbe.bestAsk.ask, bid_usdc_per_btc: null });
+          if (spSProbe?.bestBid) legs.push({ role: "short", venue: spSProbe.bestBid.venue, instrument: spSProbe.bestBid.instrument, strike: spSProbe.bestBid.strike, expiry_iso: spSProbe.bestBid.expiryIso, ask_usdc_per_btc: null, bid_usdc_per_btc: spSProbe.bestBid.bid });
+        }
+        return { id: o.id, structure: o.structure, strike: o.strike, short_strike: o.short_strike, premium_usdc: o.premium_usdc, hedge_cost_usdc: o.hedge_cost_usdc, legs };
+      });
+      defaultPerpProtectQuoteStore.put({
+        quote_id: quoteId,
+        created_at_ms: nowMs,
+        expires_at_ms: nowMs + ttlMs,
+        position: { side, size_btc: sizeBtc, entry_price: entryPrice, leverage, tenor_days: tenorDays, spot, settlement_style: settlementStyle, liquidation_prevented: liquidationPrevented },
+        options: snapshotOptions
+      });
+
       // Value benchmark vs Bybit Perp Protect (~"as low as 2% of initial margin", single-venue).
       const recommended = quote.options.find((o) => o.recommended) ?? quote.options[0] ?? null;
       const bybitBenchmark = {
@@ -2061,9 +2088,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         basis: "Atticus sources the cheapest qualifying option across OKX/Deribit/Bullish (vs Bybit's single book) and adds a transparent underwriter load; the recommended tier's cost as a % of margin is comparable to Bybit's '~2% of initial margin' headline."
       };
       reply.send({
-        as_of: new Date().toISOString(),
-        quote_id: `pp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
-        quote_expires_at: new Date(Date.now() + 30_000).toISOString(),
+        as_of: new Date(nowMs).toISOString(),
+        quote_id: quoteId,
+        quote_expires_at: new Date(nowMs + ttlMs).toISOString(),
         ...quote,
         liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
         bybit_benchmark: bybitBenchmark,

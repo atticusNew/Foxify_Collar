@@ -23,6 +23,9 @@ export type LegRow = {
   strike: number | null;
   daysToExpiry?: number | null;
   spreadPct?: number | null;
+  /** Venue instrument id of the priced leg (kept so a later /activate can execute the SAME option). */
+  instrument?: string | null;
+  expiryIso?: string | null;
 };
 
 export type LegSelectConfig = {
@@ -40,6 +43,8 @@ export type PickedLeg = {
   strike: number;
   daysToExpiry: number | null;
   spreadPct: number | null;
+  instrument: string | null;
+  expiryIso: string | null;
 };
 
 export type LegSelection = {
@@ -89,7 +94,9 @@ export const pickBestLegs = (rows: LegRow[], cfg: LegSelectConfig): LegSelection
     bid: r.bid,
     strike: r.strike as number,
     daysToExpiry: r.daysToExpiry ?? null,
-    spreadPct: r.spreadPct ?? null
+    spreadPct: r.spreadPct ?? null,
+    instrument: r.instrument ?? null,
+    expiryIso: r.expiryIso ?? null
   });
 
   // Cheapest ASK by per-day cost (tie → lower absolute ask).
