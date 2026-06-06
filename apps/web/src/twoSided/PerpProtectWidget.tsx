@@ -39,7 +39,6 @@ type PPQuote = {
   position: PPPosition; settlement_style: string; liquidation_prevented: boolean; tenor_days: number;
   options: PPOption[];
   liquidation: { price: number; move_pct: number };
-  bybit_benchmark: { atticus_recommended_cost_pct_margin: number | null; bybit_reference_pct_margin: number; basis: string };
 };
 
 const usd = (x: number | null | undefined) => (x == null ? "—" : `$${Math.round(x).toLocaleString()}`);
@@ -48,14 +47,14 @@ const pct = (x: number | null | undefined, d = 1) => (x == null ? "—" : `${(x 
 const signed = (x: number | null | undefined, side: "long" | "short") => (x == null ? "—" : `${side === "short" ? "+" : "−"}${pct(x)}`);
 
 const MAX_LEV = 100;
-const TENORS = [7, 14, 30];
+const TENORS = [1, 3, 7];
 
 export function PerpProtectWidget() {
   const [authed, setAuthed] = useState(() => !!getToken("demo"));
   const [side, setSide] = useState<"long" | "short">("long");
   const [sizeUsd, setSizeUsd] = useState(30000);
   const [leverage, setLeverage] = useState(10);
-  const [tenorDays, setTenorDays] = useState(7);
+  const [tenorDays, setTenorDays] = useState(3);
   const [entryStr, setEntryStr] = useState("");
   const [entryTouched, setEntryTouched] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -179,19 +178,18 @@ export function PerpProtectWidget() {
         {sel && pos && (
           <Card highlight>
             <SectionLabel>With this protection</SectionLabel>
-            <DetailRow label="Worst case" value={usd(sel.worst_case_usdc)} sub={`${pct(sel.worst_case_pct_margin)} of margin · ${sel.capped ? "hard cap" : `capped in-band, exposed beyond ${usd(sel.exposed_beyond)}`}`} valueColor={C.green} strong />
+            <DetailRow label="Premium" value={usd2(sel.premium_usdc)} sub={`${usd2(sel.cost_per_day_usdc)}/day · ${quote.tenor_days}d`} valueColor={C.green} strong />
+            <DetailRow label="Most you can lose" value={usd(sel.worst_case_usdc)} sub={sel.capped ? "hard cap" : `exposed beyond ${usd(sel.exposed_beyond)}`} valueColor={C.green} strong />
             <DetailRow label="Protection from" value={`${usd(sel.strike)} (${signed(sel.protect_move_pct, side)})`} sub={sel.short_strike ? `band to ${usd(sel.short_strike)}` : undefined} />
-            <DetailRow label="Breakeven" value={usd(sel.breakeven_price)} />
-            <DetailRow label="Premium" value={usd2(sel.premium_usdc)} sub={`${usd2(sel.cost_per_day_usdc)}/day · ${pct(sel.cost_pct_margin)} of margin · ${quote.tenor_days}d`} valueColor={C.green} strong last={!sel.whipsaw_exposed && !(sel.depth?.size_liquidity_warning)} />
+            <DetailRow label="Breakeven" value={usd(sel.breakeven_price)} last={!sel.whipsaw_exposed && !(sel.depth?.size_liquidity_warning)} />
             {sel.whipsaw_exposed && (
               <div style={{ marginTop: 10, fontSize: 11.5, color: C.amber, lineHeight: 1.5, background: C.amber + "12", border: `1px solid ${C.amber}33`, borderRadius: 6, padding: "8px 10px" }}>
-                Pays to this worst case if BTC moves against you and stays there. Until exchange liquidation-prevention is live, a wick to liquidation that then recovers can still cost up to {usd(sel.liquidation_whipsaw_risk_usdc)}.
+                ⚠ A wick to liquidation that then recovers can still cost up to {usd(sel.liquidation_whipsaw_risk_usdc)} until exchange liquidation-prevention is live.
               </div>
             )}
             {sel.depth?.size_liquidity_warning && (
               <div style={{ marginTop: 8, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>⚠ {sel.depth.size_liquidity_warning}</div>
             )}
-            <BybitBenchmark bm={quote.bybit_benchmark} />
             <div style={{ marginTop: 14, display: "flex", justifyContent: "flex-end" }}>
               <span style={{ fontSize: 12, color: C.muted, fontStyle: "italic" }}>One-click activation coming soon</span>
             </div>
@@ -203,9 +201,8 @@ export function PerpProtectWidget() {
 
         {/* Disclaimer */}
         <div style={{ fontSize: 10.5, color: C.muted, textAlign: "center", lineHeight: 1.6, margin: "18px 6px 8px", opacity: 0.75 }}>
-          Read-only quote · live option pricing across OKX / Deribit / Bullish. European-style compensation paid at
-          expiry (strike − settlement). Simplified liquidation (ignores maintenance margin, funding, fees, slippage).
-          True no-liquidation requires exchange margin integration; standalone, the option bounds net loss. Not financial advice.
+          Read-only quote · live pricing across OKX / Deribit / Bullish. Paid at expiry (European). Simplified
+          liquidation (ignores maintenance margin, funding, fees). Not financial advice.
         </div>
       </div>
     </Shell>
@@ -213,29 +210,18 @@ export function PerpProtectWidget() {
 }
 
 function OptionRow({ o, side, selected, onClick }: { o: PPOption; side: "long" | "short"; selected: boolean; onClick: () => void }) {
-  const kind = o.capped ? "Gap-proof" : "Spread (cheaper)";
   return (
     <div onClick={onClick} style={{ padding: "13px 15px", borderRadius: 8, cursor: "pointer", background: selected ? C.green + "12" : C.panel2, border: `1px solid ${selected ? C.green + "88" : "#333"}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
       <div>
         <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{o.label}
-          {o.recommended && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: C.green + "22", color: C.green, border: `1px solid ${C.green}55` }}>recommended</span>}</div>
-        <div style={SUB}>{kind} · protects from {signed(o.protect_move_pct, side)} · worst case {usd(o.worst_case_usdc)}</div>
+          {o.recommended && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: C.green + "22", color: C.green, border: `1px solid ${C.green}55` }}>recommended</span>}
+          {!o.capped && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: C.muted + "22", color: C.muted, border: `1px solid ${C.muted}55` }}>spread</span>}</div>
+        <div style={SUB}>protects from {signed(o.protect_move_pct, side)}</div>
       </div>
       <div style={{ textAlign: "right" }}>
         <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{usd2(o.premium_usdc)}</div>
-        <div style={SUB}>{pct(o.cost_pct_margin)} of margin</div>
+        <div style={SUB}>worst case {usd(o.worst_case_usdc)}</div>
       </div>
-    </div>
-  );
-}
-
-function BybitBenchmark({ bm }: { bm: PPQuote["bybit_benchmark"] }) {
-  if (bm.atticus_recommended_cost_pct_margin == null) return null;
-  const better = bm.atticus_recommended_cost_pct_margin <= bm.bybit_reference_pct_margin;
-  return (
-    <div style={{ marginTop: 12, fontSize: 11, color: C.muted, lineHeight: 1.5 }}>
-      Cross-venue sourced: {pct(bm.atticus_recommended_cost_pct_margin)} of margin
-      <span style={{ color: better ? C.green : C.muted }}> {better ? "≤" : "vs"} Bybit ~{pct(bm.bybit_reference_pct_margin, 0)}</span>.
     </div>
   );
 }

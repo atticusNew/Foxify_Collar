@@ -2001,7 +2001,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const sizeBtc = sizeUsd > 0 ? sizeUsd / spot : Number(b.size_btc ?? 0);
       const entryPrice = Number(b.entry_price ?? spot);
       const leverage = Number(b.leverage ?? 0);
-      const tenorDays = Number(b.tenor_days ?? 7);
+      const tenorDays = Number(b.tenor_days ?? 3);
       const settlementStyle = (["european", "american", "auto_close"].includes(b.settlement_style ?? "") ? b.settlement_style : "european") as "european" | "american" | "auto_close";
       if (!(sizeBtc > 0) || !(entryPrice > 0) || !(leverage > 0) || leverage > 100 || !(tenorDays > 0)) {
         reply.code(400).send({ error: "invalid_request", message: "size_usd>0 (or size_btc>0), entry_price>0, 0<leverage<=100, tenor_days>0" });

@@ -134,14 +134,17 @@ export const generateStrikeCandidates = (
     // Strike a small buffer INSIDE the liquidation distance (closer to spot than liq), so the
     // option is in-the-money before the perp would liquidate.
     const move = Math.max(0, liqMove - cfg.liqInsuranceBufferPct);
-    if (move > 0) raw.push({ intent: "liquidation_insurance", targetMovePct: move, targetStrike: strikeAtMove(spot, side, move), label: "Liquidation insurance", priority: 0 });
+    if (move > 0) raw.push({ intent: "liquidation_insurance", targetMovePct: move, targetStrike: strikeAtMove(spot, side, move), label: "Stay alive", priority: 0 });
   }
 
   if (intents.includes("margin_loss_cap")) {
     for (const f of cfg.marginFractions) {
       const floorPct = f / leverage; // cap loss at f × margin (before premium)
       if (!(floorPct > 0) || floorPct >= 1) continue;
-      raw.push({ intent: "margin_loss_cap", targetMovePct: floorPct, targetStrike: strikeAtMove(spot, side, floorPct), label: `Cap ${Math.round(f * 100)}% of margin`, priority: 0 });
+      // Trader-facing label is the protected PRICE move (Floor/Ceiling), NOT "% of margin" — the old
+      // margin-fraction label understated the true worst case (premium-dominated at high leverage) and
+      // confused traders. All single floors now share one consistent mental model.
+      raw.push({ intent: "margin_loss_cap", targetMovePct: floorPct, targetStrike: strikeAtMove(spot, side, floorPct), label: `${floorWord} ${sign}${pctLabel(floorPct)}`, priority: 0 });
     }
   }
 
