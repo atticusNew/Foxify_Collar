@@ -13,6 +13,7 @@ import { FoxifyVolumeDashboard } from "./twoSided/FoxifyVolumeDashboard";
 import { AtticusVolumeAdmin } from "./twoSided/AtticusVolumeAdmin";
 import { ProtectedLeverageWidget } from "./twoSided/ProtectedLeverageWidget";
 import { PublicProtectWidget } from "./twoSided/PublicProtectWidget";
+import { PerpProtectWidget } from "./twoSided/PerpProtectWidget";
 import { PILOT_SIMPLE_SIM_WIDGET, PILOT_WIDGET, PILOT_ACCESS_CODE } from "./config";
 import "./styles.css";
 
@@ -124,6 +125,11 @@ function AppRouter() {
   // Public-safe, ungated demo (LinkedIn-shareable) — checked BEFORE /protect.
   if (path === "/protect-public" || path.startsWith("/protect-public")) {
     return <PublicProtectWidget />;
+  }
+
+  // Perp Protect — trader-facing transactional product (real position; demo-gated quote).
+  if (path === "/perp-protect" || path.startsWith("/perp-protect")) {
+    return <PerpProtectWidget />;
   }
 
   // Protected Leverage floor widget (Sai sales artifact / prospect sandbox, read-only, token-gated).

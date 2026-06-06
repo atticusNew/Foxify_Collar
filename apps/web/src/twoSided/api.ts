@@ -76,6 +76,8 @@ export const foxifyPost = <T>(path: string, body?: unknown): Promise<T> =>
   request<T>("foxify", path, { method: "POST", body: body == null ? undefined : JSON.stringify(body) });
 
 export const demoGet = <T>(path: string): Promise<T> => request<T>("demo", path);
+export const demoPost = <T>(path: string, body?: unknown): Promise<T> =>
+  request<T>("demo", path, { method: "POST", body: body == null ? undefined : JSON.stringify(body) });
 
 /** Ungated public GET (no token) for the public-safe demo endpoints (/public/*). */
 export const publicGet = async <T>(path: string): Promise<T> => {
