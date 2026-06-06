@@ -75,6 +75,16 @@ test("liquidation_prevented surfaced on the quote", () => {
   assert.equal(b.liquidation_prevented, true);
 });
 
+test("worst_case_pct_margin surfaces the HONEST cap as a share of margin (label can understate)", () => {
+  // 20× long, margin = 3000. A near-money put whose premium dominates → worst case >> the
+  // "X% of margin" intent label, so the true %-of-margin must be reported.
+  const pos: PerpPosition = { spot: 60000, entryPrice: 60000, sizeBtc: 1, side: "long", leverage: 20, tenorDays: 7 };
+  const o = buildSingleOption(pos, { strike: 59250, askUsdcPerBtc: 1500, label: "Cap 25% of margin" }, 0);
+  // margin = 3000; worst = (60000-59250)*1 + 1500 = 2250; 2250/3000 = 0.75
+  assert.equal(o.worst_case_pct_margin, 0.75);
+  assert.ok(o.worst_case_pct_margin > 0.25); // honest number exceeds the intent label
+});
+
 test("pickRecommendedOption prefers a strike that protects before liq", () => {
   const q = buildPerpProtectQuote(longPos, {
     singles: [{ strike: 57000, askUsdcPerBtc: 800 }, { strike: 53000, askUsdcPerBtc: 300 }]

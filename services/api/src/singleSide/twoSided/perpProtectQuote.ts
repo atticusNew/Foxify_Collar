@@ -98,6 +98,10 @@ export type PerpProtectOption = {
   liquidation_whipsaw_risk_usdc: number | null;
   whipsaw_exposed: boolean;
   cost_pct_margin: number;
+  /** The HONEST worst case as a fraction of posted margin. Surfaced because an intent label like
+   *  "Cap 25% of margin" describes the price-loss target only — at high leverage the premium
+   *  dominates, so the true worst case (incl. premium) can be a far larger share of margin. */
+  worst_case_pct_margin: number;
   cost_per_day_usdc: number;
   breakeven_price: number;       // price at which protected PnL breaks even (incl. premium)
   protect_move_pct: number;      // strike distance from spot (positive)
@@ -194,6 +198,7 @@ export const buildSingleOption = (position: PerpPosition, q: StrikeQuote, idx: n
     liquidation_whipsaw_risk_usdc: whipsawRisk != null ? round2(whipsawRisk) : null,
     whipsaw_exposed: whipsaw,
     cost_pct_margin: margin > 0 ? round4(premium / margin) : 0,
+    worst_case_pct_margin: margin > 0 ? round4(worstCase / margin) : 0,
     cost_per_day_usdc: position.tenorDays > 0 ? round2(premium / position.tenorDays) : round2(premium),
     breakeven_price: round2(breakeven),
     protect_move_pct: round4(strikeDist(side, spot, q.strike)),
@@ -247,6 +252,7 @@ export const buildSpreadOption = (position: PerpPosition, longLeg: StrikeQuote, 
     liquidation_whipsaw_risk_usdc: whipsawRisk != null ? round2(whipsawRisk) : null,
     whipsaw_exposed: whipsaw,
     cost_pct_margin: margin > 0 ? round4(premium / margin) : 0,
+    worst_case_pct_margin: margin > 0 ? round4(bandEdgeLoss / margin) : 0,
     cost_per_day_usdc: position.tenorDays > 0 ? round2(premium / position.tenorDays) : round2(premium),
     breakeven_price: round2(breakeven),
     protect_move_pct: round4(strikeDist(side, spot, longLeg.strike)),
