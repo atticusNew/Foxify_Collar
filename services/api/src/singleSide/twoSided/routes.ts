@@ -2176,6 +2176,17 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           priceCompetitiveness = { available: false, error: (e as Error).message };
         }
       }
+      // Admin-only venue coverage: which venues actually WON a leg (verifies OKX/Deribit/Bullish are
+      // all participating — esp. Bullish, which only quotes from the whitelisted Render deploy). Not
+      // exposed to traders (the product intentionally hides per-leg routing).
+      let venuesUsed: string[] | undefined = undefined;
+      if (isAdmin) {
+        const vs = new Set<string>();
+        longLegByStrike.forEach((leg) => { if (leg.venue) vs.add(leg.venue); });
+        if (spLProbe?.bestAsk?.venue) vs.add(spLProbe.bestAsk.venue);
+        if (spSProbe?.bestBid?.venue) vs.add(spSProbe.bestBid.venue);
+        venuesUsed = [...vs];
+      }
       const payload = {
         as_of: new Date(nowMs).toISOString(),
         quote_id: quoteId,
@@ -2183,6 +2194,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         ...quote,
         options: optionsWithFairValue,
         liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
+        ...(venuesUsed !== undefined ? { venues_used: venuesUsed } : {}),
         ...(priceCompetitiveness !== undefined ? { price_competitiveness: priceCompetitiveness } : {}),
         note: "READ-ONLY quote (underwriter model). Position-aware protection for a REAL perp position across ALL leverages: single = gap-proof capped (truly hard once liquidation_prevented), spread = cheaper but exposed beyond the short strike. Each premium is a transparent build-up (premium_breakdown) over the cheapest cross-venue hedge. whipsaw_exposed/liquidation_whipsaw_risk_usdc surface pre-liquidation-prevention risk honestly. European settlement (pluggable). No execution yet."
       };
