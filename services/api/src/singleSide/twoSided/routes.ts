@@ -1983,7 +1983,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     async (req, reply) => {
       const { buildPerpProtectQuote, liquidationOf } = await import("./perpProtectQuote");
       const { okxProbe } = await import("./okxProbe");
-      const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
+      const { deribitPutProbe, bullishPutProbe, bybitPutProbe } = await import("./venuePutProbes");
       const { pickBestLegs } = await import("./perpProtectLegSelect");
       const { vwapToFill } = await import("./perpProtectDepth");
       const { generateStrikeCandidates, spreadTargets, structureConfigFromEnv } = await import("./perpProtectStructure");
@@ -2030,11 +2030,15 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       // Probe a strike across venues → cheapest qualifying ask (long) + highest qualifying bid
       // (short), with actual strikes. Selection is expiry-normalized (A1) + liquidity-guarded (B2)
       // via pickBestLegs, so a shorter-dated/illiquid quote cannot silently win.
+      // Bybit is a read-only SOURCING venue too (not just the benchmark). Toggle with
+      // PERP_PROTECT_BYBIT_VENUE=false. Region-gated → returns null off-region (simply won't win).
+      const bybitVenueEnabled = process.env.PERP_PROTECT_BYBIT_VENUE !== "false";
       const probeStrike = async (strike: number) => {
         const okx = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
-        const [der, bull] = await Promise.all([
+        const [der, bull, byb] = await Promise.all([
           deribitPutProbe({ spot, strike, tenorDays, optType }),
-          bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
+          bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType }),
+          bybitVenueEnabled ? bybitPutProbe({ spot, strike, tenorDays, optType }) : Promise.resolve(null)
         ]);
         // Size-aware (B4) effective price: walk the venue book for size_btc (TOB fallback when no
         // depth). Selection + premium then both reflect the real fill, not just top-of-book.
@@ -2056,6 +2060,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           { ...depthRow("deribit", der.ask_usdc_per_btc, der.bid_usdc_per_btc ?? null, der.ask_levels, der.bid_levels), strike: der.strike ?? null, daysToExpiry: der.days_to_expiry ?? null, spreadPct: der.spread_pct ?? null, instrument: der.instrument ?? null, expiryIso: der.expiry_iso ?? null },
           { ...depthRow("bullish", bull.ask_usdc_per_btc, bull.bid_usdc_per_btc ?? null, bull.ask_levels, bull.bid_levels), strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null, instrument: bull.instrument ?? null, expiryIso: bull.expiry_iso ?? null }
         ];
+        if (byb) {
+          rows.push({ ...depthRow("bybit", byb.ask_usdc_per_btc ?? null, byb.bid_usdc_per_btc ?? null, byb.ask_levels, byb.bid_levels), strike: byb.strike ?? null, daysToExpiry: byb.days_to_expiry ?? null, spreadPct: byb.spread_pct ?? null, instrument: byb.instrument ?? null, expiryIso: byb.expiry_iso ?? null });
+        }
         const { bestAsk, bestBid } = pickBestLegs(rows, { targetTenorDays: tenorDays });
         // Venues that returned a usable quote (reachable + listing the strike) — for the admin-only
         // coverage diagnostic, distinct from which venue actually WON on price.
@@ -2172,7 +2179,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
               bybit,
               sizeBtc,
               atticusPremiumUsdc: cmpOpt.premium_usdc,
-              atticusHedgeCostUsdc: cmpOpt.hedge_cost_usdc
+              atticusHedgeCostUsdc: cmpOpt.hedge_cost_usdc,
+              hedgeVenue: longLeg?.venue ?? null
             });
           }
         } catch (e) {

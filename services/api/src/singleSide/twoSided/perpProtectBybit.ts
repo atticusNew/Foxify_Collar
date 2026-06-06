@@ -34,6 +34,8 @@ export type PriceCompetitiveness = {
   retail_edge_usdc: number | null;           // Bybit premium − our retail (positive = we win)
   beats_bybit_hedge: boolean | null;         // our hedge cost ≤ Bybit ask (sourcing headroom)
   hedge_edge_usdc: number | null;            // (Bybit ask − our hedge) × size
+  hedge_venue: string | null;                // venue we sourced the compared option's hedge from
+  note: string | null;                       // caveat when the hedge was sourced ON Bybit (see below)
 };
 
 /** Max top-of-book spread for Bybit's ask to be treated as a real, fillable price (else it's a
@@ -57,8 +59,15 @@ export const compareToBybit = (args: {
   sizeBtc: number;
   atticusPremiumUsdc: number;
   atticusHedgeCostUsdc: number;
+  /** Venue the compared option's hedge was sourced from. When "bybit", the head-to-head is circular
+   *  (we'd be buying on Bybit's own book), so the comparison degrades to a hedge-cost FLOOR check. */
+  hedgeVenue?: string | null;
 }): PriceCompetitiveness => {
   const { optionId, bybit, sizeBtc, atticusPremiumUsdc, atticusHedgeCostUsdc } = args;
+  const hedgeVenue = args.hedgeVenue ?? null;
+  const bybitSourcedNote = hedgeVenue === "bybit"
+    ? "Hedge sourced ON Bybit → edge vs Bybit is ~0 by construction; this is a hedge-cost floor check, not a head-to-head."
+    : null;
   if (!bybit || !(bybit.ask_usdc_per_btc > 0) || !(sizeBtc > 0)) {
     return {
       available: false,
@@ -75,7 +84,9 @@ export const compareToBybit = (args: {
       beats_bybit_retail: null,
       retail_edge_usdc: null,
       beats_bybit_hedge: null,
-      hedge_edge_usdc: null
+      hedge_edge_usdc: null,
+      hedge_venue: hedgeVenue,
+      note: bybitSourcedNote
     };
   }
   const bybitPremium = bybit.ask_usdc_per_btc * sizeBtc;
@@ -99,6 +110,8 @@ export const compareToBybit = (args: {
     beats_bybit_retail: atticusPremiumUsdc <= bybitPremium,
     retail_edge_usdc: round2(bybitPremium - atticusPremiumUsdc),
     beats_bybit_hedge: atticusHedgeCostUsdc <= bybitPremium,
-    hedge_edge_usdc: round2(hedgeEdge)
+    hedge_edge_usdc: round2(hedgeEdge),
+    hedge_venue: hedgeVenue,
+    note: bybitSourcedNote
   };
 };

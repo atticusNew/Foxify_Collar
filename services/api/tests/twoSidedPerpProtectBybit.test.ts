@@ -45,3 +45,15 @@ test("unavailable Bybit data → available:false, no comparison", () => {
   assert.equal(r.beats_bybit_retail, null);
   assert.equal(r.atticus_premium_usdc, 420); // still echoes our side
 });
+
+test("hedge sourced ON Bybit → floor-check caveat note (edge is circular)", () => {
+  const r = compareToBybit({ optionId: "single-0", bybit, sizeBtc: 0.5, atticusPremiumUsdc: 420, atticusHedgeCostUsdc: 360, hedgeVenue: "bybit" });
+  assert.equal(r.hedge_venue, "bybit");
+  assert.match(r.note as string, /floor check/i);
+});
+
+test("hedge sourced elsewhere → no circular-comparison note", () => {
+  const r = compareToBybit({ optionId: "single-0", bybit, sizeBtc: 0.5, atticusPremiumUsdc: 420, atticusHedgeCostUsdc: 360, hedgeVenue: "bullish" });
+  assert.equal(r.hedge_venue, "bullish");
+  assert.equal(r.note, null);
+});

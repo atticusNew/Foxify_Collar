@@ -82,6 +82,35 @@ export const deribitPutProbe = async (opts: {
   }
 };
 
+/** Bybit option probe (read-only public data) — Bybit as a SOURCING venue, not just the benchmark.
+ *  Quotes are USDC per BTC (no spot conversion). Region-gated (works from the Singapore deploy);
+ *  returns a null ask elsewhere so it simply doesn't win/participate. */
+export const bybitPutProbe = async (opts: {
+  spot: number; strike: number; tenorDays: number; optType?: "put" | "call"; nowMs?: number;
+}): Promise<VenuePut> => {
+  const now = opts.nowMs ?? Date.now();
+  const optType = opts.optType ?? "put";
+  try {
+    const { getBybitOptionBook } = await import("../../bybitAdapter");
+    const book = await getBybitOptionBook("BTC", now + opts.tenorDays * 86_400_000, opts.strike, optType === "put" ? "P" : "C");
+    if (!book || book.ask_usdc_per_btc == null) return { venue: "bybit", ask_usdc_per_btc: null, instrument: null };
+    return {
+      venue: "bybit",
+      ask_usdc_per_btc: book.ask_usdc_per_btc,
+      bid_usdc_per_btc: book.bid_usdc_per_btc,
+      instrument: book.symbol,
+      strike: book.strike,
+      expiry_iso: new Date(book.expiry_ms).toISOString(),
+      spread_pct: spreadPctOf(book.ask_usdc_per_btc, book.bid_usdc_per_btc),
+      days_to_expiry: +((book.expiry_ms - now) / 86_400_000).toFixed(2),
+      ask_levels: book.ask_levels,
+      bid_levels: book.bid_levels
+    };
+  } catch {
+    return { venue: "bybit", ask_usdc_per_btc: null, instrument: null };
+  }
+};
+
 /** Bullish put probe via the shared client (USDC-quoted → no spot conversion). */
 export type BullishProbeClientLike = {
   getMarkets?: (params?: { forceRefresh?: boolean; cacheTtlMs?: number }) => Promise<Array<Record<string, unknown>>>;

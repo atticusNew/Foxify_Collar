@@ -429,6 +429,51 @@ export async function getBybitOptionAsk(
   }
 }
 
+/** Bybit BTC option contract size in BTC (1 contract = 0.01 BTC, like OKX coin-margined). Env-overridable. */
+const BYBIT_OPTION_CONTRACT_BTC = Number(process.env.BYBIT_OPTION_CONTRACT_BTC ?? 0.01);
+
+/**
+ * Bybit option order book (depth) at the nearest listed strike+expiry — for using Bybit as a
+ * read-only SOURCING venue (size-aware fills), not just a benchmark. Discovers the symbol via the
+ * ticker list (getBybitOptionAsk), then pulls the order book and normalizes levels to USDC-per-BTC
+ * price + BTC size (contracts × contract size). Read-only; null on failure.
+ */
+export async function getBybitOptionBook(
+  asset: string,
+  targetExpiryMs: number,
+  targetStrike: number,
+  optionType: "C" | "P"
+): Promise<{
+  ask_usdc_per_btc: number | null; bid_usdc_per_btc: number | null; strike: number; expiry_ms: number; symbol: string;
+  ask_levels: Array<{ price_usdc_per_btc: number; size_btc: number }>; bid_levels: Array<{ price_usdc_per_btc: number; size_btc: number }>;
+} | null> {
+  const top = await getBybitOptionAsk(asset, targetExpiryMs, targetStrike, optionType);
+  if (!top) return null;
+  try {
+    const url = `${BYBIT_BASE_URL}/market/orderbook?category=option&symbol=${top.symbol}&limit=25`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), BYBIT_TIMEOUT_MS);
+    const response = await fetch(url, { signal: controller.signal, headers: { "Content-Type": "application/json" } });
+    clearTimeout(timeout);
+    const data = response.ok ? await response.json() : null;
+    const ob = data?.retCode === 0 ? data?.result : null;
+    const toLevels = (rows: any): Array<{ price_usdc_per_btc: number; size_btc: number }> =>
+      (Array.isArray(rows) ? rows : [])
+        .map((r: any) => ({ price_usdc_per_btc: +Number(r[0]).toFixed(2), size_btc: +(Number(r[1]) * BYBIT_OPTION_CONTRACT_BTC).toFixed(8) }))
+        .filter((l) => l.price_usdc_per_btc > 0 && l.size_btc > 0);
+    const ask_levels = toLevels(ob?.a);
+    const bid_levels = toLevels(ob?.b);
+    return {
+      ask_usdc_per_btc: ask_levels[0]?.price_usdc_per_btc ?? top.ask_usdc_per_btc,
+      bid_usdc_per_btc: bid_levels[0]?.price_usdc_per_btc ?? top.bid_usdc_per_btc,
+      strike: top.strike, expiry_ms: top.expiry_ms, symbol: top.symbol, ask_levels, bid_levels
+    };
+  } catch {
+    // Fall back to top-of-book only (no depth) so Bybit can still compete on price.
+    return { ask_usdc_per_btc: top.ask_usdc_per_btc, bid_usdc_per_btc: top.bid_usdc_per_btc, strike: top.strike, expiry_ms: top.expiry_ms, symbol: top.symbol, ask_levels: [], bid_levels: [] };
+  }
+}
+
 export function parseBybitExpiryTag(expiryTag: string): Date | null {
   const match = expiryTag.match(/^(\d{1,2})([A-Z]{3})(\d{2})$/);
   if (!match) return null;
