@@ -1979,7 +1979,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    */
   app.post<{ Body: { side?: string; size_btc?: number; entry_price?: number; leverage?: number; tenor_days?: number; mark_price?: number; settlement_style?: string } }>(
     "/admin/foxify/v2/perp-protect/quote",
-    { preHandler: checkAdminToken },
+    { preHandler: checkDemoOrAdminToken },
     async (req, reply) => {
       const { buildPerpProtectQuote, liquidationOf } = await import("./perpProtectQuote");
       const { okxProbe } = await import("./okxProbe");
@@ -2004,6 +2004,21 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         reply.code(400).send({ error: "invalid_request", message: "size_btc>0, entry_price>0, 0<leverage<=100, tenor_days>0" });
         return;
       }
+      // Function-essential safety caps (env-overridable). Bound size, protected notional, and tenor
+      // so a single quote can't request an unhedgeable position or hammer venues with absurd inputs.
+      const maxSizeBtc = Number(process.env.PERP_PROTECT_MAX_SIZE_BTC ?? 50);
+      const maxNotionalUsdc = Number(process.env.PERP_PROTECT_MAX_NOTIONAL_USDC ?? 5_000_000);
+      const maxTenorDays = Number(process.env.PERP_PROTECT_MAX_TENOR_DAYS ?? 90);
+      const reqNotional = sizeBtc * spot;
+      if (sizeBtc > maxSizeBtc || reqNotional > maxNotionalUsdc || tenorDays > maxTenorDays) {
+        reply.code(400).send({ error: "limit_exceeded", message: `size_btc<=${maxSizeBtc}, notional<=$${maxNotionalUsdc.toLocaleString()}, tenor_days<=${maxTenorDays}` });
+        return;
+      }
+      // Short-TTL cache (reuses the demo-widget cache): identical inputs within the window reuse the
+      // quote, keeping the trader widget snappy and shielding venues from slider-spam.
+      const cacheKey = `pp:${side}:${sizeBtc}:${entryPrice}:${leverage}:${tenorDays}:${settlementStyle}:${Math.round(spot)}:${b.liquidation_prevented === true}`;
+      const cached = demoCacheGet(cacheKey);
+      if (cached) { reply.send(cached); return; }
       const optType: "put" | "call" = side === "short" ? "call" : "put";
 
       // Probe a strike across venues → cheapest qualifying ask (long) + highest qualifying bid
@@ -2133,7 +2148,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         bybit_reference_pct_margin: 0.02,
         basis: "Atticus sources the cheapest qualifying option across OKX/Deribit/Bullish (vs Bybit's single book) and adds a transparent underwriter load; the recommended tier's cost as a % of margin is comparable to Bybit's '~2% of initial margin' headline."
       };
-      reply.send({
+      const payload = {
         as_of: new Date(nowMs).toISOString(),
         quote_id: quoteId,
         quote_expires_at: new Date(nowMs + ttlMs).toISOString(),
@@ -2142,7 +2157,9 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         liquidation: { price: +liq.price.toFixed(2), move_pct: +liq.movePct.toFixed(4) },
         bybit_benchmark: bybitBenchmark,
         note: "READ-ONLY quote (underwriter model). Position-aware protection for a REAL perp position across ALL leverages: single = gap-proof capped (truly hard once liquidation_prevented), spread = cheaper but exposed beyond the short strike. Each premium is a transparent build-up (premium_breakdown) over the cheapest cross-venue hedge. whipsaw_exposed/liquidation_whipsaw_risk_usdc surface pre-liquidation-prevention risk honestly. European settlement (pluggable). No execution yet."
-      });
+      };
+      demoCacheSet(cacheKey, payload);
+      reply.send(payload);
     }
   );
 
