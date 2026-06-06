@@ -2086,7 +2086,8 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         : null;
 
       const pricer = makePerpProtectPricer(pricingConfigFromEnv());
-      const quote = buildPerpProtectQuote({ spot, entryPrice, sizeBtc, side, leverage, tenorDays, liquidationPrevented }, { singles, spread, settlementStyle, pricer });
+      const recMaxWorstPct = Number(process.env.PERP_PROTECT_REC_MAX_WORST_PCT ?? 0.6);
+      const quote = buildPerpProtectQuote({ spot, entryPrice, sizeBtc, side, leverage, tenorDays, liquidationPrevented }, { singles, spread, settlementStyle, pricer, recMaxWorstCasePctMargin: Number.isFinite(recMaxWorstPct) && recMaxWorstPct > 0 ? recMaxWorstPct : 0.6 });
       const liq = liquidationOf({ spot, entryPrice, sizeBtc, side, leverage, tenorDays });
 
       // Persist the EXACT priced legs per quote_id so a later /activate can execute the same

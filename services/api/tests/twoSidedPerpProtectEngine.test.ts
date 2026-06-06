@@ -93,3 +93,34 @@ test("pickRecommendedOption prefers a strike that protects before liq", () => {
   const recOpt = q.options.find((o) => o.id === rec);
   assert.equal(recOpt?.protects_before_liq, true);
 });
+
+test("pickRecommendedOption: cheapest option whose worst case is within the margin bound (best value)", () => {
+  // longPos: entry 60000, size 1, lev 10 → margin 6000, liq 54000. All three protect before liq.
+  // worst case = (60000−K)·1 + premium; pct of margin = worst/6000.
+  //   58800 @300  → 1200+300=1500   (25.0%)
+  //   57600 @180  → 2400+180=2580   (43.0%)
+  //   55800 @90   → 4200+90 =4290   (71.5%, exceeds 60% bound)
+  const q = buildPerpProtectQuote(longPos, {
+    singles: [
+      { strike: 58800, askUsdcPerBtc: 300 },
+      { strike: 57600, askUsdcPerBtc: 180 },
+      { strike: 55800, askUsdcPerBtc: 90 }
+    ]
+  });
+  const rec = pickRecommendedOption(q.options, 6000, 0.6);
+  const recOpt = q.options.find((o) => o.id === rec);
+  // 55800 is cheapest but breaches the 60% bound; among acceptable (58800, 57600) the cheaper is 57600.
+  assert.equal(recOpt?.strike, 57600);
+  assert.equal(recOpt?.capped, true);
+});
+
+test("pickRecommendedOption: falls back to lowest worst case when none meet the bound", () => {
+  // Tight bound (10%) that nothing satisfies → fall back to the pool, cheapest premium.
+  const q = buildPerpProtectQuote(longPos, {
+    singles: [{ strike: 58800, askUsdcPerBtc: 300 }, { strike: 57600, askUsdcPerBtc: 180 }]
+  });
+  const rec = pickRecommendedOption(q.options, 6000, 0.1);
+  const recOpt = q.options.find((o) => o.id === rec);
+  // No option ≤10% margin worst case → fallback cheapest premium = 57600.
+  assert.equal(recOpt?.strike, 57600);
+});

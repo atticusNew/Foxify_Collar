@@ -268,23 +268,28 @@ export const buildSpreadOption = (position: PerpPosition, longLeg: StrikeQuote, 
  * caps) that protects before liquidation, preferring a mid-distance strike. Spreads are never the
  * default (they re-expose beyond the band). Returns the option id, or null if none qualify.
  */
-export const pickRecommendedOption = (options: PerpProtectOption[], marginUsdc: number): string | null => {
+export const pickRecommendedOption = (
+  options: PerpProtectOption[],
+  marginUsdc: number,
+  maxWorstCasePctMargin = 0.6
+): string | null => {
   const singles = options.filter((o) => o.capped);
   if (singles.length === 0) return null;
-  const preferred = singles.filter((o) => o.protects_before_liq);
-  const pool0 = preferred.length > 0 ? preferred : singles;
-  // "Worth it": premium ≤ 60% of the capped loss (margin × cost_pct_margin proxy via worst_case).
-  const worthIt = pool0.filter((o) => o.premium_usdc <= 0.6 * Math.max(1, o.worst_case_usdc));
-  const pool = worthIt.length > 0 ? worthIt : pool0;
-  // Median by protective distance (a balanced strike), tie-broken cheaper.
-  const sorted = [...pool].sort((a, b) => a.protect_move_pct - b.protect_move_pct);
-  const chosen = sorted[Math.floor((sorted.length - 1) / 2)];
+  // Prefer options that keep you in the trade (strike inside liquidation) — the "stay alive" set.
+  const beforeLiq = singles.filter((o) => o.protects_before_liq);
+  const pool = beforeLiq.length > 0 ? beforeLiq : singles;
+  // Acceptable = the HONEST worst case (incl. premium) is bounded to ≤ threshold of posted margin.
+  // This is the trader-value anchor: don't recommend something that still loses most of the margin.
+  const acceptable = pool.filter((o) => o.worst_case_pct_margin <= maxWorstCasePctMargin);
+  const finalPool = acceptable.length > 0 ? acceptable : pool;
+  // Best value = cheapest premium that meets the bar; tie-break to the lower worst case (more protection).
+  const chosen = [...finalPool].sort((a, b) => a.premium_usdc - b.premium_usdc || a.worst_case_usdc - b.worst_case_usdc)[0];
   return chosen?.id ?? null;
 };
 
 export const buildPerpProtectQuote = (
   position: PerpPosition,
-  inputs: { singles: StrikeQuote[]; spread?: { long: StrikeQuote; short: StrikeQuote } | null; settlementStyle?: SettlementStyle; pricer?: PremiumPricer }
+  inputs: { singles: StrikeQuote[]; spread?: { long: StrikeQuote; short: StrikeQuote } | null; settlementStyle?: SettlementStyle; pricer?: PremiumPricer; recMaxWorstCasePctMargin?: number }
 ): PerpProtectQuote => {
   const { spot, entryPrice, sizeBtc, side, leverage, tenorDays } = position;
   const notional = sizeBtc * spot;
@@ -308,7 +313,7 @@ export const buildPerpProtectQuote = (
     if (sp) options.push(sp);
   }
 
-  const recId = pickRecommendedOption(options, margin);
+  const recId = pickRecommendedOption(options, margin, inputs.recMaxWorstCasePctMargin ?? 0.6);
   if (recId) { const r = options.find((o) => o.id === recId); if (r) r.recommended = true; }
 
   return {
