@@ -313,6 +313,18 @@ export const buildPerpProtectQuote = (
     if (sp) options.push(sp);
   }
 
+  // Honesty guard: a "Stay alive" option must actually be in-the-money BEFORE liquidation. If venue
+  // strike-snapping pushed the chosen strike outside the liq price, it's just a deeper floor — relabel
+  // it as such so the menu never shows a "Stay alive" that wouldn't keep the trader alive.
+  for (const o of options) {
+    if (o.label === "Stay alive" && !o.protects_before_liq) {
+      const word = side === "short" ? "Ceiling" : "Floor";
+      const sign = side === "short" ? "+" : "−";
+      const p = o.protect_move_pct * 100;
+      o.label = `${word} ${sign}${p.toFixed(p < 10 ? 1 : 0)}%`;
+    }
+  }
+
   const recId = pickRecommendedOption(options, margin, inputs.recMaxWorstCasePctMargin ?? 0.6);
   if (recId) { const r = options.find((o) => o.id === recId); if (r) r.recommended = true; }
 

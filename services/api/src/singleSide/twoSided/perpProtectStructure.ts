@@ -47,8 +47,13 @@ export type PerpProtectStructureConfig = {
   drawdownLadder: number[];
   /** Legacy margin-fraction cap tiers (floorPct = f / leverage). */
   marginFractions: number[];
-  /** How far INSIDE the liquidation price to place the liquidation-insurance strike (price fraction). */
+  /** How far INSIDE the liquidation price to place the liquidation-insurance strike (flat price
+   *  fraction floor). The EFFECTIVE buffer is max(this, liqMove × liqInsuranceBufferFrac) so the
+   *  target sits comfortably inside liq and reliably stays inside after venues snap to their grid. */
   liqInsuranceBufferPct: number;
+  /** Buffer as a fraction of the liquidation distance (1/leverage); deepens the strike inside liq so
+   *  coarse listed-strike grids don't snap it BELOW liq (which would break the "stay alive" promise). */
+  liqInsuranceBufferFrac: number;
   /** Minimum leverage to offer liquidation-insurance / margin-cap intents. */
   minLeverageForLiqIntents: number;
   minLeverageForMarginCap: number;
@@ -62,6 +67,7 @@ export const DEFAULT_STRUCTURE_CONFIG: PerpProtectStructureConfig = {
   drawdownLadder: [0.05, 0.1, 0.2],
   marginFractions: [0.25, 0.5, 0.75],
   liqInsuranceBufferPct: 0.005,
+  liqInsuranceBufferFrac: 0.12,
   minLeverageForLiqIntents: 5,
   minLeverageForMarginCap: 3,
   maxCandidates: 6,
@@ -84,6 +90,7 @@ export const structureConfigFromEnv = (env: NodeJS.ProcessEnv = process.env): Pe
     drawdownLadder: numList(env.PERP_PROTECT_DRAWDOWN_LADDER, d.drawdownLadder),
     marginFractions: numList(env.PERP_PROTECT_MARGIN_FRACTIONS, d.marginFractions),
     liqInsuranceBufferPct: num(env.PERP_PROTECT_LIQ_INSURANCE_BUFFER_PCT, d.liqInsuranceBufferPct),
+    liqInsuranceBufferFrac: num(env.PERP_PROTECT_LIQ_INSURANCE_BUFFER_FRAC, d.liqInsuranceBufferFrac),
     minLeverageForLiqIntents: num(env.PERP_PROTECT_MIN_LEV_LIQ_INTENTS, d.minLeverageForLiqIntents),
     minLeverageForMarginCap: num(env.PERP_PROTECT_MIN_LEV_MARGIN_CAP, d.minLeverageForMarginCap),
     maxCandidates: num(env.PERP_PROTECT_MAX_CANDIDATES, d.maxCandidates),
@@ -131,9 +138,12 @@ export const generateStrikeCandidates = (
   }
 
   if (intents.includes("liquidation_insurance")) {
-    // Strike a small buffer INSIDE the liquidation distance (closer to spot than liq), so the
-    // option is in-the-money before the perp would liquidate.
-    const move = Math.max(0, liqMove - cfg.liqInsuranceBufferPct);
+    // Strike a buffer INSIDE the liquidation distance (closer to spot than liq) so the option is
+    // in-the-money before the perp would liquidate. The buffer is the deeper of a flat floor and a
+    // fraction of the liq distance, so after venues snap to their listed grid the strike still lands
+    // inside liq (coarse grids were snapping it below liq → "Stay alive" that didn't keep you alive).
+    const liqBuffer = Math.max(cfg.liqInsuranceBufferPct, liqMove * cfg.liqInsuranceBufferFrac);
+    const move = Math.max(0, liqMove - liqBuffer);
     if (move > 0) raw.push({ intent: "liquidation_insurance", targetMovePct: move, targetStrike: strikeAtMove(spot, side, move), label: "Stay alive", priority: 0 });
   }
 

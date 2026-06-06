@@ -94,6 +94,27 @@ test("pickRecommendedOption prefers a strike that protects before liq", () => {
   assert.equal(recOpt?.protects_before_liq, true);
 });
 
+test("honesty guard: a 'Stay alive' strike snapped BELOW liq is relabeled as a plain floor", () => {
+  // longPos: entry 60000, lev 10 → liq 54000. A "Stay alive" labeled strike at 53000 is BELOW liq
+  // (does not protect before liquidation) → must be relabeled to a Floor, never left as "Stay alive".
+  const q = buildPerpProtectQuote(longPos, {
+    singles: [{ strike: 53000, askUsdcPerBtc: 300, label: "Stay alive" }]
+  });
+  const o = q.options[0];
+  assert.equal(o.protects_before_liq, false);
+  assert.notEqual(o.label, "Stay alive");
+  assert.match(o.label, /^Floor −/);
+});
+
+test("honesty guard: a 'Stay alive' strike inside liq keeps its label", () => {
+  const q = buildPerpProtectQuote(longPos, {
+    singles: [{ strike: 55000, askUsdcPerBtc: 400, label: "Stay alive" }] // 55000 > 54000 liq
+  });
+  const o = q.options[0];
+  assert.equal(o.protects_before_liq, true);
+  assert.equal(o.label, "Stay alive");
+});
+
 test("pickRecommendedOption: cheapest option whose worst case is within the margin bound (best value)", () => {
   // longPos: entry 60000, size 1, lev 10 → margin 6000, liq 54000. All three protect before liq.
   // worst case = (60000−K)·1 + premium; pct of margin = worst/6000.

@@ -37,6 +37,16 @@ test("liquidation_insurance strike sits INSIDE the liquidation price (long)", ()
   assert.ok(liqIns!.targetStrike > liqPrice, `${liqIns!.targetStrike} should be > ${liqPrice}`);
 });
 
+test("liquidation_insurance buffer deepens with the liq distance (robust to coarse strike grids)", () => {
+  // 10× long: liqMove=0.10. Effective buffer = max(0.005, 0.10×0.12)=0.012 → move=0.088 → strike
+  // 60000×0.912=54720, comfortably inside the 54000 liq price (was 0.095→54300 with the flat buffer).
+  const pos = { spot: 60000, side: "long" as const, leverage: 10 };
+  const liqIns = generateStrikeCandidates(pos).find((c) => c.intent === "liquidation_insurance");
+  assert.ok(liqIns);
+  assert.ok(Math.abs(liqIns!.targetMovePct - 0.088) < 1e-9, `move ${liqIns!.targetMovePct}`);
+  assert.ok(liqIns!.targetStrike > 60000 * (1 - 1 / 10), "strike must sit inside the liq price");
+});
+
 test("short side mirrors: candidates are ABOVE spot (calls)", () => {
   const pos = { spot: 60000, side: "short" as const, leverage: 10 };
   const cands = generateStrikeCandidates(pos);
