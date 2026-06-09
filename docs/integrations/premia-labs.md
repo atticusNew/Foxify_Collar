@@ -54,6 +54,7 @@ You can mix these per product line (e.g. pure routing for vault hedging, full pa
 
 - **Non-custodial** — mirrors Premia's own design philosophy; LP/treasury assets never move to Atticus.
 - **Best-execution** — never worse than any single book; Atticus compares OKX, Deribit, Bullish, and Bybit on a size-aware basis (**Live**), which directly improves on the "close to Deribit" SSVI benchmark Premia vaults already target.
+- **Liquidity backstop** — when Premia's own options exchange / market makers can't fill a strike, tenor, or size (or only at an uncompetitive spread), Atticus backstops the overflow with external cross-venue liquidity, so Premia's price-protect product is no longer capped by on-chain depth (see §9.2).
 - **Transparent pricing** — every premium decomposes into hedge + documented loads (no mystery markup), so it's auditable by LPs and risk committees.
 - **Composable** — API-first quote → persisted priced legs → execute maps cleanly onto an on-chain settlement contract or a Premia-controlled custody account.
 
@@ -343,7 +344,7 @@ The token is issued per-partner and scoped to the protect endpoints. Rotate via 
 
 ## 8. API reference
 
-> Client-facing naming is generalized below (`/v1/protect/*`). The reference implementation today is served under an internal admin-namespaced path; your onboarding packet maps the exact base URL and path for your environment. Shapes are exact.
+> All endpoints below use the Premia-facing namespace (`/v1/protect/*`). These are the paths Atticus will provision for Premia; your onboarding packet maps the exact base URL and any path adjustments agreed during integration. Request/response shapes are exact and reflect the production engine.
 
 **Base URL:** `https://<partner-host>/v1` (issued per partner)
 
@@ -498,7 +499,7 @@ Signed events: `activated`, `mtm_update`, `settled`, `remitted`. Includes `prote
 
 ## 9. Use cases
 
-For each: problem → how Atticus solves it → flow → integration steps → settlement/economics → Live vs Roadmap. The first three are requested; the remainder are protection use cases we proactively recommend for a protocol like Premia.
+For each: problem → how Atticus solves it → flow → integration steps → settlement/economics → Live vs Roadmap.
 
 ### 9.1 Route Premia's existing price-protect through Atticus (offset risk / free liquidity)
 
@@ -519,7 +520,29 @@ flowchart LR
 - **Settlement/economics:** Full pass-through frees ~100% of the capital that strike would lock; partial offload frees the offloaded fraction. Premium load is transparent (§4.1), so your markup is a clean spread over a known cost.
 - **Status:** Quote + sourcing **(Live)**; activation/offload settlement **(Roadmap)**.
 
-### 9.2 Treasury protection (price floor over a long horizon, or rolling short-tenor)
+### 9.2 Liquidity backstop / overflow routing for Premia's price-protect product (Proposed)
+
+- **Problem:** Premia runs its price-protect product on its **own options exchange**, filled by market makers and Underwriter Vaults. When on-exchange liquidity is thin — a strike, tenor, or size its MMs/vaults won't quote, or only quote at a wide/uncompetitive spread — Premia is stuck: it either can't serve the user, leaves the order partially unfilled, or pays MMs a premium that erodes the product's margin. On-chain depth and MM pricing become the ceiling on what Premia can offer.
+- **Solution:** Atticus acts as a **liquidity backstop / overflow venue** behind Premia's exchange. Premia keeps filling from its own book wherever its MMs are competitive; for the **residual size** or the **strikes/tenors its own liquidity can't cover**, it routes the overflow to Atticus, which sources the hedge across external venues (OKX / Deribit / Bullish / Bybit) at the cheapest qualifying, size-aware price. The user always gets filled, and Premia is no longer capped by on-exchange depth or held hostage by MM quotes — Atticus is the liquidity of last resort that's *never worse than any single book*.
+- **Smart routing:** per request, compare Premia's best on-exchange quote against Atticus's; fill the cheaper, or **split** — Premia's MMs take what they'll quote competitively, Atticus backstops the gap. The transparent build-up (§4.1) means Premia can set a single consistent retail price to its users regardless of which source filled.
+- **Flow:**
+
+```mermaid
+flowchart LR
+  U[User requests price protection] --> EX[Premia options exchange]
+  EX -->|on-exchange fill where competitive| MM[MMs / Underwriter Vaults]
+  EX -->|unfilled size / missing strike-tenor| RT{Route overflow}
+  RT -->|quote| A[Atticus best-execution]
+  A -->|priced legs + premium| RT
+  RT -->|backstop fill| EX
+  EX -->|single consistent price| U
+```
+
+- **Integration steps:** (1) On a protection request, get your on-exchange/MM quote. (2) `POST /protect/quote` for the same exposure (full size, so you can compare apples-to-apples). (3) Route the unfillable/uncompetitive portion to Atticus; fill the rest on-exchange. (4) (Roadmap) `POST /protect/activate` for the overflow legs; reconcile via `client_ref`.
+- **Settlement/economics:** Premia captures incremental product volume it would otherwise turn away, and avoids overpaying MMs when its own book is thin. Atticus charges its transparent load only on the routed portion; Premia keeps its retail spread on the whole order. Pairs naturally with **pure routing** or **co-underwriting** (§10).
+- **Status:** Quote + best-execution sourcing **(Live)**; programmatic overflow activation/settlement **(Roadmap)**.
+
+### 9.3 Treasury protection (price floor over a long horizon, or rolling short-tenor)
 
 - **Problem:** Premia's treasury (or a token reserve) holds BTC/ETH and wants a downside floor without selling.
 - **Solution:** Quote `side: "long", leverage: 1` over the treasury size. Two tenor strategies:
@@ -536,7 +559,7 @@ flowchart LR
 - **Settlement/economics:** European at-expiry payout funds the floor; MTM (Roadmap) lets the treasury mark the hedge continuously.
 - **Status:** Quote **(Live)**; rolling auto-renew + settlement **(Roadmap)**.
 
-### 9.3 Bad-debt / protocol-solvency protection
+### 9.4 Bad-debt / protocol-solvency protection
 
 - **Problem:** A sharp gap can push undercollateralized positions or the vault book into bad debt (solvency tail risk).
 - **Solution:** Atticus prices **deep-OTM tail protection** sized to the vault's net delta/gap exposure — a solvency backstop. Feasible **today as standardized BTC/ETH tail puts/calls** via the quote engine; a **bespoke basket** tracking Premia's exact multi-asset book is a custom underwriting engagement.
@@ -545,7 +568,7 @@ flowchart LR
 - **Settlement/economics:** Low premium for deep-OTM tails; payout triggers only on a large gap, directly offsetting bad-debt formation. Bespoke baskets priced case-by-case.
 - **Status:** Standardized BTC/ETH tail quotes **(Live)**; multi-asset bespoke basket + settlement **(Roadmap/bespoke)**.
 
-### 9.4 LP / Underwriter-Vault hedging (Proposed)
+### 9.5 LP / Underwriter-Vault hedging (Proposed)
 
 - **Problem:** Premia's Underwriter Vaults are net-short options across the surface; a directional move hurts LP equity. SSVI pricing targets "close to Deribit," but the vault still carries the residual after fills.
 - **Solution:** Atticus hedges the vault's **net option exposure** with the cheapest cross-venue offset (often a different/cheaper book than Deribit alone), reducing LP drawdown. Vault stays the on-chain underwriter; Atticus is the off-chain reinsurance/hedge.
@@ -554,7 +577,7 @@ flowchart LR
 - **Settlement/economics:** Improves vault Sharpe / reduces LP tail; cost is the transparent premium netted against vault spread income. Best as partial offload / co-underwriting (§10).
 - **Status:** Quote **(Live)**; programmatic net-exposure hedging + settlement **(Roadmap)**.
 
-### 9.5 Skew / IL offload for concentrated-liquidity LPs (Proposed)
+### 9.6 Skew / IL offload for concentrated-liquidity LPs (Proposed)
 
 - **Problem:** Concentrated-liquidity range orders carry IL and skew exposure as spot moves through the range.
 - **Solution:** Atticus prices option structures that offset the IL/skew profile (e.g. puts/calls bracketing the range), letting LPs cap the convex loss.
@@ -562,7 +585,7 @@ flowchart LR
 - **Settlement/economics:** Converts open-ended IL into a bounded premium; suits active LPs.
 - **Status:** **(Proposed)** — quoting works today for the option legs; the IL-to-strike mapping is a co-design item.
 
-### 9.6 Liquidation-protection embed for Premia perp/leverage users (Proposed)
+### 9.7 Liquidation-protection embed for Premia perp/leverage users (Proposed)
 
 - **Problem:** Leveraged users get liquidated on wicks; Premia wants a retention/UX feature.
 - **Solution:** The Live Perp Protect engine already prices **"stay alive"** liquidation-insurance tiers (strike inside the liquidation level) and capped single vs cheaper spread structures — embeddable directly in a Premia trading UI.
@@ -713,4 +736,4 @@ flowchart LR
 
 - **Atticus solutions/BD:** _[to be filled in onboarding packet]_
 - **Atticus engineering on-call:** _[provided with environment credentials]_
-- **Reference implementation:** Perp Protect (`POST /admin/foxify/v2/perp-protect/quote`, `GET .../spot`) — mapped to the generalized `/v1/protect/*` names above for partner integrations.
+- **Endpoints:** the `/v1/protect/*` namespace documented above is provisioned per partner; exact base URL and any path adjustments are confirmed in the onboarding packet if Premia moves forward.
