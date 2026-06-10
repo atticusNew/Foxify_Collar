@@ -52,9 +52,11 @@ export function registerMinerProtectRoutes(app: FastifyInstance, deps: MinerProt
         return;
       }
       // Network productivity (BTC/TH/day): request override first, else Luxor Hashprice Index.
-      const provider = b.btc_per_th_per_day != null && Number(b.btc_per_th_per_day) > 0
+      const usingOverride = b.btc_per_th_per_day != null && Number(b.btc_per_th_per_day) > 0;
+      const provider = usingOverride
         ? mockHashpriceProvider(Number(b.btc_per_th_per_day))
         : luxorHashpriceProvider(deps.luxorApiKey);
+      const hashpriceSource = usingOverride ? "request" : "luxor";
       const btcPerThPerDay = await provider.getBtcPerThPerDay();
       if (!btcPerThPerDay || btcPerThPerDay <= 0) {
         reply.code(400).send({ error: "hashprice_unavailable", message: "Provide btc_per_th_per_day or configure the Luxor Hashprice Index." });
@@ -70,6 +72,8 @@ export function registerMinerProtectRoutes(app: FastifyInstance, deps: MinerProt
 
       reply.send({
         as_of: new Date().toISOString(),
+        hashprice_source: hashpriceSource,
+        btc_per_th_per_day: btcPerThPerDay,
         ...quote,
         note: "Miner Protect quote (price-only v1): breakeven floor on expected BTC production, sourced cheapest across OKX/Deribit/Bullish/Bybit. Floors the BTC-price leg of revenue, not network difficulty (hashprice floor = roadmap). No execution yet."
       });
