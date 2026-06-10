@@ -18,6 +18,7 @@ type MinerBlock = {
   hashrate_ths: number; efficiency_w_per_th: number; power_kw: number; cost_per_day_usd: number;
   btc_per_day: number; expected_production_btc: number; breakeven_price_usd: number; btc_price: number;
   tenor_days: number; gross_revenue_usd: number; period_cost_usd: number; profitable_at_spot: boolean;
+  hashprice_usd_per_th_day: number; hashprice_btc_per_th_day: number; breakeven_hashprice_usd_per_th_day: number;
 };
 type MinerQuote = { as_of: string; hashprice_source: string; btc_per_th_per_day: number; miner: MinerBlock; options: MinerOption[]; };
 
@@ -102,31 +103,50 @@ export function MinerProtectWidget() {
 
         {err && <div style={{ padding: "10px 14px", background: "#3a1010", color: C.red, fontSize: 13, borderRadius: 6, marginBottom: 14 }}>{err === "feed_unavailable" ? "Live price feed unavailable — try again shortly." : err}</div>}
 
-        {/* Breakeven / profitability */}
+        {/* Breakeven / profitability — incl. hashprice (the miner-native metric) */}
         {m && (
           <Card>
             <SectionLabel>Your breakeven</SectionLabel>
             <DetailRow label="You profit while BTC is above" value={usd(m.breakeven_price_usd)}
               valueColor={m.profitable_at_spot ? C.green : C.red} strong
-              sub={m.profitable_at_spot ? `you're profitable now (BTC ${usd(spot)})` : `you're underwater now — BTC ${usd(spot)} is below breakeven`} last />
+              sub={m.profitable_at_spot ? `profitable now · BTC ${usd(spot)}` : `underwater now — BTC ${usd(spot)} is below breakeven`} />
+            <DetailRow label="Hashprice" value={`$${m.hashprice_usd_per_th_day.toFixed(3)}/TH/day`}
+              sub={`profitable above $${m.breakeven_hashprice_usd_per_th_day.toFixed(3)}/TH/day (your revenue per TH)`} last />
           </Card>
         )}
 
-        {/* Choose protection */}
+        {/* Choose protection — lead with margin-protecting (stay-profitable) floors, then catastrophe */}
         {quote && m && (
           quote.options.length === 0
             ? <Card><SectionLabel>Protection</SectionLabel><div style={{ fontSize: 13, color: C.amber }}>No tradable floor right now — try another tenor or larger hashrate.</div></Card>
-            : (
-              <Card>
-                <SectionLabel>Choose your price floor {loading && <span style={{ color: C.muted, fontWeight: 400 }}>· pricing…</span>}</SectionLabel>
-                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, marginBottom: 12 }}>
-                  A floor guarantees a minimum sale price for your mined BTC. If bitcoin drops below it, you're paid the difference. If it rises, you keep the gains.
-                </div>
-                <div style={{ display: "grid", gap: 8 }}>
-                  {quote.options.map((o) => <FloorRow key={o.id} o={o} selected={o.id === selectedId} onClick={() => setSelectedId(o.id)} />)}
-                </div>
-              </Card>
-            )
+            : (() => {
+              const stay = quote.options.filter((o) => o.covers_cost);
+              const cat = quote.options.filter((o) => !o.covers_cost);
+              return (
+                <Card>
+                  <SectionLabel>Protect your revenue {loading && <span style={{ color: C.muted, fontWeight: 400 }}>· pricing…</span>}</SectionLabel>
+                  <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, marginBottom: 12 }}>
+                    A floor guarantees a minimum dollar value for your mined BTC. If bitcoin drops below it you're paid the difference; if it rises you keep the gains.
+                  </div>
+                  {stay.length > 0 && (
+                    <>
+                      <GroupLabel color={C.green}>Stay profitable — covers your {usd(m.period_cost_usd)} costs</GroupLabel>
+                      <div style={{ display: "grid", gap: 8, marginBottom: cat.length ? 14 : 0 }}>
+                        {stay.map((o) => <FloorRow key={o.id} o={o} selected={o.id === selectedId} onClick={() => setSelectedId(o.id)} />)}
+                      </div>
+                    </>
+                  )}
+                  {cat.length > 0 && (
+                    <>
+                      <GroupLabel color={C.muted}>{stay.length ? "Cheaper · catastrophe cover" : "Limit your losses (below breakeven)"}</GroupLabel>
+                      <div style={{ display: "grid", gap: 8 }}>
+                        {cat.map((o) => <FloorRow key={o.id} o={o} selected={o.id === selectedId} onClick={() => setSelectedId(o.id)} />)}
+                      </div>
+                    </>
+                  )}
+                </Card>
+              );
+            })()
         )}
 
         {/* Selected detail — plain value framing */}
@@ -167,6 +187,9 @@ export function MinerProtectWidget() {
   );
 }
 
+function GroupLabel({ children, color }: { children: React.ReactNode; color: string }) {
+  return <div style={{ fontSize: 11, fontWeight: 700, color, letterSpacing: 0.4, marginBottom: 8 }}>{children}</div>;
+}
 function FloorRow({ o, selected, onClick }: { o: MinerOption; selected: boolean; onClick: () => void }) {
   return (
     <div onClick={onClick} style={{ padding: "13px 15px", borderRadius: 8, cursor: "pointer", background: selected ? C.green + "12" : C.panel2, border: `1px solid ${selected ? C.green + "88" : "#333"}`, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>

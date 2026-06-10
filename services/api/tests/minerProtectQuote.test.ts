@@ -32,6 +32,16 @@ test("quote: miner block carries breakeven, expected production, period cost, gr
   assert.equal(q.miner.btc_per_day, 0.075);
 });
 
+test("quote: hashprice ($/TH/day) + hashprice breakeven (miner-native metrics)", () => {
+  const q = buildMinerProtectQuote(miner, { floors: [{ strike: 48_000, askUsdcPerBtc: 1_000 }] });
+  // hashprice = btcPerThPerDay × spot = 7.5e-7 × 60,000 = 0.045 $/TH/day
+  assert.ok(Math.abs(q.miner.hashprice_usd_per_th_day - 0.045) < 1e-6, `${q.miner.hashprice_usd_per_th_day}`);
+  assert.equal(q.miner.hashprice_btc_per_th_day, 0.00000075);
+  // breakeven hashprice = cost/day ÷ hashrate = 3,600 / 100,000 = 0.036 $/TH/day (profitable above)
+  assert.ok(Math.abs(q.miner.breakeven_hashprice_usd_per_th_day - 0.036) < 1e-6, `${q.miner.breakeven_hashprice_usd_per_th_day}`);
+  assert.equal(q.miner.profitable_at_spot, true);
+});
+
 test("breakeven-strike floor: max margin erosion ≈ premium (does NOT fully cover cost)", () => {
   const q = buildMinerProtectQuote(miner, { floors: [{ strike: 48_000, askUsdcPerBtc: 1_000 }] });
   const o = q.options[0];

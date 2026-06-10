@@ -59,6 +59,11 @@ export type MinerProtectQuote = {
     gross_revenue_usd: number; period_cost_usd: number;
     /** Is the miner cash-flow positive at the current price? (spot > breakeven) */
     profitable_at_spot: boolean;
+    /** Hashprice = revenue per TH/s per day. The miner-native metric. */
+    hashprice_usd_per_th_day: number;       // btcPerThPerDay × spot
+    hashprice_btc_per_th_day: number;       // network productivity (difficulty-driven)
+    /** Hashprice at which revenue = cost (cost/day ÷ hashrate). Profitable while above this. */
+    breakeven_hashprice_usd_per_th_day: number;
   };
   options: MinerProtectOption[];
 };
@@ -183,7 +188,10 @@ export const buildMinerProtectQuote = (
       cost_per_day_usd: round2(costDay), btc_per_day: round8(btcDay), expected_production_btc: round8(hedgedBtc),
       breakeven_price_usd: round2(breakeven), btc_price: round2(inputs.btcPrice), tenor_days: inputs.tenorDays,
       gross_revenue_usd: round2(grossRevenue), period_cost_usd: round2(periodCost),
-      profitable_at_spot: inputs.btcPrice > breakeven
+      profitable_at_spot: inputs.btcPrice > breakeven,
+      hashprice_usd_per_th_day: +(inputs.btcPerThPerDay * inputs.btcPrice).toFixed(6),
+      hashprice_btc_per_th_day: inputs.btcPerThPerDay,
+      breakeven_hashprice_usd_per_th_day: inputs.hashrateThs > 0 ? +(costDay / inputs.hashrateThs).toFixed(6) : 0
     },
     options
   };
