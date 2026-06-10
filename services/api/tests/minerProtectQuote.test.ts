@@ -52,10 +52,12 @@ test("recommendation: cheapest floor that KEEPS the miner cash-flow positive (co
   });
   const rec = q.options.find((o) => o.recommended);
   assert.ok(rec);
-  assert.equal(rec!.label, "Margin floor +10%");
+  assert.equal(rec!.strike, 52_800);                 // cheapest floor that covers cost
   assert.equal(rec!.covers_cost, true);
   assert.equal(rec!.revenue_floor_usd, 114_300);    // 52,800 × 2.25 − 4,500
   assert.equal(q.options.filter((o) => o.recommended).length, 1);
+  assert.match(rec!.label, /^Floor \$52,800/);       // spot-relative label (price $60k)
+  assert.equal(q.miner.profitable_at_spot, true);    // spot 60k > breakeven 48k
 });
 
 test("recommendation fallback: nothing covers cost → closest to breakeven", () => {

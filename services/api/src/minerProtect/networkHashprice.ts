@@ -24,30 +24,57 @@ export const btcPerThPerDayFromDifficulty = (difficulty: number, subsidyPlusFees
 };
 
 export type TextFetcher = (url: string) => Promise<string>;
+export type JsonFetcher = (url: string) => Promise<unknown>;
 
 const defaultFetcher: TextFetcher = async (url) => {
   const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
   if (!res.ok) throw new Error(`difficulty_http_${res.status}`);
   return res.text();
 };
+const defaultJsonFetcher: JsonFetcher = async (url) => {
+  const res = await fetch(url, { signal: AbortSignal.timeout(6000) });
+  if (!res.ok) throw new Error(`fees_http_${res.status}`);
+  return res.json();
+};
 
 /** Public difficulty source (plain number). blockchain.info is unauthenticated + CORS-free. */
 export const DIFFICULTY_URL = "https://blockchain.info/q/getdifficulty";
+/** Avg block reward+fee stats over the last 144 blocks (mempool.space; totals in sats). */
+export const REWARD_STATS_URL = "https://mempool.space/api/v1/mining/reward-stats/144";
+
+/** Average transaction fees per block (BTC) over the recent window. null on failure. */
+export const fetchAvgFeesPerBlockBtc = async (fetcher: JsonFetcher = defaultJsonFetcher): Promise<number | null> => {
+  try {
+    const j = await fetcher(REWARD_STATS_URL) as { totalFee?: unknown } | null;
+    const totalFeeSats = Number(j?.totalFee); // sats across 144 blocks
+    if (!Number.isFinite(totalFeeSats) || totalFeeSats <= 0) return null;
+    return (totalFeeSats / 144) / 1e8;
+  } catch {
+    return null;
+  }
+};
 
 /**
- * Difficulty-based provider matching the HashpriceProvider shape. Reads current difficulty and
- * converts to BTC/TH/day. `subsidyPlusFeesBtc` defaults to the current subsidy (fees ≈ 0, conservative).
+ * Difficulty-based provider matching the HashpriceProvider shape: reads current difficulty + the
+ * recent average block fees, and converts (subsidy + fees) to BTC/TH/day. Pass `subsidyPlusFeesBtc`
+ * to bypass fee fetching entirely; otherwise fees are fetched (fallback 0 = conservative, subsidy-only).
  */
 export const difficultyHashpriceProvider = (
-  opts?: { subsidyPlusFeesBtc?: number; fetcher?: TextFetcher; url?: string }
+  opts?: { subsidyPlusFeesBtc?: number; subsidyBtc?: number; avgFeesPerBlockBtc?: number; fetcher?: TextFetcher; feeFetcher?: JsonFetcher; url?: string }
 ): { getBtcPerThPerDay: () => Promise<number | null> } => ({
   getBtcPerThPerDay: async () => {
     const fetcher = opts?.fetcher ?? defaultFetcher;
-    const subsidyPlusFees = opts?.subsidyPlusFeesBtc && opts.subsidyPlusFeesBtc > 0 ? opts.subsidyPlusFeesBtc : DEFAULT_BLOCK_SUBSIDY_BTC;
     try {
       const txt = await fetcher(opts?.url ?? DIFFICULTY_URL);
       const difficulty = Number(String(txt).trim());
-      return btcPerThPerDayFromDifficulty(difficulty, subsidyPlusFees);
+      let total = opts?.subsidyPlusFeesBtc;
+      if (total == null || !(total > 0)) {
+        const subsidy = opts?.subsidyBtc && opts.subsidyBtc > 0 ? opts.subsidyBtc : DEFAULT_BLOCK_SUBSIDY_BTC;
+        let fees = opts?.avgFeesPerBlockBtc;
+        if (fees == null) fees = (await fetchAvgFeesPerBlockBtc(opts?.feeFetcher)) ?? 0;
+        total = subsidy + Math.max(0, fees);
+      }
+      return btcPerThPerDayFromDifficulty(difficulty, total);
     } catch {
       return null;
     }

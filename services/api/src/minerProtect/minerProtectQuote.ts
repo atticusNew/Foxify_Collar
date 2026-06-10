@@ -45,6 +45,7 @@ export type MinerProtectOption = {
   covers_cost: boolean;          // revenue floor ≥ period cost (stays cash-flow positive)
   protected_margin_usd: number;  // revenue_floor − period_cost (≈ −premium at the breakeven strike)
   floor_vs_breakeven_pct: number; // (strike − breakeven) / breakeven
+  floor_vs_spot_pct: number;     // (strike − spot) / spot — negative = OTM protective floor
   cost_pct_revenue: number;      // premium / expected gross revenue
   recommended: boolean;
   note: string;
@@ -56,6 +57,8 @@ export type MinerProtectQuote = {
     cost_per_day_usd: number; btc_per_day: number; expected_production_btc: number;
     breakeven_price_usd: number; btc_price: number; tenor_days: number;
     gross_revenue_usd: number; period_cost_usd: number;
+    /** Is the miner cash-flow positive at the current price? (spot > breakeven) */
+    profitable_at_spot: boolean;
   };
   options: MinerProtectOption[];
 };
@@ -105,12 +108,13 @@ export const buildBreakevenFloor = (
   const revenueFloor = q.strike * ctx.hedgedBtc - premium;
   const protectedMargin = revenueFloor - ctx.periodCost;
   const vsBreakeven = ctx.breakevenPrice > 0 ? (q.strike - ctx.breakevenPrice) / ctx.breakevenPrice : 0;
+  const vsSpot = inputs.btcPrice > 0 ? (q.strike - inputs.btcPrice) / inputs.btcPrice : 0;
   const grossRevenue = ctx.hedgedBtc * inputs.btcPrice;
-  const label = Math.abs(vsBreakeven) < 0.01
+  // Label OTM floors relative to the current price (clear for traders); reserve "Breakeven floor"
+  // for a strike at the breakeven price (only meaningful when breakeven sits below spot).
+  const label = Math.abs(vsBreakeven) < 0.01 && ctx.breakevenPrice <= inputs.btcPrice
     ? `Breakeven floor ${usd(q.strike)}`
-    : vsBreakeven > 0
-      ? `Margin floor +${Math.round(vsBreakeven * 100)}%`
-      : `Floor ${Math.round(vsBreakeven * 100)}%`;
+    : `Floor ${usd(q.strike)} (${vsSpot >= 0 ? "+" : "−"}${Math.abs(Math.round(vsSpot * 100))}% vs price)`;
   const note = protectedMargin >= 0
     ? `Floors revenue at ${usd(revenueFloor)} — covers your ${usd(ctx.periodCost)} cost; you stay cash-flow positive below ${usd(q.strike)}.`
     : `Floors revenue at ${usd(revenueFloor)} vs ${usd(ctx.periodCost)} cost — max margin erosion ≈ the ${usd(premium)} premium even if BTC collapses.`;
@@ -127,6 +131,7 @@ export const buildBreakevenFloor = (
     covers_cost: revenueFloor >= ctx.periodCost,
     protected_margin_usd: round2(protectedMargin),
     floor_vs_breakeven_pct: round4(vsBreakeven),
+    floor_vs_spot_pct: round4(vsSpot),
     cost_pct_revenue: grossRevenue > 0 ? round4(premium / grossRevenue) : 0,
     recommended: false,
     note
@@ -177,7 +182,8 @@ export const buildMinerProtectQuote = (
       hashrate_ths: inputs.hashrateThs, efficiency_w_per_th: inputs.efficiencyWPerTh, power_kw: round4(power),
       cost_per_day_usd: round2(costDay), btc_per_day: round8(btcDay), expected_production_btc: round8(hedgedBtc),
       breakeven_price_usd: round2(breakeven), btc_price: round2(inputs.btcPrice), tenor_days: inputs.tenorDays,
-      gross_revenue_usd: round2(grossRevenue), period_cost_usd: round2(periodCost)
+      gross_revenue_usd: round2(grossRevenue), period_cost_usd: round2(periodCost),
+      profitable_at_spot: inputs.btcPrice > breakeven
     },
     options
   };

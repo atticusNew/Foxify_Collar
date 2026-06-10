@@ -5,25 +5,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  parseLuxorCurrentHashprice, luxorHashpriceProvider, mockHashpriceProvider, LUXOR_CURRENT_HASHPRICE_URL
+  parseLuxorHashprice, luxorHashpriceProvider, mockHashpriceProvider, LUXOR_HASHPRICE_URL
 } from "../src/minerProtect/luxorHashpriceAdapter";
 
-test("parseLuxorCurrentHashprice: reads data.priceBTC (BTC/TH/day), else null", () => {
-  assert.equal(parseLuxorCurrentHashprice({ data: { priceBTC: 0.00000075, priceUSD: 0.045 } }), 0.00000075);
-  assert.equal(parseLuxorCurrentHashprice({ data: { priceBTC: 0 } }), null);
-  assert.equal(parseLuxorCurrentHashprice({ data: {} }), null);
-  assert.equal(parseLuxorCurrentHashprice(null), null);
+test("parseLuxorHashprice: span series → most recent positive price; also handles current shape", () => {
+  // span series (currency=BTC, hashunit=THS): pick the latest timestamp's price.
+  assert.equal(parseLuxorHashprice({ data: [
+    { price: 0.0000007, timestamp: "2026-06-05T00:00:00Z" },
+    { price: 0.0000008, timestamp: "2026-06-06T00:00:00Z" }
+  ] }), 0.0000008);
+  assert.equal(parseLuxorHashprice({ data: { priceBTC: 0.00000075 } }), 0.00000075); // current shape
+  assert.equal(parseLuxorHashprice({ data: [] }), null);
+  assert.equal(parseLuxorHashprice(null), null);
 });
 
-test("luxorHashpriceProvider: hits THS current-hashprice with X-Hi-Api-Key, returns priceBTC", async () => {
+test("luxorHashpriceProvider: hits the /hashprice span endpoint with X-Hi-Api-Key, returns latest price", async () => {
   let seenUrl = ""; let seenKey = "";
   const fetcher = async (url: string, init?: { headers?: Record<string, string> }) => {
     seenUrl = url; seenKey = init?.headers?.["X-Hi-Api-Key"] ?? "";
-    return { data: { priceBTC: 0.0000008, priceUSD: 0.048, timestamp: "2026-06-06T00:00:00Z" } };
+    return { data: [{ price: 0.0000008, timestamp: "2026-06-06T00:00:00Z" }] };
   };
   const p = luxorHashpriceProvider("test-key", { fetcher });
   assert.equal(await p.getBtcPerThPerDay(), 0.0000008);
-  assert.equal(seenUrl, LUXOR_CURRENT_HASHPRICE_URL);
+  assert.equal(seenUrl, LUXOR_HASHPRICE_URL);
   assert.equal(seenKey, "test-key");
 });
 

@@ -41,7 +41,7 @@ async function main() {
   console.log(`HASHPRICE  source=${q.hashprice_source}  btc/TH/day=${q.btc_per_th_per_day}`);
   console.log(`MINER  ${m.hashrate_ths} TH/s · ${m.efficiency_w_per_th} W/TH · ${m.power_kw} kW · cost ${usd(m.cost_per_day_usd)}/day`);
   console.log(`       BTC/day ${m.btc_per_day} · ${m.tenor_days}d production ${m.expected_production_btc} BTC · gross ${usd(m.gross_revenue_usd)} · cost ${usd(m.period_cost_usd)}`);
-  console.log(`BREAKEVEN  ${usd(m.breakeven_price_usd)}  (BTC spot ${usd(m.btc_price)})\n`);
+  console.log(`BREAKEVEN  ${usd(m.breakeven_price_usd)}  (BTC spot ${usd(m.btc_price)})  ·  ${m.profitable_at_spot ? "PROFITABLE at spot" : "⚠ UNDERWATER at spot (breakeven above price)"}\n`);
   console.log("FLOORS");
   console.log("  label                  strike    premium   revenue floor  covers cost  rec");
   for (const o of (q.options ?? []) as any[]) {

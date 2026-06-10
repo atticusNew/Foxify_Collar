@@ -14,16 +14,23 @@ import {
 import type { PremiumPricer } from "../singleSide/twoSided/perpProtectQuote";
 import type { BullishProbeClientLike } from "../singleSide/twoSided/venuePutProbes";
 
-/** Floor strikes around breakeven: a cheap deeper floor, breakeven, and margin floors above it. */
-export const DEFAULT_FLOOR_CUSHIONS = [-0.05, 0, 0.05, 0.1];
+/** Protective floors are OTM puts (≤ spot): we floor downside from the CURRENT price, never above it.
+ *  Drawdown floors below spot, plus the breakeven price when it sits below spot (protect-to-breakeven).
+ *  When breakeven ≥ spot the miner is already underwater → only drawdown floors (capped at spot). */
+export const DEFAULT_FLOOR_DRAWDOWNS = [0.05, 0.1, 0.15, 0.2];
 
-export const floorStrikeLadder = (breakevenPrice: number, cushions: number[] = DEFAULT_FLOOR_CUSHIONS): number[] => {
-  if (!(breakevenPrice > 0)) return [];
+export const floorStrikeLadder = (breakevenPrice: number, spot: number, drawdowns: number[] = DEFAULT_FLOOR_DRAWDOWNS): number[] => {
+  if (!(spot > 0)) return [];
+  const raw: number[] = [];
+  if (breakevenPrice > 0 && breakevenPrice < spot) raw.push(breakevenPrice); // protect-to-breakeven (OTM)
+  for (const d of drawdowns) {
+    if (!(d > 0) || d >= 1) continue;
+    raw.push(spot * (1 - d));
+  }
   const seen = new Set<number>();
   const out: number[] = [];
-  for (const c of cushions) {
-    const k = breakevenPrice * (1 + c);
-    if (!(k > 0)) continue;
+  for (const k of raw.sort((a, b) => b - a)) { // closest-to-spot first
+    if (!(k > 0) || k > spot) continue;
     const key = Math.round(k);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -82,12 +89,12 @@ export const sourceFloorPut = async (
  */
 export const assembleMinerQuote = async (
   inputs: MinerInputs,
-  deps: { sourcePut: (strike: number) => Promise<FloorSource>; cushions?: number[]; pricer?: PremiumPricer }
+  deps: { sourcePut: (strike: number) => Promise<FloorSource>; drawdowns?: number[]; pricer?: PremiumPricer }
 ): Promise<MinerProtectQuote & { breakeven_price_usd: number; floor_strikes: number[]; venues_considered: string[] }> => {
   const costDay = costPerDayUsd(inputs);
   const btcDay = btcPerDay(inputs.hashrateThs, inputs.btcPerThPerDay);
   const breakeven = breakevenPriceUsd(costDay, btcDay);
-  const strikes = floorStrikeLadder(breakeven, deps.cushions);
+  const strikes = floorStrikeLadder(breakeven, inputs.btcPrice, deps.drawdowns);
   const sourced = await Promise.all(strikes.map((s) => deps.sourcePut(s)));
   const floors = sourced
     .map((r) => r.best)

@@ -19,12 +19,26 @@ export const mockHashpriceProvider = (btcPerThPerDay: number): HashpriceProvider
   getBtcPerThPerDay: async () => (btcPerThPerDay > 0 ? btcPerThPerDay : null)
 });
 
-/** Luxor "Get Current Hashprice" (REST) base — hashunit=THS → priceBTC is BTC per TH/s per day. */
-export const LUXOR_CURRENT_HASHPRICE_URL = "https://api.hashrateindex.com/v1/hashrateindex/hashprice/current?hashunit=THS";
+/** Luxor "Get Hashprice" (REST). currency=BTC & hashunit=THS → price is BTC per TH/s per day.
+ *  The `/hashprice/current` variant requires a higher tier (403 on some keys); the span endpoint is
+ *  broadly available. We take the most recent point from the returned series. */
+export const LUXOR_HASHPRICE_URL = "https://api.hashrateindex.com/v1/hashrateindex/hashprice?span=1D&bucket=1H&currency=BTC&hashunit=THS";
 
-/** Pure parse of Luxor's current-hashprice response → BTC/TH/day (priceBTC), or null. */
-export const parseLuxorCurrentHashprice = (json: unknown): number | null => {
-  const v = (json as { data?: { priceBTC?: unknown } } | null)?.data?.priceBTC;
+/**
+ * Pure parse of Luxor's hashprice response → BTC/TH/day. Handles both shapes:
+ *   - span series: { data: [{ price, timestamp }, ...] } → most recent positive price
+ *   - current:     { data: { priceBTC } }
+ */
+export const parseLuxorHashprice = (json: unknown): number | null => {
+  const data = (json as { data?: unknown } | null)?.data;
+  if (Array.isArray(data)) {
+    const points = data
+      .map((d) => ({ price: Number((d as { price?: unknown })?.price), ts: Date.parse(String((d as { timestamp?: unknown })?.timestamp ?? "")) }))
+      .filter((p) => Number.isFinite(p.price) && p.price > 0)
+      .sort((a, b) => (Number.isFinite(b.ts) ? b.ts : 0) - (Number.isFinite(a.ts) ? a.ts : 0));
+    return points.length ? points[0].price : null;
+  }
+  const v = (data as { priceBTC?: unknown } | null)?.priceBTC;
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
 };
 
@@ -47,8 +61,8 @@ export const luxorHashpriceProvider = (
     if (!apiKey) return null;
     const fetcher = opts?.fetcher ?? defaultFetcher;
     try {
-      const json = await fetcher(opts?.url ?? LUXOR_CURRENT_HASHPRICE_URL, { headers: { "X-Hi-Api-Key": apiKey } });
-      return parseLuxorCurrentHashprice(json);
+      const json = await fetcher(opts?.url ?? LUXOR_HASHPRICE_URL, { headers: { "X-Hi-Api-Key": apiKey } });
+      return parseLuxorHashprice(json);
     } catch {
       return null;
     }
