@@ -36,7 +36,8 @@ export function registerMinerProtectRoutes(app: FastifyInstance, deps: MinerProt
     async (req, reply) => {
       const { assembleMinerQuote, sourceFloorPut } = await import("./minerProtectSourcing");
       const { makeMinerPricer } = await import("./minerProtectQuote");
-      const { mockHashpriceProvider, luxorHashpriceProvider } = await import("./luxorHashpriceAdapter");
+      const { luxorHashpriceProvider } = await import("./luxorHashpriceAdapter");
+      const { difficultyHashpriceProvider } = await import("./networkHashprice");
 
       const b = (req.body ?? {}) as Body;
       const spot = b.mark_price != null && Number(b.mark_price) > 0 ? Number(b.mark_price) : deps.feedService.getCurrentFeed()?.canonicalPrice;
@@ -51,15 +52,24 @@ export function registerMinerProtectRoutes(app: FastifyInstance, deps: MinerProt
         reply.code(400).send({ error: "invalid_request", message: "hashrate_ths>0, efficiency_w_per_th>0, power_cost_usd_per_kwh>0, tenor_days>0" });
         return;
       }
-      // Network productivity (BTC/TH/day): request override first, else Luxor Hashprice Index.
-      const usingOverride = b.btc_per_th_per_day != null && Number(b.btc_per_th_per_day) > 0;
-      const provider = usingOverride
-        ? mockHashpriceProvider(Number(b.btc_per_th_per_day))
-        : luxorHashpriceProvider(deps.luxorApiKey);
-      const hashpriceSource = usingOverride ? "request" : "luxor";
-      const btcPerThPerDay = await provider.getBtcPerThPerDay();
+      // Network productivity (BTC/TH/day): request override → Luxor Hashprice Index (if entitled) →
+      // free on-chain difficulty fallback (always available). Source surfaced for transparency.
+      let btcPerThPerDay: number | null = null;
+      let hashpriceSource = "none";
+      if (b.btc_per_th_per_day != null && Number(b.btc_per_th_per_day) > 0) {
+        btcPerThPerDay = Number(b.btc_per_th_per_day); hashpriceSource = "request";
+      } else {
+        if (deps.luxorApiKey) {
+          btcPerThPerDay = await luxorHashpriceProvider(deps.luxorApiKey).getBtcPerThPerDay();
+          if (btcPerThPerDay) hashpriceSource = "luxor";
+        }
+        if (!btcPerThPerDay) {
+          btcPerThPerDay = await difficultyHashpriceProvider().getBtcPerThPerDay();
+          if (btcPerThPerDay) hashpriceSource = "network_difficulty";
+        }
+      }
       if (!btcPerThPerDay || btcPerThPerDay <= 0) {
-        reply.code(400).send({ error: "hashprice_unavailable", message: "Provide btc_per_th_per_day or configure the Luxor Hashprice Index." });
+        reply.code(503).send({ error: "hashprice_unavailable", message: "Could not source BTC/TH/day (network difficulty + Luxor both unavailable). Pass btc_per_th_per_day to override." });
         return;
       }
 

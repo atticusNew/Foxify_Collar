@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { floorStrikeLadder, assembleMinerQuote, type SourcedPut } from "../src/minerProtect/minerProtectSourcing";
+import { floorStrikeLadder, assembleMinerQuote, type FloorSource } from "../src/minerProtect/minerProtectSourcing";
 import type { MinerInputs } from "../src/minerProtect/minerProtectQuote";
 
 // breakeven $48,000 (see minerProtectQuote tests): 100k TH/s @ 30 W/TH, $0.05/kWh, 7.5e-7 BTC/TH/day.
@@ -19,27 +19,30 @@ test("floorStrikeLadder: cushions around breakeven, de-duped", () => {
   assert.deepEqual(floorStrikeLadder(0), []);
 });
 
-test("assembleMinerQuote: sources each floor (injected) → breakeven + recommendation", async () => {
+test("assembleMinerQuote: sources each floor (injected) → breakeven + recommendation + venues", async () => {
   // Mock sourcing: per-BTC ask scales with how close the strike is to spot (deeper = cheaper).
-  const sourcePut = async (strike: number): Promise<SourcedPut> => ({
-    strike, ask: Math.max(50, (strike - 40_000) / 10), venue: "deribit", spreadPct: 0.02
+  const sourcePut = async (strike: number): Promise<FloorSource> => ({
+    best: { strike, ask: Math.max(50, (strike - 40_000) / 10), venue: "deribit", spreadPct: 0.02 },
+    considered: ["okx", "deribit"]
   });
   const q = await assembleMinerQuote(miner, { sourcePut, cushions: [0, 0.05, 0.1] });
   assert.equal(q.breakeven_price_usd, 48_000);
   assert.deepEqual(q.floor_strikes, [48_000, 50_400, 52_800]);
   assert.equal(q.options.length, 3);
-  // exactly one recommended; it must be a cost-covering floor (strike above breakeven)
+  assert.deepEqual(q.venues_considered, ["okx", "deribit"]);
   const rec = q.options.find((o) => o.recommended);
   assert.ok(rec);
   assert.equal(q.options.filter((o) => o.recommended).length, 1);
   assert.equal(rec!.covers_cost, true);
 });
 
-test("assembleMinerQuote: drops venues that return no ask", async () => {
-  const sourcePut = async (strike: number): Promise<SourcedPut | null> =>
-    strike >= 48_000 ? { strike, ask: 800, venue: "okx", spreadPct: 0.01 } : null;
+test("assembleMinerQuote: drops strikes with no best ask; still reports considered venues", async () => {
+  const sourcePut = async (strike: number): Promise<FloorSource> =>
+    strike >= 48_000
+      ? { best: { strike, ask: 800, venue: "okx", spreadPct: 0.01 }, considered: ["okx"] }
+      : { best: null, considered: ["deribit"] }; // returned a quote but didn't win → still considered
   const q = await assembleMinerQuote(miner, { sourcePut, cushions: [-0.05, 0, 0.05] });
-  // −5% (45,600) sourced null → dropped; 48,000 and 50,400 remain.
-  assert.equal(q.options.length, 2);
+  assert.equal(q.options.length, 2); // 45,600 dropped (no best); 48,000 + 50,400 remain
   assert.ok(q.options.every((o) => o.strike >= 48_000));
+  assert.deepEqual([...q.venues_considered].sort(), ["deribit", "okx"]);
 });

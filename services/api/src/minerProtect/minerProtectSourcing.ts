@@ -33,12 +33,18 @@ export const floorStrikeLadder = (breakevenPrice: number, cushions: number[] = D
 };
 
 export type SourcedPut = { strike: number; ask: number | null; venue: string | null; spreadPct: number | null };
+export type FloorSource = { best: SourcedPut | null; considered: string[] };
+
+/** Miner protection is inherently DEEP-OTM and longer-dated → wider spreads / coarser expiries are
+ *  normal, so the selection guards are looser than the near-money perp defaults (env-overridable). */
+const MINER_MAX_SPREAD_PCT = Number(process.env.MINER_PROTECT_MAX_SPREAD_PCT ?? 0.6);
+const MINER_MAX_TENOR_DEV_PCT = Number(process.env.MINER_PROTECT_MAX_TENOR_DEV_PCT ?? 0.5);
 
 /** Source the cheapest qualifying put at `strike` across venues (size-aware when depth is present). */
 export const sourceFloorPut = async (
   strike: number,
   opts: { spot: number; tenorDays: number; bullishProbeClient?: BullishProbeClientLike | null; sizeBtc?: number }
-): Promise<SourcedPut | null> => {
+): Promise<FloorSource> => {
   const { okxProbe } = await import("../singleSide/twoSided/okxProbe");
   const { deribitPutProbe, bullishPutProbe, bybitPutProbe } = await import("../singleSide/twoSided/venuePutProbes");
   const { pickBestLegs } = await import("../singleSide/twoSided/perpProtectLegSelect");
@@ -63,8 +69,10 @@ export const sourceFloorPut = async (
     { venue: "bullish", ask: eff(bull.ask_usdc_per_btc, bull.ask_levels), bid: null, strike: bull.strike ?? null, daysToExpiry: bull.days_to_expiry ?? null, spreadPct: bull.spread_pct ?? null },
     { venue: "bybit", ask: eff(byb.ask_usdc_per_btc, byb.ask_levels), bid: null, strike: byb.strike ?? null, daysToExpiry: byb.days_to_expiry ?? null, spreadPct: byb.spread_pct ?? null }
   ];
-  const { bestAsk } = pickBestLegs(rows, { targetTenorDays: tenorDays });
-  return bestAsk && bestAsk.ask != null ? { strike: bestAsk.strike, ask: bestAsk.ask, venue: bestAsk.venue, spreadPct: bestAsk.spreadPct } : null;
+  const considered = rows.filter((r) => r.ask != null && (r.ask as number) > 0).map((r) => r.venue);
+  const { bestAsk } = pickBestLegs(rows, { targetTenorDays: tenorDays, maxSpreadPct: MINER_MAX_SPREAD_PCT, maxTenorDeviationPct: MINER_MAX_TENOR_DEV_PCT });
+  const best = bestAsk && bestAsk.ask != null ? { strike: bestAsk.strike, ask: bestAsk.ask, venue: bestAsk.venue, spreadPct: bestAsk.spreadPct } : null;
+  return { best, considered };
 };
 
 /**
@@ -74,16 +82,18 @@ export const sourceFloorPut = async (
  */
 export const assembleMinerQuote = async (
   inputs: MinerInputs,
-  deps: { sourcePut: (strike: number) => Promise<SourcedPut | null>; cushions?: number[]; pricer?: PremiumPricer }
-): Promise<MinerProtectQuote & { breakeven_price_usd: number; floor_strikes: number[] }> => {
+  deps: { sourcePut: (strike: number) => Promise<FloorSource>; cushions?: number[]; pricer?: PremiumPricer }
+): Promise<MinerProtectQuote & { breakeven_price_usd: number; floor_strikes: number[]; venues_considered: string[] }> => {
   const costDay = costPerDayUsd(inputs);
   const btcDay = btcPerDay(inputs.hashrateThs, inputs.btcPerThPerDay);
   const breakeven = breakevenPriceUsd(costDay, btcDay);
   const strikes = floorStrikeLadder(breakeven, deps.cushions);
   const sourced = await Promise.all(strikes.map((s) => deps.sourcePut(s)));
   const floors = sourced
+    .map((r) => r.best)
     .filter((r): r is SourcedPut => r != null && r.ask != null && r.ask > 0)
     .map((r) => ({ strike: r.strike, askUsdcPerBtc: r.ask as number, spreadPct: r.spreadPct }));
+  const venuesConsidered = [...new Set(sourced.flatMap((r) => r.considered))];
   const quote = buildMinerProtectQuote(inputs, { floors, pricer: deps.pricer });
-  return { ...quote, breakeven_price_usd: quote.miner.breakeven_price_usd, floor_strikes: strikes };
+  return { ...quote, breakeven_price_usd: quote.miner.breakeven_price_usd, floor_strikes: strikes, venues_considered: venuesConsidered };
 };

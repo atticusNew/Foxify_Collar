@@ -47,7 +47,9 @@ async function main() {
   for (const o of (q.options ?? []) as any[]) {
     console.log(`  ${String(o.label).padEnd(21)}  ${usd(o.strike).padStart(7)}  ${usd(o.premium_usd).padStart(8)}  ${usd(o.revenue_floor_usd).padStart(12)}  ${String(o.covers_cost).padStart(10)}  ${o.recommended ? "★" : ""}`);
   }
-  if (!q.options?.length) console.log("  (no tradable floors sourced — venues unreachable/region-gated locally?)");
+  if (!q.options?.length) console.log("  (no tradable floors sourced at these strikes)");
+  console.log(`\nVENUES CONSIDERED (returned a put quote at a floor strike): ${Array.isArray(q.venues_considered) && q.venues_considered.length ? q.venues_considered.join(", ") : "(none — deep-OTM/long-tenor not listed, or venues unreachable)"}`);
+  console.log(`FLOOR STRIKES probed: ${Array.isArray(q.floor_strikes) ? q.floor_strikes.map((s: number) => usd(s)).join(", ") : "—"}`);
   console.log("");
 }
 
