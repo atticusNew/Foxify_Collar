@@ -2254,6 +2254,17 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     reply.send({ spot: +spot.toFixed(2), as_of: new Date(feed!.asOfMs).toISOString() });
   });
 
+  // Miner Protect (separate offering; isolated module). Shares the live feed + Bullish client.
+  {
+    const { registerMinerProtectRoutes } = await import("../../minerProtect/minerProtectRoutes");
+    registerMinerProtectRoutes(app, {
+      feedService: deps.feedService,
+      bullishProbeClient: deps.bullishProbeClient,
+      preHandler: checkDemoOrAdminToken,
+      luxorApiKey: process.env.LUXOR_API_KEY
+    });
+  }
+
   /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
