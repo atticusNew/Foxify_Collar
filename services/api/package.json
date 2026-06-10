@@ -37,6 +37,7 @@
     "pilot:bullish:smoke": "tsx scripts/pilotBullishSmokeTest.ts",
     "perp-protect:sanity": "tsx scripts/perpProtectSanity.ts",
     "miner-protect:sanity": "tsx scripts/minerProtectSanity.ts",
+    "miner-protect:bitnomial": "tsx scripts/bitnomialProbe.ts",
     "pilot:compare-models": "tsx scripts/pilotCompareModels.ts",
     "pilot:backtest:fetch-btc": "tsx scripts/pilotBacktestFetchBtc.ts",
     "pilot:backtest:run": "tsx scripts/pilotBacktestRun.ts",
