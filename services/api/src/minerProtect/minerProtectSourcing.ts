@@ -89,7 +89,7 @@ export const sourceFloorPut = async (
  */
 export const assembleMinerQuote = async (
   inputs: MinerInputs,
-  deps: { sourcePut: (strike: number) => Promise<FloorSource>; drawdowns?: number[]; pricer?: PremiumPricer }
+  deps: { sourcePut: (strike: number) => Promise<FloorSource>; drawdowns?: number[]; pricer?: PremiumPricer; recTargetMarginPct?: number }
 ): Promise<MinerProtectQuote & { breakeven_price_usd: number; floor_strikes: number[]; venues_considered: string[] }> => {
   const costDay = costPerDayUsd(inputs);
   const btcDay = btcPerDay(inputs.hashrateThs, inputs.btcPerThPerDay);
@@ -101,6 +101,6 @@ export const assembleMinerQuote = async (
     .filter((r): r is SourcedPut => r != null && r.ask != null && r.ask > 0)
     .map((r) => ({ strike: r.strike, askUsdcPerBtc: r.ask as number, spreadPct: r.spreadPct }));
   const venuesConsidered = [...new Set(sourced.flatMap((r) => r.considered))];
-  const quote = buildMinerProtectQuote(inputs, { floors, pricer: deps.pricer });
+  const quote = buildMinerProtectQuote(inputs, { floors, pricer: deps.pricer, recTargetMarginPct: deps.recTargetMarginPct });
   return { ...quote, breakeven_price_usd: quote.miner.breakeven_price_usd, floor_strikes: strikes, venues_considered: venuesConsidered };
 };

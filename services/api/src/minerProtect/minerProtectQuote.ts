@@ -44,6 +44,7 @@ export type MinerProtectOption = {
   period_cost_usd: number;       // all-in cost over the tenor
   covers_cost: boolean;          // revenue floor ≥ period cost (stays cash-flow positive)
   protected_margin_usd: number;  // revenue_floor − period_cost (≈ −premium at the breakeven strike)
+  protected_margin_pct: number;  // protected_margin_usd / gross revenue (guaranteed profit margin)
   floor_vs_breakeven_pct: number; // (strike − breakeven) / breakeven
   floor_vs_spot_pct: number;     // (strike − spot) / spot — negative = OTM protective floor
   cost_pct_revenue: number;      // premium / expected gross revenue
@@ -135,6 +136,7 @@ export const buildBreakevenFloor = (
     period_cost_usd: round2(ctx.periodCost),
     covers_cost: revenueFloor >= ctx.periodCost,
     protected_margin_usd: round2(protectedMargin),
+    protected_margin_pct: grossRevenue > 0 ? round4(protectedMargin / grossRevenue) : 0,
     floor_vs_breakeven_pct: round4(vsBreakeven),
     floor_vs_spot_pct: round4(vsSpot),
     cost_pct_revenue: grossRevenue > 0 ? round4(premium / grossRevenue) : 0,
@@ -147,19 +149,20 @@ export const buildBreakevenFloor = (
  * Recommend the cheapest floor that keeps the miner cash-flow positive (covers cost). If none do
  * (e.g. only deep/cheap floors), fall back to the one closest to breakeven. Deterministic.
  */
-export const pickRecommendedFloor = (options: MinerProtectOption[]): string | null => {
+export const pickRecommendedFloor = (options: MinerProtectOption[], minMarginUsd = 0): string | null => {
   if (options.length === 0) return null;
-  const covering = options.filter((o) => o.covers_cost);
-  if (covering.length > 0) {
-    return [...covering].sort((a, b) => a.premium_usd - b.premium_usd || a.strike - b.strike)[0].id;
+  // Cheapest floor that GUARANTEES at least the target margin (default 0 = cover cost / stay positive).
+  const eligible = options.filter((o) => o.protected_margin_usd >= minMarginUsd);
+  if (eligible.length > 0) {
+    return [...eligible].sort((a, b) => a.premium_usd - b.premium_usd || a.strike - b.strike)[0].id;
   }
-  // None cover cost → closest to breakeven (smallest |floor_vs_breakeven|).
+  // None hit the target → closest to breakeven (smallest |floor_vs_breakeven|).
   return [...options].sort((a, b) => Math.abs(a.floor_vs_breakeven_pct) - Math.abs(b.floor_vs_breakeven_pct))[0].id;
 };
 
 export const buildMinerProtectQuote = (
   inputs: MinerInputs,
-  opts: { floors: MinerPutQuote[]; pricer?: PremiumPricer }
+  opts: { floors: MinerPutQuote[]; pricer?: PremiumPricer; recTargetMarginPct?: number }
 ): MinerProtectQuote => {
   const power = powerKw(inputs.hashrateThs, inputs.efficiencyWPerTh);
   const costDay = costPerDayUsd(inputs);
@@ -179,7 +182,9 @@ export const buildMinerProtectQuote = (
     options.push(buildBreakevenFloor(inputs, q, { breakevenPrice: breakeven, hedgedBtc, periodCost }, i, opts.pricer));
   });
 
-  const recId = pickRecommendedFloor(options);
+  // Target a guaranteed profit margin (% of gross revenue) when requested; default 0 = cover cost.
+  const minMarginUsd = opts.recTargetMarginPct && opts.recTargetMarginPct > 0 ? opts.recTargetMarginPct * grossRevenue : 0;
+  const recId = pickRecommendedFloor(options, minMarginUsd);
   if (recId) { const r = options.find((o) => o.id === recId); if (r) r.recommended = true; }
 
   return {

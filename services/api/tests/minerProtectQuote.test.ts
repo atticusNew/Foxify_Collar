@@ -70,6 +70,23 @@ test("recommendation: cheapest floor that KEEPS the miner cash-flow positive (co
   assert.equal(q.miner.profitable_at_spot, true);    // spot 60k > breakeven 48k
 });
 
+test("margin floor: recTargetMarginPct picks the cheapest floor guaranteeing that profit margin", () => {
+  // gross revenue = 2.25 × 60,000 = 135,000. Three cost-covering floors with rising margin.
+  const floors = [
+    { floorPct: 0, strike: 58_000, askUsdcPerBtc: 180 },  // margin ≈ 22,095 (16.4%)
+    { floorPct: 0, strike: 60_000, askUsdcPerBtc: 400 },  // margin ≈ 26,100 (19.3%)
+    { floorPct: 0, strike: 63_000, askUsdcPerBtc: 800 }   // margin ≈ 31,950 (23.7%)
+  ];
+  const base = buildMinerProtectQuote(miner, { floors });
+  assert.equal(base.options.find((o) => o.recommended)!.strike, 58_000); // default: cheapest covering
+  assert.ok(base.options[0].protected_margin_pct > 0.15);                 // pct surfaced
+
+  const targeted = buildMinerProtectQuote(miner, { floors, recTargetMarginPct: 0.18 });
+  const rec = targeted.options.find((o) => o.recommended)!;
+  assert.ok(rec.protected_margin_pct >= 0.18, `rec margin ${rec.protected_margin_pct}`);
+  assert.equal(rec.strike, 60_000); // cheapest floor that locks ≥18% margin
+});
+
 test("recommendation fallback: nothing covers cost → closest to breakeven", () => {
   const q = buildMinerProtectQuote(miner, {
     floors: [{ strike: 43_200, askUsdcPerBtc: 400 }, { strike: 40_000, askUsdcPerBtc: 200 }]

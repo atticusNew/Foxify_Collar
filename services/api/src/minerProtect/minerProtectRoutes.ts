@@ -23,6 +23,7 @@ export type MinerProtectRouteDeps = {
 type Body = {
   hashrate_ths?: number; efficiency_w_per_th?: number; power_cost_usd_per_kwh?: number;
   other_opex_usd_per_day?: number; btc_per_th_per_day?: number; tenor_days?: number; tenors?: number[]; mark_price?: number;
+  target_margin_pct?: number; // guarantee at least this profit margin (of gross revenue)
   // monitor
   strike?: number; expiry_iso?: string; premium_usd?: number; hedged_btc?: number; breakeven_price?: number;
 };
@@ -73,7 +74,8 @@ export function registerMinerProtectRoutes(app: FastifyInstance, deps: MinerProt
     const sizeBtc = inputs.hashrateThs * hp.value * tenorDays;
     const quote = await assembleMinerQuote(inputs, {
       sourcePut: (strike) => sourceFloorPut(strike, { spot, tenorDays, bullishProbeClient: deps.bullishProbeClient, sizeBtc }),
-      pricer: makeMinerPricer()
+      pricer: makeMinerPricer(),
+      recTargetMarginPct: b.target_margin_pct != null && Number(b.target_margin_pct) > 0 ? Number(b.target_margin_pct) : undefined
     });
     reply.send({ as_of: new Date().toISOString(), hashprice_source: hp.source, btc_per_th_per_day: hp.value, ...quote });
   });

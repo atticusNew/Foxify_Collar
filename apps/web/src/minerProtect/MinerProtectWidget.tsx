@@ -12,7 +12,7 @@ import { TokenGate, Shell, COLORS as C } from "../twoSided/widgets";
 type MinerOption = {
   id: string; label: string; strike: number; premium_usd: number; hedge_cost_usd: number;
   revenue_floor_usd: number; period_cost_usd: number; covers_cost: boolean; protected_margin_usd: number;
-  floor_vs_spot_pct: number; cost_pct_revenue: number; recommended: boolean; note: string;
+  protected_margin_pct: number; floor_vs_spot_pct: number; cost_pct_revenue: number; recommended: boolean; note: string;
 };
 type MinerBlock = {
   hashrate_ths: number; efficiency_w_per_th: number; power_kw: number; cost_per_day_usd: number;
@@ -37,6 +37,7 @@ export function MinerProtectWidget() {
   const [efficiency, setEfficiency] = useState(21); // W/TH
   const [powerCost, setPowerCost] = useState(0.05); // $/kWh
   const [tenorDays, setTenorDays] = useState(30);
+  const [targetMarginPct, setTargetMarginPct] = useState(0); // guarantee at least this profit margin
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const [quote, setQuote] = useState<MinerQuote | null>(null);
@@ -49,7 +50,8 @@ export function MinerProtectWidget() {
     setLoading(true); setErr(null);
     try {
       const data = await demoPost<MinerQuote>("/admin/foxify/v2/miner-protect/quote", {
-        hashrate_ths: hashrate, efficiency_w_per_th: efficiency, power_cost_usd_per_kwh: powerCost, tenor_days: tenorDays
+        hashrate_ths: hashrate, efficiency_w_per_th: efficiency, power_cost_usd_per_kwh: powerCost, tenor_days: tenorDays,
+        target_margin_pct: targetMarginPct > 0 ? targetMarginPct : undefined
       });
       setQuote(data);
       const rec = data.options.find((o) => o.recommended) ?? data.options[0] ?? null;
@@ -58,7 +60,7 @@ export function MinerProtectWidget() {
       if (e instanceof UnauthorizedError) { setAuthed(false); return; }
       setErr((e as Error).message); setQuote(null);
     } finally { setLoading(false); }
-  }, [hashrate, efficiency, powerCost, tenorDays]);
+  }, [hashrate, efficiency, powerCost, tenorDays, targetMarginPct]);
 
   useEffect(() => { if (!authed) return; const id = setTimeout(load, 350); return () => clearTimeout(id); }, [authed, load]);
   useEffect(() => {
@@ -127,6 +129,12 @@ export function MinerProtectWidget() {
                   <SectionLabel>Protect your revenue {loading && <span style={{ color: C.muted, fontWeight: 400 }}>· pricing…</span>}</SectionLabel>
                   <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5, marginBottom: 12 }}>
                     A floor guarantees a minimum dollar value for your mined BTC. If bitcoin drops below it you're paid the difference; if it rises you keep the gains.
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 14 }}>
+                    <span style={{ fontSize: 13, color: LABEL }}>Guarantee a margin</span>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {[0, 0.1, 0.2].map((p) => <Chip key={p} active={targetMarginPct === p} label={p === 0 ? "Cover costs" : `${p * 100}%`} onClick={() => setTargetMarginPct(p)} />)}
+                    </div>
                   </div>
                   {stay.length > 0 && (
                     <>
@@ -197,7 +205,9 @@ function FloorRow({ o, selected, onClick }: { o: MinerOption; selected: boolean;
         <div style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{o.label}
           {o.recommended && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: C.green + "22", color: C.green, border: `1px solid ${C.green}55` }}>recommended</span>}
           {o.covers_cost && <span style={{ marginLeft: 8, fontSize: 10, padding: "2px 7px", borderRadius: 8, background: C.blue + "22", color: C.blue, border: `1px solid ${C.blue}55` }}>covers costs</span>}</div>
-        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>guarantees ≥ {usd(o.revenue_floor_usd)} revenue</div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
+          guarantees ≥ {usd(o.revenue_floor_usd)} revenue{o.protected_margin_usd > 0 ? ` · locks ${usd(o.protected_margin_usd)} profit (${Math.round(o.protected_margin_pct * 100)}%)` : ""}
+        </div>
       </div>
       <div style={{ textAlign: "right" }}>
         <div style={{ fontSize: 16, fontWeight: 700, color: C.green }}>{usd2(o.premium_usd)}</div>
