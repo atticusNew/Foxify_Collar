@@ -5,7 +5,8 @@
  * Usage (Render shell — admin token auto-read from PILOT_ADMIN_TOKEN; Luxor used when LUXOR_API_KEY set):
  *   PERP_PROTECT_API_BASE=<live-api-host> \
  *   npm --workspace services/api run miner-protect:sanity -- \
- *     --hashrate 100000 --eff 30 --power 0.05 --tenor 30 [--btcperth 0.00000075] [--opex 0]
+ *     --hashrate 100000 --eff 30 --power 0.05 --tenor 30 [--btcperth 0.00000075] [--opex 0] [--margin 0.1]
+ *   (--margin: guarantee ≥ this profit margin; accepts a fraction 0.1 or percent 10)
  */
 
 const argOf = (n: string): string | undefined => {
@@ -28,6 +29,12 @@ async function main() {
     tenor_days: Number(argOf("tenor") ?? 30)
   };
   if (argOf("btcperth")) body.btc_per_th_per_day = Number(argOf("btcperth")); // else server uses Luxor
+  // --margin: guarantee at least this profit margin. Accepts fraction (0.1) or percent (10).
+  if (argOf("margin")) {
+    const m = Number(argOf("margin"));
+    const pct = Number.isFinite(m) ? (m > 1 ? m / 100 : m) : 0;
+    if (pct > 0) body.target_margin_pct = pct;
+  }
 
   console.log(`\n→ POST ${API_BASE}/admin/foxify/v2/miner-protect/quote\n  ${JSON.stringify(body)}\n`);
   const res = await fetch(`${API_BASE}/admin/foxify/v2/miner-protect/quote`, {
@@ -42,10 +49,12 @@ async function main() {
   console.log(`MINER  ${m.hashrate_ths} TH/s · ${m.efficiency_w_per_th} W/TH · ${m.power_kw} kW · cost ${usd(m.cost_per_day_usd)}/day`);
   console.log(`       BTC/day ${m.btc_per_day} · ${m.tenor_days}d production ${m.expected_production_btc} BTC · gross ${usd(m.gross_revenue_usd)} · cost ${usd(m.period_cost_usd)}`);
   console.log(`BREAKEVEN  ${usd(m.breakeven_price_usd)}  (BTC spot ${usd(m.btc_price)})  ·  ${m.profitable_at_spot ? "PROFITABLE at spot" : "⚠ UNDERWATER at spot (breakeven above price)"}\n`);
+  if (body.target_margin_pct) console.log(`TARGET MARGIN  ≥ ${Math.round(Number(body.target_margin_pct) * 100)}% of gross revenue\n`);
   console.log("FLOORS");
-  console.log("  label                  strike    premium   revenue floor  covers cost  rec");
+  console.log("  label                       strike    premium   revenue floor  locks profit   covers  rec");
   for (const o of (q.options ?? []) as any[]) {
-    console.log(`  ${String(o.label).padEnd(21)}  ${usd(o.strike).padStart(7)}  ${usd(o.premium_usd).padStart(8)}  ${usd(o.revenue_floor_usd).padStart(12)}  ${String(o.covers_cost).padStart(10)}  ${o.recommended ? "★" : ""}`);
+    const margin = `${usd(o.protected_margin_usd)} (${Math.round((o.protected_margin_pct || 0) * 100)}%)`;
+    console.log(`  ${String(o.label).padEnd(26)}  ${usd(o.strike).padStart(7)}  ${usd(o.premium_usd).padStart(8)}  ${usd(o.revenue_floor_usd).padStart(12)}  ${margin.padStart(13)}  ${String(o.covers_cost).padStart(6)}  ${o.recommended ? "★" : ""}`);
   }
   if (!q.options?.length) console.log("  (no tradable floors sourced at these strikes)");
   const vc = Array.isArray(q.venues_considered) ? q.venues_considered : [];
