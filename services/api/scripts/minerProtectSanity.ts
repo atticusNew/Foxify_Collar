@@ -49,9 +49,8 @@ async function main() {
   }
   if (!q.options?.length) console.log("  (no tradable floors sourced at these strikes)");
   const vc = Array.isArray(q.venues_considered) ? q.venues_considered : [];
-  console.log(`\nVENUES CONSIDERED (returned a put quote): ${vc.length ? vc.join(", ") : "(none)"}`);
+  console.log(`\nVENUES CONSIDERED (returned a put quote): ${vc.length ? vc.join(", ") : "(none — deep-OTM/long-tenor not listed, or venues unreachable)"}`);
   if (vc.length && !vc.includes("bullish")) console.log("  ⚠ bullish not among them — check PILOT_BULLISH_ENABLED + creds on this deploy");
-  console.log(`\nVENUES CONSIDERED (returned a put quote at a floor strike): ${Array.isArray(q.venues_considered) && q.venues_considered.length ? q.venues_considered.join(", ") : "(none — deep-OTM/long-tenor not listed, or venues unreachable)"}`);
   console.log(`FLOOR STRIKES probed: ${Array.isArray(q.floor_strikes) ? q.floor_strikes.map((s: number) => usd(s)).join(", ") : "—"}`);
   console.log("");
 }
