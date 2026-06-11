@@ -9,10 +9,22 @@ import { probeBitnomialBooks, hupToUsdPerThDay } from "../src/minerProtect/bitno
 
 async function main() {
   console.log("\n→ Bitnomial WS book probe: HUP (hashrate futures) + HUPO (options)\n");
-  const books = await probeBitnomialBooks(["HUP", "HUPO"], { collectMs: 6000 });
+  let opened = false, errored: unknown = null, messages = 0;
+  const books = await probeBitnomialBooks(["HUP", "HUPO"], {
+    collectMs: 6000,
+    onEvent: (evt, info) => {
+      if (evt === "open") { opened = true; console.log("  · ws connected"); }
+      else if (evt === "message") { messages = Number(info) || messages; }
+      else if (evt === "error") { errored = info; console.log(`  · ws error: ${(info as Error)?.message ?? info}`); }
+      else if (evt === "close") { console.log(`  · ws closed (received ${info ?? 0} messages)`); }
+    }
+  });
+  console.log(`\nConnection: ${opened ? "OPENED" : "did NOT open"}${errored ? " · ERRORED" : ""} · ${messages} messages\n`);
   const symbols = Object.keys(books).sort();
   if (!symbols.length) {
-    console.log("(no books — market likely closed [8:30–2:30 CT M-F], or no listings). Re-run during hours.");
+    if (!opened) console.log("⚠ Could not connect to Bitnomial WS (network/firewall or wrong URL) — NOT a market-hours issue.");
+    else if (messages === 0) console.log("Connected but no data — market likely closed [8:30–2:30 CT, Mon–Fri]. Re-run during hours.");
+    else console.log("Connected and received messages but no book snapshots (no HUP/HUPO listings matched, or book closed).");
     return;
   }
   console.log(`Got ${symbols.length} book(s):\n`);

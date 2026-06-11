@@ -62,7 +62,7 @@ export type WsFactory = (url: string) => WsLike;
  */
 export const probeBitnomialBooks = async (
   productCodes: string[],
-  opts?: { wsUrl?: string; wsFactory?: WsFactory; collectMs?: number }
+  opts?: { wsUrl?: string; wsFactory?: WsFactory; collectMs?: number; onEvent?: (evt: "open" | "message" | "error" | "close", info?: unknown) => void }
 ): Promise<Record<string, BitnomialBook>> => {
   const url = opts?.wsUrl ?? BITNOMIAL_WS_URL;
   const collectMs = opts?.collectMs ?? 3000;
@@ -87,16 +87,18 @@ export const probeBitnomialBooks = async (
     const finish = () => { if (done) return; done = true; try { ws.close(); } catch { /* noop */ } resolve(books); };
     try { ws = factory!(url); } catch { resolve({}); return; }
     const timer = setTimeout(finish, collectMs);
-    ws.on("open", () => { try { ws.send(JSON.stringify({ type: "subscribe", channels: [{ name: "book", product_codes: productCodes }] })); } catch { finish(); } });
+    let msgCount = 0;
+    ws.on("open", () => { opts?.onEvent?.("open"); try { ws.send(JSON.stringify({ type: "subscribe", channels: [{ name: "book", product_codes: productCodes }] })); } catch { finish(); } });
     ws.on("message", (data?: unknown) => {
+      msgCount += 1; opts?.onEvent?.("message", msgCount);
       try {
         const text = typeof data === "string" ? data : (data as { toString(): string })?.toString?.() ?? "";
         const b = parseBook(JSON.parse(text));
         if (b) books[b.symbol] = b;
       } catch { /* ignore non-JSON / non-book */ }
     });
-    ws.on("error", () => { clearTimeout(timer); finish(); });
-    ws.on("close", () => { clearTimeout(timer); if (!done) { done = true; resolve(books); } });
+    ws.on("error", (err?: unknown) => { opts?.onEvent?.("error", err); clearTimeout(timer); finish(); });
+    ws.on("close", () => { opts?.onEvent?.("close", msgCount); clearTimeout(timer); if (!done) { done = true; resolve(books); } });
   });
 };
 
