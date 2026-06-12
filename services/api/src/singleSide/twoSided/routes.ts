@@ -2168,13 +2168,19 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
    *   GET  /admin/foxify/v2/protection/scorecard
    */
   let _protectionService: import("./protection/protectionService").ProtectionService | null = null;
+  let _protectionSignal: import("./protection/protectionSignal").LiveSignalService | null = null;
   const getProtectionService = async () => {
     if (_protectionService) return _protectionService;
     const { ProtectionService } = await import("./protection/protectionService");
+    const { PostgresProtectionStore } = await import("./protection/protectionStorePg");
+    const { LiveSignalService } = await import("./protection/protectionSignal");
     const { buildFeeRecoveryQuote, barrierPrice } = await import("./feeRecoveryQuote");
     const { okxProbe } = await import("./okxProbe");
     const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
     const touchMultiplier = Number(process.env.PROTECTION_TOUCH_MULTIPLIER ?? "2");
+    const sigSide = (process.env.PROTECTION_SIGNAL_SIDE === "short" ? "short" : "long") as "long" | "short";
+    const sigTriggerPct = Number(process.env.PROTECTION_SIGNAL_TRIGGER_PCT ?? "0.03");
+    const sigTenorHours = Number(process.env.PROTECTION_SIGNAL_TENOR_HOURS ?? "24");
     const defaultOpsFee = Number(process.env.PROTECTION_OPS_FEE_USDC ?? "1");
     const spreadHalfPct = Number(process.env.PROTECTION_SPREAD_HALF_PCT ?? "0.01");
 
@@ -2220,13 +2226,18 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       };
     };
 
+    // Live adaptive signal (warmed from recent market data, refreshed every 30min).
+    _protectionSignal = new LiveSignalService({ side: sigSide, triggerPct: sigTriggerPct, tenorHours: sigTenorHours });
+    void _protectionSignal.start();
+
     _protectionService = new ProtectionService({
+      store: new PostgresProtectionStore(deps.pool),
       getSpot: () => deps.feedService.getCurrentFeed()?.canonicalPrice ?? null,
       priceCover,
-      getSignal: () => "NA" // live adaptive signal wiring is a follow-up; activation can pass require_go=false
+      getSignal: () => _protectionSignal?.getSignal() ?? "NA"
     });
     // Auto-monitor every 60s (shadow mode) so covers settle on touch/expiry without manual ticks.
-    const timer = setInterval(() => { try { _protectionService?.tick(); } catch { /* best-effort */ } }, 60_000);
+    const timer = setInterval(() => { void _protectionService?.tick(); }, 60_000);
     if (typeof (timer as { unref?: () => void }).unref === "function") (timer as { unref: () => void }).unref();
     return _protectionService;
   };
@@ -2255,25 +2266,30 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
 
   app.post("/admin/foxify/v2/protection/tick", { preHandler: checkAdminToken }, async (_req, reply) => {
     const svc = await getProtectionService();
-    const res = svc.tick();
+    const res = await svc.tick();
     reply.send({ ok: true, spot: res.spot, evaluated: res.evaluated, settled_now: res.settled });
   });
 
   app.get("/admin/foxify/v2/protection/positions", { preHandler: checkAdminToken }, async (_req, reply) => {
     const svc = await getProtectionService();
-    reply.send({ positions: svc.list() });
+    reply.send({ positions: await svc.list() });
   });
 
   app.get<{ Params: { id: string } }>("/admin/foxify/v2/protection/positions/:id", { preHandler: checkAdminToken }, async (req, reply) => {
     const svc = await getProtectionService();
-    const cover = svc.get(req.params.id);
+    const cover = await svc.get(req.params.id);
     if (!cover) { reply.code(404).send({ error: "not_found" }); return; }
     reply.send({ cover });
   });
 
   app.get("/admin/foxify/v2/protection/scorecard", { preHandler: checkAdminToken }, async (_req, reply) => {
     const svc = await getProtectionService();
-    reply.send({ as_of: new Date().toISOString(), scorecard: svc.scorecard() });
+    reply.send({ as_of: new Date().toISOString(), scorecard: await svc.scorecard() });
+  });
+
+  app.get("/admin/foxify/v2/protection/signal", { preHandler: checkAdminToken }, async (_req, reply) => {
+    await getProtectionService(); // ensures the signal service is started
+    reply.send({ as_of: new Date().toISOString(), signal: _protectionSignal?.getDetail() ?? { state: "NA", reason: "not_initialized" } });
   });
 
   /**

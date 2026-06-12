@@ -16,20 +16,20 @@ import {
 } from "./protectionLifecycle";
 
 export interface ProtectionStore {
-  put(cover: ProtectionCover): void;
-  get(id: string): ProtectionCover | undefined;
-  findByRef(ref: string): ProtectionCover | undefined;
-  list(): ProtectionCover[];
-  active(): ProtectionCover[];
+  put(cover: ProtectionCover): Promise<void>;
+  get(id: string): Promise<ProtectionCover | undefined>;
+  findByRef(ref: string): Promise<ProtectionCover | undefined>;
+  list(): Promise<ProtectionCover[]>;
+  active(): Promise<ProtectionCover[]>;
 }
 
 export class InMemoryProtectionStore implements ProtectionStore {
   private byId = new Map<string, ProtectionCover>();
-  put(c: ProtectionCover): void { this.byId.set(c.id, c); }
-  get(id: string): ProtectionCover | undefined { return this.byId.get(id); }
-  findByRef(ref: string): ProtectionCover | undefined { return [...this.byId.values()].find((c) => c.foxify_ref === ref); }
-  list(): ProtectionCover[] { return [...this.byId.values()].sort((a, b) => b.created_at_ms - a.created_at_ms); }
-  active(): ProtectionCover[] { return this.list().filter((c) => c.status === "active"); }
+  async put(c: ProtectionCover): Promise<void> { this.byId.set(c.id, c); }
+  async get(id: string): Promise<ProtectionCover | undefined> { return this.byId.get(id); }
+  async findByRef(ref: string): Promise<ProtectionCover | undefined> { return [...this.byId.values()].find((c) => c.foxify_ref === ref); }
+  async list(): Promise<ProtectionCover[]> { return [...this.byId.values()].sort((a, b) => b.created_at_ms - a.created_at_ms); }
+  async active(): Promise<ProtectionCover[]> { return (await this.list()).filter((c) => c.status === "active"); }
 }
 
 /** Real pricing for one cover (the route supplies this from live venue quotes). */
@@ -98,7 +98,7 @@ export class ProtectionService {
     if (!(p.payoutUsdc > 0)) return { ok: false, error: "invalid_payout", message: "payoutUsdc > 0" };
 
     if (p.foxifyRef) {
-      const existing = this.store.findByRef(p.foxifyRef);
+      const existing = await this.store.findByRef(p.foxifyRef);
       if (existing) return { ok: true, cover: existing, reused: true };
     }
 
@@ -136,7 +136,7 @@ export class ProtectionService {
       mode: p.mode ?? "shadow",
       nowMs: this.now()
     });
-    this.store.put(cover);
+    await this.store.put(cover);
     return { ok: true, cover, reused: false };
   }
 
@@ -145,21 +145,21 @@ export class ProtectionService {
    * the adverse extreme since the last tick (low for longs / high for shorts) so wicks aren't missed;
    * defaults to the current spot. Returns the covers that settled on this tick.
    */
-  tick(observed?: { low?: number; high?: number }): { evaluated: number; settled: ProtectionCover[]; spot: number | null } {
+  async tick(observed?: { low?: number; high?: number }): Promise<{ evaluated: number; settled: ProtectionCover[]; spot: number | null }> {
     const spot = this.getSpot();
     const now = this.now();
     const settled: ProtectionCover[] = [];
     if (spot == null || !(spot > 0)) return { evaluated: 0, settled, spot };
-    const active = this.store.active();
+    const active = await this.store.active();
     for (const cover of active) {
       const adverse = cover.side === "short" ? (observed?.high ?? spot) : (observed?.low ?? spot);
       const next = evaluateCover(cover, adverse, now);
-      if (next.status !== "active") { this.store.put(next); settled.push(next); }
+      if (next.status !== "active") { await this.store.put(next); settled.push(next); }
     }
     return { evaluated: active.length, settled, spot };
   }
 
-  get(id: string): ProtectionCover | undefined { return this.store.get(id); }
-  list(): ProtectionCover[] { return this.store.list(); }
-  scorecard(): ProtectionScorecard { return scorecard(this.store.list()); }
+  async get(id: string): Promise<ProtectionCover | undefined> { return this.store.get(id); }
+  async list(): Promise<ProtectionCover[]> { return this.store.list(); }
+  async scorecard(): Promise<ProtectionScorecard> { return scorecard(await this.store.list()); }
 }
