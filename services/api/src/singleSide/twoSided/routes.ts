@@ -2279,7 +2279,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
           bullishLeg = new BullishLegAdapter(deps.bullishProbeClient as never, { tradingAccountId });
         }
       } catch { /* bullish execution optional */ }
-      executor = new MultiVenueHedgeExecutor({ deribit: deribitLeg, bullish: bullishLeg });
+      executor = new MultiVenueHedgeExecutor({ deribit: deribitLeg, bullish: bullishLeg }, { slippagePct: Number(process.env.PROTECTION_EXEC_SLIPPAGE_PCT ?? "0.1") });
       _protectionExec = { enabled: true, deribit_creds: derHasCreds, deribit_paper: derPaper, bullish: Boolean(bullishLeg), env: derEnv, intentional_paper: intentionalPaper };
 
       planLiveHedge = async ({ side, spot, triggerPct, tenorDays, contractsBtc }) => {

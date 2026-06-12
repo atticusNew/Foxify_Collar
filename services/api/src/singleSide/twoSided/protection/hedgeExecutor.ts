@@ -60,7 +60,12 @@ export class SimHedgeExecutor implements HedgeExecutor {
 /** Live executor: routes each leg to its venue's real adapter (Deribit or Bullish). */
 export class MultiVenueHedgeExecutor implements HedgeExecutor {
   readonly mode = "live" as const;
-  constructor(private readonly clients: { deribit?: DeribitLegClient; bullish?: BullishLegClient }) {}
+  private readonly slip: number;
+  constructor(private readonly clients: { deribit?: DeribitLegClient; bullish?: BullishLegClient }, opts?: { slippagePct?: number }) {
+    // Headroom so IOC limits are MARKETABLE: buy ceiling above the ask, sell floor below the bid,
+    // so the order crosses the resting quote (it still fills at the real top-of-book price).
+    this.slip = opts?.slippagePct != null && opts.slippagePct >= 0 ? opts.slippagePct : 0.1;
+  }
 
   private async buy(venue: Venue, instrument: string, contractsBtc: number, maxAskUsdcPerBtc: number, oid: string) {
     if (venue === "deribit") {
@@ -83,9 +88,9 @@ export class MultiVenueHedgeExecutor implements HedgeExecutor {
     const width = widthOf(plan);
     if (!(width > 0)) return { ok: false, error: "invalid_spread_width" };
     const oid = `pp-${Date.now().toString(36)}`;
-    const buy = await this.buy(plan.inner.venue, plan.inner.instrument, plan.contractsBtc, plan.inner.askUsdcPerBtc, `${oid}-bi`);
+    const buy = await this.buy(plan.inner.venue, plan.inner.instrument, plan.contractsBtc, plan.inner.askUsdcPerBtc * (1 + this.slip), `${oid}-bi`);
     if (!buy.ok) return { ok: false, error: `inner buy (${plan.inner.venue}) failed: ${buy.detail ?? buy.reason}` };
-    const sell = await this.sell(plan.outer.venue, plan.outer.instrument, plan.contractsBtc, plan.outer.bidUsdcPerBtc, `${oid}-so`);
+    const sell = await this.sell(plan.outer.venue, plan.outer.instrument, plan.contractsBtc, plan.outer.bidUsdcPerBtc * (1 - this.slip), `${oid}-so`);
     if (!sell.ok) {
       // Compensate: unwind the inner so we aren't left exposed.
       await this.sell(plan.inner.venue, plan.inner.instrument, buy.filledContractsBtc ?? plan.contractsBtc, 0, `${oid}-bi-unwind`).catch(() => null);
