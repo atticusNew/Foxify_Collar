@@ -2295,6 +2295,14 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         if (!innerExec.length || !outerExec.length) throw new Error("no executable venue for one of the legs");
         const inner = innerExec.reduce((a, b) => (b.ask! < a.ask! ? b : a));
         const outer = outerExec.reduce((a, b) => (b.bid! > a.bid! ? b : a));
+        // Deribit can't sell options priced below ~1 tick (0.0001 BTC). If the (deep) outer leg's bid is
+        // sub-tick, the sell is unfillable → fail with actionable guidance rather than a cryptic 0-limit.
+        if (outer.venue === "deribit") {
+          const minSellUsdcPerBtc = 0.00012 * spot; // ~1.2 ticks of headroom
+          if ((outer.bid ?? 0) < minSellUsdcPerBtc) {
+            throw new Error(`outer leg too cheap to sell on Deribit: bid $${(outer.bid ?? 0).toFixed(2)}/BTC < venue minimum ~$${minSellUsdcPerBtc.toFixed(2)}/BTC. Use a longer tenor (e.g. tenor_days=2) or wider spread (PROTECTION_SPREAD_HALF_PCT) so the outer leg has a sellable bid.`);
+          }
+        }
         return {
           side, contractsBtc,
           inner: { venue: inner.venue as "deribit" | "bullish", instrument: inner.instrument!, strike: inner.strike!, askUsdcPerBtc: inner.ask!, bidUsdcPerBtc: inner.bid ?? 0 },
