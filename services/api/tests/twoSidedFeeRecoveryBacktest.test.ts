@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  normCdf, impliedTouchProb, runFeeRecoveryBacktest,
+  normCdf, impliedTouchProb, runFeeRecoveryBacktest, blockBootstrap,
   type Candle, type DvolPoint
 } from "../src/singleSide/twoSided/feeRecoveryBacktest";
 
@@ -101,6 +101,41 @@ test("term-structure uplift raises implied touch and lowers Foxify edge", () => 
   const corrAll = corrected.rows.find((r) => r.signal === "all")!;
   assert.ok(corrAll.implied_touch_rate > rawAll.implied_touch_rate, "uplift should raise implied");
   assert.ok(corrAll.foxify_ev_per_trade_usdc < rawAll.foxify_ev_per_trade_usdc, "uplift should lower Foxify edge");
+});
+
+test("blockBootstrap: all-positive series → p_positive=1, CI above 0; reproducible", () => {
+  const series = Array.from({ length: 500 }, () => 2 + Math.random()); // strictly positive
+  const a = blockBootstrap(series, { blockLen: 24, resamples: 1000, seed: 42 });
+  const b = blockBootstrap(series, { blockLen: 24, resamples: 1000, seed: 42 });
+  assert.equal(a.p_positive, 1);
+  assert.ok(a.ci_low > 0);
+  assert.equal(a.mean, b.mean); // deterministic
+  assert.equal(a.ci_low, b.ci_low);
+});
+
+test("blockBootstrap: exactly-zero-mean shuffled series → CI straddles 0, non-degenerate", () => {
+  // 400×(+1), 400×(−1) → mean exactly 0; deterministically shuffled so blocks aren't periodic.
+  const vals = Array.from({ length: 800 }, (_, i) => (i < 400 ? 1 : -1));
+  let s = 12345;
+  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
+  for (let i = vals.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [vals[i], vals[j]] = [vals[j], vals[i]]; }
+  const r = blockBootstrap(vals, { blockLen: 48, resamples: 2000, seed: 7 });
+  assert.equal(r.mean, 0);
+  assert.ok(r.ci_low < r.ci_high, "CI must have width (RNG not degenerate)");
+  assert.ok(r.ci_low < 0 && r.ci_high > 0, `CI should straddle 0: [${r.ci_low}, ${r.ci_high}]`);
+  assert.ok(r.p_positive > 0.3 && r.p_positive < 0.7, `p_positive ${r.p_positive}`);
+});
+
+test("runFeeRecoveryBacktest collects per-trade series when requested", () => {
+  const { candles, dvol } = buildSeries();
+  const rep = runFeeRecoveryBacktest(candles, dvol, {
+    triggers: [0.03], tenorHours: 1, sides: ["long"], payoutUsdc: 60, opsFeeUsdc: 1, minBucketN: 10,
+    collectSeriesFor: [{ side: "long", trigger: 0.03, signal: "all" }]
+  });
+  const s = rep.series?.["long|0.03|all"];
+  assert.ok(s && s.length > 100);
+  const boot = blockBootstrap(s!, { resamples: 500, seed: 1 });
+  assert.equal(boot.n, s!.length);
 });
 
 test("report carries window + signal buckets (all, dvol quintile, regime)", () => {

@@ -16,7 +16,7 @@
  */
 
 import {
-  runFeeRecoveryBacktest, DEFAULT_TERM_STRUCTURE, NEUTRAL_TERM_STRUCTURE,
+  runFeeRecoveryBacktest, blockBootstrap, DEFAULT_TERM_STRUCTURE, NEUTRAL_TERM_STRUCTURE,
   type Candle, type DvolPoint, type TradeSide, type TermStructure
 } from "../src/singleSide/twoSided/feeRecoveryBacktest";
 
@@ -152,8 +152,11 @@ const main = async () => {
     console.error("[backtest] insufficient data fetched"); process.exit(1);
   }
 
+  const collectSeriesFor = sides.includes("long")
+    ? triggers.map((t) => ({ side: "long" as TradeSide, trigger: t, signal: "adaptive_go" }))
+    : [];
   const baseParams = { triggers, tenorHours, sides, payoutUsdc, opsFeeUsdc, tradesPerDay, minBucketN: 30 };
-  const rep = runFeeRecoveryBacktest(candles, dvol, { ...baseParams, termStructure: term });
+  const rep = runFeeRecoveryBacktest(candles, dvol, { ...baseParams, termStructure: term, collectSeriesFor });
 
   console.log("\n══════════ FEE-RECOVERY GO/NO-GO BACKTEST ══════════");
   console.log(`window: ${rep.window.from_iso?.slice(0, 10)} → ${rep.window.to_iso?.slice(0, 10)}  entries=${rep.window.entries}`);
@@ -203,6 +206,19 @@ const main = async () => {
     .sort((a, b) => a.side === b.side ? (a.trigger - b.trigger || a.signal.localeCompare(b.signal)) : a.side.localeCompare(b.side))) {
     console.log(
       `${r.side.padEnd(5)} ${pct(r.trigger).padStart(5)}  ${r.signal.padEnd(14)} ${String(r.n).padStart(5)}  ${pct(r.realized_touch_rate).padStart(7)}  ${pct(r.implied_touch_rate).padStart(7)}  ${(r.edge * 100).toFixed(1).padStart(5)}  ${String(r.foxify_ev_per_trade_usdc).padStart(11)}  ${r.verdict}`
+    );
+  }
+
+  // ── Bootstrap significance: is the adaptive_go LONG edge distinguishable from zero? ──
+  console.log("\n--- bootstrap significance (moving-block 48-trade, 3000 resamples) on adaptive_go LONG ---");
+  console.log("trig    n     mean$/trade   5% CI    95% CI   P(edge>0)   significant?");
+  for (const t of triggers) {
+    const s = rep.series?.[`long|${t}|adaptive_go`];
+    if (!s || s.length < 100) { console.log(`${pct(t).padStart(5)}   (insufficient series)`); continue; }
+    const boot = blockBootstrap(s, { blockLen: 48, resamples: 3000, seed: 12345 });
+    const sig = boot.ci_low > 0 ? "YES (95% CI > 0)" : boot.p_positive >= 0.9 ? `likely (P=${boot.p_positive})` : "no";
+    console.log(
+      `${pct(t).padStart(5)} ${String(boot.n).padStart(5)}   ${boot.mean.toFixed(3).padStart(10)}   ${boot.ci_low.toFixed(3).padStart(6)}   ${boot.ci_high.toFixed(3).padStart(6)}   ${boot.p_positive.toFixed(3).padStart(8)}   ${sig}`
     );
   }
 

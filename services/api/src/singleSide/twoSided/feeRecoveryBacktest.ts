@@ -83,6 +83,8 @@ export type FeeRecoveryBacktestParams = {
   vrpLookbackHours?: number;
   /** Fire "adaptive_go" only when trailing realized touch exceeds trailing implied by this margin. Default 0. */
   vrpMargin?: number;
+  /** Collect the ordered per-trade Foxify P&L series for these (side,trigger,signal) buckets (for bootstrap). */
+  collectSeriesFor?: Array<{ side: TradeSide; trigger: number; signal: string }>;
 };
 
 export type CellSignalStat = {
@@ -105,7 +107,66 @@ export type FeeRecoveryBacktestReport = {
   params: FeeRecoveryBacktestParams;
   rows: CellSignalStat[];
   best_positive: CellSignalStat[];    // positive-EV (side,trigger,signal) sorted by foxify EV/trade
+  series?: Record<string, number[]>;  // ordered per-trade Foxify P&L for requested buckets
   summary: string[];
+};
+
+/** Deterministic PRNG (mulberry32) for reproducible bootstrap resamples. State lives in the closure. */
+const mulberry32 = (seed: number) => {
+  let a = seed | 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+export type BootstrapResult = {
+  n: number;
+  mean: number;
+  ci_low: number;
+  ci_high: number;
+  p_positive: number;     // fraction of resampled means > 0
+  block_len: number;
+  resamples: number;
+};
+
+/**
+ * Moving-block bootstrap on a per-trade P&L series. Resamples contiguous blocks (default 48 trades)
+ * to PRESERVE autocorrelation/regime clustering — a plain IID bootstrap would massively overstate
+ * significance on serially-correlated touch outcomes. Returns the 5–95% CI on mean P&L/trade and
+ * P(mean>0). Seeded → reproducible.
+ */
+export const blockBootstrap = (
+  series: number[],
+  opts: { blockLen?: number; resamples?: number; seed?: number } = {}
+): BootstrapResult => {
+  const n = series.length;
+  const blockLen = Math.max(1, Math.min(opts.blockLen ?? 48, n));
+  const resamples = opts.resamples ?? 2000;
+  const rng = mulberry32(opts.seed ?? 12345);
+  const observedMean = n > 0 ? series.reduce((s, x) => s + x, 0) / n : 0;
+  if (n === 0) return { n, mean: 0, ci_low: 0, ci_high: 0, p_positive: 0, block_len: blockLen, resamples };
+  const nBlocks = Math.ceil(n / blockLen);
+  const maxStart = Math.max(1, n - blockLen);
+  const means: number[] = [];
+  for (let r = 0; r < resamples; r++) {
+    let sum = 0, count = 0;
+    for (let b = 0; b < nBlocks && count < n; b++) {
+      const start = Math.floor(rng() * maxStart);
+      for (let k = 0; k < blockLen && count < n; k++) { sum += series[start + k] ?? 0; count++; }
+    }
+    means.push(sum / Math.max(1, count));
+  }
+  means.sort((a, b) => a - b);
+  const q = (p: number) => means[Math.min(means.length - 1, Math.max(0, Math.floor(p * means.length)))];
+  return {
+    n, mean: +observedMean.toFixed(4),
+    ci_low: +q(0.05).toFixed(4), ci_high: +q(0.95).toFixed(4),
+    p_positive: +(means.filter((x) => x > 0).length / means.length).toFixed(4),
+    block_len: blockLen, resamples
+  };
 };
 
 type Acc = { n: number; touches: number; impliedSum: number };
@@ -197,23 +258,30 @@ export const runFeeRecoveryBacktest = (
     outcomes.push({ tsMs: c.tsMs, q, regime, touched, implied });
   }
 
+  const collectKeys = new Set((params.collectSeriesFor ?? []).map((s) => `${s.side}|${s.trigger}|${s.signal}`));
+  const series: Record<string, number[]> = {};
+
   // Pass 2: static buckets + ADAPTIVE VRP bucket (trailing realized vs implied on RESOLVED entries).
   for (let i = 0; i < outcomes.length; i++) {
     const e = outcomes[i];
     for (let ci = 0; ci < cellDefs.length; ci++) {
       const { side, trigger } = cellDefs[ci];
-      bump(side, trigger, "all", e.touched[ci], e.implied[ci]);
-      bump(side, trigger, `dvol_q${e.q}`, e.touched[ci], e.implied[ci]);
-      bump(side, trigger, `regime:${e.regime}`, e.touched[ci], e.implied[ci]);
+      const touched = e.touched[ci], implied = e.implied[ci];
+      const pnl = (touched ? payout : 0) - (implied * payout + ops);
+      const rec = (signal: string) => {
+        bump(side, trigger, signal, touched, implied);
+        const k = `${side}|${trigger}|${signal}`;
+        if (collectKeys.has(k)) (series[k] ??= []).push(pnl);
+      };
+      rec("all"); rec(`dvol_q${e.q}`); rec(`regime:${e.regime}`);
       // adaptive: only entries that have fully RESOLVED by time e (index <= i - tenorSteps), within window.
       let n = 0, tch = 0, impSum = 0;
       for (let j = i - tenorSteps; j >= 0; j--) {
         if (outcomes[j].tsMs < e.tsMs - vrpLookbackMs) break;
         n++; tch += outcomes[j].touched[ci] ? 1 : 0; impSum += outcomes[j].implied[ci];
       }
-      if (n < 20) { bump(side, trigger, "adaptive_warmup", e.touched[ci], e.implied[ci]); continue; }
-      const go = tch / n > impSum / n + vrpMargin;
-      bump(side, trigger, go ? "adaptive_go" : "adaptive_wait", e.touched[ci], e.implied[ci]);
+      if (n < 20) { rec("adaptive_warmup"); continue; }
+      rec(tch / n > impSum / n + vrpMargin ? "adaptive_go" : "adaptive_wait");
     }
   }
 
@@ -269,6 +337,7 @@ export const runFeeRecoveryBacktest = (
     params,
     rows,
     best_positive: bestPositive,
+    series: Object.keys(series).length ? series : undefined,
     summary
   };
 };
