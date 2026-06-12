@@ -345,7 +345,8 @@ export class DeribitLegAdapter implements DeribitLegClient {
           ok: false,
           reason: "venue_error",
           detail: `Deribit sell not filled: state=${order?.order_state}. ` +
-                  `Limit was ${priceBtc.toFixed(4)} BTC (= \$${(priceBtc * spot).toFixed(2)} USDC/BTC at spot \$${spot.toFixed(0)})`
+                  `Limit was ${priceBtc.toFixed(4)} BTC (= \$${(priceBtc * spot).toFixed(2)} USDC/BTC at spot \$${spot.toFixed(0)}). ` +
+                  `raw=${JSON.stringify(resp).slice(0, 400)}`
         };
       }
       return {
