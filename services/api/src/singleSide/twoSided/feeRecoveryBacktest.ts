@@ -55,6 +55,17 @@ export type Candle = { tsMs: number; close: number; high: number; low: number };
 export type DvolPoint = { tsMs: number; dvol: number };
 export type TradeSide = "long" | "short";
 
+/**
+ * Term-structure multipliers applied to DVOL (a 30-day constant-maturity IV) to estimate the
+ * SHORT-DATED IV relevant to a 24h barrier. BTC's vol term structure is upward-sloping in calm
+ * (front-end < 30d) and inverts in elevated/stress (front-end > 30d). Without this, implied touch
+ * is understated in stress → edge overstated. Defaults are approximate and TUNABLE; the runner
+ * sweeps them to find the uplift that erases the edge.
+ */
+export type TermStructure = Partial<Record<Regime, number>>;
+export const NEUTRAL_TERM_STRUCTURE: Record<Regime, number> = { calm: 1, moderate: 1, elevated: 1, stress: 1 };
+export const DEFAULT_TERM_STRUCTURE: Record<Regime, number> = { calm: 0.9, moderate: 1.0, elevated: 1.2, stress: 1.4 };
+
 export type FeeRecoveryBacktestParams = {
   triggers: number[];                 // e.g. [0.02, 0.025, 0.03, 0.035, 0.04]
   tenorHours: number;                 // e.g. 24
@@ -64,6 +75,14 @@ export type FeeRecoveryBacktestParams = {
   dvolPercentileLookbackHours?: number; // trailing window for the DVOL percentile signal (default 720 = 30d)
   minBucketN?: number;                // min entries for a verdict (default 30)
   tradesPerDay?: number;              // for daily aggregates (default null)
+  /** DVOL→short-tenor IV term-structure multiplier by regime. Default = neutral (1×) so the pure
+   *  function is transparent; the runner passes DEFAULT_TERM_STRUCTURE (and sweeps it). */
+  termStructure?: TermStructure;
+  /** ADAPTIVE signal: trailing window (hours) over which to measure recent realized-vs-implied touch
+   *  (the variance-risk-premium momentum). Leakage-free — only RESOLVED past entries are used. Default 336 (14d). */
+  vrpLookbackHours?: number;
+  /** Fire "adaptive_go" only when trailing realized touch exceeds trailing implied by this margin. Default 0. */
+  vrpMargin?: number;
 };
 
 export type CellSignalStat = {
@@ -139,15 +158,21 @@ export const runFeeRecoveryBacktest = (
 
   const stepHours = Math.max(1, Math.round((sortedCandles[1]?.tsMs - sortedCandles[0]?.tsMs) / 3_600_000) || 1);
   const tenorSteps = Math.max(1, Math.round(tenorHours / stepHours));
+  const vrpLookbackMs = (params.vrpLookbackHours ?? 336) * 3_600_000;
+  const vrpMargin = params.vrpMargin ?? 0;
 
-  let entries = 0;
-  let firstTs = 0, lastTs = 0;
+  // Fixed (side,trigger) order so each entry's cells[] align by index across entries.
+  const cellDefs: Array<{ side: TradeSide; trigger: number }> = [];
+  for (const side of params.sides) for (const trig of params.triggers) cellDefs.push({ side, trigger: trig });
 
+  type Outcome = { tsMs: number; q: number; regime: Regime; touched: boolean[]; implied: number[] };
+
+  // Pass 1: per-entry outcomes (signals computed from PAST data only → leakage-free).
+  const outcomes: Outcome[] = [];
   for (let i = 0; i < sortedCandles.length - tenorSteps; i++) {
     const c = sortedCandles[i];
     const dv = nearestDvol(c.tsMs);
     if (dv == null) continue;
-    // trailing DVOL window for the percentile signal (prior samples only)
     const trail: number[] = [];
     for (let j = i - 1; j >= 0; j--) {
       if (sortedCandles[j].tsMs < c.tsMs - lookbackHours * 3_600_000) break;
@@ -156,28 +181,45 @@ export const runFeeRecoveryBacktest = (
     }
     const q = quintileOf(trail, dv);
     const regime: Regime = classifyRegime(dv);
-    const sigma = dv / 100;
-
-    // realized window extremes
+    const termFactor = params.termStructure?.[regime] ?? 1;
+    const sigma = (dv / 100) * termFactor;
     let lo = Infinity, hi = -Infinity;
     for (let k = i + 1; k <= i + tenorSteps; k++) {
       if (sortedCandles[k].low < lo) lo = sortedCandles[k].low;
       if (sortedCandles[k].high > hi) hi = sortedCandles[k].high;
     }
-
-    for (const side of params.sides) {
-      for (const trig of params.triggers) {
-        const implied = impliedTouchProb(trig, sigma, tenorYears);
-        const touched = side === "long" ? lo <= c.close * (1 - trig) : hi >= c.close * (1 + trig);
-        bump(side, trig, "all", touched, implied);
-        bump(side, trig, `dvol_q${q}`, touched, implied);
-        bump(side, trig, `regime:${regime}`, touched, implied);
-      }
+    const touched: boolean[] = [];
+    const implied: number[] = [];
+    for (const cd of cellDefs) {
+      implied.push(impliedTouchProb(cd.trigger, sigma, tenorYears));
+      touched.push(cd.side === "long" ? lo <= c.close * (1 - cd.trigger) : hi >= c.close * (1 + cd.trigger));
     }
-    entries++;
-    if (!firstTs) firstTs = c.tsMs;
-    lastTs = c.tsMs;
+    outcomes.push({ tsMs: c.tsMs, q, regime, touched, implied });
   }
+
+  // Pass 2: static buckets + ADAPTIVE VRP bucket (trailing realized vs implied on RESOLVED entries).
+  for (let i = 0; i < outcomes.length; i++) {
+    const e = outcomes[i];
+    for (let ci = 0; ci < cellDefs.length; ci++) {
+      const { side, trigger } = cellDefs[ci];
+      bump(side, trigger, "all", e.touched[ci], e.implied[ci]);
+      bump(side, trigger, `dvol_q${e.q}`, e.touched[ci], e.implied[ci]);
+      bump(side, trigger, `regime:${e.regime}`, e.touched[ci], e.implied[ci]);
+      // adaptive: only entries that have fully RESOLVED by time e (index <= i - tenorSteps), within window.
+      let n = 0, tch = 0, impSum = 0;
+      for (let j = i - tenorSteps; j >= 0; j--) {
+        if (outcomes[j].tsMs < e.tsMs - vrpLookbackMs) break;
+        n++; tch += outcomes[j].touched[ci] ? 1 : 0; impSum += outcomes[j].implied[ci];
+      }
+      if (n < 20) { bump(side, trigger, "adaptive_warmup", e.touched[ci], e.implied[ci]); continue; }
+      const go = tch / n > impSum / n + vrpMargin;
+      bump(side, trigger, go ? "adaptive_go" : "adaptive_wait", e.touched[ci], e.implied[ci]);
+    }
+  }
+
+  const entries = outcomes.length;
+  const firstTs = outcomes[0]?.tsMs ?? 0;
+  const lastTs = outcomes[outcomes.length - 1]?.tsMs ?? 0;
 
   const rows: CellSignalStat[] = [];
   for (const [k, a] of acc.entries()) {

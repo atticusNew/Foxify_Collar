@@ -82,6 +82,27 @@ test("short side uses highs; no upside touch in this series → realized ~0", ()
   assert.ok(all.foxify_ev_per_trade_usdc < 0);
 });
 
+test("term-structure uplift raises implied touch and lowers Foxify edge", () => {
+  // Build a high-vol series (DVOL 90 = stress) where -3% touches happen often.
+  const candles: Candle[] = [];
+  const dvol: DvolPoint[] = [];
+  const t0 = Date.UTC(2026, 0, 1);
+  const price = 100000;
+  for (let i = 0; i < 120; i++) {
+    const tsMs = t0 + i * 3_600_000;
+    const dip = i % 2 === 0;
+    candles.push({ tsMs, close: price, high: price * 1.001, low: dip ? price * 0.96 : price * 0.999 });
+    dvol.push({ tsMs, dvol: 90 }); // stress regime
+  }
+  const base = { triggers: [0.03], tenorHours: 24, sides: ["long"] as const, payoutUsdc: 60, opsFeeUsdc: 1, minBucketN: 5 };
+  const raw = runFeeRecoveryBacktest(candles, dvol, { ...base, termStructure: { stress: 1.0 } });
+  const corrected = runFeeRecoveryBacktest(candles, dvol, { ...base, termStructure: { stress: 1.5 } });
+  const rawAll = raw.rows.find((r) => r.signal === "all")!;
+  const corrAll = corrected.rows.find((r) => r.signal === "all")!;
+  assert.ok(corrAll.implied_touch_rate > rawAll.implied_touch_rate, "uplift should raise implied");
+  assert.ok(corrAll.foxify_ev_per_trade_usdc < rawAll.foxify_ev_per_trade_usdc, "uplift should lower Foxify edge");
+});
+
 test("report carries window + signal buckets (all, dvol quintile, regime)", () => {
   const { candles, dvol } = buildSeries();
   const rep = runFeeRecoveryBacktest(candles, dvol, {

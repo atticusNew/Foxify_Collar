@@ -16,7 +16,8 @@
  */
 
 import {
-  runFeeRecoveryBacktest, type Candle, type DvolPoint, type TradeSide
+  runFeeRecoveryBacktest, DEFAULT_TERM_STRUCTURE, NEUTRAL_TERM_STRUCTURE,
+  type Candle, type DvolPoint, type TradeSide, type TermStructure
 } from "../src/singleSide/twoSided/feeRecoveryBacktest";
 
 const HOUR = 3_600_000;
@@ -129,6 +130,18 @@ const main = async () => {
   const triggers = arg("triggers", "0.02,0.025,0.03,0.035,0.04").split(",").map(Number).filter((x) => x > 0);
   const sides = arg("sides", "long,short").split(",").map((s) => s.trim()).filter((s) => s === "long" || s === "short") as TradeSide[];
 
+  // Term-structure correction (DVOL 30d → short-tenor IV). Default ON with regime defaults;
+  // override elevated/stress multipliers via flags; turn off with --term-correction off.
+  const termOn = arg("term-correction", "on") !== "off";
+  const term: TermStructure = termOn ? { ...DEFAULT_TERM_STRUCTURE } : { ...NEUTRAL_TERM_STRUCTURE };
+  if (termOn) {
+    term.calm = Number(arg("calm-mult", String(term.calm)));
+    term.moderate = Number(arg("moderate-mult", String(term.moderate)));
+    term.elevated = Number(arg("elevated-mult", String(term.elevated)));
+    term.stress = Number(arg("stress-mult", String(term.stress)));
+  }
+  const splits = Math.max(1, Number(arg("split", "2")));
+
   const toMs = Date.now();
   const fromMs = toMs - days * 24 * HOUR;
 
@@ -139,14 +152,13 @@ const main = async () => {
     console.error("[backtest] insufficient data fetched"); process.exit(1);
   }
 
-  const rep = runFeeRecoveryBacktest(candles, dvol, {
-    triggers, tenorHours, sides, payoutUsdc, opsFeeUsdc, tradesPerDay, minBucketN: 30
-  });
+  const baseParams = { triggers, tenorHours, sides, payoutUsdc, opsFeeUsdc, tradesPerDay, minBucketN: 30 };
+  const rep = runFeeRecoveryBacktest(candles, dvol, { ...baseParams, termStructure: term });
 
-  // Console-friendly digest, then full JSON.
   console.log("\n══════════ FEE-RECOVERY GO/NO-GO BACKTEST ══════════");
   console.log(`window: ${rep.window.from_iso?.slice(0, 10)} → ${rep.window.to_iso?.slice(0, 10)}  entries=${rep.window.entries}`);
   console.log(`payout=$${payoutUsdc}  ops_fee=$${opsFeeUsdc}  tenor=${tenorHours}h  trades/day=${tradesPerDay}`);
+  console.log(`term-structure (DVOL×): ${termOn ? `calm ${term.calm} / mod ${term.moderate} / elev ${term.elevated} / stress ${term.stress}` : "OFF (raw DVOL)"}`);
   console.log("\n--- summary ---");
   for (const s of rep.summary) console.log("• " + s);
 
@@ -170,8 +182,53 @@ const main = async () => {
     }
   }
 
-  console.log("\n--- full JSON ---");
-  console.log(JSON.stringify(rep, null, 2));
+  // ── Sensitivity: how high must the elevated/stress front-end uplift go to kill the edge? ──
+  console.log("\n--- sensitivity: elevated & stress DVOL× uplift (focus on robust dvol_q5 long 3.0%) ---");
+  console.log("uplift  #positive  dvol_q5_long3%: realized  implied   foxify$/trade  verdict");
+  for (const mult of [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.75, 2.0]) {
+    const r2 = runFeeRecoveryBacktest(candles, dvol, {
+      ...baseParams, termStructure: { calm: term.calm, moderate: term.moderate, elevated: mult, stress: mult }
+    });
+    const q5 = r2.rows.find((x) => x.signal === "dvol_q5" && x.side === "long" && Math.abs(x.trigger - 0.03) < 1e-9);
+    console.log(
+      `${mult.toFixed(2).padStart(5)}   ${String(r2.best_positive.length).padStart(8)}   ` +
+      (q5 ? `${pct(q5.realized_touch_rate).padStart(8)}  ${pct(q5.implied_touch_rate).padStart(7)}  ${String(q5.foxify_ev_per_trade_usdc).padStart(11)}  ${q5.verdict}` : "n/a")
+    );
+  }
+
+  // ── Adaptive (deployable) signal: fire only on recent buyer-favorable VRP momentum ──
+  console.log("\n--- ADAPTIVE signal (deployable, leakage-free): adaptive_go vs adaptive_wait ---");
+  console.log("side  trig   bucket          n     realized  implied   edge   foxify$/trade  verdict");
+  for (const r of rep.rows.filter((x) => x.signal === "adaptive_go" || x.signal === "adaptive_wait")
+    .sort((a, b) => a.side === b.side ? (a.trigger - b.trigger || a.signal.localeCompare(b.signal)) : a.side.localeCompare(b.side))) {
+    console.log(
+      `${r.side.padEnd(5)} ${pct(r.trigger).padStart(5)}  ${r.signal.padEnd(14)} ${String(r.n).padStart(5)}  ${pct(r.realized_touch_rate).padStart(7)}  ${pct(r.implied_touch_rate).padStart(7)}  ${(r.edge * 100).toFixed(1).padStart(5)}  ${String(r.foxify_ev_per_trade_usdc).padStart(11)}  ${r.verdict}`
+    );
+  }
+
+  // ── Stability: split the window into sub-periods; track the robust + adaptive buckets ──
+  console.log(`\n--- stability across ${splits} sub-periods ---`);
+  const chunk = Math.floor(candles.length / splits);
+  const watch: Array<{ side: TradeSide; trigger: number; signal: string }> = [
+    { side: "long", trigger: 0.03, signal: "dvol_q5" },
+    { side: "long", trigger: 0.03, signal: "adaptive_go" },
+    { side: "long", trigger: 0.035, signal: "adaptive_go" }
+  ];
+  console.log("period            " + watch.map((w) => `${w.side[0]}${(w.trigger * 100).toFixed(1)}/${w.signal.replace("dvol_", "").replace("regime:", "")}`).join("   "));
+  for (let s = 0; s < splits; s++) {
+    const cSlice = candles.slice(s * chunk, (s + 1) * chunk + tenorHours);
+    if (cSlice.length < tenorHours + 30) continue;
+    const r3 = runFeeRecoveryBacktest(cSlice, dvol, { ...baseParams, termStructure: term, minBucketN: 15 });
+    const lbl = `${r3.window.from_iso.slice(0, 10)}→${r3.window.to_iso.slice(5, 10)}`;
+    const cells = watch.map((w) => {
+      const row = r3.rows.find((x) => x.side === w.side && Math.abs(x.trigger - w.trigger) < 1e-9 && x.signal === w.signal);
+      return row ? `${(row.foxify_ev_per_trade_usdc >= 0 ? "+" : "")}${row.foxify_ev_per_trade_usdc}(n${row.n})`.padStart(13) : "n/a".padStart(13);
+    });
+    console.log(lbl.padEnd(17) + cells.join(" "));
+  }
+
+  console.log("\n(full JSON for the main run available with --json)");
+  if (process.argv.includes("--json")) console.log(JSON.stringify(rep, null, 2));
 };
 
 main().catch((e) => { console.error(`[backtest] failed: ${(e as Error).message}`); process.exit(1); });
