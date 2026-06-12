@@ -1,105 +1,118 @@
 /**
- * Hedge executor — places/unwinds the REAL option spread that backs a cover.
+ * Hedge executor — places/unwinds the REAL option spread that backs a cover, routing each leg to the
+ * BEST executable venue (Deribit or Bullish; OKX is priced for comparison only — no executor).
  *
- *   openHedge:  long → BUY inner put + SELL outer put   (short → calls). Net debit = the hedge cost.
- *   closeHedge: the reverse (SELL inner + BUY outer) → proceeds. On a touch the spread is worth ~payout.
+ *   openHedge:  long → BUY inner put + SELL outer put   (short → calls). Each leg on its chosen venue.
+ *   closeHedge: the reverse (SELL inner + BUY outer), routed to each leg's original venue.
  *
- * SimHedgeExecutor: paper fills at the quoted prices (no venue). DeribitHedgeExecutor: real orders via
- * the existing DeribitLegAdapter (IOC limit, USDC↔BTC + tick/amount snapping handled there). The
- * DeribitLegClient is injected so it's unit-testable with a mock; the route wires the real adapter.
+ * SimHedgeExecutor: paper fills at quoted prices (tests / shadow). MultiVenueHedgeExecutor: real orders
+ * via the existing DeribitLegAdapter / BullishLegAdapter (IOC limit, tick/amount + USDC↔BTC handled
+ * there). Leg clients are injected so it's unit-testable with mocks; the route wires real adapters.
  *
- * IMPORTANT (real money): Deribit BTC options have a 0.1 BTC per-leg minimum, so the smallest live
- * spread (~0.1 BTC) implies a payout of ~$100–200 (= contracts × strike width), not $60. Size the
- * first live test accordingly. Live use is env-gated + size-capped by the caller.
+ * Deribit BTC options have a 0.1 BTC per-leg minimum → smallest live spread implies a payout of
+ * ~$100–200 (= contracts × strike width), not $60. Live use is env-gated + size-capped by the caller.
  */
 
-import type { TradeSide } from "./protectionLifecycle";
+import type { TradeSide, HedgeFill } from "./protectionLifecycle";
 import type { DeribitLegClient } from "../liveStrangleExecutor";
+import type { BullishLegClient } from "../liveStrangleExecutor";
 
-export type HedgeLegQuote = { instrument: string; strike: number; askUsdcPerBtc: number; bidUsdcPerBtc: number };
+export type Venue = "deribit" | "bullish";
+export type HedgeLegQuote = { venue: Venue; instrument: string; strike: number; askUsdcPerBtc: number; bidUsdcPerBtc: number };
 export type HedgePlan = { side: TradeSide; contractsBtc: number; inner: HedgeLegQuote; outer: HedgeLegQuote };
 
-export type FilledLeg = { role: "inner" | "outer"; action: "buy" | "sell"; instrument: string; strike: number; contractsBtc: number; fillUsdcPerBtc: number; orderId?: string };
-
 export type HedgeOpenResult =
-  | { ok: true; mode: "shadow" | "live"; legs: FilledLeg[]; debit_usdc: number; spread_width_usd: number; effective_payout_usdc: number }
+  | { ok: true; mode: "shadow" | "live"; legs: HedgeFill[]; debit_usdc: number; spread_width_usd: number; effective_payout_usdc: number; venues: string[] }
   | { ok: false; error: string };
 export type HedgeCloseResult =
-  | { ok: true; mode: "shadow" | "live"; legs: FilledLeg[]; proceeds_usdc: number }
+  | { ok: true; mode: "shadow" | "live"; legs: HedgeFill[]; proceeds_usdc: number }
   | { ok: false; error: string };
 
 export interface HedgeExecutor {
   readonly mode: "shadow" | "live";
   openHedge(plan: HedgePlan): Promise<HedgeOpenResult>;
-  /** Unwind a previously opened hedge given the filled legs (instruments + sizes). */
-  closeHedge(opened: FilledLeg[]): Promise<HedgeCloseResult>;
+  closeHedge(opened: HedgeFill[]): Promise<HedgeCloseResult>;
 }
 
 const round2 = (x: number) => +x.toFixed(2);
 const widthOf = (p: HedgePlan) => Math.abs(p.inner.strike - p.outer.strike);
 
-/** Paper executor: fills at quoted ask (buy) / bid (sell). Used for shadow covers + tests. */
+/** Paper executor: fills at quoted ask (buy) / bid (sell). For shadow covers + tests. */
 export class SimHedgeExecutor implements HedgeExecutor {
   readonly mode = "shadow" as const;
   async openHedge(plan: HedgePlan): Promise<HedgeOpenResult> {
     const width = widthOf(plan);
     if (!(width > 0)) return { ok: false, error: "invalid_spread_width" };
-    const legs: FilledLeg[] = [
-      { role: "inner", action: "buy", instrument: plan.inner.instrument, strike: plan.inner.strike, contractsBtc: plan.contractsBtc, fillUsdcPerBtc: plan.inner.askUsdcPerBtc },
-      { role: "outer", action: "sell", instrument: plan.outer.instrument, strike: plan.outer.strike, contractsBtc: plan.contractsBtc, fillUsdcPerBtc: plan.outer.bidUsdcPerBtc }
+    const legs: HedgeFill[] = [
+      { role: "inner", action: "buy", venue: plan.inner.venue, instrument: plan.inner.instrument, strike: plan.inner.strike, contractsBtc: plan.contractsBtc, fillUsdcPerBtc: plan.inner.askUsdcPerBtc },
+      { role: "outer", action: "sell", venue: plan.outer.venue, instrument: plan.outer.instrument, strike: plan.outer.strike, contractsBtc: plan.contractsBtc, fillUsdcPerBtc: plan.outer.bidUsdcPerBtc }
     ];
     const debit = round2((plan.inner.askUsdcPerBtc - plan.outer.bidUsdcPerBtc) * plan.contractsBtc);
-    return { ok: true, mode: "shadow", legs, debit_usdc: debit, spread_width_usd: round2(width), effective_payout_usdc: round2(width * plan.contractsBtc) };
+    return { ok: true, mode: "shadow", legs, debit_usdc: debit, spread_width_usd: round2(width), effective_payout_usdc: round2(width * plan.contractsBtc), venues: [...new Set([plan.inner.venue, plan.outer.venue])] };
   }
-  async closeHedge(opened: FilledLeg[]): Promise<HedgeCloseResult> {
-    // Paper close: assume reversal at the same recorded prices (the lifecycle owns the real P&L).
+  async closeHedge(opened: HedgeFill[]): Promise<HedgeCloseResult> {
     const legs = opened.map((l) => ({ ...l, action: (l.action === "buy" ? "sell" : "buy") as "buy" | "sell" }));
     const proceeds = round2(legs.reduce((s, l) => s + (l.action === "sell" ? 1 : -1) * l.fillUsdcPerBtc * l.contractsBtc, 0));
     return { ok: true, mode: "shadow", legs, proceeds_usdc: proceeds };
   }
 }
 
-/** Live executor: real Deribit orders via the injected DeribitLegAdapter (DeribitLegClient). */
-export class DeribitHedgeExecutor implements HedgeExecutor {
+/** Live executor: routes each leg to its venue's real adapter (Deribit or Bullish). */
+export class MultiVenueHedgeExecutor implements HedgeExecutor {
   readonly mode = "live" as const;
-  constructor(private readonly deribit: DeribitLegClient) {}
+  constructor(private readonly clients: { deribit?: DeribitLegClient; bullish?: BullishLegClient }) {}
+
+  private async buy(venue: Venue, instrument: string, contractsBtc: number, maxAskUsdcPerBtc: number, oid: string) {
+    if (venue === "deribit") {
+      if (!this.clients.deribit) throw new Error("deribit client unavailable");
+      return this.clients.deribit.buyLeg({ instrument, contractsBtc, maxAcceptableAskUsdcPerBtc: maxAskUsdcPerBtc, clientOrderId: oid });
+    }
+    if (!this.clients.bullish) throw new Error("bullish client unavailable");
+    return this.clients.bullish.buyLeg({ symbol: instrument, contractsBtc, maxAcceptableAskUsdcPerBtc: maxAskUsdcPerBtc, clientOrderId: oid });
+  }
+  private async sell(venue: Venue, instrument: string, contractsBtc: number, minBidUsdcPerBtc: number, oid: string) {
+    if (venue === "deribit") {
+      if (!this.clients.deribit) throw new Error("deribit client unavailable");
+      return this.clients.deribit.sellLeg({ instrument, contractsBtc, minAcceptableBidUsdcPerBtc: minBidUsdcPerBtc, clientOrderId: oid });
+    }
+    if (!this.clients.bullish) throw new Error("bullish client unavailable");
+    return this.clients.bullish.sellLeg({ symbol: instrument, contractsBtc, minAcceptableBidUsdcPerBtc: minBidUsdcPerBtc, clientOrderId: oid });
+  }
 
   async openHedge(plan: HedgePlan): Promise<HedgeOpenResult> {
     const width = widthOf(plan);
     if (!(width > 0)) return { ok: false, error: "invalid_spread_width" };
     const oid = `pp-${Date.now().toString(36)}`;
-    // BUY inner (pay up to ask), SELL outer (accept down to bid).
-    const buy = await this.deribit.buyLeg({ instrument: plan.inner.instrument, contractsBtc: plan.contractsBtc, maxAcceptableAskUsdcPerBtc: plan.inner.askUsdcPerBtc, clientOrderId: `${oid}-bi` });
-    if (!buy.ok) return { ok: false, error: `inner buy failed: ${buy.detail ?? buy.reason}` };
-    const sell = await this.deribit.sellLeg({ instrument: plan.outer.instrument, contractsBtc: plan.contractsBtc, minAcceptableBidUsdcPerBtc: plan.outer.bidUsdcPerBtc, clientOrderId: `${oid}-so` });
+    const buy = await this.buy(plan.inner.venue, plan.inner.instrument, plan.contractsBtc, plan.inner.askUsdcPerBtc, `${oid}-bi`);
+    if (!buy.ok) return { ok: false, error: `inner buy (${plan.inner.venue}) failed: ${buy.detail ?? buy.reason}` };
+    const sell = await this.sell(plan.outer.venue, plan.outer.instrument, plan.contractsBtc, plan.outer.bidUsdcPerBtc, `${oid}-so`);
     if (!sell.ok) {
-      // Compensate: we bought the inner but couldn't sell the outer → unwind the inner so we aren't left exposed.
-      await this.deribit.sellLeg({ instrument: plan.inner.instrument, contractsBtc: buy.filledContractsBtc ?? plan.contractsBtc, minAcceptableBidUsdcPerBtc: 0, clientOrderId: `${oid}-bi-unwind` }).catch(() => null);
-      return { ok: false, error: `outer sell failed (inner unwound): ${sell.detail ?? sell.reason}` };
+      // Compensate: unwind the inner so we aren't left exposed.
+      await this.sell(plan.inner.venue, plan.inner.instrument, buy.filledContractsBtc ?? plan.contractsBtc, 0, `${oid}-bi-unwind`).catch(() => null);
+      return { ok: false, error: `outer sell (${plan.outer.venue}) failed (inner unwound): ${sell.detail ?? sell.reason}` };
     }
     const contracts = Math.min(buy.filledContractsBtc ?? plan.contractsBtc, sell.filledContractsBtc ?? plan.contractsBtc);
-    const legs: FilledLeg[] = [
-      { role: "inner", action: "buy", instrument: plan.inner.instrument, strike: plan.inner.strike, contractsBtc: buy.filledContractsBtc ?? plan.contractsBtc, fillUsdcPerBtc: buy.filledAskUsdcPerBtc ?? plan.inner.askUsdcPerBtc, orderId: buy.filledOrderId },
-      { role: "outer", action: "sell", instrument: plan.outer.instrument, strike: plan.outer.strike, contractsBtc: sell.filledContractsBtc ?? plan.contractsBtc, fillUsdcPerBtc: sell.filledAskUsdcPerBtc ?? plan.outer.bidUsdcPerBtc, orderId: sell.filledOrderId }
+    const legs: HedgeFill[] = [
+      { role: "inner", action: "buy", venue: plan.inner.venue, instrument: plan.inner.instrument, strike: plan.inner.strike, contractsBtc: buy.filledContractsBtc ?? plan.contractsBtc, fillUsdcPerBtc: buy.filledAskUsdcPerBtc ?? plan.inner.askUsdcPerBtc, orderId: buy.filledOrderId },
+      { role: "outer", action: "sell", venue: plan.outer.venue, instrument: plan.outer.instrument, strike: plan.outer.strike, contractsBtc: sell.filledContractsBtc ?? plan.contractsBtc, fillUsdcPerBtc: sell.filledAskUsdcPerBtc ?? plan.outer.bidUsdcPerBtc, orderId: sell.filledOrderId }
     ];
     const debit = round2((legs[0].fillUsdcPerBtc - legs[1].fillUsdcPerBtc) * contracts);
-    return { ok: true, mode: "live", legs, debit_usdc: debit, spread_width_usd: round2(width), effective_payout_usdc: round2(width * contracts) };
+    return { ok: true, mode: "live", legs, debit_usdc: debit, spread_width_usd: round2(width), effective_payout_usdc: round2(width * contracts), venues: [...new Set([plan.inner.venue, plan.outer.venue])] };
   }
 
-  async closeHedge(opened: FilledLeg[]): Promise<HedgeCloseResult> {
+  async closeHedge(opened: HedgeFill[]): Promise<HedgeCloseResult> {
     const inner = opened.find((l) => l.role === "inner");
     const outer = opened.find((l) => l.role === "outer");
     if (!inner || !outer) return { ok: false, error: "missing legs to close" };
     const oid = `pp-${Date.now().toString(36)}-close`;
-    // Reverse: SELL inner (best-effort), BUY back outer (best-effort up to a high ceiling).
-    const sellInner = await this.deribit.sellLeg({ instrument: inner.instrument, contractsBtc: inner.contractsBtc, minAcceptableBidUsdcPerBtc: 0, clientOrderId: `${oid}-si` });
-    const buyOuter = await this.deribit.buyLeg({ instrument: outer.instrument, contractsBtc: outer.contractsBtc, maxAcceptableAskUsdcPerBtc: outer.fillUsdcPerBtc * 50 + 1e6, clientOrderId: `${oid}-bo` });
+    const sellInner = await this.sell(inner.venue as Venue, inner.instrument, inner.contractsBtc, 0, `${oid}-si`);
+    const buyOuter = await this.buy(outer.venue as Venue, outer.instrument, outer.contractsBtc, outer.fillUsdcPerBtc * 50 + 1e6, `${oid}-bo`);
     if (!sellInner.ok || !buyOuter.ok) {
       return { ok: false, error: `close partial/failed: inner=${sellInner.ok ? "ok" : sellInner.detail} outer=${buyOuter.ok ? "ok" : buyOuter.detail}` };
     }
-    const legs: FilledLeg[] = [
-      { role: "inner", action: "sell", instrument: inner.instrument, strike: inner.strike, contractsBtc: sellInner.filledContractsBtc ?? inner.contractsBtc, fillUsdcPerBtc: sellInner.filledAskUsdcPerBtc ?? 0, orderId: sellInner.filledOrderId },
-      { role: "outer", action: "buy", instrument: outer.instrument, strike: outer.strike, contractsBtc: buyOuter.filledContractsBtc ?? outer.contractsBtc, fillUsdcPerBtc: buyOuter.filledAskUsdcPerBtc ?? 0, orderId: buyOuter.filledOrderId }
+    const legs: HedgeFill[] = [
+      { role: "inner", action: "sell", venue: inner.venue, instrument: inner.instrument, strike: inner.strike, contractsBtc: sellInner.filledContractsBtc ?? inner.contractsBtc, fillUsdcPerBtc: sellInner.filledAskUsdcPerBtc ?? 0, orderId: sellInner.filledOrderId },
+      { role: "outer", action: "buy", venue: outer.venue, instrument: outer.instrument, strike: outer.strike, contractsBtc: buyOuter.filledContractsBtc ?? outer.contractsBtc, fillUsdcPerBtc: buyOuter.filledAskUsdcPerBtc ?? 0, orderId: buyOuter.filledOrderId }
     ];
     const proceeds = round2(legs[0].fillUsdcPerBtc * legs[0].contractsBtc - legs[1].fillUsdcPerBtc * legs[1].contractsBtc);
     return { ok: true, mode: "live", legs, proceeds_usdc: proceeds };

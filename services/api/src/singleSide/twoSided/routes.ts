@@ -2170,7 +2170,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   let _protectionService: import("./protection/protectionService").ProtectionService | null = null;
   let _protectionSignal: import("./protection/protectionSignal").LiveSignalService | null = null;
   let _protectionAuto: import("./protection/protectionAutoActivator").ProtectionAutoActivator | null = null;
-  const _liveHedges = new Map<string, { id: string; opened_at_ms: number; plan: import("./protection/hedgeExecutor").HedgePlan; legs: import("./protection/hedgeExecutor").FilledLeg[]; debit_usdc: number; effective_payout_usdc: number; status: "open" | "closed"; proceeds_usdc?: number; pnl_usdc?: number } >();
+  let _protectionProbeVenues: ((strike: number, optType: "put" | "call", tenorDays: number, spot: number) => Promise<Array<{ venue: string; instrument: string | null; strike: number | null; ask: number | null; bid: number | null; executable: boolean }>>) | null = null;
   const getProtectionService = async () => {
     if (_protectionService) return _protectionService;
     const { ProtectionService } = await import("./protection/protectionService");
@@ -2185,6 +2185,23 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     const sigTenorHours = Number(process.env.PROTECTION_SIGNAL_TENOR_HOURS ?? "24");
     const defaultOpsFee = Number(process.env.PROTECTION_OPS_FEE_USDC ?? "1");
     const spreadHalfPct = Number(process.env.PROTECTION_SPREAD_HALF_PCT ?? "0.01");
+
+    // Per-venue quotes (with venue tag + instrument) for a strike — used by the live planner and the
+    // venue-comparison endpoint. OKX is included for comparison but is NOT executable (no executor).
+    type VenueQuote = { venue: string; instrument: string | null; strike: number | null; ask: number | null; bid: number | null; executable: boolean };
+    const probeVenues = async (strike: number, optType: "put" | "call", tenorDays: number, spot: number): Promise<VenueQuote[]> => {
+      const okx = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
+      const [der, bull] = await Promise.all([
+        deribitPutProbe({ spot, strike, tenorDays, optType }),
+        bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
+      ]);
+      return [
+        { venue: "deribit", instrument: der.instrument, strike: der.strike ?? null, ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, executable: true },
+        { venue: "bullish", instrument: bull.instrument, strike: bull.strike ?? null, ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, executable: Boolean(deps.bullishProbeClient) },
+        { venue: "okx", instrument: okx?.instId ?? null, strike: okx?.strike ?? null, ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, executable: false }
+      ];
+    };
+    _protectionProbeVenues = probeVenues;
 
     const priceCover = async (req: { side: "long" | "short"; spot: number; triggerPct: number; tenorDays: number; payoutUsdc: number }) => {
       const optType: "put" | "call" = req.side === "short" ? "call" : "put";
@@ -2232,11 +2249,57 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     _protectionSignal = new LiveSignalService({ side: sigSide, triggerPct: sigTriggerPct, tenorHours: sigTenorHours });
     void _protectionSignal.start();
 
+    // ── Multi-venue executor + planner (built only when live execution is enabled) ──
+    const liveEnabled = String(process.env.PROTECTION_LIVE_EXECUTION ?? "false").toLowerCase() === "true";
+    let executor: import("./protection/hedgeExecutor").HedgeExecutor | undefined;
+    let planLiveHedge: import("./protection/protectionService").PlanLiveHedgeFn | undefined;
+    if (liveEnabled) {
+      const { MultiVenueHedgeExecutor } = await import("./protection/hedgeExecutor");
+      const { DeribitConnector } = await import("@foxify/connectors");
+      const { DeribitLegAdapter, BullishLegAdapter } = await import("./liveVenueAdapters");
+      const deribitLive = new DeribitConnector("live", true);
+      const deribitLeg = new DeribitLegAdapter(deribitLive as unknown as { placeOrder: (r: unknown) => Promise<unknown> }, {
+        getCurrentSpotUsd: () => deps.feedService.getCurrentFeed()?.canonicalPrice ?? null
+      });
+      let bullishLeg: InstanceType<typeof BullishLegAdapter> | undefined;
+      try {
+        const { pilotConfig } = await import("../../pilot/config");
+        const tradingAccountId = pilotConfig.bullish?.tradingAccountId;
+        if (deps.bullishProbeClient && tradingAccountId) {
+          bullishLeg = new BullishLegAdapter(deps.bullishProbeClient as never, { tradingAccountId });
+        }
+      } catch { /* bullish execution optional */ }
+      executor = new MultiVenueHedgeExecutor({ deribit: deribitLeg, bullish: bullishLeg });
+
+      planLiveHedge = async ({ side, spot, triggerPct, tenorDays, contractsBtc }) => {
+        const optType: "put" | "call" = side === "short" ? "call" : "put";
+        const barrier = barrierPrice(side, spot, triggerPct);
+        const halfWidth = Math.max(spot * spreadHalfPct, spot * 0.005);
+        const innerTarget = side === "short" ? barrier - halfWidth : barrier + halfWidth;
+        const outerTarget = side === "short" ? barrier + halfWidth : barrier - halfWidth;
+        const innerQuotes = await probeVenues(innerTarget, optType, tenorDays, spot);
+        const outerQuotes = await probeVenues(outerTarget, optType, tenorDays, spot);
+        const innerExec = innerQuotes.filter((q) => (q.venue === "deribit" || (q.venue === "bullish" && bullishLeg)) && q.ask != null && q.ask > 0 && q.strike != null);
+        const outerExec = outerQuotes.filter((q) => (q.venue === "deribit" || (q.venue === "bullish" && bullishLeg)) && q.bid != null && q.bid > 0 && q.strike != null);
+        if (!innerExec.length || !outerExec.length) throw new Error("no executable venue for one of the legs");
+        const inner = innerExec.reduce((a, b) => (b.ask! < a.ask! ? b : a));
+        const outer = outerExec.reduce((a, b) => (b.bid! > a.bid! ? b : a));
+        return {
+          side, contractsBtc,
+          inner: { venue: inner.venue as "deribit" | "bullish", instrument: inner.instrument!, strike: inner.strike!, askUsdcPerBtc: inner.ask!, bidUsdcPerBtc: inner.bid ?? 0 },
+          outer: { venue: outer.venue as "deribit" | "bullish", instrument: outer.instrument!, strike: outer.strike!, askUsdcPerBtc: outer.ask ?? 0, bidUsdcPerBtc: outer.bid! }
+        };
+      };
+    }
+
     _protectionService = new ProtectionService({
       store: new PostgresProtectionStore(deps.pool),
       getSpot: () => deps.feedService.getCurrentFeed()?.canonicalPrice ?? null,
       priceCover,
-      getSignal: () => _protectionSignal?.getSignal() ?? "NA"
+      getSignal: () => _protectionSignal?.getSignal() ?? "NA",
+      executor,
+      planLiveHedge,
+      defaultOpsFeeUsdc: defaultOpsFee
     });
     // Auto-monitor every 60s (shadow mode) so covers settle on touch/expiry without manual ticks.
     const timer = setInterval(() => { void _protectionService?.tick(); }, 60_000);
@@ -2260,25 +2323,69 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     return _protectionService;
   };
 
-  app.post<{ Body: { side?: string; trigger_pct?: number; tenor_days?: number; payout_usdc?: number; foxify_ref?: string; require_go?: boolean; ops_fee_usdc?: number; signal_override?: string } }>(
+  app.post<{ Body: { side?: string; trigger_pct?: number; tenor_days?: number; payout_usdc?: number; contracts_btc?: number; foxify_ref?: string; require_go?: boolean; ops_fee_usdc?: number; signal_override?: string; mode?: string } }>(
     "/admin/foxify/v2/protection/activate",
     { preHandler: checkAdminToken },
     async (req, reply) => {
       const svc = await getProtectionService();
       const b = req.body ?? {};
       const side = b.side === "short" ? "short" : "long";
+      const mode: "shadow" | "live" = b.mode === "live" ? "live" : "shadow";
+      // LIVE = real money. Hard-gate + size cap.
+      if (mode === "live") {
+        if (String(process.env.PROTECTION_LIVE_EXECUTION ?? "false").toLowerCase() !== "true") {
+          reply.code(403).send({ error: "live_execution_disabled", message: "set PROTECTION_LIVE_EXECUTION=true to place real orders" }); return;
+        }
+      }
+      const maxContracts = Number(process.env.PROTECTION_LIVE_MAX_CONTRACTS_BTC ?? "0.1");
       const result = await svc.activate({
         foxifyRef: b.foxify_ref ?? null,
         side,
         triggerPct: Number(b.trigger_pct ?? 0.03),
         tenorDays: Number(b.tenor_days ?? 1),
         payoutUsdc: Number(b.payout_usdc ?? 60),
+        contractsBtc: mode === "live" ? Math.min(Number(b.contracts_btc ?? 0.1), maxContracts) : undefined,
         requireGo: b.require_go === true,
         signalOverride: (["GO", "WAIT", "NA"].includes(b.signal_override ?? "") ? b.signal_override : undefined) as "GO" | "WAIT" | "NA" | undefined,
-        mode: "shadow"
+        mode
       });
-      if (!result.ok) { reply.code(result.error === "feed_unavailable" || result.error === "pricing_failed" ? 503 : 400).send(result); return; }
+      if (!result.ok) {
+        const transient = ["feed_unavailable", "pricing_failed", "planning_failed", "hedge_open_failed", "live_unavailable"].includes(result.error);
+        reply.code(transient ? 503 : 400).send(result); return;
+      }
       reply.code(result.reused ? 200 : 201).send({ ok: true, reused: result.reused, cover: result.cover });
+    }
+  );
+
+  // Manually settle + unwind an active cover now (forced) — operator-driven live test / early close.
+  app.post<{ Params: { id: string } }>("/admin/foxify/v2/protection/positions/:id/close", { preHandler: checkAdminToken }, async (req, reply) => {
+    const svc = await getProtectionService();
+    const r = await svc.forceClose(req.params.id);
+    if (!r.ok) { reply.code(r.error === "not_found" ? 404 : 400).send(r); return; }
+    reply.send({ ok: true, cover: r.cover });
+  });
+
+  // Venue price comparison for the replicating legs (Deribit/Bullish executable, OKX comparison-only).
+  app.get<{ Querystring: { side?: string; trigger_pct?: string; tenor_days?: string } }>(
+    "/admin/foxify/v2/protection/venue-quotes",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      await getProtectionService();
+      const { barrierPrice } = await import("./feeRecoveryQuote");
+      const side = req.query.side === "short" ? "short" : "long";
+      const optType: "put" | "call" = side === "short" ? "call" : "put";
+      const triggerPct = Number(req.query.trigger_pct ?? "0.03");
+      const tenorDays = Number(req.query.tenor_days ?? "1");
+      const spot = deps.feedService.getCurrentFeed()?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+      const barrier = barrierPrice(side, spot, triggerPct);
+      const halfWidth = Math.max(spot * 0.01, spot * 0.005);
+      const innerTarget = side === "short" ? barrier - halfWidth : barrier + halfWidth;
+      const outerTarget = side === "short" ? barrier + halfWidth : barrier - halfWidth;
+      if (!_protectionProbeVenues) { reply.code(503).send({ error: "not_initialized" }); return; }
+      const [innerQuotes, outerQuotes] = await Promise.all([_protectionProbeVenues(innerTarget, optType, tenorDays, spot), _protectionProbeVenues(outerTarget, optType, tenorDays, spot)]);
+      reply.send({ as_of: new Date().toISOString(), spot, side, barrier_price: +barrier.toFixed(2), inner_leg_buy: innerQuotes, outer_leg_sell: outerQuotes,
+        note: "inner = leg you BUY (lowest ask wins); outer = leg you SELL (highest bid wins). Deribit/Bullish are executable; OKX is comparison-only." });
     }
   );
 
@@ -2315,100 +2422,6 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     reply.send({ as_of: new Date().toISOString(), auto_activator: _protectionAuto?.status() ?? { running: false, note: "disabled (set PROTECTION_AUTO_ACTIVATE_ENABLED=true)" } });
   });
 
-  /**
-   * ─────────── LIVE TEST (real money) — single guarded round-trip on Deribit ───────────
-   * Places ONE real put-spread (buy inner / sell outer) and lets you unwind it, to prove the live
-   * execution path end-to-end. HARD-GATED: requires PROTECTION_LIVE_EXECUTION=true + admin token, and
-   * caps size at PROTECTION_LIVE_MAX_CONTRACTS_BTC (default 0.1 BTC = Deribit minimum). Deliberately
-   * SEPARATE from the auto-monitored shadow lifecycle so no live order is ever placed automatically.
-   *
-   *   POST /admin/foxify/v2/protection/live-test/open   { trigger_pct?, tenor_days?, contracts_btc?, spread_half_pct?, side? }
-   *   POST /admin/foxify/v2/protection/live-test/:id/close
-   *   GET  /admin/foxify/v2/protection/live-test
-   */
-  const buildLiveDeribitExecutor = async () => {
-    const { DeribitConnector } = await import("@foxify/connectors");
-    const { DeribitLegAdapter } = await import("./liveVenueAdapters");
-    const { DeribitHedgeExecutor } = await import("./protection/hedgeExecutor");
-    const deribitLive = new DeribitConnector("live", true);
-    const adapter = new DeribitLegAdapter(deribitLive as unknown as { placeOrder: (r: unknown) => Promise<unknown> }, {
-      getCurrentSpotUsd: () => deps.feedService.getCurrentFeed()?.canonicalPrice ?? null
-    });
-    return new DeribitHedgeExecutor(adapter);
-  };
-
-  app.post<{ Body: { trigger_pct?: number; tenor_days?: number; contracts_btc?: number; spread_half_pct?: number; side?: string } }>(
-    "/admin/foxify/v2/protection/live-test/open",
-    { preHandler: checkAdminToken },
-    async (req, reply) => {
-      if (String(process.env.PROTECTION_LIVE_EXECUTION ?? "false").toLowerCase() !== "true") {
-        reply.code(403).send({ error: "live_execution_disabled", message: "set PROTECTION_LIVE_EXECUTION=true to enable real orders" });
-        return;
-      }
-      const { barrierPrice } = await import("./feeRecoveryQuote");
-      const { deribitPutProbe } = await import("./venuePutProbes");
-      const b = req.body ?? {};
-      const side = b.side === "short" ? "short" : "long";
-      const optType: "put" | "call" = side === "short" ? "call" : "put";
-      const spot = deps.feedService.getCurrentFeed()?.canonicalPrice;
-      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
-      const triggerPct = Number(b.trigger_pct ?? 0.03);
-      const tenorDays = Number(b.tenor_days ?? 1);
-      const maxContracts = Number(process.env.PROTECTION_LIVE_MAX_CONTRACTS_BTC ?? "0.1");
-      const contractsBtc = Math.min(Number(b.contracts_btc ?? 0.1), maxContracts);
-      if (!(contractsBtc > 0)) { reply.code(400).send({ error: "invalid_contracts" }); return; }
-      const halfPct = b.spread_half_pct != null && Number(b.spread_half_pct) > 0 ? Number(b.spread_half_pct) : 0.01;
-      const barrier = barrierPrice(side, spot, triggerPct);
-      const halfWidth = Math.max(spot * halfPct, spot * 0.005);
-      const innerTarget = side === "short" ? barrier - halfWidth : barrier + halfWidth;
-      const outerTarget = side === "short" ? barrier + halfWidth : barrier - halfWidth;
-      const [inner, outer] = await Promise.all([
-        deribitPutProbe({ spot, strike: innerTarget, tenorDays, optType }),
-        deribitPutProbe({ spot, strike: outerTarget, tenorDays, optType })
-      ]);
-      if (!inner.instrument || inner.ask_usdc_per_btc == null || inner.strike == null || !outer.instrument || outer.bid_usdc_per_btc == null || outer.strike == null) {
-        reply.code(503).send({ error: "deribit_chain_unavailable", inner, outer }); return;
-      }
-      const plan = {
-        side: side as "long" | "short", contractsBtc,
-        inner: { instrument: inner.instrument, strike: inner.strike, askUsdcPerBtc: inner.ask_usdc_per_btc, bidUsdcPerBtc: inner.bid_usdc_per_btc ?? 0 },
-        outer: { instrument: outer.instrument, strike: outer.strike, askUsdcPerBtc: outer.ask_usdc_per_btc ?? 0, bidUsdcPerBtc: outer.bid_usdc_per_btc }
-      };
-      try {
-        const executor = await buildLiveDeribitExecutor();
-        const res = await executor.openHedge(plan);
-        if (!res.ok) { reply.code(502).send({ error: "open_failed", message: res.error, plan }); return; }
-        const id = `live_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-        _liveHedges.set(id, { id, opened_at_ms: Date.now(), plan, legs: res.legs, debit_usdc: res.debit_usdc, effective_payout_usdc: res.effective_payout_usdc, status: "open" });
-        reply.code(201).send({ ok: true, id, debit_usdc: res.debit_usdc, effective_payout_usdc: res.effective_payout_usdc, spread_width_usd: res.spread_width_usd, legs: res.legs, note: "REAL Deribit spread opened. Unwind with /live-test/:id/close." });
-      } catch (e) {
-        reply.code(500).send({ error: "live_open_threw", message: (e as Error).message });
-      }
-    }
-  );
-
-  app.post<{ Params: { id: string } }>("/admin/foxify/v2/protection/live-test/:id/close", { preHandler: checkAdminToken }, async (req, reply) => {
-    if (String(process.env.PROTECTION_LIVE_EXECUTION ?? "false").toLowerCase() !== "true") { reply.code(403).send({ error: "live_execution_disabled" }); return; }
-    const pos = _liveHedges.get(req.params.id);
-    if (!pos) { reply.code(404).send({ error: "not_found" }); return; }
-    if (pos.status === "closed") { reply.send({ ok: true, already_closed: true, position: pos }); return; }
-    try {
-      const executor = await buildLiveDeribitExecutor();
-      const res = await executor.closeHedge(pos.legs);
-      if (!res.ok) { reply.code(502).send({ error: "close_failed", message: res.error }); return; }
-      pos.status = "closed";
-      pos.proceeds_usdc = res.proceeds_usdc;
-      pos.pnl_usdc = +(res.proceeds_usdc - pos.debit_usdc).toFixed(2); // hedge-only round-trip P&L (excludes any premium charged to Foxify)
-      _liveHedges.set(pos.id, pos);
-      reply.send({ ok: true, id: pos.id, proceeds_usdc: res.proceeds_usdc, hedge_pnl_usdc: pos.pnl_usdc, close_legs: res.legs });
-    } catch (e) {
-      reply.code(500).send({ error: "live_close_threw", message: (e as Error).message });
-    }
-  });
-
-  app.get("/admin/foxify/v2/protection/live-test", { preHandler: checkAdminToken }, async (_req, reply) => {
-    reply.send({ positions: [..._liveHedges.values()].sort((a, b) => b.opened_at_ms - a.opened_at_ms) });
-  });
 
   /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional

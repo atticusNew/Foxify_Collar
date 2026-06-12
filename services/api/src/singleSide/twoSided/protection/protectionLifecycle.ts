@@ -18,6 +18,23 @@ export type TradeSide = "long" | "short";
 export type SignalState = "GO" | "WAIT" | "NA";
 export type CoverStatus = "active" | "settled_touch" | "expired_no_touch" | "cancelled";
 
+/** One executed option leg of the replicating spread (open or close), with the venue it routed to. */
+export type HedgeFill = {
+  role: "inner" | "outer";
+  action: "buy" | "sell";
+  venue: string;            // "deribit" | "bullish"
+  instrument: string;
+  strike: number;
+  contractsBtc: number;
+  fillUsdcPerBtc: number;
+  orderId?: string;
+};
+
+/** Real hedge attached to a LIVE cover at activation (the spread Atticus actually bought). */
+export type HedgeRecord = { debit_usdc: number; effective_payout_usdc: number; venues: string[]; legs: HedgeFill[] };
+/** Hedge unwind result attached at settlement. */
+export type HedgeClose = { proceeds_usdc: number; realized_hedge_pnl_usdc: number; legs: HedgeFill[] };
+
 export type ProtectionCover = {
   id: string;
   foxify_ref: string | null;        // idempotency / external reference
@@ -42,6 +59,9 @@ export type ProtectionCover = {
   settle_price?: number;
   foxify_pnl_usdc?: number;         // (touched? payout : 0) − premium
   atticus_pnl_usdc?: number;        // premium − hedge_cost (hedge funds payout on touch)
+  /** LIVE covers only: the real spread bought at activation + its unwind at settlement. */
+  hedge?: HedgeRecord;
+  hedge_close?: HedgeClose;
 };
 
 export type OpenCoverInput = {
@@ -58,6 +78,7 @@ export type OpenCoverInput = {
   impliedTouch: number;
   signal?: SignalState;
   mode?: "shadow" | "live";
+  hedge?: HedgeRecord;
   nowMs: number;
 };
 
@@ -95,7 +116,8 @@ export const openCover = (i: OpenCoverInput): ProtectionCover => {
     implied_touch: round4(i.impliedTouch),
     signal: i.signal ?? "NA",
     mode: i.mode ?? "shadow",
-    status: "active"
+    status: "active",
+    ...(i.hedge ? { hedge: i.hedge } : {})
   };
 };
 
@@ -135,6 +157,15 @@ export const settleCover = (
     settle_price: round2(opts.settlePrice),
     foxify_pnl_usdc: round2(foxifyPnl),
     atticus_pnl_usdc: round2(atticusPnl)
+  };
+};
+
+/** Attach the real hedge-unwind result to a settled LIVE cover (realized = proceeds − debit paid). */
+export const attachHedgeClose = (cover: ProtectionCover, close: { proceeds_usdc: number; legs: HedgeFill[] }): ProtectionCover => {
+  const debit = cover.hedge?.debit_usdc ?? 0;
+  return {
+    ...cover,
+    hedge_close: { proceeds_usdc: round2(close.proceeds_usdc), realized_hedge_pnl_usdc: round2(close.proceeds_usdc - debit), legs: close.legs }
   };
 };
 

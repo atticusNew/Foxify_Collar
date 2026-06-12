@@ -11,9 +11,10 @@
  */
 
 import {
-  openCover, evaluateCover, scorecard,
+  openCover, evaluateCover, settleCover, attachHedgeClose, scorecard,
   type ProtectionCover, type SignalState, type TradeSide, type ProtectionScorecard
 } from "./protectionLifecycle";
+import type { HedgeExecutor, HedgePlan } from "./hedgeExecutor";
 
 export interface ProtectionStore {
   put(cover: ProtectionCover): Promise<void>;
@@ -45,14 +46,24 @@ export type PriceCoverFn = (req: {
   side: TradeSide; spot: number; triggerPct: number; tenorDays: number; payoutUsdc: number;
 }) => Promise<CoverPricing>;
 
+/** Builds the multi-venue replicating spread plan for a LIVE cover (best executable venue per leg). */
+export type PlanLiveHedgeFn = (req: {
+  side: TradeSide; spot: number; triggerPct: number; tenorDays: number; contractsBtc: number;
+}) => Promise<HedgePlan>;
+
 export type ProtectionServiceDeps = {
   store?: ProtectionStore;
   /** Live mark/index price; null if the feed is unavailable. */
   getSpot: () => number | null;
-  /** Real cover pricing from venue quotes. */
+  /** Real cover pricing from venue quotes (shadow covers). */
   priceCover: PriceCoverFn;
   /** Optional live signal gate; if requireGo is set, activation needs "GO". */
   getSignal?: () => SignalState;
+  /** Live execution: real spread open/unwind. When set with planLiveHedge, mode:"live" places real orders. */
+  executor?: HedgeExecutor;
+  planLiveHedge?: PlanLiveHedgeFn;
+  defaultOpsFeeUsdc?: number;
+  defaultContractsBtc?: number;
   now?: () => number;
   idGen?: () => string;
 };
@@ -62,7 +73,8 @@ export type ActivateParams = {
   side?: TradeSide;
   triggerPct: number;
   tenorDays: number;
-  payoutUsdc: number;
+  payoutUsdc: number;          // shadow: the target payout. live: ignored (derived from contracts×width).
+  contractsBtc?: number;       // live only: spread size (≥ venue minimum).
   requireGo?: boolean;
   signalOverride?: SignalState;
   mode?: "shadow" | "live";
@@ -79,6 +91,10 @@ export class ProtectionService {
   private getSpot: () => number | null;
   private priceCover: PriceCoverFn;
   private getSignal: () => SignalState;
+  private executor?: HedgeExecutor;
+  private planLiveHedge?: PlanLiveHedgeFn;
+  private defaultOpsFeeUsdc: number;
+  private defaultContractsBtc: number;
   private now: () => number;
   private idGen: () => string;
 
@@ -87,6 +103,10 @@ export class ProtectionService {
     this.getSpot = deps.getSpot;
     this.priceCover = deps.priceCover;
     this.getSignal = deps.getSignal ?? (() => "NA");
+    this.executor = deps.executor;
+    this.planLiveHedge = deps.planLiveHedge;
+    this.defaultOpsFeeUsdc = deps.defaultOpsFeeUsdc ?? 1;
+    this.defaultContractsBtc = deps.defaultContractsBtc ?? 0.1;
     this.now = deps.now ?? (() => Date.now());
     this.idGen = deps.idGen ?? defaultId;
   }
@@ -95,7 +115,8 @@ export class ProtectionService {
     const side: TradeSide = p.side === "short" ? "short" : "long";
     if (!(p.triggerPct > 0 && p.triggerPct < 1)) return { ok: false, error: "invalid_trigger", message: "triggerPct in (0,1)" };
     if (!(p.tenorDays > 0)) return { ok: false, error: "invalid_tenor", message: "tenorDays > 0" };
-    if (!(p.payoutUsdc > 0)) return { ok: false, error: "invalid_payout", message: "payoutUsdc > 0" };
+    // payout is derived from the real fills in live mode; only required for shadow.
+    if ((p.mode ?? "shadow") !== "live" && !(p.payoutUsdc > 0)) return { ok: false, error: "invalid_payout", message: "payoutUsdc > 0" };
 
     if (p.foxifyRef) {
       const existing = await this.store.findByRef(p.foxifyRef);
@@ -109,6 +130,34 @@ export class ProtectionService {
 
     const spot = this.getSpot();
     if (spot == null || !(spot > 0)) return { ok: false, error: "feed_unavailable", message: "no live spot" };
+
+    // ── LIVE: place the real spread, derive payout/premium from the actual fills ──
+    if ((p.mode ?? "shadow") === "live") {
+      if (!this.executor || !this.planLiveHedge) return { ok: false, error: "live_unavailable", message: "executor/planner not configured" };
+      const contractsBtc = p.contractsBtc ?? this.defaultContractsBtc;
+      let plan: HedgePlan;
+      try {
+        plan = await this.planLiveHedge({ side, spot, triggerPct: p.triggerPct, tenorDays: p.tenorDays, contractsBtc });
+      } catch (e) {
+        return { ok: false, error: "planning_failed", message: (e as Error).message };
+      }
+      const open = await this.executor.openHedge(plan);
+      if (!open.ok) return { ok: false, error: "hedge_open_failed", message: open.error };
+      const opsFee = this.defaultOpsFeeUsdc;
+      const payout = open.effective_payout_usdc;
+      const debit = open.debit_usdc;
+      const cover = openCover({
+        id: this.idGen(), foxifyRef: p.foxifyRef ?? null, side, spot,
+        triggerPct: p.triggerPct, tenorMs: Math.round(p.tenorDays * 86_400_000),
+        payoutUsdc: payout, premiumUsdc: +(debit + opsFee).toFixed(2), hedgeCostUsdc: debit, opsFeeUsdc: opsFee,
+        impliedTouch: payout > 0 ? Math.min(1, debit / payout) : 0,
+        signal, mode: "live",
+        hedge: { debit_usdc: debit, effective_payout_usdc: payout, venues: open.venues, legs: open.legs },
+        nowMs: this.now()
+      });
+      await this.store.put(cover);
+      return { ok: true, cover, reused: false };
+    }
 
     let pricing: CoverPricing;
     try {
@@ -154,9 +203,39 @@ export class ProtectionService {
     for (const cover of active) {
       const adverse = cover.side === "short" ? (observed?.high ?? spot) : (observed?.low ?? spot);
       const next = evaluateCover(cover, adverse, now);
-      if (next.status !== "active") { await this.store.put(next); settled.push(next); }
+      if (next.status === "active") continue;
+      // LIVE cover settled → unwind the real spread. If the unwind FAILS, leave it active and retry
+      // next tick (never mark a live cover settled while the hedge is still open).
+      if (next.mode === "live" && next.hedge && this.executor) {
+        try {
+          const close = await this.executor.closeHedge(next.hedge.legs);
+          if (!close.ok) continue; // retry next tick
+          const closed = attachHedgeClose(next, { proceeds_usdc: close.proceeds_usdc, legs: close.legs });
+          await this.store.put(closed);
+          settled.push(closed);
+        } catch { continue; } // retry next tick
+      } else {
+        await this.store.put(next);
+        settled.push(next);
+      }
     }
     return { evaluated: active.length, settled, spot };
+  }
+
+  /** Manually settle + unwind an active cover now (forced, no touch). For operator-driven live tests. */
+  async forceClose(id: string): Promise<{ ok: true; cover: ProtectionCover } | { ok: false; error: string }> {
+    const c = await this.store.get(id);
+    if (!c) return { ok: false, error: "not_found" };
+    if (c.status !== "active") return { ok: false, error: "not_active" };
+    const spot = this.getSpot() ?? c.spot_at_entry;
+    let settled = settleCover(c, { touched: false, settlePrice: spot, nowMs: this.now() });
+    if (c.mode === "live" && c.hedge && this.executor) {
+      const close = await this.executor.closeHedge(c.hedge.legs);
+      if (!close.ok) return { ok: false, error: `hedge_unwind_failed: ${close.error}` };
+      settled = attachHedgeClose(settled, { proceeds_usdc: close.proceeds_usdc, legs: close.legs });
+    }
+    await this.store.put(settled);
+    return { ok: true, cover: settled };
   }
 
   async get(id: string): Promise<ProtectionCover | undefined> { return this.store.get(id); }
