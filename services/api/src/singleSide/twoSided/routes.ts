@@ -2171,6 +2171,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   let _protectionSignal: import("./protection/protectionSignal").LiveSignalService | null = null;
   let _protectionAuto: import("./protection/protectionAutoActivator").ProtectionAutoActivator | null = null;
   let _protectionProbeVenues: ((strike: number, optType: "put" | "call", tenorDays: number, spot: number) => Promise<Array<{ venue: string; instrument: string | null; strike: number | null; ask: number | null; bid: number | null; executable: boolean }>>) | null = null;
+  let _protectionExec: { enabled: boolean; deribit_creds: boolean; deribit_paper: boolean; bullish: boolean; env: string; intentional_paper: boolean } | null = null;
   const getProtectionService = async () => {
     if (_protectionService) return _protectionService;
     const { ProtectionService } = await import("./protection/protectionService");
@@ -2257,10 +2258,19 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       const { MultiVenueHedgeExecutor } = await import("./protection/hedgeExecutor");
       const { DeribitConnector } = await import("@foxify/connectors");
       const { DeribitLegAdapter, BullishLegAdapter } = await import("./liveVenueAdapters");
-      const deribitLive = new DeribitConnector("live", true);
-      const deribitLeg = new DeribitLegAdapter(deribitLive as unknown as { placeOrder: (r: unknown) => Promise<unknown> }, {
+      // Real orders need paper=false + credentials. Read creds from DERIBIT_* (fallback PILOT_DERIBIT_*).
+      // PROTECTION_LIVE_PAPER=true → intentional paper dry-run of the live code path.
+      const derClientId = process.env.DERIBIT_CLIENT_ID ?? process.env.PILOT_DERIBIT_CLIENT_ID;
+      const derClientSecret = process.env.DERIBIT_CLIENT_SECRET ?? process.env.PILOT_DERIBIT_CLIENT_SECRET;
+      const derEnv: "live" | "testnet" = (process.env.DERIBIT_ENV ?? process.env.PILOT_DERIBIT_ENV) === "testnet" ? "testnet" : "live";
+      const derHasCreds = Boolean(derClientId && derClientSecret);
+      const intentionalPaper = String(process.env.PROTECTION_LIVE_PAPER ?? "false").toLowerCase() === "true";
+      const derPaper = intentionalPaper || !derHasCreds; // no creds ⇒ cannot trade ⇒ paper
+      const deribitConn = new DeribitConnector(derEnv, derPaper, derHasCreds ? { clientId: derClientId!, clientSecret: derClientSecret! } : undefined);
+      const deribitLeg = new DeribitLegAdapter(deribitConn as unknown as { placeOrder: (r: unknown) => Promise<unknown> }, {
         getCurrentSpotUsd: () => deps.feedService.getCurrentFeed()?.canonicalPrice ?? null
       });
+      console.log(`[Protection] live executor: deribit env=${derEnv} paper=${derPaper} creds=${derHasCreds ? "present" : "MISSING"}`);
       let bullishLeg: InstanceType<typeof BullishLegAdapter> | undefined;
       try {
         const { pilotConfig } = await import("../../pilot/config");
@@ -2270,6 +2280,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         }
       } catch { /* bullish execution optional */ }
       executor = new MultiVenueHedgeExecutor({ deribit: deribitLeg, bullish: bullishLeg });
+      _protectionExec = { enabled: true, deribit_creds: derHasCreds, deribit_paper: derPaper, bullish: Boolean(bullishLeg), env: derEnv, intentional_paper: intentionalPaper };
 
       planLiveHedge = async ({ side, spot, triggerPct, tenorDays, contractsBtc }) => {
         const optType: "put" | "call" = side === "short" ? "call" : "put";
@@ -2335,6 +2346,12 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       if (mode === "live") {
         if (String(process.env.PROTECTION_LIVE_EXECUTION ?? "false").toLowerCase() !== "true") {
           reply.code(403).send({ error: "live_execution_disabled", message: "set PROTECTION_LIVE_EXECUTION=true to place real orders" }); return;
+        }
+        // Refuse to silently paper-fill a real request: if Deribit has no creds and paper wasn't
+        // explicitly requested, fail loudly so a paper fill isn't mistaken for a real trade.
+        if (_protectionExec?.deribit_paper && !_protectionExec?.intentional_paper) {
+          reply.code(409).send({ error: "live_creds_missing", message: "Deribit credentials missing → would paper-fill. Set DERIBIT_CLIENT_ID/SECRET for real orders, or PROTECTION_LIVE_PAPER=true to paper-test the live path.", exec: _protectionExec });
+          return;
         }
       }
       const maxContracts = Number(process.env.PROTECTION_LIVE_MAX_CONTRACTS_BTC ?? "0.1");
@@ -2420,6 +2437,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   app.get("/admin/foxify/v2/protection/auto-status", { preHandler: checkAdminToken }, async (_req, reply) => {
     await getProtectionService();
     reply.send({ as_of: new Date().toISOString(), auto_activator: _protectionAuto?.status() ?? { running: false, note: "disabled (set PROTECTION_AUTO_ACTIVATE_ENABLED=true)" } });
+  });
+
+  app.get("/admin/foxify/v2/protection/exec-status", { preHandler: checkAdminToken }, async (_req, reply) => {
+    await getProtectionService();
+    const exec = _protectionExec ?? { enabled: false, note: "live execution disabled (set PROTECTION_LIVE_EXECUTION=true)" };
+    const willPlaceReal = Boolean(_protectionExec && !_protectionExec.deribit_paper);
+    reply.send({ as_of: new Date().toISOString(), exec, will_place_real_orders: willPlaceReal });
   });
 
 
