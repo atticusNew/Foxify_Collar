@@ -2053,6 +2053,108 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * POST /admin/foxify/v2/fee-recovery/quote — FEE-RECOVERY COVER (Foxify's concrete 2026-06 ask).
+   * Fixed-payout ONE-TOUCH: refund a flat cash amount (fees + slippage budget) when a directional
+   * perp's stop level (e.g. -3%) is TOUCHED within a short tenor (e.g. 24h). The option leg is
+   * priced from REAL listed exchange quotes — a replicating vertical spread straddling the barrier,
+   * cheapest ask (long leg) + best bid (short leg) across OKX/Deribit/Bullish — NOT Black-Scholes.
+   * Returns the exchange-derived fair value, the loaded premium, and the FULL economics for BOTH
+   * sides (incl. the breakeven hit-rate Foxify's real positions must clear). Phase 1 = QUOTE ONLY.
+   *
+   * Body: { side, notional_usdc, trigger_pct, tenor_days, payout_usdc, mark_price?,
+   *         load_pct?, touch_multiplier?, min_premium_usdc?, spread_half_pct?,
+   *         trades_per_day?, foxify_real_touch_rate? }
+   */
+  app.post<{ Body: {
+    side?: string; notional_usdc?: number; trigger_pct?: number; tenor_days?: number; payout_usdc?: number;
+    mark_price?: number; load_pct?: number; touch_multiplier?: number; min_premium_usdc?: number;
+    spread_half_pct?: number; trades_per_day?: number; foxify_real_touch_rate?: number;
+  } }>(
+    "/admin/foxify/v2/fee-recovery/quote",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const { buildFeeRecoveryQuote, barrierPrice } = await import("./feeRecoveryQuote");
+      const { okxProbe } = await import("./okxProbe");
+      const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
+      const b = (req.body ?? {}) as Record<string, unknown>;
+      const feed = deps.feedService.getCurrentFeed();
+      const spot = b.mark_price != null && Number(b.mark_price) > 0 ? Number(b.mark_price) : feed?.canonicalPrice;
+      if (!spot || spot <= 0) { reply.code(503).send({ error: "feed_unavailable" }); return; }
+
+      const side: "long" | "short" = b.side === "short" ? "short" : "long";
+      const notionalUsdc = Number(b.notional_usdc ?? 0);
+      const triggerPct = Number(b.trigger_pct ?? 0.03);
+      const tenorDays = Number(b.tenor_days ?? 1);
+      const payoutUsdc = Number(b.payout_usdc ?? 0);
+      if (!(notionalUsdc > 0) || !(triggerPct > 0 && triggerPct < 1) || !(tenorDays > 0) || !(payoutUsdc > 0)) {
+        reply.code(400).send({ error: "invalid_request", message: "notional_usdc>0, 0<trigger_pct<1, tenor_days>0, payout_usdc>0" });
+        return;
+      }
+      const config = {
+        loadPct: b.load_pct != null ? Number(b.load_pct) : undefined,
+        touchMultiplier: b.touch_multiplier != null ? Number(b.touch_multiplier) : undefined,
+        minPremiumUsdc: b.min_premium_usdc != null ? Number(b.min_premium_usdc) : undefined
+      };
+      const econ = {
+        tradesPerDay: b.trades_per_day != null ? Number(b.trades_per_day) : undefined,
+        foxifyRealTouchRate: b.foxify_real_touch_rate != null ? Number(b.foxify_real_touch_rate) : null
+      };
+
+      const optType: "put" | "call" = side === "short" ? "call" : "put";
+      const barrier = barrierPrice(side, spot, triggerPct);
+      // Tight vertical straddling the barrier: inner leg (closer to spot) = BUY; outer leg (deeper) = SELL.
+      const halfPct = b.spread_half_pct != null && Number(b.spread_half_pct) > 0 ? Number(b.spread_half_pct) : 0.01;
+      const halfWidth = Math.max(spot * halfPct, spot * 0.005);
+      const innerTarget = side === "short" ? barrier - halfWidth : barrier + halfWidth; // closer to spot
+      const outerTarget = side === "short" ? barrier + halfWidth : barrier - halfWidth; // deeper OTM
+
+      // Probe a strike across venues → cheapest ask + best bid, with actual snapped strikes.
+      const probeStrike = async (strike: number) => {
+        const okx = await okxProbe({ spot, putStrike: strike, callStrike: strike, tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
+        const [der, bull] = await Promise.all([
+          deribitPutProbe({ spot, strike, tenorDays, optType }),
+          bullishPutProbe(deps.bullishProbeClient, { spot, strike, tenorDays, optType })
+        ]);
+        const rows = [
+          { ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null },
+          { ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null },
+          { ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null }
+        ];
+        const asks = rows.filter((r) => r.ask != null && r.ask > 0 && r.strike != null) as { ask: number; bid: number | null; strike: number }[];
+        const bids = rows.filter((r) => r.bid != null && r.bid > 0 && r.strike != null) as { ask: number | null; bid: number; strike: number }[];
+        const bestAsk = asks.length ? asks.reduce((a, r) => (r.ask < a.ask ? r : a)) : null;
+        const bestBid = bids.length ? bids.reduce((a, r) => (r.bid > a.bid ? r : a)) : null;
+        return { bestAsk, bestBid };
+      };
+
+      const [inner, outer] = await Promise.all([probeStrike(innerTarget), probeStrike(outerTarget)]);
+      if (!inner.bestAsk || !outer.bestBid) {
+        reply.code(503).send({ error: "chain_unavailable", message: "no live ask on inner leg or bid on outer leg across venues", inner_strike_target: +innerTarget.toFixed(2), outer_strike_target: +outerTarget.toFixed(2) });
+        return;
+      }
+
+      const result = buildFeeRecoveryQuote(
+        { side, spot, notionalUsdc, triggerPct, tenorDays, payoutUsdc },
+        { longStrike: inner.bestAsk.strike, longAskUsdcPerBtc: inner.bestAsk.ask, shortStrike: outer.bestBid.strike, shortBidUsdcPerBtc: outer.bestBid.bid },
+        config, econ
+      );
+      if (!result.ok) {
+        reply.code(422).send({ error: result.error, message: result.message,
+          inner_strike: inner.bestAsk.strike, outer_strike: outer.bestBid.strike,
+          hint: "venue strike snapping may have collapsed/inverted the spread; widen spread_half_pct" });
+        return;
+      }
+
+      reply.send({
+        as_of: new Date().toISOString(),
+        quote_id: `fr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        quote_expires_at: new Date(Date.now() + 30_000).toISOString(),
+        ...result
+      });
+    }
+  );
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=
