@@ -2155,6 +2155,128 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   /**
+   * ─────────── SHADOW PROTECTION (Phase 2) — live, paper-settled fee-recovery covers ───────────
+   * A clean, separate demo that runs the full protection lifecycle against the REAL BTC feed and
+   * REAL option pricing (pass-through + flat ops fee), settled on paper (zero capital). Produces a
+   * live validation scorecard (realized vs implied touch, per-side P&L). The same engine accepts a
+   * real venue executor later — settlement logic is identical.
+   *
+   *   POST /admin/foxify/v2/protection/activate   { side?, trigger_pct, tenor_days, payout_usdc, foxify_ref?, require_go?, ops_fee_usdc? }
+   *   POST /admin/foxify/v2/protection/tick       (manual monitor pass; also runs automatically every 60s)
+   *   GET  /admin/foxify/v2/protection/positions
+   *   GET  /admin/foxify/v2/protection/positions/:id
+   *   GET  /admin/foxify/v2/protection/scorecard
+   */
+  let _protectionService: import("./protection/protectionService").ProtectionService | null = null;
+  const getProtectionService = async () => {
+    if (_protectionService) return _protectionService;
+    const { ProtectionService } = await import("./protection/protectionService");
+    const { buildFeeRecoveryQuote, barrierPrice } = await import("./feeRecoveryQuote");
+    const { okxProbe } = await import("./okxProbe");
+    const { deribitPutProbe, bullishPutProbe } = await import("./venuePutProbes");
+    const touchMultiplier = Number(process.env.PROTECTION_TOUCH_MULTIPLIER ?? "2");
+    const defaultOpsFee = Number(process.env.PROTECTION_OPS_FEE_USDC ?? "1");
+    const spreadHalfPct = Number(process.env.PROTECTION_SPREAD_HALF_PCT ?? "0.01");
+
+    const priceCover = async (req: { side: "long" | "short"; spot: number; triggerPct: number; tenorDays: number; payoutUsdc: number }) => {
+      const optType: "put" | "call" = req.side === "short" ? "call" : "put";
+      const barrier = barrierPrice(req.side, req.spot, req.triggerPct);
+      const halfWidth = Math.max(req.spot * spreadHalfPct, req.spot * 0.005);
+      const innerTarget = req.side === "short" ? barrier - halfWidth : barrier + halfWidth;
+      const outerTarget = req.side === "short" ? barrier + halfWidth : barrier - halfWidth;
+      const probeStrike = async (strike: number) => {
+        const okx = await okxProbe({ spot: req.spot, putStrike: strike, callStrike: strike, tenorDays: req.tenorDays }).then((o) => o.legs.find((l) => l.opt_type === optType)).catch(() => null);
+        const [der, bull] = await Promise.all([
+          deribitPutProbe({ spot: req.spot, strike, tenorDays: req.tenorDays, optType }),
+          bullishPutProbe(deps.bullishProbeClient, { spot: req.spot, strike, tenorDays: req.tenorDays, optType })
+        ]);
+        const rows = [
+          { ask: okx?.ask_usdc_per_btc ?? null, bid: okx?.bid_usdc_per_btc ?? null, strike: okx?.strike ?? null },
+          { ask: der.ask_usdc_per_btc, bid: der.bid_usdc_per_btc ?? null, strike: der.strike ?? null },
+          { ask: bull.ask_usdc_per_btc, bid: bull.bid_usdc_per_btc ?? null, strike: bull.strike ?? null }
+        ];
+        const asks = rows.filter((r) => r.ask != null && r.ask > 0 && r.strike != null) as { ask: number; bid: number | null; strike: number }[];
+        const bids = rows.filter((r) => r.bid != null && r.bid > 0 && r.strike != null) as { ask: number | null; bid: number; strike: number }[];
+        return {
+          bestAsk: asks.length ? asks.reduce((a, r) => (r.ask < a.ask ? r : a)) : null,
+          bestBid: bids.length ? bids.reduce((a, r) => (r.bid > a.bid ? r : a)) : null
+        };
+      };
+      const [inner, outer] = await Promise.all([probeStrike(innerTarget), probeStrike(outerTarget)]);
+      if (!inner.bestAsk || !outer.bestBid) throw new Error("chain_unavailable: no live ask/bid for the replicating legs");
+      const q = buildFeeRecoveryQuote(
+        { side: req.side, spot: req.spot, notionalUsdc: req.payoutUsdc * 1000, triggerPct: req.triggerPct, tenorDays: req.tenorDays, payoutUsdc: req.payoutUsdc },
+        { longStrike: inner.bestAsk.strike, longAskUsdcPerBtc: inner.bestAsk.ask, shortStrike: outer.bestBid.strike, shortBidUsdcPerBtc: outer.bestBid.bid },
+        { loadPct: 0, touchMultiplier }, {}
+      );
+      if (!q.ok) throw new Error(`${q.error}: ${q.message}`);
+      const opsFee = defaultOpsFee;
+      return {
+        hedgeCostUsdc: q.pricing.fair_value_usdc,
+        impliedTouch: q.pricing.implied_touch_prob,
+        opsFeeUsdc: opsFee,
+        premiumUsdc: +(q.pricing.fair_value_usdc + opsFee).toFixed(2),
+        payoutUsdc: req.payoutUsdc
+      };
+    };
+
+    _protectionService = new ProtectionService({
+      getSpot: () => deps.feedService.getCurrentFeed()?.canonicalPrice ?? null,
+      priceCover,
+      getSignal: () => "NA" // live adaptive signal wiring is a follow-up; activation can pass require_go=false
+    });
+    // Auto-monitor every 60s (shadow mode) so covers settle on touch/expiry without manual ticks.
+    const timer = setInterval(() => { try { _protectionService?.tick(); } catch { /* best-effort */ } }, 60_000);
+    if (typeof (timer as { unref?: () => void }).unref === "function") (timer as { unref: () => void }).unref();
+    return _protectionService;
+  };
+
+  app.post<{ Body: { side?: string; trigger_pct?: number; tenor_days?: number; payout_usdc?: number; foxify_ref?: string; require_go?: boolean; ops_fee_usdc?: number; signal_override?: string } }>(
+    "/admin/foxify/v2/protection/activate",
+    { preHandler: checkAdminToken },
+    async (req, reply) => {
+      const svc = await getProtectionService();
+      const b = req.body ?? {};
+      const side = b.side === "short" ? "short" : "long";
+      const result = await svc.activate({
+        foxifyRef: b.foxify_ref ?? null,
+        side,
+        triggerPct: Number(b.trigger_pct ?? 0.03),
+        tenorDays: Number(b.tenor_days ?? 1),
+        payoutUsdc: Number(b.payout_usdc ?? 60),
+        requireGo: b.require_go === true,
+        signalOverride: (["GO", "WAIT", "NA"].includes(b.signal_override ?? "") ? b.signal_override : undefined) as "GO" | "WAIT" | "NA" | undefined,
+        mode: "shadow"
+      });
+      if (!result.ok) { reply.code(result.error === "feed_unavailable" || result.error === "pricing_failed" ? 503 : 400).send(result); return; }
+      reply.code(result.reused ? 200 : 201).send({ ok: true, reused: result.reused, cover: result.cover });
+    }
+  );
+
+  app.post("/admin/foxify/v2/protection/tick", { preHandler: checkAdminToken }, async (_req, reply) => {
+    const svc = await getProtectionService();
+    const res = svc.tick();
+    reply.send({ ok: true, spot: res.spot, evaluated: res.evaluated, settled_now: res.settled });
+  });
+
+  app.get("/admin/foxify/v2/protection/positions", { preHandler: checkAdminToken }, async (_req, reply) => {
+    const svc = await getProtectionService();
+    reply.send({ positions: svc.list() });
+  });
+
+  app.get<{ Params: { id: string } }>("/admin/foxify/v2/protection/positions/:id", { preHandler: checkAdminToken }, async (req, reply) => {
+    const svc = await getProtectionService();
+    const cover = svc.get(req.params.id);
+    if (!cover) { reply.code(404).send({ error: "not_found" }); return; }
+    reply.send({ cover });
+  });
+
+  app.get("/admin/foxify/v2/protection/scorecard", { preHandler: checkAdminToken }, async (_req, reply) => {
+    const svc = await getProtectionService();
+    reply.send({ as_of: new Date().toISOString(), scorecard: svc.scorecard() });
+  });
+
+  /**
    * GET /admin/foxify/v2/breakeven-win-rate — for each structure, the MINIMUM directional
    * hit-rate Foxify needs for +EV (in a regime, frictions on/off). The decision number.
    * Query: ?cell_id=&regime=&frictionless=&n_paths=
