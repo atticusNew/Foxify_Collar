@@ -2320,8 +2320,20 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       planLiveHedge,
       defaultOpsFeeUsdc: defaultOpsFee
     });
-    // Auto-monitor every 60s (shadow mode) so covers settle on touch/expiry without manual ticks.
-    const timer = setInterval(() => { void _protectionService?.tick(); }, 60_000);
+    // Auto-monitor: sample spot every 5s to track the adverse extreme (low/high) so intraday wicks
+    // that recover within the minute aren't MISSED (instantaneous 60s checks under-count touches vs
+    // the OHLC-based signal/backtest). Settle every 60s against that extreme, then reset.
+    let rollMin = Infinity, rollMax = -Infinity;
+    const sampler = setInterval(() => {
+      const s = deps.feedService.getCurrentFeed()?.canonicalPrice;
+      if (s && s > 0) { if (s < rollMin) rollMin = s; if (s > rollMax) rollMax = s; }
+    }, 5_000);
+    if (typeof (sampler as { unref?: () => void }).unref === "function") (sampler as { unref: () => void }).unref();
+    const timer = setInterval(() => {
+      const observed = { low: rollMin === Infinity ? undefined : rollMin, high: rollMax === -Infinity ? undefined : rollMax };
+      rollMin = Infinity; rollMax = -Infinity;
+      void _protectionService?.tick(observed);
+    }, 60_000);
     if (typeof (timer as { unref?: () => void }).unref === "function") (timer as { unref: () => void }).unref();
 
     // Optional auto-activator: opens a shadow cover each interval when the signal is GO (builds the track record).
