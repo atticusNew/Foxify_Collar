@@ -34,6 +34,8 @@ export type HedgeFill = {
 export type HedgeRecord = { debit_usdc: number; effective_payout_usdc: number; venues: string[]; legs: HedgeFill[] };
 /** Hedge unwind result attached at settlement. */
 export type HedgeClose = { proceeds_usdc: number; realized_hedge_pnl_usdc: number; legs: HedgeFill[] };
+/** In-flight unwind progress — which legs have already closed, so a retry skips them (resumable). */
+export type HedgeCloseProgress = { closed_roles: string[]; legs: HedgeFill[]; proceeds_usdc: number };
 
 export type ProtectionCover = {
   id: string;
@@ -62,6 +64,8 @@ export type ProtectionCover = {
   /** LIVE covers only: the real spread bought at activation + its unwind at settlement. */
   hedge?: HedgeRecord;
   hedge_close?: HedgeClose;
+  /** Partial-unwind progress while an active cover's hedge is being closed leg-by-leg (resumable). */
+  close_progress?: HedgeCloseProgress;
 };
 
 export type OpenCoverInput = {

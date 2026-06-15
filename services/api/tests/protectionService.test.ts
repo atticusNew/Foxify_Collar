@@ -136,6 +136,38 @@ test("live tick: leaves cover ACTIVE if unwind fails (retry next tick)", async (
   if (a.ok) assert.equal((await m.svc.get(a.cover.id))?.status, "active"); // not settled while hedge open
 });
 
+test("live tick: resumable unwind — inner closes, outer fails, retry skips inner and completes", async () => {
+  let t = 1_000_000; let id = 0; const calls: Array<string[]> = []; let attempt = 0;
+  const planLiveHedge: PlanLiveHedgeFn = async () => plan;
+  const executor: HedgeExecutor = {
+    mode: "live",
+    openHedge: async () => ({ ok: true, mode: "live", legs: liveLegs, debit_usdc: 50, spread_width_usd: 2000, effective_payout_usdc: 200, venues: ["deribit", "bullish"] }),
+    closeHedge: async (_opened, skip = []) => {
+      calls.push(skip); attempt++;
+      if (attempt === 1) return { ok: false, mode: "live", proceeds_usdc: 110, closed_legs: [{ ...liveLegs[0], action: "sell", fillUsdcPerBtc: 1100 }], leg_results: [{ role: "inner", ok: true }, { role: "outer", ok: false, error: "venue down" }], error: "outer:venue down" };
+      return { ok: true, mode: "live", proceeds_usdc: -75, closed_legs: [{ ...liveLegs[1], action: "buy", fillUsdcPerBtc: 750 }], leg_results: [{ role: "outer", ok: true }] };
+    }
+  };
+  const svc = new ProtectionService({ getSpot: () => 100000, priceCover: async () => pricing, planLiveHedge, executor, defaultOpsFeeUsdc: 1, now: () => t, idGen: () => `live-${++id}` });
+  const a = await svc.activate({ side: "long", triggerPct: 0.03, tenorDays: 1, payoutUsdc: 0, contractsBtc: 0.1, mode: "live" });
+  assert.equal(a.ok, true); if (!a.ok) return;
+
+  // First tick: touch → inner closes, outer fails → cover stays active with progress.
+  const r1 = await svc.tick({ low: 96000 });
+  assert.equal(r1.settled.length, 0);
+  const mid = await svc.get(a.cover.id);
+  assert.equal(mid?.status, "active");
+  assert.deepEqual(mid?.close_progress?.closed_roles, ["inner"]);
+
+  // Second tick: retry skips inner, closes outer → fully settled.
+  const r2 = await svc.tick({ low: 96000 });
+  assert.equal(r2.settled.length, 1);
+  assert.equal(r2.settled[0].status, "settled_touch");
+  assert.equal(r2.settled[0].hedge_close?.proceeds_usdc, 35);          // 110 + (−75)
+  assert.equal(r2.settled[0].hedge_close?.realized_hedge_pnl_usdc, -15); // 35 − 50 debit
+  assert.deepEqual(calls[1], ["inner"]);                                // inner NOT re-attempted
+});
+
 test("forceClose: manually unwinds an active live cover", async () => {
   const m = makeLiveService({ spot: 100000, closeProceeds: 40 });
   const a = await m.svc.activate({ side: "long", triggerPct: 0.03, tenorDays: 1, payoutUsdc: 0, contractsBtc: 0.1, mode: "live" });

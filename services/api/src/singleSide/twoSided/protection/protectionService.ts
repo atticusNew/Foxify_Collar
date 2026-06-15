@@ -12,7 +12,7 @@
 
 import {
   openCover, evaluateCover, settleCover, attachHedgeClose, scorecard,
-  type ProtectionCover, type SignalState, type TradeSide, type ProtectionScorecard
+  type ProtectionCover, type SignalState, type TradeSide, type ProtectionScorecard, type HedgeCloseProgress
 } from "./protectionLifecycle";
 import type { HedgeExecutor, HedgePlan } from "./hedgeExecutor";
 
@@ -207,13 +207,14 @@ export class ProtectionService {
       const adverse = cover.side === "short" ? (observed?.high ?? spot) : (observed?.low ?? spot);
       const next = evaluateCover(cover, adverse, now);
       if (next.status === "active") continue;
-      // LIVE cover settled → unwind the real spread. If the unwind FAILS, leave it active and retry
-      // next tick (never mark a live cover settled while the hedge is still open).
+      // LIVE cover settled → unwind the real spread, resumably. If not FULLY unwound, persist
+      // progress and leave it active to retry next tick (never settle while a leg is still open;
+      // never re-touch a leg that already closed).
       if (next.mode === "live" && next.hedge && this.executor) {
         try {
-          const close = await this.executor.closeHedge(next.hedge.legs);
-          if (!close.ok) continue; // retry next tick
-          const closed = attachHedgeClose(next, { proceeds_usdc: close.proceeds_usdc, legs: close.legs });
+          const u = await this.attemptUnwind(cover);
+          if (!u.fully) { await this.store.put({ ...cover, close_progress: u.merged }); continue; }
+          const closed = attachHedgeClose({ ...next, close_progress: u.merged }, { proceeds_usdc: u.merged.proceeds_usdc, legs: u.merged.legs });
           await this.store.put(closed);
           settled.push(closed);
         } catch { continue; } // retry next tick
@@ -235,12 +236,36 @@ export class ProtectionService {
     const spot = this.getSpot() ?? c.spot_at_entry;
     let settled = settleCover(c, { touched: false, settlePrice: spot, nowMs: this.now() });
     if (!opts?.skipUnwind && c.mode === "live" && c.hedge && this.executor) {
-      const close = await this.executor.closeHedge(c.hedge.legs);
-      if (!close.ok) return { ok: false, error: `hedge_unwind_failed: ${close.error}` };
-      settled = attachHedgeClose(settled, { proceeds_usdc: close.proceeds_usdc, legs: close.legs });
+      const u = await this.attemptUnwind(c);
+      if (!u.fully) {
+        await this.store.put({ ...c, close_progress: u.merged }); // persist partial → retryable
+        return { ok: false, error: `hedge_unwind_partial: closed [${u.merged.closed_roles.join(",") || "none"}]; ${u.error ?? ""}`.trim() };
+      }
+      settled = attachHedgeClose({ ...settled, close_progress: u.merged }, { proceeds_usdc: u.merged.proceeds_usdc, legs: u.merged.legs });
     }
     await this.store.put(settled);
     return { ok: true, cover: settled };
+  }
+
+  /**
+   * Resumable hedge unwind: closes only legs NOT already closed (per cover.close_progress), then
+   * merges this call's results into accumulated progress. Returns whether ALL legs are now closed.
+   * Backward-compatible with executors that omit leg_results (treats ok as "all remaining closed").
+   */
+  private async attemptUnwind(cover: ProtectionCover): Promise<{ fully: boolean; merged: HedgeCloseProgress; error?: string }> {
+    const allRoles = [...new Set((cover.hedge?.legs ?? []).map((l) => l.role))];
+    const prog: HedgeCloseProgress = cover.close_progress ?? { closed_roles: [], legs: [], proceeds_usdc: 0 };
+    const res = await this.executor!.closeHedge(cover.hedge!.legs, prog.closed_roles);
+    const newlyClosed = res.leg_results
+      ? res.leg_results.filter((r) => r.ok).map((r) => r.role)
+      : (res.ok ? allRoles.filter((r) => !prog.closed_roles.includes(r)) : []);
+    const merged: HedgeCloseProgress = {
+      closed_roles: [...new Set([...prog.closed_roles, ...newlyClosed])],
+      legs: [...prog.legs, ...(res.closed_legs ?? [])],
+      proceeds_usdc: +(prog.proceeds_usdc + (res.proceeds_usdc ?? 0)).toFixed(2)
+    };
+    const fully = allRoles.length > 0 && allRoles.every((r) => merged.closed_roles.includes(r));
+    return { fully, merged, error: res.error };
   }
 
   async get(id: string): Promise<ProtectionCover | undefined> { return this.store.get(id); }

@@ -24,14 +24,25 @@ export type HedgePlan = { side: TradeSide; contractsBtc: number; inner: HedgeLeg
 export type HedgeOpenResult =
   | { ok: true; mode: "shadow" | "live"; legs: HedgeFill[]; debit_usdc: number; spread_width_usd: number; effective_payout_usdc: number; venues: string[] }
   | { ok: false; error: string };
-export type HedgeCloseResult =
-  | { ok: true; mode: "shadow" | "live"; legs: HedgeFill[]; proceeds_usdc: number }
-  | { ok: false; error: string };
+
+/** Per-leg unwind outcome — lets the caller persist which legs already closed (resumable retry). */
+export type LegCloseResult = { role: "inner" | "outer"; ok: boolean; fill?: HedgeFill; error?: string };
+/** `ok` = every requested (non-skipped) leg closed THIS call. proceeds/closed_legs cover only legs
+ *  closed this call (callers accumulate across retries). */
+export type HedgeCloseResult = {
+  ok: boolean;
+  mode: "shadow" | "live";
+  proceeds_usdc: number;
+  closed_legs: HedgeFill[];
+  leg_results: LegCloseResult[];
+  error?: string;
+};
 
 export interface HedgeExecutor {
   readonly mode: "shadow" | "live";
   openHedge(plan: HedgePlan): Promise<HedgeOpenResult>;
-  closeHedge(opened: HedgeFill[]): Promise<HedgeCloseResult>;
+  /** Unwind the opened legs. `skipRoles` = legs already closed on a prior attempt (skipped → resumable). */
+  closeHedge(opened: HedgeFill[], skipRoles?: string[]): Promise<HedgeCloseResult>;
 }
 
 const round2 = (x: number) => +x.toFixed(2);
@@ -50,10 +61,18 @@ export class SimHedgeExecutor implements HedgeExecutor {
     const debit = round2((plan.inner.askUsdcPerBtc - plan.outer.bidUsdcPerBtc) * plan.contractsBtc);
     return { ok: true, mode: "shadow", legs, debit_usdc: debit, spread_width_usd: round2(width), effective_payout_usdc: round2(width * plan.contractsBtc), venues: [...new Set([plan.inner.venue, plan.outer.venue])] };
   }
-  async closeHedge(opened: HedgeFill[]): Promise<HedgeCloseResult> {
-    const legs = opened.map((l) => ({ ...l, action: (l.action === "buy" ? "sell" : "buy") as "buy" | "sell" }));
-    const proceeds = round2(legs.reduce((s, l) => s + (l.action === "sell" ? 1 : -1) * l.fillUsdcPerBtc * l.contractsBtc, 0));
-    return { ok: true, mode: "shadow", legs, proceeds_usdc: proceeds };
+  async closeHedge(opened: HedgeFill[], skipRoles: string[] = []): Promise<HedgeCloseResult> {
+    const legResults: LegCloseResult[] = [];
+    const closed: HedgeFill[] = [];
+    let proceeds = 0;
+    for (const l of opened) {
+      if (skipRoles.includes(l.role)) continue;
+      const fill: HedgeFill = { ...l, action: (l.action === "buy" ? "sell" : "buy") as "buy" | "sell" };
+      closed.push(fill);
+      proceeds += (fill.action === "sell" ? 1 : -1) * fill.fillUsdcPerBtc * fill.contractsBtc;
+      legResults.push({ role: l.role, ok: true, fill });
+    }
+    return { ok: true, mode: "shadow", proceeds_usdc: round2(proceeds), closed_legs: closed, leg_results: legResults };
   }
 }
 
@@ -105,25 +124,38 @@ export class MultiVenueHedgeExecutor implements HedgeExecutor {
     return { ok: true, mode: "live", legs, debit_usdc: debit, spread_width_usd: round2(width), effective_payout_usdc: round2(width * contracts), venues: [...new Set([plan.inner.venue, plan.outer.venue])] };
   }
 
-  async closeHedge(opened: HedgeFill[]): Promise<HedgeCloseResult> {
+  async closeHedge(opened: HedgeFill[], skipRoles: string[] = []): Promise<HedgeCloseResult> {
     const inner = opened.find((l) => l.role === "inner");
     const outer = opened.find((l) => l.role === "outer");
-    if (!inner || !outer) return { ok: false, error: "missing legs to close" };
     const oid = `pp-${Date.now().toString(36)}-close`;
-    const sellInner = await this.sell(inner.venue as Venue, inner.instrument, inner.contractsBtc, 0, `${oid}-si`);
-    // Buy back the outer at a SANE crossable ceiling — NOT a ~$1M limit (venues reject out-of-range
-    // prices, which previously left a stray short). 10× the sold premium (min $100/BTC) crosses a
-    // normal ask while staying in-range.
-    const buyBackCeil = Math.max(outer.fillUsdcPerBtc * 10, 100);
-    const buyOuter = await this.buy(outer.venue as Venue, outer.instrument, outer.contractsBtc, buyBackCeil, `${oid}-bo`);
-    if (!sellInner.ok || !buyOuter.ok) {
-      return { ok: false, error: `close partial/failed: inner=${sellInner.ok ? "ok" : sellInner.detail} outer=${buyOuter.ok ? "ok" : buyOuter.detail}` };
+    const legResults: LegCloseResult[] = [];
+    const closed: HedgeFill[] = [];
+    let proceeds = 0;
+
+    // Inner leg → reverse is SELL (best-effort, crosses any bid).
+    if (inner && !skipRoles.includes("inner")) {
+      const r = await this.sell(inner.venue as Venue, inner.instrument, inner.contractsBtc, 0, `${oid}-si`);
+      if (r.ok) {
+        const fill: HedgeFill = { role: "inner", action: "sell", venue: inner.venue, instrument: inner.instrument, strike: inner.strike, contractsBtc: r.filledContractsBtc ?? inner.contractsBtc, fillUsdcPerBtc: r.filledAskUsdcPerBtc ?? 0, orderId: r.filledOrderId };
+        closed.push(fill); proceeds += fill.fillUsdcPerBtc * fill.contractsBtc; legResults.push({ role: "inner", ok: true, fill });
+      } else legResults.push({ role: "inner", ok: false, error: r.detail ?? r.reason });
     }
-    const legs: HedgeFill[] = [
-      { role: "inner", action: "sell", venue: inner.venue, instrument: inner.instrument, strike: inner.strike, contractsBtc: sellInner.filledContractsBtc ?? inner.contractsBtc, fillUsdcPerBtc: sellInner.filledAskUsdcPerBtc ?? 0, orderId: sellInner.filledOrderId },
-      { role: "outer", action: "buy", venue: outer.venue, instrument: outer.instrument, strike: outer.strike, contractsBtc: buyOuter.filledContractsBtc ?? outer.contractsBtc, fillUsdcPerBtc: buyOuter.filledAskUsdcPerBtc ?? 0, orderId: buyOuter.filledOrderId }
-    ];
-    const proceeds = round2(legs[0].fillUsdcPerBtc * legs[0].contractsBtc - legs[1].fillUsdcPerBtc * legs[1].contractsBtc);
-    return { ok: true, mode: "live", legs, proceeds_usdc: proceeds };
+    // Outer leg → reverse is BUY, at a SANE crossable ceiling (NOT ~$1M, which venues reject as
+    // out-of-range and previously left a stray short). 10× the sold premium (min $100/BTC) crosses.
+    if (outer && !skipRoles.includes("outer")) {
+      const buyBackCeil = Math.max(outer.fillUsdcPerBtc * 10, 100);
+      const r = await this.buy(outer.venue as Venue, outer.instrument, outer.contractsBtc, buyBackCeil, `${oid}-bo`);
+      if (r.ok) {
+        const fill: HedgeFill = { role: "outer", action: "buy", venue: outer.venue, instrument: outer.instrument, strike: outer.strike, contractsBtc: r.filledContractsBtc ?? outer.contractsBtc, fillUsdcPerBtc: r.filledAskUsdcPerBtc ?? 0, orderId: r.filledOrderId };
+        closed.push(fill); proceeds -= fill.fillUsdcPerBtc * fill.contractsBtc; legResults.push({ role: "outer", ok: true, fill });
+      } else legResults.push({ role: "outer", ok: false, error: r.detail ?? r.reason });
+    }
+
+    const requested = [inner && !skipRoles.includes("inner") ? "inner" : null, outer && !skipRoles.includes("outer") ? "outer" : null].filter(Boolean) as string[];
+    const ok = requested.length > 0 && requested.every((role) => legResults.find((lr) => lr.role === role)?.ok);
+    return {
+      ok, mode: "live", proceeds_usdc: round2(proceeds), closed_legs: closed, leg_results: legResults,
+      error: ok ? undefined : legResults.filter((lr) => !lr.ok).map((lr) => `${lr.role}:${lr.error}`).join("; ") || "no legs to close"
+    };
   }
 }
