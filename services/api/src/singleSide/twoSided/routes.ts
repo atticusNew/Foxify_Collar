@@ -2247,7 +2247,13 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     };
 
     // Live adaptive signal (warmed from recent market data, refreshed every 30min).
-    _protectionSignal = new LiveSignalService({ side: sigSide, triggerPct: sigTriggerPct, tenorHours: sigTenorHours });
+    // Lookback defaults to 96h (4d): a 14d window lagged the mid-June vol collapse badly (kept
+    // flashing GO off a stale early-June spike while reality went calm). Shorter = more reactive.
+    _protectionSignal = new LiveSignalService({
+      side: sigSide, triggerPct: sigTriggerPct, tenorHours: sigTenorHours,
+      vrpLookbackHours: Number(process.env.PROTECTION_SIGNAL_VRP_LOOKBACK_HOURS ?? "96"),
+      vrpMargin: Number(process.env.PROTECTION_SIGNAL_VRP_MARGIN ?? "0")
+    });
     void _protectionSignal.start();
 
     // ── Multi-venue executor + planner (built only when live execution is enabled) ──
