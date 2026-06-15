@@ -2246,13 +2246,26 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       };
     };
 
+    // Telegram alerting on signal transitions (Foxify bot/channel). Env: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
+    const { sendTelegramMessage, formatSignalAlert } = await import("./protection/telegramNotifier");
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+    const tgChat = process.env.TELEGRAM_CHAT_ID;
+    const tgPayout = Number(process.env.PROTECTION_AUTO_PAYOUT_USDC ?? "60");
+    const tgAlert = (curr: import("./protection/protectionSignal").LiveSignalResult, prev: import("./protection/protectionSignal").LiveSignalResult | null) => {
+      if (!tgToken || !tgChat) return;
+      const text = formatSignalAlert(curr, prev, { side: sigSide, triggerPct: sigTriggerPct, tenorHours: sigTenorHours, payoutUsdc: tgPayout });
+      void sendTelegramMessage({ botToken: tgToken, chatId: tgChat }, text).then((r) => { if (!r.ok) console.warn(`[Protection] telegram alert failed: ${r.error}`); });
+    };
+
     // Live adaptive signal (warmed from recent market data, refreshed every 30min).
     // Lookback defaults to 96h (4d): a 14d window lagged the mid-June vol collapse badly (kept
     // flashing GO off a stale early-June spike while reality went calm). Shorter = more reactive.
     _protectionSignal = new LiveSignalService({
       side: sigSide, triggerPct: sigTriggerPct, tenorHours: sigTenorHours,
       vrpLookbackHours: Number(process.env.PROTECTION_SIGNAL_VRP_LOOKBACK_HOURS ?? "96"),
-      vrpMargin: Number(process.env.PROTECTION_SIGNAL_VRP_MARGIN ?? "0")
+      vrpMargin: Number(process.env.PROTECTION_SIGNAL_VRP_MARGIN ?? "0"),
+      // Alert only on transitions involving GO (GO opening, or standing down from GO).
+      onChange: (prev, curr) => { if (curr.state === "GO" || prev.state === "GO") tgAlert(curr, prev); }
     });
     void _protectionSignal.start();
 
@@ -2463,6 +2476,18 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   app.get("/admin/foxify/v2/protection/auto-status", { preHandler: checkAdminToken }, async (_req, reply) => {
     await getProtectionService();
     reply.send({ as_of: new Date().toISOString(), auto_activator: _protectionAuto?.status() ?? { running: false, note: "disabled (set PROTECTION_AUTO_ACTIVATE_ENABLED=true)" } });
+  });
+
+  app.post("/admin/foxify/v2/protection/telegram/test", { preHandler: checkAdminToken }, async (_req, reply) => {
+    await getProtectionService();
+    const { sendTelegramMessage } = await import("./protection/telegramNotifier");
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    const chat = process.env.TELEGRAM_CHAT_ID;
+    if (!token || !chat) { reply.code(400).send({ error: "telegram_not_configured", message: "set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID" }); return; }
+    const detail = _protectionSignal?.getDetail();
+    const r = await sendTelegramMessage({ botToken: token, chatId: chat },
+      `*ATTICUS PROTECTION — test message*\nWiring OK. Current signal: ${detail?.state ?? "?"} (edge ${detail?.edge_pts ?? "?"} pts). You'll get an alert here when it flips to GO.`);
+    reply.code(r.ok ? 200 : 502).send({ ok: r.ok, status: r.status, error: r.error });
   });
 
   app.get("/admin/foxify/v2/protection/exec-status", { preHandler: checkAdminToken }, async (_req, reply) => {

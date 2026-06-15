@@ -75,6 +75,8 @@ export type LiveSignalServiceOpts = LiveSignalParams & {
   warmDays?: number;           // how much history to pull on boot/refresh (default 45d)
   fetchOhlc?: (fromMs: number, toMs: number) => Promise<Candle[]>;
   fetchDvolFn?: (fromMs: number, toMs: number) => Promise<DvolPoint[]>;
+  /** Fired when the signal STATE changes between refreshes (e.g. WAIT→GO). For alerting. */
+  onChange?: (prev: LiveSignalResult, curr: LiveSignalResult) => void;
   log?: (msg: string) => void;
 };
 
@@ -102,8 +104,12 @@ export class LiveSignalService {
     const fromMs = toMs - warmDays * 24 * HOUR;
     try {
       const [candles, dvol] = await Promise.all([this.fetchOhlc(fromMs, toMs), this.fetchDvolFn(fromMs, toMs)]);
+      const prev = this.current;
       this.current = computeLiveSignal(candles, dvol, this.opts);
       this.log(`signal=${this.current.state} edge=${this.current.edge_pts}pts n=${this.current.samples}`);
+      if (prev.state !== this.current.state && this.opts.onChange) {
+        try { this.opts.onChange(prev, this.current); } catch (e) { this.log(`onChange handler error: ${(e as Error).message}`); }
+      }
     } catch (e) {
       this.log(`refresh failed (keeping prior signal=${this.current.state}): ${(e as Error).message}`);
     }
