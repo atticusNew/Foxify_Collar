@@ -46,9 +46,11 @@ export type PriceCoverFn = (req: {
   side: TradeSide; spot: number; triggerPct: number; tenorDays: number; payoutUsdc: number;
 }) => Promise<CoverPricing>;
 
-/** Builds the multi-venue replicating spread plan for a LIVE cover (best executable venue per leg). */
+/** Builds the multi-venue replicating spread plan for a LIVE cover (best executable venue per leg).
+ *  `forceVenue` pins both legs to one venue (for venue-specific live execution tests). */
 export type PlanLiveHedgeFn = (req: {
   side: TradeSide; spot: number; triggerPct: number; tenorDays: number; contractsBtc: number;
+  forceVenue?: "deribit" | "bullish";
 }) => Promise<HedgePlan>;
 
 export type ProtectionServiceDeps = {
@@ -75,6 +77,7 @@ export type ActivateParams = {
   tenorDays: number;
   payoutUsdc: number;          // shadow: the target payout. live: ignored (derived from contracts×width).
   contractsBtc?: number;       // live only: spread size (≥ venue minimum).
+  forceVenue?: "deribit" | "bullish"; // live only: pin both legs to one venue (venue test).
   requireGo?: boolean;
   signalOverride?: SignalState;
   mode?: "shadow" | "live";
@@ -137,7 +140,7 @@ export class ProtectionService {
       const contractsBtc = p.contractsBtc ?? this.defaultContractsBtc;
       let plan: HedgePlan;
       try {
-        plan = await this.planLiveHedge({ side, spot, triggerPct: p.triggerPct, tenorDays: p.tenorDays, contractsBtc });
+        plan = await this.planLiveHedge({ side, spot, triggerPct: p.triggerPct, tenorDays: p.tenorDays, contractsBtc, forceVenue: p.forceVenue });
       } catch (e) {
         return { ok: false, error: "planning_failed", message: (e as Error).message };
       }

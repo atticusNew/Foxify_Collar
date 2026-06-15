@@ -2301,7 +2301,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
       executor = new MultiVenueHedgeExecutor({ deribit: deribitLeg, bullish: bullishLeg }, { slippagePct: Number(process.env.PROTECTION_EXEC_SLIPPAGE_PCT ?? "0.1") });
       _protectionExec = { enabled: true, deribit_creds: derHasCreds, deribit_paper: derPaper, bullish: Boolean(bullishLeg), env: derEnv, intentional_paper: intentionalPaper };
 
-      planLiveHedge = async ({ side, spot, triggerPct, tenorDays, contractsBtc }) => {
+      planLiveHedge = async ({ side, spot, triggerPct, tenorDays, contractsBtc, forceVenue }) => {
         const optType: "put" | "call" = side === "short" ? "call" : "put";
         const barrier = barrierPrice(side, spot, triggerPct);
         const halfWidth = Math.max(spot * spreadHalfPct, spot * 0.005);
@@ -2309,9 +2309,11 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         const outerTarget = side === "short" ? barrier + halfWidth : barrier - halfWidth;
         const innerQuotes = await probeVenues(innerTarget, optType, tenorDays, spot);
         const outerQuotes = await probeVenues(outerTarget, optType, tenorDays, spot);
-        const innerExec = innerQuotes.filter((q) => (q.venue === "deribit" || (q.venue === "bullish" && bullishLeg)) && q.ask != null && q.ask > 0 && q.strike != null);
-        const outerExec = outerQuotes.filter((q) => (q.venue === "deribit" || (q.venue === "bullish" && bullishLeg)) && q.bid != null && q.bid > 0 && q.strike != null);
-        if (!innerExec.length || !outerExec.length) throw new Error("no executable venue for one of the legs");
+        const venueOk = (v: string) => (forceVenue ? v === forceVenue : (v === "deribit" || (v === "bullish" && bullishLeg)));
+        if (forceVenue === "bullish" && !bullishLeg) throw new Error("force_venue=bullish but Bullish execution is unavailable (missing PILOT_BULLISH_TRADING_ACCOUNT_ID / client)");
+        const innerExec = innerQuotes.filter((q) => venueOk(q.venue) && q.ask != null && q.ask > 0 && q.strike != null);
+        const outerExec = outerQuotes.filter((q) => venueOk(q.venue) && q.bid != null && q.bid > 0 && q.strike != null);
+        if (!innerExec.length || !outerExec.length) throw new Error(`no executable venue for one of the legs${forceVenue ? ` (force_venue=${forceVenue}; needs ask on inner + bid on outer)` : ""}`);
         const inner = innerExec.reduce((a, b) => (b.ask! < a.ask! ? b : a));
         const outer = outerExec.reduce((a, b) => (b.bid! > a.bid! ? b : a));
         // Deribit can't sell options priced below ~1 tick (0.0001 BTC). If the (deep) outer leg's bid is
@@ -2373,7 +2375,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     return _protectionService;
   };
 
-  app.post<{ Body: { side?: string; trigger_pct?: number; tenor_days?: number; payout_usdc?: number; contracts_btc?: number; foxify_ref?: string; require_go?: boolean; ops_fee_usdc?: number; signal_override?: string; mode?: string } }>(
+  app.post<{ Body: { side?: string; trigger_pct?: number; tenor_days?: number; payout_usdc?: number; contracts_btc?: number; force_venue?: string; foxify_ref?: string; require_go?: boolean; ops_fee_usdc?: number; signal_override?: string; mode?: string } }>(
     "/admin/foxify/v2/protection/activate",
     { preHandler: checkAdminToken },
     async (req, reply) => {
@@ -2401,6 +2403,7 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
         tenorDays: Number(b.tenor_days ?? 1),
         payoutUsdc: Number(b.payout_usdc ?? 60),
         contractsBtc: mode === "live" ? Math.min(Number(b.contracts_btc ?? 0.1), maxContracts) : undefined,
+        forceVenue: b.force_venue === "bullish" ? "bullish" : b.force_venue === "deribit" ? "deribit" : undefined,
         requireGo: b.require_go === true,
         signalOverride: (["GO", "WAIT", "NA"].includes(b.signal_override ?? "") ? b.signal_override : undefined) as "GO" | "WAIT" | "NA" | undefined,
         mode
