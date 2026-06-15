@@ -111,7 +111,11 @@ export class MultiVenueHedgeExecutor implements HedgeExecutor {
     if (!inner || !outer) return { ok: false, error: "missing legs to close" };
     const oid = `pp-${Date.now().toString(36)}-close`;
     const sellInner = await this.sell(inner.venue as Venue, inner.instrument, inner.contractsBtc, 0, `${oid}-si`);
-    const buyOuter = await this.buy(outer.venue as Venue, outer.instrument, outer.contractsBtc, outer.fillUsdcPerBtc * 50 + 1e6, `${oid}-bo`);
+    // Buy back the outer at a SANE crossable ceiling — NOT a ~$1M limit (venues reject out-of-range
+    // prices, which previously left a stray short). 10× the sold premium (min $100/BTC) crosses a
+    // normal ask while staying in-range.
+    const buyBackCeil = Math.max(outer.fillUsdcPerBtc * 10, 100);
+    const buyOuter = await this.buy(outer.venue as Venue, outer.instrument, outer.contractsBtc, buyBackCeil, `${oid}-bo`);
     if (!sellInner.ok || !buyOuter.ok) {
       return { ok: false, error: `close partial/failed: inner=${sellInner.ok ? "ok" : sellInner.detail} outer=${buyOuter.ok ? "ok" : buyOuter.detail}` };
     }

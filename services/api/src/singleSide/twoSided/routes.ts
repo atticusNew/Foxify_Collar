@@ -2417,9 +2417,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
   );
 
   // Manually settle + unwind an active cover now (forced) — operator-driven live test / early close.
-  app.post<{ Params: { id: string } }>("/admin/foxify/v2/protection/positions/:id/close", { preHandler: checkAdminToken }, async (req, reply) => {
+  // ?skip_unwind=true settles WITHOUT a venue unwind (use after flattening the legs manually on the exchange).
+  app.post<{ Params: { id: string }; Querystring: { skip_unwind?: string } }>("/admin/foxify/v2/protection/positions/:id/close", { preHandler: checkAdminToken }, async (req, reply) => {
     const svc = await getProtectionService();
-    const r = await svc.forceClose(req.params.id);
+    const r = await svc.forceClose(req.params.id, { skipUnwind: req.query.skip_unwind === "true" });
     if (!r.ok) { reply.code(r.error === "not_found" ? 404 : 400).send(r); return; }
     reply.send({ ok: true, cover: r.cover });
   });

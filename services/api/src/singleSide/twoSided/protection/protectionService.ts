@@ -225,14 +225,16 @@ export class ProtectionService {
     return { evaluated: active.length, settled, spot };
   }
 
-  /** Manually settle + unwind an active cover now (forced, no touch). For operator-driven live tests. */
-  async forceClose(id: string): Promise<{ ok: true; cover: ProtectionCover } | { ok: false; error: string }> {
+  /** Manually settle + unwind an active cover now (forced, no touch). For operator-driven live tests.
+   *  `skipUnwind` settles WITHOUT calling the venue (use after manually flattening the legs on the
+   *  exchange) — prevents the monitor from repeatedly re-attempting a venue unwind on a stuck cover. */
+  async forceClose(id: string, opts?: { skipUnwind?: boolean }): Promise<{ ok: true; cover: ProtectionCover } | { ok: false; error: string }> {
     const c = await this.store.get(id);
     if (!c) return { ok: false, error: "not_found" };
     if (c.status !== "active") return { ok: false, error: "not_active" };
     const spot = this.getSpot() ?? c.spot_at_entry;
     let settled = settleCover(c, { touched: false, settlePrice: spot, nowMs: this.now() });
-    if (c.mode === "live" && c.hedge && this.executor) {
+    if (!opts?.skipUnwind && c.mode === "live" && c.hedge && this.executor) {
       const close = await this.executor.closeHedge(c.hedge.legs);
       if (!close.ok) return { ok: false, error: `hedge_unwind_failed: ${close.error}` };
       settled = attachHedgeClose(settled, { proceeds_usdc: close.proceeds_usdc, legs: close.legs });
