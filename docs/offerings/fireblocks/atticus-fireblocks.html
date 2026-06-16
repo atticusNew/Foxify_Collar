@@ -10,14 +10,16 @@
   *{ box-sizing:border-box; }
   html,body{ margin:0; }
   body{ font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--ink);
-        background:#fff; line-height:1.36; -webkit-font-smoothing:antialiased; }
+        background:#fff; line-height:1.36; -webkit-font-smoothing:antialiased;
+        -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
   .page{ padding:2px 2px; }
   header{ display:flex; justify-content:space-between; align-items:flex-end; gap:24px;
           border-bottom:3px solid var(--gold); padding-bottom:9px; }
-  .brand{ display:flex; align-items:center; gap:10px; }
-  .brand img{ height:38px; }
-  .brand .x{ font-size:14px; color:var(--muted); font-weight:600; }
-  .brand .fb{ font-size:20px; font-weight:800; }
+  .brand{ display:flex; align-items:center; gap:11px; }
+  .brand .atlogo{ height:34px; }
+  .brand .fblogo{ height:27px; border-radius:3px; }
+  .brand .x{ font-size:15px; color:var(--muted); font-weight:600; }
   h1.tagline{ font-size:13.5px; font-weight:700; margin:9px 0 0; line-height:1.3; }
   .sub{ font-size:11.5px; color:var(--muted); margin:3px 0 0; }
   .sub b{ color:var(--golddk); }
@@ -29,8 +31,9 @@
   .date{ font-size:10.5px; color:var(--muted); text-align:right; line-height:1.6; white-space:nowrap; }
   h2{ font-size:11px; text-transform:uppercase; letter-spacing:1.2px; color:var(--golddk);
       margin:13px 0 6px; border-bottom:1px solid var(--line); padding-bottom:4px; }
-  .nh{ display:inline-block; width:16px; height:16px; background:var(--gold); color:#fff; border-radius:50%;
-       font-size:10px; font-weight:800; text-align:center; line-height:16px; margin-right:7px; vertical-align:1px; }
+  .nh{ display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px;
+       background:var(--gold); color:#fff; border-radius:50%; font-size:11px; font-weight:800;
+       margin-right:8px; vertical-align:-4px; box-shadow:0 1px 2px rgba(122,93,21,.35); }
   ul{ margin:4px 0; padding-left:18px; }
   li{ font-size:12.5px; margin:4px 0; }
   b,strong{ color:var(--ink); }
@@ -56,7 +59,7 @@
 <main class="page">
   <header>
     <div>
-      <div class="brand"><img src="https://i.ibb.co/YBfZqnKT/atlogo.png" alt="Atticus"><span class="x">×</span><span class="fb">Fireblocks</span></div>
+      <div class="brand"><img class="atlogo" src="https://i.ibb.co/YBfZqnKT/atlogo.png" alt="Atticus"><span class="x">×</span><img class="fblogo" src="https://i.ibb.co/mrYtTzPG/fireblocks-logo.jpg" alt="Fireblocks"></div>
       <h1 class="tagline">One-click, non-custodial downside protection — embedded in your UI.</h1>
       <p class="sub"><b>$0 integration cost · $0 custody change · $0 balance-sheet risk to Fireblocks.</b></p>
     </div>

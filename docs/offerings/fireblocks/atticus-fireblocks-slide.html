@@ -8,13 +8,15 @@
          --green:#15803d; --red:#b3261e; --panel:#fbf6ea; }
   *{ box-sizing:border-box; }
   html,body{ margin:0; padding:0; }
-  body{ font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--ink); -webkit-font-smoothing:antialiased; }
+  body{ font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--ink); -webkit-font-smoothing:antialiased;
+        -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  *{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
   .slide{ width:13.333in; height:7.5in; padding:0.34in 0.5in; display:flex; flex-direction:column; overflow:hidden; }
   .top{ display:flex; justify-content:space-between; align-items:center; border-bottom:3px solid var(--gold); padding-bottom:8px; }
-  .brand{ display:flex; align-items:center; gap:12px; }
-  .brand img{ height:40px; }
-  .brand .x{ font-size:15px; color:var(--muted); font-weight:600; }
-  .brand .fb{ font-size:21px; font-weight:800; }
+  .brand{ display:flex; align-items:center; gap:13px; }
+  .brand .atlogo{ height:38px; }
+  .brand .fblogo{ height:30px; border-radius:3px; }
+  .brand .x{ font-size:16px; color:var(--muted); font-weight:600; }
   .snap{ font-size:11px; color:var(--muted); text-align:right; line-height:1.5; }
   .title{ font-size:20px; font-weight:800; margin:10px 0 2px; }
   .sub{ font-size:12.5px; color:var(--muted); margin:0; }
@@ -25,8 +27,9 @@
             color:var(--golddk); font-weight:800; margin-right:7px; }
   .why b{ color:var(--golddk); }
   .cols{ display:grid; grid-template-columns:1fr 1.08fr; gap:0 28px; margin-top:10px; }
-  .num-h{ display:inline-block; width:16px; height:16px; background:var(--gold); color:#fff; border-radius:50%;
-          font-size:10px; font-weight:800; text-align:center; line-height:16px; margin-right:6px; vertical-align:1px; }
+  .num-h{ display:inline-flex; align-items:center; justify-content:center; width:19px; height:19px;
+          background:var(--gold); color:#fff; border-radius:50%; font-size:11px; font-weight:800;
+          margin-right:7px; vertical-align:-4px; box-shadow:0 1px 2px rgba(122,93,21,.35); }
   h2{ font-size:11px; text-transform:uppercase; letter-spacing:1.1px; color:var(--golddk); margin:0 0 6px;
       border-bottom:1px solid var(--line); padding-bottom:3px; }
   .blk{ margin-bottom:11px; }
@@ -60,7 +63,7 @@
 <body>
 <div class="slide">
   <div class="top">
-    <div class="brand"><img src="https://i.ibb.co/YBfZqnKT/atlogo.png" alt="Atticus"><span class="x">×</span><span class="fb">Fireblocks</span></div>
+    <div class="brand"><img class="atlogo" src="https://i.ibb.co/YBfZqnKT/atlogo.png" alt="Atticus"><span class="x">×</span><img class="fblogo" src="https://i.ibb.co/mrYtTzPG/fireblocks-logo.jpg" alt="Fireblocks"></div>
     <div class="snap">Embedded protection · partnership brief<br>Live snapshot <b>June 16, 2026</b></div>
   </div>
 
