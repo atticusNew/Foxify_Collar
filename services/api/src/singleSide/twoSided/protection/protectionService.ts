@@ -270,5 +270,10 @@ export class ProtectionService {
 
   async get(id: string): Promise<ProtectionCover | undefined> { return this.store.get(id); }
   async list(): Promise<ProtectionCover[]> { return this.store.list(); }
-  async scorecard(): Promise<ProtectionScorecard> { return scorecard(await this.store.list()); }
+  /** Scorecard over all covers, or only those created at/after `sinceMs` (clean post-fix cohort). */
+  async scorecard(opts?: { sinceMs?: number }): Promise<ProtectionScorecard> {
+    const all = await this.store.list();
+    const covers = opts?.sinceMs != null ? all.filter((c) => c.created_at_ms >= opts.sinceMs!) : all;
+    return scorecard(covers);
+  }
 }

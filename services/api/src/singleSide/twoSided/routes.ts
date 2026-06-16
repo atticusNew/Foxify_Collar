@@ -2467,9 +2467,10 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
     reply.send({ cover });
   });
 
-  app.get("/admin/foxify/v2/protection/scorecard", { preHandler: checkAdminToken }, async (_req, reply) => {
+  app.get<{ Querystring: { since_ms?: string } }>("/admin/foxify/v2/protection/scorecard", { preHandler: checkAdminToken }, async (req, reply) => {
     const svc = await getProtectionService();
-    reply.send({ as_of: new Date().toISOString(), scorecard: await svc.scorecard() });
+    const sinceMs = req.query.since_ms ? Number(req.query.since_ms) : undefined;
+    reply.send({ as_of: new Date().toISOString(), since_ms: sinceMs ?? null, scorecard: await svc.scorecard(sinceMs != null ? { sinceMs } : undefined) });
   });
 
   app.get("/admin/foxify/v2/protection/signal", { preHandler: checkAdminToken }, async (_req, reply) => {
