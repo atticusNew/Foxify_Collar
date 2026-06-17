@@ -80,8 +80,20 @@ export type LiveSignalServiceOpts = LiveSignalParams & {
   log?: (msg: string) => void;
 };
 
+export type SignalTransition = { at_ms: number; from: "GO" | "WAIT" | "NA"; to: "GO" | "WAIT" | "NA"; edge_pts: number | null };
+export type SignalTransitionInfo = {
+  current_state: "GO" | "WAIT" | "NA";
+  last_go_at_ms: number | null;     // use as scorecard ?since_ms= for a clean GO-cohort
+  last_wait_at_ms: number | null;
+  last_transition: SignalTransition | null;
+  transitions: SignalTransition[];  // most-recent-last, capped
+};
+
 export class LiveSignalService {
   private current: LiveSignalResult = { state: "NA", trailing_realized: null, trailing_implied: null, edge_pts: null, samples: 0, as_of_ms: 0, reason: "not started" };
+  private lastGoAtMs: number | null = null;
+  private lastWaitAtMs: number | null = null;
+  private transitions: SignalTransition[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly opts: LiveSignalServiceOpts;
   private readonly fetchOhlc: (f: number, t: number) => Promise<Candle[]>;
@@ -97,6 +109,15 @@ export class LiveSignalService {
 
   getSignal(): "GO" | "WAIT" | "NA" { return this.current.state; }
   getDetail(): LiveSignalResult { return this.current; }
+  getTransitions(): SignalTransitionInfo {
+    return {
+      current_state: this.current.state,
+      last_go_at_ms: this.lastGoAtMs,
+      last_wait_at_ms: this.lastWaitAtMs,
+      last_transition: this.transitions.length ? this.transitions[this.transitions.length - 1] : null,
+      transitions: this.transitions.slice(-50)
+    };
+  }
 
   async refresh(): Promise<LiveSignalResult> {
     const warmDays = this.opts.warmDays ?? 45;
@@ -107,8 +128,15 @@ export class LiveSignalService {
       const prev = this.current;
       this.current = computeLiveSignal(candles, dvol, this.opts);
       this.log(`signal=${this.current.state} edge=${this.current.edge_pts}pts n=${this.current.samples}`);
-      if (prev.state !== this.current.state && this.opts.onChange) {
-        try { this.opts.onChange(prev, this.current); } catch (e) { this.log(`onChange handler error: ${(e as Error).message}`); }
+      if (prev.state !== this.current.state) {
+        const atMs = Date.now(); // wall-clock so it aligns with cover created_at_ms for ?since_ms
+        this.transitions.push({ at_ms: atMs, from: prev.state, to: this.current.state, edge_pts: this.current.edge_pts });
+        if (this.transitions.length > 100) this.transitions.shift();
+        if (this.current.state === "GO") this.lastGoAtMs = atMs;
+        if (this.current.state === "WAIT") this.lastWaitAtMs = atMs;
+        if (this.opts.onChange) {
+          try { this.opts.onChange(prev, this.current); } catch (e) { this.log(`onChange handler error: ${(e as Error).message}`); }
+        }
       }
     } catch (e) {
       this.log(`refresh failed (keeping prior signal=${this.current.state}): ${(e as Error).message}`);

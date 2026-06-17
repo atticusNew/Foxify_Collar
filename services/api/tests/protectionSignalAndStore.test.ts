@@ -51,6 +51,41 @@ test("computeLiveSignal: NA on insufficient data", () => {
   assert.equal(r.state, "NA");
 });
 
+test("LiveSignalService: records transitions + last_go_at_ms, fires onChange on flip", async () => {
+  const { LiveSignalService } = await import("../src/singleSide/twoSided/protection/protectionSignal");
+  // GO dataset (frequent touches, low implied) vs WAIT dataset (no touches, high implied).
+  const t0 = Date.UTC(2026, 0, 1);
+  const goData = (): { candles: Candle[]; dvol: DvolPoint[] } => {
+    const candles: Candle[] = []; const dvol: DvolPoint[] = [];
+    for (let i = 0; i < 400; i++) { candles.push({ tsMs: t0 + i * 3_600_000, close: 100000, high: 100100, low: i % 2 === 0 ? 96000 : 99900 }); dvol.push({ tsMs: t0 + i * 3_600_000, dvol: 30 }); }
+    return { candles, dvol };
+  };
+  const waitData = (): { candles: Candle[]; dvol: DvolPoint[] } => {
+    const candles: Candle[] = []; const dvol: DvolPoint[] = [];
+    for (let i = 0; i < 400; i++) { candles.push({ tsMs: t0 + i * 3_600_000, close: 100000, high: 100100, low: 99900 }); dvol.push({ tsMs: t0 + i * 3_600_000, dvol: 60 }); }
+    return { candles, dvol };
+  };
+  let phase: "go" | "wait" = "go";
+  const changes: string[] = [];
+  const svc = new LiveSignalService({
+    side: "long", triggerPct: 0.03, tenorHours: 1, vrpLookbackHours: 240, minSamples: 30,
+    fetchOhlc: async () => (phase === "go" ? goData() : waitData()).candles,
+    fetchDvolFn: async () => (phase === "go" ? goData() : waitData()).dvol,
+    onChange: (prev, curr) => changes.push(`${prev.state}->${curr.state}`),
+    log: () => {}
+  });
+  await svc.refresh(); // NA -> GO
+  assert.equal(svc.getSignal(), "GO");
+  assert.ok(svc.getTransitions().last_go_at_ms != null);
+  phase = "wait";
+  await svc.refresh(); // GO -> WAIT
+  assert.equal(svc.getSignal(), "WAIT");
+  const info = svc.getTransitions();
+  assert.equal(info.last_transition?.to, "WAIT");
+  assert.ok(info.transitions.length >= 2);
+  assert.deepEqual(changes, ["NA->GO", "GO->WAIT"]);
+});
+
 test("PostgresProtectionStore: put/get/findByRef/list/active round-trip", async () => {
   const db = newDb();
   const pg = db.adapters.createPg();

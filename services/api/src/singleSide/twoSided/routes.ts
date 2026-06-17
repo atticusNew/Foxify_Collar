@@ -2475,7 +2475,19 @@ export const registerFoxifyV2Routes: FastifyPluginAsync<FoxifyV2RoutesDeps> = as
 
   app.get("/admin/foxify/v2/protection/signal", { preHandler: checkAdminToken }, async (_req, reply) => {
     await getProtectionService(); // ensures the signal service is started
-    reply.send({ as_of: new Date().toISOString(), signal: _protectionSignal?.getDetail() ?? { state: "NA", reason: "not_initialized" } });
+    const t = _protectionSignal?.getTransitions();
+    reply.send({
+      as_of: new Date().toISOString(),
+      signal: _protectionSignal?.getDetail() ?? { state: "NA", reason: "not_initialized" },
+      last_go_at_ms: t?.last_go_at_ms ?? null,        // use as scorecard ?since_ms= for a clean GO cohort
+      last_transition: t?.last_transition ?? null
+    });
+  });
+
+  // Full signal transition history (GO/WAIT flips with timestamps) — last_go_at_ms is the clean cohort cutoff.
+  app.get("/admin/foxify/v2/protection/signal/transitions", { preHandler: checkAdminToken }, async (_req, reply) => {
+    await getProtectionService();
+    reply.send({ as_of: new Date().toISOString(), ...(_protectionSignal?.getTransitions() ?? { current_state: "NA", last_go_at_ms: null, last_wait_at_ms: null, last_transition: null, transitions: [] }) });
   });
 
   app.get("/admin/foxify/v2/protection/auto-status", { preHandler: checkAdminToken }, async (_req, reply) => {
