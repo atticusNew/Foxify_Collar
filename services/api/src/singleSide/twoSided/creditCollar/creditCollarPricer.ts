@@ -83,6 +83,19 @@ export type AtticusSpreadConfig = {
   strikeGridUsdc?: number;
   /** Max OTM fraction to search the funding leg over (default 0.20 = 20%). */
   fundingSearchMaxPct?: number;
+  /**
+   * How the LEGS are filled when Atticus back-to-backs the hedge. This is the single biggest
+   * swing in feasibility (Phase 0 review #1): back-to-back means Atticus BUYS the protective leg
+   * at ASK and SELLS the funding leg at BID — crossing the spread on BOTH legs. At scale you WILL
+   * pay the spread, so the default is "touch" (executable), not "mid" (optimistic).
+   *   "mid"   → mid-to-mid (best case; do not trust for go-live sizing)
+   *   "touch" → protective at ask, funding at bid (realistic back-to-back execution)
+   */
+  fillMode?: "mid" | "touch";
+  /** Per-leg HALF-spread as a fraction of the leg's mid premium (default 0.10 = ±10% of premium). */
+  relativeHalfSpreadPct?: number;
+  /** Per-leg HALF-spread absolute floor in USDC/BTC (default 1.5) — short-dated OTM books have wide ticks. */
+  absHalfSpreadUsdcPerBtc?: number;
 };
 
 export type CollarLegs = {
@@ -110,17 +123,24 @@ export type CreditCollarQuote = {
   };
   legs: CollarLegs & {
     floor_pct: number;          // how far OTM the protective floor sits
-    cap_pct: number;            // how far OTM the funding cap sits
-    floor_leg_mid_usdc: number; // Foxify-long leg fair value (Atticus pays / is long? see attribution)
+    cap_pct: number;            // how far OTM the funding cap sits (= upside Foxify surrenders)
+    floor_leg_mid_usdc: number;
     funding_leg_mid_usdc: number;
   };
+  fills: {
+    fill_mode: "mid" | "touch";
+    protective_leg_ask_usdc: number;  // Atticus BUYS the protective leg here
+    funding_leg_bid_usdc: number;     // Atticus SELLS the funding leg here
+    crossing_drag_usdc: number;       // fair (mid) credit − fundable (executable) credit
+  };
   economics: {
-    fair_credit_usdc: number;        // market-fair credit (funding mid − floor mid) × contracts
+    fair_credit_mid_usdc: number;    // mid-to-mid credit (funding mid − floor mid) × contracts (reference)
+    fundable_credit_usdc: number;    // executable credit after crossing BOTH legs — the real basis
     foxify_credit_usdc: number;      // what Foxify actually receives (accrued, not upfront) = target
-    atticus_margin_usdc: number;     // fair_credit − foxify_credit (embedded spread)
+    atticus_margin_usdc: number;     // fundable_credit − foxify_credit (post-crossing embedded spread)
     atticus_margin_bps: number;      // margin / notional × 1e4
     required_margin_usdc: number;    // max(notional × spreadBps, minMarginUsdc)
-    foxify_market_implied_ev_usdc: number; // = foxify_credit − fair_credit = −atticus_margin (≤ −required)
+    foxify_market_implied_ev_usdc: number; // = foxify_credit − fair_credit_mid = −(crossing + margin)
     rebates_included: false;
   };
   foxify_outcome: {
@@ -215,10 +235,19 @@ export const solveAndPriceCreditCollar = (
   const r = config.riskFreeRate != null ? config.riskFreeRate : 0.045;
   const grid = config.strikeGridUsdc != null && config.strikeGridUsdc > 0 ? config.strikeGridUsdc : 500;
   const fundingSearchMaxPct = config.fundingSearchMaxPct != null && config.fundingSearchMaxPct > 0 ? config.fundingSearchMaxPct : 0.2;
+  const fillMode: "mid" | "touch" = config.fillMode === "mid" ? "mid" : "touch";
+  const relHalf = config.relativeHalfSpreadPct != null && config.relativeHalfSpreadPct >= 0 ? config.relativeHalfSpreadPct : 0.1;
+  const absHalf = config.absHalfSpreadUsdcPerBtc != null && config.absHalfSpreadUsdcPerBtc >= 0 ? config.absHalfSpreadUsdcPerBtc : 1.5;
 
   const T = yearsFromDays(tenorDays);
   const contractsBtc = notionalUsdc / spot;
   const requiredMarginUsdc = Math.max((notionalUsdc * spreadBps) / 1e4, minMarginUsdc);
+
+  // Executable per-leg prices. Atticus BUYS the protective leg (pays ask) and SELLS the funding
+  // leg (receives bid). Half-spread = max(% of mid premium, absolute floor). "mid" mode = no crossing.
+  const halfSpreadPerBtc = (midPerBtc: number) => Math.max(midPerBtc * relHalf, absHalf);
+  const execAskPerBtc = (midPerBtc: number) => (fillMode === "touch" ? midPerBtc + halfSpreadPerBtc(midPerBtc) : midPerBtc);
+  const execBidPerBtc = (midPerBtc: number) => (fillMode === "touch" ? Math.max(0, midPerBtc - halfSpreadPerBtc(midPerBtc)) : midPerBtc);
 
   // Leg roles by side. The protective (long) leg gives the floor/ceiling; the funding (short)
   // leg is sold to manufacture the credit and is Atticus's COUNTERPARTY exposure on Foxify.
@@ -237,17 +266,19 @@ export const solveAndPriceCreditCollar = (
     return { ok: false, error: "invalid_protective_strike", message: "protective strike resolved <= 0" };
   }
   const protectiveMidPerBtc = legMidPerBtc(protectiveType, spot, protectiveStrike, T, r, skew);
+  const protectiveExecPerBtc = execAskPerBtc(protectiveMidPerBtc); // Atticus BUYS the protective leg (pays ask)
 
-  // 2) Search the funding leg from loose (far OTM) to tight; pick the loosest that funds credit+margin.
+  // 2) Search the funding leg from loose (far OTM) to tight; pick the loosest that funds credit+margin
+  //    at EXECUTABLE prices (funding sold at bid). Crossing both legs is the real competition for credit.
   //    long perp  → short call ABOVE spot; tighter = lower strike = more premium
   //    short perp → short put BELOW spot; tighter = higher strike = more premium
-  const targetFairCredit = targetCreditUsdc + requiredMarginUsdc;
+  const targetFundableCredit = targetCreditUsdc + requiredMarginUsdc;
   const steps = Math.max(1, Math.floor((spot * fundingSearchMaxPct) / grid));
 
   let chosenFundingStrike: number | null = null;
   let chosenFundingMidPerBtc = 0;
-  let chosenFairCredit = 0;
-  let tightestFairCredit = 0; // best (max) fair credit seen, for the infeasibility hint
+  let chosenFundableCredit = 0;
+  let tightestFundableCredit = 0; // best (max) executable credit seen, for the infeasibility hint
 
   for (let i = steps; i >= 1; i--) {
     const offset = i * grid;
@@ -258,13 +289,14 @@ export const solveAndPriceCreditCollar = (
     if (side === "short" && snapped >= spot) continue;
 
     const fundingMidPerBtc = legMidPerBtc(fundingType, spot, snapped, T, r, skew);
-    const fairCredit = (fundingMidPerBtc - protectiveMidPerBtc) * contractsBtc;
-    tightestFairCredit = Math.max(tightestFairCredit, fairCredit);
+    const fundingExecPerBtc = execBidPerBtc(fundingMidPerBtc);
+    const fundableCredit = (fundingExecPerBtc - protectiveExecPerBtc) * contractsBtc;
+    tightestFundableCredit = Math.max(tightestFundableCredit, fundableCredit);
 
-    if (fairCredit >= targetFairCredit) {
+    if (fundableCredit >= targetFundableCredit) {
       chosenFundingStrike = snapped;
       chosenFundingMidPerBtc = fundingMidPerBtc;
-      chosenFairCredit = fairCredit;
+      chosenFundableCredit = fundableCredit;
       break; // first hit from the loose end = loosest acceptable = best retained upside for Foxify
     }
   }
@@ -275,8 +307,8 @@ export const solveAndPriceCreditCollar = (
       error: "credit_infeasible_at_floor",
       message:
         `Cannot manufacture credit ${round2(targetCreditUsdc)} + margin ${round2(requiredMarginUsdc)} ` +
-        `(= ${round2(targetFairCredit)}) at floor ${round4(maxFloorPct)}. ` +
-        `Best fair credit achievable here ≈ ${round2(tightestFairCredit)}.`,
+        `(= ${round2(targetFundableCredit)}) at floor ${round4(maxFloorPct)} with ${fillMode} fills. ` +
+        `Best executable credit achievable here ≈ ${round2(tightestFundableCredit)}.`,
       hints: [
         "Increase max_floor_pct (deeper/cheaper protective leg ⟹ more credit available).",
         "Lower target_credit_usdc (the upside tail has finite value; it can't fund an arbitrary credit).",
@@ -289,12 +321,28 @@ export const solveAndPriceCreditCollar = (
   const putStrike = side === "long" ? protectiveStrike : chosenFundingStrike;
   const callStrike = side === "long" ? chosenFundingStrike : protectiveStrike;
 
-  const fairCreditUsdc = chosenFairCredit;
-  const foxifyCreditUsdc = targetCreditUsdc;
-  const atticusMarginUsdc = fairCreditUsdc - foxifyCreditUsdc;
-  const foxifyEvUsdc = foxifyCreditUsdc - fairCreditUsdc; // = −atticusMargin
+  // Credit Atticus can actually fund (executable, both legs crossed) vs the mid-to-mid fair credit.
+  // The gap is the leg-crossing drag that goes to the market makers — Foxify bears it on top of margin.
+  const fundableCreditUsdc = chosenFundableCredit;
+  const fairCreditMidUsdc = (chosenFundingMidPerBtc - protectiveMidPerBtc) * contractsBtc;
+  const crossingDragUsdc = Math.max(0, fairCreditMidUsdc - fundableCreditUsdc);
 
-  // Guardrail: EV-neutral means Foxify EV ≤ −required margin. Reject anything that drifts positive.
+  const foxifyCreditUsdc = targetCreditUsdc;
+  const atticusMarginUsdc = fundableCreditUsdc - foxifyCreditUsdc; // post-crossing margin Atticus keeps
+  // Foxify's EV is measured against TRUE fair value (mid). It eats BOTH the crossing and the margin.
+  const foxifyEvUsdc = foxifyCreditUsdc - fairCreditMidUsdc; // = −(crossingDrag + atticusMargin)
+
+  // Guardrail 1: Atticus must keep at least the required margin AFTER paying the leg-crossing.
+  if (atticusMarginUsdc < requiredMarginUsdc - 1e-6) {
+    return {
+      ok: false,
+      error: "margin_below_floor_after_crossing",
+      message:
+        `Atticus post-crossing margin ${round2(atticusMarginUsdc)} < required ${round2(requiredMarginUsdc)} ` +
+        `(crossing drag ${round2(crossingDragUsdc)} with ${fillMode} fills). Not viable at this credit/floor.`
+    };
+  }
+  // Guardrail 2: EV-neutral means Foxify EV ≤ −required margin. Reject anything that drifts non-negative.
   if (foxifyEvUsdc > -requiredMarginUsdc + 1e-6) {
     return {
       ok: false,
@@ -360,8 +408,15 @@ export const solveAndPriceCreditCollar = (
       floor_leg_mid_usdc: round2(protectiveMidPerBtc * contractsBtc),
       funding_leg_mid_usdc: round2(chosenFundingMidPerBtc * contractsBtc)
     },
+    fills: {
+      fill_mode: fillMode,
+      protective_leg_ask_usdc: round2(protectiveExecPerBtc * contractsBtc),
+      funding_leg_bid_usdc: round2(execBidPerBtc(chosenFundingMidPerBtc) * contractsBtc),
+      crossing_drag_usdc: round2(crossingDragUsdc)
+    },
     economics: {
-      fair_credit_usdc: round2(fairCreditUsdc),
+      fair_credit_mid_usdc: round2(fairCreditMidUsdc),
+      fundable_credit_usdc: round2(fundableCreditUsdc),
       foxify_credit_usdc: round2(foxifyCreditUsdc),
       atticus_margin_usdc: round2(atticusMarginUsdc),
       atticus_margin_bps: round4((atticusMarginUsdc / notionalUsdc) * 1e4),
