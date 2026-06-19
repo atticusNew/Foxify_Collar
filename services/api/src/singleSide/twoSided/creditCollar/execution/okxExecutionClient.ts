@@ -137,4 +137,17 @@ export class OkxExecutionClient {
   getPositions(instType = "OPTION"): Promise<OkxResponse<{ instId?: string; pos?: string; mmr?: string; imr?: string; mgnRatio?: string }>> {
     return this.request("GET", `/api/v5/account/positions?instType=${instType}`);
   }
+
+  /** Account config — acctLv (2 single-ccy, 3 multi-ccy, 4 portfolio), posMode, perms. Read-only. */
+  getAccountConfig(): Promise<OkxResponse<{ acctLv?: string; posMode?: string; mgnIsoMode?: string; ctIsoMode?: string; perm?: string; opAuth?: string }>> {
+    return this.request("GET", "/api/v5/account/config");
+  }
+
+  /**
+   * Activate options trading for the ACCOUNT — the API equivalent of "click any symbol on the
+   * options chain to activate trading" (clears error 51198). Idempotent; safe to call on startup.
+   */
+  activateOption(): Promise<OkxResponse<{ ts?: string }>> {
+    return this.request("POST", "/api/v5/account/activate-option", "");
+  }
 }

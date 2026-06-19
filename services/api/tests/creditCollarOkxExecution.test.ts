@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { signOkx, buildOkxHeaders, buildOrderBody, type OkxCredentials } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
+import { signOkx, buildOkxHeaders, buildOrderBody, OkxExecutionClient, type OkxCredentials, type OkxFetcher } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
 import {
   buildCollarLegOrders,
   legSlippageUsd,
@@ -45,6 +45,36 @@ test("slippage sign: buy pays more = +, sell receives less = +", () => {
   const fillSell: LegFill = { filled: true, avgPxUsd: 190, filledContracts: 1, ordId: "2", state: "filled" };
   assert.equal(legSlippageUsd("sell", 200, fillSell), 10);
   assert.equal(legSlippageUsd("buy", 100, { filled: false, avgPxUsd: null, filledContracts: 0, ordId: null, state: null }), null);
+});
+
+test("activateOption: signed POST to /activate-option, empty body, demo header", async () => {
+  const calls: Array<{ url: string; method: string; headers: Record<string, string>; body?: string }> = [];
+  const fetcher: OkxFetcher = async (url, init) => {
+    calls.push({ url, ...init });
+    return { status: 200, json: async () => ({ code: "0", msg: "", data: [{ ts: "1" }] }) };
+  };
+  const client = new OkxExecutionClient({ apiKey: "k", secret: "s", passphrase: "p", mode: "demo" }, fetcher);
+  const r = await client.activateOption();
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, "POST");
+  assert.match(calls[0].url, /\/api\/v5\/account\/activate-option$/);
+  assert.equal(calls[0].body, undefined); // empty body ⟹ not sent
+  assert.equal(calls[0].headers["x-simulated-trading"], "1");
+  assert.ok(calls[0].headers["OK-ACCESS-SIGN"]);
+});
+
+test("getInstruments/getBookTop: GET with demo header in demo mode", async () => {
+  const calls: string[] = [];
+  const fetcher: OkxFetcher = async (url, init) => {
+    calls.push(`${init.method} ${url}`);
+    return { status: 200, json: async () => ({ code: "0", msg: "", data: [] }) };
+  };
+  const client = new OkxExecutionClient({ apiKey: "k", secret: "s", passphrase: "p", mode: "demo" }, fetcher);
+  await client.getInstruments("OPTION", "BTC-USD");
+  await client.getBookTop("BTC-USD-260621-61000-P");
+  assert.match(calls[0], /GET .*\/public\/instruments\?instType=OPTION&uly=BTC-USD$/);
+  assert.match(calls[1], /GET .*\/market\/books\?instId=BTC-USD-260621-61000-P&sz=1$/);
 });
 
 test("classifyOutcome covers all four states", () => {
