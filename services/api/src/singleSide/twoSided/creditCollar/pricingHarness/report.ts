@@ -268,8 +268,10 @@ export const runPricingReport = (dataset: CaptureDataset, cfg: HarnessReportConf
   if (dataset.dailyListing.bullish === false) {
     blockers.push("Bullish daily BTC option listing NOT detected — gates tenor-aligned back-to-back hedging (confirm the Bullish option market/endpoint on Render).");
   }
-  const notViableTiers = serviceFeeSurvives.filter((t) => t.verdict === "NOT_VIABLE").map((t) => `$${(t.tierDailyUsd / 1e6).toFixed(2)}m`);
-  if (notViableTiers.length > 0) blockers.push(`Service fee NOT viable at ramp tier(s): ${notViableTiers.join(", ")} (small-book / cost).`);
+  // Only Tier-1+ ($1m+) non-viability is a real blocker; sub-$1m tiers are the shadow smoke tier
+  // (a few positions/day are trivially small-book and not the live ramp target).
+  const notViableTiers = serviceFeeSurvives.filter((t) => t.verdict === "NOT_VIABLE" && t.tierDailyUsd >= 1_000_000).map((t) => `$${(t.tierDailyUsd / 1e6).toFixed(2)}m`);
+  if (notViableTiers.length > 0) blockers.push(`Service fee NOT viable at ramp tier(s): ${notViableTiers.join(", ")} (cost vs fee).`);
   const exhaustedClips = serviceFeeSurvives.filter((t) => t.bookExhausted).map((t) => `$${(t.clipUsd / 1e6).toFixed(2)}m`);
   if (exhaustedClips.length > 0) blockers.push(`Perp book exhausted at clip(s): ${exhaustedClips.join(", ")} — deepen the perp book fetch to measure impact at scale.`);
 
