@@ -120,7 +120,7 @@ export class DeribitExecutionClient {
     return { ok: r.ok, message: r.ok ? "auth ok" : `${r.code}: ${r.msg}` };
   }
 
-  getAccountSummary(currency = "BTC"): Promise<DeribitResponse<{ equity?: number; available_funds?: number; margin_balance?: number }>> {
+  getAccountSummary(currency = "BTC"): Promise<DeribitResponse<{ equity?: number; available_funds?: number; margin_balance?: number; portfolio_margining_enabled?: boolean; margin_model?: string; initial_margin?: number }>> {
     return this.priv("/private/get_account_summary", { currency, extended: true });
   }
 

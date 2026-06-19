@@ -37,6 +37,17 @@ const main = async () => {
   }
   console.error("[deribit-pm-netting] auth ok ✓ (read-only — no orders placed)");
 
+  // Margin model matters: PM netting is only < 1 on a Portfolio Margin account. Report it up front.
+  const acct = await client.getAccountSummary("BTC");
+  const pmEnabled = acct.result?.portfolio_margining_enabled === true;
+  const marginModel = acct.result?.margin_model ?? "unknown";
+  console.error(`[deribit-pm-netting] account margin model: ${marginModel} · portfolio_margining_enabled=${pmEnabled}`);
+  if (!pmEnabled) {
+    console.error("[deribit-pm-netting] ⚠️ account is NOT in Portfolio Margin — netting will read 1.0 (no cross-wing offset).");
+    console.error("  To measure real PM savings: on test.deribit.com switch the account to Portfolio Margin (Account → Margin model),");
+    console.error("  close leftover test positions, then re-run. Until then MODELB_PM_NETTING=1 (isolated) is the correct conservative input.");
+  }
+
   const idx = await client.getOrderBook("BTC-PERPETUAL").catch(() => null);
   const spot = idx?.result?.best_ask_price != null && idx.result.best_bid_price != null ? (Number(idx.result.best_ask_price) + Number(idx.result.best_bid_price)) / 2 : 0;
   if (!(spot > 0)) {
@@ -49,6 +60,13 @@ const main = async () => {
   const capPct = Number(process.env.DERIBIT_PM_CAP_PCT ?? "0.02");
   const sizeBtc = Number(process.env.DERIBIT_PM_SIZE ?? "1");
   const maxCandidates = Number(process.env.DERIBIT_MAX_CANDIDATES ?? "10");
+
+  // Account baseline (existing positions) so we can also report an INCREMENTAL netting that is robust
+  // to leftover test positions: incremental IM of adding the collar = withLegs − baseline.
+  await sleep(1100);
+  const baseline = await client.simulatePortfolio("BTC", {}, true);
+  const baselineIm = baseline.result?.projected_initial_margin != null ? Math.abs(Number(baseline.result.projected_initial_margin)) : null;
+  console.error(`[deribit-pm-netting] account baseline IM (existing positions): ${baselineIm ?? "n/a"}BTC`);
 
   const points: Array<Record<string, unknown>> = [];
   const factors: number[] = [];
@@ -73,17 +91,26 @@ const main = async () => {
     const isoPutSell = isoPut.result?.sell != null ? Math.abs(Number(isoPut.result.sell)) : null;
     const isoCallSell = isoCall.result?.sell != null ? Math.abs(Number(isoCall.result.sell)) : null;
 
+    const legs = { [putInstrument]: -sizeBtc, [callInstrument]: -sizeBtc };
     await sleep(1100); // simulate_portfolio is rate-limited to ~1/s
-    const pm = await client.simulatePortfolio("BTC", { [putInstrument]: -sizeBtc, [callInstrument]: -sizeBtc }, false);
-    const portfolioIm = pm.result?.projected_initial_margin != null ? Math.abs(Number(pm.result.projected_initial_margin)) : null;
+    const pmIsolated = await client.simulatePortfolio("BTC", legs, false); // simulated set only
+    const isoSetIm = pmIsolated.result?.projected_initial_margin != null ? Math.abs(Number(pmIsolated.result.projected_initial_margin)) : null;
+    await sleep(1100);
+    const pmWith = await client.simulatePortfolio("BTC", legs, true); // account + legs (for incremental)
+    const withIm = pmWith.result?.projected_initial_margin != null ? Math.abs(Number(pmWith.result.projected_initial_margin)) : null;
+    const incrementalIm = withIm != null && baselineIm != null ? Math.max(0, withIm - baselineIm) : null;
 
-    if (isoPutSell == null || isoCallSell == null || portfolioIm == null) {
-      console.error(`[deribit-pm-netting] tenor=${tenorDays}: incomplete margins (isoPut=${isoPutSell} isoCall=${isoCallSell} pm=${portfolioIm}; ${pm.ok ? "" : pm.code + " " + pm.msg})`);
+    if (isoPutSell == null || isoCallSell == null) {
+      console.error(`[deribit-pm-netting] tenor=${tenorDays}: incomplete isolated margins (isoPut=${isoPutSell} isoCall=${isoCallSell})`);
       continue;
     }
     const isoSum = isoPutSell + isoCallSell;
-    const nettingFactor = portfolioNettingFactor([isoPutSell, isoCallSell], portfolioIm);
-    factors.push(nettingFactor);
+    // Prefer the isolated-set PM number; fall back to the incremental estimate if the set number looks
+    // contaminated (≫ isolated sum ⟹ the account baseline leaked in).
+    const setLooksClean = isoSetIm != null && isoSetIm < isoSum * 3;
+    const pmForNetting = setLooksClean ? (isoSetIm as number) : incrementalIm;
+    const nettingFactor = pmForNetting != null ? portfolioNettingFactor([isoPutSell, isoCallSell], pmForNetting) : null;
+    if (nettingFactor != null) factors.push(nettingFactor);
     points.push({
       tenorDays,
       putInstrument,
@@ -92,12 +119,13 @@ const main = async () => {
       isoPutSellBtc: +isoPutSell.toFixed(8),
       isoCallSellBtc: +isoCallSell.toFixed(8),
       isolatedSumBtc: +isoSum.toFixed(8),
-      portfolioImBtc: +portfolioIm.toFixed(8),
-      nettingFactor: +nettingFactor.toFixed(4),
-      isolatedSumUsd: +(isoSum * spot).toFixed(2),
-      portfolioImUsd: +(portfolioIm * spot).toFixed(2)
+      pmIsolatedSetImBtc: isoSetIm != null ? +isoSetIm.toFixed(8) : null,
+      pmIncrementalImBtc: incrementalIm != null ? +incrementalIm.toFixed(8) : null,
+      usedSource: setLooksClean ? "isolated_set" : "incremental",
+      nettingFactor: nettingFactor != null ? +nettingFactor.toFixed(4) : null,
+      contaminated: !setLooksClean
     });
-    console.error(`[deribit-pm-netting] tenor=${tenorDays}d short-put+short-call: isolated ${isoSum.toFixed(5)}BTC → PM ${portfolioIm.toFixed(5)}BTC ⟹ netting ${nettingFactor.toFixed(4)}`);
+    console.error(`[deribit-pm-netting] tenor=${tenorDays}d isolated ${isoSum.toFixed(5)}BTC · PM-set ${isoSetIm?.toFixed(5) ?? "n/a"}BTC · PM-incremental ${incrementalIm?.toFixed(5) ?? "n/a"}BTC ⟹ netting ${nettingFactor?.toFixed(4) ?? "n/a"} (${setLooksClean ? "isolated_set" : "incremental"})`);
   }
 
   const summary = factors.length
@@ -105,12 +133,19 @@ const main = async () => {
         nettingFactor_min: +Math.min(...factors).toFixed(4),
         nettingFactor_max: +Math.max(...factors).toFixed(4),
         nettingFactor_median: +factors.slice().sort((a, b) => a - b)[Math.floor(factors.length / 2)].toFixed(4),
-        suggestedPmNetting: +Math.max(...factors).toFixed(4) // conservative = least netting observed
+        // Conservative: if PM isn't enabled there is NO netting ⟹ 1; else the least netting observed.
+        suggestedPmNetting: pmEnabled ? +Math.max(...factors).toFixed(4) : 1
       }
     : null;
 
-  process.stdout.write(JSON.stringify({ venue: "deribit", mode, spot, floorPct, capPct, sizeBtc, points, summary, note: "MODELB_PM_NETTING = suggestedPmNetting (conservative = highest measured factor = least netting)" }, null, 2) + "\n");
-  if (summary) console.error(`[deribit-pm-netting] PM netting factor: ${summary.nettingFactor_min}–${summary.nettingFactor_max} (median ${summary.nettingFactor_median}). Use MODELB_PM_NETTING=${summary.suggestedPmNetting}.`);
+  process.stdout.write(
+    JSON.stringify(
+      { venue: "deribit", mode, spot, marginModel, portfolioMarginingEnabled: pmEnabled, baselineImBtc: baselineIm, floorPct, capPct, sizeBtc, points, summary, note: pmEnabled ? "MODELB_PM_NETTING = suggestedPmNetting" : "Account NOT in Portfolio Margin ⟹ netting=1 (isolated). Enable PM + clean positions to measure savings." },
+      null,
+      2
+    ) + "\n"
+  );
+  if (summary) console.error(`[deribit-pm-netting] PM netting: ${summary.nettingFactor_min}–${summary.nettingFactor_max} (median ${summary.nettingFactor_median}). Use MODELB_PM_NETTING=${summary.suggestedPmNetting}${pmEnabled ? "" : " (PM not enabled ⟹ isolated)"}.`);
 };
 
 main().catch((e) => {
