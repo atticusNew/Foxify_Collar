@@ -11,6 +11,7 @@ import {
   type WingCaptureConfig
 } from "../src/singleSide/twoSided/creditCollar/pricingHarness/capture";
 import { recommendRouting } from "../src/singleSide/twoSided/creditCollar/pricingHarness/routing";
+import { parseBullishBtcOptionMarkets, normalizeBullishLevels } from "../src/singleSide/twoSided/creditCollar/pricingHarness/liveFetchers";
 import { runPricingReport, type HarnessReportConfig } from "../src/singleSide/twoSided/creditCollar/pricingHarness/report";
 
 const SPOT = 100_000;
@@ -123,6 +124,37 @@ test("report: with $75 fee on real captured spreads ⟹ credit feasible, service
   // routing picks a venue per leg; Bullish has the tightest fixture spread so it should win at least one leg.
   assert.ok(rep.routing.every((r) => r.chosenVenue != null));
   assert.ok(rep.routing.some((r) => r.chosenVenue === "bullish"));
+});
+
+test("bullish parser: keeps BTC OPTION markets, parses strike/type/expiry, drops spot pairs", () => {
+  const recs = [
+    { symbol: "AAVEAUSD", marketType: "SPOT", baseSymbol: "AAVE" } as any,
+    { symbol: "BTCUSDC", marketType: "SPOT", underlyingBaseSymbol: "BTC" } as any,
+    { symbol: "BTC-20JUN26-60000-P", marketType: "OPTION", optionType: "PUT", optionStrikePrice: "60000", expiryDatetime: "2026-06-20T08:00:00Z", underlyingBaseSymbol: "BTC", marketEnabled: true },
+    { symbol: "BTC-20JUN26-65000-C", marketType: "OPTION", optionType: "CALL", optionStrikePrice: "65000", expiryDatetime: "2026-06-20T08:00:00Z", underlyingBaseSymbol: "BTC", marketEnabled: true },
+    { symbol: "ETH-20JUN26-3000-C", marketType: "OPTION", optionType: "CALL", optionStrikePrice: "3000", expiryDatetime: "2026-06-20T08:00:00Z", underlyingBaseSymbol: "ETH", marketEnabled: true },
+    { symbol: "BTC-DISABLED", marketType: "OPTION", optionType: "PUT", optionStrikePrice: "50000", expiryDatetime: "2026-06-20T08:00:00Z", underlyingBaseSymbol: "BTC", marketEnabled: false }
+  ];
+  const opts = parseBullishBtcOptionMarkets(recs);
+  assert.equal(opts.length, 2, "only the 2 enabled BTC options");
+  assert.ok(opts.some((o) => o.optType === "put" && o.strike === 60000));
+  assert.ok(opts.some((o) => o.optType === "call" && o.strike === 65000));
+  assert.ok(opts.every((o) => Number.isFinite(o.expiryMs)));
+});
+
+test("bullish orderbook normalizer handles object and flat array forms", () => {
+  const objForm = normalizeBullishLevels([{ price: "100", quantity: "2" }, { price: "99", quantity: "1" }]);
+  assert.equal(objForm.length, 2);
+  assert.equal(objForm[0].price, 100);
+  const flatForm = normalizeBullishLevels(["100", "2", "99", "1"]);
+  assert.equal(flatForm.length, 2);
+  assert.equal(flatForm[1].quantity, 1);
+  // Bullish's real field name is priceLevelQuantity.
+  const bullishForm = normalizeBullishLevels([{ price: "40.0000", priceLevelQuantity: "15.5349", type: "ask" }]);
+  assert.equal(bullishForm.length, 1);
+  assert.equal(bullishForm[0].price, 40);
+  assert.equal(bullishForm[0].quantity, 15.5349);
+  assert.equal(normalizeBullishLevels([]).length, 0);
 });
 
 test("routing: materially cheaper non-Bullish venue wins; otherwise Bullish kept", () => {

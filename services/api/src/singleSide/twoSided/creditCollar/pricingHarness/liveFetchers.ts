@@ -166,43 +166,131 @@ export const fetchOkxPerp = async (
   }
 };
 
-// ── Bullish (public markets for daily-listing detection + best-effort orderbook) ──
+// ── Bullish (public /markets discovery + hybrid orderbook; USDC-quoted) ───────
+// Schema matches the pilot's Bullish client (bullish.ts): markets carry marketType / optionType /
+// optionStrikePrice / expiryDatetime / underlyingBaseSymbol; orderbook at
+// /trading-api/v1/markets/:symbol/orderbook/hybrid. Bullish option premia are USDC per BTC (no ×spot).
+
+export type BullishMarketRaw = {
+  symbol?: string;
+  marketType?: string;
+  optionType?: string;
+  optionStrikePrice?: string;
+  expiryDatetime?: string;
+  underlyingBaseSymbol?: string;
+  marketEnabled?: boolean;
+};
+
+const ORDERBOOK_TEMPLATE = process.env.BULLISH_ORDERBOOK_PATH_TEMPLATE ?? "/trading-api/v1/markets/:symbol/orderbook/hybrid";
+
+/** Normalize a Bullish orderbook side: array of {price,quantity} objects OR a flat [p,q,p,q,…]. Pure. */
+export const normalizeBullishLevels = (value: unknown): Array<{ price: number; quantity: number }> => {
+  if (!Array.isArray(value) || value.length === 0) return [];
+  if (typeof value[0] === "object" && value[0] !== null) {
+    // Bullish hybrid orderbook levels are { price, priceLevelQuantity, type }. Accept common aliases.
+    return (value as Array<{ price?: string | number; priceLevelQuantity?: string | number; quantity?: string | number; size?: string | number }>)
+      .map((l) => ({ price: Number(l.price), quantity: Number(l.priceLevelQuantity ?? l.quantity ?? l.size) }))
+      .filter((l) => Number.isFinite(l.price) && Number.isFinite(l.quantity) && l.price > 0);
+  }
+  const flat = (value as Array<string | number>).map((x) => Number(x));
+  const out: Array<{ price: number; quantity: number }> = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) if (flat[i] > 0) out.push({ price: flat[i], quantity: flat[i + 1] });
+  return out;
+};
+
+/** Pure: filter Bullish /markets to BTC OPTION markets + parse strike/type/expiry. */
+export const parseBullishBtcOptionMarkets = (
+  records: BullishMarketRaw[]
+): Array<{ symbol: string; strike: number; optType: "put" | "call"; expiryMs: number }> => {
+  const out: Array<{ symbol: string; strike: number; optType: "put" | "call"; expiryMs: number }> = [];
+  for (const r of records) {
+    const isOption = /OPTION/i.test(String(r.marketType ?? "")) || (r.optionType != null && r.optionStrikePrice != null);
+    const isBtc = String(r.underlyingBaseSymbol ?? "").toUpperCase() === "BTC" || /^BTC/i.test(String(r.symbol ?? ""));
+    if (!isOption || !isBtc) continue;
+    if (r.marketEnabled === false) continue;
+    const strike = Number(r.optionStrikePrice);
+    const ot = String(r.optionType ?? "").toUpperCase();
+    const optType: "put" | "call" | null = ot.startsWith("C") ? "call" : ot.startsWith("P") ? "put" : null;
+    const expiryMs = r.expiryDatetime ? Date.parse(String(r.expiryDatetime)) : NaN;
+    if (!r.symbol || !(strike > 0) || optType == null || !Number.isFinite(expiryMs)) continue;
+    out.push({ symbol: r.symbol, strike, optType, expiryMs });
+  }
+  return out;
+};
+
+export const fetchBullishMarkets = async (base = process.env.BULLISH_REST_BASE ?? "https://api.exchange.bullish.com"): Promise<BullishMarketRaw[]> => {
+  const raw = (await getJson(`${base}/trading-api/v1/markets`)) as BullishMarketRaw[] | { data?: BullishMarketRaw[] };
+  return Array.isArray(raw) ? raw : raw.data ?? [];
+};
+
+const bullishOrderbook = async (base: string, symbol: string): Promise<{ bid: number | null; ask: number | null; bids: PerpLevel[]; asks: PerpLevel[] }> => {
+  const path = ORDERBOOK_TEMPLATE.replace(":symbol", encodeURIComponent(symbol));
+  const ob = (await getJson(`${base}${path}`)) as { bids?: unknown; asks?: unknown };
+  const bidsN = normalizeBullishLevels(ob.bids);
+  const asksN = normalizeBullishLevels(ob.asks);
+  return {
+    bid: bidsN[0]?.price ?? null,
+    ask: asksN[0]?.price ?? null,
+    bids: bidsN.map((l) => ({ priceUsd: l.price, sizeUsd: l.quantity * l.price })),
+    asks: asksN.map((l) => ({ priceUsd: l.price, sizeUsd: l.quantity * l.price }))
+  };
+};
 
 export const fetchBullishOptions = async (
+  wing: { floorPcts: number[]; capPcts: number[]; tenorsDays: number[] },
+  referenceSpot: number,
+  records?: BullishMarketRaw[],
   base = process.env.BULLISH_REST_BASE ?? "https://api.exchange.bullish.com"
 ): Promise<FetchResult<VenueOptionSnapshot> & { dailyListingObserved: boolean }> => {
   const nowMs = Date.now();
   try {
-    const markets = (await getJson(`${base}/trading-api/v1/markets`)) as Array<{ symbol?: string; marketType?: string }> | { data?: Array<{ symbol?: string; marketType?: string }> };
-    const list = Array.isArray(markets) ? markets : markets.data ?? [];
-    const optionMarkets = list.filter((m) => /BTC/i.test(String(m.symbol ?? "")) && /OPTION/i.test(String(m.marketType ?? m.symbol ?? "")));
-    // Daily-listing detection from symbol/expiry encoding; best-effort (operator confirms on Render).
-    const dailyListingObserved = optionMarkets.some((m) => /1D|DAILY|0DTE|24H/i.test(String(m.symbol ?? "")));
-    const options: OptionQuote[] = []; // orderbook quotes require the venue-specific path; left to live wiring
-    return { ok: optionMarkets.length > 0, error: optionMarkets.length === 0 ? "no_bullish_btc_option_markets_seen" : undefined, dailyListingObserved, snapshot: { venue: "bullish", spot: 0, nowMs, options } };
+    const recs = records ?? (await fetchBullishMarkets(base));
+    const parsed = parseBullishBtcOptionMarkets(recs).filter((o) => o.expiryMs > nowMs);
+    if (parsed.length === 0) {
+      return { ok: false, error: "no_bullish_btc_option_markets", dailyListingObserved: false, snapshot: { venue: "bullish", spot: referenceSpot, nowMs, options: [] } };
+    }
+    const dailyListingObserved = parsed.some((o) => o.expiryMs <= nowMs + 30 * 3_600_000);
+    const spot = referenceSpot > 0 ? referenceSpot : 0;
+    // Quote only the symbols near the wing strikes × target tenors (limit live orderbook calls).
+    const keepExp = nearTenors([...new Set(parsed.map((o) => o.expiryMs))], nowMs, wing.tenorsDays);
+    const keepStrikes = spot > 0 ? strikesNearWings(parsed.map((o) => o.strike), spot, wing.floorPcts, wing.capPcts) : new Set(parsed.map((o) => o.strike));
+    const targets = parsed.filter((o) => keepExp.has(o.expiryMs) && keepStrikes.has(o.strike)).slice(0, 24);
+    const options: OptionQuote[] = [];
+    for (const t of targets) {
+      try {
+        const { bid, ask } = await bullishOrderbook(base, t.symbol);
+        options.push({ strike: t.strike, optType: t.optType, expiryMs: t.expiryMs, bidUsdcPerBtc: bid, askUsdcPerBtc: ask });
+      } catch {
+        options.push({ strike: t.strike, optType: t.optType, expiryMs: t.expiryMs, bidUsdcPerBtc: null, askUsdcPerBtc: null });
+      }
+    }
+    const anyQuotes = options.some((o) => o.bidUsdcPerBtc != null && o.askUsdcPerBtc != null);
+    return {
+      ok: anyQuotes,
+      error: anyQuotes ? undefined : "bullish_option_markets_found_but_no_orderbook_quotes",
+      dailyListingObserved,
+      snapshot: { venue: "bullish", spot, nowMs, options }
+    };
   } catch (e) {
-    return { ok: false, error: (e as Error).message, dailyListingObserved: false, snapshot: { venue: "bullish", spot: 0, nowMs, options: [] } };
+    return { ok: false, error: (e as Error).message, dailyListingObserved: false, snapshot: { venue: "bullish", spot: referenceSpot, nowMs, options: [] } };
   }
 };
 
 export const fetchBullishPerp = async (
+  records?: BullishMarketRaw[],
   base = process.env.BULLISH_REST_BASE ?? "https://api.exchange.bullish.com"
 ): Promise<FetchResult<VenuePerpSnapshot>> => {
   const nowMs = Date.now();
-  const symbol = process.env.BULLISH_PERP_SYMBOL ?? "BTC-USDC-PERP";
   try {
-    const path = (process.env.BULLISH_ORDERBOOK_PATH ?? "/trading-api/v1/markets/:symbol/orderbook/hybrid").replace(":symbol", encodeURIComponent(symbol));
-    const ob = (await getJson(`${base}${path}`)) as { bids?: Array<{ price?: string; quantity?: string }>; asks?: Array<{ price?: string; quantity?: string }> };
-    const toLevels = (rows?: Array<{ price?: string; quantity?: string }>): PerpLevel[] =>
-      (rows ?? []).map((l) => {
-        const priceUsd = Number(l.price);
-        const qtyBtc = Number(l.quantity);
-        return { priceUsd, sizeUsd: qtyBtc * priceUsd };
-      });
-    const bids = toLevels(ob.bids);
-    const asks = toLevels(ob.asks);
-    const spot = bids[0]?.priceUsd && asks[0]?.priceUsd ? (bids[0].priceUsd + asks[0].priceUsd) / 2 : 0;
-    return { ok: bids.length > 0 && asks.length > 0, snapshot: { venue: "bullish", spot, nowMs, bids, asks } };
+    const recs = records ?? (await fetchBullishMarkets(base));
+    const explicit = process.env.BULLISH_PERP_SYMBOL;
+    const perp = explicit
+      ? recs.find((r) => String(r.symbol).toUpperCase() === explicit.toUpperCase())
+      : recs.find((r) => /PERP/i.test(String(r.marketType ?? "")) && (/^BTC/i.test(String(r.symbol ?? "")) || String(r.underlyingBaseSymbol ?? "").toUpperCase() === "BTC"));
+    if (!perp?.symbol) return { ok: false, error: "no_bullish_btc_perp_market", snapshot: { venue: "bullish", spot: 0, nowMs, bids: [], asks: [] } };
+    const { bid, ask, bids, asks } = await bullishOrderbook(base, perp.symbol);
+    const spot = bid != null && ask != null ? (bid + ask) / 2 : bid ?? 0;
+    return { ok: bids.length > 0 && asks.length > 0, error: bids.length > 0 && asks.length > 0 ? undefined : "bullish_perp_orderbook_empty", snapshot: { venue: "bullish", spot, nowMs, bids, asks } };
   } catch (e) {
     return { ok: false, error: (e as Error).message, snapshot: { venue: "bullish", spot: 0, nowMs, bids: [], asks: [] } };
   }
@@ -218,13 +306,18 @@ export type LiveCaptureResult = {
 /** Pull all venues (best-effort). Quote-only. */
 export const captureLive = async (wing: { floorPcts: number[]; capPcts: number[]; tenorsDays: number[] }): Promise<LiveCaptureResult> => {
   const errors: LiveCaptureResult["errors"] = [];
-  const [dOpt, dPerp, oOpt, oPerp, bOpt, bPerp] = await Promise.all([
+  // Deribit/OKX first (also gives a reference spot); Bullish markets fetched once and shared.
+  const [dOpt, dPerp, oOpt, oPerp, bMarkets] = await Promise.all([
     fetchDeribitOptions(),
     fetchDeribitPerp(),
     fetchOkxOptions(wing),
     fetchOkxPerp(),
-    fetchBullishOptions(),
-    fetchBullishPerp()
+    fetchBullishMarkets().catch(() => [] as BullishMarketRaw[])
+  ]);
+  const referenceSpot = dOpt.snapshot.spot || oOpt.snapshot.spot || dPerp.snapshot.spot || oPerp.snapshot.spot || 0;
+  const [bOpt, bPerp] = await Promise.all([
+    fetchBullishOptions(wing, referenceSpot, bMarkets),
+    fetchBullishPerp(bMarkets)
   ]);
   const optionSnapshots: VenueOptionSnapshot[] = [];
   const perpSnapshots: VenuePerpSnapshot[] = [];
