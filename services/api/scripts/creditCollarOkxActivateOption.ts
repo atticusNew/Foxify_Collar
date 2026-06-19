@@ -75,10 +75,11 @@ const main = async () => {
     }
   } else {
     console.error(`[okx-activate] ❌ activation failed: ${res.code} ${res.msg}`);
-    if (/^HTTP_5\d\d$/.test(res.code)) {
-      console.error("  This is an OKX gateway timeout, not a credential problem. Try the colo/cloud endpoint:");
-      console.error("    OKX_REST_BASE=https://aws.okx.com OKX_EXECUTION_MODE=demo npm --silent --workspace services/api run okx:activate-option");
-      console.error("  (aws.okx.com is OKX's recommended host from cloud IPs and usually clears 504s.)");
+    if (/^HTTP_5\d\d$/.test(res.code) || res.code === "ERR") {
+      console.error("  This is an OKX gateway/network issue, not a credential problem. Options:");
+      console.error("   - just re-run (retries are built in; 504s are usually transient);");
+      console.error("   - increase patience: OKX_EXEC_TIMEOUT_MS=20000 OKX_EXECUTION_MODE=demo npm --silent --workspace services/api run okx:activate-option");
+      console.error("   - fallback: activate once in the OKX mobile app (Demo Trading) on cellular data, then API orders work.");
     }
     process.exit(1);
   }

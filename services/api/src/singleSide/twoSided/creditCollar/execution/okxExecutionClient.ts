@@ -101,7 +101,13 @@ export class OkxExecutionClient {
   private async request<T = unknown>(method: "GET" | "POST", path: string, body = ""): Promise<OkxResponse<T>> {
     const timestamp = new Date().toISOString();
     const headers = buildOkxHeaders(this.creds, timestamp, method, path, body);
-    const res = await this.fetcher(this.base + path, { method, headers, body: body || undefined });
+    let res: OkxRawResponse;
+    try {
+      res = await this.fetcher(this.base + path, { method, headers, body: body || undefined });
+    } catch (e) {
+      // Network/DNS/timeout — return a retryable sentinel instead of throwing (don't crash callers).
+      return { ok: false, code: "ERR", msg: `network error: ${e instanceof Error ? e.message : String(e)}`, data: [] as T[] };
+    }
     let j: { code?: string; msg?: string; data?: T[] };
     try {
       // Prefer the raw text (read once) so a non-JSON body fails gracefully with a useful snippet.

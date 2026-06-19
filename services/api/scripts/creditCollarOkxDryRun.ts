@@ -84,7 +84,7 @@ const main = async () => {
       console.error("[okx-dry-run] options trading active ✓");
     } else {
       console.error(`[okx-dry-run] activate-option returned ${act.code}: ${act.msg} (continuing; set OKX_SKIP_ACTIVATE=1 to skip)`);
-      if (/^HTTP_5\d\d$/.test(act.code)) console.error("  Tip: OKX gateway timeout — retry, or set OKX_REST_BASE=https://aws.okx.com");
+      if (/^HTTP_5\d\d$/.test(act.code) || act.code === "ERR") console.error("  Tip: transient OKX gateway/network issue — just re-run; activation retries are built in.");
     }
   }
 

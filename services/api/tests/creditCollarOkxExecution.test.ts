@@ -114,6 +114,23 @@ test("activateOptionWithRetry: non-retryable error returns immediately", async (
   assert.equal(n, 1);
 });
 
+test("request does not throw on network/DNS error — returns retryable ERR", async () => {
+  let n = 0;
+  const fetcher: OkxFetcher = async () => {
+    n++;
+    if (n === 1) throw new Error("getaddrinfo ENOTFOUND aws.okx.com");
+    return { status: 200, text: async () => JSON.stringify({ code: "0", data: [{ ts: "1" }] }), json: async () => ({ code: "0", data: [{ ts: "1" }] }) };
+  };
+  const client = new OkxExecutionClient({ apiKey: "k", secret: "s", passphrase: "p", mode: "demo" }, fetcher);
+  // First call: surfaces ERR (no throw).
+  const direct = await client.getBalance();
+  assert.equal(direct.ok, false);
+  assert.equal(direct.code, "ERR");
+  // Retry wrapper recovers on the next attempt.
+  const r = await client.activateOptionWithRetry({ tries: 3, baseDelayMs: 0, sleep: async () => {} });
+  assert.equal(r.ok, true);
+});
+
 test("request is resilient to a non-JSON (HTML) response", async () => {
   const html = "<!DOCTYPE html><html><body>error</body></html>";
   const fetcher: OkxFetcher = async () => ({ status: 200, text: async () => html, json: async () => JSON.parse(html) });
