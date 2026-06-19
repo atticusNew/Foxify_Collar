@@ -119,6 +119,20 @@ export class OkxExecutionClient {
     return this.request("GET", "/api/v5/account/balance");
   }
 
+  /**
+   * Instrument universe for the ACTIVE environment. In demo mode this carries x-simulated-trading
+   * so we only ever see instIds that actually exist in demo (live + demo chains differ). Public
+   * endpoint, but routed through the signed/header path so the mode header is applied consistently.
+   */
+  getInstruments(instType = "OPTION", uly = "BTC-USD"): Promise<OkxResponse<{ instId?: string; state?: string }>> {
+    return this.request("GET", `/api/v5/public/instruments?instType=${instType}&uly=${encodeURIComponent(uly)}`);
+  }
+
+  /** Top-of-book for an instId in the ACTIVE environment (demo header applied in demo mode). */
+  getBookTop(instId: string): Promise<OkxResponse<{ bids?: string[][]; asks?: string[][] }>> {
+    return this.request("GET", `/api/v5/market/books?instId=${encodeURIComponent(instId)}&sz=1`);
+  }
+
   /** Account positions (to read option position + maintenance margin after a fill). */
   getPositions(instType = "OPTION"): Promise<OkxResponse<{ instId?: string; pos?: string; mmr?: string; imr?: string; mgnRatio?: string }>> {
     return this.request("GET", `/api/v5/account/positions?instType=${instType}`);
