@@ -39,7 +39,7 @@ export type HarnessReportConfig = {
 
 // ── Skew curve from captured mids (real implied vol per wing strike) ──────────
 
-const buildSkewFromCapture = (
+export const buildSkewFromCapture = (
   dataset: CaptureDataset,
   tenorDays: number
 ): { skew: SkewCurve; points: Array<{ strike: number; iv: number }>; ok: boolean } => {
@@ -85,7 +85,7 @@ const buildSkewFromCapture = (
 
 // ── Leg half-spread model from captured wing spreads (routing-aware) ──────────
 
-const buildLegSpreadFromCapture = (
+export const buildLegSpreadFromCapture = (
   dataset: CaptureDataset,
   tenorDays: number,
   routing: LegRouting[]

@@ -47,3 +47,48 @@ services:
         value: "https://www.okx.com"
       - key: BULLISH_REST_BASE
         value: "https://api.exchange.bullish.com"
+
+  # ── Tier-0 SHADOW activation (paper-settled, NO trading, live tiers OFF) ──
+  # Runs the full credit-collar lifecycle end-to-end with zero capital so the operator can watch it
+  # before any live tier. Read/quote-only + paper settlement. Set HARNESS_FEE_USDC=75. For audit
+  # continuity across runs, set ORACLE_PRIVATE_KEY_PEM / ORACLE_PUBLIC_KEY_PEM (ECDSA P-256);
+  # otherwise an ephemeral keypair is generated per run.
+  - type: cron
+    name: foxify-credit-collar-shadow
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/credit-collar-phase-a-c13c
+    schedule: "*/15 * * * *"
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api run shadow:run
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HARNESS_FEE_USDC
+        sync: false
+      - key: SHADOW_N_POSITIONS
+        value: "20"
+      - key: SHADOW_POSITION_USDC
+        value: "50000"
+      - key: SHADOW_TIER0_CAP_USDC
+        value: "1000000"
+      - key: SHADOW_SETTLEMENT_WINDOW_MIN
+        value: "30"
+      - key: HARNESS_TENOR_DAYS
+        value: "1"
+      - key: HARNESS_MAX_FLOOR_PCT
+        value: "0.04"
+      - key: HARNESS_SERVICE_FEE_BPS
+        value: "2"
+      # ECDSA settlement-oracle keys (optional; ephemeral if unset). NEVER commit the private key.
+      - key: ORACLE_PRIVATE_KEY_PEM
+        sync: false
+      - key: ORACLE_PUBLIC_KEY_PEM
+        sync: false
+      - key: DERIBIT_REST_BASE
+        value: "https://www.deribit.com/api/v2"
+      - key: OKX_REST_BASE
+        value: "https://www.okx.com"
+      - key: BULLISH_REST_BASE
+        value: "https://api.exchange.bullish.com"

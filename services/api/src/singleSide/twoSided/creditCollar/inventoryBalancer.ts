@@ -147,6 +147,12 @@ export type ExposureBreakerConfig = {
    * to be "warehousing." Default 0 (ratio always applies). Set per ramp tier in production.
    */
   minGrossNotionalUsd?: number;
+  /**
+   * Absolute net-delta cap in USDC. Halts when |net| ≥ this REGARDLESS of book size — the real
+   * directional-warehouse limit at small/Tier-0 books where the ratio isn't yet meaningful. The book
+   * halts if EITHER the abs cap OR the (material-book) ratio is breached. Default: no abs cap.
+   */
+  maxAbsNetNotionalUsd?: number;
 };
 
 export type ExposureBreakerState = "ok" | "warn" | "halted";
@@ -165,20 +171,29 @@ export const evaluateExposureBreaker = (
   priorState: ExposureBreakerState = "ok"
 ): ExposureDecision => {
   const x = inv.imbalanceRatio;
-  // Below the gross floor the ratio is not meaningful (tiny book → trivially ~100% imbalanced);
-  // absolute exposure is too small to be warehousing, so allow (and clear any latch).
-  if (inv.grossNotionalUsdc < (config.minGrossNotionalUsd ?? 0)) {
-    return { state: "ok", allowNewOpens: true, exposureRatio: x, reason: `gross $${inv.grossNotionalUsdc} below ratio floor — exposure immaterial` };
+  const absNet = Math.abs(inv.netNotionalUsdc);
+  const maxAbs = config.maxAbsNetNotionalUsd;
+  // The ratio is only meaningful above the gross floor (a 1–2 position book is trivially ~100%).
+  const ratioActive = inv.grossNotionalUsdc >= (config.minGrossNotionalUsd ?? 0);
+  const absBreach = maxAbs != null && absNet >= maxAbs;
+  const ratioBreach = ratioActive && x >= config.haltBandPct;
+
+  // Latch: once halted, stay halted until BOTH the abs net and the (active) ratio recover.
+  if (priorState === "halted") {
+    const absRecovered = maxAbs == null || absNet <= maxAbs * 0.7;
+    const ratioRecovered = !ratioActive || x <= config.resumeBandPct;
+    if (!(absRecovered && ratioRecovered)) {
+      return { state: "halted", allowNewOpens: false, exposureRatio: x, reason: `halted (latched): |net| $${absNet.toFixed(0)}, exposure ${(x * 100).toFixed(1)}% — awaiting recovery` };
+    }
   }
-  // Latch: stay halted until exposure recovers below resumeBandPct (manual-resume analogue).
-  if (priorState === "halted" && x > config.resumeBandPct) {
-    return { state: "halted", allowNewOpens: false, exposureRatio: x, reason: `halted: exposure ${(x * 100).toFixed(1)}% > resume ${(config.resumeBandPct * 100).toFixed(1)}%` };
+  if (absBreach) {
+    return { state: "halted", allowNewOpens: false, exposureRatio: x, reason: `HALT: |net| $${absNet.toFixed(0)} ≥ abs cap $${maxAbs} — directional warehousing, do not open` };
   }
-  if (x >= config.haltBandPct) {
-    return { state: "halted", allowNewOpens: false, exposureRatio: x, reason: `HALT new opens: exposure ${(x * 100).toFixed(1)}% ≥ halt band ${(config.haltBandPct * 100).toFixed(1)}% — steering failing, do not warehouse direction` };
+  if (ratioBreach) {
+    return { state: "halted", allowNewOpens: false, exposureRatio: x, reason: `HALT: exposure ${(x * 100).toFixed(1)}% ≥ halt band ${(config.haltBandPct * 100).toFixed(1)}% — steering failing` };
   }
-  if (x >= config.warnBandPct) {
-    return { state: "warn", allowNewOpens: true, exposureRatio: x, reason: `warn: exposure ${(x * 100).toFixed(1)}% ≥ warn band ${(config.warnBandPct * 100).toFixed(1)}% — steer harder` };
+  if ((maxAbs != null && absNet >= maxAbs * 0.7) || (ratioActive && x >= config.warnBandPct)) {
+    return { state: "warn", allowNewOpens: true, exposureRatio: x, reason: `warn: |net| $${absNet.toFixed(0)}, exposure ${(x * 100).toFixed(1)}% — steer harder` };
   }
   return { state: "ok", allowNewOpens: true, exposureRatio: x, reason: "flat within band" };
 };
