@@ -1,0 +1,120 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { signOkx, buildOkxHeaders, buildOrderBody, type OkxCredentials } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
+import {
+  buildCollarLegOrders,
+  legSlippageUsd,
+  classifyOutcome,
+  executeCollarHedge,
+  type CollarHedgeSpec,
+  type ExecClient,
+  type LegFill
+} from "../src/singleSide/twoSided/creditCollar/execution/okxCollarExecutor";
+
+const creds: OkxCredentials = { apiKey: "k", secret: "s", passphrase: "p", mode: "demo" };
+
+test("okx signing is deterministic, secret-sensitive, base64", () => {
+  const a = signOkx("2026-06-19T00:00:00.000Z", "POST", "/api/v5/trade/order", "{}", "secret");
+  const b = signOkx("2026-06-19T00:00:00.000Z", "POST", "/api/v5/trade/order", "{}", "secret");
+  assert.equal(a, b);
+  assert.notEqual(a, signOkx("2026-06-19T00:00:00.000Z", "POST", "/api/v5/trade/order", "{}", "other"));
+  assert.match(a, /^[A-Za-z0-9+/]+=*$/);
+});
+
+test("okx headers include sim-trading flag in demo, not in live", () => {
+  const demo = buildOkxHeaders({ ...creds, mode: "demo" }, "t", "GET", "/x", "");
+  assert.equal(demo["x-simulated-trading"], "1");
+  assert.equal(demo["OK-ACCESS-KEY"], "k");
+  const live = buildOkxHeaders({ ...creds, mode: "live" }, "t", "GET", "/x", "");
+  assert.equal(live["x-simulated-trading"], undefined);
+});
+
+test("order body + collar legs: buy put, sell call", () => {
+  const body = JSON.parse(buildOrderBody({ instId: "BTC-USD-X-P", side: "buy", ordType: "limit", sz: "1", px: "100" }));
+  assert.equal(body.side, "buy");
+  assert.equal(body.tdMode, "cross");
+  const spec: CollarHedgeSpec = { putInstId: "P", callInstId: "C", sizeContracts: "1", putLimitPx: "100", callLimitPx: "200", modeledPutAskUsd: 100, modeledCallBidUsd: 200 };
+  const { putOrder, callOrder } = buildCollarLegOrders(spec);
+  assert.equal(putOrder.side, "buy");
+  assert.equal(callOrder.side, "sell");
+});
+
+test("slippage sign: buy pays more = +, sell receives less = +", () => {
+  const fillBuy: LegFill = { filled: true, avgPxUsd: 105, filledContracts: 1, ordId: "1", state: "filled" };
+  assert.equal(legSlippageUsd("buy", 100, fillBuy), 5);
+  const fillSell: LegFill = { filled: true, avgPxUsd: 190, filledContracts: 1, ordId: "2", state: "filled" };
+  assert.equal(legSlippageUsd("sell", 200, fillSell), 10);
+  assert.equal(legSlippageUsd("buy", 100, { filled: false, avgPxUsd: null, filledContracts: 0, ordId: null, state: null }), null);
+});
+
+test("classifyOutcome covers all four states", () => {
+  assert.equal(classifyOutcome(true, true), "both_filled");
+  assert.equal(classifyOutcome(true, false), "put_orphan");
+  assert.equal(classifyOutcome(false, true), "call_orphan");
+  assert.equal(classifyOutcome(false, false), "neither_filled");
+});
+
+const spec: CollarHedgeSpec = { putInstId: "BTC-USD-P", callInstId: "BTC-USD-C", sizeContracts: "1", putLimitPx: "100", callLimitPx: "200", modeledPutAskUsd: 100, modeledCallBidUsd: 200 };
+const fastOpts = { pollTries: 1, pollDelayMs: 0, sleep: async () => {} };
+
+const mockClient = (fillSet: Set<string>, opts: { compFails?: boolean; imr?: number } = {}): ExecClient & { placed: string[] } => {
+  const placed: string[] = [];
+  return {
+    mode: "demo",
+    placed,
+    placeOrder: async (o) => {
+      placed.push(`${o.side}:${o.instId}:${o.reduceOnly ? "reduceOnly" : "open"}`);
+      if (o.reduceOnly && opts.compFails) return { ok: false, code: "1", msg: "comp failed", data: [{}] };
+      return { ok: true, code: "0", msg: "", data: [{ ordId: `ord-${o.instId}-${o.side}` }] };
+    },
+    getOrder: async (instId) => ({ ok: true, data: [{ state: fillSet.has(instId) ? "filled" : "unfilled", avgPx: instId === "BTC-USD-P" ? "101" : "199", accFillSz: "1" }] }),
+    cancelOrder: async () => ({ ok: true, data: [] }),
+    getPositions: async () => ({ ok: true, data: opts.imr != null ? [{ instId: "BTC-USD-C", imr: String(opts.imr) }] : [] })
+  };
+};
+
+test("executor: both legs fill ⟹ safe, slippage + margin measured", async () => {
+  const c = mockClient(new Set(["BTC-USD-P", "BTC-USD-C"]), { imr: 6000 });
+  const r = await executeCollarHedge(c, spec, fastOpts);
+  assert.equal(r.outcome, "both_filled");
+  assert.equal(r.safe, true);
+  assert.equal(r.putSlippageUsd, 1); // bought put at 101 vs modeled 100
+  assert.equal(r.callSlippageUsd, 1); // sold call at 199 vs modeled 200
+  assert.equal(r.shortLegMarginUsd, 6000);
+  assert.equal(r.compensated, false);
+});
+
+test("executor: put fills, call doesn't ⟹ compensates (closes orphan put), stays safe", async () => {
+  const c = mockClient(new Set(["BTC-USD-P"]));
+  const r = await executeCollarHedge(c, spec, fastOpts);
+  assert.equal(r.outcome, "put_orphan");
+  assert.equal(r.compensated, true);
+  assert.equal(r.safe, true);
+  assert.ok(c.placed.some((p) => p === "sell:BTC-USD-P:reduceOnly"), "orphan put closed");
+});
+
+test("executor: call fills, put doesn't ⟹ buys back orphan call, stays safe", async () => {
+  const c = mockClient(new Set(["BTC-USD-C"]));
+  const r = await executeCollarHedge(c, spec, fastOpts);
+  assert.equal(r.outcome, "call_orphan");
+  assert.equal(r.compensated, true);
+  assert.equal(r.safe, true);
+  assert.ok(c.placed.some((p) => p === "buy:BTC-USD-C:reduceOnly"), "orphan call bought back");
+});
+
+test("executor: neither fills ⟹ safe, no compensation", async () => {
+  const c = mockClient(new Set());
+  const r = await executeCollarHedge(c, spec, fastOpts);
+  assert.equal(r.outcome, "neither_filled");
+  assert.equal(r.safe, true);
+  assert.equal(r.compensated, false);
+});
+
+test("executor: compensation FAILURE ⟹ NOT safe, error surfaced (naked-leg alarm)", async () => {
+  const c = mockClient(new Set(["BTC-USD-P"]), { compFails: true });
+  const r = await executeCollarHedge(c, spec, fastOpts);
+  assert.equal(r.outcome, "put_orphan");
+  assert.equal(r.compensated, false);
+  assert.equal(r.safe, false, "failed compensation must flag unsafe (naked leg)");
+  assert.ok(r.errors.some((e) => /FAILED to close orphan/.test(e)));
+});
