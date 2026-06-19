@@ -105,7 +105,8 @@ const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
 const badge = (text: string, color: string) => `<span class="badge" style="background:${color}">${esc(text)}</span>`;
 
-const verdictColor = (v: ShadowAggregate["verdict"]) => (v === "TRACK_RECORD_CLEAN" ? "#16794a" : v === "WATCH" ? "#9a6b00" : "#9a1b1b");
+const verdictColor = (v: ShadowAggregate["verdict"]) =>
+  v === "TRACK_RECORD_CLEAN" ? "#16794a" : v === "WATCH" ? "#9a6b00" : v === "NO_DATA" ? "#0b5cab" : "#9a1b1b";
 const liveColor = (s: DashboardModel["liveness"]["state"]) => (s === "RUNNING" ? "#16794a" : s === "STARTING" ? "#0b5cab" : s === "STALE" ? "#9a6b00" : "#9a1b1b");
 
 export const renderDashboardHtml = (m: DashboardModel): string => {
@@ -149,6 +150,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${badge(m.liveness.state, liveColor(m.liveness.state))}
     ${badge("verdict: " + a.verdict.replace(/_/g, " "), verdictColor(a.verdict))}
   </div>
+  ${a.verdict === "NO_DATA" ? `<p class="muted" style="margin-top:10px">Warming up — the first shadow cycle runs on boot (~15–20s of live quotes). The scorecard fills once sessions are recorded; this page auto-refreshes.</p>` : ""}
   <div class="grid">
     ${card("Shadow", m.running ? "RUNNING" : m.liveness.state, m.liveness.lastRunAgoSec != null ? `last run ${m.liveness.lastRunAgoSec}s ago` : "no run yet")}
     ${card("Cycles run", String(m.liveness.cyclesRun), m.liveness.nextExpectedSec != null ? `next in ~${Math.max(0, m.liveness.nextExpectedSec)}s` : "")}

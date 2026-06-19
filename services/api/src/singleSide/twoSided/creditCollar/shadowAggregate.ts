@@ -52,7 +52,7 @@ export type ShadowAggregate = {
     realizedServiceFeeBps: number;   // serviceFee / openedNotional × 1e4
     avgServiceFeePerPositionUsdc: number;
   };
-  verdict: "TRACK_RECORD_CLEAN" | "WATCH" | "DEGRADED";
+  verdict: "TRACK_RECORD_CLEAN" | "WATCH" | "DEGRADED" | "NO_DATA";
   flags: string[];
   notes: string[];
 };
@@ -112,17 +112,22 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
   const realizedServiceFeeBps = openedNotional > 0 ? +((serviceFee / openedNotional) * 1e4).toFixed(4) : 0;
 
   // Verdict + flags: the bar for a clean track record before any live tier.
+  // NB: with 0 sessions the rates are vacuously 0 — that's NO_DATA (warming up), NOT a DEGRADED fail.
   const flags: string[] = [];
-  if (allVerifiedRate < 1) flags.push(`oracle verification failed in ${Math.round((1 - allVerifiedRate) * sessions)} session(s)`);
-  if (withDrift > 0) flags.push(`venue-vs-ledger reconciliation drift in ${withDrift} session(s)`);
-  if (lifecycleCompleteRate < 0.95) flags.push(`lifecycle incomplete in ${Math.round((1 - lifecycleCompleteRate) * sessions)} session(s)`);
-  if (maxPeakRatio > band + 1e-9) flags.push(`peak net exposure ${(maxPeakRatio * 100).toFixed(1)}% exceeded the ${(band * 100).toFixed(0)}% band`);
-  if (oracleHealthyRate < 0.9) flags.push(`oracle below 'healthy' in ${(100 - oracleHealthyRate * 100).toFixed(0)}% of sessions`);
-  if (sessions < minClean) flags.push(`only ${sessions} session(s) — need ≥ ${minClean} for a CLEAN verdict`);
+  if (sessions === 0) {
+    flags.push("no sessions yet — first shadow cycle runs on boot (~15–20s); collecting data");
+  } else {
+    if (allVerifiedRate < 1) flags.push(`oracle verification failed in ${Math.round((1 - allVerifiedRate) * sessions)} session(s)`);
+    if (withDrift > 0) flags.push(`venue-vs-ledger reconciliation drift in ${withDrift} session(s)`);
+    if (lifecycleCompleteRate < 0.95) flags.push(`lifecycle incomplete in ${Math.round((1 - lifecycleCompleteRate) * sessions)} session(s)`);
+    if (maxPeakRatio > band + 1e-9) flags.push(`peak net exposure ${(maxPeakRatio * 100).toFixed(1)}% exceeded the ${(band * 100).toFixed(0)}% band`);
+    if (oracleHealthyRate < 0.9) flags.push(`oracle below 'healthy' in ${(100 - oracleHealthyRate * 100).toFixed(0)}% of sessions`);
+    if (sessions < minClean) flags.push(`only ${sessions} session(s) — need ≥ ${minClean} for a CLEAN verdict`);
+  }
 
-  const hardFail = allVerifiedRate < 1 || withDrift > 0 || lifecycleCompleteRate < 0.9;
+  const hardFail = sessions > 0 && (allVerifiedRate < 1 || withDrift > 0 || lifecycleCompleteRate < 0.9);
   const clean = sessions >= minClean && allVerifiedRate === 1 && allReconciledRate === 1 && lifecycleCompleteRate >= 0.95 && maxPeakRatio <= band + 1e-9 && oracleHealthyRate >= 0.9;
-  const verdict: ShadowAggregate["verdict"] = hardFail ? "DEGRADED" : clean ? "TRACK_RECORD_CLEAN" : "WATCH";
+  const verdict: ShadowAggregate["verdict"] = sessions === 0 ? "NO_DATA" : hardFail ? "DEGRADED" : clean ? "TRACK_RECORD_CLEAN" : "WATCH";
 
   return {
     sessions,

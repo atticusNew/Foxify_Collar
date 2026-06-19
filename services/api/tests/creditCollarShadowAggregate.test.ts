@@ -75,12 +75,13 @@ test("aggregate: exposure breach beyond band is flagged", () => {
   assert.notEqual(agg.verdict, "TRACK_RECORD_CLEAN");
 });
 
-test("aggregate: empty history is well-defined", () => {
+test("aggregate: empty history ⟹ NO_DATA (warming up), NOT DEGRADED", () => {
   const agg = aggregateShadowScorecards([]);
   assert.equal(agg.sessions, 0);
   assert.equal(agg.positions.openRate, 0);
   assert.equal(agg.economics.realizedServiceFeeBps, 0);
-  assert.notEqual(agg.verdict, "TRACK_RECORD_CLEAN");
+  assert.equal(agg.verdict, "NO_DATA");
+  assert.ok(agg.flags.some((f) => /no sessions yet/.test(f)));
 });
 
 test("store: append + load round-trips JSONL; filterSince works", () => {
