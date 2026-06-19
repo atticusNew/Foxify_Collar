@@ -99,8 +99,27 @@ const main = async () => {
   console.error(`[deribit-dry-run] spot=${spot} put=${putInstrument}@${putAsk}BTC call=${callInstrument}@${callBid}BTC size=${size} mode=${mode} expiry=${resolved.legs.expiryIso}`);
   const report = await executeCollarHedge(client.asExecClient(), spec, { pollTries: num(process.env.DERIBIT_POLL_TRIES, 6), pollDelayMs: num(process.env.DERIBIT_POLL_DELAY_MS, 700) });
 
-  process.stdout.write(JSON.stringify({ venue: "deribit", mode, spot, spec, report, units: "px + slippage in BTC per contract; margin in BTC" }, null, 2) + "\n");
-  console.error(`[deribit-dry-run] outcome=${report.outcome} safe=${report.safe} compensated=${report.compensated} shortLegMargin=${report.shortLegMarginUsd} errors=${report.errors.length}`);
+  // Derive consumable economics: Deribit option px + margin are in BTC; convert to USD + % of notional.
+  const sizeBtc = Number(size); // 1 BTC option contract = 1 BTC notional
+  const notionalUsd = sizeBtc * spot;
+  const putCostUsd = report.putFill.avgPxUsd != null ? report.putFill.avgPxUsd * spot * report.putFill.filledContracts : null;
+  const callPremiumUsd = report.callFill.avgPxUsd != null ? report.callFill.avgPxUsd * spot * report.callFill.filledContracts : null;
+  const netHedgeDebitUsd = putCostUsd != null && callPremiumUsd != null ? +(putCostUsd - callPremiumUsd).toFixed(2) : null;
+  const shortMarginBtc = report.shortLegMarginUsd; // venue-native (BTC for Deribit)
+  const shortMarginUsd = shortMarginBtc != null ? +(shortMarginBtc * spot).toFixed(2) : null;
+  const shortMarginPctOfNotional = shortMarginBtc != null && sizeBtc > 0 ? +((shortMarginBtc / sizeBtc) * 100).toFixed(2) : null;
+  const economics = {
+    notionalUsd: +notionalUsd.toFixed(2),
+    putCostUsd: putCostUsd != null ? +putCostUsd.toFixed(2) : null,
+    callPremiumUsd: callPremiumUsd != null ? +callPremiumUsd.toFixed(2) : null,
+    netHedgeDebitUsd,
+    shortLegMarginBtc: shortMarginBtc,
+    shortLegMarginUsd: shortMarginUsd,
+    shortLegMarginPctOfNotional: shortMarginPctOfNotional
+  };
+
+  process.stdout.write(JSON.stringify({ venue: "deribit", mode, spot, spec, report, economics, units: "px + slippage in BTC per contract; margin reported in BTC (report) and USD (economics)" }, null, 2) + "\n");
+  console.error(`[deribit-dry-run] outcome=${report.outcome} safe=${report.safe} compensated=${report.compensated} shortLegMargin=${shortMarginBtc}BTC (~$${shortMarginUsd}, ${shortMarginPctOfNotional}% of notional) netHedgeDebit=$${netHedgeDebitUsd} errors=${report.errors.length}`);
   if (!report.safe) process.exit(7); // naked-leg alarm
 };
 
