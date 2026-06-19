@@ -77,6 +77,43 @@ test("setAccountLevel: signed POST with acctLv body", async () => {
   assert.equal(calls[0].body, JSON.stringify({ acctLv: "4" }));
 });
 
+test("activateOptionWithRetry: retries 504 then succeeds", async () => {
+  let n = 0;
+  const fetcher: OkxFetcher = async () => {
+    n++;
+    if (n < 3) return { status: 504, text: async () => "<!DOCTYPE html>gateway timeout", json: async () => JSON.parse("<!DOCTYPE html>") };
+    return { status: 200, text: async () => JSON.stringify({ code: "0", msg: "", data: [{ ts: "1" }] }), json: async () => ({ code: "0", data: [{ ts: "1" }] }) };
+  };
+  const client = new OkxExecutionClient({ apiKey: "k", secret: "s", passphrase: "p", mode: "demo" }, fetcher);
+  const r = await client.activateOptionWithRetry({ tries: 5, baseDelayMs: 0, sleep: async () => {} });
+  assert.equal(r.ok, true);
+  assert.equal(n, 3);
+});
+
+test("activateOptionWithRetry: 51199 already-activated counts as success, no further retry", async () => {
+  let n = 0;
+  const fetcher: OkxFetcher = async () => {
+    n++;
+    return { status: 200, text: async () => JSON.stringify({ code: "51199", msg: "already" }), json: async () => ({ code: "51199", msg: "already" }) };
+  };
+  const client = new OkxExecutionClient({ apiKey: "k", secret: "s", passphrase: "p", mode: "demo" }, fetcher);
+  const r = await client.activateOptionWithRetry({ tries: 5, baseDelayMs: 0, sleep: async () => {} });
+  assert.equal(r.code, "51199");
+  assert.equal(n, 1);
+});
+
+test("activateOptionWithRetry: non-retryable error returns immediately", async () => {
+  let n = 0;
+  const fetcher: OkxFetcher = async () => {
+    n++;
+    return { status: 200, text: async () => JSON.stringify({ code: "50101", msg: "env" }), json: async () => ({ code: "50101", msg: "env" }) };
+  };
+  const client = new OkxExecutionClient({ apiKey: "k", secret: "s", passphrase: "p", mode: "demo" }, fetcher);
+  const r = await client.activateOptionWithRetry({ tries: 5, baseDelayMs: 0, sleep: async () => {} });
+  assert.equal(r.code, "50101");
+  assert.equal(n, 1);
+});
+
 test("request is resilient to a non-JSON (HTML) response", async () => {
   const html = "<!DOCTYPE html><html><body>error</body></html>";
   const fetcher: OkxFetcher = async () => ({ status: 200, text: async () => html, json: async () => JSON.parse(html) });

@@ -79,11 +79,12 @@ const main = async () => {
   // Activate options trading via API (idempotent) so we don't trip 51198 "…activate trading".
   // This is the API equivalent of clicking the options chain; runs from the whitelisted IP.
   if (process.env.OKX_SKIP_ACTIVATE !== "1") {
-    const act = await client.activateOption();
+    const act = await client.activateOptionWithRetry({ tries: 5 });
     if (act.ok || act.code === "51199") {
       console.error("[okx-dry-run] options trading active ✓");
     } else {
       console.error(`[okx-dry-run] activate-option returned ${act.code}: ${act.msg} (continuing; set OKX_SKIP_ACTIVATE=1 to skip)`);
+      if (/^HTTP_5\d\d$/.test(act.code)) console.error("  Tip: OKX gateway timeout — retry, or set OKX_REST_BASE=https://aws.okx.com");
     }
   }
 

@@ -169,6 +169,27 @@ export class OkxExecutionClient {
   }
 
   /**
+   * Activate options with retry — this endpoint is prone to transient gateway timeouts (HTTP 504)
+   * and rate limits. Retries on 5xx / rate-limit / network errors with linear backoff. Idempotent.
+   * 51199 (already activated) is treated as success.
+   */
+  async activateOptionWithRetry(opts: { tries?: number; baseDelayMs?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<OkxResponse<{ ts?: string }>> {
+    const tries = opts.tries ?? 4;
+    const baseDelayMs = opts.baseDelayMs ?? 1500;
+    const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    let last: OkxResponse<{ ts?: string }> = { ok: false, code: "NONE", msg: "no_attempt", data: [] };
+    for (let i = 0; i < tries; i++) {
+      const r = await this.activateOption();
+      if (r.ok || r.code === "51199") return r;
+      last = r;
+      const retryable = /^HTTP_5\d\d$/.test(r.code) || r.code === "50011" /* rate limit */ || r.code === "50013" /* busy */ || r.code === "ERR";
+      if (!retryable) return r;
+      if (i < tries - 1) await sleep(baseDelayMs * (i + 1));
+    }
+    return last;
+  }
+
+  /**
    * Switch account mode. acctLv: "2" single-ccy margin, "3" multi-ccy margin, "4" portfolio margin.
    * Options require acctLv ≥ 3; a collar's long leg needs portfolio margin (4) for offset.
    */

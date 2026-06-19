@@ -61,7 +61,8 @@ const main = async () => {
     process.exit(1);
   }
 
-  const res = await client.activateOption();
+  console.error(`[okx-activate] activating options via ${process.env.OKX_REST_BASE ?? "https://www.okx.com"} (retrying transient 504s)…`);
+  const res = await client.activateOptionWithRetry({ tries: 5 });
   const ok = res.ok || res.code === "51199" /* already activated */;
   process.stdout.write(JSON.stringify({ mode, activated: ok, code: res.code, msg: res.msg, ts: res.data?.[0]?.ts ?? null, acctLv }, null, 2) + "\n");
 
@@ -74,6 +75,11 @@ const main = async () => {
     }
   } else {
     console.error(`[okx-activate] ❌ activation failed: ${res.code} ${res.msg}`);
+    if (/^HTTP_5\d\d$/.test(res.code)) {
+      console.error("  This is an OKX gateway timeout, not a credential problem. Try the colo/cloud endpoint:");
+      console.error("    OKX_REST_BASE=https://aws.okx.com OKX_EXECUTION_MODE=demo npm --silent --workspace services/api run okx:activate-option");
+      console.error("  (aws.okx.com is OKX's recommended host from cloud IPs and usually clears 504s.)");
+    }
     process.exit(1);
   }
 };
