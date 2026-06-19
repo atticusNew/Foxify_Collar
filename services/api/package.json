@@ -68,6 +68,7 @@
     "okx:auth-probe": "tsx scripts/creditCollarOkxAuthProbe.ts",
     "okx:activate-option": "tsx scripts/creditCollarOkxActivateOption.ts",
     "deribit:dry-run": "tsx scripts/creditCollarDeribitDryRun.ts",
-    "deribit:auth-probe": "tsx scripts/creditCollarDeribitAuthProbe.ts"
+    "deribit:auth-probe": "tsx scripts/creditCollarDeribitAuthProbe.ts",
+    "deribit:margin-sweep": "tsx scripts/creditCollarDeribitMarginSweep.ts"
   }
 }

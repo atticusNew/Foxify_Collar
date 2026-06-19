@@ -92,6 +92,21 @@ test("resolveDeribitCollarLegs: empty list surfaces no_matching_instruments", as
   assert.equal(r.error, "no_matching_instruments");
 });
 
+test("getMargins: read-only hypothetical-order margin (sell = short-leg IM)", async () => {
+  const calls: string[] = [];
+  const fetcher: DeribitFetcher = async (url) => {
+    calls.push(url);
+    if (url.includes("/public/auth")) return { status: 200, json: async () => ({ result: { access_token: "tok", expires_in: 900 } }) };
+    if (url.includes("/private/get_margins")) return { status: 200, json: async () => ({ result: { buy: 0.0001, sell: 0.0132 } }) };
+    return { status: 200, json: async () => ({ result: null }) };
+  };
+  const client = new DeribitExecutionClient({ clientId: "id", clientSecret: "sec", mode: "testnet" }, fetcher);
+  const r = await client.getMargins("BTC-22JUN26-64500-C", 0.1, 0.0009);
+  assert.equal(r.ok, true);
+  assert.equal(r.result?.sell, 0.0132); // short-call initial margin in BTC
+  assert.ok(calls.some((u) => u.includes("/private/get_margins") && u.includes("amount=0.1")));
+});
+
 test("mapDeribitState maps to executor states", () => {
   assert.equal(mapDeribitState("filled"), "filled");
   assert.equal(mapDeribitState("cancelled"), "canceled");

@@ -144,6 +144,14 @@ export class DeribitExecutionClient {
     return this.priv("/private/get_order_state", { order_id: orderId });
   }
 
+  /**
+   * Margin for a HYPOTHETICAL order — computes buy/sell initial margin WITHOUT placing anything.
+   * Lets us sweep the short-leg IM across size/strike/tenor with zero orders. Margins are in BTC.
+   */
+  getMargins(instrumentName: string, amount: number, price: number): Promise<DeribitResponse<{ buy?: number; sell?: number; max_price?: number; min_price?: number }>> {
+    return this.priv("/private/get_margins", { instrument_name: instrumentName, amount, price });
+  }
+
   cancel(orderId: string): Promise<DeribitResponse<DeribitOrder>> {
     return this.priv("/private/cancel", { order_id: orderId });
   }

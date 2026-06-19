@@ -69,6 +69,26 @@ export type ModelBConfig = {
   stressJumpPct: number;                // ±jump for the both-wing reserve (e.g. 0.12)
   /** Extra reserve for the stop→24h-TWAP timing gap (deep-put gap-through backstop), as a fraction. */
   intradayTimingBufferPct: number;
+
+  /**
+   * MEASURED exchange initial margin to carry ONE short option leg, as a fraction of that leg's
+   * notional (e.g. 0.132 from the Deribit margin sweep for a ~2% OTM 3-day call). Opt-in: 0/undefined
+   * ⟹ legacy behaviour (no option-margin capital booked, e.g. pure perp-residual hedging).
+   */
+  shortOptionImFraction?: number;
+  /**
+   * Gross short-option notional carried at the hedge venue as a fraction of DAILY GROSS — i.e. how
+   * much option exposure is back-to-back hedged with short options rather than perps, accounting for
+   * tenor overlap. A delta-flat OPTIONS book still posts margin on BOTH short wings (no delta netting),
+   * so this is driven by GROSS, not net. Default 0 (no option-margin capital).
+   */
+  shortOptionGrossNotionalFraction?: number;
+  /**
+   * Portfolio-margin netting factor in [0,1] applied to the short-option margin: 1 = isolated/multi-
+   * ccy (no offset between the long put and short call), <1 = portfolio margin nets the long leg
+   * against the short leg (OKX/Deribit PM). Default 1 (conservative, no netting).
+   */
+  portfolioMarginNettingFactor?: number;
   /**
    * Max peak directional exposure (peak |net| / daily gross) the book may carry before it is deemed
    * to have crossed from "service fee on a flat book" into forbidden directional WAREHOUSING. Above
@@ -109,6 +129,9 @@ export type ModelBResult =
       reserveUpWingUsdc: number;
       reserveBindingWing: "down" | "up";
       intradayTimingGapReserveUsdc: number;
+      /** Measured exchange margin posted to carry the short option legs of the hedge (0 if perp-only). */
+      shortOptionMarginUsdc: number;
+      shortOptionMarginCostPerDayUsdc: number;
       reserveUsdc: number;
       // ── guardrail ──
       foxifyEvPerPositionUsdc: number;    // = −service fee (must be ≤ −service fee)
@@ -217,10 +240,21 @@ export const simulateModelBVolume = (cfg: ModelBConfig): ModelBResult => {
   const jumpWing = Math.max(downWing, upWing);
   const bindingWing: "down" | "up" = downWing >= upWing ? "down" : "up";
   const timingGapReserve = jumpWing * cfg.intradayTimingBufferPct;     // stop-instant → 24h TWAP carry
-  const reserve = jumpWing + timingGapReserve;
-  const reserveCapitalCostPerDay = (reserve * cfg.costOfCapitalAnnual) / 365;
 
-  const netServiceRevenuePerDay = serviceFeeRevenuePerDay - perpHedgeCostPerDay - reserveCapitalCostPerDay;
+  // ── Measured short-option exchange margin (opt-in; from the Deribit margin sweep) ──
+  // A delta-flat OPTIONS book still posts IM on BOTH short wings (margin doesn't net on delta), so
+  // this scales with GROSS short-option notional carried at the hedge venue, not the net residual.
+  const imFraction = cfg.shortOptionImFraction ?? 0;
+  const grossOptFraction = cfg.shortOptionGrossNotionalFraction ?? 0;
+  const pmNetting = cfg.portfolioMarginNettingFactor ?? 1;
+  const shortOptionGrossNotional = grossPerDay * grossOptFraction;
+  const shortOptionMargin = shortOptionGrossNotional * imFraction * pmNetting;
+  const shortOptionMarginCostPerDay = (shortOptionMargin * cfg.costOfCapitalAnnual) / 365;
+
+  const reserve = jumpWing + timingGapReserve + shortOptionMargin;
+  const reserveCapitalCostPerDay = ((jumpWing + timingGapReserve) * cfg.costOfCapitalAnnual) / 365;
+
+  const netServiceRevenuePerDay = serviceFeeRevenuePerDay - perpHedgeCostPerDay - reserveCapitalCostPerDay - shortOptionMarginCostPerDay;
   const annualizedNet = netServiceRevenuePerDay * 365;
   const annualizedNetBps = grossPerDay > 0 ? (netServiceRevenuePerDay / grossPerDay) * 1e4 : 0;
 
@@ -256,6 +290,8 @@ export const simulateModelBVolume = (cfg: ModelBConfig): ModelBResult => {
     reserveUpWingUsdc: round2(upWing),
     reserveBindingWing: bindingWing,
     intradayTimingGapReserveUsdc: round2(timingGapReserve),
+    shortOptionMarginUsdc: round2(shortOptionMargin),
+    shortOptionMarginCostPerDayUsdc: round2(shortOptionMarginCostPerDay),
     reserveUsdc: round2(reserve),
     foxifyEvPerPositionUsdc: round2(evPerPosition),
     evGuardrailHeld: evHeld,
@@ -266,7 +302,10 @@ export const simulateModelBVolume = (cfg: ModelBConfig): ModelBResult => {
       "Internalize the bulk; perp-hedge the small intraday residual (depth/impact priced at the clip).",
       "Reserve = imbalanced ±12% both-wing jump on the PEAK intraday residual + stop→24h-TWAP timing gap.",
       "Rebates = 0 (viability bar). EV guardrail enforced: Foxify EV ≤ −service fee.",
-      "Foxify per-position fee (bps of notional) is the remaining calibration unknown — feasibility shown as a function of it."
+      "Foxify per-position fee (bps of notional) is the remaining calibration unknown — feasibility shown as a function of it.",
+      imFraction > 0
+        ? `Short-option exchange margin booked: measured IM ${(imFraction * 100).toFixed(1)}%/notional × ${(grossOptFraction * 100).toFixed(0)}% gross option carry × PM netting ${pmNetting} ⟹ $${round2(shortOptionMargin)} capital (cost $${round2(shortOptionMarginCostPerDay)}/day). Flat OPTIONS books post IM on BOTH short wings — use Portfolio Margin to net.`
+        : "Short-option exchange margin NOT booked (perp-residual hedging assumed; set shortOptionImFraction + shortOptionGrossNotionalFraction from the Deribit margin sweep to include it)."
     ]
   };
 };

@@ -304,6 +304,32 @@ test("Model B: steering FAILURE crosses into directional warehousing ⟹ not VIA
   assert.notEqual(failed.verdict, "VIABLE_AT_REBATES_ZERO");
 });
 
+test("Model B: measured short-option IM is booked as capital (opt-in) and drags net revenue", () => {
+  const base = simulateModelBVolume(modelB({ seed: 7 }));
+  // Measured from the Deribit margin sweep: ~13% IM/notional, ~30% of gross carried as short options.
+  const withIm = simulateModelBVolume(modelB({ seed: 7, shortOptionImFraction: 0.13, shortOptionGrossNotionalFraction: 0.3, portfolioMarginNettingFactor: 1 }));
+  assert.equal(base.ok, true);
+  assert.equal(withIm.ok, true);
+  if (!base.ok || !withIm.ok) return;
+  assert.equal(base.shortOptionMarginUsdc, 0, "default (perp-only) books no option margin");
+  assert.ok(withIm.shortOptionMarginUsdc > 0, "measured IM books real capital");
+  // grossPerDay = 50m; 30% carried × 13% IM × 1.0 netting = 0.30*0.13*50m = $1.95m capital.
+  assert.ok(Math.abs(withIm.shortOptionMarginUsdc - 0.3 * 0.13 * 50_000_000) < 1, "option margin = grossOptFraction × IM × netting × dailyGross");
+  assert.ok(withIm.shortOptionMarginCostPerDayUsdc > 0);
+  assert.ok(withIm.reserveUsdc > base.reserveUsdc, "option margin adds to total capital reserve");
+  assert.ok(withIm.netServiceRevenuePerDayUsdc < base.netServiceRevenuePerDayUsdc, "carrying option margin drags net service revenue");
+});
+
+test("Model B: Portfolio Margin netting reduces booked short-option margin", () => {
+  const isolated = simulateModelBVolume(modelB({ seed: 7, shortOptionImFraction: 0.13, shortOptionGrossNotionalFraction: 0.3, portfolioMarginNettingFactor: 1 }));
+  const portfolio = simulateModelBVolume(modelB({ seed: 7, shortOptionImFraction: 0.13, shortOptionGrossNotionalFraction: 0.3, portfolioMarginNettingFactor: 0.45 }));
+  assert.equal(isolated.ok, true);
+  assert.equal(portfolio.ok, true);
+  if (!isolated.ok || !portfolio.ok) return;
+  assert.ok(portfolio.shortOptionMarginUsdc < isolated.shortOptionMarginUsdc, "PM nets long vs short ⟹ less margin");
+  assert.ok(Math.abs(portfolio.shortOptionMarginUsdc - 0.45 * isolated.shortOptionMarginUsdc) < 1);
+});
+
 test("Model B: feasibility surfaces as a function of the (unknown) Foxify fee level", () => {
   const lowFee = simulateModelBVolume(modelB({ creditBpsOfNotional: 8, atmIv: 0.35, skewSlopePer10pct: 0.06 }));
   const highFee = simulateModelBVolume(modelB({ creditBpsOfNotional: 40, atmIv: 0.35, skewSlopePer10pct: 0.06 }));
