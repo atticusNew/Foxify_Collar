@@ -46,6 +46,7 @@ export type ShadowScorecard = {
   oracle: { status: OracleSnapshot["status"]; priceUsd: number | null; safeForActivation: boolean; signatureValid: boolean };
   attempted: number;
   opened: number;
+  openedNotionalUsdc: number;
   halted: number;
   rejected: number;
   rejectionsByReason: Record<string, number>;
@@ -162,6 +163,7 @@ export const runShadowSession = (deps: ShadowSessionDeps): ShadowScorecard => {
     },
     attempted: deps.nPositions,
     opened: opened.length,
+    openedNotionalUsdc: round2(opened.reduce((s, r) => s + r.notionalUsdc, 0)),
     halted,
     rejected,
     rejectionsByReason,

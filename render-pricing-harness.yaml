@@ -50,23 +50,32 @@ services:
 
   # ── Tier-0 SHADOW activation (paper-settled, NO trading, live tiers OFF) ──
   # Runs the full credit-collar lifecycle end-to-end with zero capital so the operator can watch it
-  # before any live tier. Read/quote-only + paper settlement. Set HARNESS_FEE_USDC=75. For audit
-  # continuity across runs, set ORACLE_PRIVATE_KEY_PEM / ORACLE_PUBLIC_KEY_PEM (ECDSA P-256);
-  # otherwise an ephemeral keypair is generated per run.
-  - type: cron
+  # before any live tier. Read/quote-only + paper settlement. A WORKER (not cron) with a persistent
+  # DISK so the scorecard track record accumulates across cycles (cron containers are ephemeral).
+  # Set HARNESS_FEE_USDC=75. For audit continuity set ORACLE_PRIVATE_KEY_PEM / ORACLE_PUBLIC_KEY_PEM
+  # (ECDSA P-256); otherwise an ephemeral keypair is generated per run.
+  - type: worker
     name: foxify-credit-collar-shadow
     runtime: node
     plan: starter
     region: singapore
     branch: cursor/credit-collar-phase-a-c13c
-    schedule: "*/15 * * * *"
     buildCommand: npm ci
     startCommand: npm --workspace services/api run shadow:run
+    disk:
+      name: shadow-track-record
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
       - key: HARNESS_FEE_USDC
         sync: false
+      # Worker loop: one shadow session every 15 min, appended to the disk-backed JSONL track record.
+      - key: SHADOW_LOOP_INTERVAL_MS
+        value: "900000"
+      - key: SHADOW_STORE_PATH
+        value: "/var/data/shadow-scorecards.jsonl"
       - key: SHADOW_N_POSITIONS
         value: "20"
       - key: SHADOW_POSITION_USDC

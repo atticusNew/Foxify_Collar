@@ -10,8 +10,13 @@
  */
 
 import { runLiveShadowSession, type LiveShadowConfig } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
+import { appendScorecard, loadScorecards, DEFAULT_SHADOW_STORE_PATH } from "../src/singleSide/twoSided/creditCollar/shadowStore";
+import { aggregateShadowScorecards } from "../src/singleSide/twoSided/creditCollar/shadowAggregate";
 
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
+const storeEnabled = String(process.env.SHADOW_STORE_ENABLED ?? "true").toLowerCase() !== "false";
+const loopIntervalMs = num(process.env.SHADOW_LOOP_INTERVAL_MS, 0);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const cfg: LiveShadowConfig = {
   positionNotionalUsdc: num(process.env.SHADOW_POSITION_USDC, 50_000),
@@ -37,15 +42,40 @@ const cfg: LiveShadowConfig = {
   oraclePublicKeyPem: process.env.ORACLE_PUBLIC_KEY_PEM
 };
 
-const main = async () => {
-  console.error("[shadow] running Tier-0 shadow lifecycle (paper, read/quote-only, live tiers OFF)…");
+const runOnce = async () => {
   const res = await runLiveShadowSession(cfg);
-  process.stdout.write(JSON.stringify(res, null, 2) + "\n");
   if (res.ok) {
     const s = res.scorecard;
-    console.error(`[shadow] opened=${s.opened}/${s.attempted} halted=${s.halted} rejected=${s.rejected} settlements=${s.settlements} lifecycleComplete=${s.lifecycleComplete} peakExp=${(s.peakNetExposureRatio * 100).toFixed(1)}% oracleVerified=${s.allSettledOracleVerified} reconciled=${s.allReconciled}`);
+    if (storeEnabled) appendScorecard({ tsMs: Date.now(), scorecard: s, spotUsd: res.meta.spotUsd, oracleSources: res.meta.oracleSources });
+    console.error(
+      `[shadow] opened=${s.opened}/${s.attempted} halted=${s.halted} rejected=${s.rejected} settlements=${s.settlements} ` +
+        `lifecycleComplete=${s.lifecycleComplete} peakExp=${(s.peakNetExposureRatio * 100).toFixed(1)}% oracleVerified=${s.allSettledOracleVerified} reconciled=${s.allReconciled}`
+    );
+    if (storeEnabled) {
+      const agg = aggregateShadowScorecards(loadScorecards());
+      console.error(`[shadow] track record: ${agg.sessions} session(s) | verdict=${agg.verdict} | openRate=${(agg.positions.openRate * 100).toFixed(0)}% | oracleVerified=${(agg.oracle.allVerifiedRate * 100).toFixed(0)}% | reconciled=${(agg.reconciliation.allReconciledRate * 100).toFixed(0)}% | realizedFee=${agg.economics.realizedServiceFeeBps}bps${agg.flags.length ? ` | flags: ${agg.flags.join("; ")}` : ""}`);
+    }
   } else {
     console.error(`[shadow] not run: ${res.error} — ${res.message}`);
+  }
+  return res;
+};
+
+const main = async () => {
+  console.error(`[shadow] Tier-0 shadow lifecycle (paper, read/quote-only, live tiers OFF). store=${storeEnabled ? DEFAULT_SHADOW_STORE_PATH : "off"} loop=${loopIntervalMs > 0 ? `${loopIntervalMs}ms` : "single"}`);
+  if (loopIntervalMs > 0) {
+    // Worker mode (durable accumulation on a disk-backed Render worker).
+    for (;;) {
+      try {
+        await runOnce();
+      } catch (e) {
+        console.error("[shadow] cycle error:", (e as Error).message);
+      }
+      await sleep(loopIntervalMs);
+    }
+  } else {
+    const res = await runOnce();
+    process.stdout.write(JSON.stringify(res, null, 2) + "\n");
   }
 };
 
