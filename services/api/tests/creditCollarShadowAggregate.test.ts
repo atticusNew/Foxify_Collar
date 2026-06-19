@@ -50,6 +50,24 @@ test("aggregate: clean cohort ⟹ TRACK_RECORD_CLEAN with realized service-fee b
   assert.equal(agg.flags.length, 0);
 });
 
+test("aggregate: capital-aware net bps subtracts the measured short-leg IM drag", () => {
+  const records = Array.from({ length: 12 }, (_, i) => rec(1000 + i));
+  // Measured IM 13.93%/notional, full gross carry, isolated (PM=1), 12%/yr, 1-day hold.
+  const agg = aggregateShadowScorecards(records, {
+    capital: { shortOptionImFraction: 0.1393, shortOptionGrossNotionalFraction: 1.0, portfolioMarginNettingFactor: 1.0, costOfCapitalAnnual: 0.12, tenorDays: 1 }
+  });
+  assert.equal(agg.economics.realizedServiceFeeBps, 2);
+  // capitalCostBps = 0.1393 × 1 × 1 × 0.12 × (1/365) × 1e4 ≈ 0.4580 bps
+  assert.ok(Math.abs(agg.capital.capitalCostBps - 0.458) < 0.01, `got ${agg.capital.capitalCostBps}`);
+  assert.ok(Math.abs(agg.capital.capitalAwareNetServiceFeeBps - (2 - agg.capital.capitalCostBps)) < 1e-6);
+  // Portfolio-margin netting halves the drag.
+  const pm = aggregateShadowScorecards(records, {
+    capital: { shortOptionImFraction: 0.1393, shortOptionGrossNotionalFraction: 1.0, portfolioMarginNettingFactor: 0.5, costOfCapitalAnnual: 0.12, tenorDays: 1 }
+  });
+  assert.ok(Math.abs(pm.capital.capitalCostBps - agg.capital.capitalCostBps / 2) < 1e-6, "PM netting halves the capital drag");
+  assert.ok(pm.capital.capitalAwareNetServiceFeeBps > agg.capital.capitalAwareNetServiceFeeBps);
+});
+
 test("aggregate: too few sessions ⟹ WATCH (not CLEAN) even if clean", () => {
   const agg = aggregateShadowScorecards([rec(1), rec(2)]);
   assert.equal(agg.verdict, "WATCH");

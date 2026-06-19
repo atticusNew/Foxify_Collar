@@ -152,6 +152,20 @@ export class DeribitExecutionClient {
     return this.priv("/private/get_margins", { instrument_name: instrumentName, amount, price });
   }
 
+  /**
+   * Portfolio-margin simulation — computes the PM initial margin for a set of HYPOTHETICAL positions
+   * WITHOUT trading. Lets us measure the real cross-wing netting of a collar book (vs summed isolated
+   * leg margins). `simulated_positions` is instrument→size (options in BTC; short = negative). Margins
+   * in BTC. add_positions=false ⟹ margin of the simulated set alone. Rate-limited to ~1/s by Deribit.
+   */
+  simulatePortfolio(
+    currency: string,
+    simulatedPositions: Record<string, number>,
+    addPositions = false
+  ): Promise<DeribitResponse<{ projected_initial_margin?: number; projected_maintenance_margin?: number; available_funds?: number }>> {
+    return this.priv("/private/simulate_portfolio", { currency, add_positions: addPositions, simulated_positions: JSON.stringify(simulatedPositions) });
+  }
+
   cancel(orderId: string): Promise<DeribitResponse<DeribitOrder>> {
     return this.priv("/private/cancel", { order_id: orderId });
   }

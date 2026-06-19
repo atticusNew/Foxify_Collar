@@ -89,6 +89,16 @@ export const rankDeribitCollarCandidates = (
   return { expiryMs, expiryIso: new Date(expiryMs).toISOString(), puts, calls };
 };
 
+/**
+ * Pure: portfolio-margin netting factor = portfolio IM / sum of isolated short-leg margins, clamped
+ * to [0,1]. 1 ⟹ no netting (isolated/multi-ccy); <1 ⟹ PM offsets the wings. Feeds MODELB_PM_NETTING.
+ */
+export const portfolioNettingFactor = (isolatedShortLegMargins: number[], portfolioInitialMargin: number): number => {
+  const isoSum = isolatedShortLegMargins.reduce((a, b) => a + Math.abs(b), 0);
+  if (!(isoSum > 0)) return 1;
+  return Math.max(0, Math.min(1, Math.abs(portfolioInitialMargin) / isoSum));
+};
+
 export type InstrumentLister = (currency: string, kind: string) => Promise<{ ok: boolean; result: Array<{ instrument_name?: string; is_active?: boolean }> | null }>;
 export type BookReader = (instrumentName: string) => Promise<{ ok: boolean; result: { best_bid_price?: number; best_ask_price?: number } | null }>;
 

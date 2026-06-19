@@ -5,7 +5,8 @@ import {
   parseDeribitOptionName,
   selectDeribitCollar,
   rankDeribitCollarCandidates,
-  resolveDeribitCollarLegs
+  resolveDeribitCollarLegs,
+  portfolioNettingFactor
 } from "../src/singleSide/twoSided/creditCollar/execution/deribitLegResolver";
 import { executeCollarHedge, type CollarHedgeSpec } from "../src/singleSide/twoSided/creditCollar/execution/okxCollarExecutor";
 
@@ -105,6 +106,33 @@ test("getMargins: read-only hypothetical-order margin (sell = short-leg IM)", as
   assert.equal(r.ok, true);
   assert.equal(r.result?.sell, 0.0132); // short-call initial margin in BTC
   assert.ok(calls.some((u) => u.includes("/private/get_margins") && u.includes("amount=0.1")));
+});
+
+test("portfolioNettingFactor: PM IM / isolated sum, clamped [0,1]", () => {
+  // isolated short put 0.013 + short call 0.013 = 0.026; PM combined 0.013 ⟹ 50% netting.
+  assert.equal(portfolioNettingFactor([0.013, 0.013], 0.013), 0.5);
+  // No offset ⟹ factor 1 (or clamped).
+  assert.equal(portfolioNettingFactor([0.01, 0.01], 0.02), 1);
+  assert.equal(portfolioNettingFactor([0.01, 0.01], 0.05), 1); // clamp at 1
+  assert.equal(portfolioNettingFactor([], 0.01), 1); // no isolated legs ⟹ 1
+});
+
+test("simulatePortfolio: read-only PM simulation request shape", async () => {
+  const calls: string[] = [];
+  const fetcher: DeribitFetcher = async (url) => {
+    calls.push(url);
+    if (url.includes("/public/auth")) return { status: 200, json: async () => ({ result: { access_token: "tok", expires_in: 900 } }) };
+    if (url.includes("/private/simulate_portfolio")) return { status: 200, json: async () => ({ result: { projected_initial_margin: 0.013, projected_maintenance_margin: 0.008 } }) };
+    return { status: 200, json: async () => ({ result: null }) };
+  };
+  const client = new DeribitExecutionClient({ clientId: "id", clientSecret: "sec", mode: "testnet" }, fetcher);
+  const r = await client.simulatePortfolio("BTC", { "BTC-22JUN26-61500-P": -1, "BTC-22JUN26-64500-C": -1 }, false);
+  assert.equal(r.ok, true);
+  assert.equal(r.result?.projected_initial_margin, 0.013);
+  const url = calls.find((u) => u.includes("/private/simulate_portfolio"))!;
+  assert.match(url, /add_positions=false/);
+  assert.match(url, /simulated_positions=/);
+  assert.ok(decodeURIComponent(url).includes('"BTC-22JUN26-64500-C":-1'), "short call encoded as negative size");
 });
 
 test("mapDeribitState maps to executor states", () => {

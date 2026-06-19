@@ -57,6 +57,26 @@ export type ShadowAggregate = {
     realizedServiceFeeBps: number;   // serviceFee / openedNotional × 1e4
     avgServiceFeePerPositionUsdc: number;
   };
+  /**
+   * Capital-aware economics from the MEASURED short-leg IM (Deribit sweep). The short-option exchange
+   * margin is the binding capital; this converts it into a per-throughput bps drag (held for the tenor)
+   * and reports the realized service fee NET of that capital cost — the number that actually matters.
+   */
+  capital: {
+    shortOptionImFraction: number;
+    shortOptionGrossNotionalFraction: number;
+    portfolioMarginNettingFactor: number;
+    costOfCapitalAnnual: number;
+    tenorDays: number;
+    /** IM posted per unit notional opened (USD/USD). */
+    imFractionOfNotional: number;
+    /** Cost-of-capital drag on throughput, bps (= im × coc × tenor/365). */
+    capitalCostBps: number;
+    /** Realized service fee minus the capital drag. */
+    capitalAwareNetServiceFeeBps: number;
+    /** Total IM that would have been posted for the opened notional (point-in-time proxy). */
+    impliedShortOptionMarginUsdc: number;
+  };
   verdict: "TRACK_RECORD_CLEAN" | "WATCH" | "DEGRADED" | "NO_DATA";
   flags: string[];
   notes: string[];
@@ -69,6 +89,14 @@ export type ShadowAggregateConfig = {
   minSessionsForClean?: number;
   /** Target service-fee bps to compare realized against (default 2). */
   targetServiceFeeBps?: number;
+  /** Measured capital inputs (Deribit margin sweep + PM-netting). Drives capital-aware net bps. */
+  capital?: {
+    shortOptionImFraction?: number;            // measured IM / notional (default 0.1393, sweep conservative)
+    shortOptionGrossNotionalFraction?: number; // share of open book carried as short options (default 1.0)
+    portfolioMarginNettingFactor?: number;     // measured PM netting (default 1.0 = isolated)
+    costOfCapitalAnnual?: number;              // default 0.12
+    tenorDays?: number;                        // holding period for IM (default 1)
+  };
 };
 
 const rate = (n: number, d: number) => (d > 0 ? +(n / d).toFixed(4) : 0);
@@ -121,6 +149,17 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
   const lifecycleCompleteRate = rate(lifecycle, sessions);
   const oracleHealthyRate = rate(oracleHealthy, sessions);
   const realizedServiceFeeBps = openedNotional > 0 ? +((serviceFee / openedNotional) * 1e4).toFixed(4) : 0;
+
+  // ── Capital-aware economics (measured short-leg IM → bps drag on throughput) ──
+  const capImFraction = cfg.capital?.shortOptionImFraction ?? 0.1393;
+  const capGrossFraction = cfg.capital?.shortOptionGrossNotionalFraction ?? 1.0;
+  const capPmNetting = cfg.capital?.portfolioMarginNettingFactor ?? 1.0;
+  const capCoc = cfg.capital?.costOfCapitalAnnual ?? 0.12;
+  const capTenorDays = cfg.capital?.tenorDays ?? 1;
+  const imFractionOfNotional = capImFraction * capGrossFraction * capPmNetting;
+  const capitalCostBps = +(imFractionOfNotional * capCoc * (capTenorDays / 365) * 1e4).toFixed(4);
+  const capitalAwareNetServiceFeeBps = +(realizedServiceFeeBps - capitalCostBps).toFixed(4);
+  const impliedShortOptionMarginUsdc = round2(openedNotional * imFractionOfNotional);
 
   // Verdict + flags: the bar for a clean track record before any live tier.
   // NB: with 0 sessions the rates are vacuously 0 — that's NO_DATA (warming up), NOT a DEGRADED fail.
@@ -175,10 +214,22 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
       realizedServiceFeeBps,
       avgServiceFeePerPositionUsdc: opened > 0 ? round2(serviceFee / opened) : 0
     },
+    capital: {
+      shortOptionImFraction: capImFraction,
+      shortOptionGrossNotionalFraction: capGrossFraction,
+      portfolioMarginNettingFactor: capPmNetting,
+      costOfCapitalAnnual: capCoc,
+      tenorDays: capTenorDays,
+      imFractionOfNotional: +imFractionOfNotional.toFixed(6),
+      capitalCostBps,
+      capitalAwareNetServiceFeeBps,
+      impliedShortOptionMarginUsdc
+    },
     verdict,
     flags,
     notes: [
       `Realized service fee ${realizedServiceFeeBps} bps vs target ${targetBps} bps (shadow, paper-settled).`,
+      `Capital-aware: ${realizedServiceFeeBps} bps − ${capitalCostBps} bps capital drag (measured IM ${(capImFraction * 100).toFixed(1)}%/notional × ${capGrossFraction} gross × PM ${capPmNetting} × ${(capCoc * 100).toFixed(0)}%/yr × ${capTenorDays}d) = ${capitalAwareNetServiceFeeBps} bps net.`,
       "TRACK_RECORD_CLEAN requires: 100% oracle-verified + reconciled, ≥95% lifecycle complete, exposure within band, ≥90% oracle healthy, and enough sessions.",
       "Shadow only — zero capital. This track record gates the decision to flip Tier-1 (still default-off)."
     ]

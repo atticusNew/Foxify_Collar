@@ -166,6 +166,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Peak exposure", `${(a.exposure.maxPeakNetExposureRatio * 100).toFixed(1)}%`, `avg ${(a.exposure.avgPeakNetExposureRatio * 100).toFixed(1)}%`)}
     ${card("Floor used", `${(a.floor.avgFloorPctUsed * 100).toFixed(1)}%`, `max ${(a.floor.maxFloorPctUsed * 100).toFixed(1)}% (deeper = calmer regime)`)}
     ${card("Realized fee", `${a.economics.realizedServiceFeeBps} bps`, `$${a.economics.totalServiceFeeUsdc} on $${a.economics.openedNotionalUsdc}`)}
+    ${card("Capital-aware net", `${a.capital.capitalAwareNetServiceFeeBps} bps`, `−${a.capital.capitalCostBps} bps IM drag (measured ${(a.capital.shortOptionImFraction * 100).toFixed(1)}%/notional, PM ${a.capital.portfolioMarginNettingFactor})`)}
     ${card("Credit accrued", `$${a.economics.totalCreditAccruedUsdc}`, `net to Foxify $${a.economics.totalNetToFoxifyUsdc}`)}
   </div>
   <h2>Realized settlement economics (forward-settled at real expiry price)</h2>

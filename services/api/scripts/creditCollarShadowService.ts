@@ -24,6 +24,15 @@ const haltBand = num(process.env.SHADOW_BREAKER_HALT, 0.15);
 const forwardSettle = String(process.env.SHADOW_FORWARD_SETTLE ?? "true").toLowerCase() !== "false";
 const settlementHorizonMin = num(process.env.SHADOW_SETTLEMENT_HORIZON_MIN, 60); // positions settle 1h later (real move)
 
+// Measured capital inputs (Deribit margin sweep + PM-netting) → capital-aware net bps on the dashboard.
+const capitalConfig = {
+  shortOptionImFraction: num(process.env.SHADOW_SHORT_OPTION_IM_FRACTION, 0.1393),
+  shortOptionGrossNotionalFraction: num(process.env.SHADOW_SHORT_OPTION_GROSS_FRACTION, 1.0),
+  portfolioMarginNettingFactor: num(process.env.SHADOW_PM_NETTING, 1.0),
+  costOfCapitalAnnual: num(process.env.SHADOW_COST_OF_CAPITAL, 0.12),
+  tenorDays: num(process.env.HARNESS_TENOR_DAYS, 1)
+};
+
 const cfg: LiveShadowConfig = {
   positionNotionalUsdc: num(process.env.SHADOW_POSITION_USDC, 50_000),
   feeUsdc: num(process.env.HARNESS_FEE_USDC, 75),
@@ -109,7 +118,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);
