@@ -3,6 +3,7 @@ import test from "node:test";
 import { bsPut, bsCall } from "../scripts/backtest/singleSide/coreEngine";
 import {
   buildDataset,
+  captureWingSpreads,
   capturePerpImpact,
   listsDailyOption,
   type OptionQuote,
@@ -83,6 +84,23 @@ test("capture: daily-listing detection + wing spreads per tenor", () => {
   assert.ok(ds.options.some((r) => r.wing === "floor_put" && r.tenorDays <= 1.2));
   assert.ok(ds.options.some((r) => r.wing === "cap_call"));
   assert.equal(ds.dailyListing.deribit, true);
+});
+
+test("capture: rejects sparse-chain mis-picks (wrong-side / far-from-target wing strikes)", () => {
+  // A sparse chain whose only call near the cap targets is DEEP ITM (60000, below spot) — must be dropped,
+  // not emitted as a cap_call. Puts at 60000 (valid OTM side) within tolerance are kept.
+  const sparse: VenueOptionSnapshot = {
+    venue: "bullish",
+    spot: SPOT, // 100_000
+    nowMs: NOW,
+    options: [
+      { strike: 97000, optType: "put", expiryMs: DAILY_EXP, bidUsdcPerBtc: 120, askUsdcPerBtc: 140 }, // ~3% OTM put, valid
+      { strike: 95000, optType: "call", expiryMs: DAILY_EXP, bidUsdcPerBtc: 5300, askUsdcPerBtc: 5700 } // deep ITM, wrong side
+    ]
+  };
+  const rows = captureWingSpreads(sparse, wingCfg);
+  assert.ok(rows.every((r) => r.wing !== "cap_call"), "deep-ITM 95000 call must NOT be captured as a cap_call");
+  assert.ok(rows.length > 0 && rows.every((r) => r.wing === "floor_put"), "valid OTM put wing is kept");
 });
 
 test("capture: perp impact grows with clip and is larger into thinner depth", () => {

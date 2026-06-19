@@ -65,6 +65,12 @@ export type WingCaptureConfig = {
   tenorsDays: number[];
   /** A listed expiry within this many hours of 24h counts as "daily". */
   dailyMaxHours?: number;
+  /**
+   * Max |nearest strike − target| / spot to ACCEPT a wing quote (default 0.025 = 2.5%). On a sparse
+   * chain the nearest listed strike can be far from the target (or on the WRONG side of spot — e.g. a
+   * deep-ITM call masquerading as an OTM cap); such rows are dropped rather than emitted as junk.
+   */
+  maxStrikeDeviationPct?: number;
 };
 
 const pickNearestExpiry = (expiries: number[], nowMs: number, tenorDays: number): number | null => {
@@ -89,6 +95,7 @@ export const listsDailyOption = (snap: VenueOptionSnapshot, dailyMaxHours = 30):
 
 export const captureWingSpreads = (snap: VenueOptionSnapshot, cfg: WingCaptureConfig): WingSpreadRow[] => {
   const rows: WingSpreadRow[] = [];
+  const maxDev = cfg.maxStrikeDeviationPct ?? 0.025;
   const expiries = [...new Set(snap.options.map((o) => o.expiryMs))];
   for (const tenorDays of cfg.tenorsDays) {
     const expiryMs = pickNearestExpiry(expiries, snap.nowMs, tenorDays);
@@ -103,6 +110,11 @@ export const captureWingSpreads = (snap: VenueOptionSnapshot, cfg: WingCaptureCo
         const target = snap.spot * (1 + w.sign * pct);
         const q = nearestStrike(snap.options, w.optType, expiryMs, target);
         if (!q) continue;
+        // Reject sparse-chain mis-picks: wrong side of spot (ITM masquerading as a wing) or too far
+        // from the target. A put wing must be ≤ spot; a call wing must be ≥ spot (small ε allowed).
+        const wrongSide = w.sign === -1 ? q.strike > snap.spot * 1.005 : q.strike < snap.spot * 0.995;
+        const deviation = Math.abs(q.strike - target) / snap.spot;
+        if (wrongSide || deviation > maxDev) continue;
         const bid = q.bidUsdcPerBtc;
         const ask = q.askUsdcPerBtc;
         const mid = bid != null && ask != null ? (bid + ask) / 2 : null;
