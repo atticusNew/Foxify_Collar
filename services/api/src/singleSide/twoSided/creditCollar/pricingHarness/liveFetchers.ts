@@ -86,7 +86,8 @@ export const fetchDeribitPerp = async (
 ): Promise<FetchResult<VenuePerpSnapshot>> => {
   const nowMs = Date.now();
   try {
-    const ob = (await getJson(`${base}/public/get_order_book?instrument_name=BTC-PERPETUAL&depth=50`)) as {
+    // depth=1000 (a valid Deribit step) so $5–50m clip impact is measurable, not book-exhausted.
+    const ob = (await getJson(`${base}/public/get_order_book?instrument_name=BTC-PERPETUAL&depth=1000`)) as {
       result?: { bids?: number[][]; asks?: number[][]; index_price?: number };
     };
     const spot = Number(ob.result?.index_price ?? 0);
@@ -148,7 +149,7 @@ export const fetchOkxPerp = async (
   try {
     const instId = process.env.OKX_PERP_INSTID ?? "BTC-USDT-SWAP";
     const ctVal = Number(process.env.OKX_PERP_CT_VAL ?? "0.01"); // BTC per contract for BTC-USDT-SWAP
-    const book = (await getJson(`${base}/api/v5/market/books?instId=${instId}&sz=200`)) as { data?: Array<{ bids?: string[][]; asks?: string[][] }> };
+    const book = (await getJson(`${base}/api/v5/market/books-full?instId=${instId}&sz=400`).catch(() => getJson(`${base}/api/v5/market/books?instId=${instId}&sz=400`))) as { data?: Array<{ bids?: string[][]; asks?: string[][] }> };
     const top = book.data?.[0];
     const toLevels = (rows?: string[][]): PerpLevel[] =>
       (rows ?? []).map((l) => {

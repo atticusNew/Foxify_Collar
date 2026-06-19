@@ -134,6 +134,17 @@ const perpAllInBpsAtClip = (dataset: CaptureDataset, venue: Venue, clipUsd: numb
   return { bps: topHalfBps + (worst.impactBps as number), exhausted: atClip.some((r) => r.bookExhausted) };
 };
 
+/** Best perp venue for the residual hedge at a clip: prefer a NON-exhausted book, then the cheapest. */
+const bestPerpAtClip = (dataset: CaptureDataset, clipUsd: number): { venue: Venue; bps: number; exhausted: boolean } | null => {
+  const venues: Venue[] = ["bullish", "deribit", "okx"];
+  const results = venues
+    .map((v) => ({ v, r: perpAllInBpsAtClip(dataset, v, clipUsd) }))
+    .filter((x): x is { v: Venue; r: { bps: number; exhausted: boolean } } => x.r != null);
+  if (results.length === 0) return null;
+  results.sort((a, b) => Number(a.r.exhausted) - Number(b.r.exhausted) || a.r.bps - b.r.bps);
+  return { venue: results[0].v, bps: results[0].r.bps, exhausted: results[0].r.exhausted };
+};
+
 // ── The single-run report ─────────────────────────────────────────────────────
 
 export type HarnessReport = {
@@ -149,7 +160,7 @@ export type HarnessReport = {
     | { ok: true; feasible: false; reason: string }
     | { ok: false; reason: string };
   architecture: { backToBackFoxifyCostUsdc: number; internalizeFoxifyCostUsdc: number; recommendation: string } | null;
-  serviceFeeSurvives: Array<{ tierDailyUsd: number; clipUsd: number; perpAllInBps: number | null; bookExhausted: boolean; netPerDayUsdc: number; annualNetUsdc: number; verdict: string }>;
+  serviceFeeSurvives: Array<{ tierDailyUsd: number; clipUsd: number; perpVenue: Venue | null; perpAllInBps: number | null; bookExhausted: boolean; netPerDayUsdc: number; annualNetUsdc: number; verdict: string }>;
   greenlightTier1: boolean;
   blockers: string[];
   notes: string[];
@@ -203,7 +214,7 @@ export const runPricingReport = (dataset: CaptureDataset, cfg: HarnessReportConf
   let architecture: HarnessReport["architecture"] = null;
   const refTier = cfg.rampTiersDailyUsd[cfg.rampTiersDailyUsd.length - 1];
   const refClip = refTier * cfg.peakResidualPct;
-  const bullishPerp = perpAllInBpsAtClip(dataset, "bullish", refClip) ?? perpAllInBpsAtClip(dataset, "deribit", refClip) ?? perpAllInBpsAtClip(dataset, "okx", refClip);
+  const bullishPerp = bestPerpAtClip(dataset, refClip);
   if (skewOk && fee != null && bullishPerp) {
     const book: BookSpec = {
       spot, tenorDays: cfg.tenorDays, maxFloorPct: cfg.maxFloorPct, atmIv: skew(spot, "call"), skewSlopePer10pct: 0.12,
@@ -229,7 +240,7 @@ export const runPricingReport = (dataset: CaptureDataset, cfg: HarnessReportConf
   if (skewOk && fee != null) {
     for (const tier of cfg.rampTiersDailyUsd) {
       const clip = tier * cfg.peakResidualPct;
-      const perp = perpAllInBpsAtClip(dataset, "bullish", clip) ?? perpAllInBpsAtClip(dataset, "deribit", clip) ?? perpAllInBpsAtClip(dataset, "okx", clip);
+      const perp = bestPerpAtClip(dataset, clip);
       const mb: ModelBConfig = {
         dailyNotionalUsdc: tier, avgPositionNotionalUsdc: cfg.positionNotionalUsdc, spot,
         tenorDays: cfg.tenorDays, maxFloorPct: cfg.maxFloorPct, atmIv: skew(spot, "call"), skewSlopePer10pct: 0.12,
@@ -243,6 +254,7 @@ export const runPricingReport = (dataset: CaptureDataset, cfg: HarnessReportConf
       serviceFeeSurvives.push({
         tierDailyUsd: tier,
         clipUsd: clip,
+        perpVenue: perp ? perp.venue : null,
         perpAllInBps: perp ? +perp.bps.toFixed(3) : null,
         bookExhausted: perp ? perp.exhausted : false,
         netPerDayUsdc: r.ok ? r.netServiceRevenuePerDayUsdc : 0,
