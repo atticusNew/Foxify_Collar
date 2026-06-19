@@ -20,7 +20,7 @@ const mask = (s: string): string => (s.length <= 6 ? `${s[0] ?? ""}***` : `${s.s
 const probe = async (creds: { clientId: string; clientSecret: string }, mode: DeribitMode) => {
   const client = new DeribitExecutionClient({ ...creds, mode });
   const r = await client.authCheck();
-  return { mode, ok: r.ok, message: r.message };
+  return { mode, base: client.restBase, ok: r.ok, message: r.message };
 };
 
 const main = async () => {
@@ -49,8 +49,11 @@ const main = async () => {
 
   const testnet = await probe(creds, "testnet");
   const live = await probe(creds, "live");
-  console.error(`[deribit-auth-probe] testnet: ${testnet.ok ? "OK ✓" : `FAIL ${testnet.message}`}`);
-  console.error(`[deribit-auth-probe] live:    ${live.ok ? "OK ✓" : `FAIL ${live.message}`}`);
+  console.error(`[deribit-auth-probe] testnet (${testnet.base}): ${testnet.ok ? "OK ✓" : `FAIL ${testnet.message}`}`);
+  console.error(`[deribit-auth-probe] live    (${live.base}): ${live.ok ? "OK ✓" : `FAIL ${live.message}`}`);
+  if (testnet.base === live.base) {
+    console.error(`[deribit-auth-probe] ⚠️ both modes resolved to the SAME base (${testnet.base}) — DERIBIT_EXEC_REST_BASE is overriding the mode. Unset it.`);
+  }
 
   let verdict: string;
   if (testnet.ok) {

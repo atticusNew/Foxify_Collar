@@ -42,6 +42,7 @@ const main = async () => {
   }
 
   const client = new DeribitExecutionClient({ clientId, clientSecret, mode });
+  console.error(`[deribit-dry-run] REST base: ${client.restBase}`);
 
   const auth = await client.authCheck();
   if (!auth.ok) {

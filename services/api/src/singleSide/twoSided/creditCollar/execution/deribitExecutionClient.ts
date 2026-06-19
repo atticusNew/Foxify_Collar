@@ -45,11 +45,19 @@ export class DeribitExecutionClient {
 
   constructor(creds: DeribitCredentials, private readonly fetcher: DeribitFetcher = defaultFetcher) {
     this.creds = { ...creds, clientId: creds.clientId.trim(), clientSecret: creds.clientSecret.trim() };
-    this.base = this.creds.baseUrl ?? process.env.DERIBIT_REST_BASE ?? baseForMode(this.creds.mode);
+    // Base MUST follow the explicit mode. We deliberately do NOT read the shared DERIBIT_REST_BASE
+    // (it points at production for the public pricing-harness fetchers) — inheriting it would send
+    // testnet keys to www.deribit.com and fail auth (13004). A dedicated override is allowed.
+    this.base = this.creds.baseUrl ?? process.env.DERIBIT_EXEC_REST_BASE ?? baseForMode(this.creds.mode);
   }
 
   get mode(): "demo" | "live" {
     return this.creds.mode === "live" ? "live" : "demo";
+  }
+
+  /** The REST base actually in use (so callers can log testnet vs production unambiguously). */
+  get restBase(): string {
+    return this.base;
   }
 
   private q(params: Record<string, string | number | boolean | undefined>): string {

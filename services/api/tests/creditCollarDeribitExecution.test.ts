@@ -11,6 +11,25 @@ import { executeCollarHedge, type CollarHedgeSpec } from "../src/singleSide/twoS
 
 const now = Date.UTC(2026, 5, 19, 0, 0, 0);
 
+test("restBase follows mode and ignores shared DERIBIT_REST_BASE (production pricing-harness var)", () => {
+  const prev = process.env.DERIBIT_REST_BASE;
+  const prevExec = process.env.DERIBIT_EXEC_REST_BASE;
+  process.env.DERIBIT_REST_BASE = "https://www.deribit.com/api/v2"; // production, set by harness
+  delete process.env.DERIBIT_EXEC_REST_BASE;
+  try {
+    const testnet = new DeribitExecutionClient({ clientId: "id", clientSecret: "sec", mode: "testnet" });
+    const live = new DeribitExecutionClient({ clientId: "id", clientSecret: "sec", mode: "live" });
+    assert.equal(testnet.restBase, "https://test.deribit.com/api/v2"); // NOT redirected to production
+    assert.equal(live.restBase, "https://www.deribit.com/api/v2");
+    // Dedicated override is still honored.
+    process.env.DERIBIT_EXEC_REST_BASE = "https://mirror.example/api/v2";
+    assert.equal(new DeribitExecutionClient({ clientId: "id", clientSecret: "sec", mode: "testnet" }).restBase, "https://mirror.example/api/v2");
+  } finally {
+    if (prev === undefined) delete process.env.DERIBIT_REST_BASE; else process.env.DERIBIT_REST_BASE = prev;
+    if (prevExec === undefined) delete process.env.DERIBIT_EXEC_REST_BASE; else process.env.DERIBIT_EXEC_REST_BASE = prevExec;
+  }
+});
+
 test("parseDeribitOptionName handles BTC-DDMMMYY-STRIKE-C/P", () => {
   assert.deepEqual(parseDeribitOptionName("BTC-21JUN26-61000-C"), { strike: 61000, optType: "call", expiryMs: Date.UTC(2026, 5, 21, 8, 0, 0) });
   assert.deepEqual(parseDeribitOptionName("BTC-3JUL26-50000-P"), { strike: 50000, optType: "put", expiryMs: Date.UTC(2026, 6, 3, 8, 0, 0) });
