@@ -20,7 +20,7 @@ import {
   type OracleTick,
   type PriceSample
 } from "./referenceOracle";
-import type { SkewCurve, AtticusSpreadConfig } from "./creditCollarPricer";
+import type { SkewCurve, AtticusSpreadConfig, AdaptiveFloorConfig } from "./creditCollarPricer";
 
 export type ShadowSessionDeps = {
   scaffoldConfig: ScaffoldConfig;
@@ -52,6 +52,8 @@ export type ShadowScorecard = {
   rejectionsByReason: Record<string, number>;
   peakNetExposureRatio: number;
   peakNetNotionalUsdc: number;
+  maxFloorPctUsed: number;             // deepest floor the solver needed (regime signal: calm ⟹ deeper)
+  avgFloorPctUsed: number;
   serviceFeeAccruedUsdc: number;       // Atticus margin booked across opened positions
   foxifyCreditAccruedUsdc: number;     // credit accrued to held balance (netted at settlement)
   settlements: number;
@@ -151,6 +153,8 @@ export const runShadowSession = (deps: ShadowSessionDeps): ShadowScorecard => {
 
   const serviceFeeAccrued = opened.reduce((s, r) => s + r.serviceFeeUsdc, 0);
   const foxifyCreditAccrued = opened.reduce((s, r) => s + r.foxifyCreditUsdc, 0);
+  const maxFloorPctUsed = opened.reduce((m, r) => Math.max(m, r.floorPctUsed), 0);
+  const avgFloorPctUsed = opened.length > 0 ? opened.reduce((s, r) => s + r.floorPctUsed, 0) / opened.length : 0;
 
   return {
     label: "tier0_shadow_paper_settled",
@@ -169,6 +173,8 @@ export const runShadowSession = (deps: ShadowSessionDeps): ShadowScorecard => {
     rejectionsByReason,
     peakNetExposureRatio: +peakNetExposureRatio.toFixed(4),
     peakNetNotionalUsdc: round2(peakNetNotionalUsdc),
+    maxFloorPctUsed: +maxFloorPctUsed.toFixed(4),
+    avgFloorPctUsed: +avgFloorPctUsed.toFixed(4),
     serviceFeeAccruedUsdc: round2(serviceFeeAccrued),
     foxifyCreditAccruedUsdc: round2(foxifyCreditAccrued),
     settlements,
@@ -203,6 +209,7 @@ export type LiveShadowConfig = {
   bullishWeight: number;
   settlementWindowMin: number;
   seed: number;
+  adaptiveFloor?: AdaptiveFloorConfig;
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
 };
@@ -259,6 +266,7 @@ export const runLiveShadowSession = async (cfg: LiveShadowConfig): Promise<LiveS
     maxFloorPct: cfg.maxFloorPct,
     tenorDays: cfg.tenorDays,
     feeUsdc: cfg.feeUsdc,
+    adaptiveFloor: cfg.adaptiveFloor,
     liveEnabled: false, // Tier-0 shadow: never live
     spreadConfig: { fillMode: "touch", legHalfSpreadUsdcPerBtc: legSpread }
   };

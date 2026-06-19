@@ -479,3 +479,50 @@ export const solveAndPriceCreditCollar = (
     ]
   };
 };
+
+// ── Regime-adaptive floor ─────────────────────────────────────────────────────
+// In a calm/low-vol regime the skew may not fund the target credit at the configured floor (the
+// option premium isn't there). Rather than silently going infeasible, progressively DEEPEN the floor
+// (a cheaper put ⟹ more credit headroom) up to a cap, and surface the floor actually used so the
+// regime is VISIBLE (a deeper floor = calmer market / thinner premium). This is a real product lever,
+// not just a sim convenience: in production you'd quote the deepest acceptable floor that funds the fee.
+
+export type AdaptiveFloorConfig = {
+  enabled: boolean;
+  /** Hard cap on how deep the floor may go (e.g. 0.10 = 10% OTM). */
+  maxFloorCapPct: number;
+  /** Step to deepen by when infeasible (e.g. 0.005 = 0.5%). */
+  stepPct: number;
+};
+
+export type AdaptiveCollarResult = {
+  quote: CreditCollarQuote | CreditCollarError;
+  floorUsedPct: number;
+  deepenedFromPct: number;
+  steps: number;
+};
+
+/**
+ * Solve the credit collar, deepening the floor until it prices (or the cap is hit). Pure. When
+ * `adaptive.enabled` is false this is a single solve at `params.maxFloorPct`.
+ */
+export const solveAdaptiveCreditCollar = (
+  params: CreditCollarParams,
+  skew: SkewCurve,
+  config: AtticusSpreadConfig = {},
+  adaptive?: AdaptiveFloorConfig
+): AdaptiveCollarResult => {
+  const startFloor = params.maxFloorPct;
+  if (!adaptive?.enabled) {
+    return { quote: solveAndPriceCreditCollar(params, skew, config), floorUsedPct: startFloor, deepenedFromPct: startFloor, steps: 0 };
+  }
+  let floor = startFloor;
+  let steps = 0;
+  let quote = solveAndPriceCreditCollar({ ...params, maxFloorPct: floor }, skew, config);
+  while (!quote.ok && floor < adaptive.maxFloorCapPct - 1e-9) {
+    floor = Math.min(adaptive.maxFloorCapPct, +(floor + adaptive.stepPct).toFixed(4));
+    steps += 1;
+    quote = solveAndPriceCreditCollar({ ...params, maxFloorPct: floor }, skew, config);
+  }
+  return { quote, floorUsedPct: floor, deepenedFromPct: startFloor, steps };
+};

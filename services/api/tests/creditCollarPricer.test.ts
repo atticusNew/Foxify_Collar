@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   solveAndPriceCreditCollar,
+  solveAdaptiveCreditCollar,
   type CreditCollarParams
 } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { flatSkew, linearDownsideSkew } from "../src/singleSide/twoSided/creditCollar/skew";
@@ -184,6 +185,25 @@ test("sim: spread clears costs at rebates=0 AND reserve survives an imbalanced j
   assert.ok(res.stressCoverageRatio >= 1, "reserve must survive the imbalanced jump");
   assert.ok(res.medianCapPct > 0 && res.medianCapPct < 0.1, "median cap (upside surrendered) is reported");
   assert.notEqual(res.verdict, "NOT_VIABLE");
+});
+
+test("adaptive floor: deepens to stay feasible in a thin/low-vol regime; disabled == single solve", () => {
+  const thin = linearDownsideSkew(SPOT, 0.3, 0.04); // calm regime
+  const params = baseParams({ targetCreditUsdc: 150, maxFloorPct: 0.04 }); // demanding credit vs thin vol
+  const single = solveAndPriceCreditCollar(params, thin, { fillMode: "touch" });
+  const adaptive = solveAdaptiveCreditCollar(params, thin, { fillMode: "touch" }, { enabled: true, maxFloorCapPct: 0.12, stepPct: 0.005 });
+  if (!single.ok) {
+    assert.equal(adaptive.quote.ok, true, "adaptive floor should find a feasible deeper floor");
+    assert.ok(adaptive.floorUsedPct > params.maxFloorPct, "floor was deepened");
+    assert.ok(adaptive.steps > 0);
+  } else {
+    assert.equal(adaptive.floorUsedPct, params.maxFloorPct, "already feasible ⟹ no deepening");
+  }
+  // Disabled ⟹ identical to a single solve at the configured floor.
+  const off = solveAdaptiveCreditCollar(params, thin, { fillMode: "touch" }, { enabled: false, maxFloorCapPct: 0.12, stepPct: 0.005 });
+  assert.equal(off.quote.ok, single.ok);
+  assert.equal(off.floorUsedPct, params.maxFloorPct);
+  assert.equal(off.steps, 0);
 });
 
 test("sim: thin back-to-back + stress flips NOT_VIABLE (viability rides on hedge quality, not rebates)", () => {

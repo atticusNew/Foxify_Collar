@@ -13,7 +13,7 @@
  * I/O here — fills are injected (paper in shadow); this is the orchestration + invariants only.
  */
 
-import { solveAndPriceCreditCollar, type SkewCurve, type AtticusSpreadConfig, type PerpSide } from "./creditCollarPricer";
+import { solveAdaptiveCreditCollar, type SkewCurve, type AtticusSpreadConfig, type PerpSide, type AdaptiveFloorConfig } from "./creditCollarPricer";
 import {
   computeInventory,
   recommendNextSide,
@@ -38,6 +38,8 @@ export type ScaffoldConfig = {
   tenorDays: number;
   /** Foxify's per-position fee = the CREDIT accrued (e.g. 75). If absent, the service fee is used. */
   feeUsdc?: number;
+  /** Regime-adaptive floor: deepen the floor until the credit prices in calm/low-vol markets. */
+  adaptiveFloor?: AdaptiveFloorConfig;
   /** Master live switch. Default false ⟹ everything is shadow/paper regardless of tier.live. */
   liveEnabled: boolean;
   spreadConfig?: AtticusSpreadConfig;
@@ -58,6 +60,7 @@ export type ActivationRecord = {
   serviceFeeUsdc: number;
   foxifyCreditUsdc: number;
   foxifyEvUsdc: number;
+  floorPctUsed: number;
   status: "active";
 };
 
@@ -148,11 +151,13 @@ export class CreditCollarActivationScaffold {
     // 4. Price + EV guardrail. Credit = Foxify's fee; margin = Atticus's service fee.
     const serviceFee = Math.max((instruction.notionalUsdc * this.cfg.serviceFeeBps) / 1e4, this.cfg.minServiceFeeUsdc);
     const creditUsdc = this.cfg.feeUsdc != null && this.cfg.feeUsdc > 0 ? this.cfg.feeUsdc : serviceFee;
-    const q = solveAndPriceCreditCollar(
+    const adaptive = solveAdaptiveCreditCollar(
       { side: instruction.side, spot: instruction.spot, notionalUsdc: instruction.notionalUsdc, tenorDays: this.cfg.tenorDays, targetCreditUsdc: creditUsdc, maxFloorPct: this.cfg.maxFloorPct, referenceMode: "net_book_delta" },
       this.skew,
-      { ...(this.cfg.spreadConfig ?? {}), fillMode: this.cfg.spreadConfig?.fillMode ?? "touch", spreadBps: 0, minMarginUsdc: serviceFee }
+      { ...(this.cfg.spreadConfig ?? {}), fillMode: this.cfg.spreadConfig?.fillMode ?? "touch", spreadBps: 0, minMarginUsdc: serviceFee },
+      this.cfg.adaptiveFloor
     );
+    const q = adaptive.quote;
     if (!q.ok) return { ok: false, error: "not_priceable", message: q.message };
     if (q.economics.foxify_market_implied_ev_usdc > -serviceFee + 1e-6) {
       return { ok: false, error: "ev_guardrail", message: "Foxify EV must be ≤ −service fee" };
@@ -174,6 +179,7 @@ export class CreditCollarActivationScaffold {
       serviceFeeUsdc: serviceFee,
       foxifyCreditUsdc: q.economics.foxify_credit_usdc,
       foxifyEvUsdc: q.economics.foxify_market_implied_ev_usdc,
+      floorPctUsed: adaptive.floorUsedPct,
       status: "active"
     };
   }

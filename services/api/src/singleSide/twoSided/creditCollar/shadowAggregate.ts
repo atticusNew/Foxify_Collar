@@ -43,6 +43,11 @@ export type ShadowAggregate = {
     avgPeakNetExposureRatio: number;
     maxPeakNetNotionalUsdc: number;
   };
+  floor: {
+    /** Deepest floor the solver needed across sessions — the regime signal (calm ⟹ deeper). */
+    maxFloorPctUsed: number;
+    avgFloorPctUsed: number;
+  };
   economics: {
     openedNotionalUsdc: number;
     totalServiceFeeUsdc: number;
@@ -81,6 +86,7 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
   let openedNotional = 0, serviceFee = 0, credit = 0, payout = 0, net = 0;
   let oracleHealthy = 0, safeActivation = 0, allVerified = 0, allReconciled = 0, lifecycle = 0, withDrift = 0;
   let maxPeakRatio = 0, sumPeakRatio = 0, maxPeakNotional = 0;
+  let maxFloorUsed = 0, sumFloorUsed = 0, floorSessions = 0;
   const rejReasons: Record<string, number> = {};
 
   for (const s of sc) {
@@ -102,6 +108,11 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
     maxPeakRatio = Math.max(maxPeakRatio, s.peakNetExposureRatio);
     sumPeakRatio += s.peakNetExposureRatio;
     maxPeakNotional = Math.max(maxPeakNotional, s.peakNetNotionalUsdc);
+    if (s.opened > 0) {
+      maxFloorUsed = Math.max(maxFloorUsed, s.maxFloorPctUsed ?? 0);
+      sumFloorUsed += s.avgFloorPctUsed ?? 0;
+      floorSessions += 1;
+    }
     for (const [reason, n] of Object.entries(s.rejectionsByReason)) rejReasons[reason] = (rejReasons[reason] ?? 0) + n;
   }
 
@@ -150,6 +161,10 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
       maxPeakNetExposureRatio: +maxPeakRatio.toFixed(4),
       avgPeakNetExposureRatio: rate(sumPeakRatio, sessions),
       maxPeakNetNotionalUsdc: round2(maxPeakNotional)
+    },
+    floor: {
+      maxFloorPctUsed: +maxFloorUsed.toFixed(4),
+      avgFloorPctUsed: floorSessions > 0 ? +(sumFloorUsed / floorSessions).toFixed(4) : 0
     },
     economics: {
       openedNotionalUsdc: round2(openedNotional),

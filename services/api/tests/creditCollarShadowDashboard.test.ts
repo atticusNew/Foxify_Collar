@@ -11,7 +11,7 @@ const sc = (over: Partial<ShadowScorecard> = {}): ShadowScorecard => ({
   label: "tier0_shadow_paper_settled", mode: "shadow",
   oracle: { status: "healthy", priceUsd: 62_000, safeForActivation: true, signatureValid: true },
   attempted: 20, opened: 20, openedNotionalUsdc: 1_000_000, halted: 0, rejected: 0, rejectionsByReason: {},
-  peakNetExposureRatio: 0.09, peakNetNotionalUsdc: 50_000, serviceFeeAccruedUsdc: 200, foxifyCreditAccruedUsdc: 1_500,
+  peakNetExposureRatio: 0.09, peakNetNotionalUsdc: 50_000, maxFloorPctUsed: 0.04, avgFloorPctUsed: 0.04, serviceFeeAccruedUsdc: 200, foxifyCreditAccruedUsdc: 1_500,
   settlements: 20, allSettledOracleVerified: true, allReconciled: true, totalPayoutToFoxifyUsdc: -120,
   totalNetToFoxifyUsdc: 1_380, settlementPriceUsd: 62_000, lifecycleComplete: true, notes: [], ...over
 });

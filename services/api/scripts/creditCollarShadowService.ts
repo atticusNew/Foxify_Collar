@@ -41,6 +41,11 @@ const cfg: LiveShadowConfig = {
   bullishWeight: num(process.env.HARNESS_BULLISH_WEIGHT, 0.15),
   settlementWindowMin: num(process.env.SHADOW_SETTLEMENT_WINDOW_MIN, 30),
   seed: num(process.env.SHADOW_SEED, 42),
+  adaptiveFloor: {
+    enabled: String(process.env.SHADOW_ADAPTIVE_FLOOR ?? "true").toLowerCase() !== "false",
+    maxFloorCapPct: num(process.env.SHADOW_ADAPTIVE_FLOOR_CAP, 0.1),
+    stepPct: num(process.env.SHADOW_ADAPTIVE_FLOOR_STEP, 0.005)
+  },
   oraclePrivateKeyPem: process.env.ORACLE_PRIVATE_KEY_PEM,
   oraclePublicKeyPem: process.env.ORACLE_PUBLIC_KEY_PEM
 };

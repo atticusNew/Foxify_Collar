@@ -19,6 +19,8 @@ const mkScorecard = (over: Partial<ShadowScorecard> = {}): ShadowScorecard => ({
   rejectionsByReason: {},
   peakNetExposureRatio: 0.09,
   peakNetNotionalUsdc: 50_000,
+  maxFloorPctUsed: 0.04,
+  avgFloorPctUsed: 0.04,
   serviceFeeAccruedUsdc: 200,
   foxifyCreditAccruedUsdc: 1_500,
   settlements: 20,
