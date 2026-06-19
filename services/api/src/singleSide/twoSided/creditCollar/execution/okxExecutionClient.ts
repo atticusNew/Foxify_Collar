@@ -77,8 +77,18 @@ export type OkxResponse<T = unknown> = { ok: boolean; code: string; msg: string;
 
 export class OkxExecutionClient {
   private readonly base: string;
-  constructor(private readonly creds: OkxCredentials, private readonly fetcher: OkxFetcher = defaultFetcher) {
-    this.base = creds.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
+  private readonly creds: OkxCredentials;
+  constructor(creds: OkxCredentials, private readonly fetcher: OkxFetcher = defaultFetcher) {
+    // Trim defensively — a trailing newline/space in an env value is a common cause of
+    // "OK-ACCESS-PASSPHRASE incorrect" / signature failures.
+    this.creds = { ...creds, apiKey: creds.apiKey.trim(), secret: creds.secret.trim(), passphrase: creds.passphrase.trim() };
+    this.base = this.creds.baseUrl ?? process.env.OKX_REST_BASE ?? "https://www.okx.com";
+  }
+
+  /** Auth preflight — a private GET to isolate credential problems from order logic. */
+  async authCheck(): Promise<{ ok: boolean; message: string }> {
+    const r = await this.getBalance();
+    return { ok: r.ok, message: r.ok ? "auth ok" : `${r.code}: ${r.msg}` };
   }
 
   get mode(): OkxMode {

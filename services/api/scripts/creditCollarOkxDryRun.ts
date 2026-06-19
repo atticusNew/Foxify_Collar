@@ -48,8 +48,8 @@ const main = async () => {
     process.exit(4);
   }
 
-  const floorPct = num(process.env.OKX_DRYRUN_FLOOR_PCT, 0.05);
-  const capPct = num(process.env.OKX_DRYRUN_CAP_PCT, 0.02);
+  const floorPct = num(process.env.OKX_DRYRUN_FLOOR_PCT, 0.03);
+  const capPct = num(process.env.OKX_DRYRUN_CAP_PCT, 0.01);
   const tenorDays = num(process.env.OKX_DRYRUN_TENOR_DAYS, 1);
   const sizeContracts = process.env.OKX_SIZE_CONTRACTS ?? "1";
 
@@ -66,13 +66,15 @@ const main = async () => {
     process.exit(6);
   }
 
-  // px + modeled in OKX NATIVE units (BTC per contract); slippage report is therefore in BTC.
+  // Marketable buffer to actually cross the (wide) option book in demo. Limit px is buffered; the
+  // MODELED px stays the true ask/bid so slippage is measured against the real quote.
+  const buffer = num(process.env.OKX_MARKETABLE_BUFFER_PCT, 0.5);
   const spec: CollarHedgeSpec = {
     putInstId: put.instId,
     callInstId: call.instId,
     sizeContracts,
-    putLimitPx: String(put.ask_btc),       // marketable buy
-    callLimitPx: String(call.bid_btc),     // marketable sell
+    putLimitPx: String(+(put.ask_btc * (1 + buffer)).toFixed(6)),                 // cross up to buy
+    callLimitPx: String(Math.max(0.0001, +(call.bid_btc * (1 - buffer)).toFixed(6))), // cross down to sell
     modeledPutAskUsd: put.ask_btc,         // native BTC units (report slippage in BTC)
     modeledCallBidUsd: call.bid_btc,
     tdMode: (process.env.OKX_TD_MODE as "cross" | "isolated" | "cash") ?? "cross",
@@ -81,6 +83,17 @@ const main = async () => {
 
   console.error(`[okx-dry-run] spot=${spot} put=${put.instId}@${put.ask_btc}BTC call=${call.instId}@${call.bid_btc}BTC size=${sizeContracts} mode=${mode}`);
   const client = new OkxExecutionClient({ apiKey, secret, passphrase, mode });
+
+  // Auth preflight — isolate credential problems before placing any order.
+  const auth = await client.authCheck();
+  if (!auth.ok) {
+    console.error(`[okx-dry-run] AUTH FAILED: ${auth.message}`);
+    console.error("  Check: (1) key created in OKX DEMO trading (x-simulated-trading needs DEMO keys),");
+    console.error("         (2) OK-ACCESS-PASSPHRASE = the API key's passphrase (NOT your login password),");
+    console.error("         (3) env quoted, no trailing newline:  printf '%s' \"$OKX_API_PASSPHRASE\" | wc -c");
+    process.exit(8);
+  }
+  console.error("[okx-dry-run] auth ok ✓");
   const report = await executeCollarHedge(client, spec, { pollTries: num(process.env.OKX_POLL_TRIES, 6), pollDelayMs: num(process.env.OKX_POLL_DELAY_MS, 700) });
 
   process.stdout.write(JSON.stringify({ mode, spot, spec, report, units: "px + slippage in BTC per contract (OKX native); margin in account ccy" }, null, 2) + "\n");
