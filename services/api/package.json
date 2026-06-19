@@ -64,6 +64,7 @@
     "shadow:run": "tsx scripts/creditCollarShadowRunner.ts",
     "shadow:scorecard": "tsx scripts/creditCollarShadowScorecard.ts",
     "shadow:service": "tsx scripts/creditCollarShadowService.ts",
-    "okx:dry-run": "tsx scripts/creditCollarOkxDryRun.ts"
+    "okx:dry-run": "tsx scripts/creditCollarOkxDryRun.ts",
+    "okx:auth-probe": "tsx scripts/creditCollarOkxAuthProbe.ts"
   }
 }
