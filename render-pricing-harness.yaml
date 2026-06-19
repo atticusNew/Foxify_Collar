@@ -1,0 +1,49 @@
+# Render blueprint — credit-collar pricing-measurement harness (READ/QUOTE-ONLY, NO trading).
+#
+# Deploys the harness to Render for venue connectivity (Bullish + Deribit + OKX public market data).
+# It runs on a schedule and logs, on each run, the measured spreads/depth, the daily-option-listing
+# answer, the $50k/$<fee> credit + feasibility, the service-fee-survives verdict per ramp tier, and
+# the routing recommendation. NO API keys, NO order placement.
+#
+# Deploy: connect this blueprint in the Render dashboard (New > Blueprint) on this branch, OR add the
+# cron service to the existing blueprint. Set HARNESS_FEE_USDC=75 once Foxify confirms the fee.
+# Run on demand from the Render shell:  npm --workspace services/api run harness:pricing
+
+services:
+  - type: cron
+    name: foxify-credit-collar-pricing-harness
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/credit-collar-phase-a-c13c
+    # Every 30 min during the measurement window; adjust/disable once captures are sufficient.
+    schedule: "*/30 * * * *"
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api run harness:pricing
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Foxify fee target — leave unset until confirmed; report flags it as a blocker. Then set "75".
+      - key: HARNESS_FEE_USDC
+        sync: false
+      - key: HARNESS_SERVICE_FEE_BPS
+        value: "2"
+      - key: HARNESS_MIN_SERVICE_FEE_USDC
+        value: "10"
+      - key: HARNESS_TENOR_DAYS
+        value: "1"
+      - key: HARNESS_MAX_FLOOR_PCT
+        value: "0.04"
+      - key: HARNESS_PEAK_RESIDUAL_PCT
+        value: "0.11"
+      - key: HARNESS_BULLISH_WEIGHT
+        value: "0.15"
+      - key: HARNESS_FETCH_TIMEOUT_MS
+        value: "8000"
+      # Public REST bases (override here if a region/mirror is needed):
+      - key: DERIBIT_REST_BASE
+        value: "https://www.deribit.com/api/v2"
+      - key: OKX_REST_BASE
+        value: "https://www.okx.com"
+      - key: BULLISH_REST_BASE
+        value: "https://api.exchange.bullish.com"

@@ -141,6 +141,12 @@ export type ExposureBreakerConfig = {
   haltBandPct: number;
   /** Once halted, only resume opening once exposure recovers below this (hysteresis). */
   resumeBandPct: number;
+  /**
+   * Gross-notional floor below which the |net|/gross RATIO is not meaningful (a 1–2 position book is
+   * trivially ~100% imbalanced). Below this the breaker allows opens — absolute exposure is too small
+   * to be "warehousing." Default 0 (ratio always applies). Set per ramp tier in production.
+   */
+  minGrossNotionalUsd?: number;
 };
 
 export type ExposureBreakerState = "ok" | "warn" | "halted";
@@ -159,6 +165,11 @@ export const evaluateExposureBreaker = (
   priorState: ExposureBreakerState = "ok"
 ): ExposureDecision => {
   const x = inv.imbalanceRatio;
+  // Below the gross floor the ratio is not meaningful (tiny book → trivially ~100% imbalanced);
+  // absolute exposure is too small to be warehousing, so allow (and clear any latch).
+  if (inv.grossNotionalUsdc < (config.minGrossNotionalUsd ?? 0)) {
+    return { state: "ok", allowNewOpens: true, exposureRatio: x, reason: `gross $${inv.grossNotionalUsdc} below ratio floor — exposure immaterial` };
+  }
   // Latch: stay halted until exposure recovers below resumeBandPct (manual-resume analogue).
   if (priorState === "halted" && x > config.resumeBandPct) {
     return { state: "halted", allowNewOpens: false, exposureRatio: x, reason: `halted: exposure ${(x * 100).toFixed(1)}% > resume ${(config.resumeBandPct * 100).toFixed(1)}%` };

@@ -59,6 +59,7 @@
     "pilot:phase0:d4:capital-requirements": "tsx scripts/phase0/capital_requirements_model.ts",
     "pilot:phase2:chain-sample": "tsx scripts/pilotDeribitChainSampler.ts",
     "backtest:fee-recovery": "tsx scripts/feeRecoveryTouchBacktest.ts",
-    "calibrate:short-iv": "tsx scripts/calibrateShortDatedIv.ts"
+    "calibrate:short-iv": "tsx scripts/calibrateShortDatedIv.ts",
+    "harness:pricing": "tsx scripts/creditCollarPricingHarness.ts"
   }
 }
