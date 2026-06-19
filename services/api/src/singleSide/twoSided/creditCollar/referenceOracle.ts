@@ -16,7 +16,7 @@
  * reproducibility, manipulation-resistance, and degradation before any capital.
  */
 
-import { createHmac } from "node:crypto";
+import { createSign, createVerify, generateKeyPairSync } from "node:crypto";
 
 export type PriceSample = {
   source: string;
@@ -177,7 +177,13 @@ export const confirmTrigger = (
   return { triggered: firstConfirm != null, firstConfirmTsMs: firstConfirm, maxRun };
 };
 
-// ── Audit: deterministic canonicalization + HMAC signature ────────────────────
+// ── Audit: deterministic canonicalization + ASYMMETRIC (ECDSA) signature ──────
+//
+// The settlement oracle snapshot decides who pays whom — it needs NON-REPUDIATION, so it is signed
+// ASYMMETRICALLY (ECDSA P-256). Atticus signs with a PRIVATE key; Foxify (or any third party) verifies
+// with the PUBLIC key, CANNOT forge a snapshot, and Atticus CANNOT later repudiate a price it signed.
+// (HMAC is deliberately NOT used here: it is symmetric, so a shared-secret holder could forge — fine
+// for two-party API auth like FOXIFY_API_KEY_HMAC_SECRET, wrong for a settlement source-of-truth.)
 
 /** Canonical, stable string for a snapshot so the signature is reproducible by Foxify. */
 export const canonicalizeSnapshot = (snap: OracleSnapshot): string => {
@@ -194,29 +200,48 @@ export const canonicalizeSnapshot = (snap: OracleSnapshot): string => {
   ].join("|");
 };
 
-export const signSnapshot = (snap: OracleSnapshot, secret: string): string =>
-  createHmac("sha256", secret).update(canonicalizeSnapshot(snap)).digest("hex");
+/** Generate an ECDSA P-256 keypair (PEM). Atticus keeps the private key; Foxify gets the public key. */
+export const generateOracleKeyPair = (): { privateKeyPem: string; publicKeyPem: string } => {
+  const { privateKey, publicKey } = generateKeyPairSync("ec", {
+    namedCurve: "prime256v1",
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" }
+  });
+  return { privateKeyPem: privateKey, publicKeyPem: publicKey };
+};
 
-export const verifySnapshot = (snap: OracleSnapshot, signatureHex: string, secret: string): boolean => {
-  const expected = signSnapshot(snap, secret);
-  // length-stable compare
-  if (expected.length !== signatureHex.length) return false;
-  let diff = 0;
-  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ signatureHex.charCodeAt(i);
-  return diff === 0;
+/** Atticus signs a snapshot with its PRIVATE key (ECDSA/SHA-256). Returns a hex DER signature. */
+export const signSnapshot = (snap: OracleSnapshot, privateKeyPem: string): string => {
+  const signer = createSign("SHA256");
+  signer.update(canonicalizeSnapshot(snap));
+  signer.end();
+  return signer.sign(privateKeyPem, "hex");
+};
+
+/** Anyone verifies with the PUBLIC key — cannot forge, and the signer cannot repudiate. */
+export const verifySnapshot = (snap: OracleSnapshot, signatureHex: string, publicKeyPem: string): boolean => {
+  try {
+    const verifier = createVerify("SHA256");
+    verifier.update(canonicalizeSnapshot(snap));
+    verifier.end();
+    return verifier.verify(publicKeyPem, signatureHex, "hex");
+  } catch {
+    return false;
+  }
 };
 
 /**
- * Independent recomputation: re-aggregate from the PERSISTED usable samples and confirm the price +
- * signature match — what Foxify (or an auditor) runs to verify a settlement wasn't tampered with.
+ * Independent recomputation: re-aggregate from the PERSISTED usable samples and confirm the price
+ * reproduces AND the ECDSA signature validates against Atticus's PUBLIC key — what Foxify (or an
+ * auditor) runs to verify a settlement wasn't tampered with, without any secret that could forge.
  */
 export const recomputeAndVerify = (
   persisted: { snapshot: OracleSnapshot; signatureHex: string },
-  secret: string
+  publicKeyPem: string
 ): { reproduced: boolean; signatureValid: boolean; recomputedPriceUsd: number | null } => {
   const snap = persisted.snapshot;
   const re = aggregateOracle(snap.usableSamples, snap.asOfMs, snap.config);
   const reproduced = re.priceUsd === snap.priceUsd && re.status === snap.status;
-  const signatureValid = verifySnapshot(snap, persisted.signatureHex, secret);
+  const signatureValid = verifySnapshot(snap, persisted.signatureHex, publicKeyPem);
   return { reproduced, signatureValid, recomputedPriceUsd: re.priceUsd };
 };

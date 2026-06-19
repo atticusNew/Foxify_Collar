@@ -126,6 +126,79 @@ export const recommendNextSide = (
   };
 };
 
+// ── Live exposure circuit breaker (production, not just a sim verdict) ─────────
+//
+// The Model-B safety model is "steering keeps us flat; if steering fails, HALT rather than warehouse
+// direction." That must be a RUNTIME breaker on the real-time book delta — analogous to the oracle's
+// fail-closed — checked in the activation gate before every new open. The sim verdict proves the
+// property in replay; this is the component that enforces it live. Default-off until wired to the
+// activation path (no live route is created here).
+
+export type ExposureBreakerConfig = {
+  /** Warn (alert, keep opening) at this peak |net|/gross. */
+  warnBandPct: number;
+  /** HALT new opens at/above this |net|/gross (fail-closed; forbidden directional warehousing). */
+  haltBandPct: number;
+  /** Once halted, only resume opening once exposure recovers below this (hysteresis). */
+  resumeBandPct: number;
+};
+
+export type ExposureBreakerState = "ok" | "warn" | "halted";
+
+export type ExposureDecision = {
+  state: ExposureBreakerState;
+  allowNewOpens: boolean;
+  exposureRatio: number;
+  reason: string;
+};
+
+/** Pure evaluation of the breaker for a current inventory + prior state (latching with hysteresis). */
+export const evaluateExposureBreaker = (
+  inv: Inventory,
+  config: ExposureBreakerConfig,
+  priorState: ExposureBreakerState = "ok"
+): ExposureDecision => {
+  const x = inv.imbalanceRatio;
+  // Latch: stay halted until exposure recovers below resumeBandPct (manual-resume analogue).
+  if (priorState === "halted" && x > config.resumeBandPct) {
+    return { state: "halted", allowNewOpens: false, exposureRatio: x, reason: `halted: exposure ${(x * 100).toFixed(1)}% > resume ${(config.resumeBandPct * 100).toFixed(1)}%` };
+  }
+  if (x >= config.haltBandPct) {
+    return { state: "halted", allowNewOpens: false, exposureRatio: x, reason: `HALT new opens: exposure ${(x * 100).toFixed(1)}% ≥ halt band ${(config.haltBandPct * 100).toFixed(1)}% — steering failing, do not warehouse direction` };
+  }
+  if (x >= config.warnBandPct) {
+    return { state: "warn", allowNewOpens: true, exposureRatio: x, reason: `warn: exposure ${(x * 100).toFixed(1)}% ≥ warn band ${(config.warnBandPct * 100).toFixed(1)}% — steer harder` };
+  }
+  return { state: "ok", allowNewOpens: true, exposureRatio: x, reason: "flat within band" };
+};
+
+/**
+ * Stateful breaker for the production activation gate. Call `onBook(positions)` whenever the book
+ * changes; call `canOpen()` before every new activation. Latches halted until exposure recovers.
+ */
+export class ExposureBreaker {
+  private state: ExposureBreakerState = "ok";
+  private lastDecision: ExposureDecision | null = null;
+  constructor(private readonly config: ExposureBreakerConfig) {}
+
+  onBook(openPositions: PerpPosition[]): ExposureDecision {
+    const inv = computeInventory(openPositions, this.config.warnBandPct);
+    const decision = evaluateExposureBreaker(inv, this.config, this.state);
+    this.state = decision.state;
+    this.lastDecision = decision;
+    return decision;
+  }
+
+  /** Gate for the activation path: true ⟹ a new open is permitted. Fail-closed if never evaluated. */
+  canOpen(): boolean {
+    return this.lastDecision != null && this.lastDecision.allowNewOpens;
+  }
+
+  current(): ExposureDecision | null {
+    return this.lastDecision;
+  }
+}
+
 /** A position carrying its identity, so independence can be asserted (not just notional/side). */
 export type IdentifiedPosition = PerpPosition & {
   /** Distinct per-trade reference (e.g. foxifyPairRef). Independent trades have distinct refs. */
@@ -135,20 +208,75 @@ export type IdentifiedPosition = PerpPosition & {
    * side, to net it). That is the forbidden self-cancel (two spreads protecting nothing).
    */
   pairedWithRef?: string;
+  /** Optional: the underlying perp instrument/market id (for the structural pair backstop). */
+  instrument?: string;
+  /** Optional: position open time (ms) — independent flow is spread over time; pairs are simultaneous. */
+  tsMs?: number;
+};
+
+export type StructuralPairFlag = {
+  refA: string;
+  refB: string;
+  reason: string;
+};
+
+/**
+ * EXACT discriminator for "manufactured offsetting pair" (the forbidden self-hedge):
+ *   same `instrument`  AND  opposite `side`  AND  |notional diff| ≤ notionalTolPct
+ *   AND  |tsMs diff| ≤ windowMs  (opened in the SAME moment).
+ * Model-B balanced flow does NOT match: it is INDEPENDENT positions spread over time (different tsMs
+ * beyond the window) and/or different instruments — the simultaneity + same-instrument is what marks
+ * a literal self-hedge. This is a DIAGNOSTIC (alert for review), never an auto-block, because a
+ * false-block would halt legitimate Model-B flow (far worse than a false-pass, which just wastes a
+ * spread). The HARD block is reserved for unambiguous intent: duplicate refs or explicit pairedWithRef.
+ */
+export const flagStructuralPairs = (
+  positions: IdentifiedPosition[],
+  opts: { notionalTolPct?: number; windowMs?: number } = {}
+): StructuralPairFlag[] => {
+  const notionalTol = opts.notionalTolPct ?? 0.02;
+  const windowMs = opts.windowMs ?? 2000;
+  const flags: StructuralPairFlag[] = [];
+  for (let i = 0; i < positions.length; i++) {
+    for (let j = i + 1; j < positions.length; j++) {
+      const a = positions[i];
+      const b = positions[j];
+      if (a.side === b.side) continue;
+      if (!a.instrument || !b.instrument || a.instrument !== b.instrument) continue; // need same instrument
+      if (a.tsMs == null || b.tsMs == null) continue; // need timestamps to judge simultaneity
+      const sizeRel = Math.abs(a.notionalUsdc - b.notionalUsdc) / Math.max(a.notionalUsdc, b.notionalUsdc);
+      if (sizeRel > notionalTol) continue;
+      if (Math.abs(a.tsMs - b.tsMs) > windowMs) continue;
+      flags.push({
+        refA: a.ref,
+        refB: b.ref,
+        reason: `same instrument ${a.instrument}, opposite side, size within ${(notionalTol * 100).toFixed(0)}%, opened within ${windowMs}ms — review as possible manufactured self-hedge`
+      });
+    }
+  }
+  return flags;
 };
 
 /**
  * Assert inventory balance arises from INDEPENDENT real trades, not manufactured offsetting pairs.
  *
- * IMPORTANT: a well-balanced inventory book has long ≈ short and therefore a HIGH aggregate offset
- * ratio — that is GOOD (net-flat), not self-cancellation. So we do NOT reject on aggregate balance.
- * We reject only LITERAL pairing: duplicate refs, or positions explicitly tagged `pairedWithRef`
- * (a long and short opened on the SAME instrument purely to net each other). `detectSelfCancellation`
- * is retained as an informational diagnostic, not a gate (reference mode is fixed = net_book_delta).
+ * Boundary (Model B is, by design, balanced flow across independent positions):
+ *   ALLOWED  : balanced flow across independent positions (distinct refs, different entries/times/
+ *              strikes) netting flat in aggregate — high aggregate offset ratio is GOOD, not blocked.
+ *   HARD-BLOCK: unambiguous literal pairing — duplicate refs, or explicit `pairedWithRef`.
+ *   DIAGNOSTIC: structural near-coincident same-instrument opposite pairs (see flagStructuralPairs) —
+ *              ALERTED for review, never auto-blocked (a false-block would halt legitimate flow).
+ * `detectSelfCancellation` is retained as an aggregate diagnostic only (reference mode is fixed =
+ * net_book_delta), since a balanced book intentionally shows a high aggregate offset ratio.
  */
 export const assertIndependentFlow = (
-  openPositions: IdentifiedPosition[]
-): { selfCancellationDiagnostic: ReturnType<typeof detectSelfCancellation>; independent: true } => {
+  openPositions: IdentifiedPosition[],
+  structuralOpts: { notionalTolPct?: number; windowMs?: number } = {}
+): {
+  selfCancellationDiagnostic: ReturnType<typeof detectSelfCancellation>;
+  structuralPairFlags: StructuralPairFlag[];
+  independent: true;
+} => {
   const seen = new Set<string>();
   for (const p of openPositions) {
     if (!p.ref) throw new Error("flow_integrity: every position must carry a distinct ref (independent trade)");
@@ -162,7 +290,9 @@ export const assertIndependentFlow = (
       );
     }
   }
-  // Informational only: aggregate offset ratio is EXPECTED to be high for a balanced book.
-  const selfCancellationDiagnostic = detectSelfCancellation(openPositions);
-  return { selfCancellationDiagnostic, independent: true };
+  return {
+    selfCancellationDiagnostic: detectSelfCancellation(openPositions), // aggregate diagnostic only
+    structuralPairFlags: flagStructuralPairs(openPositions, structuralOpts), // alert, not block
+    independent: true
+  };
 };

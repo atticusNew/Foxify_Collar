@@ -5,12 +5,17 @@ import {
   recommendNextSide,
   assertInventoryNeutralPolicy,
   assertIndependentFlow,
-  type InventoryPolicy
+  flagStructuralPairs,
+  evaluateExposureBreaker,
+  ExposureBreaker,
+  type InventoryPolicy,
+  type ExposureBreakerConfig
 } from "../src/singleSide/twoSided/creditCollar/inventoryBalancer";
 import {
   aggregateOracle,
   computeSettlementTwap,
   confirmTrigger,
+  generateOracleKeyPair,
   signSnapshot,
   verifySnapshot,
   recomputeAndVerify,
@@ -64,6 +69,63 @@ test("balanced independent flow is NOT flagged as self-cancelling; manufactured 
       { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "dup" }
     ])
   );
+});
+
+// ── Live exposure circuit breaker ───────────────────────────────────────────
+
+const breakerCfg: ExposureBreakerConfig = { warnBandPct: 0.1, haltBandPct: 0.15, resumeBandPct: 0.08 };
+
+test("live breaker: halts new opens when real-time exposure crosses the band, latches with hysteresis", () => {
+  const flat = computeInventory([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 980_000 }], 0.1);
+  assert.equal(evaluateExposureBreaker(flat, breakerCfg).allowNewOpens, true);
+
+  const imbalanced = computeInventory([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 600_000 }], 0.1);
+  const halt = evaluateExposureBreaker(imbalanced, breakerCfg);
+  assert.equal(halt.state, "halted");
+  assert.equal(halt.allowNewOpens, false);
+
+  // Latches: still halted while exposure is between resume (8%) and halt (15%) bands.
+  const recovering = computeInventory([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 800_000 }], 0.1);
+  assert.ok(recovering.imbalanceRatio > 0.08 && recovering.imbalanceRatio < 0.15);
+  const stillHalted = evaluateExposureBreaker(recovering, breakerCfg, "halted");
+  assert.equal(stillHalted.allowNewOpens, false, "stays halted until exposure recovers below resume band");
+  // Fully recovered below resume band ⟹ resumes.
+  const recovered = computeInventory([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 950_000 }], 0.1);
+  assert.equal(evaluateExposureBreaker(recovered, breakerCfg, "halted").allowNewOpens, true, "resumes once exposure < resume band");
+});
+
+test("live breaker: stateful gate is fail-closed before first evaluation", () => {
+  const b = new ExposureBreaker(breakerCfg);
+  assert.equal(b.canOpen(), false, "must be fail-closed until the book has been evaluated");
+  b.onBook([{ asset: "BTC", side: "long", notionalUsdc: 500_000 }, { asset: "BTC", side: "short", notionalUsdc: 500_000 }]);
+  assert.equal(b.canOpen(), true);
+  b.onBook([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 100_000 }]);
+  assert.equal(b.canOpen(), false, "halts when the live book goes directional");
+});
+
+test("structural pair discriminator: flags simultaneous same-instrument self-hedge, NOT spread-out independent flow", () => {
+  const now = 1_700_000_000_000;
+  // Manufactured self-hedge: same instrument, opposite side, same size, same moment — flagged.
+  const selfHedge = flagStructuralPairs([
+    { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "p1", instrument: "BTC-PERP", tsMs: now },
+    { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "p2", instrument: "BTC-PERP", tsMs: now + 200 }
+  ]);
+  assert.equal(selfHedge.length, 1, "near-coincident same-instrument opposite pair must be flagged");
+
+  // Model-B balanced flow: independent positions spread over time — NOT flagged.
+  const independent = flagStructuralPairs([
+    { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "a", instrument: "BTC-PERP", tsMs: now },
+    { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "b", instrument: "BTC-PERP", tsMs: now + 600_000 }
+  ]);
+  assert.equal(independent.length, 0, "positions spread over time must NOT be flagged (no false-block of Model B flow)");
+
+  // The structural flag is a DIAGNOSTIC, not a hard block — assertIndependentFlow still passes.
+  const res = assertIndependentFlow([
+    { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "x", instrument: "BTC-PERP", tsMs: now },
+    { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "y", instrument: "BTC-PERP", tsMs: now + 100 }
+  ]);
+  assert.equal(res.independent, true, "structural near-pair alerts but does not auto-block (false-block would halt the business)");
+  assert.ok(res.structuralPairFlags.length >= 1);
 });
 
 // ── Reference oracle ────────────────────────────────────────────────────────
@@ -139,17 +201,26 @@ test("oracle: tick-persistence suppresses a single wick", () => {
   assert.equal(real.triggered, true, "a sustained move must confirm");
 });
 
-test("oracle: snapshot is signable + independently recomputable/verifiable", () => {
+test("oracle: ECDSA-signed snapshot — public-key verify, non-forgeable, non-repudiable, recomputable", () => {
   const now = 1_000_000;
   const snap = aggregateOracle(
     [mk("bullish", 100_000, 200, now), mk("deribit", 100_020, 200, now), mk("coinbase", 99_990, 200, now)],
     now
   );
-  const secret = "shared-audit-secret";
-  const sig = signSnapshot(snap, secret);
-  assert.equal(verifySnapshot(snap, sig, secret), true);
-  assert.equal(verifySnapshot(snap, sig, "wrong-secret"), false);
-  const audit = recomputeAndVerify({ snapshot: snap, signatureHex: sig }, secret);
+  const atticus = generateOracleKeyPair();
+  const sig = signSnapshot(snap, atticus.privateKeyPem);
+  // Foxify verifies with the PUBLIC key only.
+  assert.equal(verifySnapshot(snap, sig, atticus.publicKeyPem), true);
+  // A different key cannot have produced it (non-repudiation) and cannot forge a valid one.
+  const impostor = generateOracleKeyPair();
+  assert.equal(verifySnapshot(snap, sig, impostor.publicKeyPem), false);
+  const forged = signSnapshot(snap, impostor.privateKeyPem);
+  assert.equal(verifySnapshot(snap, forged, atticus.publicKeyPem), false, "impostor cannot forge Atticus's signature");
+  // Tampering with the price invalidates the signature.
+  const tampered = { ...snap, priceUsd: 90_000 };
+  assert.equal(verifySnapshot(tampered, sig, atticus.publicKeyPem), false);
+  // Independent recompute + verify with the public key (no secret that could forge).
+  const audit = recomputeAndVerify({ snapshot: snap, signatureHex: sig }, atticus.publicKeyPem);
   assert.equal(audit.reproduced, true);
   assert.equal(audit.signatureValid, true);
   assert.equal(audit.recomputedPriceUsd, snap.priceUsd);
