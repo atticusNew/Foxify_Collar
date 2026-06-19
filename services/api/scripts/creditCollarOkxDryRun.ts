@@ -67,6 +67,15 @@ const main = async () => {
   }
   console.error("[okx-dry-run] auth ok ✓");
 
+  // Account mode gate — options need acctLv ≥ 3 (single-ccy margin can't trade options at all).
+  const cfg = await client.getAccountConfig();
+  const acctLv = cfg.data?.[0]?.acctLv;
+  if (acctLv === "1" || acctLv === "2") {
+    console.error(`[okx-dry-run] ❌ account mode ${acctLv} cannot trade options. Switch first:`);
+    console.error("  OKX_SET_ACCT_LV=4 npm --silent --workspace services/api run okx:activate-option");
+    process.exit(10);
+  }
+
   // Activate options trading via API (idempotent) so we don't trip 51198 "…activate trading".
   // This is the API equivalent of clicking the options chain; runs from the whitelisted IP.
   if (process.env.OKX_SKIP_ACTIVATE !== "1") {

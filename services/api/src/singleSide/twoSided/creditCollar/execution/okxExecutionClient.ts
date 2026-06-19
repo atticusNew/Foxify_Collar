@@ -66,11 +66,14 @@ export const buildOrderBody = (o: OkxLegOrder): string =>
     ...(o.reduceOnly != null ? { reduceOnly: o.reduceOnly } : {})
   });
 
-export type OkxFetcher = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<{ status: number; json: () => Promise<unknown> }>;
+export type OkxRawResponse = { status: number; json: () => Promise<unknown>; text?: () => Promise<string> };
+export type OkxFetcher = (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => Promise<OkxRawResponse>;
 
 const defaultFetcher: OkxFetcher = async (url, init) => {
   const res = await fetch(url, { method: init.method, headers: init.headers, body: init.body, signal: AbortSignal.timeout(Number(process.env.OKX_EXEC_TIMEOUT_MS ?? "10000")) });
-  return { status: res.status, json: () => res.json() };
+  // Read as text once so a non-JSON body (HTML error page / WAF / 404) doesn't throw inside json().
+  const raw = await res.text();
+  return { status: res.status, text: async () => raw, json: async () => JSON.parse(raw) };
 };
 
 export type OkxResponse<T = unknown> = { ok: boolean; code: string; msg: string; data: T[] };
@@ -99,7 +102,20 @@ export class OkxExecutionClient {
     const timestamp = new Date().toISOString();
     const headers = buildOkxHeaders(this.creds, timestamp, method, path, body);
     const res = await this.fetcher(this.base + path, { method, headers, body: body || undefined });
-    const j = (await res.json()) as { code?: string; msg?: string; data?: T[] };
+    let j: { code?: string; msg?: string; data?: T[] };
+    try {
+      // Prefer the raw text (read once) so a non-JSON body fails gracefully with a useful snippet.
+      const raw = res.text ? await res.text() : null;
+      j = (raw != null ? (raw.trim() === "" ? {} : JSON.parse(raw)) : await res.json()) as { code?: string; msg?: string; data?: T[] };
+    } catch {
+      let snippet = "";
+      try {
+        snippet = ((res.text ? await res.text() : "") ?? "").replace(/\s+/g, " ").trim().slice(0, 160);
+      } catch {
+        /* ignore */
+      }
+      return { ok: false, code: `HTTP_${res.status}`, msg: `non-JSON response (status ${res.status})${snippet ? `: ${snippet}` : ""}`, data: [] as T[] };
+    }
     return { ok: res.status === 200 && (j.code === "0" || j.code == null), code: String(j.code ?? ""), msg: String(j.msg ?? ""), data: (j.data ?? []) as T[] };
   }
 
@@ -148,6 +164,15 @@ export class OkxExecutionClient {
    * options chain to activate trading" (clears error 51198). Idempotent; safe to call on startup.
    */
   activateOption(): Promise<OkxResponse<{ ts?: string }>> {
-    return this.request("POST", "/api/v5/account/activate-option", "");
+    // Non-empty JSON body — OKX returns an HTML error page (not JSON) for empty-body POSTs.
+    return this.request("POST", "/api/v5/account/activate-option", "{}");
+  }
+
+  /**
+   * Switch account mode. acctLv: "2" single-ccy margin, "3" multi-ccy margin, "4" portfolio margin.
+   * Options require acctLv ≥ 3; a collar's long leg needs portfolio margin (4) for offset.
+   */
+  setAccountLevel(acctLv: "2" | "3" | "4"): Promise<OkxResponse<{ acctLv?: string }>> {
+    return this.request("POST", "/api/v5/account/set-account-level", JSON.stringify({ acctLv }));
   }
 }

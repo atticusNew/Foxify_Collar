@@ -47,7 +47,7 @@ test("slippage sign: buy pays more = +, sell receives less = +", () => {
   assert.equal(legSlippageUsd("buy", 100, { filled: false, avgPxUsd: null, filledContracts: 0, ordId: null, state: null }), null);
 });
 
-test("activateOption: signed POST to /activate-option, empty body, demo header", async () => {
+test("activateOption: signed POST to /activate-option, non-empty body, demo header", async () => {
   const calls: Array<{ url: string; method: string; headers: Record<string, string>; body?: string }> = [];
   const fetcher: OkxFetcher = async (url, init) => {
     calls.push({ url, ...init });
@@ -59,9 +59,32 @@ test("activateOption: signed POST to /activate-option, empty body, demo header",
   assert.equal(calls.length, 1);
   assert.equal(calls[0].method, "POST");
   assert.match(calls[0].url, /\/api\/v5\/account\/activate-option$/);
-  assert.equal(calls[0].body, undefined); // empty body ⟹ not sent
+  assert.equal(calls[0].body, "{}"); // non-empty body so OKX doesn't return an HTML error page
   assert.equal(calls[0].headers["x-simulated-trading"], "1");
   assert.ok(calls[0].headers["OK-ACCESS-SIGN"]);
+});
+
+test("setAccountLevel: signed POST with acctLv body", async () => {
+  const calls: Array<{ url: string; body?: string }> = [];
+  const fetcher: OkxFetcher = async (url, init) => {
+    calls.push({ url, body: init.body });
+    return { status: 200, json: async () => ({ code: "0", msg: "", data: [{ acctLv: "4" }] }) };
+  };
+  const client = new OkxExecutionClient({ apiKey: "k", secret: "s", passphrase: "p", mode: "demo" }, fetcher);
+  const r = await client.setAccountLevel("4");
+  assert.equal(r.ok, true);
+  assert.match(calls[0].url, /\/api\/v5\/account\/set-account-level$/);
+  assert.equal(calls[0].body, JSON.stringify({ acctLv: "4" }));
+});
+
+test("request is resilient to a non-JSON (HTML) response", async () => {
+  const html = "<!DOCTYPE html><html><body>error</body></html>";
+  const fetcher: OkxFetcher = async () => ({ status: 200, text: async () => html, json: async () => JSON.parse(html) });
+  const client = new OkxExecutionClient({ apiKey: "k", secret: "s", passphrase: "p", mode: "demo" }, fetcher);
+  const r = await client.activateOption();
+  assert.equal(r.ok, false);
+  assert.match(r.code, /^HTTP_/);
+  assert.match(r.msg, /non-JSON response/);
 });
 
 test("getInstruments/getBookTop: GET with demo header in demo mode", async () => {

@@ -36,8 +36,30 @@ const main = async () => {
   console.error("[okx-activate] auth ok ✓");
 
   const cfg = await client.getAccountConfig();
-  const acctLv = cfg.data?.[0]?.acctLv;
+  let acctLv = cfg.data?.[0]?.acctLv;
   if (acctLv) console.error(`[okx-activate] account mode: ${acctLv} (${ACCT_LV[acctLv] ?? "?"}), posMode=${cfg.data?.[0]?.posMode ?? "?"}`);
+
+  // Options require acctLv ≥ 3 (single-ccy margin can't trade options at all). Optionally switch.
+  const target = process.env.OKX_SET_ACCT_LV as "2" | "3" | "4" | undefined;
+  if (target && acctLv !== target) {
+    console.error(`[okx-activate] switching account mode ${acctLv} → ${target} (${ACCT_LV[target] ?? "?"})…`);
+    const sw = await client.setAccountLevel(target);
+    if (sw.ok) {
+      acctLv = target;
+      console.error(`[okx-activate] account mode now ${target} ✓`);
+    } else {
+      console.error(`[okx-activate] ⚠️ account-mode switch failed: ${sw.code} ${sw.msg}`);
+      if (target === "4") console.error("  Portfolio Margin can require a precheck/min equity; try OKX_SET_ACCT_LV=3 first.");
+    }
+  }
+
+  if (acctLv === "1" || acctLv === "2") {
+    console.error(`[okx-activate] ❌ account mode ${acctLv} (${ACCT_LV[acctLv]}) CANNOT trade options.`);
+    console.error("  Switch first:  OKX_SET_ACCT_LV=4 npm --silent --workspace services/api run okx:activate-option");
+    console.error("  (4 = Portfolio Margin — needed so the collar's long put offsets the short call.)");
+    process.stdout.write(JSON.stringify({ mode, activated: false, reason: "account_mode_unsupported", acctLv }, null, 2) + "\n");
+    process.exit(1);
+  }
 
   const res = await client.activateOption();
   const ok = res.ok || res.code === "51199" /* already activated */;
@@ -47,7 +69,7 @@ const main = async () => {
     console.error("[okx-activate] ✅ options trading ACTIVE for this account. Re-run okx:dry-run.");
     if (acctLv === "3") {
       console.error("[okx-activate] NOTE: multi-ccy margin (acctLv=3) blocks net-long options in CROSS margin (error 51019).");
-      console.error("  A collar BUYS a put (long leg) — to test both legs use Portfolio Margin (acctLv=4),");
+      console.error("  A collar BUYS a put (long leg) — to test both legs use Portfolio Margin (OKX_SET_ACCT_LV=4),");
       console.error("  or run the long leg with OKX_TD_MODE=isolated. Short call alone works under cross.");
     }
   } else {
