@@ -32,6 +32,17 @@ const main = async () => {
   }
   const creds = { clientId: clientId.trim(), clientSecret: clientSecret.trim() };
   console.error(`[deribit-auth-probe] client_id=${mask(creds.clientId)} (len ${creds.clientId.length}) secret(len ${creds.clientSecret.length})`);
+
+  // Outbound IP — Deribit API keys can be IP-allowlisted; a key works from one Render instance and
+  // fails from another if it's scoped to an IP. Print it so the right IP can be allowlisted.
+  let egressIp = "unknown";
+  try {
+    const ipRes = await fetch("https://api.ipify.org", { signal: AbortSignal.timeout(5000) });
+    egressIp = (await ipRes.text()).trim();
+  } catch {
+    /* best-effort */
+  }
+  console.error(`[deribit-auth-probe] this host's outbound IP: ${egressIp}  (allowlist this on the Deribit key if it's IP-scoped)`);
   if (creds.clientId.length !== clientId.length || creds.clientSecret.length !== clientSecret.length) {
     console.error("[deribit-auth-probe] ⚠️ trimmed whitespace from a value — re-export with single quotes.");
   }
@@ -53,7 +64,7 @@ const main = async () => {
       "INVALID_BOTH — credentials fail on both systems. Re-copy client_id + client_secret (the secret is " +
       "shown only once at creation), and ensure the key has trade scope. If unsure, create a fresh testnet key.";
   }
-  process.stdout.write(JSON.stringify({ testnet, live, verdict }, null, 2) + "\n");
+  process.stdout.write(JSON.stringify({ testnet, live, verdict, outboundIp: egressIp }, null, 2) + "\n");
   console.error(`[deribit-auth-probe] VERDICT: ${verdict}`);
   if (!testnet.ok && !live.ok) process.exit(1);
 };
