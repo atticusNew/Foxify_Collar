@@ -4,6 +4,7 @@ import { DeribitExecutionClient, mapDeribitState, type DeribitFetcher } from "..
 import {
   parseDeribitOptionName,
   selectDeribitCollar,
+  rankDeribitCollarCandidates,
   resolveDeribitCollarLegs
 } from "../src/singleSide/twoSided/creditCollar/execution/deribitLegResolver";
 import { executeCollarHedge, type CollarHedgeSpec } from "../src/singleSide/twoSided/creditCollar/execution/okxCollarExecutor";
@@ -39,6 +40,31 @@ test("resolveDeribitCollarLegs: reads instrument list + best bid/ask", async () 
   assert.ok(r.ok && r.legs);
   assert.equal(r.legs!.putAskBtc, 0.0011);
   assert.equal(r.legs!.callBidBtc, 0.0009);
+});
+
+test("rankDeribitCollarCandidates: ranks both wings by closeness", () => {
+  const c = rankDeribitCollarCandidates(names, { nowMs: now, tenorDays: 1, putTarget: 60800, callTarget: 66400 });
+  assert.ok(c);
+  assert.equal(c!.puts[0].strike, 61000); // 61000 closest to 60800, then 60000
+  assert.equal(c!.puts[1].strike, 60000);
+  assert.equal(c!.calls[0].strike, 66000); // 66000 closest to 66400, then 67000
+  assert.equal(c!.calls[1].strike, 67000);
+});
+
+test("resolveDeribitCollarLegs: liquidity-aware — walks past a zero-bid call to the nearest that quotes", async () => {
+  const list = async () => ({ ok: true, result: names.map((instrument_name) => ({ instrument_name, is_active: true })) });
+  // Nearest call (66000) has NO bid; the next (67000) does. Put nearest (61000) quotes fine.
+  const readBook = async (n: string) => {
+    if (n === "BTC-20JUN26-66000-C") return { ok: true, result: { best_bid_price: 0, best_ask_price: 0.002 } };
+    if (n === "BTC-20JUN26-67000-C") return { ok: true, result: { best_bid_price: 0.0005, best_ask_price: 0.0008 } };
+    return { ok: true, result: { best_bid_price: 0.0009, best_ask_price: 0.0011 } };
+  };
+  const r = await resolveDeribitCollarLegs(list, readBook, { nowMs: now, tenorDays: 1, putTarget: 61000, callTarget: 66000 });
+  assert.ok(r.ok && r.legs);
+  assert.equal(r.legs!.callInstrument, "BTC-20JUN26-67000-C"); // walked to the strike with a real bid
+  assert.equal(r.legs!.callBidBtc, 0.0005);
+  assert.equal(r.legs!.putInstrument, "BTC-20JUN26-61000-P");
+  assert.equal(r.legs!.putAskBtc, 0.0011);
 });
 
 test("resolveDeribitCollarLegs: empty list surfaces no_matching_instruments", async () => {

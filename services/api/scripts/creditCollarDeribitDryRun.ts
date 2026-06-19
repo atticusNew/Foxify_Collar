@@ -60,15 +60,17 @@ const main = async () => {
     process.exit(4);
   }
 
-  const floorPct = num(process.env.DERIBIT_DRYRUN_FLOOR_PCT, 0.05);
-  const capPct = num(process.env.DERIBIT_DRYRUN_CAP_PCT, 0.05);
+  // Near-ATM by default so both wings have live two-sided quotes on the thinner testnet book.
+  const floorPct = num(process.env.DERIBIT_DRYRUN_FLOOR_PCT, 0.03);
+  const capPct = num(process.env.DERIBIT_DRYRUN_CAP_PCT, 0.02);
   const tenorDays = num(process.env.DERIBIT_DRYRUN_TENOR_DAYS, 2);
+  const maxCandidates = num(process.env.DERIBIT_MAX_CANDIDATES, 8);
   const size = process.env.DERIBIT_SIZE ?? "0.1"; // Deribit BTC option min is 0.1 contracts
 
   const resolved = await resolveDeribitCollarLegs(
     (currency, kind) => client.getInstruments(currency, kind),
     (name) => client.getOrderBook(name),
-    { nowMs: Date.now(), tenorDays, putTarget: spot * (1 - floorPct), callTarget: spot * (1 + capPct) }
+    { nowMs: Date.now(), tenorDays, putTarget: spot * (1 - floorPct), callTarget: spot * (1 + capPct), maxCandidates }
   );
   if (!resolved.ok || !resolved.legs) {
     console.error(`[deribit-dry-run] leg resolution failed: ${resolved.error}`);
