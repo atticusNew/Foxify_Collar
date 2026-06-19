@@ -48,20 +48,21 @@ services:
       - key: BULLISH_REST_BASE
         value: "https://api.exchange.bullish.com"
 
-  # ── Tier-0 SHADOW activation (paper-settled, NO trading, live tiers OFF) ──
-  # Runs the full credit-collar lifecycle end-to-end with zero capital so the operator can watch it
-  # before any live tier. Read/quote-only + paper settlement. A WORKER (not cron) with a persistent
-  # DISK so the scorecard track record accumulates across cycles (cron containers are ephemeral).
+  # ── Tier-0 SHADOW service: dashboard + shadow loop (paper-settled, NO trading, live tiers OFF) ──
+  # A WEB service (so it serves the read-only dashboard) with a persistent DISK (so the scorecard
+  # track record accumulates). It runs a shadow lifecycle every SHADOW_LOOP_INTERVAL_MS AND serves:
+  #   /  (HTML dashboard: scorecard + RUNNING heartbeat) · /api/scorecard · /api/health · /healthz
   # Set HARNESS_FEE_USDC=75. For audit continuity set ORACLE_PRIVATE_KEY_PEM / ORACLE_PUBLIC_KEY_PEM
-  # (ECDSA P-256); otherwise an ephemeral keypair is generated per run.
-  - type: worker
+  # (ECDSA P-256). Optional read-only dashboard token: SHADOW_DASHBOARD_TOKEN.
+  - type: web
     name: foxify-credit-collar-shadow
     runtime: node
     plan: starter
     region: singapore
     branch: cursor/credit-collar-phase-a-c13c
+    healthCheckPath: /healthz
     buildCommand: npm ci
-    startCommand: npm --workspace services/api run shadow:run
+    startCommand: npm --workspace services/api run shadow:service
     disk:
       name: shadow-track-record
       mountPath: /var/data
@@ -94,6 +95,9 @@ services:
       - key: ORACLE_PRIVATE_KEY_PEM
         sync: false
       - key: ORACLE_PUBLIC_KEY_PEM
+        sync: false
+      # Optional read-only dashboard bearer token (leave unset for an open read-only page).
+      - key: SHADOW_DASHBOARD_TOKEN
         sync: false
       - key: DERIBIT_REST_BASE
         value: "https://www.deribit.com/api/v2"
