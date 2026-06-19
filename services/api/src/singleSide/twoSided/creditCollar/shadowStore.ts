@@ -16,7 +16,7 @@ export const DEFAULT_SHADOW_STORE_PATH = process.env.SHADOW_STORE_PATH ?? "./log
 // (ephemeral). Cached per preferred path so append + load agree within the process. Attach a disk
 // for durability across restarts.
 let _resolved: { preferred: string; effective: string } | null = null;
-const resolveWritablePath = (preferred: string): string => {
+export const resolveWritablePath = (preferred: string): string => {
   if (_resolved && _resolved.preferred === preferred) return _resolved.effective;
   let effective = preferred;
   try {

@@ -218,12 +218,20 @@ export type LiveShadowResult =
   | { ok: true; scorecard: ShadowScorecard; meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] } }
   | { ok: false; error: string; message: string };
 
+export type LiveShadowInputs = {
+  skew: SkewCurve;
+  legSpread: NonNullable<AtticusSpreadConfig["legHalfSpreadUsdcPerBtc"]>;
+  spot: number;
+  scaffoldConfig: ScaffoldConfig;
+  oracle: { snapshot: OracleSnapshot; signatureHex: string; publicKeyPem: string; settlementTwapTicks: OracleTick[]; windowStartMs: number; windowEndMs: number; nowMs: number };
+  meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] };
+};
+
 /**
- * Build live shadow inputs (real wing spreads → skew + leg-spread; real multi-source oracle) and run
- * one shadow session. Read/quote-only; paper settlement. Imported lazily so the pure core stays
- * dependency-light for tests.
+ * Assemble the live shadow inputs (real wing-spread skew + leg-spread; real multi-source ECDSA oracle).
+ * Shared by the compressed one-shot session and the forward-settled cycle. Read/quote-only.
  */
-export const runLiveShadowSession = async (cfg: LiveShadowConfig): Promise<LiveShadowResult> => {
+export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok: true; inputs: LiveShadowInputs } | { ok: false; error: string; message: string }> => {
   const { buildDataset } = await import("./pricingHarness/capture");
   const { captureLive } = await import("./pricingHarness/liveFetchers");
   const { fetchSpotSamples } = await import("./pricingHarness/spotFeeds");
@@ -241,7 +249,6 @@ export const runLiveShadowSession = async (cfg: LiveShadowConfig): Promise<LiveS
   const routing = recommendRouting(dataset.options, cfg.tenorDays, { bullishWeight: cfg.bullishWeight, materialMarginPct: 0.2 });
   const legSpread: NonNullable<AtticusSpreadConfig["legHalfSpreadUsdcPerBtc"]> = buildLegSpreadFromCapture(dataset, cfg.tenorDays, routing);
 
-  // Reference oracle from live multi-source spot.
   const spotFeed = await fetchSpotSamples();
   const nowMs = Date.now();
   const snapshot = aggregateOracle(spotFeed.samples as PriceSample[], nowMs);
@@ -251,7 +258,6 @@ export const runLiveShadowSession = async (cfg: LiveShadowConfig): Promise<LiveS
     : generateOracleKeyPair();
   const signatureHex = signSnapshot(snapshot, keys.privateKeyPem);
   const windowStartMs = nowMs - cfg.settlementWindowMin * 60_000;
-  // Compressed settlement TWAP: the verified oracle price held flat across the window (shadow).
   const settlementTwapTicks: OracleTick[] = [
     { tsMs: windowStartMs, priceUsd: snapshot.priceUsd },
     { tsMs: nowMs, priceUsd: snapshot.priceUsd }
@@ -267,15 +273,37 @@ export const runLiveShadowSession = async (cfg: LiveShadowConfig): Promise<LiveS
     tenorDays: cfg.tenorDays,
     feeUsdc: cfg.feeUsdc,
     adaptiveFloor: cfg.adaptiveFloor,
-    liveEnabled: false, // Tier-0 shadow: never live
+    liveEnabled: false,
     spreadConfig: { fillMode: "touch", legHalfSpreadUsdcPerBtc: legSpread }
   };
+
+  return {
+    ok: true,
+    inputs: {
+      skew,
+      legSpread,
+      spot: snapshot.priceUsd,
+      scaffoldConfig,
+      oracle: { snapshot, signatureHex, publicKeyPem: keys.publicKeyPem, settlementTwapTicks, windowStartMs, windowEndMs: nowMs, nowMs },
+      meta: { spotUsd: snapshot.priceUsd, oracleSources: snapshot.usedSources, fetchErrors: [...live.errors, ...spotFeed.errors] }
+    }
+  };
+};
+
+/**
+ * Run one COMPRESSED shadow session (open + settle-at-entry). Kept for the one-shot CLI; the service
+ * uses the forward-settled cycle for real payout economics.
+ */
+export const runLiveShadowSession = async (cfg: LiveShadowConfig): Promise<LiveShadowResult> => {
+  const built = await buildLiveShadowInputs(cfg);
+  if (!built.ok) return { ok: false, error: built.error, message: built.message };
+  const { skew, spot, scaffoldConfig, oracle, meta } = built.inputs;
 
   const scorecard = runShadowSession({
     scaffoldConfig,
     skew,
-    spot: snapshot.priceUsd,
-    oracle: { snapshot, signatureHex, publicKeyPem: keys.publicKeyPem, settlementTwapTicks, windowStartMs, windowEndMs: nowMs },
+    spot,
+    oracle: { snapshot: oracle.snapshot, signatureHex: oracle.signatureHex, publicKeyPem: oracle.publicKeyPem, settlementTwapTicks: oracle.settlementTwapTicks, windowStartMs: oracle.windowStartMs, windowEndMs: oracle.windowEndMs },
     nPositions: cfg.nPositions,
     positionNotionalUsdc: cfg.positionNotionalUsdc,
     instrument: "BTC-PERP",
@@ -285,6 +313,6 @@ export const runLiveShadowSession = async (cfg: LiveShadowConfig): Promise<LiveS
   return {
     ok: true,
     scorecard,
-    meta: { spotUsd: snapshot.priceUsd, oracleSources: snapshot.usedSources, fetchErrors: [...live.errors, ...spotFeed.errors] }
+    meta
   };
 };

@@ -6,6 +6,7 @@
  */
 
 import { aggregateShadowScorecards, type ShadowRunRecord, type ShadowAggregate, type ShadowAggregateConfig } from "./shadowAggregate";
+import type { SettlementAggregate } from "./forwardSettlement";
 
 /** In-process liveness reported by the running shadow loop. */
 export type ShadowLiveStatus = {
@@ -32,6 +33,7 @@ export type DashboardModel = {
     lastError: string | null;
   };
   aggregate: ShadowAggregate;
+  settlement: SettlementAggregate | null;
   recentSessions: Array<{
     tsIso: string;
     opened: number;
@@ -53,7 +55,8 @@ export const buildDashboardModel = (
   records: ShadowRunRecord[],
   status: ShadowLiveStatus,
   nowMs: number,
-  aggCfg: ShadowAggregateConfig = {}
+  aggCfg: ShadowAggregateConfig = {},
+  settlement: SettlementAggregate | null = null
 ): DashboardModel => {
   const aggregate = aggregateShadowScorecards(records, aggCfg);
   const lastRunAgoMs = status.lastRunAtMs != null ? nowMs - status.lastRunAtMs : null;
@@ -96,6 +99,7 @@ export const buildDashboardModel = (
       lastError: status.lastError
     },
     aggregate,
+    settlement,
     recentSessions: recent,
     generatedAtIso: new Date(nowMs).toISOString()
   };
@@ -164,6 +168,19 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Realized fee", `${a.economics.realizedServiceFeeBps} bps`, `$${a.economics.totalServiceFeeUsdc} on $${a.economics.openedNotionalUsdc}`)}
     ${card("Credit accrued", `$${a.economics.totalCreditAccruedUsdc}`, `net to Foxify $${a.economics.totalNetToFoxifyUsdc}`)}
   </div>
+  <h2>Realized settlement economics (forward-settled at real expiry price)</h2>
+  ${
+    m.settlement && m.settlement.settledPositions > 0
+      ? `<div class="grid">
+    ${card("Settled", String(m.settlement.settledPositions), `avg held ${m.settlement.avgHeldHours}h`)}
+    ${card("Book net payout", `${m.settlement.bookNetPayoutBps} bps`, `$${m.settlement.totalPayoutToFoxifyUsdc} (delta-flat ⟹ ~0)`)}
+    ${card("Floor paid", pct(m.settlement.pctFloorBreached), `cap hit ${pct(m.settlement.pctCapBreached)}`)}
+    ${card("Realized fee", `$${m.settlement.totalServiceFeeUsdc}`, "Atticus margin (settled)")}
+    ${card("Net to Foxify", `$${m.settlement.totalNetToFoxifyUsdc}`, `credit $${m.settlement.totalCreditAccruedUsdc} + payout`)}
+    ${card("Payout range", `$${m.settlement.worstPayoutUsdc} … $${m.settlement.bestPayoutUsdc}`, `avg $${m.settlement.avgPayoutPerPositionUsdc}`)}
+  </div>`
+      : `<p class="muted">No positions have matured + settled yet (forward settlement at expiry). Real payout economics appear here once the first batch reaches its horizon.</p>`
+  }
   <h2>Flags</h2>${flags}
   <h2>Recent sessions</h2>
   <table><thead><tr><th>time</th><th>opened</th><th>halt</th><th>rej</th><th>peakExp</th><th>fee</th><th>oracle</th><th>recon</th><th>lifecycle</th></tr></thead>
@@ -180,6 +197,8 @@ export type DashboardDeps = {
   loadRecords: () => ShadowRunRecord[];
   liveStatus: () => ShadowLiveStatus;
   aggregateConfig?: ShadowAggregateConfig;
+  /** Realized-economics aggregate over the settlement ledger (forward settlement). */
+  settlementAggregate?: () => SettlementAggregate;
   /** Optional read-only bearer token. If set, /api/* and / require it. */
   token?: string;
   nowMs?: () => number;
@@ -200,10 +219,12 @@ export const handleDashboardRequest = (
     if (presented !== deps.token) return { statusCode: 401, contentType: "text/plain", body: "unauthorized" };
   }
 
-  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig);
+  const settlement = deps.settlementAggregate ? deps.settlementAggregate() : null;
+  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement);
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
   if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(model, null, 2) };
+  if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(settlement ?? { settledPositions: 0 }, null, 2) };
   if (path === "/api/health") {
     return { statusCode: model.running ? 200 : 503, contentType: "application/json", body: JSON.stringify({ running: model.running, liveness: model.liveness, sessions: model.aggregate.sessions, verdict: model.aggregate.verdict }, null, 2) };
   }

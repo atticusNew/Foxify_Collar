@@ -11,6 +11,7 @@
 
 import { createServer } from "node:http";
 import { runLiveShadowSession, type LiveShadowConfig } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
+import { runForwardShadowCycle, loadSettlementAggregate } from "../src/singleSide/twoSided/creditCollar/forwardShadow";
 import { appendScorecard, loadScorecards } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 
@@ -20,6 +21,8 @@ const intervalMs = num(process.env.SHADOW_LOOP_INTERVAL_MS, 900_000);
 const port = num(process.env.PORT, 10_000);
 const token = process.env.SHADOW_DASHBOARD_TOKEN;
 const haltBand = num(process.env.SHADOW_BREAKER_HALT, 0.15);
+const forwardSettle = String(process.env.SHADOW_FORWARD_SETTLE ?? "true").toLowerCase() !== "false";
+const settlementHorizonMin = num(process.env.SHADOW_SETTLEMENT_HORIZON_MIN, 60); // positions settle 1h later (real move)
 
 const cfg: LiveShadowConfig = {
   positionNotionalUsdc: num(process.env.SHADOW_POSITION_USDC, 50_000),
@@ -62,9 +65,23 @@ const status: ShadowLiveStatus = {
 
 const runCycle = async () => {
   try {
-    const res = await runLiveShadowSession(cfg);
     status.cyclesRun += 1;
     status.lastRunAtMs = Date.now();
+    if (forwardSettle) {
+      const res = await runForwardShadowCycle({ ...cfg, settlementHorizonMin });
+      if (res.ok) {
+        appendScorecard({ tsMs: status.lastRunAtMs, scorecard: res.openingScorecard, spotUsd: res.meta.spotUsd, oracleSources: res.meta.oracleSources });
+        status.lastRunOk = true;
+        status.lastError = null;
+        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified}`);
+      } else {
+        status.lastRunOk = false;
+        status.lastError = `${res.error}: ${res.message}`;
+        console.error(`[shadow-svc] cycle ${status.cyclesRun} not run: ${status.lastError}`);
+      }
+      return;
+    }
+    const res = await runLiveShadowSession(cfg);
     if (res.ok) {
       appendScorecard({ tsMs: status.lastRunAtMs, scorecard: res.scorecard, spotUsd: res.meta.spotUsd, oracleSources: res.meta.oracleSources });
       status.lastRunOk = true;
@@ -76,8 +93,6 @@ const runCycle = async () => {
       console.error(`[shadow-svc] cycle ${status.cyclesRun} not run: ${status.lastError}`);
     }
   } catch (e) {
-    status.cyclesRun += 1;
-    status.lastRunAtMs = Date.now();
     status.lastRunOk = false;
     status.lastError = (e as Error).message;
     console.error(`[shadow-svc] cycle error: ${status.lastError}`);
@@ -94,7 +109,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);
