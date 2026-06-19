@@ -3,9 +3,11 @@ import test from "node:test";
 import {
   compareHedgeArchitectures,
   optionSpreadDecisionBoundary,
+  internalizeLineFlowSensitivity,
   type BookSpec,
   type CostModel
 } from "../src/singleSide/twoSided/creditCollar/hedgeArchitectureCompare";
+import { wingAwareLegSpread } from "../src/singleSide/twoSided/creditCollar/skew";
 
 const book = (over: Partial<BookSpec> = {}): BookSpec => ({
   spot: 100_000,
@@ -31,7 +33,10 @@ const cost = (over: Partial<CostModel> = {}): CostModel => ({
   optionRelHalfSpreadPct: 0.1,
   optionAbsHalfSpreadUsdcPerBtc: 1.5,
   backToBackWarehouseFraction: 0.15,
-  perpHalfSpreadBps: 1.5,
+  nettingEfficiency: 1.0,
+  perpTopOfBookBps: 1.5,
+  perpDepthUsdc: 5_000_000,
+  perpImpactCoefBps: 1.0,
   dailyRehedgeTurnover: 2,
   reserveMultiple: 1.5,
   costOfCapitalAnnual: 0.12,
@@ -77,8 +82,49 @@ test("decision boundary: back-to-back only wins at a tight enough option spread"
 });
 
 test("perp residual hedge cost scales with net imbalance", () => {
-  const balanced = compareHedgeArchitectures(book({ longFraction: 0.5, netLongBias: 0.0, seed: 5 }), cost());
-  const imbalanced = compareHedgeArchitectures(book({ longFraction: 0.85, netLongBias: 0.7, seed: 5 }), cost());
+  const balanced = compareHedgeArchitectures(book({ longFraction: 0.5, seed: 5 }), cost());
+  const imbalanced = compareHedgeArchitectures(book({ longFraction: 0.85, seed: 5 }), cost());
   assert.ok(imbalanced.internalizePerp.perpHedgeCostPerDayUsdc > balanced.internalizePerp.perpHedgeCostPerDayUsdc,
     "more imbalance ⟹ more residual delta ⟹ more perp hedge cost");
+});
+
+test("flow concurrency: streaky/directional flow raises the internalize line (review #1)", () => {
+  // Balanced book (50/50) so net is ~flat — concurrency is the ONLY driver of the residual.
+  const b = book({ longFraction: 0.5, seed: 9 });
+  const rows = internalizeLineFlowSensitivity(b, cost(), [1.0, 0.5, 0.0]);
+  const wellNetted = rows[0];
+  const fullyDirectional = rows[2];
+  assert.ok(fullyDirectional.residualDeltaNotionalUsdc > wellNetted.residualDeltaNotionalUsdc,
+    "no concurrency ⟹ Atticus warehouses gross ⟹ larger residual");
+  assert.ok(fullyDirectional.perpHedgeCostPerDayUsdc > wellNetted.perpHedgeCostPerDayUsdc);
+  assert.ok(fullyDirectional.internalizeFoxifyCostPerPositionUsdc >= wellNetted.internalizeFoxifyCostPerPositionUsdc,
+    "streaky flow makes internalize more expensive for Foxify");
+});
+
+test("reserve stresses BOTH wings; binds on the concentrated side (review #2)", () => {
+  const longHeavy = compareHedgeArchitectures(book({ longFraction: 0.85, seed: 3 }), cost());
+  assert.equal(longHeavy.internalizePerp.reserveBindingWing, "down", "long-heavy book ⟹ put wing binds on a −jump");
+  assert.ok(longHeavy.internalizePerp.reserveDownWingUsdc > longHeavy.internalizePerp.reserveUpWingUsdc);
+
+  const shortHeavy = compareHedgeArchitectures(book({ longFraction: 0.15, seed: 3 }), cost());
+  assert.equal(shortHeavy.internalizePerp.reserveBindingWing, "up", "short-heavy book ⟹ call wing binds on a +jump");
+  assert.ok(shortHeavy.internalizePerp.reserveUpWingUsdc > shortHeavy.internalizePerp.reserveDownWingUsdc);
+});
+
+test("wing-aware option spread costs more than a flat ATM-equivalent (review #3a)", () => {
+  const flat = compareHedgeArchitectures(book(), cost({ optionRelHalfSpreadPct: 0.05 }));
+  // Same 5% ATM, but widening with OTM moneyness at the actual wing strikes.
+  const wing = compareHedgeArchitectures(
+    book(),
+    cost({ optionLegSpread: wingAwareLegSpread({ atmRelHalfPct: 0.05, widenPerOtmPct: 0.5, absUsdcPerBtc: 1.5 }) })
+  );
+  assert.ok(wing.backToBack.foxifyCostPerPositionUsdc > flat.backToBack.foxifyCostPerPositionUsdc,
+    "wing widening must raise back-to-back cost vs a flat ATM capture");
+});
+
+test("perp impact at clip: thinner depth raises the residual hedge cost (review #3b)", () => {
+  const deep = compareHedgeArchitectures(book({ longFraction: 0.8, seed: 11 }), cost({ perpDepthUsdc: 50_000_000 }));
+  const thin = compareHedgeArchitectures(book({ longFraction: 0.8, seed: 11 }), cost({ perpDepthUsdc: 2_000_000 }));
+  assert.ok(thin.internalizePerp.perpHedgeCostPerDayUsdc > deep.internalizePerp.perpHedgeCostPerDayUsdc,
+    "a clip that walks thin depth costs more than one into deep depth");
 });

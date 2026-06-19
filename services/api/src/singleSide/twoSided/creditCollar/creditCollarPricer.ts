@@ -96,6 +96,19 @@ export type AtticusSpreadConfig = {
   relativeHalfSpreadPct?: number;
   /** Per-leg HALF-spread absolute floor in USDC/BTC (default 1.5) — short-dated OTM books have wide ticks. */
   absHalfSpreadUsdcPerBtc?: number;
+  /**
+   * MEASUREMENT-READY override: per-leg HALF-spread in USDC/BTC at the ACTUAL wing strike + tenor the
+   * solver picks (OTM wings are materially wider than ATM — capturing ATM mislocates the crossover).
+   * When provided, this overrides relativeHalfSpreadPct / absHalfSpreadUsdcPerBtc. Plug measured
+   * Bullish wing spreads here. Receives the leg's mid so a %-of-premium model is still expressible.
+   */
+  legHalfSpreadUsdcPerBtc?: (ctx: {
+    strike: number;
+    spot: number;
+    optType: "put" | "call";
+    tenorDays: number;
+    midPerBtc: number;
+  }) => number;
 };
 
 export type CollarLegs = {
@@ -244,10 +257,17 @@ export const solveAndPriceCreditCollar = (
   const requiredMarginUsdc = Math.max((notionalUsdc * spreadBps) / 1e4, minMarginUsdc);
 
   // Executable per-leg prices. Atticus BUYS the protective leg (pays ask) and SELLS the funding
-  // leg (receives bid). Half-spread = max(% of mid premium, absolute floor). "mid" mode = no crossing.
-  const halfSpreadPerBtc = (midPerBtc: number) => Math.max(midPerBtc * relHalf, absHalf);
-  const execAskPerBtc = (midPerBtc: number) => (fillMode === "touch" ? midPerBtc + halfSpreadPerBtc(midPerBtc) : midPerBtc);
-  const execBidPerBtc = (midPerBtc: number) => (fillMode === "touch" ? Math.max(0, midPerBtc - halfSpreadPerBtc(midPerBtc)) : midPerBtc);
+  // leg (receives bid). Half-spread at the ACTUAL wing strike: measured model if supplied, else
+  // max(% of mid premium, absolute floor). "mid" mode = no crossing.
+  const legSpreadModel = config.legHalfSpreadUsdcPerBtc;
+  const halfSpreadPerBtc = (midPerBtc: number, strike: number, optType: "put" | "call") =>
+    legSpreadModel
+      ? Math.max(0, legSpreadModel({ strike, spot, optType, tenorDays, midPerBtc }))
+      : Math.max(midPerBtc * relHalf, absHalf);
+  const execAskPerBtc = (midPerBtc: number, strike: number, optType: "put" | "call") =>
+    fillMode === "touch" ? midPerBtc + halfSpreadPerBtc(midPerBtc, strike, optType) : midPerBtc;
+  const execBidPerBtc = (midPerBtc: number, strike: number, optType: "put" | "call") =>
+    fillMode === "touch" ? Math.max(0, midPerBtc - halfSpreadPerBtc(midPerBtc, strike, optType)) : midPerBtc;
 
   // Leg roles by side. The protective (long) leg gives the floor/ceiling; the funding (short)
   // leg is sold to manufacture the credit and is Atticus's COUNTERPARTY exposure on Foxify.
@@ -266,7 +286,7 @@ export const solveAndPriceCreditCollar = (
     return { ok: false, error: "invalid_protective_strike", message: "protective strike resolved <= 0" };
   }
   const protectiveMidPerBtc = legMidPerBtc(protectiveType, spot, protectiveStrike, T, r, skew);
-  const protectiveExecPerBtc = execAskPerBtc(protectiveMidPerBtc); // Atticus BUYS the protective leg (pays ask)
+  const protectiveExecPerBtc = execAskPerBtc(protectiveMidPerBtc, protectiveStrike, protectiveType); // Atticus BUYS the protective leg (pays ask)
 
   // 2) Search the funding leg from loose (far OTM) to tight; pick the loosest that funds credit+margin
   //    at EXECUTABLE prices (funding sold at bid). Crossing both legs is the real competition for credit.
@@ -289,7 +309,7 @@ export const solveAndPriceCreditCollar = (
     if (side === "short" && snapped >= spot) continue;
 
     const fundingMidPerBtc = legMidPerBtc(fundingType, spot, snapped, T, r, skew);
-    const fundingExecPerBtc = execBidPerBtc(fundingMidPerBtc);
+    const fundingExecPerBtc = execBidPerBtc(fundingMidPerBtc, snapped, fundingType);
     const fundableCredit = (fundingExecPerBtc - protectiveExecPerBtc) * contractsBtc;
     tightestFundableCredit = Math.max(tightestFundableCredit, fundableCredit);
 
@@ -411,7 +431,7 @@ export const solveAndPriceCreditCollar = (
     fills: {
       fill_mode: fillMode,
       protective_leg_ask_usdc: round2(protectiveExecPerBtc * contractsBtc),
-      funding_leg_bid_usdc: round2(execBidPerBtc(chosenFundingMidPerBtc) * contractsBtc),
+      funding_leg_bid_usdc: round2(execBidPerBtc(chosenFundingMidPerBtc, chosenFundingStrike, fundingType) * contractsBtc),
       crossing_drag_usdc: round2(crossingDragUsdc)
     },
     economics: {
