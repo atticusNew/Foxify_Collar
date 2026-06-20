@@ -68,6 +68,21 @@ test("aggregate: capital-aware net bps subtracts the measured short-leg IM drag"
   assert.ok(pm.capital.capitalAwareNetServiceFeeBps > agg.capital.capitalAwareNetServiceFeeBps);
 });
 
+test("aggregate: a 0-open cycle that correctly declined (oracle not safe) is NOT counted incomplete", () => {
+  // Stored lifecycleComplete=false (old code), opened=0, oracle not safe ⟹ reclassified as complete.
+  const declined = rec(50, {
+    opened: 0,
+    openedNotionalUsdc: 0,
+    halted: 20,
+    lifecycleComplete: false,
+    oracle: { status: "degraded", priceUsd: 62_000, safeForActivation: false, signatureValid: true }
+  });
+  const records = [...Array.from({ length: 11 }, (_, i) => rec(i)), declined];
+  const agg = aggregateShadowScorecards(records);
+  assert.equal(agg.lifecycleCompleteRate, 1, "safe declines count as complete (correct fail-closed)");
+  assert.notEqual(agg.verdict, "DEGRADED");
+});
+
 test("aggregate: too few sessions ⟹ WATCH (not CLEAN) even if clean", () => {
   const agg = aggregateShadowScorecards([rec(1), rec(2)]);
   assert.equal(agg.verdict, "WATCH");

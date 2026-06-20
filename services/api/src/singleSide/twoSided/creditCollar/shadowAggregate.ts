@@ -119,6 +119,11 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
   let maxFloorUsed = 0, sumFloorUsed = 0, floorSessions = 0;
   const rejReasons: Record<string, number> = {};
 
+  // Effective lifecycle completeness — retroactively corrects records stored before the fix: a cycle
+  // that opened 0 BECAUSE the oracle wasn't safe for activation was correct fail-closed behavior,
+  // not a failure. Derived from stored fields so historical sessions benefit without clearing data.
+  const effLifecycleComplete = (s: ShadowScorecard): boolean => s.lifecycleComplete || (s.opened === 0 && !s.oracle.safeForActivation);
+
   for (const s of sc) {
     attempted += s.attempted;
     opened += s.opened;
@@ -134,7 +139,7 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
     if (s.allSettledOracleVerified) allVerified += 1;
     if (s.allReconciled) allReconciled += 1;
     else withDrift += 1;
-    if (s.lifecycleComplete) lifecycle += 1;
+    if (effLifecycleComplete(s)) lifecycle += 1;
     maxPeakRatio = Math.max(maxPeakRatio, s.peakNetExposureRatio);
     sumPeakRatio += s.peakNetExposureRatio;
     maxPeakNotional = Math.max(maxPeakNotional, s.peakNetNotionalUsdc);
@@ -185,7 +190,7 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
   const rN = recent.length;
   const rUnverifiedRate = rN > 0 ? recent.filter((s) => !s.allSettledOracleVerified).length / rN : 0;
   const rDriftRate = rN > 0 ? recent.filter((s) => !s.allReconciled).length / rN : 0;
-  const rLifecycleIncompleteRate = rN > 0 ? recent.filter((s) => !s.lifecycleComplete).length / rN : 0;
+  const rLifecycleIncompleteRate = rN > 0 ? recent.filter((s) => !effLifecycleComplete(s)).length / rN : 0;
   const rExposureBreach = recent.some((s) => s.peakNetExposureRatio > band + 1e-9);
   const hardFail = rN > 0 && (rUnverifiedRate > 0.1 || rDriftRate > 0.1 || rLifecycleIncompleteRate > 0.2 || rExposureBreach);
 
