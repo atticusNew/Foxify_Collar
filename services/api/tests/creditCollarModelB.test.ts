@@ -1,0 +1,341 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  computeInventory,
+  recommendNextSide,
+  assertInventoryNeutralPolicy,
+  assertIndependentFlow,
+  flagStructuralPairs,
+  evaluateExposureBreaker,
+  ExposureBreaker,
+  type InventoryPolicy,
+  type ExposureBreakerConfig
+} from "../src/singleSide/twoSided/creditCollar/inventoryBalancer";
+import {
+  aggregateOracle,
+  computeSettlementTwap,
+  confirmTrigger,
+  generateOracleKeyPair,
+  signSnapshot,
+  verifySnapshot,
+  recomputeAndVerify,
+  type PriceSample
+} from "../src/singleSide/twoSided/creditCollar/referenceOracle";
+import { simulateModelBVolume, type ModelBConfig } from "../src/singleSide/twoSided/creditCollar/modelBVolumeSim";
+
+const neutral: InventoryPolicy = { targetNetBandPct: 0.1, allowDirectionalBias: false, directionalTiltSigned: 0 };
+
+// ── Inventory balancer ──────────────────────────────────────────────────────
+
+test("inventory signal steers toward flat (recommends the offsetting side)", () => {
+  const longHeavy = computeInventory(
+    [
+      { asset: "BTC", side: "long", notionalUsdc: 300_000 },
+      { asset: "BTC", side: "short", notionalUsdc: 100_000 }
+    ],
+    0.1
+  );
+  assert.equal(longHeavy.netNotionalUsdc, 200_000);
+  const rec = recommendNextSide(longHeavy, 50_000, neutral);
+  assert.equal(rec.side, "short", "long-heavy book ⟹ steer short to flatten");
+  assert.ok(rec.reducesImbalance);
+});
+
+test("no directional warehousing: directional policy is hard-rejected", () => {
+  assert.throws(() => assertInventoryNeutralPolicy({ ...neutral, allowDirectionalBias: true }));
+  assert.throws(() => assertInventoryNeutralPolicy({ ...neutral, directionalTiltSigned: 0.2 }));
+  assert.doesNotThrow(() => assertInventoryNeutralPolicy(neutral));
+});
+
+test("balanced independent flow is NOT flagged as self-cancelling; manufactured pairs ARE", () => {
+  // Many independent trades that balance in aggregate — must be allowed.
+  const independent = assertIndependentFlow([
+    { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "a" },
+    { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "b" },
+    { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "c" }
+  ]);
+  assert.equal(independent.independent, true);
+  // A manufactured hedge pair (same instrument, opened to net another) is rejected.
+  assert.throws(() =>
+    assertIndependentFlow([
+      { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "x" },
+      { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "y", pairedWithRef: "x" }
+    ])
+  );
+  // Duplicate refs (same trade counted twice) rejected.
+  assert.throws(() =>
+    assertIndependentFlow([
+      { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "dup" },
+      { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "dup" }
+    ])
+  );
+});
+
+// ── Live exposure circuit breaker ───────────────────────────────────────────
+
+const breakerCfg: ExposureBreakerConfig = { warnBandPct: 0.1, haltBandPct: 0.15, resumeBandPct: 0.08 };
+
+test("live breaker: halts new opens when real-time exposure crosses the band, latches with hysteresis", () => {
+  const flat = computeInventory([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 980_000 }], 0.1);
+  assert.equal(evaluateExposureBreaker(flat, breakerCfg).allowNewOpens, true);
+
+  const imbalanced = computeInventory([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 600_000 }], 0.1);
+  const halt = evaluateExposureBreaker(imbalanced, breakerCfg);
+  assert.equal(halt.state, "halted");
+  assert.equal(halt.allowNewOpens, false);
+
+  // Latches: still halted while exposure is between resume (8%) and halt (15%) bands.
+  const recovering = computeInventory([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 800_000 }], 0.1);
+  assert.ok(recovering.imbalanceRatio > 0.08 && recovering.imbalanceRatio < 0.15);
+  const stillHalted = evaluateExposureBreaker(recovering, breakerCfg, "halted");
+  assert.equal(stillHalted.allowNewOpens, false, "stays halted until exposure recovers below resume band");
+  // Fully recovered below resume band ⟹ resumes.
+  const recovered = computeInventory([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 950_000 }], 0.1);
+  assert.equal(evaluateExposureBreaker(recovered, breakerCfg, "halted").allowNewOpens, true, "resumes once exposure < resume band");
+});
+
+test("live breaker: stateful gate is fail-closed before first evaluation", () => {
+  const b = new ExposureBreaker(breakerCfg);
+  assert.equal(b.canOpen(), false, "must be fail-closed until the book has been evaluated");
+  b.onBook([{ asset: "BTC", side: "long", notionalUsdc: 500_000 }, { asset: "BTC", side: "short", notionalUsdc: 500_000 }]);
+  assert.equal(b.canOpen(), true);
+  b.onBook([{ asset: "BTC", side: "long", notionalUsdc: 1_000_000 }, { asset: "BTC", side: "short", notionalUsdc: 100_000 }]);
+  assert.equal(b.canOpen(), false, "halts when the live book goes directional");
+});
+
+test("structural pair discriminator: flags simultaneous same-instrument self-hedge, NOT spread-out independent flow", () => {
+  const now = 1_700_000_000_000;
+  // Manufactured self-hedge: same instrument, opposite side, same size, same moment — flagged.
+  const selfHedge = flagStructuralPairs([
+    { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "p1", instrument: "BTC-PERP", tsMs: now },
+    { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "p2", instrument: "BTC-PERP", tsMs: now + 200 }
+  ]);
+  assert.equal(selfHedge.length, 1, "near-coincident same-instrument opposite pair must be flagged");
+
+  // Model-B balanced flow: independent positions spread over time — NOT flagged.
+  const independent = flagStructuralPairs([
+    { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "a", instrument: "BTC-PERP", tsMs: now },
+    { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "b", instrument: "BTC-PERP", tsMs: now + 600_000 }
+  ]);
+  assert.equal(independent.length, 0, "positions spread over time must NOT be flagged (no false-block of Model B flow)");
+
+  // The structural flag is a DIAGNOSTIC, not a hard block — assertIndependentFlow still passes.
+  const res = assertIndependentFlow([
+    { asset: "BTC", side: "long", notionalUsdc: 50_000, ref: "x", instrument: "BTC-PERP", tsMs: now },
+    { asset: "BTC", side: "short", notionalUsdc: 50_000, ref: "y", instrument: "BTC-PERP", tsMs: now + 100 }
+  ]);
+  assert.equal(res.independent, true, "structural near-pair alerts but does not auto-block (false-block would halt the business)");
+  assert.ok(res.structuralPairFlags.length >= 1);
+});
+
+// ── Reference oracle ────────────────────────────────────────────────────────
+
+const mk = (source: string, priceUsd: number, ageMs: number, now: number): PriceSample => ({ source, priceUsd, tsMs: now - ageMs });
+
+test("oracle: healthy median with >=3 fresh inlier sources", () => {
+  const now = 1_000_000;
+  const snap = aggregateOracle(
+    [mk("bullish", 100_000, 500, now), mk("deribit", 100_050, 800, now), mk("coinbase", 99_980, 1000, now)],
+    now
+  );
+  assert.equal(snap.status, "healthy");
+  assert.equal(snap.safeForActivation, true);
+  assert.equal(snap.priceUsd, 100_000);
+});
+
+test("oracle: stale sources dropped; fail-closed below min sources", () => {
+  const now = 1_000_000;
+  const snap = aggregateOracle(
+    [mk("bullish", 100_000, 500, now), mk("deribit", 100_050, 9000, now), mk("coinbase", 99_980, 8000, now)],
+    now
+  );
+  assert.ok(snap.droppedStale.includes("deribit") && snap.droppedStale.includes("coinbase"));
+  assert.equal(snap.safeForActivation, false, "only 1 fresh source ⟹ fail-closed for activation");
+  assert.notEqual(snap.status, "healthy");
+});
+
+test("oracle: MAD rejects a manipulated outlier", () => {
+  const now = 1_000_000;
+  const snap = aggregateOracle(
+    [mk("bullish", 100_000, 200, now), mk("deribit", 100_020, 200, now), mk("coinbase", 99_990, 200, now), mk("evil", 130_000, 200, now)],
+    now
+  );
+  assert.ok(snap.droppedOutliers.includes("evil"), "outlier must be rejected by MAD");
+  assert.ok(Math.abs((snap.priceUsd as number) - 100_000) < 100, "median unaffected by the rejected outlier");
+});
+
+test("oracle: settlement TWAP is time-weighted over the window", () => {
+  const r = computeSettlementTwap(
+    [
+      { tsMs: 0, priceUsd: 100_000 },
+      { tsMs: 600_000, priceUsd: 101_000 },
+      { tsMs: 1_200_000, priceUsd: 99_000 }
+    ],
+    0,
+    1_800_000
+  );
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.ok(r.twapUsd > 99_000 && r.twapUsd < 101_000);
+});
+
+test("oracle: tick-persistence suppresses a single wick", () => {
+  const ticks = [
+    { tsMs: 0, priceUsd: 100_000 },
+    { tsMs: 1000, priceUsd: 95_000 }, // single wick below barrier
+    { tsMs: 2000, priceUsd: 100_000 },
+    { tsMs: 3000, priceUsd: 100_000 }
+  ];
+  const wick = confirmTrigger(ticks, 96_000, "down", 3);
+  assert.equal(wick.triggered, false, "a single wick must not confirm a 3-tick-persistent trigger");
+  const real = confirmTrigger(
+    [
+      { tsMs: 0, priceUsd: 95_000 },
+      { tsMs: 1000, priceUsd: 94_000 },
+      { tsMs: 2000, priceUsd: 93_500 }
+    ],
+    96_000,
+    "down",
+    3
+  );
+  assert.equal(real.triggered, true, "a sustained move must confirm");
+});
+
+test("oracle: ECDSA-signed snapshot — public-key verify, non-forgeable, non-repudiable, recomputable", () => {
+  const now = 1_000_000;
+  const snap = aggregateOracle(
+    [mk("bullish", 100_000, 200, now), mk("deribit", 100_020, 200, now), mk("coinbase", 99_990, 200, now)],
+    now
+  );
+  const atticus = generateOracleKeyPair();
+  const sig = signSnapshot(snap, atticus.privateKeyPem);
+  // Foxify verifies with the PUBLIC key only.
+  assert.equal(verifySnapshot(snap, sig, atticus.publicKeyPem), true);
+  // A different key cannot have produced it (non-repudiation) and cannot forge a valid one.
+  const impostor = generateOracleKeyPair();
+  assert.equal(verifySnapshot(snap, sig, impostor.publicKeyPem), false);
+  const forged = signSnapshot(snap, impostor.privateKeyPem);
+  assert.equal(verifySnapshot(snap, forged, atticus.publicKeyPem), false, "impostor cannot forge Atticus's signature");
+  // Tampering with the price invalidates the signature.
+  const tampered = { ...snap, priceUsd: 90_000 };
+  assert.equal(verifySnapshot(tampered, sig, atticus.publicKeyPem), false);
+  // Independent recompute + verify with the public key (no secret that could forge).
+  const audit = recomputeAndVerify({ snapshot: snap, signatureHex: sig }, atticus.publicKeyPem);
+  assert.equal(audit.reproduced, true);
+  assert.equal(audit.signatureValid, true);
+  assert.equal(audit.recomputedPriceUsd, snap.priceUsd);
+});
+
+// ── Model B volume sim ──────────────────────────────────────────────────────
+
+const modelB = (over: Partial<ModelBConfig> = {}): ModelBConfig => ({
+  dailyNotionalUsdc: 50_000_000,
+  avgPositionNotionalUsdc: 50_000,
+  spot: 100_000,
+  tenorDays: 1,
+  maxFloorPct: 0.04,
+  atmIv: 0.55,
+  skewSlopePer10pct: 0.12,
+  serviceFeeBps: 2.0,
+  minServiceFeeUsdc: 10,
+  creditBpsOfNotional: 20,
+  steerComplianceProb: 0.95,
+  flowStreakiness: 0.7,
+  targetNetBandPct: 0.1,
+  perpTopOfBookBps: 1.5,
+  perpDepthUsdc: 5_000_000,
+  perpImpactCoefBps: 1.0,
+  dailyRehedgeTurnover: 2,
+  reserveMultiple: 1.5,
+  costOfCapitalAnnual: 0.12,
+  stressJumpPct: 0.12,
+  intradayTimingBufferPct: 0.25,
+  maxDirectionalExposureBand: 0.15,
+  days: 250,
+  seed: 42,
+  ...over
+});
+
+test("Model B: service fee clears costs at rebates=0 with steered-flat flow", () => {
+  const r = simulateModelBVolume(modelB());
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.label, "model_b_service_fee_volume_engine");
+  assert.ok(r.realizedNettingEfficiency >= 0.8, "high steer compliance ⟹ high netting efficiency");
+  assert.ok(r.netServiceRevenuePerDayUsdc > 0, "service fee must clear perp + reserve capital cost at rebates=0");
+  assert.ok(r.evGuardrailHeld, "Foxify EV ≤ −service fee must hold");
+  assert.ok(r.foxifyEvPerPositionUsdc < 0, "Foxify EV strictly negative");
+  assert.notEqual(r.verdict, "NOT_VIABLE");
+});
+
+test("Model B: poor steering (low compliance) collapses netting efficiency and raises perp cost", () => {
+  const good = simulateModelBVolume(modelB({ steerComplianceProb: 0.98, seed: 3 }));
+  const poor = simulateModelBVolume(modelB({ steerComplianceProb: 0.55, seed: 3 }));
+  assert.equal(good.ok, true);
+  assert.equal(poor.ok, true);
+  if (!good.ok || !poor.ok) return;
+  assert.ok(poor.realizedNettingEfficiency < good.realizedNettingEfficiency,
+    "streaky/uncontrolled flow nets worse");
+  assert.ok(poor.perpHedgeCostPerDayUsdc > good.perpHedgeCostPerDayUsdc,
+    "bigger residual ⟹ more perp hedge cost");
+});
+
+test("Model B: reserve sizes off the imbalanced peak residual ±12% both wings", () => {
+  const r = simulateModelBVolume(modelB({ steerComplianceProb: 0.7, seed: 11 }));
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.ok(r.reserveDownWingUsdc >= 0 && r.reserveUpWingUsdc >= 0);
+  assert.ok(r.reserveUsdc >= Math.max(r.reserveDownWingUsdc, r.reserveUpWingUsdc),
+    "reserve includes the timing-gap buffer on top of the binding wing");
+  assert.ok(r.intradayTimingGapReserveUsdc > 0, "stop→TWAP timing gap reserve is carried");
+});
+
+test("Model B: steering FAILURE crosses into directional warehousing ⟹ not VIABLE (no warehousing rule)", () => {
+  const steered = simulateModelBVolume(modelB({ steerComplianceProb: 0.95, flowStreakiness: 0.85, seed: 4 }));
+  const failed = simulateModelBVolume(modelB({ steerComplianceProb: 0.0, flowStreakiness: 0.85, seed: 4 }));
+  assert.equal(steered.ok, true);
+  assert.equal(failed.ok, true);
+  if (!steered.ok || !failed.ok) return;
+  assert.ok(steered.peakDirectionalExposureRatio < steered.inputs.maxDirectionalExposureBand,
+    "steered book stays flat (within the directional band)");
+  assert.equal(steered.verdict, "VIABLE_AT_REBATES_ZERO");
+  assert.ok(failed.peakDirectionalExposureRatio > failed.inputs.maxDirectionalExposureBand,
+    "no steering ⟹ directional warehousing exposure");
+  assert.notEqual(failed.verdict, "VIABLE_AT_REBATES_ZERO");
+});
+
+test("Model B: measured short-option IM is booked as capital (opt-in) and drags net revenue", () => {
+  const base = simulateModelBVolume(modelB({ seed: 7 }));
+  // Measured from the Deribit margin sweep: ~13% IM/notional, ~30% of gross carried as short options.
+  const withIm = simulateModelBVolume(modelB({ seed: 7, shortOptionImFraction: 0.13, shortOptionGrossNotionalFraction: 0.3, portfolioMarginNettingFactor: 1 }));
+  assert.equal(base.ok, true);
+  assert.equal(withIm.ok, true);
+  if (!base.ok || !withIm.ok) return;
+  assert.equal(base.shortOptionMarginUsdc, 0, "default (perp-only) books no option margin");
+  assert.ok(withIm.shortOptionMarginUsdc > 0, "measured IM books real capital");
+  // grossPerDay = 50m; 30% carried × 13% IM × 1.0 netting = 0.30*0.13*50m = $1.95m capital.
+  assert.ok(Math.abs(withIm.shortOptionMarginUsdc - 0.3 * 0.13 * 50_000_000) < 1, "option margin = grossOptFraction × IM × netting × dailyGross");
+  assert.ok(withIm.shortOptionMarginCostPerDayUsdc > 0);
+  assert.ok(withIm.reserveUsdc > base.reserveUsdc, "option margin adds to total capital reserve");
+  assert.ok(withIm.netServiceRevenuePerDayUsdc < base.netServiceRevenuePerDayUsdc, "carrying option margin drags net service revenue");
+});
+
+test("Model B: Portfolio Margin netting reduces booked short-option margin", () => {
+  const isolated = simulateModelBVolume(modelB({ seed: 7, shortOptionImFraction: 0.13, shortOptionGrossNotionalFraction: 0.3, portfolioMarginNettingFactor: 1 }));
+  const portfolio = simulateModelBVolume(modelB({ seed: 7, shortOptionImFraction: 0.13, shortOptionGrossNotionalFraction: 0.3, portfolioMarginNettingFactor: 0.45 }));
+  assert.equal(isolated.ok, true);
+  assert.equal(portfolio.ok, true);
+  if (!isolated.ok || !portfolio.ok) return;
+  assert.ok(portfolio.shortOptionMarginUsdc < isolated.shortOptionMarginUsdc, "PM nets long vs short ⟹ less margin");
+  assert.ok(Math.abs(portfolio.shortOptionMarginUsdc - 0.45 * isolated.shortOptionMarginUsdc) < 1);
+});
+
+test("Model B: feasibility surfaces as a function of the (unknown) Foxify fee level", () => {
+  const lowFee = simulateModelBVolume(modelB({ creditBpsOfNotional: 8, atmIv: 0.35, skewSlopePer10pct: 0.06 }));
+  const highFee = simulateModelBVolume(modelB({ creditBpsOfNotional: 40, atmIv: 0.35, skewSlopePer10pct: 0.06 }));
+  assert.equal(lowFee.ok, true);
+  assert.equal(highFee.ok, true);
+  if (!lowFee.ok || !highFee.ok) return;
+  assert.ok(lowFee.feasibilityRate >= highFee.feasibilityRate,
+    "a smaller credit/notional ratio is at least as fundable against skew");
+});

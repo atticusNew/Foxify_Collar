@@ -1,0 +1,116 @@
+# Render blueprint — credit-collar pricing-measurement harness (READ/QUOTE-ONLY, NO trading).
+#
+# Deploys the harness to Render for venue connectivity (Bullish + Deribit + OKX public market data).
+# It runs on a schedule and logs, on each run, the measured spreads/depth, the daily-option-listing
+# answer, the $50k/$<fee> credit + feasibility, the service-fee-survives verdict per ramp tier, and
+# the routing recommendation. NO API keys, NO order placement.
+#
+# Deploy: connect this blueprint in the Render dashboard (New > Blueprint) on this branch, OR add the
+# cron service to the existing blueprint. Set HARNESS_FEE_USDC=75 once Foxify confirms the fee.
+# Run on demand from the Render shell:  npm --workspace services/api run harness:pricing
+
+services:
+  - type: cron
+    name: foxify-credit-collar-pricing-harness
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/credit-collar-phase-a-c13c
+    # Every 30 min during the measurement window; adjust/disable once captures are sufficient.
+    schedule: "*/30 * * * *"
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api run harness:pricing
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Foxify fee target — leave unset until confirmed; report flags it as a blocker. Then set "75".
+      - key: HARNESS_FEE_USDC
+        sync: false
+      - key: HARNESS_SERVICE_FEE_BPS
+        value: "2"
+      - key: HARNESS_MIN_SERVICE_FEE_USDC
+        value: "10"
+      - key: HARNESS_TENOR_DAYS
+        value: "1"
+      - key: HARNESS_MAX_FLOOR_PCT
+        value: "0.04"
+      - key: HARNESS_PEAK_RESIDUAL_PCT
+        value: "0.11"
+      - key: HARNESS_BULLISH_WEIGHT
+        value: "0.15"
+      - key: HARNESS_FETCH_TIMEOUT_MS
+        value: "8000"
+      # Public REST bases (override here if a region/mirror is needed):
+      - key: DERIBIT_REST_BASE
+        value: "https://www.deribit.com/api/v2"
+      - key: OKX_REST_BASE
+        value: "https://www.okx.com"
+      - key: BULLISH_REST_BASE
+        value: "https://api.exchange.bullish.com"
+
+  # ── Tier-0 SHADOW service: dashboard + shadow loop (paper-settled, NO trading, live tiers OFF) ──
+  # A WEB service (so it serves the read-only dashboard) with a persistent DISK (so the scorecard
+  # track record accumulates). It runs a shadow lifecycle every SHADOW_LOOP_INTERVAL_MS AND serves:
+  #   /  (HTML dashboard: scorecard + RUNNING heartbeat) · /api/scorecard · /api/health · /healthz
+  # Set HARNESS_FEE_USDC=75. For audit continuity set ORACLE_PRIVATE_KEY_PEM / ORACLE_PUBLIC_KEY_PEM
+  # (ECDSA P-256). Optional read-only dashboard token: SHADOW_DASHBOARD_TOKEN.
+  - type: web
+    name: foxify-credit-collar-shadow
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/credit-collar-phase-a-c13c
+    healthCheckPath: /healthz
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api run shadow:service
+    disk:
+      name: shadow-track-record
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HARNESS_FEE_USDC
+        sync: false
+      # Worker loop: one shadow session every 15 min, appended to the disk-backed JSONL track record.
+      - key: SHADOW_LOOP_INTERVAL_MS
+        value: "900000"
+      - key: SHADOW_STORE_PATH
+        value: "/var/data/shadow-scorecards.jsonl"
+      - key: SHADOW_N_POSITIONS
+        value: "20"
+      - key: SHADOW_POSITION_USDC
+        value: "50000"
+      - key: SHADOW_TIER0_CAP_USDC
+        value: "1000000"
+      - key: SHADOW_SETTLEMENT_WINDOW_MIN
+        value: "30"
+      - key: HARNESS_TENOR_DAYS
+        value: "1"
+      - key: HARNESS_MAX_FLOOR_PCT
+        value: "0.04"
+      - key: HARNESS_SERVICE_FEE_BPS
+        value: "2"
+      # Capital-aware net bps inputs — MEASURED on Deribit (margin sweep + PM-netting), not assumed.
+      - key: SHADOW_SHORT_OPTION_IM_FRACTION
+        value: "0.1393"   # short-leg IM / notional (sweep, conservative/worst observed)
+      - key: SHADOW_SHORT_OPTION_GROSS_FRACTION
+        value: "1.0"      # share of open book carried as short options (~24h tenor ⟹ full book)
+      - key: SHADOW_PM_NETTING
+        value: "0.2216"   # measured balanced-book PM netting (Deribit simulate_portfolio, widest-strike/conservative)
+      - key: SHADOW_COST_OF_CAPITAL
+        value: "0.12"
+      # ECDSA settlement-oracle keys (optional; ephemeral if unset). NEVER commit the private key.
+      - key: ORACLE_PRIVATE_KEY_PEM
+        sync: false
+      - key: ORACLE_PUBLIC_KEY_PEM
+        sync: false
+      # Optional read-only dashboard bearer token (leave unset for an open read-only page).
+      - key: SHADOW_DASHBOARD_TOKEN
+        sync: false
+      - key: DERIBIT_REST_BASE
+        value: "https://www.deribit.com/api/v2"
+      - key: OKX_REST_BASE
+        value: "https://www.okx.com"
+      - key: BULLISH_REST_BASE
+        value: "https://api.exchange.bullish.com"
