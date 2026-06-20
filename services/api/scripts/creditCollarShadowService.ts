@@ -12,6 +12,7 @@
 import { createServer } from "node:http";
 import { runLiveShadowSession, type LiveShadowConfig } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
 import { runForwardShadowCycle, loadSettlementAggregate } from "../src/singleSide/twoSided/creditCollar/forwardShadow";
+import { buildPartnerFeedFromEnv } from "../src/singleSide/twoSided/creditCollar/partnerFeedFactory";
 import { appendScorecard, loadScorecards } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowLifecycleReport } from "../src/singleSide/twoSided/creditCollar/lifecycleShadow";
@@ -43,6 +44,12 @@ const rollingTickHistory = {
   maxTicks: num(process.env.SHADOW_TICK_HISTORY_MAX, 192),
   maxAgeMs: num(process.env.SHADOW_TICK_HISTORY_MAX_AGE_MS, 24 * 3_600_000)
 };
+
+// Live partner-position feed (read-only): when PARTNER_FEED_URL is set, the lifecycle coordinator
+// drives the FSM on live data — orphan-cancel, close-SLA gap allocation, breach forfeit. Unset ⟹ the
+// coordinator stays dormant (the feed is the remaining external integration with Foxify's exchange).
+const partnerFeed = buildPartnerFeedFromEnv() ?? undefined;
+if (partnerFeed) console.error("[shadow-svc] partner feed configured ⟹ lifecycle coordinator ACTIVE (perp↔collar SLA/gap/orphan on live data)");
 
 // Measured capital inputs (Deribit margin sweep + PM-netting) → capital-aware net bps on the dashboard.
 const capitalConfig = {
@@ -113,7 +120,11 @@ const runCycle = async () => {
           fullTenorMs: cfg.tenorDays * 86_400_000,
           basisMaxBps: num(process.env.SHADOW_BASIS_MAX_BPS, 25),
           initialCollateralUsdc: num(process.env.SHADOW_COLLATERAL_USDC, 250_000),
-          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 25_000)
+          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 25_000),
+          partnerFeed,
+          closeSlaMs: num(process.env.SHADOW_CLOSE_SLA_MS, 30_000),
+          reopenCooldownMs: num(process.env.SHADOW_REOPEN_COOLDOWN_MS, 60_000),
+          maxStalenessMs: num(process.env.PARTNER_FEED_MAX_STALENESS_MS, 15_000)
         }
       });
       if (res.ok) {
