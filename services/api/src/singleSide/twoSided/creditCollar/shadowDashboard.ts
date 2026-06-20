@@ -176,7 +176,8 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Settled", String(m.settlement.settledPositions), `avg held ${m.settlement.avgHeldHours}h`)}
     ${card("Book net payout", `${m.settlement.bookNetPayoutBps} bps`, `$${m.settlement.totalPayoutToFoxifyUsdc} (delta-flat ⟹ ~0)`)}
     ${card("Floor paid", pct(m.settlement.pctFloorBreached), `cap hit ${pct(m.settlement.pctCapBreached)}`)}
-    ${card("Realized fee", `$${m.settlement.totalServiceFeeUsdc}`, "Atticus margin (settled)")}
+    ${card("Realized fee", `$${m.settlement.totalServiceFeeUsdc}`, `${m.settlement.realizedServiceFeeBps} bps gross`)}
+    ${card("Net after capital", `$${m.settlement.totalAtticusNetAfterCapitalUsdc}`, `${m.settlement.capitalAwareNetServiceFeeBps} bps · −$${m.settlement.totalCapitalCostUsdc} IM cost · peak IM $${m.settlement.peakShortLegMarginUsdc}`)}
     ${card("Net to Foxify", `$${m.settlement.totalNetToFoxifyUsdc}`, `credit $${m.settlement.totalCreditAccruedUsdc} + payout`)}
     ${card("Payout range", `$${m.settlement.worstPayoutUsdc} … $${m.settlement.bestPayoutUsdc}`, `avg $${m.settlement.avgPayoutPerPositionUsdc}`)}
   </div>`

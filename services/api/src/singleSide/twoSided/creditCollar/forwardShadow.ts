@@ -29,7 +29,11 @@ export type ForwardCycleResult =
     }
   | { ok: false; error: string; message: string };
 
-export type ForwardCycleConfig = LiveShadowConfig & { settlementHorizonMin?: number };
+export type ForwardCycleConfig = LiveShadowConfig & {
+  settlementHorizonMin?: number;
+  /** Measured capital inputs (Deribit) so settled positions report P&L net of the IM they tied up. */
+  capital?: import("./forwardSettlement").SettlementCapitalConfig;
+};
 
 export const runForwardShadowCycle = async (
   cfg: ForwardCycleConfig,
@@ -42,7 +46,7 @@ export const runForwardShadowCycle = async (
 
   // 1) Settle matured positions at the current ECDSA-verified TWAP (real later price).
   const open = loadOpenPositions(paths.openPath);
-  const { settled, stillOpen, oracleVerified, settlePriceUsd, deferred } = settleMatured(open, now, oracle);
+  const { settled, stillOpen, oracleVerified, settlePriceUsd, deferred } = settleMatured(open, now, oracle, cfg.capital);
   appendSettlements(settled, paths.ledgerPath);
   const settledPayout = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
 

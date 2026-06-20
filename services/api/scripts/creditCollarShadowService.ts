@@ -77,7 +77,15 @@ const runCycle = async () => {
     status.cyclesRun += 1;
     status.lastRunAtMs = Date.now();
     if (forwardSettle) {
-      const res = await runForwardShadowCycle({ ...cfg, settlementHorizonMin });
+      const res = await runForwardShadowCycle({
+        ...cfg,
+        settlementHorizonMin,
+        capital: {
+          shortOptionImFraction: capitalConfig.shortOptionImFraction,
+          portfolioMarginNettingFactor: capitalConfig.portfolioMarginNettingFactor,
+          costOfCapitalAnnual: capitalConfig.costOfCapitalAnnual
+        }
+      });
       if (res.ok) {
         appendScorecard({ tsMs: status.lastRunAtMs, scorecard: res.openingScorecard, spotUsd: res.meta.spotUsd, oracleSources: res.meta.oracleSources });
         status.lastRunOk = true;

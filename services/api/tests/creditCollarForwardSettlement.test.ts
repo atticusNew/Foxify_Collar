@@ -105,10 +105,38 @@ test("aggregateSettlements: realized economics incl. delta-neutral book net + fl
   assert.ok(agg.pctFloorBreached > 0);
 });
 
+test("settleMatured: folds measured short-leg IM into per-position capital + net-after-capital", () => {
+  // 2h hold; notional 50k; IM 13.93%/notional × PM 0.2216; 12%/yr.
+  const oracle = oracleAt(99_000);
+  const cap = { shortOptionImFraction: 0.1393, portfolioMarginNettingFactor: 0.2216, costOfCapitalAnnual: 0.12 };
+  const r = settleMatured([pos({ ref: "c", openedAtMs: NOW - 2 * 3_600_000, expiresAtMs: NOW - 60_000 })], NOW, oracle, cap);
+  assert.equal(r.settled.length, 1);
+  const o = r.settled[0];
+  // shortLegMargin = 50000 × 0.1393 × 0.2216 ≈ 1543.6
+  assert.ok(Math.abs(o.shortLegMarginUsdc - 50_000 * 0.1393 * 0.2216) < 1, `got ${o.shortLegMarginUsdc}`);
+  // capitalCost = IM × 0.12 × (2h / 8760h) ≈ tiny
+  const expectedCost = o.shortLegMarginUsdc * 0.12 * (2 / 8760);
+  assert.ok(Math.abs(o.capitalCostUsdc - expectedCost) < 0.01, `got ${o.capitalCostUsdc}`);
+  assert.ok(Math.abs(o.atticusNetAfterCapitalUsdc - (o.serviceFeeUsdc - o.capitalCostUsdc)) < 1e-6);
+});
+
+test("aggregateSettlements: capital-aware net bps below gross service-fee bps", () => {
+  const oracle = oracleAt(99_000);
+  const cap = { shortOptionImFraction: 0.1393, portfolioMarginNettingFactor: 1.0, costOfCapitalAnnual: 0.12 };
+  // Long hold (24h) so the capital drag is material.
+  const settled = settleMatured([pos({ ref: "x", openedAtMs: NOW - 24 * 3_600_000, expiresAtMs: NOW - 60_000 })], NOW, oracle, cap).settled;
+  const agg = aggregateSettlements(settled);
+  assert.ok(agg.totalCapitalCostUsdc > 0);
+  assert.ok(agg.peakShortLegMarginUsdc > 0);
+  assert.ok(agg.capitalAwareNetServiceFeeBps < agg.realizedServiceFeeBps, "capital drag lowers net bps");
+});
+
 test("aggregateSettlements: empty is well-defined", () => {
   const agg = aggregateSettlements([]);
   assert.equal(agg.settledPositions, 0);
   assert.equal(agg.bookNetPayoutBps, 0);
+  assert.equal(agg.capitalAwareNetServiceFeeBps, 0);
+  assert.equal(agg.totalCapitalCostUsdc, 0);
 });
 
 test("store: open positions replace; settlements append; round-trip", () => {

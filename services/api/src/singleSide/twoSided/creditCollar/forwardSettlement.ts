@@ -44,7 +44,23 @@ export type SettlementOutcome = {
   openedAtMs: number;
   settledAtMs: number;
   heldMs: number;
+  // ── Capital (measured short-leg IM, Deribit) ──
+  shortLegMarginUsdc: number;          // IM posted to carry this position's short option leg
+  capitalCostUsdc: number;             // cost-of-capital on that IM over the actual holding period
+  atticusNetAfterCapitalUsdc: number;  // serviceFee − capitalCost (the real margin net of capital)
 };
+
+/**
+ * Measured capital inputs (Deribit margin sweep + PM-netting). Short-leg IM as a fraction of notional,
+ * the portfolio-margin netting that applies on a balanced book, and the annual cost of that capital.
+ */
+export type SettlementCapitalConfig = {
+  shortOptionImFraction?: number;        // default 0.1393 (sweep, conservative)
+  portfolioMarginNettingFactor?: number; // default 1.0 (isolated); ~0.2216 measured on PM
+  costOfCapitalAnnual?: number;          // default 0.12
+};
+
+const YEAR_MS = 365 * 86_400_000;
 
 const round2 = (x: number) => +x.toFixed(2);
 
@@ -88,12 +104,16 @@ export type CycleOracle = {
 export const settleMatured = (
   open: OpenPosition[],
   nowMs: number,
-  oracle: CycleOracle
+  oracle: CycleOracle,
+  capital: SettlementCapitalConfig = {}
 ): { settled: SettlementOutcome[]; stillOpen: OpenPosition[]; oracleVerified: boolean; settlePriceUsd: number | null; deferred: number } => {
   const oracleVerified = verifySnapshot(oracle.snapshot, oracle.signatureHex, oracle.publicKeyPem);
   const twap = computeSettlementTwap(oracle.settlementTwapTicks, oracle.windowStartMs, oracle.windowEndMs);
   const canSettle = oracleVerified && twap.ok;
   const settlePriceUsd = twap.ok ? twap.twapUsd : null;
+  const imFraction = capital.shortOptionImFraction ?? 0.1393;
+  const pmNetting = capital.portfolioMarginNettingFactor ?? 1.0;
+  const coc = capital.costOfCapitalAnnual ?? 0.12;
 
   const settled: SettlementOutcome[] = [];
   const stillOpen: OpenPosition[] = [];
@@ -111,6 +131,10 @@ export const settleMatured = (
       continue;
     }
     const s = computeCollarSettlement(p, settlePriceUsd);
+    const heldMs = nowMs - p.openedAtMs;
+    // Capital: IM posted to carry this position's short option leg, costed over the real holding period.
+    const shortLegMargin = p.notionalUsdc * imFraction * pmNetting;
+    const capitalCost = shortLegMargin * coc * (Math.max(0, heldMs) / YEAR_MS);
     settled.push({
       ref: p.ref,
       side: p.side,
@@ -129,7 +153,10 @@ export const settleMatured = (
       oracleVerified: true,
       openedAtMs: p.openedAtMs,
       settledAtMs: nowMs,
-      heldMs: nowMs - p.openedAtMs
+      heldMs,
+      shortLegMarginUsdc: round2(shortLegMargin),
+      capitalCostUsdc: round2(capitalCost),
+      atticusNetAfterCapitalUsdc: round2(p.serviceFeeUsdc - capitalCost)
     });
   }
   return { settled, stillOpen, oracleVerified, settlePriceUsd, deferred };
@@ -152,6 +179,12 @@ export type SettlementAggregate = {
   bestPayoutUsdc: number;
   avgHeldHours: number;
   oracleVerifiedRate: number;
+  // ── Capital-aware (measured short-leg IM) ──
+  peakShortLegMarginUsdc: number;        // max single-position IM (point-in-time capital proxy)
+  totalCapitalCostUsdc: number;          // summed cost-of-capital over holding periods
+  totalAtticusNetAfterCapitalUsdc: number; // serviceFee − capital cost, book level
+  realizedServiceFeeBps: number;         // serviceFee / notional × 1e4
+  capitalAwareNetServiceFeeBps: number;  // (serviceFee − capitalCost) / notional × 1e4
 };
 
 export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementAggregate => {
@@ -160,7 +193,8 @@ export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementA
     return {
       settledPositions: 0, totalNotionalUsdc: 0, totalPayoutToFoxifyUsdc: 0, bookNetPayoutBps: 0,
       totalServiceFeeUsdc: 0, totalCreditAccruedUsdc: 0, totalNetToFoxifyUsdc: 0, pctFloorBreached: 0,
-      pctCapBreached: 0, avgPayoutPerPositionUsdc: 0, worstPayoutUsdc: 0, bestPayoutUsdc: 0, avgHeldHours: 0, oracleVerifiedRate: 0
+      pctCapBreached: 0, avgPayoutPerPositionUsdc: 0, worstPayoutUsdc: 0, bestPayoutUsdc: 0, avgHeldHours: 0, oracleVerifiedRate: 0,
+      peakShortLegMarginUsdc: 0, totalCapitalCostUsdc: 0, totalAtticusNetAfterCapitalUsdc: 0, realizedServiceFeeBps: 0, capitalAwareNetServiceFeeBps: 0
     };
   }
   const notional = outcomes.reduce((s, o) => s + o.notionalUsdc, 0);
@@ -168,6 +202,9 @@ export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementA
   const fee = outcomes.reduce((s, o) => s + o.serviceFeeUsdc, 0);
   const credit = outcomes.reduce((s, o) => s + o.foxifyCreditUsdc, 0);
   const net = outcomes.reduce((s, o) => s + o.netToFoxifyUsdc, 0);
+  const capitalCost = outcomes.reduce((s, o) => s + (o.capitalCostUsdc ?? 0), 0);
+  const atticusNetAfterCapital = outcomes.reduce((s, o) => s + (o.atticusNetAfterCapitalUsdc ?? o.serviceFeeUsdc), 0);
+  const peakMargin = outcomes.reduce((m, o) => Math.max(m, o.shortLegMarginUsdc ?? 0), 0);
   const payouts = outcomes.map((o) => o.payoutToFoxifyUsdc);
   return {
     settledPositions: n,
@@ -183,6 +220,11 @@ export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementA
     worstPayoutUsdc: round2(Math.min(...payouts)),
     bestPayoutUsdc: round2(Math.max(...payouts)),
     avgHeldHours: +(outcomes.reduce((s, o) => s + o.heldMs, 0) / n / 3_600_000).toFixed(2),
-    oracleVerifiedRate: +(outcomes.filter((o) => o.oracleVerified).length / n).toFixed(4)
+    oracleVerifiedRate: +(outcomes.filter((o) => o.oracleVerified).length / n).toFixed(4),
+    peakShortLegMarginUsdc: round2(peakMargin),
+    totalCapitalCostUsdc: round2(capitalCost),
+    totalAtticusNetAfterCapitalUsdc: round2(atticusNetAfterCapital),
+    realizedServiceFeeBps: notional > 0 ? +((fee / notional) * 1e4).toFixed(4) : 0,
+    capitalAwareNetServiceFeeBps: notional > 0 ? +(((fee - capitalCost) / notional) * 1e4).toFixed(4) : 0
   };
 };
