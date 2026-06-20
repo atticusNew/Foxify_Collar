@@ -74,17 +74,27 @@ test("aggregate: too few sessions ⟹ WATCH (not CLEAN) even if clean", () => {
   assert.ok(agg.flags.some((f) => /session/.test(f)));
 });
 
-test("aggregate: reconciliation drift or oracle failure ⟹ DEGRADED", () => {
+test("aggregate: MATERIAL recent failures ⟹ DEGRADED", () => {
+  // A recent cluster of reconciliation drift (well above the 10% recent threshold).
   const records = [
-    ...Array.from({ length: 11 }, (_, i) => rec(i)),
-    rec(99, { allReconciled: false }),
-    rec(100, { allSettledOracleVerified: false, lifecycleComplete: false })
+    ...Array.from({ length: 6 }, (_, i) => rec(i)),
+    ...Array.from({ length: 6 }, (_, i) => rec(100 + i, { allReconciled: false }))
   ];
   const agg = aggregateShadowScorecards(records);
   assert.equal(agg.verdict, "DEGRADED");
-  assert.equal(agg.reconciliation.sessionsWithDrift, 1);
   assert.ok(agg.flags.some((f) => /reconciliation drift/.test(f)));
-  assert.ok(agg.flags.some((f) => /oracle verification failed/.test(f)));
+});
+
+test("aggregate: a SINGLE old blip among many clean ⟹ WATCH, not DEGRADED (transient-tolerant)", () => {
+  // One ancient failure, then 30 clean recent sessions — the recent window is clean ⟹ not DEGRADED.
+  const records = [
+    rec(1, { allSettledOracleVerified: false, allReconciled: false, lifecycleComplete: false }),
+    ...Array.from({ length: 30 }, (_, i) => rec(1000 + i))
+  ];
+  const agg = aggregateShadowScorecards(records);
+  assert.equal(agg.verdict, "WATCH", "a lone historical blip must not permanently alarm");
+  // The all-time blip still shows up as an informational flag.
+  assert.ok(agg.flags.some((f) => /oracle verification failed|reconciliation drift|lifecycle incomplete/.test(f)));
 });
 
 test("aggregate: exposure breach beyond band is flagged", () => {

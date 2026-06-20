@@ -89,6 +89,8 @@ export type ShadowAggregateConfig = {
   minSessionsForClean?: number;
   /** Target service-fee bps to compare realized against (default 2). */
   targetServiceFeeBps?: number;
+  /** Sessions in the recent window used for the DEGRADED alarm (default 25). */
+  recentWindowForVerdict?: number;
   /** Measured capital inputs (Deribit margin sweep + PM-netting). Drives capital-aware net bps. */
   capital?: {
     shortOptionImFraction?: number;            // measured IM / notional (default 0.1393, sweep conservative)
@@ -175,7 +177,18 @@ export const aggregateShadowScorecards = (records: ShadowRunRecord[], cfg: Shado
     if (sessions < minClean) flags.push(`only ${sessions} session(s) — need ≥ ${minClean} for a CLEAN verdict`);
   }
 
-  const hardFail = sessions > 0 && (allVerifiedRate < 1 || withDrift > 0 || lifecycleCompleteRate < 0.9);
+  // DEGRADED is a MATERIAL, RECENT alarm — not a single historical blip. Compute the failure rates
+  // over the most recent window; a lone old failure drops CLEAN→WATCH (via the all-time `clean` gate
+  // below), but only a recent CLUSTER trips DEGRADED.
+  const recentWindow = cfg.recentWindowForVerdict ?? 25;
+  const recent = [...records].sort((a, b) => b.tsMs - a.tsMs).slice(0, recentWindow).map((r) => r.scorecard);
+  const rN = recent.length;
+  const rUnverifiedRate = rN > 0 ? recent.filter((s) => !s.allSettledOracleVerified).length / rN : 0;
+  const rDriftRate = rN > 0 ? recent.filter((s) => !s.allReconciled).length / rN : 0;
+  const rLifecycleIncompleteRate = rN > 0 ? recent.filter((s) => !s.lifecycleComplete).length / rN : 0;
+  const rExposureBreach = recent.some((s) => s.peakNetExposureRatio > band + 1e-9);
+  const hardFail = rN > 0 && (rUnverifiedRate > 0.1 || rDriftRate > 0.1 || rLifecycleIncompleteRate > 0.2 || rExposureBreach);
+
   const clean = sessions >= minClean && allVerifiedRate === 1 && allReconciledRate === 1 && lifecycleCompleteRate >= 0.95 && maxPeakRatio <= band + 1e-9 && oracleHealthyRate >= 0.9;
   const verdict: ShadowAggregate["verdict"] = sessions === 0 ? "NO_DATA" : hardFail ? "DEGRADED" : clean ? "TRACK_RECORD_CLEAN" : "WATCH";
 
