@@ -18,6 +18,9 @@ import { loadTickHistory, saveTickHistory, rollTickHistory, type RollConfig } fr
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
+import { stepLifecycleBook, seedTracked, checkReopenCooldowns, type CoordinatorOutcome } from "./lifecycleCoordinator";
+import { loadLifecycleStates, saveLifecycleStates, loadLifecycleHistory, saveLifecycleHistory, type TrackedPosition, type LifecycleHistory } from "./lifecycleStateStore";
+import type { PartnerPositionState } from "./barrierLifecycle";
 
 export type ForwardCycleResult =
   | {
@@ -32,6 +35,8 @@ export type ForwardCycleResult =
       settlePriceUsd: number | null;
       oracleVerified: boolean;
       lifecycle: ShadowLifecycleReport;
+      /** Lifecycle-coordinator summary when a partner feed drives the FSM (null otherwise). */
+      coordinator: CoordinatorOutcome["summary"] & { active: boolean; cherryPick: boolean } | null;
       meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] };
     }
   | { ok: false; error: string; message: string };
@@ -63,12 +68,20 @@ export type ForwardCycleConfig = LiveShadowConfig & {
     partnerFeed?: PartnerPositionFeed;
     maxStalenessMs?: number;       // partner-feed staleness tolerance (default 15_000)
     sizeTolerancePct?: number;     // partner size vs notional tolerance (default 0.02)
+    /**
+     * Drive the lifecycle FSM (orphan-cancel, close-SLA gap, breach forfeit) from the partner feed.
+     * Only takes effect when partnerFeed is set. Default true when a feed is present.
+     */
+    driveLifecycle?: boolean;
+    closeSlaMs?: number;           // max ms from close signal to confirmed perp close (default 30_000)
+    reopenCooldownMs?: number;     // anti-churn cooldown for reopening a line (default 60_000)
+    cherryPick?: { minPerSide?: number; maxGap?: number }; // asymmetric-compliance detector thresholds
   };
 };
 
 export const runForwardShadowCycle = async (
   cfg: ForwardCycleConfig,
-  paths: { openPath?: string; ledgerPath?: string; tickHistoryPath?: string } = {}
+  paths: { openPath?: string; ledgerPath?: string; tickHistoryPath?: string; lifecycleStatePath?: string; lifecycleHistoryPath?: string } = {}
 ): Promise<ForwardCycleResult> => {
   const built = await buildLiveShadowInputs(cfg);
   if (!built.ok) return { ok: false, error: built.error, message: built.message };
@@ -89,12 +102,75 @@ export const runForwardShadowCycle = async (
     }
   }
 
-  // 1) Settle the open book under the touch-first / European-fallback model. A confirmed barrier touch
-  //    settles at the strike (hedge margin released early); otherwise a matured position settles
-  //    European on the verified TWAP. Fail-closed on an unverifiable oracle.
-  const open = loadOpenPositions(paths.openPath);
+  // ── Setup: economic book, collateral ledger, lifecycle config ────────────────
+  const priorOpen = loadOpenPositions(paths.openPath);
+  const lcCfg = cfg.lifecycle ?? {};
+  const minBuffer = lcCfg.minCollateralBufferUsdc ?? 25_000;
+  let ledger = loadLedger(lcCfg.initialCollateralUsdc ?? 250_000, { minBufferUsdc: minBuffer });
+  const driveLifecycle = !!lcCfg.partnerFeed && (lcCfg.driveLifecycle ?? true);
+
+  // 1) Lifecycle COORDINATOR (when a partner feed drives the FSM): reconcile perp↔collar, run the state
+  //    machine, allocate close-SLA gaps, and identify ORPHAN-CANCELS — all BEFORE economic settlement.
+  let coordinator: CoordinatorOutcome | null = null;
+  let coordinatorStates: Record<string, TrackedPosition> = {};
+  let cancelledSet = new Set<string>();
+  let partnerStates: Record<string, PartnerPositionState> | undefined;
+  let partnerFeedHealthy = true;
+  let cooldownFlags: string[] = [];
+  let history: LifecycleHistory = { closeHistory: [], lastCloseByRef: {} };
+
+  if (driveLifecycle && lcCfg.partnerFeed) {
+    const priorStates = loadLifecycleStates(paths.lifecycleStatePath);
+    history = loadLifecycleHistory(paths.lifecycleHistoryPath);
+    const trackedOnly = Object.values(priorStates).filter((s) => !priorOpen.some((p) => p.ref === s.ref));
+    const refsForFeed = [...priorOpen.map((p) => p.ref), ...trackedOnly.map((s) => s.ref)];
+    try {
+      const records = await lcCfg.partnerFeed.fetchPositions(refsForFeed);
+      const rc = reconcilePositions(
+        [
+          ...priorOpen.map((p) => ({ ref: p.ref, notionalUsdc: p.notionalUsdc })),
+          ...trackedOnly.map((s) => ({ ref: s.ref, notionalUsdc: s.notionalUsdc }))
+        ],
+        records,
+        now,
+        { maxStalenessMs: lcCfg.maxStalenessMs, sizeTolerancePct: lcCfg.sizeTolerancePct }
+      );
+      partnerStates = rc.byRef;
+      partnerFeedHealthy = rc.summary.feedHealthy;
+    } catch {
+      partnerFeedHealthy = false; // feed failure ⟹ degraded (fail-closed; missing ⟹ assume open)
+      partnerStates = {};
+    }
+    coordinator = stepLifecycleBook(
+      priorStates,
+      priorOpen,
+      {
+        nowMs: now,
+        ticks: oracle.settlementTwapTicks,
+        partnerStates: partnerStates ?? {},
+        settlePriceUsd: oracle.snapshot.priceUsd ?? spot,
+        ledger,
+        closeHistory: history.closeHistory,
+        lastCloseByRef: history.lastCloseByRef
+      },
+      {
+        lifecycle: { persistTicks: cfg.settlement?.persistTicks ?? 3, closeSlaMs: lcCfg.closeSlaMs, reopenCooldownMs: lcCfg.reopenCooldownMs, sizeTolerancePct: lcCfg.sizeTolerancePct },
+        vesting: cfg.settlement?.vesting,
+        collateral: { minBufferUsdc: minBuffer },
+        cherryPick: lcCfg.cherryPick
+      }
+    );
+    ledger = coordinator.ledger;
+    coordinatorStates = coordinator.states;
+    cancelledSet = new Set(coordinator.cancelledRefs);
+    history = { closeHistory: coordinator.closeHistory, lastCloseByRef: coordinator.lastCloseByRef };
+  }
+
+  // 2) Economic settlement (touch-first / European). Orphan-cancelled positions are EXCLUDED — they're
+  //    cancelled, not matured/touched, so they never get a normal settlement.
+  const settleable = cancelledSet.size ? priorOpen.filter((p) => !cancelledSet.has(p.ref)) : priorOpen;
   const { settled, stillOpen, oracleVerified, settlePriceUsd, deferred, touchSettled, europeanSettled } = settleMatured(
-    open,
+    settleable,
     now,
     oracle,
     cfg.capital,
@@ -103,7 +179,7 @@ export const runForwardShadowCycle = async (
   appendSettlements(settled, paths.ledgerPath);
   const settledPayout = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
 
-  // 2) Open a new steered batch (settlement DEFERRED to expiry).
+  // 3) Open a new steered batch (settlement DEFERRED to expiry).
   const scaffold = new CreditCollarActivationScaffold(scaffoldConfig, skew);
   const band = scaffoldConfig.policy.targetNetBandPct;
   const minGross = scaffoldConfig.breaker.minGrossNotionalUsd ?? 0;
@@ -157,15 +233,21 @@ export const runForwardShadowCycle = async (
   const openBook = [...stillOpen, ...newOpens];
   saveOpenPositions(openBook, paths.openPath);
 
-  // 3) Lifecycle overlay: exercise vesting + collateral + basis over the live open book.
-  const lcCfg = cfg.lifecycle ?? {};
-  const minBuffer = lcCfg.minCollateralBufferUsdc ?? 25_000;
-  const ledger0 = loadLedger(lcCfg.initialCollateralUsdc ?? 250_000, { minBufferUsdc: minBuffer });
+  // 3a) Persist FSM state: surviving coordinator states + seed this cycle's new opens as "proposed".
+  if (driveLifecycle) {
+    const nextStates: Record<string, TrackedPosition> = { ...coordinatorStates };
+    for (const p of newOpens) nextStates[p.ref] = seedTracked(p);
+    saveLifecycleStates(nextStates, paths.lifecycleStatePath);
+    cooldownFlags = checkReopenCooldowns(
+      newOpens.map((p) => ({ ref: p.ref, openedAtMs: p.openedAtMs })),
+      history.lastCloseByRef,
+      lcCfg.reopenCooldownMs ?? 60_000
+    ).map((f) => ("ref" in f && f.ref ? `${f.kind}:${f.ref}` : f.kind));
+    saveLifecycleHistory(history, paths.lifecycleHistoryPath);
+  }
 
-  // Optional: reconcile the open book against a live partner-position feed (read-only, independent).
-  let partnerStates: Record<string, import("./barrierLifecycle").PartnerPositionState> | undefined;
-  let partnerFeedHealthy = true;
-  if (lcCfg.partnerFeed) {
+  // 3b) Non-coordinator partner fetch (overlay-only reconciliation) when the FSM isn't driving.
+  if (lcCfg.partnerFeed && !driveLifecycle) {
     try {
       const records = await lcCfg.partnerFeed.fetchPositions(openBook.map((p) => p.ref));
       const rec = reconcilePositions(openBook.map((p) => ({ ref: p.ref, notionalUsdc: p.notionalUsdc })), records, now, { maxStalenessMs: lcCfg.maxStalenessMs, sizeTolerancePct: lcCfg.sizeTolerancePct });
@@ -176,20 +258,28 @@ export const runForwardShadowCycle = async (
     }
   }
 
-  const { report: lifecycle, ledger: ledger1 } = reconcileShadowLifecycle({
+  // 4) Lifecycle overlay (basis + vesting view). When the coordinator is driving it owns gaps/orphans,
+  //    so the overlay's modeled gap is suppressed (modeledTouchGapBps: 0) to avoid double-counting.
+  const { report: lifecycle, ledger: ledgerAfter } = reconcileShadowLifecycle({
     open: openBook,
     nowMs: now,
     ticks: oracle.settlementTwapTicks,
     oracleMedianUsd: oracle.snapshot.priceUsd ?? spot,
     usableSamples: oracle.snapshot.usableSamples,
-    ledger: ledger0,
+    ledger,
     tenorMs: lcCfg.fullTenorMs ?? cfg.tenorDays * 86_400_000,
     basisMaxBps: lcCfg.basisMaxBps ?? 25,
     persistTicks: 3,
+    modeledTouchGapBps: driveLifecycle ? 0 : undefined,
     partnerStates,
     partnerFeedHealthy
   });
-  saveLedger(ledger1);
+  // Merge coordinator + cooldown signals into the report flags (deduped at the source modules).
+  if (coordinator) {
+    for (const f of coordinator.flags) lifecycle.flags.push("ref" in f && f.ref ? `${f.kind}:${f.ref}` : f.kind);
+    lifecycle.flags.push(...cooldownFlags);
+  }
+  saveLedger(ledgerAfter);
 
   const openedNotional = newOpens.reduce((s, p) => s + p.notionalUsdc, 0);
   const openingScorecard: ShadowScorecard = {
@@ -239,6 +329,7 @@ export const runForwardShadowCycle = async (
     settlePriceUsd,
     oracleVerified,
     lifecycle,
+    coordinator: coordinator ? { ...coordinator.summary, active: true, cherryPick: !!coordinator.cherryPickFlag } : null,
     meta
   };
 };

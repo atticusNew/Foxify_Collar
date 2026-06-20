@@ -11,11 +11,21 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolveWritablePath } from "./shadowStore";
-import type { LifecyclePosition } from "./barrierLifecycle";
+import type { BarrierSide, LifecyclePosition } from "./barrierLifecycle";
 
 export type TrackedPosition = LifecyclePosition & { foxifyCreditUsdc: number };
 
+/** Cross-cycle history for the cherry-pick (asymmetric compliance) + reopen-cooldown detectors. */
+export type LifecycleHistory = {
+  closeHistory: Array<{ barrier: BarrierSide; closedOnTime: boolean }>;
+  lastCloseByRef: Record<string, number>;
+};
+
 export const DEFAULT_LIFECYCLE_STATE_PATH = process.env.SHADOW_LIFECYCLE_STATE_PATH ?? "./logs/shadow-lifecycle-state.json";
+export const DEFAULT_LIFECYCLE_HISTORY_PATH = process.env.SHADOW_LIFECYCLE_HISTORY_PATH ?? "./logs/shadow-lifecycle-history.json";
+
+/** Keep the close history bounded — the detectors only need a recent window. */
+const MAX_CLOSE_HISTORY = 500;
 
 export const loadLifecycleStates = (path = DEFAULT_LIFECYCLE_STATE_PATH): Record<string, TrackedPosition> => {
   const eff = resolveWritablePath(path);
@@ -37,5 +47,32 @@ export const saveLifecycleStates = (states: Record<string, TrackedPosition>, pat
     writeFileSync(eff, JSON.stringify(states), "utf8");
   } catch (e) {
     console.warn(`[lifecycle-state] save failed (${(e as Error).message})`);
+  }
+};
+
+export const loadLifecycleHistory = (path = DEFAULT_LIFECYCLE_HISTORY_PATH): LifecycleHistory => {
+  const eff = resolveWritablePath(path);
+  if (!existsSync(eff)) return { closeHistory: [], lastCloseByRef: {} };
+  try {
+    const parsed = JSON.parse(readFileSync(eff, "utf8")) as LifecycleHistory;
+    return {
+      closeHistory: Array.isArray(parsed?.closeHistory) ? parsed.closeHistory : [],
+      lastCloseByRef: parsed?.lastCloseByRef && typeof parsed.lastCloseByRef === "object" ? parsed.lastCloseByRef : {}
+    };
+  } catch {
+    return { closeHistory: [], lastCloseByRef: {} };
+  }
+};
+
+export const saveLifecycleHistory = (history: LifecycleHistory, path = DEFAULT_LIFECYCLE_HISTORY_PATH): void => {
+  const eff = resolveWritablePath(path);
+  const trimmed: LifecycleHistory = {
+    closeHistory: history.closeHistory.slice(-MAX_CLOSE_HISTORY),
+    lastCloseByRef: history.lastCloseByRef
+  };
+  try {
+    writeFileSync(eff, JSON.stringify(trimmed), "utf8");
+  } catch (e) {
+    console.warn(`[lifecycle-history] save failed (${(e as Error).message})`);
   }
 };

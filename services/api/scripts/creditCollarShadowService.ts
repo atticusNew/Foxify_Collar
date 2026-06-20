@@ -122,7 +122,11 @@ const runCycle = async () => {
         status.lastError = null;
         const lc = res.lifecycle;
         latestLifecycle = lc;
-        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} (touch=${res.touchSettledThisCycle} euro=${res.europeanSettledThisCycle}) payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}`);
+        const co = res.coordinator;
+        const coStr = co
+          ? ` | coord: open=${co.open} closeSig=${co.closeSignaled} orphanCxl=${co.orphanCancelled} breach=${co.breached} gapFoxify=$${co.gapToFoxifyUsdc}${co.cherryPick ? " CHERRY-PICK" : ""}`
+          : "";
+        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} (touch=${res.touchSettledThisCycle} euro=${res.europeanSettledThisCycle}) payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}${coStr}`);
       } else {
         status.lastRunOk = false;
         status.lastError = `${res.error}: ${res.message}`;
