@@ -47,6 +47,22 @@ test("dashboard HTML renders and shows RUNNING + verdict", () => {
   assert.ok(html.includes("/api/scorecard"));
 });
 
+test("dashboard HTML: renders the touch-vs-European settlement-model breakdown", () => {
+  const settlement = {
+    settledPositions: 10, totalNotionalUsdc: 500_000, totalPayoutToFoxifyUsdc: 0, bookNetPayoutBps: 0,
+    totalServiceFeeUsdc: 100, totalCreditAccruedUsdc: 750, totalNetToFoxifyUsdc: 750, pctFloorBreached: 0.3,
+    pctCapBreached: 0.1, touchSettlements: 4, europeanSettlements: 6, pctTouchSettled: 0.4, totalCreditClawbackUsdc: 12.5,
+    avgPayoutPerPositionUsdc: 0, worstPayoutUsdc: 0, bestPayoutUsdc: 0, avgHeldHours: 5, oracleVerifiedRate: 1,
+    peakShortLegMarginUsdc: 6965, totalCapitalCostUsdc: 1.2, totalAtticusNetAfterCapitalUsdc: 98.8,
+    realizedServiceFeeBps: 2, capitalAwareNetServiceFeeBps: 1.97
+  };
+  const html = renderDashboardHtml(buildDashboardModel([rec(NOW - 30_000)], status(), NOW, undefined, settlement));
+  assert.ok(html.includes("Settlement model"), "shows the settlement-model card");
+  assert.ok(html.includes("40% touch") || /40(\.0+)?% touch/.test(html), "shows the touch share");
+  assert.ok(html.includes("4 touch") && html.includes("6 European"));
+  assert.ok(html.includes("clawback"));
+});
+
 test("handler: routes / (html), /api/scorecard (json), /api/health (running), /healthz", () => {
   const deps = { loadRecords: () => [rec(NOW - 30_000)], liveStatus: () => status(), nowMs: () => NOW };
   assert.equal(handleDashboardRequest({ method: "GET", path: "/" }, deps).contentType.includes("text/html"), true);
