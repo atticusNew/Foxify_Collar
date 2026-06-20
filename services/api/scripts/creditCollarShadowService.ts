@@ -36,6 +36,14 @@ const settlementConfig = {
   vesting: { barrierFullVest: String(process.env.SHADOW_BARRIER_FULL_VEST ?? "true").toLowerCase() !== "false" }
 };
 
+// Rolling oracle tick history: append each cycle's verified median so the touch detector sees a real
+// price stream. ON by default so the touch path engages on live data; trimmed to a 24h window.
+const rollingTickHistory = {
+  enabled: String(process.env.SHADOW_TICK_HISTORY ?? "true").toLowerCase() !== "false",
+  maxTicks: num(process.env.SHADOW_TICK_HISTORY_MAX, 192),
+  maxAgeMs: num(process.env.SHADOW_TICK_HISTORY_MAX_AGE_MS, 24 * 3_600_000)
+};
+
 // Measured capital inputs (Deribit margin sweep + PM-netting) → capital-aware net bps on the dashboard.
 const capitalConfig = {
   shortOptionImFraction: num(process.env.SHADOW_SHORT_OPTION_IM_FRACTION, 0.1393),
@@ -100,6 +108,7 @@ const runCycle = async () => {
           costOfCapitalAnnual: capitalConfig.costOfCapitalAnnual
         },
         settlement: settlementConfig,
+        rollingTickHistory,
         lifecycle: {
           fullTenorMs: cfg.tenorDays * 86_400_000,
           basisMaxBps: num(process.env.SHADOW_BASIS_MAX_BPS, 25),

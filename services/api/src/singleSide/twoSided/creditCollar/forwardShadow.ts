@@ -14,6 +14,7 @@ import { buildLiveShadowInputs, type LiveShadowConfig } from "./shadowRunner";
 import type { ShadowScorecard } from "./shadowRunner";
 import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate, type SettlementLifecycleConfig } from "./forwardSettlement";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
+import { loadTickHistory, saveTickHistory, rollTickHistory, type RollConfig } from "./tickHistoryStore";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
@@ -42,10 +43,16 @@ export type ForwardCycleConfig = LiveShadowConfig & {
   /**
    * Settlement model: touch-first / European-fallback. Touch is ON by default; persistTicks is the
    * anti-wick confirmation depth on the oracle tick stream; touchGapBps models slippage past the
-   * barrier. With the synthetic same-price tick stream no touch fires (safe) — feed a real rolling
-   * tick history (SHADOW_BARRIER_*) for the touch path to engage on live data.
+   * barrier.
    */
   settlement?: SettlementLifecycleConfig;
+  /**
+   * Rolling oracle tick history. When enabled, each cycle's verified median is appended to a disk-backed
+   * window and used as the tick stream for BOTH settlement (touch detection) and the lifecycle overlay.
+   * This is what lets the touch path actually engage on live data (the synthetic 2-tick stream never
+   * confirms a touch). Default off ⟹ legacy synthetic ticks (European-only in practice).
+   */
+  rollingTickHistory?: { enabled: boolean } & RollConfig;
   /** Vesting/collateral/basis overlay params. */
   lifecycle?: {
     fullTenorMs?: number;          // tenor used for vesting (defaults to tenorDays)
@@ -61,12 +68,26 @@ export type ForwardCycleConfig = LiveShadowConfig & {
 
 export const runForwardShadowCycle = async (
   cfg: ForwardCycleConfig,
-  paths: { openPath?: string; ledgerPath?: string } = {}
+  paths: { openPath?: string; ledgerPath?: string; tickHistoryPath?: string } = {}
 ): Promise<ForwardCycleResult> => {
   const built = await buildLiveShadowInputs(cfg);
   if (!built.ok) return { ok: false, error: built.error, message: built.message };
   const { skew, spot, scaffoldConfig, oracle, meta } = built.inputs;
   const now = oracle.nowMs;
+
+  // Roll the real oracle tick history: append this cycle's verified median so the touch detector sees a
+  // genuine price stream (not the synthetic same-price 2-tick window). Used for settlement + overlay.
+  if (cfg.rollingTickHistory?.enabled) {
+    const prev = loadTickHistory(paths.tickHistoryPath);
+    const medianUsd = oracle.snapshot.priceUsd ?? spot;
+    const rolled = rollTickHistory(prev, { tsMs: now, priceUsd: medianUsd }, now, cfg.rollingTickHistory);
+    saveTickHistory(rolled, paths.tickHistoryPath);
+    if (rolled.length > 0) {
+      oracle.settlementTwapTicks = rolled;
+      oracle.windowStartMs = rolled[0].tsMs;
+      oracle.windowEndMs = now;
+    }
+  }
 
   // 1) Settle the open book under the touch-first / European-fallback model. A confirmed barrier touch
   //    settles at the strike (hedge margin released early); otherwise a matured position settles
