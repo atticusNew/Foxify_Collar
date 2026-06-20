@@ -232,6 +232,25 @@ test("settleMatured: unverified oracle does NOT touch-settle and defers matured 
   assert.equal(r.stillOpen.length, 1);
 });
 
+test("settleMatured: safeToSettle=false defers ALL settlement (fail-closed basis gate)", () => {
+  const oracle = oracleAt(92_000); // would normally settle the matured position
+  const matured = pos({ ref: "m", expiresAtMs: NOW - 60_000 });
+  const r = settleMatured([matured], NOW, oracle, {}, { safeToSettle: false });
+  assert.equal(r.settled.length, 0, "nothing settles on an unsafe basis");
+  assert.equal(r.touchSettled, 0);
+  assert.equal(r.europeanSettled, 0);
+  assert.equal(r.deferred, 1, "matured-but-ungated ⟹ deferred");
+  assert.equal(r.stillOpen.length, 1);
+});
+
+test("settleMatured: safeToSettle=false also blocks a barrier touch", () => {
+  const oracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000]); // floor touch present
+  const p = pos({ ref: "t", openedAtMs: NOW - 3_600_000, expiresAtMs: NOW + 22 * 3_600_000 });
+  const r = settleMatured([p], NOW, oracle, {}, { safeToSettle: false });
+  assert.equal(r.touchSettled, 0, "touch is gated off too — never settle on a divergent price");
+  assert.equal(r.stillOpen.length, 1);
+});
+
 test("aggregateSettlements: surfaces touch vs European breakdown + clawback", () => {
   const touchOracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000]);
   const touch = settleMatured([pos({ ref: "T", openedAtMs: NOW - 3_600_000, expiresAtMs: NOW + 22 * 3_600_000 })], NOW, touchOracle).settled;

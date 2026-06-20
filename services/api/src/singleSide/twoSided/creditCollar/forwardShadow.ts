@@ -20,6 +20,8 @@ import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
 import { stepLifecycleBook, seedTracked, checkReopenCooldowns, type CoordinatorOutcome } from "./lifecycleCoordinator";
 import { loadLifecycleStates, saveLifecycleStates, loadLifecycleHistory, saveLifecycleHistory, type TrackedPosition, type LifecycleHistory } from "./lifecycleStateStore";
+import { assessBasis, type VenueMark } from "./basisGuard";
+import { evaluateActivationGate, type ActivationGateConfig } from "./activationGate";
 import type { PartnerPositionState } from "./barrierLifecycle";
 
 export type ForwardCycleResult =
@@ -37,6 +39,8 @@ export type ForwardCycleResult =
       lifecycle: ShadowLifecycleReport;
       /** Lifecycle-coordinator summary when a partner feed drives the FSM (null otherwise). */
       coordinator: CoordinatorOutcome["summary"] & { active: boolean; cherryPick: boolean } | null;
+      /** Fail-closed open-gate decision for this cycle (enforced before any opens). */
+      gate: { allowOpens: boolean; reasons: string[] };
       meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] };
     }
   | { ok: false; error: string; message: string };
@@ -51,6 +55,11 @@ export type ForwardCycleConfig = LiveShadowConfig & {
    * barrier.
    */
   settlement?: SettlementLifecycleConfig;
+  /**
+   * Fail-closed OPEN gate (oracle-safe / collateral-ok / partner-feed-healthy / basis-safe). All guards
+   * required by default. A closed gate halts opens for the cycle (a correct fail-closed decline).
+   */
+  activationGate?: ActivationGateConfig;
   /**
    * Rolling oracle tick history. When enabled, each cycle's verified median is appended to a disk-backed
    * window and used as the tick stream for BOTH settlement (touch detection) and the lifecycle overlay.
@@ -166,18 +175,35 @@ export const runForwardShadowCycle = async (
     history = { closeHistory: coordinator.closeHistory, lastCloseByRef: coordinator.lastCloseByRef };
   }
 
+  // 1b) Basis (partner-vs-oracle, proxied by cross-venue oracle dispersion) — a FAIL-CLOSED gate on
+  //     both settlement and opens. Computed before settlement so a wide basis defers settling.
+  const basisMarks: VenueMark[] = oracle.snapshot.usableSamples.map((s) => ({ venue: s.source, priceUsd: s.priceUsd, tsMs: s.tsMs }));
+  const basisAssess = assessBasis(oracle.snapshot.priceUsd ?? spot, basisMarks, lcCfg.basisMaxBps ?? 25);
+  const basisSafe = basisAssess.safeToSettle;
+
   // 2) Economic settlement (touch-first / European). Orphan-cancelled positions are EXCLUDED — they're
-  //    cancelled, not matured/touched, so they never get a normal settlement.
+  //    cancelled, not matured/touched, so they never get a normal settlement. Fail-closed on basis.
   const settleable = cancelledSet.size ? priorOpen.filter((p) => !cancelledSet.has(p.ref)) : priorOpen;
   const { settled, stillOpen, oracleVerified, settlePriceUsd, deferred, touchSettled, europeanSettled } = settleMatured(
     settleable,
     now,
     oracle,
     cfg.capital,
-    cfg.settlement
+    { ...cfg.settlement, safeToSettle: basisSafe }
   );
   appendSettlements(settled, paths.ledgerPath);
   const settledPayout = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
+
+  // 2b) FAIL-CLOSED OPEN GATE — every guard must pass before opening new protection this cycle.
+  const gate = evaluateActivationGate(
+    {
+      oracleSafeForActivation: !!oracle.snapshot.safeForActivation,
+      collateralHalted: ledger.haltNewProtection,
+      partnerFeedHealthy,
+      basisSafeToSettle: basisSafe
+    },
+    cfg.activationGate
+  );
 
   // 3) Open a new steered batch (settlement DEFERRED to expiry).
   const scaffold = new CreditCollarActivationScaffold(scaffoldConfig, skew);
@@ -196,7 +222,10 @@ export const runForwardShadowCycle = async (
   let sumFloor = 0;
   const rej: Record<string, number> = {};
 
-  for (let i = 0; i < cfg.nPositions; i++) {
+  // Fail-closed: a closed gate halts ALL opens this cycle (a correct decline; reasons surfaced below).
+  if (!gate.allowOpens) halted = cfg.nPositions;
+
+  for (let i = 0; gate.allowOpens && i < cfg.nPositions; i++) {
     const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
     if (!instr.ok) {
       halted += 1;
@@ -279,6 +308,8 @@ export const runForwardShadowCycle = async (
     for (const f of coordinator.flags) lifecycle.flags.push("ref" in f && f.ref ? `${f.kind}:${f.ref}` : f.kind);
     lifecycle.flags.push(...cooldownFlags);
   }
+  // Surface a closed open-gate as flags (the fail-closed decline reasons).
+  if (!gate.allowOpens) for (const r of gate.reasons) lifecycle.flags.push(`open_gate:${r}`);
   saveLedger(ledgerAfter);
 
   const openedNotional = newOpens.reduce((s, p) => s + p.notionalUsdc, 0);
@@ -307,13 +338,13 @@ export const runForwardShadowCycle = async (
     totalNetToFoxifyUsdc: 0,
     settlementPriceUsd: settlePriceUsd ?? 0,
     // "Complete" = the cycle behaved CORRECTLY: oracle verified AND we either opened positions OR
-    // correctly DECLINED because the oracle wasn't safe for activation (fail-closed is correct, not a
-    // failure). Only an unverified oracle, or oracle-safe-but-zero-opens (a real pricing/breaker
-    // signal), counts as incomplete.
-    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation),
+    // correctly DECLINED because the fail-closed OPEN GATE was shut (oracle-unsafe / collateral-halted /
+    // partner-feed-degraded / basis-unsafe). Only oracle-unverified, or gate-open-but-zero-opens (a real
+    // pricing/breaker signal), counts as incomplete.
+    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !gate.allowOpens),
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
-      newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
+      !gate.allowOpens ? `Cycle correctly declined to open (fail-closed gate: ${gate.reasons.join(", ")}).` : ""
     ].filter(Boolean)
   };
 
@@ -330,6 +361,7 @@ export const runForwardShadowCycle = async (
     oracleVerified,
     lifecycle,
     coordinator: coordinator ? { ...coordinator.summary, active: true, cherryPick: !!coordinator.cherryPickFlag } : null,
+    gate,
     meta
   };
 };

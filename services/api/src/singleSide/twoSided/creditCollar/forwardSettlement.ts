@@ -80,6 +80,12 @@ export type SettlementLifecycleConfig = {
   enableBarrierTouch?: boolean;    // default true (touch-first); false ⟹ pure European
   persistTicks?: number;           // anti-wick tick persistence to confirm a touch (default 3)
   touchGapBps?: number;            // modeled adverse slippage past the barrier at touch (default 0)
+  /**
+   * Fail-closed settlement gate. When false (e.g. partner-vs-oracle basis too wide to trust the
+   * settlement price), NO position settles this cycle — matured ones defer, never settle on a
+   * divergent price. Default true. This is the basis `safeToSettle` enforced on the settle path.
+   */
+  safeToSettle?: boolean;
   vesting?: {
     curve?: VestingCurve;          // default "linear"
     convexity?: number;            // exponent for "convex"
@@ -175,6 +181,8 @@ export const settleMatured = (
   const enableTouch = lifecycle.enableBarrierTouch !== false; // default ON (touch-first)
   const persist = lifecycle.persistTicks ?? 3;
   const touchGapBps = Math.max(0, lifecycle.touchGapBps ?? 0);
+  // Fail-closed settlement gate (basis safeToSettle). When unsafe, nothing settles this cycle.
+  const settlementAllowed = lifecycle.safeToSettle !== false;
 
   const settled: SettlementOutcome[] = [];
   const stillOpen: OpenPosition[] = [];
@@ -243,6 +251,13 @@ export const settleMatured = (
   };
 
   for (const p of open) {
+    // 0) Fail-closed gate: an unsafe settlement (e.g. basis too wide) settles NOTHING — matured
+    //    positions defer, unmatured stay open. Never settle on a price we don't trust.
+    if (!settlementAllowed) {
+      stillOpen.push(p);
+      if (p.expiresAtMs <= nowMs) deferred += 1;
+      continue;
+    }
     // 1) Barrier touch (priority over expiry). Trust the tick stream only if the snapshot verifies.
     const touch =
       enableTouch && oracleVerified
