@@ -178,8 +178,15 @@ export const runForwardShadowCycle = async (
     totalPayoutToFoxifyUsdc: 0,
     totalNetToFoxifyUsdc: 0,
     settlementPriceUsd: settlePriceUsd ?? 0,
-    lifecycleComplete: newOpens.length > 0,
-    notes: ["Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger."]
+    // "Complete" = the cycle behaved CORRECTLY: oracle verified AND we either opened positions OR
+    // correctly DECLINED because the oracle wasn't safe for activation (fail-closed is correct, not a
+    // failure). Only an unverified oracle, or oracle-safe-but-zero-opens (a real pricing/breaker
+    // signal), counts as incomplete.
+    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation),
+    notes: [
+      "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
+      newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
+    ].filter(Boolean)
   };
 
   return {
