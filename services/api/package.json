@@ -71,6 +71,7 @@
     "deribit:auth-probe": "tsx scripts/creditCollarDeribitAuthProbe.ts",
     "deribit:margin-sweep": "tsx scripts/creditCollarDeribitMarginSweep.ts",
     "deribit:pm-netting": "tsx scripts/creditCollarDeribitPmNetting.ts",
+    "deribit:close-all": "tsx scripts/creditCollarDeribitCloseAll.ts",
     "modelb:calibrated": "tsx scripts/creditCollarCalibratedEconomics.ts"
   }
 }

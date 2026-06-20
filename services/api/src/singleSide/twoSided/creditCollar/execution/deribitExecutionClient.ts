@@ -170,8 +170,13 @@ export class DeribitExecutionClient {
     return this.priv("/private/cancel", { order_id: orderId });
   }
 
-  getPositions(currency = "BTC", kind = "option"): Promise<DeribitResponse<Array<{ instrument_name?: string; size?: number; initial_margin?: number; maintenance_margin?: number }>>> {
+  getPositions(currency = "BTC", kind = "option"): Promise<DeribitResponse<Array<{ instrument_name?: string; size?: number; initial_margin?: number; maintenance_margin?: number; direction?: string }>>> {
     return this.priv("/private/get_positions", { currency, kind });
+  }
+
+  /** Close an entire position for an instrument (market or limit). Used to reset the testnet book. */
+  closePosition(instrumentName: string, type: "market" | "limit" = "market", price?: number): Promise<DeribitResponse<{ order?: DeribitOrder; trades?: unknown[] }>> {
+    return this.priv("/private/close_position", { instrument_name: instrumentName, type, price });
   }
 
   /**
