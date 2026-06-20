@@ -6,7 +6,7 @@
  * runs the gap waterfall against the collateral ledger.
  */
 
-import { detectBarrier } from "./barrierLifecycle";
+import { detectBarrier, type PartnerPositionState } from "./barrierLifecycle";
 import { computeVestedCredit } from "./creditVesting";
 import { assessBasis, type VenueMark } from "./basisGuard";
 import { applyGap, type CollateralLedger } from "./collateralLedger";
@@ -27,6 +27,10 @@ export type ShadowLifecycleReport = {
   collateralHalted: boolean;
   gapToReserveUsdc: number;        // gaps absorbed by Atticus's reserve this cycle (on-time)
   gapToFoxifyUsdc: number;         // gaps debited to Foxify this cycle (breach)
+  /** Positions the partner feed shows CLOSED with no barrier ⟹ closed early without signal. */
+  orphansDetected: number;
+  /** True iff the partner-position feed is fully reconciled (no missing/stale). */
+  partnerFeedHealthy: boolean;
   flags: string[];
 };
 
@@ -41,6 +45,10 @@ export type ShadowLifecycleArgs = {
   basisMaxBps: number;
   persistTicks?: number;
   modeledTouchGapBps?: number;     // modeled slippage per detected touch (routed on-time → reserve)
+  /** Optional reconciled partner states by ref (from the partner-position feed). */
+  partnerStates?: Record<string, PartnerPositionState>;
+  /** Whether the partner feed reconciled cleanly (no missing/stale). Default true. */
+  partnerFeedHealthy?: boolean;
 };
 
 export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: ShadowLifecycleReport; ledger: CollateralLedger } => {
@@ -57,6 +65,7 @@ export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: S
   let gapFoxify = 0;
   let vested = 0;
   let full = 0;
+  let orphans = 0;
   const flags: string[] = [];
 
   for (const p of args.open) {
@@ -67,6 +76,14 @@ export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: S
     vested += v.realizedCreditUsdc;
 
     const { barrier } = detectBarrier(args.ticks, p.putStrike, p.callStrike, persist);
+
+    // Reconciliation: partner shows CLOSED with no barrier ⟹ closed early without a signal (orphan).
+    const partner = args.partnerStates?.[p.ref];
+    if (partner && !partner.isOpen && barrier === "none") {
+      orphans += 1;
+      flags.push(`orphan_protection:${p.ref}`);
+    }
+
     if (barrier !== "none") {
       touches += 1;
       // Model the on-time close gap and run it through the waterfall (reserve absorbs when on time).
@@ -80,8 +97,10 @@ export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: S
     }
   }
 
+  const partnerFeedHealthy = args.partnerFeedHealthy ?? true;
   if (!basis.safeToSettle) flags.push(`basis_wide:${basis.maxAbsBasisBps}bps`);
   if (ledger.haltNewProtection) flags.push("collateral_below_min_buffer");
+  if (!partnerFeedHealthy) flags.push("partner_feed_degraded");
 
   return {
     report: {
@@ -96,6 +115,8 @@ export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: S
       collateralHalted: ledger.haltNewProtection,
       gapToReserveUsdc: round2(gapReserve),
       gapToFoxifyUsdc: round2(gapFoxify),
+      orphansDetected: orphans,
+      partnerFeedHealthy,
       flags
     },
     ledger

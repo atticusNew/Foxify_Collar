@@ -16,6 +16,7 @@ import { settleMatured, aggregateSettlements, type OpenPosition, type Settlement
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
+import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
 
 export type ForwardCycleResult =
   | {
@@ -42,6 +43,10 @@ export type ForwardCycleConfig = LiveShadowConfig & {
     basisMaxBps?: number;          // basis tolerance (default 25)
     initialCollateralUsdc?: number; // posted collateral seed (default 250_000)
     minCollateralBufferUsdc?: number; // halt below this (default 25_000)
+    /** Optional live partner-position feed; when set, the overlay reconciles the open book against it. */
+    partnerFeed?: PartnerPositionFeed;
+    maxStalenessMs?: number;       // partner-feed staleness tolerance (default 15_000)
+    sizeTolerancePct?: number;     // partner size vs notional tolerance (default 0.02)
   };
 };
 
@@ -118,6 +123,21 @@ export const runForwardShadowCycle = async (
   const lcCfg = cfg.lifecycle ?? {};
   const minBuffer = lcCfg.minCollateralBufferUsdc ?? 25_000;
   const ledger0 = loadLedger(lcCfg.initialCollateralUsdc ?? 250_000, { minBufferUsdc: minBuffer });
+
+  // Optional: reconcile the open book against a live partner-position feed (read-only, independent).
+  let partnerStates: Record<string, import("./barrierLifecycle").PartnerPositionState> | undefined;
+  let partnerFeedHealthy = true;
+  if (lcCfg.partnerFeed) {
+    try {
+      const records = await lcCfg.partnerFeed.fetchPositions(openBook.map((p) => p.ref));
+      const rec = reconcilePositions(openBook.map((p) => ({ ref: p.ref, notionalUsdc: p.notionalUsdc })), records, now, { maxStalenessMs: lcCfg.maxStalenessMs, sizeTolerancePct: lcCfg.sizeTolerancePct });
+      partnerStates = rec.byRef;
+      partnerFeedHealthy = rec.summary.feedHealthy;
+    } catch {
+      partnerFeedHealthy = false; // feed failure ⟹ degraded (fail-closed)
+    }
+  }
+
   const { report: lifecycle, ledger: ledger1 } = reconcileShadowLifecycle({
     open: openBook,
     nowMs: now,
@@ -127,7 +147,9 @@ export const runForwardShadowCycle = async (
     ledger: ledger0,
     tenorMs: lcCfg.fullTenorMs ?? cfg.tenorDays * 86_400_000,
     basisMaxBps: lcCfg.basisMaxBps ?? 25,
-    persistTicks: 3
+    persistTicks: 3,
+    partnerStates,
+    partnerFeedHealthy
   });
   saveLedger(ledger1);
 

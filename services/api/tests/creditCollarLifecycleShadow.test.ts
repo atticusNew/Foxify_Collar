@@ -60,6 +60,39 @@ test("overlay: wide basis flags defer-settle", () => {
   assert.ok(r.report.flags.some((f) => /basis_wide/.test(f)));
 });
 
+test("overlay: partner feed shows a closed perp with no barrier ⟹ orphan detected", () => {
+  const r = reconcileShadowLifecycle({
+    open: [pos({ ref: "a" }), pos({ ref: "b" })],
+    nowMs: NOW,
+    ticks: [{ tsMs: NOW, priceUsd: 63_000 }], // no barrier
+    oracleMedianUsd: 63_000,
+    usableSamples: samples({ deribit: 63_000, okx: 63_005 }),
+    ledger: openLedger(250_000),
+    tenorMs: DAY,
+    basisMaxBps: 25,
+    partnerStates: { a: { isOpen: false, sizeUsd: 0, markPriceUsd: 63_000 }, b: { isOpen: true, sizeUsd: 50_000, markPriceUsd: 63_000 } },
+    partnerFeedHealthy: true
+  });
+  assert.equal(r.report.orphansDetected, 1);
+  assert.ok(r.report.flags.some((f) => /orphan_protection:a/.test(f)));
+});
+
+test("overlay: degraded partner feed is flagged", () => {
+  const r = reconcileShadowLifecycle({
+    open: [pos()],
+    nowMs: NOW,
+    ticks: [{ tsMs: NOW, priceUsd: 63_000 }],
+    oracleMedianUsd: 63_000,
+    usableSamples: samples({ deribit: 63_000, okx: 63_005 }),
+    ledger: openLedger(250_000),
+    tenorMs: DAY,
+    basisMaxBps: 25,
+    partnerFeedHealthy: false
+  });
+  assert.equal(r.report.partnerFeedHealthy, false);
+  assert.ok(r.report.flags.includes("partner_feed_degraded"));
+});
+
 test("overlay: a barrier touch routes a modeled gap to the reserve (collateral intact)", () => {
   const ticks: OracleTick[] = [0, 1, 2, 3].map((i) => ({ tsMs: NOW + i * 1000, priceUsd: 65_500 })); // above the cap
   const r = reconcileShadowLifecycle({
