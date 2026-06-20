@@ -1,12 +1,14 @@
 #!/usr/bin/env tsx
 /**
- * Deribit PORTFOLIO-MARGIN NETTING measurement — READ-ONLY. Measures the REAL cross-wing netting of
- * a delta-flat collar book by comparing Deribit's portfolio-margin simulation of both short wings
- * (short put + short call) against the sum of their ISOLATED short-leg margins. Places NOTHING.
+ * Deribit PORTFOLIO-MARGIN NETTING measurement — READ-ONLY. Measures the REAL netting of a STEERED-
+ * FLAT collar book: opposing collars at adjacent strikes — long-client collar (short put0, long call0)
+ * + short-client collar (long put1, short call1) — whose LONG legs offset the SHORT legs. Compares the
+ * book's PM initial margin to the gross sum of the two SHORT legs' isolated margins. Places NOTHING.
  *
- * netting factor = portfolio_initial_margin({short put, short call}) / (isoPutSellIM + isoCallSellIM)
+ * netting factor = PM_IM(balanced book) / (isoSell(put0) + isoSell(call1))
  *
- * Plug the result into MODELB_PM_NETTING for the calibrated economics (replaces the 0.45 placeholder).
+ * (A short strangle is also reported as a no-offset reference — it raises PM, confirming you must
+ * net with opposing flow, not warehouse both short wings.) Plug the BOOK netting into MODELB_PM_NETTING.
  *
  *   DERIBIT_CLIENT_ID=... DERIBIT_CLIENT_SECRET=... \
  *   DERIBIT_PM_TENORS=1,2,7 DERIBIT_PM_FLOOR_PCT=0.03 DERIBIT_PM_CAP_PCT=0.02 DERIBIT_PM_SIZE=1 \
@@ -14,7 +16,7 @@
  */
 
 import { DeribitExecutionClient, type DeribitMode } from "../src/singleSide/twoSided/creditCollar/execution/deribitExecutionClient";
-import { resolveDeribitCollarLegs, portfolioNettingFactor } from "../src/singleSide/twoSided/creditCollar/execution/deribitLegResolver";
+import { rankDeribitCollarCandidates, portfolioNettingFactor } from "../src/singleSide/twoSided/creditCollar/execution/deribitLegResolver";
 
 const nums = (v: string | undefined, d: number[]): number[] => (v ? v.split(",").map((x) => Number(x.trim())).filter((x) => Number.isFinite(x)) : d);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -68,64 +70,63 @@ const main = async () => {
   const baselineIm = baseline.result?.projected_initial_margin != null ? Math.abs(Number(baseline.result.projected_initial_margin)) : null;
   console.error(`[deribit-pm-netting] account baseline IM (existing positions): ${baselineIm ?? "n/a"}BTC`);
 
+  const instr = await client.getInstruments("BTC", "option");
+  const names = (instr.result ?? []).filter((d) => d.is_active !== false).map((d) => String(d.instrument_name ?? "")).filter(Boolean);
+
+  const bidOf = async (name: string) => {
+    const ob = await client.getOrderBook(name);
+    return ob.result?.best_bid_price != null ? Number(ob.result.best_bid_price) : 0.001;
+  };
+  const incrementalPm = async (positions: Record<string, number>): Promise<number | null> => {
+    await sleep(1100); // simulate_portfolio rate-limited ~1/s
+    const r = await client.simulatePortfolio("BTC", positions, true);
+    const im = r.result?.projected_initial_margin != null ? Math.abs(Number(r.result.projected_initial_margin)) : null;
+    return im != null && baselineIm != null ? Math.max(0, im - baselineIm) : null;
+  };
+
   const points: Array<Record<string, unknown>> = [];
   const factors: number[] = [];
   for (const tenorDays of tenors) {
-    const resolved = await resolveDeribitCollarLegs(
-      (currency, kind) => client.getInstruments(currency, kind),
-      (name) => client.getOrderBook(name),
-      { nowMs: Date.now(), tenorDays, putTarget: spot * (1 - floorPct), callTarget: spot * (1 + capPct), maxCandidates }
-    );
-    if (!resolved.ok || !resolved.legs) {
-      console.error(`[deribit-pm-netting] skip tenor=${tenorDays}: ${resolved.error}`);
+    const cand = rankDeribitCollarCandidates(names, { nowMs: Date.now(), tenorDays, putTarget: spot * (1 - floorPct), callTarget: spot * (1 + capPct) });
+    if (!cand || cand.puts.length < 2 || cand.calls.length < 2) {
+      console.error(`[deribit-pm-netting] skip tenor=${tenorDays}: need ≥2 put + ≥2 call strikes`);
       continue;
     }
-    const { putInstrument, callInstrument } = resolved.legs;
-    // Need short-side prices (bids) for the isolated SELL margins.
-    const [pb, cb] = await Promise.all([client.getOrderBook(putInstrument), client.getOrderBook(callInstrument)]);
-    const putBid = pb.result?.best_bid_price != null ? Number(pb.result.best_bid_price) : 0.001;
-    const callBid = cb.result?.best_bid_price != null ? Number(cb.result.best_bid_price) : 0.001;
+    // Opposing collars at ADJACENT strikes (the steered-flat book): a long-client collar (short put0,
+    // long call0) + a short-client collar (long put1, short call1). The long legs offset the shorts.
+    const put0 = cand.puts[0], put1 = cand.puts[1], call0 = cand.calls[0], call1 = cand.calls[1];
+    const book = { [put0.name]: -sizeBtc, [call0.name]: +sizeBtc, [put1.name]: +sizeBtc, [call1.name]: -sizeBtc };
 
-    const isoPut = await client.getMargins(putInstrument, sizeBtc, putBid);
-    const isoCall = await client.getMargins(callInstrument, sizeBtc, callBid);
-    const isoPutSell = isoPut.result?.sell != null ? Math.abs(Number(isoPut.result.sell)) : null;
-    const isoCallSell = isoCall.result?.sell != null ? Math.abs(Number(isoCall.result.sell)) : null;
-
-    const legs = { [putInstrument]: -sizeBtc, [callInstrument]: -sizeBtc };
-    await sleep(1100); // simulate_portfolio is rate-limited to ~1/s
-    const pmIsolated = await client.simulatePortfolio("BTC", legs, false); // simulated set only
-    const isoSetIm = pmIsolated.result?.projected_initial_margin != null ? Math.abs(Number(pmIsolated.result.projected_initial_margin)) : null;
-    await sleep(1100);
-    const pmWith = await client.simulatePortfolio("BTC", legs, true); // account + legs (for incremental)
-    const withIm = pmWith.result?.projected_initial_margin != null ? Math.abs(Number(pmWith.result.projected_initial_margin)) : null;
-    const incrementalIm = withIm != null && baselineIm != null ? Math.max(0, withIm - baselineIm) : null;
-
+    // Gross short-leg isolated margins (what the model books at pmNetting=1): the two SHORT legs.
+    const [put0Bid, call1Bid] = await Promise.all([bidOf(put0.name), bidOf(call1.name)]);
+    const isoPut0 = await client.getMargins(put0.name, sizeBtc, put0Bid);
+    const isoCall1 = await client.getMargins(call1.name, sizeBtc, call1Bid);
+    const isoPutSell = isoPut0.result?.sell != null ? Math.abs(Number(isoPut0.result.sell)) : null;
+    const isoCallSell = isoCall1.result?.sell != null ? Math.abs(Number(isoCall1.result.sell)) : null;
     if (isoPutSell == null || isoCallSell == null) {
-      console.error(`[deribit-pm-netting] tenor=${tenorDays}: incomplete isolated margins (isoPut=${isoPutSell} isoCall=${isoCallSell})`);
+      console.error(`[deribit-pm-netting] tenor=${tenorDays}: incomplete isolated margins`);
       continue;
     }
-    const isoSum = isoPutSell + isoCallSell;
-    // Prefer the isolated-set PM number; fall back to the incremental estimate if the set number looks
-    // contaminated (≫ isolated sum ⟹ the account baseline leaked in).
-    const setLooksClean = isoSetIm != null && isoSetIm < isoSum * 3;
-    const pmForNetting = setLooksClean ? (isoSetIm as number) : incrementalIm;
-    const nettingFactor = pmForNetting != null ? portfolioNettingFactor([isoPutSell, isoCallSell], pmForNetting) : null;
-    if (nettingFactor != null) factors.push(nettingFactor);
+    const grossShortIsolated = isoPutSell + isoCallSell;
+
+    const bookPm = await incrementalPm(book);                                  // balanced/offsetting book
+    const stranglePm = await incrementalPm({ [put0.name]: -sizeBtc, [call0.name]: -sizeBtc }); // no-offset reference
+
+    const nettingBook = bookPm != null ? portfolioNettingFactor([isoPutSell, isoCallSell], bookPm) : null;
+    const nettingStrangle = stranglePm != null ? portfolioNettingFactor([isoPutSell, isoCallSell], stranglePm) : null;
+    if (nettingBook != null) factors.push(nettingBook);
+
     points.push({
       tenorDays,
-      putInstrument,
-      callInstrument,
+      collar: { putShort: put0.name, callLong: call0.name, putLong: put1.name, callShort: call1.name },
       sizeBtc,
-      isoPutSellBtc: +isoPutSell.toFixed(8),
-      isoCallSellBtc: +isoCallSell.toFixed(8),
-      isolatedSumBtc: +isoSum.toFixed(8),
-      pmIsolatedSetImBtc: isoSetIm != null ? +isoSetIm.toFixed(8) : null,
-      pmIncrementalImBtc: incrementalIm != null ? +incrementalIm.toFixed(8) : null,
-      usedSource: setLooksClean ? "isolated_set" : "incremental",
-      nettingFactor: nettingFactor != null ? +nettingFactor.toFixed(4) : null,
-      contaminated: !setLooksClean
+      grossShortIsolatedBtc: +grossShortIsolated.toFixed(8),
+      balancedBookPmImBtc: bookPm != null ? +bookPm.toFixed(8) : null,
+      strangleRefPmImBtc: stranglePm != null ? +stranglePm.toFixed(8) : null,
+      nettingFactorBook: nettingBook != null ? +nettingBook.toFixed(4) : null,
+      nettingFactorStrangleRef: nettingStrangle != null ? +nettingStrangle.toFixed(4) : null
     });
-    console.error(`[deribit-pm-netting] tenor=${tenorDays}d isolated ${isoSum.toFixed(5)}BTC · PM-set ${isoSetIm?.toFixed(5) ?? "n/a"}BTC · PM-incremental ${incrementalIm?.toFixed(5) ?? "n/a"}BTC ⟹ netting ${nettingFactor?.toFixed(4) ?? "n/a"} (${setLooksClean ? "isolated_set" : "incremental"})`);
+    console.error(`[deribit-pm-netting] tenor=${tenorDays}d grossShortIso ${grossShortIsolated.toFixed(5)}BTC · balanced-book PM ${bookPm?.toFixed(5) ?? "n/a"}BTC ⟹ netting ${nettingBook?.toFixed(4) ?? "n/a"} (strangle ref ${nettingStrangle?.toFixed(4) ?? "n/a"})`);
   }
 
   const summary = factors.length
@@ -140,7 +141,7 @@ const main = async () => {
 
   process.stdout.write(
     JSON.stringify(
-      { venue: "deribit", mode, spot, marginModel, portfolioMarginingEnabled: pmEnabled, baselineImBtc: baselineIm, floorPct, capPct, sizeBtc, points, summary, note: pmEnabled ? "MODELB_PM_NETTING = suggestedPmNetting" : "Account NOT in Portfolio Margin ⟹ netting=1 (isolated). Enable PM + clean positions to measure savings." },
+      { venue: "deribit", mode, spot, marginModel, portfolioMarginingEnabled: pmEnabled, baselineImBtc: baselineIm, floorPct, capPct, sizeBtc, points, summary, note: pmEnabled ? "MODELB_PM_NETTING = suggestedPmNetting (balanced-book PM IM / gross short-leg isolated). Strangle ref ≥1 confirms shorts must be netted with opposing flow." : "Account NOT in Portfolio Margin ⟹ netting=1 (isolated). Enable PM to measure savings." },
       null,
       2
     ) + "\n"
