@@ -12,6 +12,7 @@
 import { createServer } from "node:http";
 import { runLiveShadowSession, type LiveShadowConfig } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
 import { runForwardShadowCycle, loadSettlementAggregate } from "../src/singleSide/twoSided/creditCollar/forwardShadow";
+import { buildPartnerFeedFromEnv } from "../src/singleSide/twoSided/creditCollar/partnerFeedFactory";
 import { appendScorecard, loadScorecards } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowLifecycleReport } from "../src/singleSide/twoSided/creditCollar/lifecycleShadow";
@@ -24,6 +25,31 @@ const token = process.env.SHADOW_DASHBOARD_TOKEN;
 const haltBand = num(process.env.SHADOW_BREAKER_HALT, 0.15);
 const forwardSettle = String(process.env.SHADOW_FORWARD_SETTLE ?? "true").toLowerCase() !== "false";
 const settlementHorizonMin = num(process.env.SHADOW_SETTLEMENT_HORIZON_MIN, 60); // positions settle 1h later (real move)
+
+// Settlement model: touch-first / European-fallback. Touch is ON by default; it only ENGAGES once a
+// real rolling tick history is fed (SHADOW_BARRIER_*) — with the synthetic same-price stream no touch
+// fires (safe). persistTicks is the cycle-cadence anti-wick depth; barrierFullVest=true ⟹ an
+// involuntary barrier touch realizes full credit.
+const settlementConfig = {
+  enableBarrierTouch: String(process.env.SHADOW_BARRIER_TOUCH ?? "true").toLowerCase() !== "false",
+  persistTicks: num(process.env.SHADOW_BARRIER_PERSIST_TICKS, 2),
+  touchGapBps: num(process.env.SHADOW_BARRIER_TOUCH_GAP_BPS, 0),
+  vesting: { barrierFullVest: String(process.env.SHADOW_BARRIER_FULL_VEST ?? "true").toLowerCase() !== "false" }
+};
+
+// Rolling oracle tick history: append each cycle's verified median so the touch detector sees a real
+// price stream. ON by default so the touch path engages on live data; trimmed to a 24h window.
+const rollingTickHistory = {
+  enabled: String(process.env.SHADOW_TICK_HISTORY ?? "true").toLowerCase() !== "false",
+  maxTicks: num(process.env.SHADOW_TICK_HISTORY_MAX, 192),
+  maxAgeMs: num(process.env.SHADOW_TICK_HISTORY_MAX_AGE_MS, 24 * 3_600_000)
+};
+
+// Live partner-position feed (read-only): when PARTNER_FEED_URL is set, the lifecycle coordinator
+// drives the FSM on live data — orphan-cancel, close-SLA gap allocation, breach forfeit. Unset ⟹ the
+// coordinator stays dormant (the feed is the remaining external integration with Foxify's exchange).
+const partnerFeed = buildPartnerFeedFromEnv() ?? undefined;
+if (partnerFeed) console.error("[shadow-svc] partner feed configured ⟹ lifecycle coordinator ACTIVE (perp↔collar SLA/gap/orphan on live data)");
 
 // Measured capital inputs (Deribit margin sweep + PM-netting) → capital-aware net bps on the dashboard.
 const capitalConfig = {
@@ -88,11 +114,17 @@ const runCycle = async () => {
           portfolioMarginNettingFactor: capitalConfig.portfolioMarginNettingFactor,
           costOfCapitalAnnual: capitalConfig.costOfCapitalAnnual
         },
+        settlement: settlementConfig,
+        rollingTickHistory,
         lifecycle: {
           fullTenorMs: cfg.tenorDays * 86_400_000,
           basisMaxBps: num(process.env.SHADOW_BASIS_MAX_BPS, 25),
           initialCollateralUsdc: num(process.env.SHADOW_COLLATERAL_USDC, 250_000),
-          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 25_000)
+          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 25_000),
+          partnerFeed,
+          closeSlaMs: num(process.env.SHADOW_CLOSE_SLA_MS, 30_000),
+          reopenCooldownMs: num(process.env.SHADOW_REOPEN_COOLDOWN_MS, 60_000),
+          maxStalenessMs: num(process.env.PARTNER_FEED_MAX_STALENESS_MS, 15_000)
         }
       });
       if (res.ok) {
@@ -101,7 +133,12 @@ const runCycle = async () => {
         status.lastError = null;
         const lc = res.lifecycle;
         latestLifecycle = lc;
-        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}`);
+        const gateStr = res.gate.allowOpens ? "" : ` | GATE CLOSED: ${res.gate.reasons.join(",")}`;
+        const co = res.coordinator;
+        const coStr = co
+          ? ` | coord: open=${co.open} closeSig=${co.closeSignaled} orphanCxl=${co.orphanCancelled} breach=${co.breached} gapFoxify=$${co.gapToFoxifyUsdc}${co.cherryPick ? " CHERRY-PICK" : ""}`
+          : "";
+        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} (touch=${res.touchSettledThisCycle} euro=${res.europeanSettledThisCycle}) payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}${coStr}${gateStr}`);
       } else {
         status.lastRunOk = false;
         status.lastError = `${res.error}: ${res.message}`;

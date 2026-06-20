@@ -12,11 +12,17 @@ import { CreditCollarActivationScaffold } from "./activationScaffold";
 import { computeInventory } from "./inventoryBalancer";
 import { buildLiveShadowInputs, type LiveShadowConfig } from "./shadowRunner";
 import type { ShadowScorecard } from "./shadowRunner";
-import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
+import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate, type SettlementLifecycleConfig } from "./forwardSettlement";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
+import { loadTickHistory, saveTickHistory, rollTickHistory, type RollConfig } from "./tickHistoryStore";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
+import { stepLifecycleBook, seedTracked, checkReopenCooldowns, type CoordinatorOutcome } from "./lifecycleCoordinator";
+import { loadLifecycleStates, saveLifecycleStates, loadLifecycleHistory, saveLifecycleHistory, type TrackedPosition, type LifecycleHistory } from "./lifecycleStateStore";
+import { assessBasis, type VenueMark } from "./basisGuard";
+import { evaluateActivationGate, type ActivationGateConfig } from "./activationGate";
+import type { PartnerPositionState } from "./barrierLifecycle";
 
 export type ForwardCycleResult =
   | {
@@ -24,11 +30,17 @@ export type ForwardCycleResult =
       openingScorecard: ShadowScorecard;
       settledThisCycle: number;
       settledPayoutThisCycleUsdc: number;
+      touchSettledThisCycle: number;
+      europeanSettledThisCycle: number;
       deferred: number;
       openBookSize: number;
       settlePriceUsd: number | null;
       oracleVerified: boolean;
       lifecycle: ShadowLifecycleReport;
+      /** Lifecycle-coordinator summary when a partner feed drives the FSM (null otherwise). */
+      coordinator: CoordinatorOutcome["summary"] & { active: boolean; cherryPick: boolean } | null;
+      /** Fail-closed open-gate decision for this cycle (enforced before any opens). */
+      gate: { allowOpens: boolean; reasons: string[] };
       meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] };
     }
   | { ok: false; error: string; message: string };
@@ -37,6 +49,24 @@ export type ForwardCycleConfig = LiveShadowConfig & {
   settlementHorizonMin?: number;
   /** Measured capital inputs (Deribit) so settled positions report P&L net of the IM they tied up. */
   capital?: import("./forwardSettlement").SettlementCapitalConfig;
+  /**
+   * Settlement model: touch-first / European-fallback. Touch is ON by default; persistTicks is the
+   * anti-wick confirmation depth on the oracle tick stream; touchGapBps models slippage past the
+   * barrier.
+   */
+  settlement?: SettlementLifecycleConfig;
+  /**
+   * Fail-closed OPEN gate (oracle-safe / collateral-ok / partner-feed-healthy / basis-safe). All guards
+   * required by default. A closed gate halts opens for the cycle (a correct fail-closed decline).
+   */
+  activationGate?: ActivationGateConfig;
+  /**
+   * Rolling oracle tick history. When enabled, each cycle's verified median is appended to a disk-backed
+   * window and used as the tick stream for BOTH settlement (touch detection) and the lifecycle overlay.
+   * This is what lets the touch path actually engage on live data (the synthetic 2-tick stream never
+   * confirms a touch). Default off ⟹ legacy synthetic ticks (European-only in practice).
+   */
+  rollingTickHistory?: { enabled: boolean } & RollConfig;
   /** Vesting/collateral/basis overlay params. */
   lifecycle?: {
     fullTenorMs?: number;          // tenor used for vesting (defaults to tenorDays)
@@ -47,25 +77,135 @@ export type ForwardCycleConfig = LiveShadowConfig & {
     partnerFeed?: PartnerPositionFeed;
     maxStalenessMs?: number;       // partner-feed staleness tolerance (default 15_000)
     sizeTolerancePct?: number;     // partner size vs notional tolerance (default 0.02)
+    /**
+     * Drive the lifecycle FSM (orphan-cancel, close-SLA gap, breach forfeit) from the partner feed.
+     * Only takes effect when partnerFeed is set. Default true when a feed is present.
+     */
+    driveLifecycle?: boolean;
+    closeSlaMs?: number;           // max ms from close signal to confirmed perp close (default 30_000)
+    reopenCooldownMs?: number;     // anti-churn cooldown for reopening a line (default 60_000)
+    cherryPick?: { minPerSide?: number; maxGap?: number }; // asymmetric-compliance detector thresholds
   };
 };
 
 export const runForwardShadowCycle = async (
   cfg: ForwardCycleConfig,
-  paths: { openPath?: string; ledgerPath?: string } = {}
+  paths: { openPath?: string; ledgerPath?: string; tickHistoryPath?: string; lifecycleStatePath?: string; lifecycleHistoryPath?: string } = {}
 ): Promise<ForwardCycleResult> => {
   const built = await buildLiveShadowInputs(cfg);
   if (!built.ok) return { ok: false, error: built.error, message: built.message };
   const { skew, spot, scaffoldConfig, oracle, meta } = built.inputs;
   const now = oracle.nowMs;
 
-  // 1) Settle matured positions at the current ECDSA-verified TWAP (real later price).
-  const open = loadOpenPositions(paths.openPath);
-  const { settled, stillOpen, oracleVerified, settlePriceUsd, deferred } = settleMatured(open, now, oracle, cfg.capital);
+  // Roll the real oracle tick history: append this cycle's verified median so the touch detector sees a
+  // genuine price stream (not the synthetic same-price 2-tick window). Used for settlement + overlay.
+  if (cfg.rollingTickHistory?.enabled) {
+    const prev = loadTickHistory(paths.tickHistoryPath);
+    const medianUsd = oracle.snapshot.priceUsd ?? spot;
+    const rolled = rollTickHistory(prev, { tsMs: now, priceUsd: medianUsd }, now, cfg.rollingTickHistory);
+    saveTickHistory(rolled, paths.tickHistoryPath);
+    if (rolled.length > 0) {
+      oracle.settlementTwapTicks = rolled;
+      oracle.windowStartMs = rolled[0].tsMs;
+      oracle.windowEndMs = now;
+    }
+  }
+
+  // ── Setup: economic book, collateral ledger, lifecycle config ────────────────
+  const priorOpen = loadOpenPositions(paths.openPath);
+  const lcCfg = cfg.lifecycle ?? {};
+  const minBuffer = lcCfg.minCollateralBufferUsdc ?? 25_000;
+  let ledger = loadLedger(lcCfg.initialCollateralUsdc ?? 250_000, { minBufferUsdc: minBuffer });
+  const driveLifecycle = !!lcCfg.partnerFeed && (lcCfg.driveLifecycle ?? true);
+
+  // 1) Lifecycle COORDINATOR (when a partner feed drives the FSM): reconcile perp↔collar, run the state
+  //    machine, allocate close-SLA gaps, and identify ORPHAN-CANCELS — all BEFORE economic settlement.
+  let coordinator: CoordinatorOutcome | null = null;
+  let coordinatorStates: Record<string, TrackedPosition> = {};
+  let cancelledSet = new Set<string>();
+  let partnerStates: Record<string, PartnerPositionState> | undefined;
+  let partnerFeedHealthy = true;
+  let cooldownFlags: string[] = [];
+  let history: LifecycleHistory = { closeHistory: [], lastCloseByRef: {} };
+
+  if (driveLifecycle && lcCfg.partnerFeed) {
+    const priorStates = loadLifecycleStates(paths.lifecycleStatePath);
+    history = loadLifecycleHistory(paths.lifecycleHistoryPath);
+    const trackedOnly = Object.values(priorStates).filter((s) => !priorOpen.some((p) => p.ref === s.ref));
+    const refsForFeed = [...priorOpen.map((p) => p.ref), ...trackedOnly.map((s) => s.ref)];
+    try {
+      const records = await lcCfg.partnerFeed.fetchPositions(refsForFeed);
+      const rc = reconcilePositions(
+        [
+          ...priorOpen.map((p) => ({ ref: p.ref, notionalUsdc: p.notionalUsdc })),
+          ...trackedOnly.map((s) => ({ ref: s.ref, notionalUsdc: s.notionalUsdc }))
+        ],
+        records,
+        now,
+        { maxStalenessMs: lcCfg.maxStalenessMs, sizeTolerancePct: lcCfg.sizeTolerancePct }
+      );
+      partnerStates = rc.byRef;
+      partnerFeedHealthy = rc.summary.feedHealthy;
+    } catch {
+      partnerFeedHealthy = false; // feed failure ⟹ degraded (fail-closed; missing ⟹ assume open)
+      partnerStates = {};
+    }
+    coordinator = stepLifecycleBook(
+      priorStates,
+      priorOpen,
+      {
+        nowMs: now,
+        ticks: oracle.settlementTwapTicks,
+        partnerStates: partnerStates ?? {},
+        settlePriceUsd: oracle.snapshot.priceUsd ?? spot,
+        ledger,
+        closeHistory: history.closeHistory,
+        lastCloseByRef: history.lastCloseByRef
+      },
+      {
+        lifecycle: { persistTicks: cfg.settlement?.persistTicks ?? 3, closeSlaMs: lcCfg.closeSlaMs, reopenCooldownMs: lcCfg.reopenCooldownMs, sizeTolerancePct: lcCfg.sizeTolerancePct },
+        vesting: cfg.settlement?.vesting,
+        collateral: { minBufferUsdc: minBuffer },
+        cherryPick: lcCfg.cherryPick
+      }
+    );
+    ledger = coordinator.ledger;
+    coordinatorStates = coordinator.states;
+    cancelledSet = new Set(coordinator.cancelledRefs);
+    history = { closeHistory: coordinator.closeHistory, lastCloseByRef: coordinator.lastCloseByRef };
+  }
+
+  // 1b) Basis (partner-vs-oracle, proxied by cross-venue oracle dispersion) — a FAIL-CLOSED gate on
+  //     both settlement and opens. Computed before settlement so a wide basis defers settling.
+  const basisMarks: VenueMark[] = oracle.snapshot.usableSamples.map((s) => ({ venue: s.source, priceUsd: s.priceUsd, tsMs: s.tsMs }));
+  const basisAssess = assessBasis(oracle.snapshot.priceUsd ?? spot, basisMarks, lcCfg.basisMaxBps ?? 25);
+  const basisSafe = basisAssess.safeToSettle;
+
+  // 2) Economic settlement (touch-first / European). Orphan-cancelled positions are EXCLUDED — they're
+  //    cancelled, not matured/touched, so they never get a normal settlement. Fail-closed on basis.
+  const settleable = cancelledSet.size ? priorOpen.filter((p) => !cancelledSet.has(p.ref)) : priorOpen;
+  const { settled, stillOpen, oracleVerified, settlePriceUsd, deferred, touchSettled, europeanSettled } = settleMatured(
+    settleable,
+    now,
+    oracle,
+    cfg.capital,
+    { ...cfg.settlement, safeToSettle: basisSafe }
+  );
   appendSettlements(settled, paths.ledgerPath);
   const settledPayout = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
 
-  // 2) Open a new steered batch (settlement DEFERRED to expiry).
+  // 2b) FAIL-CLOSED OPEN GATE — every guard must pass before opening new protection this cycle.
+  const gate = evaluateActivationGate(
+    {
+      oracleSafeForActivation: !!oracle.snapshot.safeForActivation,
+      collateralHalted: ledger.haltNewProtection,
+      partnerFeedHealthy,
+      basisSafeToSettle: basisSafe
+    },
+    cfg.activationGate
+  );
+
+  // 3) Open a new steered batch (settlement DEFERRED to expiry).
   const scaffold = new CreditCollarActivationScaffold(scaffoldConfig, skew);
   const band = scaffoldConfig.policy.targetNetBandPct;
   const minGross = scaffoldConfig.breaker.minGrossNotionalUsd ?? 0;
@@ -82,7 +222,10 @@ export const runForwardShadowCycle = async (
   let sumFloor = 0;
   const rej: Record<string, number> = {};
 
-  for (let i = 0; i < cfg.nPositions; i++) {
+  // Fail-closed: a closed gate halts ALL opens this cycle (a correct decline; reasons surfaced below).
+  if (!gate.allowOpens) halted = cfg.nPositions;
+
+  for (let i = 0; gate.allowOpens && i < cfg.nPositions; i++) {
     const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
     if (!instr.ok) {
       halted += 1;
@@ -119,15 +262,21 @@ export const runForwardShadowCycle = async (
   const openBook = [...stillOpen, ...newOpens];
   saveOpenPositions(openBook, paths.openPath);
 
-  // 3) Lifecycle overlay: exercise vesting + collateral + basis over the live open book.
-  const lcCfg = cfg.lifecycle ?? {};
-  const minBuffer = lcCfg.minCollateralBufferUsdc ?? 25_000;
-  const ledger0 = loadLedger(lcCfg.initialCollateralUsdc ?? 250_000, { minBufferUsdc: minBuffer });
+  // 3a) Persist FSM state: surviving coordinator states + seed this cycle's new opens as "proposed".
+  if (driveLifecycle) {
+    const nextStates: Record<string, TrackedPosition> = { ...coordinatorStates };
+    for (const p of newOpens) nextStates[p.ref] = seedTracked(p);
+    saveLifecycleStates(nextStates, paths.lifecycleStatePath);
+    cooldownFlags = checkReopenCooldowns(
+      newOpens.map((p) => ({ ref: p.ref, openedAtMs: p.openedAtMs })),
+      history.lastCloseByRef,
+      lcCfg.reopenCooldownMs ?? 60_000
+    ).map((f) => ("ref" in f && f.ref ? `${f.kind}:${f.ref}` : f.kind));
+    saveLifecycleHistory(history, paths.lifecycleHistoryPath);
+  }
 
-  // Optional: reconcile the open book against a live partner-position feed (read-only, independent).
-  let partnerStates: Record<string, import("./barrierLifecycle").PartnerPositionState> | undefined;
-  let partnerFeedHealthy = true;
-  if (lcCfg.partnerFeed) {
+  // 3b) Non-coordinator partner fetch (overlay-only reconciliation) when the FSM isn't driving.
+  if (lcCfg.partnerFeed && !driveLifecycle) {
     try {
       const records = await lcCfg.partnerFeed.fetchPositions(openBook.map((p) => p.ref));
       const rec = reconcilePositions(openBook.map((p) => ({ ref: p.ref, notionalUsdc: p.notionalUsdc })), records, now, { maxStalenessMs: lcCfg.maxStalenessMs, sizeTolerancePct: lcCfg.sizeTolerancePct });
@@ -138,20 +287,30 @@ export const runForwardShadowCycle = async (
     }
   }
 
-  const { report: lifecycle, ledger: ledger1 } = reconcileShadowLifecycle({
+  // 4) Lifecycle overlay (basis + vesting view). When the coordinator is driving it owns gaps/orphans,
+  //    so the overlay's modeled gap is suppressed (modeledTouchGapBps: 0) to avoid double-counting.
+  const { report: lifecycle, ledger: ledgerAfter } = reconcileShadowLifecycle({
     open: openBook,
     nowMs: now,
     ticks: oracle.settlementTwapTicks,
     oracleMedianUsd: oracle.snapshot.priceUsd ?? spot,
     usableSamples: oracle.snapshot.usableSamples,
-    ledger: ledger0,
+    ledger,
     tenorMs: lcCfg.fullTenorMs ?? cfg.tenorDays * 86_400_000,
     basisMaxBps: lcCfg.basisMaxBps ?? 25,
     persistTicks: 3,
+    modeledTouchGapBps: driveLifecycle ? 0 : undefined,
     partnerStates,
     partnerFeedHealthy
   });
-  saveLedger(ledger1);
+  // Merge coordinator + cooldown signals into the report flags (deduped at the source modules).
+  if (coordinator) {
+    for (const f of coordinator.flags) lifecycle.flags.push("ref" in f && f.ref ? `${f.kind}:${f.ref}` : f.kind);
+    lifecycle.flags.push(...cooldownFlags);
+  }
+  // Surface a closed open-gate as flags (the fail-closed decline reasons).
+  if (!gate.allowOpens) for (const r of gate.reasons) lifecycle.flags.push(`open_gate:${r}`);
+  saveLedger(ledgerAfter);
 
   const openedNotional = newOpens.reduce((s, p) => s + p.notionalUsdc, 0);
   const openingScorecard: ShadowScorecard = {
@@ -179,13 +338,13 @@ export const runForwardShadowCycle = async (
     totalNetToFoxifyUsdc: 0,
     settlementPriceUsd: settlePriceUsd ?? 0,
     // "Complete" = the cycle behaved CORRECTLY: oracle verified AND we either opened positions OR
-    // correctly DECLINED because the oracle wasn't safe for activation (fail-closed is correct, not a
-    // failure). Only an unverified oracle, or oracle-safe-but-zero-opens (a real pricing/breaker
-    // signal), counts as incomplete.
-    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation),
+    // correctly DECLINED because the fail-closed OPEN GATE was shut (oracle-unsafe / collateral-halted /
+    // partner-feed-degraded / basis-unsafe). Only oracle-unverified, or gate-open-but-zero-opens (a real
+    // pricing/breaker signal), counts as incomplete.
+    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !gate.allowOpens),
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
-      newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
+      !gate.allowOpens ? `Cycle correctly declined to open (fail-closed gate: ${gate.reasons.join(", ")}).` : ""
     ].filter(Boolean)
   };
 
@@ -194,11 +353,15 @@ export const runForwardShadowCycle = async (
     openingScorecard,
     settledThisCycle: settled.length,
     settledPayoutThisCycleUsdc: +settledPayout.toFixed(2),
+    touchSettledThisCycle: touchSettled,
+    europeanSettledThisCycle: europeanSettled,
     deferred,
     openBookSize: openBook.length,
     settlePriceUsd,
     oracleVerified,
     lifecycle,
+    coordinator: coordinator ? { ...coordinator.summary, active: true, cherryPick: !!coordinator.cherryPickFlag } : null,
+    gate,
     meta
   };
 };
