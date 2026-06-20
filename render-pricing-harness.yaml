@@ -91,6 +91,15 @@ services:
         value: "0.04"
       - key: HARNESS_SERVICE_FEE_BPS
         value: "2"
+      # Capital-aware net bps inputs — MEASURED on Deribit (margin sweep + PM-netting), not assumed.
+      - key: SHADOW_SHORT_OPTION_IM_FRACTION
+        value: "0.1393"   # short-leg IM / notional (sweep, conservative/worst observed)
+      - key: SHADOW_SHORT_OPTION_GROSS_FRACTION
+        value: "1.0"      # share of open book carried as short options (~24h tenor ⟹ full book)
+      - key: SHADOW_PM_NETTING
+        value: "0.2216"   # measured balanced-book PM netting (Deribit simulate_portfolio, widest-strike/conservative)
+      - key: SHADOW_COST_OF_CAPITAL
+        value: "0.12"
       # ECDSA settlement-oracle keys (optional; ephemeral if unset). NEVER commit the private key.
       - key: ORACLE_PRIVATE_KEY_PEM
         sync: false
