@@ -12,7 +12,7 @@ import { CreditCollarActivationScaffold } from "./activationScaffold";
 import { computeInventory } from "./inventoryBalancer";
 import { buildLiveShadowInputs, type LiveShadowConfig } from "./shadowRunner";
 import type { ShadowScorecard } from "./shadowRunner";
-import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
+import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate, type SettlementLifecycleConfig } from "./forwardSettlement";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
@@ -24,6 +24,8 @@ export type ForwardCycleResult =
       openingScorecard: ShadowScorecard;
       settledThisCycle: number;
       settledPayoutThisCycleUsdc: number;
+      touchSettledThisCycle: number;
+      europeanSettledThisCycle: number;
       deferred: number;
       openBookSize: number;
       settlePriceUsd: number | null;
@@ -37,6 +39,13 @@ export type ForwardCycleConfig = LiveShadowConfig & {
   settlementHorizonMin?: number;
   /** Measured capital inputs (Deribit) so settled positions report P&L net of the IM they tied up. */
   capital?: import("./forwardSettlement").SettlementCapitalConfig;
+  /**
+   * Settlement model: touch-first / European-fallback. Touch is ON by default; persistTicks is the
+   * anti-wick confirmation depth on the oracle tick stream; touchGapBps models slippage past the
+   * barrier. With the synthetic same-price tick stream no touch fires (safe) — feed a real rolling
+   * tick history (SHADOW_BARRIER_*) for the touch path to engage on live data.
+   */
+  settlement?: SettlementLifecycleConfig;
   /** Vesting/collateral/basis overlay params. */
   lifecycle?: {
     fullTenorMs?: number;          // tenor used for vesting (defaults to tenorDays)
@@ -59,9 +68,17 @@ export const runForwardShadowCycle = async (
   const { skew, spot, scaffoldConfig, oracle, meta } = built.inputs;
   const now = oracle.nowMs;
 
-  // 1) Settle matured positions at the current ECDSA-verified TWAP (real later price).
+  // 1) Settle the open book under the touch-first / European-fallback model. A confirmed barrier touch
+  //    settles at the strike (hedge margin released early); otherwise a matured position settles
+  //    European on the verified TWAP. Fail-closed on an unverifiable oracle.
   const open = loadOpenPositions(paths.openPath);
-  const { settled, stillOpen, oracleVerified, settlePriceUsd, deferred } = settleMatured(open, now, oracle, cfg.capital);
+  const { settled, stillOpen, oracleVerified, settlePriceUsd, deferred, touchSettled, europeanSettled } = settleMatured(
+    open,
+    now,
+    oracle,
+    cfg.capital,
+    cfg.settlement
+  );
   appendSettlements(settled, paths.ledgerPath);
   const settledPayout = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
 
@@ -194,6 +211,8 @@ export const runForwardShadowCycle = async (
     openingScorecard,
     settledThisCycle: settled.length,
     settledPayoutThisCycleUsdc: +settledPayout.toFixed(2),
+    touchSettledThisCycle: touchSettled,
+    europeanSettledThisCycle: europeanSettled,
     deferred,
     openBookSize: openBook.length,
     settlePriceUsd,

@@ -25,6 +25,17 @@ const haltBand = num(process.env.SHADOW_BREAKER_HALT, 0.15);
 const forwardSettle = String(process.env.SHADOW_FORWARD_SETTLE ?? "true").toLowerCase() !== "false";
 const settlementHorizonMin = num(process.env.SHADOW_SETTLEMENT_HORIZON_MIN, 60); // positions settle 1h later (real move)
 
+// Settlement model: touch-first / European-fallback. Touch is ON by default; it only ENGAGES once a
+// real rolling tick history is fed (SHADOW_BARRIER_*) — with the synthetic same-price stream no touch
+// fires (safe). persistTicks is the cycle-cadence anti-wick depth; barrierFullVest=true ⟹ an
+// involuntary barrier touch realizes full credit.
+const settlementConfig = {
+  enableBarrierTouch: String(process.env.SHADOW_BARRIER_TOUCH ?? "true").toLowerCase() !== "false",
+  persistTicks: num(process.env.SHADOW_BARRIER_PERSIST_TICKS, 2),
+  touchGapBps: num(process.env.SHADOW_BARRIER_TOUCH_GAP_BPS, 0),
+  vesting: { barrierFullVest: String(process.env.SHADOW_BARRIER_FULL_VEST ?? "true").toLowerCase() !== "false" }
+};
+
 // Measured capital inputs (Deribit margin sweep + PM-netting) → capital-aware net bps on the dashboard.
 const capitalConfig = {
   shortOptionImFraction: num(process.env.SHADOW_SHORT_OPTION_IM_FRACTION, 0.1393),
@@ -88,6 +99,7 @@ const runCycle = async () => {
           portfolioMarginNettingFactor: capitalConfig.portfolioMarginNettingFactor,
           costOfCapitalAnnual: capitalConfig.costOfCapitalAnnual
         },
+        settlement: settlementConfig,
         lifecycle: {
           fullTenorMs: cfg.tenorDays * 86_400_000,
           basisMaxBps: num(process.env.SHADOW_BASIS_MAX_BPS, 25),
@@ -101,7 +113,7 @@ const runCycle = async () => {
         status.lastError = null;
         const lc = res.lifecycle;
         latestLifecycle = lc;
-        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}`);
+        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} (touch=${res.touchSettledThisCycle} euro=${res.europeanSettledThisCycle}) payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}`);
       } else {
         status.lastRunOk = false;
         status.lastError = `${res.error}: ${res.message}`;
