@@ -146,3 +146,38 @@ test("lifecycle: no touch by expiry ⟹ expired (European settle)", () => {
   assert.equal(s.pos.state, "expired");
   assert.ok(s.actions.includes("settle"));
 });
+
+// ── Credit-vesting + gap wiring ──
+const DAY = 86_400_000;
+const vesting = { fullCreditUsdc: 70, tenorMs: DAY };
+
+test("lifecycle: expiry vests full credit", () => {
+  const s = stepLifecycle({ ...mkPos(), state: "open", openedAtMs: NOW - DAY, expiresAtMs: NOW - 1 }, { nowMs: NOW, ticks: ticksAt(63_000), partner: open(), vesting });
+  assert.equal(s.creditOutcome?.realizedCreditUsdc, 70);
+  assert.equal(s.creditOutcome?.reason, "expiry");
+});
+
+test("lifecycle: barrier close on time ⟹ credit earned (barrier_close) + gap to reserve", () => {
+  const signaled = { ...mkPos(), state: "close_signaled" as const, barrierTouched: "ceiling" as const, closeSignaledAtMs: NOW, openedAtMs: NOW - DAY / 2 };
+  const s = stepLifecycle(signaled, { nowMs: NOW + 5_000, ticks: [], partner: flat({ markPriceUsd: 65_200 }), settlePriceUsd: 65_200, cfg: { closeSlaMs: 30_000 }, vesting });
+  assert.equal(s.pos.state, "closed");
+  assert.equal(s.creditOutcome?.reason, "barrier_close");
+  assert.ok((s.creditOutcome?.realizedCreditUsdc ?? 0) > 0);
+  assert.ok(s.gapEvent && s.gapEvent.onTimeWithinSla === true, "gap routed to the reserve when on time");
+});
+
+test("lifecycle: SLA breach forfeits the credit and routes the gap to Foxify", () => {
+  const signaled = { ...mkPos(), state: "close_signaled" as const, barrierTouched: "ceiling" as const, closeSignaledAtMs: NOW, openedAtMs: NOW - DAY / 2 };
+  const s = stepLifecycle(signaled, { nowMs: NOW + 60_000, ticks: [], partner: open({ markPriceUsd: 66_000 }), settlePriceUsd: 66_000, cfg: { closeSlaMs: 30_000 }, vesting });
+  assert.equal(s.pos.state, "breached");
+  assert.equal(s.creditOutcome?.forfeited, true);
+  assert.equal(s.creditOutcome?.realizedCreditUsdc, 0);
+  assert.ok(s.gapEvent && s.gapEvent.onTimeWithinSla === false, "breach gap is Foxify's");
+});
+
+test("lifecycle: voluntary early close (orphan) vests only the held fraction", () => {
+  const s = stepLifecycle({ ...mkPos(), state: "open", openedAtMs: NOW - DAY / 10 }, { nowMs: NOW, ticks: ticksAt(63_000), partner: flat(), vesting });
+  assert.equal(s.pos.state, "cancelled");
+  assert.equal(s.creditOutcome?.reason, "voluntary_early_close");
+  assert.ok((s.creditOutcome?.realizedCreditUsdc ?? 0) < 10, "early close ⟹ tiny vested credit, rest clawed");
+});

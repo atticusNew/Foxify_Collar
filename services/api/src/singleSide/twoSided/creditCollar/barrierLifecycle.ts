@@ -14,6 +14,8 @@
  */
 
 import { confirmTrigger, type OracleTick } from "./referenceOracle";
+import { computeVestedCredit, type CreditVestingConfig, type VestingOutcome } from "./creditVesting";
+import type { GapResolution } from "./collateralLedger";
 
 export type CollarSide = "long" | "short"; // the trader's PERP side
 
@@ -182,6 +184,8 @@ export type LifecycleContext = {
   partner: PartnerPositionState;        // partner-exchange reconciliation
   settlePriceUsd?: number | null;       // realized close/settlement price (oracle or partner mark)
   cfg?: LifecycleConfig;
+  /** Credit vesting params (fullCreditUsdc + tenorMs); when set, the step emits the realized credit. */
+  vesting?: CreditVestingConfig;
 };
 
 export type LifecycleStep = {
@@ -189,6 +193,10 @@ export type LifecycleStep = {
   actions: Array<"confirm_open" | "emit_close_signal" | "unwind_hedge" | "settle" | "cancel_collar">;
   flags: GamingFlag[];
   accountability: CloseAccountability | null;
+  /** Realized credit (vested/clawed/forfeited) when the position concludes. Null otherwise. */
+  creditOutcome: VestingOutcome | null;
+  /** Gap to resolve against the collateral ledger when a barrier settles. Null otherwise. */
+  gapEvent: GapResolution | null;
 };
 
 /**
@@ -204,7 +212,11 @@ export const stepLifecycle = (pos: LifecyclePosition, ctx: LifecycleContext): Li
   const actions: LifecycleStep["actions"] = [];
   const flags: GamingFlag[] = [];
   let accountability: CloseAccountability | null = null;
+  let creditOutcome: VestingOutcome | null = null;
+  let gapEvent: GapResolution | null = null;
   let next = { ...pos };
+  const heldMs = ctx.nowMs - pos.openedAtMs;
+  const credit = (reason: Parameters<typeof computeVestedCredit>[2]) => (ctx.vesting ? computeVestedCredit(ctx.vesting, heldMs, reason) : null);
 
   // Reconciliation guards apply in any live state.
   const phantom = detectPhantom(pos, ctx.partner);
@@ -227,6 +239,7 @@ export const stepLifecycle = (pos: LifecyclePosition, ctx: LifecycleContext): Li
         flags.push(orphan);
         next.state = "cancelled";
         actions.push("cancel_collar", "unwind_hedge");
+        creditOutcome = credit("voluntary_early_close"); // closed early with no barrier ⟹ vested portion only
         break;
       }
       const { barrier, confirmTsMs } = detectBarrier(ctx.ticks, pos.putStrike, pos.callStrike, persist);
@@ -238,6 +251,7 @@ export const stepLifecycle = (pos: LifecyclePosition, ctx: LifecycleContext): Li
       } else if (ctx.nowMs >= pos.expiresAtMs) {
         next.state = "expired";
         actions.push("settle"); // European settle on the oracle TWAP
+        creditOutcome = credit("expiry"); // held full tenor ⟹ fully vested
       }
       break;
     }
@@ -250,12 +264,17 @@ export const stepLifecycle = (pos: LifecyclePosition, ctx: LifecycleContext): Li
         accountability = assessClose(pos.barrierTouched, barrierPrice, closePrice, contractsBtc, pos.closeSignaledAtMs ?? ctx.nowMs, ctx.nowMs, sla);
         next.state = accountability.onTime ? "closed" : "breached";
         actions.push("settle");
+        // On-time barrier close ⟹ earned (barrier_close); late ⟹ breach forfeits the credit.
+        creditOutcome = credit(accountability.onTime ? "barrier_close" : "breach_forfeit");
+        gapEvent = accountability.gapUsdc > 0 ? { ref: pos.ref, gapUsdc: accountability.gapUsdc, onTimeWithinSla: accountability.onTime } : null;
       } else if (ctx.nowMs - (pos.closeSignaledAtMs ?? ctx.nowMs) > sla) {
         // Still open past the SLA — breach; the gap from here is Foxify's.
         const closePrice = ctx.settlePriceUsd ?? ctx.partner.markPriceUsd ?? barrierPrice;
         accountability = assessClose(pos.barrierTouched, barrierPrice, closePrice, contractsBtc, pos.closeSignaledAtMs ?? ctx.nowMs, ctx.nowMs, sla);
         next.state = "breached";
         actions.push("settle");
+        creditOutcome = credit("breach_forfeit"); // didn't close on the signal ⟹ forfeit
+        gapEvent = accountability.gapUsdc > 0 ? { ref: pos.ref, gapUsdc: accountability.gapUsdc, onTimeWithinSla: false } : null;
       }
       break;
     }
@@ -263,5 +282,5 @@ export const stepLifecycle = (pos: LifecyclePosition, ctx: LifecycleContext): Li
       break; // terminal states: closed | breached | expired | cancelled
   }
 
-  return { pos: next, actions, flags, accountability };
+  return { pos: next, actions, flags, accountability, creditOutcome, gapEvent };
 };
