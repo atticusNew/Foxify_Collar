@@ -14,6 +14,7 @@ import { runLiveShadowSession, type LiveShadowConfig } from "../src/singleSide/t
 import { runForwardShadowCycle, loadSettlementAggregate } from "../src/singleSide/twoSided/creditCollar/forwardShadow";
 import { appendScorecard, loadScorecards } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
+import type { ShadowLifecycleReport } from "../src/singleSide/twoSided/creditCollar/lifecycleShadow";
 
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
 
@@ -72,6 +73,8 @@ const status: ShadowLiveStatus = {
   lastError: null
 };
 
+let latestLifecycle: ShadowLifecycleReport | null = null;
+
 const runCycle = async () => {
   try {
     status.cyclesRun += 1;
@@ -84,13 +87,21 @@ const runCycle = async () => {
           shortOptionImFraction: capitalConfig.shortOptionImFraction,
           portfolioMarginNettingFactor: capitalConfig.portfolioMarginNettingFactor,
           costOfCapitalAnnual: capitalConfig.costOfCapitalAnnual
+        },
+        lifecycle: {
+          fullTenorMs: cfg.tenorDays * 86_400_000,
+          basisMaxBps: num(process.env.SHADOW_BASIS_MAX_BPS, 25),
+          initialCollateralUsdc: num(process.env.SHADOW_COLLATERAL_USDC, 250_000),
+          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 25_000)
         }
       });
       if (res.ok) {
         appendScorecard({ tsMs: status.lastRunAtMs, scorecard: res.openingScorecard, spotUsd: res.meta.spotUsd, oracleSources: res.meta.oracleSources });
         status.lastRunOk = true;
         status.lastError = null;
-        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified}`);
+        const lc = res.lifecycle;
+        latestLifecycle = lc;
+        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}`);
       } else {
         status.lastRunOk = false;
         status.lastError = `${res.error}: ${res.message}`;
@@ -126,7 +137,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);

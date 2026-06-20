@@ -7,6 +7,7 @@
 
 import { aggregateShadowScorecards, type ShadowRunRecord, type ShadowAggregate, type ShadowAggregateConfig } from "./shadowAggregate";
 import type { SettlementAggregate } from "./forwardSettlement";
+import type { ShadowLifecycleReport } from "./lifecycleShadow";
 
 /** In-process liveness reported by the running shadow loop. */
 export type ShadowLiveStatus = {
@@ -34,6 +35,7 @@ export type DashboardModel = {
   };
   aggregate: ShadowAggregate;
   settlement: SettlementAggregate | null;
+  lifecycle: ShadowLifecycleReport | null;
   recentSessions: Array<{
     tsIso: string;
     opened: number;
@@ -56,7 +58,8 @@ export const buildDashboardModel = (
   status: ShadowLiveStatus,
   nowMs: number,
   aggCfg: ShadowAggregateConfig = {},
-  settlement: SettlementAggregate | null = null
+  settlement: SettlementAggregate | null = null,
+  lifecycle: ShadowLifecycleReport | null = null
 ): DashboardModel => {
   const aggregate = aggregateShadowScorecards(records, aggCfg);
   const lastRunAgoMs = status.lastRunAtMs != null ? nowMs - status.lastRunAtMs : null;
@@ -100,6 +103,7 @@ export const buildDashboardModel = (
     },
     aggregate,
     settlement,
+    lifecycle,
     recentSessions: recent,
     generatedAtIso: new Date(nowMs).toISOString()
   };
@@ -183,6 +187,16 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
   </div>`
       : `<p class="muted">No positions have matured + settled yet (forward settlement at expiry). Real payout economics appear here once the first batch reaches its horizon.</p>`
   }
+  ${
+    m.lifecycle
+      ? `<h2>Cross-venue lifecycle (live overlay)</h2><div class="grid">
+    ${card("Basis", `${m.lifecycle.basisBps} bps`, m.lifecycle.basisWithinTolerance ? "within tolerance" : "⚠️ wide — defer settle")}
+    ${card("Credit vesting", `${m.lifecycle.vestProgressPct}%`, `$${m.lifecycle.vestedCreditSoFarUsdc} of $${m.lifecycle.fullCreditUsdc} accrued`)}
+    ${card("Collateral", `$${m.lifecycle.collateralAvailableUsdc}`, m.lifecycle.collateralHalted ? "⚠️ below buffer — HALT" : "available")}
+    ${card("Barrier touches", String(m.lifecycle.barrierTouchesDetected), `gap→reserve $${m.lifecycle.gapToReserveUsdc} · →Foxify $${m.lifecycle.gapToFoxifyUsdc}`)}
+  </div>`
+      : ""
+  }
   <h2>Flags</h2>${flags}
   <h2>Recent sessions</h2>
   <table><thead><tr><th>time</th><th>opened</th><th>halt</th><th>rej</th><th>peakExp</th><th>fee</th><th>oracle</th><th>recon</th><th>lifecycle</th></tr></thead>
@@ -201,6 +215,8 @@ export type DashboardDeps = {
   aggregateConfig?: ShadowAggregateConfig;
   /** Realized-economics aggregate over the settlement ledger (forward settlement). */
   settlementAggregate?: () => SettlementAggregate;
+  /** Latest cross-venue lifecycle overlay report (vesting/collateral/basis). */
+  lifecycleReport?: () => ShadowLifecycleReport | null;
   /** Optional read-only bearer token. If set, /api/* and / require it. */
   token?: string;
   nowMs?: () => number;
@@ -222,7 +238,8 @@ export const handleDashboardRequest = (
   }
 
   const settlement = deps.settlementAggregate ? deps.settlementAggregate() : null;
-  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement);
+  const lifecycle = deps.lifecycleReport ? deps.lifecycleReport() : null;
+  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle);
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
   if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(model, null, 2) };

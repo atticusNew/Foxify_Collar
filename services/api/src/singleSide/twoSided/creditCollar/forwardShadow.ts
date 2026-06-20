@@ -14,6 +14,8 @@ import { buildLiveShadowInputs, type LiveShadowConfig } from "./shadowRunner";
 import type { ShadowScorecard } from "./shadowRunner";
 import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
+import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
+import { loadLedger, saveLedger } from "./collateralStore";
 
 export type ForwardCycleResult =
   | {
@@ -25,6 +27,7 @@ export type ForwardCycleResult =
       openBookSize: number;
       settlePriceUsd: number | null;
       oracleVerified: boolean;
+      lifecycle: ShadowLifecycleReport;
       meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] };
     }
   | { ok: false; error: string; message: string };
@@ -33,6 +36,13 @@ export type ForwardCycleConfig = LiveShadowConfig & {
   settlementHorizonMin?: number;
   /** Measured capital inputs (Deribit) so settled positions report P&L net of the IM they tied up. */
   capital?: import("./forwardSettlement").SettlementCapitalConfig;
+  /** Vesting/collateral/basis overlay params. */
+  lifecycle?: {
+    fullTenorMs?: number;          // tenor used for vesting (defaults to tenorDays)
+    basisMaxBps?: number;          // basis tolerance (default 25)
+    initialCollateralUsdc?: number; // posted collateral seed (default 250_000)
+    minCollateralBufferUsdc?: number; // halt below this (default 25_000)
+  };
 };
 
 export const runForwardShadowCycle = async (
@@ -101,7 +111,25 @@ export const runForwardShadowCycle = async (
     }
   }
 
-  saveOpenPositions([...stillOpen, ...newOpens], paths.openPath);
+  const openBook = [...stillOpen, ...newOpens];
+  saveOpenPositions(openBook, paths.openPath);
+
+  // 3) Lifecycle overlay: exercise vesting + collateral + basis over the live open book.
+  const lcCfg = cfg.lifecycle ?? {};
+  const minBuffer = lcCfg.minCollateralBufferUsdc ?? 25_000;
+  const ledger0 = loadLedger(lcCfg.initialCollateralUsdc ?? 250_000, { minBufferUsdc: minBuffer });
+  const { report: lifecycle, ledger: ledger1 } = reconcileShadowLifecycle({
+    open: openBook,
+    nowMs: now,
+    ticks: oracle.settlementTwapTicks,
+    oracleMedianUsd: oracle.snapshot.priceUsd ?? spot,
+    usableSamples: oracle.snapshot.usableSamples,
+    ledger: ledger0,
+    tenorMs: lcCfg.fullTenorMs ?? cfg.tenorDays * 86_400_000,
+    basisMaxBps: lcCfg.basisMaxBps ?? 25,
+    persistTicks: 3
+  });
+  saveLedger(ledger1);
 
   const openedNotional = newOpens.reduce((s, p) => s + p.notionalUsdc, 0);
   const openingScorecard: ShadowScorecard = {
@@ -138,9 +166,10 @@ export const runForwardShadowCycle = async (
     settledThisCycle: settled.length,
     settledPayoutThisCycleUsdc: +settledPayout.toFixed(2),
     deferred,
-    openBookSize: stillOpen.length + newOpens.length,
+    openBookSize: openBook.length,
     settlePriceUsd,
     oracleVerified,
+    lifecycle,
     meta
   };
 };
