@@ -178,6 +178,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     m.settlement && m.settlement.settledPositions > 0
       ? `<div class="grid">
     ${card("Settled", String(m.settlement.settledPositions), `avg held ${m.settlement.avgHeldHours}h`)}
+    ${card("Settlement model", `${pct(m.settlement.pctTouchSettled)} touch`, `${m.settlement.touchSettlements} touch · ${m.settlement.europeanSettlements} European${m.settlement.totalCreditClawbackUsdc > 0 ? ` · $${m.settlement.totalCreditClawbackUsdc} clawback` : ""}`)}
     ${card("Book net payout", `${m.settlement.bookNetPayoutBps} bps`, `$${m.settlement.totalPayoutToFoxifyUsdc} (delta-flat ⟹ ~0)`)}
     ${card("Floor paid", pct(m.settlement.pctFloorBreached), `cap hit ${pct(m.settlement.pctCapBreached)}`)}
     ${card("Realized fee", `$${m.settlement.totalServiceFeeUsdc}`, `${m.settlement.realizedServiceFeeBps} bps gross`)}

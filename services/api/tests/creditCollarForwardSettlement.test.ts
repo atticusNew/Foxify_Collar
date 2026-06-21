@@ -137,6 +137,131 @@ test("aggregateSettlements: empty is well-defined", () => {
   assert.equal(agg.bookNetPayoutBps, 0);
   assert.equal(agg.capitalAwareNetServiceFeeBps, 0);
   assert.equal(agg.totalCapitalCostUsdc, 0);
+  assert.equal(agg.touchSettlements, 0);
+  assert.equal(agg.europeanSettlements, 0);
+  assert.equal(agg.pctTouchSettled, 0);
+});
+
+// ── Settlement model: touch-first / European fallback ─────────────────────────
+
+const oracleWithTicks = (snapshotPriceUsd: number, tickPrices: number[], pubKeyOverride?: string): CycleOracle => {
+  const samples: PriceSample[] = [
+    { source: "deribit", priceUsd: snapshotPriceUsd, tsMs: NOW - 200 },
+    { source: "okx", priceUsd: snapshotPriceUsd + 10, tsMs: NOW - 200 },
+    { source: "coinbase", priceUsd: snapshotPriceUsd - 10, tsMs: NOW - 200 }
+  ];
+  const snapshot = aggregateOracle(samples, NOW);
+  const keys = generateOracleKeyPair();
+  const signatureHex = signSnapshot(snapshot, keys.privateKeyPem);
+  const windowStartMs = NOW - tickPrices.length * 60_000;
+  const ticks: OracleTick[] = tickPrices.map((p, i) => ({ tsMs: windowStartMs + (i + 1) * 60_000 - 60_000 + 1, priceUsd: p }));
+  return { snapshot, signatureHex, publicKeyPem: pubKeyOverride ?? keys.publicKeyPem, settlementTwapTicks: ticks, windowStartMs, windowEndMs: NOW };
+};
+
+test("settleMatured: BARRIER TOUCH (floor) settles at the strike, before expiry, full credit", () => {
+  // putStrike 96k; ticks dip and persist ≤ 96k ⟹ floor touch confirmed. Position NOT yet matured.
+  const oracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000]);
+  const p = pos({ ref: "t", openedAtMs: NOW - 2 * 3_600_000, expiresAtMs: NOW + 22 * 3_600_000 });
+  const r = settleMatured([p], NOW, oracle);
+  assert.equal(r.touchSettled, 1);
+  assert.equal(r.europeanSettled, 0);
+  assert.equal(r.settled.length, 1);
+  assert.equal(r.stillOpen.length, 0, "touch settles even though expiry has not passed");
+  const o = r.settled[0];
+  assert.equal(o.settlementType, "barrier_touch");
+  assert.equal(o.barrierSide, "floor");
+  assert.equal(o.settlePriceUsd, 96_000, "settles AT the barrier (ATM) with no modeled gap");
+  assert.equal(o.payoutToFoxifyUsdc, 0, "option is ATM at the barrier — clean unwind");
+  assert.equal(o.vestedCreditUsdc, 75, "involuntary barrier touch ⟹ full credit (barrierFullVest default)");
+  assert.equal(o.creditClawbackUsdc, 0);
+  assert.equal(o.netToFoxifyUsdc, 75);
+});
+
+test("settleMatured: BARRIER TOUCH (ceiling) settles at the cap", () => {
+  const oracle = oracleWithTicks(102_000, [100_000, 102_000, 103_000, 104_000]);
+  const p = pos({ ref: "c", openedAtMs: NOW - 3_600_000, expiresAtMs: NOW + 22 * 3_600_000 });
+  const r = settleMatured([p], NOW, oracle);
+  assert.equal(r.touchSettled, 1);
+  const o = r.settled[0];
+  assert.equal(o.barrierSide, "ceiling");
+  assert.equal(o.settlePriceUsd, 101_000);
+  assert.equal(o.payoutToFoxifyUsdc, 0);
+});
+
+test("settleMatured: touchGapBps models adverse slippage past the barrier (the floor pays the gap)", () => {
+  const oracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000]);
+  const p = pos({ ref: "g", openedAtMs: NOW - 3_600_000, expiresAtMs: NOW + 22 * 3_600_000 });
+  const r = settleMatured([p], NOW, oracle, {}, { touchGapBps: 50 }); // 0.5% slip past the floor
+  const o = r.settled[0];
+  // gap = 0.005 × 96000 = 480; settle = 95520; put pays 480 × 0.5 contracts = 240.
+  assert.equal(o.settlePriceUsd, 95_520);
+  assert.equal(o.payoutToFoxifyUsdc, 240);
+  assert.equal(o.floorBreached, true);
+  assert.equal(o.netToFoxifyUsdc, 75 + 240);
+});
+
+test("settleMatured: enableBarrierTouch=false ⟹ pure European fallback (legacy)", () => {
+  const oracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000]); // would touch the floor
+  const p = pos({ ref: "e", expiresAtMs: NOW - 60_000 }); // matured
+  const r = settleMatured([p], NOW, oracle, {}, { enableBarrierTouch: false });
+  assert.equal(r.touchSettled, 0);
+  assert.equal(r.europeanSettled, 1);
+  assert.equal(r.settled[0].settlementType, "european_expiry");
+  assert.equal(r.settled[0].barrierSide, "none");
+});
+
+test("settleMatured: barrier touch can be TIME-VESTED via barrierFullVest=false (clawback applies)", () => {
+  const oracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000]);
+  const p = pos({ ref: "v", openedAtMs: NOW - 2 * 3_600_000, expiresAtMs: NOW + 22 * 3_600_000 }); // ~2h of 24h
+  const r = settleMatured([p], NOW, oracle, {}, { vesting: { barrierFullVest: false } });
+  const o = r.settled[0];
+  assert.ok(o.vestedCreditUsdc < 75, `time-vested ⟹ partial credit, got ${o.vestedCreditUsdc}`);
+  assert.ok(o.creditClawbackUsdc > 0, "the unearned portion is clawed back");
+  assert.ok(Math.abs(o.vestedCreditUsdc + o.creditClawbackUsdc - 75) < 0.05, "vested + clawback = full credit");
+});
+
+test("settleMatured: unverified oracle does NOT touch-settle and defers matured (fail-closed)", () => {
+  const impostor = generateOracleKeyPair();
+  const oracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000], impostor.publicKeyPem);
+  const p = pos({ ref: "u", expiresAtMs: NOW - 60_000 }); // matured + would touch
+  const r = settleMatured([p], NOW, oracle);
+  assert.equal(r.oracleVerified, false);
+  assert.equal(r.touchSettled, 0, "ticks are not trusted on an unverifiable oracle");
+  assert.equal(r.settled.length, 0);
+  assert.equal(r.deferred, 1);
+  assert.equal(r.stillOpen.length, 1);
+});
+
+test("settleMatured: safeToSettle=false defers ALL settlement (fail-closed basis gate)", () => {
+  const oracle = oracleAt(92_000); // would normally settle the matured position
+  const matured = pos({ ref: "m", expiresAtMs: NOW - 60_000 });
+  const r = settleMatured([matured], NOW, oracle, {}, { safeToSettle: false });
+  assert.equal(r.settled.length, 0, "nothing settles on an unsafe basis");
+  assert.equal(r.touchSettled, 0);
+  assert.equal(r.europeanSettled, 0);
+  assert.equal(r.deferred, 1, "matured-but-ungated ⟹ deferred");
+  assert.equal(r.stillOpen.length, 1);
+});
+
+test("settleMatured: safeToSettle=false also blocks a barrier touch", () => {
+  const oracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000]); // floor touch present
+  const p = pos({ ref: "t", openedAtMs: NOW - 3_600_000, expiresAtMs: NOW + 22 * 3_600_000 });
+  const r = settleMatured([p], NOW, oracle, {}, { safeToSettle: false });
+  assert.equal(r.touchSettled, 0, "touch is gated off too — never settle on a divergent price");
+  assert.equal(r.stillOpen.length, 1);
+});
+
+test("aggregateSettlements: surfaces touch vs European breakdown + clawback", () => {
+  const touchOracle = oracleWithTicks(95_000, [98_000, 95_000, 94_000, 93_000]);
+  const touch = settleMatured([pos({ ref: "T", openedAtMs: NOW - 3_600_000, expiresAtMs: NOW + 22 * 3_600_000 })], NOW, touchOracle).settled;
+  const euroOracle = oracleAt(99_000);
+  const euro = settleMatured([pos({ ref: "E", expiresAtMs: NOW - 60_000 })], NOW, euroOracle).settled;
+  const agg = aggregateSettlements([...touch, ...euro]);
+  assert.equal(agg.settledPositions, 2);
+  assert.equal(agg.touchSettlements, 1);
+  assert.equal(agg.europeanSettlements, 1);
+  assert.equal(agg.pctTouchSettled, 0.5);
+  assert.ok(agg.totalCreditClawbackUsdc >= 0);
 });
 
 test("store: open positions replace; settlements append; round-trip", () => {

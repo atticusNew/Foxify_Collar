@@ -77,6 +77,20 @@ services:
         value: "900000"
       - key: SHADOW_STORE_PATH
         value: "/var/data/shadow-scorecards.jsonl"
+      # ALL operational stores must live on the persistent disk too — otherwise they fall back to the
+      # ephemeral container fs (./logs) and are wiped on every deploy (settlement/touch never accumulate).
+      - key: SHADOW_OPEN_POSITIONS_PATH
+        value: "/var/data/shadow-open-positions.jsonl"
+      - key: SHADOW_SETTLEMENT_LEDGER_PATH
+        value: "/var/data/shadow-settlements.jsonl"
+      - key: SHADOW_TICK_HISTORY_PATH
+        value: "/var/data/shadow-tick-history.json"
+      - key: SHADOW_COLLATERAL_PATH
+        value: "/var/data/shadow-collateral.json"
+      - key: SHADOW_LIFECYCLE_STATE_PATH
+        value: "/var/data/shadow-lifecycle-state.json"
+      - key: SHADOW_LIFECYCLE_HISTORY_PATH
+        value: "/var/data/shadow-lifecycle-history.json"
       - key: SHADOW_N_POSITIONS
         value: "20"
       - key: SHADOW_POSITION_USDC
