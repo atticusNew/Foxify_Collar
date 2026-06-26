@@ -178,9 +178,11 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     m.settlement && m.settlement.settledPositions > 0
       ? `<div class="grid">
     ${card("Settled", String(m.settlement.settledPositions), `avg held ${m.settlement.avgHeldHours}h`)}
-    ${card("Book net payout", `${m.settlement.bookNetPayoutBps} bps`, `$${m.settlement.totalPayoutToFoxifyUsdc} (delta-flat ⟹ ~0)`)}
+    ${card("Atticus option net (hedged)", `$${m.settlement.totalAtticusOptionNetUsdc}`, `${m.settlement.bookHedgedNetBps} bps — back-to-back hedge receipt nets the Foxify payout ⟹ ~0`)}
+    ${card("Book payout (un-hedged view)", `${m.settlement.bookNetPayoutBps} bps`, `$${m.settlement.totalPayoutToFoxifyUsdc} Foxify-facing only — swings at real tenor; not Atticus risk`)}
     ${card("Floor paid", pct(m.settlement.pctFloorBreached), `cap hit ${pct(m.settlement.pctCapBreached)}`)}
     ${card("Realized fee", `$${m.settlement.totalServiceFeeUsdc}`, `${m.settlement.realizedServiceFeeBps} bps gross`)}
+    ${card("Option fees (Bullish)", `$${m.settlement.totalOptionFeesUsdc}`, `net after fees+capital $${m.settlement.totalAtticusNetAfterFeesAndCapitalUsdc} (${m.settlement.netAfterFeesAndCapitalBps} bps)`)}
     ${card("Net after capital", `$${m.settlement.totalAtticusNetAfterCapitalUsdc}`, `${m.settlement.capitalAwareNetServiceFeeBps} bps · −$${m.settlement.totalCapitalCostUsdc} IM cost · peak IM $${m.settlement.peakShortLegMarginUsdc}`)}
     ${card("Net to Foxify", `$${m.settlement.totalNetToFoxifyUsdc}`, `credit $${m.settlement.totalCreditAccruedUsdc} + payout`)}
     ${card("Payout range", `$${m.settlement.worstPayoutUsdc} … $${m.settlement.bestPayoutUsdc}`, `avg $${m.settlement.avgPayoutPerPositionUsdc}`)}
