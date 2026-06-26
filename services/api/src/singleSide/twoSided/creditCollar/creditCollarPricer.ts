@@ -38,6 +38,7 @@
  */
 
 import { bsPut, bsCall } from "../../../pilot/blackScholes";
+import { computeCollarOpenFees, type FeeVenueMode } from "./bullishFees";
 
 export type PerpSide = "long" | "short";
 
@@ -109,6 +110,13 @@ export type AtticusSpreadConfig = {
     tenorDays: number;
     midPerBtc: number;
   }) => number;
+  /**
+   * Hedge-venue fee channel for the Bullish option legs (see bullishFees.ts). Defaults to the
+   * CONSERVATIVE "clob_taker" (both legs charged at the 1bp-notional/10%-premium min). Set "otc_rfq"
+   * for the RFQ/block path (multi-leg nets to the heavier leg) or "clob_maker" if quoting passively.
+   * The realized fee is surfaced in economics so the headroom number is net of fees, not just crossing.
+   */
+  feeMode?: FeeVenueMode;
 };
 
 export type CollarLegs = {
@@ -155,6 +163,10 @@ export type CreditCollarQuote = {
     required_margin_usdc: number;    // max(notional × spreadBps, minMarginUsdc)
     foxify_market_implied_ev_usdc: number; // = foxify_credit − fair_credit_mid = −(crossing + margin)
     rebates_included: false;
+    // ── Hedge-venue (Bullish) option fees — grounds the headroom number net of real fees ──
+    fee_mode: FeeVenueMode;
+    option_open_fees_usdc: number;            // fee to OPEN the collar on Bullish (held-to-expiry pays only this)
+    atticus_margin_net_of_fees_usdc: number;  // embedded spread AFTER the open fee — the real per-position edge
   };
   foxify_outcome: {
     /** Max protected loss (between spot and the floor, net of the credit cushion). */
@@ -407,6 +419,18 @@ export const solveAndPriceCreditCollar = (
   // off by contracts × spot × 1% = notional × 1% relative to Foxify's actual perp P&L.
   const basisUsdcPer1pct = notionalUsdc * 0.01;
 
+  // Hedge-venue (Bullish) option fees on the two legs, computed at the mid premiums. The headroom that
+  // actually matters is the embedded spread NET of this fee — surfaced so a thin-wing/low-vol regime
+  // that leaves a positive margin but a negative net-of-fees is visible rather than implied.
+  const feeMode: FeeVenueMode = config.feeMode ?? "clob_taker";
+  const fees = computeCollarOpenFees({
+    notionalUsd: notionalUsdc,
+    protectivePremiumUsd: protectiveMidPerBtc * contractsBtc,
+    fundingPremiumUsd: chosenFundingMidPerBtc * contractsBtc,
+    mode: feeMode
+  });
+  const atticusMarginNetOfFeesUsdc = atticusMarginUsdc - fees.openFeeUsdc;
+
   return {
     ok: true,
     position: {
@@ -442,7 +466,10 @@ export const solveAndPriceCreditCollar = (
       atticus_margin_bps: round4((atticusMarginUsdc / notionalUsdc) * 1e4),
       required_margin_usdc: round2(requiredMarginUsdc),
       foxify_market_implied_ev_usdc: round2(foxifyEvUsdc),
-      rebates_included: false
+      rebates_included: false,
+      fee_mode: feeMode,
+      option_open_fees_usdc: round2(fees.openFeeUsdc),
+      atticus_margin_net_of_fees_usdc: round2(atticusMarginNetOfFeesUsdc)
     },
     foxify_outcome: {
       max_loss_usdc: round2(foxifyMaxLossUsdc),
@@ -475,6 +502,7 @@ export const solveAndPriceCreditCollar = (
       "Fair value at per-strike (skew) mid; Atticus margin is the explicit embedded spread on top.",
       "EV-neutral: Foxify market-implied EV = −Atticus margin (≤ −required). Positive Foxify EV is rejected.",
       "Credit is accrued + netted at settlement, NOT paid upfront — removes free-option exposure + financing drag.",
+      `Bullish option fees (${feeMode}): open ${round2(fees.openFeeUsdc)} ⟹ margin net of fees ${round2(atticusMarginNetOfFeesUsdc)}. Held-to-expiry pays only the open; rebates excluded.`,
       "Rebates excluded (upside-only, never load-bearing). Phase A = pricing/sim only; no execution, no settlement."
     ]
   };

@@ -61,6 +61,8 @@ export type ActivationRecord = {
   foxifyCreditUsdc: number;
   foxifyEvUsdc: number;
   floorPctUsed: number;
+  /** Hedge-venue (Bullish) fee to OPEN the collar legs — held-to-expiry pays only this. */
+  openFeeUsdc: number;
   status: "active";
 };
 
@@ -180,6 +182,7 @@ export class CreditCollarActivationScaffold {
       foxifyCreditUsdc: q.economics.foxify_credit_usdc,
       foxifyEvUsdc: q.economics.foxify_market_implied_ev_usdc,
       floorPctUsed: adaptive.floorUsedPct,
+      openFeeUsdc: q.economics.option_open_fees_usdc,
       status: "active"
     };
   }
