@@ -165,6 +165,33 @@ export class OkxExecutionClient {
     return this.request("GET", "/api/v5/account/config");
   }
 
+  /** Your ACTUAL options maker/taker fee tier (VIP-adjusted). Read-only. Negative = rebate. */
+  getTradeFee(instType = "OPTION", uly = "BTC-USD"): Promise<OkxResponse<{ instType?: string; maker?: string; taker?: string; makerU?: string; takerU?: string; level?: string }>> {
+    return this.request("GET", `/api/v5/account/trade-fee?instType=${instType}&uly=${encodeURIComponent(uly)}`);
+  }
+
+  /** Public option chain (instId/strike/expiry/type/contract-value) for the ACTIVE environment. Read-only. */
+  getOptionChain(uly = "BTC-USD"): Promise<OkxResponse<{ instId?: string; optType?: "C" | "P"; stk?: string; expTime?: string; ctVal?: string; state?: string }>> {
+    return this.request("GET", `/api/v5/public/instruments?instType=OPTION&uly=${encodeURIComponent(uly)}`);
+  }
+
+  /** Public index price (e.g. BTC-USD) for picking strikes. Read-only. */
+  getIndexPrice(instId = "BTC-USD"): Promise<OkxResponse<{ idxPx?: string }>> {
+    return this.request("GET", `/api/v5/market/index-tickers?instId=${encodeURIComponent(instId)}`);
+  }
+
+  /**
+   * Portfolio-margin SIMULATOR (Position Builder). Read-only: computes margin for a hypothetical book —
+   * places NO orders, moves NO capital. `simPos` = [{ instId, pos }] with pos = signed contract count
+   * (positive long, negative short). inclRealPosAndEq=false isolates the simulated legs only.
+   */
+  positionBuilder(
+    simPos: Array<{ instId: string; pos: string }>,
+    inclRealPosAndEq = false
+  ): Promise<OkxResponse<Record<string, unknown>>> {
+    return this.request("POST", "/api/v5/account/position-builder", JSON.stringify({ inclRealPosAndEq, simPos }));
+  }
+
   /**
    * Activate options trading for the ACCOUNT — the API equivalent of "click any symbol on the
    * options chain to activate trading" (clears error 51198). Idempotent; safe to call on startup.
