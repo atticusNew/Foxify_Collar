@@ -96,15 +96,31 @@ const main = async () => {
   const contracts = Math.max(1, Math.round(targetBtc / ctVal));
   out.contractsPerLeg = { targetBtc: +targetBtc.toFixed(4), ctVal, contracts };
 
+  // Mark price per leg = the simulated entry (avgPx) Position Builder requires. Mark first, then book mid.
+  const avgPxOf = async (instId: string): Promise<string> => {
+    const mk = await client.getMarkPrice(instId);
+    const m = Number(mk.data?.[0]?.markPx ?? 0);
+    if (m > 0) return String(m);
+    const bk = await client.getBookTop(instId);
+    const bid = Number(bk.data?.[0]?.bids?.[0]?.[0] ?? 0);
+    const ask = Number(bk.data?.[0]?.asks?.[0]?.[0] ?? 0);
+    const mid = bid > 0 && ask > 0 ? (bid + ask) / 2 : bid || ask;
+    return String(mid > 0 ? mid : 0.0001); // nonzero so OKX accepts it; entry barely affects scenario margin
+  };
+  const [pxPut4, pxCall2, pxCall4, pxPut2] = await Promise.all([
+    avgPxOf(put4.instId), avgPxOf(call2.instId), avgPxOf(call4.instId), avgPxOf(put2.instId)
+  ]);
+  out.markPx = { put4: pxPut4, call2: pxCall2, call4: pxCall4, put2: pxPut2 };
+
   // 5) Position Builder — unmatched single collar vs matched long+short book.
   const single = [
-    { instId: put4.instId, pos: String(contracts) },   // long put −4%
-    { instId: call2.instId, pos: String(-contracts) }  // short call +2%
+    { instId: put4.instId, pos: String(contracts), avgPx: pxPut4 },   // long put −4%
+    { instId: call2.instId, pos: String(-contracts), avgPx: pxCall2 } // short call +2%
   ];
   const pair = [
     ...single,
-    { instId: call4.instId, pos: String(contracts) },  // long call +4%
-    { instId: put2.instId, pos: String(-contracts) }   // short put −2%
+    { instId: call4.instId, pos: String(contracts), avgPx: pxCall4 }, // long call +4%
+    { instId: put2.instId, pos: String(-contracts), avgPx: pxPut2 }   // short put −2%
   ];
 
   const pb = async (label: string, simPos: Array<{ instId: string; pos: string }>) => {

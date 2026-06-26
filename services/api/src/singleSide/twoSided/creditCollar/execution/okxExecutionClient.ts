@@ -180,13 +180,18 @@ export class OkxExecutionClient {
     return this.request("GET", `/api/v5/market/index-tickers?instId=${encodeURIComponent(instId)}`);
   }
 
+  /** Public option mark price for an instId (used as the simulated entry price for Position Builder). Read-only. */
+  getMarkPrice(instId: string): Promise<OkxResponse<{ markPx?: string }>> {
+    return this.request("GET", `/api/v5/public/mark-price?instType=OPTION&instId=${encodeURIComponent(instId)}`);
+  }
+
   /**
    * Portfolio-margin SIMULATOR (Position Builder). Read-only: computes margin for a hypothetical book —
    * places NO orders, moves NO capital. `simPos` = [{ instId, pos }] with pos = signed contract count
    * (positive long, negative short). inclRealPosAndEq=false isolates the simulated legs only.
    */
   positionBuilder(
-    simPos: Array<{ instId: string; pos: string }>,
+    simPos: Array<{ instId: string; pos: string; avgPx: string }>,
     inclRealPosAndEq = false
   ): Promise<OkxResponse<Record<string, unknown>>> {
     return this.request("POST", "/api/v5/account/position-builder", JSON.stringify({ inclRealPosAndEq, simPos }));
