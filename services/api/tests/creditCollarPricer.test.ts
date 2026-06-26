@@ -187,6 +187,46 @@ test("sim: spread clears costs at rebates=0 AND reserve survives an imbalanced j
   assert.notEqual(res.verdict, "NOT_VIABLE");
 });
 
+test("pass_through model: collar nets to ~0, profit is the SEPARATE operation fee", () => {
+  const embedded = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", feeMode: "clob_taker" });
+  const pass = solveAndPriceCreditCollar(baseParams(), SKEW, {
+    fillMode: "touch",
+    feeMode: "clob_taker",
+    pricingModel: "pass_through",
+    operationFeeBps: 2,
+    minOperationFeeUsdc: 10
+  });
+  assert.equal(embedded.ok, true);
+  assert.equal(pass.ok, true);
+  if (!embedded.ok || !pass.ok) return;
+
+  // Embedded: profit lives inside the collar (margin), no separate operation fee.
+  assert.equal(embedded.economics.pricing_model, "embedded_spread");
+  assert.equal(embedded.economics.operation_fee_usdc, 0);
+  assert.ok(embedded.economics.atticus_margin_net_of_fees_usdc > 0);
+
+  // Pass-through: the collar funds credit + the Bullish fee and nets to ~0; profit is the operation fee.
+  assert.equal(pass.economics.pricing_model, "pass_through");
+  assert.ok(pass.economics.foxify_credit_usdc >= 100, "Foxify receives at least the target credit (overshoot passed through)");
+  assert.ok(pass.economics.operation_fee_usdc >= 10, "operation fee billed separately (>= floor)");
+  assert.ok(Math.abs(pass.economics.atticus_margin_net_of_fees_usdc) <= 0.5, "collar nets to ~0 (proceeds passed through, fee funded)");
+  assert.equal(pass.economics.atticus_total_revenue_usdc, pass.economics.operation_fee_usdc, "all profit is the separate fee");
+  // Foxify EV from the collar is still strictly negative (they cross the spread + fund the fee), but it is
+  // NOT pushed down by an embedded margin — so the collar is sold at (near) fair value.
+  assert.ok(pass.economics.foxify_market_implied_ev_usdc <= 1e-6);
+});
+
+test("pass_through funds the Bullish fee inside the credit (looser-or-equal cap vs embedded margin)", () => {
+  const embedded = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", feeMode: "clob_taker" });
+  const pass = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", feeMode: "clob_taker", pricingModel: "pass_through" });
+  assert.equal(embedded.ok, true);
+  assert.equal(pass.ok, true);
+  if (!embedded.ok || !pass.ok) return;
+  // Embedded must fund credit + ~$12 margin; pass_through only credit + ~$7 fee ⟹ needs no more premium,
+  // so its ceiling sits at least as loose (Foxify surrenders no more upside than the embedded model).
+  assert.ok(pass.legs.cap_pct >= embedded.legs.cap_pct - 1e-9, "pass_through cap is looser-or-equal (funds less extra)");
+});
+
 test("adaptive floor: deepens to stay feasible in a thin/low-vol regime; disabled == single solve", () => {
   const thin = linearDownsideSkew(SPOT, 0.3, 0.04); // calm regime
   const params = baseParams({ targetCreditUsdc: 150, maxFloorPct: 0.04 }); // demanding credit vs thin vol
