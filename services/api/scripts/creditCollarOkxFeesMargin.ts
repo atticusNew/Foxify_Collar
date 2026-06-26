@@ -93,8 +93,6 @@ const main = async () => {
   }
 
   const targetBtc = notional / spot;
-  const contracts = Math.max(1, Math.round(targetBtc / ctVal));
-  out.contractsPerLeg = { targetBtc: +targetBtc.toFixed(4), ctVal, contracts };
 
   // Mark price per leg = the simulated entry (avgPx) Position Builder requires. Mark first, then book mid.
   const avgPxOf = async (instId: string): Promise<string> => {
@@ -112,7 +110,28 @@ const main = async () => {
   ]);
   out.markPx = { put4: pxPut4, call2: pxCall2, call4: pxCall4, put2: pxPut2 };
 
-  // 5) Position Builder — unmatched single collar vs matched long+short book.
+  const pb = async (label: string, simPos: Array<{ instId: string; pos: string; avgPx: string }>) => {
+    const r = await client.positionBuilder(simPos);
+    return { label, ok: r.ok, code: r.code, msg: r.msg, simPos, result: (r.data?.[0] ?? {}) as Record<string, unknown> };
+  };
+  const portfoliosOf = (res: Record<string, unknown>): Array<{ instId?: string; notionalUsd?: string }> =>
+    ((res.riskUnitData as Array<{ portfolios?: Array<{ instId?: string; notionalUsd?: string }> }> | undefined)?.[0]?.portfolios) ?? [];
+
+  // Calibrate the REAL contract size from the simulator's own notionalUsd (OKX's ctVal/ctMult units are
+  // unreliable for these instruments). 1-contract probe → per-contract notional → right contract count.
+  const calib = await pb("calibration (1 put contract)", [{ instId: put4.instId, pos: "1", avgPx: pxPut4 }]);
+  const perContractNotional = Number(portfoliosOf(calib.result).find((p) => p.instId === put4.instId)?.notionalUsd ?? 0);
+  const perContractBtc = perContractNotional > 0 && put4.stk > 0 ? perContractNotional / put4.stk : 0.01;
+  const contracts = Math.max(1, Math.round(targetBtc / perContractBtc));
+  out.contractsPerLeg = {
+    targetBtc: +targetBtc.toFixed(4),
+    reportedCtVal: ctVal,
+    perContractBtc: +perContractBtc.toFixed(5),
+    contracts,
+    note: "contracts sized from the simulator's notionalUsd, not the (unreliable) ctVal field"
+  };
+
+  // 5) Position Builder — unmatched single collar vs matched long+short book, at the calibrated size.
   const single = [
     { instId: put4.instId, pos: String(contracts), avgPx: pxPut4 },   // long put −4%
     { instId: call2.instId, pos: String(-contracts), avgPx: pxCall2 } // short call +2%
@@ -123,14 +142,20 @@ const main = async () => {
     { instId: put2.instId, pos: String(-contracts), avgPx: pxPut2 }   // short put −2%
   ];
 
-  const pb = async (label: string, simPos: Array<{ instId: string; pos: string }>) => {
-    const r = await client.positionBuilder(simPos);
-    return { label, ok: r.ok, code: r.code, msg: r.msg, simPos, result: r.data?.[0] ?? r.data };
-  };
+  const unmatched = await pb("unmatched: long put −4% + short call +2%", single);
+  const matched = await pb("matched: + long call +4% + short put −2% (defined-risk)", pair);
+  out.positionBuilder = { unmatched_single_collar: unmatched, matched_long_short_book: matched };
 
-  out.positionBuilder = {
-    unmatched_single_collar: await pb("unmatched: long put −4% + short call +2%", single),
-    matched_long_short_book: await pb("matched: + long call +4% + short put −2% (defined-risk)", pair)
+  // Readable summary: IM as $ and %-of-notional, plus the PM netting factor (matched-per-position ÷ unmatched).
+  const numOf = (res: Record<string, unknown>, k: string) => Number((res[k] as string | undefined) ?? 0);
+  const posNotional = contracts * perContractNotional; // one collar's protected notional (≈ target)
+  const uImr = numOf(unmatched.result, "totalImr");
+  const mImr = numOf(matched.result, "totalImr");
+  out.imSummary = {
+    perPositionNotionalUsd: +posNotional.toFixed(0),
+    unmatched: { imrUsd: +uImr.toFixed(2), mmrUsd: +numOf(unmatched.result, "totalMmr").toFixed(2), imrPctOfNotional: posNotional > 0 ? +((uImr / posNotional) * 100).toFixed(2) : null },
+    matchedPair: { totalImrUsd: +mImr.toFixed(2), imrPerPositionUsd: +(mImr / 2).toFixed(2), imrPctOfNotionalPerPosition: posNotional > 0 ? +(((mImr / 2) / posNotional) * 100).toFixed(2) : null },
+    pmNettingFactor: uImr > 0 ? +((mImr / 2) / uImr).toFixed(3) : null
   };
 
   process.stdout.write(JSON.stringify(out, null, 2) + "\n");
