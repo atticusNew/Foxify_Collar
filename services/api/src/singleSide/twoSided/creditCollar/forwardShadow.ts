@@ -101,6 +101,7 @@ export const runForwardShadowCycle = async (
         serviceFeeUsdc: rec.serviceFeeUsdc,
         floorPctUsed: rec.floorPctUsed,
         openFeeUsdc: rec.openFeeUsdc,
+        feesFundedByCollar: rec.feesFundedByCollar,
         openedAtMs: now,
         expiresAtMs: now + horizonMs
       });

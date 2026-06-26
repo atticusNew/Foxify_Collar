@@ -36,6 +36,12 @@ export type ScaffoldConfig = {
   minServiceFeeUsdc: number;
   maxFloorPct: number;
   tenorDays: number;
+  /**
+   * Profit model (see creditCollarPricer). Default "pass_through": the collar is sold at fair value and
+   * funds only credit + Bullish fees (nets ~0), and Atticus's profit is the SEPARATE operation fee
+   * (sized from serviceFeeBps / minServiceFeeUsdc). "embedded_spread" keeps the legacy embedded margin.
+   */
+  pricingModel?: "embedded_spread" | "pass_through";
   /** Foxify's per-position fee = the CREDIT accrued (e.g. 75). If absent, the service fee is used. */
   feeUsdc?: number;
   /** Regime-adaptive floor: deepen the floor until the credit prices in calm/low-vol markets. */
@@ -63,6 +69,10 @@ export type ActivationRecord = {
   floorPctUsed: number;
   /** Hedge-venue (Bullish) fee to OPEN the collar legs — held-to-expiry pays only this. */
   openFeeUsdc: number;
+  /** Atticus's profit model: "pass_through" (collar nets ~0, fee billed separately) or "embedded_spread". */
+  pricingModel: "embedded_spread" | "pass_through";
+  /** True when the collar itself funds the Bullish open fee (pass_through) ⟹ fee is not borne by Atticus's net. */
+  feesFundedByCollar: boolean;
   status: "active";
 };
 
@@ -150,19 +160,28 @@ export class CreditCollarActivationScaffold {
     }
     const mode = this.modeFor(tier);
 
-    // 4. Price + EV guardrail. Credit = Foxify's fee; margin = Atticus's service fee.
-    const serviceFee = Math.max((instruction.notionalUsdc * this.cfg.serviceFeeBps) / 1e4, this.cfg.minServiceFeeUsdc);
-    const creditUsdc = this.cfg.feeUsdc != null && this.cfg.feeUsdc > 0 ? this.cfg.feeUsdc : serviceFee;
+    // 4. Price + EV guardrail. Credit = Foxify's fee. Default model = pass_through: the operation fee is
+    //    billed separately and the collar nets to ~0; embedded_spread keeps the legacy embedded margin.
+    const model = this.cfg.pricingModel ?? "pass_through";
+    const opFee = Math.max((instruction.notionalUsdc * this.cfg.serviceFeeBps) / 1e4, this.cfg.minServiceFeeUsdc);
+    const creditUsdc = this.cfg.feeUsdc != null && this.cfg.feeUsdc > 0 ? this.cfg.feeUsdc : opFee;
+    const baseSpreadCfg = { ...(this.cfg.spreadConfig ?? {}), fillMode: this.cfg.spreadConfig?.fillMode ?? "touch" };
+    const spreadCfg =
+      model === "pass_through"
+        ? { ...baseSpreadCfg, pricingModel: "pass_through" as const, operationFeeBps: this.cfg.serviceFeeBps, minOperationFeeUsdc: this.cfg.minServiceFeeUsdc }
+        : { ...baseSpreadCfg, pricingModel: "embedded_spread" as const, spreadBps: 0, minMarginUsdc: opFee };
     const adaptive = solveAdaptiveCreditCollar(
       { side: instruction.side, spot: instruction.spot, notionalUsdc: instruction.notionalUsdc, tenorDays: this.cfg.tenorDays, targetCreditUsdc: creditUsdc, maxFloorPct: this.cfg.maxFloorPct, referenceMode: "net_book_delta" },
       this.skew,
-      { ...(this.cfg.spreadConfig ?? {}), fillMode: this.cfg.spreadConfig?.fillMode ?? "touch", spreadBps: 0, minMarginUsdc: serviceFee },
+      spreadCfg,
       this.cfg.adaptiveFloor
     );
     const q = adaptive.quote;
     if (!q.ok) return { ok: false, error: "not_priceable", message: q.message };
-    if (q.economics.foxify_market_implied_ev_usdc > -serviceFee + 1e-6) {
-      return { ok: false, error: "ev_guardrail", message: "Foxify EV must be ≤ −service fee" };
+    // No positive Foxify EV from the COLLAR. pass_through ⟹ ≤ 0 (operation fee is separate); embedded ⟹ ≤ −margin.
+    const evCeiling = model === "pass_through" ? 1e-6 : -opFee + 1e-6;
+    if (q.economics.foxify_market_implied_ev_usdc > evCeiling) {
+      return { ok: false, error: "ev_guardrail", message: model === "pass_through" ? "Foxify collar EV must be ≤ 0" : "Foxify EV must be ≤ −service fee" };
     }
 
     // 5. Book it (paper in shadow).
@@ -178,11 +197,13 @@ export class CreditCollarActivationScaffold {
       notionalUsdc: instruction.notionalUsdc,
       putStrike: q.legs.putStrike,
       callStrike: q.legs.callStrike,
-      serviceFeeUsdc: serviceFee,
+      serviceFeeUsdc: opFee, // Atticus revenue per position (operation fee in pass_through; embedded margin floor otherwise)
       foxifyCreditUsdc: q.economics.foxify_credit_usdc,
       foxifyEvUsdc: q.economics.foxify_market_implied_ev_usdc,
       floorPctUsed: adaptive.floorUsedPct,
       openFeeUsdc: q.economics.option_open_fees_usdc,
+      pricingModel: model,
+      feesFundedByCollar: model === "pass_through",
       status: "active"
     };
   }

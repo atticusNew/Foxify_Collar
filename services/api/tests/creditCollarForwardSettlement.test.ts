@@ -102,6 +102,21 @@ test("settleMatured: books hedge receipt + Bullish fee into the grounded net", (
   assert.ok(Math.abs(o.atticusNetAfterCapitalUsdc - (o.serviceFeeUsdc - o.capitalCostUsdc)) < 1e-6);
 });
 
+test("settleMatured: pass_through ⟹ collar funds the fee, so Atticus's net does NOT subtract it again", () => {
+  const oracle = oracleAt(99_000);
+  const cap = { shortOptionImFraction: 0.1393, portfolioMarginNettingFactor: 1.0, costOfCapitalAnnual: 0.12 };
+  // Same position, two models: pass_through (collar funds the $7 fee) vs embedded (Atticus eats it).
+  const passThrough = settleMatured([pos({ ref: "pt", openFeeUsdc: 7, feesFundedByCollar: true })], NOW, oracle, cap).settled[0];
+  const embedded = settleMatured([pos({ ref: "em", openFeeUsdc: 7, feesFundedByCollar: false })], NOW, oracle, cap).settled[0];
+  assert.equal(passThrough.optionFeesUsdc, 7, "fee is still reported for transparency");
+  // pass_through: net = serviceFee − capital (fee already funded by the collar).
+  assert.ok(Math.abs(passThrough.atticusNetAfterFeesAndCapitalUsdc - (passThrough.serviceFeeUsdc - passThrough.capitalCostUsdc)) < 1e-6);
+  // embedded: net = serviceFee − fee − capital (Atticus bears the fee).
+  assert.ok(Math.abs(embedded.atticusNetAfterFeesAndCapitalUsdc - (embedded.serviceFeeUsdc - 7 - embedded.capitalCostUsdc)) < 1e-6);
+  // The pass_through net is exactly one fee higher (it isn't double-charged).
+  assert.ok(Math.abs((passThrough.atticusNetAfterFeesAndCapitalUsdc - embedded.atticusNetAfterFeesAndCapitalUsdc) - 7) < 1e-6);
+});
+
 test("aggregateSettlements: book is flat by construction even when raw Foxify payout swings", () => {
   const oracleDown = oracleAt(92_000);
   // A one-sided (un-paired) book: both legs are LONG-perp collars ⟹ raw Foxify payout is large + directional,

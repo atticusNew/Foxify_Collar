@@ -25,6 +25,12 @@ export type OpenPosition = {
   expiresAtMs: number;
   /** Hedge-venue (Bullish) fee paid to OPEN the collar legs. Held-to-expiry pays only this. Default 0. */
   openFeeUsdc?: number;
+  /**
+   * True (pass_through model) when the COLLAR itself funds the Bullish open fee — so the fee is not
+   * borne by Atticus's net (it's already covered by the funded credit). Default false (embedded model:
+   * the fee comes out of Atticus's margin).
+   */
+  feesFundedByCollar?: boolean;
 };
 
 export type SettlementOutcome = {
@@ -168,7 +174,10 @@ export const settleMatured = (
     const capitalCost = shortLegMargin * coc * (Math.max(0, heldMs) / YEAR_MS);
     // Real Bullish open fee (held-to-expiry pays only the open). Default 0 for legacy positions.
     const optionFees = Math.max(0, p.openFeeUsdc ?? 0);
-    const atticusNetAfterFeesAndCapital = p.serviceFeeUsdc + s.atticusOptionNetUsdc - optionFees - capitalCost;
+    // In pass_through the collar funds the fee (it's inside the credit), so Atticus's net doesn't bear it
+    // again; in embedded the fee comes out of Atticus's margin. serviceFeeUsdc is Atticus's gross revenue.
+    const feeBorneByAtticus = p.feesFundedByCollar ? 0 : optionFees;
+    const atticusNetAfterFeesAndCapital = p.serviceFeeUsdc + s.atticusOptionNetUsdc - feeBorneByAtticus - capitalCost;
     settled.push({
       ref: p.ref,
       side: p.side,
@@ -283,6 +292,7 @@ export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementA
     totalAtticusNetAfterFeesAndCapitalUsdc: round2(atticusNetAfterFeesAndCapital),
     realizedServiceFeeBps: notional > 0 ? +((fee / notional) * 1e4).toFixed(4) : 0,
     capitalAwareNetServiceFeeBps: notional > 0 ? +(((fee - capitalCost) / notional) * 1e4).toFixed(4) : 0,
-    netAfterFeesAndCapitalBps: notional > 0 ? +(((fee - optionFees - capitalCost) / notional) * 1e4).toFixed(4) : 0
+    // Use the per-position net (which already respects feesFundedByCollar) rather than blindly subtracting fees.
+    netAfterFeesAndCapitalBps: notional > 0 ? +((atticusNetAfterFeesAndCapital / notional) * 1e4).toFixed(4) : 0
   };
 };
