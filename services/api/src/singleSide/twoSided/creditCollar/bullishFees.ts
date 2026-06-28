@@ -47,15 +47,37 @@ export const BULLISH_FEE = {
  */
 export const BULLISH_ISOLATED_IM_FRACTION = 0.1393;
 
+/**
+ * OKX options fee schedule: charged on index notional, capped at 12.5% of premium. Standard (non-VIP)
+ * maker ~2 bps / taker ~3 bps; OKX often shows a small maker/taker REBATE (negative) at low tiers.
+ * For deep-OTM cheap legs the 12.5%-premium cap binds, so the per-leg fee is small either way.
+ */
+export const OKX_FEE = {
+  clobMakerBps: 2,
+  clobTakerBps: 3,
+  otcRfqBps: 3,
+  premiumCapPct: 0.125
+} as const;
+
+/** Hedge venue whose fee schedule applies. */
+export type FeeVenue = "bullish" | "okx";
+
+const VENUE_FEE: Record<FeeVenue, { clobMakerBps: number; clobTakerBps: number; otcRfqBps: number; premiumCapPct: number }> = {
+  bullish: { clobMakerBps: BULLISH_FEE.clobMakerBps, clobTakerBps: BULLISH_FEE.clobTakerBps, otcRfqBps: BULLISH_FEE.otcRfqBps, premiumCapPct: BULLISH_FEE.premiumCapPct },
+  okx: { clobMakerBps: OKX_FEE.clobMakerBps, clobTakerBps: OKX_FEE.clobTakerBps, otcRfqBps: OKX_FEE.otcRfqBps, premiumCapPct: OKX_FEE.premiumCapPct }
+};
+
 export type FeeVenueMode = "clob_maker" | "clob_taker" | "otc_rfq";
 
-export const rateBpsFor = (mode: FeeVenueMode): number =>
-  mode === "clob_maker" ? BULLISH_FEE.clobMakerBps : mode === "clob_taker" ? BULLISH_FEE.clobTakerBps : BULLISH_FEE.otcRfqBps;
+export const rateBpsFor = (mode: FeeVenueMode, venue: FeeVenue = "bullish"): number => {
+  const v = VENUE_FEE[venue];
+  return mode === "clob_maker" ? v.clobMakerBps : mode === "clob_taker" ? v.clobTakerBps : v.otcRfqBps;
+};
 
-/** Per-leg fee = min(rate × notional, 10% × premium). Pure, non-negative. */
-export const legFeeUsdc = (rateBps: number, notionalUsd: number, premiumUsd: number): number => {
+/** Per-leg fee = min(rate × notional, capPct × premium). Pure, non-negative. capPct defaults to Bullish (10%). */
+export const legFeeUsdc = (rateBps: number, notionalUsd: number, premiumUsd: number, premiumCapPct: number = BULLISH_FEE.premiumCapPct): number => {
   const byNotional = (Math.max(0, rateBps) / 1e4) * Math.max(0, notionalUsd);
-  const byPremium = BULLISH_FEE.premiumCapPct * Math.max(0, premiumUsd);
+  const byPremium = premiumCapPct * Math.max(0, premiumUsd);
   return round4(Math.min(byNotional, byPremium));
 };
 
@@ -67,6 +89,8 @@ export type CollarFeeInput = {
   /** Total premium of the funding (short) leg, in USDC. */
   fundingPremiumUsd: number;
   mode: FeeVenueMode;
+  /** Hedge venue fee schedule. Default "bullish" (10% cap); "okx" = 12.5% cap + OKX rates. */
+  venue?: FeeVenue;
 };
 
 export type CollarFeeResult = {
@@ -81,11 +105,13 @@ export type CollarFeeResult = {
   earlyCloseRoundTripFeeUsdc: number;
 };
 
-/** Compute the open + (potential) early-close fees for a credit collar on Bullish. Pure. */
+/** Compute the open + (potential) early-close fees for a credit collar on the hedge venue. Pure. */
 export const computeCollarOpenFees = (input: CollarFeeInput): CollarFeeResult => {
-  const rate = rateBpsFor(input.mode);
-  const protectiveFee = legFeeUsdc(rate, input.notionalUsd, input.protectivePremiumUsd);
-  const fundingFee = legFeeUsdc(rate, input.notionalUsd, input.fundingPremiumUsd);
+  const venue: FeeVenue = input.venue ?? "bullish";
+  const rate = rateBpsFor(input.mode, venue);
+  const capPct = VENUE_FEE[venue].premiumCapPct;
+  const protectiveFee = legFeeUsdc(rate, input.notionalUsd, input.protectivePremiumUsd, capPct);
+  const fundingFee = legFeeUsdc(rate, input.notionalUsd, input.fundingPremiumUsd, capPct);
   // CLOB charges both legs; OTC/RFQ multi-leg nets to the heavier leg (single structure fee).
   const openFee = input.mode === "otc_rfq" ? Math.max(protectiveFee, fundingFee) : protectiveFee + fundingFee;
   return {

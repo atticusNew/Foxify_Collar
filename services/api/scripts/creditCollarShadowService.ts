@@ -54,6 +54,8 @@ const cfg: LiveShadowConfig = {
   bullishWeight: num(process.env.HARNESS_BULLISH_WEIGHT, 0.15),
   settlementWindowMin: num(process.env.SHADOW_SETTLEMENT_WINDOW_MIN, 30),
   seed: num(process.env.SHADOW_SEED, 42),
+  // Force a single hedge venue for the mirror (e.g. SHADOW_HEDGE_VENUE=okx) so skew/spreads/fees are OKX-specific.
+  hedgeVenue: (["bullish", "okx", "deribit"].includes(String(process.env.SHADOW_HEDGE_VENUE)) ? (process.env.SHADOW_HEDGE_VENUE as "bullish" | "okx" | "deribit") : undefined),
   adaptiveFloor: {
     enabled: String(process.env.SHADOW_ADAPTIVE_FLOOR ?? "true").toLowerCase() !== "false",
     maxFloorCapPct: num(process.env.SHADOW_ADAPTIVE_FLOOR_CAP, 0.1),

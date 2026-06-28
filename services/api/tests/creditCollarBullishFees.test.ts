@@ -43,3 +43,16 @@ test("fees are immaterial vs an $80 credit / ~$30 spread (the headline)", () => 
   const f = computeCollarOpenFees({ notionalUsd: 50_000, protectivePremiumUsd: 20, fundingPremiumUsd: 70, mode: "clob_taker" });
   assert.ok(f.openFeeUsdc < 10, "Bullish open fee is single-digit dollars per 50k collar");
 });
+
+test("OKX venue uses the 12.5% premium cap (vs Bullish 10%)", () => {
+  const input = { notionalUsd: 50_000, protectivePremiumUsd: 20, fundingPremiumUsd: 70, mode: "clob_taker" } as const;
+  const bullish = computeCollarOpenFees({ ...input, venue: "bullish" });
+  const okx = computeCollarOpenFees({ ...input, venue: "okx" });
+  // Put leg ($20 premium): Bullish 10% cap = $2; OKX 12.5% cap = $2.50 (premium cap binds on the cheap leg).
+  assert.equal(bullish.protectiveFeeUsdc, 2);
+  assert.equal(okx.protectiveFeeUsdc, 2.5);
+  // OKX fee is still single-digit dollars — immaterial vs the $80 credit.
+  assert.ok(okx.openFeeUsdc < 20, `OKX open fee should be small, got ${okx.openFeeUsdc}`);
+  // Default (no venue) == Bullish (back-compat).
+  assert.equal(computeCollarOpenFees(input).openFeeUsdc, bullish.openFeeUsdc);
+});

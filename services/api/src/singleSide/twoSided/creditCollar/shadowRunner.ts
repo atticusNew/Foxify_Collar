@@ -212,6 +212,13 @@ export type LiveShadowConfig = {
   adaptiveFloor?: AdaptiveFloorConfig;
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
+  /**
+   * Force a single hedge venue for pricing/execution/fees (e.g. "okx" for the Foxify-OKX mirror): filters
+   * the captured option dataset to this venue so the skew, routing, leg-spreads AND the fee schedule all
+   * reflect that one venue — "as close to identical to live execution as the paper shadow gets." When unset,
+   * the prior multi-venue blend (skew across venues, cost-routed spreads) is used.
+   */
+  hedgeVenue?: "bullish" | "okx" | "deribit";
 };
 
 export type LiveShadowResult =
@@ -244,6 +251,15 @@ export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok
   const dataset = buildDataset(live.optionSnapshots, live.perpSnapshots, wing, clips);
   dataset.dailyListing.bullish = dataset.dailyListing.bullish || live.bullishDailyListingObserved;
 
+  // Force a single hedge venue (e.g. OKX for the Foxify mirror): filter the option set so skew, routing,
+  // and leg-spreads all reflect that venue's live book rather than a multi-venue blend.
+  if (cfg.hedgeVenue) {
+    dataset.options = dataset.options.filter((o) => o.venue === cfg.hedgeVenue);
+    if (dataset.options.length === 0) {
+      return { ok: false, error: "no_quotes_on_hedge_venue", message: `no live option quotes captured on ${cfg.hedgeVenue} this cycle` };
+    }
+  }
+
   const { skew, ok: skewOk } = buildSkewFromCapture(dataset, cfg.tenorDays);
   if (!skewOk) return { ok: false, error: "skew_under_determined", message: "not enough live IV points to build the skew curve" };
   const routing = recommendRouting(dataset.options, cfg.tenorDays, { bullishWeight: cfg.bullishWeight, materialMarginPct: 0.2 });
@@ -274,7 +290,7 @@ export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok
     feeUsdc: cfg.feeUsdc,
     adaptiveFloor: cfg.adaptiveFloor,
     liveEnabled: false,
-    spreadConfig: { fillMode: "touch", legHalfSpreadUsdcPerBtc: legSpread }
+    spreadConfig: { fillMode: "touch", legHalfSpreadUsdcPerBtc: legSpread, feeVenue: cfg.hedgeVenue === "okx" ? "okx" : "bullish" }
   };
 
   return {

@@ -38,7 +38,7 @@
  */
 
 import { bsPut, bsCall } from "../../../pilot/blackScholes";
-import { computeCollarOpenFees, type FeeVenueMode } from "./bullishFees";
+import { computeCollarOpenFees, type FeeVenueMode, type FeeVenue } from "./bullishFees";
 
 export type PerpSide = "long" | "short";
 
@@ -117,6 +117,8 @@ export type AtticusSpreadConfig = {
    * The realized fee is surfaced in economics so the headroom number is net of fees, not just crossing.
    */
   feeMode?: FeeVenueMode;
+  /** Hedge venue fee schedule for the option legs. Default "bullish" (10% cap); "okx" = 12.5% cap + OKX rates. */
+  feeVenue?: FeeVenue;
   /**
    * Pricing model — WHERE Atticus's profit sits:
    *   - "embedded_spread" (default): the collar funds credit + an embedded Atticus margin, and Atticus
@@ -407,7 +409,8 @@ export const solveAndPriceCreditCollar = (
     notionalUsd: notionalUsdc,
     protectivePremiumUsd: protectiveMidPerBtc * contractsBtc,
     fundingPremiumUsd: chosenFundingMidPerBtc * contractsBtc,
-    mode: feeMode
+    mode: feeMode,
+    venue: config.feeVenue ?? "bullish"
   });
 
   // pass_through: pass the FULL executable collar proceeds, net of the Bullish fee, to Foxify (≥ target).
