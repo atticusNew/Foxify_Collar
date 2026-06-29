@@ -132,6 +132,16 @@ export type AtticusSpreadConfig = {
   operationFeeBps?: number;
   /** pass_through only: operation fee floor in USDC/position. Default 10. */
   minOperationFeeUsdc?: number;
+  /**
+   * CREDIT-TARGET MODE (pass_through). Ceiling on the credit actually handed to Foxify (USDC). Foxify only
+   * needs ~the target; without a ceiling, discrete-strike overshoot is passed through as EXTRA credit, which
+   * is funded by capping the upside TIGHTER than necessary. With a ceiling set, Foxify receives min(fundable,
+   * ceiling) and the solver is free to sit the cap WIDER (less surrendered upside / fewer cap breaches); any
+   * bounded overshoot above the ceiling is retained as Atticus margin (≈ the operation fee, just realized in
+   * the collar). Combine with a finer strikeGridUsdc so the cap can actually land near the target. Unset ⟹
+   * legacy pass-through (full overshoot to Foxify).
+   */
+  maxFoxifyCreditUsdc?: number;
 };
 
 export type CollarLegs = {
@@ -286,6 +296,7 @@ export const solveAndPriceCreditCollar = (
   const feeMode: FeeVenueMode = config.feeMode ?? "clob_taker";
   const operationFeeBps = config.operationFeeBps != null && config.operationFeeBps >= 0 ? config.operationFeeBps : 2;
   const minOperationFeeUsdc = config.minOperationFeeUsdc != null && config.minOperationFeeUsdc >= 0 ? config.minOperationFeeUsdc : 10;
+  const maxFoxifyCreditUsdc = config.maxFoxifyCreditUsdc != null && config.maxFoxifyCreditUsdc > 0 ? config.maxFoxifyCreditUsdc : Infinity;
 
   const T = yearsFromDays(tenorDays);
   const contractsBtc = notionalUsdc / spot;
@@ -413,12 +424,13 @@ export const solveAndPriceCreditCollar = (
     venue: config.feeVenue ?? "bullish"
   });
 
-  // pass_through: pass the FULL executable collar proceeds, net of the Bullish fee, to Foxify (≥ target).
-  // Discrete strikes overshoot the target; that overshoot is value Foxify already paid for (via the cap),
-  // so it goes to Foxify — the collar nets to ~0 for Atticus and Atticus is NOT skimming the spread.
+  // pass_through: hand the executable collar proceeds (net of the Bullish fee) to Foxify, but no more than
+  // maxFoxifyCreditUsdc. Without a ceiling the full overshoot is passed through (legacy) — which forces a
+  // TIGHTER cap to manufacture credit Foxify never asked for. With a ceiling, Foxify gets the target and the
+  // solver can sit the cap WIDER; any bounded overshoot above the ceiling is retained as Atticus margin.
   // embedded_spread: Foxify gets the fixed target; Atticus keeps the remainder as its margin.
   const foxifyCreditUsdc = pricingModel === "pass_through"
-    ? Math.max(targetCreditUsdc, fundableCreditUsdc - fees.openFeeUsdc)
+    ? Math.min(Math.max(targetCreditUsdc, fundableCreditUsdc - fees.openFeeUsdc), maxFoxifyCreditUsdc)
     : targetCreditUsdc;
   const atticusMarginUsdc = fundableCreditUsdc - foxifyCreditUsdc; // collar spread Atticus keeps (≈ fee in pass_through)
   // Foxify's EV is measured against TRUE fair value (mid). It eats the crossing (+ margin in embedded).

@@ -58,7 +58,7 @@ const capitalConfig = {
 
 const cfg: LiveShadowConfig = {
   positionNotionalUsdc: num(process.env.SHADOW_POSITION_USDC, 50_000),
-  feeUsdc: num(process.env.HARNESS_FEE_USDC, 75),
+  feeUsdc: num(process.env.HARNESS_FEE_USDC, 80), // Foxify's stated per-trade need ($80) = the credit TARGET
   serviceFeeBps: num(process.env.HARNESS_SERVICE_FEE_BPS, 2),
   minServiceFeeUsdc: num(process.env.HARNESS_MIN_SERVICE_FEE_USDC, 10),
   tenorDays: num(process.env.HARNESS_TENOR_DAYS, 1),
@@ -76,6 +76,11 @@ const cfg: LiveShadowConfig = {
   bullishWeight: num(process.env.HARNESS_BULLISH_WEIGHT, 0.15),
   settlementWindowMin: num(process.env.SHADOW_SETTLEMENT_WINDOW_MIN, 30),
   seed: num(process.env.SHADOW_SEED, 42),
+  // Credit-target mode: finer strike grid lets the cap sit nearer the $80 target (WIDER cap ⟹ fewer cap
+  // breaches), and the credit ceiling hands Foxify ~the target rather than passing discrete-strike overshoot
+  // through as extra credit funded by an over-tight cap. Bounded overshoot above the ceiling → Atticus margin.
+  strikeGridUsdc: num(process.env.HARNESS_STRIKE_GRID_USDC, 250),
+  maxFoxifyCreditUsdc: num(process.env.HARNESS_MAX_CREDIT_USDC, 100),
   // Force a single hedge venue for the mirror (e.g. SHADOW_HEDGE_VENUE=okx) so skew/spreads/fees are OKX-specific.
   hedgeVenue: (["bullish", "okx", "deribit"].includes(String(process.env.SHADOW_HEDGE_VENUE)) ? (process.env.SHADOW_HEDGE_VENUE as "bullish" | "okx" | "deribit") : undefined),
   adaptiveFloor: {

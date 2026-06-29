@@ -210,6 +210,10 @@ export type LiveShadowConfig = {
   settlementWindowMin: number;
   seed: number;
   adaptiveFloor?: AdaptiveFloorConfig;
+  /** Strike grid snap in USDC for the solver. Finer (e.g. 250) lets the cap sit nearer the credit target ⟹ wider cap. */
+  strikeGridUsdc?: number;
+  /** Credit-target mode (pass_through): ceiling on credit handed to Foxify; bounded overshoot → Atticus margin. */
+  maxFoxifyCreditUsdc?: number;
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
   /**
@@ -290,7 +294,13 @@ export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok
     feeUsdc: cfg.feeUsdc,
     adaptiveFloor: cfg.adaptiveFloor,
     liveEnabled: false,
-    spreadConfig: { fillMode: "touch", legHalfSpreadUsdcPerBtc: legSpread, feeVenue: cfg.hedgeVenue === "okx" ? "okx" : "bullish" }
+    spreadConfig: {
+      fillMode: "touch",
+      legHalfSpreadUsdcPerBtc: legSpread,
+      feeVenue: cfg.hedgeVenue === "okx" ? "okx" : "bullish",
+      ...(cfg.strikeGridUsdc != null ? { strikeGridUsdc: cfg.strikeGridUsdc } : {}),
+      ...(cfg.maxFoxifyCreditUsdc != null ? { maxFoxifyCreditUsdc: cfg.maxFoxifyCreditUsdc } : {})
+    }
   };
 
   return {
