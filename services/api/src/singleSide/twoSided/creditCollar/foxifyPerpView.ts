@@ -1,37 +1,90 @@
 /**
  * Foxify matched-perp view — Phase A (pure, offline). The settlement ledger models the COLLAR legs
- * (Atticus's side). This module reconstructs FOXIFY's side — the perp P&L the collar sits on — so the
+ * (Atticus's side). This module reconstructs FOXIFY's side — the perp book the collar sits on — so the
  * dashboard can show the two things Foxify actually cares about:
  *
- *   1. Are they (close to) FLAT on the perps?  → matched long/short perp P&L should net to ~0.
+ *   1. Are they (close to) FLAT on the perps?  → matched long/short perp P&L nets to ~0.
  *   2. Do the CREDITS cover their FEES?         → accrued credit vs the assumed per-position perp fee.
  *
- * Per settled position we already have side, entry spot, settle price, times, the collar payout, and the
- * accrued credit — enough to compute the perp P&L (signed by side) and combine it into Foxify's all-in
- * outcome: perp P&L + collar payout + credit − assumed perp fee. The perps live on the partner venues
- * (dYdX/Bluefin), not in the shadow, so this is the modelled view; live, the partner-position feed
- * supplies the real fills. Pure: no I/O beyond the optional ledger loader.
+ * REALISM MODEL. The naive view treats a long and a short as the SAME oracle price flipped in sign — a
+ * mechanical mirror that nets to *exactly* zero and erases everything that moves a real delta-neutral
+ * perp book. The real world is: a long on venue A and a short on venue B, opened at slightly different
+ * marks, carried across funding settlements, each paying its own fees. This module models that with
+ * per-venue inputs (assumption-free by default; feed real numbers — ideally from the live partner feed —
+ * to make it faithful):
+ *
+ *   • venue per leg     — round-robin across the configured perp venues; a matched pair's two legs land
+ *                         on DIFFERENT venues (dYdX / Bluefin / Hyperliquid …), as Foxify actually trades.
+ *   • funding carry     — perps settle funding ~every 8h; over a 24h hold that's ~3 periods. A positive
+ *                         funding rate ⟹ longs PAY shorts. With per-venue rates the matched book keeps a
+ *                         real funding SPREAD (the usual P&L of a delta-neutral perp book). Default 0.
+ *   • mark basis        — each perp marks to its venue index, not Atticus's oracle; an entry/exit basis
+ *                         (bps) gives each leg its own price and breaks the exact-zero mirror. Default 0.
+ *   • per-venue fees    — open+close trading fee per venue, overriding the global assumption. Default
+ *                         falls back to the global perp-fee assumption (the credit benchmark).
+ *
+ * With all per-venue inputs left at their defaults the numbers reduce to the prior oracle-mirror (so the
+ * existing track record is unchanged); supply real venue inputs to make the perp side faithful. The perps
+ * live on the partner venues, not in the shadow — this is the modelled view; live, the partner-position
+ * feed supplies the real fills, funding, and fees. Pure: no I/O beyond the optional ledger loader.
  */
 
 import type { SettlementOutcome } from "./forwardSettlement";
 import { loadSettlements } from "./forwardSettlementStore";
 
 const r2 = (x: number) => +x.toFixed(2);
+const FUNDING_PERIOD_HOURS = 8; // standard perp funding interval
+
+export type PerpVenue = {
+  name: string;
+  /** Assumed funding rate in bps per 8h interval. +rate ⟹ longs PAY shorts (cost to long, income to short). */
+  fundingBpsPer8h?: number;
+  /** Per-position perp trading fee (open+close, USDC) on this venue; overrides the global assumption. */
+  feeUsdc?: number;
+  /** Perp mark − oracle at entry, in bps (default 0 ⟹ leg opens at the oracle price). */
+  entryBasisBps?: number;
+  /** Perp mark − oracle at exit, in bps (default 0 ⟹ leg closes at the oracle price). */
+  exitBasisBps?: number;
+};
+
+export type FoxifyViewConfig = {
+  /** Global assumed per-position perp fee (USDC) — the credit benchmark. Default 80. Overridden per venue. */
+  perpFeeUsdc?: number;
+  /** How many recent matched pairs to surface. Default 5. */
+  recentPairs?: number;
+  /**
+   * Perp venues to spread the book across (round-robin). The two legs of a matched pair are placed on
+   * adjacent venues so they land on DIFFERENT exchanges. Default: three unfunded, zero-basis venues
+   * (labels only — numerically identical to the oracle mirror until you supply funding/basis/fees).
+   */
+  venues?: PerpVenue[];
+};
 
 export type FoxifyPositionRow = {
   ref: string;
   side: "long" | "short";
-  entryPriceUsd: number;
+  venue: string;
+  entryPriceUsd: number;      // venue mark at entry (oracle ± entry basis)
   entryIso: string;
-  settlePriceUsd: number;
+  settlePriceUsd: number;     // venue mark at exit (oracle ± exit basis)
   settleIso: string;
   heldHours: number;
-  movePct: number;            // (settle − entry)/entry
+  movePct: number;            // (exit − entry)/entry on this venue
   perpPnlUsdc: number;        // Foxify's perp P&L on this leg (signed by side)
+  fundingUsdc: number;        // funding carry over the hold (+ received / − paid)
   collarPayoutUsdc: number;   // collar option payoff to Foxify (± ; capped/floored)
   creditUsdc: number;         // credit accrued on this position
-  perpFeeUsdc: number;        // assumed perp trading fee the credit is meant to cover
-  foxifyNetUsdc: number;      // perp P&L + collar payout + credit − perp fee
+  perpFeeUsdc: number;        // assumed perp trading fee (open+close) the credit is meant to cover
+  foxifyNetUsdc: number;      // perp P&L + funding + collar payout + credit − perp fee
+};
+
+export type FoxifyVenueBreakdown = {
+  venue: string;
+  positions: number;
+  perpPnlUsdc: number;
+  fundingUsdc: number;
+  feesUsdc: number;
+  netUsdc: number;
 };
 
 export type FoxifyView = {
@@ -44,54 +97,75 @@ export type FoxifyView = {
   grossPerpPnlUsdc: number;   // Σ |perp P&L| — how much gross movement was offset
   longCount: number;
   shortCount: number;
+  // ── Funding carry (the real economic of holding the perp book) ──
+  netFundingUsdc: number;     // Σ funding — the carry the delta-neutral book keeps (≠0 only with venue rates)
   // ── Credits vs fees (the trader-value half) ──
   totalCreditUsdc: number;
-  assumedPerpFeeUsdc: number;     // per-position fee assumption used
-  totalAssumedFeesUsdc: number;
+  assumedPerpFeeUsdc: number;     // global per-position fee assumption
+  totalAssumedFeesUsdc: number;   // sum of per-venue fees actually applied
   creditMinusFeesUsdc: number;
   creditCoversFees: boolean;
   creditCoverageRatio: number;    // total credit / total assumed fees
-  // ── Foxify all-in (perps + collars + credits − fees) ──
+  // ── Foxify all-in (perps + funding + collars + credits − fees) ──
   totalCollarPayoutUsdc: number;
   foxifyAllInNetUsdc: number;
   foxifyAllInNetBps: number;
+  // ── Where the book sat (per-venue) ──
+  venues: FoxifyVenueBreakdown[];
   // ── Recent matched pairs (one long + one short, most recent first) ──
   recentPairs: Array<{ long: FoxifyPositionRow | null; short: FoxifyPositionRow | null; pairNetUsdc: number }>;
 };
 
-/** Foxify's perp P&L on a settled position: signed move × notional (long gains on up, short on down). */
+const DEFAULT_VENUES: PerpVenue[] = [{ name: "dYdX" }, { name: "Bluefin" }, { name: "Hyperliquid" }];
+
+/** Foxify's perp P&L on a settled position at the oracle price (no venue basis): signed move × notional. */
 export const perpPnlUsdc = (o: SettlementOutcome): number => {
   const move = o.spotAtEntry > 0 ? (o.settlePriceUsd - o.spotAtEntry) / o.spotAtEntry : 0;
   return r2((o.side === "long" ? move : -move) * o.notionalUsdc);
 };
 
-export type FoxifyViewConfig = {
-  /** Assumed per-position perp trading fee the credit is meant to cover (USDC). Default 80 (the credit target). */
-  perpFeeUsdc?: number;
-  /** How many recent matched pairs to surface. Default 5. */
-  recentPairs?: number;
-};
-
 export const buildFoxifyView = (outcomes: SettlementOutcome[], cfg: FoxifyViewConfig = {}): FoxifyView => {
-  const perpFee = cfg.perpFeeUsdc != null && cfg.perpFeeUsdc >= 0 ? cfg.perpFeeUsdc : 80;
+  const globalFee = cfg.perpFeeUsdc != null && cfg.perpFeeUsdc >= 0 ? cfg.perpFeeUsdc : 80;
   const nPairs = cfg.recentPairs ?? 5;
+  const venues = cfg.venues && cfg.venues.length > 0 ? cfg.venues : DEFAULT_VENUES;
+  const nv = venues.length;
+
+  // Per-side round-robin: long #i → venues[i], short #i → venues[i+1] ⟹ a matched pair's legs differ (nv≥2).
+  let li = 0;
+  let si = 0;
 
   const rows: FoxifyPositionRow[] = outcomes.map((o) => {
-    const perp = perpPnlUsdc(o);
+    const isLong = o.side === "long";
+    const venue = isLong ? venues[li++ % nv] : venues[(si++ + 1) % nv];
+
+    const entryPrice = o.spotAtEntry * (1 + (venue.entryBasisBps ?? 0) / 1e4);
+    const exitPrice = o.settlePriceUsd * (1 + (venue.exitBasisBps ?? 0) / 1e4);
+    const move = entryPrice > 0 ? (exitPrice - entryPrice) / entryPrice : 0;
+    const perp = r2((isLong ? move : -move) * o.notionalUsdc);
+
+    const heldHours = +(o.heldMs / 3_600_000).toFixed(2);
+    const periods = heldHours / FUNDING_PERIOD_HOURS;
+    const fundMag = (o.notionalUsdc * ((venue.fundingBpsPer8h ?? 0) / 1e4)) * periods;
+    const funding = r2(isLong ? -fundMag : fundMag); // +rate ⟹ long pays, short receives
+
+    const fee = venue.feeUsdc != null && venue.feeUsdc >= 0 ? venue.feeUsdc : globalFee;
+
     return {
       ref: o.ref,
       side: o.side,
-      entryPriceUsd: o.spotAtEntry,
+      venue: venue.name,
+      entryPriceUsd: r2(entryPrice),
       entryIso: new Date(o.openedAtMs).toISOString(),
-      settlePriceUsd: o.settlePriceUsd,
+      settlePriceUsd: r2(exitPrice),
       settleIso: new Date(o.settledAtMs).toISOString(),
-      heldHours: +(o.heldMs / 3_600_000).toFixed(2),
-      movePct: o.movePct,
+      heldHours,
+      movePct: +move.toFixed(6),
       perpPnlUsdc: perp,
+      fundingUsdc: funding,
       collarPayoutUsdc: o.payoutToFoxifyUsdc,
       creditUsdc: o.foxifyCreditUsdc,
-      perpFeeUsdc: perpFee,
-      foxifyNetUsdc: r2(perp + o.payoutToFoxifyUsdc + o.foxifyCreditUsdc - perpFee)
+      perpFeeUsdc: fee,
+      foxifyNetUsdc: r2(perp + funding + o.payoutToFoxifyUsdc + o.foxifyCreditUsdc - fee)
     };
   });
 
@@ -105,10 +179,31 @@ export const buildFoxifyView = (outcomes: SettlementOutcome[], cfg: FoxifyViewCo
   const longPerp = longs.reduce((s, r) => s + r.perpPnlUsdc, 0);
   const shortPerp = shorts.reduce((s, r) => s + r.perpPnlUsdc, 0);
   const gross = sum((r) => Math.abs(r.perpPnlUsdc));
+  const netFunding = sum((r) => r.fundingUsdc);
   const credit = sum((r) => r.creditUsdc);
-  const fees = n * perpFee;
+  const fees = sum((r) => r.perpFeeUsdc);
   const collar = sum((r) => r.collarPayoutUsdc);
   const allIn = sum((r) => r.foxifyNetUsdc);
+
+  // Per-venue breakdown.
+  const venueMap = new Map<string, FoxifyVenueBreakdown>();
+  for (const r of rows) {
+    const b = venueMap.get(r.venue) ?? { venue: r.venue, positions: 0, perpPnlUsdc: 0, fundingUsdc: 0, feesUsdc: 0, netUsdc: 0 };
+    b.positions += 1;
+    b.perpPnlUsdc += r.perpPnlUsdc;
+    b.fundingUsdc += r.fundingUsdc;
+    b.feesUsdc += r.perpFeeUsdc;
+    b.netUsdc += r.foxifyNetUsdc;
+    venueMap.set(r.venue, b);
+  }
+  const venueBreakdown = [...venueMap.values()].map((b) => ({
+    venue: b.venue,
+    positions: b.positions,
+    perpPnlUsdc: r2(b.perpPnlUsdc),
+    fundingUsdc: r2(b.fundingUsdc),
+    feesUsdc: r2(b.feesUsdc),
+    netUsdc: r2(b.netUsdc)
+  }));
 
   // Recent matched pairs: most-recent longs alongside most-recent shorts.
   const byRecent = (a: FoxifyPositionRow, b: FoxifyPositionRow) => Date.parse(b.settleIso) - Date.parse(a.settleIso);
@@ -130,8 +225,9 @@ export const buildFoxifyView = (outcomes: SettlementOutcome[], cfg: FoxifyViewCo
     grossPerpPnlUsdc: r2(gross),
     longCount: longs.length,
     shortCount: shorts.length,
+    netFundingUsdc: r2(netFunding),
     totalCreditUsdc: r2(credit),
-    assumedPerpFeeUsdc: perpFee,
+    assumedPerpFeeUsdc: globalFee,
     totalAssumedFeesUsdc: r2(fees),
     creditMinusFeesUsdc: r2(credit - fees),
     creditCoversFees: credit >= fees,
@@ -139,6 +235,7 @@ export const buildFoxifyView = (outcomes: SettlementOutcome[], cfg: FoxifyViewCo
     totalCollarPayoutUsdc: r2(collar),
     foxifyAllInNetUsdc: r2(allIn),
     foxifyAllInNetBps: notional > 0 ? +((allIn / notional) * 1e4).toFixed(4) : 0,
+    venues: venueBreakdown,
     recentPairs
   };
 };

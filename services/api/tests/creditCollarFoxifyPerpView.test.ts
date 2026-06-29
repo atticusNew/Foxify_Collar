@@ -102,4 +102,64 @@ test("empty ledger is safe (zeros, no division by notional)", () => {
   assert.equal(view.netPerpPnlBps, 0);
   assert.equal(view.creditCoverageRatio, 0);
   assert.equal(view.recentPairs.length, 0);
+  assert.equal(view.netFundingUsdc, 0);
+  assert.equal(view.venues.length, 0);
+});
+
+test("default venues label legs without changing the numbers (oracle-mirror baseline)", () => {
+  const settlePriceUsd = 102_000;
+  const movePct = 0.02;
+  const view = buildFoxifyView([
+    outcome({ ref: "L1", side: "long", settlePriceUsd, movePct }),
+    outcome({ ref: "S1", side: "short", settlePriceUsd, movePct })
+  ]);
+  // No funding/basis configured ⟹ funding 0 and perp P&L is still the exact mirror.
+  assert.equal(view.netFundingUsdc, 0);
+  assert.ok(Math.abs(view.netPerpPnlUsdc) < 1e-6);
+  // Legs land on different venues (the two perps on different exchanges).
+  const long = view.recentPairs[0].long!;
+  const short = view.recentPairs[0].short!;
+  assert.ok(long.venue.length > 0 && short.venue.length > 0);
+  assert.notEqual(long.venue, short.venue);
+  assert.ok(view.venues.length >= 1);
+});
+
+test("funding carry is signed: +rate ⟹ long pays, short receives; held 24h = 3 periods", () => {
+  // 10 bps/8h on $50k over 24h (3 periods) = $50k * 0.001 * 3 = $150 per leg.
+  const venues = [{ name: "A", fundingBpsPer8h: 10 }];
+  const view = buildFoxifyView(
+    [outcome({ side: "long" }), outcome({ side: "short" })],
+    { venues }
+  );
+  const long = view.recentPairs[0].long!;
+  const short = view.recentPairs[0].short!;
+  assert.equal(long.fundingUsdc, -150); // long pays
+  assert.equal(short.fundingUsdc, 150); // short receives
+  // Same venue+rate ⟹ funding nets out; a real spread needs different per-venue rates.
+  assert.equal(view.netFundingUsdc, 0);
+});
+
+test("a per-venue funding SPREAD leaves a real residual carry (the delta-neutral book's P&L)", () => {
+  // Long venue earns less than the short venue pays out ⟹ net positive carry to the book.
+  const venues = [
+    { name: "Cheap", fundingBpsPer8h: 2 },  // long #0 lands here → pays $30
+    { name: "Rich", fundingBpsPer8h: 10 }   // short #0 lands here (round-robin +1) → receives $150
+  ];
+  const view = buildFoxifyView([outcome({ side: "long" }), outcome({ side: "short" })], { venues });
+  assert.ok(view.netFundingUsdc > 0, `expected positive funding spread, got ${view.netFundingUsdc}`);
+});
+
+test("a non-zero mark basis breaks the exact-zero perp mirror", () => {
+  // Give the venues different entry/exit basis so the two legs no longer price identically.
+  const venues = [
+    { name: "A", entryBasisBps: 5, exitBasisBps: -3 },
+    { name: "B", entryBasisBps: -4, exitBasisBps: 6 }
+  ];
+  const settlePriceUsd = 101_000;
+  const movePct = 0.01;
+  const view = buildFoxifyView(
+    [outcome({ ref: "L1", side: "long", settlePriceUsd, movePct }), outcome({ ref: "S1", side: "short", settlePriceUsd, movePct })],
+    { venues }
+  );
+  assert.ok(Math.abs(view.netPerpPnlUsdc) > 1e-6, `basis should create a residual, got ${view.netPerpPnlUsdc}`);
 });

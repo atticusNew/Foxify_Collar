@@ -27,6 +27,25 @@ const forwardSettle = String(process.env.SHADOW_FORWARD_SETTLE ?? "true").toLowe
 const settlementHorizonMin = num(process.env.SHADOW_SETTLEMENT_HORIZON_MIN, 60); // positions settle 1h later (real move)
 // Assumed per-position perp trading fee the credit is meant to cover — drives the Foxify "credit covers fees" view.
 const foxifyPerpFeeUsdc = num(process.env.FOXIFY_PERP_FEE_USDC, 80);
+// Foxify perp-book realism inputs. Each leg of a matched pair lands on a DIFFERENT venue (round-robin).
+// Funding/basis/fee are CSV-aligned to the venue list (single value broadcasts); leave at 0 for the
+// oracle-mirror baseline, or feed real per-venue numbers (ideally from the partner feed) to make it faithful.
+const csvStr = (v: string | undefined, d: string[]): string[] => (v && v.trim() ? v.split(",").map((s) => s.trim()).filter(Boolean) : d);
+const perVenue = (csv: string | undefined, n: number): number[] => {
+  const parts = csvStr(csv, []).map((s) => Number(s)).filter((x) => Number.isFinite(x));
+  if (parts.length === 0) return Array(n).fill(0);
+  return Array.from({ length: n }, (_, i) => parts[i] ?? parts[parts.length - 1]); // broadcast last value
+};
+const foxifyVenueNames = csvStr(process.env.FOXIFY_PERP_VENUES, ["dYdX", "Bluefin", "Hyperliquid"]);
+const foxifyFundingBps = perVenue(process.env.FOXIFY_FUNDING_BPS_PER_8H, foxifyVenueNames.length);
+const foxifyEntryBasisBps = perVenue(process.env.FOXIFY_PERP_ENTRY_BASIS_BPS, foxifyVenueNames.length);
+const foxifyExitBasisBps = perVenue(process.env.FOXIFY_PERP_EXIT_BASIS_BPS, foxifyVenueNames.length);
+const foxifyVenues = foxifyVenueNames.map((name, i) => ({
+  name,
+  fundingBpsPer8h: foxifyFundingBps[i],
+  entryBasisBps: foxifyEntryBasisBps[i],
+  exitBasisBps: foxifyExitBasisBps[i]
+}));
 
 // Measured capital inputs (Deribit margin sweep + PM-netting) → capital-aware net bps on the dashboard.
 const capitalConfig = {
@@ -142,7 +161,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);

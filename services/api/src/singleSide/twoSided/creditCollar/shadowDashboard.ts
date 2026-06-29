@@ -197,19 +197,20 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     m.foxify && m.foxify.settledPositions > 0
       ? `<h2>Foxify view — matched perps + credit (modelled; live = partner-venue feed)</h2><div class="grid">
     ${card("Net perp P&L (flatness)", `$${m.foxify.netPerpPnlUsdc}`, `${m.foxify.netPerpPnlBps} bps — matched long/short net ⟹ ~0 (gross moved $${m.foxify.grossPerpPnlUsdc})`)}
-    ${card("Long vs short P&L", `$${m.foxify.longPerpPnlUsdc} / $${m.foxify.shortPerpPnlUsdc}`, `${m.foxify.longCount} long · ${m.foxify.shortCount} short — should offset`)}
+    ${card("Net funding carry", `$${m.foxify.netFundingUsdc}`, `assumed perp funding spread across venues (0 unless venue rates set)`)}
     ${card("Credit covers fees?", m.foxify.creditCoversFees ? `YES (${m.foxify.creditCoverageRatio}×)` : `NO (${m.foxify.creditCoverageRatio}×)`, `credit $${m.foxify.totalCreditUsdc} vs assumed fees $${m.foxify.totalAssumedFeesUsdc} (@ $${m.foxify.assumedPerpFeeUsdc}/pos)`)}
-    ${card("Foxify all-in net", `$${m.foxify.foxifyAllInNetUsdc}`, `${m.foxify.foxifyAllInNetBps} bps — perps + collar + credit − fees`)}
+    ${card("Foxify all-in net", `$${m.foxify.foxifyAllInNetUsdc}`, `${m.foxify.foxifyAllInNetBps} bps — perps + funding + collar + credit − fees`)}
   </div>
-  <table><thead><tr><th>recent pair (settle)</th><th>side</th><th>entry → settle</th><th>move</th><th>perp P&L</th><th>collar</th><th>credit</th><th>net</th></tr></thead><tbody>${
+  <p class="muted" style="margin:2px 0 0">Perp book by venue: ${m.foxify.venues.map((v) => `${esc(v.venue)} ${v.positions} (P&L $${v.perpPnlUsdc}, funding $${v.fundingUsdc})`).join(" · ")}</p>
+  <table><thead><tr><th>recent pair (settle)</th><th>side</th><th>venue</th><th>entry → settle</th><th>move</th><th>perp P&L</th><th>funding</th><th>collar</th><th>credit</th><th>net</th></tr></thead><tbody>${
           m.foxify.recentPairs
             .flatMap((p) => [p.long, p.short])
             .filter((r): r is NonNullable<typeof r> => r != null)
             .map(
               (row) =>
-                `<tr><td>${esc(row.settleIso.replace("T", " ").slice(0, 16))}</td><td>${row.side}</td><td>$${row.entryPriceUsd.toFixed(0)} → $${row.settlePriceUsd.toFixed(0)}</td><td>${(row.movePct * 100).toFixed(2)}%</td><td>$${row.perpPnlUsdc}</td><td>$${row.collarPayoutUsdc}</td><td>$${row.creditUsdc}</td><td>$${row.foxifyNetUsdc}</td></tr>`
+                `<tr><td>${esc(row.settleIso.replace("T", " ").slice(0, 16))}</td><td>${row.side}</td><td>${esc(row.venue)}</td><td>$${row.entryPriceUsd.toFixed(0)} → $${row.settlePriceUsd.toFixed(0)}</td><td>${(row.movePct * 100).toFixed(2)}%</td><td>$${row.perpPnlUsdc}</td><td>$${row.fundingUsdc}</td><td>$${row.collarPayoutUsdc}</td><td>$${row.creditUsdc}</td><td>$${row.foxifyNetUsdc}</td></tr>`
             )
-            .join("") || `<tr><td colspan="8" class="muted">No matured pairs yet.</td></tr>`
+            .join("") || `<tr><td colspan="10" class="muted">No matured pairs yet.</td></tr>`
         }</tbody></table>`
       : ""
   }
