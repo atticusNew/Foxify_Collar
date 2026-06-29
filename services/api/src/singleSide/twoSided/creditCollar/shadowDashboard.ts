@@ -8,6 +8,7 @@
 import { aggregateShadowScorecards, type ShadowRunRecord, type ShadowAggregate, type ShadowAggregateConfig } from "./shadowAggregate";
 import type { SettlementAggregate } from "./forwardSettlement";
 import type { ShadowLifecycleReport } from "./lifecycleShadow";
+import type { FoxifyView } from "./foxifyPerpView";
 
 /** In-process liveness reported by the running shadow loop. */
 export type ShadowLiveStatus = {
@@ -35,6 +36,7 @@ export type DashboardModel = {
   };
   aggregate: ShadowAggregate;
   settlement: SettlementAggregate | null;
+  foxify: FoxifyView | null;
   lifecycle: ShadowLifecycleReport | null;
   recentSessions: Array<{
     tsIso: string;
@@ -59,7 +61,8 @@ export const buildDashboardModel = (
   nowMs: number,
   aggCfg: ShadowAggregateConfig = {},
   settlement: SettlementAggregate | null = null,
-  lifecycle: ShadowLifecycleReport | null = null
+  lifecycle: ShadowLifecycleReport | null = null,
+  foxify: FoxifyView | null = null
 ): DashboardModel => {
   const aggregate = aggregateShadowScorecards(records, aggCfg);
   const lastRunAgoMs = status.lastRunAtMs != null ? nowMs - status.lastRunAtMs : null;
@@ -103,6 +106,7 @@ export const buildDashboardModel = (
     },
     aggregate,
     settlement,
+    foxify,
     lifecycle,
     recentSessions: recent,
     generatedAtIso: new Date(nowMs).toISOString()
@@ -190,6 +194,26 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
       : `<p class="muted">No positions have matured + settled yet (forward settlement at expiry). Real payout economics appear here once the first batch reaches its horizon.</p>`
   }
   ${
+    m.foxify && m.foxify.settledPositions > 0
+      ? `<h2>Foxify view — matched perps + credit (modelled; live = partner-venue feed)</h2><div class="grid">
+    ${card("Net perp P&L (flatness)", `$${m.foxify.netPerpPnlUsdc}`, `${m.foxify.netPerpPnlBps} bps — matched long/short net ⟹ ~0 (gross moved $${m.foxify.grossPerpPnlUsdc})`)}
+    ${card("Long vs short P&L", `$${m.foxify.longPerpPnlUsdc} / $${m.foxify.shortPerpPnlUsdc}`, `${m.foxify.longCount} long · ${m.foxify.shortCount} short — should offset`)}
+    ${card("Credit covers fees?", m.foxify.creditCoversFees ? `YES (${m.foxify.creditCoverageRatio}×)` : `NO (${m.foxify.creditCoverageRatio}×)`, `credit $${m.foxify.totalCreditUsdc} vs assumed fees $${m.foxify.totalAssumedFeesUsdc} (@ $${m.foxify.assumedPerpFeeUsdc}/pos)`)}
+    ${card("Foxify all-in net", `$${m.foxify.foxifyAllInNetUsdc}`, `${m.foxify.foxifyAllInNetBps} bps — perps + collar + credit − fees`)}
+  </div>
+  <table><thead><tr><th>recent pair (settle)</th><th>side</th><th>entry → settle</th><th>move</th><th>perp P&L</th><th>collar</th><th>credit</th><th>net</th></tr></thead><tbody>${
+          m.foxify.recentPairs
+            .flatMap((p) => [p.long, p.short])
+            .filter((r): r is NonNullable<typeof r> => r != null)
+            .map(
+              (row) =>
+                `<tr><td>${esc(row.settleIso.replace("T", " ").slice(0, 16))}</td><td>${row.side}</td><td>$${row.entryPriceUsd.toFixed(0)} → $${row.settlePriceUsd.toFixed(0)}</td><td>${(row.movePct * 100).toFixed(2)}%</td><td>$${row.perpPnlUsdc}</td><td>$${row.collarPayoutUsdc}</td><td>$${row.creditUsdc}</td><td>$${row.foxifyNetUsdc}</td></tr>`
+            )
+            .join("") || `<tr><td colspan="8" class="muted">No matured pairs yet.</td></tr>`
+        }</tbody></table>`
+      : ""
+  }
+  ${
     m.lifecycle
       ? `<h2>Cross-venue lifecycle (live overlay)</h2><div class="grid">
     ${card("Basis", `${m.lifecycle.basisBps} bps`, m.lifecycle.basisWithinTolerance ? "within tolerance" : "⚠️ wide — defer settle")}
@@ -217,6 +241,8 @@ export type DashboardDeps = {
   aggregateConfig?: ShadowAggregateConfig;
   /** Realized-economics aggregate over the settlement ledger (forward settlement). */
   settlementAggregate?: () => SettlementAggregate;
+  /** Foxify matched-perp + credit view over the settlement ledger. */
+  foxifyView?: () => FoxifyView | null;
   /** Latest cross-venue lifecycle overlay report (vesting/collateral/basis). */
   lifecycleReport?: () => ShadowLifecycleReport | null;
   /** Optional read-only bearer token. If set, /api/* and / require it. */
@@ -241,11 +267,13 @@ export const handleDashboardRequest = (
 
   const settlement = deps.settlementAggregate ? deps.settlementAggregate() : null;
   const lifecycle = deps.lifecycleReport ? deps.lifecycleReport() : null;
-  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle);
+  const foxify = deps.foxifyView ? deps.foxifyView() : null;
+  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, foxify);
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
   if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(model, null, 2) };
   if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(settlement ?? { settledPositions: 0 }, null, 2) };
+  if (path === "/api/foxify") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(foxify ?? { settledPositions: 0 }, null, 2) };
   if (path === "/api/health") {
     return { statusCode: model.running ? 200 : 503, contentType: "application/json", body: JSON.stringify({ running: model.running, liveness: model.liveness, sessions: model.aggregate.sessions, verdict: model.aggregate.verdict }, null, 2) };
   }
