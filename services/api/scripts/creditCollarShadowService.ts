@@ -62,7 +62,7 @@ const cfg: LiveShadowConfig = {
   serviceFeeBps: num(process.env.HARNESS_SERVICE_FEE_BPS, 2),
   minServiceFeeUsdc: num(process.env.HARNESS_MIN_SERVICE_FEE_USDC, 10),
   tenorDays: num(process.env.HARNESS_TENOR_DAYS, 1),
-  maxFloorPct: num(process.env.HARNESS_MAX_FLOOR_PCT, 0.04),
+  maxFloorPct: num(process.env.HARNESS_MAX_FLOOR_PCT, 0.06), // deeper floor ⟹ cheaper put ⟹ WIDER cap for the same $80 (sweep: cap 1.67%→2.08%/2.92%, breaches 24%→17%)
   nPositions: num(process.env.SHADOW_N_POSITIONS, 20),
   tier0CapUsdc: num(process.env.SHADOW_TIER0_CAP_USDC, 1_000_000),
   breaker: {
