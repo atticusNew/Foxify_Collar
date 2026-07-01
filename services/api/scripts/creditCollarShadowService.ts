@@ -13,6 +13,7 @@ import { createServer } from "node:http";
 import { runLiveShadowSession, type LiveShadowConfig } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
 import { runForwardShadowCycle, loadSettlementAggregate } from "../src/singleSide/twoSided/creditCollar/forwardShadow";
 import { loadFoxifyView } from "../src/singleSide/twoSided/creditCollar/foxifyPerpView";
+import { loadRegimeStats } from "../src/singleSide/twoSided/creditCollar/regimeStats";
 import { appendScorecard, loadScorecards } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowLifecycleReport } from "../src/singleSide/twoSided/creditCollar/lifecycleShadow";
@@ -169,7 +170,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);

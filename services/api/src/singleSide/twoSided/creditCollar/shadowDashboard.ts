@@ -9,6 +9,7 @@ import { aggregateShadowScorecards, type ShadowRunRecord, type ShadowAggregate, 
 import type { SettlementAggregate } from "./forwardSettlement";
 import type { ShadowLifecycleReport } from "./lifecycleShadow";
 import type { FoxifyView } from "./foxifyPerpView";
+import type { RegimeStats } from "./regimeStats";
 
 /** In-process liveness reported by the running shadow loop. */
 export type ShadowLiveStatus = {
@@ -37,6 +38,7 @@ export type DashboardModel = {
   aggregate: ShadowAggregate;
   settlement: SettlementAggregate | null;
   foxify: FoxifyView | null;
+  regime: RegimeStats | null;
   lifecycle: ShadowLifecycleReport | null;
   recentSessions: Array<{
     tsIso: string;
@@ -62,7 +64,8 @@ export const buildDashboardModel = (
   aggCfg: ShadowAggregateConfig = {},
   settlement: SettlementAggregate | null = null,
   lifecycle: ShadowLifecycleReport | null = null,
-  foxify: FoxifyView | null = null
+  foxify: FoxifyView | null = null,
+  regime: RegimeStats | null = null
 ): DashboardModel => {
   const aggregate = aggregateShadowScorecards(records, aggCfg);
   const lastRunAgoMs = status.lastRunAtMs != null ? nowMs - status.lastRunAtMs : null;
@@ -107,6 +110,7 @@ export const buildDashboardModel = (
     aggregate,
     settlement,
     foxify,
+    regime,
     lifecycle,
     recentSessions: recent,
     generatedAtIso: new Date(nowMs).toISOString()
@@ -215,6 +219,24 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
       : ""
   }
   ${
+    m.regime && m.regime.days > 0
+      ? `<h2>Regime & realized vol — is the credit clearing the bleed? (staggered daily P&L)</h2><div class="grid">
+    ${card("Realized vol", `${m.regime.realizedDailyVolPct}%/day`, `${m.regime.realizedAnnualVolPct}% annualized (caps priced ~50%) · avg |move| ${(m.regime.avgAbsMovePct * 100).toFixed(2)}%`)}
+    ${card(`Credit clears bleed? ${m.regime.creditClearsBleed ? "YES" : "NO"}`, money(m.regime.cumulativeNetUsdc), `net = credit ${money(m.regime.cumulativeCreditUsdc)} + collar ${money(m.regime.cumulativeCollarUsdc)} − fees ${money(m.regime.cumulativeFeesUsdc)}`)}
+    ${card("Avg day (Foxify net)", money(m.regime.avgDayNetUsdc), `${pct(m.regime.pctDaysPositive)} of days positive · ${m.regime.days} days`)}
+    ${card("Day spread (smoothing)", `±${money(m.regime.dayNetStdUsdc)}`, `best ${money(m.regime.bestDayNetUsdc)} · worst ${money(m.regime.worstDayNetUsdc)} — staggering shrinks this`)}
+  </div>
+  <table><thead><tr><th>day</th><th>positions</th><th>realized vol</th><th>avg move</th><th>credit</th><th>collar</th><th>Foxify net</th></tr></thead><tbody>${
+          m.regime.recentDays
+            .map(
+              (d) =>
+                `<tr><td>${esc(d.dayIso)}</td><td>${d.positions}</td><td>${d.realizedVolPct}%</td><td>${(d.avgMovePct * 100).toFixed(2)}%</td><td>${money(d.creditUsdc)}</td><td>${money(d.collarUsdc)}</td><td>${money(d.netUsdc)}</td></tr>`
+            )
+            .join("") || `<tr><td colspan="7" class="muted">No settled days yet.</td></tr>`
+        }</tbody></table>`
+      : ""
+  }
+  ${
     m.lifecycle
       ? `<h2>Cross-venue lifecycle (live overlay)</h2><div class="grid">
     ${card("Basis", `${m.lifecycle.basisBps} bps`, m.lifecycle.basisWithinTolerance ? "within tolerance" : "⚠️ wide — defer settle")}
@@ -286,6 +308,7 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
     ${card("Cap hit", `${(s.pctCapBreached * 100).toFixed(1)}%`, "how often price passed the cap (Foxify forfeits upside)")}
     ${card("Floor hit", `${(s.pctFloorBreached * 100).toFixed(1)}%`, "how often price passed the floor (Foxify gets protection)")}
     ${card("Credit vs fees", f ? `${f.creditCoverageRatio}×` : "—", f ? `credit ${money(f.totalCreditUsdc)} vs assumed fees ${money(f.totalAssumedFeesUsdc)}` : "")}
+    ${m.regime && m.regime.days > 0 ? card("Realized vol · clears bleed?", `${m.regime.realizedDailyVolPct}%/day · ${m.regime.creditClearsBleed ? "CLEARS" : "BLEEDS"}`, `cumulative net ${money(m.regime.cumulativeNetUsdc)} · ${(m.regime.pctDaysPositive * 100).toFixed(0)}% of days positive`, m.regime.creditClearsBleed ? "#16794a" : "#9a1b1b") : ""}
   </div>
   <div class="card" style="margin-top:14px">
     <div class="k">How to read this</div>
@@ -327,6 +350,8 @@ export type DashboardDeps = {
   settlementAggregate?: () => SettlementAggregate;
   /** Foxify matched-perp + credit view over the settlement ledger. */
   foxifyView?: () => FoxifyView | null;
+  /** Regime & realized-vol readout over the settlement ledger. */
+  regimeStats?: () => RegimeStats | null;
   /** Latest cross-venue lifecycle overlay report (vesting/collateral/basis). */
   lifecycleReport?: () => ShadowLifecycleReport | null;
   /** Optional read-only bearer token. If set, /api/* and / require it. */
@@ -352,13 +377,15 @@ export const handleDashboardRequest = (
   const settlement = deps.settlementAggregate ? deps.settlementAggregate() : null;
   const lifecycle = deps.lifecycleReport ? deps.lifecycleReport() : null;
   const foxify = deps.foxifyView ? deps.foxifyView() : null;
-  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, foxify);
+  const regime = deps.regimeStats ? deps.regimeStats() : null;
+  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, foxify, regime);
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
   if (path === "/simple") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderSimpleHtml(model) };
   if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(model, null, 2) };
   if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(settlement ?? { settledPositions: 0 }, null, 2) };
   if (path === "/api/foxify") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(foxify ?? { settledPositions: 0 }, null, 2) };
+  if (path === "/api/regime") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(regime ?? { settledPositions: 0 }, null, 2) };
   if (path === "/api/health") {
     return { statusCode: model.running ? 200 : 503, contentType: "application/json", body: JSON.stringify({ running: model.running, liveness: model.liveness, sessions: model.aggregate.sessions, verdict: model.aggregate.verdict }, null, 2) };
   }
