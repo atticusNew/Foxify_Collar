@@ -228,7 +228,85 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
   <h2>Recent sessions</h2>
   <table><thead><tr><th>time</th><th>opened</th><th>halt</th><th>rej</th><th>peakExp</th><th>fee</th><th>oracle</th><th>recon</th><th>lifecycle</th></tr></thead>
   <tbody>${rows || `<tr><td colspan="9" class="muted">No sessions yet.</td></tr>`}</tbody></table>
-  <p class="sub" style="margin-top:16px">JSON: <a href="/api/scorecard">/api/scorecard</a> · <a href="/api/health">/api/health</a></p>
+  <p class="sub" style="margin-top:16px"><a href="/simple">◱ Simple view</a> · JSON: <a href="/api/scorecard">/api/scorecard</a> · <a href="/api/health">/api/health</a></p>
+</div></body></html>`;
+};
+
+// ── Simple view ───────────────────────────────────────────────────────────────
+// A plain-English P&L + execution readout: who collects, who forfeits, who pays,
+// and the proof Atticus is flat. Built entirely from the same model as the advanced page.
+
+const money = (x: number) => `${x < 0 ? "−" : ""}$${Math.abs(x).toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+
+export const renderSimpleHtml = (m: DashboardModel): string => {
+  const s = m.settlement;
+  const f = m.foxify;
+  const card = (label: string, value: string, sub = "", tone = "") =>
+    `<div class="card"><div class="k">${esc(label)}</div><div class="v"${tone ? ` style="color:${tone}"` : ""}>${value}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</div>`;
+
+  const body =
+    !s || s.settledPositions === 0
+      ? `<p class="muted">No positions have settled yet. Real per-trade P&L appears here once the first 24h batch matures.</p>`
+      : (() => {
+          const n = s.settledPositions;
+          const per = (x: number) => `$${(x / n).toFixed(0)}/trade`;
+          // Foxify side
+          const creditTotal = s.totalCreditAccruedUsdc;
+          const collarNet = s.totalPayoutToFoxifyUsdc; // − = Foxify gave back capped upside (net of floor received)
+          const foxNet = f ? f.foxifyAllInNetUsdc : s.totalNetToFoxifyUsdc;
+          const foxNetBps = f ? f.foxifyAllInNetBps : null;
+          // Atticus side
+          const atticusKeep = s.totalAtticusNetAfterFeesAndCapitalUsdc;
+          const venueFees = s.totalOptionFeesUsdc;
+          const paysOut = s.totalPayoutToFoxifyUsdc; // what the collar owes/returns
+          const hedgeBack = s.totalHedgeReceiptUsdc; // the identical hedge leg
+          return `
+  <h2>Foxify — what they collect, forfeit, and keep</h2>
+  <div class="grid">
+    ${card("Foxify COLLECTS — credit", money(creditTotal), `${per(creditTotal)} · paid to Foxify to cover their perp fees`, "#16794a")}
+    ${card("Foxify FORFEITS / receives — collar", money(collarNet), collarNet < 0 ? `${per(collarNet)} · capped upside given back on rallies (comes out of their perp gain)` : `${per(collarNet)} · floor protection received on drops`, collarNet < 0 ? "#9a6b00" : "#16794a")}
+    ${card("Foxify KEEPS — all-in net", money(foxNet), `${foxNetBps != null ? foxNetBps + " bps · " : ""}perps + credit − fees − forfeits`, foxNet >= 0 ? "#16794a" : "#9a1b1b")}
+    ${card("Foxify perps", f ? money(f.netPerpPnlUsdc) : "—", "matched long/short ⟹ ~flat (no directional bet)")}
+  </div>
+  <h2>Atticus — what it pays, passes through, and keeps</h2>
+  <div class="grid">
+    ${card("Atticus KEEPS — profit (ops fee)", money(atticusKeep), `${s.netAfterFeesAndCapitalBps} bps · the separate operation fee, net of costs`, "#16794a")}
+    ${card("Atticus PAYS — venue option fees", money(venueFees), `${per(venueFees)} · funded by the collar, not Atticus's pocket`)}
+    ${card("Atticus PASSES THROUGH — collar", `${money(paysOut)} ⟷ ${money(hedgeBack)}`, "collar owed ⟷ identical hedge pays it back")}
+    ${card("Atticus FLAT?", s.bookHedgedNetBps === 0 ? "YES — 0 bps" : `${s.bookHedgedNetBps} bps`, "hedge nets the collar payout to zero ⟹ no market risk", s.bookHedgedNetBps === 0 ? "#16794a" : "#9a1b1b")}
+  </div>
+  <h2>Context</h2>
+  <div class="grid">
+    ${card("Settled trades", String(n), `avg held ${s.avgHeldHours}h`)}
+    ${card("Cap hit", `${(s.pctCapBreached * 100).toFixed(1)}%`, "how often price passed the cap (Foxify forfeits upside)")}
+    ${card("Floor hit", `${(s.pctFloorBreached * 100).toFixed(1)}%`, "how often price passed the floor (Foxify gets protection)")}
+    ${card("Credit vs fees", f ? `${f.creditCoverageRatio}×` : "—", f ? `credit ${money(f.totalCreditUsdc)} vs assumed fees ${money(f.totalAssumedFeesUsdc)}` : "")}
+  </div>
+  <div class="card" style="margin-top:14px">
+    <div class="k">How to read this</div>
+    <div class="s" style="font-size:13px;line-height:1.6">
+      • <b>Foxify</b> collects credit every trade, occasionally gives back capped upside on a rally (out of the gain they made on the perp), and nets positive.<br>
+      • <b>Atticus</b> takes no market risk: whatever the collar owes, the identical hedge pays back (net $0). Atticus's profit is the separate ops fee.<br>
+      • <b>Per-trade math:</b> Foxify keeps ≈ credit − forfeits − fees; Atticus keeps ≈ ops fee − venue fees − capital cost.
+    </div>
+  </div>`;
+        })();
+
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="30"><title>Credit-Collar Shadow — Simple</title>
+<style>
+  body{font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
+  .wrap{max-width:980px;margin:0 auto;padding:20px}
+  h1{font-size:18px;margin:0 0 4px} .sub{color:#8b949e;margin:0 0 16px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin:10px 0}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px}
+  .card .k{color:#8b949e;font-size:12px} .card .v{font-size:22px;font-weight:700;margin-top:2px} .card .s{color:#8b949e;font-size:12px;margin-top:2px}
+  .muted{color:#8b949e} h2{font-size:14px;margin:22px 0 6px;color:#c9d1d9} a{color:#58a6ff} b{color:#e6edf3}
+</style></head><body><div class="wrap">
+  <h1>Credit-Collar Shadow — Simple P&L</h1>
+  <p class="sub">Plain-English money flow · paper-settled · generated ${esc(m.generatedAtIso)}</p>
+  <p class="sub"><a href="/">◲ Advanced view</a> · JSON: <a href="/api/scorecard">/api/scorecard</a></p>
+  ${body}
 </div></body></html>`;
 };
 
@@ -272,6 +350,7 @@ export const handleDashboardRequest = (
   const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, foxify);
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
+  if (path === "/simple") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderSimpleHtml(model) };
   if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(model, null, 2) };
   if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(settlement ?? { settledPositions: 0 }, null, 2) };
   if (path === "/api/foxify") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(foxify ?? { settledPositions: 0 }, null, 2) };

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDashboardModel, renderDashboardHtml, handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
+import { buildDashboardModel, renderDashboardHtml, renderSimpleHtml, handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowRunRecord } from "../src/singleSide/twoSided/creditCollar/shadowAggregate";
 import type { ShadowScorecard } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
 
@@ -45,6 +45,28 @@ test("dashboard HTML renders and shows RUNNING + verdict", () => {
   assert.ok(html.includes("RUNNING"));
   assert.ok(/verdict/i.test(html));
   assert.ok(html.includes("/api/scorecard"));
+});
+
+test("simple view: renders plain-English P&L and cross-links the advanced view", () => {
+  const settlement = {
+    settledPositions: 100, totalCreditAccruedUsdc: 9_000, totalPayoutToFoxifyUsdc: -1_200,
+    totalNetToFoxifyUsdc: 7_800, totalOptionFeesUsdc: 2_600, totalHedgeReceiptUsdc: -1_200,
+    totalAtticusNetAfterFeesAndCapitalUsdc: 980, netAfterFeesAndCapitalBps: 1.96, bookHedgedNetBps: 0,
+    avgHeldHours: 24.1, pctCapBreached: 0.12, pctFloorBreached: 0
+  } as unknown as Parameters<typeof buildDashboardModel>[4];
+  const model = buildDashboardModel([rec(NOW - 30_000)], status(), NOW, {}, settlement);
+  const html = renderSimpleHtml(model);
+  assert.ok(html.includes("Simple P&L"));
+  assert.ok(/Foxify COLLECTS/i.test(html));
+  assert.ok(/Atticus FLAT/i.test(html));
+  assert.ok(html.includes("Advanced view"));
+});
+
+test("handler: /simple returns html", () => {
+  const deps = { loadRecords: () => [rec(NOW - 30_000)], liveStatus: () => status(), nowMs: () => NOW };
+  const r = handleDashboardRequest({ method: "GET", path: "/simple" }, deps);
+  assert.equal(r.statusCode, 200);
+  assert.ok(r.contentType.includes("text/html"));
 });
 
 test("handler: routes / (html), /api/scorecard (json), /api/health (running), /healthz", () => {
