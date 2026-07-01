@@ -260,14 +260,19 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
           const venueFees = s.totalOptionFeesUsdc;
           const paysOut = s.totalPayoutToFoxifyUsdc; // what the collar owes/returns
           const hedgeBack = s.totalHedgeReceiptUsdc; // the identical hedge leg
+          const fees = f ? f.totalAssumedFeesUsdc : 0;
+          const perp = f ? f.netPerpPnlUsdc : 0;
+          const reconcile = `Foxify keeps = credit ${money(creditTotal)} ${collarNet < 0 ? "−" : "+"} collar ${money(Math.abs(collarNet))} − perp fees ${money(fees)} ${perp < 0 ? "−" : "+"} perps ${money(Math.abs(perp))} = ${money(foxNet)}`;
           return `
-  <h2>Foxify — what they collect, forfeit, and keep</h2>
+  <h2>Foxify — what they collect, forfeit, pay, and keep</h2>
   <div class="grid">
-    ${card("Foxify COLLECTS — credit", money(creditTotal), `${per(creditTotal)} · paid to Foxify to cover their perp fees`, "#16794a")}
-    ${card("Foxify FORFEITS / receives — collar", money(collarNet), collarNet < 0 ? `${per(collarNet)} · capped upside given back on rallies (comes out of their perp gain)` : `${per(collarNet)} · floor protection received on drops`, collarNet < 0 ? "#9a6b00" : "#16794a")}
-    ${card("Foxify KEEPS — all-in net", money(foxNet), `${foxNetBps != null ? foxNetBps + " bps · " : ""}perps + credit − fees − forfeits`, foxNet >= 0 ? "#16794a" : "#9a1b1b")}
-    ${card("Foxify perps", f ? money(f.netPerpPnlUsdc) : "—", "matched long/short ⟹ ~flat (no directional bet)")}
+    ${card("Foxify COLLECTS — credit", money(creditTotal), `${per(creditTotal)} · paid to Foxify`, "#16794a")}
+    ${card("Foxify FORFEITS / receives — collar", money(collarNet), collarNet < 0 ? `${per(collarNet)} · capped upside given back on moves` : `${per(collarNet)} · floor protection received`, collarNet < 0 ? "#9a6b00" : "#16794a")}
+    ${card("Foxify PAYS — perp fees", money(-fees), `${per(-fees)} · assumed $${f ? f.assumedPerpFeeUsdc : 0}/trade cost the credit is meant to cover`, "#9a6b00")}
+    ${card("Foxify KEEPS — all-in net", money(foxNet), `${foxNetBps != null ? foxNetBps + " bps · " : ""}= credit − forfeits − fees + perps`, foxNet >= 0 ? "#16794a" : "#9a1b1b")}
+    ${card("Foxify perps", f ? money(perp) : "—", "matched long/short ⟹ ~flat (no directional bet)")}
   </div>
+  <p class="muted" style="margin:2px 0 0">${esc(reconcile)}</p>
   <h2>Atticus — what it pays, passes through, and keeps</h2>
   <div class="grid">
     ${card("Atticus KEEPS — profit (ops fee)", money(atticusKeep), `${s.netAfterFeesAndCapitalBps} bps · the separate operation fee, net of costs`, "#16794a")}
@@ -285,9 +290,9 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
   <div class="card" style="margin-top:14px">
     <div class="k">How to read this</div>
     <div class="s" style="font-size:13px;line-height:1.6">
-      • <b>Foxify</b> collects credit every trade, occasionally gives back capped upside on a rally (out of the gain they made on the perp), and nets positive.<br>
-      • <b>Atticus</b> takes no market risk: whatever the collar owes, the identical hedge pays back (net $0). Atticus's profit is the separate ops fee.<br>
-      • <b>Per-trade math:</b> Foxify keeps ≈ credit − forfeits − fees; Atticus keeps ≈ ops fee − venue fees − capital cost.
+      • <b>Foxify math (3 parts):</b> keeps = credit collected − collar forfeited − perp fees. All three matter — the fees are the line people forget.<br>
+      • <b>Regime:</b> in calm tape the caps rarely breach, so forfeits are small and Foxify nets positive; in a sustained trend the caps breach often and the forfeits can exceed the net credit — that's a short-volatility trade, not free money.<br>
+      • <b>Atticus</b> takes no market risk: whatever the collar owes, the identical hedge pays back (net $0). Atticus's profit is the separate ops fee, in every regime.
     </div>
   </div>`;
         })();
