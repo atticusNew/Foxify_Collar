@@ -14,6 +14,7 @@ import { buildLiveShadowInputs, type LiveShadowConfig } from "./shadowRunner";
 import type { ShadowScorecard } from "./shadowRunner";
 import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
+import { computeOpensThisCycle, loadOpeningState, saveOpeningState } from "./openingSignalStore";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
@@ -52,7 +53,7 @@ export type ForwardCycleConfig = LiveShadowConfig & {
 
 export const runForwardShadowCycle = async (
   cfg: ForwardCycleConfig,
-  paths: { openPath?: string; ledgerPath?: string } = {}
+  paths: { openPath?: string; ledgerPath?: string; openingStatePath?: string } = {}
 ): Promise<ForwardCycleResult> => {
   const built = await buildLiveShadowInputs(cfg);
   if (!built.ok) return { ok: false, error: built.error, message: built.message };
@@ -82,7 +83,18 @@ export const runForwardShadowCycle = async (
   let sumFloor = 0;
   const rej: Record<string, number> = {};
 
-  for (let i = 0; i < cfg.nPositions; i++) {
+  // How many to open this cycle. Signal mode (dailyPositions set) releases a steady staggered rate over
+  // time (partner-like flow); otherwise the legacy fixed batch of nPositions. Neutral-over-time either way.
+  const signalMode = cfg.dailyPositions != null && cfg.dailyPositions > 0;
+  let nToOpen = cfg.nPositions;
+  if (signalMode) {
+    const prevState = loadOpeningState(paths.openingStatePath);
+    const step = computeOpensThisCycle(prevState, now, cfg.dailyPositions as number);
+    nToOpen = step.nToOpen;
+    saveOpeningState(step.next, paths.openingStatePath);
+  }
+
+  for (let i = 0; i < nToOpen; i++) {
     const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
     if (!instr.ok) {
       halted += 1;
@@ -160,7 +172,7 @@ export const runForwardShadowCycle = async (
     label: "tier0_shadow_paper_settled",
     mode: "shadow",
     oracle: { status: oracle.snapshot.status, priceUsd: oracle.snapshot.priceUsd, safeForActivation: oracle.snapshot.safeForActivation, signatureValid: oracleVerified },
-    attempted: cfg.nPositions,
+    attempted: nToOpen,
     opened: newOpens.length,
     openedNotionalUsdc: +openedNotional.toFixed(2),
     halted,
@@ -184,9 +196,11 @@ export const runForwardShadowCycle = async (
     // correctly DECLINED because the oracle wasn't safe for activation (fail-closed is correct, not a
     // failure). Only an unverified oracle, or oracle-safe-but-zero-opens (a real pricing/breaker
     // signal), counts as incomplete.
-    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation),
+    // In signal mode a cycle with nothing DUE (nToOpen === 0) is correct behavior, not a failure.
+    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation || (signalMode && nToOpen === 0)),
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
+      signalMode ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle.` : "",
       newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
     ].filter(Boolean)
   };

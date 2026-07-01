@@ -214,6 +214,13 @@ export type LiveShadowConfig = {
   strikeGridUsdc?: number;
   /** Credit-target mode (pass_through): ceiling on credit handed to Foxify; bounded overshoot → Atticus margin. */
   maxFoxifyCreditUsdc?: number;
+  /**
+   * Partner-like opening SIGNAL: target positions PER DAY, released at a steady staggered rate across cycles
+   * (delta-neutral over time via the scaffold's side steering), instead of a fixed `nPositions` batch dumped
+   * at one price each cycle. Set to 2 to shadow the actual first pilot. When unset, the legacy fixed-batch
+   * behavior (`nPositions` per cycle) is used.
+   */
+  dailyPositions?: number;
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
   /**

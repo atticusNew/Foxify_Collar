@@ -80,7 +80,10 @@ const cfg: LiveShadowConfig = {
   // breaches), and the credit ceiling hands Foxify ~the target rather than passing discrete-strike overshoot
   // through as extra credit funded by an over-tight cap. Bounded overshoot above the ceiling → Atticus margin.
   strikeGridUsdc: num(process.env.HARNESS_STRIKE_GRID_USDC, 250),
-  maxFoxifyCreditUsdc: num(process.env.HARNESS_MAX_CREDIT_USDC, 100),
+  maxFoxifyCreditUsdc: num(process.env.HARNESS_MAX_CREDIT_USDC, 80), // deliver EXACTLY the $80 target; overshoot → Atticus, not over-credit
+  // Partner-like opening signal: positions/day, staggered (delta-neutral over time). Set 2 to shadow the
+  // actual first pilot. Unset (0) ⟹ legacy fixed batch of SHADOW_N_POSITIONS per cycle (scaled stress mode).
+  dailyPositions: num(process.env.SHADOW_DAILY_POSITIONS, 0) || undefined,
   // Force a single hedge venue for the mirror (e.g. SHADOW_HEDGE_VENUE=okx) so skew/spreads/fees are OKX-specific.
   hedgeVenue: (["bullish", "okx", "deribit"].includes(String(process.env.SHADOW_HEDGE_VENUE)) ? (process.env.SHADOW_HEDGE_VENUE as "bullish" | "okx" | "deribit") : undefined),
   adaptiveFloor: {
