@@ -108,6 +108,9 @@ const cfg: LiveShadowConfig = {
   // Partner-like opening signal: positions/day, staggered (delta-neutral over time). Set 2 to shadow the
   // actual first pilot. Unset (0) ⟹ legacy fixed batch of SHADOW_N_POSITIONS per cycle (scaled stress mode).
   dailyPositions: num(process.env.SHADOW_DAILY_POSITIONS, 0) || undefined,
+  // Opening direction: flat (neutral, default) | long | short | trend (follow live momentum). Non-flat runs
+  // a DIRECTIONAL book on real tape — the market sets the hit-rate. See the directional-edge backtest.
+  directionalBias: (["flat", "long", "short", "trend"].includes(String(process.env.SHADOW_DIRECTIONAL_BIAS)) ? (process.env.SHADOW_DIRECTIONAL_BIAS as "flat" | "long" | "short" | "trend") : undefined),
   // Regime-aware opening gate: widen the cap + throttle when the trailing avg |24h move| is elevated; pause
   // when extreme. Lets the short-vol book sit out trend/high-vol regimes. On by default; tune the thresholds.
   regimeGate: {

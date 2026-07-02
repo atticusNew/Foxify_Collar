@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeLiveRegimeSignal, type PriceObs } from "../src/singleSide/twoSided/creditCollar/priceHistoryStore";
+import { computeLiveRegimeSignal, trendDirection, type PriceObs } from "../src/singleSide/twoSided/creditCollar/priceHistoryStore";
 import { evaluateRegimeGate, type RegimeGateConfig } from "../src/singleSide/twoSided/creditCollar/regimeGate";
 
 const CYCLE = 900_000; // 15 min
@@ -39,6 +39,14 @@ test("gate blends live: a live spike trips the gate even with calm trailing sett
   assert.equal(d.regime, "halt");
   assert.equal(d.signalSource, "live");
   assert.equal(d.liveMovePct, 4.0);
+});
+
+test("trendDirection: +1 rising, −1 falling, 0 flat/insufficient", () => {
+  const rising = [{ tsMs: NOW - 5 * CYCLE, priceUsd: 60000 }, { tsMs: NOW, priceUsd: 61000 }];
+  const falling = [{ tsMs: NOW - 5 * CYCLE, priceUsd: 61000 }, { tsMs: NOW, priceUsd: 60000 }];
+  assert.equal(trendDirection(rising, NOW), 1);
+  assert.equal(trendDirection(falling, NOW), -1);
+  assert.equal(trendDirection([{ tsMs: NOW, priceUsd: 60000 }], NOW), 0);
 });
 
 test("live works during trailing warm-up (before enough positions have settled)", () => {

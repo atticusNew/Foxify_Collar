@@ -16,7 +16,8 @@ import { settleMatured, aggregateSettlements, type OpenPosition, type Settlement
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
 import { computeOpensThisCycle, loadOpeningState, saveOpeningState } from "./openingSignalStore";
 import { evaluateRegimeGate, type RegimeGateDecision } from "./regimeGate";
-import { appendPriceObs, loadPriceHistory, computeLiveRegimeSignal } from "./priceHistoryStore";
+import { appendPriceObs, loadPriceHistory, computeLiveRegimeSignal, trendDirection } from "./priceHistoryStore";
+import type { PerpSide } from "./creditCollarPricer";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
@@ -116,13 +117,22 @@ export const runForwardShadowCycle = async (
   // Apply the regime gate's throttle (halt ⟹ 0, elevated ⟹ scaled down).
   if (regimeGate) nToOpen = Math.max(0, Math.round(nToOpen * regimeGate.openMultiplier));
 
+  // Directional bias: override the net-flat steering with a lean (or trend-follow). "flat" ⟹ unchanged.
+  let biasSide: PerpSide | null = null;
+  if (cfg.directionalBias === "long") biasSide = "long";
+  else if (cfg.directionalBias === "short") biasSide = "short";
+  else if (cfg.directionalBias === "trend") {
+    const dir = trendDirection(loadPriceHistory(paths.priceHistoryPath), now, cfg.regimeGate?.liveLookbackMs);
+    biasSide = dir >= 0 ? "long" : "short"; // follow recent momentum; flat/unknown ⟹ long
+  }
+
   for (let i = 0; i < nToOpen; i++) {
     const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
     if (!instr.ok) {
       halted += 1;
       continue;
     }
-    const rec = scaffold.activate({ ref: instr.ref, side: instr.side, notionalUsdc: cfg.positionNotionalUsdc, spot, instrument: "BTC-PERP", tsMs: now + i });
+    const rec = scaffold.activate({ ref: instr.ref, side: biasSide ?? instr.side, notionalUsdc: cfg.positionNotionalUsdc, spot, instrument: "BTC-PERP", tsMs: now + i });
     if ("status" in rec && rec.status === "active") {
       newOpens.push({
         ref: rec.ref,
@@ -223,6 +233,7 @@ export const runForwardShadowCycle = async (
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
       signalMode ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle.` : "",
+      biasSide ? `Directional bias: ${cfg.directionalBias} ⟹ opening ${biasSide} (directional book; breaker relaxed).` : "",
       regimeGate ? `Regime gate: ${regimeGate.regime} (${regimeGate.reason}).` : "",
       newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
     ].filter(Boolean)

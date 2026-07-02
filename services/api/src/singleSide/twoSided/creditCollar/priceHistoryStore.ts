@@ -62,6 +62,14 @@ export const appendPriceObs = (obs: PriceObs, path = DEFAULT_PRICE_HISTORY_PATH,
   }
 };
 
+/** Sign of the net price change over the lookback window: +1 rising, −1 falling, 0 flat/insufficient. */
+export const trendDirection = (history: PriceObs[], nowMs: number, lookbackMs = 6 * 3_600_000): 1 | -1 | 0 => {
+  const pts = history.filter((p) => p.tsMs >= nowMs - lookbackMs).sort((a, b) => a.tsMs - b.tsMs);
+  if (pts.length < 2) return 0;
+  const chg = pts[pts.length - 1].priceUsd - pts[0].priceUsd;
+  return chg > 0 ? 1 : chg < 0 ? -1 : 0;
+};
+
 export type LiveRegimeConfig = { lookbackMs?: number; minSamples?: number };
 export type LiveRegimeSignal = { gaugePct: number; volPct: number; momentumPct: number; samples: number };
 

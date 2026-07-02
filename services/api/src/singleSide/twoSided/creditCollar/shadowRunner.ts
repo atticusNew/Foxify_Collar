@@ -226,6 +226,13 @@ export type LiveShadowConfig = {
    * (deeper floor) and throttle opens; when extreme, pause. Lets the short-vol book sit out the bleed regimes.
    */
   regimeGate?: import("./regimeGate").RegimeGateConfig;
+  /**
+   * Opening DIRECTION. "flat" (default) steers net-flat (neutral book). "long"/"short" force a directional
+   * lean; "trend" opens the side of recent price momentum (trend-following). Non-flat = a directional book
+   * (Foxify takes market risk); the exposure breaker is relaxed so it doesn't self-halt. The market sets the
+   * realized hit-rate. Use to shadow the directional-edge strategy on real tape.
+   */
+  directionalBias?: "flat" | "long" | "short" | "trend";
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
   /**
@@ -295,10 +302,15 @@ export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok
     { tsMs: nowMs, priceUsd: snapshot.priceUsd }
   ];
 
+  // Directional mode intentionally warehouses net exposure (Foxify's bet), so relax the flat-steering
+  // breaker; it would otherwise fail-closed the moment the book leans. Paper shadow only.
+  const directional = cfg.directionalBias != null && cfg.directionalBias !== "flat";
+  const breaker = directional ? { ...cfg.breaker, warnBandPct: 100, haltBandPct: 100, resumeBandPct: 100, maxAbsNetNotionalUsd: Number.MAX_SAFE_INTEGER } : cfg.breaker;
+
   const scaffoldConfig: ScaffoldConfig = {
     tiers: [{ tier: 0, maxDailyNotionalUsdc: cfg.tier0CapUsdc, live: false }],
     policy: cfg.policy,
-    breaker: cfg.breaker,
+    breaker,
     serviceFeeBps: cfg.serviceFeeBps,
     minServiceFeeUsdc: cfg.minServiceFeeUsdc,
     maxFloorPct: cfg.maxFloorPct,
