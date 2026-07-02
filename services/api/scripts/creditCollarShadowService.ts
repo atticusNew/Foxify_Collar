@@ -14,11 +14,33 @@ import { runLiveShadowSession, type LiveShadowConfig } from "../src/singleSide/t
 import { runForwardShadowCycle, loadSettlementAggregate } from "../src/singleSide/twoSided/creditCollar/forwardShadow";
 import { loadFoxifyView } from "../src/singleSide/twoSided/creditCollar/foxifyPerpView";
 import { loadRegimeStats } from "../src/singleSide/twoSided/creditCollar/regimeStats";
-import { appendScorecard, loadScorecards } from "../src/singleSide/twoSided/creditCollar/shadowStore";
+import { appendScorecard, loadScorecards, resolveWritablePath, DEFAULT_SHADOW_STORE_PATH } from "../src/singleSide/twoSided/creditCollar/shadowStore";
+import { DEFAULT_OPEN_POSITIONS_PATH, DEFAULT_SETTLEMENT_LEDGER_PATH } from "../src/singleSide/twoSided/creditCollar/forwardSettlementStore";
+import { DEFAULT_OPENING_STATE_PATH } from "../src/singleSide/twoSided/creditCollar/openingSignalStore";
+import { DEFAULT_COLLATERAL_PATH } from "../src/singleSide/twoSided/creditCollar/collateralStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowLifecycleReport } from "../src/singleSide/twoSided/creditCollar/lifecycleShadow";
+import { existsSync, unlinkSync } from "node:fs";
 
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
+
+// One-time store reset: set SHADOW_RESET_ON_BOOT=true to WIPE the accumulated shadow stores on startup
+// (scorecards, settlements, open positions, opening-signal state, collateral) for a fresh track record.
+// Remove the flag afterwards so later restarts don't keep wiping.
+if (String(process.env.SHADOW_RESET_ON_BOOT ?? "").toLowerCase() === "true") {
+  for (const p of [DEFAULT_SHADOW_STORE_PATH, DEFAULT_OPEN_POSITIONS_PATH, DEFAULT_SETTLEMENT_LEDGER_PATH, DEFAULT_OPENING_STATE_PATH, DEFAULT_COLLATERAL_PATH]) {
+    try {
+      const eff = resolveWritablePath(p);
+      if (existsSync(eff)) {
+        unlinkSync(eff);
+        console.error(`[shadow-svc] RESET: cleared ${eff}`);
+      }
+    } catch (e) {
+      console.warn(`[shadow-svc] RESET: could not clear ${p} (${(e as Error).message})`);
+    }
+  }
+  console.error("[shadow-svc] RESET complete — starting with EMPTY stores. Remove SHADOW_RESET_ON_BOOT so future restarts persist.");
+}
 
 const intervalMs = num(process.env.SHADOW_LOOP_INTERVAL_MS, 900_000);
 const port = num(process.env.PORT, 10_000);
