@@ -1,0 +1,506 @@
+{
+  "schema": "atticus.deribit.chain-sample.v1",
+  "timestamp": "2026-07-02T04:13:51.861Z",
+  "source": {
+    "deribit": "https://www.deribit.com/api/v2/public",
+    "coinbase": "https://api.exchange.coinbase.com/products/BTC-USD/ticker"
+  },
+  "spot": {
+    "deribitIndex": 60902.41,
+    "coinbaseSpot": 60893.51,
+    "deltaPct": -0.01461354320789843
+  },
+  "dvol": 41.34,
+  "instrumentsScanned": 878,
+  "perTier": [
+    {
+      "slPct": 0.02,
+      "protectionType": "long",
+      "optionType": "put",
+      "triggerPrice": 59684.3618,
+      "triggerBandLow": 59379.84975,
+      "triggerBandHigh": 59988.873849999996,
+      "inBandCandidates": [
+        {
+          "instrument": "BTC-3JUL26-59500-P",
+          "strike": 59500,
+          "expiryTs": 1783065600000,
+          "daysToExpiry": 1.1570509722222222,
+          "book": {
+            "instrument_name": "BTC-3JUL26-59500-P",
+            "best_bid_price": 0.0019,
+            "best_ask_price": 0.0023,
+            "best_bid_amount": 19.2,
+            "best_ask_amount": 32,
+            "mark_price": 0.0021,
+            "mark_iv": 42.58,
+            "underlying_price": 60897.72
+          },
+          "askUsd": 140.064756,
+          "bidUsd": 115.705668,
+          "spreadBps": 1904.761904761904,
+          "markUsd": 127.885212
+        },
+        {
+          "instrument": "BTC-4JUL26-59500-P",
+          "strike": 59500,
+          "expiryTs": 1783152000000,
+          "daysToExpiry": 2.157050972222222,
+          "book": {
+            "instrument_name": "BTC-4JUL26-59500-P",
+            "best_bid_price": 0.0035,
+            "best_ask_price": 0.0039,
+            "best_bid_amount": 30,
+            "best_ask_amount": 38.4,
+            "mark_price": 0.0037,
+            "mark_iv": 38.76,
+            "underlying_price": 60902.41
+          },
+          "askUsd": 237.519399,
+          "bidUsd": 213.15843500000003,
+          "spreadBps": 1081.0810810810797,
+          "markUsd": 225.338917
+        }
+      ],
+      "inBand1dCandidate": "BTC-3JUL26-59500-P",
+      "fallbackCandidate": "BTC-3JUL26-59500-P",
+      "fallbackDaysToExpiry": 1.1570509722222222
+    },
+    {
+      "slPct": 0.02,
+      "protectionType": "short",
+      "optionType": "call",
+      "triggerPrice": 62120.45820000001,
+      "triggerBandLow": 61815.94615000001,
+      "triggerBandHigh": 62424.970250000006,
+      "inBandCandidates": [
+        {
+          "instrument": "BTC-3JUL26-62000-C",
+          "strike": 62000,
+          "expiryTs": 1783065600000,
+          "daysToExpiry": 1.1570509722222222,
+          "book": {
+            "instrument_name": "BTC-3JUL26-62000-C",
+            "best_bid_price": 0.0019,
+            "best_ask_price": 0.0023,
+            "best_bid_amount": 13,
+            "best_ask_amount": 10,
+            "mark_price": 0.0021,
+            "mark_iv": 36.1,
+            "underlying_price": 60897.72
+          },
+          "askUsd": 140.064756,
+          "bidUsd": 115.705668,
+          "spreadBps": 1904.761904761904,
+          "markUsd": 127.885212
+        },
+        {
+          "instrument": "BTC-4JUL26-62000-C",
+          "strike": 62000,
+          "expiryTs": 1783152000000,
+          "daysToExpiry": 2.157050972222222,
+          "book": {
+            "instrument_name": "BTC-4JUL26-62000-C",
+            "best_bid_price": 0.0032,
+            "best_ask_price": 0.0037,
+            "best_bid_amount": 37,
+            "best_ask_amount": 34.2,
+            "mark_price": 0.0034,
+            "mark_iv": 32.16,
+            "underlying_price": 60902.41
+          },
+          "askUsd": 225.338917,
+          "bidUsd": 194.88771200000002,
+          "spreadBps": 1449.27536231884,
+          "markUsd": 207.068194
+        }
+      ],
+      "inBand1dCandidate": "BTC-3JUL26-62000-C",
+      "fallbackCandidate": "BTC-3JUL26-62000-C",
+      "fallbackDaysToExpiry": 1.1570509722222222
+    },
+    {
+      "slPct": 0.03,
+      "protectionType": "long",
+      "optionType": "put",
+      "triggerPrice": 59075.337700000004,
+      "triggerBandLow": 58770.825650000006,
+      "triggerBandHigh": 59379.84975,
+      "inBandCandidates": [
+        {
+          "instrument": "BTC-3JUL26-59000-P",
+          "strike": 59000,
+          "expiryTs": 1783065600000,
+          "daysToExpiry": 1.1570509722222222,
+          "book": {
+            "instrument_name": "BTC-3JUL26-59000-P",
+            "best_bid_price": 0.0011,
+            "best_ask_price": 0.0015,
+            "best_bid_amount": 82.5,
+            "best_ask_amount": 65.6,
+            "mark_price": 0.0013,
+            "mark_iv": 45.1,
+            "underlying_price": 60897.72
+          },
+          "askUsd": 91.34658,
+          "bidUsd": 66.987492,
+          "spreadBps": 3076.923076923077,
+          "markUsd": 79.167036
+        },
+        {
+          "instrument": "BTC-4JUL26-59000-P",
+          "strike": 59000,
+          "expiryTs": 1783152000000,
+          "daysToExpiry": 2.157050972222222,
+          "book": {
+            "instrument_name": "BTC-4JUL26-59000-P",
+            "best_bid_price": 0.0024,
+            "best_ask_price": 0.0027,
+            "best_bid_amount": 30,
+            "best_ask_amount": 21.3,
+            "mark_price": 0.0025,
+            "mark_iv": 40.67,
+            "underlying_price": 60902.41
+          },
+          "askUsd": 164.436507,
+          "bidUsd": 146.165784,
+          "spreadBps": 1176.4705882352941,
+          "markUsd": 152.25602500000002
+        }
+      ],
+      "inBand1dCandidate": "BTC-3JUL26-59000-P",
+      "fallbackCandidate": "BTC-3JUL26-59000-P",
+      "fallbackDaysToExpiry": 1.1570509722222222
+    },
+    {
+      "slPct": 0.03,
+      "protectionType": "short",
+      "optionType": "call",
+      "triggerPrice": 62729.4823,
+      "triggerBandLow": 62424.970250000006,
+      "triggerBandHigh": 63033.99435,
+      "inBandCandidates": [
+        {
+          "instrument": "BTC-3JUL26-63000-C",
+          "strike": 63000,
+          "expiryTs": 1783065600000,
+          "daysToExpiry": 1.1570509722222222,
+          "book": {
+            "instrument_name": "BTC-3JUL26-63000-C",
+            "best_bid_price": 0.0004,
+            "best_ask_price": 0.0006,
+            "best_bid_amount": 46.2,
+            "best_ask_amount": 8.9,
+            "mark_price": 0.0006,
+            "mark_iv": 38.51,
+            "underlying_price": 60897.72
+          },
+          "askUsd": 36.538632,
+          "bidUsd": 24.359088000000003,
+          "spreadBps": 3999.9999999999986,
+          "markUsd": 36.538632
+        },
+        {
+          "instrument": "BTC-4JUL26-63000-C",
+          "strike": 63000,
+          "expiryTs": 1783152000000,
+          "daysToExpiry": 2.157050972222222,
+          "book": {
+            "instrument_name": "BTC-4JUL26-63000-C",
+            "best_bid_price": 0.0009,
+            "best_ask_price": 0.0012,
+            "best_bid_amount": 49.2,
+            "best_ask_amount": 18,
+            "mark_price": 0.001,
+            "mark_iv": 32.65,
+            "underlying_price": 60902.41
+          },
+          "askUsd": 73.082892,
+          "bidUsd": 54.812169000000004,
+          "spreadBps": 2857.1428571428564,
+          "markUsd": 60.90241
+        }
+      ],
+      "inBand1dCandidate": "BTC-3JUL26-63000-C",
+      "fallbackCandidate": "BTC-3JUL26-63000-C",
+      "fallbackDaysToExpiry": 1.1570509722222222
+    },
+    {
+      "slPct": 0.05,
+      "protectionType": "long",
+      "optionType": "put",
+      "triggerPrice": 57857.2895,
+      "triggerBandLow": 57552.77745,
+      "triggerBandHigh": 58161.80155,
+      "inBandCandidates": [
+        {
+          "instrument": "BTC-3JUL26-58000-P",
+          "strike": 58000,
+          "expiryTs": 1783065600000,
+          "daysToExpiry": 1.1570509722222222,
+          "book": {
+            "instrument_name": "BTC-3JUL26-58000-P",
+            "best_bid_price": 0.0004,
+            "best_ask_price": 0.0006,
+            "best_bid_amount": 70.4,
+            "best_ask_amount": 30.4,
+            "mark_price": 0.0005,
+            "mark_iv": 50.16,
+            "underlying_price": 60897.72
+          },
+          "askUsd": 36.538632,
+          "bidUsd": 24.359088000000003,
+          "spreadBps": 3999.9999999999986,
+          "markUsd": 30.44886
+        },
+        {
+          "instrument": "BTC-4JUL26-58000-P",
+          "strike": 58000,
+          "expiryTs": 1783152000000,
+          "daysToExpiry": 2.157050972222222,
+          "book": {
+            "instrument_name": "BTC-4JUL26-58000-P",
+            "best_bid_price": 0.0011,
+            "best_ask_price": 0.0013,
+            "best_bid_amount": 30,
+            "best_ask_amount": 23.1,
+            "mark_price": 0.0012,
+            "mark_iv": 44.67,
+            "underlying_price": 60902.41
+          },
+          "askUsd": 79.173133,
+          "bidUsd": 66.99265100000001,
+          "spreadBps": 1666.666666666666,
+          "markUsd": 73.082892
+        }
+      ],
+      "inBand1dCandidate": "BTC-3JUL26-58000-P",
+      "fallbackCandidate": "BTC-3JUL26-58000-P",
+      "fallbackDaysToExpiry": 1.1570509722222222
+    },
+    {
+      "slPct": 0.05,
+      "protectionType": "short",
+      "optionType": "call",
+      "triggerPrice": 63947.53050000001,
+      "triggerBandLow": 63643.01845000001,
+      "triggerBandHigh": 64252.042550000006,
+      "inBandCandidates": [
+        {
+          "instrument": "BTC-3JUL26-64000-C",
+          "strike": 64000,
+          "expiryTs": 1783065600000,
+          "daysToExpiry": 1.1570509722222222,
+          "book": {
+            "instrument_name": "BTC-3JUL26-64000-C",
+            "best_bid_price": 0.0001,
+            "best_ask_price": 0.0003,
+            "best_bid_amount": 66.1,
+            "best_ask_amount": 6.7,
+            "mark_price": 0.0002,
+            "mark_iv": 43.55,
+            "underlying_price": 60897.72
+          },
+          "askUsd": 18.269316,
+          "bidUsd": 6.089772000000001,
+          "spreadBps": 10000,
+          "markUsd": 12.179544000000002
+        },
+        {
+          "instrument": "BTC-4JUL26-64000-C",
+          "strike": 64000,
+          "expiryTs": 1783152000000,
+          "daysToExpiry": 2.157050972222222,
+          "book": {
+            "instrument_name": "BTC-4JUL26-64000-C",
+            "best_bid_price": 0.0003,
+            "best_ask_price": 0.0005,
+            "best_bid_amount": 30,
+            "best_ask_amount": 10.4,
+            "mark_price": 0.0004,
+            "mark_iv": 35.94,
+            "underlying_price": 60902.41
+          },
+          "askUsd": 30.451205,
+          "bidUsd": 18.270723,
+          "spreadBps": 5000,
+          "markUsd": 24.360964000000003
+        }
+      ],
+      "inBand1dCandidate": "BTC-3JUL26-64000-C",
+      "fallbackCandidate": "BTC-3JUL26-64000-C",
+      "fallbackDaysToExpiry": 1.1570509722222222
+    },
+    {
+      "slPct": 0.1,
+      "protectionType": "long",
+      "optionType": "put",
+      "triggerPrice": 54812.169,
+      "triggerBandLow": 54507.656950000004,
+      "triggerBandHigh": 55116.68105,
+      "inBandCandidates": [
+        {
+          "instrument": "BTC-3JUL26-55000-P",
+          "strike": 55000,
+          "expiryTs": 1783065600000,
+          "daysToExpiry": 1.1570509722222222,
+          "book": {
+            "instrument_name": "BTC-3JUL26-55000-P",
+            "best_bid_price": 0.0001,
+            "best_ask_price": 0.0002,
+            "best_bid_amount": 18,
+            "best_ask_amount": 36.5,
+            "mark_price": 0.0001,
+            "mark_iv": 76.83,
+            "underlying_price": 60894.45
+          },
+          "askUsd": 12.17889,
+          "bidUsd": 6.089445,
+          "spreadBps": 6666.666666666667,
+          "markUsd": 6.089445
+        },
+        {
+          "instrument": "BTC-4JUL26-55000-P",
+          "strike": 55000,
+          "expiryTs": 1783152000000,
+          "daysToExpiry": 2.157050972222222,
+          "book": {
+            "instrument_name": "BTC-4JUL26-55000-P",
+            "best_bid_price": 0.0001,
+            "best_ask_price": 0.0003,
+            "best_bid_amount": 38,
+            "best_ask_amount": 87.9,
+            "mark_price": 0.0002,
+            "mark_iv": 58.14,
+            "underlying_price": 60902.41
+          },
+          "askUsd": 18.270723,
+          "bidUsd": 6.090241000000001,
+          "spreadBps": 9999.999999999998,
+          "markUsd": 12.180482000000001
+        }
+      ],
+      "inBand1dCandidate": "BTC-3JUL26-55000-P",
+      "fallbackCandidate": "BTC-3JUL26-55000-P",
+      "fallbackDaysToExpiry": 1.1570509722222222
+    },
+    {
+      "slPct": 0.1,
+      "protectionType": "short",
+      "optionType": "call",
+      "triggerPrice": 66992.65100000001,
+      "triggerBandLow": 66688.13895000001,
+      "triggerBandHigh": 67297.16305000002,
+      "inBandCandidates": [
+        {
+          "instrument": "BTC-3JUL26-67000-C",
+          "strike": 67000,
+          "expiryTs": 1783065600000,
+          "daysToExpiry": 1.1570509722222222,
+          "book": {
+            "instrument_name": "BTC-3JUL26-67000-C",
+            "best_bid_price": 0,
+            "best_ask_price": 0.0001,
+            "best_bid_amount": 0,
+            "best_ask_amount": 30.4,
+            "mark_price": 0,
+            "mark_iv": 62.4,
+            "underlying_price": 60894.45
+          },
+          "askUsd": 6.089445,
+          "bidUsd": 0,
+          "spreadBps": null,
+          "markUsd": 0
+        }
+      ],
+      "inBand1dCandidate": "BTC-3JUL26-67000-C",
+      "fallbackCandidate": "BTC-3JUL26-67000-C",
+      "fallbackDaysToExpiry": 1.1570509722222222
+    }
+  ],
+  "skew": {
+    "expiryTs": 1783065600000,
+    "daysToExpiry": 1.1570509722222222,
+    "strikes": [
+      {
+        "instrument": "BTC-3JUL26-58000-P",
+        "strike": 58000,
+        "markIv": 50.16,
+        "bidUsd": 24.360372,
+        "askUsd": 36.540558
+      },
+      {
+        "instrument": "BTC-3JUL26-58500-P",
+        "strike": 58500,
+        "markIv": 47.37,
+        "bidUsd": 42.630651,
+        "askUsd": 54.810837
+      },
+      {
+        "instrument": "BTC-3JUL26-59000-P",
+        "strike": 59000,
+        "markIv": 45.1,
+        "bidUsd": 66.991023,
+        "askUsd": 91.351395
+      },
+      {
+        "instrument": "BTC-3JUL26-59500-P",
+        "strike": 59500,
+        "markIv": 42.58,
+        "bidUsd": 115.711767,
+        "askUsd": 140.072139
+      },
+      {
+        "instrument": "BTC-3JUL26-60000-P",
+        "strike": 60000,
+        "markIv": 40.41,
+        "bidUsd": 194.882976,
+        "askUsd": 219.243348
+      },
+      {
+        "instrument": "BTC-3JUL26-60500-P",
+        "strike": 60500,
+        "markIv": 38.87,
+        "bidUsd": 334.955115,
+        "askUsd": 365.40558
+      },
+      {
+        "instrument": "BTC-3JUL26-61000-P",
+        "strike": 61000,
+        "markIv": 37.2,
+        "bidUsd": 517.63266,
+        "askUsd": 608.9796
+      },
+      {
+        "instrument": "BTC-3JUL26-61500-P",
+        "strike": 61500,
+        "markIv": 36.19,
+        "bidUsd": 700.32654,
+        "askUsd": 1004.8163400000001
+      },
+      {
+        "instrument": "BTC-3JUL26-62000-P",
+        "strike": 62000,
+        "markIv": 36.1,
+        "bidUsd": 974.36736,
+        "askUsd": 1461.55104
+      },
+      {
+        "instrument": "BTC-3JUL26-63000-P",
+        "strike": 63000,
+        "markIv": 38.51,
+        "bidUsd": 1918.379295,
+        "askUsd": 2466.487665
+      },
+      {
+        "instrument": "BTC-3JUL26-64000-P",
+        "strike": 64000,
+        "markIv": 43.55,
+        "bidUsd": 2892.794175,
+        "askUsd": 3471.3530100000003
+      }
+    ]
+  },
+  "fetchErrors": [],
+  "durationMs": 1475
+}
