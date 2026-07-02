@@ -14,6 +14,7 @@ import { runLiveShadowSession, type LiveShadowConfig } from "../src/singleSide/t
 import { runForwardShadowCycle, loadSettlementAggregate } from "../src/singleSide/twoSided/creditCollar/forwardShadow";
 import { loadFoxifyView } from "../src/singleSide/twoSided/creditCollar/foxifyPerpView";
 import { loadRegimeStats } from "../src/singleSide/twoSided/creditCollar/regimeStats";
+import { loadPriceHistory, computeLiveRegimeSignal } from "../src/singleSide/twoSided/creditCollar/priceHistoryStore";
 import { appendScorecard, loadScorecards, resolveWritablePath, DEFAULT_SHADOW_STORE_PATH } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import { DEFAULT_OPEN_POSITIONS_PATH, DEFAULT_SETTLEMENT_LEDGER_PATH } from "../src/singleSide/twoSided/creditCollar/forwardSettlementStore";
 import { DEFAULT_OPENING_STATE_PATH } from "../src/singleSide/twoSided/creditCollar/openingSignalStore";
@@ -116,7 +117,9 @@ const cfg: LiveShadowConfig = {
     elevatedVolPct: num(process.env.SHADOW_REGIME_ELEVATED_VOL, 1.5),
     haltVolPct: num(process.env.SHADOW_REGIME_HALT_VOL, 3.0),
     elevatedOpenMultiplier: num(process.env.SHADOW_REGIME_ELEVATED_MULT, 0.5),
-    elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.1)
+    elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.1),
+    liveLookbackMs: num(process.env.SHADOW_REGIME_LIVE_LOOKBACK_MIN, 360) * 60_000, // leading signal window (min → ms), default 6h
+    liveMinSamples: num(process.env.SHADOW_REGIME_LIVE_MIN_SAMPLES, 4)
   },
   // Force a single hedge venue for the mirror (e.g. SHADOW_HEDGE_VENUE=okx) so skew/spreads/fees are OKX-specific.
   hedgeVenue: (["bullish", "okx", "deribit"].includes(String(process.env.SHADOW_HEDGE_VENUE)) ? (process.env.SHADOW_HEDGE_VENUE as "bullish" | "okx" | "deribit") : undefined),
@@ -204,7 +207,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, gate: cfg.regimeGate }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, gate: cfg.regimeGate, liveGaugePct: computeLiveRegimeSignal(loadPriceHistory(), Date.now(), { lookbackMs: cfg.regimeGate?.liveLookbackMs, minSamples: cfg.regimeGate?.liveMinSamples })?.gaugePct ?? null }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);

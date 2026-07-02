@@ -21,11 +21,18 @@ export type RegimeGateConfig = {
   elevatedOpenMultiplier?: number;
   /** Deeper floor (⟹ wider cap) to use when elevated/halt. Default 0.10. */
   elevatedFloorPct?: number;
+  /** Leading signal: lookback window (ms) over live oracle prices. Default 6h. */
+  liveLookbackMs?: number;
+  /** Leading signal: min live samples in the window before it's used. Default 4. */
+  liveMinSamples?: number;
 };
 
 export type RegimeGateDecision = {
   regime: "calm" | "elevated" | "halt";
-  realizedMovePct: number; // trailing avg |24h move|, in %
+  realizedMovePct: number; // the EFFECTIVE gauge used = max(trailing, live), in %
+  trailingMovePct: number; // trailing avg |24h move| from settled positions (lags ~12–24h)
+  liveMovePct: number | null; // leading gauge from live oracle prices (same-cycle), null if unavailable
+  signalSource: "trailing" | "live"; // which one drove the decision
   samples: number;
   openMultiplier: number; // scale applied to the cycle's opens (1 calm · <1 elevated · 0 halt)
   floorPctOverride: number | null; // deeper floor when elevated/halt (wider cap), else null
@@ -34,7 +41,13 @@ export type RegimeGateDecision = {
 
 const mean = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : 0);
 
-export const evaluateRegimeGate = (recentAbsMovePcts: number[], cfg: RegimeGateConfig): RegimeGateDecision => {
+/**
+ * Evaluate the gate. `recentAbsMovePcts` is the TRAILING signal (settled |24h moves|, as fractions).
+ * `liveGaugePct` is the optional LEADING gauge from live oracle prices (already in %). The gate acts on
+ * the MORE conservative (higher) of the two, so it catches a developing regime from live prices even
+ * before positions settle, and still respects the realized trailing move.
+ */
+export const evaluateRegimeGate = (recentAbsMovePcts: number[], cfg: RegimeGateConfig, liveGaugePct?: number | null): RegimeGateDecision => {
   const minSamples = cfg.minSamples ?? 10;
   const elevated = cfg.elevatedVolPct ?? 1.5;
   const halt = cfg.haltVolPct ?? 3.0;
@@ -42,16 +55,27 @@ export const evaluateRegimeGate = (recentAbsMovePcts: number[], cfg: RegimeGateC
   const elevFloor = cfg.elevatedFloorPct ?? 0.1;
 
   const samples = recentAbsMovePcts.length;
-  const volPct = +(mean(recentAbsMovePcts) * 100).toFixed(3); // moves are fractions ⟹ ×100 for %
+  const trailingPct = +(mean(recentAbsMovePcts) * 100).toFixed(3); // moves are fractions ⟹ ×100 for %
+  const live = liveGaugePct != null && Number.isFinite(liveGaugePct) ? +liveGaugePct.toFixed(3) : null;
+  const trailingUsable = samples >= minSamples; // trailing needs enough settled samples; live is usable as soon as present
 
-  if (!cfg.enabled || samples < minSamples) {
-    return { regime: "calm", realizedMovePct: volPct, samples, openMultiplier: 1, floorPctOverride: null, reason: !cfg.enabled ? "gate disabled" : `warming up (${samples}/${minSamples} samples)` };
+  // Effective gauge = max of the usable signals. Live works even before positions settle (warm-up).
+  const candidates: number[] = [];
+  if (trailingUsable) candidates.push(trailingPct);
+  if (live != null) candidates.push(live);
+  const effective = candidates.length ? Math.max(...candidates) : 0;
+  const source: "trailing" | "live" = live != null && effective === live ? "live" : "trailing";
+  const base = { realizedMovePct: effective, trailingMovePct: trailingPct, liveMovePct: live, signalSource: source, samples };
+
+  if (!cfg.enabled || candidates.length === 0) {
+    return { ...base, regime: "calm", openMultiplier: 1, floorPctOverride: null, reason: !cfg.enabled ? "gate disabled" : `warming up (trailing ${samples}/${minSamples}, no live signal yet)` };
   }
-  if (volPct >= halt) {
-    return { regime: "halt", realizedMovePct: volPct, samples, openMultiplier: 0, floorPctOverride: elevFloor, reason: `avg |24h move| ${volPct}% ≥ halt ${halt}% — pause new opens (sit out the trend)` };
+  const src = `${source} avg |move| ${effective}%`;
+  if (effective >= halt) {
+    return { ...base, regime: "halt", openMultiplier: 0, floorPctOverride: elevFloor, reason: `${src} ≥ halt ${halt}% — pause new opens (sit out the trend)` };
   }
-  if (volPct >= elevated) {
-    return { regime: "elevated", realizedMovePct: volPct, samples, openMultiplier: elevMult, floorPctOverride: elevFloor, reason: `avg |24h move| ${volPct}% ≥ elevated ${elevated}% — widen cap (floor ${elevFloor}) + throttle opens ×${elevMult}` };
+  if (effective >= elevated) {
+    return { ...base, regime: "elevated", openMultiplier: elevMult, floorPctOverride: elevFloor, reason: `${src} ≥ elevated ${elevated}% — widen cap (floor ${elevFloor}) + throttle opens ×${elevMult}` };
   }
-  return { regime: "calm", realizedMovePct: volPct, samples, openMultiplier: 1, floorPctOverride: null, reason: `avg |24h move| ${volPct}% < elevated ${elevated}% — open normally, harvest credit` };
+  return { ...base, regime: "calm", openMultiplier: 1, floorPctOverride: null, reason: `${src} < elevated ${elevated}% — open normally, harvest credit` };
 };

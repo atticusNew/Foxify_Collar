@@ -16,6 +16,7 @@ import { settleMatured, aggregateSettlements, type OpenPosition, type Settlement
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
 import { computeOpensThisCycle, loadOpeningState, saveOpeningState } from "./openingSignalStore";
 import { evaluateRegimeGate, type RegimeGateDecision } from "./regimeGate";
+import { appendPriceObs, loadPriceHistory, computeLiveRegimeSignal } from "./priceHistoryStore";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
@@ -55,7 +56,7 @@ export type ForwardCycleConfig = LiveShadowConfig & {
 
 export const runForwardShadowCycle = async (
   cfg: ForwardCycleConfig,
-  paths: { openPath?: string; ledgerPath?: string; openingStatePath?: string } = {}
+  paths: { openPath?: string; ledgerPath?: string; openingStatePath?: string; priceHistoryPath?: string } = {}
 ): Promise<ForwardCycleResult> => {
   const built = await buildLiveShadowInputs(cfg);
   if (!built.ok) return { ok: false, error: built.error, message: built.message };
@@ -71,10 +72,17 @@ export const runForwardShadowCycle = async (
   // 2) Regime gate: gauge the trailing 24h move magnitude and, if elevated, widen the cap (deeper floor)
   //    + throttle opens; if extreme, pause. Sits the short-vol book out of the bleed regimes.
   let regimeGate: RegimeGateDecision | undefined;
+  // Record the current oracle price for the LEADING signal (updates every cycle, ~15 min).
+  const oraclePriceUsd = oracle.snapshot.priceUsd ?? spot;
+  if (cfg.regimeGate?.enabled) appendPriceObs({ tsMs: now, priceUsd: oraclePriceUsd }, paths.priceHistoryPath);
   if (cfg.regimeGate?.enabled) {
     const lookback = cfg.regimeGate.lookback ?? 40;
     const recentAbs = loadSettlements(paths.ledgerPath).slice(-lookback).map((o) => Math.abs(o.movePct));
-    regimeGate = evaluateRegimeGate(recentAbs, cfg.regimeGate);
+    const live = computeLiveRegimeSignal(loadPriceHistory(paths.priceHistoryPath), now, {
+      lookbackMs: cfg.regimeGate.liveLookbackMs,
+      minSamples: cfg.regimeGate.liveMinSamples
+    });
+    regimeGate = evaluateRegimeGate(recentAbs, cfg.regimeGate, live?.gaugePct ?? null);
     if (regimeGate.floorPctOverride != null) scaffoldConfig.maxFloorPct = regimeGate.floorPctOverride;
   }
 
