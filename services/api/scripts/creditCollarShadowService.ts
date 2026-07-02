@@ -107,6 +107,17 @@ const cfg: LiveShadowConfig = {
   // Partner-like opening signal: positions/day, staggered (delta-neutral over time). Set 2 to shadow the
   // actual first pilot. Unset (0) ⟹ legacy fixed batch of SHADOW_N_POSITIONS per cycle (scaled stress mode).
   dailyPositions: num(process.env.SHADOW_DAILY_POSITIONS, 0) || undefined,
+  // Regime-aware opening gate: widen the cap + throttle when the trailing avg |24h move| is elevated; pause
+  // when extreme. Lets the short-vol book sit out trend/high-vol regimes. On by default; tune the thresholds.
+  regimeGate: {
+    enabled: String(process.env.SHADOW_REGIME_GATE ?? "true").toLowerCase() !== "false",
+    lookback: num(process.env.SHADOW_REGIME_LOOKBACK, 40),
+    minSamples: num(process.env.SHADOW_REGIME_MIN_SAMPLES, 10),
+    elevatedVolPct: num(process.env.SHADOW_REGIME_ELEVATED_VOL, 1.5),
+    haltVolPct: num(process.env.SHADOW_REGIME_HALT_VOL, 3.0),
+    elevatedOpenMultiplier: num(process.env.SHADOW_REGIME_ELEVATED_MULT, 0.5),
+    elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.1)
+  },
   // Force a single hedge venue for the mirror (e.g. SHADOW_HEDGE_VENUE=okx) so skew/spreads/fees are OKX-specific.
   hedgeVenue: (["bullish", "okx", "deribit"].includes(String(process.env.SHADOW_HEDGE_VENUE)) ? (process.env.SHADOW_HEDGE_VENUE as "bullish" | "okx" | "deribit") : undefined),
   adaptiveFloor: {
@@ -156,7 +167,8 @@ const runCycle = async () => {
         status.lastError = null;
         const lc = res.lifecycle;
         latestLifecycle = lc;
-        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}`);
+        const rg = res.regimeGate ? ` | regime=${res.regimeGate.regime}(${res.regimeGate.realizedMovePct}%)` : "";
+        console.error(`[shadow-svc] cycle ${status.cyclesRun}: opened=${res.openingScorecard.opened}/${res.openingScorecard.attempted} settled=${res.settledThisCycle} payout=$${res.settledPayoutThisCycleUsdc} openBook=${res.openBookSize} deferred=${res.deferred} verified=${res.oracleVerified}${rg} | basis=${lc.basisBps}bps vest=${lc.vestProgressPct}% collat=$${lc.collateralAvailableUsdc}${lc.collateralHalted ? " HALT" : ""}`);
       } else {
         status.lastRunOk = false;
         status.lastError = `${res.error}: ${res.message}`;
@@ -192,7 +204,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, gate: cfg.regimeGate }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);

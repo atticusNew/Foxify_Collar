@@ -15,6 +15,7 @@ import type { ShadowScorecard } from "./shadowRunner";
 import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
 import { computeOpensThisCycle, loadOpeningState, saveOpeningState } from "./openingSignalStore";
+import { evaluateRegimeGate, type RegimeGateDecision } from "./regimeGate";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
@@ -30,6 +31,7 @@ export type ForwardCycleResult =
       settlePriceUsd: number | null;
       oracleVerified: boolean;
       lifecycle: ShadowLifecycleReport;
+      regimeGate?: RegimeGateDecision;
       meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] };
     }
   | { ok: false; error: string; message: string };
@@ -66,7 +68,17 @@ export const runForwardShadowCycle = async (
   appendSettlements(settled, paths.ledgerPath);
   const settledPayout = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
 
-  // 2) Open a new steered batch (settlement DEFERRED to expiry).
+  // 2) Regime gate: gauge the trailing 24h move magnitude and, if elevated, widen the cap (deeper floor)
+  //    + throttle opens; if extreme, pause. Sits the short-vol book out of the bleed regimes.
+  let regimeGate: RegimeGateDecision | undefined;
+  if (cfg.regimeGate?.enabled) {
+    const lookback = cfg.regimeGate.lookback ?? 40;
+    const recentAbs = loadSettlements(paths.ledgerPath).slice(-lookback).map((o) => Math.abs(o.movePct));
+    regimeGate = evaluateRegimeGate(recentAbs, cfg.regimeGate);
+    if (regimeGate.floorPctOverride != null) scaffoldConfig.maxFloorPct = regimeGate.floorPctOverride;
+  }
+
+  // Open a new steered batch (settlement DEFERRED to expiry).
   const scaffold = new CreditCollarActivationScaffold(scaffoldConfig, skew);
   const band = scaffoldConfig.policy.targetNetBandPct;
   const minGross = scaffoldConfig.breaker.minGrossNotionalUsd ?? 0;
@@ -91,8 +103,10 @@ export const runForwardShadowCycle = async (
     const prevState = loadOpeningState(paths.openingStatePath);
     const step = computeOpensThisCycle(prevState, now, cfg.dailyPositions as number);
     nToOpen = step.nToOpen;
-    saveOpeningState(step.next, paths.openingStatePath);
+    saveOpeningState(step.next, paths.openingStatePath); // advance the clock even if the gate throttles, so no backlog dumps
   }
+  // Apply the regime gate's throttle (halt ⟹ 0, elevated ⟹ scaled down).
+  if (regimeGate) nToOpen = Math.max(0, Math.round(nToOpen * regimeGate.openMultiplier));
 
   for (let i = 0; i < nToOpen; i++) {
     const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
@@ -196,11 +210,12 @@ export const runForwardShadowCycle = async (
     // correctly DECLINED because the oracle wasn't safe for activation (fail-closed is correct, not a
     // failure). Only an unverified oracle, or oracle-safe-but-zero-opens (a real pricing/breaker
     // signal), counts as incomplete.
-    // In signal mode a cycle with nothing DUE (nToOpen === 0) is correct behavior, not a failure.
-    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation || (signalMode && nToOpen === 0)),
+    // A cycle with nothing DUE (signal) or paused by the regime gate (nToOpen === 0) is correct, not a failure.
+    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation || nToOpen === 0),
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
       signalMode ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle.` : "",
+      regimeGate ? `Regime gate: ${regimeGate.regime} (${regimeGate.reason}).` : "",
       newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
     ].filter(Boolean)
   };
@@ -215,6 +230,7 @@ export const runForwardShadowCycle = async (
     settlePriceUsd,
     oracleVerified,
     lifecycle,
+    regimeGate,
     meta
   };
 };

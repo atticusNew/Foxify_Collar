@@ -221,6 +221,11 @@ export type LiveShadowConfig = {
    * behavior (`nPositions` per cycle) is used.
    */
   dailyPositions?: number;
+  /**
+   * Regime-aware opening gate: when the trailing avg |24h move| is elevated (trend/high-vol), widen the cap
+   * (deeper floor) and throttle opens; when extreme, pause. Lets the short-vol book sit out the bleed regimes.
+   */
+  regimeGate?: import("./regimeGate").RegimeGateConfig;
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
   /**

@@ -9,6 +9,7 @@
 import type { SettlementOutcome } from "./forwardSettlement";
 import { loadSettlements } from "./forwardSettlementStore";
 import { perpPnlUsdc } from "./foxifyPerpView";
+import { evaluateRegimeGate, type RegimeGateConfig, type RegimeGateDecision } from "./regimeGate";
 
 const r2 = (x: number) => +x.toFixed(2);
 const r4 = (x: number) => +x.toFixed(4);
@@ -49,10 +50,11 @@ export type RegimeStats = {
   cumulativeFeesUsdc: number;
   cumulativeNetUsdc: number;
   creditClearsBleed: boolean; // cumulative net ≥ 0
+  gate: RegimeGateDecision | null; // current regime-gate action (null if no gate config supplied)
   recentDays: RegimeDay[];
 };
 
-export type RegimeConfig = { perpFeeUsdc?: number; recentDays?: number };
+export type RegimeConfig = { perpFeeUsdc?: number; recentDays?: number; gate?: RegimeGateConfig };
 
 export const buildRegimeStats = (outcomes: SettlementOutcome[], cfg: RegimeConfig = {}): RegimeStats => {
   const fee = cfg.perpFeeUsdc != null && cfg.perpFeeUsdc >= 0 ? cfg.perpFeeUsdc : 80;
@@ -113,6 +115,7 @@ export const buildRegimeStats = (outcomes: SettlementOutcome[], cfg: RegimeConfi
     cumulativeFeesUsdc: r2(cumFees),
     cumulativeNetUsdc: r2(cumNet),
     creditClearsBleed: cumNet >= 0,
+    gate: cfg.gate ? evaluateRegimeGate(outcomes.slice(-(cfg.gate.lookback ?? 40)).map((o) => Math.abs(o.movePct)), cfg.gate) : null,
     recentDays: days.slice(0, nRecent)
   };
 };
