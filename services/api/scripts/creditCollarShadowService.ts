@@ -163,8 +163,10 @@ const runCycle = async () => {
         lifecycle: {
           fullTenorMs: cfg.tenorDays * 86_400_000,
           basisMaxBps: num(process.env.SHADOW_BASIS_MAX_BPS, 25),
-          initialCollateralUsdc: num(process.env.SHADOW_COLLATERAL_USDC, 250_000),
-          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 25_000)
+          // Pilot-accurate defaults: Foxify posts $5k for the 2×$50k/day pilot (halt if the buffer drops
+          // below $500). Override via env for scaled runs (e.g. 250k/25k for the 1k/day book).
+          initialCollateralUsdc: num(process.env.SHADOW_COLLATERAL_USDC, 5_000),
+          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 500)
         }
       });
       if (res.ok) {
