@@ -128,9 +128,12 @@ export type AtticusSpreadConfig = {
    *     minOperationFeeUsdc) billed to Foxify — surfaced in economics, NOT embedded in the strikes.
    */
   pricingModel?: "embedded_spread" | "pass_through";
-  /** pass_through only: operation fee in bps of notional, billed separately. Default 2 bps. */
+  /**
+   * pass_through only: operation fee in bps of notional, billed separately. Default 0 — Atticus's fee is
+   * negotiated separately on volume and deliberately NOT modeled in platform economics.
+   */
   operationFeeBps?: number;
-  /** pass_through only: operation fee floor in USDC/position. Default 10. */
+  /** pass_through only: operation fee floor in USDC/position. Default 0 (see operationFeeBps). */
   minOperationFeeUsdc?: number;
   /**
    * CREDIT-TARGET MODE (pass_through). Ceiling on the credit actually handed to Foxify (USDC). Foxify only
@@ -310,8 +313,8 @@ export const solveAndPriceCreditCollar = (
   const absHalf = config.absHalfSpreadUsdcPerBtc != null && config.absHalfSpreadUsdcPerBtc >= 0 ? config.absHalfSpreadUsdcPerBtc : 1.5;
   const pricingModel: "embedded_spread" | "pass_through" = config.pricingModel === "pass_through" ? "pass_through" : "embedded_spread";
   const feeMode: FeeVenueMode = config.feeMode ?? "clob_taker";
-  const operationFeeBps = config.operationFeeBps != null && config.operationFeeBps >= 0 ? config.operationFeeBps : 2;
-  const minOperationFeeUsdc = config.minOperationFeeUsdc != null && config.minOperationFeeUsdc >= 0 ? config.minOperationFeeUsdc : 10;
+  const operationFeeBps = config.operationFeeBps != null && config.operationFeeBps >= 0 ? config.operationFeeBps : 0;
+  const minOperationFeeUsdc = config.minOperationFeeUsdc != null && config.minOperationFeeUsdc >= 0 ? config.minOperationFeeUsdc : 0;
   const maxFoxifyCreditUsdc = config.maxFoxifyCreditUsdc != null && config.maxFoxifyCreditUsdc > 0 ? config.maxFoxifyCreditUsdc : Infinity;
   const minCapSigmaMult = config.minCapSigmaMult != null && config.minCapSigmaMult > 0 ? config.minCapSigmaMult : 0;
   const maxRetainedNetOfFeesUsdc = config.maxRetainedNetOfFeesUsdc != null && config.maxRetainedNetOfFeesUsdc >= 0 ? config.maxRetainedNetOfFeesUsdc : Infinity;
@@ -624,7 +627,7 @@ export const solveAndPriceCreditCollar = (
       "EV-neutral: Foxify market-implied EV = −Atticus margin (≤ −required). Positive Foxify EV is rejected.",
       "Credit is accrued + netted at settlement, NOT paid upfront — removes free-option exposure + financing drag.",
       pricingModel === "pass_through"
-        ? `pass_through: collar funds credit + Bullish fee (${feeMode}, open ${round2(fees.openFeeUsdc)}) ⟹ collar nets ~${round2(atticusMarginNetOfFeesUsdc)}; profit is the SEPARATE operation fee ${round2(operationFeeUsdc)}.`
+        ? `pass_through: collar funds credit + venue fee (${feeMode}, open ${round2(fees.openFeeUsdc)}) ⟹ collar nets ~${round2(atticusMarginNetOfFeesUsdc)}; Atticus's fee is ${operationFeeUsdc > 0 ? `the SEPARATE operation fee ${round2(operationFeeUsdc)}` : "negotiated separately on volume (NOT modeled in platform economics)"}.`
         : `embedded_spread: Atticus margin ${round2(atticusMarginUsdc)} net of Bullish fee (${feeMode}, ${round2(fees.openFeeUsdc)}) = ${round2(atticusMarginNetOfFeesUsdc)} per position.`,
       ...(creditFloated
         ? [`σ-floor: target credit not fundable with the cap ≥ ${minCapSigmaMult}σ (${round4(sigmaTenorPct)} tenor-σ) — cap held at the σ-floor and credit FLOATED DOWN to ${round2(foxifyCreditUsdc)} (partial coverage; judge coverage monthly, not per-trade).`]

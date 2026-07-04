@@ -89,8 +89,10 @@ const isDirectional = ["long", "short", "trend"].includes(String(process.env.SHA
 const cfg: LiveShadowConfig = {
   positionNotionalUsdc: num(process.env.SHADOW_POSITION_USDC, 50_000),
   feeUsdc: num(process.env.HARNESS_FEE_USDC, 80), // Foxify's stated per-trade need ($80) = the credit TARGET
-  serviceFeeBps: num(process.env.HARNESS_SERVICE_FEE_BPS, 2),
-  minServiceFeeUsdc: num(process.env.HARNESS_MIN_SERVICE_FEE_USDC, 10),
+  // Atticus's fee is NEGOTIATED SEPARATELY on volume and is deliberately NOT modeled in platform economics
+  // (a hardcoded number would distort the "collar nets to ~0" proof and anchor the negotiation). Default 0.
+  serviceFeeBps: num(process.env.HARNESS_SERVICE_FEE_BPS, 0),
+  minServiceFeeUsdc: num(process.env.HARNESS_MIN_SERVICE_FEE_USDC, 0),
   tenorDays: num(process.env.HARNESS_TENOR_DAYS, 1),
   maxFloorPct: num(process.env.HARNESS_MAX_FLOOR_PCT, 0.06), // deeper floor ⟹ cheaper put ⟹ WIDER cap for the same $80 (sweep: cap 1.67%→2.08%/2.92%, breaches 24%→17%)
   nPositions: num(process.env.SHADOW_N_POSITIONS, 20),

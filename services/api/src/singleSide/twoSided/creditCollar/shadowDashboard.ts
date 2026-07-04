@@ -177,7 +177,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Lifecycle complete", pct(a.lifecycleCompleteRate), "")}
     ${card("Peak exposure", `${(a.exposure.maxPeakNetExposureRatio * 100).toFixed(1)}%`, `avg ${(a.exposure.avgPeakNetExposureRatio * 100).toFixed(1)}%`)}
     ${card("Floor used", `${(a.floor.avgFloorPctUsed * 100).toFixed(1)}%`, `max ${(a.floor.maxFloorPctUsed * 100).toFixed(1)}% (deeper = calmer regime)`)}
-    ${card("Realized fee", `${a.economics.realizedServiceFeeBps} bps`, `$${a.economics.totalServiceFeeUsdc} on $${a.economics.openedNotionalUsdc}`)}
+    ${card("Realized fee", `${a.economics.realizedServiceFeeBps} bps`, a.economics.totalServiceFeeUsdc > 0 ? `$${a.economics.totalServiceFeeUsdc} on $${a.economics.openedNotionalUsdc}` : "Atticus fee negotiated separately — not modeled")}
     ${card("Capital-aware net", `${a.capital.capitalAwareNetServiceFeeBps} bps`, `−${a.capital.capitalCostBps} bps IM drag (measured ${(a.capital.shortOptionImFraction * 100).toFixed(1)}%/notional, PM ${a.capital.portfolioMarginNettingFactor})`)}
     ${card("Credit accrued", `$${a.economics.totalCreditAccruedUsdc}`, `net to Foxify $${a.economics.totalNetToFoxifyUsdc}`)}
   </div>
@@ -189,7 +189,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Atticus option net (hedged)", `$${m.settlement.totalAtticusOptionNetUsdc}`, `${m.settlement.bookHedgedNetBps} bps — back-to-back hedge receipt nets the Foxify payout ⟹ ~0`)}
     ${card("Book payout (un-hedged view)", `${m.settlement.bookNetPayoutBps} bps`, `$${m.settlement.totalPayoutToFoxifyUsdc} Foxify-facing only — swings at real tenor; not Atticus risk`)}
     ${card("Floor paid", pct(m.settlement.pctFloorBreached), `cap hit ${pct(m.settlement.pctCapBreached)}`)}
-    ${card("Realized fee", `$${m.settlement.totalServiceFeeUsdc}`, `${m.settlement.realizedServiceFeeBps} bps gross`)}
+    ${card("Realized fee", `$${m.settlement.totalServiceFeeUsdc}`, m.settlement.totalServiceFeeUsdc > 0 ? `${m.settlement.realizedServiceFeeBps} bps gross` : "Atticus fee negotiated separately — not modeled")}
     ${card("Option fees (Bullish)", `$${m.settlement.totalOptionFeesUsdc}`, `net after fees+capital $${m.settlement.totalAtticusNetAfterFeesAndCapitalUsdc} (${m.settlement.netAfterFeesAndCapitalBps} bps)`)}
     ${card("Net after capital", `$${m.settlement.totalAtticusNetAfterCapitalUsdc}`, `${m.settlement.capitalAwareNetServiceFeeBps} bps · −$${m.settlement.totalCapitalCostUsdc} IM cost · peak IM $${m.settlement.peakShortLegMarginUsdc}`)}
     ${card("Net to Foxify", `$${m.settlement.totalNetToFoxifyUsdc}`, `credit $${m.settlement.totalCreditAccruedUsdc} + payout`)}
@@ -299,7 +299,7 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
   <p class="muted" style="margin:2px 0 0">${esc(reconcile)}</p>
   <h2>Atticus — what it pays, passes through, and keeps</h2>
   <div class="grid">
-    ${card("Atticus KEEPS — profit (ops fee)", money(atticusKeep), `${s.netAfterFeesAndCapitalBps} bps · the separate operation fee, net of costs`, "#16794a")}
+    ${card("Atticus collar net", money(atticusKeep), `${s.netAfterFeesAndCapitalBps} bps · should be ~0 (flat by design) · Atticus's fee is negotiated separately on volume, NOT modeled here`, Math.abs(atticusKeep) < 1000 ? "#16794a" : "#9a6b00")}
     ${card("Atticus PAYS — venue option fees", money(venueFees), `${per(venueFees)} · funded by the collar, not Atticus's pocket`)}
     ${card("Atticus PASSES THROUGH — collar", `${money(paysOut)} ⟷ ${money(hedgeBack)}`, "collar owed ⟷ identical hedge pays it back")}
     ${card("Atticus FLAT?", s.bookHedgedNetBps === 0 ? "YES — 0 bps" : `${s.bookHedgedNetBps} bps`, "hedge nets the collar payout to zero ⟹ no market risk", s.bookHedgedNetBps === 0 ? "#16794a" : "#9a1b1b")}
@@ -317,7 +317,7 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
     <div class="s" style="font-size:13px;line-height:1.6">
       • <b>Foxify math (3 parts):</b> keeps = credit collected − collar forfeited − perp fees. All three matter — the fees are the line people forget.<br>
       • <b>Regime:</b> in calm tape the caps rarely breach, so forfeits are small and Foxify nets positive; in a sustained trend the caps breach often and the forfeits can exceed the net credit — that's a short-volatility trade, not free money.<br>
-      • <b>Atticus</b> takes no market risk: whatever the collar owes, the identical hedge pays back (net $0). Atticus's profit is the separate ops fee, in every regime.
+      • <b>Atticus</b> takes no market risk: whatever the collar owes, the identical hedge pays back (net $0). Atticus's fee is negotiated separately on volume and deliberately NOT modeled in these economics.
     </div>
   </div>`;
         })();
