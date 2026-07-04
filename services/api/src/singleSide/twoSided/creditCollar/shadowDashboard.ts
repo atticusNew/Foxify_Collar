@@ -225,7 +225,8 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card(`Credit clears bleed? ${m.regime.creditClearsBleed ? "YES" : "NO"}`, money(m.regime.cumulativeNetUsdc), `net = credit ${money(m.regime.cumulativeCreditUsdc)} + collar ${money(m.regime.cumulativeCollarUsdc)} − fees ${money(m.regime.cumulativeFeesUsdc)}`)}
     ${card("Avg day (Foxify net)", money(m.regime.avgDayNetUsdc), `${pct(m.regime.pctDaysPositive)} of days positive · ${m.regime.days} days`)}
     ${card("Day spread (smoothing)", `±${money(m.regime.dayNetStdUsdc)}`, `best ${money(m.regime.bestDayNetUsdc)} · worst ${money(m.regime.worstDayNetUsdc)} — staggering shrinks this`)}
-    ${m.regime.gate ? card(`Regime gate: ${m.regime.gate.regime.toUpperCase()}`, m.regime.gate.regime === "calm" ? "open normally" : m.regime.gate.regime === "elevated" ? `throttle ×${m.regime.gate.openMultiplier} + wider cap` : "PAUSE opens", m.regime.gate.reason) : ""}
+    ${m.regime.gate ? card(`Regime gate: ${m.regime.gate.regime.toUpperCase()}`, m.regime.gate.regime === "calm" ? "open normally" : m.regime.gate.regime === "elevated" ? (m.regime.gate.openMultiplier === 0 ? "PAUSE (calm-only policy)" : `throttle ×${m.regime.gate.openMultiplier} + wider cap`) : "PAUSE opens", m.regime.gate.reason) : ""}
+    ${m.regime.signal ? card("Signal hit-rate (day-level)", `${(m.regime.signal.dayHitRate * 100).toFixed(0)}% over ${m.regime.signal.days}d`, `P(edge>BE ${(m.regime.signal.breakevenUsed * 100).toFixed(0)}%) = ${(m.regime.signal.pAboveBreakeven * 100).toFixed(0)}% · 95% CI ${(m.regime.signal.ci95[0] * 100).toFixed(0)}–${(m.regime.signal.ci95[1] * 100).toFixed(0)}% — measures, not validates (~600d to separate 55% from BE)`) : ""}
   </div>
   <table><thead><tr><th>day</th><th>positions</th><th>realized vol</th><th>avg move</th><th>credit</th><th>collar</th><th>Foxify net</th></tr></thead><tbody>${
           m.regime.recentDays

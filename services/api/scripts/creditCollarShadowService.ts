@@ -80,6 +80,12 @@ const capitalConfig = {
   tenorDays: num(process.env.HARNESS_TENOR_DAYS, 1)
 };
 
+// CALM-ONLY NEUTRAL POLICY (historical validation: the neutral both-sides book is reliably profitable ONLY
+// when avg |24h move| < ~1.2%/day; in 2 years it never had a winning fortnight at credit=fee outside calm).
+// Neutral mode therefore gates at 1.2% and PAUSES when not calm (no half-speed into a losing regime).
+// Directional mode keeps the wider 1.5% / throttle-×0.5 behavior (its regime economics differ).
+const isDirectional = ["long", "short", "trend"].includes(String(process.env.SHADOW_DIRECTIONAL_BIAS));
+
 const cfg: LiveShadowConfig = {
   positionNotionalUsdc: num(process.env.SHADOW_POSITION_USDC, 50_000),
   feeUsdc: num(process.env.HARNESS_FEE_USDC, 80), // Foxify's stated per-trade need ($80) = the credit TARGET
@@ -124,9 +130,11 @@ const cfg: LiveShadowConfig = {
     enabled: String(process.env.SHADOW_REGIME_GATE ?? "true").toLowerCase() !== "false",
     lookback: num(process.env.SHADOW_REGIME_LOOKBACK, 40),
     minSamples: num(process.env.SHADOW_REGIME_MIN_SAMPLES, 10),
-    elevatedVolPct: num(process.env.SHADOW_REGIME_ELEVATED_VOL, 1.5),
+    // Calm-only for the neutral book: calm line at 1.2% (the historically profitable bucket) and PAUSE
+    // (×0) when not calm. Directional keeps 1.5% / ×0.5.
+    elevatedVolPct: num(process.env.SHADOW_REGIME_ELEVATED_VOL, isDirectional ? 1.5 : 1.2),
     haltVolPct: num(process.env.SHADOW_REGIME_HALT_VOL, 3.0),
-    elevatedOpenMultiplier: num(process.env.SHADOW_REGIME_ELEVATED_MULT, 0.5),
+    elevatedOpenMultiplier: num(process.env.SHADOW_REGIME_ELEVATED_MULT, isDirectional ? 0.5 : 0),
     elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.1),
     liveLookbackMs: num(process.env.SHADOW_REGIME_LIVE_LOOKBACK_MIN, 360) * 60_000, // leading signal window (min → ms), default 6h
     liveMinSamples: num(process.env.SHADOW_REGIME_LIVE_MIN_SAMPLES, 4)

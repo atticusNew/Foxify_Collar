@@ -61,4 +61,27 @@ test("empty ledger is safe", () => {
   assert.equal(r.days, 0);
   assert.equal(r.realizedDailyVolPct, 0);
   assert.equal(r.recentDays.length, 0);
+  assert.equal(r.signal, null);
+});
+
+test("signal: day-level hit-rate with Bayesian posterior (same-day positions = one observation)", () => {
+  const d = (n: number) => Date.parse("2026-07-01T12:00:00Z") + n * DAY;
+  // 3 days: day0 two longs on an up-move (correct), day1 one short on an up-move (wrong),
+  // day2 one long + one short (perfect split ⟹ no directional info, skipped).
+  const r = buildRegimeStats([
+    oc({ ref: "a", side: "long", settledAtMs: d(0), movePct: 0.01 }),
+    oc({ ref: "b", side: "long", settledAtMs: d(0), movePct: 0.01 }),
+    oc({ ref: "c", side: "short", settledAtMs: d(1), movePct: 0.02 }),
+    oc({ ref: "d", side: "long", settledAtMs: d(2), movePct: 0.01 }),
+    oc({ ref: "e", side: "short", settledAtMs: d(2), movePct: 0.01 })
+  ]);
+  assert.ok(r.signal, "signal block present");
+  const s = r.signal!;
+  assert.equal(s.days, 2, "split day excluded; 2 informative days");
+  assert.equal(s.correctDays, 1);
+  assert.equal(s.dayHitRate, 0.5);
+  // Beta(2,2) posterior: mean 0.5, wide CI at N=2, and P(p > 0.52) < wide-but-sane bounds.
+  assert.ok(Math.abs(s.posteriorMean - 0.5) < 1e-9);
+  assert.ok(s.pAboveBreakeven > 0.2 && s.pAboveBreakeven < 0.8, `tiny sample ⟹ wide posterior (got ${s.pAboveBreakeven})`);
+  assert.ok(s.ci95[0] < 0.2 && s.ci95[1] > 0.8, "95% CI is honest about N=2");
 });

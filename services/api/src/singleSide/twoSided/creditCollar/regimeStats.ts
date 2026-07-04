@@ -51,10 +51,70 @@ export type RegimeStats = {
   cumulativeNetUsdc: number;
   creditClearsBleed: boolean; // cumulative net ≥ 0
   gate: RegimeGateDecision | null; // current regime-gate action (null if no gate config supplied)
+  /**
+   * Directional-signal measurement (day-level — same-day positions share one market outcome, so the
+   * independent unit is the DAY, not the trade). Bayesian Beta(1,1) posterior on the day-level hit rate;
+   * pAboveBreakeven = P(hit rate > breakeven) — the number the throttle rule acts on. NOTE the power
+   * reality: ~600 independent days separate 55% from breakeven at 95% confidence; a 2-week pilot gives
+   * ±26pts. This block MEASURES, it does not "validate".
+   */
+  signal: {
+    days: number;
+    correctDays: number;
+    dayHitRate: number;
+    posteriorMean: number;
+    breakevenUsed: number;
+    pAboveBreakeven: number;
+    ci95: [number, number];
+  } | null;
   recentDays: RegimeDay[];
 };
 
-export type RegimeConfig = { perpFeeUsdc?: number; recentDays?: number; gate?: RegimeGateConfig; liveGaugePct?: number | null };
+export type RegimeConfig = {
+  perpFeeUsdc?: number;
+  recentDays?: number;
+  gate?: RegimeGateConfig;
+  liveGaugePct?: number | null;
+  /** Breakeven hit-rate the signal must clear (from the historical table; ~0.52 normal tape). Default 0.52. */
+  signalBreakevenPct?: number;
+};
+
+// Beta(a,b) posterior utilities (numeric; small and dependency-free).
+const betaPdf = (x: number, a: number, b: number): number => {
+  if (x <= 0 || x >= 1) return 0;
+  // log-space to avoid overflow for larger a,b
+  const logB = lgamma(a) + lgamma(b) - lgamma(a + b);
+  return Math.exp((a - 1) * Math.log(x) + (b - 1) * Math.log(1 - x) - logB);
+};
+const lgamma = (z: number): number => {
+  // Lanczos approximation
+  const g = [676.5203681218851, -1259.1392167224028, 771.32342877765313, -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+  if (z < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * z)) - lgamma(1 - z);
+  z -= 1;
+  let x = 0.99999999999980993;
+  for (let i = 0; i < g.length; i++) x += g[i] / (z + i + 1);
+  const t = z + g.length - 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
+};
+const betaTailProb = (threshold: number, a: number, b: number): number => {
+  // P(X > threshold) by Simpson integration over [threshold, 1]
+  const n = 400;
+  const h = (1 - threshold) / n;
+  if (h <= 0) return 0;
+  let s = betaPdf(threshold, a, b) + betaPdf(1, a, b);
+  for (let i = 1; i < n; i++) s += betaPdf(threshold + i * h, a, b) * (i % 2 ? 4 : 2);
+  return Math.min(1, Math.max(0, (s * h) / 3));
+};
+const betaQuantile = (q: number, a: number, b: number): number => {
+  // bisection on the CDF (1 − tail)
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (1 - betaTailProb(mid, a, b) < q) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
+};
 
 export const buildRegimeStats = (outcomes: SettlementOutcome[], cfg: RegimeConfig = {}): RegimeStats => {
   const fee = cfg.perpFeeUsdc != null && cfg.perpFeeUsdc >= 0 ? cfg.perpFeeUsdc : 80;
@@ -116,6 +176,32 @@ export const buildRegimeStats = (outcomes: SettlementOutcome[], cfg: RegimeConfi
     cumulativeNetUsdc: r2(cumNet),
     creditClearsBleed: cumNet >= 0,
     gate: cfg.gate ? evaluateRegimeGate(outcomes.slice(-(cfg.gate.lookback ?? 40)).map((o) => Math.abs(o.movePct)), cfg.gate, cfg.liveGaugePct ?? null) : null,
+    signal: (() => {
+      // Day-level hit rate: a day is "correct" if the majority of its settled positions sat on the winning
+      // side of that day's move. (Same-day positions share the outcome ⟹ one observation per day.)
+      let correct = 0;
+      let counted = 0;
+      for (const [, os] of byDay) {
+        const decided = os.filter((o) => o.movePct !== 0);
+        if (!decided.length) continue;
+        const hits = decided.filter((o) => (o.side === "long") === (o.movePct > 0)).length;
+        if (hits * 2 === decided.length) continue; // perfectly split (neutral pairs) — no directional info
+        counted += 1;
+        if (hits * 2 > decided.length) correct += 1;
+      }
+      if (counted === 0) return null;
+      const a = 1 + correct, b = 1 + (counted - correct);
+      const be = cfg.signalBreakevenPct ?? 0.52;
+      return {
+        days: counted,
+        correctDays: correct,
+        dayHitRate: +(correct / counted).toFixed(4),
+        posteriorMean: +(a / (a + b)).toFixed(4),
+        breakevenUsed: be,
+        pAboveBreakeven: +betaTailProb(be, a, b).toFixed(4),
+        ci95: [+betaQuantile(0.025, a, b).toFixed(4), +betaQuantile(0.975, a, b).toFixed(4)] as [number, number]
+      };
+    })(),
     recentDays: days.slice(0, nRecent)
   };
 };
