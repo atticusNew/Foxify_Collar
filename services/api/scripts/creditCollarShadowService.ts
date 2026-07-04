@@ -104,12 +104,14 @@ const cfg: LiveShadowConfig = {
   // breaches), and the credit ceiling hands Foxify ~the target rather than passing discrete-strike overshoot
   // through as extra credit funded by an over-tight cap. Bounded overshoot above the ceiling → Atticus margin.
   strikeGridUsdc: num(process.env.HARNESS_STRIKE_GRID_USDC, 250),
-  maxFoxifyCreditUsdc: num(process.env.HARNESS_MAX_CREDIT_USDC, 80), // deliver EXACTLY the $80 target; overshoot → Atticus, not over-credit
-  // σ-floor on the cap: never compress the cap inside 1.1× tenor-σ to manufacture credit — in calm tape the
-  // credit FLOATS DOWN instead (partial coverage, judged monthly). Symmetric retention bound: Atticus may
-  // retain ≤ $25 net of fees from the collar (mirror of the no-positive-Foxify-EV guardrail).
+  // FULL PASS-THROUGH both ways: the strike solve stays TARGET-driven ($80 sets the cap width; never widen
+  // the target to chase credit), but whatever the chosen strike actually throws off flows to Foxify — the
+  // discrete-strike overshoot is value their cap generated (no ceiling), and Atticus retains ≤ $2 rounding
+  // dust (retention bound). Mirrors the σ-floor float-DOWN so credit variance is symmetric: sometimes $72,
+  // sometimes $95, target $80. Atticus's profit is ONLY the separate ops fee.
+  maxFoxifyCreditUsdc: num(process.env.HARNESS_MAX_CREDIT_USDC, 0) || undefined,
   minCapSigmaMult: num(process.env.HARNESS_MIN_CAP_SIGMA, 1.1),
-  maxRetainedNetOfFeesUsdc: num(process.env.HARNESS_MAX_RETAINED_USDC, 25),
+  maxRetainedNetOfFeesUsdc: num(process.env.HARNESS_MAX_RETAINED_USDC, 2),
   // Partner-like opening signal: positions/day, staggered (delta-neutral over time). Set 2 to shadow the
   // actual first pilot. Unset (0) ⟹ legacy fixed batch of SHADOW_N_POSITIONS per cycle (scaled stress mode).
   dailyPositions: num(process.env.SHADOW_DAILY_POSITIONS, 0) || undefined,
