@@ -105,6 +105,11 @@ const cfg: LiveShadowConfig = {
   // through as extra credit funded by an over-tight cap. Bounded overshoot above the ceiling → Atticus margin.
   strikeGridUsdc: num(process.env.HARNESS_STRIKE_GRID_USDC, 250),
   maxFoxifyCreditUsdc: num(process.env.HARNESS_MAX_CREDIT_USDC, 80), // deliver EXACTLY the $80 target; overshoot → Atticus, not over-credit
+  // σ-floor on the cap: never compress the cap inside 1.1× tenor-σ to manufacture credit — in calm tape the
+  // credit FLOATS DOWN instead (partial coverage, judged monthly). Symmetric retention bound: Atticus may
+  // retain ≤ $25 net of fees from the collar (mirror of the no-positive-Foxify-EV guardrail).
+  minCapSigmaMult: num(process.env.HARNESS_MIN_CAP_SIGMA, 1.1),
+  maxRetainedNetOfFeesUsdc: num(process.env.HARNESS_MAX_RETAINED_USDC, 25),
   // Partner-like opening signal: positions/day, staggered (delta-neutral over time). Set 2 to shadow the
   // actual first pilot. Unset (0) ⟹ legacy fixed batch of SHADOW_N_POSITIONS per cycle (scaled stress mode).
   dailyPositions: num(process.env.SHADOW_DAILY_POSITIONS, 0) || undefined,

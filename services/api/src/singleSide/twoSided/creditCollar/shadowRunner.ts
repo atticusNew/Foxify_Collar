@@ -214,6 +214,10 @@ export type LiveShadowConfig = {
   strikeGridUsdc?: number;
   /** Credit-target mode (pass_through): ceiling on credit handed to Foxify; bounded overshoot → Atticus margin. */
   maxFoxifyCreditUsdc?: number;
+  /** σ-floor on cap distance (× tenor-σ); credit floats below target rather than tightening the cap. 0 = off. */
+  minCapSigmaMult?: number;
+  /** Symmetric retention bound: max Atticus retention from the collar net of fees (mirror EV guardrail). */
+  maxRetainedNetOfFeesUsdc?: number;
   /**
    * Partner-like opening SIGNAL: target positions PER DAY, released at a steady staggered rate across cycles
    * (delta-neutral over time via the scaffold's side steering), instead of a fixed `nPositions` batch dumped
@@ -323,7 +327,9 @@ export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok
       legHalfSpreadUsdcPerBtc: legSpread,
       feeVenue: cfg.hedgeVenue === "okx" ? "okx" : "bullish",
       ...(cfg.strikeGridUsdc != null ? { strikeGridUsdc: cfg.strikeGridUsdc } : {}),
-      ...(cfg.maxFoxifyCreditUsdc != null ? { maxFoxifyCreditUsdc: cfg.maxFoxifyCreditUsdc } : {})
+      ...(cfg.maxFoxifyCreditUsdc != null ? { maxFoxifyCreditUsdc: cfg.maxFoxifyCreditUsdc } : {}),
+      ...(cfg.minCapSigmaMult != null ? { minCapSigmaMult: cfg.minCapSigmaMult } : {}),
+      ...(cfg.maxRetainedNetOfFeesUsdc != null ? { maxRetainedNetOfFeesUsdc: cfg.maxRetainedNetOfFeesUsdc } : {})
     }
   };
 

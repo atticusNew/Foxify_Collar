@@ -60,9 +60,12 @@ const scenarios = [
   { name: "rally  (+2.5%/d, 2% vol)", drift: 0.025, vol: 0.02 },
   { name: "calm   (0 drift, 1% vol)", drift: 0.0, vol: 0.01 },
   { name: "chop   (0 drift, 3.5% vol)", drift: 0.0, vol: 0.035 },
-  { name: "selloff(−2.5%/d, 2% vol)", drift: -0.025, vol: 0.02 }
+  { name: "selloff(−2.5%/d, 2% vol)", drift: -0.025, vol: 0.02 },
+  // The reviewer's "both strikes bind" regime: daily moves large enough that winners cap AND losers floor.
+  { name: "extreme(0 drift, 6% vol)", drift: 0.0, vol: 0.06 },
+  { name: "crash  (0 drift, 8% vol)", drift: 0.0, vol: 0.08 }
 ];
-const hitRates = [0.5, 0.525, 0.55, 0.575, 0.6, 0.65];
+const hitRates = [0.5, 0.525, 0.55, 0.575, 0.6, 0.65, 0.7, 0.75];
 
 const fmt = (x: number) => (x < 0 ? "−" : "") + "$" + Math.abs(Math.round(x)).toLocaleString("en-US");
 

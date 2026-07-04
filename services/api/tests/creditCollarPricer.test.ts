@@ -250,6 +250,35 @@ test("credit-target mode: a finer strike grid sits the cap WIDER and overshoots 
   assert.ok(fineOvershoot <= coarseOvershoot + 1e-6, "finer grid overshoots the target by less-or-equal");
 });
 
+test("σ-floor: in low vol the cap holds at the σ-floor and the credit floats DOWN (no ATM compression)", () => {
+  const lowVol = flatSkew(0.3); // calm: 30% ann ⟹ tenor-σ ~1.57%/day
+  const off = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 100 }), lowVol, { fillMode: "touch", pricingModel: "pass_through" });
+  const on = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 100 }), lowVol, { fillMode: "touch", pricingModel: "pass_through", minCapSigmaMult: 1.25 });
+  assert.equal(off.ok, true);
+  assert.equal(on.ok, true);
+  if (!off.ok || !on.ok) return;
+  const sigmaTenor = 0.3 * Math.sqrt(1 / 365); // ~1.57%
+  // Without the σ-floor the solver compresses the cap inside 1.25σ to manufacture the credit.
+  assert.ok(off.legs.cap_pct < 1.25 * sigmaTenor, `legacy compresses the cap (${off.legs.cap_pct})`);
+  // With it, the cap may not sit closer than 1.25σ, and the credit floats below the target instead.
+  assert.ok(on.legs.cap_pct >= 1.25 * sigmaTenor - 1e-6, `σ-floor holds the cap wide (${on.legs.cap_pct})`);
+  assert.ok(on.economics.foxify_credit_usdc < 100, `credit floats below target (${on.economics.foxify_credit_usdc})`);
+  assert.ok(on.economics.foxify_credit_usdc > 0, "floated credit is still positive");
+});
+
+test("symmetric retention bound: Atticus retention net of fees is capped; excess passes to Foxify", () => {
+  // Coarse grid + low ceiling ⟹ big overshoot the ceiling would hand to Atticus; the bound stops that.
+  const unbounded = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 80 }), SKEW, { fillMode: "touch", pricingModel: "pass_through", strikeGridUsdc: 1000, maxFoxifyCreditUsdc: 85 });
+  const bounded = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 80 }), SKEW, { fillMode: "touch", pricingModel: "pass_through", strikeGridUsdc: 1000, maxFoxifyCreditUsdc: 85, maxRetainedNetOfFeesUsdc: 25 });
+  assert.equal(unbounded.ok, true);
+  assert.equal(bounded.ok, true);
+  if (!unbounded.ok || !bounded.ok) return;
+  if (unbounded.economics.atticus_margin_net_of_fees_usdc > 25) {
+    assert.ok(bounded.economics.atticus_margin_net_of_fees_usdc <= 25 + 0.01, `retention capped at 25 (got ${bounded.economics.atticus_margin_net_of_fees_usdc})`);
+    assert.ok(bounded.economics.foxify_credit_usdc > unbounded.economics.foxify_credit_usdc, "excess passes to Foxify as extra credit");
+  }
+});
+
 test("pass_through funds the Bullish fee inside the credit (looser-or-equal cap vs embedded margin)", () => {
   const embedded = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", feeMode: "clob_taker" });
   const pass = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", feeMode: "clob_taker", pricingModel: "pass_through" });
