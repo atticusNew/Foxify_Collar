@@ -107,15 +107,20 @@ export const runForwardShadowCycle = async (
   // How many to open this cycle. Signal mode (dailyPositions set) releases a steady staggered rate over
   // time (partner-like flow); otherwise the legacy fixed batch of nPositions. Neutral-over-time either way.
   const signalMode = cfg.dailyPositions != null && cfg.dailyPositions > 0;
+  // PAIR-ATOMIC for the neutral book: both legs of a matched pair open in the same cycle or neither, so a
+  // gate pause between legs can never strand a naked directional leg. Directional modes open singles.
+  const neutralBook = cfg.directionalBias == null || cfg.directionalBias === "flat";
+  const pairSize = neutralBook ? 2 : 1;
   let nToOpen = cfg.nPositions;
   if (signalMode) {
     const prevState = loadOpeningState(paths.openingStatePath);
-    const step = computeOpensThisCycle(prevState, now, cfg.dailyPositions as number);
+    const step = computeOpensThisCycle(prevState, now, cfg.dailyPositions as number, { pairSize });
     nToOpen = step.nToOpen;
     saveOpeningState(step.next, paths.openingStatePath); // advance the clock even if the gate throttles, so no backlog dumps
   }
-  // Apply the regime gate's throttle (halt ⟹ 0, elevated ⟹ scaled down).
+  // Apply the regime gate's throttle (halt ⟹ 0, elevated ⟹ scaled down), preserving pair atomicity.
   if (regimeGate) nToOpen = Math.max(0, Math.round(nToOpen * regimeGate.openMultiplier));
+  nToOpen = Math.floor(nToOpen / pairSize) * pairSize;
 
   // Directional bias: override the net-flat steering with a lean (or trend-follow). "flat" ⟹ unchanged.
   let biasSide: PerpSide | null = null;
@@ -160,6 +165,16 @@ export const runForwardShadowCycle = async (
       rejected += 1;
       rej[rec.error] = (rej[rec.error] ?? 0) + 1;
     }
+  }
+
+  // Pair-atomic completeness: if one leg of a pair priced but its sibling rejected (e.g. one-sided skew
+  // infeasibility), drop the orphan before persisting — the neutral book never carries a naked leg.
+  if (pairSize === 2 && newOpens.length % 2 === 1) {
+    const dropped = newOpens.pop() as OpenPosition;
+    rejected += 1;
+    rej["pair_incomplete_dropped"] = (rej["pair_incomplete_dropped"] ?? 0) + 1;
+    serviceFee -= dropped.serviceFeeUsdc;
+    credit -= dropped.foxifyCreditUsdc;
   }
 
   const openBook = [...stillOpen, ...newOpens];
@@ -232,7 +247,7 @@ export const runForwardShadowCycle = async (
     lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation || nToOpen === 0),
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
-      signalMode ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle.` : "",
+      signalMode ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle${pairSize === 2 ? " (pair-atomic: both legs or neither)" : ""}.` : "",
       biasSide ? `Directional bias: ${cfg.directionalBias} ⟹ opening ${biasSide} (directional book; breaker relaxed).` : "",
       regimeGate ? `Regime gate: ${regimeGate.regime} (${regimeGate.reason}).` : "",
       newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
