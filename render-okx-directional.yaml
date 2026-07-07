@@ -1,0 +1,97 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-okx-directional.yaml — Foxify DIRECTIONAL (trend-following) SHADOW
+#
+# The twin of foxify-okx-mirror, running the DIRECTIONAL book on the same live
+# tape: SHADOW_DIRECTIONAL_BIAS=trend opens WITH recent momentum (the market
+# sets the realized hit-rate), 2 positions/day, own isolated disk stores.
+# Run BOTH services side-by-side to show Foxify the two strategies on
+# identical market data: neutral (calm-only, pauses in vol) vs directional
+# (trades the trend; needs ~54%+ hit-rate per the historical breakeven table).
+# Paper settlement only — read-only, live tiers OFF, NO venue credentials.
+#
+# Deploy: Render dashboard → New → Blueprint → select this file.
+# Dashboard: https://foxify-okx-directional.onrender.com (/, /simple, /api/scorecard)
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: foxify-okx-directional
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/bullish-fees-hedge-receipt-9151
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api run shadow:service
+    healthCheckPath: /healthz
+    disk:
+      name: okx-directional-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # ── THE DIFFERENCE: directional trend-following book ──
+      - key: SHADOW_DIRECTIONAL_BIAS
+        value: trend               # open the side of recent live momentum (long | short | trend)
+
+      # ── Pilot terms (same as the neutral mirror) ──
+      - key: SHADOW_HEDGE_VENUE
+        value: okx
+      - key: SHADOW_SETTLEMENT_HORIZON_MIN
+        value: "1440"              # real 24h tenor
+      - key: HARNESS_FEE_USDC
+        value: "80"                # $80 credit target
+      - key: HARNESS_TENOR_DAYS
+        value: "1"
+      - key: SHADOW_DAILY_POSITIONS
+        value: "2"                 # pilot cadence: 2/day, staggered (singles in directional mode)
+      - key: SHADOW_POSITION_USDC
+        value: "50000"
+      - key: SHADOW_LOOP_INTERVAL_MS
+        value: "900000"
+      - key: SHADOW_TIER0_CAP_USDC
+        value: "2000000"
+      - key: HARNESS_BULLISH_WEIGHT
+        value: "0"
+      # Floor/σ-floor/credit pass-through/regime-gate: code defaults (6% floor, 1.1σ cap floor,
+      # full pass-through, directional gate 1.5%/×0.5). Override here only with intent.
+
+      # ── Capital inputs (OKX-measured) ──
+      - key: SHADOW_SHORT_OPTION_IM_FRACTION
+        value: "0.14"
+      - key: SHADOW_PM_NETTING
+        value: "0.078"
+      - key: SHADOW_COST_OF_CAPITAL
+        value: "0.12"
+      - key: SHADOW_COLLATERAL_USDC
+        value: "5000"
+
+      # ── Isolated disk stores (never shared with the neutral mirror) ──
+      - key: SHADOW_STORE_PATH
+        value: /var/data/okx-directional-scorecards.jsonl
+      - key: SHADOW_OPEN_POSITIONS_PATH
+        value: /var/data/okx-directional-open.jsonl
+      - key: SHADOW_SETTLEMENT_LEDGER_PATH
+        value: /var/data/okx-directional-settlements.jsonl
+      - key: SHADOW_COLLATERAL_PATH
+        value: /var/data/okx-directional-collateral.json
+      - key: SHADOW_OPENING_STATE_PATH
+        value: /var/data/okx-directional-opening.json
+      - key: SHADOW_PRICE_HISTORY_PATH
+        value: /var/data/okx-directional-prices.jsonl
+
+      # ── Public market-data bases (read-only; NO API keys) ──
+      - key: OKX_REST_BASE
+        value: https://www.okx.com
+      - key: DERIBIT_REST_BASE
+        value: https://www.deribit.com/api/v2
+      - key: BULLISH_REST_BASE
+        value: https://api.exchange.bullish.com
+
+      - key: ORACLE_PRIVATE_KEY_PEM
+        sync: false
+      - key: ORACLE_PUBLIC_KEY_PEM
+        sync: false
+      - key: SHADOW_DASHBOARD_TOKEN
+        sync: false
