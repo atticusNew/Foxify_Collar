@@ -18,6 +18,7 @@ import { loadPriceHistory, computeLiveRegimeSignal } from "../src/singleSide/two
 import { appendScorecard, loadScorecards, resolveWritablePath, DEFAULT_SHADOW_STORE_PATH } from "../src/singleSide/twoSided/creditCollar/shadowStore";
 import { DEFAULT_OPEN_POSITIONS_PATH, DEFAULT_SETTLEMENT_LEDGER_PATH, loadOpenPositions, loadSettlements } from "../src/singleSide/twoSided/creditCollar/forwardSettlementStore";
 import { DEFAULT_OPENING_STATE_PATH } from "../src/singleSide/twoSided/creditCollar/openingSignalStore";
+import { DEFAULT_GATE_STATE_PATH, loadGateState } from "../src/singleSide/twoSided/creditCollar/regimeGateStore";
 import { DEFAULT_COLLATERAL_PATH } from "../src/singleSide/twoSided/creditCollar/collateralStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowLifecycleReport } from "../src/singleSide/twoSided/creditCollar/lifecycleShadow";
@@ -29,7 +30,7 @@ const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(
 // (scorecards, settlements, open positions, opening-signal state, collateral) for a fresh track record.
 // Remove the flag afterwards so later restarts don't keep wiping.
 if (String(process.env.SHADOW_RESET_ON_BOOT ?? "").toLowerCase() === "true") {
-  for (const p of [DEFAULT_SHADOW_STORE_PATH, DEFAULT_OPEN_POSITIONS_PATH, DEFAULT_SETTLEMENT_LEDGER_PATH, DEFAULT_OPENING_STATE_PATH, DEFAULT_COLLATERAL_PATH]) {
+  for (const p of [DEFAULT_SHADOW_STORE_PATH, DEFAULT_OPEN_POSITIONS_PATH, DEFAULT_SETTLEMENT_LEDGER_PATH, DEFAULT_OPENING_STATE_PATH, DEFAULT_COLLATERAL_PATH, DEFAULT_GATE_STATE_PATH]) {
     try {
       const eff = resolveWritablePath(p);
       if (existsSync(eff)) {
@@ -139,8 +140,12 @@ const cfg: LiveShadowConfig = {
     elevatedOpenMultiplier: num(process.env.SHADOW_REGIME_ELEVATED_MULT, isDirectional ? 0.5 : 0),
     elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.1),
     liveLookbackMs: num(process.env.SHADOW_REGIME_LIVE_LOOKBACK_MIN, 360) * 60_000, // leading signal window (min → ms), default 6h
-    liveMinSamples: num(process.env.SHADOW_REGIME_LIVE_MIN_SAMPLES, 4)
+    liveMinSamples: num(process.env.SHADOW_REGIME_LIVE_MIN_SAMPLES, 4),
+    // Hysteresis: once elevated/halt, only exit below threshold × ratio (stops calm↔elevated flicker at the line).
+    hysteresisExitRatio: num(process.env.SHADOW_REGIME_HYSTERESIS, 0.85)
   },
+  // Auto mode: positions/day while ELEVATED (directional). Set 1 for the conservative variant (default = full rate).
+  autoElevatedDailyPositions: num(process.env.SHADOW_AUTO_ELEVATED_DAILY, 0) || undefined,
   // Force a single hedge venue for the mirror (e.g. SHADOW_HEDGE_VENUE=okx) so skew/spreads/fees are OKX-specific.
   hedgeVenue: (["bullish", "okx", "deribit"].includes(String(process.env.SHADOW_HEDGE_VENUE)) ? (process.env.SHADOW_HEDGE_VENUE as "bullish" | "okx" | "deribit") : undefined),
   adaptiveFloor: {
@@ -229,7 +234,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, gate: cfg.regimeGate, liveGaugePct: computeLiveRegimeSignal(loadPriceHistory(), Date.now(), { lookbackMs: cfg.regimeGate?.liveLookbackMs, minSamples: cfg.regimeGate?.liveMinSamples })?.gaugePct ?? null }), positions: () => ({ open: loadOpenPositions(), settled: loadSettlements() }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, gate: cfg.regimeGate, liveGaugePct: computeLiveRegimeSignal(loadPriceHistory(), Date.now(), { lookbackMs: cfg.regimeGate?.liveLookbackMs, minSamples: cfg.regimeGate?.liveMinSamples })?.gaugePct ?? null, prevRegime: loadGateState()?.regime ?? null }), positions: () => ({ open: loadOpenPositions(), settled: loadSettlements() }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);

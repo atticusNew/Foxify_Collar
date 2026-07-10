@@ -25,6 +25,12 @@ export type RegimeGateConfig = {
   liveLookbackMs?: number;
   /** Leading signal: min live samples in the window before it's used. Default 4. */
   liveMinSamples?: number;
+  /**
+   * HYSTERESIS: once a stricter regime is entered, it only exits when the gauge falls BELOW
+   * threshold × this ratio (default 0.85). Stops the gate flickering calm↔elevated on noise when the
+   * gauge hovers at the line (e.g. enter elevated at 1.2%, exit only below ~1.02%).
+   */
+  hysteresisExitRatio?: number;
 };
 
 export type RegimeGateDecision = {
@@ -46,13 +52,23 @@ const mean = (xs: number[]) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.l
  * `liveGaugePct` is the optional LEADING gauge from live oracle prices (already in %). The gate acts on
  * the MORE conservative (higher) of the two, so it catches a developing regime from live prices even
  * before positions settle, and still respects the realized trailing move.
+ *
+ * `prevRegime` enables HYSTERESIS: entering a stricter regime uses the normal thresholds, but exiting
+ * requires the gauge to fall below threshold × hysteresisExitRatio — so a gauge hovering at the line
+ * (e.g. 1.19 ↔ 1.21) can't flicker the strategy on and off each cycle.
  */
-export const evaluateRegimeGate = (recentAbsMovePcts: number[], cfg: RegimeGateConfig, liveGaugePct?: number | null): RegimeGateDecision => {
+export const evaluateRegimeGate = (
+  recentAbsMovePcts: number[],
+  cfg: RegimeGateConfig,
+  liveGaugePct?: number | null,
+  prevRegime?: RegimeGateDecision["regime"] | null
+): RegimeGateDecision => {
   const minSamples = cfg.minSamples ?? 10;
   const elevated = cfg.elevatedVolPct ?? 1.5;
   const halt = cfg.haltVolPct ?? 3.0;
   const elevMult = cfg.elevatedOpenMultiplier ?? 0.5;
   const elevFloor = cfg.elevatedFloorPct ?? 0.1;
+  const exitRatio = cfg.hysteresisExitRatio ?? 0.85;
 
   const samples = recentAbsMovePcts.length;
   const trailingPct = +(mean(recentAbsMovePcts) * 100).toFixed(3); // moves are fractions ⟹ ×100 for %
@@ -71,11 +87,16 @@ export const evaluateRegimeGate = (recentAbsMovePcts: number[], cfg: RegimeGateC
     return { ...base, regime: "calm", openMultiplier: 1, floorPctOverride: null, reason: !cfg.enabled ? "gate disabled" : `warming up (trailing ${samples}/${minSamples}, no live signal yet)` };
   }
   const src = `${source} avg |move| ${effective}%`;
-  if (effective >= halt) {
-    return { ...base, regime: "halt", openMultiplier: 0, floorPctOverride: elevFloor, reason: `${src} ≥ halt ${halt}% — pause new opens (sit out the trend)` };
+  // Sticky exits: a regime already entered only releases below threshold × exitRatio.
+  const haltBar = prevRegime === "halt" ? halt * exitRatio : halt;
+  const elevBar = prevRegime === "halt" || prevRegime === "elevated" ? elevated * exitRatio : elevated;
+  const sticky = (bar: number, enter: number) => (bar < enter ? ` (hysteresis: exit below ${+bar.toFixed(3)}%)` : "");
+
+  if (effective >= haltBar) {
+    return { ...base, regime: "halt", openMultiplier: 0, floorPctOverride: elevFloor, reason: `${src} ≥ halt ${+haltBar.toFixed(3)}%${sticky(haltBar, halt)} — pause new opens (sit out the trend)` };
   }
-  if (effective >= elevated) {
-    return { ...base, regime: "elevated", openMultiplier: elevMult, floorPctOverride: elevFloor, reason: `${src} ≥ elevated ${elevated}% — widen cap (floor ${elevFloor}) + throttle opens ×${elevMult}` };
+  if (effective >= elevBar) {
+    return { ...base, regime: "elevated", openMultiplier: elevMult, floorPctOverride: elevFloor, reason: `${src} ≥ elevated ${+elevBar.toFixed(3)}%${sticky(elevBar, elevated)} — widen cap (floor ${elevFloor}) + throttle opens ×${elevMult}` };
   }
-  return { ...base, regime: "calm", openMultiplier: 1, floorPctOverride: null, reason: `${src} < elevated ${elevated}% — open normally, harvest credit` };
+  return { ...base, regime: "calm", openMultiplier: 1, floorPctOverride: null, reason: `${src} < elevated ${+elevBar.toFixed(3)}% — open normally, harvest credit` };
 };

@@ -238,6 +238,12 @@ export type LiveShadowConfig = {
    * breaker is relaxed so a leaning book doesn't self-halt. The market sets the realized hit-rate.
    */
   directionalBias?: "flat" | "long" | "short" | "trend" | "auto";
+  /**
+   * Auto mode only: positions/day while ELEVATED (the directional leg). Default = dailyPositions (full
+   * rate). Set 1 for the conservative variant — halves the same-day directional doubling (a trend day's
+   * two positions are ONE bet at double size; this dial trades credit volume for per-day variance).
+   */
+  autoElevatedDailyPositions?: number;
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
   /**

@@ -42,3 +42,21 @@ test("extreme regime ⟹ pause new opens", () => {
   assert.equal(d.regime, "halt");
   assert.equal(d.openMultiplier, 0);
 });
+
+test("hysteresis: elevated is sticky at the line — no calm↔elevated flicker", () => {
+  const c = cfg({ elevatedVolPct: 1.2, hysteresisExitRatio: 0.85 }); // exit below 1.02
+  // Fresh (no prev): 1.19 < 1.2 ⟹ calm.
+  assert.equal(evaluateRegimeGate(moves(1.19), c, null, null).regime, "calm");
+  // Already elevated: 1.19 (and even 1.05) stays elevated — above the 1.02 exit bar.
+  assert.equal(evaluateRegimeGate(moves(1.19), c, null, "elevated").regime, "elevated");
+  assert.equal(evaluateRegimeGate(moves(1.05), c, null, "elevated").regime, "elevated");
+  // Only genuinely calming (below 1.02) releases.
+  assert.equal(evaluateRegimeGate(moves(0.95), c, null, "elevated").regime, "calm");
+});
+
+test("hysteresis: halt is sticky, and releases into elevated (not straight to calm)", () => {
+  const c = cfg({ elevatedVolPct: 1.2, haltVolPct: 3.0, hysteresisExitRatio: 0.85 }); // halt exit 2.55
+  assert.equal(evaluateRegimeGate(moves(2.7), c, null, "halt").regime, "halt"); // above 2.55 ⟹ still halt
+  assert.equal(evaluateRegimeGate(moves(2.3), c, null, "halt").regime, "elevated"); // below halt exit, above elevated
+  assert.equal(evaluateRegimeGate(moves(0.9), c, null, "halt").regime, "calm"); // fully calmed
+});

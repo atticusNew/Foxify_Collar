@@ -16,6 +16,7 @@ import { settleMatured, aggregateSettlements, type OpenPosition, type Settlement
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
 import { computeOpensThisCycle, loadOpeningState, saveOpeningState } from "./openingSignalStore";
 import { evaluateRegimeGate, type RegimeGateDecision } from "./regimeGate";
+import { loadGateState, saveGateState } from "./regimeGateStore";
 import { appendPriceObs, loadPriceHistory, computeLiveRegimeSignal, trendDirection } from "./priceHistoryStore";
 import type { PerpSide } from "./creditCollarPricer";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
@@ -83,7 +84,9 @@ export const runForwardShadowCycle = async (
       lookbackMs: cfg.regimeGate.liveLookbackMs,
       minSamples: cfg.regimeGate.liveMinSamples
     });
-    regimeGate = evaluateRegimeGate(recentAbs, cfg.regimeGate, live?.gaugePct ?? null);
+    const prev = loadGateState();
+    regimeGate = evaluateRegimeGate(recentAbs, cfg.regimeGate, live?.gaugePct ?? null, prev?.regime ?? null);
+    saveGateState({ regime: regimeGate.regime, updatedAtMs: now });
     if (regimeGate.floorPctOverride != null) scaffoldConfig.maxFloorPct = regimeGate.floorPctOverride;
   }
 
@@ -120,8 +123,14 @@ export const runForwardShadowCycle = async (
   const pairSize = neutralBook ? 2 : 1;
   let nToOpen = cfg.nPositions;
   if (signalMode) {
+    // Conservative elevated-day dial (auto mode): directional days may run at a reduced rate (e.g. 1/day
+    // instead of 2) since same-day directional positions are one bet at double size.
+    const dailyRate =
+      autoMode && autoRegime === "elevated" && cfg.autoElevatedDailyPositions != null && cfg.autoElevatedDailyPositions > 0
+        ? cfg.autoElevatedDailyPositions
+        : (cfg.dailyPositions as number);
     const prevState = loadOpeningState(paths.openingStatePath);
-    const step = computeOpensThisCycle(prevState, now, cfg.dailyPositions as number, { pairSize });
+    const step = computeOpensThisCycle(prevState, now, dailyRate, { pairSize });
     nToOpen = step.nToOpen;
     saveOpeningState(step.next, paths.openingStatePath); // advance the clock even if the gate throttles, so no backlog dumps
   }

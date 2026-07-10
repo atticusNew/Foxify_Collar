@@ -77,6 +77,8 @@ export type RegimeConfig = {
   liveGaugePct?: number | null;
   /** Breakeven hit-rate the signal must clear (from the historical table; ~0.52 normal tape). Default 0.52. */
   signalBreakevenPct?: number;
+  /** Last persisted gate regime, so the dashboard's gate display applies the same hysteresis as the loop. */
+  prevRegime?: "calm" | "elevated" | "halt" | null;
 };
 
 // Beta(a,b) posterior utilities (numeric; small and dependency-free).
@@ -175,7 +177,7 @@ export const buildRegimeStats = (outcomes: SettlementOutcome[], cfg: RegimeConfi
     cumulativeFeesUsdc: r2(cumFees),
     cumulativeNetUsdc: r2(cumNet),
     creditClearsBleed: cumNet >= 0,
-    gate: cfg.gate ? evaluateRegimeGate(outcomes.slice(-(cfg.gate.lookback ?? 40)).map((o) => Math.abs(o.movePct)), cfg.gate, cfg.liveGaugePct ?? null) : null,
+    gate: cfg.gate ? evaluateRegimeGate(outcomes.slice(-(cfg.gate.lookback ?? 40)).map((o) => Math.abs(o.movePct)), cfg.gate, cfg.liveGaugePct ?? null, cfg.prevRegime ?? null) : null,
     signal: (() => {
       // Day-level hit rate: a day is "correct" if the majority of its settled positions sat on the winning
       // side of that day's move. (Same-day positions share the outcome ⟹ one observation per day.)
