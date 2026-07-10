@@ -62,6 +62,29 @@ test("simple view: renders plain-English P&L and cross-links the advanced view",
   assert.ok(html.includes("Advanced view"));
 });
 
+test("positions view renders open + settled with leg premiums and plain-words fields", async () => {
+  const { renderPositionsHtml } = await import("../src/singleSide/twoSided/creditCollar/shadowDashboard");
+  const open = [{
+    ref: "cc-123-1", side: "long" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, putStrike: 56_400, callStrike: 61_250,
+    foxifyCreditUsdc: 80, serviceFeeUsdc: 0, floorPctUsed: 0.06, openedAtMs: NOW - 3_600_000, expiresAtMs: NOW + 20 * 3_600_000,
+    fundingLegPremiumUsdc: 128.4, protectiveLegPremiumUsdc: 40.2, venue: "g20_quote",
+    quoteMeta: { rfqRef: "RFQ-1", quotedNetUsdc: 82, modelNetUsdc: 79, quotedAtIso: new Date(NOW).toISOString() }
+  }];
+  const settled = [{
+    ref: "cc-100-9", side: "short" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, settlePriceUsd: 60_500, movePct: 0.0083,
+    putIntrinsicUsd: 0, callIntrinsicUsd: 0, payoutToFoxifyUsdc: 0, foxifyCreditUsdc: 85, netToFoxifyUsdc: 85, serviceFeeUsdc: 0,
+    floorBreached: false, capBreached: false, oracleVerified: true, openedAtMs: NOW - 25 * 3_600_000, settledAtMs: NOW - 3_600_000,
+    heldMs: 24 * 3_600_000, hedgeReceiptUsdc: 0, atticusOptionNetUsdc: 0, shortLegMarginUsdc: 546, capitalCostUsdc: 0.18,
+    optionFeesUsdc: 8, atticusNetAfterCapitalUsdc: -0.18, atticusNetAfterFeesAndCapitalUsdc: -0.18,
+    fundingLegPremiumUsdc: 120, protectiveLegPremiumUsdc: 35, venue: "okx_model"
+  }];
+  const html = renderPositionsHtml(open, settled, NOW);
+  assert.ok(html.includes("SOLD cap for") && html.includes("PAID for floor"));
+  assert.ok(html.includes("g20_quote") && html.includes("okx_model"));
+  assert.ok(html.includes("quoted") && html.includes("vs model"));
+  assert.ok(/no breach/.test(html));
+});
+
 test("handler: /simple returns html", () => {
   const deps = { loadRecords: () => [rec(NOW - 30_000)], liveStatus: () => status(), nowMs: () => NOW };
   const r = handleDashboardRequest({ method: "GET", path: "/simple" }, deps);

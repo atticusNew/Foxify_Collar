@@ -31,6 +31,14 @@ export type OpenPosition = {
    * the fee comes out of Atticus's margin).
    */
   feesFundedByCollar?: boolean;
+  /** What we SOLD the funding leg (cap) for at open — executable premium collected, USDC. */
+  fundingLegPremiumUsdc?: number;
+  /** What we PAID for the protective leg (floor) at open — executable premium, USDC. */
+  protectiveLegPremiumUsdc?: number;
+  /** Hedge venue for this position ("okx_model" in the shadow; "g20_quote" when booked off a live RFQ). */
+  venue?: string;
+  /** Live-RFQ metadata when booked off a real venue quote (dry-run or live). */
+  quoteMeta?: { rfqRef: string; quotedNetUsdc: number; modelNetUsdc: number; quotedAtIso: string };
 };
 
 export type SettlementOutcome = {
@@ -61,6 +69,11 @@ export type SettlementOutcome = {
   optionFeesUsdc: number;              // realized Bullish open fee (held-to-expiry pays only the open)
   atticusNetAfterCapitalUsdc: number;  // serviceFee − capitalCost (kept for continuity)
   atticusNetAfterFeesAndCapitalUsdc: number; // serviceFee + optionNet − fees − capitalCost (fully grounded)
+  // ── Per-leg open premiums + venue (for the positions view; optional on legacy rows) ──
+  fundingLegPremiumUsdc?: number;      // what we SOLD the cap for at open
+  protectiveLegPremiumUsdc?: number;   // what we PAID for the floor at open
+  venue?: string;
+  quoteMeta?: OpenPosition["quoteMeta"];
 };
 
 /**
@@ -203,7 +216,11 @@ export const settleMatured = (
       capitalCostUsdc: round2(capitalCost),
       optionFeesUsdc: round2(optionFees),
       atticusNetAfterCapitalUsdc: round2(p.serviceFeeUsdc - capitalCost),
-      atticusNetAfterFeesAndCapitalUsdc: round2(atticusNetAfterFeesAndCapital)
+      atticusNetAfterFeesAndCapitalUsdc: round2(atticusNetAfterFeesAndCapital),
+      fundingLegPremiumUsdc: p.fundingLegPremiumUsdc,
+      protectiveLegPremiumUsdc: p.protectiveLegPremiumUsdc,
+      venue: p.venue,
+      quoteMeta: p.quoteMeta
     });
   }
   return { settled, stillOpen, oracleVerified, settlePriceUsd, deferred };

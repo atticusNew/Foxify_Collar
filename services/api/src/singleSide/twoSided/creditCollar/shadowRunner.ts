@@ -232,11 +232,12 @@ export type LiveShadowConfig = {
   regimeGate?: import("./regimeGate").RegimeGateConfig;
   /**
    * Opening DIRECTION. "flat" (default) steers net-flat (neutral book). "long"/"short" force a directional
-   * lean; "trend" opens the side of recent price momentum (trend-following). Non-flat = a directional book
-   * (Foxify takes market risk); the exposure breaker is relaxed so it doesn't self-halt. The market sets the
-   * realized hit-rate. Use to shadow the directional-edge strategy on real tape.
+   * lean; "trend" opens the side of recent price momentum (trend-following). "auto" = the HYBRID pilot
+   * strategy: CALM ⟹ neutral pair (as if the partner approved) · ELEVATED ⟹ directional single with the
+   * trend (as if the partner picked the side) · HALT ⟹ skip. Non-flat books take market risk; the exposure
+   * breaker is relaxed so a leaning book doesn't self-halt. The market sets the realized hit-rate.
    */
-  directionalBias?: "flat" | "long" | "short" | "trend";
+  directionalBias?: "flat" | "long" | "short" | "trend" | "auto";
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
   /**

@@ -107,9 +107,16 @@ export const runForwardShadowCycle = async (
   // How many to open this cycle. Signal mode (dailyPositions set) releases a steady staggered rate over
   // time (partner-like flow); otherwise the legacy fixed batch of nPositions. Neutral-over-time either way.
   const signalMode = cfg.dailyPositions != null && cfg.dailyPositions > 0;
+  // HYBRID "auto" strategy (the pilot's actual playbook): CALM ⟹ neutral pair (as if the partner approved)
+  // · ELEVATED ⟹ directional single with the trend at the FULL rate (as if the partner picked the side; the
+  // gate's neutral pause does not apply to the directional leg) · HALT ⟹ skip entirely.
+  const autoMode = cfg.directionalBias === "auto";
+  const autoRegime = autoMode ? (regimeGate?.regime ?? "calm") : null;
+  const effectiveBias: LiveShadowConfig["directionalBias"] =
+    autoMode ? (autoRegime === "calm" ? "flat" : autoRegime === "elevated" ? "trend" : "flat") : cfg.directionalBias;
   // PAIR-ATOMIC for the neutral book: both legs of a matched pair open in the same cycle or neither, so a
   // gate pause between legs can never strand a naked directional leg. Directional modes open singles.
-  const neutralBook = cfg.directionalBias == null || cfg.directionalBias === "flat";
+  const neutralBook = effectiveBias == null || effectiveBias === "flat";
   const pairSize = neutralBook ? 2 : 1;
   let nToOpen = cfg.nPositions;
   if (signalMode) {
@@ -119,14 +126,19 @@ export const runForwardShadowCycle = async (
     saveOpeningState(step.next, paths.openingStatePath); // advance the clock even if the gate throttles, so no backlog dumps
   }
   // Apply the regime gate's throttle (halt ⟹ 0, elevated ⟹ scaled down), preserving pair atomicity.
-  if (regimeGate) nToOpen = Math.max(0, Math.round(nToOpen * regimeGate.openMultiplier));
+  // In auto mode the throttle is bypassed while ELEVATED (the directional leg trades it — full rate,
+  // wider cap via the floor override) and only HALT zeroes issuance.
+  if (regimeGate) {
+    const mult = autoMode ? (regimeGate.regime === "halt" ? 0 : 1) : regimeGate.openMultiplier;
+    nToOpen = Math.max(0, Math.round(nToOpen * mult));
+  }
   nToOpen = Math.floor(nToOpen / pairSize) * pairSize;
 
   // Directional bias: override the net-flat steering with a lean (or trend-follow). "flat" ⟹ unchanged.
   let biasSide: PerpSide | null = null;
-  if (cfg.directionalBias === "long") biasSide = "long";
-  else if (cfg.directionalBias === "short") biasSide = "short";
-  else if (cfg.directionalBias === "trend") {
+  if (effectiveBias === "long") biasSide = "long";
+  else if (effectiveBias === "short") biasSide = "short";
+  else if (effectiveBias === "trend") {
     const dir = trendDirection(loadPriceHistory(paths.priceHistoryPath), now, cfg.regimeGate?.liveLookbackMs);
     biasSide = dir >= 0 ? "long" : "short"; // follow recent momentum; flat/unknown ⟹ long
   }
@@ -151,6 +163,9 @@ export const runForwardShadowCycle = async (
         floorPctUsed: rec.floorPctUsed,
         openFeeUsdc: rec.openFeeUsdc,
         feesFundedByCollar: rec.feesFundedByCollar,
+        fundingLegPremiumUsdc: rec.fundingLegPremiumUsdc,
+        protectiveLegPremiumUsdc: rec.protectiveLegPremiumUsdc,
+        venue: `${cfg.hedgeVenue ?? "blend"}_model`,
         openedAtMs: now,
         expiresAtMs: now + horizonMs
       });
@@ -248,7 +263,8 @@ export const runForwardShadowCycle = async (
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
       signalMode ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle${pairSize === 2 ? " (pair-atomic: both legs or neither)" : ""}.` : "",
-      biasSide ? `Directional bias: ${cfg.directionalBias} ⟹ opening ${biasSide} (directional book; breaker relaxed).` : "",
+      autoMode ? `Hybrid auto strategy: regime ${autoRegime} ⟹ ${autoRegime === "calm" ? "neutral pair" : autoRegime === "elevated" ? `directional ${biasSide} (trend)` : "skip"}.` : "",
+      biasSide && !autoMode ? `Directional bias: ${cfg.directionalBias} ⟹ opening ${biasSide} (directional book; breaker relaxed).` : "",
       regimeGate ? `Regime gate: ${regimeGate.regime} (${regimeGate.reason}).` : "",
       newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
     ].filter(Boolean)

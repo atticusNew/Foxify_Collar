@@ -69,6 +69,10 @@ export type ActivationRecord = {
   floorPctUsed: number;
   /** Hedge-venue (Bullish) fee to OPEN the collar legs — held-to-expiry pays only this. */
   openFeeUsdc: number;
+  /** What we SOLD the funding leg (the cap) for — executable premium collected, USDC. */
+  fundingLegPremiumUsdc: number;
+  /** What we PAID for the protective leg (the floor) — executable premium, USDC. */
+  protectiveLegPremiumUsdc: number;
   /** Atticus's profit model: "pass_through" (collar nets ~0, fee billed separately) or "embedded_spread". */
   pricingModel: "embedded_spread" | "pass_through";
   /** True when the collar itself funds the Bullish open fee (pass_through) ⟹ fee is not borne by Atticus's net. */
@@ -202,6 +206,8 @@ export class CreditCollarActivationScaffold {
       foxifyEvUsdc: q.economics.foxify_market_implied_ev_usdc,
       floorPctUsed: adaptive.floorUsedPct,
       openFeeUsdc: q.economics.option_open_fees_usdc,
+      fundingLegPremiumUsdc: q.fills.funding_leg_bid_usdc,
+      protectiveLegPremiumUsdc: q.fills.protective_leg_ask_usdc,
       pricingModel: model,
       feesFundedByCollar: model === "pass_through",
       status: "active"

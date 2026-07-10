@@ -6,7 +6,7 @@
  */
 
 import { aggregateShadowScorecards, type ShadowRunRecord, type ShadowAggregate, type ShadowAggregateConfig } from "./shadowAggregate";
-import type { SettlementAggregate } from "./forwardSettlement";
+import type { SettlementAggregate, OpenPosition, SettlementOutcome } from "./forwardSettlement";
 import type { ShadowLifecycleReport } from "./lifecycleShadow";
 import type { FoxifyView } from "./foxifyPerpView";
 import type { RegimeStats } from "./regimeStats";
@@ -252,7 +252,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
   <h2>Recent sessions</h2>
   <table><thead><tr><th>time</th><th>opened</th><th>halt</th><th>rej</th><th>peakExp</th><th>fee</th><th>oracle</th><th>recon</th><th>lifecycle</th></tr></thead>
   <tbody>${rows || `<tr><td colspan="9" class="muted">No sessions yet.</td></tr>`}</tbody></table>
-  <p class="sub" style="margin-top:16px"><a href="/simple">◱ Simple view</a> · JSON: <a href="/api/scorecard">/api/scorecard</a> · <a href="/api/health">/api/health</a></p>
+  <p class="sub" style="margin-top:16px"><a href="/simple">◱ Simple view</a> · <a href="/positions">◲ Positions</a> · JSON: <a href="/api/scorecard">/api/scorecard</a> · <a href="/api/health">/api/health</a></p>
 </div></body></html>`;
 };
 
@@ -335,8 +335,83 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
 </style></head><body><div class="wrap">
   <h1>Credit-Collar Shadow — Simple P&L</h1>
   <p class="sub">Plain-English money flow · paper-settled · generated ${esc(m.generatedAtIso)}</p>
-  <p class="sub"><a href="/">◲ Advanced view</a> · JSON: <a href="/api/scorecard">/api/scorecard</a></p>
+  <p class="sub"><a href="/">◲ Advanced view</a> · <a href="/positions">Positions</a> · JSON: <a href="/api/scorecard">/api/scorecard</a></p>
   ${body}
+</div></body></html>`;
+};
+
+// ── Positions view ────────────────────────────────────────────────────────────
+// Position-by-position breakout in plain words: entry, ceiling (cap), floor, what we SOLD the cap for,
+// what we PAID for the floor, the net credit, the synthetic perp detail, and at settlement the result
+// line (credit − forfeit − fee). The walkthrough page for G-20 / Foxify conversations.
+
+export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOutcome[], nowMs: number, maxSettled = 20): string => {
+  const pctOf = (strike: number, entry: number) => `${(((strike - entry) / entry) * 100).toFixed(1)}%`;
+  const m$ = (x: number | undefined) => (x == null ? "—" : `${x < 0 ? "−" : ""}$${Math.abs(x).toLocaleString("en-US", { maximumFractionDigits: 2 })}`);
+  const dt = (ms: number) => new Date(ms).toISOString().slice(0, 16).replace("T", " ") + "Z";
+
+  const openRows = open
+    .sort((a, b) => b.openedAtMs - a.openedAtMs)
+    .map((p) => {
+      const capStrike = p.side === "long" ? p.callStrike : p.putStrike;
+      const floorStrike = p.side === "long" ? p.putStrike : p.callStrike;
+      const hrsLeft = Math.max(0, (p.expiresAtMs - nowMs) / 3_600_000).toFixed(1);
+      return `<tr>
+        <td>${esc(p.ref.slice(-8))}</td><td>${p.side.toUpperCase()} (perp: ${esc(p.venue ?? "synthetic")})</td>
+        <td>$${p.spotAtEntry.toLocaleString("en-US", { maximumFractionDigits: 0 })}<br><span class="muted">${dt(p.openedAtMs)}</span></td>
+        <td>$${capStrike.toLocaleString("en-US", { maximumFractionDigits: 0 })} <span class="muted">(${pctOf(capStrike, p.spotAtEntry)})</span></td>
+        <td>$${floorStrike.toLocaleString("en-US", { maximumFractionDigits: 0 })} <span class="muted">(${pctOf(floorStrike, p.spotAtEntry)})</span></td>
+        <td>${m$(p.fundingLegPremiumUsdc)}</td><td>${m$(p.protectiveLegPremiumUsdc)}</td>
+        <td><b>${m$(p.foxifyCreditUsdc)}</b>${p.quoteMeta ? `<br><span class="muted">quoted ${m$(p.quoteMeta.quotedNetUsdc)} vs model ${m$(p.quoteMeta.modelNetUsdc)}</span>` : ""}</td>
+        <td>${hrsLeft}h left</td>
+      </tr>`;
+    })
+    .join("");
+
+  const settledRows = [...settled]
+    .sort((a, b) => b.settledAtMs - a.settledAtMs)
+    .slice(0, maxSettled)
+    .map((o) => {
+      const breach = o.capBreached ? "CAP hit (gave back)" : o.floorBreached ? "FLOOR hit (protected)" : "no breach";
+      const result = o.foxifyCreditUsdc + o.payoutToFoxifyUsdc;
+      return `<tr>
+        <td>${esc(o.ref.slice(-8))}</td><td>${o.side.toUpperCase()} (${esc(o.venue ?? "synthetic")})</td>
+        <td>$${o.spotAtEntry.toLocaleString("en-US", { maximumFractionDigits: 0 })} → $${o.settlePriceUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}<br><span class="muted">${(o.movePct * 100).toFixed(2)}% · ${(o.heldMs / 3_600_000).toFixed(1)}h</span></td>
+        <td>${m$(o.fundingLegPremiumUsdc)}</td><td>${m$(o.protectiveLegPremiumUsdc)}</td>
+        <td>${m$(o.foxifyCreditUsdc)}</td>
+        <td>${esc(breach)}</td>
+        <td>${m$(o.payoutToFoxifyUsdc)}</td>
+        <td><b>${m$(result)}</b><br><span class="muted">credit ${o.payoutToFoxifyUsdc < 0 ? "−" : "+"} collar</span></td>
+      </tr>`;
+    })
+    .join("");
+
+  const totCredit = settled.reduce((s, o) => s + o.foxifyCreditUsdc, 0);
+  const totCollar = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
+  const capHits = settled.filter((o) => o.capBreached).length;
+  const floorHits = settled.filter((o) => o.floorBreached).length;
+
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="30"><title>Positions</title>
+<style>
+  body{font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
+  .wrap{max-width:1180px;margin:0 auto;padding:20px}
+  h1{font-size:18px;margin:0 0 4px} .sub{color:#8b949e;margin:0 0 14px} h2{font-size:14px;margin:20px 0 6px;color:#c9d1d9}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #21262d;vertical-align:top} th{color:#8b949e;font-weight:600}
+  .muted{color:#8b949e;font-size:12px} b{color:#e6edf3} a{color:#58a6ff}
+  .strip{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:10px 14px;margin:10px 0;font-size:13px}
+</style></head><body><div class="wrap">
+  <h1>Positions — plain-words breakout</h1>
+  <p class="sub"><a href="/">Advanced</a> · <a href="/simple">Simple P&L</a> · generated ${esc(new Date(nowMs).toISOString())}</p>
+  <div class="strip"><b>Running results (${settled.length} settled):</b> credits collected ${m$(totCredit)} · collar net (givebacks/protection) ${m$(totCollar)} · cap hit ${capHits}× · floor hit ${floorHits}× · <b>net ${m$(totCredit + totCollar)}</b> before perp fees</div>
+  <h2>Open positions (${open.length})</h2>
+  <table><thead><tr><th>ref</th><th>side (perp)</th><th>entry @ opened</th><th>ceiling (cap)</th><th>floor (protection)</th><th>SOLD cap for</th><th>PAID for floor</th><th>net credit</th><th>expires</th></tr></thead>
+  <tbody>${openRows || `<tr><td colspan="9" class="muted">No open positions.</td></tr>`}</tbody></table>
+  <h2>Settled (last ${Math.min(maxSettled, settled.length)})</h2>
+  <table><thead><tr><th>ref</th><th>side</th><th>entry → settle</th><th>SOLD cap</th><th>PAID floor</th><th>credit</th><th>breach</th><th>collar payout</th><th>result</th></tr></thead>
+  <tbody>${settledRows || `<tr><td colspan="9" class="muted">Nothing settled yet.</td></tr>`}</tbody></table>
+  <p class="sub" style="margin-top:12px">How to read: the collar SELLS the ceiling (collect premium) and BUYS the floor (pay premium); the difference funds the net credit. At settlement: no breach ⟹ keep the credit · cap hit ⟹ give back gains above the ceiling (paid from that position's own perp gain) · floor hit ⟹ protection pays losses beyond the floor.</p>
 </div></body></html>`;
 };
 
@@ -354,6 +429,8 @@ export type DashboardDeps = {
   foxifyView?: () => FoxifyView | null;
   /** Regime & realized-vol readout over the settlement ledger. */
   regimeStats?: () => RegimeStats | null;
+  /** Open positions + settled outcomes for the plain-words positions view. */
+  positions?: () => { open: OpenPosition[]; settled: SettlementOutcome[] };
   /** Latest cross-venue lifecycle overlay report (vesting/collateral/basis). */
   lifecycleReport?: () => ShadowLifecycleReport | null;
   /** Optional read-only bearer token. If set, /api/* and / require it. */
@@ -384,6 +461,13 @@ export const handleDashboardRequest = (
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
   if (path === "/simple") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderSimpleHtml(model) };
+  if (path === "/positions" && deps.positions) {
+    const pos = deps.positions();
+    return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderPositionsHtml(pos.open, pos.settled, now) };
+  }
+  if (path === "/api/positions" && deps.positions) {
+    return { statusCode: 200, contentType: "application/json", body: JSON.stringify(deps.positions(), null, 2) };
+  }
   if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(model, null, 2) };
   if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(settlement ?? { settledPositions: 0 }, null, 2) };
   if (path === "/api/foxify") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(foxify ?? { settledPositions: 0 }, null, 2) };

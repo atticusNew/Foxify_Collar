@@ -16,7 +16,7 @@ import { loadFoxifyView } from "../src/singleSide/twoSided/creditCollar/foxifyPe
 import { loadRegimeStats } from "../src/singleSide/twoSided/creditCollar/regimeStats";
 import { loadPriceHistory, computeLiveRegimeSignal } from "../src/singleSide/twoSided/creditCollar/priceHistoryStore";
 import { appendScorecard, loadScorecards, resolveWritablePath, DEFAULT_SHADOW_STORE_PATH } from "../src/singleSide/twoSided/creditCollar/shadowStore";
-import { DEFAULT_OPEN_POSITIONS_PATH, DEFAULT_SETTLEMENT_LEDGER_PATH } from "../src/singleSide/twoSided/creditCollar/forwardSettlementStore";
+import { DEFAULT_OPEN_POSITIONS_PATH, DEFAULT_SETTLEMENT_LEDGER_PATH, loadOpenPositions, loadSettlements } from "../src/singleSide/twoSided/creditCollar/forwardSettlementStore";
 import { DEFAULT_OPENING_STATE_PATH } from "../src/singleSide/twoSided/creditCollar/openingSignalStore";
 import { DEFAULT_COLLATERAL_PATH } from "../src/singleSide/twoSided/creditCollar/collateralStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
@@ -123,9 +123,9 @@ const cfg: LiveShadowConfig = {
   // Partner-like opening signal: positions/day, staggered (delta-neutral over time). Set 2 to shadow the
   // actual first pilot. Unset (0) ⟹ legacy fixed batch of SHADOW_N_POSITIONS per cycle (scaled stress mode).
   dailyPositions: num(process.env.SHADOW_DAILY_POSITIONS, 0) || undefined,
-  // Opening direction: flat (neutral, default) | long | short | trend (follow live momentum). Non-flat runs
-  // a DIRECTIONAL book on real tape — the market sets the hit-rate. See the directional-edge backtest.
-  directionalBias: (["flat", "long", "short", "trend"].includes(String(process.env.SHADOW_DIRECTIONAL_BIAS)) ? (process.env.SHADOW_DIRECTIONAL_BIAS as "flat" | "long" | "short" | "trend") : undefined),
+  // Opening direction: flat (neutral, default) | long | short | trend (follow live momentum) | auto
+  // (HYBRID pilot playbook: calm ⟹ neutral pair, elevated ⟹ directional single with the trend, halt ⟹ skip).
+  directionalBias: (["flat", "long", "short", "trend", "auto"].includes(String(process.env.SHADOW_DIRECTIONAL_BIAS)) ? (process.env.SHADOW_DIRECTIONAL_BIAS as "flat" | "long" | "short" | "trend" | "auto") : undefined),
   // Regime-aware opening gate: widen the cap + throttle when the trailing avg |24h move| is elevated; pause
   // when extreme. Lets the short-vol book sit out trend/high-vol regimes. On by default; tune the thresholds.
   regimeGate: {
@@ -229,7 +229,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, gate: cfg.regimeGate, liveGaugePct: computeLiveRegimeSignal(loadPriceHistory(), Date.now(), { lookbackMs: cfg.regimeGate?.liveLookbackMs, minSamples: cfg.regimeGate?.liveMinSamples })?.gaugePct ?? null }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, gate: cfg.regimeGate, liveGaugePct: computeLiveRegimeSignal(loadPriceHistory(), Date.now(), { lookbackMs: cfg.regimeGate?.liveLookbackMs, minSamples: cfg.regimeGate?.liveMinSamples })?.gaugePct ?? null }), positions: () => ({ open: loadOpenPositions(), settled: loadSettlements() }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);
