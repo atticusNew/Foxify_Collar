@@ -119,7 +119,9 @@ const generate = async (): Promise<void> => {
     const adaptive = solveAdaptiveCreditCollar(
       { side, spot, notionalUsdc: cfg.positionNotionalUsdc, tenorDays: cfg.tenorDays, targetCreditUsdc: cfg.feeUsdc, maxFloorPct: scaffoldConfig.maxFloorPct, referenceMode: "position" },
       skew,
-      scaffoldConfig.spreadConfig ?? {},
+      // Pass-through, same as the shadow's scaffold: the collar funds credit + fees only (no embedded
+      // margin), and the σ-floor FLOATS the credit down on quiet tape instead of failing to price.
+      { ...(scaffoldConfig.spreadConfig ?? {}), pricingModel: "pass_through", operationFeeBps: 0, minOperationFeeUsdc: 0 },
       scaffoldConfig.adaptiveFloor
     );
     if (!adaptive.quote.ok) {
