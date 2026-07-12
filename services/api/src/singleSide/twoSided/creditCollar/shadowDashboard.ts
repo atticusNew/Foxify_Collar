@@ -369,6 +369,7 @@ export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOut
         <td>$${capStrike.toLocaleString("en-US", { maximumFractionDigits: 0 })} <span class="muted">(${pctOf(capStrike, p.spotAtEntry)})</span></td>
         <td>$${floorStrike.toLocaleString("en-US", { maximumFractionDigits: 0 })} <span class="muted">(${pctOf(floorStrike, p.spotAtEntry)})</span></td>
         <td>${m$(p.fundingLegPremiumUsdc)}</td><td>${m$(p.protectiveLegPremiumUsdc)}</td>
+        <td>${m$(p.openFeeUsdc)}</td>
         <td><b>${m$(p.foxifyCreditUsdc)}</b>${p.quoteMeta ? `<br><span class="muted">quoted ${m$(p.quoteMeta.quotedNetUsdc)} vs model ${m$(p.quoteMeta.modelNetUsdc)}</span>` : ""}</td>
         <td>${hrsLeft}h left</td>
       </tr>`;
@@ -385,6 +386,7 @@ export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOut
         <td>${esc(o.ref.slice(-8))}</td><td>${o.side.toUpperCase()} (${esc(o.venue ?? "synthetic")})</td>
         <td>$${o.spotAtEntry.toLocaleString("en-US", { maximumFractionDigits: 0 })} → $${o.settlePriceUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}<br><span class="muted">${(o.movePct * 100).toFixed(2)}% · ${(o.heldMs / 3_600_000).toFixed(1)}h</span></td>
         <td>${m$(o.fundingLegPremiumUsdc)}</td><td>${m$(o.protectiveLegPremiumUsdc)}</td>
+        <td>${m$(o.optionFeesUsdc)}</td>
         <td>${m$(o.foxifyCreditUsdc)}</td>
         <td>${esc(breach)}</td>
         <td>${m$(o.payoutToFoxifyUsdc)}</td>
@@ -413,12 +415,12 @@ export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOut
   <p class="sub"><a href="/">Advanced</a> · <a href="/simple">Simple P&L</a> · generated ${esc(new Date(nowMs).toISOString())}</p>
   <div class="strip"><b>Running results (${settled.length} settled):</b> credits collected ${m$(totCredit)} · collar net (givebacks/protection) ${m$(totCollar)} · cap hit ${capHits}× · floor hit ${floorHits}× · <b>net ${m$(totCredit + totCollar)}</b> before perp fees</div>
   <h2>Open positions (${open.length})</h2>
-  <table><thead><tr><th>ref</th><th>side (perp)</th><th>entry @ opened</th><th>ceiling (cap)</th><th>floor (protection)</th><th>SOLD cap for</th><th>PAID for floor</th><th>net credit</th><th>expires</th></tr></thead>
-  <tbody>${openRows || `<tr><td colspan="9" class="muted">No open positions.</td></tr>`}</tbody></table>
+  <table><thead><tr><th>ref</th><th>side (perp)</th><th>entry @ opened</th><th>ceiling (cap)</th><th>floor (protection)</th><th>SOLD cap for</th><th>PAID for floor</th><th>venue fee</th><th>net credit</th><th>expires</th></tr></thead>
+  <tbody>${openRows || `<tr><td colspan="10" class="muted">No open positions.</td></tr>`}</tbody></table>
   <h2>Settled (last ${Math.min(maxSettled, settled.length)})</h2>
-  <table><thead><tr><th>ref</th><th>side</th><th>entry → settle</th><th>SOLD cap</th><th>PAID floor</th><th>credit</th><th>breach</th><th>collar payout</th><th>result</th></tr></thead>
-  <tbody>${settledRows || `<tr><td colspan="9" class="muted">Nothing settled yet.</td></tr>`}</tbody></table>
-  <p class="sub" style="margin-top:12px">How to read: the collar SELLS the ceiling (collect premium) and BUYS the floor (pay premium); the difference funds the net credit. At settlement: no breach ⟹ keep the credit · cap hit ⟹ give back gains above the ceiling (paid from that position's own perp gain) · floor hit ⟹ protection pays losses beyond the floor.</p>
+  <table><thead><tr><th>ref</th><th>side</th><th>entry → settle</th><th>SOLD cap</th><th>PAID floor</th><th>venue fee</th><th>credit</th><th>breach</th><th>collar payout</th><th>result</th></tr></thead>
+  <tbody>${settledRows || `<tr><td colspan="10" class="muted">Nothing settled yet.</td></tr>`}</tbody></table>
+  <p class="sub" style="margin-top:12px">How to read: <b>net credit = SOLD − PAID − venue fee</b>. The collar SELLS the ceiling (collect premium) and BUYS the floor (pay premium); the hedge venue's trading fee is funded by the collar (never by Atticus, never deducted from the credit afterward). Anything the structure funds above the target passes to Foxify in full. At settlement: no breach ⟹ keep the credit · cap hit ⟹ give back gains above the ceiling (paid from that position's own perp gain) · floor hit ⟹ protection pays losses beyond the floor.</p>
 </div></body></html>`;
 };
 
