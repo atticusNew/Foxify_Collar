@@ -119,7 +119,8 @@ const betaQuantile = (q: number, a: number, b: number): number => {
 };
 
 export const buildRegimeStats = (outcomes: SettlementOutcome[], cfg: RegimeConfig = {}): RegimeStats => {
-  const fee = cfg.perpFeeUsdc != null && cfg.perpFeeUsdc >= 0 ? cfg.perpFeeUsdc : 80;
+  // Default 0: no fee assumed until the partner's real number is known (dashboards show observed money only).
+  const fee = cfg.perpFeeUsdc != null && cfg.perpFeeUsdc >= 0 ? cfg.perpFeeUsdc : 0;
   const nRecent = cfg.recentDays ?? 14;
 
   const moves = outcomes.map((o) => o.movePct);

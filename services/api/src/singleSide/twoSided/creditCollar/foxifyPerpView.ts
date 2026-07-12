@@ -48,7 +48,11 @@ export type PerpVenue = {
 };
 
 export type FoxifyViewConfig = {
-  /** Global assumed per-position perp fee (USDC) — the credit benchmark. Default 80. Overridden per venue. */
+  /**
+   * Global per-position perp fee (USDC) — the credit benchmark. Default 0: NO fee is assumed until
+   * Foxify's real number is known (a hypothetical here poisons every downstream net). Model one ad hoc
+   * via the dashboard's ?fee=X override or FOXIFY_PERP_FEE_USDC.
+   */
   perpFeeUsdc?: number;
   /** How many recent matched pairs to surface. Default 5. */
   recentPairs?: number;
@@ -125,7 +129,7 @@ export const perpPnlUsdc = (o: SettlementOutcome): number => {
 };
 
 export const buildFoxifyView = (outcomes: SettlementOutcome[], cfg: FoxifyViewConfig = {}): FoxifyView => {
-  const globalFee = cfg.perpFeeUsdc != null && cfg.perpFeeUsdc >= 0 ? cfg.perpFeeUsdc : 80;
+  const globalFee = cfg.perpFeeUsdc != null && cfg.perpFeeUsdc >= 0 ? cfg.perpFeeUsdc : 0;
   const nPairs = cfg.recentPairs ?? 5;
   const venues = cfg.venues && cfg.venues.length > 0 ? cfg.venues : DEFAULT_VENUES;
   const nv = venues.length;

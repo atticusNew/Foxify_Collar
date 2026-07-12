@@ -50,8 +50,9 @@ const token = process.env.SHADOW_DASHBOARD_TOKEN;
 const haltBand = num(process.env.SHADOW_BREAKER_HALT, 0.15);
 const forwardSettle = String(process.env.SHADOW_FORWARD_SETTLE ?? "true").toLowerCase() !== "false";
 const settlementHorizonMin = num(process.env.SHADOW_SETTLEMENT_HORIZON_MIN, 60); // positions settle 1h later (real move)
-// Assumed per-position perp trading fee the credit is meant to cover — drives the Foxify "credit covers fees" view.
-const foxifyPerpFeeUsdc = num(process.env.FOXIFY_PERP_FEE_USDC, 80);
+// Per-position perp fee for the Foxify views. Default 0: NO fee assumed until Foxify's real number is known
+// (dashboards show observed money only). Model one ad hoc with ?fee=25 on any dashboard URL, or set the env.
+const foxifyPerpFeeUsdc = num(process.env.FOXIFY_PERP_FEE_USDC, 0);
 // Foxify perp-book realism inputs. Each leg of a matched pair lands on a DIFFERENT venue (round-robin).
 // Funding/basis/fee are CSV-aligned to the venue list (single value broadcasts); leave at 0 for the
 // oracle-mirror baseline, or feed real per-venue numbers (ideally from the partner feed) to make it faithful.
@@ -234,7 +235,7 @@ const loop = async () => {
 const server = createServer((req, res) => {
   const out = handleDashboardRequest(
     { method: req.method ?? "GET", path: req.url ?? "/", authorization: req.headers.authorization },
-    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: () => loadFoxifyView(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: () => loadRegimeStats(undefined, { perpFeeUsdc: foxifyPerpFeeUsdc, gate: cfg.regimeGate, liveGaugePct: computeLiveRegimeSignal(loadPriceHistory(), Date.now(), { lookbackMs: cfg.regimeGate?.liveLookbackMs, minSamples: cfg.regimeGate?.liveMinSamples })?.gaugePct ?? null, prevRegime: loadGateState()?.regime ?? null }), positions: () => ({ open: loadOpenPositions(), settled: loadSettlements() }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
+    { loadRecords: () => loadScorecards(), liveStatus: () => status, settlementAggregate: () => loadSettlementAggregate(), foxifyView: (feeUsdc?: number) => loadFoxifyView(undefined, { perpFeeUsdc: feeUsdc ?? foxifyPerpFeeUsdc, venues: foxifyVenues }), regimeStats: (feeUsdc?: number) => loadRegimeStats(undefined, { perpFeeUsdc: feeUsdc ?? foxifyPerpFeeUsdc, gate: cfg.regimeGate, liveGaugePct: computeLiveRegimeSignal(loadPriceHistory(), Date.now(), { lookbackMs: cfg.regimeGate?.liveLookbackMs, minSamples: cfg.regimeGate?.liveMinSamples })?.gaugePct ?? null, prevRegime: loadGateState()?.regime ?? null }), positions: () => ({ open: loadOpenPositions(), settled: loadSettlements() }), lifecycleReport: () => latestLifecycle, token, aggregateConfig: { exposureBandPct: haltBand, targetServiceFeeBps: cfg.serviceFeeBps, capital: capitalConfig } }
   );
   res.writeHead(out.statusCode, { "Content-Type": out.contentType });
   res.end(out.body);

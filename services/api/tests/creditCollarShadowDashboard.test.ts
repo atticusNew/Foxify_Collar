@@ -85,6 +85,23 @@ test("positions view renders open + settled with leg premiums and plain-words fi
   assert.ok(/no breach/.test(html));
 });
 
+test("?fee= override flows into the Foxify/regime views; no fee assumed by default", () => {
+  const captured: Array<number | undefined> = [];
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    foxifyView: (fee?: number) => {
+      captured.push(fee);
+      return null;
+    }
+  };
+  handleDashboardRequest({ method: "GET", path: "/simple" }, deps);
+  handleDashboardRequest({ method: "GET", path: "/simple?fee=25" }, deps);
+  handleDashboardRequest({ method: "GET", path: "/api/scorecard?fee=42.5" }, deps);
+  assert.deepEqual(captured, [undefined, 25, 42.5], "no override by default; ?fee= parsed and passed through");
+});
+
 test("handler: /simple returns html", () => {
   const deps = { loadRecords: () => [rec(NOW - 30_000)], liveStatus: () => status(), nowMs: () => NOW };
   const r = handleDashboardRequest({ method: "GET", path: "/simple" }, deps);
