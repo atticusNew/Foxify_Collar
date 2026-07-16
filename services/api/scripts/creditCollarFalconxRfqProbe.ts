@@ -67,6 +67,7 @@ const quoteAndTrack = async (label: string, structure: Array<{ side: "buy" | "se
   const r = await request("/v3/derivatives/option/quote", "POST", {
     token_pair: { base_token: "BTC", quote_token: "USDC" },
     quantity: QTY,
+    side: "two_way", // top-level side is required (per API error); two_way returns bid AND ask on the structure
     structure,
     client_order_id: randomUUID()
   });
