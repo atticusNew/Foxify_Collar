@@ -140,7 +140,13 @@ const generate = async (): Promise<void> => {
   const rfqs = loadRfqs();
   const ref = `RFQ-${rfqs.length + 1}`;
   const qtyBtc = +(cfg.positionNotionalUsdc / spot).toFixed(4);
-  const expiryIso = new Date(now + cfg.tenorDays * 86_400_000).toISOString();
+  // Expiry snaps to the standard 08:00 UTC daily fixing (the grid FalconX/OKX trade and the Deribit
+  // reference G-20 settles on) — one settlement clock across every venue. Take the next 08:00 that is
+  // at least 12h out (running at the 08:15 window ⟹ ~24h tenor, the pure product shape).
+  const next8 = new Date(now);
+  next8.setUTCHours(8, 0, 0, 0);
+  while (next8.getTime() - now < 12 * 3_600_000) next8.setUTCDate(next8.getUTCDate() + 1);
+  const expiryIso = next8.toISOString();
   const pending: PendingRfq = {
     ref,
     createdAtIso: new Date(now).toISOString(),
@@ -167,7 +173,7 @@ const generate = async (): Promise<void> => {
     .join("\n");
   console.log(`── paste to G-20 ─────────────────────────────────────────────`);
   console.log(`${ref} — ${new Date(now).toISOString().slice(0, 10)}
-BTC ref ~$${fmtUsd(spot)} · expiry ${expiryIso.slice(0, 16)}Z (24h) · cash-settled USDC
+BTC ref ~$${fmtUsd(spot)} · expiry ${expiryIso.slice(0, 16)}Z (standard daily 08:00 UTC fixing) · cash-settled USDC
 ${legLines}
 Quote NET both ways per structure pls, validity 60s.
 Reply format: ${ref} BID <net> ASK <net> VALID 60`);

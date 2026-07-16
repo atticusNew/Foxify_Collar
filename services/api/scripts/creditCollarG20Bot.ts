@@ -22,7 +22,9 @@ import { resolveWritablePath } from "../src/singleSide/twoSided/creditCollar/sha
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
-const WINDOW = process.env.G20_WINDOW_UTC || "14:00";
+// Default window 08:15 UTC: just after the 08:00 daily roll, so quotes are on the FRESH daily expiry
+// (true ~24h tenor, richest premium) and every venue shares the same 08:00 fixing clock.
+const WINDOW = process.env.G20_WINDOW_UTC || "08:15";
 const AUTO_CONFIRM = String(process.env.G20_AUTO_CONFIRM ?? "false").toLowerCase() === "true";
 const MAX_DISCOUNT = Number(process.env.G20_MAX_DISCOUNT_PCT ?? 0.25);
 const RFQ_PATH = process.env.G20_RFQ_PATH ?? "./logs/g20-rfqs.jsonl";
