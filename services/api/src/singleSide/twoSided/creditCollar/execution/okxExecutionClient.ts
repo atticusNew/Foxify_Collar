@@ -129,7 +129,7 @@ export class OkxExecutionClient {
     return this.request("POST", "/api/v5/trade/order", buildOrderBody(o));
   }
 
-  getOrder(instId: string, ordId: string): Promise<OkxResponse<{ ordId?: string; state?: string; avgPx?: string; accFillSz?: string; sz?: string; fee?: string }>> {
+  getOrder(instId: string, ordId: string): Promise<OkxResponse<{ ordId?: string; state?: string; avgPx?: string; accFillSz?: string; sz?: string; fee?: string; feeCcy?: string; px?: string }>> {
     return this.request("GET", `/api/v5/trade/order?instId=${encodeURIComponent(instId)}&ordId=${encodeURIComponent(ordId)}`);
   }
 
@@ -170,9 +170,27 @@ export class OkxExecutionClient {
     return this.request("GET", `/api/v5/account/trade-fee?instType=${instType}&uly=${encodeURIComponent(uly)}`);
   }
 
-  /** Public option chain (instId/strike/expiry/type/contract-value) for the ACTIVE environment. Read-only. */
-  getOptionChain(uly = "BTC-USD"): Promise<OkxResponse<{ instId?: string; optType?: "C" | "P"; stk?: string; expTime?: string; ctVal?: string; state?: string }>> {
+  /** Public option chain (instId/strike/expiry/type/contract-value/ticks) for the ACTIVE environment. Read-only. */
+  getOptionChain(uly = "BTC-USD"): Promise<OkxResponse<{ instId?: string; optType?: "C" | "P"; stk?: string; expTime?: string; ctVal?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }>> {
     return this.request("GET", `/api/v5/public/instruments?instType=OPTION&uly=${encodeURIComponent(uly)}`);
+  }
+
+  /**
+   * Public delivery/exercise history — OKX's ACTUAL settlement price per expired instrument
+   * (type: exercised / counterparty_exercised / expired_otm). Read-only; used for settlement
+   * reconciliation of okx_live positions against the venue's own fixing.
+   */
+  getDeliveryExerciseHistory(instType = "OPTION", uly = "BTC-USD"): Promise<OkxResponse<{ ts?: string; details?: Array<{ insId?: string; px?: string; type?: string }> }>> {
+    return this.request("GET", `/api/v5/public/delivery-exercise-history?instType=${instType}&uly=${encodeURIComponent(uly)}`);
+  }
+
+  /**
+   * Account bills (7-day window) — the REAL cash flows: option premium payments, fees, and
+   * delivery/exercise settlement amounts (balance changes in BTC for coin-margined options).
+   * Read-only; drives per-position settlement reconciliation to the cent.
+   */
+  getBills(instType = "OPTION", limit = 100): Promise<OkxResponse<{ billId?: string; instId?: string; type?: string; subType?: string; balChg?: string; px?: string; sz?: string; ccy?: string; ts?: string }>> {
+    return this.request("GET", `/api/v5/account/bills?instType=${instType}&limit=${limit}`);
   }
 
   /** Public index price (e.g. BTC-USD) for picking strikes. Read-only. */

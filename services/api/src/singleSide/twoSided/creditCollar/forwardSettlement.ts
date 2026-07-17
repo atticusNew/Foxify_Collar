@@ -35,10 +35,22 @@ export type OpenPosition = {
   fundingLegPremiumUsdc?: number;
   /** What we PAID for the protective leg (floor) at open — executable premium, USDC. */
   protectiveLegPremiumUsdc?: number;
-  /** Hedge venue for this position ("okx_model" in the shadow; "g20_quote" when booked off a live RFQ). */
+  /** Hedge venue for this position ("okx_model" in the shadow; "g20_quote" off a manual RFQ; "okx_live" for real fills). */
   venue?: string;
   /** Live-RFQ metadata when booked off a real venue quote (dry-run or live). */
   quoteMeta?: { rfqRef: string; quotedNetUsdc: number; modelNetUsdc: number; quotedAtIso: string };
+  /** Real-execution metadata (venue okx_live): the exact instruments/fills, for unwind + reconciliation. */
+  liveMeta?: {
+    putInstId: string;
+    callInstId: string;
+    contracts: number;          // venue contracts per leg (0.01 BTC each on OKX)
+    ctValBtc: number;
+    mode: "demo" | "live";
+    protectiveFillPxBtc: number; // avg fill px, BTC per BTC underlying
+    fundingFillPxBtc: number;
+    venueFeeUsdc: number;        // realized venue fee across both legs (USD at entry spot)
+    clOrdPrefix?: string;
+  };
 };
 
 export type SettlementOutcome = {
@@ -74,6 +86,7 @@ export type SettlementOutcome = {
   protectiveLegPremiumUsdc?: number;   // what we PAID for the floor at open
   venue?: string;
   quoteMeta?: OpenPosition["quoteMeta"];
+  liveMeta?: OpenPosition["liveMeta"]; // real-execution metadata (okx_live) — reconciliation needs the instIds
 };
 
 /**
@@ -220,7 +233,8 @@ export const settleMatured = (
       fundingLegPremiumUsdc: p.fundingLegPremiumUsdc,
       protectiveLegPremiumUsdc: p.protectiveLegPremiumUsdc,
       venue: p.venue,
-      quoteMeta: p.quoteMeta
+      quoteMeta: p.quoteMeta,
+      liveMeta: p.liveMeta
     });
   }
   return { settled, stillOpen, oracleVerified, settlePriceUsd, deferred };
