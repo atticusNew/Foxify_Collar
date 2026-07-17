@@ -22,6 +22,9 @@ import { DEFAULT_GATE_STATE_PATH, loadGateState } from "../src/singleSide/twoSid
 import { DEFAULT_COLLATERAL_PATH } from "../src/singleSide/twoSided/creditCollar/collateralStore";
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowLifecycleReport } from "../src/singleSide/twoSided/creditCollar/lifecycleShadow";
+import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
+import { buildOkxLiveExecutionHook, type LiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
+import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
 import { existsSync, unlinkSync } from "node:fs";
 
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
@@ -158,6 +161,34 @@ const cfg: LiveShadowConfig = {
   oraclePublicKeyPem: process.env.ORACLE_PUBLIC_KEY_PEM
 };
 
+// ── OKX LIVE execution hook (DEFAULT OFF). Armed ONLY when LIVE_ENABLED=true AND OKX creds exist; ──
+// real money additionally requires OKX_EXECUTION_MODE=live + OKX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY.
+// When armed, opens happen ONLY via the guarded 08:15 UTC window (venue okx_live) — no paper opens.
+let liveExecution: LiveExecutionHook | undefined;
+{
+  const liveGuards = parseLiveGuardsFromEnv(process.env);
+  if (liveGuards.liveEnabled) {
+    const apiKey = process.env.OKX_API_KEY;
+    const secret = process.env.OKX_API_SECRET;
+    const passphrase = process.env.OKX_API_PASSPHRASE;
+    if (!apiKey || !secret || !passphrase) {
+      console.error("[shadow-svc] ❌ LIVE_ENABLED=true but OKX_API_KEY/SECRET/PASSPHRASE missing — live path stays OFF (paper shadow).");
+    } else {
+      const armed = executionArmed(liveGuards);
+      if (!armed.armed) {
+        console.error(`[shadow-svc] ❌ live path NOT armed: ${armed.reason} — paper shadow continues.`);
+      } else {
+        const client = new OkxExecutionClient({ apiKey, secret, passphrase, mode: liveGuards.mode });
+        liveExecution = buildOkxLiveExecutionHook(process.env, { client });
+        console.error(
+          `[shadow-svc] ⚡ OKX LIVE EXECUTION ARMED (${liveGuards.mode.toUpperCase()}): window ${liveGuards.windowUtc}–${liveGuards.windowLatestUtc} UTC · caps $${liveGuards.maxPositionNotionalUsdc}/pos $${liveGuards.maxDayNotionalUsdc}/day · band ${liveGuards.slippageBandPct * 100}%` +
+            (liveGuards.canaryContracts != null ? ` · CANARY ${liveGuards.canaryContracts} contracts` : "")
+        );
+      }
+    }
+  }
+}
+
 const status: ShadowLiveStatus = {
   loopActive: true,
   intervalMs,
@@ -177,6 +208,7 @@ const runCycle = async () => {
     if (forwardSettle) {
       const res = await runForwardShadowCycle({
         ...cfg,
+        liveExecution,
         settlementHorizonMin,
         capital: {
           shortOptionImFraction: capitalConfig.shortOptionImFraction,
