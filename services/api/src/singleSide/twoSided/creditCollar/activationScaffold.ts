@@ -73,6 +73,9 @@ export type ActivationRecord = {
   fundingLegPremiumUsdc: number;
   /** What we PAID for the protective leg (the floor) — executable premium, USDC. */
   protectiveLegPremiumUsdc: number;
+  /** Model MID premiums per leg, USDC (the live executor's slippage-band anchor). */
+  fundingLegMidUsdc: number;
+  protectiveLegMidUsdc: number;
   /** Atticus's profit model: "pass_through" (collar nets ~0, fee billed separately) or "embedded_spread". */
   pricingModel: "embedded_spread" | "pass_through";
   /** True when the collar itself funds the Bullish open fee (pass_through) ⟹ fee is not borne by Atticus's net. */
@@ -208,6 +211,8 @@ export class CreditCollarActivationScaffold {
       openFeeUsdc: q.economics.option_open_fees_usdc,
       fundingLegPremiumUsdc: q.fills.funding_leg_bid_usdc,
       protectiveLegPremiumUsdc: q.fills.protective_leg_ask_usdc,
+      fundingLegMidUsdc: q.legs.funding_leg_mid_usdc,
+      protectiveLegMidUsdc: q.legs.floor_leg_mid_usdc,
       pricingModel: model,
       feesFundedByCollar: model === "pass_through",
       status: "active"

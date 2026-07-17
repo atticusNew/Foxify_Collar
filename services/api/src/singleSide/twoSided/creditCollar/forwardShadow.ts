@@ -22,6 +22,7 @@ import type { PerpSide } from "./creditCollarPricer";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
+import type { LiveExecutionHook, SolveSide } from "./execution/okxLiveRunner";
 
 export type ForwardCycleResult =
   | {
@@ -54,6 +55,13 @@ export type ForwardCycleConfig = LiveShadowConfig & {
     maxStalenessMs?: number;       // partner-feed staleness tolerance (default 15_000)
     sizeTolerancePct?: number;     // partner size vs notional tolerance (default 0.02)
   };
+  /**
+   * LIVE execution hook (OKX pilot). When set, the cycle does NOT open paper positions: opens happen
+   * ONLY through the hook's guarded daily window (kill-switch, caps, pair-atomic real fills) and are
+   * booked as venue "okx_live" into the same ledgers. Settled live positions are reconciled against
+   * the venue. Unset (default) ⟹ the pure paper shadow, unchanged.
+   */
+  liveExecution?: LiveExecutionHook;
 };
 
 export const runForwardShadowCycle = async (
@@ -109,7 +117,7 @@ export const runForwardShadowCycle = async (
 
   // How many to open this cycle. Signal mode (dailyPositions set) releases a steady staggered rate over
   // time (partner-like flow); otherwise the legacy fixed batch of nPositions. Neutral-over-time either way.
-  const signalMode = cfg.dailyPositions != null && cfg.dailyPositions > 0;
+  const signalMode = cfg.dailyPositions != null && cfg.dailyPositions > 0 && cfg.liveExecution == null;
   // HYBRID "auto" strategy (the pilot's actual playbook): CALM ⟹ neutral pair (as if the partner approved)
   // · ELEVATED ⟹ directional single with the trend at the FULL rate (as if the partner picked the side; the
   // gate's neutral pause does not apply to the directional leg) · HALT ⟹ skip entirely.
@@ -152,53 +160,108 @@ export const runForwardShadowCycle = async (
     biasSide = dir >= 0 ? "long" : "short"; // follow recent momentum; flat/unknown ⟹ long
   }
 
-  for (let i = 0; i < nToOpen; i++) {
-    const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
-    if (!instr.ok) {
-      halted += 1;
-      continue;
+  if (cfg.liveExecution) {
+    // ── LIVE MODE (OKX pilot): no paper opens. Settled live positions reconcile against the venue,
+    //    and opens happen ONLY through the guarded daily window (kill-switch → window → caps →
+    //    pair-atomic real fills). Guardrail rejections skip the day — never forced.
+    try {
+      await cfg.liveExecution.reconcileSettled(settled);
+    } catch (e) {
+      console.error(`[okx-live] settlement reconciliation error: ${(e as Error).message}`);
     }
-    const rec = scaffold.activate({ ref: instr.ref, side: biasSide ?? instr.side, notionalUsdc: cfg.positionNotionalUsdc, spot, instrument: "BTC-PERP", tsMs: now + i });
-    if ("status" in rec && rec.status === "active") {
-      newOpens.push({
-        ref: rec.ref,
-        side: rec.side,
-        notionalUsdc: rec.notionalUsdc,
-        spotAtEntry: spot,
-        putStrike: rec.putStrike,
-        callStrike: rec.callStrike,
-        foxifyCreditUsdc: rec.foxifyCreditUsdc,
-        serviceFeeUsdc: rec.serviceFeeUsdc,
-        floorPctUsed: rec.floorPctUsed,
-        openFeeUsdc: rec.openFeeUsdc,
-        feesFundedByCollar: rec.feesFundedByCollar,
-        fundingLegPremiumUsdc: rec.fundingLegPremiumUsdc,
-        protectiveLegPremiumUsdc: rec.protectiveLegPremiumUsdc,
-        venue: `${cfg.hedgeVenue ?? "blend"}_model`,
-        openedAtMs: now,
-        expiresAtMs: now + horizonMs
+    const solveSide: SolveSide = (side) => {
+      const rec = scaffold.activate({ ref: `cc-live-${now}-${side}`, side, notionalUsdc: cfg.positionNotionalUsdc, spot, instrument: "BTC-PERP", tsMs: now });
+      if ("status" in rec && rec.status === "active") {
+        return {
+          ok: true,
+          solved: {
+            ref: rec.ref,
+            side: rec.side,
+            notionalUsdc: rec.notionalUsdc,
+            putStrike: rec.putStrike,
+            callStrike: rec.callStrike,
+            foxifyCreditUsdc: rec.foxifyCreditUsdc,
+            serviceFeeUsdc: rec.serviceFeeUsdc,
+            floorPctUsed: rec.floorPctUsed,
+            protectiveLegMidUsdc: rec.protectiveLegMidUsdc,
+            fundingLegMidUsdc: rec.fundingLegMidUsdc
+          }
+        };
+      }
+      return { ok: false, error: (rec as { error: string }).error, message: (rec as { message: string }).message };
+    };
+    try {
+      const live = await cfg.liveExecution.executeWindow({
+        nowMs: now,
+        spot,
+        regime: regimeGate,
+        trendBias: biasSide ?? (trendDirection(loadPriceHistory(paths.priceHistoryPath), now, cfg.regimeGate?.liveLookbackMs) >= 0 ? "long" : "short"),
+        solveSide
       });
-      serviceFee += rec.serviceFeeUsdc;
-      credit += rec.foxifyCreditUsdc;
-      maxFloor = Math.max(maxFloor, rec.floorPctUsed);
-      sumFloor += rec.floorPctUsed;
-      const inv = computeInventory(scaffold.bookSnapshot(), band);
-      peakNotional = Math.max(peakNotional, Math.abs(inv.netNotionalUsdc));
-      if (inv.grossNotionalUsdc >= minGross) peakRatio = Math.max(peakRatio, inv.imbalanceRatio);
-    } else if ("error" in rec) {
-      rejected += 1;
-      rej[rec.error] = (rej[rec.error] ?? 0) + 1;
+      nToOpen = live.attempted;
+      rejected += live.rejected;
+      for (const [k, v] of Object.entries(live.rejectionsByReason)) rej[k] = (rej[k] ?? 0) + v;
+      for (const p of live.newOpens) {
+        newOpens.push(p);
+        serviceFee += p.serviceFeeUsdc;
+        credit += p.foxifyCreditUsdc;
+        maxFloor = Math.max(maxFloor, p.floorPctUsed);
+        sumFloor += p.floorPctUsed;
+      }
+      if (live.summary) console.error(`[okx-live] ${live.summary}`);
+    } catch (e) {
+      console.error(`[okx-live] window execution error (nothing booked): ${(e as Error).message}`);
+      rej["live_execution_error"] = (rej["live_execution_error"] ?? 0) + 1;
     }
-  }
+  } else {
+    for (let i = 0; i < nToOpen; i++) {
+      const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
+      if (!instr.ok) {
+        halted += 1;
+        continue;
+      }
+      const rec = scaffold.activate({ ref: instr.ref, side: biasSide ?? instr.side, notionalUsdc: cfg.positionNotionalUsdc, spot, instrument: "BTC-PERP", tsMs: now + i });
+      if ("status" in rec && rec.status === "active") {
+        newOpens.push({
+          ref: rec.ref,
+          side: rec.side,
+          notionalUsdc: rec.notionalUsdc,
+          spotAtEntry: spot,
+          putStrike: rec.putStrike,
+          callStrike: rec.callStrike,
+          foxifyCreditUsdc: rec.foxifyCreditUsdc,
+          serviceFeeUsdc: rec.serviceFeeUsdc,
+          floorPctUsed: rec.floorPctUsed,
+          openFeeUsdc: rec.openFeeUsdc,
+          feesFundedByCollar: rec.feesFundedByCollar,
+          fundingLegPremiumUsdc: rec.fundingLegPremiumUsdc,
+          protectiveLegPremiumUsdc: rec.protectiveLegPremiumUsdc,
+          venue: `${cfg.hedgeVenue ?? "blend"}_model`,
+          openedAtMs: now,
+          expiresAtMs: now + horizonMs
+        });
+        serviceFee += rec.serviceFeeUsdc;
+        credit += rec.foxifyCreditUsdc;
+        maxFloor = Math.max(maxFloor, rec.floorPctUsed);
+        sumFloor += rec.floorPctUsed;
+        const inv = computeInventory(scaffold.bookSnapshot(), band);
+        peakNotional = Math.max(peakNotional, Math.abs(inv.netNotionalUsdc));
+        if (inv.grossNotionalUsdc >= minGross) peakRatio = Math.max(peakRatio, inv.imbalanceRatio);
+      } else if ("error" in rec) {
+        rejected += 1;
+        rej[rec.error] = (rej[rec.error] ?? 0) + 1;
+      }
+    }
 
-  // Pair-atomic completeness: if one leg of a pair priced but its sibling rejected (e.g. one-sided skew
-  // infeasibility), drop the orphan before persisting — the neutral book never carries a naked leg.
-  if (pairSize === 2 && newOpens.length % 2 === 1) {
-    const dropped = newOpens.pop() as OpenPosition;
-    rejected += 1;
-    rej["pair_incomplete_dropped"] = (rej["pair_incomplete_dropped"] ?? 0) + 1;
-    serviceFee -= dropped.serviceFeeUsdc;
-    credit -= dropped.foxifyCreditUsdc;
+    // Pair-atomic completeness: if one leg of a pair priced but its sibling rejected (e.g. one-sided skew
+    // infeasibility), drop the orphan before persisting — the neutral book never carries a naked leg.
+    if (pairSize === 2 && newOpens.length % 2 === 1) {
+      const dropped = newOpens.pop() as OpenPosition;
+      rejected += 1;
+      rej["pair_incomplete_dropped"] = (rej["pair_incomplete_dropped"] ?? 0) + 1;
+      serviceFee -= dropped.serviceFeeUsdc;
+      credit -= dropped.foxifyCreditUsdc;
+    }
   }
 
   const openBook = [...stillOpen, ...newOpens];
@@ -271,6 +334,7 @@ export const runForwardShadowCycle = async (
     lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation || nToOpen === 0),
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
+      cfg.liveExecution ? "LIVE EXECUTION MODE: opens only via the guarded OKX daily window (venue okx_live); no paper opens." : "",
       signalMode ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle${pairSize === 2 ? " (pair-atomic: both legs or neither)" : ""}.` : "",
       autoMode ? `Hybrid auto strategy: regime ${autoRegime} ⟹ ${autoRegime === "calm" ? "neutral pair" : autoRegime === "elevated" ? `directional ${biasSide} (trend)` : "skip"}.` : "",
       biasSide && !autoMode ? `Directional bias: ${cfg.directionalBias} ⟹ opening ${biasSide} (directional book; breaker relaxed).` : "",
