@@ -1,0 +1,174 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-okx-live.yaml — Atticus OKX LIVE pilot service (real collar hedges)
+#
+# A DEDICATED, ISOLATED service for the two-week OKX pilot. It runs the SAME
+# shadow service loop as the mirror, but with the live execution hook armed:
+# at the 08:15 UTC window the auto strategy's output becomes REAL OKX orders
+# (pair-atomic, band-capped limits, both legs or neither), booked to FRESH
+# ledgers as venue "okx_live", settled at the 08:00 UTC fixing and reconciled
+# against OKX's own delivery price + bills.
+#
+# The existing foxify-okx-mirror service KEEPS RUNNING UNCHANGED in parallel
+# as the model-price benchmark. Do NOT reuse its disk or env.
+#
+# DEFAULT-OFF DISCIPLINE
+#   - LIVE_ENABLED is sync:false and must be set to "true" in the dashboard at
+#     launch (it is the master kill-switch — unset/false = paper only, no orders).
+#   - Real money additionally requires OKX_EXECUTION_MODE=live AND
+#     OKX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY (both sync:false).
+#   - Secrets ONLY here (sync:false) — never in code, logs, or chat.
+#
+# CONFIG FREEZE (canary → end of the two weeks): floor 6% / 10% elevated,
+# credit target $80, ceiling off, σ-floor 1.1×, gate 1.2/3.0 with 0.85
+# hysteresis, 2 positions/day (one calm pair or one elevated single), $50k
+# per position / $100k per day. Change nothing below during the pilot.
+#
+# Deploy: Render dashboard → New → Blueprint → select this file.
+# Ops: run venue-touching commands (readiness, canary, unwind) in THIS
+# service's shell — its outbound IPs are the whitelisted ones.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: foxify-okx-live
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/bullish-fees-hedge-receipt-9151
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api run shadow:service
+    healthCheckPath: /healthz
+    disk:
+      name: okx-live-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # ── MASTER KILL-SWITCH + live-money gates (dashboard-managed, deliberate) ──
+      - key: LIVE_ENABLED
+        sync: false               # set "true" at launch; anything else = no orders, ever
+      - key: OKX_EXECUTION_MODE
+        sync: false               # "demo" for rehearsal · "live" for real money
+      - key: OKX_LIVE_CONFIRM
+        sync: false               # must be I_UNDERSTAND_REAL_MONEY for live mode
+
+      # ── OKX API credentials (trade-scope only, withdrawals OFF, IP-whitelisted) ──
+      - key: OKX_API_KEY
+        sync: false
+      - key: OKX_API_SECRET
+        sync: false
+      - key: OKX_API_PASSPHRASE
+        sync: false
+
+      # ── Live execution rails (pilot spec) ──
+      - key: LIVE_WINDOW_UTC
+        value: "08:15"            # daily window open
+      - key: LIVE_WINDOW_LATEST_UTC
+        value: "10:00"            # after this the day is SKIPPED — never chase
+      - key: LIVE_MAX_POSITION_USDC
+        value: "50000"            # per-position cap (effective, contract-rounded notional)
+      - key: LIVE_MAX_DAY_NOTIONAL_USDC
+        value: "100000"           # per-day cap (calm pair = 2 × 50k)
+      - key: LIVE_SLIPPAGE_BAND_PCT
+        value: "0.25"             # max limit-price distance vs model mid, per leg
+      - key: LIVE_MAX_STRIKE_DRIFT_PCT
+        value: "0.01"             # listed-vs-solver strike drift tolerance (of spot)
+      - key: LIVE_RECON_TOLERANCE_USDC
+        value: "5"                # settlement reconciliation tolerance; mismatch ⟹ issuance halt
+      # LIVE_CANARY_CONTRACTS: set to 1–5 in the dashboard for the Mon/Tue canary; REMOVE for pilot size.
+
+      # ── Product terms (FROZEN for the pilot — identical to the shadow mirror) ──
+      - key: SHADOW_HEDGE_VENUE
+        value: okx
+      - key: SHADOW_SETTLEMENT_HORIZON_MIN
+        value: "1440"             # 24h tenor (live rows expire at the LISTED 08:00 UTC fixing)
+      - key: HARNESS_FEE_USDC
+        value: "80"               # credit target
+      - key: HARNESS_TENOR_DAYS
+        value: "1"
+      - key: HARNESS_MAX_FLOOR_PCT
+        value: "0.06"             # 6% default floor
+      - key: SHADOW_ADAPTIVE_FLOOR
+        value: "true"
+      - key: SHADOW_ADAPTIVE_FLOOR_CAP
+        value: "0.1"              # elevated days may deepen to 10% (gate override)
+      - key: SHADOW_ADAPTIVE_FLOOR_STEP
+        value: "0.005"
+      - key: HARNESS_STRIKE_GRID_USDC
+        value: "250"
+      - key: HARNESS_MIN_CAP_SIGMA
+        value: "1.1"              # σ-floor: never compress the cap to chase credit
+      - key: HARNESS_MAX_RETAINED_USDC
+        value: "2"                # retention bound (≤$2 dust)
+      - key: HARNESS_BULLISH_WEIGHT
+        value: "0"
+      - key: SHADOW_POSITION_USDC
+        value: "50000"
+      - key: SHADOW_DIRECTIONAL_BIAS
+        value: auto               # calm ⟹ neutral pair · elevated ⟹ trend single · halt ⟹ skip
+      - key: SHADOW_DAILY_POSITIONS
+        value: "2"
+      - key: SHADOW_REGIME_GATE
+        value: "true"
+      - key: SHADOW_REGIME_ELEVATED_VOL
+        value: "1.2"
+      - key: SHADOW_REGIME_HALT_VOL
+        value: "3.0"
+      - key: SHADOW_REGIME_HYSTERESIS
+        value: "0.85"
+      - key: SHADOW_REGIME_ELEVATED_FLOOR
+        value: "0.1"
+      - key: SHADOW_LOOP_INTERVAL_MS
+        value: "900000"           # 15-min cycles (settle/recon cadence; opens only in the window)
+      - key: SHADOW_TIER0_CAP_USDC
+        value: "2000000"
+
+      # ── Capital inputs (OKX-measured PM netting — dashboard reporting only) ──
+      - key: SHADOW_SHORT_OPTION_IM_FRACTION
+        value: "0.14"
+      - key: SHADOW_PM_NETTING
+        value: "0.078"
+      - key: SHADOW_COST_OF_CAPITAL
+        value: "0.12"
+
+      # ── FRESH disk-backed stores (single-config live track record, unpolluted) ──
+      - key: SHADOW_STORE_PATH
+        value: /var/data/okx-live-scorecards.jsonl
+      - key: SHADOW_OPEN_POSITIONS_PATH
+        value: /var/data/okx-live-open.jsonl
+      - key: SHADOW_SETTLEMENT_LEDGER_PATH
+        value: /var/data/okx-live-settlements.jsonl
+      - key: SHADOW_COLLATERAL_PATH
+        value: /var/data/okx-live-collateral.json
+      - key: SHADOW_OPENING_STATE_PATH
+        value: /var/data/okx-live-opening-state.json
+      - key: SHADOW_GATE_STATE_PATH
+        value: /var/data/okx-live-gate-state.json
+      - key: SHADOW_PRICE_HISTORY_PATH
+        value: /var/data/okx-live-price-history.jsonl
+      - key: LIVE_EXECUTIONS_PATH
+        value: /var/data/okx-live-executions.jsonl
+      - key: LIVE_WINDOW_STATE_PATH
+        value: /var/data/okx-live-window-state.json
+      - key: LIVE_ALERTS_PATH
+        value: /var/data/okx-live-alerts.jsonl
+      - key: LIVE_RECON_PATH
+        value: /var/data/okx-live-reconciliations.jsonl
+
+      # ── Public market-data bases ──
+      - key: OKX_REST_BASE
+        value: https://www.okx.com
+      - key: DERIBIT_REST_BASE
+        value: https://www.deribit.com/api/v2
+      - key: BULLISH_REST_BASE
+        value: https://api.exchange.bullish.com
+
+      # ── Oracle keys (audit continuity) + dashboard token ──
+      - key: ORACLE_PRIVATE_KEY_PEM
+        sync: false
+      - key: ORACLE_PUBLIC_KEY_PEM
+        sync: false
+      - key: SHADOW_DASHBOARD_TOKEN
+        sync: false
