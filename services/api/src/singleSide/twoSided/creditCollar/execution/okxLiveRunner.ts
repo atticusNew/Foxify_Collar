@@ -74,7 +74,7 @@ export type LiveExecutionHook = {
 
 export type LiveVenueClient = LiveExecClient &
   ReconFetchers & {
-    getOptionChain: (uly?: string) => Promise<{ ok: boolean; data: Array<{ instId?: string; optType?: string; stk?: string; expTime?: string; ctVal?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }> }>;
+    getOptionChain: (uly?: string) => Promise<{ ok: boolean; data: Array<{ instId?: string; optType?: string; stk?: string; expTime?: string; ctVal?: string; ctMult?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }> }>;
   };
 
 export type LiveRunnerDeps = {

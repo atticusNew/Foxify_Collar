@@ -170,8 +170,9 @@ export class OkxExecutionClient {
     return this.request("GET", `/api/v5/account/trade-fee?instType=${instType}&uly=${encodeURIComponent(uly)}`);
   }
 
-  /** Public option chain (instId/strike/expiry/type/contract-value/ticks) for the ACTIVE environment. Read-only. */
-  getOptionChain(uly = "BTC-USD"): Promise<OkxResponse<{ instId?: string; optType?: "C" | "P"; stk?: string; expTime?: string; ctVal?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }>> {
+  /** Public option chain (instId/strike/expiry/type/contract-value/ticks) for the ACTIVE environment. Read-only.
+   *  NOTE: real contract size = ctVal × ctMult (OKX lists ctVal=1, ctMult=0.01 for BTC-USD options). */
+  getOptionChain(uly = "BTC-USD"): Promise<OkxResponse<{ instId?: string; optType?: "C" | "P"; stk?: string; expTime?: string; ctVal?: string; ctMult?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }>> {
     return this.request("GET", `/api/v5/public/instruments?instType=OPTION&uly=${encodeURIComponent(uly)}`);
   }
 

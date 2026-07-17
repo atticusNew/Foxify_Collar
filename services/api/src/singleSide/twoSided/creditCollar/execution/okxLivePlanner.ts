@@ -30,9 +30,18 @@ export type OkxChainInstrument = {
   state: string;      // "live" = tradeable
 };
 
-/** Parse the raw instruments payload into typed chain rows (skips malformed/non-live-parsable rows). */
+/** Coin-margined standard chain only: BTC-USD-YYMMDD-STRIKE-C/P. Excludes the _UM (USD-margined,
+ *  linear, 5-USD-tick) variants — a different product with a different price convention. */
+const COIN_MARGINED_INSTID = /^BTC-USD-\d{6}-\d+-[CP]$/;
+
+/**
+ * Parse the raw instruments payload into typed chain rows (skips malformed / _UM / non-coin rows).
+ * CONTRACT SIZE: OKX reports ctVal=1 (BTC) with ctMult=0.01 for these options — the real per-contract
+ * size is ctVal × ctMult = 0.01 BTC. Reading ctVal alone would be a 100× sizing error (verified
+ * against the live chain; the fees-margin probe hit the same trap).
+ */
 export const parseOkxChain = (
-  raw: Array<{ instId?: string; optType?: string; stk?: string; expTime?: string; ctVal?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }>
+  raw: Array<{ instId?: string; optType?: string; stk?: string; expTime?: string; ctVal?: string; ctMult?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }>
 ): OkxChainInstrument[] =>
   raw
     .map((r) => ({
@@ -40,7 +49,7 @@ export const parseOkxChain = (
       optType: r.optType === "C" ? ("call" as const) : r.optType === "P" ? ("put" as const) : null,
       strike: Number(r.stk ?? NaN),
       expiryMs: Number(r.expTime ?? NaN),
-      ctValBtc: Number(r.ctVal ?? NaN),
+      ctValBtc: Number(r.ctVal ?? NaN) * Number(r.ctMult ?? "1"),
       tickSz: Number(r.tickSz ?? NaN),
       lotSz: Number(r.lotSz ?? 1),
       minSz: Number(r.minSz ?? 1),
@@ -48,7 +57,11 @@ export const parseOkxChain = (
     }))
     .filter(
       (r): r is OkxChainInstrument =>
-        r.optType != null && r.instId !== "" && Number.isFinite(r.strike) && r.strike > 0 && Number.isFinite(r.expiryMs) && r.expiryMs > 0 && Number.isFinite(r.ctValBtc) && r.ctValBtc > 0
+        r.optType != null &&
+        COIN_MARGINED_INSTID.test(r.instId) &&
+        Number.isFinite(r.strike) && r.strike > 0 &&
+        Number.isFinite(r.expiryMs) && r.expiryMs > 0 &&
+        Number.isFinite(r.ctValBtc) && r.ctValBtc > 0
     );
 
 /**

@@ -62,6 +62,18 @@ test("parseOkxChain: parses valid rows, drops malformed", () => {
   assert.equal(parsed[0].ctValBtc, 0.01);
 });
 
+test("parseOkxChain: real OKX shape — ctVal×ctMult = 0.01 BTC, _UM (USD-margined) excluded", () => {
+  // Verified against the live chain: coin-margined rows report ctVal=1, ctMult=0.01 (reading ctVal
+  // alone would be a 100× sizing error), and _UM rows are a different product (linear, 5-USD tick).
+  const parsed = parseOkxChain([
+    { instId: "BTC-USD-260720-94000-P", optType: "P", stk: "94000", expTime: String(expiry), ctVal: "1", ctMult: "0.01", tickSz: "0.0001", lotSz: "1", minSz: "1", state: "live" },
+    { instId: "BTC-USD_UM-260720-94000-P", optType: "P", stk: "94000", expTime: String(expiry), ctVal: "1", ctMult: "0.01", tickSz: "5", lotSz: "1", minSz: "1", state: "live" }
+  ]);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0].instId, "BTC-USD-260720-94000-P");
+  assert.equal(parsed[0].ctValBtc, 0.01);
+});
+
 // ── expiry snap ───────────────────────────────────────────────────────────────
 
 test("nextStandardDailyExpiryMs: at the 08:15 window the next 08:00 ≥12h out is tomorrow (~24h tenor)", () => {
