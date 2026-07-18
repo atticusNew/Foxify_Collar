@@ -68,6 +68,7 @@
     "okx:auth-probe": "tsx scripts/creditCollarOkxAuthProbe.ts",
     "okx:fees-margin": "tsx scripts/creditCollarOkxFeesMargin.ts",
     "okx:activate-option": "tsx scripts/creditCollarOkxActivateOption.ts",
+    "credit:check": "tsx scripts/creditCollarCreditCheck.ts",
     "okx:readiness": "tsx scripts/creditCollarOkxReadiness.ts",
     "falconx:readiness": "tsx scripts/creditCollarFalconxReadiness.ts",
     "live:canary": "tsx scripts/creditCollarLiveCanary.ts",
