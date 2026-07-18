@@ -139,11 +139,21 @@ of credit — needs product sign-off, NOT a unilateral config change) would mate
 Single-structure stress numbers (what the short leg owes at settlement, ~$50k protection): a 5%
 adverse move ≈ $1.1–1.3k · 10% ≈ $3.6–3.8k · 15% ≈ $6.1–6.3k · 20% ≈ $8.7k. **A $2k IA covers a
 lone structure only to ~6.6% past the reference** — sufficient for netted-pair days, NOT for
-directional single days. Realistic prefunding targets: ~$100k at FalconX's literal 100%-notional
-ask (two structures/day, same-morning recycling); ~$6–10k with package margining on pair days plus
-a 15–20%-stress IA on single days; $2k only if directional singles are excluded from the mandate
-(a product decision). FRAMING with the desk: we present as PROTECTION of client perp positions
+directional single days. FRAMING with the desk: we present as PROTECTION of client perp positions
 (one or two positions protected per day) — never as a volume/flow facility.
+
+**HARD CONSTRAINT: total collateral stays at the ~$2k envelope** (the OKX-PM equivalent: ~$546 per
+position ⟹ ~$1.1k for a two-position day). An OTC desk will not match exchange portfolio margin
+from a standing start — the decision tree to hold the line:
+
+1. **Pair days:** push package margining (defined-risk condor, max loss ≈ $1,984 per ~$100k) —
+   $2k genuinely covers every calm day. Lead with this.
+2. **Single (directional) days:** either add one cheap far-OTM long wing ~4% beyond the cap
+   (defines max loss ≈ $2k; costs a few dollars of credit — PRODUCT SIGN-OFF REQUIRED, not a
+   config change), or route single days to OKX (PM margin ≈ $546; path fully built,
+   `LIVE_EXECUTION_VENUE=okx`). Both keep total collateral ≈ $2–3k.
+3. **If FalconX's pair-day answer is also far above $2k:** run the pilot on OKX entirely and
+   revisit FalconX later.
 
 Also confirm: collateral currency (USDC?) · posted once and recycled daily vs per-trade · release
 timing after the 08:00 fixing (we re-issue 15 minutes later at 08:15) · whether the net premium
