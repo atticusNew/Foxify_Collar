@@ -23,8 +23,11 @@ import { DEFAULT_COLLATERAL_PATH } from "../src/singleSide/twoSided/creditCollar
 import { handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowLifecycleReport } from "../src/singleSide/twoSided/creditCollar/lifecycleShadow";
 import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
-import { buildOkxLiveExecutionHook, type LiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
-import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
+import { buildOkxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
+import { FalconxClient } from "../src/singleSide/twoSided/creditCollar/execution/falconxClient";
+import { buildFalconxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/falconxLiveRunner";
+import type { LiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/liveWindowRunner";
+import { executionArmed, parseLiveGuardsFromEnv, type LiveExecutionVenue } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
 import { existsSync, unlinkSync } from "node:fs";
 
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
@@ -161,30 +164,42 @@ const cfg: LiveShadowConfig = {
   oraclePublicKeyPem: process.env.ORACLE_PUBLIC_KEY_PEM
 };
 
-// ── OKX LIVE execution hook (DEFAULT OFF). Armed ONLY when LIVE_ENABLED=true AND OKX creds exist; ──
-// real money additionally requires OKX_EXECUTION_MODE=live + OKX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY.
-// When armed, opens happen ONLY via the guarded 08:15 UTC window (venue okx_live) — no paper opens.
+// ── LIVE execution hook (DEFAULT OFF). Venue via LIVE_EXECUTION_VENUE (falconx = primary; okx =
+// fallback). Armed ONLY when LIVE_ENABLED=true AND the venue's creds exist; real money additionally
+// requires the venue confirm phrase (FALCONX_LIVE_CONFIRM, or OKX_EXECUTION_MODE=live+OKX_LIVE_CONFIRM).
+// When armed, opens happen ONLY via the guarded 08:15 UTC window (venue <venue>_live) — no paper opens.
 let liveExecution: LiveExecutionHook | undefined;
 {
-  const liveGuards = parseLiveGuardsFromEnv(process.env);
+  const venue: LiveExecutionVenue = (process.env.LIVE_EXECUTION_VENUE ?? "falconx").toLowerCase() === "okx" ? "okx" : "falconx";
+  const liveGuards = parseLiveGuardsFromEnv(process.env, venue);
   if (liveGuards.liveEnabled) {
-    const apiKey = process.env.OKX_API_KEY;
-    const secret = process.env.OKX_API_SECRET;
-    const passphrase = process.env.OKX_API_PASSPHRASE;
-    if (!apiKey || !secret || !passphrase) {
-      console.error("[shadow-svc] ❌ LIVE_ENABLED=true but OKX_API_KEY/SECRET/PASSPHRASE missing — live path stays OFF (paper shadow).");
-    } else {
-      const armed = executionArmed(liveGuards);
-      if (!armed.armed) {
-        console.error(`[shadow-svc] ❌ live path NOT armed: ${armed.reason} — paper shadow continues.`);
+    const armed = executionArmed(liveGuards);
+    if (!armed.armed) {
+      console.error(`[shadow-svc] ❌ live path NOT armed: ${armed.reason} — paper shadow continues.`);
+    } else if (venue === "falconx") {
+      const apiKey = process.env.FALCONX_API_KEY;
+      const secret = process.env.FALCONX_SECRET;
+      const passphrase = process.env.FALCONX_PASSPHRASE;
+      if (!apiKey || !secret || !passphrase) {
+        console.error("[shadow-svc] ❌ LIVE_ENABLED=true but FALCONX_API_KEY/SECRET/PASSPHRASE missing — live path stays OFF (paper shadow).");
       } else {
-        const client = new OkxExecutionClient({ apiKey, secret, passphrase, mode: liveGuards.mode });
-        liveExecution = buildOkxLiveExecutionHook(process.env, { client });
-        console.error(
-          `[shadow-svc] ⚡ OKX LIVE EXECUTION ARMED (${liveGuards.mode.toUpperCase()}): window ${liveGuards.windowUtc}–${liveGuards.windowLatestUtc} UTC · caps $${liveGuards.maxPositionNotionalUsdc}/pos $${liveGuards.maxDayNotionalUsdc}/day · band ${liveGuards.slippageBandPct * 100}%` +
-            (liveGuards.canaryContracts != null ? ` · CANARY ${liveGuards.canaryContracts} contracts` : "")
-        );
+        liveExecution = buildFalconxLiveExecutionHook(process.env, { client: new FalconxClient({ apiKey, secret, passphrase }) });
       }
+    } else {
+      const apiKey = process.env.OKX_API_KEY;
+      const secret = process.env.OKX_API_SECRET;
+      const passphrase = process.env.OKX_API_PASSPHRASE;
+      if (!apiKey || !secret || !passphrase) {
+        console.error("[shadow-svc] ❌ LIVE_ENABLED=true but OKX_API_KEY/SECRET/PASSPHRASE missing — live path stays OFF (paper shadow).");
+      } else {
+        liveExecution = buildOkxLiveExecutionHook(process.env, { client: new OkxExecutionClient({ apiKey, secret, passphrase, mode: liveGuards.mode }) });
+      }
+    }
+    if (liveExecution) {
+      console.error(
+        `[shadow-svc] ⚡ ${venue.toUpperCase()} LIVE EXECUTION ARMED (${liveGuards.mode.toUpperCase()}): window ${liveGuards.windowUtc}–${liveGuards.windowLatestUtc} UTC · caps $${liveGuards.maxPositionNotionalUsdc}/pos $${liveGuards.maxDayNotionalUsdc}/day · band ${liveGuards.slippageBandPct * 100}%` +
+          (liveGuards.canaryContracts != null ? ` · CANARY ${liveGuards.canaryContracts} × 0.01 BTC` : "")
+      );
     }
   }
 }

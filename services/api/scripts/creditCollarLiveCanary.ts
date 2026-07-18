@@ -1,25 +1,32 @@
 #!/usr/bin/env tsx
 /**
- * OKX LIVE CANARY — the Mon/Tue go/no-go artifact: ONE tiny real collar (default 1 contract =
- * 0.01 BTC) through the FULL production path: live skew/pricer solve (pass-through, σ-floor, all
- * guardrails) → instrument mapping → band-capped atomic execution → booked to the SAME ledgers as
- * venue "okx_live" → appears on /positions → settles at the next 08:00 UTC fixing → reconciles
- * against OKX's delivery price + bills on the following cycle.
+ * LIVE CANARY (venue-aware) — the go/no-go artifact: ONE tiny real collar (default 1 × 0.01 BTC)
+ * through the FULL production path: live skew/pricer solve (pass-through, σ-floor, all guardrails)
+ * → venue plan → atomic execution → booked to the SAME ledgers as venue "<venue>_live" → appears on
+ * /positions → settles at the next 08:00 UTC fixing → reconciles against the venue's own settlement
+ * on the following cycle.
  *
- * SAFETY: same gates as the service. Requires LIVE_ENABLED=true; real money additionally requires
- * OKX_EXECUTION_MODE=live + OKX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY. Size is FORCED tiny
- * (LIVE_CANARY_CONTRACTS, default 1; hard max 5 here). The canary bypasses the 08:15 clock (it uses
- * its own window-state file) but respects every other rail. It executes ONE directional single —
- * side from the live trend, or --side long|short.
+ * Venue: LIVE_EXECUTION_VENUE=falconx (default, PRIMARY) or okx (fallback).
+ *   - FalconX: OTC RFQ — the collar executes as ONE structure (atomic at the venue). There is NO
+ *     demo: every execute is real money ⟹ requires FALCONX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY.
+ *   - OKX: two CLOB legs with band-capped limits; demo env available via OKX_EXECUTION_MODE=demo.
+ *
+ * SAFETY: same gates as the service. Requires LIVE_ENABLED=true. Size is FORCED tiny
+ * (LIVE_CANARY_CONTRACTS × 0.01 BTC, default 1, hard max 5). The canary bypasses the 08:15 clock
+ * (own window-state file) but respects every other rail. Executes ONE directional single — side
+ * from the live trend, or --side long|short.
  *
  * Run in the Render shell (whitelisted IP), with the SAME env as the live service:
- *   LIVE_ENABLED=true LIVE_CANARY_CONTRACTS=1 \
- *   npm --silent --workspace services/api run okx:live-canary -- --side long
+ *   LIVE_ENABLED=true FALCONX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY LIVE_CANARY_CONTRACTS=1 \
+ *   npm --silent --workspace services/api run live:canary -- --side long
  */
 
-import { OkxExecutionClient, type OkxMode } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
+import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
 import { buildOkxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
-import { parseLiveGuardsFromEnv, executionArmed } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
+import { FalconxClient } from "../src/singleSide/twoSided/creditCollar/execution/falconxClient";
+import { buildFalconxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/falconxLiveRunner";
+import type { LiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/liveWindowRunner";
+import { parseLiveGuardsFromEnv, executionArmed, type LiveExecutionVenue } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
 import { buildLiveShadowInputs, type LiveShadowConfig } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
 import { solveAdaptiveCreditCollar, type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
@@ -46,7 +53,7 @@ const cfg: LiveShadowConfig = {
   strikeGridUsdc: num(process.env.HARNESS_STRIKE_GRID_USDC, 250),
   minCapSigmaMult: num(process.env.HARNESS_MIN_CAP_SIGMA, 1.1),
   maxRetainedNetOfFeesUsdc: num(process.env.HARNESS_MAX_RETAINED_USDC, 2),
-  hedgeVenue: "okx",
+  hedgeVenue: "okx", // model-price source stays the OKX book (the shadow benchmark)
   adaptiveFloor: { enabled: true, maxFloorCapPct: num(process.env.SHADOW_ADAPTIVE_FLOOR_CAP, 0.1), stepPct: 0.005 }
 };
 
@@ -64,18 +71,12 @@ const gateCfg = {
 };
 
 const main = async () => {
-  const apiKey = process.env.OKX_API_KEY;
-  const secret = process.env.OKX_API_SECRET;
-  const passphrase = process.env.OKX_API_PASSPHRASE;
-  if (!apiKey || !secret || !passphrase) {
-    console.error("[canary] missing OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE");
-    process.exit(2);
-  }
+  const venue: LiveExecutionVenue = (process.env.LIVE_EXECUTION_VENUE ?? "falconx").toLowerCase() === "okx" ? "okx" : "falconx";
 
   // Canary guard profile: tiny forced size, own window-state file (clock bypass), everything else real.
   const canaryContracts = Math.min(5, Math.max(1, num(process.env.LIVE_CANARY_CONTRACTS, 1)));
   const guards = {
-    ...parseLiveGuardsFromEnv(process.env),
+    ...parseLiveGuardsFromEnv(process.env, venue),
     windowUtc: "00:00",
     windowLatestUtc: "23:59",
     canaryContracts
@@ -83,13 +84,30 @@ const main = async () => {
   const armed = executionArmed(guards);
   if (!armed.armed) {
     console.error(`[canary] refused: ${armed.reason}`);
-    console.error("  Set LIVE_ENABLED=true (and for real money: OKX_EXECUTION_MODE=live OKX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY).");
+    console.error(`  Set LIVE_ENABLED=true and ${guards.confirmEnvVar}=I_UNDERSTAND_REAL_MONEY (FalconX has no demo — every execute is real).`);
     process.exit(3);
   }
-  const mode: OkxMode = guards.mode;
-  console.error(`[canary] ${mode.toUpperCase()} mode · ${canaryContracts} contract(s) ≈ ${(canaryContracts * 0.01).toFixed(2)} BTC`);
 
-  // Live inputs: OKX skew + oracle spot (the same pipeline the service runs).
+  let hook: LiveExecutionHook;
+  const canaryPaths = { windowState: process.env.LIVE_CANARY_WINDOW_STATE_PATH ?? "./logs/live-canary-window.json" };
+  if (venue === "falconx") {
+    const { FALCONX_API_KEY: k, FALCONX_SECRET: s, FALCONX_PASSPHRASE: p } = process.env;
+    if (!k || !s || !p) {
+      console.error("[canary] missing FALCONX_API_KEY / FALCONX_SECRET / FALCONX_PASSPHRASE");
+      process.exit(2);
+    }
+    hook = buildFalconxLiveExecutionHook(process.env, { client: new FalconxClient({ apiKey: k, secret: s, passphrase: p }), guards, paths: canaryPaths });
+  } else {
+    const { OKX_API_KEY: k, OKX_API_SECRET: s, OKX_API_PASSPHRASE: p } = process.env;
+    if (!k || !s || !p) {
+      console.error("[canary] missing OKX_API_KEY / OKX_API_SECRET / OKX_API_PASSPHRASE");
+      process.exit(2);
+    }
+    hook = buildOkxLiveExecutionHook(process.env, { client: new OkxExecutionClient({ apiKey: k, secret: s, passphrase: p, mode: guards.mode }), guards, paths: canaryPaths });
+  }
+  console.error(`[canary] venue ${venue.toUpperCase()} · ${guards.mode.toUpperCase()} · ${canaryContracts} × 0.01 BTC ≈ ${(canaryContracts * 0.01).toFixed(2)} BTC`);
+
+  // Live inputs: OKX-book skew (the model benchmark) + oracle spot — the same pipeline the service runs.
   const built = await buildLiveShadowInputs(cfg);
   if (!built.ok) {
     console.error(`[canary] cannot build live inputs: ${built.error} — ${built.message}`);
@@ -139,13 +157,6 @@ const main = async () => {
     };
   };
 
-  const client = new OkxExecutionClient({ apiKey, secret, passphrase, mode });
-  const hook = buildOkxLiveExecutionHook(process.env, {
-    client,
-    guards,
-    paths: { windowState: process.env.LIVE_CANARY_WINDOW_STATE_PATH ?? "./logs/live-canary-window.json" }
-  });
-
   // Elevated-shaped context ⟹ exactly ONE directional single at canary size (a calm ctx would pair).
   const res = await hook.executeWindow({
     nowMs: now,
@@ -164,8 +175,8 @@ const main = async () => {
   saveOpenPositions([...open, ...res.newOpens]);
   const p = res.newOpens[0];
   process.stdout.write(JSON.stringify({ booked: p }, null, 2) + "\n");
-  console.error(`[canary] ✅ BOOKED ${p.ref}: ${p.side} collar ${p.putStrike}/${p.callStrike}, ${p.liveMeta?.contracts} contracts, net credit $${p.foxifyCreditUsdc}, fees $${p.openFeeUsdc}.`);
-  console.error(`[canary] Now verify: (1) /positions shows venue okx_live; (2) it settles at ${new Date(p.expiresAtMs).toISOString()}; (3) the NEXT cycle logs 'recon ${p.ref}: MATCHED'. That completes the go/no-go.`);
+  console.error(`[canary] ✅ BOOKED ${p.ref}: ${p.side} collar ${p.putStrike}/${p.callStrike}, qty ${p.liveMeta?.contracts}×${p.liveMeta?.ctValBtc} BTC, net credit $${p.foxifyCreditUsdc} (model $${p.quoteMeta?.modelNetUsdc}).`);
+  console.error(`[canary] Now verify: (1) /positions shows venue ${p.venue}; (2) it settles at ${new Date(p.expiresAtMs).toISOString()}; (3) the NEXT cycle logs 'recon ${p.ref}: MATCHED'. That completes the go/no-go.`);
 };
 
 main().catch((e) => {
