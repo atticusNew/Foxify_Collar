@@ -15,28 +15,39 @@
 
 import type { LiveWindowState } from "./liveExecutionStore";
 
+export type LiveExecutionVenue = "okx" | "falconx";
+
 export type LiveGuardsConfig = {
+  venue: LiveExecutionVenue;
   liveEnabled: boolean;
   mode: "demo" | "live";
-  liveConfirmed: boolean;          // OKX_LIVE_CONFIRM matches the phrase
+  liveConfirmed: boolean;          // the venue's *_LIVE_CONFIRM matches the phrase
+  confirmEnvVar: string;           // which env var carries the confirmation (for messages)
   windowUtc: string;               // "HH:MM"
   windowLatestUtc: string;         // "HH:MM"
   maxPositionNotionalUsdc: number;
   maxDayNotionalUsdc: number;
   slippageBandPct: number;
   maxStrikeDriftPct: number;
-  canaryContracts: number | null;  // when set, forces a tiny fixed contract count (Mon/Tue canary)
+  canaryContracts: number | null;  // when set, forces a tiny fixed size (Mon/Tue canary; 0.01 BTC units)
 };
 
 export const LIVE_CONFIRM_PHRASE = "I_UNDERSTAND_REAL_MONEY";
 
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
 
-/** Parse the guard config from env. Defaults are the pilot spec; everything is default-off/safe. */
-export const parseLiveGuardsFromEnv = (env: Record<string, string | undefined>): LiveGuardsConfig => ({
+/**
+ * Parse the guard config from env. Defaults are the pilot spec; everything is default-off/safe.
+ * Venue differences: OKX has a demo environment (mode from OKX_EXECUTION_MODE); FalconX is an OTC
+ * desk with NO demo — every execution is real money, so mode is always "live" and the confirmation
+ * phrase (FALCONX_LIVE_CONFIRM) is always required to arm.
+ */
+export const parseLiveGuardsFromEnv = (env: Record<string, string | undefined>, venue: LiveExecutionVenue = "okx"): LiveGuardsConfig => ({
+  venue,
   liveEnabled: String(env.LIVE_ENABLED ?? "").toLowerCase() === "true",
-  mode: (env.OKX_EXECUTION_MODE ?? "demo").toLowerCase() === "live" ? "live" : "demo",
-  liveConfirmed: env.OKX_LIVE_CONFIRM === LIVE_CONFIRM_PHRASE,
+  mode: venue === "falconx" ? "live" : (env.OKX_EXECUTION_MODE ?? "demo").toLowerCase() === "live" ? "live" : "demo",
+  liveConfirmed: (venue === "falconx" ? env.FALCONX_LIVE_CONFIRM : env.OKX_LIVE_CONFIRM) === LIVE_CONFIRM_PHRASE,
+  confirmEnvVar: venue === "falconx" ? "FALCONX_LIVE_CONFIRM" : "OKX_LIVE_CONFIRM",
   windowUtc: env.LIVE_WINDOW_UTC ?? "08:15",
   windowLatestUtc: env.LIVE_WINDOW_LATEST_UTC ?? "10:00",
   maxPositionNotionalUsdc: num(env.LIVE_MAX_POSITION_USDC, 50_000),
@@ -50,9 +61,9 @@ export const parseLiveGuardsFromEnv = (env: Record<string, string | undefined>):
 export const executionArmed = (cfg: LiveGuardsConfig): { armed: boolean; reason: string } => {
   if (!cfg.liveEnabled) return { armed: false, reason: "LIVE_ENABLED is not true (master kill-switch off)" };
   if (cfg.mode === "live" && !cfg.liveConfirmed) {
-    return { armed: false, reason: `OKX_EXECUTION_MODE=live but OKX_LIVE_CONFIRM≠${LIVE_CONFIRM_PHRASE} — refusing real money` };
+    return { armed: false, reason: `${cfg.venue} live execution requires ${cfg.confirmEnvVar}=${LIVE_CONFIRM_PHRASE} — refusing real money` };
   }
-  return { armed: true, reason: cfg.mode === "live" ? "armed (LIVE — real money)" : "armed (demo environment)" };
+  return { armed: true, reason: cfg.mode === "live" ? `armed (${cfg.venue} LIVE — real money)` : "armed (demo environment)" };
 };
 
 const hhmmToMinutes = (hhmm: string): number => {

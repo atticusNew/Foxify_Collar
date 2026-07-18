@@ -134,8 +134,8 @@ test("window state: round-trips and defaults empty", () => {
 test("recon store: unresolved mismatch halts; a later matched record for the same ref releases", () => {
   const path = join(tmp, "recon.jsonl");
   const rec = (ref: string, status: LiveReconRecord["status"], tsMs: number): LiveReconRecord => ({
-    tsMs, ref, putInstId: "P", callInstId: "C", ourSettlePriceUsd: 100_000, okxDeliveryPriceUsd: 100_010,
-    priceDiffUsd: -10, ourPayoutUsdc: 0, okxCashFlowUsdc: 0, cashDiffUsdc: 0, toleranceUsdc: 5, status, notes: []
+    tsMs, ref, putInstId: "P", callInstId: "C", ourSettlePriceUsd: 100_000, venueSettlePriceUsd: 100_010,
+    priceDiffUsd: -10, ourPayoutUsdc: 0, venueCashFlowUsdc: 0, cashDiffUsdc: 0, toleranceUsdc: 5, status, notes: []
   });
   appendLiveRecon(rec("a", "matched", 1), path);
   assert.equal(hasUnresolvedReconMismatch(loadLiveRecons(path)), false);
@@ -147,7 +147,7 @@ test("recon store: unresolved mismatch halts; a later matched record for the sam
 
 test("recon store: pending_venue_data does NOT halt", () => {
   const path = join(tmp, "recon2.jsonl");
-  appendLiveRecon({ tsMs: 1, ref: "x", putInstId: null, callInstId: null, ourSettlePriceUsd: 0, okxDeliveryPriceUsd: null, priceDiffUsd: null, ourPayoutUsdc: 0, okxCashFlowUsdc: null, cashDiffUsdc: null, toleranceUsdc: 5, status: "pending_venue_data", notes: [] }, path);
+  appendLiveRecon({ tsMs: 1, ref: "x", putInstId: null, callInstId: null, ourSettlePriceUsd: 0, venueSettlePriceUsd: null, priceDiffUsd: null, ourPayoutUsdc: 0, venueCashFlowUsdc: null, cashDiffUsdc: null, toleranceUsdc: 5, status: "pending_venue_data", notes: [] }, path);
   assert.equal(hasUnresolvedReconMismatch(loadLiveRecons(path)), false);
 });
 

@@ -65,7 +65,7 @@ test("recon: venue cash matches expected payoff at OKX's own delivery price ⟹ 
   };
   const rec = reconcileLiveSettlement(settled(), okx, { toleranceUsdc: 5, nowMs: 1 });
   assert.equal(rec.status, "matched");
-  assert.equal(rec.okxDeliveryPriceUsd, 93_050);
+  assert.equal(rec.venueSettlePriceUsd, 93_050);
   assert.equal(rec.priceDiffUsd, -50); // our oracle vs venue fixing — the measured basis
   assert.ok(Math.abs(rec.cashDiffUsdc ?? 99) <= 0.01);
 });
@@ -91,7 +91,7 @@ test("recon: both legs expired OTM with NO bills ⟹ legitimate $0, matched", ()
   const okx = { deliveryPxByInstId: { "BTC-USD-260720-94000-P": 100_480 }, cashFlowBtcByInstId: {} };
   const rec = reconcileLiveSettlement(s, okx, { toleranceUsdc: 5, nowMs: 1 });
   assert.equal(rec.status, "matched");
-  assert.equal(rec.okxCashFlowUsdc, 0);
+  assert.equal(rec.venueCashFlowUsdc, 0);
 });
 
 test("recon: expected non-zero payoff but bills missing ⟹ pending (bills lag), not mismatch", () => {

@@ -49,7 +49,10 @@ export type LiveExecutionRecord = {
   dayUtc: string;                 // YYYY-MM-DD (window day)
   ref: string;
   side: "long" | "short";
-  outcome: "filled" | "aborted_no_fill" | "aborted_unwound" | "naked_leg_unresolved" | "pair_sibling_unwound";
+  /** "filled" books notional; everything else stands for nothing. Known values: filled ·
+   *  pair_sibling_unwound · OKX: aborted_no_fill / aborted_unwound / naked_leg_unresolved ·
+   *  FalconX: aborted_no_quote / aborted_band / aborted_execute_failed. */
+  outcome: string;
   mode: "demo" | "live";
   effectiveNotionalUsdc: number;  // 0 unless filled/booked
   contracts: number;
@@ -110,10 +113,10 @@ export type LiveReconRecord = {
   putInstId: string | null;
   callInstId: string | null;
   ourSettlePriceUsd: number;
-  okxDeliveryPriceUsd: number | null;   // OKX's own fixing for the expiry (null = not yet published)
+  venueSettlePriceUsd: number | null;   // the venue's own fixing for the expiry (null = not yet published)
   priceDiffUsd: number | null;
   ourPayoutUsdc: number;                // our oracle-settled collar payoff for the position
-  okxCashFlowUsdc: number | null;       // realized OKX settlement cash flow (bills), USD
+  venueCashFlowUsdc: number | null;     // realized venue settlement cash flow, USD
   cashDiffUsdc: number | null;
   toleranceUsdc: number;
   status: "matched" | "mismatch" | "pending_venue_data";

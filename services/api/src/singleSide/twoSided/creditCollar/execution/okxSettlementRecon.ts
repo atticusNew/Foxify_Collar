@@ -51,10 +51,10 @@ export const reconcileLiveSettlement = (
     putInstId: meta?.putInstId ?? null,
     callInstId: meta?.callInstId ?? null,
     ourSettlePriceUsd: outcome.settlePriceUsd,
-    okxDeliveryPriceUsd: null,
+    venueSettlePriceUsd: null,
     priceDiffUsd: null,
     ourPayoutUsdc: outcome.payoutToFoxifyUsdc,
-    okxCashFlowUsdc: null,
+    venueCashFlowUsdc: null,
     cashDiffUsdc: null,
     toleranceUsdc: opts.toleranceUsdc,
     notes
@@ -87,10 +87,10 @@ export const reconcileLiveSettlement = (
     if (Math.abs(expected) <= opts.toleranceUsdc) {
       notes.push("no settlement bills and expected payoff ≈ 0 (both legs expired OTM) — reconciled at $0");
       const priceDiff = round2(outcome.settlePriceUsd - deliveryPx);
-      return { ...base, okxDeliveryPriceUsd: deliveryPx, priceDiffUsd: priceDiff, okxCashFlowUsdc: 0, cashDiffUsdc: round2(0 - expected), status: "matched" };
+      return { ...base, venueSettlePriceUsd: deliveryPx, priceDiffUsd: priceDiff, venueCashFlowUsdc: 0, cashDiffUsdc: round2(0 - expected), status: "matched" };
     }
     notes.push(`expected non-zero settlement (${round2(expected)} USD) but no OKX bills found — retry next cycle`);
-    return { ...base, okxDeliveryPriceUsd: deliveryPx, priceDiffUsd: round2(outcome.settlePriceUsd - deliveryPx), status: "pending_venue_data" };
+    return { ...base, venueSettlePriceUsd: deliveryPx, priceDiffUsd: round2(outcome.settlePriceUsd - deliveryPx), status: "pending_venue_data" };
   }
 
   const contractsBtc = meta.contracts * meta.ctValBtc;
@@ -105,9 +105,9 @@ export const reconcileLiveSettlement = (
 
   return {
     ...base,
-    okxDeliveryPriceUsd: deliveryPx,
+    venueSettlePriceUsd: deliveryPx,
     priceDiffUsd: priceDiff,
-    okxCashFlowUsdc: okxCashUsd,
+    venueCashFlowUsdc: okxCashUsd,
     cashDiffUsdc: cashDiff,
     status: matched ? "matched" : "mismatch"
   };

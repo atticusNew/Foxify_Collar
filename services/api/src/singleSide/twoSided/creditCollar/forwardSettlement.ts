@@ -39,17 +39,20 @@ export type OpenPosition = {
   venue?: string;
   /** Live-RFQ metadata when booked off a real venue quote (dry-run or live). */
   quoteMeta?: { rfqRef: string; quotedNetUsdc: number; modelNetUsdc: number; quotedAtIso: string };
-  /** Real-execution metadata (venue okx_live): the exact instruments/fills, for unwind + reconciliation. */
+  /** Real-execution metadata (venue okx_live / falconx_live): exact instruments/fills, for unwind + reconciliation. */
   liveMeta?: {
-    putInstId: string;
+    putInstId: string;           // OKX instId or FalconX symbol of the put leg
     callInstId: string;
-    contracts: number;          // venue contracts per leg (0.01 BTC each on OKX)
+    contracts: number;           // venue contracts per leg (OKX: 0.01 BTC lots · FalconX: qty in BTC with ctValBtc=1)
     ctValBtc: number;
     mode: "demo" | "live";
-    protectiveFillPxBtc: number; // avg fill px, BTC per BTC underlying
+    protectiveFillPxBtc: number; // avg fill px, BTC per BTC underlying (0 when the venue quotes USD net)
     fundingFillPxBtc: number;
-    venueFeeUsdc: number;        // realized venue fee across both legs (USD at entry spot)
+    venueFeeUsdc: number;        // realized venue fee across both legs (0 for all-in RFQ pricing)
     clOrdPrefix?: string;
+    /** FalconX: the executed quote + trade ids (reconciliation joins on trade_id). */
+    fxQuoteId?: string;
+    fxTradeIds?: string[];
   };
 };
 

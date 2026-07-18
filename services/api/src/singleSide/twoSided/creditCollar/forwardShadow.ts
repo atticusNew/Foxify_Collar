@@ -22,7 +22,7 @@ import type { PerpSide } from "./creditCollarPricer";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
-import type { LiveExecutionHook, SolveSide } from "./execution/okxLiveRunner";
+import type { LiveExecutionHook, SolveSide } from "./execution/liveWindowRunner";
 
 export type ForwardCycleResult =
   | {

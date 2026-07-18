@@ -221,7 +221,7 @@ test("runner: second collar fill failure unwinds the first (both-or-neither at P
 test("runner: unresolved recon mismatch HALTS issuance (window consumed, alert raised)", async () => {
   const paths = freshPaths();
   appendLiveRecon(
-    { tsMs: 1, ref: "old", putInstId: "P", callInstId: "C", ourSettlePriceUsd: 1, okxDeliveryPriceUsd: 1, priceDiffUsd: 0, ourPayoutUsdc: 10, okxCashFlowUsdc: 0, cashDiffUsdc: -10, toleranceUsdc: 5, status: "mismatch", notes: [] },
+    { tsMs: 1, ref: "old", putInstId: "P", callInstId: "C", ourSettlePriceUsd: 1, venueSettlePriceUsd: 1, priceDiffUsd: 0, ourPayoutUsdc: 10, venueCashFlowUsdc: 0, cashDiffUsdc: -10, toleranceUsdc: 5, status: "mismatch", notes: [] },
     paths.recon
   );
   const { client, placed } = makeClient({});
