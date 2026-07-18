@@ -117,10 +117,37 @@ flattening).
    the same flatness bar the shadow proved).
 5. All settlements reconciled (no unresolved mismatches).
 
+## Collateral / IA (open with the FalconX desk — updated 2026-07-18)
+
+FalconX's desk (Oliver Sitt, Jul 17) asked for the exact structure/size to set the IA and stated
+they would ask for a **prefunded, 100% collateralized position**. Where that lands drives the
+funding gate and Atticus's capital line:
+
+| IA outcome | Prefunding needed | Capital cost (12% CoC, 2 weeks) |
+|---|---|---|
+| Pair margined as a package (defined-risk condor max loss) | ≈ $2k/day | ≈ $9 |
+| 100% of short-leg notional on directional days | ≈ $50k | ≈ $230 |
+| Full day cap prefunded | ≈ $100k | ≈ $460 |
+
+Negotiating facts (send with the structure): a **calm-day pair nets to an iron condor** — short
+±2% strangle, long −6%/+6% wings — so the worst possible settlement obligation is the 4% wing
+width: ≈ 4% × spot × 0.8 BTC ≈ **$2k per $100k pair**, and we are net premium receivers on every
+structure. Directional (elevated) days carry one cash-settled short leg with a −10% protective
+long on the other side; ask whether a far-OTM long wing (a defined-risk spread, costs a few dollars
+of credit — needs product sign-off, NOT a unilateral config change) would materially cut the IA.
+
+Also confirm: collateral currency (USDC?) · posted once and recycled daily vs per-trade · release
+timing after the 08:00 fixing (we re-issue 15 minutes later at 08:15) · whether the net premium
+owed to us offsets the IA. Until confirmed, `falconx:readiness` gates funding at the FULL day cap
+($100k) and the dashboard reports capital costs at the conservative prefunded level
+(`SHADOW_SHORT_OPTION_IM_FRACTION=1.0`); set `FALCONX_READINESS_MIN_BALANCE_USD` and relax the
+capital inputs only after the desk's number is in writing.
+
 ## Business launch gates (tracked here, owned by the client)
 
-- [ ] **FalconX deposit posted** (the ~$5k arrangement — was "pending" during shadow; now the
-      critical path: no deposit ⟹ no margin ⟹ no executes). Verify with `falconx:readiness`.
+- [ ] **IA agreed with FalconX + prefunding posted** (see the Collateral/IA section — this replaced
+      the old $5k deposit gate and is the critical path: no collateral ⟹ no executes). Verify with
+      `falconx:readiness`.
 - [ ] Derivatives/options entitlement live on the account (instruments + quote checks PASS).
 - [ ] Client's real per-trade fee number → `FOXIFY_PERP_FEE_USDC` (currently 0 = not modeled).
 - [ ] Daily mandate confirmed: "open per signal at the window unless told otherwise."

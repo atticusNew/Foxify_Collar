@@ -28,7 +28,10 @@ const main = async () => {
     console.error("[fx-readiness] missing FALCONX_API_KEY / FALCONX_SECRET / FALCONX_PASSPHRASE");
     process.exit(2);
   }
-  const minBalanceUsd = num(process.env.FALCONX_READINESS_MIN_BALANCE_USD, 5_000);
+  // FalconX asked for PREFUNDED, 100% COLLATERALIZED positions (desk message 2026-07-17). Until the
+  // IA is negotiated down (the calm-day pair is a defined-risk iron condor, max loss ≈ 4% × notional),
+  // the funding gate defaults to the FULL day cap. Override once the desk confirms the real IA.
+  const minBalanceUsd = num(process.env.FALCONX_READINESS_MIN_BALANCE_USD, num(process.env.LIVE_MAX_DAY_NOTIONAL_USDC, 100_000));
   const client = new FalconxClient({ apiKey, secret, passphrase });
   const checks: Check[] = [];
 
@@ -111,7 +114,8 @@ const main = async () => {
 
   const humanTodo = [
     "Derivatives/options entitlement enabled on the FalconX account (ISDA-style docs + options addendum) — if instruments/quote checks FAIL, this is the blocker; contact the FalconX coverage team.",
-    `Client deposit posted: ≥ $${minBalanceUsd} (the agreed $5k gate). Confirm with FalconX which entity holds it and that it collateralizes the short option leg (their incremental_im_for_trade on the readiness quote is the per-trade number).`,
+    `IA / PREFUNDING (desk asked for prefunded 100%-collateralized positions): funding gate currently ≥ $${minBalanceUsd}. NEGOTIATE: calm-day pairs are a defined-risk iron condor (max loss ≈ 4% × notional ≈ $2k per $100k pair) — ask for package margining; directional days, ask what 100% collateralization means for a cash-settled short leg (premium + % notional vs full notional) and whether a far-OTM long wing (defined-risk spread) reduces it. Set FALCONX_READINESS_MIN_BALANCE_USD to the agreed IA once confirmed.`,
+    "Collateral mechanics with the desk: currency (USDC?), posted once + recycled daily vs per-trade, and how soon after the 08:00 fixing settled P&L/collateral is released (we re-issue at 08:15 — 15 minutes later).",
     "API key scoped to trading only, withdrawals OFF, IP-allowlisted to the Render service's outbound IPs.",
     "Confirm the fixing: contract fixing_source should be deribit, fixing time 8am UTC (matches our 08:00 settlement clock).",
     "Confirm the EXECUTE endpoint path with the desk (client is built for /v3/derivatives/option/quote/execute; override via FALCONX_EXECUTE_PATH if they route differently).",

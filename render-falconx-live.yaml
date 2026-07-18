@@ -129,10 +129,14 @@ services:
         value: "2000000"
 
       # ── Capital inputs (dashboard reporting only) ──
+      # FalconX asked for PREFUNDED, 100%-COLLATERALIZED positions (desk, 2026-07-17): until the IA
+      # is negotiated (calm pairs are a defined-risk condor ⟹ should margin at ~4% of notional as a
+      # package), report capital costs at the CONSERVATIVE prefunded level. Revise both after the IA
+      # confirmation — never leave the dashboard flattering the capital line.
       - key: SHADOW_SHORT_OPTION_IM_FRACTION
-        value: "0.14"
+        value: "1.0"
       - key: SHADOW_PM_NETTING
-        value: "0.078"
+        value: "1.0"
       - key: SHADOW_COST_OF_CAPITAL
         value: "0.12"
 
