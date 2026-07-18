@@ -1,36 +1,36 @@
 # ─────────────────────────────────────────────────────────────────────────
-# render-okx-live.yaml — Atticus OKX LIVE pilot service (FALLBACK venue —
-# FalconX is primary; see render-falconx-live.yaml)
+# render-falconx-live.yaml — Atticus FALCONX LIVE pilot service (PRIMARY venue)
 #
-# A DEDICATED, ISOLATED service for the two-week OKX pilot. It runs the SAME
-# shadow service loop as the mirror, but with the live execution hook armed:
-# at the 08:15 UTC window the auto strategy's output becomes REAL OKX orders
-# (pair-atomic, band-capped limits, both legs or neither), booked to FRESH
-# ledgers as venue "okx_live", settled at the 08:00 UTC fixing and reconciled
-# against OKX's own delivery price + bills.
+# A DEDICATED, ISOLATED service for the two-week live pilot, executing at
+# FalconX's OTC options desk. Same loop as the shadow mirror, live hook armed:
+# at the 08:15 UTC window the auto strategy's output becomes a REAL FalconX
+# RFQ — the collar quoted and executed as ONE structure (both legs or neither,
+# atomic at the venue), band-checked against the model mid, booked to FRESH
+# ledgers as venue "falconx_live", settled at the 08:00 UTC Deribit fixing and
+# reconciled against FalconX's own transactions + cash flows.
 #
-# The existing foxify-okx-mirror service KEEPS RUNNING UNCHANGED in parallel
-# as the model-price benchmark. Do NOT reuse its disk or env.
+# The foxify-okx-mirror service KEEPS RUNNING UNCHANGED in parallel as the
+# model-price benchmark. OKX remains wired as the FALLBACK execution venue
+# (LIVE_EXECUTION_VENUE=okx + render-okx-live.yaml) if FalconX is blocked.
 #
 # DEFAULT-OFF DISCIPLINE
-#   - LIVE_ENABLED is sync:false and must be set to "true" in the dashboard at
-#     launch (it is the master kill-switch — unset/false = paper only, no orders).
-#   - Real money additionally requires OKX_EXECUTION_MODE=live AND
-#     OKX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY (both sync:false).
-#   - Secrets ONLY here (sync:false) — never in code, logs, or chat.
+#   - LIVE_ENABLED is sync:false — set "true" in the dashboard at launch only.
+#   - FalconX has NO demo environment: EVERY execute is real money, so the hook
+#     additionally requires FALCONX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY
+#     (sync:false). Secrets ONLY here — never in code, logs, or chat.
 #
 # CONFIG FREEZE (canary → end of the two weeks): floor 6% / 10% elevated,
 # credit target $80, ceiling off, σ-floor 1.1×, gate 1.2/3.0 with 0.85
 # hysteresis, 2 positions/day (one calm pair or one elevated single), $50k
-# per position / $100k per day. Change nothing below during the pilot.
+# per position / $100k per day, band 0.25. Change nothing below mid-pilot.
 #
 # Deploy: Render dashboard → New → Blueprint → select this file.
-# Ops: run venue-touching commands (readiness, canary, unwind) in THIS
-# service's shell — its outbound IPs are the whitelisted ones.
+# Ops: run venue-touching commands (falconx:readiness, live:canary,
+# live:unwind) in THIS service's shell — its outbound IPs are allowlisted.
 # ─────────────────────────────────────────────────────────────────────────
 services:
   - type: web
-    name: foxify-okx-live
+    name: foxify-falconx-live
     runtime: node
     plan: starter
     region: singapore
@@ -40,32 +40,30 @@ services:
     startCommand: npm --workspace services/api run shadow:service
     healthCheckPath: /healthz
     disk:
-      name: okx-live-data
+      name: falconx-live-data
       mountPath: /var/data
       sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
 
-      # ── Venue pin (the service defaults to falconx — this blueprint is the OKX fallback) ──
+      # ── Venue + MASTER KILL-SWITCH + live-money gate (dashboard-managed) ──
       - key: LIVE_EXECUTION_VENUE
-        value: okx
-
-      # ── MASTER KILL-SWITCH + live-money gates (dashboard-managed, deliberate) ──
+        value: falconx
       - key: LIVE_ENABLED
         sync: false               # set "true" at launch; anything else = no orders, ever
-      - key: OKX_EXECUTION_MODE
-        sync: false               # "demo" for rehearsal · "live" for real money
-      - key: OKX_LIVE_CONFIRM
-        sync: false               # must be I_UNDERSTAND_REAL_MONEY for live mode
+      - key: FALCONX_LIVE_CONFIRM
+        sync: false               # must be I_UNDERSTAND_REAL_MONEY (FalconX has no demo)
 
-      # ── OKX API credentials (trade-scope only, withdrawals OFF, IP-whitelisted) ──
-      - key: OKX_API_KEY
+      # ── FalconX API credentials (trading scope only, withdrawals OFF, IP-allowlisted) ──
+      - key: FALCONX_API_KEY
         sync: false
-      - key: OKX_API_SECRET
+      - key: FALCONX_SECRET
         sync: false
-      - key: OKX_API_PASSPHRASE
+      - key: FALCONX_PASSPHRASE
         sync: false
+      # FALCONX_EXECUTE_PATH: only if the desk routes execute differently than
+      # /v3/derivatives/option/quote/execute (confirm during onboarding).
 
       # ── Live execution rails (pilot spec) ──
       - key: LIVE_WINDOW_UTC
@@ -73,20 +71,20 @@ services:
       - key: LIVE_WINDOW_LATEST_UTC
         value: "10:00"            # after this the day is SKIPPED — never chase
       - key: LIVE_MAX_POSITION_USDC
-        value: "50000"            # per-position cap (effective, contract-rounded notional)
+        value: "50000"            # per-position cap (qty-rounded effective notional)
       - key: LIVE_MAX_DAY_NOTIONAL_USDC
         value: "100000"           # per-day cap (calm pair = 2 × 50k)
       - key: LIVE_SLIPPAGE_BAND_PCT
-        value: "0.25"             # max limit-price distance vs model mid, per leg
+        value: "0.25"             # quoted net may be worse than model MID net by ≤25% (structure-level)
       - key: LIVE_MAX_STRIKE_DRIFT_PCT
         value: "0.01"             # listed-vs-solver strike drift tolerance (of spot)
       - key: LIVE_RECON_TOLERANCE_USDC
         value: "5"                # settlement reconciliation tolerance; mismatch ⟹ issuance halt
-      # LIVE_CANARY_CONTRACTS: set to 1–5 in the dashboard for the Mon/Tue canary; REMOVE for pilot size.
+      # LIVE_CANARY_CONTRACTS: set 1–5 in the dashboard for the Mon/Tue canary (×0.01 BTC); REMOVE for pilot size.
 
       # ── Product terms (FROZEN for the pilot — identical to the shadow mirror) ──
       - key: SHADOW_HEDGE_VENUE
-        value: okx
+        value: okx                # model-price source stays the OKX book (the shadow benchmark)
       - key: SHADOW_SETTLEMENT_HORIZON_MIN
         value: "1440"             # 24h tenor (live rows expire at the LISTED 08:00 UTC fixing)
       - key: HARNESS_FEE_USDC
@@ -130,7 +128,7 @@ services:
       - key: SHADOW_TIER0_CAP_USDC
         value: "2000000"
 
-      # ── Capital inputs (OKX-measured PM netting — dashboard reporting only) ──
+      # ── Capital inputs (dashboard reporting only) ──
       - key: SHADOW_SHORT_OPTION_IM_FRACTION
         value: "0.14"
       - key: SHADOW_PM_NETTING
@@ -140,29 +138,31 @@ services:
 
       # ── FRESH disk-backed stores (single-config live track record, unpolluted) ──
       - key: SHADOW_STORE_PATH
-        value: /var/data/okx-live-scorecards.jsonl
+        value: /var/data/falconx-live-scorecards.jsonl
       - key: SHADOW_OPEN_POSITIONS_PATH
-        value: /var/data/okx-live-open.jsonl
+        value: /var/data/falconx-live-open.jsonl
       - key: SHADOW_SETTLEMENT_LEDGER_PATH
-        value: /var/data/okx-live-settlements.jsonl
+        value: /var/data/falconx-live-settlements.jsonl
       - key: SHADOW_COLLATERAL_PATH
-        value: /var/data/okx-live-collateral.json
+        value: /var/data/falconx-live-collateral.json
       - key: SHADOW_OPENING_STATE_PATH
-        value: /var/data/okx-live-opening-state.json
+        value: /var/data/falconx-live-opening-state.json
       - key: SHADOW_GATE_STATE_PATH
-        value: /var/data/okx-live-gate-state.json
+        value: /var/data/falconx-live-gate-state.json
       - key: SHADOW_PRICE_HISTORY_PATH
-        value: /var/data/okx-live-price-history.jsonl
+        value: /var/data/falconx-live-price-history.jsonl
       - key: LIVE_EXECUTIONS_PATH
-        value: /var/data/okx-live-executions.jsonl
+        value: /var/data/falconx-live-executions.jsonl
       - key: LIVE_WINDOW_STATE_PATH
-        value: /var/data/okx-live-window-state.json
+        value: /var/data/falconx-live-window-state.json
       - key: LIVE_ALERTS_PATH
-        value: /var/data/okx-live-alerts.jsonl
+        value: /var/data/falconx-live-alerts.jsonl
       - key: LIVE_RECON_PATH
-        value: /var/data/okx-live-reconciliations.jsonl
+        value: /var/data/falconx-live-reconciliations.jsonl
 
-      # ── Public market-data bases ──
+      # ── API bases (public market data + FalconX) ──
+      - key: FALCONX_BASE_URL
+        value: https://api.falconx.io
       - key: OKX_REST_BASE
         value: https://www.okx.com
       - key: DERIBIT_REST_BASE
