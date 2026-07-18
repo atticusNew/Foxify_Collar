@@ -136,6 +136,15 @@ structure. Directional (elevated) days carry one cash-settled short leg with a �
 long on the other side; ask whether a far-OTM long wing (a defined-risk spread, costs a few dollars
 of credit — needs product sign-off, NOT a unilateral config change) would materially cut the IA.
 
+Single-structure stress numbers (what the short leg owes at settlement, ~$50k protection): a 5%
+adverse move ≈ $1.1–1.3k · 10% ≈ $3.6–3.8k · 15% ≈ $6.1–6.3k · 20% ≈ $8.7k. **A $2k IA covers a
+lone structure only to ~6.6% past the reference** — sufficient for netted-pair days, NOT for
+directional single days. Realistic prefunding targets: ~$100k at FalconX's literal 100%-notional
+ask (two structures/day, same-morning recycling); ~$6–10k with package margining on pair days plus
+a 15–20%-stress IA on single days; $2k only if directional singles are excluded from the mandate
+(a product decision). FRAMING with the desk: we present as PROTECTION of client perp positions
+(one or two positions protected per day) — never as a volume/flow facility.
+
 Also confirm: collateral currency (USDC?) · posted once and recycled daily vs per-trade · release
 timing after the 08:00 fixing (we re-issue 15 minutes later at 08:15) · whether the net premium
 owed to us offsets the IA. Until confirmed, `falconx:readiness` gates funding at the FULL day cap
