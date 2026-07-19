@@ -236,7 +236,14 @@ const runCycle = async () => {
           // Pilot-accurate defaults: Foxify posts $5k for the 2×$50k/day pilot (halt if the buffer drops
           // below $500). Override via env for scaled runs (e.g. 250k/25k for the 1k/day book).
           initialCollateralUsdc: num(process.env.SHADOW_COLLATERAL_USDC, 5_000),
-          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 500)
+          minCollateralBufferUsdc: num(process.env.SHADOW_COLLATERAL_MIN_BUFFER, 500),
+          // Lock watcher: early unwind permitted only when the market cost of closing the legs fits
+          // inside the UNVESTED credit (schedule never underwater). Buffer/spread tunable via env.
+          lockPolicy: {
+            bufferUsdc: num(process.env.SHADOW_LOCK_BUFFER_USDC, 0),
+            spreadRelPct: num(process.env.SHADOW_LOCK_SPREAD_REL, 0.05),
+            minLegSpreadUsdc: num(process.env.SHADOW_LOCK_MIN_LEG_SPREAD_USDC, 1)
+          }
         }
       });
       if (res.ok) {

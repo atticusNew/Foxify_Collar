@@ -54,6 +54,8 @@ export type ForwardCycleConfig = LiveShadowConfig & {
     partnerFeed?: PartnerPositionFeed;
     maxStalenessMs?: number;       // partner-feed staleness tolerance (default 15_000)
     sizeTolerancePct?: number;     // partner size vs notional tolerance (default 0.02)
+    /** Lock-watcher policy: early unwind permitted only when market cost ≤ unvested credit (− buffer). */
+    lockPolicy?: { bufferUsdc?: number; spreadRelPct?: number; minLegSpreadUsdc?: number };
   };
   /**
    * LIVE execution hook (OKX pilot). When set, the cycle does NOT open paper positions: opens happen
@@ -297,7 +299,10 @@ export const runForwardShadowCycle = async (
     basisMaxBps: lcCfg.basisMaxBps ?? 25,
     persistTicks: 3,
     partnerStates,
-    partnerFeedHealthy
+    partnerFeedHealthy,
+    // Lock watcher prices unwinds off the live skew curve (same surface the pricer solved on).
+    iv: skew,
+    lockPolicy: lcCfg.lockPolicy
   });
   saveLedger(ledger1);
 
