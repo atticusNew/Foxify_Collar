@@ -62,6 +62,12 @@ export type FoxifyViewConfig = {
    * (labels only — numerically identical to the oracle mirror until you supply funding/basis/fees).
    */
   venues?: PerpVenue[];
+  /**
+   * Max entry-time gap (ms) for a long+short to count as a MATCHED pair. Pair-atomic opens share a
+   * cycle (entries ms apart); anything wider is a directional single and must not be displayed as a
+   * pair. Default 5 minutes.
+   */
+  pairWindowMs?: number;
 };
 
 export type FoxifyPositionRow = {
@@ -116,8 +122,8 @@ export type FoxifyView = {
   foxifyAllInNetBps: number;
   // ── Where the book sat (per-venue) ──
   venues: FoxifyVenueBreakdown[];
-  // ── Recent matched pairs (one long + one short, most recent first) ──
-  recentPairs: Array<{ long: FoxifyPositionRow | null; short: FoxifyPositionRow | null; pairNetUsdc: number }>;
+  // ── Recent groups (most recent first): a MATCHED pair (long+short opened together) or a directional single ──
+  recentPairs: Array<{ long: FoxifyPositionRow | null; short: FoxifyPositionRow | null; matched: boolean; pairNetUsdc: number }>;
 };
 
 const DEFAULT_VENUES: PerpVenue[] = [{ name: "dYdX" }, { name: "Bluefin" }, { name: "Hyperliquid" }];
@@ -209,16 +215,29 @@ export const buildFoxifyView = (outcomes: SettlementOutcome[], cfg: FoxifyViewCo
     netUsdc: r2(b.netUsdc)
   }));
 
-  // Recent matched pairs: most-recent longs alongside most-recent shorts.
-  const byRecent = (a: FoxifyPositionRow, b: FoxifyPositionRow) => Date.parse(b.settleIso) - Date.parse(a.settleIso);
-  const rl = [...longs].sort(byRecent);
-  const rs = [...shorts].sort(byRecent);
-  const recentPairs: FoxifyView["recentPairs"] = [];
-  for (let i = 0; i < Math.min(nPairs, Math.max(rl.length, rs.length)); i++) {
-    const long = rl[i] ?? null;
-    const short = rs[i] ?? null;
-    recentPairs.push({ long, short, pairNetUsdc: r2((long?.foxifyNetUsdc ?? 0) + (short?.foxifyNetUsdc ?? 0)) });
+  // Recent groups: a long and a short only count as a MATCHED pair when they were OPENED together
+  // (pair-atomic ⟹ entry times within the pair window). Anything else — directional singles from
+  // elevated-day trend calls — surfaces as a single. Grouping unrelated legs by recency painted
+  // mismatched entries as "pair" losses (a −$727 pseudo-pair that was really two separate bets).
+  const pairWindowMs = cfg.pairWindowMs ?? 5 * 60_000;
+  const openMsByRef = new Map<string, number>(outcomes.map((o) => [o.ref, o.openedAtMs]));
+  const openMs = (r: FoxifyPositionRow) => openMsByRef.get(r.ref) ?? Date.parse(r.entryIso);
+  const unmatchedShorts = [...shorts];
+  const groups: FoxifyView["recentPairs"] = [];
+  for (const long of longs) {
+    const idx = unmatchedShorts.findIndex((s) => Math.abs(openMs(s) - openMs(long)) <= pairWindowMs);
+    if (idx >= 0) {
+      const short = unmatchedShorts.splice(idx, 1)[0];
+      groups.push({ long, short, matched: true, pairNetUsdc: r2(long.foxifyNetUsdc + short.foxifyNetUsdc) });
+    } else {
+      groups.push({ long, short: null, matched: false, pairNetUsdc: r2(long.foxifyNetUsdc) });
+    }
   }
+  for (const short of unmatchedShorts) groups.push({ long: null, short, matched: false, pairNetUsdc: r2(short.foxifyNetUsdc) });
+  const recency = (g: FoxifyView["recentPairs"][number]) =>
+    Math.max(g.long ? Date.parse(g.long.settleIso) : 0, g.short ? Date.parse(g.short.settleIso) : 0);
+  groups.sort((a, b) => recency(b) - recency(a));
+  const recentPairs = groups.slice(0, nPairs);
 
   return {
     settledPositions: n,

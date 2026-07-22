@@ -145,7 +145,8 @@ const cfg: LiveShadowConfig = {
     elevatedVolPct: num(process.env.SHADOW_REGIME_ELEVATED_VOL, isDirectional ? 1.5 : 1.2),
     haltVolPct: num(process.env.SHADOW_REGIME_HALT_VOL, 3.0),
     elevatedOpenMultiplier: num(process.env.SHADOW_REGIME_ELEVATED_MULT, isDirectional ? 0.5 : 0),
-    elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.1),
+    // 6% elevated floor = the deck's "~6% protective wing" (worst wrong-side loss ~6% of notional).
+    elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.06),
     liveLookbackMs: num(process.env.SHADOW_REGIME_LIVE_LOOKBACK_MIN, 360) * 60_000, // leading signal window (min → ms), default 6h
     liveMinSamples: num(process.env.SHADOW_REGIME_LIVE_MIN_SAMPLES, 4),
     // Hysteresis: once elevated/halt, only exit below threshold × ratio (stops calm↔elevated flicker at the line).
@@ -153,6 +154,9 @@ const cfg: LiveShadowConfig = {
   },
   // Auto mode: positions/day while ELEVATED (directional). Set 1 for the conservative variant (default = full rate).
   autoElevatedDailyPositions: num(process.env.SHADOW_AUTO_ELEVATED_DAILY, 0) || undefined,
+  // Auto mode: fraction of elevated days the partner actually TAKES the directional call (deterministic
+  // per UTC day). Default 1/3 — realistic partner behavior; 1 = legacy take-every-call.
+  autoDirectionalParticipation: num(process.env.SHADOW_DIRECTIONAL_PARTICIPATION, 0.33),
   // Force a single hedge venue for the mirror (e.g. SHADOW_HEDGE_VENUE=okx) so skew/spreads/fees are OKX-specific.
   hedgeVenue: (["bullish", "okx", "deribit"].includes(String(process.env.SHADOW_HEDGE_VENUE)) ? (process.env.SHADOW_HEDGE_VENUE as "bullish" | "okx" | "deribit") : undefined),
   adaptiveFloor: {

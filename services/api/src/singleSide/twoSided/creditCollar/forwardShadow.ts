@@ -66,6 +66,16 @@ export type ForwardCycleConfig = LiveShadowConfig & {
   liveExecution?: LiveExecutionHook;
 };
 
+/** Deterministic per-day roll in [0,1) (FNV-1a over the UTC date) for the partner-participation model. */
+export const dayParticipationRoll = (dayIso: string): number => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < dayIso.length; i++) {
+    h ^= dayIso.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h / 0x100000000;
+};
+
 export const runForwardShadowCycle = async (
   cfg: ForwardCycleConfig,
   paths: { openPath?: string; ledgerPath?: string; openingStatePath?: string; priceHistoryPath?: string } = {}
@@ -150,6 +160,13 @@ export const runForwardShadowCycle = async (
   if (regimeGate) {
     const mult = autoMode ? (regimeGate.regime === "halt" ? 0 : 1) : regimeGate.openMultiplier;
     nToOpen = Math.max(0, Math.round(nToOpen * mult));
+  }
+  // Partner-participation model: directional bets are the PARTNER's call, and they don't take every
+  // trend signal. On elevated days in auto mode, open only on the fraction of days they'd participate —
+  // deterministic per UTC day, so the decision is stable across the day's cycles and restarts.
+  const participation = cfg.autoDirectionalParticipation ?? 1;
+  if (autoMode && autoRegime === "elevated" && participation < 1) {
+    if (dayParticipationRoll(new Date(now).toISOString().slice(0, 10)) >= participation) nToOpen = 0;
   }
   nToOpen = Math.floor(nToOpen / pairSize) * pairSize;
 

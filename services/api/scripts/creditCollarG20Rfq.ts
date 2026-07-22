@@ -83,7 +83,7 @@ const gateCfg = {
   elevatedVolPct: num(process.env.SHADOW_REGIME_ELEVATED_VOL, 1.2),
   haltVolPct: num(process.env.SHADOW_REGIME_HALT_VOL, 3.0),
   elevatedOpenMultiplier: 0,
-  elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.1),
+  elevatedFloorPct: num(process.env.SHADOW_REGIME_ELEVATED_FLOOR, 0.06),
   liveLookbackMs: num(process.env.SHADOW_REGIME_LIVE_LOOKBACK_MIN, 360) * 60_000,
   liveMinSamples: num(process.env.SHADOW_REGIME_LIVE_MIN_SAMPLES, 4)
 };

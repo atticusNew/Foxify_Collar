@@ -208,13 +208,13 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Foxify all-in net", `$${m.foxify.foxifyAllInNetUsdc}`, `${m.foxify.foxifyAllInNetBps} bps — perps + funding + collar + credit − fees`)}
   </div>
   <p class="muted" style="margin:2px 0 0">Perp book by venue: ${m.foxify.venues.map((v) => `${esc(v.venue)} ${v.positions} (P&L $${v.perpPnlUsdc}, funding $${v.fundingUsdc})`).join(" · ")}</p>
-  <table><thead><tr><th>recent pair (settle)</th><th>side</th><th>venue</th><th>entry → settle</th><th>move</th><th>perp P&L</th><th>funding</th><th>collar</th><th>credit</th><th>net</th></tr></thead><tbody>${
+  <table><thead><tr><th>recent (settle)</th><th>side</th><th>venue</th><th>entry → settle</th><th>move</th><th>perp P&L</th><th>funding</th><th>collar</th><th>credit</th><th>net</th></tr></thead><tbody>${
           m.foxify.recentPairs
-            .flatMap((p) => [p.long, p.short])
-            .filter((r): r is NonNullable<typeof r> => r != null)
+            .flatMap((p) => [p.long, p.short].map((r) => ({ r, matched: p.matched })))
+            .filter((x): x is { r: NonNullable<typeof x.r>; matched: boolean } => x.r != null)
             .map(
-              (row) =>
-                `<tr><td>${esc(row.settleIso.replace("T", " ").slice(0, 16))}</td><td>${row.side}</td><td>${esc(row.venue)}</td><td>$${row.entryPriceUsd.toFixed(0)} → $${row.settlePriceUsd.toFixed(0)}</td><td>${(row.movePct * 100).toFixed(2)}%</td><td>$${row.perpPnlUsdc}</td><td>$${row.fundingUsdc}</td><td>$${row.collarPayoutUsdc}</td><td>$${row.creditUsdc}</td><td>$${row.foxifyNetUsdc}</td></tr>`
+              ({ r: row, matched }) =>
+                `<tr><td>${esc(row.settleIso.replace("T", " ").slice(0, 16))}</td><td>${row.side}${matched ? "" : " · SINGLE (directional)"}</td><td>${esc(row.venue)}</td><td>$${row.entryPriceUsd.toFixed(0)} → $${row.settlePriceUsd.toFixed(0)}</td><td>${(row.movePct * 100).toFixed(2)}%</td><td>$${row.perpPnlUsdc}</td><td>$${row.fundingUsdc}</td><td>$${row.collarPayoutUsdc}</td><td>$${row.creditUsdc}</td><td>$${row.foxifyNetUsdc}</td></tr>`
             )
             .join("") || `<tr><td colspan="10" class="muted">No matured pairs yet.</td></tr>`
         }</tbody></table>`

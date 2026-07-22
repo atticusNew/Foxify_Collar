@@ -244,6 +244,13 @@ export type LiveShadowConfig = {
    * two positions are ONE bet at double size; this dial trades credit volume for per-day variance).
    */
   autoElevatedDailyPositions?: number;
+  /**
+   * Auto mode: fraction of ELEVATED days on which the partner actually TAKES the directional trend call
+   * (0..1). The partner decides directional bets, not us — a shadow that takes every call overstates
+   * both the wins and the losses of the directional book. Deterministic per UTC day (stable across
+   * cycles/restarts). Default 1 (take every call — legacy behavior).
+   */
+  autoDirectionalParticipation?: number;
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
   /**

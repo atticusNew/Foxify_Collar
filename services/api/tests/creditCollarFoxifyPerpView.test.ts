@@ -94,6 +94,37 @@ test("Foxify all-in net = perp P&L + collar payout + credit − fee, and recent 
   assert.equal(view.recentPairs.length, 1);
   assert.equal(view.recentPairs[0].long?.ref, "L1");
   assert.equal(view.recentPairs[0].short?.ref, "S1");
+  assert.equal(view.recentPairs[0].matched, true, "same-cycle long+short is a matched pair");
+});
+
+test("legs opened hours apart are directional SINGLES, not a pseudo-pair", () => {
+  const view = buildFoxifyView([
+    outcome({ ref: "S-early", side: "short", openedAtMs: NOW - 38 * 3_600_000, settledAtMs: NOW - 14 * 3_600_000 }),
+    outcome({ ref: "L-late", side: "long", openedAtMs: NOW - 24 * 3_600_000, settledAtMs: NOW })
+  ]);
+  assert.equal(view.recentPairs.length, 2, "two singles, no grouping");
+  for (const g of view.recentPairs) {
+    assert.equal(g.matched, false);
+    assert.ok((g.long == null) !== (g.short == null), "exactly one leg per single");
+  }
+  // Most recent settle first.
+  assert.equal(view.recentPairs[0].long?.ref, "L-late");
+  assert.equal(view.recentPairs[1].short?.ref, "S-early");
+  // A single's group net is just that leg's net.
+  assert.equal(view.recentPairs[0].pairNetUsdc, view.recentPairs[0].long?.foxifyNetUsdc);
+});
+
+test("mixed book: the atomic pair matches, the lone directional stays single", () => {
+  const view = buildFoxifyView([
+    outcome({ ref: "L1", side: "long" }),
+    outcome({ ref: "S1", side: "short" }), // same default openedAtMs as L1 ⟹ matched
+    outcome({ ref: "S-solo", side: "short", openedAtMs: NOW - 40 * 3_600_000, settledAtMs: NOW - 16 * 3_600_000 })
+  ]);
+  assert.equal(view.recentPairs.length, 2);
+  const pair = view.recentPairs.find((g) => g.matched);
+  const single = view.recentPairs.find((g) => !g.matched);
+  assert.ok(pair && pair.long?.ref === "L1" && pair.short?.ref === "S1");
+  assert.ok(single && single.long == null && single.short?.ref === "S-solo");
 });
 
 test("empty ledger is safe (zeros, no division by notional)", () => {

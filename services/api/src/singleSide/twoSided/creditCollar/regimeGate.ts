@@ -19,7 +19,12 @@ export type RegimeGateConfig = {
   haltVolPct?: number;
   /** Open-rate multiplier when elevated (0..1). Default 0.5. */
   elevatedOpenMultiplier?: number;
-  /** Deeper floor (⟹ wider cap) to use when elevated/halt. Default 0.10. */
+  /**
+   * Deeper floor (⟹ wider cap) to use when elevated/halt. Default 0.06 — matches the client-facing
+   * "~6% protective wing": worst wrong-side loss stays ~6% of notional (the number in the deck), at the
+   * cost of slightly dearer protection / tighter cap on elevated days. (Was 0.10; a 10% floor lets a
+   * wrong directional call bleed ~$5k/$50k before protection engages — inconsistent with the pitch.)
+   */
   elevatedFloorPct?: number;
   /** Leading signal: lookback window (ms) over live oracle prices. Default 6h. */
   liveLookbackMs?: number;
@@ -67,7 +72,7 @@ export const evaluateRegimeGate = (
   const elevated = cfg.elevatedVolPct ?? 1.5;
   const halt = cfg.haltVolPct ?? 3.0;
   const elevMult = cfg.elevatedOpenMultiplier ?? 0.5;
-  const elevFloor = cfg.elevatedFloorPct ?? 0.1;
+  const elevFloor = cfg.elevatedFloorPct ?? 0.06;
   const exitRatio = cfg.hysteresisExitRatio ?? 0.85;
 
   const samples = recentAbsMovePcts.length;
