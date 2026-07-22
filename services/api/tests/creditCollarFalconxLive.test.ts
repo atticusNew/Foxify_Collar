@@ -389,7 +389,9 @@ const freshPaths = () => {
   const dir = mkdtempSync(join(tmpdir(), "fx-runner-"));
   return { executions: join(dir, "exec.jsonl"), windowState: join(dir, "window.json"), alerts: join(dir, "alerts.jsonl"), recon: join(dir, "recon.jsonl"), settlements: join(dir, "settle.jsonl") };
 };
-const armedEnv = { LIVE_ENABLED: "true", FALCONX_LIVE_CONFIRM: "I_UNDERSTAND_REAL_MONEY" };
+// LIVE_DIRECTIONAL_DECISION=auto pins the legacy trend-auto behavior these scenarios exercise;
+// the pilot default ("partner") is covered in creditCollarPartnerDecisionGate.test.ts.
+const armedEnv = { LIVE_ENABLED: "true", FALCONX_LIVE_CONFIRM: "I_UNDERSTAND_REAL_MONEY", LIVE_DIRECTIONAL_DECISION: "auto" };
 const ctx = (regime: "calm" | "elevated" | "halt") => ({ nowMs: NOW, spot: SPOT, regime: gate(regime), trendBias: "long" as const, solveSide: solveOk });
 
 test("falconx runner: calm day executes the PAIR as two atomic structures, booked falconx_live", async () => {

@@ -176,5 +176,11 @@ export const buildOkxLiveExecutionHook = (env: Record<string, string | undefined
     }
   };
 
-  return buildLiveExecutionHook({ adapter, guards, paths: deps.paths });
+  return buildLiveExecutionHook({
+    adapter,
+    guards,
+    // Pilot default: the partner makes the elevated-day directional call (LIVE_DIRECTIONAL_DECISION=auto opts out).
+    directionalDecisionMode: (env.LIVE_DIRECTIONAL_DECISION ?? "partner").toLowerCase() === "auto" ? "auto" : "partner",
+    paths: deps.paths
+  });
 };

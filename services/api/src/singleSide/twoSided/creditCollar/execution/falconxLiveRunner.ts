@@ -412,5 +412,11 @@ export const buildFalconxLiveExecutionHook = (env: Record<string, string | undef
     reconcileSettled: (targets: SettlementOutcome[], nowMs: number) => reconcileFalconxSettlements(deps.client, targets, { toleranceUsdc: reconTol, nowMs })
   };
 
-  return buildLiveExecutionHook({ adapter, guards, paths: deps.paths });
+  return buildLiveExecutionHook({
+    adapter,
+    guards,
+    // Pilot default: the partner makes the elevated-day directional call (LIVE_DIRECTIONAL_DECISION=auto opts out).
+    directionalDecisionMode: (env.LIVE_DIRECTIONAL_DECISION ?? "partner").toLowerCase() === "auto" ? "auto" : "partner",
+    paths: deps.paths
+  });
 };

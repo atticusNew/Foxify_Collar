@@ -89,6 +89,8 @@ export type SettlementOutcome = {
   protectiveLegPremiumUsdc?: number;   // what we PAID for the floor at open
   venue?: string;
   quoteMeta?: OpenPosition["quoteMeta"];
+  /** How the position concluded. Default (absent) = "expiry". "watcher_unwind" = early barrier close. */
+  closedBy?: "expiry" | "watcher_unwind";
   liveMeta?: OpenPosition["liveMeta"]; // real-execution metadata (okx_live) — reconciliation needs the instIds
 };
 
@@ -241,6 +243,68 @@ export const settleMatured = (
     });
   }
   return { settled, stillOpen, oracleVerified, settlePriceUsd, deferred };
+};
+
+/**
+ * Settle a position EARLY at a confirmed barrier touch (watcher-permitted lock). The collar dies at
+ * the line — the touched leg carries zero intrinsic there, so the option payout is ~0 — and the
+ * partner keeps the credit VESTED to the touch (the unvested remainder funded the hedge buyback,
+ * which the watcher verified was affordable before permitting). Pure.
+ *
+ * Deliberately does NOT carry liveMeta onto the outcome: the expiry-settlement reconciliation joins
+ * on liveMeta and would flag an early-closed position as a venue mismatch (its venue cash flow is the
+ * unwind, not a delivery) — the unwind itself is already audited in the live-executions ledger.
+ */
+export const settleAtBarrier = (
+  pos: OpenPosition,
+  barrier: "floor" | "ceiling",
+  nowMs: number,
+  vestedCreditUsdc: number,
+  capital: SettlementCapitalConfig = {}
+): SettlementOutcome => {
+  const barrierPrice = barrier === "floor" ? pos.putStrike : pos.callStrike;
+  const s = computeCollarSettlement(pos, barrierPrice, barrierPrice);
+  const heldMs = Math.max(0, nowMs - pos.openedAtMs);
+  const imFraction = capital.shortOptionImFraction ?? 0.1393;
+  const pmNetting = capital.portfolioMarginNettingFactor ?? 1.0;
+  const coc = capital.costOfCapitalAnnual ?? 0.12;
+  const shortLegMargin = pos.notionalUsdc * imFraction * pmNetting;
+  const capitalCost = shortLegMargin * coc * (heldMs / YEAR_MS);
+  const optionFees = Math.max(0, pos.openFeeUsdc ?? 0);
+  const feeBorneByAtticus = pos.feesFundedByCollar ? 0 : optionFees;
+  const vested = round2(Math.max(0, Math.min(vestedCreditUsdc, pos.foxifyCreditUsdc)));
+  return {
+    ref: pos.ref,
+    side: pos.side,
+    notionalUsdc: pos.notionalUsdc,
+    spotAtEntry: pos.spotAtEntry,
+    settlePriceUsd: barrierPrice,
+    movePct: pos.spotAtEntry > 0 ? +((barrierPrice - pos.spotAtEntry) / pos.spotAtEntry).toFixed(6) : 0,
+    putIntrinsicUsd: s.putIntrinsicUsd,
+    callIntrinsicUsd: s.callIntrinsicUsd,
+    payoutToFoxifyUsdc: s.payoutToFoxifyUsdc,
+    foxifyCreditUsdc: vested,
+    netToFoxifyUsdc: round2(vested + s.payoutToFoxifyUsdc),
+    serviceFeeUsdc: pos.serviceFeeUsdc,
+    floorBreached: s.floorBreached,
+    capBreached: s.capBreached,
+    oracleVerified: true, // the touch was confirmed on oracle ticks (persistTicks anti-wick)
+    openedAtMs: pos.openedAtMs,
+    settledAtMs: nowMs,
+    heldMs,
+    hedgeReceiptUsdc: s.hedgeReceiptUsdc,
+    atticusOptionNetUsdc: s.atticusOptionNetUsdc,
+    shortLegMarginUsdc: round2(shortLegMargin),
+    capitalCostUsdc: round2(capitalCost),
+    optionFeesUsdc: round2(optionFees),
+    atticusNetAfterCapitalUsdc: round2(pos.serviceFeeUsdc - capitalCost),
+    atticusNetAfterFeesAndCapitalUsdc: round2(pos.serviceFeeUsdc + s.atticusOptionNetUsdc - feeBorneByAtticus - capitalCost),
+    fundingLegPremiumUsdc: pos.fundingLegPremiumUsdc,
+    protectiveLegPremiumUsdc: pos.protectiveLegPremiumUsdc,
+    venue: pos.venue,
+    quoteMeta: pos.quoteMeta,
+    closedBy: "watcher_unwind"
+  };
 };
 
 // ── Settlement aggregate (the REAL economics) ─────────────────────────────────

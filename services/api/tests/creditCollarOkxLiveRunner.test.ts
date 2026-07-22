@@ -91,7 +91,9 @@ const freshPaths = () => {
   return { executions: join(dir, "exec.jsonl"), windowState: join(dir, "window.json"), alerts: join(dir, "alerts.jsonl"), recon: join(dir, "recon.jsonl"), settlements: join(dir, "settle.jsonl") };
 };
 
-const armedEnv = { LIVE_ENABLED: "true" };
+// LIVE_DIRECTIONAL_DECISION=auto pins the legacy trend-auto behavior these scenarios exercise;
+// the pilot default ("partner") is covered in creditCollarPartnerDecisionGate.test.ts.
+const armedEnv = { LIVE_ENABLED: "true", LIVE_DIRECTIONAL_DECISION: "auto" };
 const mkHook = (client: LiveVenueClient, paths: ReturnType<typeof freshPaths>, env: Record<string, string | undefined> = armedEnv) =>
   buildOkxLiveExecutionHook(env, { client, guards: parseLiveGuardsFromEnv(env), paths, fillTimeoutMs: 50, pollDelayMs: 1, sleep: async () => {} });
 
@@ -238,7 +240,7 @@ test("runner: canary contract override forces tiny size through the SAME full pa
     "BTC-USD-260723-94000-P": [{ fill: 2, px: 0.0013 }],
     "BTC-USD-260723-102000-C": [{ fill: 2, px: 0.0028 }]
   });
-  const env = { LIVE_ENABLED: "true", LIVE_CANARY_CONTRACTS: "2" };
+  const env = { LIVE_ENABLED: "true", LIVE_DIRECTIONAL_DECISION: "auto", LIVE_CANARY_CONTRACTS: "2" };
   const hook = mkHook(client, paths, env);
   const r = await hook.executeWindow(ctx("elevated"));
   assert.equal(r.newOpens.length, 1);
@@ -250,7 +252,7 @@ test("runner: canary contract override forces tiny size through the SAME full pa
 test("runner: per-day notional cap skips the day", async () => {
   const paths = freshPaths();
   const { client, placed } = makeClient({});
-  const env = { LIVE_ENABLED: "true", LIVE_MAX_DAY_NOTIONAL_USDC: "40000" }; // below one 50k position
+  const env = { LIVE_ENABLED: "true", LIVE_DIRECTIONAL_DECISION: "auto", LIVE_MAX_DAY_NOTIONAL_USDC: "40000" }; // below one 50k position
   const hook = mkHook(client, paths, env);
   const r = await hook.executeWindow(ctx("elevated"));
   assert.equal(r.newOpens.length, 0);

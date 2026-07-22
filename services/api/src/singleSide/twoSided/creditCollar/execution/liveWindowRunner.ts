@@ -20,7 +20,9 @@
 import type { PerpSide } from "../creditCollarPricer";
 import type { OpenPosition, SettlementOutcome } from "../forwardSettlement";
 import type { RegimeGateDecision } from "../regimeGate";
+import type { LockDecision } from "../lockPolicy";
 import { loadSettlements } from "../forwardSettlementStore";
+import { latestDecisionForDay } from "./partnerDecisionStore";
 import {
   appendLiveExecution,
   appendLiveRecon,
@@ -66,9 +68,23 @@ export type LiveWindowResult = {
   summary: string;
 };
 
+export type WatcherUnwindResult = {
+  ref: string;
+  complete: boolean;              // hedge legs fully closed at the venue
+  barrier: "floor" | "ceiling";
+  barrierPriceUsd: number;
+  vestedCreditUsdc: number;
+};
+
 export type LiveExecutionHook = {
   executeWindow: (ctx: LiveWindowContext) => Promise<LiveWindowResult>;
   reconcileSettled: (settledThisCycle: SettlementOutcome[]) => Promise<void>;
+  /**
+   * Watcher-driven early unwind: executes IMMEDIATELY when the lock watcher permits a lock at a
+   * confirmed barrier touch — the hedge does not wait for the partner. The close signal to the
+   * partner (close your perp within the SLA) is raised as an alert in the same moment.
+   */
+  unwindOnWatcher: (open: OpenPosition[], permitted: LockDecision[], ctx: { nowMs: number; spot: number }) => Promise<WatcherUnwindResult[]>;
 };
 
 // ── Venue adapter contract ────────────────────────────────────────────────────
@@ -111,7 +127,13 @@ export type LiveVenueAdapter = {
 export type LiveRunnerDeps = {
   adapter: LiveVenueAdapter;
   guards: LiveGuardsConfig;
-  paths?: { executions?: string; windowState?: string; alerts?: string; recon?: string; settlements?: string };
+  /**
+   * Who makes the ELEVATED-day directional call. "partner" (pilot default): wait inside the daily
+   * window for an explicit partner decision (take/pass via the partner-decision store); no decision
+   * by window close ⟹ day skipped. "auto": legacy — trend signal decides (shadow/backtest behavior).
+   */
+  directionalDecisionMode?: "partner" | "auto";
+  paths?: { executions?: string; windowState?: string; alerts?: string; recon?: string; settlements?: string; partnerDecisions?: string };
 };
 
 /** Build the live hook from a venue adapter. All the rails live here; the venue only trades. */
@@ -142,7 +164,23 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
       saveWindowState({ lastAttemptDayUtc: window.dayUtc, lastAttemptTsMs: ctx.nowMs, lastOutcome: "halt_skip" }, paths.windowState);
       return none(`regime HALT (${ctx.regime?.reason ?? ""}) — day skipped`);
     }
-    const sides: PerpSide[] = regime === "calm" ? ["long", "short"] : [ctx.trendBias];
+    // ELEVATED-day directional bets belong to the PARTNER (pilot default): wait for their decision
+    // inside the window. No decision ⟹ do NOT consume the window (they can still decide until the
+    // window closes; a day that closes undecided is skipped by the never-chase rule). "pass" consumes
+    // the window and skips; "take" trades their side (or our trend signal when they leave it to us).
+    let directionalSide: PerpSide = ctx.trendBias;
+    if (regime === "elevated" && (deps.directionalDecisionMode ?? "partner") === "partner") {
+      const decision = latestDecisionForDay(window.dayUtc, paths.partnerDecisions);
+      if (!decision) {
+        return none(`elevated: awaiting partner directional decision (window open until close — record via partner-decision CLI/API)`);
+      }
+      if (decision.action === "pass") {
+        saveWindowState({ lastAttemptDayUtc: window.dayUtc, lastAttemptTsMs: ctx.nowMs, lastOutcome: "partner_pass_skip" }, paths.windowState);
+        return none(`elevated: partner passed on today's directional — day skipped`);
+      }
+      directionalSide = decision.side ?? ctx.trendBias;
+    }
+    const sides: PerpSide[] = regime === "calm" ? ["long", "short"] : [directionalSide];
     const pairAtomic = sides.length === 2;
 
     // Consume the window FIRST (crash-safe: never a double window on restart).
@@ -293,5 +331,64 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
     }
   };
 
-  return { executeWindow, reconcileSettled };
+  /**
+   * Watcher-permitted early unwind — fires the moment the lock watcher says so (the watcher only
+   * permits when the buyback fits inside the unvested credit, so every executed lock is affordable
+   * by construction). Does NOT wait for the partner: the hedge unwinds now, and the partner's close
+   * signal (close the perp within the SLA) is raised as an alert in the same breath.
+   */
+  const unwindOnWatcher = async (open: OpenPosition[], permitted: LockDecision[], ctx: { nowMs: number; spot: number }): Promise<WatcherUnwindResult[]> => {
+    const results: WatcherUnwindResult[] = [];
+    if (permitted.length === 0) return results;
+    const byRef = new Map(open.map((p) => [p.ref, p]));
+    // Minimal window context for the venue unwind (solveSide is never consulted on an unwind).
+    const unwindCtx: LiveWindowContext = {
+      nowMs: ctx.nowMs,
+      spot: ctx.spot,
+      regime: undefined,
+      trendBias: "long",
+      solveSide: () => ({ ok: false, error: "not_applicable", message: "unwind context has no solver" })
+    };
+    for (const d of permitted) {
+      const pos = byRef.get(d.ref);
+      if (!pos || pos.venue !== adapter.venueLabel || !pos.liveMeta) continue; // only OUR live positions
+      const barrierPrice = d.barrier === "floor" ? pos.putStrike : pos.callStrike;
+      raiseLiveAlert(
+        {
+          tsMs: ctx.nowMs,
+          level: "warn",
+          code: "close_signal",
+          message: `CLOSE SIGNAL ${pos.ref}: ${d.barrier} touched @ $${barrierPrice} — hedge unwinding NOW (watcher: cost $${d.unwindCostUsdc} ≤ unvested $${d.unvestedCreditUsdc}); partner must close the perp within the SLA. Vested credit $${d.vestedCreditUsdc}.`,
+          data: d
+        },
+        paths.alerts
+      );
+      const rep = await adapter.unwindFilled(pos, unwindCtx);
+      appendLiveExecution(
+        {
+          tsMs: ctx.nowMs,
+          dayUtc: new Date(ctx.nowMs).toISOString().slice(0, 10),
+          ref: pos.ref,
+          side: pos.side,
+          outcome: rep.complete ? "watcher_unwound" : "watcher_unwind_incomplete",
+          mode: adapter.mode,
+          effectiveNotionalUsdc: 0,
+          contracts: pos.liveMeta?.contracts ?? 0,
+          putInstId: pos.liveMeta?.putInstId ?? null,
+          callInstId: pos.liveMeta?.callInstId ?? null,
+          netCreditUsdc: null,
+          venueFeeUsdc: null,
+          detail: { decision: d, unwind: rep.detail ?? rep.notes }
+        },
+        paths.executions
+      );
+      if (!rep.complete) {
+        raiseLiveAlert({ tsMs: ctx.nowMs, level: "critical", code: "watcher_unwind_incomplete", message: `watcher unwind of ${pos.ref} INCOMPLETE — ${rep.notes.join("; ")} — manual action required`, data: rep }, paths.alerts);
+      }
+      results.push({ ref: pos.ref, complete: rep.complete, barrier: d.barrier, barrierPriceUsd: barrierPrice, vestedCreditUsdc: d.vestedCreditUsdc });
+    }
+    return results;
+  };
+
+  return { executeWindow, reconcileSettled, unwindOnWatcher };
 };

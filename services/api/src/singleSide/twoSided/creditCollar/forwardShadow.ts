@@ -12,7 +12,7 @@ import { CreditCollarActivationScaffold } from "./activationScaffold";
 import { computeInventory } from "./inventoryBalancer";
 import { buildLiveShadowInputs, type LiveShadowConfig } from "./shadowRunner";
 import type { ShadowScorecard } from "./shadowRunner";
-import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
+import { settleMatured, settleAtBarrier, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
 import { computeOpensThisCycle, loadOpeningState, saveOpeningState } from "./openingSignalStore";
 import { evaluateRegimeGate, type RegimeGateDecision } from "./regimeGate";
@@ -36,6 +36,8 @@ export type ForwardCycleResult =
       oracleVerified: boolean;
       lifecycle: ShadowLifecycleReport;
       regimeGate?: RegimeGateDecision;
+      /** Positions closed EARLY this cycle by a watcher-permitted lock (live executions only). */
+      watcherUnwinds?: number;
       meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] };
     }
   | { ok: false; error: string; message: string };
@@ -323,6 +325,34 @@ export const runForwardShadowCycle = async (
   });
   saveLedger(ledger1);
 
+  // 3b) Watcher-driven LIVE unwind: a PERMITTED lock executes immediately — the hedge does not wait
+  // for the partner (their close signal is raised in the same moment; closing their perp within the
+  // SLA is their side of the protocol). The position settles AT THE BARRIER with the vested credit.
+  let watcherUnwinds = 0;
+  if (cfg.liveExecution && lifecycle.lockWatcher && lifecycle.lockWatcher.locksPermitted > 0) {
+    try {
+      const permitted = lifecycle.lockWatcher.decisions.filter((d) => d.permitted);
+      const unwound = await cfg.liveExecution.unwindOnWatcher(openBook, permitted, { nowMs: now, spot: oraclePriceUsd });
+      const completed = unwound.filter((u) => u.complete);
+      if (completed.length > 0) {
+        const byRef = new Map(openBook.map((p) => [p.ref, p]));
+        const barrierSettled = completed
+          .map((u) => {
+            const pos = byRef.get(u.ref);
+            return pos ? settleAtBarrier(pos, u.barrier, now, u.vestedCreditUsdc, cfg.capital) : null;
+          })
+          .filter((s): s is NonNullable<typeof s> => s != null);
+        appendSettlements(barrierSettled, paths.ledgerPath);
+        const closedRefs = new Set(barrierSettled.map((s) => s.ref));
+        saveOpenPositions(openBook.filter((p) => !closedRefs.has(p.ref)), paths.openPath);
+        watcherUnwinds = barrierSettled.length;
+        console.error(`[live] watcher unwound ${watcherUnwinds} position(s) at the barrier — vested credit realized, ledger settled`);
+      }
+    } catch (e) {
+      console.error(`[live] watcher unwind error (positions remain open): ${(e as Error).message}`);
+    }
+  }
+
   const openedNotional = newOpens.reduce((s, p) => s + p.notionalUsdc, 0);
   const openingScorecard: ShadowScorecard = {
     label: "tier0_shadow_paper_settled",
@@ -368,14 +398,15 @@ export const runForwardShadowCycle = async (
   return {
     ok: true,
     openingScorecard,
-    settledThisCycle: settled.length,
+    settledThisCycle: settled.length + watcherUnwinds,
     settledPayoutThisCycleUsdc: +settledPayout.toFixed(2),
     deferred,
-    openBookSize: openBook.length,
+    openBookSize: openBook.length - watcherUnwinds,
     settlePriceUsd,
     oracleVerified,
     lifecycle,
     regimeGate,
+    watcherUnwinds,
     meta
   };
 };
