@@ -2,11 +2,13 @@
 /**
  * Record the PARTNER's elevated-day directional decision for the live runner.
  *
- * On elevated days the live window waits (until the window closes) for this record:
- *   take  — open the directional single; --side long|short, or omit to use our trend signal
- *   pass  — skip today; the window is consumed and nothing opens
+ * The live window waits (until the window closes) for this record:
+ *   confirm — calm-day pair ACK (their bot auto-confirms; a silent bot fails closed)
+ *   take    — elevated: open the directional single; --side long|short, or omit for our trend signal
+ *   pass    — skip today; the window is consumed and nothing opens
  *
  * Usage:
+ *   npx tsx scripts/creditCollarPartnerDecision.ts confirm                 # calm pair ACK
  *   npx tsx scripts/creditCollarPartnerDecision.ts take --side short
  *   npx tsx scripts/creditCollarPartnerDecision.ts pass
  *   npx tsx scripts/creditCollarPartnerDecision.ts take --day 2026-07-23   # pre-record for a day
@@ -36,8 +38,8 @@ if (action === "show") {
   process.exit(0);
 }
 
-if (action !== "take" && action !== "pass") {
-  console.error(`usage: creditCollarPartnerDecision.ts take [--side long|short] [--day YYYY-MM-DD] | pass [--day YYYY-MM-DD] | show [--day YYYY-MM-DD]`);
+if (action !== "confirm" && action !== "take" && action !== "pass") {
+  console.error(`usage: creditCollarPartnerDecision.ts confirm | take [--side long|short] | pass  [--day YYYY-MM-DD] · show [--day YYYY-MM-DD]`);
   process.exit(1);
 }
 
@@ -46,14 +48,14 @@ if (sideArg != null && sideArg !== "long" && sideArg !== "short") {
   console.error(`invalid --side "${sideArg}" (expect long|short)`);
   process.exit(1);
 }
-if (action === "pass" && sideArg != null) {
-  console.error("--side is meaningless with 'pass'");
+if (action !== "take" && sideArg != null) {
+  console.error(`--side is meaningless with '${action}'`);
   process.exit(1);
 }
 
 const rec = {
   dayUtc,
-  action: action as "take" | "pass",
+  action: action as "confirm" | "take" | "pass",
   side: action === "take" ? ((sideArg as "long" | "short" | undefined) ?? null) : null,
   decidedAtIso: new Date().toISOString(),
   source: "cli"
@@ -61,7 +63,9 @@ const rec = {
 appendPartnerDecision(rec);
 console.log(`recorded: ${JSON.stringify(rec)}`);
 console.log(
-  action === "take"
-    ? `→ live window will open the directional single (side: ${rec.side ?? "our trend signal"}) when due on ${dayUtc}.`
-    : `→ live window will skip ${dayUtc} (partner passed).`
+  action === "confirm"
+    ? `→ live window will open the calm PAIR when due on ${dayUtc}.`
+    : action === "take"
+      ? `→ live window will open the directional single (side: ${rec.side ?? "our trend signal"}) when due on ${dayUtc}.`
+      : `→ live window will skip ${dayUtc} (partner passed).`
 );

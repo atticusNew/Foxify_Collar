@@ -159,8 +159,27 @@ export const buildOkxLiveExecutionHook = (env: Record<string, string | undefined
       };
     },
 
-    unwindFilled: async (pos: OpenPosition, ctx: LiveWindowContext) => {
+    unwindFilled: async (pos: OpenPosition, ctx: LiveWindowContext, opts?: { maxCostUsdc?: number }) => {
       const lm = pos.liveMeta!;
+      // Budget check against the REAL book before firing market orders (OKX unwinds on the CLOB, so
+      // the book top is the executable truth): buy back the sold funding leg at the ask, recover the
+      // held protective leg at the bid. Over budget — or no ask to verify — ⟹ defer; the position
+      // stays fully hedged and rides behind its floor.
+      if (opts?.maxCostUsdc != null) {
+        const fundingInst = pos.side === "long" ? lm.callInstId : lm.putInstId;
+        const protectiveInst = pos.side === "long" ? lm.putInstId : lm.callInstId;
+        const [fTop, pTop] = await Promise.all([deps.client.getBookTop(fundingInst), deps.client.getBookTop(protectiveInst)]);
+        const askBtc = Number(fTop.data?.[0]?.asks?.[0]?.[0] ?? NaN);
+        const bidBtc = Number(pTop.data?.[0]?.bids?.[0]?.[0] ?? NaN);
+        if (!Number.isFinite(askBtc)) {
+          return { complete: false, deferred: true, notes: [`no ask on ${fundingInst} — cannot verify unwind cost against budget $${opts.maxCostUsdc.toFixed(2)}; deferring`] };
+        }
+        const qtyBtc = lm.contracts * lm.ctValBtc;
+        const estCostUsdc = (askBtc - (Number.isFinite(bidBtc) ? bidBtc : 0)) * qtyBtc * ctx.spot;
+        if (estCostUsdc > opts.maxCostUsdc) {
+          return { complete: false, deferred: true, notes: [`book-top unwind cost $${estCostUsdc.toFixed(2)} > budget $${opts.maxCostUsdc.toFixed(2)} — deferring (rides behind its floor)`] };
+        }
+      }
       const rep = await unwindLiveCollar(
         deps.client,
         { side: pos.side, putInstId: lm.putInstId, callInstId: lm.callInstId, contracts: lm.contracts, ctValBtc: lm.ctValBtc },

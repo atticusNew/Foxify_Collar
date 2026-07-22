@@ -12,6 +12,7 @@ import {
 import { parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
 import { loadLiveAlerts, loadLiveExecutions, loadWindowState } from "../src/singleSide/twoSided/creditCollar/execution/liveExecutionStore";
 import { appendPartnerDecision, latestDecisionForDay } from "../src/singleSide/twoSided/creditCollar/execution/partnerDecisionStore";
+import { loadPartnerSignals } from "../src/singleSide/twoSided/creditCollar/execution/partnerSignalStore";
 import { settleAtBarrier, type OpenPosition } from "../src/singleSide/twoSided/creditCollar/forwardSettlement";
 import type { LockDecision } from "../src/singleSide/twoSided/creditCollar/lockPolicy";
 import type { RegimeGateDecision } from "../src/singleSide/twoSided/creditCollar/regimeGate";
@@ -64,10 +65,11 @@ const livePos = (side: PerpSide, over: Partial<OpenPosition> = {}): OpenPosition
   ...over
 });
 
-/** Fake venue: fills everything, records what it was asked to trade/unwind. */
-const makeAdapter = () => {
+/** Fake venue: fills everything, records what it was asked to trade/unwind. Optionally price-checks unwinds. */
+const makeAdapter = (opts: { realUnwindCostUsdc?: number } = {}) => {
   const executedSides: PerpSide[] = [];
   const unwoundRefs: string[] = [];
+  const seenBudgets: Array<number | undefined> = [];
   const adapter: LiveVenueAdapter = {
     venueLabel: "fake_live",
     mode: "demo",
@@ -76,13 +78,17 @@ const makeAdapter = () => {
       executedSides.push(s.side);
       return { outcome: "filled", safe: true, pos: livePos(s.side, { openedAtMs: ctx.nowMs }), netCreditUsdc: 80, venueFeeUsdc: 2, contracts: 50, putInstId: "P", callInstId: "C" };
     },
-    unwindFilled: async (pos) => {
+    unwindFilled: async (pos, _ctx, o) => {
+      seenBudgets.push(o?.maxCostUsdc);
+      if (o?.maxCostUsdc != null && opts.realUnwindCostUsdc != null && opts.realUnwindCostUsdc > o.maxCostUsdc) {
+        return { complete: false, deferred: true, notes: [`real cost ${opts.realUnwindCostUsdc} > budget ${o.maxCostUsdc}`] };
+      }
       unwoundRefs.push(pos.ref);
       return { complete: true, notes: ["unwound"] };
     },
     reconcileSettled: async () => []
   };
-  return { adapter, executedSides, unwoundRefs };
+  return { adapter, executedSides, unwoundRefs, seenBudgets };
 };
 
 const freshPaths = () => {
@@ -93,7 +99,8 @@ const freshPaths = () => {
     alerts: join(dir, "alerts.jsonl"),
     recon: join(dir, "recon.jsonl"),
     settlements: join(dir, "settle.jsonl"),
-    partnerDecisions: join(dir, "decisions.jsonl")
+    partnerDecisions: join(dir, "decisions.jsonl"),
+    partnerSignals: join(dir, "signals.jsonl")
   };
 };
 
@@ -136,7 +143,7 @@ test("partner mode: 'pass' consumes the window and skips the day", async () => {
   assert.equal(loadWindowState(paths.windowState).lastOutcome, "partner_pass_skip");
 });
 
-test("partner mode: 'take' without a side defers to the trend signal; calm days are untouched by the gate", async () => {
+test("partner mode: 'take' without a side defers to the trend signal", async () => {
   const paths = freshPaths();
   const { adapter } = makeAdapter();
   appendPartnerDecision({ dayUtc: DAY, action: "take", side: null, decidedAtIso: new Date(NOW).toISOString(), source: "cli" }, paths.partnerDecisions);
@@ -144,12 +151,40 @@ test("partner mode: 'take' without a side defers to the trend signal; calm days 
   const r = await hook.executeWindow(ctx("elevated"));
   assert.equal(r.newOpens.length, 1);
   assert.equal(r.newOpens[0].side, "long", "trendBias used when the partner leaves the side to us");
+});
 
-  const paths2 = freshPaths();
-  const { adapter: a2 } = makeAdapter();
-  const hook2 = buildLiveExecutionHook({ adapter: a2, guards, directionalDecisionMode: "partner", paths: paths2 });
-  const rCalm = await hook2.executeWindow(ctx("calm"));
-  assert.equal(rCalm.newOpens.length, 2, "calm pair needs no partner decision");
+test("partner mode: CALM requires the pair ACK (fail-closed) — silent bot opens nothing, ACK opens the pair + GREEN LIGHT after the fill", async () => {
+  const paths = freshPaths();
+  const { adapter, executedSides } = makeAdapter();
+  const hook = buildLiveExecutionHook({ adapter, guards, directionalDecisionMode: "partner", paths });
+  const r1 = await hook.executeWindow(ctx("calm"));
+  assert.equal(r1.newOpens.length, 0);
+  assert.ok(r1.summary.includes("awaiting partner pair ACK"));
+  assert.equal(executedSides.length, 0, "no hedge against a silent partner");
+  assert.equal(loadWindowState(paths.windowState).lastAttemptDayUtc, null, "window not consumed — they can still ACK");
+  // The ask went to the outbox exactly once, even across repeated cycles.
+  await hook.executeWindow({ ...ctx("calm"), nowMs: NOW + 15 * 60e3 });
+  const daySignals = loadPartnerSignals(paths.partnerSignals).filter((s) => s.kind === "day_signal");
+  assert.equal(daySignals.length, 1, "one day_signal per day, not one per cycle");
+  assert.equal(daySignals[0].kind === "day_signal" && daySignals[0].intent, "pair");
+  // ACK arrives ⟹ the pair opens, and the green light carries the EXECUTED terms.
+  appendPartnerDecision({ dayUtc: DAY, action: "confirm", side: null, decidedAtIso: new Date(NOW).toISOString(), source: "cli" }, paths.partnerDecisions);
+  const r2 = await hook.executeWindow({ ...ctx("calm"), nowMs: NOW + 30 * 60e3 });
+  assert.equal(r2.newOpens.length, 2);
+  const green = loadPartnerSignals(paths.partnerSignals).filter((s) => s.kind === "green_light");
+  assert.equal(green.length, 1, "green light AFTER the venue fill");
+  assert.equal(green[0].kind === "green_light" && green[0].positions.length, 2);
+});
+
+test("partner mode: a calm ACK does not authorize an elevated directional day", async () => {
+  const paths = freshPaths();
+  const { adapter, executedSides } = makeAdapter();
+  appendPartnerDecision({ dayUtc: DAY, action: "confirm", side: null, decidedAtIso: new Date(NOW).toISOString(), source: "cli" }, paths.partnerDecisions);
+  const hook = buildLiveExecutionHook({ adapter, guards, directionalDecisionMode: "partner", paths });
+  const r = await hook.executeWindow(ctx("elevated"));
+  assert.equal(r.newOpens.length, 0);
+  assert.equal(executedSides.length, 0);
+  assert.equal(loadWindowState(paths.windowState).lastAttemptDayUtc, null, "still waiting for an explicit take/pass");
 });
 
 test("auto mode: elevated trades the trend side with no decision (legacy/backtest behavior)", async () => {
@@ -200,6 +235,36 @@ test("watcher unwind: a permitted lock unwinds the live position immediately and
   assert.ok(execs.some((e) => e.ref === pos.ref && e.outcome === "watcher_unwound"));
   const alerts = loadLiveAlerts(paths.alerts);
   assert.ok(alerts.some((a) => a.code === "close_signal" && a.message.includes(pos.ref)), "partner close signal raised in the same moment");
+});
+
+test("watcher unwind: the REAL venue cost is checked against the budget (unvested − buffer) — over budget defers, position rides", async () => {
+  const paths = freshPaths();
+  // Watcher model said $15 with $45 headroom ⟹ budget $60; the venue's real quote is $200 ⟹ defer.
+  const { adapter, unwoundRefs, seenBudgets } = makeAdapter({ realUnwindCostUsdc: 200 });
+  const hook = buildLiveExecutionHook({ adapter, guards, paths });
+  const pos = livePos("long");
+  const results = await hook.unwindOnWatcher([pos], [lockDecision(pos.ref)], { nowMs: NOW, spot: 102_000 });
+  assert.equal(seenBudgets[0], 60, "budget = model cost + headroom = unvested − buffer");
+  assert.equal(results[0].complete, false);
+  assert.equal(unwoundRefs.length, 0, "nothing executed");
+  const execs = loadLiveExecutions(paths.executions);
+  assert.ok(execs.some((e) => e.outcome === "watcher_unwind_deferred_budget"));
+  const alerts = loadLiveAlerts(paths.alerts);
+  assert.ok(alerts.some((a) => a.code === "watcher_unwind_deferred"), "deferral is a warn, not a critical");
+  assert.ok(!alerts.some((a) => a.code === "close_signal"), "partner is NEVER told to close against an unwind that didn't happen");
+  const signals = loadPartnerSignals(paths.partnerSignals);
+  assert.ok(!signals.some((s) => s.kind === "close_signal"));
+});
+
+test("watcher unwind: close signal goes to the partner OUTBOX only after the unwind executes", async () => {
+  const paths = freshPaths();
+  const { adapter } = makeAdapter();
+  const hook = buildLiveExecutionHook({ adapter, guards, paths });
+  const pos = livePos("long");
+  await hook.unwindOnWatcher([pos], [lockDecision(pos.ref)], { nowMs: NOW, spot: 102_000 });
+  const closes = loadPartnerSignals(paths.partnerSignals).filter((s) => s.kind === "close_signal");
+  assert.equal(closes.length, 1);
+  assert.equal(closes[0].kind === "close_signal" && closes[0].ref, pos.ref);
 });
 
 test("watcher unwind: ignores positions that are not ours (other venue / no liveMeta)", async () => {

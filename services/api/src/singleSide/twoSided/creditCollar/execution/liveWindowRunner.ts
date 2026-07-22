@@ -23,6 +23,7 @@ import type { RegimeGateDecision } from "../regimeGate";
 import type { LockDecision } from "../lockPolicy";
 import { loadSettlements } from "../forwardSettlementStore";
 import { latestDecisionForDay } from "./partnerDecisionStore";
+import { appendPartnerSignal, daySignalEmitted } from "./partnerSignalStore";
 import {
   appendLiveExecution,
   appendLiveRecon,
@@ -36,6 +37,8 @@ import {
   type LiveReconRecord
 } from "./liveExecutionStore";
 import { checkNotionalCaps, executionArmed, isWindowDue, type LiveGuardsConfig } from "./liveGuards";
+
+const round2c = (x: number) => +x.toFixed(2);
 
 export type SolvedCollar = {
   ref: string;
@@ -118,8 +121,13 @@ export type LiveVenueAdapter = {
   plan: (solved: SolvedCollar, ctx: LiveWindowContext) => Promise<VenuePlanResult>;
   /** Execute atomically (both legs or neither — enforced by the venue or by unwind-on-partial). */
   execute: (solved: SolvedCollar, plan: VenuePlan, ctx: LiveWindowContext) => Promise<VenueExecutionResult>;
-  /** Unwind an already-booked position of this window (pair-atomicity abort). */
-  unwindFilled: (pos: OpenPosition, ctx: LiveWindowContext) => Promise<{ complete: boolean; notes: string[]; detail?: unknown }>;
+  /**
+   * Unwind an already-booked position (pair-atomicity abort, or a watcher-permitted lock). When
+   * `opts.maxCostUsdc` is set the venue must verify the REAL unwind cost (its quote / book top)
+   * against that budget BEFORE executing — over budget ⟹ decline with `deferred: true` (the
+   * position stays fully hedged and rides; the watcher re-evaluates next cycle).
+   */
+  unwindFilled: (pos: OpenPosition, ctx: LiveWindowContext, opts?: { maxCostUsdc?: number }) => Promise<{ complete: boolean; deferred?: boolean; notes: string[]; detail?: unknown }>;
   /** Reconcile settled live positions against the venue's own settlement data. */
   reconcileSettled: (targets: SettlementOutcome[], nowMs: number) => Promise<LiveReconRecord[]>;
 };
@@ -133,7 +141,7 @@ export type LiveRunnerDeps = {
    * by window close ⟹ day skipped. "auto": legacy — trend signal decides (shadow/backtest behavior).
    */
   directionalDecisionMode?: "partner" | "auto";
-  paths?: { executions?: string; windowState?: string; alerts?: string; recon?: string; settlements?: string; partnerDecisions?: string };
+  paths?: { executions?: string; windowState?: string; alerts?: string; recon?: string; settlements?: string; partnerDecisions?: string; partnerSignals?: string };
 };
 
 /** Build the live hook from a venue adapter. All the rails live here; the venue only trades. */
@@ -160,25 +168,46 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
 
     // Strategy: HALT ⟹ skip · CALM ⟹ neutral pair (both-or-neither) · ELEVATED ⟹ one directional single.
     const regime = ctx.regime?.regime ?? "calm";
+    const partnerMode = (deps.directionalDecisionMode ?? "partner") === "partner";
+    const emitDaySignal = (intent: "pair" | "directional_proposal" | "no_open") => {
+      if (partnerMode && !daySignalEmitted(window.dayUtc, paths.partnerSignals)) {
+        appendPartnerSignal({ kind: "day_signal", tsMs: ctx.nowMs, dayUtc: window.dayUtc, regime, intent, trendSide: regime === "elevated" ? ctx.trendBias : null }, paths.partnerSignals);
+      }
+    };
     if (regime === "halt") {
+      emitDaySignal("no_open"); // notice only — STRESS is always a pass, no ask
       saveWindowState({ lastAttemptDayUtc: window.dayUtc, lastAttemptTsMs: ctx.nowMs, lastOutcome: "halt_skip" }, paths.windowState);
       return none(`regime HALT (${ctx.regime?.reason ?? ""}) — day skipped`);
     }
-    // ELEVATED-day directional bets belong to the PARTNER (pilot default): wait for their decision
-    // inside the window. No decision ⟹ do NOT consume the window (they can still decide until the
-    // window closes; a day that closes undecided is skipped by the never-chase rule). "pass" consumes
-    // the window and skips; "take" trades their side (or our trend signal when they leave it to us).
+    // The PARTNER speaks before anything opens (pilot default; "auto" = legacy trend-auto for
+    // shadow/backtests). CALM needs their pair ACK (auto-confirm on their side, but a silent bot
+    // must fail closed — we never lock hedges against a partner who can't open perps). ELEVATED
+    // needs take/pass. No decision ⟹ the window is NOT consumed (they can decide until it closes;
+    // a day that closes undecided is skipped by never-chase). The day_signal outbox record is what
+    // their bot answers — transport (poll/webhook) is a separate skin.
     let directionalSide: PerpSide = ctx.trendBias;
-    if (regime === "elevated" && (deps.directionalDecisionMode ?? "partner") === "partner") {
+    if (partnerMode) {
       const decision = latestDecisionForDay(window.dayUtc, paths.partnerDecisions);
-      if (!decision) {
-        return none(`elevated: awaiting partner directional decision (window open until close — record via partner-decision CLI/API)`);
+      if (regime === "calm") {
+        emitDaySignal("pair");
+        if (!decision) return none(`calm: awaiting partner pair ACK (fail-closed — no ACK, no hedge)`);
+        if (decision.action === "pass") {
+          saveWindowState({ lastAttemptDayUtc: window.dayUtc, lastAttemptTsMs: ctx.nowMs, lastOutcome: "partner_pass_skip" }, paths.windowState);
+          return none(`calm: partner passed — day skipped`);
+        }
+      } else {
+        emitDaySignal("directional_proposal");
+        if (!decision) return none(`elevated: awaiting partner directional decision (take/pass — window open until close)`);
+        if (decision.action === "pass") {
+          saveWindowState({ lastAttemptDayUtc: window.dayUtc, lastAttemptTsMs: ctx.nowMs, lastOutcome: "partner_pass_skip" }, paths.windowState);
+          return none(`elevated: partner passed on today's directional — day skipped`);
+        }
+        if (decision.action === "confirm") {
+          // A pair ACK is not a directional decision — keep waiting for an explicit take/pass.
+          return none(`elevated: partner sent a calm ACK — need an explicit take/pass for a directional day`);
+        }
+        directionalSide = decision.side ?? ctx.trendBias;
       }
-      if (decision.action === "pass") {
-        saveWindowState({ lastAttemptDayUtc: window.dayUtc, lastAttemptTsMs: ctx.nowMs, lastOutcome: "partner_pass_skip" }, paths.windowState);
-        return none(`elevated: partner passed on today's directional — day skipped`);
-      }
-      directionalSide = decision.side ?? ctx.trendBias;
     }
     const sides: PerpSide[] = regime === "calm" ? ["long", "short"] : [directionalSide];
     const pairAtomic = sides.length === 2;
@@ -296,6 +325,18 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
       summary += `${side}: filled net $${exec.netCreditUsdc} (fees $${exec.venueFeeUsdc}); `;
     }
 
+    // GREEN LIGHT: hedge locked FIRST, partner opens perps SECOND — never the other way around.
+    // Final terms attached so their bot opens against exactly what was executed, not an estimate.
+    appendPartnerSignal(
+      {
+        kind: "green_light",
+        tsMs: ctx.nowMs,
+        dayUtc: window.dayUtc,
+        positions: newOpens.map((p) => ({ ref: p.ref, side: p.side, notionalUsdc: p.notionalUsdc, putStrike: p.putStrike, callStrike: p.callStrike, creditUsdc: p.foxifyCreditUsdc, expiresAtMs: p.expiresAtMs }))
+      },
+      paths.partnerSignals
+    );
+
     return finish("filled", `window executed: ${summary.trim()}`);
   };
 
@@ -353,24 +394,18 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
       const pos = byRef.get(d.ref);
       if (!pos || pos.venue !== adapter.venueLabel || !pos.liveMeta) continue; // only OUR live positions
       const barrierPrice = d.barrier === "floor" ? pos.putStrike : pos.callStrike;
-      raiseLiveAlert(
-        {
-          tsMs: ctx.nowMs,
-          level: "warn",
-          code: "close_signal",
-          message: `CLOSE SIGNAL ${pos.ref}: ${d.barrier} touched @ $${barrierPrice} — hedge unwinding NOW (watcher: cost $${d.unwindCostUsdc} ≤ unvested $${d.unvestedCreditUsdc}); partner must close the perp within the SLA. Vested credit $${d.vestedCreditUsdc}.`,
-          data: d
-        },
-        paths.alerts
-      );
-      const rep = await adapter.unwindFilled(pos, unwindCtx);
+      // Budget for the REAL unwind (venue quote/book, not the model): the unvested credit minus the
+      // policy buffer — recoverable from the decision as modelCost + headroom. Over budget ⟹ the
+      // venue declines (deferred) and the position rides behind its floor; never lock at a loss.
+      const maxCostUsdc = d.unwindCostUsdc + d.headroomUsdc;
+      const rep = await adapter.unwindFilled(pos, unwindCtx, { maxCostUsdc });
       appendLiveExecution(
         {
           tsMs: ctx.nowMs,
           dayUtc: new Date(ctx.nowMs).toISOString().slice(0, 10),
           ref: pos.ref,
           side: pos.side,
-          outcome: rep.complete ? "watcher_unwound" : "watcher_unwind_incomplete",
+          outcome: rep.complete ? "watcher_unwound" : rep.deferred ? "watcher_unwind_deferred_budget" : "watcher_unwind_incomplete",
           mode: adapter.mode,
           effectiveNotionalUsdc: 0,
           contracts: pos.liveMeta?.contracts ?? 0,
@@ -378,11 +413,30 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
           callInstId: pos.liveMeta?.callInstId ?? null,
           netCreditUsdc: null,
           venueFeeUsdc: null,
-          detail: { decision: d, unwind: rep.detail ?? rep.notes }
+          detail: { decision: d, maxCostUsdc, unwind: rep.detail ?? rep.notes }
         },
         paths.executions
       );
-      if (!rep.complete) {
+      if (rep.complete) {
+        // Execute FIRST, signal SECOND (the partner is never told to close against an unwind that
+        // didn't happen). Same moment as the fill confirmation — zero deliberate gap.
+        appendPartnerSignal(
+          { kind: "close_signal", tsMs: ctx.nowMs, ref: pos.ref, side: pos.side, barrier: d.barrier, barrierPriceUsd: barrierPrice, vestedCreditUsdc: d.vestedCreditUsdc },
+          paths.partnerSignals
+        );
+        raiseLiveAlert(
+          {
+            tsMs: ctx.nowMs,
+            level: "warn",
+            code: "close_signal",
+            message: `CLOSE SIGNAL ${pos.ref}: ${d.barrier} @ $${barrierPrice} — hedge UNWOUND (budget $${round2c(maxCostUsdc)}); partner must close the perp within the SLA. Vested credit $${d.vestedCreditUsdc}.`,
+            data: d
+          },
+          paths.alerts
+        );
+      } else if (rep.deferred) {
+        raiseLiveAlert({ tsMs: ctx.nowMs, level: "warn", code: "watcher_unwind_deferred", message: `watcher unwind of ${pos.ref} DEFERRED — real unwind cost exceeded budget $${round2c(maxCostUsdc)} (${rep.notes.join("; ")}) — position rides behind its floor`, data: rep }, paths.alerts);
+      } else {
         raiseLiveAlert({ tsMs: ctx.nowMs, level: "critical", code: "watcher_unwind_incomplete", message: `watcher unwind of ${pos.ref} INCOMPLETE — ${rep.notes.join("; ")} — manual action required`, data: rep }, paths.alerts);
       }
       results.push({ ref: pos.ref, complete: rep.complete, barrier: d.barrier, barrierPriceUsd: barrierPrice, vestedCreditUsdc: d.vestedCreditUsdc });

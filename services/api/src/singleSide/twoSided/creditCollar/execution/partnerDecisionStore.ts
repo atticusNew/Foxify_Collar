@@ -17,8 +17,9 @@ export const DEFAULT_PARTNER_DECISION_PATH = process.env.LIVE_PARTNER_DECISION_P
 
 export type PartnerDecision = {
   dayUtc: string;                 // YYYY-MM-DD the decision applies to
-  action: "take" | "pass";
-  /** Partner-chosen side; null ⟹ defer to our trend signal. Ignored on "pass". */
+  /** confirm = calm-day pair ACK · take = elevated directional (side optional) · pass = skip the day. */
+  action: "confirm" | "take" | "pass";
+  /** Partner-chosen side; null ⟹ defer to our trend signal. Only meaningful on "take". */
   side: PerpSide | null;
   decidedAtIso: string;
   source?: string;                // "cli" | "api" | operator note

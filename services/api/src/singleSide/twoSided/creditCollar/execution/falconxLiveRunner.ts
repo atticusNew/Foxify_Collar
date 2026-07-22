@@ -195,8 +195,8 @@ export const executeFalconxCollar = async (
 export const unwindFalconxCollar = async (
   client: FalconxClient,
   pos: OpenPosition,
-  opts: { bandPct?: number } = {}
-): Promise<{ complete: boolean; unwindValueUsdc: number | null; fxQuoteId: string | null; tradeIds: string[]; notes: string[] }> => {
+  opts: { bandPct?: number; maxCostUsdc?: number } = {}
+): Promise<{ complete: boolean; deferred?: boolean; unwindValueUsdc: number | null; fxQuoteId: string | null; tradeIds: string[]; notes: string[] }> => {
   const lm = pos.liveMeta;
   const notes: string[] = [];
   if (!lm) return { complete: false, unwindValueUsdc: null, fxQuoteId: null, tradeIds: [], notes: ["no liveMeta — not a live position"] };
@@ -215,6 +215,20 @@ export const unwindFalconxCollar = async (
     return { complete: false, unwindValueUsdc: null, fxQuoteId: null, tradeIds: [], notes };
   }
   const askPerUnit = fxPriceValue(q.json.ask_price);
+  // Budget check against the REAL quote (watcher locks only when affordable): over budget — or
+  // unverifiable — ⟹ decline and ride; the position stays fully hedged behind its floor.
+  if (opts.maxCostUsdc != null) {
+    const quotedCostUsdc = askPerUnit != null ? askPerUnit * qtyBtc : null;
+    if (quotedCostUsdc == null || quotedCostUsdc > opts.maxCostUsdc) {
+      notes.push(
+        quotedCostUsdc == null
+          ? `unwind quote has no ask price — cannot verify against budget $${opts.maxCostUsdc.toFixed(2)}; deferring`
+          : `quoted unwind cost $${quotedCostUsdc.toFixed(2)} > budget $${opts.maxCostUsdc.toFixed(2)} — deferring (rides behind its floor)`
+      );
+      if (q.json.rfq_id) await client.closeRfq(String(q.json.rfq_id)).catch(() => undefined);
+      return { complete: false, deferred: true, unwindValueUsdc: null, fxQuoteId: String(q.json.fx_quote_id), tradeIds: [], notes };
+    }
+  }
   const ex = await client.executeQuote(String(q.json.fx_quote_id), "buy");
   if (!ex.ok) {
     notes.push(`unwind execute failed: ${ex.errorMessage ?? "unknown"} — position rides to expiry (fully hedged)`);
@@ -404,9 +418,9 @@ export const buildFalconxLiveExecutionHook = (env: Record<string, string | undef
       };
     },
 
-    unwindFilled: async (pos: OpenPosition) => {
-      const rep = await unwindFalconxCollar(deps.client, pos);
-      return { complete: rep.complete, notes: rep.notes, detail: rep };
+    unwindFilled: async (pos: OpenPosition, _ctx, opts) => {
+      const rep = await unwindFalconxCollar(deps.client, pos, { maxCostUsdc: opts?.maxCostUsdc });
+      return { complete: rep.complete, deferred: rep.deferred, notes: rep.notes, detail: rep };
     },
 
     reconcileSettled: (targets: SettlementOutcome[], nowMs: number) => reconcileFalconxSettlements(deps.client, targets, { toleranceUsdc: reconTol, nowMs })

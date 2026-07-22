@@ -88,7 +88,7 @@ const solveOk: SolveSide = (side) => solved(side);
 
 const freshPaths = () => {
   const dir = mkdtempSync(join(tmpdir(), "live-runner-"));
-  return { executions: join(dir, "exec.jsonl"), windowState: join(dir, "window.json"), alerts: join(dir, "alerts.jsonl"), recon: join(dir, "recon.jsonl"), settlements: join(dir, "settle.jsonl") };
+  return { executions: join(dir, "exec.jsonl"), windowState: join(dir, "window.json"), alerts: join(dir, "alerts.jsonl"), recon: join(dir, "recon.jsonl"), settlements: join(dir, "settle.jsonl"), partnerSignals: join(dir, "signals.jsonl") };
 };
 
 // LIVE_DIRECTIONAL_DECISION=auto pins the legacy trend-auto behavior these scenarios exercise;
