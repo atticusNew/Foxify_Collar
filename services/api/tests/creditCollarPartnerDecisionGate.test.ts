@@ -13,7 +13,7 @@ import { parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/
 import { loadLiveAlerts, loadLiveExecutions, loadWindowState } from "../src/singleSide/twoSided/creditCollar/execution/liveExecutionStore";
 import { appendPartnerDecision, latestDecisionForDay } from "../src/singleSide/twoSided/creditCollar/execution/partnerDecisionStore";
 import { loadPartnerSignals } from "../src/singleSide/twoSided/creditCollar/execution/partnerSignalStore";
-import { settleAtBarrier, type OpenPosition } from "../src/singleSide/twoSided/creditCollar/forwardSettlement";
+import { settleAtBarrier, settleOnPartnerClose, type OpenPosition } from "../src/singleSide/twoSided/creditCollar/forwardSettlement";
 import type { LockDecision } from "../src/singleSide/twoSided/creditCollar/lockPolicy";
 import type { RegimeGateDecision } from "../src/singleSide/twoSided/creditCollar/regimeGate";
 import type { PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
@@ -237,7 +237,7 @@ test("watcher unwind: a permitted lock unwinds the live position immediately and
   assert.ok(alerts.some((a) => a.code === "close_signal" && a.message.includes(pos.ref)), "partner close signal raised in the same moment");
 });
 
-test("watcher unwind: the REAL venue cost is checked against the budget (unvested − buffer) — over budget defers, position rides", async () => {
+test("watcher unwind: the REAL venue cost is checked against the budget — over budget the HEDGE defers, but the partner CLOSE SIGNAL still fires (decoupled)", async () => {
   const paths = freshPaths();
   // Watcher model said $15 with $45 headroom ⟹ budget $60; the venue's real quote is $200 ⟹ defer.
   const { adapter, unwoundRefs, seenBudgets } = makeAdapter({ realUnwindCostUsdc: 200 });
@@ -246,25 +246,52 @@ test("watcher unwind: the REAL venue cost is checked against the budget (unveste
   const results = await hook.unwindOnWatcher([pos], [lockDecision(pos.ref)], { nowMs: NOW, spot: 102_000 });
   assert.equal(seenBudgets[0], 60, "budget = model cost + headroom = unvested − buffer");
   assert.equal(results[0].complete, false);
-  assert.equal(unwoundRefs.length, 0, "nothing executed");
+  assert.equal(unwoundRefs.length, 0, "our hedge did NOT execute");
   const execs = loadLiveExecutions(paths.executions);
   assert.ok(execs.some((e) => e.outcome === "watcher_unwind_deferred_budget"));
   const alerts = loadLiveAlerts(paths.alerts);
   assert.ok(alerts.some((a) => a.code === "watcher_unwind_deferred"), "deferral is a warn, not a critical");
-  assert.ok(!alerts.some((a) => a.code === "close_signal"), "partner is NEVER told to close against an unwind that didn't happen");
-  const signals = loadPartnerSignals(paths.partnerSignals);
-  assert.ok(!signals.some((s) => s.kind === "close_signal"));
-});
-
-test("watcher unwind: close signal goes to the partner OUTBOX only after the unwind executes", async () => {
-  const paths = freshPaths();
-  const { adapter } = makeAdapter();
-  const hook = buildLiveExecutionHook({ adapter, guards, paths });
-  const pos = livePos("long");
-  await hook.unwindOnWatcher([pos], [lockDecision(pos.ref)], { nowMs: NOW, spot: 102_000 });
+  // DECOUPLED: the touch is the partner's contractual exit — the signal fires regardless of our hedge.
+  assert.ok(alerts.some((a) => a.code === "close_signal"), "partner close signal fires on the TOUCH, not on our unwind");
   const closes = loadPartnerSignals(paths.partnerSignals).filter((s) => s.kind === "close_signal");
   assert.equal(closes.length, 1);
+});
+
+test("watcher unwind: an UNPERMITTED touch (watcher says ride) still signals the partner once — and never touches the venue", async () => {
+  const paths = freshPaths();
+  const { adapter, unwoundRefs, seenBudgets } = makeAdapter();
+  const hook = buildLiveExecutionHook({ adapter, guards, paths });
+  const pos = livePos("long");
+  const notPermitted = lockDecision(pos.ref, { permitted: false, headroomUsdc: -100 });
+  const r1 = await hook.unwindOnWatcher([pos], [notPermitted], { nowMs: NOW, spot: 102_000 });
+  assert.equal(r1.length, 0, "no hedge attempt on an unpermitted decision");
+  assert.equal(unwoundRefs.length, 0);
+  assert.equal(seenBudgets.length, 0, "venue never consulted");
+  assert.equal(loadLiveExecutions(paths.executions).length, 0, "no execution record — the lockWatcher report covers it");
+  // The close signal fired once — and is DEDUPED on the next cycle while price sits at the line.
+  await hook.unwindOnWatcher([pos], [notPermitted], { nowMs: NOW + 15 * 60e3, spot: 102_000 });
+  const closes = loadPartnerSignals(paths.partnerSignals).filter((s) => s.kind === "close_signal");
+  assert.equal(closes.length, 1, "one close signal per position, not one per cycle");
   assert.equal(closes[0].kind === "close_signal" && closes[0].ref, pos.ref);
+});
+
+test("partner close: mandatory hedge unwind — no budget gate — and only for OUR live positions", async () => {
+  const paths = freshPaths();
+  // realUnwindCostUsdc high, but mandatory unwinds pass no budget ⟹ executes anyway.
+  const { adapter, unwoundRefs, seenBudgets } = makeAdapter({ realUnwindCostUsdc: 10_000 });
+  const hook = buildLiveExecutionHook({ adapter, guards, paths });
+  const ours = livePos("long");
+  const paper = livePos("short", { ref: "paper-1", venue: "okx_model", liveMeta: undefined });
+  const out = await hook.unwindForPartnerClose([ours, paper], [ours.ref, "paper-1"], { nowMs: NOW, spot: 102_000 });
+  assert.equal(out.length, 1, "only our live position concluded");
+  assert.equal(out[0].ref, ours.ref);
+  assert.equal(out[0].complete, true);
+  assert.equal(seenBudgets[0], undefined, "NO budget on a mandatory unwind — the client mirror is gone");
+  assert.equal(unwoundRefs[0], ours.ref);
+  const execs = loadLiveExecutions(paths.executions);
+  assert.ok(execs.some((e) => e.ref === ours.ref && e.outcome === "partner_close_unwound"));
+  const alerts = loadLiveAlerts(paths.alerts);
+  assert.ok(alerts.some((a) => a.code === "partner_close_unwind"));
 });
 
 test("watcher unwind: ignores positions that are not ours (other venue / no liveMeta)", async () => {
@@ -294,4 +321,19 @@ test("settleAtBarrier: the collar dies at the line — zero option payout, veste
   const clamped = settleAtBarrier(pos, "floor", NOW, 999);
   assert.equal(clamped.foxifyCreditUsdc, 80);
   assert.equal(clamped.settlePriceUsd, pos.putStrike);
+});
+
+test("settleOnPartnerClose: collar cancels — zero payout either direction, vested credit only, tagged partner_close", () => {
+  const pos = livePos("long");
+  const s = settleOnPartnerClose(pos, 101_000, NOW, 20);
+  assert.equal(s.payoutToFoxifyUsdc, 0, "anti-free-option: no collar payout after the perp is gone");
+  assert.equal(s.putIntrinsicUsd, 0);
+  assert.equal(s.callIntrinsicUsd, 0);
+  assert.equal(s.foxifyCreditUsdc, 20, "partner keeps the VESTED credit");
+  assert.equal(s.netToFoxifyUsdc, 20);
+  assert.equal(s.closedBy, "partner_close");
+  assert.equal(s.liveMeta, undefined, "no liveMeta ⟹ expiry reconciliation will not flag the early conclusion");
+  assert.equal(s.settlePriceUsd, 101_000);
+  assert.equal(s.floorBreached, false);
+  assert.equal(s.capBreached, false);
 });

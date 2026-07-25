@@ -23,7 +23,7 @@ import type { RegimeGateDecision } from "../regimeGate";
 import type { LockDecision } from "../lockPolicy";
 import { loadSettlements } from "../forwardSettlementStore";
 import { latestDecisionForDay } from "./partnerDecisionStore";
-import { appendPartnerSignal, daySignalEmitted } from "./partnerSignalStore";
+import { appendPartnerSignal, daySignalEmitted, loadPartnerSignals } from "./partnerSignalStore";
 import {
   appendLiveExecution,
   appendLiveRecon,
@@ -83,11 +83,20 @@ export type LiveExecutionHook = {
   executeWindow: (ctx: LiveWindowContext) => Promise<LiveWindowResult>;
   reconcileSettled: (settledThisCycle: SettlementOutcome[]) => Promise<void>;
   /**
-   * Watcher-driven early unwind: executes IMMEDIATELY when the lock watcher permits a lock at a
-   * confirmed barrier touch — the hedge does not wait for the partner. The close signal to the
-   * partner (close your perp within the SLA) is raised as an alert in the same moment.
+   * Touch handling — TWO decoupled halves:
+   *   CLIENT: every confirmed touch emits the partner CLOSE SIGNAL immediately (deduped per ref) —
+   *   the partner's exit at the line is contractual and never waits on our hedge economics.
+   *   OURS: the watcher-permitted, budget-checked hedge unwind executes on its own schedule; a
+   *   deferred/expensive unwind rides behind its wings and changes nothing for the partner.
+   * Takes ALL touch decisions (permitted and deferred).
    */
-  unwindOnWatcher: (open: OpenPosition[], permitted: LockDecision[], ctx: { nowMs: number; spot: number }) => Promise<WatcherUnwindResult[]>;
+  unwindOnWatcher: (open: OpenPosition[], decisions: LockDecision[], ctx: { nowMs: number; spot: number }) => Promise<WatcherUnwindResult[]>;
+  /**
+   * Partner perp CLOSED (position feed) ⟹ our hedge lost its client mirror and is now naked
+   * exposure — unwind it MANDATORILY (no budget gate; the budget logic only applies while riding
+   * is safe, i.e. while the client mirror exists). Returns the refs that are ours to conclude.
+   */
+  unwindForPartnerClose: (open: OpenPosition[], closedRefs: string[], ctx: { nowMs: number; spot: number }) => Promise<Array<{ ref: string; complete: boolean }>>;
 };
 
 // ── Venue adapter contract ────────────────────────────────────────────────────
@@ -372,33 +381,61 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
     }
   };
 
+  // Minimal window context for venue unwinds (solveSide is never consulted on an unwind).
+  const unwindCtx = (ctx: { nowMs: number; spot: number }): LiveWindowContext => ({
+    nowMs: ctx.nowMs,
+    spot: ctx.spot,
+    regime: undefined,
+    trendBias: "long",
+    solveSide: () => ({ ok: false, error: "not_applicable", message: "unwind context has no solver" })
+  });
+
   /**
-   * Watcher-permitted early unwind — fires the moment the lock watcher says so (the watcher only
-   * permits when the buyback fits inside the unvested credit, so every executed lock is affordable
-   * by construction). Does NOT wait for the partner: the hedge unwinds now, and the partner's close
-   * signal (close the perp within the SLA) is raised as an alert in the same breath.
+   * Touch handling, decoupled. CLIENT half: every confirmed touch emits the partner CLOSE SIGNAL
+   * immediately (deduped per ref across cycles) — their exit at the line is contractual and does
+   * not wait on our hedge. OUR half: the watcher-permitted unwind runs budget-checked against the
+   * real venue price; expensive ⟹ the hedge rides behind its wings — invisible to the partner.
    */
-  const unwindOnWatcher = async (open: OpenPosition[], permitted: LockDecision[], ctx: { nowMs: number; spot: number }): Promise<WatcherUnwindResult[]> => {
+  const unwindOnWatcher = async (open: OpenPosition[], decisions: LockDecision[], ctx: { nowMs: number; spot: number }): Promise<WatcherUnwindResult[]> => {
     const results: WatcherUnwindResult[] = [];
-    if (permitted.length === 0) return results;
+    if (decisions.length === 0) return results;
     const byRef = new Map(open.map((p) => [p.ref, p]));
-    // Minimal window context for the venue unwind (solveSide is never consulted on an unwind).
-    const unwindCtx: LiveWindowContext = {
-      nowMs: ctx.nowMs,
-      spot: ctx.spot,
-      regime: undefined,
-      trendBias: "long",
-      solveSide: () => ({ ok: false, error: "not_applicable", message: "unwind context has no solver" })
-    };
-    for (const d of permitted) {
+    const alreadySignaled = new Set(
+      loadPartnerSignals(paths.partnerSignals)
+        .filter((s) => s.kind === "close_signal")
+        .map((s) => (s.kind === "close_signal" ? s.ref : ""))
+    );
+    for (const d of decisions) {
       const pos = byRef.get(d.ref);
       if (!pos || pos.venue !== adapter.venueLabel || !pos.liveMeta) continue; // only OUR live positions
       const barrierPrice = d.barrier === "floor" ? pos.putStrike : pos.callStrike;
+
+      // ── CLIENT: the touch itself triggers the mandatory close signal — once, unconditionally.
+      if (!alreadySignaled.has(pos.ref)) {
+        alreadySignaled.add(pos.ref);
+        appendPartnerSignal(
+          { kind: "close_signal", tsMs: ctx.nowMs, ref: pos.ref, side: pos.side, barrier: d.barrier, barrierPriceUsd: barrierPrice, vestedCreditUsdc: d.vestedCreditUsdc },
+          paths.partnerSignals
+        );
+        raiseLiveAlert(
+          {
+            tsMs: ctx.nowMs,
+            level: "warn",
+            code: "close_signal",
+            message: `CLOSE SIGNAL ${pos.ref}: ${d.barrier} touched @ $${barrierPrice} — partner must close the perp within the SLA; earned credit $${d.vestedCreditUsdc} concludes at the line. (Our hedge is handled separately.)`,
+            data: d
+          },
+          paths.alerts
+        );
+      }
+
+      // ── OURS: watcher-permitted, budget-checked hedge unwind. Not permitted ⟹ ride (no action).
+      if (!d.permitted) continue;
       // Budget for the REAL unwind (venue quote/book, not the model): the unvested credit minus the
       // policy buffer — recoverable from the decision as modelCost + headroom. Over budget ⟹ the
-      // venue declines (deferred) and the position rides behind its floor; never lock at a loss.
+      // venue declines (deferred) and the hedge rides behind its wings; never lock at a loss.
       const maxCostUsdc = d.unwindCostUsdc + d.headroomUsdc;
-      const rep = await adapter.unwindFilled(pos, unwindCtx, { maxCostUsdc });
+      const rep = await adapter.unwindFilled(pos, unwindCtx(ctx), { maxCostUsdc });
       appendLiveExecution(
         {
           tsMs: ctx.nowMs,
@@ -417,32 +454,57 @@ export const buildLiveExecutionHook = (deps: LiveRunnerDeps): LiveExecutionHook 
         },
         paths.executions
       );
-      if (rep.complete) {
-        // Execute FIRST, signal SECOND (the partner is never told to close against an unwind that
-        // didn't happen). Same moment as the fill confirmation — zero deliberate gap.
-        appendPartnerSignal(
-          { kind: "close_signal", tsMs: ctx.nowMs, ref: pos.ref, side: pos.side, barrier: d.barrier, barrierPriceUsd: barrierPrice, vestedCreditUsdc: d.vestedCreditUsdc },
-          paths.partnerSignals
-        );
-        raiseLiveAlert(
-          {
-            tsMs: ctx.nowMs,
-            level: "warn",
-            code: "close_signal",
-            message: `CLOSE SIGNAL ${pos.ref}: ${d.barrier} @ $${barrierPrice} — hedge UNWOUND (budget $${round2c(maxCostUsdc)}); partner must close the perp within the SLA. Vested credit $${d.vestedCreditUsdc}.`,
-            data: d
-          },
-          paths.alerts
-        );
-      } else if (rep.deferred) {
-        raiseLiveAlert({ tsMs: ctx.nowMs, level: "warn", code: "watcher_unwind_deferred", message: `watcher unwind of ${pos.ref} DEFERRED — real unwind cost exceeded budget $${round2c(maxCostUsdc)} (${rep.notes.join("; ")}) — position rides behind its floor`, data: rep }, paths.alerts);
-      } else {
-        raiseLiveAlert({ tsMs: ctx.nowMs, level: "critical", code: "watcher_unwind_incomplete", message: `watcher unwind of ${pos.ref} INCOMPLETE — ${rep.notes.join("; ")} — manual action required`, data: rep }, paths.alerts);
+      if (rep.deferred) {
+        raiseLiveAlert({ tsMs: ctx.nowMs, level: "warn", code: "watcher_unwind_deferred", message: `hedge unwind of ${pos.ref} DEFERRED — real unwind cost exceeded budget $${round2c(maxCostUsdc)} (${rep.notes.join("; ")}) — hedge rides behind its wings (client outcome unaffected)`, data: rep }, paths.alerts);
+      } else if (!rep.complete) {
+        raiseLiveAlert({ tsMs: ctx.nowMs, level: "critical", code: "watcher_unwind_incomplete", message: `hedge unwind of ${pos.ref} INCOMPLETE — ${rep.notes.join("; ")} — manual action required`, data: rep }, paths.alerts);
       }
       results.push({ ref: pos.ref, complete: rep.complete, barrier: d.barrier, barrierPriceUsd: barrierPrice, vestedCreditUsdc: d.vestedCreditUsdc });
     }
     return results;
   };
 
-  return { executeWindow, reconcileSettled, unwindOnWatcher };
+  /**
+   * Partner perp closed (position feed) ⟹ the client mirror is gone and our hedge is naked
+   * exposure. Unwind MANDATORILY — no budget gate: the ride-safely economics only exist while the
+   * client side mirrors us. Incomplete unwinds escalate critical; the client conclusion proceeds
+   * regardless (their perp being closed is a fact, not a request).
+   */
+  const unwindForPartnerClose = async (open: OpenPosition[], closedRefs: string[], ctx: { nowMs: number; spot: number }): Promise<Array<{ ref: string; complete: boolean }>> => {
+    const out: Array<{ ref: string; complete: boolean }> = [];
+    const closed = new Set(closedRefs);
+    for (const pos of open) {
+      if (!closed.has(pos.ref) || pos.venue !== adapter.venueLabel || !pos.liveMeta) continue;
+      raiseLiveAlert(
+        { tsMs: ctx.nowMs, level: "warn", code: "partner_close_unwind", message: `partner perp on ${pos.ref} is CLOSED — hedge lost its mirror; unwinding now (mandatory, no budget gate)` },
+        paths.alerts
+      );
+      const rep = await adapter.unwindFilled(pos, unwindCtx(ctx)); // no maxCostUsdc — mandatory
+      appendLiveExecution(
+        {
+          tsMs: ctx.nowMs,
+          dayUtc: new Date(ctx.nowMs).toISOString().slice(0, 10),
+          ref: pos.ref,
+          side: pos.side,
+          outcome: rep.complete ? "partner_close_unwound" : "partner_close_unwind_incomplete",
+          mode: adapter.mode,
+          effectiveNotionalUsdc: 0,
+          contracts: pos.liveMeta?.contracts ?? 0,
+          putInstId: pos.liveMeta?.putInstId ?? null,
+          callInstId: pos.liveMeta?.callInstId ?? null,
+          netCreditUsdc: null,
+          venueFeeUsdc: null,
+          detail: rep.detail ?? rep.notes
+        },
+        paths.executions
+      );
+      if (!rep.complete) {
+        raiseLiveAlert({ tsMs: ctx.nowMs, level: "critical", code: "partner_close_unwind_incomplete", message: `mandatory unwind of ${pos.ref} INCOMPLETE — ${rep.notes.join("; ")} — naked hedge risk, manual action required NOW`, data: rep }, paths.alerts);
+      }
+      out.push({ ref: pos.ref, complete: rep.complete });
+    }
+    return out;
+  };
+
+  return { executeWindow, reconcileSettled, unwindOnWatcher, unwindForPartnerClose };
 };

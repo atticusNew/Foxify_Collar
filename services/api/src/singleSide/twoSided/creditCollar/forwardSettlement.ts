@@ -89,8 +89,9 @@ export type SettlementOutcome = {
   protectiveLegPremiumUsdc?: number;   // what we PAID for the floor at open
   venue?: string;
   quoteMeta?: OpenPosition["quoteMeta"];
-  /** How the position concluded. Default (absent) = "expiry". "watcher_unwind" = early barrier close. */
-  closedBy?: "expiry" | "watcher_unwind";
+  /** How the position concluded. Default (absent) = "expiry". "watcher_unwind" = early barrier close ·
+   *  "partner_close" = partner closed the perp (touch signal or voluntary) ⟹ collar concludes, vested credit. */
+  closedBy?: "expiry" | "watcher_unwind" | "partner_close";
   liveMeta?: OpenPosition["liveMeta"]; // real-execution metadata (okx_live) — reconciliation needs the instIds
 };
 
@@ -304,6 +305,64 @@ export const settleAtBarrier = (
     venue: pos.venue,
     quoteMeta: pos.quoteMeta,
     closedBy: "watcher_unwind"
+  };
+};
+
+/**
+ * Conclude a position because the PARTNER closed their perp (on the touch signal or voluntarily).
+ * Product term: closing the perp cancels the collar — no option payout in either direction (the
+ * anti-free-option rule: protection cannot be kept after the position it protects is gone) — and
+ * the partner keeps the credit VESTED to that moment. Pure.
+ */
+export const settleOnPartnerClose = (
+  pos: OpenPosition,
+  settlePriceUsd: number,
+  nowMs: number,
+  vestedCreditUsdc: number,
+  capital: SettlementCapitalConfig = {}
+): SettlementOutcome => {
+  const heldMs = Math.max(0, nowMs - pos.openedAtMs);
+  const imFraction = capital.shortOptionImFraction ?? 0.1393;
+  const pmNetting = capital.portfolioMarginNettingFactor ?? 1.0;
+  const coc = capital.costOfCapitalAnnual ?? 0.12;
+  const shortLegMargin = pos.notionalUsdc * imFraction * pmNetting;
+  const capitalCost = shortLegMargin * coc * (heldMs / YEAR_MS);
+  const optionFees = Math.max(0, pos.openFeeUsdc ?? 0);
+  const feeBorneByAtticus = pos.feesFundedByCollar ? 0 : optionFees;
+  const vested = round2(Math.max(0, Math.min(vestedCreditUsdc, pos.foxifyCreditUsdc)));
+  return {
+    ref: pos.ref,
+    side: pos.side,
+    notionalUsdc: pos.notionalUsdc,
+    spotAtEntry: pos.spotAtEntry,
+    settlePriceUsd,
+    movePct: pos.spotAtEntry > 0 ? +((settlePriceUsd - pos.spotAtEntry) / pos.spotAtEntry).toFixed(6) : 0,
+    putIntrinsicUsd: 0,
+    callIntrinsicUsd: 0,
+    payoutToFoxifyUsdc: 0, // collar cancelled — no payout either direction
+    foxifyCreditUsdc: vested,
+    netToFoxifyUsdc: vested,
+    serviceFeeUsdc: pos.serviceFeeUsdc,
+    floorBreached: false,
+    capBreached: false,
+    oracleVerified: true,
+    openedAtMs: pos.openedAtMs,
+    settledAtMs: nowMs,
+    heldMs,
+    hedgeReceiptUsdc: 0,
+    atticusOptionNetUsdc: 0,
+    shortLegMarginUsdc: round2(shortLegMargin),
+    capitalCostUsdc: round2(capitalCost),
+    optionFeesUsdc: round2(optionFees),
+    atticusNetAfterCapitalUsdc: round2(pos.serviceFeeUsdc - capitalCost),
+    atticusNetAfterFeesAndCapitalUsdc: round2(pos.serviceFeeUsdc - feeBorneByAtticus - capitalCost),
+    fundingLegPremiumUsdc: pos.fundingLegPremiumUsdc,
+    protectiveLegPremiumUsdc: pos.protectiveLegPremiumUsdc,
+    venue: pos.venue,
+    quoteMeta: pos.quoteMeta,
+    closedBy: "partner_close"
+    // Deliberately no liveMeta: the hedge unwind is audited in the live-executions ledger; the
+    // expiry reconciliation must not expect a venue delivery for an early-concluded position.
   };
 };
 

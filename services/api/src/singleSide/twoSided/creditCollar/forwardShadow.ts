@@ -12,7 +12,8 @@ import { CreditCollarActivationScaffold } from "./activationScaffold";
 import { computeInventory } from "./inventoryBalancer";
 import { buildLiveShadowInputs, type LiveShadowConfig } from "./shadowRunner";
 import type { ShadowScorecard } from "./shadowRunner";
-import { settleMatured, settleAtBarrier, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
+import { settleMatured, settleAtBarrier, settleOnPartnerClose, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
+import { vestedTimeFraction } from "./creditVesting";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
 import { computeOpensThisCycle, loadOpeningState, saveOpeningState } from "./openingSignalStore";
 import { evaluateRegimeGate, type RegimeGateDecision } from "./regimeGate";
@@ -325,14 +326,15 @@ export const runForwardShadowCycle = async (
   });
   saveLedger(ledger1);
 
-  // 3b) Watcher-driven LIVE unwind: a PERMITTED lock executes immediately — the hedge does not wait
-  // for the partner (their close signal is raised in the same moment; closing their perp within the
-  // SLA is their side of the protocol). The position settles AT THE BARRIER with the vested credit.
+  // 3b) LIVE touch handling — decoupled halves. CLIENT: every confirmed touch emits the partner
+  // close signal inside the hook, unconditionally (their line exit is contractual). OURS: only
+  // watcher-PERMITTED hedge unwinds execute; a completed unwind settles the position at the barrier
+  // with the vested credit. Deferred hedges ride (bounded) and conclude via 3c when the partner
+  // closes, or at expiry.
   let watcherUnwinds = 0;
-  if (cfg.liveExecution && lifecycle.lockWatcher && lifecycle.lockWatcher.locksPermitted > 0) {
+  if (cfg.liveExecution && lifecycle.lockWatcher && lifecycle.lockWatcher.decisions.length > 0) {
     try {
-      const permitted = lifecycle.lockWatcher.decisions.filter((d) => d.permitted);
-      const unwound = await cfg.liveExecution.unwindOnWatcher(openBook, permitted, { nowMs: now, spot: oraclePriceUsd });
+      const unwound = await cfg.liveExecution.unwindOnWatcher(openBook, lifecycle.lockWatcher.decisions, { nowMs: now, spot: oraclePriceUsd });
       const completed = unwound.filter((u) => u.complete);
       if (completed.length > 0) {
         const byRef = new Map(openBook.map((p) => [p.ref, p]));
@@ -350,6 +352,40 @@ export const runForwardShadowCycle = async (
       }
     } catch (e) {
       console.error(`[live] watcher unwind error (positions remain open): ${(e as Error).message}`);
+    }
+  }
+
+  // 3c) LIVE partner-close conclusion: the position feed shows a perp CLOSED (touch-signal close or
+  // voluntary) ⟹ conclude the client side with the VESTED credit (collar cancels — no payout either
+  // direction) and mandatorily unwind our now-unmirrored hedge (no budget gate — naked exposure).
+  if (cfg.liveExecution && partnerStates) {
+    try {
+      const currentOpen = loadOpenPositions(paths.openPath);
+      const closedRefs = currentOpen
+        .filter((p) => p.liveMeta && partnerStates?.[p.ref] && !partnerStates[p.ref].isOpen)
+        .map((p) => p.ref);
+      if (closedRefs.length > 0) {
+        const concluded = await cfg.liveExecution.unwindForPartnerClose(currentOpen, closedRefs, { nowMs: now, spot: oraclePriceUsd });
+        if (concluded.length > 0) {
+          const byRef = new Map(currentOpen.map((p) => [p.ref, p]));
+          const settledRows = concluded
+            .map(({ ref }) => {
+              const pos = byRef.get(ref);
+              if (!pos) return null;
+              const tenorMs = Math.max(1, pos.expiresAtMs - pos.openedAtMs);
+              const vested = pos.foxifyCreditUsdc * vestedTimeFraction(now - pos.openedAtMs, tenorMs);
+              return settleOnPartnerClose(pos, oraclePriceUsd, now, vested, cfg.capital);
+            })
+            .filter((s): s is NonNullable<typeof s> => s != null);
+          appendSettlements(settledRows, paths.ledgerPath);
+          const gone = new Set(settledRows.map((s) => s.ref));
+          saveOpenPositions(currentOpen.filter((p) => !gone.has(p.ref)), paths.openPath);
+          watcherUnwinds += settledRows.length;
+          console.error(`[live] concluded ${settledRows.length} position(s) on partner close — vested credit realized, hedge unwound`);
+        }
+      }
+    } catch (e) {
+      console.error(`[live] partner-close conclusion error (positions remain open): ${(e as Error).message}`);
     }
   }
 
