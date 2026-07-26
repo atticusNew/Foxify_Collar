@@ -11,7 +11,7 @@
  *   pass <ref> · list   Same semantics as the G-20 tool.
  *
  * Env: FALCONX_API_KEY / FALCONX_SECRET / FALCONX_PASSPHRASE (required; put them in Render env)
- *      + the usual HARNESS_*/SHADOW_* pilot settings (defaults match the shadow).
+ *      + the usual HARNESS_* / SHADOW_* pilot settings (defaults match the shadow).
  *
  * NOTE: their quotes are firm ~5s — the printed quote will have expired by the time you read it. For the
  * paper pilot that's fine (we book at the observed level). Live execution later = re-quote + execute
