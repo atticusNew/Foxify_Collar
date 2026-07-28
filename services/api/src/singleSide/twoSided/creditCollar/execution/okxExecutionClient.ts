@@ -216,6 +216,33 @@ export class OkxExecutionClient {
     return this.request("POST", "/api/v5/account/position-builder", JSON.stringify({ inclRealPosAndEq, simPos }));
   }
 
+  // ── Block trading / RFQ (the institutional lane confirmed with the OKX BD) ──────────────────
+
+  /** Makers available to quote this account's RFQs. Access requires the $10k block-trading tier. */
+  getRfqCounterparties(): Promise<OkxResponse<{ traderCode?: string; traderName?: string }>> {
+    return this.request("GET", "/api/v5/rfq/counterparties");
+  }
+
+  /** Create a multi-leg RFQ (the whole collar as ONE package — atomic by construction). */
+  createRfq(body: { counterparties: string[]; anonymous: boolean; clRfqId?: string; allowPartialExecution: false; legs: Array<{ instId: string; sz: string; side: "buy" | "sell" }> }): Promise<OkxResponse<{ rfqId?: string; state?: string }>> {
+    return this.request("POST", "/api/v5/rfq/create-rfq", JSON.stringify(body));
+  }
+
+  /** Maker quotes for an RFQ (auto-quoting LPs respond in seconds at pilot size, per the BD). */
+  getRfqQuotes(rfqId: string): Promise<OkxResponse<{ quoteId?: string; rfqId?: string; state?: string; validUntil?: string; legs?: Array<{ instId?: string; px?: string; sz?: string; side?: string; fee?: string }> }>> {
+    return this.request("GET", `/api/v5/rfq/quotes?rfqId=${encodeURIComponent(rfqId)}`);
+  }
+
+  /** Execute a maker quote — all legs fill as one block trade or none do. */
+  executeRfqQuote(rfqId: string, quoteId: string): Promise<OkxResponse<{ blockTdId?: string; legs?: Array<{ instId?: string; px?: string; sz?: string; fee?: string }> }>> {
+    return this.request("POST", "/api/v5/rfq/execute-quote", JSON.stringify({ rfqId, quoteId }));
+  }
+
+  /** Cancel an open RFQ (no acceptable quote / abandoning the window). */
+  cancelRfq(rfqId: string): Promise<OkxResponse<{ rfqId?: string }>> {
+    return this.request("POST", "/api/v5/rfq/cancel-rfq", JSON.stringify({ rfqId }));
+  }
+
   /**
    * Activate options trading for the ACCOUNT — the API equivalent of "click any symbol on the
    * options chain to activate trading" (clears error 51198). Idempotent; safe to call on startup.

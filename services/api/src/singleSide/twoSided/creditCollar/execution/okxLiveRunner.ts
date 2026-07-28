@@ -21,7 +21,8 @@ import {
   type VenuePlanResult,
   type VenueExecutionResult
 } from "./liveWindowRunner";
-import { executeLiveCollar, type LiveExecClient } from "./okxLiveCollarExecutor";
+import { executeLiveCollar, type LiveExecClient, type LiveCollarExecutionReport } from "./okxLiveCollarExecutor";
+import { executeRfqCollar, type RfqExecClient } from "./okxRfqExecutor";
 import { parseOkxChain, planLiveCollar, type LiveCollarPlan } from "./okxLivePlanner";
 import { fetchOkxSettlementData, reconcileLiveSettlement, type ReconFetchers } from "./okxSettlementRecon";
 import { unwindLiveCollar } from "./okxLiveUnwind";
@@ -32,7 +33,7 @@ export type { LiveExecutionHook, LiveWindowContext, LiveWindowResult, SolvedColl
 export type LiveVenueClient = LiveExecClient &
   ReconFetchers & {
     getOptionChain: (uly?: string) => Promise<{ ok: boolean; data: Array<{ instId?: string; optType?: string; stk?: string; expTime?: string; ctVal?: string; ctMult?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }> }>;
-  };
+  } & Partial<Pick<RfqExecClient, "getRfqCounterparties" | "createRfq" | "getRfqQuotes" | "executeRfqQuote" | "cancelRfq">>; // RFQ lane optional — clients without it (older fakes) run CLOB-only
 
 export type LiveRunnerDeps = {
   client: LiveVenueClient;
@@ -135,27 +136,63 @@ export const buildOkxLiveExecutionHook = (env: Record<string, string | undefined
     execute: async (solved, venuePlan, ctx): Promise<VenueExecutionResult> => {
       const { plan } = venuePlan.handle as Handle;
       const clOrdPrefix = `al${ctx.nowMs.toString(36)}${solved.side === "long" ? "L" : "S"}`;
-      const exec = await executeLiveCollar(deps.client, plan, {
-        bandPct: guards.slippageBandPct,
-        fillTimeoutMs: deps.fillTimeoutMs,
-        pollDelayMs: deps.pollDelayMs,
-        spotUsd: ctx.spot,
-        clOrdPrefix,
-        sleep: deps.sleep
-      });
+
+      // RFQ-first, CLOB fallback ("routes to whichever is better", literally): the whole collar goes
+      // out as ONE atomic block RFQ when (a) the client has the RFQ lane, (b) it isn't disabled, and
+      // (c) the package clears OKX's block minimum (sub-minimum sizes — e.g. the canary — go straight
+      // to the book). Any SAFE RFQ non-fill (no makers, no banded quote, execute miss) falls back to
+      // the band-capped order-book executor — the RFQ can only improve on the screen, never gate it.
+      const rfqCapable = typeof deps.client.createRfq === "function" && typeof deps.client.getRfqQuotes === "function";
+      const rfqMinNotional = Number(env.LIVE_OKX_RFQ_MIN_NOTIONAL_USDC ?? "50000");
+      const rfqEnabled = rfqCapable && (env.LIVE_OKX_RFQ ?? "true").toLowerCase() !== "false" && plan.effectiveNotionalUsdc >= rfqMinNotional;
+      let exec: LiveCollarExecutionReport;
+      let via = "clob";
+      const extraAlerts: string[] = [];
+      if (rfqEnabled) {
+        const rfq = await executeRfqCollar(deps.client as unknown as RfqExecClient, plan, {
+          bandPct: guards.slippageBandPct,
+          spotUsd: ctx.spot,
+          quoteWaitMs: Number(env.LIVE_OKX_RFQ_WAIT_MS ?? "15000"),
+          pollDelayMs: deps.pollDelayMs,
+          sleep: deps.sleep
+        });
+        if (rfq.outcome === "filled") {
+          exec = rfq;
+          via = `rfq:${rfq.blockTdId ?? rfq.rfqId ?? ""}`;
+        } else {
+          extraAlerts.push(`RFQ fallback → order book (${rfq.errors.at(-1) ?? "no acceptable quote"})`);
+          exec = await executeLiveCollar(deps.client, plan, {
+            bandPct: guards.slippageBandPct,
+            fillTimeoutMs: deps.fillTimeoutMs,
+            pollDelayMs: deps.pollDelayMs,
+            spotUsd: ctx.spot,
+            clOrdPrefix,
+            sleep: deps.sleep
+          });
+        }
+      } else {
+        exec = await executeLiveCollar(deps.client, plan, {
+          bandPct: guards.slippageBandPct,
+          fillTimeoutMs: deps.fillTimeoutMs,
+          pollDelayMs: deps.pollDelayMs,
+          spotUsd: ctx.spot,
+          clOrdPrefix,
+          sleep: deps.sleep
+        });
+      }
       const putInstId = plan.protective.optType === "put" ? plan.protective.instId : plan.funding.instId;
       const callInstId = plan.protective.optType === "call" ? plan.protective.instId : plan.funding.instId;
       return {
         outcome: exec.outcome,
         safe: exec.safe,
-        pos: exec.outcome === "filled" ? bookLivePosition(solved, plan, exec, ctx.nowMs, ctx.spot, deps.client.mode, clOrdPrefix) : undefined,
+        pos: exec.outcome === "filled" ? bookLivePosition(solved, plan, exec, ctx.nowMs, ctx.spot, deps.client.mode, via === "clob" ? clOrdPrefix : via) : undefined,
         netCreditUsdc: exec.netCreditUsdc,
         venueFeeUsdc: exec.venueFeeUsdc,
         contracts: plan.contracts,
         putInstId,
         callInstId,
-        alerts: exec.alerts,
-        detail: { protective: exec.protective, funding: exec.funding, unwind: exec.unwind, errors: exec.errors }
+        alerts: [...extraAlerts, ...exec.alerts],
+        detail: { via, protective: exec.protective, funding: exec.funding, unwind: exec.unwind, errors: exec.errors }
       };
     },
 

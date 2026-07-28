@@ -297,3 +297,91 @@ test("runner: reconcileSettled writes records and alerts on mismatch", async () 
   const r = await hook.executeWindow({ ...ctx("calm"), nowMs: NOW + 24 * 3600e3 });
   assert.ok(r.summary.includes("halted"));
 });
+
+// ── RFQ lane (block trading): RFQ-first with automatic CLOB fallback ──────────
+
+/** Bolt the RFQ methods onto a CLOB fake. quotes=null ⟹ makers never respond. */
+const withRfq = (client: LiveVenueClient, quotes: Array<{ quoteId: string; putPx: number; callPx: number }> | null) =>
+  Object.assign(client, {
+    getRfqCounterparties: async () => ({ ok: true, code: "0", msg: "", data: [{ traderCode: "MM1" }] }),
+    createRfq: async () => ({ ok: true, code: "0", msg: "", data: [{ rfqId: "R1", state: "active" }] }),
+    getRfqQuotes: async () => ({
+      ok: true,
+      code: "0",
+      msg: "",
+      data: (quotes ?? []).map((q) => ({
+        quoteId: q.quoteId,
+        rfqId: "R1",
+        state: "active",
+        legs: [
+          { instId: "BTC-USD-260723-94000-P", px: String(q.putPx), sz: "50", side: "sell" },
+          { instId: "BTC-USD-260723-102000-C", px: String(q.callPx), sz: "50", side: "buy" }
+        ]
+      }))
+    }),
+    executeRfqQuote: async () => ({ ok: true, code: "0", msg: "", data: [{ blockTdId: "BT9" }] }),
+    cancelRfq: async () => ({ ok: true, code: "0", msg: "", data: [] })
+  });
+
+test("runner: RFQ lane fills the collar as ONE block — booked okx_live with the quoted economics", async () => {
+  const paths = freshPaths();
+  const { client, placed } = makeClient({}); // CLOB script empty on purpose: a book order would fail loudly
+  withRfq(client, [{ quoteId: "Q1", putPx: 0.0012, callPx: 0.0028 }]); // model mids: put 0.0012 · call 0.0029
+  const hook = mkHook(client, paths);
+  const r = await hook.executeWindow(ctx("elevated"));
+  assert.equal(r.newOpens.length, 1);
+  const pos = r.newOpens[0];
+  assert.equal(pos.venue, "okx_live");
+  assert.ok(pos.quoteMeta?.rfqRef.startsWith("rfq:BT9"), `rfqRef ${pos.quoteMeta?.rfqRef}`);
+  // (0.0028 − 0.0012) × 0.5 BTC × $100k = $80 gross, minus the estimated block fees.
+  assert.ok(pos.foxifyCreditUsdc > 50 && pos.foxifyCreditUsdc < 80, `net ${pos.foxifyCreditUsdc}`);
+  assert.equal(placed.length, 0, "no order-book orders — the block was the fill");
+  assert.equal(loadWindowState(paths.windowState).lastOutcome, "filled");
+});
+
+test("runner: no RFQ quotes ⟹ automatic fallback to the band-capped order book", async () => {
+  const paths = freshPaths();
+  const { client, placed } = makeClient({
+    "BTC-USD-260723-94000-P": [{ fill: 50, px: 0.0013 }],
+    "BTC-USD-260723-102000-C": [{ fill: 50, px: 0.0028 }]
+  });
+  withRfq(client, null); // makers never quote
+  const hook = mkHook(client, paths, { ...armedEnv, LIVE_OKX_RFQ_WAIT_MS: "30" });
+  const r = await hook.executeWindow(ctx("elevated"));
+  assert.equal(r.newOpens.length, 1, "the day is not lost — the book filled it");
+  assert.ok(!r.newOpens[0].quoteMeta?.rfqRef.startsWith("rfq:"), "booked via CLOB, not RFQ");
+  assert.ok(placed.length > 0, "order-book orders were placed");
+});
+
+test("runner: LIVE_OKX_RFQ=false pins the CLOB path even when the client is RFQ-capable", async () => {
+  const paths = freshPaths();
+  const { client, placed } = makeClient({
+    "BTC-USD-260723-94000-P": [{ fill: 50, px: 0.0013 }],
+    "BTC-USD-260723-102000-C": [{ fill: 50, px: 0.0028 }]
+  });
+  withRfq(client, [{ quoteId: "Q1", putPx: 0.0012, callPx: 0.0028 }]);
+  const hook = mkHook(client, paths, { ...armedEnv, LIVE_OKX_RFQ: "false" });
+  const r = await hook.executeWindow(ctx("elevated"));
+  assert.equal(r.newOpens.length, 1);
+  assert.ok(placed.length > 0, "book path used despite an available RFQ quote");
+});
+
+test("runner: canary size below the block minimum skips RFQ and goes straight to the book", async () => {
+  const paths = freshPaths();
+  const { client, placed } = makeClient({
+    "BTC-USD-260723-94000-P": [{ fill: 2, px: 0.0013 }],
+    "BTC-USD-260723-102000-C": [{ fill: 2, px: 0.0028 }]
+  });
+  let rfqTouched = false;
+  withRfq(client, [{ quoteId: "Q1", putPx: 0.0012, callPx: 0.0028 }]);
+  (client as { createRfq: unknown }).createRfq = async () => {
+    rfqTouched = true;
+    return { ok: true, code: "0", msg: "", data: [{ rfqId: "R1" }] };
+  };
+  const env = { ...armedEnv, LIVE_CANARY_CONTRACTS: "2" }; // 0.02 BTC ≈ $2k — under the $50k block minimum
+  const hook = mkHook(client, paths, env);
+  const r = await hook.executeWindow(ctx("elevated"));
+  assert.equal(r.newOpens.length, 1);
+  assert.equal(rfqTouched, false, "sub-minimum sizes never attempt RFQ");
+  assert.ok(placed.length > 0);
+});
