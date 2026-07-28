@@ -65,7 +65,7 @@ const main = async () => {
   const baseDelayMs = Math.max(0, Number(process.env.OKX_ACTIVATE_DELAY_MS ?? "2000"));
   console.error(`[okx-activate] activating options via ${process.env.OKX_REST_BASE ?? "https://www.okx.com"} (${tries} tries, retrying transient 504s)…`);
   const res = await client.activateOptionWithRetry({ tries, baseDelayMs });
-  const ok = res.ok || res.code === "51199" /* already activated */;
+  const ok = res.ok || res.code === "51199" || res.code === "50050" /* both = already activated */;
   process.stdout.write(JSON.stringify({ mode, activated: ok, code: res.code, msg: res.msg, ts: res.data?.[0]?.ts ?? null, acctLv }, null, 2) + "\n");
 
   if (ok) {

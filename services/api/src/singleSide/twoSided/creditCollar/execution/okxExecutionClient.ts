@@ -264,7 +264,7 @@ export class OkxExecutionClient {
     let last: OkxResponse<{ ts?: string }> = { ok: false, code: "NONE", msg: "no_attempt", data: [] };
     for (let i = 0; i < tries; i++) {
       const r = await this.activateOption();
-      if (r.ok || r.code === "51199") return r;
+      if (r.ok || r.code === "51199" || r.code === "50050") return r; // 51199/50050 = already activated
       last = r;
       const retryable = /^HTTP_5\d\d$/.test(r.code) || r.code === "50011" /* rate limit */ || r.code === "50013" /* busy */ || r.code === "ERR";
       if (!retryable) return r;
