@@ -32,6 +32,8 @@ export type RfqExecutorOpts = {
   spotUsd: number;
   quoteWaitMs?: number;         // total time to wait for an acceptable quote (default 15s)
   pollDelayMs?: number;         // default 1s
+  /** OKX caps counterparties per RFQ (error 70107 beyond it). Default 15 — the documented max. */
+  maxCounterparties?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
 };
@@ -110,9 +112,12 @@ export const executeRfqCollar = async (
     blockTdId: null
   });
 
-  // 1) Makers available to this account?
+  // 1) Makers available to this account? (Capped — OKX rejects RFQs addressed to more than 15.)
   const cps = await client.getRfqCounterparties();
-  const traderCodes = (cps.data ?? []).map((c) => c.traderCode).filter((t): t is string => typeof t === "string" && t.length > 0);
+  const traderCodes = (cps.data ?? [])
+    .map((c) => c.traderCode)
+    .filter((t): t is string => typeof t === "string" && t.length > 0)
+    .slice(0, Math.max(1, opts.maxCounterparties ?? 15));
   if (!cps.ok || traderCodes.length === 0) return abort(`no RFQ counterparties (${cps.code}: ${cps.msg})`);
 
   // 2) One RFQ, both legs, atomic. Protective = we BUY (client floor); funding = we SELL (client cap).

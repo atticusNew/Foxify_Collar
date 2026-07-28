@@ -115,6 +115,20 @@ test("rfq: execute-quote failure (expired quote) ⟹ cancel + safe non-fill, not
   assert.equal(calls.cancelled, 1);
 });
 
+test("rfq: counterparty list is capped at the OKX per-RFQ maximum (error 70107 guard)", async () => {
+  const seen: string[][] = [];
+  const { client } = makeClient([q("Q1", 0.0013, 0.0027)]);
+  client.getRfqCounterparties = async () => ({ ok: true, code: "0", msg: "", data: Array.from({ length: 40 }, (_, i) => ({ traderCode: `MM${i}` })) });
+  const origCreate = client.createRfq;
+  client.createRfq = async (body) => {
+    seen.push(body.counterparties);
+    return origCreate(body);
+  };
+  const r = await executeRfqCollar(client, plan, opts);
+  assert.equal(r.outcome, "filled");
+  assert.equal(seen[0].length, 15, "capped at the documented max of 15");
+});
+
 test("rfq: quoteNetCreditUsd prices the package (receive cap − pay floor)", () => {
   assert.equal(quoteNetCreditUsd(q("Q", 0.0012, 0.0028), plan, SPOT), 140 - 60);
   assert.equal(quoteNetCreditUsd({ quoteId: "Q", legs: [] }, plan, SPOT), null);

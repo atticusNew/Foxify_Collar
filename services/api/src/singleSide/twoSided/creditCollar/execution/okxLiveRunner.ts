@@ -154,6 +154,7 @@ export const buildOkxLiveExecutionHook = (env: Record<string, string | undefined
           spotUsd: ctx.spot,
           quoteWaitMs: Number(env.LIVE_OKX_RFQ_WAIT_MS ?? "15000"),
           pollDelayMs: deps.pollDelayMs,
+          maxCounterparties: Number(env.LIVE_OKX_RFQ_MAX_COUNTERPARTIES ?? "15"),
           sleep: deps.sleep
         });
         if (rfq.outcome === "filled") {
