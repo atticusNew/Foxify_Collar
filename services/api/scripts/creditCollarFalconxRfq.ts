@@ -138,10 +138,14 @@ const quote = async (): Promise<void> => {
     console.error(`no instruments from FalconX: ${JSON.stringify(inst?.error ?? inst).slice(0, 200)}`);
     process.exit(1);
   }
-  const targetExpiry = nextDailyExpiry(now);
+  // FALCONX_EXPIRY=YYYY-MM-DD probes a specific listed expiry (e.g. a weekly) — diagnostic for
+  // "no quotes on dailies" vs "account not enabled for quoting at all". Default: next daily 08:00.
+  const expiryOverride = process.env.FALCONX_EXPIRY;
+  const targetExpiry = expiryOverride ? Date.parse(`${expiryOverride}T08:00:00.000Z`) : nextDailyExpiry(now);
   const atExpiry = instruments.filter((i) => Number(i.epoch_time_expiry) === targetExpiry);
   if (!atExpiry.length) {
-    console.error(`FalconX lists no instruments at ${new Date(targetExpiry).toISOString()} — expiries: ${[...new Set(instruments.map((i) => i.epoch_time_expiry))].slice(0, 5).join(",")}`);
+    const listed = [...new Set(instruments.map((i) => Number(i.epoch_time_expiry)))].sort((a, b) => a - b);
+    console.error(`FalconX lists no instruments at ${new Date(targetExpiry).toISOString()} — listed expiries: ${listed.slice(0, 8).map((e) => new Date(e).toISOString().slice(0, 10)).join(", ")}`);
     process.exit(1);
   }
   const nearest = (type: "call" | "put", target: number) =>
