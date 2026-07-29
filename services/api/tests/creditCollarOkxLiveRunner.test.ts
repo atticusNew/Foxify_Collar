@@ -40,7 +40,7 @@ const makeClient = (script: Record<string, Behavior[]>, unwindScript: Record<str
     mode: "demo",
     placeOrder: async (o) => {
       placed.push({ instId: o.instId, side: o.side, ordType: o.ordType, sz: o.sz, reduceOnly: o.reduceOnly });
-      const src = o.ordType === "market" ? unwindScript : script;
+      const src = o.reduceOnly ? unwindScript : script; // closes are reduceOnly IOC limits (OKX options reject market)
       const b = (src[o.instId] ?? []).shift() ?? { fill: 0 };
       if (b.reject) return { ok: false, code: "51000", msg: b.reject, data: [] };
       const ordId = `o${++seq}`;
@@ -191,7 +191,7 @@ test("runner: guardrail rejection on the SECOND side unwinds the first collar (p
   const hook = mkHook(client, paths);
   const r = await hook.executeWindow({ ...ctx("calm"), solveSide });
   assert.equal(r.newOpens.length, 0); // NOTHING stands
-  const unwinds = placed.filter((p) => p.ordType === "market" && p.reduceOnly);
+  const unwinds = placed.filter((p) => p.ordType === "ioc" && p.reduceOnly);
   assert.equal(unwinds.length, 2); // both legs of collar 1 closed
   const execs = loadLiveExecutions(paths.executions);
   assert.ok(execs.some((e) => e.outcome === "pair_sibling_unwound"));

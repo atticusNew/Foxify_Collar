@@ -11,7 +11,7 @@
 
 import type { PerpSide } from "../creditCollarPricer";
 import type { LiveExecClient } from "./okxLiveCollarExecutor";
-import { premiumUsd } from "./okxLivePlanner";
+import { premiumUsd, iocClosePxBtc } from "./okxLivePlanner";
 
 export type UnwindTarget = {
   side: PerpSide;
@@ -61,10 +61,19 @@ export const unwindLiveCollar = async (
 
   const closeLeg = async (instId: string, action: "buy" | "sell", tag: string): Promise<UnwindLegClose> => {
     const out: UnwindLegClose = { instId, action, closedContracts: 0, avgPxBtc: null, feeBtc: 0 };
+    // OKX options reject market orders — price an aggressive IOC limit off the live book.
+    const top = await client.getBookTop(instId);
+    const book = top.data?.[0];
+    const px = iocClosePxBtc(action, { bidPxBtc: parseNum(book?.bids?.[0]?.[0]), askPxBtc: parseNum(book?.asks?.[0]?.[0]) }, 0.05);
+    if (px == null) {
+      notes.push(`close ${action} ${instId}: EMPTY BOOK — no safe IOC reference; not closed`);
+      return out;
+    }
     const res = await client.placeOrder({
       instId,
       side: action,
-      ordType: "market",
+      ordType: "ioc",
+      px: String(px),
       sz: String(target.contracts),
       tdMode: "cross",
       reduceOnly: true,

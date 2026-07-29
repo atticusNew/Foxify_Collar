@@ -15,7 +15,7 @@
  */
 
 import type { OkxLegOrder } from "./okxExecutionClient";
-import { fillWithinBand, premiumUsd, bandCappedLimitPxBtc, type LiveCollarPlan, type PlannedLeg } from "./okxLivePlanner";
+import { fillWithinBand, premiumUsd, bandCappedLimitPxBtc, iocClosePxBtc, type LiveCollarPlan, type PlannedLeg } from "./okxLivePlanner";
 
 export type LiveExecClient = {
   mode: "demo" | "live";
@@ -239,17 +239,32 @@ export const executeLiveCollar = async (client: LiveExecClient, plan: LiveCollar
   } else if (!anyFill) {
     outcome = "aborted_no_fill";
   } else {
-    // Incomplete: unwind EVERY filled contract (both-or-neither extends to fills). reduceOnly market.
+    // Incomplete: unwind EVERY filled contract (both-or-neither extends to fills). OKX options reject
+    // market orders — closes are aggressive reduceOnly IOC limits priced off the live book.
     alerts.push(`ONE-SIDED/PARTIAL FILL on ${plan.protective.instId}/${plan.funding.instId} (protective ${prot.filled}/${prot.requested}, funding ${fund.filled}/${fund.requested}) — unwinding all fills`);
     const notes: string[] = [];
     let protClosed = 0;
     let fundClosed = 0;
     const closeLeg = async (t: LegTracker): Promise<number> => {
       if (t.filled <= 0) return 0;
+      const closeAction: "buy" | "sell" = t.leg.action === "buy" ? "sell" : "buy";
+      const top = await client.getBookTop(t.leg.instId);
+      const book = top.data?.[0];
+      const px = iocClosePxBtc(
+        closeAction,
+        { bidPxBtc: parseNum(book?.bids?.[0]?.[0]), askPxBtc: parseNum(book?.asks?.[0]?.[0]) },
+        0.05,
+        t.leg.tickSz
+      );
+      if (px == null) {
+        notes.push(`unwind ${t.leg.instId}: EMPTY BOOK — no safe IOC reference; not closed`);
+        return 0;
+      }
       const res = await client.placeOrder({
         instId: t.leg.instId,
-        side: t.leg.action === "buy" ? "sell" : "buy",
-        ordType: "market",
+        side: closeAction,
+        ordType: "ioc",
+        px: String(px),
         sz: String(t.filled),
         tdMode: opts.tdMode ?? "cross",
         reduceOnly: true,
@@ -260,18 +275,17 @@ export const executeLiveCollar = async (client: LiveExecClient, plan: LiveCollar
         notes.push(`unwind ${t.leg.instId} REJECTED: ${res.code} ${res.data?.[0]?.sMsg ?? res.msg}`);
         return 0;
       }
-      // Confirm the market close actually filled.
+      // Confirm the IOC close: "filled" = done; "canceled" can still carry partial fills — absorb them.
       for (let i = 0; i < 10; i++) {
         const q = await client.getOrder(t.leg.instId, ordId);
         const snap = q.data?.[0];
-        if (snap?.state === "filled") {
-          const closed = parseNum(snap.accFillSz) ?? t.filled;
+        if (snap?.state === "filled" || snap?.state === "canceled") {
+          const closed = parseNum(snap.accFillSz) ?? (snap.state === "filled" ? t.filled : 0);
           const fee = parseNum(snap.fee);
           if (fee != null) t.feeBtc += -fee;
-          notes.push(`closed ${closed} on ${t.leg.instId} @ ${snap.avgPx ?? "?"}`);
+          notes.push(`closed ${closed}/${t.filled} on ${t.leg.instId} @ ${snap.avgPx ?? "?"} (${snap.state})`);
           return closed;
         }
-        if (snap?.state === "canceled") break;
         await sleep(pollDelayMs);
       }
       notes.push(`unwind order ${ordId} on ${t.leg.instId} did not confirm filled`);

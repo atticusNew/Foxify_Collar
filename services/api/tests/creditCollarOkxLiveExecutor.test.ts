@@ -31,7 +31,7 @@ const makeClient = (script: Record<string, Behavior[]>, unwindScript: Record<str
     mode: "demo",
     placeOrder: async (o) => {
       placed.push({ instId: o.instId, side: o.side, ordType: o.ordType, sz: o.sz, px: o.px, reduceOnly: o.reduceOnly });
-      const source = o.ordType === "market" ? unwindScript : script;
+      const source = o.reduceOnly ? unwindScript : script; // closes are reduceOnly IOC limits (OKX options reject market)
       const b = (source[o.instId] ?? []).shift() ?? { fill: 0 };
       if (b.reject) return { ok: false, code: "51000", msg: b.reject, data: [] };
       const ordId = `ord${++seq}`;
@@ -133,7 +133,7 @@ test("live executor: one-sided fill ⟹ unwind ALL fills (short leg first), abor
   assert.ok(r.safe);
   assert.ok(r.unwind?.complete);
   assert.equal(r.unwind?.fundingClosed, 50);
-  const unwindOrder = placed.find((p) => p.ordType === "market");
+  const unwindOrder = placed.find((p) => p.ordType === "ioc");
   assert.equal(unwindOrder?.instId, "BTC-USD-260720-102000-C");
   assert.equal(unwindOrder?.side, "buy");           // buying back the short call
   assert.equal(unwindOrder?.reduceOnly, true);

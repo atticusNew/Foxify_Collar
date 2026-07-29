@@ -35,11 +35,21 @@ const makeClient = (script: Script, positionsAfter: Array<{ instId: string; pos:
       return { ok: true, data: [{ state, avgPx: String(o.b.px ?? 0), accFillSz: String(filled), fee: String(-(o.b.fee ?? 0)) }] };
     },
     cancelOrder: async () => ({ ok: true, data: [] }),
-    getBookTop: async () => ({ ok: true, data: [] }),
+    // Closes are book-priced IOC limits now (OKX options reject market orders) — give every leg a live top.
+    getBookTop: async () => ({ ok: true, data: [{ bids: [["0.001", "99"]], asks: [["0.002", "99"]] }] }),
     getPositions: async () => ({ ok: true, data: positionsAfter })
   };
   return { client, placed };
 };
+
+test("unwind: an EMPTY book yields no safe IOC reference — nothing placed, position rides fully hedged", async () => {
+  const { client, placed } = makeClient({ "BTC-USD-260720-102000-C": [{ fill: 50, px: 0.001 }] });
+  client.getBookTop = async () => ({ ok: true, data: [] });
+  const r = await unwindLiveCollar(client, target, { spotUsd: 100_000, sleep: async () => {}, pollDelayMs: 1 });
+  assert.equal(r.outcome, "rides_to_expiry");
+  assert.equal(placed.length, 0, "no order without a price reference");
+  assert.ok(r.notes.some((n) => n.includes("EMPTY BOOK")));
+});
 
 test("unwind: closes SHORT (funding) leg FIRST, then the long; verifies flat; nets the value", async () => {
   const { client, placed } = makeClient({

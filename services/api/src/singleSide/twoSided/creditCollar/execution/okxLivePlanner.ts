@@ -122,6 +122,30 @@ export const bandCappedLimitPxBtc = (
 export const fillWithinBand = (action: "buy" | "sell", avgPxBtc: number, modelMidPxBtc: number, bandPct: number): boolean =>
   action === "buy" ? avgPxBtc <= modelMidPxBtc * (1 + bandPct) + 1e-12 : avgPxBtc >= modelMidPxBtc * (1 - bandPct) - 1e-12;
 
+/**
+ * IOC close price (BTC per BTC underlying). OKX OPTIONS REJECT MARKET ORDERS ("instId and ordType
+ * don't match" — live-verified by the demo canary), so every close/unwind is an aggressive IOC
+ * LIMIT: cross the touch by `crossPct` so it fills against any resting liquidity, and IOC cancels
+ * the remainder (never rests). When the needed side of the book is empty, fall back to the far side
+ * with a defensive multiplier; with no book at all there is no safe reference ⟹ null (the caller
+ * keeps its existing safe-abort semantics and alerts).
+ */
+export const iocClosePxBtc = (
+  action: "buy" | "sell",
+  top: { bidPxBtc: number | null; askPxBtc: number | null },
+  crossPct = 0.05,
+  tickSz = 0.0001
+): number | null => {
+  if (action === "buy") {
+    const ref = top.askPxBtc ?? (top.bidPxBtc != null ? top.bidPxBtc * 1.25 : null);
+    if (ref == null || ref <= 0) return null;
+    return roundPx(Math.max(tickSz > 0 ? tickSz : 0.0001, ceilToTick(ref * (1 + crossPct), tickSz)));
+  }
+  const ref = top.bidPxBtc ?? (top.askPxBtc != null ? top.askPxBtc * 0.75 : null);
+  if (ref == null || ref <= 0) return null;
+  return roundPx(Math.max(tickSz > 0 ? tickSz : 0.0001, floorToTick(ref * (1 - crossPct), tickSz)));
+};
+
 export type PlannedLeg = {
   instId: string;
   optType: "put" | "call";
