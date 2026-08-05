@@ -63,6 +63,30 @@ test("simple view: renders plain-English P&L and cross-links the advanced view",
   assert.ok(html.includes("Advanced view"));
 });
 
+test("onesheet: renders live proof from the model, includes contact, never names the former partner", () => {
+  const settlement = {
+    settledPositions: 38, totalNotionalUsdc: 1_900_000, totalCreditAccruedUsdc: 1_788.87, totalPayoutToFoxifyUsdc: -431.88,
+    totalNetToFoxifyUsdc: 1_356.99, totalOptionFeesUsdc: 316.51, totalHedgeReceiptUsdc: -431.88,
+    totalAtticusNetAfterFeesAndCapitalUsdc: -6.84, totalAtticusNetAfterCapitalUsdc: -6.84, totalCapitalCostUsdc: 6.84,
+    netAfterFeesAndCapitalBps: -0.036, bookHedgedNetBps: 0, avgHeldHours: 24.13, pctCapBreached: 0.0526, pctFloorBreached: 0
+  } as unknown as Parameters<typeof buildDashboardModel>[4];
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    settlementAggregate: () => settlement as never,
+    oneSheetContact: "founder@atticus.example"
+  };
+  const r = handleDashboardRequest({ method: "GET", path: "/onesheet" }, deps);
+  assert.equal(r.statusCode, 200);
+  assert.ok(r.contentType.includes("text/html"));
+  assert.ok(r.body.includes("Self-Funding Volume Facility"));
+  assert.ok(r.body.includes("Structure net (the product)"));
+  assert.ok(r.body.includes("founder@atticus.example"));
+  assert.ok(r.body.includes("What funds the flow?"));
+  assert.ok(!/foxify/i.test(r.body), "onesheet must never name the former partner");
+});
+
 test("positions view renders open + settled with leg premiums and plain-words fields", async () => {
   const { renderPositionsHtml } = await import("../src/singleSide/twoSided/creditCollar/shadowDashboard");
   const open = [{
