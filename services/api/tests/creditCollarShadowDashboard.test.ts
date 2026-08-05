@@ -129,6 +129,30 @@ test("onesheet: product-book segmentation counts only positions opened after the
   assert.ok(!/foxify/i.test(r.body));
 });
 
+test("public JSON: api responses scrub partner-named keys and the legacy alias is gone", () => {
+  const settled = [{
+    ref: "cc-1", side: "long" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, settlePriceUsd: 60_100, movePct: 0.0017,
+    putIntrinsicUsd: 0, callIntrinsicUsd: 0, payoutToFoxifyUsdc: -10, foxifyCreditUsdc: 40, netToFoxifyUsdc: 30, serviceFeeUsdc: 0,
+    floorBreached: false, capBreached: false, oracleVerified: true, openedAtMs: NOW - 25 * 3_600_000, settledAtMs: NOW - 3_600_000,
+    heldMs: 24 * 3_600_000, hedgeReceiptUsdc: 0, atticusOptionNetUsdc: 0, shortLegMarginUsdc: 500, capitalCostUsdc: 0.2,
+    optionFeesUsdc: 8, atticusNetAfterCapitalUsdc: 0, atticusNetAfterFeesAndCapitalUsdc: 0
+  }];
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    positions: () => ({ open: [], settled: settled as never })
+  };
+  const scorecard = handleDashboardRequest({ method: "GET", path: "/api/scorecard" }, deps);
+  assert.ok(!/foxify/i.test(scorecard.body), "scorecard JSON keys must be partner-neutral");
+  const positions = handleDashboardRequest({ method: "GET", path: "/api/positions" }, deps);
+  assert.ok(!/foxify/i.test(positions.body), "positions JSON keys must be partner-neutral");
+  assert.ok(positions.body.includes("clientCreditUsdc"), "scrub preserves the rest of the key name");
+  assert.ok(positions.body.includes("payoutToClientUsdc"));
+  assert.equal(handleDashboardRequest({ method: "GET", path: "/api/foxify" }, deps).statusCode, 404, "legacy alias removed");
+  assert.equal(handleDashboardRequest({ method: "GET", path: "/api/client" }, deps).statusCode, 200);
+});
+
 test("positions view renders open + settled with leg premiums and plain-words fields", async () => {
   const { renderPositionsHtml } = await import("../src/singleSide/twoSided/creditCollar/shadowDashboard");
   const open = [{

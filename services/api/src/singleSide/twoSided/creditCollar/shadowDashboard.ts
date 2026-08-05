@@ -582,6 +582,22 @@ export type DashboardDeps = {
   nowMs?: () => number;
 };
 
+// Public JSON boundary: internal/persisted field names carry the former partner's name (renaming them
+// would orphan the durable ledger), so API responses rename keys at serialization time instead —
+// `foxify*`/`*Foxify*` → `client*`/`*Client*`. Stores and in-process types are untouched.
+const scrubKeys = (x: unknown): unknown => {
+  if (Array.isArray(x)) return x.map(scrubKeys);
+  if (x && typeof x === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(x as Record<string, unknown>)) {
+      out[k.replace(/foxify/gi, (m) => (m[0] === "F" ? "Client" : "client"))] = scrubKeys(v);
+    }
+    return out;
+  }
+  return x;
+};
+const toPublicJson = (x: unknown): string => JSON.stringify(scrubKeys(x), null, 2);
+
 export const handleDashboardRequest = (
   req: { method: string; path: string; authorization?: string },
   deps: DashboardDeps
@@ -618,13 +634,12 @@ export const handleDashboardRequest = (
     return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderPositionsHtml(pos.open, pos.settled, now) };
   }
   if (path === "/api/positions" && deps.positions) {
-    return { statusCode: 200, contentType: "application/json", body: JSON.stringify(deps.positions(), null, 2) };
+    return { statusCode: 200, contentType: "application/json", body: toPublicJson(deps.positions()) };
   }
-  if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(model, null, 2) };
-  if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(settlement ?? { settledPositions: 0 }, null, 2) };
-  // /api/client is the canonical route; /api/foxify kept as a legacy alias for existing tooling.
-  if (path === "/api/client" || path === "/api/foxify") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(client ?? { settledPositions: 0 }, null, 2) };
-  if (path === "/api/regime") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(regime ?? { settledPositions: 0 }, null, 2) };
+  if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: toPublicJson(model) };
+  if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: toPublicJson(settlement ?? { settledPositions: 0 }) };
+  if (path === "/api/client") return { statusCode: 200, contentType: "application/json", body: toPublicJson(client ?? { settledPositions: 0 }) };
+  if (path === "/api/regime") return { statusCode: 200, contentType: "application/json", body: toPublicJson(regime ?? { settledPositions: 0 }) };
   if (path === "/api/health") {
     return { statusCode: model.running ? 200 : 503, contentType: "application/json", body: JSON.stringify({ running: model.running, liveness: model.liveness, sessions: model.aggregate.sessions, verdict: model.aggregate.verdict }, null, 2) };
   }
