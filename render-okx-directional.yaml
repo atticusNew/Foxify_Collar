@@ -18,7 +18,11 @@
 # ─────────────────────────────────────────────────────────────────────────
 services:
   - type: web
-    name: foxify-okx-directional
+    # Renamed from foxify-okx-directional on 2026-08-05 (dashboard rename; this file must match or a
+    # blueprint sync would spawn a duplicate service with an EMPTY disk). NOTE: the .onrender.com
+    # subdomain is fixed at creation and does NOT follow the rename — public URL comes from the
+    # custom domain (Settings → Custom Domains), e.g. demo.atticustrade.com.
+    name: exchange-vol-fac
     runtime: node
     plan: starter
     region: singapore
