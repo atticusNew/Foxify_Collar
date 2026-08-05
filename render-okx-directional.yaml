@@ -83,7 +83,8 @@ services:
       - key: SHADOW_COST_OF_CAPITAL
         value: "0.12"
       - key: SHADOW_COLLATERAL_USDC
-        value: "5000"
+        value: "25000"             # modeled principal pilot facility: $10k options deposit + perp
+                                   # margin + buffer (was 5000 = the former partner's posting)
 
       # ── Isolated disk stores (never shared with the neutral mirror) ──
       - key: SHADOW_STORE_PATH
