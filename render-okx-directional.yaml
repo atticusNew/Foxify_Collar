@@ -85,15 +85,20 @@ services:
       - key: SHADOW_COLLATERAL_USDC
         value: "5000"
 
-      # ── Isolated disk stores (never shared with the neutral mirror) ──
+      # ── Disk stores — PINNED TO THE FILES ACTUALLY IN USE (2026-08-05 audit of /var/data).
+      # The main stores carry historical "okx-mirror-*" filenames from how this service was first
+      # configured; the newer stores use "okx-directional-*" names. The names are historical, the
+      # FILES are the durable track record (1.6k+ sessions). DO NOT "clean up" or rename these
+      # paths: repointing a store env to a fresh filename orphans the data (it already ate the
+      # open book once tonight — recovered because the file survived). ──
       - key: SHADOW_STORE_PATH
-        value: /var/data/okx-directional-scorecards.jsonl
+        value: /var/data/okx-mirror-scorecards.jsonl
       - key: SHADOW_OPEN_POSITIONS_PATH
         value: /var/data/okx-directional-open.jsonl
       - key: SHADOW_SETTLEMENT_LEDGER_PATH
-        value: /var/data/okx-directional-settlements.jsonl
+        value: /var/data/okx-mirror-settlements.jsonl
       - key: SHADOW_COLLATERAL_PATH
-        value: /var/data/okx-directional-collateral.json
+        value: /var/data/okx-mirror-collateral.json
       - key: SHADOW_OPENING_STATE_PATH
         value: /var/data/okx-directional-opening.json
       - key: SHADOW_PRICE_HISTORY_PATH
