@@ -37,7 +37,7 @@ export type DashboardModel = {
   };
   aggregate: ShadowAggregate;
   settlement: SettlementAggregate | null;
-  foxify: FoxifyView | null;
+  client: FoxifyView | null;
   regime: RegimeStats | null;
   lifecycle: ShadowLifecycleReport | null;
   recentSessions: Array<{
@@ -64,7 +64,7 @@ export const buildDashboardModel = (
   aggCfg: ShadowAggregateConfig = {},
   settlement: SettlementAggregate | null = null,
   lifecycle: ShadowLifecycleReport | null = null,
-  foxify: FoxifyView | null = null,
+  client: FoxifyView | null = null,
   regime: RegimeStats | null = null
 ): DashboardModel => {
   const aggregate = aggregateShadowScorecards(records, aggCfg);
@@ -109,7 +109,7 @@ export const buildDashboardModel = (
     },
     aggregate,
     settlement,
-    foxify,
+    client,
     regime,
     lifecycle,
     recentSessions: recent,
@@ -146,7 +146,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
   const card = (label: string, value: string, sub = "") => `<div class="card"><div class="k">${esc(label)}</div><div class="v">${value}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</div>`;
 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="30"><title>Credit-Collar Shadow</title>
+<meta http-equiv="refresh" content="30"><title>Atticus — Shadow Pilot</title>
 <style>
   body{font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
   .wrap{max-width:980px;margin:0 auto;padding:20px}
@@ -160,8 +160,8 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
   .muted{color:#8b949e} .flags{color:#e3b341;margin:6px 0 0 18px} h2{font-size:14px;margin:22px 0 6px;color:#c9d1d9}
   a{color:#58a6ff}
 </style></head><body><div class="wrap">
-  <h1>Credit-Collar Tier-0 Shadow</h1>
-  <p class="sub">Read-only · paper-settled · live tiers OFF · auto-refresh 30s · generated ${esc(m.generatedAtIso)}</p>
+  <h1>Atticus Volume Facility — Shadow Pilot</h1>
+  <p class="sub">Live shadow of Atticus's self-funding volume facility: real venue options pricing, paper settlement, every leg auditable. Read-only · no live capital · auto-refresh 30s · generated ${esc(m.generatedAtIso)}</p>
   <div>
     ${badge(m.liveness.state, liveColor(m.liveness.state))}
     ${badge("verdict: " + a.verdict.replace(/_/g, " "), verdictColor(a.verdict))}
@@ -179,37 +179,37 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Floor used", `${(a.floor.avgFloorPctUsed * 100).toFixed(1)}%`, `max ${(a.floor.maxFloorPctUsed * 100).toFixed(1)}% (deeper = calmer regime)`)}
     ${card("Realized fee", `${a.economics.realizedServiceFeeBps} bps`, a.economics.totalServiceFeeUsdc > 0 ? `$${a.economics.totalServiceFeeUsdc} on $${a.economics.openedNotionalUsdc}` : "Atticus fee negotiated separately — not modeled")}
     ${card("Capital-aware net", `${a.capital.capitalAwareNetServiceFeeBps} bps`, `−${a.capital.capitalCostBps} bps IM drag (measured ${(a.capital.shortOptionImFraction * 100).toFixed(1)}%/notional, PM ${a.capital.portfolioMarginNettingFactor})`)}
-    ${card("Credit accrued", `$${a.economics.totalCreditAccruedUsdc}`, `net to Foxify $${a.economics.totalNetToFoxifyUsdc}`)}
+    ${card("Credit accrued", `$${a.economics.totalCreditAccruedUsdc}`, `net to client $${a.economics.totalNetToFoxifyUsdc}`)}
   </div>
   <h2>Realized settlement economics (forward-settled at real expiry price)</h2>
   ${
     m.settlement && m.settlement.settledPositions > 0
       ? `<div class="grid">
     ${card("Settled", String(m.settlement.settledPositions), `avg held ${m.settlement.avgHeldHours}h`)}
-    ${card("Atticus option net (hedged)", `$${m.settlement.totalAtticusOptionNetUsdc}`, `${m.settlement.bookHedgedNetBps} bps — back-to-back hedge receipt nets the Foxify payout ⟹ ~0`)}
-    ${card("Book payout (un-hedged view)", `${m.settlement.bookNetPayoutBps} bps`, `$${m.settlement.totalPayoutToFoxifyUsdc} Foxify-facing only — swings at real tenor; not Atticus risk`)}
+    ${card("Atticus option net (hedged)", `$${m.settlement.totalAtticusOptionNetUsdc}`, `${m.settlement.bookHedgedNetBps} bps — back-to-back hedge receipt nets the client payout ⟹ ~0`)}
+    ${card("Book payout (un-hedged view)", `${m.settlement.bookNetPayoutBps} bps`, `$${m.settlement.totalPayoutToFoxifyUsdc} client-facing only — swings at real tenor; not Atticus risk`)}
     ${card("Floor paid", pct(m.settlement.pctFloorBreached), `cap hit ${pct(m.settlement.pctCapBreached)}`)}
     ${card("Realized fee", `$${m.settlement.totalServiceFeeUsdc}`, m.settlement.totalServiceFeeUsdc > 0 ? `${m.settlement.realizedServiceFeeBps} bps gross` : "Atticus fee negotiated separately — not modeled")}
-    ${card("Option fees (Bullish)", `$${m.settlement.totalOptionFeesUsdc}`, `net after fees+capital $${m.settlement.totalAtticusNetAfterFeesAndCapitalUsdc} (${m.settlement.netAfterFeesAndCapitalBps} bps)`)}
+    ${card("Venue option fees", `$${m.settlement.totalOptionFeesUsdc}`, `net after fees+capital $${m.settlement.totalAtticusNetAfterFeesAndCapitalUsdc} (${m.settlement.netAfterFeesAndCapitalBps} bps)`)}
     ${card("Net after capital", `$${m.settlement.totalAtticusNetAfterCapitalUsdc}`, `${m.settlement.capitalAwareNetServiceFeeBps} bps · −$${m.settlement.totalCapitalCostUsdc} IM cost · peak IM $${m.settlement.peakShortLegMarginUsdc}`)}
-    ${card("Net to Foxify", `$${m.settlement.totalNetToFoxifyUsdc}`, `credit $${m.settlement.totalCreditAccruedUsdc} + payout`)}
+    ${card("Net to client", `$${m.settlement.totalNetToFoxifyUsdc}`, `credit $${m.settlement.totalCreditAccruedUsdc} + payout`)}
     ${card("Payout range", `$${m.settlement.worstPayoutUsdc} … $${m.settlement.bestPayoutUsdc}`, `avg $${m.settlement.avgPayoutPerPositionUsdc}`)}
   </div>`
       : `<p class="muted">No positions have matured + settled yet (forward settlement at expiry). Real payout economics appear here once the first batch reaches its horizon.</p>`
   }
   ${
-    m.foxify && m.foxify.settledPositions > 0
-      ? `<h2>Foxify view — matched perps + credit (modelled; live = partner-venue feed)</h2><div class="grid">
-    ${card("Net perp P&L (flatness)", `$${m.foxify.netPerpPnlUsdc}`, `${m.foxify.netPerpPnlBps} bps — matched long/short net ⟹ ~0 (gross moved $${m.foxify.grossPerpPnlUsdc})`)}
-    ${card("Net funding carry", `$${m.foxify.netFundingUsdc}`, `assumed perp funding spread across venues (0 unless venue rates set)`)}
-    ${m.foxify.totalAssumedFeesUsdc > 0
-      ? card("Credit covers fees?", m.foxify.creditCoversFees ? `YES (${m.foxify.creditCoverageRatio}×)` : `NO (${m.foxify.creditCoverageRatio}×)`, `credit $${m.foxify.totalCreditUsdc} vs modeled fees $${m.foxify.totalAssumedFeesUsdc} (?fee=${m.foxify.assumedPerpFeeUsdc})`)
-      : card("Credit vs fees", "no fee assumed", `credit $${m.foxify.totalCreditUsdc} · awaiting the real per-trade cost — add ?fee=25 to model`)}
-    ${card("Foxify all-in net", `$${m.foxify.foxifyAllInNetUsdc}`, `${m.foxify.foxifyAllInNetBps} bps — perps + funding + collar + credit − fees`)}
+    m.client && m.client.settledPositions > 0
+      ? `<h2>Client view — perp book + credit (modelled; live = partner-venue feed)</h2><div class="grid">
+    ${card("Net perp P&L (flatness)", `$${m.client.netPerpPnlUsdc}`, `${m.client.netPerpPnlBps} bps — matched long/short net ⟹ ~0 (gross moved $${m.client.grossPerpPnlUsdc})`)}
+    ${card("Net funding carry", `$${m.client.netFundingUsdc}`, `assumed perp funding spread across venues (0 unless venue rates set)`)}
+    ${m.client.totalAssumedFeesUsdc > 0
+      ? card("Credit covers fees?", m.client.creditCoversFees ? `YES (${m.client.creditCoverageRatio}×)` : `NO (${m.client.creditCoverageRatio}×)`, `credit $${m.client.totalCreditUsdc} vs modeled fees $${m.client.totalAssumedFeesUsdc} (?fee=${m.client.assumedPerpFeeUsdc})`)
+      : card("Credit vs fees", "no fee assumed", `credit $${m.client.totalCreditUsdc} · awaiting the real per-trade cost — add ?fee=25 to model`)}
+    ${card("Client all-in net", `$${m.client.foxifyAllInNetUsdc}`, `${m.client.foxifyAllInNetBps} bps — perps + funding + collar + credit − fees`)}
   </div>
-  <p class="muted" style="margin:2px 0 0">Perp book by venue: ${m.foxify.venues.map((v) => `${esc(v.venue)} ${v.positions} (P&L $${v.perpPnlUsdc}, funding $${v.fundingUsdc})`).join(" · ")}</p>
+  <p class="muted" style="margin:2px 0 0">Perp book by venue: ${m.client.venues.map((v) => `${esc(v.venue)} ${v.positions} (P&L $${v.perpPnlUsdc}, funding $${v.fundingUsdc})`).join(" · ")}</p>
   <table><thead><tr><th>recent (settle)</th><th>side</th><th>venue</th><th>entry → settle</th><th>move</th><th>perp P&L</th><th>funding</th><th>collar</th><th>credit</th><th>net</th></tr></thead><tbody>${
-          m.foxify.recentPairs
+          m.client.recentPairs
             .flatMap((p) => [p.long, p.short].map((r) => ({ r, matched: p.matched })))
             .filter((x): x is { r: NonNullable<typeof x.r>; matched: boolean } => x.r != null)
             .map(
@@ -225,12 +225,12 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
       ? `<h2>Regime & realized vol — is the credit clearing the bleed? (staggered daily P&L)</h2><div class="grid">
     ${card("Realized vol", `${m.regime.realizedDailyVolPct}%/day`, `${m.regime.realizedAnnualVolPct}% annualized (caps priced ~50%) · avg |move| ${(m.regime.avgAbsMovePct * 100).toFixed(2)}%`)}
     ${card(`Credit clears bleed? ${m.regime.creditClearsBleed ? "YES" : "NO"}`, money(m.regime.cumulativeNetUsdc), m.regime.cumulativeFeesUsdc > 0 ? `net = credit ${money(m.regime.cumulativeCreditUsdc)} + collar ${money(m.regime.cumulativeCollarUsdc)} − modeled fees ${money(m.regime.cumulativeFeesUsdc)}` : `net = credit ${money(m.regime.cumulativeCreditUsdc)} + collar ${money(m.regime.cumulativeCollarUsdc)} · no fee assumed (?fee=25 to model)`)}
-    ${card("Avg day (Foxify net)", money(m.regime.avgDayNetUsdc), `${pct(m.regime.pctDaysPositive)} of days positive · ${m.regime.days} days`)}
+    ${card("Avg day (client net)", money(m.regime.avgDayNetUsdc), `${pct(m.regime.pctDaysPositive)} of days positive · ${m.regime.days} days`)}
     ${card("Day spread (smoothing)", `±${money(m.regime.dayNetStdUsdc)}`, `best ${money(m.regime.bestDayNetUsdc)} · worst ${money(m.regime.worstDayNetUsdc)} — staggering shrinks this`)}
     ${m.regime.gate ? card(`Regime gate: ${m.regime.gate.regime.toUpperCase()}`, m.regime.gate.regime === "calm" ? "open normally" : m.regime.gate.regime === "elevated" ? (m.regime.gate.openMultiplier === 0 ? "PAUSE (calm-only policy)" : `throttle ×${m.regime.gate.openMultiplier} + wider cap`) : "PAUSE opens", m.regime.gate.reason) : ""}
     ${m.regime.signal ? card("Signal hit-rate (day-level)", `${(m.regime.signal.dayHitRate * 100).toFixed(0)}% over ${m.regime.signal.days}d`, `P(edge>BE ${(m.regime.signal.breakevenUsed * 100).toFixed(0)}%) = ${(m.regime.signal.pAboveBreakeven * 100).toFixed(0)}% · 95% CI ${(m.regime.signal.ci95[0] * 100).toFixed(0)}–${(m.regime.signal.ci95[1] * 100).toFixed(0)}% — measures, not validates (~600d to separate 55% from BE)`) : ""}
   </div>
-  <table><thead><tr><th>day</th><th>positions</th><th>realized vol</th><th>avg move</th><th>credit</th><th>collar</th><th>Foxify net</th></tr></thead><tbody>${
+  <table><thead><tr><th>day</th><th>positions</th><th>realized vol</th><th>avg move</th><th>credit</th><th>collar</th><th>client net</th></tr></thead><tbody>${
           m.regime.recentDays
             .map(
               (d) =>
@@ -246,7 +246,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Basis", `${m.lifecycle.basisBps} bps`, m.lifecycle.basisWithinTolerance ? "within tolerance" : "⚠️ wide — defer settle")}
     ${card("Credit vesting", `${m.lifecycle.vestProgressPct}%`, `$${m.lifecycle.vestedCreditSoFarUsdc} of $${m.lifecycle.fullCreditUsdc} accrued`)}
     ${card("Collateral", `$${m.lifecycle.collateralAvailableUsdc}`, m.lifecycle.collateralHalted ? "⚠️ below buffer — HALT" : "available")}
-    ${card("Barrier touches", String(m.lifecycle.barrierTouchesDetected), `gap→reserve $${m.lifecycle.gapToReserveUsdc} · →Foxify $${m.lifecycle.gapToFoxifyUsdc}`)}
+    ${card("Barrier touches", String(m.lifecycle.barrierTouchesDetected), `gap→reserve $${m.lifecycle.gapToReserveUsdc} · →client $${m.lifecycle.gapToFoxifyUsdc}`)}
     ${m.lifecycle.lockWatcher ? card("Lock watcher", m.lifecycle.lockWatcher.touchesEvaluated === 0 ? "armed" : `${m.lifecycle.lockWatcher.locksPermitted} lock / ${m.lifecycle.lockWatcher.locksDeferred} defer`, m.lifecycle.lockWatcher.touchesEvaluated === 0 ? "no touches this cycle — early unwind permits only when leg buyback ≤ unvested credit" : m.lifecycle.lockWatcher.decisions.map((d) => `${d.ref.slice(-6)} ${d.barrier}: cost $${d.unwindCostUsdc} vs unvested $${d.unvestedCreditUsdc} → ${d.permitted ? "LOCK" : d.lockEtaMs != null ? `defer ~${(d.lockEtaMs / 3_600_000).toFixed(1)}h` : "ride to expiry"}`).join(" · ")) : ""}
   </div>`
       : ""
@@ -267,7 +267,7 @@ const money = (x: number) => `${x < 0 ? "−" : ""}$${Math.abs(x).toLocaleString
 
 export const renderSimpleHtml = (m: DashboardModel): string => {
   const s = m.settlement;
-  const f = m.foxify;
+  const f = m.client;
   const card = (label: string, value: string, sub = "", tone = "") =>
     `<div class="card"><div class="k">${esc(label)}</div><div class="v"${tone ? ` style="color:${tone}"` : ""}>${value}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</div>`;
 
@@ -291,18 +291,18 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
           const feeAssumed = fees > 0;
           const perp = f ? f.netPerpPnlUsdc : 0;
           const reconcile = feeAssumed
-            ? `Foxify keeps = credit ${money(creditTotal)} ${collarNet < 0 ? "−" : "+"} collar ${money(Math.abs(collarNet))} − perp fees ${money(fees)} ${perp < 0 ? "−" : "+"} perps ${money(Math.abs(perp))} = ${money(foxNet)}`
-            : `Foxify keeps = credit ${money(creditTotal)} ${collarNet < 0 ? "−" : "+"} collar ${money(Math.abs(collarNet))} ${perp < 0 ? "−" : "+"} perps ${money(Math.abs(perp))} = ${money(foxNet)} · no fee assumed — add ?fee=25 to model one`;
+            ? `Client keeps = credit ${money(creditTotal)} ${collarNet < 0 ? "−" : "+"} collar ${money(Math.abs(collarNet))} − perp fees ${money(fees)} ${perp < 0 ? "−" : "+"} perps ${money(Math.abs(perp))} = ${money(foxNet)}`
+            : `Client keeps = credit ${money(creditTotal)} ${collarNet < 0 ? "−" : "+"} collar ${money(Math.abs(collarNet))} ${perp < 0 ? "−" : "+"} perps ${money(Math.abs(perp))} = ${money(foxNet)} · no fee assumed — add ?fee=25 to model one`;
           return `
-  <h2>Foxify — what they collect, forfeit, pay, and keep${feeAssumed ? ` (modeled fee $${f!.assumedPerpFeeUsdc}/trade)` : ""}</h2>
+  <h2>Client — what they collect, forfeit, pay, and keep${feeAssumed ? ` (modeled fee $${f!.assumedPerpFeeUsdc}/trade)` : ""}</h2>
   <div class="grid">
-    ${card("Foxify COLLECTS — credit", money(creditTotal), `${per(creditTotal)} · paid to Foxify`, "#16794a")}
-    ${card("Foxify FORFEITS / receives — collar", money(collarNet), collarNet < 0 ? `${per(collarNet)} · capped upside given back on moves` : `${per(collarNet)} · floor protection received`, collarNet < 0 ? "#9a6b00" : "#16794a")}
+    ${card("Client COLLECTS — credit", money(creditTotal), `${per(creditTotal)} · paid to the client`, "#16794a")}
+    ${card("Client FORFEITS / receives — collar", money(collarNet), collarNet < 0 ? `${per(collarNet)} · capped upside given back on moves` : `${per(collarNet)} · floor protection received`, collarNet < 0 ? "#9a6b00" : "#16794a")}
     ${feeAssumed
-      ? card("Foxify PAYS — perp fees", money(-fees), `${per(-fees)} · modeled at $${f!.assumedPerpFeeUsdc}/trade (?fee=${f!.assumedPerpFeeUsdc})`, "#9a6b00")
-      : card("Foxify PAYS — perp fees", "not modeled", "awaiting Foxify's real number · add ?fee=25 to the URL to preview")}
-    ${card("Foxify KEEPS — all-in net", money(foxNet), `${foxNetBps != null ? foxNetBps + " bps · " : ""}= credit − forfeits ${feeAssumed ? "− fees " : ""}+ perps`, foxNet >= 0 ? "#16794a" : "#9a1b1b")}
-    ${card("Foxify perps", f ? money(perp) : "—", "matched long/short ⟹ ~flat (no directional bet)")}
+      ? card("Client PAYS — perp fees", money(-fees), `${per(-fees)} · modeled at $${f!.assumedPerpFeeUsdc}/trade (?fee=${f!.assumedPerpFeeUsdc})`, "#9a6b00")
+      : card("Client PAYS — perp fees", "not modeled", "awaiting the venue's real number · add ?fee=25 to the URL to preview")}
+    ${card("Client KEEPS — all-in net", money(foxNet), `${foxNetBps != null ? foxNetBps + " bps · " : ""}= credit − forfeits ${feeAssumed ? "− fees " : ""}+ perps`, foxNet >= 0 ? "#16794a" : "#9a1b1b")}
+    ${card("Client perps", f ? money(perp) : "—", "matched long/short ⟹ ~flat (no directional bet)")}
   </div>
   <p class="muted" style="margin:2px 0 0">${esc(reconcile)}</p>
   <h2>Atticus — what it pays, passes through, and keeps</h2>
@@ -315,23 +315,23 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
   <h2>Context</h2>
   <div class="grid">
     ${card("Settled trades", String(n), `avg held ${s.avgHeldHours}h`)}
-    ${card("Cap hit", `${(s.pctCapBreached * 100).toFixed(1)}%`, "how often price passed the cap (Foxify forfeits upside)")}
-    ${card("Floor hit", `${(s.pctFloorBreached * 100).toFixed(1)}%`, "how often price passed the floor (Foxify gets protection)")}
+    ${card("Cap hit", `${(s.pctCapBreached * 100).toFixed(1)}%`, "how often price passed the cap (client forfeits upside)")}
+    ${card("Floor hit", `${(s.pctFloorBreached * 100).toFixed(1)}%`, "how often price passed the floor (client gets protection)")}
     ${card("Credit vs fees", f && f.totalAssumedFeesUsdc > 0 ? `${f.creditCoverageRatio}×` : "n/a", f && f.totalAssumedFeesUsdc > 0 ? `credit ${money(f.totalCreditUsdc)} vs modeled fees ${money(f.totalAssumedFeesUsdc)}` : "no fee assumed — ?fee=25 to model")}
     ${m.regime && m.regime.days > 0 ? card("Realized vol · clears bleed?", `${m.regime.realizedDailyVolPct}%/day · ${m.regime.creditClearsBleed ? "CLEARS" : "BLEEDS"}`, `cumulative net ${money(m.regime.cumulativeNetUsdc)} · ${(m.regime.pctDaysPositive * 100).toFixed(0)}% of days positive`, m.regime.creditClearsBleed ? "#16794a" : "#9a1b1b") : ""}
   </div>
   <div class="card" style="margin-top:14px">
     <div class="k">How to read this</div>
     <div class="s" style="font-size:13px;line-height:1.6">
-      • <b>Foxify math (3 parts):</b> keeps = credit collected − collar forfeited − perp fees. All three matter — the fees are the line people forget.<br>
-      • <b>Regime:</b> in calm tape the caps rarely breach, so forfeits are small and Foxify nets positive; in a sustained trend the caps breach often and the forfeits can exceed the net credit — that's a short-volatility trade, not free money.<br>
+      • <b>Client math (3 parts):</b> keeps = credit collected − collar forfeited − perp fees. All three matter — the fees are the line people forget.<br>
+      • <b>Regime:</b> in calm tape the caps rarely breach, so forfeits are small and the client nets positive; in a sustained trend the caps breach often and the forfeits can exceed the net credit — that's a short-volatility trade, not free money.<br>
       • <b>Atticus</b> takes no market risk: whatever the collar owes, the identical hedge pays back (net $0). Atticus's fee is negotiated separately on volume and deliberately NOT modeled in these economics.
     </div>
   </div>`;
         })();
 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="30"><title>Credit-Collar Shadow — Simple</title>
+<meta http-equiv="refresh" content="30"><title>Atticus Shadow Pilot — Simple P&L</title>
 <style>
   body{font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
   .wrap{max-width:980px;margin:0 auto;padding:20px}
@@ -341,8 +341,8 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
   .card .k{color:#8b949e;font-size:12px} .card .v{font-size:22px;font-weight:700;margin-top:2px} .card .s{color:#8b949e;font-size:12px;margin-top:2px}
   .muted{color:#8b949e} h2{font-size:14px;margin:22px 0 6px;color:#c9d1d9} a{color:#58a6ff} b{color:#e6edf3}
 </style></head><body><div class="wrap">
-  <h1>Credit-Collar Shadow — Simple P&L</h1>
-  <p class="sub">Plain-English money flow · paper-settled · generated ${esc(m.generatedAtIso)}</p>
+  <h1>Atticus Shadow Pilot — Simple P&L</h1>
+  <p class="sub">Plain-English money flow of the self-funding volume facility · real venue options pricing, paper-settled · generated ${esc(m.generatedAtIso)}</p>
   <p class="sub"><a href="/">◲ Advanced view</a> · <a href="/positions">Positions</a> · JSON: <a href="/api/scorecard">/api/scorecard</a></p>
   ${body}
 </div></body></html>`;
@@ -351,7 +351,7 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
 // ── Positions view ────────────────────────────────────────────────────────────
 // Position-by-position breakout in plain words: entry, ceiling (cap), floor, what we SOLD the cap for,
 // what we PAID for the floor, the net credit, the synthetic perp detail, and at settlement the result
-// line (credit − forfeit − fee). The walkthrough page for G-20 / Foxify conversations.
+// line (credit − forfeit − fee). The walkthrough page for partner/counterparty conversations.
 
 export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOutcome[], nowMs: number, maxSettled = 20): string => {
   const pctOf = (strike: number, entry: number) => `${(((strike - entry) / entry) * 100).toFixed(1)}%`;
@@ -402,7 +402,7 @@ export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOut
   const floorHits = settled.filter((o) => o.floorBreached).length;
 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="30"><title>Positions</title>
+<meta http-equiv="refresh" content="30"><title>Atticus Shadow — Positions</title>
 <style>
   body{font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
   .wrap{max-width:1180px;margin:0 auto;padding:20px}
@@ -421,7 +421,7 @@ export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOut
   <h2>Settled (last ${Math.min(maxSettled, settled.length)})</h2>
   <table><thead><tr><th>ref</th><th>side</th><th>entry → settle</th><th>SOLD cap</th><th>PAID floor</th><th>venue fee</th><th>credit</th><th>breach</th><th>collar payout</th><th>result</th></tr></thead>
   <tbody>${settledRows || `<tr><td colspan="10" class="muted">Nothing settled yet.</td></tr>`}</tbody></table>
-  <p class="sub" style="margin-top:12px">How to read: <b>net credit = SOLD − PAID − venue fee</b>. The collar SELLS the ceiling (collect premium) and BUYS the floor (pay premium); the hedge venue's trading fee is funded by the collar (never by Atticus, never deducted from the credit afterward). Anything the structure funds above the target passes to Foxify in full. At settlement: no breach ⟹ keep the credit · cap hit ⟹ give back gains above the ceiling (paid from that position's own perp gain) · floor hit ⟹ protection pays losses beyond the floor.</p>
+  <p class="sub" style="margin-top:12px">How to read: <b>net credit = SOLD − PAID − venue fee</b>. The collar SELLS the ceiling (collect premium) and BUYS the floor (pay premium); the hedge venue's trading fee is funded by the collar (never by Atticus, never deducted from the credit afterward). Anything the structure funds above the target passes to the client in full. At settlement: no breach ⟹ keep the credit · cap hit ⟹ give back gains above the ceiling (paid from that position's own perp gain) · floor hit ⟹ protection pays losses beyond the floor.</p>
 </div></body></html>`;
 };
 
@@ -435,7 +435,7 @@ export type DashboardDeps = {
   aggregateConfig?: ShadowAggregateConfig;
   /** Realized-economics aggregate over the settlement ledger (forward settlement). */
   settlementAggregate?: () => SettlementAggregate;
-  /** Foxify matched-perp + credit view over the settlement ledger. `feeUsdc` = ?fee= override (else env default). */
+  /** Client matched-perp + credit view over the settlement ledger. `feeUsdc` = ?fee= override (else env default). */
   foxifyView?: (feeUsdc?: number) => FoxifyView | null;
   /** Regime & realized-vol readout over the settlement ledger. `feeUsdc` = ?fee= override (else env default). */
   regimeStats?: (feeUsdc?: number) => RegimeStats | null;
@@ -469,9 +469,9 @@ export const handleDashboardRequest = (
 
   const settlement = deps.settlementAggregate ? deps.settlementAggregate() : null;
   const lifecycle = deps.lifecycleReport ? deps.lifecycleReport() : null;
-  const foxify = deps.foxifyView ? deps.foxifyView(feeOverride) : null;
+  const client = deps.foxifyView ? deps.foxifyView(feeOverride) : null;
   const regime = deps.regimeStats ? deps.regimeStats(feeOverride) : null;
-  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, foxify, regime);
+  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, client, regime);
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
   if (path === "/simple") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderSimpleHtml(model) };
@@ -484,7 +484,8 @@ export const handleDashboardRequest = (
   }
   if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(model, null, 2) };
   if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(settlement ?? { settledPositions: 0 }, null, 2) };
-  if (path === "/api/foxify") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(foxify ?? { settledPositions: 0 }, null, 2) };
+  // /api/client is the canonical route; /api/foxify kept as a legacy alias for existing tooling.
+  if (path === "/api/client" || path === "/api/foxify") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(client ?? { settledPositions: 0 }, null, 2) };
   if (path === "/api/regime") return { statusCode: 200, contentType: "application/json", body: JSON.stringify(regime ?? { settledPositions: 0 }, null, 2) };
   if (path === "/api/health") {
     return { statusCode: model.running ? 200 : 503, contentType: "application/json", body: JSON.stringify({ running: model.running, liveness: model.liveness, sessions: model.aggregate.sessions, verdict: model.aggregate.verdict }, null, 2) };
