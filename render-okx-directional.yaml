@@ -1,13 +1,17 @@
 # ─────────────────────────────────────────────────────────────────────────
-# render-okx-directional.yaml — Foxify DIRECTIONAL (trend-following) SHADOW
+# render-okx-directional.yaml — Atticus PRODUCT BOOK shadow (neutral pairs)
 #
-# The twin of foxify-okx-mirror, running the DIRECTIONAL book on the same live
-# tape: SHADOW_DIRECTIONAL_BIAS=trend opens WITH recent momentum (the market
-# sets the realized hit-rate), 2 positions/day, own isolated disk stores.
-# Run BOTH services side-by-side to show Foxify the two strategies on
-# identical market data: neutral (calm-only, pauses in vol) vs directional
-# (trades the trend; needs ~54%+ hit-rate per the historical breakeven table).
+# HISTORY: this service originally ran the partner-era directional/auto book
+# (trend singles on elevated days). The partner is gone and the product being
+# sold is the self-funding NEUTRAL book, so as of 2026-08-05 this service runs
+# pairs-only: matched long/short pairs (pair-atomic), in calm AND elevated
+# regimes (elevated keeps the widened cap via the 6% floor override; HALT
+# still pauses opens). No directional risk is taken. The service name and disk
+# are kept so the durable track record continues across the strategy switch.
 # Paper settlement only — read-only, live tiers OFF, NO venue credentials.
+#
+# This YAML is the SOURCE OF TRUTH for the service: do not edit envs in the
+# dashboard (a blueprint sync will overwrite them). Change them here and push.
 #
 # Deploy: Render dashboard → New → Blueprint → select this file.
 # Dashboard: https://foxify-okx-directional.onrender.com (/, /simple, /api/scorecard)
@@ -31,9 +35,14 @@ services:
       - key: NODE_ENV
         value: production
 
-      # ── THE DIFFERENCE: directional trend-following book ──
+      # ── Strategy: the PRODUCT BOOK — neutral pairs only, no directional lane ──
       - key: SHADOW_DIRECTIONAL_BIAS
-        value: trend               # open the side of recent live momentum (long | short | trend)
+        value: flat                # matched long/short pairs (pair-atomic); no directional singles
+      - key: SHADOW_REGIME_ELEVATED_MULT
+        value: "1"                 # keep opening pairs in ELEVATED at the widened cap (6% floor
+                                   # override still applies); HALT (≥3%) still pauses opens.
+                                   # A matched pair's cap giveback is funded by that side's own
+                                   # perp gain, so elevated pairs stay bounded — unlike singles.
 
       # ── Pilot terms (same as the neutral mirror) ──
       - key: SHADOW_HEDGE_VENUE
@@ -45,7 +54,7 @@ services:
       - key: HARNESS_TENOR_DAYS
         value: "1"
       - key: SHADOW_DAILY_POSITIONS
-        value: "2"                 # pilot cadence: 2/day, staggered (singles in directional mode)
+        value: "2"                 # pilot cadence: 2/day = 1 matched pair/day (pair-atomic)
       - key: SHADOW_POSITION_USDC
         value: "50000"
       - key: SHADOW_LOOP_INTERVAL_MS
@@ -54,8 +63,9 @@ services:
         value: "2000000"
       - key: HARNESS_BULLISH_WEIGHT
         value: "0"
-      # Floor/σ-floor/credit pass-through/regime-gate: code defaults (6% floor, 1.1σ cap floor,
-      # full pass-through, directional gate 1.5%/×0.5). Override here only with intent.
+      # Floor/σ-floor/credit pass-through: code defaults (6% floor, 1.1σ cap floor, full
+      # pass-through). Neutral-mode gate thresholds apply (elevated 1.2%, halt 3.0%) with the
+      # elevated multiplier overridden to 1 above. Override anything else only with intent.
 
       # ── Capital inputs (OKX-measured) ──
       - key: SHADOW_SHORT_OPTION_IM_FRACTION
