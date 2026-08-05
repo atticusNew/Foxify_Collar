@@ -43,6 +43,10 @@ services:
                                    # override still applies); HALT (≥3%) still pauses opens.
                                    # A matched pair's cap giveback is funded by that side's own
                                    # perp gain, so elevated pairs stay bounded — unlike singles.
+      - key: SHADOW_PRODUCT_BOOK_SINCE
+        value: "2026-08-05T04:30:00Z"  # strategy-switch timestamp: /onesheet segments positions
+                                       # opened after this as the "current product book" (nothing
+                                       # pre-switch is deleted; lifetime integrity stays intact)
 
       # ── Pilot terms (same as the neutral mirror) ──
       - key: SHADOW_HEDGE_VENUE
