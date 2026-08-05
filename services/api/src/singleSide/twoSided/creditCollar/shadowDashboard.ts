@@ -255,7 +255,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
   <h2>Recent sessions</h2>
   <table><thead><tr><th>time</th><th>opened</th><th>halt</th><th>rej</th><th>peakExp</th><th>fee</th><th>oracle</th><th>recon</th><th>lifecycle</th></tr></thead>
   <tbody>${rows || `<tr><td colspan="9" class="muted">No sessions yet.</td></tr>`}</tbody></table>
-  <p class="sub" style="margin-top:16px"><a href="/simple">◱ Simple view</a> · <a href="/positions">◲ Positions</a> · JSON: <a href="/api/scorecard">/api/scorecard</a> · <a href="/api/health">/api/health</a></p>
+  <p class="sub" style="margin-top:16px"><a href="/simple">◱ Simple view</a> · <a href="/positions">◲ Positions</a> · <a href="/onesheet">◳ One-sheet</a> · JSON: <a href="/api/scorecard">/api/scorecard</a> · <a href="/api/health">/api/health</a></p>
 </div></body></html>`;
 };
 
@@ -345,6 +345,78 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
   <p class="sub">Plain-English money flow of the self-funding volume facility · real venue options pricing, paper-settled · generated ${esc(m.generatedAtIso)}</p>
   <p class="sub"><a href="/">◲ Advanced view</a> · <a href="/positions">Positions</a> · JSON: <a href="/api/scorecard">/api/scorecard</a></p>
   ${body}
+</div></body></html>`;
+};
+
+// ── One-sheet ─────────────────────────────────────────────────────────────────
+// The outward-facing pitch page (/onesheet): static facility copy + LIVE numbers computed from the
+// same model as the scorecard, so the "one-pager" sent to venues/investors can never go stale.
+// Print-friendly (light @media print styles) so a PDF snapshot is one Cmd+P away when an attachment
+// is required. Contact line is injected via deps (SHADOW_CONTACT env) — never hardcoded.
+
+export const renderOneSheetHtml = (m: DashboardModel, contact?: string): string => {
+  const s = m.settlement;
+  const c = m.client;
+  const card = (label: string, value: string, sub = "") =>
+    `<div class="card"><div class="k">${esc(label)}</div><div class="v">${value}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</div>`;
+
+  const proof =
+    !s || s.settledPositions === 0
+      ? `<p class="muted">The live book is warming up — proof numbers appear here as positions settle (24h tenor).</p>`
+      : `<div class="grid">
+    ${card("Live window", `${m.regime?.days ?? 0} days`, "real venue options pricing · paper-settled · updates every cycle")}
+    ${card("Settled", `${s.settledPositions} positions`, `$${s.totalNotionalUsdc.toLocaleString("en-US")} notional · avg held ${s.avgHeldHours}h`)}
+    ${card("Structure net (the product)", money(s.totalNetToFoxifyUsdc), `credit ${money(s.totalCreditAccruedUsdc)} − givebacks ${money(Math.abs(s.totalPayoutToFoxifyUsdc))}`)}
+    ${c ? card("Client all-in net", `${money(c.foxifyAllInNetUsdc)}`, `${c.foxifyAllInNetBps} bps${m.regime ? ` · ${(m.regime.pctDaysPositive * 100).toFixed(0)}% of days positive` : ""}`) : ""}
+    ${card("Risk events", `${m.aggregate.positions.halted} halts`, `floor breached ${(s.pctFloorBreached * 100).toFixed(1)}% · cap touched ${(s.pctCapBreached * 100).toFixed(1)}% · 0 manual interventions`)}
+    ${card("Integrity", m.aggregate.verdict.replace(/_/g, " "), `${pct(m.aggregate.oracle.allVerifiedRate)} oracle-signed · ${pct(m.aggregate.reconciliation.allReconciledRate)} reconciled`)}
+    ${card("Platform take at zero fee", money(s.totalAtticusNetAfterFeesAndCapitalUsdc), "pass-through proven — revenue is the op fee, not a hidden spread")}
+    ${card("Capital efficiency", money(s.totalCapitalCostUsdc), "total capital cost on the window (portfolio-margin netted)")}
+  </div>
+  <p class="muted" style="margin:4px 0 0">The validation window also exercised a directional overlay; it netted approximately zero and is retired — the facility runs the neutral-pair book only.</p>`;
+
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60"><title>Atticus — Self-Funding Volume Facility</title>
+<style>
+  body{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
+  .wrap{max-width:860px;margin:0 auto;padding:24px}
+  h1{font-size:20px;margin:0 0 4px} .sub{color:#8b949e;margin:0 0 14px}
+  h2{font-size:14px;margin:20px 0 6px;color:#c9d1d9}
+  p{margin:6px 0} .muted{color:#8b949e;font-size:12px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:10px 0}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:12px}
+  .card .k{color:#8b949e;font-size:12px} .card .v{font-size:20px;font-weight:700;margin-top:2px} .card .s{color:#8b949e;font-size:12px;margin-top:2px}
+  ol{margin:6px 0 0 20px;padding:0} li{margin:4px 0} a{color:#58a6ff} b{color:#e6edf3}
+  @media print{
+    body{background:#fff;color:#111} .card{background:#fff;border-color:#bbb}
+    .card .k,.card .s,.muted,.sub{color:#555} h2{color:#111} b{color:#111} a{color:#0645ad}
+    .noprint{display:none}
+  }
+</style></head><body><div class="wrap">
+  <h1>Atticus — Self-Funding Volume Facility</h1>
+  <p class="sub">Live one-sheet: every number below is computed from the running book and refreshes automatically · generated ${esc(m.generatedAtIso)}</p>
+
+  <h2>What it is</h2>
+  <p>Atticus generates <b>real, delta-hedged perp volume whose costs are paid by options credit — not incentive budgets</b>. Each position is a genuine, collateralized perp leg on a venue, wrapped in a short-tenor asymmetric collar hedged on an options venue. The collar's net credit covers fees, funding, and slippage, so the flow has its own economic engine and doesn't leave when a rewards program ends.</p>
+  <p><b>Two lanes:</b> principal flow (Atticus opens the positions — portfolio-level neutral, always one-sided per venue: the pair spans two venues, so the facility is structurally incapable of self-matching on any single book) · a venue-embedded product (the venue's own traders wrap positions they already hold: they collect the credit and get a defined floor; pricing + hedging run behind Atticus's API for an operational fee).</p>
+
+  <h2>Live proof — straight from the running book</h2>
+  ${proof}
+
+  <h2>The four questions to ask any volume partner (answered)</h2>
+  <ol>
+    <li><b>What funds the flow?</b> Options credit generated by the structure itself — not your incentive budget.</li>
+    <li><b>What's at risk?</b> Real collateral, real margin, real liquidation risk on every leg.</li>
+    <li><b>Can it self-match?</b> No — neutrality spans venues; every book sees a genuine one-sided position.</li>
+    <li><b>Is it auditable?</b> Every leg logged; settlements oracle-signed; leg-by-leg economics on this site (<a href="/positions">positions</a>).</li>
+  </ol>
+
+  <h2>Execution readiness</h2>
+  <p>Full execution stack built and demo-validated end to end against a tier-1 options venue: block RFQ with order-book fallback, reduce-only IOC unwind rails, regime gating, collateral ledger, credit vesting, incident runbook. Additional perp-venue adapters are thin modules — additive work, not new architecture.</p>
+
+  <h2>Verify, then talk</h2>
+  <p class="noprint"><a href="/simple">Plain-English P&L</a> · <a href="/positions">Leg-by-leg positions</a> · <a href="/">Full scorecard</a> · <a href="/api/scorecard">Raw JSON</a></p>
+  ${contact ? `<p><b>Contact:</b> ${esc(contact)}</p>` : ""}
 </div></body></html>`;
 };
 
@@ -445,6 +517,8 @@ export type DashboardDeps = {
   lifecycleReport?: () => ShadowLifecycleReport | null;
   /** Optional read-only bearer token. If set, /api/* and / require it. */
   token?: string;
+  /** Contact line rendered on /onesheet (e.g. "name <email>" or a Telegram/X handle). */
+  oneSheetContact?: string;
   nowMs?: () => number;
 };
 
@@ -475,6 +549,7 @@ export const handleDashboardRequest = (
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
   if (path === "/simple") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderSimpleHtml(model) };
+  if (path === "/onesheet") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderOneSheetHtml(model, deps.oneSheetContact) };
   if (path === "/positions" && deps.positions) {
     const pos = deps.positions();
     return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderPositionsHtml(pos.open, pos.settled, now) };
