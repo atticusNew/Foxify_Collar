@@ -125,7 +125,13 @@ const verdictColor = (v: ShadowAggregate["verdict"]) =>
   v === "TRACK_RECORD_CLEAN" ? "#16794a" : v === "WATCH" ? "#9a6b00" : v === "NO_DATA" ? "#0b5cab" : "#9a1b1b";
 const liveColor = (s: DashboardModel["liveness"]["state"]) => (s === "RUNNING" ? "#16794a" : s === "STARTING" ? "#0b5cab" : s === "STALE" ? "#9a6b00" : "#9a1b1b");
 
-export const renderDashboardHtml = (m: DashboardModel): string => {
+export type RenderOpts = {
+  /** Render the day-signal (directional overlay) tracker card. Default false: the overlay is retired
+   * and the tracker invites the wrong conversation on a public page. Data stays in the JSON API. */
+  showDirectionalTracker?: boolean;
+};
+
+export const renderDashboardHtml = (m: DashboardModel, opts: RenderOpts = {}): string => {
   const a = m.aggregate;
   const rows = m.recentSessions
     .map(
@@ -176,7 +182,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Reconciled", pct(a.reconciliation.allReconciledRate), `${a.reconciliation.sessionsWithDrift} w/ drift`)}
     ${card("Lifecycle complete", pct(a.lifecycleCompleteRate), "")}
     ${card("Peak exposure", `${(a.exposure.maxPeakNetExposureRatio * 100).toFixed(1)}%`, `avg ${(a.exposure.avgPeakNetExposureRatio * 100).toFixed(1)}%`)}
-    ${card("Floor used", `${(a.floor.avgFloorPctUsed * 100).toFixed(1)}%`, `max ${(a.floor.maxFloorPctUsed * 100).toFixed(1)}% (deeper = calmer regime)`)}
+    ${card("Floor used", `${(a.floor.avgFloorPctUsed * 100).toFixed(1)}%`, `max ${(a.floor.maxFloorPctUsed * 100).toFixed(1)}% · deeper floor = wider cap (6% elevated override)`)}
     ${card("Realized fee", `${a.economics.realizedServiceFeeBps} bps`, a.economics.totalServiceFeeUsdc > 0 ? `$${a.economics.totalServiceFeeUsdc} on $${a.economics.openedNotionalUsdc}` : "Atticus fee negotiated separately — not modeled")}
     ${card("Capital-aware net", `${a.capital.capitalAwareNetServiceFeeBps} bps`, `−${a.capital.capitalCostBps} bps IM drag (measured ${(a.capital.shortOptionImFraction * 100).toFixed(1)}%/notional, PM ${a.capital.portfolioMarginNettingFactor})`)}
     ${card("Credit accrued", `$${a.economics.totalCreditAccruedUsdc}`, `net to client $${a.economics.totalNetToFoxifyUsdc}`)}
@@ -228,7 +234,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
     ${card("Avg day (client net)", money(m.regime.avgDayNetUsdc), `${pct(m.regime.pctDaysPositive)} of days positive · ${m.regime.days} days`)}
     ${card("Day spread (smoothing)", `±${money(m.regime.dayNetStdUsdc)}`, `best ${money(m.regime.bestDayNetUsdc)} · worst ${money(m.regime.worstDayNetUsdc)} — staggering shrinks this`)}
     ${m.regime.gate ? card(`Regime gate: ${m.regime.gate.regime.toUpperCase()}`, m.regime.gate.regime === "calm" ? "open normally" : m.regime.gate.regime === "elevated" ? (m.regime.gate.openMultiplier === 0 ? "PAUSE (calm-only policy)" : `throttle ×${m.regime.gate.openMultiplier} + wider cap`) : "PAUSE opens", m.regime.gate.reason) : ""}
-    ${m.regime.signal ? card("Signal hit-rate (day-level)", `${(m.regime.signal.dayHitRate * 100).toFixed(0)}% over ${m.regime.signal.days}d`, `P(edge>BE ${(m.regime.signal.breakevenUsed * 100).toFixed(0)}%) = ${(m.regime.signal.pAboveBreakeven * 100).toFixed(0)}% · 95% CI ${(m.regime.signal.ci95[0] * 100).toFixed(0)}–${(m.regime.signal.ci95[1] * 100).toFixed(0)}% — measures, not validates (~600d to separate 55% from BE)`) : ""}
+    ${opts.showDirectionalTracker && m.regime.signal ? card("Signal hit-rate (day-level)", `${(m.regime.signal.dayHitRate * 100).toFixed(0)}% over ${m.regime.signal.days}d`, `P(edge>BE ${(m.regime.signal.breakevenUsed * 100).toFixed(0)}%) = ${(m.regime.signal.pAboveBreakeven * 100).toFixed(0)}% · 95% CI ${(m.regime.signal.ci95[0] * 100).toFixed(0)}–${(m.regime.signal.ci95[1] * 100).toFixed(0)}% — measures, not validates (~600d to separate 55% from BE)`) : ""}
   </div>
   <table><thead><tr><th>day</th><th>positions</th><th>realized vol</th><th>avg move</th><th>credit</th><th>collar</th><th>client net</th></tr></thead><tbody>${
           m.regime.recentDays
@@ -245,7 +251,7 @@ export const renderDashboardHtml = (m: DashboardModel): string => {
       ? `<h2>Cross-venue lifecycle (live overlay)</h2><div class="grid">
     ${card("Basis", `${m.lifecycle.basisBps} bps`, m.lifecycle.basisWithinTolerance ? "within tolerance" : "⚠️ wide — defer settle")}
     ${card("Credit vesting", `${m.lifecycle.vestProgressPct}%`, `$${m.lifecycle.vestedCreditSoFarUsdc} of $${m.lifecycle.fullCreditUsdc} accrued`)}
-    ${card("Collateral", `$${m.lifecycle.collateralAvailableUsdc}`, m.lifecycle.collateralHalted ? "⚠️ below buffer — HALT" : "available")}
+    ${card("Modeled collateral", `$${m.lifecycle.collateralAvailableUsdc}`, m.lifecycle.collateralHalted ? "⚠️ below buffer — HALT" : "available (paper; sized to the pilot facility)")}
     ${card("Barrier touches", String(m.lifecycle.barrierTouchesDetected), `gap→reserve $${m.lifecycle.gapToReserveUsdc} · →client $${m.lifecycle.gapToFoxifyUsdc}`)}
     ${m.lifecycle.lockWatcher ? card("Lock watcher", m.lifecycle.lockWatcher.touchesEvaluated === 0 ? "armed" : `${m.lifecycle.lockWatcher.locksPermitted} lock / ${m.lifecycle.lockWatcher.locksDeferred} defer`, m.lifecycle.lockWatcher.touchesEvaluated === 0 ? "no touches this cycle — early unwind permits only when leg buyback ≤ unvested credit" : m.lifecycle.lockWatcher.decisions.map((d) => `${d.ref.slice(-6)} ${d.barrier}: cost $${d.unwindCostUsdc} vs unvested $${d.unvestedCreditUsdc} → ${d.permitted ? "LOCK" : d.lockEtaMs != null ? `defer ~${(d.lockEtaMs / 3_600_000).toFixed(1)}h` : "ride to expiry"}`).join(" · ")) : ""}
   </div>`
@@ -483,6 +489,14 @@ export const renderOneSheetHtml = (m: DashboardModel, contact?: string, productB
 // what we PAID for the floor, the net credit, the synthetic perp detail, and at settlement the result
 // line (credit − forfeit − fee). The walkthrough page for partner/counterparty conversations.
 
+/** "okx_model" → "OKX (model)" etc. — internal venue codes read poorly on a public page. */
+const prettyVenue = (v: string | undefined): string => {
+  if (!v) return "synthetic";
+  const [name, ...rest] = v.split("_");
+  const brand = { okx: "OKX", g20: "G-20", bullish: "Bullish", deribit: "Deribit", falconx: "FalconX" }[name.toLowerCase()] ?? name;
+  return rest.length ? `${brand} (${rest.join(" ")})` : brand;
+};
+
 export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOutcome[], nowMs: number, maxSettled = 20): string => {
   const pctOf = (strike: number, entry: number) => `${(((strike - entry) / entry) * 100).toFixed(1)}%`;
   const m$ = (x: number | undefined) => (x == null ? "—" : `${x < 0 ? "−" : ""}$${Math.abs(x).toLocaleString("en-US", { maximumFractionDigits: 2 })}`);
@@ -495,7 +509,7 @@ export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOut
       const floorStrike = p.side === "long" ? p.putStrike : p.callStrike;
       const hrsLeft = Math.max(0, (p.expiresAtMs - nowMs) / 3_600_000).toFixed(1);
       return `<tr>
-        <td>${esc(p.ref.slice(-8))}</td><td>${p.side.toUpperCase()} (perp: ${esc(p.venue ?? "synthetic")})</td>
+        <td>${esc(p.ref.slice(-8))}</td><td>${p.side.toUpperCase()} (perp: ${esc(prettyVenue(p.venue))})</td>
         <td>$${p.spotAtEntry.toLocaleString("en-US", { maximumFractionDigits: 0 })}<br><span class="muted">${dt(p.openedAtMs)}</span></td>
         <td>$${capStrike.toLocaleString("en-US", { maximumFractionDigits: 0 })} <span class="muted">(${pctOf(capStrike, p.spotAtEntry)})</span></td>
         <td>$${floorStrike.toLocaleString("en-US", { maximumFractionDigits: 0 })} <span class="muted">(${pctOf(floorStrike, p.spotAtEntry)})</span></td>
@@ -514,7 +528,7 @@ export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOut
       const breach = o.capBreached ? "CAP hit (gave back)" : o.floorBreached ? "FLOOR hit (protected)" : "no breach";
       const result = o.foxifyCreditUsdc + o.payoutToFoxifyUsdc;
       return `<tr>
-        <td>${esc(o.ref.slice(-8))}</td><td>${o.side.toUpperCase()} (${esc(o.venue ?? "synthetic")})</td>
+        <td>${esc(o.ref.slice(-8))}</td><td>${o.side.toUpperCase()} (${esc(prettyVenue(o.venue))})</td>
         <td>$${o.spotAtEntry.toLocaleString("en-US", { maximumFractionDigits: 0 })} → $${o.settlePriceUsd.toLocaleString("en-US", { maximumFractionDigits: 0 })}<br><span class="muted">${(o.movePct * 100).toFixed(2)}% · ${(o.heldMs / 3_600_000).toFixed(1)}h</span></td>
         <td>${m$(o.fundingLegPremiumUsdc)}</td><td>${m$(o.protectiveLegPremiumUsdc)}</td>
         <td>${m$(o.optionFeesUsdc)}</td>
@@ -579,6 +593,8 @@ export type DashboardDeps = {
   oneSheetContact?: string;
   /** Strategy-switch timestamp (ms): /onesheet segments positions opened at/after it as the "product book". */
   productBookSinceMs?: number;
+  /** Render the retired directional-overlay tracker card on the advanced page. Default false. */
+  showDirectionalTracker?: boolean;
   nowMs?: () => number;
 };
 
@@ -623,7 +639,7 @@ export const handleDashboardRequest = (
   const regime = deps.regimeStats ? deps.regimeStats(feeOverride) : null;
   const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, client, regime);
 
-  if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
+  if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model, { showDirectionalTracker: deps.showDirectionalTracker }) };
   if (path === "/simple") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderSimpleHtml(model) };
   if (path === "/onesheet") {
     const pb = deps.productBookSinceMs != null && deps.positions ? computeProductBook(deps.positions(), deps.productBookSinceMs) : null;

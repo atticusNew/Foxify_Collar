@@ -129,6 +129,19 @@ test("onesheet: product-book segmentation counts only positions opened after the
   assert.ok(!/foxify/i.test(r.body));
 });
 
+test("directional tracker card: hidden by default, rendered only with the opt-in flag", () => {
+  const regime = {
+    settledPositions: 10, days: 5, realizedDailyVolPct: 1.1, realizedAnnualVolPct: 21, avgAbsMovePct: 0.009,
+    avgDayNetUsdc: 50, bestDayNetUsdc: 400, worstDayNetUsdc: -300, dayNetStdUsdc: 200, pctDaysPositive: 0.6,
+    cumulativeCreditUsdc: 500, cumulativeCollarUsdc: -100, cumulativeFeesUsdc: 0, cumulativeNetUsdc: 400,
+    creditClearsBleed: true, recentDays: [],
+    signal: { days: 8, correctDays: 5, dayHitRate: 0.625, posteriorMean: 0.6, breakevenUsed: 0.52, pAboveBreakeven: 0.7, ci95: [0.3, 0.86] }
+  } as unknown as Parameters<typeof buildDashboardModel>[7];
+  const model = buildDashboardModel([rec(NOW - 30_000)], status(), NOW, {}, null, null, null, regime);
+  assert.ok(!renderDashboardHtml(model).includes("Signal hit-rate"), "tracker hidden by default");
+  assert.ok(renderDashboardHtml(model, { showDirectionalTracker: true }).includes("Signal hit-rate"), "tracker rendered with flag");
+});
+
 test("public JSON: api responses scrub partner-named keys and the legacy alias is gone", () => {
   const settled = [{
     ref: "cc-1", side: "long" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, settlePriceUsd: 60_100, movePct: 0.0017,
@@ -171,7 +184,7 @@ test("positions view renders open + settled with leg premiums and plain-words fi
   }];
   const html = renderPositionsHtml(open, settled, NOW);
   assert.ok(html.includes("SOLD cap for") && html.includes("PAID for floor"));
-  assert.ok(html.includes("g20_quote") && html.includes("okx_model"));
+  assert.ok(html.includes("G-20 (quote)") && html.includes("OKX (model)"), "internal venue codes are prettified");
   assert.ok(html.includes("quoted") && html.includes("vs model"));
   assert.ok(/no breach/.test(html));
 });
