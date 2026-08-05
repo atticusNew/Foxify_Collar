@@ -41,7 +41,7 @@ test("dashboard model: surfaces aggregate verdict + recent sessions", () => {
 
 test("dashboard HTML renders and shows RUNNING + verdict", () => {
   const html = renderDashboardHtml(buildDashboardModel([rec(NOW - 30_000)], status(), NOW));
-  assert.ok(html.includes("Credit-Collar Tier-0 Shadow"));
+  assert.ok(html.includes("Atticus Volume Facility — Shadow Pilot"));
   assert.ok(html.includes("RUNNING"));
   assert.ok(/verdict/i.test(html));
   assert.ok(html.includes("/api/scorecard"));
@@ -57,7 +57,8 @@ test("simple view: renders plain-English P&L and cross-links the advanced view",
   const model = buildDashboardModel([rec(NOW - 30_000)], status(), NOW, {}, settlement);
   const html = renderSimpleHtml(model);
   assert.ok(html.includes("Simple P&L"));
-  assert.ok(/Foxify COLLECTS/i.test(html));
+  assert.ok(/Client COLLECTS/i.test(html));
+  assert.ok(!/foxify/i.test(html), "rendered pages must not name the former partner");
   assert.ok(/Atticus FLAT/i.test(html));
   assert.ok(html.includes("Advanced view"));
 });
