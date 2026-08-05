@@ -1,6 +1,6 @@
 # Atticus — Self-Funding Volume Facility
 
-*One-pager for venues and strategic capital · numbers as of the 17-day shadow window ending 2026-08-05 · live dashboard supersedes this snapshot*
+*One-pager for venues and strategic capital. **The canonical version is live at `/onesheet` on the shadow dashboard** — numbers there are computed from the running book and never go stale. This file is the source copy; the table below is a snapshot (17-day window ending 2026-08-05) kept only for reference.*
 
 ## What it is
 
@@ -22,13 +22,13 @@ Exchanges buy volume today with emissions and rebates, and the flow evaporates w
 | Notional traded | $2.1M opened · 38 positions settled (2/day, $50k max) |
 | Structure net (the product) | **+$1,357** — credit $1,789 − cap givebacks $432 |
 | Client net, all-in | +$1,329 (+7.0 bps) · 65% of days positive |
-| Worst day | −$2,111 (partner-era directional overlay) — recovered over the following sessions |
+| Worst day | −$2,111 — recovered over the following sessions |
 | Risk events | 0 floor breaches · 2 cap touches (5.3%) · 0 halts · 0 manual interventions |
 | Integrity | 100% oracle-signed settlements · 100% reconciled · verdict TRACK_RECORD_CLEAN |
 | Platform take at zero fee | −$7 (pass-through proven — revenue is the op fee, 2–3 bps at scale) |
 | Capital efficiency | $6.84 total capital cost on $1.9M traded (portfolio-margin netted) |
 
-The early window also carried a partner-era directional overlay (the client called market direction on elevated days); over 17 days it round-tripped to approximately zero and it has been retired — the facility now runs the neutral-pair book only, which is the product. The structure line above is the product's own economics: options credit clearing givebacks through both calm and elevated regimes, including the worst day on record.
+The validation window also exercised a directional overlay; it netted approximately zero over the window and has been retired — the facility runs the neutral-pair book only, which is the product. The structure line above is the product's own economics: options credit clearing givebacks through both calm and elevated regimes, including the worst day on record.
 
 Risk automation is live in the same tape: a regime gate (trailing + live signal with hysteresis) throttles or pauses opens in elevated conditions, and a lock-watcher permits early unwinds only when the hedge buyback cost is at or below unvested credit ("never underwater").
 
