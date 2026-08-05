@@ -87,6 +87,48 @@ test("onesheet: renders live proof from the model, includes contact, never names
   assert.ok(!/foxify/i.test(r.body), "onesheet must never name the former partner");
 });
 
+test("onesheet: product-book segmentation counts only positions opened after the switch", async () => {
+  const { computeProductBook } = await import("../src/singleSide/twoSided/creditCollar/shadowDashboard");
+  const SWITCH = NOW - 24 * 3_600_000;
+  const settledBase = {
+    notionalUsdc: 50_000, spotAtEntry: 60_000, settlePriceUsd: 60_100, movePct: 0.0017, putIntrinsicUsd: 0, callIntrinsicUsd: 0,
+    netToFoxifyUsdc: 0, serviceFeeUsdc: 0, floorBreached: false, oracleVerified: true, heldMs: 24 * 3_600_000,
+    hedgeReceiptUsdc: 0, atticusOptionNetUsdc: 0, shortLegMarginUsdc: 500, capitalCostUsdc: 0.2, optionFeesUsdc: 8,
+    atticusNetAfterCapitalUsdc: 0, atticusNetAfterFeesAndCapitalUsdc: 0, fundingLegPremiumUsdc: 100, protectiveLegPremiumUsdc: 30
+  };
+  const settled = [
+    // pre-switch (old strategy): must be EXCLUDED from the product book
+    { ...settledBase, ref: "old-1", side: "short" as const, openedAtMs: SWITCH - 3_600_000, settledAtMs: SWITCH + 20 * 3_600_000, payoutToFoxifyUsdc: -300, foxifyCreditUsdc: 80, capBreached: true },
+    // post-switch pair: INCLUDED
+    { ...settledBase, ref: "new-1", side: "long" as const, openedAtMs: SWITCH + 3_600_000, settledAtMs: NOW - 60_000, payoutToFoxifyUsdc: 0, foxifyCreditUsdc: 40, capBreached: false },
+    { ...settledBase, ref: "new-2", side: "short" as const, openedAtMs: SWITCH + 3_600_000, settledAtMs: NOW - 60_000, payoutToFoxifyUsdc: -10, foxifyCreditUsdc: 40, capBreached: true }
+  ];
+  const open = [
+    { ref: "open-old", side: "long" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, putStrike: 56_400, callStrike: 61_250, foxifyCreditUsdc: 50, serviceFeeUsdc: 0, floorPctUsed: 0.06, openedAtMs: SWITCH - 7_200_000, expiresAtMs: NOW + 3_600_000 },
+    { ref: "open-new", side: "short" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, putStrike: 61_250, callStrike: 56_400, foxifyCreditUsdc: 60, serviceFeeUsdc: 0, floorPctUsed: 0.06, openedAtMs: SWITCH + 7_200_000, expiresAtMs: NOW + 3_600_000 }
+  ];
+  const pb = computeProductBook({ open: open as never, settled: settled as never }, SWITCH);
+  assert.equal(pb.settled, 2, "only post-switch settles");
+  assert.equal(pb.creditUsdc, 80);
+  assert.equal(pb.collarNetUsdc, -10);
+  assert.equal(pb.structureNetUsdc, 70);
+  assert.equal(pb.capTouched, 1, "pre-switch cap breach excluded");
+  assert.equal(pb.openPositions, 1, "only post-switch opens");
+  assert.equal(pb.openFullCreditUsdc, 60);
+
+  // Route: segmented section renders when productBookSinceMs is set
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    positions: () => ({ open: open as never, settled: settled as never }),
+    productBookSinceMs: SWITCH
+  };
+  const r = handleDashboardRequest({ method: "GET", path: "/onesheet" }, deps);
+  assert.ok(r.body.includes("Current product book — neutral pairs only"));
+  assert.ok(!/foxify/i.test(r.body));
+});
+
 test("positions view renders open + settled with leg premiums and plain-words fields", async () => {
   const { renderPositionsHtml } = await import("../src/singleSide/twoSided/creditCollar/shadowDashboard");
   const open = [{

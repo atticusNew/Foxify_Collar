@@ -353,12 +353,69 @@ export const renderSimpleHtml = (m: DashboardModel): string => {
 // same model as the scorecard, so the "one-pager" sent to venues/investors can never go stale.
 // Print-friendly (light @media print styles) so a PDF snapshot is one Cmd+P away when an attachment
 // is required. Contact line is injected via deps (SHADOW_CONTACT env) — never hardcoded.
+//
+// SEGMENTATION (SHADOW_PRODUCT_BOOK_SINCE): the shadow's history is one continuous tape, but the
+// opening strategy switched to the product book (neutral pairs only) mid-tape. Rather than deleting
+// pre-switch history — which would zero the lifetime-integrity odometer and look like tape curation —
+// the one-sheet segments: "current product book" (positions OPENED after the switch) front and center,
+// full-window results + lifetime integrity underneath. Nothing is removed; the layers are labeled.
 
-export const renderOneSheetHtml = (m: DashboardModel, contact?: string): string => {
+/** Product-book slice: positions opened at/after the strategy-switch timestamp. */
+export type ProductBookStats = {
+  sinceIso: string;
+  settled: number;
+  notionalUsdc: number;
+  creditUsdc: number;
+  collarNetUsdc: number; // settled payout sum: negative = cap givebacks, positive = floor protection
+  structureNetUsdc: number; // credit + collar payout
+  capTouched: number;
+  floorBreached: number;
+  openPositions: number;
+  openFullCreditUsdc: number;
+};
+
+export const computeProductBook = (pos: { open: OpenPosition[]; settled: SettlementOutcome[] }, sinceMs: number): ProductBookStats => {
+  const settled = pos.settled.filter((o) => o.openedAtMs >= sinceMs);
+  const open = pos.open.filter((p) => p.openedAtMs >= sinceMs);
+  const credit = settled.reduce((s, o) => s + o.foxifyCreditUsdc, 0);
+  const collar = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
+  return {
+    sinceIso: new Date(sinceMs).toISOString().slice(0, 10),
+    settled: settled.length,
+    notionalUsdc: settled.reduce((s, o) => s + o.notionalUsdc, 0),
+    creditUsdc: +credit.toFixed(2),
+    collarNetUsdc: +collar.toFixed(2),
+    structureNetUsdc: +(credit + collar).toFixed(2),
+    capTouched: settled.filter((o) => o.capBreached).length,
+    floorBreached: settled.filter((o) => o.floorBreached).length,
+    openPositions: open.length,
+    openFullCreditUsdc: +open.reduce((s, p) => s + p.foxifyCreditUsdc, 0).toFixed(2)
+  };
+};
+
+export const renderOneSheetHtml = (m: DashboardModel, contact?: string, productBook?: ProductBookStats | null): string => {
   const s = m.settlement;
   const c = m.client;
   const card = (label: string, value: string, sub = "") =>
     `<div class="card"><div class="k">${esc(label)}</div><div class="v">${value}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</div>`;
+
+  const pb = productBook;
+  const productBookSection = !pb
+    ? ""
+    : `<h2>Current product book — neutral pairs only (since ${esc(pb.sinceIso)})</h2>
+  ${
+    pb.settled === 0
+      ? `<div class="grid">
+    ${card("Open now", `${pb.openPositions} positions`, `${money(pb.openFullCreditUsdc)} credit vesting · first settles land within 24h of open (24h tenor)`)}
+  </div>
+  <p class="muted" style="margin:4px 0 0">The product book is young by design — it accrues below in real time. Full-window results and lifetime integrity follow.</p>`
+      : `<div class="grid">
+    ${card("Settled", `${pb.settled} positions`, `$${pb.notionalUsdc.toLocaleString("en-US")} notional`)}
+    ${card("Structure net", money(pb.structureNetUsdc), `credit ${money(pb.creditUsdc)} ${pb.collarNetUsdc < 0 ? "−" : "+"} collar ${money(Math.abs(pb.collarNetUsdc))}`)}
+    ${card("Risk events", `${pb.floorBreached} floor · ${pb.capTouched} cap`, "breaches / touches in the product book")}
+    ${card("Open now", `${pb.openPositions} positions`, `${money(pb.openFullCreditUsdc)} credit vesting`)}
+  </div>`
+  }`;
 
   const proof =
     !s || s.settledPositions === 0
@@ -400,7 +457,8 @@ export const renderOneSheetHtml = (m: DashboardModel, contact?: string): string 
   <p>Atticus generates <b>real, delta-hedged perp volume whose costs are paid by options credit — not incentive budgets</b>. Each position is a genuine, collateralized perp leg on a venue, wrapped in a short-tenor asymmetric collar hedged on an options venue. The collar's net credit covers fees, funding, and slippage, so the flow has its own economic engine and doesn't leave when a rewards program ends.</p>
   <p><b>Two lanes:</b> principal flow (Atticus opens the positions — portfolio-level neutral, always one-sided per venue: the pair spans two venues, so the facility is structurally incapable of self-matching on any single book) · a venue-embedded product (the venue's own traders wrap positions they already hold: they collect the credit and get a defined floor; pricing + hedging run behind Atticus's API for an operational fee).</p>
 
-  <h2>Live proof — straight from the running book</h2>
+  ${productBookSection}
+  <h2>${pb ? "Full-window results + lifetime integrity" : "Live proof — straight from the running book"}</h2>
   ${proof}
 
   <h2>The four questions to ask any volume partner (answered)</h2>
@@ -519,6 +577,8 @@ export type DashboardDeps = {
   token?: string;
   /** Contact line rendered on /onesheet (e.g. "name <email>" or a Telegram/X handle). */
   oneSheetContact?: string;
+  /** Strategy-switch timestamp (ms): /onesheet segments positions opened at/after it as the "product book". */
+  productBookSinceMs?: number;
   nowMs?: () => number;
 };
 
@@ -549,7 +609,10 @@ export const handleDashboardRequest = (
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model) };
   if (path === "/simple") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderSimpleHtml(model) };
-  if (path === "/onesheet") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderOneSheetHtml(model, deps.oneSheetContact) };
+  if (path === "/onesheet") {
+    const pb = deps.productBookSinceMs != null && deps.positions ? computeProductBook(deps.positions(), deps.productBookSinceMs) : null;
+    return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderOneSheetHtml(model, deps.oneSheetContact, pb) };
+  }
   if (path === "/positions" && deps.positions) {
     const pos = deps.positions();
     return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderPositionsHtml(pos.open, pos.settled, now) };
