@@ -140,13 +140,18 @@ export const buildFoxifyView = (outcomes: SettlementOutcome[], cfg: FoxifyViewCo
   const venues = cfg.venues && cfg.venues.length > 0 ? cfg.venues : DEFAULT_VENUES;
   const nv = venues.length;
 
-  // Per-side round-robin: long #i → venues[i], short #i → venues[i+1] ⟹ a matched pair's legs differ (nv≥2).
-  let li = 0;
-  let si = 0;
+  // Venue per leg is a deterministic function of the OPEN timestamp: a pair's two legs share
+  // `openedAtMs`, so long → venues[rank], short → venues[rank+1] guarantees the legs land on
+  // DIFFERENT venues (nv≥2) — the product's cross-venue rule (never self-match on one book).
+  // (The previous per-side counters desynchronized whenever the long/short counts diverged —
+  // e.g. the retired directional singles — and same-venue "pairs" leaked into the display.)
+  const openTimes = [...new Set(outcomes.map((o) => o.openedAtMs))].sort((a, b) => a - b);
+  const rankByOpen = new Map(openTimes.map((t, i) => [t, i]));
 
   const rows: FoxifyPositionRow[] = outcomes.map((o) => {
     const isLong = o.side === "long";
-    const venue = isLong ? venues[li++ % nv] : venues[(si++ + 1) % nv];
+    const rank = rankByOpen.get(o.openedAtMs) ?? 0;
+    const venue = isLong ? venues[rank % nv] : venues[(rank + 1) % nv];
 
     const entryPrice = o.spotAtEntry * (1 + (venue.entryBasisBps ?? 0) / 1e4);
     const exitPrice = o.settlePriceUsd * (1 + (venue.exitBasisBps ?? 0) / 1e4);
