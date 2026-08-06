@@ -39,13 +39,14 @@ test("pair legs land on different venues even after unbalanced singles (producti
   // The retired directional era left more longs than shorts; the old per-side counters
   // desynchronized and same-venue "pairs" leaked into the public display. Reproduce: three
   // long singles at distinct open times, then a matched pair sharing one open time.
-  const T = NOW - 48 * 3_600_000;
+  const T = NOW - 96 * 3_600_000;
+  const H = 3_600_000;
   const outcomes = [
-    outcome({ ref: "s1", side: "long", openedAtMs: T + 1_000 }),
-    outcome({ ref: "s2", side: "long", openedAtMs: T + 2_000 }),
-    outcome({ ref: "s3", side: "long", openedAtMs: T + 3_000 }),
-    outcome({ ref: "p-long", side: "long", openedAtMs: T + 10_000 }),
-    outcome({ ref: "p-short", side: "short", openedAtMs: T + 10_000 })
+    outcome({ ref: "s1", side: "long", openedAtMs: T + 1 * H }),
+    outcome({ ref: "s2", side: "long", openedAtMs: T + 13 * H }),
+    outcome({ ref: "s3", side: "long", openedAtMs: T + 25 * H }),
+    outcome({ ref: "p-long", side: "long", openedAtMs: T + 48 * H }),
+    outcome({ ref: "p-short", side: "short", openedAtMs: T + 48 * H })
   ];
   const view = buildFoxifyView(outcomes, { recentPairs: 10 });
   const pair = view.recentPairs.find((p) => p.long?.ref === "p-long");
