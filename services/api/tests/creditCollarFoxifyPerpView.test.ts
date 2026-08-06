@@ -35,6 +35,25 @@ const outcome = (over: Partial<SettlementOutcome> = {}): SettlementOutcome => ({
   ...over
 });
 
+test("pair legs land on different venues even after unbalanced singles (production regression)", () => {
+  // The retired directional era left more longs than shorts; the old per-side counters
+  // desynchronized and same-venue "pairs" leaked into the public display. Reproduce: three
+  // long singles at distinct open times, then a matched pair sharing one open time.
+  const T = NOW - 96 * 3_600_000;
+  const H = 3_600_000;
+  const outcomes = [
+    outcome({ ref: "s1", side: "long", openedAtMs: T + 1 * H }),
+    outcome({ ref: "s2", side: "long", openedAtMs: T + 13 * H }),
+    outcome({ ref: "s3", side: "long", openedAtMs: T + 25 * H }),
+    outcome({ ref: "p-long", side: "long", openedAtMs: T + 48 * H }),
+    outcome({ ref: "p-short", side: "short", openedAtMs: T + 48 * H })
+  ];
+  const view = buildFoxifyView(outcomes, { recentPairs: 10 });
+  const pair = view.recentPairs.find((p) => p.long?.ref === "p-long");
+  assert.ok(pair?.long && pair?.short, "pair is matched");
+  assert.notEqual(pair.long.venue, pair.short.venue, "pair legs must sit on DIFFERENT venues regardless of history");
+});
+
 test("perp P&L is signed by side: long gains on up-move, short gains on down-move", () => {
   const up = { settlePriceUsd: 101_000, movePct: 0.01 };
   // +1% on $50k = +$500 for the long, −$500 for the short
@@ -147,7 +166,9 @@ test("default venues label legs without changing the numbers (oracle-mirror base
   // No funding/basis configured ⟹ funding 0 and perp P&L is still the exact mirror.
   assert.equal(view.netFundingUsdc, 0);
   assert.ok(Math.abs(view.netPerpPnlUsdc) < 1e-6);
-  // Legs land on different venues (the two perps on different exchanges).
+  // Legs land on different venues (the two perps on different exchanges) — the invariant that
+  // guards the product's "never self-match on one book" rule, now timestamp-derived so it can't
+  // drift when long/short counts diverge.
   const long = view.recentPairs[0].long!;
   const short = view.recentPairs[0].short!;
   assert.ok(long.venue.length > 0 && short.venue.length > 0);
