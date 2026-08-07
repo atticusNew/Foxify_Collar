@@ -10,6 +10,7 @@ import type { SettlementAggregate, OpenPosition, SettlementOutcome } from "./for
 import type { ShadowLifecycleReport } from "./lifecycleShadow";
 import type { FoxifyView } from "./foxifyPerpView";
 import type { RegimeStats } from "./regimeStats";
+import type { PrincipalPairRecord } from "./execution/principalPairRunner";
 
 /** In-process liveness reported by the running shadow loop. */
 export type ShadowLiveStatus = {
@@ -40,6 +41,8 @@ export type DashboardModel = {
   client: FoxifyView | null;
   regime: RegimeStats | null;
   lifecycle: ShadowLifecycleReport | null;
+  /** Principal book — Atticus's OWN live-capital pairs (real venue legs + disclosed paper stand-ins). */
+  principal: PrincipalPairRecord[] | null;
   recentSessions: Array<{
     tsIso: string;
     opened: number;
@@ -65,7 +68,8 @@ export const buildDashboardModel = (
   settlement: SettlementAggregate | null = null,
   lifecycle: ShadowLifecycleReport | null = null,
   client: FoxifyView | null = null,
-  regime: RegimeStats | null = null
+  regime: RegimeStats | null = null,
+  principal: PrincipalPairRecord[] | null = null
 ): DashboardModel => {
   const aggregate = aggregateShadowScorecards(records, aggCfg);
   const lastRunAgoMs = status.lastRunAtMs != null ? nowMs - status.lastRunAtMs : null;
@@ -112,6 +116,7 @@ export const buildDashboardModel = (
     client,
     regime,
     lifecycle,
+    principal,
     recentSessions: recent,
     generatedAtIso: new Date(nowMs).toISOString()
   };
@@ -255,6 +260,29 @@ export const renderDashboardHtml = (m: DashboardModel, opts: RenderOpts = {}): s
     ${card("Barrier touches", String(m.lifecycle.barrierTouchesDetected), `gap→reserve $${m.lifecycle.gapToReserveUsdc} · →client $${m.lifecycle.gapToFoxifyUsdc}`)}
     ${m.lifecycle.lockWatcher ? card("Lock watcher", m.lifecycle.lockWatcher.touchesEvaluated === 0 ? "armed" : `${m.lifecycle.lockWatcher.locksPermitted} lock / ${m.lifecycle.lockWatcher.locksDeferred} defer`, m.lifecycle.lockWatcher.touchesEvaluated === 0 ? "no touches this cycle — early unwind permits only when leg buyback ≤ unvested credit" : m.lifecycle.lockWatcher.decisions.map((d) => `${d.ref.slice(-6)} ${d.barrier}: cost $${d.unwindCostUsdc} vs unvested $${d.unvestedCreditUsdc} → ${d.permitted ? "LOCK" : d.lockEtaMs != null ? `defer ~${(d.lockEtaMs / 3_600_000).toFixed(1)}h` : "ride to expiry"}`).join(" · ")) : ""}
   </div>`
+      : ""
+  }
+  ${
+    m.principal && m.principal.length > 0
+      ? `<h2>Principal book — LIVE CAPITAL (micro scale)</h2>
+  <p class="muted" style="margin:2px 0 6px">Atticus's own positions through the same execution stack that runs this page. Legs marked PAPER are the disclosed stand-in for the next venue adapter — never counted as real. Real legs are verifiable on the venue itself.</p>
+  <table><thead><tr><th>ref</th><th>status</th><th>opened</th><th>leg</th><th>venue</th><th>size</th><th>entry</th><th>close</th><th>leg P&L</th></tr></thead><tbody>${m.principal
+        .sort((a, b) => b.openedAtMs - a.openedAtMs)
+        .flatMap((p) =>
+          [p.long, p.short]
+            .filter((l): l is NonNullable<typeof l> => l != null)
+            .map((l) => {
+              const isPaper = l.venue.startsWith("paper");
+              const closeFill = l.side === "long" ? p.closeLong : p.closeShort;
+              const closePx = closeFill?.avgPx ?? null;
+              const pnl =
+                closePx != null && l.avgPx != null
+                  ? ((l.side === "long" ? closePx - l.avgPx : l.avgPx - closePx) * l.sz).toFixed(2)
+                  : null;
+              return `<tr><td>${esc(p.ref.slice(-8))}</td><td>${esc(p.status.replace(/_/g, " "))}</td><td>${esc(new Date(p.openedAtMs).toISOString().slice(0, 16).replace("T", " "))}Z</td><td>${l.side.toUpperCase()}</td><td>${esc(l.venue)} · <b>${isPaper ? "PAPER" : "REAL"}</b></td><td>${l.sz} ${esc(p.coin)}</td><td>${l.avgPx != null ? `$${l.avgPx.toLocaleString("en-US")}` : "—"}</td><td>${closePx != null ? `$${closePx.toLocaleString("en-US")}` : "—"}</td><td>${pnl != null ? `$${pnl}` : "—"}</td></tr>`;
+            })
+        )
+        .join("")}</tbody></table>`
       : ""
   }
   <h2>Flags</h2>${flags}
@@ -464,6 +492,15 @@ export const renderOneSheetHtml = (m: DashboardModel, contact?: string, productB
   <p><b>Two lanes:</b> principal flow (Atticus opens the positions — portfolio-level neutral, always one-sided per venue: the pair spans two venues, so the facility is structurally incapable of self-matching on any single book) · a venue-embedded product (the venue's own traders wrap positions they already hold: they collect the credit and get a defined floor; pricing + hedging run behind Atticus's API for an operational fee).</p>
 
   ${productBookSection}
+  ${
+    m.principal && m.principal.length > 0
+      ? `<div class="grid">${card(
+          "Live capital — principal book",
+          `${m.principal.reduce((n, p) => n + [p.long, p.short].filter((l) => l && !l.venue.startsWith("paper")).length, 0)} real leg(s)`,
+          "our own positions through the same stack · paper stand-ins disclosed · leg-by-leg on the dashboard"
+        )}</div>`
+      : ""
+  }
   <h2>${pb ? "Full-window results + lifetime integrity" : "Live proof — straight from the running book"}</h2>
   ${proof}
 
@@ -595,6 +632,8 @@ export type DashboardDeps = {
   productBookSinceMs?: number;
   /** Render the retired directional-overlay tracker card on the advanced page. Default false. */
   showDirectionalTracker?: boolean;
+  /** Principal book (live-capital pairs) — rendered on / and /onesheet when non-empty. */
+  principalPairs?: () => PrincipalPairRecord[];
   nowMs?: () => number;
 };
 
@@ -637,7 +676,8 @@ export const handleDashboardRequest = (
   const lifecycle = deps.lifecycleReport ? deps.lifecycleReport() : null;
   const client = deps.foxifyView ? deps.foxifyView(feeOverride) : null;
   const regime = deps.regimeStats ? deps.regimeStats(feeOverride) : null;
-  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, client, regime);
+  const principal = deps.principalPairs ? deps.principalPairs() : null;
+  const model = buildDashboardModel(deps.loadRecords(), deps.liveStatus(), now, deps.aggregateConfig, settlement, lifecycle, client, regime, principal);
 
   if (path === "/" || path === "") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderDashboardHtml(model, { showDirectionalTracker: deps.showDirectionalTracker }) };
   if (path === "/simple") return { statusCode: 200, contentType: "text/html; charset=utf-8", body: renderSimpleHtml(model) };
@@ -655,6 +695,7 @@ export const handleDashboardRequest = (
   if (path === "/api/scorecard") return { statusCode: 200, contentType: "application/json", body: toPublicJson(model) };
   if (path === "/api/settlements") return { statusCode: 200, contentType: "application/json", body: toPublicJson(settlement ?? { settledPositions: 0 }) };
   if (path === "/api/client") return { statusCode: 200, contentType: "application/json", body: toPublicJson(client ?? { settledPositions: 0 }) };
+  if (path === "/api/principal") return { statusCode: 200, contentType: "application/json", body: toPublicJson(principal ?? []) };
   if (path === "/api/regime") return { statusCode: 200, contentType: "application/json", body: toPublicJson(regime ?? { settledPositions: 0 }) };
   if (path === "/api/health") {
     return { statusCode: model.running ? 200 : 503, contentType: "application/json", body: JSON.stringify({ running: model.running, liveness: model.liveness, sessions: model.aggregate.sessions, verdict: model.aggregate.verdict }, null, 2) };

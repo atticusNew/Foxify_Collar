@@ -51,6 +51,9 @@ services:
         value: "2026-08-05T04:30:00Z"  # strategy-switch timestamp: /onesheet segments positions
                                        # opened after this as the "current product book" (nothing
                                        # pre-switch is deleted; lifetime integrity stays intact)
+      - key: PRINCIPAL_PAIRS_PATH
+        value: /var/data/principal-pairs.jsonl  # principal book (LIVE capital) ledger — written by
+                                                # the principal-pair CLI, rendered on / and /onesheet
 
       # ── Pilot terms (same as the neutral mirror) ──
       - key: SHADOW_HEDGE_VENUE

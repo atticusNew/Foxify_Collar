@@ -142,6 +142,44 @@ test("directional tracker card: hidden by default, rendered only with the opt-in
   assert.ok(renderDashboardHtml(model, { showDirectionalTracker: true }).includes("Signal hit-rate"), "tracker rendered with flag");
 });
 
+test("principal book: renders REAL/PAPER legs + P&L on / and the live-capital card on /onesheet; hidden when empty; /api/principal serves it", () => {
+  const principal = [{
+    ref: "pp-1786140888829",
+    coin: "BTC",
+    notionalUsdcPerLeg: 12,
+    openedAtMs: NOW - 3_600_000,
+    status: "closed" as const,
+    long: { venue: "hyperliquid", side: "long" as const, sz: 0.00018, avgPx: 64_893, oid: 7 },
+    short: { venue: "paper2", side: "short" as const, sz: 0.00018, avgPx: 64_568.04, oid: "paper-1" },
+    closedAtMs: NOW,
+    closeLong: { status: "filled" as const, requestedSz: 0.00018, filledSz: 0.00018, avgPx: 65_100, oid: 8 },
+    closeShort: { status: "filled" as const, requestedSz: 0.00018, filledSz: 0.00018, avgPx: 65_150, oid: "paper-2" },
+    notes: ["live pair"]
+  }];
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    principalPairs: () => principal as never
+  };
+  const page = handleDashboardRequest({ method: "GET", path: "/" }, deps);
+  assert.ok(page.body.includes("Principal book — LIVE CAPITAL"));
+  assert.ok(page.body.includes("hyperliquid") && page.body.includes("REAL"));
+  assert.ok(page.body.includes("paper2") && page.body.includes("PAPER"));
+  assert.ok(!/foxify/i.test(page.body));
+
+  const onesheet = handleDashboardRequest({ method: "GET", path: "/onesheet" }, deps);
+  assert.ok(onesheet.body.includes("Live capital — principal book"));
+  assert.ok(onesheet.body.includes("1 real leg(s)"), "paper legs are not counted as real");
+
+  const api = handleDashboardRequest({ method: "GET", path: "/api/principal" }, deps);
+  assert.equal(api.statusCode, 200);
+  assert.ok(api.body.includes("pp-1786140888829"));
+
+  const emptyDeps = { ...deps, principalPairs: () => [] as never };
+  assert.ok(!handleDashboardRequest({ method: "GET", path: "/" }, emptyDeps).body.includes("Principal book"), "section hidden when ledger empty");
+});
+
 test("public JSON: api responses scrub partner-named keys and the legacy alias is gone", () => {
   const settled = [{
     ref: "cc-1", side: "long" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, settlePriceUsd: 60_100, movePct: 0.0017,
