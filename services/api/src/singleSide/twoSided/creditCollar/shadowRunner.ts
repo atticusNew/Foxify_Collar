@@ -195,6 +195,14 @@ export const runShadowSession = (deps: ShadowSessionDeps): ShadowScorecard => {
 
 // ── Live wrapper: assemble shadow inputs from live public quotes + the multi-source oracle ────────
 
+/** Venue-user flow simulation bounds (integration mode). */
+export type ClientFlowConfig = {
+  minPerDay: number;
+  maxPerDay: number;
+  minNotionalUsdc: number;
+  maxNotionalUsdc: number;
+};
+
 export type LiveShadowConfig = {
   positionNotionalUsdc: number;
   feeUsdc: number;
@@ -225,6 +233,14 @@ export type LiveShadowConfig = {
    * behavior (`nPositions` per cycle) is used.
    */
   dailyPositions?: number;
+  /**
+   * INTEGRATION-MODE simulation: venue-USER flow instead of our own pair cadence. Random arrivals per UTC
+   * day (deterministic roll in [minPerDay, maxPerDay]), random side and notional per open (singles — venue
+   * users don't arrive in matched pairs). Produces the EMBEDDED-PRODUCT tape (the "one-toggle credit" lane)
+   * for design-partner conversations. Overrides dailyPositions/directionalBias when set; the exposure
+   * breaker still caps net inventory (the facility limits its own book, exactly as it would live).
+   */
+  clientFlow?: ClientFlowConfig;
   /**
    * Regime-aware opening gate: when the trailing avg |24h move| is elevated (trend/high-vol), widen the cap
    * (deeper floor) and throttle opens; when extreme, pause. Lets the short-vol book sit out the bleed regimes.
