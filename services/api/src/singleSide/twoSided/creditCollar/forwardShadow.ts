@@ -69,6 +69,23 @@ export type ForwardCycleConfig = LiveShadowConfig & {
   liveExecution?: LiveExecutionHook;
 };
 
+/** Integration-mode helpers: deterministic venue-user flow simulation (count per day, side+size per open). */
+export type ClientFlowConfig = import("./shadowRunner").ClientFlowConfig;
+
+export const clientFlowCountForDay = (dayIso: string, cf: ClientFlowConfig): number => {
+  const lo = Math.max(0, Math.ceil(cf.minPerDay));
+  const hi = Math.max(lo, Math.floor(cf.maxPerDay));
+  return lo + Math.floor(dayParticipationRoll(`${dayIso}#count`) * (hi - lo + 1));
+};
+
+export const clientFlowOpenParams = (salt: string, cf: ClientFlowConfig): { side: PerpSide; notionalUsdc: number } => {
+  const side: PerpSide = dayParticipationRoll(`${salt}#side`) < 0.5 ? "long" : "short";
+  const raw = cf.minNotionalUsdc + dayParticipationRoll(`${salt}#size`) * (cf.maxNotionalUsdc - cf.minNotionalUsdc);
+  // Venue users trade round-ish tickets: snap to $500 within bounds.
+  const notionalUsdc = Math.min(cf.maxNotionalUsdc, Math.max(cf.minNotionalUsdc, Math.round(raw / 500) * 500));
+  return { side, notionalUsdc };
+};
+
 /** Deterministic per-day roll in [0,1) (FNV-1a over the UTC date) for the partner-participation model. */
 export const dayParticipationRoll = (dayIso: string): number => {
   let h = 0x811c9dc5;
@@ -130,9 +147,14 @@ export const runForwardShadowCycle = async (
   let sumFloor = 0;
   const rej: Record<string, number> = {};
 
+  // INTEGRATION MODE: simulate venue-user flow (random arrivals/sizes/sides, singles). Overrides the
+  // pair cadence and directional modes; the exposure breaker still caps net inventory like it would live.
+  const clientFlow = cfg.liveExecution == null ? cfg.clientFlow : undefined;
+  const dayIso = new Date(now).toISOString().slice(0, 10);
+
   // How many to open this cycle. Signal mode (dailyPositions set) releases a steady staggered rate over
   // time (partner-like flow); otherwise the legacy fixed batch of nPositions. Neutral-over-time either way.
-  const signalMode = cfg.dailyPositions != null && cfg.dailyPositions > 0 && cfg.liveExecution == null;
+  const signalMode = ((cfg.dailyPositions != null && cfg.dailyPositions > 0) || clientFlow != null) && cfg.liveExecution == null;
   // HYBRID "auto" strategy (the pilot's actual playbook): CALM ⟹ neutral pair (as if the partner approved)
   // · ELEVATED ⟹ directional single with the trend at the FULL rate (as if the partner picked the side; the
   // gate's neutral pause does not apply to the directional leg) · HALT ⟹ skip entirely.
@@ -141,15 +163,17 @@ export const runForwardShadowCycle = async (
   const effectiveBias: LiveShadowConfig["directionalBias"] =
     autoMode ? (autoRegime === "calm" ? "flat" : autoRegime === "elevated" ? "trend" : "flat") : cfg.directionalBias;
   // PAIR-ATOMIC for the neutral book: both legs of a matched pair open in the same cycle or neither, so a
-  // gate pause between legs can never strand a naked directional leg. Directional modes open singles.
+  // gate pause between legs can never strand a naked directional leg. Directional modes — and venue-user
+  // flow, whose arrivals are inherently one-sided — open singles.
   const neutralBook = effectiveBias == null || effectiveBias === "flat";
-  const pairSize = neutralBook ? 2 : 1;
+  const pairSize = clientFlow ? 1 : neutralBook ? 2 : 1;
   let nToOpen = cfg.nPositions;
   if (signalMode) {
     // Conservative elevated-day dial (auto mode): directional days may run at a reduced rate (e.g. 1/day
     // instead of 2) since same-day directional positions are one bet at double size.
-    const dailyRate =
-      autoMode && autoRegime === "elevated" && cfg.autoElevatedDailyPositions != null && cfg.autoElevatedDailyPositions > 0
+    const dailyRate = clientFlow
+      ? clientFlowCountForDay(dayIso, clientFlow)
+      : autoMode && autoRegime === "elevated" && cfg.autoElevatedDailyPositions != null && cfg.autoElevatedDailyPositions > 0
         ? cfg.autoElevatedDailyPositions
         : (cfg.dailyPositions as number);
     const prevState = loadOpeningState(paths.openingStatePath);
@@ -161,7 +185,9 @@ export const runForwardShadowCycle = async (
   // In auto mode the throttle is bypassed while ELEVATED (the directional leg trades it — full rate,
   // wider cap via the floor override) and only HALT zeroes issuance.
   if (regimeGate) {
-    const mult = autoMode ? (regimeGate.regime === "halt" ? 0 : 1) : regimeGate.openMultiplier;
+    // Client flow mirrors auto mode's gate treatment: venue users keep arriving in elevated regimes (the
+    // widened cap reprices their wraps); only HALT stops accepting.
+    const mult = autoMode || clientFlow ? (regimeGate.regime === "halt" ? 0 : 1) : regimeGate.openMultiplier;
     nToOpen = Math.max(0, Math.round(nToOpen * mult));
   }
   // Partner-participation model: directional bets are the PARTNER's call, and they don't take every
@@ -237,12 +263,14 @@ export const runForwardShadowCycle = async (
     }
   } else {
     for (let i = 0; i < nToOpen; i++) {
-      const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
+      const flow = clientFlow ? clientFlowOpenParams(`${now}#${i}`, clientFlow) : null;
+      const notional = flow?.notionalUsdc ?? cfg.positionNotionalUsdc;
+      const instr = scaffold.nextInstruction(notional);
       if (!instr.ok) {
         halted += 1;
         continue;
       }
-      const rec = scaffold.activate({ ref: instr.ref, side: biasSide ?? instr.side, notionalUsdc: cfg.positionNotionalUsdc, spot, instrument: "BTC-PERP", tsMs: now + i });
+      const rec = scaffold.activate({ ref: instr.ref, side: flow ? flow.side : (biasSide ?? instr.side), notionalUsdc: notional, spot, instrument: "BTC-PERP", tsMs: now + i });
       if ("status" in rec && rec.status === "active") {
         newOpens.push({
           ref: rec.ref,
@@ -423,7 +451,8 @@ export const runForwardShadowCycle = async (
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
       cfg.liveExecution ? "LIVE EXECUTION MODE: opens only via the guarded OKX daily window (venue okx_live); no paper opens." : "",
-      signalMode ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle${pairSize === 2 ? " (pair-atomic: both legs or neither)" : ""}.` : "",
+      clientFlow ? `INTEGRATION-MODE (venue-user flow): ${clientFlowCountForDay(dayIso, clientFlow)} arrivals rolled for ${dayIso} ($${clientFlow.minNotionalUsdc}–$${clientFlow.maxNotionalUsdc} tickets, random side, singles); ${nToOpen} due this cycle.` : "",
+      signalMode && !clientFlow ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle${pairSize === 2 ? " (pair-atomic: both legs or neither)" : ""}.` : "",
       autoMode ? `Hybrid auto strategy: regime ${autoRegime} ⟹ ${autoRegime === "calm" ? "neutral pair" : autoRegime === "elevated" ? `directional ${biasSide} (trend)` : "skip"}.` : "",
       biasSide && !autoMode ? `Directional bias: ${cfg.directionalBias} ⟹ opening ${biasSide} (directional book; breaker relaxed).` : "",
       regimeGate ? `Regime gate: ${regimeGate.regime} (${regimeGate.reason}).` : "",

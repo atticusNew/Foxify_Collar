@@ -158,6 +158,17 @@ const cfg: LiveShadowConfig = {
   // Auto mode: fraction of elevated days the partner actually TAKES the directional call (deterministic
   // per UTC day). Default 1/3 — realistic partner behavior; 1 = legacy take-every-call.
   autoDirectionalParticipation: num(process.env.SHADOW_DIRECTIONAL_PARTICIPATION, 0.33),
+  // INTEGRATION MODE (SHADOW_CLIENT_FLOW=true): simulate venue-USER flow — random arrivals/sizes/sides,
+  // singles — producing the embedded-product tape. Meant for a SEPARATE service with its own stores
+  // (see render-integration-shadow.yaml); overrides the pair cadence when enabled.
+  clientFlow: String(process.env.SHADOW_CLIENT_FLOW ?? "").toLowerCase() === "true"
+    ? {
+        minPerDay: num(process.env.SHADOW_CLIENT_FLOW_MIN_PER_DAY, 1),
+        maxPerDay: num(process.env.SHADOW_CLIENT_FLOW_MAX_PER_DAY, 6),
+        minNotionalUsdc: num(process.env.SHADOW_CLIENT_FLOW_MIN_NOTIONAL, 1_000),
+        maxNotionalUsdc: num(process.env.SHADOW_CLIENT_FLOW_MAX_NOTIONAL, 50_000)
+      }
+    : undefined,
   // Force a single hedge venue for the mirror (e.g. SHADOW_HEDGE_VENUE=okx) so skew/spreads/fees are OKX-specific.
   hedgeVenue: (["bullish", "okx", "deribit"].includes(String(process.env.SHADOW_HEDGE_VENUE)) ? (process.env.SHADOW_HEDGE_VENUE as "bullish" | "okx" | "deribit") : undefined),
   adaptiveFloor: {
