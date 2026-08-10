@@ -158,6 +158,9 @@ export const renderDashboardHtml = (m: DashboardModel, opts: RenderOpts = {}): s
 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="30"><title>Atticus — Shadow Pilot</title>
+<meta property="og:title" content="Atticus — Live Volume Facility Tape">
+<meta property="og:description" content="Delta-hedged flow funded by options credit. Every position, every leg, every oracle-signed settlement — public, updating every 15 minutes, worst day included.">
+<meta property="og:type" content="website"><meta name="twitter:card" content="summary">
 <style>
   body{font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
   .wrap{max-width:980px;margin:0 auto;padding:20px}
@@ -468,6 +471,9 @@ export const renderOneSheetHtml = (m: DashboardModel, contact?: string, productB
 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="60"><title>Atticus — Self-Funding Volume Facility</title>
+<meta property="og:title" content="Atticus — Self-Funding Volume Facility">
+<meta property="og:description" content="Volume that pays its own way: options credit funds delta-hedged flow. Live one-sheet — every number computed from the running book. The audit is one click.">
+<meta property="og:type" content="website"><meta name="twitter:card" content="summary">
 <style>
   body{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#0d1117;color:#e6edf3}
   .wrap{max-width:860px;margin:0 auto;padding:24px}
@@ -595,6 +601,7 @@ export const renderPositionsHtml = (open: OpenPosition[], settled: SettlementOut
 </style></head><body><div class="wrap">
   <h1>Positions — plain-words breakout</h1>
   <p class="sub"><a href="/">Advanced</a> · <a href="/simple">Simple P&L</a> · generated ${esc(new Date(nowMs).toISOString())}</p>
+  <p class="muted">History note: rows tagged "SINGLE (directional)" are from the early validation window's directional overlay — it netted approximately zero and was retired. The facility runs the neutral-pair book only.</p>
   <div class="strip"><b>Running results (${settled.length} settled):</b> credits collected ${m$(totCredit)} · collar net (givebacks/protection) ${m$(totCollar)} · cap hit ${capHits}× · floor hit ${floorHits}× · <b>net ${m$(totCredit + totCollar)}</b> before perp fees</div>
   <h2>Open positions (${open.length})</h2>
   <table><thead><tr><th>ref</th><th>side (perp)</th><th>entry @ opened</th><th>ceiling (cap)</th><th>floor (protection)</th><th>SOLD cap for</th><th>PAID for floor</th><th>venue fee</th><th>net credit</th><th>expires</th></tr></thead>

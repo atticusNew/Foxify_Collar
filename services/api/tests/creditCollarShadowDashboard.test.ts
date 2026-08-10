@@ -204,6 +204,17 @@ test("public JSON: api responses scrub partner-named keys and the legacy alias i
   assert.equal(handleDashboardRequest({ method: "GET", path: "/api/client" }, deps).statusCode, 200);
 });
 
+test("public-page batch: OG tags on / and /onesheet; positions page carries the overlay history note", () => {
+  const deps = { loadRecords: () => [rec(NOW - 30_000)], liveStatus: () => status(), nowMs: () => NOW, positions: () => ({ open: [], settled: [] }) };
+  const dash = handleDashboardRequest({ method: "GET", path: "/" }, deps).body;
+  assert.ok(dash.includes('og:title') && dash.includes("Live Volume Facility Tape"));
+  const onesheet = handleDashboardRequest({ method: "GET", path: "/onesheet" }, deps).body;
+  assert.ok(onesheet.includes('og:description') && onesheet.includes("The audit is one click."));
+  const positions = handleDashboardRequest({ method: "GET", path: "/positions" }, deps).body;
+  assert.ok(positions.includes("History note") && positions.includes("retired"));
+  assert.ok(!/foxify/i.test(dash + onesheet + positions));
+});
+
 test("positions view renders open + settled with leg premiums and plain-words fields", async () => {
   const { renderPositionsHtml } = await import("../src/singleSide/twoSided/creditCollar/shadowDashboard");
   const open = [{
