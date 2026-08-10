@@ -99,6 +99,29 @@ test("executor: openLeg sizes from mid, sends aggressive IOC, maps fill; closeLe
   assert.ok(Number(c.p) < 64_000, "aggressive sell prices below mid");
 });
 
+test("agent-wallet setups: position queries hit the MASTER address, not the signing key's", async () => {
+  const seen: string[] = [];
+  const { impl } = mockFetch((url, body) => {
+    const b = body as Record<string, unknown>;
+    if (url.endsWith("/info") && b.type === "clearinghouseState") {
+      seen.push(String(b.user));
+      return { assetPositions: [{ position: { coin: "BTC", szi: "0.00018" } }] };
+    }
+    if (url.endsWith("/info") && b.type === "meta") return { universe: [{ name: "BTC", szDecimals: 5, maxLeverage: 40 }] };
+    throw new Error(`unexpected ${url} ${JSON.stringify(b)}`);
+  });
+  const MASTER = "0x" + "a".repeat(40);
+  const withMaster = new HyperliquidClient({ baseUrl: HL_TESTNET_BASE, privateKeyHex: KEY, masterAddress: MASTER, fetchImpl: impl as never });
+  const ex = new HyperliquidPerpExecutor(withMaster);
+  assert.equal(await ex.positionSz("BTC"), 0.00018);
+  assert.equal(seen[0], MASTER, "queried the master account");
+  assert.equal(withMaster.address().toLowerCase() === MASTER.toLowerCase(), false, "master differs from the signing key's address");
+
+  const withoutMaster = new HyperliquidClient({ baseUrl: HL_TESTNET_BASE, privateKeyHex: KEY, fetchImpl: impl as never });
+  await new HyperliquidPerpExecutor(withoutMaster).positionSz("BTC");
+  assert.equal(seen[1], withoutMaster.address(), "falls back to the key's own address when no master set");
+});
+
 test("executor: error status and dust-size guard surface honestly", async () => {
   const { impl } = mockFetch((url, body) => {
     const b = body as Record<string, unknown>;

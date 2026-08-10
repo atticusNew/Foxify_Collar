@@ -31,6 +31,7 @@ const isTestnet = String(process.env.HL_ENV ?? "").toLowerCase() === "testnet";
 const hlClient = new HyperliquidClient({
   baseUrl: isTestnet ? HL_TESTNET_BASE : HL_MAINNET_BASE,
   privateKeyHex: process.env.HL_PRIVATE_KEY,
+  masterAddress: process.env.HL_MASTER_ADDRESS || undefined, // required for position queries under API/agent wallets
   isMainnet: !isTestnet
 });
 const liveMid = (c: string) => hlClient.midPx(c); // paper legs fill at the LIVE mid

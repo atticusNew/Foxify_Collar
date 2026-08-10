@@ -35,6 +35,12 @@ type FetchLike = (url: string, init: { method: string; headers: Record<string, s
 export type HyperliquidClientConfig = {
   baseUrl?: string; // default mainnet
   privateKeyHex?: string; // required for exchange actions only
+  /**
+   * The MASTER account address (0x…) when privateKeyHex is an API/agent wallet. Agent keys SIGN on
+   * behalf of the master account, but positions/balances live on the master — without this, position
+   * queries would look up the agent's own (empty) address. Unset ⟹ the key IS the account.
+   */
+  masterAddress?: string;
   isMainnet?: boolean; // phantom-agent source; default true unless baseUrl is the testnet
   fetchImpl?: FetchLike; // test seam
   nowMs?: () => number; // nonce source (test seam)
@@ -58,6 +64,7 @@ export const roundSz = (sz: number, szDecimals: number): string => String(Number
 export class HyperliquidClient {
   private readonly base: string;
   private readonly key: string | undefined;
+  private readonly master: string | undefined;
   private readonly mainnet: boolean;
   private readonly fetchImpl: FetchLike;
   private readonly nowMs: () => number;
@@ -66,6 +73,7 @@ export class HyperliquidClient {
   constructor(cfg: HyperliquidClientConfig = {}) {
     this.base = cfg.baseUrl ?? HL_MAINNET_BASE;
     this.key = cfg.privateKeyHex;
+    this.master = cfg.masterAddress;
     this.mainnet = cfg.isMainnet ?? this.base !== HL_TESTNET_BASE;
     this.fetchImpl = cfg.fetchImpl ?? (fetch as unknown as FetchLike);
     this.nowMs = cfg.nowMs ?? (() => Date.now());
@@ -75,6 +83,11 @@ export class HyperliquidClient {
   address(): string {
     if (!this.key) throw new Error("hyperliquid: no private key configured");
     return addressFromPrivateKey(this.key);
+  }
+
+  /** The account that HOLDS positions: the master address when set (agent-key setups), else the key's own. */
+  accountAddress(): string {
+    return this.master ?? this.address();
   }
 
   private async post(path: "/info" | "/exchange", body: unknown): Promise<unknown> {
