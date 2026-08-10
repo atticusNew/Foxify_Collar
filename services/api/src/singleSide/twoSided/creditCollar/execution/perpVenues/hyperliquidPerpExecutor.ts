@@ -21,7 +21,7 @@ export class HyperliquidPerpExecutor implements PerpLegExecutor {
   }
 
   positionSz(coin: string): Promise<number> {
-    return this.client.positionSz(this.client.address(), coin);
+    return this.client.positionSz(this.client.accountAddress(), coin);
   }
 
   fundingBpsPer8h(coin: string): Promise<number | null> {

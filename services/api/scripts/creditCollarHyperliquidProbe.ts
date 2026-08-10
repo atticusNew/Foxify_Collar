@@ -19,7 +19,12 @@ const wantOrder = String(process.env.HL_PROBE_ORDER ?? "").toLowerCase() === "tr
 const coin = process.env.HL_COIN ?? "BTC";
 
 const main = async () => {
-  const client = new HyperliquidClient({ baseUrl: isTestnet ? HL_TESTNET_BASE : HL_MAINNET_BASE, privateKeyHex: key, isMainnet: !isTestnet });
+  const client = new HyperliquidClient({
+    baseUrl: isTestnet ? HL_TESTNET_BASE : HL_MAINNET_BASE,
+    privateKeyHex: key,
+    masterAddress: process.env.HL_MASTER_ADDRESS || undefined,
+    isMainnet: !isTestnet
+  });
   console.log(`[hl-probe] env=${env} base=${isTestnet ? HL_TESTNET_BASE : HL_MAINNET_BASE}`);
 
   const meta = await client.assetMeta(coin);
@@ -33,9 +38,9 @@ const main = async () => {
     console.log("[hl-probe] no HL_PRIVATE_KEY — read-only probe complete.");
     return;
   }
-  const addr = client.address();
-  console.log(`[hl-probe] agent address: ${addr}`);
-  const pos = await client.positionSz(addr, coin);
+  console.log(`[hl-probe] signing (agent) address: ${client.address()}`);
+  console.log(`[hl-probe] account address (positions): ${client.accountAddress()}${process.env.HL_MASTER_ADDRESS ? " (from HL_MASTER_ADDRESS)" : " (key's own — set HL_MASTER_ADDRESS if using an API/agent wallet)"}`);
+  const pos = await client.positionSz(client.accountAddress(), coin);
   console.log(`[hl-probe] current ${coin} position: ${pos}`);
 
   if (!wantOrder) {
