@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildDashboardModel, renderDashboardHtml, handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
+import { buildDashboardModel, renderDashboardHtml, renderSimpleHtml, handleDashboardRequest, type ShadowLiveStatus } from "../src/singleSide/twoSided/creditCollar/shadowDashboard";
 import type { ShadowRunRecord } from "../src/singleSide/twoSided/creditCollar/shadowAggregate";
 import type { ShadowScorecard } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
 
@@ -41,10 +41,225 @@ test("dashboard model: surfaces aggregate verdict + recent sessions", () => {
 
 test("dashboard HTML renders and shows RUNNING + verdict", () => {
   const html = renderDashboardHtml(buildDashboardModel([rec(NOW - 30_000)], status(), NOW));
-  assert.ok(html.includes("Credit-Collar Tier-0 Shadow"));
+  assert.ok(html.includes("Atticus Volume Facility — Shadow Pilot"));
   assert.ok(html.includes("RUNNING"));
   assert.ok(/verdict/i.test(html));
   assert.ok(html.includes("/api/scorecard"));
+});
+
+test("simple view: renders plain-English P&L and cross-links the advanced view", () => {
+  const settlement = {
+    settledPositions: 100, totalCreditAccruedUsdc: 9_000, totalPayoutToFoxifyUsdc: -1_200,
+    totalNetToFoxifyUsdc: 7_800, totalOptionFeesUsdc: 2_600, totalHedgeReceiptUsdc: -1_200,
+    totalAtticusNetAfterFeesAndCapitalUsdc: 980, netAfterFeesAndCapitalBps: 1.96, bookHedgedNetBps: 0,
+    avgHeldHours: 24.1, pctCapBreached: 0.12, pctFloorBreached: 0
+  } as unknown as Parameters<typeof buildDashboardModel>[4];
+  const model = buildDashboardModel([rec(NOW - 30_000)], status(), NOW, {}, settlement);
+  const html = renderSimpleHtml(model);
+  assert.ok(html.includes("Simple P&L"));
+  assert.ok(/Client COLLECTS/i.test(html));
+  assert.ok(!/foxify/i.test(html), "rendered pages must not name the former partner");
+  assert.ok(/Atticus FLAT/i.test(html));
+  assert.ok(html.includes("Advanced view"));
+});
+
+test("onesheet: renders live proof from the model, includes contact, never names the former partner", () => {
+  const settlement = {
+    settledPositions: 38, totalNotionalUsdc: 1_900_000, totalCreditAccruedUsdc: 1_788.87, totalPayoutToFoxifyUsdc: -431.88,
+    totalNetToFoxifyUsdc: 1_356.99, totalOptionFeesUsdc: 316.51, totalHedgeReceiptUsdc: -431.88,
+    totalAtticusNetAfterFeesAndCapitalUsdc: -6.84, totalAtticusNetAfterCapitalUsdc: -6.84, totalCapitalCostUsdc: 6.84,
+    netAfterFeesAndCapitalBps: -0.036, bookHedgedNetBps: 0, avgHeldHours: 24.13, pctCapBreached: 0.0526, pctFloorBreached: 0
+  } as unknown as Parameters<typeof buildDashboardModel>[4];
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    settlementAggregate: () => settlement as never,
+    oneSheetContact: "founder@atticus.example"
+  };
+  const r = handleDashboardRequest({ method: "GET", path: "/onesheet" }, deps);
+  assert.equal(r.statusCode, 200);
+  assert.ok(r.contentType.includes("text/html"));
+  assert.ok(r.body.includes("Self-Funding Volume Facility"));
+  assert.ok(r.body.includes("Structure net (the product)"));
+  assert.ok(r.body.includes("founder@atticus.example"));
+  assert.ok(r.body.includes("What funds the flow?"));
+  assert.ok(!/foxify/i.test(r.body), "onesheet must never name the former partner");
+});
+
+test("onesheet: product-book segmentation counts only positions opened after the switch", async () => {
+  const { computeProductBook } = await import("../src/singleSide/twoSided/creditCollar/shadowDashboard");
+  const SWITCH = NOW - 24 * 3_600_000;
+  const settledBase = {
+    notionalUsdc: 50_000, spotAtEntry: 60_000, settlePriceUsd: 60_100, movePct: 0.0017, putIntrinsicUsd: 0, callIntrinsicUsd: 0,
+    netToFoxifyUsdc: 0, serviceFeeUsdc: 0, floorBreached: false, oracleVerified: true, heldMs: 24 * 3_600_000,
+    hedgeReceiptUsdc: 0, atticusOptionNetUsdc: 0, shortLegMarginUsdc: 500, capitalCostUsdc: 0.2, optionFeesUsdc: 8,
+    atticusNetAfterCapitalUsdc: 0, atticusNetAfterFeesAndCapitalUsdc: 0, fundingLegPremiumUsdc: 100, protectiveLegPremiumUsdc: 30
+  };
+  const settled = [
+    // pre-switch (old strategy): must be EXCLUDED from the product book
+    { ...settledBase, ref: "old-1", side: "short" as const, openedAtMs: SWITCH - 3_600_000, settledAtMs: SWITCH + 20 * 3_600_000, payoutToFoxifyUsdc: -300, foxifyCreditUsdc: 80, capBreached: true },
+    // post-switch pair: INCLUDED
+    { ...settledBase, ref: "new-1", side: "long" as const, openedAtMs: SWITCH + 3_600_000, settledAtMs: NOW - 60_000, payoutToFoxifyUsdc: 0, foxifyCreditUsdc: 40, capBreached: false },
+    { ...settledBase, ref: "new-2", side: "short" as const, openedAtMs: SWITCH + 3_600_000, settledAtMs: NOW - 60_000, payoutToFoxifyUsdc: -10, foxifyCreditUsdc: 40, capBreached: true }
+  ];
+  const open = [
+    { ref: "open-old", side: "long" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, putStrike: 56_400, callStrike: 61_250, foxifyCreditUsdc: 50, serviceFeeUsdc: 0, floorPctUsed: 0.06, openedAtMs: SWITCH - 7_200_000, expiresAtMs: NOW + 3_600_000 },
+    { ref: "open-new", side: "short" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, putStrike: 61_250, callStrike: 56_400, foxifyCreditUsdc: 60, serviceFeeUsdc: 0, floorPctUsed: 0.06, openedAtMs: SWITCH + 7_200_000, expiresAtMs: NOW + 3_600_000 }
+  ];
+  const pb = computeProductBook({ open: open as never, settled: settled as never }, SWITCH);
+  assert.equal(pb.settled, 2, "only post-switch settles");
+  assert.equal(pb.creditUsdc, 80);
+  assert.equal(pb.collarNetUsdc, -10);
+  assert.equal(pb.structureNetUsdc, 70);
+  assert.equal(pb.capTouched, 1, "pre-switch cap breach excluded");
+  assert.equal(pb.openPositions, 1, "only post-switch opens");
+  assert.equal(pb.openFullCreditUsdc, 60);
+
+  // Route: segmented section renders when productBookSinceMs is set
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    positions: () => ({ open: open as never, settled: settled as never }),
+    productBookSinceMs: SWITCH
+  };
+  const r = handleDashboardRequest({ method: "GET", path: "/onesheet" }, deps);
+  assert.ok(r.body.includes("Current product book — neutral pairs only"));
+  assert.ok(!/foxify/i.test(r.body));
+});
+
+test("directional tracker card: hidden by default, rendered only with the opt-in flag", () => {
+  const regime = {
+    settledPositions: 10, days: 5, realizedDailyVolPct: 1.1, realizedAnnualVolPct: 21, avgAbsMovePct: 0.009,
+    avgDayNetUsdc: 50, bestDayNetUsdc: 400, worstDayNetUsdc: -300, dayNetStdUsdc: 200, pctDaysPositive: 0.6,
+    cumulativeCreditUsdc: 500, cumulativeCollarUsdc: -100, cumulativeFeesUsdc: 0, cumulativeNetUsdc: 400,
+    creditClearsBleed: true, recentDays: [],
+    signal: { days: 8, correctDays: 5, dayHitRate: 0.625, posteriorMean: 0.6, breakevenUsed: 0.52, pAboveBreakeven: 0.7, ci95: [0.3, 0.86] }
+  } as unknown as Parameters<typeof buildDashboardModel>[7];
+  const model = buildDashboardModel([rec(NOW - 30_000)], status(), NOW, {}, null, null, null, regime);
+  assert.ok(!renderDashboardHtml(model).includes("Signal hit-rate"), "tracker hidden by default");
+  assert.ok(renderDashboardHtml(model, { showDirectionalTracker: true }).includes("Signal hit-rate"), "tracker rendered with flag");
+});
+
+test("principal book: renders REAL/PAPER legs + P&L on / and the live-capital card on /onesheet; hidden when empty; /api/principal serves it", () => {
+  const principal = [{
+    ref: "pp-1786140888829",
+    coin: "BTC",
+    notionalUsdcPerLeg: 12,
+    openedAtMs: NOW - 3_600_000,
+    status: "closed" as const,
+    long: { venue: "hyperliquid", side: "long" as const, sz: 0.00018, avgPx: 64_893, oid: 7 },
+    short: { venue: "paper2", side: "short" as const, sz: 0.00018, avgPx: 64_568.04, oid: "paper-1" },
+    closedAtMs: NOW,
+    closeLong: { status: "filled" as const, requestedSz: 0.00018, filledSz: 0.00018, avgPx: 65_100, oid: 8 },
+    closeShort: { status: "filled" as const, requestedSz: 0.00018, filledSz: 0.00018, avgPx: 65_150, oid: "paper-2" },
+    notes: ["live pair"]
+  }];
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    principalPairs: () => principal as never
+  };
+  const page = handleDashboardRequest({ method: "GET", path: "/" }, deps);
+  assert.ok(page.body.includes("Principal book — LIVE CAPITAL"));
+  assert.ok(page.body.includes("hyperliquid") && page.body.includes("REAL"));
+  assert.ok(page.body.includes("paper2") && page.body.includes("PAPER"));
+  assert.ok(!/foxify/i.test(page.body));
+
+  const onesheet = handleDashboardRequest({ method: "GET", path: "/onesheet" }, deps);
+  assert.ok(onesheet.body.includes("Live capital — principal book"));
+  assert.ok(onesheet.body.includes("1 real leg(s)"), "paper legs are not counted as real");
+
+  const api = handleDashboardRequest({ method: "GET", path: "/api/principal" }, deps);
+  assert.equal(api.statusCode, 200);
+  assert.ok(api.body.includes("pp-1786140888829"));
+
+  const emptyDeps = { ...deps, principalPairs: () => [] as never };
+  assert.ok(!handleDashboardRequest({ method: "GET", path: "/" }, emptyDeps).body.includes("Principal book"), "section hidden when ledger empty");
+});
+
+test("public JSON: api responses scrub partner-named keys and the legacy alias is gone", () => {
+  const settled = [{
+    ref: "cc-1", side: "long" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, settlePriceUsd: 60_100, movePct: 0.0017,
+    putIntrinsicUsd: 0, callIntrinsicUsd: 0, payoutToFoxifyUsdc: -10, foxifyCreditUsdc: 40, netToFoxifyUsdc: 30, serviceFeeUsdc: 0,
+    floorBreached: false, capBreached: false, oracleVerified: true, openedAtMs: NOW - 25 * 3_600_000, settledAtMs: NOW - 3_600_000,
+    heldMs: 24 * 3_600_000, hedgeReceiptUsdc: 0, atticusOptionNetUsdc: 0, shortLegMarginUsdc: 500, capitalCostUsdc: 0.2,
+    optionFeesUsdc: 8, atticusNetAfterCapitalUsdc: 0, atticusNetAfterFeesAndCapitalUsdc: 0
+  }];
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    positions: () => ({ open: [], settled: settled as never })
+  };
+  const scorecard = handleDashboardRequest({ method: "GET", path: "/api/scorecard" }, deps);
+  assert.ok(!/foxify/i.test(scorecard.body), "scorecard JSON keys must be partner-neutral");
+  const positions = handleDashboardRequest({ method: "GET", path: "/api/positions" }, deps);
+  assert.ok(!/foxify/i.test(positions.body), "positions JSON keys must be partner-neutral");
+  assert.ok(positions.body.includes("clientCreditUsdc"), "scrub preserves the rest of the key name");
+  assert.ok(positions.body.includes("payoutToClientUsdc"));
+  assert.equal(handleDashboardRequest({ method: "GET", path: "/api/foxify" }, deps).statusCode, 404, "legacy alias removed");
+  assert.equal(handleDashboardRequest({ method: "GET", path: "/api/client" }, deps).statusCode, 200);
+});
+
+test("public-page batch: OG tags on / and /onesheet; positions page carries the overlay history note", () => {
+  const deps = { loadRecords: () => [rec(NOW - 30_000)], liveStatus: () => status(), nowMs: () => NOW, positions: () => ({ open: [], settled: [] }) };
+  const dash = handleDashboardRequest({ method: "GET", path: "/" }, deps).body;
+  assert.ok(dash.includes('og:title') && dash.includes("Live Volume Facility Tape"));
+  const onesheet = handleDashboardRequest({ method: "GET", path: "/onesheet" }, deps).body;
+  assert.ok(onesheet.includes('og:description') && onesheet.includes("The audit is one click."));
+  const positions = handleDashboardRequest({ method: "GET", path: "/positions" }, deps).body;
+  assert.ok(positions.includes("History note") && positions.includes("retired"));
+  assert.ok(!/foxify/i.test(dash + onesheet + positions));
+});
+
+test("positions view renders open + settled with leg premiums and plain-words fields", async () => {
+  const { renderPositionsHtml } = await import("../src/singleSide/twoSided/creditCollar/shadowDashboard");
+  const open = [{
+    ref: "cc-123-1", side: "long" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, putStrike: 56_400, callStrike: 61_250,
+    foxifyCreditUsdc: 80, serviceFeeUsdc: 0, floorPctUsed: 0.06, openedAtMs: NOW - 3_600_000, expiresAtMs: NOW + 20 * 3_600_000,
+    fundingLegPremiumUsdc: 128.4, protectiveLegPremiumUsdc: 40.2, venue: "g20_quote",
+    quoteMeta: { rfqRef: "RFQ-1", quotedNetUsdc: 82, modelNetUsdc: 79, quotedAtIso: new Date(NOW).toISOString() }
+  }];
+  const settled = [{
+    ref: "cc-100-9", side: "short" as const, notionalUsdc: 50_000, spotAtEntry: 60_000, settlePriceUsd: 60_500, movePct: 0.0083,
+    putIntrinsicUsd: 0, callIntrinsicUsd: 0, payoutToFoxifyUsdc: 0, foxifyCreditUsdc: 85, netToFoxifyUsdc: 85, serviceFeeUsdc: 0,
+    floorBreached: false, capBreached: false, oracleVerified: true, openedAtMs: NOW - 25 * 3_600_000, settledAtMs: NOW - 3_600_000,
+    heldMs: 24 * 3_600_000, hedgeReceiptUsdc: 0, atticusOptionNetUsdc: 0, shortLegMarginUsdc: 546, capitalCostUsdc: 0.18,
+    optionFeesUsdc: 8, atticusNetAfterCapitalUsdc: -0.18, atticusNetAfterFeesAndCapitalUsdc: -0.18,
+    fundingLegPremiumUsdc: 120, protectiveLegPremiumUsdc: 35, venue: "okx_model"
+  }];
+  const html = renderPositionsHtml(open, settled, NOW);
+  assert.ok(html.includes("SOLD cap for") && html.includes("PAID for floor"));
+  assert.ok(html.includes("G-20 (quote)") && html.includes("OKX (model)"), "internal venue codes are prettified");
+  assert.ok(html.includes("quoted") && html.includes("vs model"));
+  assert.ok(/no breach/.test(html));
+});
+
+test("?fee= override flows into the Foxify/regime views; no fee assumed by default", () => {
+  const captured: Array<number | undefined> = [];
+  const deps = {
+    loadRecords: () => [rec(NOW - 30_000)],
+    liveStatus: () => status(),
+    nowMs: () => NOW,
+    foxifyView: (fee?: number) => {
+      captured.push(fee);
+      return null;
+    }
+  };
+  handleDashboardRequest({ method: "GET", path: "/simple" }, deps);
+  handleDashboardRequest({ method: "GET", path: "/simple?fee=25" }, deps);
+  handleDashboardRequest({ method: "GET", path: "/api/scorecard?fee=42.5" }, deps);
+  assert.deepEqual(captured, [undefined, 25, 42.5], "no override by default; ?fee= parsed and passed through");
+});
+
+test("handler: /simple returns html", () => {
+  const deps = { loadRecords: () => [rec(NOW - 30_000)], liveStatus: () => status(), nowMs: () => NOW };
+  const r = handleDashboardRequest({ method: "GET", path: "/simple" }, deps);
+  assert.equal(r.statusCode, 200);
+  assert.ok(r.contentType.includes("text/html"));
 });
 
 test("handler: routes / (html), /api/scorecard (json), /api/health (running), /healthz", () => {

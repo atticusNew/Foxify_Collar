@@ -187,6 +187,109 @@ test("sim: spread clears costs at rebates=0 AND reserve survives an imbalanced j
   assert.notEqual(res.verdict, "NOT_VIABLE");
 });
 
+test("pass_through model: collar nets to ~0, profit is the SEPARATE operation fee", () => {
+  const embedded = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", feeMode: "clob_taker" });
+  const pass = solveAndPriceCreditCollar(baseParams(), SKEW, {
+    fillMode: "touch",
+    feeMode: "clob_taker",
+    pricingModel: "pass_through",
+    operationFeeBps: 2,
+    minOperationFeeUsdc: 10
+  });
+  assert.equal(embedded.ok, true);
+  assert.equal(pass.ok, true);
+  if (!embedded.ok || !pass.ok) return;
+
+  // Embedded: profit lives inside the collar (margin), no separate operation fee.
+  assert.equal(embedded.economics.pricing_model, "embedded_spread");
+  assert.equal(embedded.economics.operation_fee_usdc, 0);
+  assert.ok(embedded.economics.atticus_margin_net_of_fees_usdc > 0);
+
+  // Pass-through: the collar funds credit + the Bullish fee and nets to ~0; profit is the operation fee.
+  assert.equal(pass.economics.pricing_model, "pass_through");
+  assert.ok(pass.economics.foxify_credit_usdc >= 100, "Foxify receives at least the target credit (overshoot passed through)");
+  assert.ok(pass.economics.operation_fee_usdc >= 10, "operation fee billed separately (>= floor)");
+  assert.ok(Math.abs(pass.economics.atticus_margin_net_of_fees_usdc) <= 0.5, "collar nets to ~0 (proceeds passed through, fee funded)");
+  assert.equal(pass.economics.atticus_total_revenue_usdc, pass.economics.operation_fee_usdc, "all profit is the separate fee");
+  // Foxify EV from the collar is still strictly negative (they cross the spread + fund the fee), but it is
+  // NOT pushed down by an embedded margin — so the collar is sold at (near) fair value.
+  assert.ok(pass.economics.foxify_market_implied_ev_usdc <= 1e-6);
+});
+
+test("credit-target mode: ceiling caps Foxify credit and routes the bounded overshoot to Atticus", () => {
+  const uncapped = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", pricingModel: "pass_through" });
+  const capped = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", pricingModel: "pass_through", maxFoxifyCreditUsdc: 105 });
+  assert.equal(uncapped.ok, true);
+  assert.equal(capped.ok, true);
+  if (!uncapped.ok || !capped.ok) return;
+  // Foxify never receives more than the ceiling, and never more than the uncapped pass-through would give.
+  assert.ok(capped.economics.foxify_credit_usdc <= 105 + 1e-6, "Foxify credit capped at the ceiling");
+  assert.ok(capped.economics.foxify_credit_usdc <= uncapped.economics.foxify_credit_usdc + 1e-6);
+  // Foxify still gets at least the target.
+  assert.ok(capped.economics.foxify_credit_usdc >= baseParams().targetCreditUsdc - 1e-6, "Foxify still gets the target");
+  // When the uncapped model would have overshot past the ceiling, that overshoot is retained as Atticus margin.
+  if (uncapped.economics.foxify_credit_usdc > 105 + 1e-6) {
+    assert.ok(
+      capped.economics.atticus_margin_net_of_fees_usdc > uncapped.economics.atticus_margin_net_of_fees_usdc + 1e-6,
+      "ceiling routes the bounded overshoot to Atticus margin"
+    );
+  }
+});
+
+test("credit-target mode: a finer strike grid sits the cap WIDER and overshoots the target by less", () => {
+  const coarse = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 80 }), SKEW, { fillMode: "touch", pricingModel: "pass_through", strikeGridUsdc: 1000 });
+  const fine = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 80 }), SKEW, { fillMode: "touch", pricingModel: "pass_through", strikeGridUsdc: 100 });
+  assert.equal(coarse.ok, true);
+  assert.equal(fine.ok, true);
+  if (!coarse.ok || !fine.ok) return;
+  // More candidate strikes ⟹ the loosest one that still funds the target sits at least as far OTM (wider cap),
+  // so Foxify surrenders less upside, and the discrete-strike overshoot above the target is smaller-or-equal.
+  assert.ok(fine.legs.cap_pct >= coarse.legs.cap_pct - 1e-9, "finer grid ⟹ wider-or-equal cap");
+  const coarseOvershoot = coarse.economics.fundable_credit_usdc - 80;
+  const fineOvershoot = fine.economics.fundable_credit_usdc - 80;
+  assert.ok(fineOvershoot <= coarseOvershoot + 1e-6, "finer grid overshoots the target by less-or-equal");
+});
+
+test("σ-floor: in low vol the cap holds at the σ-floor and the credit floats DOWN (no ATM compression)", () => {
+  const lowVol = flatSkew(0.3); // calm: 30% ann ⟹ tenor-σ ~1.57%/day
+  const off = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 100 }), lowVol, { fillMode: "touch", pricingModel: "pass_through" });
+  const on = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 100 }), lowVol, { fillMode: "touch", pricingModel: "pass_through", minCapSigmaMult: 1.25 });
+  assert.equal(off.ok, true);
+  assert.equal(on.ok, true);
+  if (!off.ok || !on.ok) return;
+  const sigmaTenor = 0.3 * Math.sqrt(1 / 365); // ~1.57%
+  // Without the σ-floor the solver compresses the cap inside 1.25σ to manufacture the credit.
+  assert.ok(off.legs.cap_pct < 1.25 * sigmaTenor, `legacy compresses the cap (${off.legs.cap_pct})`);
+  // With it, the cap may not sit closer than 1.25σ, and the credit floats below the target instead.
+  assert.ok(on.legs.cap_pct >= 1.25 * sigmaTenor - 1e-6, `σ-floor holds the cap wide (${on.legs.cap_pct})`);
+  assert.ok(on.economics.foxify_credit_usdc < 100, `credit floats below target (${on.economics.foxify_credit_usdc})`);
+  assert.ok(on.economics.foxify_credit_usdc > 0, "floated credit is still positive");
+});
+
+test("symmetric retention bound: Atticus retention net of fees is capped; excess passes to Foxify", () => {
+  // Coarse grid + low ceiling ⟹ big overshoot the ceiling would hand to Atticus; the bound stops that.
+  const unbounded = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 80 }), SKEW, { fillMode: "touch", pricingModel: "pass_through", strikeGridUsdc: 1000, maxFoxifyCreditUsdc: 85 });
+  const bounded = solveAndPriceCreditCollar(baseParams({ targetCreditUsdc: 80 }), SKEW, { fillMode: "touch", pricingModel: "pass_through", strikeGridUsdc: 1000, maxFoxifyCreditUsdc: 85, maxRetainedNetOfFeesUsdc: 25 });
+  assert.equal(unbounded.ok, true);
+  assert.equal(bounded.ok, true);
+  if (!unbounded.ok || !bounded.ok) return;
+  if (unbounded.economics.atticus_margin_net_of_fees_usdc > 25) {
+    assert.ok(bounded.economics.atticus_margin_net_of_fees_usdc <= 25 + 0.01, `retention capped at 25 (got ${bounded.economics.atticus_margin_net_of_fees_usdc})`);
+    assert.ok(bounded.economics.foxify_credit_usdc > unbounded.economics.foxify_credit_usdc, "excess passes to Foxify as extra credit");
+  }
+});
+
+test("pass_through funds the Bullish fee inside the credit (looser-or-equal cap vs embedded margin)", () => {
+  const embedded = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", feeMode: "clob_taker" });
+  const pass = solveAndPriceCreditCollar(baseParams(), SKEW, { fillMode: "touch", feeMode: "clob_taker", pricingModel: "pass_through" });
+  assert.equal(embedded.ok, true);
+  assert.equal(pass.ok, true);
+  if (!embedded.ok || !pass.ok) return;
+  // Embedded must fund credit + ~$12 margin; pass_through only credit + ~$7 fee ⟹ needs no more premium,
+  // so its ceiling sits at least as loose (Foxify surrenders no more upside than the embedded model).
+  assert.ok(pass.legs.cap_pct >= embedded.legs.cap_pct - 1e-9, "pass_through cap is looser-or-equal (funds less extra)");
+});
+
 test("adaptive floor: deepens to stay feasible in a thin/low-vol regime; disabled == single solve", () => {
   const thin = linearDownsideSkew(SPOT, 0.3, 0.04); // calm regime
   const params = baseParams({ targetCreditUsdc: 150, maxFloorPct: 0.04 }); // demanding credit vs thin vol

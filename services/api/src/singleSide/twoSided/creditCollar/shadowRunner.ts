@@ -195,6 +195,14 @@ export const runShadowSession = (deps: ShadowSessionDeps): ShadowScorecard => {
 
 // ── Live wrapper: assemble shadow inputs from live public quotes + the multi-source oracle ────────
 
+/** Venue-user flow simulation bounds (integration mode). */
+export type ClientFlowConfig = {
+  minPerDay: number;
+  maxPerDay: number;
+  minNotionalUsdc: number;
+  maxNotionalUsdc: number;
+};
+
 export type LiveShadowConfig = {
   positionNotionalUsdc: number;
   feeUsdc: number;
@@ -210,8 +218,64 @@ export type LiveShadowConfig = {
   settlementWindowMin: number;
   seed: number;
   adaptiveFloor?: AdaptiveFloorConfig;
+  /** Strike grid snap in USDC for the solver. Finer (e.g. 250) lets the cap sit nearer the credit target ⟹ wider cap. */
+  strikeGridUsdc?: number;
+  /** Credit-target mode (pass_through): ceiling on credit handed to Foxify; bounded overshoot → Atticus margin. */
+  maxFoxifyCreditUsdc?: number;
+  /** σ-floor on cap distance (× tenor-σ); credit floats below target rather than tightening the cap. 0 = off. */
+  minCapSigmaMult?: number;
+  /** Symmetric retention bound: max Atticus retention from the collar net of fees (mirror EV guardrail). */
+  maxRetainedNetOfFeesUsdc?: number;
+  /**
+   * Partner-like opening SIGNAL: target positions PER DAY, released at a steady staggered rate across cycles
+   * (delta-neutral over time via the scaffold's side steering), instead of a fixed `nPositions` batch dumped
+   * at one price each cycle. Set to 2 to shadow the actual first pilot. When unset, the legacy fixed-batch
+   * behavior (`nPositions` per cycle) is used.
+   */
+  dailyPositions?: number;
+  /**
+   * INTEGRATION-MODE simulation: venue-USER flow instead of our own pair cadence. Random arrivals per UTC
+   * day (deterministic roll in [minPerDay, maxPerDay]), random side and notional per open (singles — venue
+   * users don't arrive in matched pairs). Produces the EMBEDDED-PRODUCT tape (the "one-toggle credit" lane)
+   * for design-partner conversations. Overrides dailyPositions/directionalBias when set; the exposure
+   * breaker still caps net inventory (the facility limits its own book, exactly as it would live).
+   */
+  clientFlow?: ClientFlowConfig;
+  /**
+   * Regime-aware opening gate: when the trailing avg |24h move| is elevated (trend/high-vol), widen the cap
+   * (deeper floor) and throttle opens; when extreme, pause. Lets the short-vol book sit out the bleed regimes.
+   */
+  regimeGate?: import("./regimeGate").RegimeGateConfig;
+  /**
+   * Opening DIRECTION. "flat" (default) steers net-flat (neutral book). "long"/"short" force a directional
+   * lean; "trend" opens the side of recent price momentum (trend-following). "auto" = the HYBRID pilot
+   * strategy: CALM ⟹ neutral pair (as if the partner approved) · ELEVATED ⟹ directional single with the
+   * trend (as if the partner picked the side) · HALT ⟹ skip. Non-flat books take market risk; the exposure
+   * breaker is relaxed so a leaning book doesn't self-halt. The market sets the realized hit-rate.
+   */
+  directionalBias?: "flat" | "long" | "short" | "trend" | "auto";
+  /**
+   * Auto mode only: positions/day while ELEVATED (the directional leg). Default = dailyPositions (full
+   * rate). Set 1 for the conservative variant — halves the same-day directional doubling (a trend day's
+   * two positions are ONE bet at double size; this dial trades credit volume for per-day variance).
+   */
+  autoElevatedDailyPositions?: number;
+  /**
+   * Auto mode: fraction of ELEVATED days on which the partner actually TAKES the directional trend call
+   * (0..1). The partner decides directional bets, not us — a shadow that takes every call overstates
+   * both the wins and the losses of the directional book. Deterministic per UTC day (stable across
+   * cycles/restarts). Default 1 (take every call — legacy behavior).
+   */
+  autoDirectionalParticipation?: number;
   oraclePrivateKeyPem?: string;
   oraclePublicKeyPem?: string;
+  /**
+   * Force a single hedge venue for pricing/execution/fees (e.g. "okx" for the Foxify-OKX mirror): filters
+   * the captured option dataset to this venue so the skew, routing, leg-spreads AND the fee schedule all
+   * reflect that one venue — "as close to identical to live execution as the paper shadow gets." When unset,
+   * the prior multi-venue blend (skew across venues, cost-routed spreads) is used.
+   */
+  hedgeVenue?: "bullish" | "okx" | "deribit";
 };
 
 export type LiveShadowResult =
@@ -244,6 +308,15 @@ export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok
   const dataset = buildDataset(live.optionSnapshots, live.perpSnapshots, wing, clips);
   dataset.dailyListing.bullish = dataset.dailyListing.bullish || live.bullishDailyListingObserved;
 
+  // Force a single hedge venue (e.g. OKX for the Foxify mirror): filter the option set so skew, routing,
+  // and leg-spreads all reflect that venue's live book rather than a multi-venue blend.
+  if (cfg.hedgeVenue) {
+    dataset.options = dataset.options.filter((o) => o.venue === cfg.hedgeVenue);
+    if (dataset.options.length === 0) {
+      return { ok: false, error: "no_quotes_on_hedge_venue", message: `no live option quotes captured on ${cfg.hedgeVenue} this cycle` };
+    }
+  }
+
   const { skew, ok: skewOk } = buildSkewFromCapture(dataset, cfg.tenorDays);
   if (!skewOk) return { ok: false, error: "skew_under_determined", message: "not enough live IV points to build the skew curve" };
   const routing = recommendRouting(dataset.options, cfg.tenorDays, { bullishWeight: cfg.bullishWeight, materialMarginPct: 0.2 });
@@ -263,10 +336,15 @@ export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok
     { tsMs: nowMs, priceUsd: snapshot.priceUsd }
   ];
 
+  // Directional mode intentionally warehouses net exposure (Foxify's bet), so relax the flat-steering
+  // breaker; it would otherwise fail-closed the moment the book leans. Paper shadow only.
+  const directional = cfg.directionalBias != null && cfg.directionalBias !== "flat";
+  const breaker = directional ? { ...cfg.breaker, warnBandPct: 100, haltBandPct: 100, resumeBandPct: 100, maxAbsNetNotionalUsd: Number.MAX_SAFE_INTEGER } : cfg.breaker;
+
   const scaffoldConfig: ScaffoldConfig = {
     tiers: [{ tier: 0, maxDailyNotionalUsdc: cfg.tier0CapUsdc, live: false }],
     policy: cfg.policy,
-    breaker: cfg.breaker,
+    breaker,
     serviceFeeBps: cfg.serviceFeeBps,
     minServiceFeeUsdc: cfg.minServiceFeeUsdc,
     maxFloorPct: cfg.maxFloorPct,
@@ -274,7 +352,15 @@ export const buildLiveShadowInputs = async (cfg: LiveShadowConfig): Promise<{ ok
     feeUsdc: cfg.feeUsdc,
     adaptiveFloor: cfg.adaptiveFloor,
     liveEnabled: false,
-    spreadConfig: { fillMode: "touch", legHalfSpreadUsdcPerBtc: legSpread }
+    spreadConfig: {
+      fillMode: "touch",
+      legHalfSpreadUsdcPerBtc: legSpread,
+      feeVenue: cfg.hedgeVenue === "okx" ? "okx" : "bullish",
+      ...(cfg.strikeGridUsdc != null ? { strikeGridUsdc: cfg.strikeGridUsdc } : {}),
+      ...(cfg.maxFoxifyCreditUsdc != null ? { maxFoxifyCreditUsdc: cfg.maxFoxifyCreditUsdc } : {}),
+      ...(cfg.minCapSigmaMult != null ? { minCapSigmaMult: cfg.minCapSigmaMult } : {}),
+      ...(cfg.maxRetainedNetOfFeesUsdc != null ? { maxRetainedNetOfFeesUsdc: cfg.maxRetainedNetOfFeesUsdc } : {})
+    }
   };
 
   return {

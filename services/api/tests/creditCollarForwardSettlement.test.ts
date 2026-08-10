@@ -69,6 +69,68 @@ test("computeCollarSettlement: short-perp mirror (long call ceiling, short put)"
   assert.ok(down.payoutToFoxifyUsdc < 0);
 });
 
+test("hedge-leg receipt: same settlement index ⟹ Atticus option net is exactly 0 (flat by construction)", () => {
+  // Architecture A: the collar and its back-to-back hedge both settle on the Bullish index.
+  const down = computeCollarSettlement(pos(), 92_000); // big down move, put deep ITM
+  assert.equal(down.payoutToFoxifyUsdc, 2000);
+  assert.equal(down.hedgeReceiptUsdc, 2000, "hedge pays the same payoff at the same price");
+  assert.equal(down.atticusOptionNetUsdc, 0, "receipt − payout = 0 ⟹ Atticus is flat through the move");
+
+  const up = computeCollarSettlement(pos(), 105_000); // rally past cap, short call owes
+  assert.equal(up.atticusOptionNetUsdc, 0, "flat on the up move too, regardless of Foxify-facing swing");
+});
+
+test("hedge-leg receipt: a settlement-index basis surfaces as a non-zero option net (not hidden)", () => {
+  // If the hedge settles on a DIFFERENT index than the Foxify reference, the residual is visible.
+  const s = computeCollarSettlement(pos(), 92_000, 92_500); // hedge index $500 higher than Foxify ref
+  // Foxify put pays (96000-92000)*0.5 = 2000 ; hedge put pays (96000-92500)*0.5 = 1750.
+  assert.equal(s.payoutToFoxifyUsdc, 2000);
+  assert.equal(s.hedgeReceiptUsdc, 1750);
+  assert.equal(s.atticusOptionNetUsdc, -250, "the index gap is booked as Atticus basis, not silently flat");
+});
+
+test("settleMatured: books hedge receipt + Bullish fee into the grounded net", () => {
+  const oracle = oracleAt(92_000);
+  const cap = { shortOptionImFraction: 0.1393, portfolioMarginNettingFactor: 1.0, costOfCapitalAnnual: 0.12 };
+  const r = settleMatured([pos({ ref: "f", openFeeUsdc: 7 })], NOW, oracle, cap);
+  const o = r.settled[0];
+  assert.equal(o.optionFeesUsdc, 7);
+  assert.equal(o.atticusOptionNetUsdc, 0, "same-index hedge ⟹ option net 0");
+  // grounded net = serviceFee + optionNet(0) − fee(7) − capitalCost
+  assert.ok(Math.abs(o.atticusNetAfterFeesAndCapitalUsdc - (o.serviceFeeUsdc - 7 - o.capitalCostUsdc)) < 1e-6, `got ${o.atticusNetAfterFeesAndCapitalUsdc}`);
+  // continuity field unchanged (fees excluded there).
+  assert.ok(Math.abs(o.atticusNetAfterCapitalUsdc - (o.serviceFeeUsdc - o.capitalCostUsdc)) < 1e-6);
+});
+
+test("settleMatured: pass_through ⟹ collar funds the fee, so Atticus's net does NOT subtract it again", () => {
+  const oracle = oracleAt(99_000);
+  const cap = { shortOptionImFraction: 0.1393, portfolioMarginNettingFactor: 1.0, costOfCapitalAnnual: 0.12 };
+  // Same position, two models: pass_through (collar funds the $7 fee) vs embedded (Atticus eats it).
+  const passThrough = settleMatured([pos({ ref: "pt", openFeeUsdc: 7, feesFundedByCollar: true })], NOW, oracle, cap).settled[0];
+  const embedded = settleMatured([pos({ ref: "em", openFeeUsdc: 7, feesFundedByCollar: false })], NOW, oracle, cap).settled[0];
+  assert.equal(passThrough.optionFeesUsdc, 7, "fee is still reported for transparency");
+  // pass_through: net = serviceFee − capital (fee already funded by the collar).
+  assert.ok(Math.abs(passThrough.atticusNetAfterFeesAndCapitalUsdc - (passThrough.serviceFeeUsdc - passThrough.capitalCostUsdc)) < 1e-6);
+  // embedded: net = serviceFee − fee − capital (Atticus bears the fee).
+  assert.ok(Math.abs(embedded.atticusNetAfterFeesAndCapitalUsdc - (embedded.serviceFeeUsdc - 7 - embedded.capitalCostUsdc)) < 1e-6);
+  // The pass_through net is exactly one fee higher (it isn't double-charged).
+  assert.ok(Math.abs((passThrough.atticusNetAfterFeesAndCapitalUsdc - embedded.atticusNetAfterFeesAndCapitalUsdc) - 7) < 1e-6);
+});
+
+test("aggregateSettlements: book is flat by construction even when raw Foxify payout swings", () => {
+  const oracleDown = oracleAt(92_000);
+  // A one-sided (un-paired) book: both legs are LONG-perp collars ⟹ raw Foxify payout is large + directional,
+  // but each is hedged back-to-back, so Atticus's option net is ~0.
+  const a = settleMatured([pos({ ref: "L1", openFeeUsdc: 7 })], NOW, oracleDown, {}).settled;
+  const b = settleMatured([pos({ ref: "L2", openFeeUsdc: 7 })], NOW, oracleDown, {}).settled;
+  const agg = aggregateSettlements([...a, ...b]);
+  assert.equal(agg.totalPayoutToFoxifyUsdc, 4000, "raw Foxify-facing payout swings with the market");
+  assert.equal(agg.totalAtticusOptionNetUsdc, 0, "but the hedged book nets to ~0 — the real flatness proof");
+  assert.equal(agg.bookHedgedNetBps, 0);
+  assert.equal(agg.totalOptionFeesUsdc, 14);
+  assert.ok(agg.netAfterFeesAndCapitalBps < agg.realizedServiceFeeBps, "fees lower the grounded net bps");
+});
+
 test("settleMatured: settles matured on a verified oracle; keeps unmatured", () => {
   const oracle = oracleAt(92_000);
   const matured = pos({ ref: "m", expiresAtMs: NOW - 60_000 });

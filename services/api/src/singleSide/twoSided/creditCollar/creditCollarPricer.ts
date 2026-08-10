@@ -38,6 +38,7 @@
  */
 
 import { bsPut, bsCall } from "../../../pilot/blackScholes";
+import { computeCollarOpenFees, type FeeVenueMode, type FeeVenue } from "./bullishFees";
 
 export type PerpSide = "long" | "short";
 
@@ -109,6 +110,57 @@ export type AtticusSpreadConfig = {
     tenorDays: number;
     midPerBtc: number;
   }) => number;
+  /**
+   * Hedge-venue fee channel for the Bullish option legs (see bullishFees.ts). Defaults to the
+   * CONSERVATIVE "clob_taker" (both legs charged at the 1bp-notional/10%-premium min). Set "otc_rfq"
+   * for the RFQ/block path (multi-leg nets to the heavier leg) or "clob_maker" if quoting passively.
+   * The realized fee is surfaced in economics so the headroom number is net of fees, not just crossing.
+   */
+  feeMode?: FeeVenueMode;
+  /** Hedge venue fee schedule for the option legs. Default "bullish" (10% cap); "okx" = 12.5% cap + OKX rates. */
+  feeVenue?: FeeVenue;
+  /**
+   * Pricing model — WHERE Atticus's profit sits:
+   *   - "embedded_spread" (default): the collar funds credit + an embedded Atticus margin, and Atticus
+   *     keeps the spread. Foxify EV = −(crossing + margin). (Legacy behavior.)
+   *   - "pass_through": the collar is sold at fair value and funds ONLY the credit + the Bullish open fee,
+   *     so it nets to ~0 for Atticus. Atticus's profit is a SEPARATE operation fee (operationFeeBps /
+   *     minOperationFeeUsdc) billed to Foxify — surfaced in economics, NOT embedded in the strikes.
+   */
+  pricingModel?: "embedded_spread" | "pass_through";
+  /**
+   * pass_through only: operation fee in bps of notional, billed separately. Default 0 — Atticus's fee is
+   * negotiated separately on volume and deliberately NOT modeled in platform economics.
+   */
+  operationFeeBps?: number;
+  /** pass_through only: operation fee floor in USDC/position. Default 0 (see operationFeeBps). */
+  minOperationFeeUsdc?: number;
+  /**
+   * CREDIT-TARGET MODE (pass_through). Ceiling on the credit actually handed to Foxify (USDC). Foxify only
+   * needs ~the target; without a ceiling, discrete-strike overshoot is passed through as EXTRA credit, which
+   * is funded by capping the upside TIGHTER than necessary. With a ceiling set, Foxify receives min(fundable,
+   * ceiling) and the solver is free to sit the cap WIDER (less surrendered upside / fewer cap breaches); any
+   * bounded overshoot above the ceiling is retained as Atticus margin (≈ the operation fee, just realized in
+   * the collar). Combine with a finer strikeGridUsdc so the cap can actually land near the target. Unset ⟹
+   * legacy pass-through (full overshoot to Foxify).
+   */
+  maxFoxifyCreditUsdc?: number;
+  /**
+   * σ-FLOOR ON CAP DISTANCE. In calm/low-vol tape, manufacturing the full target credit forces the cap
+   * toward ATM (the far floor is nearly worthless, so the whole credit must come from the cap) — exactly
+   * when the book is issuing most. With this set (e.g. 1.1), the funding strike may never sit closer than
+   * `minCapSigmaMult × σ_tenor` from spot; if the target credit can't be manufactured at that distance the
+   * credit FLOATS DOWN to what that strike funds (partial fee coverage) instead of tightening the cap.
+   * 0/unset ⟹ off (legacy: tighten until funded or infeasible).
+   */
+  minCapSigmaMult?: number;
+  /**
+   * SYMMETRIC RETENTION BOUND (pass_through). The EV identity is: Foxify EV ≡ −(crossing + Atticus margin),
+   * so bounding what Atticus retains from the collar bounds Foxify's EV from below — the mirror of the
+   * "no positive Foxify EV" guardrail. Any collar proceeds beyond fees + this bound are passed to Foxify as
+   * extra credit (even above the ceiling). Unset ⟹ off.
+   */
+  maxRetainedNetOfFeesUsdc?: number;
 };
 
 export type CollarLegs = {
@@ -155,6 +207,14 @@ export type CreditCollarQuote = {
     required_margin_usdc: number;    // max(notional × spreadBps, minMarginUsdc)
     foxify_market_implied_ev_usdc: number; // = foxify_credit − fair_credit_mid = −(crossing + margin)
     rebates_included: false;
+    // ── Hedge-venue (Bullish) option fees — grounds the headroom number net of real fees ──
+    fee_mode: FeeVenueMode;
+    option_open_fees_usdc: number;            // fee to OPEN the collar on Bullish (held-to-expiry pays only this)
+    atticus_margin_net_of_fees_usdc: number;  // collar spread AFTER the open fee (~0 in pass_through)
+    // ── Profit model ──
+    pricing_model: "embedded_spread" | "pass_through";
+    operation_fee_usdc: number;               // SEPARATE operation fee billed to Foxify (pass_through); 0 in embedded
+    atticus_total_revenue_usdc: number;       // what Atticus actually makes per position (margin-net-of-fees OR operation fee)
   };
   foxify_outcome: {
     /** Max protected loss (between spot and the floor, net of the credit cushion). */
@@ -251,10 +311,20 @@ export const solveAndPriceCreditCollar = (
   const fillMode: "mid" | "touch" = config.fillMode === "mid" ? "mid" : "touch";
   const relHalf = config.relativeHalfSpreadPct != null && config.relativeHalfSpreadPct >= 0 ? config.relativeHalfSpreadPct : 0.1;
   const absHalf = config.absHalfSpreadUsdcPerBtc != null && config.absHalfSpreadUsdcPerBtc >= 0 ? config.absHalfSpreadUsdcPerBtc : 1.5;
+  const pricingModel: "embedded_spread" | "pass_through" = config.pricingModel === "pass_through" ? "pass_through" : "embedded_spread";
+  const feeMode: FeeVenueMode = config.feeMode ?? "clob_taker";
+  const operationFeeBps = config.operationFeeBps != null && config.operationFeeBps >= 0 ? config.operationFeeBps : 0;
+  const minOperationFeeUsdc = config.minOperationFeeUsdc != null && config.minOperationFeeUsdc >= 0 ? config.minOperationFeeUsdc : 0;
+  const maxFoxifyCreditUsdc = config.maxFoxifyCreditUsdc != null && config.maxFoxifyCreditUsdc > 0 ? config.maxFoxifyCreditUsdc : Infinity;
+  const minCapSigmaMult = config.minCapSigmaMult != null && config.minCapSigmaMult > 0 ? config.minCapSigmaMult : 0;
+  const maxRetainedNetOfFeesUsdc = config.maxRetainedNetOfFeesUsdc != null && config.maxRetainedNetOfFeesUsdc >= 0 ? config.maxRetainedNetOfFeesUsdc : Infinity;
 
   const T = yearsFromDays(tenorDays);
   const contractsBtc = notionalUsdc / spot;
-  const requiredMarginUsdc = Math.max((notionalUsdc * spreadBps) / 1e4, minMarginUsdc);
+  // In pass_through the collar carries NO embedded Atticus margin — it funds only credit + Bullish fees and
+  // nets to ~0; profit is the separate operation fee. In embedded_spread the collar must throw off this margin.
+  const requiredMarginUsdc = pricingModel === "pass_through" ? 0 : Math.max((notionalUsdc * spreadBps) / 1e4, minMarginUsdc);
+  const operationFeeUsdc = pricingModel === "pass_through" ? Math.max((notionalUsdc * operationFeeBps) / 1e4, minOperationFeeUsdc) : 0;
 
   // Executable per-leg prices. Atticus BUYS the protective leg (pays ask) and SELLS the funding
   // leg (receives bid). Half-spread at the ACTUAL wing strike: measured model if supplied, else
@@ -288,46 +358,82 @@ export const solveAndPriceCreditCollar = (
   const protectiveMidPerBtc = legMidPerBtc(protectiveType, spot, protectiveStrike, T, r, skew);
   const protectiveExecPerBtc = execAskPerBtc(protectiveMidPerBtc, protectiveStrike, protectiveType); // Atticus BUYS the protective leg (pays ask)
 
-  // 2) Search the funding leg from loose (far OTM) to tight; pick the loosest that funds credit+margin
+  // 2) Search the funding leg from loose (far OTM) to tight; pick the loosest that funds the target
   //    at EXECUTABLE prices (funding sold at bid). Crossing both legs is the real competition for credit.
   //    long perp  → short call ABOVE spot; tighter = lower strike = more premium
   //    short perp → short put BELOW spot; tighter = higher strike = more premium
-  const targetFundableCredit = targetCreditUsdc + requiredMarginUsdc;
   const steps = Math.max(1, Math.floor((spot * fundingSearchMaxPct) / grid));
-
-  let chosenFundingStrike: number | null = null;
-  let chosenFundingMidPerBtc = 0;
-  let chosenFundableCredit = 0;
   let tightestFundableCredit = 0; // best (max) executable credit seen, for the infeasibility hint
 
-  for (let i = steps; i >= 1; i--) {
-    const offset = i * grid;
-    const fundingStrike = side === "long" ? spot + offset : spot - offset;
-    if (!(fundingStrike > 0)) continue;
-    const snapped = side === "long" ? snapDown(fundingStrike, grid) : snapUp(fundingStrike, grid);
-    if (side === "long" && snapped <= spot) continue;
-    if (side === "short" && snapped >= spot) continue;
+  // σ-floor on the cap distance: the funding strike may never sit closer than minCapSigmaMult × σ_tenor.
+  // σ_tenor from the ATM implied on the funding side (the vol the cap is actually priced at).
+  const atmIv = skew(snapUp(spot, grid), fundingType);
+  const sigmaTenorPct = atmIv * Math.sqrt(T);
+  const minCapOffsetUsd = minCapSigmaMult > 0 ? minCapSigmaMult * sigmaTenorPct * spot : 0;
 
-    const fundingMidPerBtc = legMidPerBtc(fundingType, spot, snapped, T, r, skew);
-    const fundingExecPerBtc = execBidPerBtc(fundingMidPerBtc, snapped, fundingType);
-    const fundableCredit = (fundingExecPerBtc - protectiveExecPerBtc) * contractsBtc;
-    tightestFundableCredit = Math.max(tightestFundableCredit, fundableCredit);
+  const searchFunding = (targetFundable: number): { strike: number; midPerBtc: number; fundable: number } | null => {
+    for (let i = steps; i >= 1; i--) {
+      const offset = i * grid;
+      if (offset < minCapOffsetUsd) break; // σ-floor: no closer than minCapSigmaMult × σ_tenor
+      const fundingStrike = side === "long" ? spot + offset : spot - offset;
+      if (!(fundingStrike > 0)) continue;
+      const snapped = side === "long" ? snapDown(fundingStrike, grid) : snapUp(fundingStrike, grid);
+      if (side === "long" && snapped <= spot) continue;
+      if (side === "short" && snapped >= spot) continue;
 
-    if (fundableCredit >= targetFundableCredit) {
-      chosenFundingStrike = snapped;
-      chosenFundingMidPerBtc = fundingMidPerBtc;
-      chosenFundableCredit = fundableCredit;
-      break; // first hit from the loose end = loosest acceptable = best retained upside for Foxify
+      const fundingMidPerBtc = legMidPerBtc(fundingType, spot, snapped, T, r, skew);
+      const fundingExecPerBtc = execBidPerBtc(fundingMidPerBtc, snapped, fundingType);
+      const fundableCredit = (fundingExecPerBtc - protectiveExecPerBtc) * contractsBtc;
+      tightestFundableCredit = Math.max(tightestFundableCredit, fundableCredit);
+
+      if (fundableCredit >= targetFundable) {
+        return { strike: snapped, midPerBtc: fundingMidPerBtc, fundable: fundableCredit }; // loosest acceptable
+      }
     }
+    return null;
+  };
+
+  const openFeeFor = (fundingMidPerBtc: number): number =>
+    computeCollarOpenFees({
+      notionalUsd: notionalUsdc,
+      protectivePremiumUsd: protectiveMidPerBtc * contractsBtc,
+      fundingPremiumUsd: fundingMidPerBtc * contractsBtc,
+      mode: feeMode
+    }).openFeeUsdc;
+
+  // embedded_spread: fund credit + the embedded Atticus margin.
+  // pass_through:    fund credit + the Bullish open fee (two-pass to resolve the fee↔strike circularity),
+  //                  so the collar nets to ~0 and Atticus's profit is the separate operation fee.
+  let chosen: { strike: number; midPerBtc: number; fundable: number } | null;
+  let creditFloated = false;
+  if (pricingModel === "pass_through") {
+    const provisional = searchFunding(targetCreditUsdc);
+    chosen = provisional ? searchFunding(targetCreditUsdc + openFeeFor(provisional.midPerBtc)) : null;
+    // σ-floor float-down: if the target can't be manufactured at/beyond the σ-floor distance, DON'T tighten —
+    // price the tightest ALLOWED strike and let the credit float below target (partial coverage, honest cap).
+    if (chosen == null && minCapOffsetUsd > 0) {
+      const floorStrike = side === "long" ? snapUp(spot + minCapOffsetUsd, grid) : snapDown(spot - minCapOffsetUsd, grid);
+      if ((side === "long" && floorStrike > spot) || (side === "short" && floorStrike < spot && floorStrike > 0)) {
+        const midPerBtc = legMidPerBtc(fundingType, spot, floorStrike, T, r, skew);
+        const fundable = (execBidPerBtc(midPerBtc, floorStrike, fundingType) - protectiveExecPerBtc) * contractsBtc;
+        if (fundable - openFeeFor(midPerBtc) > 0) {
+          chosen = { strike: floorStrike, midPerBtc, fundable };
+          creditFloated = true;
+        }
+      }
+    }
+  } else {
+    chosen = searchFunding(targetCreditUsdc + requiredMarginUsdc);
   }
 
-  if (chosenFundingStrike == null) {
+  if (chosen == null) {
+    const extraLabel = pricingModel === "pass_through" ? `Bullish open fee` : `margin ${round2(requiredMarginUsdc)}`;
     return {
       ok: false,
       error: "credit_infeasible_at_floor",
       message:
-        `Cannot manufacture credit ${round2(targetCreditUsdc)} + margin ${round2(requiredMarginUsdc)} ` +
-        `(= ${round2(targetFundableCredit)}) at floor ${round4(maxFloorPct)} with ${fillMode} fills. ` +
+        `Cannot manufacture credit ${round2(targetCreditUsdc)} + ${extraLabel} ` +
+        `at floor ${round4(maxFloorPct)} with ${fillMode} fills. ` +
         `Best executable credit achievable here ≈ ${round2(tightestFundableCredit)}.`,
       hints: [
         "Increase max_floor_pct (deeper/cheaper protective leg ⟹ more credit available).",
@@ -338,6 +444,10 @@ export const solveAndPriceCreditCollar = (
     };
   }
 
+  const chosenFundingStrike = chosen.strike;
+  const chosenFundingMidPerBtc = chosen.midPerBtc;
+  const chosenFundableCredit = chosen.fundable;
+
   const putStrike = side === "long" ? protectiveStrike : chosenFundingStrike;
   const callStrike = side === "long" ? chosenFundingStrike : protectiveStrike;
 
@@ -347,10 +457,39 @@ export const solveAndPriceCreditCollar = (
   const fairCreditMidUsdc = (chosenFundingMidPerBtc - protectiveMidPerBtc) * contractsBtc;
   const crossingDragUsdc = Math.max(0, fairCreditMidUsdc - fundableCreditUsdc);
 
-  const foxifyCreditUsdc = targetCreditUsdc;
-  const atticusMarginUsdc = fundableCreditUsdc - foxifyCreditUsdc; // post-crossing margin Atticus keeps
-  // Foxify's EV is measured against TRUE fair value (mid). It eats BOTH the crossing and the margin.
-  const foxifyEvUsdc = foxifyCreditUsdc - fairCreditMidUsdc; // = −(crossingDrag + atticusMargin)
+  // Hedge-venue (Bullish) option fees at the chosen strikes (mid premiums).
+  const fees = computeCollarOpenFees({
+    notionalUsd: notionalUsdc,
+    protectivePremiumUsd: protectiveMidPerBtc * contractsBtc,
+    fundingPremiumUsd: chosenFundingMidPerBtc * contractsBtc,
+    mode: feeMode,
+    venue: config.feeVenue ?? "bullish"
+  });
+
+  // pass_through: hand the executable collar proceeds (net of the Bullish fee) to Foxify, but no more than
+  // maxFoxifyCreditUsdc. Without a ceiling the full overshoot is passed through (legacy) — which forces a
+  // TIGHTER cap to manufacture credit Foxify never asked for. With a ceiling, Foxify gets the target and the
+  // solver can sit the cap WIDER; any bounded overshoot above the ceiling is retained as Atticus margin.
+  // embedded_spread: Foxify gets the fixed target; Atticus keeps the remainder as its margin.
+  const rawPassCredit = fundableCreditUsdc - fees.openFeeUsdc; // collar proceeds net of the venue fee
+  let foxifyCreditUsdc: number;
+  if (pricingModel !== "pass_through") {
+    foxifyCreditUsdc = targetCreditUsdc;
+  } else if (creditFloated) {
+    // σ-floor float-down: the cap stayed at the σ-floor distance; credit = what that strike funds (< target).
+    foxifyCreditUsdc = Math.max(0, Math.min(rawPassCredit, maxFoxifyCreditUsdc));
+  } else {
+    foxifyCreditUsdc = Math.min(Math.max(targetCreditUsdc, rawPassCredit), maxFoxifyCreditUsdc);
+  }
+  // Symmetric retention bound (the mirror guardrail): Foxify EV ≡ −(crossing + Atticus margin), so bound what
+  // Atticus retains net of fees; proceeds beyond fees + bound pass to Foxify as extra credit (above the ceiling).
+  if (pricingModel === "pass_through" && Number.isFinite(maxRetainedNetOfFeesUsdc)) {
+    const retained = rawPassCredit - foxifyCreditUsdc;
+    if (retained > maxRetainedNetOfFeesUsdc) foxifyCreditUsdc = rawPassCredit - maxRetainedNetOfFeesUsdc;
+  }
+  const atticusMarginUsdc = fundableCreditUsdc - foxifyCreditUsdc; // collar spread Atticus keeps (≈ fee in pass_through)
+  // Foxify's EV is measured against TRUE fair value (mid). It eats the crossing (+ margin in embedded).
+  const foxifyEvUsdc = foxifyCreditUsdc - fairCreditMidUsdc;
 
   // Guardrail 1: Atticus must keep at least the required margin AFTER paying the leg-crossing.
   if (atticusMarginUsdc < requiredMarginUsdc - 1e-6) {
@@ -407,6 +546,12 @@ export const solveAndPriceCreditCollar = (
   // off by contracts × spot × 1% = notional × 1% relative to Foxify's actual perp P&L.
   const basisUsdcPer1pct = notionalUsdc * 0.01;
 
+  // The collar spread NET of the Bullish fee is the real collar edge: in embedded_spread it's Atticus's
+  // per-position profit; in pass_through it is ~0 by construction (proceeds passed through, fee funded).
+  const atticusMarginNetOfFeesUsdc = atticusMarginUsdc - fees.openFeeUsdc;
+  // What Atticus actually makes per position: the collar net-of-fees (embedded) OR the separate fee (pass_through).
+  const atticusTotalRevenueUsdc = pricingModel === "pass_through" ? operationFeeUsdc : atticusMarginNetOfFeesUsdc;
+
   return {
     ok: true,
     position: {
@@ -442,7 +587,13 @@ export const solveAndPriceCreditCollar = (
       atticus_margin_bps: round4((atticusMarginUsdc / notionalUsdc) * 1e4),
       required_margin_usdc: round2(requiredMarginUsdc),
       foxify_market_implied_ev_usdc: round2(foxifyEvUsdc),
-      rebates_included: false
+      rebates_included: false,
+      fee_mode: feeMode,
+      option_open_fees_usdc: round2(fees.openFeeUsdc),
+      atticus_margin_net_of_fees_usdc: round2(atticusMarginNetOfFeesUsdc),
+      pricing_model: pricingModel,
+      operation_fee_usdc: round2(operationFeeUsdc),
+      atticus_total_revenue_usdc: round2(atticusTotalRevenueUsdc)
     },
     foxify_outcome: {
       max_loss_usdc: round2(foxifyMaxLossUsdc),
@@ -475,6 +626,15 @@ export const solveAndPriceCreditCollar = (
       "Fair value at per-strike (skew) mid; Atticus margin is the explicit embedded spread on top.",
       "EV-neutral: Foxify market-implied EV = −Atticus margin (≤ −required). Positive Foxify EV is rejected.",
       "Credit is accrued + netted at settlement, NOT paid upfront — removes free-option exposure + financing drag.",
+      pricingModel === "pass_through"
+        ? `pass_through: collar funds credit + venue fee (${feeMode}, open ${round2(fees.openFeeUsdc)}) ⟹ collar nets ~${round2(atticusMarginNetOfFeesUsdc)}; Atticus's fee is ${operationFeeUsdc > 0 ? `the SEPARATE operation fee ${round2(operationFeeUsdc)}` : "negotiated separately on volume (NOT modeled in platform economics)"}.`
+        : `embedded_spread: Atticus margin ${round2(atticusMarginUsdc)} net of Bullish fee (${feeMode}, ${round2(fees.openFeeUsdc)}) = ${round2(atticusMarginNetOfFeesUsdc)} per position.`,
+      ...(creditFloated
+        ? [`σ-floor: target credit not fundable with the cap ≥ ${minCapSigmaMult}σ (${round4(sigmaTenorPct)} tenor-σ) — cap held at the σ-floor and credit FLOATED DOWN to ${round2(foxifyCreditUsdc)} (partial coverage; judge coverage monthly, not per-trade).`]
+        : []),
+      ...(pricingModel === "pass_through" && Number.isFinite(maxRetainedNetOfFeesUsdc)
+        ? [`symmetric retention bound: Atticus may retain ≤ ${round2(maxRetainedNetOfFeesUsdc)} net of fees from the collar (Foxify EV ≡ −(crossing + retention) is bounded BOTH ways).`]
+        : []),
       "Rebates excluded (upside-only, never load-bearing). Phase A = pricing/sim only; no execution, no settlement."
     ]
   };

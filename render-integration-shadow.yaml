@@ -1,0 +1,95 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-integration-shadow.yaml — Atticus EMBEDDED-PRODUCT shadow (venue-user flow)
+#
+# OPT-IN second service (deploy via Render → New → Blueprint when wanted; nothing auto-creates it).
+# Simulates the "one-toggle credit" lane a design-partner venue would run: random venue-user
+# arrivals per day at varied ticket sizes and sides (singles — users don't arrive in pairs), each
+# wrapped by the same pricer/rails as the main shadow, on live OKX options pricing. Produces the
+# PRODUCT's own public tape for venue conversations, fully isolated from the main tape's disk.
+# Paper settlement only — read-only, live tiers OFF, NO venue credentials.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: atticus-product-shadow
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/bullish-fees-hedge-receipt-9151
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api run shadow:service
+    healthCheckPath: /healthz
+    disk:
+      name: product-shadow-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # ── THE DIFFERENCE: venue-user flow simulation ──
+      - key: SHADOW_CLIENT_FLOW
+        value: "true"
+      - key: SHADOW_CLIENT_FLOW_MIN_PER_DAY
+        value: "1"
+      - key: SHADOW_CLIENT_FLOW_MAX_PER_DAY
+        value: "6"
+      - key: SHADOW_CLIENT_FLOW_MIN_NOTIONAL
+        value: "1000"                # $1k–$50k tickets, snapped to $500
+      - key: SHADOW_CLIENT_FLOW_MAX_NOTIONAL
+        value: "50000"
+
+      # ── Product terms (same engine as the main shadow) ──
+      - key: SHADOW_HEDGE_VENUE
+        value: okx
+      - key: SHADOW_SETTLEMENT_HORIZON_MIN
+        value: "1440"
+      - key: HARNESS_TENOR_DAYS
+        value: "1"
+      - key: SHADOW_LOOP_INTERVAL_MS
+        value: "900000"
+      - key: SHADOW_TIER0_CAP_USDC
+        value: "2000000"
+      - key: HARNESS_BULLISH_WEIGHT
+        value: "0"
+      - key: SHADOW_COLLATERAL_USDC
+        value: "25000"
+
+      # ── Capital inputs (OKX-measured) ──
+      - key: SHADOW_SHORT_OPTION_IM_FRACTION
+        value: "0.14"
+      - key: SHADOW_PM_NETTING
+        value: "0.078"
+      - key: SHADOW_COST_OF_CAPITAL
+        value: "0.12"
+
+      # ── Isolated disk stores (NEVER shared with the main tape) ──
+      - key: SHADOW_STORE_PATH
+        value: /var/data/product-shadow-scorecards.jsonl
+      - key: SHADOW_OPEN_POSITIONS_PATH
+        value: /var/data/product-shadow-open.jsonl
+      - key: SHADOW_SETTLEMENT_LEDGER_PATH
+        value: /var/data/product-shadow-settlements.jsonl
+      - key: SHADOW_COLLATERAL_PATH
+        value: /var/data/product-shadow-collateral.json
+      - key: SHADOW_OPENING_STATE_PATH
+        value: /var/data/product-shadow-opening.json
+      - key: SHADOW_PRICE_HISTORY_PATH
+        value: /var/data/product-shadow-prices.jsonl
+
+      # ── Public market-data bases (read-only; NO API keys) ──
+      - key: OKX_REST_BASE
+        value: https://www.okx.com
+      - key: DERIBIT_REST_BASE
+        value: https://www.deribit.com/api/v2
+      - key: BULLISH_REST_BASE
+        value: https://api.exchange.bullish.com
+
+      - key: ORACLE_PRIVATE_KEY_PEM
+        sync: false
+      - key: ORACLE_PUBLIC_KEY_PEM
+        sync: false
+      - key: SHADOW_DASHBOARD_TOKEN
+        sync: false
+      - key: SHADOW_CONTACT
+        sync: false

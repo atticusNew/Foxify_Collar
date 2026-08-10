@@ -23,6 +23,37 @@ export type OpenPosition = {
   floorPctUsed: number;
   openedAtMs: number;
   expiresAtMs: number;
+  /** Hedge-venue (Bullish) fee paid to OPEN the collar legs. Held-to-expiry pays only this. Default 0. */
+  openFeeUsdc?: number;
+  /**
+   * True (pass_through model) when the COLLAR itself funds the Bullish open fee — so the fee is not
+   * borne by Atticus's net (it's already covered by the funded credit). Default false (embedded model:
+   * the fee comes out of Atticus's margin).
+   */
+  feesFundedByCollar?: boolean;
+  /** What we SOLD the funding leg (cap) for at open — executable premium collected, USDC. */
+  fundingLegPremiumUsdc?: number;
+  /** What we PAID for the protective leg (floor) at open — executable premium, USDC. */
+  protectiveLegPremiumUsdc?: number;
+  /** Hedge venue for this position ("okx_model" in the shadow; "g20_quote" off a manual RFQ; "okx_live" for real fills). */
+  venue?: string;
+  /** Live-RFQ metadata when booked off a real venue quote (dry-run or live). */
+  quoteMeta?: { rfqRef: string; quotedNetUsdc: number; modelNetUsdc: number; quotedAtIso: string };
+  /** Real-execution metadata (venue okx_live / falconx_live): exact instruments/fills, for unwind + reconciliation. */
+  liveMeta?: {
+    putInstId: string;           // OKX instId or FalconX symbol of the put leg
+    callInstId: string;
+    contracts: number;           // venue contracts per leg (OKX: 0.01 BTC lots · FalconX: qty in BTC with ctValBtc=1)
+    ctValBtc: number;
+    mode: "demo" | "live";
+    protectiveFillPxBtc: number; // avg fill px, BTC per BTC underlying (0 when the venue quotes USD net)
+    fundingFillPxBtc: number;
+    venueFeeUsdc: number;        // realized venue fee across both legs (0 for all-in RFQ pricing)
+    clOrdPrefix?: string;
+    /** FalconX: the executed quote + trade ids (reconciliation joins on trade_id). */
+    fxQuoteId?: string;
+    fxTradeIds?: string[];
+  };
 };
 
 export type SettlementOutcome = {
@@ -44,10 +75,24 @@ export type SettlementOutcome = {
   openedAtMs: number;
   settledAtMs: number;
   heldMs: number;
-  // ── Capital (measured short-leg IM, Deribit) ──
+  // ── Back-to-back hedge leg (the flatness proof) ──
+  hedgeReceiptUsdc: number;            // Atticus's identical hedge on Bullish pays the SAME collar payoff
+  atticusOptionNetUsdc: number;        // hedgeReceipt − payoutToFoxify ⟹ ~0 in architecture A (same index)
+  // ── Capital (measured short-leg IM) + real Bullish option fees ──
   shortLegMarginUsdc: number;          // IM posted to carry this position's short option leg
   capitalCostUsdc: number;             // cost-of-capital on that IM over the actual holding period
-  atticusNetAfterCapitalUsdc: number;  // serviceFee − capitalCost (the real margin net of capital)
+  optionFeesUsdc: number;              // realized Bullish open fee (held-to-expiry pays only the open)
+  atticusNetAfterCapitalUsdc: number;  // serviceFee − capitalCost (kept for continuity)
+  atticusNetAfterFeesAndCapitalUsdc: number; // serviceFee + optionNet − fees − capitalCost (fully grounded)
+  // ── Per-leg open premiums + venue (for the positions view; optional on legacy rows) ──
+  fundingLegPremiumUsdc?: number;      // what we SOLD the cap for at open
+  protectiveLegPremiumUsdc?: number;   // what we PAID for the floor at open
+  venue?: string;
+  quoteMeta?: OpenPosition["quoteMeta"];
+  /** How the position concluded. Default (absent) = "expiry". "watcher_unwind" = early barrier close ·
+   *  "partner_close" = partner closed the perp (touch signal or voluntary) ⟹ collar concludes, vested credit. */
+  closedBy?: "expiry" | "watcher_unwind" | "partner_close";
+  liveMeta?: OpenPosition["liveMeta"]; // real-execution metadata (okx_live) — reconciliation needs the instIds
 };
 
 /**
@@ -64,15 +109,34 @@ const YEAR_MS = 365 * 86_400_000;
 
 const round2 = (x: number) => +x.toFixed(2);
 
-/** Pure collar payoff at a settlement price. Long-perp: long put − short call; short-perp: mirror. */
+/**
+ * Pure collar payoff at a settlement price. Long-perp: long put − short call; short-perp: mirror.
+ *
+ * Also books the back-to-back HEDGE leg: Atticus hedges by holding the IDENTICAL collar on Bullish, so
+ * its receipt is the SAME payoff evaluated at the hedge-venue settlement price. In architecture A (the
+ * collar AND the hedge both settle on the Bullish index) `hedgeSettlePriceUsd === settlePriceUsd`, so
+ * the receipt equals the payout and Atticus's option net is exactly 0 — flat by construction. A non-zero
+ * `atticusOptionNetUsdc` is precisely the settlement basis between the Foxify reference and the hedge
+ * index (e.g. an architecture-B bilateral trade settling on a different index). Pass the two prices
+ * separately to MEASURE that basis instead of asserting flatness.
+ */
 export const computeCollarSettlement = (
   pos: OpenPosition,
-  settlePriceUsd: number
-): { contractsBtc: number; putIntrinsicUsd: number; callIntrinsicUsd: number; payoutToFoxifyUsdc: number; netToFoxifyUsdc: number; floorBreached: boolean; capBreached: boolean } => {
+  settlePriceUsd: number,
+  hedgeSettlePriceUsd: number = settlePriceUsd
+): { contractsBtc: number; putIntrinsicUsd: number; callIntrinsicUsd: number; payoutToFoxifyUsdc: number; netToFoxifyUsdc: number; floorBreached: boolean; capBreached: boolean; hedgeReceiptUsdc: number; atticusOptionNetUsdc: number } => {
   const contractsBtc = pos.notionalUsdc / pos.spotAtEntry;
+  const payoffAt = (s: number): number => {
+    const put = Math.max(0, pos.putStrike - s) * contractsBtc;
+    const call = Math.max(0, s - pos.callStrike) * contractsBtc;
+    return pos.side === "long" ? put - call : call - put;
+  };
   const putIntrinsic = Math.max(0, pos.putStrike - settlePriceUsd) * contractsBtc;
   const callIntrinsic = Math.max(0, settlePriceUsd - pos.callStrike) * contractsBtc;
-  const payout = pos.side === "long" ? putIntrinsic - callIntrinsic : callIntrinsic - putIntrinsic;
+  const payout = payoffAt(settlePriceUsd);
+  // Atticus's back-to-back hedge on Bullish pays the same collar payoff at the hedge-venue price.
+  const hedgeReceipt = payoffAt(hedgeSettlePriceUsd);
+  const atticusOptionNet = hedgeReceipt - payout;
   // "floor" = the protective leg (long put for long-perp; long call for short-perp).
   const floorBreached = pos.side === "long" ? settlePriceUsd < pos.putStrike : settlePriceUsd > pos.callStrike;
   const capBreached = pos.side === "long" ? settlePriceUsd > pos.callStrike : settlePriceUsd < pos.putStrike;
@@ -83,7 +147,9 @@ export const computeCollarSettlement = (
     payoutToFoxifyUsdc: round2(payout),
     netToFoxifyUsdc: round2(pos.foxifyCreditUsdc + payout),
     floorBreached,
-    capBreached
+    capBreached,
+    hedgeReceiptUsdc: round2(hedgeReceipt),
+    atticusOptionNetUsdc: round2(atticusOptionNet)
   };
 };
 
@@ -130,11 +196,20 @@ export const settleMatured = (
       deferred += 1;
       continue;
     }
-    const s = computeCollarSettlement(p, settlePriceUsd);
+    // Architecture A: the collar and its back-to-back hedge both settle on the same Bullish index, so
+    // the hedge price equals the settlement price ⟹ option net 0. (A future basis feed would pass a
+    // separate hedge price here to MEASURE the residual.)
+    const s = computeCollarSettlement(p, settlePriceUsd, settlePriceUsd);
     const heldMs = nowMs - p.openedAtMs;
     // Capital: IM posted to carry this position's short option leg, costed over the real holding period.
     const shortLegMargin = p.notionalUsdc * imFraction * pmNetting;
     const capitalCost = shortLegMargin * coc * (Math.max(0, heldMs) / YEAR_MS);
+    // Real Bullish open fee (held-to-expiry pays only the open). Default 0 for legacy positions.
+    const optionFees = Math.max(0, p.openFeeUsdc ?? 0);
+    // In pass_through the collar funds the fee (it's inside the credit), so Atticus's net doesn't bear it
+    // again; in embedded the fee comes out of Atticus's margin. serviceFeeUsdc is Atticus's gross revenue.
+    const feeBorneByAtticus = p.feesFundedByCollar ? 0 : optionFees;
+    const atticusNetAfterFeesAndCapital = p.serviceFeeUsdc + s.atticusOptionNetUsdc - feeBorneByAtticus - capitalCost;
     settled.push({
       ref: p.ref,
       side: p.side,
@@ -154,12 +229,141 @@ export const settleMatured = (
       openedAtMs: p.openedAtMs,
       settledAtMs: nowMs,
       heldMs,
+      hedgeReceiptUsdc: s.hedgeReceiptUsdc,
+      atticusOptionNetUsdc: s.atticusOptionNetUsdc,
       shortLegMarginUsdc: round2(shortLegMargin),
       capitalCostUsdc: round2(capitalCost),
-      atticusNetAfterCapitalUsdc: round2(p.serviceFeeUsdc - capitalCost)
+      optionFeesUsdc: round2(optionFees),
+      atticusNetAfterCapitalUsdc: round2(p.serviceFeeUsdc - capitalCost),
+      atticusNetAfterFeesAndCapitalUsdc: round2(atticusNetAfterFeesAndCapital),
+      fundingLegPremiumUsdc: p.fundingLegPremiumUsdc,
+      protectiveLegPremiumUsdc: p.protectiveLegPremiumUsdc,
+      venue: p.venue,
+      quoteMeta: p.quoteMeta,
+      liveMeta: p.liveMeta
     });
   }
   return { settled, stillOpen, oracleVerified, settlePriceUsd, deferred };
+};
+
+/**
+ * Settle a position EARLY at a confirmed barrier touch (watcher-permitted lock). The collar dies at
+ * the line — the touched leg carries zero intrinsic there, so the option payout is ~0 — and the
+ * partner keeps the credit VESTED to the touch (the unvested remainder funded the hedge buyback,
+ * which the watcher verified was affordable before permitting). Pure.
+ *
+ * Deliberately does NOT carry liveMeta onto the outcome: the expiry-settlement reconciliation joins
+ * on liveMeta and would flag an early-closed position as a venue mismatch (its venue cash flow is the
+ * unwind, not a delivery) — the unwind itself is already audited in the live-executions ledger.
+ */
+export const settleAtBarrier = (
+  pos: OpenPosition,
+  barrier: "floor" | "ceiling",
+  nowMs: number,
+  vestedCreditUsdc: number,
+  capital: SettlementCapitalConfig = {}
+): SettlementOutcome => {
+  const barrierPrice = barrier === "floor" ? pos.putStrike : pos.callStrike;
+  const s = computeCollarSettlement(pos, barrierPrice, barrierPrice);
+  const heldMs = Math.max(0, nowMs - pos.openedAtMs);
+  const imFraction = capital.shortOptionImFraction ?? 0.1393;
+  const pmNetting = capital.portfolioMarginNettingFactor ?? 1.0;
+  const coc = capital.costOfCapitalAnnual ?? 0.12;
+  const shortLegMargin = pos.notionalUsdc * imFraction * pmNetting;
+  const capitalCost = shortLegMargin * coc * (heldMs / YEAR_MS);
+  const optionFees = Math.max(0, pos.openFeeUsdc ?? 0);
+  const feeBorneByAtticus = pos.feesFundedByCollar ? 0 : optionFees;
+  const vested = round2(Math.max(0, Math.min(vestedCreditUsdc, pos.foxifyCreditUsdc)));
+  return {
+    ref: pos.ref,
+    side: pos.side,
+    notionalUsdc: pos.notionalUsdc,
+    spotAtEntry: pos.spotAtEntry,
+    settlePriceUsd: barrierPrice,
+    movePct: pos.spotAtEntry > 0 ? +((barrierPrice - pos.spotAtEntry) / pos.spotAtEntry).toFixed(6) : 0,
+    putIntrinsicUsd: s.putIntrinsicUsd,
+    callIntrinsicUsd: s.callIntrinsicUsd,
+    payoutToFoxifyUsdc: s.payoutToFoxifyUsdc,
+    foxifyCreditUsdc: vested,
+    netToFoxifyUsdc: round2(vested + s.payoutToFoxifyUsdc),
+    serviceFeeUsdc: pos.serviceFeeUsdc,
+    floorBreached: s.floorBreached,
+    capBreached: s.capBreached,
+    oracleVerified: true, // the touch was confirmed on oracle ticks (persistTicks anti-wick)
+    openedAtMs: pos.openedAtMs,
+    settledAtMs: nowMs,
+    heldMs,
+    hedgeReceiptUsdc: s.hedgeReceiptUsdc,
+    atticusOptionNetUsdc: s.atticusOptionNetUsdc,
+    shortLegMarginUsdc: round2(shortLegMargin),
+    capitalCostUsdc: round2(capitalCost),
+    optionFeesUsdc: round2(optionFees),
+    atticusNetAfterCapitalUsdc: round2(pos.serviceFeeUsdc - capitalCost),
+    atticusNetAfterFeesAndCapitalUsdc: round2(pos.serviceFeeUsdc + s.atticusOptionNetUsdc - feeBorneByAtticus - capitalCost),
+    fundingLegPremiumUsdc: pos.fundingLegPremiumUsdc,
+    protectiveLegPremiumUsdc: pos.protectiveLegPremiumUsdc,
+    venue: pos.venue,
+    quoteMeta: pos.quoteMeta,
+    closedBy: "watcher_unwind"
+  };
+};
+
+/**
+ * Conclude a position because the PARTNER closed their perp (on the touch signal or voluntarily).
+ * Product term: closing the perp cancels the collar — no option payout in either direction (the
+ * anti-free-option rule: protection cannot be kept after the position it protects is gone) — and
+ * the partner keeps the credit VESTED to that moment. Pure.
+ */
+export const settleOnPartnerClose = (
+  pos: OpenPosition,
+  settlePriceUsd: number,
+  nowMs: number,
+  vestedCreditUsdc: number,
+  capital: SettlementCapitalConfig = {}
+): SettlementOutcome => {
+  const heldMs = Math.max(0, nowMs - pos.openedAtMs);
+  const imFraction = capital.shortOptionImFraction ?? 0.1393;
+  const pmNetting = capital.portfolioMarginNettingFactor ?? 1.0;
+  const coc = capital.costOfCapitalAnnual ?? 0.12;
+  const shortLegMargin = pos.notionalUsdc * imFraction * pmNetting;
+  const capitalCost = shortLegMargin * coc * (heldMs / YEAR_MS);
+  const optionFees = Math.max(0, pos.openFeeUsdc ?? 0);
+  const feeBorneByAtticus = pos.feesFundedByCollar ? 0 : optionFees;
+  const vested = round2(Math.max(0, Math.min(vestedCreditUsdc, pos.foxifyCreditUsdc)));
+  return {
+    ref: pos.ref,
+    side: pos.side,
+    notionalUsdc: pos.notionalUsdc,
+    spotAtEntry: pos.spotAtEntry,
+    settlePriceUsd,
+    movePct: pos.spotAtEntry > 0 ? +((settlePriceUsd - pos.spotAtEntry) / pos.spotAtEntry).toFixed(6) : 0,
+    putIntrinsicUsd: 0,
+    callIntrinsicUsd: 0,
+    payoutToFoxifyUsdc: 0, // collar cancelled — no payout either direction
+    foxifyCreditUsdc: vested,
+    netToFoxifyUsdc: vested,
+    serviceFeeUsdc: pos.serviceFeeUsdc,
+    floorBreached: false,
+    capBreached: false,
+    oracleVerified: true,
+    openedAtMs: pos.openedAtMs,
+    settledAtMs: nowMs,
+    heldMs,
+    hedgeReceiptUsdc: 0,
+    atticusOptionNetUsdc: 0,
+    shortLegMarginUsdc: round2(shortLegMargin),
+    capitalCostUsdc: round2(capitalCost),
+    optionFeesUsdc: round2(optionFees),
+    atticusNetAfterCapitalUsdc: round2(pos.serviceFeeUsdc - capitalCost),
+    atticusNetAfterFeesAndCapitalUsdc: round2(pos.serviceFeeUsdc - feeBorneByAtticus - capitalCost),
+    fundingLegPremiumUsdc: pos.fundingLegPremiumUsdc,
+    protectiveLegPremiumUsdc: pos.protectiveLegPremiumUsdc,
+    venue: pos.venue,
+    quoteMeta: pos.quoteMeta,
+    closedBy: "partner_close"
+    // Deliberately no liveMeta: the hedge unwind is audited in the live-executions ledger; the
+    // expiry reconciliation must not expect a venue delivery for an early-concluded position.
+  };
 };
 
 // ── Settlement aggregate (the REAL economics) ─────────────────────────────────
@@ -179,12 +383,19 @@ export type SettlementAggregate = {
   bestPayoutUsdc: number;
   avgHeldHours: number;
   oracleVerifiedRate: number;
-  // ── Capital-aware (measured short-leg IM) ──
+  // ── Back-to-back flatness proof (the number that replaces the misleading raw Foxify-payout swing) ──
+  totalHedgeReceiptUsdc: number;         // summed receipt from the identical hedge legs on Bullish
+  totalAtticusOptionNetUsdc: number;     // hedgeReceipt − payoutToFoxify, book level ⟹ ~0 if truly flat
+  bookHedgedNetBps: number;              // atticus option net / notional × 1e4 (flatness residual; ~0)
+  // ── Capital-aware (measured short-leg IM) + real Bullish fees ──
   peakShortLegMarginUsdc: number;        // max single-position IM (point-in-time capital proxy)
   totalCapitalCostUsdc: number;          // summed cost-of-capital over holding periods
-  totalAtticusNetAfterCapitalUsdc: number; // serviceFee − capital cost, book level
+  totalOptionFeesUsdc: number;           // summed realized Bullish open fees
+  totalAtticusNetAfterCapitalUsdc: number; // serviceFee − capital cost, book level (continuity)
+  totalAtticusNetAfterFeesAndCapitalUsdc: number; // serviceFee + optionNet − fees − capital (grounded)
   realizedServiceFeeBps: number;         // serviceFee / notional × 1e4
   capitalAwareNetServiceFeeBps: number;  // (serviceFee − capitalCost) / notional × 1e4
+  netAfterFeesAndCapitalBps: number;     // (serviceFee − fees − capitalCost) / notional × 1e4
 };
 
 export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementAggregate => {
@@ -194,7 +405,9 @@ export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementA
       settledPositions: 0, totalNotionalUsdc: 0, totalPayoutToFoxifyUsdc: 0, bookNetPayoutBps: 0,
       totalServiceFeeUsdc: 0, totalCreditAccruedUsdc: 0, totalNetToFoxifyUsdc: 0, pctFloorBreached: 0,
       pctCapBreached: 0, avgPayoutPerPositionUsdc: 0, worstPayoutUsdc: 0, bestPayoutUsdc: 0, avgHeldHours: 0, oracleVerifiedRate: 0,
-      peakShortLegMarginUsdc: 0, totalCapitalCostUsdc: 0, totalAtticusNetAfterCapitalUsdc: 0, realizedServiceFeeBps: 0, capitalAwareNetServiceFeeBps: 0
+      totalHedgeReceiptUsdc: 0, totalAtticusOptionNetUsdc: 0, bookHedgedNetBps: 0,
+      peakShortLegMarginUsdc: 0, totalCapitalCostUsdc: 0, totalOptionFeesUsdc: 0, totalAtticusNetAfterCapitalUsdc: 0,
+      totalAtticusNetAfterFeesAndCapitalUsdc: 0, realizedServiceFeeBps: 0, capitalAwareNetServiceFeeBps: 0, netAfterFeesAndCapitalBps: 0
     };
   }
   const notional = outcomes.reduce((s, o) => s + o.notionalUsdc, 0);
@@ -205,6 +418,11 @@ export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementA
   const capitalCost = outcomes.reduce((s, o) => s + (o.capitalCostUsdc ?? 0), 0);
   const atticusNetAfterCapital = outcomes.reduce((s, o) => s + (o.atticusNetAfterCapitalUsdc ?? o.serviceFeeUsdc), 0);
   const peakMargin = outcomes.reduce((m, o) => Math.max(m, o.shortLegMarginUsdc ?? 0), 0);
+  // Back-to-back hedge leg: receipt defaults to the Foxify payout when absent (architecture A, net 0).
+  const hedgeReceipt = outcomes.reduce((s, o) => s + (o.hedgeReceiptUsdc ?? o.payoutToFoxifyUsdc), 0);
+  const optionNet = outcomes.reduce((s, o) => s + (o.atticusOptionNetUsdc ?? 0), 0);
+  const optionFees = outcomes.reduce((s, o) => s + (o.optionFeesUsdc ?? 0), 0);
+  const atticusNetAfterFeesAndCapital = outcomes.reduce((s, o) => s + (o.atticusNetAfterFeesAndCapitalUsdc ?? o.atticusNetAfterCapitalUsdc ?? o.serviceFeeUsdc), 0);
   const payouts = outcomes.map((o) => o.payoutToFoxifyUsdc);
   return {
     settledPositions: n,
@@ -221,10 +439,17 @@ export const aggregateSettlements = (outcomes: SettlementOutcome[]): SettlementA
     bestPayoutUsdc: round2(Math.max(...payouts)),
     avgHeldHours: +(outcomes.reduce((s, o) => s + o.heldMs, 0) / n / 3_600_000).toFixed(2),
     oracleVerifiedRate: +(outcomes.filter((o) => o.oracleVerified).length / n).toFixed(4),
+    totalHedgeReceiptUsdc: round2(hedgeReceipt),
+    totalAtticusOptionNetUsdc: round2(optionNet),
+    bookHedgedNetBps: notional > 0 ? +((optionNet / notional) * 1e4).toFixed(4) : 0,
     peakShortLegMarginUsdc: round2(peakMargin),
     totalCapitalCostUsdc: round2(capitalCost),
+    totalOptionFeesUsdc: round2(optionFees),
     totalAtticusNetAfterCapitalUsdc: round2(atticusNetAfterCapital),
+    totalAtticusNetAfterFeesAndCapitalUsdc: round2(atticusNetAfterFeesAndCapital),
     realizedServiceFeeBps: notional > 0 ? +((fee / notional) * 1e4).toFixed(4) : 0,
-    capitalAwareNetServiceFeeBps: notional > 0 ? +(((fee - capitalCost) / notional) * 1e4).toFixed(4) : 0
+    capitalAwareNetServiceFeeBps: notional > 0 ? +(((fee - capitalCost) / notional) * 1e4).toFixed(4) : 0,
+    // Use the per-position net (which already respects feesFundedByCollar) rather than blindly subtracting fees.
+    netAfterFeesAndCapitalBps: notional > 0 ? +((atticusNetAfterFeesAndCapital / notional) * 1e4).toFixed(4) : 0
   };
 };

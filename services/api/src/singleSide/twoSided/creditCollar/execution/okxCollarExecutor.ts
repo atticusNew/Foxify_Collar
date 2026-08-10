@@ -103,6 +103,9 @@ export const executeCollarHedge = async (client: ExecClient, spec: CollarHedgeSp
   const outcome = classifyOutcome(putFill.filled, callFill.filled);
 
   // Compensation: close the orphan leg so Atticus is never left naked.
+  // NOTE (legacy Phase-B demo executor, NOT on the live path): OKX options reject market orders —
+  // these compensations will be rejected live. The live path (okxLiveCollarExecutor/okxLiveUnwind)
+  // uses book-priced reduceOnly IOC limits; migrate this the same way if this executor is revived.
   let compensated = false;
   let compensationNote: string | null = null;
   if (outcome === "put_orphan") {

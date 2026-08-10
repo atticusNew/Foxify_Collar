@@ -72,8 +72,11 @@ test("shadow: credit accrued (not upfront) and service fee booked; EV guardrail 
   const s = runShadowSession(deps());
   assert.ok(s.foxifyCreditAccruedUsdc > 0, "credit accrued to held balance");
   assert.ok(s.serviceFeeAccruedUsdc > 0, "Atticus service fee booked");
-  // ~$75 credit per opened position (held + netted at settlement).
-  assert.ok(Math.abs(s.foxifyCreditAccruedUsdc - 75 * s.opened) < 1);
+  // pass_through model: Foxify receives AT LEAST the $75 target per position; any discrete-strike
+  // overshoot is passed through to Foxify (the collar nets to ~0 for Atticus, who earns the separate
+  // operation fee). So credit is ≥ 75×opened, and bounded by a sane per-position ceiling.
+  assert.ok(s.foxifyCreditAccruedUsdc >= 75 * s.opened - 1, `credit must cover the target, got ${s.foxifyCreditAccruedUsdc} for ${s.opened}`);
+  assert.ok(s.foxifyCreditAccruedUsdc <= 250 * s.opened, `per-position credit should stay bounded, got ${s.foxifyCreditAccruedUsdc / s.opened}`);
 });
 
 test("shadow: steered flat book settles ~delta-neutral on a big directional move (collars offset); credit always netted", () => {

@@ -10,6 +10,7 @@ import { detectBarrier, type PartnerPositionState } from "./barrierLifecycle";
 import { computeVestedCredit } from "./creditVesting";
 import { assessBasis, type VenueMark } from "./basisGuard";
 import { applyGap, type CollateralLedger } from "./collateralLedger";
+import { assessLock, type LockPolicyConfig, type LockWatcherReport } from "./lockPolicy";
 import type { OpenPosition } from "./forwardSettlement";
 import type { OracleTick, PriceSample } from "./referenceOracle";
 
@@ -31,6 +32,12 @@ export type ShadowLifecycleReport = {
   orphansDetected: number;
   /** True iff the partner-position feed is fully reconciled (no missing/stale). */
   partnerFeedHealthy: boolean;
+  /**
+   * Lock-line watcher: for each detected touch, would the early-unwind rule permit a lock right now?
+   * (permit iff market unwind cost ≤ unvested credit — the vesting schedule is never underwater).
+   * Null when no vol surface was provided (watcher can't price the unwind).
+   */
+  lockWatcher: LockWatcherReport | null;
   flags: string[];
 };
 
@@ -49,6 +56,10 @@ export type ShadowLifecycleArgs = {
   partnerStates?: Record<string, PartnerPositionState>;
   /** Whether the partner feed reconciled cleanly (no missing/stale). Default true. */
   partnerFeedHealthy?: boolean;
+  /** Per-strike IV (the live skew curve); enables the lock watcher to price unwinds at a touch. */
+  iv?: (strike: number, optType: "put" | "call") => number;
+  /** Lock-policy knobs (buffer/spread); tenorMs is taken from the overlay's tenor. */
+  lockPolicy?: Omit<LockPolicyConfig, "tenorMs">;
 };
 
 export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: ShadowLifecycleReport; ledger: CollateralLedger } => {
@@ -67,6 +78,7 @@ export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: S
   let full = 0;
   let orphans = 0;
   const flags: string[] = [];
+  const lockDecisions: NonNullable<ShadowLifecycleReport["lockWatcher"]>["decisions"] = [];
 
   for (const p of args.open) {
     full += p.foxifyCreditUsdc;
@@ -94,6 +106,12 @@ export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: S
       ledger = a.ledger;
       gapReserve += a.bearer === "reserve" ? gapUsdc : 0;
       gapFoxify += a.bearer === "foxify" ? a.debitedUsdc : 0;
+      // Lock watcher: would the early-unwind rule permit locking this position right now?
+      if (args.iv) {
+        lockDecisions.push(
+          assessLock(p, barrier, args.oracleMedianUsd, args.nowMs, args.iv, { tenorMs: args.tenorMs, ...args.lockPolicy })
+        );
+      }
     }
   }
 
@@ -117,6 +135,14 @@ export const reconcileShadowLifecycle = (args: ShadowLifecycleArgs): { report: S
       gapToFoxifyUsdc: round2(gapFoxify),
       orphansDetected: orphans,
       partnerFeedHealthy,
+      lockWatcher: args.iv
+        ? {
+            touchesEvaluated: lockDecisions.length,
+            locksPermitted: lockDecisions.filter((d) => d.permitted).length,
+            locksDeferred: lockDecisions.filter((d) => !d.permitted).length,
+            decisions: lockDecisions
+          }
+        : null,
       flags
     },
     ledger

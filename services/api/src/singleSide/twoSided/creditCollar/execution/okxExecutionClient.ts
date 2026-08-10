@@ -46,7 +46,8 @@ export const buildOkxHeaders = (
 export type OkxLegOrder = {
   instId: string;
   side: "buy" | "sell";
-  ordType: "limit" | "market";
+  /** NOTE: OKX options reject "market" — closes use aggressive "ioc" limits (px required). */
+  ordType: "limit" | "market" | "ioc";
   sz: string;
   px?: string;
   tdMode?: "cross" | "isolated" | "cash";
@@ -129,7 +130,7 @@ export class OkxExecutionClient {
     return this.request("POST", "/api/v5/trade/order", buildOrderBody(o));
   }
 
-  getOrder(instId: string, ordId: string): Promise<OkxResponse<{ ordId?: string; state?: string; avgPx?: string; accFillSz?: string; sz?: string; fee?: string }>> {
+  getOrder(instId: string, ordId: string): Promise<OkxResponse<{ ordId?: string; state?: string; avgPx?: string; accFillSz?: string; sz?: string; fee?: string; feeCcy?: string; px?: string }>> {
     return this.request("GET", `/api/v5/trade/order?instId=${encodeURIComponent(instId)}&ordId=${encodeURIComponent(ordId)}`);
   }
 
@@ -165,6 +166,84 @@ export class OkxExecutionClient {
     return this.request("GET", "/api/v5/account/config");
   }
 
+  /** Your ACTUAL options maker/taker fee tier (VIP-adjusted). Read-only. Negative = rebate. */
+  getTradeFee(instType = "OPTION", uly = "BTC-USD"): Promise<OkxResponse<{ instType?: string; maker?: string; taker?: string; makerU?: string; takerU?: string; level?: string }>> {
+    return this.request("GET", `/api/v5/account/trade-fee?instType=${instType}&uly=${encodeURIComponent(uly)}`);
+  }
+
+  /** Public option chain (instId/strike/expiry/type/contract-value/ticks) for the ACTIVE environment. Read-only.
+   *  NOTE: real contract size = ctVal × ctMult (OKX lists ctVal=1, ctMult=0.01 for BTC-USD options). */
+  getOptionChain(uly = "BTC-USD"): Promise<OkxResponse<{ instId?: string; optType?: "C" | "P"; stk?: string; expTime?: string; ctVal?: string; ctMult?: string; tickSz?: string; lotSz?: string; minSz?: string; state?: string }>> {
+    return this.request("GET", `/api/v5/public/instruments?instType=OPTION&uly=${encodeURIComponent(uly)}`);
+  }
+
+  /**
+   * Public delivery/exercise history — OKX's ACTUAL settlement price per expired instrument
+   * (type: exercised / counterparty_exercised / expired_otm). Read-only; used for settlement
+   * reconciliation of okx_live positions against the venue's own fixing.
+   */
+  getDeliveryExerciseHistory(instType = "OPTION", uly = "BTC-USD"): Promise<OkxResponse<{ ts?: string; details?: Array<{ insId?: string; px?: string; type?: string }> }>> {
+    return this.request("GET", `/api/v5/public/delivery-exercise-history?instType=${instType}&uly=${encodeURIComponent(uly)}`);
+  }
+
+  /**
+   * Account bills (7-day window) — the REAL cash flows: option premium payments, fees, and
+   * delivery/exercise settlement amounts (balance changes in BTC for coin-margined options).
+   * Read-only; drives per-position settlement reconciliation to the cent.
+   */
+  getBills(instType = "OPTION", limit = 100): Promise<OkxResponse<{ billId?: string; instId?: string; type?: string; subType?: string; balChg?: string; px?: string; sz?: string; ccy?: string; ts?: string }>> {
+    return this.request("GET", `/api/v5/account/bills?instType=${instType}&limit=${limit}`);
+  }
+
+  /** Public index price (e.g. BTC-USD) for picking strikes. Read-only. */
+  getIndexPrice(instId = "BTC-USD"): Promise<OkxResponse<{ idxPx?: string }>> {
+    return this.request("GET", `/api/v5/market/index-tickers?instId=${encodeURIComponent(instId)}`);
+  }
+
+  /** Public option mark price for an instId (used as the simulated entry price for Position Builder). Read-only. */
+  getMarkPrice(instId: string): Promise<OkxResponse<{ markPx?: string }>> {
+    return this.request("GET", `/api/v5/public/mark-price?instType=OPTION&instId=${encodeURIComponent(instId)}`);
+  }
+
+  /**
+   * Portfolio-margin SIMULATOR (Position Builder). Read-only: computes margin for a hypothetical book —
+   * places NO orders, moves NO capital. `simPos` = [{ instId, pos }] with pos = signed contract count
+   * (positive long, negative short). inclRealPosAndEq=false isolates the simulated legs only.
+   */
+  positionBuilder(
+    simPos: Array<{ instId: string; pos: string; avgPx: string }>,
+    inclRealPosAndEq = false
+  ): Promise<OkxResponse<Record<string, unknown>>> {
+    return this.request("POST", "/api/v5/account/position-builder", JSON.stringify({ inclRealPosAndEq, simPos }));
+  }
+
+  // ── Block trading / RFQ (the institutional lane confirmed with the OKX BD) ──────────────────
+
+  /** Makers available to quote this account's RFQs. Access requires the $10k block-trading tier. */
+  getRfqCounterparties(): Promise<OkxResponse<{ traderCode?: string; traderName?: string }>> {
+    return this.request("GET", "/api/v5/rfq/counterparties");
+  }
+
+  /** Create a multi-leg RFQ (the whole collar as ONE package — atomic by construction). */
+  createRfq(body: { counterparties: string[]; anonymous: boolean; clRfqId?: string; allowPartialExecution: false; legs: Array<{ instId: string; sz: string; side: "buy" | "sell" }> }): Promise<OkxResponse<{ rfqId?: string; state?: string }>> {
+    return this.request("POST", "/api/v5/rfq/create-rfq", JSON.stringify(body));
+  }
+
+  /** Maker quotes for an RFQ (auto-quoting LPs respond in seconds at pilot size, per the BD). */
+  getRfqQuotes(rfqId: string): Promise<OkxResponse<{ quoteId?: string; rfqId?: string; state?: string; validUntil?: string; legs?: Array<{ instId?: string; px?: string; sz?: string; side?: string; fee?: string }> }>> {
+    return this.request("GET", `/api/v5/rfq/quotes?rfqId=${encodeURIComponent(rfqId)}`);
+  }
+
+  /** Execute a maker quote — all legs fill as one block trade or none do. */
+  executeRfqQuote(rfqId: string, quoteId: string): Promise<OkxResponse<{ blockTdId?: string; legs?: Array<{ instId?: string; px?: string; sz?: string; fee?: string }> }>> {
+    return this.request("POST", "/api/v5/rfq/execute-quote", JSON.stringify({ rfqId, quoteId }));
+  }
+
+  /** Cancel an open RFQ (no acceptable quote / abandoning the window). */
+  cancelRfq(rfqId: string): Promise<OkxResponse<{ rfqId?: string }>> {
+    return this.request("POST", "/api/v5/rfq/cancel-rfq", JSON.stringify({ rfqId }));
+  }
+
   /**
    * Activate options trading for the ACCOUNT — the API equivalent of "click any symbol on the
    * options chain to activate trading" (clears error 51198). Idempotent; safe to call on startup.
@@ -186,7 +265,7 @@ export class OkxExecutionClient {
     let last: OkxResponse<{ ts?: string }> = { ok: false, code: "NONE", msg: "no_attempt", data: [] };
     for (let i = 0; i < tries; i++) {
       const r = await this.activateOption();
-      if (r.ok || r.code === "51199") return r;
+      if (r.ok || r.code === "51199" || r.code === "50050") return r; // 51199/50050 = already activated
       last = r;
       const retryable = /^HTTP_5\d\d$/.test(r.code) || r.code === "50011" /* rate limit */ || r.code === "50013" /* busy */ || r.code === "ERR";
       if (!retryable) return r;

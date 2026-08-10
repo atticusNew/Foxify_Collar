@@ -12,11 +12,18 @@ import { CreditCollarActivationScaffold } from "./activationScaffold";
 import { computeInventory } from "./inventoryBalancer";
 import { buildLiveShadowInputs, type LiveShadowConfig } from "./shadowRunner";
 import type { ShadowScorecard } from "./shadowRunner";
-import { settleMatured, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
+import { settleMatured, settleAtBarrier, settleOnPartnerClose, aggregateSettlements, type OpenPosition, type SettlementAggregate } from "./forwardSettlement";
+import { vestedTimeFraction } from "./creditVesting";
 import { loadOpenPositions, saveOpenPositions, appendSettlements, loadSettlements } from "./forwardSettlementStore";
+import { computeOpensThisCycle, loadOpeningState, saveOpeningState } from "./openingSignalStore";
+import { evaluateRegimeGate, type RegimeGateDecision } from "./regimeGate";
+import { loadGateState, saveGateState } from "./regimeGateStore";
+import { appendPriceObs, loadPriceHistory, computeLiveRegimeSignal, trendDirection } from "./priceHistoryStore";
+import type { PerpSide } from "./creditCollarPricer";
 import { reconcileShadowLifecycle, type ShadowLifecycleReport } from "./lifecycleShadow";
 import { loadLedger, saveLedger } from "./collateralStore";
 import { reconcilePositions, type PartnerPositionFeed } from "./partnerReconciliation";
+import type { LiveExecutionHook, SolveSide } from "./execution/liveWindowRunner";
 
 export type ForwardCycleResult =
   | {
@@ -29,6 +36,9 @@ export type ForwardCycleResult =
       settlePriceUsd: number | null;
       oracleVerified: boolean;
       lifecycle: ShadowLifecycleReport;
+      regimeGate?: RegimeGateDecision;
+      /** Positions closed EARLY this cycle by a watcher-permitted lock (live executions only). */
+      watcherUnwinds?: number;
       meta: { spotUsd: number; oracleSources: string[]; fetchErrors: unknown[] };
     }
   | { ok: false; error: string; message: string };
@@ -47,12 +57,48 @@ export type ForwardCycleConfig = LiveShadowConfig & {
     partnerFeed?: PartnerPositionFeed;
     maxStalenessMs?: number;       // partner-feed staleness tolerance (default 15_000)
     sizeTolerancePct?: number;     // partner size vs notional tolerance (default 0.02)
+    /** Lock-watcher policy: early unwind permitted only when market cost ≤ unvested credit (− buffer). */
+    lockPolicy?: { bufferUsdc?: number; spreadRelPct?: number; minLegSpreadUsdc?: number };
   };
+  /**
+   * LIVE execution hook (OKX pilot). When set, the cycle does NOT open paper positions: opens happen
+   * ONLY through the hook's guarded daily window (kill-switch, caps, pair-atomic real fills) and are
+   * booked as venue "okx_live" into the same ledgers. Settled live positions are reconciled against
+   * the venue. Unset (default) ⟹ the pure paper shadow, unchanged.
+   */
+  liveExecution?: LiveExecutionHook;
+};
+
+/** Integration-mode helpers: deterministic venue-user flow simulation (count per day, side+size per open). */
+export type ClientFlowConfig = import("./shadowRunner").ClientFlowConfig;
+
+export const clientFlowCountForDay = (dayIso: string, cf: ClientFlowConfig): number => {
+  const lo = Math.max(0, Math.ceil(cf.minPerDay));
+  const hi = Math.max(lo, Math.floor(cf.maxPerDay));
+  return lo + Math.floor(dayParticipationRoll(`${dayIso}#count`) * (hi - lo + 1));
+};
+
+export const clientFlowOpenParams = (salt: string, cf: ClientFlowConfig): { side: PerpSide; notionalUsdc: number } => {
+  const side: PerpSide = dayParticipationRoll(`${salt}#side`) < 0.5 ? "long" : "short";
+  const raw = cf.minNotionalUsdc + dayParticipationRoll(`${salt}#size`) * (cf.maxNotionalUsdc - cf.minNotionalUsdc);
+  // Venue users trade round-ish tickets: snap to $500 within bounds.
+  const notionalUsdc = Math.min(cf.maxNotionalUsdc, Math.max(cf.minNotionalUsdc, Math.round(raw / 500) * 500));
+  return { side, notionalUsdc };
+};
+
+/** Deterministic per-day roll in [0,1) (FNV-1a over the UTC date) for the partner-participation model. */
+export const dayParticipationRoll = (dayIso: string): number => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < dayIso.length; i++) {
+    h ^= dayIso.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h / 0x100000000;
 };
 
 export const runForwardShadowCycle = async (
   cfg: ForwardCycleConfig,
-  paths: { openPath?: string; ledgerPath?: string } = {}
+  paths: { openPath?: string; ledgerPath?: string; openingStatePath?: string; priceHistoryPath?: string } = {}
 ): Promise<ForwardCycleResult> => {
   const built = await buildLiveShadowInputs(cfg);
   if (!built.ok) return { ok: false, error: built.error, message: built.message };
@@ -65,7 +111,26 @@ export const runForwardShadowCycle = async (
   appendSettlements(settled, paths.ledgerPath);
   const settledPayout = settled.reduce((s, o) => s + o.payoutToFoxifyUsdc, 0);
 
-  // 2) Open a new steered batch (settlement DEFERRED to expiry).
+  // 2) Regime gate: gauge the trailing 24h move magnitude and, if elevated, widen the cap (deeper floor)
+  //    + throttle opens; if extreme, pause. Sits the short-vol book out of the bleed regimes.
+  let regimeGate: RegimeGateDecision | undefined;
+  // Record the current oracle price for the LEADING signal (updates every cycle, ~15 min).
+  const oraclePriceUsd = oracle.snapshot.priceUsd ?? spot;
+  if (cfg.regimeGate?.enabled) appendPriceObs({ tsMs: now, priceUsd: oraclePriceUsd }, paths.priceHistoryPath);
+  if (cfg.regimeGate?.enabled) {
+    const lookback = cfg.regimeGate.lookback ?? 40;
+    const recentAbs = loadSettlements(paths.ledgerPath).slice(-lookback).map((o) => Math.abs(o.movePct));
+    const live = computeLiveRegimeSignal(loadPriceHistory(paths.priceHistoryPath), now, {
+      lookbackMs: cfg.regimeGate.liveLookbackMs,
+      minSamples: cfg.regimeGate.liveMinSamples
+    });
+    const prev = loadGateState();
+    regimeGate = evaluateRegimeGate(recentAbs, cfg.regimeGate, live?.gaugePct ?? null, prev?.regime ?? null);
+    saveGateState({ regime: regimeGate.regime, updatedAtMs: now });
+    if (regimeGate.floorPctOverride != null) scaffoldConfig.maxFloorPct = regimeGate.floorPctOverride;
+  }
+
+  // Open a new steered batch (settlement DEFERRED to expiry).
   const scaffold = new CreditCollarActivationScaffold(scaffoldConfig, skew);
   const band = scaffoldConfig.policy.targetNetBandPct;
   const minGross = scaffoldConfig.breaker.minGrossNotionalUsd ?? 0;
@@ -82,37 +147,170 @@ export const runForwardShadowCycle = async (
   let sumFloor = 0;
   const rej: Record<string, number> = {};
 
-  for (let i = 0; i < cfg.nPositions; i++) {
-    const instr = scaffold.nextInstruction(cfg.positionNotionalUsdc);
-    if (!instr.ok) {
-      halted += 1;
-      continue;
+  // INTEGRATION MODE: simulate venue-user flow (random arrivals/sizes/sides, singles). Overrides the
+  // pair cadence and directional modes; the exposure breaker still caps net inventory like it would live.
+  const clientFlow = cfg.liveExecution == null ? cfg.clientFlow : undefined;
+  const dayIso = new Date(now).toISOString().slice(0, 10);
+
+  // How many to open this cycle. Signal mode (dailyPositions set) releases a steady staggered rate over
+  // time (partner-like flow); otherwise the legacy fixed batch of nPositions. Neutral-over-time either way.
+  const signalMode = ((cfg.dailyPositions != null && cfg.dailyPositions > 0) || clientFlow != null) && cfg.liveExecution == null;
+  // HYBRID "auto" strategy (the pilot's actual playbook): CALM ⟹ neutral pair (as if the partner approved)
+  // · ELEVATED ⟹ directional single with the trend at the FULL rate (as if the partner picked the side; the
+  // gate's neutral pause does not apply to the directional leg) · HALT ⟹ skip entirely.
+  const autoMode = cfg.directionalBias === "auto";
+  const autoRegime = autoMode ? (regimeGate?.regime ?? "calm") : null;
+  const effectiveBias: LiveShadowConfig["directionalBias"] =
+    autoMode ? (autoRegime === "calm" ? "flat" : autoRegime === "elevated" ? "trend" : "flat") : cfg.directionalBias;
+  // PAIR-ATOMIC for the neutral book: both legs of a matched pair open in the same cycle or neither, so a
+  // gate pause between legs can never strand a naked directional leg. Directional modes — and venue-user
+  // flow, whose arrivals are inherently one-sided — open singles.
+  const neutralBook = effectiveBias == null || effectiveBias === "flat";
+  const pairSize = clientFlow ? 1 : neutralBook ? 2 : 1;
+  let nToOpen = cfg.nPositions;
+  if (signalMode) {
+    // Conservative elevated-day dial (auto mode): directional days may run at a reduced rate (e.g. 1/day
+    // instead of 2) since same-day directional positions are one bet at double size.
+    const dailyRate = clientFlow
+      ? clientFlowCountForDay(dayIso, clientFlow)
+      : autoMode && autoRegime === "elevated" && cfg.autoElevatedDailyPositions != null && cfg.autoElevatedDailyPositions > 0
+        ? cfg.autoElevatedDailyPositions
+        : (cfg.dailyPositions as number);
+    const prevState = loadOpeningState(paths.openingStatePath);
+    const step = computeOpensThisCycle(prevState, now, dailyRate, { pairSize });
+    nToOpen = step.nToOpen;
+    saveOpeningState(step.next, paths.openingStatePath); // advance the clock even if the gate throttles, so no backlog dumps
+  }
+  // Apply the regime gate's throttle (halt ⟹ 0, elevated ⟹ scaled down), preserving pair atomicity.
+  // In auto mode the throttle is bypassed while ELEVATED (the directional leg trades it — full rate,
+  // wider cap via the floor override) and only HALT zeroes issuance.
+  if (regimeGate) {
+    // Client flow mirrors auto mode's gate treatment: venue users keep arriving in elevated regimes (the
+    // widened cap reprices their wraps); only HALT stops accepting.
+    const mult = autoMode || clientFlow ? (regimeGate.regime === "halt" ? 0 : 1) : regimeGate.openMultiplier;
+    nToOpen = Math.max(0, Math.round(nToOpen * mult));
+  }
+  // Partner-participation model: directional bets are the PARTNER's call, and they don't take every
+  // trend signal. On elevated days in auto mode, open only on the fraction of days they'd participate —
+  // deterministic per UTC day, so the decision is stable across the day's cycles and restarts.
+  const participation = cfg.autoDirectionalParticipation ?? 1;
+  if (autoMode && autoRegime === "elevated" && participation < 1) {
+    if (dayParticipationRoll(new Date(now).toISOString().slice(0, 10)) >= participation) nToOpen = 0;
+  }
+  nToOpen = Math.floor(nToOpen / pairSize) * pairSize;
+
+  // Directional bias: override the net-flat steering with a lean (or trend-follow). "flat" ⟹ unchanged.
+  let biasSide: PerpSide | null = null;
+  if (effectiveBias === "long") biasSide = "long";
+  else if (effectiveBias === "short") biasSide = "short";
+  else if (effectiveBias === "trend") {
+    const dir = trendDirection(loadPriceHistory(paths.priceHistoryPath), now, cfg.regimeGate?.liveLookbackMs);
+    biasSide = dir >= 0 ? "long" : "short"; // follow recent momentum; flat/unknown ⟹ long
+  }
+
+  if (cfg.liveExecution) {
+    // ── LIVE MODE (OKX pilot): no paper opens. Settled live positions reconcile against the venue,
+    //    and opens happen ONLY through the guarded daily window (kill-switch → window → caps →
+    //    pair-atomic real fills). Guardrail rejections skip the day — never forced.
+    try {
+      await cfg.liveExecution.reconcileSettled(settled);
+    } catch (e) {
+      console.error(`[okx-live] settlement reconciliation error: ${(e as Error).message}`);
     }
-    const rec = scaffold.activate({ ref: instr.ref, side: instr.side, notionalUsdc: cfg.positionNotionalUsdc, spot, instrument: "BTC-PERP", tsMs: now + i });
-    if ("status" in rec && rec.status === "active") {
-      newOpens.push({
-        ref: rec.ref,
-        side: rec.side,
-        notionalUsdc: rec.notionalUsdc,
-        spotAtEntry: spot,
-        putStrike: rec.putStrike,
-        callStrike: rec.callStrike,
-        foxifyCreditUsdc: rec.foxifyCreditUsdc,
-        serviceFeeUsdc: rec.serviceFeeUsdc,
-        floorPctUsed: rec.floorPctUsed,
-        openedAtMs: now,
-        expiresAtMs: now + horizonMs
+    const solveSide: SolveSide = (side) => {
+      const rec = scaffold.activate({ ref: `cc-live-${now}-${side}`, side, notionalUsdc: cfg.positionNotionalUsdc, spot, instrument: "BTC-PERP", tsMs: now });
+      if ("status" in rec && rec.status === "active") {
+        return {
+          ok: true,
+          solved: {
+            ref: rec.ref,
+            side: rec.side,
+            notionalUsdc: rec.notionalUsdc,
+            putStrike: rec.putStrike,
+            callStrike: rec.callStrike,
+            foxifyCreditUsdc: rec.foxifyCreditUsdc,
+            serviceFeeUsdc: rec.serviceFeeUsdc,
+            floorPctUsed: rec.floorPctUsed,
+            protectiveLegMidUsdc: rec.protectiveLegMidUsdc,
+            fundingLegMidUsdc: rec.fundingLegMidUsdc
+          }
+        };
+      }
+      return { ok: false, error: (rec as { error: string }).error, message: (rec as { message: string }).message };
+    };
+    try {
+      const live = await cfg.liveExecution.executeWindow({
+        nowMs: now,
+        spot,
+        regime: regimeGate,
+        trendBias: biasSide ?? (trendDirection(loadPriceHistory(paths.priceHistoryPath), now, cfg.regimeGate?.liveLookbackMs) >= 0 ? "long" : "short"),
+        solveSide
       });
-      serviceFee += rec.serviceFeeUsdc;
-      credit += rec.foxifyCreditUsdc;
-      maxFloor = Math.max(maxFloor, rec.floorPctUsed);
-      sumFloor += rec.floorPctUsed;
-      const inv = computeInventory(scaffold.bookSnapshot(), band);
-      peakNotional = Math.max(peakNotional, Math.abs(inv.netNotionalUsdc));
-      if (inv.grossNotionalUsdc >= minGross) peakRatio = Math.max(peakRatio, inv.imbalanceRatio);
-    } else if ("error" in rec) {
+      nToOpen = live.attempted;
+      rejected += live.rejected;
+      for (const [k, v] of Object.entries(live.rejectionsByReason)) rej[k] = (rej[k] ?? 0) + v;
+      for (const p of live.newOpens) {
+        newOpens.push(p);
+        serviceFee += p.serviceFeeUsdc;
+        credit += p.foxifyCreditUsdc;
+        maxFloor = Math.max(maxFloor, p.floorPctUsed);
+        sumFloor += p.floorPctUsed;
+      }
+      if (live.summary) console.error(`[okx-live] ${live.summary}`);
+    } catch (e) {
+      console.error(`[okx-live] window execution error (nothing booked): ${(e as Error).message}`);
+      rej["live_execution_error"] = (rej["live_execution_error"] ?? 0) + 1;
+    }
+  } else {
+    for (let i = 0; i < nToOpen; i++) {
+      const flow = clientFlow ? clientFlowOpenParams(`${now}#${i}`, clientFlow) : null;
+      const notional = flow?.notionalUsdc ?? cfg.positionNotionalUsdc;
+      const instr = scaffold.nextInstruction(notional);
+      if (!instr.ok) {
+        halted += 1;
+        continue;
+      }
+      const rec = scaffold.activate({ ref: instr.ref, side: flow ? flow.side : (biasSide ?? instr.side), notionalUsdc: notional, spot, instrument: "BTC-PERP", tsMs: now + i });
+      if ("status" in rec && rec.status === "active") {
+        newOpens.push({
+          ref: rec.ref,
+          side: rec.side,
+          notionalUsdc: rec.notionalUsdc,
+          spotAtEntry: spot,
+          putStrike: rec.putStrike,
+          callStrike: rec.callStrike,
+          foxifyCreditUsdc: rec.foxifyCreditUsdc,
+          serviceFeeUsdc: rec.serviceFeeUsdc,
+          floorPctUsed: rec.floorPctUsed,
+          openFeeUsdc: rec.openFeeUsdc,
+          feesFundedByCollar: rec.feesFundedByCollar,
+          fundingLegPremiumUsdc: rec.fundingLegPremiumUsdc,
+          protectiveLegPremiumUsdc: rec.protectiveLegPremiumUsdc,
+          venue: `${cfg.hedgeVenue ?? "blend"}_model`,
+          openedAtMs: now,
+          expiresAtMs: now + horizonMs
+        });
+        serviceFee += rec.serviceFeeUsdc;
+        credit += rec.foxifyCreditUsdc;
+        maxFloor = Math.max(maxFloor, rec.floorPctUsed);
+        sumFloor += rec.floorPctUsed;
+        const inv = computeInventory(scaffold.bookSnapshot(), band);
+        peakNotional = Math.max(peakNotional, Math.abs(inv.netNotionalUsdc));
+        if (inv.grossNotionalUsdc >= minGross) peakRatio = Math.max(peakRatio, inv.imbalanceRatio);
+      } else if ("error" in rec) {
+        rejected += 1;
+        rej[rec.error] = (rej[rec.error] ?? 0) + 1;
+      }
+    }
+
+    // Pair-atomic completeness: if one leg of a pair priced but its sibling rejected (e.g. one-sided skew
+    // infeasibility), drop the orphan before persisting — the neutral book never carries a naked leg.
+    if (pairSize === 2 && newOpens.length % 2 === 1) {
+      const dropped = newOpens.pop() as OpenPosition;
       rejected += 1;
-      rej[rec.error] = (rej[rec.error] ?? 0) + 1;
+      rej["pair_incomplete_dropped"] = (rej["pair_incomplete_dropped"] ?? 0) + 1;
+      serviceFee -= dropped.serviceFeeUsdc;
+      credit -= dropped.foxifyCreditUsdc;
     }
   }
 
@@ -149,16 +347,82 @@ export const runForwardShadowCycle = async (
     basisMaxBps: lcCfg.basisMaxBps ?? 25,
     persistTicks: 3,
     partnerStates,
-    partnerFeedHealthy
+    partnerFeedHealthy,
+    // Lock watcher prices unwinds off the live skew curve (same surface the pricer solved on).
+    iv: skew,
+    lockPolicy: lcCfg.lockPolicy
   });
   saveLedger(ledger1);
+
+  // 3b) LIVE touch handling — decoupled halves. CLIENT: every confirmed touch emits the partner
+  // close signal inside the hook, unconditionally (their line exit is contractual). OURS: only
+  // watcher-PERMITTED hedge unwinds execute; a completed unwind settles the position at the barrier
+  // with the vested credit. Deferred hedges ride (bounded) and conclude via 3c when the partner
+  // closes, or at expiry.
+  let watcherUnwinds = 0;
+  if (cfg.liveExecution && lifecycle.lockWatcher && lifecycle.lockWatcher.decisions.length > 0) {
+    try {
+      const unwound = await cfg.liveExecution.unwindOnWatcher(openBook, lifecycle.lockWatcher.decisions, { nowMs: now, spot: oraclePriceUsd });
+      const completed = unwound.filter((u) => u.complete);
+      if (completed.length > 0) {
+        const byRef = new Map(openBook.map((p) => [p.ref, p]));
+        const barrierSettled = completed
+          .map((u) => {
+            const pos = byRef.get(u.ref);
+            return pos ? settleAtBarrier(pos, u.barrier, now, u.vestedCreditUsdc, cfg.capital) : null;
+          })
+          .filter((s): s is NonNullable<typeof s> => s != null);
+        appendSettlements(barrierSettled, paths.ledgerPath);
+        const closedRefs = new Set(barrierSettled.map((s) => s.ref));
+        saveOpenPositions(openBook.filter((p) => !closedRefs.has(p.ref)), paths.openPath);
+        watcherUnwinds = barrierSettled.length;
+        console.error(`[live] watcher unwound ${watcherUnwinds} position(s) at the barrier — vested credit realized, ledger settled`);
+      }
+    } catch (e) {
+      console.error(`[live] watcher unwind error (positions remain open): ${(e as Error).message}`);
+    }
+  }
+
+  // 3c) LIVE partner-close conclusion: the position feed shows a perp CLOSED (touch-signal close or
+  // voluntary) ⟹ conclude the client side with the VESTED credit (collar cancels — no payout either
+  // direction) and mandatorily unwind our now-unmirrored hedge (no budget gate — naked exposure).
+  if (cfg.liveExecution && partnerStates) {
+    try {
+      const currentOpen = loadOpenPositions(paths.openPath);
+      const closedRefs = currentOpen
+        .filter((p) => p.liveMeta && partnerStates?.[p.ref] && !partnerStates[p.ref].isOpen)
+        .map((p) => p.ref);
+      if (closedRefs.length > 0) {
+        const concluded = await cfg.liveExecution.unwindForPartnerClose(currentOpen, closedRefs, { nowMs: now, spot: oraclePriceUsd });
+        if (concluded.length > 0) {
+          const byRef = new Map(currentOpen.map((p) => [p.ref, p]));
+          const settledRows = concluded
+            .map(({ ref }) => {
+              const pos = byRef.get(ref);
+              if (!pos) return null;
+              const tenorMs = Math.max(1, pos.expiresAtMs - pos.openedAtMs);
+              const vested = pos.foxifyCreditUsdc * vestedTimeFraction(now - pos.openedAtMs, tenorMs);
+              return settleOnPartnerClose(pos, oraclePriceUsd, now, vested, cfg.capital);
+            })
+            .filter((s): s is NonNullable<typeof s> => s != null);
+          appendSettlements(settledRows, paths.ledgerPath);
+          const gone = new Set(settledRows.map((s) => s.ref));
+          saveOpenPositions(currentOpen.filter((p) => !gone.has(p.ref)), paths.openPath);
+          watcherUnwinds += settledRows.length;
+          console.error(`[live] concluded ${settledRows.length} position(s) on partner close — vested credit realized, hedge unwound`);
+        }
+      }
+    } catch (e) {
+      console.error(`[live] partner-close conclusion error (positions remain open): ${(e as Error).message}`);
+    }
+  }
 
   const openedNotional = newOpens.reduce((s, p) => s + p.notionalUsdc, 0);
   const openingScorecard: ShadowScorecard = {
     label: "tier0_shadow_paper_settled",
     mode: "shadow",
     oracle: { status: oracle.snapshot.status, priceUsd: oracle.snapshot.priceUsd, safeForActivation: oracle.snapshot.safeForActivation, signatureValid: oracleVerified },
-    attempted: cfg.nPositions,
+    attempted: nToOpen,
     opened: newOpens.length,
     openedNotionalUsdc: +openedNotional.toFixed(2),
     halted,
@@ -182,9 +446,16 @@ export const runForwardShadowCycle = async (
     // correctly DECLINED because the oracle wasn't safe for activation (fail-closed is correct, not a
     // failure). Only an unverified oracle, or oracle-safe-but-zero-opens (a real pricing/breaker
     // signal), counts as incomplete.
-    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation),
+    // A cycle with nothing DUE (signal) or paused by the regime gate (nToOpen === 0) is correct, not a failure.
+    lifecycleComplete: oracleVerified && (newOpens.length > 0 || !oracle.snapshot.safeForActivation || nToOpen === 0),
     notes: [
       "Forward-settled: opens deferred to real expiry; settlement economics in the settlement ledger.",
+      cfg.liveExecution ? "LIVE EXECUTION MODE: opens only via the guarded OKX daily window (venue okx_live); no paper opens." : "",
+      clientFlow ? `INTEGRATION-MODE (venue-user flow): ${clientFlowCountForDay(dayIso, clientFlow)} arrivals rolled for ${dayIso} ($${clientFlow.minNotionalUsdc}–$${clientFlow.maxNotionalUsdc} tickets, random side, singles); ${nToOpen} due this cycle.` : "",
+      signalMode && !clientFlow ? `Partner-signal opening: ${cfg.dailyPositions}/day staggered; ${nToOpen} due this cycle${pairSize === 2 ? " (pair-atomic: both legs or neither)" : ""}.` : "",
+      autoMode ? `Hybrid auto strategy: regime ${autoRegime} ⟹ ${autoRegime === "calm" ? "neutral pair" : autoRegime === "elevated" ? `directional ${biasSide} (trend)` : "skip"}.` : "",
+      biasSide && !autoMode ? `Directional bias: ${cfg.directionalBias} ⟹ opening ${biasSide} (directional book; breaker relaxed).` : "",
+      regimeGate ? `Regime gate: ${regimeGate.regime} (${regimeGate.reason}).` : "",
       newOpens.length === 0 && !oracle.snapshot.safeForActivation ? "Cycle correctly declined to open (oracle not safe for activation — fail-closed)." : ""
     ].filter(Boolean)
   };
@@ -192,13 +463,15 @@ export const runForwardShadowCycle = async (
   return {
     ok: true,
     openingScorecard,
-    settledThisCycle: settled.length,
+    settledThisCycle: settled.length + watcherUnwinds,
     settledPayoutThisCycleUsdc: +settledPayout.toFixed(2),
     deferred,
-    openBookSize: openBook.length,
+    openBookSize: openBook.length - watcherUnwinds,
     settlePriceUsd,
     oracleVerified,
     lifecycle,
+    regimeGate,
+    watcherUnwinds,
     meta
   };
 };
