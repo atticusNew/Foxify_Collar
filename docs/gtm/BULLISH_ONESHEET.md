@@ -146,7 +146,7 @@ What we will run, on request, in 5 business days: a **quote overlay** — replay
 1. Written rebate / maker program terms for this flow (options CLOB and RFQ/block).
 2. Intro to the MM you want to show this to.
 3. 1-DTE BTC options: CLOB vs RFQ, USD vs USDC, strike grid and typical top-of-book depth around ±2% / ±5% / ±10%.
-4. Onboarding: entity, min size, and how fast an account can trade live.
+4. Onboarding: entity, min size, how fast an account can trade live, and portfolio-margin treatment of a long-floor / short-cap 1-DTE pair.
 
 We can be in an MM meeting with this sheet as soon as you set it. Live routing follows terms, not the other way around.
 
