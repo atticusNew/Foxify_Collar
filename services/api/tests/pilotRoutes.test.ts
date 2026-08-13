@@ -110,6 +110,34 @@ const createPilotHarness = async (opts?: {
   process.env.PILOT_TENOR_POLICY_LOOKBACK_MINUTES = "60";
   process.env.PILOT_INTERNAL_TOKEN = "internal-local";
   process.env.IBKR_REQUIRE_OPTIONS_NATIVE = "false";
+  // Ensure env from a prior test does not leak — explicit defaults reset
+  // every harness call so `opts.env` overrides start from a clean slate.
+  delete process.env.V7_PRICING_ENABLED;
+  // Bundle C ships hedge-budget caps enforced by default ($100 day-1
+  // ramp). The pre-existing routes tests use ad-hoc notionals that would
+  // breach Day 1's ramp; the cap is exercised directly by
+  // pilotHedgeBudgetCap.test.ts so disable enforcement here unless an
+  // individual test opts in.
+  if (process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED === undefined) {
+    process.env.PILOT_HEDGE_BUDGET_CAP_ENABLED = "false";
+  }
+  // Bundle C ships WS#8 operational guardrails (Foxify pool kill-switch,
+  // aggregate liability cap, etc.) enforced by default. Pre-existing
+  // routes tests use a $0 Foxify pool, so the kill-switch fires on every
+  // activation. Guardrails are exercised directly by
+  // pilotOperationalGuardrails.test.ts so blanket-disable here unless an
+  // individual test opts in.
+  if (process.env.PILOT_GUARDS_ALL_DISABLED === undefined) {
+    process.env.PILOT_GUARDS_ALL_DISABLED = "true";
+  }
+  // Bundle C anti-bot is in-process LRU keyed on fingerprint. In tests, all
+  // requests share loopback IP + same UA → all collapse to one fingerprint, so
+  // the activate cooldown blocks every subsequent test with 429. Disable for
+  // the pre-existing route tests; anti-bot logic is covered by
+  // pilotThrottleStore.test.ts and pilotFingerprint.test.ts directly.
+  if (process.env.PILOT_ANTI_BOT_ENFORCE === undefined) {
+    process.env.PILOT_ANTI_BOT_ENFORCE = "false";
+  }
   if (opts?.env) {
     for (const [key, value] of Object.entries(opts.env)) {
       if (value === undefined) {
@@ -125,6 +153,23 @@ const createPilotHarness = async (opts?: {
   const configModule = await import("../src/pilot/config");
   configModule.pilotConfig.enabled = true;
   configModule.pilotConfig.activationEnabled = process.env.PILOT_ACTIVATION_ENABLED === "true";
+  // V7 pricing is module-import-scoped via parseV7PricingConfig(); allow
+  // tests to opt out (treasury-subsidy tests, for example, exercise the
+  // pre-V7 actuarial-strict pricing path that is gated by !v7Enabled).
+  // Default = enabled (matches production); explicit "false" disables.
+  configModule.pilotConfig.v7.enabled = process.env.V7_PRICING_ENABLED !== "false";
+  // Daily / aggregate notional caps are set once at config import time.
+  // Re-apply from current env so per-test overrides take effect.
+  if (process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC !== undefined) {
+    configModule.pilotConfig.maxDailyProtectedNotionalUsdc = Number(
+      process.env.PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC
+    );
+  }
+  if (process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC !== undefined) {
+    configModule.pilotConfig.maxProtectionNotionalUsdc = Number(
+      process.env.PILOT_MAX_PROTECTION_NOTIONAL_USDC
+    );
+  }
   configModule.pilotConfig.pilotHedgePolicy = configModule.parsePilotHedgePolicy(process.env.PILOT_HEDGE_POLICY);
   configModule.pilotConfig.venueMode = (opts?.venueMode || "mock_falconx") as any;
   configModule.pilotConfig.tenantScopeId = process.env.PILOT_TENANT_SCOPE_ID || "foxify-pilot";
@@ -281,6 +326,12 @@ const createPilotHarness = async (opts?: {
   dbModule.__setPilotPoolForTests(pool as any);
   const triggerMonitorModule = await import("../src/pilot/triggerMonitor");
   triggerMonitorModule.__setTriggerMonitorEnabledForTests(false);
+  // Defensive: clear any leftover throttle state from a prior test in the
+  // same process even if a future test re-enables anti-bot enforcement.
+  try {
+    const throttleModule = await import("../src/pilot/throttleStore");
+    throttleModule.__resetThrottleStoreForTests();
+  } catch {/* throttleStore may not be loaded yet on first call */}
   const { registerPilotRoutes } = await import("../src/pilot/routes");
 
   const app = Fastify();
@@ -460,7 +511,14 @@ test("pilot route hardening A-H", async (t) => {
   });
 
   await t.test("D) daily cap enforcement is atomic under concurrent activate requests", async () => {
-    const harness = await createPilotHarness();
+    // Bundle C raised the default per-day cap to $100k; this test
+    // verifies atomic enforcement so it needs a tighter cap so that
+    // two $30k activations breach it.
+    const harness = await createPilotHarness({
+      env: {
+        PILOT_MAX_DAILY_PROTECTED_NOTIONAL_USDC: "50000"
+      }
+    });
     try {
       const { app } = harness;
       const q1 = await app.inject({
@@ -3093,6 +3151,9 @@ test("Y4b) quote supports hybrid pricing mode and reports mode diagnostics", asy
 test("Y4c) quote rejects when per-quote treasury subsidy cap is exceeded", async () => {
   const harness = await createPilotHarness({
     env: {
+      // Treasury subsidy gating lives in the !v7Enabled actuarial-strict
+      // path; disable V7 to exercise it.
+      V7_PRICING_ENABLED: "false",
       PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
       PILOT_TREASURY_SUBSIDY_CAP_PCT: "0.01",
       PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "false"
@@ -3118,6 +3179,7 @@ test("Y4c) quote rejects when per-quote treasury subsidy cap is exceeded", async
 test("Y4d) quote rejects when daily treasury subsidy cap is exceeded", async () => {
   const harness = await createPilotHarness({
     env: {
+      V7_PRICING_ENABLED: "false",
       PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
       PILOT_TREASURY_SUBSIDY_CAP_PCT: "1.0",
       PILOT_TREASURY_DAILY_SUBSIDY_CAP_USDC: "1",
@@ -3145,6 +3207,7 @@ test("Y4d) quote rejects when daily treasury subsidy cap is exceeded", async () 
 test("Y4e) quote falls back to strict pricing mode when treasury rails trip", async () => {
   const harness = await createPilotHarness({
     env: {
+      V7_PRICING_ENABLED: "false",
       PILOT_PREMIUM_PRICING_MODE: "hybrid_otm_treasury",
       PILOT_TREASURY_SUBSIDY_CAP_PCT: "0.01",
       PILOT_TREASURY_STRICT_FALLBACK_ENABLED: "true"

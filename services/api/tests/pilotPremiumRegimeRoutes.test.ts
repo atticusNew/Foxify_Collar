@@ -64,6 +64,12 @@ const createHarness = async (opts?: {
   process.env.PILOT_TENOR_MAX_DAYS = "7";
   process.env.PILOT_TENOR_DEFAULT_DAYS = "7";
   process.env.PILOT_DYNAMIC_TENOR_ENABLED = "false";
+  // Mock instrument expires exactly 7d from now; allow larger drift to
+  // avoid edge-case rejection from sub-second jitter at quote time.
+  process.env.PILOT_DERIBIT_MAX_TENOR_DRIFT_DAYS = "7";
+  // V7 launched-tier set is rev 6 (2/3/5/7); this test uses Pro (Bronze)
+  // legacy tier and must therefore opt out of V7 routing entirely.
+  process.env.V7_PRICING_ENABLED = "false";
   process.env.PILOT_PREMIUM_PRICING_MODE = "hybrid_otm_treasury";
   process.env.PILOT_SELECTOR_MODE = "hybrid_treasury";
   process.env.PILOT_TREASURY_SUBSIDY_CAP_PCT = "1";
@@ -95,6 +101,14 @@ const createHarness = async (opts?: {
   triggerMonitorModule.__setTriggerMonitorEnabledForTests(false);
   const premiumRegimeModule = await import("../src/pilot/premiumRegime");
   premiumRegimeModule.__resetPremiumRegimeStateForTests();
+  // Bundle C raised the parsed pilot min notional floor to $10k. This
+  // test exercises overlay math at $5k legacy notional — patch the
+  // resolved config value directly so the route doesn't reject the
+  // smaller-notional fixture.
+  const configModule = await import("../src/pilot/config");
+  configModule.pilotConfig.quoteMinNotionalUsdc = 1000;
+  configModule.pilotConfig.v7.enabled = false;
+  configModule.pilotConfig.deribitMaxTenorDriftDays = 7;
   const { registerPilotRoutes } = await import("../src/pilot/routes");
   const app = Fastify();
   await registerPilotRoutes(app, { deribit: buildDeribitStub() as any });

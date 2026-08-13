@@ -1,0 +1,107 @@
+name: Phase 2 — Deribit chain sampler (1-day-tenor investigation)
+
+# Read-only sampler. Hits Deribit mainnet public API (no auth, no secrets).
+# Designed to run for ~7 days, every 4-6 hours, then be disabled.
+#
+# Output: artifacts/chain-samples/<UTC-timestamp>.json + index.csv
+#         committed to the `chain-samples-data` branch (separate from any
+#         development branch, so it doesn't clutter PRs).
+#
+# Disable: either (a) disable the workflow in the GitHub Actions UI, or
+#          (b) delete this file once the 7-day window completes.
+
+on:
+  schedule:
+    # Every 6 hours, at minute :07 to avoid the top-of-hour rush
+    - cron: "7 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why running manually (for the commit message)"
+        required: false
+        default: "manual run"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: deribit-chain-sampler
+  cancel-in-progress: false
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout (analysis branch — for the script)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: Install tsx
+        run: npm install --no-save --no-audit --no-fund tsx@4
+
+      - name: Run sampler
+        id: sample
+        run: |
+          set -euo pipefail
+          npx tsx services/api/scripts/pilotDeribitChainSampler.ts \
+            --out-dir artifacts/chain-samples \
+            --csv-path artifacts/chain-samples/index.csv
+          ls -la artifacts/chain-samples | tail -10
+          echo "snapshot_count=$(ls artifacts/chain-samples/*.json 2>/dev/null | wc -l | tr -d ' ')" >> "$GITHUB_OUTPUT"
+
+      - name: Commit snapshot to chain-samples-data branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DISPATCH_REASON: ${{ github.event.inputs.reason || 'scheduled run' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Stash the sampler outputs before switching branches
+          mkdir -p /tmp/chain-samples-out
+          cp -r artifacts/chain-samples/. /tmp/chain-samples-out/
+
+          # Fetch (or create) the data branch
+          git fetch origin chain-samples-data:chain-samples-data 2>/dev/null || true
+          if git show-ref --verify --quiet refs/heads/chain-samples-data; then
+            git checkout chain-samples-data
+          else
+            # Create as orphan branch on first run so it stays small
+            git checkout --orphan chain-samples-data
+            git rm -rf . >/dev/null 2>&1 || true
+            cat > README.md <<'EOF'
+          # chain-samples-data
+
+          Auto-generated branch for Phase 2 of the 1-day-tenor investigation.
+          Each commit on this branch is one Deribit chain snapshot fetched by
+          .github/workflows/deribit-chain-sampler.yml.
+
+          Each snapshot is read-only public market data from
+          https://www.deribit.com/api/v2/public — no secrets involved.
+          EOF
+            mkdir -p artifacts/chain-samples
+            git add README.md
+            git commit -m "chain-samples-data: initialize branch"
+          fi
+
+          mkdir -p artifacts/chain-samples
+          cp -r /tmp/chain-samples-out/. artifacts/chain-samples/
+
+          git add artifacts/chain-samples
+          if git diff --cached --quiet; then
+            echo "no new snapshot to commit"
+            exit 0
+          fi
+
+          STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+          git commit -m "chain-sampler: snapshot ${STAMP} (${DISPATCH_REASON})"
+          git push origin chain-samples-data
