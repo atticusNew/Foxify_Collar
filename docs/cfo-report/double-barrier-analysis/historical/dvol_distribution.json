@@ -1,0 +1,48 @@
+{
+  "n_days": 1874,
+  "mean": 61.40871931696905,
+  "median": 56.74,
+  "p5": 37.703,
+  "p25": 47.565,
+  "p75": 74.29,
+  "p95": 94.58049999999999,
+  "min": 32.38,
+  "max": 156.2,
+  "bands": [
+    {
+      "name": "deep_calm",
+      "lo": 0,
+      "hi": 40,
+      "fraction_of_days": 0.10618996798292422,
+      "expected_days_per_year": 38.759338313767344
+    },
+    {
+      "name": "calm",
+      "lo": 40,
+      "hi": 50,
+      "fraction_of_days": 0.19423692636072573,
+      "expected_days_per_year": 70.8964781216649
+    },
+    {
+      "name": "mod",
+      "lo": 50,
+      "hi": 65,
+      "fraction_of_days": 0.3633938100320171,
+      "expected_days_per_year": 132.63874066168623
+    },
+    {
+      "name": "elev",
+      "lo": 65,
+      "hi": 80,
+      "fraction_of_days": 0.14354322305229456,
+      "expected_days_per_year": 52.39327641408751
+    },
+    {
+      "name": "stress",
+      "lo": 80,
+      "hi": 200,
+      "fraction_of_days": 0.1926360725720384,
+      "expected_days_per_year": 70.31216648879402
+    }
+  ]
+}

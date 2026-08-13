@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-05-10T20:25:37.915Z",
+  "venue": "bullish",
+  "base_url": "https://api.exchange.bullish.com",
+  "spot_usd": 81115.35,
+  "notional_usd": 50000,
+  "btc_qty": 0.6164061426104923,
+  "target_tenor_days": 30,
+  "actual_tenor_days": 18.48220625,
+  "target_barrier_pct": 0.02,
+  "target_call_strike": 82737.657,
+  "target_put_strike": 79493.043,
+  "call": {
+    "symbol": "BTC-USDC-20260529-82000-C",
+    "strike": 82000,
+    "ask_usd_per_btc": 2280,
+    "bid_usd_per_btc": 2200,
+    "cost_usd_for_qty": 1405.4060051519225
+  },
+  "put": {
+    "symbol": "BTC-USDC-20260529-80000-P",
+    "strike": 80000,
+    "ask_usd_per_btc": 2170,
+    "bid_usd_per_btc": 2100,
+    "cost_usd_for_qty": 1337.6013294647682
+  },
+  "strangle_total_usd": 2743.007334616691,
+  "per_pair_day_amortized_usd": 148.41341436803253,
+  "calibration_check": {
+    "vs_founder_1150": 2.385223769231905,
+    "vs_cfo_doc_3700": 0.7413533336801867
+  }
+}
