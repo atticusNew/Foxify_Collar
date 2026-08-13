@@ -2,6 +2,8 @@
 **Execution flow brief** · 13 Aug 2026 · for BD + market makers  
 Contact: Michael William · michael@atticustrade.com · live tape: https://facility.atticustrade.com/onesheet
 
+**OKX fee on the running book (the number you asked for): $523 on $3.45M notional = 1.52 bps.** Regular / lowest published options tier, on-screen. Account is institutionally onboarded; live path is RFQ + portfolio margin. No VIP yet — first live flow is uncommitted.
+
 ---
 
 ## What you would be executing
@@ -30,8 +32,10 @@ Window through 13 Aug 2026. Real venue options pricing. Client settlement in thi
 | Cap touched | **2.9%** | 0 |
 | Halts / manual | 0 / 0 | 0 / 0 |
 | Integrity | 100% oracle-signed, 100% reconciled | same |
+| Venue option fees (accrued) | **$523 · 1.52 bps of notional** | included in full window |
+| Platform net after fees + capital (zero ops fee) | **−$12.42 · −0.036 bps** | pass-through proven |
 
-Quoted credit band is 10–16 bps/day at the smallest execution tier. Realized all-in on the 24-day tape is **9.33 bps**. Scale (netting, rebates, better tier) improves this; it does not rely on a hotter number.
+Quoted credit band is 10–16 bps/day at the smallest execution tier. Realized all-in on the 24-day tape is **9.33 bps**. Scale (netting, rebates, RFQ, better tier) improves this; it does not rely on a hotter number.
 
 Directional overlay was run, netted ~zero, and is **retired**. Book is neutral pairs only.
 
@@ -49,6 +53,8 @@ Directional overlay was run, netted ~zero, and is **retired**. Book is neutral p
 | Information | Uninformed / mechanical. Band chosen by the user or by a rules engine, not by a vol desk |
 | Adverse selection | Low. We are not picking your stale quotes on news |
 | Self-match | None on a single book. Pair is split across two perp venues |
+| Execution today | On-screen / CLOB (shadow) |
+| Live execution | RFQ / block first, then sanity-check vs on-screen; portfolio margin |
 | Unwind | Reduce-only IOC + RFQ/block fallback |
 | What fails a fill | Missing 1-DTE strikes outside ~4–5% of spot; thin wings; RFQ timeout |
 
@@ -58,17 +64,35 @@ This is the flow you would take to MMs. They will care about **strike grid, size
 
 ## What we pay today on OKX (the number you asked for)
 
-**Do not use “OKX is 3 bps.”** Options fees are notional-rated and **premium-capped**.
+### On the live 24-day shadow tape
+
+| | |
+|---|---|
+| Settled notional | $3,450,000 · 69 names · avg hold 24.13h |
+| Venue option fees accrued | **$523** |
+| Effective fee | **1.52 bps of notional** (~$7.58 per name, both collar legs) |
+| Platform net after fees + capital, zero Atticus take | **−$12.42 (−0.036 bps)** |
+| Account | Institutional KYB complete |
+| Fee tier | **Regular / lowest published options tier** (3.0 bps maker / 3.0 bps taker, 7% premium cap) |
+| Collateral posted | None yet. Shadow volume does not count as 30-day VIP volume |
+| Execution today | **On-screen / CLOB** |
+| Live design | **RFQ first**, sanity-check vs on-screen, **portfolio margin** at the entry PM level |
+
+$523 is accrued at Regular on-screen rates on real venue prices. It is not cash paid — the book is paper-settled until we post IM. It is the right benchmark: this is what the book costs at the worst published OKX options tier, on-screen, before RFQ or VIP.
+
+Headline Regular is 3.0 bps of notional. We realized **1.52 bps** across both collar legs because OKX fees are `min(rate × notional, 7% × premium)` and the **premium cap binds** on cheap 1-DTE premium. Per-leg that is ~0.76 bps — in line with the formula, not a special deal.
+
+After those fees and capital, the structure is flat at zero ops fee. Any improvement you give on **spread, RFQ/block, rebate, or PM** goes straight into client credit or our fee. There is no hidden pad.
+
+### Formula and public schedule (why 3 bps is the wrong number)
 
 ```
 OKX options fee = min( fee_rate × notional , 7% × premium )
 ```
 
-Public schedule (OKX global fee framework, options):
-
-| Tier | 30d volume (USD) | Maker | Taker |
+| Tier | 30d options volume (USD) | Maker | Taker |
 |---|---|---|---|
-| Regular | < $3M | 0.0300% | 0.0300% |
+| **Regular ← we are here** | < $3M | 0.0300% | 0.0300% |
 | VIP 1 | ≥ $3M | 0.0280% | 0.0300% |
 | VIP 2 | ≥ $5M | 0.0250% | 0.0300% |
 | VIP 3 | ≥ $10M | 0.0200% | 0.0300% |
@@ -79,21 +103,19 @@ Public schedule (OKX global fee framework, options):
 | VIP 8 | ≥ $2B | −0.0100% | 0.0150% |
 | VIP 9 | ≥ $20B | −0.0100% | 0.0130% |
 
-Maker rebate only starts VIP 7. Day options have no exercise fee. Combo/RFQ legs can be discounted.
+Maker rebate only starts VIP 7. Day options have no exercise fee. Combo/RFQ legs can be discounted up to 50% on OKX — **we have not used that yet.** First live orders are RFQ.
 
-**Worked example on the structure we actually trade**
-
-$100,000 notional · 12 bps option premium = $120 premium
+**Worked example (same structure, one $100k name, 12 bps premium = $120)**
 
 | | Math | Fee | Effective |
 |---|---|---|---|
-| OKX regular taker | min(3.0 bps × $100k, 7% × $120) = min($30, $8.40) | **$8.40** | **0.84 bps of notional** |
-| OKX VIP 5 taker | min(2.0 bps × $100k, 7% × $120) = min($20, $8.40) | **$8.40** | cap still binds |
-| Bullish CLOB published | taker 1 bp notional, cap 10% of premium → min($10, $12) | **$10** | **1.0 bp of notional** |
+| OKX Regular taker (us) | min(3.0 bps × $100k, 7% × $120) = min($30, $8.40) | **$8.40** | **0.84 bps / leg** |
+| OKX VIP 5 taker | min(2.0 bps × $100k, 7% × $120) | **$8.40** | cap still binds |
+| Bullish CLOB published | taker 1 bp notional, cap 10% of premium → min($10, $12) | **$10** | **1.0 bp / leg** |
 
-On cheap 24h premium the **OKX 7% cap usually binds**, so headline notional bps overstate what we pay. Bullish does not win this on the published taker rate. Bullish wins if **spread + RFQ/block + rebate program + MM willingness to quote this exact 1-DTE collar** beat OKX all-in.
+On the published CLOB taker card, Bullish does not automatically beat Regular OKX once the 7% cap binds. Bullish wins if **spread + RFQ/block + rebate program + MM quotes on this exact 1-DTE collar + portfolio margin** beat 1.52 bps all-in and the fills we already get on-screen.
 
-Our live account VIP tier and last-10 fill tape (premium, fee paid, maker/taker, RFQ vs book) attach on request the same day. Send those two items with this sheet if you have them; do not wait on a second shadow to start the MM conversation.
+We are institutionally onboarded and **not yet in a VIP or a funded PM relationship.** Live flow is uncommitted. That is the window.
 
 ---
 
@@ -102,10 +124,10 @@ Our live account VIP tier and last-10 fill tape (premium, fee paid, maker/taker,
 All-in, per collar, in this order:
 
 1. Spread paid (ask vs mid on the put we buy, bid vs mid on the call we sell)
-2. Fee after premium cap and any rebate
-3. Fill rate on 1-DTE strikes at the bands we actually use
-4. Size before the book walks
-5. RFQ/block vs CLOB for $50k–$250k names
+2. Fee after premium cap and any rebate — tape benchmark **1.52 bps** on-screen Regular
+3. RFQ/block vs on-screen on the same name (this is how we will actually send live)
+4. Fill rate on 1-DTE strikes at the bands we actually use
+5. Size before the book walks, and PM treatment of the short cap / long floor pair
 
 A rebate that looks better on a rate card and a 1-DTE grid that dies outside 4% of spot is a worse venue for this book.
 
