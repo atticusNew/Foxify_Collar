@@ -34,13 +34,12 @@ Stop adding names until these three have a yes, a no, or a dated next step.
 - Method: reply-all today. Keep Albert on it.
 - Draft: see user-facing note / previous send copy.
 
-**GRVT** (cold — email + one LinkedIn, same text)
+**GRVT** (warm thread — Antoine. Do not also cold JunHak.)
 
-- JunHak Lee, Head of BD — https://www.linkedin.com/in/junhak-lee-4b1a4021b — **primary**
-- Hong Gyu Yea, CEO — https://www.linkedin.com/in/hong-gyu-yea-b5264728 — only if JunHak does not reply in 4 days
-- Matthew Quek, COO — product/ops if BD asks for a second call
-- Email: contact@grvt.io (put JunHak in the first line so it gets routed)
-- Method: LinkedIn connection **with the note in the request**, plus the same paragraph to contact@grvt.io. Do not send a deck. Do not mention Bullish.
+- Antoine Tsao, Institutional BD — https://www.linkedin.com/in/antoine-tsao — **live thread, stay here.** He onboards MMs, professional traders, volume. He can route internally.
+- JunHak Lee, Head of BD — only if Antoine says “talk to JunHak” or goes silent 5+ days
+- Hong Yea, CEO — not from a second LinkedIn while Antoine is live
+- Method: continue Antoine’s thread. One ask: 20 min. Do not paste the cold blast. Do not CC JunHak in parallel.
 
 **SAI / Nibiru** (cold — LinkedIn, they live there)
 
