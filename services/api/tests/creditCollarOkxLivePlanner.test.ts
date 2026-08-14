@@ -8,6 +8,7 @@ import {
   bandCappedLimitPxBtc,
   fillWithinBand,
   planLiveCollar,
+  bandAnchorPxBtc,
   type OkxChainInstrument
 } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
 
@@ -207,4 +208,32 @@ test("planLiveCollar: zero-contract size fails closed", () => {
   const r = planLiveCollar(chain, { ...baseInput, notionalUsdc: 400 }); // 0.004 BTC → 0 contracts
   assert.ok(!r.ok);
   assert.equal(!r.ok ? r.error : "", "size_rounds_to_zero");
+});
+
+test("bandAnchorPxBtc: sub-tick and zero model mids floor to 1 listed tick", () => {
+  assert.equal(bandAnchorPxBtc(0, 0.0001), 0.0001);
+  assert.equal(bandAnchorPxBtc(6.35e-6, 0.0001), 0.0001); // $0.004 put on 0.01 BTC at ~$63k
+  assert.equal(bandAnchorPxBtc(0.0012, 0.0001), 0.0012); // $50k clip unchanged
+  assert.equal(bandAnchorPxBtc(0, 0), 0); // no tick, no mid → still invalid
+});
+
+test("planLiveCollar: 1-lot wrap with $0.00 / sub-cent put mid still plans (tick floor, not model_mid_invalid)", () => {
+  const oneLot = {
+    ...baseInput,
+    notionalUsdc: 1_000,
+    modelContractsBtc: 0.01,
+    protectiveMidUsdc: 0, // round2 of a 10% overnight put on 0.01 BTC
+    fundingMidUsdc: 0.16
+  };
+  const zeroPut = planLiveCollar(chain, oneLot);
+  assert.equal(zeroPut.ok, true, zeroPut.ok ? "" : `${zeroPut.error}: ${zeroPut.message}`);
+  if (!zeroPut.ok) return;
+  assert.equal(zeroPut.plan.contracts, 1);
+  assert.equal(zeroPut.plan.protective.modelMidPxBtc, 0.0001);
+  assert.ok(zeroPut.plan.funding.modelMidPxBtc > 0);
+
+  const subCent = planLiveCollar(chain, { ...oneLot, protectiveMidUsdc: 0.004 });
+  assert.equal(subCent.ok, true, subCent.ok ? "" : `${subCent.error}: ${subCent.message}`);
+  if (!subCent.ok) return;
+  assert.equal(subCent.plan.protective.modelMidPxBtc, 0.0001);
 });

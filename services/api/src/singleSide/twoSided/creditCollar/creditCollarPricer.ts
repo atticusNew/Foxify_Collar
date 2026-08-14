@@ -577,8 +577,9 @@ export const solveAndPriceCreditCollar = (
       atticusShortLeg: atticusShortLegType,
       floor_pct: round4(floorPct),
       cap_pct: round4(capPct),
-      floor_leg_mid_usdc: round2(protectiveMidPerBtc * contractsBtc),
-      funding_leg_mid_usdc: round2(chosenFundingMidPerBtc * contractsBtc)
+      // round6 (not round2): a 1-lot deep put is often sub-cent; $0.00 zeros the live slippage-band anchor.
+      floor_leg_mid_usdc: round6(protectiveMidPerBtc * contractsBtc),
+      funding_leg_mid_usdc: round6(chosenFundingMidPerBtc * contractsBtc)
     },
     fills: {
       fill_mode: fillMode,

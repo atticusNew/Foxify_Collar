@@ -281,6 +281,11 @@ test("pass_through float: 1-lot OKX clip takes executable credit when 16bps targ
   assert.ok(q.economics.foxify_credit_usdc > 0, "floated credit is positive");
   assert.ok(q.economics.foxify_credit_usdc <= 1.01 + 1e-6, "does not invent credit above the scaled target");
   assert.equal(q.economics.operation_fee_usdc, 0);
+  assert.ok(q.legs.funding_leg_mid_usdc > 0, "funding mid survives 1-lot scale");
+  // Sub-cent puts must not be rounded to 0.00 (that zeros the live slippage-band reconstruction).
+  if (q.legs.floor_leg_mid_usdc > 0 && q.legs.floor_leg_mid_usdc < 0.005) {
+    assert.notEqual(+q.legs.floor_leg_mid_usdc.toFixed(2), 0);
+  }
 });
 
 test("pass_through infeasible copy names OKX fees when feeVenue is okx, never Bullish", () => {
