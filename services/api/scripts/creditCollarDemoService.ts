@@ -48,7 +48,7 @@ import {
 import { buildLiveShadowInputs, type LiveShadowConfig } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
 import { solveAdaptiveCreditCollar, type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
-import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
+import { fetchOkxListedTouchQuote } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 import { buildOkxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
 import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
 
@@ -190,12 +190,46 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     { ...(scaffoldConfig.spreadConfig ?? {}), pricingModel: "pass_through", operationFeeBps: 0, minOperationFeeUsdc: 0, feeVenue: "okx" },
     scaffoldConfig.adaptiveFloor
   );
-  if (!adaptive.quote.ok) {
-    failWrap(rec, Date.now(), `wrap refused: ${adaptive.quote.error} — ${adaptive.quote.message}`);
-    persist();
-    return { status: 409, body: { ok: false, error: adaptive.quote.error, message: adaptive.quote.message, wrap: rec } };
+  type DemoQuote = {
+    legs: { putStrike: number; callStrike: number; floor_pct: number; cap_pct: number; floor_leg_mid_usdc: number; funding_leg_mid_usdc: number };
+    economics: { foxify_credit_usdc: number };
+  };
+  let q: DemoQuote;
+  let floorUsedPct = adaptive.floorUsedPct;
+  let quoteNote = "";
+  if (adaptive.quote.ok) {
+    q = adaptive.quote;
+  } else {
+    // Model (50k-scale wing spreads) said touch credit ≤ 0. Price the listed 1-lot books we would
+    // actually trade — same Saturday 08:00 pair live already mapped last take.
+    const listed = await fetchOkxListedTouchQuote({
+      side: position.side,
+      spot,
+      planPutStrike: spot * (1 - (scaffoldConfig.maxFloorPct ?? 0.06)),
+      planCallStrike: spot * 1.01,
+      notionalUsdc: hedgeNotionalUsdc,
+      contractsBtc: cover.coveredBtc,
+      nowMs: Date.now()
+    });
+    if (!listed.ok) {
+      failWrap(rec, Date.now(), `wrap refused: ${listed.error} — ${listed.message}`);
+      persist();
+      return { status: 409, body: { ok: false, error: listed.error, message: listed.message, wrap: rec } };
+    }
+    q = {
+      legs: {
+        putStrike: listed.putStrike,
+        callStrike: listed.callStrike,
+        floor_pct: listed.floorPct,
+        cap_pct: listed.capPct,
+        floor_leg_mid_usdc: listed.putMidUsdc,
+        funding_leg_mid_usdc: listed.callMidUsdc
+      },
+      economics: { foxify_credit_usdc: listed.creditUsdc }
+    };
+    floorUsedPct = listed.floorPct;
+    quoteNote = `listed OKX ${listed.putInstId} / ${listed.callInstId} touch`;
   }
-  const q = adaptive.quote;
   rec.quote = {
     spot: round2(spot),
     putStrike: q.legs.putStrike,
@@ -203,7 +237,7 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     floorPct: q.legs.floor_pct,
     capPct: q.legs.cap_pct,
     creditUsdc: q.economics.foxify_credit_usdc,
-    floorPctUsed: adaptive.floorUsedPct,
+    floorPctUsed: floorUsedPct,
     tenorDays: baseCfg.tenorDays
   };
   pushStage(
@@ -211,6 +245,7 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     "quoted",
     Date.now(),
     `floor $${q.legs.putStrike} / cap $${q.legs.callStrike} · credit $${q.economics.foxify_credit_usdc}` +
+      (quoteNote ? ` · ${quoteNote}` : "") +
       (sizeNote ? ` · ${sizeNote}` : "")
   );
   persist();
@@ -278,7 +313,7 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
               callStrike: q.legs.callStrike,
               foxifyCreditUsdc: q.economics.foxify_credit_usdc,
               serviceFeeUsdc: 0,
-              floorPctUsed: adaptive.floorUsedPct,
+              floorPctUsed: floorUsedPct,
               protectiveLegMidUsdc: q.legs.floor_leg_mid_usdc,
               fundingLegMidUsdc: q.legs.funding_leg_mid_usdc
             }
