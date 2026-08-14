@@ -81,10 +81,10 @@
       return;
     }
     busy = true;
-    // The ~20s is REAL work (capturing the live options book) — show it counting, not a spinner.
+    // The ~20s is REAL work — show it counting. One writer only: sync() stays out while busy.
     const t0 = Date.now();
-    setChip("pricing the live options book…", "ap-warn");
-    const tick = setInterval(() => setChip("pricing the live options book… " + Math.round((Date.now() - t0) / 1000) + "s", "ap-warn"), 500);
+    setChip("Wrapping…", "ap-warn");
+    const tick = setInterval(() => setChip("Wrapping… " + Math.round((Date.now() - t0) / 1000) + "s", "ap-warn"), 1000);
     const res = await api("/demo/api/wrap", "POST");
     clearInterval(tick);
     busy = false;
@@ -100,6 +100,7 @@
 
   // ── state sync (engine is the source of truth, not the click) ──────────────
   const sync = async () => {
+    if (busy) return; // the in-flight wrap owns the chip (its counter) — no competing writers
     const res = await api("/demo/api/state", "GET");
     if (!res.ok || !res.json || !res.json.ok) {
       if (!busy) setChip("engine offline", "ap-bad");
@@ -134,8 +135,9 @@
           " · $" + q.creditUsdc + " credit · " + (v.fullyVested ? "fully vested" : hrs + "h " + mins + "m to full vest");
       }
     } else if (w.status === "quoting" || w.status === "executing") {
+      // A wrap in flight from ANOTHER surface (e.g. the control-room button) — steady label, no counter.
       setSwitch(true);
-      setChip(w.status === "executing" ? "hedge legs executing…" : "pricing…", "ap-warn");
+      setChip("Wrapping…", "ap-warn");
     }
   };
 

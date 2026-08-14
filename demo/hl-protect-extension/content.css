@@ -57,6 +57,9 @@
   max-width: 340px;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums; /* counter digits don't wiggle */
+  min-width: 76px; /* "Wrapping… 12s" fits without width jumps */
+  text-align: center;
 }
 
 .atticus-protect .ap-chip.ap-idle { background: #1c2624; color: #949e9c; }
