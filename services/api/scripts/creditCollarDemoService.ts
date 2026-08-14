@@ -5,10 +5,9 @@
  *
  * What it does, all real:
  *   1. POSITION  — reads the REAL Hyperliquid position (clearinghouseState) for DEMO_HL_ADDRESS.
- *   2. QUOTE     — prices the REAL collar off the live OKX options book (same pricer, pass-through,
- *                  σ-floor, adaptive floor — the exact production solve), credit target scaled to
- *                  the micro notional ($80-per-$50k geometry).
- *   3. EXECUTE   — DEMO_EXECUTION=paper (default): model quote booked, clearly labeled PAPER.
+ *   2. QUOTE     — listed OKX lots (floor, never round up). Credit = call bid − put ask − OKX fees
+ *                  (pass-through, Atticus fee 0). No $80/$50k Foxify target. Cap stays off ATM.
+ *   3. EXECUTE   — DEMO_EXECUTION=paper (default): listed-book quote, clearly labeled PAPER.
  *                  okx_demo / okx_live: REAL hedge legs through the SAME production path as the
  *                  canary (band-capped IOC legs, unwind-on-partial, alerts) — real order IDs.
  *   4. CONTROL ROOM — GET /demo renders the Atticus-side page for the recording: position, quote,
@@ -31,7 +30,10 @@ import {
   assessDemoWrap,
   concludeWrapEarly,
   coverOkxLots,
+  demoPlanStrikes,
   demoVestingStatus,
+  DEMO_CAP_PCT,
+  DEMO_FLOOR_PCT,
   failWrap,
   loadDemoWraps,
   newDemoWrap,
@@ -39,15 +41,14 @@ import {
   parseDemoGuardsFromEnv,
   pushStage,
   saveDemoWraps,
-  scaledCreditTarget,
   uncoveredSizeNote,
   wrapRefuseFromLive,
   type DemoLeg,
   type DemoWrapRecord
 } from "../src/singleSide/twoSided/creditCollar/demoWrap";
-import { buildLiveShadowInputs, type LiveShadowConfig } from "../src/singleSide/twoSided/creditCollar/shadowRunner";
-import { solveAdaptiveCreditCollar, type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
+import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
 import { evaluateRegimeGate } from "../src/singleSide/twoSided/creditCollar/regimeGate";
+import { OkxExecutionClient } from "../src/singleSide/twoSided/creditCollar/execution/okxExecutionClient";
 import { fetchOkxListedTouchQuote } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 import { buildOkxLiveExecutionHook } from "../src/singleSide/twoSided/creditCollar/execution/okxLiveRunner";
 import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSided/creditCollar/execution/liveGuards";
@@ -74,36 +75,10 @@ const hlAccount = (): string | null => {
   }
 };
 
-// Same pricing frame as the shadow/canary (config freeze) — notional is swapped in per wrap.
-const baseCfg: LiveShadowConfig = {
-  positionNotionalUsdc: 50_000, // replaced per wrap
-  feeUsdc: num(process.env.HARNESS_FEE_USDC, 80),
-  serviceFeeBps: 0,
-  minServiceFeeUsdc: 0,
-  tenorDays: num(process.env.HARNESS_TENOR_DAYS, 1),
-  maxFloorPct: num(process.env.HARNESS_MAX_FLOOR_PCT, 0.06),
-  nPositions: 1,
-  tier0CapUsdc: 2_000_000,
-  breaker: { warnBandPct: 100, haltBandPct: 100, resumeBandPct: 100, minGrossNotionalUsd: 0, maxAbsNetNotionalUsd: Number.MAX_SAFE_INTEGER },
-  policy: { targetNetBandPct: 0.1, allowDirectionalBias: false, directionalTiltSigned: 0 },
-  bullishWeight: 0,
-  settlementWindowMin: 30,
-  seed: 42,
-  strikeGridUsdc: num(process.env.HARNESS_STRIKE_GRID_USDC, 250),
-  minCapSigmaMult: num(process.env.HARNESS_MIN_CAP_SIGMA, 1.1),
-  maxRetainedNetOfFeesUsdc: num(process.env.HARNESS_MAX_RETAINED_USDC, 2),
-  hedgeVenue: "okx",
-  adaptiveFloor: { enabled: true, maxFloorCapPct: num(process.env.SHADOW_ADAPTIVE_FLOOR_CAP, 0.1), stepPct: 0.005 }
-};
+const floorPct = num(process.env.DEMO_FLOOR_PCT, DEMO_FLOOR_PCT);
+const capPct = num(process.env.DEMO_CAP_PCT, DEMO_CAP_PCT);
 
 const DAY_MS = 86_400_000;
-
-/**
- * Paper-lane expiry: EXACTLY now + tenor (24h default) — matches the pricer's tenor, the shadow
- * model, and the product pitch. Snapping to a listed 08:00 UTC print is a LIVE-lane concern (the
- * real venue legs settle at the venue's daily print, and there the true expiry is shown).
- */
-const paperExpiryMs = (nowMs: number, tenorDays: number): number => nowMs + tenorDays * DAY_MS;
 
 type HlPositionRead = {
   coin: string;
@@ -174,62 +149,37 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
   saveDemoWraps(records, storePath);
   const persist = () => saveDemoWraps(records, storePath);
 
-  // 2) QUOTE — live OKX book, production solve, credit target scaled to COVERED lots (floor, never round up).
-  const built = await buildLiveShadowInputs({ ...baseCfg, positionNotionalUsdc: coveredNotionalUsdc });
-  if (!built.ok) {
-    failWrap(rec, Date.now(), `wrap refused: live pricing inputs unavailable: ${built.error} — ${built.message}`);
-    persist();
-    return { status: 502, body: { ok: false, error: built.error, message: built.message, wrap: rec } };
-  }
-  const { skew, spot, scaffoldConfig } = built.inputs;
+  // 2) QUOTE — listed OKX lots. Credit = executable touch net of OKX fees. No $80/$50k target.
+  const spot = position.markPx;
   const hedgeNotionalUsdc = round2(cover.coveredBtc * spot);
-  const targetCredit = scaledCreditTarget(baseCfg.feeUsdc, 50_000, hedgeNotionalUsdc);
-  const adaptive = solveAdaptiveCreditCollar(
-    { side: position.side, spot, notionalUsdc: hedgeNotionalUsdc, tenorDays: baseCfg.tenorDays, targetCreditUsdc: targetCredit, maxFloorPct: scaffoldConfig.maxFloorPct, referenceMode: "position" },
-    skew,
-    { ...(scaffoldConfig.spreadConfig ?? {}), pricingModel: "pass_through", operationFeeBps: 0, minOperationFeeUsdc: 0, feeVenue: "okx" },
-    scaffoldConfig.adaptiveFloor
-  );
-  type DemoQuote = {
-    legs: { putStrike: number; callStrike: number; floor_pct: number; cap_pct: number; floor_leg_mid_usdc: number; funding_leg_mid_usdc: number };
-    economics: { foxify_credit_usdc: number };
-  };
-  let q: DemoQuote;
-  let floorUsedPct = adaptive.floorUsedPct;
-  let quoteNote = "";
-  if (adaptive.quote.ok) {
-    q = adaptive.quote;
-  } else {
-    // Model (50k-scale wing spreads) said touch credit ≤ 0. Price the listed 1-lot books we would
-    // actually trade — same Saturday 08:00 pair live already mapped last take.
-    const listed = await fetchOkxListedTouchQuote({
-      side: position.side,
-      spot,
-      planPutStrike: spot * (1 - (scaffoldConfig.maxFloorPct ?? 0.06)),
-      planCallStrike: spot * 1.01,
-      notionalUsdc: hedgeNotionalUsdc,
-      contractsBtc: cover.coveredBtc,
-      nowMs: Date.now()
-    });
-    if (!listed.ok) {
-      failWrap(rec, Date.now(), `wrap refused: ${listed.error} — ${listed.message}`);
-      persist();
-      return { status: 409, body: { ok: false, error: listed.error, message: listed.message, wrap: rec } };
-    }
-    q = {
-      legs: {
-        putStrike: listed.putStrike,
-        callStrike: listed.callStrike,
-        floor_pct: listed.floorPct,
-        cap_pct: listed.capPct,
-        floor_leg_mid_usdc: listed.putMidUsdc,
-        funding_leg_mid_usdc: listed.callMidUsdc
-      },
-      economics: { foxify_credit_usdc: listed.creditUsdc }
-    };
-    floorUsedPct = listed.floorPct;
-    quoteNote = `listed OKX ${listed.putInstId} / ${listed.callInstId} touch`;
+  const plan = demoPlanStrikes(spot, floorPct, capPct);
+  const listed = await fetchOkxListedTouchQuote({
+    side: position.side,
+    spot,
+    planPutStrike: plan.putStrike,
+    planCallStrike: plan.callStrike,
+    notionalUsdc: hedgeNotionalUsdc,
+    contractsBtc: cover.coveredBtc,
+    nowMs: Date.now()
+  });
+  if (!listed.ok) {
+    failWrap(rec, Date.now(), `wrap refused: ${listed.error} — ${listed.message}`);
+    persist();
+    return { status: 409, body: { ok: false, error: listed.error, message: listed.message, wrap: rec } };
   }
+  const q = {
+    legs: {
+      putStrike: listed.putStrike,
+      callStrike: listed.callStrike,
+      floor_pct: listed.floorPct,
+      cap_pct: listed.capPct,
+      floor_leg_mid_usdc: listed.putMidUsdc,
+      funding_leg_mid_usdc: listed.callMidUsdc
+    },
+    economics: { foxify_credit_usdc: listed.creditUsdc }
+  };
+  const floorUsedPct = listed.floorPct;
+  const tenorDays = Math.max(1 / 24, (listed.expiryMs - Date.now()) / DAY_MS);
   rec.quote = {
     spot: round2(spot),
     putStrike: q.legs.putStrike,
@@ -238,24 +188,24 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     capPct: q.legs.cap_pct,
     creditUsdc: q.economics.foxify_credit_usdc,
     floorPctUsed: floorUsedPct,
-    tenorDays: baseCfg.tenorDays
+    tenorDays: +tenorDays.toFixed(2)
   };
   pushStage(
     rec,
     "quoted",
     Date.now(),
     `floor $${q.legs.putStrike} / cap $${q.legs.callStrike} · credit $${q.economics.foxify_credit_usdc}` +
-      (quoteNote ? ` · ${quoteNote}` : "") +
+      ` · listed OKX ${listed.putInstId} / ${listed.callInstId} touch` +
       (sizeNote ? ` · ${sizeNote}` : "")
   );
   persist();
 
   // 3) EXECUTE.
   if (guards.executionMode === "paper") {
-    const expiresAtMs = paperExpiryMs(nowMs, baseCfg.tenorDays);
+    const expiresAtMs = listed.expiryMs;
     rec.legs = paperLegsFromQuote(q, expiresAtMs);
-    rec.hedge = { venue: "okx_model", mode: "paper", netCreditUsdc: q.economics.foxify_credit_usdc, venueFeeUsdc: null, contracts: cover.lots, sizeNote };
-    pushStage(rec, "hedge_locked", Date.now(), "PAPER lane — model quote off the live OKX book, no venue orders");
+    rec.hedge = { venue: "okx_model", mode: "paper", netCreditUsdc: q.economics.foxify_credit_usdc, venueFeeUsdc: listed.venueFeeUsdc, contracts: cover.lots, sizeNote };
+    pushStage(rec, "hedge_locked", Date.now(), "PAPER lane — listed OKX touch quote, no venue orders");
     pushStage(rec, "green_light", Date.now());
     rec.vesting = { fullCreditUsdc: q.economics.foxify_credit_usdc, startMs: Date.now(), endMs: expiresAtMs };
     pushStage(rec, "vesting", Date.now(), `$${q.economics.foxify_credit_usdc} vests linearly to ${new Date(expiresAtMs).toISOString()}`);

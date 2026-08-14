@@ -20,6 +20,7 @@ export type ListedTouchQuote =
       callStrike: number;
       putInstId: string;
       callInstId: string;
+      expiryMs: number;
       floorPct: number;
       capPct: number;
       putAskPxBtc: number;
@@ -118,6 +119,7 @@ export const quoteFromListedBooks = (input: {
     callStrike: callLeg.listedStrike,
     putInstId: putLeg.instId,
     callInstId: callLeg.instId,
+    expiryMs: planned.plan.expiryMs,
     floorPct: round6((input.spot - putLeg.listedStrike) / input.spot),
     capPct: round6((callLeg.listedStrike - input.spot) / input.spot),
     putAskPxBtc: putAskPx,

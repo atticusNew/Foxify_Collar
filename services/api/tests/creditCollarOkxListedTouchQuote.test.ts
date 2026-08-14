@@ -49,6 +49,7 @@ test("quoteFromListedBooks: 1-lot two-sided book with positive net credit succee
   if (!q.ok) return;
   assert.equal(q.putStrike, 94_000);
   assert.equal(q.callStrike, 102_000);
+  assert.equal(q.expiryMs, expiry);
   assert.ok(q.creditUsdc > 0);
   assert.ok(q.creditUsdc <= 0.2);
 });

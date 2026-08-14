@@ -16,6 +16,9 @@ import {
   coverOkxLots,
   uncoveredSizeNote,
   OKX_OPTION_LOT_BTC,
+  demoPlanStrikes,
+  DEMO_FLOOR_PCT,
+  DEMO_CAP_PCT,
   pushStage,
   saveDemoWraps,
   scaledCreditTarget,
@@ -101,7 +104,7 @@ test("demo wrap: clean state permits", () => {
 
 // ── credit scaling ────────────────────────────────────────────────────────────
 
-test("credit target scales proportionally ($80 on $50k geometry)", () => {
+test("credit target scales proportionally ($80 on $50k GTM illustration only)", () => {
   assert.equal(scaledCreditTarget(80, 50_000, 50_000), 80);
   assert.equal(scaledCreditTarget(80, 50_000, 650), 1.04); // one OKX min clip at ~$65k spot
   assert.equal(scaledCreditTarget(80, 50_000, 25_000), 40);
@@ -146,6 +149,14 @@ test("coverOkxLots: never rounds up (0.019 → 1 lot, not 2)", () => {
   if (!r.ok) return;
   assert.equal(r.lots, 1);
   assert.equal(OKX_OPTION_LOT_BTC, 0.01);
+});
+
+test("demoPlanStrikes: 6% floor / 1.5% cap — not a $50k credit hunt", () => {
+  assert.equal(DEMO_FLOOR_PCT, 0.06);
+  assert.equal(DEMO_CAP_PCT, 0.015);
+  const s = demoPlanStrikes(62_849.3);
+  assert.ok(Math.abs(s.putStrike - 62_849.3 * 0.94) < 1e-6);
+  assert.ok(Math.abs(s.callStrike - 62_849.3 * 1.015) < 1e-6);
 });
 
 // ── paper legs ────────────────────────────────────────────────────────────────

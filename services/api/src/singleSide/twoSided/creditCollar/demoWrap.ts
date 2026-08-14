@@ -232,12 +232,21 @@ export const uncoveredSizeNote = (szBase: number, covered: Extract<CoveredLots, 
     ? `protecting ${covered.coveredBtc} of ${szBase} BTC (${covered.lots} × ${OKX_OPTION_LOT_BTC}); remainder unwrapped`
     : null;
 
-// ── Credit scaling ────────────────────────────────────────────────────────────
+/** Direct-client collar geometry: floor/cap in spot space. Not a $50k Foxify credit target. */
+export const DEMO_FLOOR_PCT = 0.06;
+/** Stay off ATM (σ-floor-ish overnight); do not tighten to manufacture a tape credit. */
+export const DEMO_CAP_PCT = 0.015;
+
+export const demoPlanStrikes = (spot: number, floorPct = DEMO_FLOOR_PCT, capPct = DEMO_CAP_PCT): { putStrike: number; callStrike: number } => ({
+  putStrike: spot * (1 - floorPct),
+  callStrike: spot * (1 + capPct)
+});
+
+// ── Credit scaling (GTM illustration only — not the live demo solver) ─────────
 
 /**
- * The product prices $baseCredit on $baseNotional (e.g. $80 on $50k). A demo position is micro, so
- * the target scales proportionally — same collar geometry, honest economics — with a small floor so
- * the solver always has a positive target.
+ * Illustrative $80 on $50k (~16 bps) from the old Foxify tape. Direct-client wraps do NOT use this
+ * as a solver target; they take listed OKX touch credit on floored lots. Kept for GTM / one-pagers.
  */
 export const scaledCreditTarget = (baseCreditUsdc: number, baseNotionalUsdc: number, notionalUsdc: number, minUsdc = 0.5): number => {
   if (!(baseNotionalUsdc > 0) || !(notionalUsdc > 0)) return minUsdc;
