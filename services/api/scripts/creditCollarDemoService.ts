@@ -95,13 +95,12 @@ const baseCfg: LiveShadowConfig = {
 
 const DAY_MS = 86_400_000;
 
-/** Listed-style expiry for the paper lane: the first 08:00 UTC at/after now + tenor. */
-const paperExpiryMs = (nowMs: number, tenorDays: number): number => {
-  const t = nowMs + tenorDays * DAY_MS;
-  const d = new Date(t);
-  const at8 = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 8, 0, 0, 0);
-  return at8 >= t ? at8 : at8 + DAY_MS;
-};
+/**
+ * Paper-lane expiry: EXACTLY now + tenor (24h default) — matches the pricer's tenor, the shadow
+ * model, and the product pitch. Snapping to a listed 08:00 UTC print is a LIVE-lane concern (the
+ * real venue legs settle at the venue's daily print, and there the true expiry is shown).
+ */
+const paperExpiryMs = (nowMs: number, tenorDays: number): number => nowMs + tenorDays * DAY_MS;
 
 type HlPositionRead = {
   coin: string;
