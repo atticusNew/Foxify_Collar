@@ -81,6 +81,9 @@
       return;
     }
     busy = true;
+    // Immediate knob feedback: flip ON for the attempt (flips back on refuse). Without this the
+    // knob only ever moves on success, which reads as "the toggle doesn't toggle" during refusals.
+    setSwitch(true);
     // The ~20s is REAL work — show it counting. One writer only: sync() stays out while busy.
     const t0 = Date.now();
     setChip("Wrapping…", "ap-warn");
@@ -118,6 +121,9 @@
               : "closed early · kept $" + w.vestingStatus.vestedUsdc.toFixed(2) + " of $" + w.vestingStatus.fullCreditUsdc.toFixed(2),
             "ap-idle"
           );
+        } else if (w && w.status === "failed" && w.failReason) {
+          // The refusal stays readable until the next action — the poll must not blank it to "off".
+          setChip(w.failReason, "ap-bad");
         } else setChip("off", "ap-idle");
       }
       return;
