@@ -1,6 +1,7 @@
 /**
  * Listed-lot pass-through quote. Credit = call bid − put ask − OKX fees on the instruments we
- * would actually trade. If the 1.5% pin has no bid, walk to a neighboring listed OTM strike.
+ * would actually trade. If the 1.5% pin has no bid, walk listed OTM neighbors and sell the
+ * fattest bid in band — never the first thin touch, which can be a debit vs the put ask.
  */
 
 import { computeCollarOpenFees } from "../bullishFees";
@@ -143,6 +144,9 @@ type ChainRow = {
   state?: string;
 };
 
+/** 5 bp of spot: listed 100-pt grid can sit a few dollars inside a float 0.8% pin (63400 vs 63404). */
+export const BAND_EDGE_SLACK_PCT = 0.0005;
+
 /**
  * Listed OTM candidates nearest a target strike. Calls stay above spot (min/max OTM);
  * puts stay below. Empty-strike pins (e.g. 63750-C with no bid) can then walk to a neighbor.
@@ -155,8 +159,9 @@ export const listedWingCandidates = (
   targetStrike: number,
   band: { minOtmPct: number; maxOtmPct: number }
 ): OkxChainInstrument[] => {
-  const lo = optType === "call" ? spot * (1 + band.minOtmPct) : spot * (1 - band.maxOtmPct);
-  const hi = optType === "call" ? spot * (1 + band.maxOtmPct) : spot * (1 - band.minOtmPct);
+  const slack = spot * BAND_EDGE_SLACK_PCT;
+  const lo = (optType === "call" ? spot * (1 + band.minOtmPct) : spot * (1 - band.maxOtmPct)) - slack;
+  const hi = (optType === "call" ? spot * (1 + band.maxOtmPct) : spot * (1 - band.minOtmPct)) + slack;
   return chain
     .filter((c) => c.optType === optType && c.expiryMs === expiryMs && c.state === "live" && c.strike >= lo - 1e-6 && c.strike <= hi + 1e-6)
     .sort((a, b) => Math.abs(a.strike - targetStrike) - Math.abs(b.strike - targetStrike));
@@ -174,6 +179,21 @@ export const firstWingWithTouch = (
     if (px != null && px > 0) return { inst, book };
   }
   return null;
+};
+
+/** Among wings with a bid, pick the highest bid. Equal bids keep the nearer candidate (sort order). */
+export const fattestWingBid = (
+  candidates: OkxChainInstrument[],
+  books: Record<string, BookTopPx>
+): { inst: OkxChainInstrument; book: BookTopPx } | null => {
+  let best: { inst: OkxChainInstrument; book: BookTopPx; bid: number } | null = null;
+  for (const inst of candidates) {
+    const book = books[inst.instId];
+    const bid = book?.bidPxBtc;
+    if (!(bid != null && bid > 0)) continue;
+    if (!best || bid > best.bid) best = { inst, book, bid };
+  }
+  return best ? { inst: best.inst, book: best.book } : null;
 };
 
 const parseBook = (raw: { data?: Array<{ bids?: string[][]; asks?: string[][] }> }): BookTopPx => ({
@@ -239,7 +259,7 @@ export const fetchOkxListedTouchQuote = async (input: {
       if (!books[c.instId]) books[c.instId] = await readBook(c.instId);
     }
     const buyHit = firstWingWithTouch(buyCands, books, "ask");
-    const sellHit = firstWingWithTouch(sellCands, books, "bid");
+    const sellHit = fattestWingBid(sellCands, books);
     if (!buyHit || !sellHit) {
       const buyInst = buyCands[0]?.instId ?? "?";
       const sellInst = sellCands[0]?.instId ?? "?";

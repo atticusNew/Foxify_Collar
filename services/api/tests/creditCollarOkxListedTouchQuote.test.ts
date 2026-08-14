@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { OkxChainInstrument } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
-import { quoteFromListedBooks, touchCreditUsdc, listedWingCandidates, firstWingWithTouch } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
+import { quoteFromListedBooks, touchCreditUsdc, listedWingCandidates, firstWingWithTouch, fattestWingBid } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 
 const now = Date.UTC(2026, 6, 19, 8, 20, 0);
 const expiry = Date.UTC(2026, 6, 20, 8, 0, 0);
@@ -95,4 +95,38 @@ test("firstWingWithTouch: skips empty 63750-C and takes a neighbor with a bid", 
   const hit = firstWingWithTouch(cands, books, "bid");
   assert.ok(hit);
   assert.equal(hit!.inst.strike, 102_000);
+});
+
+test("fattestWingBid: skips a thin nearer 63600-C debit bid for a fatter 63500-C", () => {
+  // Live Saturday 1-lot: 63600 is closer to the 1.5% pin but bid 0.0001 < put ask 0.0002.
+  const cands = [inst(63_600, "call"), inst(63_500, "call"), inst(63_750, "call")];
+  const books = {
+    [cands[0].instId]: { bidPxBtc: 0.0001, askPxBtc: 0.0002 },
+    [cands[1].instId]: { bidPxBtc: 0.0003, askPxBtc: 0.0004 },
+    [cands[2].instId]: { bidPxBtc: null, askPxBtc: 0.0002 }
+  };
+  const hit = fattestWingBid(cands, books);
+  assert.ok(hit);
+  assert.equal(hit!.inst.strike, 63_500);
+  assert.equal(hit!.book.bidPxBtc, 0.0003);
+});
+
+test("fattestWingBid: equal bids keep the nearer candidate", () => {
+  const cands = [inst(63_600, "call"), inst(63_500, "call")];
+  const books = {
+    [cands[0].instId]: { bidPxBtc: 0.0001, askPxBtc: 0.0002 },
+    [cands[1].instId]: { bidPxBtc: 0.0001, askPxBtc: 0.0002 }
+  };
+  const hit = fattestWingBid(cands, books);
+  assert.ok(hit);
+  assert.equal(hit!.inst.strike, 63_600);
+});
+
+test("listedWingCandidates: 5bp slack includes listed 63400-C when 0.8% pin is 63404", () => {
+  const spot = 62_900.9;
+  const target = Math.round(spot * 1.015);
+  const wide = [inst(63_250, "call"), inst(63_400, "call"), inst(63_500, "call"), inst(63_750, "call")];
+  const cands = listedWingCandidates(wide, expiry, "call", spot, target, { minOtmPct: 0.008, maxOtmPct: 0.04 });
+  assert.ok(cands.some((c) => c.strike === 63_400), "listed 63400 is 4 dollars inside 0.8% — still OTM");
+  assert.ok(!cands.some((c) => c.strike === 63_250), "63250 is ~0.55% OTM, still ATM-adjacent");
 });
