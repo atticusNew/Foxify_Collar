@@ -135,6 +135,24 @@ export class HyperliquidClient {
     return p ? Number(p.position.szi) : 0;
   }
 
+  /** Full position row (size + entry + value) for display surfaces. null ⟹ no open position. */
+  async positionDetail(address: string, coin: string): Promise<{ szi: number; entryPx: number | null; positionValueUsd: number | null } | null> {
+    const st = (await this.post("/info", { type: "clearinghouseState", user: address })) as {
+      assetPositions?: Array<{ position: { coin: string; szi: string; entryPx?: string; positionValue?: string } }>;
+    };
+    const p = (st.assetPositions ?? []).find((ap) => ap.position.coin === coin);
+    if (!p) return null;
+    const szi = Number(p.position.szi);
+    if (!Number.isFinite(szi) || szi === 0) return null;
+    const entry = Number(p.position.entryPx);
+    const value = Number(p.position.positionValue);
+    return {
+      szi,
+      entryPx: Number.isFinite(entry) && entry > 0 ? entry : null,
+      positionValueUsd: Number.isFinite(value) && value > 0 ? value : null
+    };
+  }
+
   /** Current funding in bps per 8h from metaAndAssetCtxs (funding is an 8h rate fraction). */
   async fundingBpsPer8h(coin: string): Promise<number | null> {
     const raw = (await this.post("/info", { type: "metaAndAssetCtxs" })) as [
