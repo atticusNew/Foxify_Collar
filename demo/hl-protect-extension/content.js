@@ -159,7 +159,10 @@
     }
     const r = row.getBoundingClientRect();
     const w = el.getBoundingClientRect();
-    el.style.top = Math.round(r.top + (r.height - w.height) / 2) + "px";
+    // Hang just BELOW the row, right-aligned: the empty strip beside "Unified Account Summary" —
+    // covers no row controls (Close All / TP/SL) and never reaches the venue footer.
+    const top = Math.min(r.bottom + 4, window.innerHeight - w.height - 48);
+    el.style.top = Math.round(top) + "px";
     el.style.left = Math.round(Math.max(8, r.right - w.width - 10)) + "px";
   };
 
