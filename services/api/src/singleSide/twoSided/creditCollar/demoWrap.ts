@@ -101,7 +101,7 @@ export type DemoWrapRecord = {
     netCreditUsdc: number | null;
     venueFeeUsdc: number | null;
     contracts: number | null;
-    /** Set when the hedge's min clip exceeds the wrapped position (e.g. OKX 0.01 BTC lots vs a micro HL leg). */
+    /** Uncovered remainder when the position is not an integer OKX lot (floor, never round up). */
     sizeNote: string | null;
   } | null;
   legs: DemoLeg[];
@@ -182,6 +182,39 @@ export const assessDemoWrap = (
   }
   return { ok: true };
 };
+
+// ── OKX lot cover (floor, never round up) ─────────────────────────────────────
+
+/** OKX coin-margined BTC option contract size. */
+export const OKX_OPTION_LOT_BTC = 0.01;
+
+export type CoveredLots =
+  | { ok: true; coveredBtc: number; lots: number; remainderBtc: number }
+  | { ok: false; reason: string };
+
+/**
+ * Whole lots that FIT inside the position. Never round up (that would sell extra options the
+ * trader does not hold). Below one lot there is no listed clip — refuse with a human line.
+ */
+export const coverOkxLots = (szBase: number, lotBtc = OKX_OPTION_LOT_BTC): CoveredLots => {
+  const sz = Math.abs(szBase);
+  if (!(sz > 0) || !(lotBtc > 0)) return { ok: false, reason: "no live position to wrap (size 0)" };
+  const lots = Math.floor(sz / lotBtc + 1e-12);
+  if (lots < 1) {
+    return {
+      ok: false,
+      reason: `wrap refused: this position is ${sz} BTC; OKX options trade in ${lotBtc} BTC lots (minimum one lot)`
+    };
+  }
+  const coveredBtc = +(lots * lotBtc).toFixed(8);
+  const remainderBtc = +Math.max(0, sz - coveredBtc).toFixed(8);
+  return { ok: true, coveredBtc, lots, remainderBtc };
+};
+
+export const uncoveredSizeNote = (szBase: number, covered: Extract<CoveredLots, { ok: true }>): string | null =>
+  covered.remainderBtc > 1e-8
+    ? `protecting ${covered.coveredBtc} of ${szBase} BTC (${covered.lots} × ${OKX_OPTION_LOT_BTC}); remainder unwrapped`
+    : null;
 
 // ── Credit scaling ────────────────────────────────────────────────────────────
 

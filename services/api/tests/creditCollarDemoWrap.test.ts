@@ -13,6 +13,9 @@ import {
   paperInstId,
   paperLegsFromQuote,
   parseDemoGuardsFromEnv,
+  coverOkxLots,
+  uncoveredSizeNote,
+  OKX_OPTION_LOT_BTC,
   pushStage,
   saveDemoWraps,
   scaledCreditTarget,
@@ -106,6 +109,42 @@ test("credit target scales proportionally ($80 on $50k geometry)", () => {
 test("credit target floors at the minimum for dust positions", () => {
   assert.equal(scaledCreditTarget(80, 50_000, 10), 0.5);
   assert.equal(scaledCreditTarget(80, 50_000, 0), 0.5);
+});
+
+// ── OKX lot cover (floor, never round up) ─────────────────────────────────────
+
+test("coverOkxLots: refuses below one 0.01 BTC lot", () => {
+  const r = coverOkxLots(0.009);
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.match(r.reason, /wrap refused: this position is 0\.009 BTC/);
+  assert.match(r.reason, /0\.01 BTC lots/);
+});
+
+test("coverOkxLots: 0.01 is exactly one lot; 0.012 floors to 0.01 with remainder", () => {
+  const exact = coverOkxLots(0.01);
+  assert.equal(exact.ok, true);
+  if (!exact.ok) return;
+  assert.equal(exact.lots, 1);
+  assert.equal(exact.coveredBtc, 0.01);
+  assert.equal(exact.remainderBtc, 0);
+
+  const partial = coverOkxLots(0.012);
+  assert.equal(partial.ok, true);
+  if (!partial.ok) return;
+  assert.equal(partial.lots, 1);
+  assert.equal(partial.coveredBtc, 0.01);
+  assert.ok(partial.remainderBtc > 0.0019 && partial.remainderBtc < 0.0021);
+  assert.match(uncoveredSizeNote(0.012, partial) ?? "", /protecting 0\.01 of 0\.012 BTC/);
+  assert.equal(uncoveredSizeNote(0.01, exact), null);
+});
+
+test("coverOkxLots: never rounds up (0.019 → 1 lot, not 2)", () => {
+  const r = coverOkxLots(0.019);
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.lots, 1);
+  assert.equal(OKX_OPTION_LOT_BTC, 0.01);
 });
 
 // ── paper legs ────────────────────────────────────────────────────────────────

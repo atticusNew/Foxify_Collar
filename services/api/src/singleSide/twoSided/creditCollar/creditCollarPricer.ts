@@ -123,7 +123,7 @@ export type AtticusSpreadConfig = {
    * Pricing model — WHERE Atticus's profit sits:
    *   - "embedded_spread" (default): the collar funds credit + an embedded Atticus margin, and Atticus
    *     keeps the spread. Foxify EV = −(crossing + margin). (Legacy behavior.)
-   *   - "pass_through": the collar is sold at fair value and funds ONLY the credit + the Bullish open fee,
+   *   - "pass_through": the collar is sold at fair value and funds ONLY the credit + the venue open fee,
    *     so it nets to ~0 for Atticus. Atticus's profit is a SEPARATE operation fee (operationFeeBps /
    *     minOperationFeeUsdc) billed to Foxify — surfaced in economics, NOT embedded in the strikes.
    */
@@ -371,7 +371,11 @@ export const solveAndPriceCreditCollar = (
   const sigmaTenorPct = atmIv * Math.sqrt(T);
   const minCapOffsetUsd = minCapSigmaMult > 0 ? minCapSigmaMult * sigmaTenorPct * spot : 0;
 
-  const searchFunding = (targetFundable: number): { strike: number; midPerBtc: number; fundable: number } | null => {
+  type FundingPick = { strike: number; midPerBtc: number; fundable: number; execPerBtc: number };
+
+  const scanFunding = (targetFundable: number): { hit: FundingPick | null; best: FundingPick | null } => {
+    let hit: FundingPick | null = null;
+    let best: FundingPick | null = null;
     for (let i = steps; i >= 1; i--) {
       const offset = i * grid;
       if (offset < minCapOffsetUsd) break; // σ-floor: no closer than minCapSigmaMult × σ_tenor
@@ -385,56 +389,59 @@ export const solveAndPriceCreditCollar = (
       const fundingExecPerBtc = execBidPerBtc(fundingMidPerBtc, snapped, fundingType);
       const fundableCredit = (fundingExecPerBtc - protectiveExecPerBtc) * contractsBtc;
       tightestFundableCredit = Math.max(tightestFundableCredit, fundableCredit);
-
-      if (fundableCredit >= targetFundable) {
-        return { strike: snapped, midPerBtc: fundingMidPerBtc, fundable: fundableCredit }; // loosest acceptable
-      }
+      const pick: FundingPick = { strike: snapped, midPerBtc: fundingMidPerBtc, fundable: fundableCredit, execPerBtc: fundingExecPerBtc };
+      if (!best || fundableCredit > best.fundable) best = pick;
+      // Far → near: first strike that clears the target is the loosest acceptable.
+      if (hit == null && fundableCredit >= targetFundable) hit = pick;
     }
-    return null;
+    return { hit, best };
   };
 
-  const openFeeFor = (fundingMidPerBtc: number): number =>
+  const feeVenue: FeeVenue = config.feeVenue ?? "bullish";
+  const openFeeForExec = (fundingExecPerBtc: number): number =>
     computeCollarOpenFees({
       notionalUsd: notionalUsdc,
-      protectivePremiumUsd: protectiveMidPerBtc * contractsBtc,
-      fundingPremiumUsd: fundingMidPerBtc * contractsBtc,
-      mode: feeMode
+      protectivePremiumUsd: protectiveExecPerBtc * contractsBtc,
+      fundingPremiumUsd: fundingExecPerBtc * contractsBtc,
+      mode: feeMode,
+      venue: feeVenue
     }).openFeeUsdc;
 
   // embedded_spread: fund credit + the embedded Atticus margin.
-  // pass_through:    fund credit + the Bullish open fee (two-pass to resolve the fee↔strike circularity),
+  // pass_through:    fund credit + the venue open fee (two-pass to resolve the fee↔strike circularity),
   //                  so the collar nets to ~0 and Atticus's profit is the separate operation fee.
-  let chosen: { strike: number; midPerBtc: number; fundable: number } | null;
+  let chosen: FundingPick | null;
   let creditFloated = false;
   if (pricingModel === "pass_through") {
-    const provisional = searchFunding(targetCreditUsdc);
-    chosen = provisional ? searchFunding(targetCreditUsdc + openFeeFor(provisional.midPerBtc)) : null;
-    // σ-floor float-down: if the target can't be manufactured at/beyond the σ-floor distance, DON'T tighten —
-    // price the tightest ALLOWED strike and let the credit float below target (partial coverage, honest cap).
-    if (chosen == null && minCapOffsetUsd > 0) {
-      const floorStrike = side === "long" ? snapUp(spot + minCapOffsetUsd, grid) : snapDown(spot - minCapOffsetUsd, grid);
-      if ((side === "long" && floorStrike > spot) || (side === "short" && floorStrike < spot && floorStrike > 0)) {
-        const midPerBtc = legMidPerBtc(fundingType, spot, floorStrike, T, r, skew);
-        const fundable = (execBidPerBtc(midPerBtc, floorStrike, fundingType) - protectiveExecPerBtc) * contractsBtc;
-        if (fundable - openFeeFor(midPerBtc) > 0) {
-          chosen = { strike: floorStrike, midPerBtc, fundable };
-          creditFloated = true;
-        }
+    const provisional = scanFunding(targetCreditUsdc);
+    chosen = provisional.hit ? scanFunding(targetCreditUsdc + openFeeForExec(provisional.hit.execPerBtc)).hit : null;
+    // Target not fundable at/beyond the σ-floor: DON'T tighten past it — take the best allowed
+    // strike and float credit to executable touch net of venue fees (honest pass-through).
+    if (chosen == null && provisional.best != null) {
+      const net = provisional.best.fundable - openFeeForExec(provisional.best.execPerBtc);
+      if (net > 0) {
+        chosen = provisional.best;
+        creditFloated = true;
       }
     }
   } else {
-    chosen = searchFunding(targetCreditUsdc + requiredMarginUsdc);
+    chosen = scanFunding(targetCreditUsdc + requiredMarginUsdc).hit;
   }
 
   if (chosen == null) {
-    const extraLabel = pricingModel === "pass_through" ? `Bullish open fee` : `margin ${round2(requiredMarginUsdc)}`;
+    const feeLabel = feeVenue === "okx" ? "OKX open fee" : "venue open fee";
+    const extraLabel = pricingModel === "pass_through" ? feeLabel : `margin ${round2(requiredMarginUsdc)}`;
     return {
       ok: false,
       error: "credit_infeasible_at_floor",
       message:
-        `Cannot manufacture credit ${round2(targetCreditUsdc)} + ${extraLabel} ` +
-        `at floor ${round4(maxFloorPct)} with ${fillMode} fills. ` +
-        `Best executable credit achievable here ≈ ${round2(tightestFundableCredit)}.`,
+        pricingModel === "pass_through"
+          ? `Cannot fund pass-through credit ${round2(targetCreditUsdc)} + ${extraLabel} ` +
+            `at floor ${round4(maxFloorPct)} with ${fillMode} fills. ` +
+            `Best executable credit ≈ ${round2(tightestFundableCredit)}; net after ${extraLabel} ≤ 0.`
+          : `Cannot manufacture credit ${round2(targetCreditUsdc)} + ${extraLabel} ` +
+            `at floor ${round4(maxFloorPct)} with ${fillMode} fills. ` +
+            `Best executable credit achievable here ≈ ${round2(tightestFundableCredit)}.`,
       hints: [
         "Increase max_floor_pct (deeper/cheaper protective leg ⟹ more credit available).",
         "Lower target_credit_usdc (the upside tail has finite value; it can't fund an arbitrary credit).",

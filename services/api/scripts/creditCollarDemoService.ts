@@ -30,6 +30,7 @@ import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execu
 import {
   assessDemoWrap,
   concludeWrapEarly,
+  coverOkxLots,
   demoVestingStatus,
   failWrap,
   loadDemoWraps,
@@ -39,6 +40,7 @@ import {
   pushStage,
   saveDemoWraps,
   scaledCreditTarget,
+  uncoveredSizeNote,
   type DemoLeg,
   type DemoWrapRecord
 } from "../src/singleSide/twoSided/creditCollar/demoWrap";
@@ -145,7 +147,12 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     return { status: 409, body: { ok: false, error: "no_position", message: `no open ${coin} position on ${hlAccount() ?? "unset account (set DEMO_HL_ADDRESS)"}` } };
   }
 
-  const permit = assessDemoWrap(guards, nowMs, position.notionalUsdc, records);
+  const cover = coverOkxLots(position.szBase);
+  if (!cover.ok) return { status: 409, body: { ok: false, error: "below_min_lot", message: cover.reason } };
+  const coveredNotionalUsdc = round2(cover.coveredBtc * position.markPx);
+  const sizeNote = uncoveredSizeNote(position.szBase, cover);
+
+  const permit = assessDemoWrap(guards, nowMs, coveredNotionalUsdc, records);
   if (!permit.ok) return { status: 409, body: { ok: false, error: "refused", message: permit.reason } };
 
   // okx lanes must clear the SAME arming chain as the canary before anything else happens.
@@ -166,23 +173,24 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
   saveDemoWraps(records, storePath);
   const persist = () => saveDemoWraps(records, storePath);
 
-  // 2) QUOTE — live OKX book, production solve, micro-scaled credit target.
-  const built = await buildLiveShadowInputs({ ...baseCfg, positionNotionalUsdc: position.notionalUsdc });
+  // 2) QUOTE — live OKX book, production solve, credit target scaled to COVERED lots (floor, never round up).
+  const built = await buildLiveShadowInputs({ ...baseCfg, positionNotionalUsdc: coveredNotionalUsdc });
   if (!built.ok) {
-    failWrap(rec, Date.now(), `live pricing inputs unavailable: ${built.error} — ${built.message}`);
+    failWrap(rec, Date.now(), `wrap refused: live pricing inputs unavailable: ${built.error} — ${built.message}`);
     persist();
     return { status: 502, body: { ok: false, error: built.error, message: built.message, wrap: rec } };
   }
   const { skew, spot, scaffoldConfig } = built.inputs;
-  const targetCredit = scaledCreditTarget(baseCfg.feeUsdc, 50_000, position.notionalUsdc);
+  const hedgeNotionalUsdc = round2(cover.coveredBtc * spot);
+  const targetCredit = scaledCreditTarget(baseCfg.feeUsdc, 50_000, hedgeNotionalUsdc);
   const adaptive = solveAdaptiveCreditCollar(
-    { side: position.side, spot, notionalUsdc: position.notionalUsdc, tenorDays: baseCfg.tenorDays, targetCreditUsdc: targetCredit, maxFloorPct: scaffoldConfig.maxFloorPct, referenceMode: "position" },
+    { side: position.side, spot, notionalUsdc: hedgeNotionalUsdc, tenorDays: baseCfg.tenorDays, targetCreditUsdc: targetCredit, maxFloorPct: scaffoldConfig.maxFloorPct, referenceMode: "position" },
     skew,
-    { ...(scaffoldConfig.spreadConfig ?? {}), pricingModel: "pass_through", operationFeeBps: 0, minOperationFeeUsdc: 0 },
+    { ...(scaffoldConfig.spreadConfig ?? {}), pricingModel: "pass_through", operationFeeBps: 0, minOperationFeeUsdc: 0, feeVenue: "okx" },
     scaffoldConfig.adaptiveFloor
   );
   if (!adaptive.quote.ok) {
-    failWrap(rec, Date.now(), `pricer declined: ${adaptive.quote.error} — ${adaptive.quote.message}`);
+    failWrap(rec, Date.now(), `wrap refused: ${adaptive.quote.error} — ${adaptive.quote.message}`);
     persist();
     return { status: 409, body: { ok: false, error: adaptive.quote.error, message: adaptive.quote.message, wrap: rec } };
   }
@@ -197,14 +205,20 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     floorPctUsed: adaptive.floorUsedPct,
     tenorDays: baseCfg.tenorDays
   };
-  pushStage(rec, "quoted", Date.now(), `floor $${q.legs.putStrike} / cap $${q.legs.callStrike} · credit $${q.economics.foxify_credit_usdc}`);
+  pushStage(
+    rec,
+    "quoted",
+    Date.now(),
+    `floor $${q.legs.putStrike} / cap $${q.legs.callStrike} · credit $${q.economics.foxify_credit_usdc}` +
+      (sizeNote ? ` · ${sizeNote}` : "")
+  );
   persist();
 
   // 3) EXECUTE.
   if (guards.executionMode === "paper") {
     const expiresAtMs = paperExpiryMs(nowMs, baseCfg.tenorDays);
     rec.legs = paperLegsFromQuote(q, expiresAtMs);
-    rec.hedge = { venue: "okx_model", mode: "paper", netCreditUsdc: q.economics.foxify_credit_usdc, venueFeeUsdc: null, contracts: null, sizeNote: null };
+    rec.hedge = { venue: "okx_model", mode: "paper", netCreditUsdc: q.economics.foxify_credit_usdc, venueFeeUsdc: null, contracts: cover.lots, sizeNote };
     pushStage(rec, "hedge_locked", Date.now(), "PAPER lane — model quote off the live OKX book, no venue orders");
     pushStage(rec, "green_light", Date.now());
     rec.vesting = { fullCreditUsdc: q.economics.foxify_credit_usdc, startMs: Date.now(), endMs: expiresAtMs };
@@ -214,7 +228,7 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     return { status: 200, body: { ok: true, wrap: rec } };
   }
 
-  // okx_demo / okx_live — real hedge legs through the canary path, hard-forced to min clip count.
+  // okx_demo / okx_live — real hedge legs; size is FLOORED lots (never round up).
   rec.status = "executing";
   pushStage(rec, "hedge_executing", Date.now(), `real ${guards.executionMode.replace("okx_", "OKX ")} legs going out`);
   persist();
@@ -228,8 +242,8 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     ...parseLiveGuardsFromEnv(process.env, "okx"),
     windowUtc: "00:00",
     windowLatestUtc: "23:59",
-    // Hedge in venue min-clip lots (0.01 BTC): enough to cover the micro position, capped at 5.
-    canaryContracts: Math.min(5, Math.max(1, Math.round(position.szBase / 0.01)))
+    // Exact covered lots (already ≥ 1). Pins the plan to floor(sz/0.01), never USD-round up.
+    canaryContracts: cover.lots
   };
   const hook = buildOkxLiveExecutionHook(
     { ...process.env, LIVE_DIRECTIONAL_DECISION: "auto" }, // demo wrap = the client's own decision; no partner gate
@@ -258,7 +272,7 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
             solved: {
               ref: rec.id,
               side,
-              notionalUsdc: position.notionalUsdc,
+              notionalUsdc: hedgeNotionalUsdc,
               putStrike: q.legs.putStrike,
               callStrike: q.legs.callStrike,
               foxifyCreditUsdc: q.economics.foxify_credit_usdc,
@@ -271,9 +285,10 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
         : { ok: false as const, error: "wrong_side", message: "demo wraps only the client's actual side" }
   });
   if (res.newOpens.length === 0) {
-    failWrap(rec, Date.now(), `hedge did not fill: ${res.summary}`);
+    const detail = String(res.summary ?? "hedge did not fill").replace(/\s*—\s*day skipped/gi, "");
+    failWrap(rec, Date.now(), `wrap refused: ${detail}`);
     persist();
-    return { status: 502, body: { ok: false, error: "hedge_not_filled", message: res.summary, wrap: rec } };
+    return { status: 502, body: { ok: false, error: "hedge_not_filled", message: rec.failReason, wrap: rec } };
   }
   const pos = res.newOpens[0];
   const legs: DemoLeg[] = [
@@ -288,7 +303,11 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     netCreditUsdc: pos.foxifyCreditUsdc,
     venueFeeUsdc: pos.liveMeta?.venueFeeUsdc ?? null,
     contracts: pos.liveMeta?.contracts ?? null,
-    sizeNote: hedgedBtc > position.szBase ? `hedge min clip: ${hedgedBtc} BTC hedged vs ${position.szBase} BTC position (venue lot = 0.01 BTC)` : null
+    sizeNote:
+      sizeNote ??
+      (hedgedBtc > position.szBase + 1e-8
+        ? `protecting ${cover.coveredBtc} of ${position.szBase} BTC (${cover.lots} × 0.01)`
+        : null)
   };
   pushStage(rec, "hedge_locked", Date.now(), `filled — net credit $${pos.foxifyCreditUsdc} · fees $${pos.liveMeta?.venueFeeUsdc ?? 0}`);
   pushStage(rec, "green_light", Date.now());
