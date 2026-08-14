@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assessDemoWrap,
+  concludeWrapEarly,
   demoVestingStatus,
   failWrap,
   loadDemoWraps,
@@ -142,6 +143,27 @@ test("vesting: 0 at start, half mid-tenor, capped at full", () => {
   assert.equal(after.vestedUsdc, 1.04);
   assert.equal(after.fullyVested, true);
   assert.equal(after.remainingMs, 0);
+});
+
+test("early close: collects vested-to-now, freezes the clock, frees the active slot", () => {
+  const r = wrap({ vesting: { fullCreditUsdc: 1.04, startMs: NOW, endMs: NOW + DAY }, status: "active" });
+  const v = concludeWrapEarly(r, NOW + DAY / 4)!;
+  assert.equal(v.vestedUsdc, 0.26); // 25% of the tenor ⟹ 25% of the credit
+  assert.equal(r.status, "concluded");
+  assert.equal(r.concludedAtMs, NOW + DAY / 4);
+  assert.match(r.stages[r.stages.length - 1].note!, /voluntary early close.*collected \$0\.26.*clawed back/);
+  // Vesting is FROZEN at the close — polling later never shows more vested.
+  const later = demoVestingStatus(r, NOW + DAY)!;
+  assert.equal(later.vestedUsdc, 0.26);
+  assert.equal(later.fraction, 0.25);
+  // The concluded wrap no longer blocks a new one (cooldown still applies from createdAtMs).
+  const res = assessDemoWrap(guards({ cooldownMs: 0 }), NOW + DAY / 2, 100, [r]);
+  assert.deepEqual(res, { ok: true });
+});
+
+test("early close: refuses when nothing is active", () => {
+  assert.equal(concludeWrapEarly(wrap({ status: "failed" }), NOW), null);
+  assert.equal(concludeWrapEarly(wrap(), NOW), null); // quoting, no vesting yet
 });
 
 // ── record state machine ──────────────────────────────────────────────────────

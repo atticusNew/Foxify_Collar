@@ -109,6 +109,8 @@ export type DemoWrapRecord = {
   stages: DemoStage[];
   status: "quoting" | "executing" | "active" | "failed" | "concluded";
   failReason: string | null;
+  /** Set on a voluntary early close (toggle off): vesting freezes here — vested collected, rest clawed back. */
+  concludedAtMs?: number | null;
 };
 
 export const newDemoWrap = (
@@ -224,17 +226,39 @@ export type DemoVestingStatus = {
 export const demoVestingStatus = (rec: DemoWrapRecord, nowMs: number): DemoVestingStatus | null => {
   if (!rec.vesting) return null;
   const { fullCreditUsdc, startMs, endMs } = rec.vesting;
+  // A voluntary early close freezes the clock: vested-to-close is collected, the rest clawed back.
+  const effNowMs = rec.concludedAtMs != null ? Math.min(nowMs, rec.concludedAtMs) : nowMs;
   const tenorMs = Math.max(1, endMs - startMs);
-  const elapsedMs = Math.max(0, nowMs - startMs);
+  const elapsedMs = Math.max(0, effNowMs - startMs);
   const fraction = vestedTimeFraction(Math.min(elapsedMs, tenorMs), tenorMs, "linear");
   return {
     fullCreditUsdc: round2(fullCreditUsdc),
     vestedUsdc: round2(fullCreditUsdc * fraction),
     fraction: +fraction.toFixed(4),
     elapsedMs,
-    remainingMs: Math.max(0, endMs - nowMs),
-    fullyVested: nowMs >= endMs
+    remainingMs: Math.max(0, endMs - effNowMs),
+    fullyVested: effNowMs >= endMs
   };
+};
+
+/**
+ * Voluntary early close (the toggle flipped OFF): conclude the wrap NOW — the client collects the
+ * credit vested to this moment, the unvested remainder is clawed back, and the hedge unwinds
+ * (paper lane: bookkeeping only; okx lanes surface the unwind in their own ledgers).
+ * Returns the frozen vesting readout, or null when there is nothing active to close.
+ */
+export const concludeWrapEarly = (rec: DemoWrapRecord, nowMs: number): DemoVestingStatus | null => {
+  if (rec.status !== "active" || !rec.vesting) return null;
+  rec.concludedAtMs = nowMs;
+  rec.status = "concluded";
+  const v = demoVestingStatus(rec, nowMs)!;
+  pushStage(
+    rec,
+    "concluded",
+    nowMs,
+    `voluntary early close — collected $${v.vestedUsdc.toFixed(2)} vested of $${v.fullCreditUsdc.toFixed(2)} (${(v.fraction * 100).toFixed(1)}%); unvested $${round2(v.fullCreditUsdc - v.vestedUsdc).toFixed(2)} clawed back · hedge unwound`
+  );
+  return v;
 };
 
 // ── Store (tiny JSON array — records mutate through stages, demo scale is small) ──

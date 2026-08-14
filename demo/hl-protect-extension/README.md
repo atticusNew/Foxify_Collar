@@ -30,6 +30,15 @@ okx modes, real hedge orders through the production execution path).
 4. The Atticus control room — the second surface for the recording — is at
    `http://localhost:8788/demo`.
 
+## Toggle semantics
+
+- **ON** — wraps the live position: real position read → collar priced off the live OKX book →
+  hedge (paper or real, per lane) → credit starts vesting linearly over the tenor.
+- **OFF** — voluntary early close: the client collects the credit **vested so far**, the unvested
+  remainder is clawed back, and the hedge unwinds. (This mirrors the product's anti-farming
+  vesting: open-and-grab vests nothing.)
+- **Reset demo** (control room) — clears all takes for a fresh rehearsal.
+
 ## Safety rails (all fail-closed, enforced server-side)
 
 - `DEMO_ENABLED` kill switch (set `false` to refuse all wraps)

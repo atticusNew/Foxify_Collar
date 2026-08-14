@@ -66,8 +66,18 @@
     if (busy) return;
     const on = widget()?.querySelector(".ap-switch")?.getAttribute("aria-checked") === "true";
     if (on) {
-      // Demo wraps run their tenor (or conclude via the control room) — the toggle doesn't unwind.
-      setChip("wrap runs its tenor — see control room", "ap-warn");
+      // Toggle OFF = voluntary early close: collect the credit vested so far, claw back the rest.
+      busy = true;
+      setChip("closing early…", "ap-warn");
+      const res = await api("/demo/api/close", "POST");
+      busy = false;
+      if (res.ok && res.json && res.json.ok) {
+        setSwitch(false);
+        const v = res.json.vested;
+        setChip("closed early · collected $" + v.vestedUsdc.toFixed(2) + " of $" + v.fullCreditUsdc.toFixed(2) + " vested", "ap-idle");
+      } else {
+        setChip((res.json && (res.json.message || res.json.error)) || res.error || "close failed", "ap-bad");
+      }
       return;
     }
     busy = true;
@@ -96,7 +106,14 @@
     if (!w || w.status === "failed" || w.status === "concluded") {
       if (!busy) {
         setSwitch(false);
-        setChip(w && w.status === "concluded" ? "concluded — fully vested" : "off", "ap-idle");
+        if (w && w.status === "concluded" && w.vestingStatus) {
+          setChip(
+            w.vestingStatus.fullyVested
+              ? "concluded — fully vested $" + w.vestingStatus.fullCreditUsdc.toFixed(2)
+              : "closed early · collected $" + w.vestingStatus.vestedUsdc.toFixed(2) + " vested",
+            "ap-idle"
+          );
+        } else setChip("off", "ap-idle");
       }
       return;
     }
@@ -120,8 +137,17 @@
   };
 
   const attach = () => {
-    if (widget()) return; // already placed and still in the DOM
+    const existing = widget();
     const row = findPositionRow();
+    if (existing) {
+      // Upgrade path: docked fallback relocates into the row the moment the positions table renders
+      // (e.g. the user widened the window or switched to the Positions tab).
+      if (existing.classList.contains("ap-docked") && row) {
+        existing.classList.remove("ap-docked");
+        (row.querySelector("td:last-child") || row).appendChild(existing);
+      }
+      return;
+    }
     const el = buildWidget();
     if (row) {
       const lastCell = row.querySelector("td:last-child") || row;

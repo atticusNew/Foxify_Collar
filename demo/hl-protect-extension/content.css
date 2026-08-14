@@ -68,7 +68,7 @@
 .atticus-protect.ap-docked {
   position: fixed;
   right: 16px;
-  bottom: 16px;
+  bottom: 72px; /* clear the venue's footer links */
   z-index: 2147483000;
   background: #0f1a1c;
   border: 1px solid #2a3a38;

@@ -29,6 +29,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { HyperliquidClient } from "../src/singleSide/twoSided/creditCollar/execution/perpVenues/hyperliquidClient";
 import {
   assessDemoWrap,
+  concludeWrapEarly,
   demoVestingStatus,
   failWrap,
   loadDemoWraps,
@@ -311,7 +312,7 @@ const buildState = async () => {
     positionError = (e as Error).message;
   }
   const wraps = loadDemoWraps(storePath).map((r) => {
-    if (r.status === "active" && r.vesting && nowMs >= r.vesting.endMs) {
+    if (r.status === "active" && r.vesting && r.concludedAtMs == null && nowMs >= r.vesting.endMs) {
       // Display-only conclusion: the tenor has run — fully vested.
       return { ...r, status: "concluded" as const, vestingStatus: demoVestingStatus(r, nowMs) };
     }
@@ -379,6 +380,7 @@ const CONTROL_ROOM_HTML = `<!doctype html><html lang="en"><head><meta charset="u
   <div class="bar"><div id="vestbar"></div></div>
   <div style="margin-top:18px">
     <button class="btn" id="wrapBtn">Wrap now (backup trigger)</button>
+    <button class="btn ghost" id="closeBtn">Close early (collect vested)</button>
     <button class="btn ghost" id="resetBtn">Reset demo</button>
     <span id="actionMsg" class="muted" style="margin-left:10px"></span>
   </div>
@@ -447,6 +449,12 @@ $("wrapBtn").onclick = async () => {
   } catch (e) { $("actionMsg").textContent = "request failed: "+e; }
   $("wrapBtn").disabled = false; poll();
 };
+$("closeBtn").onclick = async () => {
+  const r = await fetch("/demo/api/close", { method: "POST" });
+  const j = await r.json();
+  $("actionMsg").textContent = j.ok ? "closed early — collected $"+j.vested.vestedUsdc.toFixed(2)+" vested" : (j.message || "nothing to close");
+  poll();
+};
 $("resetBtn").onclick = async () => {
   const r = await fetch("/demo/api/reset", { method: "POST" });
   const j = await r.json();
@@ -502,6 +510,19 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       } finally {
         wrapInFlight = false;
       }
+      return;
+    }
+    if (req.method === "POST" && url.pathname === "/demo/api/close") {
+      // Voluntary early close (toggle OFF): collect vested-to-now, claw back the rest, unwind.
+      const records = loadDemoWraps(storePath);
+      const active = records.find((r) => r.status === "active");
+      if (!active) {
+        sendJson(res, 409, { ok: false, error: "nothing_active", message: "no active wrap to close" });
+        return;
+      }
+      const v = concludeWrapEarly(active, Date.now());
+      saveDemoWraps(records, storePath);
+      sendJson(res, 200, { ok: true, wrap: active, vested: v });
       return;
     }
     if (req.method === "POST" && url.pathname === "/demo/api/reset") {
