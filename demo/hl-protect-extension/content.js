@@ -121,6 +121,14 @@
       setSwitch(true);
       const v = w.vestingStatus;
       setChip("EARNING · $" + v.vestedUsdc.toFixed(2) + " / $" + v.fullCreditUsdc.toFixed(2) + " vested", "ap-good");
+      // Terms on hover — the floor is real, just not clutter: tooltip carries floor/cap/tenor.
+      const q = w.quote;
+      if (q) {
+        const hrs = Math.floor(v.remainingMs / 3600000), mins = Math.round((v.remainingMs % 3600000) / 60000);
+        widget().title =
+          "Floor $" + q.putStrike + " (−" + (q.floorPct * 100).toFixed(1) + "%) · Cap $" + q.callStrike + " (+" + (q.capPct * 100).toFixed(1) + "%)" +
+          " · $" + q.creditUsdc + " credit · " + (v.fullyVested ? "fully vested" : hrs + "h " + mins + "m to full vest");
+      }
     } else if (w.status === "quoting" || w.status === "executing") {
       setSwitch(true);
       setChip(w.status === "executing" ? "hedge legs executing…" : "pricing…", "ap-warn");
