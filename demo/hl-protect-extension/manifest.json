@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Atticus Protect — demo toggle",
-  "version": "0.1.0",
-  "description": "Demo-only, local rendering: shows the Atticus 'Protect' toggle in-place on the live Hyperliquid positions UI. All pricing and execution run in the local Atticus demo service — the toggle is placement only and is disclosed as such.",
+  "name": "Atticus Earn & Protect — demo toggle",
+  "version": "0.1.1",
+  "description": "Demo-only, local rendering: shows the Atticus 'Earn & Protect' toggle in-place on the live Hyperliquid positions UI. All pricing and execution run in the local Atticus demo service — the toggle is placement only and is disclosed as such.",
   "content_scripts": [
     {
       "matches": ["https://app.hyperliquid.xyz/*"],

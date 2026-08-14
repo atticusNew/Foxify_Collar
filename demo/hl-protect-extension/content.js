@@ -1,6 +1,6 @@
-// Atticus Protect — demo toggle (content script).
+// Atticus Earn & Protect — demo toggle (content script).
 //
-// Renders ONE small element — a "Protect" toggle — into the live Hyperliquid positions UI, styled
+// Renders ONE small element — an "Earn & Protect" toggle — into the live Hyperliquid positions UI, styled
 // to sit naturally in their dark theme. That placement is the only staged pixel of the demo (and is
 // disclosed); flipping the toggle calls the LOCAL Atticus demo service, which reads the real
 // position, prices the real collar off the live OKX book, and (in okx modes) executes real hedge
@@ -37,7 +37,7 @@
     el.id = WIDGET_ID;
     el.className = "atticus-protect";
     el.innerHTML =
-      '<span class="ap-label">Protect</span>' +
+      '<span class="ap-label">Earn &amp; Protect</span>' +
       '<span class="ap-switch" role="switch" aria-checked="false" tabindex="0"><span class="ap-knob"></span></span>' +
       '<span class="ap-chip ap-idle">off</span>';
     el.querySelector(".ap-switch").addEventListener("click", onToggle);
@@ -74,7 +74,7 @@
       if (res.ok && res.json && res.json.ok) {
         setSwitch(false);
         const v = res.json.vested;
-        setChip("closed early · collected $" + v.vestedUsdc.toFixed(2) + " of $" + v.fullCreditUsdc.toFixed(2) + " vested", "ap-idle");
+        setChip("closed early · earned $" + v.vestedUsdc.toFixed(2) + " of $" + v.fullCreditUsdc.toFixed(2) + " vested", "ap-idle");
       } else {
         setChip((res.json && (res.json.message || res.json.error)) || res.error || "close failed", "ap-bad");
       }
@@ -87,7 +87,7 @@
     if (res.ok && res.json && res.json.ok) {
       setSwitch(true);
       const credit = res.json.wrap?.quote?.creditUsdc;
-      setChip("PROTECTED" + (credit != null ? " · $" + credit + " credit" : ""), "ap-good");
+      setChip("EARNING" + (credit != null ? " · $" + credit + " credit" : ""), "ap-good");
     } else {
       setSwitch(false);
       setChip((res.json && (res.json.message || res.json.error)) || res.error || "demo service offline?", "ap-bad");
@@ -109,8 +109,8 @@
         if (w && w.status === "concluded" && w.vestingStatus) {
           setChip(
             w.vestingStatus.fullyVested
-              ? "concluded — fully vested $" + w.vestingStatus.fullCreditUsdc.toFixed(2)
-              : "closed early · collected $" + w.vestingStatus.vestedUsdc.toFixed(2) + " vested",
+              ? "concluded — earned $" + w.vestingStatus.fullCreditUsdc.toFixed(2) + " in full"
+              : "closed early · earned $" + w.vestingStatus.vestedUsdc.toFixed(2) + " vested",
             "ap-idle"
           );
         } else setChip("off", "ap-idle");
@@ -120,7 +120,7 @@
     if (w.status === "active" && w.vestingStatus) {
       setSwitch(true);
       const v = w.vestingStatus;
-      setChip("PROTECTED · $" + v.vestedUsdc.toFixed(2) + " / $" + v.fullCreditUsdc.toFixed(2) + " vested", "ap-good");
+      setChip("EARNING · $" + v.vestedUsdc.toFixed(2) + " / $" + v.fullCreditUsdc.toFixed(2) + " vested", "ap-good");
     } else if (w.status === "quoting" || w.status === "executing") {
       setSwitch(true);
       setChip(w.status === "executing" ? "hedge legs executing…" : "pricing…", "ap-warn");

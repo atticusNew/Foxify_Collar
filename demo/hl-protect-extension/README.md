@@ -1,6 +1,6 @@
-# Atticus Protect — demo toggle (browser extension)
+# Atticus Earn & Protect — demo toggle (browser extension)
 
-Demo-only. Renders the **"Protect" toggle into the live Hyperliquid positions UI** so the
+Demo-only. Renders the **"Earn & Protect" toggle into the live Hyperliquid positions UI** so the
 integration's placement can be shown on a real venue. The toggle is the **only staged pixel** —
 everything behind it is the live engine (real position reads, live OKX options pricing, and, in
 okx modes, real hedge orders through the production execution path).
