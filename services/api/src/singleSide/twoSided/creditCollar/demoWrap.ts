@@ -148,6 +148,22 @@ export const failWrap = (rec: DemoWrapRecord, tsMs: number, reason: string): Dem
   return pushStage(rec, "failed", tsMs, reason);
 };
 
+/**
+ * Live hedge refused — keep the runner summary, drop canary "day skipped" / empty "pair unwound",
+ * and surface the venue's own error (50111 must not look like a missing option).
+ */
+export const wrapRefuseFromLive = (summary: string, venueErrors: string[] = []): string => {
+  const base = String(summary || "hedge did not fill")
+    .replace(/\s*—\s*day skipped/gi, "")
+    .replace(/\s*\(pair unwound\)/gi, "")
+    .trim();
+  const err = venueErrors.find((e) => String(e).trim()) ?? "";
+  if (/50111|Invalid OK-ACCESS-KEY/i.test(err)) {
+    return "wrap refused: OKX rejected the API key (50111 Invalid OK-ACCESS-KEY) — check live key, passphrase, and no extra quotes in env";
+  }
+  return err ? `wrap refused: ${base} — ${err}` : `wrap refused: ${base}`;
+};
+
 // ── Guardrails ────────────────────────────────────────────────────────────────
 
 export type DemoWrapAssessment = { ok: true } | { ok: false; reason: string };

@@ -19,6 +19,7 @@ import {
   pushStage,
   saveDemoWraps,
   scaledCreditTarget,
+  wrapRefuseFromLive,
   type DemoGuardsConfig,
   type DemoWrapRecord
 } from "../src/singleSide/twoSided/creditCollar/demoWrap";
@@ -215,6 +216,15 @@ test("record: stages accumulate in order; failWrap terminalizes", () => {
   assert.equal(r.status, "failed");
   assert.equal(r.failReason, "pricer declined");
   assert.deepEqual(r.stages.map((s) => s.stage), ["wrap_requested", "position_read", "quoted", "failed"]);
+});
+
+test("wrapRefuseFromLive: 50111 is an API key reject, not a missing option", () => {
+  const msg = wrapRefuseFromLive("execution aborted_no_fill on long (pair unwound) — day skipped", [
+    "place buy BTC-USD-260816-59000-P attempt 1 failed: 50111 Invalid OK-ACCESS-KEY"
+  ]);
+  assert.match(msg, /50111 Invalid OK-ACCESS-KEY/);
+  assert.match(msg, /API key/);
+  assert.doesNotMatch(msg, /pair unwound|day skipped|missing/);
 });
 
 // ── env parsing ───────────────────────────────────────────────────────────────

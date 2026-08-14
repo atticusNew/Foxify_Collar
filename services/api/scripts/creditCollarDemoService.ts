@@ -41,6 +41,7 @@ import {
   saveDemoWraps,
   scaledCreditTarget,
   uncoveredSizeNote,
+  wrapRefuseFromLive,
   type DemoLeg,
   type DemoWrapRecord
 } from "../src/singleSide/twoSided/creditCollar/demoWrap";
@@ -285,8 +286,7 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
         : { ok: false as const, error: "wrong_side", message: "demo wraps only the client's actual side" }
   });
   if (res.newOpens.length === 0) {
-    const detail = String(res.summary ?? "hedge did not fill").replace(/\s*—\s*day skipped/gi, "");
-    failWrap(rec, Date.now(), `wrap refused: ${detail}`);
+    failWrap(rec, Date.now(), wrapRefuseFromLive(String(res.summary ?? "hedge did not fill"), res.venueErrors ?? []));
     persist();
     return { status: 502, body: { ok: false, error: "hedge_not_filled", message: rec.failReason, wrap: rec } };
   }
