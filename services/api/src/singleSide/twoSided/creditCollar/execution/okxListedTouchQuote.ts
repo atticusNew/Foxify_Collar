@@ -1,7 +1,8 @@
 /**
  * Listed-lot pass-through quote. Credit = call bid − put ask − OKX fees on the instruments we
- * would actually trade. If the 1.5% pin has no bid, walk listed OTM neighbors and sell the
- * fattest bid in band — never the first thin touch, which can be a debit vs the put ask.
+ * would actually trade. Sell-wing selection follows the pricer's loosest-acceptable principle:
+ * the WIDEST listed OTM strike whose executable net credit is positive — walking tighter toward
+ * the ATM guard only when nothing wider clears. Never a debit; refuse when nothing in band clears.
  */
 
 import { computeCollarOpenFees } from "../bullishFees";
@@ -27,6 +28,10 @@ export type ListedTouchQuote =
       callBidPxBtc: number;
       putMidUsdc: number;
       callMidUsdc: number;
+      /** Executable touch of the leg we BUY (ask), whole position USDC at 6dp — the honest band anchor. */
+      protectiveTouchUsdc: number;
+      /** Executable touch of the leg we SELL (bid), whole position USDC at 6dp — the honest band anchor. */
+      fundingTouchUsdc: number;
       creditUsdc: number;
       venueFeeUsdc: number;
     }
@@ -126,6 +131,9 @@ export const quoteFromListedBooks = (input: {
     callBidPxBtc: callBidPx,
     putMidUsdc: round2(putMidPx * qty * input.spot),
     callMidUsdc: round2(callMidPx * qty * input.spot),
+    // 6dp, NOT round2: cent-rounding these distorts the executor's slippage-band anchor on 1-lot legs.
+    protectiveTouchUsdc: round6(buyAsk * qty * input.spot),
+    fundingTouchUsdc: round6(sellBid * qty * input.spot),
     creditUsdc: net,
     venueFeeUsdc: round2(fees)
   };
@@ -181,19 +189,42 @@ export const firstWingWithTouch = (
   return null;
 };
 
-/** Among wings with a bid, pick the highest bid. Equal bids keep the nearer candidate (sort order). */
-export const fattestWingBid = (
+export type WingPick = { inst: OkxChainInstrument; book: BookTopPx; netUsdc: number };
+
+/**
+ * Sell-wing selection = the pricer's loosest-acceptable-strike principle on listed books: among
+ * candidates with a bid, pick the WIDEST strike (farthest from spot) whose executable net credit —
+ * (bid − buy ask) × size − OKX open fees — is positive. Tighter strikes are used only when nothing
+ * wider clears. `closest` is the best-net candidate regardless of sign, for an honest refuse line.
+ */
+export const widestExecutableWing = (
   candidates: OkxChainInstrument[],
-  books: Record<string, BookTopPx>
-): { inst: OkxChainInstrument; book: BookTopPx } | null => {
-  let best: { inst: OkxChainInstrument; book: BookTopPx; bid: number } | null = null;
+  books: Record<string, BookTopPx>,
+  buyAskPxBtc: number,
+  size: { contracts: number; ctValBtc: number },
+  spot: number,
+  notionalUsdc: number
+): { pick: WingPick | null; closest: WingPick | null } => {
+  let pick: WingPick | null = null;
+  let closest: WingPick | null = null;
   for (const inst of candidates) {
     const book = books[inst.instId];
     const bid = book?.bidPxBtc;
     if (!(bid != null && bid > 0)) continue;
-    if (!best || bid > best.bid) best = { inst, book, bid };
+    const gross = touchCreditUsdc(bid, buyAskPxBtc, size.contracts, size.ctValBtc, spot);
+    const qtyBtc = size.contracts * size.ctValBtc;
+    const fees = computeCollarOpenFees({
+      notionalUsd: notionalUsdc,
+      protectivePremiumUsd: buyAskPxBtc * qtyBtc * spot,
+      fundingPremiumUsd: bid * qtyBtc * spot,
+      mode: "clob_taker",
+      venue: "okx"
+    }).openFeeUsdc;
+    const cand: WingPick = { inst, book, netUsdc: round2(gross - fees) };
+    if (!closest || cand.netUsdc > closest.netUsdc) closest = cand;
+    if (cand.netUsdc > 0 && (!pick || Math.abs(inst.strike - spot) > Math.abs(pick.inst.strike - spot))) pick = cand;
   }
-  return best ? { inst: best.inst, book: best.book } : null;
+  return { pick, closest };
 };
 
 const parseBook = (raw: { data?: Array<{ bids?: string[][]; asks?: string[][] }> }): BookTopPx => ({
@@ -201,9 +232,10 @@ const parseBook = (raw: { data?: Array<{ bids?: string[][]; asks?: string[][] }>
   askPxBtc: raw.data?.[0]?.asks?.[0]?.[0] != null ? Number(raw.data[0].asks[0][0]) : null
 });
 
-const CALL_BAND = { minOtmPct: 0.008, maxOtmPct: 0.04 };
-const PUT_BAND = { minOtmPct: 0.02, maxOtmPct: 0.08 };
-const MAX_BOOK_PROBES = 8;
+/** Hard ATM guard 0.5%: the cap may walk this tight when nothing wider clears a credit, never past it. */
+export const CALL_BAND = { minOtmPct: 0.005, maxOtmPct: 0.04 };
+export const PUT_BAND = { minOtmPct: 0.02, maxOtmPct: 0.08 };
+const MAX_BOOK_PROBES = 10;
 
 /** Public (unsigned) listed-book quote. Does not place orders. */
 export const fetchOkxListedTouchQuote = async (input: {
@@ -259,12 +291,20 @@ export const fetchOkxListedTouchQuote = async (input: {
       if (!books[c.instId]) books[c.instId] = await readBook(c.instId);
     }
     const buyHit = firstWingWithTouch(buyCands, books, "ask");
-    const sellHit = fattestWingBid(sellCands, books);
+    const size = planned.ok
+      ? { contracts: planned.plan.contracts, ctValBtc: planned.plan.ctValBtc }
+      : { contracts: Math.max(1, Math.round(input.contractsBtc / 0.01)), ctValBtc: 0.01 };
+    const sellScan = buyHit
+      ? widestExecutableWing(sellCands, books, buyHit.book.askPxBtc!, size, input.spot, input.notionalUsdc)
+      : { pick: null, closest: null };
+    // Widest positive-credit wing if one exists; otherwise the best-net candidate so the refuse
+    // line names the real instruments and the real (nonpositive) number.
+    const sellHit = sellScan.pick ?? sellScan.closest;
     if (!buyHit || !sellHit) {
       const buyInst = buyCands[0]?.instId ?? "?";
       const sellInst = sellCands[0]?.instId ?? "?";
       const buyAsk = buyHit?.book.askPxBtc ?? books[buyInst]?.askPxBtc ?? "none";
-      const sellBid = sellHit?.book.bidPxBtc ?? books[sellInst]?.bidPxBtc ?? "none";
+      const sellBid = books[sellInst]?.bidPxBtc ?? "none";
       return {
         ok: false,
         error: "listed_book_empty",

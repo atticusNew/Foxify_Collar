@@ -264,8 +264,10 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
               foxifyCreditUsdc: q.economics.foxify_credit_usdc,
               serviceFeeUsdc: 0,
               floorPctUsed: floorUsedPct,
-              protectiveLegMidUsdc: q.legs.floor_leg_mid_usdc,
-              fundingLegMidUsdc: q.legs.funding_leg_mid_usdc
+              // Band anchors = the EXACT listed touches the credit was computed from (6dp), not
+              // cent-rounded display mids — the executor buys/sells at the validated prices.
+              protectiveLegMidUsdc: listed.protectiveTouchUsdc,
+              fundingLegMidUsdc: listed.fundingTouchUsdc
             }
           }
         : { ok: false as const, error: "wrong_side", message: "demo wraps only the client's actual side" }

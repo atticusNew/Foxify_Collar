@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { OkxChainInstrument } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
-import { quoteFromListedBooks, touchCreditUsdc, listedWingCandidates, firstWingWithTouch, fattestWingBid } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
+import { quoteFromListedBooks, touchCreditUsdc, listedWingCandidates, firstWingWithTouch, widestExecutableWing, CALL_BAND } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 
 const now = Date.UTC(2026, 6, 19, 8, 20, 0);
 const expiry = Date.UTC(2026, 6, 20, 8, 0, 0);
@@ -97,29 +97,70 @@ test("firstWingWithTouch: skips empty 63750-C and takes a neighbor with a bid", 
   assert.equal(hit!.inst.strike, 102_000);
 });
 
-test("fattestWingBid: skips a thin nearer 63600-C debit bid for a fatter 63500-C", () => {
-  // Live Saturday 1-lot: 63600 is closer to the 1.5% pin but bid 0.0001 < put ask 0.0002.
-  const cands = [inst(63_600, "call"), inst(63_500, "call"), inst(63_750, "call")];
+const SPOT = 62_882;
+const SIZE = { contracts: 1, ctValBtc: 0.01 };
+const NOTIONAL = 628.82;
+
+test("widestExecutableWing: widest strike whose net credit clears wins, not the fattest bid", () => {
+  // 63200 has the fattest bid but 63400 (wider) also clears — the client keeps more upside.
+  const cands = [inst(63_400, "call"), inst(63_250, "call"), inst(63_200, "call")];
   const books = {
-    [cands[0].instId]: { bidPxBtc: 0.0001, askPxBtc: 0.0002 },
-    [cands[1].instId]: { bidPxBtc: 0.0003, askPxBtc: 0.0004 },
-    [cands[2].instId]: { bidPxBtc: null, askPxBtc: 0.0002 }
+    [cands[0].instId]: { bidPxBtc: 0.0002, askPxBtc: 0.0003 },
+    [cands[1].instId]: { bidPxBtc: 0.0003, askPxBtc: 0.0005 },
+    [cands[2].instId]: { bidPxBtc: 0.0005, askPxBtc: 0.0006 }
   };
-  const hit = fattestWingBid(cands, books);
-  assert.ok(hit);
-  assert.equal(hit!.inst.strike, 63_500);
-  assert.equal(hit!.book.bidPxBtc, 0.0003);
+  const { pick } = widestExecutableWing(cands, books, 0.0001, SIZE, SPOT, NOTIONAL);
+  assert.ok(pick);
+  assert.equal(pick!.inst.strike, 63_400);
+  assert.ok(pick!.netUsdc > 0);
 });
 
-test("fattestWingBid: equal bids keep the nearer candidate", () => {
-  const cands = [inst(63_600, "call"), inst(63_500, "call")];
+test("widestExecutableWing: walks tighter only when nothing wider clears (tonight's book)", () => {
+  // Live 22:45 UTC book: 63400 bid 1 tick = put ask (gross $0), 63500+ no bids, 63250 bid 3 ticks.
+  const cands = [inst(63_750, "call"), inst(63_400, "call"), inst(63_250, "call")];
+  const books = {
+    [cands[0].instId]: { bidPxBtc: null, askPxBtc: 0.0001 },
+    [cands[1].instId]: { bidPxBtc: 0.0001, askPxBtc: 0.0003 },
+    [cands[2].instId]: { bidPxBtc: 0.0003, askPxBtc: 0.0005 }
+  };
+  const { pick } = widestExecutableWing(cands, books, 0.0001, SIZE, SPOT, NOTIONAL);
+  assert.ok(pick);
+  assert.equal(pick!.inst.strike, 63_250);
+  assert.ok(pick!.netUsdc > 0, `net ${pick!.netUsdc}`);
+});
+
+test("widestExecutableWing: nothing clears ⟹ no pick, closest names the honest refuse", () => {
+  const cands = [inst(63_400, "call"), inst(63_600, "call")];
   const books = {
     [cands[0].instId]: { bidPxBtc: 0.0001, askPxBtc: 0.0002 },
-    [cands[1].instId]: { bidPxBtc: 0.0001, askPxBtc: 0.0002 }
+    [cands[1].instId]: { bidPxBtc: null, askPxBtc: 0.0002 }
   };
-  const hit = fattestWingBid(cands, books);
-  assert.ok(hit);
-  assert.equal(hit!.inst.strike, 63_600);
+  const { pick, closest } = widestExecutableWing(cands, books, 0.0001, SIZE, SPOT, NOTIONAL);
+  assert.equal(pick, null);
+  assert.ok(closest);
+  assert.equal(closest!.inst.strike, 63_400);
+  assert.ok(closest!.netUsdc <= 0);
+});
+
+test("CALL_BAND: hard ATM guard is 0.5%, never past it", () => {
+  assert.equal(CALL_BAND.minOtmPct, 0.005);
+  const wide = [inst(63_100, "call"), inst(63_200, "call"), inst(63_400, "call")];
+  const cands = listedWingCandidates(wide, expiry, "call", SPOT, SPOT * 1.015, CALL_BAND);
+  assert.ok(cands.some((c) => c.strike === 63_200), "0.51% OTM is inside the guard");
+  assert.ok(!cands.some((c) => c.strike === 63_100), "0.35% OTM is past the guard — excluded");
+});
+
+test("quoteFromListedBooks: touch anchors exported at 6dp (not cent-rounded)", () => {
+  const q = quoteFromListedBooks({
+    ...base,
+    putBook: { bidPxBtc: 0.00005, askPxBtc: 0.0001 },
+    callBook: { bidPxBtc: 0.0003, askPxBtc: 0.0004 }
+  });
+  assert.equal(q.ok, true, q.ok ? "" : `${q.error}: ${q.message}`);
+  if (!q.ok) return;
+  // buy put at ask 0.0001 × 0.01 BTC × 100k = $0.10 · sell call at bid 0.0003 ⟹ $0.30
+  assert.equal(q.protectiveTouchUsdc, 0.1);
+  assert.equal(q.fundingTouchUsdc, 0.3);
 });
 
 test("listedWingCandidates: 5bp slack includes listed 63400-C when 0.8% pin is 63404", () => {
