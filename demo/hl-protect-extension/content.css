@@ -64,6 +64,23 @@
 .atticus-protect .ap-chip.ap-warn { background: #2e2a12; color: #e3b341; }
 .atticus-protect .ap-chip.ap-bad  { background: #331a1a; color: #ff8080; }
 
+/* Primary placement: fixed overlay glued to the position row (top/left set by the script) —
+   compact so it sits inside the row height, backed so it reads as part of the row. */
+.atticus-protect.ap-row-overlay {
+  position: fixed;
+  z-index: 2147483000;
+  background: rgba(15, 26, 28, 0.97);
+  border: 1px solid #2a3a38;
+  border-radius: 8px;
+  padding: 2px 8px;
+  margin-left: 0;
+  font-size: 11px;
+}
+
+.atticus-protect.ap-row-overlay .ap-chip {
+  max-width: 240px;
+}
+
 /* Fallback placement when the positions row can't be located: slim docked pill. */
 .atticus-protect.ap-docked {
   position: fixed;

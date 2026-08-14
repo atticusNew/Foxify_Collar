@@ -136,36 +136,50 @@
     return null;
   };
 
-  const attach = () => {
-    const existing = widget();
+  // The widget NEVER lives inside HL's table (fixed-width cells ⟹ overflow/misalignment). It is a
+  // fixed-position overlay glued to the position row: vertically centered on the row, pinned to its
+  // right edge, re-positioned continuously so scroll/resize/re-render can't detach it. No row ⟹
+  // docked pill bottom-right.
+  const positionOverlay = () => {
+    const el = widget();
+    if (!el) return;
     const row = findPositionRow();
-    if (existing) {
-      // Upgrade path: docked fallback relocates into the row the moment the positions table renders
-      // (e.g. the user widened the window or switched to the Positions tab).
-      if (existing.classList.contains("ap-docked") && row) {
-        existing.classList.remove("ap-docked");
-        (row.querySelector("td:last-child") || row).appendChild(existing);
+    if (!row) {
+      if (!el.classList.contains("ap-docked")) {
+        el.classList.remove("ap-row-overlay");
+        el.classList.add("ap-docked");
+        el.style.top = "";
+        el.style.left = "";
       }
       return;
     }
-    const el = buildWidget();
-    if (row) {
-      const lastCell = row.querySelector("td:last-child") || row;
-      lastCell.appendChild(el);
-    } else {
-      el.classList.add("ap-docked");
-      document.body.appendChild(el);
+    if (el.classList.contains("ap-docked")) {
+      el.classList.remove("ap-docked");
+      el.classList.add("ap-row-overlay");
     }
-    sync();
+    const r = row.getBoundingClientRect();
+    const w = el.getBoundingClientRect();
+    el.style.top = Math.round(r.top + (r.height - w.height) / 2) + "px";
+    el.style.left = Math.round(Math.max(8, r.right - w.width - 10)) + "px";
   };
 
-  // React re-renders replace rows — keep re-attaching (debounced).
+  const attach = () => {
+    if (widget()) return;
+    const el = buildWidget();
+    el.classList.add("ap-docked"); // positionOverlay promotes it to the row overlay when the row exists
+    document.body.appendChild(el);
+    sync();
+    positionOverlay();
+  };
+
+  // React re-renders replace rows — keep re-attaching (debounced) and keep the overlay glued.
   let raf = null;
   const observer = new MutationObserver(() => {
     if (raf) return;
     raf = requestAnimationFrame(() => {
       raf = null;
       attach();
+      positionOverlay();
     });
   });
 
@@ -173,6 +187,9 @@
     attach();
     observer.observe(document.body, { childList: true, subtree: true });
     setInterval(sync, POLL_MS);
+    setInterval(positionOverlay, 400);
+    window.addEventListener("scroll", positionOverlay, true); // capture: HL scrolls inner containers
+    window.addEventListener("resize", positionOverlay);
   };
 
   if (document.readyState === "complete" || document.readyState === "interactive") start();
