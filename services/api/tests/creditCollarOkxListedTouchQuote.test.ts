@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { OkxChainInstrument } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
-import { quoteFromListedBooks, touchCreditUsdc } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
+import { quoteFromListedBooks, touchCreditUsdc, listedWingCandidates, firstWingWithTouch } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 
 const now = Date.UTC(2026, 6, 19, 8, 20, 0);
 const expiry = Date.UTC(2026, 6, 20, 8, 0, 0);
@@ -75,4 +75,24 @@ test("quoteFromListedBooks: debit book (put ask > call bid) refuses with nonposi
   assert.equal(q.ok, false);
   if (q.ok) return;
   assert.equal(q.error, "listed_credit_nonpositive");
+});
+
+test("listedWingCandidates: OTM calls nearest 1.5% target, excluding ATM", () => {
+  const wide = [inst(100500, "call"), inst(101000, "call"), inst(101500, "call"), inst(102000, "call"), inst(105000, "call")];
+  const cands = listedWingCandidates(wide, expiry, "call", 100_000, 101_500, { minOtmPct: 0.008, maxOtmPct: 0.04 });
+  assert.equal(cands[0].strike, 101_500);
+  assert.ok(!cands.some((c) => c.strike === 100_500)); // 0.5% is inside min OTM
+  assert.ok(cands.some((c) => c.strike === 101_000));
+});
+
+test("firstWingWithTouch: skips empty 63750-C and takes a neighbor with a bid", () => {
+  const cands = [inst(101500, "call"), inst(102000, "call"), inst(101000, "call")];
+  const books = {
+    [cands[0].instId]: { bidPxBtc: null, askPxBtc: 0.0004 },
+    [cands[1].instId]: { bidPxBtc: 0.0003, askPxBtc: 0.0004 },
+    [cands[2].instId]: { bidPxBtc: 0.0002, askPxBtc: 0.0003 }
+  };
+  const hit = firstWingWithTouch(cands, books, "bid");
+  assert.ok(hit);
+  assert.equal(hit!.inst.strike, 102_000);
 });
