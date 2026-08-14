@@ -74,15 +74,19 @@
       if (res.ok && res.json && res.json.ok) {
         setSwitch(false);
         const v = res.json.vested;
-        setChip("closed early · earned $" + v.vestedUsdc.toFixed(2) + " of $" + v.fullCreditUsdc.toFixed(2) + " vested", "ap-idle");
+        setChip("closed early · kept $" + v.vestedUsdc.toFixed(2) + " of $" + v.fullCreditUsdc.toFixed(2), "ap-idle");
       } else {
         setChip((res.json && (res.json.message || res.json.error)) || res.error || "close failed", "ap-bad");
       }
       return;
     }
     busy = true;
-    setChip("wrapping…", "ap-warn");
+    // The ~20s is REAL work (capturing the live options book) — show it counting, not a spinner.
+    const t0 = Date.now();
+    setChip("pricing the live options book…", "ap-warn");
+    const tick = setInterval(() => setChip("pricing the live options book… " + Math.round((Date.now() - t0) / 1000) + "s", "ap-warn"), 500);
     const res = await api("/demo/api/wrap", "POST");
+    clearInterval(tick);
     busy = false;
     if (res.ok && res.json && res.json.ok) {
       setSwitch(true);
@@ -109,8 +113,8 @@
         if (w && w.status === "concluded" && w.vestingStatus) {
           setChip(
             w.vestingStatus.fullyVested
-              ? "concluded — earned $" + w.vestingStatus.fullCreditUsdc.toFixed(2) + " in full"
-              : "closed early · earned $" + w.vestingStatus.vestedUsdc.toFixed(2) + " vested",
+              ? "completed — earned $" + w.vestingStatus.fullCreditUsdc.toFixed(2) + " in full"
+              : "closed early · kept $" + w.vestingStatus.vestedUsdc.toFixed(2) + " of $" + w.vestingStatus.fullCreditUsdc.toFixed(2),
             "ap-idle"
           );
         } else setChip("off", "ap-idle");
@@ -120,7 +124,7 @@
     if (w.status === "active" && w.vestingStatus) {
       setSwitch(true);
       const v = w.vestingStatus;
-      setChip("EARNING · $" + v.vestedUsdc.toFixed(2) + " / $" + v.fullCreditUsdc.toFixed(2) + " vested", "ap-good");
+      setChip("EARNING · $" + v.vestedUsdc.toFixed(2) + " of $" + v.fullCreditUsdc.toFixed(2), "ap-good");
       // Terms on hover — the floor is real, just not clutter: tooltip carries floor/cap/tenor.
       const q = w.quote;
       if (q) {
