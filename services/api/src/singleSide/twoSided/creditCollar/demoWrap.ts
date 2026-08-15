@@ -192,7 +192,9 @@ export const assessDemoWrap = (
   nowMs: number,
   positionNotionalUsdc: number,
   existing: DemoWrapRecord[],
-  account?: string
+  account?: string,
+  /** Renewal lane: an auto-renew of an expired wrap skips the daily NEW-wrap quota (book caps still bind). */
+  renewal = false
 ): DemoWrapAssessment => {
   if (!cfg.enabled) return { ok: false, reason: "demo disabled — DEMO_ENABLED kill switch is off" };
   if (!(positionNotionalUsdc > 0)) return { ok: false, reason: "no live position to wrap (size 0)" };
@@ -213,7 +215,7 @@ export const assessDemoWrap = (
     return { ok: false, reason: `book notional cap — $${round2(openNotional)} open + $${round2(positionNotionalUsdc)} would exceed $${cfg.maxBookNotionalUsdc}` };
   }
   const today = existing.filter((r) => dayUtcOf(r.createdAtMs) === dayUtcOf(nowMs));
-  if (today.length >= cfg.maxWrapsPerDay) return { ok: false, reason: `daily demo quota reached (${cfg.maxWrapsPerDay}/day)` };
+  if (!renewal && today.length >= cfg.maxWrapsPerDay) return { ok: false, reason: `daily demo quota reached (${cfg.maxWrapsPerDay}/day)` };
   const last = mine[mine.length - 1];
   if (last && nowMs - last.createdAtMs < cfg.cooldownMs) {
     return { ok: false, reason: `cooldown — ${Math.ceil((cfg.cooldownMs - (nowMs - last.createdAtMs)) / 1000)}s until the next wrap` };
@@ -339,6 +341,73 @@ export const concludeWrapEarly = (rec: DemoWrapRecord, nowMs: number): DemoVesti
     `voluntary early close — collected $${v.vestedUsdc.toFixed(2)} vested of $${v.fullCreditUsdc.toFixed(2)} (${(v.fraction * 100).toFixed(1)}%); unvested $${round2(v.fullCreditUsdc - v.vestedUsdc).toFixed(2)} clawed back · hedge unwound`
   );
   return v;
+};
+
+/**
+ * Natural expiry: the tenor ran to the listed fixing — credit fully vested, hedge legs settle at
+ * the venue print (nothing to unwind). Persists what buildState previously only displayed.
+ */
+export const concludeAtExpiry = (rec: DemoWrapRecord, nowMs: number): boolean => {
+  if (rec.status !== "active" || !rec.vesting || nowMs < rec.vesting.endMs) return false;
+  rec.status = "concluded";
+  rec.concludedAtMs = rec.vesting.endMs;
+  pushStage(rec, "concluded", nowMs, `expired at the listed fixing — $${round2(rec.vesting.fullCreditUsdc)} earned in full`);
+  return true;
+};
+
+// ── Auto-renew (protection is a STATE, not a button) ─────────────────────────
+// The toggle ON persists a per-account preference; while it is on, an expired wrap re-quotes at
+// the morning book and re-wraps (fresh record, fresh terms, same guard chain). A book that can't
+// fund a credit ⟹ an honest skip: the account is visibly unprotected and the loop retries on a
+// throttle. Toggle OFF / early close clears the preference. Nothing renews for accounts that never
+// opted in — pulling this code cannot surprise-renew an old wrap.
+
+export const DEFAULT_PROTECTION_STORE_PATH = process.env.DEMO_PROTECTION_STORE_PATH ?? "./logs/demo-protection.json";
+
+export type ProtectionPref = { on: boolean; sinceMs: number; lastRenewAttemptMs?: number };
+export type ProtectionPrefs = Record<string, ProtectionPref>; // key = account, lowercase
+
+export const loadProtectionPrefs = (path = DEFAULT_PROTECTION_STORE_PATH): ProtectionPrefs => {
+  const eff = resolveWritablePath(path);
+  if (!existsSync(eff)) return {};
+  try {
+    const parsed = JSON.parse(readFileSync(eff, "utf8")) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as ProtectionPrefs) : {};
+  } catch {
+    return {};
+  }
+};
+
+export const saveProtectionPrefs = (prefs: ProtectionPrefs, path = DEFAULT_PROTECTION_STORE_PATH): void => {
+  try {
+    writeFileSync(resolveWritablePath(path), JSON.stringify(prefs, null, 1), "utf8");
+  } catch (e) {
+    console.error(`[demo-wrap] protection prefs save failed: ${(e as Error).message}`);
+  }
+};
+
+export type RenewalAction = "expire_and_renew" | "retry_wrap" | "none";
+
+/**
+ * What should the renewal loop do for one account right now? Pure.
+ *   expire_and_renew — the active wrap ran past its listed expiry: conclude it, re-wrap now.
+ *   retry_wrap       — protection is on but nothing is open (a skip-day refuse or a cleared store):
+ *                      try again, throttled so quote probes don't hammer the venue.
+ *   none             — off, in flight, still vesting, or inside the retry throttle.
+ */
+export const renewalDecision = (
+  pref: ProtectionPref | undefined,
+  latest: DemoWrapRecord | null,
+  nowMs: number,
+  retryMs: number
+): RenewalAction => {
+  if (!pref?.on) return "none";
+  if (latest && (latest.status === "quoting" || latest.status === "executing")) return "none";
+  if (latest && latest.status === "active") {
+    return latest.vesting != null && nowMs >= latest.vesting.endMs ? "expire_and_renew" : "none";
+  }
+  // failed / concluded / nothing yet — retry on the throttle
+  return pref.lastRenewAttemptMs == null || nowMs - pref.lastRenewAttemptMs >= retryMs ? "retry_wrap" : "none";
 };
 
 // ── Store (tiny JSON array — records mutate through stages, demo scale is small) ──

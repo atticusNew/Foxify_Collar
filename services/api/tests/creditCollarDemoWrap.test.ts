@@ -3,16 +3,21 @@ import test from "node:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeFileSync } from "node:fs";
 import {
   assessDemoWrap,
+  concludeAtExpiry,
   concludeWrapEarly,
   demoVestingStatus,
   failWrap,
   loadDemoWraps,
+  loadProtectionPrefs,
   newDemoWrap,
   paperInstId,
   paperLegsFromQuote,
   parseDemoGuardsFromEnv,
+  renewalDecision,
+  saveProtectionPrefs,
   coverOkxLots,
   uncoveredSizeNote,
   OKX_OPTION_LOT_BTC,
@@ -140,6 +145,60 @@ test("book cap: open-wrap count is bounded across accounts", () => {
   const res = assessDemoWrap(guards({ maxActiveWraps: 2, maxWrapsPerDay: 10 }), NOW, 100, [open(1), open(2)], "0xbbb");
   assert.equal(res.ok, false);
   assert.match((res as { reason: string }).reason, /book is full/);
+});
+
+// ── Auto-renew ────────────────────────────────────────────────────────────────
+
+test("renewalDecision: off / in-flight / still-vesting ⟹ none", () => {
+  const pref = { on: true, sinceMs: NOW - DAY };
+  assert.equal(renewalDecision(undefined, null, NOW, 60_000), "none");
+  assert.equal(renewalDecision({ on: false, sinceMs: NOW }, null, NOW, 60_000), "none");
+  assert.equal(renewalDecision(pref, wrap({ status: "executing" }), NOW, 60_000), "none");
+  const vesting = wrap({ status: "active", vesting: { fullCreditUsdc: 0.1, startMs: NOW - 3_600_000, endMs: NOW + 3_600_000 } });
+  assert.equal(renewalDecision(pref, vesting, NOW, 60_000), "none");
+});
+
+test("renewalDecision: active wrap past its listed expiry ⟹ expire_and_renew", () => {
+  const expired = wrap({ status: "active", vesting: { fullCreditUsdc: 0.1, startMs: NOW - DAY, endMs: NOW - 60_000 } });
+  assert.equal(renewalDecision({ on: true, sinceMs: NOW - DAY }, expired, NOW, 60_000), "expire_and_renew");
+});
+
+test("renewalDecision: skip-day retries on the throttle, not before", () => {
+  const failed = wrap({ status: "failed" });
+  const fresh = { on: true, sinceMs: NOW - DAY, lastRenewAttemptMs: NOW - 30_000 };
+  assert.equal(renewalDecision(fresh, failed, NOW, 900_000), "none");
+  const due = { on: true, sinceMs: NOW - DAY, lastRenewAttemptMs: NOW - 901_000 };
+  assert.equal(renewalDecision(due, failed, NOW, 900_000), "retry_wrap");
+});
+
+test("concludeAtExpiry: persists conclusion exactly at endMs, refuses early", () => {
+  const active = wrap({ status: "active", vesting: { fullCreditUsdc: 0.1, startMs: NOW - DAY, endMs: NOW - 1 } });
+  assert.equal(concludeAtExpiry(active, NOW), true);
+  assert.equal(active.status, "concluded");
+  assert.equal(active.concludedAtMs, NOW - 1); // frozen at the fixing, not at loop time
+  const early = wrap({ status: "active", vesting: { fullCreditUsdc: 0.1, startMs: NOW, endMs: NOW + DAY } });
+  assert.equal(concludeAtExpiry(early, NOW), false);
+  assert.equal(early.status, "active");
+});
+
+test("renewal lane: skips the daily NEW-wrap quota, keeps every other rail", () => {
+  const today = (i: number) => wrap({ id: `w${i}`, createdAtMs: NOW - (i + 2) * 60_000, status: "failed" });
+  const quotaFull = [today(0), today(1), today(2)];
+  assert.equal(assessDemoWrap(guards({ maxWrapsPerDay: 3, cooldownMs: 0 }), NOW, 100, quotaFull, "0xabc").ok, false);
+  assert.equal(assessDemoWrap(guards({ maxWrapsPerDay: 3, cooldownMs: 0 }), NOW, 100, quotaFull, "0xabc", true).ok, true);
+  // book caps still bind in the renewal lane
+  const res = assessDemoWrap(guards({ maxWrapsPerDay: 3, cooldownMs: 0, maxBookNotionalUsdc: 50 }), NOW, 100, quotaFull, "0xabc", true);
+  assert.equal(res.ok, false);
+  assert.match((res as { reason: string }).reason, /book notional cap/);
+});
+
+test("protection prefs: round-trip, corrupt file ⟹ empty", () => {
+  const p = join(tmpdir(), `prot-${Date.now()}.json`);
+  saveProtectionPrefs({ "0xabc": { on: true, sinceMs: NOW } }, p);
+  const loaded = loadProtectionPrefs(p);
+  assert.equal(loaded["0xabc"].on, true);
+  writeFileSync(p, "not json", "utf8");
+  assert.deepEqual(loadProtectionPrefs(p), {});
 });
 
 test("guards from env: book caps parse with safe defaults", () => {

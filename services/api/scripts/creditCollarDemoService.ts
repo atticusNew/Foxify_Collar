@@ -43,6 +43,10 @@ import {
   saveDemoWraps,
   uncoveredSizeNote,
   wrapRefuseFromLive,
+  concludeAtExpiry,
+  loadProtectionPrefs,
+  saveProtectionPrefs,
+  renewalDecision,
   type DemoLeg,
   type DemoWrapRecord
 } from "../src/singleSide/twoSided/creditCollar/demoWrap";
@@ -61,6 +65,20 @@ const guards = parseDemoGuardsFromEnv(process.env);
 const storePath = process.env.DEMO_STORE_PATH ?? "./logs/demo-wraps.json";
 const allowReset = String(process.env.DEMO_ALLOW_RESET ?? "true").toLowerCase() === "true";
 const coin = process.env.DEMO_COIN ?? "BTC";
+
+// Auto-renew: protection is a STATE — while an account's toggle is on, expired wraps re-quote and
+// re-wrap at the morning book; unfundable books are honest skip-days retried on a throttle.
+const autoRenew = String(process.env.DEMO_AUTO_RENEW ?? "true").toLowerCase() === "true";
+const renewRetryMs = num(process.env.DEMO_RENEW_RETRY_MS, 900_000); // skip-day retry throttle (15 min)
+const renewCheckMs = num(process.env.DEMO_RENEW_CHECK_MS, 60_000);
+const protectionPath = process.env.DEMO_PROTECTION_STORE_PATH ?? "./logs/demo-protection.json";
+const setProtection = (account: string, on: boolean): void => {
+  const prefs = loadProtectionPrefs(protectionPath);
+  const key = account.toLowerCase();
+  if (on) prefs[key] = { ...(prefs[key] ?? { sinceMs: Date.now() }), on: true, sinceMs: prefs[key]?.on ? prefs[key].sinceMs : Date.now() };
+  else if (prefs[key]) prefs[key] = { ...prefs[key], on: false };
+  saveProtectionPrefs(prefs, protectionPath);
+};
 
 // The account whose position is wrapped: explicit demo address > master address > the key's own.
 const hl = new HyperliquidClient({
@@ -132,7 +150,7 @@ const readHlPosition = async (account?: string | null): Promise<HlPositionRead |
 // Per-account in-flight lock: different clients may wrap concurrently; one client is serialized.
 const wrapsInFlight = new Set<string>();
 
-const doWrap = async (account: string): Promise<{ status: number; body: unknown }> => {
+const doWrap = async (account: string, renewal = false): Promise<{ status: number; body: unknown }> => {
   const nowMs = Date.now();
   const records = loadDemoWraps(storePath);
 
@@ -151,7 +169,7 @@ const doWrap = async (account: string): Promise<{ status: number; body: unknown 
   const coveredNotionalUsdc = round2(cover.coveredBtc * position.markPx);
   const sizeNote = uncoveredSizeNote(position.szBase, cover);
 
-  const permit = assessDemoWrap(guards, nowMs, coveredNotionalUsdc, records, account);
+  const permit = assessDemoWrap(guards, nowMs, coveredNotionalUsdc, records, account, renewal);
   if (!permit.ok) return { status: 409, body: { ok: false, error: "refused", message: permit.reason } };
 
   // okx lanes must clear the SAME arming chain as the canary before anything else happens.
@@ -168,6 +186,7 @@ const doWrap = async (account: string): Promise<{ status: number; body: unknown 
   }
 
   const rec = newDemoWrap(`wrap-${nowMs}`, nowMs, "hyperliquid", account, position);
+  if (renewal) rec.stages[0].note = "auto-renewal — protection stayed on through expiry";
   records.push(rec);
   saveDemoWraps(records, storePath);
   const persist = () => saveDemoWraps(records, storePath);
@@ -374,8 +393,80 @@ const buildState = async (account?: string, all = false) => {
       openNotionalUsdc: round2(open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0)),
       totalWraps: allWraps.length
     },
+    protection: (() => {
+      const prefs = loadProtectionPrefs(protectionPath);
+      return {
+        autoRenew,
+        on: acct != null ? prefs[acct.toLowerCase()]?.on === true : false,
+        accountsOn: Object.values(prefs).filter((p) => p.on).length
+      };
+    })(),
     generatedAtIso: new Date(nowMs).toISOString()
   };
+};
+
+// ── Auto-renew loop ───────────────────────────────────────────────────────────
+// Every cycle, for each opted-in account: persist natural expiries, then re-wrap. Skip-days
+// (book can't fund a credit) probe the quote FIRST so refusals don't spam failed records —
+// only a real wrap attempt (quote said yes) writes to the store.
+
+const renewalTick = async (): Promise<void> => {
+  if (!autoRenew || !guards.enabled) return;
+  const prefs = loadProtectionPrefs(protectionPath);
+  for (const [key, pref] of Object.entries(prefs)) {
+    if (!pref.on || wrapsInFlight.has(key)) continue;
+    try {
+      const records = loadDemoWraps(storePath);
+      const mine = records.filter((r) => r.account.toLowerCase() === key);
+      const latest = mine.length ? mine[mine.length - 1] : null;
+      const nowMs = Date.now();
+      const action = renewalDecision(pref, latest, nowMs, renewRetryMs);
+      if (action === "none") continue;
+
+      if (action === "expire_and_renew" && latest && concludeAtExpiry(latest, nowMs)) {
+        saveDemoWraps(records, storePath);
+        console.error(`[demo] auto-renew: ${latest.id} expired fully vested — re-wrapping ${key}`);
+      }
+
+      // Throttle stamp before the attempt so a crash can't hot-loop the venue.
+      prefs[key] = { ...pref, lastRenewAttemptMs: nowMs };
+      saveProtectionPrefs(prefs, protectionPath);
+
+      const position = await readHlPosition(key);
+      if (!position) {
+        // Position is gone — protection has nothing to attach to. Disarm and say so.
+        prefs[key] = { ...prefs[key], on: false };
+        saveProtectionPrefs(prefs, protectionPath);
+        console.error(`[demo] auto-renew: no open ${coin} position on ${key} — protection off`);
+        continue;
+      }
+      const cover = coverOkxLots(position.szBase);
+      if (!cover.ok) continue; // below one lot — retry next throttle window
+      const probe = await fetchOkxListedTouchQuote({
+        side: position.side,
+        spot: position.markPx,
+        planPutStrike: demoPlanStrikes(position.markPx, floorPct, capPct).putStrike,
+        planCallStrike: demoPlanStrikes(position.markPx, floorPct, capPct).callStrike,
+        notionalUsdc: round2(cover.coveredBtc * position.markPx),
+        contractsBtc: cover.coveredBtc,
+        nowMs
+      });
+      if (!probe.ok) {
+        console.error(`[demo] auto-renew: ${key} skip-day — ${probe.error} (retry in ${Math.round(renewRetryMs / 60000)}m)`);
+        continue;
+      }
+      wrapsInFlight.add(key);
+      try {
+        const out = await doWrap(key, true);
+        const ok = (out.body as { ok?: boolean }).ok === true;
+        console.error(`[demo] auto-renew: ${key} ${ok ? "re-wrapped" : `refused — ${(out.body as { message?: string }).message ?? "?"}`}`);
+      } finally {
+        wrapsInFlight.delete(key);
+      }
+    } catch (e) {
+      console.error(`[demo] auto-renew error for ${key}: ${(e as Error).message}`);
+    }
+  }
 };
 
 // ── Control room page ─────────────────────────────────────────────────────────
@@ -447,7 +538,8 @@ const render = (st) => {
     badge("mode: "+g.executionMode.toUpperCase().replace("_"," "), modeColor) +
     badge("per-wrap cap $"+g.maxPositionNotionalUsdc, "#30363d") +
     badge("account "+(st.account? st.account.slice(0,6)+"…"+st.account.slice(-4) : "unset"), "#30363d") +
-    (st.book ? badge("book: "+st.book.openWraps+" open · $"+st.book.openNotionalUsdc+" / $"+g.maxBookNotionalUsdc, "#30363d") : "");
+    (st.book ? badge("book: "+st.book.openWraps+" open · $"+st.book.openNotionalUsdc+" / $"+g.maxBookNotionalUsdc, "#30363d") : "") +
+    (st.protection && st.protection.autoRenew ? badge("auto-renew: "+(st.protection.on?"ON":"off")+(st.protection.accountsOn>1?" ("+st.protection.accountsOn+" accts)":""), st.protection.on?"#16794a":"#30363d") : "");
 
   const p = st.position;
   const w = latestWrap(st);
@@ -564,6 +656,9 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       wrapsInFlight.add(key);
       try {
         const out = await doWrap(acct.account);
+        // Toggle ON is a state: a SUCCESSFUL wrap arms auto-renew for this account (refusals don't —
+        // the daily quota can't be laundered through the renewal lane by toggling once).
+        if ((out.body as { ok?: boolean }).ok === true) setProtection(acct.account, true);
         sendJson(res, out.status, out.body);
       } finally {
         wrapsInFlight.delete(key);
@@ -577,10 +672,12 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
         return;
       }
+      // Toggle OFF always disarms auto-renew, whether or not something is active right now.
+      setProtection(acct.account, false);
       const records = loadDemoWraps(storePath);
       const active = records.find((r) => r.status === "active" && r.account.toLowerCase() === acct.account.toLowerCase());
       if (!active) {
-        sendJson(res, 409, { ok: false, error: "nothing_active", message: `no active wrap to close on ${acct.account}` });
+        sendJson(res, 409, { ok: false, error: "nothing_active", message: `no active wrap to close on ${acct.account} (auto-renew off)` });
         return;
       }
       const v = concludeWrapEarly(active, Date.now());
@@ -594,7 +691,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
         return;
       }
       saveDemoWraps([], storePath);
-      sendJson(res, 200, { ok: true, message: "demo store cleared" });
+      saveProtectionPrefs({}, protectionPath);
+      sendJson(res, 200, { ok: true, message: "demo store cleared (wraps + auto-renew prefs)" });
       return;
     }
     sendJson(res, 404, { ok: false, error: "not_found" });
@@ -607,6 +705,8 @@ server.listen(port, () => {
   console.error(`[demo] Wrap Control Room on http://localhost:${port}/demo`);
   console.error(`[demo] mode ${guards.executionMode.toUpperCase()} · kill switch ${guards.enabled ? "ARMED" : "OFF"} · per-wrap cap $${guards.maxPositionNotionalUsdc} · book cap $${guards.maxBookNotionalUsdc} / ${guards.maxActiveWraps} wraps · account ${hlAccount() ?? "UNSET (set DEMO_HL_ADDRESS)"}`);
   if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
+  console.error(`[demo] auto-renew ${autoRenew ? `ON — expiries re-wrap while the toggle stays on (skip-day retry ${Math.round(renewRetryMs / 60000)}m)` : "OFF (DEMO_AUTO_RENEW=false)"}`);
+  if (autoRenew) setInterval(() => void renewalTick(), renewCheckMs);
   if (guards.executionMode !== "paper") {
     const armed = executionArmed(parseLiveGuardsFromEnv(process.env, "okx"));
     console.error(`[demo] okx lane: ${armed.armed ? armed.reason : `NOT ARMED — ${armed.reason}`}`);
