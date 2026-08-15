@@ -3,16 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Atticus — Earn & Protect. One toggle. A floor under every position — and it pays.</title>
-<meta name="description" content="Atticus embeds one-tap collar protection into trading venues. Traders get a hard floor plus an upfront credit, funded by the live options market. Venues keep their traders. Every cent auditable to an exchange fill.">
-<meta property="og:title" content="Atticus — Earn & Protect">
-<meta property="og:description" content="One toggle. A hard floor under every position — and it pays. Embedded collar protection for trading venues.">
+<title>Atticus | Earn & Protect. One toggle. A hard floor that pays.</title>
+<meta name="description" content="Atticus embeds one-tap collar protection into trading venues. Traders get a hard floor plus an upfront credit, priced by the live options market. Every cent auditable to an exchange fill.">
+<meta property="og:title" content="Atticus | Earn & Protect">
+<meta property="og:description" content="One toggle. A hard floor under every position. And it pays.">
 <meta property="og:type" content="website">
+<meta property="og:image" content="https://www.atticustrade.com/atlogo.png">
 <meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/png" href="atlogo.png">
 <style>
   :root{
     --bg:#0b0f14; --panel:#111722; --panel2:#0e141d; --line:#1f2937;
-    --text:#e8edf4; --muted:#8b98a9; --accent:#2dd4a7; --accent2:#1f6feb;
+    --text:#e8edf4; --muted:#8b98a9; --accent:#2dd4a7;
     --radius:14px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -20,24 +22,20 @@
   body{background:var(--bg);color:var(--text);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;-webkit-font-smoothing:antialiased}
   a{color:var(--accent);text-decoration:none}
   .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
-  /* nav */
   nav{position:sticky;top:0;z-index:10;background:rgba(11,15,20,.82);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
   .nav-in{display:flex;align-items:center;justify-content:space-between;height:64px}
-  .logo{font-weight:800;font-size:18px;letter-spacing:.4px;color:var(--text)}
-  .logo span{color:var(--accent)}
+  .logo-img{height:26px;display:block}
   .nav-links{display:flex;gap:26px;align-items:center}
   .nav-links a{color:var(--muted);font-size:14px;font-weight:500}
   .nav-links a:hover{color:var(--text)}
   .btn{display:inline-block;background:var(--accent);color:#04110c;font-weight:700;padding:10px 20px;border-radius:10px;font-size:14px;border:0;cursor:pointer}
   .btn:hover{filter:brightness(1.08)}
   .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
-  /* hero */
-  .hero{display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:center;padding:88px 0 64px}
+  .hero{display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:center;padding:84px 0 60px}
   .kicker{color:var(--accent);font-weight:700;font-size:13px;letter-spacing:2.5px;text-transform:uppercase;margin-bottom:14px}
-  h1{font-size:44px;line-height:1.12;font-weight:800;letter-spacing:-.5px}
-  .hero p.sub{color:var(--muted);font-size:18px;margin:20px 0 30px;max-width:34em}
+  h1{font-size:46px;line-height:1.1;font-weight:800;letter-spacing:-.5px}
+  .hero p.sub{color:var(--muted);font-size:18px;margin:20px 0 30px;max-width:30em}
   .hero-ctas{display:flex;gap:14px;flex-wrap:wrap}
-  /* toggle demo card */
   .demo-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
   .demo-row{display:flex;justify-content:space-between;align-items:center;font-size:14px}
   .demo-row .pos{font-weight:700}
@@ -54,16 +52,14 @@
   .leg.on{opacity:1}
   .leg b{display:block;color:var(--text);font-size:13px;margin-bottom:2px}
   .demo-note{margin-top:14px;font-size:11.5px;color:var(--muted)}
-  /* sections */
-  section{padding:72px 0;border-top:1px solid var(--line)}
+  section{padding:68px 0;border-top:1px solid var(--line)}
   h2{font-size:28px;font-weight:800;letter-spacing:-.3px;margin-bottom:10px}
-  .lead{color:var(--muted);max-width:44em;margin-bottom:36px}
+  .lead{color:var(--muted);max-width:44em;margin-bottom:34px}
   .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:22px}
   .card .n{color:var(--accent);font-weight:800;font-size:13px;letter-spacing:1.5px;margin-bottom:8px}
   .card h3{font-size:17px;margin-bottom:8px}
   .card p{color:var(--muted);font-size:14.5px}
-  /* audience split */
   .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
   .aud{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:26px}
   .aud h3{font-size:19px;margin-bottom:14px}
@@ -71,24 +67,22 @@
   .aud li{padding:7px 0 7px 26px;position:relative;color:var(--muted);font-size:14.5px}
   .aud li:before{content:"";position:absolute;left:2px;top:14px;width:7px;height:7px;border-radius:2px;background:var(--accent)}
   .aud li b{color:var(--text)}
-  /* honesty band */
-  .band{background:linear-gradient(180deg,rgba(45,212,167,.07),transparent);border:1px solid rgba(45,212,167,.25);border-radius:var(--radius);padding:30px;text-align:center}
-  .band h3{font-size:20px;margin-bottom:8px}
-  .band p{color:var(--muted);max-width:52em;margin:0 auto;font-size:15px}
-  /* thesis */
-  .thesis{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+  .band{background:linear-gradient(180deg,rgba(45,212,167,.07),transparent);border:1px solid rgba(45,212,167,.25);border-radius:var(--radius);padding:32px;text-align:center}
+  .band h3{font-size:22px;margin-bottom:10px}
+  .band p{color:var(--muted);max-width:44em;margin:0 auto;font-size:15px}
+  .thesis{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
   .thesis div{padding:26px;background:var(--panel)}
   .thesis div+div{border-left:1px solid var(--line)}
   .thesis b{display:block;font-size:15px;margin-bottom:6px}
   .thesis span{color:var(--muted);font-size:14px}
-  /* cta */
   .cta{text-align:center;padding:80px 0}
   .cta h2{font-size:32px}
   .cta p{color:var(--muted);margin:14px 0 28px}
   footer{border-top:1px solid var(--line);padding:34px 0;color:var(--muted);font-size:12.5px}
-  footer .row{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:14px}
+  footer .row{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+  footer .logo-img{height:20px;opacity:.8}
   @media (max-width:860px){
-    .hero{grid-template-columns:1fr;padding:56px 0 40px}
+    .hero{grid-template-columns:1fr;padding:52px 0 36px}
     h1{font-size:34px}
     .grid3,.grid2,.thesis{grid-template-columns:1fr}
     .thesis div+div{border-left:0;border-top:1px solid var(--line)}
@@ -99,12 +93,11 @@
 <body>
 
 <nav><div class="wrap nav-in">
-  <div class="logo">ATTICUS<span>.</span></div>
+  <a href="#"><img class="logo-img" src="atlogo.png" alt="Atticus"></a>
   <div class="nav-links">
     <a href="#how">How it works</a>
     <a href="#venues">For venues</a>
-    <a href="#traders">For traders</a>
-    <a href="#principles">Principles</a>
+    <a href="#edge">Why us</a>
     <!-- SET CONTACT: replace with your scheduling/Telegram/email link -->
     <a class="btn" href="mailto:hello@atticustrade.com?subject=Earn%20%26%20Protect%20demo">Book a demo</a>
   </div>
@@ -113,64 +106,64 @@
 <header class="wrap hero">
   <div>
     <div class="kicker">Earn &amp; Protect</div>
-    <h1>One toggle. A hard floor under every position — and it pays.</h1>
-    <p class="sub">Atticus embeds collar protection into trading venues. Your traders keep their upside room, gain a defined floor, and collect a credit up front — priced and funded by the live options market, not by your treasury.</p>
+    <h1>One toggle. A hard floor under every position. And it pays.</h1>
+    <p class="sub">Atticus embeds collar protection into trading venues. Traders keep upside, gain a hard floor, and collect a credit up front. Priced by the live options market. Never subsidized.</p>
     <div class="hero-ctas">
       <a class="btn" href="mailto:hello@atticustrade.com?subject=Earn%20%26%20Protect%20demo">Book a 30-second demo</a>
       <a class="btn ghost" href="#how">See how it works</a>
     </div>
   </div>
-  <div class="demo-card" aria-label="Product demo mock">
+  <div class="demo-card" aria-label="Product demo">
     <div class="demo-row">
-      <div class="pos">LONG 0.50 BTC <small>· perp · your venue's UI</small></div>
+      <div class="pos">LONG 0.50 BTC <small>&middot; perp &middot; your venue's UI</small></div>
       <div class="switch" id="sw" role="switch" aria-checked="false" tabindex="0"><div class="knob"></div></div>
     </div>
     <div class="chip" id="chip">Earn &amp; Protect: off</div>
     <div class="legs">
-      <div class="leg" id="leg1"><b>Floor secured</b>protective put · listed market</div>
-      <div class="leg" id="leg2"><b>Credit collected</b>covered call · vests daily</div>
+      <div class="leg" id="leg1"><b>Floor secured</b>protective put &middot; listed market</div>
+      <div class="leg" id="leg2"><b>Credit collected</b>covered call &middot; vests daily</div>
     </div>
-    <div class="demo-note">Illustration. Live terms are quoted from listed order books at the moment of the toggle — and refused honestly when the market can't fund them.</div>
+    <div class="demo-note">Illustration. Live terms are quoted from listed order books at the moment of the toggle, and refused honestly when the market can't fund them.</div>
   </div>
 </header>
 
-<section id="how"><div class="wrap">
-  <h2>How it works</h2>
-  <p class="lead">A collar, delivered as a toggle. No options UI, no custody, no capital migration — protection attaches to the position the trader already holds.</p>
-  <div class="grid3">
-    <div class="card"><div class="n">01 · TOGGLE</div><h3>Trader flips it on</h3><p>We read the real position from your venue — side, size, mark. One tap is the entire user experience.</p></div>
-    <div class="card"><div class="n">02 · STRUCTURE</div><h3>The market builds the collar</h3><p>We buy a protective put (~6% below spot) and sell a call above spot on listed options books. The call funds the put — the surplus, net of exchange fees, is the trader's credit.</p></div>
-    <div class="card"><div class="n">03 · EARN</div><h3>Credit vests, protection renews</h3><p>The credit vests to the daily listed expiry and auto-renews at the morning book while the toggle stays on. Toggle off anytime — vested credit is kept.</p></div>
+<section id="edge" style="border-top:0;padding-top:0"><div class="wrap">
+  <div class="band">
+    <h3>Every other yield pays users to take risk. Ours pays them to remove it.</h3>
+    <p>LP fees, staking, lending, covered calls: all of them buy risk with yield. Nobody else pays a trader to become safer. That is the product, and it only works because we never fake it. If the market can't fund a credit, we refuse and say why.</p>
   </div>
 </div></section>
 
-<section id="principles"><div class="wrap">
-  <div class="band">
-    <h3>If the market can't fund a credit, we refuse — and say why.</h3>
-    <p>No manufactured yield. No subsidized APY. No silent size changes, ever. Real strikes, real fills, and every cent auditable to an exchange execution and reconciled against the venue's own settlement prints. In a market that's been burned by invented numbers, our refusals are the feature.</p>
+<section id="how"><div class="wrap">
+  <h2>How it works</h2>
+  <p class="lead">A collar, delivered as a toggle. No options UI, no custody, no capital migration.</p>
+  <div class="grid3">
+    <div class="card"><div class="n">01 &middot; TOGGLE</div><h3>Flip it on</h3><p>We read the real position from your venue. One tap is the entire user experience.</p></div>
+    <div class="card"><div class="n">02 &middot; STRUCTURE</div><h3>The market builds the collar</h3><p>We buy a protective put below spot and sell a call above it on listed books. The call funds the put. The surplus, net of exchange fees, is the trader's credit.</p></div>
+    <div class="card"><div class="n">03 &middot; EARN</div><h3>Credit vests, protection renews</h3><p>The credit vests to the daily listed expiry and auto-renews while the toggle stays on. Toggle off anytime, keep what's vested.</p></div>
   </div>
 </div></section>
 
 <section id="venues"><div class="wrap">
-  <h2>Built for the venue, priced by the market</h2>
-  <p class="lead">Drawdowns are the number-one churn event on every trading platform. Protected traders survive them — and keep trading with you.</p>
+  <h2>Built for the venue</h2>
+  <p class="lead">Drawdowns are the number-one churn event on every trading platform. Protected traders survive them and keep trading with you.</p>
   <div class="grid2">
     <div class="aud">
-      <h3>For exchanges &amp; platforms</h3>
+      <h3>Exchanges &amp; platforms</h3>
       <ul>
-        <li><b>Retention where it hurts:</b> the traders most likely to churn are the ones a drawdown just hit. The wrap is the countermeasure.</li>
-        <li><b>Volume stays on venue:</b> unlike LP and staking yield, protection doesn't park capital — it keeps positions open and trading.</li>
-        <li><b>Your brand, your UX:</b> a native toggle or a simple API. The trader never leaves your screen.</li>
-        <li><b>Simple economics:</b> venue-paid platform fee on wrapped notional. The trader's credit comes from the market — never from you.</li>
-        <li><b>One-week pilot:</b> capped, instrumented, free — with production terms agreed up front.</li>
+        <li><b>Retention where it hurts:</b> the wrap catches traders at the exact moment they normally leave.</li>
+        <li><b>Volume stays on venue:</b> protection doesn't park capital in pools. Positions stay open and trading.</li>
+        <li><b>Your brand, your UX:</b> a native toggle or a simple API.</li>
+        <li><b>Simple economics:</b> venue-paid fee on wrapped notional. The trader's credit comes from the market, never from you.</li>
+        <li><b>One-week pilot:</b> capped, instrumented, free. Production terms agreed up front.</li>
       </ul>
     </div>
-    <div class="aud" id="traders">
-      <h3>For their traders</h3>
+    <div class="aud">
+      <h3>Their traders</h3>
       <ul>
-        <li><b>A hard floor:</b> beyond the floor strike, losses stop. Leverage with a defined worst case.</li>
-        <li><b>Paid to be protected:</b> a credit up front, vesting daily — everywhere else, a floor costs premium.</li>
-        <li><b>Nothing to learn or move:</b> no options interface, no custody, no bridging. The position stays exactly where it is.</li>
+        <li><b>A hard floor:</b> losses stop at the floor strike. Leverage with a defined worst case.</li>
+        <li><b>Paid to be protected:</b> a credit up front, vesting daily. Everywhere else, a floor costs premium.</li>
+        <li><b>Nothing to learn or move:</b> the position stays exactly where it is.</li>
         <li><b>Leave anytime:</b> toggle off, keep what's vested.</li>
       </ul>
     </div>
@@ -179,30 +172,29 @@
 
 <section><div class="wrap">
   <h2>The economics, honestly</h2>
-  <p class="lead">Pooled protection is the whole point: individual retail positions inherit institutional execution.</p>
+  <p class="lead">Pooled protection is the point: retail positions inherit institutional execution.</p>
   <div class="thesis">
-    <div><b>Traders</b><span>inherit block economics their size could never reach — pooled wraps are hedged as institutional blocks, and every position gets block pricing.</span></div>
-    <div><b>Venues</b><span>get the retention product their yield pages can't offer: yield that makes users safer instead of paying them to take more risk.</span></div>
-    <div><b>Desks</b><span>get what they can't originate — aggregated, diversified, daily programmatic hedge flow from thousands of positions too small to onboard alone.</span></div>
+    <div><b>Traders</b><span>get block economics their size could never reach. Pooled wraps hedge as institutional blocks; every position gets block pricing.</span></div>
+    <div><b>Venues</b><span>get the one yield product that makes users safer instead of paying them to take more risk.</span></div>
+    <div><b>Desks</b><span>get flow they can't originate: aggregated, diversified, daily programmatic hedge flow.</span></div>
   </div>
 </div></section>
 
 <section class="cta"><div class="wrap">
   <h2>Two design-partner slots open.</h2>
-  <p>A one-week, capped, instrumented pilot on your venue — live in days, not quarters.</p>
+  <p>A one-week, capped, instrumented pilot on your venue. Live in days, not quarters.</p>
   <a class="btn" href="mailto:hello@atticustrade.com?subject=Design%20partner%20pilot">Talk to us</a>
 </div></section>
 
 <footer><div class="wrap">
   <div class="row">
-    <div><b style="color:var(--text)">ATTICUS</b> — embedded protection infrastructure</div>
+    <img class="logo-img" src="atlogo.png" alt="Atticus">
     <div><a href="mailto:hello@atticustrade.com">hello@atticustrade.com</a></div>
   </div>
-  <div>© 2026 Atticus. Derivatives involve risk. Protection terms are quoted from live listed markets at the moment of activation and depend on market liquidity; when terms cannot be funded, activation is declined. Nothing on this page is investment advice.</div>
+  <div>&copy; 2026 Atticus. Derivatives involve risk. Protection terms are quoted from live listed markets at activation and depend on market liquidity; when terms cannot be funded, activation is declined. Nothing on this page is investment advice.</div>
 </div></footer>
 
 <script>
-  // Hero toggle: a small honest loop — on ⟹ legs + credit; off ⟹ idle.
   const sw = document.getElementById("sw"), chip = document.getElementById("chip"),
         l1 = document.getElementById("leg1"), l2 = document.getElementById("leg2");
   let on = false, t;
@@ -210,11 +202,11 @@
     sw.classList.toggle("on", on); sw.setAttribute("aria-checked", String(on));
     chip.classList.toggle("on", on);
     if (on) {
-      chip.innerHTML = "Wrapping… pricing the live options book";
+      chip.textContent = "Wrapping\u2026 pricing the live options book";
       l1.classList.remove("on"); l2.classList.remove("on");
       t = setTimeout(() => { l1.classList.add("on"); }, 600);
       setTimeout(() => { l2.classList.add("on");
-        chip.innerHTML = "EARNING · <b>credit vesting</b> · floor −6.0% · cap +1.5%"; }, 1200);
+        chip.innerHTML = "EARNING \u00b7 <b>credit vesting</b> \u00b7 floor \u22126.0% \u00b7 cap +1.5%"; }, 1200);
     } else {
       clearTimeout(t);
       chip.textContent = "Earn & Protect: off";
@@ -224,7 +216,6 @@
   const flip = () => { on = !on; apply(); };
   sw.addEventListener("click", flip);
   sw.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); } });
-  // Auto-demo once for first-time visitors, then leave it to them.
   setTimeout(() => { if (!on) { on = true; apply(); } }, 1400);
 </script>
 </body>
