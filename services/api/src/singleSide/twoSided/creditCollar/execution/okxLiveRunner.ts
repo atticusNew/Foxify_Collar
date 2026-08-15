@@ -183,6 +183,41 @@ export const buildOkxLiveExecutionHook = (env: Record<string, string | undefined
       }
       const putInstId = plan.protective.optType === "put" ? plan.protective.instId : plan.funding.instId;
       const callInstId = plan.protective.optType === "call" ? plan.protective.instId : plan.funding.instId;
+
+      // QUOTE-FLOOR INVARIANT (opt-in, LIVE_ENFORCE_QUOTE_FLOOR): a fill must never be worse than
+      // the credit quoted to the client. Tick-pinned limits make this structurally true at 1-lot;
+      // this makes it a GUARANTEE at any size — a breach unwinds the pair instead of booking it.
+      // Default OFF: the canary/shadow services quote a MODEL target where realized-vs-model drift
+      // is expected and recorded in quoteMeta, not refused.
+      const enforceQuoteFloor = String(env.LIVE_ENFORCE_QUOTE_FLOOR ?? "false").toLowerCase() === "true";
+      if (
+        enforceQuoteFloor &&
+        exec.outcome === "filled" &&
+        exec.netCreditUsdc != null &&
+        exec.netCreditUsdc < solved.foxifyCreditUsdc - 0.01
+      ) {
+        extraAlerts.push(
+          `FILL BELOW QUOTE: realized $${exec.netCreditUsdc} < quoted $${solved.foxifyCreditUsdc} — unwinding the pair (never fill worse than quoted)`
+        );
+        const rep = await unwindLiveCollar(
+          deps.client,
+          { side: plan.side, putInstId, callInstId, contracts: plan.contracts, ctValBtc: plan.ctValBtc },
+          { spotUsd: ctx.spot, sleep: deps.sleep }
+        );
+        return {
+          outcome: rep.complete ? "aborted_unwound" : "naked_leg_unresolved",
+          safe: rep.complete,
+          pos: undefined,
+          netCreditUsdc: null,
+          venueFeeUsdc: exec.venueFeeUsdc,
+          contracts: plan.contracts,
+          putInstId,
+          callInstId,
+          alerts: [...extraAlerts, ...exec.alerts],
+          detail: { via, protective: exec.protective, funding: exec.funding, unwind: rep, errors: exec.errors, quoteFloor: { quoted: solved.foxifyCreditUsdc, realized: exec.netCreditUsdc } }
+        };
+      }
+
       return {
         outcome: exec.outcome,
         safe: exec.safe,

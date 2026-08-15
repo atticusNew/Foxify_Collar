@@ -97,7 +97,10 @@ export type DemoWrapRecord = {
     callStrike: number;
     floorPct: number;
     capPct: number;
+    /** ONE-NUMBER RULE: after hedge_locked this is the REALIZED credit (every surface shows it). */
     creditUsdc: number;
+    /** The indicative quote at toggle time, kept for the labeled "quoted → filled" history. */
+    quotedCreditUsdc?: number | null;
     floorPctUsed: number;
     tenorDays: number;
   } | null;

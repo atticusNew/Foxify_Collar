@@ -105,8 +105,10 @@
     busy = false;
     if (res.ok && res.json && res.json.ok) {
       setSwitch(true);
-      const credit = res.json.wrap?.quote?.creditUsdc;
-      setChip("EARNING" + (credit != null ? " · $" + credit + " credit" : ""), "ap-good");
+      const q = res.json.wrap?.quote;
+      const credit = q?.creditUsdc;
+      const beat = q && q.quotedCreditUsdc != null && credit != null && credit > q.quotedCreditUsdc + 0.005;
+      setChip("EARNING" + (credit != null ? " · $" + credit + " credit" + (beat ? " (beat quote)" : "") : ""), "ap-good");
     } else {
       setSwitch(false);
       setChip((res.json && (res.json.message || res.json.error)) || res.error || "demo service offline?", "ap-bad");

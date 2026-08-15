@@ -229,6 +229,7 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
     floorPct: q.legs.floor_pct,
     capPct: q.legs.cap_pct,
     creditUsdc: q.economics.foxify_credit_usdc,
+    quotedCreditUsdc: q.economics.foxify_credit_usdc, // kept as labeled history once the fill lands
     floorPctUsed: floorUsedPct,
     tenorDays: +tenorDays.toFixed(2)
   };
@@ -274,7 +275,9 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
     canaryContracts: cover.lots
   };
   const hook = buildOkxLiveExecutionHook(
-    { ...process.env, LIVE_DIRECTIONAL_DECISION: "auto" }, // demo wrap = the client's own decision; no partner gate
+    // demo wrap = the client's own decision (no partner gate) + hard guarantee: never fill worse
+    // than the credit quoted to the client — a breach unwinds instead of booking.
+    { ...process.env, LIVE_DIRECTIONAL_DECISION: "auto", LIVE_ENFORCE_QUOTE_FLOOR: "true" },
     {
       client: new OkxExecutionClient({ apiKey: k, secret: s, passphrase: p, mode: liveGuards.mode }),
       guards: liveGuards,
@@ -338,7 +341,19 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
         ? `protecting ${cover.coveredBtc} of ${position.szBase} BTC (${cover.lots} × 0.01)`
         : null)
   };
-  pushStage(rec, "hedge_locked", Date.now(), `filled — net credit $${pos.foxifyCreditUsdc} · fees $${pos.liveMeta?.venueFeeUsdc ?? 0}`);
+  // ONE-NUMBER RULE: after the fill, every surface shows the REALIZED credit; the quote survives
+  // only as labeled history ("quoted → filled"). Two unlabeled numbers read as a glitch.
+  const quotedCredit = rec.quote?.creditUsdc ?? pos.foxifyCreditUsdc;
+  if (rec.quote) rec.quote.creditUsdc = pos.foxifyCreditUsdc;
+  const beatQuote = pos.foxifyCreditUsdc > quotedCredit + 0.005;
+  pushStage(
+    rec,
+    "hedge_locked",
+    Date.now(),
+    beatQuote
+      ? `filled — net credit $${pos.foxifyCreditUsdc} (quoted $${quotedCredit}, price improvement passed through) · fees $${pos.liveMeta?.venueFeeUsdc ?? 0}`
+      : `filled — net credit $${pos.foxifyCreditUsdc} · fees $${pos.liveMeta?.venueFeeUsdc ?? 0}`
+  );
   pushStage(rec, "green_light", Date.now());
   rec.vesting = { fullCreditUsdc: pos.foxifyCreditUsdc, startMs: Date.now(), endMs: pos.expiresAtMs };
   pushStage(rec, "vesting", Date.now(), `$${pos.foxifyCreditUsdc} vests linearly to ${new Date(pos.expiresAtMs).toISOString()}`);
@@ -548,8 +563,10 @@ const render = (st) => {
     card("Client position ("+(p?"Hyperliquid · live":"none")+")",
       p ? p.side.toUpperCase()+" "+p.szBase+" "+p.coin : (st.positionError?"read error":"no open "+st.coin),
       p ? "entry "+(p.entryPx?("$"+p.entryPx):"?")+" · mark $"+p.markPx.toFixed(1)+" · ≈$"+p.notionalUsdc : (st.positionError||"open a position to enable the toggle")) +
-    card("Hedge quote", q ? fmt$(q.creditUsdc)+" credit" : "—",
-      q ? "floor $"+q.putStrike+" ("+(q.floorPct*100).toFixed(1)+"%) · cap $"+q.callStrike+" ("+(q.capPct*100).toFixed(1)+"%)" : "priced on wrap") +
+    card("Hedge quote",
+      q ? fmt$(q.creditUsdc)+(q.quotedCreditUsdc!=null && Math.abs(q.creditUsdc-q.quotedCreditUsdc)>0.005 ? " filled" : " credit") : "—",
+      q ? ((q.quotedCreditUsdc!=null && Math.abs(q.creditUsdc-q.quotedCreditUsdc)>0.005 ? "quoted "+fmt$(q.quotedCreditUsdc)+" · improvement passed through · " : "")
+          +"floor $"+q.putStrike+" ("+(q.floorPct*100).toFixed(1)+"%) · cap $"+q.callStrike+" ("+(q.capPct*100).toFixed(1)+"%)") : "priced on wrap") +
     card("Hedge venue", w && w.hedge ? w.hedge.venue.toUpperCase().replace("_"," ") : "—",
       w && w.hedge ? (w.hedge.sizeNote || (w.hedge.contracts!=null ? w.hedge.contracts+" × 0.01 BTC lots" : "model quote off the live book")) : "") +
     card("Status", w ? w.status.toUpperCase() : "IDLE", w && w.failReason ? w.failReason : "");
