@@ -17,15 +17,27 @@
   const WIDGET_ID = "atticus-protect-widget";
 
   // ── plumbing ────────────────────────────────────────────────────────────────
+  // Timeout guard: MV3 background workers can be killed mid-flight, losing the sendMessage
+  // callback forever — without a deadline the chip freezes ("closing early…") and busy never
+  // clears. Wraps legitimately take ~60s (live legs); everything else should answer in seconds.
+  const API_TIMEOUT_MS = { "/demo/api/wrap": 120000 };
   const api = (path, method, body) =>
     new Promise((resolve) => {
+      let done = false;
+      const finish = (res) => { if (!done) { done = true; resolve(res); } };
+      const deadline = setTimeout(
+        () => finish({ ok: false, error: "no response from the demo service — refresh the page and check the control room" }),
+        API_TIMEOUT_MS[path] || 15000
+      );
       try {
         chrome.runtime.sendMessage({ type: "atticus_fetch", path, method, body }, (res) => {
-          if (chrome.runtime.lastError || !res) resolve({ ok: false, error: chrome.runtime.lastError?.message || "no response" });
-          else resolve(res);
+          clearTimeout(deadline);
+          if (chrome.runtime.lastError || !res) finish({ ok: false, error: chrome.runtime.lastError?.message || "no response" });
+          else finish(res);
         });
       } catch (e) {
-        resolve({ ok: false, error: String(e) });
+        clearTimeout(deadline);
+        finish({ ok: false, error: String(e) });
       }
     });
 
