@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-okx-egress-proxy.yaml — fixed-IP relay for OKX API calls
+#
+# WHY: the OKX API key's IP whitelist holds the Render Singapore outbound IPs
+# (set up for the live canary services). When placing from a machine whose IP
+# is not whitelisted (OKX 50110) and the whitelist can't be edited (2FA not at
+# hand), point OKX_REST_BASE at this proxy — every signed call then egresses
+# from the whitelisted Render IPs. The proxy holds NO OKX credentials; signing
+# stays on the operator's machine. See scripts/okxEgressProxy.ts.
+#
+# REGION MUST BE singapore — same region as foxify-okx-live ⟹ same shared
+# outbound IP set (the whitelisted ones). VERIFY after deploy: this service's
+# outbound IPs (dashboard → service → Connect/Outbound) must appear in the
+# OKX key's whitelist; if Render ever splits the region IP pool, the relay
+# stops helping and the whitelist needs a real edit.
+#
+# USAGE (operator's machine, demo service env):
+#   OKX_REST_BASE=https://<this-service>.onrender.com/t/<PROXY_TOKEN>
+#
+# Deploy: Render dashboard → New → Blueprint → select this file.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: atticus-okx-egress-proxy
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/hl-toggle-demo-9151
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/okxEgressProxy.ts
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # URL token — the only gate on the relay. Copy its generated value into the
+      # operator machine's OKX_REST_BASE. Rotate by editing here; old URLs die instantly.
+      - key: PROXY_TOKEN
+        generateValue: true
