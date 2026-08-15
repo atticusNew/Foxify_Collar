@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { OkxChainInstrument } from "../src/singleSide/twoSided/creditCollar/execution/okxLivePlanner";
-import { quoteFromListedBooks, touchCreditUsdc, listedWingCandidates, firstWingWithTouch, widestExecutableWing, CALL_BAND } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
+import { quoteFromListedBooks, touchCreditUsdc, listedWingCandidates, firstWingWithTouch, widestExecutableWing, FUNDING_BAND, PROTECTIVE_BAND } from "../src/singleSide/twoSided/creditCollar/execution/okxListedTouchQuote";
 
 const now = Date.UTC(2026, 6, 19, 8, 20, 0);
 const expiry = Date.UTC(2026, 6, 20, 8, 0, 0);
@@ -142,12 +142,52 @@ test("widestExecutableWing: nothing clears ⟹ no pick, closest names the honest
   assert.ok(closest!.netUsdc <= 0);
 });
 
-test("CALL_BAND: hard ATM guard is 0.5%, never past it", () => {
-  assert.equal(CALL_BAND.minOtmPct, 0.005);
+test("FUNDING_BAND: hard ATM guard is 0.5%, never past it", () => {
+  assert.equal(FUNDING_BAND.minOtmPct, 0.005);
   const wide = [inst(63_100, "call"), inst(63_200, "call"), inst(63_400, "call")];
-  const cands = listedWingCandidates(wide, expiry, "call", SPOT, SPOT * 1.015, CALL_BAND);
+  const cands = listedWingCandidates(wide, expiry, "call", SPOT, SPOT * 1.015, FUNDING_BAND);
   assert.ok(cands.some((c) => c.strike === 63_200), "0.51% OTM is inside the guard");
   assert.ok(!cands.some((c) => c.strike === 63_100), "0.35% OTM is past the guard — excluded");
+});
+
+test("bands mirror by ROLE for shorts: funding puts sit near spot, protective calls deep", () => {
+  const spot = 100_000;
+  // Short-side funding wing: SELL puts 0.5–4% BELOW spot (99,600 = 0.4% is inside the ATM guard).
+  const puts = [inst(99_600, "put"), inst(99_400, "put"), inst(98_500, "put"), inst(95_000, "put")];
+  const fund = listedWingCandidates(puts, expiry, "put", spot, spot * 0.985, FUNDING_BAND);
+  assert.ok(fund.some((c) => c.strike === 99_400) && fund.some((c) => c.strike === 98_500));
+  assert.ok(!fund.some((c) => c.strike === 99_600), "0.4% below is past the ATM guard — excluded");
+  assert.ok(!fund.some((c) => c.strike === 95_000), "5% below is outside the funding band");
+  // Short-side protective wing: BUY calls 2–8% ABOVE spot.
+  const calls = [inst(101_000, "call"), inst(106_000, "call"), inst(109_000, "call")];
+  const prot = listedWingCandidates(calls, expiry, "call", spot, spot * 1.06, PROTECTIVE_BAND);
+  assert.ok(prot.some((c) => c.strike === 106_000));
+  assert.ok(!prot.some((c) => c.strike === 101_000), "1% above is inside the protective minimum");
+});
+
+test("quoteFromListedBooks: SHORT side — buy call at ask, sell put at bid, floor labeled on the call", () => {
+  const shortChain: OkxChainInstrument[] = [inst(98_500, "put"), inst(106_000, "call")];
+  const q = quoteFromListedBooks({
+    side: "short",
+    spot: 100_000,
+    planPutStrike: 98_500,
+    planCallStrike: 106_000,
+    notionalUsdc: 1_000,
+    contractsBtc: 0.01,
+    nowMs: now,
+    chain: shortChain,
+    putBook: { bidPxBtc: 0.0004, askPxBtc: 0.0005 },  // funding: sell put at bid 0.0004
+    callBook: { bidPxBtc: 0.00005, askPxBtc: 0.0001 } // protective: buy call at ask 0.0001
+  });
+  assert.equal(q.ok, true, q.ok ? "" : `${q.error}: ${q.message}`);
+  if (!q.ok) return;
+  assert.ok(q.creditUsdc > 0, `net ${q.creditUsdc}`);
+  // Floor/cap are role-labeled: floor = call side (+6%), cap = put side (−1.5%).
+  assert.ok(Math.abs(q.floorPct - 0.06) < 0.001, `floorPct ${q.floorPct}`);
+  assert.ok(Math.abs(q.capPct - 0.015) < 0.001, `capPct ${q.capPct}`);
+  // Touch anchors carry the roles: protective = call ask, funding = put bid.
+  assert.equal(q.protectiveTouchUsdc, +(0.0001 * 0.01 * 100_000).toFixed(6));
+  assert.equal(q.fundingTouchUsdc, +(0.0004 * 0.01 * 100_000).toFixed(6));
 });
 
 test("quoteFromListedBooks: touch anchors exported at 6dp (not cent-rounded)", () => {

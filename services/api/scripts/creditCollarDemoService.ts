@@ -194,7 +194,7 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
   // 2) QUOTE — listed OKX lots. Credit = executable touch net of OKX fees. No $80/$50k target.
   const spot = position.markPx;
   const hedgeNotionalUsdc = round2(cover.coveredBtc * spot);
-  const plan = demoPlanStrikes(spot, floorPct, capPct);
+  const plan = demoPlanStrikes(spot, position.side, floorPct, capPct);
   const listed = await fetchOkxListedTouchQuote({
     side: position.side,
     spot,
@@ -215,11 +215,14 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
       callStrike: listed.callStrike,
       floor_pct: listed.floorPct,
       cap_pct: listed.capPct,
-      floor_leg_mid_usdc: listed.putMidUsdc,
-      funding_leg_mid_usdc: listed.callMidUsdc
+      // Side-aware roles: long buys the put / sells the call; short mirrors (buys call, sells put).
+      floor_leg_mid_usdc: position.side === "long" ? listed.putMidUsdc : listed.callMidUsdc,
+      funding_leg_mid_usdc: position.side === "long" ? listed.callMidUsdc : listed.putMidUsdc
     },
     economics: { foxify_credit_usdc: listed.creditUsdc }
   };
+  const floorStrike = position.side === "long" ? listed.putStrike : listed.callStrike;
+  const capStrike = position.side === "long" ? listed.callStrike : listed.putStrike;
   const floorUsedPct = listed.floorPct;
   const tenorDays = Math.max(1 / 24, (listed.expiryMs - Date.now()) / DAY_MS);
   rec.quote = {
@@ -230,6 +233,8 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
     capPct: q.legs.cap_pct,
     creditUsdc: q.economics.foxify_credit_usdc,
     quotedCreditUsdc: q.economics.foxify_credit_usdc, // kept as labeled history once the fill lands
+    floorStrike,
+    capStrike,
     floorPctUsed: floorUsedPct,
     tenorDays: +tenorDays.toFixed(2)
   };
@@ -237,7 +242,7 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
     rec,
     "quoted",
     Date.now(),
-    `floor $${q.legs.putStrike} / cap $${q.legs.callStrike} · credit $${q.economics.foxify_credit_usdc}` +
+    `floor $${floorStrike} / cap $${capStrike} · credit $${q.economics.foxify_credit_usdc}` +
       ` · listed OKX ${listed.putInstId} / ${listed.callInstId} touch` +
       (sizeNote ? ` · ${sizeNote}` : "")
   );
@@ -246,7 +251,7 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
   // 3) EXECUTE.
   if (guards.executionMode === "paper") {
     const expiresAtMs = listed.expiryMs;
-    rec.legs = paperLegsFromQuote(q, expiresAtMs);
+    rec.legs = paperLegsFromQuote(q, expiresAtMs, position.side);
     rec.hedge = { venue: "okx_model", mode: "paper", netCreditUsdc: q.economics.foxify_credit_usdc, venueFeeUsdc: listed.venueFeeUsdc, contracts: cover.lots, sizeNote };
     pushStage(rec, "hedge_locked", Date.now(), "PAPER lane — listed OKX touch quote, no venue orders");
     pushStage(rec, "green_light", Date.now());
@@ -323,10 +328,17 @@ const doWrap = async (account: string, renewal = false): Promise<{ status: numbe
     return { status: 502, body: { ok: false, error: "hedge_not_filled", message: rec.failReason, wrap: rec } };
   }
   const pos = res.newOpens[0];
-  const legs: DemoLeg[] = [
-    { role: "sell_call_cap", instId: pos.liveMeta?.callInstId ?? null, orderId: pos.liveMeta?.clOrdPrefix ?? null, premiumUsdc: round2(pos.fundingLegPremiumUsdc ?? 0), real: true },
-    { role: "buy_put_floor", instId: pos.liveMeta?.putInstId ?? null, orderId: pos.liveMeta?.clOrdPrefix ?? null, premiumUsdc: round2(-(pos.protectiveLegPremiumUsdc ?? 0)), real: true }
-  ];
+  // Side-aware roles: for a long the call is sold (cap) and the put bought (floor); a short mirrors.
+  const legs: DemoLeg[] =
+    position.side === "long"
+      ? [
+          { role: "sell_call_cap", instId: pos.liveMeta?.callInstId ?? null, orderId: pos.liveMeta?.clOrdPrefix ?? null, premiumUsdc: round2(pos.fundingLegPremiumUsdc ?? 0), real: true },
+          { role: "buy_put_floor", instId: pos.liveMeta?.putInstId ?? null, orderId: pos.liveMeta?.clOrdPrefix ?? null, premiumUsdc: round2(-(pos.protectiveLegPremiumUsdc ?? 0)), real: true }
+        ]
+      : [
+          { role: "sell_put_cap", instId: pos.liveMeta?.putInstId ?? null, orderId: pos.liveMeta?.clOrdPrefix ?? null, premiumUsdc: round2(pos.fundingLegPremiumUsdc ?? 0), real: true },
+          { role: "buy_call_floor", instId: pos.liveMeta?.callInstId ?? null, orderId: pos.liveMeta?.clOrdPrefix ?? null, premiumUsdc: round2(-(pos.protectiveLegPremiumUsdc ?? 0)), real: true }
+        ];
   rec.legs = legs;
   const hedgedBtc = (pos.liveMeta?.contracts ?? 0) * (pos.liveMeta?.ctValBtc ?? 0.01);
   rec.hedge = {
@@ -457,11 +469,12 @@ const renewalTick = async (): Promise<void> => {
       }
       const cover = coverOkxLots(position.szBase);
       if (!cover.ok) continue; // below one lot — retry next throttle window
+      const renewPlan = demoPlanStrikes(position.markPx, position.side, floorPct, capPct);
       const probe = await fetchOkxListedTouchQuote({
         side: position.side,
         spot: position.markPx,
-        planPutStrike: demoPlanStrikes(position.markPx, floorPct, capPct).putStrike,
-        planCallStrike: demoPlanStrikes(position.markPx, floorPct, capPct).callStrike,
+        planPutStrike: renewPlan.putStrike,
+        planCallStrike: renewPlan.callStrike,
         notionalUsdc: round2(cover.coveredBtc * position.markPx),
         contractsBtc: cover.coveredBtc,
         nowMs
@@ -566,7 +579,7 @@ const render = (st) => {
     card("Hedge quote",
       q ? fmt$(q.creditUsdc)+(q.quotedCreditUsdc!=null && Math.abs(q.creditUsdc-q.quotedCreditUsdc)>0.005 ? " filled" : " credit") : "—",
       q ? ((q.quotedCreditUsdc!=null && Math.abs(q.creditUsdc-q.quotedCreditUsdc)>0.005 ? "quoted "+fmt$(q.quotedCreditUsdc)+" · improvement passed through · " : "")
-          +"floor $"+q.putStrike+" ("+(q.floorPct*100).toFixed(1)+"%) · cap $"+q.callStrike+" ("+(q.capPct*100).toFixed(1)+"%)") : "priced on wrap") +
+          +"floor $"+(q.floorStrike??q.putStrike)+" ("+(q.floorPct*100).toFixed(1)+"%) · cap $"+(q.capStrike??q.callStrike)+" ("+(q.capPct*100).toFixed(1)+"%)") : "priced on wrap") +
     card("Hedge venue", w && w.hedge ? w.hedge.venue.toUpperCase().replace("_"," ") : "—",
       w && w.hedge ? (w.hedge.sizeNote || (w.hedge.contracts!=null ? w.hedge.contracts+" × 0.01 BTC lots" : "model quote off the live book")) : "") +
     card("Status", w ? w.status.toUpperCase() : "IDLE", w && w.failReason ? w.failReason : "");
@@ -574,8 +587,9 @@ const render = (st) => {
   if (w) {
     $("timeline").innerHTML = w.stages.map(s =>
       '<li class="'+(s.stage==="failed"?"fail":"done")+'"><b>'+esc(stageLabel[s.stage]||s.stage)+'</b> <span class="t">'+new Date(s.tsMs).toISOString().slice(11,19)+'Z</span>'+(s.note?'<div class="n">'+esc(s.note)+'</div>':'')+'</li>').join("");
+    const legLabel = {sell_call_cap:"SELL call (cap)", buy_put_floor:"BUY put (floor)", sell_put_cap:"SELL put (cap)", buy_call_floor:"BUY call (floor)"};
     $("legs").innerHTML = w.legs.length ? w.legs.map(l =>
-      '<tr><td>'+(l.role==="sell_call_cap"?"SELL call (cap)":"BUY put (floor)")+'</td><td>'+esc(l.instId||"—")+'</td><td>'+esc(l.orderId||"—")+'</td><td>'+fmt$(l.premiumUsdc)+'</td><td class="'+(l.real?"real":"paper")+'">'+(l.real?"REAL":"PAPER")+'</td></tr>').join("")
+      '<tr><td>'+(legLabel[l.role]||esc(l.role))+'</td><td>'+esc(l.instId||"—")+'</td><td>'+esc(l.orderId||"—")+'</td><td>'+fmt$(l.premiumUsdc)+'</td><td class="'+(l.real?"real":"paper")+'">'+(l.real?"REAL":"PAPER")+'</td></tr>').join("")
       : '<tr><td colspan="5" class="muted">—</td></tr>';
     const v = w.vestingStatus;
     if (v) {

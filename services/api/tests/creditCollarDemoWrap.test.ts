@@ -147,6 +147,32 @@ test("book cap: open-wrap count is bounded across accounts", () => {
   assert.match((res as { reason: string }).reason, /book is full/);
 });
 
+// ── Shorts (mirror geometry) ──────────────────────────────────────────────────
+
+test("demoPlanStrikes: SHORT mirrors — protection 6% ABOVE spot, cap 1.5% below", () => {
+  const s = demoPlanStrikes(100_000, "short");
+  assert.equal(s.callStrike, 106_000); // protective call on the loss side (up)
+  assert.equal(s.putStrike, 98_500);   // funding put on the profit side (down)
+  const l = demoPlanStrikes(100_000, "long");
+  assert.equal(l.putStrike, 94_000);
+  assert.equal(l.callStrike, 101_500);
+  // default side stays long (backward compatible)
+  assert.deepEqual(demoPlanStrikes(100_000), l);
+});
+
+test("paperLegsFromQuote: SHORT legs — sell put (cap, +premium), buy call (floor, −premium)", () => {
+  const q = { legs: { putStrike: 98_500, callStrike: 106_000, floor_leg_mid_usdc: 0.06, funding_leg_mid_usdc: 0.25 } };
+  const legs = paperLegsFromQuote(q, NOW + DAY, "short");
+  const cap = legs.find((l) => l.role === "sell_put_cap")!;
+  const floor = legs.find((l) => l.role === "buy_call_floor")!;
+  assert.ok(cap && floor);
+  assert.match(cap.instId!, /98500-P/);
+  assert.equal(cap.premiumUsdc, 0.25);
+  assert.match(floor.instId!, /106000-C/);
+  assert.equal(floor.premiumUsdc, -0.06);
+  assert.equal(cap.real, false);
+});
+
 // ── Auto-renew ────────────────────────────────────────────────────────────────
 
 test("renewalDecision: off / in-flight / still-vesting ⟹ none", () => {
@@ -263,8 +289,8 @@ test("demoPlanStrikes: 6% floor / 1.5% cap — not a $50k credit hunt", () => {
   assert.equal(DEMO_FLOOR_PCT, 0.06);
   assert.equal(DEMO_CAP_PCT, 0.015);
   const s = demoPlanStrikes(62_849.3);
-  assert.ok(Math.abs(s.putStrike - 62_849.3 * 0.94) < 1e-6);
-  assert.ok(Math.abs(s.callStrike - 62_849.3 * 1.015) < 1e-6);
+  assert.ok(Math.abs(s.putStrike - 62_849.3 * 0.94) < 0.01);   // strikes now cent-rounded
+  assert.ok(Math.abs(s.callStrike - 62_849.3 * 1.015) < 0.01);
 });
 
 // ── paper legs ────────────────────────────────────────────────────────────────

@@ -107,8 +107,10 @@ export const quoteFromListedBooks = (input: {
     };
   }
 
-  const putAskPx = input.putBook.askPxBtc ?? buyAsk;
-  const callBidPx = input.callBook.bidPxBtc ?? sellBid;
+  // Empty-book display fallbacks are SIDE-aware: for a long the put is the buy wing (ask known)
+  // and the call the sell wing (bid known); a short mirrors. Crossing them shows phantom prices.
+  const putAskPx = input.putBook.askPxBtc ?? (input.side === "long" ? buyAsk : sellBid);
+  const callBidPx = input.callBook.bidPxBtc ?? (input.side === "long" ? sellBid : buyAsk);
   const putMidPx =
     input.putBook.bidPxBtc != null && input.putBook.bidPxBtc > 0 && putAskPx > 0
       ? (input.putBook.bidPxBtc + putAskPx) / 2
@@ -125,8 +127,14 @@ export const quoteFromListedBooks = (input: {
     putInstId: putLeg.instId,
     callInstId: callLeg.instId,
     expiryMs: planned.plan.expiryMs,
-    floorPct: round6((input.spot - putLeg.listedStrike) / input.spot),
-    capPct: round6((callLeg.listedStrike - input.spot) / input.spot),
+    // Side-aware: the FLOOR is the protective wing's distance (put below for long, CALL above for
+    // short); the CAP is the funding wing's. Type-based labels would invert the story for shorts.
+    floorPct: round6(
+      input.side === "long" ? (input.spot - putLeg.listedStrike) / input.spot : (callLeg.listedStrike - input.spot) / input.spot
+    ),
+    capPct: round6(
+      input.side === "long" ? (callLeg.listedStrike - input.spot) / input.spot : (input.spot - putLeg.listedStrike) / input.spot
+    ),
     putAskPxBtc: putAskPx,
     callBidPxBtc: callBidPx,
     putMidUsdc: round2(putMidPx * qty * input.spot),
@@ -232,9 +240,15 @@ const parseBook = (raw: { data?: Array<{ bids?: string[][]; asks?: string[][] }>
   askPxBtc: raw.data?.[0]?.asks?.[0]?.[0] != null ? Number(raw.data[0].asks[0][0]) : null
 });
 
-/** Hard ATM guard 0.5%: the cap may walk this tight when nothing wider clears a credit, never past it. */
-export const CALL_BAND = { minOtmPct: 0.005, maxOtmPct: 0.04 };
-export const PUT_BAND = { minOtmPct: 0.02, maxOtmPct: 0.08 };
+/**
+ * Bands are assigned by ROLE, not option type, so shorts mirror correctly:
+ *   FUNDING (the wing we SELL, near spot on the client's PROFIT side): 0.5–4% OTM.
+ *     Hard ATM guard 0.5% — the cap may walk this tight when nothing wider clears, never past it.
+ *   PROTECTIVE (the wing we BUY, deep on the client's LOSS side): 2–8% OTM.
+ * Long: sell calls above / buy puts below. Short: sell puts below / buy calls above.
+ */
+export const FUNDING_BAND = { minOtmPct: 0.005, maxOtmPct: 0.04 };
+export const PROTECTIVE_BAND = { minOtmPct: 0.02, maxOtmPct: 0.08 };
 const MAX_BOOK_PROBES = 10;
 
 /** Public (unsigned) listed-book quote. Does not place orders. */
@@ -276,8 +290,8 @@ export const fetchOkxListedTouchQuote = async (input: {
     const buyType = input.side === "long" ? "put" : "call";
     const sellTarget = input.side === "long" ? input.planCallStrike : input.planPutStrike;
     const buyTarget = input.side === "long" ? input.planPutStrike : input.planCallStrike;
-    const sellCands = listedWingCandidates(chain, expiryMs, sellType, input.spot, sellTarget, sellType === "call" ? CALL_BAND : PUT_BAND).slice(0, MAX_BOOK_PROBES);
-    const buyCands = listedWingCandidates(chain, expiryMs, buyType, input.spot, buyTarget, buyType === "put" ? PUT_BAND : CALL_BAND).slice(0, MAX_BOOK_PROBES);
+    const sellCands = listedWingCandidates(chain, expiryMs, sellType, input.spot, sellTarget, FUNDING_BAND).slice(0, MAX_BOOK_PROBES);
+    const buyCands = listedWingCandidates(chain, expiryMs, buyType, input.spot, buyTarget, PROTECTIVE_BAND).slice(0, MAX_BOOK_PROBES);
     if (sellCands.length === 0 || buyCands.length === 0) {
       return {
         ok: false,

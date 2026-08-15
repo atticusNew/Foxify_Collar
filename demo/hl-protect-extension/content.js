@@ -151,7 +151,7 @@
       if (q) {
         const hrs = Math.floor(v.remainingMs / 3600000), mins = Math.round((v.remainingMs % 3600000) / 60000);
         widget().title =
-          "Floor $" + q.putStrike + " (−" + (q.floorPct * 100).toFixed(1) + "%) · Cap $" + q.callStrike + " (+" + (q.capPct * 100).toFixed(1) + "%)" +
+          "Floor $" + (q.floorStrike ?? q.putStrike) + " (−" + (q.floorPct * 100).toFixed(1) + "%) · Cap $" + (q.capStrike ?? q.callStrike) + " (+" + (q.capPct * 100).toFixed(1) + "%)" +
           " · $" + q.creditUsdc + " credit · " + (v.fullyVested ? "fully vested" : hrs + "h " + mins + "m to full vest");
       }
     } else if (w.status === "quoting" || w.status === "executing") {

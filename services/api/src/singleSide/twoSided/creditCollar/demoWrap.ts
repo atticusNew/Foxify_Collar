@@ -69,7 +69,8 @@ export type DemoStageName =
 export type DemoStage = { stage: DemoStageName; tsMs: number; note?: string };
 
 export type DemoLeg = {
-  role: "sell_call_cap" | "buy_put_floor";
+  /** Long-perp wrap: sell_call_cap + buy_put_floor. Short-perp wrap (mirror): sell_put_cap + buy_call_floor. */
+  role: "sell_call_cap" | "buy_put_floor" | "sell_put_cap" | "buy_call_floor";
   instId: string | null;
   orderId: string | null;
   /** Signed premium in USDC: + collected (sold), − paid (bought). */
@@ -101,6 +102,9 @@ export type DemoWrapRecord = {
     creditUsdc: number;
     /** The indicative quote at toggle time, kept for the labeled "quoted → filled" history. */
     quotedCreditUsdc?: number | null;
+    /** Side-aware display strikes: floor = the protective strike (put for long, CALL for short). */
+    floorStrike?: number;
+    capStrike?: number;
     floorPctUsed: number;
     tenorDays: number;
   } | null;
@@ -264,10 +268,20 @@ export const DEMO_FLOOR_PCT = 0.06;
 /** Stay off ATM (σ-floor-ish overnight); do not tighten to manufacture a tape credit. */
 export const DEMO_CAP_PCT = 0.015;
 
-export const demoPlanStrikes = (spot: number, floorPct = DEMO_FLOOR_PCT, capPct = DEMO_CAP_PCT): { putStrike: number; callStrike: number } => ({
-  putStrike: spot * (1 - floorPct),
-  callStrike: spot * (1 + capPct)
-});
+/**
+ * Side-aware geometry: protection sits ~floorPct on the LOSS side, the cap ~capPct on the PROFIT
+ * side. Long: buy put 6% below / sell call 1.5% above. Short (mirror): buy call 6% above / sell
+ * put 1.5% below — a short profits when price falls, so its loss side is UP.
+ */
+export const demoPlanStrikes = (
+  spot: number,
+  side: PerpSide = "long",
+  floorPct = DEMO_FLOOR_PCT,
+  capPct = DEMO_CAP_PCT
+): { putStrike: number; callStrike: number } =>
+  side === "long"
+    ? { putStrike: round2(spot * (1 - floorPct)), callStrike: round2(spot * (1 + capPct)) }
+    : { putStrike: round2(spot * (1 - capPct)), callStrike: round2(spot * (1 + floorPct)) };
 
 // ── Credit scaling (GTM illustration only — not the live demo solver) ─────────
 
@@ -291,11 +305,18 @@ export const paperInstId = (strikeUsd: number, kind: "C" | "P", expiresAtMs: num
 
 export const paperLegsFromQuote = (
   q: { legs: { putStrike: number; callStrike: number; floor_leg_mid_usdc: number; funding_leg_mid_usdc: number } },
-  expiresAtMs: number
-): DemoLeg[] => [
-  { role: "sell_call_cap", instId: paperInstId(q.legs.callStrike, "C", expiresAtMs), orderId: null, premiumUsdc: round2(q.legs.funding_leg_mid_usdc), real: false },
-  { role: "buy_put_floor", instId: paperInstId(q.legs.putStrike, "P", expiresAtMs), orderId: null, premiumUsdc: round2(-q.legs.floor_leg_mid_usdc), real: false }
-];
+  expiresAtMs: number,
+  side: PerpSide = "long"
+): DemoLeg[] =>
+  side === "long"
+    ? [
+        { role: "sell_call_cap", instId: paperInstId(q.legs.callStrike, "C", expiresAtMs), orderId: null, premiumUsdc: round2(q.legs.funding_leg_mid_usdc), real: false },
+        { role: "buy_put_floor", instId: paperInstId(q.legs.putStrike, "P", expiresAtMs), orderId: null, premiumUsdc: round2(-q.legs.floor_leg_mid_usdc), real: false }
+      ]
+    : [
+        { role: "sell_put_cap", instId: paperInstId(q.legs.putStrike, "P", expiresAtMs), orderId: null, premiumUsdc: round2(q.legs.funding_leg_mid_usdc), real: false },
+        { role: "buy_call_floor", instId: paperInstId(q.legs.callStrike, "C", expiresAtMs), orderId: null, premiumUsdc: round2(-q.legs.floor_leg_mid_usdc), real: false }
+      ];
 
 // ── Vesting readout ───────────────────────────────────────────────────────────
 
