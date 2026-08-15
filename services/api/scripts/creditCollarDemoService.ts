@@ -75,6 +75,28 @@ const hlAccount = (): string | null => {
   }
 };
 
+// ── Stage A: multi-client accounts ────────────────────────────────────────────
+// DEMO_ALLOWED_ACCOUNTS: comma-separated extra HL addresses that may wrap through this service
+// ("*" = any address — pilot open mode; book caps still bound total exposure). The primary
+// (DEMO_HL_ADDRESS) is always allowed. Every wrap/close/state call may carry ?account=0x…;
+// omitted ⟹ the primary, so the extension and existing flows are unchanged.
+const allowedAccounts = (process.env.DEMO_ALLOWED_ACCOUNTS ?? "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+const accountAllowed = (a: string): boolean => {
+  const primary = (hlAccount() ?? "").toLowerCase();
+  const c = a.toLowerCase();
+  return c === primary || allowedAccounts.includes("*") || allowedAccounts.includes(c);
+};
+const resolveAccount = (raw: string | null): { ok: true; account: string } | { ok: false; message: string } => {
+  const account = (raw ?? hlAccount() ?? "").trim();
+  if (!account) return { ok: false, message: "no account — set DEMO_HL_ADDRESS or pass ?account=0x…" };
+  if (!/^0x[0-9a-fA-F]{40}$/.test(account)) return { ok: false, message: `not an address: ${account}` };
+  if (!accountAllowed(account)) return { ok: false, message: `account ${account} is not on the allow-list (DEMO_ALLOWED_ACCOUNTS)` };
+  return { ok: true, account };
+};
+
 const floorPct = num(process.env.DEMO_FLOOR_PCT, DEMO_FLOOR_PCT);
 const capPct = num(process.env.DEMO_CAP_PCT, DEMO_CAP_PCT);
 
@@ -89,10 +111,10 @@ type HlPositionRead = {
   notionalUsdc: number;
 };
 
-const readHlPosition = async (): Promise<HlPositionRead | null> => {
-  const account = hlAccount();
-  if (!account) return null;
-  const [detail, mark] = await Promise.all([hl.positionDetail(account, coin), hl.midPx(coin)]);
+const readHlPosition = async (account?: string | null): Promise<HlPositionRead | null> => {
+  const acct = account ?? hlAccount();
+  if (!acct) return null;
+  const [detail, mark] = await Promise.all([hl.positionDetail(acct, coin), hl.midPx(coin)]);
   if (!detail) return null;
   const szBase = Math.abs(detail.szi);
   return {
@@ -107,20 +129,21 @@ const readHlPosition = async (): Promise<HlPositionRead | null> => {
 
 // ── Wrap flow ─────────────────────────────────────────────────────────────────
 
-let wrapInFlight = false;
+// Per-account in-flight lock: different clients may wrap concurrently; one client is serialized.
+const wrapsInFlight = new Set<string>();
 
-const doWrap = async (): Promise<{ status: number; body: unknown }> => {
+const doWrap = async (account: string): Promise<{ status: number; body: unknown }> => {
   const nowMs = Date.now();
   const records = loadDemoWraps(storePath);
 
   let position: HlPositionRead | null;
   try {
-    position = await readHlPosition();
+    position = await readHlPosition(account);
   } catch (e) {
     return { status: 502, body: { ok: false, error: "position_read_failed", message: (e as Error).message } };
   }
   if (!position) {
-    return { status: 409, body: { ok: false, error: "no_position", message: `no open ${coin} position on ${hlAccount() ?? "unset account (set DEMO_HL_ADDRESS)"}` } };
+    return { status: 409, body: { ok: false, error: "no_position", message: `no open ${coin} position on ${account}` } };
   }
 
   const cover = coverOkxLots(position.szBase);
@@ -128,7 +151,7 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
   const coveredNotionalUsdc = round2(cover.coveredBtc * position.markPx);
   const sizeNote = uncoveredSizeNote(position.szBase, cover);
 
-  const permit = assessDemoWrap(guards, nowMs, coveredNotionalUsdc, records);
+  const permit = assessDemoWrap(guards, nowMs, coveredNotionalUsdc, records, account);
   if (!permit.ok) return { status: 409, body: { ok: false, error: "refused", message: permit.reason } };
 
   // okx lanes must clear the SAME arming chain as the canary before anything else happens.
@@ -144,7 +167,7 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
     }
   }
 
-  const rec = newDemoWrap(`wrap-${nowMs}`, nowMs, "hyperliquid", hlAccount() ?? "?", position);
+  const rec = newDemoWrap(`wrap-${nowMs}`, nowMs, "hyperliquid", account, position);
   records.push(rec);
   saveDemoWraps(records, storePath);
   const persist = () => saveDemoWraps(records, storePath);
@@ -307,22 +330,28 @@ const doWrap = async (): Promise<{ status: number; body: unknown }> => {
 
 // ── State for the control room + extension chip ───────────────────────────────
 
-const buildState = async () => {
+const buildState = async (account?: string, all = false) => {
   const nowMs = Date.now();
+  const acct = account ?? hlAccount();
   let position: HlPositionRead | null = null;
   let positionError: string | null = null;
   try {
-    position = await readHlPosition();
+    position = await readHlPosition(acct);
   } catch (e) {
     positionError = (e as Error).message;
   }
-  const wraps = loadDemoWraps(storePath).map((r) => {
+  const decorate = (r: ReturnType<typeof loadDemoWraps>[number]) => {
     if (r.status === "active" && r.vesting && r.concludedAtMs == null && nowMs >= r.vesting.endMs) {
       // Display-only conclusion: the tenor has run — fully vested.
       return { ...r, status: "concluded" as const, vestingStatus: demoVestingStatus(r, nowMs) };
     }
     return { ...r, vestingStatus: demoVestingStatus(r, nowMs) };
-  });
+  };
+  const allWraps = loadDemoWraps(storePath).map(decorate);
+  // Default view = the requested account only (the extension's chip must never show another
+  // client's wrap). ?all=1 = the whole book for the ops view.
+  const wraps = all ? allWraps : allWraps.filter((r) => r.account.toLowerCase() === (acct ?? "").toLowerCase());
+  const open = allWraps.filter((r) => r.status === "quoting" || r.status === "executing" || r.status === "active");
   return {
     ok: true,
     guards: {
@@ -330,13 +359,21 @@ const buildState = async () => {
       executionMode: guards.executionMode,
       maxPositionNotionalUsdc: guards.maxPositionNotionalUsdc,
       maxWrapsPerDay: guards.maxWrapsPerDay,
-      cooldownMs: guards.cooldownMs
+      cooldownMs: guards.cooldownMs,
+      maxBookNotionalUsdc: guards.maxBookNotionalUsdc,
+      maxActiveWraps: guards.maxActiveWraps
     },
-    account: hlAccount(),
+    account: acct,
     coin,
     position,
     positionError,
     wraps,
+    book: {
+      accounts: [...new Set(allWraps.map((r) => r.account))].length,
+      openWraps: open.length,
+      openNotionalUsdc: round2(open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0)),
+      totalWraps: allWraps.length
+    },
     generatedAtIso: new Date(nowMs).toISOString()
   };
 };
@@ -389,9 +426,9 @@ const CONTROL_ROOM_HTML = `<!doctype html><html lang="en"><head><meta charset="u
     <button class="btn ghost" id="resetBtn">Reset demo</button>
     <span id="actionMsg" class="muted" style="margin-left:10px"></span>
   </div>
-  <h2>History</h2>
-  <table><thead><tr><th>id</th><th>position</th><th>credit</th><th>status</th></tr></thead>
-  <tbody id="history"><tr><td colspan="4" class="muted">—</td></tr></tbody></table>
+  <h2>Book (all accounts)</h2>
+  <table><thead><tr><th>id</th><th>account</th><th>position</th><th>credit</th><th>status</th></tr></thead>
+  <tbody id="history"><tr><td colspan="5" class="muted">—</td></tr></tbody></table>
   <div class="note">Disclosure: the venue-side toggle is rendered locally by a browser extension to show placement — the venue is not (yet) a partner. Everything on this page is the live engine: real position reads, live options pricing, and (in okx modes) real hedge orders. Rails: kill switch, hard micro-notional cap, one wrap at a time, daily quota.</div>
 </div>
 <script>
@@ -408,8 +445,9 @@ const render = (st) => {
   $("badges").innerHTML =
     badge(g.enabled?"ARMED":"KILL SWITCH OFF", g.enabled?"#16794a":"#9a1b1b") +
     badge("mode: "+g.executionMode.toUpperCase().replace("_"," "), modeColor) +
-    badge("micro cap $"+g.maxPositionNotionalUsdc, "#30363d") +
-    badge("account "+(st.account? st.account.slice(0,6)+"…"+st.account.slice(-4) : "unset"), "#30363d");
+    badge("per-wrap cap $"+g.maxPositionNotionalUsdc, "#30363d") +
+    badge("account "+(st.account? st.account.slice(0,6)+"…"+st.account.slice(-4) : "unset"), "#30363d") +
+    (st.book ? badge("book: "+st.book.openWraps+" open · $"+st.book.openNotionalUsdc+" / $"+g.maxBookNotionalUsdc, "#30363d") : "");
 
   const p = st.position;
   const w = latestWrap(st);
@@ -437,13 +475,17 @@ const render = (st) => {
     } else { $("vesting").textContent = w.status==="failed" ? "no vesting — wrap failed" : "—"; $("vestbar").style.width = "0"; }
   }
   $("history").innerHTML = (st.wraps||[]).slice().reverse().map(r =>
-    '<tr><td>'+esc(r.id)+'</td><td>'+esc(r.position.side+" "+r.position.szBase+" "+r.position.coin)+'</td><td>'+fmt$(r.quote?r.quote.creditUsdc:null)+'</td><td>'+esc(r.status)+'</td></tr>').join("")
-    || '<tr><td colspan="4" class="muted">—</td></tr>';
+    '<tr><td>'+esc(r.id)+'</td><td>'+esc(r.account ? r.account.slice(0,6)+"…"+r.account.slice(-4) : "—")+'</td><td>'+esc(r.position.side+" "+r.position.szBase+" "+r.position.coin)+'</td><td>'+fmt$(r.quote?r.quote.creditUsdc:null)+'</td><td>'+esc(r.status)+'</td></tr>').join("")
+    || '<tr><td colspan="5" class="muted">—</td></tr>';
 };
-const latestWrap = (st) => (st.wraps && st.wraps.length ? st.wraps[st.wraps.length-1] : null);
+// Cards/timeline follow the PRIMARY account's latest wrap; the book table shows every account.
+const latestWrap = (st) => {
+  const mine = (st.wraps||[]).filter((r) => !st.account || (r.account||"").toLowerCase() === st.account.toLowerCase());
+  return mine.length ? mine[mine.length-1] : null;
+};
 
 const poll = async () => {
-  try { render(await (await fetch("/demo/api/state")).json()); } catch (e) { /* keep last render */ }
+  try { render(await (await fetch("/demo/api/state?all=1")).json()); } catch (e) { /* keep last render */ }
 };
 $("wrapBtn").onclick = async () => {
   $("wrapBtn").disabled = true; $("actionMsg").textContent = "wrapping…";
@@ -500,29 +542,45 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
     if (req.method === "GET" && url.pathname === "/demo/api/state") {
-      sendJson(res, 200, await buildState());
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
+      sendJson(res, 200, await buildState(acct.account, url.searchParams.get("all") === "1"));
       return;
     }
     if (req.method === "POST" && url.pathname === "/demo/api/wrap") {
-      if (wrapInFlight) {
-        sendJson(res, 409, { ok: false, error: "in_flight", message: "a wrap request is already being processed" });
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
         return;
       }
-      wrapInFlight = true;
+      const key = acct.account.toLowerCase();
+      if (wrapsInFlight.has(key)) {
+        sendJson(res, 409, { ok: false, error: "in_flight", message: `a wrap for ${acct.account} is already being processed` });
+        return;
+      }
+      wrapsInFlight.add(key);
       try {
-        const out = await doWrap();
+        const out = await doWrap(acct.account);
         sendJson(res, out.status, out.body);
       } finally {
-        wrapInFlight = false;
+        wrapsInFlight.delete(key);
       }
       return;
     }
     if (req.method === "POST" && url.pathname === "/demo/api/close") {
       // Voluntary early close (toggle OFF): collect vested-to-now, claw back the rest, unwind.
+      const acct = resolveAccount(url.searchParams.get("account"));
+      if (!acct.ok) {
+        sendJson(res, 403, { ok: false, error: "account_refused", message: acct.message });
+        return;
+      }
       const records = loadDemoWraps(storePath);
-      const active = records.find((r) => r.status === "active");
+      const active = records.find((r) => r.status === "active" && r.account.toLowerCase() === acct.account.toLowerCase());
       if (!active) {
-        sendJson(res, 409, { ok: false, error: "nothing_active", message: "no active wrap to close" });
+        sendJson(res, 409, { ok: false, error: "nothing_active", message: `no active wrap to close on ${acct.account}` });
         return;
       }
       const v = concludeWrapEarly(active, Date.now());
@@ -547,7 +605,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
 server.listen(port, () => {
   console.error(`[demo] Wrap Control Room on http://localhost:${port}/demo`);
-  console.error(`[demo] mode ${guards.executionMode.toUpperCase()} · kill switch ${guards.enabled ? "ARMED" : "OFF"} · micro cap $${guards.maxPositionNotionalUsdc} · account ${hlAccount() ?? "UNSET (set DEMO_HL_ADDRESS)"}`);
+  console.error(`[demo] mode ${guards.executionMode.toUpperCase()} · kill switch ${guards.enabled ? "ARMED" : "OFF"} · per-wrap cap $${guards.maxPositionNotionalUsdc} · book cap $${guards.maxBookNotionalUsdc} / ${guards.maxActiveWraps} wraps · account ${hlAccount() ?? "UNSET (set DEMO_HL_ADDRESS)"}`);
+  if (allowedAccounts.length > 0) console.error(`[demo] multi-client: ${allowedAccounts.includes("*") ? "ANY account (book caps bound exposure)" : `${allowedAccounts.length} extra account(s) allowed`}`);
   if (guards.executionMode !== "paper") {
     const armed = executionArmed(parseLiveGuardsFromEnv(process.env, "okx"));
     console.error(`[demo] okx lane: ${armed.armed ? armed.reason : `NOT ARMED — ${armed.reason}`}`);

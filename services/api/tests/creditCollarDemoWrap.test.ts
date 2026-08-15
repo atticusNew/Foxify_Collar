@@ -36,6 +36,8 @@ const guards = (over: Partial<DemoGuardsConfig> = {}): DemoGuardsConfig => ({
   maxPositionNotionalUsdc: 1_000,
   maxWrapsPerDay: 3,
   cooldownMs: 30_000,
+  maxBookNotionalUsdc: 25_000,
+  maxActiveWraps: 25,
   ...over
 });
 
@@ -100,6 +102,53 @@ test("demo wrap: clean state permits", () => {
   // concluded/failed wraps from yesterday don't block today
   const old = wrap({ createdAtMs: NOW - 2 * DAY, status: "concluded" });
   assert.deepEqual(assessDemoWrap(guards(), NOW, 100, [old]), { ok: true });
+});
+
+// ── Stage A: per-account book ─────────────────────────────────────────────────
+
+test("multi-client: another account's active wrap does NOT block a new account", () => {
+  const other = wrap({ account: "0xaaa", status: "active", createdAtMs: NOW - DAY });
+  const res = assessDemoWrap(guards({ maxWrapsPerDay: 10 }), NOW, 100, [other], "0xbbb");
+  assert.deepEqual(res, { ok: true });
+});
+
+test("multi-client: the SAME account's active wrap still blocks a double-wrap", () => {
+  const mine = wrap({ account: "0xbbb", status: "active", createdAtMs: NOW - DAY });
+  const res = assessDemoWrap(guards({ maxWrapsPerDay: 10 }), NOW, 100, [mine], "0xbbb");
+  assert.equal(res.ok, false);
+  assert.match((res as { reason: string }).reason, /already active/);
+});
+
+test("multi-client: cooldown is per account — a fresh account is not throttled", () => {
+  const justWrapped = wrap({ account: "0xaaa", status: "failed", createdAtMs: NOW - 5_000 });
+  const res = assessDemoWrap(guards({ cooldownMs: 30_000, maxWrapsPerDay: 10 }), NOW, 100, [justWrapped], "0xbbb");
+  assert.deepEqual(res, { ok: true });
+  const same = assessDemoWrap(guards({ cooldownMs: 30_000, maxWrapsPerDay: 10 }), NOW, 100, [justWrapped], "0xaaa");
+  assert.equal(same.ok, false);
+  assert.match((same as { reason: string }).reason, /cooldown/);
+});
+
+test("book cap: total open notional is bounded across accounts", () => {
+  const openBig = wrap({ account: "0xaaa", status: "active", createdAtMs: NOW - DAY, position: { ...wrap().position, notionalUsdc: 900 } });
+  const res = assessDemoWrap(guards({ maxBookNotionalUsdc: 1_000, maxWrapsPerDay: 10 }), NOW, 200, [openBig], "0xbbb");
+  assert.equal(res.ok, false);
+  assert.match((res as { reason: string }).reason, /book notional cap/);
+});
+
+test("book cap: open-wrap count is bounded across accounts", () => {
+  const open = (i: number) => wrap({ id: `w${i}`, account: `0xa${i}`, status: "active", createdAtMs: NOW - DAY });
+  const res = assessDemoWrap(guards({ maxActiveWraps: 2, maxWrapsPerDay: 10 }), NOW, 100, [open(1), open(2)], "0xbbb");
+  assert.equal(res.ok, false);
+  assert.match((res as { reason: string }).reason, /book is full/);
+});
+
+test("guards from env: book caps parse with safe defaults", () => {
+  const g = parseDemoGuardsFromEnv({});
+  assert.equal(g.maxBookNotionalUsdc, 25_000);
+  assert.equal(g.maxActiveWraps, 25);
+  const custom = parseDemoGuardsFromEnv({ DEMO_MAX_BOOK_NOTIONAL_USDC: "5000", DEMO_MAX_ACTIVE_WRAPS: "3" });
+  assert.equal(custom.maxBookNotionalUsdc, 5_000);
+  assert.equal(custom.maxActiveWraps, 3);
 });
 
 // ── credit scaling ────────────────────────────────────────────────────────────

@@ -30,11 +30,15 @@ export type DemoGuardsConfig = {
   /** Master kill switch (DEMO_ENABLED). Off ⟹ the wrap endpoint refuses everything. */
   enabled: boolean;
   executionMode: DemoExecutionMode;
-  /** HARD micro cap on the wrapped position's notional — a fat-fingered demo cannot scale. */
+  /** HARD micro cap on ONE wrap's notional — a fat-fingered demo cannot scale. */
   maxPositionNotionalUsdc: number;
   maxWrapsPerDay: number;
-  /** Minimum gap between wrap attempts (multi-take recording ≠ rapid-fire opens). */
+  /** Minimum gap between wrap attempts PER ACCOUNT (multi-take recording ≠ rapid-fire opens). */
   cooldownMs: number;
+  /** Pilot book cap: total notional across all open (in-flight + active) wraps. */
+  maxBookNotionalUsdc: number;
+  /** Pilot book cap: how many wraps may be open (in-flight + active) at once, across all accounts. */
+  maxActiveWraps: number;
 };
 
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
@@ -44,7 +48,9 @@ export const parseDemoGuardsFromEnv = (env: Record<string, string | undefined>):
   executionMode: env.DEMO_EXECUTION === "okx_live" ? "okx_live" : env.DEMO_EXECUTION === "okx_demo" ? "okx_demo" : "paper",
   maxPositionNotionalUsdc: num(env.DEMO_MAX_NOTIONAL_USDC, 1_000),
   maxWrapsPerDay: num(env.DEMO_MAX_WRAPS_PER_DAY, 6),
-  cooldownMs: num(env.DEMO_COOLDOWN_MS, 30_000)
+  cooldownMs: num(env.DEMO_COOLDOWN_MS, 30_000),
+  maxBookNotionalUsdc: num(env.DEMO_MAX_BOOK_NOTIONAL_USDC, 25_000),
+  maxActiveWraps: num(env.DEMO_MAX_ACTIVE_WRAPS, 25)
 });
 
 // ── Wrap record ───────────────────────────────────────────────────────────────
@@ -170,29 +176,45 @@ export type DemoWrapAssessment = { ok: true } | { ok: false; reason: string };
 
 const dayUtcOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
+const isOpen = (r: DemoWrapRecord) => r.status === "quoting" || r.status === "executing" || r.status === "active";
+
 /**
- * May a wrap open right now? Fail-closed on every rail: kill switch, position present, hard micro
- * cap, one wrap in flight/active at a time, daily quota, cooldown. Pure — the service feeds it the
- * live store contents.
+ * May a wrap open right now? Fail-closed on every rail: kill switch, position present, hard per-wrap
+ * cap, book caps (open-wrap count + total open notional), daily quota, cooldown. Pure — the service
+ * feeds it the live store contents.
+ *
+ * ACCOUNT SCOPING (Stage A, pilot multi-client): when `account` is given, one-at-a-time and cooldown
+ * apply PER ACCOUNT — different clients wrap concurrently; one client cannot double-wrap the same
+ * position. When omitted (legacy single-account demo), those rails stay global, unchanged.
  */
 export const assessDemoWrap = (
   cfg: DemoGuardsConfig,
   nowMs: number,
   positionNotionalUsdc: number,
-  existing: DemoWrapRecord[]
+  existing: DemoWrapRecord[],
+  account?: string
 ): DemoWrapAssessment => {
   if (!cfg.enabled) return { ok: false, reason: "demo disabled — DEMO_ENABLED kill switch is off" };
   if (!(positionNotionalUsdc > 0)) return { ok: false, reason: "no live position to wrap (size 0)" };
   if (positionNotionalUsdc > cfg.maxPositionNotionalUsdc) {
-    return { ok: false, reason: `position notional $${round2(positionNotionalUsdc)} exceeds the demo hard cap $${cfg.maxPositionNotionalUsdc}` };
+    return { ok: false, reason: `position notional $${round2(positionNotionalUsdc)} exceeds the per-wrap hard cap $${cfg.maxPositionNotionalUsdc}` };
   }
-  const inFlight = existing.find((r) => r.status === "quoting" || r.status === "executing");
-  if (inFlight) return { ok: false, reason: `wrap ${inFlight.id} is still in flight — one at a time` };
-  const active = existing.find((r) => r.status === "active");
-  if (active) return { ok: false, reason: `wrap ${active.id} is already active — conclude or reset before wrapping again` };
+  const mine = account != null ? existing.filter((r) => r.account === account) : existing;
+  const inFlight = mine.find((r) => r.status === "quoting" || r.status === "executing");
+  if (inFlight) return { ok: false, reason: `wrap ${inFlight.id} is still in flight — one at a time${account != null ? " per account" : ""}` };
+  const active = mine.find((r) => r.status === "active");
+  if (active) return { ok: false, reason: `wrap ${active.id} is already active${account != null ? ` on ${account}` : ""} — conclude or reset before wrapping again` };
+  const open = existing.filter(isOpen);
+  if (open.length >= cfg.maxActiveWraps) {
+    return { ok: false, reason: `book is full — ${open.length} open wraps (cap ${cfg.maxActiveWraps})` };
+  }
+  const openNotional = open.reduce((s, r) => s + (r.position?.notionalUsdc ?? 0), 0);
+  if (openNotional + positionNotionalUsdc > cfg.maxBookNotionalUsdc) {
+    return { ok: false, reason: `book notional cap — $${round2(openNotional)} open + $${round2(positionNotionalUsdc)} would exceed $${cfg.maxBookNotionalUsdc}` };
+  }
   const today = existing.filter((r) => dayUtcOf(r.createdAtMs) === dayUtcOf(nowMs));
   if (today.length >= cfg.maxWrapsPerDay) return { ok: false, reason: `daily demo quota reached (${cfg.maxWrapsPerDay}/day)` };
-  const last = existing[existing.length - 1];
+  const last = mine[mine.length - 1];
   if (last && nowMs - last.createdAtMs < cfg.cooldownMs) {
     return { ok: false, reason: `cooldown — ${Math.ceil((cfg.cooldownMs - (nowMs - last.createdAtMs)) / 1000)}s until the next wrap` };
   }
