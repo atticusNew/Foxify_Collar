@@ -14,7 +14,7 @@
 <style>
   :root{
     --bg:#0b0f14; --panel:#111722; --panel2:#0e141d; --line:#1f2937;
-    --text:#e8edf4; --muted:#8b98a9; --accent:#2dd4a7;
+    --text:#e8edf4; --muted:#8b98a9; --accent:#d9ab01;
     --radius:14px;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -28,7 +28,7 @@
   .nav-links{display:flex;gap:26px;align-items:center}
   .nav-links a{color:var(--muted);font-size:14px;font-weight:500}
   .nav-links a:hover{color:var(--text)}
-  .btn{display:inline-block;background:var(--accent);color:#04110c;font-weight:700;padding:10px 20px;border-radius:10px;font-size:14px;border:0;cursor:pointer}
+  .btn{display:inline-block;background:var(--accent);color:#171200;font-weight:700;padding:10px 20px;border-radius:10px;font-size:14px;border:0;cursor:pointer}
   .btn:hover{filter:brightness(1.08)}
   .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
   .hero{display:grid;grid-template-columns:1.15fr .85fr;gap:48px;align-items:center;padding:84px 0 60px}
@@ -43,9 +43,9 @@
   .switch{width:46px;height:26px;border-radius:999px;background:#26303e;position:relative;cursor:pointer;transition:background .25s;flex:none}
   .switch .knob{position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#98a3b3;transition:all .25s}
   .switch.on{background:var(--accent)}
-  .switch.on .knob{left:23px;background:#04110c}
+  .switch.on .knob{left:23px;background:#171200}
   .chip{margin-top:16px;border-radius:10px;padding:12px 14px;font-size:13.5px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);transition:all .3s}
-  .chip.on{border-color:rgba(45,212,167,.4);color:var(--text)}
+  .chip.on{border-color:rgba(217,171,1,.45);color:var(--text)}
   .chip b{color:var(--accent)}
   .legs{margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12.5px;color:var(--muted)}
   .leg{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;opacity:.35;transition:opacity .4s}
@@ -67,7 +67,7 @@
   .aud li{padding:7px 0 7px 26px;position:relative;color:var(--muted);font-size:14.5px}
   .aud li:before{content:"";position:absolute;left:2px;top:14px;width:7px;height:7px;border-radius:2px;background:var(--accent)}
   .aud li b{color:var(--text)}
-  .band{background:linear-gradient(180deg,rgba(45,212,167,.07),transparent);border:1px solid rgba(45,212,167,.25);border-radius:var(--radius);padding:32px;text-align:center}
+  .band{background:linear-gradient(180deg,rgba(217,171,1,.07),transparent);border:1px solid rgba(217,171,1,.28);border-radius:var(--radius);padding:32px;text-align:center}
   .band h3{font-size:22px;margin-bottom:10px}
   .band p{color:var(--muted);max-width:44em;margin:0 auto;font-size:15px}
   .thesis{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
