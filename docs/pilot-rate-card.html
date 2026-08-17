@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Atticus | Design-Partner Pilot &amp; Rate Card</title>
+<style>
+  :root{ --ink:#141a22; --muted:#5b6675; --line:#e3e7ee; --accent:#b8900a; --good:#177a4c; --bg:#fbfbf9; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;padding:40px 20px}
+  .page{max-width:820px;margin:0 auto}
+  .head{display:flex;justify-content:space-between;align-items:baseline;border-bottom:3px solid var(--accent);padding-bottom:14px;margin-bottom:8px}
+  .brand{font-size:22px;font-weight:800;letter-spacing:.5px}
+  .brand span{color:var(--accent)}
+  .head .date{color:var(--muted);font-size:13px}
+  h1{font-size:19px;font-weight:800;margin:18px 0 4px}
+  .sub{color:var(--muted);font-size:13.5px;margin-bottom:20px}
+  h2{font-size:14px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:var(--accent);margin:24px 0 10px}
+  table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  td{padding:9px 14px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:top}
+  td:first-child{color:var(--muted);width:38%}
+  td:last-child{font-weight:600}
+  tr:last-child td{border-bottom:0}
+  .good{color:var(--good)}
+  .fill{background:#fdf6e0;border-radius:4px;padding:0 6px}
+  .note{background:#fff;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:12px 16px;font-size:13px;color:var(--muted);margin:18px 0}
+  .note b{color:var(--ink)}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .foot{color:var(--muted);font-size:11.5px;margin-top:24px;border-top:1px solid var(--line);padding-top:12px}
+  @media print{ body{padding:0} }
+  @media (max-width:640px){ .cols{grid-template-columns:1fr} }
+</style>
+</head>
+<body><div class="page">
+
+<div class="head">
+  <div class="brand">ATTICUS<span>.</span></div>
+  <div class="date">Design-Partner Pilot &amp; Production Rate Card · v1 · August 2026</div>
+</div>
+
+<h1>Earn &amp; Protect: one-week pilot, zero cost, production terms agreed up front</h1>
+<div class="sub">One toggle on your venue: your trader gets a hard floor plus an upfront credit, funded by the live options market. This page is the entire commercial arrangement: what the pilot is, what each side provides, and exactly what production costs if you convert. Nothing else appears later.</div>
+
+<h2>Pilot structure (7 days, $0)</h2>
+<table>
+  <tr><td>Pilot fee</td><td class="good">$0</td></tr>
+  <tr><td>Duration</td><td>7 consecutive days from first wrap</td></tr>
+  <tr><td>Scope caps</td><td>Up to <span class="fill">$[250,000]</span> total wrapped notional · <span class="fill">[50]</span> wraps/day · <span class="fill">[$25,000]</span> max book at any time</td></tr>
+  <tr><td>Cohort</td><td>Venue-selected traders (or venue test accounts), long and short positions, BTC</td></tr>
+  <tr><td>Surface</td><td>Native toggle in your UI (we provide the spec) or our overlay/API for speed</td></tr>
+  <tr><td>Reporting</td><td>Live ops dashboard + daily wrap report (opens, credits paid, refusals with reasons, fills vs quotes)</td></tr>
+</table>
+
+<h2>Who provides what</h2>
+<div class="cols">
+  <table>
+    <tr><td colspan="2"><b>Atticus provides</b></td></tr>
+    <tr><td>Engine</td><td>Quoting, hedging, execution, settlement, reconciliation</td></tr>
+    <tr><td>Capital</td><td>All hedge margin during the pilot</td></tr>
+    <tr><td>Integration</td><td>API + integration spec + engineering support</td></tr>
+    <tr><td>Audit trail</td><td>Every credit traceable to an exchange fill</td></tr>
+  </table>
+  <table>
+    <tr><td colspan="2"><b>Venue provides</b></td></tr>
+    <tr><td>Owner</td><td>One named integration/product owner</td></tr>
+    <tr><td>Access</td><td>Position reads for the pilot cohort</td></tr>
+    <tr><td>Cohort</td><td>Traders or test accounts for the week</td></tr>
+    <tr><td>Decision</td><td>Convert / decline within 7 days of pilot end</td></tr>
+  </table>
+</div>
+
+<h2>Success metrics (agreed before day one)</h2>
+<table>
+  <tr><td>Execution quality</td><td>Fill rate on fundable quotes; zero fills worse than quoted (guaranteed, see below)</td></tr>
+  <tr><td>Honesty rate</td><td>100% of refusals carry a stated market reason</td></tr>
+  <tr><td>Trader outcome</td><td>Credits paid vs caps hit; floor performance on any drawdown days</td></tr>
+  <tr><td>Retention signal</td><td>Wrapped vs unwrapped cohort: position hold time and repeat trading (venue-measured)</td></tr>
+</table>
+
+<h2>Production rate card (activates only on conversion)</h2>
+<table>
+  <tr><td>Platform fee</td><td><b>10 bps</b> of wrapped notional per wrap-day, venue-paid · <b>7.5 bps launch-partner rate</b> for the first two design partners, locked 12 months</td></tr>
+  <tr><td>Monthly minimum</td><td><span class="fill">$[2,500]</span>/month (waived any month fees exceed it)</td></tr>
+  <tr><td>Trader cost</td><td class="good">$0 — the trader's credit comes from the options market, never from the trader or the venue</td></tr>
+  <tr><td>Inside the collar</td><td class="good">Atticus takes no spread inside the structure. The quoted credit is the market's price; our fee is this line item and nothing else</td></tr>
+  <tr><td>Revenue share</td><td>Optional: venue rebate of <span class="fill">[10–20]</span>% of platform fees on venue-sourced volume above <span class="fill">$[5]</span>M/month wrapped</td></tr>
+  <tr><td>Term</td><td>12 months, either side may exit with 30 days notice after month 3</td></tr>
+</table>
+
+<h2>Standing guarantees (contractual, both pilot and production)</h2>
+<table>
+  <tr><td>Never worse than quoted</td><td class="good">A fill below the quoted credit is refused and unwound, not booked. Improvements pass to the trader</td></tr>
+  <tr><td>Honest refusals</td><td class="good">When the market cannot fund a credit, activation declines with the reason. No manufactured yield, ever</td></tr>
+  <tr><td>Full auditability</td><td class="good">Every leg reconciled against the hedge venue's own fills and settlement prints; venue receives the reconciliation feed</td></tr>
+  <tr><td>Hard caps</td><td class="good">Per-wrap, per-day, and book-level notional caps enforced in code; kill switch on both sides</td></tr>
+</table>
+
+<div class="note"><b>Why the pilot is free and the terms are pre-agreed:</b> the pilot exists to measure, not to negotiate. Pricing is settled now, while neither side has leverage, so the conversion decision is about one thing only: what the week's data says.</div>
+
+<div class="foot">
+  Indicative terms for design-partner discussion; not an offer. Protection terms quoted from live listed markets at activation and subject to market liquidity. Bracketed values <span class="fill">[·]</span> set per partner. Contact: hello@atticustrade.com · atticustrade.com
+</div>
+
+</div></body></html>
