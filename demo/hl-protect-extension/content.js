@@ -74,6 +74,43 @@
     }
   };
 
+  // ── Client-facing refusal copy ────────────────────────────────────────────
+  // The engine's refusal strings are operator-grade (instrument IDs, error codes, tick math).
+  // The chip shows ≤8 human words; the FULL technical string moves to the hover tooltip so a
+  // curious viewer (or a venue exec mid-demo) can still see the forensics. Codes never render.
+  const humanChip = (raw) => {
+    const s = String(raw || "");
+    const cooldown = s.match(/cooldown[^0-9]*(\d+)s/i);
+    if (cooldown) return "Next wrap in " + cooldown[1] + "s";
+    // Infrastructure faults FIRST: a venue error code inside a no-fill wrapper is our fault,
+    // and the classiest thing to say on camera is exactly that.
+    if (/50\d{3}|51\d{3}|OK-ACCESS|API key|account mode|activate trading|passphrase|network error|position_read_failed/i.test(s))
+      return "Our issue, not yours \u00b7 nothing opened";
+    if (/listed_credit_nonpositive|listed_book_empty|credit_infeasible|not_priceable|no executable/i.test(s))
+      return "No honest credit right now \u00b7 nothing opened";
+    if (/aborted_no_fill|aborted_unwound|pair unwound|did not fill|hedge_not_filled/i.test(s))
+      return "Couldn't fill at our quote \u00b7 nothing opened";
+    if (/minimum one lot|0\.01 BTC lots|below_min_lot/i.test(s))
+      return "Below the 0.01 BTC minimum";
+    if (/quota reached/i.test(s)) return "Daily limit reached";
+    if (/hard cap|book notional cap|book is full/i.test(s))
+      return "Above the pilot cap \u00b7 nothing opened";
+    if (/already active|in flight|in_flight|being processed/i.test(s)) return "Already protected";
+    if (/no open .* position|no live position|no_position/i.test(s))
+      return "No open position to protect";
+    if (/allow-list|account_refused|not an address/i.test(s))
+      return "Account not enabled for this pilot";
+    if (/kill switch|demo disabled/i.test(s)) return "Protection paused";
+    if (/offline|no response/i.test(s)) return "Our issue, not yours \u00b7 nothing opened";
+    return "Couldn't complete \u00b7 nothing opened";
+  };
+
+  const setFailChip = (raw) => {
+    setChip(humanChip(raw), "ap-bad");
+    const el = widget();
+    if (el) el.title = String(raw || ""); // forensics on hover
+  };
+
   const onToggle = async () => {
     if (busy) return;
     const on = widget()?.querySelector(".ap-switch")?.getAttribute("aria-checked") === "true";
@@ -87,8 +124,11 @@
         setSwitch(false);
         const v = res.json.vested;
         setChip("closed early · kept $" + v.vestedUsdc.toFixed(2) + " of $" + v.fullCreditUsdc.toFixed(2), "ap-idle");
+      } else if (res.json && /nothing_active/i.test(res.json.error || "")) {
+        setSwitch(false);
+        setChip("Nothing to close", "ap-idle");
       } else {
-        setChip((res.json && (res.json.message || res.json.error)) || res.error || "close failed", "ap-bad");
+        setFailChip((res.json && (res.json.message || res.json.error)) || res.error || "close failed");
       }
       return;
     }
@@ -111,7 +151,7 @@
       setChip("EARNING" + (credit != null ? " · $" + credit + " credit" + (beat ? " (beat quote)" : "") : ""), "ap-good");
     } else {
       setSwitch(false);
-      setChip((res.json && (res.json.message || res.json.error)) || res.error || "demo service offline?", "ap-bad");
+      setFailChip((res.json && (res.json.message || res.json.error)) || res.error || "demo service offline");
     }
   };
 
@@ -120,7 +160,7 @@
     if (busy) return; // the in-flight wrap owns the chip (its counter) — no competing writers
     const res = await api("/demo/api/state", "GET");
     if (!res.ok || !res.json || !res.json.ok) {
-      if (!busy) setChip("engine offline", "ap-bad");
+      if (!busy) setChip("Protection paused · reconnecting", "ap-bad");
       return;
     }
     const wraps = res.json.wraps || [];
@@ -136,8 +176,8 @@
             "ap-idle"
           );
         } else if (w && w.status === "failed" && w.failReason) {
-          // The refusal stays readable until the next action — the poll must not blank it to "off".
-          setChip(w.failReason, "ap-bad");
+          // The refusal stays readable until the next action — human copy, forensics on hover.
+          setFailChip(w.failReason);
         } else setChip("off", "ap-idle");
       }
       return;
