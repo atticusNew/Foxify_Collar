@@ -70,8 +70,21 @@ export const EP_WEB_APP_HTML = `<!doctype html>
   .terms{margin-top:10px;display:grid;grid-template-columns:repeat(3,1fr);gap:8px;font-size:12px;color:var(--muted)}
   .term{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px}
   .term b{display:block;color:var(--text);font-size:13px}
+  .term b em{font-style:normal;color:var(--muted);font-size:11px;font-weight:500;margin-left:4px}
   .bar{background:#132e35;border-radius:999px;height:8px;overflow:hidden;margin-top:10px}
   .bar>div{background:linear-gradient(90deg,#1b7f74,var(--accent));height:100%;width:0;transition:width .8s}
+  .unlock{margin-top:6px;font-size:12px;color:var(--muted)}
+  .trust{margin-top:10px;font-size:11.5px;color:var(--muted)}
+  /* Tap/hover tooltips (mobile-safe — no title attributes) */
+  .tipwrap{position:relative;cursor:help}
+  .tipwrap .tip{display:none;position:absolute;bottom:135%;left:50%;transform:translateX(-50%);width:240px;background:#081418;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12px;font-weight:400;color:var(--text);line-height:1.5;z-index:30;box-shadow:0 10px 28px rgba(0,0,0,.55);text-align:left;text-transform:none;letter-spacing:0;white-space:normal}
+  .tipwrap.tip-right .tip{left:auto;right:0;transform:none}
+  .tipwrap:hover .tip,.tipwrap.open .tip{display:block}
+  .info{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;border:1px solid var(--line);color:var(--muted);font-size:9.5px;margin-left:5px;vertical-align:1px}
+  .mode-pill{font-size:11px;font-weight:700;letter-spacing:.6px;border-radius:999px;padding:3.5px 11px;margin-right:8px}
+  .mode-paper{background:rgba(217,171,1,.14);color:#e3c34c;border:1px solid rgba(217,171,1,.4)}
+  .mode-demo{background:rgba(80,210,193,.1);color:var(--accent);border:1px solid rgba(80,210,193,.35)}
+  .mode-live{background:rgba(46,189,133,.12);color:var(--good);border:1px solid rgba(46,189,133,.4)}
   .coverage{margin-top:10px;font-size:12.5px;color:var(--accent)}
   table{width:100%;border-collapse:collapse;margin-top:6px;font-size:13px}
   th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line)} th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}
@@ -86,11 +99,16 @@ export const EP_WEB_APP_HTML = `<!doctype html>
 <body>
 <nav><div class="nav-in">
   <div class="logo">Earn &amp; Protect <span class="by">by <b>ATTICUS</b></span></div>
-  <div class="pill" id="connPill">not connected</div>
+  <div style="display:flex;align-items:center">
+    <span class="mode-pill tipwrap" id="modePill" style="display:none"></span>
+    <div class="pill" id="connPill">not connected</div>
+  </div>
 </div></nav>
 <div class="wrap">
-  <h1>One toggle. A hard floor. And it pays.</h1>
-  <p class="sub">Paste your Hyperliquid address — we only <b>read</b> your positions (no signing, no deposits, no keys). Flip protection on and the credit the options market funds is paid to your wallet at each daily cycle's close.</p>
+  <header id="hero">
+    <h1>One toggle. A hard floor. And it pays.</h1>
+    <p class="sub">Paste your Hyperliquid address — we only <b>read</b> your positions (no signing, no deposits, no keys). Flip protection on and the credit the options market funds is paid to your wallet at each daily cycle's close.</p>
+  </header>
 
   <div class="card" id="geoBanner" style="display:none;border-color:rgba(237,112,136,.45)">
     <b>Not available in your region.</b> <span class="muted small" id="geoMsg"></span>
@@ -162,6 +180,15 @@ const humanChip = (raw) => {
 
 const stageLabel = {wrap_requested:"Requested",position_read:"Position read",quoted:"Priced off the live book",hedge_executing:"Hedge executing",hedge_locked:"Hedge locked",green_light:"Protection live",vesting:"Credit vesting",failed:"Refused",knocked_out:"Cap touched — cycle over",concluded:"Concluded"};
 
+// "pays in 11h 26m" — the vesting bar's time axis.
+const fmtDur = (ms) => {
+  if (ms == null || ms <= 0) return "now";
+  const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+  return h > 0 ? h + "h " + m + "m" : m > 0 ? m + "m" : "<1m";
+};
+const tip = (trigger, text, right) => '<span class="tipwrap' + (right ? " tip-right" : "") + '">' + trigger + '<span class="tip">' + esc(text) + '</span></span>';
+const infoTip = (text, right) => tip('<span class="info">i</span>', text, right);
+
 let account = localStorage.getItem("ep_account") || "";
 let busy = false;
 
@@ -192,19 +219,33 @@ const render = (positions, state) => {
   if (!positions || positions.length === 0) { el.innerHTML = '<div class="empty">No open perp positions on ' + esc(short(account)) + '.</div>'; return; }
   const w = state ? latestFor(state.wraps || []) : null;
   const founding = state && state.protection && state.protection.founding;
+  const caps = state && state.caps;
   el.innerHTML = positions.map((p) => {
     const isWrapCoin = p.wrappable;
     const active = isWrapCoin && w && (w.status === "active" || w.status === "quoting" || w.status === "executing");
     const v = w && w.vestingStatus;
     const q = w && w.quote;
-    let chip = "", terms = "", bar = "", coverage = "", tooltip = "";
+    let chip = "", terms = "", bar = "", coverage = "", trust = "", tooltip = "";
     if (isWrapCoin && w) {
-      if (w.status === "active" && v) {
-        chip = '<div class="chip on">EARNING · <b>' + fmt$(v.vestedUsdc) + '</b> of ' + fmt$(v.fullCreditUsdc) + ' vested' + (founding ? '<span class="badge founding">FOUNDING RATE</span>' : '') + '</div>';
-        if (q) terms = '<div class="terms"><div class="term"><b>' + fmt$(q.creditUsdc) + '</b>cycle credit</div><div class="term"><b>$' + (q.floorStrike ?? q.putStrike) + '</b>hard floor</div><div class="term"><b>$' + (q.capStrike ?? q.callStrike) + '</b>cap (ends cycle)</div></div>';
-        bar = '<div class="bar"><div style="width:' + (v.fraction * 100).toFixed(1) + '%"></div></div>';
+      if (w.status === "active" && v && q) {
+        const capStrike = q.capStrike ?? q.callStrike, floorStrike = q.floorStrike ?? q.putStrike;
+        // Side-aware signs: a long's floor is below / cap above; a short mirrors.
+        const floorSign = p.side === "long" ? "−" : "+", capSign = p.side === "long" ? "+" : "−";
+        const foundingBadge = founding && caps
+          ? tip('<span class="badge founding">FOUNDING RATE</span>',
+              "First-" + caps.foundingWallets + " wallet: we keep " + (caps.foundingTakeRatePct * 100).toFixed(0) + "% of the credit we source instead of " + (caps.takeRatePct * 100).toFixed(0) + "%, locked 12 months from your first wrap. Cuts under $0.05 a cycle are waived entirely.")
+          : "";
+        chip = '<div class="chip on">EARNING · <b>' + fmt$(v.vestedUsdc) + '</b> of ' + fmt$(v.fullCreditUsdc) + ' unlocked' + foundingBadge + '</div>';
+        terms = '<div class="terms">' +
+          '<div class="term"><b>' + fmt$(q.creditUsdc) + '</b>today\\u2019s credit' + infoTip("Funded by the options market, not by us. Unlocks through the day and pays to this wallet automatically at the cycle's close — never upfront.") + '</div>' +
+          '<div class="term"><b>$' + floorStrike + ' <em>' + floorSign + (q.floorPct * 100).toFixed(1) + '%</em></b>hard floor' + infoTip("Losses stop here. Struck " + floorSign + (q.floorPct * 100).toFixed(1) + "% from the price when protection started ($" + q.spot + "), not from your entry.") + '</div>' +
+          '<div class="term"><b>$' + capStrike + ' <em>' + capSign + (q.capPct * 100).toFixed(1) + '%</em></b>cap — ends cycle' + infoTip("If the price touches $" + capStrike + ", this cycle ends early: you keep your position, every gain to the cap, and the credit unlocked to that moment. Protection re-arms automatically at the new price while the toggle stays on. You never owe anything.", true) + '</div>' +
+          '</div>';
+        bar = '<div class="bar"><div style="width:' + (v.fraction * 100).toFixed(1) + '%"></div></div>' +
+          '<div class="unlock">unlocks through the day · ' + (v.fullyVested ? "fully unlocked — pays at settlement" : "pays in " + fmtDur(v.remainingMs)) + '</div>';
         const note = w.hedge && w.hedge.sizeNote;
         if (note) coverage = '<div class="coverage">' + esc(note) + '</div>';
+        trust = '<div class="trust">Priced live from listed options. When the market can\\u2019t fund a credit, we refuse and say why.</div>';
       } else if (w.status === "quoting" || w.status === "executing") {
         chip = '<div class="chip on">Wrapping… pricing the live options book</div>';
       } else if (w.status === "knocked_out") {
@@ -217,15 +258,25 @@ const render = (positions, state) => {
         tooltip = w.failReason;
       }
     }
+    // The active toggle carries its unlocked/full numbers so turning OFF can state the consequence.
     const toggle = isWrapCoin
-      ? '<div class="switch' + (active ? " on" : "") + (busy ? " busy" : "") + '" data-coin="' + esc(p.coin) + '" data-active="' + (active ? "1" : "0") + '" role="switch" aria-checked="' + (active ? "true" : "false") + '"><div class="knob"></div></div>'
+      ? '<div class="switch' + (active ? " on" : "") + (busy ? " busy" : "") + '" data-coin="' + esc(p.coin) + '" data-active="' + (active ? "1" : "0") + '"' +
+        (active && v ? ' data-vested="' + v.vestedUsdc + '" data-full="' + v.fullCreditUsdc + '"' : "") +
+        ' role="switch" aria-checked="' + (active ? "true" : "false") + '"><div class="knob"></div></div>'
       : '<span class="small muted">protection for ' + esc(p.coin) + ' coming soon</span>';
     return '<div class="card" title="' + esc(tooltip) + '">' +
       '<div class="row"><div class="pos-head"><span class="' + (p.side === "long" ? "long" : "short") + '">' + p.side.toUpperCase() + '</span> ' + p.szBase + ' ' + esc(p.coin) + ' <small>· ' + fmt$(p.notionalUsdc) + (p.entryPx ? ' · entry $' + p.entryPx : '') + '</small></div>' + toggle + '</div>' +
-      chip + terms + bar + coverage + '</div>';
+      chip + terms + bar + coverage + trust + '</div>';
   }).join("");
   for (const sw of el.querySelectorAll(".switch")) sw.addEventListener("click", onToggle);
 };
+
+// Mobile-safe tooltips: tap toggles, tapping elsewhere closes.
+document.addEventListener("click", (ev) => {
+  const wrap = ev.target.closest ? ev.target.closest(".tipwrap") : null;
+  for (const t of document.querySelectorAll(".tipwrap.open")) if (t !== wrap) t.classList.remove("open");
+  if (wrap) wrap.classList.toggle("open");
+});
 
 const renderPayouts = (state) => {
   const rows = (state && state.payouts || []).slice().reverse();
@@ -238,12 +289,18 @@ const onToggle = async (ev) => {
   if (busy || !account) return;
   const sw = ev.currentTarget;
   const isOn = sw.dataset.active === "1";
+  // Turning OFF is an early close with consequences — state them before acting.
+  if (isOn) {
+    const kept = Number(sw.dataset.vested || 0), full = Number(sw.dataset.full || 0);
+    const msg = "Turn protection off now?\\n\\nYou keep " + fmt$(kept) + " already unlocked; the remaining " + fmt$(Math.max(0, full - kept)) + " returns to the market. Auto-renew turns off.";
+    if (!window.confirm(msg)) return;
+  }
   busy = true;
   sw.classList.add("busy");
   try {
     if (isOn) {
       const j = await api("/api/close", { method: "POST" });
-      $("connectMsg").textContent = j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " vested. Auto-renew off." : humanChip(j.message || j.error);
+      $("connectMsg").textContent = j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off." : humanChip(j.message || j.error);
     } else {
       // Client-supplied idempotency key: a flaky network can never double-wrap.
       const idem = "web-" + account.slice(2, 10) + "-" + Date.now().toString(36);
@@ -283,12 +340,27 @@ $("tosBtn").onclick = async () => {
   checkGates();
 };
 
+// Mode pill: SIMULATED (paper) / DEMO VENUE (okx_demo) / LIVE (okx_live) — nobody should ever
+// mistake a test surface for real money or vice versa.
+const setModePill = (mode) => {
+  const el = $("modePill");
+  if (!mode) { el.style.display = "none"; return; }
+  const m = mode === "okx_live" ? ["LIVE", "mode-live", "Real hedge orders on the listed venue. Credits are real."]
+    : mode === "okx_demo" ? ["DEMO VENUE", "mode-demo", "Real order flow against the venue's demo environment — no real money."]
+    : ["SIMULATED", "mode-paper", "Paper mode: quotes are live market prices, but no venue orders are placed and payouts are simulated."];
+  el.style.display = "";
+  el.className = "mode-pill tipwrap " + m[1];
+  el.innerHTML = m[0] + '<span class="tip">' + m[2] + '</span>';
+};
+
 let pollTimer = null;
 const poll = async () => {
   if (!account) return;
   try {
     const [pos, st] = await Promise.all([api("/api/positions"), api("/api/state")]);
     if (st && st.caps) $("rateNote").textContent = " (" + (st.caps.foundingTakeRatePct * 100).toFixed(0) + "% vs " + (st.caps.takeRatePct * 100).toFixed(0) + "%, locked 12 months)";
+    if (st && st.guards) setModePill(st.guards.executionMode);
+    $("hero").style.display = "none"; // connected: the app gets denser, the pitch gets out of the way
     render(pos.ok ? pos.positions : [], st.ok ? st : null);
     renderPayouts(st.ok ? st : null);
   } catch (e) { /* keep last render */ }
@@ -310,6 +382,8 @@ $("forgetBtn").onclick = () => {
   $("addrInput").value = "";
   $("connectMsg").textContent = "";
   setConn();
+  $("hero").style.display = "";
+  $("modePill").style.display = "none";
   $("positions").innerHTML = '<div class="empty">Connect an address to see your open positions.</div>';
   renderPayouts(null);
 };
