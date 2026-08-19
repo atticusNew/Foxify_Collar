@@ -127,6 +127,10 @@ export type DemoWrapRecord = {
   concludedAtMs?: number | null;
   /** Design B knockout record: set when mark touched the cap and the cycle ended early. */
   knockout?: KnockoutInfo | null;
+  /** Client-supplied idempotency key: a retry with the same key replays the original outcome. */
+  idempotencyKey?: string | null;
+  /** The honest credit split (decision 3): gross the market paid, our published take, the trader's net. */
+  economics?: { grossCreditUsdc: number; atticusTakeUsdc: number; takeRatePct: number; founding: boolean } | null;
 };
 
 export type KnockoutInfo = {
