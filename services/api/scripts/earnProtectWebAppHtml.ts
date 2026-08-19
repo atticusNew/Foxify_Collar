@@ -16,14 +16,23 @@
  *   - ONE-NUMBER RULE: after a fill, the realized credit is the only unlabeled number
  *   - honest refusal copy (human line; full engine string on hover) — port of the extension chip
  *   - partial coverage stated plainly; payout history links to the tx
+ *
+ * TWO VARIANTS from one template (buildEpAppHtml):
+ *   web      — the standalone page at /app
+ *   miniapp  — the Telegram Mini App at /miniapp: telegram-web-app.js, ready()/expand(), haptic
+ *              feedback on actions, account handed off by the bot via ?account=… (falls back to
+ *              the paste flow — localStorage persists inside Telegram's WebView), compact layout.
  */
 
-export const EP_WEB_APP_HTML = `<!doctype html>
+export const buildEpAppHtml = (variant: "web" | "miniapp"): string => {
+  const miniapp = variant === "miniapp";
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Atticus — Earn & Protect</title>
+<title>${miniapp ? "Earn & Protect" : "Atticus — Earn & Protect"}</title>
+${miniapp ? '<script src="https://telegram.org/js/telegram-web-app.js"></script>' : ""}
 <style>
   /* ── VENUE THEME TOKENS ──────────────────────────────────────────────────
      Skinned to feel native inside Hyperliquid (dark teal surfaces, mint
@@ -79,6 +88,8 @@ export const EP_WEB_APP_HTML = `<!doctype html>
   .bar>div{background:linear-gradient(90deg,#1b7f74,var(--accent));height:100%;width:0;min-width:7px;border-radius:999px;transition:width .8s;box-shadow:0 0 6px rgba(80,210,193,.5)}
   .unlock{margin-top:6px;font-size:12px;color:var(--muted)}
   .trust{margin-top:10px;font-size:11.5px;color:var(--muted)}
+  .flash{display:none;background:var(--panel);border:1px solid rgba(80,210,193,.45);border-radius:6px;padding:10px 13px;font-size:13px;margin-bottom:12px}
+  .flash.bad{border-color:rgba(237,112,136,.45)}
   /* Tap/hover tooltips (mobile-safe — no title attributes) */
   .tipwrap{position:relative;cursor:help}
   .tipwrap .tip{display:none;position:absolute;bottom:135%;left:50%;transform:translateX(-50%);width:240px;background:#081418;border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12px;font-weight:400;color:var(--text);line-height:1.5;z-index:30;box-shadow:0 10px 28px rgba(0,0,0,.55);text-align:left;text-transform:none;letter-spacing:0;white-space:normal}
@@ -131,6 +142,8 @@ export const EP_WEB_APP_HTML = `<!doctype html>
     <div class="small muted" id="connectMsg" style="margin-top:8px"></div>
   </div>
 
+  <div class="flash" id="flash"></div>
+
   <div class="card" id="tosCard" style="display:none;border-color:rgba(80,210,193,.45)">
     <b>One step before protection:</b> <span class="muted small">accept the <a href="/tos" target="_blank" rel="noopener">Terms of Service</a> (<span id="tosVer"></span>). Recorded once per wallet per version.</span>
     <div class="row" style="margin-top:10px">
@@ -157,6 +170,11 @@ export const EP_WEB_APP_HTML = `<!doctype html>
   </div>
 </div>
 <script>
+const MINIAPP = ${miniapp ? "true" : "false"};
+const TG = MINIAPP && window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
+if (TG) { try { TG.ready(); TG.expand(); } catch (e) {} }
+const haptic = (kind) => { if (TG && TG.HapticFeedback) { try { kind === "impact" ? TG.HapticFeedback.impactOccurred("medium") : TG.HapticFeedback.notificationOccurred(kind); } catch (e) {} } };
+
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt$ = (x) => x == null ? "—" : (x < 0 ? "−$" : "$") + Math.abs(x).toFixed(2);
@@ -198,13 +216,27 @@ const fmtDur = (ms) => {
 const tip = (trigger, text, right) => '<span class="tipwrap' + (right ? " tip-right" : "") + '">' + trigger + '<span class="tip">' + esc(text) + '</span></span>';
 const infoTip = (text, right) => tip('<span class="info">i</span>', text, right);
 
-let account = localStorage.getItem("ep_account") || "";
+// Mini App account handoff: the bot passes ?account=0x… on its launch buttons; localStorage keeps
+// it for menu-button launches (no per-chat URL there). The paste flow remains the fallback.
+const urlAccount = new URLSearchParams(location.search).get("account");
+let account = (urlAccount && /^0x[0-9a-fA-F]{40}$/.test(urlAccount) ? urlAccount : "") || localStorage.getItem("ep_account") || "";
+if (account) localStorage.setItem("ep_account", account);
 let busy = false;
+
+// One status writer: the connect-card line on web; a visible flash strip in the Mini App
+// (where the connect card is hidden once an account is bound).
+const setMsg = (t, isErr) => {
+  $("connectMsg").textContent = t || "";
+  const f = $("flash");
+  if (MINIAPP) { f.textContent = t || ""; f.style.display = t ? "" : "none"; f.className = "flash" + (isErr ? " bad" : ""); }
+};
 
 const setConn = () => {
   $("connPill").textContent = account ? short(account) + " · read-only" : "not connected";
   $("forgetBtn").style.display = account ? "" : "none";
   if (account) $("addrInput").value = account;
+  // Mini App with a connected account: the connect card is noise — the pill carries the identity.
+  if (MINIAPP) $("connectCard").style.display = account ? "none" : "";
 };
 
 const api = async (path, opts) => {
@@ -319,6 +351,7 @@ const onToggle = async (ev) => {
     if (!window.confirm(msg)) return;
   }
   busy = true;
+  haptic("impact");
   // Immediate knob feedback: flip for the ATTEMPT, pulse while working; the next state render
   // corrects it if the engine refuses. A toggle that only moves on success reads as stuck.
   sw.classList.toggle("on", !isOn);
@@ -326,17 +359,19 @@ const onToggle = async (ev) => {
   try {
     if (isOn) {
       const j = await api("/api/close", { method: "POST" });
-      $("connectMsg").textContent = j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off." : humanChip(j.message || j.error);
+      setMsg(j.ok ? "Closed early — kept " + fmt$(j.vested.vestedUsdc) + " unlocked. Auto-renew off." : humanChip(j.message || j.error), !j.ok);
     } else {
-      $("connectMsg").textContent = "Wrapping — pricing the live options book…";
+      setMsg("Wrapping — pricing the live options book…", false);
       // Client-supplied idempotency key: a flaky network can never double-wrap.
-      const idem = "web-" + account.slice(2, 10) + "-" + Date.now().toString(36);
+      const idem = (MINIAPP ? "tma-" : "web-") + account.slice(2, 10) + "-" + Date.now().toString(36);
       const j = await api("/api/wrap", { method: "POST", headers: { "Idempotency-Key": idem } });
-      $("connectMsg").textContent = j.ok ? "Protection live — credit pays at the cycle's close." : humanChip(j.message || j.error);
+      setMsg(j.ok ? "Protection live — credit pays at the cycle's close." : humanChip(j.message || j.error), !j.ok);
       if (!j.ok) $("connectMsg").title = String(j.message || j.error || "");
+      haptic(j.ok ? "success" : "error");
     }
   } catch (e) {
-    $("connectMsg").textContent = "Our issue, not yours · nothing opened";
+    setMsg("Our issue, not yours · nothing opened", true);
+    haptic("error");
   }
   busy = false;
   poll();
@@ -363,7 +398,7 @@ const checkGates = async () => {
 $("tosCheck").onchange = () => { $("tosBtn").disabled = !$("tosCheck").checked; };
 $("tosBtn").onclick = async () => {
   const j = await api("/api/tos/accept", { method: "POST" });
-  $("connectMsg").textContent = j.ok ? "Terms accepted (" + j.version + ") — you're set." : humanChip(j.message || j.error);
+  setMsg(j.ok ? "Terms accepted (" + j.version + ") — you're set." : humanChip(j.message || j.error), !j.ok);
   checkGates();
 };
 
@@ -423,3 +458,7 @@ setInterval(checkGates, 30000);
 </script>
 </body>
 </html>`;
+};
+
+export const EP_WEB_APP_HTML = buildEpAppHtml("web");
+export const EP_MINI_APP_HTML = buildEpAppHtml("miniapp");

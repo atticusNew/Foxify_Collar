@@ -88,7 +88,7 @@ import {
   type LoopPulse
 } from "../src/singleSide/twoSided/creditCollar/epSafety";
 import { assessGeofence, buildCountryResolver, parseGeofenceFromEnv } from "../src/singleSide/twoSided/creditCollar/epGeofence";
-import { EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
+import { EP_MINI_APP_HTML, EP_WEB_APP_HTML } from "./earnProtectWebAppHtml";
 import { EP_PUBLIC_DASHBOARD_HTML, EP_TOS_HTML } from "./earnProtectPublicPagesHtml";
 import { Pool } from "pg";
 import { type PerpSide } from "../src/singleSide/twoSided/creditCollar/creditCollarPricer";
@@ -101,7 +101,7 @@ import { executionArmed, parseLiveGuardsFromEnv } from "../src/singleSide/twoSid
 const num = (v: string | undefined, d: number) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
 const round2 = (x: number) => +x.toFixed(2);
 
-const port = num(process.env.DEMO_PORT, 8788);
+const port = num(process.env.DEMO_PORT ?? process.env.PORT, 8788); // PORT: hosted platforms (Render) inject it
 const guards = parseDemoGuardsFromEnv(process.env);
 const storePath = process.env.DEMO_STORE_PATH ?? "./logs/demo-wraps.json";
 const allowReset = String(process.env.DEMO_ALLOW_RESET ?? "true").toLowerCase() === "true";
@@ -1059,11 +1059,11 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     }
 
     // ── Pages ──
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app")) {
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app" || url.pathname === "/miniapp")) {
       // Brand logo slot: set EP_BRAND_LOGO_URL to render the mark next to the wordmark.
       const logoUrl = process.env.EP_BRAND_LOGO_URL?.trim();
       const logoTag = logoUrl && /^https?:\/\//.test(logoUrl) ? `<img class="brand-img" src="${logoUrl.replace(/"/g, "")}" alt="">` : "";
-      sendHtml(res, EP_WEB_APP_HTML.replace("__BRAND_LOGO__", logoTag));
+      sendHtml(res, (url.pathname === "/miniapp" ? EP_MINI_APP_HTML : EP_WEB_APP_HTML).replace("__BRAND_LOGO__", logoTag));
       return;
     }
     if (req.method === "GET" && url.pathname === "/demo") {

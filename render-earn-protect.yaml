@@ -1,0 +1,62 @@
+# ─────────────────────────────────────────────────────────────────────────
+# render-earn-protect.yaml — the Earn & Protect service, deployed publicly.
+#
+# WHY: the Telegram Mini App requires a public HTTPS URL (Telegram refuses
+# http/localhost web_app URLs), and the trader web app / public dashboard
+# need a real home anyway. This deploys the whole service with Postgres for
+# durable state (Render's filesystem is ephemeral — JSON stores would reset
+# on every deploy).
+#
+# Deploy: Render dashboard → New → Blueprint → select this file.
+# After deploy:
+#   - trader app:      https://<service>.onrender.com/app
+#   - mini app:        https://<service>.onrender.com/miniapp
+#     → set EP_MINIAPP_URL=https://<service>.onrender.com/miniapp on the BOT
+#   - public book:     https://<service>.onrender.com/public
+#   - control room:    https://<service>.onrender.com/demo?token=<EP_ADMIN_TOKEN>
+#
+# Live OKX trading additionally needs (set manually, never in this file):
+#   DEMO_EXECUTION=okx_live LIVE_ENABLED=true OKX_EXECUTION_MODE=live
+#   OKX_LIVE_CONFIRM=I_UNDERSTAND_REAL_MONEY + OKX_API_KEY/SECRET/PASSPHRASE.
+#   Region is singapore ⟹ same outbound IP pool as the OKX whitelist, so
+#   OKX_REST_BASE (egress proxy) is unnecessary when deployed here.
+# ─────────────────────────────────────────────────────────────────────────
+services:
+  - type: web
+    name: atticus-earn-protect
+    runtime: node
+    plan: starter
+    region: singapore
+    branch: cursor/hl-direct-phase3-launch-2108
+    autoDeploy: true
+    buildCommand: npm ci
+    startCommand: npm --workspace services/api exec tsx scripts/creditCollarDemoService.ts
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DEMO_ENABLED
+        value: "true"
+      - key: DEMO_EXECUTION
+        value: paper # flip to okx_live manually with the full arming chain
+      - key: DEMO_ALLOWED_ACCOUNTS
+        value: "*" # founding-cohort waitlist + book caps still bound exposure
+      - key: EP_ADMIN_TOKEN
+        generateValue: true # control room / admin API token — read it from the dashboard
+      - key: DATABASE_URL
+        fromDatabase:
+          name: atticus-earn-protect-db
+          property: connectionString
+      # Launch gates: OFF while testing; arm both before public launch.
+      - key: EP_GEOFENCE
+        value: "false"
+      - key: EP_TOS_REQUIRED
+        value: "false"
+      # Brand mark (finch) — set when the asset URL exists.
+      - key: EP_BRAND_LOGO_URL
+        sync: false
+
+databases:
+  - name: atticus-earn-protect-db
+    plan: basic-256mb
+    region: singapore

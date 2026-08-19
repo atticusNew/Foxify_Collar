@@ -42,6 +42,12 @@ const tgBase = `${process.env.TELEGRAM_API_BASE ?? "https://api.telegram.org"}/b
 const apiBase = process.env.EP_API_BASE ?? "http://localhost:8788";
 const storePath = process.env.EP_BOT_STORE_PATH ?? "./logs/ep-bot-chats.json";
 const notifyMs = num(process.env.EP_BOT_NOTIFY_MS, 30_000);
+// Telegram Mini App home (must be public HTTPS — Telegram refuses http/localhost web_app URLs).
+// The service serves it at <public-base>/miniapp; unset ⟹ buttons/menu are simply omitted.
+const rawMiniApp = process.env.EP_MINIAPP_URL?.trim() ?? "";
+const miniAppUrl = /^https:\/\//.test(rawMiniApp) ? rawMiniApp.replace(/\/$/, "") : null;
+if (rawMiniApp && !miniAppUrl) console.error("[ep-bot] EP_MINIAPP_URL ignored — Telegram requires an https:// URL");
+const miniAppFor = (address: string): string | null => (miniAppUrl ? `${miniAppUrl}?account=${address}` : null);
 
 // ── Chat store (chatId → address + notification snapshot) ─────────────────────
 
@@ -114,7 +120,7 @@ const showPositions = async (chatId: string | number, address: string): Promise<
     return;
   }
   const positions = (pos.positions as BotPosition[]) ?? [];
-  await send(chatId, positionsText(positions), positionsKeyboard(positions, prot.on === true));
+  await send(chatId, positionsText(positions), positionsKeyboard(positions, prot.on === true, miniAppFor(address)));
 };
 
 /** ToS gate (Phase 3): prompt with the inline accept button when the current version is unaccepted. */
@@ -291,8 +297,11 @@ const pollLoop = async (): Promise<void> => {
   }
 };
 
-console.error(`[ep-bot] Earn & Protect bot up — API ${apiBase} · notifier every ${Math.round(notifyMs / 1000)}s`);
+console.error(`[ep-bot] Earn & Protect bot up — API ${apiBase} · notifier every ${Math.round(notifyMs / 1000)}s${miniAppUrl ? ` · mini app ${miniAppUrl}` : " · mini app OFF (set EP_MINIAPP_URL)"}`);
 // Register the "/" command menu (the professional touch traders expect).
 void tg("setMyCommands", { commands: BOT_COMMANDS });
+// The chat menu button opens the Mini App (global — the app resolves the account from
+// localStorage inside Telegram's WebView, or the paste flow on first open).
+if (miniAppUrl) void tg("setChatMenuButton", { menu_button: { type: "web_app", text: "Earn & Protect", web_app: { url: miniAppUrl } } });
 setInterval(() => void notifyTick(), notifyMs);
 void pollLoop();

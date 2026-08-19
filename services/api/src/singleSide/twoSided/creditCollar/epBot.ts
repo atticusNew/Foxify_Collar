@@ -106,20 +106,25 @@ export const tosPrompt = (version: string, baseUrl: string): { text: string; key
 // ── Inline keyboards ──────────────────────────────────────────────────────────
 
 export type BotPosition = { coin: string; side: string; szBase: number; notionalUsdc: number; wrappable: boolean };
-export type InlineButton = { text: string; callback_data: string };
+export type InlineButton = { text: string; callback_data?: string; web_app?: { url: string } };
 
 /**
  * One row per position: wrappable coins get the protect/unprotect action; others a disabled note.
  * callback_data is `wrap` | `close` (the API is account-scoped — the chat's stored address).
+ * When a Mini App URL is configured, a launch row opens the full branded app inside Telegram with
+ * the chat's account handed off in the URL.
  */
-export const positionsKeyboard = (positions: BotPosition[], protectionOn: boolean): InlineButton[][] =>
-  positions
+export const positionsKeyboard = (positions: BotPosition[], protectionOn: boolean, miniAppUrl?: string | null): InlineButton[][] => {
+  const rows: InlineButton[][] = positions
     .filter((p) => p.wrappable)
     .map((p) => [
       protectionOn
         ? { text: `✋ Unprotect ${p.side.toUpperCase()} ${p.szBase} ${p.coin} (keep vested)`, callback_data: "close" }
         : { text: `🛡 Earn & Protect ${p.side.toUpperCase()} ${p.szBase} ${p.coin} (${fmt$(p.notionalUsdc)})`, callback_data: "wrap" }
     ]);
+  if (miniAppUrl) rows.push([{ text: "📱 Open the app", web_app: { url: miniAppUrl } }]);
+  return rows;
+};
 
 const escHtml = (s: string): string => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
